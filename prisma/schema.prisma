@@ -1,0 +1,94 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Document {
+  id          String   @id @default(uuid())
+  code        String   @unique
+  date        DateTime @default(now())
+  partner     String
+  description String
+  amount      Float
+  status      String   // PENDING, COMPLETED, DRAFT
+}
+
+model MasterDataItem {
+  id          String   @id @default(uuid())
+  type        String
+  code        String
+  name        String
+  group       String?
+  branch      String?
+  taxCode     String?
+  contactName String?
+  phone       String?
+  email       String?
+  accountNo   String?
+  status      String   @default("ACTIVE")
+  note        String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([type, code])
+  @@index([type])
+  @@index([status])
+}
+
+model Deposit {
+  id              String           @id @default(uuid())
+  code            String           @unique
+  receivedDate    DateTime         @default(now())
+  partnerCode     String
+  partnerName     String
+  branchCode      String
+  moneySourceCode String
+  amount          Float
+  remainingAmount Float
+  purpose         String
+  status          String           @default("HOLDING")
+  note            String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  histories       DepositHistory[]
+
+  @@index([status])
+  @@index([partnerCode])
+  @@index([branchCode])
+}
+
+model DepositHistory {
+  id        String   @id @default(uuid())
+  depositId String
+  action    String
+  amount    Float?
+  note      String?
+  actor     String?
+  createdAt DateTime @default(now())
+  deposit   Deposit  @relation(fields: [depositId], references: [id], onDelete: Cascade)
+
+  @@index([depositId])
+}
+
+model OpeningBalance {
+  id              String   @id @default(uuid())
+  period          String
+  branchCode      String
+  balanceType     String
+  objectCode      String?
+  objectName      String?
+  moneySourceCode String?
+  amount          Float
+  note            String?
+  status          String   @default("DRAFT")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([period])
+  @@index([balanceType])
+  @@index([status])
+}
