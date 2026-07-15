@@ -247,14 +247,14 @@ export default function DepositsPage() {
           </div>
 
           <label className="text-xs font-bold text-slate-600 block">
-            Khach hang *
+            Khách hàng *
             <select
               value={form.partnerCode}
               onChange={(e) => handlePartnerChange(e.target.value)}
-              className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+              className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
               required
             >
-              <option value="">-- Chon doi tac --</option>
+              <option value="">-- Chọn đối tác --</option>
               {partners.map(item => (
                 <option key={item.id} value={item.code}>
                   [{item.code}] {item.name}
@@ -264,23 +264,24 @@ export default function DepositsPage() {
           </label>
 
           <label className="text-xs font-bold text-slate-600 block">
-            Ten khach hang
+            Tên khách hàng
             <input
               value={form.partnerName}
               readOnly
               className="mt-1 w-full border border-slate-200 bg-slate-50 text-slate-500 rounded-lg px-3 py-2 text-sm outline-none cursor-not-allowed"
+              placeholder="Tên khách hàng tự động điền"
             />
           </label>
 
           <label className="text-xs font-bold text-slate-600 block">
-            Chi nhanh *
+            Chi nhánh *
             <select
               value={form.branchCode}
               onChange={(e) => setForm(val => ({ ...val, branchCode: e.target.value }))}
-              className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+              className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
               required
             >
-              <option value="">-- Chon chi nhanh --</option>
+              <option value="">-- Chọn chi nhánh --</option>
               {branches.map(item => (
                 <option key={item.id} value={item.code}>
                   [{item.code}] {item.name}
@@ -290,14 +291,14 @@ export default function DepositsPage() {
           </label>
 
           <label className="text-xs font-bold text-slate-600 block">
-            Nguon tien *
+            Nguồn tiền *
             <select
               value={form.moneySourceCode}
               onChange={(e) => setForm(val => ({ ...val, moneySourceCode: e.target.value }))}
-              className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+              className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
               required
             >
-              <option value="">-- Chon nguon tien --</option>
+              <option value="">-- Chọn nguồn tiền --</option>
               {moneySources
                 .filter(item => !form.branchCode || item.branch === form.branchCode)
                 .map(item => (
@@ -309,23 +310,23 @@ export default function DepositsPage() {
           </label>
 
           <label className="text-xs font-bold text-slate-600 block">
-            So tien *
+            Số tiền *
             <input
               type="number"
               value={form.amount}
               onChange={(e) => setForm(val => ({ ...val, amount: e.target.value }))}
-              className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+              className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
               required
             />
           </label>
 
           <label className="text-xs font-bold text-slate-600 block">
-            Noi dung coc *
+            Nội dung cọc *
             <input
               type="text"
               value={form.purpose}
               onChange={(e) => setForm(val => ({ ...val, purpose: e.target.value }))}
-              className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+              className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
               required
             />
           </label>
@@ -335,13 +336,14 @@ export default function DepositsPage() {
             <textarea
               value={form.note}
               onChange={(event) => setForm((value) => ({ ...value, note: event.target.value }))}
-              className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm h-20 resize-none"
+              className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm h-20 resize-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              placeholder="Nhập ghi chú thêm..."
             />
           </label>
 
           {message && <p className="text-sm rounded-lg bg-blue-50 border border-blue-100 text-blue-700 px-3 py-2">{message}</p>}
 
-          <button disabled={isSaving} className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-bold">
+          <button disabled={isSaving} className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-bold transition-colors">
             {isSaving ? "Đang lưu..." : "Tạo phiếu cọc"}
           </button>
         </form>

@@ -181,6 +181,8 @@ export default function OpeningBalancesPage() {
   }, [balances]);
   const canManageOpeningBalances = user ? canPerformAction(user.role, "config") : false;
   const canReopenOpeningBalances = user?.role === "Admin";
+  const isSourceType = ["CASH", "BANK", "WALLET_POS"].includes(form.balanceType);
+  const isObjectType = ["AR", "AP", "DEPOSIT"].includes(form.balanceType);
 
   const createBalance = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -318,41 +320,40 @@ export default function OpeningBalancesPage() {
               <h2 className="font-bold text-lg mt-1">Nhập số dư</h2>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <label className="text-xs font-bold text-slate-600">
-                Kỳ *
-                <input
-                  value={form.period}
-                  onChange={(event) => setForm((value) => ({ ...value, period: event.target.value }))}
-                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
-                  placeholder="2026-07"
-                  required
-                />
-              </label>
-              <label className="text-xs font-bold text-slate-600">
-                Chi nhánh *
-                <select
-                  value={form.branchCode}
-                  onChange={(event) => setForm((value) => ({ ...value, branchCode: event.target.value }))}
-                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
-                  required
-                >
-                  <option value="">-- Chon chi nhanh --</option>
-                  {branches.map(item => (
-                    <option key={item.id} value={item.code}>
-                      [{item.code}] {item.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
+            <label className="text-xs font-bold text-slate-600 block">
+              Kỳ *
+              <input
+                value={form.period}
+                onChange={(event) => setForm((value) => ({ ...value, period: event.target.value }))}
+                className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                placeholder="2026-07"
+                required
+              />
+            </label>
+
+            <label className="text-xs font-bold text-slate-600 block">
+              Chi nhánh *
+              <select
+                value={form.branchCode}
+                onChange={(event) => setForm((value) => ({ ...value, branchCode: event.target.value }))}
+                className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                required
+              >
+                <option value="">-- Chọn chi nhánh --</option>
+                {branches.map(item => (
+                  <option key={item.id} value={item.code}>
+                    [{item.code}] {item.name}
+                  </option>
+                ))}
+              </select>
+            </label>
 
             <label className="text-xs font-bold text-slate-600 block">
               Loại số dư *
               <select
                 value={form.balanceType}
                 onChange={(event) => setForm((value) => ({ ...value, balanceType: event.target.value }))}
-                className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                 required
               >
                 {balanceTypes.map((type) => (
@@ -363,32 +364,47 @@ export default function OpeningBalancesPage() {
               </select>
             </label>
 
-            <div className="grid grid-cols-2 gap-3">
-              <label className="text-xs font-bold text-slate-600">
-                Ma doi tuong (Cong no/Coc)
-                <select
-                  value={form.objectCode}
-                  onChange={(event) => handlePartnerChange(event.target.value)}
-                  disabled={["CASH", "BANK", "WALLET_POS"].includes(form.balanceType)}
-                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm disabled:bg-slate-50 disabled:text-slate-400 disabled:cursor-not-allowed"
-                >
-                  <option value="">-- Chon doi tac --</option>
-                  {partners.map(item => (
-                    <option key={item.id} value={item.code}>
-                      [{item.code}] {item.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="text-xs font-bold text-slate-600">
-                Nguon tien (Quy/Ngan hang)
+            {isObjectType && (
+              <>
+                <label className="text-xs font-bold text-slate-600 block">
+                  Mã đối tượng (Công nợ/Cọc) *
+                  <select
+                    value={form.objectCode}
+                    onChange={(event) => handlePartnerChange(event.target.value)}
+                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                    required
+                  >
+                    <option value="">-- Chọn đối tác --</option>
+                    {partners.map(item => (
+                      <option key={item.id} value={item.code}>
+                        [{item.code}] {item.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="text-xs font-bold text-slate-600 block">
+                  Tên đối tượng
+                  <input
+                    value={form.objectName}
+                    readOnly
+                    className="mt-1 w-full border border-slate-200 bg-slate-50 text-slate-500 rounded-lg px-3 py-2 text-sm outline-none cursor-not-allowed"
+                    placeholder="Tên khách hàng/nhà cung cấp tự động điền"
+                  />
+                </label>
+              </>
+            )}
+
+            {isSourceType && (
+              <label className="text-xs font-bold text-slate-600 block">
+                Nguồn tiền (Quỹ/Ngân hàng/Ví) *
                 <select
                   value={form.moneySourceCode}
                   onChange={(event) => setForm((value) => ({ ...value, moneySourceCode: event.target.value }))}
-                  disabled={["AR", "AP", "DEPOSIT"].includes(form.balanceType)}
-                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm disabled:bg-slate-50 disabled:text-slate-400 disabled:cursor-not-allowed"
+                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  required
                 >
-                  <option value="">-- Chon nguon tien --</option>
+                  <option value="">-- Chọn nguồn tiền --</option>
                   {moneySources
                     .filter(item => !form.branchCode || item.branch === form.branchCode)
                     .map(item => (
@@ -398,35 +414,26 @@ export default function OpeningBalancesPage() {
                     ))}
                 </select>
               </label>
-            </div>
-
-            <label className="text-xs font-bold text-slate-600 block">
-              Ten doi tuong
-              <input
-                value={form.objectName}
-                readOnly
-                className="mt-1 w-full border border-slate-200 bg-slate-50 text-slate-500 rounded-lg px-3 py-2 text-sm outline-none cursor-not-allowed"
-                placeholder="Ten khach hang/nha cung cap tu dong dien"
-              />
-            </label>
+            )}
 
             <div className="grid grid-cols-2 gap-3">
-              <label className="text-xs font-bold text-slate-600">
+              <label className="text-xs font-bold text-slate-600 block">
                 Số tiền *
                 <input
+                  type="number"
                   value={form.amount}
                   onChange={(event) => setForm((value) => ({ ...value, amount: event.target.value }))}
-                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
-                  inputMode="numeric"
+                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                   required
                 />
               </label>
-              <label className="text-xs font-bold text-slate-600">
-                Trạng thái
+              <label className="text-xs font-bold text-slate-600 block">
+                Trạng thái *
                 <select
                   value={form.status}
                   onChange={(event) => setForm((value) => ({ ...value, status: event.target.value }))}
-                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  required
                 >
                   <option value="DRAFT">Nháp</option>
                   <option value="CONFIRMED">Đã chốt</option>
@@ -439,13 +446,14 @@ export default function OpeningBalancesPage() {
               <textarea
                 value={form.note}
                 onChange={(event) => setForm((value) => ({ ...value, note: event.target.value }))}
-                className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm h-20 resize-none"
+                className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm h-20 resize-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                placeholder="Nhập ghi chú thêm..."
               />
             </label>
 
             {message && <p className="text-sm rounded-lg bg-blue-50 border border-blue-100 text-blue-700 px-3 py-2">{message}</p>}
 
-            <button disabled={isSaving} className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-bold">
+            <button disabled={isSaving} className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-bold transition-colors">
               {isSaving ? "Đang lưu..." : "Thêm số dư đầu kỳ"}
             </button>
           </form>

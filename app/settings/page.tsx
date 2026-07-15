@@ -39,16 +39,16 @@ type MasterDataForm = {
 };
 
 const tabs = [
-  { type: "BRANCH", label: "Chi nhanh", icon: "apartment", hint: "1.1 - Don vi van hanh" },
-  { type: "DEPARTMENT", label: "Phong ban", icon: "groups", hint: "1.1 - Bo phan noi bo" },
-  { type: "WAREHOUSE", label: "Kho", icon: "warehouse", hint: "1.1 - Kho hang" },
-  { type: "PARTNER", label: "Doi tac", icon: "handshake", hint: "1.1 - KH/NCC/Doi tac" },
-  { type: "MONEY_SOURCE", label: "Nguon tien", icon: "account_balance_wallet", hint: "1.1 - Quy/Ngan hang/Vi" },
-  { type: "REVENUE_EXPENSE_CATEGORY", label: "Thu / Chi", icon: "category", hint: "1.2 - OPEX/CAPEX/Gia von/Doanh thu" },
-  { type: "ACCOUNTING_PERIOD", label: "Ky ke toan", icon: "calendar_month", hint: "1.4 - Mo/khoa ky" },
-  { type: "DOCUMENT_TYPE", label: "Loai chung tu", icon: "receipt_long", hint: "1.4 - Phieu thu/chi/coc" },
-  { type: "DOCUMENT_NUMBER_RULE", label: "Quy tac ma", icon: "tag", hint: "1.4 - Ma chung tu tu dong" },
-  { type: "SYSTEM_PARAM", label: "Tham so", icon: "tune", hint: "1.4 - VAT/trang thai" },
+  { type: "BRANCH", label: "Chi nhánh", icon: "apartment", hint: "1.1 - Đơn vị vận hành" },
+  { type: "DEPARTMENT", label: "Phòng ban", icon: "groups", hint: "1.1 - Bộ phận nội bộ" },
+  { type: "WAREHOUSE", label: "Kho", icon: "warehouse", hint: "1.1 - Kho hàng" },
+  { type: "PARTNER", label: "Đối tác", icon: "handshake", hint: "1.1 - KH/NCC/Đối tác" },
+  { type: "MONEY_SOURCE", label: "Nguồn tiền", icon: "account_balance_wallet", hint: "1.1 - Quỹ/Ngân hàng/Ví" },
+  { type: "REVENUE_EXPENSE_CATEGORY", label: "Thu / Chi", icon: "category", hint: "1.2 - OPEX/CAPEX/Giá vốn/Doanh thu" },
+  { type: "ACCOUNTING_PERIOD", label: "Kỳ kế toán", icon: "calendar_month", hint: "1.4 - Mở/khóa kỳ" },
+  { type: "DOCUMENT_TYPE", label: "Loại chứng từ", icon: "receipt_long", hint: "1.4 - Phiếu thu/chi/cọc" },
+  { type: "DOCUMENT_NUMBER_RULE", label: "Quy tắc mã", icon: "tag", hint: "1.4 - Mã chứng từ tự động" },
+  { type: "SYSTEM_PARAM", label: "Tham số", icon: "tune", hint: "1.4 - VAT/trạng thái" },
 ];
 
 const emptyForm: MasterDataForm = {
@@ -281,14 +281,14 @@ export default function SettingsPage() {
           <button
             onClick={() => router.push("/")}
             className="h-9 w-9 rounded-lg bg-slate-100 hover:bg-slate-200 flex items-center justify-center"
-            title="Ve dashboard"
+            title="Về dashboard"
           >
             <span className="material-symbols-outlined text-lg">arrow_back</span>
           </button>
           <div>
-            <h1 className="text-xl font-bold">Cau hinh Danh muc & Tham so</h1>
+            <h1 className="text-xl font-bold">Cấu hình Danh mục & Tham số</h1>
             <p className="text-xs text-slate-500">
-              Nhom A 1.1 - 1.4: du lieu nen cho thu/chi, tien coc, so du dau ky va import.
+              Nhóm A 1.1 - 1.4: dữ liệu nền cho thu/chi, tiền cọc, số dư đầu kỳ và import.
             </p>
           </div>
         </div>
@@ -301,7 +301,7 @@ export default function SettingsPage() {
             onClick={handleLogout}
             className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold hover:bg-slate-50"
           >
-            Dang xuat
+            Đăng xuất
           </button>
         </div>
       </header>
@@ -331,10 +331,10 @@ export default function SettingsPage() {
         <section className="grid grid-cols-1 xl:grid-cols-[420px_1fr] gap-6">
           {!canManageSettings && (
             <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 h-fit">
-              <p className="text-xs font-bold text-blue-600 uppercase">Quyen truy cap</p>
-              <h2 className="font-bold text-lg mt-1">Chi xem danh muc</h2>
+              <p className="text-xs font-bold text-blue-600 uppercase">Quyền truy cập</p>
+              <h2 className="font-bold text-lg mt-1">Chỉ xem danh mục</h2>
               <p className="text-sm text-slate-500 mt-2">
-                Vai tro hien tai duoc xem danh muc nen, khong duoc them/sua/ngung dung cau hinh.
+                Vai trò hiện tại được xem danh mục nền, không được thêm/sửa/ngừng dùng cấu hình.
               </p>
             </div>
           )}
@@ -343,7 +343,7 @@ export default function SettingsPage() {
             <div>
               <p className="text-xs font-bold text-blue-600 uppercase">{activeTab.hint}</p>
               <h2 className="font-bold text-lg mt-1">
-                {form.id ? "Cap nhat" : "Them moi"} {activeTab.label.toLowerCase()}
+                {form.id ? "Cập nhật" : "Thêm mới"} {activeTab.label.toLowerCase()}
               </h2>
             </div>
 
@@ -351,7 +351,7 @@ export default function SettingsPage() {
 
             <div className="grid grid-cols-2 gap-3">
               <label className="text-xs font-bold text-slate-600">
-                Ma danh muc *
+                Mã danh mục *
                 <input
                   value={form.code}
                   onChange={(event) => setForm((value) => ({ ...value, code: event.target.value }))}
@@ -361,41 +361,41 @@ export default function SettingsPage() {
                 />
               </label>
               <label className="text-xs font-bold text-slate-600">
-                Trang thai
+                Trạng thái
                 <select
                   value={form.status}
                   onChange={(event) => setForm((value) => ({ ...value, status: event.target.value }))}
                   className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
                 >
-                  <option value="ACTIVE">Hoat dong</option>
-                  <option value="INACTIVE">Ngung dung</option>
+                  <option value="ACTIVE">Hoạt động</option>
+                  <option value="INACTIVE">Ngừng dùng</option>
                 </select>
               </label>
             </div>
 
             <label className="text-xs font-bold text-slate-600 block">
-              Ten danh muc *
+              Tên danh mục *
               <input
                 value={form.name}
                 onChange={(event) => setForm((value) => ({ ...value, name: event.target.value }))}
                 className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
-                placeholder="Ten hien thi"
+                placeholder="Tên hiển thị"
                 required
               />
             </label>
 
             <div className="grid grid-cols-2 gap-3">
               <label className="text-xs font-bold text-slate-600">
-                Nhom/Loai
+                Nhóm/Loại
                 <input
                   value={form.group}
                   onChange={(event) => setForm((value) => ({ ...value, group: event.target.value }))}
                   className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
-                  placeholder={groupPlaceholders[activeType] || "VD: Khach hang"}
+                  placeholder={groupPlaceholders[activeType] || "VD: Khách hàng"}
                 />
               </label>
               <label className="text-xs font-bold text-slate-600">
-                Chi nhanh
+                Chi nhánh
                 <input
                   value={form.branch}
                   onChange={(event) => setForm((value) => ({ ...value, branch: event.target.value }))}
@@ -415,7 +415,7 @@ export default function SettingsPage() {
                 />
               </label>
               <label className="text-xs font-bold text-slate-600">
-                So tai khoan
+                Số tài khoản
                 <input
                   value={form.accountNo}
                   onChange={(event) => setForm((value) => ({ ...value, accountNo: event.target.value }))}
@@ -426,7 +426,7 @@ export default function SettingsPage() {
 
             <div className="grid grid-cols-2 gap-3">
               <label className="text-xs font-bold text-slate-600">
-                Nguoi lien he
+                Người liên hệ
                 <input
                   value={form.contactName}
                   onChange={(event) => setForm((value) => ({ ...value, contactName: event.target.value }))}
@@ -434,7 +434,7 @@ export default function SettingsPage() {
                 />
               </label>
               <label className="text-xs font-bold text-slate-600">
-                Dien thoai
+                Điện thoại
                 <input
                   value={form.phone}
                   onChange={(event) => setForm((value) => ({ ...value, phone: event.target.value }))}
@@ -453,12 +453,12 @@ export default function SettingsPage() {
             </label>
 
             <label className="text-xs font-bold text-slate-600 block">
-              Ghi chu/gia tri cau hinh
+              Ghi chú/Giá trị cấu hình
               <textarea
                 value={form.note}
                 onChange={(event) => setForm((value) => ({ ...value, note: event.target.value }))}
                 className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm h-20 resize-none"
-                placeholder={notePlaceholders[activeType] || "Thong tin bo sung"}
+                placeholder={notePlaceholders[activeType] || "Thông tin bổ sung"}
               />
             </label>
 
