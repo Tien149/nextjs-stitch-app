@@ -45,3 +45,6 @@ prisma/*.db
 
 # logs
 *.log
+
+# Excel temp files
+~$*

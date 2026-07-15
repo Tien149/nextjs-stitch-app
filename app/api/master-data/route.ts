@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
-import { getRequestSession, requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
+import { getRequestSession, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 
 const defaultMasterData = [

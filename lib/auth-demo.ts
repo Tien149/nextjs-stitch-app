@@ -98,6 +98,18 @@ export const appMenuItems: AppMenuItem[] = [
     roles: ["Admin", "Kế toán tổng hợp", "Quản lý"],
   },
   {
+    name: "Import Sao kê",
+    icon: "upload_file",
+    href: "/imports/bank-statements",
+    roles: ["Admin", "Kế toán tổng hợp", "Kế toán công nợ"],
+  },
+  {
+    name: "Import Doanh thu",
+    icon: "point_of_sale",
+    href: "/imports/revenue",
+    roles: ["Admin", "Kế toán tổng hợp"],
+  },
+  {
     name: "Chứng từ",
     icon: "receipt_long",
     href: "/",

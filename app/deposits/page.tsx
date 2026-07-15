@@ -29,6 +29,15 @@ type Deposit = {
   histories: DepositHistory[];
 };
 
+type MasterDataOption = {
+  id: string;
+  type: string;
+  code: string;
+  name: string;
+  group: string | null;
+  branch: string | null;
+};
+
 const emptyForm = {
   partnerCode: "KH_ABC",
   partnerName: "Công ty TNHH ABC",
@@ -56,9 +65,9 @@ export default function DepositsPage() {
   const [search, setSearch] = useState("");
   const [message, setMessage] = useState("");
   const [isSaving, setIsSaving] = useState(false);
-  const [branches, setBranches] = useState<any[]>([]);
-  const [partners, setPartners] = useState<any[]>([]);
-  const [moneySources, setMoneySources] = useState<any[]>([]);
+  const [branches, setBranches] = useState<MasterDataOption[]>([]);
+  const [partners, setPartners] = useState<MasterDataOption[]>([]);
+  const [moneySources, setMoneySources] = useState<MasterDataOption[]>([]);
 
   useEffect(() => {
     const raw = localStorage.getItem(SESSION_KEY);
@@ -103,10 +112,10 @@ export default function DepositsPage() {
     try {
       const response = await fetch("/api/master-data?status=ACTIVE");
       if (response.ok) {
-        const data = await response.json();
-        const activeBranches = data.filter((item: any) => item.type === "BRANCH");
-        const activePartners = data.filter((item: any) => item.type === "PARTNER");
-        const activeMoneySources = data.filter((item: any) => item.type === "MONEY_SOURCE");
+        const data = (await response.json()) as MasterDataOption[];
+        const activeBranches = data.filter((item) => item.type === "BRANCH");
+        const activePartners = data.filter((item) => item.type === "PARTNER");
+        const activeMoneySources = data.filter((item) => item.type === "MONEY_SOURCE");
         setBranches(activeBranches);
         setPartners(activePartners);
         setMoneySources(activeMoneySources);
@@ -115,7 +124,7 @@ export default function DepositsPage() {
         setForm(prev => {
           const firstBranch = activeBranches[0]?.code || "";
           const firstPartner = activePartners[0] || null;
-          const firstMoneySource = activeMoneySources.find((item: any) => !firstBranch || item.branch === firstBranch)?.code || activeMoneySources[0]?.code || "";
+          const firstMoneySource = activeMoneySources.find((item) => !firstBranch || item.branch === firstBranch)?.code || activeMoneySources[0]?.code || "";
           return {
             ...prev,
             branchCode: prev.branchCode || firstBranch,

@@ -92,3 +92,75 @@ model OpeningBalance {
   @@index([balanceType])
   @@index([status])
 }
+
+model ImportBatch {
+  id             String   @id @default(uuid())
+  importType     String
+  templateCode   String
+  fileName       String
+  uploadedBy     String?
+  status         String   @default("PREVIEW")
+  totalRows      Int      @default(0)
+  validRows      Int      @default(0)
+  errorRows      Int      @default(0)
+  mappingJson    String?
+  errorJson      String?
+  committedAt    DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  bankTransactions BankStatementTransaction[]
+  revenueRows      RevenueImportRow[]
+
+  @@index([importType])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model BankStatementTransaction {
+  id              String   @id @default(uuid())
+  importBatchId   String
+  transactionDate DateTime
+  bankAccount     String
+  transactionCode String
+  description     String
+  debitAmount     Float    @default(0)
+  creditAmount    Float    @default(0)
+  balanceAfter    Float?
+  branchCode      String?
+  partnerHint     String?
+  reconcileStatus String   @default("UNMATCHED")
+  createdAt       DateTime @default(now())
+
+  importBatch ImportBatch @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
+
+  @@unique([bankAccount, transactionCode])
+  @@index([transactionDate])
+  @@index([bankAccount])
+  @@index([reconcileStatus])
+}
+
+model RevenueImportRow {
+  id             String   @id @default(uuid())
+  importBatchId  String
+  saleDate       DateTime
+  branchCode     String
+  channel        String?
+  revenueSource  String
+  paymentMethod  String
+  orderCount     Int?
+  grossAmount    Float
+  discountAmount Float    @default(0)
+  vatAmount      Float    @default(0)
+  feeAmount      Float    @default(0)
+  netAmount      Float
+  externalRef    String
+  createdAt      DateTime @default(now())
+
+  importBatch ImportBatch @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
+
+  @@unique([branchCode, saleDate, externalRef])
+  @@index([saleDate])
+  @@index([branchCode])
+  @@index([paymentMethod])
+}
