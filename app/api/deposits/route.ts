@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 
 function cleanText(value: unknown) {
@@ -20,6 +21,9 @@ async function nextDepositCode() {
 
 export async function GET(request: Request) {
   try {
+    const auth = requireMenuAccess(request, "/deposits");
+    if (!auth.ok) return auth.response;
+
     const { searchParams } = new URL(request.url);
     const status = searchParams.get("status") || undefined;
     const search = searchParams.get("search")?.trim();
@@ -55,6 +59,9 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    const auth = requireMenuAction(request, "/deposits", "create");
+    if (!auth.ok) return auth.response;
+
     const body = await request.json();
     const partnerCode = cleanText(body.partnerCode);
     const partnerName = cleanText(body.partnerName);
@@ -68,6 +75,28 @@ export async function POST(request: Request) {
         { error: "Thiếu khách hàng, chi nhánh, nguồn tiền, nội dung hoặc số tiền không hợp lệ" },
         { status: 400 },
       );
+    }
+
+    // Verify master data status
+    const activeBranch = await prisma.masterDataItem.findUnique({
+      where: { type_code: { type: "BRANCH", code: branchCode } }
+    });
+    if (!activeBranch || activeBranch.status !== "ACTIVE") {
+      return NextResponse.json({ error: `Chi nhánh [${branchCode}] không tồn tại hoặc ngưng hoạt động` }, { status: 400 });
+    }
+
+    const activePartner = await prisma.masterDataItem.findUnique({
+      where: { type_code: { type: "PARTNER", code: partnerCode } }
+    });
+    if (!activePartner || activePartner.status !== "ACTIVE") {
+      return NextResponse.json({ error: `Khách hàng [${partnerCode}] không tồn tại hoặc ngưng hoạt động` }, { status: 400 });
+    }
+
+    const activeSource = await prisma.masterDataItem.findUnique({
+      where: { type_code: { type: "MONEY_SOURCE", code: moneySourceCode } }
+    });
+    if (!activeSource || activeSource.status !== "ACTIVE") {
+      return NextResponse.json({ error: `Nguồn tiền [${moneySourceCode}] không tồn tại hoặc ngưng hoạt động` }, { status: 400 });
     }
 
     const code = await nextDepositCode();
@@ -86,8 +115,8 @@ export async function POST(request: Request) {
           create: {
             action: "CREATE",
             amount,
-            actor: cleanText(body.actor) || "Demo user",
-            note: "Ghi nhận tiền cọc",
+            actor: auth.session.name,
+            note: "Ghi nhan tien coc",
           },
         },
       },
@@ -103,20 +132,26 @@ export async function POST(request: Request) {
 
 export async function PATCH(request: Request) {
   try {
+    const auth = requireMenuAction(request, "/deposits", "edit");
+    if (!auth.ok) return auth.response;
+
     const body = await request.json();
     const id = cleanText(body.id);
     const action = cleanText(body.action);
     const actionAmount = toAmount(body.amount);
-    const actor = cleanText(body.actor) || "Demo user";
     const note = cleanText(body.note) || null;
 
     if (!id || !action) {
-      return NextResponse.json({ error: "Thiếu ID hoặc thao tác xử lý" }, { status: 400 });
+      return NextResponse.json({ error: "Thieu ID hoac thao tac xu ly" }, { status: 400 });
     }
 
     const current = await prisma.deposit.findUnique({ where: { id } });
     if (!current) {
-      return NextResponse.json({ error: "Không tìm thấy phiếu cọc" }, { status: 404 });
+      return NextResponse.json({ error: "Khong tim thay phieu coc" }, { status: 404 });
+    }
+
+    if (current.remainingAmount <= 0) {
+      return NextResponse.json({ error: "Phieu coc da het so du xu ly" }, { status: 400 });
     }
 
     let status = current.status;
@@ -125,15 +160,12 @@ export async function PATCH(request: Request) {
 
     if (action === "OFFSET") {
       if (actionAmount <= 0 || actionAmount > current.remainingAmount) {
-        return NextResponse.json({ error: "Số tiền cấn trừ không hợp lệ" }, { status: 400 });
+        return NextResponse.json({ error: "So tien can tru khong hop le" }, { status: 400 });
       }
       remainingAmount = current.remainingAmount - actionAmount;
       status = remainingAmount === 0 ? "OFFSET" : "HOLDING";
       historyAmount = actionAmount;
     } else if (action === "REFUND") {
-      if (current.remainingAmount <= 0) {
-        return NextResponse.json({ error: "Phiếu cọc không còn số dư để hoàn" }, { status: 400 });
-      }
       historyAmount = current.remainingAmount;
       remainingAmount = 0;
       status = "REFUNDED";
@@ -146,7 +178,7 @@ export async function PATCH(request: Request) {
       remainingAmount = 0;
       status = "REVENUE";
     } else {
-      return NextResponse.json({ error: "Thao tác không hỗ trợ" }, { status: 400 });
+      return NextResponse.json({ error: "Thao tac khong ho tro" }, { status: 400 });
     }
 
     const deposit = await prisma.deposit.update({
@@ -158,7 +190,7 @@ export async function PATCH(request: Request) {
           create: {
             action,
             amount: historyAmount,
-            actor,
+            actor: auth.session.name,
             note,
           },
         },

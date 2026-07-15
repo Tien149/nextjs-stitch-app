@@ -1,8 +1,12 @@
 import { NextResponse } from 'next/server';
+import { requireNamedMenuAccess, requireNamedMenuAction } from '@/lib/api-auth';
 import { prisma } from '@/lib/prisma';
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const auth = requireNamedMenuAccess(request, '/', 'Báo cáo & BI');
+    if (!auth.ok) return auth.response;
+
     const documents = await prisma.document.findMany({
       orderBy: { date: 'desc' },
     });
@@ -15,6 +19,9 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
+    const auth = requireNamedMenuAction(request, '/', 'Báo cáo & BI', 'create');
+    if (!auth.ok) return auth.response;
+
     const body = await request.json();
     const { partner, description, amount, status } = body;
 

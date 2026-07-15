@@ -78,6 +78,9 @@ export default function OpeningBalancesPage() {
   const [message, setMessage] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [branches, setBranches] = useState<any[]>([]);
+  const [partners, setPartners] = useState<any[]>([]);
+  const [moneySources, setMoneySources] = useState<any[]>([]);
 
   useEffect(() => {
     const session = getSessionFromStorage();
@@ -115,14 +118,55 @@ export default function OpeningBalancesPage() {
     }
   };
 
+  const loadMasterData = async () => {
+    try {
+      const response = await fetch("/api/master-data?status=ACTIVE");
+      if (response.ok) {
+        const data = await response.json();
+        const activeBranches = data.filter((item: any) => item.type === "BRANCH");
+        const activePartners = data.filter((item: any) => item.type === "PARTNER");
+        const activeMoneySources = data.filter((item: any) => item.type === "MONEY_SOURCE");
+        setBranches(activeBranches);
+        setPartners(activePartners);
+        setMoneySources(activeMoneySources);
+        
+        // Update form with default values if they are empty
+        setForm(prev => {
+          const firstBranch = activeBranches[0]?.code || "";
+          const firstPartner = activePartners[0] || null;
+          const firstMoneySource = activeMoneySources.find((item: any) => !firstBranch || item.branch === firstBranch)?.code || activeMoneySources[0]?.code || "";
+          return {
+            ...prev,
+            branchCode: prev.branchCode || firstBranch,
+            objectCode: prev.objectCode || (firstPartner ? firstPartner.code : ""),
+            objectName: prev.objectName || (firstPartner ? firstPartner.name : ""),
+            moneySourceCode: prev.moneySourceCode || firstMoneySource,
+          };
+        });
+      }
+    } catch (error) {
+      console.error("Failed to load master data", error);
+    }
+  };
+
   useEffect(() => {
     if (!isCheckingAuth) {
       window.setTimeout(() => {
         loadBalances();
+        loadMasterData();
       }, 0);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isCheckingAuth, balanceTypeFilter, statusFilter]);
+
+  const handlePartnerChange = (code: string) => {
+    const p = partners.find(item => item.code === code);
+    setForm(value => ({
+      ...value,
+      objectCode: code,
+      objectName: p ? p.name : "",
+    }));
+  };
 
   const totals = useMemo(() => {
     return balances.reduce(
@@ -136,6 +180,7 @@ export default function OpeningBalancesPage() {
     );
   }, [balances]);
   const canManageOpeningBalances = user ? canPerformAction(user.role, "config") : false;
+  const canReopenOpeningBalances = user?.role === "Admin";
 
   const createBalance = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -143,17 +188,44 @@ export default function OpeningBalancesPage() {
       setMessage("Bạn chỉ có quyền xem số dư đầu kỳ.");
       return;
     }
+
+    const isSourceType = ["CASH", "BANK", "WALLET_POS"].includes(form.balanceType);
+    const isObjectType = ["AR", "AP", "DEPOSIT"].includes(form.balanceType);
+
+    if (isSourceType && !form.moneySourceCode) {
+      setMessage("Đối với số dư quỹ/ngân hàng/ví, bắt buộc phải chọn Nguồn tiền.");
+      return;
+    }
+
+    if (isObjectType && !form.objectCode) {
+      setMessage("Đối với số dư công nợ/tiền cọc, bắt buộc phải chọn Đối tượng.");
+      return;
+    }
+
     setIsSaving(true);
     setMessage("");
     try {
+      const payload = {
+        ...form,
+        objectCode: isObjectType ? form.objectCode : "",
+        objectName: isObjectType ? form.objectName : "",
+        moneySourceCode: isSourceType ? form.moneySourceCode : "",
+      };
+
       const response = await fetch("/api/opening-balances", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify(payload),
       });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Không tạo được số dư đầu kỳ");
-      setForm(emptyForm);
+      const resData = await response.json();
+      if (!response.ok) throw new Error(resData.error || "Không tạo được số dư đầu kỳ");
+      setForm({
+        ...emptyForm,
+        branchCode: branches[0]?.code || "",
+        objectCode: partners[0]?.code || "",
+        objectName: partners[0]?.name || "",
+        moneySourceCode: moneySources[0]?.code || "",
+      });
       setMessage("Đã thêm số dư đầu kỳ.");
       await loadBalances();
     } catch (error) {
@@ -259,13 +331,19 @@ export default function OpeningBalancesPage() {
               </label>
               <label className="text-xs font-bold text-slate-600">
                 Chi nhánh *
-                <input
+                <select
                   value={form.branchCode}
-                  onChange={(event) => setForm((value) => ({ ...value, branchCode: event.target.value.toUpperCase() }))}
-                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm uppercase"
-                  placeholder="HCM"
+                  onChange={(event) => setForm((value) => ({ ...value, branchCode: event.target.value }))}
+                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
                   required
-                />
+                >
+                  <option value="">-- Chon chi nhanh --</option>
+                  {branches.map(item => (
+                    <option key={item.id} value={item.code}>
+                      [{item.code}] {item.name}
+                    </option>
+                  ))}
+                </select>
               </label>
             </div>
 
@@ -287,32 +365,48 @@ export default function OpeningBalancesPage() {
 
             <div className="grid grid-cols-2 gap-3">
               <label className="text-xs font-bold text-slate-600">
-                Mã đối tượng
-                <input
+                Ma doi tuong (Cong no/Coc)
+                <select
                   value={form.objectCode}
-                  onChange={(event) => setForm((value) => ({ ...value, objectCode: event.target.value }))}
-                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
-                  placeholder="KH/NCC"
-                />
+                  onChange={(event) => handlePartnerChange(event.target.value)}
+                  disabled={["CASH", "BANK", "WALLET_POS"].includes(form.balanceType)}
+                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm disabled:bg-slate-50 disabled:text-slate-400 disabled:cursor-not-allowed"
+                >
+                  <option value="">-- Chon doi tac --</option>
+                  {partners.map(item => (
+                    <option key={item.id} value={item.code}>
+                      [{item.code}] {item.name}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label className="text-xs font-bold text-slate-600">
-                Nguồn tiền
-                <input
+                Nguon tien (Quy/Ngan hang)
+                <select
                   value={form.moneySourceCode}
                   onChange={(event) => setForm((value) => ({ ...value, moneySourceCode: event.target.value }))}
-                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
-                  placeholder="VCB_HCM"
-                />
+                  disabled={["AR", "AP", "DEPOSIT"].includes(form.balanceType)}
+                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm disabled:bg-slate-50 disabled:text-slate-400 disabled:cursor-not-allowed"
+                >
+                  <option value="">-- Chon nguon tien --</option>
+                  {moneySources
+                    .filter(item => !form.branchCode || item.branch === form.branchCode)
+                    .map(item => (
+                      <option key={item.id} value={item.code}>
+                        [{item.code}] {item.name}
+                      </option>
+                    ))}
+                </select>
               </label>
             </div>
 
             <label className="text-xs font-bold text-slate-600 block">
-              Tên đối tượng
+              Ten doi tuong
               <input
                 value={form.objectName}
-                onChange={(event) => setForm((value) => ({ ...value, objectName: event.target.value }))}
-                className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
-                placeholder="Tên khách hàng/nhà cung cấp nếu có"
+                readOnly
+                className="mt-1 w-full border border-slate-200 bg-slate-50 text-slate-500 rounded-lg px-3 py-2 text-sm outline-none cursor-not-allowed"
+                placeholder="Ten khach hang/nha cung cap tu dong dien"
               />
             </label>
 
@@ -449,9 +543,13 @@ export default function OpeningBalancesPage() {
                           {canManageOpeningBalances && (
                             <td className="px-4 py-3 text-right">
                               {balance.status === "CONFIRMED" ? (
-                                <button onClick={() => updateStatus(balance, "DRAFT")} className="text-xs font-bold text-slate-600 hover:underline">
-                                  Mở lại
-                                </button>
+                                canReopenOpeningBalances ? (
+                                  <button onClick={() => updateStatus(balance, "DRAFT")} className="text-xs font-bold text-slate-600 hover:underline">
+                                    Mở lại
+                                  </button>
+                                ) : (
+                                  <span className="text-xs font-bold text-slate-400">Đã khóa</span>
+                                )
                               ) : (
                                 <button onClick={() => updateStatus(balance, "CONFIRMED")} className="text-xs font-bold text-emerald-700 hover:underline">
                                   Chốt số dư

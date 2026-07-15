@@ -56,6 +56,9 @@ export default function DepositsPage() {
   const [search, setSearch] = useState("");
   const [message, setMessage] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+  const [branches, setBranches] = useState<any[]>([]);
+  const [partners, setPartners] = useState<any[]>([]);
+  const [moneySources, setMoneySources] = useState<any[]>([]);
 
   useEffect(() => {
     const raw = localStorage.getItem(SESSION_KEY);
@@ -96,14 +99,55 @@ export default function DepositsPage() {
     setDeposits((await response.json()) as Deposit[]);
   };
 
+  const loadMasterData = async () => {
+    try {
+      const response = await fetch("/api/master-data?status=ACTIVE");
+      if (response.ok) {
+        const data = await response.json();
+        const activeBranches = data.filter((item: any) => item.type === "BRANCH");
+        const activePartners = data.filter((item: any) => item.type === "PARTNER");
+        const activeMoneySources = data.filter((item: any) => item.type === "MONEY_SOURCE");
+        setBranches(activeBranches);
+        setPartners(activePartners);
+        setMoneySources(activeMoneySources);
+        
+        // Update form with default values if they are empty
+        setForm(prev => {
+          const firstBranch = activeBranches[0]?.code || "";
+          const firstPartner = activePartners[0] || null;
+          const firstMoneySource = activeMoneySources.find((item: any) => !firstBranch || item.branch === firstBranch)?.code || activeMoneySources[0]?.code || "";
+          return {
+            ...prev,
+            branchCode: prev.branchCode || firstBranch,
+            partnerCode: prev.partnerCode || (firstPartner ? firstPartner.code : ""),
+            partnerName: prev.partnerName || (firstPartner ? firstPartner.name : ""),
+            moneySourceCode: prev.moneySourceCode || firstMoneySource,
+          };
+        });
+      }
+    } catch (error) {
+      console.error("Failed to load master data", error);
+    }
+  };
+
   useEffect(() => {
     if (!isCheckingAuth) {
       window.setTimeout(() => {
         loadDeposits();
+        loadMasterData();
       }, 0);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isCheckingAuth]);
+
+  const handlePartnerChange = (code: string) => {
+    const p = partners.find(item => item.code === code);
+    setForm(value => ({
+      ...value,
+      partnerCode: code,
+      partnerName: p ? p.name : "",
+    }));
+  };
 
   const createDeposit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -202,24 +246,89 @@ export default function DepositsPage() {
             <h2 className="font-bold text-lg mt-1">Tạo phiếu cọc</h2>
           </div>
 
-          {[
-            ["partnerCode", "Mã khách hàng"],
-            ["partnerName", "Tên khách hàng"],
-            ["branchCode", "Chi nhánh"],
-            ["moneySourceCode", "Nguồn tiền"],
-            ["amount", "Số tiền"],
-            ["purpose", "Nội dung cọc"],
-          ].map(([key, label]) => (
-            <label key={key} className="text-xs font-bold text-slate-600 block">
-              {label}
-              <input
-                value={form[key as keyof typeof form]}
-                onChange={(event) => setForm((value) => ({ ...value, [key]: event.target.value }))}
-                className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
-                required
-              />
-            </label>
-          ))}
+          <label className="text-xs font-bold text-slate-600 block">
+            Khach hang *
+            <select
+              value={form.partnerCode}
+              onChange={(e) => handlePartnerChange(e.target.value)}
+              className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+              required
+            >
+              <option value="">-- Chon doi tac --</option>
+              {partners.map(item => (
+                <option key={item.id} value={item.code}>
+                  [{item.code}] {item.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="text-xs font-bold text-slate-600 block">
+            Ten khach hang
+            <input
+              value={form.partnerName}
+              readOnly
+              className="mt-1 w-full border border-slate-200 bg-slate-50 text-slate-500 rounded-lg px-3 py-2 text-sm outline-none cursor-not-allowed"
+            />
+          </label>
+
+          <label className="text-xs font-bold text-slate-600 block">
+            Chi nhanh *
+            <select
+              value={form.branchCode}
+              onChange={(e) => setForm(val => ({ ...val, branchCode: e.target.value }))}
+              className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+              required
+            >
+              <option value="">-- Chon chi nhanh --</option>
+              {branches.map(item => (
+                <option key={item.id} value={item.code}>
+                  [{item.code}] {item.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="text-xs font-bold text-slate-600 block">
+            Nguon tien *
+            <select
+              value={form.moneySourceCode}
+              onChange={(e) => setForm(val => ({ ...val, moneySourceCode: e.target.value }))}
+              className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+              required
+            >
+              <option value="">-- Chon nguon tien --</option>
+              {moneySources
+                .filter(item => !form.branchCode || item.branch === form.branchCode)
+                .map(item => (
+                  <option key={item.id} value={item.code}>
+                    [{item.code}] {item.name} ({item.group || ""})
+                  </option>
+                ))}
+            </select>
+          </label>
+
+          <label className="text-xs font-bold text-slate-600 block">
+            So tien *
+            <input
+              type="number"
+              value={form.amount}
+              onChange={(e) => setForm(val => ({ ...val, amount: e.target.value }))}
+              className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+              required
+            />
+          </label>
+
+          <label className="text-xs font-bold text-slate-600 block">
+            Noi dung coc *
+            <input
+              type="text"
+              value={form.purpose}
+              onChange={(e) => setForm(val => ({ ...val, purpose: e.target.value }))}
+              className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+              required
+            />
+          </label>
 
           <label className="text-xs font-bold text-slate-600 block">
             Ghi chú

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
+import { getRequestSession, requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 
 const defaultMasterData = [
@@ -206,6 +207,24 @@ const defaultMasterData = [
     note: "OPEN",
     status: "ACTIVE",
   },
+  {
+    type: "WAREHOUSE",
+    code: "KHO_HCM",
+    name: "Kho hang trung tam HCM",
+    group: "Kho chinh",
+    branch: "HCM",
+    status: "ACTIVE",
+    note: "Kho luu tru thuc pham va nguyen vat lieu",
+  },
+  {
+    type: "WAREHOUSE",
+    code: "KHO_HN",
+    name: "Kho hang chi nhanh Ha Noi",
+    group: "Kho phu",
+    branch: "HN",
+    status: "ACTIVE",
+    note: "Kho hang phu tro",
+  },
 ];
 
 async function ensureSeedData() {
@@ -229,6 +248,9 @@ function cleanText(value: unknown) {
 
 export async function GET(request: Request) {
   try {
+    const auth = getRequestSession(request);
+    if (!auth.ok) return auth.response;
+
     await ensureSeedData();
 
     const { searchParams } = new URL(request.url);
@@ -264,6 +286,9 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    const auth = requireMenuAction(request, "/settings", "config");
+    if (!auth.ok) return auth.response;
+
     const body = await request.json();
     const type = cleanText(body.type);
     const code = cleanText(body.code).toUpperCase();
@@ -302,6 +327,9 @@ export async function POST(request: Request) {
 
 export async function PATCH(request: Request) {
   try {
+    const auth = requireMenuAction(request, "/settings", "config");
+    if (!auth.ok) return auth.response;
+
     const body = await request.json();
     const id = cleanText(body.id);
 
