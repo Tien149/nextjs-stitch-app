@@ -88,8 +88,138 @@ body {
   line-height: 1;
 }
 
+.sidebar-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.sidebar-scroll:hover {
+  scrollbar-color: rgba(148, 163, 184, 0.65) transparent;
+}
+
+.sidebar-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+
+.sidebar-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-radius: 9999px;
+}
+
+.sidebar-scroll:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(148, 163, 184, 0.65);
+}
+
+.date-control {
+  position: relative;
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #ffffff;
+  transition: border-color 150ms ease, box-shadow 150ms ease, background-color 150ms ease;
+}
+
+.date-control:hover {
+  border-color: #94a3b8;
+}
+
+.date-control:focus-within {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.14);
+}
+
+.date-control-invalid {
+  border-color: #f43f5e;
+  background: #fff1f2;
+}
+
+.date-control-disabled {
+  cursor: not-allowed;
+  border-color: #e2e8f0;
+  background: #f8fafc;
+  color: #94a3b8;
+}
+
+.date-control-input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  background: transparent;
+  padding: 10px 42px 10px 12px;
+  color: #1e293b;
+  font-size: 14px;
+  line-height: 20px;
+  outline: none;
+}
+
+.date-control-input::placeholder {
+  color: #94a3b8;
+}
+
+.date-control-button {
+  position: absolute;
+  right: 5px;
+  display: grid;
+  height: 32px;
+  width: 32px;
+  place-items: center;
+  border-radius: 6px;
+  color: #64748b;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+.date-control-button:hover {
+  background: #eff6ff;
+  color: #2563eb;
+}
+
 .glass-card {
   background: rgba(255, 255, 255, 0.8);
   backdrop-filter: blur(8px);
   border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+@layer components {
+  .control {
+    @apply mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm bg-white outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100;
+  }
+
+  .primary-button {
+    @apply min-h-10 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold px-4 py-2.5 inline-flex items-center justify-center gap-2;
+  }
+
+  .secondary-button {
+    @apply min-h-10 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-sm font-bold px-4 py-2.5 inline-flex items-center justify-center gap-2;
+  }
+
+  .icon-button {
+    @apply h-9 w-9 rounded-lg border border-slate-200 hover:bg-slate-50 grid place-items-center;
+  }
+
+  .table-panel {
+    @apply bg-white border border-slate-200 rounded-lg overflow-hidden;
+  }
+
+  .cell {
+    @apply px-4 py-3 align-top;
+  }
+
+  .cell small {
+    @apply block text-xs text-slate-500 mt-1;
+  }
+
+  .status {
+    @apply inline-block rounded px-2 py-1 text-xs font-bold;
+  }
+
+  .action-link {
+    @apply text-xs font-bold text-slate-700 hover:underline ml-3;
+  }
 }

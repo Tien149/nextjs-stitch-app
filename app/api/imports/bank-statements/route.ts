@@ -6,7 +6,7 @@ import { parseImportFile } from "@/lib/import-parser";
 import { prisma } from "@/lib/prisma";
 
 const importType = "BANK_STATEMENT" as const;
-const menuHref = "/imports/bank-statements";
+const menuHref = "/imports";
 
 function getUploadFile(formData: FormData) {
   const file = formData.get("file");
@@ -17,6 +17,17 @@ export async function GET(request: Request) {
   try {
     const auth = requireMenuAccess(request, menuHref);
     if (!auth.ok) return auth.response;
+
+    const { searchParams } = new URL(request.url);
+    const batchId = searchParams.get("batchId") || undefined;
+    if (batchId) {
+      const batch = await prisma.importBatch.findFirst({
+        where: { id: batchId, importType },
+        include: { bankTransactions: { orderBy: { transactionDate: "desc" } } },
+      });
+      if (!batch) return NextResponse.json({ error: "Không tìm thấy batch import" }, { status: 404 });
+      return NextResponse.json(batch);
+    }
 
     const batches = await prisma.importBatch.findMany({
       where: { importType },

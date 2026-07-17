@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/custom-client";
 import { prisma } from "@/lib/prisma";
 import { type ImportType } from "@/lib/import-templates";
 import { type ParsedImportRow } from "@/lib/import-parser";
@@ -36,6 +36,61 @@ export async function commitImport(input: CommitInput) {
   }
 
   return prisma.$transaction(async (tx) => {
+    if (input.importType === "BANK_STATEMENT") {
+      const duplicateKeys = await Promise.all(
+        input.rows.map((row) =>
+          tx.bankStatementTransaction.findUnique({
+            where: {
+              bankAccount_transactionCode: {
+                bankAccount: asText(row.values.bank_account),
+                transactionCode: asText(row.values.transaction_code),
+              },
+            },
+            select: { id: true },
+          }),
+        ),
+      );
+      if (duplicateKeys.some(Boolean)) {
+        throw new Error("File có giao dịch trùng với dữ liệu đã import, vui lòng kiểm tra lại trước khi commit");
+      }
+    }
+
+    if (input.importType === "REVENUE_POS") {
+      const duplicateKeys = await Promise.all(
+        input.rows.map((row) =>
+          tx.revenueImportRow.findUnique({
+            where: {
+              branchCode_saleDate_externalRef: {
+                branchCode: asText(row.values.branch_code),
+                saleDate: asDate(row.values.sale_date),
+                externalRef: asText(row.values.external_ref),
+              },
+            },
+            select: { id: true },
+          }),
+        ),
+      );
+      if (duplicateKeys.some(Boolean)) {
+        throw new Error("File có dòng doanh thu trùng với dữ liệu đã import, vui lòng kiểm tra lại trước khi commit");
+      }
+    }
+
+    if (input.importType === "PAYROLL") {
+      const duplicateKeys = await Promise.all(
+        input.rows.map((row) => tx.payrollImportRow.findUnique({
+          where: {
+            period_employeeCode_branchCode: {
+              period: asText(row.values.period),
+              employeeCode: asText(row.values.employee_code),
+              branchCode: asText(row.values.branch_code),
+            },
+          },
+          select: { id: true },
+        })),
+      );
+      if (duplicateKeys.some(Boolean)) throw new Error("File có nhân viên trùng kỳ lương và chi nhánh");
+    }
+
     const batch = await tx.importBatch.create({
       data: {
         importType: input.importType,
@@ -65,7 +120,6 @@ export async function commitImport(input: CommitInput) {
           branchCode: row.values.branch_code === null ? null : asText(row.values.branch_code),
           partnerHint: row.values.partner_hint === null ? null : asText(row.values.partner_hint),
         })),
-        skipDuplicates: true,
       });
     }
 
@@ -86,7 +140,28 @@ export async function commitImport(input: CommitInput) {
           netAmount: asNumber(row.values.net_amount),
           externalRef: asText(row.values.external_ref),
         })),
-        skipDuplicates: true,
+      });
+    }
+
+
+    if (input.importType === "PAYROLL") {
+      await tx.payrollImportRow.createMany({
+        data: input.rows.map((row) => ({
+          importBatchId: batch.id,
+          period: asText(row.values.period),
+          employeeCode: asText(row.values.employee_code),
+          employeeName: asText(row.values.employee_name),
+          branchCode: asText(row.values.branch_code),
+          departmentCode: asText(row.values.department_code),
+          baseSalary: asNumber(row.values.base_salary),
+          allowanceAmount: asNumber(row.values.allowance_amount),
+          bonusAmount: asNumber(row.values.bonus_amount),
+          insuranceAmount: asNumber(row.values.insurance_amount),
+          taxAmount: asNumber(row.values.tax_amount),
+          deductionAmount: asNumber(row.values.deduction_amount),
+          netAmount: asNumber(row.values.net_amount),
+          externalRef: row.values.external_ref === null ? null : asText(row.values.external_ref),
+        })),
       });
     }
 
@@ -95,6 +170,7 @@ export async function commitImport(input: CommitInput) {
       include: {
         bankTransactions: input.importType === "BANK_STATEMENT",
         revenueRows: input.importType === "REVENUE_POS",
+        payrollRows: input.importType === "PAYROLL",
       },
     });
   });

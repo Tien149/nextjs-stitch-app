@@ -1,4 +1,4 @@
-export type ImportType = "BANK_STATEMENT" | "REVENUE_POS" | "OPENING_BALANCE";
+export type ImportType = "BANK_STATEMENT" | "REVENUE_POS" | "OPENING_BALANCE" | "PAYROLL";
 
 export type ImportFieldType = "text" | "date" | "number" | "integer";
 
@@ -94,7 +94,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
     code: "REVENUE_POS_STANDARD_V1",
     importType: "REVENUE_POS",
     name: "Doanh thu POS chuẩn",
-    description: "Template doanh thu theo ngày/chi nhánh/kênh bán/phương thức thanh toán.",
+    description: "Template doanh thu theo ngày, chi nhánh, kênh dine-in/takeaway/delivery và phương thức thanh toán.",
     fields: [
       {
         field: "sale_date",
@@ -180,6 +180,27 @@ export const importTemplates: ImportTemplateDefinition[] = [
         type: "text",
         aliases: ["ma tham chieu pos", "external ref", "pos ref", "reference"],
       },
+    ],
+  },
+  {
+    code: "PAYROLL_STANDARD_V1",
+    importType: "PAYROLL",
+    name: "Bảng lương chuẩn",
+    description: "Template lương theo kỳ, nhân viên, chi nhánh và các khoản thu nhập/khấu trừ.",
+    fields: [
+      { field: "period", label: "Kỳ lương", required: true, type: "text", aliases: ["ky luong", "ky", "period", "payroll period"] },
+      { field: "employee_code", label: "Mã nhân viên", required: true, type: "text", aliases: ["ma nhan vien", "ma nv", "employee code", "staff code"] },
+      { field: "employee_name", label: "Tên nhân viên", required: true, type: "text", aliases: ["ten nhan vien", "ho ten", "employee name", "staff name"] },
+      { field: "branch_code", label: "Chi nhánh", required: true, type: "text", aliases: ["chi nhanh", "branch", "store"] },
+      { field: "department_code", label: "Phòng ban", required: true, type: "text", aliases: ["phong ban", "bo phan", "department"] },
+      { field: "base_salary", label: "Lương cơ bản", required: true, type: "number", aliases: ["luong co ban", "base salary", "basic salary"] },
+      { field: "allowance_amount", label: "Phụ cấp", required: false, type: "number", aliases: ["phu cap", "allowance"] },
+      { field: "bonus_amount", label: "Thưởng", required: false, type: "number", aliases: ["thuong", "bonus"] },
+      { field: "insurance_amount", label: "Bảo hiểm", required: false, type: "number", aliases: ["bao hiem", "insurance"] },
+      { field: "tax_amount", label: "Thuế TNCN", required: false, type: "number", aliases: ["thue tncn", "thue", "personal income tax", "tax"] },
+      { field: "deduction_amount", label: "Khấu trừ khác", required: false, type: "number", aliases: ["khau tru khac", "khau tru", "deduction"] },
+      { field: "net_amount", label: "Thực nhận", required: true, type: "number", aliases: ["thuc nhan", "net amount", "net salary"] },
+      { field: "external_ref", label: "Mã tham chiếu", required: false, type: "text", aliases: ["ma tham chieu", "reference", "external ref"] },
     ],
   },
   {

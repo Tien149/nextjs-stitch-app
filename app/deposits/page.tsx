@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { DateInput } from "@/components/DateInput";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 
 type DepositHistory = {
@@ -39,6 +40,7 @@ type MasterDataOption = {
 };
 
 const emptyForm = {
+  receivedDate: new Date().toISOString().slice(0, 10),
   partnerCode: "KH_ABC",
   partnerName: "Công ty TNHH ABC",
   branchCode: "HCM",
@@ -254,6 +256,11 @@ export default function DepositsPage() {
             <p className="text-xs font-bold text-blue-600 uppercase">2.1 Ghi nhận cọc</p>
             <h2 className="font-bold text-lg mt-1">Tạo phiếu cọc</h2>
           </div>
+
+          <label className="text-xs font-bold text-slate-600 block">
+            Ngày nhận cọc *
+            <DateInput value={form.receivedDate} onChange={(receivedDate) => setForm((value) => ({ ...value, receivedDate }))} className="mt-1" required ariaLabel="Ngày nhận cọc" />
+          </label>
 
           <label className="text-xs font-bold text-slate-600 block">
             Khách hàng *

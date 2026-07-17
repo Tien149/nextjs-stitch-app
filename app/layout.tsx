@@ -1,9 +1,10 @@
 import type { Metadata } from "next";
+import InputValidationGuard from "@/components/InputValidationGuard";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "FIN-ERP Executive Dashboard",
-  description: "Hệ thống quản trị tài chính doanh nghiệp thông minh",
+  title: "FIN ERP",
+  description: "Hệ thống quản trị tài chính, POS và công nợ",
 };
 
 export default function RootLayout({
@@ -20,6 +21,7 @@ export default function RootLayout({
         />
       </head>
       <body className="min-h-full flex flex-col bg-[#f1f5f9] text-[#171c1f]" suppressHydrationWarning>
+        <InputValidationGuard />
         {children}
       </body>
     </html>

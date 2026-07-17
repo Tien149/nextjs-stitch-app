@@ -47,21 +47,21 @@ export default function Login() {
               <span className="material-symbols-outlined text-3xl">account_balance</span>
             </div>
             <div>
-              <p className="text-xl font-bold tracking-wide">FIN-ERP SYSTEM</p>
-              <p className="text-sm text-slate-400">Giai đoạn 1 - Auth & phân quyền</p>
+              <p className="text-xl font-bold tracking-wide">FIN ERP</p>
+              <p className="text-sm text-slate-400">Tài chính, POS và công nợ</p>
             </div>
           </div>
 
           <div className="mt-14 space-y-5">
             <div className="border-l-4 border-blue-500 pl-4">
-              <p className="text-sm text-slate-400">Mục tiêu test</p>
+              <p className="text-sm text-slate-400">Môi trường demo</p>
               <h1 className="text-3xl font-bold mt-1">
-                Đăng nhập theo vai trò và kiểm tra menu quyền hạn
+                Quản trị doanh thu, tiền cọc, số dư và import dữ liệu
               </h1>
             </div>
             <p className="text-slate-300 leading-7">
-              Đây là bản demo client-side để test nhanh trước khi nối backend thật. Mỗi tài khoản
-              có quyền truy cập menu khác nhau theo plan Giai đoạn 1.
+              Dùng để test nhanh các vai trò trong chuỗi vận hành: kế toán tổng hợp,
+              kế toán công nợ, quản lý chi nhánh và viewer chỉ xem.
             </p>
           </div>
         </div>
@@ -70,22 +70,22 @@ export default function Login() {
           <div className="bg-slate-900 border border-slate-800 rounded-lg p-3">
             <b className="text-white">Admin</b>
             <br />
-            Toàn quyền hệ thống
+            Cấu hình toàn bộ hệ thống
           </div>
           <div className="bg-slate-900 border border-slate-800 rounded-lg p-3">
             <b className="text-white">Kế toán</b>
             <br />
-            Danh mục, cọc, số dư
+            Danh mục, số dư, import POS
           </div>
           <div className="bg-slate-900 border border-slate-800 rounded-lg p-3">
             <b className="text-white">Công nợ</b>
             <br />
-            Tiền cọc và công nợ
+            Tiền cọc, đối tác, sao kê
           </div>
           <div className="bg-slate-900 border border-slate-800 rounded-lg p-3">
-            <b className="text-white">Viewer</b>
+            <b className="text-white">Quản lý</b>
             <br />
-            Chỉ xem báo cáo
+            Xem tình hình vận hành
           </div>
         </div>
       </section>
@@ -166,10 +166,10 @@ export default function Login() {
             <p className="text-xs font-bold text-slate-500 uppercase mb-3">Gợi ý test nhanh</p>
             <div className="grid sm:grid-cols-2 gap-2 text-xs">
               <div className="rounded-lg border border-slate-200 bg-white p-3">
-                Admin thấy menu <b>Phân quyền & Người dùng</b>.
+                Admin cấu hình danh mục, kho, nguồn tiền và quy tắc mã.
               </div>
               <div className="rounded-lg border border-slate-200 bg-white p-3">
-                Viewer chỉ thấy nhóm báo cáo được phép xem.
+                Kế toán tổng hợp import doanh thu POS và sao kê ngân hàng.
               </div>
             </div>
           </div>

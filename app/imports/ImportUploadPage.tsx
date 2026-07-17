@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { appMenuItems, canAccessMenu, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 
@@ -30,6 +30,12 @@ type Batch = {
   createdAt: string;
 };
 
+type BatchDetail = Batch & {
+  bankTransactions?: Record<string, string | number | null>[];
+  revenueRows?: Record<string, string | number | null>[];
+  payrollRows?: Record<string, string | number | null>[];
+};
+
 type ImportUploadPageProps = {
   title: string;
   subtitle: string;
@@ -38,6 +44,7 @@ type ImportUploadPageProps = {
   templatePath: string;
   templateCode: string;
   primaryFields: string[];
+  navigation?: ReactNode;
 };
 
 function getSessionFromStorage(): DemoSession | null {
@@ -58,6 +65,7 @@ export default function ImportUploadPage({
   templatePath,
   templateCode,
   primaryFields,
+  navigation,
 }: ImportUploadPageProps) {
   const router = useRouter();
   const [user, setUser] = useState<DemoSession | null>(null);
@@ -65,6 +73,7 @@ export default function ImportUploadPage({
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<PreviewPayload | null>(null);
   const [batches, setBatches] = useState<Batch[]>([]);
+  const [selectedBatch, setSelectedBatch] = useState<BatchDetail | null>(null);
   const [message, setMessage] = useState("");
   const [isUploading, setIsUploading] = useState(false);
 
@@ -87,19 +96,34 @@ export default function ImportUploadPage({
 
   const errorRows = useMemo(() => preview?.rows.filter((row) => row.errors.length > 0) || [], [preview]);
 
-  const loadBatches = async () => {
-    const response = await fetch(apiPath);
-    if (response.ok) setBatches((await response.json()) as Batch[]);
+  const loadBatches = useCallback(async (signal?: AbortSignal) => {
+    const response = await fetch(apiPath, { signal });
+    if (response.ok && !signal?.aborted) setBatches((await response.json()) as Batch[]);
+  }, [apiPath]);
+
+  const loadBatchDetail = async (batchId: string) => {
+    const response = await fetch(`${apiPath}?batchId=${batchId}`);
+    if (response.ok) setSelectedBatch((await response.json()) as BatchDetail);
   };
 
   useEffect(() => {
-    if (!isCheckingAuth) {
-      window.setTimeout(() => {
-        loadBatches();
-      }, 0);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isCheckingAuth]);
+    if (isCheckingAuth) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setFile(null);
+      setPreview(null);
+      setBatches([]);
+      setSelectedBatch(null);
+      setMessage("");
+      void loadBatches(controller.signal).catch((error) => {
+        if (error instanceof Error && error.name !== "AbortError") setMessage("Không tải được lịch sử import.");
+      });
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [apiPath, isCheckingAuth, loadBatches]);
 
   const upload = async (mode: "preview" | "commit") => {
     if (!file) {
@@ -161,6 +185,12 @@ export default function ImportUploadPage({
         </div>
       </header>
 
+      {navigation && (
+        <div className="bg-white border-b border-slate-200">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 overflow-x-auto">{navigation}</div>
+        </div>
+      )}
+
       <main className="max-w-7xl mx-auto p-6 space-y-6">
         <section className="grid grid-cols-1 lg:grid-cols-[420px_1fr] gap-6">
           <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4 h-fit">
@@ -216,7 +246,7 @@ export default function ImportUploadPage({
             <div className="p-5 border-b border-slate-200">
               <h2 className="font-bold">Preview dữ liệu</h2>
               <p className="text-xs text-slate-500 mt-1">
-                Hệ thống tự nhận header theo alias. Dòng lỗi sẽ bị chặn khi commit.
+                Hệ thống tự nhận header theo alias. Dòng lỗi sẽ bị chặn khi commit vào dữ liệu vận hành.
               </p>
             </div>
 
@@ -283,9 +313,9 @@ export default function ImportUploadPage({
           <div className="p-5 border-b border-slate-200 flex items-center justify-between">
             <div>
               <h2 className="font-bold">Lịch sử import</h2>
-              <p className="text-xs text-slate-500 mt-1">20 batch gần nhất.</p>
+              <p className="text-xs text-slate-500 mt-1">20 batch gần nhất, bấm một dòng để xem chi tiết.</p>
             </div>
-            <button onClick={loadBatches} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50">
+            <button onClick={() => void loadBatches()} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50">
               Tải lại
             </button>
           </div>
@@ -307,7 +337,7 @@ export default function ImportUploadPage({
                   </tr>
                 ) : (
                   batches.map((batch) => (
-                    <tr key={batch.id} className="hover:bg-slate-50">
+                    <tr key={batch.id} onClick={() => loadBatchDetail(batch.id)} className="hover:bg-slate-50 cursor-pointer">
                       <td className="px-4 py-3 font-bold">{batch.fileName}</td>
                       <td className="px-4 py-3">{batch.status}</td>
                       <td className="px-4 py-3">{batch.validRows}/{batch.totalRows}</td>
@@ -320,6 +350,48 @@ export default function ImportUploadPage({
             </table>
           </div>
         </section>
+
+        {selectedBatch && (
+          <section className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+            <div className="p-5 border-b border-slate-200 flex items-center justify-between">
+              <div>
+                <h2 className="font-bold">Chi tiết batch: {selectedBatch.fileName}</h2>
+                <p className="text-xs text-slate-500 mt-1">
+                  {selectedBatch.validRows}/{selectedBatch.totalRows} dòng đã commit.
+                </p>
+              </div>
+              <button onClick={() => setSelectedBatch(null)} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50">
+                Đóng
+              </button>
+            </div>
+            <div className="overflow-x-auto max-h-[420px]">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 text-slate-500 uppercase sticky top-0">
+                  <tr>
+                    {Object.keys(selectedBatch.bankTransactions?.[0] || selectedBatch.revenueRows?.[0] || selectedBatch.payrollRows?.[0] || {})
+                      .filter((key) => !["id", "importBatchId", "createdAt"].includes(key))
+                      .slice(0, 10)
+                      .map((key) => (
+                        <th key={key} className="px-4 py-3 whitespace-nowrap">{key}</th>
+                      ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {(selectedBatch.bankTransactions || selectedBatch.revenueRows || selectedBatch.payrollRows || []).slice(0, 100).map((row, index) => (
+                    <tr key={index} className="hover:bg-slate-50">
+                      {Object.entries(row)
+                        .filter(([key]) => !["id", "importBatchId", "createdAt"].includes(key))
+                        .slice(0, 10)
+                        .map(([key, value]) => (
+                          <td key={key} className="px-4 py-3 whitespace-nowrap">{String(value ?? "-")}</td>
+                        ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
       </main>
     </div>
   );

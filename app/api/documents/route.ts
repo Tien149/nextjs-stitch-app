@@ -4,7 +4,7 @@ import { prisma } from '@/lib/prisma';
 
 export async function GET(request: Request) {
   try {
-    const auth = requireNamedMenuAccess(request, '/', 'Báo cáo & BI');
+    const auth = requireNamedMenuAccess(request, '/', 'Dashboard');
     if (!auth.ok) return auth.response;
 
     const documents = await prisma.document.findMany({
@@ -19,7 +19,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const auth = requireNamedMenuAction(request, '/', 'Báo cáo & BI', 'create');
+    const auth = requireNamedMenuAction(request, '/', 'Dashboard', 'create');
     if (!auth.ok) return auth.response;
 
     const body = await request.json();

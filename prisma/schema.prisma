@@ -4,7 +4,9 @@ datasource db {
 }
 
 generator client {
-  provider = "prisma-client-js"
+  provider   = "prisma-client-js"
+  output     = "../node_modules/@prisma/custom-client"
+  engineType = "library"
 }
 
 model Document {
@@ -14,7 +16,7 @@ model Document {
   partner     String
   description String
   amount      Float
-  status      String   // PENDING, COMPLETED, DRAFT
+  status      String // PENDING, COMPLETED, DRAFT
 }
 
 model MasterDataItem {
@@ -94,23 +96,24 @@ model OpeningBalance {
 }
 
 model ImportBatch {
-  id             String   @id @default(uuid())
-  importType     String
-  templateCode   String
-  fileName       String
-  uploadedBy     String?
-  status         String   @default("PREVIEW")
-  totalRows      Int      @default(0)
-  validRows      Int      @default(0)
-  errorRows      Int      @default(0)
-  mappingJson    String?
-  errorJson      String?
-  committedAt    DateTime?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id           String    @id @default(uuid())
+  importType   String
+  templateCode String
+  fileName     String
+  uploadedBy   String?
+  status       String    @default("PREVIEW")
+  totalRows    Int       @default(0)
+  validRows    Int       @default(0)
+  errorRows    Int       @default(0)
+  mappingJson  String?
+  errorJson    String?
+  committedAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
   bankTransactions BankStatementTransaction[]
   revenueRows      RevenueImportRow[]
+  payrollRows      PayrollImportRow[]
 
   @@index([importType])
   @@index([status])
@@ -132,7 +135,8 @@ model BankStatementTransaction {
   reconcileStatus String   @default("UNMATCHED")
   createdAt       DateTime @default(now())
 
-  importBatch ImportBatch @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
+  importBatch ImportBatch           @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
+  matches     ReconciliationMatch[]
 
   @@unique([bankAccount, transactionCode])
   @@index([transactionDate])
@@ -163,4 +167,622 @@ model RevenueImportRow {
   @@index([saleDate])
   @@index([branchCode])
   @@index([paymentMethod])
+}
+
+model FinancialVoucher {
+  id              String   @id @default(uuid())
+  code            String   @unique
+  voucherType     String
+  voucherDate     DateTime @default(now())
+  partnerCode     String?
+  partnerName     String
+  branchCode      String
+  moneySourceCode String
+  categoryCode    String?
+  amount          Float
+  description     String
+  status          String   @default("DRAFT")
+  createdBy       String?
+  approvedBy      String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([voucherType])
+  @@index([voucherDate])
+  @@index([partnerCode])
+  @@index([status])
+}
+
+model AssetRecord {
+  id                    String              @id @default(uuid())
+  code                  String              @unique
+  name                  String
+  branchCode            String
+  departmentCode        String?
+  assetGroup            String
+  purchaseDate          DateTime
+  originalCost          Float
+  currentValue          Float
+  usefulLifeMonths      Int?
+  depreciationStartDate DateTime?
+  residualValue         Float               @default(0)
+  supplierCode          String?
+  supplierName          String?
+  status                String              @default("IN_USE")
+  note                  String?
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+  depreciations         AssetDepreciation[]
+  maintenances          AssetMaintenance[]
+  damageReports         AssetDamageReport[]
+
+  @@index([branchCode])
+  @@index([assetGroup])
+  @@index([status])
+}
+
+model ReconciliationMatch {
+  id                String    @id @default(uuid())
+  bankTransactionId String
+  targetType        String
+  targetId          String
+  targetCode        String
+  targetDate        DateTime?
+  targetAmount      Float
+  matchedAmount     Float
+  status            String    @default("MATCHED")
+  note              String?
+  matchedBy         String?
+  createdAt         DateTime  @default(now())
+
+  bankTransaction BankStatementTransaction @relation(fields: [bankTransactionId], references: [id], onDelete: Cascade)
+
+  @@unique([bankTransactionId, targetType, targetId])
+  @@index([targetType])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model InventoryItem {
+  id        String   @id @default(uuid())
+  code      String   @unique
+  name      String
+  itemType  String
+  unit      String
+  category  String?
+  minStock  Float    @default(0)
+  status    String   @default("ACTIVE")
+  note      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  balances         InventoryBalance[]
+  transactionLines InventoryTransactionLine[]
+  recipeLines      RecipeLine[]
+  requestLines     PurchaseRequestLine[]
+  orderLines       PurchaseOrderLine[]
+  quoteLines       SupplierQuoteLine[]
+
+  @@index([itemType])
+  @@index([status])
+}
+
+model InventoryBalance {
+  id            String   @id @default(uuid())
+  itemId        String
+  warehouseCode String
+  quantity      Float    @default(0)
+  averageCost   Float    @default(0)
+  updatedAt     DateTime @updatedAt
+
+  item InventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([itemId, warehouseCode])
+  @@index([warehouseCode])
+}
+
+model InventoryTransaction {
+  id              String   @id @default(uuid())
+  code            String   @unique
+  transactionType String
+  transactionDate DateTime @default(now())
+  branchCode      String
+  warehouseCode   String
+  referenceType   String?
+  referenceId     String?
+  referenceCode   String?
+  status          String   @default("POSTED")
+  note            String?
+  createdBy       String?
+  createdAt       DateTime @default(now())
+
+  lines InventoryTransactionLine[]
+
+  @@index([transactionType])
+  @@index([transactionDate])
+  @@index([warehouseCode])
+}
+
+model InventoryTransactionLine {
+  id            String @id @default(uuid())
+  transactionId String
+  itemId        String
+  quantity      Float
+  unitCost      Float
+  totalCost     Float
+
+  transaction InventoryTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  item        InventoryItem        @relation(fields: [itemId], references: [id])
+
+  @@index([transactionId])
+  @@index([itemId])
+}
+
+model PurchaseRequest {
+  id          String    @id @default(uuid())
+  code        String    @unique
+  requestDate DateTime  @default(now())
+  branchCode  String
+  requestedBy String
+  neededDate  DateTime?
+  reason      String
+  status      String    @default("DRAFT")
+  approvedBy  String?
+  approvedAt  DateTime?
+  note        String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  lines  PurchaseRequestLine[]
+  quotes SupplierQuote[]
+  orders PurchaseOrder[]
+
+  @@index([status])
+  @@index([branchCode])
+}
+
+model PurchaseRequestLine {
+  id                String  @id @default(uuid())
+  requestId         String
+  itemId            String
+  quantity          Float
+  estimatedUnitCost Float   @default(0)
+  note              String?
+
+  request PurchaseRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  item    InventoryItem   @relation(fields: [itemId], references: [id])
+
+  @@index([requestId])
+  @@index([itemId])
+}
+
+model SupplierQuote {
+  id            String   @id @default(uuid())
+  requestId     String
+  supplierCode  String
+  supplierName  String
+  quotationDate DateTime @default(now())
+  deliveryDays  Int?
+  paymentTerms  String?
+  totalAmount   Float    @default(0)
+  isSelected    Boolean  @default(false)
+  note          String?
+  createdAt     DateTime @default(now())
+
+  request PurchaseRequest     @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  lines   SupplierQuoteLine[]
+
+  @@unique([requestId, supplierCode])
+  @@index([requestId])
+}
+
+model SupplierQuoteLine {
+  id        String @id @default(uuid())
+  quoteId   String
+  itemId    String
+  quantity  Float
+  unitCost  Float
+  totalCost Float
+
+  quote SupplierQuote @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  item  InventoryItem @relation(fields: [itemId], references: [id])
+
+  @@index([quoteId])
+}
+
+model PurchaseOrder {
+  id            String    @id @default(uuid())
+  code          String    @unique
+  requestId     String?
+  orderDate     DateTime  @default(now())
+  expectedDate  DateTime?
+  supplierCode  String
+  supplierName  String
+  branchCode    String
+  warehouseCode String
+  status        String    @default("DRAFT")
+  totalAmount   Float     @default(0)
+  approvedBy    String?
+  approvedAt    DateTime?
+  note          String?
+  createdBy     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  request PurchaseRequest?    @relation(fields: [requestId], references: [id])
+  lines   PurchaseOrderLine[]
+  payable SupplierPayable?
+
+  @@index([status])
+  @@index([supplierCode])
+  @@index([requestId])
+}
+
+model PurchaseOrderLine {
+  id               String @id @default(uuid())
+  orderId          String
+  itemId           String
+  orderedQuantity  Float
+  receivedQuantity Float  @default(0)
+  unitCost         Float
+  totalCost        Float
+
+  order PurchaseOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  item  InventoryItem @relation(fields: [itemId], references: [id])
+
+  @@index([orderId])
+}
+
+model SupplierPayable {
+  id                String   @id @default(uuid())
+  purchaseOrderId   String   @unique
+  supplierCode      String
+  supplierName      String
+  recognizedDate    DateTime @default(now())
+  originalAmount    Float
+  outstandingAmount Float
+  status            String   @default("OPEN")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+
+  @@index([supplierCode])
+  @@index([status])
+}
+
+model Recipe {
+  id            String   @id @default(uuid())
+  code          String   @unique
+  productCode   String
+  productName   String
+  unit          String
+  sellingPrice  Float    @default(0)
+  version       Int      @default(1)
+  effectiveFrom DateTime @default(now())
+  status        String   @default("ACTIVE")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  lines RecipeLine[]
+
+  @@index([productCode])
+  @@index([status])
+}
+
+model RecipeLine {
+  id        String @id @default(uuid())
+  recipeId  String
+  itemId    String
+  quantity  Float
+  wasteRate Float  @default(0)
+
+  recipe Recipe        @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  item   InventoryItem @relation(fields: [itemId], references: [id])
+
+  @@index([recipeId])
+}
+
+model AssetDepreciation {
+  id                      String   @id @default(uuid())
+  assetId                 String
+  period                  String
+  depreciationAmount      Float
+  accumulatedDepreciation Float
+  remainingValue          Float
+  status                  String   @default("POSTED")
+  runBy                   String?
+  createdAt               DateTime @default(now())
+
+  asset AssetRecord @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@unique([assetId, period])
+  @@index([period])
+}
+
+model AssetMaintenance {
+  id              String    @id @default(uuid())
+  assetId         String
+  maintenanceType String
+  scheduledDate   DateTime
+  completedDate   DateTime?
+  supplierName    String?
+  cost            Float     @default(0)
+  status          String    @default("SCHEDULED")
+  note            String?
+  createdBy       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  asset AssetRecord @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([scheduledDate])
+  @@index([status])
+}
+
+model AssetDamageReport {
+  id              String    @id @default(uuid())
+  code            String    @unique
+  assetId         String
+  reportedDate    DateTime  @default(now())
+  severity        String
+  description     String
+  status          String    @default("NEW")
+  repairCost      Float     @default(0)
+  repairTreatment String?
+  resolvedAt      DateTime?
+  reportedBy      String?
+  resolvedBy      String?
+  note            String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  asset AssetRecord @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([reportedDate])
+}
+
+model CashbookAdjustment {
+  id              String   @id @default(uuid())
+  code            String   @unique
+  entryDate       DateTime @default(now())
+  entryType       String
+  branchCode      String
+  moneySourceCode String
+  amount          Float
+  description     String
+  createdBy       String?
+  createdAt       DateTime @default(now())
+
+  @@index([entryDate])
+  @@index([moneySourceCode])
+}
+
+model Accrual {
+  id              String   @id @default(uuid())
+  code            String   @unique
+  name            String
+  branchCode      String
+  categoryCode    String
+  totalAmount     Float
+  startPeriod     String
+  numberOfPeriods Int
+  actualAmount    Float?
+  status          String   @default("ACTIVE")
+  note            String?
+  createdBy       String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  schedules AccrualSchedule[]
+
+  @@index([status])
+  @@index([startPeriod])
+}
+
+model AccrualSchedule {
+  id        String    @id @default(uuid())
+  accrualId String
+  period    String
+  amount    Float
+  status    String    @default("PLANNED")
+  postedAt  DateTime?
+
+  accrual Accrual @relation(fields: [accrualId], references: [id], onDelete: Cascade)
+
+  @@unique([accrualId, period])
+  @@index([period])
+}
+
+model AccountingPeriod {
+  id         String    @id @default(uuid())
+  period     String
+  branchCode String
+  status     String    @default("OPEN")
+  closedBy   String?
+  closedAt   DateTime?
+  reopenedBy String?
+  reopenedAt DateTime?
+  reason     String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@unique([period, branchCode])
+  @@index([status])
+}
+
+model AccountingAccount {
+  id            String   @id @default(uuid())
+  code          String   @unique
+  name          String
+  accountType   String
+  normalBalance String
+  reportGroup   String
+  parentCode    String?
+  status        String   @default("ACTIVE")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  lines JournalLine[]
+
+  @@index([accountType])
+  @@index([reportGroup])
+}
+
+model JournalEntry {
+  id          String   @id @default(uuid())
+  code        String   @unique
+  entryDate   DateTime
+  period      String
+  branchCode  String
+  sourceType  String
+  sourceId    String
+  sourceCode  String?
+  description String
+  status      String   @default("POSTED")
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  lines JournalLine[]
+
+  @@unique([sourceType, sourceId])
+  @@index([period])
+  @@index([branchCode])
+  @@index([status])
+}
+
+model JournalLine {
+  id             String  @id @default(uuid())
+  entryId        String
+  accountId      String
+  debit          Float   @default(0)
+  credit         Float   @default(0)
+  departmentCode String?
+  partnerCode    String?
+  categoryCode   String?
+  description    String?
+
+  entry   JournalEntry      @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  account AccountingAccount @relation(fields: [accountId], references: [id])
+
+  @@index([entryId])
+  @@index([accountId])
+  @@index([departmentCode])
+}
+
+model PostingRule {
+  id                String   @id @default(uuid())
+  sourceType        String
+  ruleCode          String   @unique
+  name              String
+  debitAccountCode  String
+  creditAccountCode String
+  conditionJson     String?
+  status            String   @default("ACTIVE")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([sourceType])
+  @@index([status])
+}
+
+model PayrollImportRow {
+  id              String   @id @default(uuid())
+  importBatchId   String
+  period          String
+  employeeCode    String
+  employeeName    String
+  branchCode      String
+  departmentCode  String
+  baseSalary      Float
+  allowanceAmount Float    @default(0)
+  bonusAmount     Float    @default(0)
+  insuranceAmount Float    @default(0)
+  taxAmount       Float    @default(0)
+  deductionAmount Float    @default(0)
+  netAmount       Float
+  externalRef     String?
+  createdAt       DateTime @default(now())
+
+  importBatch ImportBatch @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
+
+  @@unique([period, employeeCode, branchCode])
+  @@index([period])
+  @@index([branchCode])
+  @@index([departmentCode])
+}
+
+model WorkItem {
+  id             String    @id @default(uuid())
+  code           String    @unique
+  title          String
+  description    String?
+  branchCode     String
+  departmentCode String
+  assigneeId     String?
+  assigneeName   String
+  period         String?
+  priority       String    @default("MEDIUM")
+  status         String    @default("TODO")
+  dueDate        DateTime
+  completedAt    DateTime?
+  approvedBy     String?
+  approvedAt     DateTime?
+  createdBy      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  histories WorkItemHistory[]
+
+  @@index([branchCode])
+  @@index([departmentCode])
+  @@index([status])
+  @@index([dueDate])
+}
+
+model WorkItemHistory {
+  id         String   @id @default(uuid())
+  workItemId String
+  action     String
+  fromStatus String?
+  toStatus   String?
+  note       String?
+  actor      String?
+  createdAt  DateTime @default(now())
+
+  workItem WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+
+  @@index([workItemId])
+}
+
+model ForecastAssumption {
+  id             String   @id @default(uuid())
+  period         String
+  branchCode     String
+  scenario       String
+  assumptionType String
+  amount         Float
+  note           String?
+  createdBy      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([period, branchCode, scenario, assumptionType])
+  @@index([period])
+  @@index([scenario])
+}
+
+model ReportTarget {
+  id          String   @id @default(uuid())
+  period      String
+  branchCode  String
+  metric      String
+  targetValue Float
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([period, branchCode, metric])
+  @@index([period])
 }

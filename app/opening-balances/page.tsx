@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { MonthInput } from "@/components/DateInput";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 
 type OpeningBalance = {
@@ -331,12 +332,12 @@ export default function OpeningBalancesPage() {
 
             <label className="text-xs font-bold text-slate-600 block">
               Kỳ *
-              <input
+              <MonthInput
                 value={form.period}
-                onChange={(event) => setForm((value) => ({ ...value, period: event.target.value }))}
-                className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                placeholder="2026-07"
+                onChange={(period) => setForm((value) => ({ ...value, period }))}
+                className="mt-1"
                 required
+                ariaLabel="Kỳ số dư đầu kỳ"
               />
             </label>
 

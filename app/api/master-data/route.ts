@@ -7,10 +7,10 @@ const defaultMasterData = [
   {
     type: "BRANCH",
     code: "TC",
-    name: "Tong cong ty",
+    name: "Van phong quan ly",
     group: "Head Office",
     status: "ACTIVE",
-    note: "Don vi quan ly toan he thong",
+    note: "Don vi quan ly tai chinh va van hanh",
   },
   {
     type: "BRANCH",
@@ -44,15 +44,15 @@ const defaultMasterData = [
     type: "WAREHOUSE",
     code: "KHO_HCM",
     name: "Kho nguyen vat lieu HCM",
-    group: "Nguyen vat lieu",
+    group: "Nguyen vat lieu/Bao bi",
     branch: "HCM",
     status: "ACTIVE",
   },
   {
     type: "WAREHOUSE",
     code: "KHO_HN",
-    name: "Kho thanh pham Ha Noi",
-    group: "Thanh pham",
+    name: "Kho nguyen vat lieu Ha Noi",
+    group: "Nguyen vat lieu/Bao bi",
     branch: "HN",
     status: "ACTIVE",
   },
@@ -95,18 +95,18 @@ const defaultMasterData = [
   {
     type: "PARTNER",
     code: "NCC_FOOD",
-    name: "NCC Thuc pham Sach",
+    name: "NCC Nguyen lieu",
     group: "Nha cung cap",
     taxCode: "0109876543",
     contactName: "Tran Thi B",
     phone: "0900000002",
-    email: "food@example.com",
+    email: "coffee-supplier@example.com",
     status: "ACTIVE",
   },
   {
     type: "REVENUE_EXPENSE_CATEGORY",
     code: "REV_FOOD",
-    name: "Doanh thu ban hang F&B",
+    name: "Doanh thu do uong va banh",
     group: "Nguon doanh thu",
     note: "Dung phan loai doanh thu import tu POS",
     status: "ACTIVE",
@@ -114,9 +114,9 @@ const defaultMasterData = [
   {
     type: "REVENUE_EXPENSE_CATEGORY",
     code: "COGS_FOOD",
-    name: "Gia von nguyen vat lieu",
+    name: "Gia von nguyen vat lieu va bao bi",
     group: "Gia von",
-    note: "Dung cho food cost/COGS",
+    note: "Dung cho COGS nguyen vat lieu",
     status: "ACTIVE",
   },
   {
@@ -130,7 +130,7 @@ const defaultMasterData = [
   {
     type: "REVENUE_EXPENSE_CATEGORY",
     code: "CAPEX_EQUIPMENT",
-    name: "Mua sam thiet bi",
+    name: "Mua sam thiet bi quay",
     group: "CAPEX",
     note: "Chi phi dau tu tai san",
     status: "ACTIVE",
@@ -236,7 +236,7 @@ async function ensureSeedData() {
           code: item.code,
         },
       },
-      update: {},
+      update: item,
       create: item,
     });
   }

@@ -1,0 +1,170 @@
+import { NextResponse } from "next/server";
+import { isAdmin, requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
+import { prisma } from "@/lib/prisma";
+import { addPeriod, apiError, businessError, cleanText, isPeriodLocked, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
+
+const menuHref = "/finance-operations";
+
+function periodBounds(period: string) {
+  const start = new Date(`${period}-01T00:00:00`);
+  const end = new Date(`${addPeriod(period, 1)}-01T00:00:00`);
+  return { start, end };
+}
+
+async function closingChecklist(period: string, branchCode: string) {
+  const { start, end } = periodBounds(period);
+  const branchFilter = branchCode === "ALL" ? {} : { branchCode };
+  const [draftVouchers, pendingOrders, unmatchedBankRows, negativeStock, assets, depreciationRuns, pendingAccruals, importErrors] = await Promise.all([
+    prisma.financialVoucher.count({ where: { ...branchFilter, voucherDate: { gte: start, lt: end }, status: "DRAFT" } }),
+    prisma.purchaseOrder.count({ where: { ...branchFilter, status: { in: ["APPROVED", "PARTIALLY_RECEIVED"] } } }),
+    prisma.bankStatementTransaction.count({ where: { ...(branchCode === "ALL" ? {} : { branchCode }), transactionDate: { gte: start, lt: end }, reconcileStatus: "UNMATCHED" } }),
+    prisma.inventoryBalance.count({ where: { quantity: { lt: 0 } } }),
+    prisma.assetRecord.count({ where: { ...branchFilter, status: "IN_USE", usefulLifeMonths: { gt: 0 }, depreciationStartDate: { lte: end } } }),
+    prisma.assetDepreciation.count({ where: { period, ...(branchCode === "ALL" ? {} : { asset: { branchCode } }) } }),
+    prisma.accrualSchedule.count({ where: { period, status: "PLANNED", ...(branchCode === "ALL" ? {} : { accrual: { branchCode } }) } }),
+    prisma.importBatch.count({ where: { status: "ERROR", createdAt: { gte: start, lt: end } } }),
+  ]);
+  return [
+    { key: "draftVouchers", label: "Không còn phiếu thu/chi nháp", passed: draftVouchers === 0, count: draftVouchers },
+    { key: "pendingOrders", label: "PO trong kỳ đã nhận hàng xong", passed: pendingOrders === 0, count: pendingOrders },
+    { key: "unmatchedBankRows", label: "Sao kê đã đối soát", passed: unmatchedBankRows === 0, count: unmatchedBankRows },
+    { key: "depreciation", label: "Đã chạy khấu hao", passed: assets === 0 || depreciationRuns >= assets, count: Math.max(assets - depreciationRuns, 0) },
+    { key: "accruals", label: "Đã ghi nhận phân bổ kỳ", passed: pendingAccruals === 0, count: pendingAccruals },
+    { key: "negativeStock", label: "Không có tồn kho âm", passed: negativeStock === 0, count: negativeStock },
+    { key: "importErrors", label: "Không còn batch import lỗi", passed: importErrors === 0, count: importErrors },
+  ];
+}
+
+export async function GET(request: Request) {
+  try {
+    const auth = requireMenuAccess(request, menuHref);
+    if (!auth.ok) return auth.response;
+    const { searchParams } = new URL(request.url);
+    const period = normalizePeriod(searchParams.get("period")) || new Date().toISOString().slice(0, 7);
+    const branchCode = cleanText(searchParams.get("branchCode")) || "ALL";
+    const { start, end } = periodBounds(period);
+    const branchFilter = branchCode === "ALL" ? {} : { branchCode };
+
+    const [openingBalances, vouchers, adjustments, accruals, accountingPeriod, checklist] = await Promise.all([
+      prisma.openingBalance.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { branchCode }), status: "POSTED" } }),
+      prisma.financialVoucher.findMany({ where: { ...branchFilter, voucherDate: { gte: start, lt: end }, status: "APPROVED" }, orderBy: { voucherDate: "asc" } }),
+      prisma.cashbookAdjustment.findMany({ where: { ...branchFilter, entryDate: { gte: start, lt: end } }, orderBy: { entryDate: "asc" } }),
+      prisma.accrual.findMany({ include: { schedules: { orderBy: { period: "asc" } } }, orderBy: { createdAt: "desc" } }),
+      prisma.accountingPeriod.findUnique({ where: { period_branchCode: { period, branchCode } } }),
+      closingChecklist(period, branchCode),
+    ]);
+
+    const openingAmount = openingBalances.reduce((sum, row) => sum + row.amount, 0);
+    const entries = [
+      ...vouchers.map((row) => ({ id: row.id, date: row.voucherDate, code: row.code, type: row.voucherType, moneySourceCode: row.moneySourceCode, description: row.description, receipt: row.voucherType === "RECEIPT" ? row.amount : 0, payment: row.voucherType === "PAYMENT" ? row.amount : 0 })),
+      ...adjustments.map((row) => ({ id: row.id, date: row.entryDate, code: row.code, type: "ADJUSTMENT", moneySourceCode: row.moneySourceCode, description: row.description, receipt: row.entryType === "RECEIPT" ? row.amount : 0, payment: row.entryType === "PAYMENT" ? row.amount : 0 })),
+    ].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    let runningBalance = openingAmount;
+    const cashbook = entries.map((entry) => {
+      runningBalance += entry.receipt - entry.payment;
+      return { ...entry, balance: runningBalance };
+    });
+
+    return NextResponse.json({ period, branchCode, openingAmount, closingBalance: runningBalance, cashbook, accruals, accountingPeriod: accountingPeriod || { status: "OPEN" }, checklist });
+  } catch (error) {
+    const result = apiError(error);
+    return NextResponse.json({ error: result.message }, { status: result.status });
+  }
+}
+
+export async function POST(request: Request) {
+  try {
+    const body = await request.json();
+    const action = cleanText(body.action);
+
+    if (["CLOSE_PERIOD", "REOPEN_PERIOD"].includes(action)) {
+      const auth = requireMenuAction(request, menuHref, "config");
+      if (!auth.ok) return auth.response;
+      if (!isAdmin(auth.session.role)) return NextResponse.json({ error: "Chỉ Admin được khóa hoặc mở lại kỳ" }, { status: 403 });
+      const period = normalizePeriod(body.period);
+      const branchCode = cleanText(body.branchCode) || "ALL";
+      if (!period) businessError("Kỳ kế toán phải có dạng YYYY-MM");
+      if (action === "CLOSE_PERIOD") {
+        const checklist = await closingChecklist(period, branchCode);
+        if (checklist.some((item) => !item.passed)) businessError("Chưa thể khóa kỳ vì checklist còn mục chưa hoàn tất");
+        const result = await prisma.accountingPeriod.upsert({
+          where: { period_branchCode: { period, branchCode } },
+          create: { period, branchCode, status: "CLOSED", closedBy: auth.session.name, closedAt: new Date() },
+          update: { status: "CLOSED", closedBy: auth.session.name, closedAt: new Date(), reopenedBy: null, reopenedAt: null, reason: null },
+        });
+        return NextResponse.json(result);
+      }
+      const reason = cleanText(body.reason);
+      if (!reason) businessError("Mở lại kỳ bắt buộc nhập lý do");
+      const result = await prisma.accountingPeriod.upsert({
+        where: { period_branchCode: { period, branchCode } },
+        create: { period, branchCode, status: "OPEN", reopenedBy: auth.session.name, reopenedAt: new Date(), reason },
+        update: { status: "OPEN", reopenedBy: auth.session.name, reopenedAt: new Date(), reason },
+      });
+      return NextResponse.json(result);
+    }
+
+    const auth = requireMenuAction(request, menuHref, action === "POST_ACCRUAL" ? "edit" : "create");
+    if (!auth.ok) return auth.response;
+
+    if (action === "CREATE_ADJUSTMENT") {
+      const entryDate = toDate(body.entryDate);
+      const branchCode = cleanText(body.branchCode);
+      if (!branchCode || !cleanText(body.moneySourceCode) || toNumber(body.amount) <= 0 || !cleanText(body.description)) businessError("Bút toán điều chỉnh thiếu thông tin bắt buộc");
+      if (await isPeriodLocked(entryDate, branchCode)) businessError("Kỳ kế toán đã khóa");
+      const result = await prisma.cashbookAdjustment.create({
+        data: {
+          code: `DCQ-${new Date().getFullYear()}-${String(await prisma.cashbookAdjustment.count() + 1).padStart(4, "0")}`,
+          entryDate,
+          entryType: cleanText(body.entryType) || "RECEIPT",
+          branchCode,
+          moneySourceCode: cleanText(body.moneySourceCode),
+          amount: toNumber(body.amount),
+          description: cleanText(body.description),
+          createdBy: auth.session.name,
+        },
+      });
+      return NextResponse.json(result, { status: 201 });
+    }
+
+    if (action === "CREATE_ACCRUAL") {
+      const startPeriod = normalizePeriod(body.startPeriod);
+      const numberOfPeriods = Math.floor(toNumber(body.numberOfPeriods));
+      const totalAmount = toNumber(body.totalAmount);
+      if (!startPeriod || numberOfPeriods <= 0 || totalAmount <= 0 || !cleanText(body.name) || !cleanText(body.branchCode)) businessError("Khoản trích trước thiếu thông tin bắt buộc");
+      const amount = totalAmount / numberOfPeriods;
+      const result = await prisma.accrual.create({
+        data: {
+          code: `PB-${new Date().getFullYear()}-${String(await prisma.accrual.count() + 1).padStart(4, "0")}`,
+          name: cleanText(body.name),
+          branchCode: cleanText(body.branchCode),
+          categoryCode: cleanText(body.categoryCode) || "OPEX",
+          totalAmount,
+          startPeriod,
+          numberOfPeriods,
+          note: cleanText(body.note) || null,
+          createdBy: auth.session.name,
+          schedules: { create: Array.from({ length: numberOfPeriods }, (_, index) => ({ period: addPeriod(startPeriod, index), amount })) },
+        },
+        include: { schedules: true },
+      });
+      return NextResponse.json(result, { status: 201 });
+    }
+
+    if (action === "POST_ACCRUAL") {
+      const scheduleId = cleanText(body.scheduleId);
+      const schedule = await prisma.accrualSchedule.findUnique({ where: { id: scheduleId }, include: { accrual: true } });
+      if (!schedule) businessError("Không tìm thấy kỳ phân bổ");
+      if (await isPeriodLocked(new Date(`${schedule.period}-01T00:00:00`), schedule.accrual.branchCode)) businessError("Kỳ kế toán đã khóa");
+      const result = await prisma.accrualSchedule.update({ where: { id: scheduleId }, data: { status: "POSTED", postedAt: new Date() } });
+      const remaining = await prisma.accrualSchedule.count({ where: { accrualId: schedule.accrualId, status: "PLANNED" } });
+      if (remaining === 0) await prisma.accrual.update({ where: { id: schedule.accrualId }, data: { status: "COMPLETED" } });
+      return NextResponse.json(result);
+    }
+
+    businessError("Thao tác tài chính không hợp lệ");
+  } catch (error) {
+    const result = apiError(error);
+    return NextResponse.json({ error: result.message }, { status: result.status });
+  }
+}

@@ -353,6 +353,7 @@ export default function SettingsPage() {
               <label className="text-xs font-bold text-slate-600">
                 Mã danh mục *
                 <input
+                  data-input-kind="code"
                   value={form.code}
                   onChange={(event) => setForm((value) => ({ ...value, code: event.target.value }))}
                   className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm uppercase"
@@ -397,6 +398,7 @@ export default function SettingsPage() {
               <label className="text-xs font-bold text-slate-600">
                 Chi nhánh
                 <input
+                  data-input-kind="code"
                   value={form.branch}
                   onChange={(event) => setForm((value) => ({ ...value, branch: event.target.value }))}
                   className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
@@ -409,6 +411,7 @@ export default function SettingsPage() {
               <label className="text-xs font-bold text-slate-600">
                 MST
                 <input
+                  data-input-kind="tax-code"
                   value={form.taxCode}
                   onChange={(event) => setForm((value) => ({ ...value, taxCode: event.target.value }))}
                   className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
@@ -417,6 +420,7 @@ export default function SettingsPage() {
               <label className="text-xs font-bold text-slate-600">
                 Số tài khoản
                 <input
+                  data-input-kind="account-number"
                   value={form.accountNo}
                   onChange={(event) => setForm((value) => ({ ...value, accountNo: event.target.value }))}
                   className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
@@ -436,6 +440,7 @@ export default function SettingsPage() {
               <label className="text-xs font-bold text-slate-600">
                 Điện thoại
                 <input
+                  data-input-kind="phone"
                   value={form.phone}
                   onChange={(event) => setForm((value) => ({ ...value, phone: event.target.value }))}
                   className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
@@ -446,6 +451,8 @@ export default function SettingsPage() {
             <label className="text-xs font-bold text-slate-600 block">
               Email
               <input
+                data-input-kind="email"
+                type="email"
                 value={form.email}
                 onChange={(event) => setForm((value) => ({ ...value, email: event.target.value }))}
                 className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"

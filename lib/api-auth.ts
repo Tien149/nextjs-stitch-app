@@ -3,6 +3,7 @@ import {
   appMenuItems,
   canAccessMenu,
   canPerformAction,
+  canPerformMenuAction,
   demoUsers,
   type AppAction,
   type DemoRole,
@@ -116,7 +117,7 @@ export function requireMenuAction(request: Request, href: string, action: AppAct
   const auth = requireMenuAccess(request, href);
   if (!auth.ok) return auth;
 
-  if (!canPerformAction(auth.session.role, action)) {
+  if (!canPerformMenuAction(auth.session.role, href, action)) {
     return { ok: false, response: forbidden() };
   }
 
@@ -132,7 +133,7 @@ export function requireNamedMenuAction(
   const auth = requireNamedMenuAccess(request, href, name);
   if (!auth.ok) return auth;
 
-  if (!canPerformAction(auth.session.role, action)) {
+  if (!canPerformMenuAction(auth.session.role, href, action)) {
     return { ok: false, response: forbidden() };
   }
 

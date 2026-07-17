@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
-import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
+import { forbidden, requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { commitImport, isUniqueConstraintError } from "@/lib/import-commit";
 import { getImportTemplate } from "@/lib/import-templates";
 import { parseImportFile } from "@/lib/import-parser";
 import { prisma } from "@/lib/prisma";
 
 const importType = "REVENUE_POS" as const;
-const menuHref = "/imports/revenue";
+const menuHref = "/imports";
 
 function getUploadFile(formData: FormData) {
   const file = formData.get("file");
@@ -17,6 +17,18 @@ export async function GET(request: Request) {
   try {
     const auth = requireMenuAccess(request, menuHref);
     if (!auth.ok) return auth.response;
+    if (auth.session.role === "Kế toán công nợ") return forbidden("Không có quyền truy cập Import Doanh thu");
+
+    const { searchParams } = new URL(request.url);
+    const batchId = searchParams.get("batchId") || undefined;
+    if (batchId) {
+      const batch = await prisma.importBatch.findFirst({
+        where: { id: batchId, importType },
+        include: { revenueRows: { orderBy: { saleDate: "desc" } } },
+      });
+      if (!batch) return NextResponse.json({ error: "Không tìm thấy batch import" }, { status: 404 });
+      return NextResponse.json(batch);
+    }
 
     const batches = await prisma.importBatch.findMany({
       where: { importType },
@@ -40,6 +52,7 @@ export async function POST(request: Request) {
   try {
     const auth = requireMenuAction(request, menuHref, "create");
     if (!auth.ok) return auth.response;
+    if (auth.session.role === "Kế toán công nợ") return forbidden("Không có quyền Import Doanh thu");
 
     const { searchParams } = new URL(request.url);
     const mode = searchParams.get("mode") || "preview";

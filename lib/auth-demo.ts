@@ -74,16 +74,16 @@ export const demoUsers: DemoUser[] = [
 
 export const appMenuItems: AppMenuItem[] = [
   {
-    name: "Báo cáo & BI",
+    name: "Dashboard",
     icon: "dashboard",
     href: "/",
     roles: ["Admin", "Kế toán tổng hợp", "Quản lý", "Viewer"],
   },
   {
-    name: "Tài chính & Sổ quỹ",
+    name: "Sổ quỹ",
     icon: "account_balance_wallet",
-    href: "/",
-    roles: ["Admin", "Kế toán tổng hợp"],
+    href: "/finance-operations",
+    roles: ["Admin", "Kế toán tổng hợp", "Kế toán công nợ", "Quản lý", "Viewer"],
   },
   {
     name: "Số dư đầu kỳ",
@@ -94,25 +94,31 @@ export const appMenuItems: AppMenuItem[] = [
   {
     name: "Dòng tiền",
     icon: "timeline",
-    href: "/",
+    href: "/reports?tab=cashflow",
     roles: ["Admin", "Kế toán tổng hợp", "Quản lý"],
   },
   {
-    name: "Import Sao kê",
+    name: "Import dữ liệu",
     icon: "upload_file",
-    href: "/imports/bank-statements",
+    href: "/imports",
     roles: ["Admin", "Kế toán tổng hợp", "Kế toán công nợ"],
   },
   {
-    name: "Import Doanh thu",
-    icon: "point_of_sale",
-    href: "/imports/revenue",
-    roles: ["Admin", "Kế toán tổng hợp"],
+    name: "Đối soát",
+    icon: "rule",
+    href: "/reconciliations",
+    roles: ["Admin", "Kế toán tổng hợp", "Kế toán công nợ"],
   },
   {
     name: "Chứng từ",
     icon: "receipt_long",
-    href: "/",
+    href: "/vouchers",
+    roles: ["Admin", "Kế toán tổng hợp"],
+  },
+  {
+    name: "Sổ cái Kế toán",
+    icon: "menu_book",
+    href: "/accounting",
     roles: ["Admin", "Kế toán tổng hợp"],
   },
   {
@@ -124,26 +130,38 @@ export const appMenuItems: AppMenuItem[] = [
   {
     name: "Công nợ Đối tác",
     icon: "handshake",
-    href: "/",
+    href: "/debts",
     roles: ["Admin", "Kế toán tổng hợp", "Kế toán công nợ", "Quản lý"],
   },
   {
-    name: "Cung ứng & Recipe",
+    name: "Mua hàng",
+    icon: "shopping_cart",
+    href: "/procurement",
+    roles: ["Admin", "Kế toán tổng hợp", "Kế toán công nợ", "Quản lý"],
+  },
+  {
+    name: "Kho & Định lượng",
     icon: "inventory_2",
-    href: "/",
-    roles: ["Admin", "Kế toán tổng hợp"],
+    href: "/inventory",
+    roles: ["Admin", "Kế toán tổng hợp", "Quản lý", "Viewer"],
   },
   {
     name: "Tài sản & Khấu hao",
     icon: "precision_manufacturing",
-    href: "/",
-    roles: ["Admin", "Kế toán tổng hợp"],
+    href: "/assets",
+    roles: ["Admin", "Kế toán tổng hợp", "Quản lý"],
   },
   {
-    name: "Nhập liệu AI",
-    icon: "smart_toy",
-    href: "/",
-    roles: ["Admin", "Kế toán tổng hợp"],
+    name: "Công việc",
+    icon: "task_alt",
+    href: "/work-management",
+    roles: ["Admin", "Kế toán tổng hợp", "Quản lý", "Viewer"],
+  },
+  {
+    name: "Báo cáo & BI",
+    icon: "monitoring",
+    href: "/reports",
+    roles: ["Admin", "Kế toán tổng hợp", "Quản lý", "Viewer"],
   },
   {
     name: "Cấu hình Danh mục",
@@ -165,6 +183,54 @@ export const roleActions: Record<DemoRole, AppAction[]> = {
   "Kế toán công nợ": ["view", "create", "edit", "export"],
   "Quản lý": ["view", "approve", "export"],
   Viewer: ["view"],
+};
+
+const menuActionOverrides: Partial<Record<string, Partial<Record<DemoRole, AppAction[]>>>> = {
+  "/procurement": {
+    Admin: roleActions.Admin,
+    "Kế toán tổng hợp": ["view", "create", "edit", "export"],
+    "Kế toán công nợ": ["view", "export"],
+    "Quản lý": ["view", "create", "approve", "export"],
+  },
+  "/inventory": {
+    Admin: roleActions.Admin,
+    "Kế toán tổng hợp": ["view", "create", "edit", "export"],
+    "Quản lý": ["view", "create", "edit", "export"],
+    Viewer: ["view"],
+  },
+  "/assets": {
+    Admin: roleActions.Admin,
+    "Kế toán tổng hợp": ["view", "create", "edit", "export"],
+    "Quản lý": ["view", "create", "edit", "export"],
+  },
+  "/finance-operations": {
+    Admin: roleActions.Admin,
+    "Kế toán tổng hợp": ["view", "create", "edit", "export", "config"],
+    "Kế toán công nợ": ["view", "export"],
+    "Quản lý": ["view", "export"],
+    Viewer: ["view"],
+  },
+  "/imports": {
+    Admin: roleActions.Admin,
+    "Kế toán tổng hợp": ["view", "create", "export"],
+    "Kế toán công nợ": ["view", "create", "export"],
+  },
+  "/accounting": {
+    Admin: roleActions.Admin,
+    "Kế toán tổng hợp": ["view", "create", "edit", "export", "config"],
+  },
+  "/work-management": {
+    Admin: roleActions.Admin,
+    "Kế toán tổng hợp": ["view", "create", "edit", "export"],
+    "Quản lý": ["view", "create", "edit", "approve", "export"],
+    Viewer: ["view"],
+  },
+  "/reports": {
+    Admin: roleActions.Admin,
+    "Kế toán tổng hợp": ["view", "create", "edit", "export", "config"],
+    "Quản lý": ["view", "export"],
+    Viewer: ["view"],
+  },
 };
 
 export function findDemoUser(userIdOrEmail: string) {
@@ -191,4 +257,9 @@ export function canAccessMenu(role: DemoRole, item: AppMenuItem) {
 
 export function canPerformAction(role: DemoRole, action: AppAction) {
   return roleActions[role]?.includes(action) ?? false;
+}
+
+export function canPerformMenuAction(role: DemoRole, href: string, action: AppAction) {
+  const configuredActions = menuActionOverrides[href]?.[role];
+  return configuredActions ? configuredActions.includes(action) : canPerformAction(role, action);
 }

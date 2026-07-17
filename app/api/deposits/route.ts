@@ -103,6 +103,7 @@ export async function POST(request: Request) {
     const deposit = await prisma.deposit.create({
       data: {
         code,
+        receivedDate: body.receivedDate ? new Date(String(body.receivedDate)) : new Date(),
         partnerCode,
         partnerName,
         branchCode,

@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import { MonthInput } from "@/components/DateInput";
 import {
   appMenuItems,
   canAccessMenu,
@@ -20,13 +21,45 @@ interface DocumentItem {
   status: string;
 }
 
+interface DashboardPnl {
+  revenue: number;
+  cogs: number;
+  payroll: number;
+  depreciation: number;
+  otherOpex: number;
+  otherIncome: number;
+  otherExpense: number;
+  grossProfit: number;
+  ebitda: number;
+  netProfit: number;
+}
+
+interface DashboardData {
+  period: string;
+  branchCode: string;
+  pnl: {
+    total: DashboardPnl;
+  };
+  trend: Array<DashboardPnl & { period: string }>;
+  balance: {
+    rows: Array<{ reportGroup: string; amount: number }>;
+    difference: number;
+    balanced: boolean;
+  };
+}
+
+const DEFAULT_DASHBOARD_PERIOD = new Date().toISOString().slice(0, 7);
+
 export default function Home() {
   const router = useRouter();
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [filterStatus, setFilterStatus] = useState("ALL");
   const [isCreateOpen, setIsCreateOpen] = useState(false);
-  const [activeMenu, setActiveMenu] = useState("Báo cáo & BI");
+  const [activeMenu, setActiveMenu] = useState("Dashboard");
+  const [dashboardPeriod, setDashboardPeriod] = useState(DEFAULT_DASHBOARD_PERIOD);
+  const [dashboard, setDashboard] = useState<DashboardData | null>(null);
+  const [dashboardError, setDashboardError] = useState("");
 
   // Auth states
   const [user, setUser] = useState<DemoSession | null>(null);
@@ -52,6 +85,21 @@ export default function Home() {
     }
   };
 
+  const fetchDashboard = useCallback(async (period: string) => {
+    try {
+      setDashboardError("");
+      const response = await fetch(`/api/reports?type=dashboard&period=${period}&branchCode=ALL`);
+      if (!response.ok) {
+        const payload = await response.json();
+        throw new Error(payload.error || "Không tải được dữ liệu Dashboard");
+      }
+      setDashboard(await response.json() as DashboardData);
+    } catch (error) {
+      setDashboard(null);
+      setDashboardError(error instanceof Error ? error.message : "Không tải được dữ liệu Dashboard");
+    }
+  }, []);
+
   useEffect(() => {
     const session = localStorage.getItem(SESSION_KEY);
     if (!session) {
@@ -66,7 +114,7 @@ export default function Home() {
       if (!parsedSession.role || !parsedSession.email || !hasAllowedMenu) {
         throw new Error("Invalid session");
       }
-      const dashboardMenu = appMenuItems.find((item) => item.href === "/" && item.name === "Báo cáo & BI");
+      const dashboardMenu = appMenuItems.find((item) => item.href === "/" && item.name === "Dashboard");
       if (!dashboardMenu || !canAccessMenu(parsedSession.role, dashboardMenu)) {
         const firstRoute = allowedItems.find((item) => item.href !== "/");
         router.replace(firstRoute?.href || "/login");
@@ -77,12 +125,13 @@ export default function Home() {
         setActiveMenu(dashboardMenu.name);
         setIsCheckingAuth(false);
         fetchDocuments();
+        fetchDashboard(DEFAULT_DASHBOARD_PERIOD);
       }, 0);
     } catch {
       localStorage.removeItem(SESSION_KEY);
       router.push("/login");
     }
-  }, [router]);
+  }, [fetchDashboard, router]);
 
   const handleLogout = () => {
     localStorage.removeItem(SESSION_KEY);
@@ -90,24 +139,37 @@ export default function Home() {
     router.push("/login");
   };
 
-  // Calculate dynamic KPIs based on database content + baseline
-  // Baseline matching the hardcoded numbers in code.html
-  const baseRevenue = 4285000000;
-  const baseExpense = 2910450000;
-  
-  // Calculate additions from DB
-  const dbRevenue = documents
-    .filter(doc => doc.code.startsWith("PT") && doc.status === "COMPLETED")
-    .reduce((sum, doc) => sum + doc.amount, 0);
-
-  const dbExpense = documents
-    .filter(doc => doc.code.startsWith("PC") && doc.status !== "DRAFT")
-    .reduce((sum, doc) => sum + doc.amount, 0);
-
-  const totalRevenue = baseRevenue + dbRevenue;
-  const totalExpense = baseExpense + dbExpense;
-  const ebitda = totalRevenue - totalExpense;
-  const totalCash = 8120000000 + dbRevenue - dbExpense;
+  const expenseOf = (value: DashboardPnl) => value.cogs + value.payroll + value.depreciation + value.otherOpex + value.otherExpense;
+  const currentPnl = dashboard?.pnl.total;
+  const totalRevenue = currentPnl?.revenue || 0;
+  const totalExpense = currentPnl ? expenseOf(currentPnl) : 0;
+  const ebitda = currentPnl?.ebitda || 0;
+  const totalCash = dashboard?.balance.rows
+    .filter((row) => row.reportGroup === "CASH")
+    .reduce((sum, row) => sum + row.amount, 0) || 0;
+  const trend = dashboard?.trend || [];
+  const currentTrend = trend.at(-1);
+  const previousTrend = trend.at(-2);
+  const percentageChange = (current: number, previous?: number) => previous ? (current - previous) / Math.abs(previous) * 100 : null;
+  const revenueGrowth = percentageChange(currentTrend?.revenue || 0, previousTrend?.revenue);
+  const expenseGrowth = percentageChange(currentTrend ? expenseOf(currentTrend) : 0, previousTrend ? expenseOf(previousTrend) : undefined);
+  const chartMax = Math.max(...trend.map((row) => Math.max(row.revenue, expenseOf(row))), 1);
+  const hasAccountingData = trend.some((row) => row.revenue !== 0 || expenseOf(row) !== 0) || totalCash !== 0;
+  const healthScore = hasAccountingData
+    ? Math.max(0, 10 - (ebitda < 0 ? 3 : 0) - (totalCash < 0 ? 3 : 0) - (dashboard?.balance.balanced === false ? 4 : 0))
+    : 0;
+  const financialWarnings: Array<{ title: string; detail: string; tone: "amber" | "rose" | "emerald"; icon: string }> = [];
+  if (dashboardError) financialWarnings.push({ title: "Không tải được dữ liệu", detail: dashboardError, tone: "rose", icon: "error_outline" });
+  else if (!hasAccountingData) financialWarnings.push({ title: "Chưa có dữ liệu ghi sổ", detail: `Hãy nhập dữ liệu và đồng bộ sổ cái cho kỳ ${dashboardPeriod}.`, tone: "amber", icon: "database" });
+  else {
+    if (dashboard?.balance.balanced === false) financialWarnings.push({ title: "Bảng cân đối đang lệch", detail: `Chênh lệch ${formatCurrency(Math.abs(dashboard.balance.difference))} đ.`, tone: "rose", icon: "balance" });
+    if (ebitda < 0) financialWarnings.push({ title: "EBITDA đang âm", detail: `Kỳ ${dashboardPeriod} đang âm ${formatCurrency(Math.abs(ebitda))} đ.`, tone: "rose", icon: "trending_down" });
+    if (totalCash < 0) financialWarnings.push({ title: "Số dư tiền đang âm", detail: `Số dư cuối kỳ ${formatCurrency(totalCash)} đ.`, tone: "rose", icon: "account_balance_wallet" });
+  }
+  const pendingDocuments = documents.filter((document) => document.status === "PENDING").length;
+  if (pendingDocuments > 0) financialWarnings.push({ title: "Chứng từ chờ xử lý", detail: `${pendingDocuments} chứng từ vận hành đang chờ duyệt.`, tone: "amber", icon: "pending_actions" });
+  if (financialWarnings.length === 0) financialWarnings.push({ title: "Không có cảnh báo", detail: `Dữ liệu kỳ ${dashboardPeriod} đang cân đối.`, tone: "emerald", icon: "verified" });
+  const healthLabel = !hasAccountingData ? "Chưa đủ dữ liệu để đánh giá." : healthScore >= 8 ? "Các chỉ số tài chính chính đang ổn định." : healthScore >= 5 ? "Có chỉ số cần được theo dõi." : "Có rủi ro tài chính cần xử lý.";
 
   // Handle Form Submission
   const handleSubmit = async (e: React.FormEvent) => {
@@ -154,9 +216,9 @@ export default function Home() {
   };
 
   // Format currency in VND
-  const formatCurrency = (val: number) => {
+  function formatCurrency(val: number) {
     return new Intl.NumberFormat("vi-VN").format(val);
-  };
+  }
 
   // Filter documents based on search query and status filter dropdown
   const filteredDocuments = documents.filter((doc) => {
@@ -189,12 +251,12 @@ export default function Home() {
   return (
     <div className="flex min-h-screen bg-[#f1f5f9]">
       {/* Sidebar */}
-      <aside className="w-64 h-screen fixed left-0 top-0 bg-[#0f172a] flex flex-col py-6 shadow-xl z-50">
-        <div className="px-6 mb-8">
-          <h1 className="text-xl font-bold text-white tracking-tight">FIN-ERP</h1>
-          <p className="text-white/60 text-[10px] uppercase tracking-widest mt-1">Executive Suite</p>
+      <aside className="w-64 h-screen fixed left-0 top-0 bg-[#0f172a] flex flex-col py-6 shadow-xl z-50 overflow-hidden">
+        <div className="px-6 mb-8 shrink-0">
+          <h1 className="text-xl font-bold text-white tracking-tight">FIN ERP</h1>
+          <p className="text-white/60 text-[10px] uppercase tracking-widest mt-1">Finance Suite</p>
         </div>
-        <nav className="flex-1 space-y-1">
+        <nav className="sidebar-scroll flex-1 min-h-0 space-y-1 overflow-y-auto overscroll-contain pr-1">
           {allowedMenuItems.map((item) => (
             <button
               key={item.name}
@@ -216,7 +278,7 @@ export default function Home() {
             </button>
           ))}
         </nav>
-        <div className="mt-auto pt-6 border-t border-slate-800 space-y-1">
+        <div className="shrink-0 pt-4 border-t border-slate-800 space-y-1 bg-[#0f172a]">
           <button className="w-full flex items-center px-6 py-2 text-white/70 hover:bg-[#1e293b] hover:text-white transition-all text-left">
             <span className="material-symbols-outlined mr-3 text-[20px]">help</span>
             <span className="text-sm font-medium">Trợ giúp</span>
@@ -236,7 +298,7 @@ export default function Home() {
         {/* Header */}
         <header className="h-16 sticky top-0 bg-white flex justify-between items-center px-6 border-b border-slate-200 z-45 shadow-sm">
           <div className="flex items-center gap-6">
-            <h2 className="text-lg font-bold text-slate-800">Bảng điều hành Module H.8</h2>
+            <h2 className="text-lg font-bold text-slate-800">Bảng điều hành</h2>
             <div className="hidden lg:flex items-center gap-4 ml-4">
               <span className="text-[#2563eb] font-bold border-b-2 border-[#2563eb] pb-1 text-xs uppercase tracking-wider cursor-pointer">
                 Dashboard
@@ -258,7 +320,7 @@ export default function Home() {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="pl-10 pr-4 py-1.5 bg-slate-100 rounded-lg border-none focus:ring-2 focus:ring-[#2563eb] text-xs w-64 outline-none transition-all"
-                placeholder="Tìm mã chứng từ, tài khoản..."
+                placeholder="Tìm chứng từ, đối tác, nguồn tiền..."
                 type="text"
               />
             </div>
@@ -296,10 +358,19 @@ export default function Home() {
           {/* Header Area */}
           <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
             <div>
-              <h1 className="text-2xl font-bold text-slate-950">Tổng quan Điều hành</h1>
-              <p className="text-slate-500 text-sm mt-0.5">Dữ liệu cập nhật theo thời gian thực</p>
+              <h1 className="text-2xl font-bold text-slate-950">Tổng quan vận hành</h1>
+              <p className="text-slate-500 text-sm mt-0.5">Theo dõi doanh thu POS, chi phí, tiền mặt và công nợ</p>
             </div>
             <div className="flex items-center gap-3">
+              <MonthInput
+                value={dashboardPeriod}
+                onChange={(value) => {
+                  setDashboardPeriod(value);
+                  if (value) void fetchDashboard(value);
+                }}
+                className="w-40 shadow-sm"
+                ariaLabel="Kỳ báo cáo"
+              />
               <select
                 value={filterStatus}
                 onChange={(e) => setFilterStatus(e.target.value)}
@@ -326,15 +397,16 @@ export default function Home() {
               <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
                 <span className="material-symbols-outlined text-4xl text-[#059669]">trending_up</span>
               </div>
-              <p className="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1">TỔNG DOANH THU</p>
+              <p className="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1">DOANH THU</p>
               <h3 className="text-xl font-bold text-slate-900">
                 {formatCurrency(totalRevenue)} <span className="text-xs font-normal">₫</span>
               </h3>
               <div className="mt-4 flex items-center gap-2">
                 <span className="flex items-center text-[#059669] bg-[#ecfdf5] px-1.5 py-0.5 rounded text-[10px] font-bold">
-                  <span className="material-symbols-outlined text-[12px] mr-0.5">arrow_upward</span> 12.5%
+                  <span className="material-symbols-outlined text-[12px] mr-0.5">{revenueGrowth !== null && revenueGrowth < 0 ? "arrow_downward" : "arrow_upward"}</span>
+                  {revenueGrowth === null ? "Chưa có kỳ trước" : `${revenueGrowth >= 0 ? "+" : ""}${revenueGrowth.toFixed(1)}%`}
                 </span>
-                <span className="text-slate-400 text-[10px]">so với tháng trước</span>
+                <span className="text-slate-400 text-[10px]">so với kỳ trước</span>
               </div>
             </div>
 
@@ -343,15 +415,16 @@ export default function Home() {
               <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
                 <span className="material-symbols-outlined text-4xl text-rose-600">payments</span>
               </div>
-              <p className="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1">TỔNG CHI PHÍ</p>
+              <p className="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1">CHI PHÍ VẬN HÀNH</p>
               <h3 className="text-xl font-bold text-slate-900">
                 {formatCurrency(totalExpense)} <span className="text-xs font-normal">₫</span>
               </h3>
               <div className="mt-4 flex items-center gap-2">
                 <span className="flex items-center text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded text-[10px] font-bold">
-                  <span className="material-symbols-outlined text-[12px] mr-0.5">arrow_downward</span> 4.2%
+                  <span className="material-symbols-outlined text-[12px] mr-0.5">{expenseGrowth !== null && expenseGrowth > 0 ? "arrow_upward" : "arrow_downward"}</span>
+                  {expenseGrowth === null ? "Chưa có kỳ trước" : `${expenseGrowth >= 0 ? "+" : ""}${expenseGrowth.toFixed(1)}%`}
                 </span>
-                <span className="text-slate-400 text-[10px]">kiểm soát tốt</span>
+                <span className="text-slate-400 text-[10px]">so với kỳ trước</span>
               </div>
             </div>
 
@@ -360,15 +433,16 @@ export default function Home() {
               <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
                 <span className="material-symbols-outlined text-4xl text-[#059669]">analytics</span>
               </div>
-              <p className="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1">LỢI NHUẬN EBITDA</p>
+              <p className="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1">LỢI NHUẬN VẬN HÀNH</p>
               <h3 className="text-xl font-bold text-slate-900">
                 {formatCurrency(ebitda)} <span className="text-xs font-normal">₫</span>
               </h3>
               <div className="mt-4 flex items-center gap-2">
                 <span className="flex items-center text-[#059669] bg-[#ecfdf5] px-1.5 py-0.5 rounded text-[10px] font-bold">
-                  <span className="material-symbols-outlined text-[12px] mr-0.5">arrow_upward</span> 18.2%
+                  <span className="material-symbols-outlined text-[12px] mr-0.5">monitoring</span>
+                  {totalRevenue ? `${(ebitda / totalRevenue * 100).toFixed(1)}%` : "0%"}
                 </span>
-                <span className="text-slate-400 text-[10px]">biên LN {((ebitda / totalRevenue) * 100).toFixed(0)}%</span>
+                <span className="text-slate-400 text-[10px]">biên EBITDA</span>
               </div>
             </div>
 
@@ -377,15 +451,15 @@ export default function Home() {
               <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
                 <span className="material-symbols-outlined text-4xl text-amber-600">account_balance</span>
               </div>
-              <p className="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1">TIỀN MẶT & TƯƠNG ĐƯƠNG</p>
+              <p className="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1">TIỀN MẶT & ĐỐI SOÁT</p>
               <h3 className="text-xl font-bold text-slate-900">
                 {formatCurrency(totalCash)} <span className="text-xs font-normal">₫</span>
               </h3>
               <div className="mt-4 flex items-center gap-2">
                 <span className="flex items-center text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded text-[10px] font-bold">
-                  <span className="material-symbols-outlined text-[12px] mr-0.5">history</span> Ổn định
+                  <span className="material-symbols-outlined text-[12px] mr-0.5">account_balance</span> {dashboard?.balance.balanced ? "Đã cân đối" : "Cần kiểm tra"}
                 </span>
-                <span className="text-slate-400 text-[10px]">dòng tiền lưu động</span>
+                <span className="text-slate-400 text-[10px]">theo sổ cái đến cuối kỳ</span>
               </div>
             </div>
           </div>
@@ -396,8 +470,8 @@ export default function Home() {
             <div className="lg:col-span-8 bg-white p-6 rounded-xl shadow-sm border border-slate-100">
               <div className="flex items-center justify-between mb-8">
                 <div>
-                  <h4 className="text-base font-bold text-slate-900">Phân tích Tăng trưởng YoY</h4>
-                  <p className="text-slate-500 text-xs">So sánh Doanh thu và Chi phí theo tháng (đơn vị: Tỷ VNĐ)</p>
+                  <h4 className="text-base font-bold text-slate-900">Phân tích doanh thu</h4>
+                  <p className="text-slate-500 text-xs">So sánh doanh thu POS và chi phí vận hành theo tháng</p>
                 </div>
                 <div className="flex items-center gap-4">
                   <div className="flex items-center gap-1.5">
@@ -417,26 +491,23 @@ export default function Home() {
                 <div className="absolute inset-x-0 bottom-40 h-[1px] bg-slate-100"></div>
                 <div className="absolute inset-x-0 bottom-56 h-[1px] bg-slate-100"></div>
 
-                {[
-                  { month: "T1", expense: "40%", revenue: "55%" },
-                  { month: "T2", expense: "45%", revenue: "50%" },
-                  { month: "T3", expense: "35%", revenue: "60%" },
-                  { month: "T4", expense: "50%", revenue: "75%" },
-                  { month: "T5", expense: "45%", revenue: "85%", highlight: true },
-                  { month: "T6", expense: "40%", revenue: "45%", future: true },
-                  { month: "T7", expense: "40%", revenue: "45%", future: true },
-                  { month: "T8", expense: "40%", revenue: "45%", future: true },
-                ].map((item, idx) => (
-                  <div key={idx} className={`flex-1 flex flex-col items-center group relative h-full justify-end ${item.future ? 'opacity-40' : ''}`}>
+                {trend.map((item) => {
+                  const expense = expenseOf(item);
+                  const expenseHeight = expense ? `${Math.max(4, expense / chartMax * 100)}%` : "0%";
+                  const revenueHeight = item.revenue ? `${Math.max(4, item.revenue / chartMax * 100)}%` : "0%";
+                  const highlight = item.period === dashboardPeriod;
+                  return (
+                  <div key={item.period} className="flex-1 flex flex-col items-center group relative h-full justify-end">
                     <div className="flex items-end gap-1 w-full justify-center">
-                      <div className="w-3.5 bg-slate-200 rounded-t" style={{ height: item.expense }}></div>
-                      <div className={`w-3.5 rounded-t ${item.highlight ? 'bg-[#2563eb] border-x-2 border-blue-300' : 'bg-[#2563eb]'}`} style={{ height: item.revenue }}></div>
+                      <div className="w-3.5 bg-slate-300 rounded-t" style={{ height: expenseHeight }} title={`Chi phí ${formatCurrency(expense)} đ`}></div>
+                      <div className={`w-3.5 rounded-t ${highlight ? "bg-[#2563eb] ring-2 ring-blue-200" : "bg-[#2563eb]"}`} style={{ height: revenueHeight }} title={`Doanh thu ${formatCurrency(item.revenue)} đ`}></div>
                     </div>
-                    <span className={`absolute -bottom-6 text-[10px] font-semibold ${item.highlight ? 'text-[#2563eb] font-bold' : 'text-slate-400'}`}>
-                      {item.month}
+                    <span className={`absolute -bottom-6 text-[10px] font-semibold ${highlight ? "text-[#2563eb] font-bold" : "text-slate-400"}`}>
+                      {item.period.slice(5)}
                     </span>
                   </div>
-                ))}
+                );})}
+                {trend.length === 0 && <p className="m-auto text-xs text-slate-400">Chưa có dữ liệu ghi sổ.</p>}
               </div>
             </div>
 
@@ -447,28 +518,21 @@ export default function Home() {
                 <div className="flex items-center justify-between mb-4">
                   <h4 className="text-sm font-bold text-slate-900">Cảnh báo hệ thống</h4>
                   <span className="bg-rose-100 text-rose-700 text-[10px] font-bold px-2 py-0.5 rounded-full">
-                    {filteredDocuments.filter(d => d.status === "PENDING").length} MỚI
+                    {financialWarnings.filter((item) => item.tone !== "emerald").length} MỚI
                   </span>
                 </div>
                 <div className="space-y-3">
-                  <div className="p-3 bg-amber-50 border-l-4 border-amber-400 rounded-r-lg">
-                    <div className="flex items-start gap-2.5">
-                      <span className="material-symbols-outlined text-amber-600 text-[18px]">engineering</span>
-                      <div>
-                        <p className="text-xs font-bold text-slate-950">Lịch bảo trì định kỳ</p>
-                        <p className="text-[11px] text-slate-600 mt-0.5">Hệ thống máy chủ sẽ bảo trì vào 22:00 tối nay.</p>
+                  {financialWarnings.map((item) => (
+                    <div key={`${item.title}-${item.detail}`} className={`p-3 border-l-4 rounded-r-lg ${item.tone === "rose" ? "bg-rose-50 border-rose-400" : item.tone === "emerald" ? "bg-emerald-50 border-emerald-400" : "bg-amber-50 border-amber-400"}`}>
+                      <div className="flex items-start gap-2.5">
+                        <span className={`material-symbols-outlined text-[18px] ${item.tone === "rose" ? "text-rose-600" : item.tone === "emerald" ? "text-emerald-600" : "text-amber-600"}`}>{item.icon}</span>
+                        <div>
+                          <p className="text-xs font-bold text-slate-950">{item.title}</p>
+                          <p className="text-[11px] text-slate-600 mt-0.5">{item.detail}</p>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                  <div className="p-3 bg-rose-50 border-l-4 border-rose-400 rounded-r-lg">
-                    <div className="flex items-start gap-2.5">
-                      <span className="material-symbols-outlined text-rose-600 text-[18px]">error_outline</span>
-                      <div>
-                        <p className="text-xs font-bold text-slate-950">Vượt ngân sách dự phòng</p>
-                        <p className="text-[11px] text-slate-600 mt-0.5">Chi phí Marketing tháng 5 đã vượt 15% so với kế hoạch.</p>
-                      </div>
-                    </div>
-                  </div>
+                  ))}
                 </div>
               </div>
 
@@ -476,15 +540,15 @@ export default function Home() {
               <div className="bg-[#0f172a] p-5 rounded-xl shadow-lg text-white">
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">CHỈ SỐ SỨC KHỎE DN</span>
-                  <span className="material-symbols-outlined text-[#059669]">verified</span>
+                  <span className={`material-symbols-outlined ${healthScore >= 8 ? "text-[#059669]" : healthScore >= 5 ? "text-amber-400" : "text-rose-400"}`}>{healthScore >= 8 ? "verified" : "monitor_heart"}</span>
                 </div>
                 <div className="flex items-end gap-1.5 mb-2">
-                  <span className="text-2xl font-bold">8.5</span>
+                  <span className="text-2xl font-bold">{healthScore.toFixed(1)}</span>
                   <span className="text-xs text-slate-400 mb-1">/ 10</span>
                 </div>
-                <p className="text-[11px] text-slate-300 mb-4">Mức độ an toàn tài chính đang ở mức Cao. Không có rủi ro nợ xấu ngắn hạn.</p>
+                <p className="text-[11px] text-slate-300 mb-4">{healthLabel}</p>
                 <div className="w-full bg-slate-700 h-1 rounded-full overflow-hidden">
-                  <div className="bg-[#059669] h-full w-[85%]"></div>
+                  <div className={`h-full ${healthScore >= 8 ? "bg-[#059669]" : healthScore >= 5 ? "bg-amber-400" : "bg-rose-500"}`} style={{ width: `${healthScore * 10}%` }}></div>
                 </div>
               </div>
             </div>
@@ -493,7 +557,7 @@ export default function Home() {
           {/* Transactions List */}
           <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
             <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
-              <h4 className="text-base font-bold text-slate-900">Chứng từ điều hành (Module H.8.4)</h4>
+              <h4 className="text-base font-bold text-slate-900">Chứng từ vận hành</h4>
               {canCreateDocuments && (
                 <button 
                   onClick={() => setIsCreateOpen(true)}
