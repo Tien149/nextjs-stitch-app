@@ -25,6 +25,8 @@ model MasterDataItem {
   code        String
   name        String
   group       String?
+  partnerType String?
+  partnerGroup String?
   branch      String?
   taxCode     String?
   contactName String?
@@ -39,6 +41,8 @@ model MasterDataItem {
   @@unique([type, code])
   @@index([type])
   @@index([status])
+  @@index([partnerType])
+  @@index([partnerGroup])
 }
 
 model Deposit {
@@ -64,16 +68,22 @@ model Deposit {
 }
 
 model DepositHistory {
-  id        String   @id @default(uuid())
+  id        String            @id @default(uuid())
   depositId String
+  voucherId String?
   action    String
   amount    Float?
+  actionDate DateTime?
+  treatmentNote String?
   note      String?
   actor     String?
-  createdAt DateTime @default(now())
-  deposit   Deposit  @relation(fields: [depositId], references: [id], onDelete: Cascade)
+  createdAt DateTime          @default(now())
+  deposit   Deposit           @relation(fields: [depositId], references: [id], onDelete: Cascade)
+  voucher   FinancialVoucher? @relation(fields: [voucherId], references: [id], onDelete: SetNull)
 
+  @@unique([voucherId, action])
   @@index([depositId])
+  @@index([voucherId])
 }
 
 model OpeningBalance {
@@ -84,6 +94,12 @@ model OpeningBalance {
   objectCode      String?
   objectName      String?
   moneySourceCode String?
+  warehouseCode   String?
+  departmentCode  String?
+  quantity        Float?
+  unitCost        Float?
+  allocationMonths Int?
+  allocationStartPeriod String?
   amount          Float
   note            String?
   status          String   @default("DRAFT")
@@ -91,6 +107,7 @@ model OpeningBalance {
   updatedAt       DateTime @updatedAt
 
   @@index([period])
+  @@index([branchCode])
   @@index([balanceType])
   @@index([status])
 }
@@ -100,6 +117,8 @@ model ImportBatch {
   importType   String
   templateCode String
   fileName     String
+  branchCode   String?
+  fileChecksum String?
   uploadedBy   String?
   status       String    @default("PREVIEW")
   totalRows    Int       @default(0)
@@ -108,16 +127,44 @@ model ImportBatch {
   mappingJson  String?
   errorJson    String?
   committedAt  DateTime?
+  rolledBackAt DateTime?
+  rolledBackBy String?
+  rollbackNote String?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
   bankTransactions BankStatementTransaction[]
   revenueRows      RevenueImportRow[]
   payrollRows      PayrollImportRow[]
+  importRows       ImportRow[]
+  vouchers         FinancialVoucher[]
+  moneyTransfers   MoneyTransfer[]
+  debtRecords      DebtRecord[]
 
   @@index([importType])
   @@index([status])
   @@index([createdAt])
+  @@index([fileChecksum])
+}
+
+model ImportRow {
+  id              String   @id @default(uuid())
+  importBatchId   String
+  sheetName       String
+  sourceRowNumber Int
+  rawJson         String
+  normalizedJson  String
+  errorJson       String?
+  rowFingerprint  String
+  targetType      String?
+  targetId        String?
+  createdAt       DateTime @default(now())
+
+  importBatch ImportBatch @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
+
+  @@unique([importBatchId, sheetName, sourceRowNumber])
+  @@index([rowFingerprint])
+  @@index([targetType, targetId])
 }
 
 model BankStatementTransaction {
@@ -170,27 +217,93 @@ model RevenueImportRow {
 }
 
 model FinancialVoucher {
-  id              String   @id @default(uuid())
-  code            String   @unique
-  voucherType     String
-  voucherDate     DateTime @default(now())
-  partnerCode     String?
-  partnerName     String
-  branchCode      String
-  moneySourceCode String
-  categoryCode    String?
-  amount          Float
-  description     String
-  status          String   @default("DRAFT")
-  createdBy       String?
-  approvedBy      String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id                      String   @id @default(uuid())
+  importBatchId           String?
+  code                    String   @unique
+  sourceDocumentCode      String?
+  voucherType             String
+  voucherDate             DateTime @default(now())
+  partnerCode             String?
+  partnerName             String
+  branchCode              String
+  sourceScope             String   @default("EXTERNAL")
+  moneySourceCode         String
+  categoryCode            String?
+  externalRef             String?
+  counterpartyAccountNo   String?
+  counterpartyAccountName String?
+  depositAction           String?
+  depositCode             String?
+  debtAction              String?
+  debtReference           String?
+  allocationMonths        Int?
+  allocationStartPeriod   String?
+  amount                  Float
+  description             String
+  status                  String   @default("DRAFT")
+  createdBy               String?
+  approvedBy              String?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  importBatch      ImportBatch?     @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  depositHistories DepositHistory[]
+  debtSettlement   DebtSettlement?
 
   @@index([voucherType])
   @@index([voucherDate])
   @@index([partnerCode])
   @@index([status])
+  @@index([importBatchId])
+  @@index([branchCode, voucherType, externalRef])
+}
+
+model DebtRecord {
+  id                    String    @id @default(uuid())
+  importBatchId         String?
+  code                  String    @unique
+  debtType              String
+  partnerGroup          String    @default("EXTERNAL")
+  partnerCode           String
+  partnerName           String
+  branchCode            String
+  documentDate          DateTime
+  dueDate               DateTime?
+  categoryCode          String?
+  originalAmount        Float
+  outstandingAmount     Float
+  allocationMonths      Int?
+  allocationStartPeriod String?
+  description           String
+  sourceType            String    @default("IMPORT")
+  sourceId              String?
+  status                String    @default("OPEN")
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  importBatch ImportBatch?     @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  settlements DebtSettlement[]
+
+  @@index([branchCode])
+  @@index([partnerCode])
+  @@index([debtType, status])
+  @@index([importBatchId])
+}
+
+model DebtSettlement {
+  id             String   @id @default(uuid())
+  debtId         String
+  voucherId      String   @unique
+  settlementDate DateTime
+  amount         Float
+  createdBy      String?
+  createdAt      DateTime @default(now())
+
+  debt    DebtRecord       @relation(fields: [debtId], references: [id], onDelete: Cascade)
+  voucher FinancialVoucher @relation(fields: [voucherId], references: [id], onDelete: Restrict)
+
+  @@index([debtId])
+  @@index([settlementDate])
 }
 
 model AssetRecord {
@@ -200,6 +313,9 @@ model AssetRecord {
   branchCode            String
   departmentCode        String?
   assetGroup            String
+  imageUrl              String?
+  location              String?
+  quantity              Float               @default(1)
   purchaseDate          DateTime
   originalCost          Float
   currentValue          Float
@@ -208,6 +324,10 @@ model AssetRecord {
   residualValue         Float               @default(0)
   supplierCode          String?
   supplierName          String?
+  sourcePurchaseOrderId String?
+  sourceReceiptId       String?
+  disposalDate          DateTime?
+  disposalStatus        String?
   status                String              @default("IN_USE")
   note                  String?
   createdAt             DateTime            @default(now())
@@ -217,8 +337,10 @@ model AssetRecord {
   damageReports         AssetDamageReport[]
 
   @@index([branchCode])
+  @@index([departmentCode])
   @@index([assetGroup])
   @@index([status])
+  @@index([sourcePurchaseOrderId])
 }
 
 model ReconciliationMatch {
@@ -250,6 +372,7 @@ model InventoryItem {
   itemType  String
   unit      String
   category  String?
+  requiresImage Boolean @default(false)
   minStock  Float    @default(0)
   status    String   @default("ACTIVE")
   note      String?
@@ -347,6 +470,7 @@ model PurchaseRequestLine {
   itemId            String
   quantity          Float
   estimatedUnitCost Float   @default(0)
+  imageUrl          String?
   note              String?
 
   request PurchaseRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
@@ -426,6 +550,7 @@ model PurchaseOrderLine {
   receivedQuantity Float  @default(0)
   unitCost         Float
   totalCost        Float
+  imageUrl         String?
 
   order PurchaseOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
   item  InventoryItem @relation(fields: [itemId], references: [id])
@@ -557,6 +682,32 @@ model CashbookAdjustment {
 
   @@index([entryDate])
   @@index([moneySourceCode])
+}
+
+model MoneyTransfer {
+  id                  String   @id @default(uuid())
+  importBatchId       String?
+  code                String   @unique
+  transferDate        DateTime
+  branchCode          String
+  fromMoneySourceCode String
+  toMoneySourceCode   String
+  amount              Float
+  externalRef         String?
+  description         String
+  status              String   @default("PENDING_REVIEW")
+  createdBy           String?
+  approvedBy          String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  importBatch ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+
+  @@index([transferDate])
+  @@index([branchCode])
+  @@index([status])
+  @@index([importBatchId])
+  @@index([branchCode, externalRef])
 }
 
 model Accrual {
@@ -723,6 +874,11 @@ model WorkItem {
   departmentCode String
   assigneeId     String?
   assigneeName   String
+  linkedModule   String?
+  linkedId       String?
+  linkedCode     String?
+  checklistJson  String?
+  attachmentUrl  String?
   period         String?
   priority       String    @default("MEDIUM")
   status         String    @default("TODO")
@@ -738,6 +894,7 @@ model WorkItem {
 
   @@index([branchCode])
   @@index([departmentCode])
+  @@index([linkedModule, linkedId])
   @@index([status])
   @@index([dueDate])
 }
@@ -785,4 +942,37 @@ model ReportTarget {
 
   @@unique([period, branchCode, metric])
   @@index([period])
+}
+
+model Role {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  actions   String[]
+  users     User[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model User {
+  id             String             @id @default(uuid())
+  email          String             @unique
+  password       String
+  name           String
+  roleId         String
+  role           Role               @relation(fields: [roleId], references: [id])
+  branchAccesses UserBranchAccess[]
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  @@index([roleId])
+}
+
+model UserBranchAccess {
+  id         String   @id @default(uuid())
+  userId     String
+  branchCode String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, branchCode])
+  @@index([userId])
 }

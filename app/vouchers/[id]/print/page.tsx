@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
+import { storeLabel } from "@/lib/branch-labels";
 
 type Voucher = {
   id: string;
@@ -38,7 +39,7 @@ export default function VoucherPrintPage() {
         <div className="flex justify-between items-start border-b border-slate-200 pb-6">
           <div>
             <h1 className="text-2xl font-bold">FIN ERP</h1>
-            <p className="text-sm text-slate-500">Chi nhánh: {voucher.branchCode}</p>
+            <p className="text-sm text-slate-500">Cửa hàng: {storeLabel(voucher.branchCode)}</p>
           </div>
           <button onClick={() => window.print()} className="print:hidden rounded-lg bg-blue-600 text-white px-4 py-2 text-sm font-bold">In chứng từ</button>
         </div>

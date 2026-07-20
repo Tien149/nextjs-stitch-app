@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
+import { assertBranchAccess, branchFilterForSession } from "@/lib/accounting";
 
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -31,16 +32,20 @@ export async function GET(request: Request) {
 
     const { searchParams } = new URL(request.url);
     const status = searchParams.get("status") || "UNMATCHED";
+    const branchFilter = branchFilterForSession(auth.session, searchParams.get("branchCode") || "ALL");
 
     const [bankRows, revenueRows, deposits, vouchers, matches] = await Promise.all([
       prisma.bankStatementTransaction.findMany({
-        where: status === "ALL" ? {} : { reconcileStatus: status },
+        where: {
+          ...branchFilter,
+          ...(status === "ALL" ? {} : { reconcileStatus: status })
+        },
         orderBy: { transactionDate: "desc" },
         take: 100,
       }),
-      prisma.revenueImportRow.findMany({ orderBy: { saleDate: "desc" }, take: 300 }),
-      prisma.deposit.findMany({ orderBy: { receivedDate: "desc" }, take: 300 }),
-      prisma.financialVoucher.findMany({ where: { status: "APPROVED" }, orderBy: { voucherDate: "desc" }, take: 300 }),
+      prisma.revenueImportRow.findMany({ where: { ...branchFilter }, orderBy: { saleDate: "desc" }, take: 300 }),
+      prisma.deposit.findMany({ where: { ...branchFilter }, orderBy: { receivedDate: "desc" }, take: 300 }),
+      prisma.financialVoucher.findMany({ where: { ...branchFilter, status: "APPROVED" }, orderBy: { voucherDate: "desc" }, take: 300 }),
       prisma.reconciliationMatch.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
     ]);
 
@@ -107,6 +112,13 @@ export async function POST(request: Request) {
 
     const bank = await prisma.bankStatementTransaction.findUnique({ where: { id: bankTransactionId } });
     if (!bank) return NextResponse.json({ error: "Không tìm thấy giao dịch sao kê" }, { status: 404 });
+    if (bank.branchCode) {
+      try {
+        assertBranchAccess(auth.session, bank.branchCode);
+      } catch (e) {
+        return NextResponse.json({ error: e instanceof Error ? e.message : "Không có quyền chi nhánh" }, { status: 403 });
+      }
+    }
     if (bank.reconcileStatus === "MATCHED") {
       return NextResponse.json({ error: "Giao dịch này đã được đối soát" }, { status: 400 });
     }

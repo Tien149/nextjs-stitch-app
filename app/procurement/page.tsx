@@ -3,14 +3,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { DateInput } from "@/components/DateInput";
+import { storeLabel, storeOptions } from "@/lib/branch-labels";
 import { canPerformMenuAction } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 
-type Item = { id: string; code: string; name: string; unit: string };
-type RequestLine = { id: string; itemId: string; quantity: number; estimatedUnitCost: number; item: Item };
+type Item = { id: string; code: string; name: string; unit: string; itemType: string; requiresImage: boolean };
+type RequestLine = { id: string; itemId: string; quantity: number; estimatedUnitCost: number; imageUrl: string | null; item: Item };
 type Quote = { id: string; supplierCode: string; supplierName: string; totalAmount: number; deliveryDays: number | null; paymentTerms: string | null; isSelected: boolean; lines: Array<{ itemId: string; quantity: number; unitCost: number }> };
 type PurchaseRequest = { id: string; code: string; requestDate: string; branchCode: string; requestedBy: string; neededDate: string | null; reason: string; status: string; lines: RequestLine[]; quotes: Quote[] };
-type OrderLine = { id: string; itemId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; item: Item };
+type OrderLine = { id: string; itemId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; imageUrl: string | null; item: Item };
 type PurchaseOrder = { id: string; code: string; orderDate: string; supplierName: string; branchCode: string; warehouseCode: string; status: string; totalAmount: number; lines: OrderLine[]; payable: { outstandingAmount: number } | null };
 type Data = { items: Item[]; requests: PurchaseRequest[]; orders: PurchaseOrder[] };
 
@@ -30,7 +31,8 @@ export default function ProcurementPage() {
     reason: "Bổ sung nguyên liệu vận hành",
     itemId: "",
     quantity: "10",
-    estimatedUnitCost: "100000"
+    estimatedUnitCost: "100000",
+    imageUrl: "",
   });
 
   const [quoteForm, setQuoteForm] = useState({
@@ -63,6 +65,7 @@ export default function ProcurementPage() {
   }, [loading]);
 
   const selectedRequest = useMemo(() => data.requests.find((item) => item.id === quoteForm.requestId), [data.requests, quoteForm.requestId]);
+  const selectedItem = useMemo(() => data.items.find((item) => item.id === requestForm.itemId), [data.items, requestForm.itemId]);
 
   const send = async (method: "POST" | "PATCH", body: object, success: string) => {
     setMessage("");
@@ -75,7 +78,7 @@ export default function ProcurementPage() {
 
   const createRequest = async (event: React.FormEvent) => {
     event.preventDefault();
-    await send("POST", { action: "CREATE_REQUEST", branchCode: requestForm.branchCode, neededDate: requestForm.neededDate, reason: requestForm.reason, lines: [{ itemId: requestForm.itemId, quantity: requestForm.quantity, estimatedUnitCost: requestForm.estimatedUnitCost }] }, "Đã tạo yêu cầu mua hàng.");
+    await send("POST", { action: "CREATE_REQUEST", branchCode: requestForm.branchCode, neededDate: requestForm.neededDate, reason: requestForm.reason, lines: [{ itemId: requestForm.itemId, quantity: requestForm.quantity, estimatedUnitCost: requestForm.estimatedUnitCost, imageUrl: requestForm.imageUrl }] }, "Đã tạo yêu cầu mua hàng.");
   };
 
   const addQuote = async (event: React.FormEvent) => {
@@ -85,7 +88,7 @@ export default function ProcurementPage() {
   };
 
   const createOrder = async (request: PurchaseRequest, quote: Quote) => {
-    await send("POST", { action: "CREATE_ORDER", requestId: request.id, supplierCode: quote.supplierCode, supplierName: quote.supplierName, branchCode: request.branchCode, warehouseCode, lines: quote.lines.map((line) => ({ itemId: line.itemId, quantity: line.quantity, unitCost: line.unitCost })) }, "Đã tạo PO từ báo giá.");
+    await send("POST", { action: "CREATE_ORDER", requestId: request.id, supplierCode: quote.supplierCode, supplierName: quote.supplierName, branchCode: request.branchCode, warehouseCode, lines: quote.lines.map((line) => ({ itemId: line.itemId, quantity: line.quantity, unitCost: line.unitCost })) }, "Đã tạo PO nháp từ báo giá. Vui lòng duyệt PO trước khi nhận hàng.");
     setActive("orders");
   };
 
@@ -109,15 +112,18 @@ export default function ProcurementPage() {
             <form onSubmit={createRequest} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
               <h2 className="font-bold text-slate-800">Tạo yêu cầu mua</h2>
               
-              <Field label="Chi nhánh">
+              <Field label="Cửa hàng">
                 <select
                   value={requestForm.branchCode}
                   onChange={(e) => setRequestForm({ ...requestForm, branchCode: e.target.value })}
                   className="control"
                   required
                 >
-                  <option value="HCM">Chi nhánh HCM</option>
-                  <option value="HN">Chi nhánh Hà Nội</option>
+                  {storeOptions.map((option) => (
+                    <option key={option.code} value={option.code}>
+                      {storeLabel(option.code)}
+                    </option>
+                  ))}
                 </select>
               </Field>
               
@@ -129,9 +135,21 @@ export default function ProcurementPage() {
                 <select value={requestForm.itemId} onChange={(e) => setRequestForm({ ...requestForm, itemId: e.target.value })} className="control" required>
                   <option value="">Chọn mặt hàng</option>
                   {data.items.map((item) => (
-                    <option key={item.id} value={item.id}>{item.code} - {item.name}</option>
+                    <option key={item.id} value={item.id}>{item.code} - {item.name}{item.requiresImage ? " *cần hình" : ""}</option>
                   ))}
                 </select>
+              </Field>
+              <Field label={selectedItem?.requiresImage ? "URL hình ảnh *" : "URL hình ảnh"}>
+                <input
+                  value={requestForm.imageUrl}
+                  onChange={(e) => setRequestForm({ ...requestForm, imageUrl: e.target.value })}
+                  className="control"
+                  placeholder="https://... hoặc mã ảnh nội bộ"
+                  required={Boolean(selectedItem?.requiresImage)}
+                />
+                {selectedItem && ["TOOL", "ASSET"].includes(selectedItem.itemType) && (
+                  <p className="mt-1 text-[11px] font-semibold text-amber-600">Mặt hàng này sẽ tự tạo hồ sơ tài sản/CCDC khi nhận PO.</p>
+                )}
               </Field>
               
               <div className="grid grid-cols-2 gap-3">
@@ -172,7 +190,7 @@ export default function ProcurementPage() {
                   </td>
                   <td className="cell">
                     <b>{request.reason}</b>
-                    <small>{request.lines.map((line) => `${line.item.name}: ${line.quantity} ${line.item.unit}`).join(", ")}</small>
+                    <small>{request.lines.map((line) => `${line.item.name}: ${line.quantity} ${line.item.unit}${line.imageUrl ? " · có hình" : ""}`).join(", ")}</small>
                   </td>
                   <td className="cell text-right font-semibold">
                     {money(request.lines.reduce((sum, line) => sum + line.quantity * line.estimatedUnitCost, 0))} đ
@@ -256,8 +274,8 @@ export default function ProcurementPage() {
                       onChange={(e) => setWarehouseCode(e.target.value)}
                       className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-36 focus:border-blue-500 outline-none"
                     >
-                      <option value="KHO_HCM">Kho HCM</option>
-                      <option value="KHO_HN">Kho HN</option>
+                      <option value="KHO_HCM">Kho Cửa hàng 1</option>
+                      <option value="KHO_HN">Kho Cửa hàng 2</option>
                     </select>
                   </div>
                 </div>
@@ -312,6 +330,7 @@ export default function ProcurementPage() {
               { label: "Nhà cung cấp" },
               { label: "Giá trị", align: "right" },
               { label: "Tiến độ nhận" },
+              { label: "Tài sản/Ảnh" },
               { label: "Công nợ", align: "right" },
               { label: "Thao tác", align: "right" },
             ]}
@@ -336,10 +355,19 @@ export default function ProcurementPage() {
                     <b>{received}/{ordered}</b>
                     <small><span className={`status ${statusStyle(order.status)}`}>{order.status}</span></small>
                   </td>
+                  <td className="cell">
+                    <b>{order.lines.filter((line) => ["TOOL", "ASSET"].includes(line.item.itemType)).length} dòng</b>
+                    <small>{order.lines.some((line) => line.imageUrl) ? "Có hình ảnh" : "Chưa có hình"}</small>
+                  </td>
                   <td className="cell text-right font-semibold text-rose-700">
                     {money(order.payable?.outstandingAmount || 0)} đ
                   </td>
-                  <td className="cell text-right">
+                  <td className="cell text-right space-x-2">
+                    {canApprove && order.status === "DRAFT" && (
+                      <button onClick={() => void send("PATCH", { action: "APPROVE_ORDER", orderId: order.id }, "Đã duyệt PO.")} className="action-link text-blue-700 hover:underline">
+                        Duyệt PO
+                      </button>
+                    )}
                     {canEdit && ["APPROVED", "PARTIALLY_RECEIVED"].includes(order.status) && (
                       <button onClick={() => void send("PATCH", { action: "RECEIVE_ORDER", orderId: order.id }, "Đã nhận toàn bộ số lượng còn lại và cập nhật kho.")} className="action-link text-emerald-700 hover:underline">
                         Nhận hàng

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { MonthInput, DateInput } from "@/components/DateInput";
+import { branchScopeOptions, storeLabel, storeOptions } from "@/lib/branch-labels";
 import { canPerformMenuAction } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 
@@ -200,16 +201,18 @@ export default function AccountingPage() {
             </div>
             
             <div className="flex flex-col gap-1.5">
-              <span className="text-xs font-bold text-slate-600">Chi nhánh</span>
+              <span className="text-xs font-bold text-slate-600">Phạm vi cửa hàng</span>
               <div className="relative">
                 <select
                   value={branchCode}
                   onChange={(e) => setBranchCode(e.target.value)}
                   className="w-48 pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all appearance-none cursor-pointer font-medium"
                 >
-                  <option value="ALL">Tất cả chi nhánh</option>
-                  <option value="HCM">Chi nhánh HCM</option>
-                  <option value="HN">Chi nhánh Hà Nội</option>
+                  {branchScopeOptions.map((option) => (
+                    <option key={option.code} value={option.code}>
+                      {option.label}
+                    </option>
+                  ))}
                 </select>
                 <span className="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none text-lg">
                   unfold_more
@@ -367,7 +370,7 @@ export default function AccountingPage() {
                               {index === 0 && (
                                 <div className="flex flex-col gap-0.5">
                                   <span className="font-semibold">{entry.code}</span>
-                                  <span className="text-[10px] text-slate-400 font-semibold">{entry.branchCode}</span>
+                                  <span className="text-[10px] text-slate-400 font-semibold">{storeLabel(entry.branchCode)}</span>
                                 </div>
                               )}
                             </td>
@@ -441,15 +444,18 @@ export default function AccountingPage() {
                   </div>
                   
                   <div className="flex flex-col gap-1.5">
-                    <span className="text-xs font-bold text-slate-600">Chi nhánh</span>
+                    <span className="text-xs font-bold text-slate-600">Cửa hàng</span>
                     <div className="relative">
                       <select
                         value={manual.branchCode}
                         onChange={(e) => setManual({ ...manual, branchCode: e.target.value })}
                         className="w-full pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all appearance-none cursor-pointer"
                       >
-                        <option value="HCM">CN Hồ Chí Minh</option>
-                        <option value="HN">CN Hà Nội</option>
+                        {storeOptions.map((option) => (
+                          <option key={option.code} value={option.code}>
+                            {storeLabel(option.code)}
+                          </option>
+                        ))}
                       </select>
                       <span className="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none text-lg">
                         unfold_more

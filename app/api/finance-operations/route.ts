@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { isAdmin, requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 import { addPeriod, apiError, businessError, cleanText, isPeriodLocked, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
+import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
 
 const menuHref = "/finance-operations";
 
@@ -15,7 +16,7 @@ async function closingChecklist(period: string, branchCode: string) {
   const { start, end } = periodBounds(period);
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
   const [draftVouchers, pendingOrders, unmatchedBankRows, negativeStock, assets, depreciationRuns, pendingAccruals, importErrors] = await Promise.all([
-    prisma.financialVoucher.count({ where: { ...branchFilter, voucherDate: { gte: start, lt: end }, status: "DRAFT" } }),
+    prisma.financialVoucher.count({ where: { ...branchFilter, voucherDate: { gte: start, lt: end }, status: { in: ["DRAFT", "PENDING_REVIEW"] } } }),
     prisma.purchaseOrder.count({ where: { ...branchFilter, status: { in: ["APPROVED", "PARTIALLY_RECEIVED"] } } }),
     prisma.bankStatementTransaction.count({ where: { ...(branchCode === "ALL" ? {} : { branchCode }), transactionDate: { gte: start, lt: end }, reconcileStatus: "UNMATCHED" } }),
     prisma.inventoryBalance.count({ where: { quantity: { lt: 0 } } }),
@@ -41,23 +42,28 @@ export async function GET(request: Request) {
     if (!auth.ok) return auth.response;
     const { searchParams } = new URL(request.url);
     const period = normalizePeriod(searchParams.get("period")) || new Date().toISOString().slice(0, 7);
-    const branchCode = cleanText(searchParams.get("branchCode")) || "ALL";
+    const branchCode = requestedBranch(auth.session, cleanText(searchParams.get("branchCode")) || "ALL");
     const { start, end } = periodBounds(period);
     const branchFilter = branchCode === "ALL" ? {} : { branchCode };
 
-    const [openingBalances, vouchers, adjustments, accruals, accountingPeriod, checklist] = await Promise.all([
+    const [openingBalances, vouchers, adjustments, accruals, accountingPeriod, checklist, moneyTransfers] = await Promise.all([
       prisma.openingBalance.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { branchCode }), status: "POSTED" } }),
       prisma.financialVoucher.findMany({ where: { ...branchFilter, voucherDate: { gte: start, lt: end }, status: "APPROVED" }, orderBy: { voucherDate: "asc" } }),
       prisma.cashbookAdjustment.findMany({ where: { ...branchFilter, entryDate: { gte: start, lt: end } }, orderBy: { entryDate: "asc" } }),
-      prisma.accrual.findMany({ include: { schedules: { orderBy: { period: "asc" } } }, orderBy: { createdAt: "desc" } }),
+      prisma.accrual.findMany({ where: { ...(branchCode === "ALL" ? {} : { branchCode }) }, include: { schedules: { orderBy: { period: "asc" } } }, orderBy: { createdAt: "desc" } }),
       prisma.accountingPeriod.findUnique({ where: { period_branchCode: { period, branchCode } } }),
       closingChecklist(period, branchCode),
+      prisma.moneyTransfer.findMany({ where: { ...branchFilter, transferDate: { gte: start, lt: end } }, orderBy: { transferDate: "asc" } }),
     ]);
 
     const openingAmount = openingBalances.reduce((sum, row) => sum + row.amount, 0);
     const entries = [
       ...vouchers.map((row) => ({ id: row.id, date: row.voucherDate, code: row.code, type: row.voucherType, moneySourceCode: row.moneySourceCode, description: row.description, receipt: row.voucherType === "RECEIPT" ? row.amount : 0, payment: row.voucherType === "PAYMENT" ? row.amount : 0 })),
-      ...adjustments.map((row) => ({ id: row.id, date: row.entryDate, code: row.code, type: "ADJUSTMENT", moneySourceCode: row.moneySourceCode, description: row.description, receipt: row.entryType === "RECEIPT" ? row.amount : 0, payment: row.entryType === "PAYMENT" ? row.amount : 0 })),
+      ...adjustments.map((row) => ({ id: row.id, date: row.entryDate, code: row.code, type: "ADJUSTMENT", moneySourceCode: row.moneySourceCode, description: row.description, receipt: entryTypeToReceipt(row.entryType, row.amount), payment: entryTypeToPayment(row.entryType, row.amount) })),
+      ...moneyTransfers.filter((row) => row.status === "APPROVED").flatMap((row) => [
+        { id: `${row.id}-out`, date: row.transferDate, code: row.code, type: "TRANSFER_OUT", moneySourceCode: row.fromMoneySourceCode, description: row.description, receipt: 0, payment: row.amount },
+        { id: `${row.id}-in`, date: row.transferDate, code: row.code, type: "TRANSFER_IN", moneySourceCode: row.toMoneySourceCode, description: row.description, receipt: row.amount, payment: 0 },
+      ]),
     ].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
     let runningBalance = openingAmount;
     const cashbook = entries.map((entry) => {
@@ -65,11 +71,19 @@ export async function GET(request: Request) {
       return { ...entry, balance: runningBalance };
     });
 
-    return NextResponse.json({ period, branchCode, openingAmount, closingBalance: runningBalance, cashbook, accruals, accountingPeriod: accountingPeriod || { status: "OPEN" }, checklist });
+    return NextResponse.json({ period, branchCode, openingAmount, closingBalance: runningBalance, cashbook, accruals, moneyTransfers, accountingPeriod: accountingPeriod || { status: "OPEN" }, checklist });
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });
   }
+}
+
+function entryTypeToReceipt(entryType: string, amount: number) {
+  return entryType === "RECEIPT" ? amount : 0;
+}
+
+function entryTypeToPayment(entryType: string, amount: number) {
+  return entryType === "PAYMENT" ? amount : 0;
 }
 
 export async function POST(request: Request) {
@@ -77,12 +91,26 @@ export async function POST(request: Request) {
     const body = await request.json();
     const action = cleanText(body.action);
 
+    if (action === "APPROVE_TRANSFER") {
+      const auth = requireMenuAction(request, menuHref, "approve");
+      if (!auth.ok) return auth.response;
+      const id = cleanText(body.id);
+      const transfer = await prisma.moneyTransfer.findUnique({ where: { id } });
+      if (!transfer) businessError("Không tìm thấy giao dịch điều tiền");
+      assertBranchAccess(auth.session, transfer.branchCode);
+      if (transfer.status !== "PENDING_REVIEW") businessError("Giao dịch điều tiền không ở trạng thái chờ duyệt");
+      return NextResponse.json(await prisma.moneyTransfer.update({
+        where: { id },
+        data: { status: "APPROVED", approvedBy: auth.session.name },
+      }));
+    }
+
     if (["CLOSE_PERIOD", "REOPEN_PERIOD"].includes(action)) {
       const auth = requireMenuAction(request, menuHref, "config");
       if (!auth.ok) return auth.response;
       if (!isAdmin(auth.session.role)) return NextResponse.json({ error: "Chỉ Admin được khóa hoặc mở lại kỳ" }, { status: 403 });
       const period = normalizePeriod(body.period);
-      const branchCode = cleanText(body.branchCode) || "ALL";
+      const branchCode = requestedBranch(auth.session, cleanText(body.branchCode) || "ALL");
       if (!period) businessError("Kỳ kế toán phải có dạng YYYY-MM");
       if (action === "CLOSE_PERIOD") {
         const checklist = await closingChecklist(period, branchCode);
@@ -111,6 +139,13 @@ export async function POST(request: Request) {
       const entryDate = toDate(body.entryDate);
       const branchCode = cleanText(body.branchCode);
       if (!branchCode || !cleanText(body.moneySourceCode) || toNumber(body.amount) <= 0 || !cleanText(body.description)) businessError("Bút toán điều chỉnh thiếu thông tin bắt buộc");
+
+      try {
+        assertBranchAccess(auth.session, branchCode);
+      } catch (e) {
+        return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi" }, { status: 403 });
+      }
+
       if (await isPeriodLocked(entryDate, branchCode)) businessError("Kỳ kế toán đã khóa");
       const result = await prisma.cashbookAdjustment.create({
         data: {
@@ -131,13 +166,21 @@ export async function POST(request: Request) {
       const startPeriod = normalizePeriod(body.startPeriod);
       const numberOfPeriods = Math.floor(toNumber(body.numberOfPeriods));
       const totalAmount = toNumber(body.totalAmount);
-      if (!startPeriod || numberOfPeriods <= 0 || totalAmount <= 0 || !cleanText(body.name) || !cleanText(body.branchCode)) businessError("Khoản trích trước thiếu thông tin bắt buộc");
+      const branchCode = cleanText(body.branchCode);
+      if (!startPeriod || numberOfPeriods <= 0 || totalAmount <= 0 || !cleanText(body.name) || !branchCode) businessError("Khoản trích trước thiếu thông tin bắt buộc");
+
+      try {
+        assertBranchAccess(auth.session, branchCode);
+      } catch (e) {
+        return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi" }, { status: 403 });
+      }
+
       const amount = totalAmount / numberOfPeriods;
       const result = await prisma.accrual.create({
         data: {
           code: `PB-${new Date().getFullYear()}-${String(await prisma.accrual.count() + 1).padStart(4, "0")}`,
           name: cleanText(body.name),
-          branchCode: cleanText(body.branchCode),
+          branchCode,
           categoryCode: cleanText(body.categoryCode) || "OPEX",
           totalAmount,
           startPeriod,
@@ -155,6 +198,13 @@ export async function POST(request: Request) {
       const scheduleId = cleanText(body.scheduleId);
       const schedule = await prisma.accrualSchedule.findUnique({ where: { id: scheduleId }, include: { accrual: true } });
       if (!schedule) businessError("Không tìm thấy kỳ phân bổ");
+
+      try {
+        assertBranchAccess(auth.session, schedule.accrual.branchCode);
+      } catch (e) {
+        return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi" }, { status: 403 });
+      }
+
       if (await isPeriodLocked(new Date(`${schedule.period}-01T00:00:00`), schedule.accrual.branchCode)) businessError("Kỳ kế toán đã khóa");
       const result = await prisma.accrualSchedule.update({ where: { id: scheduleId }, data: { status: "POSTED", postedAt: new Date() } });
       const remaining = await prisma.accrualSchedule.count({ where: { accrualId: schedule.accrualId, status: "PLANNED" } });

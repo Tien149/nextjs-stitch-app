@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { DateInput, MonthInput } from "@/components/DateInput";
+import { branchScopeOptions, storeLabel, storeOptions } from "@/lib/branch-labels";
 import { canPerformMenuAction } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 
@@ -10,7 +11,8 @@ type CashEntry = { id: string; date: string; code: string; type: string; moneySo
 type Schedule = { id: string; period: string; amount: number; status: string };
 type Accrual = { id: string; code: string; name: string; branchCode: string; categoryCode: string; totalAmount: number; startPeriod: string; numberOfPeriods: number; status: string; schedules: Schedule[] };
 type Check = { key: string; label: string; passed: boolean; count: number };
-type Data = { openingAmount: number; closingBalance: number; cashbook: CashEntry[]; accruals: Accrual[]; accountingPeriod: { status: string; closedBy?: string; closedAt?: string }; checklist: Check[] };
+type MoneyTransfer = { id: string; code: string; transferDate: string; fromMoneySourceCode: string; toMoneySourceCode: string; amount: number; description: string; status: string };
+type Data = { openingAmount: number; closingBalance: number; cashbook: CashEntry[]; accruals: Accrual[]; moneyTransfers: MoneyTransfer[]; accountingPeriod: { status: string; closedBy?: string; closedAt?: string }; checklist: Check[] };
 
 const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value);
 
@@ -22,7 +24,7 @@ export default function FinanceOperationsPage() {
   const [active, setActive] = useState("cashbook");
   const [period, setPeriod] = useState(new Date().toISOString().slice(0, 7));
   const [branchCode, setBranchCode] = useState("ALL");
-  const [data, setData] = useState<Data>({ openingAmount: 0, closingBalance: 0, cashbook: [], accruals: [], accountingPeriod: { status: "OPEN" }, checklist: [] });
+  const [data, setData] = useState<Data>({ openingAmount: 0, closingBalance: 0, cashbook: [], accruals: [], moneyTransfers: [], accountingPeriod: { status: "OPEN" }, checklist: [] });
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
   
@@ -48,6 +50,7 @@ export default function FinanceOperationsPage() {
   const canCreate = user ? canPerformMenuAction(user.role, href, "create") : false;
   const canEdit = user ? canPerformMenuAction(user.role, href, "edit") : false;
   const canClose = user?.role === "Admin";
+  const canApproveTransfer = user?.role === "Admin";
 
   const loadData = useCallback(async () => {
     const response = await fetch(`/api/finance-operations?period=${period}&branchCode=${branchCode}`);
@@ -140,16 +143,18 @@ export default function FinanceOperationsPage() {
             </div>
             
             <div className="flex flex-col gap-1.5">
-              <span className="text-xs font-bold text-slate-600">Chi nhánh</span>
+              <span className="text-xs font-bold text-slate-600">Phạm vi cửa hàng</span>
               <div className="relative">
                 <select
                   value={branchCode}
                   onChange={(e) => setBranchCode(e.target.value)}
                   className="w-48 pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all appearance-none cursor-pointer font-medium"
                 >
-                  <option value="ALL">Tất cả chi nhánh</option>
-                  <option value="HCM">Chi nhánh HCM</option>
-                  <option value="HN">Chi nhánh Hà Nội</option>
+                  {branchScopeOptions.map((option) => (
+                    <option key={option.code} value={option.code}>
+                      {option.label}
+                    </option>
+                  ))}
                 </select>
                 <span className="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none text-lg">
                   unfold_more
@@ -253,6 +258,42 @@ export default function FinanceOperationsPage() {
               </div>
             </div>
 
+            {data.moneyTransfers.some((transfer) => transfer.status === "PENDING_REVIEW") && (
+              <section className="overflow-hidden rounded-xl border border-amber-200 bg-white shadow-sm">
+                <div className="flex items-center justify-between border-b border-amber-100 bg-amber-50 px-5 py-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-amber-900">Điều tiền chờ duyệt</h3>
+                    <p className="mt-0.5 text-xs text-amber-700">Dữ liệu import chỉ vào sổ quỹ sau khi Admin duyệt.</p>
+                  </div>
+                  <span className="rounded-full bg-white px-2.5 py-1 text-xs font-bold text-amber-800">
+                    {data.moneyTransfers.filter((transfer) => transfer.status === "PENDING_REVIEW").length}
+                  </span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-50 text-slate-500">
+                      <tr><th className="px-4 py-3">Ngày / Mã</th><th className="px-4 py-3">Từ nguồn</th><th className="px-4 py-3">Đến nguồn</th><th className="px-4 py-3 text-right">Số tiền</th><th className="px-4 py-3 text-right">Thao tác</th></tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {data.moneyTransfers.filter((transfer) => transfer.status === "PENDING_REVIEW").map((transfer) => (
+                        <tr key={transfer.id}>
+                          <td className="px-4 py-3"><b>{transfer.code}</b><p className="text-slate-500">{new Date(transfer.transferDate).toLocaleDateString("vi-VN")}</p></td>
+                          <td className="px-4 py-3">{transfer.fromMoneySourceCode}</td>
+                          <td className="px-4 py-3">{transfer.toMoneySourceCode}</td>
+                          <td className="px-4 py-3 text-right font-bold">{money(transfer.amount)} đ</td>
+                          <td className="px-4 py-3 text-right">
+                            {canApproveTransfer ? (
+                              <button type="button" onClick={() => void send({ action: "APPROVE_TRANSFER", id: transfer.id }, "Đã duyệt giao dịch điều tiền.")} className="rounded-lg bg-emerald-600 px-3 py-2 font-bold text-white hover:bg-emerald-700">Duyệt</button>
+                            ) : <span className="text-slate-400">Chờ Admin</span>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            )}
+
             {/* Content Split: Form & Table */}
             <div className="grid xl:grid-cols-[380px_1fr] gap-6 items-start">
               {canCreate && data.accountingPeriod.status !== "CLOSED" ? (
@@ -294,14 +335,17 @@ export default function FinanceOperationsPage() {
 
                   <div className="grid grid-cols-2 gap-4">
                     <div className="flex flex-col gap-1.5">
-                      <span className="text-xs font-bold text-slate-600">Chi nhánh</span>
+                      <span className="text-xs font-bold text-slate-600">Cửa hàng</span>
                       <select
                         value={adjustment.branchCode}
                         onChange={(e) => setAdjustment({ ...adjustment, branchCode: e.target.value })}
                         className="w-full pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all cursor-pointer"
                       >
-                        <option value="HCM">CN Hồ Chí Minh</option>
-                        <option value="HN">CN Hà Nội</option>
+                        {storeOptions.map((option) => (
+                          <option key={option.code} value={option.code}>
+                            {storeLabel(option.code)}
+                          </option>
+                        ))}
                       </select>
                     </div>
 
@@ -312,10 +356,10 @@ export default function FinanceOperationsPage() {
                         onChange={(e) => setAdjustment({ ...adjustment, moneySourceCode: e.target.value })}
                         className="w-full pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all cursor-pointer"
                       >
-                        <option value="CASH_HCM">Tiền mặt HCM</option>
-                        <option value="CASH_HN">Tiền mặt HN</option>
-                        <option value="VCB_HCM">Vietcombank HCM</option>
-                        <option value="VCB_HN">Vietcombank HN</option>
+                        <option value="CASH_HCM">Tiền mặt Cửa hàng 1</option>
+                        <option value="CASH_HN">Tiền mặt Cửa hàng 2</option>
+                        <option value="VCB_HCM">Vietcombank Cửa hàng 1</option>
+                        <option value="VCB_HN">Vietcombank Cửa hàng 2</option>
                         <option value="MOMO_POS">Momo POS</option>
                       </select>
                     </div>
@@ -453,14 +497,17 @@ export default function FinanceOperationsPage() {
 
                 <div className="grid grid-cols-2 gap-4">
                   <div className="flex flex-col gap-1.5">
-                    <span className="text-xs font-bold text-slate-600">Chi nhánh</span>
+                    <span className="text-xs font-bold text-slate-600">Cửa hàng</span>
                     <select
                       value={accrual.branchCode}
                       onChange={(e) => setAccrual({ ...accrual, branchCode: e.target.value })}
                       className="w-full pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all cursor-pointer"
                     >
-                      <option value="HCM">CN Hồ Chí Minh</option>
-                      <option value="HN">CN Hà Nội</option>
+                      {storeOptions.map((option) => (
+                        <option key={option.code} value={option.code}>
+                          {storeLabel(option.code)}
+                        </option>
+                      ))}
                     </select>
                   </div>
 
@@ -540,7 +587,7 @@ export default function FinanceOperationsPage() {
                         </span>
                         <h4 className="font-bold text-slate-900 mt-1">{row.name}</h4>
                         <p className="text-xs text-slate-500 font-semibold mt-0.5">
-                          Chi nhánh: {row.branchCode} · Nhóm: {row.categoryCode} · Thời gian: {row.numberOfPeriods} kỳ
+                          Cửa hàng: {storeLabel(row.branchCode)} · Nhóm: {row.categoryCode} · Thời gian: {row.numberOfPeriods} kỳ
                         </p>
                       </div>
                       
@@ -670,7 +717,7 @@ export default function FinanceOperationsPage() {
                   <h3 className="font-bold text-slate-900">
                     {data.accountingPeriod.status === "CLOSED" ? "Kỳ đã khóa" : "Kỳ đang mở"}
                   </h3>
-                  <p className="text-xs text-slate-500 font-medium">Chi nhánh lọc: {branchCode}</p>
+                  <p className="text-xs text-slate-500 font-medium">Phạm vi lọc: {storeLabel(branchCode)}</p>
                 </div>
               </div>
 

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireMenuAccess } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
+import { requestedBranch } from "@/lib/accounting";
 
 type DebtRow = {
   partnerCode: string;
@@ -10,16 +11,39 @@ type DebtRow = {
   bankMatched: number;
   voucherNet: number;
   purchasePayable: number;
+  debtReceivable: number;
+  debtPayable: number;
+  partnerGroup: string;
+  nearestDueDate: Date | null;
+  overdueAmount: number;
+  dueSoonAmount: number;
+  openDebtCount: number;
+  debtStatus: string;
   balance: number;
 };
 
 type LedgerRow = {
   date: Date;
+  dueDate?: Date | null;
   source: string;
   code: string;
   description: string;
   amount: number;
+  status?: string;
+  agingBucket?: string;
 };
+
+function agingBucket(dueDate?: Date | null) {
+  if (!dueDate) return "NO_DUE_DATE";
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const due = new Date(dueDate);
+  due.setHours(0, 0, 0, 0);
+  const diffDays = Math.ceil((due.getTime() - today.getTime()) / 86400000);
+  if (diffDays < 0) return "OVERDUE";
+  if (diffDays <= 7) return "DUE_7";
+  return "OPEN";
+}
 
 function addDebt(rows: Map<string, DebtRow>, code: string, name: string, patch: Partial<DebtRow>) {
   if (!code) return;
@@ -33,6 +57,14 @@ function addDebt(rows: Map<string, DebtRow>, code: string, name: string, patch: 
       bankMatched: 0,
       voucherNet: 0,
       purchasePayable: 0,
+      debtReceivable: 0,
+      debtPayable: 0,
+      partnerGroup: "EXTERNAL",
+      nearestDueDate: null,
+      overdueAmount: 0,
+      dueSoonAmount: 0,
+      openDebtCount: 0,
+      debtStatus: "NO_DEBT",
       balance: 0,
     };
 
@@ -46,14 +78,17 @@ export async function GET(request: Request) {
 
     const { searchParams } = new URL(request.url);
     const partnerCode = searchParams.get("partnerCode")?.trim();
+    const branchCode = requestedBranch(auth.session, searchParams.get("branchCode")?.trim() || "ALL");
+    const branchFilter = branchCode === "ALL" ? {} : { branchCode };
 
-    const [partners, openingBalances, deposits, bankRows, vouchers, purchasePayables] = await Promise.all([
+    const [partners, openingBalances, deposits, bankRows, vouchers, purchasePayables, debtRecords] = await Promise.all([
       prisma.masterDataItem.findMany({ where: { type: "PARTNER" } }),
-      prisma.openingBalance.findMany({ where: { balanceType: { in: ["AR", "AP"] } } }),
-      prisma.deposit.findMany(),
-      prisma.bankStatementTransaction.findMany({ where: { partnerHint: { not: null } } }),
-      prisma.financialVoucher.findMany({ where: { partnerCode: { not: null }, status: { not: "CANCELLED" } } }),
-      prisma.supplierPayable.findMany({ include: { purchaseOrder: true } }),
+      prisma.openingBalance.findMany({ where: { balanceType: { in: ["AR", "AP"] }, ...branchFilter } }),
+      prisma.deposit.findMany({ where: branchFilter }),
+      prisma.bankStatementTransaction.findMany({ where: { partnerHint: { not: null }, ...(branchCode === "ALL" ? {} : { branchCode }) } }),
+      prisma.financialVoucher.findMany({ where: { partnerCode: { not: null }, status: "APPROVED", debtAction: null, ...branchFilter } }),
+      prisma.supplierPayable.findMany({ where: branchCode === "ALL" ? {} : { purchaseOrder: { branchCode } }, include: { purchaseOrder: true } }),
+      prisma.debtRecord.findMany({ where: branchFilter }),
     ]);
 
     if (partnerCode) {
@@ -103,6 +138,18 @@ export async function GET(request: Request) {
           amount: item.outstandingAmount,
         });
       }
+      for (const item of debtRecords.filter((row) => row.partnerCode === partnerCode && row.outstandingAmount > 0)) {
+        ledger.push({
+          date: item.documentDate,
+          source: item.debtType,
+          code: item.code,
+          dueDate: item.dueDate,
+          description: `${item.description}${item.dueDate ? ` · Hạn ${item.dueDate.toLocaleDateString("vi-VN")}` : ""}`,
+          amount: item.debtType === "RECEIVABLE" ? item.outstandingAmount : -item.outstandingAmount,
+          status: item.status,
+          agingBucket: agingBucket(item.dueDate),
+        });
+      }
 
       const sortedLedger = ledger.sort((a, b) => b.date.getTime() - a.date.getTime());
       const balance = sortedLedger.reduce((sum, row) => sum + row.amount, 0);
@@ -116,7 +163,7 @@ export async function GET(request: Request) {
     }
 
     const rows = new Map<string, DebtRow>();
-    for (const partner of partners) addDebt(rows, partner.code, partner.name, {});
+    for (const partner of partners) addDebt(rows, partner.code, partner.name, { partnerGroup: partner.partnerGroup || "EXTERNAL" });
 
     for (const item of openingBalances) {
       if (!item.objectCode) continue;
@@ -157,10 +204,28 @@ export async function GET(request: Request) {
       });
     }
 
+    for (const item of debtRecords) {
+      const current = rows.get(item.partnerCode);
+      const bucket = agingBucket(item.dueDate);
+      const currentDue = current?.nearestDueDate || null;
+      const nextDue = item.outstandingAmount > 0 && item.dueDate && (!currentDue || item.dueDate < currentDue) ? item.dueDate : currentDue;
+      const hasOpenDebt = item.outstandingAmount > 0 && item.status !== "SETTLED";
+      addDebt(rows, item.partnerCode, item.partnerName, {
+        partnerGroup: item.partnerGroup,
+        debtReceivable: (current?.debtReceivable || 0) + (item.debtType === "RECEIVABLE" ? item.outstandingAmount : 0),
+        debtPayable: (current?.debtPayable || 0) + (item.debtType === "PAYABLE" ? item.outstandingAmount : 0),
+        nearestDueDate: nextDue,
+        overdueAmount: (current?.overdueAmount || 0) + (bucket === "OVERDUE" ? item.outstandingAmount : 0),
+        dueSoonAmount: (current?.dueSoonAmount || 0) + (bucket === "DUE_7" ? item.outstandingAmount : 0),
+        openDebtCount: (current?.openDebtCount || 0) + (hasOpenDebt ? 1 : 0),
+        debtStatus: bucket === "OVERDUE" && item.outstandingAmount > 0 ? "OVERDUE" : current?.debtStatus === "OVERDUE" ? "OVERDUE" : bucket === "DUE_7" && item.outstandingAmount > 0 ? "DUE_7" : hasOpenDebt ? "OPEN" : current?.debtStatus || "NO_DEBT",
+      });
+    }
+
     const result = Array.from(rows.values())
       .map((row) => ({
         ...row,
-        balance: row.openingAmount + row.purchasePayable - row.depositHolding - row.bankMatched - row.voucherNet,
+        balance: row.openingAmount + row.purchasePayable + row.debtReceivable - row.debtPayable - row.depositHolding - row.bankMatched - row.voucherNet,
       }))
       .sort((a, b) => Math.abs(b.balance) - Math.abs(a.balance));
 

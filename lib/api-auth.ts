@@ -4,7 +4,6 @@ import {
   canAccessMenu,
   canPerformAction,
   canPerformMenuAction,
-  demoUsers,
   type AppAction,
   type DemoRole,
   type DemoSession,
@@ -31,20 +30,18 @@ function parseSession(rawValue: string): DemoSession | null {
 
   try {
     const parsed = JSON.parse(decodeURIComponent(rawValue)) as Partial<DemoSession>;
-    const matchedUser = demoUsers.find(
-      (user) => user.id === parsed.id && user.email === parsed.email && user.role === parsed.role,
-    );
 
-    if (!matchedUser || !parsed.name || !parsed.branch || !parsed.loginAt) {
+    if (!parsed.id || !parsed.name || !parsed.role || !parsed.branch || !parsed.email || !parsed.loginAt) {
       return null;
     }
 
     return {
-      id: matchedUser.id,
-      name: matchedUser.name,
-      role: matchedUser.role,
-      branch: matchedUser.branch,
-      email: matchedUser.email,
+      id: parsed.id,
+      name: parsed.name,
+      role: parsed.role as DemoRole,
+      branch: parsed.branch,
+      email: parsed.email,
+      allowedBranches: parsed.allowedBranches || [],
       loginAt: parsed.loginAt,
     };
   } catch {

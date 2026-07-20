@@ -10,7 +10,7 @@ const importType = "PAYROLL" as const;
 const menuHref = "/imports";
 
 function payrollTemplateResponse() {
-  const headers = ["Kỳ lương", "Mã nhân viên", "Tên nhân viên", "Chi nhánh", "Phòng ban", "Lương cơ bản", "Phụ cấp", "Thưởng", "Bảo hiểm", "Thuế TNCN", "Khấu trừ khác", "Thực nhận", "Mã tham chiếu"];
+  const headers = ["Kỳ lương", "Mã nhân viên", "Tên nhân viên", "Cửa hàng", "Phòng ban", "Lương cơ bản", "Phụ cấp", "Thưởng", "Bảo hiểm", "Thuế TNCN", "Khấu trừ khác", "Thực nhận", "Mã tham chiếu"];
   const data = [
     headers,
     ["2026-07", "NV001", "Nguyễn Văn An", "HCM", "OPERATIONS", 9000000, 1000000, 500000, 945000, 150000, 0, 9405000, "PAY-202607-NV001"],

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { Prisma } from "@prisma/custom-client";
 import { getRequestSession, requireMenuAction } from "@/lib/api-auth";
+import { assertBranchAccess, getAllowedBranches } from "@/lib/accounting";
 import { prisma } from "@/lib/prisma";
 
 const defaultMasterData = [
@@ -15,14 +15,14 @@ const defaultMasterData = [
   {
     type: "BRANCH",
     code: "HCM",
-    name: "Chi nhanh TP. HCM",
+    name: "Cua hang 1",
     group: "Branch",
     status: "ACTIVE",
   },
   {
     type: "BRANCH",
     code: "HN",
-    name: "Chi nhanh Ha Noi",
+    name: "Cua hang 2",
     group: "Branch",
     status: "ACTIVE",
   },
@@ -43,7 +43,7 @@ const defaultMasterData = [
   {
     type: "WAREHOUSE",
     code: "KHO_HCM",
-    name: "Kho nguyen vat lieu HCM",
+    name: "Kho nguyen vat lieu Cua hang 1",
     group: "Nguyen vat lieu/Bao bi",
     branch: "HCM",
     status: "ACTIVE",
@@ -51,7 +51,7 @@ const defaultMasterData = [
   {
     type: "WAREHOUSE",
     code: "KHO_HN",
-    name: "Kho nguyen vat lieu Ha Noi",
+    name: "Kho nguyen vat lieu Cua hang 2",
     group: "Nguyen vat lieu/Bao bi",
     branch: "HN",
     status: "ACTIVE",
@@ -59,7 +59,7 @@ const defaultMasterData = [
   {
     type: "MONEY_SOURCE",
     code: "TM_HCM",
-    name: "Quy tien mat HCM",
+    name: "Quy tien mat Cua hang 1",
     group: "Tien mat",
     branch: "HCM",
     status: "ACTIVE",
@@ -67,7 +67,7 @@ const defaultMasterData = [
   {
     type: "MONEY_SOURCE",
     code: "VCB_HCM",
-    name: "Vietcombank HCM",
+    name: "Vietcombank Cua hang 1",
     group: "Ngan hang",
     branch: "HCM",
     accountNo: "0071000012345",
@@ -76,7 +76,7 @@ const defaultMasterData = [
   {
     type: "MONEY_SOURCE",
     code: "POS_HN",
-    name: "POS/Vi dien tu Ha Noi",
+    name: "POS/Vi dien tu Cua hang 2",
     group: "Vi/POS",
     branch: "HN",
     status: "ACTIVE",
@@ -85,7 +85,9 @@ const defaultMasterData = [
     type: "PARTNER",
     code: "KH_ABC",
     name: "Cong ty TNHH ABC",
-    group: "Khach hang",
+    group: "CUSTOMER",
+    partnerType: "CUSTOMER",
+    partnerGroup: "EXTERNAL",
     taxCode: "0312345678",
     contactName: "Nguyen Van A",
     phone: "0900000001",
@@ -96,7 +98,9 @@ const defaultMasterData = [
     type: "PARTNER",
     code: "NCC_FOOD",
     name: "NCC Nguyen lieu",
-    group: "Nha cung cap",
+    group: "SUPPLIER",
+    partnerType: "SUPPLIER",
+    partnerGroup: "EXTERNAL",
     taxCode: "0109876543",
     contactName: "Tran Thi B",
     phone: "0900000002",
@@ -210,7 +214,7 @@ const defaultMasterData = [
   {
     type: "WAREHOUSE",
     code: "KHO_HCM",
-    name: "Kho hang trung tam HCM",
+    name: "Kho hang trung tam Cua hang 1",
     group: "Kho chinh",
     branch: "HCM",
     status: "ACTIVE",
@@ -219,7 +223,7 @@ const defaultMasterData = [
   {
     type: "WAREHOUSE",
     code: "KHO_HN",
-    name: "Kho hang chi nhanh Ha Noi",
+    name: "Kho hang Cua hang 2",
     group: "Kho phu",
     branch: "HN",
     status: "ACTIVE",
@@ -246,6 +250,10 @@ function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function isUniqueConstraintError(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "P2002";
+}
+
 export async function GET(request: Request) {
   try {
     const auth = getRequestSession(request);
@@ -257,11 +265,15 @@ export async function GET(request: Request) {
     const type = searchParams.get("type") || undefined;
     const status = searchParams.get("status") || undefined;
     const search = searchParams.get("search")?.trim();
+    const allowedBranches = getAllowedBranches(auth.session);
 
     const items = await prisma.masterDataItem.findMany({
       where: {
         ...(type ? { type } : {}),
         ...(status ? { status } : {}),
+        ...(type && ["WAREHOUSE", "MONEY_SOURCE", "DEPARTMENT"].includes(type) && allowedBranches.length === 1
+          ? { OR: [{ branch: allowedBranches[0] }, { branch: "ALL" }, { branch: null }] }
+          : {}),
         ...(search
           ? {
               OR: [
@@ -270,6 +282,8 @@ export async function GET(request: Request) {
                 { group: { contains: search } },
                 { branch: { contains: search } },
                 { taxCode: { contains: search } },
+                { partnerType: { contains: search } },
+                { partnerGroup: { contains: search } },
               ],
             }
           : {}),
@@ -278,9 +292,41 @@ export async function GET(request: Request) {
     });
 
     return NextResponse.json(items);
-  } catch (error) {
-    console.error("Error fetching master data:", error);
+  } catch {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+  }
+}
+
+function validateMasterData(type: string, group: string | null, branch: string | null, partnerGroup?: string | null) {
+  if (type === "PARTNER") {
+    if (!group || !["CUSTOMER", "SUPPLIER", "BOTH", "EMPLOYEE", "OTHER_PARTNER"].includes(group.toUpperCase())) {
+      throw new Error("Loại đối tác bắt buộc là CUSTOMER, SUPPLIER, BOTH, EMPLOYEE hoặc OTHER_PARTNER.");
+    }
+    if (partnerGroup && !["EXTERNAL", "INTERNAL"].includes(partnerGroup.toUpperCase())) {
+      throw new Error("Nhóm đối tượng bắt buộc là EXTERNAL hoặc INTERNAL.");
+    }
+  }
+  if (type === "WAREHOUSE") {
+    if (!branch || !["HCM", "HN"].includes(branch.toUpperCase())) {
+      throw new Error("Cửa hàng của kho bắt buộc là Cửa hàng 1 hoặc Cửa hàng 2.");
+    }
+  }
+  if (type === "MONEY_SOURCE") {
+    if (!group || !["CASH", "BANK", "WALLET"].includes(group.toUpperCase())) {
+      throw new Error("Nhóm nguồn tiền bắt buộc là CASH, BANK hoặc WALLET.");
+    }
+    if (!branch || !["HCM", "HN", "ALL"].includes(branch.toUpperCase())) {
+      throw new Error("Cửa hàng của nguồn tiền bắt buộc là Cửa hàng 1, Cửa hàng 2 hoặc Admin / Tất cả cửa hàng.");
+    }
+  }
+  if (type === "REVENUE_EXPENSE_CATEGORY" && group && !["OPEX", "CAPEX", "COGS", "REVENUE_SOURCE"].includes(group.toUpperCase())) {
+    throw new Error("Nhóm Thu/Chi bắt buộc là OPEX, CAPEX, COGS hoặc REVENUE_SOURCE.");
+  }
+  if (type === "ACCOUNTING_PERIOD" && group && !["OPEN", "LOCKED", "CLOSED"].includes(group.toUpperCase())) {
+    throw new Error("Trạng thái kỳ kế toán bắt buộc là OPEN, LOCKED hoặc CLOSED.");
+  }
+  if (type === "DOCUMENT_TYPE" && group && !["RECEIPT", "PAYMENT", "DEPOSIT", "TRANSFER"].includes(group.toUpperCase())) {
+    throw new Error("Nhóm loại chứng từ bắt buộc là RECEIPT, PAYMENT, DEPOSIT hoặc TRANSFER.");
   }
 }
 
@@ -293,9 +339,22 @@ export async function POST(request: Request) {
     const type = cleanText(body.type);
     const code = cleanText(body.code).toUpperCase();
     const name = cleanText(body.name);
+    const group = cleanText(body.group) || null;
+    const branch = cleanText(body.branch) || null;
+    const partnerType = type === "PARTNER" ? (cleanText(body.partnerType) || group || "").toUpperCase() : null;
+    const partnerGroup = type === "PARTNER" ? (cleanText(body.partnerGroup) || "EXTERNAL").toUpperCase() : null;
 
     if (!type || !code || !name) {
-      return NextResponse.json({ error: "Loai danh muc, ma va ten la bat buoc" }, { status: 400 });
+      return NextResponse.json({ error: "Loại danh mục, mã và tên là bắt buộc" }, { status: 400 });
+    }
+
+    try {
+      validateMasterData(type, partnerType || group, branch, partnerGroup);
+      if (branch && ["WAREHOUSE", "MONEY_SOURCE", "DEPARTMENT"].includes(type)) {
+        assertBranchAccess(auth.session, branch);
+      }
+    } catch (e) {
+      return NextResponse.json({ error: e instanceof Error ? e.message : "Dữ liệu không hợp lệ" }, { status: 400 });
     }
 
     const item = await prisma.masterDataItem.create({
@@ -303,8 +362,10 @@ export async function POST(request: Request) {
         type,
         code,
         name,
-        group: cleanText(body.group) || null,
-        branch: cleanText(body.branch) || null,
+        group: type === "PARTNER" ? partnerType : group,
+        partnerType,
+        partnerGroup,
+        branch,
         taxCode: cleanText(body.taxCode) || null,
         contactName: cleanText(body.contactName) || null,
         phone: cleanText(body.phone) || null,
@@ -317,8 +378,8 @@ export async function POST(request: Request) {
 
     return NextResponse.json(item, { status: 201 });
   } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-      return NextResponse.json({ error: "Ma danh muc da ton tai trong nhom nay" }, { status: 409 });
+    if (isUniqueConstraintError(error)) {
+      return NextResponse.json({ error: "Mã danh mục đã tồn tại trong nhóm này" }, { status: 409 });
     }
     console.error("Error creating master data:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
@@ -332,9 +393,31 @@ export async function PATCH(request: Request) {
 
     const body = await request.json();
     const id = cleanText(body.id);
-
     if (!id) {
-      return NextResponse.json({ error: "Thieu ID danh muc" }, { status: 400 });
+      return NextResponse.json({ error: "Thiếu ID danh mục" }, { status: 400 });
+    }
+
+    const current = await prisma.masterDataItem.findUnique({ where: { id } });
+    if (!current) {
+      return NextResponse.json({ error: "Không tìm thấy danh mục" }, { status: 404 });
+    }
+
+    const group = body.group !== undefined ? cleanText(body.group) || null : current.group;
+    const branch = body.branch !== undefined ? cleanText(body.branch) || null : current.branch;
+    const partnerType = current.type === "PARTNER"
+      ? (body.partnerType !== undefined ? cleanText(body.partnerType) || null : current.partnerType || group)
+      : null;
+    const partnerGroup = current.type === "PARTNER"
+      ? (body.partnerGroup !== undefined ? cleanText(body.partnerGroup) || null : current.partnerGroup || "EXTERNAL")
+      : null;
+
+    try {
+      validateMasterData(current.type, partnerType || group, branch, partnerGroup);
+      if (branch && ["WAREHOUSE", "MONEY_SOURCE", "DEPARTMENT"].includes(current.type)) {
+        assertBranchAccess(auth.session, branch);
+      }
+    } catch (e) {
+      return NextResponse.json({ error: e instanceof Error ? e.message : "Dữ liệu không hợp lệ" }, { status: 400 });
     }
 
     const item = await prisma.masterDataItem.update({
@@ -342,8 +425,10 @@ export async function PATCH(request: Request) {
       data: {
         ...(body.code !== undefined ? { code: cleanText(body.code).toUpperCase() } : {}),
         ...(body.name !== undefined ? { name: cleanText(body.name) } : {}),
-        ...(body.group !== undefined ? { group: cleanText(body.group) || null } : {}),
-        ...(body.branch !== undefined ? { branch: cleanText(body.branch) || null } : {}),
+        group: current.type === "PARTNER" ? partnerType : group,
+        partnerType,
+        partnerGroup,
+        branch,
         ...(body.taxCode !== undefined ? { taxCode: cleanText(body.taxCode) || null } : {}),
         ...(body.contactName !== undefined ? { contactName: cleanText(body.contactName) || null } : {}),
         ...(body.phone !== undefined ? { phone: cleanText(body.phone) || null } : {}),
@@ -356,8 +441,8 @@ export async function PATCH(request: Request) {
 
     return NextResponse.json(item);
   } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-      return NextResponse.json({ error: "Ma danh muc da ton tai trong nhom nay" }, { status: 409 });
+    if (isUniqueConstraintError(error)) {
+      return NextResponse.json({ error: "Mã danh mục đã tồn tại trong nhóm này" }, { status: 409 });
     }
     console.error("Error updating master data:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });

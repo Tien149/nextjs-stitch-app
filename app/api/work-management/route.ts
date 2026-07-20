@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
-import { requestedBranch } from "@/lib/accounting";
+import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
 import { prisma } from "@/lib/prisma";
 import { apiError, businessError, cleanText, normalizePeriod, toDate } from "@/lib/phase3";
 
@@ -42,8 +42,9 @@ export async function POST(request: Request) {
     const title = cleanText(body.title);
     const assigneeName = cleanText(body.assigneeName);
     const departmentCode = cleanText(body.departmentCode);
-    const branchCode = requestedBranch(auth.session, cleanText(body.branchCode));
+    const branchCode = cleanText(body.branchCode);
     if (!title || !assigneeName || !departmentCode || !branchCode) businessError("Công việc thiếu tiêu đề, người phụ trách, phòng ban hoặc chi nhánh");
+    assertBranchAccess(auth.session, branchCode);
     const code = `CV-${new Date().getFullYear()}-${String(await prisma.workItem.count() + 1).padStart(4, "0")}`;
     const item = await prisma.workItem.create({
       data: {
@@ -79,7 +80,7 @@ export async function PATCH(request: Request) {
     const item = await prisma.workItem.findUnique({ where: { id } });
     if (!item) businessError("Không tìm thấy công việc");
     const allowedBranch = requestedBranch(auth.session, item.branchCode);
-    if (allowedBranch !== "ALL" && allowedBranch !== item.branchCode) return NextResponse.json({ error: "Không được thao tác công việc ngoài chi nhánh" }, { status: 403 });
+    if (allowedBranch !== "ALL" && allowedBranch !== item.branchCode) return NextResponse.json({ error: "Không được thao tác công việc ngoài cửa hàng được phân công" }, { status: 403 });
     let nextStatus = cleanText(body.status);
     if (action === "APPROVE") {
       if (item.status !== "WAITING_APPROVAL") businessError("Công việc chưa ở trạng thái chờ duyệt");

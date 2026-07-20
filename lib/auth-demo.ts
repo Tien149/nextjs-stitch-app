@@ -1,3 +1,5 @@
+import { branchAccessLabel } from "@/lib/branch-labels";
+
 export type DemoRole =
   | "Admin"
   | "Kế toán tổng hợp"
@@ -18,6 +20,7 @@ export type DemoUser = {
 
 export type DemoSession = Omit<DemoUser, "password"> & {
   loginAt: string;
+  allowedBranches: string[];
 };
 
 export type AppMenuItem = {
@@ -34,7 +37,7 @@ export const demoUsers: DemoUser[] = [
     id: "admin",
     name: "Admin Kế toán",
     role: "Admin",
-    branch: "Tổng công ty",
+    branch: "Admin / Tất cả cửa hàng",
     email: "admin@fin-erp.vn",
     password: "123456",
   },
@@ -42,7 +45,7 @@ export const demoUsers: DemoUser[] = [
     id: "ktth",
     name: "Kế toán tổng hợp",
     role: "Kế toán tổng hợp",
-    branch: "Tổng công ty",
+    branch: "Admin / Tất cả cửa hàng",
     email: "ktth@fin-erp.vn",
     password: "123456",
   },
@@ -50,15 +53,15 @@ export const demoUsers: DemoUser[] = [
     id: "congno",
     name: "Kế toán công nợ",
     role: "Kế toán công nợ",
-    branch: "Chi nhánh HCM",
+    branch: "Chủ cửa hàng - Cửa hàng 1",
     email: "congno@fin-erp.vn",
     password: "123456",
   },
   {
     id: "quanly",
-    name: "Quản lý",
+    name: "Chủ cửa hàng",
     role: "Quản lý",
-    branch: "Chi nhánh Hà Nội",
+    branch: "Chủ cửa hàng - Cửa hàng 2",
     email: "quanly@fin-erp.vn",
     password: "123456",
   },
@@ -66,7 +69,7 @@ export const demoUsers: DemoUser[] = [
     id: "viewer",
     name: "Viewer",
     role: "Viewer",
-    branch: "Tổng công ty",
+    branch: "Admin / Tất cả cửa hàng",
     email: "viewer@fin-erp.vn",
     password: "123456",
   },
@@ -212,7 +215,7 @@ const menuActionOverrides: Partial<Record<string, Partial<Record<DemoRole, AppAc
   },
   "/imports": {
     Admin: roleActions.Admin,
-    "Kế toán tổng hợp": ["view", "create", "export"],
+    "Kế toán tổng hợp": ["view", "create", "edit", "export"],
     "Kế toán công nợ": ["view", "create", "export"],
   },
   "/accounting": {
@@ -241,12 +244,15 @@ export function findDemoUser(userIdOrEmail: string) {
 }
 
 export function createDemoSession(user: DemoUser): DemoSession {
+  const allowedBranches = user.id === "congno" ? ["HCM"] : user.id === "quanly" ? ["HN"] : ["ALL"];
+
   return {
     id: user.id,
     name: user.name,
     role: user.role,
-    branch: user.branch,
+    branch: branchAccessLabel(allowedBranches),
     email: user.email,
+    allowedBranches,
     loginAt: new Date().toISOString(),
   };
 }

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError, businessError, cleanText, isPeriodLocked, toDate, toNumber } from "@/lib/phase3";
+import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
 
 const menuHref = "/inventory";
 
@@ -25,10 +26,34 @@ export async function GET(request: Request) {
   try {
     const auth = requireMenuAccess(request, menuHref);
     if (!auth.ok) return auth.response;
+
+    const { searchParams } = new URL(request.url);
+    const branchCode = requestedBranch(auth.session, searchParams.get("branchCode") || "ALL");
+    const branchFilter = branchCode === "ALL" ? {} : { branchCode };
+
+    // Get warehouses belonging to this branch
+    const allowedWarehouses = await prisma.masterDataItem.findMany({
+      where: {
+        type: "WAREHOUSE",
+        ...(branchCode === "ALL" ? {} : { branch: branchCode }),
+      },
+      select: { code: true }
+    });
+    const warehouseCodes = allowedWarehouses.map((w) => w.code);
+
     const [items, balances, transactions, recipes] = await Promise.all([
       prisma.inventoryItem.findMany({ orderBy: { name: "asc" } }),
-      prisma.inventoryBalance.findMany({ include: { item: true }, orderBy: [{ warehouseCode: "asc" }, { item: { name: "asc" } }] }),
-      prisma.inventoryTransaction.findMany({ include: { lines: { include: { item: true } } }, orderBy: { createdAt: "desc" }, take: 100 }),
+      prisma.inventoryBalance.findMany({
+        where: { warehouseCode: { in: warehouseCodes } },
+        include: { item: true },
+        orderBy: [{ warehouseCode: "asc" }, { item: { name: "asc" } }]
+      }),
+      prisma.inventoryTransaction.findMany({
+        where: { ...branchFilter },
+        include: { lines: { include: { item: true } } },
+        orderBy: { createdAt: "desc" },
+        take: 100
+      }),
       prisma.recipe.findMany({ include: { lines: { include: { item: { include: { balances: true } } } } }, orderBy: { updatedAt: "desc" } }),
     ]);
     const recipesWithCost = recipes.map((recipe) => ({
@@ -58,15 +83,33 @@ export async function POST(request: Request) {
       const itemCode = cleanText(body.code);
       const name = cleanText(body.name);
       const unit = cleanText(body.unit);
+      const itemType = cleanText(body.itemType) || "MATERIAL";
+
       if (!itemCode || !name || !unit) businessError("Mã, tên và đơn vị tính là bắt buộc");
+
+      const uppercaseCode = itemCode.toUpperCase();
+      if (itemType === "MATERIAL" && !uppercaseCode.startsWith("NVL_")) {
+        businessError("Mã nguyên vật liệu bắt buộc phải bắt đầu bằng 'NVL_' (ví dụ: NVL_SUADAC).");
+      }
+      if (itemType === "PACKAGING" && !uppercaseCode.startsWith("BB_")) {
+        businessError("Mã bao bì bắt buộc phải bắt đầu bằng 'BB_' (ví dụ: BB_LYGIAY).");
+      }
+      if (itemType === "TOOL" && !uppercaseCode.startsWith("CCDC_")) {
+        businessError("Mã công cụ dụng cụ bắt buộc phải bắt đầu bằng 'CCDC_' (ví dụ: CCDC_MAYPHA).");
+      }
+      if (itemType === "ASSET" && !uppercaseCode.startsWith("TS_")) {
+        businessError("Mã tài sản bắt buộc phải bắt đầu bằng 'TS_' (ví dụ: TS_MAYPHA).");
+      }
+
       const item = await prisma.inventoryItem.create({
         data: {
-          code: itemCode,
+          code: uppercaseCode,
           name,
           unit,
-          itemType: cleanText(body.itemType) || "MATERIAL",
+          itemType,
           category: cleanText(body.category) || null,
           minStock: toNumber(body.minStock),
+          requiresImage: !!body.requiresImage,
           note: cleanText(body.note) || null,
         },
       });
@@ -100,7 +143,17 @@ export async function POST(request: Request) {
     const transactionDate = toDate(body.transactionDate);
     const branchCode = cleanText(body.branchCode);
     const warehouseCode = cleanText(body.warehouseCode);
-    if (!branchCode || !warehouseCode) businessError("Chi nhánh và kho là bắt buộc");
+    if (!branchCode || !warehouseCode) businessError("Cửa hàng và kho là bắt buộc");
+    assertBranchAccess(auth.session, branchCode);
+
+    // Validate that the warehouse belongs to the branch
+    const warehouse = await prisma.masterDataItem.findFirst({
+      where: { type: "WAREHOUSE", code: warehouseCode, branch: branchCode }
+    });
+    if (!warehouse) {
+      businessError(`Kho ${warehouseCode} không thuộc chi nhánh ${branchCode}.`);
+    }
+
     if (await isPeriodLocked(transactionDate, branchCode)) businessError("Kỳ kế toán đã khóa");
 
     let inputLines = linesFrom(body.lines);

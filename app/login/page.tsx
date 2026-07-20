@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { createDemoSession, demoUsers, findDemoUser, SESSION_KEY } from "@/lib/auth-demo";
+import { displayRoleName } from "@/lib/branch-labels";
+import { demoUsers, SESSION_KEY } from "@/lib/auth-demo";
 
 export default function Login() {
   const router = useRouter();
@@ -13,30 +14,38 @@ export default function Login() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const handleLogin = (event: React.FormEvent) => {
+  const handleLogin = async (event: React.FormEvent) => {
     event.preventDefault();
     setError("");
     setLoading(true);
 
-    window.setTimeout(() => {
-      const user = findDemoUser(userId);
-      if (!user || user.password !== password) {
-        setError("Sai tài khoản hoặc mật khẩu. Mật khẩu demo là: 123456");
-        setLoading(false);
-        return;
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: userId, password }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "Sai tài khoản hoặc mật khẩu. Mật khẩu mặc định là: 123456");
       }
 
-      const session = createDemoSession(user);
+      const session = await response.json();
       const sessionValue = JSON.stringify(session);
       localStorage.setItem(SESSION_KEY, sessionValue);
       document.cookie = `${SESSION_KEY}=${encodeURIComponent(sessionValue)}; path=/; max-age=${
         rememberMe ? 86400 * 7 : 3600
-      }`;
+      }; SameSite=Lax`;
 
       const next = new URLSearchParams(window.location.search).get("next");
       router.push(next || "/");
-    }, 350);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Có lỗi xảy ra");
+      setLoading(false);
+    }
   };
+
 
   return (
     <main className="min-h-screen grid bg-slate-100 text-slate-800 lg:grid-cols-[480px_1fr]">
@@ -60,8 +69,8 @@ export default function Login() {
               </h1>
             </div>
             <p className="text-slate-300 leading-7">
-              Dùng để test nhanh các vai trò trong chuỗi vận hành: kế toán tổng hợp,
-              kế toán công nợ, quản lý chi nhánh và viewer chỉ xem.
+              Dùng để test nhanh các vai trò trong chuỗi vận hành: admin,
+              kế toán tổng hợp, kế toán công nợ, chủ cửa hàng và viewer chỉ xem.
             </p>
           </div>
         </div>
@@ -83,7 +92,7 @@ export default function Login() {
             Tiền cọc, đối tác, sao kê
           </div>
           <div className="bg-slate-900 border border-slate-800 rounded-lg p-3">
-            <b className="text-white">Quản lý</b>
+            <b className="text-white">Chủ cửa hàng</b>
             <br />
             Xem tình hình vận hành
           </div>
@@ -110,7 +119,7 @@ export default function Login() {
               >
                 {demoUsers.map((user) => (
                   <option key={user.id} value={user.id}>
-                    {user.name} - {user.role}
+                    {user.name} - {displayRoleName(user.role)}
                   </option>
                 ))}
               </select>

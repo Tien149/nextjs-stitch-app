@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
+import { assertBranchAccess, branchFilterForSession } from "@/lib/accounting";
 import { prisma } from "@/lib/prisma";
 
 function cleanText(value: unknown) {
@@ -9,6 +10,12 @@ function cleanText(value: unknown) {
 function toAmount(value: unknown) {
   const numberValue = Number(value);
   return Number.isFinite(numberValue) ? numberValue : 0;
+}
+
+function toDate(value: unknown, fallback = new Date()) {
+  if (!value) return fallback;
+  const date = new Date(String(value));
+  return Number.isNaN(date.getTime()) ? fallback : date;
 }
 
 async function nextDepositCode() {
@@ -27,9 +34,11 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const status = searchParams.get("status") || undefined;
     const search = searchParams.get("search")?.trim();
+    const branchFilter = branchFilterForSession(auth.session, searchParams.get("branchCode") || "ALL");
 
     const deposits = await prisma.deposit.findMany({
       where: {
+        ...branchFilter,
         ...(status && status !== "ALL" ? { status } : {}),
         ...(search
           ? {
@@ -77,12 +86,18 @@ export async function POST(request: Request) {
       );
     }
 
+    try {
+      assertBranchAccess(auth.session, branchCode);
+    } catch (e) {
+      return NextResponse.json({ error: e instanceof Error ? e.message : "Không có quyền chi nhánh" }, { status: 403 });
+    }
+
     // Verify master data status
     const activeBranch = await prisma.masterDataItem.findUnique({
       where: { type_code: { type: "BRANCH", code: branchCode } }
     });
     if (!activeBranch || activeBranch.status !== "ACTIVE") {
-      return NextResponse.json({ error: `Chi nhánh [${branchCode}] không tồn tại hoặc ngưng hoạt động` }, { status: 400 });
+      return NextResponse.json({ error: `Cửa hàng [${branchCode}] không tồn tại hoặc ngưng hoạt động` }, { status: 400 });
     }
 
     const activePartner = await prisma.masterDataItem.findUnique({
@@ -99,11 +114,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: `Nguồn tiền [${moneySourceCode}] không tồn tại hoặc ngưng hoạt động` }, { status: 400 });
     }
 
+    const receivedDate = toDate(body.receivedDate);
     const code = await nextDepositCode();
     const deposit = await prisma.deposit.create({
       data: {
         code,
-        receivedDate: body.receivedDate ? new Date(String(body.receivedDate)) : new Date(),
+        receivedDate,
         partnerCode,
         partnerName,
         branchCode,
@@ -116,6 +132,8 @@ export async function POST(request: Request) {
           create: {
             action: "CREATE",
             amount,
+            actionDate: receivedDate,
+            treatmentNote: "Ghi nhận tiền cọc",
             actor: auth.session.name,
             note: "Ghi nhan tien coc",
           },
@@ -141,6 +159,8 @@ export async function PATCH(request: Request) {
     const action = cleanText(body.action);
     const actionAmount = toAmount(body.amount);
     const note = cleanText(body.note) || null;
+    const actionDate = toDate(body.actionDate);
+    const treatmentNote = cleanText(body.treatmentNote) || note;
 
     if (!id || !action) {
       return NextResponse.json({ error: "Thieu ID hoac thao tac xu ly" }, { status: 400 });
@@ -151,15 +171,28 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: "Khong tim thay phieu coc" }, { status: 404 });
     }
 
-    if (current.remainingAmount <= 0) {
+    if (current.remainingAmount <= 0 && action !== "SUPPLEMENT") {
       return NextResponse.json({ error: "Phieu coc da het so du xu ly" }, { status: 400 });
+    }
+
+    try {
+      assertBranchAccess(auth.session, current.branchCode);
+    } catch (e) {
+      return NextResponse.json({ error: e instanceof Error ? e.message : "Không có quyền chi nhánh" }, { status: 403 });
     }
 
     let status = current.status;
     let remainingAmount = current.remainingAmount;
     let historyAmount: number | null = null;
 
-    if (action === "OFFSET") {
+    if (action === "SUPPLEMENT") {
+      if (actionAmount <= 0) {
+        return NextResponse.json({ error: "So tien bo sung coc khong hop le" }, { status: 400 });
+      }
+      remainingAmount = current.remainingAmount + actionAmount;
+      status = "HOLDING";
+      historyAmount = actionAmount;
+    } else if (action === "OFFSET") {
       if (actionAmount <= 0 || actionAmount > current.remainingAmount) {
         return NextResponse.json({ error: "So tien can tru khong hop le" }, { status: 400 });
       }
@@ -187,10 +220,13 @@ export async function PATCH(request: Request) {
       data: {
         status,
         remainingAmount,
+        ...(action === "SUPPLEMENT" ? { amount: current.amount + actionAmount } : {}),
         histories: {
           create: {
             action,
             amount: historyAmount,
+            actionDate,
+            treatmentNote,
             actor: auth.session.name,
             note,
           },

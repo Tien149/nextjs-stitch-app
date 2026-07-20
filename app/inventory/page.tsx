@@ -2,10 +2,11 @@
 
 import { useEffect, useState } from "react";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
+import { storeLabel, storeOptions } from "@/lib/branch-labels";
 import { canPerformMenuAction } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 
-type Item = { id: string; code: string; name: string; unit: string; itemType: string; minStock: number };
+type Item = { id: string; code: string; name: string; unit: string; itemType: string; minStock: number; requiresImage: boolean };
 type Balance = { id: string; warehouseCode: string; quantity: number; averageCost: number; item: Item };
 type Transaction = { id: string; code: string; transactionType: string; transactionDate: string; warehouseCode: string; referenceCode: string | null; lines: Array<{ id: string; quantity: number; unitCost: number; totalCost: number; item: Item }> };
 type Recipe = { id: string; code: string; productCode: string; productName: string; sellingPrice: number; estimatedCost: number; version: number; lines: Array<{ quantity: number; wasteRate: number; item: Item }> };
@@ -19,7 +20,7 @@ export default function InventoryPage() {
   const [data, setData] = useState<Data>({ items: [], balances: [], transactions: [], recipes: [] });
   const [message, setMessage] = useState("");
   
-  const [itemForm, setItemForm] = useState({ code: "NVL_001", name: "Nguyên liệu mẫu", unit: "kg", itemType: "MATERIAL", minStock: "5" });
+  const [itemForm, setItemForm] = useState({ code: "NVL_001", name: "Nguyên liệu mẫu", unit: "kg", itemType: "MATERIAL", minStock: "5", requiresImage: false });
   const [stockForm, setStockForm] = useState({ transactionType: "RECEIPT", branchCode: "HCM", warehouseCode: "KHO_HCM", itemId: "", quantity: "10", unitCost: "100000", referenceCode: "", note: "Nhập kho vận hành" });
   const [recipeForm, setRecipeForm] = useState({ productCode: "SP_001", productName: "Sản phẩm mẫu", sellingPrice: "45000", itemId: "", quantity: "0.02", wasteRate: "3" });
   const [wasteForm, setWasteForm] = useState({ recipeId: "", productQuantity: "1", branchCode: "HCM", warehouseCode: "KHO_HCM", referenceCode: "", note: "Hủy hàng theo báo cáo POS" });
@@ -116,6 +117,16 @@ export default function InventoryPage() {
                   <option value="ASSET">Tài sản</option>
                 </select>
               </Input>
+
+              <label className="flex items-center gap-2 text-xs font-bold text-slate-600 mt-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={itemForm.requiresImage}
+                  onChange={(e) => setItemForm({ ...itemForm, requiresImage: e.target.checked })}
+                  className="rounded text-blue-600 focus:ring-blue-500"
+                />
+                Yêu cầu ảnh khi mua / nhận hàng
+              </label>
               
               <button className="primary-button w-full">
                 <span className="material-symbols-outlined text-lg">add</span>Thêm mặt hàng
@@ -132,6 +143,7 @@ export default function InventoryPage() {
                 { label: "Loại" },
                 { label: "Đơn vị" },
                 { label: "Tồn tối thiểu", align: "right" },
+                { label: "Yêu cầu ảnh" },
               ]}
             >
               {data.items.map((item) => (
@@ -141,6 +153,13 @@ export default function InventoryPage() {
                   <Cell>{item.itemType}</Cell>
                   <Cell>{item.unit}</Cell>
                   <Cell right>{money(item.minStock)}</Cell>
+                  <Cell>
+                    {item.requiresImage ? (
+                      <span className="status bg-indigo-50 text-indigo-700 font-bold px-2 py-0.5 rounded text-[11px]">Bắt buộc</span>
+                    ) : (
+                      <span className="text-slate-400">-</span>
+                    )}
+                  </Cell>
                 </tr>
               ))}
             </Table>
@@ -166,14 +185,17 @@ export default function InventoryPage() {
               </Input>
               
               <div className="grid grid-cols-2 gap-3">
-                <Input label="Chi nhánh">
+                <Input label="Cửa hàng">
                   <select
                     value={stockForm.branchCode}
                     onChange={(e) => setStockForm({ ...stockForm, branchCode: e.target.value })}
                     className="control"
                   >
-                    <option value="HCM">CN Hồ Chí Minh</option>
-                    <option value="HN">CN Hà Nội</option>
+                    {storeOptions.map((option) => (
+                      <option key={option.code} value={option.code}>
+                        {storeLabel(option.code)}
+                      </option>
+                    ))}
                   </select>
                 </Input>
                 <Input label="Kho">
@@ -182,8 +204,8 @@ export default function InventoryPage() {
                     onChange={(e) => setStockForm({ ...stockForm, warehouseCode: e.target.value })}
                     className="control"
                   >
-                    <option value="KHO_HCM">Kho HCM</option>
-                    <option value="KHO_HN">Kho HN</option>
+                    <option value="KHO_HCM">Kho Cửa hàng 1</option>
+                    <option value="KHO_HN">Kho Cửa hàng 2</option>
                   </select>
                 </Input>
               </div>
@@ -307,14 +329,17 @@ export default function InventoryPage() {
             </Input>
             
             <div className="grid grid-cols-2 gap-3">
-              <Input label="Chi nhánh">
+              <Input label="Cửa hàng">
                 <select
                   value={wasteForm.branchCode}
                   onChange={(e) => setWasteForm({ ...wasteForm, branchCode: e.target.value })}
                   className="control"
                 >
-                  <option value="HCM">CN Hồ Chí Minh</option>
-                  <option value="HN">CN Hà Nội</option>
+                  {storeOptions.map((option) => (
+                    <option key={option.code} value={option.code}>
+                      {storeLabel(option.code)}
+                    </option>
+                  ))}
                 </select>
               </Input>
               
@@ -324,8 +349,8 @@ export default function InventoryPage() {
                   onChange={(e) => setWasteForm({ ...wasteForm, warehouseCode: e.target.value })}
                   className="control"
                 >
-                  <option value="KHO_HCM">Kho HCM</option>
-                  <option value="KHO_HN">Kho HN</option>
+                  <option value="KHO_HCM">Kho Cửa hàng 1</option>
+                  <option value="KHO_HN">Kho Cửa hàng 2</option>
                 </select>
               </Input>
             </div>

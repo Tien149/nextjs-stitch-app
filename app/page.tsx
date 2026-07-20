@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { MonthInput } from "@/components/DateInput";
+import { branchScopeOptions, displayRoleName } from "@/lib/branch-labels";
 import {
   appMenuItems,
   canAccessMenu,
@@ -60,6 +61,8 @@ export default function Home() {
   const [dashboardPeriod, setDashboardPeriod] = useState(DEFAULT_DASHBOARD_PERIOD);
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [dashboardError, setDashboardError] = useState("");
+  const [globalBranch, setGlobalBranch] = useState("ALL");
+  const [isBranchLocked, setIsBranchLocked] = useState(false);
 
   // Auth states
   const [user, setUser] = useState<DemoSession | null>(null);
@@ -85,10 +88,10 @@ export default function Home() {
     }
   };
 
-  const fetchDashboard = useCallback(async (period: string) => {
+  const fetchDashboard = useCallback(async (period: string, branch: string) => {
     try {
       setDashboardError("");
-      const response = await fetch(`/api/reports?type=dashboard&period=${period}&branchCode=ALL`);
+      const response = await fetch(`/api/reports?type=dashboard&period=${period}&branchCode=${branch}`);
       if (!response.ok) {
         const payload = await response.json();
         throw new Error(payload.error || "Không tải được dữ liệu Dashboard");
@@ -120,18 +123,36 @@ export default function Home() {
         router.replace(firstRoute?.href || "/login");
         return;
       }
+
+      let initialBranch = "ALL";
+      let locked = false;
+      if (parsedSession.allowedBranches?.length === 1 && !parsedSession.allowedBranches.includes("ALL")) {
+        initialBranch = parsedSession.allowedBranches[0];
+        locked = true;
+      } else {
+        initialBranch = localStorage.getItem("global_branch_code") || "ALL";
+      }
+
       window.setTimeout(() => {
         setUser(parsedSession);
         setActiveMenu(dashboardMenu.name);
+        setGlobalBranch(initialBranch);
+        setIsBranchLocked(locked);
         setIsCheckingAuth(false);
         fetchDocuments();
-        fetchDashboard(DEFAULT_DASHBOARD_PERIOD);
+        fetchDashboard(DEFAULT_DASHBOARD_PERIOD, initialBranch);
       }, 0);
     } catch {
       localStorage.removeItem(SESSION_KEY);
       router.push("/login");
     }
   }, [fetchDashboard, router]);
+
+  const handleBranchChange = (code: string) => {
+    setGlobalBranch(code);
+    localStorage.setItem("global_branch_code", code);
+    fetchDashboard(dashboardPeriod, code);
+  };
 
   const handleLogout = () => {
     localStorage.removeItem(SESSION_KEY);
@@ -312,6 +333,25 @@ export default function Home() {
             </div>
           </div>
           <div className="flex items-center gap-4">
+            {/* Global Branch Selector */}
+            <div className="relative">
+              <select
+                value={globalBranch}
+                onChange={(e) => handleBranchChange(e.target.value)}
+                disabled={isBranchLocked}
+                className="pl-3 pr-8 py-1.5 bg-slate-100 border border-slate-200 rounded-lg focus:ring-2 focus:ring-[#2563eb]/20 focus:border-[#2563eb] text-xs font-semibold outline-none cursor-pointer appearance-none transition-all disabled:opacity-75 disabled:cursor-not-allowed"
+              >
+                {branchScopeOptions.map((option) => (
+                  <option key={option.code} value={option.code}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <span className="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none text-base">
+                unfold_more
+              </span>
+            </div>
+
             <div className="relative hidden sm:block">
               <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">
                 search
@@ -342,7 +382,7 @@ export default function Home() {
                 <div className="text-right hidden md:block">
                   <div className="text-xs font-bold text-slate-800">{user?.name}</div>
                   <div className="text-[10px] text-slate-500 font-medium">
-                    {user?.role} - {user?.branch}
+                    {displayRoleName(user?.role)} - {user?.branch}
                   </div>
                 </div>
                 <div className="w-9 h-9 rounded-full bg-[#004ac6] text-white flex items-center justify-center font-bold text-sm shadow-sm border border-slate-200">
@@ -366,7 +406,7 @@ export default function Home() {
                 value={dashboardPeriod}
                 onChange={(value) => {
                   setDashboardPeriod(value);
-                  if (value) void fetchDashboard(value);
+                  if (value) void fetchDashboard(value, globalBranch);
                 }}
                 className="w-40 shadow-sm"
                 ariaLabel="Kỳ báo cáo"

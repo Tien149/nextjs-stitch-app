@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { DateInput } from "@/components/DateInput";
+import { displayRoleName, storeLabel, storeOptions } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 
 type Asset = {
@@ -11,10 +12,15 @@ type Asset = {
   name: string;
   branchCode: string;
   assetGroup: string;
+  imageUrl: string | null;
+  location: string | null;
+  quantity: number;
   purchaseDate: string;
   originalCost: number;
   currentValue: number;
   supplierName: string | null;
+  sourcePurchaseOrderId: string | null;
+  sourceReceiptId: string | null;
   status: string;
   note: string | null;
 };
@@ -23,10 +29,13 @@ const emptyForm = {
   name: "Máy pha cà phê Espresso",
   branchCode: "HCM",
   assetGroup: "EQUIPMENT",
+  imageUrl: "",
+  location: "Kho chính",
+  quantity: "1",
   purchaseDate: new Date().toISOString().slice(0, 10),
   originalCost: "85000000",
   supplierName: "NCC Thiết bị F&B",
-  note: "Máy pha cà phê chính chi nhánh Hồ Chí Minh",
+  note: "Thiết bị chính của cửa hàng",
 };
 
 export default function AssetsPage() {
@@ -108,7 +117,7 @@ export default function AssetsPage() {
             <span className="material-symbols-outlined text-lg">settings_suggest</span>
             Vận hành tài sản
           </button>
-          <p className="hidden sm:block text-xs font-bold text-slate-500">{user?.role}</p>
+          <p className="hidden sm:block text-xs font-bold text-slate-500">{displayRoleName(user?.role)}</p>
         </div>
       </header>
 
@@ -133,15 +142,18 @@ export default function AssetsPage() {
 
             <div className="grid grid-cols-2 gap-3">
               <label className="text-xs font-bold text-slate-600 block">
-                Chi nhánh *
+                Cửa hàng *
                 <select
                   value={form.branchCode}
                   onChange={(event) => setForm((value) => ({ ...value, branchCode: event.target.value }))}
                   className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                   required
                 >
-                  <option value="HCM">Chi nhánh HCM</option>
-                  <option value="HN">Chi nhánh Hà Nội</option>
+                  {storeOptions.map((option) => (
+                    <option key={option.code} value={option.code}>
+                      {storeLabel(option.code)}
+                    </option>
+                  ))}
                 </select>
               </label>
 
@@ -175,6 +187,40 @@ export default function AssetsPage() {
                   onChange={(event) => setForm((value) => ({ ...value, originalCost: event.target.value }))}
                   className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                   required
+                />
+              </label>
+            </div>
+
+            <label className="text-xs font-bold text-slate-600 block">
+              URL hình ảnh
+              <input
+                type="text"
+                value={form.imageUrl}
+                onChange={(event) => setForm((value) => ({ ...value, imageUrl: event.target.value }))}
+                className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                placeholder="https://... hoặc mã ảnh nội bộ"
+              />
+            </label>
+
+            <div className="grid grid-cols-2 gap-3">
+              <label className="text-xs font-bold text-slate-600 block">
+                Vị trí
+                <input
+                  type="text"
+                  value={form.location}
+                  onChange={(event) => setForm((value) => ({ ...value, location: event.target.value }))}
+                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                />
+              </label>
+              <label className="text-xs font-bold text-slate-600 block">
+                Số lượng
+                <input
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  value={form.quantity}
+                  onChange={(event) => setForm((value) => ({ ...value, quantity: event.target.value }))}
+                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                 />
               </label>
             </div>
@@ -216,7 +262,7 @@ export default function AssetsPage() {
               <thead className="bg-slate-50 text-slate-500 text-xs uppercase border-b border-slate-200">
                 <tr>
                   <th className="px-4 py-3 text-left">Tài sản</th>
-                  <th className="px-4 py-3 text-left">Chi nhánh</th>
+                  <th className="px-4 py-3 text-left">Cửa hàng/Vị trí</th>
                   <th className="px-4 py-3 text-right">Nguyên giá</th>
                   <th className="px-4 py-3 text-right">Giá trị còn lại</th>
                   <th className="px-4 py-3 text-left">Trạng thái</th>
@@ -227,8 +273,19 @@ export default function AssetsPage() {
                   <tr><td colSpan={5} className="px-4 py-10 text-center text-slate-400">Chưa có tài sản.</td></tr>
                 ) : assets.map((asset) => (
                   <tr key={asset.id} className="hover:bg-slate-50">
-                    <td className="px-4 py-3"><b>{asset.code} - {asset.name}</b><p className="text-xs text-slate-500">{asset.assetGroup} · {asset.supplierName || "-"}</p></td>
-                    <td className="px-4 py-3">{asset.branchCode}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-3">
+                        <div className="grid h-10 w-10 place-items-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
+                          {asset.imageUrl ? <span className="material-symbols-outlined text-blue-600">image</span> : <span className="material-symbols-outlined text-slate-400">precision_manufacturing</span>}
+                        </div>
+                        <div>
+                          <b>{asset.code} - {asset.name}</b>
+                          <p className="text-xs text-slate-500">{asset.assetGroup} · SL {asset.quantity} · {asset.supplierName || "-"}</p>
+                          {(asset.sourcePurchaseOrderId || asset.sourceReceiptId) && <p className="text-[11px] font-bold text-blue-600">Tạo từ PO/Nhập hàng</p>}
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">{storeLabel(asset.branchCode)}<p className="text-xs text-slate-500">{asset.location || "-"}</p></td>
                     <td className="px-4 py-3 text-right font-semibold">{money(asset.originalCost)} đ</td>
                     <td className="px-4 py-3 text-right font-semibold text-indigo-950">{money(asset.currentValue)} đ</td>
                     <td className="px-4 py-3"><span className="text-xs font-bold bg-slate-100 rounded px-2 py-1">{asset.status}</span></td>

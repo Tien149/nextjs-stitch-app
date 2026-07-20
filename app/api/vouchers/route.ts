@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
+import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
+import { applyVoucherSideEffects } from "@/lib/voucher-side-effects";
 
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -29,10 +31,19 @@ export async function GET(request: Request) {
     if (id) {
       const voucher = await prisma.financialVoucher.findUnique({ where: { id } });
       if (!voucher) return NextResponse.json({ error: "Không tìm thấy chứng từ" }, { status: 404 });
+      try {
+        assertBranchAccess(auth.session, voucher.branchCode);
+      } catch (e) {
+        return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi" }, { status: 403 });
+      }
       return NextResponse.json(voucher);
     }
 
+    const branchCode = requestedBranch(auth.session, cleanText(searchParams.get("branchCode")) || "ALL");
+    const branchFilter = branchCode === "ALL" ? {} : { branchCode };
+
     const vouchers = await prisma.financialVoucher.findMany({
+      where: { ...branchFilter },
       orderBy: { voucherDate: "desc" },
       take: 100,
     });
@@ -61,6 +72,12 @@ export async function POST(request: Request) {
     }
     if (!partnerName || !branchCode || !moneySourceCode || amount <= 0 || !description) {
       return NextResponse.json({ error: "Thiếu đối tác, chi nhánh, nguồn tiền, số tiền hoặc nội dung" }, { status: 400 });
+    }
+
+    try {
+      assertBranchAccess(auth.session, branchCode);
+    } catch (e) {
+      return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi" }, { status: 403 });
     }
 
     const voucher = await prisma.financialVoucher.create({
@@ -102,6 +119,13 @@ export async function PATCH(request: Request) {
 
     const current = await prisma.financialVoucher.findUnique({ where: { id } });
     if (!current) return NextResponse.json({ error: "Không tìm thấy chứng từ" }, { status: 404 });
+
+    try {
+      assertBranchAccess(auth.session, current.branchCode);
+    } catch (e) {
+      return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi" }, { status: 403 });
+    }
+
     if (current.status === "APPROVED" && status === "APPROVED") {
       return NextResponse.json({ error: "Chứng từ đã được duyệt" }, { status: 400 });
     }
@@ -109,12 +133,15 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: "Chứng từ đã hủy, không thể đổi trạng thái" }, { status: 400 });
     }
 
-    const voucher = await prisma.financialVoucher.update({
-      where: { id },
-      data: {
-        status,
-        approvedBy: status === "APPROVED" ? auth.session.name : null,
-      },
+    const voucher = await prisma.$transaction(async (tx) => {
+      if (status === "APPROVED") await applyVoucherSideEffects(tx, current, auth.session.name);
+      return tx.financialVoucher.update({
+        where: { id },
+        data: {
+          status,
+          approvedBy: status === "APPROVED" ? auth.session.name : null,
+        },
+      });
     });
 
     return NextResponse.json(voucher);

@@ -33,12 +33,47 @@ export function periodBounds(period: string) {
   return { start: new Date(`${period}-01T00:00:00`), end: new Date(`${addPeriod(period, 1)}-01T00:00:00`) };
 }
 
-export function requestedBranch(session: DemoSession, value: string) {
-  if (session.role === "Quản lý") {
-    if (session.branch.includes("Hà Nội")) return "HN";
-    if (session.branch.includes("HCM")) return "HCM";
+export const managedBranches = ["HCM", "HN"] as const;
+
+export function getAllowedBranches(session: DemoSession) {
+  if (session.allowedBranches?.includes("ALL")) return [...managedBranches];
+  if (session.allowedBranches?.length) {
+    return session.allowedBranches.filter((branch) => managedBranches.includes(branch as typeof managedBranches[number]));
   }
-  return value || "ALL";
+  if (session.branch.includes("HCM")) return ["HCM"];
+  if (session.branch.includes("Hà Nội") || session.branch.includes("HN")) return ["HN"];
+  return [...managedBranches];
+}
+
+export function canUseAllBranches(session: DemoSession) {
+  return getAllowedBranches(session).length > 1;
+}
+
+export function requestedBranch(session: DemoSession, value: string) {
+  const requested = (value || "ALL").trim().toUpperCase();
+  const allowed = getAllowedBranches(session);
+  if (requested === "ALL") return canUseAllBranches(session) ? "ALL" : allowed[0];
+  return allowed.includes(requested) ? requested : allowed[0];
+}
+
+export function assertBranchAccess(session: DemoSession, payloadBranch: string) {
+  const requested = (payloadBranch || "").trim().toUpperCase();
+  const allowedBranches = getAllowedBranches(session);
+  if (!requested || (requested === "ALL" && canUseAllBranches(session))) return;
+  if (requested === "ALL" || !allowedBranches.includes(requested)) {
+    throw new Error(`Bạn không có quyền thao tác ngoài cửa hàng được phân công (${allowedBranches.join(", ")}).`);
+  }
+}
+
+export function branchFilterForSession(session: DemoSession, value?: string) {
+  const allowed = getAllowedBranches(session);
+  const isAll = canUseAllBranches(session);
+  const requested = (value || "ALL").trim().toUpperCase();
+
+  if (requested === "ALL") {
+    return isAll ? {} : { branchCode: { in: allowed } };
+  }
+  return allowed.includes(requested) ? { branchCode: requested } : { branchCode: allowed[0] };
 }
 
 type EntryLine = {
