@@ -90,7 +90,7 @@ const importTabs: ImportTab[] = [
     apiPath: "/api/imports?importType=OPENING_BALANCE&templateCode=OPENING_BALANCE_STANDARD_V1",
     templatePath: "/api/imports?importType=OPENING_BALANCE&templateCode=OPENING_BALANCE_STANDARD_V1&template=1",
     templateCode: "OPENING_BALANCE_STANDARD_V1",
-    primaryFields: ["period", "branch_code", "balance_type", "amount"],
+    primaryFields: ["period", "branch_code", "balance_type", "money_source_code", "object_code", "warehouse_code", "allocation_months", "amount"],
   },
   {
     id: "receipt",

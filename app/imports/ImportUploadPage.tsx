@@ -119,6 +119,7 @@ export default function ImportUploadPage({
   const [mappingFields, setMappingFields] = useState<TemplateField[]>([]);
   const [mappingDirty, setMappingDirty] = useState(false);
   const [showTemplateLink, setShowTemplateLink] = useState(false);
+  const alwaysShowTemplateLink = templateCode === "OPENING_BALANCE_STANDARD_V1";
 
   useEffect(() => {
     const session = getSessionFromStorage();
@@ -153,6 +154,7 @@ export default function ImportUploadPage({
   }, [isCheckingAuth, requiresBranch]);
 
   const errorRows = useMemo(() => preview?.rows.filter((row) => row.errors.length > 0) || [], [preview]);
+  const messageIsError = /lỗi|không|vui lòng|thất bại|sai|thiếu|bắt buộc|error|failed|invalid|khong|loi|dong|dòng/i.test(message);
 
   const loadBatches = useCallback(async (signal?: AbortSignal) => {
     const response = await fetch(apiPath, { signal });
@@ -210,15 +212,20 @@ export default function ImportUploadPage({
         body: formData,
       });
       const payload = await response.json();
-      if (payload.preview) {
-        setPreview(payload.preview as PreviewPayload);
-        setMapping((payload.preview as PreviewPayload).mapping || {});
+      const previewPayload = payload.preview as PreviewPayload | undefined;
+      if (previewPayload) {
+        setPreview(previewPayload);
+        setMapping(previewPayload.mapping || {});
         setMappingFields((payload.template?.fields || []) as TemplateField[]);
         setMappingDirty(false);
       }
       if (!response.ok) throw new Error(payload.error || "Không xử lý được file import");
 
-      setMessage(mode === "preview" ? "Đã đọc file, vui lòng kiểm tra preview." : "Đã commit dữ liệu import.");
+      if (mode === "preview" && previewPayload && previewPayload.errorRows > 0) {
+        setMessage(`File có ${previewPayload.errorRows} dòng lỗi, vui lòng kiểm tra phần màu đỏ.`);
+      } else {
+        setMessage(mode === "preview" ? "Đã đọc file, vui lòng kiểm tra preview." : "Đã commit dữ liệu import.");
+      }
       if (mode === "commit") await loadBatches();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Có lỗi khi import file");
@@ -344,7 +351,7 @@ export default function ImportUploadPage({
 
           <div className="min-w-0 space-y-2 lg:col-start-2">
           <div className="flex h-fit flex-wrap items-end justify-end gap-2">
-            {showTemplateLink && (
+            {(showTemplateLink || alwaysShowTemplateLink) && (
               <a
                 href={templatePath}
                 className="flex h-9 w-[138px] items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-bold shadow-sm hover:bg-slate-50"
@@ -417,7 +424,15 @@ export default function ImportUploadPage({
               </button>
             </div>
 
-            {message && <p className="h-9 max-w-[360px] truncate rounded-lg bg-blue-50 border border-blue-100 text-blue-700 px-3 py-2 text-xs shadow-sm">{message}</p>}
+            {message && (
+              <p className={`h-9 max-w-[420px] truncate rounded-lg border px-3 py-2 text-xs font-semibold shadow-sm ${
+                messageIsError
+                  ? "border-rose-200 bg-rose-50 text-rose-700"
+                  : "border-blue-100 bg-blue-50 text-blue-700"
+              }`}>
+                {message}
+              </p>
+            )}
           </div>
 
           <section className="min-w-0 bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden">
@@ -519,14 +534,16 @@ export default function ImportUploadPage({
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {preview.rows.slice(0, 100).map((row) => (
-                        <tr key={row.rowNumber} className="hover:bg-slate-50">
+                        <tr key={row.rowNumber} className={row.errors.length > 0 ? "bg-rose-50/70 hover:bg-rose-50" : "hover:bg-slate-50"}>
                           <td className="px-4 py-3 font-bold">{row.rowNumber}</td>
                           {primaryFields.map((field) => (
                             <td key={field} className="px-4 py-3 whitespace-nowrap">
                               {String(row.values[field] ?? "-")}
                             </td>
                           ))}
-                          <td className="px-4 py-3 text-rose-700">{row.errors.join("; ") || "-"}</td>
+                          <td className={`px-4 py-3 ${row.errors.length > 0 ? "font-semibold text-rose-700" : "text-slate-400"}`}>
+                            {row.errors.join("; ") || "-"}
+                          </td>
                         </tr>
                       ))}
                     </tbody>

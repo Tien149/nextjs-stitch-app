@@ -128,16 +128,31 @@ function templateExample(templateCode: string) {
   return examples[templateCode] || {};
 }
 
+function templateExampleRows(templateCode: string): Array<Record<string, string | number | Date>> {
+  if (templateCode === "OPENING_BALANCE_STANDARD_V1") {
+    return [
+      { period: "2026-07", branch_code: "HCM", balance_type: "BANK", money_source_code: "VCB_HCM", amount: 2500000000, note: "So du ngan hang dau ky" },
+      { period: "2026-07", branch_code: "HCM", balance_type: "CASH", money_source_code: "TM_HCM", amount: 120000000, note: "Quy tien mat dau ky" },
+      { period: "2026-07", branch_code: "HCM", balance_type: "DEPOSIT", object_code: "KH_ABC", object_name: "Cong ty ABC", money_source_code: "VCB_HCM", amount: 7000000, note: "Tien coc dau ky" },
+      { period: "2026-07", branch_code: "HCM", balance_type: "INVENTORY", object_code: "NL001", object_name: "Nguyen lieu mau", warehouse_code: "KHO_HCM", quantity: 50, unit_cost: 32000, amount: 1600000, note: "Ton kho dau ky" },
+      { period: "2026-07", branch_code: "HCM", balance_type: "ASSET", object_code: "TS001", object_name: "Thiet bi dau ky", department_code: "STORE", quantity: 1, unit_cost: 18000000, amount: 18000000, note: "Tai san/CCDC dau ky" },
+      { period: "2026-07", branch_code: "HCM", balance_type: "PREPAID_EXPENSE", object_code: "PB001", object_name: "Chi phi phan bo dau ky", money_source_code: "OPEX_RENT", allocation_months: 12, allocation_start_period: "2026-07", amount: 120000000, note: "Chi phi phan bo dau ky" },
+    ];
+  }
+  const example = templateExample(templateCode);
+  return Object.keys(example).length > 0 ? [example] : [];
+}
+
 function templateResponse(importType: ImportType, templateCode?: string) {
   const template = getImportTemplate(importType, templateCode);
   if (!template) return NextResponse.json({ error: "Không tìm thấy template import" }, { status: 404 });
   const fields = template.fields.filter((field) => !field.hiddenFromMapping);
   const headers = fields.map((field) => field.label);
-  const example = templateExample(template.code);
-  const exampleRow = fields.map((field) => example[field.field] ?? "");
-  const worksheet = XLSX.utils.aoa_to_sheet([headers, exampleRow], { cellDates: true });
+  const examples = templateExampleRows(template.code);
+  const exampleRows = examples.length ? examples.map((example) => fields.map((field) => example[field.field] ?? "")) : [fields.map(() => "")];
+  const worksheet = XLSX.utils.aoa_to_sheet([headers, ...exampleRows], { cellDates: true });
   worksheet["!cols"] = headers.map((header) => ({ wch: Math.min(Math.max(header.length + 4, 14), 34) }));
-  worksheet["!autofilter"] = { ref: `A1:${XLSX.utils.encode_col(Math.max(headers.length - 1, 0))}2` };
+  worksheet["!autofilter"] = { ref: `A1:${XLSX.utils.encode_col(Math.max(headers.length - 1, 0))}${exampleRows.length + 1}` };
   const workbook = XLSX.utils.book_new();
   const sheetName = (template.preferredSheetNames?.[0] || "Du lieu mau").slice(0, 31);
   XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);

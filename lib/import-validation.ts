@@ -213,8 +213,12 @@ export async function validateImportResult(
     where: { type: { in: ["BRANCH", "MONEY_SOURCE", "PARTNER", "REVENUE_EXPENSE_CATEGORY"] } },
     select: { type: true, code: true, name: true, branch: true, status: true },
   });
+  const inventoryItems = importType === "OPENING_BALANCE"
+    ? await prisma.inventoryItem.findMany({ select: { code: true, status: true } })
+    : [];
 
   const branchTypes: ImportType[] = ["VOUCHER", "INTERNAL_TRANSFER", "DEBT_OPENING", "OPENING_BALANCE", "REVENUE_POS", "PAYROLL"];
+  const openingBalanceKeys = new Set<string>();
   for (const row of result.rows) {
     if (branchTypes.includes(importType)) validateBranch(row, session, masterItems);
 
@@ -229,6 +233,19 @@ export async function validateImportResult(
       if (!["CASH", "BANK", "WALLET_POS", "AR", "AP", "DEPOSIT", "INVENTORY", "ASSET", "PREPAID_EXPENSE"].includes(balanceType)) {
         addError(row, "Loại số dư không hợp lệ");
       }
+      const openingKey = [
+        text(row.values.period),
+        text(row.values.branch_code).toUpperCase(),
+        balanceType,
+        text(row.values.object_code).toUpperCase(),
+        text(row.values.money_source_code).toUpperCase(),
+        text(row.values.warehouse_code).toUpperCase(),
+        text(row.values.department_code).toUpperCase(),
+      ].join("|");
+      if (openingBalanceKeys.has(openingKey)) {
+        addError(row, "File co dong so du dau ky bi trung nguon/doi tuong");
+      }
+      openingBalanceKeys.add(openingKey);
       if (["CASH", "BANK", "WALLET_POS", "DEPOSIT"].includes(balanceType) && !text(row.values.money_source_code)) {
         addError(row, "Loại số dư này bắt buộc có Nguồn tiền");
       }
@@ -236,6 +253,10 @@ export async function validateImportResult(
         addError(row, "Loại số dư này bắt buộc có Mã đối tượng/Mã nguồn");
       }
       if (balanceType === "INVENTORY") {
+        const itemCode = text(row.values.object_code).toUpperCase();
+        const item = inventoryItems.find((candidate) => candidate.code.toUpperCase() === itemCode);
+        if (itemCode && !item) addError(row, `Không tìm thấy mặt hàng ${itemCode}. Vui lòng tạo/import Danh mục mặt hàng trước`);
+        if (item && item.status !== "ACTIVE") addError(row, `Mặt hàng ${itemCode} đang ngưng hoạt động`);
         if (!text(row.values.warehouse_code)) addError(row, "Tồn kho đầu kỳ bắt buộc có Kho");
         if (numberValue(row.values.quantity) <= 0) addError(row, "Tồn kho đầu kỳ bắt buộc có Số lượng > 0");
       }

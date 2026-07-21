@@ -408,13 +408,30 @@ export async function commitImport(input: CommitInput) {
     }
 
     if (input.importType === "OPENING_BALANCE") {
-      const pairs = Array.from(new Set(input.rows.map((row) => `${asText(row.values.period)}|${asText(row.values.branch_code)}`)));
+      const openingKeys = Array.from(new Map(input.rows.map((row) => {
+        const values = row.values;
+        const key = [
+          asText(values.period),
+          asText(values.branch_code),
+          asText(values.balance_type).toUpperCase(),
+          asText(values.object_code).toUpperCase(),
+          asText(values.money_source_code).toUpperCase(),
+          asText(values.warehouse_code).toUpperCase(),
+          asText(values.department_code).toUpperCase(),
+        ].join("|");
+        return [key, values];
+      })).values());
       await tx.openingBalance.deleteMany({
         where: {
-          OR: pairs.map((pair) => {
-            const [period, branchCode] = pair.split("|");
-            return { period, branchCode };
-          }),
+          OR: openingKeys.map((values) => ({
+            period: asText(values.period),
+            branchCode: asText(values.branch_code),
+            balanceType: asText(values.balance_type).toUpperCase(),
+            objectCode: asText(values.object_code) || null,
+            moneySourceCode: asText(values.money_source_code) || null,
+            warehouseCode: asText(values.warehouse_code) || null,
+            departmentCode: asText(values.department_code) || null,
+          })),
         },
       });
       for (const row of input.rows) {

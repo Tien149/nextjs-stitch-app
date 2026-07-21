@@ -396,6 +396,17 @@ export default function OpeningBalancesPage() {
         </div>
         <div className="flex items-center gap-3">
           <BranchScopeSelect session={user} value={branchScope} onChange={setBranchScope} />
+          {canManageOpeningBalances && (
+            <button
+              type="button"
+              onClick={() => router.push("/imports?tab=opening-balance")}
+              className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-blue-700"
+              title="Import so du dau ky bang Excel"
+            >
+              <span className="material-symbols-outlined text-[18px]">upload_file</span>
+              Import Excel
+            </button>
+          )}
           <div className="hidden sm:block text-right">
             <p className="text-xs font-bold text-slate-900">{user?.name}</p>
             <p className="text-[11px] text-slate-500">{user?.role}</p>

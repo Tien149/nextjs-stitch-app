@@ -8,7 +8,7 @@ import { canPerformMenuAction } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 
 type Account = { id: string; code: string; name: string; accountType: string; reportGroup: string };
-type Line = { id: string; debit: number; credit: number; departmentCode: string | null; account: Account };
+type Line = { id: string; debit: number; credit: number; departmentCode: string | null; account: Account; categoryCode: string | null; partnerCode: string | null };
 type Entry = { id: string; code: string; entryDate: string; branchCode: string; sourceType: string; sourceCode: string | null; description: string; lines: Line[] };
 type Data = { accounts: Account[]; entries: Entry[]; totals: { debit: number; credit: number; difference: number } };
 
@@ -23,6 +23,8 @@ export default function AccountingPage() {
   const [period, setPeriod] = useState(new Date().toISOString().slice(0, 7));
   const [branchCode, setBranchCode] = useState("ALL");
   const [data, setData] = useState<Data>({ accounts: [], entries: [], totals: { debit: 0, credit: 0, difference: 0 } });
+  const [categories, setCategories] = useState<any[]>([]);
+  const [showAccountingDetails, setShowAccountingDetails] = useState(false);
   const [message, setMessage] = useState("");
   const [syncing, setSyncing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -31,8 +33,9 @@ export default function AccountingPage() {
     entryDate: new Date().toISOString().slice(0, 10),
     branchCode: "HCM",
     description: "Bút toán điều chỉnh",
-    debitAccount: "6428",
-    creditAccount: "1121",
+    entryType: "EXPENSE", // INCOME or EXPENSE
+    categoryCode: "",
+    moneySourceCode: "",
     amount: "1000000",
   });
 
@@ -42,7 +45,18 @@ export default function AccountingPage() {
   const loadData = useCallback(async () => {
     const response = await fetch(`/api/accounting?period=${period}&branchCode=${branchCode}`);
     if (response.ok) {
-      setData((await response.json()) as Data);
+      const payload = await response.json();
+      setData(payload);
+      if (payload.categories) {
+        setCategories(payload.categories);
+        const defaultCat = payload.categories.find((c: any) => c.type === "REVENUE_EXPENSE_CATEGORY")?.code || "";
+        const defaultSrc = payload.categories.find((c: any) => c.type === "MONEY_SOURCE")?.code || "";
+        setManual((prev) => ({
+          ...prev,
+          categoryCode: prev.categoryCode || defaultCat,
+          moneySourceCode: prev.moneySourceCode || defaultSrc,
+        }));
+      }
     }
   }, [branchCode, period]);
 
@@ -90,10 +104,10 @@ export default function AccountingPage() {
           entryDate: manual.entryDate,
           branchCode: manual.branchCode,
           description: manual.description,
-          lines: [
-            { accountCode: manual.debitAccount, debit: toNumber(manual.amount) },
-            { accountCode: manual.creditAccount, credit: toNumber(manual.amount) },
-          ],
+          entryType: manual.entryType,
+          categoryCode: manual.categoryCode,
+          moneySourceCode: manual.moneySourceCode,
+          amount: toNumber(manual.amount),
         }),
       });
       const payload = await response.json();
@@ -143,6 +157,123 @@ export default function AccountingPage() {
       default:
         return "bg-slate-50 text-slate-700 border border-slate-100";
     }
+  };
+
+  const getSourceLabel = (type: string) => {
+    switch (type) {
+      case "OPENING_BALANCE": return { text: "Số dư đầu kỳ", icon: "database", color: "bg-blue-50 text-blue-700 border-blue-100" };
+      case "VOUCHER": return { text: "Thu / Chi", icon: "payments", color: "bg-amber-50 text-amber-700 border-amber-100" };
+      case "REVENUE_POS": return { text: "Doanh thu POS", icon: "point_of_sale", color: "bg-emerald-50 text-emerald-700 border-emerald-100" };
+      case "BANK_STATEMENT": return { text: "Sao kê ngân hàng", icon: "account_balance", color: "bg-cyan-50 text-cyan-700 border-cyan-100" };
+      case "ASSET_ACQUISITION": return { text: "Mua sắm tài sản", icon: "shopping_cart", color: "bg-purple-50 text-purple-700 border-purple-100" };
+      case "SUPPLIER_PAYABLE": return { text: "Nhập hàng NCC", icon: "local_shipping", color: "bg-rose-50 text-rose-700 border-rose-100" };
+      case "INVENTORY_ISSUE": return { text: "Xuất kho", icon: "warehouse", color: "bg-slate-50 text-slate-700 border-slate-100" };
+      case "DEPRECIATION": return { text: "Khấu hao tài sản", icon: "trending_down", color: "bg-orange-50 text-orange-700 border-orange-100" };
+      case "ACCRUAL": return { text: "Phân bổ chi phí", icon: "event_repeat", color: "bg-teal-50 text-teal-700 border-teal-100" };
+      case "PAYROLL": return { text: "Bảng lương", icon: "badge", color: "bg-indigo-50 text-indigo-700 border-indigo-100" };
+      case "MANUAL": return { text: "Bút toán tay", icon: "edit_note", color: "bg-fuchsia-50 text-fuchsia-700 border-fuchsia-100" };
+      default: return { text: type, icon: "receipt_long", color: "bg-slate-50 text-slate-700 border-slate-100" };
+    }
+  };
+
+  const handleRedirectToSource = (sourceType: string) => {
+    switch (sourceType) {
+      case "OPENING_BALANCE":
+        router.push("/opening-balances");
+        break;
+      case "VOUCHER":
+        router.push("/vouchers");
+        break;
+      case "REVENUE_POS":
+        router.push("/imports/revenue");
+        break;
+      case "BANK_STATEMENT":
+        router.push("/imports/bank-statements");
+        break;
+      case "ASSET_ACQUISITION":
+        router.push("/assets");
+        break;
+      case "SUPPLIER_PAYABLE":
+        router.push("/procurement");
+        break;
+      case "INVENTORY_ISSUE":
+        router.push("/inventory");
+        break;
+      case "DEPRECIATION":
+        router.push("/assets/operations");
+        break;
+      case "ACCRUAL":
+        router.push("/finance-operations");
+        break;
+      case "PAYROLL":
+        router.push("/imports/payroll");
+        break;
+      default:
+        break;
+    }
+  };
+
+  const getEntryCategorySummary = (entry: Entry) => {
+    const lineWithCategory = entry.lines.find(l => l.categoryCode);
+    const lineWithMoneySource = entry.lines.find(l => l.account.code === "1111" || l.account.code === "1121");
+    
+    let categoryName = "";
+    if (lineWithCategory?.categoryCode) {
+      const matched = categories.find(c => c.code === lineWithCategory.categoryCode);
+      categoryName = matched ? matched.name : lineWithCategory.categoryCode;
+    }
+    
+    const lineWithPartner = entry.lines.find(l => l.partnerCode);
+    let partnerName = "";
+    if (lineWithPartner?.partnerCode) {
+      const matchedPartner = categories.find(c => c.code === lineWithPartner.partnerCode);
+      partnerName = matchedPartner ? matchedPartner.name : lineWithPartner.partnerCode;
+    }
+
+    if (entry.sourceType === "VOUCHER") {
+      const isReceipt = entry.lines.some(l => (l.account.code === "1111" || l.account.code === "1121") && l.debit > 0);
+      const moneySourceStr = lineWithMoneySource ? ` (${lineWithMoneySource.account.name})` : "";
+      if (isReceipt) {
+        return `Thu: ${categoryName || "Doanh thu khác"}${moneySourceStr}`;
+      } else {
+        return `Chi: ${categoryName || "Chi phí vận hành"}${moneySourceStr}`;
+      }
+    }
+
+    if (entry.sourceType === "REVENUE_POS") {
+      return `Doanh thu POS: ${categoryName || "F&B"}`;
+    }
+
+    if (entry.sourceType === "OPENING_BALANCE") {
+      return `Số dư đầu kỳ ${partnerName ? `- Đối tác: ${partnerName}` : ""}`;
+    }
+
+    if (entry.sourceType === "SUPPLIER_PAYABLE") {
+      return `Nhập hàng NCC ${partnerName ? `- ${partnerName}` : ""}`;
+    }
+
+    if (entry.sourceType === "DEPRECIATION") {
+      return `Chi phí khấu hao tài sản`;
+    }
+
+    if (entry.sourceType === "ACCRUAL") {
+      return `Phân bổ chi phí: ${categoryName || "Phân bổ CCDC/trả trước"}`;
+    }
+
+    if (entry.sourceType === "PAYROLL") {
+      return `Chi phí nhân sự / Lương`;
+    }
+
+    if (entry.sourceType === "MANUAL") {
+      return `${categoryName || "Điều chỉnh nội bộ"}`;
+    }
+
+    if (categoryName) return categoryName;
+    return entry.lines.map(l => l.account.name).filter((v, i, a) => a.indexOf(v) === i).join(" - ");
+  };
+
+  const getEntryAmount = (entry: Entry) => {
+    return entry.lines.reduce((sum, line) => sum + line.debit, 0);
   };
 
   const getAccountTypeBadge = (type: string) => {
@@ -325,99 +456,199 @@ export default function AccountingPage() {
 
             {/* General Ledger Table Card */}
             <section className="bg-white border border-slate-200 rounded-2xl shadow-lg overflow-hidden">
-              <div className="px-6 py-5 border-b border-slate-200 flex items-center justify-between">
+              <div className="px-6 py-5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-4">
                 <div>
                   <h3 className="font-bold text-slate-900">Sổ Nhật ký chung</h3>
                   <p className="text-xs text-slate-500 mt-1">Liệt kê tất cả bút toán kép được đồng bộ hoặc tạo thủ công trong kỳ.</p>
                 </div>
-                <button
-                  onClick={loadData}
-                  className="h-9 px-3 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-bold flex items-center gap-1.5 transition-colors"
-                >
-                  <span className="material-symbols-outlined text-sm">refresh</span>
-                  Tải lại
-                </button>
+                
+                <div className="flex items-center gap-4">
+                  <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 cursor-pointer hover:text-slate-800 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-lg shadow-sm">
+                    <input
+                      type="checkbox"
+                      checked={showAccountingDetails}
+                      onChange={(e) => setShowAccountingDetails(e.target.checked)}
+                      className="rounded text-indigo-600 focus:ring-indigo-500 border-slate-300 h-4 w-4"
+                    />
+                    Hiển thị định khoản kế toán (Nợ/Có)
+                  </label>
+                  
+                  <button
+                    onClick={loadData}
+                    className="h-9 px-3 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-bold flex items-center gap-1.5 transition-colors shadow-sm"
+                  >
+                    <span className="material-symbols-outlined text-sm">refresh</span>
+                    Tải lại
+                  </button>
+                </div>
               </div>
 
               <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead className="bg-slate-50/80 backdrop-blur-sm text-xs font-bold text-slate-500 uppercase tracking-wider border-b border-slate-200">
-                    <tr>
-                      <th className="px-5 py-3.5 text-left">Ngày</th>
-                      <th className="px-5 py-3.5 text-left">Bút toán</th>
-                      <th className="px-5 py-3.5 text-left">Nguồn dữ liệu</th>
-                      <th className="px-5 py-3.5 text-left">Diễn giải</th>
-                      <th className="px-5 py-3.5 text-left">Tài khoản hạch toán</th>
-                      <th className="px-5 py-3.5 text-right">Phát sinh Nợ</th>
-                      <th className="px-5 py-3.5 text-right">Phát sinh Có</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {data.entries.length === 0 ? (
+                {showAccountingDetails ? (
+                  // Traditional Double-entry Accounting Table
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-slate-50/80 backdrop-blur-sm text-xs font-bold text-slate-500 uppercase tracking-wider border-b border-slate-200">
                       <tr>
-                        <td colSpan={7} className="px-5 py-12 text-center text-slate-400 font-medium">
-                          Chưa có phát sinh kế toán trong kỳ. Nhấp &quot;Đồng bộ ghi sổ&quot; hoặc tạo bút toán tay.
-                        </td>
+                        <th className="px-5 py-3.5 text-left">Ngày</th>
+                        <th className="px-5 py-3.5 text-left">Bút toán</th>
+                        <th className="px-5 py-3.5 text-left">Nguồn dữ liệu</th>
+                        <th className="px-5 py-3.5 text-left">Diễn giải</th>
+                        <th className="px-5 py-3.5 text-left">Tài khoản hạch toán</th>
+                        <th className="px-5 py-3.5 text-right">Phát sinh Nợ</th>
+                        <th className="px-5 py-3.5 text-right">Phát sinh Có</th>
                       </tr>
-                    ) : (
-                      data.entries.flatMap((entry) =>
-                        entry.lines.map((line, index) => (
-                          <tr key={line.id} className="hover:bg-slate-50/40 transition-colors">
-                            <td className="px-5 py-4 whitespace-nowrap text-slate-500 text-xs font-medium align-top">
-                              {index === 0 ? new Date(entry.entryDate).toLocaleDateString("vi-VN") : ""}
-                            </td>
-                            <td className="px-5 py-4 whitespace-nowrap text-xs font-bold text-slate-800 align-top">
-                              {index === 0 && (
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {data.entries.length === 0 ? (
+                        <tr>
+                          <td colSpan={7} className="px-5 py-12 text-center text-slate-400 font-medium">
+                            Chưa có phát sinh kế toán trong kỳ. Nhấp &quot;Đồng bộ ghi sổ&quot; hoặc tạo bút toán tay.
+                          </td>
+                        </tr>
+                      ) : (
+                        data.entries.flatMap((entry) =>
+                          entry.lines.map((line, index) => (
+                            <tr key={line.id} className="hover:bg-slate-50/40 transition-colors">
+                              <td className="px-5 py-4 whitespace-nowrap text-slate-500 text-xs font-medium align-top">
+                                {index === 0 ? new Date(entry.entryDate).toLocaleDateString("vi-VN") : ""}
+                              </td>
+                              <td className="px-5 py-4 whitespace-nowrap text-xs font-bold text-slate-800 align-top">
+                                {index === 0 && (
+                                  <div className="flex flex-col gap-0.5">
+                                    <span className="font-semibold">{entry.code}</span>
+                                    <span className="text-[10px] text-slate-400 font-semibold">{storeLabel(entry.branchCode)}</span>
+                                  </div>
+                                )}
+                              </td>
+                              <td className="px-5 py-4 whitespace-nowrap text-xs align-top">
+                                {index === 0 && (
+                                  <div className="flex flex-col gap-0.5">
+                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${getSourceBadgeClass(entry.sourceType)}`}>
+                                      {entry.sourceType}
+                                    </span>
+                                    {entry.sourceCode && (
+                                      <span className="text-[10px] text-slate-400 font-semibold">{entry.sourceCode}</span>
+                                    )}
+                                  </div>
+                                )}
+                              </td>
+                              <td className="px-5 py-4 text-xs font-medium text-slate-700 max-w-xs truncate align-top">
+                                {index === 0 ? entry.description : ""}
+                              </td>
+                              <td className="px-5 py-4 text-xs text-slate-700 align-top">
                                 <div className="flex flex-col gap-0.5">
-                                  <span className="font-semibold">{entry.code}</span>
-                                  <span className="text-[10px] text-slate-400 font-semibold">{storeLabel(entry.branchCode)}</span>
-                                </div>
-                              )}
-                            </td>
-                            <td className="px-5 py-4 whitespace-nowrap text-xs align-top">
-                              {index === 0 && (
-                                <div className="flex flex-col gap-0.5">
-                                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${getSourceBadgeClass(entry.sourceType)}`}>
-                                    {entry.sourceType}
-                                  </span>
-                                  {entry.sourceCode && (
-                                    <span className="text-[10px] text-slate-400 font-semibold">{entry.sourceCode}</span>
+                                  <div>
+                                    <span className="font-bold text-indigo-950 bg-indigo-50/40 border border-indigo-100/30 px-1.5 py-0.5 rounded text-[11px] mr-1.5">
+                                      {line.account.code}
+                                    </span>
+                                    <span className="font-medium text-slate-800">{line.account.name}</span>
+                                  </div>
+                                  {line.departmentCode && (
+                                    <span className="text-[10px] text-slate-400 font-semibold">Phòng: {line.departmentCode}</span>
                                   )}
                                 </div>
-                              )}
-                            </td>
-                            <td className="px-5 py-4 text-xs font-medium text-slate-700 max-w-xs truncate align-top">
-                              {index === 0 ? entry.description : ""}
-                            </td>
-                            <td className="px-5 py-4 text-xs text-slate-700 align-top">
-                              <div className="flex flex-col gap-0.5">
-                                <div>
-                                  <span className="font-bold text-indigo-950 bg-indigo-50/40 border border-indigo-100/30 px-1.5 py-0.5 rounded text-[11px] mr-1.5">
-                                    {line.account.code}
-                                  </span>
-                                  <span className="font-medium text-slate-800">{line.account.name}</span>
+                              </td>
+                              <td className="px-5 py-4 whitespace-nowrap text-right text-xs font-semibold text-slate-900 align-top">
+                                {line.debit > 0 ? `${money(line.debit)} đ` : <span className="text-slate-300">-</span>}
+                              </td>
+                              <td className="px-5 py-4 whitespace-nowrap text-right text-xs font-semibold text-slate-900 align-top">
+                                {line.credit > 0 ? `${money(line.credit)} đ` : <span className="text-slate-300">-</span>}
+                              </td>
+                            </tr>
+                          ))
+                        )
+                      )}
+                    </tbody>
+                  </table>
+                ) : (
+                  // Consolidated Management Ledger Table (Simplified, Category-oriented)
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-slate-50/80 backdrop-blur-sm text-xs font-bold text-slate-500 uppercase tracking-wider border-b border-slate-200">
+                      <tr>
+                        <th className="px-5 py-3.5 text-left">Ngày</th>
+                        <th className="px-5 py-3.5 text-left">Mã bút toán</th>
+                        <th className="px-5 py-3.5 text-left">Phần hành</th>
+                        <th className="px-5 py-3.5 text-left">Chứng từ gốc</th>
+                        <th className="px-5 py-3.5 text-left">Nội dung diễn giải</th>
+                        <th className="px-5 py-3.5 text-left">Phân loại Quản trị</th>
+                        <th className="px-5 py-3.5 text-right">Số tiền</th>
+                        <th className="px-5 py-3.5 text-center">Hành động</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {data.entries.length === 0 ? (
+                        <tr>
+                          <td colSpan={8} className="px-5 py-12 text-center text-slate-400 font-medium">
+                            Chưa có phát sinh kế toán quản trị trong kỳ. Nhấp &quot;Đồng bộ ghi sổ&quot; hoặc tạo bút toán tay.
+                          </td>
+                        </tr>
+                      ) : (
+                        data.entries.map((entry) => {
+                          const badge = getSourceLabel(entry.sourceType);
+                          return (
+                            <tr key={entry.id} className="hover:bg-slate-50/40 transition-colors">
+                              <td className="px-5 py-4 whitespace-nowrap text-slate-500 text-xs font-medium">
+                                {new Date(entry.entryDate).toLocaleDateString("vi-VN")}
+                              </td>
+                              <td className="px-5 py-4 whitespace-nowrap text-xs font-bold text-slate-800">
+                                <div className="flex flex-col gap-0.5">
+                                  <span>{entry.code}</span>
+                                  <span className="text-[10px] text-slate-400 font-semibold">{storeLabel(entry.branchCode)}</span>
                                 </div>
-                                {line.departmentCode && (
-                                  <span className="text-[10px] text-slate-400 font-semibold">Phòng: {line.departmentCode}</span>
+                              </td>
+                              <td className="px-5 py-4 whitespace-nowrap text-xs">
+                                <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold border ${badge.color}`}>
+                                  <span className="material-symbols-outlined text-xs">{badge.icon}</span>
+                                  {badge.text}
+                                </span>
+                              </td>
+                              <td className="px-5 py-4 whitespace-nowrap text-xs font-semibold text-slate-700">
+                                {entry.sourceCode ? (
+                                  <button
+                                    onClick={() => handleRedirectToSource(entry.sourceType)}
+                                    className="text-indigo-600 hover:text-indigo-800 hover:underline flex items-center gap-0.5 text-left font-bold"
+                                    title="Nhấp để truy vết sang màn hình phần hành nguồn"
+                                  >
+                                    {entry.sourceCode}
+                                    <span className="material-symbols-outlined text-[10px]">open_in_new</span>
+                                  </button>
+                                ) : (
+                                  <span className="text-slate-400">-</span>
                                 )}
-                              </div>
-                            </td>
-                            <td className="px-5 py-4 whitespace-nowrap text-right text-xs font-semibold text-slate-900 align-top">
-                              {line.debit > 0 ? `${money(line.debit)} đ` : <span className="text-slate-300">-</span>}
-                            </td>
-                            <td className="px-5 py-4 whitespace-nowrap text-right text-xs font-semibold text-slate-900 align-top">
-                              {line.credit > 0 ? `${money(line.credit)} đ` : <span className="text-slate-300">-</span>}
-                            </td>
-                          </tr>
-                        ))
-                      )
-                    )}
-                  </tbody>
-                </table>
+                              </td>
+                              <td className="px-5 py-4 text-xs font-medium text-slate-700 max-w-xs truncate">
+                                {entry.description}
+                              </td>
+                              <td className="px-5 py-4 text-xs font-bold text-slate-900">
+                                {getEntryCategorySummary(entry)}
+                              </td>
+                              <td className="px-5 py-4 whitespace-nowrap text-right text-xs font-bold text-indigo-950">
+                                {money(getEntryAmount(entry))} đ
+                              </td>
+                              <td className="px-5 py-4 whitespace-nowrap text-center text-xs">
+                                {entry.sourceType !== "MANUAL" ? (
+                                  <button
+                                    onClick={() => handleRedirectToSource(entry.sourceType)}
+                                    className="px-2.5 py-1 rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold border border-indigo-100 flex items-center gap-1 mx-auto transition-colors active:scale-95 shadow-sm"
+                                  >
+                                    <span className="material-symbols-outlined text-xs">edit_square</span>
+                                    Sửa nguồn
+                                  </button>
+                                ) : (
+                                  <span className="text-slate-400 text-[10px]">Bút toán tay</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                )}
               </div>
             </section>
           </div>
-        )}
+        ) || null}
 
         {/* TAB 2: Manual Adjustment */}
         {active === "manual" && (
@@ -476,18 +707,15 @@ export default function AccountingPage() {
 
                 <div className="grid grid-cols-2 gap-4">
                   <div className="flex flex-col gap-1.5">
-                    <span className="text-xs font-bold text-slate-600">Tài khoản ghi NỢ (Debit)</span>
+                    <span className="text-xs font-bold text-slate-600">Loại bút toán</span>
                     <div className="relative">
                       <select
-                        value={manual.debitAccount}
-                        onChange={(e) => setManual({ ...manual, debitAccount: e.target.value })}
+                        value={manual.entryType}
+                        onChange={(e) => setManual({ ...manual, entryType: e.target.value })}
                         className="w-full pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all appearance-none cursor-pointer"
                       >
-                        {data.accounts.map((acc) => (
-                          <option key={acc.id} value={acc.code}>
-                            {acc.code} — {acc.name}
-                          </option>
-                        ))}
+                        <option value="EXPENSE">Chi phí (Expense)</option>
+                        <option value="INCOME">Doanh thu / Thu nhập (Income)</option>
                       </select>
                       <span className="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none text-lg">
                         unfold_more
@@ -496,23 +724,47 @@ export default function AccountingPage() {
                   </div>
 
                   <div className="flex flex-col gap-1.5">
-                    <span className="text-xs font-bold text-slate-600">Tài khoản ghi CÓ (Credit)</span>
+                    <span className="text-xs font-bold text-slate-600">Nguồn tiền</span>
                     <div className="relative">
                       <select
-                        value={manual.creditAccount}
-                        onChange={(e) => setManual({ ...manual, creditAccount: e.target.value })}
+                        value={manual.moneySourceCode}
+                        onChange={(e) => setManual({ ...manual, moneySourceCode: e.target.value })}
                         className="w-full pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all appearance-none cursor-pointer"
                       >
-                        {data.accounts.map((acc) => (
-                          <option key={acc.id} value={acc.code}>
-                            {acc.code} — {acc.name}
-                          </option>
-                        ))}
+                        {categories
+                          .filter((c) => c.type === "MONEY_SOURCE")
+                          .map((c) => (
+                            <option key={c.id} value={c.code}>
+                              [{c.code}] {c.name}
+                            </option>
+                          ))}
                       </select>
                       <span className="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none text-lg">
                         unfold_more
                       </span>
                     </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-xs font-bold text-slate-600">Nhóm phân loại (Loại thu chi)</span>
+                  <div className="relative">
+                    <select
+                      value={manual.categoryCode}
+                      onChange={(e) => setManual({ ...manual, categoryCode: e.target.value })}
+                      className="w-full pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all appearance-none cursor-pointer font-bold"
+                    >
+                      {categories
+                        .filter((c) => c.type === "REVENUE_EXPENSE_CATEGORY")
+                        .map((c) => (
+                          <option key={c.id} value={c.code}>
+                            [{c.code}] {c.name} ({c.group || ""})
+                          </option>
+                        ))}
+                    </select>
+                    <span className="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none text-lg">
+                      unfold_more
+                    </span>
                   </div>
                 </div>
 

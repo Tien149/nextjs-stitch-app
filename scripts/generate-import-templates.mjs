@@ -52,12 +52,15 @@ saveWorkbook("mau_doanh_thu_pos.xlsx", [
 ]);
 
 saveWorkbook("mau_so_du_dau_ky.xlsx", [
-  ["Ky", "Chi nhanh", "Loai so du", "Ma doi tuong", "Ten doi tuong", "Nguon tien", "So tien", "Ghi chu"],
-  ["2026-07", "HCM", "BANK", "", "", "VCB_HCM", 2500000000, "So du ngan hang dau ky"],
-  ["2026-07", "HCM", "CASH", "", "", "TM_HCM", 120000000, "Quy tien mat dau ky"],
-  ["2026-07", "HCM", "AR", "KH_ABC", "Cong ty TNHH ABC", "", 50000000, "Phai thu dau ky"],
-  ["2026-07", "HCM", "AP", "NCC_FOOD", "NCC Nguyen lieu", "", -18500000, "Phai tra dau ky"],
-  ["2026-07", "HCM", "DEPOSIT", "KH_ABC", "Cong ty TNHH ABC", "VCB_HCM", 50000000, "Tien coc dang giu"],
+  ["Ky", "Chi nhanh", "Loai so du", "Ma doi tuong", "Ten doi tuong", "Nguon tien", "Kho", "Phong ban", "So luong", "Don gia", "So ky phan bo", "Ky bat dau phan bo", "So tien", "Ghi chu"],
+  ["2026-07", "HCM", "BANK", "", "", "VCB_HCM", "", "", "", "", "", "", 2500000000, "So du ngan hang dau ky"],
+  ["2026-07", "HCM", "CASH", "", "", "TM_HCM", "", "", "", "", "", "", 120000000, "Quy tien mat dau ky"],
+  ["2026-07", "HCM", "AR", "KH_ABC", "Cong ty TNHH ABC", "", "", "", "", "", "", "", 50000000, "Phai thu dau ky"],
+  ["2026-07", "HCM", "AP", "NCC_FOOD", "NCC Nguyen lieu", "", "", "", "", "", "", "", 18500000, "Phai tra dau ky"],
+  ["2026-07", "HCM", "DEPOSIT", "KH_ABC", "Cong ty TNHH ABC", "VCB_HCM", "", "", "", "", "", "", 7000000, "Tien coc dang giu"],
+  ["2026-07", "HCM", "INVENTORY", "NL001", "Nguyen lieu mau", "", "KHO_HCM", "", 50, 32000, "", "", 1600000, "Ton kho dau ky"],
+  ["2026-07", "HCM", "ASSET", "TS001", "Thiet bi dau ky", "", "", "STORE", 1, 18000000, "", "", 18000000, "Tai san/CCDC dau ky"],
+  ["2026-07", "HCM", "PREPAID_EXPENSE", "PB001", "Chi phi phan bo dau ky", "OPEX_RENT", "", "", "", "", 12, "2026-07", 120000000, "Chi phi phan bo dau ky"],
 ]);
 
 const readme = `# Import Templates Giai Doan 2
