@@ -2,12 +2,15 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import { AppBrand } from "@/components/AppBrand";
 import { MonthInput } from "@/components/DateInput";
 import { branchScopeOptions, displayRoleName } from "@/lib/branch-labels";
 import {
   appMenuItems,
   canAccessMenu,
   canPerformAction,
+  canViewFinancialDashboard,
+  getDefaultRouteForRole,
   type DemoSession,
   SESSION_KEY,
 } from "@/lib/auth-demo";
@@ -118,9 +121,8 @@ export default function Home() {
         throw new Error("Invalid session");
       }
       const dashboardMenu = appMenuItems.find((item) => item.href === "/" && item.name === "Dashboard");
-      if (!dashboardMenu || !canAccessMenu(parsedSession.role, dashboardMenu)) {
-        const firstRoute = allowedItems.find((item) => item.href !== "/");
-        router.replace(firstRoute?.href || "/login");
+      if (!dashboardMenu || !canAccessMenu(parsedSession.role, dashboardMenu) || !canViewFinancialDashboard(parsedSession.role)) {
+        router.replace(getDefaultRouteForRole(parsedSession.role));
         return;
       }
 
@@ -274,8 +276,7 @@ export default function Home() {
       {/* Sidebar */}
       <aside className="w-64 h-screen fixed left-0 top-0 bg-[#0f172a] flex flex-col py-6 shadow-xl z-50 overflow-hidden">
         <div className="px-6 mb-8 shrink-0">
-          <h1 className="text-xl font-bold text-white tracking-tight">FIN ERP</h1>
-          <p className="text-white/60 text-[10px] uppercase tracking-widest mt-1">Finance Suite</p>
+          <AppBrand compact />
         </div>
         <nav className="sidebar-scroll flex-1 min-h-0 space-y-1 overflow-y-auto overscroll-contain pr-1">
           {allowedMenuItems.map((item) => (

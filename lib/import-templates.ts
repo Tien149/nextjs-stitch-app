@@ -5,6 +5,9 @@ export type ImportType =
   | "PAYROLL"
   | "MASTER_DATA"
   | "INVENTORY_ITEM"
+  | "INVENTORY_TRANSACTION"
+  | "BOM"
+  | "STOCKTAKE"
   | "VOUCHER"
   | "INTERNAL_TRANSFER"
   | "DEBT_OPENING";
@@ -194,6 +197,9 @@ export const importTemplates: ImportTemplateDefinition[] = [
         type: "text",
         aliases: ["ma tham chieu pos", "external ref", "pos ref", "reference"],
       },
+      { field: "product_code", label: "Ma mon POS", required: false, type: "text", aliases: ["ma mon pos", "ma mon", "product code", "item code"] },
+      { field: "product_quantity", label: "So luong ban", required: false, type: "number", aliases: ["so luong ban", "quantity sold", "qty", "product quantity"] },
+      { field: "warehouse_code", label: "Kho xuat", required: false, type: "text", aliases: ["kho xuat", "kho", "warehouse", "warehouse code"] },
     ],
   },
   {
@@ -291,11 +297,63 @@ export const importTemplates: ImportTemplateDefinition[] = [
     name: "Danh mục mặt hàng",
     description: "Import danh mục nguyên vật liệu, bao bì, CCDC, tài sản.",
     fields: [
+      { field: "purchase_unit", label: "DVT mua", required: false, type: "text", aliases: ["dvt mua", "don vi mua", "purchase unit"] },
+      { field: "conversion_rate", label: "Ty le quy doi", required: false, type: "number", aliases: ["ty le quy doi", "he so quy doi", "conversion rate"] },
       { field: "code", label: "Mã mặt hàng", required: true, type: "text", aliases: ["ma hang", "ma mat hang", "code", "item code"] },
       { field: "name", label: "Tên mặt hàng", required: true, type: "text", aliases: ["ten hang", "ten mat hang", "name", "item name"] },
       { field: "item_type", label: "Loại hàng", required: true, type: "text", aliases: ["loai hang", "loai mat hang", "item type"] },
       { field: "unit", label: "Đơn vị tính", required: true, type: "text", aliases: ["dvt", "don vi tinh", "unit"] },
       { field: "min_stock", label: "Tồn tối thiểu", required: false, type: "number", aliases: ["ton toi thieu", "min stock", "min_stock"] },
+    ],
+  },
+  {
+    code: "INVENTORY_TRANSACTION_STANDARD_V1",
+    importType: "INVENTORY_TRANSACTION",
+    name: "Nhap / Xuat kho",
+    description: "Import giao dich nhap mua, xuat huy, xuat khac va dieu chuyen kho theo DVT quy doi.",
+    fields: [
+      { field: "transaction_date", label: "Ngay", required: true, type: "date", aliases: ["ngay", "ngay giao dich", "transaction date", "date"] },
+      { field: "transaction_type", label: "Loai giao dich", required: true, type: "text", aliases: ["loai giao dich", "loai nhap xuat", "transaction type"] },
+      { field: "branch_code", label: "Cua hang", required: true, type: "text", aliases: ["cua hang", "chi nhanh", "branch", "store"] },
+      { field: "warehouse_code", label: "Kho xuat / nhap", required: true, type: "text", aliases: ["kho", "kho xuat", "kho nhap", "warehouse", "warehouse code"] },
+      { field: "to_warehouse_code", label: "Kho nhan", required: false, type: "text", aliases: ["kho nhan", "kho den", "to warehouse", "destination warehouse"] },
+      { field: "item_code", label: "Ma mat hang", required: true, type: "text", aliases: ["ma mat hang", "ma hang", "item code", "code"] },
+      { field: "quantity", label: "So luong", required: true, type: "number", aliases: ["so luong", "quantity", "qty"] },
+      { field: "unit_code", label: "DVT", required: true, type: "text", aliases: ["dvt", "don vi tinh", "unit", "unit code"] },
+      { field: "unit_cost", label: "Don gia", required: false, type: "number", aliases: ["don gia", "unit cost", "price"] },
+      { field: "reference_code", label: "So chung tu", required: false, type: "text", aliases: ["so chung tu", "ma chung tu", "reference", "external ref"] },
+      { field: "partner_code", label: "NCC / Doi tuong", required: false, type: "text", aliases: ["ncc", "ma ncc", "doi tuong", "partner"] },
+      { field: "note", label: "Ghi chu", required: false, type: "text", aliases: ["ghi chu", "note", "dien giai"] },
+    ],
+  },
+  {
+    code: "BOM_STANDARD_V1",
+    importType: "BOM",
+    name: "Dinh luong / BOM",
+    description: "Import dinh luong thanh pham va ban thanh pham.",
+    fields: [
+      { field: "product_code", label: "Ma san pham", required: true, type: "text", aliases: ["ma san pham", "ma mon", "product code"] },
+      { field: "product_name", label: "Ten san pham", required: true, type: "text", aliases: ["ten san pham", "ten mon", "product name"] },
+      { field: "ingredient_code", label: "Ma nguyen lieu", required: true, type: "text", aliases: ["ma nguyen lieu", "ma hang", "ingredient code"] },
+      { field: "quantity", label: "So luong dinh muc", required: true, type: "number", aliases: ["so luong dinh muc", "dinh luong", "quantity"] },
+      { field: "waste_rate", label: "Hao hut %", required: false, type: "number", aliases: ["hao hut", "hao hut %", "waste rate"] },
+      { field: "effective_date", label: "Ngay ap dung", required: true, type: "date", aliases: ["ngay ap dung", "effective date", "date"] },
+      { field: "version", label: "Version", required: false, type: "integer", aliases: ["version", "phien ban"] },
+      { field: "note", label: "Ghi chu", required: false, type: "text", aliases: ["ghi chu", "note"] },
+    ],
+  },
+  {
+    code: "STOCKTAKE_STANDARD_V1",
+    importType: "STOCKTAKE",
+    name: "Kiem ke kho",
+    description: "Import ton thuc te theo cua hang, kho va ma hang.",
+    fields: [
+      { field: "stocktake_date", label: "Ngay kiem ke", required: true, type: "date", aliases: ["ngay kiem ke", "ngay", "date"] },
+      { field: "branch_code", label: "Cua hang", required: true, type: "text", aliases: ["cua hang", "chi nhanh", "branch"] },
+      { field: "warehouse_code", label: "Kho", required: true, type: "text", aliases: ["kho", "warehouse", "warehouse code"] },
+      { field: "item_code", label: "Ma hang", required: true, type: "text", aliases: ["ma hang", "ma mat hang", "item code"] },
+      { field: "actual_quantity", label: "Ton thuc te", required: true, type: "number", aliases: ["ton thuc te", "actual quantity", "actual"] },
+      { field: "reason", label: "Ly do", required: false, type: "text", aliases: ["ly do", "reason", "note"] },
     ],
   },
   {

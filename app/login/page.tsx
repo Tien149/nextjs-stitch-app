@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { AppBrand } from "@/components/AppBrand";
 import { displayRoleName } from "@/lib/branch-labels";
-import { demoUsers, SESSION_KEY } from "@/lib/auth-demo";
+import { canViewFinancialDashboard, demoUsers, getDefaultRouteForRole, SESSION_KEY } from "@/lib/auth-demo";
 
 export default function Login() {
   const router = useRouter();
@@ -39,7 +40,9 @@ export default function Login() {
       }; SameSite=Lax`;
 
       const next = new URLSearchParams(window.location.search).get("next");
-      router.push(next || "/");
+      const defaultRoute = getDefaultRouteForRole(session.role);
+      const targetRoute = next && (next !== "/" || canViewFinancialDashboard(session.role)) ? next : defaultRoute;
+      router.push(targetRoute);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Có lỗi xảy ra");
       setLoading(false);
@@ -51,15 +54,7 @@ export default function Login() {
     <main className="min-h-screen grid bg-slate-100 text-slate-800 lg:grid-cols-[480px_1fr]">
       <section className="bg-slate-950 text-white p-8 lg:p-10 flex flex-col justify-between">
         <div>
-          <div className="flex items-center gap-3">
-            <div className="bg-blue-600 text-white p-3 rounded-lg">
-              <span className="material-symbols-outlined text-3xl">account_balance</span>
-            </div>
-            <div>
-              <p className="text-xl font-bold tracking-wide">FIN ERP</p>
-              <p className="text-sm text-slate-400">Tài chính, POS và công nợ</p>
-            </div>
-          </div>
+          <AppBrand />
 
           <div className="mt-14 space-y-5">
             <div className="border-l-4 border-blue-500 pl-4">

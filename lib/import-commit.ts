@@ -4,6 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { addPeriod, periodFromDate } from "@/lib/phase3";
 import { type ImportType } from "@/lib/import-templates";
 import { type ParsedImportRow } from "@/lib/import-parser";
+import { normalizeStockTransactionType, postInventoryTransaction } from "@/lib/inventory-stock";
+import { writeAuditLog } from "@/lib/audit-log";
 
 function asText(value: unknown) {
   return String(value || "").trim();
@@ -20,6 +22,14 @@ function asInteger(value: unknown) {
 
 function asDate(value: unknown) {
   return value instanceof Date ? value : new Date(String(value));
+}
+
+function normalizeInventoryItemType(value: unknown) {
+  const raw = asText(value).toUpperCase();
+  if (!raw || raw === "MATERIAL" || raw === "RAW" || raw === "NVL") return "RAW_MATERIAL";
+  if (raw === "BTP" || raw === "SEMI" || raw === "SEMI_FINISHED_GOOD") return "SEMI_FINISHED";
+  if (raw === "TP" || raw === "PRODUCT" || raw === "FINISHED_GOOD") return "FINISHED";
+  return raw;
 }
 
 function jsonValue(value: unknown) {
@@ -121,6 +131,10 @@ async function assertImportPeriodsOpen(tx: Prisma.TransactionClient, batchId: st
       await assertPeriodOpen(tx, asText(values.period), asText(values.branch_code));
     }
   }
+  if (importType === "INVENTORY_TRANSACTION") {
+    const rows = await tx.inventoryTransaction.findMany({ where: { importBatchId: batchId }, select: { transactionDate: true, branchCode: true } });
+    for (const row of rows) await assertPeriodOpen(tx, periodFromDate(row.transactionDate), row.branchCode);
+  }
 }
 
 async function createStagingRows(
@@ -161,7 +175,7 @@ export async function commitImport(input: CommitInput) {
   if (errorRows.length > 0) throw new Error("File còn dòng lỗi, vui lòng sửa trước khi commit");
   if (input.rows.length === 0) throw new Error("File không có dòng dữ liệu để commit");
 
-  return prisma.$transaction(async (tx) => {
+  const batchResult = await prisma.$transaction(async (tx) => {
     if (input.fileChecksum) {
       const duplicateBatch = await tx.importBatch.findFirst({
         where: {
@@ -216,7 +230,7 @@ export async function commitImport(input: CommitInput) {
       if (duplicateKeys.some(Boolean)) throw new Error("File có nhân viên trùng kỳ lương và chi nhánh");
     }
 
-    if (["VOUCHER", "INTERNAL_TRANSFER", "DEBT_OPENING"].includes(input.importType)) {
+    if (["VOUCHER", "INTERNAL_TRANSFER", "DEBT_OPENING", "INVENTORY_TRANSACTION", "BOM", "STOCKTAKE"].includes(input.importType)) {
       const fingerprints = input.rows.map((row) => rowFingerprint(input.importType, row));
       if (new Set(fingerprints).size !== fingerprints.length) throw new Error("File có các dòng nghiệp vụ bị trùng nhau");
       const existing = await tx.importRow.findFirst({
@@ -314,23 +328,62 @@ export async function commitImport(input: CommitInput) {
     }
 
     if (input.importType === "REVENUE_POS") {
-      await tx.revenueImportRow.createMany({
-        data: input.rows.map((row) => ({
-          importBatchId: batch.id,
-          saleDate: asDate(row.values.sale_date),
-          branchCode: asText(row.values.branch_code),
-          channel: row.values.channel === null ? null : asText(row.values.channel),
-          revenueSource: asText(row.values.revenue_source),
-          paymentMethod: asText(row.values.payment_method),
-          orderCount: row.values.order_count === null ? null : asInteger(row.values.order_count),
-          grossAmount: asNumber(row.values.gross_amount),
-          discountAmount: asNumber(row.values.discount_amount),
-          vatAmount: asNumber(row.values.vat_amount),
-          feeAmount: asNumber(row.values.fee_amount),
-          netAmount: asNumber(row.values.net_amount),
-          externalRef: asText(row.values.external_ref),
-        })),
-      });
+      for (const row of input.rows) {
+        const productCode = asText(row.values.product_code).toUpperCase();
+        const productQuantity = asNumber(row.values.product_quantity);
+        const revenueRow = await tx.revenueImportRow.create({
+          data: {
+            importBatchId: batch.id,
+            saleDate: asDate(row.values.sale_date),
+            branchCode: asText(row.values.branch_code),
+            channel: row.values.channel === null ? null : asText(row.values.channel),
+            revenueSource: asText(row.values.revenue_source),
+            paymentMethod: asText(row.values.payment_method),
+            orderCount: row.values.order_count === null ? null : asInteger(row.values.order_count),
+            grossAmount: asNumber(row.values.gross_amount),
+            discountAmount: asNumber(row.values.discount_amount),
+            vatAmount: asNumber(row.values.vat_amount),
+            feeAmount: asNumber(row.values.fee_amount),
+            netAmount: asNumber(row.values.net_amount),
+            externalRef: asText(row.values.external_ref),
+            productCode: productCode || null,
+            productQuantity: productQuantity > 0 ? productQuantity : null,
+            inventoryStatus: productCode && productQuantity > 0 ? "PENDING" : "NOT_REQUIRED",
+          },
+        });
+        await setImportTarget(tx, staging, row, "REVENUE_POS", revenueRow.id);
+        if (productCode && productQuantity > 0) {
+          const recipe = await tx.recipe.findFirst({
+            where: { productCode, status: "ACTIVE" },
+            include: { lines: true },
+            orderBy: { version: "desc" },
+          });
+          if (!recipe) throw new Error(`Dong ${row.rowNumber}: Chua co BOM active cho ${productCode}`);
+          await postInventoryTransaction(tx, {
+            importBatchId: batch.id,
+            code: `XB-${asText(row.values.external_ref)}`,
+            transactionType: "XUAT_BAN",
+            transactionDate: asDate(row.values.sale_date),
+            branchCode: asText(row.values.branch_code),
+            warehouseCode: asText(row.values.warehouse_code) || "KHO_HCM",
+            referenceType: "REVENUE_POS",
+            referenceId: revenueRow.id,
+            referenceCode: asText(row.values.external_ref),
+            note: `Tu dong tru kho POS ${productCode}`,
+            createdBy: input.uploadedBy,
+            lines: recipe.lines.map((line) => ({
+              itemId: line.itemId,
+              inputQuantity: line.quantity * (1 + line.wasteRate / 100) * productQuantity,
+              inputUnitCode: "",
+              inputUnitCost: 0,
+            })),
+          });
+          await tx.revenueImportRow.update({
+            where: { id: revenueRow.id },
+            data: { inventoryStatus: "POSTED" },
+          });
+        }
+      }
     }
 
     if (input.importType === "PAYROLL") {
@@ -393,9 +446,9 @@ export async function commitImport(input: CommitInput) {
       for (const row of input.rows) {
         const code = asText(row.values.code).toUpperCase();
         const name = asText(row.values.name);
-        const itemType = asText(row.values.item_type).toUpperCase();
+        const itemType = normalizeInventoryItemType(row.values.item_type);
         const unit = asText(row.values.unit);
-        if (!['MATERIAL', 'PACKAGING', 'TOOL', 'ASSET'].includes(itemType)) {
+        if (!['RAW_MATERIAL', 'SEMI_FINISHED', 'FINISHED', 'PACKAGING', 'TOOL', 'ASSET'].includes(itemType)) {
           throw new Error(`Dòng ${row.rowNumber}: Loại hàng không hợp lệ`);
         }
         const item = await tx.inventoryItem.upsert({
@@ -403,7 +456,169 @@ export async function commitImport(input: CommitInput) {
           create: { code, name, itemType, unit, minStock: asNumber(row.values.min_stock), status: "ACTIVE" },
           update: { name, itemType, unit, minStock: asNumber(row.values.min_stock) },
         });
+        await tx.itemUnitConversion.upsert({
+          where: { itemId_unitCode: { itemId: item.id, unitCode: unit.toUpperCase() } },
+          create: { itemId: item.id, unitCode: unit.toUpperCase(), unitName: unit, conversionRate: 1, note: "ĐVT cơ bản" },
+          update: { unitName: unit, conversionRate: 1 },
+        });
+        const purchaseUnit = row.values.purchase_unit ? asText(row.values.purchase_unit) : "";
+        const conversionRate = row.values.conversion_rate ? asNumber(row.values.conversion_rate) : 0;
+        if (purchaseUnit || conversionRate) {
+          if (!purchaseUnit || conversionRate < 1) throw new Error(`Dòng ${row.rowNumber}: ĐVT mua và tỷ lệ quy đổi phải hợp lệ`);
+          await tx.itemUnitConversion.upsert({
+            where: { itemId_unitCode: { itemId: item.id, unitCode: purchaseUnit.toUpperCase() } },
+            create: { itemId: item.id, unitCode: purchaseUnit.toUpperCase(), unitName: purchaseUnit, conversionRate, isDefaultPurchase: true },
+            update: { unitName: purchaseUnit, conversionRate, isDefaultPurchase: true },
+          });
+        }
         await setImportTarget(tx, staging, row, "INVENTORY_ITEM", item.id);
+      }
+    }
+
+    if (input.importType === "INVENTORY_TRANSACTION") {
+      const groups = new Map<string, ParsedImportRow[]>();
+      for (const row of input.rows) {
+        const transactionType = normalizeStockTransactionType(row.values.transaction_type);
+        const referenceCode = asText(row.values.reference_code) || `ROW-${row.rowNumber}`;
+        const key = [
+          referenceCode,
+          transactionType,
+          asText(row.values.branch_code).toUpperCase(),
+          asText(row.values.warehouse_code).toUpperCase(),
+          asText(row.values.to_warehouse_code).toUpperCase(),
+        ].join("|");
+        groups.set(key, [...(groups.get(key) || []), row]);
+      }
+      let sequence = await tx.inventoryTransaction.count();
+      for (const rows of groups.values()) {
+        const first = rows[0];
+        const transactionDate = asDate(first.values.transaction_date);
+        const transactionType = normalizeStockTransactionType(first.values.transaction_type);
+        const prefix = transactionType === "NHAP_MUA" ? "NM" : transactionType === "NHAP_KHAC" ? "NK" : transactionType === "XUAT_HUY" ? "HH" : transactionType === "DIEU_CHUYEN" ? "DCK" : "XK";
+        sequence += 1;
+        const transaction = await postInventoryTransaction(tx, {
+          importBatchId: batch.id,
+          code: asText(first.values.reference_code) || `${prefix}-${transactionDate.getUTCFullYear()}-${String(sequence).padStart(4, "0")}`,
+          transactionType,
+          transactionDate,
+          branchCode: asText(first.values.branch_code),
+          warehouseCode: asText(first.values.warehouse_code),
+          toWarehouseCode: asText(first.values.to_warehouse_code) || null,
+          referenceType: "IMPORT",
+          referenceCode: asText(first.values.reference_code) || null,
+          note: asText(first.values.note) || null,
+          createdBy: input.uploadedBy,
+          lines: rows.map((row) => ({
+            itemCode: asText(row.values.item_code).toUpperCase(),
+            inputQuantity: asNumber(row.values.quantity),
+            inputUnitCode: asText(row.values.unit_code),
+            inputUnitCost: asNumber(row.values.unit_cost),
+          })),
+        });
+        for (const row of rows) await setImportTarget(tx, staging, row, "INVENTORY_TRANSACTION", transaction.id);
+      }
+    }
+
+    if (input.importType === "BOM") {
+      const groups = new Map<string, ParsedImportRow[]>();
+      for (const row of input.rows) {
+        const productCode = asText(row.values.product_code).toUpperCase();
+        groups.set(productCode, [...(groups.get(productCode) || []), row]);
+      }
+      for (const [productCode, rows] of groups) {
+        const latest = await tx.recipe.findFirst({ where: { productCode }, orderBy: { version: "desc" } });
+        await tx.recipe.updateMany({ where: { productCode, status: "ACTIVE" }, data: { status: "INACTIVE" } });
+        const recipe = await tx.recipe.create({
+          data: {
+            code: `${productCode}-V${(latest?.version || 0) + 1}`,
+            productCode,
+            productName: asText(rows[0].values.product_name),
+            unit: "phan",
+            sellingPrice: 0,
+            version: (latest?.version || 0) + 1,
+            status: "ACTIVE",
+            lines: {
+              create: await Promise.all(rows.map(async (row) => {
+                const item = await tx.inventoryItem.findUnique({ where: { code: asText(row.values.ingredient_code).toUpperCase() } });
+                if (!item) throw new Error(`Dong ${row.rowNumber}: Khong tim thay nguyen lieu ${asText(row.values.ingredient_code)}`);
+                return { itemId: item.id, quantity: asNumber(row.values.quantity), wasteRate: asNumber(row.values.waste_rate) };
+              })),
+            },
+          },
+        });
+        for (const row of rows) await setImportTarget(tx, staging, row, "BOM", recipe.id);
+      }
+    }
+
+    if (input.importType === "STOCKTAKE") {
+      const groups = new Map<string, ParsedImportRow[]>();
+      for (const row of input.rows) {
+        const key = [
+          asDate(row.values.stocktake_date).toISOString().slice(0, 10),
+          asText(row.values.branch_code).toUpperCase(),
+          asText(row.values.warehouse_code).toUpperCase(),
+        ].join("|");
+        groups.set(key, [...(groups.get(key) || []), row]);
+      }
+      let sequence = await tx.stocktakeSession.count();
+      for (const rows of groups.values()) {
+        const first = rows[0];
+        const stocktakeDate = asDate(first.values.stocktake_date);
+        sequence += 1;
+        const stocktake = await tx.stocktakeSession.create({
+          data: {
+            code: `KK-${stocktakeDate.getUTCFullYear()}-${String(sequence).padStart(4, "0")}`,
+            stocktakeDate,
+            branchCode: asText(first.values.branch_code),
+            warehouseCode: asText(first.values.warehouse_code),
+            status: "APPROVED",
+            approvedBy: input.uploadedBy,
+            approvedAt: new Date(),
+            createdBy: input.uploadedBy,
+          },
+        });
+        const inboundLines = [];
+        const outboundLines = [];
+        for (const row of rows) {
+          const item = await tx.inventoryItem.findUnique({ where: { code: asText(row.values.item_code).toUpperCase() } });
+          if (!item) throw new Error(`Dong ${row.rowNumber}: Khong tim thay mat hang ${asText(row.values.item_code)}`);
+          const balance = await tx.inventoryBalance.findUnique({ where: { itemId_warehouseCode: { itemId: item.id, warehouseCode: asText(first.values.warehouse_code) } } });
+          const systemQuantity = balance?.quantity || 0;
+          const actualQuantity = asNumber(row.values.actual_quantity);
+          const varianceQuantity = actualQuantity - systemQuantity;
+          await tx.stocktakeLine.create({
+            data: { stocktakeId: stocktake.id, itemId: item.id, systemQuantity, actualQuantity, varianceQuantity, reason: asText(row.values.reason) || null },
+          });
+          await setImportTarget(tx, staging, row, "STOCKTAKE", stocktake.id);
+          if (varianceQuantity > 0) inboundLines.push({ itemId: item.id, inputQuantity: varianceQuantity, inputUnitCode: item.unit, inputUnitCost: balance?.averageCost || 0 });
+          if (varianceQuantity < 0) outboundLines.push({ itemId: item.id, inputQuantity: Math.abs(varianceQuantity), inputUnitCode: item.unit, inputUnitCost: 0 });
+        }
+        if (inboundLines.length > 0) await postInventoryTransaction(tx, {
+          importBatchId: batch.id,
+          code: `${stocktake.code}-N`,
+          transactionType: "NHAP_KIEM_KE",
+          transactionDate: stocktakeDate,
+          branchCode: asText(first.values.branch_code),
+          warehouseCode: asText(first.values.warehouse_code),
+          referenceType: "STOCKTAKE",
+          referenceId: stocktake.id,
+          referenceCode: stocktake.code,
+          createdBy: input.uploadedBy,
+          lines: inboundLines,
+        });
+        if (outboundLines.length > 0) await postInventoryTransaction(tx, {
+          importBatchId: batch.id,
+          code: `${stocktake.code}-X`,
+          transactionType: "XUAT_KIEM_KE",
+          transactionDate: stocktakeDate,
+          branchCode: asText(first.values.branch_code),
+          warehouseCode: asText(first.values.warehouse_code),
+          referenceType: "STOCKTAKE",
+          referenceId: stocktake.id,
+          referenceCode: stocktake.code,
+          createdBy: input.uploadedBy,
+          lines: outboundLines,
+        });
       }
     }
 
@@ -704,9 +919,21 @@ export async function commitImport(input: CommitInput) {
         vouchers: input.importType === "VOUCHER",
         moneyTransfers: input.importType === "INTERNAL_TRANSFER",
         debtRecords: input.importType === "DEBT_OPENING",
+        inventoryTransactions: input.importType === "INVENTORY_TRANSACTION",
       },
     });
   });
+  await writeAuditLog({
+    actorName: input.uploadedBy,
+    module: "IMPORT",
+    action: "COMMIT_IMPORT",
+    entityType: "ImportBatch",
+    entityId: batchResult?.id || null,
+    entityCode: input.fileName,
+    branchCode: input.branchCode || null,
+    metadata: { importType: input.importType, templateCode: input.templateCode, totalRows: input.rows.length },
+  });
+  return batchResult;
 }
 
 async function rollbackBankStatement(tx: Prisma.TransactionClient, batchId: string) {
@@ -721,6 +948,7 @@ async function rollbackBankStatement(tx: Prisma.TransactionClient, batchId: stri
 }
 
 async function rollbackRevenue(tx: Prisma.TransactionClient, batchId: string) {
+  await rollbackInventoryTransactions(tx, batchId);
   const rows = await tx.revenueImportRow.findMany({ where: { importBatchId: batchId }, select: { id: true } });
   const ids = rows.map((row) => row.id);
   if (ids.length > 0) {
@@ -853,6 +1081,76 @@ async function rollbackInventoryItems(tx: Prisma.TransactionClient, batchId: str
   await tx.inventoryItem.updateMany({ where: { id: { in: ids } }, data: { status: "INACTIVE" } });
 }
 
+async function adjustInventoryBalanceForRollback(
+  tx: Prisma.TransactionClient,
+  itemId: string,
+  warehouseCode: string,
+  quantityDelta: number,
+) {
+  const balance = await tx.inventoryBalance.findUnique({ where: { itemId_warehouseCode: { itemId, warehouseCode } } });
+  const nextQuantity = (balance?.quantity || 0) + quantityDelta;
+  if (nextQuantity < -0.000001) throw new Error("Rollback import kho se lam am ton kho, can kiem tra thu cong");
+  if (!balance) {
+    await tx.inventoryBalance.create({ data: { itemId, warehouseCode, quantity: nextQuantity, averageCost: 0 } });
+  } else {
+    await tx.inventoryBalance.update({ where: { id: balance.id }, data: { quantity: nextQuantity } });
+  }
+}
+
+async function rollbackInventoryTransactions(tx: Prisma.TransactionClient, batchId: string) {
+  const transactions = await tx.inventoryTransaction.findMany({
+    where: { importBatchId: batchId },
+    include: { lines: true },
+    orderBy: { createdAt: "desc" },
+  });
+  for (const transaction of transactions) {
+    for (const line of transaction.lines) {
+      if (transaction.transactionType.startsWith("NHAP_")) {
+        await adjustInventoryBalanceForRollback(tx, line.itemId, transaction.warehouseCode, -line.quantity);
+      } else if (transaction.transactionType.startsWith("XUAT_")) {
+        await adjustInventoryBalanceForRollback(tx, line.itemId, transaction.warehouseCode, line.quantity);
+      } else if (transaction.transactionType === "DIEU_CHUYEN") {
+        await adjustInventoryBalanceForRollback(tx, line.itemId, transaction.warehouseCode, line.quantity);
+        if (transaction.toWarehouseCode) await adjustInventoryBalanceForRollback(tx, line.itemId, transaction.toWarehouseCode, -line.quantity);
+      }
+    }
+  }
+  await tx.inventoryTransaction.deleteMany({ where: { importBatchId: batchId } });
+}
+
+async function rollbackBom(tx: Prisma.TransactionClient, batchId: string) {
+  const targets = await tx.importRow.findMany({
+    where: { importBatchId: batchId, targetType: "BOM", targetId: { not: null } },
+    select: { targetId: true },
+  });
+  const recipeIds = Array.from(new Set(targets.map((target) => target.targetId).filter(Boolean))) as string[];
+  if (recipeIds.length === 0) return;
+
+  await tx.recipe.deleteMany({ where: { id: { in: recipeIds } } });
+
+  const affectedProducts = await tx.importRow.findMany({
+    where: { importBatchId: batchId, targetType: "BOM" },
+    select: { normalizedJson: true },
+  });
+  const productCodes = Array.from(new Set(affectedProducts.map((row) => asText(parseStoredJson(row.normalizedJson).product_code).toUpperCase()).filter(Boolean)));
+  for (const productCode of productCodes) {
+    const latest = await tx.recipe.findFirst({ where: { productCode }, orderBy: { version: "desc" } });
+    if (latest) await tx.recipe.update({ where: { id: latest.id }, data: { status: "ACTIVE" } });
+  }
+}
+
+async function rollbackStocktake(tx: Prisma.TransactionClient, batchId: string) {
+  await rollbackInventoryTransactions(tx, batchId);
+  const targets = await tx.importRow.findMany({
+    where: { importBatchId: batchId, targetType: "STOCKTAKE", targetId: { not: null } },
+    select: { targetId: true },
+  });
+  const stocktakeIds = Array.from(new Set(targets.map((target) => target.targetId).filter(Boolean))) as string[];
+  if (stocktakeIds.length > 0) {
+    await tx.stocktakeSession.deleteMany({ where: { id: { in: stocktakeIds } } });
+  }
+}
+
 async function rollbackOpeningBalances(tx: Prisma.TransactionClient, batchId: string) {
   const rows = await tx.importRow.findMany({ where: { importBatchId: batchId }, select: { normalizedJson: true } });
   const openingFilters: Prisma.OpeningBalanceWhereInput[] = [];
@@ -931,7 +1229,7 @@ async function rollbackOpeningBalances(tx: Prisma.TransactionClient, batchId: st
 }
 
 export async function rollbackImportBatch(input: RollbackInput) {
-  return prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     const batch = await tx.importBatch.findUnique({ where: { id: input.batchId } });
     if (!batch) throw new Error("Không tìm thấy batch import");
     if (!["COMMITTED", "APPROVED", "COMMITTED_WITH_ERRORS"].includes(batch.status)) {
@@ -948,6 +1246,9 @@ export async function rollbackImportBatch(input: RollbackInput) {
     else if (batch.importType === "DEBT_OPENING") await rollbackDebtOpening(tx, batch.id);
     else if (batch.importType === "MASTER_DATA") await rollbackMasterData(tx, batch.id);
     else if (batch.importType === "INVENTORY_ITEM") await rollbackInventoryItems(tx, batch.id);
+    else if (batch.importType === "INVENTORY_TRANSACTION") await rollbackInventoryTransactions(tx, batch.id);
+    else if (batch.importType === "BOM") await rollbackBom(tx, batch.id);
+    else if (batch.importType === "STOCKTAKE") await rollbackStocktake(tx, batch.id);
     else if (batch.importType === "OPENING_BALANCE") await rollbackOpeningBalances(tx, batch.id);
     else throw new Error(`Chưa hỗ trợ rollback loại import ${batch.importType}`);
 
@@ -961,6 +1262,18 @@ export async function rollbackImportBatch(input: RollbackInput) {
       },
     });
   });
+  await writeAuditLog({
+    actorName: input.actor,
+    module: "IMPORT",
+    action: "ROLLBACK_IMPORT",
+    entityType: "ImportBatch",
+    entityId: result.id,
+    entityCode: result.fileName,
+    branchCode: result.branchCode || null,
+    message: input.note || null,
+    metadata: { importType: result.importType, totalRows: result.totalRows },
+  });
+  return result;
 }
 
 export function isUniqueConstraintError(error: unknown) {

@@ -3,6 +3,7 @@ import { isAdmin, requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 import { addPeriod, apiError, businessError, cleanText, isPeriodLocked, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
 import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
+import { writeAuditLog } from "@/lib/audit-log";
 
 const menuHref = "/finance-operations";
 
@@ -99,10 +100,12 @@ export async function POST(request: Request) {
       if (!transfer) businessError("Không tìm thấy giao dịch điều tiền");
       assertBranchAccess(auth.session, transfer.branchCode);
       if (transfer.status !== "PENDING_REVIEW") businessError("Giao dịch điều tiền không ở trạng thái chờ duyệt");
-      return NextResponse.json(await prisma.moneyTransfer.update({
+      const result = await prisma.moneyTransfer.update({
         where: { id },
         data: { status: "APPROVED", approvedBy: auth.session.name },
-      }));
+      });
+      await writeAuditLog({ session: auth.session, module: "FINANCE_OPERATIONS", action: "APPROVE_TRANSFER", entityType: "MoneyTransfer", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { amount: result.amount, from: result.fromMoneySourceCode, to: result.toMoneySourceCode } });
+      return NextResponse.json(result);
     }
 
     if (["CLOSE_PERIOD", "REOPEN_PERIOD"].includes(action)) {
@@ -120,6 +123,7 @@ export async function POST(request: Request) {
           create: { period, branchCode, status: "CLOSED", closedBy: auth.session.name, closedAt: new Date() },
           update: { status: "CLOSED", closedBy: auth.session.name, closedAt: new Date(), reopenedBy: null, reopenedAt: null, reason: null },
         });
+        await writeAuditLog({ session: auth.session, module: "FINANCE_OPERATIONS", action: "CLOSE_PERIOD", entityType: "AccountingPeriod", entityId: result.id, entityCode: `${period}-${branchCode}`, branchCode, metadata: { checklist } });
         return NextResponse.json(result);
       }
       const reason = cleanText(body.reason);
@@ -129,6 +133,7 @@ export async function POST(request: Request) {
         create: { period, branchCode, status: "OPEN", reopenedBy: auth.session.name, reopenedAt: new Date(), reason },
         update: { status: "OPEN", reopenedBy: auth.session.name, reopenedAt: new Date(), reason },
       });
+      await writeAuditLog({ session: auth.session, module: "FINANCE_OPERATIONS", action: "REOPEN_PERIOD", entityType: "AccountingPeriod", entityId: result.id, entityCode: `${period}-${branchCode}`, branchCode, message: reason });
       return NextResponse.json(result);
     }
 
@@ -159,6 +164,7 @@ export async function POST(request: Request) {
           createdBy: auth.session.name,
         },
       });
+      await writeAuditLog({ session: auth.session, module: "FINANCE_OPERATIONS", action: "CREATE_ADJUSTMENT", entityType: "CashbookAdjustment", entityId: result.id, entityCode: result.code, branchCode, metadata: { amount: result.amount, entryType: result.entryType, moneySourceCode: result.moneySourceCode } });
       return NextResponse.json(result, { status: 201 });
     }
 
@@ -191,6 +197,7 @@ export async function POST(request: Request) {
         },
         include: { schedules: true },
       });
+      await writeAuditLog({ session: auth.session, module: "FINANCE_OPERATIONS", action: "CREATE_ACCRUAL", entityType: "Accrual", entityId: result.id, entityCode: result.code, branchCode, metadata: { totalAmount, startPeriod, numberOfPeriods } });
       return NextResponse.json(result, { status: 201 });
     }
 
@@ -209,6 +216,7 @@ export async function POST(request: Request) {
       const result = await prisma.accrualSchedule.update({ where: { id: scheduleId }, data: { status: "POSTED", postedAt: new Date() } });
       const remaining = await prisma.accrualSchedule.count({ where: { accrualId: schedule.accrualId, status: "PLANNED" } });
       if (remaining === 0) await prisma.accrual.update({ where: { id: schedule.accrualId }, data: { status: "COMPLETED" } });
+      await writeAuditLog({ session: auth.session, module: "FINANCE_OPERATIONS", action: "POST_ACCRUAL", entityType: "AccrualSchedule", entityId: result.id, entityCode: `${schedule.accrual.code}-${schedule.period}`, branchCode: schedule.accrual.branchCode, metadata: { period: schedule.period, amount: schedule.amount } });
       return NextResponse.json(result);
     }
 

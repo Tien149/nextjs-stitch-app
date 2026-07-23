@@ -20,23 +20,23 @@ model Document {
 }
 
 model MasterDataItem {
-  id          String   @id @default(uuid())
-  type        String
-  code        String
-  name        String
-  group       String?
-  partnerType String?
+  id           String   @id @default(uuid())
+  type         String
+  code         String
+  name         String
+  group        String?
+  partnerType  String?
   partnerGroup String?
-  branch      String?
-  taxCode     String?
-  contactName String?
-  phone       String?
-  email       String?
-  accountNo   String?
-  status      String   @default("ACTIVE")
-  note        String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  branch       String?
+  taxCode      String?
+  contactName  String?
+  phone        String?
+  email        String?
+  accountNo    String?
+  status       String   @default("ACTIVE")
+  note         String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@unique([type, code])
   @@index([type])
@@ -68,18 +68,18 @@ model Deposit {
 }
 
 model DepositHistory {
-  id        String            @id @default(uuid())
-  depositId String
-  voucherId String?
-  action    String
-  amount    Float?
-  actionDate DateTime?
+  id            String            @id @default(uuid())
+  depositId     String
+  voucherId     String?
+  action        String
+  amount        Float?
+  actionDate    DateTime?
   treatmentNote String?
-  note      String?
-  actor     String?
-  createdAt DateTime          @default(now())
-  deposit   Deposit           @relation(fields: [depositId], references: [id], onDelete: Cascade)
-  voucher   FinancialVoucher? @relation(fields: [voucherId], references: [id], onDelete: SetNull)
+  note          String?
+  actor         String?
+  createdAt     DateTime          @default(now())
+  deposit       Deposit           @relation(fields: [depositId], references: [id], onDelete: Cascade)
+  voucher       FinancialVoucher? @relation(fields: [voucherId], references: [id], onDelete: SetNull)
 
   @@unique([voucherId, action])
   @@index([depositId])
@@ -87,24 +87,24 @@ model DepositHistory {
 }
 
 model OpeningBalance {
-  id              String   @id @default(uuid())
-  period          String
-  branchCode      String
-  balanceType     String
-  objectCode      String?
-  objectName      String?
-  moneySourceCode String?
-  warehouseCode   String?
-  departmentCode  String?
-  quantity        Float?
-  unitCost        Float?
-  allocationMonths Int?
+  id                    String   @id @default(uuid())
+  period                String
+  branchCode            String
+  balanceType           String
+  objectCode            String?
+  objectName            String?
+  moneySourceCode       String?
+  warehouseCode         String?
+  departmentCode        String?
+  quantity              Float?
+  unitCost              Float?
+  allocationMonths      Int?
   allocationStartPeriod String?
-  amount          Float
-  note            String?
-  status          String   @default("DRAFT")
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  amount                Float
+  note                  String?
+  status                String   @default("DRAFT")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 
   @@index([period])
   @@index([branchCode])
@@ -133,13 +133,14 @@ model ImportBatch {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  bankTransactions BankStatementTransaction[]
-  revenueRows      RevenueImportRow[]
-  payrollRows      PayrollImportRow[]
-  importRows       ImportRow[]
-  vouchers         FinancialVoucher[]
-  moneyTransfers   MoneyTransfer[]
-  debtRecords      DebtRecord[]
+  bankTransactions      BankStatementTransaction[]
+  revenueRows           RevenueImportRow[]
+  payrollRows           PayrollImportRow[]
+  importRows            ImportRow[]
+  vouchers              FinancialVoucher[]
+  moneyTransfers        MoneyTransfer[]
+  debtRecords           DebtRecord[]
+  inventoryTransactions InventoryTransaction[]
 
   @@index([importType])
   @@index([status])
@@ -192,21 +193,24 @@ model BankStatementTransaction {
 }
 
 model RevenueImportRow {
-  id             String   @id @default(uuid())
-  importBatchId  String
-  saleDate       DateTime
-  branchCode     String
-  channel        String?
-  revenueSource  String
-  paymentMethod  String
-  orderCount     Int?
-  grossAmount    Float
-  discountAmount Float    @default(0)
-  vatAmount      Float    @default(0)
-  feeAmount      Float    @default(0)
-  netAmount      Float
-  externalRef    String
-  createdAt      DateTime @default(now())
+  id              String   @id @default(uuid())
+  importBatchId   String
+  saleDate        DateTime
+  branchCode      String
+  channel         String?
+  revenueSource   String
+  paymentMethod   String
+  orderCount      Int?
+  grossAmount     Float
+  discountAmount  Float    @default(0)
+  vatAmount       Float    @default(0)
+  feeAmount       Float    @default(0)
+  netAmount       Float
+  externalRef     String
+  productCode     String?
+  productQuantity Float?
+  inventoryStatus String?
+  createdAt       DateTime @default(now())
 
   importBatch ImportBatch @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
 
@@ -214,6 +218,8 @@ model RevenueImportRow {
   @@index([saleDate])
   @@index([branchCode])
   @@index([paymentMethod])
+  @@index([productCode])
+  @@index([inventoryStatus])
 }
 
 model FinancialVoucher {
@@ -307,36 +313,41 @@ model DebtSettlement {
 }
 
 model AssetRecord {
-  id                    String              @id @default(uuid())
-  code                  String              @unique
-  name                  String
-  branchCode            String
-  departmentCode        String?
-  assetGroup            String
-  imageUrl              String?
-  location              String?
-  quantity              Float               @default(1)
-  purchaseDate          DateTime
-  originalCost          Float
-  currentValue          Float
-  usefulLifeMonths      Int?
-  depreciationStartDate DateTime?
-  residualValue         Float               @default(0)
-  supplierCode          String?
-  supplierName          String?
-  sourcePurchaseOrderId String?
-  sourceReceiptId       String?
-  disposalDate          DateTime?
-  disposalStatus        String?
-  status                String              @default("IN_USE")
-  note                  String?
-  createdAt             DateTime            @default(now())
-  updatedAt             DateTime            @updatedAt
-  depreciations         AssetDepreciation[]
-  maintenances          AssetMaintenance[]
-  damageReports         AssetDamageReport[]
+  id                      String              @id @default(uuid())
+  code                    String              @unique
+  name                    String
+  branchCode              String
+  departmentCode          String?
+  assetGroup              String
+  imageUrl                String?
+  location                String?
+  warehouseCode           String?
+  quantity                Float               @default(1)
+  purchaseDate            DateTime
+  originalCost            Float
+  currentValue            Float
+  accumulatedDepreciation Float               @default(0)
+  usefulLifeMonths        Int?
+  depreciationStartDate   DateTime?
+  residualValue           Float               @default(0)
+  supplierCode            String?
+  supplierName            String?
+  sourcePurchaseOrderId   String?
+  sourceReceiptId         String?
+  disposalDate            DateTime?
+  disposalStatus          String?
+  disposalAmount          Float?              @default(0)
+  disposalNote            String?
+  status                  String              @default("IN_USE")
+  note                    String?
+  createdAt               DateTime            @default(now())
+  updatedAt               DateTime            @updatedAt
+  depreciations           AssetDepreciation[]
+  maintenances            AssetMaintenance[]
+  damageReports           AssetDamageReport[]
 
   @@index([branchCode])
+  @@index([warehouseCode])
   @@index([departmentCode])
   @@index([assetGroup])
   @@index([status])
@@ -366,28 +377,86 @@ model ReconciliationMatch {
 }
 
 model InventoryItem {
-  id        String   @id @default(uuid())
-  code      String   @unique
-  name      String
-  itemType  String
-  unit      String
-  category  String?
-  requiresImage Boolean @default(false)
-  minStock  Float    @default(0)
-  status    String   @default("ACTIVE")
-  note      String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id            String   @id @default(uuid())
+  code          String   @unique
+  name          String
+  itemType      String
+  unit          String
+  category      String?
+  requiresImage Boolean  @default(false)
+  minStock      Float    @default(0)
+  status        String   @default("ACTIVE")
+  note          String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   balances         InventoryBalance[]
+  unitConversions  ItemUnitConversion[]
   transactionLines InventoryTransactionLine[]
   recipeLines      RecipeLine[]
+  stocktakeLines   StocktakeLine[]
   requestLines     PurchaseRequestLine[]
   orderLines       PurchaseOrderLine[]
   quoteLines       SupplierQuoteLine[]
 
   @@index([itemType])
   @@index([status])
+}
+
+model ItemUnitConversion {
+  id                String   @id @default(uuid())
+  itemId            String
+  unitCode          String
+  unitName          String?
+  conversionRate    Float
+  isDefaultPurchase Boolean  @default(false)
+  note              String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  item InventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([itemId, unitCode])
+  @@index([unitCode])
+  @@index([isDefaultPurchase])
+}
+
+model StocktakeSession {
+  id            String    @id @default(uuid())
+  code          String    @unique
+  stocktakeDate DateTime  @default(now())
+  branchCode    String
+  warehouseCode String
+  status        String    @default("DRAFT")
+  approvedBy    String?
+  approvedAt    DateTime?
+  note          String?
+  createdBy     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  lines StocktakeLine[]
+
+  @@index([branchCode])
+  @@index([warehouseCode])
+  @@index([status])
+  @@index([stocktakeDate])
+}
+
+model StocktakeLine {
+  id               String  @id @default(uuid())
+  stocktakeId      String
+  itemId           String
+  systemQuantity   Float
+  actualQuantity   Float
+  varianceQuantity Float
+  reason           String?
+
+  stocktake StocktakeSession @relation(fields: [stocktakeId], references: [id], onDelete: Cascade)
+  item      InventoryItem    @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@index([stocktakeId])
+  @@index([itemId])
 }
 
 model InventoryBalance {
@@ -406,11 +475,13 @@ model InventoryBalance {
 
 model InventoryTransaction {
   id              String   @id @default(uuid())
+  importBatchId   String?
   code            String   @unique
   transactionType String
   transactionDate DateTime @default(now())
   branchCode      String
   warehouseCode   String
+  toWarehouseCode String?
   referenceType   String?
   referenceId     String?
   referenceCode   String?
@@ -419,20 +490,27 @@ model InventoryTransaction {
   createdBy       String?
   createdAt       DateTime @default(now())
 
-  lines InventoryTransactionLine[]
+  importBatch ImportBatch?               @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  lines       InventoryTransactionLine[]
 
   @@index([transactionType])
   @@index([transactionDate])
   @@index([warehouseCode])
+  @@index([toWarehouseCode])
+  @@index([importBatchId])
 }
 
 model InventoryTransactionLine {
-  id            String @id @default(uuid())
-  transactionId String
-  itemId        String
-  quantity      Float
-  unitCost      Float
-  totalCost     Float
+  id             String  @id @default(uuid())
+  transactionId  String
+  itemId         String
+  quantity       Float
+  unitCost       Float
+  totalCost      Float
+  inputQuantity  Float?
+  inputUnitCode  String?
+  conversionRate Float   @default(1)
+  inputUnitCost  Float?
 
   transaction InventoryTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
   item        InventoryItem        @relation(fields: [itemId], references: [id])
@@ -442,19 +520,20 @@ model InventoryTransactionLine {
 }
 
 model PurchaseRequest {
-  id          String    @id @default(uuid())
-  code        String    @unique
-  requestDate DateTime  @default(now())
-  branchCode  String
-  requestedBy String
-  neededDate  DateTime?
-  reason      String
-  status      String    @default("DRAFT")
-  approvedBy  String?
-  approvedAt  DateTime?
-  note        String?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id             String    @id @default(uuid())
+  code           String    @unique
+  requestDate    DateTime  @default(now())
+  branchCode     String
+  departmentCode String?
+  requestedBy    String
+  neededDate     DateTime?
+  reason         String
+  status         String    @default("DRAFT")
+  approvedBy     String?
+  approvedAt     DateTime?
+  note           String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   lines  PurchaseRequestLine[]
   quotes SupplierQuote[]
@@ -462,6 +541,7 @@ model PurchaseRequest {
 
   @@index([status])
   @@index([branchCode])
+  @@index([departmentCode])
 }
 
 model PurchaseRequestLine {
@@ -515,23 +595,24 @@ model SupplierQuoteLine {
 }
 
 model PurchaseOrder {
-  id            String    @id @default(uuid())
-  code          String    @unique
-  requestId     String?
-  orderDate     DateTime  @default(now())
-  expectedDate  DateTime?
-  supplierCode  String
-  supplierName  String
-  branchCode    String
-  warehouseCode String
-  status        String    @default("DRAFT")
-  totalAmount   Float     @default(0)
-  approvedBy    String?
-  approvedAt    DateTime?
-  note          String?
-  createdBy     String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id             String    @id @default(uuid())
+  code           String    @unique
+  requestId      String?
+  orderDate      DateTime  @default(now())
+  expectedDate   DateTime?
+  supplierCode   String
+  supplierName   String
+  branchCode     String
+  departmentCode String?
+  warehouseCode  String
+  status         String    @default("DRAFT")
+  totalAmount    Float     @default(0)
+  approvedBy     String?
+  approvedAt     DateTime?
+  note           String?
+  createdBy      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   request PurchaseRequest?    @relation(fields: [requestId], references: [id])
   lines   PurchaseOrderLine[]
@@ -540,14 +621,15 @@ model PurchaseOrder {
   @@index([status])
   @@index([supplierCode])
   @@index([requestId])
+  @@index([departmentCode])
 }
 
 model PurchaseOrderLine {
-  id               String @id @default(uuid())
+  id               String  @id @default(uuid())
   orderId          String
   itemId           String
   orderedQuantity  Float
-  receivedQuantity Float  @default(0)
+  receivedQuantity Float   @default(0)
   unitCost         Float
   totalCost        Float
   imageUrl         String?
@@ -626,46 +708,53 @@ model AssetDepreciation {
 }
 
 model AssetMaintenance {
-  id              String    @id @default(uuid())
-  assetId         String
-  maintenanceType String
-  scheduledDate   DateTime
-  completedDate   DateTime?
-  supplierName    String?
-  cost            Float     @default(0)
-  status          String    @default("SCHEDULED")
-  note            String?
-  createdBy       String?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id                 String    @id @default(uuid())
+  assetId            String
+  maintenanceType    String
+  scheduledDate      DateTime
+  completedDate      DateTime?
+  supplierName       String?
+  cost               Float     @default(0)
+  recurrenceRule     String?
+  recurrenceInterval Int?      @default(1)
+  recurrenceEndDate  DateTime?
+  linkedWorkItemId   String?
+  status             String    @default("SCHEDULED")
+  note               String?
+  createdBy          String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   asset AssetRecord @relation(fields: [assetId], references: [id], onDelete: Cascade)
 
   @@index([scheduledDate])
+  @@index([linkedWorkItemId])
   @@index([status])
 }
 
 model AssetDamageReport {
-  id              String    @id @default(uuid())
-  code            String    @unique
-  assetId         String
-  reportedDate    DateTime  @default(now())
-  severity        String
-  description     String
-  status          String    @default("NEW")
-  repairCost      Float     @default(0)
-  repairTreatment String?
-  resolvedAt      DateTime?
-  reportedBy      String?
-  resolvedBy      String?
-  note            String?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id               String    @id @default(uuid())
+  code             String    @unique
+  assetId          String
+  reportedDate     DateTime  @default(now())
+  severity         String
+  description      String
+  status           String    @default("NEW")
+  repairCost       Float     @default(0)
+  repairTreatment  String?
+  resolvedAt       DateTime?
+  linkedWorkItemId String?
+  reportedBy       String?
+  resolvedBy       String?
+  note             String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   asset AssetRecord @relation(fields: [assetId], references: [id], onDelete: Cascade)
 
   @@index([status])
   @@index([reportedDate])
+  @@index([linkedWorkItemId])
 }
 
 model CashbookAdjustment {
@@ -720,6 +809,8 @@ model Accrual {
   startPeriod     String
   numberOfPeriods Int
   actualAmount    Float?
+  sourceType      String?
+  sourceId        String?
   status          String   @default("ACTIVE")
   note            String?
   createdBy       String?
@@ -730,6 +821,7 @@ model Accrual {
 
   @@index([status])
   @@index([startPeriod])
+  @@index([sourceType, sourceId])
 }
 
 model AccrualSchedule {
@@ -761,6 +853,31 @@ model AccountingPeriod {
 
   @@unique([period, branchCode])
   @@index([status])
+}
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  occurredAt   DateTime @default(now())
+  actorId      String?
+  actorName    String?
+  actorRole    String?
+  branchCode   String?
+  module       String
+  action       String
+  entityType   String
+  entityId     String?
+  entityCode   String?
+  status       String   @default("SUCCESS")
+  message      String?
+  metadataJson String?
+  createdAt    DateTime @default(now())
+
+  @@index([occurredAt])
+  @@index([actorId])
+  @@index([actorRole])
+  @@index([branchCode])
+  @@index([module])
+  @@index([entityType, entityId])
 }
 
 model AccountingAccount {
@@ -890,7 +1007,10 @@ model WorkItem {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  histories WorkItemHistory[]
+  histories      WorkItemHistory[]
+  checklistItems WorkChecklistItem[]
+  comments       WorkComment[]
+  attachments    WorkAttachment[]
 
   @@index([branchCode])
   @@index([departmentCode])
@@ -912,6 +1032,53 @@ model WorkItemHistory {
   workItem WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
 
   @@index([workItemId])
+}
+
+model WorkChecklistItem {
+  id          String    @id @default(uuid())
+  workItemId  String
+  title       String
+  position    Int       @default(0)
+  isDone      Boolean   @default(false)
+  completedBy String?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  workItem WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+
+  @@index([workItemId, position])
+  @@index([isDone])
+}
+
+model WorkComment {
+  id         String   @id @default(uuid())
+  workItemId String
+  content    String
+  authorId   String?
+  authorName String
+  authorRole String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  workItem WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+
+  @@index([workItemId, createdAt])
+}
+
+model WorkAttachment {
+  id         String   @id @default(uuid())
+  workItemId String
+  fileName   String
+  mimeType   String?
+  fileSize   Int?
+  url        String
+  uploadedBy String?
+  createdAt  DateTime @default(now())
+
+  workItem WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+
+  @@index([workItemId, createdAt])
 }
 
 model ForecastAssumption {
@@ -968,10 +1135,10 @@ model User {
 }
 
 model UserBranchAccess {
-  id         String   @id @default(uuid())
+  id         String @id @default(uuid())
   userId     String
   branchCode String
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user       User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, branchCode])
   @@index([userId])

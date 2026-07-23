@@ -3,6 +3,7 @@ import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError, businessError, cleanText, isPeriodLocked, toDate, toNumber } from "@/lib/phase3";
 import { assertBranchAccess, branchFilterForSession } from "@/lib/accounting";
+import { writeAuditLog } from "@/lib/audit-log";
 
 const menuHref = "/procurement";
 
@@ -46,7 +47,7 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const branchFilter = branchFilterForSession(auth.session, searchParams.get("branchCode") || "ALL");
 
-    const [items, requests, orders] = await Promise.all([
+    const [items, requests, orders, departments] = await Promise.all([
       prisma.inventoryItem.findMany({ where: { status: "ACTIVE" }, orderBy: { name: "asc" } }),
       prisma.purchaseRequest.findMany({
         where: { ...branchFilter },
@@ -63,9 +64,13 @@ export async function GET(request: Request) {
         orderBy: { createdAt: "desc" },
         take: 100,
       }),
+      prisma.masterDataItem.findMany({
+        where: { type: "DEPARTMENT", status: "ACTIVE" },
+        orderBy: [{ branch: "asc" }, { name: "asc" }],
+      }),
     ]);
 
-    return NextResponse.json({ items, requests, orders });
+    return NextResponse.json({ items, requests, orders, departments });
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });
@@ -82,6 +87,7 @@ export async function POST(request: Request) {
     if (action === "CREATE_REQUEST") {
       const lines = validLines(body.lines);
       const branchCode = cleanText(body.branchCode);
+      const departmentCode = cleanText(body.departmentCode) || cleanText(body.department) || null;
       const reason = cleanText(body.reason);
       if (!branchCode || !reason || lines.length === 0) businessError("Cần chi nhánh, lý do và ít nhất một mặt hàng");
       assertBranchAccess(auth.session, branchCode);
@@ -99,6 +105,7 @@ export async function POST(request: Request) {
         data: {
           code,
           branchCode,
+          departmentCode,
           requestedBy: auth.session.name,
           requestDate: toDate(body.requestDate),
           neededDate: body.neededDate ? toDate(body.neededDate) : null,
@@ -117,6 +124,7 @@ export async function POST(request: Request) {
         },
         include: { lines: { include: { item: true } } },
       });
+      await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "CREATE_REQUEST", entityType: "PurchaseRequest", entityId: result.id, entityCode: result.code, branchCode, metadata: { departmentCode, lines: result.lines.length } });
       return NextResponse.json(result, { status: 201 });
     }
 
@@ -144,6 +152,7 @@ export async function POST(request: Request) {
         },
         include: { lines: { include: { item: true } } },
       });
+      await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "ADD_QUOTE", entityType: "SupplierQuote", entityId: result.id, entityCode: result.supplierCode, branchCode: pr.branchCode, metadata: { requestId, supplierName, totalAmount } });
       return NextResponse.json(result, { status: 201 });
     }
 
@@ -153,6 +162,7 @@ export async function POST(request: Request) {
       const supplierCode = cleanText(body.supplierCode);
       const supplierName = cleanText(body.supplierName);
       const branchCode = cleanText(body.branchCode);
+      const bodyDepartmentCode = cleanText(body.departmentCode) || cleanText(body.department) || null;
       const warehouseCode = cleanText(body.warehouseCode);
       if (!supplierCode || !supplierName || !branchCode || !warehouseCode || lines.length === 0) {
         businessError("PO thiếu nhà cung cấp, chi nhánh, kho nhận hoặc dòng hàng");
@@ -185,6 +195,8 @@ export async function POST(request: Request) {
         const source = await prisma.purchaseRequest.findUnique({ where: { id: requestId } });
         if (!source || !["APPROVED", "ORDERED"].includes(source.status)) businessError("PR phải được duyệt trước khi tạo PO");
       }
+      const sourceRequest = requestId ? await prisma.purchaseRequest.findUnique({ where: { id: requestId } }) : null;
+      const departmentCode = bodyDepartmentCode || sourceRequest?.departmentCode || null;
       const code = cleanText(body.code) || await generatedCode("PO", await prisma.purchaseOrder.count());
       const totalAmount = lines.reduce((sum, line) => sum + line.quantity * line.unitCost, 0);
       const result = await prisma.$transaction(async (tx) => {
@@ -195,6 +207,7 @@ export async function POST(request: Request) {
             supplierCode,
             supplierName,
             branchCode,
+            departmentCode,
             warehouseCode,
             expectedDate: body.expectedDate ? toDate(body.expectedDate) : null,
             totalAmount,
@@ -216,6 +229,7 @@ export async function POST(request: Request) {
         if (requestId) await tx.purchaseRequest.update({ where: { id: requestId }, data: { status: "ORDERED" } });
         return order;
       });
+      await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "CREATE_ORDER", entityType: "PurchaseOrder", entityId: result.id, entityCode: result.code, branchCode, metadata: { requestId, supplierCode, supplierName, departmentCode, warehouseCode, totalAmount } });
       return NextResponse.json(result, { status: 201 });
     }
 
@@ -244,6 +258,7 @@ export async function PATCH(request: Request) {
           where: { id: orderId },
           data: { status: "APPROVED", approvedBy: auth.session.name, approvedAt: new Date(), note: cleanText(body.note) || undefined },
         });
+        await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "APPROVE_ORDER", entityType: "PurchaseOrder", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { previousStatus: order.status, status: result.status } });
         return NextResponse.json(result);
       }
       if (action === "SELECT_QUOTE") {
@@ -255,6 +270,7 @@ export async function PATCH(request: Request) {
           prisma.supplierQuote.updateMany({ where: { requestId: quote.requestId }, data: { isSelected: false } }),
           prisma.supplierQuote.update({ where: { id: quoteId }, data: { isSelected: true } }),
         ]);
+        await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "SELECT_QUOTE", entityType: "SupplierQuote", entityId: quote.id, entityCode: quote.supplierCode, branchCode: quote.request.branchCode, metadata: { requestId: quote.requestId, supplierName: quote.supplierName, totalAmount: quote.totalAmount } });
         return NextResponse.json({ ok: true });
       }
       const requestId = cleanText(body.requestId);
@@ -267,6 +283,7 @@ export async function PATCH(request: Request) {
         where: { id: requestId },
         data: { status, approvedBy: auth.session.name, approvedAt: new Date(), note: cleanText(body.note) || undefined },
       });
+      await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action, entityType: "PurchaseRequest", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { previousStatus: pr.status, status } });
       return NextResponse.json(result);
     }
 
@@ -333,6 +350,7 @@ export async function PATCH(request: Request) {
               code: `TS-${order.code}-${String(assetSequence + 1).padStart(4, "0")}`,
               name: line.item.name,
               branchCode: order.branchCode,
+              departmentCode: order.departmentCode || null,
               assetGroup: assetGroupFromItemType(line.item.itemType),
               imageUrl: line.imageUrl || null,
               location: order.warehouseCode,
@@ -363,6 +381,7 @@ export async function PATCH(request: Request) {
       return stockTransaction;
     });
 
+    await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "RECEIVE_ORDER", entityType: "PurchaseOrder", entityId: order.id, entityCode: order.code, branchCode: order.branchCode, metadata: { receiptId: result.id, receiptCode: result.code, lines: receiveLines.length } });
     return NextResponse.json(result);
   } catch (error) {
     const result = apiError(error);

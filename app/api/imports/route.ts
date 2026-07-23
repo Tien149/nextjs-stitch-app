@@ -129,14 +129,42 @@ function templateExample(templateCode: string) {
 }
 
 function templateExampleRows(templateCode: string): Array<Record<string, string | number | Date>> {
+  if (templateCode === "INVENTORY_ITEM_STANDARD_V1") {
+    return [
+      { code: "NVL_NUOCSUOI", name: "Nuoc suoi chai", item_type: "RAW_MATERIAL", unit: "chai", purchase_unit: "thung", conversion_rate: 24, min_stock: 120 },
+      { code: "NVL_DUONG", name: "Duong cat", item_type: "RAW_MATERIAL", unit: "g", purchase_unit: "kg", conversion_rate: 1000, min_stock: 5000 },
+      { code: "BTP_SOTCACHUA", name: "Sot ca chua", item_type: "SEMI_FINISHED", unit: "ml", purchase_unit: "lit", conversion_rate: 1000, min_stock: 3000 },
+      { code: "SP_COMBO01", name: "Combo ban POS", item_type: "FINISHED", unit: "phan", min_stock: 0 },
+    ];
+  }
   if (templateCode === "OPENING_BALANCE_STANDARD_V1") {
     return [
       { period: "2026-07", branch_code: "HCM", balance_type: "BANK", money_source_code: "VCB_HCM", amount: 2500000000, note: "So du ngan hang dau ky" },
       { period: "2026-07", branch_code: "HCM", balance_type: "CASH", money_source_code: "TM_HCM", amount: 120000000, note: "Quy tien mat dau ky" },
       { period: "2026-07", branch_code: "HCM", balance_type: "DEPOSIT", object_code: "KH_ABC", object_name: "Cong ty ABC", money_source_code: "VCB_HCM", amount: 7000000, note: "Tien coc dau ky" },
-      { period: "2026-07", branch_code: "HCM", balance_type: "INVENTORY", object_code: "NL001", object_name: "Nguyen lieu mau", warehouse_code: "KHO_HCM", quantity: 50, unit_cost: 32000, amount: 1600000, note: "Ton kho dau ky" },
+      { period: "2026-07", branch_code: "HCM", balance_type: "INVENTORY", object_code: "NVL_NUOCSUOI", object_name: "Nuoc suoi chai", warehouse_code: "KHO_HCM", quantity: 50, unit_cost: 32000, amount: 1600000, note: "Ton kho dau ky" },
       { period: "2026-07", branch_code: "HCM", balance_type: "ASSET", object_code: "TS001", object_name: "Thiet bi dau ky", department_code: "STORE", quantity: 1, unit_cost: 18000000, amount: 18000000, note: "Tai san/CCDC dau ky" },
       { period: "2026-07", branch_code: "HCM", balance_type: "PREPAID_EXPENSE", object_code: "PB001", object_name: "Chi phi phan bo dau ky", money_source_code: "OPEX_RENT", allocation_months: 12, allocation_start_period: "2026-07", amount: 120000000, note: "Chi phi phan bo dau ky" },
+    ];
+  }
+  if (templateCode === "INVENTORY_TRANSACTION_STANDARD_V1") {
+    return [
+      { transaction_date: new Date("2026-07-22T00:00:00Z"), transaction_type: "NHAP_MUA", branch_code: "HCM", warehouse_code: "KHO_HCM", item_code: "NVL_NUOCSUOI", quantity: 20, unit_code: "thung", unit_cost: 120000, reference_code: "PNK-0001", partner_code: "NCC_FOOD", note: "Nhap mua nuoc suoi" },
+      { transaction_date: new Date("2026-07-22T00:00:00Z"), transaction_type: "XUAT_HUY", branch_code: "HCM", warehouse_code: "KHO_HCM", item_code: "NVL_NUOCSUOI", quantity: 12, unit_code: "chai", reference_code: "HH-0001", note: "Huy hang vo chai" },
+      { transaction_date: new Date("2026-07-22T00:00:00Z"), transaction_type: "DIEU_CHUYEN", branch_code: "HCM", warehouse_code: "KHO_HCM", to_warehouse_code: "KHO_HN", item_code: "NVL_NUOCSUOI", quantity: 2, unit_code: "thung", reference_code: "DCK-0001", note: "Dieu chuyen noi bo" },
+    ];
+  }
+  if (templateCode === "BOM_STANDARD_V1") {
+    return [
+      { product_code: "SP_COMBO01", product_name: "Combo ban POS", ingredient_code: "NVL_NUOCSUOI", quantity: 1, waste_rate: 0, effective_date: new Date("2026-07-22T00:00:00Z"), version: 1, note: "1 chai/phan" },
+      { product_code: "SP_COMBO01", product_name: "Combo ban POS", ingredient_code: "NVL_DUONG", quantity: 20, waste_rate: 5, effective_date: new Date("2026-07-22T00:00:00Z"), version: 1, note: "20g duong/phan" },
+      { product_code: "BTP_SOTCACHUA", product_name: "Sot ca chua", ingredient_code: "NVL_DUONG", quantity: 30, waste_rate: 3, effective_date: new Date("2026-07-22T00:00:00Z"), version: 1, note: "30g duong/lit sot" },
+    ];
+  }
+  if (templateCode === "STOCKTAKE_STANDARD_V1") {
+    return [
+      { stocktake_date: new Date("2026-07-22T00:00:00Z"), branch_code: "HCM", warehouse_code: "KHO_HCM", item_code: "NVL_NUOCSUOI", actual_quantity: 505, reason: "Kiem ke thuc te" },
+      { stocktake_date: new Date("2026-07-22T00:00:00Z"), branch_code: "HCM", warehouse_code: "KHO_HCM", item_code: "NVL_DUONG", actual_quantity: 9800, reason: "Kiem ke thuc te" },
     ];
   }
   const example = templateExample(templateCode);

@@ -117,6 +117,7 @@ export default function SettingsPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [showDrawer, setShowDrawer] = useState(false);
+  const [brandingLogo, setBrandingLogo] = useState("");
 
   const activeTab = tabs.find((tab) => tab.type === activeType) || tabs[0];
 
@@ -155,7 +156,9 @@ export default function SettingsPage() {
       }
 
       setItems((await activeResponse.json()) as MasterDataItem[]);
-      setAllItems((await allResponse.json()) as MasterDataItem[]);
+      const allPayload = (await allResponse.json()) as MasterDataItem[];
+      setAllItems(allPayload);
+      setBrandingLogo(allPayload.find((item) => item.type === "SYSTEM_PARAM" && item.code === "APP_LOGO")?.note || "");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Có lỗi khi tải danh mục");
     } finally {
@@ -304,6 +307,50 @@ export default function SettingsPage() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+  };
+
+  const handleLogoUpload = (file: File | null) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setMessage("Vui lòng chọn file logo dạng hình ảnh.");
+      return;
+    }
+    if (file.size > 1_500_000) {
+      setMessage("Logo nên nhỏ hơn 1.5MB để tải nhanh.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => setBrandingLogo(String(reader.result || ""));
+    reader.readAsDataURL(file);
+  };
+
+  const saveBrandingLogo = async () => {
+    if (!canManageSettings) {
+      setMessage("Bạn chỉ có quyền xem danh mục.");
+      return;
+    }
+    const existing = allItems.find((item) => item.type === "SYSTEM_PARAM" && item.code === "APP_LOGO");
+    const payload = {
+      ...(existing ? { id: existing.id } : {}),
+      type: "SYSTEM_PARAM",
+      code: "APP_LOGO",
+      name: "FIN ERP",
+      group: "Finance Suite",
+      note: brandingLogo,
+      status: "ACTIVE",
+    };
+    const response = await fetch("/api/master-data", {
+      method: existing ? "PATCH" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      setMessage(body.error || "Không lưu được logo hệ thống.");
+      return;
+    }
+    setMessage("Đã cập nhật logo hệ thống. Refresh trang để thấy logo mới ở sidebar/login.");
+    await loadItems();
   };
 
   const handleLogout = () => {
@@ -458,6 +505,44 @@ export default function SettingsPage() {
                   </button>
                 </div>
               </div>
+
+              {activeType === "SYSTEM_PARAM" && (
+                <div className="border-b border-slate-200 bg-white px-5 py-4">
+                  <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                    <div className="flex items-center gap-4">
+                      <div className="grid h-16 w-16 place-items-center overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+                        {brandingLogo ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={brandingLogo} alt="Logo hệ thống" className="h-full w-full object-contain p-2" />
+                        ) : (
+                          <span className="material-symbols-outlined text-3xl text-slate-400">account_balance</span>
+                        )}
+                      </div>
+                      <div>
+                        <h3 className="text-sm font-bold text-slate-900">Logo hệ thống</h3>
+                        <p className="text-xs text-slate-500">Logo này hiển thị ở sidebar Dashboard và màn hình đăng nhập.</p>
+                      </div>
+                    </div>
+                    {canManageSettings && (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={(event) => handleLogoUpload(event.target.files?.[0] || null)}
+                          className="max-w-[260px] rounded-lg border border-slate-300 px-3 py-2 text-xs file:mr-3 file:rounded-md file:border-0 file:bg-blue-50 file:px-3 file:py-1 file:text-xs file:font-bold file:text-blue-700"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void saveBrandingLogo()}
+                          className="rounded-lg bg-blue-600 px-3 py-2 text-xs font-bold text-white hover:bg-blue-700"
+                        >
+                          Lưu logo
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* Data Table */}
               <div className="overflow-x-auto">

@@ -22,6 +22,33 @@ async function defaultMoneySource(tx: Prisma.TransactionClient, branchCode: stri
   return source?.code || (branchCode === "HN" ? "POS_HN" : "TM_HCM");
 }
 
+async function nextWorkItemCode(tx: Prisma.TransactionClient) {
+  const count = await tx.workItem.count();
+  return `CV-${new Date().getFullYear()}-${String(count + 1).padStart(4, "0")}`;
+}
+
+function addMonths(date: Date, months: number) {
+  const next = new Date(date);
+  const targetDay = next.getDate();
+  next.setMonth(next.getMonth() + months);
+  if (next.getDate() < targetDay) next.setDate(0);
+  return next;
+}
+
+function maintenanceDates(startDate: Date, rule: string, interval: number, endDate: Date | null) {
+  const normalizedRule = rule === "QUARTERLY" || rule === "YEARLY" || rule === "MONTHLY" ? rule : "NONE";
+  if (normalizedRule === "NONE") return [startDate];
+  const stepMonths = normalizedRule === "YEARLY" ? 12 * interval : normalizedRule === "QUARTERLY" ? 3 * interval : interval;
+  const finalDate = endDate || addMonths(startDate, stepMonths * 11);
+  const dates: Date[] = [];
+  let current = startDate;
+  while (current <= finalDate && dates.length < 24) {
+    dates.push(new Date(current));
+    current = addMonths(current, stepMonths);
+  }
+  return dates;
+}
+
 export async function GET(request: Request) {
   try {
     const auth = requireMenuAccess(request, menuHref);
@@ -117,16 +144,54 @@ export async function POST(request: Request) {
       const asset = await prisma.assetRecord.findUnique({ where: { id: assetId } });
       if (!asset) businessError("Không tìm thấy tài sản");
       assertBranchAccess(auth.session, asset.branchCode);
-      const result = await prisma.assetMaintenance.create({
-        data: {
-          assetId,
-          maintenanceType: cleanText(body.maintenanceType) || "Định kỳ",
-          scheduledDate: toDate(body.scheduledDate),
-          supplierName: cleanText(body.supplierName) || null,
-          cost: toNumber(body.cost),
-          note: cleanText(body.note) || null,
-          createdBy: auth.session.name,
-        },
+      const scheduledDate = toDate(body.scheduledDate);
+      const recurrenceRule = cleanText(body.recurrenceRule) || "NONE";
+      const recurrenceInterval = Math.max(1, Math.floor(toNumber(body.recurrenceInterval) || 1));
+      const recurrenceEndDate = body.recurrenceEndDate ? toDate(body.recurrenceEndDate) : null;
+      const dates = maintenanceDates(scheduledDate, recurrenceRule, recurrenceInterval, recurrenceEndDate);
+      const shouldCreateWorkTask = body.createWorkTask !== false;
+      const result = await prisma.$transaction(async (tx) => {
+        const created = [];
+        for (const date of dates) {
+          const maintenance = await tx.assetMaintenance.create({
+            data: {
+              assetId,
+              maintenanceType: cleanText(body.maintenanceType) || "Định kỳ",
+              scheduledDate: date,
+              supplierName: cleanText(body.supplierName) || null,
+              cost: toNumber(body.cost),
+              recurrenceRule: recurrenceRule === "NONE" ? null : recurrenceRule,
+              recurrenceInterval,
+              recurrenceEndDate,
+              note: cleanText(body.note) || null,
+              createdBy: auth.session.name,
+            },
+          });
+          if (!shouldCreateWorkTask) {
+            created.push(maintenance);
+            continue;
+          }
+          const workItem = await tx.workItem.create({
+            data: {
+              code: await nextWorkItemCode(tx),
+              title: `Bảo trì ${asset.code} - ${asset.name}`,
+              description: `${cleanText(body.maintenanceType) || "Bảo trì định kỳ"}${maintenance.supplierName ? ` - ${maintenance.supplierName}` : ""}`,
+              branchCode: asset.branchCode,
+              departmentCode: asset.departmentCode || "OPS",
+              assigneeName: cleanText(body.assigneeName) || auth.session.name,
+              linkedModule: "ASSET_MAINTENANCE",
+              linkedId: maintenance.id,
+              linkedCode: asset.code,
+              checklistJson: JSON.stringify(["Kiểm tra tình trạng thiết bị", "Ghi nhận chi phí/phát sinh", "Cập nhật kết quả bảo trì"]),
+              priority: "MEDIUM",
+              dueDate: date,
+              createdBy: auth.session.name,
+              histories: { create: { action: "CREATED_FROM_ASSET_MAINTENANCE", toStatus: "TODO", actor: auth.session.name, note: cleanText(body.note) || null } },
+            },
+          });
+          created.push(await tx.assetMaintenance.update({ where: { id: maintenance.id }, data: { linkedWorkItemId: workItem.id } }));
+        }
+        return created.length === 1 ? created[0] : { created: created.length, items: created };
       });
       return NextResponse.json(result, { status: 201 });
     }
@@ -141,6 +206,16 @@ export async function POST(request: Request) {
         where: { id },
         data: { status: "COMPLETED", completedDate: toDate(body.completedDate), cost: toNumber(body.cost), note: cleanText(body.note) || undefined },
       });
+      if (maintenance.linkedWorkItemId) {
+        await prisma.workItem.update({
+          where: { id: maintenance.linkedWorkItemId },
+          data: {
+            status: "COMPLETED",
+            completedAt: new Date(),
+            histories: { create: { action: "COMPLETED_FROM_ASSET_MAINTENANCE", fromStatus: "TODO", toStatus: "COMPLETED", actor: auth.session.name, note: cleanText(body.note) || null } },
+          },
+        });
+      }
       return NextResponse.json(result);
     }
 
@@ -152,15 +227,36 @@ export async function POST(request: Request) {
       if (!asset) businessError("Không tìm thấy tài sản");
       assertBranchAccess(auth.session, asset.branchCode);
       const code = `BH-${new Date().getFullYear()}-${String(await prisma.assetDamageReport.count() + 1).padStart(4, "0")}`;
-      const result = await prisma.assetDamageReport.create({
-        data: {
-          code,
-          assetId,
-          severity: cleanText(body.severity) || "MEDIUM",
-          description,
-          reportedBy: auth.session.name,
-          note: cleanText(body.note) || null,
-        },
+      const result = await prisma.$transaction(async (tx) => {
+        const report = await tx.assetDamageReport.create({
+          data: {
+            code,
+            assetId,
+            severity: cleanText(body.severity) || "MEDIUM",
+            description,
+            reportedBy: auth.session.name,
+            note: cleanText(body.note) || null,
+          },
+        });
+        const workItem = await tx.workItem.create({
+          data: {
+            code: await nextWorkItemCode(tx),
+            title: `Xử lý sửa chữa ${asset.code} - ${asset.name}`,
+            description,
+            branchCode: asset.branchCode,
+            departmentCode: asset.departmentCode || "OPS",
+            assigneeName: cleanText(body.assigneeName) || auth.session.name,
+            linkedModule: "ASSET_DAMAGE_REPORT",
+            linkedId: report.id,
+            linkedCode: code,
+            checklistJson: JSON.stringify(["Kiểm tra hiện trạng", "Đề xuất xử lý/nhà cung cấp", "Cập nhật chi phí thực tế", "Hoàn tất sửa chữa"]),
+            priority: cleanText(body.severity) === "HIGH" ? "HIGH" : "MEDIUM",
+            dueDate: body.dueDate ? toDate(body.dueDate) : new Date(Date.now() + 24 * 60 * 60 * 1000),
+            createdBy: auth.session.name,
+            histories: { create: { action: "CREATED_FROM_ASSET_DAMAGE", toStatus: "TODO", actor: auth.session.name, note: cleanText(body.note) || null } },
+          },
+        });
+        return tx.assetDamageReport.update({ where: { id: report.id }, data: { linkedWorkItemId: workItem.id } });
       });
       return NextResponse.json(result, { status: 201 });
     }
@@ -179,20 +275,47 @@ export async function POST(request: Request) {
           await tx.assetRecord.update({ where: { id: report.assetId }, data: { originalCost: { increment: repairCost }, currentValue: { increment: repairCost } } });
         }
         if (treatment === "ALLOCATE" && repairCost > 0) {
-          const periods = Math.max(2, Math.floor(toNumber(body.numberOfPeriods) || 6));
+          const periods = Math.max(2, Math.floor(toNumber(body.numberOfPeriods || body.allocationMonths) || 6));
           const startPeriod = `${resolvedAt.getFullYear()}-${String(resolvedAt.getMonth() + 1).padStart(2, "0")}`;
           const amount = repairCost / periods;
+          const categoryCode = cleanText(body.categoryCode) || "REPAIR";
           await tx.accrual.create({
             data: {
               code: `PBSC-${report.code}`,
               name: `Phân bổ sửa chữa ${report.asset.name}`,
               branchCode: report.asset.branchCode,
-              categoryCode: "REPAIR",
+              categoryCode,
               totalAmount: repairCost,
               startPeriod,
               numberOfPeriods: periods,
+              sourceType: "ASSET_REPAIR",
+              sourceId: report.id,
               createdBy: auth.session.name,
               schedules: { create: Array.from({ length: periods }, (_, index) => ({ period: addPeriod(startPeriod, index), amount })) },
+            },
+          });
+        }
+        if (treatment === "DEBT" && repairCost > 0) {
+          const partnerName = cleanText(body.supplierName) || report.asset.supplierName || "Nhà cung cấp sửa chữa";
+          const partnerCode = cleanText(body.supplierCode) || report.asset.supplierCode || "NCC_REPAIR";
+          const debtCode = `CN-${report.code}`;
+          await tx.debtRecord.create({
+            data: {
+              code: debtCode,
+              debtType: "PAYABLE",
+              partnerGroup: "EXTERNAL",
+              partnerCode,
+              partnerName,
+              branchCode: report.asset.branchCode,
+              documentDate: resolvedAt,
+              dueDate: body.dueDate ? toDate(body.dueDate) : null,
+              categoryCode: cleanText(body.categoryCode) || "REPAIR",
+              originalAmount: repairCost,
+              outstandingAmount: repairCost,
+              description: `Công nợ sửa chữa ${report.asset.code} - ${report.asset.name}: ${report.description}`,
+              sourceType: "ASSET_REPAIR",
+              sourceId: report.id,
+              status: "OPEN",
             },
           });
         }
@@ -204,6 +327,7 @@ export async function POST(request: Request) {
               sourceDocumentCode: report.code,
               voucherType: "PAYMENT",
               voucherDate: resolvedAt,
+              partnerCode: cleanText(body.supplierCode) || report.asset.supplierCode || null,
               partnerName: cleanText(body.supplierName) || report.asset.supplierName || "Nhà cung cấp sửa chữa",
               branchCode: report.asset.branchCode,
               moneySourceCode,
@@ -215,11 +339,74 @@ export async function POST(request: Request) {
             },
           });
         }
-        return tx.assetDamageReport.update({
+        const updatedReport = await tx.assetDamageReport.update({
           where: { id },
           data: { status: "COMPLETED", repairCost, repairTreatment: treatment, resolvedAt, resolvedBy: auth.session.name, note: cleanText(body.note) || undefined },
         });
+        if (updatedReport.linkedWorkItemId) {
+          await tx.workItem.update({
+            where: { id: updatedReport.linkedWorkItemId },
+            data: {
+              status: "COMPLETED",
+              completedAt: new Date(),
+              histories: { create: { action: "COMPLETED_FROM_ASSET_REPAIR", fromStatus: "TODO", toStatus: "COMPLETED", actor: auth.session.name, note: cleanText(body.note) || null } },
+            },
+          });
+        }
+        return updatedReport;
       });
+      return NextResponse.json(result);
+    }
+
+    if (action === "DISPOSE_ASSET") {
+      const assetId = cleanText(body.assetId) || cleanText(body.id);
+      const asset = await prisma.assetRecord.findUnique({ where: { id: assetId } });
+      if (!asset) businessError("Không tìm thấy tài sản");
+      assertBranchAccess(auth.session, asset.branchCode);
+
+      const disposalDate = body.disposalDate ? toDate(body.disposalDate) : new Date();
+      if (await isPeriodLocked(disposalDate, asset.branchCode)) businessError("Kỳ kế toán đã khóa");
+
+      const disposalAmount = toNumber(body.disposalAmount);
+      const disposalNote = cleanText(body.disposalNote) || cleanText(body.note);
+
+      const result = await prisma.$transaction(async (tx) => {
+        if (disposalAmount > 0) {
+          const moneySourceCode = cleanText(body.moneySourceCode) || await defaultMoneySource(tx, asset.branchCode);
+          const count = await tx.financialVoucher.count({ where: { voucherType: "RECEIPT" } });
+          const voucherCode = `PTTL-${String(count + 1).padStart(4, "0")}`;
+          await tx.financialVoucher.create({
+            data: {
+              code: voucherCode,
+              sourceDocumentCode: asset.code,
+              voucherType: "RECEIPT",
+              voucherDate: disposalDate,
+              partnerCode: asset.supplierCode || null,
+              partnerName: asset.supplierName || "Thanh lý tài sản",
+              branchCode: asset.branchCode,
+              moneySourceCode,
+              categoryCode: "ASSET_DISPOSAL",
+              amount: disposalAmount,
+              description: `Thu tiền thanh lý tài sản ${asset.code} - ${asset.name}`,
+              status: "PENDING_REVIEW",
+              createdBy: auth.session.name,
+            },
+          });
+        }
+
+        return tx.assetRecord.update({
+          where: { id: assetId },
+          data: {
+            status: "DISPOSED",
+            disposalStatus: "DISPOSED",
+            disposalDate,
+            disposalAmount,
+            disposalNote: disposalNote || null,
+            currentValue: 0,
+          },
+        });
+      });
+
       return NextResponse.json(result);
     }
 

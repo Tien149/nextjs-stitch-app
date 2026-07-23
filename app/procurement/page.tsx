@@ -8,12 +8,13 @@ import { canPerformMenuAction } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 
 type Item = { id: string; code: string; name: string; unit: string; itemType: string; requiresImage: boolean };
+type MasterItem = { id: string; type: string; code: string; name: string; branch: string | null; status: string };
 type RequestLine = { id: string; itemId: string; quantity: number; estimatedUnitCost: number; imageUrl: string | null; item: Item };
 type Quote = { id: string; supplierCode: string; supplierName: string; totalAmount: number; deliveryDays: number | null; paymentTerms: string | null; isSelected: boolean; lines: Array<{ itemId: string; quantity: number; unitCost: number }> };
-type PurchaseRequest = { id: string; code: string; requestDate: string; branchCode: string; requestedBy: string; neededDate: string | null; reason: string; status: string; lines: RequestLine[]; quotes: Quote[] };
+type PurchaseRequest = { id: string; code: string; requestDate: string; branchCode: string; departmentCode: string | null; requestedBy: string; neededDate: string | null; reason: string; status: string; lines: RequestLine[]; quotes: Quote[] };
 type OrderLine = { id: string; itemId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; imageUrl: string | null; item: Item };
-type PurchaseOrder = { id: string; code: string; orderDate: string; supplierName: string; branchCode: string; warehouseCode: string; status: string; totalAmount: number; lines: OrderLine[]; payable: { outstandingAmount: number } | null };
-type Data = { items: Item[]; requests: PurchaseRequest[]; orders: PurchaseOrder[] };
+type PurchaseOrder = { id: string; code: string; orderDate: string; supplierName: string; branchCode: string; departmentCode: string | null; warehouseCode: string; status: string; totalAmount: number; lines: OrderLine[]; payable: { outstandingAmount: number } | null };
+type Data = { items: Item[]; requests: PurchaseRequest[]; orders: PurchaseOrder[]; departments: MasterItem[] };
 
 const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
 const statusStyle = (status: string) => status === "COMPLETED" || status === "APPROVED" ? "bg-emerald-50 text-emerald-700" : status.includes("REJECT") ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-700";
@@ -22,11 +23,12 @@ export default function ProcurementPage() {
   const href = "/procurement";
   const { user, loading } = useModuleAuth(href);
   const [active, setActive] = useState("requests");
-  const [data, setData] = useState<Data>({ items: [], requests: [], orders: [] });
+  const [data, setData] = useState<Data>({ items: [], requests: [], orders: [], departments: [] });
   const [message, setMessage] = useState("");
   
   const [requestForm, setRequestForm] = useState({
     branchCode: "HCM",
+    departmentCode: "",
     neededDate: new Date().toISOString().slice(0, 10),
     reason: "Bổ sung nguyên liệu vận hành",
     itemId: "",
@@ -49,13 +51,25 @@ export default function ProcurementPage() {
   const canCreate = user ? canPerformMenuAction(user.role, href, "create") : false;
   const canEdit = user ? canPerformMenuAction(user.role, href, "edit") : false;
   const canApprove = user ? canPerformMenuAction(user.role, href, "approve") : false;
+  const departmentName = (code?: string | null) => data.departments.find((item) => item.code === code)?.name || code || "Chưa gán phòng ban";
+  const departmentsForBranch = useMemo(
+    () => data.departments.filter((item) => !item.branch || item.branch === "ALL" || item.branch === requestForm.branchCode),
+    [data.departments, requestForm.branchCode],
+  );
 
   const loadData = async () => {
     const response = await fetch("/api/procurement");
     if (response.ok) {
       const payload = await response.json() as Data;
       setData(payload);
-      setRequestForm((form) => ({ ...form, itemId: form.itemId || payload.items[0]?.id || "" }));
+      setRequestForm((form) => {
+        const availableDepartments = payload.departments.filter((item) => !item.branch || item.branch === "ALL" || item.branch === form.branchCode);
+        return {
+          ...form,
+          itemId: form.itemId || payload.items[0]?.id || "",
+          departmentCode: form.departmentCode || availableDepartments[0]?.code || "",
+        };
+      });
       setQuoteForm((form) => ({ ...form, requestId: form.requestId || payload.requests.find((item) => item.status === "APPROVED")?.id || payload.requests[0]?.id || "" }));
     }
   };
@@ -78,7 +92,7 @@ export default function ProcurementPage() {
 
   const createRequest = async (event: React.FormEvent) => {
     event.preventDefault();
-    await send("POST", { action: "CREATE_REQUEST", branchCode: requestForm.branchCode, neededDate: requestForm.neededDate, reason: requestForm.reason, lines: [{ itemId: requestForm.itemId, quantity: requestForm.quantity, estimatedUnitCost: requestForm.estimatedUnitCost, imageUrl: requestForm.imageUrl }] }, "Đã tạo yêu cầu mua hàng.");
+    await send("POST", { action: "CREATE_REQUEST", branchCode: requestForm.branchCode, departmentCode: requestForm.departmentCode, neededDate: requestForm.neededDate, reason: requestForm.reason, lines: [{ itemId: requestForm.itemId, quantity: requestForm.quantity, estimatedUnitCost: requestForm.estimatedUnitCost, imageUrl: requestForm.imageUrl }] }, "Đã tạo yêu cầu mua hàng.");
   };
 
   const addQuote = async (event: React.FormEvent) => {
@@ -88,7 +102,7 @@ export default function ProcurementPage() {
   };
 
   const createOrder = async (request: PurchaseRequest, quote: Quote) => {
-    await send("POST", { action: "CREATE_ORDER", requestId: request.id, supplierCode: quote.supplierCode, supplierName: quote.supplierName, branchCode: request.branchCode, warehouseCode, lines: quote.lines.map((line) => ({ itemId: line.itemId, quantity: line.quantity, unitCost: line.unitCost })) }, "Đã tạo PO nháp từ báo giá. Vui lòng duyệt PO trước khi nhận hàng.");
+    await send("POST", { action: "CREATE_ORDER", requestId: request.id, supplierCode: quote.supplierCode, supplierName: quote.supplierName, branchCode: request.branchCode, departmentCode: request.departmentCode, warehouseCode, lines: quote.lines.map((line) => ({ itemId: line.itemId, quantity: line.quantity, unitCost: line.unitCost })) }, "Đã tạo PO nháp từ báo giá. Vui lòng duyệt PO trước khi nhận hàng.");
     setActive("orders");
   };
 
@@ -115,13 +129,32 @@ export default function ProcurementPage() {
               <Field label="Cửa hàng">
                 <select
                   value={requestForm.branchCode}
-                  onChange={(e) => setRequestForm({ ...requestForm, branchCode: e.target.value })}
+                  onChange={(e) => {
+                    const branchCode = e.target.value;
+                    const nextDepartment = data.departments.find((item) => !item.branch || item.branch === "ALL" || item.branch === branchCode)?.code || "";
+                    setRequestForm({ ...requestForm, branchCode, departmentCode: nextDepartment });
+                  }}
                   className="control"
                   required
                 >
                   {storeOptions.map((option) => (
                     <option key={option.code} value={option.code}>
                       {storeLabel(option.code)}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+
+              <Field label="Phòng ban">
+                <select
+                  value={requestForm.departmentCode}
+                  onChange={(e) => setRequestForm({ ...requestForm, departmentCode: e.target.value })}
+                  className="control"
+                >
+                  <option value="">Chưa gán phòng ban</option>
+                  {departmentsForBranch.map((item) => (
+                    <option key={item.id} value={item.code}>
+                      {item.name} ({item.code})
                     </option>
                   ))}
                 </select>
@@ -176,6 +209,7 @@ export default function ProcurementPage() {
             <Table
               headers={[
                 { label: "Yêu cầu" },
+                { label: "Phòng ban" },
                 { label: "Nội dung" },
                 { label: "Giá dự kiến", align: "right" },
                 { label: "Trạng thái" },
@@ -187,6 +221,10 @@ export default function ProcurementPage() {
                   <td className="cell">
                     <b>{request.code}</b>
                     <small>{new Date(request.requestDate).toLocaleDateString("vi-VN")} · {request.branchCode}</small>
+                  </td>
+                  <td className="cell">
+                    <b>{departmentName(request.departmentCode)}</b>
+                    <small>{request.departmentCode || "UNASSIGNED"}</small>
                   </td>
                   <td className="cell">
                     <b>{request.reason}</b>
@@ -327,6 +365,7 @@ export default function ProcurementPage() {
           <Table
             headers={[
               { label: "PO" },
+              { label: "Phòng ban" },
               { label: "Nhà cung cấp" },
               { label: "Giá trị", align: "right" },
               { label: "Tiến độ nhận" },
@@ -343,6 +382,10 @@ export default function ProcurementPage() {
                   <td className="cell">
                     <b>{order.code}</b>
                     <small>{order.branchCode} · {order.warehouseCode}</small>
+                  </td>
+                  <td className="cell">
+                    <b>{departmentName(order.departmentCode)}</b>
+                    <small>{order.departmentCode || "UNASSIGNED"}</small>
                   </td>
                   <td className="cell">
                     <b>{order.supplierName}</b>

@@ -80,7 +80,7 @@ export const appMenuItems: AppMenuItem[] = [
     name: "Dashboard",
     icon: "dashboard",
     href: "/",
-    roles: ["Admin", "Kế toán tổng hợp", "Quản lý", "Viewer"],
+    roles: ["Admin", "Kế toán tổng hợp", "Quản lý"],
   },
   {
     name: "Sổ quỹ",
@@ -164,7 +164,7 @@ export const appMenuItems: AppMenuItem[] = [
     name: "Báo cáo & BI",
     icon: "monitoring",
     href: "/reports",
-    roles: ["Admin", "Kế toán tổng hợp", "Quản lý", "Viewer"],
+    roles: ["Admin", "Kế toán tổng hợp", "Quản lý"],
   },
   {
     name: "Cấu hình Danh mục",
@@ -232,9 +232,21 @@ const menuActionOverrides: Partial<Record<string, Partial<Record<DemoRole, AppAc
     Admin: roleActions.Admin,
     "Kế toán tổng hợp": ["view", "create", "edit", "export", "config"],
     "Quản lý": ["view", "export"],
-    Viewer: ["view"],
   },
 };
+
+const financialDashboardRoles: DemoRole[] = ["Admin", "Kế toán tổng hợp", "Quản lý"];
+
+export function canViewFinancialDashboard(role: DemoRole) {
+  return financialDashboardRoles.includes(role);
+}
+
+export function getDefaultRouteForRole(role: DemoRole) {
+  if (canViewFinancialDashboard(role)) return "/";
+  if (role === "Kế toán công nợ") return "/debts";
+  if (role === "Viewer") return "/work-management";
+  return appMenuItems.find((item) => item.href !== "/" && canAccessMenu(role, item))?.href || "/login";
+}
 
 export function findDemoUser(userIdOrEmail: string) {
   const normalized = userIdOrEmail.trim().toLowerCase();
