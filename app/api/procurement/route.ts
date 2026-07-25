@@ -148,7 +148,14 @@ export async function POST(request: Request) {
           paymentTerms: cleanText(body.paymentTerms) || null,
           totalAmount,
           note: cleanText(body.note) || null,
-          lines: { create: lines.map((line) => ({ ...line, totalCost: line.quantity * line.unitCost })) },
+          lines: {
+            create: lines.map((line) => ({
+              itemId: line.itemId,
+              quantity: line.quantity,
+              unitCost: line.unitCost,
+              totalCost: line.quantity * line.unitCost,
+            })),
+          },
         },
         include: { lines: { include: { item: true } } },
       });

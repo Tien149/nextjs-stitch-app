@@ -617,11 +617,11 @@ export default function AssetsPage() {
           )}
 
           {/* Asset List & Filter Table */}
-          <section className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden flex flex-col">
+          <section className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden flex flex-col max-h-[720px]">
             {/* Filter Toolbar */}
-            <div className="p-4 border-b border-slate-200 bg-slate-50/70 space-y-3">
+            <div className="p-4 border-b border-slate-200 bg-slate-50/70 space-y-3 shrink-0">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <h2 className="font-bold text-slate-900 text-base">Danh sách Tài sản & CCDC</h2>
+                <h2 className="font-bold text-slate-900 text-base">Danh sách Tài sản &amp; CCDC</h2>
                 <button
                   onClick={loadAssets}
                   className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 transition-colors inline-flex items-center gap-1.5"
@@ -729,9 +729,9 @@ export default function AssetsPage() {
             </div>
 
             {/* Table */}
-            <div className="overflow-x-auto flex-1">
+            <div className="overflow-x-auto overflow-y-auto flex-1 custom-scrollbar max-h-[560px]">
               <table className="w-full text-left text-xs min-w-[760px]">
-                <thead className="bg-slate-100 text-slate-600 uppercase font-bold border-b border-slate-200">
+                <thead className="bg-slate-100 text-slate-600 uppercase font-bold border-b border-slate-200 sticky top-0 z-10 shadow-sm">
                   <tr>
                     <th className="px-4 py-3">Tài sản / CCDC</th>
                     <th className="px-3 py-3">Cửa hàng / Kho</th>

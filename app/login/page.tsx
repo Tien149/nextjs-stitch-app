@@ -1,19 +1,39 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { AppBrand } from "@/components/AppBrand";
 import { displayRoleName } from "@/lib/branch-labels";
 import { canViewFinancialDashboard, demoUsers, getDefaultRouteForRole, SESSION_KEY } from "@/lib/auth-demo";
 
+type LoginBranch = { code: string; name: string };
+
 export default function Login() {
   const router = useRouter();
   const [userId, setUserId] = useState("admin");
+  const [quickSelect, setQuickSelect] = useState("admin");
   const [password, setPassword] = useState("123456");
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [branches, setBranches] = useState<LoginBranch[]>([]);
+  const [selectedBranch, setSelectedBranch] = useState("HCM");
+
+  useEffect(() => {
+    fetch("/api/branding")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && Array.isArray(data.branches)) {
+          setBranches(data.branches);
+          if (data.branches.length > 0) {
+            const defaultBranch = (data.branches as LoginBranch[]).find((b) => b.code === "HCM") || data.branches[0];
+            setSelectedBranch(defaultBranch.code);
+          }
+        }
+      })
+      .catch((e) => console.error("Error loading branches for login:", e));
+  }, []);
 
   const handleLogin = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -33,6 +53,15 @@ export default function Login() {
       }
 
       const session = await response.json();
+
+      if (session.role === "Quản lý" || session.role === "Kế toán công nợ") {
+        if (selectedBranch) {
+          const matchedBranch = branches.find((b) => b.code === selectedBranch);
+          session.allowedBranches = [selectedBranch];
+          session.branch = matchedBranch ? `Chủ cửa hàng - ${matchedBranch.name}` : `Chủ cửa hàng - ${selectedBranch}`;
+        }
+      }
+
       const sessionValue = JSON.stringify(session);
       localStorage.setItem(SESSION_KEY, sessionValue);
       document.cookie = `${SESSION_KEY}=${encodeURIComponent(sessionValue)}; path=/; max-age=${
@@ -106,18 +135,69 @@ export default function Login() {
 
           <form onSubmit={handleLogin} className="p-6 space-y-5">
             <div>
-              <label className="text-sm font-bold text-slate-700">Tài khoản</label>
+              <label className="text-sm font-bold text-slate-700">Chọn nhanh tài khoản test</label>
               <select
-                value={userId}
-                onChange={(event) => setUserId(event.target.value)}
-                className="w-full mt-2 border border-slate-300 rounded-lg px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                value={quickSelect}
+                onChange={(event) => {
+                  const val = event.target.value;
+                  setQuickSelect(val);
+                  if (val) {
+                    const matched = demoUsers.find((u) => u.id === val);
+                    setUserId(matched?.email || val);
+                    setPassword("123456");
+                  }
+                }}
+                className="w-full mt-2 border border-slate-300 rounded-lg px-3 py-2.5 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
               >
+                <option value="">-- Nhập tài khoản thủ công bên dưới --</option>
                 {demoUsers.map((user) => (
                   <option key={user.id} value={user.id}>
-                    {user.name} - {displayRoleName(user.role)}
+                    {user.name} ({displayRoleName(user.role)})
                   </option>
                 ))}
               </select>
+            </div>
+
+            {(quickSelect === "quanly" || quickSelect === "congno") && branches.length > 0 && (
+              <div>
+                <label className="text-sm font-bold text-blue-700">Cửa hàng quản lý áp dụng</label>
+                <select
+                  value={selectedBranch}
+                  onChange={(event) => setSelectedBranch(event.target.value)}
+                  className="w-full mt-2 border border-blue-300 rounded-lg px-3 py-2.5 text-sm bg-blue-50/50 text-blue-900 font-semibold outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer transition animate-fade-in"
+                >
+                  {branches.map((b) => (
+                    <option key={b.code} value={b.code}>
+                      {b.name} ({b.code})
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-blue-600 mt-1.5 italic font-semibold">
+                  * Hệ thống sẽ tự động liên kết tài khoản Quản lý cho riêng Cửa hàng được chọn này.
+                </p>
+              </div>
+            )}
+
+            <div>
+              <label className="text-sm font-bold text-slate-700">Email hoặc Tên đăng nhập</label>
+              <input
+                type="text"
+                value={userId}
+                onChange={(event) => {
+                  const val = event.target.value;
+                  setUserId(val);
+                  // Reset quick select if typing manually does not match any demo ID/email
+                  const matchedDemo = demoUsers.find((u) => u.id === val || u.email === val);
+                  if (matchedDemo) {
+                    setQuickSelect(matchedDemo.id);
+                  } else {
+                    setQuickSelect("");
+                  }
+                }}
+                className="w-full mt-2 border border-slate-300 rounded-lg px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Nhập email hoặc tên tài khoản của bạn..."
+                required
+              />
             </div>
 
             <div>
@@ -128,6 +208,8 @@ export default function Login() {
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                   className="w-full border border-slate-300 rounded-lg px-3 py-3 pr-11 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="Mật khẩu của bạn..."
+                  required
                 />
                 <button
                   type="button"

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { MonthInput } from "@/components/DateInput";
 import { branchScopeOptions, storeLabel, storeOptions } from "@/lib/branch-labels";
@@ -51,6 +51,7 @@ type ActivityLog = { id: string; time: string; module: string; action: string; a
 type AccountingPeriodStatus = { period: string; branchCode: string; status: string; closedBy: string | null; closedAt: string | null; reopenedBy: string | null; reopenedAt: string | null; reason: string | null };
 type ActivityData = { accountingPeriod: AccountingPeriodStatus; periods: AccountingPeriodStatus[]; logs: ActivityLog[] };
 type ReportData = DashboardData | PnlData | YoyData | CashflowData | BalanceData | OperationsData | BudgetData | ActivityData;
+type DrilldownRow = { id: string; date: string; code: string; accountCode: string; accountName: string; description: string; amount: number };
 
 const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value);
 const metricLabels: Record<string, string> = {
@@ -77,6 +78,34 @@ export default function ReportsPage() {
   const [forecast, setForecast] = useState({ period: new Date().toISOString().slice(0, 7), branchCode: "HCM", scenario: "BASE", assumptionType: "INFLOW", amount: "100000000", note: "Kế hoạch dòng tiền" });
   const [targetForm, setTargetForm] = useState({ metric: "otherOpex", targetValue: "50000000" });
   const [reopenReason, setReopenReason] = useState("Bổ sung hoặc điều chỉnh dữ liệu kỳ trước");
+
+  const [expandedMetric, setExpandedMetric] = useState<string | null>(null);
+  const [drilldownData, setDrilldownData] = useState<DrilldownRow[]>([]);
+  const [drilldownLoading, setDrilldownLoading] = useState(false);
+
+  const handleToggleExpand = async (metric: string) => {
+    if (expandedMetric === metric) {
+      setExpandedMetric(null);
+      setDrilldownData([]);
+      return;
+    }
+
+    setExpandedMetric(metric);
+    setDrilldownData([]);
+    setDrilldownLoading(true);
+
+    try {
+      const res = await fetch(`/api/reports/drilldown?period=${period}&branchCode=${branchCode}&metric=${metric}`);
+      if (res.ok) {
+        const payload = await res.json();
+        setDrilldownData(payload);
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setDrilldownLoading(false);
+    }
+  };
 
   const canConfigure = user ? canPerformMenuAction(user.role, href, "create") : false;
   const canAdminPeriod = user?.role === "Admin";
@@ -262,18 +291,133 @@ export default function ReportsPage() {
               </form>
             )}
             <section className="table-panel">
-              <PanelHeader title="So sánh thực tế với ngân sách" subtitle="Chi phí vượt ngân sách được đánh dấu đỏ; doanh thu/lợi nhuận đạt target được đánh dấu xanh." />
+              <PanelHeader title="So sánh thực tế với ngân sách" subtitle="Bấm vào từng chỉ tiêu để xem chi tiết đối chiếu chứng từ gốc phát sinh chi phí thực tế." />
               <div className="max-h-[560px] overflow-auto">
-                <Table headers={["Chỉ tiêu", "Thực tế", "Ngân sách/Target", "Chênh lệch", "Tỷ lệ dùng"]}>
-                  {budget.rows.map((row) => (
-                    <tr key={row.metric} className="border-t border-slate-100">
-                      <Cell><b>{row.label}</b><small className="block text-slate-500">{row.kind === "EXPENSE" ? "Chi phí" : row.kind === "REVENUE" ? "Doanh thu" : "Lợi nhuận"}</small></Cell>
-                      <Cell right>{money(row.actual)} đ</Cell>
-                      <Cell right>{row.target ? `${money(row.target)} đ` : "Chưa nhập"}</Cell>
-                      <Cell right><span className={row.isGood ? "text-emerald-700" : "text-rose-700"}>{money(row.variance)} đ</span></Cell>
-                      <Cell right>{row.usageRate === null ? "-" : `${(row.usageRate * 100).toFixed(1)}%`}</Cell>
-                    </tr>
-                  ))}
+                <Table headers={["Chỉ tiêu", "Thực tế", "Ngân sách/Target", "Chênh lệch", "Tỷ lệ dùng & Tiến trình", "Đối chiếu"]}>
+                  {budget.rows.map((row) => {
+                    const hasTarget = !!row.target;
+                    const rateVal = row.usageRate !== null ? Math.round(row.usageRate * 100) : 0;
+
+                    // Determine elegant premium color schemes based on variance
+                    let barColor = "bg-slate-300";
+
+                    if (row.kind === "EXPENSE") {
+                      if (rateVal <= 80) {
+                        barColor = "bg-emerald-500";
+                      } else if (rateVal <= 100) {
+                        barColor = "bg-amber-500";
+                      } else {
+                        barColor = "bg-rose-500";
+                      }
+                    } else { // REVENUE or PROFIT
+                      if (rateVal >= 100) {
+                        barColor = "bg-emerald-500";
+                      } else if (rateVal >= 80) {
+                        barColor = "bg-amber-500";
+                      } else {
+                        barColor = "bg-rose-500";
+                      }
+                    }
+
+                    const isExpanded = expandedMetric === row.metric;
+
+                    return (
+                      <React.Fragment key={row.metric}>
+                        <tr
+                          className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer transition-colors"
+                          onClick={() => void handleToggleExpand(row.metric)}
+                        >
+                          <Cell>
+                            <div className="flex flex-col">
+                              <span className="font-bold text-slate-800">{row.label}</span>
+                              <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider mt-0.5">
+                                {row.kind === "EXPENSE" ? "Chi phí" : row.kind === "REVENUE" ? "Doanh thu" : "Lợi nhuận"}
+                              </span>
+                            </div>
+                          </Cell>
+                          <Cell right><b>{money(row.actual)} đ</b></Cell>
+                          <Cell right>{hasTarget ? `${money(row.target)} đ` : <span className="text-slate-400 italic text-[11px]">Chưa đặt</span>}</Cell>
+                          <Cell right>
+                            <span className={`inline-block px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
+                              row.isGood ? "text-emerald-700 bg-emerald-50 border border-emerald-100" : "text-rose-700 bg-rose-50 border border-rose-100"
+                            }`}>
+                              {row.variance >= 0 ? "+" : ""}{money(row.variance)} đ
+                            </span>
+                          </Cell>
+                          <Cell>
+                            <div className="flex items-center gap-3 min-w-[120px]">
+                              <span className="text-xs font-bold text-slate-600 w-10 shrink-0">
+                                {row.usageRate === null ? "-" : `${(row.usageRate * 100).toFixed(0)}%`}
+                              </span>
+                              {row.usageRate !== null && (
+                                <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden border border-slate-200/50">
+                                  <div
+                                    className={`h-full rounded-full transition-all duration-300 ${barColor}`}
+                                    style={{ width: `${Math.min(100, Math.max(0, rateVal))}%` }}
+                                  />
+                                </div>
+                              )}
+                            </div>
+                          </Cell>
+                          <Cell right>
+                            <span className="material-symbols-outlined text-slate-400 select-none text-base">
+                              {isExpanded ? "expand_less" : "expand_more"}
+                            </span>
+                          </Cell>
+                        </tr>
+                        {isExpanded && (
+                          <tr className="bg-slate-50/50">
+                            <td colSpan={6} className="px-4 py-3 border-t border-slate-100">
+                              <div className="bg-white border border-slate-200/60 rounded-xl p-4 shadow-sm">
+                                <div className="flex items-center justify-between mb-3">
+                                  <h4 className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
+                                    <span className="material-symbols-outlined text-sm text-blue-500">receipt_long</span>
+                                    Đối chiếu chứng từ thực tế cho: {row.label}
+                                  </h4>
+                                  <span className="text-[10px] text-slate-500 font-bold bg-slate-100 px-2 py-0.5 rounded">
+                                    {drilldownLoading ? "Đang tải..." : `${drilldownData.length} dòng phát sinh`}
+                                  </span>
+                                </div>
+
+                                {drilldownLoading ? (
+                                  <div className="flex justify-center py-6">
+                                    <div className="h-6 w-6 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
+                                  </div>
+                                ) : drilldownData.length === 0 ? (
+                                  <p className="text-center py-6 text-xs text-slate-400 italic">Không có phát sinh chi phí thực tế cho hạng mục này.</p>
+                                ) : (
+                                  <div className="overflow-x-auto max-h-[260px] overflow-y-auto custom-scrollbar border border-slate-100 rounded-lg">
+                                    <table className="w-full text-left text-[11px] font-medium text-slate-600 border-collapse">
+                                      <thead className="bg-slate-50 text-slate-500 uppercase font-bold text-[10px] sticky top-0 z-10 border-b border-slate-200 shadow-sm">
+                                        <tr>
+                                          <th className="px-3 py-2">Ngày</th>
+                                          <th className="px-3 py-2">Mã chứng từ</th>
+                                          <th className="px-3 py-2">Tài khoản</th>
+                                          <th className="px-3 py-2">Diễn giải</th>
+                                          <th className="px-3 py-2 text-right">Số tiền</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-slate-100">
+                                        {drilldownData.map((item, idx) => (
+                                          <tr key={`${item.id}-${idx}`} className="hover:bg-slate-50/50">
+                                            <td className="px-3 py-2 whitespace-nowrap">{item.date}</td>
+                                            <td className="px-3 py-2 font-semibold text-blue-600 whitespace-nowrap">{item.code}</td>
+                                            <td className="px-3 py-2 whitespace-nowrap text-slate-700">{item.accountCode} - {item.accountName}</td>
+                                            <td className="px-3 py-2 max-w-[240px] truncate text-slate-500" title={item.description}>{item.description}</td>
+                                            <td className="px-3 py-2 text-right font-bold text-slate-800 whitespace-nowrap">{money(Math.abs(item.amount))} đ</td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
                 </Table>
               </div>
             </section>

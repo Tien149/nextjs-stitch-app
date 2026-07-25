@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { AppBrand } from "@/components/AppBrand";
 import { MonthInput } from "@/components/DateInput";
-import { branchScopeOptions, displayRoleName } from "@/lib/branch-labels";
+import { branchScopeOptions, displayRoleName, updateDynamicBranches } from "@/lib/branch-labels";
 import {
   appMenuItems,
   canAccessMenu,
@@ -107,6 +107,17 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    // Fetch branches dynamically
+    fetch("/api/master-data?type=BRANCH")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && Array.isArray(data)) {
+          const activeBranches = data.filter((b) => b.status === "ACTIVE");
+          updateDynamicBranches(activeBranches);
+        }
+      })
+      .catch((e) => console.error("Error loading branches in Home:", e));
+
     const session = localStorage.getItem(SESSION_KEY);
     if (!session) {
       router.push("/login");

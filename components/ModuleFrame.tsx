@@ -2,7 +2,7 @@
 
 import { type ReactNode, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { branchScopeOptions, displayRoleName } from "@/lib/branch-labels";
+import { branchScopeOptions, displayRoleName, updateDynamicBranches } from "@/lib/branch-labels";
 import { SESSION_KEY, type DemoSession } from "@/lib/auth-demo";
 
 export function ModuleFrame({
@@ -24,6 +24,17 @@ export function ModuleFrame({
   const [isLocked, setIsLocked] = useState(false);
 
   useEffect(() => {
+    // Fetch branches from database dynamically
+    fetch("/api/master-data?type=BRANCH")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && Array.isArray(data)) {
+          const activeBranches = data.filter((b) => b.status === "ACTIVE");
+          updateDynamicBranches(activeBranches);
+        }
+      })
+      .catch((e) => console.error("Error loading branches in ModuleFrame:", e));
+
     const raw = localStorage.getItem(SESSION_KEY);
     if (raw) {
       try {

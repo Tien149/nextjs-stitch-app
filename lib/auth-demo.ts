@@ -178,6 +178,12 @@ export const appMenuItems: AppMenuItem[] = [
     href: "/permissions",
     roles: ["Admin"],
   },
+  {
+    name: "Nhật ký Hệ thống",
+    icon: "history",
+    href: "/audit-logs",
+    roles: ["Admin"],
+  },
 ];
 
 export const roleActions: Record<DemoRole, AppAction[]> = {

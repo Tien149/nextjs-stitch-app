@@ -79,8 +79,6 @@ export default function ProcurementPage() {
   }, [loading]);
 
   const selectedRequest = useMemo(() => data.requests.find((item) => item.id === quoteForm.requestId), [data.requests, quoteForm.requestId]);
-  const selectedItem = useMemo(() => data.items.find((item) => item.id === requestForm.itemId), [data.items, requestForm.itemId]);
-
   const send = async (method: "POST" | "PATCH", body: object, success: string) => {
     setMessage("");
     const response = await fetch("/api/procurement", { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -113,10 +111,47 @@ export default function ProcurementPage() {
     setQuoteForm({ ...quoteForm, supplierCode: code, supplierName: name });
   };
 
+  const totalPRs = data.requests.length;
+  const pendingPRs = data.requests.filter((r) => ["DRAFT", "PENDING_APPROVAL"].includes(r.status)).length;
+  const totalPOs = data.orders.length;
+  const openPOs = data.orders.filter((o) => !["COMPLETED", "RECEIVED"].includes(o.status)).length;
+
   if (loading) return <div className="h-screen grid place-items-center bg-slate-100">Đang tải...</div>;
 
   return (
     <ModuleFrame title="Mua hàng & Nhà cung cấp" subtitle="GĐ3 - PR, báo giá, PO và nhận hàng" role={user?.role}>
+      {/* Operational Summary Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-500">Tổng yêu cầu PR</span>
+            <span className="material-symbols-outlined text-blue-500 text-xl">assignment</span>
+          </div>
+          <p className="text-lg font-bold text-slate-800 mt-1">{totalPRs} yêu cầu</p>
+        </div>
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-500">PR chờ duyệt</span>
+            <span className="material-symbols-outlined text-amber-500 text-xl">pending_actions</span>
+          </div>
+          <p className="text-lg font-bold text-amber-600 mt-1">{pendingPRs} yêu cầu</p>
+        </div>
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-500">Đơn mua hàng (PO)</span>
+            <span className="material-symbols-outlined text-indigo-500 text-xl">local_shipping</span>
+          </div>
+          <p className="text-lg font-bold text-indigo-600 mt-1">{totalPOs} đơn</p>
+        </div>
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-500">PO đang thực hiện</span>
+            <span className="material-symbols-outlined text-emerald-500 text-xl">package_2</span>
+          </div>
+          <p className="text-lg font-bold text-emerald-600 mt-1">{openPOs} đơn</p>
+        </div>
+      </div>
+
       <ModuleTabs active={active} onChange={setActive} tabs={[{ id: "requests", label: "Yêu cầu mua", icon: "assignment" }, { id: "quotes", label: "So sánh giá", icon: "compare_arrows" }, { id: "orders", label: "Đơn mua hàng", icon: "local_shipping" }]} />
       {message && <p className="mb-4 px-4 py-3 rounded-lg border border-blue-100 bg-blue-50 text-sm text-blue-700">{message}</p>}
 
@@ -145,13 +180,13 @@ export default function ProcurementPage() {
                 </select>
               </Field>
 
-              <Field label="Phòng ban">
+              <Field label="Phòng ban cần mua">
                 <select
                   value={requestForm.departmentCode}
                   onChange={(e) => setRequestForm({ ...requestForm, departmentCode: e.target.value })}
                   className="control"
+                  required
                 >
-                  <option value="">Chưa gán phòng ban</option>
                   {departmentsForBranch.map((item) => (
                     <option key={item.id} value={item.code}>
                       {item.name} ({item.code})
@@ -159,43 +194,74 @@ export default function ProcurementPage() {
                   ))}
                 </select>
               </Field>
-              
-              <Field label="Ngày cần hàng">
-                <DateInput value={requestForm.neededDate} onChange={(neededDate) => setRequestForm({ ...requestForm, neededDate })} className="mt-1.5" required ariaLabel="Ngày cần hàng" />
-              </Field>
-              
+
               <Field label="Mặt hàng">
-                <select value={requestForm.itemId} onChange={(e) => setRequestForm({ ...requestForm, itemId: e.target.value })} className="control" required>
-                  <option value="">Chọn mặt hàng</option>
+                <select
+                  value={requestForm.itemId}
+                  onChange={(e) => setRequestForm({ ...requestForm, itemId: e.target.value })}
+                  className="control"
+                  required
+                >
                   {data.items.map((item) => (
-                    <option key={item.id} value={item.id}>{item.code} - {item.name}{item.requiresImage ? " *cần hình" : ""}</option>
+                    <option key={item.id} value={item.id}>
+                      {item.name} ({item.code}) - {item.unit}
+                    </option>
                   ))}
                 </select>
               </Field>
-              <Field label={selectedItem?.requiresImage ? "URL hình ảnh *" : "URL hình ảnh"}>
+
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Số lượng">
+                  <input
+                    type="number"
+                    min="0.01"
+                    step="any"
+                    value={requestForm.quantity}
+                    onChange={(e) => setRequestForm({ ...requestForm, quantity: e.target.value })}
+                    className="control"
+                    required
+                  />
+                </Field>
+                <Field label="Đơn giá dự kiến">
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={requestForm.estimatedUnitCost}
+                    onChange={(e) => setRequestForm({ ...requestForm, estimatedUnitCost: e.target.value })}
+                    className="control"
+                    required
+                  />
+                </Field>
+              </div>
+
+              <Field label="Ngày cần hàng">
+                <DateInput
+                  value={requestForm.neededDate}
+                  onChange={(neededDate) => setRequestForm({ ...requestForm, neededDate })}
+                  className="control"
+                  required
+                  ariaLabel="Ngày cần hàng"
+                />
+              </Field>
+
+              <Field label="Lý do / Diễn giải">
+                <textarea
+                  value={requestForm.reason}
+                  onChange={(e) => setRequestForm({ ...requestForm, reason: e.target.value })}
+                  className="control h-20 resize-none"
+                  required
+                />
+              </Field>
+
+              <Field label="URL hình ảnh (nếu có)">
                 <input
+                  type="url"
+                  placeholder="https://... hoặc để trống"
                   value={requestForm.imageUrl}
                   onChange={(e) => setRequestForm({ ...requestForm, imageUrl: e.target.value })}
                   className="control"
-                  placeholder="https://... hoặc mã ảnh nội bộ"
-                  required={Boolean(selectedItem?.requiresImage)}
                 />
-                {selectedItem && ["TOOL", "ASSET"].includes(selectedItem.itemType) && (
-                  <p className="mt-1 text-[11px] font-semibold text-amber-600">Mặt hàng này sẽ tự tạo hồ sơ tài sản/CCDC khi nhận PO.</p>
-                )}
-              </Field>
-              
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Số lượng">
-                  <input type="number" min="0.01" step="0.01" value={requestForm.quantity} onChange={(e) => setRequestForm({ ...requestForm, quantity: e.target.value })} className="control" />
-                </Field>
-                <Field label="Giá dự kiến">
-                  <input type="number" value={requestForm.estimatedUnitCost} onChange={(e) => setRequestForm({ ...requestForm, estimatedUnitCost: e.target.value })} className="control" />
-                </Field>
-              </div>
-              
-              <Field label="Lý do">
-                <textarea value={requestForm.reason} onChange={(e) => setRequestForm({ ...requestForm, reason: e.target.value })} className="control h-20 resize-none" required />
               </Field>
               
               <button className="primary-button w-full">
@@ -298,61 +364,48 @@ export default function ProcurementPage() {
 
           <section className="space-y-4">
             {data.requests.filter((request) => request.quotes.length > 0).map((request) => (
-              <div key={request.id} className="bg-white border border-slate-200 rounded-lg overflow-hidden shadow-sm">
-                <div className="px-5 py-4 border-b border-slate-200 flex justify-between items-center">
+              <div key={request.id} className="table-panel shadow-sm p-4">
+                <div className="flex items-center justify-between pb-3 mb-3 border-b border-slate-100">
                   <div>
-                    <b>{request.code} - {request.reason}</b>
-                    <p className="text-xs text-slate-500 mt-1">{request.lines.length} mặt hàng</p>
+                    <b>{request.code} — {request.reason}</b>
+                    <p className="text-xs text-slate-500">Mặt hàng: {request.lines.map((line) => `${line.item.name} (${line.quantity} ${line.item.unit})`).join(", ")}</p>
                   </div>
-                  
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-slate-600">Kho nhận:</span>
-                    <select
-                      value={warehouseCode}
-                      onChange={(e) => setWarehouseCode(e.target.value)}
-                      className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-36 focus:border-blue-500 outline-none"
-                    >
-                      <option value="KHO_HCM">Kho Cửa hàng 1</option>
-                      <option value="KHO_HN">Kho Cửa hàng 2</option>
-                    </select>
-                  </div>
+                  <span className={`status ${statusStyle(request.status)}`}>{request.status}</span>
                 </div>
-                
-                <Table
-                  headers={[
-                    { label: "Nhà cung cấp" },
-                    { label: "Tổng báo giá", align: "right" },
-                    { label: "Giao hàng" },
-                    { label: "Điều khoản" },
-                    { label: "Thao tác", align: "right" },
-                  ]}
-                >
-                  {request.quotes.map((quote) => (
-                    <tr key={quote.id} className="border-t border-slate-100">
-                      <td className="cell">
-                        <b>{quote.supplierName}</b>
-                        <small>{quote.supplierCode}</small>
-                      </td>
-                      <td className="cell font-bold text-right text-indigo-950">
-                        {money(quote.totalAmount)} đ
-                      </td>
-                      <td className="cell">{quote.deliveryDays || "-"} ngày</td>
-                      <td className="cell">{quote.paymentTerms || "-"}</td>
-                      <td className="cell text-right space-x-2">
-                        {canApprove && (
-                          <button onClick={() => void send("PATCH", { action: "SELECT_QUOTE", quoteId: quote.id }, "Đã chọn báo giá.")} className="action-link hover:underline text-indigo-700">
-                            {quote.isSelected ? "Đã chọn" : "Chọn"}
-                          </button>
-                        )}
-                        {canCreate && (
-                          <button onClick={() => void createOrder(request, quote)} className="action-link text-blue-700 hover:underline">
-                            Tạo PO
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </Table>
+
+                <div className="overflow-x-auto max-h-[300px] overflow-y-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50 text-xs text-slate-500 uppercase border-b border-slate-200 sticky top-0 z-10">
+                      <tr>
+                        <th className="px-3 py-2 text-left">Nhà cung cấp</th>
+                        <th className="px-3 py-2 text-right">Tổng giá</th>
+                        <th className="px-3 py-2 text-center">Giao hàng</th>
+                        <th className="px-3 py-2 text-left">Điều khoản</th>
+                        <th className="px-3 py-2 text-right">Thao tác</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {request.quotes.map((quote) => (
+                        <tr key={quote.id} className="border-t border-slate-100">
+                          <td className="cell">
+                            <b>{quote.supplierName}</b>
+                            <small>{quote.supplierCode}</small>
+                          </td>
+                          <td className="cell text-right font-bold">{money(quote.totalAmount)} đ</td>
+                          <td className="cell text-center">{quote.deliveryDays ? `${quote.deliveryDays} ngày` : "N/A"}</td>
+                          <td className="cell">{quote.paymentTerms || "N/A"}</td>
+                          <td className="cell text-right">
+                            {canCreate && (
+                              <button onClick={() => void createOrder(request, quote)} className="action-link text-blue-700 hover:underline">
+                                Chọn & Tạo PO
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             ))}
           </section>
@@ -361,42 +414,56 @@ export default function ProcurementPage() {
 
       {active === "orders" && (
         <section className="table-panel shadow-sm">
-          <PanelTitle title="Đơn mua hàng" onReload={loadData} />
+          <div className="p-5 border-b border-slate-200 flex items-center justify-between">
+            <div>
+              <h2 className="font-bold">Đơn mua hàng (PO)</h2>
+              <p className="text-xs text-slate-500 mt-1">Duyệt PO và bấm &quot;Nhận hàng&quot; để tự động tăng tồn kho &amp; ghi nhận công nợ.</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
+                Kho nhận:
+                <select value={warehouseCode} onChange={(e) => setWarehouseCode(e.target.value)} className="control py-1 px-2 text-xs">
+                  <option value="KHO_HCM">Kho Cửa hàng 1 (KHO_HCM)</option>
+                  <option value="KHO_HN">Kho Cửa hàng 2 (KHO_HN)</option>
+                </select>
+              </label>
+              <button type="button" title="Tải lại" onClick={loadData} className="icon-button"><span className="material-symbols-outlined text-lg">refresh</span></button>
+            </div>
+          </div>
+
           <Table
             headers={[
-              { label: "PO" },
-              { label: "Phòng ban" },
+              { label: "Mã PO" },
               { label: "Nhà cung cấp" },
-              { label: "Giá trị", align: "right" },
-              { label: "Tiến độ nhận" },
-              { label: "Tài sản/Ảnh" },
-              { label: "Công nợ", align: "right" },
+              { label: "Cửa hàng/Kho" },
+              { label: "Tổng tiền", align: "right" },
+              { label: "Trạng thái" },
+              { label: "Tài sản/CCDC" },
+              { label: "Công nợ phát sinh", align: "right" },
               { label: "Thao tác", align: "right" },
             ]}
           >
             {data.orders.map((order) => {
-              const ordered = order.lines.reduce((sum, line) => sum + line.orderedQuantity, 0);
-              const received = order.lines.reduce((sum, line) => sum + line.receivedQuantity, 0);
+              const totalOrdered = order.lines.reduce((sum, line) => sum + line.orderedQuantity, 0);
+              const totalReceived = order.lines.reduce((sum, line) => sum + line.receivedQuantity, 0);
               return (
                 <tr key={order.id} className="border-t border-slate-100">
                   <td className="cell">
                     <b>{order.code}</b>
-                    <small>{order.branchCode} · {order.warehouseCode}</small>
-                  </td>
-                  <td className="cell">
-                    <b>{departmentName(order.departmentCode)}</b>
-                    <small>{order.departmentCode || "UNASSIGNED"}</small>
+                    <small>{new Date(order.orderDate).toLocaleDateString("vi-VN")}</small>
                   </td>
                   <td className="cell">
                     <b>{order.supplierName}</b>
-                    <small>{new Date(order.orderDate).toLocaleDateString("vi-VN")}</small>
-                  </td>
-                  <td className="cell text-right font-bold text-slate-900">
-                    {money(order.totalAmount)} đ
+                    <small>{order.lines.map((line) => `${line.item.name} (${line.receivedQuantity}/${line.orderedQuantity})`).join(", ")}</small>
                   </td>
                   <td className="cell">
-                    <b>{received}/{ordered}</b>
-                    <small><span className={`status ${statusStyle(order.status)}`}>{order.status}</span></small>
+                    <b>{storeLabel(order.branchCode)}</b>
+                    <small>Kho: {order.warehouseCode}</small>
+                  </td>
+                  <td className="cell text-right font-bold">{money(order.totalAmount)} đ</td>
+                  <td className="cell">
+                    <span className={`status ${statusStyle(order.status)}`}>{order.status}</span>
+                    <small className="block mt-0.5 text-[10px] text-slate-500">Đã nhận: {totalReceived}/{totalOrdered}</small>
                   </td>
                   <td className="cell">
                     <b>{order.lines.filter((line) => ["TOOL", "ASSET"].includes(line.item.itemType)).length} dòng</b>
@@ -432,9 +499,9 @@ function PanelTitle({ title, onReload }: { title: string; onReload: () => void }
 
 function Table({ headers, children }: { headers: { label: string; align?: "left" | "right" }[]; children: React.ReactNode }) {
   return (
-    <div className="overflow-x-auto">
+    <div className="overflow-x-auto max-h-[580px] overflow-y-auto">
       <table className="w-full text-sm">
-        <thead className="bg-slate-50 text-xs text-slate-500 uppercase border-b border-slate-200">
+        <thead className="bg-slate-50 text-xs text-slate-500 uppercase border-b border-slate-200 sticky top-0 z-10 shadow-sm">
           <tr>
             {headers.map((header, i) => (
               <th

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { branchScopeOptions, displayRoleName, storeLabel, storeOptions } from "@/lib/branch-labels";
+import { displayRoleName, storeLabel } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 
 type MasterDataItem = {
@@ -115,9 +115,22 @@ export default function SettingsPage() {
   const [form, setForm] = useState<MasterDataForm>(emptyForm);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [message, setMessage] = useState("");
+  const [successMessage, setSuccessMessage] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
   const [showDrawer, setShowDrawer] = useState(false);
   const [brandingLogo, setBrandingLogo] = useState("");
+  const [confirmDeleteTarget, setConfirmDeleteTarget] = useState<MasterDataItem | null>(null);
+
+  const dynamicStores = useMemo(() => {
+    const dbStores = allItems.filter((item) => item.type === "BRANCH" && item.status === "ACTIVE");
+    if (dbStores.length > 0) {
+      return dbStores.map((item) => ({ code: item.code, name: item.name }));
+    }
+    return [
+      { code: "HCM", name: "Cửa hàng 1" },
+      { code: "HN", name: "Cửa hàng 2" },
+    ];
+  }, [allItems]);
 
   const activeTab = tabs.find((tab) => tab.type === activeType) || tabs[0];
 
@@ -140,7 +153,8 @@ export default function SettingsPage() {
 
   const loadItems = async () => {
     setIsLoading(true);
-    setMessage("");
+    setSuccessMessage("");
+    setErrorMessage("");
     try {
       const params = new URLSearchParams();
       params.set("type", activeType);
@@ -160,7 +174,7 @@ export default function SettingsPage() {
       setAllItems(allPayload);
       setBrandingLogo(allPayload.find((item) => item.type === "SYSTEM_PARAM" && item.code === "APP_LOGO")?.note || "");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Có lỗi khi tải danh mục");
+      setErrorMessage(error instanceof Error ? error.message : "Có lỗi khi tải danh mục");
     } finally {
       setIsLoading(false);
     }
@@ -190,7 +204,8 @@ export default function SettingsPage() {
 
   const resetForm = (type = activeType) => {
     setForm({ ...emptyForm, type, partnerGroup: "EXTERNAL" });
-    setMessage("");
+    setSuccessMessage("");
+    setErrorMessage("");
   };
 
   const selectTab = (type: string) => {
@@ -200,7 +215,7 @@ export default function SettingsPage() {
 
   const editItem = (item: MasterDataItem) => {
     if (!canManageSettings) {
-      setMessage("Bạn chỉ có quyền xem danh mục.");
+      setErrorMessage("Bạn chỉ có quyền xem danh mục.");
       return;
     }
     setForm({
@@ -223,14 +238,36 @@ export default function SettingsPage() {
     setShowDrawer(true);
   };
 
+  const handleLinkBranchChange = (branchCode: string) => {
+    setForm((prev) => {
+      const updated = { ...prev, branch: branchCode };
+      if (!branchCode) return updated;
+
+      const store = allItems.find((item) => item.type === "BRANCH" && item.code === branchCode);
+      if (store) {
+        return {
+          ...updated,
+          taxCode: store.taxCode || "",
+          accountNo: store.accountNo || "",
+          contactName: store.contactName || "",
+          phone: store.phone || "",
+          email: store.email || "",
+          note: store.note || "",
+        };
+      }
+      return updated;
+    });
+  };
+
   const saveItem = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!canManageSettings) {
-      setMessage("Bạn chỉ có quyền xem danh mục.");
+      setErrorMessage("Bạn chỉ có quyền xem danh mục.");
       return;
     }
     setIsSaving(true);
-    setMessage("");
+    setSuccessMessage("");
+    setErrorMessage("");
     try {
       const response = await fetch("/api/master-data", {
         method: form.id ? "PATCH" : "POST",
@@ -243,10 +280,10 @@ export default function SettingsPage() {
       }
       resetForm(form.type);
       setShowDrawer(false);
-      setMessage(form.id ? "Đã cập nhật danh mục thành công." : "Đã thêm danh mục mới thành công.");
+      setSuccessMessage(form.id ? "Đã cập nhật danh mục thành công." : "Đã thêm danh mục mới thành công.");
       await loadItems();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Có lỗi khi lưu danh mục");
+      setErrorMessage(error instanceof Error ? error.message : "Có lỗi khi lưu danh mục");
     } finally {
       setIsSaving(false);
     }
@@ -254,11 +291,12 @@ export default function SettingsPage() {
 
   const toggleStatus = async (item: MasterDataItem) => {
     if (!canManageSettings) {
-      setMessage("Bạn chỉ có quyền xem danh mục.");
+      setErrorMessage("Bạn chỉ có quyền xem danh mục.");
       return;
     }
     const nextStatus = item.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
-    setMessage("");
+    setSuccessMessage("");
+    setErrorMessage("");
     try {
       const response = await fetch("/api/master-data", {
         method: "PATCH",
@@ -271,7 +309,34 @@ export default function SettingsPage() {
       }
       await loadItems();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Có lỗi khi đổi trạng thái");
+      setErrorMessage(error instanceof Error ? error.message : "Có lỗi khi đổi trạng thái");
+    }
+  };
+
+  const deleteItem = async (item: MasterDataItem) => {
+    if (!canManageSettings) {
+      setErrorMessage("Bạn chỉ có quyền xem danh mục.");
+      return;
+    }
+    setConfirmDeleteTarget(item);
+  };
+
+  const executeDelete = async (item: MasterDataItem) => {
+    setConfirmDeleteTarget(null);
+    setSuccessMessage("");
+    setErrorMessage("");
+    try {
+      const response = await fetch(`/api/master-data?id=${item.id}`, {
+        method: "DELETE",
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "Không xóa được danh mục");
+      }
+      setSuccessMessage("Đã xóa danh mục thành công.");
+      await loadItems();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Có lỗi khi xóa danh mục");
     }
   };
 
@@ -312,11 +377,11 @@ export default function SettingsPage() {
   const handleLogoUpload = (file: File | null) => {
     if (!file) return;
     if (!file.type.startsWith("image/")) {
-      setMessage("Vui lòng chọn file logo dạng hình ảnh.");
+      setErrorMessage("Vui lòng chọn file logo dạng hình ảnh.");
       return;
     }
     if (file.size > 1_500_000) {
-      setMessage("Logo nên nhỏ hơn 1.5MB để tải nhanh.");
+      setErrorMessage("Logo nên nhỏ hơn 1.5MB để tải nhanh.");
       return;
     }
     const reader = new FileReader();
@@ -326,7 +391,7 @@ export default function SettingsPage() {
 
   const saveBrandingLogo = async () => {
     if (!canManageSettings) {
-      setMessage("Bạn chỉ có quyền xem danh mục.");
+      setErrorMessage("Bạn chỉ có quyền xem danh mục.");
       return;
     }
     const existing = allItems.find((item) => item.type === "SYSTEM_PARAM" && item.code === "APP_LOGO");
@@ -346,10 +411,10 @@ export default function SettingsPage() {
     });
     const body = await response.json();
     if (!response.ok) {
-      setMessage(body.error || "Không lưu được logo hệ thống.");
+      setErrorMessage(body.error || "Không lưu được logo hệ thống.");
       return;
     }
-    setMessage("Đã cập nhật logo hệ thống. Refresh trang để thấy logo mới ở sidebar/login.");
+    setSuccessMessage("Đã cập nhật logo hệ thống. Refresh trang để thấy logo mới ở sidebar/login.");
     await loadItems();
   };
 
@@ -439,10 +504,17 @@ export default function SettingsPage() {
 
           {/* Right Workspace Content */}
           <div className="space-y-6">
-            {message && (
-              <p className="text-sm rounded-lg bg-blue-50 border border-blue-100 text-blue-700 px-4 py-3 shadow-sm flex items-center gap-2">
-                <span className="material-symbols-outlined text-lg">info</span>
-                {message}
+            {successMessage && (
+              <p className="text-sm rounded-lg bg-emerald-50 border border-emerald-100 text-emerald-700 px-4 py-3 shadow-sm flex items-center gap-2">
+                <span className="material-symbols-outlined text-lg">check_circle</span>
+                {successMessage}
+              </p>
+            )}
+
+            {errorMessage && (
+              <p className="text-sm rounded-lg bg-rose-50 border border-rose-100 text-rose-700 px-4 py-3 shadow-sm flex items-center gap-2">
+                <span className="material-symbols-outlined text-lg">error</span>
+                {errorMessage}
               </p>
             )}
 
@@ -617,6 +689,12 @@ export default function SettingsPage() {
                               >
                                 {item.status === "ACTIVE" ? "Ngừng" : "Kích hoạt"}
                               </button>
+                              <button
+                                onClick={() => deleteItem(item)}
+                                className="text-xs font-bold text-rose-600 hover:text-rose-800 ml-4 transition"
+                              >
+                                Xóa
+                              </button>
                             </td>
                           )}
                         </tr>
@@ -635,7 +713,7 @@ export default function SettingsPage() {
         <div className="fixed inset-0 z-50 flex justify-end">
           {/* Overlay mask */}
           <div
-            className="absolute inset-0 bg-slate-900/40 backdrop-blur-xs transition-opacity cursor-pointer"
+            className="absolute inset-0 bg-slate-900/20 transition-opacity cursor-pointer"
             onClick={() => setShowDrawer(false)}
           />
           {/* Drawer content */}
@@ -788,26 +866,27 @@ export default function SettingsPage() {
                   {activeType === "WAREHOUSE" ? (
                     <select
                       value={form.branch}
-                      onChange={(event) => setForm((value) => ({ ...value, branch: event.target.value }))}
+                      onChange={(event) => handleLinkBranchChange(event.target.value)}
                       className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition cursor-pointer"
                     >
                       <option value="">-- Chọn cửa hàng --</option>
-                      {storeOptions.map((option) => (
-                        <option key={option.code} value={option.code}>
-                          {storeLabel(option.code)}
+                      {dynamicStores.map((store) => (
+                        <option key={store.code} value={store.code}>
+                          {store.name}
                         </option>
                       ))}
                     </select>
                   ) : activeType === "MONEY_SOURCE" ? (
                     <select
                       value={form.branch}
-                      onChange={(event) => setForm((value) => ({ ...value, branch: event.target.value }))}
+                      onChange={(event) => handleLinkBranchChange(event.target.value)}
                       className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition cursor-pointer"
                     >
                       <option value="">-- Chọn cửa hàng --</option>
-                      {branchScopeOptions.map((option) => (
-                        <option key={option.code} value={option.code}>
-                          {option.label}
+                      <option value="ALL">Admin / Tất cả cửa hàng</option>
+                      {dynamicStores.map((store) => (
+                        <option key={store.code} value={store.code}>
+                          Chủ cửa hàng - {store.name}
                         </option>
                       ))}
                     </select>
@@ -905,6 +984,43 @@ export default function SettingsPage() {
                 className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-bold transition shadow-sm"
               >
                 {isSaving ? "Đang lưu..." : form.id ? "Lưu cập nhật" : "Thêm mới"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmDeleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/20">
+          <div className="bg-white border border-slate-200 rounded-2xl max-w-md w-full shadow-2xl overflow-hidden flex flex-col p-6 animate-scale-up">
+            <div className="flex items-center gap-3">
+              <div className="h-10 w-10 shrink-0 bg-rose-50 text-rose-500 rounded-full grid place-items-center">
+                <span className="material-symbols-outlined text-xl">warning</span>
+              </div>
+              <h3 className="font-bold text-slate-900 text-base">Xác nhận xóa danh mục</h3>
+            </div>
+
+            <p className="text-slate-600 text-xs leading-5 mt-4">
+              Hành động này sẽ xóa vĩnh viễn danh mục <b>{confirmDeleteTarget.name}</b> (Mã: <code>{confirmDeleteTarget.code}</code>) khỏi hệ thống.
+            </p>
+            <p className="text-slate-400 text-[11px] leading-4 mt-2">
+              Lưu ý: Bạn không thể xóa nếu danh mục này đang được liên kết bởi các chứng từ hoặc báo cáo thực tế.
+            </p>
+
+            <div className="flex items-center gap-3 justify-end mt-6">
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteTarget(null)}
+                className="px-4 py-2 border border-slate-300 rounded-lg text-slate-700 bg-white hover:bg-slate-50 font-bold text-xs transition"
+              >
+                Hủy bỏ
+              </button>
+              <button
+                type="button"
+                onClick={() => executeDelete(confirmDeleteTarget)}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-lg text-xs transition shadow-sm"
+              >
+                Đồng ý xóa
               </button>
             </div>
           </div>

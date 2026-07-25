@@ -240,7 +240,7 @@ async function ensureSeedData() {
           code: item.code,
         },
       },
-      update: item,
+      update: {},
       create: item,
     });
   }
@@ -297,7 +297,7 @@ export async function GET(request: Request) {
   }
 }
 
-function validateMasterData(type: string, group: string | null, branch: string | null, partnerGroup?: string | null) {
+async function validateMasterData(type: string, group: string | null, branch: string | null, partnerGroup?: string | null) {
   if (type === "PARTNER") {
     if (!group || !["CUSTOMER", "SUPPLIER", "BOTH", "EMPLOYEE", "OTHER_PARTNER"].includes(group.toUpperCase())) {
       throw new Error("Loại đối tác bắt buộc là CUSTOMER, SUPPLIER, BOTH, EMPLOYEE hoặc OTHER_PARTNER.");
@@ -307,16 +307,30 @@ function validateMasterData(type: string, group: string | null, branch: string |
     }
   }
   if (type === "WAREHOUSE") {
-    if (!branch || !["HCM", "HN"].includes(branch.toUpperCase())) {
-      throw new Error("Cửa hàng của kho bắt buộc là Cửa hàng 1 hoặc Cửa hàng 2.");
+    if (!branch) {
+      throw new Error("Cửa hàng của kho là bắt buộc.");
+    }
+    const branchExists = await prisma.masterDataItem.findFirst({
+      where: { type: "BRANCH", code: branch.toUpperCase() }
+    });
+    if (!branchExists) {
+      throw new Error(`Cửa hàng liên kết "${branch}" không hợp lệ hoặc không tồn tại trên hệ thống.`);
     }
   }
   if (type === "MONEY_SOURCE") {
     if (!group || !["CASH", "BANK", "WALLET"].includes(group.toUpperCase())) {
       throw new Error("Nhóm nguồn tiền bắt buộc là CASH, BANK hoặc WALLET.");
     }
-    if (!branch || !["HCM", "HN", "ALL"].includes(branch.toUpperCase())) {
-      throw new Error("Cửa hàng của nguồn tiền bắt buộc là Cửa hàng 1, Cửa hàng 2 hoặc Admin / Tất cả cửa hàng.");
+    if (!branch) {
+      throw new Error("Cửa hàng của nguồn tiền là bắt buộc.");
+    }
+    if (branch.toUpperCase() !== "ALL") {
+      const branchExists = await prisma.masterDataItem.findFirst({
+        where: { type: "BRANCH", code: branch.toUpperCase() }
+      });
+      if (!branchExists) {
+        throw new Error(`Cửa hàng liên kết "${branch}" không hợp lệ hoặc không tồn tại trên hệ thống.`);
+      }
     }
   }
   if (type === "REVENUE_EXPENSE_CATEGORY" && group && !["OPEX", "CAPEX", "COGS", "REVENUE_SOURCE"].includes(group.toUpperCase())) {
@@ -349,7 +363,7 @@ export async function POST(request: Request) {
     }
 
     try {
-      validateMasterData(type, partnerType || group, branch, partnerGroup);
+      await validateMasterData(type, partnerType || group, branch, partnerGroup);
       if (branch && ["WAREHOUSE", "MONEY_SOURCE", "DEPARTMENT"].includes(type)) {
         assertBranchAccess(auth.session, branch);
       }
@@ -412,7 +426,7 @@ export async function PATCH(request: Request) {
       : null;
 
     try {
-      validateMasterData(current.type, partnerType || group, branch, partnerGroup);
+      await validateMasterData(current.type, partnerType || group, branch, partnerGroup);
       if (branch && ["WAREHOUSE", "MONEY_SOURCE", "DEPARTMENT"].includes(current.type)) {
         assertBranchAccess(auth.session, branch);
       }
@@ -446,5 +460,32 @@ export async function PATCH(request: Request) {
     }
     console.error("Error updating master data:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+  }
+}
+
+export async function DELETE(request: Request) {
+  try {
+    const auth = requireMenuAction(request, "/settings", "config");
+    if (!auth.ok) return auth.response;
+
+    const { searchParams } = new URL(request.url);
+    const id = searchParams.get("id");
+    if (!id) {
+      return NextResponse.json({ error: "Thiếu ID danh mục" }, { status: 400 });
+    }
+
+    const current = await prisma.masterDataItem.findUnique({ where: { id } });
+    if (!current) {
+      return NextResponse.json({ error: "Không tìm thấy danh mục" }, { status: 404 });
+    }
+
+    await prisma.masterDataItem.delete({ where: { id } });
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    console.error("Error deleting master data:", error);
+    return NextResponse.json(
+      { error: "Không thể xóa danh mục này do có thể đã có dữ liệu chứng từ liên kết" },
+      { status: 400 }
+    );
   }
 }

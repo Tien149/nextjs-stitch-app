@@ -127,40 +127,77 @@ export default function InventoryPage() {
     if (response.ok) await loadData();
   };
 
+  const totalSKUs = data.items.length;
+  const lowStockCount = data.balances.filter((b) => b.quantity < (b.item.minStock || 0)).length;
+  const totalStockValue = data.balances.reduce((sum, b) => sum + b.quantity * b.averageCost, 0);
+  const totalTransactions = data.transactions.length;
+
   if (loading) return <div className="h-screen grid place-items-center bg-slate-100">Đang tải...</div>;
   
   return (
     <ModuleFrame title="Kho & Định lượng" subtitle="GĐ3 - tồn kho, giá bình quân, recipe và hủy hàng" role={user?.role}>
-      <ModuleTabs active={active} onChange={setActive} tabs={[{ id: "stock", label: "Tồn kho", icon: "inventory" }, { id: "transactions", label: "Nhập / Xuất", icon: "swap_horiz" }, { id: "items", label: "Mặt hàng", icon: "category" }, { id: "recipes", label: "Định lượng", icon: "menu_book" }, { id: "production", label: "Che bien", icon: "blender" }, { id: "stocktake", label: "Kiem ke", icon: "fact_check" }, { id: "waste", label: "Hủy hàng", icon: "delete_sweep" }]} />
+      {/* Operational Summary Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-500">Tổng mã hàng (SKUs)</span>
+            <span className="material-symbols-outlined text-blue-500 text-xl">inventory_2</span>
+          </div>
+          <p className="text-lg font-bold text-slate-800 mt-1">{totalSKUs} mặt hàng</p>
+        </div>
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-500">Cảnh báo dưới Min</span>
+            <span className="material-symbols-outlined text-rose-500 text-xl">warning</span>
+          </div>
+          <p className="text-lg font-bold text-rose-600 mt-1">{lowStockCount} mặt hàng</p>
+        </div>
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-500">Tổng giá trị tồn kho</span>
+            <span className="material-symbols-outlined text-emerald-500 text-xl">payments</span>
+          </div>
+          <p className="text-lg font-bold text-emerald-600 mt-1">{money(totalStockValue)} đ</p>
+        </div>
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-500">Tổng giao dịch kho</span>
+            <span className="material-symbols-outlined text-indigo-500 text-xl">swap_horiz</span>
+          </div>
+          <p className="text-lg font-bold text-indigo-600 mt-1">{totalTransactions} giao dịch</p>
+        </div>
+      </div>
+
+      <ModuleTabs active={active} onChange={setActive} tabs={[{ id: "stock", label: "Tồn kho", icon: "inventory" }, { id: "transactions", label: "Nhập / Xuất", icon: "swap_horiz" }, { id: "items", label: "Mặt hàng", icon: "category" }, { id: "recipes", label: "Định lượng", icon: "menu_book" }, { id: "production", label: "Chế biến", icon: "blender" }, { id: "stocktake", label: "Kiểm kê", icon: "fact_check" }, { id: "waste", label: "Hủy hàng", icon: "delete_sweep" }]} />
       {message && <p className="mb-4 px-4 py-3 rounded-lg border border-blue-100 bg-blue-50 text-sm text-blue-700">{message}</p>}
 
       {active === "stock" && (
         <section className="table-panel shadow-sm mb-5">
-          <Panel title="NXT co ban theo kho" reload={loadData} />
+          <Panel title="Nhập - Xuất - Tồn cơ bản theo kho" reload={loadData} />
           <div className="px-5 pb-4 grid sm:grid-cols-2 gap-3">
             <Input label="Kho">
               <select className="control" value={reportWarehouse} onChange={(e) => setReportWarehouse(e.target.value)}>
-                <option value="ALL">Tat ca kho</option>
+                <option value="ALL">Tất cả kho</option>
                 {warehouseOptions.map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>)}
               </select>
             </Input>
-            <Input label="Loai giao dich">
+            <Input label="Loại giao dịch">
               <select className="control" value={reportType} onChange={(e) => setReportType(e.target.value)}>
-                <option value="ALL">Tat ca loai</option>
+                <option value="ALL">Tất cả loại</option>
                 {movementTypes.map((type) => <option key={type} value={type}>{type}</option>)}
               </select>
             </Input>
           </div>
           <Table
             headers={[
-              { label: "Mat hang" },
+              { label: "Mặt hàng" },
               { label: "Kho" },
-              { label: "Dau ky", align: "right" },
-              { label: "Nhap", align: "right" },
-              { label: "Xuat", align: "right" },
-              { label: "Cuoi ky", align: "right" },
-              { label: "Gia BQ", align: "right" },
-              { label: "Gia tri ton", align: "right" },
+              { label: "Đầu kỳ", align: "right" },
+              { label: "Nhập", align: "right" },
+              { label: "Xuất", align: "right" },
+              { label: "Cuối kỳ", align: "right" },
+              { label: "Giá bình quân", align: "right" },
+              { label: "Giá trị tồn", align: "right" },
             ]}
           >
             {(filteredStockSummary.length ? filteredStockSummary : data.balances.filter((row) => reportWarehouse === "ALL" || row.warehouseCode === reportWarehouse).map((row) => ({
@@ -184,8 +221,8 @@ export default function InventoryPage() {
                 <Cell right>{money(row.inboundQuantity)}</Cell>
                 <Cell right>{money(row.outboundQuantity)}</Cell>
                 <Cell right><b>{money(row.closingQuantity)}</b></Cell>
-                <Cell right>{money(row.averageCost)} d</Cell>
-                <Cell right><b>{money(row.closingValue)} d</b></Cell>
+                <Cell right>{money(row.averageCost)} đ</Cell>
+                <Cell right><b>{money(row.closingValue)} đ</b></Cell>
               </tr>
             ))}
           </Table>
@@ -194,17 +231,17 @@ export default function InventoryPage() {
 
       {active === "stock" && (
         <section className="table-panel shadow-sm mb-5">
-          <Panel title="Chi tiet phat sinh theo loai giao dich" reload={loadData} />
+          <Panel title="Chi tiết phát sinh theo loại giao dịch" reload={loadData} />
           <Table
             headers={[
-              { label: "Ngay" },
-              { label: "Chung tu" },
-              { label: "Loai" },
+              { label: "Ngày" },
+              { label: "Chứng từ" },
+              { label: "Loại" },
               { label: "Kho" },
-              { label: "Mat hang" },
-              { label: "Nhap", align: "right" },
-              { label: "Xuat", align: "right" },
-              { label: "Gia tri", align: "right" },
+              { label: "Mặt hàng" },
+              { label: "Nhập", align: "right" },
+              { label: "Xuất", align: "right" },
+              { label: "Giá trị", align: "right" },
             ]}
           >
             {filteredStockMovements.map((row) => (
@@ -216,7 +253,7 @@ export default function InventoryPage() {
                 <Cell><b>{row.itemCode}</b><small>{row.itemName}</small></Cell>
                 <Cell right>{row.inboundQuantity ? `${money(row.inboundQuantity)} ${row.unit}` : "-"}</Cell>
                 <Cell right>{row.outboundQuantity ? `${money(row.outboundQuantity)} ${row.unit}` : "-"}</Cell>
-                <Cell right>{money(row.value)} d</Cell>
+                <Cell right>{money(row.value)} đ</Cell>
               </tr>
             ))}
           </Table>
@@ -567,42 +604,42 @@ export default function InventoryPage() {
       {active === "production" && (
         <div className="grid lg:grid-cols-[380px_1fr] gap-5">
           {canCreate && (
-            <form onSubmit={(e) => { e.preventDefault(); void send({ action: "PRODUCE_SEMI_FINISHED", ...productionForm }, "Da ghi nhan che bien ban thanh pham."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
-              <h2 className="font-bold text-slate-800">Che bien ban thanh pham</h2>
-              <Input label="Ma BTP">
+            <form onSubmit={(e) => { e.preventDefault(); void send({ action: "PRODUCE_SEMI_FINISHED", ...productionForm }, "Đã ghi nhận chế biến bán thành phẩm."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
+              <h2 className="font-bold text-slate-800">Chế biến bán thành phẩm</h2>
+              <Input label="Mã bán thành phẩm">
                 <input data-input-kind="code" className="control" value={productionForm.productCode} onChange={(e) => setProductionForm({ ...productionForm, productCode: e.target.value })} />
               </Input>
               <div className="grid grid-cols-2 gap-3">
-                <Input label="So luong">
+                <Input label="Số lượng">
                   <input type="number" step="0.001" className="control" value={productionForm.productQuantity} onChange={(e) => setProductionForm({ ...productionForm, productQuantity: e.target.value })} />
                 </Input>
-                <Input label="Cua hang">
+                <Input label="Cửa hàng">
                   <select className="control" value={productionForm.branchCode} onChange={(e) => setProductionForm({ ...productionForm, branchCode: e.target.value })}>
                     {storeOptions.map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
                   </select>
                 </Input>
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <Input label="Kho xuat NVL">
+                <Input label="Kho xuất NVL">
                   <select className="control" value={productionForm.warehouseCode} onChange={(e) => setProductionForm({ ...productionForm, warehouseCode: e.target.value })}>
                     {warehouseOptions.map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>)}
                   </select>
                 </Input>
-                <Input label="Kho nhap BTP">
+                <Input label="Kho nhập BTP">
                   <select className="control" value={productionForm.toWarehouseCode} onChange={(e) => setProductionForm({ ...productionForm, toWarehouseCode: e.target.value })}>
                     {warehouseOptions.map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>)}
                   </select>
                 </Input>
               </div>
-              <Input label="Ma lenh">
+              <Input label="Mã lệnh">
                 <input data-input-kind="code" className="control" value={productionForm.referenceCode} onChange={(e) => setProductionForm({ ...productionForm, referenceCode: e.target.value })} />
               </Input>
-              <button className="primary-button w-full">Ghi nhan che bien</button>
+              <button className="primary-button w-full">Ghi nhận chế biến</button>
             </form>
           )}
           <section className="table-panel shadow-sm">
-            <Panel title="Giao dich che bien gan nhat" reload={loadData} />
-            <Table headers={[{ label: "Chung tu" }, { label: "Loai" }, { label: "Kho" }, { label: "Mat hang" }]}>
+            <Panel title="Giao dịch chế biến gần nhất" reload={loadData} />
+            <Table headers={[{ label: "Chứng từ" }, { label: "Loại" }, { label: "Kho" }, { label: "Mặt hàng" }]}>
               {data.transactions.filter((row) => row.transactionType.includes("CHE_BIEN")).map((row) => (
                 <tr key={row.id} className="border-t border-slate-100">
                   <Cell><b>{row.code}</b><small>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}</small></Cell>
@@ -619,10 +656,10 @@ export default function InventoryPage() {
       {active === "stocktake" && (
         <div className="space-y-5">
           {canCreate && (
-            <form onSubmit={(e) => { e.preventDefault(); void send({ action: "APPROVE_STOCKTAKE", ...stocktakeForm, lines: stocktakeRows.map((row) => ({ itemId: row.itemId, actualQuantity: row.actualQuantity, reason: row.reason || stocktakeForm.reason })) }, "Da duyet kiem ke va sinh dieu chinh."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
-              <h2 className="font-bold text-slate-800">Kiem ke kho</h2>
+            <form onSubmit={(e) => { e.preventDefault(); void send({ action: "APPROVE_STOCKTAKE", ...stocktakeForm, lines: stocktakeRows.map((row) => ({ itemId: row.itemId, actualQuantity: row.actualQuantity, reason: row.reason || stocktakeForm.reason })) }, "Đã duyệt kiểm kê và sinh điều chỉnh."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
+              <h2 className="font-bold text-slate-800">Kiểm kê kho</h2>
               <div className="grid grid-cols-2 gap-3">
-                <Input label="Cua hang">
+                <Input label="Cửa hàng">
                   <select className="control" value={stocktakeForm.branchCode} onChange={(e) => setStocktakeForm({ ...stocktakeForm, branchCode: e.target.value })}>
                     {storeOptions.map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
                   </select>
@@ -633,16 +670,16 @@ export default function InventoryPage() {
                   </select>
                 </Input>
               </div>
-              <Input label="Ly do">
+              <Input label="Lý do">
                 <input className="control" value={stocktakeForm.reason} onChange={(e) => setStocktakeForm({ ...stocktakeForm, reason: e.target.value })} />
               </Input>
               <div className="flex justify-end">
                 <button type="button" className="secondary-button" onClick={() => setStocktakeRows(buildStocktakeRows(stocktakeForm.warehouseCode, data.balances, data.items))}>
-                  <span className="material-symbols-outlined text-lg">refresh</span>Nap danh sach kho
+                  <span className="material-symbols-outlined text-lg">refresh</span>Nạp danh sách kho
                 </button>
               </div>
               <div className="border border-slate-200 rounded-lg overflow-hidden">
-                <Table headers={[{ label: "Mat hang" }, { label: "Ton he thong", align: "right" }, { label: "Ton thuc te", align: "right" }, { label: "Chenh lech", align: "right" }, { label: "Ly do" }]}>
+                <Table headers={[{ label: "Mặt hàng" }, { label: "Tồn hệ thống", align: "right" }, { label: "Tồn thực tế", align: "right" }, { label: "Chênh lệch", align: "right" }, { label: "Lý do" }]}>
                   {stocktakeRows.map((row, index) => {
                     const actualQuantity = Number(row.actualQuantity || 0);
                     const variance = actualQuantity - row.systemQuantity;
@@ -674,12 +711,12 @@ export default function InventoryPage() {
                   })}
                 </Table>
               </div>
-              <button className="primary-button w-full">Duyet kiem ke</button>
+              <button className="primary-button w-full">Duyệt kiểm kê</button>
             </form>
           )}
           <section className="table-panel shadow-sm">
-            <Panel title="Phieu kiem ke gan nhat" reload={loadData} />
-            <Table headers={[{ label: "Phieu" }, { label: "Kho" }, { label: "Mat hang" }, { label: "Chenh lech", align: "right" }]}>
+            <Panel title="Phiếu kiểm kê gần nhất" reload={loadData} />
+            <Table headers={[{ label: "Phiếu" }, { label: "Kho" }, { label: "Mặt hàng" }, { label: "Chênh lệch", align: "right" }]}>
               {data.stocktakes.map((row) => (
                 <tr key={row.id} className="border-t border-slate-100">
                   <Cell><b>{row.code}</b><small>{new Date(row.stocktakeDate).toLocaleDateString("vi-VN")} · {row.status}</small></Cell>
@@ -757,9 +794,9 @@ function Panel({ title, reload }: { title: string; reload: () => void }) { retur
 
 function Table({ headers, children }: { headers: { label: string; align?: "left" | "right" }[]; children: React.ReactNode }) {
   return (
-    <div className="overflow-x-auto">
+    <div className="overflow-x-auto max-h-[580px] overflow-y-auto custom-scrollbar">
       <table className="w-full text-sm">
-        <thead className="bg-slate-50 text-xs text-slate-500 uppercase border-b border-slate-200">
+        <thead className="bg-slate-50 text-xs text-slate-500 uppercase border-b border-slate-200 sticky top-0 z-10 shadow-sm">
           <tr>
             {headers.map((header, i) => (
               <th

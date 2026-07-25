@@ -2,9 +2,32 @@ export const branchScopeOptions = [
   { code: "ALL", label: "Admin / Tất cả cửa hàng" },
   { code: "HCM", label: "Chủ cửa hàng - Cửa hàng 1" },
   { code: "HN", label: "Chủ cửa hàng - Cửa hàng 2" },
-] as const;
+];
 
-export const storeOptions = branchScopeOptions.filter((option) => option.code !== "ALL");
+export const storeOptions = [
+  { code: "HCM", label: "Chủ cửa hàng - Cửa hàng 1" },
+  { code: "HN", label: "Chủ cửa hàng - Cửa hàng 2" },
+];
+
+export function updateDynamicBranches(branches: Array<{ code: string; name: string }>) {
+  if (!branches || branches.length === 0) return;
+
+  const newScope = [{ code: "ALL", label: "Admin / Tất cả cửa hàng" }];
+  const newStores: Array<{ code: string; label: string }> = [];
+
+  branches.forEach((b) => {
+    const label = b.name.startsWith("Chủ cửa hàng - ") ? b.name : `Chủ cửa hàng - ${b.name}`;
+    newScope.push({ code: b.code, label });
+    newStores.push({ code: b.code, label });
+  });
+
+  // Mutate in place
+  branchScopeOptions.length = 0;
+  branchScopeOptions.push(...newScope);
+
+  storeOptions.length = 0;
+  storeOptions.push(...newStores);
+}
 
 export function branchLabel(code?: string | null) {
   if (!code) return "-";

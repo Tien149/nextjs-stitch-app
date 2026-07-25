@@ -173,9 +173,9 @@ export default function DebtsPage() {
               <option value="OPEN">Còn hạn</option>
             </select>
           </div>
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto max-h-[560px] overflow-y-auto custom-scrollbar">
             <table className="w-full text-left text-sm">
-              <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
+              <thead className="bg-slate-50 text-slate-500 text-xs uppercase border-b border-slate-200 sticky top-0 z-10 shadow-sm">
                 <tr>
                   <th className="px-4 py-3">Đối tác</th>
                   <th className="px-4 py-3">Nhóm</th>
