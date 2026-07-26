@@ -135,7 +135,7 @@ export default function InventoryPage() {
   if (loading) return <div className="h-screen grid place-items-center bg-slate-100">Đang tải...</div>;
   
   return (
-    <ModuleFrame title="Kho & Định lượng" subtitle="GĐ3 - tồn kho, giá bình quân, recipe và hủy hàng" role={user?.role}>
+    <ModuleFrame title="Kho & Định lượng" subtitle="Giai đoạn 3 • Quản lý kho hàng, tính giá bình quân, công thức định lượng và hủy hàng" role={user?.role}>
       {/* Operational Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
         <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
@@ -184,7 +184,7 @@ export default function InventoryPage() {
             <Input label="Loại giao dịch">
               <select className="control" value={reportType} onChange={(e) => setReportType(e.target.value)}>
                 <option value="ALL">Tất cả loại</option>
-                {movementTypes.map((type) => <option key={type} value={type}>{type}</option>)}
+                {movementTypes.map((type) => <option key={type} value={type}>{movementTypeLabel(type)}</option>)}
               </select>
             </Input>
           </div>
@@ -248,7 +248,7 @@ export default function InventoryPage() {
               <tr key={`${row.transactionId}-${row.itemCode}-${row.warehouseCode}-${row.inboundQuantity}-${row.outboundQuantity}`} className="border-t border-slate-100">
                 <Cell>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}</Cell>
                 <Cell><b>{row.code}</b><small>{row.referenceCode || "-"}</small></Cell>
-                <Cell><span className="status bg-slate-100">{row.transactionType}</span></Cell>
+                <Cell><span className="status bg-slate-100">{movementTypeLabel(row.transactionType)}</span></Cell>
                 <Cell>{row.warehouseCode}</Cell>
                 <Cell><b>{row.itemCode}</b><small>{row.itemName}</small></Cell>
                 <Cell right>{row.inboundQuantity ? `${money(row.inboundQuantity)} ${row.unit}` : "-"}</Cell>
@@ -414,11 +414,11 @@ export default function InventoryPage() {
               
               <Input label="Loại">
                 <select className="control" value={stockForm.transactionType} onChange={(e) => setStockForm({ ...stockForm, transactionType: e.target.value })}>
-                  <option value="NHAP_MUA">Nhap mua</option>
-                  <option value="NHAP_KHAC">Nhap khac</option>
-                  <option value="XUAT_HUY">Xuat huy / hao hut</option>
-                  <option value="XUAT_KHAC">Xuat khac</option>
-                  <option value="DIEU_CHUYEN">Dieu chuyen kho</option>
+                  <option value="NHAP_MUA">Nhập mua</option>
+                  <option value="NHAP_KHAC">Nhập khác</option>
+                  <option value="XUAT_HUY">Xuất hủy / Hao hụt</option>
+                  <option value="XUAT_KHAC">Xuất khác</option>
+                  <option value="DIEU_CHUYEN">Điều chuyển kho</option>
                 </select>
               </Input>
               
@@ -517,7 +517,7 @@ export default function InventoryPage() {
               {data.transactions.map((row) => (
                 <tr key={row.id} className="border-t border-slate-100">
                   <Cell><b>{row.code}</b><small>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}</small></Cell>
-                  <Cell><span className="status bg-slate-100">{row.transactionType}</span></Cell>
+                  <Cell><span className="status bg-slate-100">{movementTypeLabel(row.transactionType)}</span></Cell>
                   <Cell>{row.toWarehouseCode ? `${row.warehouseCode} -> ${row.toWarehouseCode}` : row.warehouseCode}</Cell>
                   <Cell>{row.lines.map((line) => `${line.item.name}: ${money(line.inputQuantity || line.quantity)} ${line.inputUnitCode || line.item.unit} = ${money(line.quantity)} ${line.item.unit}`).join(", ")}</Cell>
                   <Cell right><b>{money(row.lines.reduce((sum, line) => sum + line.totalCost, 0))} đ</b></Cell>
@@ -547,25 +547,40 @@ export default function InventoryPage() {
                 <input className="control" value={recipeForm.productName} onChange={(e) => setRecipeForm({ ...recipeForm, productName: e.target.value })} />
               </Input>
               
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-xs font-bold text-slate-600">Dong nguyen lieu</h3>
-                  <button type="button" className="text-xs font-bold text-blue-600" onClick={() => setRecipeRows([...recipeRows, { itemId: "", quantity: "1", wasteRate: "0" }])}>Them dong</button>
+              <div className="space-y-4 border border-slate-100 rounded-lg p-3.5 bg-slate-50/50">
+                <div className="flex items-center justify-between border-b border-slate-200/60 pb-2">
+                  <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Thành phần nguyên liệu</h3>
+                  <button type="button" className="text-xs font-bold text-blue-600 hover:underline flex items-center gap-0.5" onClick={() => setRecipeRows([...recipeRows, { itemId: "", quantity: "1", wasteRate: "0" }])}>
+                    <span className="material-symbols-outlined text-sm font-bold">add</span>Thêm dòng
+                  </button>
                 </div>
                 {recipeRows.map((row, index) => (
-                  <div key={index} className="grid grid-cols-[1fr_90px_80px_32px] gap-2 items-end">
-                    <Input label="Nguyen lieu">
+                  <div key={index} className="bg-white border border-slate-200 rounded-xl p-3.5 space-y-3 relative shadow-sm">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Nguyên liệu #{index + 1}</span>
+                      {recipeRows.length > 1 && (
+                        <button type="button" className="text-xs font-bold text-rose-600 hover:text-rose-700 hover:underline flex items-center gap-0.5" onClick={() => setRecipeRows(recipeRows.filter((_, rowIndex) => rowIndex !== index))}>
+                          Xóa
+                        </button>
+                      )}
+                    </div>
+                    
+                    <div className="flex flex-col gap-1">
+                      <span className="text-xs font-bold text-slate-600">Chọn nguyên liệu</span>
                       <ItemSelect items={data.items} value={row.itemId} onChange={(itemId) => setRecipeRows(recipeRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, itemId } : candidate))} />
-                    </Input>
-                    <Input label="Dinh muc">
-                      <input type="number" step="0.001" className="control" value={row.quantity} onChange={(e) => setRecipeRows(recipeRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, quantity: e.target.value } : candidate))} />
-                    </Input>
-                    <Input label="Hao hut %">
-                      <input type="number" step="0.1" className="control" value={row.wasteRate} onChange={(e) => setRecipeRows(recipeRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, wasteRate: e.target.value } : candidate))} />
-                    </Input>
-                    <button type="button" className="icon-button" onClick={() => setRecipeRows(recipeRows.filter((_, rowIndex) => rowIndex !== index))}>
-                      <span className="material-symbols-outlined text-lg">close</span>
-                    </button>
+                    </div>
+                    
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="flex flex-col gap-1">
+                        <span className="text-xs font-bold text-slate-600">Định lượng</span>
+                        <input type="number" step="0.001" className="control !mt-0" value={row.quantity} onChange={(e) => setRecipeRows(recipeRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, quantity: e.target.value } : candidate))} />
+                      </div>
+                      
+                      <div className="flex flex-col gap-1">
+                        <span className="text-xs font-bold text-slate-600">Hao hụt (%)</span>
+                        <input type="number" step="0.1" className="control !mt-0" value={row.wasteRate} onChange={(e) => setRecipeRows(recipeRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, wasteRate: e.target.value } : candidate))} />
+                      </div>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -643,7 +658,7 @@ export default function InventoryPage() {
               {data.transactions.filter((row) => row.transactionType.includes("CHE_BIEN")).map((row) => (
                 <tr key={row.id} className="border-t border-slate-100">
                   <Cell><b>{row.code}</b><small>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}</small></Cell>
-                  <Cell>{row.transactionType}</Cell>
+                  <Cell>{movementTypeLabel(row.transactionType)}</Cell>
                   <Cell>{row.warehouseCode}</Cell>
                   <Cell>{row.lines.map((line) => `${line.item.code}: ${money(line.quantity)} ${line.item.unit}`).join(", ")}</Cell>
                 </tr>
@@ -786,6 +801,22 @@ export default function InventoryPage() {
       )}
     </ModuleFrame>
   );
+}
+
+function movementTypeLabel(type: string): string {
+  const map: Record<string, string> = {
+    NHAP_MUA: "Nhập mua",
+    NHAP_KHAC: "Nhập khác",
+    NHAP_CHE_BIEN: "Nhập chế biến",
+    NHAP_KIEM_KE: "Nhập kiểm kê",
+    XUAT_BAN: "Xuất bán",
+    XUAT_HUY: "Xuất hủy / hao hụt",
+    XUAT_KHAC: "Xuất khác",
+    XUAT_CHE_BIEN: "Xuất chế biến",
+    XUAT_KIEM_KE: "Xuất kiểm kê",
+    DIEU_CHUYEN: "Điều chuyển kho",
+  };
+  return map[type] || type;
 }
 
 function Input({ label, children }: { label: string; children: React.ReactNode }) { return <label className="block text-xs font-bold text-slate-600">{label}{children}</label>; }

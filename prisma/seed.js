@@ -89,36 +89,7 @@ async function main() {
     });
   }
 
-  const docs = [
-    {
-      code: 'PC-2024-00124',
-      partner: 'Công ty TNHH Giải pháp số X',
-      description: 'Thanh toán phí duy trì Server Q2/2024',
-      amount: 125400000,
-      status: 'PENDING',
-    },
-    {
-      code: 'PT-2024-05891',
-      partner: 'Tập đoàn Bất động sản Blue',
-      description: 'Thu tiền đặt cọc dự án Sky Tower A',
-      amount: 2500000000,
-      status: 'COMPLETED',
-    },
-    {
-      code: 'PC-2024-00125',
-      partner: 'Cửa hàng Vật liệu Xây dựng S',
-      description: 'Mua vật tư bảo trì máy móc phân xưởng 3',
-      amount: 45200000,
-      status: 'DRAFT',
-    }
-  ];
-
-  for (const doc of docs) {
-    await prisma.document.create({
-      data: doc
-    });
-  }
-
+  // Không tạo thêm dữ liệu tài liệu mock để giữ DB sạch
   console.log('Database seeded successfully with Roles and Users!');
 }
 

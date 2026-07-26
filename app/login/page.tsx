@@ -64,6 +64,16 @@ export default function Login() {
 
       const sessionValue = JSON.stringify(session);
       localStorage.setItem(SESSION_KEY, sessionValue);
+
+      // Đồng bộ chi nhánh mặc định cho tài khoản vừa đăng nhập
+      if (session.allowedBranches?.includes("ALL")) {
+        localStorage.setItem("global_branch_code", "ALL");
+      } else if (session.allowedBranches?.length > 0) {
+        localStorage.setItem("global_branch_code", session.allowedBranches[0]);
+      } else {
+        localStorage.setItem("global_branch_code", "ALL");
+      }
+
       document.cookie = `${SESSION_KEY}=${encodeURIComponent(sessionValue)}; path=/; max-age=${
         rememberMe ? 86400 * 7 : 3600
       }; SameSite=Lax`;

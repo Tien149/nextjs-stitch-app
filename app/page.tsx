@@ -519,7 +519,7 @@ export default function Home() {
           {/* Main Chart + Health Grid */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
             {/* Chart YoY */}
-            <div className="lg:col-span-8 bg-white p-6 rounded-xl shadow-sm border border-slate-100">
+            <div className="lg:col-span-9 bg-white p-6 rounded-xl shadow-sm border border-slate-100">
               <div className="flex items-center justify-between mb-8">
                 <div>
                   <h4 className="text-base font-bold text-slate-900">Phân tích doanh thu</h4>
@@ -537,11 +537,20 @@ export default function Home() {
                 </div>
               </div>
               {/* Custom Chart */}
-              <div className="h-64 w-full flex items-end justify-between gap-4 px-4 pb-8 relative">
-                <div className="absolute inset-x-0 bottom-8 h-[1px] bg-slate-100"></div>
-                <div className="absolute inset-x-0 bottom-24 h-[1px] bg-slate-100"></div>
-                <div className="absolute inset-x-0 bottom-40 h-[1px] bg-slate-100"></div>
-                <div className="absolute inset-x-0 bottom-56 h-[1px] bg-slate-100"></div>
+              <div className="h-64 w-full flex items-end justify-between gap-4 pl-16 pr-4 pb-8 relative">
+                {/* Y-Axis Grid Lines & Labels */}
+                {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+                  const value = ratio * chartMax;
+                  const bottomOffset = 32 + ratio * 180; // 32px is bottom padding offset, 180px is max chart bars area height
+                  return (
+                    <div key={ratio} className="absolute left-0 right-0 flex items-center" style={{ bottom: `${bottomOffset}px` }}>
+                      <span className="absolute left-2 text-[9px] font-bold text-slate-400 w-12 text-right">
+                        {formatCurrency(value)}
+                      </span>
+                      <div className="flex-1 ml-16 border-t border-slate-100 border-dashed"></div>
+                    </div>
+                  );
+                })}
 
                 {trend.map((item) => {
                   const expense = expenseOf(item);
@@ -550,7 +559,7 @@ export default function Home() {
                   const highlight = item.period === dashboardPeriod;
                   return (
                   <div key={item.period} className="flex-1 flex flex-col items-center group relative h-full justify-end">
-                    <div className="flex items-end gap-1 w-full justify-center">
+                    <div className="flex items-end gap-1 w-full justify-center h-full">
                       <div className="w-3.5 bg-slate-300 rounded-t" style={{ height: expenseHeight }} title={`Chi phí ${formatCurrency(expense)} đ`}></div>
                       <div className={`w-3.5 rounded-t ${highlight ? "bg-[#2563eb] ring-2 ring-blue-200" : "bg-[#2563eb]"}`} style={{ height: revenueHeight }} title={`Doanh thu ${formatCurrency(item.revenue)} đ`}></div>
                     </div>
@@ -564,9 +573,9 @@ export default function Home() {
             </div>
 
             {/* Sidebar widgets */}
-            <div className="lg:col-span-4 flex flex-col gap-5">
+            <div className="lg:col-span-3 flex flex-col gap-4">
               {/* Warnings */}
-              <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-100 flex-1">
+              <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100 flex-1">
                 <div className="flex items-center justify-between mb-4">
                   <h4 className="text-sm font-bold text-slate-900">Cảnh báo hệ thống</h4>
                   <span className="bg-rose-100 text-rose-700 text-[10px] font-bold px-2 py-0.5 rounded-full">
@@ -589,7 +598,7 @@ export default function Home() {
               </div>
 
               {/* Health Score */}
-              <div className="bg-[#0f172a] p-5 rounded-xl shadow-lg text-white">
+              <div className="bg-[#0f172a] p-4 rounded-xl shadow-lg text-white">
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">CHỈ SỐ SỨC KHỎE DN</span>
                   <span className={`material-symbols-outlined ${healthScore >= 8 ? "text-[#059669]" : healthScore >= 5 ? "text-amber-400" : "text-rose-400"}`}>{healthScore >= 8 ? "verified" : "monitor_heart"}</span>

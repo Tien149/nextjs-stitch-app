@@ -322,7 +322,7 @@ export default function AccountingPage() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-6 mt-8 space-y-6">
+      <main className="max-w-[96%] mx-auto px-6 mt-8 space-y-6">
         {/* Modern Filter Card */}
         <section className="bg-white/80 backdrop-blur-md border border-slate-200/60 shadow-lg shadow-slate-100/50 rounded-2xl p-5 flex flex-wrap items-end justify-between gap-4">
           <div className="flex flex-wrap items-center gap-4">

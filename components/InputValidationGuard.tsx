@@ -56,8 +56,37 @@ export default function InputValidationGuard() {
       if (!(event.target instanceof HTMLInputElement)) return;
       const input = event.target;
       prepare(input);
-      const pasted = event.clipboardData?.getData("text") || "";
-      if (!isAccepted(input, prospectiveValue(input, pasted))) event.preventDefault();
+      let pasted = event.clipboardData?.getData("text") || "";
+      
+      const kind = input.dataset.inputKind as InputKind | undefined;
+      if (kind === "code") {
+        pasted = pasted.trim().replace(/[^A-Za-z0-9._-]/g, "");
+      } else if (kind === "phone") {
+        pasted = pasted.trim().replace(/[^+0-9 ]/g, "");
+      } else if (kind === "tax-code") {
+        pasted = pasted.trim().replace(/[^0-9-]/g, "");
+      } else if (kind === "account-number") {
+        pasted = pasted.trim().replace(/[^0-9]/g, "");
+      } else if (kind === "email") {
+        pasted = pasted.trim();
+      }
+
+      if (!isAccepted(input, prospectiveValue(input, pasted))) {
+        event.preventDefault();
+      } else {
+        // Thay thế nội dung paste mặc định bằng nội dung đã làm sạch
+        event.preventDefault();
+        const start = input.selectionStart ?? input.value.length;
+        const end = input.selectionEnd ?? start;
+        const newValue = input.value.slice(0, start) + pasted + input.value.slice(end);
+        
+        // Cập nhật giá trị input và kích hoạt event change cho React nhận diện
+        input.value = newValue;
+        input.selectionStart = input.selectionEnd = start + pasted.length;
+        
+        const changeEvent = new Event("input", { bubbles: true });
+        input.dispatchEvent(changeEvent);
+      }
     };
     const onInput = (event: Event) => {
       if (!(event.target instanceof HTMLInputElement)) return;

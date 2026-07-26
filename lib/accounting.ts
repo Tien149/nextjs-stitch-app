@@ -117,7 +117,15 @@ export async function postJournalEntry(input: EntryInput) {
   });
   if (existing) {
     const existingDebit = existing.lines.reduce((sum, line) => sum + line.debit, 0);
-    if (Math.abs(existingDebit - debit) <= 0.5 && existing.period === period) return "SKIPPED_EXISTS";
+    const isSameLines = existing.lines.length === input.lines.length &&
+      existing.lines.every((el) => {
+        const matchingInput = input.lines.find((il) => {
+          const accountId = accountMap.get(il.accountCode);
+          return accountId === el.accountId && (il.debit || 0) === el.debit && (il.credit || 0) === el.credit;
+        });
+        return !!matchingInput;
+      });
+    if (Math.abs(existingDebit - debit) <= 0.5 && existing.period === period && isSameLines) return "SKIPPED_EXISTS";
     await prisma.$transaction(async (tx) => {
       await tx.journalLine.deleteMany({ where: { entryId: existing.id } });
       await tx.journalEntry.update({
@@ -176,8 +184,13 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   const vouchers = await prisma.financialVoucher.findMany({ where: { ...branchFilter, voucherDate: { gte: start, lt: end }, status: "APPROVED" } });
   for (const row of vouchers) {
     const cashAccount = row.moneySourceCode.toUpperCase().includes("CASH") ? "1111" : "1121";
+    const creditAccount = row.categoryCode && (row.categoryCode.toUpperCase().startsWith("REV") || row.categoryCode.toUpperCase().startsWith("DT"))
+      ? "511"
+      : row.partnerCode
+        ? "131"
+        : "711";
     const lines = row.voucherType === "RECEIPT"
-      ? [{ accountCode: cashAccount, debit: row.amount }, { accountCode: row.partnerCode ? "131" : "711", credit: row.amount, partnerCode: row.partnerCode, categoryCode: row.categoryCode }]
+      ? [{ accountCode: cashAccount, debit: row.amount }, { accountCode: creditAccount, credit: row.amount, partnerCode: row.partnerCode, categoryCode: row.categoryCode }]
       : [{ accountCode: "6428", debit: row.amount, partnerCode: row.partnerCode, categoryCode: row.categoryCode }, { accountCode: cashAccount, credit: row.amount }];
     results.push(await postJournalEntry({ entryDate: row.voucherDate, branchCode: row.branchCode, sourceType: "VOUCHER", sourceId: row.id, sourceCode: row.code, description: row.description, createdBy: actor, lines }));
   }
