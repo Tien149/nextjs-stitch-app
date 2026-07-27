@@ -351,6 +351,23 @@ export async function commitImport(input: CommitInput) {
             inventoryStatus: productCode && productQuantity > 0 ? "PENDING" : "NOT_REQUIRED",
           },
         });
+
+        if (productCode) {
+          const productName = asText(row.values.product_name) || `Mặt hàng ${productCode}`;
+          const unit = asText(row.values.unit) || "Cái";
+          await tx.inventoryItem.upsert({
+            where: { code: productCode },
+            create: {
+              code: productCode,
+              name: productName,
+              unit,
+              itemType: "FINISHED",
+              minStock: 0,
+            },
+            update: {},
+          });
+        }
+
         await setImportTarget(tx, staging, row, "REVENUE_POS", revenueRow.id);
         if (productCode && productQuantity > 0) {
           const recipe = await tx.recipe.findFirst({
@@ -358,26 +375,50 @@ export async function commitImport(input: CommitInput) {
             include: { lines: true },
             orderBy: { version: "desc" },
           });
-          if (!recipe) throw new Error(`Dong ${row.rowNumber}: Chua co BOM active cho ${productCode}`);
-          await postInventoryTransaction(tx, {
-            importBatchId: batch.id,
-            code: `XB-${asText(row.values.external_ref)}`,
-            transactionType: "XUAT_BAN",
-            transactionDate: asDate(row.values.sale_date),
-            branchCode: asText(row.values.branch_code),
-            warehouseCode: asText(row.values.warehouse_code) || "KHO_HCM",
-            referenceType: "REVENUE_POS",
-            referenceId: revenueRow.id,
-            referenceCode: asText(row.values.external_ref),
-            note: `Tu dong tru kho POS ${productCode}`,
-            createdBy: input.uploadedBy,
-            lines: recipe.lines.map((line) => ({
-              itemId: line.itemId,
-              inputQuantity: line.quantity * (1 + line.wasteRate / 100) * productQuantity,
-              inputUnitCode: "",
-              inputUnitCost: 0,
-            })),
-          });
+          if (recipe) {
+            await postInventoryTransaction(tx, {
+              importBatchId: batch.id,
+              code: `XB-${asText(row.values.external_ref)}`,
+              transactionType: "XUAT_BAN",
+              transactionDate: asDate(row.values.sale_date),
+              branchCode: asText(row.values.branch_code),
+              warehouseCode: asText(row.values.warehouse_code) || "KHO_HCM",
+              referenceType: "REVENUE_POS",
+              referenceId: revenueRow.id,
+              referenceCode: asText(row.values.external_ref),
+              note: `Tu dong tru kho POS ${productCode}`,
+              createdBy: input.uploadedBy,
+              lines: recipe.lines.map((line) => ({
+                itemId: line.itemId,
+                inputQuantity: line.quantity * (1 + line.wasteRate / 100) * productQuantity,
+                inputUnitCode: "",
+                inputUnitCost: 0,
+              })),
+            });
+          } else {
+            const item = await tx.inventoryItem.findUnique({ where: { code: productCode } });
+            if (item) {
+              await postInventoryTransaction(tx, {
+                importBatchId: batch.id,
+                code: `XB-${asText(row.values.external_ref)}`,
+                transactionType: "XUAT_BAN",
+                transactionDate: asDate(row.values.sale_date),
+                branchCode: asText(row.values.branch_code),
+                warehouseCode: asText(row.values.warehouse_code) || "KHO_HCM",
+                referenceType: "REVENUE_POS",
+                referenceId: revenueRow.id,
+                referenceCode: asText(row.values.external_ref),
+                note: `Tru kho truc tiep mat hang POS ${productCode}`,
+                createdBy: input.uploadedBy,
+                lines: [{
+                  itemId: item.id,
+                  inputQuantity: productQuantity,
+                  inputUnitCode: item.unit,
+                  inputUnitCost: 0,
+                }],
+              });
+            }
+          }
           await tx.revenueImportRow.update({
             where: { id: revenueRow.id },
             data: { inventoryStatus: "POSTED" },

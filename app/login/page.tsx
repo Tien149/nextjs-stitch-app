@@ -10,9 +10,9 @@ type LoginBranch = { code: string; name: string };
 
 export default function Login() {
   const router = useRouter();
-  const [userId, setUserId] = useState("admin");
-  const [quickSelect, setQuickSelect] = useState("admin");
-  const [password, setPassword] = useState("123456");
+  const [userId, setUserId] = useState("");
+  const [quickSelect, setQuickSelect] = useState("");
+  const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
   const [error, setError] = useState("");
@@ -44,7 +44,7 @@ export default function Login() {
       const response = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: userId, password }),
+        body: JSON.stringify({ email: userId.trim(), password: password.trim() }),
       });
 
       if (!response.ok) {
@@ -81,7 +81,7 @@ export default function Login() {
       const next = new URLSearchParams(window.location.search).get("next");
       const defaultRoute = getDefaultRouteForRole(session.role);
       const targetRoute = next && (next !== "/" || canViewFinancialDashboard(session.role)) ? next : defaultRoute;
-      router.push(targetRoute);
+      window.location.href = targetRoute;
     } catch (e) {
       setError(e instanceof Error ? e.message : "Có lỗi xảy ra");
       setLoading(false);
@@ -196,7 +196,6 @@ export default function Login() {
                 onChange={(event) => {
                   const val = event.target.value;
                   setUserId(val);
-                  // Reset quick select if typing manually does not match any demo ID/email
                   const matchedDemo = demoUsers.find((u) => u.id === val || u.email === val);
                   if (matchedDemo) {
                     setQuickSelect(matchedDemo.id);
@@ -204,7 +203,13 @@ export default function Login() {
                     setQuickSelect("");
                   }
                 }}
-                className="w-full mt-2 border border-slate-300 rounded-lg px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                onPaste={(event) => {
+                  const pasted = event.clipboardData.getData("text");
+                  if (pasted) {
+                    setUserId(pasted);
+                  }
+                }}
+                className="w-full mt-2 border border-slate-300 rounded-lg px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 font-semibold"
                 placeholder="Nhập email hoặc tên tài khoản của bạn..."
                 required
               />
@@ -217,16 +222,27 @@ export default function Login() {
                   type={showPassword ? "text" : "password"}
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
-                  className="w-full border border-slate-300 rounded-lg px-3 py-3 pr-11 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                  onPaste={(event) => {
+                    const pasted = event.clipboardData.getData("text");
+                    if (pasted) {
+                      setPassword(pasted);
+                    }
+                  }}
+                  autoComplete="current-password"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-3 pr-11 text-sm outline-none focus:ring-2 focus:ring-blue-500 font-semibold"
                   placeholder="Mật khẩu của bạn..."
                   required
                 />
                 <button
                   type="button"
-                  onClick={() => setShowPassword((value) => !value)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setShowPassword((value) => !value);
+                  }}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 p-1 flex items-center justify-center"
                 >
-                  <span className="material-symbols-outlined text-xl">
+                  <span className="material-symbols-outlined text-xl pointer-events-none">
                     {showPassword ? "visibility_off" : "visibility"}
                   </span>
                 </button>

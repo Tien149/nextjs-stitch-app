@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { DateInput, MonthInput } from "@/components/DateInput";
-import { canPerformMenuAction } from "@/lib/auth-demo";
+import { canPerformMenuAction, SESSION_KEY } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 
 type Asset = {
@@ -121,8 +121,16 @@ export default function AssetOperationsPage() {
   const canCreate = user ? canPerformMenuAction(user.role, href, "create") : false;
   const canEdit = user ? canPerformMenuAction(user.role, href, "edit") : false;
 
+  const getSessionHeaders = (): Record<string, string> => {
+    if (typeof window === "undefined") return {};
+    const raw = localStorage.getItem(SESSION_KEY);
+    return raw ? { "x-demo-session": encodeURIComponent(raw) } : {};
+  };
+
   const loadData = async () => {
-    const response = await fetch("/api/assets/operations");
+    const response = await fetch("/api/assets/operations", {
+      headers: getSessionHeaders(),
+    });
     if (!response.ok) return;
     const payload = await response.json() as Data;
     setData(payload);
@@ -136,7 +144,10 @@ export default function AssetOperationsPage() {
   const send = async (body: object, success: string) => {
     const response = await fetch("/api/assets/operations", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...getSessionHeaders(),
+      },
       body: JSON.stringify(body),
     });
     const payload = await response.json();

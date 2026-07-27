@@ -16,6 +16,7 @@ type RoleItem = {
   id: string;
   name: string;
   actions: AppAction[];
+  menuAccess?: string[];
   _count?: { users: number };
 };
 
@@ -61,8 +62,26 @@ export default function PermissionsPage() {
     roleId: "",
     branchCode: "ALL",
   });
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [savingUser, setSavingUser] = useState(false);
   const [userFormError, setUserFormError] = useState("");
+
+  const getPasswordStrength = (pass: string) => {
+    if (!pass) return { label: "", color: "", score: 0 };
+    if (pass.length < 6) return { label: "Quá ngắn (Cần ≥ 6 ký tự)", color: "text-rose-600 bg-rose-50 border-rose-200", score: 1 };
+    const hasLetters = /[a-zA-Z]/.test(pass);
+    const hasNumbers = /[0-9]/.test(pass);
+    const hasSpecial = /[^a-zA-Z0-9]/.test(pass);
+    if (pass.length >= 8 && hasLetters && hasNumbers && hasSpecial) {
+      return { label: "Mạnh (An toàn cao)", color: "text-emerald-700 bg-emerald-50 border-emerald-200", score: 3 };
+    }
+    if (pass.length >= 6 && ((hasLetters && hasNumbers) || pass.length >= 8)) {
+      return { label: "Trung bình", color: "text-blue-700 bg-blue-50 border-blue-200", score: 2 };
+    }
+    return { label: "Yếu", color: "text-amber-700 bg-amber-50 border-amber-200", score: 1 };
+  };
 
   const loadData = async () => {
     try {
@@ -210,6 +229,9 @@ export default function PermissionsPage() {
       roleId: rolesList[0]?.id || "",
       branchCode: "ALL",
     });
+    setConfirmPassword("");
+    setShowPassword(false);
+    setShowConfirmPassword(false);
     setUserFormError("");
     setIsUserModalOpen(true);
   };
@@ -223,6 +245,14 @@ export default function PermissionsPage() {
     }
     if (!userForm.password.trim()) {
       setUserFormError("Vui lòng nhập mật khẩu.");
+      return;
+    }
+    if (userForm.password.length < 6) {
+      setUserFormError("Mật khẩu phải có độ dài tối thiểu 6 ký tự.");
+      return;
+    }
+    if (userForm.password !== confirmPassword) {
+      setUserFormError("Mật khẩu xác nhận không trùng khớp với mật khẩu đã nhập.");
       return;
     }
     if (!userForm.name.trim()) {
@@ -262,6 +292,47 @@ export default function PermissionsPage() {
       setUserFormError("Đã xảy ra lỗi kết nối.");
     } finally {
       setSavingUser(false);
+    }
+  };
+
+  const handleToggleMenuAccess = async (role: RoleItem, menuHref: string) => {
+    if (role.name === "Admin") return;
+
+    const standardRoles = ["Admin", "Kế toán tổng hợp", "Kế toán công nợ", "Quản lý", "Viewer"];
+
+    let currentMenuAccess: string[];
+    if (Array.isArray(role.menuAccess) && role.menuAccess.length > 0) {
+      currentMenuAccess = [...role.menuAccess];
+    } else {
+      currentMenuAccess = appMenuItems
+        .filter((item) => item.roles.includes(role.name as any) || (!standardRoles.includes(role.name) && (role.actions || []).includes("view")))
+        .map((item) => item.href);
+    }
+
+    const isCurrentlyChecked = currentMenuAccess.includes(menuHref);
+    const newMenuAccess = isCurrentlyChecked
+      ? currentMenuAccess.filter((href) => href !== menuHref)
+      : [...currentMenuAccess, menuHref];
+
+    setRolesList((prev) =>
+      prev.map((r) => (r.id === role.id ? { ...r, menuAccess: newMenuAccess } : r))
+    );
+
+    try {
+      const res = await fetch("/api/permissions", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "UPDATE_ROLE_MENU",
+          roleId: role.id,
+          menuAccess: newMenuAccess,
+        }),
+      });
+      if (!res.ok) {
+        void loadData();
+      }
+    } catch {
+      void loadData();
     }
   };
 
@@ -541,16 +612,30 @@ export default function PermissionsPage() {
                     </td>
                     {rolesList.map((r) => {
                       const standardRoles = ["Admin", "Kế toán tổng hợp", "Kế toán công nợ", "Quản lý", "Viewer"];
-                      const hasAccess = item.roles.includes(r.name as any) || (!standardRoles.includes(r.name) && (r.actions || []).includes("view"));
+                      const isAdmin = r.name === "Admin";
+                      const isMenuChecked = isAdmin
+                        ? true
+                        : Array.isArray(r.menuAccess) && r.menuAccess.length > 0
+                        ? r.menuAccess.includes(item.href) || r.menuAccess.includes(item.name)
+                        : item.roles.includes(r.name as any) || (!standardRoles.includes(r.name) && (r.actions || []).includes("view"));
+
                       return (
                         <td key={r.id} className="px-4 py-3">
-                          {hasAccess ? (
-                            <span className="text-emerald-600 font-bold flex items-center gap-1">
-                              <span className="material-symbols-outlined text-base">check_circle</span> Có
+                          <label
+                            title={isAdmin ? "Tài khoản Admin có toàn quyền mở tất cả Menu" : "Tích để bật/tắt quyền mở Menu này"}
+                            className={`inline-flex items-center gap-2 select-none ${isAdmin ? "cursor-not-allowed opacity-80" : "cursor-pointer group"}`}
+                          >
+                            <input
+                              type="checkbox"
+                              disabled={isAdmin}
+                              checked={isMenuChecked}
+                              onChange={() => handleToggleMenuAccess(r, item.href)}
+                              className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer disabled:cursor-not-allowed transition"
+                            />
+                            <span className={`text-xs font-bold transition ${isMenuChecked ? "text-emerald-600" : "text-slate-400 group-hover:text-slate-600"}`}>
+                              {isMenuChecked ? "Có" : "-"}
                             </span>
-                          ) : (
-                            <span className="text-slate-300">-</span>
-                          )}
+                          </label>
                         </td>
                       );
                     })}
@@ -720,33 +805,121 @@ export default function PermissionsPage() {
                 </div>
               )}
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                    User / Email đăng nhập <span className="text-rose-500">*</span>
-                  </label>
-                  <input
-                    type="email"
-                    required
-                    value={userForm.email}
-                    onChange={(e) => setUserForm({ ...userForm, email: e.target.value })}
-                    placeholder="VD: namtv@fin-erp.vn"
-                    className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition font-semibold"
-                  />
-                </div>
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                  User / Email đăng nhập <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="email"
+                  required
+                  value={userForm.email}
+                  onChange={(e) => setUserForm({ ...userForm, email: e.target.value })}
+                  placeholder="VD: namtv@fin-erp.vn"
+                  className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition font-semibold"
+                />
+              </div>
 
+              {/* Password Inputs Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* Password Field */}
                 <div className="space-y-1">
                   <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
                     Mật khẩu <span className="text-rose-500">*</span>
                   </label>
-                  <input
-                    type="password"
-                    required
-                    value={userForm.password}
-                    onChange={(e) => setUserForm({ ...userForm, password: e.target.value })}
-                    placeholder="Nhập mật khẩu..."
-                    className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition font-semibold"
-                  />
+                  <div className="relative">
+                    <input
+                      type={showPassword ? "text" : "password"}
+                      required
+                      autoComplete="new-password"
+                      value={userForm.password}
+                      onChange={(e) => setUserForm({ ...userForm, password: e.target.value })}
+                      onPaste={(e) => {
+                        const pasted = e.clipboardData.getData("text");
+                        if (pasted) {
+                          setUserForm((prev) => ({ ...prev, password: pasted }));
+                        }
+                      }}
+                      placeholder="Nhập mật khẩu (≥ 6 ký tự)"
+                      className="w-full px-3 py-2 pr-9 text-xs bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition font-semibold"
+                    />
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setShowPassword(!showPassword);
+                      }}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition flex items-center justify-center p-1"
+                      title={showPassword ? "Ẩn mật khẩu" : "Hiện mật khẩu"}
+                    >
+                      <span className="material-symbols-outlined text-base pointer-events-none">
+                        {showPassword ? "visibility_off" : "visibility"}
+                      </span>
+                    </button>
+                  </div>
+                  {/* Password Strength Indicator */}
+                  {userForm.password && (
+                    <div className="mt-1 flex items-center justify-between text-[10px]">
+                      <span className={`px-1.5 py-0.5 rounded border font-bold ${getPasswordStrength(userForm.password).color}`}>
+                        Độ mạnh: {getPasswordStrength(userForm.password).label}
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Confirm Password Field */}
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                    Xác nhận mật khẩu <span className="text-rose-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showConfirmPassword ? "text" : "password"}
+                      required
+                      autoComplete="new-password"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      onPaste={(e) => {
+                        const pasted = e.clipboardData.getData("text");
+                        if (pasted) {
+                          setConfirmPassword(pasted);
+                        }
+                      }}
+                      placeholder="Nhập lại mật khẩu..."
+                      className={`w-full px-3 py-2 pr-9 text-xs bg-white border rounded-lg focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition font-semibold ${
+                        confirmPassword && confirmPassword !== userForm.password
+                          ? "border-rose-300 bg-rose-50/40"
+                          : confirmPassword && confirmPassword === userForm.password
+                          ? "border-emerald-300 bg-emerald-50/40"
+                          : "border-slate-300"
+                      }`}
+                    />
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setShowConfirmPassword(!showConfirmPassword);
+                      }}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition flex items-center justify-center p-1"
+                      title={showConfirmPassword ? "Ẩn mật khẩu" : "Hiện mật khẩu"}
+                    >
+                      <span className="material-symbols-outlined text-base pointer-events-none">
+                        {showConfirmPassword ? "visibility_off" : "visibility"}
+                      </span>
+                    </button>
+                  </div>
+                  {/* Match Indicator */}
+                  {confirmPassword && (
+                    <p className={`text-[10px] font-bold mt-0.5 flex items-center gap-1 ${
+                      confirmPassword === userForm.password ? "text-emerald-600" : "text-rose-600"
+                    }`}>
+                      <span className="material-symbols-outlined text-[12px]">
+                        {confirmPassword === userForm.password ? "check_circle" : "cancel"}
+                      </span>
+                      {confirmPassword === userForm.password ? "Trùng khớp" : "Mật khẩu không khớp"}
+                    </p>
+                  )}
                 </div>
               </div>
 

@@ -13,12 +13,30 @@ function toAmount(value: unknown) {
   return Number.isFinite(numberValue) ? numberValue : 0;
 }
 
-async function nextVoucherCode(voucherType: string) {
-  const prefix = voucherType === "RECEIPT" ? "PT" : "PC";
-  const now = new Date();
-  const ym = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}`;
-  const count = await prisma.financialVoucher.count({ where: { voucherType } });
-  return `${prefix}-${ym}-${String(count + 1).padStart(3, "0")}`;
+import { generateFormattedVoucherCode, formatVoucherPrefix } from "@/lib/voucher-code-generator";
+
+async function nextVoucherCode(voucherType: string, voucherDate?: Date | string | null, branchCode?: string | null) {
+  const d = voucherDate ? new Date(voucherDate) : new Date();
+  const validDate = isNaN(d.getTime()) ? new Date() : d;
+  const startOfMonth = new Date(validDate.getFullYear(), validDate.getMonth(), 1);
+  const endOfMonth = new Date(validDate.getFullYear(), validDate.getMonth() + 1, 1);
+  const prefix = formatVoucherPrefix(voucherType);
+
+  const count = await prisma.financialVoucher.count({
+    where: {
+      voucherType,
+      ...(branchCode ? { branchCode } : {}),
+      voucherDate: { gte: startOfMonth, lt: endOfMonth },
+      code: { startsWith: prefix },
+    },
+  });
+
+  return generateFormattedVoucherCode({
+    voucherType,
+    voucherDate: validDate,
+    branchCode,
+    seqNumber: count + 1,
+  });
 }
 
 export async function GET(request: Request) {
@@ -80,11 +98,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi" }, { status: 403 });
     }
 
+    const voucherDate = body.voucherDate ? new Date(String(body.voucherDate)) : new Date();
+
     const voucher = await prisma.financialVoucher.create({
       data: {
-        code: await nextVoucherCode(voucherType),
+        code: await nextVoucherCode(voucherType, voucherDate, branchCode),
         voucherType,
-        voucherDate: body.voucherDate ? new Date(String(body.voucherDate)) : new Date(),
+        voucherDate,
         partnerCode: cleanText(body.partnerCode) || null,
         partnerName,
         branchCode,

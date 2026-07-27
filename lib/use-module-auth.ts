@@ -18,7 +18,7 @@ export function useModuleAuth(href: string) {
     }
     try {
       const session = JSON.parse(raw) as DemoSession;
-      if (!menu || !canAccessMenu(session.role, menu)) {
+      if (!menu || !canAccessMenu(session, menu)) {
         router.push("/");
         return;
       }

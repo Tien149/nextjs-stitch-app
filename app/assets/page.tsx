@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { DateInput } from "@/components/DateInput";
+import { SearchableSelect } from "@/components/SearchableSelect";
 import { displayRoleName, storeLabel, storeOptions } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 
@@ -111,12 +112,19 @@ export default function AssetsPage() {
   const canCreate = user ? canPerformAction(user.role, "create") : false;
   const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
 
+  const getSessionHeaders = (): Record<string, string> => {
+    if (typeof window === "undefined") return {};
+    const raw = localStorage.getItem(SESSION_KEY);
+    return raw ? { "x-demo-session": encodeURIComponent(raw) } : {};
+  };
+
   const loadMasterData = async () => {
     try {
+      const headers = getSessionHeaders();
       const [whRes, depRes, supRes] = await Promise.all([
-        fetch("/api/master-data?type=WAREHOUSE"),
-        fetch("/api/master-data?type=DEPARTMENT"),
-        fetch("/api/master-data?type=PARTNER"),
+        fetch("/api/master-data?type=WAREHOUSE", { headers }),
+        fetch("/api/master-data?type=DEPARTMENT", { headers }),
+        fetch("/api/master-data?type=PARTNER", { headers }),
       ]);
       if (whRes.ok) setWarehouses((await whRes.json()) as MasterItem[]);
       if (depRes.ok) setDepartments((await depRes.json()) as MasterItem[]);
@@ -138,7 +146,9 @@ export default function AssetsPage() {
     if (filterStatus !== "ALL") params.set("status", filterStatus);
     if (searchQuery.trim()) params.set("q", searchQuery.trim());
 
-    const response = await fetch(`/api/assets?${params.toString()}`);
+    const response = await fetch(`/api/assets?${params.toString()}`, {
+      headers: getSessionHeaders(),
+    });
     if (response.ok) {
       setAssets((await response.json()) as Asset[]);
     }
@@ -158,33 +168,38 @@ export default function AssetsPage() {
     const branchWhs = warehouses.filter(
       (w) => !w.branch || w.branch === form.branchCode || w.branch === "ALL"
     );
-    if (branchWhs.length > 0 && (!form.location || !branchWhs.some((w) => w.code === form.location))) {
-      setForm((prev) => ({ ...prev, location: branchWhs[0].code }));
+    const targetWhs = branchWhs.length > 0 ? branchWhs : warehouses;
+    if (targetWhs.length > 0 && (!form.location || !targetWhs.some((w) => w.code === form.location))) {
+      setForm((prev) => ({ ...prev, location: targetWhs[0].code }));
     }
   }, [form.branchCode, warehouses]);
 
   // Form warehouse list
   const availableFormWarehouses = useMemo(() => {
-    return warehouses.filter(
+    const filtered = warehouses.filter(
       (w) => !w.branch || w.branch === form.branchCode || w.branch === "ALL"
     );
+    return filtered.length > 0 ? filtered : warehouses;
   }, [warehouses, form.branchCode]);
 
   const availableFormDepartments = useMemo(() => {
-    return departments.filter(
+    const filtered = departments.filter(
       (d) => !d.branch || d.branch === form.branchCode || d.branch === "ALL"
     );
+    return filtered.length > 0 ? filtered : departments;
   }, [departments, form.branchCode]);
 
   // Filter warehouse list
   const availableFilterWarehouses = useMemo(() => {
     if (filterBranch === "ALL") return warehouses;
-    return warehouses.filter((w) => !w.branch || w.branch === filterBranch || w.branch === "ALL");
+    const filtered = warehouses.filter((w) => !w.branch || w.branch === filterBranch || w.branch === "ALL");
+    return filtered.length > 0 ? filtered : warehouses;
   }, [warehouses, filterBranch]);
 
   const availableFilterDepartments = useMemo(() => {
     if (filterBranch === "ALL") return departments;
-    return departments.filter((d) => !d.branch || d.branch === filterBranch || d.branch === "ALL");
+    const filtered = departments.filter((d) => !d.branch || d.branch === filterBranch || d.branch === "ALL");
+    return filtered.length > 0 ? filtered : departments;
   }, [departments, filterBranch]);
 
   // KPI Calculations
@@ -215,7 +230,10 @@ export default function AssetsPage() {
     setMessage("");
     const response = await fetch("/api/assets", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...getSessionHeaders(),
+      },
       body: JSON.stringify(form),
     });
     const payload = await response.json();
@@ -427,11 +445,11 @@ export default function AssetsPage() {
                 </label>
 
                 <SearchableSelect
-                  label="Vị trí / Kho *"
+                  label="Vị trí / Kho"
                   value={form.location}
                   onChange={(location) => setForm((v) => ({ ...v, location }))}
-                  options={availableFormWarehouses.map((wh) => ({ value: wh.code, label: `${wh.name} (${wh.code})` }))}
-                  placeholder="Gõ tên/mã kho để lọc"
+                  options={availableFormWarehouses.map((wh) => ({ value: wh.code, label: wh.name, subLabel: wh.code }))}
+                  placeholder="Chọn vị trí / kho..."
                   required
                 />
               </div>
@@ -441,8 +459,8 @@ export default function AssetsPage() {
                   label="Phòng ban / Bộ phận"
                   value={form.departmentCode}
                   onChange={(departmentCode) => setForm((v) => ({ ...v, departmentCode }))}
-                  options={availableFormDepartments.map((dep) => ({ value: dep.code, label: `${dep.name} (${dep.code})` }))}
-                  placeholder="Gõ tên/mã phòng ban"
+                  options={availableFormDepartments.map((dep) => ({ value: dep.code, label: dep.name, subLabel: dep.code }))}
+                  placeholder="Chọn phòng ban..."
                 />
 
                 <label className="text-xs font-bold text-slate-600 block">
@@ -548,8 +566,8 @@ export default function AssetsPage() {
                       const matched = suppliers.find((s) => s.code === supplierCode);
                       setForm((v) => ({ ...v, supplierCode, supplierName: matched ? matched.name : "" }));
                     }}
-                    options={suppliers.map((sup) => ({ value: sup.code, label: `${sup.name} (${sup.code})` }))}
-                    placeholder="Gõ tên/mã NCC"
+                    options={suppliers.map((sup) => ({ value: sup.code, label: sup.name, subLabel: sup.code }))}
+                    placeholder="Chọn nhà cung cấp..."
                   />
                 ) : (
                   <label className="text-xs font-bold text-slate-600 block">
@@ -851,54 +869,5 @@ export default function AssetsPage() {
         </div>
       </main>
     </div>
-  );
-}
-
-function SearchableSelect({
-  label,
-  value,
-  onChange,
-  options,
-  placeholder,
-  required,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  options: { value: string; label: string }[];
-  placeholder?: string;
-  required?: boolean;
-}) {
-  const [search, setSearch] = useState("");
-  const filtered = useMemo(() => {
-    const keyword = search.trim().toLowerCase();
-    if (!keyword) return options;
-    return options.filter((option) => `${option.value} ${option.label}`.toLowerCase().includes(keyword));
-  }, [options, search]);
-
-  return (
-    <label className="text-xs font-bold text-slate-600 block">
-      {label}
-      <input
-        type="text"
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        className="mt-1 w-full border border-slate-300 rounded-t-lg px-3 py-1.5 text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-        placeholder={placeholder || "Gõ để lọc danh mục"}
-      />
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full border-x border-b border-slate-300 rounded-b-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white"
-        required={required}
-      >
-        <option value="">{options.length === 0 ? "Chưa có dữ liệu danh mục" : "Chọn"}</option>
-        {filtered.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </label>
   );
 }

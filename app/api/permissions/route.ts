@@ -179,8 +179,16 @@ export async function PATCH(request: Request) {
     const branchCodes = body.branchCodes;
     const roleId = body.roleId;
 
+    if (body.action === "UPDATE_ROLE_MENU" || (roleId && Array.isArray(body.menuAccess))) {
+      const updatedRole = await prisma.role.update({
+        where: { id: roleId },
+        data: { menuAccess: body.menuAccess },
+      });
+      return NextResponse.json(updatedRole);
+    }
+
     if (!userId) {
-      return NextResponse.json({ error: "Thiếu userId" }, { status: 400 });
+      return NextResponse.json({ error: "Thiếu userId hoặc thông tin cần cập nhật" }, { status: 400 });
     }
 
     if (roleId) {

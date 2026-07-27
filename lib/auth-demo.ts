@@ -21,6 +21,7 @@ export type DemoUser = {
 export type DemoSession = Omit<DemoUser, "password"> & {
   loginAt: string;
   allowedBranches: string[];
+  menuAccess?: string[];
 };
 
 export type AppMenuItem = {
@@ -252,16 +253,20 @@ const menuActionOverrides: Partial<Record<string, Partial<Record<DemoRole, AppAc
 };
 
 const financialDashboardRoles: DemoRole[] = ["Admin", "Kế toán tổng hợp", "Quản lý"];
+const standardRolesList = ["Admin", "Kế toán tổng hợp", "Kế toán công nợ", "Quản lý", "Viewer"];
 
-export function canViewFinancialDashboard(role: DemoRole) {
-  return financialDashboardRoles.includes(role);
+export function canViewFinancialDashboard(role: DemoRole | string) {
+  if (financialDashboardRoles.includes(role as DemoRole)) return true;
+  if (!standardRolesList.includes(role)) return true;
+  return false;
 }
 
-export function getDefaultRouteForRole(role: DemoRole) {
-  if (canViewFinancialDashboard(role)) return "/";
+export function getDefaultRouteForRole(role: DemoRole | string) {
+  if (canViewFinancialDashboard(role as DemoRole)) return "/";
   if (role === "Kế toán công nợ") return "/debts";
   if (role === "Viewer") return "/work-management";
-  return appMenuItems.find((item) => item.href !== "/" && canAccessMenu(role, item))?.href || "/login";
+  const firstAllowed = appMenuItems.find((item) => canAccessMenu(role, item));
+  return firstAllowed?.href || "/work-management";
 }
 
 export function findDemoUser(userIdOrEmail: string) {
@@ -285,8 +290,32 @@ export function createDemoSession(user: DemoUser): DemoSession {
   };
 }
 
-export function canAccessMenu(role: DemoRole, item: AppMenuItem) {
-  return item.roles.includes(role);
+export function canAccessMenu(roleOrSession: DemoRole | DemoSession | string | null | undefined, item: AppMenuItem, menuAccessList?: string[] | null) {
+  if (!roleOrSession) return false;
+  let roleName: string;
+  let customList = menuAccessList;
+
+  if (typeof roleOrSession === "object") {
+    roleName = roleOrSession.role;
+    if (!customList && Array.isArray(roleOrSession.menuAccess)) {
+      customList = roleOrSession.menuAccess;
+    }
+  } else {
+    roleName = roleOrSession;
+  }
+
+  if (roleName === "Admin") return true;
+
+  if (Array.isArray(customList) && customList.length > 0) {
+    return customList.includes(item.href) || customList.includes(item.name);
+  }
+
+  const standardRoles = ["Admin", "Kế toán tổng hợp", "Kế toán công nợ", "Quản lý", "Viewer"];
+  if (!standardRoles.includes(roleName)) {
+    return item.href !== "/permissions" && item.href !== "/audit-logs";
+  }
+
+  return item.roles.includes(roleName as any);
 }
 
 export function canPerformAction(role: DemoRole, action: AppAction) {

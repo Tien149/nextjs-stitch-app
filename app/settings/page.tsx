@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { displayRoleName, storeLabel } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
+import { MonthInput } from "@/components/DateInput";
 
 type MasterDataItem = {
   id: string;
@@ -86,11 +87,37 @@ const groupPlaceholders: Record<string, string> = {
   SYSTEM_PARAM: "VD: Thue / Trang thai nghiep vu",
 };
 
+const codePlaceholders: Record<string, string> = {
+  BRANCH: "VD: HCM_STORE",
+  DEPARTMENT: "VD: KE_TOAN",
+  WAREHOUSE: "VD: KHO_TONG",
+  PARTNER: "VD: NCC_001",
+  MONEY_SOURCE: "VD: VCB_01",
+  REVENUE_EXPENSE_CATEGORY: "VD: CHIPHI_OPEX",
+  ACCOUNTING_PERIOD: "VD: 2026-07",
+  DOCUMENT_TYPE: "VD: PHIEU_THU",
+  DOCUMENT_NUMBER_RULE: "VD: RULE_PT",
+  SYSTEM_PARAM: "VD: VAT_RATE",
+};
+
+const namePlaceholders: Record<string, string> = {
+  BRANCH: "VD: Cửa hàng Hồ Chí Minh",
+  DEPARTMENT: "VD: Phòng Kế toán",
+  WAREHOUSE: "VD: Kho tổng miền Nam",
+  PARTNER: "VD: Công ty TNHH Nam Mới",
+  MONEY_SOURCE: "VD: Ngân hàng VCB - 0123456789",
+  REVENUE_EXPENSE_CATEGORY: "VD: Chi phí thuê mặt bằng",
+  ACCOUNTING_PERIOD: "VD: Kỳ kế toán Tháng 07/2026",
+  DOCUMENT_TYPE: "VD: Phiếu thu tiền mặt",
+  DOCUMENT_NUMBER_RULE: "VD: Quy tắc mã phiếu thu",
+  SYSTEM_PARAM: "VD: Thuế suất VAT mặc định",
+};
+
 const notePlaceholders: Record<string, string> = {
   REVENUE_EXPENSE_CATEGORY: "VD: dung cho import doanh thu, phan loai chi phi hoac P&L",
   ACCOUNTING_PERIOD: "VD: ngay bat dau/ket thuc ky, ghi chu khoa so",
   DOCUMENT_TYPE: "VD: chung tu thu tien, chi tien, ghi nhan tien coc",
-  DOCUMENT_NUMBER_RULE: "VD: PT-{YYYYMM}-{SEQ3}",
+  DOCUMENT_NUMBER_RULE: "VD: PTHU-2607-ASA-00001 (MãPhiếu-YYMM-ChiNhánh-STT5)",
   SYSTEM_PARAM: "VD: VAT 8%, trang thai nghiep vu...",
 };
 
@@ -741,15 +768,33 @@ export default function SettingsPage() {
 
               <div className="grid grid-cols-2 gap-4">
                 <label className="text-xs font-bold text-slate-700 block">
-                  Mã danh mục *
-                  <input
-                    data-input-kind="code"
-                    value={form.code}
-                    onChange={(event) => setForm((value) => ({ ...value, code: event.target.value }))}
-                    className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm uppercase outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
-                    placeholder="VD: STORE_01"
-                    required
-                  />
+                  {activeType === "ACCOUNTING_PERIOD" ? "Chọn Tháng / Năm *" : "Mã danh mục *"}
+                  {activeType === "ACCOUNTING_PERIOD" ? (
+                    <div className="mt-1.5">
+                      <MonthInput
+                        value={form.code}
+                        onChange={(newMonthVal) => {
+                          if (!newMonthVal) return;
+                          const parts = newMonthVal.split("-");
+                          const autoName = parts.length === 2 ? `Kỳ kế toán Tháng ${parts[1]}/${parts[0]}` : form.name;
+                          setForm((prev) => ({
+                            ...prev,
+                            code: newMonthVal,
+                            name: autoName,
+                          }));
+                        }}
+                      />
+                    </div>
+                  ) : (
+                    <input
+                      data-input-kind="code"
+                      value={form.code}
+                      onChange={(event) => setForm((value) => ({ ...value, code: event.target.value }))}
+                      className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm uppercase outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
+                      placeholder={codePlaceholders[activeType] || "VD: CODE_01"}
+                      required
+                    />
+                  )}
                 </label>
                 <label className="text-xs font-bold text-slate-700 block">
                   Trạng thái
@@ -770,7 +815,7 @@ export default function SettingsPage() {
                   value={form.name}
                   onChange={(event) => setForm((value) => ({ ...value, name: event.target.value }))}
                   className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
-                  placeholder="Tên hiển thị trực quan"
+                  placeholder={namePlaceholders[activeType] || "Tên hiển thị trực quan"}
                   required
                 />
               </label>
@@ -861,98 +906,115 @@ export default function SettingsPage() {
                   </label>
                 )}
 
-                <label className="text-xs font-bold text-slate-700 block">
-                  Cửa hàng liên kết
-                  {activeType === "WAREHOUSE" ? (
-                    <select
-                      value={form.branch}
-                      onChange={(event) => handleLinkBranchChange(event.target.value)}
-                      className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition cursor-pointer"
-                    >
-                      <option value="">-- Chọn cửa hàng --</option>
-                      {dynamicStores.map((store) => (
-                        <option key={store.code} value={store.code}>
-                          {store.name}
-                        </option>
-                      ))}
-                    </select>
-                  ) : activeType === "MONEY_SOURCE" ? (
-                    <select
-                      value={form.branch}
-                      onChange={(event) => handleLinkBranchChange(event.target.value)}
-                      className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition cursor-pointer"
-                    >
-                      <option value="">-- Chọn cửa hàng --</option>
-                      <option value="ALL">Admin / Tất cả cửa hàng</option>
-                      {dynamicStores.map((store) => (
-                        <option key={store.code} value={store.code}>
-                          Chủ cửa hàng - {store.name}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      data-input-kind="code"
-                      value={form.branch}
-                      onChange={(event) => setForm((value) => ({ ...value, branch: event.target.value }))}
-                      className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
-                      placeholder="VD: STORE_01"
-                    />
+                {["WAREHOUSE", "MONEY_SOURCE", "PARTNER", "DEPARTMENT"].includes(activeType) && (
+                  <label className="text-xs font-bold text-slate-700 block">
+                    Cửa hàng liên kết
+                    {activeType === "WAREHOUSE" ? (
+                      <select
+                        value={form.branch}
+                        onChange={(event) => handleLinkBranchChange(event.target.value)}
+                        className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition cursor-pointer"
+                      >
+                        <option value="">-- Chọn cửa hàng --</option>
+                        {dynamicStores.map((store) => (
+                          <option key={store.code} value={store.code}>
+                            {store.name}
+                          </option>
+                        ))}
+                      </select>
+                    ) : activeType === "MONEY_SOURCE" ? (
+                      <select
+                        value={form.branch}
+                        onChange={(event) => handleLinkBranchChange(event.target.value)}
+                        className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition cursor-pointer"
+                      >
+                        <option value="">-- Chọn cửa hàng --</option>
+                        <option value="ALL">Admin / Tất cả cửa hàng</option>
+                        {dynamicStores.map((store) => (
+                          <option key={store.code} value={store.code}>
+                            Chủ cửa hàng - {store.name}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        data-input-kind="code"
+                        value={form.branch}
+                        onChange={(event) => setForm((value) => ({ ...value, branch: event.target.value }))}
+                        className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
+                        placeholder="VD: STORE_01"
+                      />
+                    )}
+                  </label>
+                )}
+              </div>
+
+              {["PARTNER", "BRANCH", "MONEY_SOURCE"].includes(activeType) && (
+                <div className="grid grid-cols-2 gap-4">
+                  {["PARTNER", "BRANCH"].includes(activeType) && (
+                    <label className="text-xs font-bold text-slate-700">
+                      Mã số thuế (MST)
+                      <input
+                        data-input-kind="tax-code"
+                        value={form.taxCode}
+                        onChange={(event) => setForm((value) => ({ ...value, taxCode: event.target.value }))}
+                        className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
+                        placeholder="VD: 0101234567"
+                      />
+                    </label>
                   )}
-                </label>
-              </div>
+                  {["PARTNER", "MONEY_SOURCE"].includes(activeType) && (
+                    <label className="text-xs font-bold text-slate-700">
+                      Số tài khoản ngân hàng
+                      <input
+                        data-input-kind="account-number"
+                        value={form.accountNo}
+                        onChange={(event) => setForm((value) => ({ ...value, accountNo: event.target.value }))}
+                        className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
+                        placeholder="VD: 19031234567019"
+                      />
+                    </label>
+                  )}
+                </div>
+              )}
 
-              <div className="grid grid-cols-2 gap-4">
-                <label className="text-xs font-bold text-slate-700">
-                  Mã số thuế (MST)
-                  <input
-                    data-input-kind="tax-code"
-                    value={form.taxCode}
-                    onChange={(event) => setForm((value) => ({ ...value, taxCode: event.target.value }))}
-                    className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
-                  />
-                </label>
-                <label className="text-xs font-bold text-slate-700">
-                  Số tài khoản ngân hàng
-                  <input
-                    data-input-kind="account-number"
-                    value={form.accountNo}
-                    onChange={(event) => setForm((value) => ({ ...value, accountNo: event.target.value }))}
-                    className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
-                  />
-                </label>
-              </div>
+              {["PARTNER", "BRANCH", "DEPARTMENT", "WAREHOUSE"].includes(activeType) && (
+                <>
+                  <div className="grid grid-cols-2 gap-4">
+                    <label className="text-xs font-bold text-slate-700">
+                      Người liên hệ chính
+                      <input
+                        value={form.contactName}
+                        onChange={(event) => setForm((value) => ({ ...value, contactName: event.target.value }))}
+                        className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
+                        placeholder="VD: Nguyễn Văn A"
+                      />
+                    </label>
+                    <label className="text-xs font-bold text-slate-700">
+                      Số điện thoại
+                      <input
+                        data-input-kind="phone"
+                        value={form.phone}
+                        onChange={(event) => setForm((value) => ({ ...value, phone: event.target.value }))}
+                        className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
+                        placeholder="VD: 0901234567"
+                      />
+                    </label>
+                  </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <label className="text-xs font-bold text-slate-700">
-                  Người liên hệ chính
-                  <input
-                    value={form.contactName}
-                    onChange={(event) => setForm((value) => ({ ...value, contactName: event.target.value }))}
-                    className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
-                  />
-                </label>
-                <label className="text-xs font-bold text-slate-700">
-                  Số điện thoại
-                  <input
-                    data-input-kind="phone"
-                    value={form.phone}
-                    onChange={(event) => setForm((value) => ({ ...value, phone: event.target.value }))}
-                    className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
-                  />
-                </label>
-              </div>
-
-              <label className="text-xs font-bold text-slate-700 block">
-                Địa chỉ email
-                <input
-                  data-input-kind="email"
-                  type="email"
-                  value={form.email}
-                  onChange={(event) => setForm((value) => ({ ...value, email: event.target.value }))}
-                  className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
-                />
-              </label>
+                  <label className="text-xs font-bold text-slate-700 block">
+                    Địa chỉ email
+                    <input
+                      data-input-kind="email"
+                      type="email"
+                      value={form.email}
+                      onChange={(event) => setForm((value) => ({ ...value, email: event.target.value }))}
+                      className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
+                      placeholder="VD: contact@company.com"
+                    />
+                  </label>
+                </>
+              )}
 
               <label className="text-xs font-bold text-slate-700 block">
                 Ghi chú / Giá trị cấu hình

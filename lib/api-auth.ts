@@ -42,6 +42,7 @@ function parseSession(rawValue: string): DemoSession | null {
       branch: parsed.branch,
       email: parsed.email,
       allowedBranches: parsed.allowedBranches || [],
+      menuAccess: parsed.menuAccess || [],
       loginAt: parsed.loginAt,
     };
   } catch {
@@ -60,7 +61,9 @@ export function forbidden(message = "Khong du quyen thuc hien thao tac nay") {
 export function getRequestSession(request: Request): ApiAuthResult {
   const cookieSession = getCookieValue(request, SESSION_KEY);
   const headerSession = request.headers.get("x-demo-session") || "";
-  const session = parseSession(cookieSession || headerSession);
+  const authHeader = request.headers.get("authorization") || "";
+  const bearerToken = authHeader.toLowerCase().startsWith("bearer ") ? authHeader.slice(7).trim() : "";
+  const session = parseSession(cookieSession || headerSession || bearerToken);
 
   if (!session) {
     return { ok: false, response: unauthorized() };
@@ -74,7 +77,7 @@ export function requireMenuAccess(request: Request, href: string): ApiAuthResult
   if (!auth.ok) return auth;
 
   const allowed = appMenuItems.some(
-    (item) => item.href === href && canAccessMenu(auth.session.role, item),
+    (item) => item.href === href && canAccessMenu(auth.session, item),
   );
 
   if (!allowed) {
@@ -89,7 +92,7 @@ export function requireNamedMenuAccess(request: Request, href: string, name: str
   if (!auth.ok) return auth;
 
   const allowed = appMenuItems.some(
-    (item) => item.href === href && item.name === name && canAccessMenu(auth.session.role, item),
+    (item) => item.href === href && item.name === name && canAccessMenu(auth.session, item),
   );
 
   if (!allowed) {

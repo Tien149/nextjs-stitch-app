@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { assertBranchAccess, branchFilterForSession } from "@/lib/accounting";
 import { prisma } from "@/lib/prisma";
+import { generateFormattedVoucherCode } from "@/lib/voucher-code-generator";
 
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -18,12 +19,26 @@ function toDate(value: unknown, fallback = new Date()) {
   return Number.isNaN(date.getTime()) ? fallback : date;
 }
 
-async function nextDepositCode() {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const count = await prisma.deposit.count();
-  return `COC-${year}${month}-${String(count + 1).padStart(3, "0")}`;
+async function nextDepositCode(voucherDate?: Date | string | null, branchCode?: string | null) {
+  const d = voucherDate ? new Date(voucherDate) : new Date();
+  const validDate = isNaN(d.getTime()) ? new Date() : d;
+  const startOfMonth = new Date(validDate.getFullYear(), validDate.getMonth(), 1);
+  const endOfMonth = new Date(validDate.getFullYear(), validDate.getMonth() + 1, 1);
+
+  const count = await prisma.deposit.count({
+    where: {
+      ...(branchCode ? { branchCode } : {}),
+      receivedDate: { gte: startOfMonth, lt: endOfMonth },
+      code: { startsWith: "PCOC" },
+    },
+  });
+
+  return generateFormattedVoucherCode({
+    voucherType: "PCOC",
+    voucherDate: validDate,
+    branchCode,
+    seqNumber: count + 1,
+  });
 }
 
 export async function GET(request: Request) {
@@ -115,7 +130,7 @@ export async function POST(request: Request) {
     }
 
     const receivedDate = toDate(body.receivedDate);
-    const code = await nextDepositCode();
+    const code = await nextDepositCode(receivedDate, branchCode);
     const deposit = await prisma.deposit.create({
       data: {
         code,

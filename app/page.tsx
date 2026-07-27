@@ -126,13 +126,14 @@ export default function Home() {
 
     try {
       const parsedSession = JSON.parse(session) as DemoSession;
-      const allowedItems = appMenuItems.filter((item) => canAccessMenu(parsedSession.role, item));
+      const allowedItems = appMenuItems.filter((item) => canAccessMenu(parsedSession, item));
       const hasAllowedMenu = allowedItems.length > 0;
       if (!parsedSession.role || !parsedSession.email || !hasAllowedMenu) {
         throw new Error("Invalid session");
       }
       const dashboardMenu = appMenuItems.find((item) => item.href === "/" && item.name === "Dashboard");
-      if (!dashboardMenu || !canAccessMenu(parsedSession.role, dashboardMenu) || !canViewFinancialDashboard(parsedSession.role)) {
+      if (!dashboardMenu || !canAccessMenu(parsedSession, dashboardMenu) || !canViewFinancialDashboard(parsedSession.role)) {
+        setIsCheckingAuth(false);
         router.replace(getDefaultRouteForRole(parsedSession.role));
         return;
       }

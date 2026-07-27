@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { storeLabel, storeOptions } from "@/lib/branch-labels";
-import { canPerformMenuAction } from "@/lib/auth-demo";
+import { canPerformMenuAction, SESSION_KEY } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 
 type UnitConversion = { id: string; unitCode: string; unitName: string | null; conversionRate: number; isDefaultPurchase: boolean };
@@ -97,8 +97,16 @@ export default function InventoryPage() {
     return true;
   }).slice(-100).reverse();
 
+  const getSessionHeaders = (): Record<string, string> => {
+    if (typeof window === "undefined") return {};
+    const raw = localStorage.getItem(SESSION_KEY);
+    return raw ? { "x-demo-session": encodeURIComponent(raw) } : {};
+  };
+
   const loadData = async () => {
-    const response = await fetch("/api/inventory");
+    const response = await fetch("/api/inventory", {
+      headers: getSessionHeaders(),
+    });
     if (!response.ok) return;
     const payload = await response.json() as Data;
     setData(payload);
@@ -121,7 +129,14 @@ export default function InventoryPage() {
 
   const send = async (body: object, success: string) => {
     setMessage("");
-    const response = await fetch("/api/inventory", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const response = await fetch("/api/inventory", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...getSessionHeaders(),
+      },
+      body: JSON.stringify(body),
+    });
     const payload = await response.json();
     setMessage(response.ok ? success : payload.error || "Không thực hiện được thao tác");
     if (response.ok) await loadData();

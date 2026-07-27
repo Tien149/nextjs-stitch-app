@@ -10,6 +10,7 @@ export async function POST(request: Request) {
     }
 
     const normalizedEmail = email.trim();
+    const normalizedPassword = password.trim();
 
     // Query user by email or fallback search (e.g. ID matching lower case)
     const user = await prisma.user.findFirst({
@@ -26,7 +27,7 @@ export async function POST(request: Request) {
       }
     });
 
-    if (!user || user.password !== password) {
+    if (!user || user.password.trim() !== normalizedPassword) {
       return NextResponse.json({ error: "Sai tài khoản hoặc mật khẩu. Mật khẩu mặc định là: 123456" }, { status: 401 });
     }
 
@@ -36,6 +37,7 @@ export async function POST(request: Request) {
       id: user.id,
       name: user.id === "quanly" ? "Chủ cửa hàng" : user.name,
       role: user.role.name,
+      menuAccess: user.role.menuAccess || [],
       branch: branchAccessLabel(allowedBranches),
       email: user.email,
       allowedBranches,

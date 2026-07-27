@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { addPeriod, apiError, businessError, cleanText, isPeriodLocked, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
 import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
 import { writeAuditLog } from "@/lib/audit-log";
+import { generateFormattedVoucherCode } from "@/lib/voucher-code-generator";
 
 const menuHref = "/finance-operations";
 
@@ -152,9 +153,10 @@ export async function POST(request: Request) {
       }
 
       if (await isPeriodLocked(entryDate, branchCode)) businessError("Kỳ kế toán đã khóa");
+      const adjCount = await prisma.cashbookAdjustment.count();
       const result = await prisma.cashbookAdjustment.create({
         data: {
-          code: `DCQ-${new Date().getFullYear()}-${String(await prisma.cashbookAdjustment.count() + 1).padStart(4, "0")}`,
+          code: generateFormattedVoucherCode({ voucherType: "DCQ1", voucherDate: entryDate, branchCode, seqNumber: adjCount + 1 }),
           entryDate,
           entryType: cleanText(body.entryType) || "RECEIPT",
           branchCode,
@@ -182,9 +184,10 @@ export async function POST(request: Request) {
       }
 
       const amount = totalAmount / numberOfPeriods;
+      const accrualCount = await prisma.accrual.count();
       const result = await prisma.accrual.create({
         data: {
-          code: `PB-${new Date().getFullYear()}-${String(await prisma.accrual.count() + 1).padStart(4, "0")}`,
+          code: generateFormattedVoucherCode({ voucherType: "PBOU", voucherDate: `${startPeriod}-01`, branchCode, seqNumber: accrualCount + 1 }),
           name: cleanText(body.name),
           branchCode,
           categoryCode: cleanText(body.categoryCode) || "OPEX",
