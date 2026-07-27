@@ -64,6 +64,49 @@ export async function POST(request: Request) {
       return NextResponse.json(role, { status: 201 });
     }
 
+    if (action === "CREATE_USER") {
+      const { email, password, name, phone, position, roleId, branchCodes } = body;
+      if (!email || !email.trim()) {
+        return NextResponse.json({ error: "Email / User đăng nhập không được để trống" }, { status: 400 });
+      }
+      if (!password || !password.trim()) {
+        return NextResponse.json({ error: "Mật khẩu không được để trống" }, { status: 400 });
+      }
+      if (!name || !name.trim()) {
+        return NextResponse.json({ error: "Họ và tên người dùng không được để trống" }, { status: 400 });
+      }
+      if (!roleId) {
+        return NextResponse.json({ error: "Vui lòng chọn vai trò cho người dùng" }, { status: 400 });
+      }
+
+      const existingUser = await prisma.user.findUnique({ where: { email: email.trim().toLowerCase() } });
+      if (existingUser) {
+        return NextResponse.json({ error: "Email / Tên đăng nhập này đã tồn tại trong hệ thống" }, { status: 400 });
+      }
+
+      const branches = Array.isArray(branchCodes) && branchCodes.length > 0 ? branchCodes : ["ALL"];
+
+      const newUser = await prisma.user.create({
+        data: {
+          email: email.trim().toLowerCase(),
+          password: password.trim(),
+          name: name.trim(),
+          phone: phone ? phone.trim() : null,
+          position: position ? position.trim() : null,
+          roleId,
+          branchAccesses: {
+            create: branches.map((b: string) => ({ branchCode: b })),
+          },
+        },
+        include: {
+          role: true,
+          branchAccesses: true,
+        },
+      });
+
+      return NextResponse.json(newUser, { status: 201 });
+    }
+
     return NextResponse.json({ error: "Hành động không hợp lệ" }, { status: 400 });
   } catch (error) {
     console.error("Error creating role:", error);
