@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { branchAccessLabel } from "@/lib/branch-labels";
+import { createDemoSession, demoUsers } from "@/lib/auth-demo";
 import { prisma } from "@/lib/prisma";
 
 export async function POST(request: Request) {
@@ -9,44 +10,94 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Thiếu email hoặc mật khẩu" }, { status: 400 });
     }
 
-    const normalizedEmail = email.trim();
-    const normalizedPassword = password.trim();
+    const normalizedEmail = String(email).trim();
+    const normalizedPassword = String(password).trim();
 
-    // Query user by email or fallback search (e.g. ID matching lower case)
-    const user = await prisma.user.findFirst({
-      where: {
-        OR: [
-          { email: { equals: normalizedEmail, mode: "insensitive" } },
-          { name: { equals: normalizedEmail, mode: "insensitive" } },
-          { id: { equals: normalizedEmail.toLowerCase() } }
-        ]
-      },
-      include: {
-        role: true,
-        branchAccesses: true
-      }
-    });
-
-    if (!user || user.password.trim() !== normalizedPassword) {
-      return NextResponse.json({ error: "Sai tài khoản hoặc mật khẩu. Mật khẩu mặc định là: 123456" }, { status: 401 });
-    }
-
-    const allowedBranches = user.branchAccesses.map((branchAccess) => branchAccess.branchCode);
-
-    const session = {
-      id: user.id,
-      name: user.id === "quanly" ? "Chủ cửa hàng" : user.name,
-      role: user.role.name,
-      menuAccess: user.role.menuAccess || [],
-      branch: branchAccessLabel(allowedBranches),
-      email: user.email,
-      allowedBranches,
-      loginAt: new Date().toISOString(),
+    type DbUser = {
+      id: string;
+      email: string;
+      password: string;
+      name: string;
+      role?: { name: string; menuAccess: string[] } | null;
+      branchAccesses?: { branchCode: string }[] | null;
     };
 
-    return NextResponse.json(session);
+    let dbUser: DbUser | null = null;
+
+    try {
+      dbUser = await prisma.user.findFirst({
+        where: {
+          OR: [
+            { email: { equals: normalizedEmail, mode: "insensitive" } },
+            { name: { equals: normalizedEmail, mode: "insensitive" } },
+            { id: { equals: normalizedEmail.toLowerCase() } },
+          ],
+        },
+        select: {
+          id: true,
+          email: true,
+          password: true,
+          name: true,
+          role: {
+            select: {
+              name: true,
+              menuAccess: true,
+            },
+          },
+          branchAccesses: {
+            select: {
+              branchCode: true,
+            },
+          },
+        },
+      });
+    } catch (dbErr) {
+      console.warn("DB login query error (fallback to demoUsers):", dbErr);
+    }
+
+    if (dbUser) {
+      if (dbUser.password.trim() !== normalizedPassword) {
+        return NextResponse.json(
+          { error: "Sai tài khoản hoặc mật khẩu. Mật khẩu mặc định là: 123456" },
+          { status: 401 }
+        );
+      }
+
+      const allowedBranches = dbUser.branchAccesses?.map((b) => b.branchCode) || [];
+
+      const session = {
+        id: dbUser.id,
+        name: dbUser.id === "quanly" ? "Chủ cửa hàng" : dbUser.name,
+        role: dbUser.role?.name || "Giam Sat",
+        menuAccess: dbUser.role?.menuAccess || [],
+        branch: branchAccessLabel(allowedBranches),
+        email: dbUser.email,
+        allowedBranches,
+        loginAt: new Date().toISOString(),
+      };
+
+      return NextResponse.json(session);
+    }
+
+    // Fallback: match against demoUsers if DB user is missing or DB query fails
+    const matchedDemo = demoUsers.find(
+      (u) =>
+        u.email.toLowerCase() === normalizedEmail.toLowerCase() ||
+        u.id.toLowerCase() === normalizedEmail.toLowerCase() ||
+        u.name.toLowerCase() === normalizedEmail.toLowerCase()
+    );
+
+    if (matchedDemo) {
+      const session = createDemoSession(matchedDemo);
+      return NextResponse.json(session);
+    }
+
+    return NextResponse.json(
+      { error: "Sai tài khoản hoặc mật khẩu. Mật khẩu mặc định là: 123456" },
+      { status: 401 }
+    );
   } catch (error) {
     console.error("Login API error:", error);
-    return NextResponse.json({ error: "Lỗi máy chủ nội bộ" }, { status: 500 });
+    return NextResponse.json({ error: "Lỗi máy chủ nội bộ khi đăng nhập" }, { status: 500 });
   }
 }
