@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "prisma generate && next build",
+    "db:push": "prisma db push",
+    "deploy:vps": "git pull origin master && npm install && npx prisma db push && npm run build && pm2 restart fin-erp",
     "start": "next start",
     "lint": "eslint",
     "postinstall": "prisma generate"
