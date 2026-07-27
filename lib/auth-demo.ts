@@ -186,6 +186,16 @@ export const appMenuItems: AppMenuItem[] = [
   },
 ];
 
+export const ALL_APP_ACTIONS: { key: AppAction; label: string; desc: string }[] = [
+  { key: "view", label: "view", desc: "Xem dữ liệu" },
+  { key: "create", label: "create", desc: "Tạo mới" },
+  { key: "edit", label: "edit", desc: "Chỉnh sửa" },
+  { key: "delete", label: "delete", desc: "Xóa dữ liệu" },
+  { key: "approve", label: "approve", desc: "Phê duyệt" },
+  { key: "export", label: "export", desc: "Xuất Excel / Báo cáo" },
+  { key: "config", label: "config", desc: "Cấu hình hệ thống" },
+];
+
 export const roleActions: Record<DemoRole, AppAction[]> = {
   Admin: ["view", "create", "edit", "delete", "approve", "export", "config"],
   "Kế toán tổng hợp": ["view", "create", "edit", "export", "config"],

@@ -7,17 +7,121 @@ export async function GET(request: Request) {
     const auth = requireMenuAccess(request, "/permissions");
     if (!auth.ok) return auth.response;
 
-    const users = await prisma.user.findMany({
-      include: {
-        role: true,
-        branchAccesses: true
+    const [users, roles] = await Promise.all([
+      prisma.user.findMany({
+        include: {
+          role: true,
+          branchAccesses: true,
+        },
+        orderBy: { email: "asc" },
+      }),
+      prisma.role.findMany({
+        include: {
+          _count: {
+            select: { users: true },
+          },
+        },
+        orderBy: { createdAt: "asc" },
+      }),
+    ]);
+
+    return NextResponse.json({ users, roles });
+  } catch (error) {
+    console.error("Error fetching permissions data:", error);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+  }
+}
+
+export async function POST(request: Request) {
+  try {
+    const auth = requireMenuAction(request, "/permissions", "create");
+    if (!auth.ok) return auth.response;
+
+    const body = await request.json();
+    const action = body.action || "CREATE_ROLE";
+
+    if (action === "CREATE_ROLE") {
+      const { name, actions } = body;
+      if (!name || !name.trim()) {
+        return NextResponse.json({ error: "Tên vai trò không được để trống" }, { status: 400 });
+      }
+      if (!Array.isArray(actions) || actions.length === 0) {
+        return NextResponse.json({ error: "Cần chọn ít nhất 1 quyền trong ma trận phân quyền" }, { status: 400 });
+      }
+
+      const existing = await prisma.role.findUnique({ where: { name: name.trim() } });
+      if (existing) {
+        return NextResponse.json({ error: "Tên vai trò này đã tồn tại trong hệ thống" }, { status: 400 });
+      }
+
+      const role = await prisma.role.create({
+        data: {
+          name: name.trim(),
+          actions,
+        },
+      });
+
+      return NextResponse.json(role, { status: 201 });
+    }
+
+    return NextResponse.json({ error: "Hành động không hợp lệ" }, { status: 400 });
+  } catch (error) {
+    console.error("Error creating role:", error);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+  }
+}
+
+export async function PUT(request: Request) {
+  try {
+    const auth = requireMenuAction(request, "/permissions", "edit");
+    if (!auth.ok) return auth.response;
+
+    const body = await request.json();
+    const { roleId, name, actions } = body;
+
+    if (!roleId || !name || !name.trim()) {
+      return NextResponse.json({ error: "Thiếu mã vai trò hoặc tên vai trò" }, { status: 400 });
+    }
+    if (!Array.isArray(actions) || actions.length === 0) {
+      return NextResponse.json({ error: "Cần chọn ít nhất 1 quyền trong ma trận phân quyền" }, { status: 400 });
+    }
+
+    const role = await prisma.role.update({
+      where: { id: roleId },
+      data: {
+        name: name.trim(),
+        actions,
       },
-      orderBy: { email: "asc" }
     });
 
-    return NextResponse.json(users);
+    return NextResponse.json(role);
   } catch (error) {
-    console.error("Error fetching users:", error);
+    console.error("Error updating role:", error);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+  }
+}
+
+export async function DELETE(request: Request) {
+  try {
+    const auth = requireMenuAction(request, "/permissions", "delete");
+    if (!auth.ok) return auth.response;
+
+    const { searchParams } = new URL(request.url);
+    const roleId = searchParams.get("roleId");
+
+    if (!roleId) {
+      return NextResponse.json({ error: "Thiếu mã vai trò cần xóa" }, { status: 400 });
+    }
+
+    const userCount = await prisma.user.count({ where: { roleId } });
+    if (userCount > 0) {
+      return NextResponse.json({ error: `Không thể xóa vai trò này vì đang có ${userCount} người dùng sử dụng` }, { status: 400 });
+    }
+
+    await prisma.role.delete({ where: { id: roleId } });
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    console.error("Error deleting role:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
@@ -29,23 +133,32 @@ export async function PATCH(request: Request) {
 
     const body = await request.json();
     const userId = body.userId;
-    const branchCodes = body.branchCodes; // array of strings e.g. ["HCM", "HN", "ALL"]
+    const branchCodes = body.branchCodes;
+    const roleId = body.roleId;
 
-    if (!userId || !Array.isArray(branchCodes)) {
-      return NextResponse.json({ error: "Thiếu userId hoặc danh sách chi nhánh không hợp lệ" }, { status: 400 });
+    if (!userId) {
+      return NextResponse.json({ error: "Thiếu userId" }, { status: 400 });
     }
 
-    // Update branch accesses inside a transaction
-    await prisma.$transaction([
-      prisma.userBranchAccess.deleteMany({ where: { userId } }),
-      prisma.userBranchAccess.createMany({
-        data: branchCodes.map((branchCode) => ({ userId, branchCode }))
-      })
-    ]);
+    if (roleId) {
+      await prisma.user.update({
+        where: { id: userId },
+        data: { roleId },
+      });
+    }
+
+    if (Array.isArray(branchCodes)) {
+      await prisma.$transaction([
+        prisma.userBranchAccess.deleteMany({ where: { userId } }),
+        prisma.userBranchAccess.createMany({
+          data: branchCodes.map((branchCode) => ({ userId, branchCode })),
+        }),
+      ]);
+    }
 
     return NextResponse.json({ ok: true });
   } catch (error) {
-    console.error("Error updating user branch access:", error);
+    console.error("Error updating user permission:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
