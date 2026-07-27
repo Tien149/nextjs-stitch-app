@@ -189,14 +189,14 @@ export default function VouchersPage() {
           </div>
         </div>
 
-        <main className="grid xl:grid-cols-[400px_1fr] gap-6">
+        <main className="grid xl:grid-cols-[380px_1fr] gap-6 items-start">
           {canCreate && (
-            <form onSubmit={createVoucher} className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4 h-fit">
+            <form onSubmit={createVoucher} className="bg-white border border-slate-200 rounded-2xl shadow-sm p-5 space-y-4">
               <div>
                 <span className="text-[10px] font-bold text-blue-600 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-full uppercase">
                   6.3 Receipt / Payment
                 </span>
-                <h2 className="font-bold text-lg mt-2">Tạo phiếu thu/chi</h2>
+                <h2 className="font-bold text-lg mt-2 text-slate-800">Tạo phiếu thu/chi</h2>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -269,7 +269,7 @@ export default function VouchersPage() {
                   <select
                     value={form.moneySourceCode}
                     onChange={(event) => setForm((value) => ({ ...value, moneySourceCode: event.target.value }))}
-                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white"
+                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white text-ellipsis overflow-hidden"
                     required
                   >
                     {form.branchCode === "HCM" ? (
@@ -330,21 +330,21 @@ export default function VouchersPage() {
               </label>
 
               {message && <p className="text-sm rounded-lg bg-blue-50 border border-blue-100 text-blue-700 px-3 py-2">{message}</p>}
-              <button className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-2.5 text-sm font-bold transition-colors">Tạo chứng từ</button>
+              <button className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-xl py-2.5 text-sm font-bold transition-all shadow-sm active:scale-[0.99]">Tạo chứng từ</button>
             </form>
           )}
 
-          <section className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden flex flex-col max-h-[620px]">
+          <section className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden flex flex-col">
             <div className="p-5 border-b border-slate-200 flex items-center justify-between shrink-0">
               <div>
                 <h2 className="font-bold text-slate-800">Danh sách phiếu</h2>
                 <p className="text-xs text-slate-500 mt-1">Dùng nút In để mở print view/PDF browser.</p>
               </div>
-              <button onClick={() => void loadVouchers(branchCode)} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50">Tải lại</button>
+              <button onClick={() => void loadVouchers(branchCode)} className="rounded-lg border border-slate-200 px-3.5 py-1.5 text-xs font-bold hover:bg-slate-50 text-slate-700 transition-colors">Tải lại</button>
             </div>
-            <div className="overflow-x-auto overflow-y-auto flex-1">
+            <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
-                <thead className="bg-slate-50 text-slate-500 text-xs uppercase border-b border-slate-200 sticky top-0 z-10 shadow-sm">
+                <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-bold border-b border-slate-200">
                   <tr>
                     <th className="px-4 py-3 text-left">Chứng từ</th>
                     <th className="px-4 py-3 text-left">Đối tác</th>
@@ -357,15 +357,35 @@ export default function VouchersPage() {
                   {vouchers.length === 0 ? (
                     <tr><td colSpan={5} className="px-4 py-10 text-center text-slate-400">Chưa có chứng từ cho chi nhánh này.</td></tr>
                   ) : vouchers.map((voucher) => (
-                    <tr key={voucher.id} className="hover:bg-slate-50">
-                      <td className="px-4 py-3"><b>{voucher.code}</b><p className="text-xs text-slate-500">{voucher.voucherType === "RECEIPT" ? "Phiếu thu" : "Phiếu chi"} · {new Date(voucher.voucherDate).toLocaleDateString("vi-VN")}</p></td>
-                      <td className="px-4 py-3"><b>{voucher.partnerName}</b><p className="text-xs text-slate-500">{voucher.description}</p></td>
-                      <td className="px-4 py-3 text-right font-bold">{money(voucher.amount)} đ</td>
-                      <td className="px-4 py-3"><span className="text-xs font-bold bg-slate-100 rounded px-2 py-1">{voucher.status}</span></td>
-                      <td className="px-4 py-3 text-right space-x-2">
-                        {canApprove && ["DRAFT", "PENDING_REVIEW"].includes(voucher.status) && <button onClick={() => void approveVoucher(voucher.id)} className="text-xs font-bold text-emerald-700 hover:underline">Duyệt</button>}
-                        {canApprove && ["DRAFT", "PENDING_REVIEW"].includes(voucher.status) && <button onClick={() => void cancelVoucher(voucher.id)} className="text-xs font-bold text-rose-700 hover:underline">Hủy</button>}
-                        <button onClick={() => window.open(`/vouchers/${voucher.id}/print`, "_blank")} className="text-xs font-bold text-blue-700 hover:underline">In</button>
+                    <tr key={voucher.id} className="hover:bg-slate-50/80 transition-colors">
+                      <td className="px-4 py-3.5">
+                        <b className="text-slate-800 font-semibold">{voucher.code}</b>
+                        <p className="text-xs text-slate-500 mt-0.5">{voucher.voucherType === "RECEIPT" ? "Phiếu thu" : "Phiếu chi"} · {new Date(voucher.voucherDate).toLocaleDateString("vi-VN")}</p>
+                      </td>
+                      <td className="px-4 py-3.5">
+                        <b className="text-slate-800 font-medium">{voucher.partnerName}</b>
+                        <p className="text-xs text-slate-500 mt-0.5 line-clamp-1">{voucher.description}</p>
+                      </td>
+                      <td className="px-4 py-3.5 text-right font-bold text-slate-900 whitespace-nowrap">{money(voucher.amount)} đ</td>
+                      <td className="px-4 py-3.5 whitespace-nowrap">
+                        <span className={`text-[11px] font-bold px-2.5 py-1 rounded-full uppercase tracking-wider ${
+                          voucher.status === "APPROVED"
+                            ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                            : voucher.status === "DRAFT" || voucher.status === "PENDING_REVIEW"
+                            ? "bg-amber-50 text-amber-700 border border-amber-200"
+                            : "bg-rose-50 text-rose-700 border border-rose-200"
+                        }`}>
+                          {voucher.status === "APPROVED" ? "Đã duyệt" : voucher.status === "DRAFT" ? "Bản nháp" : voucher.status}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5 text-right whitespace-nowrap space-x-1.5">
+                        {canApprove && ["DRAFT", "PENDING_REVIEW"].includes(voucher.status) && (
+                          <button onClick={() => void approveVoucher(voucher.id)} className="px-2.5 py-1 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 rounded-lg text-xs font-bold transition-colors">Duyệt</button>
+                        )}
+                        {canApprove && ["DRAFT", "PENDING_REVIEW"].includes(voucher.status) && (
+                          <button onClick={() => void cancelVoucher(voucher.id)} className="px-2.5 py-1 bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 rounded-lg text-xs font-bold transition-colors">Hủy</button>
+                        )}
+                        <button onClick={() => window.open(`/vouchers/${voucher.id}/print`, "_blank")} className="px-2.5 py-1 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 rounded-lg text-xs font-bold transition-colors">In</button>
                       </td>
                     </tr>
                   ))}
