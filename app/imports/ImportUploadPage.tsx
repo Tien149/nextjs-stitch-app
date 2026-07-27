@@ -144,7 +144,9 @@ export default function ImportUploadPage({
   useEffect(() => {
     if (isCheckingAuth || !requiresBranch) return;
     const controller = new AbortController();
-    void fetch("/api/master-data?type=BRANCH&status=ACTIVE", { signal: controller.signal })
+    const rawSession = localStorage.getItem(SESSION_KEY);
+    const headers: Record<string, string> = rawSession ? { "x-demo-session": encodeURIComponent(rawSession) } : {};
+    void fetch("/api/master-data?type=BRANCH&status=ACTIVE", { headers, signal: controller.signal })
       .then(async (response) => response.ok ? response.json() : [])
       .then((items: BranchOption[]) => setBranches(items.map((item) => ({ code: item.code, name: item.name }))))
       .catch((error) => {

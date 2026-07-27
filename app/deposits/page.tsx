@@ -137,7 +137,9 @@ export default function DepositsPage() {
 
   const loadMasterData = async () => {
     try {
-      const response = await fetch("/api/master-data?status=ACTIVE");
+      const rawSession = localStorage.getItem(SESSION_KEY);
+      const headers: Record<string, string> = rawSession ? { "x-demo-session": encodeURIComponent(rawSession) } : {};
+      const response = await fetch("/api/master-data?status=ACTIVE", { headers });
       if (response.ok) {
         const data = (await response.json()) as MasterDataOption[];
         const activeBranches = data.filter((item) => item.type === "BRANCH");

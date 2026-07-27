@@ -24,8 +24,11 @@ export function ModuleFrame({
   const [isLocked, setIsLocked] = useState(false);
 
   useEffect(() => {
+    const raw = localStorage.getItem(SESSION_KEY);
+    const headers: Record<string, string> = raw ? { "x-demo-session": encodeURIComponent(raw) } : {};
+
     // Fetch branches from database dynamically
-    fetch("/api/master-data?type=BRANCH")
+    fetch("/api/master-data?type=BRANCH", { headers })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data && Array.isArray(data)) {
@@ -35,7 +38,6 @@ export function ModuleFrame({
       })
       .catch((e) => console.error("Error loading branches in ModuleFrame:", e));
 
-    const raw = localStorage.getItem(SESSION_KEY);
     if (raw) {
       try {
         const parsed = JSON.parse(raw) as DemoSession;

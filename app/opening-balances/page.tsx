@@ -164,9 +164,11 @@ export default function OpeningBalancesPage() {
 
   const loadMasterData = async () => {
     try {
+      const rawSession = localStorage.getItem(SESSION_KEY);
+      const headers: Record<string, string> = rawSession ? { "x-demo-session": encodeURIComponent(rawSession) } : {};
       const [resMaster, resInv] = await Promise.all([
-        fetch("/api/master-data?status=ACTIVE"),
-        fetch("/api/inventory"),
+        fetch("/api/master-data?status=ACTIVE", { headers }),
+        fetch("/api/inventory", { headers }),
       ]);
 
       if (resMaster.ok) {

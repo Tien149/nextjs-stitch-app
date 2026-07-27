@@ -107,8 +107,11 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    const rawSession = localStorage.getItem(SESSION_KEY);
+    const headers: Record<string, string> = rawSession ? { "x-demo-session": encodeURIComponent(rawSession) } : {};
+
     // Fetch branches dynamically
-    fetch("/api/master-data?type=BRANCH")
+    fetch("/api/master-data?type=BRANCH", { headers })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data && Array.isArray(data)) {
