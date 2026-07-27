@@ -929,7 +929,7 @@ export default function SettingsPage() {
                         className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition cursor-pointer"
                       >
                         <option value="">-- Chọn cửa hàng --</option>
-                        <option value="ALL">Admin / Tất cả cửa hàng</option>
+                        <option value="ALL">Tất cả cửa hàng</option>
                         {dynamicStores.map((store) => (
                           <option key={store.code} value={store.code}>
                             Chủ cửa hàng - {store.name}

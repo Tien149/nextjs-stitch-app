@@ -1,5 +1,5 @@
 export const branchScopeOptions = [
-  { code: "ALL", label: "Admin / Tất cả cửa hàng" },
+  { code: "ALL", label: "Tất cả cửa hàng" },
   { code: "HCM", label: "Chủ cửa hàng - Cửa hàng 1" },
   { code: "HN", label: "Chủ cửa hàng - Cửa hàng 2" },
 ];
@@ -12,7 +12,7 @@ export const storeOptions = [
 export function updateDynamicBranches(branches: Array<{ code: string; name: string }>) {
   if (!branches || branches.length === 0) return;
 
-  const newScope = [{ code: "ALL", label: "Admin / Tất cả cửa hàng" }];
+  const newScope = [{ code: "ALL", label: "Tất cả cửa hàng" }];
   const newStores: Array<{ code: string; label: string }> = [];
 
   branches.forEach((b) => {
@@ -41,7 +41,7 @@ export function storeLabel(code?: string | null) {
 }
 
 export function branchAccessLabel(codes: string[]) {
-  if (codes.includes("ALL")) return "Admin / Tất cả cửa hàng";
+  if (codes.includes("ALL")) return "Tất cả cửa hàng";
   if (codes.length === 0) return "Chưa gán cửa hàng";
   return codes.map(branchLabel).join(", ");
 }
