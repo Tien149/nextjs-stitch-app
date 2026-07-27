@@ -66,6 +66,7 @@ export default function Home() {
   const [dashboardError, setDashboardError] = useState("");
   const [globalBranch, setGlobalBranch] = useState("ALL");
   const [isBranchLocked, setIsBranchLocked] = useState(false);
+  const [dynamicBranchOptions, setDynamicBranchOptions] = useState<Array<{ code: string; label: string }>>([...branchScopeOptions]);
 
   // Auth states
   const [user, setUser] = useState<DemoSession | null>(null);
@@ -79,29 +80,32 @@ export default function Home() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Load documents
-  const fetchDocuments = async () => {
+  const fetchDocuments = useCallback(async () => {
     try {
-      const res = await fetch("/api/documents");
+      const rawSession = localStorage.getItem(SESSION_KEY);
+      const headers: Record<string, string> = rawSession ? { "x-demo-session": encodeURIComponent(rawSession) } : {};
+      const res = await fetch("/api/documents", { headers });
       if (res.ok) {
         const data = await res.json();
         setDocuments(data);
       }
-    } catch (error) {
-      console.error("Failed to fetch documents", error);
+    } catch {
+      // Keep empty if fails
     }
-  };
+  }, []);
 
-  const fetchDashboard = useCallback(async (period: string, branch: string) => {
+  const fetchDashboard = useCallback(async (period: string, branchCode: string) => {
     try {
       setDashboardError("");
-      const response = await fetch(`/api/reports?type=dashboard&period=${period}&branchCode=${branch}`);
-      if (!response.ok) {
-        const payload = await response.json();
-        throw new Error(payload.error || "Không tải được dữ liệu Dashboard");
+      const rawSession = localStorage.getItem(SESSION_KEY);
+      const headers: Record<string, string> = rawSession ? { "x-demo-session": encodeURIComponent(rawSession) } : {};
+      const res = await fetch(`/api/reports?period=${period}&branchCode=${branchCode}`, { headers });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Không tải được dữ liệu Dashboard");
       }
-      setDashboard(await response.json() as DashboardData);
+      setDashboard(data);
     } catch (error) {
-      setDashboard(null);
       setDashboardError(error instanceof Error ? error.message : "Không tải được dữ liệu Dashboard");
     }
   }, []);
@@ -117,6 +121,7 @@ export default function Home() {
         if (data && Array.isArray(data)) {
           const activeBranches = data.filter((b) => b.status === "ACTIVE");
           updateDynamicBranches(activeBranches);
+          setDynamicBranchOptions([...branchScopeOptions]);
         }
       })
       .catch((e) => console.error("Error loading branches in Home:", e));
@@ -357,7 +362,7 @@ export default function Home() {
                 disabled={isBranchLocked}
                 className="pl-3 pr-8 py-1.5 bg-slate-100 border border-slate-200 rounded-lg focus:ring-2 focus:ring-[#2563eb]/20 focus:border-[#2563eb] text-xs font-semibold outline-none cursor-pointer appearance-none transition-all disabled:opacity-75 disabled:cursor-not-allowed"
               >
-                {branchScopeOptions.map((option) => (
+                {dynamicBranchOptions.map((option) => (
                   <option key={option.code} value={option.code}>
                     {option.label}
                   </option>

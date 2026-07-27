@@ -22,6 +22,7 @@ export function ModuleFrame({
 }) {
   const router = useRouter();
   const [isLocked, setIsLocked] = useState(false);
+  const [dynamicBranchOptions, setDynamicBranchOptions] = useState<Array<{ code: string; label: string }>>([...branchScopeOptions]);
 
   useEffect(() => {
     const raw = localStorage.getItem(SESSION_KEY);
@@ -34,6 +35,7 @@ export function ModuleFrame({
         if (data && Array.isArray(data)) {
           const activeBranches = data.filter((b) => b.status === "ACTIVE");
           updateDynamicBranches(activeBranches);
+          setDynamicBranchOptions([...branchScopeOptions]);
         }
       })
       .catch((e) => console.error("Error loading branches in ModuleFrame:", e));
@@ -80,7 +82,7 @@ export function ModuleFrame({
                 disabled={isLocked}
                 className="pl-3 pr-8 py-1.5 bg-slate-100 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 text-xs font-semibold outline-none cursor-pointer appearance-none transition-all disabled:opacity-75 disabled:cursor-not-allowed"
               >
-                {branchScopeOptions.map((option) => (
+                {dynamicBranchOptions.map((option) => (
                   <option key={option.code} value={option.code}>
                     {option.label}
                   </option>
