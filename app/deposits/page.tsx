@@ -276,9 +276,6 @@ export default function DepositsPage() {
     <div className="min-h-screen bg-slate-100 text-slate-800">
       <header className="sticky top-0 z-20 bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between shadow-sm">
         <div className="flex items-center gap-3">
-          <button onClick={() => router.push("/")} className="h-9 w-9 rounded-lg bg-slate-100 hover:bg-slate-200">
-            <span className="material-symbols-outlined text-lg">arrow_back</span>
-          </button>
           <div>
             <h1 className="text-xl font-bold">Quản trị Tiền cọc</h1>
             <p className="text-xs text-slate-500">Nhóm B 2.1 - 2.3: ghi nhận, cấn trừ, hoàn/hủy cọc.</p>

@@ -1,7 +1,6 @@
 "use client";
 
 import { type ReactNode, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import { branchScopeOptions, displayRoleName, updateDynamicBranches } from "@/lib/branch-labels";
 import { SESSION_KEY, type DemoSession } from "@/lib/auth-demo";
 
@@ -20,7 +19,6 @@ export function ModuleFrame({
   onChangeBranch?: (code: string) => void;
   children: ReactNode;
 }) {
-  const router = useRouter();
   const [isLocked, setIsLocked] = useState(false);
   const [dynamicBranchOptions, setDynamicBranchOptions] = useState<Array<{ code: string; label: string }>>([...branchScopeOptions]);
 
@@ -56,14 +54,6 @@ export function ModuleFrame({
     <div className="min-h-screen bg-slate-100 text-slate-800">
       <header className="sticky top-0 z-20 bg-white border-b border-slate-200 px-4 sm:px-6 py-4 flex items-center justify-between shadow-sm">
         <div className="flex items-center gap-3 min-w-0">
-          <button
-            type="button"
-            title="Quay lại Dashboard"
-            onClick={() => router.push("/")}
-            className="h-9 w-9 shrink-0 rounded-lg bg-slate-100 hover:bg-slate-200 grid place-items-center"
-          >
-            <span className="material-symbols-outlined text-lg">arrow_back</span>
-          </button>
           <div className="min-w-0">
             <h1 className="text-lg sm:text-xl font-bold truncate">{title}</h1>
             <p className="text-xs text-slate-500 truncate">{subtitle}</p>

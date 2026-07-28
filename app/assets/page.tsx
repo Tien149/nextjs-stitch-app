@@ -309,12 +309,6 @@ export default function AssetsPage() {
     <div className="min-h-screen bg-slate-100 text-slate-800">
       <header className="sticky top-0 z-20 bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between shadow-sm">
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => router.push("/")}
-            className="h-9 w-9 rounded-lg bg-slate-100 hover:bg-slate-200 flex items-center justify-center transition-colors"
-          >
-            <span className="material-symbols-outlined text-lg">arrow_back</span>
-          </button>
           <div>
             <h1 className="text-xl font-bold text-slate-900">Quản lý Tài sản & CCDC</h1>
             <p className="text-xs text-slate-500">

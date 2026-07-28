@@ -298,14 +298,6 @@ export default function AccountingPage() {
       {/* Premium Header */}
       <header className="sticky top-0 z-30 backdrop-blur-md bg-white/80 border-b border-slate-200/60 px-6 py-4 flex items-center justify-between shadow-sm">
         <div className="flex items-center gap-4">
-          <button
-            type="button"
-            title="Quay lại Dashboard"
-            onClick={() => router.push("/")}
-            className="h-10 w-10 shrink-0 rounded-xl bg-slate-100 hover:bg-slate-200 grid place-items-center active:scale-95 transition-all shadow-sm"
-          >
-            <span className="material-symbols-outlined text-lg">arrow_back</span>
-          </button>
           <div>
             <h1 className="text-xl font-bold bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 bg-clip-text text-transparent">
               Sổ cái Kế toán
