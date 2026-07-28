@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { branchAccessLabel } from "@/lib/branch-labels";
-import { createDemoSession, demoUsers } from "@/lib/auth-demo";
 import { prisma } from "@/lib/prisma";
 
 export async function POST(request: Request) {
@@ -52,7 +51,13 @@ export async function POST(request: Request) {
         },
       });
     } catch (dbErr) {
-      console.warn("DB login query error (fallback to demoUsers):", dbErr);
+      // Không có cơ chế đăng nhập dự phòng: nếu không kiểm tra được tài khoản
+      // trong database thì phải từ chối, tuyệt đối không cấp phiên đăng nhập.
+      console.error("Lỗi truy vấn tài khoản khi đăng nhập:", dbErr);
+      return NextResponse.json(
+        { error: "Hệ thống đang không truy cập được dữ liệu tài khoản. Vui lòng thử lại sau." },
+        { status: 503 }
+      );
     }
 
     if (dbUser) {
@@ -79,19 +84,9 @@ export async function POST(request: Request) {
       return NextResponse.json(session);
     }
 
-    // Fallback: match against demoUsers if DB user is missing or DB query fails
-    const matchedDemo = demoUsers.find(
-      (u) =>
-        u.email.toLowerCase() === normalizedEmail.toLowerCase() ||
-        u.id.toLowerCase() === normalizedEmail.toLowerCase() ||
-        u.name.toLowerCase() === normalizedEmail.toLowerCase()
-    );
-
-    if (matchedDemo && matchedDemo.password.trim() === normalizedPassword) {
-      const session = createDemoSession(matchedDemo);
-      return NextResponse.json(session);
-    }
-
+    // Không tìm thấy tài khoản đang hoạt động trong database.
+    // Tài khoản đã bị xoá (deletedAt khác null) cũng rơi vào nhánh này nên
+    // mất quyền đăng nhập ngay sau khi bị xoá.
     return NextResponse.json(
       { error: "Tài khoản hoặc mật khẩu không đúng." },
       { status: 401 }
