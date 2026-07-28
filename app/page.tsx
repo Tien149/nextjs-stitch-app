@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { AppBrand } from "@/components/AppBrand";
 import { MonthInput } from "@/components/DateInput";
 import { branchScopeOptions, displayRoleName, updateDynamicBranches } from "@/lib/branch-labels";
 import {
@@ -60,7 +59,6 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState("");
   const [filterStatus, setFilterStatus] = useState("ALL");
   const [isCreateOpen, setIsCreateOpen] = useState(false);
-  const [activeMenu, setActiveMenu] = useState("Dashboard");
   const [dashboardPeriod, setDashboardPeriod] = useState(DEFAULT_DASHBOARD_PERIOD);
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [dashboardError, setDashboardError] = useState("");
@@ -157,7 +155,6 @@ export default function Home() {
 
       window.setTimeout(() => {
         setUser(parsedSession);
-        setActiveMenu(dashboardMenu.name);
         setGlobalBranch(initialBranch);
         setIsBranchLocked(locked);
         setIsCheckingAuth(false);
@@ -174,12 +171,6 @@ export default function Home() {
     setGlobalBranch(code);
     localStorage.setItem("global_branch_code", code);
     fetchDashboard(dashboardPeriod, code);
-  };
-
-  const handleLogout = () => {
-    localStorage.removeItem(SESSION_KEY);
-    document.cookie = `${SESSION_KEY}=; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT;`;
-    router.push("/login");
   };
 
   const expenseOf = (value: DashboardPnl) => value.cogs + value.payroll + value.depreciation + value.otherOpex + value.otherExpense;
@@ -274,15 +265,12 @@ export default function Home() {
     return matchesSearch && doc.status === filterStatus;
   });
 
-  const allowedMenuItems = user
-    ? appMenuItems.filter((item) => canAccessMenu(user.role, item))
-    : [];
   const canCreateDocuments = user ? canPerformAction(user.role, "create") : false;
   const canExportDocuments = user ? canPerformAction(user.role, "export") : false;
 
   if (isCheckingAuth) {
     return (
-      <div className="flex h-screen w-screen items-center justify-center bg-[#f1f5f9]">
+      <div className="flex h-screen w-full items-center justify-center bg-[#f1f5f9]">
         <div className="flex flex-col items-center gap-2">
           <div className="w-10 h-10 border-4 border-[#2563eb] border-t-transparent rounded-full animate-spin"></div>
           <p className="text-xs font-bold text-slate-500 uppercase tracking-widest mt-2">Đang tải...</p>
@@ -292,51 +280,9 @@ export default function Home() {
   }
 
   return (
-    <div className="flex min-h-screen bg-[#f1f5f9]">
-      {/* Sidebar */}
-      <aside className="w-64 h-screen fixed left-0 top-0 bg-[#0f172a] flex flex-col py-6 shadow-xl z-50 overflow-hidden">
-        <div className="px-6 mb-8 shrink-0">
-          <AppBrand compact />
-        </div>
-        <nav className="sidebar-scroll flex-1 min-h-0 space-y-1 overflow-y-auto overscroll-contain pr-1">
-          {allowedMenuItems.map((item) => (
-            <button
-              key={item.name}
-              onClick={() => {
-                if (item.href !== "/") {
-                  router.push(item.href);
-                  return;
-                }
-                setActiveMenu(item.name);
-              }}
-              className={`w-full flex items-center px-6 py-3 text-left transition-all active:scale-[0.98] duration-150 ${
-                activeMenu === item.name
-                  ? "bg-[#1e293b] text-white border-l-4 border-[#2563eb]"
-                  : "text-white/70 hover:bg-[#1e293b] hover:text-white"
-              }`}
-            >
-              <span className="material-symbols-outlined mr-3 text-[20px]">{item.icon}</span>
-              <span className="text-sm font-medium">{item.name}</span>
-            </button>
-          ))}
-        </nav>
-        <div className="shrink-0 pt-4 border-t border-slate-800 space-y-1 bg-[#0f172a]">
-          <button className="w-full flex items-center px-6 py-2 text-white/70 hover:bg-[#1e293b] hover:text-white transition-all text-left">
-            <span className="material-symbols-outlined mr-3 text-[20px]">help</span>
-            <span className="text-sm font-medium">Trợ giúp</span>
-          </button>
-          <button 
-            onClick={handleLogout}
-            className="w-full flex items-center px-6 py-2 text-white/70 hover:bg-[#1e293b] hover:text-white transition-all text-left"
-          >
-            <span className="material-symbols-outlined mr-3 text-[20px]">logout</span>
-            <span className="text-sm font-medium">Đăng xuất</span>
-          </button>
-        </div>
-      </aside>
-
+    <div className="min-h-screen bg-[#f1f5f9]">
       {/* Main Content Body */}
-      <div className="flex-1 pl-64 flex flex-col min-h-screen">
+      <div className="flex flex-col min-h-screen">
         {/* Header */}
         <header className="h-16 sticky top-0 bg-white flex justify-between items-center px-6 border-b border-slate-200 z-45 shadow-sm">
           <div className="flex items-center gap-6">

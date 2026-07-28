@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import InputValidationGuard from "@/components/InputValidationGuard";
+import { AppShell } from "@/components/AppShell";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -22,7 +23,7 @@ export default function RootLayout({
       </head>
       <body className="min-h-full flex flex-col bg-[#f1f5f9] text-[#171c1f]" suppressHydrationWarning>
         <InputValidationGuard />
-        {children}
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   );
