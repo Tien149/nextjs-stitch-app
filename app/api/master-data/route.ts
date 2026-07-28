@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getRequestSession, requireMenuAction } from "@/lib/api-auth";
 import { assertBranchAccess, getAllowedBranches } from "@/lib/accounting";
 import { prisma } from "@/lib/prisma";
+import { softDeleteRecord } from "@/lib/soft-delete";
 
 const defaultMasterData = [
   {
@@ -479,7 +480,7 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: "Không tìm thấy danh mục" }, { status: 404 });
     }
 
-    await prisma.masterDataItem.delete({ where: { id } });
+    await softDeleteRecord({ model: "MasterDataItem", id, session: auth.session });
     return NextResponse.json({ ok: true });
   } catch (error) {
     console.error("Error deleting master data:", error);

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { isAdmin, requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { assertBranchAccess, branchFilterForSession } from "@/lib/accounting";
-import { prisma } from "@/lib/prisma";
+import { prisma, prismaRaw } from "@/lib/prisma";
 
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -203,7 +203,9 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: "Trang thai so du khong hop le" }, { status: 400 });
     }
 
-    const balance = await prisma.$transaction(async (tx) => {
+    // Dùng client thô: nhánh "mở lại" phải xoá cứng Tài sản / Chi phí trả trước do chính
+    // số dư này sinh ra, nếu chỉ xoá mềm thì mã vẫn bị chiếm và lần chốt lại sẽ báo trùng mã.
+    const balance = await prismaRaw.$transaction(async (tx) => {
       // 1. Perform side effects
       if (isConfirmRequest) {
         if (current.balanceType === "INVENTORY") {

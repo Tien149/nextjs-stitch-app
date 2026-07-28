@@ -94,7 +94,7 @@ export async function GET(request: Request) {
     const warehouseCodes = allowedWarehouses.map((w) => w.code);
 
     const [items, balances, transactions, reportTransactions, recipes, warehouses, stocktakes] = await Promise.all([
-      prisma.inventoryItem.findMany({ include: { unitConversions: { orderBy: [{ isDefaultPurchase: "desc" }, { unitCode: "asc" }] } }, orderBy: { name: "asc" } }),
+      prisma.inventoryItem.findMany({ include: { unitConversions: { where: { deletedAt: null }, orderBy: [{ isDefaultPurchase: "desc" }, { unitCode: "asc" }] } }, orderBy: { name: "asc" } }),
       prisma.inventoryBalance.findMany({
         where: { warehouseCode: { in: warehouseCodes } },
         include: { item: true },
@@ -323,7 +323,7 @@ export async function POST(request: Request) {
       });
       await createOrUpdateConversion(item.id, unit, 1, "ĐVT cơ bản");
       if (purchaseUnit) await createOrUpdateConversion(item.id, purchaseUnit, conversionRate, cleanText(body.conversionNote));
-      const result = await prisma.inventoryItem.findUnique({ where: { id: item.id }, include: { unitConversions: true } });
+      const result = await prisma.inventoryItem.findUnique({ where: { id: item.id }, include: { unitConversions: { where: { deletedAt: null } } } });
       return NextResponse.json(result, { status: 201 });
     }
 

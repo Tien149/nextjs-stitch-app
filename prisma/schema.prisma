@@ -17,6 +17,11 @@ model Document {
   description String
   amount      Float
   status      String // PENDING, COMPLETED, DRAFT
+
+  deletedAt DateTime?
+  deletedBy String?
+
+  @@index([deletedAt])
 }
 
 model MasterDataItem {
@@ -38,11 +43,15 @@ model MasterDataItem {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@unique([type, code])
   @@index([type])
   @@index([status])
   @@index([partnerType])
   @@index([partnerGroup])
+  @@index([deletedAt])
 }
 
 model Deposit {
@@ -62,9 +71,13 @@ model Deposit {
   updatedAt       DateTime         @updatedAt
   histories       DepositHistory[]
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@index([status])
   @@index([partnerCode])
   @@index([branchCode])
+  @@index([deletedAt])
 }
 
 model DepositHistory {
@@ -106,10 +119,14 @@ model OpeningBalance {
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@index([period])
   @@index([branchCode])
   @@index([balanceType])
   @@index([status])
+  @@index([deletedAt])
 }
 
 model ImportBatch {
@@ -142,10 +159,14 @@ model ImportBatch {
   debtRecords           DebtRecord[]
   inventoryTransactions InventoryTransaction[]
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@index([importType])
   @@index([status])
   @@index([createdAt])
   @@index([fileChecksum])
+  @@index([deletedAt])
 }
 
 model ImportRow {
@@ -186,10 +207,14 @@ model BankStatementTransaction {
   importBatch ImportBatch           @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
   matches     ReconciliationMatch[]
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@unique([bankAccount, transactionCode])
   @@index([transactionDate])
   @@index([bankAccount])
   @@index([reconcileStatus])
+  @@index([deletedAt])
 }
 
 model RevenueImportRow {
@@ -214,12 +239,16 @@ model RevenueImportRow {
 
   importBatch ImportBatch @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@unique([branchCode, saleDate, externalRef])
   @@index([saleDate])
   @@index([branchCode])
   @@index([paymentMethod])
   @@index([productCode])
   @@index([inventoryStatus])
+  @@index([deletedAt])
 }
 
 model FinancialVoucher {
@@ -256,12 +285,16 @@ model FinancialVoucher {
   depositHistories DepositHistory[]
   debtSettlement   DebtSettlement?
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@index([voucherType])
   @@index([voucherDate])
   @@index([partnerCode])
   @@index([status])
   @@index([importBatchId])
   @@index([branchCode, voucherType, externalRef])
+  @@index([deletedAt])
 }
 
 model DebtRecord {
@@ -290,10 +323,14 @@ model DebtRecord {
   importBatch ImportBatch?     @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
   settlements DebtSettlement[]
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@index([branchCode])
   @@index([partnerCode])
   @@index([debtType, status])
   @@index([importBatchId])
+  @@index([deletedAt])
 }
 
 model DebtSettlement {
@@ -346,12 +383,16 @@ model AssetRecord {
   maintenances            AssetMaintenance[]
   damageReports           AssetDamageReport[]
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@index([branchCode])
   @@index([warehouseCode])
   @@index([departmentCode])
   @@index([assetGroup])
   @@index([status])
   @@index([sourcePurchaseOrderId])
+  @@index([deletedAt])
 }
 
 model ReconciliationMatch {
@@ -370,10 +411,14 @@ model ReconciliationMatch {
 
   bankTransaction BankStatementTransaction @relation(fields: [bankTransactionId], references: [id], onDelete: Cascade)
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@unique([bankTransactionId, targetType, targetId])
   @@index([targetType])
   @@index([status])
   @@index([createdAt])
+  @@index([deletedAt])
 }
 
 model InventoryItem {
@@ -399,8 +444,12 @@ model InventoryItem {
   orderLines       PurchaseOrderLine[]
   quoteLines       SupplierQuoteLine[]
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@index([itemType])
   @@index([status])
+  @@index([deletedAt])
 }
 
 model ItemUnitConversion {
@@ -416,9 +465,13 @@ model ItemUnitConversion {
 
   item InventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@unique([itemId, unitCode])
   @@index([unitCode])
   @@index([isDefaultPurchase])
+  @@index([deletedAt])
 }
 
 model StocktakeSession {
@@ -437,10 +490,14 @@ model StocktakeSession {
 
   lines StocktakeLine[]
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@index([branchCode])
   @@index([warehouseCode])
   @@index([status])
   @@index([stocktakeDate])
+  @@index([deletedAt])
 }
 
 model StocktakeLine {
@@ -493,11 +550,15 @@ model InventoryTransaction {
   importBatch ImportBatch?               @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
   lines       InventoryTransactionLine[]
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@index([transactionType])
   @@index([transactionDate])
   @@index([warehouseCode])
   @@index([toWarehouseCode])
   @@index([importBatchId])
+  @@index([deletedAt])
 }
 
 model InventoryTransactionLine {
@@ -539,9 +600,13 @@ model PurchaseRequest {
   quotes SupplierQuote[]
   orders PurchaseOrder[]
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@index([status])
   @@index([branchCode])
   @@index([departmentCode])
+  @@index([deletedAt])
 }
 
 model PurchaseRequestLine {
@@ -576,8 +641,12 @@ model SupplierQuote {
   request PurchaseRequest     @relation(fields: [requestId], references: [id], onDelete: Cascade)
   lines   SupplierQuoteLine[]
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@unique([requestId, supplierCode])
   @@index([requestId])
+  @@index([deletedAt])
 }
 
 model SupplierQuoteLine {
@@ -618,10 +687,14 @@ model PurchaseOrder {
   lines   PurchaseOrderLine[]
   payable SupplierPayable?
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@index([status])
   @@index([supplierCode])
   @@index([requestId])
   @@index([departmentCode])
+  @@index([deletedAt])
 }
 
 model PurchaseOrderLine {
@@ -673,8 +746,12 @@ model Recipe {
 
   lines RecipeLine[]
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@index([productCode])
   @@index([status])
+  @@index([deletedAt])
 }
 
 model RecipeLine {
@@ -727,9 +804,13 @@ model AssetMaintenance {
 
   asset AssetRecord @relation(fields: [assetId], references: [id], onDelete: Cascade)
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@index([scheduledDate])
   @@index([linkedWorkItemId])
   @@index([status])
+  @@index([deletedAt])
 }
 
 model AssetDamageReport {
@@ -752,9 +833,13 @@ model AssetDamageReport {
 
   asset AssetRecord @relation(fields: [assetId], references: [id], onDelete: Cascade)
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@index([status])
   @@index([reportedDate])
   @@index([linkedWorkItemId])
+  @@index([deletedAt])
 }
 
 model CashbookAdjustment {
@@ -769,8 +854,12 @@ model CashbookAdjustment {
   createdBy       String?
   createdAt       DateTime @default(now())
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@index([entryDate])
   @@index([moneySourceCode])
+  @@index([deletedAt])
 }
 
 model MoneyTransfer {
@@ -792,11 +881,15 @@ model MoneyTransfer {
 
   importBatch ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@index([transferDate])
   @@index([branchCode])
   @@index([status])
   @@index([importBatchId])
   @@index([branchCode, externalRef])
+  @@index([deletedAt])
 }
 
 model Accrual {
@@ -819,9 +912,13 @@ model Accrual {
 
   schedules AccrualSchedule[]
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@index([status])
   @@index([startPeriod])
   @@index([sourceType, sourceId])
+  @@index([deletedAt])
 }
 
 model AccrualSchedule {
@@ -894,8 +991,12 @@ model AccountingAccount {
 
   lines JournalLine[]
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@index([accountType])
   @@index([reportGroup])
+  @@index([deletedAt])
 }
 
 model JournalEntry {
@@ -915,10 +1016,14 @@ model JournalEntry {
 
   lines JournalLine[]
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@unique([sourceType, sourceId])
   @@index([period])
   @@index([branchCode])
   @@index([status])
+  @@index([deletedAt])
 }
 
 model JournalLine {
@@ -952,8 +1057,12 @@ model PostingRule {
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@index([sourceType])
   @@index([status])
+  @@index([deletedAt])
 }
 
 model PayrollImportRow {
@@ -976,10 +1085,14 @@ model PayrollImportRow {
 
   importBatch ImportBatch @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@unique([period, employeeCode, branchCode])
   @@index([period])
   @@index([branchCode])
   @@index([departmentCode])
+  @@index([deletedAt])
 }
 
 model WorkItem {
@@ -1012,11 +1125,15 @@ model WorkItem {
   comments       WorkComment[]
   attachments    WorkAttachment[]
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@index([branchCode])
   @@index([departmentCode])
   @@index([linkedModule, linkedId])
   @@index([status])
   @@index([dueDate])
+  @@index([deletedAt])
 }
 
 model WorkItemHistory {
@@ -1047,8 +1164,12 @@ model WorkChecklistItem {
 
   workItem WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@index([workItemId, position])
   @@index([isDone])
+  @@index([deletedAt])
 }
 
 model WorkComment {
@@ -1063,7 +1184,11 @@ model WorkComment {
 
   workItem WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@index([workItemId, createdAt])
+  @@index([deletedAt])
 }
 
 model WorkAttachment {
@@ -1078,7 +1203,11 @@ model WorkAttachment {
 
   workItem WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@index([workItemId, createdAt])
+  @@index([deletedAt])
 }
 
 model ForecastAssumption {
@@ -1093,9 +1222,13 @@ model ForecastAssumption {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@unique([period, branchCode, scenario, assumptionType])
   @@index([period])
   @@index([scenario])
+  @@index([deletedAt])
 }
 
 model ReportTarget {
@@ -1107,8 +1240,12 @@ model ReportTarget {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@unique([period, branchCode, metric])
   @@index([period])
+  @@index([deletedAt])
 }
 
 model Role {
@@ -1119,6 +1256,11 @@ model Role {
   users      User[]
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
+
+  deletedAt DateTime?
+  deletedBy String?
+
+  @@index([deletedAt])
 }
 
 model User {
@@ -1134,7 +1276,11 @@ model User {
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 
+  deletedAt DateTime?
+  deletedBy String?
+
   @@index([roleId])
+  @@index([deletedAt])
 }
 
 model UserBranchAccess {

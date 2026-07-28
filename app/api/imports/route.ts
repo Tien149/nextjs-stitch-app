@@ -247,13 +247,13 @@ export async function GET(request: Request) {
       const batch = await prisma.importBatch.findFirst({
         where: { id: batchId, importType, ...(templateCode ? { templateCode } : {}), ...branchWhere },
         include: {
-          bankTransactions: true,
-          revenueRows: true,
-          payrollRows: true,
+          bankTransactions: { where: { deletedAt: null } },
+          revenueRows: { where: { deletedAt: null } },
+          payrollRows: { where: { deletedAt: null } },
           importRows: { orderBy: [{ sheetName: "asc" }, { sourceRowNumber: "asc" }] },
-          vouchers: true,
-          moneyTransfers: true,
-          debtRecords: true,
+          vouchers: { where: { deletedAt: null } },
+          moneyTransfers: { where: { deletedAt: null } },
+          debtRecords: { where: { deletedAt: null } },
         },
       });
       if (!batch) return NextResponse.json({ error: "Không tìm thấy batch import" }, { status: 404 });

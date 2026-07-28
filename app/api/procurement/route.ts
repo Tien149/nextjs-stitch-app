@@ -53,7 +53,7 @@ export async function GET(request: Request) {
         where: { ...branchFilter },
         include: {
           lines: { include: { item: true } },
-          quotes: { include: { lines: { include: { item: true } } }, orderBy: { totalAmount: "asc" } },
+          quotes: { where: { deletedAt: null }, include: { lines: { include: { item: true } } }, orderBy: { totalAmount: "asc" } },
         },
         orderBy: { createdAt: "desc" },
         take: 100,

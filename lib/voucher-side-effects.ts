@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/custom-client";
+import type { TxClient } from "@/lib/prisma";
 import { addPeriod } from "@/lib/phase3";
 
 type VoucherForSideEffects = {
@@ -22,7 +23,7 @@ type VoucherForSideEffects = {
 };
 
 export async function applyVoucherSideEffects(
-  tx: Prisma.TransactionClient,
+  tx: TxClient,
   voucher: VoucherForSideEffects,
   actor: string,
 ) {

@@ -1,20 +1,20 @@
 import { NextResponse } from "next/server";
 import type { Prisma } from "@prisma/custom-client";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
-import { prisma } from "@/lib/prisma";
+import { prisma, type TxClient } from "@/lib/prisma";
 import { addPeriod, apiError, businessError, cleanText, isPeriodLocked, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
 import { assertBranchAccess, requestedBranch } from "@/lib/accounting";
 
 const menuHref = "/assets";
 
-async function nextPaymentVoucherCode(tx: Prisma.TransactionClient) {
+async function nextPaymentVoucherCode(tx: TxClient) {
   const now = new Date();
   const ym = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}`;
   const count = await tx.financialVoucher.count({ where: { voucherType: "PAYMENT" } });
   return `PC-${ym}-${String(count + 1).padStart(3, "0")}`;
 }
 
-async function defaultMoneySource(tx: Prisma.TransactionClient, branchCode: string) {
+async function defaultMoneySource(tx: TxClient, branchCode: string) {
   const source = await tx.masterDataItem.findFirst({
     where: { type: "MONEY_SOURCE", status: "ACTIVE", branch: { in: [branchCode, "ALL"] } },
     orderBy: { code: "asc" },
@@ -22,7 +22,7 @@ async function defaultMoneySource(tx: Prisma.TransactionClient, branchCode: stri
   return source?.code || (branchCode === "HN" ? "POS_HN" : "TM_HCM");
 }
 
-async function nextWorkItemCode(tx: Prisma.TransactionClient) {
+async function nextWorkItemCode(tx: TxClient) {
   const count = await tx.workItem.count();
   return `CV-${new Date().getFullYear()}-${String(count + 1).padStart(4, "0")}`;
 }

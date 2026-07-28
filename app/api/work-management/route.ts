@@ -3,6 +3,7 @@ import type { Prisma } from "@prisma/custom-client";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
 import { prisma } from "@/lib/prisma";
+import { softDeleteRecord } from "@/lib/soft-delete";
 import { apiError, businessError, cleanText, normalizePeriod } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import type { DemoSession } from "@/lib/auth-demo";
@@ -13,9 +14,9 @@ const priorities = ["LOW", "MEDIUM", "HIGH", "URGENT"];
 const maxAttachmentSize = 2_000_000;
 
 const detailInclude = {
-  checklistItems: { orderBy: [{ position: "asc" as const }, { createdAt: "asc" as const }] },
-  comments: { orderBy: { createdAt: "desc" as const } },
-  attachments: { orderBy: { createdAt: "desc" as const } },
+  checklistItems: { where: { deletedAt: null }, orderBy: [{ position: "asc" as const }, { createdAt: "asc" as const }] },
+  comments: { where: { deletedAt: null }, orderBy: { createdAt: "desc" as const } },
+  attachments: { where: { deletedAt: null }, orderBy: { createdAt: "desc" as const } },
   histories: { orderBy: { createdAt: "desc" as const } },
 };
 
@@ -115,9 +116,9 @@ export async function GET(request: Request) {
       prisma.workItem.findMany({
         where,
         include: {
-          checklistItems: { orderBy: { position: "asc" } },
-          attachments: { select: { id: true } },
-          comments: { select: { id: true } },
+          checklistItems: { where: { deletedAt: null }, orderBy: { position: "asc" } },
+          attachments: { where: { deletedAt: null }, select: { id: true } },
+          comments: { where: { deletedAt: null }, select: { id: true } },
           histories: { orderBy: { createdAt: "desc" }, take: 3 },
         },
         orderBy: [{ dueDate: "asc" }, { createdAt: "desc" }],
@@ -251,7 +252,7 @@ export async function PATCH(request: Request) {
     if (!id) businessError("Thiếu mã công việc");
     const item = await prisma.workItem.findUnique({
       where: { id },
-      include: { checklistItems: true, attachments: true },
+      include: { checklistItems: { where: { deletedAt: null } }, attachments: { where: { deletedAt: null } } },
     });
     if (!item) businessError("Không tìm thấy công việc");
     ensureBranchAccess(auth.session, item.branchCode);
@@ -320,7 +321,7 @@ export async function PATCH(request: Request) {
       const checklistId = cleanText(body.checklistId);
       const checklist = item.checklistItems.find((row) => row.id === checklistId);
       if (!checklist) businessError("Không tìm thấy dòng checklist");
-      await prisma.workChecklistItem.delete({ where: { id: checklistId } });
+      await softDeleteRecord({ model: "WorkChecklistItem", id: checklistId, session: auth.session });
       await prisma.workItemHistory.create({
         data: { workItemId: id, action, actor: auth.session.name, note: checklist.title },
       });
@@ -365,7 +366,7 @@ export async function PATCH(request: Request) {
       const attachmentId = cleanText(body.attachmentId);
       const attachment = item.attachments.find((row) => row.id === attachmentId);
       if (!attachment) businessError("Không tìm thấy tệp đính kèm");
-      await prisma.workAttachment.delete({ where: { id: attachmentId } });
+      await softDeleteRecord({ model: "WorkAttachment", id: attachmentId, session: auth.session });
       await prisma.workItemHistory.create({
         data: { workItemId: id, action, actor: auth.session.name, note: attachment.fileName },
       });

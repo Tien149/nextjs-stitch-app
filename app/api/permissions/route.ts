@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
+import { softDeleteRecord } from "@/lib/soft-delete";
 
 export async function GET(request: Request) {
   try {
@@ -18,7 +19,7 @@ export async function GET(request: Request) {
       prisma.role.findMany({
         include: {
           _count: {
-            select: { users: true },
+            select: { users: { where: { deletedAt: null } } },
           },
         },
         orderBy: { createdAt: "asc" },
@@ -174,7 +175,7 @@ export async function DELETE(request: Request) {
         }
       }
 
-      await prisma.user.delete({ where: { id: userId } });
+      await softDeleteRecord({ model: "User", id: userId, session: auth.session });
       return NextResponse.json({ ok: true });
     }
 
@@ -187,7 +188,7 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: `Không thể xóa vai trò này vì đang có ${userCount} người dùng sử dụng` }, { status: 400 });
     }
 
-    await prisma.role.delete({ where: { id: roleId } });
+    await softDeleteRecord({ model: "Role", id: roleId, session: auth.session });
     return NextResponse.json({ ok: true });
   } catch (error) {
     console.error("Error deleting role:", error);

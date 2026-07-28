@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { Prisma } from "@prisma/custom-client";
-import { prisma } from "@/lib/prisma";
+import { prisma, prismaRaw, type RawTxClient, type TxClient } from "@/lib/prisma";
 import { addPeriod, periodFromDate } from "@/lib/phase3";
 import { type ImportType } from "@/lib/import-templates";
 import { type ParsedImportRow } from "@/lib/import-parser";
@@ -49,7 +49,7 @@ function monthBounds(value: Date) {
 }
 
 async function nextVoucherCode(
-  tx: Prisma.TransactionClient,
+  tx: TxClient,
   voucherType: string,
   voucherDate: Date,
 ) {
@@ -88,7 +88,7 @@ function parseStoredJson(value: string | null) {
   }
 }
 
-async function assertPeriodOpen(tx: Prisma.TransactionClient, period: string, branchCode?: string | null) {
+async function assertPeriodOpen(tx: RawTxClient, period: string, branchCode?: string | null) {
   if (!period || !branchCode) return;
   const [branchPeriod, allBranchPeriod] = await Promise.all([
     tx.accountingPeriod.findUnique({ where: { period_branchCode: { period, branchCode } } }),
@@ -99,7 +99,7 @@ async function assertPeriodOpen(tx: Prisma.TransactionClient, period: string, br
   }
 }
 
-async function assertImportPeriodsOpen(tx: Prisma.TransactionClient, batchId: string, importType: string) {
+async function assertImportPeriodsOpen(tx: RawTxClient, batchId: string, importType: string) {
   if (importType === "BANK_STATEMENT") {
     const rows = await tx.bankStatementTransaction.findMany({ where: { importBatchId: batchId }, select: { transactionDate: true, branchCode: true } });
     for (const row of rows) await assertPeriodOpen(tx, periodFromDate(row.transactionDate), row.branchCode);
@@ -138,7 +138,7 @@ async function assertImportPeriodsOpen(tx: Prisma.TransactionClient, batchId: st
 }
 
 async function createStagingRows(
-  tx: Prisma.TransactionClient,
+  tx: TxClient,
   batchId: string,
   importType: ImportType,
   rows: ParsedImportRow[],
@@ -159,7 +159,7 @@ async function createStagingRows(
 }
 
 async function setImportTarget(
-  tx: Prisma.TransactionClient,
+  tx: TxClient,
   staging: Map<string, string>,
   row: ParsedImportRow,
   targetType: string,
@@ -977,7 +977,7 @@ export async function commitImport(input: CommitInput) {
   return batchResult;
 }
 
-async function rollbackBankStatement(tx: Prisma.TransactionClient, batchId: string) {
+async function rollbackBankStatement(tx: RawTxClient, batchId: string) {
   const lockedRows = await tx.bankStatementTransaction.count({
     where: {
       importBatchId: batchId,
@@ -988,7 +988,7 @@ async function rollbackBankStatement(tx: Prisma.TransactionClient, batchId: stri
   await tx.bankStatementTransaction.deleteMany({ where: { importBatchId: batchId } });
 }
 
-async function rollbackRevenue(tx: Prisma.TransactionClient, batchId: string) {
+async function rollbackRevenue(tx: RawTxClient, batchId: string) {
   await rollbackInventoryTransactions(tx, batchId);
   const rows = await tx.revenueImportRow.findMany({ where: { importBatchId: batchId }, select: { id: true } });
   const ids = rows.map((row) => row.id);
@@ -998,7 +998,7 @@ async function rollbackRevenue(tx: Prisma.TransactionClient, batchId: string) {
   await tx.revenueImportRow.deleteMany({ where: { importBatchId: batchId } });
 }
 
-async function rollbackPayroll(tx: Prisma.TransactionClient, batchId: string) {
+async function rollbackPayroll(tx: RawTxClient, batchId: string) {
   const rows = await tx.payrollImportRow.findMany({ where: { importBatchId: batchId }, select: { id: true } });
   const ids = rows.map((row) => row.id);
   if (ids.length > 0) {
@@ -1007,7 +1007,7 @@ async function rollbackPayroll(tx: Prisma.TransactionClient, batchId: string) {
   await tx.payrollImportRow.deleteMany({ where: { importBatchId: batchId } });
 }
 
-async function rollbackVouchers(tx: Prisma.TransactionClient, batchId: string) {
+async function rollbackVouchers(tx: RawTxClient, batchId: string) {
   const vouchers = await tx.financialVoucher.findMany({ where: { importBatchId: batchId }, select: { id: true, code: true } });
   const voucherIds = vouchers.map((voucher) => voucher.id);
   if (voucherIds.length === 0) return;
@@ -1071,11 +1071,11 @@ async function rollbackVouchers(tx: Prisma.TransactionClient, batchId: string) {
   await tx.financialVoucher.deleteMany({ where: { id: { in: voucherIds } } });
 }
 
-async function rollbackTransfers(tx: Prisma.TransactionClient, batchId: string) {
+async function rollbackTransfers(tx: RawTxClient, batchId: string) {
   await tx.moneyTransfer.deleteMany({ where: { importBatchId: batchId } });
 }
 
-async function rollbackDebtOpening(tx: Prisma.TransactionClient, batchId: string) {
+async function rollbackDebtOpening(tx: RawTxClient, batchId: string) {
   const debts = await tx.debtRecord.findMany({ where: { importBatchId: batchId }, select: { id: true, code: true } });
   const debtIds = debts.map((debt) => debt.id);
   if (debtIds.length === 0) return;
@@ -1088,7 +1088,7 @@ async function rollbackDebtOpening(tx: Prisma.TransactionClient, batchId: string
   await tx.debtRecord.deleteMany({ where: { id: { in: debtIds } } });
 }
 
-async function rollbackMasterData(tx: Prisma.TransactionClient, batchId: string) {
+async function rollbackMasterData(tx: RawTxClient, batchId: string) {
   const rows = await tx.importRow.findMany({ where: { importBatchId: batchId, targetType: "MASTER_DATA" }, select: { targetId: true } });
   const ids = rows.map((row) => row.targetId).filter((id): id is string => Boolean(id));
   if (ids.length === 0) return;
@@ -1105,7 +1105,7 @@ async function rollbackMasterData(tx: Prisma.TransactionClient, batchId: string)
   });
 }
 
-async function rollbackInventoryItems(tx: Prisma.TransactionClient, batchId: string) {
+async function rollbackInventoryItems(tx: RawTxClient, batchId: string) {
   const rows = await tx.importRow.findMany({ where: { importBatchId: batchId, targetType: "INVENTORY_ITEM" }, select: { targetId: true } });
   const ids = rows.map((row) => row.targetId).filter((id): id is string => Boolean(id));
   if (ids.length === 0) return;
@@ -1123,7 +1123,7 @@ async function rollbackInventoryItems(tx: Prisma.TransactionClient, batchId: str
 }
 
 async function adjustInventoryBalanceForRollback(
-  tx: Prisma.TransactionClient,
+  tx: RawTxClient,
   itemId: string,
   warehouseCode: string,
   quantityDelta: number,
@@ -1138,7 +1138,7 @@ async function adjustInventoryBalanceForRollback(
   }
 }
 
-async function rollbackInventoryTransactions(tx: Prisma.TransactionClient, batchId: string) {
+async function rollbackInventoryTransactions(tx: RawTxClient, batchId: string) {
   const transactions = await tx.inventoryTransaction.findMany({
     where: { importBatchId: batchId },
     include: { lines: true },
@@ -1159,7 +1159,7 @@ async function rollbackInventoryTransactions(tx: Prisma.TransactionClient, batch
   await tx.inventoryTransaction.deleteMany({ where: { importBatchId: batchId } });
 }
 
-async function rollbackBom(tx: Prisma.TransactionClient, batchId: string) {
+async function rollbackBom(tx: RawTxClient, batchId: string) {
   const targets = await tx.importRow.findMany({
     where: { importBatchId: batchId, targetType: "BOM", targetId: { not: null } },
     select: { targetId: true },
@@ -1180,7 +1180,7 @@ async function rollbackBom(tx: Prisma.TransactionClient, batchId: string) {
   }
 }
 
-async function rollbackStocktake(tx: Prisma.TransactionClient, batchId: string) {
+async function rollbackStocktake(tx: RawTxClient, batchId: string) {
   await rollbackInventoryTransactions(tx, batchId);
   const targets = await tx.importRow.findMany({
     where: { importBatchId: batchId, targetType: "STOCKTAKE", targetId: { not: null } },
@@ -1192,7 +1192,7 @@ async function rollbackStocktake(tx: Prisma.TransactionClient, batchId: string) 
   }
 }
 
-async function rollbackOpeningBalances(tx: Prisma.TransactionClient, batchId: string) {
+async function rollbackOpeningBalances(tx: RawTxClient, batchId: string) {
   const rows = await tx.importRow.findMany({ where: { importBatchId: batchId }, select: { normalizedJson: true } });
   const openingFilters: Prisma.OpeningBalanceWhereInput[] = [];
   for (const row of rows) {
@@ -1270,7 +1270,10 @@ async function rollbackOpeningBalances(tx: Prisma.TransactionClient, batchId: st
 }
 
 export async function rollbackImportBatch(input: RollbackInput) {
-  const result = await prisma.$transaction(async (tx) => {
+  // Rollback là hoàn tác một lần import máy sinh, không phải người dùng xoá dữ liệu:
+  // phải xoá cứng để giải phóng các mã unique, nếu không import lại cùng file sẽ báo trùng mã.
+  // Vì vậy dùng prismaRaw (bỏ qua lớp xoá mềm) và mọi thao tác nằm gọn trong 1 transaction.
+  const result = await prismaRaw.$transaction(async (tx) => {
     const batch = await tx.importBatch.findUnique({ where: { id: input.batchId } });
     if (!batch) throw new Error("Không tìm thấy batch import");
     if (!["COMMITTED", "APPROVED", "COMMITTED_WITH_ERRORS"].includes(batch.status)) {
