@@ -76,7 +76,12 @@ export const TRASH_ENTITIES: TrashEntity[] = [
   { model: "Role", label: "Vai trò", module: "/permissions", codeField: "name", titleField: "name" },
 
   { model: "ImportBatch", label: "Lô import", module: "/imports", codeField: "templateCode", titleField: "fileName", branchField: "branchCode" },
-  { model: "BankStatementTransaction", label: "Giao dịch sao kê", module: "/imports", codeField: "transactionCode", titleField: "description", branchField: "branchCode" },
+  {
+    model: "BankStatementTransaction", label: "Giao dịch sao kê", module: "/imports", codeField: "transactionCode", titleField: "description", branchField: "branchCode",
+    // Xoá giao dịch sao kê thì các cặp đối soát trỏ vào nó cũng phải ẩn theo,
+    // nếu không màn hình Đối soát sẽ còn lại những cặp mồ côi.
+    cascade: [{ model: "ReconciliationMatch", foreignKey: "bankTransactionId" }],
+  },
   { model: "RevenueImportRow", label: "Dòng doanh thu", module: "/imports", codeField: "externalRef", titleField: "revenueSource", branchField: "branchCode" },
   { model: "PayrollImportRow", label: "Dòng lương", module: "/imports", codeField: "employeeCode", titleField: "employeeName", branchField: "branchCode" },
   { model: "ReconciliationMatch", label: "Cặp đối soát", module: "/reconciliations", codeField: "targetCode", titleField: "note" },
