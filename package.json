@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "prisma generate && next build",
     "db:push": "prisma db push",
+    "db:clear-data": "npx ts-node scripts/clear_operational_data.ts",
     "deploy:vps": "git pull origin master && npm install && npx prisma db push && npm run build && (pm2 restart ecosystem.config.js || pm2 restart all)",
     "start": "next start",
     "lint": "eslint",
