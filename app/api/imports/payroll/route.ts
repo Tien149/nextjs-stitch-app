@@ -40,7 +40,7 @@ export async function GET(request: Request) {
     if (batchId) {
       const batch = await prisma.importBatch.findFirst({
         where: { id: batchId, importType },
-        include: { payrollRows: { where: { deletedAt: null }, orderBy: [{ period: "desc" }, { employeeCode: "asc" }] } },
+        include: { payrollRows: { orderBy: [{ period: "desc" }, { employeeCode: "asc" }] } },
       });
       if (!batch) return NextResponse.json({ error: "Không tìm thấy batch import" }, { status: 404 });
       return NextResponse.json(batch);
@@ -49,7 +49,7 @@ export async function GET(request: Request) {
       where: { importType },
       orderBy: { createdAt: "desc" },
       take: 20,
-      include: { _count: { select: { payrollRows: { where: { deletedAt: null } } } } },
+      include: { _count: { select: { payrollRows: true } } },
     }));
   } catch (error) {
     console.error("Error fetching payroll batches:", error);

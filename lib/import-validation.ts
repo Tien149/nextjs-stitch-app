@@ -355,7 +355,7 @@ export async function validateImportResult(
     select: { type: true, code: true, name: true, branch: true, status: true },
   });
   const inventoryItems = ["OPENING_BALANCE", "INVENTORY_TRANSACTION", "BOM", "STOCKTAKE", "REVENUE_POS"].includes(importType)
-    ? await prisma.inventoryItem.findMany({ select: { code: true, itemType: true, status: true, unit: true, unitConversions: { where: { deletedAt: null }, select: { unitCode: true, conversionRate: true } } } })
+    ? await prisma.inventoryItem.findMany({ select: { code: true, itemType: true, status: true, unit: true, unitConversions: { select: { unitCode: true, conversionRate: true } } } })
     : [];
   const inventoryBalances = importType === "INVENTORY_TRANSACTION"
     ? await prisma.inventoryBalance.findMany({ include: { item: { select: { code: true } } } })

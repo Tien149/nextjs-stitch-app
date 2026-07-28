@@ -153,7 +153,7 @@ export async function GET(request: Request) {
     const warehouseCodes = allowedWarehouses.map((w) => w.code);
 
     const [items, balances, transactions, reportTransactions, recipes, warehouses, stocktakes] = await Promise.all([
-      prisma.inventoryItem.findMany({ include: { unitConversions: { where: { deletedAt: null }, orderBy: [{ isDefaultPurchase: "desc" }, { unitCode: "asc" }] } }, orderBy: { name: "asc" } }),
+      prisma.inventoryItem.findMany({ include: { unitConversions: { orderBy: [{ isDefaultPurchase: "desc" }, { unitCode: "asc" }] } }, orderBy: { name: "asc" } }),
       prisma.inventoryBalance.findMany({
         where: { warehouseCode: { in: warehouseCodes } },
         include: { item: true },
@@ -368,7 +368,7 @@ export async function POST(request: Request) {
       });
       await createOrUpdateConversion(item.id, unit, 1, "ĐVT cơ bản");
       if (purchaseUnit) await createOrUpdateConversion(item.id, purchaseUnit, conversionRate, cleanText(body.conversionNote));
-      const result = await prisma.inventoryItem.findUnique({ where: { id: item.id }, include: { unitConversions: { where: { deletedAt: null } } } });
+      const result = await prisma.inventoryItem.findUnique({ where: { id: item.id }, include: { unitConversions: true } });
       return NextResponse.json(result, { status: 201 });
     }
 
@@ -655,7 +655,7 @@ export async function PATCH(request: Request) {
       if (minStock < 0) businessError("Tồn tối thiểu không được âm");
 
       const [postedLines, stockBalance] = await Promise.all([
-        prisma.inventoryTransactionLine.count({ where: { itemId, transaction: { deletedAt: null } } }),
+        prisma.inventoryTransactionLine.count({ where: { itemId } }),
         prisma.inventoryBalance.aggregate({ where: { itemId }, _sum: { quantity: true } }),
       ]);
       const onHand = stockBalance._sum.quantity || 0;
@@ -681,7 +681,7 @@ export async function PATCH(request: Request) {
           ...(body.status !== undefined ? { status: cleanText(body.status).toUpperCase() || "ACTIVE" } : {}),
           ...(body.note !== undefined ? { note: cleanText(body.note) || null } : {}),
         },
-        include: { unitConversions: { where: { deletedAt: null } } },
+        include: { unitConversions: true },
       });
       if (unit.toUpperCase() !== item.unit.toUpperCase()) {
         await createOrUpdateConversion(itemId, unit, 1, "ĐVT cơ bản");
@@ -904,7 +904,7 @@ export async function DELETE(request: Request) {
 
       const [balances, postedLines, recipeCount, openRequests, openOrders] = await Promise.all([
         prisma.inventoryBalance.findMany({ where: { itemId: id } }),
-        prisma.inventoryTransactionLine.count({ where: { itemId: id, transaction: { deletedAt: null } } }),
+        prisma.inventoryTransactionLine.count({ where: { itemId: id } }),
         prisma.recipe.count({ where: { lines: { some: { itemId: id } } } }),
         prisma.purchaseRequest.count({ where: { status: { in: openRequestStatuses }, lines: { some: { itemId: id } } } }),
         prisma.purchaseOrder.count({ where: { status: { in: openOrderStatuses }, lines: { some: { itemId: id } } } }),

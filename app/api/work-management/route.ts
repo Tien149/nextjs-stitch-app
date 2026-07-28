@@ -14,9 +14,9 @@ const priorities = ["LOW", "MEDIUM", "HIGH", "URGENT"];
 const maxAttachmentSize = 2_000_000;
 
 const detailInclude = {
-  checklistItems: { where: { deletedAt: null }, orderBy: [{ position: "asc" as const }, { createdAt: "asc" as const }] },
-  comments: { where: { deletedAt: null }, orderBy: { createdAt: "desc" as const } },
-  attachments: { where: { deletedAt: null }, orderBy: { createdAt: "desc" as const } },
+  checklistItems: { orderBy: [{ position: "asc" as const }, { createdAt: "asc" as const }] },
+  comments: { orderBy: { createdAt: "desc" as const } },
+  attachments: { orderBy: { createdAt: "desc" as const } },
   histories: { orderBy: { createdAt: "desc" as const } },
 };
 
@@ -116,9 +116,9 @@ export async function GET(request: Request) {
       prisma.workItem.findMany({
         where,
         include: {
-          checklistItems: { where: { deletedAt: null }, orderBy: { position: "asc" } },
-          attachments: { where: { deletedAt: null }, select: { id: true } },
-          comments: { where: { deletedAt: null }, select: { id: true } },
+          checklistItems: { orderBy: { position: "asc" } },
+          attachments: { select: { id: true } },
+          comments: { select: { id: true } },
           histories: { orderBy: { createdAt: "desc" }, take: 3 },
         },
         orderBy: [{ dueDate: "asc" }, { createdAt: "desc" }],
@@ -252,7 +252,7 @@ export async function PATCH(request: Request) {
     if (!id) businessError("Thiếu mã công việc");
     const item = await prisma.workItem.findUnique({
       where: { id },
-      include: { checklistItems: { where: { deletedAt: null } }, attachments: { where: { deletedAt: null } } },
+      include: { checklistItems: true, attachments: true },
     });
     if (!item) businessError("Không tìm thấy công việc");
     ensureBranchAccess(auth.session, item.branchCode);

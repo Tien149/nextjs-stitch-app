@@ -95,7 +95,7 @@ export async function GET(request: Request) {
         where: { ...branchFilter },
         include: {
           lines: { include: { item: true } },
-          quotes: { where: { deletedAt: null }, include: { lines: { include: { item: true } } }, orderBy: { totalAmount: "asc" } },
+          quotes: { include: { lines: { include: { item: true } } }, orderBy: { totalAmount: "asc" } },
         },
         orderBy: { createdAt: "desc" },
         take: 100,
@@ -353,7 +353,7 @@ export async function PATCH(request: Request) {
       if (!requestId) businessError("Thiếu PR cần sửa");
       const pr = await prisma.purchaseRequest.findUnique({
         where: { id: requestId },
-        include: { orders: { where: { deletedAt: null } } },
+        include: { orders: true },
       });
       if (!pr) businessError("Không tìm thấy yêu cầu mua hàng");
       assertBranchAccess(auth.session, pr.branchCode);
@@ -492,7 +492,7 @@ export async function PATCH(request: Request) {
       if (!quoteId) businessError("Thiếu báo giá cần sửa");
       const quote = await prisma.supplierQuote.findUnique({
         where: { id: quoteId },
-        include: { request: { include: { orders: { where: { deletedAt: null } } } } },
+        include: { request: { include: { orders: true } } },
       });
       if (!quote) businessError("Không tìm thấy báo giá");
       assertBranchAccess(auth.session, quote.request.branchCode);
@@ -664,7 +664,7 @@ export async function DELETE(request: Request) {
     if (["REQUEST", "PR", "PURCHASE_REQUEST", "PURCHASEREQUEST"].includes(type)) {
       const pr = await prisma.purchaseRequest.findUnique({
         where: { id },
-        include: { orders: { where: { deletedAt: null } } },
+        include: { orders: true },
       });
       if (!pr) businessError("Không tìm thấy đề nghị mua hàng");
       assertBranchAccess(auth.session, pr.branchCode);
@@ -700,7 +700,7 @@ export async function DELETE(request: Request) {
     if (["QUOTE", "SUPPLIER_QUOTE", "SUPPLIERQUOTE"].includes(type)) {
       const quote = await prisma.supplierQuote.findUnique({
         where: { id },
-        include: { request: { include: { orders: { where: { deletedAt: null } } } } },
+        include: { request: { include: { orders: true } } },
       });
       if (!quote) businessError("Không tìm thấy báo giá nhà cung cấp");
       assertBranchAccess(auth.session, quote.request.branchCode);

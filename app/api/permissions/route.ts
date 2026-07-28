@@ -19,7 +19,7 @@ export async function GET(request: Request) {
       prisma.role.findMany({
         include: {
           _count: {
-            select: { users: { where: { deletedAt: null } } },
+            select: { users: true },
           },
         },
         orderBy: { createdAt: "asc" },

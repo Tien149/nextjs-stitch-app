@@ -88,8 +88,8 @@ async function resolveStockLine(tx: Tx, line: StockLineInput, requireInputUnitCo
   const itemId = text(line.itemId);
   const itemCode = text(line.itemCode).toUpperCase();
   const item = itemId
-    ? await tx.inventoryItem.findUnique({ where: { id: itemId }, include: { unitConversions: { where: { deletedAt: null } } } })
-    : await tx.inventoryItem.findUnique({ where: { code: itemCode }, include: { unitConversions: { where: { deletedAt: null } } } });
+    ? await tx.inventoryItem.findUnique({ where: { id: itemId }, include: { unitConversions: true } })
+    : await tx.inventoryItem.findUnique({ where: { code: itemCode }, include: { unitConversions: true } });
 
   if (!item) stockError(`Khong tim thay mat hang ${itemCode || itemId}`);
   if (item.status !== "ACTIVE") stockError(`Mat hang ${item.code} dang ngung hoat dong`);

@@ -254,9 +254,11 @@ export async function listTrash(options: {
   limitPerModel?: number;
 }): Promise<TrashRow[]> {
   const limit = options.limitPerModel ?? 100;
-  const targets = options.models?.length
-    ? TRASH_ENTITIES.filter((entity) => options.models!.includes(entity.model))
-    : TRASH_ENTITIES;
+  const targets = (
+    options.models?.length
+      ? TRASH_ENTITIES.filter((entity) => options.models!.includes(entity.model))
+      : TRASH_ENTITIES
+  ).filter((entity) => isSoftDeletable(entity.model));
 
   const chunks = await Promise.all(
     targets.map(async (entity) => {
