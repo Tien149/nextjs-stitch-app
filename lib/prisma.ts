@@ -43,8 +43,17 @@ function clientKey(model: string): string {
   return model.charAt(0).toLowerCase() + model.slice(1);
 }
 
-function delegateOf(model: string) {
-  return (basePrisma as unknown as Record<string, any>)[clientKey(model)];
+/**
+ * Truy cập delegate theo tên model ở dạng động. Prisma không sinh kiểu cho việc
+ * tra cứu bằng chuỗi nên phải nới lỏng kiểu ở đúng một chỗ này.
+ */
+type AnyDelegate = {
+  update: (args: unknown) => Promise<unknown>;
+  updateMany: (args: unknown) => Promise<unknown>;
+};
+
+function delegateOf(model: string): AnyDelegate {
+  return (basePrisma as unknown as Record<string, AnyDelegate>)[clientKey(model)];
 }
 
 /**

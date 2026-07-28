@@ -1,4 +1,3 @@
-import { Prisma } from "@prisma/custom-client";
 import type { TxClient } from "@/lib/prisma";
 
 export const STOCK_TRANSACTION_TYPES = [

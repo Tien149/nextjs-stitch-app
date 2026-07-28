@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { SESSION_KEY, type DemoSession } from "@/lib/auth-demo";
+import { canPerformMenuAction, SESSION_KEY, type DemoSession } from "@/lib/auth-demo";
 
 type TrashRow = {
   id: string;
@@ -80,7 +80,8 @@ export function TrashPanel({
   }, [modelsKey]);
 
   useEffect(() => {
-    load();
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timer);
   }, [load]);
 
   const handleRestore = async (row: TrashRow) => {
@@ -103,6 +104,10 @@ export function TrashPanel({
       setBusyId(null);
     }
   };
+
+  /** Chỉ hiện nút Khôi phục khi vai trò có quyền xoá trên module gốc của bản ghi. */
+  const canRestore = (row: TrashRow) =>
+    Boolean(session && canPerformMenuAction(session.role, row.module, "delete"));
 
   const filtered = useMemo(() => {
     const key = keyword.trim().toLowerCase();
@@ -234,6 +239,11 @@ export function TrashPanel({
                     <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{formatDateTime(row.deletedAt)}</td>
                     <td className="px-4 py-3 text-slate-500">{row.deletedBy || "—"}</td>
                     <td className="px-4 py-3 text-right">
+                      {!canRestore(row) ? (
+                        <span className="text-xs text-slate-400" title="Vai trò của bạn không được khôi phục loại dữ liệu này">
+                          Chỉ xem
+                        </span>
+                      ) : (
                       <button
                         type="button"
                         disabled={busyId === row.id}
@@ -243,6 +253,7 @@ export function TrashPanel({
                         <span className="material-symbols-outlined text-base">restore_from_trash</span>
                         {busyId === row.id ? "Đang khôi phục..." : "Khôi phục"}
                       </button>
+                      )}
                     </td>
                   </tr>
                 ))}

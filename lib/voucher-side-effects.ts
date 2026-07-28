@@ -1,4 +1,3 @@
-import { Prisma } from "@prisma/custom-client";
 import type { TxClient } from "@/lib/prisma";
 import { addPeriod } from "@/lib/phase3";
 

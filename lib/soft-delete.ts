@@ -93,12 +93,32 @@ function clientKey(model: string): string {
   return model.charAt(0).toLowerCase() + model.slice(1);
 }
 
-function rawDelegate(model: string) {
-  return (prismaRaw as unknown as Record<string, any>)[clientKey(model)];
+/**
+ * Prisma không sinh kiểu cho việc tra cứu delegate bằng chuỗi tên model, nên các
+ * thao tác động dưới đây dùng một kiểu delegate tối giản thay vì `any`.
+ */
+type DynamicDelegate = {
+  findUnique: (args: unknown) => Promise<Record<string, unknown> | null>;
+  findFirst: (args: unknown) => Promise<Record<string, unknown> | null>;
+  findMany: (args: unknown) => Promise<Record<string, unknown>[]>;
+  count: (args: unknown) => Promise<number>;
+  update: (args: unknown) => Promise<unknown>;
+  updateMany: (args: unknown) => Promise<unknown>;
+};
+
+/** Đọc một cột dạng chuỗi từ bản ghi động, trả null nếu thiếu. */
+function fieldText(row: Record<string, unknown>, field?: string): string | null {
+  if (!field) return null;
+  const value = row[field];
+  return value === null || value === undefined ? null : String(value);
 }
 
-function liveDelegate(model: string) {
-  return (prisma as unknown as Record<string, any>)[clientKey(model)];
+function rawDelegate(model: string): DynamicDelegate {
+  return (prismaRaw as unknown as Record<string, DynamicDelegate>)[clientKey(model)];
+}
+
+function liveDelegate(model: string): DynamicDelegate {
+  return (prisma as unknown as Record<string, DynamicDelegate>)[clientKey(model)];
 }
 
 export class SoftDeleteError extends Error {
@@ -140,11 +160,11 @@ export async function softDeleteRecord({ model, id, session, reason }: ActionInp
   const deletedBy = session?.name || session?.email || null;
 
   await prismaRaw.$transaction(async (tx) => {
-    const txDelegate = (tx as unknown as Record<string, any>)[clientKey(model)];
+    const txDelegate = (tx as unknown as Record<string, DynamicDelegate>)[clientKey(model)];
     await txDelegate.update({ where: { id }, data: { deletedAt, deletedBy } });
 
     for (const child of entity?.cascade || []) {
-      const childDelegate = (tx as unknown as Record<string, any>)[clientKey(child.model)];
+      const childDelegate = (tx as unknown as Record<string, DynamicDelegate>)[clientKey(child.model)];
       await childDelegate.updateMany({
         where: { [child.foreignKey]: id, deletedAt: null },
         data: { deletedAt, deletedBy },
@@ -158,8 +178,8 @@ export async function softDeleteRecord({ model, id, session, reason }: ActionInp
     action: "SOFT_DELETE",
     entityType: model,
     entityId: id,
-    entityCode: entity?.codeField ? String(current[entity.codeField] ?? "") : null,
-    branchCode: entity?.branchField ? (current[entity.branchField] ?? null) : null,
+    entityCode: fieldText(current, entity?.codeField),
+    branchCode: fieldText(current, entity?.branchField),
     message: reason || null,
     metadata: { label: entity?.label, cascade: entity?.cascade?.map((c) => c.model) },
   });
@@ -178,11 +198,11 @@ export async function restoreRecord({ model, id, session }: ActionInput) {
   if (!current.deletedAt) throw new SoftDeleteError("Bản ghi này đang hoạt động, không cần khôi phục", 400);
 
   await prismaRaw.$transaction(async (tx) => {
-    const txDelegate = (tx as unknown as Record<string, any>)[clientKey(model)];
+    const txDelegate = (tx as unknown as Record<string, DynamicDelegate>)[clientKey(model)];
     await txDelegate.update({ where: { id }, data: { deletedAt: null, deletedBy: null } });
 
     for (const child of entity?.cascade || []) {
-      const childDelegate = (tx as unknown as Record<string, any>)[clientKey(child.model)];
+      const childDelegate = (tx as unknown as Record<string, DynamicDelegate>)[clientKey(child.model)];
       // Chỉ khôi phục con bị xoá cùng thời điểm với cha, tránh làm sống lại
       // những bản ghi con người dùng đã chủ động xoá riêng từ trước.
       await childDelegate.updateMany({
@@ -198,8 +218,8 @@ export async function restoreRecord({ model, id, session }: ActionInput) {
     action: "RESTORE",
     entityType: model,
     entityId: id,
-    entityCode: entity?.codeField ? String(current[entity.codeField] ?? "") : null,
-    branchCode: entity?.branchField ? (current[entity.branchField] ?? null) : null,
+    entityCode: fieldText(current, entity?.codeField),
+    branchCode: fieldText(current, entity?.branchField),
     metadata: { label: entity?.label },
   });
 
@@ -242,16 +262,16 @@ export async function listTrash(options: {
       });
 
       return rows.map(
-        (row: Record<string, any>): TrashRow => ({
-          id: row.id,
+        (row: Record<string, unknown>): TrashRow => ({
+          id: String(row.id),
           model: entity.model,
           label: entity.label,
           module: entity.module,
-          code: entity.codeField ? (row[entity.codeField] ?? null) : null,
-          title: entity.titleField ? (row[entity.titleField] ?? null) : null,
-          branchCode: entity.branchField ? (row[entity.branchField] ?? null) : null,
-          deletedAt: row.deletedAt,
-          deletedBy: row.deletedBy ?? null,
+          code: fieldText(row, entity.codeField),
+          title: fieldText(row, entity.titleField),
+          branchCode: fieldText(row, entity.branchField),
+          deletedAt: row.deletedAt as Date,
+          deletedBy: fieldText(row, "deletedBy"),
         }),
       );
     }),
@@ -289,7 +309,12 @@ export async function findDeletedByUnique(
     where: { ...where, deletedAt: { not: null } },
     select: { id: true, deletedAt: true, deletedBy: true },
   });
-  return row ?? null;
+  if (!row) return null;
+  return {
+    id: String(row.id),
+    deletedAt: row.deletedAt as Date,
+    deletedBy: fieldText(row, "deletedBy"),
+  };
 }
 
 /**
