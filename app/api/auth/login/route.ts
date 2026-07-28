@@ -58,7 +58,7 @@ export async function POST(request: Request) {
     if (dbUser) {
       if (dbUser.password.trim() !== normalizedPassword) {
         return NextResponse.json(
-          { error: "Sai tài khoản hoặc mật khẩu. Mật khẩu mặc định là: 123456" },
+          { error: "Tài khoản hoặc mật khẩu không đúng." },
           { status: 401 }
         );
       }
@@ -87,13 +87,13 @@ export async function POST(request: Request) {
         u.name.toLowerCase() === normalizedEmail.toLowerCase()
     );
 
-    if (matchedDemo) {
+    if (matchedDemo && matchedDemo.password.trim() === normalizedPassword) {
       const session = createDemoSession(matchedDemo);
       return NextResponse.json(session);
     }
 
     return NextResponse.json(
-      { error: "Sai tài khoản hoặc mật khẩu. Mật khẩu mặc định là: 123456" },
+      { error: "Tài khoản hoặc mật khẩu không đúng." },
       { status: 401 }
     );
   } catch (error) {

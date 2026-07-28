@@ -1,39 +1,39 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useState } from "react";
 import { AppBrand } from "@/components/AppBrand";
-import { displayRoleName } from "@/lib/branch-labels";
-import { canViewFinancialDashboard, demoUsers, getDefaultRouteForRole, SESSION_KEY } from "@/lib/auth-demo";
+import { canViewFinancialDashboard, getDefaultRouteForRole, SESSION_KEY } from "@/lib/auth-demo";
 
-type LoginBranch = { code: string; name: string };
+const highlights = [
+  {
+    icon: "point_of_sale",
+    title: "Doanh thu & POS",
+    desc: "Import doanh thu, đối soát sao kê ngân hàng theo từng cửa hàng.",
+  },
+  {
+    icon: "handshake",
+    title: "Công nợ & Tiền cọc",
+    desc: "Theo dõi công nợ đối tác, tiền cọc và tiến độ cấn trừ.",
+  },
+  {
+    icon: "inventory_2",
+    title: "Kho & Định lượng",
+    desc: "Quản lý tồn kho, công thức định lượng và giá vốn bình quân.",
+  },
+  {
+    icon: "monitoring",
+    title: "Báo cáo & BI",
+    desc: "P&L đa chiều, dòng tiền, ngân sách và bảng cân đối.",
+  },
+];
 
 export default function Login() {
-  const router = useRouter();
   const [userId, setUserId] = useState("");
-  const [quickSelect, setQuickSelect] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [branches, setBranches] = useState<LoginBranch[]>([]);
-  const [selectedBranch, setSelectedBranch] = useState("HCM");
-
-  useEffect(() => {
-    fetch("/api/branding")
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (data && Array.isArray(data.branches)) {
-          setBranches(data.branches);
-          if (data.branches.length > 0) {
-            const defaultBranch = (data.branches as LoginBranch[]).find((b) => b.code === "HCM") || data.branches[0];
-            setSelectedBranch(defaultBranch.code);
-          }
-        }
-      })
-      .catch((e) => console.error("Error loading branches for login:", e));
-  }, []);
 
   const handleLogin = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -49,23 +49,14 @@ export default function Login() {
 
       if (!response.ok) {
         const data = await response.json();
-        throw new Error(data.error || "Sai tài khoản hoặc mật khẩu. Mật khẩu mặc định là: 123456");
+        throw new Error(data.error || "Tài khoản hoặc mật khẩu không đúng.");
       }
 
       const session = await response.json();
-
-      if (session.role === "Quản lý" || session.role === "Kế toán công nợ") {
-        if (selectedBranch) {
-          const matchedBranch = branches.find((b) => b.code === selectedBranch);
-          session.allowedBranches = [selectedBranch];
-          session.branch = matchedBranch ? `Chủ cửa hàng - ${matchedBranch.name}` : `Chủ cửa hàng - ${selectedBranch}`;
-        }
-      }
-
       const sessionValue = JSON.stringify(session);
       localStorage.setItem(SESSION_KEY, sessionValue);
 
-      // Đồng bộ chi nhánh mặc định cho tài khoản vừa đăng nhập
+      // Đồng bộ chi nhánh mặc định theo phạm vi được cấp cho tài khoản
       if (session.allowedBranches?.includes("ALL")) {
         localStorage.setItem("global_branch_code", "ALL");
       } else if (session.allowedBranches?.length > 0) {
@@ -83,163 +74,91 @@ export default function Login() {
       const targetRoute = next && (next !== "/" || canViewFinancialDashboard(session.role)) ? next : defaultRoute;
       window.location.href = targetRoute;
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Có lỗi xảy ra");
+      setError(e instanceof Error ? e.message : "Không thể đăng nhập. Vui lòng thử lại.");
       setLoading(false);
     }
   };
 
-
   return (
-    <main className="min-h-screen grid bg-slate-100 text-slate-800 lg:grid-cols-[480px_1fr]">
-      <section className="bg-slate-950 text-white p-8 lg:p-10 flex flex-col justify-between">
-        <div>
+    <main className="min-h-screen grid grid-rows-[auto_1fr] bg-slate-100 text-slate-800 lg:grid-rows-[1fr] lg:grid-cols-[minmax(0,520px)_1fr]">
+      <section className="relative overflow-hidden bg-slate-950 text-white p-8 lg:p-10 flex flex-col justify-between">
+        <div className="pointer-events-none absolute -top-32 -left-24 h-80 w-80 rounded-full bg-blue-600/20 blur-3xl" />
+        <div className="pointer-events-none absolute bottom-0 right-0 h-72 w-72 translate-x-1/3 translate-y-1/3 rounded-full bg-indigo-500/10 blur-3xl" />
+
+        <div className="relative">
           <AppBrand />
 
-          <div className="mt-14 space-y-5">
-            <div className="border-l-4 border-blue-500 pl-4">
-              <p className="text-sm text-slate-400">Môi trường demo</p>
-              <h1 className="text-3xl font-bold mt-1">
-                Quản trị doanh thu, tiền cọc, số dư và import dữ liệu
-              </h1>
-            </div>
-            <p className="text-slate-300 leading-7">
-              Dùng để test nhanh các vai trò trong chuỗi vận hành: admin,
-              kế toán tổng hợp, kế toán công nợ, chủ cửa hàng và viewer chỉ xem.
+          <div className="mt-6 lg:mt-10 max-w-md">
+            <h1 className="text-2xl lg:text-4xl font-bold leading-tight">
+              Nền tảng quản trị tài chính &amp; vận hành chuỗi
+            </h1>
+            <p className="hidden lg:block text-slate-300 leading-7 mt-4">
+              Hợp nhất doanh thu, chi phí, công nợ, kho và tài sản trên một hệ thống duy nhất — số liệu
+              được kiểm soát theo từng cửa hàng và từng kỳ kế toán.
             </p>
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-3 text-xs text-slate-300 mt-10">
-          <div className="bg-slate-900 border border-slate-800 rounded-lg p-3">
-            <b className="text-white">Admin</b>
-            <br />
-            Cấu hình toàn bộ hệ thống
-          </div>
-          <div className="bg-slate-900 border border-slate-800 rounded-lg p-3">
-            <b className="text-white">Kế toán</b>
-            <br />
-            Danh mục, số dư, import POS
-          </div>
-          <div className="bg-slate-900 border border-slate-800 rounded-lg p-3">
-            <b className="text-white">Công nợ</b>
-            <br />
-            Tiền cọc, đối tác, sao kê
-          </div>
-          <div className="bg-slate-900 border border-slate-800 rounded-lg p-3">
-            <b className="text-white">Chủ cửa hàng</b>
-            <br />
-            Xem tình hình vận hành
-          </div>
+        <div className="relative hidden lg:grid sm:grid-cols-2 gap-3 mt-8">
+          {highlights.map((item) => (
+            <div key={item.title} className="rounded-xl border border-white/10 bg-white/5 p-4">
+              <span className="material-symbols-outlined text-blue-300 text-[22px]">{item.icon}</span>
+              <p className="font-bold text-sm mt-2">{item.title}</p>
+              <p className="text-xs text-slate-400 leading-5 mt-1">{item.desc}</p>
+            </div>
+          ))}
         </div>
+
+        <p className="relative hidden lg:block text-xs text-slate-500 mt-6">
+          Hệ thống nội bộ. Mọi truy cập đều được ghi nhận trong nhật ký hệ thống.
+        </p>
       </section>
 
       <section className="p-6 lg:p-10 flex items-center justify-center">
-        <div className="w-full max-w-xl bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
-          <div className="p-6 border-b border-slate-200">
-            <p className="text-sm text-blue-600 font-bold uppercase">Đăng nhập demo</p>
-            <h2 className="text-2xl font-bold mt-1">Chọn tài khoản để test quyền</h2>
-            <p className="text-sm text-slate-500 mt-2">
-              Mật khẩu chung cho tất cả tài khoản demo: <b>123456</b>
+        <div className="w-full max-w-md">
+          <div className="mb-8">
+            <h2 className="text-2xl font-bold text-slate-900">Đăng nhập</h2>
+            <p className="text-sm text-slate-500 mt-1.5">
+              Sử dụng tài khoản được cấp để truy cập hệ thống.
             </p>
           </div>
 
-          <form onSubmit={handleLogin} className="p-6 space-y-5">
+          <form onSubmit={handleLogin} className="space-y-5">
             <div>
-              <label className="text-sm font-bold text-slate-700">Chọn nhanh tài khoản test</label>
-              <select
-                value={quickSelect}
-                onChange={(event) => {
-                  const val = event.target.value;
-                  setQuickSelect(val);
-                  if (val) {
-                    const matched = demoUsers.find((u) => u.id === val);
-                    setUserId(matched?.email || val);
-                    setPassword("123456");
-                  }
-                }}
-                className="w-full mt-2 border border-slate-300 rounded-lg px-3 py-2.5 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
-              >
-                <option value="">-- Nhập tài khoản thủ công bên dưới --</option>
-                {demoUsers.map((user) => (
-                  <option key={user.id} value={user.id}>
-                    {user.name} ({displayRoleName(user.role)})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {(quickSelect === "quanly" || quickSelect === "congno") && branches.length > 0 && (
-              <div>
-                <label className="text-sm font-bold text-blue-700">Cửa hàng quản lý áp dụng</label>
-                <select
-                  value={selectedBranch}
-                  onChange={(event) => setSelectedBranch(event.target.value)}
-                  className="w-full mt-2 border border-blue-300 rounded-lg px-3 py-2.5 text-sm bg-blue-50/50 text-blue-900 font-semibold outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer transition animate-fade-in"
-                >
-                  {branches.map((b) => (
-                    <option key={b.code} value={b.code}>
-                      {b.name} ({b.code})
-                    </option>
-                  ))}
-                </select>
-                <p className="text-[10px] text-blue-600 mt-1.5 italic font-semibold">
-                  * Hệ thống sẽ tự động liên kết tài khoản Quản lý cho riêng Cửa hàng được chọn này.
-                </p>
-              </div>
-            )}
-
-            <div>
-              <label className="text-sm font-bold text-slate-700">Email hoặc Tên đăng nhập</label>
+              <label htmlFor="login-user" className="text-sm font-bold text-slate-700">
+                Email hoặc Tên đăng nhập
+              </label>
               <input
+                id="login-user"
                 type="text"
                 value={userId}
-                onChange={(event) => {
-                  const val = event.target.value;
-                  setUserId(val);
-                  const matchedDemo = demoUsers.find((u) => u.id === val || u.email === val);
-                  if (matchedDemo) {
-                    setQuickSelect(matchedDemo.id);
-                  } else {
-                    setQuickSelect("");
-                  }
-                }}
-                onPaste={(event) => {
-                  const pasted = event.clipboardData.getData("text");
-                  if (pasted) {
-                    setUserId(pasted);
-                  }
-                }}
-                className="w-full mt-2 border border-slate-300 rounded-lg px-3 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 font-semibold"
-                placeholder="Nhập email hoặc tên tài khoản của bạn..."
+                onChange={(event) => setUserId(event.target.value)}
+                autoComplete="username"
+                className="w-full mt-2 border border-slate-300 rounded-lg px-3 py-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 font-semibold"
+                placeholder="Nhập email hoặc tên đăng nhập"
                 required
               />
             </div>
 
             <div>
-              <label className="text-sm font-bold text-slate-700">Mật khẩu</label>
+              <label htmlFor="login-password" className="text-sm font-bold text-slate-700">
+                Mật khẩu
+              </label>
               <div className="relative mt-2">
                 <input
+                  id="login-password"
                   type={showPassword ? "text" : "password"}
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
-                  onPaste={(event) => {
-                    const pasted = event.clipboardData.getData("text");
-                    if (pasted) {
-                      setPassword(pasted);
-                    }
-                  }}
                   autoComplete="current-password"
-                  className="w-full border border-slate-300 rounded-lg px-3 py-3 pr-11 text-sm outline-none focus:ring-2 focus:ring-blue-500 font-semibold"
-                  placeholder="Mật khẩu của bạn..."
+                  className="w-full border border-slate-300 rounded-lg px-3 py-3 pr-11 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 font-semibold"
+                  placeholder="Nhập mật khẩu"
                   required
                 />
                 <button
                   type="button"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setShowPassword((value) => !value);
-                  }}
+                  title={showPassword ? "Ẩn mật khẩu" : "Hiện mật khẩu"}
+                  onClick={() => setShowPassword((value) => !value)}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 p-1 flex items-center justify-center"
                 >
                   <span className="material-symbols-outlined text-xl pointer-events-none">
@@ -260,31 +179,24 @@ export default function Login() {
             </label>
 
             {error && (
-              <p className="text-sm bg-rose-50 border border-rose-200 text-rose-700 rounded-lg px-3 py-2">
+              <p className="text-sm bg-rose-50 border border-rose-200 text-rose-700 rounded-lg px-3 py-2.5 flex items-start gap-2">
+                <span className="material-symbols-outlined text-lg shrink-0">error</span>
                 {error}
               </p>
             )}
 
             <button
               disabled={loading}
-              className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg py-3 font-bold flex items-center justify-center gap-2"
+              className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg py-3 font-bold flex items-center justify-center gap-2 transition-colors"
             >
               <span className="material-symbols-outlined text-xl">login</span>
               {loading ? "Đang đăng nhập..." : "Đăng nhập"}
             </button>
           </form>
 
-          <div className="bg-slate-50 border-t border-slate-200 p-5">
-            <p className="text-xs font-bold text-slate-500 uppercase mb-3">Gợi ý test nhanh</p>
-            <div className="grid sm:grid-cols-2 gap-2 text-xs">
-              <div className="rounded-lg border border-slate-200 bg-white p-3">
-                Admin cấu hình danh mục, kho, nguồn tiền và quy tắc mã.
-              </div>
-              <div className="rounded-lg border border-slate-200 bg-white p-3">
-                Kế toán tổng hợp import doanh thu POS và sao kê ngân hàng.
-              </div>
-            </div>
-          </div>
+          <p className="text-xs text-slate-500 mt-6 text-center">
+            Quên mật khẩu hoặc cần cấp tài khoản? Vui lòng liên hệ quản trị viên hệ thống.
+          </p>
         </div>
       </section>
     </main>
