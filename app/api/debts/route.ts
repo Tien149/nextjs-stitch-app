@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
-import { requireMenuAccess } from "@/lib/api-auth";
+import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
-import { requestedBranch } from "@/lib/accounting";
+import { assertBranchAccess, requestedBranch } from "@/lib/accounting";
+import { cleanText, isPeriodLocked, toDate, toNumber } from "@/lib/phase3";
+import { writeAuditLog } from "@/lib/audit-log";
+import { softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
+
+const debtTypes = ["RECEIVABLE", "PAYABLE"];
+const partnerGroups = ["EXTERNAL", "INTERNAL"];
 
 type DebtRow = {
   partnerCode: string;
@@ -232,6 +238,166 @@ export async function GET(request: Request) {
     return NextResponse.json(result);
   } catch (error) {
     console.error("Error fetching debts:", error);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+  }
+}
+
+export async function PATCH(request: Request) {
+  try {
+    const body = await request.json();
+    const action = cleanText(body.action) || "UPDATE";
+    const auth = requireMenuAction(request, "/debts", "edit");
+    if (!auth.ok) return auth.response;
+
+    const id = cleanText(body.id);
+    if (!id) return NextResponse.json({ error: "Thiếu ID công nợ" }, { status: 400 });
+    if (action !== "UPDATE") {
+      return NextResponse.json({ error: "Thao tác không hỗ trợ" }, { status: 400 });
+    }
+
+    const current = await prisma.debtRecord.findUnique({ where: { id } });
+    if (!current) return NextResponse.json({ error: "Không tìm thấy khoản công nợ" }, { status: 404 });
+
+    try {
+      assertBranchAccess(auth.session, current.branchCode);
+    } catch (e) {
+      return NextResponse.json({ error: e instanceof Error ? e.message : "Không có quyền chi nhánh" }, { status: 403 });
+    }
+
+    // Đã thanh toán một phần hay tất toán thì số liệu do phiếu thu/chi quyết định.
+    const settlementCount = await prisma.debtSettlement.count({ where: { debtId: id } });
+    if (settlementCount > 0 || current.outstandingAmount !== current.originalAmount) {
+      return NextResponse.json(
+        { error: "Khoản công nợ đã có phát sinh thanh toán, không thể sửa. Hãy điều chỉnh bằng phiếu thu/chi." },
+        { status: 400 },
+      );
+    }
+    if (current.status !== "OPEN") {
+      return NextResponse.json({ error: "Khoản công nợ đã tất toán/đóng, không thể sửa" }, { status: 400 });
+    }
+
+    const debtType = body.debtType === undefined ? current.debtType : cleanText(body.debtType);
+    const partnerGroup = body.partnerGroup === undefined ? current.partnerGroup : cleanText(body.partnerGroup);
+    const partnerCode = body.partnerCode === undefined ? current.partnerCode : cleanText(body.partnerCode);
+    const partnerName = body.partnerName === undefined ? current.partnerName : cleanText(body.partnerName);
+    const branchCode = body.branchCode === undefined ? current.branchCode : cleanText(body.branchCode);
+    const description = body.description === undefined ? current.description : cleanText(body.description);
+    const categoryCode = body.categoryCode === undefined ? current.categoryCode : cleanText(body.categoryCode) || null;
+    const originalAmount = body.originalAmount === undefined ? current.originalAmount : toNumber(body.originalAmount);
+    const documentDate = body.documentDate === undefined ? current.documentDate : toDate(body.documentDate, current.documentDate);
+    const dueDate = body.dueDate === undefined ? current.dueDate : body.dueDate ? toDate(body.dueDate, current.documentDate) : null;
+
+    if (!debtTypes.includes(debtType)) {
+      return NextResponse.json({ error: "Loại công nợ không hợp lệ" }, { status: 400 });
+    }
+    if (!partnerGroups.includes(partnerGroup)) {
+      return NextResponse.json({ error: "Nhóm đối tượng công nợ không hợp lệ" }, { status: 400 });
+    }
+    if (!partnerCode || !partnerName || !branchCode || !description || originalAmount <= 0) {
+      return NextResponse.json({ error: "Thiếu đối tác, chi nhánh, diễn giải hoặc số tiền không hợp lệ" }, { status: 400 });
+    }
+    if (dueDate && dueDate < documentDate) {
+      return NextResponse.json({ error: "Hạn thanh toán không được trước ngày chứng từ" }, { status: 400 });
+    }
+
+    try {
+      assertBranchAccess(auth.session, branchCode);
+    } catch (e) {
+      return NextResponse.json({ error: e instanceof Error ? e.message : "Không có quyền chi nhánh" }, { status: 403 });
+    }
+
+    const [currentPeriodLocked, nextPeriodLocked] = await Promise.all([
+      isPeriodLocked(current.documentDate, current.branchCode),
+      isPeriodLocked(documentDate, branchCode),
+    ]);
+    if (currentPeriodLocked || nextPeriodLocked) {
+      return NextResponse.json({ error: "Kỳ kế toán đã khóa, không thể sửa công nợ" }, { status: 400 });
+    }
+
+    const debt = await prisma.debtRecord.update({
+      where: { id },
+      data: {
+        debtType,
+        partnerGroup,
+        partnerCode,
+        partnerName,
+        branchCode,
+        documentDate,
+        dueDate,
+        categoryCode,
+        originalAmount,
+        // Chưa phát sinh thanh toán nên dư nợ luôn bằng số tiền gốc.
+        outstandingAmount: originalAmount,
+        description,
+      },
+    });
+
+    await writeAuditLog({
+      session: auth.session,
+      module: "DEBTS",
+      action: "UPDATE",
+      entityType: "DebtRecord",
+      entityId: debt.id,
+      entityCode: debt.code,
+      branchCode: debt.branchCode,
+      metadata: {
+        before: { debtType: current.debtType, partnerGroup: current.partnerGroup, partnerCode: current.partnerCode, partnerName: current.partnerName, branchCode: current.branchCode, documentDate: current.documentDate, dueDate: current.dueDate, categoryCode: current.categoryCode, originalAmount: current.originalAmount, description: current.description },
+        after: { debtType, partnerGroup, partnerCode, partnerName, branchCode, documentDate, dueDate, categoryCode, originalAmount, description },
+      },
+    });
+
+    return NextResponse.json(debt);
+  } catch (error) {
+    console.error("Error updating debt record:", error);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+  }
+}
+
+export async function DELETE(request: Request) {
+  try {
+    const auth = requireMenuAction(request, "/debts", "delete");
+    if (!auth.ok) return auth.response;
+
+    const { searchParams } = new URL(request.url);
+    const id = cleanText(searchParams.get("id"));
+    const reason = cleanText(searchParams.get("reason")) || null;
+    if (!id) return NextResponse.json({ error: "Thiếu ID công nợ" }, { status: 400 });
+
+    const current = await prisma.debtRecord.findUnique({ where: { id } });
+    if (!current) return NextResponse.json({ error: "Không tìm thấy khoản công nợ" }, { status: 404 });
+
+    try {
+      assertBranchAccess(auth.session, current.branchCode);
+    } catch (e) {
+      return NextResponse.json({ error: e instanceof Error ? e.message : "Không có quyền chi nhánh" }, { status: 403 });
+    }
+
+    // Còn phiếu thu/chi đã đối trừ vào khoản này thì phải giữ lại để không mất dấu thanh toán.
+    const settlementCount = await prisma.debtSettlement.count({ where: { debtId: id } });
+    if (settlementCount > 0) {
+      return NextResponse.json(
+        { error: "Khoản công nợ đã được thanh toán bằng phiếu thu/chi, không thể xóa." },
+        { status: 400 },
+      );
+    }
+    if (current.outstandingAmount !== current.originalAmount || current.status !== "OPEN") {
+      return NextResponse.json(
+        { error: "Khoản công nợ đã phát sinh thanh toán hoặc đã tất toán, không thể xóa." },
+        { status: 400 },
+      );
+    }
+
+    if (await isPeriodLocked(current.documentDate, current.branchCode)) {
+      return NextResponse.json({ error: "Kỳ kế toán đã khóa, không thể xóa công nợ" }, { status: 400 });
+    }
+
+    await softDeleteRecord({ model: "DebtRecord", id, session: auth.session, reason });
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    if (error instanceof SoftDeleteError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+    console.error("Error deleting debt record:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }

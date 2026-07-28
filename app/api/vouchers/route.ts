@@ -3,6 +3,13 @@ import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
 import { applyVoucherSideEffects } from "@/lib/voucher-side-effects";
+import { isPeriodLocked } from "@/lib/phase3";
+import { writeAuditLog } from "@/lib/audit-log";
+import { duplicatedInTrashMessage, findDeletedByUnique, softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
+import type { DemoSession } from "@/lib/auth-demo";
+
+/** Trạng thái không cho sửa/xoá vì chứng từ đã ghi sổ. */
+const lockedVoucherStatuses = ["APPROVED", "POSTED"];
 
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -99,10 +106,17 @@ export async function POST(request: Request) {
     }
 
     const voucherDate = body.voucherDate ? new Date(String(body.voucherDate)) : new Date();
+    const code = await nextVoucherCode(voucherType, voucherDate, branchCode);
+
+    // Mã sinh tự động có thể trùng với chứng từ đang nằm trong thùng rác -> báo rõ để xử lý.
+    const trashedVoucher = await findDeletedByUnique("FinancialVoucher", { code });
+    if (trashedVoucher) {
+      return NextResponse.json({ error: duplicatedInTrashMessage(code, "Chứng từ") }, { status: 400 });
+    }
 
     const voucher = await prisma.financialVoucher.create({
       data: {
-        code: await nextVoucherCode(voucherType, voucherDate, branchCode),
+        code,
         voucherType,
         voucherDate,
         partnerCode: cleanText(body.partnerCode) || null,
@@ -124,15 +138,125 @@ export async function POST(request: Request) {
   }
 }
 
+/**
+ * Sửa thông tin nghiệp vụ của chứng từ chưa ghi sổ.
+ * Trường nào không gửi lên thì giữ nguyên giá trị cũ.
+ */
+async function updateVoucher(session: DemoSession, id: string, body: Record<string, unknown>) {
+  const current = await prisma.financialVoucher.findUnique({ where: { id } });
+  if (!current) return NextResponse.json({ error: "Không tìm thấy chứng từ" }, { status: 404 });
+
+  try {
+    assertBranchAccess(session, current.branchCode);
+  } catch (e) {
+    return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi" }, { status: 403 });
+  }
+
+  if (lockedVoucherStatuses.includes(current.status)) {
+    return NextResponse.json(
+      { error: "Chứng từ đã duyệt/ghi sổ, không thể sửa. Hãy hủy chứng từ và lập chứng từ mới." },
+      { status: 400 },
+    );
+  }
+  if (current.status === "CANCELLED") {
+    return NextResponse.json({ error: "Chứng từ đã hủy, không thể sửa" }, { status: 400 });
+  }
+
+  const voucherType = cleanText(body.voucherType);
+  if (voucherType && voucherType !== current.voucherType) {
+    return NextResponse.json(
+      { error: "Không thể đổi loại chứng từ thu/chi vì mã chứng từ đã sinh theo loại. Hãy hủy chứng từ và lập chứng từ mới." },
+      { status: 400 },
+    );
+  }
+
+  const partnerName = body.partnerName === undefined ? current.partnerName : cleanText(body.partnerName);
+  const branchCode = body.branchCode === undefined ? current.branchCode : cleanText(body.branchCode);
+  const moneySourceCode = body.moneySourceCode === undefined ? current.moneySourceCode : cleanText(body.moneySourceCode);
+  const description = body.description === undefined ? current.description : cleanText(body.description);
+  const amount = body.amount === undefined ? current.amount : toAmount(body.amount);
+  const partnerCode = body.partnerCode === undefined ? current.partnerCode : cleanText(body.partnerCode) || null;
+  const categoryCode = body.categoryCode === undefined ? current.categoryCode : cleanText(body.categoryCode) || null;
+  const voucherDate = body.voucherDate === undefined ? current.voucherDate : new Date(String(body.voucherDate));
+
+  if (Number.isNaN(voucherDate.getTime())) {
+    return NextResponse.json({ error: "Ngày chứng từ không hợp lệ" }, { status: 400 });
+  }
+  if (!partnerName || !branchCode || !moneySourceCode || amount <= 0 || !description) {
+    return NextResponse.json({ error: "Thiếu đối tác, chi nhánh, nguồn tiền, số tiền hoặc nội dung" }, { status: 400 });
+  }
+
+  try {
+    assertBranchAccess(session, branchCode);
+  } catch (e) {
+    return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi" }, { status: 403 });
+  }
+
+  // Chứng từ đã sinh xử lý cọc/công nợ thì sửa lại sẽ làm lệch số liệu -> chặn hẳn.
+  const [depositHistoryCount, debtSettlement] = await Promise.all([
+    prisma.depositHistory.count({ where: { voucherId: id } }),
+    prisma.debtSettlement.findUnique({ where: { voucherId: id } }),
+  ]);
+  if (depositHistoryCount > 0 || debtSettlement) {
+    return NextResponse.json(
+      { error: "Chứng từ đã phát sinh xử lý tiền cọc hoặc thanh toán công nợ, không thể sửa. Hãy hủy chứng từ và lập chứng từ mới." },
+      { status: 400 },
+    );
+  }
+
+  const [currentPeriodLocked, nextPeriodLocked] = await Promise.all([
+    isPeriodLocked(current.voucherDate, current.branchCode),
+    isPeriodLocked(voucherDate, branchCode),
+  ]);
+  if (currentPeriodLocked || nextPeriodLocked) {
+    return NextResponse.json({ error: "Kỳ kế toán đã khóa, không thể sửa chứng từ" }, { status: 400 });
+  }
+
+  const voucher = await prisma.financialVoucher.update({
+    where: { id },
+    data: {
+      voucherDate,
+      partnerCode,
+      partnerName,
+      branchCode,
+      moneySourceCode,
+      categoryCode,
+      amount,
+      description,
+    },
+  });
+
+  await writeAuditLog({
+    session,
+    module: "VOUCHERS",
+    action: "UPDATE",
+    entityType: "FinancialVoucher",
+    entityId: voucher.id,
+    entityCode: voucher.code,
+    branchCode: voucher.branchCode,
+    metadata: {
+      before: { voucherDate: current.voucherDate, partnerCode: current.partnerCode, partnerName: current.partnerName, branchCode: current.branchCode, moneySourceCode: current.moneySourceCode, categoryCode: current.categoryCode, amount: current.amount, description: current.description },
+      after: { voucherDate, partnerCode, partnerName, branchCode, moneySourceCode, categoryCode, amount, description },
+    },
+  });
+
+  return NextResponse.json(voucher);
+}
+
 export async function PATCH(request: Request) {
   try {
-    const auth = requireMenuAction(request, "/vouchers", "approve");
+    const body = await request.json();
+    // Không truyền action thì giữ nguyên hành vi cũ: duyệt/hủy chứng từ.
+    const action = cleanText(body.action) || "STATUS_CHANGE";
+    const auth = requireMenuAction(request, "/vouchers", action === "UPDATE" ? "edit" : "approve");
     if (!auth.ok) return auth.response;
 
-    const body = await request.json();
     const id = cleanText(body.id);
-    const status = cleanText(body.status) || "APPROVED";
     if (!id) return NextResponse.json({ error: "Thiếu ID chứng từ" }, { status: 400 });
+
+    if (action === "UPDATE") return await updateVoucher(auth.session, id, body);
+
+    const status = cleanText(body.status) || "APPROVED";
     if (!["APPROVED", "CANCELLED"].includes(status)) {
       return NextResponse.json({ error: "Trạng thái chứng từ không hợp lệ" }, { status: 400 });
     }
@@ -167,6 +291,59 @@ export async function PATCH(request: Request) {
     return NextResponse.json(voucher);
   } catch (error) {
     console.error("Error updating voucher:", error);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+  }
+}
+
+export async function DELETE(request: Request) {
+  try {
+    const auth = requireMenuAction(request, "/vouchers", "delete");
+    if (!auth.ok) return auth.response;
+
+    const { searchParams } = new URL(request.url);
+    const id = cleanText(searchParams.get("id"));
+    const reason = cleanText(searchParams.get("reason")) || null;
+    if (!id) return NextResponse.json({ error: "Thiếu ID chứng từ" }, { status: 400 });
+
+    const current = await prisma.financialVoucher.findUnique({ where: { id } });
+    if (!current) return NextResponse.json({ error: "Không tìm thấy chứng từ" }, { status: 404 });
+
+    try {
+      assertBranchAccess(auth.session, current.branchCode);
+    } catch (e) {
+      return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi" }, { status: 403 });
+    }
+
+    if (lockedVoucherStatuses.includes(current.status)) {
+      return NextResponse.json(
+        { error: "Chứng từ đã duyệt/ghi sổ, không thể xóa. Hãy hủy chứng từ trước khi xóa." },
+        { status: 400 },
+      );
+    }
+
+    if (await isPeriodLocked(current.voucherDate, current.branchCode)) {
+      return NextResponse.json({ error: "Kỳ kế toán đã khóa, không thể xóa chứng từ" }, { status: 400 });
+    }
+
+    // Giữ lại chứng từ đã sinh xử lý cọc/công nợ để không làm lệch số dư.
+    const [depositHistoryCount, debtSettlement] = await Promise.all([
+      prisma.depositHistory.count({ where: { voucherId: id } }),
+      prisma.debtSettlement.findUnique({ where: { voucherId: id } }),
+    ]);
+    if (depositHistoryCount > 0 || debtSettlement) {
+      return NextResponse.json(
+        { error: "Chứng từ đã phát sinh xử lý tiền cọc hoặc thanh toán công nợ, không thể xóa." },
+        { status: 400 },
+      );
+    }
+
+    await softDeleteRecord({ model: "FinancialVoucher", id, session: auth.session, reason });
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    if (error instanceof SoftDeleteError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+    console.error("Error deleting voucher:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
