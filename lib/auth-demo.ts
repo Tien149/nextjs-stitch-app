@@ -185,6 +185,12 @@ export const appMenuItems: AppMenuItem[] = [
     href: "/audit-logs",
     roles: ["Admin"],
   },
+  {
+    name: "Thùng rác",
+    icon: "delete",
+    href: "/trash",
+    roles: ["Admin", "Kế toán tổng hợp", "Kế toán công nợ", "Quản lý"],
+  },
 ];
 
 export const ALL_APP_ACTIONS: { key: AppAction; label: string; desc: string }[] = [
