@@ -151,6 +151,32 @@ export async function DELETE(request: Request) {
 
     const { searchParams } = new URL(request.url);
     const roleId = searchParams.get("roleId");
+    const userId = searchParams.get("userId");
+
+    if (userId) {
+      const target = await prisma.user.findUnique({
+        where: { id: userId },
+        include: { role: true },
+      });
+      if (!target) {
+        return NextResponse.json({ error: "Không tìm thấy người dùng cần xóa" }, { status: 404 });
+      }
+      if (target.email.toLowerCase() === auth.session.email.toLowerCase()) {
+        return NextResponse.json({ error: "Không thể xóa tài khoản bạn đang đăng nhập" }, { status: 400 });
+      }
+      if (target.role?.name === "Admin") {
+        const adminCount = await prisma.user.count({ where: { role: { name: "Admin" } } });
+        if (adminCount <= 1) {
+          return NextResponse.json(
+            { error: "Không thể xóa tài khoản Admin cuối cùng của hệ thống" },
+            { status: 400 },
+          );
+        }
+      }
+
+      await prisma.user.delete({ where: { id: userId } });
+      return NextResponse.json({ ok: true });
+    }
 
     if (!roleId) {
       return NextResponse.json({ error: "Thiếu mã vai trò cần xóa" }, { status: 400 });
@@ -189,6 +215,66 @@ export async function PATCH(request: Request) {
 
     if (!userId) {
       return NextResponse.json({ error: "Thiếu userId hoặc thông tin cần cập nhật" }, { status: 400 });
+    }
+
+    if (body.action === "UPDATE_USER") {
+      const { email, name, phone, position, password } = body;
+
+      if (!email || !String(email).trim()) {
+        return NextResponse.json({ error: "Email / User đăng nhập không được để trống" }, { status: 400 });
+      }
+      if (!name || !String(name).trim()) {
+        return NextResponse.json({ error: "Họ và tên người dùng không được để trống" }, { status: 400 });
+      }
+      if (!roleId) {
+        return NextResponse.json({ error: "Vui lòng chọn vai trò cho người dùng" }, { status: 400 });
+      }
+
+      const normalizedEmail = String(email).trim().toLowerCase();
+      const duplicated = await prisma.user.findFirst({
+        where: { email: normalizedEmail, NOT: { id: userId } },
+      });
+      if (duplicated) {
+        return NextResponse.json(
+          { error: "Email / Tên đăng nhập này đã tồn tại trong hệ thống" },
+          { status: 400 },
+        );
+      }
+
+      // Không hạ quyền Admin cuối cùng, tránh khóa toàn bộ màn hình phân quyền
+      const current = await prisma.user.findUnique({ where: { id: userId }, include: { role: true } });
+      if (current?.role?.name === "Admin" && current.roleId !== roleId) {
+        const adminCount = await prisma.user.count({ where: { role: { name: "Admin" } } });
+        if (adminCount <= 1) {
+          return NextResponse.json(
+            { error: "Không thể đổi vai trò của tài khoản Admin cuối cùng" },
+            { status: 400 },
+          );
+        }
+      }
+
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          email: normalizedEmail,
+          name: String(name).trim(),
+          phone: phone ? String(phone).trim() : null,
+          position: position ? String(position).trim() : null,
+          roleId,
+          ...(password && String(password).trim() ? { password: String(password).trim() } : {}),
+        },
+      });
+
+      if (Array.isArray(branchCodes)) {
+        await prisma.$transaction([
+          prisma.userBranchAccess.deleteMany({ where: { userId } }),
+          prisma.userBranchAccess.createMany({
+            data: branchCodes.map((branchCode: string) => ({ userId, branchCode })),
+          }),
+        ]);
+      }
+
+      return NextResponse.json({ ok: true });
     }
 
     if (roleId) {

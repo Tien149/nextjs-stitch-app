@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { branchAccessLabel, branchScopeOptions, displayRoleName } from "@/lib/branch-labels";
+import { branchScopeOptions, displayRoleName } from "@/lib/branch-labels";
 import {
   ALL_APP_ACTIONS,
   appMenuItems,
@@ -51,8 +51,9 @@ export default function PermissionsPage() {
   const [savingRole, setSavingRole] = useState(false);
   const [roleFormError, setRoleFormError] = useState("");
 
-  // Modal State for User Creation
+  // Modal State for User Creation / Editing
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
+  const [editingUser, setEditingUser] = useState<PermissionUser | null>(null);
   const [userForm, setUserForm] = useState({
     email: "",
     password: "",
@@ -220,6 +221,7 @@ export default function PermissionsPage() {
 
   // User Modal Handlers
   const handleOpenCreateUserModal = () => {
+    setEditingUser(null);
     setUserForm({
       email: "",
       password: "",
@@ -236,24 +238,48 @@ export default function PermissionsPage() {
     setIsUserModalOpen(true);
   };
 
+  const handleOpenEditUserModal = (dbUser: PermissionUser) => {
+    const branches = dbUser.branchAccesses.map((branchAccess) => branchAccess.branchCode);
+    setEditingUser(dbUser);
+    setUserForm({
+      email: dbUser.email,
+      password: "",
+      name: dbUser.name,
+      phone: dbUser.phone || "",
+      position: dbUser.position || "",
+      roleId: dbUser.roleId || dbUser.role?.id || "",
+      branchCode: branches.includes("ALL") ? "ALL" : branches[0] || "ALL",
+    });
+    setConfirmPassword("");
+    setShowPassword(false);
+    setShowConfirmPassword(false);
+    setUserFormError("");
+    setIsUserModalOpen(true);
+  };
+
   const handleSaveUser = async (e: React.FormEvent) => {
     e.preventDefault();
     setUserFormError("");
+    const isEditing = !!editingUser;
+
     if (!userForm.email.trim()) {
       setUserFormError("Vui lòng nhập Email / Tên đăng nhập.");
       return;
     }
-    if (!userForm.password.trim()) {
+    if (!isEditing && !userForm.password.trim()) {
       setUserFormError("Vui lòng nhập mật khẩu.");
       return;
     }
-    if (userForm.password.length < 6) {
-      setUserFormError("Mật khẩu phải có độ dài tối thiểu 6 ký tự.");
-      return;
-    }
-    if (userForm.password !== confirmPassword) {
-      setUserFormError("Mật khẩu xác nhận không trùng khớp với mật khẩu đã nhập.");
-      return;
+    // Khi sửa, chỉ kiểm tra mật khẩu nếu người dùng thực sự nhập mật khẩu mới
+    if (userForm.password.trim()) {
+      if (userForm.password.length < 6) {
+        setUserFormError("Mật khẩu phải có độ dài tối thiểu 6 ký tự.");
+        return;
+      }
+      if (userForm.password !== confirmPassword) {
+        setUserFormError("Mật khẩu xác nhận không trùng khớp với mật khẩu đã nhập.");
+        return;
+      }
     }
     if (!userForm.name.trim()) {
       setUserFormError("Vui lòng nhập Họ và tên.");
@@ -266,32 +292,51 @@ export default function PermissionsPage() {
 
     setSavingUser(true);
     try {
+      const branchCodes = userForm.branchCode === "ALL" ? ["ALL"] : [userForm.branchCode];
       const res = await fetch("/api/permissions", {
-        method: "POST",
+        method: isEditing ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "CREATE_USER",
+          action: isEditing ? "UPDATE_USER" : "CREATE_USER",
+          ...(isEditing ? { userId: editingUser.id } : {}),
           email: userForm.email,
           password: userForm.password,
           name: userForm.name,
           phone: userForm.phone,
           position: userForm.position,
           roleId: userForm.roleId,
-          branchCodes: userForm.branchCode === "ALL" ? ["ALL"] : [userForm.branchCode],
+          branchCodes,
         }),
       });
 
       const payload = await res.json();
       if (res.ok) {
         setIsUserModalOpen(false);
+        setEditingUser(null);
         await loadData();
       } else {
-        setUserFormError(payload.error || "Không thể tạo người dùng.");
+        setUserFormError(payload.error || (isEditing ? "Không thể cập nhật người dùng." : "Không thể tạo người dùng."));
       }
     } catch {
       setUserFormError("Đã xảy ra lỗi kết nối.");
     } finally {
       setSavingUser(false);
+    }
+  };
+
+  const handleDeleteUser = async (dbUser: PermissionUser) => {
+    if (!confirm(`Xóa tài khoản "${dbUser.name}" (${dbUser.email})? Thao tác này không thể hoàn tác.`)) return;
+
+    try {
+      const res = await fetch(`/api/permissions?userId=${dbUser.id}`, { method: "DELETE" });
+      const payload = await res.json();
+      if (res.ok) {
+        await loadData();
+      } else {
+        alert(payload.error || "Không xóa được người dùng.");
+      }
+    } catch {
+      alert("Lỗi kết nối máy chủ.");
     }
   };
 
@@ -507,7 +552,7 @@ export default function PermissionsPage() {
                   <th className="px-4 py-3">Chức vụ & SĐT</th>
                   <th className="px-4 py-3">Vai trò phân công</th>
                   <th className="px-4 py-3">Phạm vi cửa hàng</th>
-                  <th className="px-4 py-3 text-right">Thao tác cửa hàng</th>
+                  <th className="px-4 py-3 text-right">Thao tác</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -520,7 +565,6 @@ export default function PermissionsPage() {
                 ) : (
                   usersList.map((dbUser) => {
                     const branches = dbUser.branchAccesses.map((branchAccess) => branchAccess.branchCode);
-                    const branchesStr = branches.includes("ALL") ? "ALL" : branches.join(", ");
                     return (
                       <tr key={dbUser.id} className="hover:bg-slate-50 transition">
                         <td className="px-4 py-3">
@@ -546,21 +590,10 @@ export default function PermissionsPage() {
                           </select>
                         </td>
                         <td className="px-4 py-3">
-                          <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
-                            branchesStr === "ALL"
-                              ? "bg-slate-100 text-slate-700"
-                              : branchesStr === "HCM"
-                              ? "bg-indigo-50 text-indigo-700"
-                              : "bg-amber-50 text-amber-700"
-                          }`}>
-                            {branchAccessLabel(branches)}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-right">
                           <select
                             value={branches.includes("ALL") ? "ALL" : branches[0] || "ALL"}
                             onChange={(e) => updateBranchAccess(dbUser.id, e.target.value)}
-                            className="bg-white border border-slate-300 rounded px-2 py-1 text-xs outline-none focus:border-blue-500 cursor-pointer text-slate-700 font-medium"
+                            className="bg-white border border-slate-300 rounded px-2.5 py-1.5 text-xs font-semibold text-slate-800 outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 cursor-pointer"
                           >
                             {branchScopeOptions.map((option) => (
                               <option key={option.code} value={option.code}>
@@ -568,6 +601,26 @@ export default function PermissionsPage() {
                               </option>
                             ))}
                           </select>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              title="Chỉnh sửa thông tin tài khoản"
+                              onClick={() => handleOpenEditUserModal(dbUser)}
+                              className="h-8 w-8 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-100 hover:text-blue-700 grid place-items-center transition"
+                            >
+                              <span className="material-symbols-outlined text-lg">edit</span>
+                            </button>
+                            <button
+                              type="button"
+                              title="Xóa tài khoản"
+                              onClick={() => handleDeleteUser(dbUser)}
+                              className="h-8 w-8 rounded-lg border border-slate-200 text-slate-600 hover:bg-rose-50 hover:text-rose-600 hover:border-rose-200 grid place-items-center transition"
+                            >
+                              <span className="material-symbols-outlined text-lg">delete</span>
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -774,11 +827,19 @@ export default function PermissionsPage() {
             <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
               <div className="flex items-center gap-2.5">
                 <div className="p-2 rounded-xl bg-blue-50 text-blue-600">
-                  <span className="material-symbols-outlined text-xl">person_add</span>
+                  <span className="material-symbols-outlined text-xl">
+                    {editingUser ? "manage_accounts" : "person_add"}
+                  </span>
                 </div>
                 <div>
-                  <h3 className="font-bold text-slate-900 text-base">Tạo người dùng mới</h3>
-                  <p className="text-xs text-slate-500">Khai báo thông tin tài khoản & gán vai trò</p>
+                  <h3 className="font-bold text-slate-900 text-base">
+                    {editingUser ? "Chỉnh sửa người dùng" : "Tạo người dùng mới"}
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    {editingUser
+                      ? "Cập nhật thông tin tài khoản, vai trò và phạm vi cửa hàng"
+                      : "Khai báo thông tin tài khoản & gán vai trò"}
+                  </p>
                 </div>
               </div>
               <button
@@ -817,12 +878,13 @@ export default function PermissionsPage() {
                 {/* Password Field */}
                 <div className="space-y-1">
                   <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                    Mật khẩu <span className="text-rose-500">*</span>
+                    {editingUser ? "Mật khẩu mới" : "Mật khẩu"}
+                    {!editingUser && <span className="text-rose-500"> *</span>}
                   </label>
                   <div className="relative">
                     <input
                       type={showPassword ? "text" : "password"}
-                      required
+                      required={!editingUser}
                       autoComplete="new-password"
                       value={userForm.password}
                       onChange={(e) => setUserForm({ ...userForm, password: e.target.value })}
@@ -832,7 +894,7 @@ export default function PermissionsPage() {
                           setUserForm((prev) => ({ ...prev, password: pasted }));
                         }
                       }}
-                      placeholder="Nhập mật khẩu (≥ 6 ký tự)"
+                      placeholder={editingUser ? "Để trống nếu không đổi" : "Nhập mật khẩu (≥ 6 ký tự)"}
                       className="w-full px-3 py-2 pr-9 text-xs bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition font-semibold"
                     />
                     <button
@@ -863,12 +925,14 @@ export default function PermissionsPage() {
                 {/* Confirm Password Field */}
                 <div className="space-y-1">
                   <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                    Xác nhận mật khẩu <span className="text-rose-500">*</span>
+                    Xác nhận mật khẩu
+                    {!editingUser && <span className="text-rose-500"> *</span>}
                   </label>
                   <div className="relative">
                     <input
                       type={showConfirmPassword ? "text" : "password"}
-                      required
+                      required={!editingUser || !!userForm.password}
+                      disabled={!!editingUser && !userForm.password}
                       autoComplete="new-password"
                       value={confirmPassword}
                       onChange={(e) => setConfirmPassword(e.target.value)}
@@ -879,7 +943,7 @@ export default function PermissionsPage() {
                         }
                       }}
                       placeholder="Nhập lại mật khẩu..."
-                      className={`w-full px-3 py-2 pr-9 text-xs bg-white border rounded-lg focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition font-semibold ${
+                      className={`w-full px-3 py-2 pr-9 text-xs bg-white border rounded-lg focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition font-semibold disabled:bg-slate-50 disabled:text-slate-400 ${
                         confirmPassword && confirmPassword !== userForm.password
                           ? "border-rose-300 bg-rose-50/40"
                           : confirmPassword && confirmPassword === userForm.password
@@ -1009,7 +1073,7 @@ export default function PermissionsPage() {
                   className="px-5 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 active:scale-95 rounded-xl shadow-md transition flex items-center gap-2 disabled:opacity-50"
                 >
                   {savingUser && <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>}
-                  Tạo người dùng
+                  {editingUser ? "Lưu thay đổi" : "Tạo người dùng"}
                 </button>
               </div>
             </form>
