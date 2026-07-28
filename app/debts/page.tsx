@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { BranchScopeSelect, resolveInitialBranchScope } from "@/components/BranchScopeSelect";
+import { DateInput } from "@/components/DateInput";
+import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { appMenuItems, canAccessMenu, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 
 type DebtRow = {
@@ -24,20 +26,41 @@ type DebtRow = {
   balance: number;
 };
 
+/** Một dòng phát sinh trong sổ chi tiết công nợ của đối tác. */
+type LedgerRow = {
+  /** Chỉ dòng đến từ khoản công nợ (RECEIVABLE/PAYABLE) mới có id để sửa/xoá. */
+  id?: string;
+  date: string;
+  dueDate?: string | null;
+  source: string;
+  code: string;
+  description: string;
+  amount: number;
+  status?: string;
+  agingBucket?: string;
+};
+
 type LedgerDetail = {
   partnerCode: string;
   partnerName: string;
   balance: number;
-  rows: {
-    date: string;
-    dueDate?: string | null;
-    source: string;
-    code: string;
-    description: string;
-    amount: number;
-    status?: string;
-    agingBucket?: string;
-  }[];
+  rows: LedgerRow[];
+};
+
+/** Nguồn phát sinh không thuộc màn hình Công nợ thì phải sửa ở màn hình gốc. */
+const externalSourceLabels: Record<string, string> = {
+  OPENING_BALANCE: "Phát sinh từ số dư đầu kỳ, hãy chỉnh tại màn hình Số dư đầu kỳ",
+  DEPOSIT: "Phát sinh từ phiếu cọc, hãy chỉnh tại màn hình Tiền cọc",
+  BANK_STATEMENT: "Phát sinh từ sao kê ngân hàng, hãy chỉnh tại màn hình Đối chiếu",
+  VOUCHER: "Phát sinh từ phiếu thu/chi, hãy chỉnh tại màn hình Chứng từ",
+  PURCHASE_ORDER: "Phát sinh từ đơn mua hàng, hãy chỉnh tại màn hình Mua hàng",
+};
+
+const emptyDebtForm = {
+  documentDate: new Date().toISOString().slice(0, 10),
+  dueDate: "",
+  description: "",
+  originalAmount: "",
 };
 
 export default function DebtsPage() {
@@ -50,6 +73,15 @@ export default function DebtsPage() {
   const [partnerGroup, setPartnerGroup] = useState<"ALL" | "EXTERNAL" | "INTERNAL">("ALL");
   const [agingFilter, setAgingFilter] = useState<"ALL" | "OVERDUE" | "DUE_7" | "OPEN">("ALL");
   const [branchScope, setBranchScope] = useState("ALL");
+  const [message, setMessage] = useState("");
+  /** Khoản công nợ đang sửa trong hộp thoại; null nghĩa là hộp thoại đang đóng. */
+  const [editingDebt, setEditingDebt] = useState<LedgerRow | null>(null);
+  const [debtForm, setDebtForm] = useState(emptyDebtForm);
+  const [saving, setSaving] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [deletingDebt, setDeletingDebt] = useState<LedgerRow | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     const raw = localStorage.getItem(SESSION_KEY);
@@ -90,6 +122,85 @@ export default function DebtsPage() {
   }, [loading, loadRows]);
 
   const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
+
+  /** Chỉ khoản công nợ còn nguyên gốc (OPEN) mới được sửa/xoá tại đây. */
+  const debtLockReason = (row: LedgerRow) => {
+    if (!row.id) return externalSourceLabels[row.source] || "Phát sinh này không sửa/xoá được tại màn hình Công nợ";
+    if (row.status && row.status !== "OPEN") {
+      return "Khoản công nợ đã có phát sinh thanh toán hoặc đã tất toán, không thể sửa/xoá. Hãy điều chỉnh bằng phiếu thu/chi.";
+    }
+    return null;
+  };
+
+  const startEditDebt = (row: LedgerRow) => {
+    setMessage("");
+    setEditError(null);
+    setEditingDebt(row);
+    setDebtForm({
+      documentDate: row.date.slice(0, 10),
+      dueDate: row.dueDate ? row.dueDate.slice(0, 10) : "",
+      description: row.description,
+      originalAmount: String(Math.abs(row.amount)),
+    });
+  };
+
+  const submitDebtEdit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!editingDebt?.id) return;
+    setSaving(true);
+    setEditError(null);
+    try {
+      const response = await fetch("/api/debts", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "UPDATE",
+          id: editingDebt.id,
+          documentDate: debtForm.documentDate,
+          dueDate: debtForm.dueDate,
+          description: debtForm.description,
+          originalAmount: debtForm.originalAmount,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setEditError(payload.error || "Không lưu được thay đổi công nợ");
+        return;
+      }
+      const savedCode = editingDebt.code;
+      setEditingDebt(null);
+      await loadRows();
+      if (ledger) await loadLedger(ledger.partnerCode);
+      setMessage(`Đã lưu thay đổi khoản công nợ ${savedCode}.`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const confirmDeleteDebt = async (reason: string) => {
+    if (!deletingDebt?.id) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const query = new URLSearchParams({ id: deletingDebt.id });
+      if (reason) query.set("reason", reason);
+      const response = await fetch(`/api/debts?${query.toString()}`, { method: "DELETE" });
+      const payload = await response.json();
+      if (!response.ok) {
+        setDeleteError(payload.error || "Không xoá được khoản công nợ");
+        return;
+      }
+      const deletedCode = deletingDebt.code;
+      if (editingDebt?.id === deletingDebt.id) setEditingDebt(null);
+      setDeletingDebt(null);
+      await loadRows();
+      if (ledger) await loadLedger(ledger.partnerCode);
+      setMessage(`Đã chuyển khoản công nợ ${deletedCode} vào Thùng rác.`);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const filteredRows = rows.filter((row) => {
     if (partnerGroup !== "ALL" && row.partnerGroup !== partnerGroup) return false;
     if (agingFilter !== "ALL" && row.debtStatus !== agingFilter) return false;
@@ -219,6 +330,9 @@ export default function DebtsPage() {
               <div>
                 <h2 className="font-bold">Ledger: {ledger.partnerName}</h2>
                 <p className="text-xs text-slate-500 mt-1">Số dư hiện tại: <b>{money(ledger.balance)} đ</b></p>
+                {message && (
+                  <p className="mt-2 text-sm rounded-lg bg-blue-50 border border-blue-100 text-blue-700 px-3 py-2">{message}</p>
+                )}
               </div>
               <button onClick={() => setLedger(null)} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50">Đóng</button>
             </div>
@@ -232,11 +346,12 @@ export default function DebtsPage() {
                     <th className="px-4 py-3">Hạn/TT</th>
                     <th className="px-4 py-3">Diễn giải</th>
                     <th className="px-4 py-3 text-right">Phát sinh</th>
+                    <th className="px-4 py-3 text-right">Thao tác</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {ledger.rows.length === 0 ? (
-                    <tr><td colSpan={6} className="px-4 py-10 text-center text-slate-400">Chưa có phát sinh.</td></tr>
+                    <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-400">Chưa có phát sinh.</td></tr>
                   ) : ledger.rows.map((item, index) => (
                     <tr key={`${item.source}-${item.code}-${index}`} className="hover:bg-slate-50">
                       <td className="px-4 py-3">{new Date(item.date).toLocaleDateString("vi-VN")}</td>
@@ -250,6 +365,20 @@ export default function DebtsPage() {
                       </td>
                       <td className="px-4 py-3">{item.description}</td>
                       <td className={`px-4 py-3 text-right font-bold ${item.amount >= 0 ? "text-blue-700" : "text-rose-700"}`}>{money(item.amount)} đ</td>
+                      <td className="px-4 py-3 text-right">
+                        <RowActions
+                          session={user}
+                          module="/debts"
+                          compact
+                          onEdit={() => startEditDebt(item)}
+                          onDelete={() => {
+                            setDeleteError(null);
+                            setDeletingDebt(item);
+                          }}
+                          editDisabledReason={debtLockReason(item)}
+                          deleteDisabledReason={debtLockReason(item)}
+                        />
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -258,6 +387,97 @@ export default function DebtsPage() {
           </section>
         )}
       </main>
+
+      {editingDebt && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+          <form onSubmit={submitDebtEdit} className="bg-white rounded-xl w-full max-w-md shadow-xl">
+            <div className="p-5 border-b border-slate-200">
+              <h3 className="font-bold text-slate-900">Sửa khoản công nợ {editingDebt.code}</h3>
+              <p className="text-sm text-slate-500 mt-1">
+                {editingDebt.source === "RECEIVABLE" ? "Công nợ phải thu" : "Công nợ phải trả"} · {ledger?.partnerName}
+              </p>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <label className="text-xs font-bold text-slate-600 block">
+                Ngày chứng từ *
+                <DateInput
+                  value={debtForm.documentDate}
+                  onChange={(documentDate) => setDebtForm((value) => ({ ...value, documentDate }))}
+                  className="mt-1"
+                  required
+                  ariaLabel="Ngày chứng từ công nợ"
+                />
+              </label>
+
+              <label className="text-xs font-bold text-slate-600 block">
+                Hạn thanh toán
+                <DateInput
+                  value={debtForm.dueDate}
+                  onChange={(dueDate) => setDebtForm((value) => ({ ...value, dueDate }))}
+                  className="mt-1"
+                  ariaLabel="Hạn thanh toán công nợ"
+                />
+              </label>
+
+              <label className="text-xs font-bold text-slate-600 block">
+                Số tiền (đ) *
+                <input
+                  type="number"
+                  min="1"
+                  value={debtForm.originalAmount}
+                  onChange={(event) => setDebtForm((value) => ({ ...value, originalAmount: event.target.value }))}
+                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  required
+                />
+              </label>
+
+              <label className="text-xs font-bold text-slate-600 block">
+                Diễn giải *
+                <textarea
+                  value={debtForm.description}
+                  onChange={(event) => setDebtForm((value) => ({ ...value, description: event.target.value }))}
+                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm h-20 resize-none outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  required
+                />
+              </label>
+
+              {editError && (
+                <p className="text-sm rounded-lg bg-rose-50 border border-rose-200 text-rose-700 px-3 py-2">{editError}</p>
+              )}
+            </div>
+
+            <div className="p-5 border-t border-slate-200 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingDebt(null);
+                  setEditError(null);
+                }}
+                className="px-4 py-2 rounded-lg text-sm font-bold text-slate-600 hover:bg-slate-100"
+              >
+                Huỷ
+              </button>
+              <button type="submit" disabled={saving} className="px-4 py-2 rounded-lg text-sm font-bold bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white">
+                {saving ? "Đang lưu..." : "Lưu thay đổi"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      <ConfirmDeleteDialog
+        open={Boolean(deletingDebt)}
+        title={`Xoá khoản công nợ ${deletingDebt?.code || ""}?`}
+        description={deletingDebt ? `${deletingDebt.description} · ${money(Math.abs(deletingDebt.amount))} đ` : undefined}
+        submitting={deleting}
+        error={deleteError}
+        onCancel={() => {
+          setDeletingDebt(null);
+          setDeleteError(null);
+        }}
+        onConfirm={confirmDeleteDebt}
+      />
     </div>
   );
 }

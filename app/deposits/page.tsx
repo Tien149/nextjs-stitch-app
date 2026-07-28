@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { BranchScopeSelect, resolveInitialBranchScope } from "@/components/BranchScopeSelect";
 import { DateInput } from "@/components/DateInput";
+import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { storeLabel } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 
@@ -62,6 +63,9 @@ const statusLabels: Record<string, string> = {
   REVENUE: "Chuyển doanh thu",
 };
 
+/** Các bút toán lịch sử chỉ mang tính ghi nhận ban đầu, không tính là đã xử lý cọc. */
+const initialDepositActions = ["CREATE", "COLLECT", "UPDATE"];
+
 const depositActionOptions = [
   { value: "OFFSET", label: "Can tru vao bill", requiresAmount: true },
   { value: "SUPPLEMENT", label: "Khach chuyen bo sung", requiresAmount: true },
@@ -82,6 +86,11 @@ export default function DepositsPage() {
   const [partners, setPartners] = useState<MasterDataOption[]>([]);
   const [moneySources, setMoneySources] = useState<MasterDataOption[]>([]);
   const [branchScope, setBranchScope] = useState("ALL");
+  /** Phiếu cọc đang sửa; null nghĩa là biểu mẫu đang ở chế độ tạo mới. */
+  const [editingDeposit, setEditingDeposit] = useState<Deposit | null>(null);
+  const [deletingDeposit, setDeletingDeposit] = useState<Deposit | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [processForm, setProcessForm] = useState({
     depositId: "",
     action: "OFFSET",
@@ -121,6 +130,26 @@ export default function DepositsPage() {
   const formatCurrency = (amount: number) => new Intl.NumberFormat("vi-VN").format(amount);
   const canCreateDeposits = user ? canPerformAction(user.role, "create") : false;
   const canProcessDeposits = user ? canPerformAction(user.role, "edit") : false;
+  /** Biểu mẫu bên trái hiện ra khi được tạo mới hoặc khi đang sửa một phiếu cọc. */
+  const showDepositForm = canCreateDeposits || Boolean(editingDeposit);
+
+  /** Phiếu cọc đã cấn trừ/hoàn/hủy thì không cho sửa; trả về lý do để hiện tooltip. */
+  const editLockReason = (deposit: Deposit) => {
+    if (deposit.status !== "HOLDING") return "Phiếu cọc đã cấn trừ/hoàn/hủy, không thể sửa";
+    return null;
+  };
+
+  /** Đã phát sinh xử lý cọc thì phải giữ lại để không mất dấu dòng tiền. */
+  const deleteLockReason = (deposit: Deposit) => {
+    if (deposit.status !== "HOLDING") return "Phiếu cọc đã cấn trừ/hoàn/hủy, không thể xoá";
+    if (deposit.remainingAmount !== deposit.amount) {
+      return "Phiếu cọc đã phát sinh cấn trừ/hoàn cọc, không thể xoá. Hãy dùng thao tác hủy phiếu cọc.";
+    }
+    if (deposit.histories.some((history) => !initialDepositActions.includes(history.action))) {
+      return "Phiếu cọc đã phát sinh xử lý, không thể xoá. Hãy dùng thao tác hủy phiếu cọc.";
+    }
+    return null;
+  };
 
   const loadDeposits = async () => {
     setMessage("");
@@ -187,29 +216,83 @@ export default function DepositsPage() {
     }));
   };
 
-  const createDeposit = async (event: React.FormEvent) => {
+  const resetDepositForm = () => {
+    setEditingDeposit(null);
+    setForm((current) => ({ ...emptyForm, branchCode: branchScope !== "ALL" ? branchScope : current.branchCode }));
+  };
+
+  const startEditDeposit = (deposit: Deposit) => {
+    setMessage("");
+    setEditingDeposit(deposit);
+    setForm({
+      receivedDate: deposit.receivedDate.slice(0, 10),
+      partnerCode: deposit.partnerCode,
+      partnerName: deposit.partnerName,
+      branchCode: deposit.branchCode,
+      moneySourceCode: deposit.moneySourceCode,
+      amount: String(deposit.amount),
+      purpose: deposit.purpose,
+      note: deposit.note || "",
+    });
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const submitDeposit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!canCreateDeposits) {
+    if (!editingDeposit && !canCreateDeposits) {
       setMessage("Bạn chỉ có quyền xem tiền cọc.");
       return;
     }
     setIsSaving(true);
     setMessage("");
     try {
-      const response = await fetch("/api/deposits", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...form, actor: user?.name }),
-      });
+      const response = editingDeposit
+        ? await fetch("/api/deposits", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...form, action: "UPDATE", id: editingDeposit.id, actor: user?.name }),
+          })
+        : await fetch("/api/deposits", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...form, actor: user?.name }),
+          });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Không tạo được phiếu cọc");
-      setForm((current) => ({ ...emptyForm, branchCode: branchScope !== "ALL" ? branchScope : current.branchCode }));
-      setMessage("Đã tạo phiếu cọc mới.");
+      if (!response.ok) {
+        throw new Error(payload.error || (editingDeposit ? "Không lưu được thay đổi" : "Không tạo được phiếu cọc"));
+      }
+      const savedMessage = editingDeposit ? `Đã lưu thay đổi phiếu cọc ${editingDeposit.code}.` : "Đã tạo phiếu cọc mới.";
+      resetDepositForm();
+      // loadDeposits() tự xoá thông báo cũ nên phải báo thành công sau khi tải lại danh sách.
       await loadDeposits();
+      setMessage(savedMessage);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Có lỗi khi tạo phiếu cọc");
+      setMessage(error instanceof Error ? error.message : "Có lỗi khi lưu phiếu cọc");
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const confirmDeleteDeposit = async (reason: string) => {
+    if (!deletingDeposit) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const query = new URLSearchParams({ id: deletingDeposit.id });
+      if (reason) query.set("reason", reason);
+      const response = await fetch(`/api/deposits?${query.toString()}`, { method: "DELETE" });
+      const payload = await response.json();
+      if (!response.ok) {
+        setDeleteError(payload.error || "Không xoá được phiếu cọc");
+        return;
+      }
+      if (editingDeposit?.id === deletingDeposit.id) resetDepositForm();
+      const deletedCode = deletingDeposit.code;
+      setDeletingDeposit(null);
+      await loadDeposits();
+      setMessage(`Đã chuyển phiếu cọc ${deletedCode} vào Thùng rác.`);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -288,7 +371,7 @@ export default function DepositsPage() {
       </header>
 
       <main className="max-w-7xl mx-auto p-6 grid grid-cols-1 xl:grid-cols-[420px_1fr] gap-6">
-        {!canCreateDeposits && (
+        {!canCreateDeposits && !editingDeposit && (
           <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 h-fit">
             <p className="text-xs font-bold text-blue-600 uppercase">Quyền truy cập</p>
             <h2 className="font-bold text-lg mt-1">Chỉ xem tiền cọc</h2>
@@ -298,10 +381,12 @@ export default function DepositsPage() {
           </div>
         )}
 
-        <form onSubmit={createDeposit} className={`bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4 ${canCreateDeposits ? "" : "hidden"}`}>
+        <form onSubmit={submitDeposit} className={`bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4 ${showDepositForm ? "" : "hidden"}`}>
           <div>
             <p className="text-xs font-bold text-blue-600 uppercase">2.1 Ghi nhận cọc</p>
-            <h2 className="font-bold text-lg mt-1">Tạo phiếu cọc</h2>
+            <h2 className="font-bold text-lg mt-1">
+              {editingDeposit ? `Sửa phiếu cọc ${editingDeposit.code}` : "Tạo phiếu cọc"}
+            </h2>
           </div>
 
           <label className="text-xs font-bold text-slate-600 block">
@@ -408,9 +493,20 @@ export default function DepositsPage() {
 
           {message && <p className="text-sm rounded-lg bg-blue-50 border border-blue-100 text-blue-700 px-3 py-2">{message}</p>}
 
-          <button disabled={isSaving} className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-bold transition-colors">
-            {isSaving ? "Đang lưu..." : "Tạo phiếu cọc"}
-          </button>
+          <div className="flex gap-2">
+            {editingDeposit && (
+              <button
+                type="button"
+                onClick={resetDepositForm}
+                className="px-4 bg-white border border-slate-300 text-slate-600 hover:bg-slate-50 rounded-lg py-2.5 text-sm font-bold transition-colors"
+              >
+                Huỷ
+              </button>
+            )}
+            <button disabled={isSaving} className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-bold transition-colors">
+              {isSaving ? "Đang lưu..." : editingDeposit ? "Lưu thay đổi" : "Tạo phiếu cọc"}
+            </button>
+          </div>
         </form>
 
         <section className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
@@ -424,6 +520,10 @@ export default function DepositsPage() {
               <button onClick={loadDeposits} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50">Tìm</button>
             </div>
           </div>
+
+          {message && !showDepositForm && (
+            <p className="mx-5 mt-4 text-sm rounded-lg bg-blue-50 border border-blue-100 text-blue-700 px-3 py-2">{message}</p>
+          )}
 
           {selectedDeposit && (
             <form onSubmit={submitProcessDeposit} className="border-b border-slate-200 bg-blue-50/60 p-4">
@@ -495,12 +595,12 @@ export default function DepositsPage() {
                   <th className="px-4 py-3">Khách hàng</th>
                   <th className="px-4 py-3">Số tiền</th>
                   <th className="px-4 py-3">Trạng thái</th>
-                  {canProcessDeposits && <th className="px-4 py-3 text-right">Xử lý</th>}
+                  <th className="px-4 py-3 text-right">Thao tác</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {deposits.length === 0 ? (
-                  <tr><td colSpan={canProcessDeposits ? 5 : 4} className="px-4 py-10 text-center text-slate-400">Chưa có phiếu cọc.</td></tr>
+                  <tr><td colSpan={5} className="px-4 py-10 text-center text-slate-400">Chưa có phiếu cọc.</td></tr>
                 ) : deposits.map((deposit) => (
                   <tr key={deposit.id} className="hover:bg-slate-50">
                     <td className="px-4 py-3">
@@ -525,14 +625,30 @@ export default function DepositsPage() {
                         </p>
                       )}
                     </td>
-                    {canProcessDeposits && (
-                      <td className="px-4 py-3 text-right space-x-2">
-                        <button onClick={() => openProcessForm(deposit, "OFFSET")} disabled={deposit.remainingAmount <= 0} className="text-xs font-bold text-blue-600 disabled:text-slate-300">Cấn trừ</button>
-                        <button onClick={() => openProcessForm(deposit, "SUPPLEMENT")} className="text-xs font-bold text-slate-600">Bổ sung</button>
-                        <button onClick={() => openProcessForm(deposit, "REFUND")} disabled={deposit.remainingAmount <= 0} className="text-xs font-bold text-emerald-600 disabled:text-slate-300">Hoàn</button>
-                        <button onClick={() => openProcessForm(deposit, "TRANSFER_REVENUE")} disabled={deposit.remainingAmount <= 0} className="text-xs font-bold text-amber-600 disabled:text-slate-300">Chuyển DT</button>
-                      </td>
-                    )}
+                    <td className="px-4 py-3">
+                      <div className="flex items-center justify-end gap-2">
+                        {canProcessDeposits && (
+                          <>
+                            <button onClick={() => openProcessForm(deposit, "OFFSET")} disabled={deposit.remainingAmount <= 0} className="text-xs font-bold text-blue-600 disabled:text-slate-300">Cấn trừ</button>
+                            <button onClick={() => openProcessForm(deposit, "SUPPLEMENT")} className="text-xs font-bold text-slate-600">Bổ sung</button>
+                            <button onClick={() => openProcessForm(deposit, "REFUND")} disabled={deposit.remainingAmount <= 0} className="text-xs font-bold text-emerald-600 disabled:text-slate-300">Hoàn</button>
+                            <button onClick={() => openProcessForm(deposit, "TRANSFER_REVENUE")} disabled={deposit.remainingAmount <= 0} className="text-xs font-bold text-amber-600 disabled:text-slate-300">Chuyển DT</button>
+                          </>
+                        )}
+                        <RowActions
+                          session={user}
+                          module="/deposits"
+                          compact
+                          onEdit={() => startEditDeposit(deposit)}
+                          onDelete={() => {
+                            setDeleteError(null);
+                            setDeletingDeposit(deposit);
+                          }}
+                          editDisabledReason={editLockReason(deposit)}
+                          deleteDisabledReason={deleteLockReason(deposit)}
+                        />
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -540,6 +656,19 @@ export default function DepositsPage() {
           </div>
         </section>
       </main>
+
+      <ConfirmDeleteDialog
+        open={Boolean(deletingDeposit)}
+        title={`Xoá phiếu cọc ${deletingDeposit?.code || ""}?`}
+        description={deletingDeposit ? `${deletingDeposit.partnerName} · ${formatCurrency(deletingDeposit.amount)} đ` : undefined}
+        submitting={deleting}
+        error={deleteError}
+        onCancel={() => {
+          setDeletingDeposit(null);
+          setDeleteError(null);
+        }}
+        onConfirm={confirmDeleteDeposit}
+      />
     </div>
   );
 }

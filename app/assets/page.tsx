@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { DateInput } from "@/components/DateInput";
+import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { displayRoleName, storeLabel, storeOptions } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
@@ -38,6 +39,7 @@ type Asset = {
   sourcePurchaseOrderId: string | null;
   sourceReceiptId: string | null;
   status: string;
+  disposalStatus?: string | null;
   note: string | null;
   allocatedPeriods?: number;
   allocatedAmount?: number;
@@ -82,6 +84,11 @@ export default function AssetsPage() {
   const [form, setForm] = useState(emptyForm);
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
+  /** Tài sản đang sửa; null nghĩa là biểu mẫu đang ở chế độ tạo mới. */
+  const [editingAsset, setEditingAsset] = useState<Asset | null>(null);
+  const [deletingAsset, setDeletingAsset] = useState<Asset | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   // Filters
   const [filterBranch, setFilterBranch] = useState("ALL");
@@ -111,6 +118,27 @@ export default function AssetsPage() {
 
   const canCreate = user ? canPerformAction(user.role, "create") : false;
   const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
+  /** Biểu mẫu bên trái hiện ra khi được tạo mới hoặc khi đang sửa một tài sản. */
+  const showAssetForm = canCreate || Boolean(editingAsset);
+  /** Số kỳ đã trích khấu hao của tài sản đang sửa; lớn hơn 0 thì các trường tài chính bị khoá. */
+  const editingAllocatedPeriods = editingAsset?.allocatedPeriods || 0;
+
+  const isDisposed = (asset: Asset) =>
+    Boolean(asset.disposalStatus) || asset.status === "DISPOSED" || asset.computedStatus === "DISPOSED";
+
+  /** Tài sản đã thanh lý thì hồ sơ phải giữ nguyên để đối chiếu sổ sách. */
+  const editLockReason = (asset: Asset) => {
+    if (isDisposed(asset)) return "Tài sản đã thanh lý, không thể sửa";
+    return null;
+  };
+
+  const deleteLockReason = (asset: Asset) => {
+    if (isDisposed(asset)) return "Tài sản đã thanh lý, không thể xoá. Hồ sơ thanh lý cần được lưu để đối chiếu sổ sách.";
+    if ((asset.allocatedPeriods || 0) > 0) {
+      return `Tài sản đã trích khấu hao ${asset.allocatedPeriods} kỳ, không thể xoá. Hãy thanh lý tài sản thay vì xoá.`;
+    }
+    return null;
+  };
 
   const getSessionHeaders = (): Record<string, string> => {
     if (typeof window === "undefined") return {};
@@ -225,9 +253,74 @@ export default function AssetsPage() {
     };
   }, [assets]);
 
-  const createAsset = async (event: React.FormEvent) => {
+  const resetAssetForm = () => {
+    setEditingAsset(null);
+    setForm((prev) => ({ ...emptyForm, branchCode: prev.branchCode }));
+  };
+
+  const startEditAsset = (asset: Asset) => {
+    setMessage("");
+    setEditingAsset(asset);
+    setForm({
+      name: asset.name,
+      branchCode: asset.branchCode,
+      departmentCode: asset.departmentCode || "",
+      assetGroup: asset.assetGroup,
+      location: asset.location || "",
+      quantity: String(asset.quantity),
+      purchaseDate: asset.purchaseDate ? asset.purchaseDate.slice(0, 10) : "",
+      originalCost: String(asset.originalCost),
+      usefulLifeMonths: asset.usefulLifeMonths ? String(asset.usefulLifeMonths) : "",
+      depreciationStartDate: asset.depreciationStartDate ? asset.depreciationStartDate.slice(0, 10) : "",
+      residualValue: String(asset.residualValue),
+      supplierCode: asset.supplierCode || "",
+      supplierName: asset.supplierName || "",
+      imageUrl: asset.imageUrl || "",
+      note: asset.note || "",
+    });
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const submitAsset = async (event: React.FormEvent) => {
     event.preventDefault();
     setMessage("");
+
+    if (editingAsset) {
+      // Tài sản đã trích khấu hao thì API khoá 6 trường tài chính, chỉ gửi thông tin quản lý.
+      const payloadBody = editingAllocatedPeriods > 0
+        ? {
+            id: editingAsset.id,
+            name: form.name,
+            branchCode: form.branchCode,
+            departmentCode: form.departmentCode,
+            assetGroup: form.assetGroup,
+            location: form.location,
+            supplierCode: form.supplierCode,
+            supplierName: form.supplierName,
+            imageUrl: form.imageUrl,
+            note: form.note,
+          }
+        : { ...form, id: editingAsset.id };
+
+      const response = await fetch("/api/assets", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          ...getSessionHeaders(),
+        },
+        body: JSON.stringify(payloadBody),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setMessage(payload.error || "Không lưu được thay đổi tài sản");
+        return;
+      }
+      setMessage(`Đã lưu thay đổi hồ sơ tài sản ${editingAsset.code}.`);
+      resetAssetForm();
+      await loadAssets();
+      return;
+    }
+
     const response = await fetch("/api/assets", {
       method: "POST",
       headers: {
@@ -244,6 +337,31 @@ export default function AssetsPage() {
     setMessage("Đã tạo thành công hồ sơ tài sản / CCDC.");
     setForm({ ...emptyForm, branchCode: form.branchCode });
     await loadAssets();
+  };
+
+  const confirmDeleteAsset = async (reason: string) => {
+    if (!deletingAsset) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const query = new URLSearchParams({ id: deletingAsset.id, type: "ASSET" });
+      if (reason) query.set("reason", reason);
+      const response = await fetch(`/api/assets?${query.toString()}`, {
+        method: "DELETE",
+        headers: getSessionHeaders(),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setDeleteError(payload.error || "Không xoá được tài sản");
+        return;
+      }
+      if (editingAsset?.id === deletingAsset.id) resetAssetForm();
+      setMessage(`Đã chuyển tài sản ${deletingAsset.code} vào Thùng rác.`);
+      setDeletingAsset(null);
+      await loadAssets();
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const handleImageUpload = (file: File | null) => {
@@ -399,15 +517,24 @@ export default function AssetsPage() {
 
         <div className="grid xl:grid-cols-[380px_1fr] gap-6">
           {/* Form Create Asset */}
-          {canCreate && (
+          {showAssetForm && (
             <form
-              onSubmit={createAsset}
+              onSubmit={submitAsset}
               className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4 h-fit"
             >
               <div>
                 <p className="text-xs font-bold text-blue-600 uppercase">Tài sản & CCDC Master</p>
-                <h2 className="font-bold text-lg text-slate-900 mt-0.5">Tạo hồ sơ tài sản / CCDC</h2>
+                <h2 className="font-bold text-lg text-slate-900 mt-0.5">
+                  {editingAsset ? `Sửa hồ sơ ${editingAsset.code}` : "Tạo hồ sơ tài sản / CCDC"}
+                </h2>
               </div>
+
+              {editingAsset && editingAllocatedPeriods > 0 && (
+                <p className="text-xs rounded-lg bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2">
+                  Tài sản đã trích khấu hao {editingAllocatedPeriods} kỳ nên số lượng, ngày mua, nguyên giá, số kỳ khấu hao,
+                  ngày bắt đầu khấu hao và giá trị thu hồi sẽ được giữ nguyên. Chỉ thông tin quản lý được cập nhật.
+                </p>
+              )}
 
               <label className="text-xs font-bold text-slate-600 block">
                 Tên tài sản / CCDC *
@@ -483,7 +610,8 @@ export default function AssetsPage() {
                     step="0.01"
                     value={form.quantity}
                     onChange={(e) => setForm((v) => ({ ...v, quantity: e.target.value }))}
-                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
+                    disabled={editingAllocatedPeriods > 0}
                     required
                   />
                 </label>
@@ -496,6 +624,7 @@ export default function AssetsPage() {
                     value={form.purchaseDate}
                     onChange={(purchaseDate) => setForm((v) => ({ ...v, purchaseDate }))}
                     className="mt-1"
+                    disabled={editingAllocatedPeriods > 0}
                     required
                     ariaLabel="Ngày mua tài sản"
                   />
@@ -508,7 +637,8 @@ export default function AssetsPage() {
                     min="1"
                     value={form.originalCost}
                     onChange={(e) => setForm((v) => ({ ...v, originalCost: e.target.value }))}
-                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
+                    disabled={editingAllocatedPeriods > 0}
                     placeholder="0"
                     required
                   />
@@ -523,7 +653,8 @@ export default function AssetsPage() {
                     min="1"
                     value={form.usefulLifeMonths}
                     onChange={(e) => setForm((v) => ({ ...v, usefulLifeMonths: e.target.value }))}
-                    className="mt-1 w-full border border-slate-300 rounded-lg px-2.5 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                    className="mt-1 w-full border border-slate-300 rounded-lg px-2.5 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
+                    disabled={editingAllocatedPeriods > 0}
                     placeholder="VD: 24"
                   />
                 </label>
@@ -534,6 +665,7 @@ export default function AssetsPage() {
                     value={form.depreciationStartDate}
                     onChange={(depreciationStartDate) => setForm((v) => ({ ...v, depreciationStartDate }))}
                     className="mt-1"
+                    disabled={editingAllocatedPeriods > 0}
                     ariaLabel="Ngày bắt đầu khấu hao"
                   />
                 </label>
@@ -547,7 +679,8 @@ export default function AssetsPage() {
                     min="0"
                     value={form.residualValue}
                     onChange={(e) => setForm((v) => ({ ...v, residualValue: e.target.value }))}
-                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
+                    disabled={editingAllocatedPeriods > 0}
                     placeholder="0"
                   />
                 </label>
@@ -622,9 +755,20 @@ export default function AssetsPage() {
                 </p>
               )}
 
-              <button className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-2.5 text-sm font-bold transition-colors shadow-sm">
-                Tạo tài sản / CCDC
-              </button>
+              <div className="flex gap-2">
+                {editingAsset && (
+                  <button
+                    type="button"
+                    onClick={resetAssetForm}
+                    className="px-4 bg-white border border-slate-300 text-slate-600 hover:bg-slate-50 rounded-lg py-2.5 text-sm font-bold transition-colors"
+                  >
+                    Huỷ
+                  </button>
+                )}
+                <button className="flex-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-2.5 text-sm font-bold transition-colors shadow-sm">
+                  {editingAsset ? "Lưu thay đổi" : "Tạo tài sản / CCDC"}
+                </button>
+              </div>
             </form>
           )}
 
@@ -634,6 +778,9 @@ export default function AssetsPage() {
             <div className="p-4 border-b border-slate-200 bg-slate-50/70 space-y-3 shrink-0">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h2 className="font-bold text-slate-900 text-base">Danh sách Tài sản &amp; CCDC</h2>
+                {message && !showAssetForm && (
+                  <p className="text-xs rounded-lg bg-blue-50 border border-blue-100 text-blue-700 px-3 py-1.5">{message}</p>
+                )}
                 <button
                   onClick={loadAssets}
                   className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 transition-colors inline-flex items-center gap-1.5"
@@ -754,12 +901,13 @@ export default function AssetsPage() {
                     <th className="px-3 py-3 text-right">Đã phân bổ</th>
                     <th className="px-3 py-3 text-right">Còn lại</th>
                     <th className="px-4 py-3 text-center">Trạng thái</th>
+                    <th className="px-4 py-3 text-right">Thao tác</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {assets.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="px-4 py-12 text-center text-slate-400">
+                      <td colSpan={10} className="px-4 py-12 text-center text-slate-400">
                         Chưa có tài sản hoặc CCDC nào phù hợp với bộ lọc.
                       </td>
                     </tr>
@@ -852,6 +1000,21 @@ export default function AssetsPage() {
                           <td className="px-4 py-3 text-center">
                             {getStatusBadge(statusToShow)}
                           </td>
+
+                          <td className="px-4 py-3 text-right">
+                            <RowActions
+                              session={user}
+                              module="/assets"
+                              compact
+                              onEdit={() => startEditAsset(asset)}
+                              onDelete={() => {
+                                setDeleteError(null);
+                                setDeletingAsset(asset);
+                              }}
+                              editDisabledReason={editLockReason(asset)}
+                              deleteDisabledReason={deleteLockReason(asset)}
+                            />
+                          </td>
                         </tr>
                       );
                     })
@@ -862,6 +1025,19 @@ export default function AssetsPage() {
           </section>
         </div>
       </main>
+
+      <ConfirmDeleteDialog
+        open={Boolean(deletingAsset)}
+        title={`Xoá tài sản ${deletingAsset?.code || ""}?`}
+        description={deletingAsset ? `${deletingAsset.name} · Nguyên giá ${money(deletingAsset.originalCost)} đ` : undefined}
+        submitting={deleting}
+        error={deleteError}
+        onCancel={() => {
+          setDeletingAsset(null);
+          setDeleteError(null);
+        }}
+        onConfirm={confirmDeleteAsset}
+      />
     </div>
   );
 }

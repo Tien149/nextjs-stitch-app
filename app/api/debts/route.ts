@@ -29,6 +29,8 @@ type DebtRow = {
 };
 
 type LedgerRow = {
+  /** Chỉ có với dòng đến từ DebtRecord, để màn hình công nợ gọi được PATCH/DELETE. */
+  id?: string;
   date: Date;
   dueDate?: Date | null;
   source: string;
@@ -146,6 +148,7 @@ export async function GET(request: Request) {
       }
       for (const item of debtRecords.filter((row) => row.partnerCode === partnerCode && row.outstandingAmount > 0)) {
         ledger.push({
+          id: item.id,
           date: item.documentDate,
           source: item.debtType,
           code: item.code,
