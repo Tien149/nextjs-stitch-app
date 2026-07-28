@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { DateInput } from "@/components/DateInput";
 import { ModuleFrame } from "@/components/ModuleFrame";
+import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { storeLabel, storeOptions } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 
@@ -43,6 +44,11 @@ export default function VouchersPage() {
   const [form, setForm] = useState(emptyForm);
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
+  /** Chứng từ đang sửa; null nghĩa là biểu mẫu đang ở chế độ tạo mới. */
+  const [editingVoucher, setEditingVoucher] = useState<Voucher | null>(null);
+  const [deletingVoucher, setDeletingVoucher] = useState<Voucher | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const loadVouchers = useCallback(async (branch: string) => {
     const response = await fetch(`/api/vouchers?branchCode=${branch}`);
@@ -96,26 +102,87 @@ export default function VouchersPage() {
   const canApprove = user ? canPerformAction(user.role, "approve") : false;
   const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
 
-  const createVoucher = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setMessage("");
-    const response = await fetch("/api/vouchers", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(form),
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      setMessage(payload.error || "Không tạo được chứng từ");
-      return;
-    }
+  /** Chứng từ đã ghi sổ hoặc đã huỷ thì không cho sửa/xoá; trả về lý do để hiện tooltip. */
+  const lockedForChange = (voucher: Voucher) => {
+    if (["APPROVED", "POSTED"].includes(voucher.status)) return "Chứng từ đã duyệt/ghi sổ, không thể sửa hoặc xoá";
+    if (voucher.status === "CANCELLED") return "Chứng từ đã huỷ";
+    return null;
+  };
+
+  const resetForm = () => {
+    setEditingVoucher(null);
     setForm({
       ...emptyForm,
       branchCode: branchCode === "ALL" ? "HCM" : branchCode,
       moneySourceCode: branchCode === "HN" ? "CASH_HN" : "CASH_HCM",
     });
-    setMessage("Đã tạo chứng từ.");
+  };
+
+  const startEditVoucher = (voucher: Voucher) => {
+    setMessage("");
+    setEditingVoucher(voucher);
+    setForm({
+      voucherType: voucher.voucherType,
+      voucherDate: voucher.voucherDate.slice(0, 10),
+      partnerCode: voucher.partnerCode || "",
+      partnerName: voucher.partnerName,
+      branchCode: voucher.branchCode,
+      moneySourceCode: voucher.moneySourceCode,
+      categoryCode: voucher.categoryCode || "",
+      amount: String(voucher.amount),
+      description: voucher.description,
+      status: voucher.status,
+    });
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const submitVoucher = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setMessage("");
+
+    const response = editingVoucher
+      ? await fetch("/api/vouchers", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...form, action: "UPDATE", id: editingVoucher.id }),
+        })
+      : await fetch("/api/vouchers", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(form),
+        });
+
+    const payload = await response.json();
+    if (!response.ok) {
+      setMessage(payload.error || (editingVoucher ? "Không lưu được thay đổi" : "Không tạo được chứng từ"));
+      return;
+    }
+
+    setMessage(editingVoucher ? "Đã lưu thay đổi chứng từ." : "Đã tạo chứng từ.");
+    resetForm();
     await loadVouchers(branchCode);
+  };
+
+  const confirmDeleteVoucher = async (reason: string) => {
+    if (!deletingVoucher) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const query = new URLSearchParams({ id: deletingVoucher.id });
+      if (reason) query.set("reason", reason);
+      const response = await fetch(`/api/vouchers?${query.toString()}`, { method: "DELETE" });
+      const payload = await response.json();
+      if (!response.ok) {
+        setDeleteError(payload.error || "Không xoá được chứng từ");
+        return;
+      }
+      setMessage(`Đã chuyển chứng từ ${deletingVoucher.code} vào Thùng rác.`);
+      if (editingVoucher?.id === deletingVoucher.id) resetForm();
+      setDeletingVoucher(null);
+      await loadVouchers(branchCode);
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const approveVoucher = async (id: string) => {
@@ -190,13 +257,15 @@ export default function VouchersPage() {
         </div>
 
         <main className="grid xl:grid-cols-[380px_1fr] gap-6 items-start">
-          {canCreate && (
-            <form onSubmit={createVoucher} className="bg-white border border-slate-200 rounded-2xl shadow-sm p-5 space-y-4">
+          {(canCreate || editingVoucher) && (
+            <form onSubmit={submitVoucher} className="bg-white border border-slate-200 rounded-2xl shadow-sm p-5 space-y-4">
               <div>
                 <span className="text-[10px] font-bold text-blue-600 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-full uppercase">
                   6.3 Receipt / Payment
                 </span>
-                <h2 className="font-bold text-lg mt-2 text-slate-800">Tạo phiếu thu/chi</h2>
+                <h2 className="font-bold text-lg mt-2 text-slate-800">
+                  {editingVoucher ? `Sửa phiếu ${editingVoucher.code}` : "Tạo phiếu thu/chi"}
+                </h2>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -330,7 +399,14 @@ export default function VouchersPage() {
               </label>
 
               {message && <p className="text-sm rounded-lg bg-blue-50 border border-blue-100 text-blue-700 px-3 py-2">{message}</p>}
-              <button className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-xl py-2.5 text-sm font-bold transition-all shadow-sm active:scale-[0.99]">Tạo chứng từ</button>
+              <div className="flex gap-2">
+                {editingVoucher && (
+                  <button type="button" onClick={resetForm} className="px-4 bg-white border border-slate-300 text-slate-600 hover:bg-slate-50 rounded-xl py-2.5 text-sm font-bold transition-all">Huỷ</button>
+                )}
+                <button className="flex-1 bg-blue-600 hover:bg-blue-700 text-white rounded-xl py-2.5 text-sm font-bold transition-all shadow-sm active:scale-[0.99]">
+                  {editingVoucher ? "Lưu thay đổi" : "Tạo chứng từ"}
+                </button>
+              </div>
             </form>
           )}
 
@@ -386,6 +462,18 @@ export default function VouchersPage() {
                           <button onClick={() => void cancelVoucher(voucher.id)} className="px-2.5 py-1 bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 rounded-lg text-xs font-bold transition-colors">Hủy</button>
                         )}
                         <button onClick={() => window.open(`/vouchers/${voucher.id}/print`, "_blank")} className="px-2.5 py-1 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 rounded-lg text-xs font-bold transition-colors">In</button>
+                        <RowActions
+                          session={user}
+                          module="/vouchers"
+                          compact
+                          onEdit={() => startEditVoucher(voucher)}
+                          onDelete={() => {
+                            setDeleteError(null);
+                            setDeletingVoucher(voucher);
+                          }}
+                          editDisabledReason={lockedForChange(voucher)}
+                          deleteDisabledReason={lockedForChange(voucher)}
+                        />
                       </td>
                     </tr>
                   ))}
@@ -395,6 +483,19 @@ export default function VouchersPage() {
           </section>
         </main>
       </div>
+
+      <ConfirmDeleteDialog
+        open={Boolean(deletingVoucher)}
+        title={`Xoá chứng từ ${deletingVoucher?.code || ""}?`}
+        description={deletingVoucher ? `${deletingVoucher.partnerName} · ${money(deletingVoucher.amount)} đ` : undefined}
+        submitting={deleting}
+        error={deleteError}
+        onCancel={() => {
+          setDeletingVoucher(null);
+          setDeleteError(null);
+        }}
+        onConfirm={confirmDeleteVoucher}
+      />
     </ModuleFrame>
   );
 }
