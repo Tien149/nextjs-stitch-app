@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import { branchAccessLabel } from "@/lib/branch-labels";
 import { prisma } from "@/lib/prisma";
+import { setSessionCookie } from "@/lib/session-cookie";
 
 export async function POST(request: Request) {
   try {
-    const { email, password } = await request.json();
+    const { email, password, rememberMe } = await request.json();
     if (!email || !password) {
       return NextResponse.json({ error: "Thiếu email hoặc mật khẩu" }, { status: 400 });
     }
@@ -81,7 +82,11 @@ export async function POST(request: Request) {
         loginAt: new Date().toISOString(),
       };
 
-      return NextResponse.json(session);
+      // Server là nơi duy nhất phát hành cookie phiên, tránh cảnh client và API
+      // giữ hai bản phiên có tuổi thọ lệch nhau.
+      const response = NextResponse.json(session);
+      setSessionCookie(response, JSON.stringify(session), Boolean(rememberMe));
+      return response;
     }
 
     // Không tìm thấy tài khoản đang hoạt động trong database.

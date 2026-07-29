@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { displayRoleName, storeLabel } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
+import { logout } from "@/lib/session-client";
 import { MonthInput } from "@/components/DateInput";
 
 type MasterDataItem = {
@@ -445,9 +446,8 @@ export default function SettingsPage() {
     await loadItems();
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem(SESSION_KEY);
-    document.cookie = `${SESSION_KEY}=; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT;`;
+  const handleLogout = async () => {
+    await logout();
     router.push("/login");
   };
 

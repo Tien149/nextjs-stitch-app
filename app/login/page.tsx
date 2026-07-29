@@ -44,7 +44,7 @@ export default function Login() {
       const response = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: userId.trim(), password: password.trim() }),
+        body: JSON.stringify({ email: userId.trim(), password: password.trim(), rememberMe }),
       });
 
       if (!response.ok) {
@@ -65,9 +65,7 @@ export default function Login() {
         localStorage.setItem("global_branch_code", "ALL");
       }
 
-      document.cookie = `${SESSION_KEY}=${encodeURIComponent(sessionValue)}; path=/; max-age=${
-        rememberMe ? 86400 * 7 : 3600
-      }; SameSite=Lax`;
+      // Cookie phiên do /api/auth/login phát hành (httpOnly), client không tự ghi nữa.
 
       const next = new URLSearchParams(window.location.search).get("next");
       const defaultRoute = getDefaultRouteForRole(session.role);

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { AppBrand } from "@/components/AppBrand";
 import { appMenuItems, canAccessMenu, type AppMenuItem, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
+import { logout } from "@/lib/session-client";
 
 function splitHref(href: string) {
   const [path, query = ""] = href.split("?");
@@ -71,9 +72,8 @@ export function AppSidebar() {
     [allowedMenuItems, pathname, search],
   );
 
-  const handleLogout = () => {
-    localStorage.removeItem(SESSION_KEY);
-    document.cookie = `${SESSION_KEY}=; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT;`;
+  const handleLogout = async () => {
+    await logout();
     router.push("/login");
   };
 

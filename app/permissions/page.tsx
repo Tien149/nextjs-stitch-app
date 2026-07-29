@@ -11,6 +11,7 @@ import {
   type DemoSession,
   SESSION_KEY,
 } from "@/lib/auth-demo";
+import { logout } from "@/lib/session-client";
 
 type RoleItem = {
   id: string;
@@ -417,9 +418,8 @@ export default function PermissionsPage() {
     }
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem(SESSION_KEY);
-    document.cookie = `${SESSION_KEY}=; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT;`;
+  const handleLogout = async () => {
+    await logout();
     router.push("/login");
   };
 
