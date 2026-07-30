@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { getRequestSession, requireMenuAction } from "@/lib/api-auth";
 import { assertBranchAccess, getAllowedBranches } from "@/lib/accounting";
-import { prisma } from "@/lib/prisma";
-import { softDeleteRecord } from "@/lib/soft-delete";
+import { prisma, prismaRaw } from "@/lib/prisma";
+import { duplicatedInTrashMessage, findDeletedByUnique, softDeleteRecord } from "@/lib/soft-delete";
 
 const defaultMasterData = [
   {
@@ -232,19 +232,39 @@ const defaultMasterData = [
   },
 ];
 
+let seedPromise: Promise<void> | null = null;
+
+/**
+ * Nạp danh mục mẫu, CHỈ khi bảng còn trắng.
+ *
+ * Trước đây hàm này upsert lại toàn bộ danh sách mẫu ở MỖI lần GET. Lớp xoá mềm đặt
+ * `deletedAt: null` cho mọi upsert (xem lib/prisma.ts) nên danh mục mẫu vừa bị xoá sẽ
+ * sống lại ngay ở lần tải danh sách sau đó: người dùng thấy "đã xoá thành công" nhưng
+ * dòng vẫn còn trên bảng.
+ */
 async function ensureSeedData() {
-  for (const item of defaultMasterData) {
-    await prisma.masterDataItem.upsert({
-      where: {
-        type_code: {
-          type: item.type,
-          code: item.code,
-        },
-      },
-      update: {},
-      create: item,
+  if (!seedPromise) {
+    seedPromise = (async () => {
+      // prismaRaw: đếm cả bản ghi đã xoá mềm, để danh mục đã xoá không bị nạp lại.
+      if ((await prismaRaw.masterDataItem.count()) > 0) return;
+      for (const item of defaultMasterData) {
+        await prismaRaw.masterDataItem.upsert({
+          where: {
+            type_code: {
+              type: item.type,
+              code: item.code,
+            },
+          },
+          update: {},
+          create: item,
+        });
+      }
+    })().catch((error) => {
+      seedPromise = null;
+      throw error;
     });
   }
+  return seedPromise;
 }
 
 function cleanText(value: unknown) {
@@ -372,6 +392,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: e instanceof Error ? e.message : "Dữ liệu không hợp lệ" }, { status: 400 });
     }
 
+    // Mã unique là (type, code): nếu bản ghi cũ đang nằm trong thùng rác thì nói rõ,
+    // tránh báo "mã đã tồn tại" trong khi người dùng không thấy dòng nào trên bảng.
+    if (await findDeletedByUnique("MasterDataItem", { type, code })) {
+      return NextResponse.json({ error: duplicatedInTrashMessage(code, "Danh mục") }, { status: 409 });
+    }
+
     const item = await prisma.masterDataItem.create({
       data: {
         type,
@@ -435,6 +461,15 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: e instanceof Error ? e.message : "Dữ liệu không hợp lệ" }, { status: 400 });
     }
 
+    // Bản ghi con liên kết bằng MÃ, nên đổi mã cha cũng bỏ rơi con y như xoá cha.
+    const nextCode = body.code !== undefined ? cleanText(body.code).toUpperCase() : current.code;
+    if (nextCode !== current.code) {
+      const blocked = await describeDependents(current, "đổi mã");
+      if (blocked) {
+        return NextResponse.json({ error: blocked }, { status: 409 });
+      }
+    }
+
     const item = await prisma.masterDataItem.update({
       where: { id },
       data: {
@@ -464,6 +499,62 @@ export async function PATCH(request: Request) {
   }
 }
 
+const TYPE_LABELS: Record<string, string> = {
+  BRANCH: "Cửa hàng",
+  DEPARTMENT: "Phòng ban",
+  WAREHOUSE: "Kho hàng",
+  PARTNER: "Đối tác",
+  MONEY_SOURCE: "Nguồn tiền",
+  REVENUE_EXPENSE_CATEGORY: "Thu / Chi",
+  ACCOUNTING_PERIOD: "Kỳ kế toán",
+  DOCUMENT_TYPE: "Loại chứng từ",
+  DOCUMENT_NUMBER_RULE: "Quy tắc mã",
+  SYSTEM_PARAM: "Tham số hệ thống",
+};
+
+function typeLabel(type: string) {
+  return TYPE_LABELS[type] || type;
+}
+
+/**
+ * Điều kiện tìm các danh mục khác đang trỏ vào bản ghi này.
+ *
+ * `validateMasterData` chỉ chặn lúc tạo/sửa, nên nếu xoá bản ghi cha thì các bản ghi con
+ * (Kho/Nguồn tiền/Phòng ban trỏ vào Cửa hàng, Quy tắc mã trỏ vào Loại chứng từ) trở thành
+ * mồ côi: vẫn hiển thị nhưng liên kết đến một mã không còn tồn tại.
+ */
+function dependentFilter(item: { type: string; code: string }): Record<string, unknown> | null {
+  if (item.type === "BRANCH") {
+    return { type: { in: ["WAREHOUSE", "MONEY_SOURCE", "DEPARTMENT"] }, branch: item.code };
+  }
+  if (item.type === "DOCUMENT_TYPE") {
+    return { type: "DOCUMENT_NUMBER_RULE", group: item.code };
+  }
+  return null;
+}
+
+/** Mô tả các danh mục con đang chặn thao tác, hoặc null nếu không có gì chặn. */
+async function describeDependents(item: { type: string; code: string }, action: "xoá" | "đổi mã") {
+  const filter = dependentFilter(item);
+  if (!filter) return null;
+
+  // prisma (không phải prismaRaw): bản ghi con đã nằm trong thùng rác thì không còn chặn.
+  const [dependents, total] = await Promise.all([
+    prisma.masterDataItem.findMany({
+      where: filter,
+      select: { type: true, code: true, name: true },
+      orderBy: [{ type: "asc" }, { code: "asc" }],
+      take: 5,
+    }),
+    prisma.masterDataItem.count({ where: filter }),
+  ]);
+  if (total === 0) return null;
+
+  const listed = dependents.map((row) => `${typeLabel(row.type)} ${row.code} - ${row.name}`).join("; ");
+  const more = total > dependents.length ? ` và ${total - dependents.length} mục khác` : "";
+  return `Không thể ${action} ${typeLabel(item.type)} "${item.code}" vì còn ${total} danh mục đang liên kết: ${listed}${more}. Hãy xoá hoặc chuyển các mục đó sang mã khác trước.`;
+}
+
 export async function DELETE(request: Request) {
   try {
     const auth = requireMenuAction(request, "/settings", "config");
@@ -478,6 +569,11 @@ export async function DELETE(request: Request) {
     const current = await prisma.masterDataItem.findUnique({ where: { id } });
     if (!current) {
       return NextResponse.json({ error: "Không tìm thấy danh mục" }, { status: 404 });
+    }
+
+    const blocked = await describeDependents(current, "xoá");
+    if (blocked) {
+      return NextResponse.json({ error: blocked }, { status: 409 });
     }
 
     await softDeleteRecord({ model: "MasterDataItem", id, session: auth.session });
