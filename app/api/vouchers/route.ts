@@ -7,6 +7,7 @@ import { isPeriodLocked } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import { duplicatedInTrashMessage, findDeletedByUnique, softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
 import type { DemoSession } from "@/lib/auth-demo";
+import { moneySourceMatchesBranch } from "@/lib/money-sources";
 
 /** Trạng thái không cho sửa/xoá vì chứng từ đã ghi sổ. */
 const lockedVoucherStatuses = ["APPROVED", "POSTED"];
@@ -105,6 +106,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi" }, { status: 403 });
     }
 
+    const activeSource = await prisma.masterDataItem.findFirst({
+      where: { type: "MONEY_SOURCE", code: moneySourceCode, status: "ACTIVE" },
+    });
+    if (!activeSource || !moneySourceMatchesBranch(activeSource, branchCode)) {
+      return NextResponse.json({ error: `Nguồn tiền [${moneySourceCode}] không tồn tại hoặc không thuộc cửa hàng đã chọn` }, { status: 400 });
+    }
+
     const voucherDate = body.voucherDate ? new Date(String(body.voucherDate)) : new Date();
     const code = await nextVoucherCode(voucherType, voucherDate, branchCode);
 
@@ -193,6 +201,13 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
   }
 
   // Chứng từ đã sinh xử lý cọc/công nợ thì sửa lại sẽ làm lệch số liệu -> chặn hẳn.
+  const activeSource = await prisma.masterDataItem.findFirst({
+    where: { type: "MONEY_SOURCE", code: moneySourceCode, status: "ACTIVE" },
+  });
+  if (!activeSource || !moneySourceMatchesBranch(activeSource, branchCode)) {
+    return NextResponse.json({ error: `Nguồn tiền [${moneySourceCode}] không tồn tại hoặc không thuộc cửa hàng đã chọn` }, { status: 400 });
+  }
+
   const [depositHistoryCount, debtSettlement] = await Promise.all([
     prisma.depositHistory.count({ where: { voucherId: id } }),
     prisma.debtSettlement.findUnique({ where: { voucherId: id } }),

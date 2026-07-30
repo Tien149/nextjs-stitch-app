@@ -5,13 +5,36 @@ import { addPeriod, apiError, businessError, cleanText, isPeriodLocked, normaliz
 import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
 import { writeAuditLog } from "@/lib/audit-log";
 import { generateFormattedVoucherCode } from "@/lib/voucher-code-generator";
+import { moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 
 const menuHref = "/finance-operations";
+const cashDepositDenominations = [500000, 200000, 100000, 50000, 20000, 10000, 5000, 2000, 1000];
+const cashDepositTargetLabels: Record<string, string> = { PKT: "Nộp Tiền PKT", CO: "Nộp Tiền Cô" };
+type CashDepositDenominationInput = { denomination?: unknown; quantity?: unknown; note?: unknown };
+type CashDepositDenominationRow = { denomination: number; quantity: number; amount: number; note: string | null };
 
 function periodBounds(period: string) {
   const start = new Date(`${period}-01T00:00:00`);
   const end = new Date(`${addPeriod(period, 1)}-01T00:00:00`);
   return { start, end };
+}
+
+function dayBounds(date: Date) {
+  const start = new Date(date);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  return { start, end };
+}
+
+function normalizeCashDepositShift(value: unknown) {
+  const shift = cleanText(value).toUpperCase();
+  return ["FULL", "MORNING", "EVENING"].includes(shift) ? shift : "FULL";
+}
+
+function normalizeCashDepositTarget(value: unknown) {
+  const target = cleanText(value).toUpperCase();
+  return target === "CO" ? "CO" : "PKT";
 }
 
 async function closingChecklist(period: string, branchCode: string) {
@@ -55,7 +78,11 @@ export async function GET(request: Request) {
       prisma.accrual.findMany({ where: { ...(branchCode === "ALL" ? {} : { branchCode }) }, include: { schedules: { orderBy: { period: "asc" } } }, orderBy: { createdAt: "desc" } }),
       prisma.accountingPeriod.findUnique({ where: { period_branchCode: { period, branchCode } } }),
       closingChecklist(period, branchCode),
-      prisma.moneyTransfer.findMany({ where: { ...branchFilter, transferDate: { gte: start, lt: end } }, orderBy: { transferDate: "asc" } }),
+      prisma.moneyTransfer.findMany({
+        where: { ...branchFilter, transferDate: { gte: start, lt: end } },
+        include: { denominations: { orderBy: { denomination: "desc" } } },
+        orderBy: { transferDate: "asc" },
+      }),
     ]);
 
     const openingAmount = openingBalances.reduce((sum, row) => sum + row.amount, 0);
@@ -109,6 +136,104 @@ export async function POST(request: Request) {
       return NextResponse.json(result);
     }
 
+    if (action === "CREATE_CASH_DEPOSIT_TRANSFER") {
+      const auth = requireMenuAction(request, menuHref, "create");
+      if (!auth.ok) return auth.response;
+
+      const transferDate = toDate(body.transferDate || body.sourceReportDate);
+      const sourceReportDate = toDate(body.sourceReportDate || body.transferDate, transferDate);
+      const branchCode = requestedBranch(auth.session, cleanText(body.branchCode));
+      const sourceShift = normalizeCashDepositShift(body.sourceShift);
+      const depositTargetType = normalizeCashDepositTarget(body.depositTargetType);
+      const fromMoneySourceCode = cleanText(body.fromMoneySourceCode);
+      const toMoneySourceCode = cleanText(body.toMoneySourceCode);
+      const amount = Math.round(toNumber(body.amount));
+      const denominationRows: CashDepositDenominationInput[] = Array.isArray(body.denominations) ? body.denominations : [];
+
+      if (!branchCode || branchCode === "ALL") businessError("Nộp tiền bắt buộc chọn một cửa hàng cụ thể.");
+      if (amount <= 0) businessError("Số tiền nộp phải lớn hơn 0.");
+      if (!fromMoneySourceCode || !toMoneySourceCode) businessError("Nguồn tiền đi và nguồn tiền nhận là bắt buộc.");
+      if (fromMoneySourceCode === toMoneySourceCode) businessError("Nguồn tiền đi và nguồn tiền nhận không được trùng nhau.");
+
+      try {
+        assertBranchAccess(auth.session, branchCode);
+      } catch (e) {
+        return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi" }, { status: 403 });
+      }
+
+      if (await isPeriodLocked(transferDate, branchCode)) businessError("Kỳ kế toán đã khóa");
+
+      const [fromMoneySource, toMoneySource] = await Promise.all([
+        prisma.masterDataItem.findFirst({ where: { type: "MONEY_SOURCE", code: fromMoneySourceCode, status: "ACTIVE", deletedAt: null } }),
+        prisma.masterDataItem.findFirst({ where: { type: "MONEY_SOURCE", code: toMoneySourceCode, status: "ACTIVE", deletedAt: null } }),
+      ]);
+      if (!fromMoneySource || !moneySourceMatchesBranch(fromMoneySource, branchCode)) businessError(`Nguồn tiền đi [${fromMoneySourceCode}] không tồn tại hoặc không thuộc cửa hàng đã chọn.`);
+      if (!toMoneySource || !moneySourceMatchesBranch(toMoneySource, branchCode)) businessError(`Nguồn tiền nhận [${toMoneySourceCode}] không tồn tại hoặc không thuộc cửa hàng đã chọn.`);
+      if (normalizeMoneySourceGroup(fromMoneySource.group) !== "CASH") businessError("Nộp tiền trong ngày bắt buộc đi từ nguồn tiền mặt.");
+
+      const denominations: CashDepositDenominationRow[] = denominationRows
+        .map((row) => {
+          const denomination = Math.floor(toNumber(row?.denomination));
+          const quantity = Math.floor(toNumber(row?.quantity));
+          return { denomination, quantity, amount: denomination * quantity, note: cleanText(row?.note) || null };
+        })
+        .filter((row) => row.denomination > 0 && row.quantity > 0);
+
+      if (denominations.length === 0) businessError("Bảng kê mệnh giá là bắt buộc khi nộp tiền.");
+      if (denominations.some((row) => !cashDepositDenominations.includes(row.denomination))) businessError("Bảng kê có mệnh giá không hợp lệ.");
+      const denominationTotal = denominations.reduce((sum: number, row: CashDepositDenominationRow) => sum + row.amount, 0);
+      if (denominationTotal !== amount) businessError(`Tổng bảng kê mệnh giá (${denominationTotal.toLocaleString("vi-VN")} đ) phải bằng số tiền nộp (${amount.toLocaleString("vi-VN")} đ).`);
+
+      const { start, end } = dayBounds(sourceReportDate);
+      const existing = await prisma.moneyTransfer.findFirst({
+        where: {
+          branchCode,
+          transferPurpose: "CASH_DEPOSIT",
+          depositTargetType,
+          sourceShift,
+          sourceReportDate: { gte: start, lt: end },
+          status: { in: ["PENDING_REVIEW", "APPROVED"] },
+          deletedAt: null,
+        },
+      });
+      if (existing) businessError(`Ngày/ca này đã có phiếu nộp tiền ${cashDepositTargetLabels[depositTargetType]} (${existing.code}) đang xử lý.`);
+
+      const transferCount = await prisma.moneyTransfer.count();
+      const reportDateCode = sourceReportDate.toISOString().slice(0, 10);
+      const result = await prisma.moneyTransfer.create({
+        data: {
+          code: generateFormattedVoucherCode({ voucherType: "NOPT", voucherDate: transferDate, branchCode, seqNumber: transferCount + 1 }),
+          transferDate,
+          branchCode,
+          fromMoneySourceCode,
+          toMoneySourceCode,
+          amount,
+          externalRef: `NOPT-${reportDateCode}-${branchCode}-${sourceShift}-${depositTargetType}`,
+          description: `${cashDepositTargetLabels[depositTargetType]} ngày ${reportDateCode} (${sourceShift})`,
+          transferPurpose: "CASH_DEPOSIT",
+          depositTargetType,
+          sourceReportDate: new Date(`${reportDateCode}T00:00:00`),
+          sourceShift,
+          status: "PENDING_REVIEW",
+          createdBy: auth.session.name,
+          denominations: { create: denominations },
+        },
+        include: { denominations: { orderBy: { denomination: "desc" } } },
+      });
+
+      await writeAuditLog({
+        session: auth.session,
+        module: "FINANCE_OPERATIONS",
+        action: "CREATE_CASH_DEPOSIT_TRANSFER",
+        entityType: "MoneyTransfer",
+        entityId: result.id,
+        entityCode: result.code,
+        branchCode,
+        metadata: { amount, from: fromMoneySourceCode, to: toMoneySourceCode, depositTargetType, sourceReportDate: reportDateCode, sourceShift, denominations },
+      });
+      return NextResponse.json(result, { status: 201 });
+    }
+
     if (["CLOSE_PERIOD", "REOPEN_PERIOD"].includes(action)) {
       const auth = requireMenuAction(request, menuHref, "config");
       if (!auth.ok) return auth.response;
@@ -144,12 +269,23 @@ export async function POST(request: Request) {
     if (action === "CREATE_ADJUSTMENT") {
       const entryDate = toDate(body.entryDate);
       const branchCode = cleanText(body.branchCode);
-      if (!branchCode || !cleanText(body.moneySourceCode) || toNumber(body.amount) <= 0 || !cleanText(body.description)) businessError("Bút toán điều chỉnh thiếu thông tin bắt buộc");
+      const moneySourceCode = cleanText(body.moneySourceCode);
+      if (!branchCode || !moneySourceCode || toNumber(body.amount) <= 0 || !cleanText(body.description)) businessError("Bút toán điều chỉnh thiếu thông tin bắt buộc");
 
       try {
         assertBranchAccess(auth.session, branchCode);
       } catch (e) {
         return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi" }, { status: 403 });
+      }
+
+      const moneySource = await prisma.masterDataItem.findFirst({
+        where: { type: "MONEY_SOURCE", code: moneySourceCode, status: "ACTIVE" },
+      });
+      if (!moneySource || !moneySourceMatchesBranch(moneySource, branchCode)) {
+        businessError(`Nguồn tiền [${moneySourceCode}] không tồn tại hoặc không thuộc cửa hàng đã chọn`);
+      }
+      if (normalizeMoneySourceGroup(moneySource.group) !== "CASH") {
+        businessError("Sổ quỹ chỉ được điều chỉnh các nguồn tiền mặt.");
       }
 
       if (await isPeriodLocked(entryDate, branchCode)) businessError("Kỳ kế toán đã khóa");
@@ -160,7 +296,7 @@ export async function POST(request: Request) {
           entryDate,
           entryType: cleanText(body.entryType) || "RECEIPT",
           branchCode,
-          moneySourceCode: cleanText(body.moneySourceCode),
+          moneySourceCode,
           amount: toNumber(body.amount),
           description: cleanText(body.description),
           createdBy: auth.session.name,

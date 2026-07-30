@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { isAdmin, requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { assertBranchAccess, branchFilterForSession } from "@/lib/accounting";
 import { prisma, prismaRaw } from "@/lib/prisma";
+import { moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -119,8 +120,12 @@ export async function POST(request: Request) {
       const activeSource = await prisma.masterDataItem.findUnique({
         where: { type_code: { type: "MONEY_SOURCE", code: moneySourceCode } }
       });
-      if (!activeSource || activeSource.status !== "ACTIVE") {
-        return NextResponse.json({ error: `Nguồn tiền [${moneySourceCode}] không tồn tại hoặc ngưng hoạt động` }, { status: 400 });
+      const expectedGroup = balanceType === "WALLET_POS" ? "WALLET" : balanceType;
+      if (!activeSource || activeSource.status !== "ACTIVE" || !moneySourceMatchesBranch(activeSource, branchCode)) {
+        return NextResponse.json({ error: `Nguồn tiền [${moneySourceCode}] không tồn tại, ngưng hoạt động hoặc không thuộc cửa hàng đã chọn` }, { status: 400 });
+      }
+      if (normalizeMoneySourceGroup(activeSource.group) !== expectedGroup) {
+        return NextResponse.json({ error: `Nguồn tiền [${moneySourceCode}] không đúng nhóm ${expectedGroup} của loại số dư ${balanceType}` }, { status: 400 });
       }
     }
 

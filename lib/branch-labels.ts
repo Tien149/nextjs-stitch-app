@@ -1,12 +1,16 @@
+function cleanStoreName(label: string) {
+  return label.replace(/^Chủ cửa hàng\s*-\s*/i, "").trim();
+}
+
 export const branchScopeOptions = [
   { code: "ALL", label: "Tất cả cửa hàng" },
-  { code: "HCM", label: "Chủ cửa hàng - Cửa hàng 1" },
-  { code: "HN", label: "Chủ cửa hàng - Cửa hàng 2" },
+  { code: "HCM", label: "Cửa hàng 1" },
+  { code: "HN", label: "Cửa hàng 2" },
 ];
 
 export const storeOptions = [
-  { code: "HCM", label: "Chủ cửa hàng - Cửa hàng 1" },
-  { code: "HN", label: "Chủ cửa hàng - Cửa hàng 2" },
+  { code: "HCM", label: "Cửa hàng 1" },
+  { code: "HN", label: "Cửa hàng 2" },
 ];
 
 export function updateDynamicBranches(branches: Array<{ code: string; name: string }>) {
@@ -15,13 +19,12 @@ export function updateDynamicBranches(branches: Array<{ code: string; name: stri
   const newScope = [{ code: "ALL", label: "Tất cả cửa hàng" }];
   const newStores: Array<{ code: string; label: string }> = [];
 
-  branches.forEach((b) => {
-    const label = b.name.startsWith("Chủ cửa hàng - ") ? b.name : `Chủ cửa hàng - ${b.name}`;
-    newScope.push({ code: b.code, label });
-    newStores.push({ code: b.code, label });
+  branches.forEach((branch) => {
+    const label = cleanStoreName(branch.name);
+    newScope.push({ code: branch.code, label });
+    newStores.push({ code: branch.code, label });
   });
 
-  // Mutate in place
   branchScopeOptions.length = 0;
   branchScopeOptions.push(...newScope);
 
@@ -31,13 +34,15 @@ export function updateDynamicBranches(branches: Array<{ code: string; name: stri
 
 export function branchLabel(code?: string | null) {
   if (!code) return "-";
-  return branchScopeOptions.find((option) => option.code === code)?.label || code;
+  const label = branchScopeOptions.find((option) => option.code === code)?.label || code;
+  return cleanStoreName(label);
 }
 
 export function storeLabel(code?: string | null) {
   if (!code) return "-";
   if (code === "ALL") return "Tất cả cửa hàng";
-  return storeOptions.find((option) => option.code === code)?.label.replace("Chủ cửa hàng - ", "") || code;
+  const label = storeOptions.find((option) => option.code === code)?.label || code;
+  return cleanStoreName(label);
 }
 
 export function branchAccessLabel(codes: string[]) {

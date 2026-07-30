@@ -5,15 +5,34 @@ import { DateInput, MonthInput } from "@/components/DateInput";
 import { branchScopeOptions, storeLabel, storeOptions } from "@/lib/branch-labels";
 import { canPerformMenuAction } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
+import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed } from "@/lib/money-sources";
 
 type CashEntry = { id: string; date: string; code: string; type: string; moneySourceCode: string; description: string; receipt: number; payment: number; balance: number };
 type Schedule = { id: string; period: string; amount: number; status: string };
 type Accrual = { id: string; code: string; name: string; branchCode: string; categoryCode: string; totalAmount: number; startPeriod: string; numberOfPeriods: number; status: string; schedules: Schedule[] };
 type Check = { key: string; label: string; passed: boolean; count: number };
-type MoneyTransfer = { id: string; code: string; transferDate: string; fromMoneySourceCode: string; toMoneySourceCode: string; amount: number; description: string; status: string };
+type MoneyTransferDenomination = { id: string; denomination: number; quantity: number; amount: number };
+type MoneyTransfer = {
+  id: string;
+  code: string;
+  transferDate: string;
+  fromMoneySourceCode: string;
+  toMoneySourceCode: string;
+  amount: number;
+  description: string;
+  status: string;
+  transferPurpose?: string | null;
+  depositTargetType?: string | null;
+  sourceReportDate?: string | null;
+  sourceShift?: string | null;
+  denominations?: MoneyTransferDenomination[];
+};
 type Data = { openingAmount: number; closingBalance: number; cashbook: CashEntry[]; accruals: Accrual[]; moneyTransfers: MoneyTransfer[]; accountingPeriod: { status: string; closedBy?: string; closedAt?: string }; checklist: Check[] };
+type MasterDataOption = { id: string; type: string; code: string; name: string; group: string | null; branch: string | null; status?: string };
 
 const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value);
+const cashDepositTargetLabels: Record<string, string> = { PKT: "Nộp Tiền PKT", CO: "Nộp Tiền Cô" };
+const shiftLabels: Record<string, string> = { FULL: "Cả ngày", MORNING: "Ca sáng", EVENING: "Ca tối" };
 
 export default function FinanceOperationsPage() {
   const href = "/finance-operations";
@@ -25,6 +44,7 @@ export default function FinanceOperationsPage() {
   const [data, setData] = useState<Data>({ openingAmount: 0, closingBalance: 0, cashbook: [], accruals: [], moneyTransfers: [], accountingPeriod: { status: "OPEN" }, checklist: [] });
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [moneySources, setMoneySources] = useState<MasterDataOption[]>([]);
   
   const [adjustment, setAdjustment] = useState({
     entryDate: new Date().toISOString().slice(0, 10),
@@ -55,9 +75,27 @@ export default function FinanceOperationsPage() {
     if (response.ok) setData((await response.json()) as Data);
   }, [branchCode, period]);
 
+  const loadMoneySources = useCallback(async () => {
+    const response = await fetch("/api/master-data?type=MONEY_SOURCE&status=ACTIVE");
+    if (!response.ok) return;
+    const sources = (await response.json()) as MasterDataOption[];
+    setMoneySources(sources);
+    setAdjustment((current) => {
+      const nextSource = isMoneySourceAllowed(sources, current.moneySourceCode, current.branchCode, ["CASH"])
+        ? current.moneySourceCode
+        : firstMoneySourceCode(sources, current.branchCode, ["CASH"]);
+      return { ...current, moneySourceCode: nextSource };
+    });
+  }, []);
+
   useEffect(() => {
-    if (!loading) window.setTimeout(() => void loadData(), 0);
-  }, [loading, loadData]);
+    if (!loading) {
+      window.setTimeout(() => {
+        void loadData();
+        void loadMoneySources();
+      }, 0);
+    }
+  }, [loading, loadData, loadMoneySources]);
 
   const send = async (body: object, success: string) => {
     if (submitting) return;
@@ -75,8 +113,8 @@ export default function FinanceOperationsPage() {
         setAdjustment({
           entryDate: new Date().toISOString().slice(0, 10),
           entryType: "RECEIPT",
-          branchCode: "HCM",
-          moneySourceCode: "CASH_HCM",
+          branchCode: adjustment.branchCode,
+          moneySourceCode: firstMoneySourceCode(moneySources, adjustment.branchCode, ["CASH"]),
           amount: "1000000",
           description: "Điều chỉnh kiểm kê quỹ",
         });
@@ -267,9 +305,24 @@ export default function FinanceOperationsPage() {
                     <tbody className="divide-y divide-slate-100">
                       {data.moneyTransfers.filter((transfer) => transfer.status === "PENDING_REVIEW").map((transfer) => (
                         <tr key={transfer.id}>
-                          <td className="px-4 py-3"><b>{transfer.code}</b><p className="text-slate-500">{new Date(transfer.transferDate).toLocaleDateString("vi-VN")}</p></td>
+                          <td className="px-4 py-3">
+                            <b>{transfer.code}</b>
+                            <p className="text-slate-500">{new Date(transfer.transferDate).toLocaleDateString("vi-VN")}</p>
+                            {transfer.transferPurpose === "CASH_DEPOSIT" && (
+                              <p className="mt-1 inline-flex rounded bg-blue-50 px-2 py-0.5 text-[11px] font-bold text-blue-700">
+                                {cashDepositTargetLabels[transfer.depositTargetType || ""] || "Nộp tiền"} · {shiftLabels[transfer.sourceShift || ""] || transfer.sourceShift}
+                              </p>
+                            )}
+                          </td>
                           <td className="px-4 py-3">{transfer.fromMoneySourceCode}</td>
-                          <td className="px-4 py-3">{transfer.toMoneySourceCode}</td>
+                          <td className="px-4 py-3">
+                            <p>{transfer.toMoneySourceCode}</p>
+                            {transfer.denominations && transfer.denominations.length > 0 && (
+                              <p className="mt-1 text-[11px] font-medium text-slate-500">
+                                {transfer.denominations.map((row) => `${money(row.denomination)} x ${row.quantity}`).join(", ")}
+                              </p>
+                            )}
+                          </td>
                           <td className="px-4 py-3 text-right font-bold">{money(transfer.amount)} đ</td>
                           <td className="px-4 py-3 text-right">
                             {canApproveTransfer ? (
@@ -328,7 +381,16 @@ export default function FinanceOperationsPage() {
                       <span className="text-xs font-bold text-slate-600">Cửa hàng</span>
                       <select
                         value={adjustment.branchCode}
-                        onChange={(e) => setAdjustment({ ...adjustment, branchCode: e.target.value })}
+                        onChange={(e) => {
+                          const nextBranch = e.target.value;
+                          setAdjustment({
+                            ...adjustment,
+                            branchCode: nextBranch,
+                            moneySourceCode: isMoneySourceAllowed(moneySources, adjustment.moneySourceCode, nextBranch, ["CASH"])
+                              ? adjustment.moneySourceCode
+                              : firstMoneySourceCode(moneySources, nextBranch, ["CASH"]),
+                          });
+                        }}
                         className="w-full pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all cursor-pointer"
                       >
                         {storeOptions.map((option) => (
@@ -346,11 +408,12 @@ export default function FinanceOperationsPage() {
                         onChange={(e) => setAdjustment({ ...adjustment, moneySourceCode: e.target.value })}
                         className="w-full pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all cursor-pointer"
                       >
-                        <option value="CASH_HCM">Tiền mặt Cửa hàng 1</option>
-                        <option value="CASH_HN">Tiền mặt Cửa hàng 2</option>
-                        <option value="VCB_HCM">Vietcombank Cửa hàng 1</option>
-                        <option value="VCB_HN">Vietcombank Cửa hàng 2</option>
-                        <option value="MOMO_POS">Momo POS</option>
+                        <option value="">-- Chọn quỹ tiền mặt --</option>
+                        {filterMoneySources(moneySources, adjustment.branchCode, ["CASH"]).map((source) => (
+                          <option key={source.id || source.code} value={source.code}>
+                            [{source.code}] {source.name}
+                          </option>
+                        ))}
                       </select>
                     </div>
                   </div>

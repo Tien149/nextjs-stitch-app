@@ -61,7 +61,7 @@ const defaultMasterData = [
     type: "MONEY_SOURCE",
     code: "TM_HCM",
     name: "Quy tien mat Cua hang 1",
-    group: "Tien mat",
+    group: "CASH",
     branch: "HCM",
     status: "ACTIVE",
   },
@@ -69,7 +69,7 @@ const defaultMasterData = [
     type: "MONEY_SOURCE",
     code: "VCB_HCM",
     name: "Vietcombank Cua hang 1",
-    group: "Ngan hang",
+    group: "BANK",
     branch: "HCM",
     accountNo: "0071000012345",
     status: "ACTIVE",
@@ -78,7 +78,7 @@ const defaultMasterData = [
     type: "MONEY_SOURCE",
     code: "POS_HN",
     name: "POS/Vi dien tu Cua hang 2",
-    group: "Vi/POS",
+    group: "WALLET",
     branch: "HN",
     status: "ACTIVE",
   },
@@ -138,6 +138,55 @@ const defaultMasterData = [
     name: "Mua sam thiet bi quay",
     group: "CAPEX",
     note: "Chi phi dau tu tai san",
+    status: "ACTIVE",
+  },
+  {
+    type: "ASSET_GROUP",
+    code: "EQUIPMENT",
+    name: "May moc thiet bi",
+    group: "FIXED_ASSET",
+    status: "ACTIVE",
+  },
+  {
+    type: "ASSET_GROUP",
+    code: "TOOL",
+    name: "Cong cu dung cu",
+    group: "CCDC",
+    status: "ACTIVE",
+  },
+  {
+    type: "ASSET_GROUP",
+    code: "FURNITURE",
+    name: "Noi that va decor",
+    group: "FIXED_ASSET",
+    status: "ACTIVE",
+  },
+  {
+    type: "INVENTORY_ITEM_GROUP",
+    code: "NVL",
+    name: "Nguyen vat lieu",
+    group: "RAW_MATERIAL",
+    status: "ACTIVE",
+  },
+  {
+    type: "INVENTORY_ITEM_GROUP",
+    code: "BTP",
+    name: "Ban thanh pham",
+    group: "SEMI_FINISHED",
+    status: "ACTIVE",
+  },
+  {
+    type: "INVENTORY_ITEM_GROUP",
+    code: "TP",
+    name: "Thanh pham",
+    group: "FINISHED",
+    status: "ACTIVE",
+  },
+  {
+    type: "INVENTORY_ITEM_GROUP",
+    code: "BAOBI",
+    name: "Bao bi va vat tu phu",
+    group: "PACKAGING",
     status: "ACTIVE",
   },
   {
@@ -267,6 +316,23 @@ async function ensureSeedData() {
   return seedPromise;
 }
 
+async function ensureSeedDataForType(type?: string) {
+  if (!type || !["ASSET_GROUP", "INVENTORY_ITEM_GROUP"].includes(type)) return;
+  if ((await prismaRaw.masterDataItem.count({ where: { type } })) > 0) return;
+  for (const item of defaultMasterData.filter((entry) => entry.type === type)) {
+    await prismaRaw.masterDataItem.upsert({
+      where: {
+        type_code: {
+          type: item.type,
+          code: item.code,
+        },
+      },
+      update: {},
+      create: item,
+    });
+  }
+}
+
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -286,6 +352,7 @@ export async function GET(request: Request) {
     const type = searchParams.get("type") || undefined;
     const status = searchParams.get("status") || undefined;
     const search = searchParams.get("search")?.trim();
+    await ensureSeedDataForType(type);
     const allowedBranches = getAllowedBranches(auth.session);
 
     const items = await prisma.masterDataItem.findMany({
@@ -356,6 +423,12 @@ async function validateMasterData(type: string, group: string | null, branch: st
   }
   if (type === "REVENUE_EXPENSE_CATEGORY" && group && !["OPEX", "CAPEX", "COGS", "REVENUE_SOURCE"].includes(group.toUpperCase())) {
     throw new Error("Nhóm Thu/Chi bắt buộc là OPEX, CAPEX, COGS hoặc REVENUE_SOURCE.");
+  }
+  if (type === "ASSET_GROUP" && group && !["FIXED_ASSET", "CCDC", "TOOL", "OTHER"].includes(group.toUpperCase())) {
+    throw new Error("Nhóm tài sản bắt buộc là FIXED_ASSET, CCDC, TOOL hoặc OTHER.");
+  }
+  if (type === "INVENTORY_ITEM_GROUP" && group && !["RAW_MATERIAL", "SEMI_FINISHED", "FINISHED", "PACKAGING", "TOOL", "ASSET", "OTHER"].includes(group.toUpperCase())) {
+    throw new Error("Nhóm mặt hàng bắt buộc là RAW_MATERIAL, SEMI_FINISHED, FINISHED, PACKAGING, TOOL, ASSET hoặc OTHER.");
   }
   if (type === "ACCOUNTING_PERIOD" && group && !["OPEN", "LOCKED", "CLOSED"].includes(group.toUpperCase())) {
     throw new Error("Trạng thái kỳ kế toán bắt buộc là OPEN, LOCKED hoặc CLOSED.");

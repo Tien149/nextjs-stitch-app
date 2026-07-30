@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { DateInput } from "@/components/DateInput";
 import { ModuleFrame } from "@/components/ModuleFrame";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { storeLabel, storeOptions } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
+import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed } from "@/lib/money-sources";
 
 type Voucher = {
   id: string;
@@ -22,6 +23,34 @@ type Voucher = {
   description: string;
   status: string;
 };
+
+type MasterDataOption = {
+  id: string;
+  type: string;
+  code: string;
+  name: string;
+  group: string | null;
+  branch: string | null;
+  status?: string;
+};
+
+const fallbackVoucherCategories: MasterDataOption[] = [
+  { id: "fallback-rev-food", type: "REVENUE_EXPENSE_CATEGORY", code: "REV_FOOD", name: "Doanh thu am thuc", group: "REVENUE_SOURCE", branch: null },
+  { id: "fallback-rev-other", type: "REVENUE_EXPENSE_CATEGORY", code: "REV_OTHER", name: "Doanh thu khac", group: "REVENUE_SOURCE", branch: null },
+  { id: "fallback-exp-rent", type: "REVENUE_EXPENSE_CATEGORY", code: "EXP_RENT", name: "Chi phi thue mat bang", group: "OPEX", branch: null },
+  { id: "fallback-exp-salary", type: "REVENUE_EXPENSE_CATEGORY", code: "EXP_SALARY", name: "Chi phi luong nhan vien", group: "OPEX", branch: null },
+  { id: "fallback-exp-marketing", type: "REVENUE_EXPENSE_CATEGORY", code: "EXP_MARKETING", name: "Chi phi Marketing", group: "OPEX", branch: null },
+  { id: "fallback-exp-other", type: "REVENUE_EXPENSE_CATEGORY", code: "EXP_OTHER", name: "Chi phi khac", group: "OPEX", branch: null },
+];
+
+function normalizeCategoryGroup(group: string | null | undefined) {
+  const raw = (group || "").toUpperCase();
+  if (raw.includes("REVENUE") || raw.includes("DOANH") || raw.includes("NGUON")) return "REVENUE_SOURCE";
+  if (raw.includes("COGS") || raw.includes("GIA")) return "COGS";
+  if (raw.includes("CAPEX")) return "CAPEX";
+  if (raw.includes("OPEX")) return "OPEX";
+  return raw;
+}
 
 const emptyForm = {
   voucherType: "RECEIPT",
@@ -49,10 +78,35 @@ export default function VouchersPage() {
   const [deletingVoucher, setDeletingVoucher] = useState<Voucher | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [moneySources, setMoneySources] = useState<MasterDataOption[]>([]);
+  const [categories, setCategories] = useState<MasterDataOption[]>([]);
 
   const loadVouchers = useCallback(async (branch: string) => {
     const response = await fetch(`/api/vouchers?branchCode=${branch}`);
     if (response.ok) setVouchers((await response.json()) as Voucher[]);
+  }, []);
+
+  const loadMoneySources = useCallback(async () => {
+    const rawSession = localStorage.getItem(SESSION_KEY);
+    const headers: Record<string, string> = rawSession ? { "x-demo-session": encodeURIComponent(rawSession) } : {};
+    const [moneyResponse, categoryResponse] = await Promise.all([
+      fetch("/api/master-data?type=MONEY_SOURCE&status=ACTIVE", { headers }),
+      fetch("/api/master-data?type=REVENUE_EXPENSE_CATEGORY&status=ACTIVE", { headers }),
+    ]);
+    if (moneyResponse.ok) {
+      const sources = (await moneyResponse.json()) as MasterDataOption[];
+      setMoneySources(sources);
+      setForm((current) => {
+        const nextBranch = current.branchCode || "HCM";
+        const nextSource = isMoneySourceAllowed(sources, current.moneySourceCode, nextBranch)
+          ? current.moneySourceCode
+          : firstMoneySourceCode(sources, nextBranch);
+        return { ...current, branchCode: nextBranch, moneySourceCode: nextSource };
+      });
+    }
+    if (categoryResponse.ok) {
+      setCategories((await categoryResponse.json()) as MasterDataOption[]);
+    }
   }, []);
 
   useEffect(() => {
@@ -80,18 +134,21 @@ export default function VouchersPage() {
       setBranchCode(initialBranch);
       setLoading(false);
       void loadVouchers(initialBranch);
+      void loadMoneySources();
     }, 0);
-  }, [router, loadVouchers]);
+  }, [router, loadVouchers, loadMoneySources]);
 
   useEffect(() => {
     window.setTimeout(() => {
       setForm((f) => ({
         ...f,
-        branchCode: branchCode === "ALL" ? "HCM" : branchCode,
-        moneySourceCode: branchCode === "HN" ? "CASH_HN" : "CASH_HCM",
+        branchCode: branchCode === "ALL" ? f.branchCode || "HCM" : branchCode,
+        moneySourceCode: isMoneySourceAllowed(moneySources, f.moneySourceCode, branchCode === "ALL" ? f.branchCode || "HCM" : branchCode)
+          ? f.moneySourceCode
+          : firstMoneySourceCode(moneySources, branchCode === "ALL" ? f.branchCode || "HCM" : branchCode),
       }));
     }, 0);
-  }, [branchCode]);
+  }, [branchCode, moneySources]);
 
   const handleBranchChange = (code: string) => {
     setBranchCode(code);
@@ -101,6 +158,33 @@ export default function VouchersPage() {
   const canCreate = user ? canPerformAction(user.role, "create") : false;
   const canApprove = user ? canPerformAction(user.role, "approve") : false;
   const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
+  const normalizedCategoryOptions = useMemo(() => {
+    const source = categories.length > 0 ? categories : fallbackVoucherCategories;
+    return source.map((category) => ({
+      ...category,
+      group: normalizeCategoryGroup(category.group),
+    }));
+  }, [categories]);
+  const categoryOptionsForType = useCallback(
+    (voucherType: string) =>
+      normalizedCategoryOptions.filter((category) => {
+        const group = normalizeCategoryGroup(category.group);
+        return voucherType === "RECEIPT" ? group === "REVENUE_SOURCE" : ["OPEX", "CAPEX", "COGS"].includes(group);
+      }),
+    [normalizedCategoryOptions],
+  );
+  const voucherCategoryOptions = useMemo(
+    () => categoryOptionsForType(form.voucherType),
+    [categoryOptionsForType, form.voucherType],
+  );
+
+  useEffect(() => {
+    if (voucherCategoryOptions.length === 0) return;
+    if (voucherCategoryOptions.some((category) => category.code === form.categoryCode)) return;
+    window.setTimeout(() => {
+      setForm((current) => ({ ...current, categoryCode: voucherCategoryOptions[0].code }));
+    }, 0);
+  }, [form.categoryCode, voucherCategoryOptions]);
 
   /** Chứng từ đã ghi sổ hoặc đã huỷ thì không cho sửa/xoá; trả về lý do để hiện tooltip. */
   const lockedForChange = (voucher: Voucher) => {
@@ -114,7 +198,8 @@ export default function VouchersPage() {
     setForm({
       ...emptyForm,
       branchCode: branchCode === "ALL" ? "HCM" : branchCode,
-      moneySourceCode: branchCode === "HN" ? "CASH_HN" : "CASH_HCM",
+      moneySourceCode: firstMoneySourceCode(moneySources, branchCode === "ALL" ? "HCM" : branchCode),
+      categoryCode: categoryOptionsForType(emptyForm.voucherType)[0]?.code || emptyForm.categoryCode,
     });
   };
 
@@ -273,7 +358,14 @@ export default function VouchersPage() {
                   Loại phiếu *
                   <select
                     value={form.voucherType}
-                    onChange={(event) => setForm((value) => ({ ...value, voucherType: event.target.value }))}
+                    onChange={(event) => {
+                      const voucherType = event.target.value;
+                      setForm((value) => ({
+                        ...value,
+                        voucherType,
+                        categoryCode: categoryOptionsForType(voucherType)[0]?.code || "",
+                      }));
+                    }}
                     className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white"
                   >
                     <option value="RECEIPT">Phiếu thu (Receipt)</option>
@@ -320,7 +412,16 @@ export default function VouchersPage() {
                   Cửa hàng *
                   <select
                     value={form.branchCode}
-                    onChange={(event) => setForm((value) => ({ ...value, branchCode: event.target.value }))}
+                    onChange={(event) => {
+                      const nextBranch = event.target.value;
+                      setForm((value) => ({
+                        ...value,
+                        branchCode: nextBranch,
+                        moneySourceCode: isMoneySourceAllowed(moneySources, value.moneySourceCode, nextBranch)
+                          ? value.moneySourceCode
+                          : firstMoneySourceCode(moneySources, nextBranch),
+                      }));
+                    }}
                     className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white disabled:opacity-75"
                     disabled={branchCode !== "ALL"}
                     required
@@ -341,19 +442,12 @@ export default function VouchersPage() {
                     className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white text-ellipsis overflow-hidden"
                     required
                   >
-                    {form.branchCode === "HCM" ? (
-                      <>
-                        <option value="CASH_HCM">Tiền mặt Cửa hàng 1</option>
-                        <option value="VCB_HCM">Vietcombank Cửa hàng 1</option>
-                        <option value="MOMO_POS">Momo POS</option>
-                      </>
-                    ) : (
-                      <>
-                        <option value="CASH_HN">Tiền mặt Cửa hàng 2</option>
-                        <option value="VCB_HN">Vietcombank Cửa hàng 2</option>
-                        <option value="MOMO_POS">Momo POS</option>
-                      </>
-                    )}
+                    <option value="">-- Chọn nguồn tiền --</option>
+                    {filterMoneySources(moneySources, form.branchCode).map((source) => (
+                      <option key={source.id || source.code} value={source.code}>
+                        [{source.code}] {source.name} ({source.group || ""})
+                      </option>
+                    ))}
                   </select>
                 </label>
               </div>
@@ -362,17 +456,17 @@ export default function VouchersPage() {
                 <label className="text-xs font-bold text-slate-600 block">
                   Nhóm thu/chi *
                   <select
-                    value={form.categoryCode || "REV_FOOD"}
+                    value={form.categoryCode || voucherCategoryOptions[0]?.code || ""}
                     onChange={(event) => setForm((value) => ({ ...value, categoryCode: event.target.value }))}
                     className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white"
                     required
                   >
-                    <option value="REV_FOOD">Doanh thu ẩm thực</option>
-                    <option value="REV_OTHER">Doanh thu khác</option>
-                    <option value="EXP_RENT">Chi phí thuê mặt bằng</option>
-                    <option value="EXP_SALARY">Chi phí lương nhân viên</option>
-                    <option value="EXP_MARKETING">Chi phí Marketing</option>
-                    <option value="EXP_OTHER">Chi phí khác</option>
+                    <option value="">-- Chọn nhóm thu/chi --</option>
+                    {voucherCategoryOptions.map((category) => (
+                      <option key={category.id || category.code} value={category.code}>
+                        [{category.group}] {category.name}
+                      </option>
+                    ))}
                   </select>
                 </label>
 

@@ -31,6 +31,12 @@ export type AppMenuItem = {
   roles: DemoRole[];
 };
 
+const standardRoles: DemoRole[] = ["Admin", "Kế toán tổng hợp", "Kế toán công nợ", "Quản lý", "Viewer"];
+
+function isDemoRole(role: string): role is DemoRole {
+  return standardRoles.includes(role as DemoRole);
+}
+
 export const SESSION_KEY = "user_session";
 
 export const demoUsers: DemoUser[] = [
@@ -54,7 +60,7 @@ export const demoUsers: DemoUser[] = [
     id: "congno",
     name: "Kế toán công nợ",
     role: "Kế toán công nợ",
-    branch: "Chủ cửa hàng - Cửa hàng 1",
+    branch: "Cửa hàng 1",
     email: "congno@fin-erp.vn",
     password: "123456",
   },
@@ -62,7 +68,7 @@ export const demoUsers: DemoUser[] = [
     id: "quanly",
     name: "Chủ cửa hàng",
     role: "Quản lý",
-    branch: "Chủ cửa hàng - Cửa hàng 2",
+    branch: "Cửa hàng 2",
     email: "quanly@fin-erp.vn",
     password: "123456",
   },
@@ -316,12 +322,11 @@ export function canAccessMenu(roleOrSession: DemoRole | DemoSession | string | n
     return customList.includes(item.href) || customList.includes(item.name);
   }
 
-  const standardRoles = ["Admin", "Kế toán tổng hợp", "Kế toán công nợ", "Quản lý", "Viewer"];
-  if (!standardRoles.includes(roleName)) {
+  if (!isDemoRole(roleName)) {
     return item.href !== "/permissions" && item.href !== "/audit-logs";
   }
 
-  return item.roles.includes(roleName as any);
+  return item.roles.includes(roleName);
 }
 
 export function canPerformAction(role: DemoRole, action: AppAction) {

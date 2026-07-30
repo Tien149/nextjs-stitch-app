@@ -7,6 +7,7 @@ import { isPeriodLocked } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import { duplicatedInTrashMessage, findDeletedByUnique, softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
 import type { DemoSession } from "@/lib/auth-demo";
+import { moneySourceMatchesBranch } from "@/lib/money-sources";
 
 /**
  * Lịch sử không tính là phát sinh xử lý cọc:
@@ -137,8 +138,8 @@ export async function POST(request: Request) {
     const activeSource = await prisma.masterDataItem.findUnique({
       where: { type_code: { type: "MONEY_SOURCE", code: moneySourceCode } }
     });
-    if (!activeSource || activeSource.status !== "ACTIVE") {
-      return NextResponse.json({ error: `Nguồn tiền [${moneySourceCode}] không tồn tại hoặc ngưng hoạt động` }, { status: 400 });
+    if (!activeSource || activeSource.status !== "ACTIVE" || !moneySourceMatchesBranch(activeSource, branchCode)) {
+      return NextResponse.json({ error: `Nguồn tiền [${moneySourceCode}] không tồn tại, ngưng hoạt động hoặc không thuộc cửa hàng đã chọn` }, { status: 400 });
     }
 
     const receivedDate = toDate(body.receivedDate);
@@ -231,6 +232,13 @@ async function updateDeposit(session: DemoSession, current: DepositRecord, body:
       { error: "Phiếu cọc đã phát sinh cấn trừ/hoàn cọc hoặc gắn với chứng từ thu/chi, không thể sửa số tiền. Hãy dùng thao tác bổ sung hoặc cấn trừ." },
       { status: 400 },
     );
+  }
+
+  const activeSource = await prisma.masterDataItem.findUnique({
+    where: { type_code: { type: "MONEY_SOURCE", code: moneySourceCode } },
+  });
+  if (!activeSource || activeSource.status !== "ACTIVE" || !moneySourceMatchesBranch(activeSource, branchCode)) {
+    return NextResponse.json({ error: `Nguồn tiền [${moneySourceCode}] không tồn tại, ngưng hoạt động hoặc không thuộc cửa hàng đã chọn` }, { status: 400 });
   }
 
   const [currentPeriodLocked, nextPeriodLocked] = await Promise.all([

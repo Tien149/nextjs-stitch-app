@@ -6,6 +6,7 @@ import { BranchScopeSelect, resolveInitialBranchScope } from "@/components/Branc
 import { MonthInput } from "@/components/DateInput";
 import { storeLabel } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
+import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed } from "@/lib/money-sources";
 
 type OpeningBalance = {
   id: string;
@@ -189,7 +190,10 @@ export default function OpeningBalancesPage() {
         setForm(prev => {
           const firstBranch = branchScope !== "ALL" ? branchScope : activeBranches[0]?.code || "";
           const firstPartner = activePartners[0] || null;
-          const firstMoneySource = activeMoneySources.find((item) => !firstBranch || item.branch === firstBranch)?.code || activeMoneySources[0]?.code || "";
+          const prevGroups = ["CASH", "BANK", "WALLET_POS"].includes(prev.balanceType)
+            ? [prev.balanceType === "WALLET_POS" ? "WALLET" : prev.balanceType]
+            : undefined;
+          const firstMoneySource = firstMoneySourceCode(activeMoneySources, firstBranch, prevGroups);
           const firstWarehouse = activeWarehouses.find(w => !firstBranch || w.branch === firstBranch)?.code || activeWarehouses[0]?.code || "";
           const firstDept = activeDepartments.find(d => !firstBranch || d.branch === firstBranch)?.code || activeDepartments[0]?.code || "";
           
@@ -198,7 +202,9 @@ export default function OpeningBalancesPage() {
             branchCode: branchScope !== "ALL" ? firstBranch : prev.branchCode || firstBranch,
             objectCode: prev.objectCode || (firstPartner ? firstPartner.code : ""),
             objectName: prev.objectName || (firstPartner ? firstPartner.name : ""),
-            moneySourceCode: prev.moneySourceCode || firstMoneySource,
+            moneySourceCode: isMoneySourceAllowed(activeMoneySources, prev.moneySourceCode, branchScope !== "ALL" ? firstBranch : prev.branchCode || firstBranch, prevGroups)
+              ? prev.moneySourceCode
+              : firstMoneySource,
             warehouseCode: prev.warehouseCode || firstWarehouse,
             departmentCode: prev.departmentCode || firstDept,
           };
@@ -261,6 +267,7 @@ export default function OpeningBalancesPage() {
   const isInventoryType = form.balanceType === "INVENTORY";
   const isAssetType = form.balanceType === "ASSET";
   const isPrepaidType = form.balanceType === "PREPAID_EXPENSE";
+  const sourceMoneyGroups = isSourceType ? [form.balanceType === "WALLET_POS" ? "WALLET" : form.balanceType] : undefined;
   const calculatedAmount = useMemo(() => {
     if (!isInventoryType && !isAssetType) return "";
     const quantity = Number(form.quantity) || 0;
@@ -339,7 +346,7 @@ export default function OpeningBalancesPage() {
         balanceType: form.balanceType,
         objectCode: partners[0]?.code || "",
         objectName: partners[0]?.name || "",
-        moneySourceCode: moneySources.find(m => m.branch === form.branchCode)?.code || moneySources[0]?.code || "",
+        moneySourceCode: firstMoneySourceCode(moneySources, form.branchCode, sourceMoneyGroups),
         warehouseCode: warehouses.find(w => w.branch === form.branchCode)?.code || warehouses[0]?.code || "",
         departmentCode: departments.find(d => d.branch === form.branchCode)?.code || departments[0]?.code || "",
       });
@@ -458,7 +465,16 @@ export default function OpeningBalancesPage() {
                 Cửa hàng *
                 <select
                   value={form.branchCode}
-                  onChange={(event) => setForm((value) => ({ ...value, branchCode: event.target.value }))}
+                  onChange={(event) => {
+                    const nextBranch = event.target.value;
+                    setForm((value) => ({
+                      ...value,
+                      branchCode: nextBranch,
+                      moneySourceCode: isMoneySourceAllowed(moneySources, value.moneySourceCode, nextBranch, sourceMoneyGroups)
+                        ? value.moneySourceCode
+                        : firstMoneySourceCode(moneySources, nextBranch, sourceMoneyGroups),
+                    }));
+                  }}
                   className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                   required
                 >
@@ -478,7 +494,21 @@ export default function OpeningBalancesPage() {
               Loại số dư *
               <select
                 value={form.balanceType}
-                onChange={(event) => setForm((value) => ({ ...value, balanceType: event.target.value, objectCode: "", objectName: "" }))}
+                onChange={(event) => {
+                  const nextBalanceType = event.target.value;
+                  const nextGroups = ["CASH", "BANK", "WALLET_POS"].includes(nextBalanceType)
+                    ? [nextBalanceType === "WALLET_POS" ? "WALLET" : nextBalanceType]
+                    : undefined;
+                  setForm((value) => ({
+                    ...value,
+                    balanceType: nextBalanceType,
+                    objectCode: "",
+                    objectName: "",
+                    moneySourceCode: nextGroups && isMoneySourceAllowed(moneySources, value.moneySourceCode, value.branchCode, nextGroups)
+                      ? value.moneySourceCode
+                      : firstMoneySourceCode(moneySources, value.branchCode, nextGroups),
+                  }));
+                }}
                 className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 cursor-pointer"
                 required
               >
@@ -501,13 +531,11 @@ export default function OpeningBalancesPage() {
                   required
                 >
                   <option value="">-- Chọn nguồn tiền --</option>
-                  {moneySources
-                    .filter(item => !form.branchCode || item.branch === form.branchCode)
-                    .map(item => (
-                      <option key={item.id} value={item.code}>
-                        [{item.code}] {item.name}
-                      </option>
-                    ))}
+                  {filterMoneySources(moneySources, form.branchCode, sourceMoneyGroups).map(item => (
+                    <option key={item.id} value={item.code}>
+                      [{item.code}] {item.name} ({item.group || ""})
+                    </option>
+                  ))}
                 </select>
               </label>
             )}

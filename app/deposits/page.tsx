@@ -7,6 +7,7 @@ import { DateInput } from "@/components/DateInput";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { storeLabel } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
+import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed } from "@/lib/money-sources";
 
 type DepositHistory = {
   id: string;
@@ -182,13 +183,15 @@ export default function DepositsPage() {
         setForm(prev => {
           const firstBranch = branchScope !== "ALL" ? branchScope : activeBranches[0]?.code || "";
           const firstPartner = activePartners[0] || null;
-          const firstMoneySource = activeMoneySources.find((item) => !firstBranch || item.branch === firstBranch)?.code || activeMoneySources[0]?.code || "";
+          const firstMoneySource = firstMoneySourceCode(activeMoneySources, firstBranch);
           return {
             ...prev,
             branchCode: branchScope !== "ALL" ? firstBranch : prev.branchCode || firstBranch,
             partnerCode: prev.partnerCode || (firstPartner ? firstPartner.code : ""),
             partnerName: prev.partnerName || (firstPartner ? firstPartner.name : ""),
-            moneySourceCode: prev.moneySourceCode || firstMoneySource,
+            moneySourceCode: isMoneySourceAllowed(activeMoneySources, prev.moneySourceCode, branchScope !== "ALL" ? firstBranch : prev.branchCode || firstBranch)
+              ? prev.moneySourceCode
+              : firstMoneySource,
           };
         });
       }
@@ -218,7 +221,10 @@ export default function DepositsPage() {
 
   const resetDepositForm = () => {
     setEditingDeposit(null);
-    setForm((current) => ({ ...emptyForm, branchCode: branchScope !== "ALL" ? branchScope : current.branchCode }));
+    setForm((current) => {
+      const nextBranch = branchScope !== "ALL" ? branchScope : current.branchCode;
+      return { ...emptyForm, branchCode: nextBranch, moneySourceCode: firstMoneySourceCode(moneySources, nextBranch) };
+    });
   };
 
   const startEditDeposit = (deposit: Deposit) => {
@@ -425,7 +431,16 @@ export default function DepositsPage() {
             Cửa hàng *
             <select
               value={form.branchCode}
-              onChange={(e) => setForm(val => ({ ...val, branchCode: e.target.value }))}
+              onChange={(e) => {
+                const nextBranch = e.target.value;
+                setForm((val) => ({
+                  ...val,
+                  branchCode: nextBranch,
+                  moneySourceCode: isMoneySourceAllowed(moneySources, val.moneySourceCode, nextBranch)
+                    ? val.moneySourceCode
+                    : firstMoneySourceCode(moneySources, nextBranch),
+                }));
+              }}
               className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
               required
             >
@@ -449,13 +464,11 @@ export default function DepositsPage() {
               required
             >
               <option value="">-- Chọn nguồn tiền --</option>
-              {moneySources
-                .filter(item => !form.branchCode || item.branch === form.branchCode)
-                .map(item => (
-                  <option key={item.id} value={item.code}>
-                    [{item.code}] {item.name} ({item.group || ""})
-                  </option>
-                ))}
+              {filterMoneySources(moneySources, form.branchCode).map(item => (
+                <option key={item.id} value={item.code}>
+                  [{item.code}] {item.name} ({item.group || ""})
+                </option>
+              ))}
             </select>
           </label>
 

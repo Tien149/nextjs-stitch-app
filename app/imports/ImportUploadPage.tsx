@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
+import { DateInput } from "@/components/DateInput";
 import { displayRoleName, storeLabel } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
+import { getImportTemplate, type ImportFieldDefinition, type ImportType } from "@/lib/import-templates";
 
 type PreviewRow = {
   sheetName: string;
@@ -51,6 +53,7 @@ type TemplateField = {
   field: string;
   label: string;
   required: boolean;
+  type?: string;
   hiddenFromMapping?: boolean;
 };
 
@@ -81,6 +84,30 @@ function statusBadgeClass(status: string) {
   if (status.includes("ERROR") || status.includes("FAILED")) return "bg-rose-50 text-rose-700 border-rose-200";
   if (status.includes("COMMITTED") || status === "APPROVED") return "bg-emerald-50 text-emerald-700 border-emerald-200";
   return "bg-amber-50 text-amber-700 border-amber-200";
+}
+
+function importTypeFromApiPath(apiPath: string) {
+  const [, query = ""] = apiPath.split("?");
+  return new URLSearchParams(query).get("importType") || "";
+}
+
+function currentDateValue() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function currentPeriodValue() {
+  return new Date().toISOString().slice(0, 7);
+}
+
+function manualInitialValue(field: ImportFieldDefinition, selectedBranch: string) {
+  if (field.field === "branch_code") return selectedBranch;
+  if (field.type === "date") return currentDateValue();
+  if (field.field.includes("period")) return currentPeriodValue();
+  if (field.field === "transaction_code" || field.field === "external_ref" || field.field === "document_code" || field.field === "reference_code") {
+    return `MANUAL-${Date.now()}`;
+  }
+  if (field.type === "number" || field.type === "integer") return "";
+  return "";
 }
 
 function getSessionFromStorage(): DemoSession | null {
@@ -119,7 +146,14 @@ export default function ImportUploadPage({
   const [mappingFields, setMappingFields] = useState<TemplateField[]>([]);
   const [mappingDirty, setMappingDirty] = useState(false);
   const [showTemplateLink, setShowTemplateLink] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualValues, setManualValues] = useState<Record<string, string>>({});
+  const [manualSaving, setManualSaving] = useState(false);
+  const [manualError, setManualError] = useState("");
   const alwaysShowTemplateLink = templateCode === "OPENING_BALANCE_STANDARD_V1";
+  const importType = importTypeFromApiPath(apiPath);
+  const template = useMemo(() => getImportTemplate(importType as ImportType, templateCode), [importType, templateCode]);
+  const manualFields = useMemo(() => template?.fields.filter((field) => !field.hiddenFromMapping) || [], [template]);
 
   useEffect(() => {
     const session = getSessionFromStorage();
@@ -180,6 +214,9 @@ export default function ImportUploadPage({
       setBatches([]);
       setSelectedBatch(null);
       setMessage("");
+      setManualOpen(false);
+      setManualValues({});
+      setManualError("");
       void loadBatches(controller.signal).catch((error) => {
         if (error instanceof Error && error.name !== "AbortError") setMessage("Không tải được lịch sử import.");
       });
@@ -189,6 +226,21 @@ export default function ImportUploadPage({
       controller.abort();
     };
   }, [apiPath, isCheckingAuth, loadBatches]);
+
+  useEffect(() => {
+    if (!manualOpen) return;
+    const timer = window.setTimeout(() => {
+      setManualError("");
+      setManualValues((current) => {
+        const next: Record<string, string> = {};
+        for (const field of manualFields) {
+          next[field.field] = current[field.field] ?? manualInitialValue(field, branchCode);
+        }
+        return next;
+      });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [branchCode, manualFields, manualOpen]);
 
   const upload = async (mode: "preview" | "commit") => {
     if (!file) {
@@ -233,6 +285,64 @@ export default function ImportUploadPage({
       setMessage(error instanceof Error ? error.message : "Có lỗi khi import file");
     } finally {
       setIsUploading(false);
+    }
+  };
+
+  const saveManualRow = async () => {
+    if (!template || manualFields.length === 0) {
+      setManualError("Không tải được cấu trúc template import.");
+      return;
+    }
+    if (requiresBranch && !branchCode) {
+      setManualError("Vui lòng chọn chi nhánh trước khi thêm mới.");
+      return;
+    }
+
+    setManualSaving(true);
+    setManualError("");
+    setMessage("");
+    try {
+      const XLSX = await import("xlsx");
+      const headers = manualFields.map((field) => field.label);
+      const row = manualFields.map((field) => manualValues[field.field] ?? "");
+      const worksheet = XLSX.utils.aoa_to_sheet([headers, row], { cellDates: true });
+      worksheet["!cols"] = headers.map((header) => ({ wch: Math.min(Math.max(header.length + 4, 14), 34) }));
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, (template.preferredSheetNames?.[0] || "Nhap tay").slice(0, 31));
+      const buffer = XLSX.write(workbook, { type: "array", bookType: "xlsx", compression: true });
+      const fileName = `manual_${template.code.toLowerCase()}_${new Date().toISOString().replace(/[:.]/g, "-")}.xlsx`;
+      const manualFile = new File([buffer], fileName, { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+
+      const formData = new FormData();
+      formData.append("file", manualFile);
+      formData.append("templateCode", templateCode);
+      if (branchCode) formData.append("branchCode", branchCode);
+
+      const response = await fetch(withQuery(apiPath, { mode: "commit" }), {
+        method: "POST",
+        body: formData,
+      });
+      const payload = await response.json();
+      const previewPayload = payload.preview as PreviewPayload | undefined;
+      if (previewPayload) {
+        setPreview(previewPayload);
+        setMapping(previewPayload.mapping || {});
+        setMappingFields((payload.template?.fields || []) as TemplateField[]);
+        setMappingDirty(false);
+      }
+      if (!response.ok) {
+        const firstError = previewPayload?.rows.find((row) => row.errors.length > 0)?.errors.join("; ");
+        throw new Error(firstError || payload.error || "Không lưu được dòng nhập tay");
+      }
+
+      setManualOpen(false);
+      setManualValues({});
+      setMessage("Đã thêm mới 1 dòng dữ liệu và commit vào hệ thống.");
+      await loadBatches();
+    } catch (error) {
+      setManualError(error instanceof Error ? error.message : "Có lỗi khi thêm mới dữ liệu.");
+    } finally {
+      setManualSaving(false);
     }
   };
 
@@ -320,6 +430,14 @@ export default function ImportUploadPage({
           </div>
         </div>
         <div className="flex items-center gap-4">
+          <button
+            type="button"
+            onClick={() => setManualOpen(true)}
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-blue-600 px-3 text-xs font-bold text-white shadow-sm hover:bg-blue-700"
+          >
+            <span className="material-symbols-outlined text-base">add</span>
+            Thêm mới
+          </button>
           <label className="hidden cursor-pointer items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-bold text-slate-600 hover:bg-white sm:flex">
             <input
               type="checkbox"
@@ -688,6 +806,111 @@ export default function ImportUploadPage({
           </section>
         )}
       </main>
+
+      {manualOpen && (
+        <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/40">
+          <button
+            type="button"
+            aria-label="Đóng thêm mới"
+            className="absolute inset-0 cursor-default"
+            onClick={() => !manualSaving && setManualOpen(false)}
+          />
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void saveManualRow();
+            }}
+            className="relative flex h-full w-full max-w-xl flex-col bg-white shadow-2xl"
+          >
+            <div className="border-b border-slate-200 px-5 py-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-bold uppercase text-blue-600">Nhập nhanh</p>
+                  <h2 className="mt-1 text-lg font-bold text-slate-900">{title}</h2>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Nhập một dòng dữ liệu ít phát sinh. Hệ thống vẫn dùng validation và lịch sử import như file Excel.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setManualOpen(false)}
+                  disabled={manualSaving}
+                  className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 disabled:opacity-50"
+                >
+                  <span className="material-symbols-outlined text-lg">close</span>
+                </button>
+              </div>
+
+              {requiresBranch && (
+                <p className="mt-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700">
+                  Chi nhánh áp dụng: {branchCode ? storeLabel(branchCode) : "Chưa chọn"}
+                </p>
+              )}
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-5 py-4">
+              {manualFields.length === 0 ? (
+                <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+                  Không tìm thấy cấu trúc field của template này.
+                </p>
+              ) : (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {manualFields.map((field) => (
+                    <label key={field.field} className="text-xs font-bold text-slate-600">
+                      {field.label}{field.required ? " *" : ""}
+                      {field.type === "date" ? (
+                        <DateInput
+                          value={manualValues[field.field] || ""}
+                          onChange={(value) => setManualValues((current) => ({ ...current, [field.field]: value }))}
+                          className="mt-1"
+                          required={field.required}
+                          ariaLabel={field.label}
+                        />
+                      ) : (
+                        <input
+                          type={field.type === "number" || field.type === "integer" ? "number" : "text"}
+                          step={field.type === "integer" ? 1 : "any"}
+                          value={manualValues[field.field] || ""}
+                          onChange={(event) => setManualValues((current) => ({ ...current, [field.field]: event.target.value }))}
+                          className="mt-1 h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                          required={field.required}
+                          placeholder={field.type === "number" || field.type === "integer" ? "0" : field.field}
+                        />
+                      )}
+                    </label>
+                  ))}
+                </div>
+              )}
+
+              {manualError && (
+                <p className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">
+                  {manualError}
+                </p>
+              )}
+            </div>
+
+            <div className="border-t border-slate-200 bg-slate-50 px-5 py-4">
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setManualOpen(false)}
+                  disabled={manualSaving}
+                  className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                >
+                  Huỷ
+                </button>
+                <button
+                  type="submit"
+                  disabled={manualSaving || manualFields.length === 0}
+                  className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {manualSaving ? "Đang lưu..." : "Lưu & commit"}
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }

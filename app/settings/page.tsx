@@ -52,6 +52,8 @@ const tabs = [
   { type: "PARTNER", label: "Đối tác", icon: "handshake", hint: "1.1 - Khách hàng, NCC, Đối tác" },
   { type: "MONEY_SOURCE", label: "Nguồn tiền", icon: "account_balance_wallet", hint: "1.1 - Quỹ/Ngân hàng/Ví" },
   { type: "REVENUE_EXPENSE_CATEGORY", label: "Thu / Chi", icon: "category", hint: "1.2 - OPEX/CAPEX/Giá vốn/Doanh thu" },
+  { type: "ASSET_GROUP", label: "Nhóm tài sản", icon: "precision_manufacturing", hint: "1.2 - Tài sản/CCDC" },
+  { type: "INVENTORY_ITEM_GROUP", label: "Nhóm mặt hàng", icon: "inventory_2", hint: "1.2 - Nguyên liệu, hàng hóa" },
   { type: "ACCOUNTING_PERIOD", label: "Kỳ kế toán", icon: "calendar_month", hint: "1.4 - Mở/khóa kỳ ghi sổ" },
   { type: "DOCUMENT_TYPE", label: "Loại chứng từ", icon: "receipt_long", hint: "1.4 - Phiếu thu/chi/cọc" },
   { type: "DOCUMENT_NUMBER_RULE", label: "Quy tắc mã", icon: "tag", hint: "1.4 - Thiết lập số chứng tự tự sinh" },
@@ -82,6 +84,8 @@ const groupPlaceholders: Record<string, string> = {
   PARTNER: "VD: Khach hang / Nha cung cap / Doi tac",
   MONEY_SOURCE: "VD: Tien mat / Ngan hang / Vi/POS",
   REVENUE_EXPENSE_CATEGORY: "VD: OPEX / CAPEX / Gia von / Nguon doanh thu",
+  ASSET_GROUP: "VD: Tai san co dinh / CCDC / May moc",
+  INVENTORY_ITEM_GROUP: "VD: Nguyen lieu / Ban thanh pham / Thanh pham",
   ACCOUNTING_PERIOD: "VD: OPEN / CLOSED",
   DOCUMENT_TYPE: "VD: Thu / Chi / Tien coc",
   DOCUMENT_NUMBER_RULE: "VD: PT / PC / COC",
@@ -95,6 +99,8 @@ const codePlaceholders: Record<string, string> = {
   PARTNER: "VD: NCC_001",
   MONEY_SOURCE: "VD: VCB_01",
   REVENUE_EXPENSE_CATEGORY: "VD: CHIPHI_OPEX",
+  ASSET_GROUP: "VD: EQUIPMENT",
+  INVENTORY_ITEM_GROUP: "VD: NVL",
   ACCOUNTING_PERIOD: "VD: 2026-07",
   DOCUMENT_TYPE: "VD: PHIEU_THU",
   DOCUMENT_NUMBER_RULE: "VD: RULE_PT",
@@ -108,6 +114,8 @@ const namePlaceholders: Record<string, string> = {
   PARTNER: "VD: Công ty TNHH Nam Mới",
   MONEY_SOURCE: "VD: Ngân hàng VCB - 0123456789",
   REVENUE_EXPENSE_CATEGORY: "VD: Chi phí thuê mặt bằng",
+  ASSET_GROUP: "VD: Máy móc thiết bị",
+  INVENTORY_ITEM_GROUP: "VD: Nguyên vật liệu",
   ACCOUNTING_PERIOD: "VD: Kỳ kế toán Tháng 07/2026",
   DOCUMENT_TYPE: "VD: Phiếu thu tiền mặt",
   DOCUMENT_NUMBER_RULE: "VD: Quy tắc mã phiếu thu",
@@ -116,6 +124,8 @@ const namePlaceholders: Record<string, string> = {
 
 const notePlaceholders: Record<string, string> = {
   REVENUE_EXPENSE_CATEGORY: "VD: dung cho import doanh thu, phan loai chi phi hoac P&L",
+  ASSET_GROUP: "VD: dung de phan loai tai san, CCDC, bao tri va khau hao",
+  INVENTORY_ITEM_GROUP: "VD: dung de loc ton kho, dinh luong, mua hang",
   ACCOUNTING_PERIOD: "VD: ngay bat dau/ket thuc ky, ghi chu khoa so",
   DOCUMENT_TYPE: "VD: chung tu thu tien, chi tien, ghi nhan tien coc",
   DOCUMENT_NUMBER_RULE: "VD: PTHU-2607-ASA-00001 (MãPhiếu-YYMM-ChiNhánh-STT5)",
@@ -925,7 +935,7 @@ export default function SettingsPage() {
                         <option value="ALL">Tất cả cửa hàng</option>
                         {dynamicStores.map((store) => (
                           <option key={store.code} value={store.code}>
-                            Chủ cửa hàng - {store.name}
+                            {store.name}
                           </option>
                         ))}
                       </select>

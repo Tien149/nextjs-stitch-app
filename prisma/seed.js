@@ -51,7 +51,7 @@ async function main() {
       password: '123456',
       name: 'Kế toán công nợ',
       roleName: 'Kế toán công nợ',
-      branch: 'Chủ cửa hàng - Cửa hàng 1',
+      branch: 'Cửa hàng 1',
       branches: ['HCM']
     },
     {
@@ -60,7 +60,7 @@ async function main() {
       password: '123456',
       name: 'Chủ cửa hàng',
       roleName: 'Quản lý',
-      branch: 'Chủ cửa hàng - Cửa hàng 2',
+      branch: 'Cửa hàng 2',
       branches: ['HN']
     },
     {
