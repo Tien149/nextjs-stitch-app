@@ -873,6 +873,10 @@ model MoneyTransfer {
   amount              Float
   externalRef         String?
   description         String
+  transferPurpose     String?
+  depositTargetType   String?
+  sourceReportDate    DateTime?
+  sourceShift         String?
   status              String   @default("PENDING_REVIEW")
   createdBy           String?
   approvedBy          String?
@@ -880,6 +884,7 @@ model MoneyTransfer {
   updatedAt           DateTime @updatedAt
 
   importBatch ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  denominations MoneyTransferDenomination[]
 
   deletedAt DateTime?
   deletedBy String?
@@ -887,9 +892,26 @@ model MoneyTransfer {
   @@index([transferDate])
   @@index([branchCode])
   @@index([status])
+  @@index([transferPurpose])
+  @@index([sourceReportDate])
   @@index([importBatchId])
   @@index([branchCode, externalRef])
   @@index([deletedAt])
+}
+
+model MoneyTransferDenomination {
+  id              String   @id @default(uuid())
+  moneyTransferId String
+  denomination    Int
+  quantity        Int
+  amount          Float
+  note            String?
+  createdAt       DateTime @default(now())
+
+  moneyTransfer MoneyTransfer @relation(fields: [moneyTransferId], references: [id], onDelete: Cascade)
+
+  @@unique([moneyTransferId, denomination])
+  @@index([moneyTransferId])
 }
 
 model Accrual {
