@@ -7,7 +7,7 @@ import { ModuleFrame } from "@/components/ModuleFrame";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { storeLabel, storeOptions } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
-import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed } from "@/lib/money-sources";
+import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
 
 type Voucher = {
   id: string;
@@ -444,8 +444,8 @@ export default function VouchersPage() {
                   >
                     <option value="">-- Chọn nguồn tiền --</option>
                     {filterMoneySources(moneySources, form.branchCode).map((source) => (
-                      <option key={source.id || source.code} value={source.code}>
-                        [{source.code}] {source.name} ({source.group || ""})
+                      <option key={source.id || source.code} value={source.code} title={moneySourceDebugLabel(source, storeLabel(form.branchCode))}>
+                        {moneySourceDisplayName(source, storeLabel(form.branchCode))}
                       </option>
                     ))}
                   </select>

@@ -6,7 +6,7 @@ import { BranchScopeSelect, resolveInitialBranchScope } from "@/components/Branc
 import { MonthInput } from "@/components/DateInput";
 import { storeLabel } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
-import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed } from "@/lib/money-sources";
+import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
 
 type OpeningBalance = {
   id: string;
@@ -532,8 +532,8 @@ export default function OpeningBalancesPage() {
                 >
                   <option value="">-- Chọn nguồn tiền --</option>
                   {filterMoneySources(moneySources, form.branchCode, sourceMoneyGroups).map(item => (
-                    <option key={item.id} value={item.code}>
-                      [{item.code}] {item.name} ({item.group || ""})
+                    <option key={item.id} value={item.code} title={moneySourceDebugLabel(item, storeLabel(form.branchCode))}>
+                      {moneySourceDisplayName(item, storeLabel(form.branchCode))}
                     </option>
                   ))}
                 </select>

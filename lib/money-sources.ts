@@ -55,6 +55,40 @@ export function isMoneySourceAllowed(
   return filterMoneySources(sources, branchCode, groups).some((source) => source.code === code);
 }
 
+function stripLeadingToken(label: string, token: string | null | undefined) {
+  const cleanToken = (token || "").trim();
+  if (!cleanToken) return label;
+  return label.replace(new RegExp(`^${cleanToken.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*[-_–—:]?\\s*`, "i"), "").trim();
+}
+
+function humanizeCodeLabel(label: string) {
+  return label
+    .replace(/\bTIENMAT\b/gi, "Tiền mặt")
+    .replace(/\bTHUNGAN\b/gi, "Thu ngân")
+    .replace(/\bNGANHANG\b/gi, "Ngân hàng")
+    .replace(/\bVIETINBANK\b/gi, "Vietinbank")
+    .replace(/\bTECHCOMBANK\b/gi, "Techcombank")
+    .replace(/\bVPBANK\b/gi, "VPBank")
+    .replace(/\bMOMO\b/gi, "Momo")
+    .replace(/\bVNPay\b/gi, "VNPay");
+}
+
+export function moneySourceDisplayName(source: MoneySourceOption, currentBranchLabel?: string | null) {
+  const rawName = (source.name || source.code || "").trim();
+  const parts = rawName.split("_").map((part) => part.trim()).filter(Boolean);
+  let label = parts.length >= 2 ? parts.slice(1).join(" ") : rawName;
+  label = label.replace(/_/g, " ").replace(/\s+/g, " ").trim();
+  label = stripLeadingToken(label, currentBranchLabel);
+  label = stripLeadingToken(label, source.branch);
+  label = stripLeadingToken(label, source.code);
+  return humanizeCodeLabel(label || source.name || source.code);
+}
+
+export function moneySourceDebugLabel(source: MoneySourceOption, currentBranchLabel?: string | null) {
+  const group = source.group ? ` (${source.group})` : "";
+  return `[${source.code}] ${moneySourceDisplayName(source, currentBranchLabel)}${group}`;
+}
+
 export function moneySourceAccountCode(source: MoneySourceOption | null | undefined) {
   const group = normalizeMoneySourceGroup(source?.group);
   return group === "CASH" ? "1111" : "1121";

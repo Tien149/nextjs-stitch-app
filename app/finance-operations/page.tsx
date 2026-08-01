@@ -5,7 +5,7 @@ import { DateInput, MonthInput } from "@/components/DateInput";
 import { branchScopeOptions, storeLabel, storeOptions } from "@/lib/branch-labels";
 import { canPerformMenuAction } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
-import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed } from "@/lib/money-sources";
+import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
 
 type CashEntry = { id: string; date: string; code: string; type: string; moneySourceCode: string; description: string; receipt: number; payment: number; balance: number };
 type Schedule = { id: string; period: string; amount: number; status: string };
@@ -410,8 +410,8 @@ export default function FinanceOperationsPage() {
                       >
                         <option value="">-- Chọn quỹ tiền mặt --</option>
                         {filterMoneySources(moneySources, adjustment.branchCode, ["CASH"]).map((source) => (
-                          <option key={source.id || source.code} value={source.code}>
-                            [{source.code}] {source.name}
+                          <option key={source.id || source.code} value={source.code} title={moneySourceDebugLabel(source, storeLabel(adjustment.branchCode))}>
+                            {moneySourceDisplayName(source, storeLabel(adjustment.branchCode))}
                           </option>
                         ))}
                       </select>

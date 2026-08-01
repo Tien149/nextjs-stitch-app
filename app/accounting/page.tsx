@@ -6,11 +6,13 @@ import { MonthInput, DateInput } from "@/components/DateInput";
 import { branchScopeOptions, storeLabel, storeOptions } from "@/lib/branch-labels";
 import { canPerformMenuAction } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
+import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
 
 type Account = { id: string; code: string; name: string; accountType: string; reportGroup: string };
 type Line = { id: string; debit: number; credit: number; departmentCode: string | null; account: Account; categoryCode: string | null; partnerCode: string | null };
 type Entry = { id: string; code: string; entryDate: string; branchCode: string; sourceType: string; sourceCode: string | null; description: string; lines: Line[] };
-type Data = { accounts: Account[]; entries: Entry[]; totals: { debit: number; credit: number; difference: number } };
+type MasterDataOption = { id: string; type: string; code: string; name: string; group: string | null; branch: string | null; status?: string };
+type Data = { accounts: Account[]; entries: Entry[]; categories?: MasterDataOption[]; totals: { debit: number; credit: number; difference: number } };
 
 const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value);
 
@@ -23,7 +25,7 @@ export default function AccountingPage() {
   const [period, setPeriod] = useState(new Date().toISOString().slice(0, 7));
   const [branchCode, setBranchCode] = useState("ALL");
   const [data, setData] = useState<Data>({ accounts: [], entries: [], totals: { debit: 0, credit: 0, difference: 0 } });
-  const [categories, setCategories] = useState<any[]>([]);
+  const [categories, setCategories] = useState<MasterDataOption[]>([]);
   const [showAccountingDetails, setShowAccountingDetails] = useState(false);
   const [message, setMessage] = useState("");
   const [syncing, setSyncing] = useState(false);
@@ -45,16 +47,18 @@ export default function AccountingPage() {
   const loadData = useCallback(async () => {
     const response = await fetch(`/api/accounting?period=${period}&branchCode=${branchCode}`);
     if (response.ok) {
-      const payload = await response.json();
+      const payload = (await response.json()) as Data;
       setData(payload);
       if (payload.categories) {
         setCategories(payload.categories);
-        const defaultCat = payload.categories.find((c: any) => c.type === "REVENUE_EXPENSE_CATEGORY")?.code || "";
-        const defaultSrc = payload.categories.find((c: any) => c.type === "MONEY_SOURCE")?.code || "";
+        const defaultCat = payload.categories.find((c) => c.type === "REVENUE_EXPENSE_CATEGORY")?.code || "";
+        const moneySourceItems = payload.categories.filter((c) => c.type === "MONEY_SOURCE");
         setManual((prev) => ({
           ...prev,
           categoryCode: prev.categoryCode || defaultCat,
-          moneySourceCode: prev.moneySourceCode || defaultSrc,
+          moneySourceCode: isMoneySourceAllowed(moneySourceItems, prev.moneySourceCode, prev.branchCode)
+            ? prev.moneySourceCode
+            : firstMoneySourceCode(moneySourceItems, prev.branchCode),
         }));
       }
     }
@@ -671,7 +675,17 @@ export default function AccountingPage() {
                     <div className="relative">
                       <select
                         value={manual.branchCode}
-                        onChange={(e) => setManual({ ...manual, branchCode: e.target.value })}
+                        onChange={(e) => {
+                          const nextBranch = e.target.value;
+                          const sources = categories.filter((c) => c.type === "MONEY_SOURCE");
+                          setManual({
+                            ...manual,
+                            branchCode: nextBranch,
+                            moneySourceCode: isMoneySourceAllowed(sources, manual.moneySourceCode, nextBranch)
+                              ? manual.moneySourceCode
+                              : firstMoneySourceCode(sources, nextBranch),
+                          });
+                        }}
                         className="w-full pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all appearance-none cursor-pointer"
                       >
                         {storeOptions.map((option) => (
@@ -723,13 +737,13 @@ export default function AccountingPage() {
                         onChange={(e) => setManual({ ...manual, moneySourceCode: e.target.value })}
                         className="w-full pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all appearance-none cursor-pointer"
                       >
-                        {categories
-                          .filter((c) => c.type === "MONEY_SOURCE")
+                        <option value="">-- Chọn nguồn tiền --</option>
+                        {filterMoneySources(categories.filter((c) => c.type === "MONEY_SOURCE"), manual.branchCode)
                           .map((c) => (
-                            <option key={c.id} value={c.code}>
-                              [{c.code}] {c.name}
-                            </option>
-                          ))}
+                          <option key={c.id} value={c.code} title={moneySourceDebugLabel(c, storeLabel(manual.branchCode))}>
+                            {moneySourceDisplayName(c, storeLabel(manual.branchCode))}
+                          </option>
+                        ))}
                       </select>
                       <span className="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none text-lg">
                         unfold_more

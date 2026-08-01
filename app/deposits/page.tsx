@@ -7,7 +7,7 @@ import { DateInput } from "@/components/DateInput";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { storeLabel } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
-import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed } from "@/lib/money-sources";
+import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
 
 type DepositHistory = {
   id: string;
@@ -465,8 +465,8 @@ export default function DepositsPage() {
             >
               <option value="">-- Chọn nguồn tiền --</option>
               {filterMoneySources(moneySources, form.branchCode).map(item => (
-                <option key={item.id} value={item.code}>
-                  [{item.code}] {item.name} ({item.group || ""})
+                <option key={item.id} value={item.code} title={moneySourceDebugLabel(item, storeLabel(form.branchCode))}>
+                  {moneySourceDisplayName(item, storeLabel(form.branchCode))}
                 </option>
               ))}
             </select>
