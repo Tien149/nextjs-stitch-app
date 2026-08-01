@@ -464,7 +464,7 @@ export default function VouchersPage() {
                     <option value="">-- Chọn nhóm thu/chi --</option>
                     {voucherCategoryOptions.map((category) => (
                       <option key={category.id || category.code} value={category.code}>
-                        [{category.group}] {category.name}
+                        {category.name}
                       </option>
                     ))}
                   </select>
