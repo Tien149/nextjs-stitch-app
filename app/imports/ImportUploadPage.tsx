@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { DateInput } from "@/components/DateInput";
 import { displayRoleName, storeLabel } from "@/lib/branch-labels";
@@ -99,6 +99,13 @@ function currentPeriodValue() {
   return new Date().toISOString().slice(0, 7);
 }
 
+function formatDetailValue(value: string | number | null) {
+  if (value === null || value === undefined || value === "") return "-";
+  if (typeof value === "number") return new Intl.NumberFormat("vi-VN").format(value);
+  if (/^\d{4}-\d{2}-\d{2}T/.test(value)) return new Date(value).toLocaleDateString("vi-VN");
+  return value;
+}
+
 function manualInitialValue(field: ImportFieldDefinition, selectedBranch: string) {
   if (field.field === "branch_code") return selectedBranch;
   if (field.type === "date") return currentDateValue();
@@ -138,6 +145,9 @@ export default function ImportUploadPage({
   const [preview, setPreview] = useState<PreviewPayload | null>(null);
   const [batches, setBatches] = useState<Batch[]>([]);
   const [selectedBatch, setSelectedBatch] = useState<BatchDetail | null>(null);
+  const [selectedBatchId, setSelectedBatchId] = useState("");
+  const [batchDetailLoading, setBatchDetailLoading] = useState(false);
+  const [batchDetailError, setBatchDetailError] = useState("");
   const [message, setMessage] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [branchCode, setBranchCode] = useState("");
@@ -154,6 +164,7 @@ export default function ImportUploadPage({
   const importType = importTypeFromApiPath(apiPath);
   const template = useMemo(() => getImportTemplate(importType as ImportType, templateCode), [importType, templateCode]);
   const manualFields = useMemo(() => template?.fields.filter((field) => !field.hiddenFromMapping) || [], [template]);
+  const batchDetailRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     const session = getSessionFromStorage();
@@ -198,9 +209,31 @@ export default function ImportUploadPage({
   }, [apiPath]);
 
   const loadBatchDetail = async (batchId: string) => {
-    const response = await fetch(withQuery(apiPath, { batchId }));
-    if (response.ok) setSelectedBatch((await response.json()) as BatchDetail);
+    if (selectedBatchId === batchId && selectedBatch && !batchDetailError) return;
+    setSelectedBatchId(batchId);
+    setBatchDetailLoading(true);
+    setBatchDetailError("");
+    try {
+      const response = await fetch(withQuery(apiPath, { batchId }));
+      const payload = await response.json();
+      if (!response.ok) {
+        setBatchDetailError(payload.error || "Không tải được chi tiết batch import.");
+        return;
+      }
+      setSelectedBatch(payload as BatchDetail);
+    } catch {
+      setBatchDetailError("Không tải được chi tiết batch import.");
+    } finally {
+      setBatchDetailLoading(false);
+    }
   };
+
+  useEffect(() => {
+    if (!selectedBatch) return;
+    window.setTimeout(() => {
+      batchDetailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
+  }, [selectedBatch]);
 
   useEffect(() => {
     if (isCheckingAuth) return;
@@ -213,6 +246,9 @@ export default function ImportUploadPage({
       setMappingDirty(false);
       setBatches([]);
       setSelectedBatch(null);
+      setSelectedBatchId("");
+      setBatchDetailLoading(false);
+      setBatchDetailError("");
       setMessage("");
       setManualOpen(false);
       setManualValues({});
@@ -411,6 +447,20 @@ export default function ImportUploadPage({
     setMessage(`Đã rollback batch ${batch.fileName}.`);
     await loadBatches();
   };
+
+  const selectedBatchRows = selectedBatch ? (
+    selectedBatch.bankTransactions ||
+    selectedBatch.revenueRows ||
+    selectedBatch.payrollRows ||
+    selectedBatch.vouchers ||
+    selectedBatch.moneyTransfers ||
+    selectedBatch.debtRecords ||
+    selectedBatch.importRows ||
+    []
+  ) : [];
+  const selectedBatchColumns = Object.keys(selectedBatchRows[0] || {})
+    .filter((key) => !["id", "importBatchId", "createdAt"].includes(key))
+    .slice(0, 10);
 
   if (isCheckingAuth) {
     return (
@@ -699,7 +749,11 @@ export default function ImportUploadPage({
                   </tr>
                 ) : (
                   batches.map((batch) => (
-                    <tr key={batch.id} onClick={() => loadBatchDetail(batch.id)} className="hover:bg-slate-50 cursor-pointer">
+                    <tr
+                      key={batch.id}
+                      onClick={() => void loadBatchDetail(batch.id)}
+                      className={`cursor-pointer hover:bg-slate-50 ${selectedBatchId === batch.id ? "bg-blue-50/70 ring-1 ring-inset ring-blue-200" : ""}`}
+                    >
                       <td className="px-4 py-3 font-bold">{batch.fileName}</td>
                       <td className="px-4 py-3">
                         <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-bold ${statusBadgeClass(batch.status)}`}>
@@ -745,63 +799,67 @@ export default function ImportUploadPage({
           </div>
         </section>
 
-        {selectedBatch && (
-          <section className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden">
+        {(selectedBatchId || selectedBatch || batchDetailLoading || batchDetailError) && (
+          <section ref={batchDetailRef} className="scroll-mt-4 bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden">
             <div className="p-5 border-b border-slate-200 flex items-center justify-between">
               <div>
-                <h2 className="font-bold">Chi tiết batch: {selectedBatch.fileName}</h2>
+                <h2 className="font-bold">Chi tiết batch{selectedBatch ? `: ${selectedBatch.fileName}` : ""}</h2>
                 <p className="text-xs text-slate-500 mt-1">
-                  {selectedBatch.validRows}/{selectedBatch.totalRows} dòng, trạng thái {selectedBatch.status}
-                  {selectedBatch.rolledBackAt ? `, rollback lúc ${new Date(selectedBatch.rolledBackAt).toLocaleString("vi-VN")}` : ""}.
+                  {selectedBatch ? (
+                    <>
+                      {selectedBatch.validRows}/{selectedBatch.totalRows} dòng, trạng thái {selectedBatch.status}
+                      {selectedBatch.rolledBackAt ? `, rollback lúc ${new Date(selectedBatch.rolledBackAt).toLocaleString("vi-VN")}` : ""}.
+                    </>
+                  ) : "Chọn một dòng lịch sử để xem chi tiết dữ liệu đã import."}
                 </p>
               </div>
-              <button onClick={() => setSelectedBatch(null)} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50">
+              <button
+                onClick={() => {
+                  setSelectedBatch(null);
+                  setSelectedBatchId("");
+                  setBatchDetailError("");
+                }}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50"
+              >
                 Đóng
               </button>
             </div>
-            <div className="overflow-x-auto max-h-[420px]">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 text-slate-500 uppercase sticky top-0">
-                  <tr>
-                    {Object.keys(
-                      selectedBatch.bankTransactions?.[0] ||
-                      selectedBatch.revenueRows?.[0] ||
-                      selectedBatch.payrollRows?.[0] ||
-                      selectedBatch.vouchers?.[0] ||
-                      selectedBatch.moneyTransfers?.[0] ||
-                      selectedBatch.debtRecords?.[0] ||
-                      selectedBatch.importRows?.[0] ||
-                      {},
-                    )
-                      .filter((key) => !["id", "importBatchId", "createdAt"].includes(key))
-                      .slice(0, 10)
-                      .map((key) => (
-                        <th key={key} className="px-4 py-3 whitespace-nowrap">{key}</th>
-                      ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {(
-                    selectedBatch.bankTransactions ||
-                    selectedBatch.revenueRows ||
-                    selectedBatch.payrollRows ||
-                    selectedBatch.vouchers ||
-                    selectedBatch.moneyTransfers ||
-                    selectedBatch.debtRecords ||
-                    selectedBatch.importRows ||
-                    []
-                  ).slice(0, 100).map((row, index) => (
-                    <tr key={index} className="hover:bg-slate-50">
-                      {Object.entries(row)
-                        .filter(([key]) => !["id", "importBatchId", "createdAt"].includes(key))
-                        .slice(0, 10)
-                        .map(([key, value]) => (
-                          <td key={key} className="px-4 py-3 whitespace-nowrap">{String(value ?? "-")}</td>
+            <div className="relative overflow-x-auto max-h-[420px] min-h-[140px]">
+              {batchDetailLoading && (
+                <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/75 text-sm font-semibold text-blue-700 backdrop-blur-[1px]">
+                  Đang tải chi tiết batch import...
+                </div>
+              )}
+              {batchDetailError ? (
+                <div className="p-5">
+                  <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">
+                    {batchDetailError}
+                  </p>
+                </div>
+              ) : selectedBatchRows.length > 0 ? (
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 text-slate-500 uppercase sticky top-0">
+                    <tr>
+                      {selectedBatchColumns.map((key) => (
+                          <th key={key} className="px-4 py-3 whitespace-nowrap">{key}</th>
                         ))}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {selectedBatchRows.slice(0, 100).map((row, index) => (
+                      <tr key={index} className="hover:bg-slate-50">
+                        {selectedBatchColumns.map((key) => (
+                          <td key={key} className="px-4 py-3 whitespace-nowrap">{formatDetailValue(row[key])}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="flex min-h-[140px] items-center justify-center px-4 text-sm text-slate-400">
+                  Chưa có dữ liệu chi tiết.
+                </div>
+              )}
             </div>
           </section>
         )}
