@@ -6,8 +6,11 @@ import { prisma } from "@/lib/prisma";
 import { getBalanceSheet, getCashflowForecast, getPnl, getTrend } from "@/lib/reports";
 import { apiError, businessError, cleanText, normalizePeriod, toNumber } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
+import { moneySourceDisplayName, normalizeMoneySourceGroup } from "@/lib/money-sources";
 
 const menuHref = "/reports";
+
+type DailyCashBucket = { total: number; cash: number; transfer: number; card: number; grab: number; other: number };
 
 function monthRange(period: string) {
   const start = new Date(`${period}-01T00:00:00`);
@@ -15,6 +18,40 @@ function monthRange(period: string) {
   end.setMonth(end.getMonth() + 1);
   end.setMilliseconds(end.getMilliseconds() - 1);
   return { start, end };
+}
+
+function dayRange(dateText: string, shift: string) {
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(dateText) ? dateText : new Date().toISOString().slice(0, 10);
+  const startHour = shift === "EVENING" ? 15 : 0;
+  const endHour = shift === "MORNING" ? 15 : 24;
+  return {
+    date,
+    start: new Date(`${date}T${String(startHour).padStart(2, "0")}:00:00`),
+    end: new Date(`${date}T${String(endHour).padStart(2, "0")}:00:00`),
+  };
+}
+
+function addAmount(bucket: DailyCashBucket, key: keyof Omit<DailyCashBucket, "total">, amount: number) {
+  bucket.total += amount;
+  bucket[key] += amount;
+}
+
+function classifyPayment(paymentMethod: string | null | undefined, channel?: string | null) {
+  const method = (paymentMethod || "").toUpperCase();
+  const saleChannel = (channel || "").toUpperCase();
+  if (saleChannel.includes("GRAB") || method.includes("GRAB")) return "grab" as const;
+  if (method.includes("CASH") || method.includes("TIEN MAT") || method.includes("TIỀN MẶT")) return "cash" as const;
+  if (method.includes("CARD") || method.includes("POS") || method.includes("QUET") || method.includes("QUẸT")) return "card" as const;
+  if (method.includes("BANK") || method.includes("TRANSFER") || method.includes("CHUYEN") || method.includes("CHUYỂN")) return "transfer" as const;
+  return "other" as const;
+}
+
+function classifyMoneySource(group: string | null | undefined) {
+  const normalized = normalizeMoneySourceGroup(group);
+  if (normalized === "CASH") return "cash" as const;
+  if (normalized === "BANK") return "transfer" as const;
+  if (normalized === "WALLET") return "card" as const;
+  return "other" as const;
 }
 
 function addStatus(statusCounts: Record<string, number>, status: string) {
@@ -194,6 +231,79 @@ async function getBudgetReport(period: string, branchCode: string) {
   };
 }
 
+async function getDailyCashReport(period: string, branchCode: string, reportDate: string, shift: string) {
+  const { date, start, end } = dayRange(reportDate || `${period}-01`, shift);
+  const branchWhere = branchCode === "ALL" ? {} : { branchCode };
+
+  const [revenues, deposits, vouchers, moneySources] = await Promise.all([
+    prisma.revenueImportRow.findMany({
+      where: { ...branchWhere, saleDate: { gte: start, lt: end } },
+      orderBy: [{ saleDate: "asc" }, { externalRef: "asc" }],
+      take: 1000,
+    }),
+    prisma.deposit.findMany({
+      where: { ...branchWhere, receivedDate: { gte: start, lt: end }, status: { not: "CANCELLED" } },
+      orderBy: [{ receivedDate: "asc" }, { code: "asc" }],
+      take: 500,
+    }),
+    prisma.financialVoucher.findMany({
+      where: { ...branchWhere, voucherType: "PAYMENT", voucherDate: { gte: start, lt: end }, status: { not: "CANCELLED" } },
+      orderBy: [{ voucherDate: "asc" }, { code: "asc" }],
+      take: 500,
+    }),
+    prisma.masterDataItem.findMany({ where: { type: "MONEY_SOURCE", status: "ACTIVE" } }),
+  ]);
+
+  const sourceByCode = new Map(moneySources.map((source) => [source.code, source]));
+  const revenue = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
+  const deposit = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
+
+  for (const row of revenues) {
+    addAmount(revenue, classifyPayment(row.paymentMethod, row.channel), row.netAmount);
+  }
+
+  for (const row of deposits) {
+    const source = sourceByCode.get(row.moneySourceCode);
+    addAmount(deposit, classifyMoneySource(source?.group), row.amount);
+  }
+
+  const expenses = vouchers.map((row) => {
+    const source = sourceByCode.get(row.moneySourceCode);
+    return {
+      id: row.id,
+      code: row.code,
+      date: row.voucherDate,
+      description: row.description,
+      partnerName: row.partnerName,
+      moneySourceCode: row.moneySourceCode,
+      moneySourceName: source ? moneySourceDisplayName(source) : row.moneySourceCode,
+      moneySourceGroup: source?.group || null,
+      amount: row.amount,
+      isCash: normalizeMoneySourceGroup(source?.group) === "CASH",
+    };
+  });
+
+  const expenseTotal = expenses.reduce((sum, row) => sum + row.amount, 0);
+  const cashExpenseTotal = expenses.filter((row) => row.isCash).reduce((sum, row) => sum + row.amount, 0);
+  const total = {
+    total: revenue.total + deposit.total,
+    cash: revenue.cash + deposit.cash,
+    transfer: revenue.transfer + deposit.transfer,
+    card: revenue.card + deposit.card,
+    grab: revenue.grab + deposit.grab,
+    other: revenue.other + deposit.other,
+  };
+
+  return {
+    period,
+    branchCode,
+    reportDate: date,
+    shift,
+    summary: { revenue, deposit, total, expenseTotal, cashExpenseTotal, cashToDeposit: total.cash - cashExpenseTotal },
+    expenses,
+  };
+}
+
 async function getActivityReport(period: string, branchCode: string) {
   const { start, end } = monthRange(period);
   const branchWhere = branchCode === "ALL" ? {} : { branchCode };
@@ -317,6 +427,7 @@ export async function GET(request: Request) {
     const branchCode = requestedBranch(auth.session, cleanText(params.get("branchCode")) || "ALL");
     if (type === "operations") return NextResponse.json(await getOperationsReport(period, branchCode));
     if (type === "budget") return NextResponse.json(await getBudgetReport(period, branchCode));
+    if (type === "daily-cash") return NextResponse.json(await getDailyCashReport(period, branchCode, cleanText(params.get("reportDate")) || `${period}-01`, cleanText(params.get("shift")) || "FULL"));
     if (type === "activity") return NextResponse.json(await getActivityReport(period, branchCode));
     if (type === "pnl") return NextResponse.json({ period, branchCode, ...(await getPnl(period, branchCode)) });
     if (type === "yoy") {

@@ -2,10 +2,11 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
-import { MonthInput } from "@/components/DateInput";
+import { DateInput, MonthInput } from "@/components/DateInput";
 import { branchScopeOptions, storeLabel, storeOptions } from "@/lib/branch-labels";
 import { canPerformMenuAction } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
+import { filterMoneySources, firstMoneySourceCode, moneySourceDebugLabel, moneySourceDisplayName, type MoneySourceOption } from "@/lib/money-sources";
 
 type Pnl = {
   revenue: number;
@@ -47,11 +48,23 @@ type OperationsData = {
 };
 type BudgetRow = { metric: string; label: string; kind: "REVENUE" | "EXPENSE" | "PROFIT"; actual: number; target: number; variance: number; usageRate: number | null; isGood: boolean };
 type BudgetData = { summary: { expenseActual: number; expenseTarget: number; revenueActual: number; revenueTarget: number }; rows: BudgetRow[] };
+type DailyCashBucket = { total: number; cash: number; transfer: number; card: number; grab: number; other: number };
+type DailyCashExpense = { id: string; code: string; date: string; description: string; partnerName: string; moneySourceCode: string; moneySourceName: string; moneySourceGroup: string | null; amount: number; isCash: boolean };
+type DailyCashData = {
+  period: string;
+  branchCode: string;
+  reportDate: string;
+  shift: string;
+  summary: { revenue: DailyCashBucket; deposit: DailyCashBucket; total: DailyCashBucket; expenseTotal: number; cashExpenseTotal: number; cashToDeposit: number };
+  expenses: DailyCashExpense[];
+};
 type ActivityLog = { id: string; time: string; module: string; action: string; actor: string; branchCode: string; code: string; note: string };
 type AccountingPeriodStatus = { period: string; branchCode: string; status: string; closedBy: string | null; closedAt: string | null; reopenedBy: string | null; reopenedAt: string | null; reason: string | null };
 type ActivityData = { accountingPeriod: AccountingPeriodStatus; periods: AccountingPeriodStatus[]; logs: ActivityLog[] };
-type ReportData = DashboardData | PnlData | YoyData | CashflowData | BalanceData | OperationsData | BudgetData | ActivityData;
+type ReportData = DashboardData | PnlData | YoyData | CashflowData | BalanceData | OperationsData | BudgetData | DailyCashData | ActivityData;
 type DrilldownRow = { id: string; date: string; code: string; accountCode: string; accountName: string; description: string; amount: number };
+type CashDepositDenomination = { denomination: number; quantity: string };
+type CashDepositForm = { depositTargetType: "PKT" | "CO"; fromMoneySourceCode: string; toMoneySourceCode: string; denominations: CashDepositDenomination[] };
 
 const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value);
 const metricLabels: Record<string, string> = {
@@ -65,17 +78,31 @@ const metricLabels: Record<string, string> = {
   ebitda: "EBITDA",
   netProfit: "Lợi nhuận ròng",
 };
+const shiftLabels: Record<string, string> = { FULL: "Cả ngày", MORNING: "Ca sáng", EVENING: "Ca tối" };
+const cashDepositTargetLabels: Record<"PKT" | "CO", string> = { PKT: "Nộp Tiền PKT", CO: "Nộp Tiền Cô" };
+const cashDepositDenominations = [500000, 200000, 100000, 50000, 20000, 10000, 5000, 2000, 1000];
 
 export default function ReportsPage() {
   const href = "/reports";
   const { user, loading } = useModuleAuth(href);
   const [active, setActive] = useState("dashboard");
   const [period, setPeriod] = useState(new Date().toISOString().slice(0, 7));
+  const [reportDate, setReportDate] = useState(new Date().toISOString().slice(0, 10));
+  const [shift, setShift] = useState("FULL");
   const [branchCode, setBranchCode] = useState("ALL");
   const [scenario, setScenario] = useState("BASE");
   const [data, setData] = useState<ReportData | null>(null);
   const [tabLoading, setTabLoading] = useState(false);
   const [message, setMessage] = useState("");
+  const [moneySources, setMoneySources] = useState<MoneySourceOption[]>([]);
+  const [cashDepositOpen, setCashDepositOpen] = useState(false);
+  const [cashDepositSubmitting, setCashDepositSubmitting] = useState(false);
+  const [cashDepositForm, setCashDepositForm] = useState<CashDepositForm>({
+    depositTargetType: "PKT",
+    fromMoneySourceCode: "",
+    toMoneySourceCode: "",
+    denominations: cashDepositDenominations.map((denomination) => ({ denomination, quantity: "" })),
+  });
   const [forecast, setForecast] = useState({ period: new Date().toISOString().slice(0, 7), branchCode: "HCM", scenario: "BASE", assumptionType: "INFLOW", amount: "100000000", note: "Kế hoạch dòng tiền" });
   const [targetForm, setTargetForm] = useState({ metric: "otherOpex", targetValue: "50000000" });
   const [reopenReason, setReopenReason] = useState("Bổ sung hoặc điều chỉnh dữ liệu kỳ trước");
@@ -109,11 +136,12 @@ export default function ReportsPage() {
   };
 
   const canConfigure = user ? canPerformMenuAction(user.role, href, "create") : false;
+  const canCreateCashDeposit = user ? canPerformMenuAction(user.role, "/finance-operations", "create") : false;
   const canAdminPeriod = user?.role === "Admin";
 
   useEffect(() => {
     const tab = new URLSearchParams(window.location.search).get("tab");
-    if (tab && ["dashboard", "operations", "budget", "activity", "pnl", "yoy", "cashflow", "balance"].includes(tab)) {
+    if (tab && ["dashboard", "operations", "budget", "daily-cash", "activity", "pnl", "yoy", "cashflow", "balance"].includes(tab)) {
       window.setTimeout(() => setActive(tab), 0);
     }
   }, []);
@@ -121,7 +149,12 @@ export default function ReportsPage() {
   const loadData = useCallback(async () => {
     try {
       setTabLoading(true);
-      const response = await fetch(`/api/reports?type=${active}&period=${period}&branchCode=${branchCode}&scenario=${scenario}`);
+      const params = new URLSearchParams({ type: active, period, branchCode, scenario });
+      if (active === "daily-cash") {
+        params.set("reportDate", reportDate);
+        params.set("shift", shift);
+      }
+      const response = await fetch(`/api/reports?${params.toString()}`);
       if (response.ok) {
         const result = await response.json();
         setData(result);
@@ -131,17 +164,42 @@ export default function ReportsPage() {
     } finally {
       setTabLoading(false);
     }
-  }, [active, branchCode, period, scenario]);
+  }, [active, branchCode, period, reportDate, scenario, shift]);
+
+  const loadMoneySources = useCallback(async () => {
+    const response = await fetch("/api/master-data?type=MONEY_SOURCE&status=ACTIVE");
+    if (!response.ok) return;
+    setMoneySources((await response.json()) as MoneySourceOption[]);
+  }, []);
 
   useEffect(() => {
-    if (!loading) window.setTimeout(() => void loadData(), 0);
-  }, [loading, loadData]);
+    if (!loading) {
+      window.setTimeout(() => {
+        void loadData();
+        void loadMoneySources();
+      }, 0);
+    }
+  }, [loading, loadData, loadMoneySources]);
 
   const handleTabChange = (newTab: string) => {
     if (newTab !== active) {
       setData(null);
       setActive(newTab);
     }
+  };
+
+  const printDailyCashReport = () => {
+    const originalTitle = document.title;
+    const restoreTitle = () => {
+      document.title = originalTitle;
+      window.removeEventListener("afterprint", restoreTitle);
+    };
+
+    document.title = "\u200B";
+    window.addEventListener("afterprint", restoreTitle);
+    window.setTimeout(() => {
+      window.print();
+    }, 0);
   };
 
   const saveForecast = async (event: React.FormEvent) => {
@@ -182,6 +240,7 @@ export default function ReportsPage() {
   const balance = active === "balance" && data && typeof data === "object" && "rows" in data ? (data as BalanceData) : null;
   const operations = active === "operations" && data && typeof data === "object" && "details" in data ? (data as OperationsData) : null;
   const budget = active === "budget" && data && typeof data === "object" && "rows" in data ? (data as BudgetData) : null;
+  const dailyCash = active === "daily-cash" && data && typeof data === "object" && "summary" in data && "expenses" in data ? (data as DailyCashData) : null;
   const activity = active === "activity" && data && typeof data === "object" && "periods" in data ? (data as ActivityData) : null;
 
   const operationRows = useMemo(() => {
@@ -194,6 +253,100 @@ export default function ReportsPage() {
       ...operations.details.assets.map((row) => ({ ...row, module: "Tài sản/CCDC" })),
     ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [operations]);
+
+  const cashDepositAmount = Math.max(0, Math.round(dailyCash?.summary.cashToDeposit || 0));
+  const cashDepositDenominationTotal = cashDepositForm.denominations.reduce((sum, row) => {
+    const quantity = Math.max(0, Math.floor(Number(row.quantity) || 0));
+    return sum + row.denomination * quantity;
+  }, 0);
+  const cashDepositCashSources = dailyCash ? filterMoneySources(moneySources, dailyCash.branchCode, ["CASH"]) : [];
+  const cashDepositTargetSources = dailyCash
+    ? filterMoneySources(moneySources, dailyCash.branchCode).filter((source) => source.code !== cashDepositForm.fromMoneySourceCode)
+    : [];
+
+  const pickCashDepositTarget = (targetType: "PKT" | "CO", fromMoneySourceCode: string, reportBranchCode: string) => {
+    const targetHint = targetType === "PKT" ? "PKT" : "CO";
+    const options = filterMoneySources(moneySources, reportBranchCode).filter((source) => source.code !== fromMoneySourceCode);
+    return (
+      options.find((source) => `${source.code} ${source.name}`.toUpperCase().includes(targetHint))?.code ||
+      options[0]?.code ||
+      ""
+    );
+  };
+
+  const openCashDepositModal = () => {
+    if (!dailyCash) return;
+    if (dailyCash.branchCode === "ALL") {
+      setMessage("Vui lòng chọn một cửa hàng cụ thể trước khi tạo phiếu nộp tiền.");
+      return;
+    }
+    if (cashDepositAmount <= 0) {
+      setMessage("Không có số tiền mặt cần nộp cho ngày/ca này.");
+      return;
+    }
+    const fromMoneySourceCode = firstMoneySourceCode(moneySources, dailyCash.branchCode, ["CASH"]);
+    const toMoneySourceCode = pickCashDepositTarget("PKT", fromMoneySourceCode, dailyCash.branchCode);
+    setCashDepositForm({
+      depositTargetType: "PKT",
+      fromMoneySourceCode,
+      toMoneySourceCode,
+      denominations: cashDepositDenominations.map((denomination) => ({ denomination, quantity: "" })),
+    });
+    setCashDepositOpen(true);
+    setMessage("");
+  };
+
+  const updateCashDepositDenomination = (denomination: number, quantity: string) => {
+    const cleanQuantity = quantity.replace(/\D/g, "");
+    setCashDepositForm((current) => ({
+      ...current,
+      denominations: current.denominations.map((row) => row.denomination === denomination ? { ...row, quantity: cleanQuantity } : row),
+    }));
+  };
+
+  const submitCashDeposit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!dailyCash || cashDepositSubmitting) return;
+    if (cashDepositDenominationTotal !== cashDepositAmount) {
+      setMessage("Tổng bảng kê mệnh giá phải bằng số tiền cần nộp.");
+      return;
+    }
+    setCashDepositSubmitting(true);
+    setMessage("");
+    try {
+      const response = await fetch("/api/finance-operations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "CREATE_CASH_DEPOSIT_TRANSFER",
+          transferDate: dailyCash.reportDate,
+          sourceReportDate: dailyCash.reportDate,
+          sourceShift: dailyCash.shift,
+          branchCode: dailyCash.branchCode,
+          depositTargetType: cashDepositForm.depositTargetType,
+          fromMoneySourceCode: cashDepositForm.fromMoneySourceCode,
+          toMoneySourceCode: cashDepositForm.toMoneySourceCode,
+          amount: cashDepositAmount,
+          denominations: cashDepositForm.denominations.map((row) => ({
+            denomination: row.denomination,
+            quantity: Math.max(0, Math.floor(Number(row.quantity) || 0)),
+          })),
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setMessage(payload.error || "Không tạo được phiếu nộp tiền.");
+        return;
+      }
+      setMessage(`Đã tạo phiếu ${payload.code} chờ duyệt.`);
+      setCashDepositOpen(false);
+      await loadData();
+    } catch {
+      setMessage("Lỗi kết nối máy chủ khi tạo phiếu nộp tiền.");
+    } finally {
+      setCashDepositSubmitting(false);
+    }
+  };
 
   if (loading) return <div className="h-screen grid place-items-center bg-slate-100">Đang tải...</div>;
 
@@ -217,6 +370,20 @@ export default function ReportsPage() {
             </select>
           </Field>
         )}
+        {active === "daily-cash" && (
+          <>
+            <Field label="Ngày thu chi">
+              <DateInput className="mt-1.5 w-40" value={reportDate} onChange={setReportDate} ariaLabel="Ngày thu chi" />
+            </Field>
+            <Field label="Ca">
+              <select className="control w-36" value={shift} onChange={(event) => setShift(event.target.value)}>
+                <option value="FULL">Cả ngày</option>
+                <option value="MORNING">Ca sáng</option>
+                <option value="EVENING">Ca tối</option>
+              </select>
+            </Field>
+          </>
+        )}
         <button type="button" className="icon-button" title="Tải lại" onClick={() => void loadData()}>
           <span className="material-symbols-outlined text-lg">refresh</span>
         </button>
@@ -229,6 +396,7 @@ export default function ReportsPage() {
           { id: "dashboard", label: "Điều hành", icon: "dashboard" },
           { id: "operations", label: "Vận hành", icon: "fact_check" },
           { id: "budget", label: "Ngân sách", icon: "price_check" },
+          { id: "daily-cash", label: "Thu chi ngày", icon: "receipt" },
           { id: "activity", label: "Kỳ & Log", icon: "history" },
           { id: "pnl", label: "P&L đa chiều", icon: "finance" },
           { id: "yoy", label: "Biến động YoY", icon: "query_stats" },
@@ -449,6 +617,248 @@ export default function ReportsPage() {
         </div>
       )}
 
+      {!tabLoading && dailyCash && (
+        <div className="space-y-5 report-print-area" id="daily-cash-report">
+          <div className="print-only text-center border-b border-slate-300 pb-3">
+            <h1 className="text-xl font-bold uppercase">Báo cáo thu chi ngày</h1>
+            <p className="mt-1 text-sm text-slate-600">
+              {new Date(dailyCash.reportDate).toLocaleDateString("vi-VN")} · {shiftLabels[dailyCash.shift] || dailyCash.shift} · {dailyCash.branchCode === "ALL" ? "Tất cả cửa hàng" : storeLabel(dailyCash.branchCode)}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 no-print">
+            <div>
+              <h2 className="text-lg font-bold text-slate-900">Báo cáo thu chi ngày</h2>
+              <p className="text-xs text-slate-500 mt-1">
+                {new Date(dailyCash.reportDate).toLocaleDateString("vi-VN")} · {shiftLabels[dailyCash.shift] || dailyCash.shift} · {dailyCash.branchCode === "ALL" ? "Tất cả cửa hàng" : storeLabel(dailyCash.branchCode)}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className="primary-button no-print"
+                onClick={openCashDepositModal}
+                disabled={!canCreateCashDeposit || dailyCash.branchCode === "ALL" || cashDepositAmount <= 0}
+                title={dailyCash.branchCode === "ALL" ? "Chọn một cửa hàng cụ thể để nộp tiền" : undefined}
+              >
+                <span className="material-symbols-outlined text-lg">savings</span>
+                Nộp tiền
+              </button>
+              <button type="button" className="secondary-button no-print" onClick={printDailyCashReport}>
+                <span className="material-symbols-outlined text-lg">print</span>
+                In báo cáo
+              </button>
+            </div>
+          </div>
+
+          <div className="grid md:grid-cols-4 gap-4 no-print">
+            <Kpi label="Tổng thu" value={dailyCash.summary.total.total} icon="payments" tone="blue" />
+            <Kpi label="Tiền mặt thu được" value={dailyCash.summary.total.cash} icon="account_balance_wallet" tone="green" />
+            <Kpi label="Chi tiền mặt" value={dailyCash.summary.cashExpenseTotal} icon="receipt_long" tone="amber" />
+            <Kpi label="Tiền mặt cần nộp" value={dailyCash.summary.cashToDeposit} icon="savings" tone={dailyCash.summary.cashToDeposit < 0 ? "rose" : "green"} />
+          </div>
+
+          <section className="table-panel">
+            <PanelHeader title="Tổng hợp thu trong ngày" subtitle="Tách doanh thu, đặt cọc theo tiền mặt, chuyển khoản, quẹt thẻ/ví và kênh Grab." />
+            <Table headers={["Loại", "Tổng thu", "Tiền mặt", "Chuyển khoản", "Quẹt thẻ/Ví", "Grab", "Khác", "Tổng chi tiền mặt", "Nộp tiền"]}>
+              <DailyCashSummaryRow label="Doanh thu bán hàng" bucket={dailyCash.summary.revenue} />
+              <DailyCashSummaryRow label="Đặt cọc" bucket={dailyCash.summary.deposit} />
+              <DailyCashSummaryRow label="TOTAL" bucket={dailyCash.summary.total} expense={dailyCash.summary.cashExpenseTotal} cashToDeposit={dailyCash.summary.cashToDeposit} strong />
+            </Table>
+          </section>
+
+          <section className="table-panel">
+            <PanelHeader title="Các khoản chi chi tiết" subtitle="Lấy từ phiếu chi trong ngày/ca. Cột nguồn tiền cho biết khoản nào là tiền mặt để tính số tiền cần nộp." />
+            <div className="max-h-[520px] overflow-auto">
+              <Table headers={["STT", "Mã phiếu", "Khoản chi chi tiết", "Tên nhà cung cấp/đối tượng", "Nguồn tiền", "Số tiền"]}>
+                {dailyCash.expenses.length === 0 ? (
+                  <tr className="border-t border-slate-100">
+                    <td colSpan={6} className="px-4 py-10 text-center text-sm text-slate-400">Không có phiếu chi trong ngày/ca này.</td>
+                  </tr>
+                ) : dailyCash.expenses.map((expense, index) => (
+                  <tr key={expense.id} className="border-t border-slate-100">
+                    <Cell>{index + 1}</Cell>
+                    <Cell><b>{expense.code}</b><small className="block text-slate-500">{new Date(expense.date).toLocaleDateString("vi-VN")}</small></Cell>
+                    <Cell>{expense.description}</Cell>
+                    <Cell>{expense.partnerName || "-"}</Cell>
+                    <Cell>
+                      <span className={`status ${expense.isCash ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-700"}`}>
+                        {expense.moneySourceName} · {expense.moneySourceGroup || "-"}
+                      </span>
+                    </Cell>
+                    <Cell right><b>{money(expense.amount)} đ</b></Cell>
+                  </tr>
+                ))}
+                {dailyCash.expenses.length > 0 && (
+                  <tr className="border-t border-slate-200 bg-slate-50 font-bold">
+                    <Cell> </Cell>
+                    <Cell> </Cell>
+                    <Cell>CỘNG</Cell>
+                    <Cell> </Cell>
+                    <Cell>Tiền mặt: {money(dailyCash.summary.cashExpenseTotal)} đ</Cell>
+                    <Cell right>{money(dailyCash.summary.expenseTotal)} đ</Cell>
+                  </tr>
+                )}
+              </Table>
+            </div>
+          </section>
+
+          <section className="grid grid-cols-2 gap-8 bg-white border border-slate-200 rounded-lg p-6 text-center text-sm font-bold text-slate-700">
+            <div className="pt-8 border-t border-dashed border-slate-300">Thu ngân</div>
+            <div className="pt-8 border-t border-dashed border-slate-300">Quản lý</div>
+          </section>
+
+          <section className="daily-cash-print-space print-only" aria-hidden="true" />
+        </div>
+      )}
+
+      {cashDepositOpen && dailyCash && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/45 p-4 no-print">
+          <form onSubmit={submitCashDeposit} className="flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg bg-white shadow-2xl">
+            <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-200 p-5">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-wider text-blue-600">Nộp tiền trong ngày</p>
+                <h2 className="mt-1 text-xl font-bold text-slate-900">{money(cashDepositAmount)} đ</h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  {new Date(dailyCash.reportDate).toLocaleDateString("vi-VN")} · {shiftLabels[dailyCash.shift] || dailyCash.shift} · {storeLabel(dailyCash.branchCode)}
+                </p>
+              </div>
+              <button type="button" className="icon-button" onClick={() => setCashDepositOpen(false)} title="Đóng">
+                <span className="material-symbols-outlined text-lg">close</span>
+              </button>
+            </div>
+
+            <div className="grid gap-5 overflow-y-auto p-5 lg:grid-cols-[0.85fr_1.35fr]">
+              <div className="space-y-4">
+                <Field label="Loại nộp tiền">
+                  <select
+                    className="control"
+                    value={cashDepositForm.depositTargetType}
+                    onChange={(event) => {
+                      const nextTarget = event.target.value === "CO" ? "CO" : "PKT";
+                      setCashDepositForm((current) => ({
+                        ...current,
+                        depositTargetType: nextTarget,
+                        toMoneySourceCode: pickCashDepositTarget(nextTarget, current.fromMoneySourceCode, dailyCash.branchCode),
+                      }));
+                    }}
+                  >
+                    <option value="PKT">{cashDepositTargetLabels.PKT}</option>
+                    <option value="CO">{cashDepositTargetLabels.CO}</option>
+                  </select>
+                </Field>
+
+                <Field label="Nguồn tiền mặt đi">
+                  <select
+                    className="control"
+                    value={cashDepositForm.fromMoneySourceCode}
+                    onChange={(event) => {
+                      const nextFrom = event.target.value;
+                      setCashDepositForm((current) => ({
+                        ...current,
+                        fromMoneySourceCode: nextFrom,
+                        toMoneySourceCode: current.toMoneySourceCode === nextFrom
+                          ? pickCashDepositTarget(current.depositTargetType, nextFrom, dailyCash.branchCode)
+                          : current.toMoneySourceCode,
+                      }));
+                    }}
+                  >
+                    {cashDepositCashSources.map((source) => (
+                      <option key={source.code} value={source.code} title={moneySourceDebugLabel(source, storeLabel(dailyCash.branchCode))}>
+                        {moneySourceDisplayName(source, storeLabel(dailyCash.branchCode))}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+
+                <Field label="Nguồn tiền nhận">
+                  <select className="control" value={cashDepositForm.toMoneySourceCode} onChange={(event) => setCashDepositForm((current) => ({ ...current, toMoneySourceCode: event.target.value }))}>
+                    {cashDepositTargetSources.map((source) => (
+                      <option key={source.code} value={source.code} title={moneySourceDebugLabel(source, storeLabel(dailyCash.branchCode))}>
+                        {moneySourceDisplayName(source, storeLabel(dailyCash.branchCode))}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+
+                <div className="rounded-lg border border-blue-100 bg-blue-50 p-4 text-sm">
+                  <p className="font-bold text-blue-900">Trạng thái sau khi tạo</p>
+                  <p className="mt-1 text-xs text-blue-700">Hệ thống sinh phiếu điều chuyển trạng thái chờ duyệt. Khi Admin/Kế toán duyệt, sổ quỹ mới ghi giảm tiền mặt và ghi tăng nguồn nhận.</p>
+                </div>
+              </div>
+
+              <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+                <div className="grid gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 sm:grid-cols-[1fr_auto] sm:items-center">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900">Bảng kê mệnh giá</h3>
+                    <p className="text-xs text-slate-500">Nhập số tờ, hệ thống tự tính thành tiền.</p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-right text-xs sm:min-w-64">
+                    <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
+                      <p className="font-semibold text-slate-500">Cần nộp</p>
+                      <p className="mt-1 font-bold text-slate-900">{money(cashDepositAmount)} đ</p>
+                    </div>
+                    <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
+                      <p className="font-semibold text-slate-500">Đã kê</p>
+                      <p className={`mt-1 font-bold ${cashDepositDenominationTotal === cashDepositAmount ? "text-emerald-700" : "text-rose-600"}`}>
+                        {money(cashDepositDenominationTotal)} đ
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <div className="max-h-[440px] overflow-auto">
+                  <table className="w-full text-left text-sm">
+                    <thead className="sticky top-0 z-10 bg-white text-xs uppercase text-slate-500 shadow-[inset_0_-1px_0_#e2e8f0]">
+                      <tr>
+                        <th className="px-4 py-3">Mệnh giá</th>
+                        <th className="px-4 py-3">Số tờ</th>
+                        <th className="px-4 py-3 text-right">Thành tiền</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {cashDepositForm.denominations.map((row) => {
+                        const quantity = Math.max(0, Math.floor(Number(row.quantity) || 0));
+                        return (
+                          <tr key={row.denomination}>
+                            <td className="px-4 py-2.5 font-bold">{money(row.denomination)} đ</td>
+                            <td className="px-4 py-2.5">
+                              <input
+                                className="control mt-0 h-9 w-28 py-1.5 text-right"
+                                inputMode="numeric"
+                                placeholder="0"
+                                value={row.quantity}
+                                onChange={(event) => updateCashDepositDenomination(row.denomination, event.target.value)}
+                              />
+                            </td>
+                            <td className="px-4 py-2.5 text-right font-bold">{money(row.denomination * quantity)} đ</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                {cashDepositDenominationTotal !== cashDepositAmount && (
+                  <p className="border-t border-rose-100 bg-rose-50 px-4 py-3 text-xs font-bold text-rose-700">
+                    Tổng bảng kê phải bằng {money(cashDepositAmount)} đ.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="flex shrink-0 justify-end gap-2 border-t border-slate-200 bg-slate-50 p-4">
+              <button type="button" className="secondary-button" onClick={() => setCashDepositOpen(false)}>Hủy</button>
+              <button
+                className="primary-button"
+                disabled={cashDepositSubmitting || cashDepositDenominationTotal !== cashDepositAmount || !cashDepositForm.fromMoneySourceCode || !cashDepositForm.toMoneySourceCode}
+              >
+                <span className="material-symbols-outlined text-lg">send</span>
+                {cashDepositSubmitting ? "Đang tạo..." : "Tạo phiếu chờ duyệt"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {!tabLoading && activity && (
         <div className="space-y-5">
           <section className="bg-white border border-slate-200 rounded-lg p-5">
@@ -657,6 +1067,23 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       {label}
       {children}
     </label>
+  );
+}
+
+function DailyCashSummaryRow({ label, bucket, expense = 0, cashToDeposit = 0, strong = false }: { label: string; bucket: DailyCashBucket; expense?: number; cashToDeposit?: number; strong?: boolean }) {
+  const contentClass = strong ? "font-bold text-slate-900 bg-slate-50" : "";
+  return (
+    <tr className={`border-t border-slate-100 ${contentClass}`}>
+      <Cell><b>{label}</b></Cell>
+      <Cell right>{money(bucket.total)} đ</Cell>
+      <Cell right>{money(bucket.cash)} đ</Cell>
+      <Cell right>{money(bucket.transfer)} đ</Cell>
+      <Cell right>{money(bucket.card)} đ</Cell>
+      <Cell right>{money(bucket.grab)} đ</Cell>
+      <Cell right>{money(bucket.other)} đ</Cell>
+      <Cell right>{strong ? `${money(expense)} đ` : "-"}</Cell>
+      <Cell right>{strong ? <b className={cashToDeposit < 0 ? "text-rose-600" : "text-emerald-700"}>{money(cashToDeposit)} đ</b> : "-"}</Cell>
+    </tr>
   );
 }
 
