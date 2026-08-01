@@ -263,6 +263,23 @@ export default function ReportsPage() {
   const cashDepositTargetSources = dailyCash
     ? filterMoneySources(moneySources, dailyCash.branchCode).filter((source) => source.code !== cashDepositForm.fromMoneySourceCode)
     : [];
+  const cashDepositDefaultFromSourceCode = cashDepositCashSources[0]?.code || "";
+  const cashDepositDefaultTargetSources = dailyCash
+    ? filterMoneySources(moneySources, dailyCash.branchCode).filter((source) => source.code !== cashDepositDefaultFromSourceCode)
+    : [];
+  const cashDepositDisabledReason = !canCreateCashDeposit
+    ? "Bạn không có quyền tạo phiếu nộp tiền."
+    : !dailyCash
+      ? "Chưa có dữ liệu báo cáo thu chi ngày."
+      : dailyCash.branchCode === "ALL"
+        ? "Chọn một cửa hàng cụ thể để nộp tiền."
+        : cashDepositAmount <= 0
+          ? "Ngày/ca này chưa có tiền mặt cần nộp."
+          : cashDepositCashSources.length === 0
+            ? "Chưa cấu hình nguồn tiền mặt cho cửa hàng này."
+            : cashDepositDefaultTargetSources.length === 0
+              ? "Chưa cấu hình nguồn tiền nhận cho cửa hàng này."
+              : "";
 
   const pickCashDepositTarget = (targetType: "PKT" | "CO", fromMoneySourceCode: string, reportBranchCode: string) => {
     const targetHint = targetType === "PKT" ? "PKT" : "CO";
@@ -286,6 +303,14 @@ export default function ReportsPage() {
     }
     const fromMoneySourceCode = firstMoneySourceCode(moneySources, dailyCash.branchCode, ["CASH"]);
     const toMoneySourceCode = pickCashDepositTarget("PKT", fromMoneySourceCode, dailyCash.branchCode);
+    if (!fromMoneySourceCode) {
+      setMessage("Chưa cấu hình nguồn tiền mặt cho cửa hàng này.");
+      return;
+    }
+    if (!toMoneySourceCode) {
+      setMessage("Chưa cấu hình nguồn tiền nhận cho cửa hàng này.");
+      return;
+    }
     setCashDepositForm({
       depositTargetType: "PKT",
       fromMoneySourceCode,
@@ -633,21 +658,26 @@ export default function ReportsPage() {
                 {new Date(dailyCash.reportDate).toLocaleDateString("vi-VN")} · {shiftLabels[dailyCash.shift] || dailyCash.shift} · {dailyCash.branchCode === "ALL" ? "Tất cả cửa hàng" : storeLabel(dailyCash.branchCode)}
               </p>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                className="primary-button no-print"
-                onClick={openCashDepositModal}
-                disabled={!canCreateCashDeposit || dailyCash.branchCode === "ALL" || cashDepositAmount <= 0}
-                title={dailyCash.branchCode === "ALL" ? "Chọn một cửa hàng cụ thể để nộp tiền" : undefined}
-              >
-                <span className="material-symbols-outlined text-lg">savings</span>
-                Nộp tiền
-              </button>
-              <button type="button" className="secondary-button no-print" onClick={printDailyCashReport}>
-                <span className="material-symbols-outlined text-lg">print</span>
-                In báo cáo
-              </button>
+            <div className="flex flex-col items-end gap-1">
+              <div className="flex flex-wrap items-center justify-end gap-2" title={cashDepositDisabledReason || undefined}>
+                <button
+                  type="button"
+                  className={cashDepositDisabledReason ? "secondary-button no-print cursor-not-allowed opacity-60" : "primary-button no-print"}
+                  onClick={openCashDepositModal}
+                  disabled={!!cashDepositDisabledReason}
+                  title={cashDepositDisabledReason || undefined}
+                >
+                  <span className="material-symbols-outlined text-lg">savings</span>
+                  Nộp tiền
+                </button>
+                <button type="button" className="secondary-button no-print" onClick={printDailyCashReport}>
+                  <span className="material-symbols-outlined text-lg">print</span>
+                  In báo cáo
+                </button>
+              </div>
+              {cashDepositDisabledReason && (
+                <p className="max-w-sm text-right text-xs font-medium text-slate-500 no-print">{cashDepositDisabledReason}</p>
+              )}
             </div>
           </div>
 
