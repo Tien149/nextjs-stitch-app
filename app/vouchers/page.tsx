@@ -9,6 +9,8 @@ import { storeLabel, storeOptions } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
 
+const voucherMoneySourceGroups = ["CASH"];
+
 type Voucher = {
   id: string;
   code: string;
@@ -31,6 +33,8 @@ type MasterDataOption = {
   name: string;
   group: string | null;
   branch: string | null;
+  partnerType?: string | null;
+  partnerGroup?: string | null;
   status?: string;
 };
 
@@ -80,32 +84,37 @@ export default function VouchersPage() {
   const [deleting, setDeleting] = useState(false);
   const [moneySources, setMoneySources] = useState<MasterDataOption[]>([]);
   const [categories, setCategories] = useState<MasterDataOption[]>([]);
+  const [partners, setPartners] = useState<MasterDataOption[]>([]);
 
   const loadVouchers = useCallback(async (branch: string) => {
     const response = await fetch(`/api/vouchers?branchCode=${branch}`);
     if (response.ok) setVouchers((await response.json()) as Voucher[]);
   }, []);
 
-  const loadMoneySources = useCallback(async () => {
+  const loadMasterData = useCallback(async () => {
     const rawSession = localStorage.getItem(SESSION_KEY);
     const headers: Record<string, string> = rawSession ? { "x-demo-session": encodeURIComponent(rawSession) } : {};
-    const [moneyResponse, categoryResponse] = await Promise.all([
+    const [moneyResponse, categoryResponse, partnerResponse] = await Promise.all([
       fetch("/api/master-data?type=MONEY_SOURCE&status=ACTIVE", { headers }),
       fetch("/api/master-data?type=REVENUE_EXPENSE_CATEGORY&status=ACTIVE", { headers }),
+      fetch("/api/master-data?type=PARTNER&status=ACTIVE", { headers }),
     ]);
     if (moneyResponse.ok) {
       const sources = (await moneyResponse.json()) as MasterDataOption[];
       setMoneySources(sources);
       setForm((current) => {
         const nextBranch = current.branchCode || "HCM";
-        const nextSource = isMoneySourceAllowed(sources, current.moneySourceCode, nextBranch)
+        const nextSource = isMoneySourceAllowed(sources, current.moneySourceCode, nextBranch, voucherMoneySourceGroups)
           ? current.moneySourceCode
-          : firstMoneySourceCode(sources, nextBranch);
+          : firstMoneySourceCode(sources, nextBranch, voucherMoneySourceGroups);
         return { ...current, branchCode: nextBranch, moneySourceCode: nextSource };
       });
     }
     if (categoryResponse.ok) {
       setCategories((await categoryResponse.json()) as MasterDataOption[]);
+    }
+    if (partnerResponse.ok) {
+      setPartners((await partnerResponse.json()) as MasterDataOption[]);
     }
   }, []);
 
@@ -134,18 +143,18 @@ export default function VouchersPage() {
       setBranchCode(initialBranch);
       setLoading(false);
       void loadVouchers(initialBranch);
-      void loadMoneySources();
+      void loadMasterData();
     }, 0);
-  }, [router, loadVouchers, loadMoneySources]);
+  }, [router, loadVouchers, loadMasterData]);
 
   useEffect(() => {
     window.setTimeout(() => {
       setForm((f) => ({
         ...f,
         branchCode: branchCode === "ALL" ? f.branchCode || "HCM" : branchCode,
-        moneySourceCode: isMoneySourceAllowed(moneySources, f.moneySourceCode, branchCode === "ALL" ? f.branchCode || "HCM" : branchCode)
+        moneySourceCode: isMoneySourceAllowed(moneySources, f.moneySourceCode, branchCode === "ALL" ? f.branchCode || "HCM" : branchCode, voucherMoneySourceGroups)
           ? f.moneySourceCode
-          : firstMoneySourceCode(moneySources, branchCode === "ALL" ? f.branchCode || "HCM" : branchCode),
+          : firstMoneySourceCode(moneySources, branchCode === "ALL" ? f.branchCode || "HCM" : branchCode, voucherMoneySourceGroups),
       }));
     }, 0);
   }, [branchCode, moneySources]);
@@ -177,6 +186,57 @@ export default function VouchersPage() {
     () => categoryOptionsForType(form.voucherType),
     [categoryOptionsForType, form.voucherType],
   );
+  const partnerOptions = useMemo(() => {
+    const availablePartners = partners.filter((partner) => {
+      if (partner.status && partner.status !== "ACTIVE") return false;
+      if (!partner.branch || partner.branch === "ALL") return true;
+      return partner.branch === form.branchCode;
+    }).filter((partner) => {
+      const type = (partner.partnerType || partner.group || "").toUpperCase();
+      if (form.voucherType === "RECEIPT") return ["CUSTOMER", "BOTH", "OTHER_PARTNER"].includes(type);
+      return ["SUPPLIER", "BOTH", "EMPLOYEE", "OTHER_PARTNER"].includes(type);
+    });
+    const retailOption = { id: "retail-customer", type: "PARTNER", code: "", name: "Khách hàng mua lẻ", group: "CUSTOMER", branch: null };
+    return form.voucherType === "RECEIPT" ? [
+      retailOption,
+      ...availablePartners,
+    ] : [
+      ...availablePartners,
+    ];
+  }, [form.branchCode, form.voucherType, partners]);
+
+  const partnerSelectValue = useMemo(() => {
+    const selected = partnerOptions.find((partner) =>
+      (partner.code && partner.code === form.partnerCode) || partner.name === form.partnerName
+    );
+    return selected ? selected.id || selected.code || selected.name : "__CURRENT__";
+  }, [form.partnerCode, form.partnerName, partnerOptions]);
+
+  const applyPartnerSelection = (selectedKey: string) => {
+    const selected = partnerOptions.find((partner) => (partner.id || partner.code || partner.name) === selectedKey);
+    if (!selected) return;
+    setForm((current) => ({
+      ...current,
+      partnerCode: selected.code,
+      partnerName: selected.name,
+    }));
+  };
+
+  useEffect(() => {
+    if (editingVoucher || partnerOptions.length === 0) return;
+    const currentPartnerStillAllowed = partnerOptions.some((partner) =>
+      (partner.code && partner.code === form.partnerCode) || partner.name === form.partnerName
+    );
+    if (currentPartnerStillAllowed) return;
+    const nextPartner = partnerOptions[0];
+    window.setTimeout(() => {
+      setForm((current) => ({
+        ...current,
+        partnerCode: nextPartner.code,
+        partnerName: nextPartner.name,
+      }));
+    }, 0);
+  }, [editingVoucher, form.partnerCode, form.partnerName, partnerOptions]);
 
   useEffect(() => {
     if (voucherCategoryOptions.length === 0) return;
@@ -198,7 +258,7 @@ export default function VouchersPage() {
     setForm({
       ...emptyForm,
       branchCode: branchCode === "ALL" ? "HCM" : branchCode,
-      moneySourceCode: firstMoneySourceCode(moneySources, branchCode === "ALL" ? "HCM" : branchCode),
+      moneySourceCode: firstMoneySourceCode(moneySources, branchCode === "ALL" ? "HCM" : branchCode, voucherMoneySourceGroups),
       categoryCode: categoryOptionsForType(emptyForm.voucherType)[0]?.code || emptyForm.categoryCode,
     });
   };
@@ -212,7 +272,9 @@ export default function VouchersPage() {
       partnerCode: voucher.partnerCode || "",
       partnerName: voucher.partnerName,
       branchCode: voucher.branchCode,
-      moneySourceCode: voucher.moneySourceCode,
+      moneySourceCode: isMoneySourceAllowed(moneySources, voucher.moneySourceCode, voucher.branchCode, voucherMoneySourceGroups)
+        ? voucher.moneySourceCode
+        : firstMoneySourceCode(moneySources, voucher.branchCode, voucherMoneySourceGroups),
       categoryCode: voucher.categoryCode || "",
       amount: String(voucher.amount),
       description: voucher.description,
@@ -390,20 +452,29 @@ export default function VouchersPage() {
                   <input
                     type="text"
                     value={form.partnerCode}
-                    onChange={(event) => setForm((value) => ({ ...value, partnerCode: event.target.value }))}
-                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                    placeholder="Tự điền khi chọn đối tác"
+                    readOnly
+                    className="mt-1 w-full border border-slate-300 rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600"
                   />
                 </label>
 
                 <label className="text-xs font-bold text-slate-600 block">
                   Tên đối tác *
-                  <input
-                    type="text"
-                    value={form.partnerName}
-                    onChange={(event) => setForm((value) => ({ ...value, partnerName: event.target.value }))}
-                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  <select
+                    value={partnerSelectValue}
+                    onChange={(event) => applyPartnerSelection(event.target.value)}
+                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white"
                     required
-                  />
+                  >
+                    {partnerSelectValue === "__CURRENT__" && (
+                      <option value="__CURRENT__">{form.partnerName || "-- Chọn đối tác --"}</option>
+                    )}
+                    {partnerOptions.map((partner) => (
+                      <option key={partner.id || partner.code || partner.name} value={partner.id || partner.code || partner.name}>
+                        {partner.code ? `${partner.code} - ${partner.name}` : partner.name}
+                      </option>
+                    ))}
+                  </select>
                 </label>
               </div>
 
@@ -417,9 +488,9 @@ export default function VouchersPage() {
                       setForm((value) => ({
                         ...value,
                         branchCode: nextBranch,
-                        moneySourceCode: isMoneySourceAllowed(moneySources, value.moneySourceCode, nextBranch)
+                        moneySourceCode: isMoneySourceAllowed(moneySources, value.moneySourceCode, nextBranch, voucherMoneySourceGroups)
                           ? value.moneySourceCode
-                          : firstMoneySourceCode(moneySources, nextBranch),
+                          : firstMoneySourceCode(moneySources, nextBranch, voucherMoneySourceGroups),
                       }));
                     }}
                     className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white disabled:opacity-75"
@@ -443,25 +514,28 @@ export default function VouchersPage() {
                     required
                   >
                     <option value="">-- Chọn nguồn tiền --</option>
-                    {filterMoneySources(moneySources, form.branchCode).map((source) => (
+                    {filterMoneySources(moneySources, form.branchCode, voucherMoneySourceGroups).map((source) => (
                       <option key={source.id || source.code} value={source.code} title={moneySourceDebugLabel(source, storeLabel(form.branchCode))}>
                         {moneySourceDisplayName(source, storeLabel(form.branchCode))}
                       </option>
                     ))}
+                    {filterMoneySources(moneySources, form.branchCode, voucherMoneySourceGroups).length === 0 && (
+                      <option value="" disabled>Chưa có nguồn tiền mặt cho cửa hàng này</option>
+                    )}
                   </select>
                 </label>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <label className="text-xs font-bold text-slate-600 block">
-                  Nhóm thu/chi *
+                  Khoản mục thu/chi *
                   <select
                     value={form.categoryCode || voucherCategoryOptions[0]?.code || ""}
                     onChange={(event) => setForm((value) => ({ ...value, categoryCode: event.target.value }))}
                     className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white"
                     required
                   >
-                    <option value="">-- Chọn nhóm thu/chi --</option>
+                    <option value="">-- Chọn khoản mục thu/chi --</option>
                     {voucherCategoryOptions.map((category) => (
                       <option key={category.id || category.code} value={category.code}>
                         {category.name}

@@ -7,7 +7,7 @@ import { isPeriodLocked } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import { duplicatedInTrashMessage, findDeletedByUnique, softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
 import type { DemoSession } from "@/lib/auth-demo";
-import { moneySourceMatchesBranch } from "@/lib/money-sources";
+import { moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 
 /** Trạng thái không cho sửa/xoá vì chứng từ đã ghi sổ. */
 const lockedVoucherStatuses = ["APPROVED", "POSTED"];
@@ -19,6 +19,35 @@ function cleanText(value: unknown) {
 function toAmount(value: unknown) {
   const numberValue = Number(value);
   return Number.isFinite(numberValue) ? numberValue : 0;
+}
+
+function normalizeVoucherCategoryGroup(group: string | null | undefined) {
+  const raw = (group || "").toUpperCase();
+  if (raw.includes("REVENUE") || raw.includes("DOANH") || raw.includes("NGUON")) return "REVENUE_SOURCE";
+  if (raw.includes("COGS") || raw.includes("GIA")) return "COGS";
+  if (raw.includes("CAPEX")) return "CAPEX";
+  if (raw.includes("OPEX")) return "OPEX";
+  return raw;
+}
+
+function categoryAllowedForVoucher(voucherType: string, group: string | null | undefined) {
+  const normalizedGroup = normalizeVoucherCategoryGroup(group);
+  return voucherType === "RECEIPT"
+    ? normalizedGroup === "REVENUE_SOURCE"
+    : ["OPEX", "CAPEX", "COGS"].includes(normalizedGroup);
+}
+
+async function validateVoucherCategory(voucherType: string, categoryCode: string) {
+  const category = await prisma.masterDataItem.findFirst({
+    where: { type: "REVENUE_EXPENSE_CATEGORY", code: categoryCode, status: "ACTIVE" },
+  });
+  if (!category) return `Khoản mục thu/chi [${categoryCode}] không tồn tại hoặc đã ngưng hoạt động`;
+  if (!categoryAllowedForVoucher(voucherType, category.group)) {
+    return voucherType === "RECEIPT"
+      ? "Phiếu thu chỉ được chọn khoản mục nhóm nguồn doanh thu"
+      : "Phiếu chi chỉ được chọn khoản mục nhóm OPEX, CAPEX hoặc giá vốn";
+  }
+  return null;
 }
 
 import { generateFormattedVoucherCode, formatVoucherPrefix } from "@/lib/voucher-code-generator";
@@ -90,13 +119,14 @@ export async function POST(request: Request) {
     const partnerName = cleanText(body.partnerName);
     const branchCode = cleanText(body.branchCode);
     const moneySourceCode = cleanText(body.moneySourceCode);
+    const categoryCode = cleanText(body.categoryCode);
     const amount = toAmount(body.amount);
     const description = cleanText(body.description);
 
     if (!["RECEIPT", "PAYMENT"].includes(voucherType)) {
       return NextResponse.json({ error: "Loại chứng từ không hợp lệ" }, { status: 400 });
     }
-    if (!partnerName || !branchCode || !moneySourceCode || amount <= 0 || !description) {
+    if (!partnerName || !branchCode || !moneySourceCode || !categoryCode || amount <= 0 || !description) {
       return NextResponse.json({ error: "Thiếu đối tác, chi nhánh, nguồn tiền, số tiền hoặc nội dung" }, { status: 400 });
     }
 
@@ -112,6 +142,13 @@ export async function POST(request: Request) {
     if (!activeSource || !moneySourceMatchesBranch(activeSource, branchCode)) {
       return NextResponse.json({ error: `Nguồn tiền [${moneySourceCode}] không tồn tại hoặc không thuộc cửa hàng đã chọn` }, { status: 400 });
     }
+
+    if (normalizeMoneySourceGroup(activeSource.group) !== "CASH") {
+      return NextResponse.json({ error: "Phiếu thu/chi chỉ được chọn nguồn tiền mặt" }, { status: 400 });
+    }
+
+    const categoryError = await validateVoucherCategory(voucherType, categoryCode);
+    if (categoryError) return NextResponse.json({ error: categoryError }, { status: 400 });
 
     const voucherDate = body.voucherDate ? new Date(String(body.voucherDate)) : new Date();
     const code = await nextVoucherCode(voucherType, voucherDate, branchCode);
@@ -131,7 +168,7 @@ export async function POST(request: Request) {
         partnerName,
         branchCode,
         moneySourceCode,
-        categoryCode: cleanText(body.categoryCode) || null,
+        categoryCode,
         amount,
         description,
         status: cleanText(body.status) || "DRAFT",
@@ -184,13 +221,13 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
   const description = body.description === undefined ? current.description : cleanText(body.description);
   const amount = body.amount === undefined ? current.amount : toAmount(body.amount);
   const partnerCode = body.partnerCode === undefined ? current.partnerCode : cleanText(body.partnerCode) || null;
-  const categoryCode = body.categoryCode === undefined ? current.categoryCode : cleanText(body.categoryCode) || null;
+  const categoryCode = body.categoryCode === undefined ? current.categoryCode || "" : cleanText(body.categoryCode);
   const voucherDate = body.voucherDate === undefined ? current.voucherDate : new Date(String(body.voucherDate));
 
   if (Number.isNaN(voucherDate.getTime())) {
     return NextResponse.json({ error: "Ngày chứng từ không hợp lệ" }, { status: 400 });
   }
-  if (!partnerName || !branchCode || !moneySourceCode || amount <= 0 || !description) {
+  if (!partnerName || !branchCode || !moneySourceCode || !categoryCode || amount <= 0 || !description) {
     return NextResponse.json({ error: "Thiếu đối tác, chi nhánh, nguồn tiền, số tiền hoặc nội dung" }, { status: 400 });
   }
 
@@ -207,6 +244,13 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
   if (!activeSource || !moneySourceMatchesBranch(activeSource, branchCode)) {
     return NextResponse.json({ error: `Nguồn tiền [${moneySourceCode}] không tồn tại hoặc không thuộc cửa hàng đã chọn` }, { status: 400 });
   }
+
+  if (normalizeMoneySourceGroup(activeSource.group) !== "CASH") {
+    return NextResponse.json({ error: "Phiếu thu/chi chỉ được chọn nguồn tiền mặt" }, { status: 400 });
+  }
+
+  const categoryError = await validateVoucherCategory(current.voucherType, categoryCode);
+  if (categoryError) return NextResponse.json({ error: categoryError }, { status: 400 });
 
   const [depositHistoryCount, debtSettlement] = await Promise.all([
     prisma.depositHistory.count({ where: { voucherId: id } }),
