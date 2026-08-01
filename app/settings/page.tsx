@@ -45,6 +45,8 @@ type MasterDataForm = {
   status: string;
 };
 
+type GroupOption = { value: string; label: string };
+
 const tabs = [
   { type: "BRANCH", label: "Cửa hàng", icon: "storefront", hint: "1.1 - Đơn vị vận hành" },
   { type: "DEPARTMENT", label: "Phòng ban", icon: "groups", hint: "1.1 - Bộ phận nội bộ" },
@@ -131,6 +133,94 @@ const notePlaceholders: Record<string, string> = {
   DOCUMENT_NUMBER_RULE: "VD: PTHU-2607-ASA-00001 (MãPhiếu-YYMM-ChiNhánh-STT5)",
   SYSTEM_PARAM: "VD: VAT 8%, trang thai nghiep vu...",
 };
+
+const groupOptions: Record<string, GroupOption[]> = {
+  PARTNER: [
+    { value: "CUSTOMER", label: "CUSTOMER - Khách hàng" },
+    { value: "SUPPLIER", label: "SUPPLIER - Nhà cung cấp" },
+    { value: "BOTH", label: "BOTH - Khách hàng & NCC" },
+    { value: "EMPLOYEE", label: "EMPLOYEE - Nhân viên" },
+    { value: "OTHER_PARTNER", label: "OTHER_PARTNER - Đối tác khác" },
+  ],
+  MONEY_SOURCE: [
+    { value: "CASH", label: "CASH - Tiền mặt" },
+    { value: "BANK", label: "BANK - Tài khoản ngân hàng" },
+    { value: "WALLET", label: "WALLET - Ví điện tử / Cổng POS" },
+  ],
+  REVENUE_EXPENSE_CATEGORY: [
+    { value: "OPEX", label: "OPEX - Chi phí vận hành" },
+    { value: "CAPEX", label: "CAPEX - Chi phí đầu tư" },
+    { value: "COGS", label: "COGS - Giá vốn" },
+    { value: "REVENUE_SOURCE", label: "REVENUE_SOURCE - Nguồn doanh thu" },
+  ],
+  ASSET_GROUP: [
+    { value: "FIXED_ASSET", label: "FIXED_ASSET - Tài sản cố định" },
+    { value: "CCDC", label: "CCDC - Công cụ dụng cụ" },
+    { value: "TOOL", label: "TOOL - Dụng cụ vận hành" },
+    { value: "OTHER", label: "OTHER - Nhóm tài sản khác" },
+  ],
+  INVENTORY_ITEM_GROUP: [
+    { value: "RAW_MATERIAL", label: "RAW_MATERIAL - Nguyên liệu thô" },
+    { value: "SEMI_FINISHED", label: "SEMI_FINISHED - Bán thành phẩm" },
+    { value: "FINISHED", label: "FINISHED - Thành phẩm bán/POS" },
+    { value: "PACKAGING", label: "PACKAGING - Bao bì/vật tư phụ" },
+    { value: "TOOL", label: "TOOL - CCDC trong kho" },
+    { value: "ASSET", label: "ASSET - Tài sản theo dõi kho" },
+    { value: "OTHER", label: "OTHER - Nhóm mặt hàng khác" },
+  ],
+  ACCOUNTING_PERIOD: [
+    { value: "OPEN", label: "OPEN - Đang mở" },
+    { value: "LOCKED", label: "LOCKED - Khóa nhập liệu" },
+    { value: "CLOSED", label: "CLOSED - Đã chốt sổ" },
+  ],
+  DOCUMENT_TYPE: [
+    { value: "RECEIPT", label: "RECEIPT - Phiếu thu" },
+    { value: "PAYMENT", label: "PAYMENT - Phiếu chi" },
+    { value: "DEPOSIT", label: "DEPOSIT - Tiền cọc" },
+    { value: "TRANSFER", label: "TRANSFER - Điều tiền" },
+  ],
+};
+
+const groupEmptyLabels: Record<string, string> = {
+  PARTNER: "-- Chọn loại đối tác --",
+  MONEY_SOURCE: "-- Chọn nhóm nguồn tiền --",
+  REVENUE_EXPENSE_CATEGORY: "-- Chọn nhóm thu/chi --",
+  ASSET_GROUP: "-- Chọn nhóm tài sản --",
+  INVENTORY_ITEM_GROUP: "-- Chọn nhóm mặt hàng --",
+  ACCOUNTING_PERIOD: "-- Chọn trạng thái kỳ --",
+  DOCUMENT_TYPE: "-- Chọn nhóm chứng từ --",
+};
+
+const legacyGroupAliases: Record<string, Record<string, string>> = {
+  REVENUE_EXPENSE_CATEGORY: {
+    "NGUON DOANH THU": "REVENUE_SOURCE",
+    "NGUỒN DOANH THU": "REVENUE_SOURCE",
+    "DOANH THU": "REVENUE_SOURCE",
+    "GIA VON": "COGS",
+    "GIÁ VỐN": "COGS",
+  },
+  DOCUMENT_TYPE: {
+    THU: "RECEIPT",
+    CHI: "PAYMENT",
+    "TIEN COC": "DEPOSIT",
+    "TIỀN CỌC": "DEPOSIT",
+    "DIEU TIEN": "TRANSFER",
+    "ĐIỀU TIỀN": "TRANSFER",
+  },
+};
+
+function normalizeGroupValue(type: string, group?: string | null) {
+  if (!group) return "";
+  const normalized = group.trim().toUpperCase();
+  return legacyGroupAliases[type]?.[normalized] || normalized;
+}
+
+function formatGroupLabel(type: string, group?: string | null) {
+  if (!group) return "-";
+  const normalized = normalizeGroupValue(type, group);
+  const matched = groupOptions[type]?.find((option) => option.value === normalized);
+  return matched?.label || group;
+}
 
 function getSessionFromStorage(): DemoSession | null {
   const rawSession = localStorage.getItem(SESSION_KEY);
@@ -261,8 +351,8 @@ export default function SettingsPage() {
       type: item.type,
       code: item.code,
       name: item.name,
-      group: item.group || "",
-      partnerType: item.partnerType || item.group || "",
+      group: normalizeGroupValue(item.type, item.group),
+      partnerType: normalizeGroupValue("PARTNER", item.partnerType || item.group),
       partnerGroup: item.partnerGroup || "EXTERNAL",
       branch: item.branch || "",
       taxCode: item.taxCode || "",
@@ -389,8 +479,8 @@ export default function SettingsPage() {
       item.code,
       item.name,
       item.type === "PARTNER"
-        ? `${item.partnerType || item.group || ""} (${item.partnerGroup || "EXTERNAL"})`
-        : item.group || "-",
+        ? `${formatGroupLabel("PARTNER", item.partnerType || item.group)} (${item.partnerGroup || "EXTERNAL"})`
+        : formatGroupLabel(item.type, item.group),
       storeLabel(item.branch),
       item.contactName || item.accountNo || item.note || "-",
       item.status === "ACTIVE" ? "Hoạt động" : "Ngừng hoạt động",
@@ -681,7 +771,7 @@ export default function SettingsPage() {
                           </td>
                           <td className="px-4 py-3">
                             <p className="font-semibold text-xs bg-slate-100 text-slate-700 px-2 py-0.5 rounded w-fit">
-                              {item.type === "PARTNER" ? item.partnerType || item.group || "-" : item.group || "-"}
+                              {item.type === "PARTNER" ? formatGroupLabel("PARTNER", item.partnerType || item.group) : formatGroupLabel(item.type, item.group)}
                             </p>
                             {item.type === "PARTNER" && (
                               <p className="text-[10px] text-slate-500 mt-0.5 font-bold uppercase">{item.partnerGroup || "EXTERNAL"}</p>
@@ -831,36 +921,60 @@ export default function SettingsPage() {
                       value={form.partnerType || form.group}
                       onChange={(event) => setForm((value) => ({ ...value, group: event.target.value, partnerType: event.target.value }))}
                       className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition cursor-pointer"
+                      required
                     >
-                      <option value="">-- Chọn loại đối tác --</option>
-                      <option value="CUSTOMER">CUSTOMER (Khách hàng)</option>
-                      <option value="SUPPLIER">SUPPLIER (Nhà cung cấp)</option>
-                      <option value="BOTH">BOTH (Khách hàng & NCC)</option>
-                      <option value="EMPLOYEE">EMPLOYEE (Nhân viên)</option>
-                      <option value="OTHER_PARTNER">OTHER_PARTNER (Đối tác khác)</option>
+                      <option value="">{groupEmptyLabels.PARTNER}</option>
+                      {groupOptions.PARTNER.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
                     </select>
                   ) : activeType === "MONEY_SOURCE" ? (
                     <select
                       value={form.group}
                       onChange={(event) => setForm((value) => ({ ...value, group: event.target.value }))}
                       className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition cursor-pointer"
+                      required
                     >
-                      <option value="">-- Chọn nhóm nguồn tiền --</option>
-                      <option value="CASH">CASH (Tiền mặt)</option>
-                      <option value="BANK">BANK (Tài khoản ngân hàng)</option>
-                      <option value="WALLET">WALLET (Ví điện tử / Cổng POS)</option>
+                      <option value="">{groupEmptyLabels.MONEY_SOURCE}</option>
+                      {groupOptions.MONEY_SOURCE.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
                     </select>
                   ) : activeType === "REVENUE_EXPENSE_CATEGORY" ? (
                     <select
                       value={form.group}
                       onChange={(event) => setForm((value) => ({ ...value, group: event.target.value }))}
                       className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition cursor-pointer"
+                      required
                     >
-                      <option value="">-- Chọn nhóm thu/chi --</option>
-                      <option value="OPEX">OPEX (Chi phí vận hành)</option>
-                      <option value="CAPEX">CAPEX (Chi phí đầu tư)</option>
-                      <option value="COGS">COGS (Giá vốn)</option>
-                      <option value="REVENUE_SOURCE">REVENUE_SOURCE (Nguồn doanh thu)</option>
+                      <option value="">{groupEmptyLabels.REVENUE_EXPENSE_CATEGORY}</option>
+                      {groupOptions.REVENUE_EXPENSE_CATEGORY.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  ) : activeType === "ASSET_GROUP" ? (
+                    <select
+                      value={form.group}
+                      onChange={(event) => setForm((value) => ({ ...value, group: event.target.value }))}
+                      className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition cursor-pointer"
+                      required
+                    >
+                      <option value="">{groupEmptyLabels.ASSET_GROUP}</option>
+                      {groupOptions.ASSET_GROUP.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  ) : activeType === "INVENTORY_ITEM_GROUP" ? (
+                    <select
+                      value={form.group}
+                      onChange={(event) => setForm((value) => ({ ...value, group: event.target.value }))}
+                      className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition cursor-pointer"
+                      required
+                    >
+                      <option value="">{groupEmptyLabels.INVENTORY_ITEM_GROUP}</option>
+                      {groupOptions.INVENTORY_ITEM_GROUP.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
                     </select>
                   ) : activeType === "ACCOUNTING_PERIOD" ? (
                     <select
@@ -868,10 +982,10 @@ export default function SettingsPage() {
                       onChange={(event) => setForm((value) => ({ ...value, group: event.target.value }))}
                       className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition cursor-pointer"
                     >
-                      <option value="">-- Chọn trạng thái kỳ --</option>
-                      <option value="OPEN">OPEN (Đang mở)</option>
-                      <option value="LOCKED">LOCKED (Khóa nhập liệu)</option>
-                      <option value="CLOSED">CLOSED (Đã chốt sổ)</option>
+                      <option value="">{groupEmptyLabels.ACCOUNTING_PERIOD}</option>
+                      {groupOptions.ACCOUNTING_PERIOD.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
                     </select>
                   ) : activeType === "DOCUMENT_TYPE" ? (
                     <select
@@ -879,11 +993,10 @@ export default function SettingsPage() {
                       onChange={(event) => setForm((value) => ({ ...value, group: event.target.value }))}
                       className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition cursor-pointer"
                     >
-                      <option value="">-- Chọn nhóm chứng từ --</option>
-                      <option value="RECEIPT">RECEIPT (Phiếu thu)</option>
-                      <option value="PAYMENT">PAYMENT (Phiếu chi)</option>
-                      <option value="DEPOSIT">DEPOSIT (Tiền cọc)</option>
-                      <option value="TRANSFER">TRANSFER (Điều tiền)</option>
+                      <option value="">{groupEmptyLabels.DOCUMENT_TYPE}</option>
+                      {groupOptions.DOCUMENT_TYPE.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
                     </select>
                   ) : (
                     <input

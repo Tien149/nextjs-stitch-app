@@ -112,7 +112,7 @@ const defaultMasterData = [
     type: "REVENUE_EXPENSE_CATEGORY",
     code: "REV_FOOD",
     name: "Doanh thu do uong va banh",
-    group: "Nguon doanh thu",
+    group: "REVENUE_SOURCE",
     note: "Dung phan loai doanh thu import tu POS",
     status: "ACTIVE",
   },
@@ -120,7 +120,7 @@ const defaultMasterData = [
     type: "REVENUE_EXPENSE_CATEGORY",
     code: "COGS_FOOD",
     name: "Gia von nguyen vat lieu va bao bi",
-    group: "Gia von",
+    group: "COGS",
     note: "Dung cho COGS nguyen vat lieu",
     status: "ACTIVE",
   },
@@ -421,14 +421,20 @@ async function validateMasterData(type: string, group: string | null, branch: st
       }
     }
   }
-  if (type === "REVENUE_EXPENSE_CATEGORY" && group && !["OPEX", "CAPEX", "COGS", "REVENUE_SOURCE"].includes(group.toUpperCase())) {
-    throw new Error("Nhóm Thu/Chi bắt buộc là OPEX, CAPEX, COGS hoặc REVENUE_SOURCE.");
+  if (type === "REVENUE_EXPENSE_CATEGORY") {
+    if (!group || !["OPEX", "CAPEX", "COGS", "REVENUE_SOURCE"].includes(group.toUpperCase())) {
+      throw new Error("Nhóm Thu/Chi bắt buộc là OPEX, CAPEX, COGS hoặc REVENUE_SOURCE.");
+    }
   }
-  if (type === "ASSET_GROUP" && group && !["FIXED_ASSET", "CCDC", "TOOL", "OTHER"].includes(group.toUpperCase())) {
-    throw new Error("Nhóm tài sản bắt buộc là FIXED_ASSET, CCDC, TOOL hoặc OTHER.");
+  if (type === "ASSET_GROUP") {
+    if (!group || !["FIXED_ASSET", "CCDC", "TOOL", "OTHER"].includes(group.toUpperCase())) {
+      throw new Error("Nhóm tài sản bắt buộc là FIXED_ASSET, CCDC, TOOL hoặc OTHER.");
+    }
   }
-  if (type === "INVENTORY_ITEM_GROUP" && group && !["RAW_MATERIAL", "SEMI_FINISHED", "FINISHED", "PACKAGING", "TOOL", "ASSET", "OTHER"].includes(group.toUpperCase())) {
-    throw new Error("Nhóm mặt hàng bắt buộc là RAW_MATERIAL, SEMI_FINISHED, FINISHED, PACKAGING, TOOL, ASSET hoặc OTHER.");
+  if (type === "INVENTORY_ITEM_GROUP") {
+    if (!group || !["RAW_MATERIAL", "SEMI_FINISHED", "FINISHED", "PACKAGING", "TOOL", "ASSET", "OTHER"].includes(group.toUpperCase())) {
+      throw new Error("Nhóm mặt hàng bắt buộc là RAW_MATERIAL, SEMI_FINISHED, FINISHED, PACKAGING, TOOL, ASSET hoặc OTHER.");
+    }
   }
   if (type === "ACCOUNTING_PERIOD" && group && !["OPEN", "LOCKED", "CLOSED"].includes(group.toUpperCase())) {
     throw new Error("Trạng thái kỳ kế toán bắt buộc là OPEN, LOCKED hoặc CLOSED.");
@@ -436,6 +442,33 @@ async function validateMasterData(type: string, group: string | null, branch: st
   if (type === "DOCUMENT_TYPE" && group && !["RECEIPT", "PAYMENT", "DEPOSIT", "TRANSFER"].includes(group.toUpperCase())) {
     throw new Error("Nhóm loại chứng từ bắt buộc là RECEIPT, PAYMENT, DEPOSIT hoặc TRANSFER.");
   }
+}
+
+const legacyGroupAliases: Record<string, Record<string, string>> = {
+  REVENUE_EXPENSE_CATEGORY: {
+    "NGUON DOANH THU": "REVENUE_SOURCE",
+    "NGUỒN DOANH THU": "REVENUE_SOURCE",
+    "DOANH THU": "REVENUE_SOURCE",
+    "GIA VON": "COGS",
+    "GIÁ VỐN": "COGS",
+  },
+  DOCUMENT_TYPE: {
+    THU: "RECEIPT",
+    CHI: "PAYMENT",
+    "TIEN COC": "DEPOSIT",
+    "TIỀN CỌC": "DEPOSIT",
+    "DIEU TIEN": "TRANSFER",
+    "ĐIỀU TIỀN": "TRANSFER",
+  },
+};
+
+function normalizeMasterGroup(type: string, group: string | null) {
+  if (!group) return null;
+  if (["PARTNER", "MONEY_SOURCE", "REVENUE_EXPENSE_CATEGORY", "ASSET_GROUP", "INVENTORY_ITEM_GROUP", "ACCOUNTING_PERIOD", "DOCUMENT_TYPE"].includes(type)) {
+    const normalized = group.toUpperCase();
+    return legacyGroupAliases[type]?.[normalized] || normalized;
+  }
+  return group;
 }
 
 export async function POST(request: Request) {
@@ -447,7 +480,7 @@ export async function POST(request: Request) {
     const type = cleanText(body.type);
     const code = cleanText(body.code).toUpperCase();
     const name = cleanText(body.name);
-    const group = cleanText(body.group) || null;
+    const group = normalizeMasterGroup(type, cleanText(body.group) || null);
     const branch = cleanText(body.branch) || null;
     const partnerType = type === "PARTNER" ? (cleanText(body.partnerType) || group || "").toUpperCase() : null;
     const partnerGroup = type === "PARTNER" ? (cleanText(body.partnerGroup) || "EXTERNAL").toUpperCase() : null;
@@ -516,10 +549,10 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: "Không tìm thấy danh mục" }, { status: 404 });
     }
 
-    const group = body.group !== undefined ? cleanText(body.group) || null : current.group;
+    const group = body.group !== undefined ? normalizeMasterGroup(current.type, cleanText(body.group) || null) : current.group;
     const branch = body.branch !== undefined ? cleanText(body.branch) || null : current.branch;
     const partnerType = current.type === "PARTNER"
-      ? (body.partnerType !== undefined ? cleanText(body.partnerType) || null : current.partnerType || group)
+      ? normalizeMasterGroup("PARTNER", body.partnerType !== undefined ? cleanText(body.partnerType) || null : current.partnerType || group)
       : null;
     const partnerGroup = current.type === "PARTNER"
       ? (body.partnerGroup !== undefined ? cleanText(body.partnerGroup) || null : current.partnerGroup || "EXTERNAL")
