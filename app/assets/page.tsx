@@ -81,6 +81,7 @@ export default function AssetsPage() {
   const [warehouses, setWarehouses] = useState<MasterItem[]>([]);
   const [departments, setDepartments] = useState<MasterItem[]>([]);
   const [suppliers, setSuppliers] = useState<MasterItem[]>([]);
+  const [assetGroups, setAssetGroups] = useState<MasterItem[]>([]);
   const [form, setForm] = useState(emptyForm);
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
@@ -149,13 +150,15 @@ export default function AssetsPage() {
   const loadMasterData = async () => {
     try {
       const headers = getSessionHeaders();
-      const [whRes, depRes, supRes] = await Promise.all([
+      const [whRes, depRes, supRes, groupRes] = await Promise.all([
         fetch("/api/master-data?type=WAREHOUSE", { headers }),
         fetch("/api/master-data?type=DEPARTMENT", { headers }),
         fetch("/api/master-data?type=PARTNER", { headers }),
+        fetch("/api/master-data?type=ASSET_GROUP&status=ACTIVE", { headers }),
       ]);
       if (whRes.ok) setWarehouses((await whRes.json()) as MasterItem[]);
       if (depRes.ok) setDepartments((await depRes.json()) as MasterItem[]);
+      if (groupRes.ok) setAssetGroups((await groupRes.json()) as MasterItem[]);
       if (supRes.ok) {
         const partners = (await supRes.json()) as MasterItem[];
         setSuppliers(partners.filter((p) => p.group === "SUPPLIER" || p.type === "PARTNER"));
@@ -198,9 +201,11 @@ export default function AssetsPage() {
     );
     const targetWhs = branchWhs.length > 0 ? branchWhs : warehouses;
     if (targetWhs.length > 0 && (!form.location || !targetWhs.some((w) => w.code === form.location))) {
-      setForm((prev) => ({ ...prev, location: targetWhs[0].code }));
+      window.setTimeout(() => {
+        setForm((prev) => ({ ...prev, location: targetWhs[0].code }));
+      }, 0);
     }
-  }, [form.branchCode, warehouses]);
+  }, [form.branchCode, form.location, warehouses]);
 
   // Form warehouse list
   const availableFormWarehouses = useMemo(() => {
@@ -229,6 +234,13 @@ export default function AssetsPage() {
     const filtered = departments.filter((d) => !d.branch || d.branch === filterBranch || d.branch === "ALL");
     return filtered.length > 0 ? filtered : departments;
   }, [departments, filterBranch]);
+
+  const assetGroupOptions = useMemo(() => {
+    if (assetGroups.length > 0) {
+      return assetGroups.map((group) => ({ code: group.code, label: group.name }));
+    }
+    return ASSET_GROUPS.map((group) => ({ code: group.code, label: group.label }));
+  }, [assetGroups]);
 
   // KPI Calculations
   const kpis = useMemo(() => {
@@ -417,7 +429,7 @@ export default function AssetsPage() {
   };
 
   const getGroupLabel = (groupCode: string) => {
-    const matched = ASSET_GROUPS.find((g) => g.code === groupCode);
+    const matched = assetGroupOptions.find((g) => g.code === groupCode);
     return matched ? matched.label : groupCode;
   };
 
@@ -446,7 +458,7 @@ export default function AssetsPage() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto p-6 space-y-6">
+      <main className="w-full max-w-[1720px] mx-auto px-4 sm:px-6 py-6 space-y-6">
         {/* KPI Stats Grid */}
         <section className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-1">
@@ -515,7 +527,7 @@ export default function AssetsPage() {
           </section>
         )}
 
-        <div className="grid xl:grid-cols-[380px_1fr] gap-6">
+        <div className="grid xl:grid-cols-[340px_minmax(0,1fr)] 2xl:grid-cols-[360px_minmax(0,1fr)] gap-5">
           {/* Form Create Asset */}
           {showAssetForm && (
             <form
@@ -592,7 +604,7 @@ export default function AssetsPage() {
                     className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white"
                     required
                   >
-                    {ASSET_GROUPS.map((g) => (
+                    {assetGroupOptions.map((g) => (
                       <option key={g.code} value={g.code}>
                         {g.label}
                       </option>
@@ -773,7 +785,7 @@ export default function AssetsPage() {
           )}
 
           {/* Asset List & Filter Table */}
-          <section className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden flex flex-col max-h-[720px]">
+          <section className="min-w-0 bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden flex flex-col max-h-[760px]">
             {/* Filter Toolbar */}
             <div className="p-4 border-b border-slate-200 bg-slate-50/70 space-y-3 shrink-0">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -852,7 +864,7 @@ export default function AssetsPage() {
                     className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs bg-white focus:border-blue-500"
                   >
                     <option value="ALL">Tất cả nhóm</option>
-                    {ASSET_GROUPS.map((g) => (
+                    {assetGroupOptions.map((g) => (
                       <option key={g.code} value={g.code}>
                         {g.label}
                       </option>
@@ -889,7 +901,7 @@ export default function AssetsPage() {
 
             {/* Table */}
             <div className="overflow-x-auto overflow-y-auto flex-1 custom-scrollbar max-h-[560px]">
-              <table className="w-full text-left text-xs min-w-[760px]">
+              <table className="w-full text-left text-xs min-w-[1040px]">
                 <thead className="bg-slate-100 text-slate-600 uppercase font-bold border-b border-slate-200 sticky top-0 z-10 shadow-sm">
                   <tr>
                     <th className="px-4 py-3">Tài sản / CCDC</th>

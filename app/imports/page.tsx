@@ -129,6 +129,18 @@ const importTabs: ImportTab[] = [
     primaryFields: ["period", "branch_code", "balance_type", "money_source_code", "object_code", "warehouse_code", "allocation_months", "amount"],
   },
   {
+    id: "assets",
+    label: "Tai san & CCDC",
+    icon: "precision_manufacturing",
+    roles: ["Admin", "Kế toán tổng hợp"],
+    title: "Import Tai san & CCDC",
+    subtitle: "Nhap hang loat ho so tai san/CCDC, sau do mo tung ho so de bo sung hinh anh/logo.",
+    apiPath: "/api/imports?importType=ASSET&templateCode=ASSET_STANDARD_V1",
+    templatePath: "/api/imports?importType=ASSET&templateCode=ASSET_STANDARD_V1&template=1",
+    templateCode: "ASSET_STANDARD_V1",
+    primaryFields: ["asset_code", "asset_name", "branch_code", "warehouse_code", "department_code", "asset_group", "quantity", "purchase_date", "original_cost", "useful_life_months", "image_url"],
+  },
+  {
     id: "receipt",
     label: "Thu",
     icon: "south_west",

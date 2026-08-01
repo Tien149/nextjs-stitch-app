@@ -135,6 +135,14 @@ async function assertImportPeriodsOpen(tx: RawTxClient, batchId: string, importT
     const rows = await tx.inventoryTransaction.findMany({ where: { importBatchId: batchId }, select: { transactionDate: true, branchCode: true } });
     for (const row of rows) await assertPeriodOpen(tx, periodFromDate(row.transactionDate), row.branchCode);
   }
+  if (importType === "ASSET") {
+    const rows = await tx.importRow.findMany({ where: { importBatchId: batchId, targetType: "ASSET" }, select: { normalizedJson: true } });
+    for (const row of rows) {
+      const values = parseStoredJson(row.normalizedJson);
+      const purchaseDate = values.purchase_date ? asDate(values.purchase_date) : null;
+      if (purchaseDate) await assertPeriodOpen(tx, periodFromDate(purchaseDate), asText(values.branch_code));
+    }
+  }
 }
 
 async function createStagingRows(
@@ -230,7 +238,7 @@ export async function commitImport(input: CommitInput) {
       if (duplicateKeys.some(Boolean)) throw new Error("File có nhân viên trùng kỳ lương và chi nhánh");
     }
 
-    if (["VOUCHER", "INTERNAL_TRANSFER", "DEBT_OPENING", "INVENTORY_TRANSACTION", "BOM", "STOCKTAKE"].includes(input.importType)) {
+    if (["VOUCHER", "INTERNAL_TRANSFER", "DEBT_OPENING", "INVENTORY_TRANSACTION", "BOM", "STOCKTAKE", "ASSET"].includes(input.importType)) {
       const fingerprints = input.rows.map((row) => rowFingerprint(input.importType, row));
       if (new Set(fingerprints).size !== fingerprints.length) throw new Error("File có các dòng nghiệp vụ bị trùng nhau");
       const existing = await tx.importRow.findFirst({
@@ -242,6 +250,18 @@ export async function commitImport(input: CommitInput) {
         select: { importBatchId: true, sourceRowNumber: true },
       });
       if (existing) throw new Error(`Dữ liệu đã tồn tại trong batch ${existing.importBatchId}, dòng ${existing.sourceRowNumber}`);
+    }
+
+    if (input.importType === "ASSET") {
+      const explicitCodes = input.rows.map((row) => asText(row.values.asset_code).toUpperCase()).filter(Boolean);
+      if (new Set(explicitCodes).size !== explicitCodes.length) throw new Error("File co ma tai san/CCDC bi trung nhau");
+      if (explicitCodes.length > 0) {
+        const existingAsset = await tx.assetRecord.findFirst({
+          where: { code: { in: explicitCodes }, deletedAt: null },
+          select: { code: true },
+        });
+        if (existingAsset) throw new Error(`Ma tai san ${existingAsset.code} da ton tai, khong tu ghi de khi import hang loat`);
+      }
     }
 
     if (input.importType === "VOUCHER") {
@@ -488,14 +508,15 @@ export async function commitImport(input: CommitInput) {
         const code = asText(row.values.code).toUpperCase();
         const name = asText(row.values.name);
         const itemType = normalizeInventoryItemType(row.values.item_type);
+        const category = asText(row.values.category).toUpperCase() || null;
         const unit = asText(row.values.unit);
         if (!['RAW_MATERIAL', 'SEMI_FINISHED', 'FINISHED', 'PACKAGING', 'TOOL', 'ASSET'].includes(itemType)) {
           throw new Error(`Dòng ${row.rowNumber}: Loại hàng không hợp lệ`);
         }
         const item = await tx.inventoryItem.upsert({
           where: { code },
-          create: { code, name, itemType, unit, minStock: asNumber(row.values.min_stock), status: "ACTIVE" },
-          update: { name, itemType, unit, minStock: asNumber(row.values.min_stock) },
+          create: { code, name, itemType, category, unit, minStock: asNumber(row.values.min_stock), status: "ACTIVE" },
+          update: { name, itemType, category, unit, minStock: asNumber(row.values.min_stock) },
         });
         await tx.itemUnitConversion.upsert({
           where: { itemId_unitCode: { itemId: item.id, unitCode: unit.toUpperCase() } },
@@ -829,6 +850,44 @@ export async function commitImport(input: CommitInput) {
             await setImportTarget(tx, staging, row, "ACCRUAL", accrual.id);
           }
         }
+      }
+    }
+
+    if (input.importType === "ASSET") {
+      let assetSequence = await tx.assetRecord.count();
+      for (const row of input.rows) {
+        let code = asText(row.values.asset_code).toUpperCase();
+        if (!code) {
+          do {
+            assetSequence += 1;
+            code = `TS-${String(assetSequence).padStart(4, "0")}`;
+          } while (await tx.assetRecord.findUnique({ where: { code }, select: { id: true } }));
+        }
+        const originalCost = asNumber(row.values.original_cost);
+        const asset = await tx.assetRecord.create({
+          data: {
+            code,
+            name: asText(row.values.asset_name),
+            branchCode: asText(row.values.branch_code),
+            departmentCode: asText(row.values.department_code) || null,
+            assetGroup: asText(row.values.asset_group),
+            imageUrl: asText(row.values.image_url) || null,
+            location: asText(row.values.warehouse_code) || null,
+            warehouseCode: asText(row.values.warehouse_code) || null,
+            quantity: asNumber(row.values.quantity) || 1,
+            purchaseDate: asDate(row.values.purchase_date),
+            originalCost,
+            currentValue: originalCost,
+            usefulLifeMonths: row.values.useful_life_months ? asInteger(row.values.useful_life_months) : null,
+            depreciationStartDate: row.values.depreciation_start_date ? asDate(row.values.depreciation_start_date) : null,
+            residualValue: row.values.residual_value ? asNumber(row.values.residual_value) : 0,
+            supplierCode: asText(row.values.supplier_code) || null,
+            supplierName: asText(row.values.supplier_name) || null,
+            status: asText(row.values.status) || "IN_USE",
+            note: asText(row.values.note) || null,
+          },
+        });
+        await setImportTarget(tx, staging, row, "ASSET", asset.id);
       }
     }
 
@@ -1192,6 +1251,33 @@ async function rollbackStocktake(tx: RawTxClient, batchId: string) {
   }
 }
 
+async function rollbackAssets(tx: RawTxClient, batchId: string) {
+  const targets = await tx.importRow.findMany({
+    where: { importBatchId: batchId, targetType: "ASSET", targetId: { not: null } },
+    select: { targetId: true },
+  });
+  const assetIds = Array.from(new Set(targets.map((target) => target.targetId).filter(Boolean))) as string[];
+  if (assetIds.length === 0) return;
+
+  const assets = await tx.assetRecord.findMany({
+    where: { id: { in: assetIds } },
+    select: { id: true, code: true, disposalStatus: true, disposalDate: true },
+  });
+  for (const asset of assets) {
+    const used = await Promise.all([
+      tx.assetDepreciation.count({ where: { assetId: asset.id } }),
+      tx.assetMaintenance.count({ where: { assetId: asset.id } }),
+      tx.assetDamageReport.count({ where: { assetId: asset.id } }),
+    ]);
+    if (used.some((count) => count > 0) || asset.disposalStatus || asset.disposalDate) {
+      throw new Error(`Tai san ${asset.code} da phat sinh nghiep vu, khong the rollback tu dong`);
+    }
+  }
+
+  await tx.journalEntry.deleteMany({ where: { sourceType: "ASSET_ACQUISITION", sourceId: { in: assetIds } } });
+  await tx.assetRecord.deleteMany({ where: { id: { in: assetIds } } });
+}
+
 async function rollbackOpeningBalances(tx: RawTxClient, batchId: string) {
   const rows = await tx.importRow.findMany({ where: { importBatchId: batchId }, select: { normalizedJson: true } });
   const openingFilters: Prisma.OpeningBalanceWhereInput[] = [];
@@ -1293,6 +1379,7 @@ export async function rollbackImportBatch(input: RollbackInput) {
     else if (batch.importType === "INVENTORY_TRANSACTION") await rollbackInventoryTransactions(tx, batch.id);
     else if (batch.importType === "BOM") await rollbackBom(tx, batch.id);
     else if (batch.importType === "STOCKTAKE") await rollbackStocktake(tx, batch.id);
+    else if (batch.importType === "ASSET") await rollbackAssets(tx, batch.id);
     else if (batch.importType === "OPENING_BALANCE") await rollbackOpeningBalances(tx, batch.id);
     else throw new Error(`Chưa hỗ trợ rollback loại import ${batch.importType}`);
 

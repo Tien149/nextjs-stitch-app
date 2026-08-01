@@ -39,14 +39,18 @@ type Batch = {
   rollbackNote?: string | null;
 };
 
+type DetailValue = string | number | boolean | null | Record<string, unknown> | unknown[];
+type DetailRow = Record<string, DetailValue>;
+
 type BatchDetail = Batch & {
-  bankTransactions?: Record<string, string | number | null>[];
-  revenueRows?: Record<string, string | number | null>[];
-  payrollRows?: Record<string, string | number | null>[];
-  importRows?: Record<string, string | number | null>[];
-  vouchers?: Record<string, string | number | null>[];
-  moneyTransfers?: Record<string, string | number | null>[];
-  debtRecords?: Record<string, string | number | null>[];
+  bankTransactions?: DetailRow[];
+  revenueRows?: DetailRow[];
+  payrollRows?: DetailRow[];
+  importRows?: DetailRow[];
+  vouchers?: DetailRow[];
+  moneyTransfers?: DetailRow[];
+  debtRecords?: DetailRow[];
+  inventoryTransactions?: DetailRow[];
 };
 
 type TemplateField = {
@@ -99,9 +103,40 @@ function currentPeriodValue() {
   return new Date().toISOString().slice(0, 7);
 }
 
-function formatDetailValue(value: string | number | null) {
+function parseDetailJson(value: DetailValue) {
+  if (!value) return {};
+  if (typeof value === "object" && !Array.isArray(value)) return value as Record<string, DetailValue>;
+  if (typeof value !== "string") return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, DetailValue> : {};
+  } catch {
+    return {};
+  }
+}
+
+function firstNonEmptyRows(...groups: Array<DetailRow[] | undefined>) {
+  return groups.find((rows) => Array.isArray(rows) && rows.length > 0) || [];
+}
+
+function normalizeGenericImportRows(rows: DetailRow[] | undefined) {
+  return (rows || []).map((row) => {
+    const normalized = parseDetailJson(row.normalizedJson);
+    return {
+      sheetName: row.sheetName,
+      sourceRowNumber: row.sourceRowNumber,
+      targetType: row.targetType,
+      ...normalized,
+      errorJson: row.errorJson,
+    };
+  });
+}
+
+function formatDetailValue(value: DetailValue) {
   if (value === null || value === undefined || value === "") return "-";
   if (typeof value === "number") return new Intl.NumberFormat("vi-VN").format(value);
+  if (typeof value === "boolean") return value ? "Có" : "Không";
+  if (typeof value === "object") return JSON.stringify(value);
   if (/^\d{4}-\d{2}-\d{2}T/.test(value)) return new Date(value).toLocaleDateString("vi-VN");
   return value;
 }
@@ -448,15 +483,15 @@ export default function ImportUploadPage({
     await loadBatches();
   };
 
-  const selectedBatchRows = selectedBatch ? (
-    selectedBatch.bankTransactions ||
-    selectedBatch.revenueRows ||
-    selectedBatch.payrollRows ||
-    selectedBatch.vouchers ||
-    selectedBatch.moneyTransfers ||
-    selectedBatch.debtRecords ||
-    selectedBatch.importRows ||
-    []
+  const selectedBatchRows = selectedBatch ? firstNonEmptyRows(
+    selectedBatch.bankTransactions,
+    selectedBatch.revenueRows,
+    selectedBatch.payrollRows,
+    selectedBatch.vouchers,
+    selectedBatch.moneyTransfers,
+    selectedBatch.debtRecords,
+    selectedBatch.inventoryTransactions,
+    normalizeGenericImportRows(selectedBatch.importRows)
   ) : [];
   const selectedBatchColumns = Object.keys(selectedBatchRows[0] || {})
     .filter((key) => !["id", "importBatchId", "createdAt"].includes(key))

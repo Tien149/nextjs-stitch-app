@@ -167,6 +167,12 @@ function templateExampleRows(templateCode: string): Array<Record<string, string 
       { stocktake_date: new Date("2026-07-22T00:00:00Z"), branch_code: "HCM", warehouse_code: "KHO_HCM", item_code: "NVL_DUONG", actual_quantity: 9800, reason: "Kiem ke thuc te" },
     ];
   }
+  if (templateCode === "ASSET_STANDARD_V1") {
+    return [
+      { asset_code: "TS-IMP-0001", asset_name: "May pha ca phe Espresso", branch_code: "HCM", warehouse_code: "KHO_HCM", department_code: "STORE", asset_group: "EQUIPMENT", quantity: 1, purchase_date: new Date("2026-07-21T00:00:00Z"), original_cost: 85000000, useful_life_months: 36, depreciation_start_date: new Date("2026-08-01T00:00:00Z"), residual_value: 0, supplier_code: "NCC_FOOD", supplier_name: "NCC Thiet bi F&B", status: "IN_USE", image_url: "", note: "Import hang loat, bo sung hinh anh sau" },
+      { asset_code: "CCDC-IMP-0001", asset_name: "May xay sinh to cong nghiep", branch_code: "HCM", warehouse_code: "KHO_HCM", department_code: "BAR", asset_group: "TOOL", quantity: 2, purchase_date: new Date("2026-07-21T00:00:00Z"), original_cost: 12000000, useful_life_months: 12, depreciation_start_date: new Date("2026-08-01T00:00:00Z"), residual_value: 0, supplier_code: "NCC_FOOD", supplier_name: "NCC Thiet bi F&B", status: "IN_USE", image_url: "", note: "CCDC dung tai quay" },
+    ];
+  }
   const example = templateExample(templateCode);
   return Object.keys(example).length > 0 ? [example] : [];
 }

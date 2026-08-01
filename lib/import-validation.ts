@@ -345,13 +345,67 @@ function validateStocktake(
   if (numberValue(row.values.actual_quantity) < 0) addError(row, "Ton thuc te khong duoc am");
 }
 
+function validateAsset(row: ParsedImportRow, masterItems: MasterItem[], existingAssetCodes: Set<string>) {
+  const branchCode = text(row.values.branch_code).toUpperCase();
+  const assetCode = text(row.values.asset_code).toUpperCase();
+  row.values.branch_code = branchCode;
+  row.values.asset_code = assetCode || null;
+
+  if (assetCode && existingAssetCodes.has(assetCode)) {
+    addError(row, `Ma tai san [${assetCode}] da ton tai, khong tu ghi de khi import hang loat`);
+  }
+
+  const warehouse = resolveMaster(masterItems, "WAREHOUSE", row.values.warehouse_code, branchCode);
+  if (!warehouse) addError(row, `Kho/Vi tri [${text(row.values.warehouse_code)}] khong ton tai hoac khong thuoc cua hang ${branchCode}`);
+  else row.values.warehouse_code = warehouse.code;
+
+  const assetGroup = resolveMaster(masterItems, "ASSET_GROUP", row.values.asset_group);
+  if (!assetGroup) addError(row, `Nhom tai san [${text(row.values.asset_group)}] khong ton tai hoac ngung hoat dong`);
+  else row.values.asset_group = assetGroup.code;
+
+  const departmentInput = text(row.values.department_code);
+  if (departmentInput) {
+    const department = resolveMaster(masterItems, "DEPARTMENT", departmentInput, branchCode);
+    if (!department) addError(row, `Phong ban [${departmentInput}] khong ton tai hoac ngung hoat dong`);
+    else row.values.department_code = department.code;
+  }
+
+  const supplierInput = row.values.supplier_code || row.values.supplier_name;
+  if (text(supplierInput)) {
+    const supplier = resolveMaster(masterItems, "PARTNER", supplierInput, branchCode);
+    if (supplier) {
+      row.values.supplier_code = supplier.code;
+      row.values.supplier_name = supplier.name;
+    }
+  }
+
+  if (numberValue(row.values.quantity) <= 0) addError(row, "So luong tai san/CCDC phai lon hon 0");
+  if (numberValue(row.values.original_cost) <= 0) addError(row, "Nguyen gia phai lon hon 0");
+  if (numberValue(row.values.residual_value) < 0) addError(row, "Gia tri thu hoi khong duoc am");
+  if (numberValue(row.values.residual_value) > numberValue(row.values.original_cost)) {
+    addError(row, "Gia tri thu hoi khong duoc lon hon nguyen gia");
+  }
+
+  const usefulLifeMonths = numberValue(row.values.useful_life_months);
+  if (usefulLifeMonths < 0 || !Number.isInteger(usefulLifeMonths)) addError(row, "So ky phan bo/khau hao phai la so nguyen duong");
+  if (usefulLifeMonths > 0 && !row.values.depreciation_start_date) {
+    addError(row, "Tai san co so ky phan bo/khau hao phai co ngay bat dau phan bo");
+  }
+
+  const status = text(row.values.status).toUpperCase() || "IN_USE";
+  row.values.status = status;
+  if (!["IN_USE", "FULLY_ALLOCATED", "DISPOSED", "INACTIVE"].includes(status)) {
+    addError(row, "Trang thai tai san chi duoc la IN_USE, FULLY_ALLOCATED, DISPOSED hoac INACTIVE");
+  }
+}
+
 export async function validateImportResult(
   result: ParsedImportResult,
   importType: ImportType,
   session: DemoSession,
 ) {
   const masterItems = await prisma.masterDataItem.findMany({
-    where: { type: { in: ["BRANCH", "MONEY_SOURCE", "PARTNER", "REVENUE_EXPENSE_CATEGORY", "WAREHOUSE"] } },
+    where: { type: { in: ["BRANCH", "MONEY_SOURCE", "PARTNER", "REVENUE_EXPENSE_CATEGORY", "WAREHOUSE", "INVENTORY_ITEM_GROUP", "ASSET_GROUP", "DEPARTMENT"] } },
     select: { type: true, code: true, name: true, branch: true, status: true },
   });
   const inventoryItems = ["OPENING_BALANCE", "INVENTORY_TRANSACTION", "BOM", "STOCKTAKE", "REVENUE_POS"].includes(importType)
@@ -360,10 +414,14 @@ export async function validateImportResult(
   const inventoryBalances = importType === "INVENTORY_TRANSACTION"
     ? await prisma.inventoryBalance.findMany({ include: { item: { select: { code: true } } } })
     : [];
+  const existingAssetCodes = importType === "ASSET"
+    ? new Set((await prisma.assetRecord.findMany({ where: { deletedAt: null }, select: { code: true } })).map((asset) => asset.code.toUpperCase()))
+    : new Set<string>();
 
-  const branchTypes: ImportType[] = ["VOUCHER", "INTERNAL_TRANSFER", "DEBT_OPENING", "OPENING_BALANCE", "REVENUE_POS", "PAYROLL", "INVENTORY_TRANSACTION", "STOCKTAKE"];
+  const branchTypes: ImportType[] = ["VOUCHER", "INTERNAL_TRANSFER", "DEBT_OPENING", "OPENING_BALANCE", "REVENUE_POS", "PAYROLL", "INVENTORY_TRANSACTION", "STOCKTAKE", "ASSET"];
   const openingBalanceKeys = new Set<string>();
   const revenueStockUsage = new Map<string, number>();
+  const importAssetCodes = new Set<string>();
   for (const row of result.rows) {
     if (branchTypes.includes(importType)) validateBranch(row, session, masterItems);
 
@@ -373,11 +431,25 @@ export async function validateImportResult(
     if (importType === "INVENTORY_TRANSACTION") validateInventoryTransaction(row, masterItems, inventoryItems, inventoryBalances);
     if (importType === "BOM") validateBom(row, inventoryItems);
     if (importType === "STOCKTAKE") validateStocktake(row, masterItems, inventoryItems);
+    if (importType === "ASSET") {
+      validateAsset(row, masterItems, existingAssetCodes);
+      const assetCode = text(row.values.asset_code).toUpperCase();
+      if (assetCode) {
+        if (importAssetCodes.has(assetCode)) addError(row, `File co ma tai san [${assetCode}] bi trung dong`);
+        importAssetCodes.add(assetCode);
+      }
+    }
     if (importType === "INVENTORY_ITEM") {
       const itemType = normalizeItemType(row.values.item_type);
       row.values.item_type = itemType;
       if (!["RAW_MATERIAL", "SEMI_FINISHED", "FINISHED", "PACKAGING", "TOOL", "ASSET"].includes(itemType)) {
         addError(row, "Loại mặt hàng không hợp lệ");
+      }
+      const itemGroupInput = text(row.values.category);
+      if (itemGroupInput) {
+        const itemGroup = resolveMaster(masterItems, "INVENTORY_ITEM_GROUP", itemGroupInput);
+        if (!itemGroup) addError(row, `Nhóm mặt hàng [${itemGroupInput}] không tồn tại hoặc ngưng hoạt động`);
+        else row.values.category = itemGroup.code;
       }
       const purchaseUnit = text(row.values.purchase_unit);
       const conversionRate = numberValue(row.values.conversion_rate);

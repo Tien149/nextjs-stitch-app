@@ -8,6 +8,7 @@ export type ImportType =
   | "INVENTORY_TRANSACTION"
   | "BOM"
   | "STOCKTAKE"
+  | "ASSET"
   | "VOUCHER"
   | "INTERNAL_TRANSFER"
   | "DEBT_OPENING";
@@ -302,6 +303,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "code", label: "Mã mặt hàng", required: true, type: "text", aliases: ["ma hang", "ma mat hang", "code", "item code"] },
       { field: "name", label: "Tên mặt hàng", required: true, type: "text", aliases: ["ten hang", "ten mat hang", "name", "item name"] },
       { field: "item_type", label: "Loại hàng", required: true, type: "text", aliases: ["loai hang", "loai mat hang", "item type"] },
+      { field: "category", label: "Nhóm mặt hàng", required: false, type: "text", aliases: ["nhom hang", "nhom mat hang", "category", "item group"] },
       { field: "unit", label: "Đơn vị tính", required: true, type: "text", aliases: ["dvt", "don vi tinh", "unit"] },
       { field: "min_stock", label: "Tồn tối thiểu", required: false, type: "number", aliases: ["ton toi thieu", "min stock", "min_stock"] },
     ],
@@ -354,6 +356,32 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "item_code", label: "Ma hang", required: true, type: "text", aliases: ["ma hang", "ma mat hang", "item code"] },
       { field: "actual_quantity", label: "Ton thuc te", required: true, type: "number", aliases: ["ton thuc te", "actual quantity", "actual"] },
       { field: "reason", label: "Ly do", required: false, type: "text", aliases: ["ly do", "reason", "note"] },
+    ],
+  },
+  {
+    code: "ASSET_STANDARD_V1",
+    importType: "ASSET",
+    name: "Tai san & CCDC",
+    description: "Import ho so tai san/CCDC hang loat, sau do mo tung ho so de bo sung hinh anh/logo neu can.",
+    preferredSheetNames: ["Tai san CCDC", "Tai san", "CCDC", "Asset"],
+    fields: [
+      { field: "asset_code", label: "Ma tai san", required: false, type: "text", aliases: ["ma tai san", "ma ccdc", "asset code", "code"] },
+      { field: "asset_name", label: "Ten tai san", required: true, type: "text", aliases: ["ten tai san", "ten ccdc", "asset name", "name"] },
+      { field: "branch_code", label: "Cua hang", required: true, type: "text", aliases: ["cua hang", "chi nhanh", "branch", "store"] },
+      { field: "warehouse_code", label: "Kho/Vi tri", required: true, type: "text", aliases: ["kho", "vi tri", "location", "warehouse", "warehouse code"] },
+      { field: "department_code", label: "Phong ban", required: false, type: "text", aliases: ["phong ban", "bo phan", "department"] },
+      { field: "asset_group", label: "Nhom tai san", required: true, type: "text", aliases: ["nhom tai san", "nhom ccdc", "asset group", "group"] },
+      { field: "quantity", label: "So luong", required: true, type: "number", aliases: ["so luong", "quantity", "qty"] },
+      { field: "purchase_date", label: "Ngay mua", required: true, type: "date", aliases: ["ngay mua", "ngay nhap", "purchase date", "date"] },
+      { field: "original_cost", label: "Nguyen gia", required: true, type: "number", aliases: ["nguyen gia", "gia tri", "original cost", "cost"] },
+      { field: "useful_life_months", label: "So ky phan bo/khau hao", required: false, type: "integer", aliases: ["so ky phan bo", "so thang phan bo", "so ky khau hao", "useful life months"] },
+      { field: "depreciation_start_date", label: "Ngay bat dau phan bo", required: false, type: "date", aliases: ["ngay bat dau phan bo", "ngay bat dau khau hao", "depreciation start date"] },
+      { field: "residual_value", label: "Gia tri thu hoi", required: false, type: "number", aliases: ["gia tri thu hoi", "gia tri con lai toi thieu", "residual value"] },
+      { field: "supplier_code", label: "Ma nha cung cap", required: false, type: "text", aliases: ["ma nha cung cap", "ma ncc", "supplier code"] },
+      { field: "supplier_name", label: "Ten nha cung cap", required: false, type: "text", aliases: ["ten nha cung cap", "ten ncc", "supplier name"] },
+      { field: "status", label: "Trang thai", required: false, type: "text", aliases: ["trang thai", "status"] },
+      { field: "image_url", label: "URL hinh anh", required: false, type: "text", aliases: ["url hinh anh", "hinh anh", "image", "image url"] },
+      { field: "note", label: "Ghi chu", required: false, type: "text", aliases: ["ghi chu", "note"] },
     ],
   },
   {
