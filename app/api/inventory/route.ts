@@ -11,6 +11,7 @@ import {
   softDeleteRecord,
   SoftDeleteError,
 } from "@/lib/soft-delete";
+import { scopePayloadByTab } from "@/lib/tab-scope";
 
 const menuHref = "/inventory";
 
@@ -323,7 +324,7 @@ export async function GET(request: Request) {
         movementByType: movement.byType,
       };
     });
-    return NextResponse.json({ items, balances, transactions, recipes: recipesWithCost, warehouses, stocktakes, stockSummary, stockMovements });
+    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, balances, transactions, recipes: recipesWithCost, warehouses, stocktakes, stockSummary, stockMovements }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });

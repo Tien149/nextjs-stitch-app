@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
-import { canViewFinancialDashboard } from "@/lib/auth-demo";
+import { allowedMenuTabs, canViewFinancialDashboard } from "@/lib/auth-demo";
 import { requestedBranch } from "@/lib/accounting";
 import { prisma } from "@/lib/prisma";
 import { getBalanceSheet, getCashflowForecast, getPnl, getTrend } from "@/lib/reports";
-import { apiError, businessError, cleanText, normalizePeriod, toNumber } from "@/lib/phase3";
+import { apiError, businessError, cleanText, isPeriodLocked, normalizePeriod, toNumber } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import { moneySourceDisplayName, normalizeMoneySourceGroup } from "@/lib/money-sources";
 
@@ -231,11 +231,18 @@ async function getBudgetReport(period: string, branchCode: string) {
   };
 }
 
+// Xem "Cả ngày" phải gộp cả bản ghi ca sáng lẫn ca tối; xem một ca thì chỉ lấy đúng ca đó.
+function manualShiftFilter(shift: string) {
+  return shift === "FULL" ? {} : { shift };
+}
+
 async function getDailyCashReport(period: string, branchCode: string, reportDate: string, shift: string) {
   const { date, start, end } = dayRange(reportDate || `${period}-01`, shift);
   const branchWhere = branchCode === "ALL" ? {} : { branchCode };
+  const dayStart = new Date(`${date}T00:00:00`);
+  const dayEnd = new Date(`${date}T24:00:00`);
 
-  const [revenues, deposits, vouchers, moneySources] = await Promise.all([
+  const [revenues, deposits, vouchers, receiptVouchers, moneySources, manualEntries] = await Promise.all([
     prisma.revenueImportRow.findMany({
       where: { ...branchWhere, saleDate: { gte: start, lt: end } },
       orderBy: [{ saleDate: "asc" }, { externalRef: "asc" }],
@@ -251,15 +258,57 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
       orderBy: [{ voucherDate: "asc" }, { code: "asc" }],
       take: 500,
     }),
+    prisma.financialVoucher.findMany({
+      where: { ...branchWhere, voucherType: "RECEIPT", voucherDate: { gte: start, lt: end }, status: { not: "CANCELLED" } },
+      orderBy: [{ voucherDate: "asc" }, { code: "asc" }],
+      take: 500,
+    }),
     prisma.masterDataItem.findMany({ where: { type: "MONEY_SOURCE", status: "ACTIVE" } }),
+    prisma.manualRevenueEntry.findMany({
+      where: { ...branchWhere, reportDate: { gte: dayStart, lt: dayEnd }, ...manualShiftFilter(shift) },
+      orderBy: [{ reportDate: "asc" }, { shift: "asc" }],
+    }),
   ]);
 
   const sourceByCode = new Map(moneySources.map((source) => [source.code, source]));
   const revenue = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
+  const manual = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
+  const receipt = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
   const deposit = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
 
   for (const row of revenues) {
     addAmount(revenue, classifyPayment(row.paymentMethod, row.channel), row.netAmount);
+  }
+
+  for (const row of manualEntries) {
+    addAmount(manual, "cash", row.cashAmount);
+    addAmount(manual, "transfer", row.transferAmount);
+    addAmount(manual, "card", row.cardAmount);
+    addAmount(manual, "grab", row.grabAmount);
+    addAmount(manual, "other", row.otherAmount);
+  }
+
+  // Phiếu thu là chứng từ thu tiền thật trên hệ thống -> xếp theo nhóm nguồn tiền của phiếu.
+  const receipts = receiptVouchers.map((row) => {
+    const source = sourceByCode.get(row.moneySourceCode);
+    return {
+      id: row.id,
+      code: row.code,
+      date: row.voucherDate,
+      description: row.description,
+      partnerName: row.partnerName,
+      status: row.status,
+      moneySourceCode: row.moneySourceCode,
+      moneySourceName: source ? moneySourceDisplayName(source) : row.moneySourceCode,
+      moneySourceGroup: source?.group || null,
+      amount: row.amount,
+      isCash: normalizeMoneySourceGroup(source?.group) === "CASH",
+    };
+  });
+
+  for (const row of receiptVouchers) {
+    const source = sourceByCode.get(row.moneySourceCode);
+    addAmount(receipt, classifyMoneySource(source?.group), row.amount);
   }
 
   for (const row of deposits) {
@@ -286,12 +335,12 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
   const expenseTotal = expenses.reduce((sum, row) => sum + row.amount, 0);
   const cashExpenseTotal = expenses.filter((row) => row.isCash).reduce((sum, row) => sum + row.amount, 0);
   const total = {
-    total: revenue.total + deposit.total,
-    cash: revenue.cash + deposit.cash,
-    transfer: revenue.transfer + deposit.transfer,
-    card: revenue.card + deposit.card,
-    grab: revenue.grab + deposit.grab,
-    other: revenue.other + deposit.other,
+    total: revenue.total + manual.total + receipt.total + deposit.total,
+    cash: revenue.cash + manual.cash + receipt.cash + deposit.cash,
+    transfer: revenue.transfer + manual.transfer + receipt.transfer + deposit.transfer,
+    card: revenue.card + manual.card + receipt.card + deposit.card,
+    grab: revenue.grab + manual.grab + receipt.grab + deposit.grab,
+    other: revenue.other + manual.other + receipt.other + deposit.other,
   };
 
   return {
@@ -299,8 +348,25 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     branchCode,
     reportDate: date,
     shift,
-    summary: { revenue, deposit, total, expenseTotal, cashExpenseTotal, cashToDeposit: total.cash - cashExpenseTotal },
+    summary: { revenue, manual, receipt, deposit, total, expenseTotal, cashExpenseTotal, cashToDeposit: total.cash - cashExpenseTotal },
     expenses,
+    receipts,
+    manualEntries: manualEntries.map((row) => ({
+      id: row.id,
+      shift: row.shift,
+      branchCode: row.branchCode,
+      cashAmount: row.cashAmount,
+      transferAmount: row.transferAmount,
+      cardAmount: row.cardAmount,
+      grabAmount: row.grabAmount,
+      otherAmount: row.otherAmount,
+      totalAmount: row.totalAmount,
+      note: row.note,
+      updatedBy: row.updatedBy || row.createdBy,
+      updatedAt: row.updatedAt,
+    })),
+    // Cùng một ngày/ca mà có cả doanh thu import lẫn doanh thu nhập tay thì rất dễ tính trùng.
+    duplicateRevenueWarning: revenue.total > 0 && manual.total > 0,
   };
 }
 
@@ -425,6 +491,12 @@ export async function GET(request: Request) {
     const type = cleanText(params.get("type")) || "dashboard";
     const period = normalizePeriod(params.get("period")) || new Date().toISOString().slice(0, 7);
     const branchCode = requestedBranch(auth.session, cleanText(params.get("branchCode")) || "ALL");
+
+    // Ẩn tab ở giao diện là chưa đủ: gõ thẳng URL vẫn lấy được số liệu nếu API không chặn.
+    const permittedTabs = allowedMenuTabs(auth.session, menuHref);
+    if (permittedTabs && !permittedTabs.includes(type)) {
+      return NextResponse.json({ error: "Bạn không có quyền xem báo cáo này" }, { status: 403 });
+    }
     if (type === "operations") return NextResponse.json(await getOperationsReport(period, branchCode));
     if (type === "budget") return NextResponse.json(await getBudgetReport(period, branchCode));
     if (type === "daily-cash") return NextResponse.json(await getDailyCashReport(period, branchCode, cleanText(params.get("reportDate")) || `${period}-01`, cleanText(params.get("shift")) || "FULL"));
@@ -450,14 +522,96 @@ export async function POST(request: Request) {
   try {
     const auth = requireMenuAction(request, menuHref, "create");
     if (!auth.ok) return auth.response;
-    if (!canViewFinancialDashboard(auth.session.role)) {
-      return NextResponse.json({ error: "Bạn không có quyền cấu hình báo cáo tài chính" }, { status: 403 });
-    }
     const body = await request.json();
     const action = cleanText(body.action);
     const period = normalizePeriod(body.period);
     const branchCode = requestedBranch(auth.session, cleanText(body.branchCode));
     if (!period || !branchCode) businessError("Thiếu kỳ hoặc chi nhánh");
+
+    // Thu ngân kết ca tự nhập doanh thu khi chưa kịp import file POS.
+    if (action === "UPSERT_MANUAL_REVENUE") {
+      const reportDateText = cleanText(body.reportDate);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(reportDateText)) businessError("Ngày báo cáo không hợp lệ.");
+      const shift = (cleanText(body.shift) || "FULL").toUpperCase();
+      if (!["FULL", "MORNING", "EVENING"].includes(shift)) businessError("Ca làm việc không hợp lệ.");
+      if (branchCode === "ALL") businessError("Chọn một cửa hàng cụ thể trước khi nhập doanh thu.");
+
+      const reportDate = new Date(`${reportDateText}T00:00:00`);
+      if (await isPeriodLocked(reportDate, branchCode)) {
+        businessError(`Kỳ kế toán của ngày ${reportDateText} đã chốt sổ, không nhập thêm doanh thu được.`);
+      }
+
+      const amounts = {
+        cashAmount: toNumber(body.cashAmount),
+        transferAmount: toNumber(body.transferAmount),
+        cardAmount: toNumber(body.cardAmount),
+        grabAmount: toNumber(body.grabAmount),
+        otherAmount: toNumber(body.otherAmount),
+      };
+      if (Object.values(amounts).some((value) => value < 0)) businessError("Số tiền không được âm.");
+      const totalAmount = Object.values(amounts).reduce((sum, value) => sum + value, 0);
+      if (totalAmount <= 0) businessError("Phải nhập ít nhất một khoản tiền lớn hơn 0.");
+
+      // Nhập "Cả ngày" rồi lại nhập từng ca (hoặc ngược lại) sẽ cộng trùng khi xem báo cáo.
+      const conflictShifts = shift === "FULL" ? ["MORNING", "EVENING"] : ["FULL"];
+      const conflict = await prisma.manualRevenueEntry.findFirst({
+        where: { branchCode, reportDate, shift: { in: conflictShifts } },
+      });
+      if (conflict) {
+        const conflictLabel = conflict.shift === "FULL" ? "Cả ngày" : conflict.shift === "MORNING" ? "Ca sáng" : "Ca tối";
+        businessError(
+          shift === "FULL"
+            ? `Ngày này đã có doanh thu nhập tay cho ${conflictLabel}. Hãy sửa bản ghi theo ca thay vì nhập thêm cho cả ngày.`
+            : `Ngày này đã có doanh thu nhập tay cho ${conflictLabel}. Hãy sửa bản ghi đó thay vì nhập thêm theo ca.`
+        );
+      }
+
+      const result = await prisma.manualRevenueEntry.upsert({
+        where: { branchCode_reportDate_shift: { branchCode, reportDate, shift } },
+        create: { branchCode, reportDate, shift, ...amounts, totalAmount, note: cleanText(body.note) || null, createdBy: auth.session.name, updatedBy: auth.session.name },
+        update: { ...amounts, totalAmount, note: cleanText(body.note) || null, updatedBy: auth.session.name },
+      });
+
+      await writeAuditLog({
+        session: auth.session,
+        module: "REPORTS",
+        action: "UPSERT_MANUAL_REVENUE",
+        entityType: "ManualRevenueEntry",
+        entityId: result.id,
+        entityCode: `${reportDateText}-${branchCode}-${shift}`,
+        branchCode,
+        metadata: { reportDate: reportDateText, shift, ...amounts, totalAmount },
+      });
+      return NextResponse.json(result);
+    }
+
+    if (action === "DELETE_MANUAL_REVENUE") {
+      const entryId = cleanText(body.entryId);
+      if (!entryId) businessError("Thiếu bản ghi cần xoá.");
+      const existing = await prisma.manualRevenueEntry.findUnique({ where: { id: entryId } });
+      if (!existing) businessError("Không tìm thấy bản ghi doanh thu nhập tay.");
+      if (branchCode !== "ALL" && existing.branchCode !== branchCode) businessError("Bản ghi không thuộc cửa hàng đã chọn.");
+      if (await isPeriodLocked(existing.reportDate, existing.branchCode)) {
+        businessError("Kỳ kế toán của bản ghi này đã chốt sổ, không xoá được.");
+      }
+
+      await prisma.manualRevenueEntry.delete({ where: { id: entryId } });
+      await writeAuditLog({
+        session: auth.session,
+        module: "REPORTS",
+        action: "DELETE_MANUAL_REVENUE",
+        entityType: "ManualRevenueEntry",
+        entityId: existing.id,
+        entityCode: `${existing.reportDate.toISOString().slice(0, 10)}-${existing.branchCode}-${existing.shift}`,
+        branchCode: existing.branchCode,
+        metadata: { totalAmount: existing.totalAmount },
+      });
+      return NextResponse.json({ ok: true });
+    }
+
+    if (!canViewFinancialDashboard(auth.session.role)) {
+      return NextResponse.json({ error: "Bạn không có quyền cấu hình báo cáo tài chính" }, { status: 403 });
+    }
     if (action === "UPSERT_FORECAST") {
       const result = await prisma.forecastAssumption.upsert({
         where: { period_branchCode_scenario_assumptionType: { period, branchCode, scenario: cleanText(body.scenario) || "BASE", assumptionType: cleanText(body.assumptionType) || "INFLOW" } },

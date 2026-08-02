@@ -3,8 +3,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { DateInput, MonthInput } from "@/components/DateInput";
-import { canPerformMenuAction, SESSION_KEY } from "@/lib/auth-demo";
+import { canPerformMenuAction, SESSION_KEY, filterModuleTabs } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
+import CopyableText from "@/components/CopyableText";
 
 type Asset = {
   id: string;
@@ -118,8 +119,18 @@ export default function AssetOperationsPage() {
     disposalNote: "",
   });
 
-  const canCreate = user ? canPerformMenuAction(user.role, href, "create") : false;
-  const canEdit = user ? canPerformMenuAction(user.role, href, "edit") : false;
+  // Menu dùng chung "/assets", nhưng tab thuộc riêng màn Vận hành tài sản.
+  const visibleTabs = useMemo(() => filterModuleTabs(user, "/assets/operations"), [user]);
+
+  // Tab mặc định có thể nằm ngoài quyền -> chuyển về tab đầu tiên được phép.
+  useEffect(() => {
+    if (visibleTabs.length === 0) return;
+    if (visibleTabs.some((tab) => tab.id === active)) return;
+    const fallback = visibleTabs[0].id;
+    window.setTimeout(() => setActive(fallback), 0);
+  }, [active, visibleTabs]);
+  const canCreate = user ? canPerformMenuAction(user, href, "create") : false;
+  const canEdit = user ? canPerformMenuAction(user, href, "edit") : false;
 
   const getSessionHeaders = (): Record<string, string> => {
     if (typeof window === "undefined") return {};
@@ -179,12 +190,7 @@ export default function AssetOperationsPage() {
       <ModuleTabs
         active={active}
         onChange={setActive}
-        tabs={[
-          { id: "depreciation", label: "Khấu hao", icon: "trending_down" },
-          { id: "maintenance", label: "Bảo trì", icon: "build" },
-          { id: "damage", label: "Sửa chữa", icon: "report_problem" },
-          { id: "disposal", label: "Thanh lý", icon: "delete_sweep" },
-        ]}
+        tabs={visibleTabs}
       />
 
       {message && <p className="mb-4 px-4 py-3 rounded-lg border border-blue-100 bg-blue-50 text-sm text-blue-700">{message}</p>}
@@ -246,7 +252,7 @@ export default function AssetOperationsPage() {
               {data.depreciations.map((row) => (
                 <tr key={row.id} className="border-t border-slate-100">
                   <Cell>{row.period}</Cell>
-                  <Cell><b>{row.asset.code} - {row.asset.name}</b></Cell>
+                  <Cell><b><CopyableText value={row.asset.code} /> - {row.asset.name}</b></Cell>
                   <Cell right>{money(row.depreciationAmount)} đ</Cell>
                   <Cell right>{money(row.accumulatedDepreciation)} đ</Cell>
                   <Cell right><b>{money(row.remainingValue)} đ</b></Cell>
@@ -315,7 +321,7 @@ export default function AssetOperationsPage() {
             <Table headers={[{ label: "Tài sản" }, { label: "Nội dung" }, { label: "Ngày dự kiến" }, { label: "Lặp" }, { label: "Task" }, { label: "Chi phí", align: "right" }, { label: "Trạng thái" }, { label: "Thao tác", align: "right" }]}>
               {data.maintenances.map((row) => (
                 <tr key={row.id} className="border-t border-slate-100">
-                  <Cell><b>{row.asset.code}</b><small>{row.asset.name}</small></Cell>
+                  <Cell><CopyableText value={row.asset.code}><b>{row.asset.code}</b></CopyableText><small>{row.asset.name}</small></Cell>
                   <Cell>{row.maintenanceType}</Cell>
                   <Cell>{new Date(row.scheduledDate).toLocaleDateString("vi-VN")}</Cell>
                   <Cell>{row.recurrenceRule || "-"}</Cell>
@@ -431,8 +437,8 @@ export default function AssetOperationsPage() {
               <Table headers={[{ label: "Phiếu" }, { label: "Tài sản" }, { label: "Mức độ" }, { label: "Mô tả" }, { label: "Task" }, { label: "Xử lý" }, { label: "Thao tác", align: "right" }]}>
                 {data.damageReports.map((row) => (
                   <tr key={row.id} className="border-t border-slate-100">
-                    <Cell><b>{row.code}</b><small>{row.status}</small></Cell>
-                    <Cell>{row.asset.code} - {row.asset.name}</Cell>
+                    <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{row.status}</small></Cell>
+                    <Cell><CopyableText value={row.asset.code} /> - {row.asset.name}</Cell>
                     <Cell><span className="status bg-amber-50 text-amber-700">{row.severity}</span></Cell>
                     <Cell>{row.description}</Cell>
                     <Cell>{row.linkedWorkItemId ? <span className="status bg-blue-50 text-blue-700">Đã tạo</span> : "-"}</Cell>
@@ -492,7 +498,7 @@ export default function AssetOperationsPage() {
               ) : (
                 data.assets.filter((a) => a.status === "DISPOSED").map((row) => (
                   <tr key={row.id} className="border-t border-slate-100">
-                    <Cell><b>{row.code}</b><small className="block text-slate-600">{row.name}</small></Cell>
+                    <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small className="block text-slate-600">{row.name}</small></Cell>
                     <Cell right>{money(row.originalCost)} đ</Cell>
                     <Cell right><b className="text-emerald-700">{money(row.disposalAmount || 0)} đ</b></Cell>
                     <Cell><span className="status bg-rose-100 text-rose-800">Đã thanh lý</span></Cell>

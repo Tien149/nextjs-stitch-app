@@ -5,9 +5,10 @@ import { useRouter } from "next/navigation";
 import { DateInput } from "@/components/DateInput";
 import { ModuleFrame } from "@/components/ModuleFrame";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
-import { storeLabel, storeOptions } from "@/lib/branch-labels";
+import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
+import CopyableText from "@/components/CopyableText";
 
 const voucherMoneySourceGroups = ["CASH"];
 
@@ -164,8 +165,8 @@ export default function VouchersPage() {
     void loadVouchers(code);
   };
 
-  const canCreate = user ? canPerformAction(user.role, "create") : false;
-  const canApprove = user ? canPerformAction(user.role, "approve") : false;
+  const canCreate = user ? canPerformAction(user, "create") : false;
+  const canApprove = user ? canPerformAction(user, "approve") : false;
   const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
   const normalizedCategoryOptions = useMemo(() => {
     const source = categories.length > 0 ? categories : fallbackVoucherCategories;
@@ -248,7 +249,8 @@ export default function VouchersPage() {
 
   /** Chứng từ đã ghi sổ hoặc đã huỷ thì không cho sửa/xoá; trả về lý do để hiện tooltip. */
   const lockedForChange = (voucher: Voucher) => {
-    if (["APPROVED", "POSTED"].includes(voucher.status)) return "Chứng từ đã duyệt/ghi sổ, không thể sửa hoặc xoá";
+    if (voucher.status === "APPROVED") return "Chứng từ đã duyệt. Bấm \"Bỏ duyệt\" để đưa về bản nháp rồi sửa hoặc xoá.";
+    if (voucher.status === "POSTED") return "Chứng từ đã ghi sổ, không thể sửa hoặc xoá";
     if (voucher.status === "CANCELLED") return "Chứng từ đã huỷ";
     return null;
   };
@@ -339,6 +341,24 @@ export default function VouchersPage() {
       body: JSON.stringify({ id, status: "APPROVED" }),
     });
     if (response.ok) await loadVouchers(branchCode);
+  };
+
+  const unapproveVoucher = async (voucher: Voucher) => {
+    if (!window.confirm(
+      `Bỏ duyệt chứng từ ${voucher.code}?\n\nChứng từ sẽ quay về bản nháp để sửa lại. Các phát sinh từ lần duyệt trước (tiền cọc, công nợ, khoản phân bổ) sẽ được hoàn tác.`
+    )) return;
+    const response = await fetch("/api/vouchers", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: voucher.id, status: "DRAFT" }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      setMessage(payload.error || "Không bỏ duyệt được chứng từ");
+      return;
+    }
+    setMessage(`Đã bỏ duyệt chứng từ ${voucher.code}. Giờ có thể sửa hoặc xoá.`);
+    await loadVouchers(branchCode);
   };
 
   const cancelVoucher = async (id: string) => {
@@ -497,7 +517,7 @@ export default function VouchersPage() {
                     disabled={branchCode !== "ALL"}
                     required
                   >
-                    {storeOptions.map((option) => (
+                    {visibleStoreOptions(user).map((option) => (
                       <option key={option.code} value={option.code}>
                         {storeLabel(option.code)}
                       </option>
@@ -603,7 +623,7 @@ export default function VouchersPage() {
                   ) : vouchers.map((voucher) => (
                     <tr key={voucher.id} className="hover:bg-slate-50/80 transition-colors">
                       <td className="px-4 py-3.5">
-                        <b className="text-slate-800 font-semibold">{voucher.code}</b>
+                        <CopyableText value={voucher.code}><b className="text-slate-800 font-semibold">{voucher.code}</b></CopyableText>
                         <p className="text-xs text-slate-500 mt-0.5">{voucher.voucherType === "RECEIPT" ? "Phiếu thu" : "Phiếu chi"} · {new Date(voucher.voucherDate).toLocaleDateString("vi-VN")}</p>
                       </td>
                       <td className="px-4 py-3.5">
@@ -628,6 +648,15 @@ export default function VouchersPage() {
                         )}
                         {canApprove && ["DRAFT", "PENDING_REVIEW"].includes(voucher.status) && (
                           <button onClick={() => void cancelVoucher(voucher.id)} className="px-2.5 py-1 bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 rounded-lg text-xs font-bold transition-colors">Hủy</button>
+                        )}
+                        {canApprove && voucher.status === "APPROVED" && (
+                          <button
+                            onClick={() => void unapproveVoucher(voucher)}
+                            title="Đưa chứng từ về bản nháp để sửa lại"
+                            className="px-2.5 py-1 bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200 rounded-lg text-xs font-bold transition-colors"
+                          >
+                            Bỏ duyệt
+                          </button>
                         )}
                         <button onClick={() => window.open(`/vouchers/${voucher.id}/print`, "_blank")} className="px-2.5 py-1 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 rounded-lg text-xs font-bold transition-colors">In</button>
                         <RowActions

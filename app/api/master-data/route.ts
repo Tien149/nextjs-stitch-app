@@ -426,6 +426,11 @@ async function validateMasterData(type: string, group: string | null, branch: st
       throw new Error("Nhóm Thu/Chi bắt buộc là OPEX, CAPEX, COGS hoặc REVENUE_SOURCE.");
     }
   }
+  if (type === "REVENUE_EXPENSE_SUBGROUP") {
+    if (!group || !["OPEX", "CAPEX", "COGS", "REVENUE_SOURCE"].includes(group.toUpperCase())) {
+      throw new Error("Nhóm lớn của nhóm thu/chi bắt buộc là OPEX, CAPEX, COGS hoặc REVENUE_SOURCE.");
+    }
+  }
   if (type === "ASSET_GROUP") {
     if (!group || !["FIXED_ASSET", "CCDC", "TOOL", "OTHER"].includes(group.toUpperCase())) {
       throw new Error("Nhóm tài sản bắt buộc là FIXED_ASSET, CCDC, TOOL hoặc OTHER.");
@@ -481,6 +486,7 @@ export async function POST(request: Request) {
     const code = cleanText(body.code).toUpperCase();
     const name = cleanText(body.name);
     const group = normalizeMasterGroup(type, cleanText(body.group) || null);
+    const subGroup = type === "REVENUE_EXPENSE_CATEGORY" ? (cleanText(body.subGroup).toUpperCase() || null) : null;
     const branch = cleanText(body.branch) || null;
     const partnerType = type === "PARTNER" ? (cleanText(body.partnerType) || group || "").toUpperCase() : null;
     const partnerGroup = type === "PARTNER" ? (cleanText(body.partnerGroup) || "EXTERNAL").toUpperCase() : null;
@@ -510,6 +516,7 @@ export async function POST(request: Request) {
         code,
         name,
         group: type === "PARTNER" ? partnerType : group,
+        subGroup,
         partnerType,
         partnerGroup,
         branch,
@@ -550,6 +557,9 @@ export async function PATCH(request: Request) {
     }
 
     const group = body.group !== undefined ? normalizeMasterGroup(current.type, cleanText(body.group) || null) : current.group;
+    const subGroup = current.type === "REVENUE_EXPENSE_CATEGORY"
+      ? (body.subGroup !== undefined ? (cleanText(body.subGroup).toUpperCase() || null) : current.subGroup)
+      : null;
     const branch = body.branch !== undefined ? cleanText(body.branch) || null : current.branch;
     const partnerType = current.type === "PARTNER"
       ? normalizeMasterGroup("PARTNER", body.partnerType !== undefined ? cleanText(body.partnerType) || null : current.partnerType || group)
@@ -582,6 +592,7 @@ export async function PATCH(request: Request) {
         ...(body.code !== undefined ? { code: cleanText(body.code).toUpperCase() } : {}),
         ...(body.name !== undefined ? { name: cleanText(body.name) } : {}),
         group: current.type === "PARTNER" ? partnerType : group,
+        subGroup,
         partnerType,
         partnerGroup,
         branch,

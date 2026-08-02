@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { MonthInput } from "@/components/DateInput";
-import { branchScopeOptions, displayRoleName, updateDynamicBranches } from "@/lib/branch-labels";
+import { displayRoleName, updateDynamicBranches, visibleBranchScopeOptions } from "@/lib/branch-labels";
 import {
   appMenuItems,
   canAccessMenu,
@@ -13,6 +13,7 @@ import {
   type DemoSession,
   SESSION_KEY,
 } from "@/lib/auth-demo";
+import CopyableText from "@/components/CopyableText";
 
 interface DocumentItem {
   id: string;
@@ -64,7 +65,7 @@ export default function Home() {
   const [dashboardError, setDashboardError] = useState("");
   const [globalBranch, setGlobalBranch] = useState("ALL");
   const [isBranchLocked, setIsBranchLocked] = useState(false);
-  const [dynamicBranchOptions, setDynamicBranchOptions] = useState<Array<{ code: string; label: string }>>([...branchScopeOptions]);
+  const [dynamicBranchOptions, setDynamicBranchOptions] = useState<Array<{ code: string; label: string }>>([]);
 
   // Auth states
   const [user, setUser] = useState<DemoSession | null>(null);
@@ -111,6 +112,14 @@ export default function Home() {
   useEffect(() => {
     const rawSession = localStorage.getItem(SESSION_KEY);
     const headers: Record<string, string> = rawSession ? { "x-demo-session": encodeURIComponent(rawSession) } : {};
+    let branchAccess: string[] = ["ALL"];
+    try {
+      const parsed = rawSession ? (JSON.parse(rawSession) as DemoSession) : null;
+      if (parsed?.allowedBranches?.length) branchAccess = parsed.allowedBranches;
+    } catch {
+      branchAccess = ["ALL"];
+    }
+    window.setTimeout(() => setDynamicBranchOptions(visibleBranchScopeOptions(branchAccess)), 0);
 
     // Fetch branches dynamically
     fetch("/api/master-data?type=BRANCH", { headers })
@@ -119,7 +128,7 @@ export default function Home() {
         if (data && Array.isArray(data)) {
           const activeBranches = data.filter((b) => b.status === "ACTIVE");
           updateDynamicBranches(activeBranches);
-          setDynamicBranchOptions([...branchScopeOptions]);
+          setDynamicBranchOptions(visibleBranchScopeOptions(branchAccess));
         }
       })
       .catch((e) => console.error("Error loading branches in Home:", e));
@@ -208,7 +217,7 @@ export default function Home() {
   // Handle Form Submission
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user || !canPerformAction(user.role, "create")) {
+    if (!user || !canPerformAction(user, "create")) {
       alert("Bạn không có quyền tạo chứng từ");
       return;
     }
@@ -265,8 +274,8 @@ export default function Home() {
     return matchesSearch && doc.status === filterStatus;
   });
 
-  const canCreateDocuments = user ? canPerformAction(user.role, "create") : false;
-  const canExportDocuments = user ? canPerformAction(user.role, "export") : false;
+  const canCreateDocuments = user ? canPerformAction(user, "create") : false;
+  const canExportDocuments = user ? canPerformAction(user, "export") : false;
 
   if (isCheckingAuth) {
     return (
@@ -604,7 +613,7 @@ export default function Home() {
                   ) : (
                     filteredDocuments.map((doc) => (
                       <tr key={doc.id} className="hover:bg-slate-50 transition-colors">
-                        <td className="px-6 py-4 text-xs font-mono font-bold text-slate-900">{doc.code}</td>
+                        <td className="px-6 py-4 text-xs font-mono font-bold text-slate-900"><CopyableText value={doc.code} /></td>
                         <td className="px-6 py-4 text-xs text-slate-500">
                           {new Date(doc.date).toLocaleDateString("vi-VN")}
                         </td>

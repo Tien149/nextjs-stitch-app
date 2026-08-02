@@ -30,6 +30,9 @@ model MasterDataItem {
   code         String
   name         String
   group        String?
+  /// Nhóm cấp 2 của khoản mục thu/chi (ví dụ OPEX -> "Chi phí cố định"). Trỏ tới code của
+  /// một mục REVENUE_EXPENSE_SUBGROUP.
+  subGroup     String?
   partnerType  String?
   partnerGroup String?
   branch       String?
@@ -51,6 +54,7 @@ model MasterDataItem {
   @@index([status])
   @@index([partnerType])
   @@index([partnerGroup])
+  @@index([subGroup])
   @@index([deletedAt])
 }
 
@@ -912,6 +916,34 @@ model MoneyTransferDenomination {
 
   @@unique([moneyTransferId, denomination])
   @@index([moneyTransferId])
+}
+
+/// Doanh thu thu ngân tự nhập khi kết ca, dùng khi không kịp import file doanh thu POS.
+/// Mỗi cửa hàng chỉ có một bản ghi cho mỗi ngày + ca, sửa lại thì ghi đè bản ghi đó.
+model ManualRevenueEntry {
+  id             String   @id @default(uuid())
+  reportDate     DateTime
+  shift          String
+  branchCode     String
+  cashAmount     Float    @default(0)
+  transferAmount Float    @default(0)
+  cardAmount     Float    @default(0)
+  grabAmount     Float    @default(0)
+  otherAmount    Float    @default(0)
+  totalAmount    Float    @default(0)
+  note           String?
+  createdBy      String?
+  updatedBy      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  deletedAt DateTime?
+  deletedBy String?
+
+  @@unique([branchCode, reportDate, shift])
+  @@index([reportDate])
+  @@index([branchCode])
+  @@index([deletedAt])
 }
 
 model Accrual {

@@ -18,7 +18,7 @@ export async function POST(request: Request) {
       email: string;
       password: string;
       name: string;
-      role?: { name: string; menuAccess: string[] } | null;
+      role?: { name: string; menuAccess: string[]; actions: string[] } | null;
       branchAccesses?: { branchCode: string }[] | null;
     };
 
@@ -42,6 +42,7 @@ export async function POST(request: Request) {
             select: {
               name: true,
               menuAccess: true,
+              actions: true,
             },
           },
           branchAccesses: {
@@ -76,6 +77,7 @@ export async function POST(request: Request) {
         name: dbUser.id === "quanly" ? "Chủ cửa hàng" : dbUser.name,
         role: dbUser.role?.name || "Giam Sat",
         menuAccess: dbUser.role?.menuAccess || [],
+        actions: dbUser.role?.actions || [],
         branch: branchAccessLabel(allowedBranches),
         email: dbUser.email,
         allowedBranches,

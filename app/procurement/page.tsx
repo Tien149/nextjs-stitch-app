@@ -4,9 +4,10 @@ import { useEffect, useMemo, useState } from "react";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { DateInput } from "@/components/DateInput";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
-import { storeLabel, storeOptions } from "@/lib/branch-labels";
-import { canPerformMenuAction } from "@/lib/auth-demo";
+import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
+import { canPerformMenuAction, filterModuleTabs } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
+import CopyableText from "@/components/CopyableText";
 
 type Item = { id: string; code: string; name: string; unit: string; itemType: string; requiresImage: boolean };
 type MasterItem = { id: string; type: string; code: string; name: string; branch: string | null; status: string };
@@ -65,9 +66,18 @@ export default function ProcurementPage() {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  const canCreate = user ? canPerformMenuAction(user.role, href, "create") : false;
-  const canEdit = user ? canPerformMenuAction(user.role, href, "edit") : false;
-  const canApprove = user ? canPerformMenuAction(user.role, href, "approve") : false;
+  const visibleTabs = useMemo(() => filterModuleTabs(user, href), [user]);
+
+  // Tab mặc định có thể nằm ngoài quyền -> chuyển về tab đầu tiên được phép.
+  useEffect(() => {
+    if (visibleTabs.length === 0) return;
+    if (visibleTabs.some((tab) => tab.id === active)) return;
+    const fallback = visibleTabs[0].id;
+    window.setTimeout(() => setActive(fallback), 0);
+  }, [active, visibleTabs]);
+  const canCreate = user ? canPerformMenuAction(user, href, "create") : false;
+  const canEdit = user ? canPerformMenuAction(user, href, "edit") : false;
+  const canApprove = user ? canPerformMenuAction(user, href, "approve") : false;
   const departmentName = (code?: string | null) => data.departments.find((item) => item.code === code)?.name || code || "Chưa gán phòng ban";
   const departmentsForBranch = useMemo(
     () => data.departments.filter((item) => !item.branch || item.branch === "ALL" || item.branch === requestForm.branchCode),
@@ -356,7 +366,7 @@ export default function ProcurementPage() {
         </div>
       </div>
 
-      <ModuleTabs active={active} onChange={setActive} tabs={[{ id: "requests", label: "Yêu cầu mua", icon: "assignment" }, { id: "quotes", label: "So sánh giá", icon: "compare_arrows" }, { id: "orders", label: "Đơn mua hàng", icon: "local_shipping" }]} />
+      <ModuleTabs active={active} onChange={setActive} tabs={visibleTabs} />
       {message && <p className="mb-4 px-4 py-3 rounded-lg border border-blue-100 bg-blue-50 text-sm text-blue-700">{message}</p>}
 
       {active === "requests" && (
@@ -385,7 +395,7 @@ export default function ProcurementPage() {
                   className="control"
                   required
                 >
-                  {storeOptions.map((option) => (
+                  {visibleStoreOptions(user).map((option) => (
                     <option key={option.code} value={option.code}>
                       {storeLabel(option.code)}
                     </option>
@@ -506,7 +516,7 @@ export default function ProcurementPage() {
               {data.requests.map((request) => (
                 <tr key={request.id} className="border-t border-slate-100">
                   <td className="cell">
-                    <b>{request.code}</b>
+                    <CopyableText value={request.code}><b>{request.code}</b></CopyableText>
                     <small>{new Date(request.requestDate).toLocaleDateString("vi-VN")} · {request.branchCode}</small>
                   </td>
                   <td className="cell">
@@ -619,7 +629,7 @@ export default function ProcurementPage() {
               <div key={request.id} className="table-panel shadow-sm p-4">
                 <div className="flex items-center justify-between pb-3 mb-3 border-b border-slate-100">
                   <div>
-                    <b>{request.code} — {request.reason}</b>
+                    <b><CopyableText value={request.code} /> — {request.reason}</b>
                     <p className="text-xs text-slate-500">Mặt hàng: {request.lines.map((line) => `${line.item.name} (${line.quantity} ${line.item.unit})`).join(", ")}</p>
                   </div>
                   <span className={`status ${statusStyle(request.status)}`}>{request.status}</span>
@@ -721,7 +731,7 @@ export default function ProcurementPage() {
               return (
                 <tr key={order.id} className="border-t border-slate-100">
                   <td className="cell">
-                    <b>{order.code}</b>
+                    <CopyableText value={order.code}><b>{order.code}</b></CopyableText>
                     <small>{new Date(order.orderDate).toLocaleDateString("vi-VN")}</small>
                   </td>
                   <td className="cell">

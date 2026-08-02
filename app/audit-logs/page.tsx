@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ModuleFrame } from "@/components/ModuleFrame";
 import { DateInput } from "@/components/DateInput";
-import { displayRoleName, storeLabel, storeOptions } from "@/lib/branch-labels";
+import { displayRoleName, storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { SESSION_KEY, type DemoSession } from "@/lib/auth-demo";
 
 type AuditLog = {
@@ -178,7 +178,7 @@ export default function AuditLogsPage() {
                 className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs bg-white focus:border-blue-500 outline-none"
               >
                 <option value="ALL">Tất cả chi nhánh</option>
-                {storeOptions.map((opt) => (
+                {visibleStoreOptions(user).map((opt) => (
                   <option key={opt.code} value={opt.code}>
                     {storeLabel(opt.code)}
                   </option>

@@ -220,10 +220,34 @@ const importTabs: ImportTab[] = [
   },
 ];
 
+// Nhãn của danh mục mà người dùng bấm Import từ màn hình Cấu hình Danh mục.
+const masterTypeLabels: Record<string, string> = {
+  BRANCH: "Cửa hàng",
+  DEPARTMENT: "Phòng ban",
+  WAREHOUSE: "Kho hàng",
+  PARTNER: "Đối tác (khách hàng/NCC)",
+  MONEY_SOURCE: "Nguồn tiền",
+  REVENUE_EXPENSE_CATEGORY: "Thu / Chi",
+  ASSET_GROUP: "Nhóm tài sản",
+  INVENTORY_ITEM_GROUP: "Nhóm mặt hàng",
+  ACCOUNTING_PERIOD: "Kỳ kế toán",
+  DOCUMENT_TYPE: "Loại chứng từ",
+  DOCUMENT_NUMBER_RULE: "Quy tắc mã",
+  SYSTEM_PARAM: "Tham số hệ thống",
+};
+
+// Vai trò tùy chỉnh chưa được khai báo trong importTabs -> mở toàn bộ tab thay vì trả về danh sách rỗng,
+// đồng bộ với cách canAccessMenu xử lý vai trò ngoài 5 vai trò chuẩn.
+function allowedTabsForRole(role: string) {
+  const matched = importTabs.filter((tab) => tab.roles.includes(role as DemoRole));
+  return matched.length > 0 ? matched : importTabs;
+}
+
 export default function ImportsPage() {
   const router = useRouter();
   const [session, setSession] = useState<DemoSession | null>(null);
   const [active, setActive] = useState("bank-statements");
+  const [masterType, setMasterType] = useState("");
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -240,12 +264,14 @@ export default function ImportsPage() {
         router.push("/");
         return;
       }
-      const allowedTabs = importTabs.filter((tab) => tab.roles.includes(parsedSession.role));
-      const requestedTab = new URLSearchParams(window.location.search).get("tab") || "bank-statements";
+      const allowedTabs = allowedTabsForRole(parsedSession.role);
+      const query = new URLSearchParams(window.location.search);
+      const requestedTab = query.get("tab") || "bank-statements";
       const selectedTab = allowedTabs.some((tab) => tab.id === requestedTab) ? requestedTab : allowedTabs[0].id;
       window.setTimeout(() => {
         setSession(parsedSession);
         setActive(selectedTab);
+        setMasterType((query.get("masterType") || "").toUpperCase());
         setLoading(false);
       }, 0);
     } catch {
@@ -262,10 +288,14 @@ export default function ImportsPage() {
     );
   }
 
-  const allowedTabs = importTabs.filter((tab) => tab.roles.includes(session.role));
+  const allowedTabs = allowedTabsForRole(session.role);
   const current = allowedTabs.find((tab) => tab.id === active) || allowedTabs[0];
+  const masterTypeHint = active === "master-data" && masterTypeLabels[masterType]
+    ? ` Đang import danh mục ${masterTypeLabels[masterType]}: cột "Loại danh mục" của mọi dòng phải điền ${masterType}.`
+    : "";
   const changeTab = (tabId: string) => {
     setActive(tabId);
+    setMasterType("");
     window.history.replaceState(null, "", `/imports?tab=${tabId}`);
   };
   const navigation = (
@@ -295,7 +325,7 @@ export default function ImportsPage() {
   return (
     <ImportUploadPage
       title={current.title}
-      subtitle={current.subtitle}
+      subtitle={`${current.subtitle}${masterTypeHint}`}
       menuHref="/imports"
       apiPath={current.apiPath}
       templatePath={current.templatePath}

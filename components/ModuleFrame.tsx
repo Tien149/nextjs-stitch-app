@@ -1,7 +1,7 @@
 "use client";
 
 import { type ReactNode, useEffect, useState } from "react";
-import { branchScopeOptions, displayRoleName, updateDynamicBranches } from "@/lib/branch-labels";
+import { displayRoleName, updateDynamicBranches, visibleBranchScopeOptions } from "@/lib/branch-labels";
 import { SESSION_KEY, type DemoSession } from "@/lib/auth-demo";
 
 export function ModuleFrame({
@@ -20,11 +20,27 @@ export function ModuleFrame({
   children: ReactNode;
 }) {
   const [isLocked, setIsLocked] = useState(false);
-  const [dynamicBranchOptions, setDynamicBranchOptions] = useState<Array<{ code: string; label: string }>>([...branchScopeOptions]);
+  const [dynamicBranchOptions, setDynamicBranchOptions] = useState<Array<{ code: string; label: string }>>([]);
 
   useEffect(() => {
     const raw = localStorage.getItem(SESSION_KEY);
     const headers: Record<string, string> = raw ? { "x-demo-session": encodeURIComponent(raw) } : {};
+    let access: string[] = [];
+
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw) as DemoSession;
+        access = parsed.allowedBranches?.length ? parsed.allowedBranches : ["ALL"];
+        if (access.length === 1 && !access.includes("ALL")) {
+          window.setTimeout(() => setIsLocked(true), 0);
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    window.setTimeout(() => {
+      setDynamicBranchOptions(visibleBranchScopeOptions(access));
+    }, 0);
 
     // Fetch branches from database dynamically
     fetch("/api/master-data?type=BRANCH", { headers })
@@ -33,21 +49,10 @@ export function ModuleFrame({
         if (data && Array.isArray(data)) {
           const activeBranches = data.filter((b) => b.status === "ACTIVE");
           updateDynamicBranches(activeBranches);
-          setDynamicBranchOptions([...branchScopeOptions]);
+          setDynamicBranchOptions(visibleBranchScopeOptions(access));
         }
       })
       .catch((e) => console.error("Error loading branches in ModuleFrame:", e));
-
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw) as DemoSession;
-        if (parsed.allowedBranches?.length === 1 && !parsed.allowedBranches.includes("ALL")) {
-          window.setTimeout(() => setIsLocked(true), 0);
-        }
-      } catch (e) {
-        console.error(e);
-      }
-    }
   }, []);
 
   return (

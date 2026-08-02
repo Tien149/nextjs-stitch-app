@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { DateInput, MonthInput } from "@/components/DateInput";
-import { branchScopeOptions, storeLabel, storeOptions } from "@/lib/branch-labels";
-import { canPerformMenuAction } from "@/lib/auth-demo";
+import { storeLabel, visibleBranchScopeOptions, visibleStoreOptions } from "@/lib/branch-labels";
+import { canPerformMenuAction, filterModuleTabs } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
+import CopyableText from "@/components/CopyableText";
 
 type CashEntry = { id: string; date: string; code: string; type: string; moneySourceCode: string; description: string; receipt: number; payment: number; balance: number };
 type Schedule = { id: string; period: string; amount: number; status: string };
@@ -65,8 +66,17 @@ export default function FinanceOperationsPage() {
     note: "",
   });
 
-  const canCreate = user ? canPerformMenuAction(user.role, href, "create") : false;
-  const canEdit = user ? canPerformMenuAction(user.role, href, "edit") : false;
+  const visibleTabs = useMemo(() => filterModuleTabs(user, href), [user]);
+
+  // Tab mặc định có thể nằm ngoài quyền -> chuyển về tab đầu tiên được phép.
+  useEffect(() => {
+    if (visibleTabs.length === 0) return;
+    if (visibleTabs.some((tab) => tab.id === active)) return;
+    const fallback = visibleTabs[0].id;
+    window.setTimeout(() => setActive(fallback), 0);
+  }, [active, visibleTabs]);
+  const canCreate = user ? canPerformMenuAction(user, href, "create") : false;
+  const canEdit = user ? canPerformMenuAction(user, href, "edit") : false;
   const canClose = user?.role === "Admin";
   const canApproveTransfer = user?.role === "Admin";
 
@@ -178,7 +188,7 @@ export default function FinanceOperationsPage() {
                   onChange={(e) => setBranchCode(e.target.value)}
                   className="w-48 pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all appearance-none cursor-pointer font-medium"
                 >
-                  {branchScopeOptions.map((option) => (
+                  {visibleBranchScopeOptions(user).map((option) => (
                     <option key={option.code} value={option.code}>
                       {option.label}
                     </option>
@@ -216,11 +226,7 @@ export default function FinanceOperationsPage() {
 
         {/* Tab Navigation */}
         <nav className="flex gap-1.5 border-b border-slate-200 overflow-x-auto">
-          {[
-            { id: "cashbook", label: "Sổ quỹ dòng tiền", icon: "account_balance_wallet" },
-            { id: "accruals", label: "Trích trước & Phân bổ", icon: "calendar_month" },
-            { id: "closing", label: "Khóa sổ kỳ kế toán", icon: "lock" },
-          ].map((tab) => (
+          {visibleTabs.map((tab) => (
             <button
               key={tab.id}
               type="button"
@@ -306,7 +312,7 @@ export default function FinanceOperationsPage() {
                       {data.moneyTransfers.filter((transfer) => transfer.status === "PENDING_REVIEW").map((transfer) => (
                         <tr key={transfer.id}>
                           <td className="px-4 py-3">
-                            <b>{transfer.code}</b>
+                            <CopyableText value={transfer.code}><b>{transfer.code}</b></CopyableText>
                             <p className="text-slate-500">{new Date(transfer.transferDate).toLocaleDateString("vi-VN")}</p>
                             {transfer.transferPurpose === "CASH_DEPOSIT" && (
                               <p className="mt-1 inline-flex rounded bg-blue-50 px-2 py-0.5 text-[11px] font-bold text-blue-700">
@@ -393,7 +399,7 @@ export default function FinanceOperationsPage() {
                         }}
                         className="w-full pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all cursor-pointer"
                       >
-                        {storeOptions.map((option) => (
+                        {visibleStoreOptions(user).map((option) => (
                           <option key={option.code} value={option.code}>
                             {storeLabel(option.code)}
                           </option>
@@ -489,7 +495,7 @@ export default function FinanceOperationsPage() {
                             </td>
                             <td className="px-5 py-4 whitespace-nowrap text-xs font-bold text-slate-800">
                               <div className="flex flex-col gap-0.5">
-                                <span>{row.code}</span>
+                                <CopyableText value={row.code}><span>{row.code}</span></CopyableText>
                                 <span className="text-[10px] text-slate-400 font-semibold">{row.moneySourceCode}</span>
                               </div>
                             </td>
@@ -556,7 +562,7 @@ export default function FinanceOperationsPage() {
                       onChange={(e) => setAccrual({ ...accrual, branchCode: e.target.value })}
                       className="w-full pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all cursor-pointer"
                     >
-                      {storeOptions.map((option) => (
+                      {visibleStoreOptions(user).map((option) => (
                         <option key={option.code} value={option.code}>
                           {storeLabel(option.code)}
                         </option>

@@ -5,7 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { DateInput, MonthInput } from "@/components/DateInput";
 import { ModuleFrame } from "@/components/ModuleFrame";
 import { canPerformMenuAction } from "@/lib/auth-demo";
-import { storeLabel, storeOptions } from "@/lib/branch-labels";
+import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import {
   localDate,
@@ -46,8 +46,8 @@ export default function WorkDetailPage() {
     dueDate: "",
   });
 
-  const canEdit = user ? canPerformMenuAction(user.role, href, "edit") : false;
-  const canApprove = user ? canPerformMenuAction(user.role, href, "approve") : false;
+  const canEdit = user ? canPerformMenuAction(user, href, "edit") : false;
+  const canApprove = user ? canPerformMenuAction(user, href, "approve") : false;
 
   const loadData = useCallback(async () => {
     const [detailResponse, listResponse] = await Promise.all([
@@ -366,7 +366,7 @@ export default function WorkDetailPage() {
             <div className="grid gap-4 p-5 sm:grid-cols-2">
               <Field label="Tiêu đề *" className="sm:col-span-2"><input required className="control" value={editForm.title} onChange={(event) => setEditForm({ ...editForm, title: event.target.value })} /></Field>
               <Field label="Mô tả" className="sm:col-span-2"><textarea className="control min-h-20 resize-y" value={editForm.description} onChange={(event) => setEditForm({ ...editForm, description: event.target.value })} /></Field>
-              <Field label="Cửa hàng"><select className="control" value={editForm.branchCode} onChange={(event) => setEditForm({ ...editForm, branchCode: event.target.value })}>{storeOptions.map((row) => <option key={row.code} value={row.code}>{storeLabel(row.code)}</option>)}</select></Field>
+              <Field label="Cửa hàng"><select className="control" value={editForm.branchCode} onChange={(event) => setEditForm({ ...editForm, branchCode: event.target.value })}>{visibleStoreOptions(user).map((row) => <option key={row.code} value={row.code}>{storeLabel(row.code)}</option>)}</select></Field>
               <Field label="Phòng ban"><select className="control" value={editForm.departmentCode} onChange={(event) => setEditForm({ ...editForm, departmentCode: event.target.value })}>{options.departments.map((row) => <option key={`${row.code}-${row.branch}`} value={row.code}>{row.name}</option>)}</select></Field>
               <Field label="Người phụ trách"><select className="control" value={editForm.assigneeId} onChange={(event) => chooseAssignee(event.target.value)}>{options.users.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></Field>
               <Field label="Mức ưu tiên"><select className="control" value={editForm.priority} onChange={(event) => setEditForm({ ...editForm, priority: event.target.value as WorkPriority })}>{Object.entries(workPriorityLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>

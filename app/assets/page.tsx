@@ -5,8 +5,9 @@ import { useRouter } from "next/navigation";
 import { DateInput } from "@/components/DateInput";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { SearchableSelect } from "@/components/SearchableSelect";
-import { displayRoleName, storeLabel, storeOptions } from "@/lib/branch-labels";
+import { displayRoleName, storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
+import CopyableText from "@/components/CopyableText";
 
 type MasterItem = {
   id: string;
@@ -117,7 +118,7 @@ export default function AssetsPage() {
     }, 0);
   }, [router]);
 
-  const canCreate = user ? canPerformAction(user.role, "create") : false;
+  const canCreate = user ? canPerformAction(user, "create") : false;
   const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
   /** Biểu mẫu bên trái hiện ra khi được tạo mới hoặc khi đang sửa một tài sản. */
   const showAssetForm = canCreate || Boolean(editingAsset);
@@ -569,7 +570,7 @@ export default function AssetsPage() {
                     className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white"
                     required
                   >
-                    {storeOptions.map((opt) => (
+                    {visibleStoreOptions(user).map((opt) => (
                       <option key={opt.code} value={opt.code}>
                         {storeLabel(opt.code)}
                       </option>
@@ -816,7 +817,7 @@ export default function AssetsPage() {
                     className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs bg-white focus:border-blue-500"
                   >
                     <option value="ALL">Tất cả cửa hàng</option>
-                    {storeOptions.map((opt) => (
+                    {visibleStoreOptions(user).map((opt) => (
                       <option key={opt.code} value={opt.code}>
                         {storeLabel(opt.code)}
                       </option>
@@ -949,7 +950,7 @@ export default function AssetsPage() {
                               </div>
                               <div>
                                 <div className="flex items-center gap-1.5">
-                                  <span className="font-bold text-slate-900">{asset.code}</span>
+                                  <CopyableText value={asset.code}><span className="font-bold text-slate-900">{asset.code}</span></CopyableText>
                                   <span className="font-medium text-slate-800">- {asset.name}</span>
                                 </div>
                                 <p className="text-[11px] text-slate-400">

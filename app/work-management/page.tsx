@@ -6,7 +6,7 @@ import { DateInput, MonthInput } from "@/components/DateInput";
 import { ModuleFrame } from "@/components/ModuleFrame";
 import { resolveInitialBranchScope } from "@/components/BranchScopeSelect";
 import { canPerformMenuAction } from "@/lib/auth-demo";
-import { storeLabel, storeOptions } from "@/lib/branch-labels";
+import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import {
   localDate,
@@ -21,6 +21,7 @@ import {
   type WorkStatus,
   type WorkView,
 } from "@/lib/work-management-types";
+import CopyableText from "@/components/CopyableText";
 
 const emptyData: WorkListData = {
   items: [],
@@ -63,9 +64,9 @@ export default function WorkManagementPage() {
   const [form, setForm] = useState(initialForm);
   const [calendarMonth, setCalendarMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
 
-  const canCreate = user ? canPerformMenuAction(user.role, href, "create") : false;
-  const canEdit = user ? canPerformMenuAction(user.role, href, "edit") : false;
-  const canApprove = user ? canPerformMenuAction(user.role, href, "approve") : false;
+  const canCreate = user ? canPerformMenuAction(user, href, "create") : false;
+  const canEdit = user ? canPerformMenuAction(user, href, "edit") : false;
+  const canApprove = user ? canPerformMenuAction(user, href, "approve") : false;
 
   useEffect(() => {
     if (!loading && user) {
@@ -272,7 +273,7 @@ export default function WorkManagementPage() {
               </Field>
               <Field label="Cửa hàng *">
                 <select required className="control" value={form.branchCode} onChange={(event) => setForm({ ...form, branchCode: event.target.value })}>
-                  {storeOptions.filter((option) => user?.allowedBranches.includes("ALL") || user?.allowedBranches.includes(option.code)).map((option) => (
+                  {visibleStoreOptions(user).map((option) => (
                     <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>
                   ))}
                 </select>
@@ -344,7 +345,7 @@ function ListView({ items, onOpen }: { items: WorkItem[]; onOpen: (id: string) =
         <tbody className="divide-y divide-slate-100">
           {items.map((item) => (
             <tr key={item.id} onClick={() => onOpen(item.id)} className="cursor-pointer hover:bg-slate-50">
-              <td className="cell max-w-80"><b className="text-slate-800">{item.title}</b><small>{item.code} · {storeLabel(item.branchCode)}</small></td>
+              <td className="cell max-w-80"><b className="text-slate-800">{item.title}</b><small><CopyableText value={item.code} /> · {storeLabel(item.branchCode)}</small></td>
               <td className="cell">{item.assigneeName}</td>
               <td className="cell">{item.departmentCode}</td>
               <td className="cell"><span className={`status ${priorityTone(item.priority)}`}>{workPriorityLabels[item.priority]}</span></td>
@@ -409,7 +410,7 @@ function KanbanView({
                       <b className="line-clamp-2 text-sm">{item.title}</b>
                       <span className={`status shrink-0 ${priorityTone(item.priority)}`}>{workPriorityLabels[item.priority]}</span>
                     </div>
-                    <p className="mt-1 text-xs text-slate-500">{item.code} · {storeLabel(item.branchCode)}</p>
+                    <p className="mt-1 text-xs text-slate-500"><CopyableText value={item.code} /> · {storeLabel(item.branchCode)}</p>
                     <div className="mt-3"><Progress item={item} /></div>
                     <div className="mt-3 flex items-center justify-between text-xs text-slate-500">
                       <span className="max-w-32 truncate">{item.assigneeName}</span>

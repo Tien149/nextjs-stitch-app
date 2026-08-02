@@ -6,6 +6,7 @@ import { displayRoleName, storeLabel } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import { logout } from "@/lib/session-client";
 import { MonthInput } from "@/components/DateInput";
+import CopyableText from "@/components/CopyableText";
 
 type MasterDataItem = {
   id: string;
@@ -13,6 +14,7 @@ type MasterDataItem = {
   code: string;
   name: string;
   group: string | null;
+  subGroup: string | null;
   partnerType: string | null;
   partnerGroup: string | null;
   branch: string | null;
@@ -33,6 +35,7 @@ type MasterDataForm = {
   code: string;
   name: string;
   group: string;
+  subGroup: string;
   partnerType: string;
   partnerGroup: string;
   branch: string;
@@ -54,6 +57,7 @@ const tabs = [
   { type: "PARTNER", label: "Đối tác", icon: "handshake", hint: "1.1 - Khách hàng, NCC, Đối tác" },
   { type: "MONEY_SOURCE", label: "Nguồn tiền", icon: "account_balance_wallet", hint: "1.1 - Quỹ/Ngân hàng/Ví" },
   { type: "REVENUE_EXPENSE_CATEGORY", label: "Thu / Chi", icon: "category", hint: "1.2 - OPEX/CAPEX/Giá vốn/Doanh thu" },
+  { type: "REVENUE_EXPENSE_SUBGROUP", label: "Nhóm thu / chi", icon: "account_tree", hint: "1.2 - Nhóm con của OPEX/CAPEX/COGS/Doanh thu" },
   { type: "ASSET_GROUP", label: "Nhóm tài sản", icon: "precision_manufacturing", hint: "1.2 - Tài sản/CCDC" },
   { type: "INVENTORY_ITEM_GROUP", label: "Nhóm mặt hàng", icon: "inventory_2", hint: "1.2 - Nguyên liệu, hàng hóa" },
   { type: "ACCOUNTING_PERIOD", label: "Kỳ kế toán", icon: "calendar_month", hint: "1.4 - Mở/khóa kỳ ghi sổ" },
@@ -67,6 +71,7 @@ const emptyForm: MasterDataForm = {
   code: "",
   name: "",
   group: "",
+  subGroup: "",
   partnerType: "",
   partnerGroup: "EXTERNAL",
   branch: "",
@@ -80,6 +85,7 @@ const emptyForm: MasterDataForm = {
 };
 
 const groupPlaceholders: Record<string, string> = {
+  REVENUE_EXPENSE_SUBGROUP: "VD: OPEX / CAPEX / Gia von / Nguon doanh thu",
   BRANCH: "VD: Branch / Head Office",
   DEPARTMENT: "VD: Back office / Operation",
   WAREHOUSE: "VD: Nguyen vat lieu / Thanh pham",
@@ -95,6 +101,7 @@ const groupPlaceholders: Record<string, string> = {
 };
 
 const codePlaceholders: Record<string, string> = {
+  REVENUE_EXPENSE_SUBGROUP: "VD: OPEX_CO_DINH",
   BRANCH: "VD: HCM_STORE",
   DEPARTMENT: "VD: KE_TOAN",
   WAREHOUSE: "VD: KHO_TONG",
@@ -110,6 +117,7 @@ const codePlaceholders: Record<string, string> = {
 };
 
 const namePlaceholders: Record<string, string> = {
+  REVENUE_EXPENSE_SUBGROUP: "VD: Chi phí cố định",
   BRANCH: "VD: Cửa hàng Hồ Chí Minh",
   DEPARTMENT: "VD: Phòng Kế toán",
   WAREHOUSE: "VD: Kho tổng miền Nam",
@@ -153,6 +161,12 @@ const groupOptions: Record<string, GroupOption[]> = {
     { value: "COGS", label: "COGS - Giá vốn" },
     { value: "REVENUE_SOURCE", label: "REVENUE_SOURCE - Nguồn doanh thu" },
   ],
+  REVENUE_EXPENSE_SUBGROUP: [
+    { value: "OPEX", label: "OPEX - Chi phí vận hành" },
+    { value: "CAPEX", label: "CAPEX - Chi phí đầu tư" },
+    { value: "COGS", label: "COGS - Giá vốn" },
+    { value: "REVENUE_SOURCE", label: "REVENUE_SOURCE - Nguồn doanh thu" },
+  ],
   ASSET_GROUP: [
     { value: "FIXED_ASSET", label: "FIXED_ASSET - Tài sản cố định" },
     { value: "CCDC", label: "CCDC - Công cụ dụng cụ" },
@@ -182,6 +196,7 @@ const groupOptions: Record<string, GroupOption[]> = {
 };
 
 const groupEmptyLabels: Record<string, string> = {
+  REVENUE_EXPENSE_SUBGROUP: "-- Chọn nhóm lớn --",
   PARTNER: "-- Chọn loại đối tác --",
   MONEY_SOURCE: "-- Chọn nhóm nguồn tiền --",
   REVENUE_EXPENSE_CATEGORY: "-- Chọn nhóm thu/chi --",
@@ -317,6 +332,21 @@ export default function SettingsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeType, isCheckingAuth]);
 
+  /** Nhóm chi tiết khả dụng theo nhóm lớn đang chọn. */
+  const subGroupOptions = useMemo(
+    () => allItems.filter(
+      (item) => item.type === "REVENUE_EXPENSE_SUBGROUP" && item.status === "ACTIVE" && item.group === form.group,
+    ),
+    [allItems, form.group],
+  );
+
+  // Đổi nhóm lớn thì nhóm chi tiết cũ không còn hợp lệ.
+  useEffect(() => {
+    if (!form.subGroup) return;
+    if (subGroupOptions.some((option) => option.code === form.subGroup)) return;
+    window.setTimeout(() => setForm((value) => ({ ...value, subGroup: "" })), 0);
+  }, [form.subGroup, subGroupOptions]);
+
   const stats = useMemo(() => {
     return tabs.map((tab) => {
       const tabItems = allItems.filter((item) => item.type === tab.type);
@@ -328,7 +358,7 @@ export default function SettingsPage() {
     });
   }, [allItems]);
 
-  const canManageSettings = user ? canPerformAction(user.role, "config") : false;
+  const canManageSettings = user ? canPerformAction(user, "config") : false;
 
   const resetForm = (type = activeType) => {
     setForm({ ...emptyForm, type, partnerGroup: "EXTERNAL" });
@@ -352,6 +382,7 @@ export default function SettingsPage() {
       code: item.code,
       name: item.name,
       group: normalizeGroupValue(item.type, item.group),
+      subGroup: item.subGroup || "",
       partnerType: normalizeGroupValue("PARTNER", item.partnerType || item.group),
       partnerGroup: item.partnerGroup || "EXTERNAL",
       branch: item.branch || "",
@@ -681,7 +712,7 @@ export default function SettingsPage() {
                   )}
 
                   <button
-                    onClick={() => router.push("/imports")}
+                    onClick={() => router.push(`/imports?tab=master-data&masterType=${activeType}`)}
                     className="bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-sm"
                   >
                     <span className="material-symbols-outlined text-[16px]">upload_file</span>
@@ -766,21 +797,34 @@ export default function SettingsPage() {
                       items.map((item) => (
                         <tr key={item.id} className="hover:bg-slate-50 transition">
                           <td className="px-4 py-3">
-                            <p className="font-bold text-slate-900">{item.code}</p>
+                            <p className="font-bold text-slate-900"><CopyableText value={item.code} /></p>
                             <p className="text-xs text-slate-500 mt-0.5">{item.name}</p>
                           </td>
                           <td className="px-4 py-3">
                             <p className="font-semibold text-xs bg-slate-100 text-slate-700 px-2 py-0.5 rounded w-fit">
                               {item.type === "PARTNER" ? formatGroupLabel("PARTNER", item.partnerType || item.group) : formatGroupLabel(item.type, item.group)}
                             </p>
+                            {item.subGroup && (
+                              <p className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-slate-600">
+                                <span className="material-symbols-outlined text-[13px] text-slate-300">subdirectory_arrow_right</span>
+                                {allItems.find((row) => row.type === "REVENUE_EXPENSE_SUBGROUP" && row.code === item.subGroup)?.name || item.subGroup}
+                              </p>
+                            )}
                             {item.type === "PARTNER" && (
                               <p className="text-[10px] text-slate-500 mt-0.5 font-bold uppercase">{item.partnerGroup || "EXTERNAL"}</p>
                             )}
                           </td>
                           <td className="px-4 py-3 font-medium">{storeLabel(item.branch)}</td>
                           <td className="px-4 py-3 max-w-xs truncate">
-                            <p className="font-medium text-xs text-slate-800">{item.contactName || item.accountNo || "-"}</p>
-                            <p className="text-[11px] text-slate-500 mt-0.5 italic">{item.phone || item.email || item.taxCode || item.note || ""}</p>
+                            <p className="font-medium text-xs text-slate-800">
+                              {item.contactName || (item.accountNo ? <CopyableText value={item.accountNo} /> : "-")}
+                            </p>
+                            <p className="text-[11px] text-slate-500 mt-0.5 italic">
+                              {item.phone ? <CopyableText value={item.phone} />
+                                : item.email ? <CopyableText value={item.email} />
+                                : item.taxCode ? <CopyableText value={item.taxCode} />
+                                : item.note || ""}
+                            </p>
                           </td>
                           <td className="px-4 py-3">
                             <span
@@ -1007,6 +1051,28 @@ export default function SettingsPage() {
                     />
                   )}
                 </label>
+
+                {activeType === "REVENUE_EXPENSE_CATEGORY" && (
+                  <label className="text-xs font-bold text-slate-700 block">
+                    Nhóm chi tiết
+                    <select
+                      value={form.subGroup}
+                      onChange={(event) => setForm((value) => ({ ...value, subGroup: event.target.value }))}
+                      disabled={!form.group}
+                      className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition cursor-pointer disabled:bg-slate-100 disabled:cursor-not-allowed"
+                    >
+                      <option value="">
+                        {!form.group ? "-- Chọn nhóm lớn trước --" : subGroupOptions.length === 0 ? "-- Chưa khai báo nhóm chi tiết --" : "-- Không phân nhóm chi tiết --"}
+                      </option>
+                      {subGroupOptions.map((option) => (
+                        <option key={option.code} value={option.code}>{option.name}</option>
+                      ))}
+                    </select>
+                    <span className="mt-1 block text-[11px] font-medium text-slate-500">
+                      Khai báo thêm ở tab &quot;Nhóm thu / chi&quot;.
+                    </span>
+                  </label>
+                )}
 
                 {activeType === "PARTNER" && (
                   <label className="text-xs font-bold text-slate-700 block">

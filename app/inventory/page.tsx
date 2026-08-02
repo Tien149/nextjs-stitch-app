@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
-import { storeLabel, storeOptions } from "@/lib/branch-labels";
-import { canPerformMenuAction, SESSION_KEY } from "@/lib/auth-demo";
+import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
+import { canPerformMenuAction, SESSION_KEY, filterModuleTabs } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
+import CopyableText from "@/components/CopyableText";
 
 type UnitConversion = { id: string; unitCode: string; unitName: string | null; conversionRate: number; isDefaultPurchase: boolean };
 type Item = { id: string; code: string; name: string; unit: string; itemType: string; minStock: number; requiresImage: boolean; unitConversions?: UnitConversion[] };
@@ -64,7 +65,16 @@ export default function InventoryPage() {
   const [stocktakeRows, setStocktakeRows] = useState<StocktakeDraftRow[]>([]);
   const [wasteForm, setWasteForm] = useState({ recipeId: "", productQuantity: "1", branchCode: "HCM", warehouseCode: "KHO_HCM", referenceCode: "", note: "Hủy hàng theo báo cáo POS" });
   
-  const canCreate = user ? canPerformMenuAction(user.role, href, "create") : false;
+  const visibleTabs = useMemo(() => filterModuleTabs(user, href), [user]);
+
+  // Tab mặc định có thể nằm ngoài quyền -> chuyển về tab đầu tiên được phép.
+  useEffect(() => {
+    if (visibleTabs.length === 0) return;
+    if (visibleTabs.some((tab) => tab.id === active)) return;
+    const fallback = visibleTabs[0].id;
+    window.setTimeout(() => setActive(fallback), 0);
+  }, [active, visibleTabs]);
+  const canCreate = user ? canPerformMenuAction(user, href, "create") : false;
   const selectedStockItem = data.items.find((item) => item.id === stockForm.itemId);
   const stockUnits = selectedStockItem?.unitConversions?.length
     ? selectedStockItem.unitConversions
@@ -183,7 +193,7 @@ export default function InventoryPage() {
         </div>
       </div>
 
-      <ModuleTabs active={active} onChange={setActive} tabs={[{ id: "stock", label: "Tồn kho", icon: "inventory" }, { id: "transactions", label: "Nhập / Xuất", icon: "swap_horiz" }, { id: "items", label: "Mặt hàng", icon: "category" }, { id: "recipes", label: "Định lượng", icon: "menu_book" }, { id: "production", label: "Chế biến", icon: "blender" }, { id: "stocktake", label: "Kiểm kê", icon: "fact_check" }, { id: "waste", label: "Hủy hàng", icon: "delete_sweep" }]} />
+      <ModuleTabs active={active} onChange={setActive} tabs={visibleTabs} />
       {message && <p className="mb-4 px-4 py-3 rounded-lg border border-blue-100 bg-blue-50 text-sm text-blue-700">{message}</p>}
 
       {active === "stock" && (
@@ -228,7 +238,7 @@ export default function InventoryPage() {
             }))).map((row) => (
               <tr key={`nxt-${row.item.id}-${row.warehouseCode}`} className="border-t border-slate-100">
                 <Cell>
-                  <b>{row.item.code} - {row.item.name}</b>
+                  <b><CopyableText value={row.item.code} /> - {row.item.name}</b>
                   <small>{row.item.unit}</small>
                 </Cell>
                 <Cell>{row.warehouseCode}</Cell>
@@ -262,7 +272,7 @@ export default function InventoryPage() {
             {filteredStockMovements.map((row) => (
               <tr key={`${row.transactionId}-${row.itemCode}-${row.warehouseCode}-${row.inboundQuantity}-${row.outboundQuantity}`} className="border-t border-slate-100">
                 <Cell>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}</Cell>
-                <Cell><b>{row.code}</b><small>{row.referenceCode || "-"}</small></Cell>
+                <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{row.referenceCode || "-"}</small></Cell>
                 <Cell><span className="status bg-slate-100">{movementTypeLabel(row.transactionType)}</span></Cell>
                 <Cell>{row.warehouseCode}</Cell>
                 <Cell><b>{row.itemCode}</b><small>{row.itemName}</small></Cell>
@@ -291,7 +301,7 @@ export default function InventoryPage() {
             {data.balances.map((row) => (
               <tr key={row.id} className="border-t border-slate-100">
                 <Cell>
-                  <b>{row.item.code} - {row.item.name}</b>
+                  <b><CopyableText value={row.item.code} /> - {row.item.name}</b>
                   <small>{row.item.itemType} · {row.item.unit}</small>
                 </Cell>
                 <Cell>{row.warehouseCode}</Cell>
@@ -401,7 +411,7 @@ export default function InventoryPage() {
             >
               {data.items.map((item) => (
                 <tr key={item.id} className="border-t border-slate-100">
-                  <Cell><b>{item.code}</b></Cell>
+                  <Cell><CopyableText value={item.code}><b>{item.code}</b></CopyableText></Cell>
                   <Cell>{item.name}</Cell>
                   <Cell>{item.itemType}</Cell>
                   <Cell>{item.unit}</Cell>
@@ -451,7 +461,7 @@ export default function InventoryPage() {
                     onChange={(e) => setStockForm({ ...stockForm, branchCode: e.target.value })}
                     className="control"
                   >
-                    {storeOptions.map((option) => (
+                    {visibleStoreOptions(user).map((option) => (
                       <option key={option.code} value={option.code}>
                         {storeLabel(option.code)}
                       </option>
@@ -531,7 +541,7 @@ export default function InventoryPage() {
             >
               {data.transactions.map((row) => (
                 <tr key={row.id} className="border-t border-slate-100">
-                  <Cell><b>{row.code}</b><small>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}</small></Cell>
+                  <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}</small></Cell>
                   <Cell><span className="status bg-slate-100">{movementTypeLabel(row.transactionType)}</span></Cell>
                   <Cell>{row.toWarehouseCode ? `${row.warehouseCode} -> ${row.toWarehouseCode}` : row.warehouseCode}</Cell>
                   <Cell>{row.lines.map((line) => `${line.item.name}: ${money(line.inputQuantity || line.quantity)} ${line.inputUnitCode || line.item.unit} = ${money(line.quantity)} ${line.item.unit}`).join(", ")}</Cell>
@@ -645,7 +655,7 @@ export default function InventoryPage() {
                 </Input>
                 <Input label="Cửa hàng">
                   <select className="control" value={productionForm.branchCode} onChange={(e) => setProductionForm({ ...productionForm, branchCode: e.target.value })}>
-                    {storeOptions.map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
+                    {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
                   </select>
                 </Input>
               </div>
@@ -672,7 +682,7 @@ export default function InventoryPage() {
             <Table headers={[{ label: "Chứng từ" }, { label: "Loại" }, { label: "Kho" }, { label: "Mặt hàng" }]}>
               {data.transactions.filter((row) => row.transactionType.includes("CHE_BIEN")).map((row) => (
                 <tr key={row.id} className="border-t border-slate-100">
-                  <Cell><b>{row.code}</b><small>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}</small></Cell>
+                  <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}</small></Cell>
                   <Cell>{movementTypeLabel(row.transactionType)}</Cell>
                   <Cell>{row.warehouseCode}</Cell>
                   <Cell>{row.lines.map((line) => `${line.item.code}: ${money(line.quantity)} ${line.item.unit}`).join(", ")}</Cell>
@@ -691,7 +701,7 @@ export default function InventoryPage() {
               <div className="grid grid-cols-2 gap-3">
                 <Input label="Cửa hàng">
                   <select className="control" value={stocktakeForm.branchCode} onChange={(e) => setStocktakeForm({ ...stocktakeForm, branchCode: e.target.value })}>
-                    {storeOptions.map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
+                    {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
                   </select>
                 </Input>
                 <Input label="Kho">
@@ -749,7 +759,7 @@ export default function InventoryPage() {
             <Table headers={[{ label: "Phiếu" }, { label: "Kho" }, { label: "Mặt hàng" }, { label: "Chênh lệch", align: "right" }]}>
               {data.stocktakes.map((row) => (
                 <tr key={row.id} className="border-t border-slate-100">
-                  <Cell><b>{row.code}</b><small>{new Date(row.stocktakeDate).toLocaleDateString("vi-VN")} · {row.status}</small></Cell>
+                  <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{new Date(row.stocktakeDate).toLocaleDateString("vi-VN")} · {row.status}</small></Cell>
                   <Cell>{row.warehouseCode}</Cell>
                   <Cell>{row.lines.map((line) => line.item.code).join(", ")}</Cell>
                   <Cell right>{money(row.lines.reduce((sum, line) => sum + line.varianceQuantity, 0))}</Cell>
@@ -780,7 +790,7 @@ export default function InventoryPage() {
                   onChange={(e) => setWasteForm({ ...wasteForm, branchCode: e.target.value })}
                   className="control"
                 >
-                  {storeOptions.map((option) => (
+                  {visibleStoreOptions(user).map((option) => (
                     <option key={option.code} value={option.code}>
                       {storeLabel(option.code)}
                     </option>
