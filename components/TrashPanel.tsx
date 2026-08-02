@@ -107,7 +107,7 @@ export function TrashPanel({
 
   /** Chỉ hiện nút Khôi phục khi vai trò có quyền xoá trên module gốc của bản ghi. */
   const canRestore = (row: TrashRow) =>
-    Boolean(session && canPerformMenuAction(session.role, row.module, "delete"));
+    Boolean(session && canPerformMenuAction(session, row.module, "delete"));
 
   const filtered = useMemo(() => {
     const key = keyword.trim().toLowerCase();

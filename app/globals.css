@@ -228,6 +228,66 @@ body {
   }
 }
 
+/* Giá trị định danh copy được bằng một cú nhấp (xem components/CopyableText.tsx) */
+.copyable {
+  position: relative;
+  cursor: pointer;
+  border-radius: 4px;
+  outline: none;
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-decoration-color: rgb(148 163 184 / 0.7);
+  text-underline-offset: 3px;
+  transition: background-color 0.12s ease;
+}
+
+.copyable:hover,
+.copyable:focus-visible {
+  background-color: rgb(219 234 254 / 0.7);
+  text-decoration-color: rgb(37 99 235);
+}
+
+.copyable:focus-visible {
+  box-shadow: 0 0 0 2px rgb(191 219 254);
+}
+
+.copyable-done {
+  background-color: rgb(209 250 229 / 0.9);
+}
+
+.copyable-flag {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  border-radius: 4px;
+  background: rgb(15 23 42);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 2px 6px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+  z-index: 20;
+}
+
+.copyable-done .copyable-flag {
+  opacity: 1;
+}
+
+@media print {
+  .copyable {
+    text-decoration-line: none;
+  }
+
+  .copyable-flag {
+    display: none;
+  }
+}
+
 @media print {
   @page {
     size: A4 portrait;

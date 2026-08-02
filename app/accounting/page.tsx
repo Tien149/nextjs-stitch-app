@@ -3,10 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { MonthInput, DateInput } from "@/components/DateInput";
-import { branchScopeOptions, storeLabel, storeOptions } from "@/lib/branch-labels";
+import { storeLabel, visibleBranchScopeOptions, visibleStoreOptions } from "@/lib/branch-labels";
 import { canPerformMenuAction } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
+import CopyableText from "@/components/CopyableText";
 
 type Account = { id: string; code: string; name: string; accountType: string; reportGroup: string };
 type Line = { id: string; debit: number; credit: number; departmentCode: string | null; account: Account; categoryCode: string | null; partnerCode: string | null };
@@ -41,8 +42,8 @@ export default function AccountingPage() {
     amount: "1000000",
   });
 
-  const canCreate = user ? canPerformMenuAction(user.role, href, "create") : false;
-  const canSync = user ? canPerformMenuAction(user.role, href, "config") : false;
+  const canCreate = user ? canPerformMenuAction(user, href, "create") : false;
+  const canSync = user ? canPerformMenuAction(user, href, "config") : false;
 
   const loadData = useCallback(async () => {
     const response = await fetch(`/api/accounting?period=${period}&branchCode=${branchCode}`);
@@ -335,7 +336,7 @@ export default function AccountingPage() {
                   onChange={(e) => setBranchCode(e.target.value)}
                   className="w-48 pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all appearance-none cursor-pointer font-medium"
                 >
-                  {branchScopeOptions.map((option) => (
+                  {visibleBranchScopeOptions(user).map((option) => (
                     <option key={option.code} value={option.code}>
                       {option.label}
                     </option>
@@ -511,7 +512,7 @@ export default function AccountingPage() {
                               <td className="px-5 py-4 whitespace-nowrap text-xs font-bold text-slate-800 align-top">
                                 {index === 0 && (
                                   <div className="flex flex-col gap-0.5">
-                                    <span className="font-semibold">{entry.code}</span>
+                                    <CopyableText value={entry.code}><span className="font-semibold">{entry.code}</span></CopyableText>
                                     <span className="text-[10px] text-slate-400 font-semibold">{storeLabel(entry.branchCode)}</span>
                                   </div>
                                 )}
@@ -588,7 +589,7 @@ export default function AccountingPage() {
                               </td>
                               <td className="px-5 py-4 whitespace-nowrap text-xs font-bold text-slate-800">
                                 <div className="flex flex-col gap-0.5">
-                                  <span>{entry.code}</span>
+                                  <CopyableText value={entry.code}><span>{entry.code}</span></CopyableText>
                                   <span className="text-[10px] text-slate-400 font-semibold">{storeLabel(entry.branchCode)}</span>
                                 </div>
                               </td>
@@ -688,7 +689,7 @@ export default function AccountingPage() {
                         }}
                         className="w-full pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all appearance-none cursor-pointer"
                       >
-                        {storeOptions.map((option) => (
+                        {visibleStoreOptions(user).map((option) => (
                           <option key={option.code} value={option.code}>
                             {storeLabel(option.code)}
                           </option>

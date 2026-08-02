@@ -26,8 +26,8 @@ export function RowActions({
   deleteDisabledReason?: string | null;
   compact?: boolean;
 }) {
-  const canEdit = Boolean(onEdit && session && canPerformMenuAction(session.role, moduleHref, "edit"));
-  const canDelete = Boolean(onDelete && session && canPerformMenuAction(session.role, moduleHref, "delete"));
+  const canEdit = Boolean(onEdit && session && canPerformMenuAction(session, moduleHref, "edit"));
+  const canDelete = Boolean(onDelete && session && canPerformMenuAction(session, moduleHref, "delete"));
 
   if (!canEdit && !canDelete) return null;
 

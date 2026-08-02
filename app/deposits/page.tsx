@@ -8,6 +8,7 @@ import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { storeLabel } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
+import CopyableText from "@/components/CopyableText";
 
 type DepositHistory = {
   id: string;
@@ -129,8 +130,8 @@ export default function DepositsPage() {
   }, [router]);
 
   const formatCurrency = (amount: number) => new Intl.NumberFormat("vi-VN").format(amount);
-  const canCreateDeposits = user ? canPerformAction(user.role, "create") : false;
-  const canProcessDeposits = user ? canPerformAction(user.role, "edit") : false;
+  const canCreateDeposits = user ? canPerformAction(user, "create") : false;
+  const canProcessDeposits = user ? canPerformAction(user, "edit") : false;
   /** Biểu mẫu bên trái hiện ra khi được tạo mới hoặc khi đang sửa một phiếu cọc. */
   const showDepositForm = canCreateDeposits || Boolean(editingDeposit);
 
@@ -543,7 +544,7 @@ export default function DepositsPage() {
               <div className="grid gap-3 lg:grid-cols-[1.2fr_1fr_140px_1fr_1.4fr_auto] lg:items-end">
                 <div>
                   <p className="text-[11px] font-bold uppercase text-blue-700">Xử lý tiền cọc</p>
-                  <p className="mt-1 text-sm font-bold text-slate-900">{selectedDeposit.code} - {selectedDeposit.partnerName}</p>
+                  <p className="mt-1 text-sm font-bold text-slate-900"><CopyableText value={selectedDeposit.code} /> - {selectedDeposit.partnerName}</p>
                   <p className="text-xs text-slate-500">Còn giữ: {formatCurrency(selectedDeposit.remainingAmount)} đ</p>
                 </div>
                 <label className="text-xs font-bold text-slate-600">
@@ -617,7 +618,7 @@ export default function DepositsPage() {
                 ) : deposits.map((deposit) => (
                   <tr key={deposit.id} className="hover:bg-slate-50">
                     <td className="px-4 py-3">
-                      <p className="font-bold">{deposit.code}</p>
+                      <p className="font-bold"><CopyableText value={deposit.code} /></p>
                       <p className="text-xs text-slate-500">{storeLabel(deposit.branchCode)} - {deposit.moneySourceCode}</p>
                     </td>
                     <td className="px-4 py-3">

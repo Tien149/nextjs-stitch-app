@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import {
   appMenuItems,
   canAccessMenu,
+  canOpenPath,
   canPerformAction,
   canPerformMenuAction,
   type AppAction,
@@ -43,6 +44,7 @@ function parseSession(rawValue: string): DemoSession | null {
       email: parsed.email,
       allowedBranches: parsed.allowedBranches || [],
       menuAccess: parsed.menuAccess || [],
+      actions: parsed.actions || [],
       loginAt: parsed.loginAt,
     };
   } catch {
@@ -76,9 +78,8 @@ export function requireMenuAccess(request: Request, href: string): ApiAuthResult
   const auth = getRequestSession(request);
   if (!auth.ok) return auth;
 
-  const allowed = appMenuItems.some(
-    (item) => item.href === href && canAccessMenu(auth.session, item),
-  );
+  // Vai trò được gán menu theo tab ("/reports?tab=daily-cash") vẫn phải gọi được API của trang.
+  const allowed = canOpenPath(auth.session, href);
 
   if (!allowed) {
     return { ok: false, response: forbidden("Khong co quyen truy cap module nay") };
@@ -106,7 +107,7 @@ export function requireAction(request: Request, action: AppAction): ApiAuthResul
   const auth = getRequestSession(request);
   if (!auth.ok) return auth;
 
-  if (!canPerformAction(auth.session.role, action)) {
+  if (!canPerformAction(auth.session, action)) {
     return { ok: false, response: forbidden() };
   }
 
@@ -117,7 +118,7 @@ export function requireMenuAction(request: Request, href: string, action: AppAct
   const auth = requireMenuAccess(request, href);
   if (!auth.ok) return auth;
 
-  if (!canPerformMenuAction(auth.session.role, href, action)) {
+  if (!canPerformMenuAction(auth.session, href, action)) {
     return { ok: false, response: forbidden() };
   }
 
@@ -133,7 +134,7 @@ export function requireNamedMenuAction(
   const auth = requireNamedMenuAccess(request, href, name);
   if (!auth.ok) return auth;
 
-  if (!canPerformMenuAction(auth.session.role, href, action)) {
+  if (!canPerformMenuAction(auth.session, href, action)) {
     return { ok: false, response: forbidden() };
   }
 

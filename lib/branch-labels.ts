@@ -13,6 +13,38 @@ export const storeOptions = [
   { code: "HN", label: "Cửa hàng 2" },
 ];
 
+type BranchAccess = { allowedBranches?: string[] | null } | string[] | null | undefined;
+
+function normalizeAllowedBranches(access: BranchAccess) {
+  const list = Array.isArray(access) ? access : access?.allowedBranches;
+  return list && list.length > 0 ? list : ["ALL"];
+}
+
+export function hasFullBranchAccess(access: BranchAccess) {
+  return normalizeAllowedBranches(access).includes("ALL");
+}
+
+/**
+ * Danh sách cửa hàng được phép nhìn thấy, kèm mục "Tất cả cửa hàng".
+ *
+ * Người dùng chỉ được gán một cửa hàng thì không được thấy TÊN các cửa hàng khác trong
+ * dropdown — khoá ô chọn thôi là chưa đủ, vì tên vẫn lộ ra.
+ */
+export function visibleBranchScopeOptions(access: BranchAccess) {
+  const allowed = normalizeAllowedBranches(access);
+  if (allowed.includes("ALL")) return [...branchScopeOptions];
+  // Không đưa "Tất cả cửa hàng" cho tài khoản bị giới hạn: phía API, "ALL" nghĩa là
+  // bỏ lọc chi nhánh, chọn vào sẽ kéo theo dữ liệu của cửa hàng chưa được gán.
+  return branchScopeOptions.filter((option) => option.code !== "ALL" && allowed.includes(option.code));
+}
+
+/** Như trên nhưng dùng cho ô chọn cửa hàng cụ thể (không có mục "Tất cả cửa hàng"). */
+export function visibleStoreOptions(access: BranchAccess) {
+  const allowed = normalizeAllowedBranches(access);
+  if (allowed.includes("ALL")) return [...storeOptions];
+  return storeOptions.filter((option) => allowed.includes(option.code));
+}
+
 export function updateDynamicBranches(branches: Array<{ code: string; name: string }>) {
   if (!branches || branches.length === 0) return;
 

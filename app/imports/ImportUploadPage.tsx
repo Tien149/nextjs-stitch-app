@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { DateInput } from "@/components/DateInput";
+import { SearchableSelect } from "@/components/SearchableSelect";
 import { displayRoleName, storeLabel } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import { getImportTemplate, type ImportFieldDefinition, type ImportType } from "@/lib/import-templates";
@@ -152,6 +153,58 @@ function manualInitialValue(field: ImportFieldDefinition, selectedBranch: string
   return "";
 }
 
+type MasterOption = { code: string; name: string; group?: string | null; partnerType?: string | null; branch?: string | null };
+
+/**
+ * Các cột trong template thực chất là mã tham chiếu tới danh mục -> cho chọn từ danh sách
+ * (có ô tìm kiếm) thay vì bắt người dùng gõ tay đúng mã.
+ */
+const masterDataFieldTypes: Record<string, string> = {
+  partner_code: "PARTNER",
+  category_code: "REVENUE_EXPENSE_CATEGORY",
+  money_source_code: "MONEY_SOURCE",
+  from_money_source_code: "MONEY_SOURCE",
+  to_money_source_code: "MONEY_SOURCE",
+  warehouse_code: "WAREHOUSE",
+  to_warehouse_code: "WAREHOUSE",
+  department_code: "DEPARTMENT",
+  branch_code: "BRANCH",
+};
+
+/** Cột tên đối tác được điền tự động theo mã đã chọn. */
+const partnerNameFields: Record<string, string> = { partner_code: "partner_name" };
+
+const normalizeGroup = (value?: string | null) => (value || "").trim().toUpperCase();
+
+/**
+ * Thu hẹp danh sách theo nghiệp vụ của từng template: phiếu phải trả chỉ gợi ý nhà cung cấp
+ * và khoản mục chi phí, phiếu phải thu chỉ gợi ý khách hàng và nguồn doanh thu.
+ */
+function filterMasterOptions(fieldName: string, templateCode: string, options: MasterOption[]) {
+  const isPayable = /PAYABLE|PAYMENT/.test(templateCode);
+  const isReceivable = /RECEIVABLE|RECEIPT/.test(templateCode);
+
+  if (fieldName === "partner_code") {
+    return options.filter((option) => {
+      const type = normalizeGroup(option.partnerType || option.group);
+      if (isPayable) return ["SUPPLIER", "BOTH", "EMPLOYEE", "OTHER_PARTNER"].includes(type);
+      if (isReceivable) return ["CUSTOMER", "BOTH", "OTHER_PARTNER"].includes(type);
+      return true;
+    });
+  }
+
+  if (fieldName === "category_code") {
+    return options.filter((option) => {
+      const group = normalizeGroup(option.group);
+      if (isPayable) return ["OPEX", "CAPEX", "COGS"].includes(group);
+      if (isReceivable) return group === "REVENUE_SOURCE";
+      return true;
+    });
+  }
+
+  return options;
+}
+
 function getSessionFromStorage(): DemoSession | null {
   const rawSession = localStorage.getItem(SESSION_KEY);
   if (!rawSession) return null;
@@ -195,6 +248,7 @@ export default function ImportUploadPage({
   const [manualValues, setManualValues] = useState<Record<string, string>>({});
   const [manualSaving, setManualSaving] = useState(false);
   const [manualError, setManualError] = useState("");
+  const [masterOptions, setMasterOptions] = useState<Record<string, MasterOption[]>>({});
   const alwaysShowTemplateLink = templateCode === "OPENING_BALANCE_STANDARD_V1";
   const importType = importTypeFromApiPath(apiPath);
   const template = useMemo(() => getImportTemplate(importType as ImportType, templateCode), [importType, templateCode]);
@@ -298,6 +352,33 @@ export default function ImportUploadPage({
     };
   }, [apiPath, isCheckingAuth, loadBatches]);
 
+  // Chỉ tải danh mục khi người dùng thực sự mở form nhập nhanh, và mỗi loại chỉ tải một lần.
+  useEffect(() => {
+    if (!manualOpen) return;
+    const neededTypes = [...new Set(
+      manualFields
+        .map((field) => masterDataFieldTypes[field.field])
+        .filter((type): type is string => Boolean(type))
+    )].filter((type) => !masterOptions[type]);
+    if (neededTypes.length === 0) return;
+
+    const controller = new AbortController();
+    const rawSession = localStorage.getItem(SESSION_KEY);
+    const headers: Record<string, string> = rawSession ? { "x-demo-session": encodeURIComponent(rawSession) } : {};
+    void Promise.all(neededTypes.map(async (type) => {
+      const response = await fetch(`/api/master-data?type=${type}&status=ACTIVE`, { headers, signal: controller.signal });
+      return [type, response.ok ? ((await response.json()) as MasterOption[]) : []] as const;
+    }))
+      .then((entries) => {
+        setMasterOptions((current) => ({ ...current, ...Object.fromEntries(entries) }));
+      })
+      .catch((error) => {
+        if (error instanceof Error && error.name !== "AbortError") setManualError("Không tải được danh mục để chọn. Vui lòng thử lại.");
+      });
+
+    return () => controller.abort();
+  }, [manualFields, manualOpen, masterOptions]);
+
   useEffect(() => {
     if (!manualOpen) return;
     const timer = window.setTimeout(() => {
@@ -366,6 +447,14 @@ export default function ImportUploadPage({
     }
     if (requiresBranch && !branchCode) {
       setManualError("Vui lòng chọn chi nhánh trước khi thêm mới.");
+      return;
+    }
+    // Ô chọn danh mục không phải <input> nên trình duyệt không tự chặn được trường bắt buộc.
+    const missingSelect = manualFields.find(
+      (field) => field.required && masterDataFieldTypes[field.field] && !(manualValues[field.field] || "").trim()
+    );
+    if (missingSelect) {
+      setManualError(`Vui lòng chọn ${missingSelect.label.toLowerCase()}.`);
       return;
     }
 
@@ -948,10 +1037,48 @@ export default function ImportUploadPage({
                 </p>
               ) : (
                 <div className="grid gap-4 sm:grid-cols-2">
-                  {manualFields.map((field) => (
+                  {manualFields.map((field) => {
+                    const masterType = masterDataFieldTypes[field.field];
+                    const rawOptions = masterType ? masterOptions[masterType] : undefined;
+                    const masterLoading = Boolean(masterType) && !rawOptions;
+                    const selectOptions = masterType
+                      ? filterMasterOptions(field.field, templateCode, rawOptions || []).map((option) => ({
+                          value: option.code,
+                          label: option.name || option.code,
+                          subLabel: option.code,
+                        }))
+                      : null;
+
+                    return (
                     <label key={field.field} className="text-xs font-bold text-slate-600">
                       {field.label}{field.required ? " *" : ""}
-                      {field.type === "date" ? (
+                      {selectOptions ? (
+                        <>
+                          <SearchableSelect
+                            value={manualValues[field.field] || ""}
+                            onChange={(value) => setManualValues((current) => {
+                              const next = { ...current, [field.field]: value };
+                              // Chọn mã đối tác thì điền luôn tên để khỏi gõ lại.
+                              const nameField = partnerNameFields[field.field];
+                              if (nameField && Object.prototype.hasOwnProperty.call(current, nameField)) {
+                                const picked = rawOptions?.find((option) => option.code === value);
+                                if (picked) next[nameField] = picked.name || "";
+                              }
+                              return next;
+                            })}
+                            options={selectOptions}
+                            placeholder={masterLoading ? "Đang tải danh mục..." : `-- Chọn ${field.label.toLowerCase()} --`}
+                            searchPlaceholder="Gõ tên hoặc mã để tìm..."
+                            required={field.required}
+                            className="mt-1"
+                          />
+                          {selectOptions.length === 0 && !masterLoading && (
+                            <span className="mt-1 block text-[11px] font-medium text-amber-700">
+                              Chưa có danh mục phù hợp. Hãy khai báo trong Cấu hình Danh mục trước.
+                            </span>
+                          )}
+                        </>
+                      ) : field.type === "date" ? (
                         <DateInput
                           value={manualValues[field.field] || ""}
                           onChange={(value) => setManualValues((current) => ({ ...current, [field.field]: value }))}
@@ -971,7 +1098,8 @@ export default function ImportUploadPage({
                         />
                       )}
                     </label>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
 

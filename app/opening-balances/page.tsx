@@ -260,7 +260,7 @@ export default function OpeningBalancesPage() {
     );
   }, [balances]);
 
-  const canManageOpeningBalances = user ? canPerformAction(user.role, "config") : false;
+  const canManageOpeningBalances = user ? canPerformAction(user, "config") : false;
   const canReopenOpeningBalances = user?.role === "Admin";
   const isSourceType = ["CASH", "BANK", "WALLET_POS"].includes(form.balanceType);
   const isObjectType = ["AR", "AP", "DEPOSIT"].includes(form.balanceType);

@@ -79,7 +79,7 @@ export async function POST(request: Request) {
     if (menu && !canAccessMenu(auth.session, menu)) {
       return NextResponse.json({ error: "Không có quyền truy cập module này" }, { status: 403 });
     }
-    if (!canPerformMenuAction(auth.session.role, entity.module, "delete")) {
+    if (!canPerformMenuAction(auth.session, entity.module, "delete")) {
       return NextResponse.json(
         { error: `Không đủ quyền xoá/khôi phục dữ liệu ${entity.label.toLowerCase()}` },
         { status: 403 },

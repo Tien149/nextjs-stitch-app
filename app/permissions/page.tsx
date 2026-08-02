@@ -3,15 +3,9 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { branchScopeOptions, displayRoleName } from "@/lib/branch-labels";
-import {
-  ALL_APP_ACTIONS,
-  appMenuItems,
-  canAccessMenu,
-  type AppAction,
-  type DemoSession,
-  SESSION_KEY,
-} from "@/lib/auth-demo";
+import { ALL_APP_ACTIONS, appMenuItems, canAccessMenu, type AppAction, type DemoSession, SESSION_KEY, moduleTabs } from "@/lib/auth-demo";
 import { logout } from "@/lib/session-client";
+import CopyableText from "@/components/CopyableText";
 
 type RoleItem = {
   id: string;
@@ -382,6 +376,59 @@ export default function PermissionsPage() {
     }
   };
 
+  /** Danh sách menu hiện tại của vai trò, suy ra mặc định nếu vai trò chưa từng được chỉnh. */
+  const currentMenuAccessOf = (role: RoleItem) => {
+    const standardRoles = ["Admin", "Kế toán tổng hợp", "Kế toán công nợ", "Quản lý", "Viewer"];
+    if (Array.isArray(role.menuAccess) && role.menuAccess.length > 0) return [...role.menuAccess];
+    return appMenuItems
+      .filter((item) => (item.roles as string[]).includes(role.name) || (!standardRoles.includes(role.name) && (role.actions || []).includes("view")))
+      .map((item) => item.href);
+  };
+
+  const saveMenuAccess = async (role: RoleItem, newMenuAccess: string[]) => {
+    setRolesList((prev) => prev.map((r) => (r.id === role.id ? { ...r, menuAccess: newMenuAccess } : r)));
+    try {
+      const res = await fetch("/api/permissions", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "UPDATE_ROLE_MENU", roleId: role.id, menuAccess: newMenuAccess }),
+      });
+      if (!res.ok) void loadData();
+    } catch {
+      void loadData();
+    }
+  };
+
+  /**
+   * Bật/tắt một tab con. Vai trò đang được gán nguyên trang thì lần đầu bỏ tick một tab
+   * sẽ chuyển sang liệt kê từng tab còn lại, để không vô tình cắt hết quyền.
+   */
+  const handleToggleTabAccess = async (role: RoleItem, menuHref: string, tabId: string) => {
+    if (role.name === "Admin") return;
+    const all = moduleTabs[menuHref] || [];
+    const current = currentMenuAccessOf(role);
+    const tabEntry = `${menuHref}?tab=${tabId}`;
+    const hasWholePage = current.includes(menuHref);
+    const checked = hasWholePage || current.includes(tabEntry);
+
+    const tabEntries = all.map((tab) => `${menuHref}?tab=${tab.id}`);
+    let next: string[];
+    if (checked) {
+      const remaining = tabEntries.filter((entry) => (hasWholePage || current.includes(entry)) && entry !== tabEntry);
+      next = [...current.filter((entry) => !tabEntries.includes(entry)), ...remaining];
+      // Bỏ tick tab cuối cùng thì gỡ luôn menu khỏi vai trò.
+      if (remaining.length === 0) next = next.filter((entry) => entry !== menuHref);
+    } else {
+      next = [...current, tabEntry];
+    }
+    // Menu cha luôn phải còn để mục này hiện ngoài thanh menu; bật đủ tab thì chỉ cần menu cha.
+    if (next.some((entry) => tabEntries.includes(entry)) && !next.includes(menuHref)) next.push(menuHref);
+    if (tabEntries.every((entry) => next.includes(entry))) {
+      next = next.filter((entry) => !tabEntries.includes(entry));
+    }
+    await saveMenuAccess(role, [...new Set(next)]);
+  };
+
   const updateUserRole = async (userId: string, roleId: string) => {
     try {
       const res = await fetch("/api/permissions", {
@@ -569,7 +616,7 @@ export default function PermissionsPage() {
                       <tr key={dbUser.id} className="hover:bg-slate-50 transition">
                         <td className="px-4 py-3">
                           <p className="font-bold text-slate-900">{dbUser.name}</p>
-                          <p className="text-xs text-slate-500">{dbUser.email}</p>
+                          <p className="text-xs text-slate-500"><CopyableText value={dbUser.email} /></p>
                         </td>
                         <td className="px-4 py-3">
                           <p className="text-xs font-bold text-slate-800">{dbUser.position || "-"}</p>
@@ -650,7 +697,7 @@ export default function PermissionsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-slate-700">
-                {appMenuItems.map((item) => (
+                {appMenuItems.flatMap((item) => [
                   <tr key={item.name} className="hover:bg-slate-50">
                     <td className="px-4 py-3 font-bold text-slate-900">
                       <span className="material-symbols-outlined text-base mr-2 align-middle text-slate-400">{item.icon}</span>
@@ -685,8 +732,40 @@ export default function PermissionsPage() {
                         </td>
                       );
                     })}
-                  </tr>
-                ))}
+                  </tr>,
+                  ...(moduleTabs[item.href] || []).map((tab) => (
+                    <tr key={`${item.name}-${tab.id}`} className="bg-slate-50/60 hover:bg-slate-100/60">
+                      <td className="px-4 py-2 pl-12 text-xs font-medium text-slate-600">
+                        <span className="material-symbols-outlined text-sm mr-2 align-middle text-slate-300">subdirectory_arrow_right</span>
+                        {tab.label}
+                      </td>
+                      {rolesList.map((r) => {
+                        const isAdmin = r.name === "Admin";
+                        const access = currentMenuAccessOf(r);
+                        const isTabChecked = isAdmin || access.includes(item.href) || access.includes(`${item.href}?tab=${tab.id}`);
+                        return (
+                          <td key={r.id} className="px-4 py-2">
+                            <label
+                              title={isAdmin ? "Tài khoản Admin có toàn quyền" : `Tích để bật/tắt riêng tab "${tab.label}"`}
+                              className={`inline-flex items-center gap-2 select-none ${isAdmin ? "cursor-not-allowed opacity-80" : "cursor-pointer group"}`}
+                            >
+                              <input
+                                type="checkbox"
+                                disabled={isAdmin}
+                                checked={isTabChecked}
+                                onChange={() => handleToggleTabAccess(r, item.href, tab.id)}
+                                className="w-3.5 h-3.5 rounded text-blue-600 focus:ring-blue-500 cursor-pointer disabled:cursor-not-allowed transition"
+                              />
+                              <span className={`text-[11px] font-bold transition ${isTabChecked ? "text-emerald-600" : "text-slate-400 group-hover:text-slate-600"}`}>
+                                {isTabChecked ? "Có" : "-"}
+                              </span>
+                            </label>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  )),
+                ])}
               </tbody>
             </table>
           </div>

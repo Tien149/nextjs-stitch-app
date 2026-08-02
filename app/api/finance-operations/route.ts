@@ -6,6 +6,7 @@ import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
 import { writeAuditLog } from "@/lib/audit-log";
 import { generateFormattedVoucherCode } from "@/lib/voucher-code-generator";
 import { moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
+import { scopePayloadByTab } from "@/lib/tab-scope";
 
 const menuHref = "/finance-operations";
 const cashDepositDenominations = [500000, 200000, 100000, 50000, 20000, 10000, 5000, 2000, 1000];
@@ -100,7 +101,7 @@ export async function GET(request: Request) {
       return { ...entry, balance: runningBalance };
     });
 
-    return NextResponse.json({ period, branchCode, openingAmount, closingBalance: runningBalance, cashbook, accruals, moneyTransfers, accountingPeriod: accountingPeriod || { status: "OPEN" }, checklist });
+    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { period, branchCode, openingAmount, closingBalance: runningBalance, cashbook, accruals, moneyTransfers, accountingPeriod: accountingPeriod || { status: "OPEN" }, checklist }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });

@@ -3,10 +3,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { DateInput, MonthInput } from "@/components/DateInput";
-import { branchScopeOptions, storeLabel, storeOptions } from "@/lib/branch-labels";
-import { canPerformMenuAction } from "@/lib/auth-demo";
+import { storeLabel, visibleBranchScopeOptions, visibleStoreOptions } from "@/lib/branch-labels";
+import { canPerformMenuAction, filterModuleTabs, moduleTabs } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import { filterMoneySources, firstMoneySourceCode, moneySourceDebugLabel, moneySourceDisplayName, type MoneySourceOption } from "@/lib/money-sources";
+import CopyableText from "@/components/CopyableText";
 
 type Pnl = {
   revenue: number;
@@ -50,14 +51,33 @@ type BudgetRow = { metric: string; label: string; kind: "REVENUE" | "EXPENSE" | 
 type BudgetData = { summary: { expenseActual: number; expenseTarget: number; revenueActual: number; revenueTarget: number }; rows: BudgetRow[] };
 type DailyCashBucket = { total: number; cash: number; transfer: number; card: number; grab: number; other: number };
 type DailyCashExpense = { id: string; code: string; date: string; description: string; partnerName: string; moneySourceCode: string; moneySourceName: string; moneySourceGroup: string | null; amount: number; isCash: boolean };
+type DailyCashReceipt = DailyCashExpense & { status: string };
+type ManualRevenueEntry = {
+  id: string;
+  shift: string;
+  branchCode: string;
+  cashAmount: number;
+  transferAmount: number;
+  cardAmount: number;
+  grabAmount: number;
+  otherAmount: number;
+  totalAmount: number;
+  note: string | null;
+  updatedBy: string | null;
+  updatedAt: string;
+};
 type DailyCashData = {
   period: string;
   branchCode: string;
   reportDate: string;
   shift: string;
-  summary: { revenue: DailyCashBucket; deposit: DailyCashBucket; total: DailyCashBucket; expenseTotal: number; cashExpenseTotal: number; cashToDeposit: number };
+  summary: { revenue: DailyCashBucket; manual: DailyCashBucket; receipt: DailyCashBucket; deposit: DailyCashBucket; total: DailyCashBucket; expenseTotal: number; cashExpenseTotal: number; cashToDeposit: number };
   expenses: DailyCashExpense[];
+  receipts: DailyCashReceipt[];
+  manualEntries: ManualRevenueEntry[];
+  duplicateRevenueWarning: boolean;
 };
+type ManualRevenueForm = { cashAmount: string; transferAmount: string; cardAmount: string; grabAmount: string; otherAmount: string; note: string };
 type ActivityLog = { id: string; time: string; module: string; action: string; actor: string; branchCode: string; code: string; note: string };
 type AccountingPeriodStatus = { period: string; branchCode: string; status: string; closedBy: string | null; closedAt: string | null; reopenedBy: string | null; reopenedAt: string | null; reason: string | null };
 type ActivityData = { accountingPeriod: AccountingPeriodStatus; periods: AccountingPeriodStatus[]; logs: ActivityLog[] };
@@ -78,9 +98,20 @@ const metricLabels: Record<string, string> = {
   ebitda: "EBITDA",
   netProfit: "Lợi nhuận ròng",
 };
+const reportTabs = moduleTabs["/reports"];
 const shiftLabels: Record<string, string> = { FULL: "Cả ngày", MORNING: "Ca sáng", EVENING: "Ca tối" };
 const cashDepositTargetLabels: Record<"PKT" | "CO", string> = { PKT: "Nộp Tiền PKT", CO: "Nộp Tiền Cô" };
 const cashDepositDenominations = [500000, 200000, 100000, 50000, 20000, 10000, 5000, 2000, 1000];
+const emptyManualRevenueForm: ManualRevenueForm = { cashAmount: "", transferAmount: "", cardAmount: "", grabAmount: "", otherAmount: "", note: "" };
+const manualRevenueFields: Array<{ key: keyof Omit<ManualRevenueForm, "note">; label: string; hint: string }> = [
+  { key: "cashAmount", label: "Tiền mặt", hint: "Tiền khách trả mặt, còn trong két" },
+  { key: "transferAmount", label: "Chuyển khoản", hint: "Khách chuyển vào tài khoản ngân hàng" },
+  { key: "cardAmount", label: "Quẹt thẻ / Ví", hint: "Máy POS, ví điện tử, QR" },
+  { key: "grabAmount", label: "Grab", hint: "Đơn qua GrabFood và các kênh Grab" },
+  { key: "otherAmount", label: "Khác", hint: "Hình thức còn lại" },
+];
+const digitsOnly = (value: string) => value.replace(/\D/g, "");
+const toAmountNumber = (value: string) => Number(digitsOnly(value) || "0");
 
 export default function ReportsPage() {
   const href = "/reports";
@@ -103,6 +134,9 @@ export default function ReportsPage() {
     toMoneySourceCode: "",
     denominations: cashDepositDenominations.map((denomination) => ({ denomination, quantity: "" })),
   });
+  const [manualRevenueOpen, setManualRevenueOpen] = useState(false);
+  const [manualRevenueSubmitting, setManualRevenueSubmitting] = useState(false);
+  const [manualRevenueForm, setManualRevenueForm] = useState<ManualRevenueForm>(emptyManualRevenueForm);
   const [forecast, setForecast] = useState({ period: new Date().toISOString().slice(0, 7), branchCode: "HCM", scenario: "BASE", assumptionType: "INFLOW", amount: "100000000", note: "Kế hoạch dòng tiền" });
   const [targetForm, setTargetForm] = useState({ metric: "otherOpex", targetValue: "50000000" });
   const [reopenReason, setReopenReason] = useState("Bổ sung hoặc điều chỉnh dữ liệu kỳ trước");
@@ -135,16 +169,30 @@ export default function ReportsPage() {
     }
   };
 
-  const canConfigure = user ? canPerformMenuAction(user.role, href, "create") : false;
-  const canCreateCashDeposit = user ? canPerformMenuAction(user.role, "/finance-operations", "create") : false;
+  // Vai trò được gán riêng một tab (ví dụ thu ngân chỉ có "Thu chi ngày") thì chỉ thấy tab đó.
+  const visibleTabs = useMemo(() => filterModuleTabs(user, href), [user]);
+  const canConfigure = user ? canPerformMenuAction(user, href, "create") : false;
+  const canCreateCashDeposit = user ? canPerformMenuAction(user, "/finance-operations", "create") : false;
+  const canEnterManualRevenue = user ? canPerformMenuAction(user, href, "create") : false;
   const canAdminPeriod = user?.role === "Admin";
 
   useEffect(() => {
     const tab = new URLSearchParams(window.location.search).get("tab");
-    if (tab && ["dashboard", "operations", "budget", "daily-cash", "activity", "pnl", "yoy", "cashflow", "balance"].includes(tab)) {
+    if (tab && reportTabs.some((item) => item.id === tab)) {
       window.setTimeout(() => setActive(tab), 0);
     }
   }, []);
+
+  // Tab mặc định có thể nằm ngoài quyền -> chuyển về tab đầu tiên được phép.
+  useEffect(() => {
+    if (visibleTabs.length === 0) return;
+    if (visibleTabs.some((tab) => tab.id === active)) return;
+    const fallback = visibleTabs[0].id;
+    window.setTimeout(() => {
+      setData(null);
+      setActive(fallback);
+    }, 0);
+  }, [active, visibleTabs]);
 
   const loadData = useCallback(async () => {
     try {
@@ -281,6 +329,104 @@ export default function ReportsPage() {
               ? "Chưa cấu hình nguồn tiền nhận cho cửa hàng này."
               : "";
 
+  // Bản ghi nhập tay của đúng ca đang xem; xem "Cả ngày" mà đã nhập theo ca thì không sửa trực tiếp ở đây được.
+  const editableManualEntry = dailyCash?.manualEntries.find((entry) => entry.shift === dailyCash.shift) || null;
+  const manualRevenueTotal = manualRevenueFields.reduce((sum, field) => sum + toAmountNumber(manualRevenueForm[field.key]), 0);
+  const manualRevenueDisabledReason = !canEnterManualRevenue
+    ? "Bạn không có quyền nhập doanh thu tay."
+    : !dailyCash
+      ? "Chưa có dữ liệu báo cáo thu chi ngày."
+      : dailyCash.branchCode === "ALL"
+        ? "Chọn một cửa hàng cụ thể để nhập doanh thu."
+        : "";
+
+  const openManualRevenueModal = () => {
+    if (!dailyCash) return;
+    if (dailyCash.branchCode === "ALL") {
+      setMessage("Vui lòng chọn một cửa hàng cụ thể trước khi nhập doanh thu.");
+      return;
+    }
+    setManualRevenueForm(editableManualEntry
+      ? {
+          cashAmount: String(Math.round(editableManualEntry.cashAmount) || ""),
+          transferAmount: String(Math.round(editableManualEntry.transferAmount) || ""),
+          cardAmount: String(Math.round(editableManualEntry.cardAmount) || ""),
+          grabAmount: String(Math.round(editableManualEntry.grabAmount) || ""),
+          otherAmount: String(Math.round(editableManualEntry.otherAmount) || ""),
+          note: editableManualEntry.note || "",
+        }
+      : emptyManualRevenueForm);
+    setManualRevenueOpen(true);
+    setMessage("");
+  };
+
+  const submitManualRevenue = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!dailyCash || manualRevenueSubmitting) return;
+    if (manualRevenueTotal <= 0) {
+      setMessage("Phải nhập ít nhất một khoản tiền lớn hơn 0.");
+      return;
+    }
+    setManualRevenueSubmitting(true);
+    setMessage("");
+    try {
+      const response = await fetch("/api/reports", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "UPSERT_MANUAL_REVENUE",
+          period,
+          branchCode: dailyCash.branchCode,
+          reportDate: dailyCash.reportDate,
+          shift: dailyCash.shift,
+          cashAmount: toAmountNumber(manualRevenueForm.cashAmount),
+          transferAmount: toAmountNumber(manualRevenueForm.transferAmount),
+          cardAmount: toAmountNumber(manualRevenueForm.cardAmount),
+          grabAmount: toAmountNumber(manualRevenueForm.grabAmount),
+          otherAmount: toAmountNumber(manualRevenueForm.otherAmount),
+          note: manualRevenueForm.note,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setMessage(payload.error || "Không lưu được doanh thu nhập tay.");
+        return;
+      }
+      setManualRevenueOpen(false);
+      setMessage(`Đã lưu doanh thu ${shiftLabels[dailyCash.shift] || dailyCash.shift}: ${money(manualRevenueTotal)} đ.`);
+      await loadData();
+    } catch {
+      setMessage("Không kết nối được máy chủ để lưu doanh thu.");
+    } finally {
+      setManualRevenueSubmitting(false);
+    }
+  };
+
+  const deleteManualRevenue = async (entry: ManualRevenueEntry) => {
+    if (!dailyCash || manualRevenueSubmitting) return;
+    if (!window.confirm(`Xoá doanh thu nhập tay ${money(entry.totalAmount)} đ của ${shiftLabels[entry.shift] || entry.shift}?`)) return;
+    setManualRevenueSubmitting(true);
+    setMessage("");
+    try {
+      const response = await fetch("/api/reports", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "DELETE_MANUAL_REVENUE", period, branchCode: dailyCash.branchCode, entryId: entry.id }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setMessage(payload.error || "Không xoá được doanh thu nhập tay.");
+        return;
+      }
+      setMessage("Đã xoá doanh thu nhập tay.");
+      await loadData();
+    } catch {
+      setMessage("Không kết nối được máy chủ để xoá doanh thu.");
+    } finally {
+      setManualRevenueSubmitting(false);
+    }
+  };
+
   const pickCashDepositTarget = (targetType: "PKT" | "CO", fromMoneySourceCode: string, reportBranchCode: string) => {
     const targetHint = targetType === "PKT" ? "PKT" : "CO";
     const options = filterMoneySources(moneySources, reportBranchCode).filter((source) => source.code !== fromMoneySourceCode);
@@ -383,7 +529,7 @@ export default function ReportsPage() {
         </Field>
         <Field label="Phạm vi cửa hàng">
           <select className="control w-56" value={branchCode} onChange={(event) => setBranchCode(event.target.value)}>
-            {branchScopeOptions.map((option) => <option key={option.code} value={option.code}>{option.label}</option>)}
+            {visibleBranchScopeOptions(user).map((option) => <option key={option.code} value={option.code}>{option.label}</option>)}
           </select>
         </Field>
         {active === "cashflow" && (
@@ -417,17 +563,7 @@ export default function ReportsPage() {
       <ModuleTabs
         active={active}
         onChange={handleTabChange}
-        tabs={[
-          { id: "dashboard", label: "Điều hành", icon: "dashboard" },
-          { id: "operations", label: "Vận hành", icon: "fact_check" },
-          { id: "budget", label: "Ngân sách", icon: "price_check" },
-          { id: "daily-cash", label: "Thu chi ngày", icon: "receipt" },
-          { id: "activity", label: "Kỳ & Log", icon: "history" },
-          { id: "pnl", label: "P&L đa chiều", icon: "finance" },
-          { id: "yoy", label: "Biến động YoY", icon: "query_stats" },
-          { id: "cashflow", label: "Dự báo dòng tiền", icon: "timeline" },
-          { id: "balance", label: "Bảng cân đối", icon: "account_balance" },
-        ]}
+        tabs={visibleTabs}
       />
 
       {message && <p className="mb-4 px-4 py-3 rounded-lg border border-blue-100 bg-blue-50 text-sm text-blue-700">{message}</p>}
@@ -462,7 +598,7 @@ export default function ReportsPage() {
                 {operationRows.map((row) => (
                   <tr key={`${row.module}-${row.id}`} className="border-t border-slate-100">
                     <Cell><b>{row.module}</b></Cell>
-                    <Cell><b>{row.code}</b><small className="block text-slate-500">{row.note}</small></Cell>
+                    <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small className="block text-slate-500">{row.note}</small></Cell>
                     <Cell>{new Date(row.date).toLocaleDateString("vi-VN")}</Cell>
                     <Cell>{storeLabel(row.branchCode)}</Cell>
                     <Cell>{row.departmentName}</Cell>
@@ -618,7 +754,7 @@ export default function ReportsPage() {
                                       {drilldownData.map((item) => (
                                         <tr key={item.id} className="border-t border-slate-100 text-xs hover:bg-slate-50">
                                           <Cell>{item.date}</Cell>
-                                          <Cell><b>{item.code}</b></Cell>
+                                          <Cell><CopyableText value={item.code}><b>{item.code}</b></CopyableText></Cell>
                                           <Cell><span className="bg-blue-50 text-blue-700 font-bold px-2 py-0.5 rounded">{item.accountCode}</span></Cell>
                                           <Cell>{item.accountName}</Cell>
                                           <Cell>{item.description}</Cell>
@@ -659,7 +795,17 @@ export default function ReportsPage() {
               </p>
             </div>
             <div className="flex flex-col items-end gap-1">
-              <div className="flex flex-wrap items-center justify-end gap-2" title={cashDepositDisabledReason || undefined}>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <button
+                  type="button"
+                  className={manualRevenueDisabledReason ? "secondary-button no-print cursor-not-allowed opacity-60" : "secondary-button no-print"}
+                  onClick={openManualRevenueModal}
+                  disabled={!!manualRevenueDisabledReason}
+                  title={manualRevenueDisabledReason || undefined}
+                >
+                  <span className="material-symbols-outlined text-lg">edit_note</span>
+                  {editableManualEntry ? "Sửa thu tay" : "Nhập thu tay"}
+                </button>
                 <button
                   type="button"
                   className={cashDepositDisabledReason ? "secondary-button no-print cursor-not-allowed opacity-60" : "primary-button no-print"}
@@ -688,13 +834,101 @@ export default function ReportsPage() {
             <Kpi label="Tiền mặt cần nộp" value={dailyCash.summary.cashToDeposit} icon="savings" tone={dailyCash.summary.cashToDeposit < 0 ? "rose" : "green"} />
           </div>
 
+          {dailyCash.duplicateRevenueWarning && (
+            <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <span className="material-symbols-outlined text-lg">warning</span>
+              <span>
+                Ngày/ca này có <b>cả doanh thu import lẫn doanh thu nhập tay</b>. Hãy kiểm tra để tránh tính trùng — nếu file POS đã lên đủ, xoá dòng nhập tay đi.
+              </span>
+            </div>
+          )}
+
           <section className="table-panel">
             <PanelHeader title="Tổng hợp thu trong ngày" subtitle="Tách doanh thu, đặt cọc theo tiền mặt, chuyển khoản, quẹt thẻ/ví và kênh Grab." />
             <Table headers={["Loại", "Tổng thu", "Tiền mặt", "Chuyển khoản", "Quẹt thẻ/Ví", "Grab", "Khác", "Tổng chi tiền mặt", "Nộp tiền"]}>
               <DailyCashSummaryRow label="Doanh thu bán hàng" bucket={dailyCash.summary.revenue} />
+              <DailyCashSummaryRow label="Doanh thu nhập tay" bucket={dailyCash.summary.manual} />
+              <DailyCashSummaryRow label="Phiếu thu" bucket={dailyCash.summary.receipt} />
               <DailyCashSummaryRow label="Đặt cọc" bucket={dailyCash.summary.deposit} />
               <DailyCashSummaryRow label="TOTAL" bucket={dailyCash.summary.total} expense={dailyCash.summary.cashExpenseTotal} cashToDeposit={dailyCash.summary.cashToDeposit} strong />
             </Table>
+          </section>
+
+          {dailyCash.manualEntries.length > 0 && (
+            <section className="table-panel">
+              <PanelHeader title="Doanh thu nhập tay đã ghi nhận" subtitle="Số thu ngân tự nhập khi kết ca. Xoá dòng này nếu sau đó đã import file doanh thu POS cho cùng ngày." />
+              <Table headers={["Ca", "Tiền mặt", "Chuyển khoản", "Quẹt thẻ/Ví", "Grab", "Khác", "Tổng thu", "Người nhập", ""]}>
+                {dailyCash.manualEntries.map((entry) => (
+                  <tr key={entry.id} className="border-t border-slate-100">
+                    <Cell><b>{shiftLabels[entry.shift] || entry.shift}</b>{entry.note && <small className="block text-slate-500">{entry.note}</small>}</Cell>
+                    <Cell right>{money(entry.cashAmount)} đ</Cell>
+                    <Cell right>{money(entry.transferAmount)} đ</Cell>
+                    <Cell right>{money(entry.cardAmount)} đ</Cell>
+                    <Cell right>{money(entry.grabAmount)} đ</Cell>
+                    <Cell right>{money(entry.otherAmount)} đ</Cell>
+                    <Cell right><b>{money(entry.totalAmount)} đ</b></Cell>
+                    <Cell>
+                      {entry.updatedBy || "-"}
+                      <small className="block text-slate-500">{new Date(entry.updatedAt).toLocaleString("vi-VN")}</small>
+                    </Cell>
+                    <Cell right>
+                      {canEnterManualRevenue && (
+                        <button
+                          type="button"
+                          className="action-link text-rose-600 no-print"
+                          onClick={() => void deleteManualRevenue(entry)}
+                          disabled={manualRevenueSubmitting}
+                        >
+                          Xoá
+                        </button>
+                      )}
+                    </Cell>
+                  </tr>
+                ))}
+              </Table>
+            </section>
+          )}
+
+          <section className="table-panel">
+            <PanelHeader title="Các khoản thu chi tiết" subtitle="Lấy từ phiếu thu trong ngày/ca. Cột nguồn tiền cho biết khoản nào là tiền mặt, cộng vào số tiền cần nộp." />
+            <div className="max-h-[520px] overflow-auto">
+              <Table headers={["STT", "Mã phiếu", "Nội dung thu", "Tên khách hàng/đối tượng", "Nguồn tiền", "Trạng thái", "Số tiền"]}>
+                {dailyCash.receipts.length === 0 ? (
+                  <tr className="border-t border-slate-100">
+                    <td colSpan={7} className="px-4 py-10 text-center text-sm text-slate-400">Không có phiếu thu trong ngày/ca này.</td>
+                  </tr>
+                ) : dailyCash.receipts.map((row, index) => (
+                  <tr key={row.id} className="border-t border-slate-100">
+                    <Cell>{index + 1}</Cell>
+                    <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small className="block text-slate-500">{new Date(row.date).toLocaleDateString("vi-VN")}</small></Cell>
+                    <Cell>{row.description}</Cell>
+                    <Cell>{row.partnerName || "-"}</Cell>
+                    <Cell>
+                      <span className={`status ${row.isCash ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-700"}`}>
+                        {row.moneySourceName} · {row.moneySourceGroup || "-"}
+                      </span>
+                    </Cell>
+                    <Cell>
+                      <span className={`status ${row.status === "APPROVED" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+                        {row.status === "APPROVED" ? "Đã duyệt" : row.status === "DRAFT" ? "Bản nháp" : row.status}
+                      </span>
+                    </Cell>
+                    <Cell right><b>{money(row.amount)} đ</b></Cell>
+                  </tr>
+                ))}
+                {dailyCash.receipts.length > 0 && (
+                  <tr className="border-t border-slate-200 bg-slate-50 font-bold">
+                    <Cell> </Cell>
+                    <Cell> </Cell>
+                    <Cell>CỘNG</Cell>
+                    <Cell> </Cell>
+                    <Cell>Tiền mặt: {money(dailyCash.summary.receipt.cash)} đ</Cell>
+                    <Cell> </Cell>
+                    <Cell right>{money(dailyCash.summary.receipt.total)} đ</Cell>
+                  </tr>
+                )}
+              </Table>
+            </div>
           </section>
 
           <section className="table-panel">
@@ -708,7 +942,7 @@ export default function ReportsPage() {
                 ) : dailyCash.expenses.map((expense, index) => (
                   <tr key={expense.id} className="border-t border-slate-100">
                     <Cell>{index + 1}</Cell>
-                    <Cell><b>{expense.code}</b><small className="block text-slate-500">{new Date(expense.date).toLocaleDateString("vi-VN")}</small></Cell>
+                    <Cell><CopyableText value={expense.code}><b>{expense.code}</b></CopyableText><small className="block text-slate-500">{new Date(expense.date).toLocaleDateString("vi-VN")}</small></Cell>
                     <Cell>{expense.description}</Cell>
                     <Cell>{expense.partnerName || "-"}</Cell>
                     <Cell>
@@ -739,6 +973,68 @@ export default function ReportsPage() {
           </section>
 
           <section className="daily-cash-print-space print-only" aria-hidden="true" />
+        </div>
+      )}
+
+      {manualRevenueOpen && dailyCash && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/45 p-4 no-print">
+          <form onSubmit={submitManualRevenue} className="flex max-h-[88vh] w-full max-w-xl flex-col overflow-hidden rounded-lg bg-white shadow-2xl">
+            <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-200 p-5">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-wider text-blue-600">
+                  {editableManualEntry ? "Sửa doanh thu nhập tay" : "Nhập doanh thu kết ca"}
+                </p>
+                <h2 className="mt-1 text-xl font-bold text-slate-900">{money(manualRevenueTotal)} đ</h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  {new Date(dailyCash.reportDate).toLocaleDateString("vi-VN")} · {shiftLabels[dailyCash.shift] || dailyCash.shift} · {storeLabel(dailyCash.branchCode)}
+                </p>
+              </div>
+              <button type="button" className="icon-button" onClick={() => setManualRevenueOpen(false)} title="Đóng">
+                <span className="material-symbols-outlined text-lg">close</span>
+              </button>
+            </div>
+
+            <div className="space-y-4 overflow-y-auto p-5">
+              <p className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+                Ngày, ca và cửa hàng lấy theo bộ lọc đang chọn ở trên. Muốn ghi cho ngày/ca khác thì đóng lại và đổi bộ lọc trước.
+              </p>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                {manualRevenueFields.map((field) => (
+                  <Field key={field.key} label={field.label}>
+                    <input
+                      className="control text-right"
+                      inputMode="numeric"
+                      placeholder="0"
+                      value={manualRevenueForm[field.key] ? money(toAmountNumber(manualRevenueForm[field.key])) : ""}
+                      onChange={(event) => setManualRevenueForm((current) => ({ ...current, [field.key]: digitsOnly(event.target.value) }))}
+                    />
+                    <span className="mt-1 block text-[11px] text-slate-500">{field.hint}</span>
+                  </Field>
+                ))}
+                <Field label="Ghi chú">
+                  <input
+                    className="control"
+                    placeholder="VD: máy POS lỗi, đối soát sau"
+                    value={manualRevenueForm.note}
+                    onChange={(event) => setManualRevenueForm((current) => ({ ...current, note: event.target.value }))}
+                  />
+                </Field>
+              </div>
+
+              <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+                <span className="text-sm font-bold text-slate-700">Tổng thu ca này</span>
+                <span className="text-lg font-bold text-slate-900">{money(manualRevenueTotal)} đ</span>
+              </div>
+            </div>
+
+            <div className="flex shrink-0 items-center justify-end gap-2 border-t border-slate-200 p-5">
+              <button type="button" className="secondary-button" onClick={() => setManualRevenueOpen(false)}>Huỷ bỏ</button>
+              <button type="submit" className="primary-button" disabled={manualRevenueSubmitting || manualRevenueTotal <= 0}>
+                {manualRevenueSubmitting ? "Đang lưu..." : "Lưu doanh thu"}
+              </button>
+            </div>
+          </form>
         </div>
       )}
 
@@ -930,7 +1226,7 @@ export default function ReportsPage() {
                     <Cell><b>{log.actor}</b></Cell>
                     <Cell><span className="font-semibold text-slate-600">{log.module}</span></Cell>
                     <Cell><span className="status bg-blue-50 text-blue-700 font-bold">{log.action}</span></Cell>
-                    <Cell><b>{log.code}</b></Cell>
+                    <Cell><CopyableText value={log.code}><b>{log.code}</b></CopyableText></Cell>
                     <Cell>{log.note}</Cell>
                   </tr>
                 ))}
@@ -1021,7 +1317,7 @@ export default function ReportsPage() {
               <div className="grid grid-cols-2 gap-3">
                 <Field label="Cửa hàng">
                   <select className="control" value={forecast.branchCode} onChange={(event) => setForecast({ ...forecast, branchCode: event.target.value })}>
-                    {storeOptions.map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
+                    {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
                   </select>
                 </Field>
                 <Field label="Kịch bản">
@@ -1077,7 +1373,7 @@ export default function ReportsPage() {
             <Table headers={["Mã chỉ tiêu", "Tên chỉ tiêu", "Nhóm báo cáo", "Số tiền"]}>
               {(balance.rows || []).map((row) => (
                 <tr key={row.code} className="border-t border-slate-100">
-                  <Cell><b>{row.code}</b></Cell>
+                  <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText></Cell>
                   <Cell>{row.name}</Cell>
                   <Cell><span className="status bg-slate-100 text-slate-700">{row.reportGroup}</span></Cell>
                   <Cell right><b>{money(row.amount)} đ</b></Cell>

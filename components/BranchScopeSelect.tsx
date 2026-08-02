@@ -1,6 +1,6 @@
 "use client";
 
-import { branchScopeOptions } from "@/lib/branch-labels";
+import { visibleBranchScopeOptions } from "@/lib/branch-labels";
 import type { DemoSession } from "@/lib/auth-demo";
 
 type BranchScopeSelectProps = {
@@ -16,17 +16,13 @@ export function resolveInitialBranchScope(session: DemoSession | null, fallback 
   if (allowed.length === 1 && !allowed.includes("ALL")) return allowed[0];
   const stored = typeof window === "undefined" ? "" : localStorage.getItem("global_branch_code") || "";
   if (stored && (allowed.includes("ALL") || allowed.includes(stored))) return stored;
-  return allowed.includes("ALL") || allowed.length > 1 ? "ALL" : allowed[0] || fallback;
+  return allowed.includes("ALL") ? "ALL" : allowed[0] || fallback;
 }
 
 export function BranchScopeSelect({ session, value, onChange, className = "" }: BranchScopeSelectProps) {
   const allowed = session?.allowedBranches?.length ? session.allowedBranches : ["ALL"];
-  const canUseAll = allowed.includes("ALL") || allowed.length > 1;
   const locked = allowed.length === 1 && !allowed.includes("ALL");
-  const options = branchScopeOptions.filter((option) => {
-    if (option.code === "ALL") return canUseAll;
-    return allowed.includes("ALL") || allowed.includes(option.code);
-  });
+  const options = visibleBranchScopeOptions(allowed);
 
   return (
     <div className={`relative ${className}`}>

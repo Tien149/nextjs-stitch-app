@@ -4,6 +4,7 @@ import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma, type TxClient } from "@/lib/prisma";
 import { addPeriod, apiError, businessError, cleanText, isPeriodLocked, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
 import { assertBranchAccess, requestedBranch } from "@/lib/accounting";
+import { scopePayloadByTab } from "@/lib/tab-scope";
 
 const menuHref = "/assets";
 
@@ -63,7 +64,7 @@ export async function GET(request: Request) {
       prisma.assetMaintenance.findMany({ where: relatedWhere, include: { asset: true }, orderBy: { scheduledDate: "desc" }, take: 200 }),
       prisma.assetDamageReport.findMany({ where: relatedWhere, include: { asset: true }, orderBy: { reportedDate: "desc" }, take: 200 }),
     ]);
-    return NextResponse.json({ assets, depreciations, maintenances, damageReports });
+    return NextResponse.json(scopePayloadByTab(auth.session, "/assets/operations", { assets, depreciations, maintenances, damageReports }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });

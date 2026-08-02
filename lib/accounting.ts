@@ -52,7 +52,9 @@ export function requestedBranch(session: DemoSession, value: string) {
   }
   const allowed = session.allowedBranches || [];
   if (requested === "ALL") {
-    return allowed.length > 1 ? "ALL" : (allowed[0] || "ALL");
+    // Không trả "ALL" cho tài khoản bị giới hạn: các API hiểu "ALL" là bỏ lọc chi nhánh,
+    // nên người được gán 2 cửa hàng sẽ nhìn thấy luôn cửa hàng thứ ba chưa được gán.
+    return allowed[0] || "ALL";
   }
   return allowed.includes(requested) ? requested : (allowed[0] || "ALL");
 }

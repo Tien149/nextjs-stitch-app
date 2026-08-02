@@ -6,6 +6,7 @@ import { BranchScopeSelect, resolveInitialBranchScope } from "@/components/Branc
 import { DateInput } from "@/components/DateInput";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { appMenuItems, canAccessMenu, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
+import CopyableText from "@/components/CopyableText";
 
 type DebtRow = {
   partnerCode: string;
@@ -356,7 +357,7 @@ export default function DebtsPage() {
                     <tr key={`${item.source}-${item.code}-${index}`} className="hover:bg-slate-50">
                       <td className="px-4 py-3">{new Date(item.date).toLocaleDateString("vi-VN")}</td>
                       <td className="px-4 py-3">{item.source}</td>
-                      <td className="px-4 py-3 font-bold">{item.code}</td>
+                      <td className="px-4 py-3 font-bold"><CopyableText value={item.code} /></td>
                       <td className="px-4 py-3">
                         <p className={`text-xs font-bold ${item.agingBucket === "OVERDUE" ? "text-rose-700" : item.agingBucket === "DUE_7" ? "text-amber-700" : "text-slate-500"}`}>
                           {item.dueDate ? new Date(item.dueDate).toLocaleDateString("vi-VN") : "-"}

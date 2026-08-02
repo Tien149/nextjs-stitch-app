@@ -10,6 +10,7 @@ import {
   softDeleteRecord,
   SoftDeleteError,
 } from "@/lib/soft-delete";
+import { scopePayloadByTab } from "@/lib/tab-scope";
 
 const menuHref = "/procurement";
 
@@ -112,7 +113,7 @@ export async function GET(request: Request) {
       }),
     ]);
 
-    return NextResponse.json({ items, requests, orders, departments });
+    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, requests, orders, departments }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });

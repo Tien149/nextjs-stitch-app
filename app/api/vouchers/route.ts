@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
-import { prisma } from "@/lib/prisma";
+import { prisma, prismaRaw } from "@/lib/prisma";
 import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
 import { applyVoucherSideEffects } from "@/lib/voucher-side-effects";
+import { revertVoucherSideEffects, VoucherRevertError } from "@/lib/voucher-revert";
 import { isPeriodLocked } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import { duplicatedInTrashMessage, findDeletedByUnique, softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
@@ -316,7 +317,7 @@ export async function PATCH(request: Request) {
     if (action === "UPDATE") return await updateVoucher(auth.session, id, body);
 
     const status = cleanText(body.status) || "APPROVED";
-    if (!["APPROVED", "CANCELLED"].includes(status)) {
+    if (!["APPROVED", "CANCELLED", "DRAFT"].includes(status)) {
       return NextResponse.json({ error: "Trạng thái chứng từ không hợp lệ" }, { status: 400 });
     }
 
@@ -334,6 +335,51 @@ export async function PATCH(request: Request) {
     }
     if (current.status === "CANCELLED") {
       return NextResponse.json({ error: "Chứng từ đã hủy, không thể đổi trạng thái" }, { status: 400 });
+    }
+
+    // Bỏ duyệt: đưa chứng từ về bản nháp để sửa lại, đồng thời trả lại mọi hệ quả
+    // mà lần duyệt trước đã sinh ra (tiền cọc, công nợ, khoản phân bổ).
+    if (status === "DRAFT") {
+      if (current.status !== "APPROVED") {
+        return NextResponse.json({ error: "Chỉ bỏ duyệt được chứng từ đang ở trạng thái đã duyệt" }, { status: 400 });
+      }
+      if (await isPeriodLocked(current.voucherDate, current.branchCode)) {
+        return NextResponse.json({ error: "Kỳ kế toán đã khóa, không thể bỏ duyệt chứng từ" }, { status: 400 });
+      }
+
+      try {
+        const reverted = await prismaRaw.$transaction(async (tx) => {
+          await revertVoucherSideEffects(tx, current);
+          return tx.financialVoucher.update({
+            where: { id },
+            data: { status: "DRAFT", approvedBy: null },
+          });
+        });
+
+        await writeAuditLog({
+          session: auth.session,
+          module: "VOUCHERS",
+          action: "UNAPPROVE_VOUCHER",
+          entityType: "FinancialVoucher",
+          entityId: reverted.id,
+          entityCode: reverted.code,
+          branchCode: reverted.branchCode,
+          metadata: {
+            amount: reverted.amount,
+            previousApprovedBy: current.approvedBy,
+            depositAction: current.depositAction,
+            debtAction: current.debtAction,
+            allocationMonths: current.allocationMonths,
+            reason: cleanText(body.reason) || null,
+          },
+        });
+        return NextResponse.json(reverted);
+      } catch (e) {
+        if (e instanceof VoucherRevertError) {
+          return NextResponse.json({ error: e.message }, { status: 400 });
+        }
+        throw e;
+      }
     }
 
     const voucher = await prisma.$transaction(async (tx) => {

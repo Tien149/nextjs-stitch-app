@@ -63,7 +63,7 @@ export default function ReconciliationsPage() {
     }, 0);
   }, [router]);
 
-  const canMatch = user ? canPerformAction(user.role, "edit") : false;
+  const canMatch = user ? canPerformAction(user, "edit") : false;
   const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
 
   const loadRows = async () => {
