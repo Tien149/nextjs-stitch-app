@@ -846,9 +846,9 @@ export default function ReportsPage() {
           <section className="table-panel">
             <PanelHeader title="Tổng hợp thu trong ngày" subtitle="Doanh thu bán hàng gộp file POS đã import, doanh thu nhập tay và phiếu thu đã lập. Tách theo tiền mặt, chuyển khoản, quẹt thẻ/ví và kênh Grab." />
             <Table headers={["Loại", "Tổng thu", "Tiền mặt", "Chuyển khoản", "Quẹt thẻ/Ví", "Grab", "Khác", "Tổng chi tiền mặt", "Nộp tiền"]}>
-              <DailyCashSummaryRow label="Doanh thu bán hàng" bucket={dailyCash.summary.revenue} />
+              <DailyCashSummaryRow label="Doanh thu bán hàng" bucket={dailyCash.summary.revenue} expense={dailyCash.summary.cashExpenseTotal} />
               <DailyCashSummaryRow label="Đặt cọc" bucket={dailyCash.summary.deposit} />
-              <DailyCashSummaryRow label="TOTAL" bucket={dailyCash.summary.total} expense={dailyCash.summary.cashExpenseTotal} cashToDeposit={dailyCash.summary.cashToDeposit} strong />
+              <DailyCashSummaryRow label="TOTAL" bucket={dailyCash.summary.total} cashToDeposit={dailyCash.summary.cashToDeposit} strong />
             </Table>
           </section>
 
@@ -1394,7 +1394,11 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-function DailyCashSummaryRow({ label, bucket, expense = 0, cashToDeposit = 0, strong = false }: { label: string; bucket: DailyCashBucket; expense?: number; cashToDeposit?: number; strong?: boolean }) {
+/**
+ * Hai cột cuối chỉ hiện ở dòng được truyền giá trị: tổng chi tiền mặt đặt ở dòng
+ * doanh thu, số phải nộp đặt ở dòng TOTAL. Dòng không nhận giá trị thì để dấu "-".
+ */
+function DailyCashSummaryRow({ label, bucket, expense, cashToDeposit, strong = false }: { label: string; bucket: DailyCashBucket; expense?: number; cashToDeposit?: number; strong?: boolean }) {
   const contentClass = strong ? "font-bold text-slate-900 bg-slate-50" : "";
   return (
     <tr className={`border-t border-slate-100 ${contentClass}`}>
@@ -1405,8 +1409,12 @@ function DailyCashSummaryRow({ label, bucket, expense = 0, cashToDeposit = 0, st
       <Cell right>{money(bucket.card)} đ</Cell>
       <Cell right>{money(bucket.grab)} đ</Cell>
       <Cell right>{money(bucket.other)} đ</Cell>
-      <Cell right>{strong ? `${money(expense)} đ` : "-"}</Cell>
-      <Cell right>{strong ? <b className={cashToDeposit < 0 ? "text-rose-600" : "text-emerald-700"}>{money(cashToDeposit)} đ</b> : "-"}</Cell>
+      <Cell right>{expense === undefined ? "-" : `${money(expense)} đ`}</Cell>
+      <Cell right>
+        {cashToDeposit === undefined
+          ? "-"
+          : <b className={cashToDeposit < 0 ? "text-rose-600" : "text-emerald-700"}>{money(cashToDeposit)} đ</b>}
+      </Cell>
     </tr>
   );
 }
