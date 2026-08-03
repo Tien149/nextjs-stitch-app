@@ -207,6 +207,16 @@ body {
     @apply h-9 w-9 rounded-lg border border-slate-200 hover:bg-slate-50 grid place-items-center;
   }
 
+  /* Nút hành động chính của một khối, nổi hơn secondary nhưng chưa đặc như primary. */
+  .accent-button {
+    @apply min-h-10 rounded-lg border border-blue-400 bg-blue-50 hover:bg-blue-100 text-blue-800 text-sm font-bold px-4 py-2.5 inline-flex items-center justify-center gap-2;
+  }
+
+  /* Nút bị khoá: giảm bằng màu chứ không làm mờ, để chữ vẫn đọc rõ. */
+  .button-disabled {
+    @apply cursor-not-allowed border-slate-400 bg-slate-200 text-slate-700 hover:bg-slate-200;
+  }
+
   .table-panel {
     @apply bg-white border border-slate-200 rounded-lg overflow-hidden;
   }

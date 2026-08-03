@@ -1,6 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import { addPeriod, businessError, isPeriodLocked, periodFromDate } from "@/lib/phase3";
 import type { DemoSession } from "@/lib/auth-demo";
+import { voucherJournalLines } from "@/lib/voucher-accounting";
+import { normalizeCategoryGroup } from "@/lib/voucher-rules";
 
 export const defaultAccounts = [
   { code: "1111", name: "Tiền mặt", accountType: "ASSET", normalBalance: "DEBIT", reportGroup: "CASH" },
@@ -13,6 +15,7 @@ export const defaultAccounts = [
   { code: "334", name: "Phải trả người lao động", accountType: "LIABILITY", normalBalance: "CREDIT", reportGroup: "PAYROLL_PAYABLE" },
   { code: "335", name: "Chi phí phải trả", accountType: "LIABILITY", normalBalance: "CREDIT", reportGroup: "ACCRUAL" },
   { code: "338", name: "Bảo hiểm phải nộp", accountType: "LIABILITY", normalBalance: "CREDIT", reportGroup: "PAYROLL_PAYABLE" },
+  { code: "3387", name: "Khách hàng ứng trước (tiền cọc)", accountType: "LIABILITY", normalBalance: "CREDIT", reportGroup: "CUSTOMER_ADVANCE" },
   { code: "3388", name: "Khấu trừ khác phải trả", accountType: "LIABILITY", normalBalance: "CREDIT", reportGroup: "OTHER_PAYABLE" },
   { code: "3335", name: "Thuế TNCN phải nộp", accountType: "LIABILITY", normalBalance: "CREDIT", reportGroup: "TAX_PAYABLE" },
   { code: "411", name: "Vốn chủ sở hữu", accountType: "EQUITY", normalBalance: "CREDIT", reportGroup: "EQUITY" },
@@ -184,16 +187,11 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   for (const row of revenues) results.push(await postJournalEntry({ entryDate: row.saleDate, branchCode: row.branchCode, sourceType: "REVENUE_POS", sourceId: row.id, sourceCode: row.externalRef, description: `Doanh thu ${row.externalRef}`, createdBy: actor, lines: [{ accountCode: row.paymentMethod.toUpperCase().includes("CASH") ? "1111" : "1121", debit: row.netAmount }, { accountCode: "511", credit: row.netAmount, categoryCode: row.revenueSource }] }));
 
   const vouchers = await prisma.financialVoucher.findMany({ where: { ...branchFilter, voucherDate: { gte: start, lt: end }, status: "APPROVED" } });
+  // Nhóm khoản mục quyết định phiếu chi vào chi phí, giá vốn hay tài sản.
+  const voucherCategories = await prisma.masterDataItem.findMany({ where: { type: "REVENUE_EXPENSE_CATEGORY" } });
+  const categoryGroupByCode = new Map(voucherCategories.map((item) => [item.code, normalizeCategoryGroup(item.group)]));
   for (const row of vouchers) {
-    const cashAccount = row.moneySourceCode.toUpperCase().includes("CASH") ? "1111" : "1121";
-    const creditAccount = row.categoryCode && (row.categoryCode.toUpperCase().startsWith("REV") || row.categoryCode.toUpperCase().startsWith("DT"))
-      ? "511"
-      : row.partnerCode
-        ? "131"
-        : "711";
-    const lines = row.voucherType === "RECEIPT"
-      ? [{ accountCode: cashAccount, debit: row.amount }, { accountCode: creditAccount, credit: row.amount, partnerCode: row.partnerCode, categoryCode: row.categoryCode }]
-      : [{ accountCode: "6428", debit: row.amount, partnerCode: row.partnerCode, categoryCode: row.categoryCode }, { accountCode: cashAccount, credit: row.amount }];
+    const { lines } = voucherJournalLines(row, row.categoryCode ? categoryGroupByCode.get(row.categoryCode) ?? null : null);
     results.push(await postJournalEntry({ entryDate: row.voucherDate, branchCode: row.branchCode, sourceType: "VOUCHER", sourceId: row.id, sourceCode: row.code, description: row.description, createdBy: actor, lines }));
   }
 

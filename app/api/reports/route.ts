@@ -7,6 +7,7 @@ import { getBalanceSheet, getCashflowForecast, getPnl, getTrend } from "@/lib/re
 import { apiError, businessError, cleanText, isPeriodLocked, normalizePeriod, toNumber } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import { moneySourceDisplayName, normalizeMoneySourceGroup } from "@/lib/money-sources";
+import { voucherMatchesShift } from "@/lib/shifts";
 
 const menuHref = "/reports";
 
@@ -242,7 +243,7 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
   const dayStart = new Date(`${date}T00:00:00`);
   const dayEnd = new Date(`${date}T24:00:00`);
 
-  const [revenues, deposits, vouchers, receiptVouchers, moneySources, manualEntries] = await Promise.all([
+  const [revenues, deposits, allPaymentVouchers, allReceiptVouchers, moneySources, manualEntries] = await Promise.all([
     prisma.revenueImportRow.findMany({
       where: { ...branchWhere, saleDate: { gte: start, lt: end } },
       orderBy: [{ saleDate: "asc" }, { externalRef: "asc" }],
@@ -254,12 +255,12 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
       take: 500,
     }),
     prisma.financialVoucher.findMany({
-      where: { ...branchWhere, voucherType: "PAYMENT", voucherDate: { gte: start, lt: end }, status: { not: "CANCELLED" } },
+      where: { ...branchWhere, voucherType: "PAYMENT", voucherDate: { gte: dayStart, lt: dayEnd }, status: { not: "CANCELLED" } },
       orderBy: [{ voucherDate: "asc" }, { code: "asc" }],
       take: 500,
     }),
     prisma.financialVoucher.findMany({
-      where: { ...branchWhere, voucherType: "RECEIPT", voucherDate: { gte: start, lt: end }, status: { not: "CANCELLED" } },
+      where: { ...branchWhere, voucherType: "RECEIPT", voucherDate: { gte: dayStart, lt: dayEnd }, status: { not: "CANCELLED" } },
       orderBy: [{ voucherDate: "asc" }, { code: "asc" }],
       take: 500,
     }),
@@ -270,22 +271,36 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     }),
   ]);
 
+  // Phiếu khai ca nào thì thuộc ca đó; phiếu cũ chưa khai vẫn xét theo giờ lập như trước.
+  const vouchers = allPaymentVouchers.filter((row) => voucherMatchesShift(row.shift, row.voucherDate, shift));
+  const receiptVouchers = allReceiptVouchers.filter((row) => voucherMatchesShift(row.shift, row.voucherDate, shift));
+
   const sourceByCode = new Map(moneySources.map((source) => [source.code, source]));
+  // Ba nguồn doanh thu đổ chung vào một dòng "Doanh thu bán hàng"; vẫn giữ tổng riêng
+  // từng nguồn để cảnh báo trùng và để các bảng chi tiết đối chiếu.
   const revenue = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
+  const posRevenue = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
   const manual = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
   const receipt = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
   const deposit = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
 
   for (const row of revenues) {
-    addAmount(revenue, classifyPayment(row.paymentMethod, row.channel), row.netAmount);
+    const bucketKey = classifyPayment(row.paymentMethod, row.channel);
+    addAmount(posRevenue, bucketKey, row.netAmount);
+    addAmount(revenue, bucketKey, row.netAmount);
   }
 
   for (const row of manualEntries) {
-    addAmount(manual, "cash", row.cashAmount);
-    addAmount(manual, "transfer", row.transferAmount);
-    addAmount(manual, "card", row.cardAmount);
-    addAmount(manual, "grab", row.grabAmount);
-    addAmount(manual, "other", row.otherAmount);
+    for (const [key, value] of [
+      ["cash", row.cashAmount],
+      ["transfer", row.transferAmount],
+      ["card", row.cardAmount],
+      ["grab", row.grabAmount],
+      ["other", row.otherAmount],
+    ] as const) {
+      addAmount(manual, key, value);
+      addAmount(revenue, key, value);
+    }
   }
 
   // Phiếu thu là chứng từ thu tiền thật trên hệ thống -> xếp theo nhóm nguồn tiền của phiếu.
@@ -295,6 +310,7 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
       id: row.id,
       code: row.code,
       date: row.voucherDate,
+      shift: row.shift,
       description: row.description,
       partnerName: row.partnerName,
       status: row.status,
@@ -306,9 +322,13 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     };
   });
 
+  // Phiếu thu có khoản mục thuộc nhóm doanh thu nên cộng thẳng vào dòng "Doanh thu bán hàng";
+  // vẫn giữ tổng riêng để bảng "Các khoản thu chi tiết" đối chiếu được.
   for (const row of receiptVouchers) {
     const source = sourceByCode.get(row.moneySourceCode);
-    addAmount(receipt, classifyMoneySource(source?.group), row.amount);
+    const bucketKey = classifyMoneySource(source?.group);
+    addAmount(receipt, bucketKey, row.amount);
+    addAmount(revenue, bucketKey, row.amount);
   }
 
   for (const row of deposits) {
@@ -322,6 +342,7 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
       id: row.id,
       code: row.code,
       date: row.voucherDate,
+      shift: row.shift,
       description: row.description,
       partnerName: row.partnerName,
       moneySourceCode: row.moneySourceCode,
@@ -334,13 +355,14 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
 
   const expenseTotal = expenses.reduce((sum, row) => sum + row.amount, 0);
   const cashExpenseTotal = expenses.filter((row) => row.isCash).reduce((sum, row) => sum + row.amount, 0);
+  // revenue đã gộp cả doanh thu import, nhập tay và phiếu thu.
   const total = {
-    total: revenue.total + manual.total + receipt.total + deposit.total,
-    cash: revenue.cash + manual.cash + receipt.cash + deposit.cash,
-    transfer: revenue.transfer + manual.transfer + receipt.transfer + deposit.transfer,
-    card: revenue.card + manual.card + receipt.card + deposit.card,
-    grab: revenue.grab + manual.grab + receipt.grab + deposit.grab,
-    other: revenue.other + manual.other + receipt.other + deposit.other,
+    total: revenue.total + deposit.total,
+    cash: revenue.cash + deposit.cash,
+    transfer: revenue.transfer + deposit.transfer,
+    card: revenue.card + deposit.card,
+    grab: revenue.grab + deposit.grab,
+    other: revenue.other + deposit.other,
   };
 
   return {
@@ -348,7 +370,7 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     branchCode,
     reportDate: date,
     shift,
-    summary: { revenue, manual, receipt, deposit, total, expenseTotal, cashExpenseTotal, cashToDeposit: total.cash - cashExpenseTotal },
+    summary: { revenue, posRevenue, manual, receipt, deposit, total, expenseTotal, cashExpenseTotal, cashToDeposit: total.cash - cashExpenseTotal },
     expenses,
     receipts,
     manualEntries: manualEntries.map((row) => ({
@@ -366,7 +388,7 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
       updatedAt: row.updatedAt,
     })),
     // Cùng một ngày/ca mà có cả doanh thu import lẫn doanh thu nhập tay thì rất dễ tính trùng.
-    duplicateRevenueWarning: revenue.total > 0 && manual.total > 0,
+    duplicateRevenueWarning: posRevenue.total > 0 && manual.total > 0,
   };
 }
 
