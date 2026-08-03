@@ -8,6 +8,7 @@ import { canPerformMenuAction, filterModuleTabs, moduleTabs } from "@/lib/auth-d
 import { useModuleAuth } from "@/lib/use-module-auth";
 import { filterMoneySources, firstMoneySourceCode, moneySourceDebugLabel, moneySourceDisplayName, type MoneySourceOption } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
+import { shiftLabel, shiftLabels } from "@/lib/shifts";
 
 type Pnl = {
   revenue: number;
@@ -50,7 +51,7 @@ type OperationsData = {
 type BudgetRow = { metric: string; label: string; kind: "REVENUE" | "EXPENSE" | "PROFIT"; actual: number; target: number; variance: number; usageRate: number | null; isGood: boolean };
 type BudgetData = { summary: { expenseActual: number; expenseTarget: number; revenueActual: number; revenueTarget: number }; rows: BudgetRow[] };
 type DailyCashBucket = { total: number; cash: number; transfer: number; card: number; grab: number; other: number };
-type DailyCashExpense = { id: string; code: string; date: string; description: string; partnerName: string; moneySourceCode: string; moneySourceName: string; moneySourceGroup: string | null; amount: number; isCash: boolean };
+type DailyCashExpense = { id: string; code: string; date: string; shift: string | null; description: string; partnerName: string; moneySourceCode: string; moneySourceName: string; moneySourceGroup: string | null; amount: number; isCash: boolean };
 type DailyCashReceipt = DailyCashExpense & { status: string };
 type ManualRevenueEntry = {
   id: string;
@@ -71,7 +72,7 @@ type DailyCashData = {
   branchCode: string;
   reportDate: string;
   shift: string;
-  summary: { revenue: DailyCashBucket; manual: DailyCashBucket; receipt: DailyCashBucket; deposit: DailyCashBucket; total: DailyCashBucket; expenseTotal: number; cashExpenseTotal: number; cashToDeposit: number };
+  summary: { revenue: DailyCashBucket; posRevenue: DailyCashBucket; manual: DailyCashBucket; receipt: DailyCashBucket; deposit: DailyCashBucket; total: DailyCashBucket; expenseTotal: number; cashExpenseTotal: number; cashToDeposit: number };
   expenses: DailyCashExpense[];
   receipts: DailyCashReceipt[];
   manualEntries: ManualRevenueEntry[];
@@ -99,7 +100,6 @@ const metricLabels: Record<string, string> = {
   netProfit: "Lợi nhuận ròng",
 };
 const reportTabs = moduleTabs["/reports"];
-const shiftLabels: Record<string, string> = { FULL: "Cả ngày", MORNING: "Ca sáng", EVENING: "Ca tối" };
 const cashDepositTargetLabels: Record<"PKT" | "CO", string> = { PKT: "Nộp Tiền PKT", CO: "Nộp Tiền Cô" };
 const cashDepositDenominations = [500000, 200000, 100000, 50000, 20000, 10000, 5000, 2000, 1000];
 const emptyManualRevenueForm: ManualRevenueForm = { cashAmount: "", transferAmount: "", cardAmount: "", grabAmount: "", otherAmount: "", note: "" };
@@ -798,7 +798,7 @@ export default function ReportsPage() {
               <div className="flex flex-wrap items-center justify-end gap-2">
                 <button
                   type="button"
-                  className={manualRevenueDisabledReason ? "secondary-button no-print cursor-not-allowed opacity-60" : "secondary-button no-print"}
+                  className={manualRevenueDisabledReason ? "accent-button no-print button-disabled" : "accent-button no-print"}
                   onClick={openManualRevenueModal}
                   disabled={!!manualRevenueDisabledReason}
                   title={manualRevenueDisabledReason || undefined}
@@ -808,7 +808,7 @@ export default function ReportsPage() {
                 </button>
                 <button
                   type="button"
-                  className={cashDepositDisabledReason ? "secondary-button no-print cursor-not-allowed opacity-60" : "primary-button no-print"}
+                  className={cashDepositDisabledReason ? "accent-button no-print button-disabled" : "primary-button no-print"}
                   onClick={openCashDepositModal}
                   disabled={!!cashDepositDisabledReason}
                   title={cashDepositDisabledReason || undefined}
@@ -844,18 +844,16 @@ export default function ReportsPage() {
           )}
 
           <section className="table-panel">
-            <PanelHeader title="Tổng hợp thu trong ngày" subtitle="Tách doanh thu, đặt cọc theo tiền mặt, chuyển khoản, quẹt thẻ/ví và kênh Grab." />
+            <PanelHeader title="Tổng hợp thu trong ngày" subtitle="Doanh thu bán hàng gộp file POS đã import, doanh thu nhập tay và phiếu thu đã lập. Tách theo tiền mặt, chuyển khoản, quẹt thẻ/ví và kênh Grab." />
             <Table headers={["Loại", "Tổng thu", "Tiền mặt", "Chuyển khoản", "Quẹt thẻ/Ví", "Grab", "Khác", "Tổng chi tiền mặt", "Nộp tiền"]}>
               <DailyCashSummaryRow label="Doanh thu bán hàng" bucket={dailyCash.summary.revenue} />
-              <DailyCashSummaryRow label="Doanh thu nhập tay" bucket={dailyCash.summary.manual} />
-              <DailyCashSummaryRow label="Phiếu thu" bucket={dailyCash.summary.receipt} />
               <DailyCashSummaryRow label="Đặt cọc" bucket={dailyCash.summary.deposit} />
               <DailyCashSummaryRow label="TOTAL" bucket={dailyCash.summary.total} expense={dailyCash.summary.cashExpenseTotal} cashToDeposit={dailyCash.summary.cashToDeposit} strong />
             </Table>
           </section>
 
           {dailyCash.manualEntries.length > 0 && (
-            <section className="table-panel">
+            <section className="table-panel no-print">
               <PanelHeader title="Doanh thu nhập tay đã ghi nhận" subtitle="Số thu ngân tự nhập khi kết ca. Xoá dòng này nếu sau đó đã import file doanh thu POS cho cùng ngày." />
               <Table headers={["Ca", "Tiền mặt", "Chuyển khoản", "Quẹt thẻ/Ví", "Grab", "Khác", "Tổng thu", "Người nhập", ""]}>
                 {dailyCash.manualEntries.map((entry) => (
@@ -900,7 +898,7 @@ export default function ReportsPage() {
                 ) : dailyCash.receipts.map((row, index) => (
                   <tr key={row.id} className="border-t border-slate-100">
                     <Cell>{index + 1}</Cell>
-                    <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small className="block text-slate-500">{new Date(row.date).toLocaleDateString("vi-VN")}</small></Cell>
+                    <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small className="block text-slate-500">{new Date(row.date).toLocaleDateString("vi-VN")}{row.shift ? ` · ${shiftLabel(row.shift)}` : ""}</small></Cell>
                     <Cell>{row.description}</Cell>
                     <Cell>{row.partnerName || "-"}</Cell>
                     <Cell>
@@ -942,7 +940,7 @@ export default function ReportsPage() {
                 ) : dailyCash.expenses.map((expense, index) => (
                   <tr key={expense.id} className="border-t border-slate-100">
                     <Cell>{index + 1}</Cell>
-                    <Cell><CopyableText value={expense.code}><b>{expense.code}</b></CopyableText><small className="block text-slate-500">{new Date(expense.date).toLocaleDateString("vi-VN")}</small></Cell>
+                    <Cell><CopyableText value={expense.code}><b>{expense.code}</b></CopyableText><small className="block text-slate-500">{new Date(expense.date).toLocaleDateString("vi-VN")}{expense.shift ? ` · ${shiftLabel(expense.shift)}` : ""}</small></Cell>
                     <Cell>{expense.description}</Cell>
                     <Cell>{expense.partnerName || "-"}</Cell>
                     <Cell>

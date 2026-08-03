@@ -262,6 +262,9 @@ model FinancialVoucher {
   sourceDocumentCode      String?
   voucherType             String
   voucherDate             DateTime @default(now())
+  /// Ca làm việc của phiếu (MORNING/EVENING/FULL). Phiếu cũ để trống thì báo cáo vẫn
+  /// suy ra ca theo giờ của voucherDate như trước.
+  shift                   String?
   partnerCode             String?
   partnerName             String
   branchCode              String
@@ -294,6 +297,7 @@ model FinancialVoucher {
 
   @@index([voucherType])
   @@index([voucherDate])
+  @@index([shift])
   @@index([partnerCode])
   @@index([status])
   @@index([importBatchId])

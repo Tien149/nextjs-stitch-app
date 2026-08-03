@@ -7,6 +7,7 @@ import { canPerformMenuAction, filterModuleTabs } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
+import { shiftLabels } from "@/lib/shifts";
 
 type CashEntry = { id: string; date: string; code: string; type: string; moneySourceCode: string; description: string; receipt: number; payment: number; balance: number };
 type Schedule = { id: string; period: string; amount: number; status: string };
@@ -33,7 +34,6 @@ type MasterDataOption = { id: string; type: string; code: string; name: string; 
 
 const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value);
 const cashDepositTargetLabels: Record<string, string> = { PKT: "Nộp Tiền PKT", CO: "Nộp Tiền Cô" };
-const shiftLabels: Record<string, string> = { FULL: "Cả ngày", MORNING: "Ca sáng", EVENING: "Ca tối" };
 
 export default function FinanceOperationsPage() {
   const href = "/finance-operations";

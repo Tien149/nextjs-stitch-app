@@ -52,6 +52,8 @@ async function validateVoucherCategory(voucherType: string, categoryCode: string
 }
 
 import { generateFormattedVoucherCode, formatVoucherPrefix } from "@/lib/voucher-code-generator";
+import { isWorkShift } from "@/lib/shifts";
+import { normalizeReceiptPurpose, validateReceiptPurpose } from "@/lib/voucher-rules";
 
 async function nextVoucherCode(voucherType: string, voucherDate?: Date | string | null, branchCode?: string | null) {
   const d = voucherDate ? new Date(voucherDate) : new Date();
@@ -127,7 +129,7 @@ export async function POST(request: Request) {
     if (!["RECEIPT", "PAYMENT"].includes(voucherType)) {
       return NextResponse.json({ error: "Loại chứng từ không hợp lệ" }, { status: 400 });
     }
-    if (!partnerName || !branchCode || !moneySourceCode || !categoryCode || amount <= 0 || !description) {
+    if (!partnerName || !branchCode || !moneySourceCode || amount <= 0 || !description) {
       return NextResponse.json({ error: "Thiếu đối tác, chi nhánh, nguồn tiền, số tiền hoặc nội dung" }, { status: 400 });
     }
 
@@ -148,10 +150,20 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Phiếu thu/chi chỉ được chọn nguồn tiền mặt" }, { status: 400 });
     }
 
-    const categoryError = await validateVoucherCategory(voucherType, categoryCode);
-    if (categoryError) return NextResponse.json({ error: categoryError }, { status: 400 });
+    if (categoryCode) {
+      const categoryError = await validateVoucherCategory(voucherType, categoryCode);
+      if (categoryError) return NextResponse.json({ error: categoryError }, { status: 400 });
+    }
 
     const voucherDate = body.voucherDate ? new Date(String(body.voucherDate)) : new Date();
+    const shiftValue = cleanText(body.shift).toUpperCase();
+    if (shiftValue && !isWorkShift(shiftValue)) {
+      return NextResponse.json({ error: "Ca làm việc không hợp lệ" }, { status: 400 });
+    }
+
+    const depositAction = normalizeReceiptPurpose(voucherType, body.depositAction);
+    const purposeError = validateReceiptPurpose(voucherType, body.depositAction, cleanText(body.partnerCode));
+    if (purposeError) return NextResponse.json({ error: purposeError }, { status: 400 });
     const code = await nextVoucherCode(voucherType, voucherDate, branchCode);
 
     // Mã sinh tự động có thể trùng với chứng từ đang nằm trong thùng rác -> báo rõ để xử lý.
@@ -165,11 +177,14 @@ export async function POST(request: Request) {
         code,
         voucherType,
         voucherDate,
+        shift: shiftValue || null,
+        depositAction: depositAction || null,
+        depositCode: depositAction ? (cleanText(body.depositCode) || null) : null,
         partnerCode: cleanText(body.partnerCode) || null,
         partnerName,
         branchCode,
         moneySourceCode,
-        categoryCode,
+        categoryCode: categoryCode || null,
         amount,
         description,
         status: cleanText(body.status) || "DRAFT",
@@ -224,11 +239,21 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
   const partnerCode = body.partnerCode === undefined ? current.partnerCode : cleanText(body.partnerCode) || null;
   const categoryCode = body.categoryCode === undefined ? current.categoryCode || "" : cleanText(body.categoryCode);
   const voucherDate = body.voucherDate === undefined ? current.voucherDate : new Date(String(body.voucherDate));
+  const shiftValue = body.shift === undefined ? current.shift : (cleanText(body.shift).toUpperCase() || null);
+  if (shiftValue && !isWorkShift(shiftValue)) {
+    return NextResponse.json({ error: "Ca làm việc không hợp lệ" }, { status: 400 });
+  }
+
+  const depositAction = current.voucherType !== "RECEIPT"
+    ? null
+    : (body.depositAction === undefined ? current.depositAction : (normalizeReceiptPurpose(current.voucherType, body.depositAction) || null));
+  const purposeError = validateReceiptPurpose(current.voucherType, depositAction, partnerCode);
+  if (purposeError) return NextResponse.json({ error: purposeError }, { status: 400 });
 
   if (Number.isNaN(voucherDate.getTime())) {
     return NextResponse.json({ error: "Ngày chứng từ không hợp lệ" }, { status: 400 });
   }
-  if (!partnerName || !branchCode || !moneySourceCode || !categoryCode || amount <= 0 || !description) {
+  if (!partnerName || !branchCode || !moneySourceCode || amount <= 0 || !description) {
     return NextResponse.json({ error: "Thiếu đối tác, chi nhánh, nguồn tiền, số tiền hoặc nội dung" }, { status: 400 });
   }
 
@@ -250,8 +275,10 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
     return NextResponse.json({ error: "Phiếu thu/chi chỉ được chọn nguồn tiền mặt" }, { status: 400 });
   }
 
-  const categoryError = await validateVoucherCategory(current.voucherType, categoryCode);
-  if (categoryError) return NextResponse.json({ error: categoryError }, { status: 400 });
+  if (categoryCode) {
+    const categoryError = await validateVoucherCategory(current.voucherType, categoryCode);
+    if (categoryError) return NextResponse.json({ error: categoryError }, { status: 400 });
+  }
 
   const [depositHistoryCount, debtSettlement] = await Promise.all([
     prisma.depositHistory.count({ where: { voucherId: id } }),
@@ -276,11 +303,14 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
     where: { id },
     data: {
       voucherDate,
+      shift: shiftValue,
+      depositAction,
+      depositCode: depositAction ? (body.depositCode === undefined ? current.depositCode : (cleanText(body.depositCode) || null)) : null,
       partnerCode,
       partnerName,
       branchCode,
       moneySourceCode,
-      categoryCode,
+      categoryCode: categoryCode || null,
       amount,
       description,
     },
@@ -295,8 +325,8 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
     entityCode: voucher.code,
     branchCode: voucher.branchCode,
     metadata: {
-      before: { voucherDate: current.voucherDate, partnerCode: current.partnerCode, partnerName: current.partnerName, branchCode: current.branchCode, moneySourceCode: current.moneySourceCode, categoryCode: current.categoryCode, amount: current.amount, description: current.description },
-      after: { voucherDate, partnerCode, partnerName, branchCode, moneySourceCode, categoryCode, amount, description },
+      before: { voucherDate: current.voucherDate, shift: current.shift, partnerCode: current.partnerCode, partnerName: current.partnerName, branchCode: current.branchCode, moneySourceCode: current.moneySourceCode, categoryCode: current.categoryCode, amount: current.amount, description: current.description },
+      after: { voucherDate, shift: shiftValue, partnerCode, partnerName, branchCode, moneySourceCode, categoryCode, amount, description },
     },
   });
 

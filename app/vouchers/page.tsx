@@ -9,6 +9,7 @@ import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
+import { shiftLabel, WORK_SHIFTS } from "@/lib/shifts";
 
 const voucherMoneySourceGroups = ["CASH"];
 
@@ -25,6 +26,9 @@ type Voucher = {
   amount: number;
   description: string;
   status: string;
+  shift: string | null;
+  depositAction: string | null;
+  depositCode: string | null;
 };
 
 type MasterDataOption = {
@@ -60,11 +64,14 @@ function normalizeCategoryGroup(group: string | null | undefined) {
 const emptyForm = {
   voucherType: "RECEIPT",
   voucherDate: new Date().toISOString().slice(0, 10),
+  shift: "MORNING",
+  depositAction: "",
+  depositCode: "",
   partnerCode: "",
   partnerName: "Khách hàng mua lẻ",
   branchCode: "HCM",
   moneySourceCode: "CASH_HCM",
-  categoryCode: "REV_FOOD",
+  categoryCode: "",
   amount: "50000000",
   description: "Thu tiền bán hàng hàng ngày / thanh toán đối tác",
   status: "DRAFT",
@@ -168,6 +175,11 @@ export default function VouchersPage() {
   const canCreate = user ? canPerformAction(user, "create") : false;
   const canApprove = user ? canPerformAction(user, "approve") : false;
   const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
+  const categoryName = (code: string | null) => {
+    if (!code) return "Chưa gán khoản mục";
+    const source = categories.length > 0 ? categories : fallbackVoucherCategories;
+    return source.find((item) => item.code === code)?.name || code;
+  };
   const normalizedCategoryOptions = useMemo(() => {
     const source = categories.length > 0 ? categories : fallbackVoucherCategories;
     return source.map((category) => ({
@@ -240,10 +252,11 @@ export default function VouchersPage() {
   }, [editingVoucher, form.partnerCode, form.partnerName, partnerOptions]);
 
   useEffect(() => {
-    if (voucherCategoryOptions.length === 0) return;
+    if (!form.categoryCode || voucherCategoryOptions.length === 0) return;
     if (voucherCategoryOptions.some((category) => category.code === form.categoryCode)) return;
+    // Khoản mục đang chọn không thuộc loại phiếu hiện tại -> bỏ chọn thay vì ép sang mục khác.
     window.setTimeout(() => {
-      setForm((current) => ({ ...current, categoryCode: voucherCategoryOptions[0].code }));
+      setForm((current) => ({ ...current, categoryCode: "" }));
     }, 0);
   }, [form.categoryCode, voucherCategoryOptions]);
 
@@ -261,7 +274,7 @@ export default function VouchersPage() {
       ...emptyForm,
       branchCode: branchCode === "ALL" ? "HCM" : branchCode,
       moneySourceCode: firstMoneySourceCode(moneySources, branchCode === "ALL" ? "HCM" : branchCode, voucherMoneySourceGroups),
-      categoryCode: categoryOptionsForType(emptyForm.voucherType)[0]?.code || emptyForm.categoryCode,
+      categoryCode: emptyForm.categoryCode,
     });
   };
 
@@ -270,6 +283,9 @@ export default function VouchersPage() {
     setEditingVoucher(voucher);
     setForm({
       voucherType: voucher.voucherType,
+      shift: voucher.shift || "MORNING",
+      depositAction: voucher.depositAction || "",
+      depositCode: voucher.depositCode || "",
       voucherDate: voucher.voucherDate.slice(0, 10),
       partnerCode: voucher.partnerCode || "",
       partnerName: voucher.partnerName,
@@ -445,7 +461,9 @@ export default function VouchersPage() {
                       setForm((value) => ({
                         ...value,
                         voucherType,
-                        categoryCode: categoryOptionsForType(voucherType)[0]?.code || "",
+                        categoryCode: "",
+                        depositAction: voucherType === "RECEIPT" ? value.depositAction : "",
+                        depositCode: voucherType === "RECEIPT" ? value.depositCode : "",
                       }));
                     }}
                     className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white"
@@ -465,6 +483,59 @@ export default function VouchersPage() {
                   />
                 </div>
               </div>
+
+              <label className="text-xs font-bold text-slate-600 block">
+                Ca làm việc *
+                <select
+                  value={form.shift}
+                  onChange={(event) => setForm((value) => ({ ...value, shift: event.target.value }))}
+                  className="control"
+                >
+                  {WORK_SHIFTS.map((option) => (
+                    <option key={option.id} value={option.id}>{option.label} ({option.hint})</option>
+                  ))}
+                </select>
+                <span className="mt-1 block text-[11px] font-medium text-slate-500">
+                  Quyết định phiếu này nằm ở ca nào trong báo cáo Thu chi ngày.
+                </span>
+              </label>
+
+              {form.voucherType === "RECEIPT" && (
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="text-xs font-bold text-slate-600 block">
+                    Nội dung thu *
+                    <select
+                      value={form.depositAction}
+                      onChange={(event) => setForm((value) => ({ ...value, depositAction: event.target.value, depositCode: event.target.value ? value.depositCode : "" }))}
+                      className="control"
+                    >
+                      <option value="">Thu doanh thu (ghi nhận toàn bộ)</option>
+                      <option value="COLLECT">Thu tiền đặt cọc (khách sẽ dùng sau)</option>
+                    </select>
+                    <span className="mt-1 block text-[11px] font-medium text-slate-500">
+                      {form.depositAction === "COLLECT"
+                        ? "Khi duyệt sẽ sinh một khoản tiền cọc theo dõi riêng."
+                        : "Tiền vào doanh thu ngay, không theo dõi số dư cọc."}
+                    </span>
+                  </label>
+
+                  {form.depositAction === "COLLECT" && (
+                    <label className="text-xs font-bold text-slate-600 block">
+                      Mã tiền cọc
+                      <input
+                        type="text"
+                        value={form.depositCode}
+                        onChange={(event) => setForm((value) => ({ ...value, depositCode: event.target.value }))}
+                        placeholder="Để trống sẽ tự sinh theo mã phiếu"
+                        className="control"
+                      />
+                      <span className="mt-1 block text-[11px] font-medium text-slate-500">
+                        Phải chọn đối tác có mã thì mới thu cọc được.
+                      </span>
+                    </label>
+                  )}
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-3">
                 <label className="text-xs font-bold text-slate-600 block">
@@ -548,14 +619,13 @@ export default function VouchersPage() {
 
               <div className="grid grid-cols-2 gap-3">
                 <label className="text-xs font-bold text-slate-600 block">
-                  Khoản mục thu/chi *
+                  Khoản mục thu/chi
                   <select
-                    value={form.categoryCode || voucherCategoryOptions[0]?.code || ""}
+                    value={form.categoryCode}
                     onChange={(event) => setForm((value) => ({ ...value, categoryCode: event.target.value }))}
                     className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white"
-                    required
                   >
-                    <option value="">-- Chọn khoản mục thu/chi --</option>
+                    <option value="">-- Không phân loại --</option>
                     {voucherCategoryOptions.map((category) => (
                       <option key={category.id || category.code} value={category.code}>
                         {category.name}
@@ -623,8 +693,33 @@ export default function VouchersPage() {
                   ) : vouchers.map((voucher) => (
                     <tr key={voucher.id} className="hover:bg-slate-50/80 transition-colors">
                       <td className="px-4 py-3.5">
-                        <CopyableText value={voucher.code}><b className="text-slate-800 font-semibold">{voucher.code}</b></CopyableText>
-                        <p className="text-xs text-slate-500 mt-0.5">{voucher.voucherType === "RECEIPT" ? "Phiếu thu" : "Phiếu chi"} · {new Date(voucher.voucherDate).toLocaleDateString("vi-VN")}</p>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+                            voucher.voucherType === "RECEIPT"
+                              ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                              : "bg-rose-50 text-rose-700 border border-rose-200"
+                          }`}>
+                            {voucher.voucherType === "RECEIPT" ? "Thu" : "Chi"}
+                          </span>
+                          {voucher.voucherType === "RECEIPT" && (
+                            <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                              voucher.depositAction
+                                ? "bg-amber-50 text-amber-700 border border-amber-200"
+                                : "bg-blue-50 text-blue-700 border border-blue-200"
+                            }`}>
+                              {voucher.depositAction ? "Tiền cọc" : "Doanh thu"}
+                            </span>
+                          )}
+                          <CopyableText value={voucher.code}><b className="text-slate-800 font-semibold">{voucher.code}</b></CopyableText>
+                        </div>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          {categoryName(voucher.categoryCode)} · {new Date(voucher.voucherDate).toLocaleDateString("vi-VN")}
+                          {voucher.shift && (
+                            <span className="ml-1.5 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-600">
+                              {shiftLabel(voucher.shift)}
+                            </span>
+                          )}
+                        </p>
                       </td>
                       <td className="px-4 py-3.5">
                         <b className="text-slate-800 font-medium">{voucher.partnerName}</b>
