@@ -176,6 +176,12 @@ export const appMenuItems: AppMenuItem[] = [
     roles: ["Admin", "Kế toán tổng hợp", "Quản lý"],
   },
   {
+    name: "Báo cáo nguồn tiền",
+    icon: "savings",
+    href: "/reports?tab=cash-source",
+    roles: ["Admin", "Kế toán tổng hợp", "Quản lý"],
+  },
+  {
     name: "Báo cáo & BI",
     icon: "monitoring",
     href: "/reports",
@@ -320,6 +326,7 @@ export const moduleTabs: Record<string, Array<{ id: string; label: string }>> = 
     { id: "operations", label: "Vận hành" },
     { id: "budget", label: "Ngân sách" },
     { id: "daily-cash", label: "Thu chi ngày" },
+    { id: "cash-source", label: "Nguồn tiền" },
     { id: "activity", label: "Kỳ & Log" },
     { id: "pnl", label: "P&L đa chiều" },
     { id: "yoy", label: "Biến động YoY" },
@@ -355,7 +362,7 @@ export const moduleTabs: Record<string, Array<{ id: string; label: string }>> = 
 
 /** Biểu tượng hiển thị của từng tab, tách khỏi khai báo quyền để giữ moduleTabs gọn. */
 export const moduleTabIcons: Record<string, string> = {
-  dashboard: "dashboard", operations: "fact_check", budget: "price_check", "daily-cash": "receipt",
+  dashboard: "dashboard", operations: "fact_check", budget: "price_check", "daily-cash": "receipt", "cash-source": "savings",
   activity: "history", pnl: "finance", yoy: "query_stats", cashflow: "timeline", balance: "account_balance",
   cashbook: "account_balance_wallet", accruals: "calendar_month", closing: "lock",
   requests: "assignment", quotes: "compare_arrows", orders: "local_shipping",

@@ -79,10 +79,40 @@ type DailyCashData = {
   duplicateRevenueWarning: boolean;
 };
 type ManualRevenueForm = { cashAmount: string; transferAmount: string; cardAmount: string; grabAmount: string; otherAmount: string; note: string };
+type CashCategoryRow = {
+  key: string;
+  name: string;
+  group: string | null;
+  origin: "VOUCHER" | "POS" | "MANUAL" | "ADJUSTMENT" | "DEPOSIT";
+  total: number;
+  count: number;
+  months: number[];
+  ratio: number;
+};
+type CashPartnerRow = { code: string; name: string; partnerType: string | null; total: number; count: number };
+type CashSourceFlow = { code: string; name: string; group: string | null; opening: number; in: number; out: number; transferIn: number; transferOut: number; closing: number };
+type CashSourceData = {
+  period: string;
+  view: "month" | "year";
+  year: string;
+  months: string[];
+  branchCode: string;
+  totals: { in: number; out: number; net: number; netRatio: number; byMonth: Array<{ period: string; in: number; out: number; net: number }> };
+  income: CashCategoryRow[];
+  expense: CashCategoryRow[];
+  expenseByPartner: CashPartnerRow[];
+  expensePartnerCount: number;
+  supplierExpense: { total: number; count: number };
+  unclassified: { income: number; expense: number };
+  pending: { receiptAmount: number; receiptCount: number; paymentAmount: number; paymentCount: number };
+  internalTransfer: { total: number; count: number };
+  sources: CashSourceFlow[];
+  deposits: Array<{ code: string; name: string; opening: number; increase: number; used: number; closing: number }>;
+};
 type ActivityLog = { id: string; time: string; module: string; action: string; actor: string; branchCode: string; code: string; note: string };
 type AccountingPeriodStatus = { period: string; branchCode: string; status: string; closedBy: string | null; closedAt: string | null; reopenedBy: string | null; reopenedAt: string | null; reason: string | null };
 type ActivityData = { accountingPeriod: AccountingPeriodStatus; periods: AccountingPeriodStatus[]; logs: ActivityLog[] };
-type ReportData = DashboardData | PnlData | YoyData | CashflowData | BalanceData | OperationsData | BudgetData | DailyCashData | ActivityData;
+type ReportData = DashboardData | PnlData | YoyData | CashflowData | BalanceData | OperationsData | BudgetData | DailyCashData | ActivityData | CashSourceData;
 type DrilldownRow = { id: string; date: string; code: string; accountCode: string; accountName: string; description: string; amount: number };
 type CashDepositDenomination = { denomination: number; quantity: string };
 type CashDepositForm = { depositTargetType: "PKT" | "CO"; fromMoneySourceCode: string; toMoneySourceCode: string; denominations: CashDepositDenomination[] };
@@ -102,9 +132,12 @@ const metricLabels: Record<string, string> = {
 const reportTabs = moduleTabs["/reports"];
 const cashDepositTargetLabels: Record<"PKT" | "CO", string> = { PKT: "Nộp Tiền PKT", CO: "Nộp Tiền Cô" };
 const cashDepositDenominations = [500000, 200000, 100000, 50000, 20000, 10000, 5000, 2000, 1000];
+// Mệnh giá nhỏ nhất còn lưu hành: số nộp luôn là bội số của nó.
+const cashDepositUnit = 1000;
 const emptyManualRevenueForm: ManualRevenueForm = { cashAmount: "", transferAmount: "", cardAmount: "", grabAmount: "", otherAmount: "", note: "" };
-const manualRevenueFields: Array<{ key: keyof Omit<ManualRevenueForm, "note">; label: string; hint: string }> = [
-  { key: "cashAmount", label: "Tiền mặt", hint: "Tiền khách trả mặt, còn trong két" },
+// Tiền mặt khoá lại (chỉ đọc): số này lấy từ phiếu thu tiền mặt của ca, không nhập tay.
+const manualRevenueFields: Array<{ key: keyof Omit<ManualRevenueForm, "note">; label: string; hint: string; locked?: boolean }> = [
+  { key: "cashAmount", label: "Tiền mặt", hint: "Lấy theo phiếu thu tiền mặt của ca, không nhập tay ở đây", locked: true },
   { key: "transferAmount", label: "Chuyển khoản", hint: "Khách chuyển vào tài khoản ngân hàng" },
   { key: "cardAmount", label: "Quẹt thẻ / Ví", hint: "Máy POS, ví điện tử, QR" },
   { key: "grabAmount", label: "Grab", hint: "Đơn qua GrabFood và các kênh Grab" },
@@ -122,6 +155,7 @@ export default function ReportsPage() {
   const [shift, setShift] = useState("FULL");
   const [branchCode, setBranchCode] = useState("ALL");
   const [scenario, setScenario] = useState("BASE");
+  const [cashSourceView, setCashSourceView] = useState<"month" | "year">("month");
   const [data, setData] = useState<ReportData | null>(null);
   const [tabLoading, setTabLoading] = useState(false);
   const [message, setMessage] = useState("");
@@ -202,6 +236,7 @@ export default function ReportsPage() {
         params.set("reportDate", reportDate);
         params.set("shift", shift);
       }
+      if (active === "cash-source") params.set("view", cashSourceView);
       const response = await fetch(`/api/reports?${params.toString()}`);
       if (response.ok) {
         const result = await response.json();
@@ -212,7 +247,7 @@ export default function ReportsPage() {
     } finally {
       setTabLoading(false);
     }
-  }, [active, branchCode, period, reportDate, scenario, shift]);
+  }, [active, branchCode, cashSourceView, period, reportDate, scenario, shift]);
 
   const loadMoneySources = useCallback(async () => {
     const response = await fetch("/api/master-data?type=MONEY_SOURCE&status=ACTIVE");
@@ -290,6 +325,7 @@ export default function ReportsPage() {
   const budget = active === "budget" && data && typeof data === "object" && "rows" in data ? (data as BudgetData) : null;
   const dailyCash = active === "daily-cash" && data && typeof data === "object" && "summary" in data && "expenses" in data ? (data as DailyCashData) : null;
   const activity = active === "activity" && data && typeof data === "object" && "periods" in data ? (data as ActivityData) : null;
+  const cashSource = active === "cash-source" && data && typeof data === "object" && "totals" in data && "income" in data ? (data as CashSourceData) : null;
 
   const operationRows = useMemo(() => {
     if (!operations) return [] as Array<OperationDetail & { module: string }>;
@@ -302,7 +338,34 @@ export default function ReportsPage() {
     ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [operations]);
 
+  /**
+   * Bảng "Tổng hợp thu trong ngày": mỗi dòng tự tính số nộp = tiền mặt của dòng đó
+   * trừ chi tiền mặt phân bổ cho dòng đó. Dòng TOTAL chỉ cộng dồn hai cột này lại.
+   */
+  const dailyCashSummaryRows = useMemo(() => {
+    if (!dailyCash) return [] as Array<{ label: string; bucket: DailyCashBucket; expense?: number; cashToDeposit?: number }>;
+    return [
+      {
+        label: "Doanh thu bán hàng",
+        bucket: dailyCash.summary.revenue,
+        expense: dailyCash.summary.cashExpenseTotal,
+        cashToDeposit: dailyCash.summary.revenue.cash - dailyCash.summary.cashExpenseTotal,
+      },
+      // Đặt cọc không gánh chi tiền mặt nên số nộp đúng bằng phần tiền mặt của nó.
+      { label: "Đặt cọc", bucket: dailyCash.summary.deposit, cashToDeposit: dailyCash.summary.deposit.cash },
+    ];
+  }, [dailyCash]);
+  const dailyCashExpenseSum = dailyCashSummaryRows.reduce((sum, row) => sum + (row.expense || 0), 0);
+  const dailyCashDepositSum = dailyCashSummaryRows.reduce((sum, row) => sum + (row.cashToDeposit || 0), 0);
+
   const cashDepositAmount = Math.max(0, Math.round(dailyCash?.summary.cashToDeposit || 0));
+  /**
+   * Nộp tiền là đếm theo tờ nên chỉ nộp được bội số của mệnh giá nhỏ nhất (1.000 đ).
+   * Số cần nộp làm tròn XUỐNG, phần lẻ dưới 1.000 đ giữ lại trong két (vẫn nằm trong
+   * số dư nguồn tiền mặt) — không làm tròn lên vì không thể nộp số tiền không có thật.
+   */
+  const cashDepositRoundedAmount = Math.floor(cashDepositAmount / cashDepositUnit) * cashDepositUnit;
+  const cashDepositRemainder = cashDepositAmount - cashDepositRoundedAmount;
   const cashDepositDenominationTotal = cashDepositForm.denominations.reduce((sum, row) => {
     const quantity = Math.max(0, Math.floor(Number(row.quantity) || 0));
     return sum + row.denomination * quantity;
@@ -323,11 +386,13 @@ export default function ReportsPage() {
         ? "Chọn một cửa hàng cụ thể để nộp tiền."
         : cashDepositAmount <= 0
           ? "Ngày/ca này chưa có tiền mặt cần nộp."
-          : cashDepositCashSources.length === 0
-            ? "Chưa cấu hình nguồn tiền mặt cho cửa hàng này."
-            : cashDepositDefaultTargetSources.length === 0
-              ? "Chưa cấu hình nguồn tiền nhận cho cửa hàng này."
-              : "";
+          : cashDepositRoundedAmount <= 0
+            ? `Tiền mặt cần nộp (${money(cashDepositAmount)} đ) chưa đủ một tờ ${money(cashDepositUnit)} đ.`
+            : cashDepositCashSources.length === 0
+              ? "Chưa cấu hình nguồn tiền mặt cho cửa hàng này."
+              : cashDepositDefaultTargetSources.length === 0
+                ? "Chưa cấu hình nguồn tiền nhận cho cửa hàng này."
+                : "";
 
   // Bản ghi nhập tay của đúng ca đang xem; xem "Cả ngày" mà đã nhập theo ca thì không sửa trực tiếp ở đây được.
   const editableManualEntry = dailyCash?.manualEntries.find((entry) => entry.shift === dailyCash.shift) || null;
@@ -443,8 +508,12 @@ export default function ReportsPage() {
       setMessage("Vui lòng chọn một cửa hàng cụ thể trước khi tạo phiếu nộp tiền.");
       return;
     }
-    if (cashDepositAmount <= 0) {
-      setMessage("Không có số tiền mặt cần nộp cho ngày/ca này.");
+    if (cashDepositRoundedAmount <= 0) {
+      setMessage(
+        cashDepositAmount <= 0
+          ? "Không có số tiền mặt cần nộp cho ngày/ca này."
+          : `Tiền mặt cần nộp (${money(cashDepositAmount)} đ) chưa đủ một tờ ${money(cashDepositUnit)} đ để lập phiếu.`,
+      );
       return;
     }
     const fromMoneySourceCode = firstMoneySourceCode(moneySources, dailyCash.branchCode, ["CASH"]);
@@ -478,8 +547,8 @@ export default function ReportsPage() {
   const submitCashDeposit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!dailyCash || cashDepositSubmitting) return;
-    if (cashDepositDenominationTotal !== cashDepositAmount) {
-      setMessage("Tổng bảng kê mệnh giá phải bằng số tiền cần nộp.");
+    if (cashDepositDenominationTotal !== cashDepositRoundedAmount) {
+      setMessage(`Tổng bảng kê mệnh giá phải bằng số tiền cần nộp (${money(cashDepositRoundedAmount)} đ).`);
       return;
     }
     setCashDepositSubmitting(true);
@@ -497,7 +566,7 @@ export default function ReportsPage() {
           depositTargetType: cashDepositForm.depositTargetType,
           fromMoneySourceCode: cashDepositForm.fromMoneySourceCode,
           toMoneySourceCode: cashDepositForm.toMoneySourceCode,
-          amount: cashDepositAmount,
+          amount: cashDepositRoundedAmount,
           denominations: cashDepositForm.denominations.map((row) => ({
             denomination: row.denomination,
             quantity: Math.max(0, Math.floor(Number(row.quantity) || 0)),
@@ -538,6 +607,14 @@ export default function ReportsPage() {
               <option value="BASE">Cơ sở</option>
               <option value="UPSIDE">Tích cực</option>
               <option value="DOWNSIDE">Thận trọng</option>
+            </select>
+          </Field>
+        )}
+        {active === "cash-source" && (
+          <Field label="Xem theo">
+            <select className="control w-40" value={cashSourceView} onChange={(event) => setCashSourceView(event.target.value === "year" ? "year" : "month")}>
+              <option value="month">Tháng</option>
+              <option value="year">Cả năm</option>
             </select>
           </Field>
         )}
@@ -778,6 +855,189 @@ export default function ReportsPage() {
         </div>
       )}
 
+      {!tabLoading && cashSource && (
+        <div className="space-y-5">
+          <div>
+            <h2 className="text-lg font-bold text-slate-900">
+              Báo cáo nguồn tiền {cashSource.view === "year" ? `năm ${cashSource.year}` : `tháng ${cashSource.period.slice(5)}/${cashSource.year}`}
+            </h2>
+            <p className="mt-1 text-xs text-slate-500">
+              {cashSource.branchCode === "ALL" ? "Tất cả cửa hàng" : storeLabel(cashSource.branchCode)} · Tiền thực thu/thực chi theo từng khoản mục thu và chi.
+            </p>
+          </div>
+
+          <div className="grid md:grid-cols-4 gap-4">
+            <Kpi label="Tổng thu" value={cashSource.totals.in} icon="payments" tone="blue" />
+            <Kpi label="Tổng chi" value={cashSource.totals.out} icon="receipt_long" tone="amber" />
+            <Kpi label="Nguồn tiền còn lại (Thu - Chi)" value={cashSource.totals.net} icon="savings" tone={cashSource.totals.net < 0 ? "rose" : "green"} />
+            <Kpi label="Chi cho nhà cung cấp" value={cashSource.supplierExpense.total} icon="local_shipping" tone="rose" />
+          </div>
+
+          <div className="flex flex-wrap gap-3 text-xs">
+            <span className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-600">
+              Tỷ suất nguồn tiền còn lại / tổng thu: <b className="text-slate-900">{(cashSource.totals.netRatio * 100).toFixed(2)}%</b>
+            </span>
+            <span className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-600">
+              Điều tiền nội bộ (không tính vào thu/chi): <b className="text-slate-900">{money(cashSource.internalTransfer.total)} đ</b> · {cashSource.internalTransfer.count} phiếu
+            </span>
+          </div>
+
+          {(cashSource.unclassified.income > 0 || cashSource.unclassified.expense > 0) && (
+            <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <span className="material-symbols-outlined text-lg">warning</span>
+              <span>
+                Có <b>{money(cashSource.unclassified.income + cashSource.unclassified.expense)} đ</b> chứng từ chưa chọn khoản mục thu/chi
+                (thu {money(cashSource.unclassified.income)} đ, chi {money(cashSource.unclassified.expense)} đ) nên đang nằm ở dòng
+                <b> &quot;Chưa phân loại&quot;</b>. Bổ sung khoản mục trên phiếu để báo cáo tách đủ theo danh mục.
+              </span>
+            </div>
+          )}
+
+          {(cashSource.pending.receiptCount > 0 || cashSource.pending.paymentCount > 0) && (
+            <div className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+              <span className="material-symbols-outlined text-lg">pending_actions</span>
+              <span>
+                Chưa tính vào báo cáo: <b>{cashSource.pending.receiptCount}</b> phiếu thu ({money(cashSource.pending.receiptAmount)} đ) và
+                <b> {cashSource.pending.paymentCount}</b> phiếu chi ({money(cashSource.pending.paymentAmount)} đ) còn ở trạng thái nháp/chờ duyệt.
+              </span>
+            </div>
+          )}
+
+          <div className="grid xl:grid-cols-2 gap-5">
+            <CashCategoryTable
+              title="Tổng quan thu theo danh mục"
+              subtitle="Doanh thu bán hàng lấy từ file POS và doanh thu nhập tay; các khoản còn lại lấy theo khoản mục trên phiếu thu đã duyệt."
+              amountHeader="Tổng thu"
+              rows={cashSource.income}
+              total={cashSource.totals.in}
+              tone="blue"
+            />
+            <CashCategoryTable
+              title="Tổng quan chi theo danh mục"
+              subtitle="Lấy theo khoản mục trên phiếu chi đã duyệt. Đây là số trả lời câu hỏi tháng này chi cho từng khoản mục hết bao nhiêu."
+              amountHeader="Tổng chi"
+              rows={cashSource.expense}
+              total={cashSource.totals.out}
+              tone="amber"
+            />
+          </div>
+
+          <section className="table-panel">
+            <PanelHeader
+              title="Chi theo đối tác"
+              subtitle={`Xếp theo số tiền đã chi trong kỳ. Dòng có nhãn NCC là nhà cung cấp, cộng lại chính là số chi cho nhà cung cấp ở thẻ trên.${
+                cashSource.expensePartnerCount > cashSource.expenseByPartner.length
+                  ? ` Đang hiện ${cashSource.expenseByPartner.length}/${cashSource.expensePartnerCount} đối tác có phát sinh chi.`
+                  : ""
+              }`}
+            />
+            <div className="overflow-x-auto">
+              <Table headers={["Đối tác", "Mã", "Loại", "Số phiếu chi", "Tổng chi", "% trên tổng chi"]}>
+                {cashSource.expenseByPartner.length === 0 && (
+                  <tr className="border-t border-slate-100"><Cell>Chưa có phiếu chi nào trong kỳ.</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell></tr>
+                )}
+                {cashSource.expenseByPartner.map((row) => (
+                  <tr key={`${row.code}-${row.name}`} className="border-t border-slate-100 hover:bg-slate-50">
+                    <Cell><b>{row.name}</b></Cell>
+                    <Cell>{row.code || "-"}</Cell>
+                    <Cell>{partnerTypeLabel(row.partnerType)}</Cell>
+                    <Cell>{row.count}</Cell>
+                    <Cell><b>{money(row.total)} đ</b></Cell>
+                    <Cell right>{cashSource.totals.out ? ((row.total / cashSource.totals.out) * 100).toFixed(2) : "0,00"} %</Cell>
+                  </tr>
+                ))}
+              </Table>
+            </div>
+          </section>
+
+          {cashSource.view === "year" && (
+            <>
+              <CashMonthMatrix title="Tổng quan nguồn thu theo tháng" months={cashSource.months} rows={cashSource.income} />
+              <CashMonthMatrix title="Tổng quan nguồn chi theo tháng" months={cashSource.months} rows={cashSource.expense} />
+              <section className="table-panel">
+                <PanelHeader title="Thu - chi từng tháng" subtitle="Tổng hợp lại theo tháng để nhìn nhanh tháng nào âm dòng tiền." />
+                <div className="overflow-x-auto">
+                  <Table headers={["Chỉ tiêu", ...cashSource.months.map((item) => `T${Number(item.slice(5))}`), "Tổng"]}>
+                    {([
+                      { label: "Tổng thu", pick: (row: { in: number; out: number; net: number }) => row.in, total: cashSource.totals.in },
+                      { label: "Tổng chi", pick: (row: { in: number; out: number; net: number }) => row.out, total: cashSource.totals.out },
+                      { label: "Nguồn tiền còn lại", pick: (row: { in: number; out: number; net: number }) => row.net, total: cashSource.totals.net },
+                    ]).map((line) => (
+                      <tr key={line.label} className="border-t border-slate-100">
+                        <Cell><b>{line.label}</b></Cell>
+                        {cashSource.totals.byMonth.map((month) => (
+                          <Cell key={month.period} right>
+                            <span className={line.label === "Nguồn tiền còn lại" && line.pick(month) < 0 ? "text-rose-600 font-bold" : ""}>
+                              {line.pick(month) ? `${money(line.pick(month))}` : "-"}
+                            </span>
+                          </Cell>
+                        ))}
+                        <Cell right><b>{money(line.total)} đ</b></Cell>
+                      </tr>
+                    ))}
+                  </Table>
+                </div>
+              </section>
+            </>
+          )}
+
+          <section className="table-panel">
+            <PanelHeader
+              title={`Tổng quan các khoản tiền cọc của khách ${cashSource.view === "year" ? `năm ${cashSource.year}` : `tháng ${cashSource.period.slice(5)}/${cashSource.year}`}`}
+              subtitle="Nhận cọc chưa phải doanh thu — chỉ là khoản khách ứng trước. Khi cấn trừ vào bill, số cọc đó mới thành doanh thu của đúng ngày cấn trừ và bị trừ khỏi số còn lại."
+            />
+            <div className="overflow-x-auto">
+              <Table headers={["Tài khoản", "Cọc chưa dùng kỳ trước chuyển sang", "Cọc phát sinh thêm trong kỳ", "Cọc đã sử dụng trong kỳ", "Cuối kỳ còn lại chưa sử dụng"]}>
+                {cashSource.deposits.length === 0 && (
+                  <tr className="border-t border-slate-100"><Cell>Chưa có phiếu cọc nào.</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell></tr>
+                )}
+                {cashSource.deposits.map((row) => (
+                  <tr key={row.code} className="border-t border-slate-100 hover:bg-slate-50">
+                    <Cell><b>{row.name}</b><p className="text-xs text-slate-500 mt-0.5">{row.code}</p></Cell>
+                    <Cell>{row.opening ? `${money(row.opening)} đ` : "-"}</Cell>
+                    <Cell>{row.increase ? `${money(row.increase)} đ` : "-"}</Cell>
+                    <Cell>{row.used ? `${money(row.used)} đ` : "-"}</Cell>
+                    <Cell right><b className={row.closing < 0 ? "text-rose-600" : "text-slate-900"}>{row.closing ? `${money(row.closing)} đ` : "-"}</b></Cell>
+                  </tr>
+                ))}
+                <tr className="border-t border-slate-200 bg-slate-50 font-bold">
+                  <Cell><b>CỘNG</b></Cell>
+                  <Cell><b>{money(cashSource.deposits.reduce((sum, row) => sum + row.opening, 0))} đ</b></Cell>
+                  <Cell><b>{money(cashSource.deposits.reduce((sum, row) => sum + row.increase, 0))} đ</b></Cell>
+                  <Cell><b>{money(cashSource.deposits.reduce((sum, row) => sum + row.used, 0))} đ</b></Cell>
+                  <Cell right><b>{money(cashSource.deposits.reduce((sum, row) => sum + row.closing, 0))} đ</b></Cell>
+                </tr>
+              </Table>
+            </div>
+          </section>
+
+          <section className="table-panel">
+            <PanelHeader
+              title="Biến động nguồn tiền (sổ quỹ)"
+              subtitle="Gồm phiếu thu/chi, điều chỉnh quỹ, điều tiền nội bộ và tiền cọc nhận/hoàn trực tiếp. Doanh thu POS/nhập tay chưa lập phiếu thu không làm thay đổi số dư ở đây."
+            />
+            <div className="overflow-x-auto">
+              <Table headers={["Nguồn tiền", "Đầu kỳ", "Thu", "Chi", "Điều tiền vào", "Điều tiền ra", "Cuối kỳ"]}>
+                {cashSource.sources.length === 0 && (
+                  <tr className="border-t border-slate-100"><Cell>Chưa có phát sinh nguồn tiền trong kỳ.</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell></tr>
+                )}
+                {cashSource.sources.map((row) => (
+                  <tr key={row.code} className="border-t border-slate-100 hover:bg-slate-50">
+                    <Cell><b>{row.name}</b><p className="text-xs text-slate-500 mt-0.5">{row.code}</p></Cell>
+                    <Cell right>{money(row.opening)} đ</Cell>
+                    <Cell right><span className="text-emerald-700">{money(row.in)} đ</span></Cell>
+                    <Cell right>{money(row.out)} đ</Cell>
+                    <Cell right>{money(row.transferIn)} đ</Cell>
+                    <Cell right>{money(row.transferOut)} đ</Cell>
+                    <Cell right><b className={row.closing < 0 ? "text-rose-600" : "text-slate-900"}>{money(row.closing)} đ</b></Cell>
+                  </tr>
+                ))}
+              </Table>
+            </div>
+          </section>
+        </div>
+      )}
+
       {!tabLoading && dailyCash && (
         <div className="space-y-5 report-print-area" id="daily-cash-report">
           <div className="print-only text-center border-b border-slate-300 pb-3">
@@ -846,9 +1106,16 @@ export default function ReportsPage() {
           <section className="table-panel">
             <PanelHeader title="Tổng hợp thu trong ngày" subtitle="Doanh thu bán hàng gộp file POS đã import, doanh thu nhập tay và phiếu thu đã lập. Tách theo tiền mặt, chuyển khoản, quẹt thẻ/ví và kênh Grab." />
             <Table headers={["Loại", "Tổng thu", "Tiền mặt", "Chuyển khoản", "Quẹt thẻ/Ví", "Grab", "Khác", "Tổng chi tiền mặt", "Nộp tiền"]}>
-              <DailyCashSummaryRow label="Doanh thu bán hàng" bucket={dailyCash.summary.revenue} expense={dailyCash.summary.cashExpenseTotal} />
-              <DailyCashSummaryRow label="Đặt cọc" bucket={dailyCash.summary.deposit} />
-              <DailyCashSummaryRow label="TOTAL" bucket={dailyCash.summary.total} cashToDeposit={dailyCash.summary.cashToDeposit} strong />
+              {dailyCashSummaryRows.map((row) => (
+                <DailyCashSummaryRow key={row.label} label={row.label} bucket={row.bucket} expense={row.expense} cashToDeposit={row.cashToDeposit} />
+              ))}
+              <DailyCashSummaryRow
+                label="TOTAL"
+                bucket={dailyCash.summary.total}
+                expense={dailyCashExpenseSum}
+                cashToDeposit={dailyCashDepositSum}
+                strong
+              />
             </Table>
           </section>
 
@@ -1001,13 +1268,15 @@ export default function ReportsPage() {
                 {manualRevenueFields.map((field) => (
                   <Field key={field.key} label={field.label}>
                     <input
-                      className="control text-right"
+                      className={field.locked ? "control text-right cursor-not-allowed bg-slate-100 text-slate-400" : "control text-right"}
                       inputMode="numeric"
                       placeholder="0"
+                      disabled={field.locked}
+                      title={field.locked ? field.hint : undefined}
                       value={manualRevenueForm[field.key] ? money(toAmountNumber(manualRevenueForm[field.key])) : ""}
                       onChange={(event) => setManualRevenueForm((current) => ({ ...current, [field.key]: digitsOnly(event.target.value) }))}
                     />
-                    <span className="mt-1 block text-[11px] text-slate-500">{field.hint}</span>
+                    <span className={`mt-1 block text-[11px] ${field.locked ? "text-slate-400" : "text-slate-500"}`}>{field.hint}</span>
                   </Field>
                 ))}
                 <Field label="Ghi chú">
@@ -1042,7 +1311,7 @@ export default function ReportsPage() {
             <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-200 p-5">
               <div>
                 <p className="text-xs font-bold uppercase tracking-wider text-blue-600">Nộp tiền trong ngày</p>
-                <h2 className="mt-1 text-xl font-bold text-slate-900">{money(cashDepositAmount)} đ</h2>
+                <h2 className="mt-1 text-xl font-bold text-slate-900">{money(cashDepositRoundedAmount)} đ</h2>
                 <p className="mt-1 text-xs text-slate-500">
                   {new Date(dailyCash.reportDate).toLocaleDateString("vi-VN")} · {shiftLabels[dailyCash.shift] || dailyCash.shift} · {storeLabel(dailyCash.branchCode)}
                 </p>
@@ -1120,11 +1389,11 @@ export default function ReportsPage() {
                   <div className="grid grid-cols-2 gap-2 text-right text-xs sm:min-w-64">
                     <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
                       <p className="font-semibold text-slate-500">Cần nộp</p>
-                      <p className="mt-1 font-bold text-slate-900">{money(cashDepositAmount)} đ</p>
+                      <p className="mt-1 font-bold text-slate-900">{money(cashDepositRoundedAmount)} đ</p>
                     </div>
                     <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
                       <p className="font-semibold text-slate-500">Đã kê</p>
-                      <p className={`mt-1 font-bold ${cashDepositDenominationTotal === cashDepositAmount ? "text-emerald-700" : "text-rose-600"}`}>
+                      <p className={`mt-1 font-bold ${cashDepositDenominationTotal === cashDepositRoundedAmount ? "text-emerald-700" : "text-rose-600"}`}>
                         {money(cashDepositDenominationTotal)} đ
                       </p>
                     </div>
@@ -1161,9 +1430,15 @@ export default function ReportsPage() {
                     </tbody>
                   </table>
                 </div>
-                {cashDepositDenominationTotal !== cashDepositAmount && (
+                {cashDepositRemainder > 0 && (
+                  <p className="border-t border-amber-100 bg-amber-50 px-4 py-3 text-xs font-medium text-amber-800">
+                    Tiền mặt cần nộp là <b>{money(cashDepositAmount)} đ</b>, nhưng nộp theo tờ nên chỉ kê được <b>{money(cashDepositRoundedAmount)} đ</b>.
+                    Phần lẻ <b>{money(cashDepositRemainder)} đ</b> giữ lại trong két, vẫn nằm trong số dư nguồn tiền mặt.
+                  </p>
+                )}
+                {cashDepositDenominationTotal !== cashDepositRoundedAmount && (
                   <p className="border-t border-rose-100 bg-rose-50 px-4 py-3 text-xs font-bold text-rose-700">
-                    Tổng bảng kê phải bằng {money(cashDepositAmount)} đ.
+                    Tổng bảng kê phải bằng {money(cashDepositRoundedAmount)} đ.
                   </p>
                 )}
               </div>
@@ -1173,7 +1448,7 @@ export default function ReportsPage() {
               <button type="button" className="secondary-button" onClick={() => setCashDepositOpen(false)}>Hủy</button>
               <button
                 className="primary-button"
-                disabled={cashDepositSubmitting || cashDepositDenominationTotal !== cashDepositAmount || !cashDepositForm.fromMoneySourceCode || !cashDepositForm.toMoneySourceCode}
+                disabled={cashDepositSubmitting || cashDepositDenominationTotal !== cashDepositRoundedAmount || !cashDepositForm.fromMoneySourceCode || !cashDepositForm.toMoneySourceCode}
               >
                 <span className="material-symbols-outlined text-lg">send</span>
                 {cashDepositSubmitting ? "Đang tạo..." : "Tạo phiếu chờ duyệt"}
@@ -1395,8 +1670,9 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 /**
- * Hai cột cuối chỉ hiện ở dòng được truyền giá trị: tổng chi tiền mặt đặt ở dòng
- * doanh thu, số phải nộp đặt ở dòng TOTAL. Dòng không nhận giá trị thì để dấu "-".
+ * Hai cột cuối chỉ hiện ở dòng được truyền giá trị: dòng doanh thu có tổng chi
+ * tiền mặt và số nộp (tiền mặt - tổng chi), dòng TOTAL là tổng của hai cột đó.
+ * Dòng không nhận giá trị thì để dấu "-".
  */
 function DailyCashSummaryRow({ label, bucket, expense, cashToDeposit, strong = false }: { label: string; bucket: DailyCashBucket; expense?: number; cashToDeposit?: number; strong?: boolean }) {
   const contentClass = strong ? "font-bold text-slate-900 bg-slate-50" : "";
@@ -1481,6 +1757,113 @@ function Table({ headers, children }: { headers: string[]; children: React.React
 
 function Cell({ children, right, center }: { children: React.ReactNode; right?: boolean; center?: boolean }) {
   return <td className={`px-4 py-3 ${right ? "text-right" : center ? "text-center" : "text-left"}`}>{children}</td>;
+}
+
+const cashOriginLabels: Record<CashCategoryRow["origin"], string> = {
+  VOUCHER: "Phiếu thu/chi",
+  POS: "File POS",
+  MANUAL: "Nhập tay",
+  ADJUSTMENT: "Điều chỉnh quỹ",
+  DEPOSIT: "Phiếu cọc",
+};
+
+function partnerTypeLabel(partnerType: string | null) {
+  const value = (partnerType || "").toUpperCase();
+  if (value === "SUPPLIER") return "NCC";
+  if (value === "BOTH") return "NCC & Khách";
+  if (value === "CUSTOMER") return "Khách hàng";
+  if (value === "EMPLOYEE") return "Nhân viên";
+  if (value === "OTHER_PARTNER") return "Đối tác khác";
+  return "-";
+}
+
+/** Bảng thu (hoặc chi) theo khoản mục kèm thanh tỷ trọng, dùng chung cho hai cột. */
+function CashCategoryTable({
+  title,
+  subtitle,
+  amountHeader,
+  rows,
+  total,
+  tone,
+}: {
+  title: string;
+  subtitle: string;
+  amountHeader: string;
+  rows: CashCategoryRow[];
+  total: number;
+  tone: "blue" | "amber";
+}) {
+  const barClass = tone === "blue" ? "bg-blue-500" : "bg-amber-500";
+  return (
+    <section className="table-panel">
+      <PanelHeader title={title} subtitle={subtitle} />
+      <div className="overflow-x-auto">
+        <Table headers={["Danh mục", "Nguồn số liệu", amountHeader, "% tỷ lệ"]}>
+          {rows.length === 0 && (
+            <tr className="border-t border-slate-100"><Cell>Chưa có phát sinh trong kỳ.</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell></tr>
+          )}
+          {rows.map((row) => (
+            <tr key={row.key} className="border-t border-slate-100 hover:bg-slate-50">
+              <Cell>
+                <b>{row.name}</b>
+                {row.key === "UNCLASSIFIED" && <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[11px] font-bold text-amber-800">cần bổ sung</span>}
+              </Cell>
+              <Cell><span className="text-xs text-slate-500">{cashOriginLabels[row.origin]} · {row.count} dòng</span></Cell>
+              <Cell><b>{money(row.total)} đ</b></Cell>
+              <Cell right>
+                <div className="flex items-center justify-end gap-2">
+                  <span className="hidden h-1.5 w-20 overflow-hidden rounded-full bg-slate-100 sm:block">
+                    <span className={`block h-full ${barClass}`} style={{ width: `${Math.min(100, Math.max(0, row.ratio * 100))}%` }} />
+                  </span>
+                  <b>{(row.ratio * 100).toFixed(2)} %</b>
+                </div>
+              </Cell>
+            </tr>
+          ))}
+          <tr className="border-t border-slate-200 bg-slate-50 font-bold">
+            <Cell><b>TỔNG</b></Cell>
+            <Cell>-</Cell>
+            <Cell><b>{money(total)} đ</b></Cell>
+            <Cell right><b>100,00 %</b></Cell>
+          </tr>
+        </Table>
+      </div>
+    </section>
+  );
+}
+
+/** Ma trận khoản mục x 12 tháng cho báo cáo năm. */
+function CashMonthMatrix({ title, months, rows }: { title: string; months: string[]; rows: CashCategoryRow[] }) {
+  const monthTotals = months.map((_, index) => rows.reduce((sum, row) => sum + row.months[index], 0));
+  const grandTotal = rows.reduce((sum, row) => sum + row.total, 0);
+  return (
+    <section className="table-panel">
+      <PanelHeader title={title} subtitle="Cuộn ngang để xem đủ 12 tháng. Ô trống là tháng không phát sinh." />
+      <div className="overflow-x-auto">
+        <Table headers={["Danh mục", ...months.map((item) => `T${Number(item.slice(5))}`), "Tổng"]}>
+          {rows.length === 0 && (
+            <tr className="border-t border-slate-100"><Cell>Chưa có phát sinh trong năm.</Cell>{months.map((item) => <Cell key={item}>-</Cell>)}<Cell right>-</Cell></tr>
+          )}
+          {rows.map((row) => (
+            <tr key={row.key} className="border-t border-slate-100 hover:bg-slate-50">
+              <Cell><b>{row.name}</b></Cell>
+              {row.months.map((value, index) => (
+                <Cell key={months[index]} right>{value ? money(value) : "-"}</Cell>
+              ))}
+              <Cell right><b>{money(row.total)} đ</b></Cell>
+            </tr>
+          ))}
+          <tr className="border-t border-slate-200 bg-slate-50 font-bold">
+            <Cell><b>TỔNG</b></Cell>
+            {monthTotals.map((value, index) => (
+              <Cell key={months[index]} right><b>{value ? money(value) : "-"}</b></Cell>
+            ))}
+            <Cell right><b>{money(grandTotal)} đ</b></Cell>
+          </tr>
+        </Table>
+      </div>
+    </section>
+  );
 }
 
 function PnlTable({ value }: { value?: Pnl }) {

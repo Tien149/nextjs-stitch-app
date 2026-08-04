@@ -3,7 +3,7 @@ import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { allowedMenuTabs, canViewFinancialDashboard } from "@/lib/auth-demo";
 import { requestedBranch } from "@/lib/accounting";
 import { prisma } from "@/lib/prisma";
-import { getBalanceSheet, getCashflowForecast, getPnl, getTrend } from "@/lib/reports";
+import { getBalanceSheet, getCashSourceReport, getCashflowForecast, getPnl, getTrend } from "@/lib/reports";
 import { apiError, businessError, cleanText, isPeriodLocked, normalizePeriod, toNumber } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import { moneySourceDisplayName, normalizeMoneySourceGroup } from "@/lib/money-sources";
@@ -529,6 +529,15 @@ export async function GET(request: Request) {
       const [current, previous] = await Promise.all([getPnl(period, branchCode), getPnl(previousPeriod, branchCode)]);
       const metrics = ["revenue", "cogs", "grossProfit", "opexBeforeDepreciation", "ebitda", "netProfit"] as const;
       return NextResponse.json({ period, previousPeriod, branchCode, rows: metrics.map((metric) => { const currentValue = current.total[metric]; const previousValue = previous.total[metric]; return { metric, currentValue, previousValue, variance: currentValue - previousValue, varianceRate: previousValue ? (currentValue - previousValue) / Math.abs(previousValue) : null }; }) });
+    }
+    if (type === "cash-source") {
+      // Xem theo năm thì trải 12 tháng của năm đang chọn, xem theo tháng thì chỉ một kỳ.
+      const view = cleanText(params.get("view")) === "year" ? "year" : "month";
+      const year = period.slice(0, 4);
+      const months = view === "year"
+        ? Array.from({ length: 12 }, (_, index) => `${year}-${String(index + 1).padStart(2, "0")}`)
+        : [period];
+      return NextResponse.json({ period, view, year, ...(await getCashSourceReport(months, branchCode)) });
     }
     if (type === "cashflow") return NextResponse.json({ period, branchCode, ...(await getCashflowForecast(period, branchCode, cleanText(params.get("scenario")) || "BASE")) });
     if (type === "balance") return NextResponse.json({ period, branchCode, ...(await getBalanceSheet(period, branchCode)) });

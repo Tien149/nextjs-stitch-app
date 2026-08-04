@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
-import { assertBranchAccess, branchFilterForSession } from "@/lib/accounting";
+import { assertBranchAccess, branchFilterForSession, postJournalEntry } from "@/lib/accounting";
+import { depositJournalLines } from "@/lib/deposit-accounting";
 import { prisma } from "@/lib/prisma";
 import { generateFormattedVoucherCode } from "@/lib/voucher-code-generator";
 import { isPeriodLocked } from "@/lib/phase3";
@@ -16,6 +17,47 @@ import { moneySourceMatchesBranch } from "@/lib/money-sources";
  *   được phép khoá luôn quyền sửa/xoá phiếu về sau.
  */
 const initialDepositActions = ["CREATE", "COLLECT", "UPDATE"];
+
+type DepositForPosting = { id: string; code: string; branchCode: string; moneySourceCode: string; partnerCode: string; partnerName: string };
+type HistoryForPosting = { id: string; action: string; amount: number | null; actionDate: Date | null; createdAt: Date; voucherId: string | null };
+
+/**
+ * Ghi sổ cho một thao tác cọc thực hiện thẳng trên màn Tiền cọc.
+ *
+ * Lịch sử sinh từ phiếu thu/chi đã được chính phiếu đó định khoản nên bỏ qua, tránh ghi
+ * hai lần. Ghi sổ hỏng thì không được làm hỏng luôn nghiệp vụ cọc, nên chỉ log lại.
+ */
+async function postDepositHistory(deposit: DepositForPosting, history: HistoryForPosting | undefined, actor: string) {
+  if (!history || history.voucherId) return;
+  const entry = depositJournalLines({
+    action: history.action,
+    amount: history.amount || 0,
+    moneySourceCode: deposit.moneySourceCode,
+    partnerCode: deposit.partnerCode || null,
+  });
+  if (!entry) return;
+  try {
+    await postJournalEntry({
+      entryDate: history.actionDate || history.createdAt,
+      branchCode: deposit.branchCode,
+      sourceType: "DEPOSIT_HISTORY",
+      sourceId: history.id,
+      sourceCode: deposit.code,
+      description: `${entry.reason} — ${deposit.partnerName}`,
+      createdBy: actor,
+      lines: entry.lines,
+    });
+  } catch (error) {
+    console.error("Error posting deposit journal entry:", error);
+  }
+}
+
+/** Bản ghi lịch sử vừa được tạo trong lời gọi hiện tại. */
+function latestHistory(histories: HistoryForPosting[], action: string) {
+  return histories
+    .filter((row) => row.action === action)
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+}
 
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -177,6 +219,9 @@ export async function POST(request: Request) {
       include: { histories: true },
     });
 
+    // Nhận cọc: tiền vào nhưng ghi Có 3387, chưa phải doanh thu.
+    await postDepositHistory(deposit, latestHistory(deposit.histories, "CREATE"), auth.session.name);
+
     return NextResponse.json(deposit, { status: 201 });
   } catch (error) {
     console.error("Error creating deposit:", error);
@@ -265,7 +310,8 @@ async function updateDeposit(session: DemoSession, current: DepositRecord, body:
       histories: {
         create: {
           action: "UPDATE",
-          amount: null,
+          // Ghi phần chênh lệch để báo cáo cọc và sổ cái vẫn khớp khi sửa lại số tiền.
+          amount: amount === current.amount ? null : amount - current.amount,
           actionDate: new Date(),
           treatmentNote: "Sửa thông tin phiếu cọc",
           actor: session.name,
@@ -279,6 +325,10 @@ async function updateDeposit(session: DemoSession, current: DepositRecord, body:
       },
     },
   });
+
+  if (amount !== current.amount) {
+    await postDepositHistory(deposit, latestHistory(deposit.histories, "UPDATE"), session.name);
+  }
 
   await writeAuditLog({
     session,
@@ -388,6 +438,9 @@ export async function PATCH(request: Request) {
         },
       },
     });
+
+    // Cấn trừ/chuyển doanh thu ghi Nợ 3387 - Có 511 vào đúng ngày xử lý; hoàn cọc ghi giảm tiền.
+    await postDepositHistory(deposit, latestHistory(deposit.histories, action), auth.session.name);
 
     return NextResponse.json(deposit);
   } catch (error) {

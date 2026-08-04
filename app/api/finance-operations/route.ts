@@ -10,6 +10,8 @@ import { scopePayloadByTab } from "@/lib/tab-scope";
 
 const menuHref = "/finance-operations";
 const cashDepositDenominations = [500000, 200000, 100000, 50000, 20000, 10000, 5000, 2000, 1000];
+// Nộp tiền đếm theo tờ nên số nộp luôn là bội số của mệnh giá nhỏ nhất; phần lẻ giữ lại trong két.
+const cashDepositUnit = 1000;
 const cashDepositTargetLabels: Record<string, string> = { PKT: "Nộp Tiền PKT", CO: "Nộp Tiền Cô" };
 type CashDepositDenominationInput = { denomination?: unknown; quantity?: unknown; note?: unknown };
 type CashDepositDenominationRow = { denomination: number; quantity: number; amount: number; note: string | null };
@@ -153,6 +155,7 @@ export async function POST(request: Request) {
 
       if (!branchCode || branchCode === "ALL") businessError("Nộp tiền bắt buộc chọn một cửa hàng cụ thể.");
       if (amount <= 0) businessError("Số tiền nộp phải lớn hơn 0.");
+      if (amount % cashDepositUnit !== 0) businessError(`Số tiền nộp phải là bội số của ${cashDepositUnit.toLocaleString("vi-VN")} đ vì nộp tiền đếm theo tờ. Phần lẻ giữ lại trong két.`);
       if (!fromMoneySourceCode || !toMoneySourceCode) businessError("Nguồn tiền đi và nguồn tiền nhận là bắt buộc.");
       if (fromMoneySourceCode === toMoneySourceCode) businessError("Nguồn tiền đi và nguồn tiền nhận không được trùng nhau.");
 
