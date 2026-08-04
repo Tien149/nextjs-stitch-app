@@ -22,6 +22,7 @@ import {
   type WorkView,
 } from "@/lib/work-management-types";
 import CopyableText from "@/components/CopyableText";
+import StickyFilterBar from "@/components/StickyFilterBar";
 
 const emptyData: WorkListData = {
   items: [],
@@ -173,8 +174,9 @@ export default function WorkManagementPage() {
         </div>
       )}
 
-      <section className="table-panel">
-        <div className="border-b border-slate-200 p-3">
+      {/* Thanh công cụ tách khỏi table-panel vì sticky không hoạt động trong khối overflow-hidden. */}
+      <StickyFilterBar>
+        <div>
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex h-9 items-center rounded-lg border border-slate-200 bg-slate-50 p-0.5">
               {([
@@ -228,7 +230,9 @@ export default function WorkManagementPage() {
             </Filter>
           </div>
         </div>
+      </StickyFilterBar>
 
+      <section className="table-panel">
         {view === "LIST" && <ListView items={data.items} onOpen={(id) => router.push(`/work-management/${id}`)} />}
         {view === "KANBAN" && (
           <KanbanView

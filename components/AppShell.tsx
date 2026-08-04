@@ -19,7 +19,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-screen w-full bg-[#f1f5f9]">
       <AppSidebar />
-      <div className="flex-1 min-w-0 pl-64 flex flex-col min-h-screen overflow-x-hidden">{children}</div>
+      {/* overflow-x-clip thay cho overflow-x-hidden: hidden biến khối này thành scroll
+          container và vô hiệu hoá position: sticky của mọi header/thanh lọc bên trong. */}
+      <div className="flex-1 min-w-0 pl-64 flex flex-col min-h-screen overflow-x-clip">{children}</div>
     </div>
   );
 }

@@ -7,6 +7,7 @@ import { canPerformMenuAction, filterModuleTabs } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
+import StickyFilterBar from "@/components/StickyFilterBar";
 import { shiftLabels } from "@/lib/shifts";
 
 type CashEntry = { id: string; date: string; code: string; type: string; moneySourceCode: string; description: string; receipt: number; payment: number; balance: number };
@@ -173,6 +174,7 @@ export default function FinanceOperationsPage() {
 
       <main className="max-w-7xl mx-auto px-6 mt-8 space-y-6">
         {/* Modern Filter Card */}
+        <StickyFilterBar className="!bg-slate-100/90">
         <section className="bg-white/80 backdrop-blur-md border border-slate-200/60 shadow-lg shadow-slate-100/50 rounded-2xl p-5 flex flex-wrap items-end justify-between gap-4">
           <div className="flex flex-wrap items-center gap-4">
             <div className="flex flex-col gap-1.5">
@@ -223,6 +225,7 @@ export default function FinanceOperationsPage() {
             </span>
           </div>
         </section>
+        </StickyFilterBar>
 
         {/* Tab Navigation */}
         <nav className="flex gap-1.5 border-b border-slate-200 overflow-x-auto">

@@ -14,6 +14,7 @@ import {
   SESSION_KEY,
 } from "@/lib/auth-demo";
 import CopyableText from "@/components/CopyableText";
+import StickyFilterBar from "@/components/StickyFilterBar";
 
 interface DocumentItem {
   id: string;
@@ -372,6 +373,7 @@ export default function Home() {
         {/* Content Canvas */}
         <main className="p-6 flex-1 max-w-7xl w-full mx-auto space-y-6">
           {/* Header Area */}
+          <StickyFilterBar className="!mb-0">
           <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
             <div>
               <h1 className="text-2xl font-bold text-slate-950">Tổng quan vận hành</h1>
@@ -405,6 +407,7 @@ export default function Home() {
               )}
             </div>
           </div>
+          </StickyFilterBar>
 
           {/* KPI Bento Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">

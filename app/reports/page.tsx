@@ -8,6 +8,7 @@ import { canPerformMenuAction, filterModuleTabs, moduleTabs } from "@/lib/auth-d
 import { useModuleAuth } from "@/lib/use-module-auth";
 import { filterMoneySources, firstMoneySourceCode, moneySourceDebugLabel, moneySourceDisplayName, type MoneySourceOption } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
+import StickyFilterBar from "@/components/StickyFilterBar";
 import { shiftLabel, shiftLabels } from "@/lib/shifts";
 
 type Pnl = {
@@ -592,7 +593,8 @@ export default function ReportsPage() {
 
   return (
     <ModuleFrame title="Báo cáo & BI" subtitle="GĐ4 - Dashboard, báo cáo vận hành, ngân sách, kỳ kế toán và nhật ký" role={user?.role}>
-      <div className="flex flex-wrap items-end gap-3 mb-4">
+      <StickyFilterBar>
+      <div className="flex flex-wrap items-end gap-3">
         <Field label="Kỳ báo cáo">
           <MonthInput className="mt-1.5 w-40" value={period} onChange={setPeriod} ariaLabel="Kỳ báo cáo" />
         </Field>
@@ -636,6 +638,7 @@ export default function ReportsPage() {
           <span className="material-symbols-outlined text-lg">refresh</span>
         </button>
       </div>
+      </StickyFilterBar>
 
       <ModuleTabs
         active={active}

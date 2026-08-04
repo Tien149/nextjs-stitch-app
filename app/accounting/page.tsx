@@ -8,6 +8,7 @@ import { canPerformMenuAction } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
+import StickyFilterBar from "@/components/StickyFilterBar";
 
 type Account = { id: string; code: string; name: string; accountType: string; reportGroup: string };
 type Line = { id: string; debit: number; credit: number; departmentCode: string | null; account: Account; categoryCode: string | null; partnerCode: string | null };
@@ -321,6 +322,7 @@ export default function AccountingPage() {
 
       <main className="max-w-[96%] mx-auto px-6 mt-8 space-y-6">
         {/* Modern Filter Card */}
+        <StickyFilterBar className="!bg-slate-100/90">
         <section className="bg-white/80 backdrop-blur-md border border-slate-200/60 shadow-lg shadow-slate-100/50 rounded-2xl p-5 flex flex-wrap items-end justify-between gap-4">
           <div className="flex flex-wrap items-center gap-4">
             <div className="flex flex-col gap-1.5">
@@ -362,6 +364,7 @@ export default function AccountingPage() {
             </button>
           )}
         </section>
+        </StickyFilterBar>
 
         {/* Tab Navigation */}
         <nav className="flex gap-1.5 border-b border-slate-200 overflow-x-auto">
