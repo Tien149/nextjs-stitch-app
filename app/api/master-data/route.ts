@@ -385,6 +385,11 @@ export async function GET(request: Request) {
   }
 }
 
+/** Các loại danh mục có tầng cha, lưu mã cha ở cột subGroup. */
+function typeSupportsSubGroup(type: string) {
+  return ["REVENUE_EXPENSE_CATEGORY", "PNL_ITEM"].includes(type);
+}
+
 async function validateMasterData(type: string, group: string | null, branch: string | null, partnerGroup?: string | null) {
   if (type === "PARTNER") {
     if (!group || !["CUSTOMER", "SUPPLIER", "BOTH", "EMPLOYEE", "OTHER_PARTNER"].includes(group.toUpperCase())) {
@@ -426,9 +431,14 @@ async function validateMasterData(type: string, group: string | null, branch: st
       throw new Error("Nhóm Thu/Chi bắt buộc là OPEX, CAPEX, COGS hoặc REVENUE_SOURCE.");
     }
   }
-  if (type === "REVENUE_EXPENSE_SUBGROUP") {
+  /**
+   * Ba tầng phân loại: Nhóm hạng mục P&L -> Hạng mục P&L -> Danh mục Thu/Chi.
+   * Tầng con lưu mã tầng cha ở cột subGroup.
+   */
+  // REVENUE_EXPENSE_SUBGROUP là tên cũ của PNL_GROUP, giữ lại để dữ liệu cũ vẫn sửa được.
+  if (["PNL_GROUP", "PNL_ITEM", "REVENUE_EXPENSE_SUBGROUP"].includes(type)) {
     if (!group || !["OPEX", "CAPEX", "COGS", "REVENUE_SOURCE"].includes(group.toUpperCase())) {
-      throw new Error("Nhóm lớn của nhóm thu/chi bắt buộc là OPEX, CAPEX, COGS hoặc REVENUE_SOURCE.");
+      throw new Error("Nhóm lớn của hạng mục P&L bắt buộc là OPEX, CAPEX, COGS hoặc REVENUE_SOURCE.");
     }
   }
   if (type === "ASSET_GROUP") {
@@ -486,7 +496,7 @@ export async function POST(request: Request) {
     const code = cleanText(body.code).toUpperCase();
     const name = cleanText(body.name);
     const group = normalizeMasterGroup(type, cleanText(body.group) || null);
-    const subGroup = type === "REVENUE_EXPENSE_CATEGORY" ? (cleanText(body.subGroup).toUpperCase() || null) : null;
+    const subGroup = typeSupportsSubGroup(type) ? (cleanText(body.subGroup).toUpperCase() || null) : null;
     const branch = cleanText(body.branch) || null;
     const partnerType = type === "PARTNER" ? (cleanText(body.partnerType) || group || "").toUpperCase() : null;
     const partnerGroup = type === "PARTNER" ? (cleanText(body.partnerGroup) || "EXTERNAL").toUpperCase() : null;
@@ -557,7 +567,7 @@ export async function PATCH(request: Request) {
     }
 
     const group = body.group !== undefined ? normalizeMasterGroup(current.type, cleanText(body.group) || null) : current.group;
-    const subGroup = current.type === "REVENUE_EXPENSE_CATEGORY"
+    const subGroup = typeSupportsSubGroup(current.type)
       ? (body.subGroup !== undefined ? (cleanText(body.subGroup).toUpperCase() || null) : current.subGroup)
       : null;
     const branch = body.branch !== undefined ? cleanText(body.branch) || null : current.branch;

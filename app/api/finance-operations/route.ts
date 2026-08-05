@@ -5,7 +5,7 @@ import { addPeriod, apiError, businessError, cleanText, isPeriodLocked, normaliz
 import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
 import { writeAuditLog } from "@/lib/audit-log";
 import { generateFormattedVoucherCode } from "@/lib/voucher-code-generator";
-import { moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
+import { moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { scopePayloadByTab } from "@/lib/tab-scope";
 
 const menuHref = "/finance-operations";
@@ -92,8 +92,9 @@ export async function GET(request: Request) {
     const entries = [
       ...vouchers.map((row) => ({ id: row.id, date: row.voucherDate, code: row.code, type: row.voucherType, moneySourceCode: row.moneySourceCode, description: row.description, receipt: row.voucherType === "RECEIPT" ? row.amount : 0, payment: row.voucherType === "PAYMENT" ? row.amount : 0 })),
       ...adjustments.map((row) => ({ id: row.id, date: row.entryDate, code: row.code, type: "ADJUSTMENT", moneySourceCode: row.moneySourceCode, description: row.description, receipt: entryTypeToReceipt(row.entryType, row.amount), payment: entryTypeToPayment(row.entryType, row.amount) })),
+      // Quyết toán ví: tiền rời ví = số về ngân hàng + phí, nên số dư ví mới về đúng 0.
       ...moneyTransfers.filter((row) => row.status === "APPROVED").flatMap((row) => [
-        { id: `${row.id}-out`, date: row.transferDate, code: row.code, type: "TRANSFER_OUT", moneySourceCode: row.fromMoneySourceCode, description: row.description, receipt: 0, payment: row.amount },
+        { id: `${row.id}-out`, date: row.transferDate, code: row.code, type: "TRANSFER_OUT", moneySourceCode: row.fromMoneySourceCode, description: row.description, receipt: 0, payment: row.amount + row.feeAmount },
         { id: `${row.id}-in`, date: row.transferDate, code: row.code, type: "TRANSFER_IN", moneySourceCode: row.toMoneySourceCode, description: row.description, receipt: row.amount, payment: 0 },
       ]),
     ].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
@@ -234,6 +235,91 @@ export async function POST(request: Request) {
         entityCode: result.code,
         branchCode,
         metadata: { amount, from: fromMoneySourceCode, to: toMoneySourceCode, depositTargetType, sourceReportDate: reportDateCode, sourceShift, denominations },
+      });
+      return NextResponse.json(result, { status: 201 });
+    }
+
+    /**
+     * Quyết toán ví/POS về ngân hàng.
+     *
+     * Doanh thu quẹt thẻ đã ghi nhận đủ ở nguồn ví (VD 50tr) ngay khi import doanh thu.
+     * Vài ngày sau cổng thanh toán trả tiền về ngân hàng sau khi trừ phí (49tr). Một
+     * phiếu quyết toán ghi cả ba việc cùng lúc: cộng tiền vào ngân hàng, giảm hết số
+     * đang treo ở ví, và đẩy phần chênh lệch sang chi phí trên P&L.
+     */
+    if (action === "CREATE_WALLET_SETTLEMENT") {
+      const auth = requireMenuAction(request, menuHref, "create");
+      if (!auth.ok) return auth.response;
+
+      const transferDate = toDate(body.transferDate);
+      const branchCode = requestedBranch(auth.session, cleanText(body.branchCode));
+      const fromMoneySourceCode = cleanText(body.fromMoneySourceCode);
+      const toMoneySourceCode = cleanText(body.toMoneySourceCode);
+      // grossAmount: số doanh thu đang treo ở ví. amount: số thực nhận trên sao kê.
+      const grossAmount = Math.round(toNumber(body.grossAmount));
+      const amount = Math.round(toNumber(body.amount));
+      const feeAmount = grossAmount - amount;
+      const feeCategoryCode = cleanText(body.feeCategoryCode);
+      const externalRef = cleanText(body.externalRef) || null;
+
+      if (!branchCode || branchCode === "ALL") businessError("Quyết toán ví bắt buộc chọn một cửa hàng cụ thể.");
+      if (amount <= 0) businessError("Số tiền thực nhận về ngân hàng phải lớn hơn 0.");
+      if (grossAmount < amount) businessError("Số tiền gốc ở ví không được nhỏ hơn số thực nhận về ngân hàng.");
+      if (!fromMoneySourceCode || !toMoneySourceCode) businessError("Nguồn ví và tài khoản ngân hàng là bắt buộc.");
+      if (fromMoneySourceCode === toMoneySourceCode) businessError("Nguồn ví và tài khoản nhận không được trùng nhau.");
+      if (feeAmount > 0 && !feeCategoryCode) businessError("Có chênh lệch phí thì bắt buộc chọn khoản mục chi phí để đưa lên P&L.");
+
+      try {
+        assertBranchAccess(auth.session, branchCode);
+      } catch (e) {
+        return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi" }, { status: 403 });
+      }
+      if (await isPeriodLocked(transferDate, branchCode)) businessError("Kỳ kế toán đã khóa");
+
+      const [fromMoneySource, toMoneySource, feeCategory] = await Promise.all([
+        prisma.masterDataItem.findFirst({ where: { type: "MONEY_SOURCE", code: fromMoneySourceCode, status: "ACTIVE" } }),
+        prisma.masterDataItem.findFirst({ where: { type: "MONEY_SOURCE", code: toMoneySourceCode, status: "ACTIVE" } }),
+        feeCategoryCode
+          ? prisma.masterDataItem.findFirst({ where: { type: "REVENUE_EXPENSE_CATEGORY", code: feeCategoryCode, status: "ACTIVE" } })
+          : Promise.resolve(null),
+      ]);
+      if (!fromMoneySource || !moneySourceMatchesBranch(fromMoneySource, branchCode)) businessError(`Nguồn ví [${fromMoneySourceCode}] không tồn tại hoặc không thuộc cửa hàng đã chọn.`);
+      if (!toMoneySource || !moneySourceMatchesBranch(toMoneySource, branchCode)) businessError(`Tài khoản nhận [${toMoneySourceCode}] không tồn tại hoặc không thuộc cửa hàng đã chọn.`);
+      if (normalizeMoneySourceGroup(fromMoneySource.group) !== "WALLET") businessError("Quyết toán phải đi từ nguồn ví/cổng POS.");
+      if (normalizeMoneySourceGroup(toMoneySource.group) !== "BANK") businessError("Quyết toán phải về tài khoản ngân hàng.");
+      if (feeCategoryCode && !feeCategory) businessError(`Khoản mục phí [${feeCategoryCode}] không tồn tại hoặc đã ngưng hoạt động.`);
+
+      const transferCount = await prisma.moneyTransfer.count();
+      const result = await prisma.moneyTransfer.create({
+        data: {
+          code: generateFormattedVoucherCode({ voucherType: "QTVI", voucherDate: transferDate, branchCode, seqNumber: transferCount + 1 }),
+          transferDate,
+          branchCode,
+          fromMoneySourceCode,
+          toMoneySourceCode,
+          amount,
+          feeAmount,
+          feeCategoryCode: feeAmount > 0 ? feeCategoryCode : null,
+          externalRef,
+          description: cleanText(body.description)
+            || `Quyết toán ${moneySourceDisplayName(fromMoneySource)} về ${moneySourceDisplayName(toMoneySource)}${feeAmount > 0 ? ` (phí ${feeAmount.toLocaleString("vi-VN")} đ)` : ""}`,
+          transferPurpose: "WALLET_SETTLEMENT",
+          // Sao kê đã là bằng chứng tiền về nên ghi nhận luôn, không bắt duyệt thêm một vòng.
+          status: "APPROVED",
+          createdBy: auth.session.name,
+          approvedBy: auth.session.name,
+        },
+      });
+
+      await writeAuditLog({
+        session: auth.session,
+        module: "FINANCE_OPERATIONS",
+        action: "CREATE_WALLET_SETTLEMENT",
+        entityType: "MoneyTransfer",
+        entityId: result.id,
+        entityCode: result.code,
+        branchCode,
+        metadata: { grossAmount, amount, feeAmount, feeCategoryCode, from: fromMoneySourceCode, to: toMoneySourceCode, externalRef },
       });
       return NextResponse.json(result, { status: 201 });
     }

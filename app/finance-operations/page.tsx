@@ -47,6 +47,17 @@ export default function FinanceOperationsPage() {
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [moneySources, setMoneySources] = useState<MasterDataOption[]>([]);
+  const [feeCategories, setFeeCategories] = useState<MasterDataOption[]>([]);
+  const [settlement, setSettlement] = useState({
+    transferDate: new Date().toISOString().slice(0, 10),
+    branchCode: "",
+    fromMoneySourceCode: "",
+    toMoneySourceCode: "",
+    grossAmount: "",
+    amount: "",
+    feeCategoryCode: "",
+    externalRef: "",
+  });
   
   const [adjustment, setAdjustment] = useState({
     entryDate: new Date().toISOString().slice(0, 10),
@@ -87,6 +98,10 @@ export default function FinanceOperationsPage() {
   }, [branchCode, period]);
 
   const loadMoneySources = useCallback(async () => {
+    void fetch("/api/master-data?type=REVENUE_EXPENSE_CATEGORY&status=ACTIVE")
+      .then((res) => (res.ok ? res.json() : []))
+      .then((items: MasterDataOption[]) => setFeeCategories(items.filter((item) => (item.group || "").toUpperCase() === "OPEX")))
+      .catch(() => setFeeCategories([]));
     const response = await fetch("/api/master-data?type=MONEY_SOURCE&status=ACTIVE");
     if (!response.ok) return;
     const sources = (await response.json()) as MasterDataOption[];
@@ -107,6 +122,8 @@ export default function FinanceOperationsPage() {
       }, 0);
     }
   }, [loading, loadData, loadMoneySources]);
+
+  const settlementFee = Math.max(0, Number(settlement.grossAmount || 0)) - Math.max(0, Number(settlement.amount || 0));
 
   const send = async (body: object, success: string) => {
     if (submitting) return;
@@ -294,6 +311,129 @@ export default function FinanceOperationsPage() {
                 </div>
               </div>
             </div>
+
+            {canCreate && (
+              <section className="overflow-hidden rounded-xl border border-indigo-200 bg-white shadow-sm">
+                <div className="border-b border-indigo-100 bg-indigo-50 px-5 py-3">
+                  <h3 className="text-sm font-bold text-indigo-900">Quyết toán ví / POS về ngân hàng</h3>
+                  <p className="mt-0.5 text-xs text-indigo-700">
+                    Doanh thu quẹt thẻ đã ghi đủ ở ví. Khi sao kê báo tiền về, nhập số gốc ở ví và số thực nhận —
+                    hệ thống cộng tiền vào ngân hàng, xoá số treo ở ví và đẩy phần chênh sang chi phí trên P&amp;L.
+                  </p>
+                </div>
+                <form
+                  className="grid gap-3 p-5 md:grid-cols-3 xl:grid-cols-6"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void send(
+                      { action: "CREATE_WALLET_SETTLEMENT", ...settlement, branchCode: settlement.branchCode || (branchCode === "ALL" ? "" : branchCode) },
+                      "Đã ghi nhận quyết toán ví về ngân hàng.",
+                    );
+                  }}
+                >
+                  <label className="text-xs font-bold text-slate-600">
+                    Ngày về tài khoản
+                    <DateInput className="mt-1.5 w-full" value={settlement.transferDate} onChange={(value) => setSettlement({ ...settlement, transferDate: value })} ariaLabel="Ngày quyết toán" />
+                  </label>
+                  <label className="text-xs font-bold text-slate-600">
+                    Cửa hàng
+                    <select
+                      className="control"
+                      value={settlement.branchCode || (branchCode === "ALL" ? "" : branchCode)}
+                      onChange={(event) => setSettlement({ ...settlement, branchCode: event.target.value, fromMoneySourceCode: "", toMoneySourceCode: "" })}
+                      required
+                    >
+                      <option value="">-- Chọn cửa hàng --</option>
+                      {visibleStoreOptions(user).map((option) => (
+                        <option key={option.code} value={option.code}>{option.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="text-xs font-bold text-slate-600">
+                    Nguồn ví / POS
+                    <select
+                      className="control"
+                      value={settlement.fromMoneySourceCode}
+                      onChange={(event) => setSettlement({ ...settlement, fromMoneySourceCode: event.target.value })}
+                      required
+                    >
+                      <option value="">-- Chọn ví --</option>
+                      {filterMoneySources(moneySources, settlement.branchCode || branchCode, ["WALLET"]).map((source) => (
+                        <option key={source.code} value={source.code} title={moneySourceDebugLabel(source)}>{moneySourceDisplayName(source)}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="text-xs font-bold text-slate-600">
+                    Tài khoản nhận
+                    <select
+                      className="control"
+                      value={settlement.toMoneySourceCode}
+                      onChange={(event) => setSettlement({ ...settlement, toMoneySourceCode: event.target.value })}
+                      required
+                    >
+                      <option value="">-- Chọn ngân hàng --</option>
+                      {filterMoneySources(moneySources, settlement.branchCode || branchCode, ["BANK"]).map((source) => (
+                        <option key={source.code} value={source.code} title={moneySourceDebugLabel(source)}>{moneySourceDisplayName(source)}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="text-xs font-bold text-slate-600">
+                    Số gốc ở ví
+                    <input
+                      className="control text-right"
+                      inputMode="numeric"
+                      placeholder="50000000"
+                      value={settlement.grossAmount}
+                      onChange={(event) => setSettlement({ ...settlement, grossAmount: event.target.value.replace(/\D/g, "") })}
+                      required
+                    />
+                  </label>
+                  <label className="text-xs font-bold text-slate-600">
+                    Thực nhận về ngân hàng
+                    <input
+                      className="control text-right"
+                      inputMode="numeric"
+                      placeholder="49000000"
+                      value={settlement.amount}
+                      onChange={(event) => setSettlement({ ...settlement, amount: event.target.value.replace(/\D/g, "") })}
+                      required
+                    />
+                  </label>
+                  <label className="text-xs font-bold text-slate-600 md:col-span-2">
+                    Khoản mục phí (lên P&amp;L)
+                    <select
+                      className="control"
+                      value={settlement.feeCategoryCode}
+                      onChange={(event) => setSettlement({ ...settlement, feeCategoryCode: event.target.value })}
+                      required={settlementFee > 0}
+                    >
+                      <option value="">{feeCategories.length === 0 ? "-- Chưa khai báo khoản mục chi phí --" : "-- Chọn khoản mục phí --"}</option>
+                      {feeCategories.map((category) => (
+                        <option key={category.code} value={category.code}>{category.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="text-xs font-bold text-slate-600 md:col-span-2">
+                    Tham chiếu sao kê
+                    <input
+                      className="control"
+                      placeholder="Số tham chiếu dòng sao kê"
+                      value={settlement.externalRef}
+                      onChange={(event) => setSettlement({ ...settlement, externalRef: event.target.value })}
+                    />
+                  </label>
+                  <div className="flex items-end gap-3 md:col-span-2">
+                    <div className="flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                      <p className="text-[11px] font-semibold text-slate-500">Phí quẹt thẻ</p>
+                      <p className={`text-sm font-bold ${settlementFee < 0 ? "text-rose-600" : "text-slate-900"}`}>{money(settlementFee)} đ</p>
+                    </div>
+                    <button type="submit" disabled={submitting || settlementFee < 0} className="h-10 rounded-lg bg-indigo-600 px-4 text-sm font-bold text-white hover:bg-indigo-700 disabled:opacity-50">
+                      Ghi nhận
+                    </button>
+                  </div>
+                </form>
+              </section>
+            )}
 
             {data.moneyTransfers.some((transfer) => transfer.status === "PENDING_REVIEW") && (
               <section className="overflow-hidden rounded-xl border border-amber-200 bg-white shadow-sm">

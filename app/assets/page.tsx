@@ -8,6 +8,7 @@ import { SearchableSelect } from "@/components/SearchableSelect";
 import { displayRoleName, storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import CopyableText from "@/components/CopyableText";
+import StickyFilterBar from "@/components/StickyFilterBar";
 
 type MasterItem = {
   id: string;
@@ -461,6 +462,7 @@ export default function AssetsPage() {
 
       <main className="w-full max-w-[1720px] mx-auto px-4 sm:px-6 py-6 space-y-6">
         {/* KPI Stats Grid */}
+        <StickyFilterBar className="!mb-0">
         <section className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-1">
             <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Tổng nguyên giá</p>
@@ -492,6 +494,7 @@ export default function AssetsPage() {
             </div>
           </div>
         </section>
+        </StickyFilterBar>
 
         {departmentSummary.length > 0 && (
           <section className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">

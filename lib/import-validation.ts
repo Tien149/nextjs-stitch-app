@@ -4,11 +4,13 @@ import { normalizeHeader, type ImportType } from "@/lib/import-templates";
 import type { ParsedImportResult, ParsedImportRow } from "@/lib/import-parser";
 import type { DemoSession } from "@/lib/auth-demo";
 import { isInboundStockType, isOutboundStockType, isStockTransactionType, normalizeStockTransactionType } from "@/lib/inventory-stock";
+import { normalizeCategoryGroup } from "@/lib/voucher-rules";
 
 type MasterItem = {
   type: string;
   code: string;
   name: string;
+  group?: string | null;
   branch: string | null;
   status: string;
 };
@@ -399,6 +401,35 @@ function validateAsset(row: ParsedImportRow, masterItems: MasterItem[], existing
   }
 }
 
+/**
+ * Cột "Loại thu/chi" trên file sao kê: để trống thì giao dịch vẫn import được và chờ
+ * đối soát phân loại sau, có khai thì phải là khoản mục đang dùng và đúng chiều tiền —
+ * tiền vào (Ghi có) chỉ nhận khoản mục nhóm doanh thu, tiền ra (Ghi nợ) chỉ nhận
+ * khoản mục chi phí, để không tạo ra dữ liệu phân loại ngược.
+ */
+function validateBankStatementCategory(row: ParsedImportRow, masterItems: MasterItem[], debit: number, credit: number) {
+  const input = row.values.category_code;
+  if (!text(input)) {
+    row.values.category_code = null;
+    return;
+  }
+
+  const category = resolveMaster(masterItems, "REVENUE_EXPENSE_CATEGORY", input, text(row.values.branch_code));
+  if (!category) {
+    addError(row, `Loại thu/chi [${text(input)}] không tồn tại hoặc đã ngưng hoạt động`);
+    return;
+  }
+  row.values.category_code = category.code;
+
+  const group = normalizeCategoryGroup(category.group) || "";
+  if (credit > 0 && group !== "REVENUE_SOURCE") {
+    addError(row, `Giao dịch tiền vào phải chọn loại thu (nhóm nguồn doanh thu), [${category.code}] đang thuộc nhóm chi`);
+  }
+  if (debit > 0 && !["OPEX", "CAPEX", "COGS"].includes(group)) {
+    addError(row, `Giao dịch tiền ra phải chọn loại chi (OPEX, CAPEX hoặc giá vốn), [${category.code}] đang thuộc nhóm thu`);
+  }
+}
+
 export async function validateImportResult(
   result: ParsedImportResult,
   importType: ImportType,
@@ -406,7 +437,7 @@ export async function validateImportResult(
 ) {
   const masterItems = await prisma.masterDataItem.findMany({
     where: { type: { in: ["BRANCH", "MONEY_SOURCE", "PARTNER", "REVENUE_EXPENSE_CATEGORY", "WAREHOUSE", "INVENTORY_ITEM_GROUP", "ASSET_GROUP", "DEPARTMENT"] } },
-    select: { type: true, code: true, name: true, branch: true, status: true },
+    select: { type: true, code: true, name: true, group: true, branch: true, status: true },
   });
   const inventoryItems = ["OPENING_BALANCE", "INVENTORY_TRANSACTION", "BOM", "STOCKTAKE", "REVENUE_POS"].includes(importType)
     ? await prisma.inventoryItem.findMany({ select: { code: true, itemType: true, status: true, unit: true, unitConversions: { select: { unitCode: true, conversionRate: true } } } })
@@ -544,6 +575,7 @@ export async function validateImportResult(
       const credit = numberValue(row.values.credit_amount);
       if ((debit <= 0 && credit <= 0) || (debit > 0 && credit > 0)) addError(row, "Mỗi giao dịch phải có đúng một bên Ghi nợ hoặc Ghi có");
       if (text(row.values.branch_code)) validateBranch(row, session, masterItems);
+      validateBankStatementCategory(row, masterItems, debit, credit);
     }
   }
 

@@ -28,7 +28,7 @@ export default function StickyFilterBar({ children, className = "" }: { children
 
   return (
     <div
-      className={`sticky z-10 -mx-4 sm:-mx-6 mb-4 border-b border-slate-200/80 bg-slate-100/95 px-4 py-3 backdrop-blur sm:px-6 ${className}`}
+      className={`sticky z-10 -mx-4 sm:-mx-6 mb-4 border-b border-slate-200/80 bg-slate-100/95 px-4 py-3 backdrop-blur sm:px-6 [&>:last-child]:mb-0 ${className}`}
       style={{ top }}
     >
       {children}

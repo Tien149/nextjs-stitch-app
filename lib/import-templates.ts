@@ -106,6 +106,14 @@ export const importTemplates: ImportTemplateDefinition[] = [
         type: "text",
         aliases: ["goi y doi tac", "doi tac", "partner", "partner hint"],
       },
+      {
+        // Khai ngay trên file để giao dịch được phân loại từ lúc import, không phải đợi đối soát.
+        field: "category_code",
+        label: "Loại thu/chi",
+        required: false,
+        type: "text",
+        aliases: ["loai thu chi", "loai thu/chi", "khoan muc", "khoan muc thu chi", "danh muc thu chi", "category", "category code"],
+      },
     ],
   },
   {

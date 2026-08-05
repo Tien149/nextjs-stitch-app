@@ -21,12 +21,12 @@ function saveWorkbook(fileName, rows) {
 }
 
 saveWorkbook("mau_sao_ke_ngan_hang.xlsx", [
-  ["Ngay giao dich", "Tai khoan", "So tham chieu", "Dien giai", "Ghi no", "Ghi co", "So du", "Chi nhanh", "Goi y doi tac"],
-  ["2026-07-01", "VCB_HCM", "VCB2607010001", "POS HCM ngay 01/07 - doanh thu the tai quay", "", 12850000, 2512850000, "HCM", "POS_HCM"],
-  ["2026-07-01", "VCB_HCM", "VCB2607010002", "KH_ABC thanh toan cong no dat tiec thang 06", "", 50000000, 2562850000, "HCM", "KH_ABC"],
-  ["2026-07-02", "VCB_HCM", "VCB2607020001", "Thanh toan NCC nguyen lieu va bao bi", 18500000, "", 2544350000, "HCM", "NCC_FOOD"],
-  ["2026-07-02", "VCB_HCM", "VCB2607020002", "Phi dich vu ngan hang thang 07", 55000, "", 2544295000, "HCM", "VCB"],
-  ["2026-07-03", "VCB_HCM", "VCB2607030001", "Vi dien tu doi soat doanh thu delivery", "", 7650000, 2551945000, "HCM", "WALLET_POS"],
+  ["Ngay giao dich", "Tai khoan", "So tham chieu", "Dien giai", "Ghi no", "Ghi co", "So du", "Chi nhanh", "Goi y doi tac", "Loai thu/chi"],
+  ["2026-07-01", "VCB_HCM", "VCB2607010001", "POS HCM ngay 01/07 - doanh thu the tai quay", "", 12850000, 2512850000, "HCM", "POS_HCM", "THU_BAN_HANG"],
+  ["2026-07-01", "VCB_HCM", "VCB2607010002", "KH_ABC thanh toan cong no dat tiec thang 06", "", 50000000, 2562850000, "HCM", "KH_ABC", "THU_BAN_HANG"],
+  ["2026-07-02", "VCB_HCM", "VCB2607020001", "Thanh toan NCC nguyen lieu va bao bi", 18500000, "", 2544350000, "HCM", "NCC_FOOD", "CHI_CONG_NO_NCC"],
+  ["2026-07-02", "VCB_HCM", "VCB2607020002", "Phi dich vu ngan hang thang 07", 55000, "", 2544295000, "HCM", "VCB", "CHI_PHI_NGAN_HANG"],
+  ["2026-07-03", "VCB_HCM", "VCB2607030001", "Vi dien tu doi soat doanh thu delivery", "", 7650000, 2551945000, "HCM", "WALLET_POS", "THU_BAN_HANG"],
 ]);
 
 saveWorkbook("mau_doanh_thu_pos.xlsx", [

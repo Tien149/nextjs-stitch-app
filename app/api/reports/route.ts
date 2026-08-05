@@ -389,6 +389,66 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     })),
     // Cùng một ngày/ca mà có cả doanh thu import lẫn doanh thu nhập tay thì rất dễ tính trùng.
     duplicateRevenueWarning: posRevenue.total > 0 && manual.total > 0,
+    moneyInReconciliation: await buildMoneyInReconciliation(revenue, branchCode, dayStart, dayEnd),
+  };
+}
+
+/**
+ * Đối chiếu "tiền vô đã đủ chưa" cho kế toán.
+ *
+ * Thu ngân khai doanh thu theo hình thức thanh toán; kế toán chỉ biết tiền thật khi
+ * sao kê ngân hàng về. Bảng này đặt hai con số cạnh nhau cho từng hình thức:
+ * - Chuyển khoản: khai bao nhiêu vs sao kê ngân hàng ghi có bấy nhiêu trong ngày.
+ * - Quẹt thẻ/ví: khai bao nhiêu vs số đã quyết toán từ ví về ngân hàng (gồm cả phí),
+ *   vì cổng thanh toán thường trả tiền sau vài ngày nên phần chưa về vẫn nằm ở ví.
+ * - Tiền mặt: khai bao nhiêu vs phiếu nộp tiền đã lập cho ngày đó.
+ */
+async function buildMoneyInReconciliation(
+  declared: DailyCashBucket,
+  branchCode: string,
+  dayStart: Date,
+  dayEnd: Date,
+) {
+  const branchWhere = branchCode === "ALL" ? {} : { branchCode };
+  const [bankRows, walletSettlements, cashDeposits] = await Promise.all([
+    prisma.bankStatementTransaction.findMany({
+      where: { ...branchWhere, transactionDate: { gte: dayStart, lt: dayEnd }, creditAmount: { gt: 0 } },
+      select: { creditAmount: true, bankAccount: true, transactionCode: true, description: true, categoryCode: true },
+    }),
+    prisma.moneyTransfer.findMany({
+      where: { ...branchWhere, transferPurpose: "WALLET_SETTLEMENT", status: "APPROVED", sourceReportDate: { gte: dayStart, lt: dayEnd } },
+      select: { amount: true, feeAmount: true },
+    }),
+    prisma.moneyTransfer.findMany({
+      where: { ...branchWhere, transferPurpose: "CASH_DEPOSIT", status: { in: ["PENDING_REVIEW", "APPROVED"] }, sourceReportDate: { gte: dayStart, lt: dayEnd } },
+      select: { amount: true, status: true },
+    }),
+  ]);
+
+  const bankReceived = bankRows.reduce((sum, row) => sum + row.creditAmount, 0);
+  const walletSettled = walletSettlements.reduce((sum, row) => sum + row.amount + row.feeAmount, 0);
+  const walletFee = walletSettlements.reduce((sum, row) => sum + row.feeAmount, 0);
+  const cashDeposited = cashDeposits.reduce((sum, row) => sum + row.amount, 0);
+
+  const rows = [
+    { key: "cash", label: "Tiền mặt", declared: declared.cash, received: cashDeposited, note: "Đối chiếu với phiếu nộp tiền đã lập cho ngày này." },
+    { key: "transfer", label: "Chuyển khoản", declared: declared.transfer, received: bankReceived, note: "Đối chiếu với các dòng ghi có trên sao kê ngân hàng trong ngày." },
+    { key: "card", label: "Quẹt thẻ / Ví", declared: declared.card + declared.grab, received: walletSettled, note: "Cổng thanh toán trả tiền sau, phần chưa quyết toán vẫn nằm ở nguồn ví." },
+  ].map((row) => {
+    const difference = row.received - row.declared;
+    return {
+      ...row,
+      difference,
+      // Lệch dưới 1.000 đ coi như khớp: chênh lẻ do làm tròn phí, không phải thiếu tiền.
+      status: Math.abs(difference) < 1000 ? "MATCHED" : difference < 0 ? "SHORT" : "OVER",
+    };
+  });
+
+  return {
+    rows,
+    walletFee,
+    bankRowCount: bankRows.length,
+    unclassifiedBankRows: bankRows.filter((row) => !row.categoryCode).length,
   };
 }
 

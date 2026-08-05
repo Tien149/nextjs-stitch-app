@@ -7,11 +7,10 @@ import { revertVoucherSideEffects, VoucherRevertError } from "@/lib/voucher-reve
 import { isPeriodLocked } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import { duplicatedInTrashMessage, findDeletedByUnique, softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
-import type { DemoSession } from "@/lib/auth-demo";
+import { canPerformMenuAction, type DemoSession } from "@/lib/auth-demo";
 import { moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 
 /** Trạng thái không cho sửa/xoá vì chứng từ đã ghi sổ. */
-const lockedVoucherStatuses = ["APPROVED", "POSTED"];
 
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -53,7 +52,7 @@ async function validateVoucherCategory(voucherType: string, categoryCode: string
 
 import { generateFormattedVoucherCode, formatVoucherPrefix } from "@/lib/voucher-code-generator";
 import { isWorkShift } from "@/lib/shifts";
-import { normalizeReceiptPurpose, validateReceiptPurpose } from "@/lib/voucher-rules";
+import { normalizeReceiptPurpose, validateReceiptPurpose, voucherEditWindowError } from "@/lib/voucher-rules";
 
 async function nextVoucherCode(voucherType: string, voucherDate?: Date | string | null, branchCode?: string | null) {
   const d = voucherDate ? new Date(voucherDate) : new Date();
@@ -172,24 +171,34 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: duplicatedInTrashMessage(code, "Chứng từ") }, { status: 400 });
     }
 
-    const voucher = await prisma.financialVoucher.create({
-      data: {
-        code,
-        voucherType,
-        voucherDate,
-        shift: shiftValue || null,
-        depositAction: depositAction || null,
-        depositCode: depositAction ? (cleanText(body.depositCode) || null) : null,
-        partnerCode: cleanText(body.partnerCode) || null,
-        partnerName,
-        branchCode,
-        moneySourceCode,
-        categoryCode: categoryCode || null,
-        amount,
-        description,
-        status: cleanText(body.status) || "DRAFT",
-        createdBy: auth.session.name,
-      },
+    // Lập phiếu là duyệt luôn: thu ngân không phải chờ ai bấm duyệt mới lên sổ.
+    // Muốn sửa thì bỏ duyệt rồi sửa, theo cửa sổ sửa trong ngày ở updateVoucher.
+    const requestedStatus = cleanText(body.status).toUpperCase();
+    const status = requestedStatus === "DRAFT" ? "DRAFT" : "APPROVED";
+
+    const voucher = await prisma.$transaction(async (tx) => {
+      const created = await tx.financialVoucher.create({
+        data: {
+          code,
+          voucherType,
+          voucherDate,
+          shift: shiftValue || null,
+          depositAction: depositAction || null,
+          depositCode: depositAction ? (cleanText(body.depositCode) || null) : null,
+          partnerCode: cleanText(body.partnerCode) || null,
+          partnerName,
+          branchCode,
+          moneySourceCode,
+          categoryCode: categoryCode || null,
+          amount,
+          description,
+          status,
+          createdBy: auth.session.name,
+          approvedBy: status === "APPROVED" ? auth.session.name : null,
+        },
+      });
+      if (status === "APPROVED") await applyVoucherSideEffects(tx, created, auth.session.name);
+      return created;
     });
 
     return NextResponse.json(voucher, { status: 201 });
@@ -213,15 +222,20 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
     return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi" }, { status: 403 });
   }
 
-  if (lockedVoucherStatuses.includes(current.status)) {
-    return NextResponse.json(
-      { error: "Chứng từ đã duyệt/ghi sổ, không thể sửa. Hãy hủy chứng từ và lập chứng từ mới." },
-      { status: 400 },
-    );
+  if (current.status === "POSTED") {
+    return NextResponse.json({ error: "Chứng từ đã ghi sổ, không thể sửa." }, { status: 400 });
   }
   if (current.status === "CANCELLED") {
     return NextResponse.json({ error: "Chứng từ đã hủy, không thể sửa" }, { status: 400 });
   }
+
+  // Phiếu duyệt ngay khi tạo, nên sửa trong ngày là chuyện bình thường; qua ngày thì phải
+  // có quyền edit_past. Chặn ở đây thay vì chặn cứng theo trạng thái "đã duyệt".
+  const windowError = voucherEditWindowError(
+    current.voucherDate,
+    canPerformMenuAction(session, "/vouchers", "edit_past"),
+  );
+  if (windowError) return NextResponse.json({ error: windowError }, { status: 403 });
 
   const voucherType = cleanText(body.voucherType);
   if (voucherType && voucherType !== current.voucherType) {
@@ -280,17 +294,6 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
     if (categoryError) return NextResponse.json({ error: categoryError }, { status: 400 });
   }
 
-  const [depositHistoryCount, debtSettlement] = await Promise.all([
-    prisma.depositHistory.count({ where: { voucherId: id } }),
-    prisma.debtSettlement.findUnique({ where: { voucherId: id } }),
-  ]);
-  if (depositHistoryCount > 0 || debtSettlement) {
-    return NextResponse.json(
-      { error: "Chứng từ đã phát sinh xử lý tiền cọc hoặc thanh toán công nợ, không thể sửa. Hãy hủy chứng từ và lập chứng từ mới." },
-      { status: 400 },
-    );
-  }
-
   const [currentPeriodLocked, nextPeriodLocked] = await Promise.all([
     isPeriodLocked(current.voucherDate, current.branchCode),
     isPeriodLocked(voucherDate, branchCode),
@@ -299,22 +302,51 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
     return NextResponse.json({ error: "Kỳ kế toán đã khóa, không thể sửa chứng từ" }, { status: 400 });
   }
 
-  const voucher = await prisma.financialVoucher.update({
-    where: { id },
-    data: {
-      voucherDate,
-      shift: shiftValue,
-      depositAction,
-      depositCode: depositAction ? (body.depositCode === undefined ? current.depositCode : (cleanText(body.depositCode) || null)) : null,
-      partnerCode,
-      partnerName,
-      branchCode,
-      moneySourceCode,
-      categoryCode: categoryCode || null,
-      amount,
-      description,
-    },
-  });
+  const data = {
+    voucherDate,
+    shift: shiftValue,
+    depositAction,
+    depositCode: depositAction ? (body.depositCode === undefined ? current.depositCode : (cleanText(body.depositCode) || null)) : null,
+    partnerCode,
+    partnerName,
+    branchCode,
+    moneySourceCode,
+    categoryCode: categoryCode || null,
+    amount,
+    description,
+  };
+
+  /**
+   * Chứng từ đã duyệt được sửa theo đúng trình tự thủ công: bỏ duyệt (trả lại cọc/công
+   * nợ/phân bổ đã sinh) - sửa - duyệt lại.
+   *
+   * Hai bước dùng hai transaction vì hoàn tác phải chạy trên client thô (xoá hẳn bản ghi
+   * hệ quả) còn ghi nhận lại chạy trên client thường. Nếu bước duyệt lại hỏng, chứng từ
+   * nằm lại ở bản nháp với số liệu mới và người dùng thấy lỗi để duyệt lại — trạng thái
+   * nhìn thấy được, không phải hỏng ngầm.
+   */
+  let voucher;
+  try {
+    if (current.status === "APPROVED") {
+      await prismaRaw.$transaction(async (tx) => {
+        await revertVoucherSideEffects(tx, current);
+        await tx.financialVoucher.update({ where: { id }, data: { ...data, status: "DRAFT", approvedBy: null } });
+      });
+      voucher = await prisma.$transaction(async (tx) => {
+        const reapproved = await tx.financialVoucher.findUniqueOrThrow({ where: { id } });
+        await applyVoucherSideEffects(tx, reapproved, session.name);
+        return tx.financialVoucher.update({
+          where: { id },
+          data: { status: "APPROVED", approvedBy: current.approvedBy || session.name },
+        });
+      });
+    } else {
+      voucher = await prisma.financialVoucher.update({ where: { id }, data });
+    }
+  } catch (e) {
+    if (e instanceof VoucherRevertError) return NextResponse.json({ error: e.message }, { status: 400 });
+    throw e;
+  }
 
   await writeAuditLog({
     session,
@@ -333,6 +365,95 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
   return NextResponse.json(voucher);
 }
 
+type StatusChangeResult = { ok: boolean; code?: string; error?: string };
+
+/**
+ * Đổi trạng thái một chứng từ. Tách riêng để nút đơn lẻ và thao tác hàng loạt dùng
+ * chung đúng một bộ quy tắc, và để hàng loạt báo được lỗi của từng phiếu.
+ */
+async function changeVoucherStatus(
+  session: DemoSession,
+  id: string,
+  status: string,
+  reason: string | null,
+): Promise<StatusChangeResult> {
+  const current = await prisma.financialVoucher.findUnique({ where: { id } });
+  if (!current) return { ok: false, error: "Không tìm thấy chứng từ" };
+
+  try {
+    assertBranchAccess(session, current.branchCode);
+  } catch (e) {
+    return { ok: false, code: current.code, error: e instanceof Error ? e.message : "Không có quyền chi nhánh" };
+  }
+
+  if (current.status === "APPROVED" && status === "APPROVED") {
+    return { ok: false, code: current.code, error: "Chứng từ đã được duyệt" };
+  }
+  if (current.status === "CANCELLED") {
+    return { ok: false, code: current.code, error: "Chứng từ đã hủy, không thể đổi trạng thái" };
+  }
+
+  // Bỏ duyệt/hủy chứng từ của ngày trước cũng nằm trong cửa sổ sửa như thao tác sửa.
+  if (status !== "APPROVED") {
+    const windowError = voucherEditWindowError(
+      current.voucherDate,
+      canPerformMenuAction(session, "/vouchers", "edit_past"),
+      new Date(),
+      status === "DRAFT" ? "bỏ duyệt" : "hủy",
+    );
+    if (windowError) return { ok: false, code: current.code, error: windowError };
+  }
+
+  // Bỏ duyệt: đưa chứng từ về bản nháp để sửa lại, đồng thời trả lại mọi hệ quả
+  // mà lần duyệt trước đã sinh ra (tiền cọc, công nợ, khoản phân bổ).
+  if (status === "DRAFT") {
+    if (current.status !== "APPROVED") {
+      return { ok: false, code: current.code, error: "Chỉ bỏ duyệt được chứng từ đang ở trạng thái đã duyệt" };
+    }
+    if (await isPeriodLocked(current.voucherDate, current.branchCode)) {
+      return { ok: false, code: current.code, error: "Kỳ kế toán đã khóa, không thể bỏ duyệt chứng từ" };
+    }
+
+    try {
+      const reverted = await prismaRaw.$transaction(async (tx) => {
+        await revertVoucherSideEffects(tx, current);
+        return tx.financialVoucher.update({ where: { id }, data: { status: "DRAFT", approvedBy: null } });
+      });
+
+      await writeAuditLog({
+        session,
+        module: "VOUCHERS",
+        action: "UNAPPROVE_VOUCHER",
+        entityType: "FinancialVoucher",
+        entityId: reverted.id,
+        entityCode: reverted.code,
+        branchCode: reverted.branchCode,
+        metadata: {
+          amount: reverted.amount,
+          previousApprovedBy: current.approvedBy,
+          depositAction: current.depositAction,
+          debtAction: current.debtAction,
+          allocationMonths: current.allocationMonths,
+          reason,
+        },
+      });
+      return { ok: true, code: reverted.code };
+    } catch (e) {
+      if (e instanceof VoucherRevertError) return { ok: false, code: current.code, error: e.message };
+      throw e;
+    }
+  }
+
+  const voucher = await prisma.$transaction(async (tx) => {
+    if (status === "APPROVED") await applyVoucherSideEffects(tx, current, session.name);
+    return tx.financialVoucher.update({
+      where: { id },
+      data: { status, approvedBy: status === "APPROVED" ? session.name : null },
+    });
+  });
+  return { ok: true, code: voucher.code };
+}
+
 export async function PATCH(request: Request) {
   try {
     const body = await request.json();
@@ -342,92 +463,89 @@ export async function PATCH(request: Request) {
     if (!auth.ok) return auth.response;
 
     const id = cleanText(body.id);
-    if (!id) return NextResponse.json({ error: "Thiếu ID chứng từ" }, { status: 400 });
-
-    if (action === "UPDATE") return await updateVoucher(auth.session, id, body);
+    if (action === "UPDATE") {
+      if (!id) return NextResponse.json({ error: "Thiếu ID chứng từ" }, { status: 400 });
+      return await updateVoucher(auth.session, id, body);
+    }
 
     const status = cleanText(body.status) || "APPROVED";
     if (!["APPROVED", "CANCELLED", "DRAFT"].includes(status)) {
       return NextResponse.json({ error: "Trạng thái chứng từ không hợp lệ" }, { status: 400 });
     }
+    const reason = cleanText(body.reason) || null;
 
-    const current = await prisma.financialVoucher.findUnique({ where: { id } });
-    if (!current) return NextResponse.json({ error: "Không tìm thấy chứng từ" }, { status: 404 });
-
-    try {
-      assertBranchAccess(auth.session, current.branchCode);
-    } catch (e) {
-      return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi" }, { status: 403 });
-    }
-
-    if (current.status === "APPROVED" && status === "APPROVED") {
-      return NextResponse.json({ error: "Chứng từ đã được duyệt" }, { status: 400 });
-    }
-    if (current.status === "CANCELLED") {
-      return NextResponse.json({ error: "Chứng từ đã hủy, không thể đổi trạng thái" }, { status: 400 });
-    }
-
-    // Bỏ duyệt: đưa chứng từ về bản nháp để sửa lại, đồng thời trả lại mọi hệ quả
-    // mà lần duyệt trước đã sinh ra (tiền cọc, công nợ, khoản phân bổ).
-    if (status === "DRAFT") {
-      if (current.status !== "APPROVED") {
-        return NextResponse.json({ error: "Chỉ bỏ duyệt được chứng từ đang ở trạng thái đã duyệt" }, { status: 400 });
+    // Thao tác hàng loạt: chạy từng phiếu và trả về phiếu nào hỏng vì lý do gì,
+    // thay vì bỏ dở cả lô khi gặp phiếu đầu tiên không hợp lệ.
+    const ids = Array.isArray(body.ids) ? body.ids.map((value: unknown) => cleanText(value)).filter(Boolean) : [];
+    if (ids.length > 0) {
+      const results: Array<StatusChangeResult & { id: string }> = [];
+      for (const itemId of ids) {
+        results.push({ id: itemId, ...(await changeVoucherStatus(auth.session, itemId, status, reason)) });
       }
-      if (await isPeriodLocked(current.voucherDate, current.branchCode)) {
-        return NextResponse.json({ error: "Kỳ kế toán đã khóa, không thể bỏ duyệt chứng từ" }, { status: 400 });
-      }
-
-      try {
-        const reverted = await prismaRaw.$transaction(async (tx) => {
-          await revertVoucherSideEffects(tx, current);
-          return tx.financialVoucher.update({
-            where: { id },
-            data: { status: "DRAFT", approvedBy: null },
-          });
-        });
-
-        await writeAuditLog({
-          session: auth.session,
-          module: "VOUCHERS",
-          action: "UNAPPROVE_VOUCHER",
-          entityType: "FinancialVoucher",
-          entityId: reverted.id,
-          entityCode: reverted.code,
-          branchCode: reverted.branchCode,
-          metadata: {
-            amount: reverted.amount,
-            previousApprovedBy: current.approvedBy,
-            depositAction: current.depositAction,
-            debtAction: current.debtAction,
-            allocationMonths: current.allocationMonths,
-            reason: cleanText(body.reason) || null,
-          },
-        });
-        return NextResponse.json(reverted);
-      } catch (e) {
-        if (e instanceof VoucherRevertError) {
-          return NextResponse.json({ error: e.message }, { status: 400 });
-        }
-        throw e;
-      }
-    }
-
-    const voucher = await prisma.$transaction(async (tx) => {
-      if (status === "APPROVED") await applyVoucherSideEffects(tx, current, auth.session.name);
-      return tx.financialVoucher.update({
-        where: { id },
-        data: {
-          status,
-          approvedBy: status === "APPROVED" ? auth.session.name : null,
-        },
+      return NextResponse.json({
+        total: results.length,
+        succeeded: results.filter((row) => row.ok).length,
+        failed: results.filter((row) => !row.ok),
       });
-    });
+    }
 
-    return NextResponse.json(voucher);
+    if (!id) return NextResponse.json({ error: "Thiếu ID chứng từ" }, { status: 400 });
+    const result = await changeVoucherStatus(auth.session, id, status, reason);
+    if (!result.ok) return NextResponse.json({ error: result.error }, { status: 400 });
+    return NextResponse.json(await prisma.financialVoucher.findUnique({ where: { id } }));
   } catch (error) {
     console.error("Error updating voucher:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
+}
+
+/** Xoá một chứng từ, dùng chung cho nút xoá đơn lẻ và xoá hàng loạt. */
+async function deleteVoucherById(session: DemoSession, id: string, reason: string | null): Promise<StatusChangeResult> {
+  const current = await prisma.financialVoucher.findUnique({ where: { id } });
+  if (!current) return { ok: false, error: "Không tìm thấy chứng từ" };
+
+  try {
+    assertBranchAccess(session, current.branchCode);
+  } catch (e) {
+    return { ok: false, code: current.code, error: e instanceof Error ? e.message : "Không có quyền chi nhánh" };
+  }
+
+  if (current.status === "POSTED") {
+    return { ok: false, code: current.code, error: "Chứng từ đã ghi sổ, không thể xóa." };
+  }
+  const windowError = voucherEditWindowError(
+    current.voucherDate,
+    canPerformMenuAction(session, "/vouchers", "edit_past"),
+    new Date(),
+    "xoá",
+  );
+  if (windowError) return { ok: false, code: current.code, error: windowError };
+
+  if (await isPeriodLocked(current.voucherDate, current.branchCode)) {
+    return { ok: false, code: current.code, error: "Kỳ kế toán đã khóa, không thể xóa chứng từ" };
+  }
+
+  // Chứng từ duyệt ngay khi tạo nên hầu hết phiếu xoá đều đang ở trạng thái đã duyệt:
+  // phải trả lại hệ quả (cọc, công nợ, phân bổ) rồi mới xoá, nếu không số dư sẽ lệch.
+  if (current.status === "APPROVED") {
+    try {
+      await prismaRaw.$transaction(async (tx) => {
+        await revertVoucherSideEffects(tx, current);
+        await tx.financialVoucher.update({ where: { id }, data: { status: "DRAFT", approvedBy: null } });
+      });
+    } catch (e) {
+      if (e instanceof VoucherRevertError) return { ok: false, code: current.code, error: e.message };
+      throw e;
+    }
+  }
+
+  try {
+    await softDeleteRecord({ model: "FinancialVoucher", id, session, reason });
+  } catch (e) {
+    if (e instanceof SoftDeleteError) return { ok: false, code: current.code, error: e.message };
+    throw e;
+  }
+  return { ok: true, code: current.code };
 }
 
 export async function DELETE(request: Request) {
@@ -436,43 +554,25 @@ export async function DELETE(request: Request) {
     if (!auth.ok) return auth.response;
 
     const { searchParams } = new URL(request.url);
-    const id = cleanText(searchParams.get("id"));
     const reason = cleanText(searchParams.get("reason")) || null;
+    const ids = cleanText(searchParams.get("ids")).split(",").map((value) => value.trim()).filter(Boolean);
+
+    if (ids.length > 0) {
+      const results: Array<StatusChangeResult & { id: string }> = [];
+      for (const itemId of ids) {
+        results.push({ id: itemId, ...(await deleteVoucherById(auth.session, itemId, reason)) });
+      }
+      return NextResponse.json({
+        total: results.length,
+        succeeded: results.filter((row) => row.ok).length,
+        failed: results.filter((row) => !row.ok),
+      });
+    }
+
+    const id = cleanText(searchParams.get("id"));
     if (!id) return NextResponse.json({ error: "Thiếu ID chứng từ" }, { status: 400 });
-
-    const current = await prisma.financialVoucher.findUnique({ where: { id } });
-    if (!current) return NextResponse.json({ error: "Không tìm thấy chứng từ" }, { status: 404 });
-
-    try {
-      assertBranchAccess(auth.session, current.branchCode);
-    } catch (e) {
-      return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi" }, { status: 403 });
-    }
-
-    if (lockedVoucherStatuses.includes(current.status)) {
-      return NextResponse.json(
-        { error: "Chứng từ đã duyệt/ghi sổ, không thể xóa. Hãy hủy chứng từ trước khi xóa." },
-        { status: 400 },
-      );
-    }
-
-    if (await isPeriodLocked(current.voucherDate, current.branchCode)) {
-      return NextResponse.json({ error: "Kỳ kế toán đã khóa, không thể xóa chứng từ" }, { status: 400 });
-    }
-
-    // Giữ lại chứng từ đã sinh xử lý cọc/công nợ để không làm lệch số dư.
-    const [depositHistoryCount, debtSettlement] = await Promise.all([
-      prisma.depositHistory.count({ where: { voucherId: id } }),
-      prisma.debtSettlement.findUnique({ where: { voucherId: id } }),
-    ]);
-    if (depositHistoryCount > 0 || debtSettlement) {
-      return NextResponse.json(
-        { error: "Chứng từ đã phát sinh xử lý tiền cọc hoặc thanh toán công nợ, không thể xóa." },
-        { status: 400 },
-      );
-    }
-
-    await softDeleteRecord({ model: "FinancialVoucher", id, session: auth.session, reason });
+    const result = await deleteVoucherById(auth.session, id, reason);
+    if (!result.ok) return NextResponse.json({ error: result.error }, { status: 400 });
     return NextResponse.json({ ok: true });
   } catch (error) {
     if (error instanceof SoftDeleteError) {

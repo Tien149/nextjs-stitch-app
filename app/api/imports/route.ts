@@ -129,6 +129,14 @@ function templateExample(templateCode: string) {
 }
 
 function templateExampleRows(templateCode: string): Array<Record<string, string | number | Date>> {
+  if (templateCode === "BANK_STATEMENT_STANDARD_V1") {
+    // Hai dòng mẫu cho thấy cột "Loại thu/chi" phải khai theo chiều tiền: tiền vào là
+    // khoản mục thu, tiền ra là khoản mục chi.
+    return [
+      { transaction_date: new Date("2026-07-01T00:00:00Z"), bank_account: "VCB_HCM", transaction_code: "VCB2607010001", description: "POS HCM ngay 01/07 - doanh thu the tai quay", credit_amount: 12850000, balance_after: 2512850000, branch_code: "HCM", partner_hint: "POS_HCM", category_code: "THU_BAN_HANG" },
+      { transaction_date: new Date("2026-07-02T00:00:00Z"), bank_account: "VCB_HCM", transaction_code: "VCB2607020001", description: "Thanh toan NCC nguyen lieu va bao bi", debit_amount: 18500000, balance_after: 2494350000, branch_code: "HCM", partner_hint: "NCC_FOOD", category_code: "CHI_CONG_NO_NCC" },
+    ];
+  }
   if (templateCode === "INVENTORY_ITEM_STANDARD_V1") {
     return [
       { code: "NVL_NUOCSUOI", name: "Nuoc suoi chai", item_type: "RAW_MATERIAL", unit: "chai", purchase_unit: "thung", conversion_rate: 24, min_stock: 120 },

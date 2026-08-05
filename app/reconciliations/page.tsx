@@ -2,7 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
+import { appMenuItems, canAccessMenu, canPerformAction, canPerformMenuAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
+import { filterMoneySources, moneySourceDebugLabel, moneySourceDisplayName, type MoneySourceOption } from "@/lib/money-sources";
+import StickyFilterBar from "@/components/StickyFilterBar";
+import { visibleStoreOptions } from "@/lib/branch-labels";
 
 type Candidate = {
   targetType: string;
@@ -23,8 +26,18 @@ type BankRow = {
   debitAmount: number;
   creditAmount: number;
   partnerHint: string | null;
+  categoryCode: string | null;
+  branchCode: string | null;
   reconcileStatus: string;
   candidates: Candidate[];
+};
+
+type SettlementForm = {
+  bankRow: BankRow;
+  branchCode: string;
+  fromMoneySourceCode: string;
+  grossAmount: string;
+  feeCategoryCode: string;
 };
 
 type MatchRow = {
@@ -44,6 +57,11 @@ export default function ReconciliationsPage() {
   const [status, setStatus] = useState("UNMATCHED");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
+  const [moneySources, setMoneySources] = useState<MoneySourceOption[]>([]);
+  const [feeCategories, setFeeCategories] = useState<Array<{ code: string; name: string; group: string | null }>>([]);
+  const [settlement, setSettlement] = useState<SettlementForm | null>(null);
+  const [settlementSaving, setSettlementSaving] = useState(false);
+  const [settlementError, setSettlementError] = useState("");
 
   useEffect(() => {
     const raw = localStorage.getItem(SESSION_KEY);
@@ -64,7 +82,12 @@ export default function ReconciliationsPage() {
   }, [router]);
 
   const canMatch = user ? canPerformAction(user, "edit") : false;
+  /** Lập phiếu quyết toán là nghiệp vụ của Sổ quỹ nên xét quyền theo module đó. */
+  const canSettleWallet = user ? canPerformMenuAction(user, "/finance-operations", "create") : false;
   const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
+  const settlementFee = settlement
+    ? Math.max(0, Number(settlement.grossAmount || 0)) - settlement.bankRow.creditAmount
+    : 0;
 
   const loadRows = async () => {
     const response = await fetch(`/api/reconciliations?status=${status}`);
@@ -83,6 +106,89 @@ export default function ReconciliationsPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, status]);
+
+  // Danh mục cho form quyết toán ví; chỉ tải một lần khi vào trang.
+  useEffect(() => {
+    if (loading) return;
+    void fetch("/api/master-data?type=MONEY_SOURCE&status=ACTIVE")
+      .then((res) => (res.ok ? res.json() : []))
+      .then((items: MoneySourceOption[]) => setMoneySources(items))
+      .catch(() => setMoneySources([]));
+    void fetch("/api/master-data?type=REVENUE_EXPENSE_CATEGORY&status=ACTIVE")
+      .then((res) => (res.ok ? res.json() : []))
+      .then((items: Array<{ code: string; name: string; group: string | null }>) =>
+        setFeeCategories(items.filter((item) => (item.group || "").toUpperCase() === "OPEX")))
+      .catch(() => setFeeCategories([]));
+  }, [loading]);
+
+  /**
+   * Mở form quyết toán từ chính dòng sao kê: số thực nhận và tài khoản nhận lấy sẵn
+   * từ dòng đó, kế toán chỉ còn chọn ví và nhập số gốc đang treo ở ví.
+   */
+  const openSettlement = (bankRow: BankRow) => {
+    setSettlementError("");
+    setSettlement({
+      bankRow,
+      branchCode: bankRow.branchCode || "",
+      fromMoneySourceCode: "",
+      grossAmount: String(Math.round(bankRow.creditAmount)),
+      feeCategoryCode: "",
+    });
+  };
+
+  const submitSettlement = async () => {
+    if (!settlement || settlementSaving) return;
+    setSettlementSaving(true);
+    setSettlementError("");
+    try {
+      const response = await fetch("/api/finance-operations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "CREATE_WALLET_SETTLEMENT",
+          transferDate: settlement.bankRow.transactionDate,
+          branchCode: settlement.branchCode,
+          fromMoneySourceCode: settlement.fromMoneySourceCode,
+          toMoneySourceCode: settlement.bankRow.bankAccount,
+          grossAmount: Number(settlement.grossAmount || 0),
+          amount: settlement.bankRow.creditAmount,
+          feeCategoryCode: settlement.feeCategoryCode,
+          externalRef: settlement.bankRow.transactionCode,
+          description: `Quyết toán ví theo sao kê ${settlement.bankRow.transactionCode}`,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setSettlementError(payload.error || "Không tạo được phiếu quyết toán.");
+        return;
+      }
+      // Đánh dấu luôn dòng sao kê là đã đối soát, nếu không ngày mai nó lại hiện ra như chưa xử lý.
+      let matchNote = "";
+      if (canMatch && settlement.bankRow.reconcileStatus !== "MATCHED") {
+        const matchResponse = await fetch("/api/reconciliations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            bankTransactionId: settlement.bankRow.id,
+            targetType: "WALLET_SETTLEMENT",
+            targetId: payload.id,
+            targetCode: payload.code,
+            targetDate: settlement.bankRow.transactionDate,
+            targetAmount: settlement.bankRow.creditAmount,
+            note: `Quyết toán ví ${settlement.fromMoneySourceCode}`,
+          }),
+        });
+        if (!matchResponse.ok) matchNote = " (chưa đánh dấu đối soát được, hãy match thủ công)";
+      }
+      setMessage(`Đã tạo phiếu quyết toán ${payload.code}: cộng ${money(settlement.bankRow.creditAmount)} đ vào ngân hàng, trừ ${money(Number(settlement.grossAmount || 0))} đ ở ví, phí ${money(settlementFee)} đ vào chi phí.${matchNote}`);
+      setSettlement(null);
+      await loadRows();
+    } catch {
+      setSettlementError("Lỗi kết nối máy chủ.");
+    } finally {
+      setSettlementSaving(false);
+    }
+  };
 
   const matchCandidate = async (bank: BankRow, candidate: Candidate) => {
     setMessage("");
@@ -123,6 +229,7 @@ export default function ReconciliationsPage() {
       </header>
 
       <main className="max-w-7xl mx-auto p-6 space-y-6">
+        <StickyFilterBar className="!-mx-6 !px-6 !mb-0">
         <section className="grid md:grid-cols-3 gap-4">
           <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
             <p className="text-xs text-slate-500">Giao dịch đang xem</p>
@@ -137,6 +244,7 @@ export default function ReconciliationsPage() {
             <p className="text-2xl font-bold">{canMatch ? "Có" : "Chỉ xem"}</p>
           </div>
         </section>
+        </StickyFilterBar>
 
         <section className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
           <div className="p-5 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3">
@@ -159,13 +267,14 @@ export default function ReconciliationsPage() {
             <Table
               headers={[
                 { label: "Sao kê" },
+                { label: "Loại thu/chi" },
                 { label: "Số tiền", align: "right" },
                 { label: "Gợi ý match" },
                 { label: "Thao tác", align: "right" },
               ]}
             >
               {rows.length === 0 ? (
-                <tr><td colSpan={4} className="px-4 py-10 text-center text-slate-400">Không có giao dịch.</td></tr>
+                <tr><td colSpan={5} className="px-4 py-10 text-center text-slate-400">Không có giao dịch.</td></tr>
               ) : rows.map((row) => {
                 const first = row.candidates[0];
                 return (
@@ -174,6 +283,15 @@ export default function ReconciliationsPage() {
                       <b>{row.transactionCode}</b>
                       <p className="text-xs text-slate-500">{new Date(row.transactionDate).toLocaleDateString("vi-VN")} · {row.bankAccount}</p>
                       <p className="text-xs text-slate-500 mt-1 max-w-md">{row.description}</p>
+                    </td>
+                    <td className="px-4 py-3">
+                      {row.categoryCode ? (
+                        <span className={`inline-block rounded px-2 py-0.5 text-xs font-bold ${row.creditAmount > 0 ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-800"}`}>
+                          {row.categoryCode}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-slate-400">Chưa phân loại</span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-right font-bold text-slate-900">{money(row.creditAmount || row.debitAmount)} đ</td>
                     <td className="px-4 py-3">
@@ -188,11 +306,23 @@ export default function ReconciliationsPage() {
                       )}
                     </td>
                     <td className="px-4 py-3 text-right">
-                      {canMatch && first && row.reconcileStatus !== "MATCHED" ? (
-                        <button onClick={() => matchCandidate(row, first)} className="text-xs font-bold text-blue-700 hover:underline">Match</button>
-                      ) : (
-                        <span className="text-xs text-slate-400 font-semibold">{row.reconcileStatus}</span>
-                      )}
+                      <div className="flex flex-col items-end gap-1.5">
+                        {canMatch && first && row.reconcileStatus !== "MATCHED" ? (
+                          <button onClick={() => matchCandidate(row, first)} className="text-xs font-bold text-blue-700 hover:underline">Match</button>
+                        ) : (
+                          <span className="text-xs text-slate-400 font-semibold">{row.reconcileStatus}</span>
+                        )}
+                        {/* Tiền vào từ cổng thanh toán: lập luôn phiếu quyết toán ví với số đã điền sẵn. */}
+                        {canSettleWallet && row.creditAmount > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => openSettlement(row)}
+                            className="rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-bold text-indigo-700 hover:bg-indigo-100"
+                          >
+                            Quyết toán ví
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -201,6 +331,117 @@ export default function ReconciliationsPage() {
           </div>
         </section>
       </main>
+
+      {settlement && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/45 p-4">
+          <div className="flex max-h-[88vh] w-full max-w-lg flex-col overflow-hidden rounded-lg bg-white shadow-2xl">
+            <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-200 p-5">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-wider text-indigo-600">Quyết toán ví về ngân hàng</p>
+                <h2 className="mt-1 text-xl font-bold text-slate-900">{money(settlement.bankRow.creditAmount)} đ</h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  {settlement.bankRow.transactionCode} · {new Date(settlement.bankRow.transactionDate).toLocaleDateString("vi-VN")} · về {settlement.bankRow.bankAccount}
+                </p>
+              </div>
+              <button type="button" className="rounded-lg border border-slate-200 px-2 py-1 text-sm font-bold text-slate-500 hover:bg-slate-50" onClick={() => setSettlement(null)}>
+                Đóng
+              </button>
+            </div>
+
+            <div className="space-y-4 overflow-y-auto p-5">
+              <p className="rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs text-indigo-800">
+                Số thực nhận và tài khoản nhận lấy sẵn từ dòng sao kê. Nhập số gốc đang treo ở ví, phần chênh lệch
+                sẽ thành chi phí quẹt thẻ trên P&amp;L.
+              </p>
+
+              <label className="block text-xs font-bold text-slate-600">
+                Cửa hàng
+                <select
+                  className="control"
+                  value={settlement.branchCode}
+                  onChange={(event) => setSettlement({ ...settlement, branchCode: event.target.value, fromMoneySourceCode: "" })}
+                >
+                  <option value="">-- Chọn cửa hàng --</option>
+                  {visibleStoreOptions(user).map((option) => (
+                    <option key={option.code} value={option.code}>{option.label}</option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="block text-xs font-bold text-slate-600">
+                Nguồn ví / POS
+                <select
+                  className="control"
+                  value={settlement.fromMoneySourceCode}
+                  onChange={(event) => setSettlement({ ...settlement, fromMoneySourceCode: event.target.value })}
+                >
+                  <option value="">-- Chọn ví --</option>
+                  {filterMoneySources(moneySources, settlement.branchCode, ["WALLET"]).map((source) => (
+                    <option key={source.code} value={source.code} title={moneySourceDebugLabel(source)}>{moneySourceDisplayName(source)}</option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="block text-xs font-bold text-slate-600">
+                Số gốc đang treo ở ví
+                <input
+                  className="control text-right"
+                  inputMode="numeric"
+                  value={settlement.grossAmount}
+                  onChange={(event) => setSettlement({ ...settlement, grossAmount: event.target.value.replace(/\D/g, "") })}
+                />
+                <span className="mt-1 block text-[11px] font-medium text-slate-500">
+                  Bằng số thực nhận nghĩa là không có phí.
+                </span>
+              </label>
+
+              <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+                <span className="text-sm font-bold text-slate-700">Phí quẹt thẻ</span>
+                <span className={`text-lg font-bold ${settlementFee < 0 ? "text-rose-600" : "text-slate-900"}`}>{money(settlementFee)} đ</span>
+              </div>
+
+              {settlementFee > 0 && (
+                <label className="block text-xs font-bold text-slate-600">
+                  Khoản mục phí (lên P&amp;L)
+                  <select
+                    className="control"
+                    value={settlement.feeCategoryCode}
+                    onChange={(event) => setSettlement({ ...settlement, feeCategoryCode: event.target.value })}
+                  >
+                    <option value="">{feeCategories.length === 0 ? "-- Chưa khai báo khoản mục chi phí --" : "-- Chọn khoản mục phí --"}</option>
+                    {feeCategories.map((category) => (
+                      <option key={category.code} value={category.code}>{category.name}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
+
+              {settlementFee < 0 && (
+                <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700">
+                  Số gốc ở ví không được nhỏ hơn số thực nhận về ngân hàng.
+                </p>
+              )}
+              {settlementError && (
+                <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700">{settlementError}</p>
+              )}
+            </div>
+
+            <div className="flex shrink-0 items-center justify-end gap-2 border-t border-slate-200 p-5">
+              <button type="button" className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50" onClick={() => setSettlement(null)}>
+                Huỷ bỏ
+              </button>
+              <button
+                type="button"
+                onClick={() => void submitSettlement()}
+                disabled={settlementSaving || settlementFee < 0 || !settlement.branchCode || !settlement.fromMoneySourceCode || (settlementFee > 0 && !settlement.feeCategoryCode)}
+                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-bold text-white hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {settlementSaving ? "Đang ghi..." : "Ghi nhận quyết toán"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

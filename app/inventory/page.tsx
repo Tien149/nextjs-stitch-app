@@ -6,6 +6,7 @@ import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { canPerformMenuAction, SESSION_KEY, filterModuleTabs } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import CopyableText from "@/components/CopyableText";
+import StickyFilterBar from "@/components/StickyFilterBar";
 
 type UnitConversion = { id: string; unitCode: string; unitName: string | null; conversionRate: number; isDefaultPurchase: boolean };
 type Item = { id: string; code: string; name: string; unit: string; itemType: string; minStock: number; requiresImage: boolean; unitConversions?: UnitConversion[] };
@@ -162,7 +163,8 @@ export default function InventoryPage() {
   return (
     <ModuleFrame title="Kho & Định lượng" subtitle="Giai đoạn 3 • Quản lý kho hàng, tính giá bình quân, công thức định lượng và hủy hàng" role={user?.role}>
       {/* Operational Summary Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
+      <StickyFilterBar>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
         <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-slate-500">Tổng mã hàng (SKUs)</span>
@@ -194,6 +196,7 @@ export default function InventoryPage() {
       </div>
 
       <ModuleTabs active={active} onChange={setActive} tabs={visibleTabs} />
+      </StickyFilterBar>
       {message && <p className="mb-4 px-4 py-3 rounded-lg border border-blue-100 bg-blue-50 text-sm text-blue-700">{message}</p>}
 
       {active === "stock" && (

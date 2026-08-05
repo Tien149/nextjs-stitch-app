@@ -6,9 +6,11 @@ import { DateInput } from "@/components/DateInput";
 import { ModuleFrame } from "@/components/ModuleFrame";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
-import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
+import { appMenuItems, canAccessMenu, canPerformAction, canPerformMenuAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
+import { voucherEditWindowError } from "@/lib/voucher-rules";
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
+import StickyFilterBar from "@/components/StickyFilterBar";
 import { shiftLabel, WORK_SHIFTS } from "@/lib/shifts";
 
 const voucherMoneySourceGroups = ["CASH"];
@@ -74,7 +76,6 @@ const emptyForm = {
   categoryCode: "",
   amount: "50000000",
   description: "Thu tiền bán hàng hàng ngày / thanh toán đối tác",
-  status: "DRAFT",
 };
 
 export default function VouchersPage() {
@@ -90,6 +91,8 @@ export default function VouchersPage() {
   const [deletingVoucher, setDeletingVoucher] = useState<Voucher | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [bulkRunning, setBulkRunning] = useState(false);
   const [moneySources, setMoneySources] = useState<MasterDataOption[]>([]);
   const [categories, setCategories] = useState<MasterDataOption[]>([]);
   const [partners, setPartners] = useState<MasterDataOption[]>([]);
@@ -174,6 +177,9 @@ export default function VouchersPage() {
 
   const canCreate = user ? canPerformAction(user, "create") : false;
   const canApprove = user ? canPerformAction(user, "approve") : false;
+  const canDelete = user ? canPerformMenuAction(user, "/vouchers", "delete") : false;
+  /** Quyền sửa/bỏ duyệt chứng từ đã qua ngày (mặc định Admin và Kế toán tổng hợp). */
+  const canEditPast = user ? canPerformMenuAction(user, "/vouchers", "edit_past") : false;
   const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
   const categoryName = (code: string | null) => {
     if (!code) return "Chưa gán khoản mục";
@@ -260,12 +266,14 @@ export default function VouchersPage() {
     }, 0);
   }, [form.categoryCode, voucherCategoryOptions]);
 
-  /** Chứng từ đã ghi sổ hoặc đã huỷ thì không cho sửa/xoá; trả về lý do để hiện tooltip. */
+  /**
+   * Phiếu duyệt ngay khi tạo nên "đã duyệt" không còn là lý do khoá sửa. Chặn theo cửa
+   * sổ ngày: trong ngày ai có quyền sửa đều sửa được, qua ngày phải có quyền edit_past.
+   */
   const lockedForChange = (voucher: Voucher) => {
-    if (voucher.status === "APPROVED") return "Chứng từ đã duyệt. Bấm \"Bỏ duyệt\" để đưa về bản nháp rồi sửa hoặc xoá.";
     if (voucher.status === "POSTED") return "Chứng từ đã ghi sổ, không thể sửa hoặc xoá";
     if (voucher.status === "CANCELLED") return "Chứng từ đã huỷ";
-    return null;
+    return voucherEditWindowError(new Date(voucher.voucherDate), canEditPast);
   };
 
   const resetForm = () => {
@@ -296,7 +304,6 @@ export default function VouchersPage() {
       categoryCode: voucher.categoryCode || "",
       amount: String(voucher.amount),
       description: voucher.description,
-      status: voucher.status,
     });
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -350,46 +357,58 @@ export default function VouchersPage() {
     }
   };
 
-  const approveVoucher = async (id: string) => {
-    const response = await fetch("/api/vouchers", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, status: "APPROVED" }),
-    });
-    if (response.ok) await loadVouchers(branchCode);
+  const selectableVouchers = vouchers.filter((voucher) => !lockedForChange(voucher));
+  const selectedVouchers = vouchers.filter((voucher) => selectedIds.includes(voucher.id));
+  const allSelectableChecked = selectableVouchers.length > 0 && selectableVouchers.every((voucher) => selectedIds.includes(voucher.id));
+
+  const toggleSelectAll = () => {
+    setSelectedIds(allSelectableChecked ? [] : selectableVouchers.map((voucher) => voucher.id));
   };
 
-  const unapproveVoucher = async (voucher: Voucher) => {
-    if (!window.confirm(
-      `Bỏ duyệt chứng từ ${voucher.code}?\n\nChứng từ sẽ quay về bản nháp để sửa lại. Các phát sinh từ lần duyệt trước (tiền cọc, công nợ, khoản phân bổ) sẽ được hoàn tác.`
-    )) return;
-    const response = await fetch("/api/vouchers", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: voucher.id, status: "DRAFT" }),
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      setMessage(payload.error || "Không bỏ duyệt được chứng từ");
-      return;
-    }
-    setMessage(`Đã bỏ duyệt chứng từ ${voucher.code}. Giờ có thể sửa hoặc xoá.`);
-    await loadVouchers(branchCode);
+  const toggleSelect = (id: string) => {
+    setSelectedIds((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
   };
 
-  const cancelVoucher = async (id: string) => {
-    const response = await fetch("/api/vouchers", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, status: "CANCELLED" }),
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      setMessage(payload.error || "Không hủy được chứng từ");
-      return;
+  /**
+   * Gọi API cho cả lô rồi tóm tắt lại: API trả về danh sách phiếu hỏng kèm lý do nên
+   * người dùng biết chính xác phiếu nào không xử lý được thay vì chỉ thấy "có lỗi".
+   */
+  const runBulk = async (kind: "APPROVE" | "UNAPPROVE" | "DELETE") => {
+    if (selectedIds.length === 0 || bulkRunning) return;
+    const labels = { APPROVE: "duyệt", UNAPPROVE: "bỏ duyệt", DELETE: "xoá" } as const;
+    const confirmText = kind === "DELETE"
+      ? `Xoá ${selectedIds.length} chứng từ đã chọn? Chứng từ đã duyệt sẽ được hoàn tác hệ quả (tiền cọc, công nợ) trước khi xoá.`
+      : `${kind === "APPROVE" ? "Duyệt" : "Bỏ duyệt"} ${selectedIds.length} chứng từ đã chọn?`;
+    if (!window.confirm(confirmText)) return;
+
+    setBulkRunning(true);
+    setMessage("");
+    try {
+      const response = kind === "DELETE"
+        ? await fetch(`/api/vouchers?ids=${selectedIds.join(",")}`, { method: "DELETE" })
+        : await fetch("/api/vouchers", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ids: selectedIds, status: kind === "APPROVE" ? "APPROVED" : "DRAFT" }),
+          });
+      const payload = await response.json();
+      if (!response.ok) {
+        setMessage(payload.error || `Không ${labels[kind]} được chứng từ.`);
+        return;
+      }
+      const failed = (payload.failed || []) as Array<{ code?: string; error?: string }>;
+      setMessage(
+        failed.length === 0
+          ? `Đã ${labels[kind]} ${payload.succeeded}/${payload.total} chứng từ.`
+          : `Đã ${labels[kind]} ${payload.succeeded}/${payload.total} chứng từ. Không xử lý được: ${failed.map((row) => `${row.code || "?"} (${row.error})`).join("; ")}`,
+      );
+      setSelectedIds([]);
+      await loadVouchers(branchCode);
+    } catch {
+      setMessage("Lỗi kết nối máy chủ.");
+    } finally {
+      setBulkRunning(false);
     }
-    setMessage("Đã hủy chứng từ.");
-    await loadVouchers(branchCode);
   };
 
   const totalReceipts = vouchers.filter(v => v.voucherType === "RECEIPT").reduce((sum, v) => sum + v.amount, 0);
@@ -408,6 +427,7 @@ export default function VouchersPage() {
     >
       <div className="space-y-6">
         {/* Operational Summary Cards */}
+        <StickyFilterBar className="!mb-0">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
             <div className="flex items-center justify-between">
@@ -438,6 +458,7 @@ export default function VouchersPage() {
             <p className="text-lg font-bold text-slate-800 mt-1">{vouchers.length} chứng từ</p>
           </div>
         </div>
+        </StickyFilterBar>
 
         <main className="grid xl:grid-cols-[380px_1fr] gap-6 items-start">
           {(canCreate || editingVoucher) && (
@@ -669,17 +690,75 @@ export default function VouchersPage() {
           )}
 
           <section className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden flex flex-col">
-            <div className="p-5 border-b border-slate-200 flex items-center justify-between shrink-0">
+            <div className="p-5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
               <div>
                 <h2 className="font-bold text-slate-800">Danh sách phiếu</h2>
-                <p className="text-xs text-slate-500 mt-1">Dùng nút In để mở print view/PDF browser.</p>
+                <p className="text-xs text-slate-500 mt-1">
+                  Phiếu được duyệt ngay khi lập. Tích chọn để duyệt, bỏ duyệt hoặc xoá hàng loạt.
+                </p>
               </div>
-              <button onClick={() => void loadVouchers(branchCode)} className="rounded-lg border border-slate-200 px-3.5 py-1.5 text-xs font-bold hover:bg-slate-50 text-slate-700 transition-colors">Tải lại</button>
+              <div className="flex flex-wrap items-center gap-2">
+                {selectedIds.length > 0 && (
+                  <>
+                    <span className="rounded-lg bg-blue-50 border border-blue-200 px-2.5 py-1.5 text-xs font-bold text-blue-700">
+                      Đã chọn {selectedIds.length}
+                    </span>
+                    {canApprove && (
+                      <button
+                        type="button"
+                        disabled={bulkRunning}
+                        onClick={() => void runBulk("APPROVE")}
+                        className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
+                      >
+                        Duyệt
+                      </button>
+                    )}
+                    {canApprove && (
+                      <button
+                        type="button"
+                        disabled={bulkRunning}
+                        onClick={() => void runBulk("UNAPPROVE")}
+                        className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-bold text-amber-700 hover:bg-amber-100 disabled:opacity-50"
+                      >
+                        Bỏ duyệt
+                      </button>
+                    )}
+                    {canDelete && (
+                      <button
+                        type="button"
+                        disabled={bulkRunning}
+                        onClick={() => void runBulk("DELETE")}
+                        className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-50"
+                      >
+                        Xoá
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setSelectedIds([])}
+                      className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50"
+                    >
+                      Bỏ chọn
+                    </button>
+                  </>
+                )}
+                <button onClick={() => void loadVouchers(branchCode)} className="rounded-lg border border-slate-200 px-3.5 py-1.5 text-xs font-bold hover:bg-slate-50 text-slate-700 transition-colors">Tải lại</button>
+              </div>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-bold border-b border-slate-200">
                   <tr>
+                    <th className="w-10 px-4 py-3 text-left">
+                      <input
+                        type="checkbox"
+                        title="Chọn tất cả phiếu sửa được"
+                        className="h-4 w-4 cursor-pointer accent-blue-600 disabled:cursor-not-allowed"
+                        checked={allSelectableChecked}
+                        disabled={selectableVouchers.length === 0}
+                        onChange={toggleSelectAll}
+                      />
+                    </th>
                     <th className="px-4 py-3 text-left">Chứng từ</th>
                     <th className="px-4 py-3 text-left">Đối tác</th>
                     <th className="px-4 py-3 text-right">Số tiền</th>
@@ -689,9 +768,21 @@ export default function VouchersPage() {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {vouchers.length === 0 ? (
-                    <tr><td colSpan={5} className="px-4 py-10 text-center text-slate-400">Chưa có chứng từ cho chi nhánh này.</td></tr>
-                  ) : vouchers.map((voucher) => (
-                    <tr key={voucher.id} className="hover:bg-slate-50/80 transition-colors">
+                    <tr><td colSpan={6} className="px-4 py-10 text-center text-slate-400">Chưa có chứng từ cho chi nhánh này.</td></tr>
+                  ) : vouchers.map((voucher) => {
+                    const lockReason = lockedForChange(voucher);
+                    return (
+                    <tr key={voucher.id} className={`transition-colors ${selectedIds.includes(voucher.id) ? "bg-blue-50/60" : "hover:bg-slate-50/80"}`}>
+                      <td className="px-4 py-3.5 align-top">
+                        <input
+                          type="checkbox"
+                          className="mt-1 h-4 w-4 cursor-pointer accent-blue-600 disabled:cursor-not-allowed"
+                          checked={selectedIds.includes(voucher.id)}
+                          disabled={Boolean(lockReason)}
+                          title={lockReason || "Chọn chứng từ"}
+                          onChange={() => toggleSelect(voucher.id)}
+                        />
+                      </td>
                       <td className="px-4 py-3.5">
                         <div className="flex flex-wrap items-center gap-1.5">
                           <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
@@ -738,21 +829,6 @@ export default function VouchersPage() {
                         </span>
                       </td>
                       <td className="px-4 py-3.5 text-right whitespace-nowrap space-x-1.5">
-                        {canApprove && ["DRAFT", "PENDING_REVIEW"].includes(voucher.status) && (
-                          <button onClick={() => void approveVoucher(voucher.id)} className="px-2.5 py-1 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 rounded-lg text-xs font-bold transition-colors">Duyệt</button>
-                        )}
-                        {canApprove && ["DRAFT", "PENDING_REVIEW"].includes(voucher.status) && (
-                          <button onClick={() => void cancelVoucher(voucher.id)} className="px-2.5 py-1 bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 rounded-lg text-xs font-bold transition-colors">Hủy</button>
-                        )}
-                        {canApprove && voucher.status === "APPROVED" && (
-                          <button
-                            onClick={() => void unapproveVoucher(voucher)}
-                            title="Đưa chứng từ về bản nháp để sửa lại"
-                            className="px-2.5 py-1 bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200 rounded-lg text-xs font-bold transition-colors"
-                          >
-                            Bỏ duyệt
-                          </button>
-                        )}
                         <button onClick={() => window.open(`/vouchers/${voucher.id}/print`, "_blank")} className="px-2.5 py-1 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 rounded-lg text-xs font-bold transition-colors">In</button>
                         <RowActions
                           session={user}
@@ -763,12 +839,13 @@ export default function VouchersPage() {
                             setDeleteError(null);
                             setDeletingVoucher(voucher);
                           }}
-                          editDisabledReason={lockedForChange(voucher)}
-                          deleteDisabledReason={lockedForChange(voucher)}
+                          editDisabledReason={lockReason}
+                          deleteDisabledReason={lockReason}
                         />
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

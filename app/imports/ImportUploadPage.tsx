@@ -180,9 +180,19 @@ const normalizeGroup = (value?: string | null) => (value || "").trim().toUpperCa
  * Thu hẹp danh sách theo nghiệp vụ của từng template: phiếu phải trả chỉ gợi ý nhà cung cấp
  * và khoản mục chi phí, phiếu phải thu chỉ gợi ý khách hàng và nguồn doanh thu.
  */
-function filterMasterOptions(fieldName: string, templateCode: string, options: MasterOption[]) {
-  const isPayable = /PAYABLE|PAYMENT/.test(templateCode);
-  const isReceivable = /RECEIVABLE|RECEIPT/.test(templateCode);
+function filterMasterOptions(
+  fieldName: string,
+  templateCode: string,
+  options: MasterOption[],
+  values: Record<string, string> = {},
+) {
+  // Sao kê không có "loại phiếu": chiều tiền do cột Ghi nợ / Ghi có quyết định, nên
+  // suy ra từ chính hai ô đó để chỉ gợi ý khoản mục đúng chiều.
+  const isBankStatement = /BANK_STATEMENT/.test(templateCode);
+  const bankDebit = Number((values.debit_amount || "").replace(/[^\d.-]/g, "")) > 0;
+  const bankCredit = Number((values.credit_amount || "").replace(/[^\d.-]/g, "")) > 0;
+  const isPayable = /PAYABLE|PAYMENT/.test(templateCode) || (isBankStatement && bankDebit);
+  const isReceivable = /RECEIVABLE|RECEIPT/.test(templateCode) || (isBankStatement && bankCredit);
 
   if (fieldName === "partner_code") {
     return options.filter((option) => {
@@ -1042,7 +1052,7 @@ export default function ImportUploadPage({
                     const rawOptions = masterType ? masterOptions[masterType] : undefined;
                     const masterLoading = Boolean(masterType) && !rawOptions;
                     const selectOptions = masterType
-                      ? filterMasterOptions(field.field, templateCode, rawOptions || []).map((option) => ({
+                      ? filterMasterOptions(field.field, templateCode, rawOptions || [], manualValues).map((option) => ({
                           value: option.code,
                           label: option.name || option.code,
                           subLabel: option.code,

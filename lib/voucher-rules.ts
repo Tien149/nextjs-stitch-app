@@ -31,3 +31,27 @@ export function normalizeCategoryGroup(group: string | null | undefined) {
   if (raw.includes("OPEX")) return "OPEX";
   return raw || null;
 }
+
+/**
+ * Cửa sổ sửa chứng từ.
+ *
+ * Phiếu thu/chi được duyệt ngay lúc tạo, nên "sửa" ở đây là bỏ duyệt - sửa - duyệt lại.
+ * Trong ngày thì ai có quyền sửa đều làm được (kể cả thu ngân) vì còn đang trong ca và
+ * số liệu chưa chốt. Qua ngày thì chỉ vai trò có quyền `edit_past` (mặc định Admin và
+ * Kế toán tổng hợp) mới được đụng vào, để số liệu ngày đã chốt không bị đổi âm thầm.
+ */
+export function isSameCalendarDay(a: Date, b: Date) {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+/** Trả về lý do chặn, hoặc null nếu được phép. */
+export function voucherEditWindowError(
+  voucherDate: Date,
+  canEditPast: boolean,
+  now: Date = new Date(),
+  actionLabel = "sửa",
+) {
+  if (canEditPast) return null;
+  if (isSameCalendarDay(new Date(voucherDate), now)) return null;
+  return `Chứng từ lập ngày ${new Date(voucherDate).toLocaleDateString("vi-VN")} đã qua ngày, chỉ Kế toán tổng hợp hoặc Admin mới ${actionLabel} được. Liên hệ kế toán để xử lý.`;
+}

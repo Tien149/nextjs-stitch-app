@@ -7,6 +7,7 @@ import { DateInput } from "@/components/DateInput";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { appMenuItems, canAccessMenu, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import CopyableText from "@/components/CopyableText";
+import StickyFilterBar from "@/components/StickyFilterBar";
 
 type DebtRow = {
   partnerCode: string;
@@ -230,6 +231,7 @@ export default function DebtsPage() {
       </header>
 
       <main className="max-w-7xl mx-auto p-6 space-y-6">
+        <StickyFilterBar className="!-mx-6 !px-6 !mb-0">
         <div className="grid md:grid-cols-5 gap-4">
           <div className="bg-white border border-slate-200 rounded-xl p-4">
             <p className="text-xs text-slate-500">Đối tác</p>
@@ -253,6 +255,7 @@ export default function DebtsPage() {
             <p className="text-xs font-bold text-amber-600">{money(dueSoonTotal)} đ trong 7 ngày</p>
           </div>
         </div>
+        </StickyFilterBar>
 
         <section className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
           <div className="p-5 border-b border-slate-200 flex items-center justify-between">

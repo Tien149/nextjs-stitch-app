@@ -157,14 +157,6 @@ export default function WorkManagementPage() {
       branchCode={branchCode}
       onChangeBranch={setBranchCode}
     >
-      <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-5">
-        <Metric label="Tổng công việc" value={data.summary.total} icon="assignment" />
-        <Metric label="Đang làm" value={data.summary.inProgress} icon="pending_actions" tone="amber" />
-        <Metric label="Chờ duyệt" value={data.summary.waitingApproval} icon="approval" tone="blue" />
-        <Metric label="Hoàn thành" value={data.summary.completed} icon="check_circle" tone="green" />
-        <Metric label="Quá hạn" value={data.summary.overdue} icon="warning" tone="red" />
-      </div>
-
       {message && (
         <div className="mb-4 flex items-center justify-between rounded-lg border border-blue-100 bg-blue-50 px-4 py-2.5 text-sm text-blue-700">
           <span>{message}</span>
@@ -174,8 +166,15 @@ export default function WorkManagementPage() {
         </div>
       )}
 
-      {/* Thanh công cụ tách khỏi table-panel vì sticky không hoạt động trong khối overflow-hidden. */}
+      {/* KPI + thanh công cụ tách khỏi table-panel vì sticky không hoạt động trong khối overflow-hidden. */}
       <StickyFilterBar>
+        <div className="mb-3 grid grid-cols-2 gap-3 lg:grid-cols-5">
+          <Metric label="Tổng công việc" value={data.summary.total} icon="assignment" />
+          <Metric label="Đang làm" value={data.summary.inProgress} icon="pending_actions" tone="amber" />
+          <Metric label="Chờ duyệt" value={data.summary.waitingApproval} icon="approval" tone="blue" />
+          <Metric label="Hoàn thành" value={data.summary.completed} icon="check_circle" tone="green" />
+          <Metric label="Quá hạn" value={data.summary.overdue} icon="warning" tone="red" />
+        </div>
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex h-9 items-center rounded-lg border border-slate-200 bg-slate-50 p-0.5">

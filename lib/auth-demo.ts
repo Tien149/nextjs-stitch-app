@@ -7,7 +7,7 @@ export type DemoRole =
   | "Quản lý"
   | "Viewer";
 
-export type AppAction = "view" | "create" | "edit" | "delete" | "approve" | "export" | "config";
+export type AppAction = "view" | "create" | "edit" | "edit_past" | "delete" | "approve" | "export" | "config";
 
 export type DemoUser = {
   id: string;
@@ -217,6 +217,7 @@ export const ALL_APP_ACTIONS: { key: AppAction; label: string; desc: string }[] 
   { key: "view", label: "view", desc: "Xem dữ liệu" },
   { key: "create", label: "create", desc: "Tạo mới" },
   { key: "edit", label: "edit", desc: "Chỉnh sửa" },
+  { key: "edit_past", label: "edit_past", desc: "Sửa/bỏ duyệt chứng từ của ngày trước" },
   { key: "delete", label: "delete", desc: "Xóa dữ liệu" },
   { key: "approve", label: "approve", desc: "Phê duyệt" },
   { key: "export", label: "export", desc: "Xuất Excel / Báo cáo" },
@@ -224,14 +225,20 @@ export const ALL_APP_ACTIONS: { key: AppAction; label: string; desc: string }[] 
 ];
 
 export const roleActions: Record<DemoRole, AppAction[]> = {
-  Admin: ["view", "create", "edit", "delete", "approve", "export", "config"],
-  "Kế toán tổng hợp": ["view", "create", "edit", "export", "config"],
+  // edit_past: chỉ Admin và Kế toán tổng hợp được sửa/bỏ duyệt chứng từ đã qua ngày.
+  Admin: ["view", "create", "edit", "edit_past", "delete", "approve", "export", "config"],
+  "Kế toán tổng hợp": ["view", "create", "edit", "edit_past", "export", "config"],
   "Kế toán công nợ": ["view", "create", "edit", "export"],
   "Quản lý": ["view", "approve", "export"],
   Viewer: ["view"],
 };
 
 const menuActionOverrides: Partial<Record<string, Partial<Record<DemoRole, AppAction[]>>>> = {
+  // Bỏ duyệt chứng từ là quyền "approve"; Kế toán tổng hợp cần nó để sửa lại phiếu đã qua ngày.
+  "/vouchers": {
+    Admin: roleActions.Admin,
+    "Kế toán tổng hợp": ["view", "create", "edit", "edit_past", "approve", "export", "config"],
+  },
   "/procurement": {
     Admin: roleActions.Admin,
     "Kế toán tổng hợp": ["view", "create", "edit", "export"],

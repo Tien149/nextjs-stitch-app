@@ -78,6 +78,12 @@ type DailyCashData = {
   receipts: DailyCashReceipt[];
   manualEntries: ManualRevenueEntry[];
   duplicateRevenueWarning: boolean;
+  moneyInReconciliation: {
+    rows: Array<{ key: string; label: string; declared: number; received: number; difference: number; status: "MATCHED" | "SHORT" | "OVER"; note: string }>;
+    walletFee: number;
+    bankRowCount: number;
+    unclassifiedBankRows: number;
+  };
 };
 type ManualRevenueForm = { cashAmount: string; transferAmount: string; cardAmount: string; grabAmount: string; otherAmount: string; note: string };
 type CashCategoryRow = {
@@ -638,13 +644,13 @@ export default function ReportsPage() {
           <span className="material-symbols-outlined text-lg">refresh</span>
         </button>
       </div>
-      </StickyFilterBar>
-
+      <div className="mb-3" />
       <ModuleTabs
         active={active}
         onChange={handleTabChange}
         tabs={visibleTabs}
       />
+      </StickyFilterBar>
 
       {message && <p className="mb-4 px-4 py-3 rounded-lg border border-blue-100 bg-blue-50 text-sm text-blue-700">{message}</p>}
 
@@ -1120,6 +1126,52 @@ export default function ReportsPage() {
                 strong
               />
             </Table>
+          </section>
+
+          <section className="table-panel">
+            <PanelHeader
+              title="Đối chiếu tiền vào đã đủ chưa"
+              subtitle="Đặt số thu ngân khai cạnh số tiền thật đã về tài khoản, để kế toán biết ngay hình thức nào còn thiếu tiền."
+            />
+            <div className="overflow-x-auto">
+              <Table headers={["Hình thức", "Thu ngân khai", "Đã về tài khoản", "Chênh lệch", "Trạng thái"]}>
+                {dailyCash.moneyInReconciliation.rows.map((row) => (
+                  <tr key={row.key} className="border-t border-slate-100">
+                    <Cell>
+                      <b>{row.label}</b>
+                      <p className="mt-0.5 text-xs text-slate-500">{row.note}</p>
+                    </Cell>
+                    <Cell right>{money(row.declared)} đ</Cell>
+                    <Cell right>{money(row.received)} đ</Cell>
+                    <Cell right>
+                      <b className={row.status === "MATCHED" ? "text-slate-500" : row.status === "SHORT" ? "text-rose-600" : "text-amber-600"}>
+                        {row.difference > 0 ? "+" : ""}{money(row.difference)} đ
+                      </b>
+                    </Cell>
+                    <Cell right>
+                      <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider ${
+                        row.status === "MATCHED"
+                          ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
+                          : row.status === "SHORT"
+                            ? "border border-rose-200 bg-rose-50 text-rose-700"
+                            : "border border-amber-200 bg-amber-50 text-amber-800"
+                      }`}>
+                        {row.status === "MATCHED" ? "Đủ" : row.status === "SHORT" ? "Thiếu" : "Thừa"}
+                      </span>
+                    </Cell>
+                  </tr>
+                ))}
+              </Table>
+            </div>
+            <div className="flex flex-wrap gap-3 border-t border-slate-100 px-4 py-3 text-xs text-slate-600">
+              <span>Phí quẹt thẻ đã tách sang chi phí: <b className="text-slate-900">{money(dailyCash.moneyInReconciliation.walletFee)} đ</b></span>
+              <span>Dòng sao kê ghi có trong ngày: <b className="text-slate-900">{dailyCash.moneyInReconciliation.bankRowCount}</b></span>
+              {dailyCash.moneyInReconciliation.unclassifiedBankRows > 0 && (
+                <span className="text-amber-700">
+                  {dailyCash.moneyInReconciliation.unclassifiedBankRows} dòng sao kê chưa gán loại thu/chi
+                </span>
+              )}
+            </div>
           </section>
 
           {dailyCash.manualEntries.length > 0 && (

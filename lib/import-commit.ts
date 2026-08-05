@@ -343,6 +343,7 @@ export async function commitImport(input: CommitInput) {
           balanceAfter: row.values.balance_after === null ? null : asNumber(row.values.balance_after),
           branchCode: row.values.branch_code === null ? null : asText(row.values.branch_code),
           partnerHint: row.values.partner_hint === null ? null : asText(row.values.partner_hint),
+          categoryCode: asText(row.values.category_code) || null,
         })),
       });
     }

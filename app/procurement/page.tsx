@@ -8,6 +8,7 @@ import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { canPerformMenuAction, filterModuleTabs } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import CopyableText from "@/components/CopyableText";
+import StickyFilterBar from "@/components/StickyFilterBar";
 
 type Item = { id: string; code: string; name: string; unit: string; itemType: string; requiresImage: boolean };
 type MasterItem = { id: string; type: string; code: string; name: string; branch: string | null; status: string };
@@ -335,7 +336,8 @@ export default function ProcurementPage() {
   return (
     <ModuleFrame title="Mua hàng & Nhà cung cấp" subtitle="GĐ3 - PR, báo giá, PO và nhận hàng" role={user?.role}>
       {/* Operational Summary Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
+      <StickyFilterBar>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
         <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-slate-500">Tổng yêu cầu PR</span>
@@ -367,6 +369,7 @@ export default function ProcurementPage() {
       </div>
 
       <ModuleTabs active={active} onChange={setActive} tabs={visibleTabs} />
+      </StickyFilterBar>
       {message && <p className="mb-4 px-4 py-3 rounded-lg border border-blue-100 bg-blue-50 text-sm text-blue-700">{message}</p>}
 
       {active === "requests" && (

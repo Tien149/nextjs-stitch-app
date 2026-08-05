@@ -364,10 +364,9 @@ export default function AccountingPage() {
             </button>
           )}
         </section>
-        </StickyFilterBar>
 
         {/* Tab Navigation */}
-        <nav className="flex gap-1.5 border-b border-slate-200 overflow-x-auto">
+        <nav className="flex gap-1.5 border-b border-slate-200 overflow-x-auto mt-3">
           {[
             { id: "ledger", label: "Nhật ký chung", icon: "receipt_long" },
             { id: "manual", label: "Bút toán tay", icon: "edit_note" },
@@ -391,6 +390,7 @@ export default function AccountingPage() {
             </button>
           ))}
         </nav>
+        </StickyFilterBar>
 
         {/* Notification Banner */}
         {message && (

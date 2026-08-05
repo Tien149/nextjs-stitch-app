@@ -30,8 +30,9 @@ model MasterDataItem {
   code         String
   name         String
   group        String?
-  /// Nhóm cấp 2 của khoản mục thu/chi (ví dụ OPEX -> "Chi phí cố định"). Trỏ tới code của
-  /// một mục REVENUE_EXPENSE_SUBGROUP.
+  /// Mã của danh mục cha trong ba tầng phân loại thu/chi:
+  /// PNL_GROUP (nhóm hạng mục P&L) -> PNL_ITEM (hạng mục chi tiết) -> REVENUE_EXPENSE_CATEGORY.
+  /// PNL_ITEM lưu mã PNL_GROUP, REVENUE_EXPENSE_CATEGORY lưu mã PNL_ITEM.
   subGroup     String?
   partnerType  String?
   partnerGroup String?
@@ -205,6 +206,8 @@ model BankStatementTransaction {
   balanceAfter    Float?
   branchCode      String?
   partnerHint     String?
+  /// Khoản mục thu/chi khai ngay trên file sao kê để giao dịch được phân loại từ lúc import.
+  categoryCode    String?
   reconcileStatus String   @default("UNMATCHED")
   createdAt       DateTime @default(now())
 
@@ -217,6 +220,7 @@ model BankStatementTransaction {
   @@unique([bankAccount, transactionCode])
   @@index([transactionDate])
   @@index([bankAccount])
+  @@index([categoryCode])
   @@index([reconcileStatus])
   @@index([deletedAt])
 }
@@ -882,6 +886,10 @@ model MoneyTransfer {
   externalRef         String?
   description         String
   transferPurpose     String?
+  /// Quyết toán ví/POS về ngân hàng: tiền rời ví = amount + feeAmount, phần feeAmount là
+  /// phí quẹt thẻ nên đi thẳng vào chi phí P&L theo feeCategoryCode.
+  feeAmount           Float    @default(0)
+  feeCategoryCode     String?
   depositTargetType   String?
   sourceReportDate    DateTime?
   sourceShift         String?
