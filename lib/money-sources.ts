@@ -55,12 +55,6 @@ export function isMoneySourceAllowed(
   return filterMoneySources(sources, branchCode, groups).some((source) => source.code === code);
 }
 
-function stripLeadingToken(label: string, token: string | null | undefined) {
-  const cleanToken = (token || "").trim();
-  if (!cleanToken) return label;
-  return label.replace(new RegExp(`^${cleanToken.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*[-_–—:]?\\s*`, "i"), "").trim();
-}
-
 function humanizeCodeLabel(label: string) {
   return label
     .replace(/\bTIENMAT\b/gi, "Tiền mặt")
@@ -74,14 +68,19 @@ function humanizeCodeLabel(label: string) {
 }
 
 export function moneySourceDisplayName(source: MoneySourceOption, currentBranchLabel?: string | null) {
-  const rawName = (source.name || source.code || "").trim();
-  const parts = rawName.split("_").map((part) => part.trim()).filter(Boolean);
-  let label = parts.length >= 2 ? parts.slice(1).join(" ") : rawName;
-  label = label.replace(/_/g, " ").replace(/\s+/g, " ").trim();
-  label = stripLeadingToken(label, currentBranchLabel);
-  label = stripLeadingToken(label, source.branch);
-  label = stripLeadingToken(label, source.code);
-  return humanizeCodeLabel(label || source.name || source.code);
+  // Keep this parameter for existing callers; branch context must not rewrite
+  // a user-configured money-source name.
+  void currentBranchLabel;
+
+  const configuredName = (source.name || "").trim();
+  if (configuredName) return configuredName;
+
+  return humanizeCodeLabel(
+    (source.code || "")
+      .replace(/_/g, " ")
+      .replace(/\s+/g, " ")
+      .trim(),
+  );
 }
 
 export function moneySourceDebugLabel(source: MoneySourceOption, currentBranchLabel?: string | null) {
