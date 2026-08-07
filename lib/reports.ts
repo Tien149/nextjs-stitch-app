@@ -241,7 +241,7 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
       }),
       prisma.moneyTransfer.findMany({
         where: { ...branchFilter, transferDate: { gte: start, lt: end }, status: "APPROVED" },
-        select: { transferDate: true, amount: true, feeAmount: true, feeCategoryCode: true, fromMoneySourceCode: true, toMoneySourceCode: true },
+        select: { transferDate: true, amount: true, feeAmount: true, feeCategoryCode: true, transferPurpose: true, fromMoneySourceCode: true, toMoneySourceCode: true },
       }),
       prisma.openingBalance.findMany({
         where: { period: months[0], ...(branchCode === "ALL" ? {} : { branchCode }), status: "POSTED", balanceType: { in: cashReportOpeningTypes } },
@@ -346,16 +346,17 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
   }
 
   for (const row of transfers) {
-    // Quyết toán ví: ví mất amount + phí, ngân hàng chỉ nhận amount, phần phí là chi phí thật.
+    // Nguồn đi giảm amount + phí/chênh lệch; nguồn nhận chỉ tăng số thực chuyển.
     touchSource(row.fromMoneySourceCode).transferOut += row.amount + row.feeAmount;
     touchSource(row.toMoneySourceCode).transferIn += row.amount;
     if (row.feeAmount > 0) {
       const category = row.feeCategoryCode ? categoryByCode.get(row.feeCategoryCode) : null;
+      const isCashRounding = row.transferPurpose === "CASH_DEPOSIT";
       bumpCategory(
         expense,
         {
-          key: row.feeCategoryCode || "WALLET_FEE",
-          name: category?.name || "Phí quẹt thẻ / phí ví",
+          key: row.feeCategoryCode || (isCashRounding ? "CASH_ROUNDING_EXPENSE" : "WALLET_FEE"),
+          name: category?.name || (isCashRounding ? "Chi phí làm tròn tiền nộp" : "Phí quẹt thẻ / phí ví"),
           group: category?.group || "OPEX",
           origin: "VOUCHER",
         },

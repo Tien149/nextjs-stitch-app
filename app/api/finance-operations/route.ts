@@ -10,7 +10,7 @@ import { scopePayloadByTab } from "@/lib/tab-scope";
 
 const menuHref = "/finance-operations";
 const cashDepositDenominations = [500000, 200000, 100000, 50000, 20000, 10000, 5000, 2000, 1000];
-// Nộp tiền đếm theo tờ nên số nộp luôn là bội số của mệnh giá nhỏ nhất; phần lẻ giữ lại trong két.
+// Số thực nộp đếm theo tờ; phần lẻ dưới 1.000 đ đi thẳng vào chi phí để clear nguồn thu ngân.
 const cashDepositUnit = 1000;
 const cashDepositTargetLabels: Record<string, string> = { PKT: "Nộp Tiền PKT", CO: "Nộp Tiền Cô" };
 type CashDepositDenominationInput = { denomination?: unknown; quantity?: unknown; note?: unknown };
@@ -136,7 +136,7 @@ export async function POST(request: Request) {
         where: { id },
         data: { status: "APPROVED", approvedBy: auth.session.name },
       });
-      await writeAuditLog({ session: auth.session, module: "FINANCE_OPERATIONS", action: "APPROVE_TRANSFER", entityType: "MoneyTransfer", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { amount: result.amount, from: result.fromMoneySourceCode, to: result.toMoneySourceCode } });
+      await writeAuditLog({ session: auth.session, module: "FINANCE_OPERATIONS", action: "APPROVE_TRANSFER", entityType: "MoneyTransfer", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { amount: result.amount, feeAmount: result.feeAmount, clearedAmount: result.amount + result.feeAmount, from: result.fromMoneySourceCode, to: result.toMoneySourceCode } });
       return NextResponse.json(result);
     }
 
@@ -152,11 +152,17 @@ export async function POST(request: Request) {
       const fromMoneySourceCode = cleanText(body.fromMoneySourceCode);
       const toMoneySourceCode = cleanText(body.toMoneySourceCode);
       const amount = Math.round(toNumber(body.amount));
+      const grossAmount = Math.round(toNumber(body.grossAmount ?? body.amount));
+      const feeAmount = grossAmount - amount;
       const denominationRows: CashDepositDenominationInput[] = Array.isArray(body.denominations) ? body.denominations : [];
 
       if (!branchCode || branchCode === "ALL") businessError("Nộp tiền bắt buộc chọn một cửa hàng cụ thể.");
-      if (amount <= 0) businessError("Số tiền nộp phải lớn hơn 0.");
-      if (amount % cashDepositUnit !== 0) businessError(`Số tiền nộp phải là bội số của ${cashDepositUnit.toLocaleString("vi-VN")} đ vì nộp tiền đếm theo tờ. Phần lẻ giữ lại trong két.`);
+      if (grossAmount <= 0) businessError("Số tiền cần clear phải lớn hơn 0.");
+      if (amount < 0) businessError("Số tiền thực nộp không được âm.");
+      if (amount % cashDepositUnit !== 0) businessError(`Số tiền thực nộp phải là bội số của ${cashDepositUnit.toLocaleString("vi-VN")} đ.`);
+      if (amount !== Math.floor(grossAmount / cashDepositUnit) * cashDepositUnit || feeAmount < 0 || feeAmount >= cashDepositUnit) {
+        businessError(`Số thực nộp phải được làm tròn xuống từ số cần clear; phần chênh lệch phải nhỏ hơn ${cashDepositUnit.toLocaleString("vi-VN")} đ.`);
+      }
       if (!fromMoneySourceCode || !toMoneySourceCode) businessError("Nguồn tiền đi và nguồn tiền nhận là bắt buộc.");
       if (fromMoneySourceCode === toMoneySourceCode) businessError("Nguồn tiền đi và nguồn tiền nhận không được trùng nhau.");
 
@@ -184,7 +190,7 @@ export async function POST(request: Request) {
         })
         .filter((row) => row.denomination > 0 && row.quantity > 0);
 
-      if (denominations.length === 0) businessError("Bảng kê mệnh giá là bắt buộc khi nộp tiền.");
+      if (amount > 0 && denominations.length === 0) businessError("Bảng kê mệnh giá là bắt buộc khi có tiền thực nộp.");
       if (denominations.some((row) => !cashDepositDenominations.includes(row.denomination))) businessError("Bảng kê có mệnh giá không hợp lệ.");
       const denominationTotal = denominations.reduce((sum: number, row: CashDepositDenominationRow) => sum + row.amount, 0);
       if (denominationTotal !== amount) businessError(`Tổng bảng kê mệnh giá (${denominationTotal.toLocaleString("vi-VN")} đ) phải bằng số tiền nộp (${amount.toLocaleString("vi-VN")} đ).`);
@@ -213,8 +219,9 @@ export async function POST(request: Request) {
           fromMoneySourceCode,
           toMoneySourceCode,
           amount,
+          feeAmount,
           externalRef: `NOPT-${reportDateCode}-${branchCode}-${sourceShift}-${depositTargetType}`,
-          description: `${cashDepositTargetLabels[depositTargetType]} ngày ${reportDateCode} (${sourceShift})`,
+          description: `${cashDepositTargetLabels[depositTargetType]} ngày ${reportDateCode} (${sourceShift})${feeAmount > 0 ? ` - chi phí làm tròn ${feeAmount.toLocaleString("vi-VN")} đ` : ""}`,
           transferPurpose: "CASH_DEPOSIT",
           depositTargetType,
           sourceReportDate: new Date(`${reportDateCode}T00:00:00`),
@@ -234,7 +241,7 @@ export async function POST(request: Request) {
         entityId: result.id,
         entityCode: result.code,
         branchCode,
-        metadata: { amount, from: fromMoneySourceCode, to: toMoneySourceCode, depositTargetType, sourceReportDate: reportDateCode, sourceShift, denominations },
+        metadata: { grossAmount, amount, feeAmount, from: fromMoneySourceCode, to: toMoneySourceCode, depositTargetType, sourceReportDate: reportDateCode, sourceShift, denominations },
       });
       return NextResponse.json(result, { status: 201 });
     }

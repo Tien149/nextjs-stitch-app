@@ -22,6 +22,7 @@ type MoneyTransfer = {
   fromMoneySourceCode: string;
   toMoneySourceCode: string;
   amount: number;
+  feeAmount: number;
   description: string;
   status: string;
   transferPurpose?: string | null;
@@ -472,7 +473,14 @@ export default function FinanceOperationsPage() {
                               </p>
                             )}
                           </td>
-                          <td className="px-4 py-3 text-right font-bold">{money(transfer.amount)} đ</td>
+                          <td className="px-4 py-3 text-right">
+                            <p className="font-bold">{money(transfer.amount)} đ</p>
+                            {transfer.feeAmount > 0 && (
+                              <p className="mt-1 text-[11px] font-medium text-amber-700">
+                                Chi phí làm tròn: {money(transfer.feeAmount)} đ · Clear: {money(transfer.amount + transfer.feeAmount)} đ
+                              </p>
+                            )}
+                          </td>
                           <td className="px-4 py-3 text-right">
                             {canApproveTransfer ? (
                               <button type="button" onClick={() => void send({ action: "APPROVE_TRANSFER", id: transfer.id }, "Đã duyệt giao dịch điều tiền.")} className="rounded-lg bg-emerald-600 px-3 py-2 font-bold text-white hover:bg-emerald-700">Duyệt</button>

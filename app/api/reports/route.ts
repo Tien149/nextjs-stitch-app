@@ -421,17 +421,18 @@ async function buildMoneyInReconciliation(
     }),
     prisma.moneyTransfer.findMany({
       where: { ...branchWhere, transferPurpose: "CASH_DEPOSIT", status: { in: ["PENDING_REVIEW", "APPROVED"] }, sourceReportDate: { gte: dayStart, lt: dayEnd } },
-      select: { amount: true, status: true },
+      select: { amount: true, feeAmount: true, status: true },
     }),
   ]);
 
   const bankReceived = bankRows.reduce((sum, row) => sum + row.creditAmount, 0);
   const walletSettled = walletSettlements.reduce((sum, row) => sum + row.amount + row.feeAmount, 0);
   const walletFee = walletSettlements.reduce((sum, row) => sum + row.feeAmount, 0);
-  const cashDeposited = cashDeposits.reduce((sum, row) => sum + row.amount, 0);
+  // Đối chiếu theo toàn bộ số đã clear khỏi thu ngân: tiền thực nộp + chi phí làm tròn.
+  const cashDeposited = cashDeposits.reduce((sum, row) => sum + row.amount + row.feeAmount, 0);
 
   const rows = [
-    { key: "cash", label: "Tiền mặt", declared: declared.cash, received: cashDeposited, note: "Đối chiếu với phiếu nộp tiền đã lập cho ngày này." },
+    { key: "cash", label: "Tiền mặt", declared: declared.cash, received: cashDeposited, note: "Đối chiếu với tổng đã clear trên phiếu nộp tiền (thực nộp + chi phí làm tròn)." },
     { key: "transfer", label: "Chuyển khoản", declared: declared.transfer, received: bankReceived, note: "Đối chiếu với các dòng ghi có trên sao kê ngân hàng trong ngày." },
     { key: "card", label: "Quẹt thẻ / Ví", declared: declared.card + declared.grab, received: walletSettled, note: "Cổng thanh toán trả tiền sau, phần chưa quyết toán vẫn nằm ở nguồn ví." },
   ].map((row) => {

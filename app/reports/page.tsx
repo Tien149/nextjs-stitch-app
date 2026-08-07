@@ -368,9 +368,8 @@ export default function ReportsPage() {
 
   const cashDepositAmount = Math.max(0, Math.round(dailyCash?.summary.cashToDeposit || 0));
   /**
-   * Nộp tiền là đếm theo tờ nên chỉ nộp được bội số của mệnh giá nhỏ nhất (1.000 đ).
-   * Số cần nộp làm tròn XUỐNG, phần lẻ dưới 1.000 đ giữ lại trong két (vẫn nằm trong
-   * số dư nguồn tiền mặt) — không làm tròn lên vì không thể nộp số tiền không có thật.
+   * Nộp tiền là đếm theo tờ nên số thực nộp làm tròn XUỐNG theo mệnh giá nhỏ nhất.
+   * Phần lẻ được ghi nhận thẳng vào chi phí để clear đủ số cần nộp khỏi nguồn thu ngân.
    */
   const cashDepositRoundedAmount = Math.floor(cashDepositAmount / cashDepositUnit) * cashDepositUnit;
   const cashDepositRemainder = cashDepositAmount - cashDepositRoundedAmount;
@@ -394,9 +393,7 @@ export default function ReportsPage() {
         ? "Chọn một cửa hàng cụ thể để nộp tiền."
         : cashDepositAmount <= 0
           ? "Ngày/ca này chưa có tiền mặt cần nộp."
-          : cashDepositRoundedAmount <= 0
-            ? `Tiền mặt cần nộp (${money(cashDepositAmount)} đ) chưa đủ một tờ ${money(cashDepositUnit)} đ.`
-            : cashDepositCashSources.length === 0
+          : cashDepositCashSources.length === 0
               ? "Chưa cấu hình nguồn tiền mặt cho cửa hàng này."
               : cashDepositDefaultTargetSources.length === 0
                 ? "Chưa cấu hình nguồn tiền nhận cho cửa hàng này."
@@ -516,11 +513,9 @@ export default function ReportsPage() {
       setMessage("Vui lòng chọn một cửa hàng cụ thể trước khi tạo phiếu nộp tiền.");
       return;
     }
-    if (cashDepositRoundedAmount <= 0) {
+    if (cashDepositAmount <= 0) {
       setMessage(
-        cashDepositAmount <= 0
-          ? "Không có số tiền mặt cần nộp cho ngày/ca này."
-          : `Tiền mặt cần nộp (${money(cashDepositAmount)} đ) chưa đủ một tờ ${money(cashDepositUnit)} đ để lập phiếu.`,
+        "Không có số tiền mặt cần nộp cho ngày/ca này.",
       );
       return;
     }
@@ -575,6 +570,7 @@ export default function ReportsPage() {
           fromMoneySourceCode: cashDepositForm.fromMoneySourceCode,
           toMoneySourceCode: cashDepositForm.toMoneySourceCode,
           amount: cashDepositRoundedAmount,
+          grossAmount: cashDepositAmount,
           denominations: cashDepositForm.denominations.map((row) => ({
             denomination: row.denomination,
             quantity: Math.max(0, Math.floor(Number(row.quantity) || 0)),
@@ -586,7 +582,11 @@ export default function ReportsPage() {
         setMessage(payload.error || "Không tạo được phiếu nộp tiền.");
         return;
       }
-      setMessage(`Đã tạo phiếu ${payload.code} chờ duyệt.`);
+      setMessage(
+        `Đã tạo phiếu ${payload.code} chờ duyệt: thực nộp ${money(cashDepositRoundedAmount)} đ`
+        + `${cashDepositRemainder > 0 ? `, chi phí làm tròn ${money(cashDepositRemainder)} đ` : ""}`
+        + `, clear ${money(cashDepositAmount)} đ khỏi nguồn thu ngân.`,
+      );
       setCashDepositOpen(false);
       await loadData();
     } catch {
@@ -1444,7 +1444,7 @@ export default function ReportsPage() {
                   </div>
                   <div className="grid grid-cols-2 gap-2 text-right text-xs sm:min-w-64">
                     <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
-                      <p className="font-semibold text-slate-500">Cần nộp</p>
+                      <p className="font-semibold text-slate-500">Thực nộp</p>
                       <p className="mt-1 font-bold text-slate-900">{money(cashDepositRoundedAmount)} đ</p>
                     </div>
                     <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
@@ -1488,8 +1488,8 @@ export default function ReportsPage() {
                 </div>
                 {cashDepositRemainder > 0 && (
                   <p className="border-t border-amber-100 bg-amber-50 px-4 py-3 text-xs font-medium text-amber-800">
-                    Tiền mặt cần nộp là <b>{money(cashDepositAmount)} đ</b>, nhưng nộp theo tờ nên chỉ kê được <b>{money(cashDepositRoundedAmount)} đ</b>.
-                    Phần lẻ <b>{money(cashDepositRemainder)} đ</b> giữ lại trong két, vẫn nằm trong số dư nguồn tiền mặt.
+                    Tiền mặt cần clear là <b>{money(cashDepositAmount)} đ</b>, số thực nộp theo mệnh giá là <b>{money(cashDepositRoundedAmount)} đ</b>.
+                    Phần lẻ <b>{money(cashDepositRemainder)} đ</b> được ghi thẳng vào chi phí; nguồn tiền mặt được giảm đủ <b>{money(cashDepositAmount)} đ</b>, không giữ lại trong két.
                   </p>
                 )}
                 {cashDepositDenominationTotal !== cashDepositRoundedAmount && (

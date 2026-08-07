@@ -3,6 +3,7 @@ import { addPeriod, businessError, isPeriodLocked, periodFromDate } from "@/lib/
 import type { DemoSession } from "@/lib/auth-demo";
 import { voucherJournalLines } from "@/lib/voucher-accounting";
 import { normalizeCategoryGroup } from "@/lib/voucher-rules";
+import { moneySourceAccountCode } from "@/lib/money-sources";
 
 export const defaultAccounts = [
   { code: "1111", name: "Tiền mặt", accountType: "ASSET", normalBalance: "DEBIT", reportGroup: "CASH" },
@@ -208,6 +209,34 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
       row.pnlItemCode ? pnlItemGroupByCode.get(row.pnlItemCode) ?? null : null,
     );
     results.push(await postJournalEntry({ entryDate: row.voucherDate, branchCode: row.branchCode, sourceType: "VOUCHER", sourceId: row.id, sourceCode: row.code, description: row.description, createdBy: actor, lines }));
+  }
+
+  // Điều chuyển có chênh lệch phải giảm đủ nguồn đi, tăng nguồn nhận theo số thực chuyển
+  // và đưa phần chênh vào chi phí. Cùng một logic áp dụng cho phí ví và làm tròn tiền nộp.
+  const [moneyTransfers, transferMoneySources] = await Promise.all([
+    prisma.moneyTransfer.findMany({ where: { ...branchFilter, transferDate: { gte: start, lt: end }, status: "APPROVED" } }),
+    prisma.masterDataItem.findMany({ where: { type: "MONEY_SOURCE" } }),
+  ]);
+  const transferSourceByCode = new Map(transferMoneySources.map((source) => [source.code, source]));
+  for (const row of moneyTransfers) {
+    const grossAmount = row.amount + row.feeAmount;
+    if (grossAmount <= 0) continue;
+    const fromAccount = moneySourceAccountCode(transferSourceByCode.get(row.fromMoneySourceCode));
+    const toAccount = moneySourceAccountCode(transferSourceByCode.get(row.toMoneySourceCode));
+    const lines: EntryLine[] = [];
+    if (row.amount > 0) lines.push({ accountCode: toAccount, debit: row.amount });
+    if (row.feeAmount > 0) lines.push({ accountCode: "6428", debit: row.feeAmount, categoryCode: row.feeCategoryCode });
+    lines.push({ accountCode: fromAccount, credit: grossAmount });
+    results.push(await postJournalEntry({
+      entryDate: row.transferDate,
+      branchCode: row.branchCode,
+      sourceType: "MONEY_TRANSFER",
+      sourceId: row.id,
+      sourceCode: row.code,
+      description: row.description,
+      createdBy: actor,
+      lines,
+    }));
   }
 
   const payables = await prisma.supplierPayable.findMany({ where: { recognizedDate: { gte: start, lt: end }, ...(branchCode === "ALL" ? {} : { purchaseOrder: { branchCode } }) }, include: { purchaseOrder: true } });
