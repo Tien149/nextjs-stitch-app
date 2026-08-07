@@ -202,7 +202,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
       {
         field: "external_ref",
         label: "Mã tham chiếu POS",
-        required: true,
+        required: false,
         type: "text",
         aliases: ["ma tham chieu pos", "external ref", "pos ref", "reference"],
       },

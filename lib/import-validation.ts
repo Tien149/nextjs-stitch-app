@@ -5,6 +5,7 @@ import type { ParsedImportResult, ParsedImportRow } from "@/lib/import-parser";
 import type { DemoSession } from "@/lib/auth-demo";
 import { isInboundStockType, isOutboundStockType, isStockTransactionType, normalizeStockTransactionType } from "@/lib/inventory-stock";
 import { normalizeCategoryGroup } from "@/lib/voucher-rules";
+import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
 
 type MasterItem = {
   type: string;
@@ -452,6 +453,7 @@ export async function validateImportResult(
   const branchTypes: ImportType[] = ["VOUCHER", "INTERNAL_TRANSFER", "DEBT_OPENING", "OPENING_BALANCE", "REVENUE_POS", "PAYROLL", "INVENTORY_TRANSACTION", "STOCKTAKE", "ASSET"];
   const openingBalanceKeys = new Set<string>();
   const revenueStockUsage = new Map<string, number>();
+  const revenueReferenceRows = new Map<string, ParsedImportRow>();
   const importAssetCodes = new Set<string>();
   for (const row of result.rows) {
     if (branchTypes.includes(importType)) validateBranch(row, session, masterItems);
@@ -560,6 +562,16 @@ export async function validateImportResult(
             }
           }
         }
+      }
+      ensureRevenuePosReference(row.values);
+      const referenceKey = revenuePosReferenceKey(row.values);
+      const duplicateReferenceRow = revenueReferenceRows.get(referenceKey);
+      if (duplicateReferenceRow) {
+        const message = `Mã tham chiếu POS [${text(row.values.external_ref)}] bị trùng trong file; hãy cung cấp mã riêng để phân biệt giao dịch`;
+        addError(duplicateReferenceRow, message);
+        addError(row, message);
+      } else {
+        revenueReferenceRows.set(referenceKey, row);
       }
     }
     if (importType === "PAYROLL") {

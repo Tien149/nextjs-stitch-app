@@ -6,6 +6,7 @@ import { type ImportType } from "@/lib/import-templates";
 import { type ParsedImportRow } from "@/lib/import-parser";
 import { normalizeStockTransactionType, postInventoryTransaction } from "@/lib/inventory-stock";
 import { writeAuditLog } from "@/lib/audit-log";
+import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
 
 function asText(value: unknown) {
   return String(value || "").trim();
@@ -179,6 +180,15 @@ async function setImportTarget(
 }
 
 export async function commitImport(input: CommitInput) {
+  if (input.importType === "REVENUE_POS") {
+    const referenceKeys = input.rows.map((row) => {
+      ensureRevenuePosReference(row.values);
+      return revenuePosReferenceKey(row.values);
+    });
+    if (new Set(referenceKeys).size !== referenceKeys.length) {
+      throw new Error("File có các dòng doanh thu trùng Mã tham chiếu POS");
+    }
+  }
   const errorRows = input.rows.filter((row) => row.errors.length > 0);
   if (errorRows.length > 0) throw new Error("File còn dòng lỗi, vui lòng sửa trước khi commit");
   if (input.rows.length === 0) throw new Error("File không có dòng dữ liệu để commit");
