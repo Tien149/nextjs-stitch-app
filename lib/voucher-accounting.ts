@@ -13,6 +13,7 @@ export type VoucherForPosting = {
   moneySourceCode: string;
   partnerCode: string | null;
   categoryCode: string | null;
+  pnlItemCode: string | null;
   depositAction: string | null;
   debtAction: string | null;
 };
@@ -23,6 +24,7 @@ export type JournalLineInput = {
   credit?: number;
   partnerCode?: string | null;
   categoryCode?: string | null;
+  pnlItemCode?: string | null;
 };
 
 export function cashAccountFor(moneySourceCode: string) {
@@ -66,7 +68,7 @@ export function paymentCounterAccount(voucher: VoucherForPosting, categoryGroup:
   return { account: "6428", reason: "Chi phí vận hành" };
 }
 
-export function voucherJournalLines(voucher: VoucherForPosting, categoryGroup: string | null) {
+export function voucherJournalLines(voucher: VoucherForPosting, categoryGroup: string | null, pnlItemGroup: string | null = null) {
   const cashAccount = cashAccountFor(voucher.moneySourceCode);
   if (voucher.voucherType === "RECEIPT") {
     const { account, reason } = receiptCounterAccount(voucher, categoryGroup);
@@ -74,15 +76,17 @@ export function voucherJournalLines(voucher: VoucherForPosting, categoryGroup: s
       reason,
       lines: [
         { accountCode: cashAccount, debit: voucher.amount },
-        { accountCode: account, credit: voucher.amount, partnerCode: voucher.partnerCode, categoryCode: voucher.categoryCode },
+        { accountCode: account, credit: voucher.amount, partnerCode: voucher.partnerCode, categoryCode: voucher.categoryCode, pnlItemCode: voucher.pnlItemCode },
       ] as JournalLineInput[],
     };
   }
-  const { account, reason } = paymentCounterAccount(voucher, categoryGroup);
+  // Khi kế toán chọn Hạng mục P&L riêng, nhóm của hạng mục đó quyết định dòng P&L.
+  // Nếu để trống, giữ cách hạch toán cũ theo Khoản mục thu/chi để dữ liệu lịch sử không đổi.
+  const { account, reason } = paymentCounterAccount(voucher, pnlItemGroup || categoryGroup);
   return {
     reason,
     lines: [
-      { accountCode: account, debit: voucher.amount, partnerCode: voucher.partnerCode, categoryCode: voucher.categoryCode },
+      { accountCode: account, debit: voucher.amount, partnerCode: voucher.partnerCode, categoryCode: voucher.categoryCode, pnlItemCode: voucher.pnlItemCode },
       { accountCode: cashAccount, credit: voucher.amount },
     ] as JournalLineInput[],
   };

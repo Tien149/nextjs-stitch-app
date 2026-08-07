@@ -13,6 +13,13 @@ type PnlBucket = {
   otherExpense: number;
 };
 
+export type PnlItemBreakdown = {
+  code: string;
+  name: string;
+  group: string | null;
+  amount: number;
+};
+
 function emptyPnl(): PnlBucket {
   return { revenue: 0, cogs: 0, payroll: 0, depreciation: 0, otherOpex: 0, otherIncome: 0, otherExpense: 0 };
 }
@@ -40,10 +47,18 @@ export function finalizePnl(bucket: PnlBucket) {
 
 export async function getPnl(period: string, branchCode: string) {
   const { start, end } = periodBounds(period);
-  const entries = await prisma.journalEntry.findMany({
-    where: { entryDate: { gte: start, lt: end }, status: "POSTED", ...(branchCode === "ALL" ? {} : { branchCode }) },
-    include: { lines: { include: { account: true } } },
-  });
+  const [entries, pnlItems] = await Promise.all([
+    prisma.journalEntry.findMany({
+      where: { entryDate: { gte: start, lt: end }, status: "POSTED", ...(branchCode === "ALL" ? {} : { branchCode }) },
+      include: { lines: { include: { account: true } } },
+    }),
+    prisma.masterDataItem.findMany({
+      where: { type: "PNL_ITEM" },
+      select: { code: true, name: true, group: true },
+    }),
+  ]);
+  const pnlItemByCode = new Map(pnlItems.map((item) => [item.code, item]));
+  const pnlItemBreakdown = new Map<string, PnlItemBreakdown>();
   const total = emptyPnl();
   const branches = new Map<string, PnlBucket>();
   const departments = new Map<string, PnlBucket>();
@@ -52,6 +67,18 @@ export async function getPnl(period: string, branchCode: string) {
     for (const line of entry.lines) {
       addLine(total, line);
       addLine(branch, line);
+      if (["COGS", "OPEX", "OTHER_EXPENSE"].includes(line.account.accountType)) {
+        const code = line.pnlItemCode || "UNCLASSIFIED";
+        const item = line.pnlItemCode ? pnlItemByCode.get(line.pnlItemCode) : null;
+        const current = pnlItemBreakdown.get(code) || {
+          code,
+          name: item?.name || (line.pnlItemCode ? `Hạng mục P&L [${line.pnlItemCode}]` : "Chưa phân loại P&L"),
+          group: item?.group || null,
+          amount: 0,
+        };
+        current.amount += line.debit - line.credit;
+        pnlItemBreakdown.set(code, current);
+      }
       const departmentCode = line.departmentCode || "UNALLOCATED";
       const department = departments.get(departmentCode) || emptyPnl();
       addLine(department, line);
@@ -63,6 +90,9 @@ export async function getPnl(period: string, branchCode: string) {
     total: finalizePnl(total),
     byBranch: Array.from(branches, ([code, bucket]) => ({ code, ...finalizePnl(bucket) })).sort((a, b) => b.revenue - a.revenue),
     byDepartment: Array.from(departments, ([code, bucket]) => ({ code, ...finalizePnl(bucket) })).sort((a, b) => b.payroll + b.otherOpex - (a.payroll + a.otherOpex)),
+    byPnlItem: Array.from(pnlItemBreakdown.values())
+      .filter((row) => Math.abs(row.amount) > 0.5)
+      .sort((a, b) => (a.code === "UNCLASSIFIED" ? 1 : b.code === "UNCLASSIFIED" ? -1 : b.amount - a.amount)),
   };
 }
 

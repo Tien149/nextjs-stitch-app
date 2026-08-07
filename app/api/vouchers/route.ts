@@ -50,6 +50,23 @@ async function validateVoucherCategory(voucherType: string, categoryCode: string
   return null;
 }
 
+async function validateVoucherPnlItem(voucherType: string, pnlItemCode: string, requireActive = true) {
+  if (voucherType !== "PAYMENT") return "Chỉ phiếu chi mới được chọn hạng mục P&L chi phí";
+  const pnlItem = await prisma.masterDataItem.findFirst({
+    where: {
+      type: "PNL_ITEM",
+      code: pnlItemCode,
+      ...(requireActive ? { status: "ACTIVE" } : {}),
+    },
+  });
+  if (!pnlItem) return `Hạng mục P&L [${pnlItemCode}] không tồn tại hoặc đã ngừng hoạt động`;
+  const group = normalizeVoucherCategoryGroup(pnlItem.group);
+  if (!["OPEX", "COGS"].includes(group)) {
+    return "Phiếu chi chỉ được chọn hạng mục P&L thuộc nhóm OPEX hoặc Giá vốn";
+  }
+  return null;
+}
+
 import { generateFormattedVoucherCode, formatVoucherPrefix } from "@/lib/voucher-code-generator";
 import { isWorkShift } from "@/lib/shifts";
 import { normalizeReceiptPurpose, validateReceiptPurpose, voucherEditWindowError } from "@/lib/voucher-rules";
@@ -122,6 +139,7 @@ export async function POST(request: Request) {
     const branchCode = cleanText(body.branchCode);
     const moneySourceCode = cleanText(body.moneySourceCode);
     const categoryCode = cleanText(body.categoryCode);
+    const pnlItemCode = voucherType === "PAYMENT" ? cleanText(body.pnlItemCode) : "";
     const amount = toAmount(body.amount);
     const description = cleanText(body.description);
 
@@ -152,6 +170,10 @@ export async function POST(request: Request) {
     if (categoryCode) {
       const categoryError = await validateVoucherCategory(voucherType, categoryCode);
       if (categoryError) return NextResponse.json({ error: categoryError }, { status: 400 });
+    }
+    if (pnlItemCode) {
+      const pnlItemError = await validateVoucherPnlItem(voucherType, pnlItemCode);
+      if (pnlItemError) return NextResponse.json({ error: pnlItemError }, { status: 400 });
     }
 
     const voucherDate = body.voucherDate ? new Date(String(body.voucherDate)) : new Date();
@@ -190,6 +212,7 @@ export async function POST(request: Request) {
           branchCode,
           moneySourceCode,
           categoryCode: categoryCode || null,
+          pnlItemCode: pnlItemCode || null,
           amount,
           description,
           status,
@@ -252,6 +275,9 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
   const amount = body.amount === undefined ? current.amount : toAmount(body.amount);
   const partnerCode = body.partnerCode === undefined ? current.partnerCode : cleanText(body.partnerCode) || null;
   const categoryCode = body.categoryCode === undefined ? current.categoryCode || "" : cleanText(body.categoryCode);
+  const pnlItemCode = current.voucherType === "PAYMENT"
+    ? (body.pnlItemCode === undefined ? current.pnlItemCode || "" : cleanText(body.pnlItemCode))
+    : "";
   const voucherDate = body.voucherDate === undefined ? current.voucherDate : new Date(String(body.voucherDate));
   const shiftValue = body.shift === undefined ? current.shift : (cleanText(body.shift).toUpperCase() || null);
   if (shiftValue && !isWorkShift(shiftValue)) {
@@ -293,6 +319,14 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
     const categoryError = await validateVoucherCategory(current.voucherType, categoryCode);
     if (categoryError) return NextResponse.json({ error: categoryError }, { status: 400 });
   }
+  if (pnlItemCode) {
+    const pnlItemError = await validateVoucherPnlItem(
+      current.voucherType,
+      pnlItemCode,
+      pnlItemCode !== current.pnlItemCode,
+    );
+    if (pnlItemError) return NextResponse.json({ error: pnlItemError }, { status: 400 });
+  }
 
   const [currentPeriodLocked, nextPeriodLocked] = await Promise.all([
     isPeriodLocked(current.voucherDate, current.branchCode),
@@ -312,6 +346,7 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
     branchCode,
     moneySourceCode,
     categoryCode: categoryCode || null,
+    pnlItemCode: pnlItemCode || null,
     amount,
     description,
   };
@@ -357,8 +392,8 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
     entityCode: voucher.code,
     branchCode: voucher.branchCode,
     metadata: {
-      before: { voucherDate: current.voucherDate, shift: current.shift, partnerCode: current.partnerCode, partnerName: current.partnerName, branchCode: current.branchCode, moneySourceCode: current.moneySourceCode, categoryCode: current.categoryCode, amount: current.amount, description: current.description },
-      after: { voucherDate, shift: shiftValue, partnerCode, partnerName, branchCode, moneySourceCode, categoryCode, amount, description },
+      before: { voucherDate: current.voucherDate, shift: current.shift, partnerCode: current.partnerCode, partnerName: current.partnerName, branchCode: current.branchCode, moneySourceCode: current.moneySourceCode, categoryCode: current.categoryCode, pnlItemCode: current.pnlItemCode, amount: current.amount, description: current.description },
+      after: { voucherDate, shift: shiftValue, partnerCode, partnerName, branchCode, moneySourceCode, categoryCode, pnlItemCode, amount, description },
     },
   });
 

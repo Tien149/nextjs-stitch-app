@@ -25,6 +25,7 @@ type Voucher = {
   branchCode: string;
   moneySourceCode: string;
   categoryCode: string | null;
+  pnlItemCode: string | null;
   amount: number;
   description: string;
   status: string;
@@ -74,6 +75,7 @@ const emptyForm = {
   branchCode: "HCM",
   moneySourceCode: "CASH_HCM",
   categoryCode: "",
+  pnlItemCode: "",
   amount: "50000000",
   description: "Thu tiền bán hàng hàng ngày / thanh toán đối tác",
 };
@@ -95,6 +97,7 @@ export default function VouchersPage() {
   const [bulkRunning, setBulkRunning] = useState(false);
   const [moneySources, setMoneySources] = useState<MasterDataOption[]>([]);
   const [categories, setCategories] = useState<MasterDataOption[]>([]);
+  const [pnlItems, setPnlItems] = useState<MasterDataOption[]>([]);
   const [partners, setPartners] = useState<MasterDataOption[]>([]);
 
   const loadVouchers = useCallback(async (branch: string) => {
@@ -105,9 +108,10 @@ export default function VouchersPage() {
   const loadMasterData = useCallback(async () => {
     const rawSession = localStorage.getItem(SESSION_KEY);
     const headers: Record<string, string> = rawSession ? { "x-demo-session": encodeURIComponent(rawSession) } : {};
-    const [moneyResponse, categoryResponse, partnerResponse] = await Promise.all([
+    const [moneyResponse, categoryResponse, pnlItemResponse, partnerResponse] = await Promise.all([
       fetch("/api/master-data?type=MONEY_SOURCE&status=ACTIVE", { headers }),
       fetch("/api/master-data?type=REVENUE_EXPENSE_CATEGORY&status=ACTIVE", { headers }),
+      fetch("/api/master-data?type=PNL_ITEM", { headers }),
       fetch("/api/master-data?type=PARTNER&status=ACTIVE", { headers }),
     ]);
     if (moneyResponse.ok) {
@@ -123,6 +127,9 @@ export default function VouchersPage() {
     }
     if (categoryResponse.ok) {
       setCategories((await categoryResponse.json()) as MasterDataOption[]);
+    }
+    if (pnlItemResponse.ok) {
+      setPnlItems((await pnlItemResponse.json()) as MasterDataOption[]);
     }
     if (partnerResponse.ok) {
       setPartners((await partnerResponse.json()) as MasterDataOption[]);
@@ -185,6 +192,10 @@ export default function VouchersPage() {
     if (!code) return "Chưa gán khoản mục";
     const source = categories.length > 0 ? categories : fallbackVoucherCategories;
     return source.find((item) => item.code === code)?.name || code;
+  };
+  const pnlItemName = (code: string | null) => {
+    if (!code) return null;
+    return pnlItems.find((item) => item.code === code)?.name || code;
   };
   const normalizedCategoryOptions = useMemo(() => {
     const source = categories.length > 0 ? categories : fallbackVoucherCategories;
@@ -302,6 +313,7 @@ export default function VouchersPage() {
         ? voucher.moneySourceCode
         : firstMoneySourceCode(moneySources, voucher.branchCode, voucherMoneySourceGroups),
       categoryCode: voucher.categoryCode || "",
+      pnlItemCode: voucher.pnlItemCode || "",
       amount: String(voucher.amount),
       description: voucher.description,
     });
@@ -483,6 +495,7 @@ export default function VouchersPage() {
                         ...value,
                         voucherType,
                         categoryCode: "",
+                        pnlItemCode: "",
                         depositAction: voucherType === "RECEIPT" ? value.depositAction : "",
                         depositCode: voucherType === "RECEIPT" ? value.depositCode : "",
                       }));
@@ -667,6 +680,37 @@ export default function VouchersPage() {
                 </label>
               </div>
 
+              {form.voucherType === "PAYMENT" && (
+                <label className="text-xs font-bold text-slate-600 block">
+                  Hạng mục P&amp;L <span className="font-medium text-slate-400">(không bắt buộc)</span>
+                  <select
+                    value={form.pnlItemCode}
+                    onChange={(event) => setForm((value) => ({ ...value, pnlItemCode: event.target.value }))}
+                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white"
+                  >
+                    <option value="">-- Chưa phân loại P&amp;L --</option>
+                    {editingVoucher && form.pnlItemCode && !pnlItems.some((item) => item.code === form.pnlItemCode && item.status === "ACTIVE") && (() => {
+                      const historicalItem = pnlItems.find((item) => item.code === form.pnlItemCode);
+                      return historicalItem ? (
+                        <option key={historicalItem.id || historicalItem.code} value={historicalItem.code}>
+                          {historicalItem.name} (Đã ngừng)
+                        </option>
+                      ) : null;
+                    })()}
+                    {pnlItems
+                      .filter((item) => item.status === "ACTIVE" && ["OPEX", "COGS"].includes(normalizeCategoryGroup(item.group)))
+                      .map((item) => (
+                        <option key={item.id || item.code} value={item.code}>
+                          {item.code} - {item.name}
+                        </option>
+                      ))}
+                  </select>
+                  <span className="mt-1 block text-[11px] font-medium text-slate-500">
+                    Dùng để phân loại chi tiết trên báo cáo P&amp;L; không thay thế khoản mục thu/chi của báo cáo dòng tiền.
+                  </span>
+                </label>
+              )}
+
               <label className="text-xs font-bold text-slate-600 block">
                 Diễn giải *
                 <textarea
@@ -811,6 +855,11 @@ export default function VouchersPage() {
                             </span>
                           )}
                         </p>
+                        {voucher.pnlItemCode && (
+                          <p className="mt-1 text-[11px] font-medium text-indigo-600">
+                            P&amp;L: {pnlItemName(voucher.pnlItemCode)}
+                          </p>
+                        )}
                       </td>
                       <td className="px-4 py-3.5">
                         <b className="text-slate-800 font-medium">{voucher.partnerName}</b>

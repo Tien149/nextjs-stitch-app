@@ -92,6 +92,7 @@ type EntryLine = {
   departmentCode?: string | null;
   partnerCode?: string | null;
   categoryCode?: string | null;
+  pnlItemCode?: string | null;
   description?: string | null;
 };
 
@@ -118,7 +119,7 @@ export async function postJournalEntry(input: EntryInput) {
   const lineData = input.lines.map((line) => {
     const accountId = accountMap.get(line.accountCode);
     if (!accountId) businessError(`Thiếu tài khoản ${line.accountCode}`);
-    return { accountId, debit: line.debit || 0, credit: line.credit || 0, departmentCode: line.departmentCode || null, partnerCode: line.partnerCode || null, categoryCode: line.categoryCode || null, description: line.description || null };
+    return { accountId, debit: line.debit || 0, credit: line.credit || 0, departmentCode: line.departmentCode || null, partnerCode: line.partnerCode || null, categoryCode: line.categoryCode || null, pnlItemCode: line.pnlItemCode || null, description: line.description || null };
   });
   if (existing) {
     const existingDebit = existing.lines.reduce((sum, line) => sum + line.debit, 0);
@@ -126,7 +127,13 @@ export async function postJournalEntry(input: EntryInput) {
       existing.lines.every((el) => {
         const matchingInput = input.lines.find((il) => {
           const accountId = accountMap.get(il.accountCode);
-          return accountId === el.accountId && (il.debit || 0) === el.debit && (il.credit || 0) === el.credit;
+          return accountId === el.accountId
+            && (il.debit || 0) === el.debit
+            && (il.credit || 0) === el.credit
+            && (il.departmentCode || null) === el.departmentCode
+            && (il.partnerCode || null) === el.partnerCode
+            && (il.categoryCode || null) === el.categoryCode
+            && (il.pnlItemCode || null) === el.pnlItemCode;
         });
         return !!matchingInput;
       });
@@ -188,10 +195,18 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
 
   const vouchers = await prisma.financialVoucher.findMany({ where: { ...branchFilter, voucherDate: { gte: start, lt: end }, status: "APPROVED" } });
   // Nhóm khoản mục quyết định phiếu chi vào chi phí, giá vốn hay tài sản.
-  const voucherCategories = await prisma.masterDataItem.findMany({ where: { type: "REVENUE_EXPENSE_CATEGORY" } });
+  const [voucherCategories, pnlItems] = await Promise.all([
+    prisma.masterDataItem.findMany({ where: { type: "REVENUE_EXPENSE_CATEGORY" } }),
+    prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" } }),
+  ]);
   const categoryGroupByCode = new Map(voucherCategories.map((item) => [item.code, normalizeCategoryGroup(item.group)]));
+  const pnlItemGroupByCode = new Map(pnlItems.map((item) => [item.code, normalizeCategoryGroup(item.group)]));
   for (const row of vouchers) {
-    const { lines } = voucherJournalLines(row, row.categoryCode ? categoryGroupByCode.get(row.categoryCode) ?? null : null);
+    const { lines } = voucherJournalLines(
+      row,
+      row.categoryCode ? categoryGroupByCode.get(row.categoryCode) ?? null : null,
+      row.pnlItemCode ? pnlItemGroupByCode.get(row.pnlItemCode) ?? null : null,
+    );
     results.push(await postJournalEntry({ entryDate: row.voucherDate, branchCode: row.branchCode, sourceType: "VOUCHER", sourceId: row.id, sourceCode: row.code, description: row.description, createdBy: actor, lines }));
   }
 

@@ -29,10 +29,11 @@ type Pnl = {
 };
 
 type PnlCut = Pnl & { code: string };
+type PnlItemBreakdown = { code: string; name: string; group: string | null; amount: number };
 type BalanceRow = { code: string; name: string; accountType: string; reportGroup: string; amount: number };
 type BalanceData = { rows: BalanceRow[]; assets: number; liabilities: number; contributedEquity: number; retainedEarnings: number; equity: number; difference: number; balanced: boolean };
 type DashboardData = { pnl: { total: Pnl; byBranch: PnlCut[] }; trend: Array<Pnl & { period: string }>; balance: BalanceData; targets: Array<{ metric: string; targetValue: number }> };
-type PnlData = { total: Pnl; byBranch: PnlCut[]; byDepartment: PnlCut[] };
+type PnlData = { total: Pnl; byBranch: PnlCut[]; byDepartment: PnlCut[]; byPnlItem: PnlItemBreakdown[] };
 type YoyData = { previousPeriod: string; rows: Array<{ metric: string; currentValue: number; previousValue: number; variance: number; varianceRate: number | null }> };
 type CashflowData = { scenario: string; startingCash: number; schedule: Array<{ period: string; inflow: number; outflow: number; closingCash: number; risk: boolean }> };
 type OperationGroup = { departmentCode: string; departmentName: string; count: number; amount: number; statusCounts: Record<string, number>; overdue?: number };
@@ -1610,6 +1611,7 @@ export default function ReportsPage() {
             <PanelHeader title="Báo cáo Kết quả Kinh doanh" subtitle="Đơn vị: VND" />
             <PnlTable value={pnl.total} />
           </section>
+          <PnlItemTable rows={pnl.byPnlItem} />
           <div className="grid xl:grid-cols-2 gap-5">
             <CutTable title="Theo cửa hàng" rows={pnl.byBranch} />
             <CutTable title="Theo phòng ban" rows={pnl.byDepartment} />
@@ -1947,6 +1949,25 @@ function PnlTable({ value }: { value?: Pnl }) {
         ))}
       </Table>
     </div>
+  );
+}
+
+function PnlItemTable({ rows }: { rows?: PnlItemBreakdown[] }) {
+  if (!rows || rows.length === 0) return null;
+  return (
+    <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+      <PanelHeader title="Chi phí theo hạng mục P&L" subtitle="Khoản chưa chọn hạng mục được giữ ở dòng Chưa phân loại P&L." />
+      <Table headers={["Mã", "Hạng mục P&L", "Nhóm", "Số tiền (VND)"]}>
+        {rows.map((row) => (
+          <tr key={row.code} className={`border-t border-slate-100 ${row.code === "UNCLASSIFIED" ? "bg-amber-50" : ""}`}>
+            <Cell><b>{row.code === "UNCLASSIFIED" ? "-" : row.code}</b></Cell>
+            <Cell>{row.name}</Cell>
+            <Cell>{row.group || "-"}</Cell>
+            <Cell right><b>{money(row.amount)} đ</b></Cell>
+          </tr>
+        ))}
+      </Table>
+    </section>
   );
 }
 

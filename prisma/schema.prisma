@@ -275,6 +275,9 @@ model FinancialVoucher {
   sourceScope             String   @default("EXTERNAL")
   moneySourceCode         String
   categoryCode            String?
+  /// Hạng mục quản trị trên báo cáo P&L. Để trống nghĩa là chưa phân loại chi tiết,
+  /// không làm thay đổi bản chất hạch toán của phiếu.
+  pnlItemCode             String?
   externalRef             String?
   counterpartyAccountNo   String?
   counterpartyAccountName String?
@@ -1101,6 +1104,7 @@ model JournalLine {
   departmentCode String?
   partnerCode    String?
   categoryCode   String?
+  pnlItemCode    String?
   description    String?
 
   entry   JournalEntry      @relation(fields: [entryId], references: [id], onDelete: Cascade)
@@ -1109,6 +1113,7 @@ model JournalLine {
   @@index([entryId])
   @@index([accountId])
   @@index([departmentCode])
+  @@index([pnlItemCode])
 }
 
 model PostingRule {
