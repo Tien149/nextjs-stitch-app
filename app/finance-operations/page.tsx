@@ -19,6 +19,7 @@ type MoneyTransfer = {
   id: string;
   code: string;
   transferDate: string;
+  branchCode: string;
   fromMoneySourceCode: string;
   toMoneySourceCode: string;
   amount: number;
@@ -33,9 +34,17 @@ type MoneyTransfer = {
 };
 type Data = { openingAmount: number; closingBalance: number; cashbook: CashEntry[]; accruals: Accrual[]; moneyTransfers: MoneyTransfer[]; accountingPeriod: { status: string; closedBy?: string; closedAt?: string }; checklist: Check[] };
 type MasterDataOption = { id: string; type: string; code: string; name: string; group: string | null; branch: string | null; status?: string };
+type CashDepositEditForm = {
+  transfer: MoneyTransfer;
+  depositTargetType: "PKT" | "CO";
+  fromMoneySourceCode: string;
+  toMoneySourceCode: string;
+  denominations: Array<{ denomination: number; quantity: string }>;
+};
 
 const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value);
 const cashDepositTargetLabels: Record<string, string> = { PKT: "Nộp Tiền PKT", CO: "Nộp Tiền Cô" };
+const cashDepositDenominations = [500000, 200000, 100000, 50000, 20000, 10000, 5000, 2000, 1000];
 
 export default function FinanceOperationsPage() {
   const href = "/finance-operations";
@@ -47,6 +56,7 @@ export default function FinanceOperationsPage() {
   const [data, setData] = useState<Data>({ openingAmount: 0, closingBalance: 0, cashbook: [], accruals: [], moneyTransfers: [], accountingPeriod: { status: "OPEN" }, checklist: [] });
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [editingCashDeposit, setEditingCashDeposit] = useState<CashDepositEditForm | null>(null);
   const [moneySources, setMoneySources] = useState<MasterDataOption[]>([]);
   const [feeCategories, setFeeCategories] = useState<MasterDataOption[]>([]);
   const [settlement, setSettlement] = useState({
@@ -125,6 +135,64 @@ export default function FinanceOperationsPage() {
   }, [loading, loadData, loadMoneySources]);
 
   const settlementFee = Math.max(0, Number(settlement.grossAmount || 0)) - Math.max(0, Number(settlement.amount || 0));
+  const editingDenominationTotal = editingCashDeposit?.denominations.reduce((sum, row) => {
+    return sum + row.denomination * Math.max(0, Math.floor(Number(row.quantity) || 0));
+  }, 0) || 0;
+
+  const openCashDepositEdit = (transfer: MoneyTransfer) => {
+    const quantityByDenomination = new Map((transfer.denominations || []).map((row) => [row.denomination, row.quantity]));
+    setEditingCashDeposit({
+      transfer,
+      depositTargetType: transfer.depositTargetType === "CO" ? "CO" : "PKT",
+      fromMoneySourceCode: transfer.fromMoneySourceCode,
+      toMoneySourceCode: transfer.toMoneySourceCode,
+      denominations: cashDepositDenominations.map((denomination) => ({
+        denomination,
+        quantity: quantityByDenomination.get(denomination) ? String(quantityByDenomination.get(denomination)) : "",
+      })),
+    });
+    setMessage("");
+  };
+
+  const saveCashDepositEdit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!editingCashDeposit || submitting) return;
+    if (editingDenominationTotal !== editingCashDeposit.transfer.amount) {
+      setMessage(`Tổng bảng kê phải bằng ${money(editingCashDeposit.transfer.amount)} đ.`);
+      return;
+    }
+    setSubmitting(true);
+    setMessage("");
+    try {
+      const response = await fetch("/api/finance-operations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "UPDATE_PENDING_CASH_DEPOSIT",
+          id: editingCashDeposit.transfer.id,
+          depositTargetType: editingCashDeposit.depositTargetType,
+          fromMoneySourceCode: editingCashDeposit.fromMoneySourceCode,
+          toMoneySourceCode: editingCashDeposit.toMoneySourceCode,
+          denominations: editingCashDeposit.denominations.map((row) => ({
+            denomination: row.denomination,
+            quantity: Math.max(0, Math.floor(Number(row.quantity) || 0)),
+          })),
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setMessage(payload.error || "Không sửa được phiếu nộp tiền.");
+        return;
+      }
+      setEditingCashDeposit(null);
+      setMessage(`Đã cập nhật phiếu ${payload.code}; số thực nộp và tổng clear được giữ nguyên.`);
+      await loadData();
+    } catch {
+      setMessage("Lỗi kết nối máy chủ khi sửa phiếu nộp tiền.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   const send = async (body: object, success: string) => {
     if (submitting) return;
@@ -482,9 +550,20 @@ export default function FinanceOperationsPage() {
                             )}
                           </td>
                           <td className="px-4 py-3 text-right">
-                            {canApproveTransfer ? (
-                              <button type="button" onClick={() => void send({ action: "APPROVE_TRANSFER", id: transfer.id }, "Đã duyệt giao dịch điều tiền.")} className="rounded-lg bg-emerald-600 px-3 py-2 font-bold text-white hover:bg-emerald-700">Duyệt</button>
-                            ) : <span className="text-slate-400">Chờ Admin</span>}
+                            <div className="flex justify-end gap-2">
+                              {canEdit && transfer.transferPurpose === "CASH_DEPOSIT" && (
+                                <button
+                                  type="button"
+                                  onClick={() => openCashDepositEdit(transfer)}
+                                  className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 font-bold text-blue-700 hover:bg-blue-100"
+                                >
+                                  Sửa
+                                </button>
+                              )}
+                              {canApproveTransfer ? (
+                                <button type="button" onClick={() => void send({ action: "APPROVE_TRANSFER", id: transfer.id }, "Đã duyệt giao dịch điều tiền.")} className="rounded-lg bg-emerald-600 px-3 py-2 font-bold text-white hover:bg-emerald-700">Duyệt</button>
+                              ) : <span className="self-center text-slate-400">Chờ Admin</span>}
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -974,6 +1053,151 @@ export default function FinanceOperationsPage() {
           </div>
         )}
       </main>
+
+      {editingCashDeposit && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/45 p-4 backdrop-blur-sm">
+          <form onSubmit={saveCashDepositEdit} className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-start justify-between border-b border-slate-200 px-5 py-4">
+              <div>
+                <p className="text-[11px] font-bold uppercase tracking-wide text-blue-600">Sửa phiếu nộp tiền chờ duyệt</p>
+                <h2 className="mt-1 text-lg font-bold text-slate-900">{editingCashDeposit.transfer.code}</h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  {new Date(editingCashDeposit.transfer.transferDate).toLocaleDateString("vi-VN")} · {storeLabel(editingCashDeposit.transfer.branchCode)} · {shiftLabels[editingCashDeposit.transfer.sourceShift || ""] || editingCashDeposit.transfer.sourceShift}
+                </p>
+              </div>
+              <button type="button" onClick={() => setEditingCashDeposit(null)} className="grid h-9 w-9 place-items-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50">
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+
+            <div className="grid min-h-0 flex-1 gap-5 overflow-auto p-5 lg:grid-cols-[320px_1fr]">
+              <div className="space-y-4">
+                <label className="block text-xs font-bold text-slate-600">
+                  Loại nộp tiền
+                  <select
+                    className="control"
+                    value={editingCashDeposit.depositTargetType}
+                    onChange={(event) => setEditingCashDeposit((current) => current ? { ...current, depositTargetType: event.target.value === "CO" ? "CO" : "PKT" } : current)}
+                  >
+                    <option value="PKT">Nộp Tiền PKT</option>
+                    <option value="CO">Nộp Tiền Cô</option>
+                  </select>
+                </label>
+
+                <label className="block text-xs font-bold text-slate-600">
+                  Nguồn tiền mặt đi
+                  <select
+                    className="control"
+                    value={editingCashDeposit.fromMoneySourceCode}
+                    onChange={(event) => {
+                      const nextFrom = event.target.value;
+                      setEditingCashDeposit((current) => {
+                        if (!current) return current;
+                        const nextTarget = current.toMoneySourceCode === nextFrom
+                          ? filterMoneySources(moneySources, current.transfer.branchCode).find((source) => source.code !== nextFrom)?.code || ""
+                          : current.toMoneySourceCode;
+                        return { ...current, fromMoneySourceCode: nextFrom, toMoneySourceCode: nextTarget };
+                      });
+                    }}
+                  >
+                    {filterMoneySources(moneySources, editingCashDeposit.transfer.branchCode, ["CASH"]).map((source) => (
+                      <option key={source.code} value={source.code}>{moneySourceDisplayName(source, storeLabel(editingCashDeposit.transfer.branchCode))}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="block text-xs font-bold text-slate-600">
+                  Nguồn tiền nhận
+                  <select
+                    className="control"
+                    value={editingCashDeposit.toMoneySourceCode}
+                    onChange={(event) => setEditingCashDeposit((current) => current ? { ...current, toMoneySourceCode: event.target.value } : current)}
+                  >
+                    {filterMoneySources(moneySources, editingCashDeposit.transfer.branchCode)
+                      .filter((source) => source.code !== editingCashDeposit.fromMoneySourceCode)
+                      .map((source) => (
+                        <option key={source.code} value={source.code}>{moneySourceDisplayName(source, storeLabel(editingCashDeposit.transfer.branchCode))}</option>
+                      ))}
+                  </select>
+                </label>
+
+                <div className="rounded-xl border border-blue-100 bg-blue-50 p-4 text-xs">
+                  <p className="font-bold text-blue-900">Số tiền được khóa</p>
+                  <div className="mt-3 space-y-2 text-blue-800">
+                    <p className="flex justify-between"><span>Thực nộp</span><b>{money(editingCashDeposit.transfer.amount)} đ</b></p>
+                    <p className="flex justify-between"><span>Chi phí làm tròn</span><b>{money(editingCashDeposit.transfer.feeAmount)} đ</b></p>
+                    <p className="flex justify-between border-t border-blue-200 pt-2"><span>Tổng clear</span><b>{money(editingCashDeposit.transfer.amount + editingCashDeposit.transfer.feeAmount)} đ</b></p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="overflow-hidden rounded-xl border border-slate-200">
+                <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900">Bảng kê mệnh giá</h3>
+                    <p className="text-xs text-slate-500">Được đổi cơ cấu số tờ nhưng không đổi tổng thực nộp.</p>
+                  </div>
+                  <div className="text-right text-xs">
+                    <p className="text-slate-500">Đã kê</p>
+                    <p className={`font-bold ${editingDenominationTotal === editingCashDeposit.transfer.amount ? "text-emerald-700" : "text-rose-600"}`}>
+                      {money(editingDenominationTotal)} / {money(editingCashDeposit.transfer.amount)} đ
+                    </p>
+                  </div>
+                </div>
+                <div className="max-h-[430px] overflow-auto">
+                  <table className="w-full text-left text-sm">
+                    <thead className="sticky top-0 bg-white text-xs uppercase text-slate-500 shadow-[inset_0_-1px_0_#e2e8f0]">
+                      <tr><th className="px-4 py-3">Mệnh giá</th><th className="px-4 py-3">Số tờ</th><th className="px-4 py-3 text-right">Thành tiền</th></tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {editingCashDeposit.denominations.map((row) => {
+                        const quantity = Math.max(0, Math.floor(Number(row.quantity) || 0));
+                        return (
+                          <tr key={row.denomination}>
+                            <td className="px-4 py-2.5 font-bold">{money(row.denomination)} đ</td>
+                            <td className="px-4 py-2.5">
+                              <input
+                                className="control mt-0 h-9 w-28 py-1.5 text-right"
+                                inputMode="numeric"
+                                value={row.quantity}
+                                placeholder="0"
+                                onChange={(event) => {
+                                  const quantityValue = event.target.value.replace(/\D/g, "");
+                                  setEditingCashDeposit((current) => current ? {
+                                    ...current,
+                                    denominations: current.denominations.map((item) => item.denomination === row.denomination ? { ...item, quantity: quantityValue } : item),
+                                  } : current);
+                                }}
+                              />
+                            </td>
+                            <td className="px-4 py-2.5 text-right font-bold">{money(row.denomination * quantity)} đ</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                {editingDenominationTotal !== editingCashDeposit.transfer.amount && (
+                  <p className="border-t border-rose-100 bg-rose-50 px-4 py-3 text-xs font-bold text-rose-700">
+                    Tổng bảng kê phải bằng {money(editingCashDeposit.transfer.amount)} đ.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {message && <p className="mx-5 mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700">{message}</p>}
+            <div className="flex justify-end gap-2 border-t border-slate-200 bg-slate-50 p-4">
+              <button type="button" onClick={() => setEditingCashDeposit(null)} className="secondary-button">Hủy</button>
+              <button
+                disabled={submitting || editingDenominationTotal !== editingCashDeposit.transfer.amount || !editingCashDeposit.fromMoneySourceCode || !editingCashDeposit.toMoneySourceCode}
+                className="primary-button disabled:opacity-50"
+              >
+                {submitting ? "Đang lưu..." : "Lưu thay đổi"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }
