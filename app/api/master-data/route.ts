@@ -353,16 +353,46 @@ export async function GET(request: Request) {
     const type = searchParams.get("type") || undefined;
     const status = searchParams.get("status") || undefined;
     const search = searchParams.get("search")?.trim();
+    const requestedMoneySourceBranch = cleanText(searchParams.get("branchCode")).toUpperCase();
     await ensureSeedDataForType(type);
     const allowedBranches = getAllowedBranches(auth.session);
+    const sessionBranches = (auth.session.allowedBranches || []).map((branch) => branch.trim().toUpperCase()).filter(Boolean);
+    const canAccessAllBranches = sessionBranches.includes("ALL");
+
+    if (
+      type === "MONEY_SOURCE"
+      && requestedMoneySourceBranch
+      && requestedMoneySourceBranch !== "ALL"
+      && !canAccessAllBranches
+      && !sessionBranches.includes(requestedMoneySourceBranch)
+    ) {
+      return NextResponse.json({ error: "Không có quyền xem nguồn tiền của cửa hàng đã chọn" }, { status: 403 });
+    }
+
+    const branchScopeFilters: Array<Record<string, unknown>> = [];
+    if (type === "MONEY_SOURCE") {
+      if (requestedMoneySourceBranch && requestedMoneySourceBranch !== "ALL") {
+        branchScopeFilters.push({
+          OR: [{ branch: requestedMoneySourceBranch }, { branch: "ALL" }, { branch: null }],
+        });
+      } else if (!canAccessAllBranches) {
+        branchScopeFilters.push({
+          OR: [{ branch: { in: sessionBranches } }, { branch: "ALL" }, { branch: null }],
+        });
+      }
+    } else if (type === "BRANCH" && !canAccessAllBranches) {
+      branchScopeFilters.push({ code: { in: sessionBranches } });
+    } else if (type && ["WAREHOUSE", "DEPARTMENT"].includes(type) && allowedBranches.length === 1) {
+      branchScopeFilters.push({
+        OR: [{ branch: allowedBranches[0] }, { branch: "ALL" }, { branch: null }],
+      });
+    }
 
     const items = await prisma.masterDataItem.findMany({
       where: {
         ...(type ? { type } : {}),
         ...(status ? { status } : {}),
-        ...(type && ["WAREHOUSE", "MONEY_SOURCE", "DEPARTMENT"].includes(type) && allowedBranches.length === 1
-          ? { OR: [{ branch: allowedBranches[0] }, { branch: "ALL" }, { branch: null }] }
-          : {}),
+        ...(branchScopeFilters.length ? { AND: branchScopeFilters } : {}),
         ...(search
           ? {
               OR: [

@@ -1,11 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { DateInput } from "@/components/DateInput";
 import { ModuleFrame } from "@/components/ModuleFrame";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
-import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
+import { storeLabel, updateDynamicBranches } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canPerformAction, canPerformMenuAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import { normalizeCashflowCategoryType, voucherEditWindowError } from "@/lib/voucher-rules";
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
@@ -87,33 +87,44 @@ export default function VouchersPage() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [bulkRunning, setBulkRunning] = useState(false);
   const [moneySources, setMoneySources] = useState<MasterDataOption[]>([]);
+  const [moneySourcesLoading, setMoneySourcesLoading] = useState(false);
+  const [moneySourcesError, setMoneySourcesError] = useState("");
+  const [formBranches, setFormBranches] = useState<MasterDataOption[]>([]);
   const [categories, setCategories] = useState<MasterDataOption[]>([]);
   const [pnlItems, setPnlItems] = useState<MasterDataOption[]>([]);
   const [partners, setPartners] = useState<MasterDataOption[]>([]);
+  const moneySourceRequestRef = useRef(0);
 
   const loadVouchers = useCallback(async (branch: string) => {
     const response = await fetch(`/api/vouchers?branchCode=${branch}`);
     if (response.ok) setVouchers((await response.json()) as Voucher[]);
   }, []);
 
-  const loadMasterData = useCallback(async () => {
+  const loadMasterData = useCallback(async (session: DemoSession, initialBranch: string) => {
     const rawSession = localStorage.getItem(SESSION_KEY);
     const headers: Record<string, string> = rawSession ? { "x-demo-session": encodeURIComponent(rawSession) } : {};
-    const [moneyResponse, categoryResponse, pnlItemResponse, partnerResponse] = await Promise.all([
-      fetch("/api/master-data?type=MONEY_SOURCE&status=ACTIVE", { headers }),
+    const [branchResponse, categoryResponse, pnlItemResponse, partnerResponse] = await Promise.all([
+      fetch("/api/master-data?type=BRANCH&status=ACTIVE", { headers }),
       fetch("/api/master-data?type=REVENUE_EXPENSE_CATEGORY&status=ACTIVE", { headers }),
       fetch("/api/master-data?type=PNL_ITEM", { headers }),
       fetch("/api/master-data?type=PARTNER&status=ACTIVE", { headers }),
     ]);
-    if (moneyResponse.ok) {
-      const sources = (await moneyResponse.json()) as MasterDataOption[];
-      setMoneySources(sources);
+    if (branchResponse.ok) {
+      const branchItems = (await branchResponse.json()) as MasterDataOption[];
+      const allowedBranches = session.allowedBranches?.length ? session.allowedBranches : ["ALL"];
+      const visibleBranches = allowedBranches.includes("ALL")
+        ? branchItems
+        : branchItems.filter((branch) => allowedBranches.includes(branch.code));
+      updateDynamicBranches(visibleBranches.map((branch) => ({ code: branch.code, name: branch.name })));
+      setFormBranches(visibleBranches);
       setForm((current) => {
-        const nextBranch = current.branchCode || "HCM";
-        const nextSource = isMoneySourceAllowed(sources, current.moneySourceCode, nextBranch, voucherMoneySourceGroups)
-          ? current.moneySourceCode
-          : firstMoneySourceCode(sources, nextBranch, voucherMoneySourceGroups);
-        return { ...current, branchCode: nextBranch, moneySourceCode: nextSource };
+        const preferredBranch = initialBranch !== "ALL" ? initialBranch : current.branchCode;
+        const nextBranch = visibleBranches.some((branch) => branch.code === preferredBranch)
+          ? preferredBranch
+          : visibleBranches[0]?.code || "";
+        return nextBranch === current.branchCode
+          ? current
+          : { ...current, branchCode: nextBranch, moneySourceCode: "" };
       });
     }
     if (categoryResponse.ok) {
@@ -124,6 +135,51 @@ export default function VouchersPage() {
     }
     if (partnerResponse.ok) {
       setPartners((await partnerResponse.json()) as MasterDataOption[]);
+    }
+  }, []);
+
+  const loadMoneySources = useCallback(async (selectedBranch: string) => {
+    const branch = selectedBranch.trim().toUpperCase();
+    const requestId = ++moneySourceRequestRef.current;
+    if (!branch || branch === "ALL") {
+      setMoneySources([]);
+      setMoneySourcesError("");
+      setMoneySourcesLoading(false);
+      return;
+    }
+
+    setMoneySourcesLoading(true);
+    setMoneySourcesError("");
+    try {
+      const rawSession = localStorage.getItem(SESSION_KEY);
+      const headers: Record<string, string> = rawSession ? { "x-demo-session": encodeURIComponent(rawSession) } : {};
+      const response = await fetch(`/api/master-data?type=MONEY_SOURCE&status=ACTIVE&branchCode=${encodeURIComponent(branch)}`, { headers });
+      const payload = await response.json().catch(() => null) as MasterDataOption[] | { error?: string } | null;
+      if (requestId !== moneySourceRequestRef.current) return;
+      if (!response.ok || !Array.isArray(payload)) {
+        const error = payload && !Array.isArray(payload) ? payload.error : null;
+        throw new Error(error || "Không tải được nguồn tiền của cửa hàng đã chọn");
+      }
+
+      setMoneySources(payload);
+      setForm((current) => {
+        if (current.branchCode.trim().toUpperCase() !== branch) return current;
+        return {
+          ...current,
+          moneySourceCode: isMoneySourceAllowed(payload, current.moneySourceCode, branch, voucherMoneySourceGroups)
+            ? current.moneySourceCode
+            : firstMoneySourceCode(payload, branch, voucherMoneySourceGroups),
+        };
+      });
+    } catch (error) {
+      if (requestId !== moneySourceRequestRef.current) return;
+      setMoneySources([]);
+      setForm((current) => current.branchCode.trim().toUpperCase() === branch
+        ? { ...current, moneySourceCode: "" }
+        : current);
+      setMoneySourcesError(error instanceof Error ? error.message : "Không tải được nguồn tiền của cửa hàng đã chọn");
+    } finally {
+      if (requestId === moneySourceRequestRef.current) setMoneySourcesLoading(false);
     }
   }, []);
 
@@ -152,21 +208,24 @@ export default function VouchersPage() {
       setBranchCode(initialBranch);
       setLoading(false);
       void loadVouchers(initialBranch);
-      void loadMasterData();
+      void loadMasterData(session, initialBranch);
     }, 0);
   }, [router, loadVouchers, loadMasterData]);
 
   useEffect(() => {
     window.setTimeout(() => {
-      setForm((f) => ({
-        ...f,
-        branchCode: branchCode === "ALL" ? f.branchCode || "HCM" : branchCode,
-        moneySourceCode: isMoneySourceAllowed(moneySources, f.moneySourceCode, branchCode === "ALL" ? f.branchCode || "HCM" : branchCode, voucherMoneySourceGroups)
-          ? f.moneySourceCode
-          : firstMoneySourceCode(moneySources, branchCode === "ALL" ? f.branchCode || "HCM" : branchCode, voucherMoneySourceGroups),
-      }));
+      setForm((current) => {
+        if (branchCode === "ALL" || current.branchCode === branchCode) return current;
+        return { ...current, branchCode, moneySourceCode: "" };
+      });
     }, 0);
-  }, [branchCode, moneySources]);
+  }, [branchCode]);
+
+  useEffect(() => {
+    if (!user || !form.branchCode) return;
+    const timer = window.setTimeout(() => void loadMoneySources(form.branchCode), 0);
+    return () => window.clearTimeout(timer);
+  }, [user, form.branchCode, loadMoneySources]);
 
   const handleBranchChange = (code: string) => {
     setBranchCode(code);
@@ -278,11 +337,12 @@ export default function VouchersPage() {
   };
 
   const resetForm = () => {
+    const nextBranch = branchCode === "ALL" ? form.branchCode : branchCode;
     setEditingVoucher(null);
     setForm({
       ...emptyForm,
-      branchCode: branchCode === "ALL" ? "HCM" : branchCode,
-      moneySourceCode: firstMoneySourceCode(moneySources, branchCode === "ALL" ? "HCM" : branchCode, voucherMoneySourceGroups),
+      branchCode: nextBranch,
+      moneySourceCode: firstMoneySourceCode(moneySources, nextBranch, voucherMoneySourceGroups),
       categoryCode: emptyForm.categoryCode,
     });
   };
@@ -603,16 +663,14 @@ export default function VouchersPage() {
                       setForm((value) => ({
                         ...value,
                         branchCode: nextBranch,
-                        moneySourceCode: isMoneySourceAllowed(moneySources, value.moneySourceCode, nextBranch, voucherMoneySourceGroups)
-                          ? value.moneySourceCode
-                          : firstMoneySourceCode(moneySources, nextBranch, voucherMoneySourceGroups),
+                        moneySourceCode: "",
                       }));
                     }}
                     className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white disabled:opacity-75"
                     disabled={branchCode !== "ALL"}
                     required
                   >
-                    {visibleStoreOptions(user).map((option) => (
+                    {formBranches.map((option) => (
                       <option key={option.code} value={option.code}>
                         {storeLabel(option.code)}
                       </option>
@@ -626,18 +684,20 @@ export default function VouchersPage() {
                     value={form.moneySourceCode}
                     onChange={(event) => setForm((value) => ({ ...value, moneySourceCode: event.target.value }))}
                     className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white text-ellipsis overflow-hidden"
+                    disabled={moneySourcesLoading || !form.branchCode}
                     required
                   >
-                    <option value="">-- Chọn nguồn tiền --</option>
+                    <option value="">{moneySourcesLoading ? "-- Đang tải nguồn tiền --" : "-- Chọn nguồn tiền --"}</option>
                     {filterMoneySources(moneySources, form.branchCode, voucherMoneySourceGroups).map((source) => (
                       <option key={source.id || source.code} value={source.code} title={moneySourceDebugLabel(source, storeLabel(form.branchCode))}>
                         {moneySourceDisplayName(source, storeLabel(form.branchCode))}
                       </option>
                     ))}
                     {filterMoneySources(moneySources, form.branchCode, voucherMoneySourceGroups).length === 0 && (
-                      <option value="" disabled>Chưa có nguồn tiền mặt cho cửa hàng này</option>
+                      <option value="" disabled>{moneySourcesError || "Chưa có nguồn tiền mặt cho cửa hàng này"}</option>
                     )}
                   </select>
+                  {moneySourcesError && <span className="mt-1 block text-[11px] font-medium text-rose-600">{moneySourcesError}</span>}
                 </label>
               </div>
 
