@@ -11,8 +11,8 @@ async function main() {
   await prisma.role.deleteMany({});
 
   const rolesData = [
-    { name: 'Admin', actions: ['view', 'create', 'edit', 'delete', 'approve', 'export', 'config'] },
-    { name: 'Kế toán tổng hợp', actions: ['view', 'create', 'edit', 'delete', 'approve', 'export'] },
+    { name: 'Admin', actions: ['view', 'create', 'edit', 'edit_past', 'delete', 'approve', 'export', 'config'] },
+    { name: 'Kế toán tổng hợp', actions: ['view', 'create', 'edit', 'edit_past', 'delete', 'approve', 'export'] },
     { name: 'Kế toán công nợ', actions: ['view', 'create', 'edit', 'delete', 'approve', 'export'] },
     { name: 'Quản lý', actions: ['view', 'approve', 'export'] },
     { name: 'Viewer', actions: ['view'] }

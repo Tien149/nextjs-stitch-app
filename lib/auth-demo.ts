@@ -217,7 +217,7 @@ export const ALL_APP_ACTIONS: { key: AppAction; label: string; desc: string }[] 
   { key: "view", label: "view", desc: "Xem dữ liệu" },
   { key: "create", label: "create", desc: "Tạo mới" },
   { key: "edit", label: "edit", desc: "Chỉnh sửa" },
-  { key: "edit_past", label: "edit_past", desc: "Sửa/bỏ duyệt chứng từ của ngày trước" },
+  { key: "edit_past", label: "edit_past", desc: "Sửa và tự duyệt lại phiếu Thu/Chi ngày trước" },
   { key: "delete", label: "delete", desc: "Xóa dữ liệu" },
   { key: "approve", label: "approve", desc: "Phê duyệt" },
   { key: "export", label: "export", desc: "Xuất Excel / Báo cáo" },
@@ -225,7 +225,7 @@ export const ALL_APP_ACTIONS: { key: AppAction; label: string; desc: string }[] 
 ];
 
 export const roleActions: Record<DemoRole, AppAction[]> = {
-  // edit_past: chỉ Admin và Kế toán tổng hợp được sửa/bỏ duyệt chứng từ đã qua ngày.
+  // edit_past: chỉ Admin và Kế toán tổng hợp được sửa chứng từ đã qua ngày.
   Admin: ["view", "create", "edit", "edit_past", "delete", "approve", "export", "config"],
   "Kế toán tổng hợp": ["view", "create", "edit", "edit_past", "export", "config"],
   "Kế toán công nợ": ["view", "create", "edit", "export"],
@@ -234,7 +234,6 @@ export const roleActions: Record<DemoRole, AppAction[]> = {
 };
 
 const menuActionOverrides: Partial<Record<string, Partial<Record<DemoRole, AppAction[]>>>> = {
-  // Bỏ duyệt chứng từ là quyền "approve"; Kế toán tổng hợp cần nó để sửa lại phiếu đã qua ngày.
   "/vouchers": {
     Admin: roleActions.Admin,
     "Kế toán tổng hợp": ["view", "create", "edit", "edit_past", "approve", "export", "config"],
@@ -478,6 +477,18 @@ export function canPerformMenuAction(subject: ActionSubject, href: string, actio
   const role = subjectRole(subject);
   const configuredActions = isDemoRole(role) ? menuActionOverrides[href]?.[role] : undefined;
   return configuredActions ? configuredActions.includes(action) : canPerformAction(subject, action);
+}
+
+/**
+ * Quyền nhạy cảm riêng của phiếu Thu/Chi ngày cũ.
+ *
+ * Không dùng fallback quyền cứng của vai trò chuẩn: phiên đăng nhập phải thực sự mang
+ * `edit_past` từ Role trong database. Nhờ vậy chỉ đúng Admin/KTTH đã được cấu hình mới
+ * có quyền; gán `edit_past` nhầm cho vai trò khác vẫn không vượt qua kiểm tra này.
+ */
+export function canEditPastVoucher(subject: DemoSession | null | undefined) {
+  if (!subject || !["Admin", "Kế toán tổng hợp"].includes(subject.role)) return false;
+  return Array.isArray(subject.actions) && subject.actions.includes("edit_past");
 }
 
 /** Danh sách tab hiển thị của một module sau khi lọc theo quyền, kèm icon để render. */

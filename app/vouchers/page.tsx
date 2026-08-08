@@ -6,8 +6,8 @@ import { DateInput } from "@/components/DateInput";
 import { ModuleFrame } from "@/components/ModuleFrame";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { storeLabel, updateDynamicBranches } from "@/lib/branch-labels";
-import { appMenuItems, canAccessMenu, canPerformAction, canPerformMenuAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
-import { normalizeCashflowCategoryType, voucherEditWindowError } from "@/lib/voucher-rules";
+import { appMenuItems, canAccessMenu, canEditPastVoucher, canPerformAction, canPerformMenuAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
+import { isSameCalendarDay, normalizeCashflowCategoryType, voucherEditWindowError } from "@/lib/voucher-rules";
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
@@ -32,6 +32,7 @@ type Voucher = {
   shift: string | null;
   depositAction: string | null;
   depositCode: string | null;
+  updatedAt: string;
 };
 
 type MasterDataOption = {
@@ -78,12 +79,17 @@ export default function VouchersPage() {
   const [branchCode, setBranchCode] = useState("ALL");
   const [form, setForm] = useState(emptyForm);
   const [message, setMessage] = useState("");
+  const [messageType, setMessageType] = useState<"success" | "error">("success");
   const [loading, setLoading] = useState(true);
   /** Chứng từ đang sửa; null nghĩa là biểu mẫu đang ở chế độ tạo mới. */
   const [editingVoucher, setEditingVoucher] = useState<Voucher | null>(null);
   const [deletingVoucher, setDeletingVoucher] = useState<Voucher | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [pastEditDialogOpen, setPastEditDialogOpen] = useState(false);
+  const [pastEditReason, setPastEditReason] = useState("");
+  const [pastEditError, setPastEditError] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [bulkRunning, setBulkRunning] = useState(false);
   const [moneySources, setMoneySources] = useState<MasterDataOption[]>([]);
@@ -153,7 +159,7 @@ export default function VouchersPage() {
     try {
       const rawSession = localStorage.getItem(SESSION_KEY);
       const headers: Record<string, string> = rawSession ? { "x-demo-session": encodeURIComponent(rawSession) } : {};
-      const response = await fetch(`/api/master-data?type=MONEY_SOURCE&status=ACTIVE&branchCode=${encodeURIComponent(branch)}`, { headers });
+      const response = await fetch(`/api/master-data?type=MONEY_SOURCE&branchCode=${encodeURIComponent(branch)}`, { headers });
       const payload = await response.json().catch(() => null) as MasterDataOption[] | { error?: string } | null;
       if (requestId !== moneySourceRequestRef.current) return;
       if (!response.ok || !Array.isArray(payload)) {
@@ -164,9 +170,15 @@ export default function VouchersPage() {
       setMoneySources(payload);
       setForm((current) => {
         if (current.branchCode.trim().toUpperCase() !== branch) return current;
+        const keepsActiveSource = isMoneySourceAllowed(payload, current.moneySourceCode, branch, voucherMoneySourceGroups);
+        const keepsHistoricalSource = Boolean(
+          editingVoucher
+          && editingVoucher.moneySourceCode === current.moneySourceCode
+          && payload.some((source) => source.code === current.moneySourceCode),
+        );
         return {
           ...current,
-          moneySourceCode: isMoneySourceAllowed(payload, current.moneySourceCode, branch, voucherMoneySourceGroups)
+          moneySourceCode: keepsActiveSource || keepsHistoricalSource
             ? current.moneySourceCode
             : firstMoneySourceCode(payload, branch, voucherMoneySourceGroups),
         };
@@ -181,7 +193,7 @@ export default function VouchersPage() {
     } finally {
       if (requestId === moneySourceRequestRef.current) setMoneySourcesLoading(false);
     }
-  }, []);
+  }, [editingVoucher]);
 
   useEffect(() => {
     const raw = localStorage.getItem(SESSION_KEY);
@@ -236,7 +248,7 @@ export default function VouchersPage() {
   const canApprove = user ? canPerformAction(user, "approve") : false;
   const canDelete = user ? canPerformMenuAction(user, "/vouchers", "delete") : false;
   /** Quyền sửa/bỏ duyệt chứng từ đã qua ngày (mặc định Admin và Kế toán tổng hợp). */
-  const canEditPast = user ? canPerformMenuAction(user, "/vouchers", "edit_past") : false;
+  const canEditPast = canEditPastVoucher(user);
   const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
   const categoryName = (code: string | null) => {
     if (!code) return "Chưa gán khoản mục";
@@ -339,6 +351,9 @@ export default function VouchersPage() {
   const resetForm = () => {
     const nextBranch = branchCode === "ALL" ? form.branchCode : branchCode;
     setEditingVoucher(null);
+    setPastEditDialogOpen(false);
+    setPastEditReason("");
+    setPastEditError("");
     setForm({
       ...emptyForm,
       branchCode: nextBranch,
@@ -359,9 +374,8 @@ export default function VouchersPage() {
       partnerCode: voucher.partnerCode || "",
       partnerName: voucher.partnerName,
       branchCode: voucher.branchCode,
-      moneySourceCode: isMoneySourceAllowed(moneySources, voucher.moneySourceCode, voucher.branchCode, voucherMoneySourceGroups)
-        ? voucher.moneySourceCode
-        : firstMoneySourceCode(moneySources, voucher.branchCode, voucherMoneySourceGroups),
+      // Không tự thay nguồn lịch sử bằng nguồn ACTIVE đầu tiên khi mở phiếu cũ để sửa.
+      moneySourceCode: voucher.moneySourceCode,
       categoryCode: voucher.categoryCode || "",
       pnlItemCode: voucher.pnlItemCode || "",
       amount: String(voucher.amount),
@@ -370,31 +384,91 @@ export default function VouchersPage() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
+  const saveVoucher = async (reason = "") => {
+    if (saving) return;
+    setMessage("");
+    setSaving(true);
+
+    try {
+      const response = editingVoucher
+        ? await fetch("/api/vouchers", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              ...form,
+              action: "UPDATE",
+              id: editingVoucher.id,
+              expectedUpdatedAt: editingVoucher.updatedAt,
+              reason: reason || undefined,
+            }),
+          })
+        : await fetch("/api/vouchers", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(form),
+          });
+
+      const payload = await response.json();
+      if (!response.ok) {
+        const error = payload.error || (editingVoucher ? "Không lưu được thay đổi" : "Không tạo được chứng từ");
+        if (pastEditDialogOpen) setPastEditError(error);
+        else {
+          setMessage(error);
+          setMessageType("error");
+        }
+        return;
+      }
+
+      setMessage(editingVoucher
+        ? payload.status === "APPROVED"
+          ? `Đã lưu thay đổi và tự động duyệt lại phiếu ${payload.code || editingVoucher.code}.`
+          : `Đã lưu thay đổi phiếu ${payload.code || editingVoucher.code}.`
+        : `Đã tạo và tự động duyệt phiếu ${payload.code || ""}.`);
+      setMessageType("success");
+      resetForm();
+      await loadVouchers(branchCode);
+    } catch {
+      const error = "Không kết nối được máy chủ. Vui lòng thử lại.";
+      if (pastEditDialogOpen) setPastEditError(error);
+      else {
+        setMessage(error);
+        setMessageType("error");
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const submitVoucher = async (event: React.FormEvent) => {
     event.preventDefault();
     setMessage("");
 
-    const response = editingVoucher
-      ? await fetch("/api/vouchers", {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...form, action: "UPDATE", id: editingVoucher.id }),
-        })
-      : await fetch("/api/vouchers", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(form),
-        });
+    const now = new Date();
+    const originalDateIsDifferent = editingVoucher
+      ? !isSameCalendarDay(new Date(editingVoucher.voucherDate), now)
+      : false;
+    const editedDateIsDifferent = editingVoucher && form.voucherDate
+      ? !isSameCalendarDay(new Date(form.voucherDate), now)
+      : false;
 
-    const payload = await response.json();
-    if (!response.ok) {
-      setMessage(payload.error || (editingVoucher ? "Không lưu được thay đổi" : "Không tạo được chứng từ"));
+    if (editingVoucher && (originalDateIsDifferent || editedDateIsDifferent)) {
+      setPastEditReason("");
+      setPastEditError("");
+      setPastEditDialogOpen(true);
       return;
     }
 
-    setMessage(editingVoucher ? "Đã lưu thay đổi chứng từ." : "Đã tạo chứng từ.");
-    resetForm();
-    await loadVouchers(branchCode);
+    await saveVoucher();
+  };
+
+  const confirmPastEdit = async () => {
+    const reason = pastEditReason.trim();
+    if (reason.length < 10) {
+      setPastEditError("Vui lòng nhập lý do tối thiểu 10 ký tự.");
+      return;
+    }
+    setPastEditError("");
+    await saveVoucher(reason);
   };
 
   const confirmDeleteVoucher = async (reason: string) => {
@@ -420,7 +494,6 @@ export default function VouchersPage() {
   };
 
   const selectableVouchers = vouchers.filter((voucher) => !lockedForChange(voucher));
-  const selectedVouchers = vouchers.filter((voucher) => selectedIds.includes(voucher.id));
   const allSelectableChecked = selectableVouchers.length > 0 && selectableVouchers.every((voucher) => selectedIds.includes(voucher.id));
 
   const toggleSelectAll = () => {
@@ -667,7 +740,7 @@ export default function VouchersPage() {
                       }));
                     }}
                     className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white disabled:opacity-75"
-                    disabled={branchCode !== "ALL"}
+                    disabled={branchCode !== "ALL" || Boolean(editingVoucher)}
                     required
                   >
                     {formBranches.map((option) => (
@@ -676,6 +749,11 @@ export default function VouchersPage() {
                       </option>
                     ))}
                   </select>
+                  {editingVoucher && (
+                    <span className="mt-1 block text-[11px] font-medium text-slate-500">
+                      Mã chứng từ đã gắn với cửa hàng; muốn đổi cửa hàng cần hủy và lập phiếu mới.
+                    </span>
+                  )}
                 </label>
 
                 <label className="text-xs font-bold text-slate-600 block">
@@ -688,6 +766,14 @@ export default function VouchersPage() {
                     required
                   >
                     <option value="">{moneySourcesLoading ? "-- Đang tải nguồn tiền --" : "-- Chọn nguồn tiền --"}</option>
+                    {editingVoucher && form.moneySourceCode && !isMoneySourceAllowed(moneySources, form.moneySourceCode, form.branchCode, voucherMoneySourceGroups) && (() => {
+                      const historicalSource = moneySources.find((source) => source.code === form.moneySourceCode);
+                      return historicalSource ? (
+                        <option key={historicalSource.id || historicalSource.code} value={historicalSource.code}>
+                          {moneySourceDisplayName(historicalSource, storeLabel(form.branchCode))} (Đã ngừng)
+                        </option>
+                      ) : null;
+                    })()}
                     {filterMoneySources(moneySources, form.branchCode, voucherMoneySourceGroups).map((source) => (
                       <option key={source.id || source.code} value={source.code} title={moneySourceDebugLabel(source, storeLabel(form.branchCode))}>
                         {moneySourceDisplayName(source, storeLabel(form.branchCode))}
@@ -771,13 +857,26 @@ export default function VouchersPage() {
                 />
               </label>
 
-              {message && <p className="text-sm rounded-lg bg-blue-50 border border-blue-100 text-blue-700 px-3 py-2">{message}</p>}
+              {message && (
+                <div
+                  className={`text-sm rounded-lg px-3.5 py-2.5 font-medium border flex items-center gap-2 ${
+                    messageType === "error"
+                      ? "bg-rose-50 border-rose-200 text-rose-700"
+                      : "bg-emerald-50 border-emerald-200 text-emerald-700"
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-base shrink-0">
+                    {messageType === "error" ? "error" : "check_circle"}
+                  </span>
+                  <span>{message}</span>
+                </div>
+              )}
               <div className="flex gap-2">
                 {editingVoucher && (
                   <button type="button" onClick={resetForm} className="px-4 bg-white border border-slate-300 text-slate-600 hover:bg-slate-50 rounded-xl py-2.5 text-sm font-bold transition-all">Huỷ</button>
                 )}
-                <button className="flex-1 bg-blue-600 hover:bg-blue-700 text-white rounded-xl py-2.5 text-sm font-bold transition-all shadow-sm active:scale-[0.99]">
-                  {editingVoucher ? "Lưu thay đổi" : "Tạo chứng từ"}
+                <button disabled={saving} className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 disabled:cursor-not-allowed text-white rounded-xl py-2.5 text-sm font-bold transition-all shadow-sm active:scale-[0.99]">
+                  {saving ? "Đang lưu..." : editingVoucher ? "Lưu thay đổi" : "Tạo chứng từ"}
                 </button>
               </div>
             </form>
@@ -964,6 +1063,70 @@ export default function VouchersPage() {
         }}
         onConfirm={confirmDeleteVoucher}
       />
+
+      {pastEditDialogOpen && editingVoucher && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/45 p-4" role="dialog" aria-modal="true" aria-labelledby="past-edit-title">
+          <div className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-start justify-between border-b border-slate-200 px-5 py-4">
+              <div>
+                <p className="text-[11px] font-bold uppercase tracking-wider text-amber-600">Phiếu đã qua ngày</p>
+                <h3 id="past-edit-title" className="mt-1 text-base font-bold text-slate-900">Lý do chỉnh sửa phiếu ngày cũ</h3>
+                <p className="mt-1 text-xs text-slate-500">
+                  {editingVoucher.code} · {new Date(editingVoucher.voucherDate).toLocaleDateString("vi-VN")}
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => setPastEditDialogOpen(false)}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 disabled:opacity-50"
+                aria-label="Đóng"
+              >
+                <span className="material-symbols-outlined text-xl">close</span>
+              </button>
+            </div>
+            <div className="space-y-3 px-5 py-4">
+              <p className="text-xs leading-5 text-slate-600">
+                Sau khi lưu, hệ thống sẽ tự động duyệt lại phiếu và ghi dữ liệu trước/sau cùng lý do này vào Audit Log.
+              </p>
+              <textarea
+                autoFocus
+                value={pastEditReason}
+                onChange={(event) => {
+                  setPastEditReason(event.target.value);
+                  if (pastEditError) setPastEditError("");
+                }}
+                placeholder="Nhập lý do chỉnh sửa (tối thiểu 10 ký tự)..."
+                className="h-28 w-full resize-none rounded-xl border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+              />
+              <div className="flex items-center justify-between gap-3">
+                <span className={`text-[11px] font-medium ${pastEditReason.trim().length < 10 ? "text-amber-600" : "text-emerald-600"}`}>
+                  {pastEditReason.trim().length}/10 ký tự tối thiểu
+                </span>
+                {pastEditError && <span className="text-right text-xs font-semibold text-rose-600">{pastEditError}</span>}
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-slate-200 bg-slate-50 px-5 py-4">
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => setPastEditDialogOpen(false)}
+                className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+              >
+                Huỷ
+              </button>
+              <button
+                type="button"
+                disabled={saving || pastEditReason.trim().length < 10}
+                onClick={() => void confirmPastEdit()}
+                className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+              >
+                {saving ? "Đang lưu..." : "Lưu và tự động duyệt lại"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </ModuleFrame>
   );
 }

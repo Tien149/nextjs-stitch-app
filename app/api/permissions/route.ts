@@ -3,6 +3,15 @@ import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 import { softDeleteRecord } from "@/lib/soft-delete";
 
+const EDIT_PAST_ROLE_NAMES = new Set(["Admin", "Kế toán tổng hợp"]);
+
+function sanitizeRoleActions(roleName: string, actions: unknown[]) {
+  const normalized = [...new Set(actions.filter((action): action is string => typeof action === "string"))];
+  return EDIT_PAST_ROLE_NAMES.has(roleName.trim())
+    ? normalized
+    : normalized.filter((action) => action !== "edit_past");
+}
+
 export async function GET(request: Request) {
   try {
     const auth = requireMenuAccess(request, "/permissions");
@@ -58,7 +67,7 @@ export async function POST(request: Request) {
       const role = await prisma.role.create({
         data: {
           name: name.trim(),
-          actions,
+          actions: sanitizeRoleActions(name, actions),
         },
       });
 
@@ -134,7 +143,7 @@ export async function PUT(request: Request) {
       where: { id: roleId },
       data: {
         name: name.trim(),
-        actions,
+        actions: sanitizeRoleActions(name, actions),
       },
     });
 

@@ -1,4 +1,4 @@
-import type { TxClient } from "@/lib/prisma";
+import type { RawTxClient } from "@/lib/prisma";
 import { addPeriod } from "@/lib/phase3";
 
 type VoucherForSideEffects = {
@@ -22,7 +22,7 @@ type VoucherForSideEffects = {
 };
 
 export async function applyVoucherSideEffects(
-  tx: TxClient,
+  tx: RawTxClient,
   voucher: VoucherForSideEffects,
   actor: string,
 ) {
@@ -53,7 +53,7 @@ export async function applyVoucherSideEffects(
       } else if (voucher.depositAction === "SUPPLEMENT") {
         if (!voucher.partnerCode) throw new Error("Khách chuyển bổ sung tiền cọc bắt buộc có mã khách hàng");
         const code = voucher.depositCode || `COC-${voucher.code}`;
-        const deposit = await tx.deposit.findUnique({ where: { code } });
+        const deposit = await tx.deposit.findFirst({ where: { code, deletedAt: null } });
         if (deposit) {
           if (deposit.branchCode !== voucher.branchCode) throw new Error(`Tiền cọc ${code} không thuộc chi nhánh chứng từ`);
           await tx.deposit.update({
@@ -119,7 +119,7 @@ export async function applyVoucherSideEffects(
     if (!voucher.debtReference) throw new Error("Thanh toán công nợ bắt buộc có mã công nợ");
     const previousSettlement = await tx.debtSettlement.findUnique({ where: { voucherId: voucher.id } });
     if (!previousSettlement) {
-      const debt = await tx.debtRecord.findUnique({ where: { code: voucher.debtReference } });
+      const debt = await tx.debtRecord.findFirst({ where: { code: voucher.debtReference, deletedAt: null } });
       if (!debt || debt.branchCode !== voucher.branchCode) throw new Error(`Không tìm thấy công nợ ${voucher.debtReference} trong chi nhánh`);
       const expectedDebtType = voucher.voucherType === "RECEIPT" ? "RECEIVABLE" : "PAYABLE";
       if (debt.debtType !== expectedDebtType) throw new Error(`Phiếu ${voucher.voucherType === "RECEIPT" ? "Thu" : "Chi"} không khớp loại công nợ ${debt.code}`);
@@ -139,7 +139,7 @@ export async function applyVoucherSideEffects(
   if (voucher.voucherType === "PAYMENT" && (voucher.allocationMonths || 0) > 1) {
     if (!voucher.allocationStartPeriod) throw new Error("Chi phí phân bổ bắt buộc có kỳ bắt đầu");
     const code = `PB-${voucher.code}`;
-    const existing = await tx.accrual.findUnique({ where: { code } });
+    const existing = await tx.accrual.findFirst({ where: { code, deletedAt: null } });
     if (!existing) {
       const numberOfPeriods = voucher.allocationMonths || 0;
       await tx.accrual.create({

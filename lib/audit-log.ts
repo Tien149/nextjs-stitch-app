@@ -26,23 +26,27 @@ function serializeMetadata(value: unknown) {
   }
 }
 
+export function buildAuditLogData(input: AuditLogInput) {
+  return {
+    actorId: input.session?.id || input.actorId || null,
+    actorName: input.session?.name || input.actorName || null,
+    actorRole: input.session?.role || input.actorRole || null,
+    branchCode: input.branchCode || null,
+    module: input.module,
+    action: input.action,
+    entityType: input.entityType,
+    entityId: input.entityId || null,
+    entityCode: input.entityCode || null,
+    status: input.status || "SUCCESS",
+    message: input.message || null,
+    metadataJson: serializeMetadata(input.metadata),
+  };
+}
+
 export async function writeAuditLog(input: AuditLogInput) {
   try {
     await prisma.auditLog.create({
-      data: {
-        actorId: input.session?.id || input.actorId || null,
-        actorName: input.session?.name || input.actorName || null,
-        actorRole: input.session?.role || input.actorRole || null,
-        branchCode: input.branchCode || null,
-        module: input.module,
-        action: input.action,
-        entityType: input.entityType,
-        entityId: input.entityId || null,
-        entityCode: input.entityCode || null,
-        status: input.status || "SUCCESS",
-        message: input.message || null,
-        metadataJson: serializeMetadata(input.metadata),
-      },
+      data: buildAuditLogData(input),
     });
   } catch (error) {
     console.error("Audit log write failed:", error);

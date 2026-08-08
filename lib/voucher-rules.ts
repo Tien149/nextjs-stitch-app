@@ -49,13 +49,28 @@ export function normalizeCategoryGroup(group: string | null | undefined) {
 /**
  * Cửa sổ sửa chứng từ.
  *
- * Phiếu thu/chi được duyệt ngay lúc tạo, nên "sửa" ở đây là bỏ duyệt - sửa - duyệt lại.
- * Trong ngày thì ai có quyền sửa đều làm được (kể cả thu ngân) vì còn đang trong ca và
- * số liệu chưa chốt. Qua ngày thì chỉ vai trò có quyền `edit_past` (mặc định Admin và
- * Kế toán tổng hợp) mới được đụng vào, để số liệu ngày đã chốt không bị đổi âm thầm.
+ * Phiếu thu/chi được duyệt ngay lúc tạo. Trong ngày, ai có quyền sửa đều có thể lưu và
+ * hệ thống tự duyệt lại. Phiếu khác ngày chỉ Admin/Kế toán tổng hợp có `edit_past` được
+ * sửa; backend bắt buộc lý do và ghi audit trước/sau.
  */
+export const VIETNAM_TIME_ZONE = "Asia/Ho_Chi_Minh";
+
+function calendarDateKey(value: Date, timeZone = VIETNAM_TIME_ZONE) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value || "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
 export function isSameCalendarDay(a: Date, b: Date) {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  const first = calendarDateKey(new Date(a));
+  return Boolean(first) && first === calendarDateKey(new Date(b));
 }
 
 /** Trả về lý do chặn, hoặc null nếu được phép. */

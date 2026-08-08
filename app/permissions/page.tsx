@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { branchScopeOptions, displayRoleName } from "@/lib/branch-labels";
-import { ALL_APP_ACTIONS, appMenuItems, canAccessMenu, type AppAction, type DemoSession, SESSION_KEY, moduleTabs } from "@/lib/auth-demo";
+import { ALL_APP_ACTIONS, appMenuItems, type AppAction, type DemoSession, SESSION_KEY, moduleTabs } from "@/lib/auth-demo";
 import { logout } from "@/lib/session-client";
 import CopyableText from "@/components/CopyableText";
 
@@ -135,6 +135,7 @@ export default function PermissionsPage() {
   };
 
   const handleToggleAction = (actionKey: AppAction) => {
+    if (actionKey === "edit_past" && !["Admin", "Kế toán tổng hợp"].includes(roleForm.name.trim())) return;
     setRoleForm((prev) => {
       const exists = prev.actions.includes(actionKey);
       if (exists) {
@@ -146,7 +147,12 @@ export default function PermissionsPage() {
   };
 
   const handleSelectAllActions = () => {
-    setRoleForm((prev) => ({ ...prev, actions: ALL_APP_ACTIONS.map((a) => a.key) }));
+    setRoleForm((prev) => ({
+      ...prev,
+      actions: ALL_APP_ACTIONS
+        .filter((action) => action.key !== "edit_past" || ["Admin", "Kế toán tổng hợp"].includes(prev.name.trim()))
+        .map((action) => action.key),
+    }));
   };
 
   const handleDeselectAllActions = () => {
@@ -345,7 +351,7 @@ export default function PermissionsPage() {
       currentMenuAccess = [...role.menuAccess];
     } else {
       currentMenuAccess = appMenuItems
-        .filter((item) => item.roles.includes(role.name as any) || (!standardRoles.includes(role.name) && (role.actions || []).includes("view")))
+        .filter((item) => (item.roles as string[]).includes(role.name) || (!standardRoles.includes(role.name) && (role.actions || []).includes("view")))
         .map((item) => item.href);
     }
 
@@ -710,7 +716,7 @@ export default function PermissionsPage() {
                         ? true
                         : Array.isArray(r.menuAccess) && r.menuAccess.length > 0
                         ? r.menuAccess.includes(item.href) || r.menuAccess.includes(item.name)
-                        : item.roles.includes(r.name as any) || (!standardRoles.includes(r.name) && (r.actions || []).includes("view"));
+                        : (item.roles as string[]).includes(r.name) || (!standardRoles.includes(r.name) && (r.actions || []).includes("view"));
 
                       return (
                         <td key={r.id} className="px-4 py-3">
@@ -813,7 +819,16 @@ export default function PermissionsPage() {
                   type="text"
                   required
                   value={roleForm.name}
-                  onChange={(e) => setRoleForm({ ...roleForm, name: e.target.value })}
+                  onChange={(e) => {
+                    const name = e.target.value;
+                    setRoleForm((current) => ({
+                      ...current,
+                      name,
+                      actions: ["Admin", "Kế toán tổng hợp"].includes(name.trim())
+                        ? current.actions
+                        : current.actions.filter((action) => action !== "edit_past"),
+                    }));
+                  }}
                   placeholder="Ví dụ: Kế toán kho, Thu ngân, Giám sát..."
                   className="w-full px-3.5 py-2.5 text-sm bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition font-semibold"
                 />
@@ -847,11 +862,16 @@ export default function PermissionsPage() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-60 overflow-y-auto pr-1">
                   {ALL_APP_ACTIONS.map((action) => {
                     const isChecked = roleForm.actions.includes(action.key);
+                    const isDisabled = action.key === "edit_past" && !["Admin", "Kế toán tổng hợp"].includes(roleForm.name.trim());
                     return (
                       <label
                         key={action.key}
-                        onClick={() => handleToggleAction(action.key)}
-                        className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer select-none transition ${
+                        onClick={() => !isDisabled && handleToggleAction(action.key)}
+                        className={`flex items-start gap-3 p-3 rounded-xl border select-none transition ${
+                          isDisabled
+                            ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400 opacity-70"
+                            : "cursor-pointer"
+                        } ${
                           isChecked
                             ? "bg-blue-50/70 border-blue-200 text-blue-950 shadow-xs"
                             : "bg-slate-50/50 border-slate-200 text-slate-600 hover:bg-slate-100/60"
@@ -860,6 +880,7 @@ export default function PermissionsPage() {
                         <input
                           type="checkbox"
                           checked={isChecked}
+                          disabled={isDisabled}
                           onChange={() => {}} // Handled by label click
                           className="mt-0.5 rounded text-blue-600 focus:ring-blue-500"
                         />
@@ -870,6 +891,7 @@ export default function PermissionsPage() {
                             </span>
                           </p>
                           <p className="text-[11px] text-slate-500 mt-0.5">{action.desc}</p>
+                          {isDisabled && <p className="mt-1 text-[10px] font-semibold text-amber-600">Chỉ áp dụng cho Admin/Kế toán tổng hợp</p>}
                         </div>
                       </label>
                     );
