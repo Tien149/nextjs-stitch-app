@@ -137,8 +137,6 @@ export type CashCategoryRow = {
   name: string;
   /** Chiều dòng tiền của danh mục: RECEIPT / PAYMENT. */
   group: string | null;
-  /** Nguồn số liệu để người xem biết dòng này lấy từ đâu. */
-  origin: "VOUCHER" | "POS" | "MANUAL" | "ADJUSTMENT" | "DEPOSIT";
   total: number;
   count: number;
   /** Số tiền của từng tháng trong phạm vi báo cáo, dùng cho bảng năm. */
@@ -162,7 +160,7 @@ function periodOfDate(value: Date) {
 
 function bumpCategory(
   map: Map<string, CashCategoryRow>,
-  base: Pick<CashCategoryRow, "key" | "name" | "group" | "origin">,
+  base: Pick<CashCategoryRow, "key" | "name" | "group">,
   monthCount: number,
   monthIndex: number,
   amount: number,
@@ -210,7 +208,7 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
           voucherType: { in: ["RECEIPT", "PAYMENT"] },
           status: { in: cashReportVoucherStatuses },
         },
-        select: { voucherType: true, voucherDate: true, categoryCode: true, partnerCode: true, partnerName: true, moneySourceCode: true, amount: true },
+        select: { voucherType: true, voucherDate: true, categoryCode: true, partnerCode: true, partnerName: true, moneySourceCode: true, amount: true, depositAction: true },
       }),
       prisma.financialVoucher.groupBy({
         by: ["voucherType"],
@@ -226,9 +224,9 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
       prisma.masterDataItem.findMany({ where: { type: "REVENUE_EXPENSE_CATEGORY" }, select: { code: true, name: true, group: true } }),
       prisma.masterDataItem.findMany({ where: { type: "PARTNER" }, select: { code: true, name: true, group: true, partnerType: true } }),
       prisma.masterDataItem.findMany({ where: { type: "MONEY_SOURCE" }, select: { code: true, name: true, group: true, branch: true } }),
-      // Doanh thu POS có thể tới hàng chục nghìn dòng mỗi năm nên gom sẵn theo ngày bán.
+      // Doanh thu POS có thể tới hàng chục nghìn dòng mỗi năm nên gom sẵn theo ngày bán và danh mục Thu.
       prisma.revenueImportRow.groupBy({
-        by: ["saleDate"],
+        by: ["saleDate", "revenueSource"],
         where: { ...branchFilter, saleDate: { gte: start, lt: end } },
         _sum: { netAmount: true },
         _count: { _all: true },
@@ -243,7 +241,7 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
       }),
       prisma.moneyTransfer.findMany({
         where: { ...branchFilter, transferDate: { gte: start, lt: end }, status: "APPROVED" },
-        select: { transferDate: true, amount: true, feeAmount: true, feeCategoryCode: true, transferPurpose: true, fromMoneySourceCode: true, toMoneySourceCode: true },
+        select: { transferDate: true, amount: true, feeAmount: true, feeCategoryCode: true, fromMoneySourceCode: true, toMoneySourceCode: true },
       }),
       prisma.openingBalance.findMany({
         where: { period: months[0], ...(branchCode === "ALL" ? {} : { branchCode }), status: "POSTED", balanceType: { in: cashReportOpeningTypes } },
@@ -267,6 +265,16 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     ]);
 
   const categoryByCode = new Map(categories.map((row) => [row.code, row]));
+  const categoryByNormalizedCode = new Map(categories.map((row) => [row.code.trim().toUpperCase(), row]));
+  const categoryByNormalizedName = new Map(categories.map((row) => [row.name.trim().toUpperCase(), row]));
+  const resolveCategory = (value: string | null | undefined, expectedType: "RECEIPT" | "PAYMENT") => {
+    const raw = (value || "").trim();
+    if (!raw) return null;
+    const category = categoryByCode.get(raw)
+      || categoryByNormalizedCode.get(raw.toUpperCase())
+      || categoryByNormalizedName.get(raw.toUpperCase());
+    return category && normalizeCashflowCategoryType(category.group) === expectedType ? category : null;
+  };
   const partnerByCode = new Map(partners.map((row) => [row.code, row]));
   const income = new Map<string, CashCategoryRow>();
   const expense = new Map<string, CashCategoryRow>();
@@ -311,13 +319,25 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
   for (const voucher of vouchers) {
     const monthIndex = monthIndexOf(voucher.voucherDate);
     const isIncome = voucher.voucherType === "RECEIPT";
-    const category = voucher.categoryCode ? categoryByCode.get(voucher.categoryCode) : null;
-    const key = voucher.categoryCode || unclassifiedKey;
-    const name = category?.name || (voucher.categoryCode ? `Khoản mục [${voucher.categoryCode}]` : "Chưa phân loại");
-    bumpCategory(isIncome ? income : expense, { key, name, group: normalizeCashflowCategoryType(category?.group), origin: "VOUCHER" }, monthCount, monthIndex, voucher.amount);
-    if (!voucher.categoryCode) {
-      if (isIncome) unclassifiedIncome += voucher.amount;
-      else unclassifiedExpense += voucher.amount;
+    const isDepositMovement = isIncome
+      ? ["COLLECT", "SUPPLEMENT"].includes(voucher.depositAction || "")
+      : voucher.depositAction === "REFUND";
+    if (!isDepositMovement) {
+      const expectedType = isIncome ? "RECEIPT" : "PAYMENT";
+      const category = resolveCategory(voucher.categoryCode, expectedType);
+      bumpCategory(
+        isIncome ? income : expense,
+        category
+          ? { key: category.code, name: category.name, group: expectedType }
+          : { key: unclassifiedKey, name: "Chưa phân loại", group: expectedType },
+        monthCount,
+        monthIndex,
+        voucher.amount,
+      );
+      if (!category) {
+        if (isIncome) unclassifiedIncome += voucher.amount;
+        else unclassifiedExpense += voucher.amount;
+      }
     }
 
     const source = touchSource(voucher.moneySourceCode);
@@ -341,27 +361,35 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
   }
 
   for (const row of posRevenues) {
+    const category = resolveCategory(row.revenueSource, "RECEIPT");
+    const amount = row._sum.netAmount || 0;
     bumpCategory(
       income,
-      { key: "POS_REVENUE", name: "Doanh thu bán hàng (file POS)", group: "RECEIPT", origin: "POS" },
+      category
+        ? { key: category.code, name: category.name, group: "RECEIPT" }
+        : { key: unclassifiedKey, name: "Chưa phân loại", group: "RECEIPT" },
       monthCount,
       monthIndexOf(row.saleDate),
-      row._sum.netAmount || 0,
+      amount,
       row._count._all,
     );
+    if (!category) unclassifiedIncome += amount;
   }
   for (const row of manualEntries) {
-    bumpCategory(income, { key: "MANUAL_REVENUE", name: "Doanh thu bán hàng (nhập tay)", group: "RECEIPT", origin: "MANUAL" }, monthCount, monthIndexOf(row.reportDate), row.totalAmount);
+    bumpCategory(income, { key: unclassifiedKey, name: "Chưa phân loại", group: "RECEIPT" }, monthCount, monthIndexOf(row.reportDate), row.totalAmount);
+    unclassifiedIncome += row.totalAmount;
   }
 
   for (const row of adjustments) {
     const monthIndex = monthIndexOf(row.entryDate);
     const source = touchSource(row.moneySourceCode);
     if (row.entryType === "RECEIPT") {
-      bumpCategory(income, { key: "ADJUSTMENT_IN", name: "Điều chỉnh tăng quỹ", group: null, origin: "ADJUSTMENT" }, monthCount, monthIndex, row.amount);
+      bumpCategory(income, { key: unclassifiedKey, name: "Chưa phân loại", group: "RECEIPT" }, monthCount, monthIndex, row.amount);
+      unclassifiedIncome += row.amount;
       source.in += row.amount;
     } else {
-      bumpCategory(expense, { key: "ADJUSTMENT_OUT", name: "Điều chỉnh giảm quỹ", group: null, origin: "ADJUSTMENT" }, monthCount, monthIndex, row.amount);
+      bumpCategory(expense, { key: unclassifiedKey, name: "Chưa phân loại", group: "PAYMENT" }, monthCount, monthIndex, row.amount);
+      unclassifiedExpense += row.amount;
       source.out += row.amount;
     }
   }
@@ -371,20 +399,17 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     touchSource(row.fromMoneySourceCode).transferOut += row.amount + row.feeAmount;
     touchSource(row.toMoneySourceCode).transferIn += row.amount;
     if (row.feeAmount > 0) {
-      const category = row.feeCategoryCode ? categoryByCode.get(row.feeCategoryCode) : null;
-      const isCashRounding = row.transferPurpose === "CASH_DEPOSIT";
+      const category = resolveCategory(row.feeCategoryCode, "PAYMENT");
       bumpCategory(
         expense,
-        {
-          key: row.feeCategoryCode || (isCashRounding ? "CASH_ROUNDING_EXPENSE" : "WALLET_FEE"),
-          name: category?.name || (isCashRounding ? "Chi phí làm tròn tiền nộp" : "Phí quẹt thẻ / phí ví"),
-          group: normalizeCashflowCategoryType(category?.group) || "PAYMENT",
-          origin: "VOUCHER",
-        },
+        category
+          ? { key: category.code, name: category.name, group: "PAYMENT" }
+          : { key: unclassifiedKey, name: "Chưa phân loại", group: "PAYMENT" },
         monthCount,
         monthIndexOf(row.transferDate),
         row.feeAmount,
       );
+      if (!category) unclassifiedExpense += row.feeAmount;
     }
   }
 
@@ -423,17 +448,23 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     if (signed > 0) row.increase += signed;
     else row.used += -signed;
 
+    const monthIndex = monthIndexOf(actionDate);
+    if (signed > 0) {
+      // Dòng này dùng đúng cùng lịch sử với cột "Cọc phát sinh thêm trong kỳ",
+      // nên hai tổng luôn khớp và không phụ thuộc cọc được tạo trực tiếp hay qua phiếu thu.
+      bumpCategory(income, { key: "DEPOSIT_IN", name: "Thu tiền cọc", group: "RECEIPT" }, monthCount, monthIndex, signed);
+    } else if (history.action === "REFUND" || history.action === "UPDATE") {
+      bumpCategory(expense, { key: "DEPOSIT_REFUND", name: "Hoàn cọc cho khách", group: "PAYMENT" }, monthCount, monthIndex, -signed);
+    }
+
     // Chỉ thao tác làm trực tiếp trên màn Tiền cọc mới cần cộng vào dòng tiền ở đây;
     // thao tác đi kèm phiếu thu/chi đã nằm trong phần chứng từ phía trên.
     if (history.voucherId) continue;
-    const monthIndex = monthIndexOf(actionDate);
     const source = touchSource(sourceCode);
     if (signed > 0) {
-      bumpCategory(income, { key: "DEPOSIT_IN", name: "Thu tiền cọc của khách", group: null, origin: "DEPOSIT" }, monthCount, monthIndex, signed);
       source.in += signed;
     } else if (history.action === "REFUND" || history.action === "UPDATE") {
       // Cấn trừ/chuyển doanh thu không có tiền ra; chỉ hoàn cọc mới là dòng tiền chi.
-      bumpCategory(expense, { key: "DEPOSIT_REFUND", name: "Hoàn cọc cho khách", group: null, origin: "DEPOSIT" }, monthCount, monthIndex, -signed);
       source.out += -signed;
     }
   }

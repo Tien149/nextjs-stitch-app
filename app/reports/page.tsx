@@ -91,7 +91,6 @@ type CashCategoryRow = {
   key: string;
   name: string;
   group: string | null;
-  origin: "VOUCHER" | "POS" | "MANUAL" | "ADJUSTMENT" | "DEPOSIT";
   total: number;
   count: number;
   months: number[];
@@ -896,9 +895,9 @@ export default function ReportsPage() {
             <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
               <span className="material-symbols-outlined text-lg">warning</span>
               <span>
-                Có <b>{money(cashSource.unclassified.income + cashSource.unclassified.expense)} đ</b> chứng từ chưa chọn khoản mục thu/chi
+                Có <b>{money(cashSource.unclassified.income + cashSource.unclassified.expense)} đ</b> dữ liệu chưa xác định được danh mục thu/chi
                 (thu {money(cashSource.unclassified.income)} đ, chi {money(cashSource.unclassified.expense)} đ) nên đang nằm ở dòng
-                <b> &quot;Chưa phân loại&quot;</b>. Bổ sung khoản mục trên phiếu để báo cáo tách đủ theo danh mục.
+                <b> &quot;Chưa phân loại&quot;</b>. Cần bổ sung danh mục hoặc quy tắc phân loại để báo cáo tách đủ theo danh mục.
               </span>
             </div>
           )}
@@ -916,7 +915,7 @@ export default function ReportsPage() {
           <div className="grid xl:grid-cols-2 gap-5">
             <CashCategoryTable
               title="Tổng quan thu theo danh mục"
-              subtitle="Doanh thu bán hàng lấy từ file POS và doanh thu nhập tay; các khoản còn lại lấy theo khoản mục trên phiếu thu đã duyệt."
+              subtitle="Gộp theo từng loại Thu trong danh mục Thu/Chi, không phân biệt dữ liệu nhập tay, import hay phiếu thu."
               amountHeader="Tổng thu"
               rows={cashSource.income}
               total={cashSource.totals.in}
@@ -924,7 +923,7 @@ export default function ReportsPage() {
             />
             <CashCategoryTable
               title="Tổng quan chi theo danh mục"
-              subtitle="Lấy theo khoản mục trên phiếu chi đã duyệt. Đây là số trả lời câu hỏi tháng này chi cho từng khoản mục hết bao nhiêu."
+              subtitle="Gộp theo từng loại Chi trong danh mục Thu/Chi; dữ liệu chưa có danh mục được đưa vào Chưa phân loại."
               amountHeader="Tổng chi"
               rows={cashSource.expense}
               total={cashSource.totals.out}
@@ -1822,14 +1821,6 @@ function Cell({ children, right, center }: { children: React.ReactNode; right?: 
   return <td className={`px-4 py-3 ${right ? "text-right" : center ? "text-center" : "text-left"}`}>{children}</td>;
 }
 
-const cashOriginLabels: Record<CashCategoryRow["origin"], string> = {
-  VOUCHER: "Phiếu thu/chi",
-  POS: "File POS",
-  MANUAL: "Nhập tay",
-  ADJUSTMENT: "Điều chỉnh quỹ",
-  DEPOSIT: "Phiếu cọc",
-};
-
 function partnerTypeLabel(partnerType: string | null) {
   const value = (partnerType || "").toUpperCase();
   if (value === "SUPPLIER") return "NCC";
@@ -1861,17 +1852,17 @@ function CashCategoryTable({
     <section className="table-panel">
       <PanelHeader title={title} subtitle={subtitle} />
       <div className="overflow-x-auto">
-        <Table headers={["Danh mục", "Nguồn số liệu", amountHeader, "% tỷ lệ"]}>
+        <Table headers={["Danh mục", amountHeader, "% tỷ lệ"]}>
           {rows.length === 0 && (
-            <tr className="border-t border-slate-100"><Cell>Chưa có phát sinh trong kỳ.</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell></tr>
+            <tr className="border-t border-slate-100"><Cell>Chưa có phát sinh trong kỳ.</Cell><Cell>-</Cell><Cell right>-</Cell></tr>
           )}
           {rows.map((row) => (
             <tr key={row.key} className="border-t border-slate-100 hover:bg-slate-50">
               <Cell>
                 <b>{row.name}</b>
                 {row.key === "UNCLASSIFIED" && <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[11px] font-bold text-amber-800">cần bổ sung</span>}
+                <p className="mt-0.5 text-xs font-normal text-slate-500">{row.count} dòng</p>
               </Cell>
-              <Cell><span className="text-xs text-slate-500">{cashOriginLabels[row.origin]} · {row.count} dòng</span></Cell>
               <Cell><b>{money(row.total)} đ</b></Cell>
               <Cell right>
                 <div className="flex items-center justify-end gap-2">
@@ -1885,7 +1876,6 @@ function CashCategoryTable({
           ))}
           <tr className="border-t border-slate-200 bg-slate-50 font-bold">
             <Cell><b>TỔNG</b></Cell>
-            <Cell>-</Cell>
             <Cell><b>{money(total)} đ</b></Cell>
             <Cell right><b>100,00 %</b></Cell>
           </tr>
