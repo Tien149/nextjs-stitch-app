@@ -4,7 +4,7 @@ import { normalizeHeader, type ImportType } from "@/lib/import-templates";
 import type { ParsedImportResult, ParsedImportRow } from "@/lib/import-parser";
 import type { DemoSession } from "@/lib/auth-demo";
 import { isInboundStockType, isOutboundStockType, isStockTransactionType, normalizeStockTransactionType } from "@/lib/inventory-stock";
-import { normalizeCategoryGroup } from "@/lib/voucher-rules";
+import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
 
 type MasterItem = {
@@ -122,7 +122,14 @@ function validateVoucher(row: ParsedImportRow, masterItems: MasterItem[]) {
 
   const category = resolveMaster(masterItems, "REVENUE_EXPENSE_CATEGORY", row.values.category_code, branchCode);
   if (!category) addError(row, `Loại thu/chi [${text(row.values.category_code)}] không tồn tại hoặc ngưng hoạt động`);
-  else row.values.category_code = category.code;
+  else {
+    row.values.category_code = category.code;
+    if (normalizeCashflowCategoryType(category.group) !== voucherType) {
+      addError(row, voucherType === "RECEIPT"
+        ? `Phiếu thu phải chọn danh mục loại Thu, [${category.code}] đang là loại Chi`
+        : `Phiếu chi phải chọn danh mục loại Chi, [${category.code}] đang là loại Thu`);
+    }
+  }
 
   const partnerInput = row.values.partner_code || row.values.partner_name;
   const partner = resolveMaster(masterItems, "PARTNER", partnerInput, branchCode);
@@ -422,12 +429,12 @@ function validateBankStatementCategory(row: ParsedImportRow, masterItems: Master
   }
   row.values.category_code = category.code;
 
-  const group = normalizeCategoryGroup(category.group) || "";
-  if (credit > 0 && group !== "REVENUE_SOURCE") {
-    addError(row, `Giao dịch tiền vào phải chọn loại thu (nhóm nguồn doanh thu), [${category.code}] đang thuộc nhóm chi`);
+  const cashflowType = normalizeCashflowCategoryType(category.group);
+  if (credit > 0 && cashflowType !== "RECEIPT") {
+    addError(row, `Giao dịch tiền vào phải chọn danh mục loại Thu, [${category.code}] đang là loại Chi`);
   }
-  if (debit > 0 && !["OPEX", "CAPEX", "COGS"].includes(group)) {
-    addError(row, `Giao dịch tiền ra phải chọn loại chi (OPEX, CAPEX hoặc giá vốn), [${category.code}] đang thuộc nhóm thu`);
+  if (debit > 0 && cashflowType !== "PAYMENT") {
+    addError(row, `Giao dịch tiền ra phải chọn danh mục loại Chi, [${category.code}] đang là loại Thu`);
   }
 }
 
@@ -572,6 +579,16 @@ export async function validateImportResult(
         addError(row, message);
       } else {
         revenueReferenceRows.set(referenceKey, row);
+      }
+    }
+    if (importType === "MASTER_DATA") {
+      const masterType = text(row.values.type).toUpperCase();
+      if (masterType === "REVENUE_EXPENSE_CATEGORY") {
+        const cashflowType = normalizeCashflowCategoryType(text(row.values.group));
+        row.values.group = cashflowType;
+        if (!["RECEIPT", "PAYMENT"].includes(cashflowType || "")) {
+          addError(row, "Danh mục Thu/Chi phải có Nhóm/Phân loại là Thu hoặc Chi");
+        }
       }
     }
     if (importType === "PAYROLL") {

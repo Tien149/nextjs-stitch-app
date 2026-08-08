@@ -7,7 +7,7 @@ import { ModuleFrame } from "@/components/ModuleFrame";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canPerformAction, canPerformMenuAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
-import { voucherEditWindowError } from "@/lib/voucher-rules";
+import { normalizeCashflowCategoryType, voucherEditWindowError } from "@/lib/voucher-rules";
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
@@ -47,22 +47,13 @@ type MasterDataOption = {
 };
 
 const fallbackVoucherCategories: MasterDataOption[] = [
-  { id: "fallback-rev-food", type: "REVENUE_EXPENSE_CATEGORY", code: "REV_FOOD", name: "Doanh thu am thuc", group: "REVENUE_SOURCE", branch: null },
-  { id: "fallback-rev-other", type: "REVENUE_EXPENSE_CATEGORY", code: "REV_OTHER", name: "Doanh thu khac", group: "REVENUE_SOURCE", branch: null },
-  { id: "fallback-exp-rent", type: "REVENUE_EXPENSE_CATEGORY", code: "EXP_RENT", name: "Chi phi thue mat bang", group: "OPEX", branch: null },
-  { id: "fallback-exp-salary", type: "REVENUE_EXPENSE_CATEGORY", code: "EXP_SALARY", name: "Chi phi luong nhan vien", group: "OPEX", branch: null },
-  { id: "fallback-exp-marketing", type: "REVENUE_EXPENSE_CATEGORY", code: "EXP_MARKETING", name: "Chi phi Marketing", group: "OPEX", branch: null },
-  { id: "fallback-exp-other", type: "REVENUE_EXPENSE_CATEGORY", code: "EXP_OTHER", name: "Chi phi khac", group: "OPEX", branch: null },
+  { id: "fallback-rev-food", type: "REVENUE_EXPENSE_CATEGORY", code: "REV_FOOD", name: "Doanh thu am thuc", group: "RECEIPT", branch: null },
+  { id: "fallback-rev-other", type: "REVENUE_EXPENSE_CATEGORY", code: "REV_OTHER", name: "Doanh thu khac", group: "RECEIPT", branch: null },
+  { id: "fallback-exp-rent", type: "REVENUE_EXPENSE_CATEGORY", code: "EXP_RENT", name: "Chi phi thue mat bang", group: "PAYMENT", branch: null },
+  { id: "fallback-exp-salary", type: "REVENUE_EXPENSE_CATEGORY", code: "EXP_SALARY", name: "Chi phi luong nhan vien", group: "PAYMENT", branch: null },
+  { id: "fallback-exp-marketing", type: "REVENUE_EXPENSE_CATEGORY", code: "EXP_MARKETING", name: "Chi phi Marketing", group: "PAYMENT", branch: null },
+  { id: "fallback-exp-other", type: "REVENUE_EXPENSE_CATEGORY", code: "EXP_OTHER", name: "Chi phi khac", group: "PAYMENT", branch: null },
 ];
-
-function normalizeCategoryGroup(group: string | null | undefined) {
-  const raw = (group || "").toUpperCase();
-  if (raw.includes("REVENUE") || raw.includes("DOANH") || raw.includes("NGUON")) return "REVENUE_SOURCE";
-  if (raw.includes("COGS") || raw.includes("GIA")) return "COGS";
-  if (raw.includes("CAPEX")) return "CAPEX";
-  if (raw.includes("OPEX")) return "OPEX";
-  return raw;
-}
 
 const emptyForm = {
   voucherType: "RECEIPT",
@@ -201,14 +192,13 @@ export default function VouchersPage() {
     const source = categories.length > 0 ? categories : fallbackVoucherCategories;
     return source.map((category) => ({
       ...category,
-      group: normalizeCategoryGroup(category.group),
+      group: normalizeCashflowCategoryType(category.group),
     }));
   }, [categories]);
   const categoryOptionsForType = useCallback(
     (voucherType: string) =>
       normalizedCategoryOptions.filter((category) => {
-        const group = normalizeCategoryGroup(category.group);
-        return voucherType === "RECEIPT" ? group === "REVENUE_SOURCE" : ["OPEX", "CAPEX", "COGS"].includes(group);
+        return normalizeCashflowCategoryType(category.group) === voucherType;
       }),
     [normalizedCategoryOptions],
   );
@@ -698,7 +688,7 @@ export default function VouchersPage() {
                       ) : null;
                     })()}
                     {pnlItems
-                      .filter((item) => item.status === "ACTIVE" && ["OPEX", "COGS"].includes(normalizeCategoryGroup(item.group)))
+                      .filter((item) => item.status === "ACTIVE" && ["OPEX", "COGS"].includes((item.group || "").toUpperCase()))
                       .map((item) => (
                         <option key={item.id || item.code} value={item.code}>
                           {item.code} - {item.name}

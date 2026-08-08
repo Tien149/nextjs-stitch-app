@@ -7,6 +7,7 @@ import { SearchableSelect } from "@/components/SearchableSelect";
 import { displayRoleName, storeLabel } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import { getImportTemplate, type ImportFieldDefinition, type ImportType } from "@/lib/import-templates";
+import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 
 type PreviewRow = {
   sheetName: string;
@@ -205,9 +206,9 @@ function filterMasterOptions(
 
   if (fieldName === "category_code") {
     return options.filter((option) => {
-      const group = normalizeGroup(option.group);
-      if (isPayable) return ["OPEX", "CAPEX", "COGS"].includes(group);
-      if (isReceivable) return group === "REVENUE_SOURCE";
+      const cashflowType = normalizeCashflowCategoryType(option.group);
+      if (isPayable) return cashflowType === "PAYMENT";
+      if (isReceivable) return cashflowType === "RECEIPT";
       return true;
     });
   }

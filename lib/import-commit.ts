@@ -7,6 +7,7 @@ import { type ParsedImportRow } from "@/lib/import-parser";
 import { normalizeStockTransactionType, postInventoryTransaction } from "@/lib/inventory-stock";
 import { writeAuditLog } from "@/lib/audit-log";
 import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
+import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 
 function asText(value: unknown) {
   return String(value || "").trim();
@@ -484,7 +485,10 @@ export async function commitImport(input: CommitInput) {
         const type = asText(row.values.type).toUpperCase();
         const code = asText(row.values.code).toUpperCase();
         const name = asText(row.values.name);
-        const group = row.values.group ? asText(row.values.group).toUpperCase() : null;
+        const rawGroup = row.values.group ? asText(row.values.group).toUpperCase() : null;
+        const group = type === "REVENUE_EXPENSE_CATEGORY"
+          ? normalizeCashflowCategoryType(rawGroup)
+          : rawGroup;
         const partnerGroup = row.values.partner_group ? asText(row.values.partner_group).toUpperCase() : "EXTERNAL";
         const branch = row.values.branch ? asText(row.values.branch).toUpperCase() : null;
         if (type === "PARTNER" && (!group || !["CUSTOMER", "SUPPLIER", "BOTH", "EMPLOYEE", "OTHER_PARTNER"].includes(group))) {
@@ -495,6 +499,9 @@ export async function commitImport(input: CommitInput) {
         }
         if (type === "MONEY_SOURCE" && (!group || !["CASH", "BANK", "WALLET"].includes(group))) {
           throw new Error(`Dòng ${row.rowNumber}: Nhóm nguồn tiền không hợp lệ`);
+        }
+        if (type === "REVENUE_EXPENSE_CATEGORY" && !["RECEIPT", "PAYMENT"].includes(group || "")) {
+          throw new Error(`Dòng ${row.rowNumber}: Loại Thu/Chi phải là Thu hoặc Chi`);
         }
         const item = await tx.masterDataItem.upsert({
           where: { type_code: { type, code } },

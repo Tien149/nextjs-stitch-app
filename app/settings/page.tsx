@@ -58,7 +58,7 @@ const tabs = [
   { type: "MONEY_SOURCE", label: "Nguồn tiền", icon: "account_balance_wallet", hint: "1.1 - Quỹ/Ngân hàng/Ví" },
   { type: "PNL_GROUP", label: "Nhóm hạng mục P&L", icon: "account_tree", hint: "1.2 - Nhóm lớn trên báo cáo P&L" },
   { type: "PNL_ITEM", label: "Hạng mục P&L", icon: "list_alt", hint: "1.2 - Dòng chi tiết trong từng nhóm P&L" },
-  { type: "REVENUE_EXPENSE_CATEGORY", label: "Thu / Chi", icon: "category", hint: "1.2 - Danh mục thu/chi, quy về hạng mục P&L" },
+  { type: "REVENUE_EXPENSE_CATEGORY", label: "Thu / Chi", icon: "category", hint: "1.2 - Danh mục dòng tiền, chỉ phân loại Thu hoặc Chi" },
   { type: "ASSET_GROUP", label: "Nhóm tài sản", icon: "precision_manufacturing", hint: "1.2 - Tài sản/CCDC" },
   { type: "INVENTORY_ITEM_GROUP", label: "Nhóm mặt hàng", icon: "inventory_2", hint: "1.2 - Nguyên liệu, hàng hóa" },
   { type: "ACCOUNTING_PERIOD", label: "Kỳ kế toán", icon: "calendar_month", hint: "1.4 - Mở/khóa kỳ ghi sổ" },
@@ -93,7 +93,7 @@ const groupPlaceholders: Record<string, string> = {
   WAREHOUSE: "VD: Nguyen vat lieu / Thanh pham",
   PARTNER: "VD: Khach hang / Nha cung cap / Doi tac",
   MONEY_SOURCE: "VD: Tien mat / Ngan hang / Vi/POS",
-  REVENUE_EXPENSE_CATEGORY: "VD: OPEX / CAPEX / Gia von / Nguon doanh thu",
+  REVENUE_EXPENSE_CATEGORY: "Chọn Thu hoặc Chi",
   ASSET_GROUP: "VD: Tai san co dinh / CCDC / May moc",
   INVENTORY_ITEM_GROUP: "VD: Nguyen lieu / Ban thanh pham / Thanh pham",
   ACCOUNTING_PERIOD: "VD: OPEN / CLOSED",
@@ -137,7 +137,7 @@ const namePlaceholders: Record<string, string> = {
 };
 
 const notePlaceholders: Record<string, string> = {
-  REVENUE_EXPENSE_CATEGORY: "VD: dung cho import doanh thu, phan loai chi phi hoac P&L",
+  REVENUE_EXPENSE_CATEGORY: "VD: dùng phân loại dòng tiền trên phiếu thu/chi",
   ASSET_GROUP: "VD: dung de phan loai tai san, CCDC, bao tri va khau hao",
   INVENTORY_ITEM_GROUP: "VD: dung de loc ton kho, dinh luong, mua hang",
   ACCOUNTING_PERIOD: "VD: ngay bat dau/ket thuc ky, ghi chu khoa so",
@@ -160,10 +160,8 @@ const groupOptions: Record<string, GroupOption[]> = {
     { value: "WALLET", label: "WALLET - Ví điện tử / Cổng POS" },
   ],
   REVENUE_EXPENSE_CATEGORY: [
-    { value: "OPEX", label: "OPEX - Chi phí vận hành" },
-    { value: "CAPEX", label: "CAPEX - Chi phí đầu tư" },
-    { value: "COGS", label: "COGS - Giá vốn" },
-    { value: "REVENUE_SOURCE", label: "REVENUE_SOURCE - Nguồn doanh thu" },
+    { value: "RECEIPT", label: "1 - Thu" },
+    { value: "PAYMENT", label: "2 - Chi" },
   ],
   PNL_GROUP: [
     { value: "OPEX", label: "OPEX - Chi phí vận hành" },
@@ -205,23 +203,17 @@ const groupOptions: Record<string, GroupOption[]> = {
   ],
 };
 
-/**
- * Ba tầng phân loại thu/chi: Nhóm hạng mục P&L -> Hạng mục P&L -> Danh mục Thu/Chi.
- * Mỗi tầng con trỏ về tầng cha bằng cột subGroup, nên chỉ cần khai quan hệ ở một chỗ.
- */
+/** Phân cấp P&L chỉ còn Nhóm P&L -> Hạng mục P&L. */
 const parentTypeOf: Record<string, string> = {
   PNL_ITEM: "PNL_GROUP",
-  REVENUE_EXPENSE_CATEGORY: "PNL_ITEM",
 };
 
 const parentFieldLabels: Record<string, string> = {
   PNL_ITEM: "Nhóm hạng mục P&L",
-  REVENUE_EXPENSE_CATEGORY: "Hạng mục P&L",
 };
 
 const parentFieldHints: Record<string, string> = {
   PNL_ITEM: "Khai báo thêm ở tab “Nhóm hạng mục P&L”.",
-  REVENUE_EXPENSE_CATEGORY: "Khai báo thêm ở tab “Hạng mục P&L”. Chọn hạng mục để khoản thu/chi này lên đúng dòng P&L.",
 };
 
 const groupEmptyLabels: Record<string, string> = {
@@ -229,7 +221,7 @@ const groupEmptyLabels: Record<string, string> = {
   PNL_ITEM: "-- Chọn nhóm lớn --",
   PARTNER: "-- Chọn loại đối tác --",
   MONEY_SOURCE: "-- Chọn nhóm nguồn tiền --",
-  REVENUE_EXPENSE_CATEGORY: "-- Chọn nhóm thu/chi --",
+  REVENUE_EXPENSE_CATEGORY: "-- Chọn Thu hoặc Chi --",
   ASSET_GROUP: "-- Chọn nhóm tài sản --",
   INVENTORY_ITEM_GROUP: "-- Chọn nhóm mặt hàng --",
   ACCOUNTING_PERIOD: "-- Chọn trạng thái kỳ --",
@@ -238,11 +230,19 @@ const groupEmptyLabels: Record<string, string> = {
 
 const legacyGroupAliases: Record<string, Record<string, string>> = {
   REVENUE_EXPENSE_CATEGORY: {
-    "NGUON DOANH THU": "REVENUE_SOURCE",
-    "NGUỒN DOANH THU": "REVENUE_SOURCE",
-    "DOANH THU": "REVENUE_SOURCE",
-    "GIA VON": "COGS",
-    "GIÁ VỐN": "COGS",
+    THU: "RECEIPT",
+    INCOME: "RECEIPT",
+    REVENUE_SOURCE: "RECEIPT",
+    "NGUON DOANH THU": "RECEIPT",
+    "NGUỒN DOANH THU": "RECEIPT",
+    "DOANH THU": "RECEIPT",
+    CHI: "PAYMENT",
+    EXPENSE: "PAYMENT",
+    OPEX: "PAYMENT",
+    CAPEX: "PAYMENT",
+    COGS: "PAYMENT",
+    "GIA VON": "PAYMENT",
+    "GIÁ VỐN": "PAYMENT",
   },
   DOCUMENT_TYPE: {
     THU: "RECEIPT",
@@ -416,7 +416,7 @@ export default function SettingsPage() {
       code: item.code,
       name: item.name,
       group: normalizeGroupValue(item.type, item.group),
-      subGroup: item.subGroup || "",
+      subGroup: parentTypeOf[item.type] ? item.subGroup || "" : "",
       partnerType: normalizeGroupValue("PARTNER", item.partnerType || item.group),
       partnerGroup: item.partnerGroup || "EXTERNAL",
       branch: item.branch || "",
@@ -838,7 +838,7 @@ export default function SettingsPage() {
                             <p className="font-semibold text-xs bg-slate-100 text-slate-700 px-2 py-0.5 rounded w-fit">
                               {item.type === "PARTNER" ? formatGroupLabel("PARTNER", item.partnerType || item.group) : formatGroupLabel(item.type, item.group)}
                             </p>
-                            {item.subGroup && (
+                            {item.subGroup && parentTypeOf[item.type] && (
                               <p className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-slate-600">
                                 <span className="material-symbols-outlined text-[13px] text-slate-300">subdirectory_arrow_right</span>
                                 {allItems.find((row) => row.type === parentTypeOf[item.type] && row.code === item.subGroup)?.name || item.subGroup}
@@ -993,7 +993,7 @@ export default function SettingsPage() {
 
               <div className="grid grid-cols-2 gap-4">
                 <label className="text-xs font-bold text-slate-700 block">
-                  Nhóm / Loại
+                  {activeType === "REVENUE_EXPENSE_CATEGORY" ? "Loại Thu/Chi" : "Nhóm / Loại"}
                   {activeType === "PARTNER" ? (
                     <select
                       value={form.partnerType || form.group}

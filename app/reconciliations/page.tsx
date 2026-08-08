@@ -6,6 +6,7 @@ import { appMenuItems, canAccessMenu, canPerformAction, canPerformMenuAction, ty
 import { filterMoneySources, moneySourceDebugLabel, moneySourceDisplayName, type MoneySourceOption } from "@/lib/money-sources";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { visibleStoreOptions } from "@/lib/branch-labels";
+import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 
 type Candidate = {
   targetType: string;
@@ -117,7 +118,7 @@ export default function ReconciliationsPage() {
     void fetch("/api/master-data?type=REVENUE_EXPENSE_CATEGORY&status=ACTIVE")
       .then((res) => (res.ok ? res.json() : []))
       .then((items: Array<{ code: string; name: string; group: string | null }>) =>
-        setFeeCategories(items.filter((item) => (item.group || "").toUpperCase() === "OPEX")))
+        setFeeCategories(items.filter((item) => normalizeCashflowCategoryType(item.group) === "PAYMENT")))
       .catch(() => setFeeCategories([]));
   }, [loading]);
 

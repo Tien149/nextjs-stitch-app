@@ -9,6 +9,7 @@ import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySo
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { shiftLabels } from "@/lib/shifts";
+import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 
 type CashEntry = { id: string; date: string; code: string; type: string; moneySourceCode: string; description: string; receipt: number; payment: number; balance: number };
 type Schedule = { id: string; period: string; amount: number; status: string };
@@ -111,7 +112,7 @@ export default function FinanceOperationsPage() {
   const loadMoneySources = useCallback(async () => {
     void fetch("/api/master-data?type=REVENUE_EXPENSE_CATEGORY&status=ACTIVE")
       .then((res) => (res.ok ? res.json() : []))
-      .then((items: MasterDataOption[]) => setFeeCategories(items.filter((item) => (item.group || "").toUpperCase() === "OPEX")))
+      .then((items: MasterDataOption[]) => setFeeCategories(items.filter((item) => normalizeCashflowCategoryType(item.group) === "PAYMENT")))
       .catch(() => setFeeCategories([]));
     const response = await fetch("/api/master-data?type=MONEY_SOURCE&status=ACTIVE");
     if (!response.ok) return;

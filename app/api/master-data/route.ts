@@ -3,6 +3,7 @@ import { getRequestSession, requireMenuAction } from "@/lib/api-auth";
 import { assertBranchAccess, getAllowedBranches } from "@/lib/accounting";
 import { prisma, prismaRaw } from "@/lib/prisma";
 import { duplicatedInTrashMessage, findDeletedByUnique, softDeleteRecord } from "@/lib/soft-delete";
+import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 
 const defaultMasterData = [
   {
@@ -112,7 +113,7 @@ const defaultMasterData = [
     type: "REVENUE_EXPENSE_CATEGORY",
     code: "REV_FOOD",
     name: "Doanh thu do uong va banh",
-    group: "REVENUE_SOURCE",
+    group: "RECEIPT",
     note: "Dung phan loai doanh thu import tu POS",
     status: "ACTIVE",
   },
@@ -120,7 +121,7 @@ const defaultMasterData = [
     type: "REVENUE_EXPENSE_CATEGORY",
     code: "COGS_FOOD",
     name: "Gia von nguyen vat lieu va bao bi",
-    group: "COGS",
+    group: "PAYMENT",
     note: "Dung cho COGS nguyen vat lieu",
     status: "ACTIVE",
   },
@@ -128,7 +129,7 @@ const defaultMasterData = [
     type: "REVENUE_EXPENSE_CATEGORY",
     code: "OPEX_RENT",
     name: "Chi phi thue mat bang",
-    group: "OPEX",
+    group: "PAYMENT",
     note: "Chi phi van hanh",
     status: "ACTIVE",
   },
@@ -136,7 +137,7 @@ const defaultMasterData = [
     type: "REVENUE_EXPENSE_CATEGORY",
     code: "CAPEX_EQUIPMENT",
     name: "Mua sam thiet bi quay",
-    group: "CAPEX",
+    group: "PAYMENT",
     note: "Chi phi dau tu tai san",
     status: "ACTIVE",
   },
@@ -387,7 +388,7 @@ export async function GET(request: Request) {
 
 /** Các loại danh mục có tầng cha, lưu mã cha ở cột subGroup. */
 function typeSupportsSubGroup(type: string) {
-  return ["REVENUE_EXPENSE_CATEGORY", "PNL_ITEM"].includes(type);
+  return type === "PNL_ITEM";
 }
 
 async function validateMasterData(type: string, group: string | null, branch: string | null, partnerGroup?: string | null) {
@@ -427,14 +428,11 @@ async function validateMasterData(type: string, group: string | null, branch: st
     }
   }
   if (type === "REVENUE_EXPENSE_CATEGORY") {
-    if (!group || !["OPEX", "CAPEX", "COGS", "REVENUE_SOURCE"].includes(group.toUpperCase())) {
-      throw new Error("Nhóm Thu/Chi bắt buộc là OPEX, CAPEX, COGS hoặc REVENUE_SOURCE.");
+    if (!["RECEIPT", "PAYMENT"].includes(normalizeCashflowCategoryType(group) || "")) {
+      throw new Error("Loại Thu/Chi bắt buộc là Thu hoặc Chi.");
     }
   }
-  /**
-   * Ba tầng phân loại: Nhóm hạng mục P&L -> Hạng mục P&L -> Danh mục Thu/Chi.
-   * Tầng con lưu mã tầng cha ở cột subGroup.
-   */
+  /** Phân cấp P&L độc lập với danh mục Thu/Chi. */
   // REVENUE_EXPENSE_SUBGROUP là tên cũ của PNL_GROUP, giữ lại để dữ liệu cũ vẫn sửa được.
   if (["PNL_GROUP", "PNL_ITEM", "REVENUE_EXPENSE_SUBGROUP"].includes(type)) {
     if (!group || !["OPEX", "CAPEX", "COGS", "REVENUE_SOURCE"].includes(group.toUpperCase())) {
@@ -461,11 +459,19 @@ async function validateMasterData(type: string, group: string | null, branch: st
 
 const legacyGroupAliases: Record<string, Record<string, string>> = {
   REVENUE_EXPENSE_CATEGORY: {
-    "NGUON DOANH THU": "REVENUE_SOURCE",
-    "NGUỒN DOANH THU": "REVENUE_SOURCE",
-    "DOANH THU": "REVENUE_SOURCE",
-    "GIA VON": "COGS",
-    "GIÁ VỐN": "COGS",
+    THU: "RECEIPT",
+    INCOME: "RECEIPT",
+    REVENUE_SOURCE: "RECEIPT",
+    "NGUON DOANH THU": "RECEIPT",
+    "NGUỒN DOANH THU": "RECEIPT",
+    "DOANH THU": "RECEIPT",
+    CHI: "PAYMENT",
+    EXPENSE: "PAYMENT",
+    OPEX: "PAYMENT",
+    CAPEX: "PAYMENT",
+    COGS: "PAYMENT",
+    "GIA VON": "PAYMENT",
+    "GIÁ VỐN": "PAYMENT",
   },
   DOCUMENT_TYPE: {
     THU: "RECEIPT",
@@ -566,7 +572,11 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: "Không tìm thấy danh mục" }, { status: 404 });
     }
 
-    const group = body.group !== undefined ? normalizeMasterGroup(current.type, cleanText(body.group) || null) : current.group;
+    // Chỉ chuyển nhóm cũ sang Thu/Chi khi người dùng thực sự gửi lại trường group.
+    // Các thao tác chỉ đổi trạng thái phải giữ nguyên phân loại lịch sử.
+    const group = body.group !== undefined
+      ? normalizeMasterGroup(current.type, cleanText(body.group) || null)
+      : current.group;
     const subGroup = typeSupportsSubGroup(current.type)
       ? (body.subGroup !== undefined ? (cleanText(body.subGroup).toUpperCase() || null) : current.subGroup)
       : null;

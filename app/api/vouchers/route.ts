@@ -9,6 +9,7 @@ import { writeAuditLog } from "@/lib/audit-log";
 import { duplicatedInTrashMessage, findDeletedByUnique, softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
 import { canPerformMenuAction, type DemoSession } from "@/lib/auth-demo";
 import { moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
+import { normalizeCashflowCategoryType, normalizeReceiptPurpose, validateReceiptPurpose, voucherEditWindowError } from "@/lib/voucher-rules";
 
 /** Trạng thái không cho sửa/xoá vì chứng từ đã ghi sổ. */
 
@@ -21,20 +22,8 @@ function toAmount(value: unknown) {
   return Number.isFinite(numberValue) ? numberValue : 0;
 }
 
-function normalizeVoucherCategoryGroup(group: string | null | undefined) {
-  const raw = (group || "").toUpperCase();
-  if (raw.includes("REVENUE") || raw.includes("DOANH") || raw.includes("NGUON")) return "REVENUE_SOURCE";
-  if (raw.includes("COGS") || raw.includes("GIA")) return "COGS";
-  if (raw.includes("CAPEX")) return "CAPEX";
-  if (raw.includes("OPEX")) return "OPEX";
-  return raw;
-}
-
 function categoryAllowedForVoucher(voucherType: string, group: string | null | undefined) {
-  const normalizedGroup = normalizeVoucherCategoryGroup(group);
-  return voucherType === "RECEIPT"
-    ? normalizedGroup === "REVENUE_SOURCE"
-    : ["OPEX", "CAPEX", "COGS"].includes(normalizedGroup);
+  return normalizeCashflowCategoryType(group) === voucherType;
 }
 
 async function validateVoucherCategory(voucherType: string, categoryCode: string) {
@@ -44,8 +33,8 @@ async function validateVoucherCategory(voucherType: string, categoryCode: string
   if (!category) return `Khoản mục thu/chi [${categoryCode}] không tồn tại hoặc đã ngưng hoạt động`;
   if (!categoryAllowedForVoucher(voucherType, category.group)) {
     return voucherType === "RECEIPT"
-      ? "Phiếu thu chỉ được chọn khoản mục nhóm nguồn doanh thu"
-      : "Phiếu chi chỉ được chọn khoản mục nhóm OPEX, CAPEX hoặc giá vốn";
+      ? "Phiếu thu chỉ được chọn danh mục loại Thu"
+      : "Phiếu chi chỉ được chọn danh mục loại Chi";
   }
   return null;
 }
@@ -60,7 +49,7 @@ async function validateVoucherPnlItem(voucherType: string, pnlItemCode: string, 
     },
   });
   if (!pnlItem) return `Hạng mục P&L [${pnlItemCode}] không tồn tại hoặc đã ngừng hoạt động`;
-  const group = normalizeVoucherCategoryGroup(pnlItem.group);
+  const group = (pnlItem.group || "").toUpperCase();
   if (!["OPEX", "COGS"].includes(group)) {
     return "Phiếu chi chỉ được chọn hạng mục P&L thuộc nhóm OPEX hoặc Giá vốn";
   }
@@ -69,7 +58,6 @@ async function validateVoucherPnlItem(voucherType: string, pnlItemCode: string, 
 
 import { generateFormattedVoucherCode, formatVoucherPrefix } from "@/lib/voucher-code-generator";
 import { isWorkShift } from "@/lib/shifts";
-import { normalizeReceiptPurpose, validateReceiptPurpose, voucherEditWindowError } from "@/lib/voucher-rules";
 
 async function nextVoucherCode(voucherType: string, voucherDate?: Date | string | null, branchCode?: string | null) {
   const d = voucherDate ? new Date(voucherDate) : new Date();

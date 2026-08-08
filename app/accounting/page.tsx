@@ -9,6 +9,7 @@ import { useModuleAuth } from "@/lib/use-module-auth";
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
+import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 
 type Account = { id: string; code: string; name: string; accountType: string; reportGroup: string };
 type Line = { id: string; debit: number; credit: number; departmentCode: string | null; account: Account; categoryCode: string | null; partnerCode: string | null };
@@ -53,11 +54,17 @@ export default function AccountingPage() {
       setData(payload);
       if (payload.categories) {
         setCategories(payload.categories);
-        const defaultCat = payload.categories.find((c) => c.type === "REVENUE_EXPENSE_CATEGORY")?.code || "";
         const moneySourceItems = payload.categories.filter((c) => c.type === "MONEY_SOURCE");
         setManual((prev) => ({
           ...prev,
-          categoryCode: prev.categoryCode || defaultCat,
+          categoryCode: payload.categories?.find((c) =>
+            c.type === "REVENUE_EXPENSE_CATEGORY"
+            && normalizeCashflowCategoryType(c.group) === (prev.entryType === "INCOME" ? "RECEIPT" : "PAYMENT")
+            && c.code === prev.categoryCode,
+          )?.code || payload.categories?.find((c) =>
+            c.type === "REVENUE_EXPENSE_CATEGORY"
+            && normalizeCashflowCategoryType(c.group) === (prev.entryType === "INCOME" ? "RECEIPT" : "PAYMENT"),
+          )?.code || "",
           moneySourceCode: isMoneySourceAllowed(moneySourceItems, prev.moneySourceCode, prev.branchCode)
             ? prev.moneySourceCode
             : firstMoneySourceCode(moneySourceItems, prev.branchCode),
@@ -721,7 +728,15 @@ export default function AccountingPage() {
                     <div className="relative">
                       <select
                         value={manual.entryType}
-                        onChange={(e) => setManual({ ...manual, entryType: e.target.value })}
+                        onChange={(e) => {
+                          const entryType = e.target.value;
+                          const cashflowType = entryType === "INCOME" ? "RECEIPT" : "PAYMENT";
+                          const categoryCode = categories.find((category) =>
+                            category.type === "REVENUE_EXPENSE_CATEGORY"
+                            && normalizeCashflowCategoryType(category.group) === cashflowType,
+                          )?.code || "";
+                          setManual({ ...manual, entryType, categoryCode });
+                        }}
                         className="w-full pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all appearance-none cursor-pointer"
                       >
                         <option value="EXPENSE">Chi phí (Expense)</option>
@@ -765,10 +780,11 @@ export default function AccountingPage() {
                       className="w-full pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all appearance-none cursor-pointer font-bold"
                     >
                       {categories
-                        .filter((c) => c.type === "REVENUE_EXPENSE_CATEGORY")
+                        .filter((c) => c.type === "REVENUE_EXPENSE_CATEGORY"
+                          && normalizeCashflowCategoryType(c.group) === (manual.entryType === "INCOME" ? "RECEIPT" : "PAYMENT"))
                         .map((c) => (
                           <option key={c.id} value={c.code}>
-                            [{c.code}] {c.name} ({c.group || ""})
+                            [{c.code}] {c.name}
                           </option>
                         ))}
                     </select>

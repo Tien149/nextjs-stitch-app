@@ -31,8 +31,7 @@ model MasterDataItem {
   name         String
   group        String?
   /// Mã của danh mục cha trong ba tầng phân loại thu/chi:
-  /// PNL_GROUP (nhóm hạng mục P&L) -> PNL_ITEM (hạng mục chi tiết) -> REVENUE_EXPENSE_CATEGORY.
-  /// PNL_ITEM lưu mã PNL_GROUP, REVENUE_EXPENSE_CATEGORY lưu mã PNL_ITEM.
+  /// Phân cấp P&L: PNL_ITEM lưu mã PNL_GROUP. Danh mục Thu/Chi không liên kết P&L.
   subGroup     String?
   partnerType  String?
   partnerGroup String?

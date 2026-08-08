@@ -7,6 +7,7 @@ import { writeAuditLog } from "@/lib/audit-log";
 import { generateFormattedVoucherCode } from "@/lib/voucher-code-generator";
 import { moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { scopePayloadByTab } from "@/lib/tab-scope";
+import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 
 const menuHref = "/finance-operations";
 const cashDepositDenominations = [500000, 200000, 100000, 50000, 20000, 10000, 5000, 2000, 1000];
@@ -396,6 +397,9 @@ export async function POST(request: Request) {
       if (normalizeMoneySourceGroup(fromMoneySource.group) !== "WALLET") businessError("Quyết toán phải đi từ nguồn ví/cổng POS.");
       if (normalizeMoneySourceGroup(toMoneySource.group) !== "BANK") businessError("Quyết toán phải về tài khoản ngân hàng.");
       if (feeCategoryCode && !feeCategory) businessError(`Khoản mục phí [${feeCategoryCode}] không tồn tại hoặc đã ngưng hoạt động.`);
+      if (feeCategory && normalizeCashflowCategoryType(feeCategory.group) !== "PAYMENT") {
+        businessError(`Khoản mục phí [${feeCategoryCode}] phải là danh mục loại Chi.`);
+      }
 
       const transferCount = await prisma.moneyTransfer.count();
       const result = await prisma.moneyTransfer.create({

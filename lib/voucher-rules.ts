@@ -22,9 +22,23 @@ export function validateReceiptPurpose(voucherType: string, value: unknown, part
   return null;
 }
 
-/** Chuẩn hoá nhóm khoản mục về 4 nhóm gốc; dùng chung cho form, API và định khoản. */
+/**
+ * Phân loại dòng tiền của danh mục Thu/Chi. Dữ liệu cũ từng dùng nhóm
+ * P&L nên vẫn được quy đổi để chứng từ lịch sử hoạt động bình thường.
+ */
+export function normalizeCashflowCategoryType(group: string | null | undefined) {
+  const raw = (group || "").trim().toUpperCase();
+  if (["RECEIPT", "THU", "INCOME", "REVENUE_SOURCE"].includes(raw)) return "RECEIPT";
+  if (["PAYMENT", "CHI", "EXPENSE", "OPEX", "CAPEX", "COGS"].includes(raw)) return "PAYMENT";
+  if (raw.includes("REVENUE") || raw.includes("DOANH") || raw.includes("NGUON")) return "RECEIPT";
+  return raw || null;
+}
+
+/** Chuẩn hoá nhóm P&L; có fallback cho danh mục Thu/Chi mới khi định khoản. */
 export function normalizeCategoryGroup(group: string | null | undefined) {
   const raw = (group || "").toUpperCase();
+  if (["RECEIPT", "THU", "INCOME"].includes(raw)) return "REVENUE_SOURCE";
+  if (["PAYMENT", "CHI", "EXPENSE"].includes(raw)) return "OPEX";
   if (raw.includes("REVENUE") || raw.includes("DOANH") || raw.includes("NGUON")) return "REVENUE_SOURCE";
   if (raw.includes("COGS") || raw.includes("GIA")) return "COGS";
   if (raw.includes("CAPEX")) return "CAPEX";

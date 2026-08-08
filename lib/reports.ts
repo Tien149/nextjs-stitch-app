@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { addPeriod } from "@/lib/phase3";
 import { periodBounds } from "@/lib/accounting";
 import { depositDecreaseActions, depositIncreaseActions } from "@/lib/deposit-accounting";
+import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 
 type PnlBucket = {
   revenue: number;
@@ -133,7 +134,7 @@ export async function getTrend(period: string, branchCode: string, months = 6) {
 export type CashCategoryRow = {
   key: string;
   name: string;
-  /** Nhóm lớn của khoản mục: REVENUE_SOURCE / OPEX / CAPEX / COGS. */
+  /** Chiều dòng tiền của danh mục: RECEIPT / PAYMENT. */
   group: string | null;
   /** Nguồn số liệu để người xem biết dòng này lấy từ đâu. */
   origin: "VOUCHER" | "POS" | "MANUAL" | "ADJUSTMENT" | "DEPOSIT";
@@ -293,7 +294,7 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     const category = voucher.categoryCode ? categoryByCode.get(voucher.categoryCode) : null;
     const key = voucher.categoryCode || unclassifiedKey;
     const name = category?.name || (voucher.categoryCode ? `Khoản mục [${voucher.categoryCode}]` : "Chưa phân loại");
-    bumpCategory(isIncome ? income : expense, { key, name, group: category?.group || null, origin: "VOUCHER" }, monthCount, monthIndex, voucher.amount);
+    bumpCategory(isIncome ? income : expense, { key, name, group: normalizeCashflowCategoryType(category?.group), origin: "VOUCHER" }, monthCount, monthIndex, voucher.amount);
     if (!voucher.categoryCode) {
       if (isIncome) unclassifiedIncome += voucher.amount;
       else unclassifiedExpense += voucher.amount;
@@ -322,7 +323,7 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
   for (const row of posRevenues) {
     bumpCategory(
       income,
-      { key: "POS_REVENUE", name: "Doanh thu bán hàng (file POS)", group: "REVENUE_SOURCE", origin: "POS" },
+      { key: "POS_REVENUE", name: "Doanh thu bán hàng (file POS)", group: "RECEIPT", origin: "POS" },
       monthCount,
       monthIndexOf(row.saleDate),
       row._sum.netAmount || 0,
@@ -330,7 +331,7 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     );
   }
   for (const row of manualEntries) {
-    bumpCategory(income, { key: "MANUAL_REVENUE", name: "Doanh thu bán hàng (nhập tay)", group: "REVENUE_SOURCE", origin: "MANUAL" }, monthCount, monthIndexOf(row.reportDate), row.totalAmount);
+    bumpCategory(income, { key: "MANUAL_REVENUE", name: "Doanh thu bán hàng (nhập tay)", group: "RECEIPT", origin: "MANUAL" }, monthCount, monthIndexOf(row.reportDate), row.totalAmount);
   }
 
   for (const row of adjustments) {
@@ -357,7 +358,7 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
         {
           key: row.feeCategoryCode || (isCashRounding ? "CASH_ROUNDING_EXPENSE" : "WALLET_FEE"),
           name: category?.name || (isCashRounding ? "Chi phí làm tròn tiền nộp" : "Phí quẹt thẻ / phí ví"),
-          group: category?.group || "OPEX",
+          group: normalizeCashflowCategoryType(category?.group) || "PAYMENT",
           origin: "VOUCHER",
         },
         monthCount,

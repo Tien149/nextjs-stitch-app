@@ -3,6 +3,7 @@ import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { ensureDefaultAccounts, periodBounds, postJournalEntry, requestedBranch, syncAccountingPeriod } from "@/lib/accounting";
 import { prisma } from "@/lib/prisma";
 import { apiError, businessError, cleanText, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
+import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 
 const menuHref = "/accounting";
 
@@ -62,6 +63,17 @@ export async function POST(request: Request) {
         // Determine bank vs cash account for the money source
         const cashAccount = (moneySourceCode.toUpperCase().includes("BANK") || moneySourceCode.toUpperCase().includes("VCB") || moneySourceCode.toUpperCase().includes("ACB")) ? "1121" : "1111";
         
+        const category = await prisma.masterDataItem.findFirst({
+          where: { type: "REVENUE_EXPENSE_CATEGORY", code: categoryCode, status: "ACTIVE" },
+        });
+        if (!category) businessError(`Danh mục Thu/Chi [${categoryCode}] không tồn tại hoặc đã ngưng hoạt động`);
+        const expectedCategoryType = body.entryType === "INCOME" ? "RECEIPT" : "PAYMENT";
+        if (normalizeCashflowCategoryType(category.group) !== expectedCategoryType) {
+          businessError(body.entryType === "INCOME"
+            ? "Bút toán thu nhập phải chọn danh mục loại Thu"
+            : "Bút toán chi phí phải chọn danh mục loại Chi");
+        }
+
         if (body.entryType === "EXPENSE") {
           lines = [
             { accountCode: "6428", debit: amount, categoryCode, description },
