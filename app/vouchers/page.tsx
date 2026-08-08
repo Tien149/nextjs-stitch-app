@@ -35,6 +35,14 @@ type Voucher = {
   updatedAt: string;
 };
 
+type BulkActionKind = "APPROVE" | "UNAPPROVE" | "DELETE";
+
+type BulkActionDialogState = {
+  kind: BulkActionKind;
+  ids: string[];
+  requiresReason: boolean;
+};
+
 type MasterDataOption = {
   id: string;
   type: string;
@@ -92,6 +100,9 @@ export default function VouchersPage() {
   const [pastEditError, setPastEditError] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [bulkRunning, setBulkRunning] = useState(false);
+  const [bulkDialog, setBulkDialog] = useState<BulkActionDialogState | null>(null);
+  const [bulkReason, setBulkReason] = useState("");
+  const [bulkDialogError, setBulkDialogError] = useState("");
   const [moneySources, setMoneySources] = useState<MasterDataOption[]>([]);
   const [moneySourcesLoading, setMoneySourcesLoading] = useState(false);
   const [moneySourcesError, setMoneySourcesError] = useState("");
@@ -100,10 +111,15 @@ export default function VouchersPage() {
   const [pnlItems, setPnlItems] = useState<MasterDataOption[]>([]);
   const [partners, setPartners] = useState<MasterDataOption[]>([]);
   const moneySourceRequestRef = useRef(0);
+  const selectAllRef = useRef<HTMLInputElement>(null);
 
   const loadVouchers = useCallback(async (branch: string) => {
     const response = await fetch(`/api/vouchers?branchCode=${branch}`);
-    if (response.ok) setVouchers((await response.json()) as Voucher[]);
+    if (response.ok) {
+      setVouchers((await response.json()) as Voucher[]);
+      // Không giữ lựa chọn cũ sau khi đổi cửa hàng hoặc tải lại danh sách.
+      setSelectedIds([]);
+    }
   }, []);
 
   const loadMasterData = useCallback(async (session: DemoSession, initialBranch: string) => {
@@ -245,7 +261,7 @@ export default function VouchersPage() {
   };
 
   const canCreate = user ? canPerformAction(user, "create") : false;
-  const canApprove = user ? canPerformAction(user, "approve") : false;
+  const canApprove = user ? canPerformMenuAction(user, "/vouchers", "approve") : false;
   const canDelete = user ? canPerformMenuAction(user, "/vouchers", "delete") : false;
   /** Quyền sửa/bỏ duyệt chứng từ đã qua ngày (mặc định Admin và Kế toán tổng hợp). */
   const canEditPast = canEditPastVoucher(user);
@@ -493,8 +509,37 @@ export default function VouchersPage() {
     }
   };
 
-  const selectableVouchers = vouchers.filter((voucher) => !lockedForChange(voucher));
+  const canBulkApproveVoucher = (voucher: Voucher) =>
+    canApprove
+    && ["DRAFT", "PENDING_REVIEW"].includes(voucher.status)
+    && !lockedForChange(voucher);
+
+  const canBulkUnapproveVoucher = (voucher: Voucher) =>
+    canApprove
+    && voucher.status === "APPROVED"
+    && !lockedForChange(voucher);
+
+  const canBulkDeleteVoucher = (voucher: Voucher) =>
+    canDelete && !lockedForChange(voucher);
+
+  // Chỉ cho chọn phiếu có ít nhất một thao tác hàng loạt mà user hiện tại được phép dùng.
+  const selectableVouchers = vouchers.filter((voucher) =>
+    canBulkApproveVoucher(voucher)
+    || canBulkUnapproveVoucher(voucher)
+    || canBulkDeleteVoucher(voucher));
+  const selectableIds = new Set(selectableVouchers.map((voucher) => voucher.id));
+  const selectedVouchers = vouchers.filter((voucher) => selectedIds.includes(voucher.id));
+  const bulkApproveIds = selectedVouchers.filter(canBulkApproveVoucher).map((voucher) => voucher.id);
+  const bulkUnapproveIds = selectedVouchers.filter(canBulkUnapproveVoucher).map((voucher) => voucher.id);
+  const bulkDeleteIds = selectedVouchers.filter(canBulkDeleteVoucher).map((voucher) => voucher.id);
   const allSelectableChecked = selectableVouchers.length > 0 && selectableVouchers.every((voucher) => selectedIds.includes(voucher.id));
+  const someSelectableChecked = selectableVouchers.some((voucher) => selectedIds.includes(voucher.id));
+
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = someSelectableChecked && !allSelectableChecked;
+    }
+  }, [allSelectableChecked, someSelectableChecked]);
 
   const toggleSelectAll = () => {
     setSelectedIds(allSelectableChecked ? [] : selectableVouchers.map((voucher) => voucher.id));
@@ -508,27 +553,62 @@ export default function VouchersPage() {
    * Gọi API cho cả lô rồi tóm tắt lại: API trả về danh sách phiếu hỏng kèm lý do nên
    * người dùng biết chính xác phiếu nào không xử lý được thay vì chỉ thấy "có lỗi".
    */
-  const runBulk = async (kind: "APPROVE" | "UNAPPROVE" | "DELETE") => {
-    if (selectedIds.length === 0 || bulkRunning) return;
+  const openBulkDialog = (kind: BulkActionKind) => {
+    const targetIds = kind === "APPROVE"
+      ? bulkApproveIds
+      : kind === "UNAPPROVE"
+        ? bulkUnapproveIds
+        : bulkDeleteIds;
     const labels = { APPROVE: "duyệt", UNAPPROVE: "bỏ duyệt", DELETE: "xoá" } as const;
-    const confirmText = kind === "DELETE"
-      ? `Xoá ${selectedIds.length} chứng từ đã chọn? Chứng từ đã duyệt sẽ được hoàn tác hệ quả (tiền cọc, công nợ) trước khi xoá.`
-      : `${kind === "APPROVE" ? "Duyệt" : "Bỏ duyệt"} ${selectedIds.length} chứng từ đã chọn?`;
-    if (!window.confirm(confirmText)) return;
+    if (targetIds.length === 0) {
+      setMessage(`Không có chứng từ phù hợp để ${labels[kind]}.`);
+      setMessageType("error");
+      return;
+    }
+
+    const targetIdSet = new Set(targetIds);
+    const requiresReason = kind !== "APPROVE" && selectedVouchers.some((voucher) =>
+      targetIdSet.has(voucher.id) && !isSameCalendarDay(new Date(voucher.voucherDate), new Date()));
+    setBulkReason("");
+    setBulkDialogError("");
+    setBulkDialog({ kind, ids: targetIds, requiresReason });
+  };
+
+  const closeBulkDialog = () => {
+    if (bulkRunning) return;
+    setBulkDialog(null);
+    setBulkReason("");
+    setBulkDialogError("");
+  };
+
+  const runBulk = async () => {
+    if (!bulkDialog || bulkRunning) return;
+    const { kind, ids: targetIds, requiresReason } = bulkDialog;
+    const reason = bulkReason.trim();
+    const labels = { APPROVE: "duyệt", UNAPPROVE: "bỏ duyệt", DELETE: "xoá" } as const;
+    if (requiresReason && reason.length < 10) {
+      setBulkDialogError("Vui lòng nhập lý do tối thiểu 10 ký tự vì danh sách có chứng từ ngày cũ.");
+      return;
+    }
 
     setBulkRunning(true);
     setMessage("");
+    setBulkDialogError("");
     try {
       const response = kind === "DELETE"
-        ? await fetch(`/api/vouchers?ids=${selectedIds.join(",")}`, { method: "DELETE" })
+        ? await fetch(`/api/vouchers?ids=${targetIds.join(",")}&reason=${encodeURIComponent(reason)}`, { method: "DELETE" })
         : await fetch("/api/vouchers", {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ids: selectedIds, status: kind === "APPROVE" ? "APPROVED" : "DRAFT" }),
+            body: JSON.stringify({
+              ids: targetIds,
+              status: kind === "APPROVE" ? "APPROVED" : "DRAFT",
+              reason: reason || undefined,
+            }),
           });
       const payload = await response.json();
       if (!response.ok) {
-        setMessage(payload.error || `Không ${labels[kind]} được chứng từ.`);
+        setBulkDialogError(payload.error || `Không ${labels[kind]} được chứng từ.`);
         return;
       }
       const failed = (payload.failed || []) as Array<{ code?: string; error?: string }>;
@@ -537,10 +617,14 @@ export default function VouchersPage() {
           ? `Đã ${labels[kind]} ${payload.succeeded}/${payload.total} chứng từ.`
           : `Đã ${labels[kind]} ${payload.succeeded}/${payload.total} chứng từ. Không xử lý được: ${failed.map((row) => `${row.code || "?"} (${row.error})`).join("; ")}`,
       );
+      setMessageType(failed.length === 0 ? "success" : "error");
+      setBulkDialog(null);
+      setBulkReason("");
+      setBulkDialogError("");
       setSelectedIds([]);
       await loadVouchers(branchCode);
     } catch {
-      setMessage("Lỗi kết nối máy chủ.");
+      setBulkDialogError("Lỗi kết nối máy chủ.");
     } finally {
       setBulkRunning(false);
     }
@@ -899,31 +983,31 @@ export default function VouchersPage() {
                     {canApprove && (
                       <button
                         type="button"
-                        disabled={bulkRunning}
-                        onClick={() => void runBulk("APPROVE")}
+                        disabled={bulkRunning || bulkApproveIds.length === 0}
+                        onClick={() => openBulkDialog("APPROVE")}
                         className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
                       >
-                        Duyệt
+                        Duyệt ({bulkApproveIds.length})
                       </button>
                     )}
                     {canApprove && (
                       <button
                         type="button"
-                        disabled={bulkRunning}
-                        onClick={() => void runBulk("UNAPPROVE")}
+                        disabled={bulkRunning || bulkUnapproveIds.length === 0}
+                        onClick={() => openBulkDialog("UNAPPROVE")}
                         className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-bold text-amber-700 hover:bg-amber-100 disabled:opacity-50"
                       >
-                        Bỏ duyệt
+                        Bỏ duyệt ({bulkUnapproveIds.length})
                       </button>
                     )}
                     {canDelete && (
                       <button
                         type="button"
-                        disabled={bulkRunning}
-                        onClick={() => void runBulk("DELETE")}
+                        disabled={bulkRunning || bulkDeleteIds.length === 0}
+                        onClick={() => openBulkDialog("DELETE")}
                         className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-50"
                       >
-                        Xoá
+                        Xoá ({bulkDeleteIds.length})
                       </button>
                     )}
                     <button
@@ -944,6 +1028,7 @@ export default function VouchersPage() {
                   <tr>
                     <th className="w-10 px-4 py-3 text-left">
                       <input
+                        ref={selectAllRef}
                         type="checkbox"
                         title="Chọn tất cả phiếu sửa được"
                         className="h-4 w-4 cursor-pointer accent-blue-600 disabled:cursor-not-allowed"
@@ -964,6 +1049,8 @@ export default function VouchersPage() {
                     <tr><td colSpan={6} className="px-4 py-10 text-center text-slate-400">Chưa có chứng từ cho chi nhánh này.</td></tr>
                   ) : vouchers.map((voucher) => {
                     const lockReason = lockedForChange(voucher);
+                    const bulkSelectionDisabledReason = lockReason
+                      || (!selectableIds.has(voucher.id) ? "Bạn không có thao tác hàng loạt phù hợp với chứng từ này" : null);
                     return (
                     <tr key={voucher.id} className={`transition-colors ${selectedIds.includes(voucher.id) ? "bg-blue-50/60" : "hover:bg-slate-50/80"}`}>
                       <td className="px-4 py-3.5 align-top">
@@ -971,8 +1058,8 @@ export default function VouchersPage() {
                           type="checkbox"
                           className="mt-1 h-4 w-4 cursor-pointer accent-blue-600 disabled:cursor-not-allowed"
                           checked={selectedIds.includes(voucher.id)}
-                          disabled={Boolean(lockReason)}
-                          title={lockReason || "Chọn chứng từ"}
+                          disabled={Boolean(bulkSelectionDisabledReason)}
+                          title={bulkSelectionDisabledReason || "Chọn chứng từ"}
                           onChange={() => toggleSelect(voucher.id)}
                         />
                       </td>
@@ -1050,6 +1137,122 @@ export default function VouchersPage() {
           </section>
         </main>
       </div>
+
+      {bulkDialog && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-950/45 p-4" role="dialog" aria-modal="true" aria-labelledby="bulk-action-title">
+          <div className="w-full max-w-lg overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-start justify-between border-b border-slate-200 px-5 py-4">
+              <div>
+                <p className="text-[11px] font-bold uppercase tracking-wider text-blue-600">Thao tác hàng loạt</p>
+                <h3 id="bulk-action-title" className="mt-1 text-base font-bold text-slate-900">
+                  {bulkDialog.kind === "APPROVE"
+                    ? `Duyệt ${bulkDialog.ids.length} chứng từ?`
+                    : bulkDialog.kind === "UNAPPROVE"
+                      ? `Bỏ duyệt ${bulkDialog.ids.length} chứng từ?`
+                      : `Xoá ${bulkDialog.ids.length} chứng từ?`}
+                </h3>
+                <p className="mt-1 text-xs text-slate-500">
+                  {vouchers
+                    .filter((voucher) => bulkDialog.ids.includes(voucher.id))
+                    .slice(0, 4)
+                    .map((voucher) => voucher.code)
+                    .join(", ")}
+                  {bulkDialog.ids.length > 4 ? ` và ${bulkDialog.ids.length - 4} phiếu khác` : ""}
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={bulkRunning}
+                onClick={closeBulkDialog}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 disabled:opacity-50"
+                aria-label="Đóng"
+              >
+                <span className="material-symbols-outlined text-xl">close</span>
+              </button>
+            </div>
+
+            <div className="space-y-4 px-5 py-4">
+              <p className={`rounded-xl border px-3 py-2.5 text-xs leading-5 ${
+                bulkDialog.kind === "APPROVE"
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                  : "border-amber-200 bg-amber-50 text-amber-800"
+              }`}>
+                {bulkDialog.kind === "APPROVE"
+                  ? "Các chứng từ sẽ được duyệt và ghi nhận các hệ quả liên quan vào sổ quỹ."
+                  : bulkDialog.kind === "UNAPPROVE"
+                    ? "Các chứng từ sẽ về Bản nháp; dòng tiền, tiền cọc, công nợ và phân bổ liên quan sẽ được hoàn tác."
+                    : "Các chứng từ đã duyệt sẽ được hoàn tác hệ quả liên quan trước khi chuyển vào Thùng rác."}
+              </p>
+
+              {bulkDialog.kind !== "APPROVE" && (
+                <div>
+                  <label htmlFor="bulk-action-reason" className="text-sm font-bold text-slate-700">
+                    Lý do {bulkDialog.requiresReason
+                      ? <span className="text-rose-600">*</span>
+                      : <span className="font-normal text-slate-400">(không bắt buộc)</span>}
+                  </label>
+                  <textarea
+                    id="bulk-action-reason"
+                    autoFocus
+                    value={bulkReason}
+                    onChange={(event) => {
+                      setBulkReason(event.target.value);
+                      if (bulkDialogError) setBulkDialogError("");
+                    }}
+                    rows={3}
+                    placeholder={bulkDialog.requiresReason
+                      ? "Nhập lý do xử lý chứng từ ngày cũ (tối thiểu 10 ký tự)..."
+                      : "VD: Điều chỉnh phiếu nhập nhầm"}
+                    className="mt-2 w-full resize-none rounded-xl border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                  />
+                  {bulkDialog.requiresReason && (
+                    <p className={`mt-1 text-[11px] font-medium ${bulkReason.trim().length < 10 ? "text-amber-600" : "text-emerald-600"}`}>
+                      {bulkReason.trim().length}/10 ký tự tối thiểu
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {bulkDialogError && (
+                <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2.5 text-sm font-semibold text-rose-700">
+                  {bulkDialogError}
+                </p>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2 border-t border-slate-200 bg-slate-50 px-5 py-4">
+              <button
+                type="button"
+                disabled={bulkRunning}
+                onClick={closeBulkDialog}
+                className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+              >
+                Huỷ
+              </button>
+              <button
+                type="button"
+                disabled={bulkRunning || (bulkDialog.requiresReason && bulkReason.trim().length < 10)}
+                onClick={() => void runBulk()}
+                className={`rounded-xl px-4 py-2 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50 ${
+                  bulkDialog.kind === "APPROVE"
+                    ? "bg-emerald-600 hover:bg-emerald-700"
+                    : bulkDialog.kind === "UNAPPROVE"
+                      ? "bg-amber-600 hover:bg-amber-700"
+                      : "bg-rose-600 hover:bg-rose-700"
+                }`}
+              >
+                {bulkRunning
+                  ? "Đang xử lý..."
+                  : bulkDialog.kind === "APPROVE"
+                    ? "Xác nhận duyệt"
+                    : bulkDialog.kind === "UNAPPROVE"
+                      ? "Xác nhận bỏ duyệt"
+                      : "Xác nhận xoá"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <ConfirmDeleteDialog
         open={Boolean(deletingVoucher)}

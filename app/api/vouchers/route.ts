@@ -7,7 +7,7 @@ import { revertVoucherSideEffects, VoucherRevertError } from "@/lib/voucher-reve
 import { isPeriodLocked } from "@/lib/phase3";
 import { buildAuditLogData, writeAuditLog } from "@/lib/audit-log";
 import { softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
-import { canEditPastVoucher, canPerformMenuAction, type DemoSession } from "@/lib/auth-demo";
+import { canEditPastVoucher, type DemoSession } from "@/lib/auth-demo";
 import { moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { isSameCalendarDay, normalizeCashflowCategoryType, normalizeReceiptPurpose, validateReceiptPurpose, voucherEditWindowError } from "@/lib/voucher-rules";
 
@@ -541,6 +541,12 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
 
 type StatusChangeResult = { ok: boolean; code?: string; error?: string };
 
+function pastVoucherReasonError(voucherDate: Date, reason: string | null, actionLabel: string) {
+  if (isSameCalendarDay(voucherDate, new Date())) return null;
+  if ((reason || "").trim().length >= 10) return null;
+  return `Vui lòng nhập lý do tối thiểu 10 ký tự để ${actionLabel} chứng từ ngày cũ.`;
+}
+
 /**
  * Đổi trạng thái một chứng từ. Tách riêng để nút đơn lẻ và thao tác hàng loạt dùng
  * chung đúng một bộ quy tắc, và để hàng loạt báo được lỗi của từng phiếu.
@@ -571,11 +577,17 @@ async function changeVoucherStatus(
   if (status !== "APPROVED") {
     const windowError = voucherEditWindowError(
       current.voucherDate,
-      canPerformMenuAction(session, "/vouchers", "edit_past"),
+      canEditPastVoucher(session),
       new Date(),
       status === "DRAFT" ? "bỏ duyệt" : "hủy",
     );
     if (windowError) return { ok: false, code: current.code, error: windowError };
+    const reasonError = pastVoucherReasonError(
+      current.voucherDate,
+      reason,
+      status === "DRAFT" ? "bỏ duyệt" : "hủy",
+    );
+    if (reasonError) return { ok: false, code: current.code, error: reasonError };
   }
 
   // Bỏ duyệt: đưa chứng từ về bản nháp để sửa lại, đồng thời trả lại mọi hệ quả
@@ -689,11 +701,13 @@ async function deleteVoucherById(session: DemoSession, id: string, reason: strin
   }
   const windowError = voucherEditWindowError(
     current.voucherDate,
-    canPerformMenuAction(session, "/vouchers", "edit_past"),
+    canEditPastVoucher(session),
     new Date(),
     "xoá",
   );
   if (windowError) return { ok: false, code: current.code, error: windowError };
+  const reasonError = pastVoucherReasonError(current.voucherDate, reason, "xóa");
+  if (reasonError) return { ok: false, code: current.code, error: reasonError };
 
   if (await isPeriodLocked(current.voucherDate, current.branchCode)) {
     return { ok: false, code: current.code, error: "Kỳ kế toán đã khóa, không thể xóa chứng từ" };
