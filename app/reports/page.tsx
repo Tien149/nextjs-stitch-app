@@ -98,7 +98,7 @@ type CashCategoryRow = {
   ratio: number;
 };
 type CashPartnerRow = { code: string; name: string; partnerType: string | null; total: number; count: number };
-type CashSourceFlow = { code: string; name: string; group: string | null; opening: number; in: number; out: number; transferIn: number; transferOut: number; closing: number };
+type CashSourceFlow = { code: string; name: string; group: string | null; branchCode: string; opening: number; in: number; out: number; transferIn: number; transferOut: number; closing: number };
 type CashSourceData = {
   period: string;
   view: "month" | "year";
@@ -1027,12 +1027,18 @@ export default function ReportsPage() {
               subtitle="Gồm phiếu thu/chi, điều chỉnh quỹ, điều tiền nội bộ và tiền cọc nhận/hoàn trực tiếp. Doanh thu POS/nhập tay chưa lập phiếu thu không làm thay đổi số dư ở đây."
             />
             <div className="overflow-x-auto">
-              <Table headers={["Nguồn tiền", "Đầu kỳ", "Thu", "Chi", "Điều tiền vào", "Điều tiền ra", "Cuối kỳ"]}>
+              <Table headers={cashSource.branchCode === "ALL"
+                ? ["Nhà hàng", "Nguồn tiền", "Đầu kỳ", "Thu", "Chi", "Điều tiền vào", "Điều tiền ra", "Cuối kỳ"]
+                : ["Nguồn tiền", "Đầu kỳ", "Thu", "Chi", "Điều tiền vào", "Điều tiền ra", "Cuối kỳ"]}>
                 {cashSource.sources.length === 0 && (
-                  <tr className="border-t border-slate-100"><Cell>Chưa có phát sinh nguồn tiền trong kỳ.</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell></tr>
+                  <tr className="border-t border-slate-100">
+                    {cashSource.branchCode === "ALL" && <Cell>-</Cell>}
+                    <Cell>Chưa khai báo nguồn tiền mặt hoặc ngân hàng.</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell>
+                  </tr>
                 )}
                 {cashSource.sources.map((row) => (
-                  <tr key={row.code} className="border-t border-slate-100 hover:bg-slate-50">
+                  <tr key={`${row.branchCode}-${row.code}`} className="border-t border-slate-100 hover:bg-slate-50">
+                    {cashSource.branchCode === "ALL" && <Cell>{storeLabel(row.branchCode)}</Cell>}
                     <Cell><b>{row.name}</b><p className="text-xs text-slate-500 mt-0.5">{row.code}</p></Cell>
                     <Cell right>{money(row.opening)} đ</Cell>
                     <Cell right><span className="text-emerald-700">{money(row.in)} đ</span></Cell>

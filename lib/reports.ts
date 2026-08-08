@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { addPeriod } from "@/lib/phase3";
 import { periodBounds } from "@/lib/accounting";
 import { depositDecreaseActions, depositIncreaseActions } from "@/lib/deposit-accounting";
+import { moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 
 type PnlBucket = {
@@ -270,16 +271,35 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
   const income = new Map<string, CashCategoryRow>();
   const expense = new Map<string, CashCategoryRow>();
   const expenseByPartner = new Map<string, CashPartnerRow>();
-  const sourceFlows = new Map<string, { code: string; name: string; group: string | null; opening: number; in: number; out: number; transferIn: number; transferOut: number }>();
+  const sourceFlows = new Map<string, { code: string; name: string; group: string | null; branchCode: string; opening: number; in: number; out: number; transferIn: number; transferOut: number }>();
 
   const touchSource = (code: string) => {
     const existing = sourceFlows.get(code);
     if (existing) return existing;
     const master = moneySources.find((row) => row.code === code);
-    const created = { code, name: master?.name || code, group: master?.group || null, opening: 0, in: 0, out: 0, transferIn: 0, transferOut: 0 };
+    const created = {
+      code,
+      name: master?.name || code,
+      group: master?.group || null,
+      branchCode: master?.branch || "ALL",
+      opening: 0,
+      in: 0,
+      out: 0,
+      transferIn: 0,
+      transferOut: 0,
+    };
     sourceFlows.set(code, created);
     return created;
   };
+
+  // Liệt kê đủ nguồn tiền mặt/ngân hàng của nhà hàng, kể cả nguồn không có số
+  // dư hoặc phát sinh trong kỳ. Ví/cổng thanh toán không thuộc bảng này.
+  for (const source of moneySources) {
+    const group = normalizeMoneySourceGroup(source.group);
+    if (!["CASH", "BANK"].includes(group)) continue;
+    if (!moneySourceMatchesBranch(source, branchCode)) continue;
+    touchSource(source.code);
+  }
 
   for (const row of openingBalances) {
     if (!row.moneySourceCode) continue;
@@ -462,7 +482,9 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
       .sort((a, b) => b.closing - a.closing),
     sources: Array.from(sourceFlows.values())
       .map((row) => ({ ...row, closing: row.opening + row.in - row.out + row.transferIn - row.transferOut }))
-      .sort((a, b) => b.closing - a.closing),
+      .filter((row) => ["CASH", "BANK"].includes(normalizeMoneySourceGroup(row.group)))
+      .filter((row) => moneySourceMatchesBranch({ ...row, branch: row.branchCode }, branchCode))
+      .sort((a, b) => a.branchCode.localeCompare(b.branchCode) || b.closing - a.closing || a.name.localeCompare(b.name)),
   };
 }
 
