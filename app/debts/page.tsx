@@ -65,6 +65,15 @@ const emptyDebtForm = {
   originalAmount: "",
 };
 
+const isReceivableBalance = (balance: number) => balance < 0;
+const isPayableBalance = (balance: number) => balance > 0;
+
+function debtBalanceLabel(balance: number) {
+  if (isReceivableBalance(balance)) return "Phải thu";
+  if (isPayableBalance(balance)) return "Phải trả";
+  return "Đã cân";
+}
+
 export default function DebtsPage() {
   const router = useRouter();
   const [rows, setRows] = useState<DebtRow[]>([]);
@@ -206,10 +215,16 @@ export default function DebtsPage() {
   const filteredRows = rows.filter((row) => {
     if (partnerGroup !== "ALL" && row.partnerGroup !== partnerGroup) return false;
     if (agingFilter !== "ALL" && row.debtStatus !== agingFilter) return false;
-    if (debtType === "RECEIVABLE" && row.balance <= 0) return false;
-    if (debtType === "PAYABLE" && row.balance >= 0) return false;
+    if (debtType === "RECEIVABLE" && !isReceivableBalance(row.balance)) return false;
+    if (debtType === "PAYABLE" && !isPayableBalance(row.balance)) return false;
     return true;
   });
+  const receivableTotal = rows
+    .filter((row) => isReceivableBalance(row.balance))
+    .reduce((sum, row) => sum + Math.abs(row.balance), 0);
+  const payableTotal = rows
+    .filter((row) => isPayableBalance(row.balance))
+    .reduce((sum, row) => sum + row.balance, 0);
   const overdueTotal = rows.reduce((sum, row) => sum + row.overdueAmount, 0);
   const dueSoonTotal = rows.reduce((sum, row) => sum + row.dueSoonAmount, 0);
 
@@ -232,36 +247,36 @@ export default function DebtsPage() {
 
       <main className="max-w-7xl mx-auto p-6 space-y-6">
         <StickyFilterBar className="!-mx-6 !px-6 !mb-0">
-        <div className="grid md:grid-cols-5 gap-4">
-          <div className="bg-white border border-slate-200 rounded-xl p-4">
-            <p className="text-xs text-slate-500">Đối tác</p>
-            <p className="text-2xl font-bold">{rows.length}</p>
+          <div className="grid md:grid-cols-5 gap-4">
+            <div className="bg-white border border-slate-200 rounded-xl p-4">
+              <p className="text-xs text-slate-500">Đối tác</p>
+              <p className="text-2xl font-bold">{rows.length}</p>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-xl p-4">
+              <p className="text-xs text-slate-500">Phải thu</p>
+              <p className="text-2xl font-bold text-blue-700">{money(receivableTotal)} đ</p>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-xl p-4">
+              <p className="text-xs text-slate-500">Phải trả</p>
+              <p className="text-2xl font-bold text-rose-700">{money(payableTotal)} đ</p>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-xl p-4">
+              <p className="text-xs text-slate-500">Tiền cọc còn giữ</p>
+              <p className="text-2xl font-bold text-emerald-700">{money(rows.reduce((s, r) => s + r.depositHolding, 0))} đ</p>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-xl p-4">
+              <p className="text-xs text-slate-500">Quá hạn / sắp hạn</p>
+              <p className="text-lg font-bold text-rose-700">{money(overdueTotal)} đ</p>
+              <p className="text-xs font-bold text-amber-600">{money(dueSoonTotal)} đ trong 7 ngày</p>
+            </div>
           </div>
-          <div className="bg-white border border-slate-200 rounded-xl p-4">
-            <p className="text-xs text-slate-500">Phải thu</p>
-            <p className="text-2xl font-bold text-blue-700">{money(rows.filter((r) => r.balance > 0).reduce((s, r) => s + r.balance, 0))} đ</p>
-          </div>
-          <div className="bg-white border border-slate-200 rounded-xl p-4">
-            <p className="text-xs text-slate-500">Phải trả/đã thu dư</p>
-            <p className="text-2xl font-bold text-rose-700">{money(Math.abs(rows.filter((r) => r.balance < 0).reduce((s, r) => s + r.balance, 0)))} đ</p>
-          </div>
-          <div className="bg-white border border-slate-200 rounded-xl p-4">
-            <p className="text-xs text-slate-500">Tiền cọc còn giữ</p>
-            <p className="text-2xl font-bold text-emerald-700">{money(rows.reduce((s, r) => s + r.depositHolding, 0))} đ</p>
-          </div>
-          <div className="bg-white border border-slate-200 rounded-xl p-4">
-            <p className="text-xs text-slate-500">Quá hạn / sắp hạn</p>
-            <p className="text-lg font-bold text-rose-700">{money(overdueTotal)} đ</p>
-            <p className="text-xs font-bold text-amber-600">{money(dueSoonTotal)} đ trong 7 ngày</p>
-          </div>
-        </div>
         </StickyFilterBar>
 
         <section className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
           <div className="p-5 border-b border-slate-200 flex items-center justify-between">
             <div>
               <h2 className="font-bold">Bảng công nợ đối tác</h2>
-              <p className="text-xs text-slate-500 mt-1">Số dư dương là còn phải thu, số dư âm là phải trả/thu dư. Bấm đối tác để xem ledger.</p>
+              <p className="text-xs text-slate-500 mt-1">Số dư âm được phân loại là Phải thu, số dư dương là Phải trả. Bấm đối tác để xem ledger.</p>
             </div>
             <button onClick={loadRows} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50">Tải lại</button>
           </div>
@@ -320,7 +335,14 @@ export default function DebtsPage() {
                     <td className="px-4 py-3 text-right">{money(row.depositHolding)}</td>
                     <td className="px-4 py-3 text-right">{money(row.bankMatched)}</td>
                     <td className="px-4 py-3 text-right">{money(row.voucherNet)}</td>
-                    <td className={`px-4 py-3 text-right font-bold ${row.balance >= 0 ? "text-blue-700" : "text-rose-700"}`}>{money(row.balance)}</td>
+                    <td className="px-4 py-3 text-right">
+                      <p className={`font-bold ${isReceivableBalance(row.balance) ? "text-blue-700" : isPayableBalance(row.balance) ? "text-rose-700" : "text-slate-500"}`}>
+                        {money(Math.abs(row.balance))}
+                      </p>
+                      <p className={`mt-0.5 text-[10px] font-bold uppercase ${isReceivableBalance(row.balance) ? "text-blue-600" : isPayableBalance(row.balance) ? "text-rose-600" : "text-slate-400"}`}>
+                        {debtBalanceLabel(row.balance)}
+                      </p>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -333,7 +355,12 @@ export default function DebtsPage() {
             <div className="p-5 border-b border-slate-200 flex items-center justify-between">
               <div>
                 <h2 className="font-bold">Ledger: {ledger.partnerName}</h2>
-                <p className="text-xs text-slate-500 mt-1">Số dư hiện tại: <b>{money(ledger.balance)} đ</b></p>
+                <p className="text-xs text-slate-500 mt-1">
+                  Số dư hiện tại:{" "}
+                  <b className={isReceivableBalance(ledger.balance) ? "text-blue-700" : isPayableBalance(ledger.balance) ? "text-rose-700" : "text-slate-600"}>
+                    {money(Math.abs(ledger.balance))} đ · {debtBalanceLabel(ledger.balance)}
+                  </b>
+                </p>
                 {message && (
                   <p className="mt-2 text-sm rounded-lg bg-blue-50 border border-blue-100 text-blue-700 px-3 py-2">{message}</p>
                 )}
@@ -368,7 +395,7 @@ export default function DebtsPage() {
                         <p className="text-[11px] text-slate-400">{item.status || "-"}</p>
                       </td>
                       <td className="px-4 py-3">{item.description}</td>
-                      <td className={`px-4 py-3 text-right font-bold ${item.amount >= 0 ? "text-blue-700" : "text-rose-700"}`}>{money(item.amount)} đ</td>
+                      <td className={`px-4 py-3 text-right font-bold ${item.amount < 0 ? "text-blue-700" : item.amount > 0 ? "text-rose-700" : "text-slate-500"}`}>{money(item.amount)} đ</td>
                       <td className="px-4 py-3 text-right">
                         <RowActions
                           session={user}
