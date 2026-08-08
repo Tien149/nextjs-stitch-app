@@ -14,6 +14,7 @@ import StickyFilterBar from "@/components/StickyFilterBar";
 import { shiftLabel, WORK_SHIFTS } from "@/lib/shifts";
 
 const voucherMoneySourceGroups = ["CASH"];
+const MAX_BULK_SELECTION = 100;
 
 type Voucher = {
   id: string;
@@ -565,6 +566,11 @@ export default function VouchersPage() {
       setMessageType("error");
       return;
     }
+    if (targetIds.length > MAX_BULK_SELECTION) {
+      setMessage(`Chỉ được xử lý tối đa ${MAX_BULK_SELECTION} chứng từ mỗi lần.`);
+      setMessageType("error");
+      return;
+    }
 
     const targetIdSet = new Set(targetIds);
     const requiresReason = kind !== "APPROVE" && selectedVouchers.some((voucher) =>
@@ -596,7 +602,11 @@ export default function VouchersPage() {
     setBulkDialogError("");
     try {
       const response = kind === "DELETE"
-        ? await fetch(`/api/vouchers?ids=${targetIds.join(",")}&reason=${encodeURIComponent(reason)}`, { method: "DELETE" })
+        ? await fetch("/api/vouchers", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ids: targetIds, reason: reason || undefined }),
+          })
         : await fetch("/api/vouchers", {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },

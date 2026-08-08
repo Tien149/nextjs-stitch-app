@@ -16,6 +16,11 @@ import { isSameCalendarDay, normalizeCashflowCategoryType, normalizeReceiptPurpo
 class VoucherConflictError extends Error { }
 
 const VOUCHER_CODE_RETRY_LIMIT = 5;
+const MAX_BULK_VOUCHERS = 100;
+
+function normalizeBulkVoucherIds(values: unknown[]) {
+  return [...new Set(values.map((value) => cleanText(value)).filter(Boolean))];
+}
 
 function isFinancialVoucherCodeUniqueError(error: unknown) {
   if (!error || typeof error !== "object") return false;
@@ -541,6 +546,16 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
 
 type StatusChangeResult = { ok: boolean; code?: string; error?: string };
 
+async function lockVoucherRow(tx: RawTxClient, id: string) {
+  const rows = await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT "id"
+    FROM "FinancialVoucher"
+    WHERE "id" = ${id}
+    FOR UPDATE
+  `;
+  if (rows.length === 0) throw new VoucherConflictError("Chứng từ không còn tồn tại.");
+}
+
 function pastVoucherReasonError(voucherDate: Date, reason: string | null, actionLabel: string) {
   if (isSameCalendarDay(voucherDate, new Date())) return null;
   if ((reason || "").trim().length >= 10) return null;
@@ -559,6 +574,7 @@ async function changeVoucherStatus(
 ): Promise<StatusChangeResult> {
   const current = await prisma.financialVoucher.findUnique({ where: { id } });
   if (!current) return { ok: false, error: "Không tìm thấy chứng từ" };
+  if (current.deletedAt) return { ok: false, code: current.code, error: "Chứng từ đã nằm trong Thùng rác" };
 
   try {
     assertBranchAccess(session, current.branchCode);
@@ -566,8 +582,8 @@ async function changeVoucherStatus(
     return { ok: false, code: current.code, error: e instanceof Error ? e.message : "Không có quyền chi nhánh" };
   }
 
-  if (current.status === "APPROVED" && status === "APPROVED") {
-    return { ok: false, code: current.code, error: "Chứng từ đã được duyệt" };
+  if (status === "APPROVED" && !["DRAFT", "PENDING_REVIEW"].includes(current.status)) {
+    return { ok: false, code: current.code, error: "Chỉ duyệt được chứng từ đang ở trạng thái Bản nháp hoặc Chờ duyệt" };
   }
   if (current.status === "CANCELLED") {
     return { ok: false, code: current.code, error: "Chứng từ đã hủy, không thể đổi trạng thái" };
@@ -589,6 +605,9 @@ async function changeVoucherStatus(
     );
     if (reasonError) return { ok: false, code: current.code, error: reasonError };
   }
+  if (status === "APPROVED" && await isPeriodLocked(current.voucherDate, current.branchCode)) {
+    return { ok: false, code: current.code, error: "Kỳ kế toán đã khóa, không thể duyệt chứng từ" };
+  }
 
   // Bỏ duyệt: đưa chứng từ về bản nháp để sửa lại, đồng thời trả lại mọi hệ quả
   // mà lần duyệt trước đã sinh ra (tiền cọc, công nợ, khoản phân bổ).
@@ -601,9 +620,15 @@ async function changeVoucherStatus(
     }
 
     try {
-      const reverted = await prismaRaw.$transaction(async (tx) => {
-        await revertVoucherSideEffects(tx, current);
-        return tx.financialVoucher.update({ where: { id }, data: { status: "DRAFT", approvedBy: null } });
+      const result = await prismaRaw.$transaction(async (tx) => {
+        await lockVoucherRow(tx, id);
+        const latest = await tx.financialVoucher.findUnique({ where: { id } });
+        if (!latest || latest.deletedAt || latest.status !== "APPROVED") {
+          throw new VoucherConflictError("Trạng thái chứng từ vừa thay đổi. Vui lòng tải lại danh sách.");
+        }
+        await revertVoucherSideEffects(tx, latest);
+        const reverted = await tx.financialVoucher.update({ where: { id }, data: { status: "DRAFT", approvedBy: null } });
+        return { reverted, previousApprovedBy: latest.approvedBy };
       });
 
       await writeAuditLog({
@@ -611,33 +636,64 @@ async function changeVoucherStatus(
         module: "VOUCHERS",
         action: "UNAPPROVE_VOUCHER",
         entityType: "FinancialVoucher",
-        entityId: reverted.id,
-        entityCode: reverted.code,
-        branchCode: reverted.branchCode,
+        entityId: result.reverted.id,
+        entityCode: result.reverted.code,
+        branchCode: result.reverted.branchCode,
         metadata: {
-          amount: reverted.amount,
-          previousApprovedBy: current.approvedBy,
-          depositAction: current.depositAction,
-          debtAction: current.debtAction,
-          allocationMonths: current.allocationMonths,
+          amount: result.reverted.amount,
+          previousApprovedBy: result.previousApprovedBy,
+          depositAction: result.reverted.depositAction,
+          debtAction: result.reverted.debtAction,
+          allocationMonths: result.reverted.allocationMonths,
           reason,
         },
       });
-      return { ok: true, code: reverted.code };
+      return { ok: true, code: result.reverted.code };
     } catch (e) {
       if (e instanceof VoucherRevertError) return { ok: false, code: current.code, error: e.message };
+      if (e instanceof VoucherConflictError) return { ok: false, code: current.code, error: e.message };
       throw e;
     }
   }
 
-  const voucher = await prismaRaw.$transaction(async (tx) => {
-    if (status === "APPROVED") await applyVoucherSideEffects(tx, current, session.name);
-    return tx.financialVoucher.update({
-      where: { id },
-      data: { status, approvedBy: status === "APPROVED" ? session.name : null },
+  try {
+    const result = await prismaRaw.$transaction(async (tx) => {
+      await lockVoucherRow(tx, id);
+      const latest = await tx.financialVoucher.findUnique({ where: { id } });
+      if (!latest || latest.deletedAt) {
+        throw new VoucherConflictError("Chứng từ không còn khả dụng. Vui lòng tải lại danh sách.");
+      }
+      if (status === "APPROVED" && !["DRAFT", "PENDING_REVIEW"].includes(latest.status)) {
+        throw new VoucherConflictError("Chứng từ đã được xử lý bởi một yêu cầu khác. Vui lòng tải lại danh sách.");
+      }
+      if (status === "APPROVED") await applyVoucherSideEffects(tx, latest, session.name);
+      const voucher = await tx.financialVoucher.update({
+        where: { id },
+        data: { status, approvedBy: status === "APPROVED" ? session.name : null },
+      });
+      return { voucher, previousStatus: latest.status };
     });
-  });
-  return { ok: true, code: voucher.code };
+
+    await writeAuditLog({
+      session,
+      module: "VOUCHERS",
+      action: status === "APPROVED" ? "APPROVE_VOUCHER" : "CHANGE_VOUCHER_STATUS",
+      entityType: "FinancialVoucher",
+      entityId: result.voucher.id,
+      entityCode: result.voucher.code,
+      branchCode: result.voucher.branchCode,
+      metadata: {
+        amount: result.voucher.amount,
+        previousStatus: result.previousStatus,
+        nextStatus: status,
+        reason,
+      },
+    });
+    return { ok: true, code: result.voucher.code };
+  } catch (e) {
+    if (e instanceof VoucherConflictError) return { ok: false, code: current.code, error: e.message };
+    throw e;
+  }
 }
 
 export async function PATCH(request: Request) {
@@ -662,8 +718,11 @@ export async function PATCH(request: Request) {
 
     // Thao tác hàng loạt: chạy từng phiếu và trả về phiếu nào hỏng vì lý do gì,
     // thay vì bỏ dở cả lô khi gặp phiếu đầu tiên không hợp lệ.
-    const ids = Array.isArray(body.ids) ? body.ids.map((value: unknown) => cleanText(value)).filter(Boolean) : [];
+    const ids = Array.isArray(body.ids) ? normalizeBulkVoucherIds(body.ids) : [];
     if (ids.length > 0) {
+      if (ids.length > MAX_BULK_VOUCHERS) {
+        return NextResponse.json({ error: `Chỉ được xử lý tối đa ${MAX_BULK_VOUCHERS} chứng từ mỗi lần.` }, { status: 400 });
+      }
       const results: Array<StatusChangeResult & { id: string }> = [];
       for (const itemId of ids) {
         results.push({ id: itemId, ...(await changeVoucherStatus(auth.session, itemId, status, reason)) });
@@ -689,6 +748,7 @@ export async function PATCH(request: Request) {
 async function deleteVoucherById(session: DemoSession, id: string, reason: string | null): Promise<StatusChangeResult> {
   const current = await prisma.financialVoucher.findUnique({ where: { id } });
   if (!current) return { ok: false, error: "Không tìm thấy chứng từ" };
+  if (current.deletedAt) return { ok: false, code: current.code, error: "Chứng từ đã nằm trong Thùng rác" };
 
   try {
     assertBranchAccess(session, current.branchCode);
@@ -718,11 +778,17 @@ async function deleteVoucherById(session: DemoSession, id: string, reason: strin
   if (current.status === "APPROVED") {
     try {
       await prismaRaw.$transaction(async (tx) => {
-        await revertVoucherSideEffects(tx, current);
+        await lockVoucherRow(tx, id);
+        const latest = await tx.financialVoucher.findUnique({ where: { id } });
+        if (!latest || latest.deletedAt || latest.status !== "APPROVED") {
+          throw new VoucherConflictError("Trạng thái chứng từ vừa thay đổi. Vui lòng tải lại danh sách.");
+        }
+        await revertVoucherSideEffects(tx, latest);
         await tx.financialVoucher.update({ where: { id }, data: { status: "DRAFT", approvedBy: null } });
       });
     } catch (e) {
       if (e instanceof VoucherRevertError) return { ok: false, code: current.code, error: e.message };
+      if (e instanceof VoucherConflictError) return { ok: false, code: current.code, error: e.message };
       throw e;
     }
   }
@@ -742,10 +808,19 @@ export async function DELETE(request: Request) {
     if (!auth.ok) return auth.response;
 
     const { searchParams } = new URL(request.url);
-    const reason = cleanText(searchParams.get("reason")) || null;
-    const ids = cleanText(searchParams.get("ids")).split(",").map((value) => value.trim()).filter(Boolean);
+    const body = request.headers.get("content-type")?.includes("application/json")
+      ? await request.json().catch(() => ({})) as Record<string, unknown>
+      : {};
+    const reason = cleanText(body.reason) || cleanText(searchParams.get("reason")) || null;
+    const queryIds = cleanText(searchParams.get("ids")).split(",").filter(Boolean);
+    const bodyIds = Array.isArray(body.ids) ? body.ids : [];
+    // Ưu tiên payload JSON mới; query string cũ vẫn được giữ để tương thích các client đã triển khai.
+    const ids = normalizeBulkVoucherIds(bodyIds.length > 0 ? bodyIds : queryIds);
 
     if (ids.length > 0) {
+      if (ids.length > MAX_BULK_VOUCHERS) {
+        return NextResponse.json({ error: `Chỉ được xử lý tối đa ${MAX_BULK_VOUCHERS} chứng từ mỗi lần.` }, { status: 400 });
+      }
       const results: Array<StatusChangeResult & { id: string }> = [];
       for (const itemId of ids) {
         results.push({ id: itemId, ...(await deleteVoucherById(auth.session, itemId, reason)) });
@@ -757,7 +832,7 @@ export async function DELETE(request: Request) {
       });
     }
 
-    const id = cleanText(searchParams.get("id"));
+    const id = cleanText(body.id) || cleanText(searchParams.get("id"));
     if (!id) return NextResponse.json({ error: "Thiếu ID chứng từ" }, { status: 400 });
     const result = await deleteVoucherById(auth.session, id, reason);
     if (!result.ok) return NextResponse.json({ error: result.error }, { status: 400 });
