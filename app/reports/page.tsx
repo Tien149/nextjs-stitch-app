@@ -80,7 +80,7 @@ type DailyCashData = {
   manualEntries: ManualRevenueEntry[];
   duplicateRevenueWarning: boolean;
   moneyInReconciliation: {
-    rows: Array<{ key: string; label: string; declared: number; received: number; difference: number; status: "MATCHED" | "SHORT" | "OVER"; note: string }>;
+    rows: Array<{ key: string; label: string; declared: number; received: number; pending: number; difference: number; status: "MATCHED" | "WAITING_APPROVAL" | "SHORT" | "OVER"; note: string }>;
     walletFee: number;
     bankRowCount: number;
     unclassifiedBankRows: number;
@@ -1137,10 +1137,10 @@ export default function ReportsPage() {
           <section className="table-panel">
             <PanelHeader
               title="Đối chiếu tiền vào đã đủ chưa"
-              subtitle="Đặt số thu ngân khai cạnh số tiền thật đã về tài khoản, để kế toán biết ngay hình thức nào còn thiếu tiền."
+              subtitle="Phiếu nộp tiền chờ duyệt được hiển thị riêng; chỉ sau khi kế toán duyệt mới tính là tiền đã xác nhận."
             />
             <div className="overflow-x-auto">
-              <Table headers={["Hình thức", "Thu ngân khai", "Đã về tài khoản", "Chênh lệch", "Trạng thái"]}>
+              <Table headers={["Hình thức", "Thu ngân khai", "Đã xác nhận", "Chờ duyệt", "Chênh lệch", "Trạng thái"]}>
                 {dailyCash.moneyInReconciliation.rows.map((row) => (
                   <tr key={row.key} className="border-t border-slate-100">
                     <Cell>
@@ -1149,8 +1149,9 @@ export default function ReportsPage() {
                     </Cell>
                     <Cell right>{money(row.declared)} đ</Cell>
                     <Cell right>{money(row.received)} đ</Cell>
+                    <Cell right>{row.pending ? `${money(row.pending)} đ` : "-"}</Cell>
                     <Cell right>
-                      <b className={row.status === "MATCHED" ? "text-slate-500" : row.status === "SHORT" ? "text-rose-600" : "text-amber-600"}>
+                      <b className={row.status === "MATCHED" ? "text-slate-500" : row.status === "SHORT" ? "text-rose-600" : row.status === "OVER" ? "text-blue-600" : "text-amber-600"}>
                         {row.difference > 0 ? "+" : ""}{money(row.difference)} đ
                       </b>
                     </Cell>
@@ -1158,11 +1159,13 @@ export default function ReportsPage() {
                       <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider ${
                         row.status === "MATCHED"
                           ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
-                          : row.status === "SHORT"
-                            ? "border border-rose-200 bg-rose-50 text-rose-700"
-                            : "border border-amber-200 bg-amber-50 text-amber-800"
+                          : row.status === "WAITING_APPROVAL"
+                            ? "border border-amber-200 bg-amber-50 text-amber-800"
+                            : row.status === "SHORT"
+                              ? "border border-rose-200 bg-rose-50 text-rose-700"
+                              : "border border-blue-200 bg-blue-50 text-blue-700"
                       }`}>
-                        {row.status === "MATCHED" ? "Đủ" : row.status === "SHORT" ? "Thiếu" : "Thừa"}
+                        {row.status === "MATCHED" ? "Đủ" : row.status === "WAITING_APPROVAL" ? "Chờ duyệt" : row.status === "SHORT" ? "Thiếu" : "Thừa"}
                       </span>
                     </Cell>
                   </tr>

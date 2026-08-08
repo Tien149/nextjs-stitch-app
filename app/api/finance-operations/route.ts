@@ -231,14 +231,67 @@ export async function POST(request: Request) {
       if (!auth.ok) return auth.response;
       const id = cleanText(body.id);
       const transfer = await prisma.moneyTransfer.findUnique({ where: { id } });
-      if (!transfer) businessError("Không tìm thấy giao dịch điều tiền");
+      if (!transfer || transfer.deletedAt) businessError("Không tìm thấy giao dịch điều tiền");
       assertBranchAccess(auth.session, transfer.branchCode);
       if (transfer.status !== "PENDING_REVIEW") businessError("Giao dịch điều tiền không ở trạng thái chờ duyệt");
-      const result = await prisma.moneyTransfer.update({
-        where: { id },
-        data: { status: "APPROVED", approvedBy: auth.session.name },
+      if (await isPeriodLocked(transfer.transferDate, transfer.branchCode)) {
+        businessError("Kỳ kế toán đã khóa, không thể duyệt giao dịch.");
+      }
+      if (transfer.fromMoneySourceCode === transfer.toMoneySourceCode) {
+        businessError("Nguồn tiền đi và nguồn tiền nhận không được trùng nhau.");
+      }
+
+      // Duyệt đúng hai nguồn đã lưu trên phiếu; không tự suy ra hoặc thay bằng nguồn khác.
+      // Nguồn đã ngừng vẫn được phép duyệt vì đã được chọn khi lập phiếu, nhưng nguồn bị
+      // xóa hoặc không còn thuộc cửa hàng thì phải sửa lại phiếu trước khi duyệt.
+      const [fromMoneySource, toMoneySource] = await Promise.all([
+        prisma.masterDataItem.findFirst({
+          where: { type: "MONEY_SOURCE", code: transfer.fromMoneySourceCode, deletedAt: null },
+        }),
+        prisma.masterDataItem.findFirst({
+          where: { type: "MONEY_SOURCE", code: transfer.toMoneySourceCode, deletedAt: null },
+        }),
+      ]);
+      if (!fromMoneySource || !moneySourceMatchesBranch(fromMoneySource, transfer.branchCode)) {
+        businessError(`Nguồn tiền đi [${transfer.fromMoneySourceCode}] không còn hợp lệ.`);
+      }
+      if (!toMoneySource || !moneySourceMatchesBranch(toMoneySource, transfer.branchCode)) {
+        businessError(`Nguồn tiền nhận [${transfer.toMoneySourceCode}] không còn hợp lệ.`);
+      }
+      if (transfer.transferPurpose === "CASH_DEPOSIT" && normalizeMoneySourceGroup(fromMoneySource.group) !== "CASH") {
+        businessError("Nguồn tiền đi của phiếu nộp tiền phải là tiền mặt.");
+      }
+
+      const result = await prisma.$transaction(async (tx) => {
+        // Điều kiện trạng thái bảo đảm hai kế toán bấm cùng lúc cũng chỉ duyệt thành công một lần.
+        const updated = await tx.moneyTransfer.updateMany({
+          where: { id, status: "PENDING_REVIEW", deletedAt: null },
+          data: { status: "APPROVED", approvedBy: auth.session.name },
+        });
+        if (updated.count !== 1) {
+          businessError("Phiếu đã được người khác duyệt hoặc không còn ở trạng thái chờ duyệt.");
+        }
+        return tx.moneyTransfer.findUniqueOrThrow({ where: { id } });
       });
-      await writeAuditLog({ session: auth.session, module: "FINANCE_OPERATIONS", action: "APPROVE_TRANSFER", entityType: "MoneyTransfer", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { amount: result.amount, feeAmount: result.feeAmount, clearedAmount: result.amount + result.feeAmount, from: result.fromMoneySourceCode, to: result.toMoneySourceCode } });
+      await writeAuditLog({
+        session: auth.session,
+        module: "FINANCE_OPERATIONS",
+        action: "APPROVE_TRANSFER",
+        entityType: "MoneyTransfer",
+        entityId: result.id,
+        entityCode: result.code,
+        branchCode: result.branchCode,
+        metadata: {
+          statusBefore: "PENDING_REVIEW",
+          statusAfter: "APPROVED",
+          amount: result.amount,
+          feeAmount: result.feeAmount,
+          sourceDecrease: result.amount + result.feeAmount,
+          targetIncrease: result.amount,
+          from: result.fromMoneySourceCode,
+          to: result.toMoneySourceCode,
+        },
+      });
       return NextResponse.json(result);
     }
 

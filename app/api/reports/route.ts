@@ -420,7 +420,7 @@ async function buildMoneyInReconciliation(
       select: { amount: true, feeAmount: true },
     }),
     prisma.moneyTransfer.findMany({
-      where: { ...branchWhere, transferPurpose: "CASH_DEPOSIT", status: { in: ["PENDING_REVIEW", "APPROVED"] }, sourceReportDate: { gte: dayStart, lt: dayEnd } },
+      where: { ...branchWhere, transferPurpose: "CASH_DEPOSIT", status: { in: ["PENDING_REVIEW", "APPROVED"] }, sourceReportDate: { gte: dayStart, lt: dayEnd }, deletedAt: null },
       select: { amount: true, feeAmount: true, status: true },
     }),
   ]);
@@ -428,20 +428,31 @@ async function buildMoneyInReconciliation(
   const bankReceived = bankRows.reduce((sum, row) => sum + row.creditAmount, 0);
   const walletSettled = walletSettlements.reduce((sum, row) => sum + row.amount + row.feeAmount, 0);
   const walletFee = walletSettlements.reduce((sum, row) => sum + row.feeAmount, 0);
-  // Đối chiếu theo toàn bộ số đã clear khỏi thu ngân: tiền thực nộp + chi phí làm tròn.
-  const cashDeposited = cashDeposits.reduce((sum, row) => sum + row.amount + row.feeAmount, 0);
+  // Chỉ phiếu được kế toán duyệt mới là tiền đã thực sự rời nguồn thu ngân.
+  // Phiếu chờ duyệt được hiển thị riêng, không cộng vào số đã về/đã clear.
+  const approvedCashDeposited = cashDeposits
+    .filter((row) => row.status === "APPROVED")
+    .reduce((sum, row) => sum + row.amount + row.feeAmount, 0);
+  const pendingCashDeposited = cashDeposits
+    .filter((row) => row.status === "PENDING_REVIEW")
+    .reduce((sum, row) => sum + row.amount + row.feeAmount, 0);
 
   const rows = [
-    { key: "cash", label: "Tiền mặt", declared: declared.cash, received: cashDeposited, note: "Đối chiếu với tổng đã clear trên phiếu nộp tiền (thực nộp + chi phí làm tròn)." },
-    { key: "transfer", label: "Chuyển khoản", declared: declared.transfer, received: bankReceived, note: "Đối chiếu với các dòng ghi có trên sao kê ngân hàng trong ngày." },
-    { key: "card", label: "Quẹt thẻ / Ví", declared: declared.card + declared.grab, received: walletSettled, note: "Cổng thanh toán trả tiền sau, phần chưa quyết toán vẫn nằm ở nguồn ví." },
+    { key: "cash", label: "Tiền mặt", declared: declared.cash, received: approvedCashDeposited, pending: pendingCashDeposited, note: "Chỉ phiếu nộp tiền đã duyệt mới được tính là đã clear khỏi nguồn thu ngân." },
+    { key: "transfer", label: "Chuyển khoản", declared: declared.transfer, received: bankReceived, pending: 0, note: "Đối chiếu với các dòng ghi có trên sao kê ngân hàng trong ngày." },
+    { key: "card", label: "Quẹt thẻ / Ví", declared: declared.card + declared.grab, received: walletSettled, pending: 0, note: "Cổng thanh toán trả tiền sau, phần chưa quyết toán vẫn nằm ở nguồn ví." },
   ].map((row) => {
     const difference = row.received - row.declared;
+    const differenceIncludingPending = row.received + row.pending - row.declared;
     return {
       ...row,
       difference,
       // Lệch dưới 1.000 đ coi như khớp: chênh lẻ do làm tròn phí, không phải thiếu tiền.
-      status: Math.abs(difference) < 1000 ? "MATCHED" : difference < 0 ? "SHORT" : "OVER",
+      status: Math.abs(difference) < 1000
+        ? "MATCHED"
+        : row.pending > 0 && Math.abs(differenceIncludingPending) < 1000
+          ? "WAITING_APPROVAL"
+          : difference < 0 ? "SHORT" : "OVER",
     };
   });
 
