@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { Prisma } from "@prisma/custom-client";
 import { prisma, prismaRaw, type RawTxClient, type TxClient } from "@/lib/prisma";
 import { addPeriod, periodFromDate } from "@/lib/phase3";
-import { normalizeHeader, type ImportType } from "@/lib/import-templates";
+import { isMasterDataImportType, normalizeHeader, type ImportType } from "@/lib/import-templates";
 import { type ParsedImportRow } from "@/lib/import-parser";
 import { normalizeStockTransactionType, postInventoryTransaction } from "@/lib/inventory-stock";
 import { writeAuditLog } from "@/lib/audit-log";
@@ -145,6 +145,7 @@ type CommitInput = {
   fileChecksum?: string;
   mapping: Record<string, string>;
   rows: ParsedImportRow[];
+  expectedMasterType?: string;
 };
 
 type RollbackInput = {
@@ -253,6 +254,21 @@ async function setImportTarget(
 }
 
 export async function commitImport(input: CommitInput) {
+  if (input.importType === "MASTER_DATA") {
+    const expectedMasterType = asText(input.expectedMasterType).toUpperCase();
+    if (expectedMasterType && !isMasterDataImportType(expectedMasterType)) {
+      throw new Error(`Loại danh mục yêu cầu [${expectedMasterType}] không được hỗ trợ import`);
+    }
+    for (const row of input.rows) {
+      const masterType = asText(row.values.type).toUpperCase();
+      if (!isMasterDataImportType(masterType)) {
+        throw new Error(`Dòng ${row.rowNumber}: Loại danh mục [${masterType || "trống"}] không hợp lệ`);
+      }
+      if (expectedMasterType && masterType !== expectedMasterType) {
+        throw new Error(`Dòng ${row.rowNumber}: Chỉ được import loại ${expectedMasterType}, không chấp nhận ${masterType}`);
+      }
+    }
+  }
   if (input.importType === "REVENUE_POS") {
     const referenceKeys = input.rows.map((row) => {
       ensureRevenuePosReference(row.values);

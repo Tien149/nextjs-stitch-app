@@ -53,6 +53,7 @@ export function SearchableSelect({
     const handleClickOutside = (event: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
         setIsOpen(false);
+        setSearch("");
       }
     };
     document.addEventListener("mousedown", handleClickOutside);
@@ -61,22 +62,26 @@ export function SearchableSelect({
 
   // Focus search input when dropdown opens
   useEffect(() => {
-    if (isOpen) {
-      setTimeout(() => {
-        searchInputRef.current?.focus();
-      }, 50);
-    } else {
-      setSearch("");
-    }
+    if (!isOpen) return;
+    const timer = window.setTimeout(() => {
+      searchInputRef.current?.focus();
+    }, 50);
+    return () => window.clearTimeout(timer);
   }, [isOpen]);
 
   const handleSelect = (val: string) => {
     onChange(val);
     setIsOpen(false);
+    setSearch("");
+  };
+
+  const toggleDropdown = () => {
+    if (isOpen) setSearch("");
+    setIsOpen((current) => !current);
   };
 
   return (
-    <div className={`relative ${className}`} ref={containerRef}>
+    <div className={`relative min-w-0 ${className}`} ref={containerRef}>
       {label && (
         <label className="text-xs font-bold text-slate-700 mb-1 block">
           {label}
@@ -88,7 +93,7 @@ export function SearchableSelect({
       <button
         type="button"
         disabled={disabled}
-        onClick={() => setIsOpen((prev) => !prev)}
+        onClick={toggleDropdown}
         className={`w-full min-h-[38px] px-3 py-2 text-left text-sm rounded-lg border transition-all duration-150 flex items-center justify-between gap-2 bg-white shadow-sm ${
           isOpen
             ? "border-blue-500 ring-2 ring-blue-100"
@@ -112,7 +117,7 @@ export function SearchableSelect({
 
       {/* Popover Dropdown */}
       {isOpen && (
-        <div className="absolute left-0 top-full mt-1.5 w-full min-w-[280px] md:min-w-[320px] bg-white border border-slate-200 rounded-xl shadow-2xl z-50 overflow-hidden animate-in fade-in-50 zoom-in-95 duration-100">
+        <div className="absolute left-0 top-full mt-1.5 w-full min-w-0 bg-white border border-slate-200 rounded-xl shadow-2xl z-50 overflow-hidden animate-in fade-in-50 zoom-in-95 duration-100">
           {/* Search Box */}
           <div className="p-2 border-b border-slate-100 bg-slate-50/80 sticky top-0 z-10">
             <div className="relative">
@@ -150,7 +155,7 @@ export function SearchableSelect({
           </div>
 
           {/* Options List */}
-          <ul className="max-h-60 overflow-y-auto py-1 text-sm divide-y divide-slate-50">
+          <ul className="max-h-52 overflow-y-auto overscroll-contain py-1 text-sm divide-y divide-slate-50">
             {filteredOptions.length === 0 ? (
               <li className="px-3 py-4 text-xs text-center text-slate-400 italic">
                 {options.length === 0 ? "Chưa có dữ liệu danh mục" : "Không tìm thấy kết quả phù hợp"}

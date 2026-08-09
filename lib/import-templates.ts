@@ -13,6 +13,27 @@ export type ImportType =
   | "INTERNAL_TRANSFER"
   | "DEBT_OPENING";
 
+export const masterDataImportTypes = [
+  "BRANCH",
+  "DEPARTMENT",
+  "WAREHOUSE",
+  "PARTNER",
+  "MONEY_SOURCE",
+  "PNL_GROUP",
+  "PNL_ITEM",
+  "REVENUE_EXPENSE_CATEGORY",
+  "ASSET_GROUP",
+  "INVENTORY_ITEM_GROUP",
+  "ACCOUNTING_PERIOD",
+  "DOCUMENT_TYPE",
+  "DOCUMENT_NUMBER_RULE",
+  "SYSTEM_PARAM",
+] as const;
+
+export function isMasterDataImportType(value: string) {
+  return (masterDataImportTypes as readonly string[]).includes(value);
+}
+
 export type ImportFieldType = "text" | "date" | "number" | "integer";
 
 export type ImportFieldDefinition = {

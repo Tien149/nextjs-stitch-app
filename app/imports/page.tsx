@@ -228,6 +228,8 @@ const masterTypeLabels: Record<string, string> = {
   WAREHOUSE: "Kho hàng",
   PARTNER: "Đối tác (khách hàng/NCC)",
   MONEY_SOURCE: "Nguồn tiền",
+  PNL_GROUP: "Nhóm hạng mục P&L",
+  PNL_ITEM: "Hạng mục P&L",
   REVENUE_EXPENSE_CATEGORY: "Thu / Chi",
   ASSET_GROUP: "Nhóm tài sản",
   INVENTORY_ITEM_GROUP: "Nhóm mặt hàng",
@@ -333,6 +335,7 @@ export default function ImportsPage() {
       primaryFields={current.primaryFields}
       requiresBranch={current.requiresBranch}
       navigation={navigation}
+      expectedMasterType={active === "master-data" ? masterType : ""}
     />
   );
 }

@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { assertBranchAccess } from "@/lib/accounting";
-import { normalizeHeader, type ImportType } from "@/lib/import-templates";
+import { isMasterDataImportType, normalizeHeader, type ImportType } from "@/lib/import-templates";
 import type { ParsedImportResult, ParsedImportRow } from "@/lib/import-parser";
 import type { DemoSession } from "@/lib/auth-demo";
 import { isInboundStockType, isOutboundStockType, isStockTransactionType, normalizeStockTransactionType } from "@/lib/inventory-stock";
@@ -66,13 +66,15 @@ function resolveMaster(
   const value = text(rawValue);
   if (!value) return null;
   const normalized = normalizeHeader(value);
+  const requestedBranch = text(branchCode).toUpperCase();
   const candidates = items.filter(
     (item) => item.type === type && item.status === "ACTIVE" &&
       (item.code.toUpperCase() === value.toUpperCase() || normalizeHeader(item.name) === normalized),
   );
-  return candidates.find((item) => item.branch === branchCode) ||
-    candidates.find((item) => !item.branch || item.branch === "ALL") ||
-    candidates[0] || null;
+  if (!requestedBranch || requestedBranch === "ALL") return candidates[0] || null;
+  return candidates.find((item) => text(item.branch).toUpperCase() === requestedBranch) ||
+    candidates.find((item) => !item.branch || text(item.branch).toUpperCase() === "ALL") ||
+    null;
 }
 
 function addError(row: ParsedImportRow, message: string) {
@@ -201,9 +203,9 @@ function validateTransfer(row: ParsedImportRow, masterItems: MasterItem[]) {
   const branchCode = text(row.values.branch_code);
   const from = resolveMaster(masterItems, "MONEY_SOURCE", row.values.from_money_source_code, branchCode);
   const to = resolveMaster(masterItems, "MONEY_SOURCE", row.values.to_money_source_code, branchCode);
-  if (!from) addError(row, `Nguồn chuyển [${text(row.values.from_money_source_code)}] không tồn tại`);
+  if (!from) addError(row, `Nguồn chuyển [${text(row.values.from_money_source_code)}] không tồn tại, đã ngưng hoặc không thuộc cửa hàng [${branchCode}]`);
   else row.values.from_money_source_code = from.code;
-  if (!to) addError(row, `Nguồn nhận [${text(row.values.to_money_source_code)}] không tồn tại`);
+  if (!to) addError(row, `Nguồn nhận [${text(row.values.to_money_source_code)}] không tồn tại, đã ngưng hoặc không thuộc cửa hàng [${branchCode}]`);
   else row.values.to_money_source_code = to.code;
   if (from && to && from.code === to.code) addError(row, "Nguồn chuyển và nguồn nhận không được giống nhau");
 }
@@ -526,7 +528,12 @@ export async function validateImportResult(
   result: ParsedImportResult,
   importType: ImportType,
   session: DemoSession,
+  options: { expectedMasterType?: string } = {},
 ) {
+  const expectedMasterType = text(options.expectedMasterType).toUpperCase();
+  if (importType === "MASTER_DATA" && expectedMasterType && !isMasterDataImportType(expectedMasterType)) {
+    throw new Error(`Loại danh mục yêu cầu [${expectedMasterType}] không được hỗ trợ import`);
+  }
   const masterItems = await prisma.masterDataItem.findMany({
     where: { type: { in: ["BRANCH", "MONEY_SOURCE", "PARTNER", "REVENUE_EXPENSE_CATEGORY", "WAREHOUSE", "INVENTORY_ITEM_GROUP", "ASSET_GROUP", "DEPARTMENT"] } },
     select: { type: true, code: true, name: true, group: true, branch: true, status: true },
@@ -667,7 +674,27 @@ export async function validateImportResult(
     }
     if (importType === "MASTER_DATA") {
       const masterType = text(row.values.type).toUpperCase();
-      if (masterType === "REVENUE_EXPENSE_CATEGORY") {
+      row.values.type = masterType;
+      if (!isMasterDataImportType(masterType)) {
+        addError(row, `Loại danh mục [${masterType || "trống"}] không hợp lệ`);
+      } else if (expectedMasterType && masterType !== expectedMasterType) {
+        addError(row, `Màn hình này chỉ cho phép import loại ${expectedMasterType}, dòng hiện tại đang là ${masterType}`);
+      }
+
+      const group = text(row.values.group).toUpperCase();
+      if (group) row.values.group = group;
+      if (masterType === "PARTNER") {
+        const partnerGroup = (text(row.values.partner_group) || "EXTERNAL").toUpperCase();
+        row.values.partner_group = partnerGroup;
+        if (!group || !["CUSTOMER", "SUPPLIER", "BOTH", "EMPLOYEE", "OTHER_PARTNER"].includes(group)) {
+          addError(row, "Đối tác phải có Nhóm/Phân loại là CUSTOMER, SUPPLIER, BOTH, EMPLOYEE hoặc OTHER_PARTNER");
+        }
+        if (!["EXTERNAL", "INTERNAL"].includes(partnerGroup)) {
+          addError(row, "Nhóm đối tượng phải là EXTERNAL hoặc INTERNAL");
+        }
+      } else if (masterType === "MONEY_SOURCE" && !["CASH", "BANK", "WALLET"].includes(group)) {
+        addError(row, "Nguồn tiền phải có Nhóm/Phân loại là CASH, BANK hoặc WALLET");
+      } else if (masterType === "REVENUE_EXPENSE_CATEGORY") {
         const cashflowType = normalizeCashflowCategoryType(text(row.values.group));
         row.values.group = cashflowType;
         if (!["RECEIPT", "PAYMENT"].includes(cashflowType || "")) {

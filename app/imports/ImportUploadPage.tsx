@@ -75,6 +75,7 @@ type ImportUploadPageProps = {
   primaryFields: string[];
   requiresBranch?: boolean;
   navigation?: ReactNode;
+  expectedMasterType?: string;
 };
 
 function withQuery(url: string, values: Record<string, string>) {
@@ -190,6 +191,26 @@ function filterMasterOptions(
   options: MasterOption[],
   values: Record<string, string> = {},
 ) {
+  const selectedBranch = normalizeGroup(values.branch_code);
+  const branchScopedFields = [
+    "partner_code",
+    "money_source_code",
+    "from_money_source_code",
+    "to_money_source_code",
+    "summary_money_source_code",
+    "increase_money_source_code",
+    "decrease_money_source_code",
+    "warehouse_code",
+    "to_warehouse_code",
+    "department_code",
+  ];
+  const scopedOptions = selectedBranch && branchScopedFields.includes(fieldName)
+    ? options.filter((option) => {
+        const optionBranch = normalizeGroup(option.branch);
+        return !optionBranch || optionBranch === "ALL" || optionBranch === selectedBranch;
+      })
+    : options;
+
   // Sao kê không có "loại phiếu": chiều tiền do cột Ghi nợ / Ghi có quyết định, nên
   // suy ra từ chính hai ô đó để chỉ gợi ý khoản mục đúng chiều.
   const isBankStatement = /BANK_STATEMENT/.test(templateCode);
@@ -199,7 +220,7 @@ function filterMasterOptions(
   const isReceivable = /RECEIVABLE|RECEIPT/.test(templateCode) || (isBankStatement && bankCredit);
 
   if (fieldName === "partner_code") {
-    return options.filter((option) => {
+    return scopedOptions.filter((option) => {
       const type = normalizeGroup(option.partnerType || option.group);
       if (isPayable) return ["SUPPLIER", "BOTH", "EMPLOYEE", "OTHER_PARTNER"].includes(type);
       if (isReceivable) return ["CUSTOMER", "BOTH", "OTHER_PARTNER"].includes(type);
@@ -208,7 +229,7 @@ function filterMasterOptions(
   }
 
   if (fieldName === "category_code") {
-    return options.filter((option) => {
+    return scopedOptions.filter((option) => {
       const cashflowType = normalizeCashflowCategoryType(option.group);
       if (isPayable) return cashflowType === "PAYMENT";
       if (isReceivable) return cashflowType === "RECEIPT";
@@ -216,7 +237,7 @@ function filterMasterOptions(
     });
   }
 
-  return options;
+  return scopedOptions;
 }
 
 function getSessionFromStorage(): DemoSession | null {
@@ -239,6 +260,7 @@ export default function ImportUploadPage({
   primaryFields,
   requiresBranch = false,
   navigation,
+  expectedMasterType = "",
 }: ImportUploadPageProps) {
   const router = useRouter();
   const [user, setUser] = useState<DemoSession | null>(null);
@@ -262,6 +284,10 @@ export default function ImportUploadPage({
   const [manualValues, setManualValues] = useState<Record<string, string>>({});
   const [manualSaving, setManualSaving] = useState(false);
   const [manualError, setManualError] = useState("");
+  const [rollbackTarget, setRollbackTarget] = useState<Batch | null>(null);
+  const [rollbackNote, setRollbackNote] = useState("");
+  const [rollbackError, setRollbackError] = useState("");
+  const [rollbackSaving, setRollbackSaving] = useState(false);
   const [masterOptions, setMasterOptions] = useState<Record<string, MasterOption[]>>({});
   const alwaysShowTemplateLink = templateCode === "OPENING_BALANCE_STANDARD_V1";
   const importType = importTypeFromApiPath(apiPath);
@@ -400,13 +426,14 @@ export default function ImportUploadPage({
       setManualValues((current) => {
         const next: Record<string, string> = {};
         for (const field of manualFields) {
-          next[field.field] = current[field.field] ?? manualInitialValue(field, branchCode);
+          next[field.field] = current[field.field]
+            ?? (field.field === "type" && expectedMasterType ? expectedMasterType : manualInitialValue(field, branchCode));
         }
         return next;
       });
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [branchCode, manualFields, manualOpen]);
+  }, [branchCode, expectedMasterType, manualFields, manualOpen]);
 
   const upload = async (mode: "preview" | "commit") => {
     if (!file) {
@@ -425,6 +452,7 @@ export default function ImportUploadPage({
       formData.append("file", file);
       formData.append("templateCode", templateCode);
       if (branchCode) formData.append("branchCode", branchCode);
+      if (expectedMasterType) formData.append("expectedMasterType", expectedMasterType);
       if (Object.keys(mapping).length > 0) formData.append("mappingJson", JSON.stringify(mapping));
 
       const response = await fetch(withQuery(apiPath, { mode }), {
@@ -497,6 +525,7 @@ export default function ImportUploadPage({
       formData.append("file", manualFile);
       formData.append("templateCode", templateCode);
       if (branchCode) formData.append("branchCode", branchCode);
+      if (expectedMasterType) formData.append("expectedMasterType", expectedMasterType);
 
       const response = await fetch(withQuery(apiPath, { mode: "commit" }), {
         method: "POST",
@@ -568,28 +597,45 @@ export default function ImportUploadPage({
     URL.revokeObjectURL(url);
   };
 
-  const rollbackBatch = async (batch: Batch) => {
-    const note = window.prompt(`Nhập lý do rollback batch "${batch.fileName}"`);
-    if (note === null) return;
-    if (!note.trim()) {
-      setMessage("Rollback bắt buộc nhập lý do.");
+  const openRollbackDialog = (batch: Batch) => {
+    setRollbackTarget(batch);
+    setRollbackNote("");
+    setRollbackError("");
+  };
+
+  const rollbackBatch = async () => {
+    if (!rollbackTarget) return;
+    const note = rollbackNote.trim();
+    if (!note) {
+      setRollbackError("Vui lòng nhập lý do rollback.");
       return;
     }
+    setRollbackSaving(true);
+    setRollbackError("");
     setMessage("");
-    const response = await fetch(apiPath, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "ROLLBACK_BATCH", batchId: batch.id, note }),
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      setMessage(payload.error || "Rollback batch thất bại.");
+    try {
+      const response = await fetch(apiPath, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "ROLLBACK_BATCH", batchId: rollbackTarget.id, note }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setRollbackError(payload.error || "Rollback batch thất bại.");
+        await loadBatches();
+        return;
+      }
+      const fileName = rollbackTarget.fileName;
+      setRollbackTarget(null);
+      setRollbackNote("");
+      setSelectedBatch(null);
+      setMessage(`Đã rollback batch ${fileName}.`);
       await loadBatches();
-      return;
+    } catch {
+      setRollbackError("Không thể kết nối để rollback batch. Vui lòng thử lại.");
+    } finally {
+      setRollbackSaving(false);
     }
-    setSelectedBatch(null);
-    setMessage(`Đã rollback batch ${batch.fileName}.`);
-    await loadBatches();
   };
 
   const selectedBatchRows = selectedBatch ? firstNonEmptyRows(
@@ -926,7 +972,7 @@ export default function ImportUploadPage({
                               type="button"
                               onClick={(event) => {
                                 event.stopPropagation();
-                                void rollbackBatch(batch);
+                                openRollbackDialog(batch);
                               }}
                               className="rounded-lg border border-rose-200 px-2 py-1 text-xs font-bold text-rose-700 hover:bg-rose-50"
                             >
@@ -1009,6 +1055,101 @@ export default function ImportUploadPage({
         )}
       </main>
 
+      {rollbackTarget && (
+        <div className="fixed inset-0 z-[60] grid place-items-center bg-slate-950/50 px-4 backdrop-blur-[1px]">
+          <button
+            type="button"
+            aria-label="Đóng hộp thoại rollback"
+            className="absolute inset-0 cursor-default"
+            onClick={() => !rollbackSaving && setRollbackTarget(null)}
+          />
+          <form
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="rollback-dialog-title"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void rollbackBatch();
+            }}
+            className="relative w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+          >
+            <div className="flex items-start gap-3 border-b border-slate-100 px-5 py-4">
+              <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-rose-50 text-rose-600">
+                <span className="material-symbols-outlined">history</span>
+              </div>
+              <div className="min-w-0 flex-1">
+                <h2 id="rollback-dialog-title" className="text-base font-bold text-slate-900">Rollback batch import</h2>
+                <p className="mt-1 text-xs leading-5 text-slate-500">
+                  Dữ liệu do batch tạo sẽ được hoàn tác nếu chưa phát sinh nghiệp vụ liên quan.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRollbackTarget(null)}
+                disabled={rollbackSaving}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-50"
+              >
+                <span className="material-symbols-outlined text-xl">close</span>
+              </button>
+            </div>
+
+            <div className="space-y-4 px-5 py-4">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">File import</p>
+                <p className="mt-1 truncate text-sm font-semibold text-slate-800" title={rollbackTarget.fileName}>
+                  {rollbackTarget.fileName}
+                </p>
+              </div>
+
+              <label className="block text-sm font-semibold text-slate-700">
+                Lý do rollback <span className="text-rose-600">*</span>
+                <textarea
+                  autoFocus
+                  rows={3}
+                  value={rollbackNote}
+                  onChange={(event) => {
+                    setRollbackNote(event.target.value);
+                    if (rollbackError) setRollbackError("");
+                  }}
+                  disabled={rollbackSaving}
+                  placeholder="Ví dụ: Import nhầm dữ liệu kiểm thử"
+                  className="mt-2 w-full resize-none rounded-xl border border-slate-300 px-3 py-2.5 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
+                />
+              </label>
+
+              {rollbackError && (
+                <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">
+                  {rollbackError}
+                </p>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2 border-t border-slate-100 bg-slate-50 px-5 py-4">
+              <button
+                type="button"
+                onClick={() => setRollbackTarget(null)}
+                disabled={rollbackSaving}
+                className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+              >
+                Hủy
+              </button>
+              <button
+                type="submit"
+                disabled={rollbackSaving}
+                className="inline-flex min-w-[132px] items-center justify-center gap-2 rounded-lg bg-rose-600 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {rollbackSaving ? (
+                  <>
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                    Đang rollback...
+                  </>
+                ) : "Xác nhận rollback"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {manualOpen && (
         <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/40">
           <button
@@ -1022,7 +1163,7 @@ export default function ImportUploadPage({
               event.preventDefault();
               void saveManualRow();
             }}
-            className="relative flex h-full w-full max-w-xl flex-col bg-white shadow-2xl"
+            className="relative flex h-full w-full max-w-2xl flex-col overflow-hidden bg-white shadow-2xl"
           >
             <div className="border-b border-slate-200 px-5 py-4">
               <div className="flex items-start justify-between gap-3">
@@ -1050,7 +1191,7 @@ export default function ImportUploadPage({
               )}
             </div>
 
-            <div className="flex-1 overflow-y-auto px-5 py-4">
+            <div className="flex-1 overflow-x-hidden overflow-y-auto px-5 py-4">
               {manualFields.length === 0 ? (
                 <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
                   Không tìm thấy cấu trúc field của template này.
@@ -1070,7 +1211,7 @@ export default function ImportUploadPage({
                       : null;
 
                     return (
-                    <label key={field.field} className="text-xs font-bold text-slate-600">
+                    <label key={field.field} className="min-w-0 text-xs font-bold text-slate-600">
                       {field.label}{field.required ? " *" : ""}
                       {selectOptions ? (
                         <>

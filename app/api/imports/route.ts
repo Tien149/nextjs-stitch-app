@@ -334,13 +334,14 @@ export async function POST(request: Request) {
     validateFile(file);
 
     const branchCode = cleanText(formData.get("branchCode")).toUpperCase();
+    const expectedMasterType = cleanText(formData.get("expectedMasterType")).toUpperCase();
     if (branchCode) assertBranchAccess(auth.session, branchCode);
     const mapping = parseMapping(formData.get("mappingJson"));
     const parsed = await parseImportFile(file, template, {
       mapping,
       defaultValues: branchCode ? { branch_code: branchCode } : {},
     });
-    await validateImportResult(parsed, importType, auth.session);
+    await validateImportResult(parsed, importType, auth.session, { expectedMasterType });
 
     if (mode === "commit") {
       if (parsed.errorRows > 0) {
@@ -357,6 +358,7 @@ export async function POST(request: Request) {
         fileChecksum,
         mapping: parsed.mapping,
         rows: parsed.rows,
+        expectedMasterType: expectedMasterType || undefined,
       });
       return NextResponse.json({ batch, preview: parsed, template }, { status: 201 });
     }
