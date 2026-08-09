@@ -48,6 +48,7 @@ function normalizeItemType(value: unknown) {
     "thanh pham": "FINISHED",
     finished: "FINISHED",
     packaging: "PACKAGING",
+    baobi: "PACKAGING",
     "bao bi": "PACKAGING",
     tool: "TOOL",
     ccdc: "TOOL",

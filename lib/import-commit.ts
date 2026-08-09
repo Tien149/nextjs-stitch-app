@@ -30,10 +30,32 @@ function asDate(value: unknown) {
 
 function normalizeInventoryItemType(value: unknown) {
   const raw = asText(value).toUpperCase();
-  if (!raw || raw === "MATERIAL" || raw === "RAW" || raw === "NVL") return "RAW_MATERIAL";
-  if (raw === "BTP" || raw === "SEMI" || raw === "SEMI_FINISHED_GOOD") return "SEMI_FINISHED";
-  if (raw === "TP" || raw === "PRODUCT" || raw === "FINISHED_GOOD") return "FINISHED";
-  return raw;
+  const normalized = normalizeHeader(asText(value));
+  const aliases: Record<string, string> = {
+    material: "RAW_MATERIAL",
+    raw: "RAW_MATERIAL",
+    nvl: "RAW_MATERIAL",
+    "nguyen lieu": "RAW_MATERIAL",
+    "raw material": "RAW_MATERIAL",
+    btp: "SEMI_FINISHED",
+    semi: "SEMI_FINISHED",
+    "ban thanh pham": "SEMI_FINISHED",
+    "semi finished": "SEMI_FINISHED",
+    "semi finished good": "SEMI_FINISHED",
+    tp: "FINISHED",
+    product: "FINISHED",
+    "thanh pham": "FINISHED",
+    finished: "FINISHED",
+    "finished good": "FINISHED",
+    packaging: "PACKAGING",
+    baobi: "PACKAGING",
+    "bao bi": "PACKAGING",
+    tool: "TOOL",
+    ccdc: "TOOL",
+    asset: "ASSET",
+    "tai san": "ASSET",
+  };
+  return aliases[normalized] || raw;
 }
 
 function jsonValue(value: unknown) {

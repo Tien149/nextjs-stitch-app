@@ -143,6 +143,7 @@ function templateExampleRows(templateCode: string): Array<Record<string, string 
       { code: "NVL_DUONG", name: "Duong cat", item_type: "RAW_MATERIAL", unit: "g", purchase_unit: "kg", conversion_rate: 1000, min_stock: 5000 },
       { code: "BTP_SOTCACHUA", name: "Sot ca chua", item_type: "SEMI_FINISHED", unit: "ml", purchase_unit: "lit", conversion_rate: 1000, min_stock: 3000 },
       { code: "SP_COMBO01", name: "Combo ban POS", item_type: "FINISHED", unit: "phan", min_stock: 0 },
+      { code: "VT_BAOBI01", name: "Bao bi dung mot lan", item_type: "PACKAGING", unit: "cai", purchase_unit: "thung", conversion_rate: 100, min_stock: 500 },
     ];
   }
   if (templateCode === "OPENING_BALANCE_STANDARD_V1") {

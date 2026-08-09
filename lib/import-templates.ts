@@ -362,7 +362,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
     code: "INVENTORY_ITEM_STANDARD_V1",
     importType: "INVENTORY_ITEM",
     name: "Danh mục mặt hàng",
-    description: "Import danh mục nguyên vật liệu, bao bì, CCDC, tài sản.",
+    description: "Import danh mục mặt hàng. Loại chuẩn: RAW_MATERIAL, SEMI_FINISHED, FINISHED, PACKAGING, TOOL hoặc ASSET.",
     fields: [
       { field: "purchase_unit", label: "DVT mua", required: false, type: "text", aliases: ["dvt mua", "don vi mua", "purchase unit"] },
       { field: "conversion_rate", label: "Ty le quy doi", required: false, type: "number", aliases: ["ty le quy doi", "he so quy doi", "conversion rate"] },
