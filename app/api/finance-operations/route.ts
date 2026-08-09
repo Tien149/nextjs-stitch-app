@@ -85,7 +85,7 @@ export async function GET(request: Request) {
       prisma.moneyTransfer.findMany({
         where: { ...branchFilter, transferDate: { gte: start, lt: end } },
         include: { denominations: { orderBy: { denomination: "desc" } } },
-        orderBy: { transferDate: "asc" },
+        orderBy: [{ createdAt: "desc" }, { transferDate: "desc" }],
       }),
     ]);
 
