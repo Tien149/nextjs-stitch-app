@@ -241,7 +241,7 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
       }),
       prisma.moneyTransfer.findMany({
         where: { ...branchFilter, transferDate: { gte: start, lt: end }, status: "APPROVED" },
-        select: { transferDate: true, amount: true, feeAmount: true, feeCategoryCode: true, fromMoneySourceCode: true, toMoneySourceCode: true },
+        select: { transferDate: true, amount: true, feeAmount: true, feeCategoryCode: true, transferPurpose: true, fromMoneySourceCode: true, toMoneySourceCode: true },
       }),
       prisma.openingBalance.findMany({
         where: { period: months[0], ...(branchCode === "ALL" ? {} : { branchCode }), status: "POSTED", balanceType: { in: cashReportOpeningTypes } },
@@ -398,18 +398,21 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     // Nguồn đi giảm amount + phí/chênh lệch; nguồn nhận chỉ tăng số thực chuyển.
     touchSource(row.fromMoneySourceCode).transferOut += row.amount + row.feeAmount;
     touchSource(row.toMoneySourceCode).transferIn += row.amount;
-    if (row.feeAmount > 0) {
+    if (row.feeAmount !== 0) {
       const category = resolveCategory(row.feeCategoryCode, "PAYMENT");
+      const fallbackCategory = row.transferPurpose === "CASH_DEPOSIT"
+        ? { key: "CASH_ROUNDING", name: "Chênh lệch làm tròn tiền nộp", group: "PAYMENT" as const }
+        : { key: unclassifiedKey, name: "Chưa phân loại", group: "PAYMENT" as const };
       bumpCategory(
         expense,
         category
           ? { key: category.code, name: category.name, group: "PAYMENT" }
-          : { key: unclassifiedKey, name: "Chưa phân loại", group: "PAYMENT" },
+          : fallbackCategory,
         monthCount,
         monthIndexOf(row.transferDate),
         row.feeAmount,
       );
-      if (!category) unclassifiedExpense += row.feeAmount;
+      if (!category && row.transferPurpose !== "CASH_DEPOSIT") unclassifiedExpense += row.feeAmount;
     }
   }
 

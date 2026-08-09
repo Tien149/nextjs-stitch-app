@@ -544,8 +544,8 @@ export default function FinanceOperationsPage() {
                           </td>
                           <td className="px-4 py-3 text-right">
                             <p className="font-bold">{money(transfer.amount)} đ</p>
-                            {transfer.feeAmount > 0 && (
-                              <p className="mt-1 text-[11px] font-medium text-amber-700">
+                            {transfer.feeAmount !== 0 && (
+                              <p className={`mt-1 text-[11px] font-medium ${transfer.feeAmount > 0 ? "text-amber-700" : "text-emerald-700"}`}>
                                 Chi phí làm tròn: {money(transfer.feeAmount)} đ · Clear: {money(transfer.amount + transfer.feeAmount)} đ
                               </p>
                             )}

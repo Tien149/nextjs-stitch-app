@@ -888,8 +888,8 @@ model MoneyTransfer {
   externalRef         String?
   description         String
   transferPurpose     String?
-  /// Quyết toán ví/POS về ngân hàng: tiền rời ví = amount + feeAmount, phần feeAmount là
-  /// phí quẹt thẻ nên đi thẳng vào chi phí P&L theo feeCategoryCode.
+  /// Chênh lệch giữa nguồn cần clear và số thực nhận/nộp: gross = amount + feeAmount.
+  /// Phí ví và làm tròn xuống là số dương; làm tròn tiền nộp lên là chi phí âm.
   feeAmount           Float    @default(0)
   feeCategoryCode     String?
   depositTargetType   String?

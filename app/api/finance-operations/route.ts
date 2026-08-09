@@ -8,11 +8,10 @@ import { generateFormattedVoucherCode } from "@/lib/voucher-code-generator";
 import { moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { scopePayloadByTab } from "@/lib/tab-scope";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
+import { cashDepositRoundingExpense, cashDepositUnit, roundCashDepositAmount } from "@/lib/cash-deposit";
 
 const menuHref = "/finance-operations";
 const cashDepositDenominations = [500000, 200000, 100000, 50000, 20000, 10000, 5000, 2000, 1000];
-// Số thực nộp đếm theo tờ; phần lẻ dưới 1.000 đ đi thẳng vào chi phí để clear nguồn thu ngân.
-const cashDepositUnit = 1000;
 const cashDepositTargetLabels: Record<string, string> = { PKT: "Nộp Tiền PKT", CO: "Nộp Tiền Cô" };
 type CashDepositDenominationInput = { denomination?: unknown; quantity?: unknown; note?: unknown };
 type CashDepositDenominationRow = { denomination: number; quantity: number; amount: number; note: string | null };
@@ -183,7 +182,7 @@ export async function POST(request: Request) {
       });
       if (duplicate) businessError(`Ngày/ca này đã có phiếu ${cashDepositTargetLabels[depositTargetType]} khác (${duplicate.code}).`);
 
-      const description = `${cashDepositTargetLabels[depositTargetType]} ngày ${reportDateCode} (${sourceShift})${current.feeAmount > 0 ? ` - chi phí làm tròn ${current.feeAmount.toLocaleString("vi-VN")} đ` : ""}`;
+      const description = `${cashDepositTargetLabels[depositTargetType]} ngày ${reportDateCode} (${sourceShift})${current.feeAmount !== 0 ? ` - chi phí làm tròn ${current.feeAmount.toLocaleString("vi-VN")} đ` : ""}`;
       const result = await prisma.$transaction(async (tx) => {
         // Điều kiện status trong updateMany ngăn ghi đè nếu Admin vừa duyệt trong lúc form đang mở.
         const updated = await tx.moneyTransfer.updateMany({
@@ -309,14 +308,16 @@ export async function POST(request: Request) {
       const amount = Math.round(toNumber(body.amount));
       const grossAmount = Math.round(toNumber(body.grossAmount ?? body.amount));
       const feeAmount = grossAmount - amount;
+      const expectedAmount = roundCashDepositAmount(grossAmount);
+      const expectedFeeAmount = cashDepositRoundingExpense(grossAmount);
       const denominationRows: CashDepositDenominationInput[] = Array.isArray(body.denominations) ? body.denominations : [];
 
       if (!branchCode || branchCode === "ALL") businessError("Nộp tiền bắt buộc chọn một cửa hàng cụ thể.");
       if (grossAmount <= 0) businessError("Số tiền cần clear phải lớn hơn 0.");
       if (amount < 0) businessError("Số tiền thực nộp không được âm.");
       if (amount % cashDepositUnit !== 0) businessError(`Số tiền thực nộp phải là bội số của ${cashDepositUnit.toLocaleString("vi-VN")} đ.`);
-      if (amount !== Math.floor(grossAmount / cashDepositUnit) * cashDepositUnit || feeAmount < 0 || feeAmount >= cashDepositUnit) {
-        businessError(`Số thực nộp phải được làm tròn xuống từ số cần clear; phần chênh lệch phải nhỏ hơn ${cashDepositUnit.toLocaleString("vi-VN")} đ.`);
+      if (amount !== expectedAmount || feeAmount !== expectedFeeAmount) {
+        businessError(`Số thực nộp phải được làm tròn đến ${cashDepositUnit.toLocaleString("vi-VN")} đ gần nhất (dưới 500 đ làm tròn xuống, từ 500 đ làm tròn lên).`);
       }
       if (!fromMoneySourceCode || !toMoneySourceCode) businessError("Nguồn tiền đi và nguồn tiền nhận là bắt buộc.");
       if (fromMoneySourceCode === toMoneySourceCode) businessError("Nguồn tiền đi và nguồn tiền nhận không được trùng nhau.");
@@ -376,7 +377,7 @@ export async function POST(request: Request) {
           amount,
           feeAmount,
           externalRef: `NOPT-${reportDateCode}-${branchCode}-${sourceShift}-${depositTargetType}`,
-          description: `${cashDepositTargetLabels[depositTargetType]} ngày ${reportDateCode} (${sourceShift})${feeAmount > 0 ? ` - chi phí làm tròn ${feeAmount.toLocaleString("vi-VN")} đ` : ""}`,
+          description: `${cashDepositTargetLabels[depositTargetType]} ngày ${reportDateCode} (${sourceShift})${feeAmount !== 0 ? ` - chi phí làm tròn ${feeAmount.toLocaleString("vi-VN")} đ` : ""}`,
           transferPurpose: "CASH_DEPOSIT",
           depositTargetType,
           sourceReportDate: new Date(`${reportDateCode}T00:00:00`),

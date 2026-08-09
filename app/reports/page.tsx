@@ -10,6 +10,7 @@ import { filterMoneySources, firstMoneySourceCode, moneySourceDebugLabel, moneyS
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { shiftLabel, shiftLabels } from "@/lib/shifts";
+import { cashDepositRoundingExpense, roundCashDepositAmount } from "@/lib/cash-deposit";
 
 type Pnl = {
   revenue: number;
@@ -139,8 +140,6 @@ const metricLabels: Record<string, string> = {
 const reportTabs = moduleTabs["/reports"];
 const cashDepositTargetLabels: Record<"PKT" | "CO", string> = { PKT: "Nộp Tiền PKT", CO: "Nộp Tiền Cô" };
 const cashDepositDenominations = [500000, 200000, 100000, 50000, 20000, 10000, 5000, 2000, 1000];
-// Mệnh giá nhỏ nhất còn lưu hành: số nộp luôn là bội số của nó.
-const cashDepositUnit = 1000;
 const emptyManualRevenueForm: ManualRevenueForm = { cashAmount: "", transferAmount: "", cardAmount: "", grabAmount: "", otherAmount: "", note: "" };
 // Tiền mặt khoá lại (chỉ đọc): số này lấy từ phiếu thu tiền mặt của ca, không nhập tay.
 const manualRevenueFields: Array<{ key: keyof Omit<ManualRevenueForm, "note">; label: string; hint: string; locked?: boolean }> = [
@@ -367,11 +366,11 @@ export default function ReportsPage() {
 
   const cashDepositAmount = Math.max(0, Math.round(dailyCash?.summary.cashToDeposit || 0));
   /**
-   * Nộp tiền là đếm theo tờ nên số thực nộp làm tròn XUỐNG theo mệnh giá nhỏ nhất.
-   * Phần lẻ được ghi nhận thẳng vào chi phí để clear đủ số cần nộp khỏi nguồn thu ngân.
+   * Số thực nộp làm tròn tới nghìn gần nhất theo quy tắc 5 lên, dưới 5 xuống.
+   * Chênh lệch dương là chi phí; làm tròn lên tạo chi phí âm.
    */
-  const cashDepositRoundedAmount = Math.floor(cashDepositAmount / cashDepositUnit) * cashDepositUnit;
-  const cashDepositRemainder = cashDepositAmount - cashDepositRoundedAmount;
+  const cashDepositRoundedAmount = roundCashDepositAmount(cashDepositAmount);
+  const cashDepositRoundingDifference = cashDepositRoundingExpense(cashDepositAmount);
   const cashDepositDenominationTotal = cashDepositForm.denominations.reduce((sum, row) => {
     const quantity = Math.max(0, Math.floor(Number(row.quantity) || 0));
     return sum + row.denomination * quantity;
@@ -583,7 +582,7 @@ export default function ReportsPage() {
       }
       setMessage(
         `Đã tạo phiếu ${payload.code} chờ duyệt: thực nộp ${money(cashDepositRoundedAmount)} đ`
-        + `${cashDepositRemainder > 0 ? `, chi phí làm tròn ${money(cashDepositRemainder)} đ` : ""}`
+        + `${cashDepositRoundingDifference !== 0 ? `, chi phí làm tròn ${money(cashDepositRoundingDifference)} đ` : ""}`
         + `, clear ${money(cashDepositAmount)} đ khỏi nguồn thu ngân.`,
       );
       setCashDepositOpen(false);
@@ -1494,10 +1493,10 @@ export default function ReportsPage() {
                     </tbody>
                   </table>
                 </div>
-                {cashDepositRemainder > 0 && (
-                  <p className="border-t border-amber-100 bg-amber-50 px-4 py-3 text-xs font-medium text-amber-800">
+                {cashDepositRoundingDifference !== 0 && (
+                  <p className={`border-t px-4 py-3 text-xs font-medium ${cashDepositRoundingDifference > 0 ? "border-amber-100 bg-amber-50 text-amber-800" : "border-emerald-100 bg-emerald-50 text-emerald-800"}`}>
                     Tiền mặt cần clear là <b>{money(cashDepositAmount)} đ</b>, số thực nộp theo mệnh giá là <b>{money(cashDepositRoundedAmount)} đ</b>.
-                    Phần lẻ <b>{money(cashDepositRemainder)} đ</b> được ghi thẳng vào chi phí; nguồn tiền mặt được giảm đủ <b>{money(cashDepositAmount)} đ</b>, không giữ lại trong két.
+                    Chi phí làm tròn là <b>{money(cashDepositRoundingDifference)} đ</b>; nguồn tiền mặt được giảm đúng <b>{money(cashDepositAmount)} đ</b>.
                   </p>
                 )}
                 {cashDepositDenominationTotal !== cashDepositRoundedAmount && (
