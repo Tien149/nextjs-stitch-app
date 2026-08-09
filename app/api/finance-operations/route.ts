@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { isAdmin, requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
-import { prisma } from "@/lib/prisma";
+import { prisma, prismaRaw } from "@/lib/prisma";
 import { addPeriod, apiError, businessError, cleanText, isPeriodLocked, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
 import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
 import { writeAuditLog } from "@/lib/audit-log";
@@ -9,6 +9,7 @@ import { moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceG
 import { scopePayloadByTab } from "@/lib/tab-scope";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { cashDepositRoundingExpense, cashDepositUnit, roundCashDepositAmount } from "@/lib/cash-deposit";
+import { completePendingReconciliation, releasePendingReconciliation } from "@/lib/reconciliation-links";
 
 const menuHref = "/finance-operations";
 const cashDepositDenominations = [500000, 200000, 100000, 50000, 20000, 10000, 5000, 2000, 1000];
@@ -46,7 +47,7 @@ async function closingChecklist(period: string, branchCode: string) {
   const [draftVouchers, pendingOrders, unmatchedBankRows, negativeStock, assets, depreciationRuns, pendingAccruals, importErrors] = await Promise.all([
     prisma.financialVoucher.count({ where: { ...branchFilter, voucherDate: { gte: start, lt: end }, status: { in: ["DRAFT", "PENDING_REVIEW"] } } }),
     prisma.purchaseOrder.count({ where: { ...branchFilter, status: { in: ["APPROVED", "PARTIALLY_RECEIVED"] } } }),
-    prisma.bankStatementTransaction.count({ where: { ...(branchCode === "ALL" ? {} : { branchCode }), transactionDate: { gte: start, lt: end }, reconcileStatus: "UNMATCHED" } }),
+    prisma.bankStatementTransaction.count({ where: { ...(branchCode === "ALL" ? {} : { branchCode }), transactionDate: { gte: start, lt: end }, reconcileStatus: { in: ["UNMATCHED", "PENDING_REVIEW"] } } }),
     prisma.inventoryBalance.count({ where: { quantity: { lt: 0 } } }),
     prisma.assetRecord.count({ where: { ...branchFilter, status: "IN_USE", usefulLifeMonths: { gt: 0 }, depreciationStartDate: { lte: end } } }),
     prisma.assetDepreciation.count({ where: { period, ...(branchCode === "ALL" ? {} : { asset: { branchCode } }) } }),
@@ -90,21 +91,25 @@ export async function GET(request: Request) {
 
     const openingAmount = openingBalances.reduce((sum, row) => sum + row.amount, 0);
     const entries = [
-      ...vouchers.map((row) => ({ id: row.id, date: row.voucherDate, code: row.code, type: row.voucherType, moneySourceCode: row.moneySourceCode, description: row.description, receipt: row.voucherType === "RECEIPT" ? row.amount : 0, payment: row.voucherType === "PAYMENT" ? row.amount : 0 })),
-      ...adjustments.map((row) => ({ id: row.id, date: row.entryDate, code: row.code, type: "ADJUSTMENT", moneySourceCode: row.moneySourceCode, description: row.description, receipt: entryTypeToReceipt(row.entryType, row.amount), payment: entryTypeToPayment(row.entryType, row.amount) })),
+      ...vouchers.map((row) => ({ id: row.id, date: row.voucherDate, createdAt: row.createdAt, code: row.code, type: row.voucherType, moneySourceCode: row.moneySourceCode, description: row.description, receipt: row.voucherType === "RECEIPT" ? row.amount : 0, payment: row.voucherType === "PAYMENT" ? row.amount : 0 })),
+      ...adjustments.map((row) => ({ id: row.id, date: row.entryDate, createdAt: row.createdAt, code: row.code, type: "ADJUSTMENT", moneySourceCode: row.moneySourceCode, description: row.description, receipt: entryTypeToReceipt(row.entryType, row.amount), payment: entryTypeToPayment(row.entryType, row.amount) })),
       // Quyết toán ví: tiền rời ví = số về ngân hàng + phí, nên số dư ví mới về đúng 0.
       ...moneyTransfers.filter((row) => row.status === "APPROVED").flatMap((row) => [
-        { id: `${row.id}-out`, date: row.transferDate, code: row.code, type: "TRANSFER_OUT", moneySourceCode: row.fromMoneySourceCode, description: row.description, receipt: 0, payment: row.amount + row.feeAmount },
-        { id: `${row.id}-in`, date: row.transferDate, code: row.code, type: "TRANSFER_IN", moneySourceCode: row.toMoneySourceCode, description: row.description, receipt: row.amount, payment: 0 },
+        { id: `${row.id}-out`, date: row.transferDate, createdAt: row.createdAt, code: row.code, type: "TRANSFER_OUT", moneySourceCode: row.fromMoneySourceCode, description: row.description, receipt: 0, payment: row.amount + row.feeAmount },
+        { id: `${row.id}-in`, date: row.transferDate, createdAt: row.createdAt, code: row.code, type: "TRANSFER_IN", moneySourceCode: row.toMoneySourceCode, description: row.description, receipt: row.amount, payment: 0 },
       ]),
-    ].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    ].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
+      || new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
     let runningBalance = openingAmount;
     const cashbook = entries.map((entry) => {
       runningBalance += entry.receipt - entry.payment;
       return { ...entry, balance: runningBalance };
     });
 
-    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { period, branchCode, openingAmount, closingBalance: runningBalance, cashbook, accruals, moneyTransfers, accountingPeriod: accountingPeriod || { status: "OPEN" }, checklist }));
+    const latestFirstCashbook = [...cashbook].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      || new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { period, branchCode, openingAmount, closingBalance: runningBalance, cashbook: latestFirstCashbook, accruals, moneyTransfers, accountingPeriod: accountingPeriod || { status: "OPEN" }, checklist }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });
@@ -260,8 +265,12 @@ export async function POST(request: Request) {
       if (transfer.transferPurpose === "CASH_DEPOSIT" && normalizeMoneySourceGroup(fromMoneySource.group) !== "CASH") {
         businessError("Nguồn tiền đi của phiếu nộp tiền phải là tiền mặt.");
       }
+      if (transfer.transferPurpose === "WALLET_SETTLEMENT") {
+        if (normalizeMoneySourceGroup(fromMoneySource.group) !== "WALLET") businessError("Nguồn tiền đi của phiếu quyết toán ví phải là ví/POS.");
+        if (normalizeMoneySourceGroup(toMoneySource.group) !== "BANK") businessError("Nguồn tiền nhận của phiếu quyết toán ví phải là ngân hàng.");
+      }
 
-      const result = await prisma.$transaction(async (tx) => {
+      const result = await prismaRaw.$transaction(async (tx) => {
         // Điều kiện trạng thái bảo đảm hai kế toán bấm cùng lúc cũng chỉ duyệt thành công một lần.
         const updated = await tx.moneyTransfer.updateMany({
           where: { id, status: "PENDING_REVIEW", deletedAt: null },
@@ -269,6 +278,9 @@ export async function POST(request: Request) {
         });
         if (updated.count !== 1) {
           businessError("Phiếu đã được người khác duyệt hoặc không còn ở trạng thái chờ duyệt.");
+        }
+        if (transfer.transferPurpose === "WALLET_SETTLEMENT") {
+          await completePendingReconciliation(tx, "WALLET_SETTLEMENT", id);
         }
         return tx.moneyTransfer.findUniqueOrThrow({ where: { id } });
       });
@@ -290,6 +302,38 @@ export async function POST(request: Request) {
           from: result.fromMoneySourceCode,
           to: result.toMoneySourceCode,
         },
+      });
+      return NextResponse.json(result);
+    }
+
+    if (action === "CANCEL_PENDING_TRANSFER") {
+      const auth = requireMenuAction(request, menuHref, "edit");
+      if (!auth.ok) return auth.response;
+      const id = cleanText(body.id);
+      const transfer = await prisma.moneyTransfer.findUnique({ where: { id } });
+      if (!transfer || transfer.deletedAt) businessError("Không tìm thấy giao dịch điều tiền");
+      assertBranchAccess(auth.session, transfer.branchCode);
+      if (transfer.status !== "PENDING_REVIEW") businessError("Chỉ được hủy giao dịch đang chờ duyệt");
+      const result = await prismaRaw.$transaction(async (tx) => {
+        const updated = await tx.moneyTransfer.updateMany({
+          where: { id, status: "PENDING_REVIEW", deletedAt: null },
+          data: { status: "CANCELLED" },
+        });
+        if (updated.count !== 1) businessError("Phiếu đã được xử lý bởi yêu cầu khác.");
+        if (transfer.transferPurpose === "WALLET_SETTLEMENT") {
+          await releasePendingReconciliation(tx, "WALLET_SETTLEMENT", id, `Phiếu ${transfer.code} đã bị hủy; chờ đối soát thủ công`);
+        }
+        return tx.moneyTransfer.findUniqueOrThrow({ where: { id } });
+      });
+      await writeAuditLog({
+        session: auth.session,
+        module: "FINANCE_OPERATIONS",
+        action: "CANCEL_PENDING_TRANSFER",
+        entityType: "MoneyTransfer",
+        entityId: result.id,
+        entityCode: result.code,
+        branchCode: result.branchCode,
+        metadata: { statusBefore: "PENDING_REVIEW", statusAfter: "CANCELLED" },
       });
       return NextResponse.json(result);
     }

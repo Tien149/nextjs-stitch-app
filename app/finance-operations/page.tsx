@@ -11,7 +11,7 @@ import StickyFilterBar from "@/components/StickyFilterBar";
 import { shiftLabels } from "@/lib/shifts";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 
-type CashEntry = { id: string; date: string; code: string; type: string; moneySourceCode: string; description: string; receipt: number; payment: number; balance: number };
+type CashEntry = { id: string; date: string; createdAt: string; code: string; type: string; moneySourceCode: string; description: string; receipt: number; payment: number; balance: number };
 type Schedule = { id: string; period: string; amount: number; status: string };
 type Accrual = { id: string; code: string; name: string; branchCode: string; categoryCode: string; totalAmount: number; startPeriod: string; numberOfPeriods: number; status: string; schedules: Schedule[] };
 type Check = { key: string; label: string; passed: boolean; count: number };
@@ -259,7 +259,7 @@ export default function FinanceOperationsPage() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-6 mt-8 space-y-6">
+      <main className="max-w-[1600px] mx-auto px-6 mt-8 space-y-6">
         {/* Modern Filter Card */}
         <StickyFilterBar className="!bg-slate-100/90">
         <section className="bg-white/80 backdrop-blur-md border border-slate-200/60 shadow-lg shadow-slate-100/50 rounded-2xl p-5 flex flex-wrap items-end justify-between gap-4">
@@ -546,7 +546,7 @@ export default function FinanceOperationsPage() {
                             <p className="font-bold">{money(transfer.amount)} đ</p>
                             {transfer.feeAmount !== 0 && (
                               <p className={`mt-1 text-[11px] font-medium ${transfer.feeAmount > 0 ? "text-amber-700" : "text-emerald-700"}`}>
-                                Chi phí làm tròn: {money(transfer.feeAmount)} đ · Clear: {money(transfer.amount + transfer.feeAmount)} đ
+                                {transfer.transferPurpose === "WALLET_SETTLEMENT" ? "Phí ví/POS" : "Chi phí làm tròn"}: {money(transfer.feeAmount)} đ · Clear: {money(transfer.amount + transfer.feeAmount)} đ
                               </p>
                             )}
                           </td>
@@ -564,6 +564,9 @@ export default function FinanceOperationsPage() {
                               {canApproveTransfer ? (
                                 <button type="button" onClick={() => void send({ action: "APPROVE_TRANSFER", id: transfer.id }, "Đã duyệt giao dịch điều tiền.")} className="rounded-lg bg-emerald-600 px-3 py-2 font-bold text-white hover:bg-emerald-700">Duyệt</button>
                               ) : <span className="self-center text-slate-400">Chờ Admin</span>}
+                              {canEdit && (
+                                <button type="button" onClick={() => void send({ action: "CANCEL_PENDING_TRANSFER", id: transfer.id }, "Đã hủy giao dịch chờ duyệt.")} className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 font-bold text-rose-700 hover:bg-rose-100">Hủy</button>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -575,7 +578,7 @@ export default function FinanceOperationsPage() {
             )}
 
             {/* Content Split: Form & Table */}
-            <div className="grid xl:grid-cols-[380px_1fr] gap-6 items-start">
+            <div className="grid xl:grid-cols-[340px_minmax(0,1fr)] gap-5 items-start">
               {canCreate && data.accountingPeriod.status !== "CLOSED" ? (
                 <form
                   onSubmit={(e) => {
@@ -693,15 +696,15 @@ export default function FinanceOperationsPage() {
               )}
 
               {/* Cashbook Table */}
-              <section className="bg-white border border-slate-200 rounded-2xl shadow-lg overflow-hidden">
+              <section className="min-w-0 bg-white border border-slate-200 rounded-2xl shadow-lg overflow-hidden">
                 <div className="px-6 py-5 border-b border-slate-200">
                   <h3 className="font-bold text-slate-900">Phát sinh dòng tiền trong kỳ</h3>
                   <p className="text-xs text-slate-500 mt-1">Danh sách thu/chi và biến động số dư thực tế theo nguồn quỹ.</p>
                 </div>
                 
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
-                    <thead className="bg-slate-50/80 backdrop-blur-sm text-xs font-bold text-slate-500 uppercase tracking-wider border-b border-slate-200">
+                <div className="max-h-[640px] overflow-auto overscroll-contain [scrollbar-gutter:stable]">
+                  <table className="min-w-[1050px] w-full text-left text-sm">
+                    <thead className="sticky top-0 z-10 bg-slate-50 text-xs font-bold text-slate-500 uppercase tracking-wider border-b border-slate-200 shadow-[0_1px_0_rgba(148,163,184,0.25)]">
                       <tr>
                         <th className="px-5 py-3.5 text-left">Ngày</th>
                         <th className="px-5 py-3.5 text-left">Chứng từ/Nguồn</th>

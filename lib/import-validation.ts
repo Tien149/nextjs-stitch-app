@@ -6,6 +6,7 @@ import type { DemoSession } from "@/lib/auth-demo";
 import { isInboundStockType, isOutboundStockType, isStockTransactionType, normalizeStockTransactionType } from "@/lib/inventory-stock";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
+import { groupBankStatementRows } from "@/lib/bank-statement-import";
 
 type MasterItem = {
   type: string;
@@ -415,7 +416,13 @@ function validateAsset(row: ParsedImportRow, masterItems: MasterItem[], existing
  * tiền vào (Ghi có) chỉ nhận khoản mục nhóm doanh thu, tiền ra (Ghi nợ) chỉ nhận
  * khoản mục chi phí, để không tạo ra dữ liệu phân loại ngược.
  */
-function validateBankStatementCategory(row: ParsedImportRow, masterItems: MasterItem[], debit: number, credit: number) {
+function validateBankStatementCategory(
+  row: ParsedImportRow,
+  masterItems: MasterItem[],
+  debit: number,
+  credit: number,
+  validateDirection = true,
+) {
   const input = row.values.category_code;
   if (!text(input)) {
     row.values.category_code = null;
@@ -430,12 +437,89 @@ function validateBankStatementCategory(row: ParsedImportRow, masterItems: Master
   row.values.category_code = category.code;
 
   const cashflowType = normalizeCashflowCategoryType(category.group);
-  if (credit > 0 && cashflowType !== "RECEIPT") {
+  if (validateDirection && credit > 0 && cashflowType !== "RECEIPT") {
     addError(row, `Giao dịch tiền vào phải chọn danh mục loại Thu, [${category.code}] đang là loại Chi`);
   }
-  if (debit > 0 && cashflowType !== "PAYMENT") {
+  if (validateDirection && debit > 0 && cashflowType !== "PAYMENT") {
     addError(row, `Giao dịch tiền ra phải chọn danh mục loại Chi, [${category.code}] đang là loại Thu`);
   }
+}
+
+const bankMoneySourceAliases: Record<string, string> = {
+  "fds vpbank": "FDSCHKHVPBANK",
+  "fds vietinbank": "FDSCHKHVIET",
+  "momo edc": "MOMO_EDC_FDS",
+};
+
+function resolveBankMoneySource(masterItems: MasterItem[], rawValue: unknown, branchCode?: string) {
+  const aliasCode = bankMoneySourceAliases[normalizeHeader(text(rawValue))];
+  return resolveMaster(masterItems, "MONEY_SOURCE", aliasCode || rawValue, branchCode);
+}
+
+function normalizeBankStatementRow(row: ParsedImportRow, masterItems: MasterItem[], session: DemoSession) {
+  row.values.transaction_code = text(row.values.transaction_code).toUpperCase();
+  const debit = numberValue(row.values.debit_amount);
+  const credit = numberValue(row.values.credit_amount);
+  if ((debit <= 0 && credit <= 0) || (debit > 0 && credit > 0)) {
+    addError(row, "Mỗi dòng sao kê phải có đúng một bên Ghi nợ hoặc Ghi có");
+  }
+
+  const rawSources = [
+    row.values.summary_money_source_code,
+    row.values.increase_money_source_code,
+    row.values.decrease_money_source_code,
+  ];
+  let branchCode = text(row.values.branch_code).toUpperCase();
+  if (!branchCode) {
+    branchCode = rawSources
+      .map((value) => resolveBankMoneySource(masterItems, value)?.branch || "")
+      .find(Boolean) || "";
+    row.values.branch_code = branchCode;
+  }
+  if (branchCode) validateBranch(row, session, masterItems);
+
+  const resolvedSources = {
+    summary_money_source_code: resolveBankMoneySource(masterItems, row.values.summary_money_source_code, branchCode),
+    increase_money_source_code: resolveBankMoneySource(masterItems, row.values.increase_money_source_code, branchCode),
+    decrease_money_source_code: resolveBankMoneySource(masterItems, row.values.decrease_money_source_code, branchCode),
+  };
+  for (const [field, source] of Object.entries(resolvedSources)) {
+    if (text(row.values[field]) && !source) {
+      addError(row, `Nguồn tiền [${text(row.values[field])}] không tồn tại hoặc đã ngưng hoạt động`);
+    } else if (source) {
+      row.values[field] = source.code;
+    }
+  }
+
+  const summaryBank = resolvedSources.summary_money_source_code?.group === "BANK"
+    ? resolvedSources.summary_money_source_code
+    : null;
+  const detailBank = [resolvedSources.increase_money_source_code, resolvedSources.decrease_money_source_code]
+    .find((source) => source?.group === "BANK");
+  const bankSource = summaryBank || detailBank;
+  row.values.bank_account = bankSource?.code || text(row.values.bank_account).toUpperCase();
+  if (!text(row.values.bank_account)) addError(row, "Không xác định được tài khoản ngân hàng từ Nguồn tiền tổng/chi tiết");
+
+  // Hướng Thu/Chi được kiểm tra lại theo số ròng của cả nhóm sau khi gom mã giao dịch.
+  validateBankStatementCategory(row, masterItems, debit, credit, false);
+
+  const increaseGroup = resolvedSources.increase_money_source_code?.group;
+  const decreaseGroup = resolvedSources.decrease_money_source_code?.group;
+  let autoProcessType = "MANUAL_REQUIRED";
+  let autoProcessNote = "Thiếu thông tin để tự động tạo phiếu";
+  if (credit > 0 && increaseGroup === "BANK" && decreaseGroup === "WALLET" && row.values.revenue_date) {
+    autoProcessType = "WALLET_SETTLEMENT";
+    autoProcessNote = "Đủ thông tin tạo phiếu quyết toán ví chờ duyệt";
+  } else if (credit > 0 && increaseGroup === "BANK" && text(row.values.category_code)) {
+    autoProcessType = "RECEIPT";
+    autoProcessNote = "Đủ thông tin tạo phiếu thu chờ duyệt";
+  } else if (debit > 0 && decreaseGroup === "BANK" && text(row.values.category_code)) {
+    autoProcessType = "PAYMENT";
+    autoProcessNote = "Đủ thông tin tạo phiếu chi chờ duyệt";
+  }
+  row.values.auto_process_type = autoProcessType;
+  row.values.auto_process_note = autoProcessNote;
+  row.values.import_action = "CREATE";
 }
 
 export async function validateImportResult(
@@ -600,11 +684,66 @@ export async function validateImportResult(
       }
     }
     if (importType === "BANK_STATEMENT") {
-      const debit = numberValue(row.values.debit_amount);
-      const credit = numberValue(row.values.credit_amount);
-      if ((debit <= 0 && credit <= 0) || (debit > 0 && credit > 0)) addError(row, "Mỗi giao dịch phải có đúng một bên Ghi nợ hoặc Ghi có");
-      if (text(row.values.branch_code)) validateBranch(row, session, masterItems);
-      validateBankStatementCategory(row, masterItems, debit, credit);
+      normalizeBankStatementRow(row, masterItems, session);
+    }
+  }
+
+  if (importType === "BANK_STATEMENT") {
+    const groups = groupBankStatementRows(result.rows);
+    const existing = groups.length > 0
+      ? await prisma.bankStatementTransaction.findMany({
+          where: {
+            transactionCode: { in: groups.map((group) => text(group.rows[0].values.transaction_code)) },
+          },
+          select: { id: true, transactionCode: true },
+        })
+      : [];
+    const existingKeys = new Set(existing.map((row) => row.transactionCode.toUpperCase()));
+
+    for (const group of groups) {
+      const existingKey = text(group.rows[0].values.transaction_code).toUpperCase();
+      if (existingKeys.has(existingKey)) {
+        for (const row of group.rows) {
+          row.values.import_action = "SKIP_EXISTING";
+          row.values.auto_process_type = "SKIP_EXISTING";
+          row.values.auto_process_note = "Giao dịch đã tồn tại trong hệ thống — commit sẽ bỏ qua, không làm lỗi cả batch";
+        }
+        continue;
+      }
+
+      if (group.isNetZero) {
+        for (const row of group.rows) {
+          row.values.import_action = "NET_ZERO";
+          row.values.auto_process_type = "NET_ZERO";
+          row.values.auto_process_note = `Cặp Nợ/Có đảo nhau, giá trị ròng 0 đ — lưu dấu vết và không tạo phiếu`;
+        }
+        continue;
+      }
+
+      for (const row of group.rows) {
+        const category = masterItems.find((item) => item.type === "REVENUE_EXPENSE_CATEGORY" && item.code === text(row.values.category_code));
+        const categoryType = normalizeCashflowCategoryType(category?.group);
+        const directionMismatch = (group.creditAmount > 0 && categoryType !== "RECEIPT")
+          || (group.debitAmount > 0 && categoryType !== "PAYMENT");
+        if (directionMismatch) {
+          row.values.auto_process_type = "MANUAL_REQUIRED";
+          row.values.auto_process_note = `Loại thu/chi [${text(row.values.category_code)}] ngược chiều Nợ/Có — đã giữ phân loại của khách và chờ kiểm tra thủ công`;
+        }
+      }
+
+      if (group.rows.length > 1) {
+        if (!group.isMultiAllocation) {
+          for (const row of group.rows) {
+            row.values.auto_process_type = "MANUAL_REQUIRED";
+            row.values.auto_process_note = "Mã giao dịch có cả Nợ và Có nhưng giá trị ròng khác 0 — cần kiểm tra thủ công";
+          }
+        } else {
+          for (const row of group.rows) {
+            row.values.import_action = "GROUP_ALLOCATION";
+            row.values.auto_process_note = `Gộp ${group.rows.length} dòng thành 1 giao dịch; giữ từng ngày doanh thu ở bảng phân bổ`;
+          }
+        }
+      }
     }
   }
 

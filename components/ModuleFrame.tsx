@@ -10,6 +10,7 @@ export function ModuleFrame({
   role,
   branchCode,
   onChangeBranch,
+  contentClassName = "max-w-7xl",
   children,
 }: {
   title: string;
@@ -17,6 +18,7 @@ export function ModuleFrame({
   role?: string;
   branchCode?: string;
   onChangeBranch?: (code: string) => void;
+  contentClassName?: string;
   children: ReactNode;
 }) {
   const [isLocked, setIsLocked] = useState(false);
@@ -91,7 +93,7 @@ export function ModuleFrame({
           <p className="hidden sm:block text-xs font-bold text-slate-500">{displayRoleName(role)}</p>
         </div>
       </header>
-      <main className="max-w-7xl mx-auto p-4 sm:p-6">{children}</main>
+      <main className={`${contentClassName} mx-auto p-4 sm:p-6`}>{children}</main>
     </div>
   );
 }

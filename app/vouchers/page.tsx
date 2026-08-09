@@ -653,6 +653,7 @@ export default function VouchersPage() {
       role={user.role}
       branchCode={branchCode}
       onChangeBranch={handleBranchChange}
+      contentClassName="max-w-[1600px]"
     >
       <div className="space-y-6">
         {/* Operational Summary Cards */}
@@ -689,7 +690,7 @@ export default function VouchersPage() {
         </div>
         </StickyFilterBar>
 
-        <main className="grid xl:grid-cols-[380px_1fr] gap-6 items-start">
+        <main className="grid gap-4 items-start xl:grid-cols-[calc((100%-3rem)/4)_minmax(0,1fr)]">
           {(canCreate || editingVoucher) && (
             <form onSubmit={submitVoucher} className="bg-white border border-slate-200 rounded-2xl shadow-sm p-5 space-y-4">
               <div>
@@ -752,7 +753,7 @@ export default function VouchersPage() {
               </label>
 
               {form.voucherType === "RECEIPT" && (
-                <div className="grid grid-cols-2 gap-3">
+                <div className={`grid gap-3 ${form.depositAction === "COLLECT" ? "grid-cols-2" : "grid-cols-1"}`}>
                   <label className="text-xs font-bold text-slate-600 block">
                     Nội dung thu *
                     <select
@@ -976,7 +977,7 @@ export default function VouchersPage() {
             </form>
           )}
 
-          <section className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden flex flex-col">
+          <section className="min-w-0 bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden flex flex-col">
             <div className="p-5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
               <div>
                 <h2 className="font-bold text-slate-800">Danh sách phiếu</h2>
@@ -1032,9 +1033,9 @@ export default function VouchersPage() {
                 <button onClick={() => void loadVouchers(branchCode)} className="rounded-lg border border-slate-200 px-3.5 py-1.5 text-xs font-bold hover:bg-slate-50 text-slate-700 transition-colors">Tải lại</button>
               </div>
             </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-bold border-b border-slate-200">
+            <div className="h-[calc(100vh-245px)] min-h-[720px] max-h-[900px] overflow-auto overscroll-contain">
+              <table className="w-full min-w-[820px] table-fixed text-left text-sm">
+                <thead className="sticky top-0 z-10 bg-slate-50 text-slate-500 text-xs uppercase font-bold border-b border-slate-200 shadow-[0_1px_0_0_rgb(226_232_240)]">
                   <tr>
                     <th className="w-10 px-4 py-3 text-left">
                       <input
@@ -1047,11 +1048,11 @@ export default function VouchersPage() {
                         onChange={toggleSelectAll}
                       />
                     </th>
-                    <th className="px-4 py-3 text-left">Chứng từ</th>
-                    <th className="px-4 py-3 text-left">Đối tác</th>
-                    <th className="px-4 py-3 text-right">Số tiền</th>
-                    <th className="px-4 py-3 text-left">Trạng thái</th>
-                    <th className="px-4 py-3 text-right">Thao tác</th>
+                    <th className="w-[200px] px-4 py-3 text-left">Chứng từ</th>
+                    <th className="w-[180px] px-4 py-3 text-left">Đối tác</th>
+                    <th className="w-[120px] px-4 py-3 text-right">Số tiền</th>
+                    <th className="w-[135px] px-4 py-3 text-left">Trạng thái</th>
+                    <th className="w-[145px] px-4 py-3 text-right">Thao tác</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -1107,9 +1108,9 @@ export default function VouchersPage() {
                           </p>
                         )}
                       </td>
-                      <td className="px-4 py-3.5">
-                        <b className="text-slate-800 font-medium">{voucher.partnerName}</b>
-                        <p className="text-xs text-slate-500 mt-0.5 line-clamp-1">{voucher.description}</p>
+                      <td className="px-4 py-3.5 align-top whitespace-normal break-words">
+                        <b className="block text-slate-800 font-medium leading-5">{voucher.partnerName}</b>
+                        <p className="mt-0.5 text-xs leading-4 text-slate-500 whitespace-normal break-words">{voucher.description}</p>
                       </td>
                       <td className="px-4 py-3.5 text-right font-bold text-slate-900 whitespace-nowrap">{money(voucher.amount)} đ</td>
                       <td className="px-4 py-3.5 whitespace-nowrap">
@@ -1123,7 +1124,7 @@ export default function VouchersPage() {
                           {voucher.status === "APPROVED" ? "Đã duyệt" : voucher.status === "DRAFT" ? "Bản nháp" : voucher.status}
                         </span>
                       </td>
-                      <td className="px-4 py-3.5 text-right whitespace-nowrap space-x-1.5">
+                      <td className="px-4 py-3.5 text-right align-top whitespace-nowrap space-x-1.5">
                         <button onClick={() => window.open(`/vouchers/${voucher.id}/print`, "_blank")} className="px-2.5 py-1 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 rounded-lg text-xs font-bold transition-colors">In</button>
                         <RowActions
                           session={user}

@@ -2,12 +2,14 @@ import { createHash } from "node:crypto";
 import { Prisma } from "@prisma/custom-client";
 import { prisma, prismaRaw, type RawTxClient, type TxClient } from "@/lib/prisma";
 import { addPeriod, periodFromDate } from "@/lib/phase3";
-import { type ImportType } from "@/lib/import-templates";
+import { normalizeHeader, type ImportType } from "@/lib/import-templates";
 import { type ParsedImportRow } from "@/lib/import-parser";
 import { normalizeStockTransactionType, postInventoryTransaction } from "@/lib/inventory-stock";
 import { writeAuditLog } from "@/lib/audit-log";
 import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
+import { generateFormattedVoucherCode } from "@/lib/voucher-code-generator";
+import { commonBankValue, groupBankStatementRows } from "@/lib/bank-statement-import";
 
 function asText(value: unknown) {
   return String(value || "").trim();
@@ -48,6 +50,76 @@ function monthBounds(value: Date) {
   const start = new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), 1));
   const end = new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth() + 1, 1));
   return { start, end };
+}
+
+function dayBoundsUtc(value: Date) {
+  const start = new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()));
+  const end = new Date(start);
+  end.setUTCDate(end.getUTCDate() + 1);
+  return { start, end };
+}
+
+function revenueMatchesMoneySource(
+  row: { paymentMethod: string; revenueSource: string; channel: string | null },
+  source: { code: string; name: string },
+) {
+  const sourceValues = [normalizeHeader(source.code), normalizeHeader(source.name)];
+  const rowValues = [normalizeHeader(row.paymentMethod), normalizeHeader(row.revenueSource), normalizeHeader(row.channel || "")];
+  if (rowValues.some((value) => value && sourceValues.includes(value))) return true;
+  const keywords = ["momo", "grab", "vnpay", "shopee", "quet the"];
+  return keywords.some((keyword) => sourceValues.some((value) => value.includes(keyword))
+    && rowValues.some((value) => value.includes(keyword)));
+}
+
+async function unresolvedWalletGrossAmount(
+  tx: TxClient,
+  branchCode: string,
+  revenueDate: Date,
+  walletSourceCode: string,
+) {
+  const source = await tx.masterDataItem.findFirst({
+    where: { type: "MONEY_SOURCE", code: walletSourceCode, deletedAt: null },
+    select: { code: true, name: true },
+  });
+  if (!source) return 0;
+  const { start, end } = dayBoundsUtc(revenueDate);
+  const [revenues, previousManualSettlements, previousImportedAllocations] = await Promise.all([
+    tx.revenueImportRow.findMany({
+      where: { branchCode, saleDate: { gte: start, lt: end }, deletedAt: null },
+      select: { paymentMethod: true, revenueSource: true, channel: true, netAmount: true },
+    }),
+    tx.moneyTransfer.findMany({
+      where: {
+        branchCode,
+        importBatchId: null,
+        transferPurpose: "WALLET_SETTLEMENT",
+        fromMoneySourceCode: walletSourceCode,
+        sourceReportDate: { gte: start, lt: end },
+        status: { in: ["PENDING_REVIEW", "APPROVED"] },
+        deletedAt: null,
+      },
+      select: { amount: true, feeAmount: true },
+    }),
+    tx.bankStatementAllocation.findMany({
+      where: {
+        revenueDate: { gte: start, lt: end },
+        decreaseMoneySourceCode: walletSourceCode,
+        grossAmount: { not: null },
+        bankTransaction: {
+          branchCode,
+          reconcileStatus: { in: ["PENDING_REVIEW", "MATCHED"] },
+          deletedAt: null,
+        },
+      },
+      select: { grossAmount: true },
+    }),
+  ]);
+  const declared = revenues
+    .filter((row) => revenueMatchesMoneySource(row, source))
+    .reduce((sum, row) => sum + row.netAmount, 0);
+  const alreadyAllocated = previousManualSettlements.reduce((sum, row) => sum + row.amount + row.feeAmount, 0)
+    + previousImportedAllocations.reduce((sum, row) => sum + (row.grossAmount || 0), 0);
+  return Math.max(0, Math.round(declared - alreadyAllocated));
 }
 
 async function nextVoucherCode(
@@ -208,18 +280,8 @@ export async function commitImport(input: CommitInput) {
       if (duplicateBatch) throw new Error(`File này đã được commit trong batch ${duplicateBatch.id} (${duplicateBatch.fileName})`);
     }
 
-    if (input.importType === "BANK_STATEMENT") {
-      const duplicateKeys = await Promise.all(input.rows.map((row) => tx.bankStatementTransaction.findUnique({
-        where: {
-          bankAccount_transactionCode: {
-            bankAccount: asText(row.values.bank_account),
-            transactionCode: asText(row.values.transaction_code),
-          },
-        },
-        select: { id: true },
-      })));
-      if (duplicateKeys.some(Boolean)) throw new Error("File có giao dịch trùng với dữ liệu đã import");
-    }
+    // BANK_STATEMENT được kiểm tra theo nhóm khi ghi: dòng trùng trong file có thể là
+    // phân bổ hợp lệ, còn giao dịch đã tồn tại sẽ được bỏ qua thay vì rollback cả batch.
 
     if (input.importType === "REVENUE_POS") {
       const duplicateKeys = await Promise.all(input.rows.map((row) => tx.revenueImportRow.findUnique({
@@ -342,21 +404,197 @@ export async function commitImport(input: CommitInput) {
     const staging = await createStagingRows(tx, batch.id, input.importType, input.rows);
 
     if (input.importType === "BANK_STATEMENT") {
-      await tx.bankStatementTransaction.createMany({
-        data: input.rows.map((row) => ({
-          importBatchId: batch.id,
-          transactionDate: asDate(row.values.transaction_date),
-          bankAccount: asText(row.values.bank_account),
-          transactionCode: asText(row.values.transaction_code),
-          description: asText(row.values.description),
-          debitAmount: asNumber(row.values.debit_amount),
-          creditAmount: asNumber(row.values.credit_amount),
-          balanceAfter: row.values.balance_after === null ? null : asNumber(row.values.balance_after),
-          branchCode: row.values.branch_code === null ? null : asText(row.values.branch_code),
-          partnerHint: row.values.partner_hint === null ? null : asText(row.values.partner_hint),
-          categoryCode: asText(row.values.category_code) || null,
-        })),
-      });
+      const groups = groupBankStatementRows(input.rows);
+      for (const group of groups) {
+        const firstRow = group.rows[0];
+        const bankAccount = asText(firstRow.values.bank_account);
+        const transactionCode = asText(firstRow.values.transaction_code);
+        const existing = await tx.bankStatementTransaction.findFirst({
+          where: { transactionCode },
+          select: { id: true },
+        });
+        if (existing) {
+          for (const row of group.rows) await setImportTarget(tx, staging, row, "BANK_STATEMENT_EXISTING", existing.id);
+          continue;
+        }
+
+        const sourceDateText = commonBankValue(group.rows, "source_date");
+        const revenueDateText = commonBankValue(group.rows, "revenue_date");
+        const sourceDate = sourceDateText ? asDate(sourceDateText) : null;
+        const revenueDate = revenueDateText ? asDate(revenueDateText) : null;
+        let autoProcessType = group.isNetZero
+          ? "NET_ZERO"
+          : commonBankValue(group.rows, "auto_process_type") || "MANUAL_REQUIRED";
+        let autoProcessNote = group.isNetZero
+          ? "Cặp Nợ/Có đảo nhau, giá trị ròng 0 đ — không tạo phiếu"
+          : commonBankValue(group.rows, "auto_process_note") || null;
+
+        const bankTransaction = await tx.bankStatementTransaction.create({
+          data: {
+            importBatchId: batch.id,
+            transactionDate: asDate(firstRow.values.transaction_date),
+            bankAccount,
+            transactionCode,
+            description: group.rows.length === 1
+              ? asText(firstRow.values.description)
+              : `${asText(firstRow.values.description)} (${group.rows.length} dòng phân bổ)`,
+            debitAmount: group.debitAmount,
+            creditAmount: group.creditAmount,
+            balanceAfter: group.rows.length === 1 && firstRow.values.balance_after !== null
+              ? asNumber(firstRow.values.balance_after)
+              : null,
+            branchCode: asText(firstRow.values.branch_code) || null,
+            partnerHint: commonBankValue(group.rows, "partner_hint") || null,
+            categoryCode: commonBankValue(group.rows, "category_code") || null,
+            sourceDate,
+            revenueDate,
+            summaryMoneySourceCode: commonBankValue(group.rows, "summary_money_source_code") || null,
+            increaseMoneySourceCode: commonBankValue(group.rows, "increase_money_source_code") || null,
+            decreaseMoneySourceCode: commonBankValue(group.rows, "decrease_money_source_code") || null,
+            autoProcessType,
+            autoProcessNote,
+            reconcileStatus: group.isNetZero ? "MATCHED" : "UNMATCHED",
+          },
+        });
+        await tx.bankStatementAllocation.createMany({
+          data: group.rows.map((row) => ({
+            bankTransactionId: bankTransaction.id,
+            sourceRowNumber: row.rowNumber,
+            sheetName: row.sheetName,
+            description: asText(row.values.description),
+            debitAmount: asNumber(row.values.debit_amount),
+            creditAmount: asNumber(row.values.credit_amount),
+            sourceDate: row.values.source_date ? asDate(row.values.source_date) : null,
+            revenueDate: row.values.revenue_date ? asDate(row.values.revenue_date) : null,
+            categoryCode: asText(row.values.category_code) || null,
+            summaryMoneySourceCode: asText(row.values.summary_money_source_code) || null,
+            increaseMoneySourceCode: asText(row.values.increase_money_source_code) || null,
+            decreaseMoneySourceCode: asText(row.values.decrease_money_source_code) || null,
+            autoProcessType: asText(row.values.auto_process_type) || null,
+            autoProcessNote: asText(row.values.auto_process_note) || null,
+          })),
+        });
+        for (const row of group.rows) await setImportTarget(tx, staging, row, "BANK_STATEMENT", bankTransaction.id);
+
+        if (["MANUAL_REQUIRED", "NET_ZERO"].includes(autoProcessType)) continue;
+        const branchCode = asText(firstRow.values.branch_code);
+        const transactionDate = asDate(firstRow.values.transaction_date);
+        const documentDate = sourceDate || transactionDate;
+        const bankAmount = Math.round(group.creditAmount || group.debitAmount);
+        let targetType = "VOUCHER";
+        let targetId = "";
+        let targetCode = "";
+
+        if (autoProcessType === "WALLET_SETTLEMENT") {
+          const walletSourceCode = commonBankValue(group.rows, "decrease_money_source_code");
+          const bankSourceCode = commonBankValue(group.rows, "increase_money_source_code");
+          const allocationGross = await Promise.all(group.rows.map(async (row) => {
+            const rowRevenueDate = row.values.revenue_date ? asDate(row.values.revenue_date) : null;
+            const rowBankAmount = Math.round(asNumber(row.values.credit_amount));
+            const grossAmount = rowRevenueDate
+              ? await unresolvedWalletGrossAmount(tx, branchCode, rowRevenueDate, walletSourceCode)
+              : 0;
+            return { row, rowRevenueDate, rowBankAmount, grossAmount };
+          }));
+          const invalidAllocation = allocationGross.find((item) => !item.rowRevenueDate || item.grossAmount < item.rowBankAmount || item.grossAmount <= 0);
+          const grossAmount = allocationGross.reduce((sum, item) => sum + item.grossAmount, 0);
+          if (invalidAllocation || grossAmount < bankAmount) {
+            autoProcessType = "MANUAL_REQUIRED";
+            autoProcessNote = invalidAllocation?.grossAmount
+              ? `Doanh thu ví ngày phân bổ còn ${invalidAllocation.grossAmount.toLocaleString("vi-VN")} đ, nhỏ hơn tiền ngân hàng ${invalidAllocation.rowBankAmount.toLocaleString("vi-VN")} đ`
+              : "Không tìm thấy đủ doanh thu POS cho các ngày doanh thu trong file";
+            await tx.bankStatementTransaction.update({
+              where: { id: bankTransaction.id },
+              data: { autoProcessType, autoProcessNote },
+            });
+            continue;
+          }
+          for (const allocation of allocationGross) {
+            await tx.bankStatementAllocation.updateMany({
+              where: {
+                bankTransactionId: bankTransaction.id,
+                sheetName: allocation.row.sheetName,
+                sourceRowNumber: allocation.row.rowNumber,
+              },
+              data: { grossAmount: allocation.grossAmount },
+            });
+          }
+          const feeAmount = grossAmount - bankAmount;
+          const transferCount = await tx.moneyTransfer.count();
+          const transfer = await tx.moneyTransfer.create({
+            data: {
+              importBatchId: batch.id,
+              code: generateFormattedVoucherCode({ voucherType: "QTVI", voucherDate: documentDate, branchCode, seqNumber: transferCount + 1 }),
+              transferDate: documentDate,
+              branchCode,
+              fromMoneySourceCode: walletSourceCode,
+              toMoneySourceCode: bankSourceCode,
+              amount: bankAmount,
+              feeAmount,
+              feeCategoryCode: null,
+              externalRef: transactionCode,
+              description: `Quyết toán ví theo sao kê ${transactionCode}${group.rows.length > 1 ? ` (${group.rows.length} ngày doanh thu)` : ""}${feeAmount > 0 ? ` (phí ${feeAmount.toLocaleString("vi-VN")} đ)` : ""}`,
+              transferPurpose: "WALLET_SETTLEMENT",
+              sourceReportDate: revenueDate,
+              status: "PENDING_REVIEW",
+              createdBy: input.uploadedBy,
+            },
+          });
+          targetType = "WALLET_SETTLEMENT";
+          targetId = transfer.id;
+          targetCode = transfer.code;
+        } else {
+          const voucherType = autoProcessType === "PAYMENT" ? "PAYMENT" : "RECEIPT";
+          const moneySourceCode = voucherType === "RECEIPT"
+            ? commonBankValue(group.rows, "increase_money_source_code")
+            : commonBankValue(group.rows, "decrease_money_source_code");
+          const voucherCount = await tx.financialVoucher.count({ where: { voucherType } });
+          const voucher = await tx.financialVoucher.create({
+            data: {
+              importBatchId: batch.id,
+              code: generateFormattedVoucherCode({ voucherType, voucherDate: documentDate, branchCode, seqNumber: voucherCount + 1 }),
+              voucherType,
+              voucherDate: documentDate,
+              partnerName: commonBankValue(group.rows, "partner_hint") || "Đối tác theo sao kê",
+              branchCode,
+              sourceScope: "BANK_STATEMENT_AUTO",
+              moneySourceCode,
+              categoryCode: commonBankValue(group.rows, "category_code") || null,
+              externalRef: transactionCode,
+              amount: bankAmount,
+              description: group.rows.length === 1
+                ? asText(firstRow.values.description)
+                : `${asText(firstRow.values.description)} (${group.rows.length} dòng phân bổ)`,
+              status: "PENDING_REVIEW",
+              createdBy: input.uploadedBy,
+            },
+          });
+          targetId = voucher.id;
+          targetCode = voucher.code;
+        }
+
+        await tx.reconciliationMatch.create({
+          data: {
+            bankTransactionId: bankTransaction.id,
+            targetType,
+            targetId,
+            targetCode,
+            targetDate: documentDate,
+            targetAmount: bankAmount,
+            matchedAmount: bankAmount,
+            status: "PENDING_REVIEW",
+            note: "Tạo tự động từ các cột nghiệp vụ trên file sao kê",
+            matchedBy: input.uploadedBy,
+          },
+        });
+        await tx.bankStatementTransaction.update({
+          where: { id: bankTransaction.id },
+          data: {
+            reconcileStatus: "PENDING_REVIEW",
+            autoProcessNote: `Đã tạo phiếu ${targetCode} chờ duyệt`,
+          },
+        });
+      }
     }
 
     if (input.importType === "REVENUE_POS") {
@@ -1030,12 +1268,14 @@ export async function commitImport(input: CommitInput) {
     return tx.importBatch.findUnique({
       where: { id: batch.id },
       include: {
-        bankTransactions: input.importType === "BANK_STATEMENT",
+        bankTransactions: input.importType === "BANK_STATEMENT"
+          ? { include: { allocations: { orderBy: { sourceRowNumber: "asc" } } } }
+          : false,
         revenueRows: input.importType === "REVENUE_POS",
         payrollRows: input.importType === "PAYROLL",
         importRows: { orderBy: [{ sheetName: "asc" }, { sourceRowNumber: "asc" }] },
-        vouchers: input.importType === "VOUCHER",
-        moneyTransfers: input.importType === "INTERNAL_TRANSFER",
+        vouchers: ["VOUCHER", "BANK_STATEMENT"].includes(input.importType),
+        moneyTransfers: ["INTERNAL_TRANSFER", "BANK_STATEMENT"].includes(input.importType),
         debtRecords: input.importType === "DEBT_OPENING",
         inventoryTransactions: input.importType === "INVENTORY_TRANSACTION",
       },
@@ -1055,13 +1295,21 @@ export async function commitImport(input: CommitInput) {
 }
 
 async function rollbackBankStatement(tx: RawTxClient, batchId: string) {
-  const lockedRows = await tx.bankStatementTransaction.count({
-    where: {
-      importBatchId: batchId,
-      OR: [{ reconcileStatus: { not: "UNMATCHED" } }, { matches: { some: {} } }],
-    },
-  });
-  if (lockedRows > 0) throw new Error("Batch sao kê đã có dòng đối soát, cần hủy đối soát trước khi rollback");
+  const [approvedVouchers, approvedTransfers, matchedRows] = await Promise.all([
+    tx.financialVoucher.count({ where: { importBatchId: batchId, status: "APPROVED", deletedAt: null } }),
+    tx.moneyTransfer.count({ where: { importBatchId: batchId, status: "APPROVED", deletedAt: null } }),
+    tx.bankStatementTransaction.count({
+      where: { importBatchId: batchId, reconcileStatus: "MATCHED", autoProcessType: { not: "NET_ZERO" }, deletedAt: null },
+    }),
+  ]);
+  if (approvedVouchers > 0 || approvedTransfers > 0 || matchedRows > 0) {
+    throw new Error("Batch sao kê đã có phiếu được duyệt; cần bỏ duyệt hoặc hủy đối soát trước khi rollback");
+  }
+  const bankRows = await tx.bankStatementTransaction.findMany({ where: { importBatchId: batchId }, select: { id: true } });
+  const bankIds = bankRows.map((row) => row.id);
+  if (bankIds.length > 0) await tx.reconciliationMatch.deleteMany({ where: { bankTransactionId: { in: bankIds } } });
+  await tx.financialVoucher.deleteMany({ where: { importBatchId: batchId } });
+  await tx.moneyTransfer.deleteMany({ where: { importBatchId: batchId } });
   await tx.bankStatementTransaction.deleteMany({ where: { importBatchId: batchId } });
 }
 
@@ -1380,7 +1628,7 @@ export async function rollbackImportBatch(input: RollbackInput) {
   const result = await prismaRaw.$transaction(async (tx) => {
     const batch = await tx.importBatch.findUnique({ where: { id: input.batchId } });
     if (!batch) throw new Error("Không tìm thấy batch import");
-    if (!["COMMITTED", "APPROVED", "COMMITTED_WITH_ERRORS"].includes(batch.status)) {
+    if (!["COMMITTED", "APPROVED", "COMMITTED_WITH_ERRORS", "ROLLBACK_FAILED"].includes(batch.status)) {
       throw new Error(`Batch trạng thái ${batch.status} không thể rollback`);
     }
 

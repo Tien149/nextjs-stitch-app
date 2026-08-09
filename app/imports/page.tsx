@@ -28,9 +28,10 @@ const importTabs: ImportTab[] = [
     title: "Import Sao kê Ngân hàng",
     subtitle: "Nhập giao dịch ngân hàng để đối soát các khoản tiền vào và tiền ra.",
     apiPath: "/api/imports?importType=BANK_STATEMENT&templateCode=BANK_STATEMENT_STANDARD_V1",
-    templatePath: "/templates/mau_sao_ke_ngan_hang.xlsx",
+    templatePath: "/api/imports?importType=BANK_STATEMENT&templateCode=BANK_STATEMENT_STANDARD_V1&template=1",
     templateCode: "BANK_STATEMENT_STANDARD_V1",
-    primaryFields: ["transaction_date", "bank_account", "transaction_code", "description", "debit_amount", "credit_amount"],
+    primaryFields: ["transaction_date", "transaction_code", "debit_amount", "credit_amount", "category_code", "increase_money_source_code", "decrease_money_source_code", "import_action", "auto_process_type", "auto_process_note"],
+    requiresBranch: true,
   },
   {
     id: "revenue",
@@ -301,23 +302,22 @@ export default function ImportsPage() {
   const navigation = (
     <nav className="rounded-lg border border-slate-200 bg-white p-1.5 shadow-sm" aria-label="Loại dữ liệu import">
       <div className="flex gap-2 overflow-x-auto lg:flex-col lg:overflow-visible" role="tablist">
-      {allowedTabs.map((tab) => (
-        <button
-          key={tab.id}
-          type="button"
-          role="tab"
-          aria-selected={active === tab.id}
-          onClick={() => changeTab(tab.id)}
-          className={`flex min-w-max items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-sm font-bold transition-colors duration-150 lg:min-w-0 ${
-            active === tab.id
-              ? "border-blue-200 bg-blue-50 text-blue-700"
-              : "border-transparent text-slate-600 hover:border-slate-200 hover:bg-slate-50 hover:text-slate-900"
-          }`}
-        >
-          <span className={`material-symbols-outlined text-lg ${active === tab.id ? "text-blue-600" : "text-slate-500"}`}>{tab.icon}</span>
-          <span className="truncate">{tab.label}</span>
-        </button>
-      ))}
+        {allowedTabs.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={active === tab.id}
+            onClick={() => changeTab(tab.id)}
+            className={`flex min-w-max items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-sm font-bold transition-colors duration-150 lg:min-w-0 ${active === tab.id
+                ? "border-blue-200 bg-blue-50 text-blue-700"
+                : "border-transparent text-slate-600 hover:border-slate-200 hover:bg-slate-50 hover:text-slate-900"
+              }`}
+          >
+            <span className={`material-symbols-outlined text-lg ${active === tab.id ? "text-blue-600" : "text-slate-500"}`}>{tab.icon}</span>
+            <span className="truncate">{tab.label}</span>
+          </button>
+        ))}
       </div>
     </nav>
   );

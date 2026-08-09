@@ -94,6 +94,10 @@ function parseDate(value: unknown) {
   const slash = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(text);
   if (slash) return checkedUtcDate(Number(slash[3]), Number(slash[2]), Number(slash[1]));
 
+  // Sao kê ngân hàng thường xuất ngày kèm giờ, ví dụ 04-08-2026 15:27:22.
+  const dateTime = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})\s+\d{1,2}:\d{2}(?::\d{2})?$/.exec(text);
+  if (dateTime) return checkedUtcDate(Number(dateTime[3]), Number(dateTime[2]), Number(dateTime[1]));
+
   return null;
 }
 
@@ -141,7 +145,9 @@ export function autoMapHeaders(headers: string[], template: ImportTemplateDefini
 }
 
 function readWorkbook(buffer: ArrayBuffer): SheetRows[] {
-  const workbook = XLSX.read(buffer, { type: "array", cellDates: true });
+  // Giữ ngày Excel ở dạng serial để SSF.parse_date_code xử lý theo lịch Excel.
+  // cellDates=true có thể dịch lùi một ngày theo timezone máy chủ (UTC vs Asia/Saigon).
+  const workbook = XLSX.read(buffer, { type: "array", cellDates: false });
   return workbook.SheetNames.map((name) => ({
     name,
     rows: XLSX.utils.sheet_to_json<Array<string | number | boolean | Date | null>>(workbook.Sheets[name], {

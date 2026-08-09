@@ -10,6 +10,7 @@ import { softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
 import { canEditPastVoucher, type DemoSession } from "@/lib/auth-demo";
 import { moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { isSameCalendarDay, normalizeCashflowCategoryType, normalizeReceiptPurpose, validateReceiptPurpose, voucherEditWindowError } from "@/lib/voucher-rules";
+import { completePendingReconciliation, releasePendingReconciliation, reopenReconciliationForReview } from "@/lib/reconciliation-links";
 
 /** Trạng thái không cho sửa/xoá vì chứng từ đã ghi sổ. */
 
@@ -628,6 +629,7 @@ async function changeVoucherStatus(
         }
         await revertVoucherSideEffects(tx, latest);
         const reverted = await tx.financialVoucher.update({ where: { id }, data: { status: "DRAFT", approvedBy: null } });
+        await reopenReconciliationForReview(tx, "VOUCHER", id);
         return { reverted, previousApprovedBy: latest.approvedBy };
       });
 
@@ -671,6 +673,10 @@ async function changeVoucherStatus(
         where: { id },
         data: { status, approvedBy: status === "APPROVED" ? session.name : null },
       });
+      if (status === "APPROVED") await completePendingReconciliation(tx, "VOUCHER", id);
+      if (status === "CANCELLED") {
+        await releasePendingReconciliation(tx, "VOUCHER", id, `Phiếu ${latest.code} đã bị hủy; chờ đối soát thủ công`);
+      }
       return { voucher, previousStatus: latest.status };
     });
 
@@ -795,6 +801,9 @@ async function deleteVoucherById(session: DemoSession, id: string, reason: strin
 
   try {
     await softDeleteRecord({ model: "FinancialVoucher", id, session, reason });
+    await prismaRaw.$transaction((tx) =>
+      releasePendingReconciliation(tx, "VOUCHER", id, `Phiếu ${current.code} đã bị xóa; chờ đối soát thủ công`),
+    );
   } catch (e) {
     if (e instanceof SoftDeleteError) return { ok: false, code: current.code, error: e.message };
     throw e;

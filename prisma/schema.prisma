@@ -194,24 +194,34 @@ model ImportRow {
 }
 
 model BankStatementTransaction {
-  id              String   @id @default(uuid())
-  importBatchId   String
-  transactionDate DateTime
-  bankAccount     String
-  transactionCode String
-  description     String
-  debitAmount     Float    @default(0)
-  creditAmount    Float    @default(0)
-  balanceAfter    Float?
-  branchCode      String?
-  partnerHint     String?
+  id                      String    @id @default(uuid())
+  importBatchId           String
+  transactionDate         DateTime
+  bankAccount             String
+  transactionCode         String
+  description             String
+  debitAmount             Float     @default(0)
+  creditAmount            Float     @default(0)
+  balanceAfter            Float?
+  branchCode              String?
+  partnerHint             String?
   /// Khoản mục thu/chi khai ngay trên file sao kê để giao dịch được phân loại từ lúc import.
-  categoryCode    String?
-  reconcileStatus String   @default("UNMATCHED")
-  createdAt       DateTime @default(now())
+  categoryCode            String?
+  /// Các cột nghiệp vụ đã được kế toán phân loại trước trên file import.
+  sourceDate              DateTime?
+  revenueDate             DateTime?
+  summaryMoneySourceCode  String?
+  increaseMoneySourceCode String?
+  decreaseMoneySourceCode String?
+  /// Kết quả lập chứng từ tự động hoặc lý do phải xử lý thủ công.
+  autoProcessType         String?
+  autoProcessNote         String?
+  reconcileStatus         String    @default("UNMATCHED")
+  createdAt               DateTime  @default(now())
 
   importBatch ImportBatch           @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
   matches     ReconciliationMatch[]
+  allocations BankStatementAllocation[]
 
   deletedAt DateTime?
   deletedBy String?
@@ -220,8 +230,39 @@ model BankStatementTransaction {
   @@index([transactionDate])
   @@index([bankAccount])
   @@index([categoryCode])
+  @@index([autoProcessType])
   @@index([reconcileStatus])
   @@index([deletedAt])
+}
+
+/// Một dòng phân bổ nghiệp vụ trong file khách. Nhiều dòng có thể cùng thuộc một
+/// giao dịch ngân hàng (ví dụ một lần MoMo chuyển tiền cho nhiều ngày doanh thu).
+model BankStatementAllocation {
+  id                      String   @id @default(uuid())
+  bankTransactionId       String
+  sourceRowNumber         Int
+  sheetName               String
+  description             String
+  debitAmount             Float    @default(0)
+  creditAmount            Float    @default(0)
+  /// Doanh thu gốc được clear ở ví cho riêng dòng phân bổ (bao gồm phí).
+  grossAmount             Float?
+  sourceDate              DateTime?
+  revenueDate             DateTime?
+  categoryCode            String?
+  summaryMoneySourceCode  String?
+  increaseMoneySourceCode String?
+  decreaseMoneySourceCode String?
+  autoProcessType         String?
+  autoProcessNote         String?
+  createdAt               DateTime @default(now())
+
+  bankTransaction BankStatementTransaction @relation(fields: [bankTransactionId], references: [id], onDelete: Cascade)
+
+  @@unique([bankTransactionId, sheetName, sourceRowNumber])
+  @@index([bankTransactionId])
+  @@index([revenueDate])
+  @@index([categoryCode])
 }
 
 model RevenueImportRow {
@@ -877,9 +918,9 @@ model CashbookAdjustment {
 }
 
 model MoneyTransfer {
-  id                  String   @id @default(uuid())
+  id                  String    @id @default(uuid())
   importBatchId       String?
-  code                String   @unique
+  code                String    @unique
   transferDate        DateTime
   branchCode          String
   fromMoneySourceCode String
@@ -890,18 +931,18 @@ model MoneyTransfer {
   transferPurpose     String?
   /// Chênh lệch giữa nguồn cần clear và số thực nhận/nộp: gross = amount + feeAmount.
   /// Phí ví và làm tròn xuống là số dương; làm tròn tiền nộp lên là chi phí âm.
-  feeAmount           Float    @default(0)
+  feeAmount           Float     @default(0)
   feeCategoryCode     String?
   depositTargetType   String?
   sourceReportDate    DateTime?
   sourceShift         String?
-  status              String   @default("PENDING_REVIEW")
+  status              String    @default("PENDING_REVIEW")
   createdBy           String?
   approvedBy          String?
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
-  importBatch ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  importBatch   ImportBatch?                @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
   denominations MoneyTransferDenomination[]
 
   deletedAt DateTime?

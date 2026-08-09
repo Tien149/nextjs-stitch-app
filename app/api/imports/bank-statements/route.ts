@@ -23,7 +23,7 @@ export async function GET(request: Request) {
     if (batchId) {
       const batch = await prisma.importBatch.findFirst({
         where: { id: batchId, importType },
-        include: { bankTransactions: { orderBy: { transactionDate: "desc" } } },
+        include: { bankTransactions: { include: { allocations: { orderBy: { sourceRowNumber: "asc" } } }, orderBy: { transactionDate: "desc" } } },
       });
       if (!batch) return NextResponse.json({ error: "Không tìm thấy batch import" }, { status: 404 });
       return NextResponse.json(batch);

@@ -402,7 +402,9 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
       const category = resolveCategory(row.feeCategoryCode, "PAYMENT");
       const fallbackCategory = row.transferPurpose === "CASH_DEPOSIT"
         ? { key: "CASH_ROUNDING", name: "Chênh lệch làm tròn tiền nộp", group: "PAYMENT" as const }
-        : { key: unclassifiedKey, name: "Chưa phân loại", group: "PAYMENT" as const };
+        : row.transferPurpose === "WALLET_SETTLEMENT"
+          ? { key: "WALLET_FEE", name: "Phí ví/POS", group: "PAYMENT" as const }
+          : { key: unclassifiedKey, name: "Chưa phân loại", group: "PAYMENT" as const };
       bumpCategory(
         expense,
         category
@@ -412,7 +414,7 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
         monthIndexOf(row.transferDate),
         row.feeAmount,
       );
-      if (!category && row.transferPurpose !== "CASH_DEPOSIT") unclassifiedExpense += row.feeAmount;
+      if (!category && !["CASH_DEPOSIT", "WALLET_SETTLEMENT"].includes(row.transferPurpose || "")) unclassifiedExpense += row.feeAmount;
     }
   }
 

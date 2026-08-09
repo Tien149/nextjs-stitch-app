@@ -40,6 +40,10 @@ export async function GET(request: Request) {
           ...branchFilter,
           ...(status === "ALL" ? {} : { reconcileStatus: status })
         },
+        include: {
+          matches: { where: { deletedAt: null }, orderBy: { createdAt: "desc" }, take: 1 },
+          allocations: { orderBy: { sourceRowNumber: "asc" } },
+        },
         orderBy: { transactionDate: "desc" },
         take: 100,
       }),
@@ -84,7 +88,8 @@ export async function GET(request: Request) {
         .sort((a, b) => b.score - a.score)
         .slice(0, 5);
 
-      return { ...bank, candidates };
+      const { matches: bankMatches, ...bankData } = bank;
+      return { ...bankData, currentMatch: bankMatches[0] || null, candidates };
     });
 
     return NextResponse.json({ rows, matches });

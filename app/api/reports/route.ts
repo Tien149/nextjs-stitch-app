@@ -264,7 +264,8 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
       orderBy: [{ voucherDate: "asc" }, { code: "asc" }],
       take: 500,
     }),
-    prisma.masterDataItem.findMany({ where: { type: "MONEY_SOURCE", status: "ACTIVE" } }),
+    // Báo cáo lịch sử vẫn cần tên/phân loại của nguồn đã ngừng hoạt động.
+    prisma.masterDataItem.findMany({ where: { type: "MONEY_SOURCE" } }),
     prisma.manualRevenueEntry.findMany({
       where: { ...branchWhere, reportDate: { gte: dayStart, lt: dayEnd }, ...manualShiftFilter(shift) },
       orderBy: [{ reportDate: "asc" }, { shift: "asc" }],
@@ -416,8 +417,8 @@ async function buildMoneyInReconciliation(
       select: { creditAmount: true, bankAccount: true, transactionCode: true, description: true, categoryCode: true },
     }),
     prisma.moneyTransfer.findMany({
-      where: { ...branchWhere, transferPurpose: "WALLET_SETTLEMENT", status: "APPROVED", sourceReportDate: { gte: dayStart, lt: dayEnd } },
-      select: { amount: true, feeAmount: true },
+      where: { ...branchWhere, transferPurpose: "WALLET_SETTLEMENT", status: { in: ["PENDING_REVIEW", "APPROVED"] }, sourceReportDate: { gte: dayStart, lt: dayEnd }, deletedAt: null },
+      select: { amount: true, feeAmount: true, status: true },
     }),
     prisma.moneyTransfer.findMany({
       where: { ...branchWhere, transferPurpose: "CASH_DEPOSIT", status: { in: ["PENDING_REVIEW", "APPROVED"] }, sourceReportDate: { gte: dayStart, lt: dayEnd }, deletedAt: null },
@@ -426,8 +427,15 @@ async function buildMoneyInReconciliation(
   ]);
 
   const bankReceived = bankRows.reduce((sum, row) => sum + row.creditAmount, 0);
-  const walletSettled = walletSettlements.reduce((sum, row) => sum + row.amount + row.feeAmount, 0);
-  const walletFee = walletSettlements.reduce((sum, row) => sum + row.feeAmount, 0);
+  const walletSettled = walletSettlements
+    .filter((row) => row.status === "APPROVED")
+    .reduce((sum, row) => sum + row.amount + row.feeAmount, 0);
+  const pendingWalletSettled = walletSettlements
+    .filter((row) => row.status === "PENDING_REVIEW")
+    .reduce((sum, row) => sum + row.amount + row.feeAmount, 0);
+  const walletFee = walletSettlements
+    .filter((row) => row.status === "APPROVED")
+    .reduce((sum, row) => sum + row.feeAmount, 0);
   // Chỉ phiếu được kế toán duyệt mới là tiền đã thực sự rời nguồn thu ngân.
   // Phiếu chờ duyệt được hiển thị riêng, không cộng vào số đã về/đã clear.
   const approvedCashDeposited = cashDeposits
@@ -440,7 +448,7 @@ async function buildMoneyInReconciliation(
   const rows = [
     { key: "cash", label: "Tiền mặt", declared: declared.cash, received: approvedCashDeposited, pending: pendingCashDeposited, note: "Chỉ phiếu nộp tiền đã duyệt mới được tính là đã clear khỏi nguồn thu ngân." },
     { key: "transfer", label: "Chuyển khoản", declared: declared.transfer, received: bankReceived, pending: 0, note: "Đối chiếu với các dòng ghi có trên sao kê ngân hàng trong ngày." },
-    { key: "card", label: "Quẹt thẻ / Ví", declared: declared.card + declared.grab, received: walletSettled, pending: 0, note: "Cổng thanh toán trả tiền sau, phần chưa quyết toán vẫn nằm ở nguồn ví." },
+    { key: "card", label: "Quẹt thẻ / Ví", declared: declared.card + declared.grab, received: walletSettled, pending: pendingWalletSettled, note: "Phiếu chờ duyệt được hiển thị riêng; chỉ sau khi duyệt mới tính là ví đã clear." },
   ].map((row) => {
     const difference = row.received - row.declared;
     const differenceIncludingPending = row.received + row.pending - row.declared;

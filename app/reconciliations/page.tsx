@@ -28,8 +28,11 @@ type BankRow = {
   creditAmount: number;
   partnerHint: string | null;
   categoryCode: string | null;
+  autoProcessType: string | null;
+  autoProcessNote: string | null;
   branchCode: string | null;
   reconcileStatus: string;
+  currentMatch: MatchRow | null;
   candidates: Candidate[];
 };
 
@@ -256,6 +259,7 @@ export default function ReconciliationsPage() {
             <div className="flex items-center gap-2">
               <select value={status} onChange={(event) => setStatus(event.target.value)} className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 outline-none">
                 <option value="UNMATCHED">Chưa match</option>
+                <option value="PENDING_REVIEW">Chờ duyệt</option>
                 <option value="MATCHED">Đã match</option>
                 <option value="ALL">Tất cả</option>
               </select>
@@ -284,6 +288,7 @@ export default function ReconciliationsPage() {
                       <b>{row.transactionCode}</b>
                       <p className="text-xs text-slate-500">{new Date(row.transactionDate).toLocaleDateString("vi-VN")} · {row.bankAccount}</p>
                       <p className="text-xs text-slate-500 mt-1 max-w-md">{row.description}</p>
+                      {row.autoProcessNote && <p className="mt-1 text-xs font-semibold text-indigo-700">{row.autoProcessNote}</p>}
                     </td>
                     <td className="px-4 py-3">
                       {row.categoryCode ? (
@@ -308,13 +313,21 @@ export default function ReconciliationsPage() {
                     </td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex flex-col items-end gap-1.5">
-                        {canMatch && first && row.reconcileStatus !== "MATCHED" ? (
+                        {canMatch && first && row.reconcileStatus === "UNMATCHED" ? (
                           <button onClick={() => matchCandidate(row, first)} className="text-xs font-bold text-blue-700 hover:underline">Match</button>
                         ) : (
                           <span className="text-xs text-slate-400 font-semibold">{row.reconcileStatus}</span>
                         )}
+                        {row.currentMatch && (
+                          <a
+                            href={row.currentMatch.targetType === "VOUCHER" ? "/vouchers" : "/finance-operations"}
+                            className="text-xs font-bold text-indigo-700 hover:underline"
+                          >
+                            Mở phiếu {row.currentMatch.targetCode}
+                          </a>
+                        )}
                         {/* Tiền vào từ cổng thanh toán: lập luôn phiếu quyết toán ví với số đã điền sẵn. */}
-                        {canSettleWallet && row.creditAmount > 0 && (
+                        {canSettleWallet && row.creditAmount > 0 && row.reconcileStatus === "UNMATCHED" && (
                           <button
                             type="button"
                             onClick={() => openSettlement(row)}
