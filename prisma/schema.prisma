@@ -59,21 +59,23 @@ model MasterDataItem {
 }
 
 model Deposit {
-  id              String           @id @default(uuid())
-  code            String           @unique
-  receivedDate    DateTime         @default(now())
-  partnerCode     String
-  partnerName     String
-  branchCode      String
-  moneySourceCode String
-  amount          Float
-  remainingAmount Float
-  purpose         String
-  status          String           @default("HOLDING")
-  note            String?
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
-  histories       DepositHistory[]
+  id                     String           @id @default(uuid())
+  code                   String           @unique
+  receivedDate           DateTime         @default(now())
+  partnerCode            String
+  partnerName            String
+  branchCode             String
+  moneySourceCode        String?
+  amount                 Float
+  remainingAmount        Float
+  purpose                String
+  status                 String           @default("HOLDING")
+  note                   String?
+  createdAt              DateTime         @default(now())
+  updatedAt              DateTime         @updatedAt
+  histories              DepositHistory[]
+  sourceOpeningBalanceId String?          @unique
+  sourceOpeningBalance   OpeningBalance?  @relation(fields: [sourceOpeningBalanceId], references: [id], onDelete: SetNull)
 
   deletedAt DateTime?
   deletedBy String?
@@ -125,6 +127,8 @@ model OpeningBalance {
 
   deletedAt DateTime?
   deletedBy String?
+
+  deposit Deposit?
 
   @@index([period])
   @@index([branchCode])

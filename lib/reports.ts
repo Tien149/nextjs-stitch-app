@@ -4,6 +4,7 @@ import { periodBounds } from "@/lib/accounting";
 import { depositDecreaseActions, depositIncreaseActions } from "@/lib/deposit-accounting";
 import { moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
+import { CASH_SOURCE_OPENING_TYPES, OPENING_BALANCE_EFFECTIVE_STATUSES } from "@/lib/opening-balance-rules";
 
 type PnlBucket = {
   revenue: number;
@@ -149,7 +150,7 @@ export type CashPartnerRow = { code: string; name: string; partnerType: string |
 /** Chỉ tiền đã thực sự vào/ra sổ quỹ mới lên báo cáo; phiếu nháp/chờ duyệt đếm riêng để cảnh báo. */
 const cashReportVoucherStatuses = ["APPROVED", "POSTED"];
 const cashReportPendingStatuses = ["DRAFT", "PENDING_REVIEW"];
-const cashReportOpeningTypes = ["CASH", "BANK", "WALLET_POS"];
+const cashReportOpeningTypes = [...CASH_SOURCE_OPENING_TYPES];
 const supplierPartnerTypes = ["SUPPLIER", "BOTH"];
 const unclassifiedKey = "UNCLASSIFIED";
 
@@ -244,7 +245,7 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
         select: { transferDate: true, amount: true, feeAmount: true, feeCategoryCode: true, transferPurpose: true, fromMoneySourceCode: true, toMoneySourceCode: true },
       }),
       prisma.openingBalance.findMany({
-        where: { period: months[0], ...(branchCode === "ALL" ? {} : { branchCode }), status: "POSTED", balanceType: { in: cashReportOpeningTypes } },
+        where: { period: months[0], ...(branchCode === "ALL" ? {} : { branchCode }), status: { in: [...OPENING_BALANCE_EFFECTIVE_STATUSES] }, balanceType: { in: cashReportOpeningTypes } },
         select: { moneySourceCode: true, amount: true },
       }),
       // Lấy cả lịch sử trước kỳ để tính được số cọc chưa dùng mang sang.

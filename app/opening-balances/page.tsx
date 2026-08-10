@@ -89,6 +89,7 @@ const emptyForm: OpeningBalanceForm = {
 const statusLabels: Record<string, string> = {
   DRAFT: "Nháp",
   CONFIRMED: "Đã chốt",
+  POSTED: "Đã ghi sổ (Import)",
 };
 
 function getSessionFromStorage(): DemoSession | null {
@@ -113,6 +114,7 @@ export default function OpeningBalancesPage() {
   const [message, setMessage] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   
   const [branches, setBranches] = useState<MasterDataOption[]>([]);
   const [partners, setPartners] = useState<MasterDataOption[]>([]);
@@ -189,7 +191,10 @@ export default function OpeningBalancesPage() {
         // Update form with default values if they are empty
         setForm(prev => {
           const firstBranch = branchScope !== "ALL" ? branchScope : activeBranches[0]?.code || "";
-          const firstPartner = activePartners[0] || null;
+          const retailPartner = activePartners.find((item) => item.code === "KH_LE") || null;
+          const firstPartner = prev.balanceType === "DEPOSIT"
+            ? retailPartner || activePartners.find((item) => ["CUSTOMER", "BOTH"].includes((item.group || "").toUpperCase())) || null
+            : activePartners[0] || null;
           const prevGroups = ["CASH", "BANK", "WALLET_POS"].includes(prev.balanceType)
             ? [prev.balanceType === "WALLET_POS" ? "WALLET" : prev.balanceType]
             : undefined;
@@ -200,8 +205,12 @@ export default function OpeningBalancesPage() {
           return {
             ...prev,
             branchCode: branchScope !== "ALL" ? firstBranch : prev.branchCode || firstBranch,
-            objectCode: prev.objectCode || (firstPartner ? firstPartner.code : ""),
-            objectName: prev.objectName || (firstPartner ? firstPartner.name : ""),
+            objectCode: prev.balanceType === "DEPOSIT" && retailPartner
+              ? retailPartner.code
+              : prev.objectCode || (firstPartner ? firstPartner.code : ""),
+            objectName: prev.balanceType === "DEPOSIT" && retailPartner
+              ? retailPartner.name
+              : prev.objectName || (firstPartner ? firstPartner.name : ""),
             moneySourceCode: isMoneySourceAllowed(activeMoneySources, prev.moneySourceCode, branchScope !== "ALL" ? firstBranch : prev.branchCode || firstBranch, prevGroups)
               ? prev.moneySourceCode
               : firstMoneySource,
@@ -253,7 +262,7 @@ export default function OpeningBalancesPage() {
       (result, item) => {
         result.count += 1;
         result.amount += item.amount;
-        if (item.status === "CONFIRMED") result.confirmed += item.amount;
+        if (["CONFIRMED", "POSTED"].includes(item.status)) result.confirmed += item.amount;
         return result;
       },
       { count: 0, amount: 0, confirmed: 0 },
@@ -268,6 +277,13 @@ export default function OpeningBalancesPage() {
   const isAssetType = form.balanceType === "ASSET";
   const isPrepaidType = form.balanceType === "PREPAID_EXPENSE";
   const sourceMoneyGroups = isSourceType ? [form.balanceType === "WALLET_POS" ? "WALLET" : form.balanceType] : undefined;
+  const selectablePartners = useMemo(() => {
+    // Tương thích PROD: mọi đối tác ACTIVE vẫn phải chọn được cho công nợ/cọc.
+    // KH_LE chỉ được ưu tiên hiển thị, không được dùng để lọc mất dữ liệu cũ.
+    return [...partners].sort(
+      (left, right) => Number(right.code === "KH_LE") - Number(left.code === "KH_LE"),
+    );
+  }, [partners]);
   const calculatedAmount = useMemo(() => {
     if (!isInventoryType && !isAssetType) return "";
     const quantity = Number(form.quantity) || 0;
@@ -332,13 +348,14 @@ export default function OpeningBalancesPage() {
       };
 
       const response = await fetch("/api/opening-balances", {
-        method: "POST",
+        method: editingId ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(editingId ? { id: editingId, ...payload, status: "DRAFT" } : payload),
       });
       const resData = await response.json();
       if (!response.ok) throw new Error(resData.error || "Không tạo được số dư đầu kỳ");
       
+      setEditingId(null);
       setForm({
         ...emptyForm,
         branchCode: form.branchCode,
@@ -350,13 +367,45 @@ export default function OpeningBalancesPage() {
         warehouseCode: warehouses.find(w => w.branch === form.branchCode)?.code || warehouses[0]?.code || "",
         departmentCode: departments.find(d => d.branch === form.branchCode)?.code || departments[0]?.code || "",
       });
-      setMessage("Đã thêm số dư đầu kỳ thành công.");
+      setMessage(editingId ? "Đã cập nhật số dư đầu kỳ." : "Đã thêm số dư đầu kỳ thành công.");
       await loadBalances();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Có lỗi khi lưu số dư đầu kỳ");
     } finally {
       setIsSaving(false);
     }
+  };
+
+  const startEditing = (balance: OpeningBalance) => {
+    setEditingId(balance.id);
+    setForm({
+      period: balance.period,
+      branchCode: balance.branchCode,
+      balanceType: balance.balanceType,
+      objectCode: balance.objectCode || "",
+      objectName: balance.objectName || "",
+      moneySourceCode: balance.moneySourceCode || "",
+      warehouseCode: balance.warehouseCode || "",
+      departmentCode: balance.departmentCode || "",
+      quantity: balance.quantity === null ? "" : String(balance.quantity),
+      unitCost: balance.unitCost === null ? "" : String(balance.unitCost),
+      allocationMonths: balance.allocationMonths === null ? "" : String(balance.allocationMonths),
+      allocationStartPeriod: balance.allocationStartPeriod || balance.period,
+      amount: String(balance.amount),
+      note: balance.note || "",
+      status: "DRAFT",
+    });
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const deleteBalance = async (balance: OpeningBalance) => {
+    if (!window.confirm(`Xóa số dư nháp ${formatCurrency(balance.amount)} đ?`)) return;
+    const response = await fetch(`/api/opening-balances?id=${encodeURIComponent(balance.id)}`, { method: "DELETE" });
+    const payload = await response.json();
+    if (!response.ok) return setMessage(payload.error || "Không xóa được số dư");
+    if (editingId === balance.id) setEditingId(null);
+    setMessage("Đã xóa số dư nháp.");
+    await loadBalances();
   };
 
   const updateStatus = async (balance: OpeningBalance, status: string) => {
@@ -502,8 +551,8 @@ export default function OpeningBalancesPage() {
                   setForm((value) => ({
                     ...value,
                     balanceType: nextBalanceType,
-                    objectCode: "",
-                    objectName: "",
+                    objectCode: nextBalanceType === "DEPOSIT" ? partners.find((item) => item.code === "KH_LE")?.code || "" : "",
+                    objectName: nextBalanceType === "DEPOSIT" ? partners.find((item) => item.code === "KH_LE")?.name || "" : "",
                     moneySourceCode: nextGroups && isMoneySourceAllowed(moneySources, value.moneySourceCode, value.branchCode, nextGroups)
                       ? value.moneySourceCode
                       : firstMoneySourceCode(moneySources, value.branchCode, nextGroups),
@@ -552,7 +601,7 @@ export default function OpeningBalancesPage() {
                     required
                   >
                     <option value="">-- Chọn đối tác --</option>
-                    {partners.map(item => (
+                    {selectablePartners.map(item => (
                       <option key={item.id} value={item.code}>
                         [{item.code}] {item.name}
                       </option>
@@ -830,13 +879,12 @@ export default function OpeningBalancesPage() {
               <label className="text-xs font-bold text-slate-600 block">
                 Trạng thái *
                 <select
-                  value={form.status}
-                  onChange={(event) => setForm((value) => ({ ...value, status: event.target.value }))}
-                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 cursor-pointer"
-                  required
+                  value="DRAFT"
+                  disabled
+                  className="mt-1 w-full cursor-not-allowed rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-700 disabled:opacity-100"
+                  aria-label="Trạng thái số dư đầu kỳ"
                 >
                   <option value="DRAFT">Nháp</option>
-                  <option value="CONFIRMED">Đã chốt</option>
                 </select>
               </label>
             </div>
@@ -853,9 +901,15 @@ export default function OpeningBalancesPage() {
 
             {message && <p className="text-sm rounded-lg bg-blue-50 border border-blue-100 text-blue-700 px-3 py-2">{message}</p>}
 
-            <button disabled={isSaving} className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-bold transition-colors shadow-sm">
-              {isSaving ? "Đang lưu..." : "Thêm số dư đầu kỳ"}
-            </button>
+            <div className="flex gap-2">
+              {editingId && <button type="button" onClick={() => {
+                setEditingId(null);
+                setForm((current) => ({ ...emptyForm, period: current.period, branchCode: current.branchCode }));
+              }} className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-600">Hủy sửa</button>}
+              <button disabled={isSaving} className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg py-2.5 text-sm font-bold transition-colors shadow-sm">
+                {isSaving ? "Đang lưu..." : editingId ? "Lưu thay đổi" : "Thêm số dư đầu kỳ"}
+              </button>
+            </div>
           </form>
 
           <section className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
@@ -885,6 +939,7 @@ export default function OpeningBalancesPage() {
                   <option value="ALL">Tất cả trạng thái</option>
                   <option value="DRAFT">Nháp</option>
                   <option value="CONFIRMED">Đã chốt</option>
+                  <option value="POSTED">Đã ghi sổ (Import)</option>
                 </select>
                 <button onClick={loadBalances} className="rounded-lg border border-slate-200 bg-white text-slate-700 px-3 py-2 text-sm font-bold hover:bg-slate-50 transition">
                   Tải lại
@@ -960,7 +1015,7 @@ export default function OpeningBalancesPage() {
                           <td className="px-4 py-3">
                             <span
                               className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${
-                                balance.status === "CONFIRMED"
+                                ["CONFIRMED", "POSTED"].includes(balance.status)
                                   ? "bg-emerald-50 text-emerald-700 border border-emerald-100"
                                   : "bg-amber-50 text-amber-700 border border-amber-100"
                               }`}
@@ -970,8 +1025,8 @@ export default function OpeningBalancesPage() {
                           </td>
                           {canManageOpeningBalances && (
                             <td className="px-4 py-3 text-right">
-                              {balance.status === "CONFIRMED" ? (
-                                canReopenOpeningBalances ? (
+                              {balance.status !== "DRAFT" ? (
+                                balance.status === "CONFIRMED" && canReopenOpeningBalances ? (
                                   <button onClick={() => updateStatus(balance, "DRAFT")} className="text-xs font-bold text-slate-500 hover:text-slate-800 transition">
                                     Mở lại
                                   </button>
@@ -979,9 +1034,11 @@ export default function OpeningBalancesPage() {
                                   <span className="text-xs font-bold text-slate-400">Đã khóa</span>
                                 )
                               ) : (
-                                <button onClick={() => updateStatus(balance, "CONFIRMED")} className="text-xs font-bold text-emerald-700 hover:text-emerald-900 transition">
-                                  Chốt số dư
-                                </button>
+                                <div className="flex justify-end gap-3">
+                                  <button onClick={() => startEditing(balance)} className="text-xs font-bold text-blue-600 hover:text-blue-800">Sửa</button>
+                                  <button onClick={() => void deleteBalance(balance)} className="text-xs font-bold text-red-600 hover:text-red-800">Xóa</button>
+                                  <button onClick={() => updateStatus(balance, "CONFIRMED")} className="text-xs font-bold text-emerald-700 hover:text-emerald-900 transition">Chốt số dư</button>
+                                </div>
                               )}
                             </td>
                           )}

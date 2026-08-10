@@ -610,7 +610,7 @@ export async function validateImportResult(
         addError(row, "File co dong so du dau ky bi trung nguon/doi tuong");
       }
       openingBalanceKeys.add(openingKey);
-      if (["CASH", "BANK", "WALLET_POS", "DEPOSIT"].includes(balanceType) && !text(row.values.money_source_code)) {
+      if (["CASH", "BANK", "WALLET_POS"].includes(balanceType) && !text(row.values.money_source_code)) {
         addError(row, "Loại số dư này bắt buộc có Nguồn tiền");
       }
       if (["AR", "AP", "DEPOSIT", "INVENTORY", "ASSET", "PREPAID_EXPENSE"].includes(balanceType) && !text(row.values.object_code)) {

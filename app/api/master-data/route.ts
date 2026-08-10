@@ -98,6 +98,16 @@ const defaultMasterData = [
   },
   {
     type: "PARTNER",
+    code: "KH_LE",
+    name: "Khách hàng mua lẻ",
+    group: "CUSTOMER",
+    partnerType: "CUSTOMER",
+    partnerGroup: "EXTERNAL",
+    status: "ACTIVE",
+    note: "Đối tượng mặc định cho tiền cọc khách lẻ",
+  },
+  {
+    type: "PARTNER",
     code: "NCC_FOOD",
     name: "NCC Nguyen lieu",
     group: "SUPPLIER",

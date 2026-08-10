@@ -9,6 +9,7 @@
     "db:clear-data": "node scripts/clear_operational_data.js",
     "audit:bank-settlements": "node scripts/review-bank-voucher-settlements.cjs",
     "audit:bank-auto-approve": "node scripts/auto-approve-pending-bank-statements.cjs",
+    "check:opening-balances": "node scripts/check-opening-balance-consistency.cjs",
     "deploy:vps": "git pull origin master && npm install && npx prisma db push && npm run build && (pm2 restart ecosystem.config.js || pm2 restart all)",
     "start": "next start",
     "lint": "eslint",

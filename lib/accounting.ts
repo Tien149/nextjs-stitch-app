@@ -171,9 +171,16 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
   const results: string[] = [];
   const openingBalances = await prisma.openingBalance.findMany({ where: { period, status: { in: ["POSTED", "CONFIRMED"] }, ...(branchCode === "ALL" ? {} : { branchCode }) } });
+  const openingSourceCodes = [...new Set(openingBalances.map((row) => row.moneySourceCode).filter((code): code is string => Boolean(code)))];
+  const openingSources = openingSourceCodes.length > 0
+    ? await prisma.masterDataItem.findMany({ where: { type: "MONEY_SOURCE", code: { in: openingSourceCodes } }, select: { code: true, group: true } })
+    : [];
+  const openingSourceGroups = new Map(openingSources.map((source) => [source.code, (source.group || "").toUpperCase()]));
   for (const row of openingBalances) {
-    const assetAccount = row.balanceType === "AR" ? "131" : row.balanceType === "INVENTORY" ? "152" : row.balanceType === "ASSET" ? "211" : (row.moneySourceCode || "").toUpperCase().includes("BANK") || (row.moneySourceCode || "").toUpperCase().includes("VCB") ? "1121" : "1111";
+    const sourceAccount = openingSourceGroups.get(row.moneySourceCode || "") === "BANK" ? "1121" : "1111";
+    const assetAccount = row.balanceType === "AR" ? "131" : row.balanceType === "INVENTORY" ? "152" : row.balanceType === "ASSET" ? "211" : sourceAccount;
     const isLiability = row.balanceType === "AP";
+    const isCustomerDeposit = row.balanceType === "DEPOSIT";
     results.push(await postJournalEntry({
       entryDate: start,
       branchCode: row.branchCode,
@@ -184,6 +191,10 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
       createdBy: actor,
       lines: isLiability
         ? [{ accountCode: "411", debit: row.amount }, { accountCode: "331", credit: row.amount, partnerCode: row.objectCode }]
+        : isCustomerDeposit
+          // Cọc đầu kỳ là số nợ khách còn treo từ trước; tiền thực tế đã nằm trong số dư quỹ/ngân hàng nhập riêng.
+          // Chỉ tái phân loại nguồn vốn, không ghi tăng tiền lần thứ hai.
+          ? [{ accountCode: "411", debit: row.amount }, { accountCode: "3387", credit: row.amount, partnerCode: row.objectCode }]
         : [{ accountCode: assetAccount, debit: row.amount, partnerCode: row.objectCode }, { accountCode: "411", credit: row.amount }],
     }));
   }

@@ -12,6 +12,7 @@ import { generateFormattedVoucherCode } from "@/lib/voucher-code-generator";
 import { commonBankValue, groupBankStatementRows } from "@/lib/bank-statement-import";
 import { normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { evaluateBankStatementAutoApproval } from "@/lib/bank-statement-auto-approval";
+import { applyOpeningDeposit } from "@/lib/opening-balance-deposit";
 
 function asText(value: unknown) {
   return String(value || "").trim();
@@ -1162,36 +1163,16 @@ export async function commitImport(input: CommitInput) {
 
         const balanceType = asText(row.values.balance_type).toUpperCase();
         if (balanceType === "DEPOSIT" && row.values.object_code) {
-          const depositCode = `COC-DK-${asText(row.values.period).replace("-", "")}-${asText(row.values.branch_code)}-${asText(row.values.object_code)}`;
-          const existingDeposit = await tx.deposit.findUnique({ where: { code: depositCode } });
-          const deposit = existingDeposit
-            ? await tx.deposit.update({
-                where: { code: depositCode },
-                data: { amount: asNumber(row.values.amount), remainingAmount: asNumber(row.values.amount), note: asText(row.values.note) || null },
-              })
-            : await tx.deposit.create({
-                data: {
-                  code: depositCode,
-                  receivedDate: new Date(`${asText(row.values.period)}-01T00:00:00Z`),
-                  partnerCode: asText(row.values.object_code),
-                  partnerName: asText(row.values.object_name) || asText(row.values.object_code),
-                  branchCode: asText(row.values.branch_code),
-                  moneySourceCode: asText(row.values.money_source_code),
-                  amount: asNumber(row.values.amount),
-                  remainingAmount: asNumber(row.values.amount),
-                  purpose: "Tiền cọc đầu kỳ",
-                  note: asText(row.values.note) || null,
-                  histories: {
-                    create: {
-                      action: "OPENING",
-                      amount: asNumber(row.values.amount),
-                      actionDate: new Date(`${asText(row.values.period)}-01T00:00:00Z`),
-                      treatmentNote: "Số dư tiền cọc đầu kỳ",
-                      actor: input.uploadedBy,
-                    },
-                  },
-                },
-              });
+          const deposit = await applyOpeningDeposit(tx as Prisma.TransactionClient, {
+            id: opening.id,
+            period: opening.period,
+            branchCode: opening.branchCode,
+            objectCode: opening.objectCode,
+            objectName: opening.objectName,
+            moneySourceCode: opening.moneySourceCode,
+            amount: opening.amount,
+            note: opening.note,
+          }, input.uploadedBy);
           await setImportTarget(tx, staging, row, "DEPOSIT", deposit.id);
         }
 

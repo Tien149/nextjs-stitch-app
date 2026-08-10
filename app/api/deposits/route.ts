@@ -18,7 +18,7 @@ import { moneySourceMatchesBranch } from "@/lib/money-sources";
  */
 const initialDepositActions = ["CREATE", "COLLECT", "UPDATE"];
 
-type DepositForPosting = { id: string; code: string; branchCode: string; moneySourceCode: string; partnerCode: string; partnerName: string };
+type DepositForPosting = { id: string; code: string; branchCode: string; moneySourceCode: string | null; partnerCode: string; partnerName: string };
 type HistoryForPosting = { id: string; action: string; amount: number | null; actionDate: Date | null; createdAt: Date; voucherId: string | null };
 
 /**
@@ -380,6 +380,13 @@ export async function PATCH(request: Request) {
     }
 
     if (action === "UPDATE") return await updateDeposit(auth.session, current, body);
+
+    if (["SUPPLEMENT", "REFUND"].includes(action) && !current.moneySourceCode) {
+      return NextResponse.json(
+        { error: "Khoản cọc đầu kỳ chưa có nguồn tiền. Khi bổ sung/hoàn tiền, hãy sửa khoản cọc và chọn nguồn thực tế dùng cho giao dịch." },
+        { status: 400 },
+      );
+    }
 
     let status = current.status;
     let remainingAmount = current.remainingAmount;

@@ -28,7 +28,7 @@ type Deposit = {
   partnerCode: string;
   partnerName: string;
   branchCode: string;
-  moneySourceCode: string;
+  moneySourceCode: string | null;
   amount: number;
   remainingAmount: number;
   purpose: string;
@@ -236,7 +236,7 @@ export default function DepositsPage() {
       partnerCode: deposit.partnerCode,
       partnerName: deposit.partnerName,
       branchCode: deposit.branchCode,
-      moneySourceCode: deposit.moneySourceCode,
+      moneySourceCode: deposit.moneySourceCode || "",
       amount: String(deposit.amount),
       purpose: deposit.purpose,
       note: deposit.note || "",
@@ -619,7 +619,7 @@ export default function DepositsPage() {
                   <tr key={deposit.id} className="hover:bg-slate-50">
                     <td className="px-4 py-3">
                       <p className="font-bold"><CopyableText value={deposit.code} /></p>
-                      <p className="text-xs text-slate-500">{storeLabel(deposit.branchCode)} - {deposit.moneySourceCode}</p>
+                      <p className="text-xs text-slate-500">{storeLabel(deposit.branchCode)} - {deposit.moneySourceCode || "Số dư đầu kỳ"}</p>
                     </td>
                     <td className="px-4 py-3">
                       <p className="font-bold">{deposit.partnerName}</p>

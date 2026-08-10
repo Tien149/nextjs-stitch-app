@@ -20,7 +20,7 @@ export const depositRevenueActions = ["OFFSET", "TRANSFER_REVENUE"];
 export type DepositHistoryForPosting = {
   action: string;
   amount: number;
-  moneySourceCode: string;
+  moneySourceCode: string | null;
   partnerCode: string | null;
 };
 
@@ -32,9 +32,9 @@ export type DepositJournalResult = {
 export function depositJournalLines(input: DepositHistoryForPosting): DepositJournalResult | null {
   const amount = Math.abs(input.amount);
   if (amount <= 0) return null;
-  const cashAccount = cashAccountFor(input.moneySourceCode);
-
   if (depositIncreaseActions.includes(input.action) || (input.action === "UPDATE" && input.amount > 0)) {
+    if (!input.moneySourceCode) return null;
+    const cashAccount = cashAccountFor(input.moneySourceCode);
     return {
       reason: "Nhận tiền cọc — khách ứng trước, chưa phải doanh thu",
       lines: [
@@ -57,6 +57,8 @@ export function depositJournalLines(input: DepositHistoryForPosting): DepositJou
   }
 
   if (input.action === "REFUND" || (input.action === "UPDATE" && input.amount < 0)) {
+    if (!input.moneySourceCode) return null;
+    const cashAccount = cashAccountFor(input.moneySourceCode);
     return {
       reason: "Hoàn tiền cọc — giảm khoản khách ứng trước, không phải chi phí",
       lines: [

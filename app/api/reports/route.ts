@@ -250,7 +250,8 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
       take: 1000,
     }),
     prisma.deposit.findMany({
-      where: { ...branchWhere, receivedDate: { gte: start, lt: end }, status: { not: "CANCELLED" } },
+      // Cọc đầu kỳ chỉ là số công nợ mang sang, không phải tiền nhận trong ngày.
+      where: { ...branchWhere, receivedDate: { gte: start, lt: end }, status: { not: "CANCELLED" }, sourceOpeningBalanceId: null },
       orderBy: [{ receivedDate: "asc" }, { code: "asc" }],
       take: 500,
     }),
@@ -323,7 +324,7 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
 
   // Phiếu thu là chứng từ thu tiền thật trên hệ thống -> xếp theo nhóm nguồn tiền của phiếu.
   const receipts = receiptVouchers.map((row) => {
-    const source = sourceByCode.get(row.moneySourceCode);
+    const source = sourceByCode.get(row.moneySourceCode || "");
     return {
       id: row.id,
       code: row.code,
@@ -350,7 +351,7 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
   }
 
   for (const row of deposits) {
-    const source = sourceByCode.get(row.moneySourceCode);
+    const source = sourceByCode.get(row.moneySourceCode || "");
     addAmount(deposit, classifyMoneySource(source?.group), row.amount);
   }
 
