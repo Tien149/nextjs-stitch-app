@@ -512,13 +512,13 @@ function normalizeBankStatementRow(row: ParsedImportRow, masterItems: MasterItem
   let autoProcessNote = "Thiếu thông tin để tự động tạo phiếu";
   if (credit > 0 && increaseGroup === "BANK" && decreaseGroup === "WALLET" && row.values.revenue_date) {
     autoProcessType = "WALLET_SETTLEMENT";
-    autoProcessNote = "Đủ thông tin tạo phiếu quyết toán ví chờ duyệt";
+    autoProcessNote = "Đủ thông tin để tự động duyệt quyết toán ví khi commit";
   } else if (credit > 0 && increaseGroup === "BANK" && text(row.values.category_code)) {
     autoProcessType = "RECEIPT";
-    autoProcessNote = "Đủ thông tin tạo phiếu thu chờ duyệt";
+    autoProcessNote = "Đủ thông tin để tự động duyệt ủy nhiệm thu khi commit";
   } else if (debit > 0 && decreaseGroup === "BANK" && text(row.values.category_code)) {
     autoProcessType = "PAYMENT";
-    autoProcessNote = "Đủ thông tin tạo phiếu chi chờ duyệt";
+    autoProcessNote = "Đủ thông tin để tự động duyệt ủy nhiệm chi khi commit";
   }
   row.values.auto_process_type = autoProcessType;
   row.values.auto_process_note = autoProcessNote;
@@ -721,15 +721,18 @@ export async function validateImportResult(
     const existing = groups.length > 0
       ? await prisma.bankStatementTransaction.findMany({
           where: {
-            transactionCode: { in: groups.map((group) => text(group.rows[0].values.transaction_code)) },
+            OR: groups.map((group) => ({
+              bankAccount: text(group.rows[0].values.bank_account),
+              transactionCode: text(group.rows[0].values.transaction_code),
+            })),
           },
-          select: { id: true, transactionCode: true },
+          select: { id: true, bankAccount: true, transactionCode: true },
         })
       : [];
-    const existingKeys = new Set(existing.map((row) => row.transactionCode.toUpperCase()));
+    const existingKeys = new Set(existing.map((row) => `${row.bankAccount}|${row.transactionCode}`.toUpperCase()));
 
     for (const group of groups) {
-      const existingKey = text(group.rows[0].values.transaction_code).toUpperCase();
+      const existingKey = `${text(group.rows[0].values.bank_account)}|${text(group.rows[0].values.transaction_code)}`.toUpperCase();
       if (existingKeys.has(existingKey)) {
         for (const row of group.rows) {
           row.values.import_action = "SKIP_EXISTING";

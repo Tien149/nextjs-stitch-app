@@ -11,6 +11,7 @@ import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { generateFormattedVoucherCode } from "@/lib/voucher-code-generator";
 import { commonBankValue, groupBankStatementRows } from "@/lib/bank-statement-import";
 import { normalizeMoneySourceGroup } from "@/lib/money-sources";
+import { evaluateBankStatementAutoApproval } from "@/lib/bank-statement-auto-approval";
 
 function asText(value: unknown) {
   return String(value || "").trim();
@@ -227,14 +228,19 @@ function parseStoredJson(value: string | null) {
   }
 }
 
-async function assertPeriodOpen(tx: RawTxClient, period: string, branchCode?: string | null) {
+async function assertPeriodOpen(
+  tx: RawTxClient,
+  period: string,
+  branchCode?: string | null,
+  action: "commit" | "rollback" = "rollback",
+) {
   if (!period || !branchCode) return;
   const [branchPeriod, allBranchPeriod] = await Promise.all([
     tx.accountingPeriod.findUnique({ where: { period_branchCode: { period, branchCode } } }),
     tx.accountingPeriod.findUnique({ where: { period_branchCode: { period, branchCode: "ALL" } } }),
   ]);
   if (branchPeriod?.status === "CLOSED" || allBranchPeriod?.status === "CLOSED") {
-    throw new Error(`Kỳ ${period} của cửa hàng ${branchCode} đã khóa, không thể rollback batch import`);
+    throw new Error(`Kỳ ${period} của cửa hàng ${branchCode} đã khóa, không thể ${action} batch import`);
   }
 }
 
@@ -490,7 +496,7 @@ export async function commitImport(input: CommitInput) {
         const bankAccount = asText(firstRow.values.bank_account);
         const transactionCode = asText(firstRow.values.transaction_code);
         const existing = await tx.bankStatementTransaction.findFirst({
-          where: { transactionCode },
+          where: { bankAccount, transactionCode },
           select: { id: true },
         });
         if (existing) {
@@ -502,6 +508,12 @@ export async function commitImport(input: CommitInput) {
         const revenueDateText = commonBankValue(group.rows, "revenue_date");
         const sourceDate = sourceDateText ? asDate(sourceDateText) : null;
         const revenueDate = revenueDateText ? asDate(revenueDateText) : null;
+        const statementDate = asDate(firstRow.values.transaction_date);
+        const branchCodeForPeriod = asText(firstRow.values.branch_code);
+        await assertPeriodOpen(tx as unknown as RawTxClient, periodFromDate(statementDate), branchCodeForPeriod, "commit");
+        if (sourceDate && periodFromDate(sourceDate) !== periodFromDate(statementDate)) {
+          await assertPeriodOpen(tx as unknown as RawTxClient, periodFromDate(sourceDate), branchCodeForPeriod, "commit");
+        }
         let autoProcessType = group.isNetZero
           ? "NET_ZERO"
           : commonBankValue(group.rows, "auto_process_type") || "MANUAL_REQUIRED";
@@ -512,7 +524,7 @@ export async function commitImport(input: CommitInput) {
         const bankTransaction = await tx.bankStatementTransaction.create({
           data: {
             importBatchId: batch.id,
-            transactionDate: asDate(firstRow.values.transaction_date),
+            transactionDate: statementDate,
             bankAccount,
             transactionCode,
             description: group.rows.length === 1
@@ -561,13 +573,36 @@ export async function commitImport(input: CommitInput) {
         const transactionDate = asDate(firstRow.values.transaction_date);
         const documentDate = sourceDate || transactionDate;
         const bankAmount = Math.round(group.creditAmount || group.debitAmount);
+        const increaseSourceCode = commonBankValue(group.rows, "increase_money_source_code");
+        const decreaseSourceCode = commonBankValue(group.rows, "decrease_money_source_code");
+        const categoryCode = commonBankValue(group.rows, "category_code");
+        const [increaseSource, decreaseSource, category] = await Promise.all([
+          increaseSourceCode
+            ? tx.masterDataItem.findFirst({
+                where: { type: "MONEY_SOURCE", code: increaseSourceCode, deletedAt: null },
+                select: { code: true, name: true, group: true, status: true },
+              })
+            : null,
+          decreaseSourceCode
+            ? tx.masterDataItem.findFirst({
+                where: { type: "MONEY_SOURCE", code: decreaseSourceCode, deletedAt: null },
+                select: { code: true, name: true, group: true, status: true },
+              })
+            : null,
+          categoryCode
+            ? tx.masterDataItem.findFirst({
+                where: { type: "REVENUE_EXPENSE_CATEGORY", code: categoryCode, deletedAt: null },
+                select: { code: true, name: true, group: true, status: true },
+              })
+            : null,
+        ]);
         let targetType = "VOUCHER";
         let targetId = "";
         let targetCode = "";
 
         if (autoProcessType === "WALLET_SETTLEMENT") {
-          const walletSourceCode = commonBankValue(group.rows, "decrease_money_source_code");
-          const bankSourceCode = commonBankValue(group.rows, "increase_money_source_code");
+          const walletSourceCode = decreaseSourceCode;
+          const bankSourceCode = increaseSourceCode;
           const allocationGross = await Promise.all(group.rows.map(async (row) => {
             const rowRevenueDate = row.values.revenue_date ? asDate(row.values.revenue_date) : null;
             const rowBankAmount = Math.round(asNumber(row.values.credit_amount));
@@ -600,6 +635,26 @@ export async function commitImport(input: CommitInput) {
             });
           }
           const feeAmount = grossAmount - bankAmount;
+          const approval = evaluateBankStatementAutoApproval({
+            autoProcessType,
+            debitAmount: group.debitAmount,
+            creditAmount: group.creditAmount,
+            branchCode,
+            revenueDate,
+            increaseSource,
+            decreaseSource,
+            category,
+            walletGrossAmount: grossAmount,
+          });
+          if (!approval.autoApprove) {
+            autoProcessType = "MANUAL_REQUIRED";
+            autoProcessNote = approval.reason;
+            await tx.bankStatementTransaction.update({
+              where: { id: bankTransaction.id },
+              data: { autoProcessType, autoProcessNote },
+            });
+            continue;
+          }
           const transferCount = await tx.moneyTransfer.count();
           const transfer = await tx.moneyTransfer.create({
             data: {
@@ -616,8 +671,9 @@ export async function commitImport(input: CommitInput) {
               description: `Quyết toán ví theo sao kê ${transactionCode}${group.rows.length > 1 ? ` (${group.rows.length} ngày doanh thu)` : ""}${feeAmount > 0 ? ` (phí ${feeAmount.toLocaleString("vi-VN")} đ)` : ""}`,
               transferPurpose: "WALLET_SETTLEMENT",
               sourceReportDate: revenueDate,
-              status: "PENDING_REVIEW",
+              status: "APPROVED",
               createdBy: input.uploadedBy,
+              approvedBy: input.uploadedBy,
             },
           });
           targetType = "WALLET_SETTLEMENT";
@@ -626,9 +682,27 @@ export async function commitImport(input: CommitInput) {
         } else {
           const voucherType = autoProcessType === "PAYMENT" ? "PAYMENT" : "RECEIPT";
           const moneySourceCode = voucherType === "RECEIPT"
-            ? commonBankValue(group.rows, "increase_money_source_code")
-            : commonBankValue(group.rows, "decrease_money_source_code");
-          const categoryCode = commonBankValue(group.rows, "category_code");
+            ? increaseSourceCode
+            : decreaseSourceCode;
+          const approval = evaluateBankStatementAutoApproval({
+            autoProcessType,
+            debitAmount: group.debitAmount,
+            creditAmount: group.creditAmount,
+            branchCode,
+            revenueDate,
+            increaseSource,
+            decreaseSource,
+            category,
+          });
+          if (!approval.autoApprove) {
+            autoProcessType = "MANUAL_REQUIRED";
+            autoProcessNote = approval.reason;
+            await tx.bankStatementTransaction.update({
+              where: { id: bankTransaction.id },
+              data: { autoProcessType, autoProcessNote },
+            });
+            continue;
+          }
           const posRevenue = voucherType === "RECEIPT"
             ? await findUnsettledPosRevenue(tx, branchCode, revenueDate || sourceDate || transactionDate, bankAmount)
             : null;
@@ -655,8 +729,9 @@ export async function commitImport(input: CommitInput) {
               description: group.rows.length === 1
                 ? asText(firstRow.values.description)
                 : `${asText(firstRow.values.description)} (${group.rows.length} dòng phân bổ)`,
-              status: "PENDING_REVIEW",
+              status: "APPROVED",
               createdBy: input.uploadedBy,
+              approvedBy: input.uploadedBy,
             },
           });
           targetId = voucher.id;
@@ -668,6 +743,7 @@ export async function commitImport(input: CommitInput) {
           }
         }
 
+        autoProcessNote = `Đã tự động duyệt và đối soát với ${targetCode}`;
         await tx.reconciliationMatch.create({
           data: {
             bankTransactionId: bankTransaction.id,
@@ -677,7 +753,7 @@ export async function commitImport(input: CommitInput) {
             targetDate: documentDate,
             targetAmount: bankAmount,
             matchedAmount: bankAmount,
-            status: "PENDING_REVIEW",
+            status: "MATCHED",
             note: "Tạo tự động từ các cột nghiệp vụ trên file sao kê",
             matchedBy: input.uploadedBy,
           },
@@ -685,7 +761,7 @@ export async function commitImport(input: CommitInput) {
         await tx.bankStatementTransaction.update({
           where: { id: bankTransaction.id },
           data: {
-            reconcileStatus: "PENDING_REVIEW",
+            reconcileStatus: "MATCHED",
             autoProcessNote: autoProcessNote || `Đã tạo chứng từ ${targetCode} chờ duyệt`,
           },
         });
@@ -1385,6 +1461,12 @@ export async function commitImport(input: CommitInput) {
       },
     });
   });
+  const bankAutoApproved = input.importType === "BANK_STATEMENT"
+    ? (batchResult?.bankTransactions || []).filter((row) => row.reconcileStatus === "MATCHED" && row.autoProcessType !== "NET_ZERO").length
+    : 0;
+  const bankManualRequired = input.importType === "BANK_STATEMENT"
+    ? (batchResult?.bankTransactions || []).filter((row) => row.autoProcessType === "MANUAL_REQUIRED").length
+    : 0;
   await writeAuditLog({
     actorName: input.uploadedBy,
     module: "IMPORT",
@@ -1393,27 +1475,23 @@ export async function commitImport(input: CommitInput) {
     entityId: batchResult?.id || null,
     entityCode: input.fileName,
     branchCode: input.branchCode || null,
-    metadata: { importType: input.importType, templateCode: input.templateCode, totalRows: input.rows.length },
+    metadata: {
+      importType: input.importType,
+      templateCode: input.templateCode,
+      totalRows: input.rows.length,
+      bankAutoApproved,
+      bankManualRequired,
+    },
   });
   return batchResult;
 }
 
 async function rollbackBankStatement(tx: RawTxClient, batchId: string) {
-  const [approvedVouchers, approvedTransfers, matchedRows] = await Promise.all([
-    tx.financialVoucher.count({ where: { importBatchId: batchId, status: "APPROVED", deletedAt: null } }),
-    tx.moneyTransfer.count({ where: { importBatchId: batchId, status: "APPROVED", deletedAt: null } }),
-    tx.bankStatementTransaction.count({
-      where: { importBatchId: batchId, reconcileStatus: "MATCHED", autoProcessType: { not: "NET_ZERO" }, deletedAt: null },
-    }),
-  ]);
-  if (approvedVouchers > 0 || approvedTransfers > 0 || matchedRows > 0) {
-    throw new Error("Batch sao kê đã có phiếu được duyệt; cần bỏ duyệt hoặc hủy đối soát trước khi rollback");
-  }
   const bankRows = await tx.bankStatementTransaction.findMany({ where: { importBatchId: batchId }, select: { id: true } });
   const bankIds = bankRows.map((row) => row.id);
   if (bankIds.length > 0) await tx.reconciliationMatch.deleteMany({ where: { bankTransactionId: { in: bankIds } } });
-  await tx.financialVoucher.deleteMany({ where: { importBatchId: batchId } });
-  await tx.moneyTransfer.deleteMany({ where: { importBatchId: batchId } });
+  await rollbackVouchers(tx, batchId);
+  await rollbackTransfers(tx, batchId);
   await tx.bankStatementTransaction.deleteMany({ where: { importBatchId: batchId } });
 }
 

@@ -472,11 +472,17 @@ export default function ImportUploadPage({
       if (mode === "preview" && previewPayload && previewPayload.errorRows > 0) {
         setMessage(`File có ${previewPayload.errorRows} dòng lỗi, vui lòng kiểm tra phần màu đỏ.`);
       } else if (mode === "commit" && templateCode === "BANK_STATEMENT_STANDARD_V1") {
-        const pendingCount = (payload.batch?.vouchers?.length || 0) + (payload.batch?.moneyTransfers?.length || 0);
-        const manualCount = previewPayload?.rows.filter((row) => row.values.auto_process_type === "MANUAL_REQUIRED").length || 0;
+        const generatedDocuments = [
+          ...(payload.batch?.vouchers || []),
+          ...(payload.batch?.moneyTransfers || []),
+        ];
+        const autoApprovedCount = generatedDocuments.filter((row: { status?: string }) => row.status === "APPROVED").length;
+        const pendingCount = generatedDocuments.filter((row: { status?: string }) => row.status === "PENDING_REVIEW").length;
+        const manualCount = (payload.batch?.bankTransactions || [])
+          .filter((row: { autoProcessType?: string }) => row.autoProcessType === "MANUAL_REQUIRED").length;
         const skippedCount = previewPayload?.rows.filter((row) => row.values.import_action === "SKIP_EXISTING").length || 0;
         const netZeroCount = previewPayload?.rows.filter((row) => row.values.import_action === "NET_ZERO").length || 0;
-        setMessage(`Đã import sao kê: tạo ${pendingCount} chứng từ ngân hàng/điều chuyển chờ duyệt, ${manualCount} dòng chờ đối soát thủ công, bỏ qua ${skippedCount} dòng đã có, ghi nhận ${netZeroCount} dòng đảo Nợ/Có ròng 0 đ.`);
+        setMessage(`Đã import sao kê: tự động duyệt và đối soát ${autoApprovedCount} chứng từ, ${pendingCount} chứng từ chờ duyệt, ${manualCount} giao dịch chờ xử lý thủ công, bỏ qua ${skippedCount} dòng đã có, ghi nhận ${netZeroCount} dòng đảo Nợ/Có ròng 0 đ.`);
       } else {
         setMessage(mode === "preview" ? "Đã đọc file, vui lòng kiểm tra preview." : "Đã commit dữ liệu import.");
       }

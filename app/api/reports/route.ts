@@ -409,7 +409,11 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     // Cùng một ngày/ca mà có cả doanh thu import lẫn doanh thu nhập tay thì rất dễ tính trùng.
     duplicateRevenueWarning: posRevenue.total > 0 && manual.total > 0,
     moneyInReconciliation: await buildMoneyInReconciliation(
-      revenue,
+      {
+        ...total,
+        // Tiền mặt cần đối chiếu là số thực tế phải nộp sau khi trừ chi tiền mặt trong ngày.
+        cash: total.cash - cashExpenseTotal,
+      },
       branchCode,
       dayStart,
       dayEnd,
