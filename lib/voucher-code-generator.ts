@@ -6,6 +6,7 @@
 
 export interface VoucherCodeOptions {
   voucherType: string; // RECEIPT | PAYMENT | DEPOSIT | ADJUSTMENT | ACCRUAL | string
+  documentChannel?: string | null; // CASH | BANK
   voucherDate?: Date | string | null;
   branchCode?: string | null;
   seqNumber: number;
@@ -14,8 +15,12 @@ export interface VoucherCodeOptions {
 /**
  * Normalizes 4-character Voucher Type prefix
  */
-export function formatVoucherPrefix(voucherType: string): string {
+export function formatVoucherPrefix(voucherType: string, documentChannel?: string | null): string {
   const typeUpper = (voucherType || "").trim().toUpperCase();
+  if ((documentChannel || "").trim().toUpperCase() === "BANK") {
+    if (["RECEIPT", "PT", "PTHU", "UNT"].includes(typeUpper)) return "UNT";
+    if (["PAYMENT", "PC", "PCHI", "UNC"].includes(typeUpper)) return "UNC";
+  }
   switch (typeUpper) {
     case "RECEIPT":
     case "PT":
@@ -77,7 +82,7 @@ export function formatSeq5(seqNumber: number): string {
  * Generates standardized voucher code: PTHU-2607-ASA-00001
  */
 export function generateFormattedVoucherCode(options: VoucherCodeOptions): string {
-  const prefix = formatVoucherPrefix(options.voucherType);
+  const prefix = formatVoucherPrefix(options.voucherType, options.documentChannel);
   const ym = formatYearMonth(options.voucherDate);
   const branch = formatBranchCode3(options.branchCode);
   const seq = formatSeq5(options.seqNumber);

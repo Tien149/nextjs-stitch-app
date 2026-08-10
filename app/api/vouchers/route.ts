@@ -8,9 +8,10 @@ import { isPeriodLocked } from "@/lib/phase3";
 import { buildAuditLogData, writeAuditLog } from "@/lib/audit-log";
 import { softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
 import { canEditPastVoucher, type DemoSession } from "@/lib/auth-demo";
-import { moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
+import { moneySourceMatchesBranch } from "@/lib/money-sources";
 import { isSameCalendarDay, normalizeCashflowCategoryType, normalizeReceiptPurpose, validateReceiptPurpose, voucherEditWindowError } from "@/lib/voucher-rules";
 import { completePendingReconciliation, releasePendingReconciliation, reopenReconciliationForReview } from "@/lib/reconciliation-links";
+import { moneySourceMatchesDocumentChannel, normalizeVoucherDocumentChannel } from "@/lib/voucher-channel";
 
 /** Trạng thái không cho sửa/xoá vì chứng từ đã ghi sổ. */
 
@@ -21,6 +22,14 @@ const MAX_BULK_VOUCHERS = 100;
 
 function normalizeBulkVoucherIds(values: unknown[]) {
   return [...new Set(values.map((value) => cleanText(value)).filter(Boolean))];
+}
+
+async function voucherIdsBelongToChannel(ids: string[], documentChannel: "CASH" | "BANK") {
+  if (ids.length === 0) return true;
+  const count = await prisma.financialVoucher.count({
+    where: { id: { in: ids }, documentChannel, deletedAt: null },
+  });
+  return count === ids.length;
 }
 
 function isFinancialVoucherCodeUniqueError(error: unknown) {
@@ -116,8 +125,8 @@ async function validateVoucherPnlItem(voucherType: string, pnlItemCode: string, 
 import { formatBranchCode3, formatVoucherPrefix, formatYearMonth, generateFormattedVoucherCode } from "@/lib/voucher-code-generator";
 import { isWorkShift } from "@/lib/shifts";
 
-function voucherCodePrefix(voucherType: string, voucherDate: Date, branchCode: string) {
-  return `${formatVoucherPrefix(voucherType)}-${formatYearMonth(voucherDate)}-${formatBranchCode3(branchCode)}-`;
+function voucherCodePrefix(voucherType: string, voucherDate: Date, branchCode: string, documentChannel: string) {
+  return `${formatVoucherPrefix(voucherType, documentChannel)}-${formatYearMonth(voucherDate)}-${formatBranchCode3(branchCode)}-`;
 }
 
 async function nextVoucherCode(
@@ -125,10 +134,11 @@ async function nextVoucherCode(
   voucherType: string,
   voucherDate: Date,
   branchCode: string,
+  documentChannel: string,
 ) {
   const d = voucherDate ? new Date(voucherDate) : new Date();
   const validDate = isNaN(d.getTime()) ? new Date() : d;
-  const codePrefix = voucherCodePrefix(voucherType, validDate, branchCode);
+  const codePrefix = voucherCodePrefix(voucherType, validDate, branchCode, documentChannel);
 
   // Serialize việc cấp số cho cùng loại/tháng/cửa hàng. Lock chỉ tồn tại trong transaction.
   // pg_advisory_xact_lock() trả kiểu PostgreSQL `void`, Prisma 5 không deserialize
@@ -159,6 +169,7 @@ async function nextVoucherCode(
 
   return generateFormattedVoucherCode({
     voucherType,
+    documentChannel,
     voucherDate: validDate,
     branchCode,
     seqNumber: maxSeq + 1,
@@ -167,14 +178,13 @@ async function nextVoucherCode(
 
 export async function GET(request: Request) {
   try {
-    const auth = requireMenuAccess(request, "/vouchers");
-    if (!auth.ok) return auth.response;
-
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id") || undefined;
     if (id) {
       const voucher = await prisma.financialVoucher.findUnique({ where: { id } });
       if (!voucher) return NextResponse.json({ error: "Không tìm thấy chứng từ" }, { status: 404 });
+      const auth = requireMenuAccess(request, voucher.documentChannel === "BANK" ? "/bank-vouchers" : "/vouchers");
+      if (!auth.ok) return auth.response;
       try {
         assertBranchAccess(auth.session, voucher.branchCode);
       } catch (e) {
@@ -183,12 +193,15 @@ export async function GET(request: Request) {
       return NextResponse.json(voucher);
     }
 
+    const documentChannel = normalizeVoucherDocumentChannel(searchParams.get("channel"));
+    const auth = requireMenuAccess(request, documentChannel === "BANK" ? "/bank-vouchers" : "/vouchers");
+    if (!auth.ok) return auth.response;
     const branchCode = requestedBranch(auth.session, cleanText(searchParams.get("branchCode")) || "ALL");
     const branchFilter = branchCode === "ALL" ? {} : { branchCode };
 
     const vouchers = await prisma.financialVoucher.findMany({
-      where: { ...branchFilter },
-      orderBy: { voucherDate: "desc" },
+      where: { ...branchFilter, documentChannel, deletedAt: null },
+      orderBy: [{ voucherDate: "desc" }, { createdAt: "desc" }],
       take: 100,
     });
     return NextResponse.json(vouchers);
@@ -200,14 +213,14 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const auth = requireMenuAction(request, "/vouchers", "create");
-    if (!auth.ok) return auth.response;
-
     const body = await request.json();
     const voucherType = cleanText(body.voucherType) || "RECEIPT";
     const partnerName = cleanText(body.partnerName);
     const branchCode = cleanText(body.branchCode);
     const moneySourceCode = cleanText(body.moneySourceCode);
+    const documentChannel = normalizeVoucherDocumentChannel(body.documentChannel);
+    const auth = requireMenuAction(request, documentChannel === "BANK" ? "/bank-vouchers" : "/vouchers", "create");
+    if (!auth.ok) return auth.response;
     const categoryCode = cleanText(body.categoryCode);
     const pnlItemCode = voucherType === "PAYMENT" ? cleanText(body.pnlItemCode) : "";
     const amount = toAmount(body.amount);
@@ -233,8 +246,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: `Nguồn tiền [${moneySourceCode}] không tồn tại hoặc không thuộc cửa hàng đã chọn` }, { status: 400 });
     }
 
-    if (normalizeMoneySourceGroup(activeSource.group) !== "CASH") {
-      return NextResponse.json({ error: "Phiếu thu/chi chỉ được chọn nguồn tiền mặt" }, { status: 400 });
+    if (!moneySourceMatchesDocumentChannel(activeSource.group, documentChannel)) {
+      return NextResponse.json({
+        error: documentChannel === "BANK"
+          ? "Chứng từ ngân hàng chỉ được chọn nguồn tiền thuộc nhóm Ngân hàng"
+          : "Phiếu thu/chi tiền mặt chỉ được chọn nguồn tiền mặt",
+      }, { status: 400 });
     }
 
     if (categoryCode) {
@@ -262,7 +279,7 @@ export async function POST(request: Request) {
     for (let attempt = 1; attempt <= VOUCHER_CODE_RETRY_LIMIT; attempt += 1) {
       try {
         voucher = await prismaRaw.$transaction(async (tx) => {
-          const code = await nextVoucherCode(tx, voucherType, voucherDate, branchCode);
+          const code = await nextVoucherCode(tx, voucherType, voucherDate, branchCode, documentChannel);
           const created = await tx.financialVoucher.create({
             data: {
               code,
@@ -274,6 +291,8 @@ export async function POST(request: Request) {
               partnerCode: cleanText(body.partnerCode) || null,
               partnerName,
               branchCode,
+              documentChannel,
+              businessEffect: "RECOGNITION",
               moneySourceCode,
               categoryCode: categoryCode || null,
               pnlItemCode: pnlItemCode || null,
@@ -448,8 +467,13 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
     return NextResponse.json({ error: `Nguồn tiền [${moneySourceCode}] không tồn tại, đã ngừng hoặc không thuộc cửa hàng đã chọn` }, { status: 400 });
   }
 
-  if (normalizeMoneySourceGroup(selectedSource.group) !== "CASH") {
-    return NextResponse.json({ error: "Phiếu thu/chi chỉ được chọn nguồn tiền mặt" }, { status: 400 });
+  const currentChannel = normalizeVoucherDocumentChannel(current.documentChannel);
+  if (!moneySourceMatchesDocumentChannel(selectedSource.group, currentChannel)) {
+    return NextResponse.json({
+      error: currentChannel === "BANK"
+        ? "Chứng từ ngân hàng chỉ được chọn nguồn tiền thuộc nhóm Ngân hàng"
+        : "Phiếu thu/chi tiền mặt chỉ được chọn nguồn tiền mặt",
+    }, { status: 400 });
   }
 
   if (categoryCode) {
@@ -707,10 +731,16 @@ export async function PATCH(request: Request) {
     const body = await request.json();
     // Không truyền action thì giữ nguyên hành vi cũ: duyệt/hủy chứng từ.
     const action = cleanText(body.action) || "STATUS_CHANGE";
-    const auth = requireMenuAction(request, "/vouchers", action === "UPDATE" ? "edit" : "approve");
+    const documentChannel = normalizeVoucherDocumentChannel(body.documentChannel);
+    const auth = requireMenuAction(request, documentChannel === "BANK" ? "/bank-vouchers" : "/vouchers", action === "UPDATE" ? "edit" : "approve");
     if (!auth.ok) return auth.response;
 
     const id = cleanText(body.id);
+    const requestedIds = Array.isArray(body.ids) ? normalizeBulkVoucherIds(body.ids) : [];
+    const channelIds = requestedIds.length > 0 ? requestedIds : (id ? [id] : []);
+    if (!(await voucherIdsBelongToChannel(channelIds, documentChannel))) {
+      return NextResponse.json({ error: "Chứng từ không thuộc màn hình/kênh đang thao tác. Vui lòng tải lại danh sách." }, { status: 400 });
+    }
     if (action === "UPDATE") {
       if (!id) return NextResponse.json({ error: "Thiếu ID chứng từ" }, { status: 400 });
       return await updateVoucher(auth.session, id, body);
@@ -724,7 +754,7 @@ export async function PATCH(request: Request) {
 
     // Thao tác hàng loạt: chạy từng phiếu và trả về phiếu nào hỏng vì lý do gì,
     // thay vì bỏ dở cả lô khi gặp phiếu đầu tiên không hợp lệ.
-    const ids = Array.isArray(body.ids) ? normalizeBulkVoucherIds(body.ids) : [];
+    const ids = requestedIds;
     if (ids.length > 0) {
       if (ids.length > MAX_BULK_VOUCHERS) {
         return NextResponse.json({ error: `Chỉ được xử lý tối đa ${MAX_BULK_VOUCHERS} chứng từ mỗi lần.` }, { status: 400 });
@@ -813,13 +843,13 @@ async function deleteVoucherById(session: DemoSession, id: string, reason: strin
 
 export async function DELETE(request: Request) {
   try {
-    const auth = requireMenuAction(request, "/vouchers", "delete");
-    if (!auth.ok) return auth.response;
-
     const { searchParams } = new URL(request.url);
     const body = request.headers.get("content-type")?.includes("application/json")
       ? await request.json().catch(() => ({})) as Record<string, unknown>
       : {};
+    const documentChannel = normalizeVoucherDocumentChannel(body.documentChannel || searchParams.get("channel"));
+    const auth = requireMenuAction(request, documentChannel === "BANK" ? "/bank-vouchers" : "/vouchers", "delete");
+    if (!auth.ok) return auth.response;
     const reason = cleanText(body.reason) || cleanText(searchParams.get("reason")) || null;
     const queryIds = cleanText(searchParams.get("ids")).split(",").filter(Boolean);
     const bodyIds = Array.isArray(body.ids) ? body.ids : [];
@@ -827,6 +857,9 @@ export async function DELETE(request: Request) {
     const ids = normalizeBulkVoucherIds(bodyIds.length > 0 ? bodyIds : queryIds);
 
     if (ids.length > 0) {
+      if (!(await voucherIdsBelongToChannel(ids, documentChannel))) {
+        return NextResponse.json({ error: "Danh sách có chứng từ không thuộc màn hình/kênh đang thao tác." }, { status: 400 });
+      }
       if (ids.length > MAX_BULK_VOUCHERS) {
         return NextResponse.json({ error: `Chỉ được xử lý tối đa ${MAX_BULK_VOUCHERS} chứng từ mỗi lần.` }, { status: 400 });
       }
@@ -843,6 +876,9 @@ export async function DELETE(request: Request) {
 
     const id = cleanText(body.id) || cleanText(searchParams.get("id"));
     if (!id) return NextResponse.json({ error: "Thiếu ID chứng từ" }, { status: 400 });
+    if (!(await voucherIdsBelongToChannel([id], documentChannel))) {
+      return NextResponse.json({ error: "Chứng từ không thuộc màn hình/kênh đang thao tác." }, { status: 400 });
+    }
     const result = await deleteVoucherById(auth.session, id, reason);
     if (!result.ok) return NextResponse.json({ error: result.error }, { status: 400 });
     return NextResponse.json({ ok: true });

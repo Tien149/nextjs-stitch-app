@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
-import type { Prisma } from "@prisma/custom-client";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma, type TxClient } from "@/lib/prisma";
 import { addPeriod, apiError, businessError, cleanText, isPeriodLocked, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
 import { assertBranchAccess, requestedBranch } from "@/lib/accounting";
 import { scopePayloadByTab } from "@/lib/tab-scope";
+import { normalizeMoneySourceGroup } from "@/lib/money-sources";
 
 const menuHref = "/assets";
 
@@ -21,6 +21,14 @@ async function defaultMoneySource(tx: TxClient, branchCode: string) {
     orderBy: { code: "asc" },
   });
   return source?.code || (branchCode === "HN" ? "POS_HN" : "TM_HCM");
+}
+
+async function documentChannelForSource(tx: TxClient, moneySourceCode: string) {
+  const source = await tx.masterDataItem.findFirst({
+    where: { type: "MONEY_SOURCE", code: moneySourceCode },
+    select: { group: true },
+  });
+  return normalizeMoneySourceGroup(source?.group) === "BANK" ? "BANK" : "CASH";
 }
 
 async function nextWorkItemCode(tx: TxClient) {
@@ -322,6 +330,7 @@ export async function POST(request: Request) {
         }
         if (treatment === "EXPENSE" && repairCost > 0) {
           const moneySourceCode = cleanText(body.moneySourceCode) || await defaultMoneySource(tx, report.asset.branchCode);
+          const documentChannel = await documentChannelForSource(tx, moneySourceCode);
           await tx.financialVoucher.create({
             data: {
               code: await nextPaymentVoucherCode(tx),
@@ -331,6 +340,7 @@ export async function POST(request: Request) {
               partnerCode: cleanText(body.supplierCode) || report.asset.supplierCode || null,
               partnerName: cleanText(body.supplierName) || report.asset.supplierName || "Nhà cung cấp sửa chữa",
               branchCode: report.asset.branchCode,
+              documentChannel,
               moneySourceCode,
               categoryCode: cleanText(body.categoryCode) || "REPAIR",
               amount: repairCost,
@@ -374,6 +384,7 @@ export async function POST(request: Request) {
       const result = await prisma.$transaction(async (tx) => {
         if (disposalAmount > 0) {
           const moneySourceCode = cleanText(body.moneySourceCode) || await defaultMoneySource(tx, asset.branchCode);
+          const documentChannel = await documentChannelForSource(tx, moneySourceCode);
           const count = await tx.financialVoucher.count({ where: { voucherType: "RECEIPT" } });
           const voucherCode = `PTTL-${String(count + 1).padStart(4, "0")}`;
           await tx.financialVoucher.create({
@@ -385,6 +396,7 @@ export async function POST(request: Request) {
               partnerCode: asset.supplierCode || null,
               partnerName: asset.supplierName || "Thanh lý tài sản",
               branchCode: asset.branchCode,
+              documentChannel,
               moneySourceCode,
               categoryCode: "ASSET_DISPOSAL",
               amount: disposalAmount,

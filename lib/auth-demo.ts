@@ -122,9 +122,15 @@ export const appMenuItems: AppMenuItem[] = [
     roles: ["Admin", "Kế toán tổng hợp", "Kế toán công nợ"],
   },
   {
-    name: "Chứng từ",
+    name: "Phiếu tiền mặt",
     icon: "receipt_long",
     href: "/vouchers",
+    roles: ["Admin", "Kế toán tổng hợp"],
+  },
+  {
+    name: "Chứng từ ngân hàng",
+    icon: "account_balance",
+    href: "/bank-vouchers",
     roles: ["Admin", "Kế toán tổng hợp"],
   },
   {
@@ -235,6 +241,10 @@ export const roleActions: Record<DemoRole, AppAction[]> = {
 
 const menuActionOverrides: Partial<Record<string, Partial<Record<DemoRole, AppAction[]>>>> = {
   "/vouchers": {
+    Admin: roleActions.Admin,
+    "Kế toán tổng hợp": ["view", "create", "edit", "edit_past", "approve", "export", "config"],
+  },
+  "/bank-vouchers": {
     Admin: roleActions.Admin,
     "Kế toán tổng hợp": ["view", "create", "edit", "edit_past", "approve", "export", "config"],
   },

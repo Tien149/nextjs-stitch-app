@@ -476,7 +476,7 @@ export default function ImportUploadPage({
         const manualCount = previewPayload?.rows.filter((row) => row.values.auto_process_type === "MANUAL_REQUIRED").length || 0;
         const skippedCount = previewPayload?.rows.filter((row) => row.values.import_action === "SKIP_EXISTING").length || 0;
         const netZeroCount = previewPayload?.rows.filter((row) => row.values.import_action === "NET_ZERO").length || 0;
-        setMessage(`Đã import sao kê: tạo ${pendingCount} phiếu chờ duyệt, ${manualCount} dòng chờ đối soát thủ công, bỏ qua ${skippedCount} dòng đã có, ghi nhận ${netZeroCount} dòng đảo Nợ/Có ròng 0 đ.`);
+        setMessage(`Đã import sao kê: tạo ${pendingCount} chứng từ ngân hàng/điều chuyển chờ duyệt, ${manualCount} dòng chờ đối soát thủ công, bỏ qua ${skippedCount} dòng đã có, ghi nhận ${netZeroCount} dòng đảo Nợ/Có ròng 0 đ.`);
       } else {
         setMessage(mode === "preview" ? "Đã đọc file, vui lòng kiểm tra preview." : "Đã commit dữ liệu import.");
       }

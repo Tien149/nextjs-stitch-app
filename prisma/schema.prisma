@@ -219,7 +219,7 @@ model BankStatementTransaction {
   reconcileStatus         String    @default("UNMATCHED")
   createdAt               DateTime  @default(now())
 
-  importBatch ImportBatch           @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
+  importBatch ImportBatch               @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
   matches     ReconciliationMatch[]
   allocations BankStatementAllocation[]
 
@@ -238,13 +238,13 @@ model BankStatementTransaction {
 /// Một dòng phân bổ nghiệp vụ trong file khách. Nhiều dòng có thể cùng thuộc một
 /// giao dịch ngân hàng (ví dụ một lần MoMo chuyển tiền cho nhiều ngày doanh thu).
 model BankStatementAllocation {
-  id                      String   @id @default(uuid())
+  id                      String    @id @default(uuid())
   bankTransactionId       String
   sourceRowNumber         Int
   sheetName               String
   description             String
-  debitAmount             Float    @default(0)
-  creditAmount            Float    @default(0)
+  debitAmount             Float     @default(0)
+  creditAmount            Float     @default(0)
   /// Doanh thu gốc được clear ở ví cho riêng dòng phân bổ (bao gồm phí).
   grossAmount             Float?
   sourceDate              DateTime?
@@ -255,7 +255,7 @@ model BankStatementAllocation {
   decreaseMoneySourceCode String?
   autoProcessType         String?
   autoProcessNote         String?
-  createdAt               DateTime @default(now())
+  createdAt               DateTime  @default(now())
 
   bankTransaction BankStatementTransaction @relation(fields: [bankTransactionId], references: [id], onDelete: Cascade)
 
@@ -313,6 +313,12 @@ model FinancialVoucher {
   partnerName             String
   branchCode              String
   sourceScope             String   @default("EXTERNAL")
+  /// Kênh chứng từ tại thời điểm phát sinh. Không suy luận động từ danh mục nguồn tiền
+  /// vì nguồn có thể được đổi nhóm sau khi chứng từ đã ghi nhận.
+  documentChannel         String   @default("CASH")
+  /// RECOGNITION: ghi nhận nghiệp vụ mới; SETTLEMENT: chỉ xác nhận dòng tiền của
+  /// nghiệp vụ đã ghi nhận trước đó (ví dụ sao kê khớp doanh thu POS).
+  businessEffect          String   @default("RECOGNITION")
   moneySourceCode         String
   categoryCode            String?
   /// Hạng mục quản trị trên báo cáo P&L. Để trống nghĩa là chưa phân loại chi tiết,
@@ -343,6 +349,8 @@ model FinancialVoucher {
   deletedBy String?
 
   @@index([voucherType])
+  @@index([documentChannel])
+  @@index([businessEffect])
   @@index([voucherDate])
   @@index([shift])
   @@index([partnerCode])

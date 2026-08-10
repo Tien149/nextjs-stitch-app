@@ -51,6 +51,7 @@ type MatchRow = {
   matchedAmount: number;
   matchedBy: string | null;
   createdAt: string;
+  targetHref?: string;
 };
 
 export default function ReconciliationsPage() {
@@ -320,7 +321,7 @@ export default function ReconciliationsPage() {
                         )}
                         {row.currentMatch && (
                           <a
-                            href={row.currentMatch.targetType === "VOUCHER" ? "/vouchers" : "/finance-operations"}
+                            href={row.currentMatch.targetHref || (row.currentMatch.targetType === "VOUCHER" ? "/vouchers" : "/finance-operations")}
                             className="text-xs font-bold text-indigo-700 hover:underline"
                           >
                             Mở phiếu {row.currentMatch.targetCode}

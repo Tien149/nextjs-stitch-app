@@ -3,11 +3,13 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { storeLabel } from "@/lib/branch-labels";
+import { type VoucherDocumentChannel, voucherTypeLabel } from "@/lib/voucher-channel";
 
 type Voucher = {
   id: string;
   code: string;
   voucherType: string;
+  documentChannel: VoucherDocumentChannel;
   voucherDate: string;
   partnerName: string;
   branchCode: string;
@@ -45,7 +47,7 @@ export default function VoucherPrintPage() {
         </div>
 
         <section className="text-center py-8">
-          <p className="text-sm uppercase tracking-widest text-slate-500">{voucher.voucherType === "RECEIPT" ? "Phiếu thu" : "Phiếu chi"}</p>
+          <p className="text-sm uppercase tracking-widest text-slate-500">{voucherTypeLabel(voucher.voucherType, voucher.documentChannel || "CASH")}</p>
           <h2 className="text-3xl font-bold mt-2">{voucher.code}</h2>
           <p className="text-sm text-slate-500 mt-2">Ngày {new Date(voucher.voucherDate).toLocaleDateString("vi-VN")}</p>
         </section>

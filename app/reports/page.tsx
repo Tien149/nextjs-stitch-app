@@ -81,7 +81,7 @@ type DailyCashData = {
   manualEntries: ManualRevenueEntry[];
   duplicateRevenueWarning: boolean;
   moneyInReconciliation: {
-    rows: Array<{ key: string; label: string; declared: number; received: number; pending: number; difference: number; status: "MATCHED" | "WAITING_APPROVAL" | "SHORT" | "OVER"; note: string }>;
+    rows: Array<{ key: string; label: string; declared: number; received: number; pending: number; difference: number; status: "MATCHED" | "WAITING_APPROVAL" | "PENDING_CLEAR" | "SHORT" | "OVER"; note: string }>;
     walletFee: number;
     bankRowCount: number;
     unclassifiedBankRows: number;
@@ -357,6 +357,8 @@ export default function ReportsPage() {
         expense: dailyCash.summary.cashExpenseTotal,
         cashToDeposit: dailyCash.summary.revenue.cash - dailyCash.summary.cashExpenseTotal,
       },
+      // Phiếu thu ngoài POS là dòng tiền thu khác, không được cộng vào doanh thu bán hàng.
+      { label: "Thu khác", bucket: dailyCash.summary.receipt, cashToDeposit: dailyCash.summary.receipt.cash },
       // Đặt cọc không gánh chi tiền mặt nên số nộp đúng bằng phần tiền mặt của nó.
       { label: "Đặt cọc", bucket: dailyCash.summary.deposit, cashToDeposit: dailyCash.summary.deposit.cash },
     ];
@@ -1118,7 +1120,7 @@ export default function ReportsPage() {
           )}
 
           <section className="table-panel">
-            <PanelHeader title="Tổng hợp thu trong ngày" subtitle="Doanh thu bán hàng gộp file POS đã import, doanh thu nhập tay và phiếu thu đã lập. Tách theo tiền mặt, chuyển khoản, quẹt thẻ/ví và kênh Grab." />
+            <PanelHeader title="Tổng hợp thu trong ngày" subtitle="Doanh thu bán hàng lấy từ POS (hoặc nhập tay khi chưa có POS); phiếu thu ngoài POS và tiền cọc được tách riêng để không ghi nhận trùng doanh thu." />
             <Table headers={["Loại", "Tổng thu", "Tiền mặt", "Chuyển khoản", "Quẹt thẻ/Ví", "Grab", "Khác", "Tổng chi tiền mặt", "Nộp tiền"]}>
               {dailyCashSummaryRows.map((row) => (
                 <DailyCashSummaryRow key={row.label} label={row.label} bucket={row.bucket} expense={row.expense} cashToDeposit={row.cashToDeposit} />
@@ -1133,43 +1135,63 @@ export default function ReportsPage() {
             </Table>
           </section>
 
-          <section className="table-panel">
+          <section className="table-panel no-print">
             <PanelHeader
               title="Đối chiếu tiền vào đã đủ chưa"
-              subtitle="Phiếu nộp tiền chờ duyệt được hiển thị riêng; chỉ sau khi kế toán duyệt mới tính là tiền đã xác nhận."
+              subtitle="Chuyển khoản đối chiếu theo ngày doanh thu; tiền ví/POS được theo dõi riêng và chỉ tính đã clear sau khi duyệt quyết toán."
             />
             <div className="overflow-x-auto">
-              <Table headers={["Hình thức", "Thu ngân khai", "Đã xác nhận", "Chờ duyệt", "Chênh lệch", "Trạng thái"]}>
+              <table className="w-full min-w-[1080px] table-fixed text-left text-sm">
+                <colgroup>
+                  <col className="w-[46%]" />
+                  <col className="w-[11%]" />
+                  <col className="w-[11%]" />
+                  <col className="w-[11%]" />
+                  <col className="w-[11%]" />
+                  <col className="w-[10%]" />
+                </colgroup>
+                <thead className="border-b border-slate-200 bg-slate-50 text-xs font-bold uppercase text-slate-500">
+                  <tr>
+                    <th className="px-4 py-3 text-left">Hình thức</th>
+                    {["Thu ngân khai", "Đã xác nhận", "Chờ duyệt", "Chênh lệch", "Trạng thái"].map((header) => (
+                      <th key={header} className="whitespace-nowrap px-4 py-3 text-right">{header}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
                 {dailyCash.moneyInReconciliation.rows.map((row) => (
                   <tr key={row.key} className="border-t border-slate-100">
-                    <Cell>
+                    <td className="px-4 py-4 align-middle text-left">
                       <b>{row.label}</b>
-                      <p className="mt-0.5 text-xs text-slate-500">{row.note}</p>
-                    </Cell>
-                    <Cell right>{money(row.declared)} đ</Cell>
-                    <Cell right>{money(row.received)} đ</Cell>
-                    <Cell right>{row.pending ? `${money(row.pending)} đ` : "-"}</Cell>
-                    <Cell right>
+                      <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-500">{row.note}</p>
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-4 text-right align-middle tabular-nums">{money(row.declared)} đ</td>
+                    <td className="whitespace-nowrap px-4 py-4 text-right align-middle tabular-nums">{money(row.received)} đ</td>
+                    <td className="whitespace-nowrap px-4 py-4 text-right align-middle tabular-nums">{row.pending ? `${money(row.pending)} đ` : "-"}</td>
+                    <td className="whitespace-nowrap px-4 py-4 text-right align-middle tabular-nums">
                       <b className={row.status === "MATCHED" ? "text-slate-500" : row.status === "SHORT" ? "text-rose-600" : row.status === "OVER" ? "text-blue-600" : "text-amber-600"}>
                         {row.difference > 0 ? "+" : ""}{money(row.difference)} đ
                       </b>
-                    </Cell>
-                    <Cell right>
-                      <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider ${
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-4 text-right align-middle">
+                      <span className={`inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider ${
                         row.status === "MATCHED"
                           ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
                           : row.status === "WAITING_APPROVAL"
                             ? "border border-amber-200 bg-amber-50 text-amber-800"
+                            : row.status === "PENDING_CLEAR"
+                              ? "border border-violet-200 bg-violet-50 text-violet-700"
                             : row.status === "SHORT"
                               ? "border border-rose-200 bg-rose-50 text-rose-700"
                               : "border border-blue-200 bg-blue-50 text-blue-700"
                       }`}>
-                        {row.status === "MATCHED" ? "Đủ" : row.status === "WAITING_APPROVAL" ? "Chờ duyệt" : row.status === "SHORT" ? "Thiếu" : "Thừa"}
+                        {row.status === "MATCHED" ? "Đủ" : row.status === "WAITING_APPROVAL" ? "Chờ duyệt" : row.status === "PENDING_CLEAR" ? "Chưa clear" : row.status === "SHORT" ? "Thiếu" : "Thừa"}
                       </span>
-                    </Cell>
+                    </td>
                   </tr>
                 ))}
-              </Table>
+                </tbody>
+              </table>
             </div>
             <div className="flex flex-wrap gap-3 border-t border-slate-100 px-4 py-3 text-xs text-slate-600">
               <span>Phí quẹt thẻ đã tách sang chi phí: <b className="text-slate-900">{money(dailyCash.moneyInReconciliation.walletFee)} đ</b></span>

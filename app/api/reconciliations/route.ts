@@ -49,7 +49,11 @@ export async function GET(request: Request) {
       }),
       prisma.revenueImportRow.findMany({ where: { ...branchFilter }, orderBy: { saleDate: "desc" }, take: 300 }),
       prisma.deposit.findMany({ where: { ...branchFilter }, orderBy: { receivedDate: "desc" }, take: 300 }),
-      prisma.financialVoucher.findMany({ where: { ...branchFilter, status: "APPROVED" }, orderBy: { voucherDate: "desc" }, take: 300 }),
+      prisma.financialVoucher.findMany({
+        where: { ...branchFilter, status: { in: ["DRAFT", "PENDING_REVIEW", "APPROVED", "POSTED"] }, deletedAt: null },
+        orderBy: { voucherDate: "desc" },
+        take: 500,
+      }),
       prisma.reconciliationMatch.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
     ]);
 
@@ -74,7 +78,7 @@ export async function GET(request: Request) {
           label: `${row.partnerName} - ${row.purpose}`,
           score: scoreCandidate(bank, { date: row.receivedDate, amount: row.amount, partnerCode: row.partnerCode }),
         })),
-        ...vouchers.map((row) => ({
+        ...vouchers.filter((row) => ["APPROVED", "POSTED"].includes(row.status)).map((row) => ({
           targetType: "VOUCHER",
           targetId: row.id,
           targetCode: row.code,
@@ -89,7 +93,24 @@ export async function GET(request: Request) {
         .slice(0, 5);
 
       const { matches: bankMatches, ...bankData } = bank;
-      return { ...bankData, currentMatch: bankMatches[0] || null, candidates };
+      const currentMatch = bankMatches[0] || null;
+      const matchedVoucher = currentMatch?.targetType === "VOUCHER"
+        ? vouchers.find((voucher) => voucher.id === currentMatch.targetId)
+        : null;
+      return {
+        ...bankData,
+        currentMatch: currentMatch
+          ? {
+              ...currentMatch,
+              targetHref: currentMatch.targetType === "VOUCHER"
+                ? (matchedVoucher?.documentChannel === "BANK" ? "/bank-vouchers" : "/vouchers")
+                : currentMatch.targetType === "REVENUE_POS"
+                  ? "/imports?tab=revenue-pos"
+                  : "/finance-operations",
+            }
+          : null,
+        candidates,
+      };
     });
 
     return NextResponse.json({ rows, matches });

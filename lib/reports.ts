@@ -208,7 +208,7 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
           voucherType: { in: ["RECEIPT", "PAYMENT"] },
           status: { in: cashReportVoucherStatuses },
         },
-        select: { voucherType: true, voucherDate: true, categoryCode: true, partnerCode: true, partnerName: true, moneySourceCode: true, amount: true, depositAction: true },
+        select: { voucherType: true, voucherDate: true, categoryCode: true, partnerCode: true, partnerName: true, moneySourceCode: true, amount: true, depositAction: true, businessEffect: true },
       }),
       prisma.financialVoucher.groupBy({
         by: ["voucherType"],
@@ -322,7 +322,7 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     const isDepositMovement = isIncome
       ? ["COLLECT", "SUPPLEMENT"].includes(voucher.depositAction || "")
       : voucher.depositAction === "REFUND";
-    if (!isDepositMovement) {
+    if (!isDepositMovement && voucher.businessEffect !== "SETTLEMENT") {
       const expectedType = isIncome ? "RECEIPT" : "PAYMENT";
       const category = resolveCategory(voucher.categoryCode, expectedType);
       bumpCategory(
@@ -375,7 +375,9 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     );
     if (!category) unclassifiedIncome += amount;
   }
+  const posRevenueDays = new Set(posRevenues.map((row) => row.saleDate.toISOString().slice(0, 10)));
   for (const row of manualEntries) {
+    if (posRevenueDays.has(row.reportDate.toISOString().slice(0, 10))) continue;
     bumpCategory(income, { key: unclassifiedKey, name: "Chưa phân loại", group: "RECEIPT" }, monthCount, monthIndexOf(row.reportDate), row.totalAmount);
     unclassifiedIncome += row.totalAmount;
   }

@@ -10,6 +10,7 @@ import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { generateFormattedVoucherCode } from "@/lib/voucher-code-generator";
 import { commonBankValue, groupBankStatementRows } from "@/lib/bank-statement-import";
+import { normalizeMoneySourceGroup } from "@/lib/money-sources";
 
 function asText(value: unknown) {
   return String(value || "").trim();
@@ -148,14 +149,55 @@ async function nextVoucherCode(
   tx: TxClient,
   voucherType: string,
   voucherDate: Date,
+  branchCode: string,
+  documentChannel: "CASH" | "BANK",
 ) {
-  const prefix = voucherType === "RECEIPT" ? "PT" : "PC";
-  const ym = `${voucherDate.getUTCFullYear()}${String(voucherDate.getUTCMonth() + 1).padStart(2, "0")}`;
   const { start, end } = monthBounds(voucherDate);
   const count = await tx.financialVoucher.count({
-    where: { voucherType, voucherDate: { gte: start, lt: end } },
+    where: { voucherType, documentChannel, voucherDate: { gte: start, lt: end } },
   });
-  return `${prefix}-${ym}-${String(count + 1).padStart(4, "0")}`;
+  return generateFormattedVoucherCode({ voucherType, documentChannel, voucherDate, branchCode, seqNumber: count + 1 });
+}
+
+/**
+ * Tìm đúng một dòng doanh thu POS chưa được sao kê nào dùng để xác nhận dòng tiền.
+ * Chỉ tự động coi là quyết toán khi khớp cửa hàng + ngày doanh thu + số tiền;
+ * trường hợp mơ hồ tiếp tục là nghiệp vụ mới/chờ kế toán kiểm tra.
+ */
+async function findUnsettledPosRevenue(
+  tx: TxClient,
+  branchCode: string,
+  revenueDate: Date,
+  amount: number,
+) {
+  const { start, end } = dayBoundsUtc(revenueDate);
+  const candidates = await tx.revenueImportRow.findMany({
+    where: { branchCode, saleDate: { gte: start, lt: end }, deletedAt: null },
+    select: { id: true, externalRef: true, saleDate: true, netAmount: true },
+  });
+  const exact = candidates.filter((row) => Math.abs(row.netAmount - amount) < 1);
+  if (exact.length !== 1) return null;
+  const used = await tx.financialVoucher.findFirst({
+    where: {
+      sourceDocumentCode: exact[0].externalRef,
+      businessEffect: "SETTLEMENT",
+      deletedAt: null,
+    },
+    select: { id: true },
+  });
+  return used ? null : exact[0];
+}
+
+async function categoryRepresentsSalesSettlement(tx: TxClient, categoryCode: string) {
+  if (!categoryCode) return false;
+  const category = await tx.masterDataItem.findFirst({
+    where: { type: "REVENUE_EXPENSE_CATEGORY", code: categoryCode, deletedAt: null },
+    select: { code: true, name: true },
+  });
+  return [category?.code, category?.name].some((value) => {
+    const normalized = normalizeHeader(value || "");
+    return normalized.includes("thu") && normalized.includes("doanh thu") && normalized.includes("ban hang");
+  });
 }
 
 type CommitInput = {
@@ -586,18 +628,28 @@ export async function commitImport(input: CommitInput) {
           const moneySourceCode = voucherType === "RECEIPT"
             ? commonBankValue(group.rows, "increase_money_source_code")
             : commonBankValue(group.rows, "decrease_money_source_code");
+          const categoryCode = commonBankValue(group.rows, "category_code");
+          const posRevenue = voucherType === "RECEIPT"
+            ? await findUnsettledPosRevenue(tx, branchCode, revenueDate || sourceDate || transactionDate, bankAmount)
+            : null;
+          const isDeclaredSalesSettlement = voucherType === "RECEIPT"
+            && await categoryRepresentsSalesSettlement(tx, categoryCode);
+          const businessEffect = posRevenue || isDeclaredSalesSettlement ? "SETTLEMENT" : "RECOGNITION";
           const voucherCount = await tx.financialVoucher.count({ where: { voucherType } });
           const voucher = await tx.financialVoucher.create({
             data: {
               importBatchId: batch.id,
-              code: generateFormattedVoucherCode({ voucherType, voucherDate: documentDate, branchCode, seqNumber: voucherCount + 1 }),
+              code: generateFormattedVoucherCode({ voucherType, documentChannel: "BANK", voucherDate: documentDate, branchCode, seqNumber: voucherCount + 1 }),
+              sourceDocumentCode: posRevenue?.externalRef || null,
               voucherType,
               voucherDate: documentDate,
               partnerName: commonBankValue(group.rows, "partner_hint") || "Đối tác theo sao kê",
               branchCode,
               sourceScope: "BANK_STATEMENT_AUTO",
+              documentChannel: "BANK",
+              businessEffect,
               moneySourceCode,
-              categoryCode: commonBankValue(group.rows, "category_code") || null,
+              categoryCode: categoryCode || null,
               externalRef: transactionCode,
               amount: bankAmount,
               description: group.rows.length === 1
@@ -609,6 +661,11 @@ export async function commitImport(input: CommitInput) {
           });
           targetId = voucher.id;
           targetCode = voucher.code;
+          if (posRevenue) {
+            autoProcessNote = `Đã tạo ${targetCode} xác nhận dòng tiền cho doanh thu POS ${posRevenue.externalRef}; không ghi nhận thêm doanh thu`;
+          } else if (isDeclaredSalesSettlement) {
+            autoProcessNote = `Đã tạo ${targetCode} xác nhận tiền ngân hàng cho doanh thu bán hàng đã khai; không ghi nhận thêm doanh thu`;
+          }
         }
 
         await tx.reconciliationMatch.create({
@@ -629,7 +686,7 @@ export async function commitImport(input: CommitInput) {
           where: { id: bankTransaction.id },
           data: {
             reconcileStatus: "PENDING_REVIEW",
-            autoProcessNote: `Đã tạo phiếu ${targetCode} chờ duyệt`,
+            autoProcessNote: autoProcessNote || `Đã tạo chứng từ ${targetCode} chờ duyệt`,
           },
         });
       }
@@ -1189,18 +1246,27 @@ export async function commitImport(input: CommitInput) {
       for (const row of input.rows) {
         const voucherType = asText(row.values.voucher_type).toUpperCase();
         const voucherDate = asDate(row.values.voucher_date);
+        const branchCode = asText(row.values.branch_code);
+        const moneySourceCode = asText(row.values.money_source_code);
+        const moneySource = await tx.masterDataItem.findFirst({
+          where: { type: "MONEY_SOURCE", code: moneySourceCode, deletedAt: null },
+          select: { group: true },
+        });
+        const documentChannel = normalizeMoneySourceGroup(moneySource?.group) === "BANK" ? "BANK" : "CASH";
         const voucher = await tx.financialVoucher.create({
           data: {
             importBatchId: batch.id,
-            code: await nextVoucherCode(tx, voucherType, voucherDate),
+            code: await nextVoucherCode(tx, voucherType, voucherDate, branchCode, documentChannel),
             sourceDocumentCode: asText(row.values.source_document_code) || null,
             voucherType,
             voucherDate,
             partnerCode: asText(row.values.partner_code) || null,
             partnerName: asText(row.values.partner_name),
-            branchCode: asText(row.values.branch_code),
+            branchCode,
             sourceScope: asText(row.values.source_scope) || "EXTERNAL",
-            moneySourceCode: asText(row.values.money_source_code),
+            documentChannel,
+            businessEffect: "RECOGNITION",
+            moneySourceCode,
             categoryCode: asText(row.values.category_code) || null,
             externalRef: asText(row.values.external_ref) || null,
             counterpartyAccountNo: asText(row.values.counterparty_account_no) || null,

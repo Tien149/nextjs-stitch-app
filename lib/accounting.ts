@@ -203,6 +203,9 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   const categoryGroupByCode = new Map(voucherCategories.map((item) => [item.code, normalizeCategoryGroup(item.group)]));
   const pnlItemGroupByCode = new Map(pnlItems.map((item) => [item.code, normalizeCategoryGroup(item.group)]));
   for (const row of vouchers) {
+    // Sao kê khớp doanh thu POS chỉ xác nhận dòng tiền; doanh thu và bút toán đối ứng
+    // đã được ghi từ RevenueImportRow nên không được tạo thêm bút toán voucher.
+    if (row.businessEffect === "SETTLEMENT") continue;
     const { lines } = voucherJournalLines(
       row,
       row.categoryCode ? categoryGroupByCode.get(row.categoryCode) ?? null : null,

@@ -12,8 +12,8 @@ import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySo
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { shiftLabel, WORK_SHIFTS } from "@/lib/shifts";
+import { type VoucherDocumentChannel, voucherChannelLabel, voucherTypeLabel } from "@/lib/voucher-channel";
 
-const voucherMoneySourceGroups = ["CASH"];
 const MAX_BULK_SELECTION = 100;
 
 type Voucher = {
@@ -24,6 +24,10 @@ type Voucher = {
   partnerCode: string | null;
   partnerName: string;
   branchCode: string;
+  documentChannel: VoucherDocumentChannel;
+  businessEffect: string;
+  sourceScope: string;
+  sourceDocumentCode: string | null;
   moneySourceCode: string;
   categoryCode: string | null;
   pnlItemCode: string | null;
@@ -81,8 +85,14 @@ const emptyForm = {
   description: "Thu tiền bán hàng hàng ngày / thanh toán đối tác",
 };
 
-export default function VouchersPage() {
+type VoucherManagementPageProps = { documentChannel?: VoucherDocumentChannel };
+
+export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManagementPageProps) {
   const router = useRouter();
+  const isBankChannel = documentChannel === "BANK";
+  const moduleHref = isBankChannel ? "/bank-vouchers" : "/vouchers";
+  const sourceGroups = useMemo(() => [documentChannel], [documentChannel]);
+  const screenLabel = voucherChannelLabel(documentChannel);
   const [user, setUser] = useState<DemoSession | null>(null);
   const [vouchers, setVouchers] = useState<Voucher[]>([]);
   const [branchCode, setBranchCode] = useState("ALL");
@@ -115,13 +125,13 @@ export default function VouchersPage() {
   const selectAllRef = useRef<HTMLInputElement>(null);
 
   const loadVouchers = useCallback(async (branch: string) => {
-    const response = await fetch(`/api/vouchers?branchCode=${branch}`);
+    const response = await fetch(`/api/vouchers?branchCode=${branch}&channel=${documentChannel}`);
     if (response.ok) {
       setVouchers((await response.json()) as Voucher[]);
       // Không giữ lựa chọn cũ sau khi đổi cửa hàng hoặc tải lại danh sách.
       setSelectedIds([]);
     }
-  }, []);
+  }, [documentChannel]);
 
   const loadMasterData = useCallback(async (session: DemoSession, initialBranch: string) => {
     const rawSession = localStorage.getItem(SESSION_KEY);
@@ -187,7 +197,7 @@ export default function VouchersPage() {
       setMoneySources(payload);
       setForm((current) => {
         if (current.branchCode.trim().toUpperCase() !== branch) return current;
-        const keepsActiveSource = isMoneySourceAllowed(payload, current.moneySourceCode, branch, voucherMoneySourceGroups);
+        const keepsActiveSource = isMoneySourceAllowed(payload, current.moneySourceCode, branch, sourceGroups);
         const keepsHistoricalSource = Boolean(
           editingVoucher
           && editingVoucher.moneySourceCode === current.moneySourceCode
@@ -197,7 +207,7 @@ export default function VouchersPage() {
           ...current,
           moneySourceCode: keepsActiveSource || keepsHistoricalSource
             ? current.moneySourceCode
-            : firstMoneySourceCode(payload, branch, voucherMoneySourceGroups),
+            : firstMoneySourceCode(payload, branch, sourceGroups),
         };
       });
     } catch (error) {
@@ -210,13 +220,13 @@ export default function VouchersPage() {
     } finally {
       if (requestId === moneySourceRequestRef.current) setMoneySourcesLoading(false);
     }
-  }, [editingVoucher]);
+  }, [editingVoucher, sourceGroups]);
 
   useEffect(() => {
     const raw = localStorage.getItem(SESSION_KEY);
-    const menu = appMenuItems.find((item) => item.href === "/vouchers");
+    const menu = appMenuItems.find((item) => item.href === moduleHref);
     if (!raw) {
-      router.push("/login?next=/vouchers");
+      router.push(`/login?next=${moduleHref}`);
       return;
     }
     const session = JSON.parse(raw) as DemoSession;
@@ -239,7 +249,7 @@ export default function VouchersPage() {
       void loadVouchers(initialBranch);
       void loadMasterData(session, initialBranch);
     }, 0);
-  }, [router, loadVouchers, loadMasterData]);
+  }, [router, loadVouchers, loadMasterData, moduleHref]);
 
   useEffect(() => {
     window.setTimeout(() => {
@@ -262,8 +272,8 @@ export default function VouchersPage() {
   };
 
   const canCreate = user ? canPerformAction(user, "create") : false;
-  const canApprove = user ? canPerformMenuAction(user, "/vouchers", "approve") : false;
-  const canDelete = user ? canPerformMenuAction(user, "/vouchers", "delete") : false;
+  const canApprove = user ? canPerformMenuAction(user, moduleHref, "approve") : false;
+  const canDelete = user ? canPerformMenuAction(user, moduleHref, "delete") : false;
   /** Quyền sửa/bỏ duyệt chứng từ đã qua ngày (mặc định Admin và Kế toán tổng hợp). */
   const canEditPast = canEditPastVoucher(user);
   const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
@@ -374,7 +384,7 @@ export default function VouchersPage() {
     setForm({
       ...emptyForm,
       branchCode: nextBranch,
-      moneySourceCode: firstMoneySourceCode(moneySources, nextBranch, voucherMoneySourceGroups),
+      moneySourceCode: firstMoneySourceCode(moneySources, nextBranch, sourceGroups),
       categoryCode: emptyForm.categoryCode,
     });
   };
@@ -413,6 +423,7 @@ export default function VouchersPage() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               ...form,
+              documentChannel,
               action: "UPDATE",
               id: editingVoucher.id,
               expectedUpdatedAt: editingVoucher.updatedAt,
@@ -422,7 +433,7 @@ export default function VouchersPage() {
         : await fetch("/api/vouchers", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(form),
+            body: JSON.stringify({ ...form, documentChannel }),
           });
 
       const payload = await response.json();
@@ -493,7 +504,7 @@ export default function VouchersPage() {
     setDeleting(true);
     setDeleteError(null);
     try {
-      const query = new URLSearchParams({ id: deletingVoucher.id });
+      const query = new URLSearchParams({ id: deletingVoucher.id, channel: documentChannel });
       if (reason) query.set("reason", reason);
       const response = await fetch(`/api/vouchers?${query.toString()}`, { method: "DELETE" });
       const payload = await response.json();
@@ -605,13 +616,14 @@ export default function VouchersPage() {
         ? await fetch("/api/vouchers", {
             method: "DELETE",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ids: targetIds, reason: reason || undefined }),
+            body: JSON.stringify({ ids: targetIds, reason: reason || undefined, documentChannel }),
           })
         : await fetch("/api/vouchers", {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               ids: targetIds,
+              documentChannel,
               status: kind === "APPROVE" ? "APPROVED" : "DRAFT",
               reason: reason || undefined,
             }),
@@ -648,8 +660,10 @@ export default function VouchersPage() {
 
   return (
     <ModuleFrame
-      title="Phiếu Thu / Chi"
-      subtitle="Quản lý hóa đơn chứng từ thu chi, tạm ứng và thanh toán đối tác"
+      title={screenLabel}
+      subtitle={isBankChannel
+        ? "Quản lý Ủy nhiệm thu/chi và chứng từ phát sinh trên tài khoản ngân hàng"
+        : "Quản lý Phiếu thu/chi sử dụng nguồn tiền mặt tại cửa hàng"}
       role={user.role}
       branchCode={branchCode}
       onChangeBranch={handleBranchChange}
@@ -678,7 +692,7 @@ export default function VouchersPage() {
               <span className="text-xs font-semibold text-slate-500">Chờ duyệt / Nháp</span>
               <span className="material-symbols-outlined text-amber-500 text-xl">pending_actions</span>
             </div>
-            <p className="text-lg font-bold text-amber-600 mt-1">{pendingCount} phiếu</p>
+            <p className="text-lg font-bold text-amber-600 mt-1">{pendingCount} chứng từ</p>
           </div>
           <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
             <div className="flex items-center justify-between">
@@ -695,16 +709,16 @@ export default function VouchersPage() {
             <form onSubmit={submitVoucher} className="bg-white border border-slate-200 rounded-2xl shadow-sm p-5 space-y-4">
               <div>
                 <span className="text-[10px] font-bold text-blue-600 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-full uppercase">
-                  6.3 Receipt / Payment
+                  {isBankChannel ? "Bank Receipt / Payment" : "6.3 Receipt / Payment"}
                 </span>
                 <h2 className="font-bold text-lg mt-2 text-slate-800">
-                  {editingVoucher ? `Sửa phiếu ${editingVoucher.code}` : "Tạo phiếu thu/chi"}
+                  {editingVoucher ? `Sửa ${voucherTypeLabel(editingVoucher.voucherType, documentChannel).toLowerCase()} ${editingVoucher.code}` : `Tạo ${screenLabel.toLowerCase()}`}
                 </h2>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <label className="text-xs font-bold text-slate-600 block">
-                  Loại phiếu *
+                  Loại chứng từ *
                   <select
                     value={form.voucherType}
                     onChange={(event) => {
@@ -720,23 +734,23 @@ export default function VouchersPage() {
                     }}
                     className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white"
                   >
-                    <option value="RECEIPT">Phiếu thu (Receipt)</option>
-                    <option value="PAYMENT">Phiếu chi (Payment)</option>
+                    <option value="RECEIPT">{voucherTypeLabel("RECEIPT", documentChannel)}</option>
+                    <option value="PAYMENT">{voucherTypeLabel("PAYMENT", documentChannel)}</option>
                   </select>
                 </label>
 
                 <div className="flex flex-col">
-                  <span className="text-xs font-bold text-slate-600 mb-1">Ngày lập phiếu *</span>
+                  <span className="text-xs font-bold text-slate-600 mb-1">Ngày chứng từ *</span>
                   <DateInput
                     value={form.voucherDate}
                     onChange={(d) => setForm((value) => ({ ...value, voucherDate: d }))}
                     className="w-full"
-                    ariaLabel="Ngày lập phiếu"
+                    ariaLabel="Ngày chứng từ"
                   />
                 </div>
               </div>
 
-              <label className="text-xs font-bold text-slate-600 block">
+              {!isBankChannel && <label className="text-xs font-bold text-slate-600 block">
                 Ca làm việc *
                 <select
                   value={form.shift}
@@ -750,7 +764,7 @@ export default function VouchersPage() {
                 <span className="mt-1 block text-[11px] font-medium text-slate-500">
                   Quyết định phiếu này nằm ở ca nào trong báo cáo Thu chi ngày.
                 </span>
-              </label>
+              </label>}
 
               {form.voucherType === "RECEIPT" && (
                 <div className={`grid gap-3 ${form.depositAction === "COLLECT" ? "grid-cols-2" : "grid-cols-1"}`}>
@@ -861,7 +875,7 @@ export default function VouchersPage() {
                     required
                   >
                     <option value="">{moneySourcesLoading ? "-- Đang tải nguồn tiền --" : "-- Chọn nguồn tiền --"}</option>
-                    {editingVoucher && form.moneySourceCode && !isMoneySourceAllowed(moneySources, form.moneySourceCode, form.branchCode, voucherMoneySourceGroups) && (() => {
+                    {editingVoucher && form.moneySourceCode && !isMoneySourceAllowed(moneySources, form.moneySourceCode, form.branchCode, sourceGroups) && (() => {
                       const historicalSource = moneySources.find((source) => source.code === form.moneySourceCode);
                       return historicalSource ? (
                         <option key={historicalSource.id || historicalSource.code} value={historicalSource.code}>
@@ -869,13 +883,13 @@ export default function VouchersPage() {
                         </option>
                       ) : null;
                     })()}
-                    {filterMoneySources(moneySources, form.branchCode, voucherMoneySourceGroups).map((source) => (
+                    {filterMoneySources(moneySources, form.branchCode, sourceGroups).map((source) => (
                       <option key={source.id || source.code} value={source.code} title={moneySourceDebugLabel(source, storeLabel(form.branchCode))}>
                         {moneySourceDisplayName(source, storeLabel(form.branchCode))}
                       </option>
                     ))}
-                    {filterMoneySources(moneySources, form.branchCode, voucherMoneySourceGroups).length === 0 && (
-                      <option value="" disabled>{moneySourcesError || "Chưa có nguồn tiền mặt cho cửa hàng này"}</option>
+                    {filterMoneySources(moneySources, form.branchCode, sourceGroups).length === 0 && (
+                      <option value="" disabled>{moneySourcesError || `Chưa có nguồn ${isBankChannel ? "ngân hàng" : "tiền mặt"} cho cửa hàng này`}</option>
                     )}
                   </select>
                   {moneySourcesError && <span className="mt-1 block text-[11px] font-medium text-rose-600">{moneySourcesError}</span>}
@@ -980,9 +994,11 @@ export default function VouchersPage() {
           <section className="min-w-0 bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden flex flex-col">
             <div className="p-5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
               <div>
-                <h2 className="font-bold text-slate-800">Danh sách phiếu</h2>
+                <h2 className="font-bold text-slate-800">Danh sách {screenLabel.toLowerCase()}</h2>
                 <p className="text-xs text-slate-500 mt-1">
-                  Phiếu được duyệt ngay khi lập. Tích chọn để duyệt, bỏ duyệt hoặc xoá hàng loạt.
+                  {isBankChannel
+                    ? "Chứng từ từ sao kê ở trạng thái chờ duyệt; chứng từ lập tay được duyệt ngay."
+                    : "Phiếu tiền mặt được duyệt ngay khi lập. Tích chọn để duyệt, bỏ duyệt hoặc xoá hàng loạt."}
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -1081,7 +1097,7 @@ export default function VouchersPage() {
                               ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
                               : "bg-rose-50 text-rose-700 border border-rose-200"
                           }`}>
-                            {voucher.voucherType === "RECEIPT" ? "Thu" : "Chi"}
+                            {voucherTypeLabel(voucher.voucherType, documentChannel)}
                           </span>
                           {voucher.voucherType === "RECEIPT" && (
                             <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
@@ -1089,7 +1105,11 @@ export default function VouchersPage() {
                                 ? "bg-amber-50 text-amber-700 border border-amber-200"
                                 : "bg-blue-50 text-blue-700 border border-blue-200"
                             }`}>
-                              {voucher.depositAction ? "Tiền cọc" : "Doanh thu"}
+                              {voucher.depositAction
+                                ? "Tiền cọc"
+                                : voucher.businessEffect === "SETTLEMENT"
+                                  ? "Đối soát POS"
+                                  : isBankChannel ? "Thu ngân hàng" : "Thu khác"}
                             </span>
                           )}
                           <CopyableText value={voucher.code}><b className="text-slate-800 font-semibold">{voucher.code}</b></CopyableText>
@@ -1111,6 +1131,12 @@ export default function VouchersPage() {
                       <td className="px-4 py-3.5 align-top whitespace-normal break-words">
                         <b className="block text-slate-800 font-medium leading-5">{voucher.partnerName}</b>
                         <p className="mt-0.5 text-xs leading-4 text-slate-500 whitespace-normal break-words">{voucher.description}</p>
+                        {isBankChannel && (
+                          <p className="mt-1 text-[11px] font-medium text-blue-700">
+                            Tài khoản: {voucher.moneySourceCode}
+                            {voucher.sourceDocumentCode ? ` · POS: ${voucher.sourceDocumentCode}` : ""}
+                          </p>
+                        )}
                       </td>
                       <td className="px-4 py-3.5 text-right font-bold text-slate-900 whitespace-nowrap">{money(voucher.amount)} đ</td>
                       <td className="px-4 py-3.5 whitespace-nowrap">
@@ -1128,7 +1154,7 @@ export default function VouchersPage() {
                         <button onClick={() => window.open(`/vouchers/${voucher.id}/print`, "_blank")} className="px-2.5 py-1 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 rounded-lg text-xs font-bold transition-colors">In</button>
                         <RowActions
                           session={user}
-                          module="/vouchers"
+                          module={moduleHref}
                           compact
                           onEdit={() => startEditVoucher(voucher)}
                           onDelete={() => {
@@ -1343,4 +1369,8 @@ export default function VouchersPage() {
       )}
     </ModuleFrame>
   );
+}
+
+export default function VouchersPage() {
+  return <VoucherManagementPage documentChannel="CASH" />;
 }
