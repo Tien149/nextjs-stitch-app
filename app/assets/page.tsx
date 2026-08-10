@@ -9,6 +9,7 @@ import { displayRoleName, storeLabel, visibleStoreOptions } from "@/lib/branch-l
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
+import { resolveInitialBranchScope } from "@/components/BranchScopeSelect";
 
 type MasterItem = {
   id: string;
@@ -86,6 +87,7 @@ export default function AssetsPage() {
   const [assetGroups, setAssetGroups] = useState<MasterItem[]>([]);
   const [form, setForm] = useState(emptyForm);
   const [message, setMessage] = useState("");
+  const [messageTone, setMessageTone] = useState<"success" | "error">("success");
   const [loading, setLoading] = useState(true);
   /** Tài sản đang sửa; null nghĩa là biểu mẫu đang ở chế độ tạo mới. */
   const [editingAsset, setEditingAsset] = useState<Asset | null>(null);
@@ -114,6 +116,11 @@ export default function AssetsPage() {
       return;
     }
     window.setTimeout(() => {
+      const initialScope = resolveInitialBranchScope(session, "");
+      const initialBranch = initialScope === "ALL"
+        ? visibleStoreOptions(session)[0]?.code || ""
+        : initialScope;
+      setForm((current) => ({ ...current, branchCode: initialBranch, location: "", departmentCode: "" }));
       setUser(session);
       setLoading(false);
     }, 0);
@@ -201,10 +208,9 @@ export default function AssetsPage() {
     const branchWhs = warehouses.filter(
       (w) => !w.branch || w.branch === form.branchCode || w.branch === "ALL"
     );
-    const targetWhs = branchWhs.length > 0 ? branchWhs : warehouses;
-    if (targetWhs.length > 0 && (!form.location || !targetWhs.some((w) => w.code === form.location))) {
+    if (!form.location || !branchWhs.some((w) => w.code === form.location)) {
       window.setTimeout(() => {
-        setForm((prev) => ({ ...prev, location: targetWhs[0].code }));
+        setForm((prev) => ({ ...prev, location: branchWhs[0]?.code || "" }));
       }, 0);
     }
   }, [form.branchCode, form.location, warehouses]);
@@ -214,14 +220,14 @@ export default function AssetsPage() {
     const filtered = warehouses.filter(
       (w) => !w.branch || w.branch === form.branchCode || w.branch === "ALL"
     );
-    return filtered.length > 0 ? filtered : warehouses;
+    return filtered;
   }, [warehouses, form.branchCode]);
 
   const availableFormDepartments = useMemo(() => {
     const filtered = departments.filter(
       (d) => !d.branch || d.branch === form.branchCode || d.branch === "ALL"
     );
-    return filtered.length > 0 ? filtered : departments;
+    return filtered;
   }, [departments, form.branchCode]);
 
   // Filter warehouse list
@@ -326,9 +332,11 @@ export default function AssetsPage() {
       });
       const payload = await response.json();
       if (!response.ok) {
+        setMessageTone("error");
         setMessage(payload.error || "Không lưu được thay đổi tài sản");
         return;
       }
+      setMessageTone("success");
       setMessage(`Đã lưu thay đổi hồ sơ tài sản ${editingAsset.code}.`);
       resetAssetForm();
       await loadAssets();
@@ -345,9 +353,11 @@ export default function AssetsPage() {
     });
     const payload = await response.json();
     if (!response.ok) {
+      setMessageTone("error");
       setMessage(payload.error || "Không tạo được tài sản");
       return;
     }
+    setMessageTone("success");
     setMessage("Đã tạo thành công hồ sơ tài sản / CCDC.");
     setForm({ ...emptyForm, branchCode: form.branchCode });
     await loadAssets();
@@ -370,6 +380,7 @@ export default function AssetsPage() {
         return;
       }
       if (editingAsset?.id === deletingAsset.id) resetAssetForm();
+      setMessageTone("success");
       setMessage(`Đã chuyển tài sản ${deletingAsset.code} vào Thùng rác.`);
       setDeletingAsset(null);
       await loadAssets();
@@ -381,10 +392,12 @@ export default function AssetsPage() {
   const handleImageUpload = (file: File | null) => {
     if (!file) return;
     if (!file.type.startsWith("image/")) {
+      setMessageTone("error");
       setMessage("Vui lòng chọn file hình ảnh hợp lệ.");
       return;
     }
     if (file.size > 1_500_000) {
+      setMessageTone("error");
       setMessage("Hình ảnh nên nhỏ hơn 1.5MB để tải nhanh trên VPS.");
       return;
     }
@@ -766,7 +779,7 @@ export default function AssetsPage() {
               </label>
 
               {message && (
-                <p className="text-sm rounded-lg bg-blue-50 border border-blue-100 text-blue-700 px-3 py-2">
+                <p className={`text-sm rounded-lg border px-3 py-2 ${messageTone === "error" ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
                   {message}
                 </p>
               )}
@@ -795,7 +808,7 @@ export default function AssetsPage() {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h2 className="font-bold text-slate-900 text-base">Danh sách Tài sản &amp; CCDC</h2>
                 {message && !showAssetForm && (
-                  <p className="text-xs rounded-lg bg-blue-50 border border-blue-100 text-blue-700 px-3 py-1.5">{message}</p>
+                  <p className={`text-xs rounded-lg border px-3 py-1.5 ${messageTone === "error" ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>{message}</p>
                 )}
                 <button
                   onClick={loadAssets}
