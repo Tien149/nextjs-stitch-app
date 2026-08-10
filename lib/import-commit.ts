@@ -1441,6 +1441,9 @@ export async function commitImport(input: CommitInput) {
         inventoryTransactions: input.importType === "INVENTORY_TRANSACTION",
       },
     });
+  }, {
+    maxWait: 10_000,
+    timeout: 120_000,
   });
   const bankAutoApproved = input.importType === "BANK_STATEMENT"
     ? (batchResult?.bankTransactions || []).filter((row) => row.reconcileStatus === "MATCHED" && row.autoProcessType !== "NET_ZERO").length

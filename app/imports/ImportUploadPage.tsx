@@ -784,10 +784,10 @@ export default function ImportUploadPage({
             </div>
 
             {message && (
-              <p className={`h-9 max-w-[420px] truncate rounded-lg border px-3 py-2 text-xs font-semibold shadow-sm ${
+              <p className={`rounded-lg border px-3 py-2 text-xs font-semibold shadow-sm ${
                 messageIsError
-                  ? "border-rose-200 bg-rose-50 text-rose-700"
-                  : "border-blue-100 bg-blue-50 text-blue-700"
+                  ? "min-h-9 w-full max-w-[760px] whitespace-normal leading-5 border-rose-300 bg-rose-50 text-rose-700"
+                  : "h-9 max-w-[420px] truncate border-blue-100 bg-blue-50 text-blue-700"
               }`}>
                 {message}
               </p>

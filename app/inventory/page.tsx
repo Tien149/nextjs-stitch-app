@@ -161,7 +161,12 @@ export default function InventoryPage() {
   if (loading) return <div className="h-screen grid place-items-center bg-slate-100">Đang tải...</div>;
   
   return (
-    <ModuleFrame title="Kho & Định lượng" subtitle="Giai đoạn 3 • Quản lý kho hàng, tính giá bình quân, công thức định lượng và hủy hàng" role={user?.role}>
+    <ModuleFrame
+      title="Kho & Định lượng"
+      subtitle="Giai đoạn 3 • Quản lý kho hàng, tính giá bình quân, công thức định lượng và hủy hàng"
+      role={user?.role}
+      contentClassName="max-w-[1680px]"
+    >
       {/* Operational Summary Cards */}
       <StickyFilterBar>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
@@ -319,7 +324,7 @@ export default function InventoryPage() {
       )}
 
       {active === "items" && (
-        <div className="grid lg:grid-cols-[360px_1fr] gap-5">
+        <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
           {canCreate && (
             <div className="space-y-4">
             <form onSubmit={(e) => { e.preventDefault(); void send({ action: "CREATE_ITEM", ...itemForm }, "Đã tạo mặt hàng."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
@@ -402,6 +407,7 @@ export default function InventoryPage() {
           <section className="table-panel shadow-sm">
             <Panel title="Danh mục mặt hàng" reload={loadData} />
             <Table
+              tableClassName="min-w-[1050px]"
               headers={[
                 { label: "Mã" },
                 { label: "Tên" },
@@ -851,10 +857,18 @@ function Input({ label, children }: { label: string; children: React.ReactNode }
 function ItemSelect({ items, value, onChange }: { items: Item[]; value: string; onChange: (value: string) => void }) { return <select className="control" value={value} onChange={(e) => onChange(e.target.value)}><option value="">Chọn mặt hàng</option>{items.map((item) => <option key={item.id} value={item.id}>{item.code} - {item.name}</option>)}</select>; }
 function Panel({ title, reload }: { title: string; reload: () => void }) { return <div className="p-5 flex justify-between"><h2 className="font-bold text-slate-800">{title}</h2><button type="button" title="Tải lại" onClick={reload} className="icon-button"><span className="material-symbols-outlined text-lg">refresh</span></button></div>; }
 
-function Table({ headers, children }: { headers: { label: string; align?: "left" | "right" }[]; children: React.ReactNode }) {
+function Table({
+  headers,
+  children,
+  tableClassName = "",
+}: {
+  headers: { label: string; align?: "left" | "right" }[];
+  children: React.ReactNode;
+  tableClassName?: string;
+}) {
   return (
     <div className="overflow-x-auto max-h-[580px] overflow-y-auto custom-scrollbar">
-      <table className="w-full text-sm">
+      <table className={`w-full text-sm ${tableClassName}`}>
         <thead className="bg-slate-50 text-xs text-slate-500 uppercase border-b border-slate-200 sticky top-0 z-10 shadow-sm">
           <tr>
             {headers.map((header, i) => (

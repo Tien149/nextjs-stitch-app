@@ -11,6 +11,21 @@ import { prisma } from "@/lib/prisma";
 
 const menuHref = "/imports";
 const maxFileSize = 10 * 1024 * 1024;
+const importTransactionTimeoutMessage = [
+  "File có quá nhiều dòng nên quá trình commit vượt thời gian xử lý cho phép.",
+  "Hệ thống đã hoàn tác toàn bộ, không có dữ liệu nào của lần import này được ghi nhận.",
+  "Vui lòng giữ nguyên dòng tiêu đề, chia file thành các file nhỏ tối đa 500 dòng và import lần lượt.",
+].join(" ");
+
+function isImportTransactionTimeout(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { code?: unknown; message?: unknown; meta?: { error?: unknown } };
+  if (candidate.code !== "P2028") return false;
+  const detail = [candidate.message, candidate.meta?.error]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ");
+  return /transaction (?:not found|already closed)|expired transaction|timeout|timed out|old closed transaction/i.test(detail);
+}
 
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -368,6 +383,13 @@ export async function POST(request: Request) {
   } catch (error) {
     if (isUniqueConstraintError(error)) {
       return NextResponse.json({ error: "Dữ liệu bị trùng với bản ghi đã tồn tại" }, { status: 409 });
+    }
+    if (isImportTransactionTimeout(error)) {
+      console.error("Import transaction timed out and was rolled back:", error);
+      return NextResponse.json(
+        { error: importTransactionTimeoutMessage, errorCode: "IMPORT_TRANSACTION_TIMEOUT" },
+        { status: 408 },
+      );
     }
     const message = error instanceof Error ? error.message : "Internal Server Error";
     const status = /quyền|không có quyền/i.test(message) ? 403 : 400;
