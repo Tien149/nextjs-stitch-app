@@ -41,6 +41,8 @@ model MasterDataItem {
   phone        String?
   email        String?
   accountNo    String?
+  /// Tiền tố sinh mã tự động cho danh mục hỗ trợ cấp mã, hiện dùng cho Nhóm tài sản/CCDC.
+  codePrefix   String?
   status       String   @default("ACTIVE")
   note         String?
   createdAt    DateTime @default(now())

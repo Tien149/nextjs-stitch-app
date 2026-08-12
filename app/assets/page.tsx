@@ -19,6 +19,7 @@ type MasterItem = {
   branch: string | null;
   status: string;
   group?: string | null;
+  codePrefix?: string | null;
 };
 
 type Asset = {
@@ -49,6 +50,8 @@ type Asset = {
   remainingPeriods?: number | null;
   computedCurrentValue?: number;
   computedStatus?: "IN_USE" | "FULLY_ALLOCATED" | "DISPOSED";
+  canEditCode?: boolean;
+  codeEditLockReason?: string | null;
 };
 
 const ASSET_GROUPS: { code: string; label: string; isTool?: boolean }[] = [
@@ -60,6 +63,7 @@ const ASSET_GROUPS: { code: string; label: string; isTool?: boolean }[] = [
 ];
 
 const emptyForm = {
+  code: "",
   name: "",
   branchCode: "HCM",
   departmentCode: "",
@@ -282,6 +286,7 @@ export default function AssetsPage() {
     setMessage("");
     setEditingAsset(asset);
     setForm({
+      code: asset.code,
       name: asset.name,
       branchCode: asset.branchCode,
       departmentCode: asset.departmentCode || "",
@@ -310,6 +315,7 @@ export default function AssetsPage() {
       const payloadBody = editingAllocatedPeriods > 0
         ? {
             id: editingAsset.id,
+            code: form.code,
             name: form.name,
             branchCode: form.branchCode,
             departmentCode: form.departmentCode,
@@ -337,7 +343,7 @@ export default function AssetsPage() {
         return;
       }
       setMessageTone("success");
-      setMessage(`Đã lưu thay đổi hồ sơ tài sản ${editingAsset.code}.`);
+      setMessage(`Đã lưu thay đổi hồ sơ tài sản ${payload.code || editingAsset.code}.`);
       resetAssetForm();
       await loadAssets();
       return;
@@ -564,6 +570,26 @@ export default function AssetsPage() {
                   ngày bắt đầu khấu hao và giá trị thu hồi sẽ được giữ nguyên. Chỉ thông tin quản lý được cập nhật.
                 </p>
               )}
+
+              <label className="text-xs font-bold text-slate-600 block">
+                Mã tài sản / CCDC
+                <input
+                  type="text"
+                  value={form.code}
+                  onChange={(e) => setForm((v) => ({ ...v, code: e.target.value.toUpperCase() }))}
+                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono uppercase focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
+                  placeholder={assetGroups.find((group) => group.code === form.assetGroup)?.codePrefix || "Để trống để hệ thống tự sinh"}
+                  disabled={Boolean(editingAsset && editingAsset.canEditCode === false)}
+                  maxLength={50}
+                />
+                <span className="mt-1 block text-[11px] font-normal text-slate-500">
+                  {editingAsset?.canEditCode === false
+                    ? editingAsset.codeEditLockReason || "Mã đã bị khóa do hồ sơ đã phát sinh nghiệp vụ."
+                    : form.code
+                      ? "Mã nhập thủ công; chỉ dùng chữ, số, dấu - và _."
+                      : "Để trống để tự sinh theo tiền tố của nhóm tài sản."}
+                </span>
+              </label>
 
               <label className="text-xs font-bold text-slate-600 block">
                 Tên tài sản / CCDC *

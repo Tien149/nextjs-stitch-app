@@ -1,11 +1,10 @@
 import { NextResponse } from "next/server";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
-import { prisma } from "@/lib/prisma";
+import { prisma, prismaRaw } from "@/lib/prisma";
 import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
 import { writeAuditLog } from "@/lib/audit-log";
+import { assertAssetCodeAvailable, AssetCodeError, nextAssetCode, normalizeAssetCode } from "@/lib/asset-code-generator";
 import {
-  duplicatedInTrashMessage,
-  findDeletedByUnique,
   softDeleteRecord,
   SoftDeleteError,
 } from "@/lib/soft-delete";
@@ -29,11 +28,6 @@ function cleanText(value: unknown) {
 function toAmount(value: unknown) {
   const numberValue = Number(value);
   return Number.isFinite(numberValue) ? numberValue : 0;
-}
-
-async function nextAssetCode() {
-  const count = await prisma.assetRecord.count();
-  return `TS-${String(count + 1).padStart(4, "0")}`;
 }
 
 function isDisposedAsset(asset: { disposalStatus: string | null; status: string }) {
@@ -90,9 +84,22 @@ export async function GET(request: Request) {
             depreciationAmount: true,
           },
         },
+        _count: { select: { maintenances: true, damageReports: true } },
       },
       orderBy: { createdAt: "desc" },
     });
+    const [journalEntries, openingBalances] = await Promise.all([
+      prismaRaw.journalEntry.findMany({
+        where: { sourceType: "ASSET_ACQUISITION", sourceId: { in: assets.map((asset) => asset.id) }, deletedAt: null },
+        select: { sourceId: true },
+      }),
+      prismaRaw.openingBalance.findMany({
+        where: { balanceType: "ASSET", objectCode: { in: assets.map((asset) => asset.code) }, deletedAt: null },
+        select: { objectCode: true },
+      }),
+    ]);
+    const journaledAssetIds = new Set(journalEntries.map((entry) => entry.sourceId));
+    const openingBalanceAssetCodes = new Set(openingBalances.map((entry) => entry.objectCode));
 
     const enriched = assets.map((asset) => {
       const allocatedPeriods = asset.depreciations.length;
@@ -109,7 +116,23 @@ export async function GET(request: Request) {
         computedStatus = "FULLY_ALLOCATED";
       }
 
-      const { depreciations: _depreciations, ...baseAsset } = asset;
+      const { depreciations: _depreciations, _count, ...baseAsset } = asset;
+      void _depreciations;
+      const codeEditLockReason = isDisposedAsset(asset)
+        ? "Tài sản đã thanh lý."
+        : allocatedPeriods > 0
+          ? `Tài sản đã trích khấu hao ${allocatedPeriods} kỳ.`
+          : _count.maintenances > 0
+            ? "Tài sản đã phát sinh bảo trì."
+            : _count.damageReports > 0
+              ? "Tài sản đã phát sinh báo hỏng."
+              : asset.sourcePurchaseOrderId || asset.sourceReceiptId
+                ? "Tài sản đã liên kết chứng từ mua hàng/nhập hàng."
+                : journaledAssetIds.has(asset.id)
+                  ? "Tài sản đã phát sinh bút toán kế toán."
+                  : openingBalanceAssetCodes.has(asset.code)
+                    ? "Tài sản được tạo từ số dư đầu kỳ."
+                    : null;
       return {
         ...baseAsset,
         warehouseCode: asset.warehouseCode || asset.location,
@@ -119,6 +142,8 @@ export async function GET(request: Request) {
         remainingPeriods,
         computedCurrentValue,
         computedStatus,
+        canEditCode: !codeEditLockReason,
+        codeEditLockReason,
       };
     });
 
@@ -179,14 +204,12 @@ export async function POST(request: Request) {
       }
     }
 
-    const code = cleanText(body.code) || (await nextAssetCode());
-    const deletedByCode = await findDeletedByUnique("AssetRecord", { code });
-    if (deletedByCode) {
-      return NextResponse.json({ error: duplicatedInTrashMessage(code, "Tài sản") }, { status: 400 });
-    }
-
-    const asset = await prisma.assetRecord.create({
-      data: {
+    const manualCode = normalizeAssetCode(body.code);
+    const asset = await prismaRaw.$transaction(async (tx) => {
+      const code = manualCode
+        ? await assertAssetCodeAvailable(tx, manualCode)
+        : await nextAssetCode(tx, assetGroup);
+      return tx.assetRecord.create({ data: {
         code,
         name,
         branchCode,
@@ -206,11 +229,17 @@ export async function POST(request: Request) {
         supplierName: cleanText(body.supplierName) || null,
         status: cleanText(body.status) || "IN_USE",
         note: cleanText(body.note) || null,
-      },
+      } });
     });
 
     return NextResponse.json(asset, { status: 201 });
   } catch (error) {
+    if (error instanceof AssetCodeError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    if (typeof error === "object" && error && "code" in error && error.code === "P2002") {
+      return NextResponse.json({ error: "Mã tài sản đã tồn tại. Vui lòng dùng mã khác." }, { status: 409 });
+    }
     console.error("Error creating asset:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
@@ -279,6 +308,35 @@ export async function PATCH(request: Request) {
     }
 
     const targetBranch = body.branchCode !== undefined ? cleanText(body.branchCode) : current.branchCode;
+    const nextCode = body.code !== undefined ? normalizeAssetCode(body.code) : current.code;
+    if (body.code !== undefined && !nextCode) {
+      return NextResponse.json({ error: "Mã tài sản không được để trống khi chỉnh sửa." }, { status: 400 });
+    }
+    const codeChanged = Boolean(nextCode && nextCode !== current.code);
+    if (codeChanged) {
+      const [maintenanceCount, damageCount, journalCount, openingBalanceCount] = await Promise.all([
+        prismaRaw.assetMaintenance.count({ where: { assetId: id } }),
+        prismaRaw.assetDamageReport.count({ where: { assetId: id } }),
+        prismaRaw.journalEntry.count({ where: { sourceType: "ASSET_ACQUISITION", sourceId: id } }),
+        prismaRaw.openingBalance.count({ where: { balanceType: "ASSET", objectCode: current.code } }),
+      ]);
+      const lockReason = depreciationCount > 0
+        ? `đã trích khấu hao ${depreciationCount} kỳ`
+        : maintenanceCount > 0
+          ? "đã phát sinh bảo trì"
+          : damageCount > 0
+            ? "đã phát sinh báo hỏng"
+            : current.sourcePurchaseOrderId || current.sourceReceiptId
+              ? "đã liên kết chứng từ mua hàng/nhập hàng"
+              : journalCount > 0
+                ? "đã phát sinh bút toán kế toán"
+                : openingBalanceCount > 0
+                  ? "được tạo từ số dư đầu kỳ"
+                  : null;
+      if (lockReason) {
+        return NextResponse.json({ error: `Không thể đổi mã tài sản ${current.code} vì hồ sơ ${lockReason}.` }, { status: 409 });
+      }
+    }
 
     try {
       assertBranchAccess(auth.session, current.branchCode);
@@ -304,9 +362,10 @@ export async function PATCH(request: Request) {
       }
     }
 
-    const asset = await prisma.assetRecord.update({
-      where: { id },
-      data: {
+    const asset = await prismaRaw.$transaction(async (tx) => {
+      const validatedCode = codeChanged ? await assertAssetCodeAvailable(tx, nextCode, id) : current.code;
+      return tx.assetRecord.update({ where: { id }, data: {
+        ...(codeChanged ? { code: validatedCode } : {}),
         ...(body.name !== undefined ? { name: cleanText(body.name) } : {}),
         ...(body.branchCode !== undefined ? { branchCode: targetBranch } : {}),
         ...(body.departmentCode !== undefined ? { departmentCode: cleanText(body.departmentCode) || null } : {}),
@@ -324,7 +383,7 @@ export async function PATCH(request: Request) {
         ...(body.supplierName !== undefined ? { supplierName: cleanText(body.supplierName) || null } : {}),
         ...(body.status !== undefined ? { status: cleanText(body.status) || "IN_USE" } : {}),
         ...(body.note !== undefined ? { note: cleanText(body.note) || null } : {}),
-      },
+      } });
     });
 
     await writeAuditLog({
@@ -338,11 +397,18 @@ export async function PATCH(request: Request) {
       metadata: {
         changedFields: Object.keys(body).filter((field) => field !== "id" && field !== "action"),
         depreciationCount,
+        ...(codeChanged ? { oldCode: current.code, newCode: asset.code } : {}),
       },
     });
 
     return NextResponse.json(asset);
   } catch (error) {
+    if (error instanceof AssetCodeError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    if (typeof error === "object" && error && "code" in error && error.code === "P2002") {
+      return NextResponse.json({ error: "Mã tài sản đã tồn tại. Vui lòng dùng mã khác." }, { status: 409 });
+    }
     console.error("Error updating asset:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }

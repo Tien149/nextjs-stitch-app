@@ -1,4 +1,4 @@
-import { prisma } from "@/lib/prisma";
+import { prisma, prismaRaw } from "@/lib/prisma";
 import { assertBranchAccess } from "@/lib/accounting";
 import { isMasterDataImportType, normalizeHeader, type ImportType } from "@/lib/import-templates";
 import type { ParsedImportResult, ParsedImportRow } from "@/lib/import-parser";
@@ -546,7 +546,7 @@ export async function validateImportResult(
     ? await prisma.inventoryBalance.findMany({ include: { item: { select: { code: true } } } })
     : [];
   const existingAssetCodes = importType === "ASSET"
-    ? new Set((await prisma.assetRecord.findMany({ where: { deletedAt: null }, select: { code: true } })).map((asset) => asset.code.toUpperCase()))
+    ? new Set((await prismaRaw.assetRecord.findMany({ select: { code: true } })).map((asset) => asset.code.toUpperCase()))
     : new Set<string>();
 
   const branchTypes: ImportType[] = ["VOUCHER", "INTERNAL_TRANSFER", "DEBT_OPENING", "OPENING_BALANCE", "REVENUE_POS", "PAYROLL", "INVENTORY_TRANSACTION", "STOCKTAKE", "ASSET"];

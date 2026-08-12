@@ -13,6 +13,7 @@ import { commonBankValue, groupBankStatementRows } from "@/lib/bank-statement-im
 import { normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { evaluateBankStatementAutoApproval } from "@/lib/bank-statement-auto-approval";
 import { applyOpeningDeposit } from "@/lib/opening-balance-deposit";
+import { assertAssetCodeAvailable, nextAssetCode } from "@/lib/asset-code-generator";
 
 function asText(value: unknown) {
   return String(value || "").trim();
@@ -417,7 +418,7 @@ export async function commitImport(input: CommitInput) {
       if (new Set(explicitCodes).size !== explicitCodes.length) throw new Error("File co ma tai san/CCDC bi trung nhau");
       if (explicitCodes.length > 0) {
         const existingAsset = await tx.assetRecord.findFirst({
-          where: { code: { in: explicitCodes }, deletedAt: null },
+          where: { code: { in: explicitCodes }, deletedAt: undefined },
           select: { code: true },
         });
         if (existingAsset) throw new Error(`Ma tai san ${existingAsset.code} da ton tai, khong tu ghi de khi import hang loat`);
@@ -1262,15 +1263,11 @@ export async function commitImport(input: CommitInput) {
     }
 
     if (input.importType === "ASSET") {
-      let assetSequence = await tx.assetRecord.count();
       for (const row of input.rows) {
         let code = asText(row.values.asset_code).toUpperCase();
-        if (!code) {
-          do {
-            assetSequence += 1;
-            code = `TS-${String(assetSequence).padStart(4, "0")}`;
-          } while (await tx.assetRecord.findUnique({ where: { code }, select: { id: true } }));
-        }
+        code = code
+          ? await assertAssetCodeAvailable(tx, code)
+          : await nextAssetCode(tx, asText(row.values.asset_group));
         const originalCost = asNumber(row.values.original_cost);
         const asset = await tx.assetRecord.create({
           data: {

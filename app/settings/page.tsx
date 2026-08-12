@@ -23,6 +23,7 @@ type MasterDataItem = {
   phone: string | null;
   email: string | null;
   accountNo: string | null;
+  codePrefix: string | null;
   status: string;
   note: string | null;
   createdAt: string;
@@ -44,6 +45,7 @@ type MasterDataForm = {
   phone: string;
   email: string;
   accountNo: string;
+  codePrefix: string;
   note: string;
   status: string;
 };
@@ -81,6 +83,7 @@ const emptyForm: MasterDataForm = {
   phone: "",
   email: "",
   accountNo: "",
+  codePrefix: "",
   note: "",
   status: "ACTIVE",
 };
@@ -425,6 +428,7 @@ export default function SettingsPage() {
       phone: item.phone || "",
       email: item.email || "",
       accountNo: item.accountNo || "",
+      codePrefix: item.codePrefix || "",
       note: item.note || "",
       status: item.status,
     });
@@ -851,7 +855,9 @@ export default function SettingsPage() {
                           <td className="px-4 py-3 font-medium">{storeLabel(item.branch)}</td>
                           <td className="px-4 py-3 max-w-xs truncate">
                             <p className="font-medium text-xs text-slate-800">
-                              {item.contactName || (item.accountNo ? <CopyableText value={item.accountNo} /> : "-")}
+                              {item.type === "ASSET_GROUP" && item.codePrefix
+                                ? <>Tiền tố mã: <CopyableText value={item.codePrefix} /></>
+                                : item.contactName || (item.accountNo ? <CopyableText value={item.accountNo} /> : "-")}
                             </p>
                             <p className="text-[11px] text-slate-500 mt-0.5 italic">
                               {item.phone ? <CopyableText value={item.phone} />
@@ -1234,6 +1240,22 @@ export default function SettingsPage() {
                     />
                   </label>
                 </>
+              )}
+
+              {activeType === "ASSET_GROUP" && (
+                <label className="text-xs font-bold text-slate-700 block">
+                  Tiền tố mã tự động
+                  <input
+                    data-input-kind="code"
+                    value={form.codePrefix}
+                    onChange={(event) => setForm((value) => ({ ...value, codePrefix: event.target.value.toUpperCase() }))}
+                    className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm uppercase outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
+                    placeholder={form.group === "CCDC" || form.group === "TOOL" ? "VD: CCDC-" : "VD: TSCD-"}
+                  />
+                  <span className="mt-1 block text-[11px] font-medium text-slate-500">
+                    Để trống sẽ dùng mặc định: CCDC- cho công cụ dụng cụ, TSCD- cho tài sản cố định.
+                  </span>
+                </label>
               )}
 
               <label className="text-xs font-bold text-slate-700 block">

@@ -11,6 +11,7 @@ import {
   SoftDeleteError,
 } from "@/lib/soft-delete";
 import { scopePayloadByTab } from "@/lib/tab-scope";
+import { nextAssetCode } from "@/lib/asset-code-generator";
 
 const menuHref = "/procurement";
 
@@ -602,14 +603,14 @@ export async function PATCH(request: Request) {
         await tx.purchaseOrderLine.update({ where: { id: line.id }, data: { receivedQuantity: { increment: line.receiveQuantity } } });
         receivedValue += receivedLineValue;
         if (["TOOL", "ASSET"].includes(line.item.itemType)) {
-          const assetSequence = await tx.assetRecord.count();
+          const assetGroup = assetGroupFromItemType(line.item.itemType);
           await tx.assetRecord.create({
             data: {
-              code: `TS-${order.code}-${String(assetSequence + 1).padStart(4, "0")}`,
+              code: await nextAssetCode(tx, assetGroup),
               name: line.item.name,
               branchCode: order.branchCode,
               departmentCode: order.departmentCode || null,
-              assetGroup: assetGroupFromItemType(line.item.itemType),
+              assetGroup,
               imageUrl: line.imageUrl || null,
               location: order.warehouseCode,
               quantity: line.receiveQuantity,

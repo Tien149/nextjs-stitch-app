@@ -156,6 +156,7 @@ const defaultMasterData = [
     code: "EQUIPMENT",
     name: "May moc thiet bi",
     group: "FIXED_ASSET",
+    codePrefix: "TSCD-",
     status: "ACTIVE",
   },
   {
@@ -163,6 +164,7 @@ const defaultMasterData = [
     code: "TOOL",
     name: "Cong cu dung cu",
     group: "CCDC",
+    codePrefix: "CCDC-",
     status: "ACTIVE",
   },
   {
@@ -170,6 +172,7 @@ const defaultMasterData = [
     code: "FURNITURE",
     name: "Noi that va decor",
     group: "FIXED_ASSET",
+    codePrefix: "NT-",
     status: "ACTIVE",
   },
   {
@@ -532,6 +535,16 @@ function normalizeMasterGroup(type: string, group: string | null) {
   return group;
 }
 
+function normalizeAssetCodePrefix(type: string, value: unknown) {
+  if (type !== "ASSET_GROUP") return null;
+  const prefix = cleanText(value).toUpperCase();
+  if (!prefix) return null;
+  if (prefix.length > 30 || !/^[A-Z0-9_-]+$/.test(prefix)) {
+    throw new Error("Tiền tố mã chỉ được gồm chữ, số, dấu gạch ngang (-), gạch dưới (_) và tối đa 30 ký tự.");
+  }
+  return prefix;
+}
+
 export async function POST(request: Request) {
   try {
     const auth = requireMenuAction(request, "/settings", "config");
@@ -546,12 +559,14 @@ export async function POST(request: Request) {
     const branch = cleanText(body.branch) || null;
     const partnerType = type === "PARTNER" ? (cleanText(body.partnerType) || group || "").toUpperCase() : null;
     const partnerGroup = type === "PARTNER" ? (cleanText(body.partnerGroup) || "EXTERNAL").toUpperCase() : null;
+    let codePrefix: string | null = null;
 
     if (!type || !code || !name) {
       return NextResponse.json({ error: "Loại danh mục, mã và tên là bắt buộc" }, { status: 400 });
     }
 
     try {
+      codePrefix = normalizeAssetCodePrefix(type, body.codePrefix);
       await validateMasterData(type, partnerType || group, branch, partnerGroup);
       if (branch && ["WAREHOUSE", "MONEY_SOURCE", "DEPARTMENT"].includes(type)) {
         assertBranchAccess(auth.session, branch);
@@ -581,6 +596,7 @@ export async function POST(request: Request) {
         phone: cleanText(body.phone) || null,
         email: cleanText(body.email) || null,
         accountNo: cleanText(body.accountNo) || null,
+        codePrefix,
         note: cleanText(body.note) || null,
         status: cleanText(body.status) || "ACTIVE",
       },
@@ -627,8 +643,10 @@ export async function PATCH(request: Request) {
     const partnerGroup = current.type === "PARTNER"
       ? (body.partnerGroup !== undefined ? cleanText(body.partnerGroup) || null : current.partnerGroup || "EXTERNAL")
       : null;
+    let codePrefix = current.codePrefix;
 
     try {
+      if (body.codePrefix !== undefined) codePrefix = normalizeAssetCodePrefix(current.type, body.codePrefix);
       await validateMasterData(current.type, partnerType || group, branch, partnerGroup);
       if (branch && ["WAREHOUSE", "MONEY_SOURCE", "DEPARTMENT"].includes(current.type)) {
         assertBranchAccess(auth.session, branch);
@@ -661,6 +679,7 @@ export async function PATCH(request: Request) {
         ...(body.phone !== undefined ? { phone: cleanText(body.phone) || null } : {}),
         ...(body.email !== undefined ? { email: cleanText(body.email) || null } : {}),
         ...(body.accountNo !== undefined ? { accountNo: cleanText(body.accountNo) || null } : {}),
+        ...(body.codePrefix !== undefined ? { codePrefix } : {}),
         ...(body.note !== undefined ? { note: cleanText(body.note) || null } : {}),
         ...(body.status !== undefined ? { status: cleanText(body.status) || "ACTIVE" } : {}),
       },

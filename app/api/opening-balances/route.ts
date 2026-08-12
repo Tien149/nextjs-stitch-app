@@ -6,6 +6,7 @@ import { buildAuditLogData } from "@/lib/audit-log";
 import { prisma, prismaRaw } from "@/lib/prisma";
 import { applyOpeningDeposit, revertOpeningDeposit } from "@/lib/opening-balance-deposit";
 import { normalizeOpeningBalanceInput, validateOpeningBalanceInput, type OpeningBalanceInput } from "@/lib/opening-balance-rules";
+import { assertAssetCodeAvailable } from "@/lib/asset-code-generator";
 
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -54,9 +55,9 @@ async function applySideEffects(tx: Prisma.TransactionClient, current: OpeningBa
     return;
   }
   if (current.balanceType === "ASSET") {
-    if (await tx.assetRecord.findUnique({ where: { code: current.objectCode || "" } })) throw new Error(`Tài sản mã ${current.objectCode} đã tồn tại`);
+    const assetCode = await assertAssetCodeAvailable(tx, current.objectCode || "");
     await tx.assetRecord.create({ data: {
-      code: current.objectCode || "", name: current.objectName || "", branchCode: current.branchCode,
+      code: assetCode, name: current.objectName || "", branchCode: current.branchCode,
       departmentCode: current.departmentCode, assetGroup: current.moneySourceCode || "ASSET",
       location: current.warehouseCode ? `Kho ${current.warehouseCode}` : "Văn phòng",
       quantity: current.quantity || 1,
