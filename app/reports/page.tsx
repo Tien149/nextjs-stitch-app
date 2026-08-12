@@ -350,15 +350,24 @@ export default function ReportsPage() {
    */
   const dailyCashSummaryRows = useMemo(() => {
     if (!dailyCash) return [] as Array<{ label: string; bucket: DailyCashBucket; expense?: number; cashToDeposit?: number }>;
+    // Phiếu thu tiền mặt chi tiết là số tiền bán hàng thực thu của ca/ngày.
+    // Gộp vào dòng doanh thu để bảng tổng hợp khớp với phần chi tiết bên dưới,
+    // nhưng vẫn giữ summary.receipt riêng cho bảng chứng từ.
+    const revenueWithCashReceipts: DailyCashBucket = {
+      total: dailyCash.summary.revenue.total + dailyCash.summary.receipt.total,
+      cash: dailyCash.summary.revenue.cash + dailyCash.summary.receipt.cash,
+      transfer: dailyCash.summary.revenue.transfer + dailyCash.summary.receipt.transfer,
+      card: dailyCash.summary.revenue.card + dailyCash.summary.receipt.card,
+      grab: dailyCash.summary.revenue.grab + dailyCash.summary.receipt.grab,
+      other: dailyCash.summary.revenue.other + dailyCash.summary.receipt.other,
+    };
     return [
       {
         label: "Doanh thu bán hàng",
-        bucket: dailyCash.summary.revenue,
+        bucket: revenueWithCashReceipts,
         expense: dailyCash.summary.cashExpenseTotal,
-        cashToDeposit: dailyCash.summary.revenue.cash - dailyCash.summary.cashExpenseTotal,
+        cashToDeposit: revenueWithCashReceipts.cash - dailyCash.summary.cashExpenseTotal,
       },
-      // Phiếu thu ngoài POS là dòng tiền thu khác, không được cộng vào doanh thu bán hàng.
-      { label: "Thu khác", bucket: dailyCash.summary.receipt, cashToDeposit: dailyCash.summary.receipt.cash },
       // Đặt cọc không gánh chi tiền mặt nên số nộp đúng bằng phần tiền mặt của nó.
       { label: "Đặt cọc", bucket: dailyCash.summary.deposit, cashToDeposit: dailyCash.summary.deposit.cash },
     ];
@@ -1120,7 +1129,7 @@ export default function ReportsPage() {
           )}
 
           <section className="table-panel">
-            <PanelHeader title="Tổng hợp thu trong ngày" subtitle="Doanh thu bán hàng lấy từ POS (hoặc nhập tay khi chưa có POS); phiếu thu ngoài POS và tiền cọc được tách riêng để không ghi nhận trùng doanh thu." />
+            <PanelHeader title="Tổng hợp thu trong ngày" subtitle="Doanh thu bán hàng gồm số liệu POS (hoặc nhập tay khi chưa có POS) và các phiếu thu tiền mặt chi tiết trong ngày/ca; tiền cọc được theo dõi riêng." />
             <Table headers={["Loại", "Tổng thu", "Tiền mặt", "Chuyển khoản", "Quẹt thẻ/Ví", "Grab", "Khác", "Tổng chi tiền mặt", "Nộp tiền"]}>
               {dailyCashSummaryRows.map((row) => (
                 <DailyCashSummaryRow key={row.label} label={row.label} bucket={row.bucket} expense={row.expense} cashToDeposit={row.cashToDeposit} />
