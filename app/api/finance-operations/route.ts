@@ -11,6 +11,7 @@ import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { cashDepositRoundingExpense, cashDepositUnit, roundCashDepositAmount } from "@/lib/cash-deposit";
 import { completePendingReconciliation, releasePendingReconciliation } from "@/lib/reconciliation-links";
 import { CASH_SOURCE_OPENING_TYPES, OPENING_BALANCE_EFFECTIVE_STATUSES } from "@/lib/opening-balance-rules";
+import { parseImportDate } from "@/lib/import-parser";
 
 const menuHref = "/finance-operations";
 const cashDepositDenominations = [500000, 200000, 100000, 50000, 20000, 10000, 5000, 2000, 1000];
@@ -469,6 +470,8 @@ export async function POST(request: Request) {
       const feeAmount = grossAmount - amount;
       const feeCategoryCode = cleanText(body.feeCategoryCode);
       const externalRef = cleanText(body.externalRef) || null;
+      const sourceReportDateText = cleanText(body.sourceReportDate);
+      const sourceReportDate = sourceReportDateText ? parseImportDate(sourceReportDateText) : null;
 
       if (!branchCode || branchCode === "ALL") businessError("Quyết toán ví bắt buộc chọn một cửa hàng cụ thể.");
       if (amount <= 0) businessError("Số tiền thực nhận về ngân hàng phải lớn hơn 0.");
@@ -476,6 +479,7 @@ export async function POST(request: Request) {
       if (!fromMoneySourceCode || !toMoneySourceCode) businessError("Nguồn ví và tài khoản ngân hàng là bắt buộc.");
       if (fromMoneySourceCode === toMoneySourceCode) businessError("Nguồn ví và tài khoản nhận không được trùng nhau.");
       if (feeAmount > 0 && !feeCategoryCode) businessError("Có chênh lệch phí thì bắt buộc chọn khoản mục chi phí để đưa lên P&L.");
+      if (sourceReportDateText && !sourceReportDate) businessError("Ngày doanh thu không hợp lệ.");
 
       try {
         assertBranchAccess(auth.session, branchCode);
@@ -515,6 +519,7 @@ export async function POST(request: Request) {
           description: cleanText(body.description)
             || `Quyết toán ${moneySourceDisplayName(fromMoneySource)} về ${moneySourceDisplayName(toMoneySource)}${feeAmount > 0 ? ` (phí ${feeAmount.toLocaleString("vi-VN")} đ)` : ""}`,
           transferPurpose: "WALLET_SETTLEMENT",
+          sourceReportDate,
           // Sao kê đã là bằng chứng tiền về nên ghi nhận luôn, không bắt duyệt thêm một vòng.
           status: "APPROVED",
           createdBy: auth.session.name,
@@ -530,7 +535,7 @@ export async function POST(request: Request) {
         entityId: result.id,
         entityCode: result.code,
         branchCode,
-        metadata: { grossAmount, amount, feeAmount, feeCategoryCode, from: fromMoneySourceCode, to: toMoneySourceCode, externalRef },
+        metadata: { grossAmount, amount, feeAmount, feeCategoryCode, from: fromMoneySourceCode, to: toMoneySourceCode, externalRef, sourceReportDate },
       });
       return NextResponse.json(result, { status: 201 });
     }

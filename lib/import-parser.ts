@@ -76,7 +76,7 @@ function checkedUtcDate(year: number, month: number, day: number) {
     : null;
 }
 
-function parseDate(value: unknown) {
+export function parseImportDate(value: unknown) {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
     return checkedUtcDate(value.getFullYear(), value.getMonth() + 1, value.getDate());
   }
@@ -122,7 +122,7 @@ function coerceValue(field: ImportFieldDefinition, value: unknown) {
       : { value: null, error: `${field.label} phải là số nguyên` };
   }
 
-  const parsed = parseDate(value);
+  const parsed = parseImportDate(value);
   return parsed ? { value: parsed } : { value: null, error: `${field.label} không đúng định dạng ngày hợp lệ` };
 }
 

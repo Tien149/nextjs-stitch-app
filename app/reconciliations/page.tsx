@@ -16,6 +16,8 @@ type Candidate = {
   targetAmount: number;
   label: string;
   score: number;
+  canMatch: boolean;
+  dateSource: string;
 };
 
 type BankRow = {
@@ -32,6 +34,12 @@ type BankRow = {
   autoProcessNote: string | null;
   branchCode: string | null;
   reconcileStatus: string;
+  revenueDates: string[];
+  suggestedRevenueDate: string | null;
+  revenueDateSource: "COLUMN" | "DESCRIPTION" | "MISSING";
+  isWalletSettlement: boolean;
+  walletSourceCodes: string[];
+  walletGrossAmount: number | null;
   currentMatch: MatchRow | null;
   candidates: Candidate[];
 };
@@ -42,6 +50,8 @@ type SettlementForm = {
   fromMoneySourceCode: string;
   grossAmount: string;
   feeCategoryCode: string;
+  sourceReportDate: string;
+  revenueDateInferred: boolean;
 };
 
 type MatchRow = {
@@ -135,9 +145,13 @@ export default function ReconciliationsPage() {
     setSettlement({
       bankRow,
       branchCode: bankRow.branchCode || "",
-      fromMoneySourceCode: "",
-      grossAmount: String(Math.round(bankRow.creditAmount)),
+      fromMoneySourceCode: bankRow.walletSourceCodes.length === 1 ? bankRow.walletSourceCodes[0] : "",
+      grossAmount: String(Math.round(bankRow.walletGrossAmount || bankRow.creditAmount)),
       feeCategoryCode: "",
+      sourceReportDate: bankRow.revenueDates.length === 1
+        ? bankRow.revenueDates[0].slice(0, 10)
+        : bankRow.suggestedRevenueDate?.slice(0, 10) || "",
+      revenueDateInferred: bankRow.revenueDateSource === "DESCRIPTION",
     });
   };
 
@@ -146,12 +160,17 @@ export default function ReconciliationsPage() {
     setSettlementSaving(true);
     setSettlementError("");
     try {
+      if (!settlement.sourceReportDate) {
+        setSettlementError("Vui lòng xác nhận Ngày doanh thu trước khi tạo quyết toán ví.");
+        return;
+      }
       const response = await fetch("/api/finance-operations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "CREATE_WALLET_SETTLEMENT",
           transferDate: settlement.bankRow.transactionDate,
+          sourceReportDate: settlement.sourceReportDate,
           branchCode: settlement.branchCode,
           fromMoneySourceCode: settlement.fromMoneySourceCode,
           toMoneySourceCode: settlement.bankRow.bankAccount,
@@ -178,7 +197,7 @@ export default function ReconciliationsPage() {
             targetType: "WALLET_SETTLEMENT",
             targetId: payload.id,
             targetCode: payload.code,
-            targetDate: settlement.bankRow.transactionDate,
+            targetDate: settlement.sourceReportDate,
             targetAmount: settlement.bankRow.creditAmount,
             note: `Quyết toán ví ${settlement.fromMoneySourceCode}`,
           }),
@@ -287,7 +306,18 @@ export default function ReconciliationsPage() {
                   <tr key={row.id} className="hover:bg-slate-50 align-top border-t border-slate-100">
                     <td className="px-4 py-3">
                       <b>{row.transactionCode}</b>
-                      <p className="text-xs text-slate-500">{new Date(row.transactionDate).toLocaleDateString("vi-VN")} · {row.bankAccount}</p>
+                      <p className="text-xs text-slate-500">Ngày GD: {new Date(row.transactionDate).toLocaleDateString("vi-VN")} · {row.bankAccount}</p>
+                      {row.revenueDates.length > 0 ? (
+                        <p className="mt-0.5 text-xs font-semibold text-emerald-700">
+                          Ngày DT: {row.revenueDates.map((value) => new Date(value).toLocaleDateString("vi-VN", { timeZone: "UTC" })).join(", ")}
+                        </p>
+                      ) : row.suggestedRevenueDate ? (
+                        <p className="mt-0.5 text-xs font-semibold text-amber-700">
+                          Ngày DT gợi ý từ diễn giải: {new Date(row.suggestedRevenueDate).toLocaleDateString("vi-VN", { timeZone: "UTC" })} · cần xác nhận
+                        </p>
+                      ) : (
+                        <p className="mt-0.5 text-xs font-semibold text-rose-700">Thiếu Ngày doanh thu</p>
+                      )}
                       <p className="text-xs text-slate-500 mt-1 max-w-md">{row.description}</p>
                       {row.autoProcessNote && <p className="mt-1 text-xs font-semibold text-indigo-700">{row.autoProcessNote}</p>}
                     </td>
@@ -307,6 +337,7 @@ export default function ReconciliationsPage() {
                           <p className="font-bold">{first.targetCode} · {first.targetType}</p>
                           <p className="text-xs text-slate-500">{first.label}</p>
                           <p className="text-xs text-emerald-700 mt-1">Score {first.score} · {money(first.targetAmount)} đ</p>
+                          {!first.canMatch && <p className="mt-1 text-xs font-semibold text-indigo-700">Tham chiếu POS để quyết toán gross/phí</p>}
                         </div>
                       ) : (
                         <span className="text-xs text-amber-700">Chưa có gợi ý đủ khớp</span>
@@ -314,7 +345,7 @@ export default function ReconciliationsPage() {
                     </td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex flex-col items-end gap-1.5">
-                        {canMatch && first && row.reconcileStatus === "UNMATCHED" ? (
+                        {canMatch && first?.canMatch && row.reconcileStatus === "UNMATCHED" ? (
                           <button onClick={() => matchCandidate(row, first)} className="text-xs font-bold text-blue-700 hover:underline">Match</button>
                         ) : (
                           <span className="text-xs text-slate-400 font-semibold">{row.reconcileStatus}</span>
@@ -328,7 +359,7 @@ export default function ReconciliationsPage() {
                           </a>
                         )}
                         {/* Tiền vào từ cổng thanh toán: lập luôn phiếu quyết toán ví với số đã điền sẵn. */}
-                        {canSettleWallet && row.creditAmount > 0 && row.reconcileStatus === "UNMATCHED" && (
+                        {canSettleWallet && row.isWalletSettlement && row.creditAmount > 0 && row.reconcileStatus === "UNMATCHED" && row.revenueDates.length <= 1 && (
                           <button
                             type="button"
                             onClick={() => openSettlement(row)}
@@ -336,6 +367,9 @@ export default function ReconciliationsPage() {
                           >
                             Quyết toán ví
                           </button>
+                        )}
+                        {row.revenueDates.length > 1 && row.reconcileStatus === "UNMATCHED" && (
+                          <span className="max-w-32 text-xs font-semibold text-amber-700">Nhiều ngày DT: xử lý theo allocation</span>
                         )}
                       </div>
                     </td>
@@ -368,6 +402,21 @@ export default function ReconciliationsPage() {
                 Số thực nhận và tài khoản nhận lấy sẵn từ dòng sao kê. Nhập số gốc đang treo ở ví, phần chênh lệch
                 sẽ thành chi phí quẹt thẻ trên P&amp;L.
               </p>
+
+              <label className="block text-xs font-bold text-slate-600">
+                Ngày doanh thu
+                <input
+                  className="control"
+                  type="date"
+                  value={settlement.sourceReportDate}
+                  onChange={(event) => setSettlement({ ...settlement, sourceReportDate: event.target.value, revenueDateInferred: false })}
+                />
+                <span className={`mt-1 block text-[11px] font-medium ${settlement.revenueDateInferred ? "text-amber-700" : "text-slate-500"}`}>
+                  {settlement.revenueDateInferred
+                    ? "Ngày này được gợi ý từ diễn giải. Hãy kiểm tra trước khi tạo phiếu."
+                    : "Dùng để liên kết quyết toán với ngày bán hàng POS; không thay đổi Ngày giao dịch ngân hàng."}
+                </span>
+              </label>
 
               <label className="block text-xs font-bold text-slate-600">
                 Cửa hàng

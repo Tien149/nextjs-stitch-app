@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/custom-client";
 import { prisma, prismaRaw, type RawTxClient, type TxClient } from "@/lib/prisma";
 import { addPeriod, periodFromDate } from "@/lib/phase3";
 import { isMasterDataImportType, normalizeHeader, type ImportType } from "@/lib/import-templates";
-import { type ParsedImportRow } from "@/lib/import-parser";
+import { parseImportDate, type ParsedImportRow } from "@/lib/import-parser";
 import { normalizeStockTransactionType, postInventoryTransaction } from "@/lib/inventory-stock";
 import { writeAuditLog } from "@/lib/audit-log";
 import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
@@ -29,7 +29,9 @@ function asInteger(value: unknown) {
 }
 
 function asDate(value: unknown) {
-  return value instanceof Date ? value : new Date(String(value));
+  const parsed = parseImportDate(value);
+  if (!parsed) throw new Error(`Ngày không hợp lệ: ${String(value || "(trống)")}`);
+  return parsed;
 }
 
 function normalizeInventoryItemType(value: unknown) {

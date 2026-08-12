@@ -7,6 +7,7 @@ import { isInboundStockType, isOutboundStockType, isStockTransactionType, normal
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
 import { groupBankStatementRows } from "@/lib/bank-statement-import";
+import { suggestRevenueDateFromDescription } from "@/lib/revenue-date";
 
 type MasterItem = {
   type: string;
@@ -513,6 +514,11 @@ function normalizeBankStatementRow(row: ParsedImportRow, masterItems: MasterItem
   if (credit > 0 && increaseGroup === "BANK" && decreaseGroup === "WALLET" && row.values.revenue_date) {
     autoProcessType = "WALLET_SETTLEMENT";
     autoProcessNote = "Đủ thông tin để tự động duyệt quyết toán ví khi commit";
+  } else if (credit > 0 && increaseGroup === "BANK" && decreaseGroup === "WALLET") {
+    const suggestion = suggestRevenueDateFromDescription(text(row.values.description));
+    autoProcessNote = suggestion
+      ? `Thiếu Ngày doanh thu; gợi ý ${suggestion.date.toLocaleDateString("vi-VN", { timeZone: "UTC" })} từ diễn giải, cần xác nhận thủ công`
+      : "Thiếu Ngày doanh thu; cần bổ sung hoặc xác nhận thủ công";
   } else if (credit > 0 && increaseGroup === "BANK" && text(row.values.category_code)) {
     autoProcessType = "RECEIPT";
     autoProcessNote = "Đủ thông tin để tự động duyệt ủy nhiệm thu khi commit";
