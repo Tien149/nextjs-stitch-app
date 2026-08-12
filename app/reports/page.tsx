@@ -1147,7 +1147,7 @@ export default function ReportsPage() {
           <section className="table-panel no-print">
             <PanelHeader
               title="Đối chiếu tiền vào đã đủ chưa"
-              subtitle="Thu ngân khai lấy từ phiếu thu/POS sau khi trừ cọc; Đã xác nhận lấy theo SUMIFS sao kê đúng Ngày doanh thu, Loại thu và Trừ nguồn tiền."
+              subtitle="Tiền mặt Thu ngân khai lấy đúng ô Tiền mặt của dòng Doanh thu bán hàng; Đã xác nhận lấy theo SUMIFS sao kê đúng Ngày doanh thu, Loại thu và Trừ nguồn tiền."
             />
             <div className="overflow-x-auto">
               <table className="w-full min-w-[1080px] table-fixed text-left text-sm">

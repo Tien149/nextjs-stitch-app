@@ -299,7 +299,6 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
   const posRevenue = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
   const manual = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
   const receipt = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
-  const salesReceipt = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
   const deposit = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
 
   for (const row of revenues) {
@@ -350,9 +349,6 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     const source = sourceByCode.get(row.moneySourceCode);
     const bucketKey = classifyMoneySource(source?.group);
     addAmount(receipt, bucketKey, row.amount);
-    if (restaurantSalesCategoryCodes.includes(row.categoryCode || "")) {
-      addAmount(salesReceipt, bucketKey, row.amount);
-    }
   }
 
   for (const row of deposits) {
@@ -389,11 +385,13 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     grab: revenue.grab + receipt.grab + deposit.grab,
     other: revenue.other + receipt.other + deposit.other,
   };
-  // "Thu ngan khai" compares the cashier/POS declaration with independently confirmed cash/bank flows.
-  // Deposits are deducted only here because statement SUMIFS already excludes deposit categories.
+  // "Thu ngân khai" ở dòng tiền mặt phải đúng bằng ô Tiền mặt của dòng
+  // "Doanh thu bán hàng" trên bảng tổng hợp. Tiền cọc mới nhận thuộc dòng Đặt cọc,
+  // còn chi tiền mặt chỉ tham gia công thức Nộp tiền = Thu - Chi; cả hai không được
+  // cộng/trừ vào số doanh thu tiền mặt dùng để đối chiếu tiền vào.
   const reconciliationDeclared = {
     total: 0,
-    cash: salesReceipt.cash - deposit.cash - cashExpenseTotal,
+    cash: revenue.cash + receipt.cash,
     transfer: revenue.transfer - deposit.transfer,
     card: revenue.card - deposit.card,
     grab: revenue.grab - deposit.grab,
@@ -557,7 +555,7 @@ async function buildMoneyInReconciliation(
     .reduce((sum, row) => sum + row.amount + row.feeAmount, 0);
 
   const rows = [
-    { key: "cash", label: "Tiền mặt", declared: declared.cash, received: approvedCashDeposited, pending: pendingCashDeposited, note: "Thu ngân khai = phiếu thu bán hàng tiền mặt đúng ca - cọc tiền mặt - chi tiền mặt; đã xác nhận từ phiếu nộp tiền được duyệt." },
+    { key: "cash", label: "Tiền mặt", declared: declared.cash, received: approvedCashDeposited, pending: pendingCashDeposited, note: "Thu ngân khai = ô Tiền mặt của dòng Doanh thu bán hàng; không cộng cọc mới nhận và không trừ chi tiền mặt. Đã xác nhận từ phiếu nộp tiền được duyệt." },
     { key: "transfer", label: "Chuyển khoản", declared: declared.transfer, received: bankReceived, pending: pendingBankReceived, note: "Đã xác nhận theo SUMIFS sao kê: đúng Ngày doanh thu, loại Thu bán hàng và Trừ nguồn tiền thuộc ngân hàng." },
     { key: "card", label: "Quẹt thẻ / Ví", declared: declared.card + declared.grab, received: walletSettled, pending: pendingWalletSettled, note: "Đã xác nhận theo SUMIFS sao kê, lấy doanh thu gộp trước phí từ nguồn ví; phí được hiển thị riêng bên dưới." },
   ].map((row) => {
