@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { appMenuItems, canAccessMenu, canPerformAction, canPerformMenuAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import { filterMoneySources, moneySourceDebugLabel, moneySourceDisplayName, type MoneySourceOption } from "@/lib/money-sources";
@@ -70,6 +70,12 @@ export default function ReconciliationsPage() {
   const [rows, setRows] = useState<BankRow[]>([]);
   const [matches, setMatches] = useState<MatchRow[]>([]);
   const [status, setStatus] = useState("UNMATCHED");
+  const [searchInput, setSearchInput] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const [moneySources, setMoneySources] = useState<MoneySourceOption[]>([]);
@@ -104,12 +110,19 @@ export default function ReconciliationsPage() {
     ? Math.max(0, Number(settlement.grossAmount || 0)) - settlement.bankRow.creditAmount
     : 0;
 
-  const loadRows = async () => {
-    const response = await fetch(`/api/reconciliations?status=${status}`);
+  const loadRows = async (options?: { query?: string; targetPage?: number; targetStatus?: string }) => {
+    const requestedQuery = options?.query ?? searchQuery;
+    const requestedPage = options?.targetPage ?? page;
+    const requestedStatus = options?.targetStatus ?? status;
+    const params = new URLSearchParams({ status: requestedStatus, page: String(requestedPage) });
+    if (requestedQuery) params.set("q", requestedQuery);
+    const response = await fetch(`/api/reconciliations?${params.toString()}`);
     if (response.ok) {
       const payload = await response.json();
       setRows(payload.rows as BankRow[]);
       setMatches(payload.matches as MatchRow[]);
+      setTotal(Number(payload.pagination?.total || 0));
+      setTotalPages(Math.max(1, Number(payload.pagination?.totalPages || 1)));
     }
   };
 
@@ -120,7 +133,24 @@ export default function ReconciliationsPage() {
       }, 0);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, status]);
+  }, [loading, status, page, searchQuery]);
+
+  const submitSearch = () => {
+    const nextQuery = (searchInputRef.current?.value || searchInput).trim();
+    setSearchInput(nextQuery);
+    if (page === 1 && nextQuery === searchQuery) {
+      void loadRows({ query: nextQuery, targetPage: 1 });
+      return;
+    }
+    setPage(1);
+    setSearchQuery(nextQuery);
+  };
+
+  const clearSearch = () => {
+    setSearchInput("");
+    setPage(1);
+    setSearchQuery("");
+  };
 
   // Danh mục cho form quyết toán ví; chỉ tải một lần khi vào trang.
   useEffect(() => {
@@ -252,12 +282,12 @@ export default function ReconciliationsPage() {
         <p className="text-xs font-bold text-slate-500">{user?.role}</p>
       </header>
 
-      <main className="max-w-7xl mx-auto p-6 space-y-6">
+      <main className="mx-auto max-w-[1600px] space-y-5 p-4 sm:p-6">
         <StickyFilterBar className="!-mx-6 !px-6 !mb-0">
         <section className="grid md:grid-cols-3 gap-4">
           <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
             <p className="text-xs text-slate-500">Giao dịch đang xem</p>
-            <p className="text-2xl font-bold">{rows.length}</p>
+            <p className="text-2xl font-bold">{rows.length}<span className="ml-1 text-sm font-semibold text-slate-400">/ {total}</span></p>
           </div>
           <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
             <p className="text-xs text-slate-500">Match gần đây</p>
@@ -271,20 +301,37 @@ export default function ReconciliationsPage() {
         </StickyFilterBar>
 
         <section className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
-          <div className="p-5 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div className="border-b border-slate-200 p-4 sm:p-5">
+            <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
             <div>
               <h2 className="font-bold">Danh sách sao kê cần đối soát</h2>
-              <p className="text-xs text-slate-500 mt-1">Gợi ý dựa trên số tiền, ngày giao dịch và mã đối tác nếu có.</p>
+              <p className="mt-1 text-xs text-slate-500">Tìm theo mã giao dịch, tài khoản, diễn giải, khoản mục hoặc mã phiếu đã match.</p>
             </div>
-            <div className="flex items-center gap-2">
-              <select value={status} onChange={(event) => setStatus(event.target.value)} className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 outline-none">
+            <div className="flex w-full flex-col gap-2 sm:flex-row xl:w-auto">
+              <input
+                ref={searchInputRef}
+                value={searchInput}
+                onChange={(event) => setSearchInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") return;
+                  event.preventDefault();
+                  submitSearch();
+                }}
+                placeholder="Nhập mã giao dịch cần tìm..."
+                className="h-10 min-w-0 flex-1 rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-blue-500 xl:w-80"
+              />
+              <select value={status} onChange={(event) => { setPage(1); setStatus(event.target.value); }} className="h-10 rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-blue-500">
                 <option value="UNMATCHED">Chưa match</option>
                 <option value="PENDING_REVIEW">Chờ duyệt</option>
                 <option value="MATCHED">Đã match</option>
                 <option value="ALL">Tất cả</option>
               </select>
-              <button onClick={loadRows} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50">Tải lại</button>
+              <button type="button" onClick={submitSearch} className="h-10 rounded-lg bg-blue-600 px-4 text-sm font-bold text-white hover:bg-blue-700">Tìm kiếm</button>
+              {(searchInput || searchQuery) && <button type="button" onClick={clearSearch} className="h-10 rounded-lg border border-slate-300 px-3 text-sm font-bold text-slate-600 hover:bg-slate-50">Xóa lọc</button>}
+              <button type="button" onClick={() => void loadRows()} className="h-10 rounded-lg border border-slate-200 px-3 text-sm font-bold hover:bg-slate-50">Tải lại</button>
             </div>
+            </div>
+            {searchQuery && <p className="mt-3 text-xs font-semibold text-blue-700">Kết quả tìm kiếm: “{searchQuery}” · {total} giao dịch</p>}
           </div>
           {message && <div className="mx-5 mt-4 rounded-lg bg-blue-50 border border-blue-100 text-blue-700 px-3 py-2 text-sm">{message}</div>}
           
@@ -304,8 +351,8 @@ export default function ReconciliationsPage() {
                 const first = row.candidates[0];
                 return (
                   <tr key={row.id} className="hover:bg-slate-50 align-top border-t border-slate-100">
-                    <td className="px-4 py-3">
-                      <b>{row.transactionCode}</b>
+                    <td className="px-4 py-3 break-words">
+                      <b className="break-all">{row.transactionCode}</b>
                       <p className="text-xs text-slate-500">Ngày GD: {new Date(row.transactionDate).toLocaleDateString("vi-VN")} · {row.bankAccount}</p>
                       {row.revenueDates.length > 0 ? (
                         <p className="mt-0.5 text-xs font-semibold text-emerald-700">
@@ -321,7 +368,7 @@ export default function ReconciliationsPage() {
                       <p className="text-xs text-slate-500 mt-1 max-w-md">{row.description}</p>
                       {row.autoProcessNote && <p className="mt-1 text-xs font-semibold text-indigo-700">{row.autoProcessNote}</p>}
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-3 break-words">
                       {row.categoryCode ? (
                         <span className={`inline-block rounded px-2 py-0.5 text-xs font-bold ${row.creditAmount > 0 ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-800"}`}>
                           {row.categoryCode}
@@ -337,13 +384,19 @@ export default function ReconciliationsPage() {
                           <p className="font-bold">{first.targetCode} · {first.targetType}</p>
                           <p className="text-xs text-slate-500">{first.label}</p>
                           <p className="text-xs text-emerald-700 mt-1">Score {first.score} · {money(first.targetAmount)} đ</p>
-                          {!first.canMatch && <p className="mt-1 text-xs font-semibold text-indigo-700">Tham chiếu POS để quyết toán gross/phí</p>}
+                          {!first.canMatch && (
+                            <p className="mt-1 text-xs font-semibold text-indigo-700">
+                              {first.targetType === "MANUAL_REVENUE"
+                                ? "Fallback doanh thu nhập tay để quyết toán gross/phí"
+                                : "Tham chiếu POS để quyết toán gross/phí"}
+                            </p>
+                          )}
                         </div>
                       ) : (
                         <span className="text-xs text-amber-700">Chưa có gợi ý đủ khớp</span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-right">
+                    <td className="px-4 py-3 text-right whitespace-nowrap">
                       <div className="flex flex-col items-end gap-1.5">
                         {canMatch && first?.canMatch && row.reconcileStatus === "UNMATCHED" ? (
                           <button onClick={() => matchCandidate(row, first)} className="text-xs font-bold text-blue-700 hover:underline">Match</button>
@@ -377,6 +430,13 @@ export default function ReconciliationsPage() {
                 );
               })}
             </Table>
+          </div>
+          <div className="flex flex-col gap-3 border-t border-slate-200 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-slate-500">Trang <b className="text-slate-800">{page}</b> / {totalPages} · {total} giao dịch</p>
+            <div className="flex gap-2">
+              <button type="button" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))} className="rounded-lg border border-slate-300 px-3 py-1.5 font-bold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Trang trước</button>
+              <button type="button" disabled={page >= totalPages} onClick={() => setPage((value) => Math.min(totalPages, value + 1))} className="rounded-lg border border-slate-300 px-3 py-1.5 font-bold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Trang sau</button>
+            </div>
           </div>
         </section>
       </main>
@@ -512,7 +572,14 @@ export default function ReconciliationsPage() {
 
 function Table({ headers, children }: { headers: { label: string; align?: "left" | "right" }[]; children: React.ReactNode }) {
   return (
-    <table className="w-full text-left text-sm">
+    <table className="w-full min-w-[1080px] table-fixed text-left text-sm">
+      <colgroup>
+        <col className="w-[31%]" />
+        <col className="w-[14%]" />
+        <col className="w-[13%]" />
+        <col className="w-[27%]" />
+        <col className="w-[15%]" />
+      </colgroup>
       <thead className="bg-slate-50 text-slate-500 text-xs uppercase border-b border-slate-200">
         <tr>
           {headers.map((header, i) => (

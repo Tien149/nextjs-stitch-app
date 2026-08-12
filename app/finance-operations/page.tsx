@@ -56,6 +56,7 @@ export default function FinanceOperationsPage() {
   const [branchCode, setBranchCode] = useState("ALL");
   const [data, setData] = useState<Data>({ openingAmount: 0, closingBalance: 0, cashbook: [], accruals: [], moneyTransfers: [], accountingPeriod: { status: "OPEN" }, checklist: [] });
   const [message, setMessage] = useState("");
+  const [transferQuery, setTransferQuery] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [editingCashDeposit, setEditingCashDeposit] = useState<CashDepositEditForm | null>(null);
   const [moneySources, setMoneySources] = useState<MasterDataOption[]>([]);
@@ -91,6 +92,29 @@ export default function FinanceOperationsPage() {
   });
 
   const visibleTabs = useMemo(() => filterModuleTabs(user, href), [user]);
+  const normalizedTransferQuery = transferQuery.trim().toLowerCase();
+  const filteredCashbook = useMemo(() => {
+    if (!normalizedTransferQuery) return data.cashbook;
+    return data.cashbook.filter((row) => [row.code, row.moneySourceCode, row.description]
+      .some((value) => value.toLowerCase().includes(normalizedTransferQuery)));
+  }, [data.cashbook, normalizedTransferQuery]);
+  const selectedTransfer = useMemo(() => {
+    if (!normalizedTransferQuery) return null;
+    return data.moneyTransfers.find((row) => row.code.toLowerCase() === normalizedTransferQuery) || null;
+  }, [data.moneyTransfers, normalizedTransferQuery]);
+
+  // Deep-link từ màn Đối soát: mở đúng kỳ/cửa hàng và định vị phiếu QTVI thay vì chỉ mở trang chung.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const linkedPeriod = params.get("period") || "";
+    const linkedBranch = params.get("branchCode") || "";
+    const linkedTransfer = params.get("transfer") || "";
+    window.setTimeout(() => {
+      if (/^\d{4}-\d{2}$/.test(linkedPeriod)) setPeriod(linkedPeriod);
+      if (linkedBranch) setBranchCode(linkedBranch);
+      if (linkedTransfer) setTransferQuery(linkedTransfer);
+    }, 0);
+  }, []);
 
   // Tab mặc định có thể nằm ngoài quyền -> chuyển về tab đầu tiên được phép.
   useEffect(() => {
@@ -697,10 +721,49 @@ export default function FinanceOperationsPage() {
 
               {/* Cashbook Table */}
               <section className="min-w-0 bg-white border border-slate-200 rounded-2xl shadow-lg overflow-hidden">
-                <div className="px-6 py-5 border-b border-slate-200">
-                  <h3 className="font-bold text-slate-900">Phát sinh dòng tiền trong kỳ</h3>
-                  <p className="text-xs text-slate-500 mt-1">Danh sách thu/chi và biến động số dư thực tế theo nguồn quỹ.</p>
+                <div className="flex flex-col gap-3 border-b border-slate-200 px-6 py-5 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <h3 className="font-bold text-slate-900">Phát sinh dòng tiền trong kỳ</h3>
+                    <p className="text-xs text-slate-500 mt-1">Danh sách thu/chi và biến động số dư thực tế theo nguồn quỹ.</p>
+                  </div>
+                  <div className="flex w-full max-w-md gap-2">
+                    <input
+                      value={transferQuery}
+                      onChange={(event) => setTransferQuery(event.target.value)}
+                      placeholder="Tìm mã phiếu QTVI..."
+                      className="h-10 min-w-0 flex-1 rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500"
+                    />
+                    {transferQuery && (
+                      <button type="button" onClick={() => setTransferQuery("")} className="h-10 rounded-lg border border-slate-300 px-3 text-sm font-bold text-slate-600 hover:bg-slate-50">Xóa</button>
+                    )}
+                  </div>
                 </div>
+
+                {selectedTransfer?.transferPurpose === "WALLET_SETTLEMENT" && (
+                  <div className="border-b border-indigo-100 bg-indigo-50/70 px-6 py-4">
+                    <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                      <div>
+                        <p className="text-xs font-bold uppercase tracking-wide text-indigo-600">Chi tiết quyết toán Ví/POS</p>
+                        <p className="mt-1 font-bold text-slate-900">{selectedTransfer.code}</p>
+                        <p className="mt-1 text-xs text-slate-600">{selectedTransfer.fromMoneySourceCode} → {selectedTransfer.toMoneySourceCode} · Ngày doanh thu {selectedTransfer.sourceReportDate ? new Date(selectedTransfer.sourceReportDate).toLocaleDateString("vi-VN", { timeZone: "UTC" }) : "—"}</p>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2 text-right">
+                        <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                          <p className="text-[11px] font-semibold text-slate-500">Thực nhận</p>
+                          <p className="font-bold text-emerald-700">{money(selectedTransfer.amount)} đ</p>
+                        </div>
+                        <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                          <p className="text-[11px] font-semibold text-slate-500">Phí</p>
+                          <p className="font-bold text-amber-700">{money(selectedTransfer.feeAmount)} đ</p>
+                        </div>
+                        <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                          <p className="text-[11px] font-semibold text-slate-500">Gross đã clear</p>
+                          <p className="font-bold text-indigo-700">{money(selectedTransfer.amount + selectedTransfer.feeAmount)} đ</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
                 
                 <div className="max-h-[640px] overflow-auto overscroll-contain [scrollbar-gutter:stable]">
                   <table className="min-w-[1050px] w-full text-left text-sm">
@@ -715,15 +778,15 @@ export default function FinanceOperationsPage() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {data.cashbook.length === 0 ? (
+                      {filteredCashbook.length === 0 ? (
                         <tr>
                           <td colSpan={6} className="px-5 py-12 text-center text-slate-400 font-medium">
                             Chưa có phát sinh dòng tiền nào trong kỳ này.
                           </td>
                         </tr>
                       ) : (
-                        data.cashbook.map((row) => (
-                          <tr key={`${row.type}-${row.id}`} className="hover:bg-slate-50/40 transition-colors">
+                        filteredCashbook.map((row) => (
+                          <tr key={`${row.type}-${row.id}`} className={`${normalizedTransferQuery && row.code.toLowerCase().includes(normalizedTransferQuery) ? "bg-indigo-50/70" : ""} hover:bg-slate-50/40 transition-colors`}>
                             <td className="px-5 py-4 whitespace-nowrap text-slate-500 text-xs font-medium">
                               {new Date(row.date).toLocaleDateString("vi-VN")}
                             </td>

@@ -2,9 +2,12 @@ import { NextResponse } from "next/server";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 import { assertBranchAccess, branchFilterForSession } from "@/lib/accounting";
-import { normalizeHeader } from "@/lib/import-templates";
 import { normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { dateKey, suggestRevenueDateFromDescription } from "@/lib/revenue-date";
+import {
+  selectWalletDeclaredRevenue,
+  walletRevenueBucket,
+} from "@/lib/wallet-revenue-reconciliation";
 
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -32,18 +35,6 @@ function scoreCandidate(
   return score;
 }
 
-function revenueMatchesWalletSource(
-  row: { paymentMethod: string; revenueSource: string; channel: string | null },
-  source: { code: string; name: string },
-) {
-  const sourceValues = [normalizeHeader(source.code), normalizeHeader(source.name)];
-  const rowValues = [normalizeHeader(row.paymentMethod), normalizeHeader(row.revenueSource), normalizeHeader(row.channel || "")];
-  if (rowValues.some((value) => value && sourceValues.includes(value))) return true;
-  const keywords = ["momo", "grab", "vnpay", "shopee", "quet the"];
-  return keywords.some((keyword) => sourceValues.some((value) => value.includes(keyword))
-    && rowValues.some((value) => value.includes(keyword)));
-}
-
 export async function GET(request: Request) {
   try {
     const auth = requireMenuAccess(request, "/reconciliations");
@@ -51,22 +42,43 @@ export async function GET(request: Request) {
 
     const { searchParams } = new URL(request.url);
     const status = searchParams.get("status") || "UNMATCHED";
+    const search = cleanText(searchParams.get("q")).slice(0, 100);
+    const page = Math.max(1, Number.parseInt(searchParams.get("page") || "1", 10) || 1);
+    const pageSize = 50;
     const branchFilter = branchFilterForSession(auth.session, searchParams.get("branchCode") || "ALL");
+    const bankWhere = {
+      ...branchFilter,
+      ...(status === "ALL" ? {} : { reconcileStatus: status }),
+      ...(search ? {
+        OR: [
+          { transactionCode: { contains: search, mode: "insensitive" as const } },
+          { bankAccount: { contains: search, mode: "insensitive" as const } },
+          { description: { contains: search, mode: "insensitive" as const } },
+          { partnerHint: { contains: search, mode: "insensitive" as const } },
+          { categoryCode: { contains: search, mode: "insensitive" as const } },
+          { matches: { some: { targetCode: { contains: search, mode: "insensitive" as const }, deletedAt: null } } },
+        ],
+      } : {}),
+    };
 
-    const [bankRows, revenueRows, deposits, vouchers, matches, moneySources] = await Promise.all([
+    const [bankRows, total, revenueRows, manualRevenueRows, deposits, vouchers, matches, moneySources] = await Promise.all([
       prisma.bankStatementTransaction.findMany({
-        where: {
-          ...branchFilter,
-          ...(status === "ALL" ? {} : { reconcileStatus: status })
-        },
+        where: bankWhere,
         include: {
           matches: { where: { deletedAt: null }, orderBy: { createdAt: "desc" }, take: 1 },
           allocations: { orderBy: { sourceRowNumber: "asc" } },
         },
         orderBy: { transactionDate: "desc" },
-        take: 100,
+        skip: (page - 1) * pageSize,
+        take: pageSize,
       }),
-      prisma.revenueImportRow.findMany({ where: { ...branchFilter }, orderBy: { saleDate: "desc" }, take: 300 }),
+      prisma.bankStatementTransaction.count({ where: bankWhere }),
+      prisma.revenueImportRow.findMany({ where: { ...branchFilter }, orderBy: { saleDate: "desc" }, take: 5000 }),
+      prisma.manualRevenueEntry.findMany({
+        where: { ...branchFilter, deletedAt: null },
+        orderBy: { reportDate: "desc" },
+        take: 2000,
+      }),
       prisma.deposit.findMany({ where: { ...branchFilter }, orderBy: { receivedDate: "desc" }, take: 300 }),
       prisma.financialVoucher.findMany({
         where: { ...branchFilter, status: { in: ["DRAFT", "PENDING_REVIEW", "APPROVED", "POSTED"] }, deletedAt: null },
@@ -121,7 +133,15 @@ export async function GET(request: Request) {
       const posCandidates = revenueRows.map((row) => {
         const dateMatches = posReferenceDates.some((date) => sameDay(date, row.saleDate));
         const branchMatches = Boolean(bank.branchCode) && row.branchCode === bank.branchCode;
-        const sourceMatches = !isWalletSettlement || walletSources.some((source) => revenueMatchesWalletSource(row, source));
+        const sourceMatches = !isWalletSettlement || walletSources.some((source) => {
+          const declared = selectWalletDeclaredRevenue({
+            posRows: [row],
+            manualRows: [],
+            bucketSources: [source],
+            bucket: walletRevenueBucket(source),
+          });
+          return declared.amount > 0;
+        });
         return {
           targetType: "REVENUE_POS",
           targetId: row.id,
@@ -136,8 +156,39 @@ export async function GET(request: Request) {
           eligible: branchMatches && dateMatches && sourceMatches && (isWalletSettlement || Math.abs(row.netAmount - bankAmount) < 1),
         };
       });
+      const manualCandidates = isWalletSettlement
+        ? [...new Set(walletSources.map(walletRevenueBucket))].flatMap((bucket) => posReferenceDates.flatMap((referenceDate) => {
+            const posRowsForDay = revenueRows.filter((row) => Boolean(bank.branchCode)
+              && row.branchCode === bank.branchCode
+              && sameDay(referenceDate, row.saleDate));
+            const manualRowsForDay = manualRevenueRows.filter((row) => Boolean(bank.branchCode)
+              && row.branchCode === bank.branchCode
+              && sameDay(referenceDate, row.reportDate));
+            const bucketSources = walletSources.filter((source) => walletRevenueBucket(source) === bucket);
+            const declared = selectWalletDeclaredRevenue({
+              posRows: posRowsForDay,
+              manualRows: manualRowsForDay,
+              bucketSources,
+              bucket,
+            });
+            if (declared.source !== "MANUAL" || declared.amount <= 0) return [];
+            return [{
+              targetType: "MANUAL_REVENUE",
+              targetId: manualRowsForDay.map((row) => row.id).join(","),
+              targetCode: `NHAP_TAY_${dateKey(referenceDate)}_${bucket}`,
+              targetDate: referenceDate,
+              targetAmount: declared.amount,
+              label: `${bank.branchCode} - Doanh thu nhập tay - ${bucket === "GRAB" ? "Grab" : "Quẹt thẻ/Ví"}`,
+              score: 30 + (Math.abs(expectedPosAmount - declared.amount) < 1 ? 70 : 0),
+              canMatch: false,
+              dateSource: "MANUAL_REVENUE",
+              eligible: true,
+            }];
+          }))
+        : [];
       const candidates = [
         ...posCandidates,
+        ...manualCandidates,
         ...deposits.map((row) => ({
           targetType: "DEPOSIT",
           targetId: row.id,
@@ -163,7 +214,7 @@ export async function GET(request: Request) {
           eligible: Math.abs(row.amount - bankAmount) < 1,
         })),
       ]
-        .filter((candidate) => candidate.eligible && candidate.score >= (candidate.targetType === "REVENUE_POS" && isWalletSettlement ? 30 : 70))
+        .filter((candidate) => candidate.eligible && candidate.score >= (["REVENUE_POS", "MANUAL_REVENUE"].includes(candidate.targetType) && isWalletSettlement ? 30 : 70))
         .sort((a, b) => b.score - a.score)
         .slice(0, 5);
 
@@ -172,6 +223,8 @@ export async function GET(request: Request) {
       const matchedVoucher = currentMatch?.targetType === "VOUCHER"
         ? vouchers.find((voucher) => voucher.id === currentMatch.targetId)
         : null;
+      const transferPeriod = bank.transactionDate.toISOString().slice(0, 7);
+      const transferHref = `/finance-operations?period=${encodeURIComponent(transferPeriod)}&branchCode=${encodeURIComponent(bank.branchCode || "ALL")}&transfer=${encodeURIComponent(currentMatch?.targetCode || "")}`;
       return {
         ...bankData,
         revenueDates: explicitRevenueDates.map((value) => value.toISOString()),
@@ -187,14 +240,18 @@ export async function GET(request: Request) {
                 ? (matchedVoucher?.documentChannel === "BANK" ? "/bank-vouchers" : "/vouchers")
                 : currentMatch.targetType === "REVENUE_POS"
                   ? "/imports?tab=revenue-pos"
-                  : "/finance-operations",
+                  : transferHref,
             }
           : null,
         candidates,
       };
     });
 
-    return NextResponse.json({ rows, matches });
+    return NextResponse.json({
+      rows,
+      matches,
+      pagination: { page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)) },
+    });
   } catch (error) {
     console.error("Error fetching reconciliation data:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });

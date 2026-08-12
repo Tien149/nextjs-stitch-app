@@ -54,6 +54,10 @@ export function evaluateBankStatementAutoApproval(
   const decreaseGroup = normalizeMoneySourceGroup(input.decreaseSource?.group);
 
   if (processType === "WALLET_SETTLEMENT") {
+    const categoryValue = normalizeHeader(`${input.category?.code || ""} ${input.category?.name || ""}`);
+    if (!active(input.category) || !categoryValue.includes("thu") || !categoryValue.includes("ban hang")) {
+      return { autoApprove: false, reason: "Loại thu phải là Thu Tiền Từ Bán Hàng Tại Nhà Hàng" };
+    }
     if (!active(input.increaseSource) || increaseGroup !== "BANK") {
       return { autoApprove: false, reason: "Nguồn tiền nhận phải là tài khoản ngân hàng đang hoạt động" };
     }

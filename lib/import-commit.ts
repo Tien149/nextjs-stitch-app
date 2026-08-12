@@ -14,6 +14,11 @@ import { normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { evaluateBankStatementAutoApproval } from "@/lib/bank-statement-auto-approval";
 import { applyOpeningDeposit } from "@/lib/opening-balance-deposit";
 import { assertAssetCodeAvailable, nextAssetCode } from "@/lib/asset-code-generator";
+import {
+  remainingWalletGross,
+  selectWalletDeclaredRevenue,
+  walletRevenueBucket,
+} from "@/lib/wallet-revenue-reconciliation";
 
 function asText(value: unknown) {
   return String(value || "").trim();
@@ -87,18 +92,6 @@ function dayBoundsUtc(value: Date) {
   return { start, end };
 }
 
-function revenueMatchesMoneySource(
-  row: { paymentMethod: string; revenueSource: string; channel: string | null },
-  source: { code: string; name: string },
-) {
-  const sourceValues = [normalizeHeader(source.code), normalizeHeader(source.name)];
-  const rowValues = [normalizeHeader(row.paymentMethod), normalizeHeader(row.revenueSource), normalizeHeader(row.channel || "")];
-  if (rowValues.some((value) => value && sourceValues.includes(value))) return true;
-  const keywords = ["momo", "grab", "vnpay", "shopee", "quet the"];
-  return keywords.some((keyword) => sourceValues.some((value) => value.includes(keyword))
-    && rowValues.some((value) => value.includes(keyword)));
-}
-
 async function unresolvedWalletGrossAmount(
   tx: TxClient,
   branchCode: string,
@@ -109,19 +102,30 @@ async function unresolvedWalletGrossAmount(
     where: { type: "MONEY_SOURCE", code: walletSourceCode, deletedAt: null },
     select: { code: true, name: true },
   });
-  if (!source) return 0;
+  if (!source) return { amount: 0, revenueSource: "NONE" as const };
+  const bucket = walletRevenueBucket(source);
   const { start, end } = dayBoundsUtc(revenueDate);
-  const [revenues, previousManualSettlements, previousImportedAllocations] = await Promise.all([
+  const walletSources = (await tx.masterDataItem.findMany({
+    where: { type: "MONEY_SOURCE", deletedAt: null },
+    select: { code: true, name: true, group: true },
+  })).filter((item) => normalizeMoneySourceGroup(item.group) === "WALLET");
+  const bucketSources = walletSources.filter((item) => walletRevenueBucket(item) === bucket);
+  const bucketSourceCodes = bucketSources.map((item) => item.code);
+  const [revenues, manualRows, previousManualSettlements, previousImportedAllocations] = await Promise.all([
     tx.revenueImportRow.findMany({
       where: { branchCode, saleDate: { gte: start, lt: end }, deletedAt: null },
       select: { paymentMethod: true, revenueSource: true, channel: true, netAmount: true },
+    }),
+    tx.manualRevenueEntry.findMany({
+      where: { branchCode, reportDate: { gte: start, lt: end }, deletedAt: null },
+      select: { cardAmount: true, grabAmount: true },
     }),
     tx.moneyTransfer.findMany({
       where: {
         branchCode,
         importBatchId: null,
         transferPurpose: "WALLET_SETTLEMENT",
-        fromMoneySourceCode: walletSourceCode,
+        fromMoneySourceCode: { in: bucketSourceCodes },
         sourceReportDate: { gte: start, lt: end },
         status: { in: ["PENDING_REVIEW", "APPROVED"] },
         deletedAt: null,
@@ -131,7 +135,7 @@ async function unresolvedWalletGrossAmount(
     tx.bankStatementAllocation.findMany({
       where: {
         revenueDate: { gte: start, lt: end },
-        decreaseMoneySourceCode: walletSourceCode,
+        decreaseMoneySourceCode: { in: bucketSourceCodes },
         grossAmount: { not: null },
         bankTransaction: {
           branchCode,
@@ -142,12 +146,18 @@ async function unresolvedWalletGrossAmount(
       select: { grossAmount: true },
     }),
   ]);
-  const declared = revenues
-    .filter((row) => revenueMatchesMoneySource(row, source))
-    .reduce((sum, row) => sum + row.netAmount, 0);
+  const declared = selectWalletDeclaredRevenue({
+    posRows: revenues,
+    manualRows,
+    bucketSources,
+    bucket,
+  });
   const alreadyAllocated = previousManualSettlements.reduce((sum, row) => sum + row.amount + row.feeAmount, 0)
     + previousImportedAllocations.reduce((sum, row) => sum + (row.grossAmount || 0), 0);
-  return Math.max(0, Math.round(declared - alreadyAllocated));
+  return {
+    amount: remainingWalletGross(declared.amount, alreadyAllocated),
+    revenueSource: declared.source,
+  };
 }
 
 async function nextVoucherCode(
@@ -495,6 +505,20 @@ export async function commitImport(input: CommitInput) {
 
     if (input.importType === "BANK_STATEMENT") {
       const groups = groupBankStatementRows(input.rows);
+      const walletSourceCatalog = (await tx.masterDataItem.findMany({
+        where: { type: "MONEY_SOURCE", deletedAt: null },
+        select: { code: true, name: true, group: true },
+      })).filter((source) => normalizeMoneySourceGroup(source.group) === "WALLET");
+      const walletSourceByCode = new Map(walletSourceCatalog.map((source) => [source.code, source]));
+      const walletAllocationFrequency = new Map<string, number>();
+      for (const row of input.rows) {
+        const source = walletSourceByCode.get(asText(row.values.decrease_money_source_code));
+        const date = row.values.revenue_date ? asDate(row.values.revenue_date) : null;
+        const branch = asText(row.values.branch_code);
+        if (!source || !date || !branch) continue;
+        const key = `${branch}:${date.toISOString().slice(0, 10)}:${walletRevenueBucket(source)}`;
+        walletAllocationFrequency.set(key, (walletAllocationFrequency.get(key) || 0) + 1);
+      }
       for (const group of groups) {
         const firstRow = group.rows[0];
         const bankAccount = asText(firstRow.values.bank_account);
@@ -607,21 +631,38 @@ export async function commitImport(input: CommitInput) {
         if (autoProcessType === "WALLET_SETTLEMENT") {
           const walletSourceCode = decreaseSourceCode;
           const bankSourceCode = increaseSourceCode;
+          const ambiguousAcrossImport = group.rows.some((row) => {
+            const source = walletSourceByCode.get(asText(row.values.decrease_money_source_code));
+            const date = row.values.revenue_date ? asDate(row.values.revenue_date) : null;
+            if (!source || !date) return false;
+            const key = `${branchCode}:${date.toISOString().slice(0, 10)}:${walletRevenueBucket(source)}`;
+            return (walletAllocationFrequency.get(key) || 0) > 1;
+          });
+          if (ambiguousAcrossImport) {
+            autoProcessType = "MANUAL_REQUIRED";
+            autoProcessNote = "Có nhiều giao dịch Ví cùng Ngày doanh thu/bucket trong file; cần duyệt thủ công để tránh phân bổ trùng gross";
+            await tx.bankStatementTransaction.update({ where: { id: bankTransaction.id }, data: { autoProcessType, autoProcessNote } });
+            continue;
+          }
           const allocationGross = await Promise.all(group.rows.map(async (row) => {
             const rowRevenueDate = row.values.revenue_date ? asDate(row.values.revenue_date) : null;
             const rowBankAmount = Math.round(asNumber(row.values.credit_amount));
-            const grossAmount = rowRevenueDate
+            const unresolved = rowRevenueDate
               ? await unresolvedWalletGrossAmount(tx, branchCode, rowRevenueDate, walletSourceCode)
-              : 0;
-            return { row, rowRevenueDate, rowBankAmount, grossAmount };
+              : { amount: 0, revenueSource: "NONE" as const };
+            return { row, rowRevenueDate, rowBankAmount, grossAmount: unresolved.amount, revenueSource: unresolved.revenueSource };
           }));
+          const allocationKeys = allocationGross.map((item) => item.rowRevenueDate?.toISOString().slice(0, 10) || "MISSING");
+          const hasAmbiguousDuplicateDate = new Set(allocationKeys).size !== allocationKeys.length;
           const invalidAllocation = allocationGross.find((item) => !item.rowRevenueDate || item.grossAmount < item.rowBankAmount || item.grossAmount <= 0);
           const grossAmount = allocationGross.reduce((sum, item) => sum + item.grossAmount, 0);
-          if (invalidAllocation || grossAmount < bankAmount) {
+          if (hasAmbiguousDuplicateDate || invalidAllocation || grossAmount < bankAmount) {
             autoProcessType = "MANUAL_REQUIRED";
-            autoProcessNote = invalidAllocation?.grossAmount
+            autoProcessNote = hasAmbiguousDuplicateDate
+              ? "Có nhiều dòng phân bổ Ví cùng Ngày doanh thu; cần duyệt thủ công để tránh phân bổ trùng gross"
+              : invalidAllocation?.grossAmount
               ? `Doanh thu ví ngày phân bổ còn ${invalidAllocation.grossAmount.toLocaleString("vi-VN")} đ, nhỏ hơn tiền ngân hàng ${invalidAllocation.rowBankAmount.toLocaleString("vi-VN")} đ`
-              : "Không tìm thấy đủ doanh thu POS cho các ngày doanh thu trong file";
+              : "Không tìm thấy đủ doanh thu POS hoặc doanh thu nhập tay cho các Ngày doanh thu trong file";
             await tx.bankStatementTransaction.update({
               where: { id: bankTransaction.id },
               data: { autoProcessType, autoProcessNote },
@@ -639,6 +680,7 @@ export async function commitImport(input: CommitInput) {
             });
           }
           const feeAmount = grossAmount - bankAmount;
+          const usedManualRevenue = allocationGross.some((item) => item.revenueSource === "MANUAL");
           const approval = evaluateBankStatementAutoApproval({
             autoProcessType,
             debitAmount: group.debitAmount,
@@ -683,6 +725,9 @@ export async function commitImport(input: CommitInput) {
           targetType = "WALLET_SETTLEMENT";
           targetId = transfer.id;
           targetCode = transfer.code;
+          autoProcessNote = usedManualRevenue
+            ? `Đã dùng doanh thu nhập tay làm nguồn fallback để đối soát với ${targetCode}`
+            : `Đã dùng doanh thu POS để đối soát với ${targetCode}`;
         } else {
           const voucherType = autoProcessType === "PAYMENT" ? "PAYMENT" : "RECEIPT";
           const moneySourceCode = voucherType === "RECEIPT"
@@ -747,7 +792,9 @@ export async function commitImport(input: CommitInput) {
           }
         }
 
-        autoProcessNote = `Đã tự động duyệt và đối soát với ${targetCode}`;
+        autoProcessNote = autoProcessType === "WALLET_SETTLEMENT" && autoProcessNote
+          ? autoProcessNote
+          : `Đã tự động duyệt và đối soát với ${targetCode}`;
         await tx.reconciliationMatch.create({
           data: {
             bankTransactionId: bankTransaction.id,
