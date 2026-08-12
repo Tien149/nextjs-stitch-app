@@ -1147,7 +1147,7 @@ export default function ReportsPage() {
           <section className="table-panel no-print">
             <PanelHeader
               title="Đối chiếu tiền vào đã đủ chưa"
-              subtitle="Chuyển khoản đối chiếu theo ngày doanh thu; tiền ví/POS được theo dõi riêng và chỉ tính đã clear sau khi duyệt quyết toán."
+              subtitle="Thu ngân khai lấy từ phiếu thu/POS sau khi trừ cọc; Đã xác nhận lấy theo SUMIFS sao kê đúng Ngày doanh thu, Loại thu và Trừ nguồn tiền."
             />
             <div className="overflow-x-auto">
               <table className="w-full min-w-[1080px] table-fixed text-left text-sm">
@@ -1203,7 +1203,7 @@ export default function ReportsPage() {
               </table>
             </div>
             <div className="flex flex-wrap gap-3 border-t border-slate-100 px-4 py-3 text-xs text-slate-600">
-              <span>Phí quẹt thẻ đã tách sang chi phí: <b className="text-slate-900">{money(dailyCash.moneyInReconciliation.walletFee)} đ</b></span>
+              <span>Phí thẻ/ví tách riêng (không trừ vào số xác nhận gộp): <b className="text-slate-900">{money(dailyCash.moneyInReconciliation.walletFee)} đ</b></span>
               <span>Dòng sao kê ghi có trong ngày: <b className="text-slate-900">{dailyCash.moneyInReconciliation.bankRowCount}</b></span>
               {dailyCash.moneyInReconciliation.unclassifiedBankRows > 0 && (
                 <span className="text-amber-700">

@@ -10,6 +10,7 @@ import { moneySourceDisplayName, normalizeMoneySourceGroup } from "@/lib/money-s
 import { voucherMatchesShift } from "@/lib/shifts";
 
 const menuHref = "/reports";
+const restaurantSalesCategoryCodes = ["THU_BAN_HANG"];
 
 type DailyCashBucket = { total: number; cash: number; transfer: number; card: number; grab: number; other: number };
 
@@ -298,6 +299,7 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
   const posRevenue = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
   const manual = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
   const receipt = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
+  const salesReceipt = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
   const deposit = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
 
   for (const row of revenues) {
@@ -348,6 +350,9 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     const source = sourceByCode.get(row.moneySourceCode);
     const bucketKey = classifyMoneySource(source?.group);
     addAmount(receipt, bucketKey, row.amount);
+    if (restaurantSalesCategoryCodes.includes(row.categoryCode || "")) {
+      addAmount(salesReceipt, bucketKey, row.amount);
+    }
   }
 
   for (const row of deposits) {
@@ -384,6 +389,21 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     grab: revenue.grab + receipt.grab + deposit.grab,
     other: revenue.other + receipt.other + deposit.other,
   };
+  // "Thu ngan khai" compares the cashier/POS declaration with independently confirmed cash/bank flows.
+  // Deposits are deducted only here because statement SUMIFS already excludes deposit categories.
+  const reconciliationDeclared = {
+    total: 0,
+    cash: salesReceipt.cash - deposit.cash - cashExpenseTotal,
+    transfer: revenue.transfer - deposit.transfer,
+    card: revenue.card - deposit.card,
+    grab: revenue.grab - deposit.grab,
+    other: revenue.other - deposit.other,
+  };
+  reconciliationDeclared.total = reconciliationDeclared.cash
+    + reconciliationDeclared.transfer
+    + reconciliationDeclared.card
+    + reconciliationDeclared.grab
+    + reconciliationDeclared.other;
 
   return {
     period,
@@ -410,14 +430,11 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     // Cùng một ngày/ca mà có cả doanh thu import lẫn doanh thu nhập tay thì rất dễ tính trùng.
     duplicateRevenueWarning: posRevenue.total > 0 && manual.total > 0,
     moneyInReconciliation: await buildMoneyInReconciliation(
-      {
-        ...total,
-        // Tiền mặt cần đối chiếu là số thực tế phải nộp sau khi trừ chi tiền mặt trong ngày.
-        cash: total.cash - cashExpenseTotal,
-      },
+      reconciliationDeclared,
       branchCode,
       dayStart,
       dayEnd,
+      shift,
       new Map(moneySources.map((source) => [source.code, source.group])),
     ),
   };
@@ -438,26 +455,40 @@ async function buildMoneyInReconciliation(
   branchCode: string,
   dayStart: Date,
   dayEnd: Date,
+  shift: string,
   moneySourceGroupByCode: Map<string, string | null>,
 ) {
   const branchWhere = branchCode === "ALL" ? {} : { branchCode };
-  const [bankCandidates, postedBankRows, walletSettlements, cashDeposits] = await Promise.all([
+  const [legacyBankCandidates, bankAllocations, postedBankRows, cashDeposits] = await Promise.all([
     prisma.bankStatementTransaction.findMany({
       where: {
         ...branchWhere,
         creditAmount: { gt: 0 },
+        revenueDate: { gte: dayStart, lt: dayEnd },
+        categoryCode: { in: restaurantSalesCategoryCodes },
         deletedAt: null,
-        OR: [
-          { revenueDate: { gte: dayStart, lt: dayEnd } },
-          { revenueDate: null, transactionDate: { gte: dayStart, lt: dayEnd } },
-        ],
+        // Dữ liệu import mới luôn có allocation, nên chỉ đọc transaction trực tiếp
+        // cho dữ liệu lịch sử để không cộng trùng với các dòng phân bổ bên dưới.
+        allocations: { none: {} },
       },
       select: {
         creditAmount: true,
         reconcileStatus: true,
-        autoProcessType: true,
-        increaseMoneySourceCode: true,
         decreaseMoneySourceCode: true,
+      },
+    }),
+    prisma.bankStatementAllocation.findMany({
+      where: {
+        creditAmount: { gt: 0 },
+        revenueDate: { gte: dayStart, lt: dayEnd },
+        categoryCode: { in: restaurantSalesCategoryCodes },
+        bankTransaction: { is: { ...branchWhere, deletedAt: null } },
+      },
+      select: {
+        creditAmount: true,
+        grossAmount: true,
+        decreaseMoneySourceCode: true,
+        bankTransaction: { select: { reconcileStatus: true } },
       },
     }),
     prisma.bankStatementTransaction.findMany({
@@ -465,28 +496,39 @@ async function buildMoneyInReconciliation(
       select: { categoryCode: true },
     }),
     prisma.moneyTransfer.findMany({
-      where: { ...branchWhere, transferPurpose: "WALLET_SETTLEMENT", status: { in: ["PENDING_REVIEW", "APPROVED"] }, sourceReportDate: { gte: dayStart, lt: dayEnd }, deletedAt: null },
-      select: { amount: true, feeAmount: true, status: true },
-    }),
-    prisma.moneyTransfer.findMany({
-      where: { ...branchWhere, transferPurpose: "CASH_DEPOSIT", status: { in: ["PENDING_REVIEW", "APPROVED"] }, sourceReportDate: { gte: dayStart, lt: dayEnd }, deletedAt: null },
+      where: {
+        ...branchWhere,
+        transferPurpose: "CASH_DEPOSIT",
+        status: { in: ["PENDING_REVIEW", "APPROVED"] },
+        sourceReportDate: { gte: dayStart, lt: dayEnd },
+        ...(shift === "FULL" ? {} : { sourceShift: shift }),
+        deletedAt: null,
+      },
       select: { amount: true, feeAmount: true, status: true },
     }),
   ]);
 
-  // Chuyển khoản trực tiếp chỉ được đối chiếu với dòng tiền BANK -> BANK của đúng
-  // ngày doanh thu. Dòng WALLET -> BANK (MoMo/VNPAY/Grab) thuộc luồng quyết toán ví,
-  // dù ngày tiền về ngân hàng trùng với ngày đang xem cũng không được cộng vào đây.
-  const directBankRows = bankCandidates.filter((row) => {
-    const increaseGroup = normalizeMoneySourceGroup(moneySourceGroupByCode.get(row.increaseMoneySourceCode || ""));
-    const decreaseGroup = normalizeMoneySourceGroup(moneySourceGroupByCode.get(row.decreaseMoneySourceCode || ""));
-    if (increaseGroup === "BANK" && decreaseGroup === "BANK") return true;
+  // SUMIFS trên file sao kê phải chạy theo từng dòng import/phân bổ, đúng Ngày doanh thu
+  // và đúng Loại thu bán hàng. Không dùng Ngày giao dịch thay thế khi thiếu Ngày doanh thu.
+  const bankCandidates = [
+    ...legacyBankCandidates.map((row) => ({ ...row, grossAmount: null as number | null })),
+    ...bankAllocations.map((row) => ({
+      creditAmount: row.creditAmount,
+      grossAmount: row.grossAmount,
+      reconcileStatus: row.bankTransaction.reconcileStatus,
+      decreaseMoneySourceCode: row.decreaseMoneySourceCode,
+    })),
+  ];
 
-    // Tương thích dữ liệu cũ chưa lưu đủ mã nguồn: phiếu thu ngân hàng trực tiếp
-    // có hai đầu cùng mã; dòng ví luôn có nguồn giảm khác nguồn ngân hàng nhận.
-    return row.autoProcessType === "RECEIPT"
-      && Boolean(row.increaseMoneySourceCode)
-      && row.increaseMoneySourceCode === row.decreaseMoneySourceCode;
+  // The customer's SUMIFS classifies each imported row by its "Tru nguon tien" column.
+  // Do not infer a source from the receiving bank account because wallet settlements also land there.
+  const directBankRows = bankCandidates.filter((row) => {
+    const decreaseGroup = normalizeMoneySourceGroup(moneySourceGroupByCode.get(row.decreaseMoneySourceCode || ""));
+    return decreaseGroup === "BANK";
+  });
+  const walletRows = bankCandidates.filter((row) => {
+    const decreaseGroup = normalizeMoneySourceGroup(moneySourceGroupByCode.get(row.decreaseMoneySourceCode || ""));
+    return decreaseGroup === "WALLET";
   });
   const bankReceived = directBankRows
     .filter((row) => row.reconcileStatus === "MATCHED")
@@ -494,15 +536,17 @@ async function buildMoneyInReconciliation(
   const pendingBankReceived = directBankRows
     .filter((row) => row.reconcileStatus === "PENDING_REVIEW")
     .reduce((sum, row) => sum + row.creditAmount, 0);
-  const walletSettled = walletSettlements
-    .filter((row) => row.status === "APPROVED")
-    .reduce((sum, row) => sum + row.amount + row.feeAmount, 0);
-  const pendingWalletSettled = walletSettlements
-    .filter((row) => row.status === "PENDING_REVIEW")
-    .reduce((sum, row) => sum + row.amount + row.feeAmount, 0);
-  const walletFee = walletSettlements
-    .filter((row) => row.status === "APPROVED")
-    .reduce((sum, row) => sum + row.feeAmount, 0);
+  // Card/wallet is compared at gross value (before fees); legacy rows without grossAmount
+  // fall back to the credited amount because no better historical value exists.
+  const walletSettled = walletRows
+    .filter((row) => row.reconcileStatus === "MATCHED")
+    .reduce((sum, row) => sum + (row.grossAmount ?? row.creditAmount), 0);
+  const pendingWalletSettled = walletRows
+    .filter((row) => row.reconcileStatus === "PENDING_REVIEW")
+    .reduce((sum, row) => sum + (row.grossAmount ?? row.creditAmount), 0);
+  const walletFee = walletRows
+    .filter((row) => row.reconcileStatus === "MATCHED")
+    .reduce((sum, row) => sum + Math.max(0, (row.grossAmount ?? row.creditAmount) - row.creditAmount), 0);
   // Chỉ phiếu được kế toán duyệt mới là tiền đã thực sự rời nguồn thu ngân.
   // Phiếu chờ duyệt được hiển thị riêng, không cộng vào số đã về/đã clear.
   const approvedCashDeposited = cashDeposits
@@ -513,9 +557,9 @@ async function buildMoneyInReconciliation(
     .reduce((sum, row) => sum + row.amount + row.feeAmount, 0);
 
   const rows = [
-    { key: "cash", label: "Tiền mặt", declared: declared.cash, received: approvedCashDeposited, pending: pendingCashDeposited, note: "Chỉ phiếu nộp tiền đã duyệt mới được tính là đã clear khỏi nguồn thu ngân." },
-    { key: "transfer", label: "Chuyển khoản", declared: declared.transfer, received: bankReceived, pending: pendingBankReceived, note: "Đối chiếu theo ngày doanh thu với dòng chuyển khoản trực tiếp; tiền MoMo/VNPAY/Grab được tách sang quyết toán ví." },
-    { key: "card", label: "Quẹt thẻ / Ví", declared: declared.card + declared.grab, received: walletSettled, pending: pendingWalletSettled, note: "Phiếu chờ duyệt được hiển thị riêng; chỉ sau khi duyệt mới tính là ví đã clear." },
+    { key: "cash", label: "Tiền mặt", declared: declared.cash, received: approvedCashDeposited, pending: pendingCashDeposited, note: "Thu ngân khai = phiếu thu bán hàng tiền mặt đúng ca - cọc tiền mặt - chi tiền mặt; đã xác nhận từ phiếu nộp tiền được duyệt." },
+    { key: "transfer", label: "Chuyển khoản", declared: declared.transfer, received: bankReceived, pending: pendingBankReceived, note: "Đã xác nhận theo SUMIFS sao kê: đúng Ngày doanh thu, loại Thu bán hàng và Trừ nguồn tiền thuộc ngân hàng." },
+    { key: "card", label: "Quẹt thẻ / Ví", declared: declared.card + declared.grab, received: walletSettled, pending: pendingWalletSettled, note: "Đã xác nhận theo SUMIFS sao kê, lấy doanh thu gộp trước phí từ nguồn ví; phí được hiển thị riêng bên dưới." },
   ].map((row) => {
     const confirmedDifference = row.received - row.declared;
     const differenceIncludingPending = row.received + row.pending - row.declared;
