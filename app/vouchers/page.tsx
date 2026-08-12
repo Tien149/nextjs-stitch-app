@@ -40,6 +40,34 @@ type Voucher = {
   updatedAt: string;
 };
 
+type VoucherTypeFilter = "ALL" | "RECEIPT" | "PAYMENT";
+
+type VoucherFilters = {
+  startDate: string;
+  endDate: string;
+  voucherType: VoucherTypeFilter;
+};
+
+type VoucherListSummary = {
+  totalReceipts: number;
+  totalPayments: number;
+  pendingCount: number;
+  totalCount: number;
+};
+
+type VoucherListPagination = {
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  totalCount: number;
+};
+
+type VoucherListResponse = {
+  rows: Voucher[];
+  summary: VoucherListSummary;
+  pagination: VoucherListPagination;
+};
+
 type BulkActionKind = "APPROVE" | "UNAPPROVE" | "DELETE";
 
 type BulkActionDialogState = {
@@ -85,6 +113,26 @@ const emptyForm = {
   description: "Thu tiền bán hàng hàng ngày / thanh toán đối tác",
 };
 
+const initialVoucherFilters: VoucherFilters = {
+  startDate: "",
+  endDate: "",
+  voucherType: "ALL",
+};
+
+const emptyVoucherSummary: VoucherListSummary = {
+  totalReceipts: 0,
+  totalPayments: 0,
+  pendingCount: 0,
+  totalCount: 0,
+};
+
+const initialVoucherPagination: VoucherListPagination = {
+  page: 1,
+  pageSize: 50,
+  totalPages: 1,
+  totalCount: 0,
+};
+
 type VoucherManagementPageProps = { documentChannel?: VoucherDocumentChannel };
 
 export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManagementPageProps) {
@@ -95,6 +143,12 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
   const screenLabel = voucherChannelLabel(documentChannel);
   const [user, setUser] = useState<DemoSession | null>(null);
   const [vouchers, setVouchers] = useState<Voucher[]>([]);
+  const [filterDraft, setFilterDraft] = useState<VoucherFilters>(initialVoucherFilters);
+  const [appliedFilters, setAppliedFilters] = useState<VoucherFilters>(initialVoucherFilters);
+  const [voucherSummary, setVoucherSummary] = useState<VoucherListSummary>(emptyVoucherSummary);
+  const [voucherPagination, setVoucherPagination] = useState<VoucherListPagination>(initialVoucherPagination);
+  const [listLoading, setListLoading] = useState(false);
+  const [listError, setListError] = useState("");
   const [branchCode, setBranchCode] = useState("ALL");
   const [form, setForm] = useState(emptyForm);
   const [message, setMessage] = useState("");
@@ -124,12 +178,34 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
   const moneySourceRequestRef = useRef(0);
   const selectAllRef = useRef<HTMLInputElement>(null);
 
-  const loadVouchers = useCallback(async (branch: string) => {
-    const response = await fetch(`/api/vouchers?branchCode=${branch}&channel=${documentChannel}`);
-    if (response.ok) {
-      setVouchers((await response.json()) as Voucher[]);
-      // Không giữ lựa chọn cũ sau khi đổi cửa hàng hoặc tải lại danh sách.
+  const loadVouchers = useCallback(async (branch: string, filters: VoucherFilters, requestedPage = 1) => {
+    setListLoading(true);
+    setListError("");
+    try {
+      const query = new URLSearchParams({
+        branchCode: branch,
+        channel: documentChannel,
+        voucherType: filters.voucherType,
+        page: String(requestedPage),
+        pageSize: String(initialVoucherPagination.pageSize),
+      });
+      if (filters.startDate) query.set("startDate", filters.startDate);
+      if (filters.endDate) query.set("endDate", filters.endDate);
+
+      const response = await fetch(`/api/vouchers?${query.toString()}`);
+      const payload = await response.json().catch(() => null) as VoucherListResponse | { error?: string } | null;
+      if (!response.ok || !payload || !("rows" in payload)) {
+        throw new Error(payload && "error" in payload ? payload.error || "Không tải được danh sách chứng từ" : "Không tải được danh sách chứng từ");
+      }
+      setVouchers(payload.rows);
+      setVoucherSummary(payload.summary);
+      setVoucherPagination(payload.pagination);
+      // Không giữ lựa chọn cũ sau khi đổi trang, đổi bộ lọc hoặc tải lại danh sách.
       setSelectedIds([]);
+    } catch (error) {
+      setListError(error instanceof Error ? error.message : "Không tải được danh sách chứng từ");
+    } finally {
+      setListLoading(false);
     }
   }, [documentChannel]);
 
@@ -246,7 +322,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
       setUser(session);
       setBranchCode(initialBranch);
       setLoading(false);
-      void loadVouchers(initialBranch);
+      void loadVouchers(initialBranch, initialVoucherFilters, 1);
       void loadMasterData(session, initialBranch);
     }, 0);
   }, [router, loadVouchers, loadMasterData, moduleHref]);
@@ -268,7 +344,30 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
 
   const handleBranchChange = (code: string) => {
     setBranchCode(code);
-    void loadVouchers(code);
+    void loadVouchers(code, appliedFilters, 1);
+  };
+
+  const applyVoucherFilters = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (filterDraft.startDate && filterDraft.endDate && filterDraft.startDate > filterDraft.endDate) {
+      setListError("Từ ngày không được lớn hơn đến ngày.");
+      return;
+    }
+    const nextFilters = { ...filterDraft };
+    setAppliedFilters(nextFilters);
+    void loadVouchers(branchCode, nextFilters, 1);
+  };
+
+  const resetVoucherFilters = () => {
+    const nextFilters = { ...initialVoucherFilters };
+    setFilterDraft(nextFilters);
+    setAppliedFilters(nextFilters);
+    void loadVouchers(branchCode, nextFilters, 1);
+  };
+
+  const changeVoucherPage = (page: number) => {
+    if (listLoading || page < 1 || page > voucherPagination.totalPages || page === voucherPagination.page) return;
+    void loadVouchers(branchCode, appliedFilters, page);
   };
 
   const canCreate = user ? canPerformAction(user, "create") : false;
@@ -454,7 +553,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
         : `Đã tạo và tự động duyệt phiếu ${payload.code || ""}.`);
       setMessageType("success");
       resetForm();
-      await loadVouchers(branchCode);
+      await loadVouchers(branchCode, appliedFilters, voucherPagination.page);
     } catch {
       const error = "Không kết nối được máy chủ. Vui lòng thử lại.";
       if (pastEditDialogOpen) setPastEditError(error);
@@ -515,7 +614,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
       setMessage(`Đã chuyển chứng từ ${deletingVoucher.code} vào Thùng rác.`);
       if (editingVoucher?.id === deletingVoucher.id) resetForm();
       setDeletingVoucher(null);
-      await loadVouchers(branchCode);
+      await loadVouchers(branchCode, appliedFilters, voucherPagination.page);
     } finally {
       setDeleting(false);
     }
@@ -644,7 +743,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
       setBulkReason("");
       setBulkDialogError("");
       setSelectedIds([]);
-      await loadVouchers(branchCode);
+      await loadVouchers(branchCode, appliedFilters, voucherPagination.page);
     } catch {
       setBulkDialogError("Lỗi kết nối máy chủ.");
     } finally {
@@ -652,9 +751,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
     }
   };
 
-  const totalReceipts = vouchers.filter(v => v.voucherType === "RECEIPT").reduce((sum, v) => sum + v.amount, 0);
-  const totalPayments = vouchers.filter(v => v.voucherType === "PAYMENT").reduce((sum, v) => sum + v.amount, 0);
-  const pendingCount = vouchers.filter(v => ["DRAFT", "PENDING_REVIEW"].includes(v.status)).length;
+  const { totalReceipts, totalPayments, pendingCount, totalCount } = voucherSummary;
 
   if (loading || !user) return <div className="h-screen grid place-items-center bg-slate-100">Đang tải...</div>;
 
@@ -699,7 +796,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
               <span className="text-xs font-semibold text-slate-500">Tổng số chứng từ</span>
               <span className="material-symbols-outlined text-slate-400 text-xl">receipt_long</span>
             </div>
-            <p className="text-lg font-bold text-slate-800 mt-1">{vouchers.length} chứng từ</p>
+            <p className="text-lg font-bold text-slate-800 mt-1">{totalCount} chứng từ</p>
           </div>
         </div>
         </StickyFilterBar>
@@ -1046,9 +1143,73 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                     </button>
                   </>
                 )}
-                <button onClick={() => void loadVouchers(branchCode)} className="rounded-lg border border-slate-200 px-3.5 py-1.5 text-xs font-bold hover:bg-slate-50 text-slate-700 transition-colors">Tải lại</button>
+                <button
+                  type="button"
+                  disabled={listLoading}
+                  onClick={() => void loadVouchers(branchCode, appliedFilters, voucherPagination.page)}
+                  className="rounded-lg border border-slate-200 px-3.5 py-1.5 text-xs font-bold hover:bg-slate-50 text-slate-700 transition-colors disabled:opacity-50"
+                >
+                  {listLoading ? "Đang tải..." : "Tải lại"}
+                </button>
               </div>
             </div>
+            <form onSubmit={applyVoucherFilters} className="flex flex-wrap items-end gap-3 border-b border-slate-200 bg-slate-50/70 px-5 py-3">
+              <div className="min-w-[150px] flex-1 sm:max-w-[190px]">
+                <label className="mb-1 block text-xs font-bold text-slate-600">Từ ngày</label>
+                <DateInput
+                  value={filterDraft.startDate}
+                  onChange={(startDate) => {
+                    setFilterDraft((current) => ({ ...current, startDate }));
+                    setListError("");
+                  }}
+                  ariaLabel="Lọc chứng từ từ ngày"
+                  className="w-full"
+                />
+              </div>
+              <div className="min-w-[150px] flex-1 sm:max-w-[190px]">
+                <label className="mb-1 block text-xs font-bold text-slate-600">Đến ngày</label>
+                <DateInput
+                  value={filterDraft.endDate}
+                  onChange={(endDate) => {
+                    setFilterDraft((current) => ({ ...current, endDate }));
+                    setListError("");
+                  }}
+                  ariaLabel="Lọc chứng từ đến ngày"
+                  className="w-full"
+                />
+              </div>
+              <label className="min-w-[170px] flex-1 text-xs font-bold text-slate-600 sm:max-w-[210px]">
+                Loại thu/chi
+                <select
+                  value={filterDraft.voucherType}
+                  onChange={(event) => {
+                    setFilterDraft((current) => ({ ...current, voucherType: event.target.value as VoucherTypeFilter }));
+                    setListError("");
+                  }}
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-700 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="ALL">Tất cả thu và chi</option>
+                  <option value="RECEIPT">Thu</option>
+                  <option value="PAYMENT">Chi</option>
+                </select>
+              </label>
+              <button
+                type="submit"
+                disabled={listLoading}
+                className="h-[38px] rounded-lg bg-blue-600 px-4 text-sm font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+              >
+                {listLoading ? "Đang lọc..." : "Lọc dữ liệu"}
+              </button>
+              <button
+                type="button"
+                disabled={listLoading}
+                onClick={resetVoucherFilters}
+                className="h-[38px] rounded-lg border border-slate-300 bg-white px-4 text-sm font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+              >
+                Xóa lọc
+              </button>
+              {listError && <p className="w-full text-xs font-semibold text-rose-600">{listError}</p>}
+            </form>
             <div className="h-[calc(100vh-245px)] min-h-[720px] max-h-[900px] overflow-auto overscroll-contain">
               <table className="w-full min-w-[820px] table-fixed text-left text-sm">
                 <thead className="sticky top-0 z-10 bg-slate-50 text-slate-500 text-xs uppercase font-bold border-b border-slate-200 shadow-[0_1px_0_0_rgb(226_232_240)]">
@@ -1073,7 +1234,11 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {vouchers.length === 0 ? (
-                    <tr><td colSpan={6} className="px-4 py-10 text-center text-slate-400">Chưa có chứng từ cho chi nhánh này.</td></tr>
+                    <tr>
+                      <td colSpan={6} className="px-4 py-10 text-center text-slate-400">
+                        {listLoading ? "Đang tải danh sách..." : "Không có chứng từ phù hợp với bộ lọc."}
+                      </td>
+                    </tr>
                   ) : vouchers.map((voucher) => {
                     const lockReason = lockedForChange(voucher);
                     const bulkSelectionDisabledReason = lockReason
@@ -1114,19 +1279,20 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                           )}
                           <CopyableText value={voucher.code}><b className="text-slate-800 font-semibold">{voucher.code}</b></CopyableText>
                         </div>
-                        <p className="text-xs text-slate-500 mt-0.5">
-                          {categoryName(voucher.categoryCode)} · {new Date(voucher.voucherDate).toLocaleDateString("vi-VN")}
-                          {voucher.shift && (
-                            <span className="ml-1.5 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-600">
-                              {shiftLabel(voucher.shift)}
-                            </span>
-                          )}
-                        </p>
+                        <p className="mt-0.5 text-xs leading-4 text-slate-500">{categoryName(voucher.categoryCode)}</p>
                         {voucher.pnlItemCode && (
                           <p className="mt-1 text-[11px] font-medium text-indigo-600">
                             P&amp;L: {pnlItemName(voucher.pnlItemCode)}
                           </p>
                         )}
+                        <p className="mt-1 flex items-center gap-1.5 whitespace-nowrap text-xs leading-4 text-slate-500">
+                          <span>{new Date(voucher.voucherDate).toLocaleDateString("vi-VN")}</span>
+                          {voucher.shift && (
+                            <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-600">
+                              {shiftLabel(voucher.shift)}
+                            </span>
+                          )}
+                        </p>
                       </td>
                       <td className="px-4 py-3.5 align-top whitespace-normal break-words">
                         <b className="block text-slate-800 font-medium leading-5">{voucher.partnerName}</b>
@@ -1170,6 +1336,29 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                   })}
                 </tbody>
               </table>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-5 py-3 text-xs text-slate-600">
+              <span>
+                Trang <b>{voucherPagination.page}</b>/{voucherPagination.totalPages} · Tổng <b>{voucherPagination.totalCount}</b> chứng từ
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={listLoading || voucherPagination.page <= 1}
+                  onClick={() => changeVoucherPage(voucherPagination.page - 1)}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 font-bold hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Trang trước
+                </button>
+                <button
+                  type="button"
+                  disabled={listLoading || voucherPagination.page >= voucherPagination.totalPages}
+                  onClick={() => changeVoucherPage(voucherPagination.page + 1)}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 font-bold hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Trang sau
+                </button>
+              </div>
             </div>
           </section>
         </main>

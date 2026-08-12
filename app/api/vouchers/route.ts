@@ -198,13 +198,79 @@ export async function GET(request: Request) {
     if (!auth.ok) return auth.response;
     const branchCode = requestedBranch(auth.session, cleanText(searchParams.get("branchCode")) || "ALL");
     const branchFilter = branchCode === "ALL" ? {} : { branchCode };
+    const startDateText = cleanText(searchParams.get("startDate"));
+    const endDateText = cleanText(searchParams.get("endDate"));
+    const voucherTypeText = cleanText(searchParams.get("voucherType")).toUpperCase();
+    const requestedPage = Number(searchParams.get("page") || "1");
+    const requestedPageSize = Number(searchParams.get("pageSize") || "50");
 
-    const vouchers = await prisma.financialVoucher.findMany({
-      where: { ...branchFilter, documentChannel, deletedAt: null },
-      orderBy: [{ voucherDate: "desc" }, { createdAt: "desc" }],
-      take: 100,
+    const parseFilterDate = (value: string) => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+      const parsed = new Date(`${value}T00:00:00.000Z`);
+      return Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value ? null : parsed;
+    };
+    const startDate = startDateText ? parseFilterDate(startDateText) : null;
+    const endDate = endDateText ? parseFilterDate(endDateText) : null;
+    if ((startDateText && !startDate) || (endDateText && !endDate)) {
+      return NextResponse.json({ error: "Ngày lọc không hợp lệ" }, { status: 400 });
+    }
+    if (startDate && endDate && startDate > endDate) {
+      return NextResponse.json({ error: "Từ ngày không được lớn hơn đến ngày" }, { status: 400 });
+    }
+    if (voucherTypeText && !["ALL", "RECEIPT", "PAYMENT"].includes(voucherTypeText)) {
+      return NextResponse.json({ error: "Loại chứng từ lọc không hợp lệ" }, { status: 400 });
+    }
+
+    const page = Number.isSafeInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1;
+    const pageSize = Number.isSafeInteger(requestedPageSize)
+      ? Math.min(Math.max(requestedPageSize, 10), 100)
+      : 50;
+    const endDateExclusive = endDate ? new Date(endDate.getTime() + 24 * 60 * 60 * 1000) : null;
+    const where = {
+      ...branchFilter,
+      documentChannel,
+      deletedAt: null,
+      ...(voucherTypeText && voucherTypeText !== "ALL" ? { voucherType: voucherTypeText } : {}),
+      ...(startDate || endDateExclusive ? {
+        voucherDate: {
+          ...(startDate ? { gte: startDate } : {}),
+          ...(endDateExclusive ? { lt: endDateExclusive } : {}),
+        },
+      } : {}),
+    };
+
+    const totalCount = await prisma.financialVoucher.count({ where });
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+    const currentPage = Math.min(page, totalPages);
+    const [vouchers, totals, pendingCount] = await Promise.all([
+      prisma.financialVoucher.findMany({
+        where,
+        orderBy: [{ voucherDate: "desc" }, { createdAt: "desc" }],
+        skip: (currentPage - 1) * pageSize,
+        take: pageSize,
+      }),
+      prisma.financialVoucher.groupBy({
+        by: ["voucherType"],
+        where,
+        _sum: { amount: true },
+      }),
+      prisma.financialVoucher.count({
+        where: { ...where, status: { in: ["DRAFT", "PENDING_REVIEW"] } },
+      }),
+    ]);
+    const totalForType = (voucherType: "RECEIPT" | "PAYMENT") =>
+      totals.find((row) => row.voucherType === voucherType)?._sum.amount || 0;
+
+    return NextResponse.json({
+      rows: vouchers,
+      summary: {
+        totalReceipts: totalForType("RECEIPT"),
+        totalPayments: totalForType("PAYMENT"),
+        pendingCount,
+        totalCount,
+      },
+      pagination: { page: currentPage, pageSize, totalPages, totalCount },
     });
-    return NextResponse.json(vouchers);
   } catch (error) {
     console.error("Error fetching vouchers:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
