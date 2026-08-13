@@ -66,6 +66,7 @@ model Deposit {
   receivedDate           DateTime         @default(now())
   partnerCode            String
   partnerName            String
+  objectName             String?
   branchCode             String
   moneySourceCode        String?
   amount                 Float

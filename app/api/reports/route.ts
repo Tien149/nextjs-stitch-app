@@ -8,6 +8,7 @@ import { apiError, businessError, cleanText, isPeriodLocked, normalizePeriod, to
 import { writeAuditLog } from "@/lib/audit-log";
 import { moneySourceDisplayName, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { voucherMatchesShift } from "@/lib/shifts";
+import { summarizeDailyDepositHistories } from "@/lib/daily-deposit-report";
 
 const menuHref = "/reports";
 const restaurantSalesCategoryCodes = ["THU_BAN_HANG"];
@@ -244,17 +245,43 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
   const dayStart = new Date(`${date}T00:00:00`);
   const dayEnd = new Date(`${date}T24:00:00`);
 
-  const [revenues, deposits, allPaymentVouchers, allReceiptVouchers, moneySources, manualEntries] = await Promise.all([
+  const [revenues, depositHistories, allPaymentVouchers, allReceiptVouchers, moneySources, manualEntries] = await Promise.all([
     prisma.revenueImportRow.findMany({
       where: { ...branchWhere, saleDate: { gte: start, lt: end } },
       orderBy: [{ saleDate: "asc" }, { externalRef: "asc" }],
       take: 1000,
     }),
-    prisma.deposit.findMany({
-      // Cọc đầu kỳ chỉ là số công nợ mang sang, không phải tiền nhận trong ngày.
-      where: { ...branchWhere, receivedDate: { gte: start, lt: end }, status: { not: "CANCELLED" }, sourceOpeningBalanceId: null },
-      orderBy: [{ receivedDate: "asc" }, { code: "asc" }],
-      take: 500,
+    prisma.depositHistory.findMany({
+      // Dùng đúng ngày phát sinh của từng thao tác. Không đọc Deposit.amount vì số này tăng dần
+      // sau mỗi lần bổ sung và sẽ làm toàn bộ tiền bổ sung bị dồn ngược về ngày nhận cọc đầu tiên.
+      where: {
+        action: { in: ["CREATE", "COLLECT", "SUPPLEMENT", "OFFSET", "REFUND", "TRANSFER_REVENUE", "UPDATE"] },
+        OR: [
+          { actionDate: { gte: start, lt: end } },
+          { actionDate: null, createdAt: { gte: start, lt: end } },
+        ],
+        // Phiếu cọc đầu kỳ có lịch sử OPENING nên tự bị loại bởi danh sách action ở trên;
+        // các lần bổ sung/hoàn phát sinh thật sau đó vẫn phải được đưa vào báo cáo.
+        deposit: { is: { ...branchWhere, deletedAt: null } },
+      },
+      select: {
+        id: true,
+        action: true,
+        amount: true,
+        actionDate: true,
+        createdAt: true,
+        treatmentNote: true,
+        voucherId: true,
+        deposit: {
+          select: {
+            code: true,
+            partnerName: true,
+            moneySourceCode: true,
+          },
+        },
+      },
+      orderBy: [{ actionDate: "asc" }, { createdAt: "asc" }],
+      take: 1000,
     }),
     prisma.financialVoucher.findMany({
       where: {
@@ -293,6 +320,17 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
   const receiptVouchers = allReceiptVouchers.filter((row) => voucherMatchesShift(row.shift, row.voucherDate, shift));
 
   const sourceByCode = new Map(moneySources.map((source) => [source.code, source]));
+  const dailyDepositMovement = summarizeDailyDepositHistories(depositHistories.map((row) => {
+    const source = sourceByCode.get(row.deposit.moneySourceCode || "");
+    return {
+      action: row.action,
+      amount: row.amount,
+      voucherId: row.voucherId,
+      moneySourceGroup: source?.group,
+      moneySourceCode: source?.code || row.deposit.moneySourceCode,
+      moneySourceName: source?.name,
+    };
+  }));
   // Ba nguồn doanh thu đổ chung vào một dòng "Doanh thu bán hàng"; vẫn giữ tổng riêng
   // từng nguồn để cảnh báo trùng và để các bảng chi tiết đối chiếu.
   const revenue = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
@@ -351,12 +389,11 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     addAmount(receipt, bucketKey, row.amount);
   }
 
-  for (const row of deposits) {
-    const source = sourceByCode.get(row.moneySourceCode || "");
-    addAmount(deposit, classifyMoneySource(source?.group), row.amount);
+  for (const key of ["cash", "transfer", "card", "grab", "other"] as const) {
+    addAmount(deposit, key, dailyDepositMovement.depositIn[key]);
   }
 
-  const expenses = vouchers.map((row) => {
+  const voucherExpenses = vouchers.map((row) => {
     const source = sourceByCode.get(row.moneySourceCode);
     return {
       id: row.id,
@@ -373,6 +410,28 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     };
   });
 
+  // Hoàn cọc thao tác trực tiếp không sinh FinancialVoucher, nhưng vẫn là tiền ra trong ngày.
+  // Lịch sử đã gắn voucher bị loại ở helper vì phiếu chi tương ứng đã có trong voucherExpenses.
+  const directDepositRefunds = depositHistories
+    .filter((row) => !row.voucherId && (row.action === "REFUND" || (row.action === "UPDATE" && (row.amount || 0) < 0)))
+    .map((row) => {
+      const source = sourceByCode.get(row.deposit.moneySourceCode || "");
+      return {
+        id: row.id,
+        code: row.deposit.code,
+        date: row.actionDate || row.createdAt,
+        shift: null,
+        description: row.treatmentNote || "Hoàn tiền cọc cho khách",
+        partnerName: row.deposit.partnerName,
+        moneySourceCode: row.deposit.moneySourceCode || "",
+        moneySourceName: source ? moneySourceDisplayName(source) : row.deposit.moneySourceCode,
+        moneySourceGroup: source?.group || null,
+        amount: Math.abs(row.amount || 0),
+        isCash: normalizeMoneySourceGroup(source?.group) === "CASH",
+      };
+    });
+  const expenses = [...voucherExpenses, ...directDepositRefunds];
+
   const expenseTotal = expenses.reduce((sum, row) => sum + row.amount, 0);
   const cashExpenseTotal = expenses.filter((row) => row.isCash).reduce((sum, row) => sum + row.amount, 0);
   // Tổng thu hiển thị đủ dòng tiền nhưng giữ ba bản chất tách biệt: doanh thu,
@@ -385,23 +444,31 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     grab: revenue.grab + receipt.grab + deposit.grab,
     other: revenue.other + receipt.other + deposit.other,
   };
-  // "Thu ngân khai" ở dòng tiền mặt phải đúng bằng ô Tiền mặt của dòng
-  // "Doanh thu bán hàng" trên bảng tổng hợp. Tiền cọc mới nhận thuộc dòng Đặt cọc,
+  // "Thu ngân khai" ở dòng tiền mặt bằng ô Tiền mặt của dòng "Doanh thu bán hàng"
+  // cộng phần cọc đã cấn trừ vào bill đúng ngày. Tiền cọc mới nhận thuộc dòng Đặt cọc,
   // còn chi tiền mặt chỉ tham gia công thức Nộp tiền = Thu - Chi; cả hai không được
   // cộng/trừ vào số doanh thu tiền mặt dùng để đối chiếu tiền vào.
   const reconciliationDeclared = {
     total: 0,
-    cash: revenue.cash + receipt.cash,
-    transfer: revenue.transfer - deposit.transfer,
-    card: revenue.card - deposit.card,
-    grab: revenue.grab - deposit.grab,
-    other: revenue.other - deposit.other,
+    cash: revenue.cash + receipt.cash + dailyDepositMovement.offsetDeclared.cash,
+    transfer: revenue.transfer - deposit.transfer + dailyDepositMovement.offsetDeclared.transfer,
+    card: revenue.card - deposit.card + dailyDepositMovement.offsetDeclared.card,
+    grab: revenue.grab - deposit.grab + dailyDepositMovement.offsetDeclared.grab,
+    other: revenue.other - deposit.other + dailyDepositMovement.offsetDeclared.other,
   };
   reconciliationDeclared.total = reconciliationDeclared.cash
     + reconciliationDeclared.transfer
     + reconciliationDeclared.card
     + reconciliationDeclared.grab
     + reconciliationDeclared.other;
+  const reconciledDepositOffset: DailyCashBucket = {
+    total: Object.values(dailyDepositMovement.offsetDeclared).reduce((sum, amount) => sum + amount, 0),
+    cash: dailyDepositMovement.offsetDeclared.cash,
+    transfer: dailyDepositMovement.offsetDeclared.transfer,
+    card: dailyDepositMovement.offsetDeclared.card,
+    grab: dailyDepositMovement.offsetDeclared.grab,
+    other: dailyDepositMovement.offsetDeclared.other,
+  };
 
   return {
     period,
@@ -434,6 +501,7 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
       dayEnd,
       shift,
       new Map(moneySources.map((source) => [source.code, source.group])),
+      reconciledDepositOffset,
     ),
   };
 }
@@ -455,6 +523,7 @@ async function buildMoneyInReconciliation(
   dayEnd: Date,
   shift: string,
   moneySourceGroupByCode: Map<string, string | null>,
+  reconciledDepositOffset: DailyCashBucket,
 ) {
   const branchWhere = branchCode === "ALL" ? {} : { branchCode };
   const [legacyBankCandidates, bankAllocations, postedBankRows, cashDeposits] = await Promise.all([
@@ -530,7 +599,8 @@ async function buildMoneyInReconciliation(
   });
   const bankReceived = directBankRows
     .filter((row) => row.reconcileStatus === "MATCHED")
-    .reduce((sum, row) => sum + row.creditAmount, 0);
+    .reduce((sum, row) => sum + row.creditAmount, 0)
+    + reconciledDepositOffset.transfer;
   const pendingBankReceived = directBankRows
     .filter((row) => row.reconcileStatus === "PENDING_REVIEW")
     .reduce((sum, row) => sum + row.creditAmount, 0);
@@ -538,7 +608,9 @@ async function buildMoneyInReconciliation(
   // fall back to the credited amount because no better historical value exists.
   const walletSettled = walletRows
     .filter((row) => row.reconcileStatus === "MATCHED")
-    .reduce((sum, row) => sum + (row.grossAmount ?? row.creditAmount), 0);
+    .reduce((sum, row) => sum + (row.grossAmount ?? row.creditAmount), 0)
+    + reconciledDepositOffset.card
+    + reconciledDepositOffset.grab;
   const pendingWalletSettled = walletRows
     .filter((row) => row.reconcileStatus === "PENDING_REVIEW")
     .reduce((sum, row) => sum + (row.grossAmount ?? row.creditAmount), 0);
@@ -549,13 +621,14 @@ async function buildMoneyInReconciliation(
   // Phiếu chờ duyệt được hiển thị riêng, không cộng vào số đã về/đã clear.
   const approvedCashDeposited = cashDeposits
     .filter((row) => row.status === "APPROVED")
-    .reduce((sum, row) => sum + row.amount + row.feeAmount, 0);
+    .reduce((sum, row) => sum + row.amount + row.feeAmount, 0)
+    + reconciledDepositOffset.cash;
   const pendingCashDeposited = cashDeposits
     .filter((row) => row.status === "PENDING_REVIEW")
     .reduce((sum, row) => sum + row.amount + row.feeAmount, 0);
 
   const rows = [
-    { key: "cash", label: "Tiền mặt", declared: declared.cash, received: approvedCashDeposited, pending: pendingCashDeposited, note: "Thu ngân khai = ô Tiền mặt của dòng Doanh thu bán hàng; không cộng cọc mới nhận và không trừ chi tiền mặt. Đã xác nhận từ phiếu nộp tiền được duyệt." },
+    { key: "cash", label: "Tiền mặt", declared: declared.cash, received: approvedCashDeposited, pending: pendingCashDeposited, note: "Thu ngân khai = tiền mặt của Doanh thu bán hàng + cọc cấn trừ vào bill. Đã xác nhận gồm phiếu nộp tiền được duyệt và phần cọc đã thu trước; cọc mới nhận không đi vào đối soát doanh thu." },
     { key: "transfer", label: "Chuyển khoản", declared: declared.transfer, received: bankReceived, pending: pendingBankReceived, note: "Đã xác nhận theo SUMIFS sao kê: đúng Ngày doanh thu, loại Thu bán hàng và Trừ nguồn tiền thuộc ngân hàng." },
     { key: "card", label: "Quẹt thẻ / Ví", declared: declared.card + declared.grab, received: walletSettled, pending: pendingWalletSettled, note: "Đã xác nhận theo SUMIFS sao kê, lấy doanh thu gộp trước phí từ nguồn ví; phí được hiển thị riêng bên dưới." },
   ].map((row) => {

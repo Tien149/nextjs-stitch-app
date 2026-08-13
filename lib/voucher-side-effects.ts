@@ -8,6 +8,7 @@ type VoucherForSideEffects = {
   voucherDate: Date;
   partnerCode: string | null;
   partnerName: string;
+  counterpartyAccountName?: string | null;
   branchCode: string;
   moneySourceCode: string;
   categoryCode: string | null;
@@ -40,6 +41,7 @@ export async function applyVoucherSideEffects(
             receivedDate: voucher.voucherDate,
             partnerCode: voucher.partnerCode,
             partnerName: voucher.partnerName,
+            objectName: voucher.counterpartyAccountName || null,
             branchCode: voucher.branchCode,
             moneySourceCode: voucher.moneySourceCode,
             amount: voucher.amount,
@@ -74,6 +76,7 @@ export async function applyVoucherSideEffects(
               receivedDate: voucher.voucherDate,
               partnerCode: voucher.partnerCode,
               partnerName: voucher.partnerName,
+              objectName: voucher.counterpartyAccountName || null,
               branchCode: voucher.branchCode,
               moneySourceCode: voucher.moneySourceCode,
               amount: voucher.amount,

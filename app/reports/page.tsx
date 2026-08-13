@@ -1147,7 +1147,7 @@ export default function ReportsPage() {
           <section className="table-panel no-print">
             <PanelHeader
               title="Đối chiếu tiền vào đã đủ chưa"
-              subtitle="Tiền mặt Thu ngân khai lấy đúng ô Tiền mặt của dòng Doanh thu bán hàng; Đã xác nhận lấy theo SUMIFS sao kê đúng Ngày doanh thu, Loại thu và Trừ nguồn tiền."
+              subtitle="Thu ngân khai lấy doanh thu bán hàng và cộng cọc cấn trừ vào bill đúng ngày; cọc mới nhận chỉ tính vào số tiền cần nộp. Đã xác nhận lấy theo SUMIFS sao kê đúng Ngày doanh thu, Loại thu và Trừ nguồn tiền."
             />
             <div className="overflow-x-auto">
               <table className="w-full min-w-[1080px] table-fixed text-left text-sm">
@@ -1291,12 +1291,12 @@ export default function ReportsPage() {
           </section>
 
           <section className="table-panel">
-            <PanelHeader title="Các khoản chi chi tiết" subtitle="Lấy từ phiếu chi trong ngày/ca. Cột nguồn tiền cho biết khoản nào là tiền mặt để tính số tiền cần nộp." />
+            <PanelHeader title="Các khoản chi/tiền ra chi tiết" subtitle="Lấy từ phiếu chi và khoản hoàn cọc trong ngày/ca. Hoàn cọc là tiền ra để tính số tiền cần nộp nhưng không phải chi phí P&L." />
             <div className="max-h-[520px] overflow-auto">
               <Table headers={["STT", "Mã phiếu", "Khoản chi chi tiết", "Tên nhà cung cấp/đối tượng", "Nguồn tiền", "Số tiền"]}>
                 {dailyCash.expenses.length === 0 ? (
                   <tr className="border-t border-slate-100">
-                    <td colSpan={6} className="px-4 py-10 text-center text-sm text-slate-400">Không có phiếu chi trong ngày/ca này.</td>
+                    <td colSpan={6} className="px-4 py-10 text-center text-sm text-slate-400">Không có phiếu chi hoặc khoản hoàn cọc trong ngày/ca này.</td>
                   </tr>
                 ) : dailyCash.expenses.map((expense, index) => (
                   <tr key={expense.id} className="border-t border-slate-100">

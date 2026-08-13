@@ -11,7 +11,8 @@ import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { generateFormattedVoucherCode } from "@/lib/voucher-code-generator";
 import { commonBankValue, groupBankStatementRows } from "@/lib/bank-statement-import";
 import { normalizeMoneySourceGroup } from "@/lib/money-sources";
-import { evaluateBankStatementAutoApproval } from "@/lib/bank-statement-auto-approval";
+import { bankStatementSpecialCategory, evaluateBankStatementAutoApproval } from "@/lib/bank-statement-auto-approval";
+import { applyVoucherSideEffects } from "@/lib/voucher-side-effects";
 import { applyOpeningDeposit } from "@/lib/opening-balance-deposit";
 import { assertAssetCodeAvailable, nextAssetCode } from "@/lib/asset-code-generator";
 import {
@@ -733,6 +734,8 @@ export async function commitImport(input: CommitInput) {
           const moneySourceCode = voucherType === "RECEIPT"
             ? increaseSourceCode
             : decreaseSourceCode;
+          const isDepositReceipt = voucherType === "RECEIPT"
+            && bankStatementSpecialCategory(category) === "DEPOSIT";
           const approval = evaluateBankStatementAutoApproval({
             autoProcessType,
             debitAmount: group.debitAmount,
@@ -752,6 +755,21 @@ export async function commitImport(input: CommitInput) {
             });
             continue;
           }
+          const retailPartner = isDepositReceipt
+            ? await tx.masterDataItem.findFirst({
+                where: { type: "PARTNER", code: "KH_LE", status: "ACTIVE", deletedAt: null },
+                select: { code: true, name: true },
+              })
+            : null;
+          if (isDepositReceipt && !retailPartner) {
+            autoProcessType = "MANUAL_REQUIRED";
+            autoProcessNote = "Thiếu đối tượng mặc định KH_LE để ghi nhận tiền khách đặt cọc";
+            await tx.bankStatementTransaction.update({
+              where: { id: bankTransaction.id },
+              data: { autoProcessType, autoProcessNote },
+            });
+            continue;
+          }
           const posRevenue = voucherType === "RECEIPT"
             ? await findUnsettledPosRevenue(tx, branchCode, revenueDate || sourceDate || transactionDate, bankAmount)
             : null;
@@ -759,6 +777,7 @@ export async function commitImport(input: CommitInput) {
             && await categoryRepresentsSalesSettlement(tx, categoryCode);
           const businessEffect = posRevenue || isDeclaredSalesSettlement ? "SETTLEMENT" : "RECOGNITION";
           const voucherCount = await tx.financialVoucher.count({ where: { voucherType } });
+          const counterpartyName = commonBankValue(group.rows, "partner_hint") || null;
           const voucher = await tx.financialVoucher.create({
             data: {
               importBatchId: batch.id,
@@ -766,13 +785,16 @@ export async function commitImport(input: CommitInput) {
               sourceDocumentCode: posRevenue?.externalRef || null,
               voucherType,
               voucherDate: documentDate,
-              partnerName: commonBankValue(group.rows, "partner_hint") || "Đối tác theo sao kê",
+              partnerCode: retailPartner?.code || null,
+              partnerName: retailPartner?.name || counterpartyName || "Đối tác theo sao kê",
               branchCode,
               sourceScope: "BANK_STATEMENT_AUTO",
               documentChannel: "BANK",
               businessEffect,
               moneySourceCode,
               categoryCode: categoryCode || null,
+              counterpartyAccountName: counterpartyName,
+              depositAction: isDepositReceipt ? "COLLECT" : null,
               externalRef: transactionCode,
               amount: bankAmount,
               description: group.rows.length === 1
@@ -783,6 +805,9 @@ export async function commitImport(input: CommitInput) {
               approvedBy: input.uploadedBy,
             },
           });
+          if (isDepositReceipt) {
+            await applyVoucherSideEffects(tx as unknown as RawTxClient, voucher, input.uploadedBy);
+          }
           targetId = voucher.id;
           targetCode = voucher.code;
           if (posRevenue) {

@@ -1,6 +1,9 @@
 import { normalizeHeader } from "@/lib/import-templates";
 import { normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
+import { bankStatementSpecialCategory } from "@/lib/bank-statement-category";
+
+export { bankStatementSpecialCategory } from "@/lib/bank-statement-category";
 
 type MasterReference = {
   code: string;
@@ -28,11 +31,6 @@ export type BankStatementApprovalDecision = {
 
 function active(item?: MasterReference | null) {
   return Boolean(item && item.status === "ACTIVE");
-}
-
-function categoryNeedsSpecialHandling(category?: MasterReference | null) {
-  const value = normalizeHeader(`${category?.code || ""} ${category?.name || ""}`);
-  return ["tien coc", "cong no", "phan bo", "tra truoc"].some((keyword) => value.includes(keyword));
 }
 
 /**
@@ -79,7 +77,10 @@ export function evaluateBankStatementAutoApproval(
   if (!active(input.category)) {
     return { autoApprove: false, reason: "Khoản mục thu/chi không tồn tại hoặc đã ngưng hoạt động" };
   }
-  if (categoryNeedsSpecialHandling(input.category)) {
+  const specialCategory = bankStatementSpecialCategory(input.category);
+  // Thu cọc qua ngân hàng có đủ căn cứ để tạo phiếu cọc ngay. Các nghiệp vụ đặc biệt
+  // còn lại vẫn cần mã tham chiếu hoặc thông tin phân bổ nên không được tự duyệt.
+  if (specialCategory && !(specialCategory === "DEPOSIT" && processType === "RECEIPT")) {
     return { autoApprove: false, reason: "Khoản mục cọc/công nợ/phân bổ cần bổ sung thông tin nghiệp vụ" };
   }
 

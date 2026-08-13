@@ -27,6 +27,7 @@ type Deposit = {
   receivedDate: string;
   partnerCode: string;
   partnerName: string;
+  objectName: string | null;
   branchCode: string;
   moneySourceCode: string | null;
   amount: number;
@@ -50,6 +51,7 @@ const emptyForm = {
   receivedDate: new Date().toISOString().slice(0, 10),
   partnerCode: "KH_ABC",
   partnerName: "Công ty TNHH ABC",
+  objectName: "",
   branchCode: "HCM",
   moneySourceCode: "VCB_HCM",
   amount: "50000000",
@@ -235,6 +237,7 @@ export default function DepositsPage() {
       receivedDate: deposit.receivedDate.slice(0, 10),
       partnerCode: deposit.partnerCode,
       partnerName: deposit.partnerName,
+      objectName: deposit.objectName || "",
       branchCode: deposit.branchCode,
       moneySourceCode: deposit.moneySourceCode || "",
       amount: String(deposit.amount),
@@ -377,7 +380,7 @@ export default function DepositsPage() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto p-6 grid grid-cols-1 xl:grid-cols-[420px_1fr] gap-6">
+      <main className="max-w-[1800px] mx-auto p-4 xl:p-5 grid grid-cols-1 xl:grid-cols-[360px_minmax(0,1fr)] gap-4 xl:gap-5">
         {!canCreateDeposits && !editingDeposit && (
           <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 h-fit">
             <p className="text-xs font-bold text-blue-600 uppercase">Quyền truy cập</p>
@@ -425,6 +428,17 @@ export default function DepositsPage() {
               readOnly
               className="mt-1 w-full border border-slate-200 bg-slate-50 text-slate-500 rounded-lg px-3 py-2 text-sm outline-none cursor-not-allowed"
               placeholder="Tên khách hàng tự động điền"
+            />
+          </label>
+
+          <label className="text-xs font-bold text-slate-600 block">
+            Đối tượng
+            <input
+              type="text"
+              value={form.objectName}
+              onChange={(event) => setForm((value) => ({ ...value, objectName: event.target.value }))}
+              className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              placeholder="Nhập đối tượng (không bắt buộc)"
             />
           </label>
 
@@ -530,7 +544,7 @@ export default function DepositsPage() {
               <p className="text-xs text-slate-500 mt-1">Cấn trừ không được vượt số tiền còn lại.</p>
             </div>
             <div className="flex gap-2">
-              <input value={search} onChange={(event) => setSearch(event.target.value)} className="border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="Tìm mã/khách hàng..." />
+              <input value={search} onChange={(event) => setSearch(event.target.value)} className="border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="Tìm mã/khách hàng/đối tượng..." />
               <button onClick={loadDeposits} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50">Tìm</button>
             </div>
           </div>
@@ -602,19 +616,20 @@ export default function DepositsPage() {
               </div>
             </form>
           )}          <div className="overflow-x-auto max-h-[560px] overflow-y-auto custom-scrollbar">
-            <table className="w-full text-left text-sm">
+            <table className="w-full min-w-[1030px] text-left text-sm">
               <thead className="bg-slate-50 text-slate-500 text-xs uppercase border-b border-slate-200 sticky top-0 z-10 shadow-sm">
                 <tr>
-                  <th className="px-4 py-3">Phiếu cọc</th>
-                  <th className="px-4 py-3">Khách hàng</th>
-                  <th className="px-4 py-3">Số tiền</th>
-                  <th className="px-4 py-3">Trạng thái</th>
-                  <th className="px-4 py-3 text-right">Thao tác</th>
+                  <th className="w-[130px] px-4 py-3">Phiếu cọc</th>
+                  <th className="w-[150px] px-4 py-3">Khách hàng</th>
+                  <th className="w-[180px] px-4 py-3">Đối tượng</th>
+                  <th className="w-[130px] px-4 py-3">Số tiền</th>
+                  <th className="w-[150px] px-4 py-3">Trạng thái</th>
+                  <th className="w-[290px] px-4 py-3 text-right">Thao tác</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {deposits.length === 0 ? (
-                  <tr><td colSpan={5} className="px-4 py-10 text-center text-slate-400">Chưa có phiếu cọc.</td></tr>
+                  <tr><td colSpan={6} className="px-4 py-10 text-center text-slate-400">Chưa có phiếu cọc.</td></tr>
                 ) : deposits.map((deposit) => (
                   <tr key={deposit.id} className="hover:bg-slate-50">
                     <td className="px-4 py-3">
@@ -624,6 +639,9 @@ export default function DepositsPage() {
                     <td className="px-4 py-3">
                       <p className="font-bold">{deposit.partnerName}</p>
                       <p className="text-xs text-slate-500">{deposit.purpose}</p>
+                    </td>
+                    <td className="px-4 py-3">
+                      <p className="font-medium text-slate-700">{deposit.objectName || "—"}</p>
                     </td>
                     <td className="px-4 py-3">
                       <p className="font-bold">{formatCurrency(deposit.amount)} đ</p>
@@ -640,13 +658,13 @@ export default function DepositsPage() {
                       )}
                     </td>
                     <td className="px-4 py-3">
-                      <div className="flex items-center justify-end gap-2">
+                      <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
                         {canProcessDeposits && (
                           <>
-                            <button onClick={() => openProcessForm(deposit, "OFFSET")} disabled={deposit.remainingAmount <= 0} className="text-xs font-bold text-blue-600 disabled:text-slate-300">Cấn trừ</button>
-                            <button onClick={() => openProcessForm(deposit, "SUPPLEMENT")} className="text-xs font-bold text-slate-600">Bổ sung</button>
-                            <button onClick={() => openProcessForm(deposit, "REFUND")} disabled={deposit.remainingAmount <= 0} className="text-xs font-bold text-emerald-600 disabled:text-slate-300">Hoàn</button>
-                            <button onClick={() => openProcessForm(deposit, "TRANSFER_REVENUE")} disabled={deposit.remainingAmount <= 0} className="text-xs font-bold text-amber-600 disabled:text-slate-300">Chuyển DT</button>
+                            <button onClick={() => openProcessForm(deposit, "OFFSET")} disabled={deposit.remainingAmount <= 0} className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[11px] font-bold text-blue-700 transition hover:bg-blue-100 disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-300">Cấn trừ</button>
+                            <button onClick={() => openProcessForm(deposit, "SUPPLEMENT")} className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-bold text-slate-700 transition hover:bg-slate-100">Bổ sung</button>
+                            <button onClick={() => openProcessForm(deposit, "REFUND")} disabled={deposit.remainingAmount <= 0} className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700 transition hover:bg-emerald-100 disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-300">Hoàn</button>
+                            <button onClick={() => openProcessForm(deposit, "TRANSFER_REVENUE")} disabled={deposit.remainingAmount <= 0} className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-700 transition hover:bg-amber-100 disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-300">Chuyển DT</button>
                           </>
                         )}
                         <RowActions

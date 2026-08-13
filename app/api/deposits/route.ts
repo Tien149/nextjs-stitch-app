@@ -116,6 +116,7 @@ export async function GET(request: Request) {
                 { code: { contains: search } },
                 { partnerCode: { contains: search } },
                 { partnerName: { contains: search } },
+                { objectName: { contains: search } },
                 { purpose: { contains: search } },
               ],
             }
@@ -144,6 +145,7 @@ export async function POST(request: Request) {
     const body = await request.json();
     const partnerCode = cleanText(body.partnerCode);
     const partnerName = cleanText(body.partnerName);
+    const objectName = cleanText(body.objectName) || null;
     const branchCode = cleanText(body.branchCode);
     const moneySourceCode = cleanText(body.moneySourceCode);
     const purpose = cleanText(body.purpose);
@@ -199,6 +201,7 @@ export async function POST(request: Request) {
         receivedDate,
         partnerCode,
         partnerName,
+        objectName,
         branchCode,
         moneySourceCode,
         amount,
@@ -245,6 +248,7 @@ async function updateDeposit(session: DemoSession, current: DepositRecord, body:
 
   const partnerCode = body.partnerCode === undefined ? current.partnerCode : cleanText(body.partnerCode);
   const partnerName = body.partnerName === undefined ? current.partnerName : cleanText(body.partnerName);
+  const objectName = body.objectName === undefined ? current.objectName : cleanText(body.objectName) || null;
   const branchCode = body.branchCode === undefined ? current.branchCode : cleanText(body.branchCode);
   const moneySourceCode = body.moneySourceCode === undefined ? current.moneySourceCode : cleanText(body.moneySourceCode);
   const purpose = body.purpose === undefined ? current.purpose : cleanText(body.purpose);
@@ -300,6 +304,7 @@ async function updateDeposit(session: DemoSession, current: DepositRecord, body:
       receivedDate,
       partnerCode,
       partnerName,
+      objectName,
       branchCode,
       moneySourceCode,
       amount,
@@ -339,8 +344,8 @@ async function updateDeposit(session: DemoSession, current: DepositRecord, body:
     entityCode: deposit.code,
     branchCode: deposit.branchCode,
     metadata: {
-      before: { receivedDate: current.receivedDate, partnerCode: current.partnerCode, partnerName: current.partnerName, branchCode: current.branchCode, moneySourceCode: current.moneySourceCode, amount: current.amount, purpose: current.purpose, note: current.note },
-      after: { receivedDate, partnerCode, partnerName, branchCode, moneySourceCode, amount, purpose, note },
+      before: { receivedDate: current.receivedDate, partnerCode: current.partnerCode, partnerName: current.partnerName, objectName: current.objectName, branchCode: current.branchCode, moneySourceCode: current.moneySourceCode, amount: current.amount, purpose: current.purpose, note: current.note },
+      after: { receivedDate, partnerCode, partnerName, objectName, branchCode, moneySourceCode, amount, purpose, note },
     },
   });
 
