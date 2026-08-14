@@ -22,7 +22,7 @@ export type DemoSession = Omit<DemoUser, "password"> & {
   loginAt: string;
   allowedBranches: string[];
   menuAccess?: string[];
-  /** Quyền thao tác của vai trò tuỳ chỉnh, lấy từ bảng Role khi đăng nhập. */
+  /** Quyền thao tác của vai trò, lấy từ bảng Role khi đăng nhập. */
   actions?: string[];
 };
 
@@ -461,16 +461,15 @@ function subjectRole(subject: ActionSubject) {
   return typeof subject === "object" && subject ? subject.role : (subject || "");
 }
 
-/** Quyền tự khai của vai trò tuỳ chỉnh; vai trò chuẩn không dùng danh sách này. */
-function customActions(subject: ActionSubject) {
+/** Quyền đã cấu hình trong Role và được đưa vào phiên đăng nhập. */
+function sessionActions(subject: ActionSubject) {
   if (typeof subject !== "object" || !subject) return null;
-  if (isDemoRole(subject.role)) return null;
   return Array.isArray(subject.actions) && subject.actions.length > 0 ? subject.actions : null;
 }
 
 export function canPerformAction(subject: ActionSubject, action: AppAction) {
-  const custom = customActions(subject);
-  if (custom) return custom.includes(action);
+  const configured = sessionActions(subject);
+  if (configured) return configured.includes(action);
 
   const role = subjectRole(subject);
   if (!isDemoRole(role)) {
@@ -481,8 +480,8 @@ export function canPerformAction(subject: ActionSubject, action: AppAction) {
 }
 
 export function canPerformMenuAction(subject: ActionSubject, href: string, action: AppAction) {
-  const custom = customActions(subject);
-  if (custom) return custom.includes(action);
+  const configured = sessionActions(subject);
+  if (configured) return configured.includes(action);
 
   const role = subjectRole(subject);
   const configuredActions = isDemoRole(role) ? menuActionOverrides[href]?.[role] : undefined;

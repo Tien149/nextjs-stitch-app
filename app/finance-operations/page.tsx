@@ -126,7 +126,7 @@ export default function FinanceOperationsPage() {
   const canCreate = user ? canPerformMenuAction(user, href, "create") : false;
   const canEdit = user ? canPerformMenuAction(user, href, "edit") : false;
   const canClose = user?.role === "Admin";
-  const canApproveTransfer = user?.role === "Admin";
+  const canApproveTransfer = user ? canPerformMenuAction(user, href, "approve") : false;
 
   const loadData = useCallback(async () => {
     const response = await fetch(`/api/finance-operations?period=${period}&branchCode=${branchCode}`);
