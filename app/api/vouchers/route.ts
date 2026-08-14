@@ -447,9 +447,9 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
   }
 
   const editReason = cleanText(body.reason);
-  if (requiresPastEditReason && editReason.length < 10) {
+  if (requiresPastEditReason && !editReason) {
     return NextResponse.json(
-      { error: "Vui lòng nhập lý do chỉnh sửa phiếu ngày cũ tối thiểu 10 ký tự" },
+      { error: "Vui lòng nhập lý do chỉnh sửa phiếu ngày cũ" },
       { status: 400 },
     );
   }
@@ -649,8 +649,8 @@ async function lockVoucherRow(tx: RawTxClient, id: string) {
 
 function pastVoucherReasonError(voucherDate: Date, reason: string | null, actionLabel: string) {
   if (isSameCalendarDay(voucherDate, new Date())) return null;
-  if ((reason || "").trim().length >= 10) return null;
-  return `Vui lòng nhập lý do tối thiểu 10 ký tự để ${actionLabel} chứng từ ngày cũ.`;
+  if ((reason || "").trim()) return null;
+  return `Vui lòng nhập lý do để ${actionLabel} chứng từ ngày cũ.`;
 }
 
 /**

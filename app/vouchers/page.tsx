@@ -474,7 +474,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
     return voucherEditWindowError(new Date(voucher.voucherDate), canEditPast);
   };
 
-  const resetForm = () => {
+  const resetFormState = (clearSavedFields: boolean) => {
     const nextBranch = branchCode === "ALL" ? form.branchCode : branchCode;
     setEditingVoucher(null);
     setPastEditDialogOpen(false);
@@ -485,7 +485,15 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
       branchCode: nextBranch,
       moneySourceCode: firstMoneySourceCode(moneySources, nextBranch, sourceGroups),
       categoryCode: emptyForm.categoryCode,
+      amount: clearSavedFields ? "" : emptyForm.amount,
+      description: clearSavedFields ? "" : emptyForm.description,
     });
+  };
+
+  const resetForm = () => resetFormState(false);
+  const resetFormAfterSave = () => resetFormState(true);
+  const clearPreviousSuccess = () => {
+    if (messageType === "success" && message) setMessage("");
   };
 
   const startEditVoucher = (voucher: Voucher) => {
@@ -552,7 +560,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
           : `Đã lưu thay đổi phiếu ${payload.code || editingVoucher.code}.`
         : `Đã tạo và tự động duyệt phiếu ${payload.code || ""}.`);
       setMessageType("success");
-      resetForm();
+      resetFormAfterSave();
       await loadVouchers(branchCode, appliedFilters, voucherPagination.page);
     } catch {
       const error = "Không kết nối được máy chủ. Vui lòng thử lại.";
@@ -590,8 +598,8 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
 
   const confirmPastEdit = async () => {
     const reason = pastEditReason.trim();
-    if (reason.length < 10) {
-      setPastEditError("Vui lòng nhập lý do tối thiểu 10 ký tự.");
+    if (!reason) {
+      setPastEditError("Vui lòng nhập lý do chỉnh sửa phiếu ngày cũ.");
       return;
     }
     setPastEditError("");
@@ -702,8 +710,8 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
     const { kind, ids: targetIds, requiresReason } = bulkDialog;
     const reason = bulkReason.trim();
     const labels = { APPROVE: "duyệt", UNAPPROVE: "bỏ duyệt", DELETE: "xoá" } as const;
-    if (requiresReason && reason.length < 10) {
-      setBulkDialogError("Vui lòng nhập lý do tối thiểu 10 ký tự vì danh sách có chứng từ ngày cũ.");
+    if (requiresReason && !reason) {
+      setBulkDialogError("Vui lòng nhập lý do vì danh sách có chứng từ ngày cũ.");
       return;
     }
 
@@ -803,7 +811,12 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
 
         <main className="grid gap-4 items-start xl:grid-cols-[calc((100%-3rem)/4)_minmax(0,1fr)]">
           {(canCreate || editingVoucher) && (
-            <form onSubmit={submitVoucher} className="bg-white border border-slate-200 rounded-2xl shadow-sm p-5 space-y-4">
+            <form
+              onSubmit={submitVoucher}
+              onChangeCapture={clearPreviousSuccess}
+              onInvalidCapture={clearPreviousSuccess}
+              className="bg-white border border-slate-200 rounded-2xl shadow-sm p-5 space-y-4"
+            >
               <div>
                 <span className="text-[10px] font-bold text-blue-600 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-full uppercase">
                   {isBankChannel ? "Bank Receipt / Payment" : "6.3 Receipt / Payment"}
@@ -1427,13 +1440,13 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                     }}
                     rows={3}
                     placeholder={bulkDialog.requiresReason
-                      ? "Nhập lý do xử lý chứng từ ngày cũ (tối thiểu 10 ký tự)..."
+                      ? "Nhập lý do xử lý chứng từ ngày cũ..."
                       : "VD: Điều chỉnh phiếu nhập nhầm"}
                     className="mt-2 w-full resize-none rounded-xl border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
                   />
                   {bulkDialog.requiresReason && (
-                    <p className={`mt-1 text-[11px] font-medium ${bulkReason.trim().length < 10 ? "text-amber-600" : "text-emerald-600"}`}>
-                      {bulkReason.trim().length}/10 ký tự tối thiểu
+                    <p className={`mt-1 text-[11px] font-medium ${bulkReason.trim() ? "text-emerald-600" : "text-rose-600"}`}>
+                      {bulkReason.trim() ? "Đã nhập lý do." : "Lý do là bắt buộc."}
                     </p>
                   )}
                 </div>
@@ -1457,7 +1470,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
               </button>
               <button
                 type="button"
-                disabled={bulkRunning || (bulkDialog.requiresReason && bulkReason.trim().length < 10)}
+                disabled={bulkRunning || (bulkDialog.requiresReason && !bulkReason.trim())}
                 onClick={() => void runBulk()}
                 className={`rounded-xl px-4 py-2 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50 ${
                   bulkDialog.kind === "APPROVE"
@@ -1525,12 +1538,12 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                   setPastEditReason(event.target.value);
                   if (pastEditError) setPastEditError("");
                 }}
-                placeholder="Nhập lý do chỉnh sửa (tối thiểu 10 ký tự)..."
+                placeholder="Nhập lý do chỉnh sửa..."
                 className="h-28 w-full resize-none rounded-xl border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
               />
               <div className="flex items-center justify-between gap-3">
-                <span className={`text-[11px] font-medium ${pastEditReason.trim().length < 10 ? "text-amber-600" : "text-emerald-600"}`}>
-                  {pastEditReason.trim().length}/10 ký tự tối thiểu
+                <span className={`text-[11px] font-medium ${pastEditReason.trim() ? "text-emerald-600" : "text-rose-600"}`}>
+                  {pastEditReason.trim() ? "Đã nhập lý do." : "Lý do là bắt buộc."}
                 </span>
                 {pastEditError && <span className="text-right text-xs font-semibold text-rose-600">{pastEditError}</span>}
               </div>
@@ -1546,7 +1559,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
               </button>
               <button
                 type="button"
-                disabled={saving || pastEditReason.trim().length < 10}
+                disabled={saving || !pastEditReason.trim()}
                 onClick={() => void confirmPastEdit()}
                 className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
               >

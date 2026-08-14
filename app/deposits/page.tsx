@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { BranchScopeSelect, resolveInitialBranchScope } from "@/components/BranchScopeSelect";
 import { DateInput } from "@/components/DateInput";
@@ -136,6 +136,21 @@ export default function DepositsPage() {
   const canProcessDeposits = user ? canPerformAction(user, "edit") : false;
   /** Biểu mẫu bên trái hiện ra khi được tạo mới hoặc khi đang sửa một phiếu cọc. */
   const showDepositForm = canCreateDeposits || Boolean(editingDeposit);
+  const depositFormRef = useRef<HTMLFormElement>(null);
+  const [depositPanelHeight, setDepositPanelHeight] = useState<number | null>(null);
+
+  useEffect(() => {
+    const formElement = depositFormRef.current;
+    if (!showDepositForm || !formElement) {
+      setDepositPanelHeight(null);
+      return;
+    }
+    const updateHeight = () => setDepositPanelHeight(Math.ceil(formElement.getBoundingClientRect().height));
+    updateHeight();
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(formElement);
+    return () => observer.disconnect();
+  }, [showDepositForm]);
 
   /** Phiếu cọc đã cấn trừ/hoàn/hủy thì không cho sửa; trả về lý do để hiện tooltip. */
   const editLockReason = (deposit: Deposit) => {
@@ -380,7 +395,10 @@ export default function DepositsPage() {
         </div>
       </header>
 
-      <main className="max-w-[1800px] mx-auto p-4 xl:p-5 grid grid-cols-1 xl:grid-cols-[360px_minmax(0,1fr)] gap-4 xl:gap-5">
+      <main
+        className="max-w-[1800px] mx-auto p-4 xl:p-5 grid grid-cols-1 xl:grid-cols-[360px_minmax(0,1fr)] items-start gap-4 xl:gap-5"
+        style={{ "--deposit-panel-height": depositPanelHeight ? `${depositPanelHeight}px` : "auto" } as CSSProperties}
+      >
         {!canCreateDeposits && !editingDeposit && (
           <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 h-fit">
             <p className="text-xs font-bold text-blue-600 uppercase">Quyền truy cập</p>
@@ -391,7 +409,7 @@ export default function DepositsPage() {
           </div>
         )}
 
-        <form onSubmit={submitDeposit} className={`bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4 ${showDepositForm ? "" : "hidden"}`}>
+        <form ref={depositFormRef} onSubmit={submitDeposit} className={`bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4 ${showDepositForm ? "" : "hidden"}`}>
           <div>
             <p className="text-xs font-bold text-blue-600 uppercase">2.1 Ghi nhận cọc</p>
             <h2 className="font-bold text-lg mt-1">
@@ -537,7 +555,7 @@ export default function DepositsPage() {
           </div>
         </form>
 
-        <section className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+        <section className="flex h-fit flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm xl:h-[var(--deposit-panel-height)]">
           <div className="p-5 border-b border-slate-200 flex flex-col md:flex-row gap-3 md:items-center justify-between">
             <div>
               <h2 className="font-bold">Danh sách tiền cọc</h2>
@@ -615,7 +633,9 @@ export default function DepositsPage() {
                 </div>
               </div>
             </form>
-          )}          <div className="overflow-x-auto max-h-[560px] overflow-y-auto custom-scrollbar">
+          )}
+
+          <div className="min-h-0 flex-1 overflow-x-auto overflow-y-auto custom-scrollbar">
             <table className="w-full min-w-[1030px] text-left text-sm">
               <thead className="bg-slate-50 text-slate-500 text-xs uppercase border-b border-slate-200 sticky top-0 z-10 shadow-sm">
                 <tr>
