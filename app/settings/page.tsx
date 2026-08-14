@@ -1242,7 +1242,7 @@ export default function SettingsPage() {
                 </>
               )}
 
-              {activeType === "ASSET_GROUP" && (
+              {["ASSET_GROUP", "DEPARTMENT"].includes(activeType) && (
                 <label className="text-xs font-bold text-slate-700 block">
                   Tiền tố mã tự động
                   <input
@@ -1250,10 +1250,13 @@ export default function SettingsPage() {
                     value={form.codePrefix}
                     onChange={(event) => setForm((value) => ({ ...value, codePrefix: event.target.value.toUpperCase() }))}
                     className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm uppercase outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
-                    placeholder={form.group === "CCDC" || form.group === "TOOL" ? "VD: CCDC-" : "VD: TSCD-"}
+                    placeholder={activeType === "DEPARTMENT" ? "VD: KIT" : form.group === "CCDC" || form.group === "TOOL" ? "VD: CCDC" : "VD: TSCD"}
+                    maxLength={activeType === "DEPARTMENT" ? 3 : 4}
                   />
                   <span className="mt-1 block text-[11px] font-medium text-slate-500">
-                    Để trống sẽ dùng mặc định: CCDC- cho công cụ dụng cụ, TSCD- cho tài sản cố định.
+                    {activeType === "DEPARTMENT"
+                      ? "Đúng 3 ký tự. Để trống sẽ dùng mã phòng ban nếu mã đó có đúng 3 ký tự."
+                      : "Đúng 4 ký tự. Để trống sẽ dùng mặc định CCDC hoặc TSCD theo phân loại nhóm."}
                   </span>
                 </label>
               )}

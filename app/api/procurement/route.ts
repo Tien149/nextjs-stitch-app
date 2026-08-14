@@ -568,6 +568,9 @@ export async function PATCH(request: Request) {
     for (const line of receiveLines) {
       if (line.receiveQuantity > line.orderedQuantity - line.receivedQuantity) businessError("Số lượng nhận vượt số lượng còn lại của PO");
     }
+    if (receiveLines.some((line) => ["TOOL", "ASSET"].includes(line.item.itemType)) && !order.departmentCode) {
+      businessError("PO có Tài sản/CCDC phải chọn Phòng ban để hệ thống tự sinh mã");
+    }
 
     const result = await prisma.$transaction(async (tx) => {
       const transactionCode = await generatedCode("NK", await tx.inventoryTransaction.count());
@@ -606,7 +609,7 @@ export async function PATCH(request: Request) {
           const assetGroup = assetGroupFromItemType(line.item.itemType);
           await tx.assetRecord.create({
             data: {
-              code: await nextAssetCode(tx, assetGroup),
+              code: await nextAssetCode(tx, assetGroup, order.departmentCode || ""),
               name: line.item.name,
               branchCode: order.branchCode,
               departmentCode: order.departmentCode || null,

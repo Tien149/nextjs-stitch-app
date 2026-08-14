@@ -14,6 +14,7 @@ type MasterItem = {
   code: string;
   name: string;
   group?: string | null;
+  partnerType?: string | null;
   branch: string | null;
   status: string;
 };
@@ -384,14 +385,35 @@ function validateAsset(row: ParsedImportRow, masterItems: MasterItem[], existing
     if (!department) addError(row, `Phong ban [${departmentInput}] khong ton tai hoac ngung hoat dong`);
     else row.values.department_code = department.code;
   }
+  if (!assetCode && !departmentInput) addError(row, "Phong ban la bat buoc khi de trong Ma tai san de tu sinh ma");
 
   const supplierInput = row.values.supplier_code || row.values.supplier_name;
   if (text(supplierInput)) {
     const supplier = resolveMaster(masterItems, "PARTNER", supplierInput, branchCode);
-    if (supplier) {
+    const supplierType = text(supplier?.partnerType || supplier?.group).toUpperCase();
+    if (supplier && ["SUPPLIER", "BOTH"].includes(supplierType)) {
       row.values.supplier_code = supplier.code;
       row.values.supplier_name = supplier.name;
+    } else addError(row, `Doi tac [${text(supplierInput)}] khong phai Nha cung cap/Phai tra dang hoat dong`);
+  }
+
+  const paymentStatus = normalizeChoice(row.values.payment_status || "PAID", {
+    paid: "PAID", "da thanh toan": "PAID", payable: "PAYABLE", "cong no": "PAYABLE", "phai tra": "PAYABLE",
+  });
+  row.values.payment_status = paymentStatus;
+  if (!["PAID", "PAYABLE"].includes(paymentStatus)) addError(row, "Thanh toan chi nhan PAID hoac PAYABLE");
+  if (paymentStatus === "PAYABLE") {
+    const originalCost = numberValue(row.values.original_cost);
+    const payableAmount = numberValue(row.values.payable_amount) || originalCost;
+    row.values.payable_amount = payableAmount;
+    if (!text(row.values.supplier_code)) addError(row, "Tai san cong no phai co Nha cung cap/Phai tra");
+    if (payableAmount !== originalCost) addError(row, "So tien cong no tai san phai bang nguyen gia");
+    if (row.values.payment_due_date && row.values.purchase_date && new Date(String(row.values.payment_due_date)) < new Date(String(row.values.purchase_date))) {
+      addError(row, "Han thanh toan khong duoc truoc ngay mua");
     }
+  } else {
+    row.values.payable_amount = 0;
+    row.values.payment_due_date = null;
   }
 
   if (numberValue(row.values.quantity) <= 0) addError(row, "So luong tai san/CCDC phai lon hon 0");
@@ -543,7 +565,7 @@ export async function validateImportResult(
   }
   const masterItems = await prisma.masterDataItem.findMany({
     where: { type: { in: ["BRANCH", "MONEY_SOURCE", "PARTNER", "REVENUE_EXPENSE_CATEGORY", "WAREHOUSE", "INVENTORY_ITEM_GROUP", "ASSET_GROUP", "DEPARTMENT"] } },
-    select: { type: true, code: true, name: true, group: true, branch: true, status: true },
+    select: { type: true, code: true, name: true, group: true, partnerType: true, branch: true, status: true },
   });
   const inventoryItems = ["OPENING_BALANCE", "INVENTORY_TRANSACTION", "BOM", "STOCKTAKE", "REVENUE_POS"].includes(importType)
     ? await prisma.inventoryItem.findMany({ select: { code: true, itemType: true, status: true, unit: true, unitConversions: { select: { unitCode: true, conversionRate: true } } } })

@@ -1,8 +1,8 @@
 import type { RawTxClient, TxClient } from "@/lib/prisma";
 
 const ASSET_CODE_PATTERN = /^[A-Z0-9_-]+$/;
-const DEFAULT_FIXED_ASSET_PREFIX = "TSCD-";
-const DEFAULT_TOOL_PREFIX = "CCDC-";
+const DEFAULT_FIXED_ASSET_PREFIX = "TSCD";
+const DEFAULT_TOOL_PREFIX = "CCDC";
 const MAX_SEQUENCE = 9999;
 
 export class AssetCodeError extends Error {}
@@ -21,9 +21,15 @@ export function validateManualAssetCode(value: unknown) {
   return code;
 }
 
-function normalizePrefix(value: string | null | undefined, fallback: string) {
-  const prefix = normalizeAssetCode(value || fallback);
-  if (!prefix || prefix.length > 30 || !ASSET_CODE_PATTERN.test(prefix)) return fallback;
+function compactPrefix(value: string | null | undefined) {
+  return normalizeAssetCode(value).replace(/[-_]/g, "");
+}
+
+function requirePrefix(value: string | null | undefined, length: number, label: string) {
+  const prefix = compactPrefix(value);
+  if (!new RegExp(`^[A-Z0-9]{${length}}$`).test(prefix)) {
+    throw new AssetCodeError(`${label} phải được cấu hình đúng ${length} ký tự chữ/số.`);
+  }
   return prefix;
 }
 
@@ -37,16 +43,30 @@ export async function resolveAssetCodePrefix(tx: AssetCodeTx, assetGroupCode: st
   });
   const isTool = ["CCDC", "TOOL"].includes((group?.group || "").toUpperCase())
     || ["CCDC", "TOOL"].includes(assetGroupCode.toUpperCase());
-  return normalizePrefix(group?.codePrefix, isTool ? DEFAULT_TOOL_PREFIX : DEFAULT_FIXED_ASSET_PREFIX);
+  return requirePrefix(group?.codePrefix || (isTool ? DEFAULT_TOOL_PREFIX : DEFAULT_FIXED_ASSET_PREFIX), 4, "Tiền tố Nhóm tài sản/CCDC");
+}
+
+export async function resolveDepartmentCodePrefix(tx: AssetCodeTx, departmentCode: string) {
+  const client = tx as RawTxClient;
+  const department = await client.masterDataItem.findFirst({
+    where: { type: "DEPARTMENT", code: departmentCode, status: "ACTIVE", deletedAt: null },
+    select: { code: true, codePrefix: true },
+  });
+  if (!department) throw new AssetCodeError(`Phòng ban ${departmentCode || "(trống)"} không tồn tại hoặc đã ngưng hoạt động.`);
+  return requirePrefix(department.codePrefix || department.code, 3, `Tiền tố Phòng ban ${department.code}`);
 }
 
 /**
  * Cấp mã theo prefix trong transaction. Advisory lock tuần tự hóa các request cùng prefix;
  * truy vấn raw bao gồm cả hồ sơ đã xóa mềm để mã lịch sử không bị tái sử dụng.
  */
-export async function nextAssetCode(tx: AssetCodeTx, assetGroupCode: string) {
+export async function nextAssetCode(tx: AssetCodeTx, assetGroupCode: string, departmentCode: string) {
   const client = tx as RawTxClient;
-  const prefix = await resolveAssetCodePrefix(tx, assetGroupCode);
+  const [groupPrefix, departmentPrefix] = await Promise.all([
+    resolveAssetCodePrefix(tx, assetGroupCode),
+    resolveDepartmentCodePrefix(tx, departmentCode),
+  ]);
+  const prefix = `${groupPrefix}${departmentPrefix}`;
   const lockKey = `asset-code:${prefix}`;
   await client.$queryRaw<Array<{ locked: number }>>`
     SELECT 1::integer AS "locked"

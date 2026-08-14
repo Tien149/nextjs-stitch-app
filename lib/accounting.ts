@@ -12,6 +12,7 @@ export const defaultAccounts = [
   { code: "152", name: "Nguyên liệu và hàng tồn kho", accountType: "ASSET", normalBalance: "DEBIT", reportGroup: "INVENTORY" },
   { code: "211", name: "Tài sản cố định", accountType: "ASSET", normalBalance: "DEBIT", reportGroup: "FIXED_ASSET" },
   { code: "214", name: "Khấu hao lũy kế", accountType: "ASSET", normalBalance: "CREDIT", reportGroup: "ACCUMULATED_DEPRECIATION" },
+  { code: "242", name: "Chi phí trả trước / CCDC", accountType: "ASSET", normalBalance: "DEBIT", reportGroup: "PREPAID_EXPENSE" },
   { code: "331", name: "Phải trả nhà cung cấp", accountType: "LIABILITY", normalBalance: "CREDIT", reportGroup: "PAYABLE" },
   { code: "334", name: "Phải trả người lao động", accountType: "LIABILITY", normalBalance: "CREDIT", reportGroup: "PAYROLL_PAYABLE" },
   { code: "335", name: "Chi phí phải trả", accountType: "LIABILITY", normalBalance: "CREDIT", reportGroup: "ACCRUAL" },
@@ -200,7 +201,13 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   }
 
   const assets = await prisma.assetRecord.findMany({ where: { ...branchFilter, purchaseDate: { gte: start, lt: end } } });
-  for (const row of assets) results.push(await postJournalEntry({ entryDate: row.purchaseDate, branchCode: row.branchCode, sourceType: "ASSET_ACQUISITION", sourceId: row.id, sourceCode: row.code, description: `Ghi tăng tài sản ${row.name}`, createdBy: actor, lines: [{ accountCode: "211", debit: row.originalCost, partnerCode: row.supplierCode }, { accountCode: row.supplierCode ? "331" : "411", credit: row.originalCost, partnerCode: row.supplierCode }] }));
+  const assetGroups = await prisma.masterDataItem.findMany({ where: { type: "ASSET_GROUP" }, select: { code: true, group: true } });
+  const assetGroupType = new Map(assetGroups.map((item) => [item.code, (item.group || "").toUpperCase()]));
+  for (const row of assets) {
+    const isTool = ["CCDC", "TOOL"].includes(assetGroupType.get(row.assetGroup) || "");
+    const payable = row.paymentStatus === "PAYABLE" || (row.paymentStatus === "UNSPECIFIED" && Boolean(row.supplierCode));
+    results.push(await postJournalEntry({ entryDate: row.purchaseDate, branchCode: row.branchCode, sourceType: "ASSET_ACQUISITION", sourceId: row.id, sourceCode: row.code, description: `Ghi tăng tài sản ${row.name}`, createdBy: actor, lines: [{ accountCode: isTool ? "242" : "211", debit: row.originalCost, partnerCode: row.supplierCode }, { accountCode: payable ? "331" : "411", credit: row.originalCost, partnerCode: payable ? row.supplierCode : null }] }));
+  }
 
   const revenues = await prisma.revenueImportRow.findMany({ where: { ...branchFilter, saleDate: { gte: start, lt: end } } });
   for (const row of revenues) results.push(await postJournalEntry({ entryDate: row.saleDate, branchCode: row.branchCode, sourceType: "REVENUE_POS", sourceId: row.id, sourceCode: row.externalRef, description: `Doanh thu ${row.externalRef}`, createdBy: actor, lines: [{ accountCode: row.paymentMethod.toUpperCase().includes("CASH") ? "1111" : "1121", debit: row.netAmount }, { accountCode: "511", credit: row.netAmount, categoryCode: row.revenueSource }] }));

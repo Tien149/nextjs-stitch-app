@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { Prisma } from "@prisma/custom-client";
 import { prisma, prismaRaw, type RawTxClient, type TxClient } from "@/lib/prisma";
-import { addPeriod, periodFromDate } from "@/lib/phase3";
+import { addPeriod, isPeriodLocked, periodFromDate } from "@/lib/phase3";
+import { ensureDefaultAccounts } from "@/lib/accounting";
 import { isMasterDataImportType, normalizeHeader, type ImportType } from "@/lib/import-templates";
 import { parseImportDate, type ParsedImportRow } from "@/lib/import-parser";
 import { normalizeStockTransactionType, postInventoryTransaction } from "@/lib/inventory-stock";
@@ -366,6 +367,19 @@ export async function commitImport(input: CommitInput) {
   const errorRows = input.rows.filter((row) => row.errors.length > 0);
   if (errorRows.length > 0) throw new Error("File còn dòng lỗi, vui lòng sửa trước khi commit");
   if (input.rows.length === 0) throw new Error("File không có dòng dữ liệu để commit");
+
+  const payableAssetRows = input.importType === "ASSET"
+    ? input.rows.filter((row) => asText(row.values.payment_status).toUpperCase() === "PAYABLE")
+    : [];
+  for (const row of payableAssetRows) {
+    const purchaseDate = asDate(row.values.purchase_date);
+    const branchCode = asText(row.values.branch_code);
+    if (await isPeriodLocked(purchaseDate, branchCode)) {
+      throw new Error(`Kỳ ${periodFromDate(purchaseDate)} của ${branchCode} đã khóa, không thể import công nợ tài sản`);
+    }
+  }
+  const assetAccounts = payableAssetRows.length > 0 ? await ensureDefaultAccounts() : [];
+  const assetAccountByCode = new Map(assetAccounts.map((account) => [account.code, account.id]));
 
   const batchResult = await prisma.$transaction(async (tx) => {
     if (input.fileChecksum) {
@@ -1341,8 +1355,11 @@ export async function commitImport(input: CommitInput) {
         let code = asText(row.values.asset_code).toUpperCase();
         code = code
           ? await assertAssetCodeAvailable(tx, code)
-          : await nextAssetCode(tx, asText(row.values.asset_group));
+          : await nextAssetCode(tx, asText(row.values.asset_group), asText(row.values.department_code));
         const originalCost = asNumber(row.values.original_cost);
+        const paymentStatus = asText(row.values.payment_status).toUpperCase() || "PAID";
+        const payableAmount = paymentStatus === "PAYABLE" ? (asNumber(row.values.payable_amount) || originalCost) : 0;
+        const purchaseDate = asDate(row.values.purchase_date);
         const asset = await tx.assetRecord.create({
           data: {
             code,
@@ -1354,7 +1371,7 @@ export async function commitImport(input: CommitInput) {
             location: asText(row.values.warehouse_code) || null,
             warehouseCode: asText(row.values.warehouse_code) || null,
             quantity: asNumber(row.values.quantity) || 1,
-            purchaseDate: asDate(row.values.purchase_date),
+            purchaseDate,
             originalCost,
             currentValue: originalCost,
             usefulLifeMonths: row.values.useful_life_months ? asInteger(row.values.useful_life_months) : null,
@@ -1362,10 +1379,56 @@ export async function commitImport(input: CommitInput) {
             residualValue: row.values.residual_value ? asNumber(row.values.residual_value) : 0,
             supplierCode: asText(row.values.supplier_code) || null,
             supplierName: asText(row.values.supplier_name) || null,
+            paymentStatus,
+            payableAmount,
+            paymentDueDate: row.values.payment_due_date ? asDate(row.values.payment_due_date) : null,
             status: asText(row.values.status) || "IN_USE",
             note: asText(row.values.note) || null,
           },
         });
+        if (paymentStatus === "PAYABLE") {
+          const assetGroupItem = await tx.masterDataItem.findFirst({
+            where: { type: "ASSET_GROUP", code: asText(row.values.asset_group), status: "ACTIVE" },
+            select: { group: true },
+          });
+          const debitAccountCode = ["CCDC", "TOOL"].includes(asText(assetGroupItem?.group).toUpperCase()) ? "242" : "211";
+          const debitAccountId = assetAccountByCode.get(debitAccountCode);
+          const payableAccountId = assetAccountByCode.get("331");
+          if (!debitAccountId || !payableAccountId) throw new Error("Thiếu tài khoản kế toán 211/242 hoặc 331");
+          await tx.debtRecord.create({ data: {
+            importBatchId: batch.id,
+            code: `CN-${asset.code}`,
+            debtType: "PAYABLE",
+            partnerGroup: "SUPPLIER",
+            partnerCode: asText(row.values.supplier_code),
+            partnerName: asText(row.values.supplier_name) || asText(row.values.supplier_code),
+            branchCode: asset.branchCode,
+            documentDate: purchaseDate,
+            dueDate: row.values.payment_due_date ? asDate(row.values.payment_due_date) : null,
+            originalAmount: payableAmount,
+            outstandingAmount: payableAmount,
+            description: `Công nợ mua tài sản/CCDC ${asset.code} - ${asset.name}`,
+            sourceType: "ASSET",
+            sourceId: asset.id,
+            status: "OPEN",
+          } });
+          await tx.journalEntry.create({ data: {
+            code: `JE-ASSET-${asset.code}`,
+            entryDate: purchaseDate,
+            period: periodFromDate(purchaseDate),
+            branchCode: asset.branchCode,
+            sourceType: "ASSET_ACQUISITION",
+            sourceId: asset.id,
+            sourceCode: asset.code,
+            description: `Ghi nhận mua tài sản/CCDC công nợ ${asset.code}`,
+            status: "POSTED",
+            createdBy: input.uploadedBy,
+            lines: { create: [
+              { accountId: debitAccountId, debit: originalCost, credit: 0, departmentCode: asset.departmentCode, description: asset.name },
+              { accountId: payableAccountId, debit: 0, credit: payableAmount, partnerCode: asset.supplierCode, description: asset.name },
+            ] },
+          } });
+        }
         await setImportTarget(tx, staging, row, "ASSET", asset.id);
       }
     }
@@ -1771,6 +1834,7 @@ async function rollbackAssets(tx: RawTxClient, batchId: string) {
       tx.assetDepreciation.count({ where: { assetId: asset.id } }),
       tx.assetMaintenance.count({ where: { assetId: asset.id } }),
       tx.assetDamageReport.count({ where: { assetId: asset.id } }),
+      tx.debtSettlement.count({ where: { debt: { sourceType: "ASSET", sourceId: asset.id } } }),
     ]);
     if (used.some((count) => count > 0) || asset.disposalStatus || asset.disposalDate) {
       throw new Error(`Tai san ${asset.code} da phat sinh nghiep vu, khong the rollback tu dong`);
@@ -1778,6 +1842,7 @@ async function rollbackAssets(tx: RawTxClient, batchId: string) {
   }
 
   await tx.journalEntry.deleteMany({ where: { sourceType: "ASSET_ACQUISITION", sourceId: { in: assetIds } } });
+  await tx.debtRecord.deleteMany({ where: { sourceType: "ASSET", sourceId: { in: assetIds } } });
   await tx.assetRecord.deleteMany({ where: { id: { in: assetIds } } });
 }
 

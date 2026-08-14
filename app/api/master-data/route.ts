@@ -365,6 +365,7 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const type = searchParams.get("type") || undefined;
     const status = searchParams.get("status") || undefined;
+    const usage = cleanText(searchParams.get("usage")).toUpperCase();
     const search = searchParams.get("search")?.trim();
     const requestedMoneySourceBranch = cleanText(searchParams.get("branchCode")).toUpperCase();
     await ensureSeedDataForType(type);
@@ -383,6 +384,14 @@ export async function GET(request: Request) {
     }
 
     const branchScopeFilters: Array<Record<string, unknown>> = [];
+    if (type === "PARTNER" && usage === "SUPPLIER") {
+      branchScopeFilters.push({
+        OR: [
+          { partnerType: { in: ["SUPPLIER", "BOTH"] } },
+          { partnerType: null, group: { in: ["SUPPLIER", "BOTH"] } },
+        ],
+      });
+    }
     if (type === "MONEY_SOURCE") {
       if (requestedMoneySourceBranch && requestedMoneySourceBranch !== "ALL") {
         branchScopeFilters.push({
@@ -536,13 +545,15 @@ function normalizeMasterGroup(type: string, group: string | null) {
 }
 
 function normalizeAssetCodePrefix(type: string, value: unknown) {
-  if (type !== "ASSET_GROUP") return null;
+  if (!["ASSET_GROUP", "DEPARTMENT"].includes(type)) return null;
   const prefix = cleanText(value).toUpperCase();
   if (!prefix) return null;
-  if (prefix.length > 30 || !/^[A-Z0-9_-]+$/.test(prefix)) {
-    throw new Error("Tiền tố mã chỉ được gồm chữ, số, dấu gạch ngang (-), gạch dưới (_) và tối đa 30 ký tự.");
+  const compact = prefix.replace(/[-_]/g, "");
+  const expectedLength = type === "ASSET_GROUP" ? 4 : 3;
+  if (!new RegExp(`^[A-Z0-9]{${expectedLength}}$`).test(compact)) {
+    throw new Error(`Tiền tố mã ${type === "ASSET_GROUP" ? "Nhóm tài sản/CCDC" : "Phòng ban"} phải đúng ${expectedLength} ký tự chữ/số.`);
   }
-  return prefix;
+  return compact;
 }
 
 export async function POST(request: Request) {

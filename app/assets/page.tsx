@@ -19,6 +19,8 @@ type MasterItem = {
   branch: string | null;
   status: string;
   group?: string | null;
+  partnerType?: string | null;
+  partnerGroup?: string | null;
   codePrefix?: string | null;
 };
 
@@ -40,6 +42,11 @@ type Asset = {
   residualValue: number;
   supplierCode: string | null;
   supplierName: string | null;
+  paymentStatus: string;
+  payableAmount: number;
+  paymentDueDate: string | null;
+  payableDebtCode?: string | null;
+  payableDebtStatus?: string | null;
   sourcePurchaseOrderId: string | null;
   sourceReceiptId: string | null;
   status: string;
@@ -77,6 +84,9 @@ const emptyForm = {
   residualValue: "0",
   supplierCode: "",
   supplierName: "",
+  paymentStatus: "PAID",
+  payableAmount: "",
+  paymentDueDate: "",
   imageUrl: "",
   note: "",
 };
@@ -166,15 +176,14 @@ export default function AssetsPage() {
       const [whRes, depRes, supRes, groupRes] = await Promise.all([
         fetch("/api/master-data?type=WAREHOUSE", { headers }),
         fetch("/api/master-data?type=DEPARTMENT", { headers }),
-        fetch("/api/master-data?type=PARTNER", { headers }),
+        fetch("/api/master-data?type=PARTNER&status=ACTIVE&usage=SUPPLIER", { headers }),
         fetch("/api/master-data?type=ASSET_GROUP&status=ACTIVE", { headers }),
       ]);
       if (whRes.ok) setWarehouses((await whRes.json()) as MasterItem[]);
       if (depRes.ok) setDepartments((await depRes.json()) as MasterItem[]);
       if (groupRes.ok) setAssetGroups((await groupRes.json()) as MasterItem[]);
       if (supRes.ok) {
-        const partners = (await supRes.json()) as MasterItem[];
-        setSuppliers(partners.filter((p) => p.group === "SUPPLIER" || p.type === "PARTNER"));
+        setSuppliers((await supRes.json()) as MasterItem[]);
       }
     } catch (e) {
       console.error("Lỗi tải danh mục master data:", e);
@@ -254,6 +263,16 @@ export default function AssetsPage() {
     return ASSET_GROUPS.map((group) => ({ code: group.code, label: group.label }));
   }, [assetGroups]);
 
+  const autoCodePreview = useMemo(() => {
+    const group = assetGroups.find((item) => item.code === form.assetGroup);
+    const department = departments.find((item) => item.code === form.departmentCode);
+    const groupRaw = (group?.codePrefix || (["CCDC", "TOOL"].some((value) => `${form.assetGroup} ${group?.group || ""}`.toUpperCase().includes(value)) ? "CCDC" : "TSCD"))
+      .replace(/[-_]/g, "").toUpperCase();
+    const departmentRaw = (department?.codePrefix || department?.code || "").replace(/[-_]/g, "").toUpperCase();
+    if (!/^[A-Z0-9]{4}$/.test(groupRaw) || !/^[A-Z0-9]{3}$/.test(departmentRaw)) return "";
+    return `${groupRaw}${departmentRaw}0001`;
+  }, [assetGroups, departments, form.assetGroup, form.departmentCode]);
+
   // KPI Calculations
   const kpis = useMemo(() => {
     const totalOriginalCost = assets.reduce((sum, a) => sum + a.originalCost, 0);
@@ -300,6 +319,9 @@ export default function AssetsPage() {
       residualValue: String(asset.residualValue),
       supplierCode: asset.supplierCode || "",
       supplierName: asset.supplierName || "",
+      paymentStatus: asset.paymentStatus || "PAID",
+      payableAmount: asset.payableAmount ? String(asset.payableAmount) : "",
+      paymentDueDate: asset.paymentDueDate ? asset.paymentDueDate.slice(0, 10) : "",
       imageUrl: asset.imageUrl || "",
       note: asset.note || "",
     });
@@ -311,6 +333,10 @@ export default function AssetsPage() {
     setMessage("");
 
     if (editingAsset) {
+      const { paymentStatus: _paymentStatus, payableAmount: _payableAmount, paymentDueDate: _paymentDueDate, ...editableForm } = form;
+      void _paymentStatus;
+      void _payableAmount;
+      void _paymentDueDate;
       // Tài sản đã trích khấu hao thì API khoá 6 trường tài chính, chỉ gửi thông tin quản lý.
       const payloadBody = editingAllocatedPeriods > 0
         ? {
@@ -326,7 +352,7 @@ export default function AssetsPage() {
             imageUrl: form.imageUrl,
             note: form.note,
           }
-        : { ...form, id: editingAsset.id };
+        : { ...editableForm, id: editingAsset.id };
 
       const response = await fetch("/api/assets", {
         method: "PATCH",
@@ -578,7 +604,7 @@ export default function AssetsPage() {
                   value={form.code}
                   onChange={(e) => setForm((v) => ({ ...v, code: e.target.value.toUpperCase() }))}
                   className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono uppercase focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
-                  placeholder={assetGroups.find((group) => group.code === form.assetGroup)?.codePrefix || "Để trống để hệ thống tự sinh"}
+                  placeholder={autoCodePreview || "Để trống để hệ thống tự sinh"}
                   disabled={Boolean(editingAsset && editingAsset.canEditCode === false)}
                   maxLength={50}
                 />
@@ -587,7 +613,9 @@ export default function AssetsPage() {
                     ? editingAsset.codeEditLockReason || "Mã đã bị khóa do hồ sơ đã phát sinh nghiệp vụ."
                     : form.code
                       ? "Mã nhập thủ công; chỉ dùng chữ, số, dấu - và _."
-                      : "Để trống để tự sinh theo tiền tố của nhóm tài sản."}
+                      : autoCodePreview
+                        ? `Mã dự kiến: ${autoCodePreview} (4 ký tự nhóm + 3 ký tự phòng ban + 4 số).`
+                        : "Hãy cấu hình tiền tố nhóm 4 ký tự và phòng ban 3 ký tự để tự sinh mã."}
                 </span>
               </label>
 
@@ -637,6 +665,7 @@ export default function AssetsPage() {
                   onChange={(departmentCode) => setForm((v) => ({ ...v, departmentCode }))}
                   options={availableFormDepartments.map((dep) => ({ value: dep.code, label: dep.name, subLabel: dep.code }))}
                   placeholder="Chọn phòng ban..."
+                  required={!form.code}
                 />
 
                 <label className="text-xs font-bold text-slate-600 block">
@@ -691,7 +720,7 @@ export default function AssetsPage() {
                     type="number"
                     min="1"
                     value={form.originalCost}
-                    onChange={(e) => setForm((v) => ({ ...v, originalCost: e.target.value }))}
+                    onChange={(e) => setForm((v) => ({ ...v, originalCost: e.target.value, payableAmount: v.paymentStatus === "PAYABLE" ? e.target.value : v.payableAmount }))}
                     className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
                     disabled={editingAllocatedPeriods > 0}
                     placeholder="0"
@@ -699,6 +728,37 @@ export default function AssetsPage() {
                   />
                 </label>
               </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <label className="text-xs font-bold text-slate-600 block">
+                  Thanh toán mua tài sản *
+                  <select
+                    value={form.paymentStatus}
+                    onChange={(e) => setForm((v) => ({ ...v, paymentStatus: e.target.value, payableAmount: e.target.value === "PAYABLE" ? v.originalCost : "", paymentDueDate: e.target.value === "PAYABLE" ? v.paymentDueDate : "" }))}
+                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white disabled:bg-slate-100"
+                    disabled={Boolean(editingAsset)}
+                    required
+                  >
+                    <option value="PAID">Đã thanh toán</option>
+                    <option value="PAYABLE">Công nợ phải trả NCC</option>
+                  </select>
+                </label>
+                <label className="text-xs font-bold text-slate-600 block">
+                  Hạn thanh toán
+                  <DateInput
+                    value={form.paymentDueDate}
+                    onChange={(paymentDueDate) => setForm((v) => ({ ...v, paymentDueDate }))}
+                    className="mt-1"
+                    disabled={Boolean(editingAsset) || form.paymentStatus !== "PAYABLE"}
+                    ariaLabel="Hạn thanh toán công nợ tài sản"
+                  />
+                </label>
+              </div>
+              {form.paymentStatus === "PAYABLE" && !editingAsset && (
+                <p className="text-[11px] text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+                  Khi lưu, hệ thống tạo công nợ NCC bằng nguyên giá và bút toán Nợ 211/242 – Có 331 trong cùng giao dịch.
+                </p>
+              )}
 
               <div className="grid grid-cols-3 gap-2">
                 <label className="text-xs font-bold text-slate-600 block">
@@ -750,6 +810,8 @@ export default function AssetsPage() {
                     }}
                     options={suppliers.map((sup) => ({ value: sup.code, label: sup.name, subLabel: sup.code }))}
                     placeholder="Chọn nhà cung cấp..."
+                    required={form.paymentStatus === "PAYABLE"}
+                    disabled={Boolean(editingAsset && editingAsset.paymentStatus === "PAYABLE")}
                   />
                 ) : (
                   <label className="text-xs font-bold text-slate-600 block">
@@ -760,6 +822,8 @@ export default function AssetsPage() {
                       onChange={(e) => setForm((v) => ({ ...v, supplierName: e.target.value, supplierCode: "" }))}
                       className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                       placeholder="Tên NCC"
+                      required={form.paymentStatus === "PAYABLE"}
+                      disabled={Boolean(editingAsset && editingAsset.paymentStatus === "PAYABLE")}
                     />
                   </label>
                 )}
@@ -999,6 +1063,11 @@ export default function AssetsPage() {
                                   NCC: {asset.supplierName || "-"}
                                   {asset.note && ` · ${asset.note}`}
                                 </p>
+                                {asset.payableDebtCode && (
+                                  <p className="text-[11px] font-medium text-amber-700">
+                                    Công nợ: {asset.payableDebtCode} · {asset.payableDebtStatus || "OPEN"}
+                                  </p>
+                                )}
                               </div>
                             </div>
                           </td>

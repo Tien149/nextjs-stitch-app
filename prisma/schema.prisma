@@ -439,6 +439,9 @@ model AssetRecord {
   residualValue           Float               @default(0)
   supplierCode            String?
   supplierName            String?
+  paymentStatus           String              @default("UNSPECIFIED")
+  payableAmount           Float               @default(0)
+  paymentDueDate          DateTime?
   sourcePurchaseOrderId   String?
   sourceReceiptId         String?
   disposalDate            DateTime?
