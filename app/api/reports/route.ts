@@ -444,13 +444,13 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     grab: revenue.grab + receipt.grab + deposit.grab,
     other: revenue.other + receipt.other + deposit.other,
   };
-  // "Thu ngân khai" ở dòng tiền mặt bằng ô Tiền mặt của dòng "Doanh thu bán hàng"
+  // "Thu ngân khai" ở dòng tiền mặt lấy đúng tổng phiếu thu tiền mặt chi tiết phía dưới
   // cộng phần cọc đã cấn trừ vào bill đúng ngày. Tiền cọc mới nhận thuộc dòng Đặt cọc,
   // còn chi tiền mặt chỉ tham gia công thức Nộp tiền = Thu - Chi; cả hai không được
   // cộng/trừ vào số doanh thu tiền mặt dùng để đối chiếu tiền vào.
   const reconciliationDeclared = {
     total: 0,
-    cash: revenue.cash + receipt.cash + dailyDepositMovement.offsetDeclared.cash,
+    cash: receipt.cash + dailyDepositMovement.offsetDeclared.cash,
     transfer: revenue.transfer - deposit.transfer + dailyDepositMovement.offsetDeclared.transfer,
     card: revenue.card - deposit.card + dailyDepositMovement.offsetDeclared.card,
     grab: revenue.grab - deposit.grab + dailyDepositMovement.offsetDeclared.grab,
@@ -499,9 +499,9 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
       branchCode,
       dayStart,
       dayEnd,
-      shift,
       new Map(moneySources.map((source) => [source.code, source.group])),
       reconciledDepositOffset,
+      receipt.cash + dailyDepositMovement.offsetDeclared.cash,
     ),
   };
 }
@@ -514,19 +514,21 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
  * - Chuyển khoản: khai bao nhiêu vs sao kê ngân hàng ghi có bấy nhiêu trong ngày.
  * - Quẹt thẻ/ví: khai bao nhiêu vs số đã quyết toán từ ví về ngân hàng (gồm cả phí),
  *   vì cổng thanh toán thường trả tiền sau vài ngày nên phần chưa về vẫn nằm ở ví.
- * - Tiền mặt: khai bao nhiêu vs phiếu nộp tiền đã lập cho ngày đó.
+ * - Tiền mặt: cả số thu ngân khai và số đã xác nhận đều lấy từ các phiếu thu tiền mặt
+ *   đã duyệt trong ngày, cộng phần cọc đã cấn trừ vào bill. Đây là quy tắc dùng chung
+ *   cho mọi cửa hàng; phiếu chi và cọc mới nhận không tham gia đối soát doanh thu.
  */
 async function buildMoneyInReconciliation(
   declared: DailyCashBucket,
   branchCode: string,
   dayStart: Date,
   dayEnd: Date,
-  shift: string,
   moneySourceGroupByCode: Map<string, string | null>,
   reconciledDepositOffset: DailyCashBucket,
+  confirmedCashReceipts: number,
 ) {
   const branchWhere = branchCode === "ALL" ? {} : { branchCode };
-  const [legacyBankCandidates, bankAllocations, postedBankRows, cashDeposits] = await Promise.all([
+  const [legacyBankCandidates, bankAllocations, postedBankRows] = await Promise.all([
     prisma.bankStatementTransaction.findMany({
       where: {
         ...branchWhere,
@@ -561,17 +563,6 @@ async function buildMoneyInReconciliation(
     prisma.bankStatementTransaction.findMany({
       where: { ...branchWhere, transactionDate: { gte: dayStart, lt: dayEnd }, creditAmount: { gt: 0 }, deletedAt: null },
       select: { categoryCode: true },
-    }),
-    prisma.moneyTransfer.findMany({
-      where: {
-        ...branchWhere,
-        transferPurpose: "CASH_DEPOSIT",
-        status: { in: ["PENDING_REVIEW", "APPROVED"] },
-        sourceReportDate: { gte: dayStart, lt: dayEnd },
-        ...(shift === "FULL" ? {} : { sourceShift: shift }),
-        deletedAt: null,
-      },
-      select: { amount: true, feeAmount: true, status: true },
     }),
   ]);
 
@@ -617,18 +608,12 @@ async function buildMoneyInReconciliation(
   const walletFee = walletRows
     .filter((row) => row.reconcileStatus === "MATCHED")
     .reduce((sum, row) => sum + Math.max(0, (row.grossAmount ?? row.creditAmount) - row.creditAmount), 0);
-  // Chỉ phiếu được kế toán duyệt mới là tiền đã thực sự rời nguồn thu ngân.
-  // Phiếu chờ duyệt được hiển thị riêng, không cộng vào số đã về/đã clear.
-  const approvedCashDeposited = cashDeposits
-    .filter((row) => row.status === "APPROVED")
-    .reduce((sum, row) => sum + row.amount + row.feeAmount, 0)
-    + reconciledDepositOffset.cash;
-  const pendingCashDeposited = cashDeposits
-    .filter((row) => row.status === "PENDING_REVIEW")
-    .reduce((sum, row) => sum + row.amount + row.feeAmount, 0);
-
+  // Grab vẫn thuộc nhóm Quẹt thẻ/Ví. Theo nghiệp vụ đã chốt, phần Grab trong chênh lệch
+  // gross/net là Chi phí bán hàng Grab; phần phí còn lại là Phí cà thẻ.
+  const walletGrabExpense = Math.min(Math.max(0, declared.grab), walletFee);
+  const walletCardFee = Math.max(0, walletFee - walletGrabExpense);
   const rows = [
-    { key: "cash", label: "Tiền mặt", declared: declared.cash, received: approvedCashDeposited, pending: pendingCashDeposited, note: "Thu ngân khai = tiền mặt của Doanh thu bán hàng + cọc cấn trừ vào bill. Đã xác nhận gồm phiếu nộp tiền được duyệt và phần cọc đã thu trước; cọc mới nhận không đi vào đối soát doanh thu." },
+    { key: "cash", label: "Tiền mặt", declared: declared.cash, received: confirmedCashReceipts, pending: 0, note: "Thu ngân khai và Đã xác nhận cùng lấy tổng phiếu thu tiền mặt đã duyệt ở bảng chi tiết phía dưới + cọc cấn trừ vào bill. Không trừ phiếu chi; cọc mới nhận không đi vào đối soát doanh thu." },
     { key: "transfer", label: "Chuyển khoản", declared: declared.transfer, received: bankReceived, pending: pendingBankReceived, note: "Đã xác nhận theo SUMIFS sao kê: đúng Ngày doanh thu, loại Thu bán hàng và Trừ nguồn tiền thuộc ngân hàng." },
     { key: "card", label: "Quẹt thẻ / Ví", declared: declared.card + declared.grab, received: walletSettled, pending: pendingWalletSettled, note: "Đã xác nhận theo SUMIFS sao kê, lấy doanh thu gộp trước phí từ nguồn ví; phí được hiển thị riêng bên dưới." },
   ].map((row) => {
@@ -654,6 +639,8 @@ async function buildMoneyInReconciliation(
   return {
     rows,
     walletFee,
+    walletGrabExpense,
+    walletCardFee,
     bankRowCount: postedBankRows.length,
     unclassifiedBankRows: postedBankRows.filter((row) => !row.categoryCode).length,
   };

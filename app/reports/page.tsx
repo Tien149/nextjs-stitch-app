@@ -83,6 +83,8 @@ type DailyCashData = {
   moneyInReconciliation: {
     rows: Array<{ key: string; label: string; declared: number; received: number; pending: number; difference: number; status: "MATCHED" | "WAITING_APPROVAL" | "PENDING_CLEAR" | "SHORT" | "OVER"; note: string }>;
     walletFee: number;
+    walletGrabExpense: number;
+    walletCardFee: number;
     bankRowCount: number;
     unclassifiedBankRows: number;
   };
@@ -1147,7 +1149,7 @@ export default function ReportsPage() {
           <section className="table-panel no-print">
             <PanelHeader
               title="Đối chiếu tiền vào đã đủ chưa"
-              subtitle="Thu ngân khai lấy doanh thu bán hàng và cộng cọc cấn trừ vào bill đúng ngày; cọc mới nhận chỉ tính vào số tiền cần nộp. Đã xác nhận lấy theo SUMIFS sao kê đúng Ngày doanh thu, Loại thu và Trừ nguồn tiền."
+              subtitle="Tiền mặt lấy tổng phiếu thu chi tiết phía dưới; Chuyển khoản và Ví lấy theo SUMIFS sao kê đúng Ngày doanh thu, Loại thu và Trừ nguồn tiền. Grab vẫn thuộc Ví; chênh lệch gross/net được tách vào chi phí trong kỳ."
             />
             <div className="overflow-x-auto">
               <table className="w-full min-w-[1080px] table-fixed text-left text-sm">
@@ -1203,7 +1205,9 @@ export default function ReportsPage() {
               </table>
             </div>
             <div className="flex flex-wrap gap-3 border-t border-slate-100 px-4 py-3 text-xs text-slate-600">
-              <span>Phí thẻ/ví tách riêng (không trừ vào số xác nhận gộp): <b className="text-slate-900">{money(dailyCash.moneyInReconciliation.walletFee)} đ</b></span>
+              <span>Chi phí bán hàng Grab: <b className="text-slate-900">{money(dailyCash.moneyInReconciliation.walletGrabExpense)} đ</b></span>
+              <span>Phí cà thẻ: <b className="text-slate-900">{money(dailyCash.moneyInReconciliation.walletCardFee)} đ</b></span>
+              <span>Tổng phí Ví trong kỳ: <b className="text-slate-900">{money(dailyCash.moneyInReconciliation.walletFee)} đ</b></span>
               <span>Dòng sao kê ghi có trong ngày: <b className="text-slate-900">{dailyCash.moneyInReconciliation.bankRowCount}</b></span>
               {dailyCash.moneyInReconciliation.unclassifiedBankRows > 0 && (
                 <span className="text-amber-700">
