@@ -21,6 +21,12 @@ import {
   selectWalletDeclaredRevenue,
   walletRevenueBucket,
 } from "@/lib/wallet-revenue-reconciliation";
+import {
+  allocateWalletSettlementGroup,
+  WALLET_CARD_FEE_CATEGORY_CODE,
+  WALLET_GRAB_EXPENSE_CATEGORY_CODE,
+} from "@/lib/wallet-settlement-allocation";
+import { vietnamBusinessDayBounds } from "@/lib/revenue-date";
 
 function asText(value: unknown) {
   return String(value || "").trim();
@@ -87,33 +93,20 @@ function monthBounds(value: Date) {
   return { start, end };
 }
 
-function dayBoundsUtc(value: Date) {
-  const start = new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()));
-  const end = new Date(start);
-  end.setUTCDate(end.getUTCDate() + 1);
-  return { start, end };
-}
-
-async function unresolvedWalletGrossAmount(
+async function unresolvedWalletGrossSummary(
   tx: TxClient,
   branchCode: string,
   revenueDate: Date,
-  walletSourceCode: string,
 ) {
-  const source = await tx.masterDataItem.findFirst({
-    where: { type: "MONEY_SOURCE", code: walletSourceCode, deletedAt: null },
-    select: { code: true, name: true },
-  });
-  if (!source) return { amount: 0, revenueSource: "NONE" as const };
-  const bucket = walletRevenueBucket(source);
-  const { start, end } = dayBoundsUtc(revenueDate);
+  const { start, end } = vietnamBusinessDayBounds(revenueDate);
   const walletSources = (await tx.masterDataItem.findMany({
     where: { type: "MONEY_SOURCE", deletedAt: null },
     select: { code: true, name: true, group: true },
   })).filter((item) => normalizeMoneySourceGroup(item.group) === "WALLET");
-  const bucketSources = walletSources.filter((item) => walletRevenueBucket(item) === bucket);
-  const bucketSourceCodes = bucketSources.map((item) => item.code);
-  const [revenues, manualRows, previousManualSettlements, previousImportedAllocations] = await Promise.all([
+  const walletSourceCodes = walletSources.map((item) => item.code);
+  const cardSources = walletSources.filter((item) => walletRevenueBucket(item) === "CARD_WALLET");
+  const grabSources = walletSources.filter((item) => walletRevenueBucket(item) === "GRAB");
+  const [revenues, manualRows, legacySettlementMatches, previousImportedAllocations, previousGrabSettlements] = await Promise.all([
     tx.revenueImportRow.findMany({
       where: { branchCode, saleDate: { gte: start, lt: end }, deletedAt: null },
       select: { paymentMethod: true, revenueSource: true, channel: true, netAmount: true },
@@ -122,22 +115,24 @@ async function unresolvedWalletGrossAmount(
       where: { branchCode, reportDate: { gte: start, lt: end }, deletedAt: null },
       select: { cardAmount: true, grabAmount: true },
     }),
-    tx.moneyTransfer.findMany({
+    tx.reconciliationMatch.findMany({
       where: {
-        branchCode,
-        importBatchId: null,
-        transferPurpose: "WALLET_SETTLEMENT",
-        fromMoneySourceCode: { in: bucketSourceCodes },
-        sourceReportDate: { gte: start, lt: end },
-        status: { in: ["PENDING_REVIEW", "APPROVED"] },
+        targetType: "WALLET_SETTLEMENT",
         deletedAt: null,
+        bankTransaction: {
+          branchCode,
+          deletedAt: null,
+          allocations: {
+            some: { revenueDate: { gte: start, lt: end }, decreaseMoneySourceCode: { in: walletSourceCodes }, grossAmount: null },
+          },
+        },
       },
-      select: { amount: true, feeAmount: true },
+      select: { targetId: true },
     }),
     tx.bankStatementAllocation.findMany({
       where: {
         revenueDate: { gte: start, lt: end },
-        decreaseMoneySourceCode: { in: bucketSourceCodes },
+        decreaseMoneySourceCode: { in: walletSourceCodes },
         grossAmount: { not: null },
         bankTransaction: {
           branchCode,
@@ -147,18 +142,44 @@ async function unresolvedWalletGrossAmount(
       },
       select: { grossAmount: true },
     }),
+    tx.moneyTransfer.findMany({
+      where: {
+        branchCode,
+        transferPurpose: "WALLET_SETTLEMENT",
+        sourceReportDate: { gte: start, lt: end },
+        status: { in: ["PENDING_REVIEW", "APPROVED"] },
+        deletedAt: null,
+      },
+      select: { grabExpenseAmount: true },
+    }),
   ]);
-  const declared = selectWalletDeclaredRevenue({
+  const previousLegacySettlements = legacySettlementMatches.length > 0
+    ? await tx.moneyTransfer.findMany({
+        where: { id: { in: legacySettlementMatches.map((row) => row.targetId) }, status: { in: ["PENDING_REVIEW", "APPROVED"] }, deletedAt: null },
+        select: { amount: true, feeAmount: true },
+      })
+    : [];
+  const cardDeclared = selectWalletDeclaredRevenue({
     posRows: revenues,
     manualRows,
-    bucketSources,
-    bucket,
+    bucketSources: cardSources,
+    bucket: "CARD_WALLET",
   });
-  const alreadyAllocated = previousManualSettlements.reduce((sum, row) => sum + row.amount + row.feeAmount, 0)
+  const grabDeclared = selectWalletDeclaredRevenue({
+    posRows: revenues,
+    manualRows,
+    bucketSources: grabSources,
+    bucket: "GRAB",
+  });
+  const alreadyAllocated = previousLegacySettlements.reduce((sum, row) => sum + row.amount + row.feeAmount, 0)
     + previousImportedAllocations.reduce((sum, row) => sum + (row.grossAmount || 0), 0);
   return {
-    amount: remainingWalletGross(declared.amount, alreadyAllocated),
-    revenueSource: declared.source,
+    amount: remainingWalletGross(cardDeclared.amount + grabDeclared.amount, alreadyAllocated),
+    grabAmount: remainingWalletGross(
+      grabDeclared.amount,
+      previousGrabSettlements.reduce((sum, row) => sum + row.grabExpenseAmount, 0),
+    ),
+    revenueSource: cardDeclared.source === "MANUAL" || grabDeclared.source === "MANUAL" ? "MANUAL" as const : cardDeclared.source,
   };
 }
 
@@ -187,7 +208,7 @@ async function findUnsettledPosRevenue(
   revenueDate: Date,
   amount: number,
 ) {
-  const { start, end } = dayBoundsUtc(revenueDate);
+  const { start, end } = vietnamBusinessDayBounds(revenueDate);
   const candidates = await tx.revenueImportRow.findMany({
     where: { branchCode, saleDate: { gte: start, lt: end }, deletedAt: null },
     select: { id: true, externalRef: true, saleDate: true, netAmount: true },
@@ -525,14 +546,29 @@ export async function commitImport(input: CommitInput) {
         select: { code: true, name: true, group: true },
       })).filter((source) => normalizeMoneySourceGroup(source.group) === "WALLET");
       const walletSourceByCode = new Map(walletSourceCatalog.map((source) => [source.code, source]));
-      const walletAllocationFrequency = new Map<string, number>();
+      const walletRowsByDay = new Map<string, ParsedImportRow[]>();
       for (const row of input.rows) {
         const source = walletSourceByCode.get(asText(row.values.decrease_money_source_code));
         const date = row.values.revenue_date ? asDate(row.values.revenue_date) : null;
         const branch = asText(row.values.branch_code);
-        if (!source || !date || !branch) continue;
-        const key = `${branch}:${date.toISOString().slice(0, 10)}:${walletRevenueBucket(source)}`;
-        walletAllocationFrequency.set(key, (walletAllocationFrequency.get(key) || 0) + 1);
+        if (!source || !date || !branch || asText(row.values.auto_process_type) !== "WALLET_SETTLEMENT" || asNumber(row.values.credit_amount) <= 0) continue;
+        const key = `${branch}:${date.toISOString().slice(0, 10)}`;
+        walletRowsByDay.set(key, [...(walletRowsByDay.get(key) || []), row]);
+      }
+      const walletPlanByRow = new Map<string, ReturnType<typeof allocateWalletSettlementGroup>[number] & { revenueSource: string }>();
+      for (const [key, rows] of walletRowsByDay) {
+        const [branch, dateText] = key.split(":");
+        const unresolved = await unresolvedWalletGrossSummary(tx, branch, asDate(dateText));
+        try {
+          const plan = allocateWalletSettlementGroup({
+            grossAmount: unresolved.amount,
+            grabRevenueAmount: unresolved.grabAmount,
+            transactions: rows.map((row) => ({ id: `${row.sheetName}:${row.rowNumber}`, netAmount: asNumber(row.values.credit_amount) })),
+          });
+          for (const item of plan) walletPlanByRow.set(item.id, { ...item, revenueSource: unresolved.revenueSource });
+        } catch {
+          // Không đủ gross: từng giao dịch bên dưới sẽ được giữ MANUAL_REQUIRED cùng lý do cụ thể.
+        }
       }
       for (const group of groups) {
         const firstRow = group.rows[0];
@@ -646,35 +682,28 @@ export async function commitImport(input: CommitInput) {
         if (autoProcessType === "WALLET_SETTLEMENT") {
           const walletSourceCode = decreaseSourceCode;
           const bankSourceCode = increaseSourceCode;
-          const ambiguousAcrossImport = group.rows.some((row) => {
-            const source = walletSourceByCode.get(asText(row.values.decrease_money_source_code));
-            const date = row.values.revenue_date ? asDate(row.values.revenue_date) : null;
-            if (!source || !date) return false;
-            const key = `${branchCode}:${date.toISOString().slice(0, 10)}:${walletRevenueBucket(source)}`;
-            return (walletAllocationFrequency.get(key) || 0) > 1;
-          });
-          if (ambiguousAcrossImport) {
-            autoProcessType = "MANUAL_REQUIRED";
-            autoProcessNote = "Có nhiều giao dịch Ví cùng Ngày doanh thu/bucket trong file; cần duyệt thủ công để tránh phân bổ trùng gross";
-            await tx.bankStatementTransaction.update({ where: { id: bankTransaction.id }, data: { autoProcessType, autoProcessNote } });
-            continue;
-          }
-          const allocationGross = await Promise.all(group.rows.map(async (row) => {
+          const allocationGross = group.rows.map((row) => {
             const rowRevenueDate = row.values.revenue_date ? asDate(row.values.revenue_date) : null;
             const rowBankAmount = Math.round(asNumber(row.values.credit_amount));
-            const unresolved = rowRevenueDate
-              ? await unresolvedWalletGrossAmount(tx, branchCode, rowRevenueDate, walletSourceCode)
-              : { amount: 0, revenueSource: "NONE" as const };
-            return { row, rowRevenueDate, rowBankAmount, grossAmount: unresolved.amount, revenueSource: unresolved.revenueSource };
-          }));
+            const plan = walletPlanByRow.get(`${row.sheetName}:${row.rowNumber}`);
+            return {
+              row,
+              rowRevenueDate,
+              rowBankAmount,
+              grossAmount: plan?.grossAmount || 0,
+              grabExpenseAmount: plan?.grabExpenseAmount || 0,
+              cardFeeAmount: plan?.cardFeeAmount || 0,
+              revenueSource: plan?.revenueSource || "NONE",
+            };
+          });
           const allocationKeys = allocationGross.map((item) => item.rowRevenueDate?.toISOString().slice(0, 10) || "MISSING");
-          const hasAmbiguousDuplicateDate = new Set(allocationKeys).size !== allocationKeys.length;
+          const hasMultipleRevenueDates = new Set(allocationKeys).size !== 1;
           const invalidAllocation = allocationGross.find((item) => !item.rowRevenueDate || item.grossAmount < item.rowBankAmount || item.grossAmount <= 0);
           const grossAmount = allocationGross.reduce((sum, item) => sum + item.grossAmount, 0);
-          if (hasAmbiguousDuplicateDate || invalidAllocation || grossAmount < bankAmount) {
+          if (hasMultipleRevenueDates || invalidAllocation || grossAmount < bankAmount) {
             autoProcessType = "MANUAL_REQUIRED";
-            autoProcessNote = hasAmbiguousDuplicateDate
-              ? "Có nhiều dòng phân bổ Ví cùng Ngày doanh thu; cần duyệt thủ công để tránh phân bổ trùng gross"
+            autoProcessNote = hasMultipleRevenueDates
+              ? "Một giao dịch Ví có nhiều Ngày doanh thu; cần duyệt thủ công theo allocation"
               : invalidAllocation?.grossAmount
               ? `Doanh thu ví ngày phân bổ còn ${invalidAllocation.grossAmount.toLocaleString("vi-VN")} đ, nhỏ hơn tiền ngân hàng ${invalidAllocation.rowBankAmount.toLocaleString("vi-VN")} đ`
               : "Không tìm thấy đủ doanh thu POS hoặc doanh thu nhập tay cho các Ngày doanh thu trong file";
@@ -695,6 +724,8 @@ export async function commitImport(input: CommitInput) {
             });
           }
           const feeAmount = grossAmount - bankAmount;
+          const grabExpenseAmount = allocationGross.reduce((sum, item) => sum + item.grabExpenseAmount, 0);
+          const cardFeeAmount = allocationGross.reduce((sum, item) => sum + item.cardFeeAmount, 0);
           const usedManualRevenue = allocationGross.some((item) => item.revenueSource === "MANUAL");
           const approval = evaluateBankStatementAutoApproval({
             autoProcessType,
@@ -727,7 +758,9 @@ export async function commitImport(input: CommitInput) {
               toMoneySourceCode: bankSourceCode,
               amount: bankAmount,
               feeAmount,
-              feeCategoryCode: null,
+              feeCategoryCode: cardFeeAmount > 0 ? WALLET_CARD_FEE_CATEGORY_CODE : null,
+              grabExpenseAmount,
+              grabExpenseCategoryCode: grabExpenseAmount > 0 ? WALLET_GRAB_EXPENSE_CATEGORY_CODE : null,
               externalRef: transactionCode,
               description: `Quyết toán ví theo sao kê ${transactionCode}${group.rows.length > 1 ? ` (${group.rows.length} ngày doanh thu)` : ""}${feeAmount > 0 ? ` (phí ${feeAmount.toLocaleString("vi-VN")} đ)` : ""}`,
               transferPurpose: "WALLET_SETTLEMENT",
@@ -1960,6 +1993,9 @@ export async function rollbackImportBatch(input: RollbackInput) {
         rollbackNote: input.note || null,
       },
     });
+  }, {
+    maxWait: 10_000,
+    timeout: 120_000,
   });
   await writeAuditLog({
     actorName: input.actor,

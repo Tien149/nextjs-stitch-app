@@ -4,6 +4,9 @@ import {
   type ImportFieldDefinition,
   type ImportTemplateDefinition,
 } from "@/lib/import-templates";
+import { parseImportDate } from "@/lib/import-date";
+
+export { parseImportDate } from "@/lib/import-date";
 
 export type ImportCellValue = string | number | Date | null;
 
@@ -67,38 +70,6 @@ function parseNumber(value: unknown) {
 function parseInteger(value: unknown) {
   const numberValue = parseNumber(value);
   return Number.isFinite(numberValue) && Number.isInteger(numberValue) ? numberValue : Number.NaN;
-}
-
-function checkedUtcDate(year: number, month: number, day: number) {
-  const value = new Date(Date.UTC(year, month - 1, day));
-  return value.getUTCFullYear() === year && value.getUTCMonth() === month - 1 && value.getUTCDate() === day
-    ? value
-    : null;
-}
-
-export function parseImportDate(value: unknown) {
-  if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    return checkedUtcDate(value.getFullYear(), value.getMonth() + 1, value.getDate());
-  }
-  if (typeof value === "number") {
-    const parsed = XLSX.SSF.parse_date_code(value);
-    return parsed ? checkedUtcDate(parsed.y, parsed.m, parsed.d) : null;
-  }
-
-  const text = String(value || "").trim();
-  if (!text) return null;
-
-  const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:T.*)?$/.exec(text);
-  if (iso) return checkedUtcDate(Number(iso[1]), Number(iso[2]), Number(iso[3]));
-
-  const slash = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(text);
-  if (slash) return checkedUtcDate(Number(slash[3]), Number(slash[2]), Number(slash[1]));
-
-  // Sao kê ngân hàng thường xuất ngày kèm giờ, ví dụ 04-08-2026 15:27:22.
-  const dateTime = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})\s+\d{1,2}:\d{2}(?::\d{2})?$/.exec(text);
-  if (dateTime) return checkedUtcDate(Number(dateTime[3]), Number(dateTime[2]), Number(dateTime[1]));
-
-  return null;
 }
 
 function coerceValue(field: ImportFieldDefinition, value: unknown) {

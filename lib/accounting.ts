@@ -246,7 +246,10 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
     const toAccount = moneySourceAccountCode(transferSourceByCode.get(row.toMoneySourceCode));
     const lines: EntryLine[] = [];
     if (row.amount > 0) lines.push({ accountCode: toAccount, debit: row.amount });
-    if (row.feeAmount > 0) lines.push({ accountCode: "6428", debit: row.feeAmount, categoryCode: row.feeCategoryCode });
+    const grabExpenseAmount = Math.min(Math.max(0, row.grabExpenseAmount), Math.max(0, row.feeAmount));
+    const cardFeeAmount = Math.max(0, row.feeAmount - grabExpenseAmount);
+    if (grabExpenseAmount > 0) lines.push({ accountCode: "6428", debit: grabExpenseAmount, categoryCode: row.grabExpenseCategoryCode });
+    if (cardFeeAmount > 0) lines.push({ accountCode: "6428", debit: cardFeeAmount, categoryCode: row.feeCategoryCode });
     if (row.feeAmount < 0) lines.push({ accountCode: "6428", credit: -row.feeAmount, categoryCode: row.feeCategoryCode });
     lines.push({ accountCode: fromAccount, credit: grossAmount });
     results.push(await postJournalEntry({

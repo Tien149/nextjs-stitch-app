@@ -273,6 +273,7 @@ export default function ImportUploadPage({
   const [batchDetailLoading, setBatchDetailLoading] = useState(false);
   const [batchDetailError, setBatchDetailError] = useState("");
   const [message, setMessage] = useState("");
+  const [manualReviewBatch, setManualReviewBatch] = useState<{ id: string; count: number } | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [branchCode, setBranchCode] = useState("");
   const [branches, setBranches] = useState<BranchOption[]>([]);
@@ -330,7 +331,8 @@ export default function ImportUploadPage({
   }, [isCheckingAuth, requiresBranch]);
 
   const errorRows = useMemo(() => preview?.rows.filter((row) => row.errors.length > 0) || [], [preview]);
-  const messageIsError = /lỗi|không|vui lòng|thất bại|sai|thiếu|bắt buộc|error|failed|invalid|khong|loi|dong|dòng/i.test(message);
+  const messageIsError = !message.startsWith("Đã ")
+    && /lỗi|không|vui lòng|thất bại|sai|thiếu|bắt buộc|error|failed|invalid|khong|loi/i.test(message);
 
   const loadBatches = useCallback(async (signal?: AbortSignal) => {
     const response = await fetch(apiPath, { signal });
@@ -379,6 +381,7 @@ export default function ImportUploadPage({
       setBatchDetailLoading(false);
       setBatchDetailError("");
       setMessage("");
+      setManualReviewBatch(null);
       setManualOpen(false);
       setManualValues({});
       setManualError("");
@@ -447,6 +450,7 @@ export default function ImportUploadPage({
 
     setIsUploading(true);
     setMessage("");
+    setManualReviewBatch(null);
     try {
       const formData = new FormData();
       formData.append("file", file);
@@ -483,6 +487,8 @@ export default function ImportUploadPage({
         const skippedCount = previewPayload?.rows.filter((row) => row.values.import_action === "SKIP_EXISTING").length || 0;
         const netZeroCount = previewPayload?.rows.filter((row) => row.values.import_action === "NET_ZERO").length || 0;
         setMessage(`Đã import sao kê: tự động duyệt và đối soát ${autoApprovedCount} chứng từ, ${pendingCount} chứng từ chờ duyệt, ${manualCount} giao dịch chờ xử lý thủ công, bỏ qua ${skippedCount} dòng đã có, ghi nhận ${netZeroCount} dòng đảo Nợ/Có ròng 0 đ.`);
+        const committedBatchId = typeof payload.batch?.id === "string" ? payload.batch.id : "";
+        setManualReviewBatch(manualCount > 0 && committedBatchId ? { id: committedBatchId, count: manualCount } : null);
       } else {
         setMessage(mode === "preview" ? "Đã đọc file, vui lòng kiểm tra preview." : "Đã commit dữ liệu import.");
       }
@@ -784,13 +790,22 @@ export default function ImportUploadPage({
             </div>
 
             {message && (
-              <p className={`rounded-lg border px-3 py-2 text-xs font-semibold shadow-sm ${
+              <div className={`flex min-h-9 w-full max-w-[900px] flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs font-semibold shadow-sm ${
                 messageIsError
-                  ? "min-h-9 w-full max-w-[760px] whitespace-normal leading-5 border-rose-300 bg-rose-50 text-rose-700"
-                  : "h-9 max-w-[420px] truncate border-blue-100 bg-blue-50 text-blue-700"
+                  ? "whitespace-normal leading-5 border-rose-300 bg-rose-50 text-rose-700"
+                  : "border-blue-100 bg-blue-50 text-blue-700"
               }`}>
-                {message}
-              </p>
+                <span>{message}</span>
+                {manualReviewBatch && !messageIsError && (
+                  <button
+                    type="button"
+                    onClick={() => router.push(`/reconciliations?status=UNMATCHED&batchId=${encodeURIComponent(manualReviewBatch.id)}`)}
+                    className="shrink-0 rounded-lg bg-amber-500 px-3 py-1.5 font-bold text-white hover:bg-amber-600"
+                  >
+                    Xem {manualReviewBatch.count} giao dịch cần xử lý →
+                  </button>
+                )}
+              </div>
             )}
           </div>
 
@@ -973,7 +988,7 @@ export default function ImportUploadPage({
                               File lỗi
                             </button>
                           )}
-                          {["COMMITTED", "APPROVED", "COMMITTED_WITH_ERRORS"].includes(batch.status) && (
+                          {["COMMITTED", "APPROVED", "COMMITTED_WITH_ERRORS", "ROLLBACK_FAILED"].includes(batch.status) && (
                             <button
                               type="button"
                               onClick={(event) => {
@@ -982,7 +997,7 @@ export default function ImportUploadPage({
                               }}
                               className="rounded-lg border border-rose-200 px-2 py-1 text-xs font-bold text-rose-700 hover:bg-rose-50"
                             >
-                              Rollback
+                              {batch.status === "ROLLBACK_FAILED" ? "Thử rollback lại" : "Rollback"}
                             </button>
                           )}
                         </div>
@@ -1084,7 +1099,9 @@ export default function ImportUploadPage({
                 <span className="material-symbols-outlined">history</span>
               </div>
               <div className="min-w-0 flex-1">
-                <h2 id="rollback-dialog-title" className="text-base font-bold text-slate-900">Rollback batch import</h2>
+                <h2 id="rollback-dialog-title" className="text-base font-bold text-slate-900">
+                  {rollbackTarget.status === "ROLLBACK_FAILED" ? "Thử rollback batch lại" : "Rollback batch import"}
+                </h2>
                 <p className="mt-1 text-xs leading-5 text-slate-500">
                   Dữ liệu do batch tạo sẽ được hoàn tác nếu chưa phát sinh nghiệp vụ liên quan.
                 </p>
@@ -1149,7 +1166,7 @@ export default function ImportUploadPage({
                     <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
                     Đang rollback...
                   </>
-                ) : "Xác nhận rollback"}
+                ) : rollbackTarget.status === "ROLLBACK_FAILED" ? "Thử rollback lại" : "Xác nhận rollback"}
               </button>
             </div>
           </form>

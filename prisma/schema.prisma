@@ -951,6 +951,9 @@ model MoneyTransfer {
   /// Phí ví và làm tròn xuống là số dương; làm tròn tiền nộp lên là chi phí âm.
   feeAmount           Float     @default(0)
   feeCategoryCode     String?
+  /// Phần chi phí bán hàng Grab nằm trong feeAmount; phần còn lại là phí cà thẻ.
+  grabExpenseAmount       Float  @default(0)
+  grabExpenseCategoryCode String?
   depositTargetType   String?
   sourceReportDate    DateTime?
   sourceShift         String?

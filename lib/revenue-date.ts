@@ -34,3 +34,16 @@ export function suggestRevenueDateFromDescription(description: string): RevenueD
 export function dateKey(value: Date) {
   return value.toISOString().slice(0, 10);
 }
+
+/**
+ * Khoảng ngày nghiệp vụ Việt Nam (+07:00) tương ứng với date-only đã lưu.
+ * Khoảng này chủ động bao phủ cả dữ liệu cũ lưu local midnight và dữ liệu import
+ * mới chuẩn hóa UTC midnight, giống cách màn hình Thu chi ngày đang truy vấn.
+ */
+export function vietnamBusinessDayBounds(value: Date) {
+  const key = dateKey(value);
+  const start = new Date(`${key}T00:00:00+07:00`);
+  const end = new Date(start);
+  end.setUTCDate(end.getUTCDate() + 1);
+  return { start, end };
+}

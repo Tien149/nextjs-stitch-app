@@ -6,7 +6,6 @@ import { appMenuItems, canAccessMenu, canPerformAction, canPerformMenuAction, ty
 import { filterMoneySources, moneySourceDebugLabel, moneySourceDisplayName, type MoneySourceOption } from "@/lib/money-sources";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { visibleStoreOptions } from "@/lib/branch-labels";
-import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 
 type Candidate = {
   targetType: string;
@@ -52,6 +51,10 @@ type SettlementForm = {
   feeCategoryCode: string;
   sourceReportDate: string;
   revenueDateInferred: boolean;
+  groupNetAmount: number;
+  groupGrabExpenseAmount: number;
+  groupCardFeeAmount: number;
+  groupTransactionCount: number;
 };
 
 type MatchRow = {
@@ -73,13 +76,13 @@ export default function ReconciliationsPage() {
   const [searchInput, setSearchInput] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [batchId, setBatchId] = useState("");
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const [moneySources, setMoneySources] = useState<MoneySourceOption[]>([]);
-  const [feeCategories, setFeeCategories] = useState<Array<{ code: string; name: string; group: string | null }>>([]);
   const [settlement, setSettlement] = useState<SettlementForm | null>(null);
   const [settlementSaving, setSettlementSaving] = useState(false);
   const [settlementError, setSettlementError] = useState("");
@@ -98,6 +101,7 @@ export default function ReconciliationsPage() {
     }
     window.setTimeout(() => {
       setUser(session);
+      setBatchId(new URLSearchParams(window.location.search).get("batchId")?.trim() || "");
       setLoading(false);
     }, 0);
   }, [router]);
@@ -107,7 +111,7 @@ export default function ReconciliationsPage() {
   const canSettleWallet = user ? canPerformMenuAction(user, "/finance-operations", "create") : false;
   const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
   const settlementFee = settlement
-    ? Math.max(0, Number(settlement.grossAmount || 0)) - settlement.bankRow.creditAmount
+    ? Math.max(0, Number(settlement.grossAmount || 0)) - settlement.groupNetAmount
     : 0;
 
   const loadRows = async (options?: { query?: string; targetPage?: number; targetStatus?: string }) => {
@@ -116,6 +120,7 @@ export default function ReconciliationsPage() {
     const requestedStatus = options?.targetStatus ?? status;
     const params = new URLSearchParams({ status: requestedStatus, page: String(requestedPage) });
     if (requestedQuery) params.set("q", requestedQuery);
+    if (batchId) params.set("batchId", batchId);
     const response = await fetch(`/api/reconciliations?${params.toString()}`);
     if (response.ok) {
       const payload = await response.json();
@@ -133,7 +138,7 @@ export default function ReconciliationsPage() {
       }, 0);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, status, page, searchQuery]);
+  }, [loading, status, page, searchQuery, batchId]);
 
   const submitSearch = () => {
     const nextQuery = (searchInputRef.current?.value || searchInput).trim();
@@ -150,6 +155,8 @@ export default function ReconciliationsPage() {
     setSearchInput("");
     setPage(1);
     setSearchQuery("");
+    setBatchId("");
+    window.history.replaceState(null, "", "/reconciliations");
   };
 
   // Danh mục cho form quyết toán ví; chỉ tải một lần khi vào trang.
@@ -159,30 +166,42 @@ export default function ReconciliationsPage() {
       .then((res) => (res.ok ? res.json() : []))
       .then((items: MoneySourceOption[]) => setMoneySources(items))
       .catch(() => setMoneySources([]));
-    void fetch("/api/master-data?type=REVENUE_EXPENSE_CATEGORY&status=ACTIVE")
-      .then((res) => (res.ok ? res.json() : []))
-      .then((items: Array<{ code: string; name: string; group: string | null }>) =>
-        setFeeCategories(items.filter((item) => normalizeCashflowCategoryType(item.group) === "PAYMENT")))
-      .catch(() => setFeeCategories([]));
   }, [loading]);
 
   /**
    * Mở form quyết toán từ chính dòng sao kê: số thực nhận và tài khoản nhận lấy sẵn
    * từ dòng đó, kế toán chỉ còn chọn ví và nhập số gốc đang treo ở ví.
    */
-  const openSettlement = (bankRow: BankRow) => {
+  const openSettlement = async (bankRow: BankRow) => {
     setSettlementError("");
-    setSettlement({
-      bankRow,
-      branchCode: bankRow.branchCode || "",
-      fromMoneySourceCode: bankRow.walletSourceCodes.length === 1 ? bankRow.walletSourceCodes[0] : "",
-      grossAmount: String(Math.round(bankRow.walletGrossAmount || bankRow.creditAmount)),
-      feeCategoryCode: "",
-      sourceReportDate: bankRow.revenueDates.length === 1
-        ? bankRow.revenueDates[0].slice(0, 10)
-        : bankRow.suggestedRevenueDate?.slice(0, 10) || "",
-      revenueDateInferred: bankRow.revenueDateSource === "DESCRIPTION",
-    });
+    setSettlementSaving(true);
+    try {
+      const response = await fetch(`/api/reconciliations?walletGroupFor=${encodeURIComponent(bankRow.id)}`);
+      const preview = await response.json();
+      if (!response.ok) {
+        setMessage(preview.error || "Không lập được nhóm quyết toán Ví.");
+        return;
+      }
+      setSettlement({
+        bankRow,
+        branchCode: preview.branchCode,
+        fromMoneySourceCode: preview.transactions.length > 1
+          ? "GROUP"
+          : bankRow.walletSourceCodes.length === 1 ? bankRow.walletSourceCodes[0] : "GROUP",
+        grossAmount: String(Math.round(preview.declaredGross)),
+        feeCategoryCode: "AUTO_SPLIT",
+        sourceReportDate: String(preview.revenueDate).slice(0, 10),
+        revenueDateInferred: false,
+        groupNetAmount: preview.transactions.reduce((sum: number, row: { netAmount: number }) => sum + row.netAmount, 0),
+        groupGrabExpenseAmount: preview.transactions.reduce((sum: number, row: { grabExpenseAmount: number }) => sum + row.grabExpenseAmount, 0),
+        groupCardFeeAmount: preview.transactions.reduce((sum: number, row: { cardFeeAmount: number }) => sum + row.cardFeeAmount, 0),
+        groupTransactionCount: preview.transactions.length,
+      });
+    } catch {
+      setMessage("Lỗi kết nối khi tải nhóm quyết toán Ví.");
+    } finally {
+      setSettlementSaving(false);
+    }
   };
 
   const submitSettlement = async () => {
@@ -190,25 +209,12 @@ export default function ReconciliationsPage() {
     setSettlementSaving(true);
     setSettlementError("");
     try {
-      if (!settlement.sourceReportDate) {
-        setSettlementError("Vui lòng xác nhận Ngày doanh thu trước khi tạo quyết toán ví.");
-        return;
-      }
-      const response = await fetch("/api/finance-operations", {
+      const response = await fetch("/api/reconciliations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "CREATE_WALLET_SETTLEMENT",
-          transferDate: settlement.bankRow.transactionDate,
-          sourceReportDate: settlement.sourceReportDate,
-          branchCode: settlement.branchCode,
-          fromMoneySourceCode: settlement.fromMoneySourceCode,
-          toMoneySourceCode: settlement.bankRow.bankAccount,
-          grossAmount: Number(settlement.grossAmount || 0),
-          amount: settlement.bankRow.creditAmount,
-          feeCategoryCode: settlement.feeCategoryCode,
-          externalRef: settlement.bankRow.transactionCode,
-          description: `Quyết toán ví theo sao kê ${settlement.bankRow.transactionCode}`,
+          action: "SETTLE_WALLET_GROUP",
+          bankTransactionId: settlement.bankRow.id,
         }),
       });
       const payload = await response.json();
@@ -216,25 +222,7 @@ export default function ReconciliationsPage() {
         setSettlementError(payload.error || "Không tạo được phiếu quyết toán.");
         return;
       }
-      // Đánh dấu luôn dòng sao kê là đã đối soát, nếu không ngày mai nó lại hiện ra như chưa xử lý.
-      let matchNote = "";
-      if (canMatch && settlement.bankRow.reconcileStatus !== "MATCHED") {
-        const matchResponse = await fetch("/api/reconciliations", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            bankTransactionId: settlement.bankRow.id,
-            targetType: "WALLET_SETTLEMENT",
-            targetId: payload.id,
-            targetCode: payload.code,
-            targetDate: settlement.sourceReportDate,
-            targetAmount: settlement.bankRow.creditAmount,
-            note: `Quyết toán ví ${settlement.fromMoneySourceCode}`,
-          }),
-        });
-        if (!matchResponse.ok) matchNote = " (chưa đánh dấu đối soát được, hãy match thủ công)";
-      }
-      setMessage(`Đã tạo phiếu quyết toán ${payload.code}: cộng ${money(settlement.bankRow.creditAmount)} đ vào ngân hàng, trừ ${money(Number(settlement.grossAmount || 0))} đ ở ví, phí ${money(settlementFee)} đ vào chi phí.${matchNote}`);
+      setMessage(`Đã quyết toán ${payload.transfers.length} giao dịch Ví: gross ${money(payload.grossAmount)} đ, thực nhận ${money(payload.netAmount)} đ, chi phí Grab ${money(payload.grabExpenseAmount)} đ, phí cà thẻ ${money(payload.cardFeeAmount)} đ.`);
       setSettlement(null);
       await loadRows();
     } catch {
@@ -327,11 +315,12 @@ export default function ReconciliationsPage() {
                 <option value="ALL">Tất cả</option>
               </select>
               <button type="button" onClick={submitSearch} className="h-10 rounded-lg bg-blue-600 px-4 text-sm font-bold text-white hover:bg-blue-700">Tìm kiếm</button>
-              {(searchInput || searchQuery) && <button type="button" onClick={clearSearch} className="h-10 rounded-lg border border-slate-300 px-3 text-sm font-bold text-slate-600 hover:bg-slate-50">Xóa lọc</button>}
+              {(searchInput || searchQuery || batchId) && <button type="button" onClick={clearSearch} className="h-10 rounded-lg border border-slate-300 px-3 text-sm font-bold text-slate-600 hover:bg-slate-50">Xóa lọc</button>}
               <button type="button" onClick={() => void loadRows()} className="h-10 rounded-lg border border-slate-200 px-3 text-sm font-bold hover:bg-slate-50">Tải lại</button>
             </div>
             </div>
             {searchQuery && <p className="mt-3 text-xs font-semibold text-blue-700">Kết quả tìm kiếm: “{searchQuery}” · {total} giao dịch</p>}
+            {batchId && <p className="mt-3 text-xs font-semibold text-amber-700">Đang lọc các giao dịch cần xử lý của batch vừa import · {total} giao dịch</p>}
           </div>
           {message && <div className="mx-5 mt-4 rounded-lg bg-blue-50 border border-blue-100 text-blue-700 px-3 py-2 text-sm">{message}</div>}
           
@@ -412,10 +401,10 @@ export default function ReconciliationsPage() {
                           </a>
                         )}
                         {/* Tiền vào từ cổng thanh toán: lập luôn phiếu quyết toán ví với số đã điền sẵn. */}
-                        {canSettleWallet && row.isWalletSettlement && row.creditAmount > 0 && row.reconcileStatus === "UNMATCHED" && row.revenueDates.length <= 1 && (
+                        {canSettleWallet && canMatch && row.isWalletSettlement && row.creditAmount > 0 && row.reconcileStatus === "UNMATCHED" && row.revenueDates.length <= 1 && (
                           <button
                             type="button"
-                            onClick={() => openSettlement(row)}
+                            onClick={() => void openSettlement(row)}
                             className="rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-bold text-indigo-700 hover:bg-indigo-100"
                           >
                             Quyết toán ví
@@ -447,9 +436,9 @@ export default function ReconciliationsPage() {
             <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-200 p-5">
               <div>
                 <p className="text-xs font-bold uppercase tracking-wider text-indigo-600">Quyết toán ví về ngân hàng</p>
-                <h2 className="mt-1 text-xl font-bold text-slate-900">{money(settlement.bankRow.creditAmount)} đ</h2>
+                <h2 className="mt-1 text-xl font-bold text-slate-900">{money(settlement.groupNetAmount)} đ thực nhận</h2>
                 <p className="mt-1 text-xs text-slate-500">
-                  {settlement.bankRow.transactionCode} · {new Date(settlement.bankRow.transactionDate).toLocaleDateString("vi-VN")} · về {settlement.bankRow.bankAccount}
+                  {settlement.groupTransactionCount} giao dịch · Ngày doanh thu {new Date(`${settlement.sourceReportDate}T00:00:00`).toLocaleDateString("vi-VN")}
                 </p>
               </div>
               <button type="button" className="rounded-lg border border-slate-200 px-2 py-1 text-sm font-bold text-slate-500 hover:bg-slate-50" onClick={() => setSettlement(null)}>
@@ -459,8 +448,8 @@ export default function ReconciliationsPage() {
 
             <div className="space-y-4 overflow-y-auto p-5">
               <p className="rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs text-indigo-800">
-                Số thực nhận và tài khoản nhận lấy sẵn từ dòng sao kê. Nhập số gốc đang treo ở ví, phần chênh lệch
-                sẽ thành chi phí quẹt thẻ trên P&amp;L.
+                Hệ thống gom toàn bộ dòng Ví cùng cửa hàng và Ngày doanh thu. Chênh lệch được tự động tách thành
+                Chi phí bán hàng Grab và Phí cà thẻ trên P&amp;L.
               </p>
 
               <label className="block text-xs font-bold text-slate-600">
@@ -469,7 +458,7 @@ export default function ReconciliationsPage() {
                   className="control"
                   type="date"
                   value={settlement.sourceReportDate}
-                  onChange={(event) => setSettlement({ ...settlement, sourceReportDate: event.target.value, revenueDateInferred: false })}
+                  readOnly
                 />
                 <span className={`mt-1 block text-[11px] font-medium ${settlement.revenueDateInferred ? "text-amber-700" : "text-slate-500"}`}>
                   {settlement.revenueDateInferred
@@ -483,7 +472,7 @@ export default function ReconciliationsPage() {
                 <select
                   className="control"
                   value={settlement.branchCode}
-                  onChange={(event) => setSettlement({ ...settlement, branchCode: event.target.value, fromMoneySourceCode: "" })}
+                  disabled
                 >
                   <option value="">-- Chọn cửa hàng --</option>
                   {visibleStoreOptions(user).map((option) => (
@@ -497,8 +486,9 @@ export default function ReconciliationsPage() {
                 <select
                   className="control"
                   value={settlement.fromMoneySourceCode}
-                  onChange={(event) => setSettlement({ ...settlement, fromMoneySourceCode: event.target.value })}
+                  disabled
                 >
+                  {settlement.fromMoneySourceCode === "GROUP" && <option value="GROUP">Nhiều nguồn Ví trong nhóm</option>}
                   <option value="">-- Chọn ví --</option>
                   {filterMoneySources(moneySources, settlement.branchCode, ["WALLET"]).map((source) => (
                     <option key={source.code} value={source.code} title={moneySourceDebugLabel(source)}>{moneySourceDisplayName(source)}</option>
@@ -512,32 +502,29 @@ export default function ReconciliationsPage() {
                   className="control text-right"
                   inputMode="numeric"
                   value={settlement.grossAmount}
-                  onChange={(event) => setSettlement({ ...settlement, grossAmount: event.target.value.replace(/\D/g, "") })}
+                  readOnly
                 />
                 <span className="mt-1 block text-[11px] font-medium text-slate-500">
-                  Bằng số thực nhận nghĩa là không có phí.
+                  Tổng Quẹt thẻ/Ví + Grab của ngày, không còn mặc định bằng số thực nhận.
                 </span>
               </label>
 
               <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
-                <span className="text-sm font-bold text-slate-700">Phí quẹt thẻ</span>
+                <span className="text-sm font-bold text-slate-700">Tổng chênh lệch đưa vào chi phí</span>
                 <span className={`text-lg font-bold ${settlementFee < 0 ? "text-rose-600" : "text-slate-900"}`}>{money(settlementFee)} đ</span>
               </div>
 
               {settlementFee > 0 && (
-                <label className="block text-xs font-bold text-slate-600">
-                  Khoản mục phí (lên P&amp;L)
-                  <select
-                    className="control"
-                    value={settlement.feeCategoryCode}
-                    onChange={(event) => setSettlement({ ...settlement, feeCategoryCode: event.target.value })}
-                  >
-                    <option value="">{feeCategories.length === 0 ? "-- Chưa khai báo khoản mục chi phí --" : "-- Chọn khoản mục phí --"}</option>
-                    {feeCategories.map((category) => (
-                      <option key={category.code} value={category.code}>{category.name}</option>
-                    ))}
-                  </select>
-                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-lg border border-orange-200 bg-orange-50 p-3">
+                    <p className="text-xs font-bold text-orange-700">Chi phí bán hàng Grab</p>
+                    <p className="mt-1 text-lg font-bold text-orange-900">{money(settlement.groupGrabExpenseAmount)} đ</p>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-xs font-bold text-slate-600">Phí cà thẻ</p>
+                    <p className="mt-1 text-lg font-bold text-slate-900">{money(settlement.groupCardFeeAmount)} đ</p>
+                  </div>
+                </div>
               )}
 
               {settlementFee < 0 && (
@@ -557,10 +544,10 @@ export default function ReconciliationsPage() {
               <button
                 type="button"
                 onClick={() => void submitSettlement()}
-                disabled={settlementSaving || settlementFee < 0 || !settlement.branchCode || !settlement.fromMoneySourceCode || (settlementFee > 0 && !settlement.feeCategoryCode)}
+                disabled={settlementSaving || settlementFee < 0 || !settlement.branchCode}
                 className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-bold text-white hover:bg-indigo-700 disabled:opacity-50"
               >
-                {settlementSaving ? "Đang ghi..." : "Ghi nhận quyết toán"}
+                {settlementSaving ? "Đang ghi..." : `Quyết toán ${settlement.groupTransactionCount} giao dịch`}
               </button>
             </div>
           </div>

@@ -3,11 +3,18 @@ import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 import { assertBranchAccess, branchFilterForSession } from "@/lib/accounting";
 import { normalizeMoneySourceGroup } from "@/lib/money-sources";
-import { dateKey, suggestRevenueDateFromDescription } from "@/lib/revenue-date";
+import { dateKey, suggestRevenueDateFromDescription, vietnamBusinessDayBounds } from "@/lib/revenue-date";
 import {
+  remainingWalletGross,
   selectWalletDeclaredRevenue,
   walletRevenueBucket,
 } from "@/lib/wallet-revenue-reconciliation";
+import {
+  allocateWalletSettlementGroup,
+  WALLET_CARD_FEE_CATEGORY_CODE,
+  WALLET_GRAB_EXPENSE_CATEGORY_CODE,
+} from "@/lib/wallet-settlement-allocation";
+import { generateFormattedVoucherCode } from "@/lib/voucher-code-generator";
 
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -35,19 +42,148 @@ function scoreCandidate(
   return score;
 }
 
+async function buildWalletGroupPreview(bankTransactionId: string) {
+  const target = await prisma.bankStatementTransaction.findUnique({
+    where: { id: bankTransactionId },
+    include: { allocations: { orderBy: { sourceRowNumber: "asc" } } },
+  });
+  if (!target || !target.branchCode) throw new Error("Không tìm thấy giao dịch Ví hoặc thiếu cửa hàng.");
+  if (target.reconcileStatus !== "UNMATCHED") throw new Error("Giao dịch đã được quyết toán hoặc đối soát.");
+
+  const revenueDates = [...new Map(target.allocations
+    .filter((row) => row.revenueDate)
+    .map((row) => [dateKey(row.revenueDate!), row.revenueDate!])).values()];
+  if (revenueDates.length !== 1) throw new Error("Nhóm quyết toán phải có đúng một Ngày doanh thu.");
+  const revenueDate = revenueDates[0];
+  const { start, end } = vietnamBusinessDayBounds(revenueDate);
+
+  const walletSources = (await prisma.masterDataItem.findMany({
+    where: { type: "MONEY_SOURCE", status: "ACTIVE", deletedAt: null },
+    select: { code: true, name: true, group: true },
+  })).filter((source) => normalizeMoneySourceGroup(source.group) === "WALLET");
+  const walletCodes = walletSources.map((source) => source.code);
+  const candidates = await prisma.bankStatementTransaction.findMany({
+    where: {
+      branchCode: target.branchCode,
+      reconcileStatus: "UNMATCHED",
+      creditAmount: { gt: 0 },
+      deletedAt: null,
+      allocations: { some: { revenueDate: { gte: start, lt: end }, decreaseMoneySourceCode: { in: walletCodes } } },
+    },
+    include: { allocations: { orderBy: { sourceRowNumber: "asc" } } },
+    orderBy: [{ transactionDate: "asc" }, { transactionCode: "asc" }],
+  });
+  const eligible = candidates.filter((bank) => {
+    const dated = bank.allocations.filter((row) => row.creditAmount > 0 && row.revenueDate);
+    return dated.length > 0
+      && dated.every((row) => dateKey(row.revenueDate!) === dateKey(revenueDate))
+      && dated.every((row) => walletCodes.includes(row.decreaseMoneySourceCode || ""));
+  });
+  if (!eligible.some((bank) => bank.id === target.id)) throw new Error("Giao dịch không còn thuộc nhóm Ví có thể quyết toán.");
+
+  const [posRows, manualRows, allocatedRows, legacySettlementMatches, grabSettlements] = await Promise.all([
+    prisma.revenueImportRow.findMany({
+      where: { branchCode: target.branchCode, saleDate: { gte: start, lt: end }, deletedAt: null },
+      select: { paymentMethod: true, revenueSource: true, channel: true, netAmount: true },
+    }),
+    prisma.manualRevenueEntry.findMany({
+      where: { branchCode: target.branchCode, reportDate: { gte: start, lt: end }, deletedAt: null },
+      select: { cardAmount: true, grabAmount: true },
+    }),
+    prisma.bankStatementAllocation.findMany({
+      where: {
+        revenueDate: { gte: start, lt: end },
+        decreaseMoneySourceCode: { in: walletCodes },
+        grossAmount: { not: null },
+        bankTransaction: { branchCode: target.branchCode, reconcileStatus: { in: ["PENDING_REVIEW", "MATCHED"] }, deletedAt: null },
+      },
+      select: { grossAmount: true },
+    }),
+    prisma.reconciliationMatch.findMany({
+      where: {
+        targetType: "WALLET_SETTLEMENT",
+        deletedAt: null,
+        bankTransaction: {
+          branchCode: target.branchCode,
+          deletedAt: null,
+          allocations: {
+            some: { revenueDate: { gte: start, lt: end }, decreaseMoneySourceCode: { in: walletCodes }, grossAmount: null },
+          },
+        },
+      },
+      select: { targetId: true },
+    }),
+    prisma.moneyTransfer.findMany({
+      where: {
+        branchCode: target.branchCode,
+        transferPurpose: "WALLET_SETTLEMENT",
+        sourceReportDate: { gte: start, lt: end },
+        status: { in: ["PENDING_REVIEW", "APPROVED"] },
+        deletedAt: null,
+      },
+      select: { grabExpenseAmount: true },
+    }),
+  ]);
+  const legacySettlements = legacySettlementMatches.length > 0
+    ? await prisma.moneyTransfer.findMany({
+        where: { id: { in: legacySettlementMatches.map((row) => row.targetId) }, status: { in: ["PENDING_REVIEW", "APPROVED"] }, deletedAt: null },
+        select: { amount: true, feeAmount: true },
+      })
+    : [];
+  const cardSources = walletSources.filter((source) => walletRevenueBucket(source) === "CARD_WALLET");
+  const grabSources = walletSources.filter((source) => walletRevenueBucket(source) === "GRAB");
+  const cardDeclared = selectWalletDeclaredRevenue({ posRows, manualRows, bucketSources: cardSources, bucket: "CARD_WALLET" });
+  const grabDeclared = selectWalletDeclaredRevenue({ posRows, manualRows, bucketSources: grabSources, bucket: "GRAB" });
+  const allocatedGross = allocatedRows.reduce((sum, row) => sum + (row.grossAmount || 0), 0)
+    + legacySettlements.reduce((sum, row) => sum + row.amount + row.feeAmount, 0);
+  const remainingGross = remainingWalletGross(cardDeclared.amount + grabDeclared.amount, allocatedGross);
+  const remainingGrab = remainingWalletGross(
+    grabDeclared.amount,
+    grabSettlements.reduce((sum, row) => sum + row.grabExpenseAmount, 0),
+  );
+  const allocations = allocateWalletSettlementGroup({
+    grossAmount: remainingGross,
+    grabRevenueAmount: remainingGrab,
+    transactions: eligible.map((bank) => ({ id: bank.id, netAmount: bank.creditAmount })),
+  });
+  const allocationById = new Map(allocations.map((row) => [row.id, row]));
+
+  return {
+    branchCode: target.branchCode,
+    revenueDate,
+    declaredGross: remainingGross,
+    declaredGrab: remainingGrab,
+    transactions: eligible.map((bank) => ({
+      ...allocationById.get(bank.id)!,
+      transactionCode: bank.transactionCode,
+      transactionDate: bank.transactionDate,
+      bankAccount: bank.bankAccount,
+      allocations: bank.allocations,
+    })),
+  };
+}
+
 export async function GET(request: Request) {
   try {
     const auth = requireMenuAccess(request, "/reconciliations");
     if (!auth.ok) return auth.response;
 
     const { searchParams } = new URL(request.url);
+    const walletGroupFor = cleanText(searchParams.get("walletGroupFor"));
+    if (walletGroupFor) {
+      const preview = await buildWalletGroupPreview(walletGroupFor);
+      assertBranchAccess(auth.session, preview.branchCode);
+      return NextResponse.json(preview);
+    }
     const status = searchParams.get("status") || "UNMATCHED";
+    const batchId = cleanText(searchParams.get("batchId"));
     const search = cleanText(searchParams.get("q")).slice(0, 100);
     const page = Math.max(1, Number.parseInt(searchParams.get("page") || "1", 10) || 1);
     const pageSize = 50;
     const branchFilter = branchFilterForSession(auth.session, searchParams.get("branchCode") || "ALL");
     const bankWhere = {
       ...branchFilter,
+      ...(batchId ? { importBatchId: batchId } : {}),
       ...(status === "ALL" ? {} : { reconcileStatus: status }),
       ...(search ? {
         OR: [
@@ -264,6 +400,97 @@ export async function POST(request: Request) {
     if (!auth.ok) return auth.response;
 
     const body = await request.json();
+    if (cleanText(body.action) === "SETTLE_WALLET_GROUP") {
+      const financeAuth = requireMenuAction(request, "/finance-operations", "create");
+      if (!financeAuth.ok) return financeAuth.response;
+      const preview = await buildWalletGroupPreview(cleanText(body.bankTransactionId));
+      assertBranchAccess(auth.session, preview.branchCode);
+      const categories = await prisma.masterDataItem.findMany({
+        where: {
+          type: "REVENUE_EXPENSE_CATEGORY",
+          code: { in: [WALLET_CARD_FEE_CATEGORY_CODE, WALLET_GRAB_EXPENSE_CATEGORY_CODE] },
+          group: "PAYMENT",
+          status: "ACTIVE",
+          deletedAt: null,
+        },
+        select: { code: true },
+      });
+      if (preview.transactions.some((row) => row.cardFeeAmount > 0) && !categories.some((row) => row.code === WALLET_CARD_FEE_CATEGORY_CODE)) {
+        return NextResponse.json({ error: `Thiếu khoản mục ${WALLET_CARD_FEE_CATEGORY_CODE}` }, { status: 400 });
+      }
+      if (preview.transactions.some((row) => row.grabExpenseAmount > 0) && !categories.some((row) => row.code === WALLET_GRAB_EXPENSE_CATEGORY_CODE)) {
+        return NextResponse.json({ error: `Thiếu khoản mục ${WALLET_GRAB_EXPENSE_CATEGORY_CODE}` }, { status: 400 });
+      }
+
+      const created = await prisma.$transaction(async (tx) => {
+        const transferCount = await tx.moneyTransfer.count();
+        const results = [];
+        for (const [index, row] of preview.transactions.entries()) {
+          const sourceCodes = [...new Set(row.allocations
+            .filter((allocation) => allocation.creditAmount > 0)
+            .map((allocation) => allocation.decreaseMoneySourceCode)
+            .filter((value): value is string => Boolean(value)))];
+          if (sourceCodes.length !== 1) throw new Error(`${row.transactionCode}: phải có đúng một nguồn Ví.`);
+          const updated = await tx.bankStatementTransaction.updateMany({
+            where: { id: row.id, reconcileStatus: "UNMATCHED", deletedAt: null },
+            data: { reconcileStatus: "MATCHED", autoProcessType: "WALLET_SETTLEMENT", autoProcessNote: "Đã quyết toán theo nhóm Ngày doanh thu" },
+          });
+          if (updated.count !== 1) throw new Error(`${row.transactionCode}: trạng thái đã thay đổi, vui lòng tải lại.`);
+          const transfer = await tx.moneyTransfer.create({
+            data: {
+              code: generateFormattedVoucherCode({ voucherType: "QTVI", voucherDate: row.transactionDate, branchCode: preview.branchCode, seqNumber: transferCount + index + 1 }),
+              transferDate: row.transactionDate,
+              branchCode: preview.branchCode,
+              fromMoneySourceCode: sourceCodes[0],
+              toMoneySourceCode: row.bankAccount,
+              amount: row.netAmount,
+              feeAmount: row.feeAmount,
+              feeCategoryCode: row.cardFeeAmount > 0 ? WALLET_CARD_FEE_CATEGORY_CODE : null,
+              grabExpenseAmount: row.grabExpenseAmount,
+              grabExpenseCategoryCode: row.grabExpenseAmount > 0 ? WALLET_GRAB_EXPENSE_CATEGORY_CODE : null,
+              externalRef: row.transactionCode,
+              description: `Quyết toán nhóm Ví theo sao kê ${row.transactionCode}`,
+              transferPurpose: "WALLET_SETTLEMENT",
+              sourceReportDate: preview.revenueDate,
+              status: "APPROVED",
+              createdBy: auth.session.name,
+              approvedBy: auth.session.name,
+            },
+          });
+          const positiveAllocations = row.allocations.filter((allocation) => allocation.creditAmount > 0);
+          const allocationPlan = allocateWalletSettlementGroup({
+            grossAmount: row.grossAmount,
+            grabRevenueAmount: 0,
+            transactions: positiveAllocations.map((allocation) => ({ id: allocation.id, netAmount: allocation.creditAmount })),
+          });
+          for (const allocation of allocationPlan) {
+            await tx.bankStatementAllocation.update({ where: { id: allocation.id }, data: { grossAmount: allocation.grossAmount } });
+          }
+          await tx.reconciliationMatch.create({
+            data: {
+              bankTransactionId: row.id,
+              targetType: "WALLET_SETTLEMENT",
+              targetId: transfer.id,
+              targetCode: transfer.code,
+              targetDate: preview.revenueDate,
+              targetAmount: row.netAmount,
+              matchedAmount: row.netAmount,
+              note: "Quyết toán nhóm Ví, tự động tách chi phí Grab và phí cà thẻ",
+              matchedBy: auth.session.name,
+            },
+          });
+          results.push(transfer);
+        }
+        return results;
+      }, { maxWait: 10_000, timeout: 120_000 });
+      return NextResponse.json({
+        transfers: created,
+        grossAmount: preview.declaredGross,
+        netAmount: preview.transactions.reduce((sum, row) => sum + row.netAmount, 0),
+        grabExpenseAmount: preview.transactions.reduce((sum, row) => sum + row.grabExpenseAmount, 0),
+        cardFeeAmount: preview.transactions.reduce((sum, row) => sum + row.cardFeeAmount, 0),
+      }, { status: 201 });
+    }
     const bankTransactionId = cleanText(body.bankTransactionId);
     const targetType = cleanText(body.targetType);
     const targetId = cleanText(body.targetId);
