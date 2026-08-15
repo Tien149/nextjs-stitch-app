@@ -20,12 +20,14 @@ type MoneyTransfer = {
   id: string;
   code: string;
   transferDate: string;
+  actualTransferDate?: string | null;
   branchCode: string;
   fromMoneySourceCode: string;
   toMoneySourceCode: string;
   amount: number;
   feeAmount: number;
   description: string;
+  externalRef?: string | null;
   status: string;
   transferPurpose?: string | null;
   depositTargetType?: string | null;
@@ -42,6 +44,15 @@ type CashDepositEditForm = {
   toMoneySourceCode: string;
   denominations: Array<{ denomination: number; quantity: string }>;
 };
+type InternalTransferEditForm = {
+  transfer: MoneyTransfer;
+  transferDate: string;
+  fromMoneySourceCode: string;
+  toMoneySourceCode: string;
+  amount: string;
+  externalRef: string;
+  description: string;
+};
 
 const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value);
 const cashDepositTargetLabels: Record<string, string> = { PKT: "Nộp Tiền PKT", CO: "Nộp Tiền Cô" };
@@ -50,7 +61,7 @@ const cashDepositDenominations = [500000, 200000, 100000, 50000, 20000, 10000, 5
 export default function FinanceOperationsPage() {
   const href = "/finance-operations";
   const { user, loading } = useModuleAuth(href);
-  
+
   const [active, setActive] = useState("cashbook");
   const [period, setPeriod] = useState(new Date().toISOString().slice(0, 7));
   const [branchCode, setBranchCode] = useState("ALL");
@@ -59,6 +70,9 @@ export default function FinanceOperationsPage() {
   const [transferQuery, setTransferQuery] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [editingCashDeposit, setEditingCashDeposit] = useState<CashDepositEditForm | null>(null);
+  const [editingInternalTransfer, setEditingInternalTransfer] = useState<InternalTransferEditForm | null>(null);
+  const [selectedCashDepositIds, setSelectedCashDepositIds] = useState<string[]>([]);
+  const [cashApproval, setCashApproval] = useState<{ ids: string[]; actualTransferDate: string } | null>(null);
   const [moneySources, setMoneySources] = useState<MasterDataOption[]>([]);
   const [feeCategories, setFeeCategories] = useState<MasterDataOption[]>([]);
   const [settlement, setSettlement] = useState({
@@ -71,7 +85,7 @@ export default function FinanceOperationsPage() {
     feeCategoryCode: "",
     externalRef: "",
   });
-  
+
   const [adjustment, setAdjustment] = useState({
     entryDate: new Date().toISOString().slice(0, 10),
     entryType: "RECEIPT",
@@ -80,7 +94,7 @@ export default function FinanceOperationsPage() {
     amount: "1000000",
     description: "Điều chỉnh kiểm kê quỹ",
   });
-  
+
   const [accrual, setAccrual] = useState({
     name: "Chi phí trả trước",
     branchCode: "HCM",
@@ -102,6 +116,14 @@ export default function FinanceOperationsPage() {
     if (!normalizedTransferQuery) return null;
     return data.moneyTransfers.find((row) => row.code.toLowerCase() === normalizedTransferQuery) || null;
   }, [data.moneyTransfers, normalizedTransferQuery]);
+  const pendingCashDeposits = useMemo(
+    () => data.moneyTransfers.filter((row) => row.status === "PENDING_REVIEW" && row.transferPurpose === "CASH_DEPOSIT"),
+    [data.moneyTransfers],
+  );
+  const activeSelectedCashDepositIds = useMemo(() => {
+    const eligibleIds = new Set(pendingCashDeposits.map((row) => row.id));
+    return selectedCashDepositIds.filter((id) => eligibleIds.has(id));
+  }, [pendingCashDeposits, selectedCashDepositIds]);
 
   // Deep-link từ màn Đối soát: mở đúng kỳ/cửa hàng và định vị phiếu QTVI thay vì chỉ mở trang chung.
   useEffect(() => {
@@ -177,6 +199,78 @@ export default function FinanceOperationsPage() {
       })),
     });
     setMessage("");
+  };
+
+  const openInternalTransferEdit = (transfer: MoneyTransfer) => {
+    setEditingInternalTransfer({
+      transfer,
+      transferDate: transfer.transferDate.slice(0, 10),
+      fromMoneySourceCode: transfer.fromMoneySourceCode,
+      toMoneySourceCode: transfer.toMoneySourceCode,
+      amount: String(transfer.amount),
+      externalRef: transfer.externalRef || "",
+      description: transfer.description,
+    });
+    setMessage("");
+  };
+
+  const saveInternalTransferEdit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!editingInternalTransfer || submitting) return;
+    setSubmitting(true);
+    setMessage("");
+    try {
+      const response = await fetch("/api/finance-operations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "UPDATE_PENDING_INTERNAL_TRANSFER", id: editingInternalTransfer.transfer.id, ...editingInternalTransfer, transfer: undefined }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setMessage(payload.error || "Không sửa được phiếu điều tiền nội bộ.");
+        return;
+      }
+      setEditingInternalTransfer(null);
+      setMessage(`Đã cập nhật phiếu ${payload.code}.`);
+      await loadData();
+    } catch {
+      setMessage("Lỗi kết nối máy chủ khi sửa phiếu điều tiền nội bộ.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const openCashApproval = (ids: string[]) => {
+    if (ids.length === 0) return;
+    setCashApproval({ ids, actualTransferDate: "" });
+    setMessage("");
+  };
+
+  const approveCashDeposits = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!cashApproval || !cashApproval.actualTransferDate || submitting) return;
+    setSubmitting(true);
+    setMessage("");
+    try {
+      const response = await fetch("/api/finance-operations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "APPROVE_CASH_DEPOSIT_TRANSFERS", ...cashApproval }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setMessage(payload.error || "Không duyệt được phiếu nộp tiền.");
+        return;
+      }
+      setCashApproval(null);
+      setSelectedCashDepositIds([]);
+      setMessage(`Đã duyệt ${payload.count} phiếu theo ngày thực tế ${new Date(`${payload.actualTransferDate.slice(0, 10)}T00:00:00`).toLocaleDateString("vi-VN")}.`);
+      await loadData();
+    } catch {
+      setMessage("Lỗi kết nối máy chủ khi duyệt phiếu nộp tiền.");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const saveCashDepositEdit = async (event: React.FormEvent) => {
@@ -286,56 +380,55 @@ export default function FinanceOperationsPage() {
       <main className="max-w-[1600px] mx-auto px-6 mt-8 space-y-6">
         {/* Modern Filter Card */}
         <StickyFilterBar className="!bg-slate-100/90">
-        <section className="bg-white/80 backdrop-blur-md border border-slate-200/60 shadow-lg shadow-slate-100/50 rounded-2xl p-5 flex flex-wrap items-end justify-between gap-4">
-          <div className="flex flex-wrap items-center gap-4">
-            <div className="flex flex-col gap-1.5">
-              <span className="text-xs font-bold text-slate-600">Kỳ kế toán</span>
-              <MonthInput className="w-44" value={period} onChange={setPeriod} ariaLabel="Kỳ sổ quỹ" />
-            </div>
-            
-            <div className="flex flex-col gap-1.5">
-              <span className="text-xs font-bold text-slate-600">Phạm vi cửa hàng</span>
-              <div className="relative">
-                <select
-                  value={branchCode}
-                  onChange={(e) => setBranchCode(e.target.value)}
-                  className="w-48 pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all appearance-none cursor-pointer font-medium"
-                >
-                  {visibleBranchScopeOptions(user).map((option) => (
-                    <option key={option.code} value={option.code}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-                <span className="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none text-lg">
-                  unfold_more
-                </span>
+          <section className="bg-white/80 backdrop-blur-md border border-slate-200/60 shadow-lg shadow-slate-100/50 rounded-2xl p-5 flex flex-wrap items-end justify-between gap-4">
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="flex flex-col gap-1.5">
+                <span className="text-xs font-bold text-slate-600">Kỳ kế toán</span>
+                <MonthInput className="w-44" value={period} onChange={setPeriod} ariaLabel="Kỳ sổ quỹ" />
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <span className="text-xs font-bold text-slate-600">Phạm vi cửa hàng</span>
+                <div className="relative">
+                  <select
+                    value={branchCode}
+                    onChange={(e) => setBranchCode(e.target.value)}
+                    className="w-48 pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all appearance-none cursor-pointer font-medium"
+                  >
+                    {visibleBranchScopeOptions(user).map((option) => (
+                      <option key={option.code} value={option.code}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none text-lg">
+                    unfold_more
+                  </span>
+                </div>
               </div>
             </div>
-          </div>
 
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => void loadData()}
-              className="h-10 px-3 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-bold flex items-center gap-1.5 transition-colors bg-white shadow-sm"
-              title="Tải lại"
-            >
-              <span className="material-symbols-outlined text-sm">refresh</span>
-              Tải lại
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => void loadData()}
+                className="h-10 px-3 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-bold flex items-center gap-1.5 transition-colors bg-white shadow-sm"
+                title="Tải lại"
+              >
+                <span className="material-symbols-outlined text-sm">refresh</span>
+                Tải lại
+              </button>
 
-            <span className={`px-4 py-2 rounded-xl text-xs font-bold border flex items-center gap-1.5 shadow-sm ${
-              data.accountingPeriod.status === "CLOSED"
-                ? "bg-rose-50 text-rose-700 border-rose-100"
-                : "bg-emerald-50 text-emerald-700 border-emerald-100"
-            }`}>
-              <span className="material-symbols-outlined text-base">
-                {data.accountingPeriod.status === "CLOSED" ? "lock" : "lock_open"}
+              <span className={`px-4 py-2 rounded-xl text-xs font-bold border flex items-center gap-1.5 shadow-sm ${data.accountingPeriod.status === "CLOSED"
+                  ? "bg-rose-50 text-rose-700 border-rose-100"
+                  : "bg-emerald-50 text-emerald-700 border-emerald-100"
+                }`}>
+                <span className="material-symbols-outlined text-base">
+                  {data.accountingPeriod.status === "CLOSED" ? "lock" : "lock_open"}
+                </span>
+                {data.accountingPeriod.status === "CLOSED" ? "KỲ ĐÃ KHÓA" : "KỲ ĐANG MỞ"}
               </span>
-              {data.accountingPeriod.status === "CLOSED" ? "KỲ ĐÃ KHÓA" : "KỲ ĐANG MỞ"}
-            </span>
-          </div>
-        </section>
+            </div>
+          </section>
         </StickyFilterBar>
 
         {/* Tab Navigation */}
@@ -348,11 +441,10 @@ export default function FinanceOperationsPage() {
                 setActive(tab.id);
                 setMessage("");
               }}
-              className={`px-5 py-3 text-sm font-bold whitespace-nowrap border-b-2 flex items-center gap-2 transition-all duration-150 ${
-                active === tab.id
+              className={`px-5 py-3 text-sm font-bold whitespace-nowrap border-b-2 flex items-center gap-2 transition-all duration-150 ${active === tab.id
                   ? "border-indigo-600 text-indigo-700"
                   : "border-transparent text-slate-500 hover:text-slate-800 hover:border-slate-300"
-              }`}
+                }`}
             >
               <span className="material-symbols-outlined text-lg">{tab.icon}</span>
               {tab.label}
@@ -536,18 +628,52 @@ export default function FinanceOperationsPage() {
                     <h3 className="text-sm font-bold text-amber-900">Điều tiền chờ duyệt</h3>
                     <p className="mt-0.5 text-xs text-amber-700">Dữ liệu import chỉ vào sổ quỹ sau khi Admin duyệt.</p>
                   </div>
-                  <span className="rounded-full bg-white px-2.5 py-1 text-xs font-bold text-amber-800">
-                    {data.moneyTransfers.filter((transfer) => transfer.status === "PENDING_REVIEW").length}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    {canApproveTransfer && activeSelectedCashDepositIds.length > 0 && (
+                      <button type="button" onClick={() => openCashApproval(activeSelectedCashDepositIds)} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700">
+                        Duyệt đã chọn ({activeSelectedCashDepositIds.length})
+                      </button>
+                    )}
+                    <span className="rounded-full bg-white px-2.5 py-1 text-xs font-bold text-amber-800">
+                      {data.moneyTransfers.filter((transfer) => transfer.status === "PENDING_REVIEW").length}
+                    </span>
+                  </div>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs">
                     <thead className="bg-slate-50 text-slate-500">
-                      <tr><th className="px-4 py-3">Ngày / Mã</th><th className="px-4 py-3">Từ nguồn</th><th className="px-4 py-3">Đến nguồn</th><th className="px-4 py-3 text-right">Số tiền</th><th className="px-4 py-3 text-right">Thao tác</th></tr>
+                      <tr>
+                        <th className="w-10 px-3 py-3 text-center">
+                          {canApproveTransfer && (
+                            <input
+                              type="checkbox"
+                              aria-label="Chọn tất cả phiếu nộp tiền mặt"
+                              checked={pendingCashDeposits.length > 0 && pendingCashDeposits.every((row) => activeSelectedCashDepositIds.includes(row.id))}
+                              onChange={(event) => setSelectedCashDepositIds(event.target.checked ? pendingCashDeposits.map((row) => row.id) : [])}
+                            />
+                          )}
+                        </th>
+                        <th className="px-4 py-3">Ngày / Mã</th>
+                        <th className="px-4 py-3">Ngày thực tế nộp tiền</th>
+                        <th className="px-4 py-3">Từ nguồn</th>
+                        <th className="px-4 py-3">Đến nguồn</th>
+                        <th className="px-4 py-3 text-right">Số tiền</th>
+                        <th className="px-4 py-3 text-right">Thao tác</th>
+                      </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {data.moneyTransfers.filter((transfer) => transfer.status === "PENDING_REVIEW").map((transfer) => (
                         <tr key={transfer.id}>
+                          <td className="px-3 py-3 text-center">
+                            {canApproveTransfer && transfer.transferPurpose === "CASH_DEPOSIT" && (
+                              <input
+                                type="checkbox"
+                                aria-label={`Chọn phiếu ${transfer.code}`}
+                                checked={activeSelectedCashDepositIds.includes(transfer.id)}
+                                onChange={(event) => setSelectedCashDepositIds((current) => event.target.checked ? [...new Set([...current, transfer.id])] : current.filter((id) => id !== transfer.id))}
+                              />
+                            )}
+                          </td>
                           <td className="px-4 py-3">
                             <CopyableText value={transfer.code}><b>{transfer.code}</b></CopyableText>
                             <p className="text-slate-500">{new Date(transfer.transferDate).toLocaleDateString("vi-VN")}</p>
@@ -557,6 +683,7 @@ export default function FinanceOperationsPage() {
                               </p>
                             )}
                           </td>
+                          <td className="px-4 py-3 text-slate-500">{transfer.actualTransferDate ? new Date(transfer.actualTransferDate).toLocaleDateString("vi-VN", { timeZone: "UTC" }) : "—"}</td>
                           <td className="px-4 py-3">{transfer.fromMoneySourceCode}</td>
                           <td className="px-4 py-3">
                             <p>{transfer.toMoneySourceCode}</p>
@@ -585,8 +712,17 @@ export default function FinanceOperationsPage() {
                                   Sửa
                                 </button>
                               )}
+                              {canEdit && transfer.code.startsWith("CTNB") && (
+                                <button
+                                  type="button"
+                                  onClick={() => openInternalTransferEdit(transfer)}
+                                  className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 font-bold text-blue-700 hover:bg-blue-100"
+                                >
+                                  Sửa
+                                </button>
+                              )}
                               {canApproveTransfer ? (
-                                <button type="button" onClick={() => void send({ action: "APPROVE_TRANSFER", id: transfer.id }, "Đã duyệt giao dịch điều tiền.")} className="rounded-lg bg-emerald-600 px-3 py-2 font-bold text-white hover:bg-emerald-700">Duyệt</button>
+                                <button type="button" onClick={() => transfer.transferPurpose === "CASH_DEPOSIT" ? openCashApproval([transfer.id]) : void send({ action: "APPROVE_TRANSFER", id: transfer.id }, "Đã duyệt giao dịch điều tiền.")} className="rounded-lg bg-emerald-600 px-3 py-2 font-bold text-white hover:bg-emerald-700">Duyệt</button>
                               ) : <span className="self-center text-slate-400">Chờ Admin</span>}
                               {canEdit && (
                                 <button type="button" onClick={() => void send({ action: "CANCEL_PENDING_TRANSFER", id: transfer.id }, "Đã hủy giao dịch chờ duyệt.")} className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 font-bold text-rose-700 hover:bg-rose-100">Hủy</button>
@@ -626,7 +762,7 @@ export default function FinanceOperationsPage() {
                       <span className="text-xs font-bold text-slate-600">Ngày điều chỉnh</span>
                       <DateInput className="w-full" value={adjustment.entryDate} onChange={(d) => setAdjustment({ ...adjustment, entryDate: d })} ariaLabel="Ngày điều chỉnh quỹ" />
                     </div>
-                    
+
                     <div className="flex flex-col gap-1.5">
                       <span className="text-xs font-bold text-slate-600">Loại điều chỉnh</span>
                       <select
@@ -764,7 +900,7 @@ export default function FinanceOperationsPage() {
                     </div>
                   </div>
                 )}
-                
+
                 <div className="max-h-[640px] overflow-auto overscroll-contain [scrollbar-gutter:stable]">
                   <table className="min-w-[1050px] w-full text-left text-sm">
                     <thead className="sticky top-0 z-10 bg-slate-50 text-xs font-bold text-slate-500 uppercase tracking-wider border-b border-slate-200 shadow-[0_1px_0_rgba(148,163,184,0.25)]">
@@ -946,7 +1082,7 @@ export default function FinanceOperationsPage() {
                           Cửa hàng: {storeLabel(row.branchCode)} · Nhóm: {row.categoryCode} · Thời gian: {row.numberOfPeriods} kỳ
                         </p>
                       </div>
-                      
+
                       <div className="text-right">
                         <p className="text-sm font-bold text-slate-900">{money(row.totalAmount)} đ</p>
                         <span className="text-[10px] font-bold text-slate-500 bg-slate-100 border border-slate-200 px-2.5 py-0.5 rounded-full uppercase mt-1 inline-block">
@@ -975,11 +1111,10 @@ export default function FinanceOperationsPage() {
                                 {money(schedule.amount)} đ
                               </td>
                               <td className="px-5 py-3 text-center text-xs">
-                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                  schedule.status === "POSTED"
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${schedule.status === "POSTED"
                                     ? "bg-emerald-50 text-emerald-700 border border-emerald-100"
                                     : "bg-slate-50 text-slate-500 border border-slate-200"
-                                }`}>
+                                  }`}>
                                   {schedule.status === "POSTED" ? "Đã phân bổ" : "Chờ phân bổ"}
                                 </span>
                               </td>
@@ -1019,7 +1154,7 @@ export default function FinanceOperationsPage() {
                   Hệ thống yêu cầu hoàn thành tất cả điều kiện kiểm tra (checklist) để đóng kỳ kế toán.
                 </p>
               </div>
-              
+
               <div className="divide-y divide-slate-100">
                 {data.checklist.length === 0 ? (
                   <div className="px-6 py-8 text-center text-slate-400 font-medium text-sm">
@@ -1029,9 +1164,8 @@ export default function FinanceOperationsPage() {
                   data.checklist.map((item) => (
                     <div key={item.key} className="px-6 py-4 flex items-center justify-between gap-4 hover:bg-slate-50/20 transition-colors">
                       <div className="flex items-center gap-3">
-                        <span className={`material-symbols-outlined text-2xl ${
-                          item.passed ? "text-emerald-500 font-bold" : "text-rose-500 font-bold animate-pulse"
-                        }`}>
+                        <span className={`material-symbols-outlined text-2xl ${item.passed ? "text-emerald-500 font-bold" : "text-rose-500 font-bold animate-pulse"
+                          }`}>
                           {item.passed ? "check_circle" : "error"}
                         </span>
                         <div>
@@ -1043,12 +1177,11 @@ export default function FinanceOperationsPage() {
                           )}
                         </div>
                       </div>
-                      
-                      <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase ${
-                        item.passed
+
+                      <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase ${item.passed
                           ? "bg-emerald-50 text-emerald-700 border border-emerald-100"
                           : "bg-rose-50 text-rose-700 border border-rose-100"
-                      }`}>
+                        }`}>
                         {item.passed ? "Đạt" : "Chưa đạt"}
                       </span>
                     </div>
@@ -1060,11 +1193,10 @@ export default function FinanceOperationsPage() {
             {/* Closing Period Widget */}
             <aside className="bg-white border border-slate-200 rounded-2xl p-6 h-fit space-y-5 shadow-lg">
               <div className="flex items-center gap-3">
-                <div className={`h-12 w-12 rounded-xl grid place-items-center shadow-sm ${
-                  data.accountingPeriod.status === "CLOSED"
+                <div className={`h-12 w-12 rounded-xl grid place-items-center shadow-sm ${data.accountingPeriod.status === "CLOSED"
                     ? "bg-rose-50 text-rose-600 border border-rose-100"
                     : "bg-emerald-50 text-emerald-600 border border-emerald-100"
-                }`}>
+                  }`}>
                   <span className="material-symbols-outlined text-2xl font-bold">
                     {data.accountingPeriod.status === "CLOSED" ? "lock" : "lock_open"}
                   </span>
@@ -1120,6 +1252,68 @@ export default function FinanceOperationsPage() {
           </div>
         )}
       </main>
+
+      {cashApproval && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/45 p-4 backdrop-blur-sm">
+          <form onSubmit={approveCashDeposits} className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-start justify-between border-b border-slate-200 px-5 py-4">
+              <div>
+                <p className="text-[11px] font-bold uppercase tracking-wide text-emerald-600">Xác nhận duyệt tiền mặt</p>
+                <h2 className="mt-1 text-lg font-bold text-slate-900">Ngày thực tế nộp tiền</h2>
+                <p className="mt-1 text-xs text-slate-500">Áp dụng cho {cashApproval.ids.length} phiếu đã chọn.</p>
+              </div>
+              <button type="button" onClick={() => setCashApproval(null)} className="grid h-9 w-9 place-items-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50">
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+            <div className="space-y-4 p-5">
+              <label className="block text-xs font-bold text-slate-600">
+                Ngày thực tế nộp tiền *
+                <DateInput className="mt-1.5 w-full" value={cashApproval.actualTransferDate} onChange={(value) => setCashApproval((current) => current ? { ...current, actualTransferDate: value } : current)} ariaLabel="Ngày thực tế nộp tiền" />
+              </label>
+              <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-4 text-xs text-emerald-900">
+                <p className="font-bold">Tổng tiền: {money(data.moneyTransfers.filter((row) => cashApproval.ids.includes(row.id)).reduce((sum, row) => sum + row.amount, 0))} đ</p>
+                <p className="mt-1">Ngày này sẽ là ngày giảm nguồn tiền mặt và tăng nguồn nhận trên Báo cáo nguồn tiền, Sổ quỹ và Sổ cái.</p>
+              </div>
+            </div>
+            {message && <p className="mx-5 mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700">{message}</p>}
+            <div className="flex justify-end gap-2 border-t border-slate-200 bg-slate-50 p-4">
+              <button type="button" onClick={() => setCashApproval(null)} className="secondary-button">Hủy</button>
+              <button disabled={submitting || !cashApproval.actualTransferDate} className="primary-button disabled:opacity-50">{submitting ? "Đang duyệt..." : `Xác nhận duyệt (${cashApproval.ids.length})`}</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {editingInternalTransfer && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/45 p-4 backdrop-blur-sm">
+          <form onSubmit={saveInternalTransferEdit} className="w-full max-w-2xl rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-start justify-between border-b border-slate-200 px-5 py-4">
+              <div>
+                <p className="text-[11px] font-bold uppercase tracking-wide text-blue-600">Sửa điều tiền nội bộ chờ duyệt</p>
+                <h2 className="mt-1 text-lg font-bold text-slate-900">{editingInternalTransfer.transfer.code}</h2>
+                <p className="mt-1 text-xs text-slate-500">{storeLabel(editingInternalTransfer.transfer.branchCode)}</p>
+              </div>
+              <button type="button" onClick={() => setEditingInternalTransfer(null)} className="grid h-9 w-9 place-items-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50">
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+            <div className="grid gap-4 p-5 sm:grid-cols-2">
+              <label className="text-xs font-bold text-slate-600">Ngày điều tiền *<DateInput className="mt-1.5 w-full" value={editingInternalTransfer.transferDate} onChange={(value) => setEditingInternalTransfer((current) => current ? { ...current, transferDate: value } : current)} ariaLabel="Ngày điều tiền nội bộ" /></label>
+              <label className="text-xs font-bold text-slate-600">Số tiền *<input className="control mt-1.5 text-right" inputMode="numeric" value={editingInternalTransfer.amount} onChange={(event) => setEditingInternalTransfer((current) => current ? { ...current, amount: event.target.value.replace(/\D/g, "") } : current)} /></label>
+              <label className="text-xs font-bold text-slate-600">Từ nguồn *<select className="control mt-1.5" value={editingInternalTransfer.fromMoneySourceCode} onChange={(event) => setEditingInternalTransfer((current) => current ? { ...current, fromMoneySourceCode: event.target.value } : current)}>{filterMoneySources(moneySources, editingInternalTransfer.transfer.branchCode).map((source) => <option key={source.code} value={source.code}>{moneySourceDisplayName(source, storeLabel(editingInternalTransfer.transfer.branchCode))}</option>)}</select></label>
+              <label className="text-xs font-bold text-slate-600">Đến nguồn *<select className="control mt-1.5" value={editingInternalTransfer.toMoneySourceCode} onChange={(event) => setEditingInternalTransfer((current) => current ? { ...current, toMoneySourceCode: event.target.value } : current)}>{filterMoneySources(moneySources, editingInternalTransfer.transfer.branchCode).filter((source) => source.code !== editingInternalTransfer.fromMoneySourceCode).map((source) => <option key={source.code} value={source.code}>{moneySourceDisplayName(source, storeLabel(editingInternalTransfer.transfer.branchCode))}</option>)}</select></label>
+              <label className="text-xs font-bold text-slate-600 sm:col-span-2">Tham chiếu ngoài<input className="control mt-1.5" value={editingInternalTransfer.externalRef} onChange={(event) => setEditingInternalTransfer((current) => current ? { ...current, externalRef: event.target.value } : current)} /></label>
+              <label className="text-xs font-bold text-slate-600 sm:col-span-2">Diễn giải *<textarea className="control mt-1.5 min-h-24" value={editingInternalTransfer.description} onChange={(event) => setEditingInternalTransfer((current) => current ? { ...current, description: event.target.value } : current)} /></label>
+            </div>
+            {message && <p className="mx-5 mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700">{message}</p>}
+            <div className="flex justify-end gap-2 border-t border-slate-200 bg-slate-50 p-4">
+              <button type="button" onClick={() => setEditingInternalTransfer(null)} className="secondary-button">Hủy</button>
+              <button disabled={submitting || !editingInternalTransfer.transferDate || !editingInternalTransfer.amount || !editingInternalTransfer.fromMoneySourceCode || !editingInternalTransfer.toMoneySourceCode || editingInternalTransfer.fromMoneySourceCode === editingInternalTransfer.toMoneySourceCode || !editingInternalTransfer.description.trim()} className="primary-button disabled:opacity-50">{submitting ? "Đang lưu..." : "Lưu thay đổi"}</button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {editingCashDeposit && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/45 p-4 backdrop-blur-sm">

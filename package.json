@@ -18,6 +18,7 @@
     "test:daily-deposits": "node --experimental-strip-types scripts/test-daily-deposit-report.mjs",
     "test:bank-deposits": "node --experimental-strip-types scripts/test-bank-statement-deposit.mjs",
     "test:import-dates": "node --experimental-strip-types scripts/test-import-date-parser.mjs",
+    "test:money-transfer-dates": "node --experimental-strip-types scripts/test-money-transfer-effective-date.mjs",
     "backfill:bank-deposits": "node scripts/backfill-bank-deposits.cjs",
     "repair:deposit-correction": "node scripts/repair-deposit-correction.cjs",
     "deploy:vps": "git pull origin master && npm install && npx prisma db push && npm run build && (pm2 restart ecosystem.config.js || pm2 restart all)",

@@ -5,6 +5,7 @@ import { depositDecreaseActions, depositIncreaseActions } from "@/lib/deposit-ac
 import { moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { CASH_SOURCE_OPENING_TYPES, OPENING_BALANCE_EFFECTIVE_STATUSES } from "@/lib/opening-balance-rules";
+import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/lib/money-transfer-date";
 
 type PnlBucket = {
   revenue: number;
@@ -241,8 +242,8 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
         select: { entryDate: true, entryType: true, amount: true, moneySourceCode: true },
       }),
       prisma.moneyTransfer.findMany({
-        where: { ...branchFilter, transferDate: { gte: start, lt: end }, status: "APPROVED" },
-        select: { transferDate: true, amount: true, feeAmount: true, feeCategoryCode: true, transferPurpose: true, fromMoneySourceCode: true, toMoneySourceCode: true },
+        where: { ...branchFilter, ...effectiveMoneyTransferDateFilter(start, end), status: "APPROVED" },
+        select: { transferDate: true, actualTransferDate: true, amount: true, feeAmount: true, feeCategoryCode: true, transferPurpose: true, fromMoneySourceCode: true, toMoneySourceCode: true },
       }),
       prisma.openingBalance.findMany({
         where: { period: months[0], ...(branchCode === "ALL" ? {} : { branchCode }), status: { in: [...OPENING_BALANCE_EFFECTIVE_STATUSES] }, balanceType: { in: cashReportOpeningTypes } },
@@ -414,7 +415,7 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
           ? { key: category.code, name: category.name, group: "PAYMENT" }
           : fallbackCategory,
         monthCount,
-        monthIndexOf(row.transferDate),
+        monthIndexOf(effectiveMoneyTransferDate(row)),
         row.feeAmount,
       );
       if (!category && !["CASH_DEPOSIT", "WALLET_SETTLEMENT"].includes(row.transferPurpose || "")) unclassifiedExpense += row.feeAmount;

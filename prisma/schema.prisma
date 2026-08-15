@@ -940,6 +940,8 @@ model MoneyTransfer {
   importBatchId       String?
   code                String    @unique
   transferDate        DateTime
+  /// Ngày tiền mặt thực tế rời quỹ và vào nguồn nhận. Chỉ bắt buộc khi duyệt CASH_DEPOSIT mới.
+  actualTransferDate  DateTime?
   branchCode          String
   fromMoneySourceCode String
   toMoneySourceCode   String
@@ -960,6 +962,7 @@ model MoneyTransfer {
   status              String    @default("PENDING_REVIEW")
   createdBy           String?
   approvedBy          String?
+  approvedAt          DateTime?
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
@@ -970,6 +973,7 @@ model MoneyTransfer {
   deletedBy String?
 
   @@index([transferDate])
+  @@index([actualTransferDate])
   @@index([branchCode])
   @@index([status])
   @@index([transferPurpose])

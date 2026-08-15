@@ -12,6 +12,7 @@ import { cashDepositRoundingExpense, cashDepositUnit, roundCashDepositAmount } f
 import { completePendingReconciliation, releasePendingReconciliation } from "@/lib/reconciliation-links";
 import { CASH_SOURCE_OPENING_TYPES, OPENING_BALANCE_EFFECTIVE_STATUSES } from "@/lib/opening-balance-rules";
 import { parseImportDate } from "@/lib/import-parser";
+import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/lib/money-transfer-date";
 
 const menuHref = "/finance-operations";
 const cashDepositDenominations = [500000, 200000, 100000, 50000, 20000, 10000, 5000, 2000, 1000];
@@ -85,7 +86,14 @@ export async function GET(request: Request) {
       prisma.accountingPeriod.findUnique({ where: { period_branchCode: { period, branchCode } } }),
       closingChecklist(period, branchCode),
       prisma.moneyTransfer.findMany({
-        where: { ...branchFilter, transferDate: { gte: start, lt: end } },
+        where: {
+          ...branchFilter,
+          OR: [
+            { status: "PENDING_REVIEW", transferDate: { gte: start, lt: end } },
+            { status: "APPROVED", ...effectiveMoneyTransferDateFilter(start, end) },
+            { status: "CANCELLED", transferDate: { gte: start, lt: end } },
+          ],
+        },
         include: { denominations: { orderBy: { denomination: "desc" } } },
         orderBy: [{ createdAt: "desc" }, { transferDate: "desc" }],
       }),
@@ -97,8 +105,8 @@ export async function GET(request: Request) {
       ...adjustments.map((row) => ({ id: row.id, date: row.entryDate, createdAt: row.createdAt, code: row.code, type: "ADJUSTMENT", moneySourceCode: row.moneySourceCode, description: row.description, receipt: entryTypeToReceipt(row.entryType, row.amount), payment: entryTypeToPayment(row.entryType, row.amount) })),
       // Quyết toán ví: tiền rời ví = số về ngân hàng + phí, nên số dư ví mới về đúng 0.
       ...moneyTransfers.filter((row) => row.status === "APPROVED").flatMap((row) => [
-        { id: `${row.id}-out`, date: row.transferDate, createdAt: row.createdAt, code: row.code, type: "TRANSFER_OUT", moneySourceCode: row.fromMoneySourceCode, description: row.description, receipt: 0, payment: row.amount + row.feeAmount },
-        { id: `${row.id}-in`, date: row.transferDate, createdAt: row.createdAt, code: row.code, type: "TRANSFER_IN", moneySourceCode: row.toMoneySourceCode, description: row.description, receipt: row.amount, payment: 0 },
+        { id: `${row.id}-out`, date: effectiveMoneyTransferDate(row), createdAt: row.createdAt, code: row.code, type: "TRANSFER_OUT", moneySourceCode: row.fromMoneySourceCode, description: row.description, receipt: 0, payment: row.amount + row.feeAmount },
+        { id: `${row.id}-in`, date: effectiveMoneyTransferDate(row), createdAt: row.createdAt, code: row.code, type: "TRANSFER_IN", moneySourceCode: row.toMoneySourceCode, description: row.description, receipt: row.amount, payment: 0 },
       ]),
     ].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
       || new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
@@ -232,6 +240,117 @@ export async function POST(request: Request) {
       return NextResponse.json(result);
     }
 
+    if (action === "UPDATE_PENDING_INTERNAL_TRANSFER") {
+      const auth = requireMenuAction(request, menuHref, "edit");
+      if (!auth.ok) return auth.response;
+
+      const id = cleanText(body.id);
+      const current = await prisma.moneyTransfer.findUnique({ where: { id } });
+      if (!current || current.deletedAt) businessError("Không tìm thấy phiếu điều tiền nội bộ.");
+      assertBranchAccess(auth.session, current.branchCode);
+      if (!current.code.startsWith("CTNB")) businessError("Chỉ phiếu điều tiền nội bộ CTNB mới được sửa tại đây.");
+      if (current.status !== "PENDING_REVIEW") businessError("Chỉ được sửa phiếu đang chờ duyệt.");
+
+      const transferDate = parseImportDate(cleanText(body.transferDate));
+      const fromMoneySourceCode = cleanText(body.fromMoneySourceCode);
+      const toMoneySourceCode = cleanText(body.toMoneySourceCode);
+      const amount = toNumber(body.amount);
+      const description = cleanText(body.description);
+      const externalRef = cleanText(body.externalRef) || null;
+      if (!transferDate) businessError("Ngày điều tiền không hợp lệ.");
+      if (await isPeriodLocked(current.transferDate, current.branchCode) || await isPeriodLocked(transferDate, current.branchCode)) {
+        businessError("Kỳ kế toán của ngày cũ hoặc ngày mới đã khóa, không thể sửa phiếu.");
+      }
+      if (!fromMoneySourceCode || !toMoneySourceCode) businessError("Nguồn tiền đi và nguồn tiền nhận là bắt buộc.");
+      if (fromMoneySourceCode === toMoneySourceCode) businessError("Nguồn tiền đi và nguồn tiền nhận không được trùng nhau.");
+      if (!(amount > 0)) businessError("Số tiền điều chuyển phải lớn hơn 0.");
+      if (!description) businessError("Diễn giải là bắt buộc.");
+
+      const [fromMoneySource, toMoneySource] = await Promise.all([
+        prisma.masterDataItem.findFirst({ where: { type: "MONEY_SOURCE", code: fromMoneySourceCode, deletedAt: null } }),
+        prisma.masterDataItem.findFirst({ where: { type: "MONEY_SOURCE", code: toMoneySourceCode, deletedAt: null } }),
+      ]);
+      if (!fromMoneySource || !moneySourceMatchesBranch(fromMoneySource, current.branchCode)) businessError(`Nguồn tiền đi [${fromMoneySourceCode}] không hợp lệ.`);
+      if (!toMoneySource || !moneySourceMatchesBranch(toMoneySource, current.branchCode)) businessError(`Nguồn tiền nhận [${toMoneySourceCode}] không hợp lệ.`);
+
+      const updated = await prisma.moneyTransfer.updateMany({
+        where: { id, status: "PENDING_REVIEW", deletedAt: null },
+        data: { transferDate, fromMoneySourceCode, toMoneySourceCode, amount, description, externalRef },
+      });
+      if (updated.count !== 1) businessError("Phiếu đã được xử lý bởi yêu cầu khác.");
+      const result = await prisma.moneyTransfer.findUniqueOrThrow({ where: { id } });
+      await writeAuditLog({
+        session: auth.session,
+        module: "FINANCE_OPERATIONS",
+        action: "UPDATE_PENDING_INTERNAL_TRANSFER",
+        entityType: "MoneyTransfer",
+        entityId: result.id,
+        entityCode: result.code,
+        branchCode: result.branchCode,
+        metadata: {
+          before: { transferDate: current.transferDate, fromMoneySourceCode: current.fromMoneySourceCode, toMoneySourceCode: current.toMoneySourceCode, amount: current.amount, description: current.description, externalRef: current.externalRef },
+          after: { transferDate, fromMoneySourceCode, toMoneySourceCode, amount, description, externalRef },
+        },
+      });
+      return NextResponse.json(result);
+    }
+
+    if (action === "APPROVE_CASH_DEPOSIT_TRANSFERS") {
+      const auth = requireMenuAction(request, menuHref, "approve");
+      if (!auth.ok) return auth.response;
+      const ids: string[] = [...new Set<string>(
+        (Array.isArray(body.ids) ? body.ids : [])
+          .map((value: unknown) => cleanText(value))
+          .filter((value: string) => Boolean(value)),
+      )];
+      if (ids.length === 0) businessError("Vui lòng chọn ít nhất một phiếu nộp tiền.");
+      if (ids.length > 100) businessError("Mỗi lần chỉ được duyệt tối đa 100 phiếu.");
+      const actualTransferDate = parseImportDate(cleanText(body.actualTransferDate));
+      if (!actualTransferDate) businessError("Ngày thực tế nộp tiền là bắt buộc.");
+
+      const transfers = await prisma.moneyTransfer.findMany({ where: { id: { in: ids }, deletedAt: null } });
+      if (transfers.length !== ids.length) businessError("Có phiếu không tồn tại hoặc đã bị xóa.");
+      const sourceCodes = [...new Set(transfers.flatMap((transfer) => [transfer.fromMoneySourceCode, transfer.toMoneySourceCode]))];
+      const sources = await prisma.masterDataItem.findMany({ where: { type: "MONEY_SOURCE", code: { in: sourceCodes }, deletedAt: null } });
+      const sourceByCode = new Map(sources.map((source) => [source.code, source]));
+      for (const transfer of transfers) {
+        assertBranchAccess(auth.session, transfer.branchCode);
+        if (transfer.transferPurpose !== "CASH_DEPOSIT") businessError(`Phiếu ${transfer.code} không phải phiếu nộp tiền mặt.`);
+        if (transfer.status !== "PENDING_REVIEW") businessError(`Phiếu ${transfer.code} không còn chờ duyệt.`);
+        if (transfer.fromMoneySourceCode === transfer.toMoneySourceCode) businessError(`Phiếu ${transfer.code} có nguồn đi và nguồn nhận trùng nhau.`);
+        if (await isPeriodLocked(actualTransferDate, transfer.branchCode)) businessError(`Kỳ kế toán ngày thực tế của phiếu ${transfer.code} đã khóa.`);
+        const fromMoneySource = sourceByCode.get(transfer.fromMoneySourceCode);
+        const toMoneySource = sourceByCode.get(transfer.toMoneySourceCode);
+        if (!fromMoneySource || !moneySourceMatchesBranch(fromMoneySource, transfer.branchCode) || normalizeMoneySourceGroup(fromMoneySource.group) !== "CASH") {
+          businessError(`Nguồn tiền đi của phiếu ${transfer.code} không còn là nguồn tiền mặt hợp lệ.`);
+        }
+        if (!toMoneySource || !moneySourceMatchesBranch(toMoneySource, transfer.branchCode)) businessError(`Nguồn tiền nhận của phiếu ${transfer.code} không còn hợp lệ.`);
+      }
+
+      const approvedAt = new Date();
+      const results = await prismaRaw.$transaction(async (tx) => {
+        const updated = await tx.moneyTransfer.updateMany({
+          where: { id: { in: ids }, status: "PENDING_REVIEW", transferPurpose: "CASH_DEPOSIT", deletedAt: null },
+          data: { status: "APPROVED", actualTransferDate, approvedAt, approvedBy: auth.session.name },
+        });
+        if (updated.count !== ids.length) businessError("Một hoặc nhiều phiếu vừa được người khác xử lý; chưa phiếu nào được duyệt.");
+        return tx.moneyTransfer.findMany({ where: { id: { in: ids } } });
+      });
+      for (const result of results) {
+        await writeAuditLog({
+          session: auth.session,
+          module: "FINANCE_OPERATIONS",
+          action: "APPROVE_CASH_DEPOSIT_TRANSFER",
+          entityType: "MoneyTransfer",
+          entityId: result.id,
+          entityCode: result.code,
+          branchCode: result.branchCode,
+          metadata: { statusBefore: "PENDING_REVIEW", statusAfter: "APPROVED", actualTransferDate, approvedAt, amount: result.amount },
+        });
+      }
+      return NextResponse.json({ count: results.length, actualTransferDate, transfers: results });
+    }
+
     if (action === "APPROVE_TRANSFER") {
       const auth = requireMenuAction(request, menuHref, "approve");
       if (!auth.ok) return auth.response;
@@ -240,6 +359,7 @@ export async function POST(request: Request) {
       if (!transfer || transfer.deletedAt) businessError("Không tìm thấy giao dịch điều tiền");
       assertBranchAccess(auth.session, transfer.branchCode);
       if (transfer.status !== "PENDING_REVIEW") businessError("Giao dịch điều tiền không ở trạng thái chờ duyệt");
+      if (transfer.transferPurpose === "CASH_DEPOSIT") businessError("Phiếu nộp tiền mặt phải nhập ngày thực tế trước khi duyệt.");
       if (await isPeriodLocked(transfer.transferDate, transfer.branchCode)) {
         businessError("Kỳ kế toán đã khóa, không thể duyệt giao dịch.");
       }
@@ -276,7 +396,7 @@ export async function POST(request: Request) {
         // Điều kiện trạng thái bảo đảm hai kế toán bấm cùng lúc cũng chỉ duyệt thành công một lần.
         const updated = await tx.moneyTransfer.updateMany({
           where: { id, status: "PENDING_REVIEW", deletedAt: null },
-          data: { status: "APPROVED", approvedBy: auth.session.name },
+          data: { status: "APPROVED", approvedBy: auth.session.name, approvedAt: new Date() },
         });
         if (updated.count !== 1) {
           businessError("Phiếu đã được người khác duyệt hoặc không còn ở trạng thái chờ duyệt.");

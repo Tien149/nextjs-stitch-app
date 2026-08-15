@@ -4,6 +4,7 @@ import type { DemoSession } from "@/lib/auth-demo";
 import { voucherJournalLines } from "@/lib/voucher-accounting";
 import { normalizeCategoryGroup } from "@/lib/voucher-rules";
 import { moneySourceAccountCode } from "@/lib/money-sources";
+import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/lib/money-transfer-date";
 
 export const defaultAccounts = [
   { code: "1111", name: "Tiền mặt", accountType: "ASSET", normalBalance: "DEBIT", reportGroup: "CASH" },
@@ -235,7 +236,7 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   // Điều chuyển có chênh lệch phải giảm đủ nguồn đi, tăng nguồn nhận theo số thực chuyển
   // và đưa phần chênh vào chi phí. Cùng một logic áp dụng cho phí ví và làm tròn tiền nộp.
   const [moneyTransfers, transferMoneySources] = await Promise.all([
-    prisma.moneyTransfer.findMany({ where: { ...branchFilter, transferDate: { gte: start, lt: end }, status: "APPROVED" } }),
+    prisma.moneyTransfer.findMany({ where: { ...branchFilter, ...effectiveMoneyTransferDateFilter(start, end), status: "APPROVED" } }),
     prisma.masterDataItem.findMany({ where: { type: "MONEY_SOURCE" } }),
   ]);
   const transferSourceByCode = new Map(transferMoneySources.map((source) => [source.code, source]));
@@ -253,7 +254,7 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
     if (row.feeAmount < 0) lines.push({ accountCode: "6428", credit: -row.feeAmount, categoryCode: row.feeCategoryCode });
     lines.push({ accountCode: fromAccount, credit: grossAmount });
     results.push(await postJournalEntry({
-      entryDate: row.transferDate,
+      entryDate: effectiveMoneyTransferDate(row),
       branchCode: row.branchCode,
       sourceType: "MONEY_TRANSFER",
       sourceId: row.id,
