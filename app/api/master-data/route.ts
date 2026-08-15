@@ -418,13 +418,13 @@ export async function GET(request: Request) {
         ...(search
           ? {
               OR: [
-                { code: { contains: search } },
-                { name: { contains: search } },
-                { group: { contains: search } },
-                { branch: { contains: search } },
-                { taxCode: { contains: search } },
-                { partnerType: { contains: search } },
-                { partnerGroup: { contains: search } },
+                { code: { contains: search, mode: "insensitive" } },
+                { name: { contains: search, mode: "insensitive" } },
+                { group: { contains: search, mode: "insensitive" } },
+                { branch: { contains: search, mode: "insensitive" } },
+                { taxCode: { contains: search, mode: "insensitive" } },
+                { partnerType: { contains: search, mode: "insensitive" } },
+                { partnerGroup: { contains: search, mode: "insensitive" } },
               ],
             }
           : {}),
