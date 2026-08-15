@@ -298,41 +298,76 @@ async function updateDeposit(session: DemoSession, current: DepositRecord, body:
     return NextResponse.json({ error: "Kỳ kế toán đã khóa, không thể sửa phiếu cọc" }, { status: 400 });
   }
 
-  const deposit = await prisma.deposit.update({
-    where: { id: current.id },
-    data: {
-      receivedDate,
-      partnerCode,
-      partnerName,
-      objectName,
-      branchCode,
-      moneySourceCode,
-      amount,
-      // Chưa phát sinh xử lý nên số dư cọc luôn bằng số tiền cọc.
-      ...(amount !== current.amount ? { remainingAmount: amount } : {}),
-      purpose,
-      note,
-      histories: {
-        create: {
-          action: "UPDATE",
-          // Ghi phần chênh lệch để báo cáo cọc và sổ cái vẫn khớp khi sửa lại số tiền.
-          amount: amount === current.amount ? null : amount - current.amount,
-          actionDate: new Date(),
-          treatmentNote: "Sửa thông tin phiếu cọc",
-          actor: session.name,
-          note,
+  const originalHistory = !processed
+    ? await prisma.depositHistory.findFirst({
+        where: { depositId: current.id, action: { in: ["CREATE", "COLLECT"] }, voucherId: null },
+        orderBy: { createdAt: "asc" },
+      })
+    : null;
+  const originalPostingChanged = Boolean(originalHistory) && (
+    amount !== current.amount
+    || receivedDate.getTime() !== current.receivedDate.getTime()
+    || branchCode !== current.branchCode
+    || moneySourceCode !== current.moneySourceCode
+    || partnerCode !== current.partnerCode
+  );
+
+  if (!processed && amount !== current.amount && !originalHistory) {
+    return NextResponse.json(
+      { error: "Không tìm thấy lịch sử nhận cọc ban đầu để sửa bút toán gốc. Vui lòng kiểm tra dữ liệu phiếu cọc." },
+      { status: 409 },
+    );
+  }
+
+  const deposit = await prisma.$transaction(async (tx) => {
+    if (originalHistory && originalPostingChanged) {
+      await tx.depositHistory.update({
+        where: { id: originalHistory.id },
+        data: { amount, actionDate: receivedDate },
+      });
+    }
+    return tx.deposit.update({
+      where: { id: current.id },
+      data: {
+        receivedDate,
+        partnerCode,
+        partnerName,
+        objectName,
+        branchCode,
+        moneySourceCode,
+        amount,
+        // Chưa phát sinh xử lý nên số dư cọc luôn bằng số tiền cọc.
+        ...(amount !== current.amount ? { remainingAmount: amount } : {}),
+        purpose,
+        note,
+        histories: {
+          create: {
+            action: "UPDATE",
+            // Đây là vết sửa thông tin, không phải một lần thu/hoàn tiền mới.
+            amount: null,
+            actionDate: new Date(),
+            treatmentNote: "Sửa thông tin phiếu cọc",
+            actor: session.name,
+            note,
+          },
         },
       },
-    },
-    include: {
-      histories: {
-        orderBy: { createdAt: "desc" },
+      include: {
+        histories: {
+          orderBy: { createdAt: "desc" },
+        },
       },
-    },
+    });
   });
 
-  if (amount !== current.amount) {
-    await postDepositHistory(deposit, latestHistory(deposit.histories, "UPDATE"), session.name);
+  // Sửa phiếu chưa xử lý phải cập nhật chính bút toán nhận cọc ban đầu; tuyệt đối không sinh
+  // một bút toán hoàn/thu mới từ phần chênh lệch do người dùng sửa dữ liệu.
+  if (originalHistory && originalPostingChanged) {
+    await postDepositHistory(
+      deposit,
+      deposit.histories.find((history) => history.id === originalHistory.id),
+      session.name,
+    );
   }
 
   await writeAuditLog({

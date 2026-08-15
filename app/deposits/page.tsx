@@ -84,6 +84,9 @@ export default function DepositsPage() {
   const [deposits, setDeposits] = useState<Deposit[]>([]);
   const [form, setForm] = useState(emptyForm);
   const [search, setSearch] = useState("");
+  const [focusedCode, setFocusedCode] = useState("");
+  const [focusedHistoryId, setFocusedHistoryId] = useState("");
+  const [hasLoadedDeposits, setHasLoadedDeposits] = useState(false);
   const [message, setMessage] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [branches, setBranches] = useState<MasterDataOption[]>([]);
@@ -117,6 +120,10 @@ export default function DepositsPage() {
         return;
       }
       window.setTimeout(() => {
+        const query = new URLSearchParams(window.location.search);
+        setSearch(query.get("search")?.trim() || "");
+        setFocusedCode(query.get("focus")?.trim() || "");
+        setFocusedHistoryId(query.get("history")?.trim() || "");
         setUser(session);
         const initialBranch = resolveInitialBranchScope(session);
         setBranchScope(initialBranch);
@@ -137,6 +144,7 @@ export default function DepositsPage() {
   /** Biểu mẫu bên trái hiện ra khi được tạo mới hoặc khi đang sửa một phiếu cọc. */
   const showDepositForm = canCreateDeposits || Boolean(editingDeposit);
   const depositFormRef = useRef<HTMLFormElement>(null);
+  const focusedRowRef = useRef<HTMLTableRowElement>(null);
   const [depositPanelHeight, setDepositPanelHeight] = useState<number | null>(null);
 
   useEffect(() => {
@@ -151,6 +159,14 @@ export default function DepositsPage() {
     observer.observe(formElement);
     return () => observer.disconnect();
   }, [showDepositForm]);
+
+  useEffect(() => {
+    if (!focusedCode || !focusedRowRef.current) return;
+    const timer = window.setTimeout(() => {
+      focusedRowRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 100);
+    return () => window.clearTimeout(timer);
+  }, [deposits, focusedCode]);
 
   /** Phiếu cọc đã cấn trừ/hoàn/hủy thì không cho sửa; trả về lý do để hiện tooltip. */
   const editLockReason = (deposit: Deposit) => {
@@ -170,17 +186,29 @@ export default function DepositsPage() {
     return null;
   };
 
-  const loadDeposits = async () => {
+  const loadDeposits = async (searchOverride?: string) => {
+    setHasLoadedDeposits(false);
     setMessage("");
     const params = new URLSearchParams();
-    if (search.trim()) params.set("search", search.trim());
+    const effectiveSearch = searchOverride ?? search;
+    if (effectiveSearch.trim()) params.set("search", effectiveSearch.trim());
     params.set("branchCode", branchScope);
     const response = await fetch(`/api/deposits?${params.toString()}`);
     if (!response.ok) {
       setMessage("Không tải được danh sách tiền cọc");
+      setHasLoadedDeposits(true);
       return;
     }
     setDeposits((await response.json()) as Deposit[]);
+    setHasLoadedDeposits(true);
+  };
+
+  const clearDepositSearch = async () => {
+    setSearch("");
+    setFocusedCode("");
+    setFocusedHistoryId("");
+    router.replace("/deposits");
+    await loadDeposits("");
   };
 
   const loadMasterData = async () => {
@@ -562,10 +590,53 @@ export default function DepositsPage() {
               <p className="text-xs text-slate-500 mt-1">Cấn trừ không được vượt số tiền còn lại.</p>
             </div>
             <div className="flex gap-2">
-              <input value={search} onChange={(event) => setSearch(event.target.value)} className="border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="Tìm mã/khách hàng/đối tượng..." />
-              <button onClick={loadDeposits} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50">Tìm</button>
+              <input
+                value={search}
+                onChange={(event) => {
+                  setSearch(event.target.value);
+                  setFocusedCode("");
+                  setFocusedHistoryId("");
+                }}
+                className="border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                placeholder="Tìm mã/khách hàng/đối tượng..."
+              />
+              <button onClick={() => void loadDeposits()} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50">Tìm</button>
+              {(search || focusedCode) && (
+                <button
+                  type="button"
+                  onClick={() => void clearDepositSearch()}
+                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50"
+                >
+                  Xóa lọc
+                </button>
+              )}
             </div>
           </div>
+
+          {focusedCode && hasLoadedDeposits && (
+            <div className={`mx-5 mt-4 rounded-lg border px-3 py-2 text-sm ${deposits.some((deposit) => deposit.code === focusedCode) ? "border-amber-200 bg-amber-50 text-amber-800" : "border-red-200 bg-red-50 text-red-700"}`}>
+              {deposits.some((deposit) => deposit.code === focusedCode)
+                ? (() => {
+                    const focusedDeposit = deposits.find((deposit) => deposit.code === focusedCode);
+                    const focusedHistory = focusedDeposit?.histories.find((history) => history.id === focusedHistoryId);
+                    if (!focusedHistoryId || !focusedHistory) {
+                      return <>Đang hiển thị phiếu nguồn <strong>{focusedCode}</strong>.</>;
+                    }
+                    const historyAmount = Math.abs(focusedHistory.amount || 0);
+                    const historyLabel = focusedHistory.action === "UPDATE"
+                      ? (Number(focusedHistory.amount) < 0 ? "Điều chỉnh giảm phiếu cọc" : "Điều chỉnh tăng phiếu cọc")
+                      : (focusedHistory.treatmentNote || focusedHistory.action);
+                    return (
+                      <>
+                        Đang truy vết: <strong>{historyLabel}</strong>
+                        {historyAmount > 0 ? <> · <strong>{formatCurrency(historyAmount)} đ</strong></> : null}
+                        {focusedDeposit ? <> · Giá trị hiện tại của phiếu: <strong>{formatCurrency(focusedDeposit.amount)} đ</strong></> : null}.
+                      </>
+                    );
+                  })()
+                : <>Không tìm thấy phiếu nguồn <strong>{focusedCode}</strong> trong phạm vi cửa hàng hiện tại.</>}
+            </div>
+          )}
 
           {message && !showDepositForm && (
             <p className="mx-5 mt-4 text-sm rounded-lg bg-blue-50 border border-blue-100 text-blue-700 px-3 py-2">{message}</p>
@@ -650,8 +721,14 @@ export default function DepositsPage() {
               <tbody className="divide-y divide-slate-100">
                 {deposits.length === 0 ? (
                   <tr><td colSpan={6} className="px-4 py-10 text-center text-slate-400">Chưa có phiếu cọc.</td></tr>
-                ) : deposits.map((deposit) => (
-                  <tr key={deposit.id} className="hover:bg-slate-50">
+                ) : deposits.map((deposit) => {
+                  const isFocused = deposit.code === focusedCode;
+                  return (
+                  <tr
+                    key={deposit.id}
+                    ref={isFocused ? focusedRowRef : undefined}
+                    className={isFocused ? "bg-amber-50 ring-2 ring-inset ring-amber-300" : "hover:bg-slate-50"}
+                  >
                     <td className="px-4 py-3">
                       <p className="font-bold"><CopyableText value={deposit.code} /></p>
                       <p className="text-xs text-slate-500">{storeLabel(deposit.branchCode)} - {deposit.moneySourceCode || "Số dư đầu kỳ"}</p>
@@ -702,7 +779,8 @@ export default function DepositsPage() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

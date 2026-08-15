@@ -13,7 +13,7 @@ import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 
 type Account = { id: string; code: string; name: string; accountType: string; reportGroup: string };
 type Line = { id: string; debit: number; credit: number; departmentCode: string | null; account: Account; categoryCode: string | null; partnerCode: string | null };
-type Entry = { id: string; code: string; entryDate: string; branchCode: string; sourceType: string; sourceCode: string | null; description: string; lines: Line[] };
+type Entry = { id: string; code: string; entryDate: string; branchCode: string; sourceType: string; sourceId: string; sourceCode: string | null; description: string; lines: Line[] };
 type MasterDataOption = { id: string; type: string; code: string; name: string; group: string | null; branch: string | null; status?: string };
 type Data = { accounts: Account[]; entries: Entry[]; categories?: MasterDataOption[]; totals: { debit: number; credit: number; difference: number } };
 
@@ -178,6 +178,8 @@ export default function AccountingPage() {
       case "VOUCHER": return { text: "Thu / Chi", icon: "payments", color: "bg-amber-50 text-amber-700 border-amber-100" };
       case "REVENUE_POS": return { text: "Doanh thu POS", icon: "point_of_sale", color: "bg-emerald-50 text-emerald-700 border-emerald-100" };
       case "BANK_STATEMENT": return { text: "Sao kê ngân hàng", icon: "account_balance", color: "bg-cyan-50 text-cyan-700 border-cyan-100" };
+      case "DEPOSIT_HISTORY": return { text: "Tiền cọc", icon: "savings", color: "bg-orange-50 text-orange-700 border-orange-100" };
+      case "MONEY_TRANSFER": return { text: "Điều tiền", icon: "swap_horiz", color: "bg-blue-50 text-blue-700 border-blue-100" };
       case "ASSET_ACQUISITION": return { text: "Mua sắm tài sản", icon: "shopping_cart", color: "bg-purple-50 text-purple-700 border-purple-100" };
       case "SUPPLIER_PAYABLE": return { text: "Nhập hàng NCC", icon: "local_shipping", color: "bg-rose-50 text-rose-700 border-rose-100" };
       case "INVENTORY_ISSUE": return { text: "Xuất kho", icon: "warehouse", color: "bg-slate-50 text-slate-700 border-slate-100" };
@@ -189,7 +191,7 @@ export default function AccountingPage() {
     }
   };
 
-  const handleRedirectToSource = (sourceType: string) => {
+  const handleRedirectToSource = (sourceType: string, sourceCode?: string | null, sourceId?: string | null) => {
     switch (sourceType) {
       case "OPENING_BALANCE":
         router.push("/opening-balances");
@@ -202,6 +204,18 @@ export default function AccountingPage() {
         break;
       case "BANK_STATEMENT":
         router.push("/imports/bank-statements");
+        break;
+      case "DEPOSIT_HISTORY":
+        if (sourceCode?.trim()) {
+          const encodedCode = encodeURIComponent(sourceCode.trim());
+          const historyQuery = sourceId?.trim() ? `&history=${encodeURIComponent(sourceId.trim())}` : "";
+          router.push(`/deposits?search=${encodedCode}&focus=${encodedCode}${historyQuery}`);
+        } else {
+          router.push("/deposits");
+        }
+        break;
+      case "MONEY_TRANSFER":
+        router.push("/finance-operations");
         break;
       case "ASSET_ACQUISITION":
         router.push("/assets");
@@ -222,6 +236,7 @@ export default function AccountingPage() {
         router.push("/imports/payroll");
         break;
       default:
+        setMessage(`Chưa cấu hình màn hình nguồn cho loại ${sourceType}.`);
         break;
     }
   };
@@ -612,7 +627,7 @@ export default function AccountingPage() {
                               <td className="px-5 py-4 whitespace-nowrap text-xs font-semibold text-slate-700">
                                 {entry.sourceCode ? (
                                   <button
-                                    onClick={() => handleRedirectToSource(entry.sourceType)}
+                                    onClick={() => handleRedirectToSource(entry.sourceType, entry.sourceCode, entry.sourceId)}
                                     className="text-indigo-600 hover:text-indigo-800 hover:underline flex items-center gap-0.5 text-left font-bold"
                                     title="Nhấp để truy vết sang màn hình phần hành nguồn"
                                   >
@@ -635,7 +650,7 @@ export default function AccountingPage() {
                               <td className="px-5 py-4 whitespace-nowrap text-center text-xs">
                                 {entry.sourceType !== "MANUAL" ? (
                                   <button
-                                    onClick={() => handleRedirectToSource(entry.sourceType)}
+                                    onClick={() => handleRedirectToSource(entry.sourceType, entry.sourceCode, entry.sourceId)}
                                     className="px-2.5 py-1 rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold border border-indigo-100 flex items-center gap-1 mx-auto transition-colors active:scale-95 shadow-sm"
                                   >
                                     <span className="material-symbols-outlined text-xs">edit_square</span>
