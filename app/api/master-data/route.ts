@@ -4,6 +4,7 @@ import { assertBranchAccess, getAllowedBranches } from "@/lib/accounting";
 import { prisma, prismaRaw } from "@/lib/prisma";
 import { duplicatedInTrashMessage, findDeletedByUnique, softDeleteRecord } from "@/lib/soft-delete";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
+import { normalizeMoneySourceGroup } from "@/lib/money-sources";
 
 const defaultMasterData = [
   {
@@ -556,6 +557,26 @@ function normalizeAssetCodePrefix(type: string, value: unknown) {
   return compact;
 }
 
+/**
+ * Ví/POS khai báo sẽ quyết toán về tài khoản ngân hàng nào.
+ *
+ * Chỉ nguồn thuộc nhóm Ví mới giữ được giá trị này; nhờ đó báo cáo nguồn tiền quy được
+ * doanh thu ví chưa có sao kê về đúng ngân hàng đích ở cột Dự thu trong kỳ.
+ */
+async function normalizeSettlementBankCode(type: string, group: string | null, value: unknown) {
+  if (type !== "MONEY_SOURCE" || normalizeMoneySourceGroup(group) !== "WALLET") return null;
+  const code = cleanText(value).toUpperCase();
+  if (!code) return null;
+  const target = await prisma.masterDataItem.findFirst({
+    where: { type: "MONEY_SOURCE", code, status: "ACTIVE", deletedAt: null },
+    select: { code: true, group: true },
+  });
+  if (!target || normalizeMoneySourceGroup(target.group) !== "BANK") {
+    throw new Error(`Nguồn ngân hàng quyết toán [${code}] không tồn tại hoặc không thuộc nhóm Ngân hàng.`);
+  }
+  return target.code;
+}
+
 export async function POST(request: Request) {
   try {
     const auth = requireMenuAction(request, "/settings", "config");
@@ -571,6 +592,7 @@ export async function POST(request: Request) {
     const partnerType = type === "PARTNER" ? (cleanText(body.partnerType) || group || "").toUpperCase() : null;
     const partnerGroup = type === "PARTNER" ? (cleanText(body.partnerGroup) || "EXTERNAL").toUpperCase() : null;
     let codePrefix: string | null = null;
+    let settlementBankCode: string | null = null;
 
     if (!type || !code || !name) {
       return NextResponse.json({ error: "Loại danh mục, mã và tên là bắt buộc" }, { status: 400 });
@@ -578,6 +600,7 @@ export async function POST(request: Request) {
 
     try {
       codePrefix = normalizeAssetCodePrefix(type, body.codePrefix);
+      settlementBankCode = await normalizeSettlementBankCode(type, group, body.settlementBankCode);
       await validateMasterData(type, partnerType || group, branch, partnerGroup);
       if (branch && ["WAREHOUSE", "MONEY_SOURCE", "DEPARTMENT"].includes(type)) {
         assertBranchAccess(auth.session, branch);
@@ -608,6 +631,7 @@ export async function POST(request: Request) {
         email: cleanText(body.email) || null,
         accountNo: cleanText(body.accountNo) || null,
         codePrefix,
+        settlementBankCode,
         note: cleanText(body.note) || null,
         status: cleanText(body.status) || "ACTIVE",
       },
@@ -655,9 +679,18 @@ export async function PATCH(request: Request) {
       ? (body.partnerGroup !== undefined ? cleanText(body.partnerGroup) || null : current.partnerGroup || "EXTERNAL")
       : null;
     let codePrefix = current.codePrefix;
+    let settlementBankCode = current.settlementBankCode;
 
     try {
       if (body.codePrefix !== undefined) codePrefix = normalizeAssetCodePrefix(current.type, body.codePrefix);
+      // Đổi phân loại khỏi nhóm Ví thì phải bỏ luôn ngân hàng quyết toán để không còn cấu hình mồ côi.
+      if (body.settlementBankCode !== undefined || group !== current.group) {
+        settlementBankCode = await normalizeSettlementBankCode(
+          current.type,
+          group,
+          body.settlementBankCode !== undefined ? body.settlementBankCode : settlementBankCode,
+        );
+      }
       await validateMasterData(current.type, partnerType || group, branch, partnerGroup);
       if (branch && ["WAREHOUSE", "MONEY_SOURCE", "DEPARTMENT"].includes(current.type)) {
         assertBranchAccess(auth.session, branch);
@@ -666,10 +699,19 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: e instanceof Error ? e.message : "Dữ liệu không hợp lệ" }, { status: 400 });
     }
 
-    // Bản ghi con liên kết bằng MÃ, nên đổi mã cha cũng bỏ rơi con y như xoá cha.
+    // Bản ghi con/giao dịch liên kết bằng MÃ, nên đổi thông tin định danh sẽ làm mất liên kết lịch sử.
     const nextCode = body.code !== undefined ? cleanText(body.code).toUpperCase() : current.code;
-    if (nextCode !== current.code) {
-      const blocked = await describeDependents(current, "đổi mã");
+    const protectedAction = nextCode !== current.code
+      ? "đổi mã"
+      : current.type === "MONEY_SOURCE" && branch !== current.branch
+        ? "đổi cửa hàng"
+        : current.type === "MONEY_SOURCE" && group !== current.group
+          ? "đổi phân loại"
+          : current.type === "PNL_ITEM" && group !== current.group
+            ? "đổi nhóm P&L"
+            : null;
+    if (protectedAction) {
+      const blocked = await describeDependents(current, protectedAction);
       if (blocked) {
         return NextResponse.json({ error: blocked }, { status: 409 });
       }
@@ -691,6 +733,7 @@ export async function PATCH(request: Request) {
         ...(body.email !== undefined ? { email: cleanText(body.email) || null } : {}),
         ...(body.accountNo !== undefined ? { accountNo: cleanText(body.accountNo) || null } : {}),
         ...(body.codePrefix !== undefined ? { codePrefix } : {}),
+        settlementBankCode,
         ...(body.note !== undefined ? { note: cleanText(body.note) || null } : {}),
         ...(body.status !== undefined ? { status: cleanText(body.status) || "ACTIVE" } : {}),
       },
@@ -712,6 +755,8 @@ const TYPE_LABELS: Record<string, string> = {
   WAREHOUSE: "Kho hàng",
   PARTNER: "Đối tác",
   MONEY_SOURCE: "Nguồn tiền",
+  PNL_GROUP: "Nhóm hạng mục P&L",
+  PNL_ITEM: "Hạng mục P&L",
   REVENUE_EXPENSE_CATEGORY: "Thu / Chi",
   ACCOUNTING_PERIOD: "Kỳ kế toán",
   DOCUMENT_TYPE: "Loại chứng từ",
@@ -737,11 +782,62 @@ function dependentFilter(item: { type: string; code: string }): Record<string, u
   if (item.type === "DOCUMENT_TYPE") {
     return { type: "DOCUMENT_NUMBER_RULE", group: item.code };
   }
+  if (item.type === "PNL_GROUP") {
+    return { type: "PNL_ITEM", subGroup: item.code };
+  }
   return null;
 }
 
-/** Mô tả các danh mục con đang chặn thao tác, hoặc null nếu không có gì chặn. */
-async function describeDependents(item: { type: string; code: string }, action: "xoá" | "đổi mã") {
+async function describeMoneySourceUsage(code: string, action: string) {
+  const [vouchers, deposits, openingBalances, adjustments, transfers] = await Promise.all([
+    prismaRaw.financialVoucher.count({ where: { moneySourceCode: code } }),
+    prismaRaw.deposit.count({ where: { moneySourceCode: code } }),
+    prismaRaw.openingBalance.count({ where: { moneySourceCode: code } }),
+    prismaRaw.cashbookAdjustment.count({ where: { moneySourceCode: code } }),
+    prismaRaw.moneyTransfer.count({
+      where: { OR: [{ fromMoneySourceCode: code }, { toMoneySourceCode: code }] },
+    }),
+  ]);
+
+  const usages = [
+    ["phiếu thu/chi", vouchers],
+    ["phiếu tiền cọc", deposits],
+    ["số dư đầu kỳ", openingBalances],
+    ["điều chỉnh sổ quỹ", adjustments],
+    ["điều chuyển tiền", transfers],
+  ] as const;
+  const used = usages.filter(([, count]) => count > 0);
+  const total = used.reduce((sum, [, count]) => sum + count, 0);
+  if (total === 0) return null;
+
+  const detail = used.map(([label, count]) => `${count} ${label}`).join(", ");
+  return `Không thể ${action} Nguồn tiền "${code}" vì đã phát sinh ${total} giao dịch (${detail}). Hãy dùng chức năng "Ngừng" để không cho chọn nguồn này cho giao dịch mới mà vẫn giữ đúng lịch sử.`;
+}
+
+async function describePnlItemUsage(code: string, action: string) {
+  const [vouchers, journalLines] = await Promise.all([
+    prismaRaw.financialVoucher.count({ where: { pnlItemCode: code } }),
+    prismaRaw.journalLine.count({ where: { pnlItemCode: code } }),
+  ]);
+  if (vouchers === 0 && journalLines === 0) return null;
+  const detail = [
+    vouchers > 0 ? `${vouchers} phiếu thu/chi` : null,
+    journalLines > 0 ? `${journalLines} dòng bút toán` : null,
+  ].filter(Boolean).join(", ");
+  return `Không thể ${action} Hạng mục P&L "${code}" vì đã được sử dụng (${detail}). Hãy dùng chức năng "Ngừng" để giữ đúng dữ liệu lịch sử.`;
+}
+
+/** Mô tả các dữ liệu đang chặn thao tác, hoặc null nếu không có gì chặn. */
+async function describeDependents(item: { type: string; code: string }, action: string) {
+  if (item.type === "MONEY_SOURCE") {
+    const usageMessage = await describeMoneySourceUsage(item.code, action);
+    if (usageMessage) return usageMessage;
+  }
+  if (item.type === "PNL_ITEM") {
+    const usageMessage = await describePnlItemUsage(item.code, action);
+    if (usageMessage) return usageMessage;
+  }
+
   const filter = dependentFilter(item);
   if (!filter) return null;
 

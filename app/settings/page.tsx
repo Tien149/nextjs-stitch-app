@@ -7,6 +7,7 @@ import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSIO
 import { logout } from "@/lib/session-client";
 import { MonthInput } from "@/components/DateInput";
 import CopyableText from "@/components/CopyableText";
+import { moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 
 type MasterDataItem = {
   id: string;
@@ -24,6 +25,7 @@ type MasterDataItem = {
   email: string | null;
   accountNo: string | null;
   codePrefix: string | null;
+  settlementBankCode: string | null;
   status: string;
   note: string | null;
   createdAt: string;
@@ -46,6 +48,7 @@ type MasterDataForm = {
   email: string;
   accountNo: string;
   codePrefix: string;
+  settlementBankCode: string;
   note: string;
   status: string;
 };
@@ -84,6 +87,7 @@ const emptyForm: MasterDataForm = {
   email: "",
   accountNo: "",
   codePrefix: "",
+  settlementBankCode: "",
   note: "",
   status: "ACTIVE",
 };
@@ -429,6 +433,7 @@ export default function SettingsPage() {
       email: item.email || "",
       accountNo: item.accountNo || "",
       codePrefix: item.codePrefix || "",
+      settlementBankCode: item.settlementBankCode || "",
       note: item.note || "",
       status: item.status,
     });
@@ -857,7 +862,9 @@ export default function SettingsPage() {
                             <p className="font-medium text-xs text-slate-800">
                               {item.type === "ASSET_GROUP" && item.codePrefix
                                 ? <>Tiền tố mã: <CopyableText value={item.codePrefix} /></>
-                                : item.contactName || (item.accountNo ? <CopyableText value={item.accountNo} /> : "-")}
+                                : item.type === "MONEY_SOURCE" && item.settlementBankCode
+                                  ? <>Quyết toán về: <CopyableText value={item.settlementBankCode} /></>
+                                  : item.contactName || (item.accountNo ? <CopyableText value={item.accountNo} /> : "-")}
                             </p>
                             <p className="text-[11px] text-slate-500 mt-0.5 italic">
                               {item.phone ? <CopyableText value={item.phone} />
@@ -1240,6 +1247,29 @@ export default function SettingsPage() {
                     />
                   </label>
                 </>
+              )}
+
+              {activeType === "MONEY_SOURCE" && normalizeMoneySourceGroup(form.group) === "WALLET" && (
+                <label className="text-xs font-bold text-slate-700 block">
+                  Ngân hàng quyết toán về
+                  <select
+                    value={form.settlementBankCode}
+                    onChange={(event) => setForm((value) => ({ ...value, settlementBankCode: event.target.value }))}
+                    className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
+                  >
+                    <option value="">-- Chưa khai báo --</option>
+                    {items
+                      .filter((item) => item.type === "MONEY_SOURCE"
+                        && item.status === "ACTIVE"
+                        && normalizeMoneySourceGroup(item.group) === "BANK"
+                        && moneySourceMatchesBranch(item, form.branch || null))
+                      .map((item) => <option key={item.code} value={item.code}>{item.name} ({item.code})</option>)}
+                  </select>
+                  <span className="mt-1 block text-[11px] font-medium text-slate-500">
+                    Tiền trong ví này sẽ về tài khoản ngân hàng nào. Khai báo xong thì doanh thu ví chưa có
+                    sao kê sẽ hiện ở cột Dự thu trong kỳ của ngân hàng đó trên Báo cáo nguồn tiền.
+                  </span>
+                </label>
               )}
 
               {["ASSET_GROUP", "DEPARTMENT"].includes(activeType) && (
