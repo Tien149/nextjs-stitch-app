@@ -175,9 +175,23 @@ export async function GET(request: Request) {
       assertBranchAccess(auth.session, preview.branchCode);
       return NextResponse.json(preview);
     }
-    const status = searchParams.get("status") || "UNMATCHED";
+    const status = searchParams.get("status") || "ALL";
     const batchId = cleanText(searchParams.get("batchId"));
     const search = cleanText(searchParams.get("q")).slice(0, 100);
+    const bankAccount = cleanText(searchParams.get("bankAccount"));
+    const operationType = cleanText(searchParams.get("operationType"));
+    const dateType = cleanText(searchParams.get("dateType")) || "TRANSACTION";
+    const fromText = cleanText(searchParams.get("from"));
+    const toText = cleanText(searchParams.get("to"));
+    const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(fromText) ? new Date(`${fromText}T00:00:00.000Z`) : null;
+    const toDate = /^\d{4}-\d{2}-\d{2}$/.test(toText) ? new Date(`${toText}T00:00:00.000Z`) : null;
+    if (toDate) toDate.setUTCDate(toDate.getUTCDate() + 1);
+    const dateRange = fromDate || toDate ? { ...(fromDate ? { gte: fromDate } : {}), ...(toDate ? { lt: toDate } : {}) } : null;
+    const dateFilter = dateRange
+      ? dateType === "SOURCE" ? { OR: [{ sourceDate: dateRange }, { allocations: { some: { sourceDate: dateRange } } }] }
+        : dateType === "REVENUE" ? { OR: [{ revenueDate: dateRange }, { allocations: { some: { revenueDate: dateRange } } }] }
+          : { transactionDate: dateRange }
+      : {};
     const page = Math.max(1, Number.parseInt(searchParams.get("page") || "1", 10) || 1);
     const pageSize = 50;
     const branchFilter = branchFilterForSession(auth.session, searchParams.get("branchCode") || "ALL");
@@ -185,6 +199,9 @@ export async function GET(request: Request) {
       ...branchFilter,
       ...(batchId ? { importBatchId: batchId } : {}),
       ...(status === "ALL" ? {} : { reconcileStatus: status }),
+      ...dateFilter,
+      ...(bankAccount ? { bankAccount } : {}),
+      ...(operationType ? { operationType } : {}),
       ...(search ? {
         OR: [
           { transactionCode: { contains: search, mode: "insensitive" as const } },
@@ -192,10 +209,44 @@ export async function GET(request: Request) {
           { description: { contains: search, mode: "insensitive" as const } },
           { partnerHint: { contains: search, mode: "insensitive" as const } },
           { categoryCode: { contains: search, mode: "insensitive" as const } },
+          { operationType: { contains: search, mode: "insensitive" as const } },
+          { partnerCode: { contains: search, mode: "insensitive" as const } },
+          { pnlItemCode: { contains: search, mode: "insensitive" as const } },
           { matches: { some: { targetCode: { contains: search, mode: "insensitive" as const }, deletedAt: null } } },
         ],
       } : {}),
     };
+
+    if (searchParams.get("ledger") === "1") {
+      const [ledgerRows, ledgerTotal] = await Promise.all([
+        prisma.bankStatementTransaction.findMany({
+          where: bankWhere,
+          include: {
+            matches: { where: { deletedAt: null }, orderBy: { createdAt: "desc" }, take: 1 },
+            allocations: { orderBy: { sourceRowNumber: "asc" } },
+          },
+          orderBy: [{ transactionDate: "desc" }, { createdAt: "desc" }],
+          skip: (page - 1) * pageSize,
+          take: pageSize,
+        }),
+        prisma.bankStatementTransaction.count({ where: bankWhere }),
+      ]);
+      return NextResponse.json({
+        rows: ledgerRows.map(({ matches: rowMatches, ...row }) => ({
+          ...row,
+          revenueDates: [...new Set((row.allocations.length ? row.allocations.map((item) => item.revenueDate) : [row.revenueDate])
+            .filter((value): value is Date => Boolean(value)).map((value) => value.toISOString()))],
+          currentMatch: rowMatches[0]
+            ? {
+                ...rowMatches[0],
+                targetHref: rowMatches[0].targetType === "VOUCHER" ? "/bank-vouchers" : "/finance-operations",
+              }
+            : null,
+        })),
+        matches: [],
+        pagination: { page, pageSize, total: ledgerTotal, totalPages: Math.max(1, Math.ceil(ledgerTotal / pageSize)) },
+      });
+    }
 
     const [bankRows, total, revenueRows, manualRevenueRows, deposits, vouchers, matches, moneySources] = await Promise.all([
       prisma.bankStatementTransaction.findMany({
