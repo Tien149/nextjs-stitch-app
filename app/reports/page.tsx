@@ -75,16 +75,19 @@ type DailyCashData = {
   branchCode: string;
   reportDate: string;
   shift: string;
-  summary: { revenue: DailyCashBucket; posRevenue: DailyCashBucket; manual: DailyCashBucket; receipt: DailyCashBucket; deposit: DailyCashBucket; total: DailyCashBucket; expenseTotal: number; cashExpenseTotal: number; cashToDeposit: number };
+  summary: { revenue: DailyCashBucket; posRevenue: DailyCashBucket; manual: DailyCashBucket; receipt: DailyCashBucket; receiptRevenue: DailyCashBucket; deposit: DailyCashBucket; total: DailyCashBucket; expenseTotal: number; cashExpenseTotal: number; cashToDeposit: number };
   expenses: DailyCashExpense[];
   receipts: DailyCashReceipt[];
   manualEntries: ManualRevenueEntry[];
   duplicateRevenueWarning: boolean;
   moneyInReconciliation: {
-    rows: Array<{ key: string; label: string; declared: number; received: number; pending: number; difference: number; status: "MATCHED" | "WAITING_APPROVAL" | "PENDING_CLEAR" | "SHORT" | "OVER"; note: string }>;
+    rows: Array<{ key: string; label: string; declared: number; received: number; difference: number; status: "MATCHED" | "PENDING_CLEAR" | "SHORT" | "OVER"; note: string }>;
+    needsFix?: Array<{ id: string; transactionCode: string; date: string; revenueDate: string | null; description: string; amount: number; reason: string }>;
+    needsFixTotal?: number;
     walletFee: number;
     walletGrabExpense: number;
     walletCardFee: number;
+    walletMissingGross?: number;
     bankRowCount: number;
     unclassifiedBankRows: number;
   };
@@ -100,7 +103,7 @@ type CashCategoryRow = {
   ratio: number;
 };
 type CashPartnerRow = { code: string; name: string; partnerType: string | null; total: number; count: number };
-type CashSourceFlow = { code: string; name: string; group: string | null; branchCode: string; opening: number; in: number; out: number; transferIn: number; transferOut: number; closing: number };
+type CashSourceFlow = { code: string; name: string; group: string | null; branchCode: string; opening: number; in: number; out: number; transferIn: number; transferOut: number; closing: number; expectedIn: number; expectedOut: number; expectedClosing: number };
 type CashSourceData = {
   period: string;
   view: "month" | "year";
@@ -119,10 +122,28 @@ type CashSourceData = {
   sources: CashSourceFlow[];
   deposits: Array<{ code: string; name: string; opening: number; increase: number; used: number; closing: number }>;
 };
+type RevenueSettlementRow = {
+  date: string;
+  moneySourceCode: string;
+  moneySourceName: string;
+  group: string;
+  revenue: number;
+  received: number;
+  remaining: number;
+  feeCategoryCode: string | null;
+  feeCategoryName: string | null;
+  status: "MATCHED" | "FEE" | "WAITING" | "OVER";
+};
+type RevenueSettlementData = {
+  period: string;
+  branchCode: string;
+  rows: RevenueSettlementRow[];
+  totals: { revenue: number; received: number; remaining: number; waiting: number; fee: number; over: number };
+};
 type ActivityLog = { id: string; time: string; module: string; action: string; actor: string; branchCode: string; code: string; note: string };
 type AccountingPeriodStatus = { period: string; branchCode: string; status: string; closedBy: string | null; closedAt: string | null; reopenedBy: string | null; reopenedAt: string | null; reason: string | null };
 type ActivityData = { accountingPeriod: AccountingPeriodStatus; periods: AccountingPeriodStatus[]; logs: ActivityLog[] };
-type ReportData = DashboardData | PnlData | YoyData | CashflowData | BalanceData | OperationsData | BudgetData | DailyCashData | ActivityData | CashSourceData;
+type ReportData = DashboardData | PnlData | YoyData | CashflowData | BalanceData | OperationsData | BudgetData | DailyCashData | ActivityData | CashSourceData | RevenueSettlementData;
 type DrilldownRow = { id: string; date: string; code: string; accountCode: string; accountName: string; description: string; amount: number };
 type CashDepositDenomination = { denomination: number; quantity: string };
 type CashDepositForm = { depositTargetType: "PKT" | "CO"; fromMoneySourceCode: string; toMoneySourceCode: string; denominations: CashDepositDenomination[] };
@@ -334,6 +355,7 @@ export default function ReportsPage() {
   const dailyCash = active === "daily-cash" && data && typeof data === "object" && "summary" in data && "expenses" in data ? (data as DailyCashData) : null;
   const activity = active === "activity" && data && typeof data === "object" && "periods" in data ? (data as ActivityData) : null;
   const cashSource = active === "cash-source" && data && typeof data === "object" && "totals" in data && "income" in data ? (data as CashSourceData) : null;
+  const settlement = active === "revenue-settlement" && data && typeof data === "object" && "rows" in data && "totals" in data && !("income" in data) ? (data as RevenueSettlementData) : null;
 
   const operationRows = useMemo(() => {
     if (!operations) return [] as Array<OperationDetail & { module: string }>;
@@ -355,13 +377,16 @@ export default function ReportsPage() {
     // Phiếu thu tiền mặt chi tiết là số tiền bán hàng thực thu của ca/ngày.
     // Gộp vào dòng doanh thu để bảng tổng hợp khớp với phần chi tiết bên dưới,
     // nhưng vẫn giữ summary.receipt riêng cho bảng chứng từ.
+    // Dùng receiptRevenue, không dùng receipt: khi file POS đã ghi doanh thu tiền mặt của ngày
+    // thì phiếu thu bán hàng bằng tiền mặt là chứng từ của chính khoản đó, đã được trừ ra ở API.
+    const cashReceipts = dailyCash.summary.receiptRevenue || dailyCash.summary.receipt;
     const revenueWithCashReceipts: DailyCashBucket = {
-      total: dailyCash.summary.revenue.total + dailyCash.summary.receipt.total,
-      cash: dailyCash.summary.revenue.cash + dailyCash.summary.receipt.cash,
-      transfer: dailyCash.summary.revenue.transfer + dailyCash.summary.receipt.transfer,
-      card: dailyCash.summary.revenue.card + dailyCash.summary.receipt.card,
-      grab: dailyCash.summary.revenue.grab + dailyCash.summary.receipt.grab,
-      other: dailyCash.summary.revenue.other + dailyCash.summary.receipt.other,
+      total: dailyCash.summary.revenue.total + cashReceipts.total,
+      cash: dailyCash.summary.revenue.cash + cashReceipts.cash,
+      transfer: dailyCash.summary.revenue.transfer + cashReceipts.transfer,
+      card: dailyCash.summary.revenue.card + cashReceipts.card,
+      grab: dailyCash.summary.revenue.grab + cashReceipts.grab,
+      other: dailyCash.summary.revenue.other + cashReceipts.other,
     };
     return [
       {
@@ -638,6 +663,8 @@ export default function ReportsPage() {
             </select>
           </Field>
         )}
+        {active === "revenue-settlement" && settlement && <RevenueSettlementPanel data={settlement} />}
+
         {active === "daily-cash" && (
           <>
             <Field label="Ngày thu chi">
@@ -1032,36 +1059,7 @@ export default function ReportsPage() {
             </div>
           </section>
 
-          <section className="table-panel">
-            <PanelHeader
-              title="Biến động nguồn tiền (sổ quỹ)"
-              subtitle="Gồm phiếu thu/chi, điều chỉnh quỹ, điều tiền nội bộ và tiền cọc nhận/hoàn trực tiếp. Doanh thu POS/nhập tay chưa lập phiếu thu không làm thay đổi số dư ở đây."
-            />
-            <div className="overflow-x-auto">
-              <Table headers={cashSource.branchCode === "ALL"
-                ? ["Nhà hàng", "Nguồn tiền", "Đầu kỳ", "Thu", "Chi", "Điều tiền vào", "Điều tiền ra", "Cuối kỳ"]
-                : ["Nguồn tiền", "Đầu kỳ", "Thu", "Chi", "Điều tiền vào", "Điều tiền ra", "Cuối kỳ"]}>
-                {cashSource.sources.length === 0 && (
-                  <tr className="border-t border-slate-100">
-                    {cashSource.branchCode === "ALL" && <Cell>-</Cell>}
-                    <Cell>Chưa khai báo nguồn tiền mặt hoặc ngân hàng.</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell>
-                  </tr>
-                )}
-                {cashSource.sources.map((row) => (
-                  <tr key={`${row.branchCode}-${row.code}`} className="border-t border-slate-100 hover:bg-slate-50">
-                    {cashSource.branchCode === "ALL" && <Cell>{storeLabel(row.branchCode)}</Cell>}
-                    <Cell><b>{row.name}</b><p className="text-xs text-slate-500 mt-0.5">{row.code}</p></Cell>
-                    <Cell right>{money(row.opening)} đ</Cell>
-                    <Cell right><span className="text-emerald-700">{money(row.in)} đ</span></Cell>
-                    <Cell right>{money(row.out)} đ</Cell>
-                    <Cell right>{money(row.transferIn)} đ</Cell>
-                    <Cell right>{money(row.transferOut)} đ</Cell>
-                    <Cell right><b className={row.closing < 0 ? "text-rose-600" : "text-slate-900"}>{money(row.closing)} đ</b></Cell>
-                  </tr>
-                ))}
-              </Table>
-            </div>
-          </section>
+          <CashSourceFlowTable cashSource={cashSource} />
         </div>
       )}
 
@@ -1154,17 +1152,16 @@ export default function ReportsPage() {
             <div className="overflow-x-auto">
               <table className="w-full min-w-[1080px] table-fixed text-left text-sm">
                 <colgroup>
-                  <col className="w-[46%]" />
-                  <col className="w-[11%]" />
-                  <col className="w-[11%]" />
-                  <col className="w-[11%]" />
-                  <col className="w-[11%]" />
-                  <col className="w-[10%]" />
+                  <col className="w-[52%]" />
+                  <col className="w-[12%]" />
+                  <col className="w-[12%]" />
+                  <col className="w-[12%]" />
+                  <col className="w-[12%]" />
                 </colgroup>
                 <thead className="border-b border-slate-200 bg-slate-50 text-xs font-bold uppercase text-slate-500">
                   <tr>
                     <th className="px-4 py-3 text-left">Hình thức</th>
-                    {["Thu ngân khai", "Đã xác nhận", "Chờ duyệt", "Chênh lệch", "Trạng thái"].map((header) => (
+                    {["Thu ngân khai", "Đã về", "Chênh lệch", "Trạng thái"].map((header) => (
                       <th key={header} className="whitespace-nowrap px-4 py-3 text-right">{header}</th>
                     ))}
                   </tr>
@@ -1178,7 +1175,6 @@ export default function ReportsPage() {
                     </td>
                     <td className="whitespace-nowrap px-4 py-4 text-right align-middle tabular-nums">{money(row.declared)} đ</td>
                     <td className="whitespace-nowrap px-4 py-4 text-right align-middle tabular-nums">{money(row.received)} đ</td>
-                    <td className="whitespace-nowrap px-4 py-4 text-right align-middle tabular-nums">{row.pending ? `${money(row.pending)} đ` : "-"}</td>
                     <td className="whitespace-nowrap px-4 py-4 text-right align-middle tabular-nums">
                       <b className={row.status === "MATCHED" ? "text-slate-500" : row.status === "SHORT" ? "text-rose-600" : row.status === "OVER" ? "text-blue-600" : "text-amber-600"}>
                         {row.difference > 0 ? "+" : ""}{money(row.difference)} đ
@@ -1188,15 +1184,14 @@ export default function ReportsPage() {
                       <span className={`inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider ${
                         row.status === "MATCHED"
                           ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
-                          : row.status === "WAITING_APPROVAL"
-                            ? "border border-amber-200 bg-amber-50 text-amber-800"
-                            : row.status === "PENDING_CLEAR"
-                              ? "border border-violet-200 bg-violet-50 text-violet-700"
+                          : row.status === "PENDING_CLEAR"
+                            ? "border border-violet-200 bg-violet-50 text-violet-700"
                             : row.status === "SHORT"
                               ? "border border-rose-200 bg-rose-50 text-rose-700"
                               : "border border-blue-200 bg-blue-50 text-blue-700"
                       }`}>
-                        {row.status === "MATCHED" ? "Đủ" : row.status === "WAITING_APPROVAL" ? "Chờ duyệt" : row.status === "PENDING_CLEAR" ? "Chưa clear" : row.status === "SHORT" ? "Thiếu" : "Thừa"}
+                        {/* Chỉ ví mới bị trừ phí thu hộ. Tiền mặt và chuyển khoản thiếu là thiếu thật. */}
+                        {row.status === "MATCHED" ? "Đủ" : row.status === "PENDING_CLEAR" ? "Ví chưa về" : row.status === "SHORT" ? (row.key === "card" ? "Chênh phí" : "Thiếu") : "Thừa"}
                       </span>
                     </td>
                   </tr>
@@ -1209,6 +1204,12 @@ export default function ReportsPage() {
               <span>Phí cà thẻ: <b className="text-slate-900">{money(dailyCash.moneyInReconciliation.walletCardFee)} đ</b></span>
               <span>Tổng phí Ví trong kỳ: <b className="text-slate-900">{money(dailyCash.moneyInReconciliation.walletFee)} đ</b></span>
               <span>Dòng sao kê ghi có trong ngày: <b className="text-slate-900">{dailyCash.moneyInReconciliation.bankRowCount}</b></span>
+              {/* Thay cho cột "Chưa đối soát" đã bỏ: số này nói thẳng phải đi xin file POS ngày nào. */}
+              {(dailyCash.moneyInReconciliation.walletMissingGross || 0) > 0 && (
+                <span className="text-amber-700">
+                  Chưa tính được phí ví: <b>{money(dailyCash.moneyInReconciliation.walletMissingGross || 0)} đ</b> — thiếu doanh thu POS của ngày này
+                </span>
+              )}
               {dailyCash.moneyInReconciliation.unclassifiedBankRows > 0 && (
                 <span className="text-amber-700">
                   {dailyCash.moneyInReconciliation.unclassifiedBankRows} dòng sao kê chưa gán loại thu/chi
@@ -1216,6 +1217,32 @@ export default function ReportsPage() {
               )}
             </div>
           </section>
+
+          {(dailyCash.moneyInReconciliation.needsFix?.length || 0) > 0 && (
+            <section className="table-panel no-print border-amber-300">
+              <PanelHeader
+                title={`Chưa vào sổ — ${dailyCash.moneyInReconciliation.needsFix?.length} dòng, ${money(dailyCash.moneyInReconciliation.needsFixTotal || 0)} đ`}
+                subtitle="Tiền đã ghi nhận trên sao kê nhưng chưa lập được chứng từ, nên chưa vào sổ kế toán. File vẫn import bình thường, không mất dòng nào. Sửa theo cột Cần làm gì rồi import lại đúng dòng đó, hoặc chạy lệnh xử lý lại."
+              />
+              <Table headers={["Ngày giao dịch", "Mã giao dịch", "Diễn giải", "Số tiền", "Cần làm gì"]}>
+                {dailyCash.moneyInReconciliation.needsFix?.map((row) => (
+                  <tr key={row.id} className="border-t border-slate-100">
+                    <Cell>
+                      {new Date(row.date).toLocaleDateString("vi-VN")}
+                      {/* Ví trả tiền của ngày hôm trước, nên phải nói rõ khoản này thuộc doanh thu ngày nào. */}
+                      {row.revenueDate && (
+                        <small className="block text-slate-500">DT {new Date(row.revenueDate).toLocaleDateString("vi-VN")}</small>
+                      )}
+                    </Cell>
+                    <Cell><span className="font-mono text-xs">{row.transactionCode}</span></Cell>
+                    <Cell><span className="line-clamp-2 text-xs text-slate-600">{row.description}</span></Cell>
+                    <Cell right><b>{money(row.amount)} đ</b></Cell>
+                    <Cell><span className="text-xs text-amber-800">{row.reason}</span></Cell>
+                  </tr>
+                ))}
+              </Table>
+            </section>
+          )}
 
           {dailyCash.manualEntries.length > 0 && (
             <section className="table-panel no-print">
@@ -1869,6 +1896,186 @@ function partnerTypeLabel(partnerType: string | null) {
 }
 
 /** Bảng thu (hoặc chi) theo khoản mục kèm thanh tỷ trọng, dùng chung cho hai cột. */
+/**
+ * Biến động nguồn tiền, kèm hai cột dự kiến theo yêu cầu của khách.
+ *
+ * Dự thu/dự chi là tiền chưa thực sự vào/ra nên KHÔNG cộng vào Cuối kỳ; chúng dựng thêm
+ * cột "Dự kiến cuối kỳ" để nhìn trước dòng tiền. Dòng TỔNG ở cuối để đối chiếu nhanh với
+ * dòng total của hai bảng Tổng quan thu/chi phía trên.
+ */
+/**
+ * Đối chiếu doanh thu với tiền thực về, theo từng Ngày và từng Nguồn tiền.
+ *
+ * Dựng đúng bảng khách đang theo dõi tay: doanh thu trong ngày, tiền đã vô, còn lại, và phần
+ * chênh thuộc chi phí nào. Hai vế lấy từ hai luồng độc lập nên bên nào chưa có dữ liệu thì
+ * hiện đúng là chưa có.
+ */
+function RevenueSettlementPanel({ data }: { data: RevenueSettlementData }) {
+  const dayLabel = (value: string) => new Date(`${value}T00:00:00Z`).toLocaleDateString("vi-VN", { timeZone: "UTC" });
+  const byDay = new Map<string, RevenueSettlementRow[]>();
+  for (const row of data.rows) byDay.set(row.date, [...(byDay.get(row.date) || []), row]);
+
+  return (
+    <div className="space-y-5">
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Kpi label="Doanh thu trong kỳ" value={data.totals.revenue} icon="point_of_sale" />
+        <Kpi label="Tiền đã về" value={data.totals.received} icon="account_balance" tone="green" />
+        <Kpi label="Phí thu hộ" value={data.totals.fee} icon="percent" tone="amber" />
+        <Kpi label="Chưa về" value={data.totals.waiting} icon="hourglass_top" tone="rose" />
+        <Kpi label="Về dư, chưa có doanh thu" value={data.totals.over} icon="priority_high" tone="rose" />
+      </section>
+
+      <section className="table-panel">
+        <PanelHeader
+          title="Tiền về đủ chưa"
+          subtitle="Mỗi ngày, mỗi phương thức thanh toán: doanh thu ghi nhận bao nhiêu, tiền thực về bao nhiêu, phần chênh là phí thu hộ hay tiền chưa về. Doanh thu lấy từ import POS, tiền về lấy từ sổ sao kê — hai luồng độc lập."
+        />
+        <div className="overflow-x-auto">
+          <Table headers={["Ngày", "Phương thức thanh toán", "Doanh thu trong ngày", "Tiền đã vô", "Còn lại", "Tên chi phí", "Trạng thái"]}>
+            {data.rows.length === 0 && (
+              <tr className="border-t border-slate-100">
+                <Cell>Chưa có doanh thu hoặc tiền về trong kỳ.</Cell>
+                <Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell>
+              </tr>
+            )}
+            {[...byDay.entries()].map(([day, rows]) => rows.map((row, index) => (
+              <tr key={`${row.date}-${row.moneySourceCode}`} className={`border-t border-slate-100 hover:bg-slate-50 ${index === 0 ? "border-t-slate-200" : ""}`}>
+                <Cell>{index === 0 ? <b>{dayLabel(day)}</b> : <span className="text-slate-300">·</span>}</Cell>
+                <Cell><b>{row.moneySourceName}</b><p className="mt-0.5 text-xs text-slate-500">{row.moneySourceCode}</p></Cell>
+                <Cell right>{money(row.revenue)} đ</Cell>
+                <Cell right><span className="text-emerald-700">{money(row.received)} đ</span></Cell>
+                <Cell right>
+                  <b className={row.remaining > 0 ? "text-amber-700" : row.remaining < 0 ? "text-rose-600" : "text-slate-400"}>
+                    {money(row.remaining)} đ
+                  </b>
+                </Cell>
+                <Cell>{row.feeCategoryName || <span className="text-slate-300">—</span>}</Cell>
+                <Cell right>
+                  <span className={`rounded-full px-2 py-1 text-xs font-bold ${
+                    row.status === "MATCHED" ? "bg-emerald-50 text-emerald-700"
+                      : row.status === "FEE" ? "bg-amber-50 text-amber-800"
+                        : row.status === "OVER" ? "bg-sky-50 text-sky-700"
+                          : "bg-rose-50 text-rose-700"}`}
+                  >
+                    {row.status === "MATCHED"
+                      ? "VỀ ĐỦ"
+                      : row.status === "OVER"
+                        ? "VỀ DƯ"
+                        : row.status === "FEE"
+                          ? (row.feeCategoryName ? "CHÊNH PHÍ" : "VỀ THIẾU")
+                          : "CHƯA VỀ"}
+                  </span>
+                </Cell>
+              </tr>
+            )))}
+            {data.rows.length > 0 && (
+              <tr className="border-t border-slate-200 bg-slate-50 font-bold">
+                <Cell><b>TỔNG</b></Cell>
+                <Cell><span className="text-xs font-normal text-slate-500">{data.rows.length} dòng</span></Cell>
+                <Cell right><b>{money(data.totals.revenue)} đ</b></Cell>
+                <Cell right><b className="text-emerald-700">{money(data.totals.received)} đ</b></Cell>
+                <Cell right><b className="text-amber-700">{money(data.totals.remaining)} đ</b></Cell>
+                <Cell>-</Cell>
+                <Cell right>-</Cell>
+              </tr>
+            )}
+          </Table>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function CashSourceFlowTable({ cashSource }: { cashSource: CashSourceData }) {
+  const showBranch = cashSource.branchCode === "ALL";
+  const rows = cashSource.sources;
+  const totals = rows.reduce(
+    (sum, row) => ({
+      opening: sum.opening + row.opening,
+      in: sum.in + row.in,
+      out: sum.out + row.out,
+      closing: sum.closing + row.closing,
+      expectedIn: sum.expectedIn + row.expectedIn,
+      expectedOut: sum.expectedOut + row.expectedOut,
+      expectedClosing: sum.expectedClosing + row.expectedClosing,
+    }),
+    { opening: 0, in: 0, out: 0, closing: 0, expectedIn: 0, expectedOut: 0, expectedClosing: 0 },
+  );
+  // Khách dùng dòng TỔNG để soi ngược lên hai bảng Tổng quan thu/chi. Hai con số chỉ bằng nhau
+  // khi mọi khoản thu/chi đều đã gắn nguồn tiền, nên chênh lệch phải được nói rõ thay vì giấu đi.
+  const incomeGap = Math.round(cashSource.totals.in - totals.in);
+  const expenseGap = Math.round(cashSource.totals.out - totals.out);
+  const headers = [
+    ...(showBranch ? ["Nhà hàng"] : []),
+    "Nguồn tiền", "Đầu kỳ", "Thu", "Chi", "Cuối kỳ", "Dự thu trong kỳ", "Dự chi trong kỳ", "Dự kiến cuối kỳ",
+  ];
+
+  return (
+    <section className="table-panel">
+      <PanelHeader
+        title="Biến động nguồn tiền (sổ quỹ)"
+        subtitle="Thu/Chi gồm phiếu thu/chi, điều chỉnh quỹ, điều tiền nội bộ và tiền cọc nhận/hoàn trực tiếp. Dự thu là doanh thu ví chưa quyết toán về ngân hàng, dự chi là phiếu chi còn nháp/chờ duyệt — cả hai chưa vào số dư Cuối kỳ."
+      />
+      <div className="overflow-x-auto">
+        <Table headers={headers}>
+          {rows.length === 0 && (
+            <tr className="border-t border-slate-100">
+              {showBranch && <Cell>-</Cell>}
+              <Cell>Chưa khai báo nguồn tiền mặt hoặc ngân hàng.</Cell>
+              <Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell>
+            </tr>
+          )}
+          {rows.map((row) => (
+            <tr key={`${row.branchCode}-${row.code}`} className="border-t border-slate-100 hover:bg-slate-50">
+              {showBranch && <Cell>{storeLabel(row.branchCode)}</Cell>}
+              <Cell>
+                <b>{row.name}</b>
+                <p className="text-xs text-slate-500 mt-0.5">{row.code}</p>
+                {(row.transferIn !== 0 || row.transferOut !== 0) && (
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    gồm điều tiền vào {money(row.transferIn)} đ / ra {money(row.transferOut)} đ
+                  </p>
+                )}
+              </Cell>
+              <Cell right>{money(row.opening)} đ</Cell>
+              <Cell right><span className="text-emerald-700">{money(row.in)} đ</span></Cell>
+              <Cell right>{money(row.out)} đ</Cell>
+              <Cell right><b className={row.closing < 0 ? "text-rose-600" : "text-slate-900"}>{money(row.closing)} đ</b></Cell>
+              <Cell right>{row.expectedIn ? <span className="text-sky-700">{money(row.expectedIn)} đ</span> : <span className="text-slate-300">—</span>}</Cell>
+              <Cell right>{row.expectedOut ? <span className="text-amber-700">{money(row.expectedOut)} đ</span> : <span className="text-slate-300">—</span>}</Cell>
+              <Cell right><b className={row.expectedClosing < 0 ? "text-rose-600" : "text-slate-900"}>{money(row.expectedClosing)} đ</b></Cell>
+            </tr>
+          ))}
+          {rows.length > 0 && (
+            <tr className="border-t border-slate-200 bg-slate-50 font-bold">
+              {showBranch && <Cell><b>TỔNG</b></Cell>}
+              <Cell>{showBranch ? <span className="text-xs font-normal text-slate-500">{rows.length} nguồn tiền</span> : <b>TỔNG</b>}</Cell>
+              <Cell right><b>{money(totals.opening)} đ</b></Cell>
+              <Cell right><b className="text-emerald-700">{money(totals.in)} đ</b></Cell>
+              <Cell right><b>{money(totals.out)} đ</b></Cell>
+              <Cell right><b className={totals.closing < 0 ? "text-rose-600" : "text-slate-900"}>{money(totals.closing)} đ</b></Cell>
+              <Cell right><b className="text-sky-700">{money(totals.expectedIn)} đ</b></Cell>
+              <Cell right><b className="text-amber-700">{money(totals.expectedOut)} đ</b></Cell>
+              <Cell right><b className={totals.expectedClosing < 0 ? "text-rose-600" : "text-slate-900"}>{money(totals.expectedClosing)} đ</b></Cell>
+            </tr>
+          )}
+          {rows.length > 0 && (incomeGap !== 0 || expenseGap !== 0) && (
+            <tr className="border-t border-slate-100 bg-amber-50/60">
+              <td colSpan={headers.length} className="px-4 py-3 text-xs text-amber-900">
+                <b>Đối chiếu với Tổng quan thu/chi:</b>{" "}
+                thu {money(cashSource.totals.in)} đ (lệch {money(incomeGap)} đ) ·
+                chi {money(cashSource.totals.out)} đ (lệch {money(expenseGap)} đ).
+                Phần lệch là doanh thu POS/nhập tay chưa lập phiếu thu và các khoản chi chưa gắn nguồn tiền,
+                nên chưa làm đổi số dư nguồn tiền.
+              </td>
+            </tr>
+          )}
+        </Table>
+      </div>
+    </section>
+  );
+}
+
 function CashCategoryTable({
   title,
   subtitle,

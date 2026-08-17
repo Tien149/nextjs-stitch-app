@@ -3,7 +3,7 @@ import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { allowedMenuTabs, canViewFinancialDashboard } from "@/lib/auth-demo";
 import { requestedBranch } from "@/lib/accounting";
 import { prisma } from "@/lib/prisma";
-import { getBalanceSheet, getCashSourceReport, getCashflowForecast, getPnl, getTrend } from "@/lib/reports";
+import { createMoneySourceMatcher, getBalanceSheet, getCashSourceReport, getCashflowForecast, getPnl, getRevenueSettlementReport, getTrend } from "@/lib/reports";
 import { apiError, businessError, cleanText, isPeriodLocked, normalizePeriod, toNumber } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import { moneySourceDisplayName, normalizeMoneySourceGroup } from "@/lib/money-sources";
@@ -47,6 +47,29 @@ function classifyPayment(paymentMethod: string | null | undefined, channel?: str
   if (method.includes("CARD") || method.includes("POS") || method.includes("QUET") || method.includes("QUẸT")) return "card" as const;
   if (method.includes("BANK") || method.includes("TRANSFER") || method.includes("CHUYEN") || method.includes("CHUYỂN")) return "transfer" as const;
   return "other" as const;
+}
+
+/**
+ * Xếp một dòng doanh thu POS vào nhóm hình thức thanh toán.
+ *
+ * Nối về danh mục nguồn tiền trước rồi mới đọc nhóm; chỉ khi không nối được mới đoán bằng chữ.
+ * Máy bán hàng ghi mã rút gọn như "MOMO_EDC" — chuỗi này không chứa chữ "quẹt" nào, nên nếu chỉ
+ * dò chữ thì toàn bộ doanh thu ví bị dồn vào cột "Khác".
+ */
+function classifyRevenueRow(
+  matchSource: ReturnType<typeof createMoneySourceMatcher>,
+  paymentMethod: string | null | undefined,
+  revenueSource: string | null | undefined,
+  channel: string | null | undefined,
+) {
+  const saleChannel = (channel || "").toUpperCase();
+  if (saleChannel.includes("GRAB")) return "grab" as const;
+  const source = matchSource(paymentMethod, revenueSource);
+  if (!source) return classifyPayment(paymentMethod, channel);
+  // Grab là ví nhưng phải đứng riêng một cột, vì phần chênh gross/net của Grab là chi phí
+  // bán hàng chứ không phải phí cà thẻ.
+  if (normalizeMoneySourceLabel(`${source.code} ${source.name}`).includes("grab")) return "grab" as const;
+  return classifyMoneySource(source.group);
 }
 
 function classifyMoneySource(group: string | null | undefined) {
@@ -339,15 +362,34 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
   const receipt = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
   const deposit = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
 
+  // Nối nguồn tiền theo cửa hàng CỦA CHÍNH DÒNG đó, không theo bộ lọc của báo cáo. Xem "Tất cả
+  // cửa hàng" thì mã rút gọn "MOMO_EDC" có 3 ứng viên (FDS, ASA, KCF) nên không phân định được,
+  // và toàn bộ doanh thu ví rơi vào cột "Khác" — đúng lỗi vừa thấy trên màn tổng.
+  const matcherByBranch = new Map<string, ReturnType<typeof createMoneySourceMatcher>>();
+  const matcherFor = (rowBranch: string) => {
+    const key = rowBranch || branchCode;
+    const current = matcherByBranch.get(key);
+    if (current) return current;
+    const created = createMoneySourceMatcher(moneySources, key);
+    matcherByBranch.set(key, created);
+    return created;
+  };
+  const posCashByBranch = new Map<string, number>();
   for (const row of revenues) {
-    const bucketKey = classifyPayment(row.paymentMethod, row.channel);
+    const bucketKey = classifyRevenueRow(matcherFor(row.branchCode), row.paymentMethod, row.revenueSource, row.channel);
     addAmount(posRevenue, bucketKey, row.netAmount);
     addAmount(revenue, bucketKey, row.netAmount);
+    if (bucketKey === "cash") posCashByBranch.set(row.branchCode, (posCashByBranch.get(row.branchCode) || 0) + row.netAmount);
   }
 
   // POS là nguồn doanh thu chuẩn. Nhập tay chỉ là phương án dự phòng khi ca/ngày đó
   // chưa có dữ liệu POS; vẫn trả các dòng nhập tay về UI để người dùng thấy cảnh báo và xoá.
-  const effectiveManualEntries = revenues.length > 0 ? [] : manualEntries;
+  //
+  // Xét theo TỪNG cửa hàng. Trước đây chỉ cần một cửa hàng có POS là bỏ hết số nhập tay của mọi
+  // cửa hàng: xem "Tất cả cửa hàng" thì NAM MÊ có POS đã nuốt luôn phần khai của ASA, làm cột
+  // "Thu ngân khai" thiếu hẳn một cửa hàng trong khi "Đã về" vẫn đủ cả hai -> báo THỪA giả.
+  const branchesWithPos = new Set(revenues.map((row) => row.branchCode));
+  const effectiveManualEntries = manualEntries.filter((row) => !branchesWithPos.has(row.branchCode));
   for (const row of effectiveManualEntries) {
     for (const [key, value] of [
       ["cash", row.cashAmount],
@@ -388,6 +430,31 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     const bucketKey = classifyMoneySource(source?.group);
     addAmount(receipt, bucketKey, row.amount);
   }
+
+  // Phiếu thu tiền mặt loại "Thu bán hàng" chính là chứng từ của khoản doanh thu tiền mặt mà file
+  // POS đã ghi trong cùng ngày, không phải một khoản doanh thu thứ hai. Cộng cả hai vào dòng
+  // "Doanh thu bán hàng" là đếm một khoản tiền hai lần, và số "Tiền mặt cần nộp" cũng gấp đôi
+  // số thu ngân thật sự đang giữ. Vẫn giữ nguyên `receipt` cho bảng đối chiếu tiền vào, vì bảng
+  // đó cố ý lấy phiếu thu làm số đã xác nhận của tiền mặt.
+  //
+  // Khử trùng theo TẪT CẢ cửa hàng thì sai: xem "Tất cả cửa hàng", NAM MÊ có POS tiền mặt sẽ kéo
+  // theo việc trừ luôn phiếu thu tiền mặt của ASA — mất hẳn 24,8 triệu khỏi ô Tổng thu. Phải xét
+  // riêng từng cửa hàng: chỉ cửa hàng nào có POS tiền mặt mới khử phiếu thu tiền mặt của chính nó.
+  const salesCashReceiptByBranch = new Map<string, number>();
+  for (const row of receiptVouchers) {
+    if (["COLLECT", "SUPPLEMENT"].includes(row.depositAction || "")) continue;
+    if (!restaurantSalesCategoryCodes.includes(row.categoryCode || "")) continue;
+    if (normalizeMoneySourceGroup(sourceByCode.get(row.moneySourceCode)?.group) !== "CASH") continue;
+    salesCashReceiptByBranch.set(row.branchCode, (salesCashReceiptByBranch.get(row.branchCode) || 0) + row.amount);
+  }
+  const duplicatedCashReceipts = [...posCashByBranch]
+    .filter(([, amount]) => amount > 0)
+    .reduce((sum, [branch]) => sum + (salesCashReceiptByBranch.get(branch) || 0), 0);
+  const receiptRevenue: DailyCashBucket = {
+    ...receipt,
+    cash: receipt.cash - duplicatedCashReceipts,
+    total: receipt.total - duplicatedCashReceipts,
+  };
 
   for (const key of ["cash", "transfer", "card", "grab", "other"] as const) {
     addAmount(deposit, key, dailyDepositMovement.depositIn[key]);
@@ -437,12 +504,12 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
   // Tổng thu hiển thị đủ dòng tiền nhưng giữ ba bản chất tách biệt: doanh thu,
   // thu khác và tiền cọc. Nhờ đó phiếu thu không làm tăng doanh thu bán hàng.
   const total = {
-    total: revenue.total + receipt.total + deposit.total,
-    cash: revenue.cash + receipt.cash + deposit.cash,
-    transfer: revenue.transfer + receipt.transfer + deposit.transfer,
-    card: revenue.card + receipt.card + deposit.card,
-    grab: revenue.grab + receipt.grab + deposit.grab,
-    other: revenue.other + receipt.other + deposit.other,
+    total: revenue.total + receiptRevenue.total + deposit.total,
+    cash: revenue.cash + receiptRevenue.cash + deposit.cash,
+    transfer: revenue.transfer + receiptRevenue.transfer + deposit.transfer,
+    card: revenue.card + receiptRevenue.card + deposit.card,
+    grab: revenue.grab + receiptRevenue.grab + deposit.grab,
+    other: revenue.other + receiptRevenue.other + deposit.other,
   };
   // "Thu ngân khai" ở dòng tiền mặt lấy đúng tổng phiếu thu tiền mặt chi tiết phía dưới
   // cộng phần cọc đã cấn trừ vào bill đúng ngày. Tiền cọc mới nhận thuộc dòng Đặt cọc,
@@ -475,7 +542,7 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     branchCode,
     reportDate: date,
     shift,
-    summary: { revenue, posRevenue, manual, receipt, deposit, total, expenseTotal, cashExpenseTotal, cashToDeposit: total.cash - cashExpenseTotal },
+    summary: { revenue, posRevenue, manual, receipt, receiptRevenue, deposit, total, expenseTotal, cashExpenseTotal, cashToDeposit: total.cash - cashExpenseTotal },
     expenses,
     receipts,
     manualEntries: manualEntries.map((row) => ({
@@ -493,13 +560,15 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
       updatedAt: row.updatedAt,
     })),
     // Cùng một ngày/ca mà có cả doanh thu import lẫn doanh thu nhập tay thì rất dễ tính trùng.
-    duplicateRevenueWarning: posRevenue.total > 0 && manual.total > 0,
+    // Chỉ cảnh báo khi CÙNG một cửa hàng có cả hai nguồn, vì đó mới là chỗ tính trùng được.
+    duplicateRevenueWarning: manualEntries.some((row) => branchesWithPos.has(row.branchCode)),
     moneyInReconciliation: await buildMoneyInReconciliation(
       reconciliationDeclared,
       branchCode,
       dayStart,
       dayEnd,
       new Map(moneySources.map((source) => [source.code, source.group])),
+      new Map(moneySources.map((source) => [source.code, `${source.code} ${source.name}`])),
       reconciledDepositOffset,
       receipt.cash + dailyDepositMovement.offsetDeclared.cash,
     ),
@@ -524,11 +593,12 @@ async function buildMoneyInReconciliation(
   dayStart: Date,
   dayEnd: Date,
   moneySourceGroupByCode: Map<string, string | null>,
+  moneySourceLabelByCode: Map<string, string>,
   reconciledDepositOffset: DailyCashBucket,
   confirmedCashReceipts: number,
 ) {
   const branchWhere = branchCode === "ALL" ? {} : { branchCode };
-  const [legacyBankCandidates, bankAllocations, postedBankRows] = await Promise.all([
+  const [legacyBankCandidates, bankAllocations, postedBankRows, needsFixRows] = await Promise.all([
     prisma.bankStatementTransaction.findMany({
       where: {
         ...branchWhere,
@@ -556,6 +626,7 @@ async function buildMoneyInReconciliation(
       select: {
         creditAmount: true,
         grossAmount: true,
+        autoProcessType: true,
         decreaseMoneySourceCode: true,
         bankTransaction: { select: { reconcileStatus: true } },
       },
@@ -563,6 +634,25 @@ async function buildMoneyInReconciliation(
     prisma.bankStatementTransaction.findMany({
       where: { ...branchWhere, transactionDate: { gte: dayStart, lt: dayEnd }, creditAmount: { gt: 0 }, deletedAt: null },
       select: { categoryCode: true },
+    }),
+    // Dòng đã ghi được tiền nhưng chưa lập được chứng từ. Phải hiện ra ở màn dùng hằng ngày, vì
+    // một màn riêng thì phải nhớ mới mở — và đó chính là cách 22 phiếu cũ tồn suốt nhiều tuần.
+    prisma.bankStatementTransaction.findMany({
+      where: {
+        ...branchWhere,
+        autoProcessType: "MANUAL_REQUIRED",
+        deletedAt: null,
+        // Chỉ theo ngày giao dịch, không OR thêm ngày doanh thu: ví trả tiền của ngày hôm trước
+        // nên một dòng sẽ hiện ở hai ngày, ai cộng qua các ngày là đếm đôi. Ngày doanh thu vẫn
+        // được trả về để hiển thị, đủ để biết dòng đó thuộc doanh thu ngày nào.
+        transactionDate: { gte: dayStart, lt: dayEnd },
+      },
+      select: {
+        id: true, transactionCode: true, transactionDate: true, revenueDate: true, description: true,
+        creditAmount: true, debitAmount: true, autoProcessNote: true,
+      },
+      orderBy: { transactionDate: "asc" },
+      take: 50,
     }),
   ]);
 
@@ -573,7 +663,9 @@ async function buildMoneyInReconciliation(
     ...bankAllocations.map((row) => ({
       creditAmount: row.creditAmount,
       grossAmount: row.grossAmount,
-      reconcileStatus: row.bankTransaction.reconcileStatus,
+      reconcileStatus: row.autoProcessType === "WALLET_SETTLEMENT_PARTIAL"
+        ? "MATCHED"
+        : row.bankTransaction.reconcileStatus,
       decreaseMoneySourceCode: row.decreaseMoneySourceCode,
     })),
   ];
@@ -588,52 +680,52 @@ async function buildMoneyInReconciliation(
     const decreaseGroup = normalizeMoneySourceGroup(moneySourceGroupByCode.get(row.decreaseMoneySourceCode || ""));
     return decreaseGroup === "WALLET";
   });
-  const bankReceived = directBankRows
-    .filter((row) => row.reconcileStatus === "MATCHED")
-    .reduce((sum, row) => sum + row.creditAmount, 0)
+  // Tiền đã ghi có trên sao kê là tiền đã về, bất kể dòng đó đã được đối soát hay chưa.
+  //
+  // Trước đây báo cáo chỉ đếm dòng MATCHED, vì luồng cũ bắt kế toán vào màn Đối soát bấm duyệt
+  // từng giao dịch. Luồng đó đã bỏ: import sao kê tự đặt MATCHED cho những dòng đủ căn cứ hạch
+  // toán, phần còn lại không còn ai bấm duyệt nữa. Giữ bộ lọc MATCHED đồng nghĩa với việc số
+  // tiền đó treo vĩnh viễn và biến mất khỏi màn hình dùng hằng ngày — hiện đang là 175,9 triệu
+  // của NAM MÊ. Phần chưa đối soát vẫn được trả về riêng để kế toán biết chỗ nào còn dở.
+  const bankReceived = directBankRows.reduce((sum, row) => sum + row.creditAmount, 0)
     + reconciledDepositOffset.transfer;
-  const pendingBankReceived = directBankRows
-    .filter((row) => row.reconcileStatus === "PENDING_REVIEW")
-    .reduce((sum, row) => sum + row.creditAmount, 0);
+
   // Card/wallet is compared at gross value (before fees); legacy rows without grossAmount
   // fall back to the credited amount because no better historical value exists.
   const walletSettled = walletRows
-    .filter((row) => row.reconcileStatus === "MATCHED")
     .reduce((sum, row) => sum + (row.grossAmount ?? row.creditAmount), 0)
     + reconciledDepositOffset.card
     + reconciledDepositOffset.grab;
-  const pendingWalletSettled = walletRows
-    .filter((row) => row.reconcileStatus === "PENDING_REVIEW")
-    .reduce((sum, row) => sum + (row.grossAmount ?? row.creditAmount), 0);
+  // Tiền ví đã về nhưng chưa biết doanh thu gốc là bao nhiêu, nên chưa tách được phí. Đây mới
+  // là số đáng hiện: nó nói thẳng phải đi xin file POS ngày nào.
+  const walletMissingGross = walletRows
+    .filter((row) => row.grossAmount == null)
+    .reduce((sum, row) => sum + row.creditAmount, 0);
   const walletFee = walletRows
-    .filter((row) => row.reconcileStatus === "MATCHED")
     .reduce((sum, row) => sum + Math.max(0, (row.grossAmount ?? row.creditAmount) - row.creditAmount), 0);
   // Grab vẫn thuộc nhóm Quẹt thẻ/Ví. Theo nghiệp vụ đã chốt, phần Grab trong chênh lệch
   // gross/net là Chi phí bán hàng Grab; phần phí còn lại là Phí cà thẻ.
-  const walletGrabExpense = Math.min(Math.max(0, declared.grab), walletFee);
+  const walletGrabExpense = walletRows
+    .filter((row) => normalizeMoneySourceLabel(moneySourceLabelByCode.get(row.decreaseMoneySourceCode || "")).includes("grab"))
+    .reduce((sum, row) => sum + Math.max(0, (row.grossAmount ?? row.creditAmount) - row.creditAmount), 0);
   const walletCardFee = Math.max(0, walletFee - walletGrabExpense);
   const rows = [
-    { key: "cash", label: "Tiền mặt", declared: declared.cash, received: confirmedCashReceipts, pending: 0, note: "Thu ngân khai và Đã xác nhận cùng lấy tổng phiếu thu tiền mặt đã duyệt ở bảng chi tiết phía dưới + cọc cấn trừ vào bill. Không trừ phiếu chi; cọc mới nhận không đi vào đối soát doanh thu." },
-    { key: "transfer", label: "Chuyển khoản", declared: declared.transfer, received: bankReceived, pending: pendingBankReceived, note: "Đã xác nhận theo SUMIFS sao kê: đúng Ngày doanh thu, loại Thu bán hàng và Trừ nguồn tiền thuộc ngân hàng." },
-    { key: "card", label: "Quẹt thẻ / Ví", declared: declared.card + declared.grab, received: walletSettled, pending: pendingWalletSettled, note: "Đã xác nhận theo SUMIFS sao kê, lấy doanh thu gộp trước phí từ nguồn ví; phí được hiển thị riêng bên dưới." },
+    { key: "cash", label: "Tiền mặt", declared: declared.cash, received: confirmedCashReceipts, note: "Thu ngân khai và Đã về cùng lấy tổng phiếu thu tiền mặt đã duyệt ở bảng chi tiết phía dưới + cọc cấn trừ vào bill. Không trừ phiếu chi; cọc mới nhận không đi vào đối soát doanh thu." },
+    { key: "transfer", label: "Chuyển khoản", declared: declared.transfer, received: bankReceived, note: "Đã về theo SUMIFS sao kê: đúng Ngày doanh thu, loại Thu bán hàng và Trừ nguồn tiền thuộc ngân hàng." },
+    { key: "card", label: "Quẹt thẻ / Ví", declared: declared.card + declared.grab, received: walletSettled, note: "Đã về theo SUMIFS sao kê, lấy doanh thu gộp trước phí từ nguồn ví; phí được hiển thị riêng bên dưới." },
   ].map((row) => {
-    const confirmedDifference = row.received - row.declared;
-    const differenceIncludingPending = row.received + row.pending - row.declared;
-    const status = Math.abs(confirmedDifference) < 1000
+    const difference = row.received - row.declared;
+    // Ví trả tiền sau vài ngày, nên thiếu nhiều là "chưa clear" chứ không phải mất tiền; thiếu ít
+    // là phần phí thu hộ chưa suy được Gross. Mốc 10% tách hai trường hợp đó.
+    const status = Math.abs(difference) < 1000
       ? "MATCHED"
-      : row.pending > 0 && Math.abs(differenceIncludingPending) < 1000
-        ? "WAITING_APPROVAL"
-        : row.key === "card" && differenceIncludingPending < -1000
+      : difference > 0
+        ? "OVER"
+        : row.key === "card" && row.declared > 0 && Math.abs(difference) > row.declared * 0.1
           ? "PENDING_CLEAR"
-          : confirmedDifference < 0 ? "SHORT" : "OVER";
-    return {
-      ...row,
-      // Khi số chờ duyệt đã đủ, hiển thị chênh lệch sau chờ duyệt (= 0) để tránh
-      // người dùng hiểu nhầm là đang thiếu tiền dù trạng thái là "Chờ duyệt".
-      difference: status === "WAITING_APPROVAL" ? differenceIncludingPending : confirmedDifference,
-      // Lệch dưới 1.000 đ coi như khớp: chênh lẻ do làm tròn phí, không phải thiếu tiền.
-      status,
-    };
+          : "SHORT";
+    // Lệch dưới 1.000 đ coi như khớp: chênh lẻ do làm tròn phí, không phải thiếu tiền.
+    return { ...row, difference, status };
   });
 
   return {
@@ -641,9 +733,26 @@ async function buildMoneyInReconciliation(
     walletFee,
     walletGrabExpense,
     walletCardFee,
+    walletMissingGross,
     bankRowCount: postedBankRows.length,
     unclassifiedBankRows: postedBankRows.filter((row) => !row.categoryCode).length,
+    // Tiền đã vào ngân hàng nhưng chưa có chứng từ. Đã nằm trong cột "Đã về" ở trên; liệt kê riêng để
+    // nói rõ phải đi sửa cái gì, không để số tiền nằm im không ai biết.
+    needsFix: needsFixRows.map((row) => ({
+      id: row.id,
+      transactionCode: row.transactionCode,
+      date: row.transactionDate,
+      revenueDate: row.revenueDate,
+      description: row.description,
+      amount: Math.round(row.creditAmount || row.debitAmount),
+      reason: row.autoProcessNote || "Chưa rõ lý do",
+    })),
+    needsFixTotal: needsFixRows.reduce((sum, row) => sum + Math.round(row.creditAmount || row.debitAmount), 0),
   };
+}
+
+function normalizeMoneySourceLabel(value: string | null | undefined) {
+  return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 }
 
 async function getActivityReport(period: string, branchCode: string) {
@@ -793,6 +902,7 @@ export async function GET(request: Request) {
         : [period];
       return NextResponse.json({ period, view, year, ...(await getCashSourceReport(months, branchCode)) });
     }
+    if (type === "revenue-settlement") return NextResponse.json(await getRevenueSettlementReport(period, branchCode));
     if (type === "cashflow") return NextResponse.json({ period, branchCode, ...(await getCashflowForecast(period, branchCode, cleanText(params.get("scenario")) || "BASE")) });
     if (type === "balance") return NextResponse.json({ period, branchCode, ...(await getBalanceSheet(period, branchCode)) });
     const [pnl, trend, balance, targets] = await Promise.all([getPnl(period, branchCode), getTrend(period, branchCode), getBalanceSheet(period, branchCode), prisma.reportTarget.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { branchCode }) } })]);
