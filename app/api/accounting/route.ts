@@ -3,9 +3,19 @@ import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { ensureDefaultAccounts, periodBounds, postJournalEntry, requestedBranch, syncAccountingPeriod } from "@/lib/accounting";
 import { prisma } from "@/lib/prisma";
 import { apiError, businessError, cleanText, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
+import { moneySourceAccountCode, moneySourceMatchesBranch } from "@/lib/money-sources";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 
 const menuHref = "/accounting";
+
+type ManualEntryLine = {
+  accountCode: string;
+  debit?: number;
+  credit?: number;
+  departmentCode?: string | null;
+  categoryCode?: string | null;
+  description?: string | null;
+};
 
 export async function GET(request: Request) {
   try {
@@ -54,18 +64,22 @@ export async function POST(request: Request) {
       const description = cleanText(body.description) || "Bút toán điều chỉnh";
       const sourceId = crypto.randomUUID();
 
-      let lines: any[] = [];
+      let lines: ManualEntryLine[] = [];
       if (body.entryType && body.amount) {
         const amount = toNumber(body.amount);
         const categoryCode = cleanText(body.categoryCode);
         const moneySourceCode = cleanText(body.moneySourceCode);
-        
-        // Determine bank vs cash account for the money source
-        const cashAccount = (moneySourceCode.toUpperCase().includes("BANK") || moneySourceCode.toUpperCase().includes("VCB") || moneySourceCode.toUpperCase().includes("ACB")) ? "1121" : "1111";
-        
-        const category = await prisma.masterDataItem.findFirst({
-          where: { type: "REVENUE_EXPENSE_CATEGORY", code: categoryCode, status: "ACTIVE" },
-        });
+        const [moneySource, category] = await Promise.all([
+          prisma.masterDataItem.findFirst({
+            where: { type: "MONEY_SOURCE", code: moneySourceCode, status: "ACTIVE" },
+          }),
+          prisma.masterDataItem.findFirst({
+            where: { type: "REVENUE_EXPENSE_CATEGORY", code: categoryCode, status: "ACTIVE" },
+          }),
+        ]);
+        if (!moneySource || !moneySourceMatchesBranch(moneySource, branchCode)) {
+          businessError(`Nguồn tiền [${moneySourceCode}] không tồn tại hoặc không thuộc cửa hàng đã chọn`);
+        }
         if (!category) businessError(`Danh mục Thu/Chi [${categoryCode}] không tồn tại hoặc đã ngưng hoạt động`);
         const expectedCategoryType = body.entryType === "INCOME" ? "RECEIPT" : "PAYMENT";
         if (normalizeCashflowCategoryType(category.group) !== expectedCategoryType) {
@@ -73,6 +87,7 @@ export async function POST(request: Request) {
             ? "Bút toán thu nhập phải chọn danh mục loại Thu"
             : "Bút toán chi phí phải chọn danh mục loại Chi");
         }
+        const cashAccount = moneySourceAccountCode(moneySource);
 
         if (body.entryType === "EXPENSE") {
           lines = [
