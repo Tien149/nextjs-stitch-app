@@ -109,10 +109,49 @@ export function autoMapHeaders(headers: string[], template: ImportTemplateDefini
   for (const field of template.fields) {
     if (field.hiddenFromMapping) continue;
     const candidates = [field.label, field.field, ...field.aliases];
-    const matched = headers.find((header) => candidates.some((candidate) => headerMatchesCandidate(header, candidate)));
+    // Duyệt theo thứ tự tên trong template chứ không theo thứ tự cột trong file, và xét trùng
+    // khít trước khi xét trùng phần đầu. File POS có cả "Thành tiền", "Tổng tiền" lẫn
+    // "Tổng tiền (không bao gồm VAT)", nếu để thứ tự cột quyết định thì lấy nhầm cột.
+    const matched = candidates.reduce<string | undefined>(
+      (found, candidate) => found || headers.find((header) => normalizeHeader(header) === normalizeHeader(candidate)),
+      undefined,
+    ) || candidates.reduce<string | undefined>(
+      (found, candidate) => found || headers.find((header) => headerMatchesCandidate(header, candidate)),
+      undefined,
+    );
     if (matched) mapping[field.field] = matched;
   }
   return mapping;
+}
+
+/**
+ * Gộp các dòng chi tiết thành một dòng cho mỗi tổ hợp chiều nghiệp vụ, cộng dồn các cột số.
+ *
+ * File xuất từ máy bán hàng để mỗi món một dòng, trong khi kế toán chỉ cần doanh thu theo ngày
+ * và theo phương thức thanh toán. Gộp ngay lúc đọc file giúp khách không phải sửa file tay.
+ */
+function aggregateParsedRows(rows: ParsedImportRow[], config: { by: string[]; sum: string[] }) {
+  const groups = new Map<string, ParsedImportRow>();
+  for (const row of rows) {
+    const key = config.by
+      .map((field) => {
+        const value = row.values[field];
+        return value instanceof Date ? value.toISOString() : String(value ?? "").trim().toUpperCase();
+      })
+      .join("|");
+    const current = groups.get(key);
+    if (!current) {
+      groups.set(key, { ...row, values: { ...row.values }, rawValues: { ...row.rawValues }, errors: [...row.errors] });
+      continue;
+    }
+    for (const field of config.sum) {
+      current.values[field] = Number(current.values[field] || 0) + Number(row.values[field] || 0);
+    }
+    for (const message of row.errors) {
+      if (!current.errors.includes(message)) current.errors.push(message);
+    }
+  }
+  return [...groups.values()];
 }
 
 function readWorkbook(buffer: ArrayBuffer): SheetRows[] {
@@ -260,14 +299,16 @@ export async function parseImportFile(
       };
     });
 
+  const rows = template.aggregate ? aggregateParsedRows(parsedRows, template.aggregate) : parsedRows;
+
   return {
     sheetName: candidate.sheet.name,
     headerRowNumber: candidate.headerIndex + 1,
     headers,
     mapping,
-    rows: parsedRows,
-    totalRows: parsedRows.length,
-    validRows: parsedRows.filter((row) => row.errors.length === 0).length,
-    errorRows: parsedRows.filter((row) => row.errors.length > 0).length,
+    rows,
+    totalRows: rows.length,
+    validRows: rows.filter((row) => row.errors.length === 0).length,
+    errorRows: rows.filter((row) => row.errors.length > 0).length,
   };
 }

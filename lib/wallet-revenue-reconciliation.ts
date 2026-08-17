@@ -25,12 +25,45 @@ export function walletRevenueBucket(source: WalletMoneySource): WalletRevenueBuc
   return value.includes("grab") ? "GRAB" : "CARD_WALLET";
 }
 
-export function revenueMatchesWalletSource(row: WalletPosRevenue, source: WalletMoneySource) {
+/**
+ * Dòng doanh thu chỉ đích danh một nguồn tiền: ghi đúng tên, đúng mã, hoặc ghi mã rút gọn mà
+ * mã nguồn tiền nối dài thêm ("MOMO_EDC" so với "MOMO_EDC_FDS"). Đây là mức nhận diện chắc
+ * chắn, khác hẳn kiểu đoán theo từ khoá bên dưới.
+ */
+export function revenueMatchesWalletSourceDefinitely(row: WalletPosRevenue, source: WalletMoneySource) {
   const sourceValues = [normalizeWalletText(source.code), normalizeWalletText(source.name)];
   const rowValues = [normalizeWalletText(row.paymentMethod), normalizeWalletText(row.revenueSource), normalizeWalletText(row.channel || "")];
-  if (rowValues.some((value) => value && sourceValues.includes(value))) return true;
+  return rowValues.some((value) => value
+    && (sourceValues.includes(value) || sourceValues.some((candidate) => candidate.startsWith(`${value} `))));
+}
+
+export function revenueMatchesWalletSource(row: WalletPosRevenue, source: WalletMoneySource) {
+  if (revenueMatchesWalletSourceDefinitely(row, source)) return true;
+  const sourceValues = [normalizeWalletText(source.code), normalizeWalletText(source.name)];
+  const rowValues = [normalizeWalletText(row.paymentMethod), normalizeWalletText(row.revenueSource), normalizeWalletText(row.channel || "")];
   return walletKeywords.some((keyword) => sourceValues.some((value) => value.includes(keyword))
     && rowValues.some((value) => value.includes(keyword)));
+}
+
+/**
+ * Xác định một dòng doanh thu thuộc về ví nào, khi trong cùng ngày còn có ví khác cùng nhóm.
+ *
+ * Dòng nào chỉ đích danh một ví thì chỉ thuộc về ví đó — nhờ vậy "ASA - Quẹt Thẻ Momo" và
+ * "KCF - Quẹt Thẻ Momo" tách được cho hai cửa hàng. Chỉ khi không ví nào được chỉ đích danh mới
+ * dùng tới từ khoá ("momo", "grab"...), và lúc đó nếu nhiều ví cùng khớp thì coi là không
+ * phân định được.
+ */
+export function walletOwnsRevenueRow(
+  row: WalletPosRevenue,
+  mineSources: WalletMoneySource[],
+  rivalSources: WalletMoneySource[],
+) {
+  const exactMine = mineSources.some((source) => revenueMatchesWalletSourceDefinitely(row, source));
+  const exactRival = rivalSources.some((source) => revenueMatchesWalletSourceDefinitely(row, source));
+  if (exactMine || exactRival) return { mine: exactMine, contested: exactMine && exactRival };
+  const looseMine = mineSources.some((source) => revenueMatchesWalletSource(row, source));
+  const looseRival = rivalSources.some((source) => revenueMatchesWalletSource(row, source));
+  return { mine: looseMine, contested: looseMine && looseRival };
 }
 
 export function selectWalletDeclaredRevenue(input: {
@@ -38,16 +71,23 @@ export function selectWalletDeclaredRevenue(input: {
   manualRows: WalletManualRevenue[];
   bucketSources: WalletMoneySource[];
   bucket: WalletRevenueBucket;
+  /** Các ví khác cùng cửa hàng, cùng ngày, cùng nhóm — để biết doanh thu có bị tranh không. */
+  rivalSources?: WalletMoneySource[];
 }) {
+  const rivalSources = input.rivalSources || [];
+
   // POS is authoritative for the whole branch/day. Manual revenue is only a fallback
   // when the day has no POS rows at all, never a supplement to partial POS data.
   if (input.posRows.length > 0) {
-    return {
-      source: "POS" as WalletRevenueSource,
-      amount: Math.round(input.posRows
-        .filter((row) => input.bucketSources.some((source) => revenueMatchesWalletSource(row, source)))
-        .reduce((sum, row) => sum + row.netAmount, 0)),
-    };
+    let amount = 0;
+    let contested = false;
+    for (const row of input.posRows) {
+      const owns = walletOwnsRevenueRow(row, input.bucketSources, rivalSources);
+      if (!owns.mine) continue;
+      if (owns.contested) contested = true;
+      amount += row.netAmount;
+    }
+    return { source: "POS" as WalletRevenueSource, amount: Math.round(amount), contested };
   }
 
   if (input.manualRows.length > 0) {
@@ -55,10 +95,12 @@ export function selectWalletDeclaredRevenue(input: {
     return {
       source: "MANUAL" as WalletRevenueSource,
       amount: Math.round(input.manualRows.reduce((sum, row) => sum + row[field], 0)),
+      // Số thu ngân khai chỉ có tổng theo nhóm, không tách được cho từng ví.
+      contested: rivalSources.length > 0,
     };
   }
 
-  return { source: "NONE" as WalletRevenueSource, amount: 0 };
+  return { source: "NONE" as WalletRevenueSource, amount: 0, contested: false };
 }
 
 export function remainingWalletGross(declared: number, allocated: number) {

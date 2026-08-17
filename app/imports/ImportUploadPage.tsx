@@ -481,14 +481,25 @@ export default function ImportUploadPage({
           ...(payload.batch?.moneyTransfers || []),
         ];
         const autoApprovedCount = generatedDocuments.filter((row: { status?: string }) => row.status === "APPROVED").length;
-        const pendingCount = generatedDocuments.filter((row: { status?: string }) => row.status === "PENDING_REVIEW").length;
-        const manualCount = (payload.batch?.bankTransactions || [])
-          .filter((row: { autoProcessType?: string }) => row.autoProcessType === "MANUAL_REQUIRED").length;
+        const recordedCount = (payload.batch?.bankTransactions || [])
+          .filter((row: { autoProcessType?: string }) => row.autoProcessType !== "NET_ZERO").length;
         const skippedCount = previewPayload?.rows.filter((row) => row.values.import_action === "SKIP_EXISTING").length || 0;
         const netZeroCount = previewPayload?.rows.filter((row) => row.values.import_action === "NET_ZERO").length || 0;
-        setMessage(`Đã import sao kê: tự động duyệt và đối soát ${autoApprovedCount} chứng từ, ${pendingCount} chứng từ chờ duyệt, ${manualCount} giao dịch chờ xử lý thủ công, bỏ qua ${skippedCount} dòng đã có, ghi nhận ${netZeroCount} dòng đảo Nợ/Có ròng 0 đ.`);
+        // Dòng ghi được tiền nhưng chưa lập được chứng từ phải báo ngay tại đây, lúc người dùng
+        // còn đang mở file. Để phát hiện sau vài tuần thì không ai nhớ file nào, dòng nào.
+        const needsFix = (payload.batch?.needsFix || []) as Array<{ transactionCode: string; amount: number; reason: string }>;
+        const needsFixTotal = needsFix.reduce((sum, row) => sum + (row.amount || 0), 0);
+        setMessage(
+          `Đã import và ghi nhận ${recordedCount} giao dịch sao kê, tự động tạo ${autoApprovedCount} chứng từ đã duyệt, bỏ qua ${skippedCount} dòng đã có và lưu dấu vết ${netZeroCount} dòng đảo Nợ/Có ròng 0 đ.`
+          + (needsFix.length
+            ? `\n\n⚠ ${needsFix.length} dòng CHƯA VÀO SỔ (${needsFixTotal.toLocaleString("vi-VN")} đ): tiền đã ghi nhận nhưng chưa lập được chứng từ.\n`
+              + needsFix.slice(0, 5).map((row) => `• ${row.transactionCode} — ${row.amount.toLocaleString("vi-VN")} đ: ${row.reason}`).join("\n")
+              + (needsFix.length > 5 ? `\n• ... còn ${needsFix.length - 5} dòng nữa` : "")
+              + `\nXem đầy đủ ở Báo cáo → Thu chi ngày → mục "Chưa vào sổ".`
+            : ""),
+        );
         const committedBatchId = typeof payload.batch?.id === "string" ? payload.batch.id : "";
-        setManualReviewBatch(manualCount > 0 && committedBatchId ? { id: committedBatchId, count: manualCount } : null);
+        setManualReviewBatch(recordedCount > 0 && committedBatchId ? { id: committedBatchId, count: recordedCount } : null);
       } else {
         setMessage(mode === "preview" ? "Đã đọc file, vui lòng kiểm tra preview." : "Đã commit dữ liệu import.");
       }
@@ -795,14 +806,15 @@ export default function ImportUploadPage({
                   ? "whitespace-normal leading-5 border-rose-300 bg-rose-50 text-rose-700"
                   : "border-blue-100 bg-blue-50 text-blue-700"
               }`}>
-                <span>{message}</span>
+                {/* Thông báo import có thể nhiều dòng khi còn dòng chưa vào sổ, phải giữ xuống dòng. */}
+                <span className="whitespace-pre-line leading-5">{message}</span>
                 {manualReviewBatch && !messageIsError && (
                   <button
                     type="button"
-                    onClick={() => router.push(`/reconciliations?status=UNMATCHED&batchId=${encodeURIComponent(manualReviewBatch.id)}`)}
-                    className="shrink-0 rounded-lg bg-amber-500 px-3 py-1.5 font-bold text-white hover:bg-amber-600"
+                    onClick={() => router.push(`/reconciliations?status=ALL&batchId=${encodeURIComponent(manualReviewBatch.id)}`)}
+                    className="shrink-0 rounded-lg bg-blue-600 px-3 py-1.5 font-bold text-white hover:bg-blue-700"
                   >
-                    Xem {manualReviewBatch.count} giao dịch cần xử lý →
+                    Xem {manualReviewBatch.count} giao dịch vừa import →
                   </button>
                 )}
               </div>

@@ -55,6 +55,12 @@ export type ImportTemplateDefinition = {
   sectionMarkers?: string[];
   stopSectionMarkers?: string[];
   defaultValues?: Record<string, string | number>;
+  /**
+   * Gộp các dòng chi tiết thành một dòng cho mỗi tổ hợp chiều nghiệp vụ, cộng dồn các cột số.
+   * Dùng cho file xuất thẳng từ máy bán hàng: mỗi món ăn là một dòng, nhưng kế toán chỉ cần
+   * doanh thu theo ngày và theo phương thức thanh toán.
+   */
+  aggregate?: { by: string[]; sum: string[] };
 };
 
 export const importTemplates: ImportTemplateDefinition[] = [
@@ -172,6 +178,69 @@ export const importTemplates: ImportTemplateDefinition[] = [
         type: "text",
         aliases: ["tru nguon tien chi tiet", "tru nguon chi tiet", "decrease money source", "debit detail method"],
       },
+      {
+        field: "operation_type",
+        label: "Loại nghiệp vụ đích",
+        required: false,
+        type: "text",
+        aliases: ["loai nghiep vu dich", "loai nghiep vu", "nghiep vu dich", "operation type", "target operation"],
+      },
+      {
+        field: "accounting_date",
+        label: "Ngày hạch toán",
+        required: false,
+        type: "date",
+        aliases: ["ngay hach toan", "accounting date", "posting date"],
+      },
+      {
+        field: "partner_code",
+        label: "Mã đối tác",
+        required: false,
+        type: "text",
+        aliases: ["ma doi tac", "ma ncc", "ma khach hang", "nha cung cap", "partner code", "supplier code", "customer code"],
+      },
+      {
+        field: "pnl_item_code",
+        label: "Hạng mục P&L",
+        required: false,
+        type: "text",
+        aliases: ["hang muc p&l", "hang muc pnl", "ma p&l", "ma pnl", "chi phi p&l", "pnl item", "pnl item code"],
+      },
+      {
+        field: "debt_reference",
+        label: "Mã công nợ",
+        required: false,
+        type: "text",
+        aliases: ["ma cong no", "tham chieu cong no", "debt reference", "debt code"],
+      },
+      {
+        field: "deposit_code",
+        label: "Mã tiền cọc",
+        required: false,
+        type: "text",
+        aliases: ["ma tien coc", "ma coc", "deposit code", "deposit reference"],
+      },
+      {
+        field: "gross_amount",
+        label: "Gross doanh thu Ví",
+        required: false,
+        type: "number",
+        aliases: ["gross doanh thu vi", "gross vi", "doanh thu gross vi", "wallet gross", "gross amount"],
+      },
+      {
+        field: "grab_expense_amount",
+        label: "Phí Grab",
+        required: false,
+        type: "number",
+        aliases: ["phi grab", "chi phi grab", "grab expense", "grab fee"],
+      },
+      {
+        field: "card_fee_amount",
+        label: "Phí cà thẻ/Ví khác",
+        required: false,
+        type: "number",
+        aliases: ["phi ca the", "phi vi khac", "phi the vi", "card fee", "wallet fee"],
+      },
     ],
   },
   {
@@ -267,6 +336,79 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "product_code", label: "Ma mon POS", required: false, type: "text", aliases: ["ma mon pos", "ma mon", "product code", "item code"] },
       { field: "product_quantity", label: "So luong ban", required: false, type: "number", aliases: ["so luong ban", "quantity sold", "qty", "product quantity"] },
       { field: "warehouse_code", label: "Kho xuat", required: false, type: "text", aliases: ["kho xuat", "kho", "warehouse", "warehouse code"] },
+    ],
+  },
+  {
+    code: "REVENUE_POS_RAW_V1",
+    importType: "REVENUE_POS",
+    name: "Doanh thu POS (file thô từ máy bán hàng)",
+    description: "Nhận thẳng file xuất từ máy bán hàng, mỗi dòng là một món. Hệ thống tự gộp thành doanh thu theo ngày và theo phương thức thanh toán, không cần sửa file.",
+    preferredSheetNames: ["Import doanh thu", "Doanh thu", "Chi tiet doanh thu"],
+    // Mỗi món là một dòng nên phải gộp lại; nếu không, các dòng cùng ngày và cùng phương thức
+    // thanh toán sẽ trùng mã tham chiếu và bị báo lỗi hàng loạt.
+    aggregate: {
+      by: ["sale_date", "branch_code", "channel", "revenue_source", "payment_method"],
+      sum: ["gross_amount", "net_amount", "discount_amount"],
+    },
+    fields: [
+      {
+        field: "sale_date",
+        label: "Thời gian",
+        required: true,
+        type: "date",
+        aliases: ["thoi gian", "ngay ban", "ngay", "sale date", "business date"],
+      },
+      {
+        field: "branch_code",
+        label: "Cửa hàng",
+        required: true,
+        type: "text",
+        aliases: ["chi nhanh", "branch", "store"],
+      },
+      {
+        field: "channel",
+        label: "Nguồn",
+        required: false,
+        type: "text",
+        aliases: ["nguon", "kenh ban", "kenh", "channel"],
+      },
+      {
+        // Máy bán hàng ghi phương thức thanh toán ở cột PTTT, trùng đúng tên nguồn tiền.
+        field: "revenue_source",
+        label: "PTTT",
+        required: true,
+        type: "text",
+        aliases: ["pttt", "phuong thuc thanh toan", "phuong thuc", "payment method"],
+      },
+      {
+        field: "payment_method",
+        label: "PTTT",
+        required: true,
+        type: "text",
+        aliases: ["pttt", "phuong thuc thanh toan", "phuong thuc", "payment method"],
+      },
+      {
+        // "Tổng tiền" là số khách đang dùng để theo dõi doanh thu, đã gồm VAT và phí dịch vụ.
+        field: "gross_amount",
+        label: "Tổng tiền",
+        required: true,
+        type: "number",
+        aliases: ["tong tien", "doanh thu", "thanh tien"],
+      },
+      {
+        field: "net_amount",
+        label: "Tổng tiền",
+        required: true,
+        type: "number",
+        aliases: ["tong tien", "doanh thu", "thanh tien"],
+      },
+      {
+        field: "discount_amount",
+        label: "Giảm giá",
+        required: false,
+        type: "number",
+        aliases: ["giam gia", "discount"],
+      },
     ],
   },
   {

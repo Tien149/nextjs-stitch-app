@@ -36,6 +36,18 @@ export function dateKey(value: Date) {
 }
 
 /**
+ * Ngày nghiệp vụ Việt Nam của một mốc date-only đã lưu.
+ *
+ * Hệ thống đang tồn tại hai quy ước: dữ liệu import chuẩn hoá về UTC midnight
+ * (2026-08-06T00:00:00Z), còn dữ liệu nhập trên giao diện lưu theo nửa đêm giờ Việt Nam
+ * (2026-08-05T17:00:00Z). Cộng 7 tiếng rồi lấy ngày UTC quy cả hai về đúng một ngày,
+ * nên đối chiếu hai nguồn không bị lệch một ngày.
+ */
+export function vietnamBusinessDayKey(value: Date) {
+  return new Date(value.getTime() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+/**
  * Khoảng ngày nghiệp vụ Việt Nam (+07:00) tương ứng với date-only đã lưu.
  * Khoảng này chủ động bao phủ cả dữ liệu cũ lưu local midnight và dữ liệu import
  * mới chuẩn hóa UTC midnight, giống cách màn hình Thu chi ngày đang truy vấn.

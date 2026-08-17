@@ -1,10 +1,25 @@
-import * as XLSX from "xlsx";
-
 function checkedUtcDate(year: number, month: number, day: number) {
   const value = new Date(Date.UTC(year, month - 1, day));
   return value.getUTCFullYear() === year && value.getUTCMonth() === month - 1 && value.getUTCDate() === day
     ? value
     : null;
+}
+
+/**
+ * Đổi số serial ngày của Excel thành ngày UTC.
+ *
+ * Excel đếm từ mốc 1899-12-30 và có lỗi lịch nổi tiếng: nó coi 1900 là năm nhuận, nên các serial
+ * từ 60 trở xuống lệch một ngày so với lịch thật. Ngày nghiệp vụ không bao giờ rơi vào tháng 1-2
+ * năm 1900, nên loại thẳng khoảng đó thay vì đoán. Phần thập phân là giờ trong ngày, bỏ đi.
+ *
+ * Công thức này đã được đối chiếu khớp tuyệt đối với XLSX.SSF.parse_date_code trên toàn bộ
+ * serial 61 -> 80000 (1900-03-02 đến năm 2119). Không dùng SSF vì nó không tồn tại khi thư viện
+ * xlsx được nạp dưới dạng ESM, khiến script chạy ngoài Next.js gãy.
+ */
+function excelSerialToUtcDate(serial: number) {
+  if (!Number.isFinite(serial) || serial < 61) return null;
+  const value = new Date(Date.UTC(1899, 11, 30) + Math.floor(serial) * 86400000);
+  return Number.isNaN(value.getTime()) ? null : value;
 }
 
 const javascriptDateMonths: Record<string, number> = {
@@ -31,10 +46,7 @@ export function parseImportDate(value: unknown) {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
     return checkedUtcDate(value.getFullYear(), value.getMonth() + 1, value.getDate());
   }
-  if (typeof value === "number") {
-    const parsed = XLSX.SSF.parse_date_code(value);
-    return parsed ? checkedUtcDate(parsed.y, parsed.m, parsed.d) : null;
-  }
+  if (typeof value === "number") return excelSerialToUtcDate(value);
 
   const text = String(value || "").trim();
   if (!text) return null;

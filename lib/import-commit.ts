@@ -12,21 +12,32 @@ import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { generateFormattedVoucherCode } from "@/lib/voucher-code-generator";
 import { commonBankValue, groupBankStatementRows } from "@/lib/bank-statement-import";
 import { normalizeMoneySourceGroup } from "@/lib/money-sources";
-import { bankStatementSpecialCategory, evaluateBankStatementAutoApproval } from "@/lib/bank-statement-auto-approval";
+import { evaluateBankStatementAutoApproval } from "@/lib/bank-statement-auto-approval";
 import { applyVoucherSideEffects } from "@/lib/voucher-side-effects";
 import { applyOpeningDeposit } from "@/lib/opening-balance-deposit";
 import { assertAssetCodeAvailable, nextAssetCode } from "@/lib/asset-code-generator";
 import {
-  remainingWalletGross,
-  selectWalletDeclaredRevenue,
-  walletRevenueBucket,
-} from "@/lib/wallet-revenue-reconciliation";
-import {
-  allocateWalletSettlementGroup,
   WALLET_CARD_FEE_CATEGORY_CODE,
   WALLET_GRAB_EXPENSE_CATEGORY_CODE,
 } from "@/lib/wallet-settlement-allocation";
-import { vietnamBusinessDayBounds } from "@/lib/revenue-date";
+
+/**
+ * Một dòng sao kê không đủ điều kiện lập chứng từ tự động.
+ *
+ * Trước đây mọi trường hợp như vậy đều ném lỗi thường và làm hỏng cả lô: file 580 dòng chỉ cần
+ * một dòng sai khoản mục là không ghi được dòng nào, người dùng chỉ nhận một dòng chữ đỏ. Nay
+ * tiền vẫn được ghi nhận (nó đã vào ngân hàng thật), chỉ riêng dòng đó không có chứng từ và
+ * được đánh dấu kèm lý do để sửa rồi xử lý lại.
+ *
+ * Chỉ dùng cho lỗi nghiệp vụ của đúng một dòng. Lỗi database vẫn phải làm hỏng cả lô như cũ,
+ * nên tuyệt đối không bắt Error chung ở chỗ gọi.
+ */
+export class BankRowNeedsFixError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BankRowNeedsFixError";
+  }
+}
 
 function asText(value: unknown) {
   return String(value || "").trim();
@@ -93,96 +104,6 @@ function monthBounds(value: Date) {
   return { start, end };
 }
 
-async function unresolvedWalletGrossSummary(
-  tx: TxClient,
-  branchCode: string,
-  revenueDate: Date,
-) {
-  const { start, end } = vietnamBusinessDayBounds(revenueDate);
-  const walletSources = (await tx.masterDataItem.findMany({
-    where: { type: "MONEY_SOURCE", deletedAt: null },
-    select: { code: true, name: true, group: true },
-  })).filter((item) => normalizeMoneySourceGroup(item.group) === "WALLET");
-  const walletSourceCodes = walletSources.map((item) => item.code);
-  const cardSources = walletSources.filter((item) => walletRevenueBucket(item) === "CARD_WALLET");
-  const grabSources = walletSources.filter((item) => walletRevenueBucket(item) === "GRAB");
-  const [revenues, manualRows, legacySettlementMatches, previousImportedAllocations, previousGrabSettlements] = await Promise.all([
-    tx.revenueImportRow.findMany({
-      where: { branchCode, saleDate: { gte: start, lt: end }, deletedAt: null },
-      select: { paymentMethod: true, revenueSource: true, channel: true, netAmount: true },
-    }),
-    tx.manualRevenueEntry.findMany({
-      where: { branchCode, reportDate: { gte: start, lt: end }, deletedAt: null },
-      select: { cardAmount: true, grabAmount: true },
-    }),
-    tx.reconciliationMatch.findMany({
-      where: {
-        targetType: "WALLET_SETTLEMENT",
-        deletedAt: null,
-        bankTransaction: {
-          branchCode,
-          deletedAt: null,
-          allocations: {
-            some: { revenueDate: { gte: start, lt: end }, decreaseMoneySourceCode: { in: walletSourceCodes }, grossAmount: null },
-          },
-        },
-      },
-      select: { targetId: true },
-    }),
-    tx.bankStatementAllocation.findMany({
-      where: {
-        revenueDate: { gte: start, lt: end },
-        decreaseMoneySourceCode: { in: walletSourceCodes },
-        grossAmount: { not: null },
-        bankTransaction: {
-          branchCode,
-          reconcileStatus: { in: ["PENDING_REVIEW", "MATCHED"] },
-          deletedAt: null,
-        },
-      },
-      select: { grossAmount: true },
-    }),
-    tx.moneyTransfer.findMany({
-      where: {
-        branchCode,
-        transferPurpose: "WALLET_SETTLEMENT",
-        sourceReportDate: { gte: start, lt: end },
-        status: { in: ["PENDING_REVIEW", "APPROVED"] },
-        deletedAt: null,
-      },
-      select: { grabExpenseAmount: true },
-    }),
-  ]);
-  const previousLegacySettlements = legacySettlementMatches.length > 0
-    ? await tx.moneyTransfer.findMany({
-        where: { id: { in: legacySettlementMatches.map((row) => row.targetId) }, status: { in: ["PENDING_REVIEW", "APPROVED"] }, deletedAt: null },
-        select: { amount: true, feeAmount: true },
-      })
-    : [];
-  const cardDeclared = selectWalletDeclaredRevenue({
-    posRows: revenues,
-    manualRows,
-    bucketSources: cardSources,
-    bucket: "CARD_WALLET",
-  });
-  const grabDeclared = selectWalletDeclaredRevenue({
-    posRows: revenues,
-    manualRows,
-    bucketSources: grabSources,
-    bucket: "GRAB",
-  });
-  const alreadyAllocated = previousLegacySettlements.reduce((sum, row) => sum + row.amount + row.feeAmount, 0)
-    + previousImportedAllocations.reduce((sum, row) => sum + (row.grossAmount || 0), 0);
-  return {
-    amount: remainingWalletGross(cardDeclared.amount + grabDeclared.amount, alreadyAllocated),
-    grabAmount: remainingWalletGross(
-      grabDeclared.amount,
-      previousGrabSettlements.reduce((sum, row) => sum + row.grabExpenseAmount, 0),
-    ),
-    revenueSource: cardDeclared.source === "MANUAL" || grabDeclared.source === "MANUAL" ? "MANUAL" as const : cardDeclared.source,
-  };
-}
-
 async function nextVoucherCode(
   tx: TxClient,
   voucherType: string,
@@ -195,47 +116,6 @@ async function nextVoucherCode(
     where: { voucherType, documentChannel, voucherDate: { gte: start, lt: end } },
   });
   return generateFormattedVoucherCode({ voucherType, documentChannel, voucherDate, branchCode, seqNumber: count + 1 });
-}
-
-/**
- * Tìm đúng một dòng doanh thu POS chưa được sao kê nào dùng để xác nhận dòng tiền.
- * Chỉ tự động coi là quyết toán khi khớp cửa hàng + ngày doanh thu + số tiền;
- * trường hợp mơ hồ tiếp tục là nghiệp vụ mới/chờ kế toán kiểm tra.
- */
-async function findUnsettledPosRevenue(
-  tx: TxClient,
-  branchCode: string,
-  revenueDate: Date,
-  amount: number,
-) {
-  const { start, end } = vietnamBusinessDayBounds(revenueDate);
-  const candidates = await tx.revenueImportRow.findMany({
-    where: { branchCode, saleDate: { gte: start, lt: end }, deletedAt: null },
-    select: { id: true, externalRef: true, saleDate: true, netAmount: true },
-  });
-  const exact = candidates.filter((row) => Math.abs(row.netAmount - amount) < 1);
-  if (exact.length !== 1) return null;
-  const used = await tx.financialVoucher.findFirst({
-    where: {
-      sourceDocumentCode: exact[0].externalRef,
-      businessEffect: "SETTLEMENT",
-      deletedAt: null,
-    },
-    select: { id: true },
-  });
-  return used ? null : exact[0];
-}
-
-async function categoryRepresentsSalesSettlement(tx: TxClient, categoryCode: string) {
-  if (!categoryCode) return false;
-  const category = await tx.masterDataItem.findFirst({
-    where: { type: "REVENUE_EXPENSE_CATEGORY", code: categoryCode, deletedAt: null },
-    select: { code: true, name: true },
-  });
-  return [category?.code, category?.name].some((value) => {
-    const normalized = normalizeHeader(value || "");
-    return normalized.includes("thu") && normalized.includes("doanh thu") && normalized.includes("ban hang");
-  });
 }
 
 type CommitInput = {
@@ -541,35 +421,7 @@ export async function commitImport(input: CommitInput) {
 
     if (input.importType === "BANK_STATEMENT") {
       const groups = groupBankStatementRows(input.rows);
-      const walletSourceCatalog = (await tx.masterDataItem.findMany({
-        where: { type: "MONEY_SOURCE", deletedAt: null },
-        select: { code: true, name: true, group: true },
-      })).filter((source) => normalizeMoneySourceGroup(source.group) === "WALLET");
-      const walletSourceByCode = new Map(walletSourceCatalog.map((source) => [source.code, source]));
-      const walletRowsByDay = new Map<string, ParsedImportRow[]>();
-      for (const row of input.rows) {
-        const source = walletSourceByCode.get(asText(row.values.decrease_money_source_code));
-        const date = row.values.revenue_date ? asDate(row.values.revenue_date) : null;
-        const branch = asText(row.values.branch_code);
-        if (!source || !date || !branch || asText(row.values.auto_process_type) !== "WALLET_SETTLEMENT" || asNumber(row.values.credit_amount) <= 0) continue;
-        const key = `${branch}:${date.toISOString().slice(0, 10)}`;
-        walletRowsByDay.set(key, [...(walletRowsByDay.get(key) || []), row]);
-      }
-      const walletPlanByRow = new Map<string, ReturnType<typeof allocateWalletSettlementGroup>[number] & { revenueSource: string }>();
-      for (const [key, rows] of walletRowsByDay) {
-        const [branch, dateText] = key.split(":");
-        const unresolved = await unresolvedWalletGrossSummary(tx, branch, asDate(dateText));
-        try {
-          const plan = allocateWalletSettlementGroup({
-            grossAmount: unresolved.amount,
-            grabRevenueAmount: unresolved.grabAmount,
-            transactions: rows.map((row) => ({ id: `${row.sheetName}:${row.rowNumber}`, netAmount: asNumber(row.values.credit_amount) })),
-          });
-          for (const item of plan) walletPlanByRow.set(item.id, { ...item, revenueSource: unresolved.revenueSource });
-        } catch {
-          // Không đủ gross: từng giao dịch bên dưới sẽ được giữ MANUAL_REQUIRED cùng lý do cụ thể.
-        }
-      }
+
       for (const group of groups) {
         const firstRow = group.rows[0];
         const bankAccount = asText(firstRow.values.bank_account);
@@ -588,14 +440,22 @@ export async function commitImport(input: CommitInput) {
         const sourceDate = sourceDateText ? asDate(sourceDateText) : null;
         const revenueDate = revenueDateText ? asDate(revenueDateText) : null;
         const statementDate = asDate(firstRow.values.transaction_date);
+        const accountingDateValue = commonBankValue(group.rows, "accounting_date")
+          ? asDate(commonBankValue(group.rows, "accounting_date"))
+          : statementDate;
         const branchCodeForPeriod = asText(firstRow.values.branch_code);
         await assertPeriodOpen(tx as unknown as RawTxClient, periodFromDate(statementDate), branchCodeForPeriod, "commit");
         if (sourceDate && periodFromDate(sourceDate) !== periodFromDate(statementDate)) {
           await assertPeriodOpen(tx as unknown as RawTxClient, periodFromDate(sourceDate), branchCodeForPeriod, "commit");
         }
-        let autoProcessType = group.isNetZero
+        if (periodFromDate(accountingDateValue) !== periodFromDate(statementDate)) {
+          await assertPeriodOpen(tx as unknown as RawTxClient, periodFromDate(accountingDateValue), branchCodeForPeriod, "commit");
+        }
+        const operationType = commonBankValue(group.rows, "operation_type");
+        const autoProcessType = group.isNetZero
           ? "NET_ZERO"
-          : commonBankValue(group.rows, "auto_process_type") || "MANUAL_REQUIRED";
+          : commonBankValue(group.rows, "auto_process_type");
+        if (!group.isNetZero && !autoProcessType) throw new Error(`Giao dịch ${transactionCode} thiếu Loại nghiệp vụ đích hợp lệ`);
         let autoProcessNote = group.isNetZero
           ? "Cặp Nợ/Có đảo nhau, giá trị ròng 0 đ — không tạo phiếu"
           : commonBankValue(group.rows, "auto_process_note") || null;
@@ -622,6 +482,15 @@ export async function commitImport(input: CommitInput) {
             summaryMoneySourceCode: commonBankValue(group.rows, "summary_money_source_code") || null,
             increaseMoneySourceCode: commonBankValue(group.rows, "increase_money_source_code") || null,
             decreaseMoneySourceCode: commonBankValue(group.rows, "decrease_money_source_code") || null,
+            operationType: operationType || null,
+            accountingDate: accountingDateValue,
+            partnerCode: commonBankValue(group.rows, "partner_code") || null,
+            pnlItemCode: commonBankValue(group.rows, "pnl_item_code") || null,
+            debtReference: commonBankValue(group.rows, "debt_reference") || null,
+            depositCode: commonBankValue(group.rows, "deposit_code") || null,
+            grossAmount: group.rows.reduce((sum, row) => sum + asNumber(row.values.gross_amount), 0) || null,
+            grabExpenseAmount: group.rows.reduce((sum, row) => sum + asNumber(row.values.grab_expense_amount), 0),
+            cardFeeAmount: group.rows.reduce((sum, row) => sum + asNumber(row.values.card_fee_amount), 0),
             autoProcessType,
             autoProcessNote,
             reconcileStatus: group.isNetZero ? "MATCHED" : "UNMATCHED",
@@ -641,16 +510,28 @@ export async function commitImport(input: CommitInput) {
             summaryMoneySourceCode: asText(row.values.summary_money_source_code) || null,
             increaseMoneySourceCode: asText(row.values.increase_money_source_code) || null,
             decreaseMoneySourceCode: asText(row.values.decrease_money_source_code) || null,
+            operationType: asText(row.values.operation_type) || null,
+            accountingDate: row.values.accounting_date ? asDate(row.values.accounting_date) : asDate(row.values.transaction_date),
+            partnerCode: asText(row.values.partner_code) || null,
+            pnlItemCode: asText(row.values.pnl_item_code) || null,
+            debtReference: asText(row.values.debt_reference) || null,
+            depositCode: asText(row.values.deposit_code) || null,
+            grossAmount: asNumber(row.values.gross_amount) || null,
+            grabExpenseAmount: asNumber(row.values.grab_expense_amount),
+            cardFeeAmount: asNumber(row.values.card_fee_amount),
             autoProcessType: asText(row.values.auto_process_type) || null,
             autoProcessNote: asText(row.values.auto_process_note) || null,
           })),
         });
         for (const row of group.rows) await setImportTarget(tx, staging, row, "BANK_STATEMENT", bankTransaction.id);
 
-        if (["MANUAL_REQUIRED", "NET_ZERO"].includes(autoProcessType)) continue;
+        if (autoProcessType === "NET_ZERO") continue;
+        try {
+        if (autoProcessType === "MANUAL_REQUIRED") throw new BankRowNeedsFixError("Dòng này cần khảo sát tay: Preview đã đánh dấu không tự lập được chứng từ");
         const branchCode = asText(firstRow.values.branch_code);
         const transactionDate = asDate(firstRow.values.transaction_date);
-        const documentDate = sourceDate || transactionDate;
+        const accountingDateText = commonBankValue(group.rows, "accounting_date");
+        const documentDate = accountingDateText ? asDate(accountingDateText) : transactionDate;
         const bankAmount = Math.round(group.creditAmount || group.debitAmount);
         const increaseSourceCode = commonBankValue(group.rows, "increase_money_source_code");
         const decreaseSourceCode = commonBankValue(group.rows, "decrease_money_source_code");
@@ -685,34 +566,25 @@ export async function commitImport(input: CommitInput) {
           const allocationGross = group.rows.map((row) => {
             const rowRevenueDate = row.values.revenue_date ? asDate(row.values.revenue_date) : null;
             const rowBankAmount = Math.round(asNumber(row.values.credit_amount));
-            const plan = walletPlanByRow.get(`${row.sheetName}:${row.rowNumber}`);
             return {
               row,
               rowRevenueDate,
               rowBankAmount,
-              grossAmount: plan?.grossAmount || 0,
-              grabExpenseAmount: plan?.grabExpenseAmount || 0,
-              cardFeeAmount: plan?.cardFeeAmount || 0,
-              revenueSource: plan?.revenueSource || "NONE",
+              grossAmount: Math.round(asNumber(row.values.gross_amount)),
+              grabExpenseAmount: Math.round(asNumber(row.values.grab_expense_amount)),
+              cardFeeAmount: Math.round(asNumber(row.values.card_fee_amount)),
             };
           });
-          const allocationKeys = allocationGross.map((item) => item.rowRevenueDate?.toISOString().slice(0, 10) || "MISSING");
-          const hasMultipleRevenueDates = new Set(allocationKeys).size !== 1;
-          const invalidAllocation = allocationGross.find((item) => !item.rowRevenueDate || item.grossAmount < item.rowBankAmount || item.grossAmount <= 0);
-          const grossAmount = allocationGross.reduce((sum, item) => sum + item.grossAmount, 0);
-          if (hasMultipleRevenueDates || invalidAllocation || grossAmount < bankAmount) {
-            autoProcessType = "MANUAL_REQUIRED";
-            autoProcessNote = hasMultipleRevenueDates
-              ? "Một giao dịch Ví có nhiều Ngày doanh thu; cần duyệt thủ công theo allocation"
-              : invalidAllocation?.grossAmount
-              ? `Doanh thu ví ngày phân bổ còn ${invalidAllocation.grossAmount.toLocaleString("vi-VN")} đ, nhỏ hơn tiền ngân hàng ${invalidAllocation.rowBankAmount.toLocaleString("vi-VN")} đ`
-              : "Không tìm thấy đủ doanh thu POS hoặc doanh thu nhập tay cho các Ngày doanh thu trong file";
-            await tx.bankStatementTransaction.update({
-              where: { id: bankTransaction.id },
-              data: { autoProcessType, autoProcessNote },
-            });
-            continue;
-          }
+          // File có thể không khai Gross ví (số này thuộc luồng doanh thu POS). Khi đó vẫn ghi
+          // nhận đủ tiền đã về ngân hàng, coi gross bằng đúng số thực nhận và để phí bằng 0;
+          // phần chênh sẽ lộ ra ở bảng đối chiếu khi doanh thu POS của ngày đó được import.
+          const declaredGross = allocationGross.some((item) => item.grossAmount > 0);
+          const invalidAllocation = allocationGross.find((item) => !item.rowRevenueDate
+            || (declaredGross && (item.grossAmount < item.rowBankAmount || item.grossAmount <= 0)));
+          const grossAmount = declaredGross
+            ? allocationGross.reduce((sum, item) => sum + item.grossAmount, 0)
+            : bankAmount;
+          if (invalidAllocation || grossAmount < bankAmount) throw new BankRowNeedsFixError("Gross ví khai trên file không cân với số tiền ngân hàng ghi có — sửa cột Gross/Phí trên file rồi import lại, hoặc để trống để hệ thống tự suy từ doanh thu POS");
           for (const allocation of allocationGross) {
             await tx.bankStatementAllocation.updateMany({
               where: {
@@ -726,7 +598,9 @@ export async function commitImport(input: CommitInput) {
           const feeAmount = grossAmount - bankAmount;
           const grabExpenseAmount = allocationGross.reduce((sum, item) => sum + item.grabExpenseAmount, 0);
           const cardFeeAmount = allocationGross.reduce((sum, item) => sum + item.cardFeeAmount, 0);
-          const usedManualRevenue = allocationGross.some((item) => item.revenueSource === "MANUAL");
+          if (declaredGross && Math.abs(feeAmount - grabExpenseAmount - cardFeeAmount) > 1) {
+            throw new BankRowNeedsFixError("Tổng phí ví không bằng Phí Grab cộng Phí cà thẻ — sửa hai cột phí trên file cho khớp");
+          }
           const approval = evaluateBankStatementAutoApproval({
             autoProcessType,
             debitAmount: group.debitAmount,
@@ -737,15 +611,12 @@ export async function commitImport(input: CommitInput) {
             decreaseSource,
             category,
             walletGrossAmount: grossAmount,
+            categoryCodeText: categoryCode,
+            increaseSourceCodeText: increaseSourceCode,
+            decreaseSourceCodeText: decreaseSourceCode,
           });
           if (!approval.autoApprove) {
-            autoProcessType = "MANUAL_REQUIRED";
-            autoProcessNote = approval.reason;
-            await tx.bankStatementTransaction.update({
-              where: { id: bankTransaction.id },
-              data: { autoProcessType, autoProcessNote },
-            });
-            continue;
+            throw new BankRowNeedsFixError(approval.reason);
           }
           const transferCount = await tx.moneyTransfer.count();
           const transfer = await tx.moneyTransfer.create({
@@ -762,7 +633,7 @@ export async function commitImport(input: CommitInput) {
               grabExpenseAmount,
               grabExpenseCategoryCode: grabExpenseAmount > 0 ? WALLET_GRAB_EXPENSE_CATEGORY_CODE : null,
               externalRef: transactionCode,
-              description: `Quyết toán ví theo sao kê ${transactionCode}${group.rows.length > 1 ? ` (${group.rows.length} ngày doanh thu)` : ""}${feeAmount > 0 ? ` (phí ${feeAmount.toLocaleString("vi-VN")} đ)` : ""}`,
+              description: `Quyết toán ví theo sao kê ${transactionCode}${group.rows.length > 1 ? ` (${group.rows.length} ngày doanh thu)` : ""}${feeAmount > 0 ? ` (phí ${feeAmount.toLocaleString("vi-VN")} đ)` : ""}${declaredGross ? "" : " — chưa có doanh thu ví để tính phí"}`,
               transferPurpose: "WALLET_SETTLEMENT",
               sourceReportDate: revenueDate,
               status: "APPROVED",
@@ -773,16 +644,38 @@ export async function commitImport(input: CommitInput) {
           targetType = "WALLET_SETTLEMENT";
           targetId = transfer.id;
           targetCode = transfer.code;
-          autoProcessNote = usedManualRevenue
-            ? `Đã dùng doanh thu nhập tay làm nguồn fallback để đối soát với ${targetCode}`
-            : `Đã dùng doanh thu POS để đối soát với ${targetCode}`;
+          autoProcessNote = declaredGross
+            ? `Đã ghi nhận quyết toán Ví theo gross/phí khách khai trên file với ${targetCode}`
+            : `Đã ghi nhận ${targetCode} theo số tiền ngân hàng thực nhận; phí ví đối chiếu sau khi có doanh thu POS`;
+        } else if (operationType === "INTERNAL_TRANSFER") {
+          const transferCount = await tx.moneyTransfer.count();
+          const transfer = await tx.moneyTransfer.create({
+            data: {
+              importBatchId: batch.id,
+              code: generateFormattedVoucherCode({ voucherType: "CTNB", voucherDate: documentDate, branchCode, seqNumber: transferCount + 1 }),
+              transferDate: documentDate,
+              branchCode,
+              fromMoneySourceCode: decreaseSourceCode,
+              toMoneySourceCode: increaseSourceCode,
+              amount: bankAmount,
+              externalRef: transactionCode,
+              description: asText(firstRow.values.description),
+              transferPurpose: "INTERNAL_TRANSFER",
+              sourceReportDate: sourceDate || transactionDate,
+              status: "APPROVED",
+              createdBy: input.uploadedBy,
+              approvedBy: input.uploadedBy,
+              approvedAt: new Date(),
+            },
+          });
+          targetType = "INTERNAL_TRANSFER";
+          targetId = transfer.id;
+          targetCode = transfer.code;
         } else {
           const voucherType = autoProcessType === "PAYMENT" ? "PAYMENT" : "RECEIPT";
           const moneySourceCode = voucherType === "RECEIPT"
             ? increaseSourceCode
             : decreaseSourceCode;
-          const isDepositReceipt = voucherType === "RECEIPT"
-            && bankStatementSpecialCategory(category) === "DEPOSIT";
           const approval = evaluateBankStatementAutoApproval({
             autoProcessType,
             debitAmount: group.debitAmount,
@@ -792,56 +685,49 @@ export async function commitImport(input: CommitInput) {
             increaseSource,
             decreaseSource,
             category,
+            categoryCodeText: categoryCode,
+            increaseSourceCodeText: increaseSourceCode,
+            decreaseSourceCodeText: decreaseSourceCode,
           });
           if (!approval.autoApprove) {
-            autoProcessType = "MANUAL_REQUIRED";
-            autoProcessNote = approval.reason;
-            await tx.bankStatementTransaction.update({
-              where: { id: bankTransaction.id },
-              data: { autoProcessType, autoProcessNote },
-            });
-            continue;
+            throw new BankRowNeedsFixError(approval.reason);
           }
-          const retailPartner = isDepositReceipt
+          const partnerCode = commonBankValue(group.rows, "partner_code") || null;
+          const partner = partnerCode
             ? await tx.masterDataItem.findFirst({
-                where: { type: "PARTNER", code: "KH_LE", status: "ACTIVE", deletedAt: null },
+                where: { type: "PARTNER", code: partnerCode, status: "ACTIVE", deletedAt: null },
                 select: { code: true, name: true },
               })
             : null;
-          if (isDepositReceipt && !retailPartner) {
-            autoProcessType = "MANUAL_REQUIRED";
-            autoProcessNote = "Thiếu đối tượng mặc định KH_LE để ghi nhận tiền khách đặt cọc";
-            await tx.bankStatementTransaction.update({
-              where: { id: bankTransaction.id },
-              data: { autoProcessType, autoProcessNote },
-            });
-            continue;
-          }
-          const posRevenue = voucherType === "RECEIPT"
-            ? await findUnsettledPosRevenue(tx, branchCode, revenueDate || sourceDate || transactionDate, bankAmount)
-            : null;
-          const isDeclaredSalesSettlement = voucherType === "RECEIPT"
-            && await categoryRepresentsSalesSettlement(tx, categoryCode);
-          const businessEffect = posRevenue || isDeclaredSalesSettlement ? "SETTLEMENT" : "RECOGNITION";
+          const isSalesReceipt = operationType === "REVENUE_RECEIPT";
+          const businessEffect = isSalesReceipt ? "SETTLEMENT" : "RECOGNITION";
           const voucherCount = await tx.financialVoucher.count({ where: { voucherType } });
           const counterpartyName = commonBankValue(group.rows, "partner_hint") || null;
+          const depositAction = operationType === "DEPOSIT_RECEIPT" ? "COLLECT"
+            : operationType === "DEPOSIT_REFUND" ? "REFUND"
+            : null;
+          const debtAction = ["AR_COLLECTION", "AP_PAYMENT"].includes(operationType) ? "SETTLE" : null;
           const voucher = await tx.financialVoucher.create({
             data: {
               importBatchId: batch.id,
               code: generateFormattedVoucherCode({ voucherType, documentChannel: "BANK", voucherDate: documentDate, branchCode, seqNumber: voucherCount + 1 }),
-              sourceDocumentCode: posRevenue?.externalRef || null,
+              sourceDocumentCode: null,
               voucherType,
               voucherDate: documentDate,
-              partnerCode: retailPartner?.code || null,
-              partnerName: retailPartner?.name || counterpartyName || "Đối tác theo sao kê",
+              partnerCode: partner?.code || null,
+              partnerName: partner?.name || counterpartyName || "Đối tác theo sao kê",
               branchCode,
               sourceScope: "BANK_STATEMENT_AUTO",
               documentChannel: "BANK",
               businessEffect,
               moneySourceCode,
               categoryCode: categoryCode || null,
+              pnlItemCode: commonBankValue(group.rows, "pnl_item_code") || null,
               counterpartyAccountName: counterpartyName,
-              depositAction: isDepositReceipt ? "COLLECT" : null,
+              depositAction,
+              depositCode: commonBankValue(group.rows, "deposit_code") || null,
+              debtAction,
+              debtReference: commonBankValue(group.rows, "debt_reference") || null,
               externalRef: transactionCode,
               amount: bankAmount,
               description: group.rows.length === 1
@@ -852,16 +738,12 @@ export async function commitImport(input: CommitInput) {
               approvedBy: input.uploadedBy,
             },
           });
-          if (isDepositReceipt) {
+          if (depositAction || debtAction) {
             await applyVoucherSideEffects(tx as unknown as RawTxClient, voucher, input.uploadedBy);
           }
           targetId = voucher.id;
           targetCode = voucher.code;
-          if (posRevenue) {
-            autoProcessNote = `Đã tạo ${targetCode} xác nhận dòng tiền cho doanh thu POS ${posRevenue.externalRef}; không ghi nhận thêm doanh thu`;
-          } else if (isDeclaredSalesSettlement) {
-            autoProcessNote = `Đã tạo ${targetCode} xác nhận tiền ngân hàng cho doanh thu bán hàng đã khai; không ghi nhận thêm doanh thu`;
-          }
+          autoProcessNote = `Đã tạo ${targetCode} theo Loại nghiệp vụ đích ${operationType}`;
         }
 
         autoProcessNote = autoProcessType === "WALLET_SETTLEMENT" && autoProcessNote
@@ -885,9 +767,22 @@ export async function commitImport(input: CommitInput) {
           where: { id: bankTransaction.id },
           data: {
             reconcileStatus: "MATCHED",
-            autoProcessNote: autoProcessNote || `Đã tạo chứng từ ${targetCode} chờ duyệt`,
+            autoProcessNote: autoProcessNote || `Đã tạo chứng từ ${targetCode}`,
           },
         });
+        } catch (error) {
+          // Chỉ dòng này hỏng, không phải cả lô. Tiền vẫn được ghi nhận; chỉ thiếu chứng từ.
+          // Lý do lưu lại nguyên văn để màn hình hiển thị đúng việc phải làm.
+          if (!(error instanceof BankRowNeedsFixError)) throw error;
+          await tx.bankStatementTransaction.update({
+            where: { id: bankTransaction.id },
+            data: {
+              reconcileStatus: "UNMATCHED",
+              autoProcessType: "MANUAL_REQUIRED",
+              autoProcessNote: error.message,
+            },
+          });
+        }
       }
     }
 
@@ -1615,9 +1510,16 @@ export async function commitImport(input: CommitInput) {
   const bankAutoApproved = input.importType === "BANK_STATEMENT"
     ? (batchResult?.bankTransactions || []).filter((row) => row.reconcileStatus === "MATCHED" && row.autoProcessType !== "NET_ZERO").length
     : 0;
-  const bankManualRequired = input.importType === "BANK_STATEMENT"
-    ? (batchResult?.bankTransactions || []).filter((row) => row.autoProcessType === "MANUAL_REQUIRED").length
-    : 0;
+  // Dòng đã ghi được tiền nhưng chưa lập được chứng từ. Trả về ngay để màn Import nói rõ còn
+  // bao nhiêu tiền chưa vào sổ, thay vì để người dùng phát hiện sau nhiều tuần.
+  const bankNeedsFix = (batchResult?.bankTransactions || [])
+    .filter((row) => row.autoProcessType === "MANUAL_REQUIRED")
+    .map((row) => ({
+      transactionCode: row.transactionCode,
+      transactionDate: row.transactionDate,
+      amount: Math.round(row.creditAmount || row.debitAmount),
+      reason: row.autoProcessNote || "Chưa rõ lý do",
+    }));
   await writeAuditLog({
     actorName: input.uploadedBy,
     module: "IMPORT",
@@ -1631,10 +1533,11 @@ export async function commitImport(input: CommitInput) {
       templateCode: input.templateCode,
       totalRows: input.rows.length,
       bankAutoApproved,
-      bankManualRequired,
+      bankNeedsFix: bankNeedsFix.length,
+      bankRecordingMode: input.importType === "BANK_STATEMENT" ? "DIRECT_INGESTION" : null,
     },
   });
-  return batchResult;
+  return batchResult ? { ...batchResult, needsFix: bankNeedsFix } : batchResult;
 }
 
 async function rollbackBankStatement(tx: RawTxClient, batchId: string) {
