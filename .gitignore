@@ -48,3 +48,11 @@ prisma/*.db
 
 # Excel temp files
 ~$*
+
+# Ban sao database - tuyet doi khong dua vao git
+*.dump
+*.sql.gz
+*.backup
+
+# File UAT dựng tạm khi kiểm thử, không phải mã nguồn
+outputs/
