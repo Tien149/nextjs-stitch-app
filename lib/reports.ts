@@ -814,25 +814,39 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
   }
 
   // Ngày không có dòng POS nào thì mới dùng số thu ngân nhập tay, tránh cộng chồng.
+  //
+  // Số nhập tay chỉ có 4 ô tổng (chuyển khoản / thẻ+ví / Grab / tiền mặt), KHÔNG nói tiền thuộc
+  // nguồn tiền cụ thể nào. Bản trước đoán nguồn theo tên và đoán sai — từ khoá "vi" (Ví) khớp
+  // luôn "Vietinbank", nên tiền thẻ bị gán vào tài khoản ngân hàng, còn tiền chuyển khoản gán
+  // vào tài khoản đứng đầu danh sách; khách nhìn thấy Chưa về / Về dư giả trong khi tiền không
+  // hề sai. Ngày dùng số nhập tay thì so ở ĐÚNG độ mịn của dữ liệu: mỗi ô một dòng gộp, tiền về
+  // của cả nhóm nguồn đổ vào dòng đó — khớp từng số với màn Thu chi ngày.
+  const manualBucketDays = new Set<string>();
+  const manualBucketSource = (branch: string, bucket: "bank" | "card" | "grab" | "cash") => ({
+    bank: { code: `NHAPTAY_CK_${branch}`, name: `Chuyển khoản — thu ngân khai (${branch})`, group: "BANK" },
+    card: { code: `NHAPTAY_THEVI_${branch}`, name: `Quẹt thẻ / Ví — thu ngân khai (${branch})`, group: "WALLET" },
+    grab: { code: `NHAPTAY_GRAB_${branch}`, name: `Grab — thu ngân khai (${branch})`, group: "WALLET" },
+    cash: { code: `NHAPTAY_TM_${branch}`, name: `Tiền mặt — thu ngân khai (${branch})`, group: "CASH" },
+  }[bucket]);
   for (const row of manualEntries) {
     const day = dayKey(row.reportDate);
     if (posDays.has(`${row.branchCode}|${day}`)) continue;
-    const buckets: Array<[string[], number]> = [
-      [["tien mat", "cash"], row.cashAmount],
-      [["chuyen khoan", "bank"], row.transferAmount],
-      [["quet the", "vi", "wallet"], row.cardAmount],
-      [["grab"], row.grabAmount],
-    ];
-    // Chỉ tìm trong nguồn tiền của ĐÚNG cửa hàng đã khai. Xem "Tất cả cửa hàng" mà tìm trong cả
-    // danh mục thì số thu ngân của ASA rơi vào nguồn tiền của NAM MÊ — tổng tiền vẫn đúng nhưng
-    // trạng thái từng dòng sai, kéo theo các ô Chưa về / Phí thu hộ / Về dư sai theo.
-    const branchSources = visibleSources.filter((item) => moneySourceMatchesBranch(item, row.branchCode));
-    for (const [keywords, amount] of buckets) {
-      if (!amount) continue;
-      const source = branchSources.find((item) => keywords.some((keyword) => normalizeSourceLabel(item.name).includes(keyword)));
-      if (source) touch(day, source).revenue += amount;
-    }
+    manualBucketDays.add(`${row.branchCode}|${day}`);
+    if (row.transferAmount) touch(day, manualBucketSource(row.branchCode, "bank")).revenue += row.transferAmount;
+    if (row.cardAmount) touch(day, manualBucketSource(row.branchCode, "card")).revenue += row.cardAmount;
+    if (row.grabAmount) touch(day, manualBucketSource(row.branchCode, "grab")).revenue += row.grabAmount;
+    // Tiền mặt không cộng ở đây: ô tiền mặt của thu ngân bị khoá (luôn 0), cả hai vế của dòng
+    // tiền mặt cùng lấy từ phiếu thu đã duyệt ở vòng phiếu thu bên dưới.
   }
+  // Ngày nhập tay thì tiền về cũng phải gộp theo nhóm, không thì vế khai nằm ở dòng gộp còn vế
+  // tiền về nằm ở dòng nguồn cụ thể — hai vế không bao giờ gặp nhau.
+  const bucketFor = (source: { code: string; name: string; group?: string | null }) => {
+    const group = normalizeMoneySourceGroup(source.group);
+    if (group === "CASH") return "cash" as const;
+    if (group === "BANK") return "bank" as const;
+    if (group !== "WALLET") return null;
+    return normalizeSourceLabel(`${source.code} ${source.name}`).includes("grab") ? ("grab" as const) : ("card" as const);
+  };
 
   for (const row of allocations) {
     if (!row.revenueDate || !row.decreaseMoneySourceCode) continue;
@@ -840,7 +854,11 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
     if (!source || !moneySourceMatchesBranch(source, branchCode)) continue;
     // Đúng như bảng khách theo dõi tay: cột "đã vô" là số tiền THỰC NHẬN, nên phần chênh
     // so với doanh thu chính là phí thu hộ (ví) hoặc phần tiền chưa về (ngân hàng).
-    touch(dayKey(row.revenueDate), source).received += row.creditAmount;
+    const day = dayKey(row.revenueDate);
+    const bucket = source.branch && source.branch !== "ALL" && manualBucketDays.has(`${source.branch}|${day}`)
+      ? bucketFor(source)
+      : null;
+    touch(day, bucket ? manualBucketSource(source.branch as string, bucket) : source).received += row.creditAmount;
   }
 
   for (const row of cashReceipts) {
@@ -848,7 +866,16 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
     const source = sourceByCode.get(row.moneySourceCode);
     if (!source || normalizeMoneySourceGroup(source.group) !== "CASH") continue;
     if (!moneySourceMatchesBranch(source, branchCode)) continue;
-    touch(dayKey(row.voucherDate), source).received += row.amount;
+    const day = dayKey(row.voucherDate);
+    if (source.branch && source.branch !== "ALL" && manualBucketDays.has(`${source.branch}|${day}`)) {
+      // Thu ngân không gõ ô tiền mặt (bị khoá) nên vế khai cũng lấy từ phiếu thu — dòng tiền mặt
+      // của ngày nhập tay luôn ĐỦ; hiện ra để khách thấy đã đối chiếu, không phải để bắt lệch.
+      const cell = touch(day, manualBucketSource(source.branch, "cash"));
+      cell.revenue += row.amount;
+      cell.received += row.amount;
+    } else {
+      touch(day, source).received += row.amount;
+    }
   }
 
   const feeNameByCode = new Map(feeCategories.map((row) => [row.code, row.name]));
@@ -889,9 +916,11 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
       received: rows.reduce((sum, row) => sum + row.received, 0),
       remaining: rows.reduce((sum, row) => sum + row.remaining, 0),
       waiting: rows.filter((row) => row.status === "WAITING").reduce((sum, row) => sum + row.remaining, 0),
-      // Chỉ phần chênh dương của ví mới là phí thu hộ. Gộp cả dòng ngân hàng hay dòng về dư
-      // vào đây sẽ ra một con số vô nghĩa, có khi âm.
-      fee: rows.filter((row) => row.group === "WALLET" && row.remaining > 0)
+      // Chỉ phần chênh dương của ví ĐÃ CÓ tiền về mới là phí thu hộ. Ví chưa về đồng nào
+      // (WAITING) là tiền đang trên đường, không phải phí — gộp vào đây thì mấy ngày cuối kỳ
+      // (ví chưa kịp quyết toán) thổi phí lên hàng trăm triệu. Dòng ngân hàng hay dòng về dư
+      // cũng không được tính, ra một con số vô nghĩa, có khi âm.
+      fee: rows.filter((row) => row.group === "WALLET" && row.remaining > 0 && row.received > 0)
         .reduce((sum, row) => sum + row.remaining, 0),
       over: rows.filter((row) => row.status === "OVER").reduce((sum, row) => sum - row.remaining, 0),
     },
