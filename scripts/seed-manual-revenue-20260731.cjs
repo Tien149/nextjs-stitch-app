@@ -19,7 +19,11 @@ const prisma = new PrismaClient();
 const args = process.argv.slice(2);
 const APPLY = args.includes("--apply");
 const CONFIRM = args[args.indexOf("--confirm") + 1];
-const ACTOR = "Script nhập doanh thu ví 31/07 (số chị Bình gửi Zalo 17/08)";
+// Tên hiển thị phải NGẮN: màn Nhật ký in đậm actorName ở cột hẹp, màn Thu chi ngày in
+// createdBy ở cột "Người nhập". Xuất xứ đầy đủ để ở `message` và `note` — hai chỗ có đủ
+// bề ngang, và chính là chỗ người đọc tìm khi muốn biết số ở đâu ra.
+const ACTOR = "Script nhập DT 31/07";
+const ACTOR_ROLE = "SCRIPT";
 const NOTE = "Doanh thu ví 31/07 chị Bình cung cấp (Zalo 17/08)";
 const REPORT_DATE_TEXT = "2026-07-31";
 const SHIFT = "FULL";
@@ -125,14 +129,14 @@ async function main() {
     await prisma.auditLog.create({
       data: {
         actorName: ACTOR,
-        actorRole: "SCRIPT",
+        actorRole: ACTOR_ROLE,
         branchCode,
         module: "REPORTS",
         action: "UPSERT_MANUAL_REVENUE",
         entityType: "ManualRevenueEntry",
         entityId: saved.id,
         entityCode: `${REPORT_DATE_TEXT}-${branchCode}-${SHIFT}`,
-        message: NOTE,
+        message: `Số chị Bình gửi Zalo 17/08 — ${chiTiet.join(" · ")}`,
         metadataJson: JSON.stringify({
           reportDate: REPORT_DATE_TEXT, shift: SHIFT,
           cashAmount: 0, transferAmount: 0, otherAmount: 0,
