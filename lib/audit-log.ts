@@ -1,6 +1,13 @@
 import { prisma } from "@/lib/prisma";
 import type { DemoSession } from "@/lib/auth-demo";
 
+/**
+ * Vai trò dành cho thao tác do lệnh bảo trì chạy, không phải người dùng bấm nút.
+ * Nhật ký vẫn ghi đủ; màn hình chỉ ẩn mặc định để kế toán soi được thao tác của người.
+ * Dùng chung một hằng số để chỗ ghi và chỗ lọc không bao giờ lệch nhau.
+ */
+export const SYSTEM_ACTOR_ROLE = "SCRIPT";
+
 type AuditLogInput = {
   session?: DemoSession | null;
   actorId?: string | null;

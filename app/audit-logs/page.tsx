@@ -52,6 +52,8 @@ export default function AuditLogsPage() {
       if (search.trim()) params.set("search", search.trim());
       if (startDate) params.set("startDate", startDate);
       if (endDate) params.set("endDate", endDate);
+      // Không gửi `includeSystem` từ màn này: thao tác của lệnh bảo trì luôn ẩn với người dùng.
+      // Cần soi thì gọi thẳng /api/audit-logs?includeSystem=1 (xem chú thích ở API).
 
       const res = await fetch(`/api/audit-logs?${params.toString()}`);
       if (res.ok) {

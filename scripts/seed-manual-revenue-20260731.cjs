@@ -23,6 +23,8 @@ const CONFIRM = args[args.indexOf("--confirm") + 1];
 // createdBy ở cột "Người nhập". Xuất xứ đầy đủ để ở `message` và `note` — hai chỗ có đủ
 // bề ngang, và chính là chỗ người đọc tìm khi muốn biết số ở đâu ra.
 const ACTOR = "Script nhập DT 31/07";
+// Phải trùng SYSTEM_ACTOR_ROLE trong lib/audit-log.ts — màn Nhật ký dựa vào đúng giá trị này
+// để ẩn thao tác máy khỏi danh sách mặc định.
 const ACTOR_ROLE = "SCRIPT";
 const NOTE = "Doanh thu ví 31/07 chị Bình cung cấp (Zalo 17/08)";
 const REPORT_DATE_TEXT = "2026-07-31";
