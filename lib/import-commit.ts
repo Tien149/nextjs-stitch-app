@@ -1454,17 +1454,20 @@ export async function commitImport(input: CommitInput) {
     }
 
     if (input.importType === "INTERNAL_TRANSFER") {
-      const transferSequence = await tx.moneyTransfer.count();
       for (let index = 0; index < input.rows.length; index += 1) {
         const row = input.rows[index];
         const transferDate = asDate(row.values.transfer_date);
-        const ym = `${transferDate.getUTCFullYear()}${String(transferDate.getUTCMonth() + 1).padStart(2, "0")}`;
+        const branchCode = asText(row.values.branch_code);
         const transfer = await tx.moneyTransfer.create({
           data: {
             importBatchId: batch.id,
-            code: `CTNB-${ym}-${String(transferSequence + index + 1).padStart(4, "0")}`,
+            // Trước đây mã tự chế bằng COUNT toàn bảng MoneyTransfer — đếm lẫn cả QTVI/NOPT và
+            // CTNB của tháng/cửa hàng khác nên số thứ tự không thuộc chuỗi mã nào, lại tụt khi
+            // rollback và cấp trúng mã đang sống. Dùng chung nextTransferCode như luồng sao kê:
+            // max + 1 trong ĐÚNG chuỗi CTNB + tháng + cửa hàng, và đúng quy tắc mã đã chốt.
+            code: await nextTransferCode(tx, "CTNB", transferDate, branchCode),
             transferDate,
-            branchCode: asText(row.values.branch_code),
+            branchCode,
             fromMoneySourceCode: asText(row.values.from_money_source_code),
             toMoneySourceCode: asText(row.values.to_money_source_code),
             amount: asNumber(row.values.amount),
@@ -1479,13 +1482,19 @@ export async function commitImport(input: CommitInput) {
     }
 
     if (input.importType === "DEBT_OPENING") {
-      const debtSequence = await tx.debtRecord.count();
       for (let index = 0; index < input.rows.length; index += 1) {
         const row = input.rows[index];
         const documentDate = asDate(row.values.document_date);
         const debtType = asText(row.values.debt_type);
+        // Cùng lý do với mã chuyển tiền: COUNT toàn bảng DebtRecord không thuộc chuỗi mã này
+        // và tụt sau rollback. Lấy max + 1 trong đúng chuỗi CN-PT/PP + ngày chứng từ.
+        const debtPrefix = `CN-${debtType === "RECEIVABLE" ? "PT" : "PP"}-${documentDate.toISOString().slice(0, 10).replace(/-/g, "")}-`;
+        const issuedDebtCodes = await tx.debtRecord.findMany({
+          where: { code: { startsWith: debtPrefix } },
+          select: { code: true },
+        });
         const code = asText(row.values.document_code) ||
-          `CN-${debtType === "RECEIVABLE" ? "PT" : "PP"}-${documentDate.toISOString().slice(0, 10).replace(/-/g, "")}-${String(debtSequence + index + 1).padStart(4, "0")}`;
+          debtPrefix + String(nextSeqFromCodes(issuedDebtCodes.map((item) => item.code), debtPrefix)).padStart(4, "0");
         const debt = await tx.debtRecord.create({
           data: {
             importBatchId: batch.id,
