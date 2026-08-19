@@ -103,7 +103,7 @@ type CashCategoryRow = {
   ratio: number;
 };
 type CashPartnerRow = { code: string; name: string; partnerType: string | null; total: number; count: number };
-type CashSourceFlow = { code: string; name: string; group: string | null; branchCode: string; opening: number; in: number; out: number; transferIn: number; transferOut: number; closing: number; expectedIn: number; expectedOut: number; expectedClosing: number };
+type CashSourceFlow = { code: string; name: string; group: string | null; branchCode: string; opening: number; in: number; out: number; transferIn: number; transferOut: number; closing: number; closingByMonth: number[]; expectedIn: number; expectedOut: number; expectedClosing: number };
 type CashSourceData = {
   period: string;
   view: "month" | "year";
@@ -111,6 +111,7 @@ type CashSourceData = {
   months: string[];
   branchCode: string;
   totals: { in: number; out: number; net: number; netRatio: number; byMonth: Array<{ period: string; in: number; out: number; net: number }> };
+  cashRemainingTarget: { byMonth: number[]; total: number };
   income: CashCategoryRow[];
   expense: CashCategoryRow[];
   expenseByPartner: CashPartnerRow[];
@@ -757,6 +758,7 @@ export default function ReportsPage() {
                     <option value="depreciation">Khấu hao</option>
                     <option value="opexBeforeDepreciation">OPEX trước khấu hao</option>
                     <option value="ebitda">EBITDA</option>
+                    <option value="cashRemaining">Nguồn tiền còn lại (báo cáo nguồn tiền)</option>
                   </select>
                 </Field>
                 <Field label="Giá trị ngân sách/target">
@@ -916,7 +918,9 @@ export default function ReportsPage() {
             <Kpi label="Tổng thu" value={cashSource.totals.in} icon="payments" tone="blue" />
             <Kpi label="Tổng chi" value={cashSource.totals.out} icon="receipt_long" tone="amber" />
             <Kpi label="Nguồn tiền còn lại (Thu - Chi)" value={cashSource.totals.net} icon="savings" tone={cashSource.totals.net < 0 ? "rose" : "green"} />
-            <Kpi label="Chi cho nhà cung cấp" value={cashSource.supplierExpense.total} icon="local_shipping" tone="rose" />
+            {cashSource.cashRemainingTarget.total > 0
+              ? <Kpi label="Nguồn tiền còn lại mục tiêu" value={cashSource.cashRemainingTarget.total} icon="flag" tone={cashSource.totals.net < cashSource.cashRemainingTarget.total ? "rose" : "green"} />
+              : <Kpi label="Chi cho nhà cung cấp" value={cashSource.supplierExpense.total} icon="local_shipping" tone="rose" />}
           </div>
 
           <div className="flex flex-wrap gap-3 text-xs">
@@ -952,7 +956,7 @@ export default function ReportsPage() {
           <div className="grid xl:grid-cols-2 gap-5">
             <CashCategoryTable
               title="Tổng quan thu theo danh mục"
-              subtitle="Gộp theo từng loại Thu trong danh mục Thu/Chi, không phân biệt dữ liệu nhập tay, import hay phiếu thu."
+              subtitle="Tiền thực thu theo danh mục: tiền mặt lấy từ phiếu thu đã duyệt, còn lại lấy từ sổ sao kê ngân hàng theo Loại thu/chi khai trên file. Doanh thu POS/nhập tay chưa về tiền không nằm ở đây — phần ví chưa quyết toán xem ở cột Dự thu."
               amountHeader="Tổng thu"
               rows={cashSource.income}
               total={cashSource.totals.in}
@@ -960,7 +964,7 @@ export default function ReportsPage() {
             />
             <CashCategoryTable
               title="Tổng quan chi theo danh mục"
-              subtitle="Gộp theo từng loại Chi trong danh mục Thu/Chi; dữ liệu chưa có danh mục được đưa vào Chưa phân loại."
+              subtitle="Tiền thực chi theo danh mục: tiền mặt lấy từ phiếu chi đã duyệt, còn lại lấy từ sổ sao kê ngân hàng theo Loại thu/chi khai trên file; dữ liệu chưa có danh mục được đưa vào Chưa phân loại."
               amountHeader="Tổng chi"
               rows={cashSource.expense}
               total={cashSource.totals.out}
@@ -1001,26 +1005,71 @@ export default function ReportsPage() {
               <CashMonthMatrix title="Tổng quan nguồn thu theo tháng" months={cashSource.months} rows={cashSource.income} />
               <CashMonthMatrix title="Tổng quan nguồn chi theo tháng" months={cashSource.months} rows={cashSource.expense} />
               <section className="table-panel">
-                <PanelHeader title="Thu - chi từng tháng" subtitle="Tổng hợp lại theo tháng để nhìn nhanh tháng nào âm dòng tiền." />
+                <PanelHeader title="Thu - chi từng tháng" subtitle="Tổng hợp lại theo tháng để nhìn nhanh tháng nào âm dòng tiền; kèm mục tiêu Nguồn tiền còn lại khai ở màn Ngân sách." />
                 <div className="overflow-x-auto">
                   <Table headers={["Chỉ tiêu", ...cashSource.months.map((item) => `T${Number(item.slice(5))}`), "Tổng"]}>
                     {([
-                      { label: "Tổng thu", pick: (row: { in: number; out: number; net: number }) => row.in, total: cashSource.totals.in },
-                      { label: "Tổng chi", pick: (row: { in: number; out: number; net: number }) => row.out, total: cashSource.totals.out },
-                      { label: "Nguồn tiền còn lại", pick: (row: { in: number; out: number; net: number }) => row.net, total: cashSource.totals.net },
+                      { label: "Tổng thu", pick: (row: { in: number; out: number; net: number }, index: number) => row.in, total: cashSource.totals.in },
+                      { label: "Tổng chi", pick: (row: { in: number; out: number; net: number }, index: number) => row.out, total: cashSource.totals.out },
+                      { label: "Nguồn tiền còn lại", pick: (row: { in: number; out: number; net: number }, index: number) => row.net, total: cashSource.totals.net },
+                      ...(cashSource.cashRemainingTarget.total > 0 ? [
+                        { label: "Nguồn tiền còn lại mục tiêu", pick: (row: { in: number; out: number; net: number }, index: number) => cashSource.cashRemainingTarget.byMonth[index] || 0, total: cashSource.cashRemainingTarget.total },
+                        { label: "So sánh với mục tiêu", pick: (row: { in: number; out: number; net: number }, index: number) => row.net - (cashSource.cashRemainingTarget.byMonth[index] || 0), total: cashSource.totals.net - cashSource.cashRemainingTarget.total },
+                      ] : []),
                     ]).map((line) => (
                       <tr key={line.label} className="border-t border-slate-100">
                         <Cell><b>{line.label}</b></Cell>
-                        {cashSource.totals.byMonth.map((month) => (
+                        {cashSource.totals.byMonth.map((month, index) => (
                           <Cell key={month.period} right>
-                            <span className={line.label === "Nguồn tiền còn lại" && line.pick(month) < 0 ? "text-rose-600 font-bold" : ""}>
-                              {line.pick(month) ? `${money(line.pick(month))}` : "-"}
+                            <span className={["Nguồn tiền còn lại", "So sánh với mục tiêu"].includes(line.label) && line.pick(month, index) < 0 ? "text-rose-600 font-bold" : ""}>
+                              {line.pick(month, index) ? `${money(line.pick(month, index))}` : "-"}
                             </span>
                           </Cell>
                         ))}
                         <Cell right><b>{money(line.total)} đ</b></Cell>
                       </tr>
                     ))}
+                    <tr className="border-t border-slate-200 bg-slate-50">
+                      <Cell><b>% Nguồn tiền còn lại / Tổng thu</b></Cell>
+                      {cashSource.totals.byMonth.map((month) => (
+                        <Cell key={month.period} right>
+                          <b className={month.net < 0 ? "text-rose-600" : "text-slate-700"}>
+                            {month.in ? `${((month.net / month.in) * 100).toFixed(2)}%` : "-"}
+                          </b>
+                        </Cell>
+                      ))}
+                      <Cell right><b>{(cashSource.totals.netRatio * 100).toFixed(2)}%</b></Cell>
+                    </tr>
+                  </Table>
+                </div>
+              </section>
+              <section className="table-panel">
+                <PanelHeader
+                  title="Tổng quan nguồn tiền cuối mỗi tháng"
+                  subtitle="Số dư từng nguồn tiền mặt/ngân hàng tại thời điểm cuối mỗi tháng: đầu kỳ cộng dồn biến động của các tháng trước đó."
+                />
+                <div className="overflow-x-auto">
+                  <Table headers={["Nguồn tiền", "Đầu kỳ", ...cashSource.months.map((item) => `T${Number(item.slice(5))}`)]}>
+                    {cashSource.sources.map((row) => (
+                      <tr key={row.code} className="border-t border-slate-100 hover:bg-slate-50">
+                        <Cell><b>{row.name}</b><p className="mt-0.5 text-xs text-slate-500">{row.code}</p></Cell>
+                        <Cell right>{row.opening ? `${money(row.opening)}` : "-"}</Cell>
+                        {row.closingByMonth.map((closing, index) => (
+                          <Cell key={cashSource.months[index]} right>
+                            <span className={closing < 0 ? "text-rose-600 font-bold" : ""}>{closing ? money(closing) : "-"}</span>
+                          </Cell>
+                        ))}
+                      </tr>
+                    ))}
+                    <tr className="border-t border-slate-200 bg-slate-50 font-bold">
+                      <Cell><b>CỘNG</b></Cell>
+                      <Cell right><b>{money(cashSource.sources.reduce((sum, row) => sum + row.opening, 0))}</b></Cell>
+                      {cashSource.months.map((month, index) => (
+                        <Cell key={month} right>
+                          <b>{money(cashSource.sources.reduce((sum, row) => sum + (row.closingByMonth[index] || 0), 0))}</b>
+                        </Cell>
+                      ))}
+                    </tr>
                   </Table>
                 </div>
               </section>
