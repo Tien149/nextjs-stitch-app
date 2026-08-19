@@ -19,6 +19,8 @@ type Voucher = {
   status: string;
   createdBy: string | null;
   approvedBy: string | null;
+  recipientName?: string | null;
+  partnerAllocations?: Array<{ id: string; partnerCode: string; partnerName: string; amount: number; debtReference: string | null }>;
 };
 
 export default function VoucherPrintPage() {
@@ -53,12 +55,41 @@ export default function VoucherPrintPage() {
         </section>
 
         <div className="space-y-4 text-sm">
-          <div className="grid grid-cols-[160px_1fr] gap-3"><b>Đối tác</b><span>{voucher.partnerName}</span></div>
+          <div className="grid grid-cols-[160px_1fr] gap-3"><b>{(voucher.partnerAllocations?.length || 0) > 0 ? "Người nhận tiền" : "Đối tác"}</b><span>{voucher.recipientName || voucher.partnerName}</span></div>
           <div className="grid grid-cols-[160px_1fr] gap-3"><b>Nguồn tiền</b><span>{voucher.moneySourceCode}</span></div>
           <div className="grid grid-cols-[160px_1fr] gap-3"><b>Nội dung</b><span>{voucher.description}</span></div>
           <div className="grid grid-cols-[160px_1fr] gap-3"><b>Số tiền</b><span className="text-xl font-bold">{money(voucher.amount)} đ</span></div>
           <div className="grid grid-cols-[160px_1fr] gap-3"><b>Trạng thái</b><span>{voucher.status}</span></div>
         </div>
+
+        {(voucher.partnerAllocations?.length || 0) > 0 && (
+          <table className="mt-6 w-full border-collapse text-sm">
+            <thead>
+              <tr className="border-b-2 border-slate-300 text-left text-xs uppercase text-slate-500">
+                <th className="py-2">STT</th>
+                <th className="py-2">Đối tác</th>
+                <th className="py-2">Mã công nợ</th>
+                <th className="py-2 text-right">Số tiền</th>
+              </tr>
+            </thead>
+            <tbody>
+              {voucher.partnerAllocations?.map((line, index) => (
+                <tr key={line.id} className="border-b border-slate-100">
+                  <td className="py-2">{index + 1}</td>
+                  <td className="py-2">{line.partnerCode} — {line.partnerName}</td>
+                  <td className="py-2">{line.debtReference || "-"}</td>
+                  <td className="py-2 text-right font-bold">{money(line.amount)} đ</td>
+                </tr>
+              ))}
+              <tr>
+                <td colSpan={3} className="py-2 font-bold">CỘNG</td>
+                <td className="py-2 text-right text-base font-bold">
+                  {money(voucher.partnerAllocations?.reduce((sum, line) => sum + line.amount, 0) || 0)} đ
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        )}
 
         <div className="grid grid-cols-3 gap-8 text-center mt-16 text-sm">
           <div><b>Người lập</b><div className="h-20" /><p>{voucher.createdBy || "-"}</p></div>

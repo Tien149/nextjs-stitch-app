@@ -712,13 +712,29 @@ export async function commitImport(input: CommitInput) {
                 select: { code: true, name: true },
               })
             : null;
+          // Một mã giao dịch trả cho nhiều đối tác: các dòng file khác đối tác/mã công nợ
+          // thành bảng phân bổ trên chứng từ, gạch nợ từng dòng — commonBankValue lúc này
+          // trả rỗng nên partner tổng của phiếu để trống, tên phiếu ghi số đối tác.
+          const rowPartnerCodes = group.rows.map((row) => asText(row.values.partner_code)).filter(Boolean);
+          const isMultiPartnerGroup = group.rows.length > 1 && !partnerCode && rowPartnerCodes.length > 0;
+          const multiPartnerByCode = isMultiPartnerGroup
+            ? new Map((await tx.masterDataItem.findMany({
+                where: { type: "PARTNER", code: { in: [...new Set(rowPartnerCodes)] }, deletedAt: null },
+                select: { code: true, name: true },
+              })).map((row) => [row.code, row.name]))
+            : new Map<string, string>();
           const isSalesReceipt = operationType === "REVENUE_RECEIPT";
           const businessEffect = isSalesReceipt ? "SETTLEMENT" : "RECOGNITION";
           const counterpartyName = commonBankValue(group.rows, "partner_hint") || null;
           const depositAction = operationType === "DEPOSIT_RECEIPT" ? "COLLECT"
             : operationType === "DEPOSIT_REFUND" ? "REFUND"
             : null;
-          const debtAction = ["AR_COLLECTION", "AP_PAYMENT"].includes(operationType) ? "SETTLE" : null;
+          // Chỉ gạch sổ nợ (SETTLE) khi file khai Mã công nợ cụ thể. Khai mỗi Mã đối tác
+          // phải thu/phải trả thì chứng từ vẫn lập và gắn đối tác — trước đây các dòng này
+          // kẹt lại vì SETTLE bắt buộc có mã công nợ, đúng case "thanh toán công nợ chưa
+          // bắt hết" khách báo.
+          const debtAction = ["AR_COLLECTION", "AP_PAYMENT"].includes(operationType)
+            && commonBankValue(group.rows, "debt_reference") ? "SETTLE" : null;
           const voucher = await tx.financialVoucher.create({
             data: {
               importBatchId: batch.id,
@@ -727,7 +743,10 @@ export async function commitImport(input: CommitInput) {
               voucherType,
               voucherDate: documentDate,
               partnerCode: partner?.code || null,
-              partnerName: partner?.name || counterpartyName || "Đối tác theo sao kê",
+              partnerName: partner?.name
+                || (isMultiPartnerGroup ? `${new Set(rowPartnerCodes).size} đối tác theo sao kê` : null)
+                || counterpartyName
+                || "Đối tác theo sao kê",
               branchCode,
               sourceScope: "BANK_STATEMENT_AUTO",
               documentChannel: "BANK",
@@ -750,7 +769,21 @@ export async function commitImport(input: CommitInput) {
               approvedBy: input.uploadedBy,
             },
           });
-          if (depositAction || debtAction) {
+          if (isMultiPartnerGroup) {
+            await tx.voucherAllocation.createMany({
+              data: group.rows
+                .filter((row) => asText(row.values.partner_code))
+                .map((row) => ({
+                  voucherId: voucher.id,
+                  partnerCode: asText(row.values.partner_code),
+                  partnerName: multiPartnerByCode.get(asText(row.values.partner_code)) || asText(row.values.partner_code),
+                  amount: asNumber(row.values.credit_amount) || asNumber(row.values.debit_amount),
+                  debtReference: asText(row.values.debt_reference) || null,
+                  note: asText(row.values.description) || null,
+                })),
+            });
+          }
+          if (depositAction || debtAction || isMultiPartnerGroup) {
             await applyVoucherSideEffects(tx as unknown as RawTxClient, voucher, input.uploadedBy);
           }
           targetId = voucher.id;

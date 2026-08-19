@@ -6,9 +6,10 @@ import { BranchScopeSelect, resolveInitialBranchScope } from "@/components/Branc
 import { DateInput } from "@/components/DateInput";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { storeLabel } from "@/lib/branch-labels";
-import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
+import { appMenuItems, canAccessMenu, canPerformAction, canPerformMenuAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
+import { PartnerPicker } from "@/components/PartnerPicker";
 
 type DepositHistory = {
   id: string;
@@ -145,6 +146,8 @@ export default function DepositsPage() {
   const formatCurrency = (amount: number) => new Intl.NumberFormat("vi-VN").format(amount);
   const canCreateDeposits = user ? canPerformAction(user, "create") : false;
   const canProcessDeposits = user ? canPerformAction(user, "edit") : false;
+  // Nút "+" tạo nhanh đối tác đi qua API danh mục nên cần đúng quyền cấu hình danh mục.
+  const canCreatePartner = user ? canPerformMenuAction(user, "/settings", "config") : false;
   /** Biểu mẫu bên trái hiện ra khi được tạo mới hoặc khi đang sửa một phiếu cọc. */
   const showDepositForm = canCreateDeposits || Boolean(editingDeposit);
   const depositFormRef = useRef<HTMLFormElement>(null);
@@ -455,22 +458,22 @@ export default function DepositsPage() {
             <DateInput value={form.receivedDate} onChange={(receivedDate) => setForm((value) => ({ ...value, receivedDate }))} className="mt-1" required ariaLabel="Ngày nhận cọc" />
           </label>
 
-          <label className="text-xs font-bold text-slate-600 block">
+          <div className="text-xs font-bold text-slate-600 block">
             Khách hàng *
-            <select
+            <PartnerPicker
+              className="mt-1"
               value={form.partnerCode}
-              onChange={(e) => handlePartnerChange(e.target.value)}
-              className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              onChange={handlePartnerChange}
+              options={partners.map((item) => ({ value: item.code, label: `[${item.code}] ${item.name}` }))}
               required
-            >
-              <option value="">-- Chọn đối tác --</option>
-              {partners.map(item => (
-                <option key={item.id} value={item.code}>
-                  [{item.code}] {item.name}
-                </option>
-              ))}
-            </select>
-          </label>
+              canCreate={canCreatePartner}
+              defaultPartnerType="CUSTOMER"
+              onCreated={(partner) => {
+                setPartners((current) => [...current, partner]);
+                setForm((value) => ({ ...value, partnerCode: partner.code, partnerName: partner.name }));
+              }}
+            />
+          </div>
 
           <label className="text-xs font-bold text-slate-600 block">
             Tên khách hàng

@@ -199,7 +199,10 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id") || undefined;
     if (id) {
-      const voucher = await prisma.financialVoucher.findUnique({ where: { id } });
+      const voucher = await prisma.financialVoucher.findUnique({
+        where: { id },
+        include: { partnerAllocations: { orderBy: { createdAt: "asc" } } },
+      });
       if (!voucher) return NextResponse.json({ error: "Không tìm thấy chứng từ" }, { status: 404 });
       const auth = requireMenuAccess(request, voucher.documentChannel === "BANK" ? "/bank-vouchers" : "/vouchers");
       if (!auth.ok) return auth.response;
@@ -263,6 +266,7 @@ export async function GET(request: Request) {
     const [vouchers, totals, pendingCount] = await Promise.all([
       prisma.financialVoucher.findMany({
         where,
+        include: { partnerAllocations: { orderBy: { createdAt: "asc" } } },
         orderBy: [{ voucherDate: "desc" }, { createdAt: "desc" }],
         skip: (currentPage - 1) * pageSize,
         take: pageSize,
@@ -313,7 +317,9 @@ export async function POST(request: Request) {
     if (!["RECEIPT", "PAYMENT"].includes(voucherType)) {
       return NextResponse.json({ error: "Loại chứng từ không hợp lệ" }, { status: 400 });
     }
-    if (!partnerName || !branchCode || !moneySourceCode || amount <= 0 || !description) {
+    // Phiếu đại diện nhiều đối tác không cần "Tên đối tác" đơn — tên hiển thị lấy từ người nhận.
+    const hasPartnerAllocations = Array.isArray(body.allocations) && (body.allocations as unknown[]).length > 0;
+    if ((!partnerName && !hasPartnerAllocations) || !branchCode || !moneySourceCode || amount <= 0 || !description) {
       return NextResponse.json({ error: "Thiếu đối tác, chi nhánh, nguồn tiền, số tiền hoặc nội dung" }, { status: 400 });
     }
 
@@ -366,6 +372,47 @@ export async function POST(request: Request) {
       }, { status: 400 });
     }
 
+    // Phiếu đại diện: một người nhận, danh sách nhiều đối tác. Chỉ áp cho phiếu Chi —
+    // đúng nghiệp vụ "anh A nhận một cục tiền đi trả 10 NCC" khách mô tả.
+    const recipientName = cleanText(body.recipientName);
+    const rawAllocations = Array.isArray(body.allocations) ? body.allocations as Array<Record<string, unknown>> : [];
+    let partnerAllocations: Array<{ partnerCode: string; partnerName: string; amount: number; debtReference: string | null; note: string | null }> = [];
+    if (rawAllocations.length > 0) {
+      if (voucherType !== "PAYMENT") {
+        return NextResponse.json({ error: "Danh sách nhiều đối tác chỉ dùng cho phiếu Chi" }, { status: 400 });
+      }
+      const lineCodes = rawAllocations.map((line) => cleanText(line.partnerCode).toUpperCase()).filter(Boolean);
+      if (lineCodes.length !== rawAllocations.length) {
+        return NextResponse.json({ error: "Mỗi dòng phân bổ phải có Mã đối tác" }, { status: 400 });
+      }
+      const linePartners = await prisma.masterDataItem.findMany({
+        where: { type: "PARTNER", code: { in: [...new Set(lineCodes)] }, status: "ACTIVE", deletedAt: null },
+        select: { code: true, name: true },
+      });
+      const partnerByCode = new Map(linePartners.map((row) => [row.code, row]));
+      partnerAllocations = rawAllocations.map((line) => ({
+        partnerCode: cleanText(line.partnerCode).toUpperCase(),
+        partnerName: partnerByCode.get(cleanText(line.partnerCode).toUpperCase())?.name || "",
+        amount: toAmount(line.amount),
+        debtReference: cleanText(line.debtReference) || null,
+        note: cleanText(line.note) || null,
+      }));
+      const badPartner = partnerAllocations.find((line) => !line.partnerName);
+      if (badPartner) {
+        return NextResponse.json({ error: `Đối tác [${badPartner.partnerCode}] không tồn tại hoặc đã ngừng hoạt động` }, { status: 400 });
+      }
+      const badAmount = partnerAllocations.find((line) => line.amount <= 0);
+      if (badAmount) {
+        return NextResponse.json({ error: `Số tiền của đối tác [${badAmount.partnerCode}] phải lớn hơn 0` }, { status: 400 });
+      }
+      const allocationTotal = partnerAllocations.reduce((sum, line) => sum + line.amount, 0);
+      if (Math.abs(allocationTotal - amount) > 1) {
+        return NextResponse.json({
+          error: `Tổng các dòng phân bổ (${Math.round(allocationTotal).toLocaleString("vi-VN")} đ) phải bằng số tiền phiếu (${Math.round(amount).toLocaleString("vi-VN")} đ)`,
+        }, { status: 400 });
+      }
+    }
+
     // Phiếu tạo thủ công luôn được duyệt ngay. Không tin status do client gửi;
     // quy trình import dùng endpoint riêng nên không bị thay đổi bởi rule này.
     let voucher = null;
@@ -381,8 +428,11 @@ export async function POST(request: Request) {
               shift: shiftValue || null,
               depositAction: depositAction || null,
               depositCode: depositAction ? (cleanText(body.depositCode) || null) : null,
-              partnerCode: cleanText(body.partnerCode) || null,
-              partnerName,
+              partnerCode: partnerAllocations.length > 0 ? null : cleanText(body.partnerCode) || null,
+              partnerName: partnerAllocations.length > 0
+                ? (recipientName || `${partnerAllocations.length} đối tác`)
+                : partnerName,
+              recipientName: recipientName || null,
               branchCode,
               documentChannel,
               businessEffect: "RECOGNITION",
@@ -396,6 +446,12 @@ export async function POST(request: Request) {
               approvedBy: auth.session.name,
             },
           });
+          if (partnerAllocations.length > 0) {
+            // Dòng phân bổ phải nằm trước side effects: gạch nợ đọc từ chính bảng này.
+            await tx.voucherAllocation.createMany({
+              data: partnerAllocations.map((line) => ({ ...line, voucherId: created.id })),
+            });
+          }
           await applyVoucherSideEffects(tx, created, auth.session.name);
           await tx.auditLog.create({
             data: buildAuditLogData({
@@ -436,6 +492,19 @@ export async function POST(request: Request) {
 async function updateVoucher(session: DemoSession, id: string, body: Record<string, unknown>) {
   const current = await prisma.financialVoucher.findUnique({ where: { id } });
   if (!current) return NextResponse.json({ error: "Không tìm thấy chứng từ" }, { status: 404 });
+
+  // Phiếu đại diện nhiều đối tác: số tiền và danh sách phân bổ dính chặt vào sổ nợ từng dòng,
+  // sửa lệch nhau sẽ làm tổng phiếu khác tổng phân bổ. Muốn đổi thì hủy phiếu và lập lại.
+  const allocationCount = await prisma.voucherAllocation.count({ where: { voucherId: id } });
+  if (allocationCount > 0) {
+    const changesAmount = body.amount !== undefined && Math.abs(toAmount(body.amount) - current.amount) > 1;
+    const changesPartner = body.partnerCode !== undefined || body.allocations !== undefined;
+    if (changesAmount || changesPartner) {
+      return NextResponse.json({
+        error: "Phiếu chi nhiều đối tác không sửa được số tiền hoặc danh sách phân bổ. Hãy hủy phiếu và lập phiếu mới.",
+      }, { status: 400 });
+    }
+  }
 
   try {
     assertBranchAccess(session, current.branchCode);

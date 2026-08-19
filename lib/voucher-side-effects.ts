@@ -1,6 +1,29 @@
 import type { RawTxClient } from "@/lib/prisma";
 import { addPeriod } from "@/lib/phase3";
 
+/** Gạch một khoản công nợ cho phiếu: dùng chung cho phiếu 1 đối tác lẫn từng dòng phân bổ. */
+async function settleDebtLine(
+  tx: RawTxClient,
+  voucher: { id: string; voucherType: string; voucherDate: Date; branchCode: string },
+  line: { debtReference: string; partnerCode: string | null; amount: number },
+  actor: string,
+) {
+  const debt = await tx.debtRecord.findFirst({ where: { code: line.debtReference, deletedAt: null } });
+  if (!debt || debt.branchCode !== voucher.branchCode) throw new Error(`Không tìm thấy công nợ ${line.debtReference} trong chi nhánh`);
+  const expectedDebtType = voucher.voucherType === "RECEIPT" ? "RECEIVABLE" : "PAYABLE";
+  if (debt.debtType !== expectedDebtType) throw new Error(`Phiếu ${voucher.voucherType === "RECEIPT" ? "Thu" : "Chi"} không khớp loại công nợ ${debt.code}`);
+  if (line.partnerCode && line.partnerCode !== debt.partnerCode) throw new Error(`Đối tượng không khớp công nợ ${debt.code}`);
+  if (line.amount > debt.outstandingAmount) throw new Error(`Số tiền thanh toán vượt dư nợ ${debt.code}`);
+  const outstandingAmount = debt.outstandingAmount - line.amount;
+  await tx.debtSettlement.create({
+    data: { debtId: debt.id, voucherId: voucher.id, settlementDate: voucher.voucherDate, amount: line.amount, createdBy: actor },
+  });
+  await tx.debtRecord.update({
+    where: { id: debt.id },
+    data: { outstandingAmount, status: outstandingAmount === 0 ? "SETTLED" : "PARTIAL" },
+  });
+}
+
 type VoucherForSideEffects = {
   id: string;
   code: string;
@@ -120,22 +143,34 @@ export async function applyVoucherSideEffects(
 
   if (voucher.debtAction === "SETTLE") {
     if (!voucher.debtReference) throw new Error("Thanh toán công nợ bắt buộc có mã công nợ");
-    const previousSettlement = await tx.debtSettlement.findUnique({ where: { voucherId: voucher.id } });
+    const previousSettlement = await tx.debtSettlement.findFirst({ where: { voucherId: voucher.id } });
     if (!previousSettlement) {
-      const debt = await tx.debtRecord.findFirst({ where: { code: voucher.debtReference, deletedAt: null } });
-      if (!debt || debt.branchCode !== voucher.branchCode) throw new Error(`Không tìm thấy công nợ ${voucher.debtReference} trong chi nhánh`);
-      const expectedDebtType = voucher.voucherType === "RECEIPT" ? "RECEIVABLE" : "PAYABLE";
-      if (debt.debtType !== expectedDebtType) throw new Error(`Phiếu ${voucher.voucherType === "RECEIPT" ? "Thu" : "Chi"} không khớp loại công nợ ${debt.code}`);
-      if (voucher.partnerCode && voucher.partnerCode !== debt.partnerCode) throw new Error(`Đối tượng không khớp công nợ ${debt.code}`);
-      if (voucher.amount > debt.outstandingAmount) throw new Error(`Số tiền thanh toán vượt dư nợ ${debt.code}`);
-      const outstandingAmount = debt.outstandingAmount - voucher.amount;
-      await tx.debtSettlement.create({
-        data: { debtId: debt.id, voucherId: voucher.id, settlementDate: voucher.voucherDate, amount: voucher.amount, createdBy: actor },
-      });
-      await tx.debtRecord.update({
-        where: { id: debt.id },
-        data: { outstandingAmount, status: outstandingAmount === 0 ? "SETTLED" : "PARTIAL" },
-      });
+      await settleDebtLine(tx, voucher, {
+        debtReference: voucher.debtReference,
+        partnerCode: voucher.partnerCode,
+        amount: voucher.amount,
+      }, actor);
+    }
+  }
+
+  // Phiếu đại diện (một người nhận, nhiều đối tác): gạch nợ theo từng dòng phân bổ.
+  // Idempotent theo (voucherId, debtId) để duyệt lại không gạch đôi.
+  const partnerAllocations = await tx.voucherAllocation.findMany({ where: { voucherId: voucher.id } });
+  if (partnerAllocations.length > 0) {
+    const existingSettlements = await tx.debtSettlement.findMany({
+      where: { voucherId: voucher.id },
+      select: { debtId: true },
+    });
+    const settledDebtIds = new Set(existingSettlements.map((row) => row.debtId));
+    for (const line of partnerAllocations) {
+      if (!line.debtReference) continue;
+      const debt = await tx.debtRecord.findFirst({ where: { code: line.debtReference, deletedAt: null }, select: { id: true } });
+      if (debt && settledDebtIds.has(debt.id)) continue;
+      await settleDebtLine(tx, voucher, {
+        debtReference: line.debtReference,
+        partnerCode: line.partnerCode,
+        amount: line.amount,
+      }, actor);
     }
   }
 

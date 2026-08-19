@@ -94,25 +94,26 @@ async function revertDeposit(tx: RawTxClient, voucher: VoucherForRevert) {
 }
 
 async function revertDebtSettlement(tx: RawTxClient, voucher: VoucherForRevert) {
-  const settlement = await tx.debtSettlement.findUnique({ where: { voucherId: voucher.id } });
-  if (!settlement) return;
+  // Phiếu đại diện có thể gạch nhiều khoản nợ trong một lần duyệt — hoàn tác phải trả lại đủ.
+  const settlements = await tx.debtSettlement.findMany({ where: { voucherId: voucher.id } });
+  for (const settlement of settlements) {
+    const debt = await tx.debtRecord.findFirst({ where: { id: settlement.debtId, deletedAt: null } });
+    if (!debt) fail("Không tìm thấy khoản công nợ gắn với chứng từ này để hoàn tác.");
 
-  const debt = await tx.debtRecord.findFirst({ where: { id: settlement.debtId, deletedAt: null } });
-  if (!debt) fail("Không tìm thấy khoản công nợ gắn với chứng từ này để hoàn tác.");
+    const outstandingAmount = debt.outstandingAmount + settlement.amount;
+    if (outstandingAmount > debt.originalAmount) {
+      fail(`Hoàn tác sẽ làm dư nợ ${debt.code} vượt quá giá trị gốc, vui lòng kiểm tra lại.`);
+    }
 
-  const outstandingAmount = debt.outstandingAmount + settlement.amount;
-  if (outstandingAmount > debt.originalAmount) {
-    fail(`Hoàn tác sẽ làm dư nợ ${debt.code} vượt quá giá trị gốc, vui lòng kiểm tra lại.`);
+    await tx.debtSettlement.delete({ where: { id: settlement.id } });
+    await tx.debtRecord.update({
+      where: { id: debt.id },
+      data: {
+        outstandingAmount,
+        status: outstandingAmount >= debt.originalAmount ? "OPEN" : "PARTIAL",
+      },
+    });
   }
-
-  await tx.debtSettlement.delete({ where: { id: settlement.id } });
-  await tx.debtRecord.update({
-    where: { id: debt.id },
-    data: {
-      outstandingAmount,
-      status: outstandingAmount >= debt.originalAmount ? "OPEN" : "PARTIAL",
-    },
-  });
 }
 
 async function revertAccrual(tx: RawTxClient, voucher: VoucherForRevert) {
@@ -134,6 +135,7 @@ async function revertAccrual(tx: RawTxClient, voucher: VoucherForRevert) {
 
 export async function revertVoucherSideEffects(tx: RawTxClient, voucher: VoucherForRevert) {
   if (voucher.depositAction) await revertDeposit(tx, voucher);
-  if (voucher.debtAction === "SETTLE") await revertDebtSettlement(tx, voucher);
+  // Không chỉ dựa vào debtAction: phiếu đại diện gạch nợ theo dòng phân bổ có debtAction rỗng.
+  await revertDebtSettlement(tx, voucher);
   await revertAccrual(tx, voucher);
 }

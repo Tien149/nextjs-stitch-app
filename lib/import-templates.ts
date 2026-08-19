@@ -195,6 +195,23 @@ export const importTemplates: ImportTemplateDefinition[] = [
         aliases: ["ma doi tac", "ma ncc", "ma khach hang", "nha cung cap", "partner code", "supplier code", "customer code"],
       },
       {
+        // Hai cột tách chiều công nợ theo yêu cầu khách: "Mã đối tác" cũ không nói được dòng
+        // tiền ra là trả nợ NCC hay chi hộ cho đối tác phải thu. Khai một trong hai cột này
+        // là đủ để hệ thống suy Loại nghiệp vụ đích công nợ, không cần khai Mã công nợ.
+        field: "payable_partner_code",
+        label: "Mã đối tác (phải trả)",
+        required: false,
+        type: "text",
+        aliases: ["ma doi tac phai tra", "doi tac phai tra", "phai tra", "payable partner", "ap partner"],
+      },
+      {
+        field: "receivable_partner_code",
+        label: "Mã đối tác (phải thu)",
+        required: false,
+        type: "text",
+        aliases: ["ma doi tac phai thu", "doi tac phai thu", "phai thu", "receivable partner", "ar partner"],
+      },
+      {
         field: "pnl_item_code",
         label: "Hạng mục P&L",
         required: false,
@@ -598,7 +615,9 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "asset_group", label: "Nhom tai san", required: true, type: "text", aliases: ["nhom tai san", "nhom ccdc", "asset group", "group"] },
       { field: "quantity", label: "So luong", required: true, type: "number", aliases: ["so luong", "quantity", "qty"] },
       { field: "purchase_date", label: "Ngay mua", required: true, type: "date", aliases: ["ngay mua", "ngay nhap", "purchase date", "date"] },
-      { field: "original_cost", label: "Nguyen gia", required: true, type: "number", aliases: ["nguyen gia", "gia tri", "original cost", "cost"] },
+      // Khách theo dõi tài sản kiểu quản trị (đếm cái, gắn phòng ban) chứ không làm kế toán,
+      // nên nguyên giá không bắt buộc; chỉ tài sản ghi công nợ mới cần nguyên giá thật.
+      { field: "original_cost", label: "Nguyen gia", required: false, type: "number", aliases: ["nguyen gia", "gia tri", "original cost", "cost"] },
       { field: "useful_life_months", label: "So ky phan bo/khau hao", required: false, type: "integer", aliases: ["so ky phan bo", "so thang phan bo", "so ky khau hao", "useful life months"] },
       { field: "depreciation_start_date", label: "Ngay bat dau phan bo", required: false, type: "date", aliases: ["ngay bat dau phan bo", "ngay bat dau khau hao", "depreciation start date"] },
       { field: "residual_value", label: "Gia tri thu hoi", required: false, type: "number", aliases: ["gia tri thu hoi", "gia tri con lai toi thieu", "residual value"] },

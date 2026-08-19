@@ -350,6 +350,8 @@ model FinancialVoucher {
   /// RECOGNITION: ghi nhận nghiệp vụ mới; SETTLEMENT: chỉ xác nhận dòng tiền của
   /// nghiệp vụ đã ghi nhận trước đó (ví dụ sao kê khớp doanh thu POS).
   businessEffect          String   @default("RECOGNITION")
+  /// Người thực nhận/chi tiền khi phiếu đại diện cho nhiều đối tác (không bắt buộc là đối tác).
+  recipientName           String?
   moneySourceCode         String
   categoryCode            String?
   /// Hạng mục quản trị trên báo cáo P&L. Để trống nghĩa là chưa phân loại chi tiết,
@@ -374,7 +376,9 @@ model FinancialVoucher {
 
   importBatch      ImportBatch?     @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
   depositHistories DepositHistory[]
-  debtSettlement   DebtSettlement?
+  debtSettlements  DebtSettlement[]
+  /// Phiếu chi một người nhận cho nhiều đối tác: mỗi dòng một đối tác + số tiền (+ mã công nợ).
+  partnerAllocations VoucherAllocation[]
 
   deletedAt DateTime?
   deletedBy String?
@@ -430,7 +434,8 @@ model DebtRecord {
 model DebtSettlement {
   id             String   @id @default(uuid())
   debtId         String
-  voucherId      String   @unique
+  /// Không còn unique: một phiếu chi đại diện có thể gạch nhiều khoản công nợ cùng lúc.
+  voucherId      String
   settlementDate DateTime
   amount         Float
   createdBy      String?
@@ -439,8 +444,26 @@ model DebtSettlement {
   debt    DebtRecord       @relation(fields: [debtId], references: [id], onDelete: Cascade)
   voucher FinancialVoucher @relation(fields: [voucherId], references: [id], onDelete: Restrict)
 
+  @@index([voucherId])
   @@index([debtId])
   @@index([settlementDate])
+}
+
+/// Dòng phân bổ của phiếu thu/chi đại diện: một phiếu, một người nhận, nhiều đối tác.
+model VoucherAllocation {
+  id            String   @id @default(uuid())
+  voucherId     String
+  partnerCode   String
+  partnerName   String
+  amount        Float
+  debtReference String?
+  note          String?
+  createdAt     DateTime @default(now())
+
+  voucher FinancialVoucher @relation(fields: [voucherId], references: [id], onDelete: Cascade)
+
+  @@index([voucherId])
+  @@index([partnerCode])
 }
 
 model AssetRecord {

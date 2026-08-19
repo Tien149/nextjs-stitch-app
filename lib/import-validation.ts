@@ -445,6 +445,8 @@ function validateAsset(row: ParsedImportRow, masterItems: MasterItem[], existing
     const originalCost = numberValue(row.values.original_cost);
     const payableAmount = numberValue(row.values.payable_amount) || originalCost;
     row.values.payable_amount = payableAmount;
+    // Chỉ nhánh công nợ mới sinh bút toán và sổ phải trả, nên mới cần nguyên giá thật.
+    if (originalCost <= 0) addError(row, "Tai san ghi cong no phai co Nguyen gia lon hon 0");
     if (!text(row.values.supplier_code)) addError(row, "Tai san cong no phai co Nha cung cap/Phai tra");
     if (payableAmount !== originalCost) addError(row, "So tien cong no tai san phai bang nguyen gia");
     if (row.values.payment_due_date && row.values.purchase_date && new Date(String(row.values.payment_due_date)) < new Date(String(row.values.purchase_date))) {
@@ -456,7 +458,8 @@ function validateAsset(row: ParsedImportRow, masterItems: MasterItem[], existing
   }
 
   if (numberValue(row.values.quantity) <= 0) addError(row, "So luong tai san/CCDC phai lon hon 0");
-  if (numberValue(row.values.original_cost) <= 0) addError(row, "Nguyen gia phai lon hon 0");
+  // Theo dõi quản trị không cần nguyên giá — để trống hoặc 0 đều được, chỉ cấm số âm.
+  if (numberValue(row.values.original_cost) < 0) addError(row, "Nguyen gia khong duoc am");
   if (numberValue(row.values.residual_value) < 0) addError(row, "Gia tri thu hoi khong duoc am");
   if (numberValue(row.values.residual_value) > numberValue(row.values.original_cost)) {
     addError(row, "Gia tri thu hoi khong duoc lon hon nguyen gia");
@@ -561,6 +564,12 @@ function inferBankOperationType(input: {
     && decreaseGroup !== "WALLET"
   ) return "INTERNAL_TRANSFER";
   if (text(row.values.debt_reference)) return credit > 0 ? "AR_COLLECTION" : "AP_PAYMENT";
+  // Cột đối tác tách chiều công nợ: khai "phải trả" + tiền ra là trả nợ NCC, khai "phải thu"
+  // + tiền vào là thu nợ khách — không cần Mã công nợ cụ thể (không có mã thì chứng từ vẫn
+  // lập, chỉ chưa gạch sổ nợ chi tiết). "Phải thu" + tiền ra là khoản chi hộ: chưa có nghiệp
+  // vụ tự sinh sổ phải thu nên để category quyết định, đối tác vẫn được gắn vào chứng từ.
+  if (text(row.values.payable_partner_code) && debit > 0) return "AP_PAYMENT";
+  if (text(row.values.receivable_partner_code) && credit > 0) return "AR_COLLECTION";
   if (text(row.values.deposit_code)) return debit > 0 ? "DEPOSIT_REFUND" : "DEPOSIT_RECEIPT";
   if (categoryText.includes("coc") || categoryText.includes("deposit")) {
     return debit > 0 ? "DEPOSIT_REFUND" : "DEPOSIT_RECEIPT";
@@ -702,6 +711,21 @@ function normalizeBankStatementRow(row: ParsedImportRow, masterItems: MasterItem
     if (!categoryValue.includes("thu") || !categoryValue.includes("ban hang")) {
       addError(row, "WALLET_SETTLEMENT phải dùng loại Thu Tiền Từ Bán Hàng Tại Nhà Hàng");
     }
+  }
+
+  // Hai cột đối tác tách chiều công nợ đổ chung về partner_code để mọi luồng phía sau
+  // (lập chứng từ, gạch nợ, báo cáo chi theo đối tác) dùng một mối.
+  const payablePartnerText = text(row.values.payable_partner_code);
+  const receivablePartnerText = text(row.values.receivable_partner_code);
+  if (payablePartnerText && receivablePartnerText) {
+    addError(row, "Mỗi dòng chỉ khai một trong hai cột Mã đối tác (phải trả) / (phải thu)");
+  }
+  const sidePartnerText = payablePartnerText || receivablePartnerText;
+  if (sidePartnerText) {
+    if (text(row.values.partner_code) && text(row.values.partner_code).toUpperCase() !== sidePartnerText.toUpperCase()) {
+      addError(row, "Mã đối tác và cột đối tác phải thu/phải trả đang khai hai mã khác nhau");
+    }
+    row.values.partner_code = sidePartnerText;
   }
 
   const partner = resolveMaster(masterItems, "PARTNER", row.values.partner_code, branchCode);
@@ -978,9 +1002,15 @@ export async function validateImportResult(
     }
     if (importType === "OPENING_BALANCE") {
       validatePeriod(row, "period", "Kỳ");
-      if (numberValue(row.values.amount) === 0) addError(row, "Số dư đầu kỳ không được bằng 0");
       const balanceType = text(row.values.balance_type).toUpperCase();
       row.values.balance_type = balanceType;
+      // Tài sản hết kỳ phân bổ vẫn còn hiện vật cần theo dõi — giá trị 0 là hợp lệ.
+      // Các loại số dư khác thì 0 đồng là dòng thừa, giữ nguyên chặn.
+      if (balanceType === "ASSET") {
+        if (numberValue(row.values.amount) < 0) addError(row, "Giá trị tài sản đầu kỳ không được âm");
+      } else if (numberValue(row.values.amount) === 0) {
+        addError(row, "Số dư đầu kỳ không được bằng 0");
+      }
       if (!["CASH", "BANK", "WALLET_POS", "AR", "AP", "DEPOSIT", "INVENTORY", "ASSET", "PREPAID_EXPENSE"].includes(balanceType)) {
         addError(row, "Loại số dư không hợp lệ");
       }
@@ -1168,14 +1198,15 @@ export async function validateImportResult(
           }
           const operationType = text(group.rows[0].values.operation_type);
           if (operationType !== "WALLET_SETTLEMENT") {
+            // Từ 19/08/2026 đối tác và mã công nợ ĐƯỢC phép khác nhau giữa các dòng cùng mã
+            // giao dịch: một lần chuyển tiền trả cho nhiều NCC là nghiệp vụ thật của khách.
+            // Chứng từ sẽ có bảng phân bổ theo từng đối tác và gạch nợ từng dòng.
             const businessFields = [
               "branch_code",
               "category_code",
               "increase_money_source_code",
               "decrease_money_source_code",
-              "partner_code",
               "pnl_item_code",
-              "debt_reference",
               "deposit_code",
               // Trước đây là "accounting_date"; cột đó đã bỏ nên giá trị luôn bằng Ngày giao dịch.
               // Giữ phép kiểm bằng chính cột nguồn: các dòng cùng một mã giao dịch phải cùng ngày.
@@ -1186,7 +1217,7 @@ export async function validateImportResult(
             ));
             if (hasMixedBusinessAllocation) {
               for (const row of group.rows) {
-                addError(row, "Một mã giao dịch ngoài Ví không được phân bổ sang nhiều nghiệp vụ/đối tượng; hãy tách mã giao dịch trong file trước khi Commit");
+                addError(row, "Một mã giao dịch ngoài Ví không được phân bổ sang nhiều nghiệp vụ (khác Loại thu/chi, nguồn tiền, ngày...); hãy tách mã giao dịch trong file trước khi Commit");
               }
             }
           }
@@ -1210,6 +1241,9 @@ export async function validateImportResult(
     const amountByDebt = new Map<string, number>();
     for (const row of debtRows) {
       const reference = text(row.values.debt_reference);
+      // Dòng công nợ suy từ cột đối tác không có mã công nợ cụ thể: chứng từ vẫn lập,
+      // chỉ chưa gạch sổ nợ chi tiết — không phải lỗi.
+      if (!reference) continue;
       const debt = debtByCode.get(reference);
       const expectedType = text(row.values.operation_type) === "AR_COLLECTION" ? "RECEIVABLE" : "PAYABLE";
       const amount = Math.round(numberValue(row.values.credit_amount) || numberValue(row.values.debit_amount));

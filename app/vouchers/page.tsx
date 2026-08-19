@@ -14,6 +14,8 @@ import StickyFilterBar from "@/components/StickyFilterBar";
 import { shiftLabel, WORK_SHIFTS } from "@/lib/shifts";
 import { type VoucherDocumentChannel, voucherChannelLabel, voucherTypeLabel } from "@/lib/voucher-channel";
 import { bankStatementSpecialCategory } from "@/lib/bank-statement-category";
+import { PartnerPicker } from "@/components/PartnerPicker";
+import { SearchableSelect } from "@/components/SearchableSelect";
 
 const MAX_BULK_SELECTION = 100;
 
@@ -38,6 +40,8 @@ type Voucher = {
   shift: string | null;
   depositAction: string | null;
   depositCode: string | null;
+  recipientName?: string | null;
+  partnerAllocations?: Array<{ id: string; partnerCode: string; partnerName: string; amount: number; debtReference: string | null }>;
   updatedAt: string;
 };
 
@@ -373,6 +377,18 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
 
   const canCreate = user ? canPerformAction(user, "create") : false;
   const canApprove = user ? canPerformMenuAction(user, moduleHref, "approve") : false;
+  // Nút "+" tạo nhanh đối tác đi qua API danh mục nên cần đúng quyền cấu hình danh mục.
+  const canCreatePartner = user ? canPerformMenuAction(user, "/settings", "config") : false;
+
+  // Phiếu chi đại diện: một người nhận đi trả cho nhiều đối tác trên cùng một phiếu.
+  const [multiPartnerMode, setMultiPartnerMode] = useState(false);
+  const [recipientName, setRecipientName] = useState("");
+  const [allocationDraft, setAllocationDraft] = useState<Array<{ key: number; partnerCode: string; amount: string; debtReference: string }>>([
+    { key: 1, partnerCode: "", amount: "", debtReference: "" },
+  ]);
+  const allocationTotal = allocationDraft.reduce((sum, line) => sum + (Number(line.amount) || 0), 0);
+  const canUseMultiPartner = form.voucherType === "PAYMENT" && !editingVoucher;
+  const isMultiPartnerActive = multiPartnerMode && canUseMultiPartner;
   const canDelete = user ? canPerformMenuAction(user, moduleHref, "delete") : false;
   /** Quyền sửa/bỏ duyệt chứng từ đã qua ngày (mặc định Admin và Kế toán tổng hợp). */
   const canEditPast = canEditPastVoucher(user);
@@ -410,6 +426,11 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
       if (!partner.branch || partner.branch === "ALL") return true;
       return partner.branch === form.branchCode;
     }).filter((partner) => {
+      // Chứng từ ngân hàng mở cả hai chiều đối tác: có khoản thu chi hộ nên phiếu chi
+      // ngân hàng phải chọn được đối tác phải thu (khách hàng), phiếu thu ngân hàng
+      // chọn được NCC hoàn tiền. Phiếu tiền mặt của thu ngân vẫn bó theo chiều để
+      // tránh chọn nhầm.
+      if (isBankChannel) return true;
       const type = (partner.partnerType || partner.group || "").toUpperCase();
       if (form.voucherType === "RECEIPT") return ["CUSTOMER", "BOTH", "OTHER_PARTNER"].includes(type);
       return ["SUPPLIER", "BOTH", "EMPLOYEE", "OTHER_PARTNER"].includes(type);
@@ -421,7 +442,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
     ] : [
       ...availablePartners,
     ];
-  }, [form.branchCode, form.voucherType, partners]);
+  }, [form.branchCode, form.voucherType, isBankChannel, partners]);
 
   const partnerSelectValue = useMemo(() => {
     const selected = partnerOptions.find((partner) =>
@@ -481,6 +502,9 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
     setPastEditDialogOpen(false);
     setPastEditReason("");
     setPastEditError("");
+    setMultiPartnerMode(false);
+    setRecipientName("");
+    setAllocationDraft([{ key: 1, partnerCode: "", amount: "", debtReference: "" }]);
     setForm({
       ...emptyForm,
       branchCode: nextBranch,
@@ -522,6 +546,27 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
   const saveVoucher = async (reason = "") => {
     if (saving) return;
     setMessage("");
+
+    let multiPartnerPayload: Record<string, unknown> = {};
+    if (isMultiPartnerActive) {
+      const lines = allocationDraft.filter((line) => line.partnerCode || line.amount || line.debtReference);
+      if (lines.length === 0 || lines.some((line) => !line.partnerCode || !(Number(line.amount) > 0))) {
+        setMessage("Mỗi dòng phân bổ phải chọn đối tác và số tiền lớn hơn 0.");
+        setMessageType("error");
+        return;
+      }
+      multiPartnerPayload = {
+        amount: allocationTotal,
+        partnerCode: "",
+        partnerName: recipientName,
+        recipientName,
+        allocations: lines.map((line) => ({
+          partnerCode: line.partnerCode,
+          amount: Number(line.amount),
+          debtReference: line.debtReference || undefined,
+        })),
+      };
+    }
     setSaving(true);
 
     try {
@@ -541,7 +586,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
         : await fetch("/api/vouchers", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ...form, documentChannel }),
+            body: JSON.stringify({ ...form, ...multiPartnerPayload, documentChannel }),
           });
 
       const payload = await response.json();
@@ -914,37 +959,121 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-3">
-                <label className="text-xs font-bold text-slate-600 block">
-                  Mã đối tác
+              {canUseMultiPartner && (
+                <label className="flex items-center gap-2 rounded-lg border border-indigo-100 bg-indigo-50/60 px-3 py-2 text-xs font-bold text-indigo-800">
                   <input
-                    type="text"
-                    value={form.partnerCode}
-                    placeholder="Tự điền khi chọn đối tác"
-                    readOnly
-                    className="mt-1 w-full border border-slate-300 rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600"
+                    type="checkbox"
+                    checked={multiPartnerMode}
+                    onChange={(event) => setMultiPartnerMode(event.target.checked)}
+                    className="h-4 w-4 accent-indigo-600"
                   />
+                  Chi cho nhiều đối tác (một người nhận đại diện)
                 </label>
+              )}
 
-                <label className="text-xs font-bold text-slate-600 block">
-                  Tên đối tác *
-                  <select
-                    value={partnerSelectValue}
-                    onChange={(event) => applyPartnerSelection(event.target.value)}
-                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white"
-                    required
-                  >
-                    {partnerSelectValue === "__CURRENT__" && (
-                      <option value="__CURRENT__">{form.partnerName || "-- Chọn đối tác --"}</option>
-                    )}
-                    {partnerOptions.map((partner) => (
-                      <option key={partner.id || partner.code || partner.name} value={partner.id || partner.code || partner.name}>
-                        {partner.code ? `${partner.code} - ${partner.name}` : partner.name}
-                      </option>
+              {isMultiPartnerActive ? (
+                <div className="space-y-3 rounded-xl border border-indigo-100 bg-indigo-50/40 p-3">
+                  <label className="text-xs font-bold text-slate-600 block">
+                    Người nhận tiền
+                    <input
+                      value={recipientName}
+                      onChange={(event) => setRecipientName(event.target.value)}
+                      placeholder="VD: Anh A — người đại diện đi thanh toán"
+                      className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                    />
+                    <span className="mt-1 block text-[11px] font-medium text-slate-500">
+                      Không cần là đối tác trong danh mục; sổ nợ vẫn gạch theo từng dòng bên dưới.
+                    </span>
+                  </label>
+                  <div className="space-y-2">
+                    {allocationDraft.map((line, index) => (
+                      <div key={line.key} className="grid grid-cols-[1.6fr_1fr_1fr_auto] items-start gap-2">
+                        <SearchableSelect
+                          value={line.partnerCode}
+                          onChange={(partnerCode) => setAllocationDraft((current) => current.map((item) => item.key === line.key ? { ...item, partnerCode } : item))}
+                          options={partnerOptions.filter((partner) => partner.code).map((partner) => ({ value: partner.code, label: `${partner.code} - ${partner.name}` }))}
+                          placeholder={`Đối tác dòng ${index + 1}`}
+                        />
+                        <input
+                          type="number"
+                          min="1"
+                          value={line.amount}
+                          onChange={(event) => setAllocationDraft((current) => current.map((item) => item.key === line.key ? { ...item, amount: event.target.value } : item))}
+                          placeholder="Số tiền"
+                          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500"
+                        />
+                        <input
+                          value={line.debtReference}
+                          onChange={(event) => setAllocationDraft((current) => current.map((item) => item.key === line.key ? { ...item, debtReference: event.target.value.toUpperCase() } : item))}
+                          placeholder="Mã công nợ (nếu có)"
+                          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setAllocationDraft((current) => current.length > 1 ? current.filter((item) => item.key !== line.key) : current)}
+                          className="mt-1 rounded-lg border border-rose-200 px-2.5 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-50"
+                          title="Xóa dòng"
+                        >
+                          ×
+                        </button>
+                      </div>
                     ))}
-                  </select>
-                </label>
-              </div>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <button
+                      type="button"
+                      onClick={() => setAllocationDraft((current) => [...current, { key: Math.max(...current.map((item) => item.key)) + 1, partnerCode: "", amount: "", debtReference: "" }])}
+                      className="rounded-lg border border-indigo-200 bg-white px-3 py-1.5 text-xs font-bold text-indigo-700 hover:bg-indigo-50"
+                    >
+                      + Thêm dòng đối tác
+                    </button>
+                    <span className="text-sm font-bold text-slate-800">
+                      Tổng phân bổ: {new Intl.NumberFormat("vi-VN").format(allocationTotal)} đ · {allocationDraft.filter((line) => line.partnerCode).length} đối tác
+                    </span>
+                  </div>
+                  <p className="text-[11px] font-medium text-slate-500">
+                    Dòng có Mã công nợ sẽ gạch thẳng vào sổ nợ của đối tác đó khi phiếu được duyệt; để trống thì chỉ ghi chi cho đối tác, đối chiếu nợ sau.
+                  </p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="text-xs font-bold text-slate-600 block">
+                    Mã đối tác
+                    <input
+                      type="text"
+                      value={form.partnerCode}
+                      placeholder="Tự điền khi chọn đối tác"
+                      readOnly
+                      className="mt-1 w-full border border-slate-300 rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600"
+                    />
+                  </label>
+
+                  <div className="text-xs font-bold text-slate-600 block">
+                    Tên đối tác *
+                    <PartnerPicker
+                      className="mt-1"
+                      value={partnerSelectValue}
+                      onChange={applyPartnerSelection}
+                      options={[
+                        ...(partnerSelectValue === "__CURRENT__"
+                          ? [{ value: "__CURRENT__", label: form.partnerName || "-- Chọn đối tác --" }]
+                          : []),
+                        ...partnerOptions.map((partner) => ({
+                          value: partner.id || partner.code || partner.name,
+                          label: partner.code ? `${partner.code} - ${partner.name}` : partner.name,
+                        })),
+                      ]}
+                      required
+                      canCreate={canCreatePartner}
+                      defaultPartnerType={form.voucherType === "RECEIPT" ? "CUSTOMER" : "SUPPLIER"}
+                      onCreated={(partner) => {
+                        setPartners((current) => [...current, partner]);
+                        setForm((current) => ({ ...current, partnerCode: partner.code, partnerName: partner.name }));
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-3">
                 <label className="text-xs font-bold text-slate-600 block">
@@ -1008,12 +1137,13 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
               </div>
 
               <div className="grid grid-cols-2 gap-3">
-                <label className="text-xs font-bold text-slate-600 block">
+                <div className="text-xs font-bold text-slate-600 block">
                   Khoản mục thu/chi
-                  <select
+                  {/* Danh mục dài nên dùng ô chọn gõ-tìm; logic tự bật thu cọc giữ nguyên. */}
+                  <SearchableSelect
+                    className="mt-1"
                     value={form.categoryCode}
-                    onChange={(event) => {
-                      const categoryCode = event.target.value;
+                    onChange={(categoryCode) => {
                       // Chọn danh mục đặt cọc thì tự bật "Thu tiền đặt cọc": nếu để trống,
                       // phiếu sẽ không sinh sổ theo dõi cọc và server cũng sẽ từ chối lệch pha.
                       const category = voucherCategoryOptions.find((option) => option.code === categoryCode);
@@ -1025,58 +1155,55 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                         depositAction: isDepositCategory && !value.depositAction ? "COLLECT" : value.depositAction,
                       }));
                     }}
-                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white"
-                  >
-                    <option value="">-- Không phân loại --</option>
-                    {voucherCategoryOptions.map((category) => (
-                      <option key={category.id || category.code} value={category.code}>
-                        {category.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                    placeholder="-- Không phân loại --"
+                    options={[
+                      { value: "", label: "-- Không phân loại --" },
+                      ...voucherCategoryOptions.map((category) => ({ value: category.code, label: `${category.code} - ${category.name}` })),
+                    ]}
+                  />
+                </div>
 
                 <label className="text-xs font-bold text-slate-600 block">
                   Số tiền (đ) *
                   <input
                     type="number"
-                    value={form.amount}
+                    value={isMultiPartnerActive ? allocationTotal : form.amount}
                     onChange={(event) => setForm((value) => ({ ...value, amount: event.target.value }))}
-                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                    readOnly={isMultiPartnerActive}
+                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold focus:border-blue-500 focus:ring-1 focus:ring-blue-500 read-only:bg-slate-100"
                     required
                   />
+                  {isMultiPartnerActive && (
+                    <span className="mt-1 block text-[11px] font-medium text-slate-500">Tự cộng từ các dòng phân bổ.</span>
+                  )}
                 </label>
               </div>
 
               {form.voucherType === "PAYMENT" && (
-                <label className="text-xs font-bold text-slate-600 block">
+                <div className="text-xs font-bold text-slate-600 block">
                   Hạng mục P&amp;L <span className="font-medium text-slate-400">(không bắt buộc)</span>
-                  <select
+                  {/* Danh mục P&L dài vài chục dòng nên dùng ô chọn gõ-tìm thay dropdown thường. */}
+                  <SearchableSelect
+                    className="mt-1"
                     value={form.pnlItemCode}
-                    onChange={(event) => setForm((value) => ({ ...value, pnlItemCode: event.target.value }))}
-                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white"
-                  >
-                    <option value="">-- Chưa phân loại P&amp;L --</option>
-                    {editingVoucher && form.pnlItemCode && !pnlItems.some((item) => item.code === form.pnlItemCode && item.status === "ACTIVE") && (() => {
-                      const historicalItem = pnlItems.find((item) => item.code === form.pnlItemCode);
-                      return historicalItem ? (
-                        <option key={historicalItem.id || historicalItem.code} value={historicalItem.code}>
-                          {historicalItem.name} (Đã ngừng)
-                        </option>
-                      ) : null;
-                    })()}
-                    {pnlItems
-                      .filter((item) => item.status === "ACTIVE" && ["OPEX", "COGS"].includes((item.group || "").toUpperCase()))
-                      .map((item) => (
-                        <option key={item.id || item.code} value={item.code}>
-                          {item.code} - {item.name}
-                        </option>
-                      ))}
-                  </select>
+                    onChange={(pnlItemCode) => setForm((value) => ({ ...value, pnlItemCode }))}
+                    placeholder="-- Chưa phân loại P&L --"
+                    options={[
+                      { value: "", label: "-- Chưa phân loại P&L --" },
+                      ...(editingVoucher && form.pnlItemCode && !pnlItems.some((item) => item.code === form.pnlItemCode && item.status === "ACTIVE")
+                        ? pnlItems
+                            .filter((item) => item.code === form.pnlItemCode)
+                            .map((item) => ({ value: item.code, label: `${item.name} (Đã ngừng)` }))
+                        : []),
+                      ...pnlItems
+                        .filter((item) => item.status === "ACTIVE" && ["OPEX", "COGS"].includes((item.group || "").toUpperCase()))
+                        .map((item) => ({ value: item.code, label: `${item.code} - ${item.name}` })),
+                    ]}
+                  />
                   <span className="mt-1 block text-[11px] font-medium text-slate-500">
                     Dùng để phân loại chi tiết trên báo cáo P&amp;L; không thay thế khoản mục thu/chi của báo cáo dòng tiền.
                   </span>
-                </label>
+                </div>
               )}
 
               <label className="text-xs font-bold text-slate-600 block">
@@ -1321,7 +1448,17 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                         </p>
                       </td>
                       <td className="px-4 py-3.5 align-top whitespace-normal break-words">
-                        <b className="block text-slate-800 font-medium leading-5">{voucher.partnerName}</b>
+                        <b className="block text-slate-800 font-medium leading-5">
+                          {voucher.partnerName}
+                          {(voucher.partnerAllocations?.length || 0) > 0 && (
+                            <span
+                              className="ml-1.5 inline-block rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700 align-middle"
+                              title={voucher.partnerAllocations?.map((line) => `${line.partnerCode} — ${new Intl.NumberFormat("vi-VN").format(line.amount)} đ${line.debtReference ? ` (${line.debtReference})` : ""}`).join("\n")}
+                            >
+                              {voucher.partnerAllocations?.length} đối tác
+                            </span>
+                          )}
+                        </b>
                         <p className="mt-0.5 text-xs leading-4 text-slate-500 whitespace-normal break-words">{voucher.description}</p>
                         {isBankChannel && (
                           <p className="mt-1 text-[11px] font-medium text-blue-700">
