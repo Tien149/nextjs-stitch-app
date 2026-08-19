@@ -672,9 +672,17 @@ export default function ImportUploadPage({
     selectedBatch.inventoryTransactions,
     normalizeGenericImportRows(selectedBatch.importRows)
   ) : [];
+  // Không cắt cứng 10 cột nữa: các cột nghiệp vụ khai trên file (ngày nguồn tiền, ngày doanh
+  // thu, nguồn tiền tổng...) nằm sau các cột cơ bản và từng bị cắt mất — khách import lên rồi
+  // không thấy lại thông tin mình đã khai. Thay vào đó ẩn cột kỹ thuật và cột trống toàn bộ.
+  const batchDetailHiddenColumns = ["id", "importBatchId", "createdAt", "updatedAt", "deletedAt", "deletedBy", "allocations", "matches"];
+  const visibleBatchRows = selectedBatchRows.slice(0, 100);
   const selectedBatchColumns = Object.keys(selectedBatchRows[0] || {})
-    .filter((key) => !["id", "importBatchId", "createdAt"].includes(key))
-    .slice(0, 10);
+    .filter((key) => !batchDetailHiddenColumns.includes(key))
+    .filter((key) => visibleBatchRows.some((row) => {
+      const value = row[key];
+      return value !== null && value !== undefined && value !== "";
+    }));
 
   if (isCheckingAuth) {
     return (
@@ -1088,7 +1096,7 @@ export default function ImportUploadPage({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {selectedBatchRows.slice(0, 100).map((row, index) => (
+                    {visibleBatchRows.map((row, index) => (
                       <tr key={index} className="hover:bg-slate-50">
                         {selectedBatchColumns.map((key) => (
                           <td key={key} className="px-4 py-3 whitespace-nowrap">{formatDetailValue(row[key])}</td>
