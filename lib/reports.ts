@@ -467,11 +467,19 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
         ? allocationLines.map((line) => ({ code: line.partnerCode, name: line.partnerName, amount: line.amount }))
         : [{ code: voucher.partnerCode || "", name: voucher.partnerName, amount: voucher.amount }];
       for (const line of partnerLines) {
-        const partnerKey = line.code || line.name || "KHAC";
+        // Phiếu sao kê không khai Mã đối tác từng mang tên mặc định "Đối tác theo sao kê" —
+        // trông như một đối tác thật và dồn cục 80%+ tổng chi. Gom hết về một dòng gọi đúng
+        // tên là dữ liệu thiếu, để khách biết phải bổ sung Mã đối tác trên file thay vì
+        // tưởng có một nhà cung cấp tên như vậy.
+        const isUnknownPartner = !line.code
+          && (!line.name || ["Đối tác theo sao kê", "Chưa khai đối tác"].includes(line.name));
+        const partnerKey = isUnknownPartner ? "__CHUA_KHAI__" : line.code || line.name || "KHAC";
         const partner = line.code ? partnerByCode.get(line.code) : null;
         const current = expenseByPartner.get(partnerKey) || {
           code: line.code,
-          name: partner?.name || line.name || "Không ghi đối tượng",
+          name: isUnknownPartner
+            ? "Chưa khai đối tác — bổ sung Mã đối tác trên file sao kê"
+            : partner?.name || line.name || "Không ghi đối tượng",
           partnerType: (partner?.partnerType || partner?.group || null),
           total: 0,
           count: 0,

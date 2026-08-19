@@ -179,6 +179,10 @@ export async function GET(request: Request) {
     const batchId = cleanText(searchParams.get("batchId"));
     const search = cleanText(searchParams.get("q")).slice(0, 100);
     const bankAccount = cleanText(searchParams.get("bankAccount"));
+    // Lọc theo MÃ NGUỒN TIỀN (khớp nguồn tổng/tăng/giảm, kể cả dòng phân bổ) — cột "Tài khoản"
+    // trên sao kê là số tài khoản thô từ file nên không dùng làm giá trị lọc được.
+    const moneySource = cleanText(searchParams.get("moneySource")).toUpperCase();
+    const category = cleanText(searchParams.get("category")).toUpperCase();
     const operationType = cleanText(searchParams.get("operationType"));
     const dateType = cleanText(searchParams.get("dateType")) || "TRANSACTION";
     const fromText = cleanText(searchParams.get("from"));
@@ -202,19 +206,41 @@ export async function GET(request: Request) {
       ...dateFilter,
       ...(bankAccount ? { bankAccount } : {}),
       ...(operationType ? { operationType } : {}),
-      ...(search ? {
-        OR: [
-          { transactionCode: { contains: search, mode: "insensitive" as const } },
-          { bankAccount: { contains: search, mode: "insensitive" as const } },
-          { description: { contains: search, mode: "insensitive" as const } },
-          { partnerHint: { contains: search, mode: "insensitive" as const } },
-          { categoryCode: { contains: search, mode: "insensitive" as const } },
-          { operationType: { contains: search, mode: "insensitive" as const } },
-          { partnerCode: { contains: search, mode: "insensitive" as const } },
-          { pnlItemCode: { contains: search, mode: "insensitive" as const } },
-          { matches: { some: { targetCode: { contains: search, mode: "insensitive" as const }, deletedAt: null } } },
-        ],
-      } : {}),
+      // Ba bộ lọc dưới đều cần OR riêng nên phải nằm trong một mảng AND chung — spread
+      // hai object cùng key OR sẽ lặng lẽ ghi đè nhau.
+      AND: [
+        ...(moneySource ? [{
+          OR: [
+            { summaryMoneySourceCode: moneySource },
+            { increaseMoneySourceCode: moneySource },
+            { decreaseMoneySourceCode: moneySource },
+            { allocations: { some: { OR: [
+              { summaryMoneySourceCode: moneySource },
+              { increaseMoneySourceCode: moneySource },
+              { decreaseMoneySourceCode: moneySource },
+            ] } } },
+          ],
+        }] : []),
+        ...(category ? [{
+          OR: [
+            { categoryCode: category },
+            { allocations: { some: { categoryCode: category } } },
+          ],
+        }] : []),
+        ...(search ? [{
+          OR: [
+            { transactionCode: { contains: search, mode: "insensitive" as const } },
+            { bankAccount: { contains: search, mode: "insensitive" as const } },
+            { description: { contains: search, mode: "insensitive" as const } },
+            { partnerHint: { contains: search, mode: "insensitive" as const } },
+            { categoryCode: { contains: search, mode: "insensitive" as const } },
+            { operationType: { contains: search, mode: "insensitive" as const } },
+            { partnerCode: { contains: search, mode: "insensitive" as const } },
+            { pnlItemCode: { contains: search, mode: "insensitive" as const } },
+            { matches: { some: { targetCode: { contains: search, mode: "insensitive" as const }, deletedAt: null } } },
+          ],
+        }] : []),
+      ],
     };
 
     if (searchParams.get("ledger") === "1") {

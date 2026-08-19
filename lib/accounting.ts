@@ -14,7 +14,11 @@ export const defaultAccounts = [
   { code: "211", name: "Tài sản cố định", accountType: "ASSET", normalBalance: "DEBIT", reportGroup: "FIXED_ASSET" },
   { code: "214", name: "Khấu hao lũy kế", accountType: "ASSET", normalBalance: "CREDIT", reportGroup: "ACCUMULATED_DEPRECIATION" },
   { code: "242", name: "Chi phí trả trước / CCDC", accountType: "ASSET", normalBalance: "DEBIT", reportGroup: "PREPAID_EXPENSE" },
+  // Hai tài khoản nội bộ dùng cho phân bổ chi phí liên nhà hàng: nhà hàng trả hộ ghi 1368,
+  // nhà hàng nhận chi phí ghi 3368. Xem toàn công ty thì hai vế triệt tiêu nhau.
+  { code: "1368", name: "Phải thu nội bộ giữa các nhà hàng", accountType: "ASSET", normalBalance: "DEBIT", reportGroup: "RECEIVABLE" },
   { code: "331", name: "Phải trả nhà cung cấp", accountType: "LIABILITY", normalBalance: "CREDIT", reportGroup: "PAYABLE" },
+  { code: "3368", name: "Phải trả nội bộ giữa các nhà hàng", accountType: "LIABILITY", normalBalance: "CREDIT", reportGroup: "PAYABLE" },
   { code: "334", name: "Phải trả người lao động", accountType: "LIABILITY", normalBalance: "CREDIT", reportGroup: "PAYROLL_PAYABLE" },
   { code: "335", name: "Chi phí phải trả", accountType: "LIABILITY", normalBalance: "CREDIT", reportGroup: "ACCRUAL" },
   { code: "338", name: "Bảo hiểm phải nộp", accountType: "LIABILITY", normalBalance: "CREDIT", reportGroup: "PAYROLL_PAYABLE" },

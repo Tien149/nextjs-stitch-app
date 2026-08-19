@@ -408,6 +408,8 @@ model DebtRecord {
   documentDate          DateTime
   dueDate               DateTime?
   categoryCode          String?
+  /// Hạng mục P&L của khoản chi phí đã phát sinh nhưng chưa thanh toán (khai khi tạo tay).
+  pnlItemCode           String?
   originalAmount        Float
   outstandingAmount     Float
   allocationMonths      Int?
@@ -1182,6 +1184,51 @@ model AccountingAccount {
   @@index([accountType])
   @@index([reportGroup])
   @@index([deletedAt])
+}
+
+/// Phiếu phân bổ chi phí liên nhà hàng: nhà hàng đã trả 100% cho NCC chuyển bớt phần chi phí
+/// thuộc về nhà hàng khác, kèm công nợ nội bộ để nhà hàng kia hoàn tiền lại.
+model CostReallocation {
+  id             String   @id @default(uuid())
+  code           String   @unique
+  documentDate   DateTime
+  period         String
+  /// Nhà hàng đang gánh 100% chi phí — sẽ được GIẢM chi phí và ghi phải thu nội bộ.
+  fromBranchCode String
+  /// Hạng mục chi phí được chuyển; cả hai đầu ghi cùng hạng mục nên P&L không lệch nhóm.
+  pnlItemCode    String
+  description    String
+  totalAmount    Float
+  status         String   @default("POSTED")
+  createdBy      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  lines CostReallocationLine[]
+
+  deletedAt DateTime?
+  deletedBy String?
+
+  @@index([period])
+  @@index([fromBranchCode])
+  @@index([deletedAt])
+}
+
+model CostReallocationLine {
+  id             String  @id @default(uuid())
+  reallocationId String
+  /// Nhà hàng nhận chi phí — sẽ TĂNG chi phí và ghi phải trả nội bộ.
+  toBranchCode   String
+  amount         Float
+  /// Mã công nợ nội bộ sinh ra cho cặp nhà hàng này.
+  receivableDebtCode String?
+  payableDebtCode    String?
+  note           String?
+
+  reallocation CostReallocation @relation(fields: [reallocationId], references: [id], onDelete: Cascade)
+
+  @@index([reallocationId])
+  @@index([toBranchCode])
 }
 
 model JournalEntry {

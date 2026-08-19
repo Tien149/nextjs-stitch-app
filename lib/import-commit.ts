@@ -755,7 +755,9 @@ export async function commitImport(input: CommitInput) {
               partnerName: partner?.name
                 || (isMultiPartnerGroup ? `${new Set(rowPartnerCodes).size} đối tác theo sao kê` : null)
                 || counterpartyName
-                || "Đối tác theo sao kê",
+                // Tên trung thực thay cho "Đối tác theo sao kê" cũ: dòng này thiếu Mã đối tác
+                // thật trên file (chỉ còn xảy ra với loại chi phí không bắt buộc đối tác).
+                || "Chưa khai đối tác",
               branchCode,
               sourceScope: "BANK_STATEMENT_AUTO",
               documentChannel: "BANK",

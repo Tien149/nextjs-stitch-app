@@ -27,13 +27,14 @@ function dateText(value: string | null | undefined) {
   return value ? new Date(value).toLocaleDateString("vi-VN", { timeZone: "UTC" }) : "—";
 }
 
-const emptyFilters = { from: "", to: "", dateType: "TRANSACTION", branchCode: "ALL", bankAccount: "", operationType: "", q: "" };
+const emptyFilters = { from: "", to: "", dateType: "TRANSACTION", branchCode: "ALL", moneySource: "", category: "", operationType: "", q: "" };
 
 export default function BankStatementLedgerPage() {
   const router = useRouter();
   const [user, setUser] = useState<DemoSession | null>(null);
   const [rows, setRows] = useState<BankRow[]>([]);
   const [moneySources, setMoneySources] = useState<MoneySourceOption[]>([]);
+  const [categories, setCategories] = useState<Array<{ id: string; code: string; name: string }>>([]);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
@@ -55,6 +56,9 @@ export default function BankStatementLedgerPage() {
     void fetch("/api/master-data?type=MONEY_SOURCE&status=ACTIVE")
       .then((response) => response.ok ? response.json() : [])
       .then((data: MoneySourceOption[]) => setMoneySources(data));
+    void fetch("/api/master-data?type=REVENUE_EXPENSE_CATEGORY&status=ACTIVE")
+      .then((response) => response.ok ? response.json() : [])
+      .then((data: Array<{ id: string; code: string; name: string }>) => setCategories(data));
   }, [router]);
 
   const loadRows = useCallback(async () => {
@@ -98,12 +102,13 @@ export default function BankStatementLedgerPage() {
 
     <main className="mx-auto max-w-[1800px] space-y-4 p-4 sm:p-6">
       <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-7">
+        <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-4">
           <label className="text-xs font-bold text-slate-600">Loại ngày<select className="control" value={filters.dateType} onChange={(e) => setFilters({ ...filters, dateType: e.target.value })}><option value="TRANSACTION">Ngày giao dịch</option><option value="SOURCE">Ngày nguồn tiền</option><option value="REVENUE">Ngày doanh thu</option></select></label>
           <label className="text-xs font-bold text-slate-600">Từ ngày<input className="control" type="date" value={filters.from} onChange={(e) => setFilters({ ...filters, from: e.target.value })} /></label>
           <label className="text-xs font-bold text-slate-600">Đến ngày<input className="control" type="date" value={filters.to} onChange={(e) => setFilters({ ...filters, to: e.target.value })} /></label>
           <label className="text-xs font-bold text-slate-600">Cửa hàng<select className="control" value={filters.branchCode} onChange={(e) => setFilters({ ...filters, branchCode: e.target.value })}><option value="ALL">Tất cả cửa hàng</option>{visibleStoreOptions(user).map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select></label>
-          <label className="text-xs font-bold text-slate-600">Tài khoản ngân hàng<select className="control" value={filters.bankAccount} onChange={(e) => setFilters({ ...filters, bankAccount: e.target.value })}><option value="">Tất cả tài khoản</option>{filterMoneySources(moneySources, filters.branchCode, ["BANK"]).map((item) => <option key={item.code} value={item.code}>{item.name}</option>)}</select></label>
+          <label className="text-xs font-bold text-slate-600">Nguồn tiền<select className="control" value={filters.moneySource} onChange={(e) => setFilters({ ...filters, moneySource: e.target.value })}><option value="">Tất cả nguồn tiền</option>{filterMoneySources(moneySources, filters.branchCode, ["BANK", "WALLET", "CASH"]).map((item) => <option key={item.code} value={item.code}>{item.name}</option>)}</select></label>
+          <label className="text-xs font-bold text-slate-600">Loại thu/chi<select className="control" value={filters.category} onChange={(e) => setFilters({ ...filters, category: e.target.value })}><option value="">Tất cả loại thu/chi</option>{categories.map((item) => <option key={item.id || item.code} value={item.code}>{item.code} - {item.name}</option>)}</select></label>
           <label className="text-xs font-bold text-slate-600">Loại nghiệp vụ<select className="control" value={filters.operationType} onChange={(e) => setFilters({ ...filters, operationType: e.target.value })}><option value="">Tất cả nghiệp vụ</option>{Object.entries(operationLabels).map(([code, label]) => <option key={code} value={code}>{label}</option>)}</select></label>
           <label className="text-xs font-bold text-slate-600">Từ khóa<input className="control" value={filters.q} onChange={(e) => setFilters({ ...filters, q: e.target.value })} onKeyDown={(e) => e.key === "Enter" && applyFilters()} placeholder="Mã GD, diễn giải, chứng từ..." /></label>
         </div>

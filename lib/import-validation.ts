@@ -9,6 +9,8 @@ import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue
 import { groupBankStatementRows } from "@/lib/bank-statement-import";
 import { isPeriodLocked } from "@/lib/phase3";
 import { normalizeMoneySourceGroup } from "@/lib/money-sources";
+import { bankStatementSpecialCategory } from "@/lib/bank-statement-category";
+import { evaluateBankStatementAutoApproval } from "@/lib/bank-statement-auto-approval";
 import {
   parseSettlementRevenueRange,
   resolveWalletFromDescription,
@@ -593,6 +595,12 @@ function inferBankOperationType(input: {
   // vụ tự sinh sổ phải thu nên để category quyết định, đối tác vẫn được gắn vào chứng từ.
   if (text(row.values.payable_partner_code) && debit > 0) return "AP_PAYMENT";
   if (text(row.values.receivable_partner_code) && credit > 0) return "AR_COLLECTION";
+  // Danh mục công nợ + cột "Mã đối tác" cũ cũng là nghiệp vụ công nợ — trước đây các dòng
+  // này rơi xuống "chi khác", chứng từ không gắn đối tác và báo cáo Chi theo đối tác dồn
+  // cục thành một dòng vô danh.
+  if (categoryText.includes("cong no") && text(row.values.partner_code)) {
+    return debit > 0 ? "AP_PAYMENT" : "AR_COLLECTION";
+  }
   if (text(row.values.deposit_code)) return debit > 0 ? "DEPOSIT_REFUND" : "DEPOSIT_RECEIPT";
   if (categoryText.includes("coc") || categoryText.includes("deposit")) {
     return debit > 0 ? "DEPOSIT_REFUND" : "DEPOSIT_RECEIPT";
@@ -764,6 +772,11 @@ function normalizeBankStatementRow(row: ParsedImportRow, masterItems: MasterItem
   if (["AR_COLLECTION", "AP_PAYMENT", "DEPOSIT_RECEIPT", "DEPOSIT_REFUND"].includes(operationType) && !partner) {
     addError(row, `${operationType} bắt buộc có Mã đối tác hợp lệ`);
   }
+  // Chi/thu công nợ mà không biết của ai là dữ liệu hỏng: chứng từ sinh ra không gắn đối tác
+  // và báo cáo Chi theo đối tác dồn cục thành một dòng vô danh. Bắt khai ngay tại preview.
+  if (bankStatementSpecialCategory(bankCategory) === "DEBT" && !partner) {
+    addError(row, "Loại thu/chi công nợ bắt buộc khai Mã đối tác — dùng cột Mã đối tác (phải trả)/(phải thu) trên file");
+  }
   const partnerType = text(partner?.partnerType || partner?.group).toUpperCase();
   if (["AR_COLLECTION", "DEPOSIT_RECEIPT", "DEPOSIT_REFUND"].includes(operationType) && partner && !["CUSTOMER", "BOTH", "OTHER_PARTNER"].includes(partnerType)) {
     addError(row, `${operationType} phải dùng đối tác Khách hàng/BOTH`);
@@ -826,6 +839,28 @@ function normalizeBankStatementRow(row: ParsedImportRow, masterItems: MasterItem
   row.values.auto_process_type = autoProcessType;
   row.values.auto_process_note = autoProcessNote;
   row.values.import_action = "CREATE";
+
+  // Flow chốt với khách: mọi lỗi phải hiện NGAY Ở PREVIEW để sửa file, không để dòng nào
+  // rơi vào trạng thái chờ xử lý tay sau Commit. Chạy chính bộ kiểm auto-duyệt của Commit
+  // tại đây — cùng một hàm nên hai bước không bao giờ lệch nhau; Gross ví không kiểm ở
+  // bước này vì có thể được tự suy sau (các phép kiểm gross đã nằm riêng phía trên).
+  if (operationType !== "INTERNAL_TRANSFER" && row.errors.length === 0) {
+    const approval = evaluateBankStatementAutoApproval({
+      autoProcessType,
+      debitAmount: debit,
+      creditAmount: credit,
+      branchCode,
+      revenueDate: row.values.revenue_date instanceof Date ? row.values.revenue_date : null,
+      increaseSource: resolvedSources.increase_money_source_code,
+      decreaseSource: resolvedSources.decrease_money_source_code,
+      category: bankCategory || null,
+      walletGrossAmount: null,
+      categoryCodeText: text(row.values.category_code) || null,
+      increaseSourceCodeText: text(row.values.increase_money_source_code) || null,
+      decreaseSourceCodeText: text(row.values.decrease_money_source_code) || null,
+    });
+    if (!approval.autoApprove) addError(row, approval.reason);
+  }
 }
 
 /**

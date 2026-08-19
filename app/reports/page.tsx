@@ -954,22 +954,39 @@ export default function ReportsPage() {
           )}
 
           <div className="grid xl:grid-cols-2 gap-5">
-            <CashCategoryTable
-              title="Tổng quan thu theo danh mục"
-              subtitle="Tiền thực thu theo danh mục: tiền mặt lấy từ phiếu thu đã duyệt, còn lại lấy từ sổ sao kê ngân hàng theo Loại thu/chi khai trên file. Doanh thu POS/nhập tay chưa về tiền không nằm ở đây — phần ví chưa quyết toán xem ở cột Dự thu."
-              amountHeader="Tổng thu"
-              rows={cashSource.income}
-              total={cashSource.totals.in}
-              tone="blue"
-            />
-            <CashCategoryTable
-              title="Tổng quan chi theo danh mục"
-              subtitle="Tiền thực chi theo danh mục: tiền mặt lấy từ phiếu chi đã duyệt, còn lại lấy từ sổ sao kê ngân hàng theo Loại thu/chi khai trên file; dữ liệu chưa có danh mục được đưa vào Chưa phân loại."
-              amountHeader="Tổng chi"
-              rows={cashSource.expense}
-              total={cashSource.totals.out}
-              tone="amber"
-            />
+            {(() => {
+              // Khoảng ngày của kỳ đang xem, để link "Chưa phân loại" mở đúng các phiếu cần sửa.
+              const firstMonth = cashSource.months[0];
+              const lastMonth = cashSource.months[cashSource.months.length - 1];
+              const lastDay = new Date(Number(lastMonth.slice(0, 4)), Number(lastMonth.slice(5)), 0).getDate();
+              const range = `missingCategory=1&from=${firstMonth}-01&to=${lastMonth}-${String(lastDay).padStart(2, "0")}`;
+              const linksFor = (voucherType: "RECEIPT" | "PAYMENT") => [
+                { label: "Xem phiếu tiền mặt chưa phân loại", href: `/vouchers?${range}&voucherType=${voucherType}` },
+                { label: "Xem chứng từ ngân hàng chưa phân loại", href: `/bank-vouchers?${range}&voucherType=${voucherType}` },
+              ];
+              return (
+                <>
+                  <CashCategoryTable
+                    title="Tổng quan thu theo danh mục"
+                    subtitle="Tiền thực thu theo danh mục: tiền mặt lấy từ phiếu thu đã duyệt, còn lại lấy từ sổ sao kê ngân hàng theo Loại thu/chi khai trên file. Doanh thu POS/nhập tay chưa về tiền không nằm ở đây — phần ví chưa quyết toán xem ở cột Dự thu."
+                    amountHeader="Tổng thu"
+                    rows={cashSource.income}
+                    total={cashSource.totals.in}
+                    tone="blue"
+                    unclassifiedLinks={linksFor("RECEIPT")}
+                  />
+                  <CashCategoryTable
+                    title="Tổng quan chi theo danh mục"
+                    subtitle="Tiền thực chi theo danh mục: tiền mặt lấy từ phiếu chi đã duyệt, còn lại lấy từ sổ sao kê ngân hàng theo Loại thu/chi khai trên file; dữ liệu chưa có danh mục được đưa vào Chưa phân loại."
+                    amountHeader="Tổng chi"
+                    rows={cashSource.expense}
+                    total={cashSource.totals.out}
+                    tone="amber"
+                    unclassifiedLinks={linksFor("PAYMENT")}
+                  />
+                </>
+              );
+            })()}
           </div>
 
           <section className="table-panel">
@@ -2201,14 +2218,17 @@ function CashSourceFlowTable({ cashSource }: { cashSource: CashSourceData }) {
               <Cell right><b className={totals.expectedClosing < 0 ? "text-rose-600" : "text-slate-900"}>{money(totals.expectedClosing)} đ</b></Cell>
             </tr>
           )}
-          {rows.length > 0 && (incomeGap !== 0 || expenseGap !== 0) && (
-            <tr className="border-t border-slate-100 bg-amber-50/60">
-              <td colSpan={headers.length} className="px-4 py-3 text-xs text-amber-900">
-                <b>Đối chiếu với Tổng quan thu/chi:</b>{" "}
-                thu {money(cashSource.totals.in)} đ (lệch {money(incomeGap)} đ) ·
-                chi {money(cashSource.totals.out)} đ (lệch {money(expenseGap)} đ).
-                Phần lệch là doanh thu POS/nhập tay chưa lập phiếu thu và các khoản chi chưa gắn nguồn tiền,
-                nên chưa làm đổi số dư nguồn tiền.
+          {rows.length > 0 && (
+            <tr className={`border-t border-slate-100 ${incomeGap !== 0 || expenseGap !== 0 ? "bg-amber-50/60" : "bg-emerald-50/60"}`}>
+              <td colSpan={headers.length} className={`px-4 py-3 text-xs ${incomeGap !== 0 || expenseGap !== 0 ? "text-amber-900" : "text-emerald-800"}`}>
+                <b>Đối chiếu với Tổng quan thu/chi theo danh mục:</b>{" "}
+                thu {money(cashSource.totals.in)} đ{incomeGap !== 0 ? ` (lệch ${money(incomeGap)} đ)` : " — khớp"} ·
+                chi {money(cashSource.totals.out)} đ{expenseGap !== 0 ? ` (lệch ${money(expenseGap)} đ)` : " — khớp"}.
+                {(incomeGap !== 0 || expenseGap !== 0) && (
+                  <> Phần lệch có chủ đích: Tổng quan thu tính doanh thu ví GROSS trước phí và cả dòng sao kê
+                  chưa lập được chứng từ, còn sổ quỹ ghi số tiền THỰC vào/ra tài khoản (net sau phí);
+                  tiền ví về ngân hàng nằm ở nhóm điều tiền nên không lặp lại ở cột Thu.</>
+                )}
               </td>
             </tr>
           )}
@@ -2225,6 +2245,7 @@ function CashCategoryTable({
   rows,
   total,
   tone,
+  unclassifiedLinks,
 }: {
   title: string;
   subtitle: string;
@@ -2232,6 +2253,8 @@ function CashCategoryTable({
   rows: CashCategoryRow[];
   total: number;
   tone: "blue" | "amber";
+  /** Link mang sẵn bộ lọc "phiếu chưa có danh mục" để bấm từ dòng Chưa phân loại đi sửa luôn. */
+  unclassifiedLinks?: Array<{ label: string; href: string }>;
 }) {
   const barClass = tone === "blue" ? "bg-blue-500" : "bg-amber-500";
   return (
@@ -2248,6 +2271,15 @@ function CashCategoryTable({
                 <b>{row.name}</b>
                 {row.key === "UNCLASSIFIED" && <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[11px] font-bold text-amber-800">cần bổ sung</span>}
                 <p className="mt-0.5 text-xs font-normal text-slate-500">{row.count} dòng</p>
+                {row.key === "UNCLASSIFIED" && (unclassifiedLinks?.length || 0) > 0 && (
+                  <p className="mt-1 flex flex-wrap gap-2 text-xs font-bold">
+                    {unclassifiedLinks?.map((link) => (
+                      <a key={link.href} href={link.href} className="text-blue-700 underline-offset-2 hover:underline">
+                        {link.label} →
+                      </a>
+                    ))}
+                  </p>
+                )}
               </Cell>
               <Cell><b>{money(row.total)} đ</b></Cell>
               <Cell right>

@@ -51,6 +51,8 @@ type VoucherFilters = {
   startDate: string;
   endDate: string;
   voucherType: VoucherTypeFilter;
+  /** Chỉ hiện phiếu chưa có Khoản mục thu/chi — dòng "Chưa phân loại" trên báo cáo link về đây. */
+  missingCategory?: boolean;
 };
 
 type VoucherListSummary = {
@@ -196,6 +198,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
       });
       if (filters.startDate) query.set("startDate", filters.startDate);
       if (filters.endDate) query.set("endDate", filters.endDate);
+      if (filters.missingCategory) query.set("missingCategory", "1");
 
       const response = await fetch(`/api/vouchers?${query.toString()}`);
       const payload = await response.json().catch(() => null) as VoucherListResponse | { error?: string } | null;
@@ -323,11 +326,27 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
       initialBranch = localStorage.getItem("global_branch_code") || "ALL";
     }
 
+    // Link từ dòng "Chưa phân loại" trên báo cáo mang sẵn bộ lọc trong URL.
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlType = (urlParams.get("voucherType") || "").toUpperCase();
+    const urlFilters: VoucherFilters = urlParams.get("missingCategory") === "1"
+      ? {
+          startDate: urlParams.get("from") || "",
+          endDate: urlParams.get("to") || "",
+          voucherType: ["RECEIPT", "PAYMENT"].includes(urlType) ? (urlType as VoucherTypeFilter) : "ALL",
+          missingCategory: true,
+        }
+      : initialVoucherFilters;
+
     window.setTimeout(() => {
       setUser(session);
       setBranchCode(initialBranch);
       setLoading(false);
-      void loadVouchers(initialBranch, initialVoucherFilters, 1);
+      if (urlFilters.missingCategory) {
+        setFilterDraft(urlFilters);
+        setAppliedFilters(urlFilters);
+      }
+      void loadVouchers(initialBranch, urlFilters, 1);
       void loadMasterData(session, initialBranch);
     }, 0);
   }, [router, loadVouchers, loadMasterData, moduleHref]);
@@ -367,6 +386,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
     const nextFilters = { ...initialVoucherFilters };
     setFilterDraft(nextFilters);
     setAppliedFilters(nextFilters);
+    if (appliedFilters.missingCategory) window.history.replaceState(null, "", moduleHref);
     void loadVouchers(branchCode, nextFilters, 1);
   };
 
@@ -546,6 +566,12 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
   const saveVoucher = async (reason = "") => {
     if (saving) return;
     setMessage("");
+
+    if (!form.categoryCode) {
+      setMessage("Phiếu thu/chi bắt buộc chọn Khoản mục thu/chi — mọi khoản thu/chi phải có loại cụ thể trên báo cáo.");
+      setMessageType("error");
+      return;
+    }
 
     let multiPartnerPayload: Record<string, unknown> = {};
     if (isMultiPartnerActive) {
@@ -1138,8 +1164,9 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
 
               <div className="grid grid-cols-2 gap-3">
                 <div className="text-xs font-bold text-slate-600 block">
-                  Khoản mục thu/chi
-                  {/* Danh mục dài nên dùng ô chọn gõ-tìm; logic tự bật thu cọc giữ nguyên. */}
+                  Khoản mục thu/chi *
+                  {/* Danh mục dài nên dùng ô chọn gõ-tìm; logic tự bật thu cọc giữ nguyên.
+                      Bắt buộc chọn: phiếu không danh mục sinh dòng "Chưa phân loại" trên báo cáo. */}
                   <SearchableSelect
                     className="mt-1"
                     value={form.categoryCode}
@@ -1155,11 +1182,8 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                         depositAction: isDepositCategory && !value.depositAction ? "COLLECT" : value.depositAction,
                       }));
                     }}
-                    placeholder="-- Không phân loại --"
-                    options={[
-                      { value: "", label: "-- Không phân loại --" },
-                      ...voucherCategoryOptions.map((category) => ({ value: category.code, label: `${category.code} - ${category.name}` })),
-                    ]}
+                    placeholder="-- Chọn khoản mục thu/chi --"
+                    options={voucherCategoryOptions.map((category) => ({ value: category.code, label: `${category.code} - ${category.name}` }))}
                   />
                 </div>
 
@@ -1363,6 +1387,18 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
               </button>
               {listError && <p className="w-full text-xs font-semibold text-rose-600">{listError}</p>}
             </form>
+            {appliedFilters.missingCategory && (
+              <div className="flex items-center justify-between border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs font-semibold text-amber-800">
+                <span>Đang lọc các phiếu CHƯA có Khoản mục thu/chi — mở từng phiếu để bổ sung danh mục, dòng &quot;Chưa phân loại&quot; trên báo cáo sẽ giảm theo.</span>
+                <button
+                  type="button"
+                  onClick={resetVoucherFilters}
+                  className="rounded-lg border border-amber-300 bg-white px-2.5 py-1 font-bold text-amber-800 hover:bg-amber-100"
+                >
+                  Bỏ lọc
+                </button>
+              </div>
+            )}
             <div className="h-[calc(100vh-245px)] min-h-[720px] max-h-[900px] overflow-auto overscroll-contain">
               <table className="w-full min-w-[820px] table-fixed text-left text-sm">
                 <thead className="sticky top-0 z-10 bg-slate-50 text-slate-500 text-xs uppercase font-bold border-b border-slate-200 shadow-[0_1px_0_0_rgb(226_232_240)]">

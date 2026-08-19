@@ -152,6 +152,12 @@ export const appMenuItems: AppMenuItem[] = [
     roles: ["Admin", "Kế toán tổng hợp", "Kế toán công nợ", "Quản lý"],
   },
   {
+    name: "Phân bổ chi phí",
+    icon: "call_split",
+    href: "/cost-reallocations",
+    roles: ["Admin", "Kế toán tổng hợp", "Kế toán công nợ", "Quản lý"],
+  },
+  {
     name: "Mua hàng",
     icon: "shopping_cart",
     href: "/procurement",
