@@ -12,6 +12,8 @@ import {
 } from "@/lib/soft-delete";
 import { scopePayloadByTab } from "@/lib/tab-scope";
 import { nextAssetCode } from "@/lib/asset-code-generator";
+import { postInventoryTransaction, nextStockDocCode } from "@/lib/inventory-stock";
+import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 
 const menuHref = "/procurement";
 
@@ -29,8 +31,16 @@ type InputLine = {
   note?: unknown;
 };
 
-async function generatedCode(prefix: string, count: number) {
-  return `${prefix}-${new Date().getFullYear()}-${String(count + 1).padStart(4, "0")}`;
+/**
+ * Mã chứng từ mua hàng: max + 1 trong chuỗi `PREFIX-YYYY-`, KHÔNG đếm COUNT — xoá mềm làm
+ * COUNT tụt và mã cấp lại đâm chứng từ đang sống. Tra bằng SQL thô để thấy cả bản ghi đã xoá.
+ */
+async function generatedCode(prefix: "PR" | "PO", table: "PurchaseRequest" | "PurchaseOrder") {
+  const head = `${prefix}-${new Date().getFullYear()}-`;
+  const rows = table === "PurchaseRequest"
+    ? await prisma.$queryRaw<Array<{ code: string }>>`SELECT "code" FROM "PurchaseRequest" WHERE "code" LIKE ${head + "%"}`
+    : await prisma.$queryRaw<Array<{ code: string }>>`SELECT "code" FROM "PurchaseOrder" WHERE "code" LIKE ${head + "%"}`;
+  return head + String(nextSeqFromCodes(rows.map((row) => row.code), head)).padStart(4, "0");
 }
 
 function validLines(value: unknown) {
@@ -144,7 +154,7 @@ export async function POST(request: Request) {
         }
       }
 
-      const code = cleanText(body.code) || await generatedCode("PR", await prisma.purchaseRequest.count());
+      const code = cleanText(body.code) || await generatedCode("PR", "PurchaseRequest");
       if (await findDeletedByUnique("PurchaseRequest", { code })) {
         businessError(duplicatedInTrashMessage(code, "Đề nghị mua hàng"));
       }
@@ -254,7 +264,7 @@ export async function POST(request: Request) {
       }
       const sourceRequest = requestId ? await prisma.purchaseRequest.findUnique({ where: { id: requestId } }) : null;
       const departmentCode = bodyDepartmentCode || sourceRequest?.departmentCode || null;
-      const code = cleanText(body.code) || await generatedCode("PO", await prisma.purchaseOrder.count());
+      const code = cleanText(body.code) || await generatedCode("PO", "PurchaseOrder");
       if (await findDeletedByUnique("PurchaseOrder", { code })) {
         businessError(duplicatedInTrashMessage(code, "Đơn mua hàng"));
       }
@@ -572,63 +582,69 @@ export async function PATCH(request: Request) {
       businessError("PO có Tài sản/CCDC phải chọn Phòng ban để hệ thống tự sinh mã");
     }
 
+    // CCDC/Tài sản KHÔNG vào tồn kho — trước đây vừa cộng tồn vừa tạo hồ sơ tài sản, cùng một
+    // cái máy nằm ở hai sổ và giá trị bị đếm đôi; kiểm kê kho lại từ chối loại này nên phần tồn
+    // đó vĩnh viễn không điều chỉnh được. Sổ tài sản là sổ gốc duy nhất cho TOOL/ASSET.
+    const stockLines = receiveLines.filter((line) => !["TOOL", "ASSET"].includes(line.item.itemType));
+    const assetLines = receiveLines.filter((line) => ["TOOL", "ASSET"].includes(line.item.itemType));
+    const freeStockLine = stockLines.find((line) => line.unitCost <= 0);
+    if (freeStockLine) {
+      // Nhập mua giá 0 kéo giá vốn bình quân về sai — hàng tặng kèm thì sửa đơn giá PO
+      // thành giá trị hợp lý hoặc nhận bằng phiếu "Nhập khác" có ghi chú.
+      businessError(`Dòng ${freeStockLine.item.code} có đơn giá 0. Nhập mua bắt buộc có đơn giá; hàng tặng kèm hãy nhận bằng phiếu Nhập khác.`);
+    }
+
     const result = await prisma.$transaction(async (tx) => {
-      const transactionCode = await generatedCode("NK", await tx.inventoryTransaction.count());
-      const stockTransaction = await tx.inventoryTransaction.create({
-        data: {
-          code: transactionCode,
-          transactionType: "RECEIPT",
-          transactionDate: receivedDate,
-          branchCode: order.branchCode,
-          warehouseCode: order.warehouseCode,
-          referenceType: "PURCHASE_ORDER",
-          referenceId: order.id,
-          referenceCode: order.code,
-          createdBy: auth.session.name,
-          note: cleanText(body.note) || `Nhận hàng từ ${order.code}`,
-          lines: { create: receiveLines.map((line) => ({ itemId: line.itemId, quantity: line.receiveQuantity, unitCost: line.unitCost, totalCost: line.receiveQuantity * line.unitCost })) },
-        },
-      });
+      // Đi qua đúng engine kho (postInventoryTransaction): mã loại chuẩn NHAP_MUA để lên báo cáo
+      // thẻ kho (báo cáo lọc NHAP_*/XUAT_* — mã "RECEIPT" cũ làm phiếu nhận PO vô hình và tồn
+      // đầu kỳ bị tính ngược sai), kèm khoá dòng tồn và kiểm tra mặt hàng ngưng hoạt động.
+      const stockTransaction = stockLines.length > 0
+        ? await postInventoryTransaction(tx, {
+            code: await nextStockDocCode(tx, "NM", receivedDate),
+            transactionType: "NHAP_MUA",
+            transactionDate: receivedDate,
+            branchCode: order.branchCode,
+            warehouseCode: order.warehouseCode,
+            referenceType: "PURCHASE_ORDER",
+            referenceId: order.id,
+            referenceCode: order.code,
+            partnerCode: order.supplierCode || null,
+            note: cleanText(body.note) || `Nhận hàng từ ${order.code}`,
+            createdBy: auth.session.name,
+            lines: stockLines.map((line) => ({ itemId: line.itemId, inputQuantity: line.receiveQuantity, inputUnitCost: line.unitCost })),
+          })
+        : null;
 
       let receivedValue = 0;
       for (const line of receiveLines) {
-        const balance = await tx.inventoryBalance.findUnique({ where: { itemId_warehouseCode: { itemId: line.itemId, warehouseCode: order.warehouseCode } } });
-        const oldQuantity = balance?.quantity || 0;
-        const oldValue = oldQuantity * (balance?.averageCost || 0);
-        const receivedLineValue = line.receiveQuantity * line.unitCost;
-        const newQuantity = oldQuantity + line.receiveQuantity;
-        const averageCost = newQuantity > 0 ? (oldValue + receivedLineValue) / newQuantity : 0;
-        await tx.inventoryBalance.upsert({
-          where: { itemId_warehouseCode: { itemId: line.itemId, warehouseCode: order.warehouseCode } },
-          create: { itemId: line.itemId, warehouseCode: order.warehouseCode, quantity: newQuantity, averageCost },
-          update: { quantity: newQuantity, averageCost },
-        });
         await tx.purchaseOrderLine.update({ where: { id: line.id }, data: { receivedQuantity: { increment: line.receiveQuantity } } });
-        receivedValue += receivedLineValue;
-        if (["TOOL", "ASSET"].includes(line.item.itemType)) {
-          const assetGroup = assetGroupFromItemType(line.item.itemType);
-          await tx.assetRecord.create({
-            data: {
-              code: await nextAssetCode(tx, assetGroup, order.departmentCode || ""),
-              name: line.item.name,
-              branchCode: order.branchCode,
-              departmentCode: order.departmentCode || null,
-              assetGroup,
-              imageUrl: line.imageUrl || null,
-              location: order.warehouseCode,
-              quantity: line.receiveQuantity,
-              purchaseDate: receivedDate,
-              originalCost: receivedLineValue,
-              currentValue: receivedLineValue,
-              supplierCode: order.supplierCode,
-              supplierName: order.supplierName,
-              sourcePurchaseOrderId: order.id,
-              sourceReceiptId: stockTransaction.id,
-              status: "IN_USE",
-              note: `Tự tạo từ nhận hàng ${order.code}`,
-            },
-          });
-        }
+        // Công nợ phải trả tính trên MỌI dòng đã nhận — tài sản vẫn là tiền phải trả NCC.
+        receivedValue += line.receiveQuantity * line.unitCost;
+      }
+      for (const line of assetLines) {
+        const receivedLineValue = line.receiveQuantity * line.unitCost;
+        const assetGroup = assetGroupFromItemType(line.item.itemType);
+        await tx.assetRecord.create({
+          data: {
+            code: await nextAssetCode(tx, assetGroup, order.departmentCode || ""),
+            name: line.item.name,
+            branchCode: order.branchCode,
+            departmentCode: order.departmentCode || null,
+            assetGroup,
+            imageUrl: line.imageUrl || null,
+            location: order.warehouseCode,
+            quantity: line.receiveQuantity,
+            purchaseDate: receivedDate,
+            originalCost: receivedLineValue,
+            currentValue: receivedLineValue,
+            supplierCode: order.supplierCode,
+            supplierName: order.supplierName,
+            sourcePurchaseOrderId: order.id,
+            sourceReceiptId: stockTransaction?.id || null,
+            status: "IN_USE",
+            note: `Tự tạo từ nhận hàng ${order.code}`,
+          },
+        });
       }
 
       const remainingLines = await tx.purchaseOrderLine.findMany({ where: { orderId: order.id } });
@@ -640,11 +656,11 @@ export async function PATCH(request: Request) {
         create: { purchaseOrderId: order.id, supplierCode: order.supplierCode, supplierName: order.supplierName, recognizedDate: receivedDate, originalAmount: receivedValue, outstandingAmount: receivedValue },
         update: { originalAmount: (payable?.originalAmount || 0) + receivedValue, outstandingAmount: (payable?.outstandingAmount || 0) + receivedValue },
       });
-      return stockTransaction;
+      return { stockTransaction, assetsCreated: assetLines.length };
     });
 
-    await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "RECEIVE_ORDER", entityType: "PurchaseOrder", entityId: order.id, entityCode: order.code, branchCode: order.branchCode, metadata: { receiptId: result.id, receiptCode: result.code, lines: receiveLines.length } });
-    return NextResponse.json(result);
+    await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "RECEIVE_ORDER", entityType: "PurchaseOrder", entityId: order.id, entityCode: order.code, branchCode: order.branchCode, metadata: { receiptId: result.stockTransaction?.id || null, receiptCode: result.stockTransaction?.code || null, assetsCreated: result.assetsCreated, lines: receiveLines.length } });
+    return NextResponse.json(result.stockTransaction || { assetsCreated: result.assetsCreated });
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });

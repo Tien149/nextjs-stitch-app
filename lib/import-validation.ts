@@ -16,6 +16,7 @@ import {
 } from "@/lib/bank-statement-wallet-hints";
 import { selectWalletDeclaredRevenue, walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
 import { vietnamBusinessDayBounds, vietnamBusinessDayKey } from "@/lib/revenue-date";
+import { isWarehouseStocktakeItemType, itemCodePrefixError } from "@/lib/inventory-scope";
 
 type MasterItem = {
   type: string;
@@ -297,7 +298,15 @@ function validateInventoryTransaction(
     unitConversions: Array<{ unitCode: string; conversionRate: number }>;
   }>,
   balances: Array<{ itemId: string; warehouseCode: string; quantity: number; item: { code: string } }>,
+  stockUsage: Map<string, number>,
 ) {
+  // Cột "NCC / Đối tượng" giờ được ghi thật vào phiếu — khai sai mã thì báo ngay tại preview.
+  const partnerCode = text(row.values.partner_code);
+  if (partnerCode) {
+    const partner = resolveMaster(masterItems, "PARTNER", partnerCode);
+    if (!partner) addError(row, `Đối tác [${partnerCode}] không tồn tại hoặc ngưng hoạt động`);
+    else row.values.partner_code = partner.code;
+  }
   const transactionType = normalizeStockTransactionType(row.values.transaction_type);
   row.values.transaction_type = transactionType;
   if (!isStockTransactionType(transactionType)) addError(row, "Loai giao dich kho khong hop le");
@@ -345,7 +354,17 @@ function validateInventoryTransaction(
 
   if (isOutboundStockType(transactionType) || transactionType === "DIEU_CHUYEN") {
     const currentBalance = balances.find((balance) => balance.item.code.toUpperCase() === itemCode && balance.warehouseCode === text(row.values.warehouse_code));
-    if ((currentBalance?.quantity || 0) < quantity * conversionRate) addError(row, "Khong the xuat vuot ton kho");
+    // Cộng dồn lượng xuất của CÁC DÒNG TRƯỚC trong cùng file: 3 dòng mỗi dòng 40 trên tồn 50
+    // từng dòng đều "đủ", preview hợp lệ nhưng commit chết giữa chừng và rollback cả batch.
+    const usageKey = `${itemCode}|${text(row.values.warehouse_code)}`;
+    const alreadyClaimed = stockUsage.get(usageKey) || 0;
+    const nextClaimed = alreadyClaimed + quantity * conversionRate;
+    stockUsage.set(usageKey, nextClaimed);
+    if ((currentBalance?.quantity || 0) < nextClaimed) {
+      addError(row, alreadyClaimed > 0
+        ? `Khong the xuat vuot ton kho (cong don ca cac dong tren cua file: ${nextClaimed})`
+        : "Khong the xuat vuot ton kho");
+    }
   }
 }
 
@@ -375,6 +394,7 @@ function validateBom(
   if (productCode && ingredientCode && productCode === ingredientCode) addError(row, "BOM khong duoc tham chieu chinh san pham do");
   if (numberValue(row.values.quantity) <= 0) addError(row, "So luong dinh muc phai lon hon 0");
   if (numberValue(row.values.waste_rate) < 0) addError(row, "Hao hut khong duoc am");
+  if (numberValue(row.values.selling_price) < 0) addError(row, "Gia ban khong duoc am");
 }
 
 function validateStocktake(
@@ -397,6 +417,9 @@ function validateStocktake(
   const item = inventoryItems.find((candidate) => candidate.code.toUpperCase() === itemCode);
   if (!item) addError(row, `Khong tim thay mat hang ${itemCode}`);
   if (item && item.status !== "ACTIVE") addError(row, `Mat hang ${itemCode} dang ngung hoat dong`);
+  if (item && !isWarehouseStocktakeItemType(item.itemType)) {
+    addError(row, `Mat hang ${itemCode} la CCDC/Tai san; hay kiem ke tai phan he Tai san & khau hao`);
+  }
   if (numberValue(row.values.actual_quantity) < 0) addError(row, "Ton thuc te khong duoc am");
 }
 
@@ -950,19 +973,33 @@ export async function validateImportResult(
     where: { type: { in: ["BRANCH", "MONEY_SOURCE", "PARTNER", "PNL_ITEM", "REVENUE_EXPENSE_CATEGORY", "WAREHOUSE", "INVENTORY_ITEM_GROUP", "ASSET_GROUP", "DEPARTMENT"] } },
     select: { type: true, code: true, name: true, group: true, partnerType: true, branch: true, status: true, accountNo: true, settlementBankCode: true },
   });
-  const inventoryItems = ["OPENING_BALANCE", "INVENTORY_TRANSACTION", "BOM", "STOCKTAKE", "REVENUE_POS"].includes(importType)
+  const inventoryItems = ["OPENING_BALANCE", "INVENTORY_TRANSACTION", "BOM", "STOCKTAKE", "REVENUE_POS", "INVENTORY_ITEM", "PRODUCTION", "WASTE"].includes(importType)
     ? await prisma.inventoryItem.findMany({ select: { code: true, itemType: true, status: true, unit: true, unitConversions: { select: { unitCode: true, conversionRate: true } } } })
     : [];
-  const inventoryBalances = importType === "INVENTORY_TRANSACTION"
+  const inventoryBalances = ["INVENTORY_TRANSACTION", "STOCKTAKE"].includes(importType)
     ? await prisma.inventoryBalance.findMany({ include: { item: { select: { code: true } } } })
     : [];
   const existingAssetCodes = importType === "ASSET"
     ? new Set((await prismaRaw.assetRecord.findMany({ select: { code: true } })).map((asset) => asset.code.toUpperCase()))
     : new Set<string>();
+  // Che bien/huy can BOM; kiem ke tai san can ho so tai san dang song.
+  const recipesForImport = ["PRODUCTION", "WASTE"].includes(importType)
+    ? await prisma.recipe.findMany({ select: { productCode: true, effectiveFrom: true, lines: { select: { id: true } } } })
+    : [];
+  const assetsForStocktake = importType === "ASSET_STOCKTAKE"
+    ? await prisma.assetRecord.findMany({ select: { code: true, branchCode: true, quantity: true } })
+    : [];
 
-  const branchTypes: ImportType[] = ["VOUCHER", "INTERNAL_TRANSFER", "DEBT_OPENING", "OPENING_BALANCE", "REVENUE_POS", "PAYROLL", "INVENTORY_TRANSACTION", "STOCKTAKE", "ASSET"];
+  const branchTypes: ImportType[] = ["VOUCHER", "INTERNAL_TRANSFER", "DEBT_OPENING", "OPENING_BALANCE", "REVENUE_POS", "PAYROLL", "INVENTORY_TRANSACTION", "STOCKTAKE", "ASSET", "PRODUCTION", "WASTE", "ASSET_STOCKTAKE"];
   const openingBalanceKeys = new Set<string>();
   const revenueStockUsage = new Map<string, number>();
+  const transactionStockUsage = new Map<string, number>();
+  // BOM: cac dong cung mon + cung ngay hieu luc phai khai product_name/selling_price giong nhau,
+  // vi ca nhom se thanh MOT phien ban cong thuc.
+  const bomGroupHeader = new Map<string, { name: string; price: number; rowNumber: number }>();
+  const stocktakeCodesInFile = new Map<string, number>();
+  const assetStocktakeRows = new Map<string, number>();
+  const inventoryItemRows = new Map<string, { name: string; itemType: string; unit: string; rowNumber: number }>();
   const revenueReferenceRows = new Map<string, ParsedImportRow>();
   const importAssetCodes = new Set<string>();
   for (const row of result.rows) {
@@ -971,9 +1008,45 @@ export async function validateImportResult(
     if (importType === "VOUCHER") validateVoucher(row, masterItems);
     if (importType === "INTERNAL_TRANSFER") validateTransfer(row, masterItems);
     if (importType === "DEBT_OPENING") validateDebt(row, masterItems);
-    if (importType === "INVENTORY_TRANSACTION") validateInventoryTransaction(row, masterItems, inventoryItems, inventoryBalances);
-    if (importType === "BOM") validateBom(row, inventoryItems);
-    if (importType === "STOCKTAKE") validateStocktake(row, masterItems, inventoryItems);
+    if (importType === "INVENTORY_TRANSACTION") validateInventoryTransaction(row, masterItems, inventoryItems, inventoryBalances, transactionStockUsage);
+    if (importType === "BOM") {
+      validateBom(row, inventoryItems);
+      const bomKey = `${text(row.values.product_code).toUpperCase()}|${text(row.values.effective_date)}`;
+      const header = bomGroupHeader.get(bomKey);
+      const rowName = text(row.values.product_name);
+      const rowPrice = numberValue(row.values.selling_price);
+      if (!header) bomGroupHeader.set(bomKey, { name: rowName, price: rowPrice, rowNumber: row.rowNumber });
+      else if (header.name !== rowName || Math.abs(header.price - rowPrice) > 0.5) {
+        addError(row, `Cac dong cung mon + cung Ngay ap dung phai khai Ten san pham va Gia ban giong nhau (khac voi dong ${header.rowNumber})`);
+      }
+    }
+    if (importType === "STOCKTAKE") {
+      validateStocktake(row, masterItems, inventoryItems);
+      const declaredCode = text(row.values.code).toUpperCase();
+      if (declaredCode) {
+        // Cung mot so phieu chi duoc dung cho MOT nhom ngay+cua hang+kho.
+        row.values.code = declaredCode;
+        const groupKey = `${text(row.values.stocktake_date)}|${text(row.values.branch_code).toUpperCase()}|${text(row.values.warehouse_code).toUpperCase()}`;
+        const claimedRow = stocktakeCodesInFile.get(declaredCode + "::" + groupKey);
+        if (!claimedRow) {
+          for (const [key, atRow] of stocktakeCodesInFile) {
+            if (key.startsWith(declaredCode + "::")) addError(row, `So phieu [${declaredCode}] da dung cho nhom khac trong file (dong ${atRow})`);
+          }
+          stocktakeCodesInFile.set(declaredCode + "::" + groupKey, row.rowNumber);
+        }
+      }
+      // Hang dem THUA o kho chua co gia von: bat khai "Don gia" ngay tu preview.
+      const stItem = inventoryItems.find((candidate) => candidate.code.toUpperCase() === text(row.values.item_code).toUpperCase());
+      if (stItem) {
+        const stBalance = inventoryBalances.find((balance) => balance.item.code.toUpperCase() === stItem.code.toUpperCase() && balance.warehouseCode === text(row.values.warehouse_code));
+        const stActual = numberValue(row.values.actual_quantity);
+        const stSystem = stBalance?.quantity || 0;
+        const stAvg = (stBalance as { averageCost?: number } | undefined)?.averageCost || 0;
+        if (stActual > stSystem && stAvg <= 0 && numberValue(row.values.unit_cost) <= 0) {
+          addError(row, `${stItem.code} chua co gia von trong kho — khai cot "Don gia" de ghi nhan phan thua`);
+        }
+      }
+    }
     if (importType === "ASSET") {
       validateAsset(row, masterItems, existingAssetCodes);
       const assetCode = text(row.values.asset_code).toUpperCase();
@@ -982,11 +1055,76 @@ export async function validateImportResult(
         importAssetCodes.add(assetCode);
       }
     }
+    if (importType === "PRODUCTION" || importType === "WASTE") {
+      const dateField = importType === "PRODUCTION" ? "production_date" : "waste_date";
+      const productCode = text(row.values.product_code).toUpperCase();
+      row.values.product_code = productCode;
+      const quantity = numberValue(row.values.product_quantity);
+      if (quantity <= 0) addError(row, "So luong phai lon hon 0");
+      const branchCode = text(row.values.branch_code).toUpperCase();
+      const warehouse = resolveMaster(masterItems, "WAREHOUSE", row.values.warehouse_code, branchCode);
+      if (!warehouse) addError(row, `Kho [${text(row.values.warehouse_code)}] khong ton tai hoac khong thuoc cua hang`);
+      else row.values.warehouse_code = warehouse.code;
+      if (importType === "PRODUCTION" && text(row.values.to_warehouse_code)) {
+        const toWarehouse = resolveMaster(masterItems, "WAREHOUSE", row.values.to_warehouse_code, branchCode);
+        if (!toWarehouse) addError(row, `Kho nhap BTP [${text(row.values.to_warehouse_code)}] khong ton tai hoac khong thuoc cua hang`);
+        else row.values.to_warehouse_code = toWarehouse.code;
+      }
+      const product = inventoryItems.find((candidate) => candidate.code.toUpperCase() === productCode);
+      if (!product) addError(row, `Khong tim thay mat hang ${productCode}`);
+      if (importType === "PRODUCTION" && product && product.itemType !== "SEMI_FINISHED") {
+        addError(row, "Che bien chi ap dung cho ban thanh pham (BTP_)");
+      }
+      const docDate = row.values[dateField] instanceof Date ? (row.values[dateField] as Date) : null;
+      if (docDate) {
+        const recipe = recipesForImport
+          .filter((candidate) => candidate.productCode.toUpperCase() === productCode && candidate.effectiveFrom <= docDate && candidate.lines.length > 0)
+          .sort((a, b) => b.effectiveFrom.getTime() - a.effectiveFrom.getTime())[0];
+        if (!recipe) addError(row, `Chua co dinh luong/BOM hieu luc tai ngay do cho ${productCode}`);
+      }
+    }
+    if (importType === "ASSET_STOCKTAKE") {
+      const assetCode = text(row.values.asset_code).toUpperCase();
+      row.values.asset_code = assetCode;
+      const asset = assetsForStocktake.find((candidate) => candidate.code.toUpperCase() === assetCode);
+      if (!asset) addError(row, `Khong tim thay tai san ${assetCode}`);
+      const branchCode = text(row.values.branch_code).toUpperCase();
+      if (asset && asset.branchCode !== branchCode) {
+        addError(row, `Tai san ${assetCode} thuoc cua hang ${asset.branchCode}, khong phai ${branchCode}`);
+      }
+      if (numberValue(row.values.actual_quantity) < 0) addError(row, "So dem thuc te khong duoc am");
+      const dupKey = `${text(row.values.stocktake_date)}|${branchCode}|${assetCode}`;
+      const dupRow = assetStocktakeRows.get(dupKey);
+      if (dupRow) addError(row, `Tai san ${assetCode} bi trung dong trong cung ngay kiem (dong ${dupRow})`);
+      else assetStocktakeRows.set(dupKey, row.rowNumber);
+    }
     if (importType === "INVENTORY_ITEM") {
       const itemType = normalizeItemType(row.values.item_type);
       row.values.item_type = itemType;
       if (!["RAW_MATERIAL", "SEMI_FINISHED", "FINISHED", "PACKAGING", "TOOL", "ASSET"].includes(itemType)) {
         addError(row, "Loại mặt hàng không hợp lệ");
+      }
+      const itemStatusValue = text(row.values.status).toUpperCase();
+      if (itemStatusValue && !["ACTIVE", "INACTIVE"].includes(itemStatusValue)) {
+        addError(row, "Trạng thái chỉ nhận ACTIVE hoặc INACTIVE");
+      }
+      const importItemCode = text(row.values.code).toUpperCase();
+      const existingItem = inventoryItems.find((candidate) => candidate.code.toUpperCase() === importItemCode);
+      // Rule tiền tố mã chỉ áp cho mã TẠO MỚI — danh mục cũ có hàng nghìn mã đặt trước khi có
+      // rule (G00024, ITEM-XXXX...), bắt cả mã cũ là không re-import được danh mục đang dùng.
+      if (importItemCode && !existingItem) {
+        const prefixMessage = itemCodePrefixError(itemType, importItemCode);
+        if (prefixMessage) addError(row, prefixMessage);
+      }
+      // Nhiều dòng cùng mã = khai thêm ĐVT quy đổi; nhưng các cột master phải giống hệt nhau,
+      // vì dòng sau sẽ ghi đè dòng trước trong cùng lượt import.
+      if (importItemCode) {
+        const firstRow = inventoryItemRows.get(importItemCode);
+        const thisRow = { name: text(row.values.name), itemType, unit: text(row.values.unit), rowNumber: row.rowNumber };
+        if (!firstRow) inventoryItemRows.set(importItemCode, thisRow);
+        else if (firstRow.name !== thisRow.name || firstRow.itemType !== thisRow.itemType || firstRow.unit !== thisRow.unit) {
+          addError(row, `Các dòng cùng mã [${importItemCode}] phải khai Tên/Loại/ĐVT giống nhau (khác với dòng ${firstRow.rowNumber})`);
+        }
       }
       const itemGroupInput = text(row.values.category);
       if (itemGroupInput) {
@@ -1327,6 +1465,35 @@ export async function validateImportResult(
         const period = date.toISOString().slice(0, 7);
         const fieldList = [...labels].join(" / ");
         for (const row of rows) addError(row, `Kỳ ${period} của ${branchCode} đã khóa (theo ${fieldList})`);
+      }
+    }
+  }
+
+  // Kỳ khoá phải báo ngay ở preview cho cả import kho/kiểm kê/POS — commit đã có chốt chặn
+  // (assertImportPeriodsOpen) nhưng để người dùng thấy file "hợp lệ" rồi chết ở Commit là tệ.
+  const periodDateFieldByType: Partial<Record<ImportType, string>> = {
+    INVENTORY_TRANSACTION: "transaction_date",
+    STOCKTAKE: "stocktake_date",
+    REVENUE_POS: "sale_date",
+    PRODUCTION: "production_date",
+    WASTE: "waste_date",
+  };
+  const periodDateField = periodDateFieldByType[importType];
+  if (periodDateField) {
+    const lockChecks = new Map<string, { date: Date; branchCode: string; rows: ParsedImportRow[] }>();
+    for (const row of result.rows) {
+      const branchCode = text(row.values.branch_code);
+      const date = row.values[periodDateField] instanceof Date ? (row.values[periodDateField] as Date) : null;
+      if (!branchCode || !date) continue;
+      const key = `${branchCode}:${date.toISOString().slice(0, 7)}`;
+      const current = lockChecks.get(key);
+      if (current) current.rows.push(row);
+      else lockChecks.set(key, { date, branchCode, rows: [row] });
+    }
+    for (const { date, branchCode, rows } of lockChecks.values()) {
+      if (await isPeriodLocked(date, branchCode)) {
+        const period = date.toISOString().slice(0, 7);
+        for (const row of rows) addError(row, `Kỳ ${period} của ${branchCode} đã khóa sổ — không thể ghi thêm chứng từ`);
       }
     }
   }

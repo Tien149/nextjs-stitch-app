@@ -5,14 +5,20 @@ import { addPeriod, apiError, businessError, cleanText, isPeriodLocked, normaliz
 import { assertBranchAccess, requestedBranch } from "@/lib/accounting";
 import { scopePayloadByTab } from "@/lib/tab-scope";
 import { normalizeMoneySourceGroup } from "@/lib/money-sources";
+import { writeAuditLog } from "@/lib/audit-log";
+import { nextSeqFromCodes, voucherCodePrefix } from "@/lib/voucher-code-generator";
 
 const menuHref = "/assets";
 
-async function nextPaymentVoucherCode(tx: TxClient) {
-  const now = new Date();
-  const ym = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}`;
-  const count = await tx.financialVoucher.count({ where: { voucherType: "PAYMENT" } });
-  return `PC-${ym}-${String(count + 1).padStart(3, "0")}`;
+/**
+ * Mã phiếu chi theo ĐÚNG định dạng chuẩn của hệ thống (PCHI/UNC-YYMM-CH-#####) và cấp số
+ * max + 1 trong chuỗi. Bản cũ tự chế "PC-YYYYMM-###" lệch chuẩn, lại đếm COUNT toàn thời gian
+ * nên vừa sai format vừa dễ trùng sau khi có phiếu bị xoá.
+ */
+async function nextPaymentVoucherCode(tx: TxClient, voucherDate: Date, branchCode: string, documentChannel: string) {
+  const prefix = voucherCodePrefix({ voucherType: "PAYMENT", documentChannel, voucherDate, branchCode });
+  const issued = await tx.financialVoucher.findMany({ where: { code: { startsWith: prefix } }, select: { code: true } });
+  return prefix + String(nextSeqFromCodes(issued.map((row) => row.code), prefix)).padStart(5, "0");
 }
 
 async function defaultMoneySource(tx: TxClient, branchCode: string) {
@@ -66,13 +72,14 @@ export async function GET(request: Request) {
     const branchCode = requestedBranch(auth.session, cleanText(searchParams.get("branchCode")) || "ALL");
     const assetWhere = branchCode === "ALL" ? {} : { branchCode };
     const relatedWhere = branchCode === "ALL" ? {} : { asset: { branchCode } };
-    const [assets, depreciations, maintenances, damageReports] = await Promise.all([
+    const [assets, depreciations, maintenances, damageReports, assetStocktakes] = await Promise.all([
       prisma.assetRecord.findMany({ where: assetWhere, orderBy: { createdAt: "desc" } }),
       prisma.assetDepreciation.findMany({ where: relatedWhere, include: { asset: true }, orderBy: [{ period: "desc" }, { createdAt: "desc" }], take: 200 }),
       prisma.assetMaintenance.findMany({ where: relatedWhere, include: { asset: true }, orderBy: { scheduledDate: "desc" }, take: 200 }),
       prisma.assetDamageReport.findMany({ where: relatedWhere, include: { asset: true }, orderBy: { reportedDate: "desc" }, take: 200 }),
+      prisma.assetStocktakeSession.findMany({ where: branchCode === "ALL" ? {} : { branchCode }, include: { lines: { include: { asset: true } } }, orderBy: { createdAt: "desc" }, take: 20 }),
     ]);
-    return NextResponse.json(scopePayloadByTab(auth.session, "/assets/operations", { assets, depreciations, maintenances, damageReports }));
+    return NextResponse.json(scopePayloadByTab(auth.session, "/assets/operations", { assets, depreciations, maintenances, damageReports, assetStocktakes }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });
@@ -86,6 +93,67 @@ export async function POST(request: Request) {
     const requiredAction = ["RUN_DEPRECIATION", "COMPLETE_MAINTENANCE", "RESOLVE_DAMAGE", "CONFIGURE_DEPRECIATION"].includes(action) ? "edit" : "create";
     const auth = requireMenuAction(request, menuHref, requiredAction);
     if (!auth.ok) return auth.response;
+
+    if (action === "APPROVE_ASSET_STOCKTAKE") {
+      const branchCode = cleanText(body.branchCode);
+      const stocktakeDate = toDate(body.stocktakeDate);
+      const rawLines = Array.isArray(body.lines) ? body.lines as Array<{ assetId?: unknown; systemQuantity?: unknown; actualQuantity?: unknown; condition?: unknown; note?: unknown }> : [];
+      const lines = rawLines
+        .map((line) => ({
+          assetId: cleanText(line.assetId),
+          systemQuantity: line.systemQuantity === undefined || line.systemQuantity === null || line.systemQuantity === "" ? null : toNumber(line.systemQuantity),
+          actualQuantity: toNumber(line.actualQuantity),
+          condition: cleanText(line.condition),
+          note: cleanText(line.note),
+        }))
+        .filter((line) => line.assetId && Number.isFinite(line.actualQuantity) && line.actualQuantity >= 0);
+      if (!branchCode || lines.length === 0) businessError("Kiểm kê tài sản cần cửa hàng và ít nhất một dòng");
+      assertBranchAccess(auth.session, branchCode);
+
+      const result = await prisma.$transaction(async (tx) => {
+        const head = `KKTS-${stocktakeDate.getFullYear()}-`;
+        const issued = await tx.$queryRaw<Array<{ code: string }>>`SELECT "code" FROM "AssetStocktakeSession" WHERE "code" LIKE ${head + "%"}`;
+        const session = await tx.assetStocktakeSession.create({
+          data: {
+            code: head + String(nextSeqFromCodes(issued.map((row) => row.code), head)).padStart(4, "0"),
+            stocktakeDate,
+            branchCode,
+            status: "APPROVED",
+            note: cleanText(body.note) || null,
+            createdBy: auth.session.name,
+            approvedBy: auth.session.name,
+            approvedAt: new Date(),
+          },
+        });
+        for (const line of lines) {
+          const asset = await tx.assetRecord.findUnique({ where: { id: line.assetId } });
+          if (!asset) businessError("Không tìm thấy tài sản trong danh sách kiểm kê");
+          if (asset.branchCode !== branchCode) businessError(`Tài sản ${asset.code} thuộc cửa hàng ${asset.branchCode}, không thuộc phiên kiểm kê này`);
+          // Khoá lạc quan — cùng luật với kiểm kê kho: số sổ sách đổi từ lúc tải danh sách thì
+          // bắt tải lại, không âm thầm đè số đếm cũ lên biến động mới.
+          if (line.systemQuantity !== null && Math.abs(line.systemQuantity - asset.quantity) > 0.000001) {
+            businessError(`Số sổ sách của ${asset.code} đã thay đổi từ lúc tải danh sách (${line.systemQuantity} → ${asset.quantity}). Tải lại danh sách rồi kiểm lại dòng này.`);
+          }
+          await tx.assetStocktakeLine.create({
+            data: {
+              sessionId: session.id,
+              assetId: asset.id,
+              systemQuantity: asset.quantity,
+              actualQuantity: line.actualQuantity,
+              varianceQuantity: line.actualQuantity - asset.quantity,
+              condition: line.condition || null,
+              note: line.note || null,
+            },
+          });
+          // Duyệt kiểm kê = số đếm là số chốt.
+          await tx.assetRecord.update({ where: { id: asset.id }, data: { quantity: line.actualQuantity } });
+        }
+        return tx.assetStocktakeSession.findUnique({ where: { id: session.id }, include: { lines: { include: { asset: true } } } });
+      });
+
+      await writeAuditLog({ session: auth.session, module: "/assets", action: "APPROVE_ASSET_STOCKTAKE", entityType: "AssetStocktakeSession", entityId: result?.id || null, entityCode: result?.code || null, branchCode, metadata: { lines: lines.length } });
+      return NextResponse.json(result, { status: 201 });
+    }
 
     if (action === "CONFIGURE_DEPRECIATION") {
       const assetId = cleanText(body.assetId);
@@ -333,7 +401,7 @@ export async function POST(request: Request) {
           const documentChannel = await documentChannelForSource(tx, moneySourceCode);
           await tx.financialVoucher.create({
             data: {
-              code: await nextPaymentVoucherCode(tx),
+              code: await nextPaymentVoucherCode(tx, resolvedAt, report.asset.branchCode, documentChannel),
               sourceDocumentCode: report.code,
               voucherType: "PAYMENT",
               voucherDate: resolvedAt,

@@ -1,4 +1,5 @@
 import type { TxClient } from "@/lib/prisma";
+import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 
 export const STOCK_TRANSACTION_TYPES = [
   "NHAP_MUA",
@@ -31,6 +32,7 @@ export type StockLineInput = {
 export type PostInventoryTransactionInput = {
   importBatchId?: string | null;
   code: string;
+  partnerCode?: string | null;
   transactionType: string;
   transactionDate: Date;
   branchCode: string;
@@ -78,6 +80,25 @@ export function isInboundStockType(value: string) {
 
 export function isOutboundStockType(value: string) {
   return value.startsWith("XUAT_");
+}
+
+/**
+ * Mã chứng từ kho kế tiếp: max + 1 trong đúng chuỗi `PREFIX-YYYY-`.
+ * Không dùng COUNT + 1: xoá/rollback làm COUNT tụt xuống và mã cấp lại đâm trúng
+ * phiếu đang sống (đúng lớp lỗi "Dữ liệu bị trùng" của phiếu tiền, đã sửa 19/08).
+ * Tra bằng SQL thô để thấy cả phiếu đã xoá mềm — ràng buộc unique tính cả chúng.
+ */
+export async function nextStockDocCode(tx: Tx, prefix: string, docDate: Date) {
+  const head = `${prefix}-${docDate.getUTCFullYear()}-`;
+  const rows = await tx.$queryRaw<Array<{ code: string }>>`SELECT "code" FROM "InventoryTransaction" WHERE "code" LIKE ${head + "%"}`;
+  return head + String(nextSeqFromCodes(rows.map((row) => row.code), head)).padStart(4, "0");
+}
+
+/** Cùng luật max + 1 cho số phiếu kiểm kê kho (KK-YYYY-####). */
+export async function nextStocktakeCode(tx: Tx, docDate: Date) {
+  const head = `KK-${docDate.getUTCFullYear()}-`;
+  const rows = await tx.$queryRaw<Array<{ code: string }>>`SELECT "code" FROM "StocktakeSession" WHERE "code" LIKE ${head + "%"}`;
+  return head + String(nextSeqFromCodes(rows.map((row) => row.code), head)).padStart(4, "0");
 }
 
 function stockError(message: string): never {
@@ -133,6 +154,10 @@ async function applyBalanceChange(
   unitCost: number,
   direction: "IN" | "OUT",
 ) {
+  // Khoá dòng tồn trước khi đọc: hai phiếu chạy song song sẽ xếp hàng thay vì cùng đọc
+  // một số tồn rồi cùng ghi đè (lost update — xuất 16.000 khỏi kho 10.000 mà không ai báo lỗi).
+  // Dòng chưa tồn tại thì không khoá được, nhưng nhánh tạo mới đã có unique (itemId, warehouseCode) chặn.
+  await tx.$queryRaw`SELECT "id" FROM "InventoryBalance" WHERE "itemId" = ${itemId} AND "warehouseCode" = ${warehouseCode} FOR UPDATE`;
   const balance = await tx.inventoryBalance.findUnique({
     where: { itemId_warehouseCode: { itemId, warehouseCode } },
   });
@@ -180,6 +205,11 @@ export async function postInventoryTransaction(tx: Tx, input: PostInventoryTrans
       valuedLines.push({ ...line, unitCost: valued.unitCost, totalCost: valued.totalCost });
     } else {
       const outValue = await applyBalanceChange(tx, line.itemId, input.warehouseCode, line.quantity, line.unitCost, "OUT");
+      // Giá vốn 0 mà cho qua thì kho nhận thay 0 bằng bình quân của chính nó — tổng giá trị
+      // kho tự tăng không chứng từ. Bắt khai giá vốn cho kho nguồn trước khi điều chuyển.
+      if (outValue.unitCost <= 0) {
+        stockError(`Mat hang ${line.item.code} o kho ${input.warehouseCode} chua co gia von (binh quan = 0). Nhap gia von (phieu nhap co don gia hoac so du dau ky) truoc khi dieu chuyen`);
+      }
       await applyBalanceChange(tx, line.itemId, input.toWarehouseCode || "", line.quantity, outValue.unitCost, "IN");
       valuedLines.push({ ...line, unitCost: outValue.unitCost, totalCost: outValue.totalCost });
     }
@@ -197,6 +227,7 @@ export async function postInventoryTransaction(tx: Tx, input: PostInventoryTrans
       referenceType: input.referenceType || null,
       referenceId: input.referenceId || null,
       referenceCode: input.referenceCode || null,
+      partnerCode: input.partnerCode || null,
       note: input.note || null,
       createdBy: input.createdBy || null,
       lines: {

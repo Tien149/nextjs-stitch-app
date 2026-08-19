@@ -374,6 +374,8 @@ export const moduleTabs: Record<string, Array<{ id: string; label: string }>> = 
     { id: "maintenance", label: "Bảo trì" },
     { id: "damage", label: "Sửa chữa" },
     { id: "disposal", label: "Thanh lý" },
+    // Kiểm kê CCDC & Tài sản nằm ở đây theo yêu cầu khách — kiểm kê bên Kho chỉ nhận hàng tồn kho.
+    { id: "stocktake", label: "Kiểm kê" },
   ],
 };
 

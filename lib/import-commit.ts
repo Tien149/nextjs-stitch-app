@@ -16,6 +16,8 @@ import { evaluateBankStatementAutoApproval } from "@/lib/bank-statement-auto-app
 import { applyVoucherSideEffects } from "@/lib/voucher-side-effects";
 import { applyOpeningDeposit } from "@/lib/opening-balance-deposit";
 import { assertAssetCodeAvailable, nextAssetCode } from "@/lib/asset-code-generator";
+import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
+import { nextStockDocCode, nextStocktakeCode } from "@/lib/inventory-stock";
 import {
   WALLET_CARD_FEE_CATEGORY_CODE,
   WALLET_GRAB_EXPENSE_CATEGORY_CODE,
@@ -50,6 +52,11 @@ function asNumber(value: unknown) {
 
 function asInteger(value: unknown) {
   return Math.trunc(asNumber(value));
+}
+
+function asFlag(value: unknown) {
+  if (typeof value === "boolean") return value;
+  return ["1", "TRUE", "YES", "Y", "CO", "CÓ", "BAT BUOC", "BẮT BUỘC"].includes(asText(value).toUpperCase());
 }
 
 function asDate(value: unknown) {
@@ -176,14 +183,10 @@ async function assertPeriodOpen(
   }
 }
 
-async function assertImportPeriodsOpen(tx: RawTxClient, batchId: string, importType: string) {
+async function assertImportPeriodsOpen(tx: RawTxClient, batchId: string, importType: string, action: "commit" | "rollback" = "rollback") {
   if (importType === "BANK_STATEMENT") {
     const rows = await tx.bankStatementTransaction.findMany({ where: { importBatchId: batchId }, select: { transactionDate: true, branchCode: true } });
     for (const row of rows) await assertPeriodOpen(tx, periodFromDate(row.transactionDate), row.branchCode);
-  }
-  if (importType === "REVENUE_POS") {
-    const rows = await tx.revenueImportRow.findMany({ where: { importBatchId: batchId }, select: { saleDate: true, branchCode: true } });
-    for (const row of rows) await assertPeriodOpen(tx, periodFromDate(row.saleDate), row.branchCode);
   }
   if (importType === "PAYROLL") {
     const rows = await tx.payrollImportRow.findMany({ where: { importBatchId: batchId }, select: { period: true, branchCode: true } });
@@ -208,9 +211,15 @@ async function assertImportPeriodsOpen(tx: RawTxClient, batchId: string, importT
       await assertPeriodOpen(tx, asText(values.period), asText(values.branch_code));
     }
   }
-  if (importType === "INVENTORY_TRANSACTION") {
+  // Mọi loại import sinh phiếu kho đều chung luật khoá kỳ — kiểm kê/chế biến/hủy trước đây
+  // không có nhánh nào nên ghi được vào tháng đã chốt sổ.
+  if (["INVENTORY_TRANSACTION", "STOCKTAKE", "PRODUCTION", "WASTE"].includes(importType)) {
     const rows = await tx.inventoryTransaction.findMany({ where: { importBatchId: batchId }, select: { transactionDate: true, branchCode: true } });
-    for (const row of rows) await assertPeriodOpen(tx, periodFromDate(row.transactionDate), row.branchCode);
+    for (const row of rows) await assertPeriodOpen(tx, periodFromDate(row.transactionDate), row.branchCode, action);
+  }
+  if (importType === "REVENUE_POS") {
+    const rows = await tx.revenueImportRow.findMany({ where: { importBatchId: batchId }, select: { saleDate: true, branchCode: true } });
+    for (const row of rows) await assertPeriodOpen(tx, periodFromDate(row.saleDate), row.branchCode, action);
   }
   if (importType === "ASSET") {
     const rows = await tx.importRow.findMany({ where: { importBatchId: batchId, targetType: "ASSET" }, select: { normalizedJson: true } });
@@ -874,19 +883,27 @@ export async function commitImport(input: CommitInput) {
 
         await setImportTarget(tx, staging, row, "REVENUE_POS", revenueRow.id);
         if (productCode && productQuantity > 0) {
+          const saleDate = asDate(row.values.sale_date);
+          const posWarehouseCode = asText(row.values.warehouse_code);
+          if (!posWarehouseCode) {
+            // Trước đây rơi về "KHO_HCM" cứng — file thiếu cột kho là trừ nhầm kho của cửa hàng khác.
+            throw new Error(`Dòng ${row.rowNumber}: dòng POS có trừ kho bắt buộc khai Kho xuất`);
+          }
+          // Công thức đúng là bản có hiệu lực TẠI NGÀY BÁN: import lại file POS của tháng trước
+          // phải trừ kho theo công thức của tháng trước, không phải công thức vừa đổi hôm nay.
           const recipe = await tx.recipe.findFirst({
-            where: { productCode, status: "ACTIVE" },
+            where: { productCode, effectiveFrom: { lte: saleDate } },
             include: { lines: true },
-            orderBy: { version: "desc" },
+            orderBy: [{ effectiveFrom: "desc" }, { version: "desc" }],
           });
           if (recipe) {
             await postInventoryTransaction(tx, {
               importBatchId: batch.id,
               code: `XB-${asText(row.values.external_ref)}`,
               transactionType: "XUAT_BAN",
-              transactionDate: asDate(row.values.sale_date),
+              transactionDate: saleDate,
               branchCode: asText(row.values.branch_code),
-              warehouseCode: asText(row.values.warehouse_code) || "KHO_HCM",
+              warehouseCode: posWarehouseCode,
               referenceType: "REVENUE_POS",
               referenceId: revenueRow.id,
               referenceCode: asText(row.values.external_ref),
@@ -906,9 +923,9 @@ export async function commitImport(input: CommitInput) {
                 importBatchId: batch.id,
                 code: `XB-${asText(row.values.external_ref)}`,
                 transactionType: "XUAT_BAN",
-                transactionDate: asDate(row.values.sale_date),
+                transactionDate: saleDate,
                 branchCode: asText(row.values.branch_code),
-                warehouseCode: asText(row.values.warehouse_code) || "KHO_HCM",
+                warehouseCode: posWarehouseCode,
                 referenceType: "REVENUE_POS",
                 referenceId: revenueRow.id,
                 referenceCode: asText(row.values.external_ref),
@@ -975,18 +992,33 @@ export async function commitImport(input: CommitInput) {
         if (type === "REVENUE_EXPENSE_CATEGORY" && !["RECEIPT", "PAYMENT"].includes(group || "")) {
           throw new Error(`Dòng ${row.rowNumber}: Loại Thu/Chi phải là Thu hoặc Chi`);
         }
+        const masterStatus = asText(row.values.status).toUpperCase();
+        if (masterStatus && !["ACTIVE", "INACTIVE"].includes(masterStatus)) {
+          throw new Error(`Dòng ${row.rowNumber}: Trạng thái chỉ nhận ACTIVE hoặc INACTIVE`);
+        }
+        // Cột không map thì không ghi đè — cùng luật với INVENTORY_ITEM.
+        const hasMasterColumn = (field: string) => Boolean(input.mapping[field]);
         const item = await tx.masterDataItem.upsert({
           where: { type_code: { type, code } },
           create: {
             type, code, name, group, partnerType: type === "PARTNER" ? group : null, partnerGroup: type === "PARTNER" ? partnerGroup : null, branch,
             taxCode: row.values.tax_code ? asText(row.values.tax_code) : null,
             accountNo: row.values.account_no ? asText(row.values.account_no) : null,
-            status: "ACTIVE",
+            contactName: asText(row.values.contact_name) || null,
+            phone: asText(row.values.phone) || null,
+            email: asText(row.values.email) || null,
+            note: asText(row.values.note) || null,
+            status: masterStatus || "ACTIVE",
           },
           update: {
             name, group, partnerType: type === "PARTNER" ? group : null, partnerGroup: type === "PARTNER" ? partnerGroup : null, branch,
             taxCode: row.values.tax_code ? asText(row.values.tax_code) : null,
             accountNo: row.values.account_no ? asText(row.values.account_no) : null,
+            ...(hasMasterColumn("contact_name") ? { contactName: asText(row.values.contact_name) || null } : {}),
+            ...(hasMasterColumn("phone") ? { phone: asText(row.values.phone) || null } : {}),
+            ...(hasMasterColumn("email") ? { email: asText(row.values.email) || null } : {}),
+            ...(hasMasterColumn("note") ? { note: asText(row.values.note) || null } : {}),
+            ...(hasMasterColumn("status") && masterStatus ? { status: masterStatus } : {}),
           },
         });
         await setImportTarget(tx, staging, row, "MASTER_DATA", item.id);
@@ -994,6 +1026,14 @@ export async function commitImport(input: CommitInput) {
     }
 
     if (input.importType === "INVENTORY_ITEM") {
+      // Cột không được map thì KHÔNG ghi đè giá trị đang có: file thiếu cột "Yêu cầu hình ảnh"
+      // mà cứ ghi asFlag(undefined) = false là mọi lần re-import đều reset cờ của item cũ.
+      const hasColumn = (field: string) => Boolean(input.mapping[field]);
+      // Nhiều dòng cùng mã = khai nhiều ĐVT quy đổi. Chỉ dòng ĐẦU TIÊN (hoặc dòng cắm cờ
+      // "ĐVT mua mặc định") được isDefaultPurchase — trước đây mọi dòng đều true, mặc định
+      // thành ngẫu nhiên theo thứ tự alphabet.
+      const seenDefaultPurchase = new Set<string>();
+      const upsertedItemIds = new Map<string, string>();
       for (const row of input.rows) {
         const code = asText(row.values.code).toUpperCase();
         const name = asText(row.values.name);
@@ -1003,10 +1043,46 @@ export async function commitImport(input: CommitInput) {
         if (!['RAW_MATERIAL', 'SEMI_FINISHED', 'FINISHED', 'PACKAGING', 'TOOL', 'ASSET'].includes(itemType)) {
           throw new Error(`Dòng ${row.rowNumber}: Loại hàng không hợp lệ`);
         }
+        const statusValue = asText(row.values.status).toUpperCase();
+        if (statusValue && !["ACTIVE", "INACTIVE"].includes(statusValue)) {
+          throw new Error(`Dòng ${row.rowNumber}: Trạng thái chỉ nhận ACTIVE hoặc INACTIVE`);
+        }
+        // Dòng LẶP MÃ trong cùng file chỉ để khai thêm ĐVT quy đổi — không đụng master data
+        // lần nữa, nếu không ô trống của dòng sau sẽ đè giá trị dòng đầu (note, tồn tối thiểu...).
+        const repeatedItemId = upsertedItemIds.get(code);
+        if (repeatedItemId) {
+          const purchaseUnitRepeat = row.values.purchase_unit ? asText(row.values.purchase_unit) : "";
+          const conversionRateRepeat = row.values.conversion_rate ? asNumber(row.values.conversion_rate) : 0;
+          if (purchaseUnitRepeat || conversionRateRepeat) {
+            if (!purchaseUnitRepeat || conversionRateRepeat < 1) throw new Error(`Dòng ${row.rowNumber}: ĐVT mua và tỷ lệ quy đổi phải hợp lệ`);
+            const explicitDefaultRepeat = hasColumn("is_default_purchase") ? asFlag(row.values.is_default_purchase) : !seenDefaultPurchase.has(code);
+            const isDefaultRepeat = explicitDefaultRepeat && !seenDefaultPurchase.has(code);
+            if (isDefaultRepeat) seenDefaultPurchase.add(code);
+            await tx.itemUnitConversion.upsert({
+              where: { itemId_unitCode: { itemId: repeatedItemId, unitCode: purchaseUnitRepeat.toUpperCase() } },
+              create: { itemId: repeatedItemId, unitCode: purchaseUnitRepeat.toUpperCase(), unitName: purchaseUnitRepeat, conversionRate: conversionRateRepeat, isDefaultPurchase: isDefaultRepeat, note: asText(row.values.conversion_note) || null },
+              update: { unitName: purchaseUnitRepeat, conversionRate: conversionRateRepeat, isDefaultPurchase: isDefaultRepeat, note: asText(row.values.conversion_note) || null },
+            });
+          }
+          await setImportTarget(tx, staging, row, "INVENTORY_ITEM", repeatedItemId);
+          continue;
+        }
         const item = await tx.inventoryItem.upsert({
           where: { code },
-          create: { code, name, itemType, category, unit, minStock: asNumber(row.values.min_stock), status: "ACTIVE" },
-          update: { name, itemType, category, unit, minStock: asNumber(row.values.min_stock) },
+          create: {
+            code, name, itemType, category, unit,
+            minStock: asNumber(row.values.min_stock),
+            requiresImage: asFlag(row.values.requires_image),
+            note: asText(row.values.note) || null,
+            status: statusValue || "ACTIVE",
+          },
+          update: {
+            name, itemType, category, unit,
+            ...(hasColumn("min_stock") ? { minStock: asNumber(row.values.min_stock) } : {}),
+            ...(hasColumn("requires_image") ? { requiresImage: asFlag(row.values.requires_image) } : {}),
+            ...(hasColumn("note") ? { note: asText(row.values.note) || null } : {}),
+            ...(hasColumn("status") && statusValue ? { status: statusValue } : {}),
+          },
         });
         await tx.itemUnitConversion.upsert({
           where: { itemId_unitCode: { itemId: item.id, unitCode: unit.toUpperCase() } },
@@ -1017,12 +1093,16 @@ export async function commitImport(input: CommitInput) {
         const conversionRate = row.values.conversion_rate ? asNumber(row.values.conversion_rate) : 0;
         if (purchaseUnit || conversionRate) {
           if (!purchaseUnit || conversionRate < 1) throw new Error(`Dòng ${row.rowNumber}: ĐVT mua và tỷ lệ quy đổi phải hợp lệ`);
+          const explicitDefault = hasColumn("is_default_purchase") ? asFlag(row.values.is_default_purchase) : !seenDefaultPurchase.has(code);
+          const isDefaultPurchase = explicitDefault && !seenDefaultPurchase.has(code);
+          if (isDefaultPurchase) seenDefaultPurchase.add(code);
           await tx.itemUnitConversion.upsert({
             where: { itemId_unitCode: { itemId: item.id, unitCode: purchaseUnit.toUpperCase() } },
-            create: { itemId: item.id, unitCode: purchaseUnit.toUpperCase(), unitName: purchaseUnit, conversionRate, isDefaultPurchase: true },
-            update: { unitName: purchaseUnit, conversionRate, isDefaultPurchase: true },
+            create: { itemId: item.id, unitCode: purchaseUnit.toUpperCase(), unitName: purchaseUnit, conversionRate, isDefaultPurchase, note: asText(row.values.conversion_note) || null },
+            update: { unitName: purchaseUnit, conversionRate, isDefaultPurchase, note: asText(row.values.conversion_note) || null },
           });
         }
+        upsertedItemIds.set(code, item.id);
         await setImportTarget(tx, staging, row, "INVENTORY_ITEM", item.id);
       }
     }
@@ -1041,16 +1121,14 @@ export async function commitImport(input: CommitInput) {
         ].join("|");
         groups.set(key, [...(groups.get(key) || []), row]);
       }
-      let sequence = await tx.inventoryTransaction.count();
       for (const rows of groups.values()) {
         const first = rows[0];
         const transactionDate = asDate(first.values.transaction_date);
         const transactionType = normalizeStockTransactionType(first.values.transaction_type);
         const prefix = transactionType === "NHAP_MUA" ? "NM" : transactionType === "NHAP_KHAC" ? "NK" : transactionType === "XUAT_HUY" ? "HH" : transactionType === "DIEU_CHUYEN" ? "DCK" : "XK";
-        sequence += 1;
         const transaction = await postInventoryTransaction(tx, {
           importBatchId: batch.id,
-          code: asText(first.values.reference_code) || `${prefix}-${transactionDate.getUTCFullYear()}-${String(sequence).padStart(4, "0")}`,
+          code: asText(first.values.reference_code) || await nextStockDocCode(tx, prefix, transactionDate),
           transactionType,
           transactionDate,
           branchCode: asText(first.values.branch_code),
@@ -1058,6 +1136,7 @@ export async function commitImport(input: CommitInput) {
           toWarehouseCode: asText(first.values.to_warehouse_code) || null,
           referenceType: "IMPORT",
           referenceCode: asText(first.values.reference_code) || null,
+          partnerCode: asText(first.values.partner_code) || null,
           note: asText(first.values.note) || null,
           createdBy: input.uploadedBy,
           lines: rows.map((row) => ({
@@ -1072,12 +1151,19 @@ export async function commitImport(input: CommitInput) {
     }
 
     if (input.importType === "BOM") {
+      // Gom theo MÓN + NGÀY HIỆU LỰC: một file được phép chứa nhiều phiên bản công thức của
+      // cùng một món (V1 hiệu lực 01/07, V2 hiệu lực 01/08). Gom chỉ theo mã món như trước
+      // là hai phiên bản dính thành một công thức cộng dồn nguyên liệu — trừ kho gấp đôi.
       const groups = new Map<string, ParsedImportRow[]>();
       for (const row of input.rows) {
         const productCode = asText(row.values.product_code).toUpperCase();
-        groups.set(productCode, [...(groups.get(productCode) || []), row]);
+        const effective = asDate(row.values.effective_date).toISOString().slice(0, 10);
+        groups.set(`${productCode}|${effective}`, [...(groups.get(`${productCode}|${effective}`) || []), row]);
       }
-      for (const [productCode, rows] of groups) {
+      // Tạo theo thứ tự ngày hiệu lực tăng dần để version tăng cùng chiều thời gian.
+      const orderedGroups = [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+      for (const [groupKey, rows] of orderedGroups) {
+        const productCode = groupKey.split("|")[0];
         const latest = await tx.recipe.findFirst({ where: { productCode }, orderBy: { version: "desc" } });
         await tx.recipe.updateMany({ where: { productCode, status: "ACTIVE" }, data: { status: "INACTIVE" } });
         const recipe = await tx.recipe.create({
@@ -1086,8 +1172,10 @@ export async function commitImport(input: CommitInput) {
             productCode,
             productName: asText(rows[0].values.product_name),
             unit: "phan",
-            sellingPrice: 0,
+            sellingPrice: asNumber(rows[0].values.selling_price),
             version: (latest?.version || 0) + 1,
+            effectiveFrom: asDate(rows[0].values.effective_date),
+            note: asText(rows[0].values.note) || null,
             status: "ACTIVE",
             lines: {
               create: await Promise.all(rows.map(async (row) => {
@@ -1112,20 +1200,19 @@ export async function commitImport(input: CommitInput) {
         ].join("|");
         groups.set(key, [...(groups.get(key) || []), row]);
       }
-      let sequence = await tx.stocktakeSession.count();
       for (const rows of groups.values()) {
         const first = rows[0];
         const stocktakeDate = asDate(first.values.stocktake_date);
-        sequence += 1;
         const stocktake = await tx.stocktakeSession.create({
           data: {
-            code: `KK-${stocktakeDate.getUTCFullYear()}-${String(sequence).padStart(4, "0")}`,
+            code: asText(first.values.code) || await nextStocktakeCode(tx, stocktakeDate),
             stocktakeDate,
             branchCode: asText(first.values.branch_code),
             warehouseCode: asText(first.values.warehouse_code),
             status: "APPROVED",
             approvedBy: input.uploadedBy,
             approvedAt: new Date(),
+            note: asText(first.values.note) || null,
             createdBy: input.uploadedBy,
           },
         });
@@ -1134,6 +1221,9 @@ export async function commitImport(input: CommitInput) {
         for (const row of rows) {
           const item = await tx.inventoryItem.findUnique({ where: { code: asText(row.values.item_code).toUpperCase() } });
           if (!item) throw new Error(`Dong ${row.rowNumber}: Khong tim thay mat hang ${asText(row.values.item_code)}`);
+          if (!isWarehouseStocktakeItemType(item.itemType)) {
+            throw new Error(`Dong ${row.rowNumber}: ${item.code} la CCDC/Tai san; hay kiem ke tai phan he Tai san & khau hao`);
+          }
           const balance = await tx.inventoryBalance.findUnique({ where: { itemId_warehouseCode: { itemId: item.id, warehouseCode: asText(first.values.warehouse_code) } } });
           const systemQuantity = balance?.quantity || 0;
           const actualQuantity = asNumber(row.values.actual_quantity);
@@ -1142,7 +1232,14 @@ export async function commitImport(input: CommitInput) {
             data: { stocktakeId: stocktake.id, itemId: item.id, systemQuantity, actualQuantity, varianceQuantity, reason: asText(row.values.reason) || null },
           });
           await setImportTarget(tx, staging, row, "STOCKTAKE", stocktake.id);
-          if (varianceQuantity > 0) inboundLines.push({ itemId: item.id, inputQuantity: varianceQuantity, inputUnitCode: item.unit, inputUnitCost: balance?.averageCost || 0 });
+          // Hàng đếm THỪA mà kho chưa có giá vốn thì phải khai "Đơn giá" trên file —
+          // nhập giá 0 là giá trị kho sai và giá vốn món ăn theo sai vĩnh viễn.
+          const declaredUnitCost = asNumber(row.values.unit_cost);
+          const surplusUnitCost = (balance?.averageCost || 0) > 0 ? balance?.averageCost || 0 : declaredUnitCost;
+          if (varianceQuantity > 0 && surplusUnitCost <= 0) {
+            throw new Error(`Dong ${row.rowNumber}: ${item.code} chua co gia von trong kho — khai cot "Don gia" de ghi nhan phan thua`);
+          }
+          if (varianceQuantity > 0) inboundLines.push({ itemId: item.id, inputQuantity: varianceQuantity, inputUnitCode: item.unit, inputUnitCost: surplusUnitCost });
           if (varianceQuantity < 0) outboundLines.push({ itemId: item.id, inputQuantity: Math.abs(varianceQuantity), inputUnitCode: item.unit, inputUnitCost: 0 });
         }
         if (inboundLines.length > 0) await postInventoryTransaction(tx, {
@@ -1171,6 +1268,144 @@ export async function commitImport(input: CommitInput) {
           createdBy: input.uploadedBy,
           lines: outboundLines,
         });
+      }
+    }
+
+    if (input.importType === "PRODUCTION") {
+      for (const row of input.rows) {
+        const productionDate = asDate(row.values.production_date);
+        const productCode = asText(row.values.product_code).toUpperCase();
+        const branchCode = asText(row.values.branch_code);
+        const warehouseCode = asText(row.values.warehouse_code);
+        const toWarehouseCode = asText(row.values.to_warehouse_code) || warehouseCode;
+        const productQuantity = asNumber(row.values.product_quantity);
+        const productItem = await tx.inventoryItem.findUnique({ where: { code: productCode } });
+        if (!productItem) throw new Error(`Dong ${row.rowNumber}: Khong tim thay ban thanh pham ${productCode}`);
+        // Cong thuc hieu luc TAI NGAY CHE BIEN — cung luat voi POS va man Che bien.
+        const recipe = await tx.recipe.findFirst({
+          where: { productCode, effectiveFrom: { lte: productionDate } },
+          include: { lines: true },
+          orderBy: [{ effectiveFrom: "desc" }, { version: "desc" }],
+        });
+        if (!recipe || recipe.lines.length === 0) throw new Error(`Dong ${row.rowNumber}: Chua co BOM hieu luc tai ngay ${asText(row.values.production_date)} cho ${productCode}`);
+        const referenceCode = asText(row.values.reference_code) || await nextStockDocCode(tx, "CB", productionDate);
+        const issue = await postInventoryTransaction(tx, {
+          importBatchId: batch.id,
+          code: `${referenceCode}-X`,
+          transactionType: "XUAT_CHE_BIEN",
+          transactionDate: productionDate,
+          branchCode,
+          warehouseCode,
+          referenceType: "PRODUCTION",
+          referenceCode,
+          note: asText(row.values.note) || null,
+          createdBy: input.uploadedBy,
+          lines: recipe.lines.map((line) => ({
+            itemId: line.itemId,
+            inputQuantity: line.quantity * (1 + line.wasteRate / 100) * productQuantity,
+            inputUnitCode: "",
+            inputUnitCost: 0,
+          })),
+        });
+        const totalCost = issue.lines.reduce((sum, line) => sum + line.totalCost, 0);
+        await postInventoryTransaction(tx, {
+          importBatchId: batch.id,
+          code: `${referenceCode}-N`,
+          transactionType: "NHAP_CHE_BIEN",
+          transactionDate: productionDate,
+          branchCode,
+          warehouseCode: toWarehouseCode,
+          referenceType: "PRODUCTION",
+          referenceCode,
+          note: asText(row.values.note) || null,
+          createdBy: input.uploadedBy,
+          lines: [{
+            itemId: productItem.id,
+            inputQuantity: productQuantity,
+            inputUnitCode: productItem.unit,
+            inputUnitCost: productQuantity > 0 ? totalCost / productQuantity : 0,
+          }],
+        });
+        await setImportTarget(tx, staging, row, "PRODUCTION", issue.id);
+      }
+    }
+
+    if (input.importType === "WASTE") {
+      for (const row of input.rows) {
+        const wasteDate = asDate(row.values.waste_date);
+        const productCode = asText(row.values.product_code).toUpperCase();
+        const productQuantity = asNumber(row.values.product_quantity);
+        const recipe = await tx.recipe.findFirst({
+          where: { productCode, effectiveFrom: { lte: wasteDate } },
+          include: { lines: true },
+          orderBy: [{ effectiveFrom: "desc" }, { version: "desc" }],
+        });
+        if (!recipe || recipe.lines.length === 0) throw new Error(`Dong ${row.rowNumber}: Chua co BOM hieu luc tai ngay ${asText(row.values.waste_date)} cho ${productCode}`);
+        const transaction = await postInventoryTransaction(tx, {
+          importBatchId: batch.id,
+          code: await nextStockDocCode(tx, "HH", wasteDate),
+          transactionType: "XUAT_HUY",
+          transactionDate: wasteDate,
+          branchCode: asText(row.values.branch_code),
+          warehouseCode: asText(row.values.warehouse_code),
+          referenceType: "POS_WASTE",
+          referenceCode: productCode,
+          note: `Huy ${productQuantity} x ${productCode}: ${asText(row.values.reason)}`,
+          createdBy: input.uploadedBy,
+          lines: recipe.lines.map((line) => ({
+            itemId: line.itemId,
+            inputQuantity: line.quantity * (1 + line.wasteRate / 100) * productQuantity,
+            inputUnitCode: "",
+            inputUnitCost: 0,
+          })),
+        });
+        await setImportTarget(tx, staging, row, "WASTE", transaction.id);
+      }
+    }
+
+    if (input.importType === "ASSET_STOCKTAKE") {
+      const groups = new Map<string, ParsedImportRow[]>();
+      for (const row of input.rows) {
+        const key = [asDate(row.values.stocktake_date).toISOString().slice(0, 10), asText(row.values.branch_code).toUpperCase()].join("|");
+        groups.set(key, [...(groups.get(key) || []), row]);
+      }
+      for (const rows of groups.values()) {
+        const first = rows[0];
+        const stocktakeDate = asDate(first.values.stocktake_date);
+        const head = `KKTS-${stocktakeDate.getUTCFullYear()}-`;
+        const issued = await tx.$queryRaw<Array<{ code: string }>>`SELECT "code" FROM "AssetStocktakeSession" WHERE "code" LIKE ${head + "%"}`;
+        const session = await tx.assetStocktakeSession.create({
+          data: {
+            importBatchId: batch.id,
+            code: head + String(nextSeqFromCodes(issued.map((row) => row.code), head)).padStart(4, "0"),
+            stocktakeDate,
+            branchCode: asText(first.values.branch_code),
+            status: "APPROVED",
+            approvedBy: input.uploadedBy,
+            approvedAt: new Date(),
+            createdBy: input.uploadedBy,
+          },
+        });
+        for (const row of rows) {
+          const assetCode = asText(row.values.asset_code).toUpperCase();
+          const asset = await tx.assetRecord.findUnique({ where: { code: assetCode } });
+          if (!asset) throw new Error(`Dong ${row.rowNumber}: Khong tim thay tai san ${assetCode}`);
+          const actualQuantity = asNumber(row.values.actual_quantity);
+          await tx.assetStocktakeLine.create({
+            data: {
+              sessionId: session.id,
+              assetId: asset.id,
+              systemQuantity: asset.quantity,
+              actualQuantity,
+              varianceQuantity: actualQuantity - asset.quantity,
+              condition: asText(row.values.condition) || null,
+              note: asText(row.values.note) || null,
+            },
+          });
+          // Duyệt kiểm kê = số đếm là số chốt: cập nhật số lượng sổ sách theo thực tế.
+          await tx.assetRecord.update({ where: { id: asset.id }, data: { quantity: actualQuantity } });
+          await setImportTarget(tx, staging, row, "ASSET_STOCKTAKE", session.id);
+        }
       }
     }
 
@@ -1533,6 +1768,11 @@ export async function commitImport(input: CommitInput) {
       }
     }
 
+    // Khoá kỳ kế toán kiểm ở CUỐI, khi mọi bản ghi của batch đã nằm trong transaction:
+    // một dòng rơi vào kỳ đã chốt là huỷ sạch cả batch. Trước đây import kho/kiểm kê/POS
+    // không kiểm gì và ghi thẳng vào tháng đã chốt sổ được.
+    await assertImportPeriodsOpen(tx as unknown as RawTxClient, batch.id, input.importType, "commit");
+
     return tx.importBatch.findUnique({
       where: { id: batch.id },
       include: {
@@ -1545,7 +1785,8 @@ export async function commitImport(input: CommitInput) {
         vouchers: ["VOUCHER", "BANK_STATEMENT"].includes(input.importType),
         moneyTransfers: ["INTERNAL_TRANSFER", "BANK_STATEMENT"].includes(input.importType),
         debtRecords: input.importType === "DEBT_OPENING",
-        inventoryTransactions: input.importType === "INVENTORY_TRANSACTION",
+        inventoryTransactions: ["INVENTORY_TRANSACTION", "PRODUCTION", "WASTE"].includes(input.importType),
+        assetStocktakes: input.importType === "ASSET_STOCKTAKE" ? { include: { lines: { include: { asset: true } } } } : false,
       },
     });
   }, {
@@ -1733,14 +1974,22 @@ async function adjustInventoryBalanceForRollback(
   itemId: string,
   warehouseCode: string,
   quantityDelta: number,
+  valueDelta: number,
 ) {
   const balance = await tx.inventoryBalance.findUnique({ where: { itemId_warehouseCode: { itemId, warehouseCode } } });
-  const nextQuantity = (balance?.quantity || 0) + quantityDelta;
+  const currentQuantity = balance?.quantity || 0;
+  const currentAverage = balance?.averageCost || 0;
+  const nextQuantity = currentQuantity + quantityDelta;
   if (nextQuantity < -0.000001) throw new Error("Rollback import kho se lam am ton kho, can kiem tra thu cong");
+  // Hoàn cả GIÁ TRỊ theo totalCost của từng dòng phiếu, không chỉ số lượng: chỉ trả số lượng
+  // thì giá vốn bình quân kẹt ở mức phiếu import đã kéo lên/xuống, và mọi phiếu xuất sau
+  // ăn giá vốn sai vĩnh viễn (nhập 100 chai @40k vào kho @20k rồi rollback -> kẹt @30k).
+  const nextValue = currentQuantity * currentAverage + valueDelta;
+  const averageCost = nextQuantity > 0.000001 ? Math.max(nextValue / nextQuantity, 0) : currentAverage;
   if (!balance) {
-    await tx.inventoryBalance.create({ data: { itemId, warehouseCode, quantity: nextQuantity, averageCost: 0 } });
+    await tx.inventoryBalance.create({ data: { itemId, warehouseCode, quantity: Math.max(nextQuantity, 0), averageCost: nextQuantity > 0.000001 ? Math.max(valueDelta / nextQuantity, 0) : 0 } });
   } else {
-    await tx.inventoryBalance.update({ where: { id: balance.id }, data: { quantity: nextQuantity } });
+    await tx.inventoryBalance.update({ where: { id: balance.id }, data: { quantity: Math.max(nextQuantity, 0), averageCost } });
   }
 }
 
@@ -1753,12 +2002,12 @@ async function rollbackInventoryTransactions(tx: RawTxClient, batchId: string) {
   for (const transaction of transactions) {
     for (const line of transaction.lines) {
       if (transaction.transactionType.startsWith("NHAP_")) {
-        await adjustInventoryBalanceForRollback(tx, line.itemId, transaction.warehouseCode, -line.quantity);
+        await adjustInventoryBalanceForRollback(tx, line.itemId, transaction.warehouseCode, -line.quantity, -line.totalCost);
       } else if (transaction.transactionType.startsWith("XUAT_")) {
-        await adjustInventoryBalanceForRollback(tx, line.itemId, transaction.warehouseCode, line.quantity);
+        await adjustInventoryBalanceForRollback(tx, line.itemId, transaction.warehouseCode, line.quantity, line.totalCost);
       } else if (transaction.transactionType === "DIEU_CHUYEN") {
-        await adjustInventoryBalanceForRollback(tx, line.itemId, transaction.warehouseCode, line.quantity);
-        if (transaction.toWarehouseCode) await adjustInventoryBalanceForRollback(tx, line.itemId, transaction.toWarehouseCode, -line.quantity);
+        await adjustInventoryBalanceForRollback(tx, line.itemId, transaction.warehouseCode, line.quantity, line.totalCost);
+        if (transaction.toWarehouseCode) await adjustInventoryBalanceForRollback(tx, line.itemId, transaction.toWarehouseCode, -line.quantity, -line.totalCost);
       }
     }
   }
@@ -1796,6 +2045,21 @@ async function rollbackStocktake(tx: RawTxClient, batchId: string) {
   if (stocktakeIds.length > 0) {
     await tx.stocktakeSession.deleteMany({ where: { id: { in: stocktakeIds } } });
   }
+}
+
+async function rollbackAssetStocktake(tx: RawTxClient, batchId: string) {
+  const targets = await tx.importRow.findMany({
+    where: { importBatchId: batchId, targetType: "ASSET_STOCKTAKE", targetId: { not: null } },
+    select: { targetId: true },
+  });
+  const sessionIds = Array.from(new Set(targets.map((target) => target.targetId).filter(Boolean))) as string[];
+  if (sessionIds.length === 0) return;
+  // Trả số lượng sổ sách về số TRƯỚC kiểm kê rồi mới xoá phiên — thứ tự ngược sẽ mất dấu.
+  const lines = await tx.assetStocktakeLine.findMany({ where: { sessionId: { in: sessionIds } } });
+  for (const line of lines) {
+    await tx.assetRecord.update({ where: { id: line.assetId }, data: { quantity: line.systemQuantity } });
+  }
+  await tx.assetStocktakeSession.deleteMany({ where: { id: { in: sessionIds } } });
 }
 
 async function rollbackAssets(tx: RawTxClient, batchId: string) {
@@ -1926,6 +2190,8 @@ export async function rollbackImportBatch(input: RollbackInput) {
     else if (batch.importType === "MASTER_DATA") await rollbackMasterData(tx, batch.id);
     else if (batch.importType === "INVENTORY_ITEM") await rollbackInventoryItems(tx, batch.id);
     else if (batch.importType === "INVENTORY_TRANSACTION") await rollbackInventoryTransactions(tx, batch.id);
+    else if (batch.importType === "PRODUCTION" || batch.importType === "WASTE") await rollbackInventoryTransactions(tx, batch.id);
+    else if (batch.importType === "ASSET_STOCKTAKE") await rollbackAssetStocktake(tx, batch.id);
     else if (batch.importType === "BOM") await rollbackBom(tx, batch.id);
     else if (batch.importType === "STOCKTAKE") await rollbackStocktake(tx, batch.id);
     else if (batch.importType === "ASSET") await rollbackAssets(tx, batch.id);

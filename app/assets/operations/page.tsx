@@ -58,11 +58,35 @@ type Damage = {
   asset: Asset;
 };
 
+type AssetStocktakeLine = {
+  id: string;
+  systemQuantity: number;
+  actualQuantity: number;
+  varianceQuantity: number;
+  condition: string | null;
+  note: string | null;
+  asset: Asset & { quantity?: number };
+};
+
+type AssetStocktakeSession = {
+  id: string;
+  code: string;
+  stocktakeDate: string;
+  branchCode: string;
+  status: string;
+  note: string | null;
+  approvedBy: string | null;
+  lines: AssetStocktakeLine[];
+};
+
+type StocktakeDraftRow = { assetId: string; code: string; name: string; systemQuantity: number; actualQuantity: string; condition: string; note: string };
+
 type Data = {
-  assets: Asset[];
+  assets: (Asset & { quantity?: number })[];
   depreciations: Depreciation[];
   maintenances: Maintenance[];
   damageReports: Damage[];
+  assetStocktakes: AssetStocktakeSession[];
 };
 
 const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value || 0);
@@ -71,7 +95,11 @@ export default function AssetOperationsPage() {
   const href = "/assets";
   const { user, loading } = useModuleAuth(href);
   const [active, setActive] = useState("depreciation");
-  const [data, setData] = useState<Data>({ assets: [], depreciations: [], maintenances: [], damageReports: [] });
+  const [data, setData] = useState<Data>({ assets: [], depreciations: [], maintenances: [], damageReports: [], assetStocktakes: [] });
+  const [stocktakeBranch, setStocktakeBranch] = useState("");
+  const [stocktakeDate, setStocktakeDate] = useState(new Date().toISOString().slice(0, 10));
+  const [stocktakeNote, setStocktakeNote] = useState("Kiểm kê CCDC & tài sản định kỳ");
+  const [stocktakeRows, setStocktakeRows] = useState<StocktakeDraftRow[]>([]);
   const [message, setMessage] = useState("");
   const [assetId, setAssetId] = useState("");
   const [config, setConfig] = useState({
@@ -197,6 +225,114 @@ export default function AssetOperationsPage() {
       {data.assets.length === 0 && (
         <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-4 text-sm">
           Cần tạo hồ sơ tài sản ở màn hình Tài sản trước khi chạy nghiệp vụ.
+        </div>
+      )}
+
+      {active === "stocktake" && (
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+          {canCreate && (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                void send({
+                  action: "APPROVE_ASSET_STOCKTAKE",
+                  branchCode: stocktakeBranch,
+                  stocktakeDate,
+                  note: stocktakeNote,
+                  lines: stocktakeRows.map((row) => ({ assetId: row.assetId, systemQuantity: row.systemQuantity, actualQuantity: row.actualQuantity, condition: row.condition, note: row.note })),
+                }, "Đã duyệt kiểm kê và cập nhật số lượng sổ sách theo số đếm.");
+              }}
+              className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm"
+            >
+              <h2 className="font-bold text-slate-800">Kiểm kê CCDC & Tài sản</h2>
+              <p className="rounded-md bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
+                Duyệt xong hệ thống lấy SỐ ĐẾM làm số sổ sách. Hàng tồn kho kiểm ở Kho & Định lượng.
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Cửa hàng">
+                  <select
+                    className="control"
+                    value={stocktakeBranch}
+                    onChange={(e) => {
+                      const branchCode = e.target.value;
+                      setStocktakeBranch(branchCode);
+                      setStocktakeRows(data.assets
+                        .filter((asset) => asset.branchCode === branchCode && asset.status !== "DISPOSED")
+                        .map((asset) => ({ assetId: asset.id, code: asset.code, name: asset.name, systemQuantity: asset.quantity || 0, actualQuantity: String(asset.quantity || 0), condition: "", note: "" })));
+                    }}
+                  >
+                    <option value="">Chọn cửa hàng</option>
+                    {[...new Set(data.assets.map((asset) => asset.branchCode))].map((branch) => <option key={branch} value={branch}>{branch}</option>)}
+                  </select>
+                </Field>
+                <Field label="Ngày kiểm kê">
+                  <DateInput className="mt-1.5" value={stocktakeDate} onChange={setStocktakeDate} ariaLabel="Ngày kiểm kê tài sản" />
+                </Field>
+              </div>
+              <Field label="Ghi chú phiên kiểm kê">
+                <input className="control" value={stocktakeNote} onChange={(e) => setStocktakeNote(e.target.value)} />
+              </Field>
+              <div className="border border-slate-200 rounded-lg overflow-hidden">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
+                    <tr><th className="px-3 py-2">Tài sản</th><th className="px-3 py-2 text-right">Sổ sách</th><th className="px-3 py-2 text-right">Số đếm</th><th className="px-3 py-2">Tình trạng</th></tr>
+                  </thead>
+                  <tbody>
+                    {stocktakeRows.length === 0 && (
+                      <tr><td className="px-3 py-4 text-slate-500" colSpan={4}>Chọn cửa hàng để nạp danh sách CCDC/tài sản.</td></tr>
+                    )}
+                    {stocktakeRows.map((row, index) => {
+                      const variance = Number(row.actualQuantity || 0) - row.systemQuantity;
+                      return (
+                        <tr key={row.assetId} className="border-t border-slate-100">
+                          <td className="px-3 py-2"><b>{row.code}</b><small className="block text-slate-500">{row.name}</small></td>
+                          <td className="px-3 py-2 text-right">{money(row.systemQuantity)}</td>
+                          <td className="px-3 py-2 text-right">
+                            <input type="number" min="0" step="1" className="control text-right w-24 inline-block" value={row.actualQuantity}
+                              onChange={(e) => setStocktakeRows(stocktakeRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, actualQuantity: e.target.value } : candidate))} />
+                            {variance !== 0 && <small className={variance > 0 ? "block text-emerald-700 font-bold" : "block text-rose-700 font-bold"}>{variance > 0 ? "+" : ""}{money(variance)}</small>}
+                          </td>
+                          <td className="px-3 py-2">
+                            <input className="control" placeholder="Tốt / Hỏng nhẹ..." value={row.condition}
+                              onChange={(e) => setStocktakeRows(stocktakeRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, condition: e.target.value } : candidate))} />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <a className="text-sm font-bold text-blue-700" href="/imports?tab=asset-stocktake">Hoặc import file kiểm kê Excel</a>
+                <button className="primary-button" disabled={!stocktakeBranch || stocktakeRows.length === 0}>Duyệt kiểm kê</button>
+              </div>
+            </form>
+          )}
+          <section className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden h-fit">
+            <div className="px-4 py-3 border-b border-slate-200"><h2 className="font-bold">Phiên kiểm kê gần nhất</h2></div>
+            <table className="w-full text-left text-sm">
+              <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
+                <tr><th className="px-3 py-2">Phiên</th><th className="px-3 py-2">Cửa hàng</th><th className="px-3 py-2 text-right">Dòng</th><th className="px-3 py-2 text-right">Chênh lệch</th></tr>
+              </thead>
+              <tbody>
+                {data.assetStocktakes.length === 0 && (
+                  <tr><td className="px-3 py-4 text-slate-500" colSpan={4}>Chưa có phiên kiểm kê nào.</td></tr>
+                )}
+                {data.assetStocktakes.map((session) => (
+                  <tr key={session.id} className="border-t border-slate-100">
+                    <td className="px-3 py-2"><CopyableText value={session.code}><b>{session.code}</b></CopyableText><small className="block text-slate-500">{new Date(session.stocktakeDate).toLocaleDateString("vi-VN")} · {session.approvedBy || "-"}</small></td>
+                    <td className="px-3 py-2">{session.branchCode}</td>
+                    <td className="px-3 py-2 text-right">{session.lines.length}</td>
+                    <td className="px-3 py-2 text-right">
+                      <b className={session.lines.some((line) => line.varianceQuantity !== 0) ? "text-rose-700" : "text-slate-400"}>
+                        {money(session.lines.reduce((sum, line) => sum + Math.abs(line.varianceQuantity), 0))}
+                      </b>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
         </div>
       )}
 
