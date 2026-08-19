@@ -200,13 +200,15 @@ function validateVoucher(row: ParsedImportRow, masterItems: MasterItem[]) {
     offset: "OFFSET",
     "hoan coc": "REFUND",
     "hoan coc khi khach thanh toan lai": "REFUND",
+    "hoan coc khi cty khach thanh toan lai": "REFUND",
     "hoan coc do khong co phat sinh": "REFUND",
     refund: "REFUND",
     "chuyen doanh thu": "REVENUE",
     "ghi nhan doanh thu": "REVENUE",
     revenue: "REVENUE",
   });
-  if (!depositAction && (categoryHint.includes("tien coc") || categoryHint.includes("deposit"))) {
+  // "datcoc" bắt các mã kiểu THU_DATCOC (chuẩn hóa thành "thu datcoc", không tách được từ).
+  if (!depositAction && (categoryHint.includes("tien coc") || categoryHint.includes("dat coc") || categoryHint.includes("datcoc") || categoryHint.includes("deposit"))) {
     depositAction = voucherType === "RECEIPT" ? "COLLECT" : "REFUND";
   }
   row.values.deposit_action = depositAction || null;

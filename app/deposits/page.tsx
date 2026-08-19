@@ -70,11 +70,15 @@ const statusLabels: Record<string, string> = {
 /** Các bút toán lịch sử chỉ mang tính ghi nhận ban đầu, không tính là đã xử lý cọc. */
 const initialDepositActions = ["CREATE", "COLLECT", "UPDATE"];
 
+// Ba lựa chọn hoàn cùng ghi sổ REFUND, chỉ khác lý do (lưu ở treatmentNote) để thống kê
+// được vì sao hoàn — theo đúng các hướng xử lý trên file theo dõi cọc của khách.
 const depositActionOptions = [
-  { value: "OFFSET", label: "Can tru vao bill", requiresAmount: true },
-  { value: "SUPPLEMENT", label: "Khach chuyen bo sung", requiresAmount: true },
-  { value: "REFUND", label: "Hoan coc", requiresAmount: false },
-  { value: "TRANSFER_REVENUE", label: "Chuyen doanh thu", requiresAmount: false },
+  { key: "OFFSET", value: "OFFSET", label: "Can tru vao bill", requiresAmount: true },
+  { key: "SUPPLEMENT", value: "SUPPLEMENT", label: "Khach chuyen bo sung", requiresAmount: true },
+  { key: "REFUND", value: "REFUND", label: "Hoan coc", requiresAmount: false },
+  { key: "REFUND_AFTER_PAYMENT", value: "REFUND", label: "Hoan coc khi cty khach thanh toan lai", requiresAmount: false },
+  { key: "REFUND_NO_ACTIVITY", value: "REFUND", label: "Hoan coc do khong co phat sinh", requiresAmount: false },
+  { key: "TRANSFER_REVENUE", value: "TRANSFER_REVENUE", label: "Chuyen doanh thu", requiresAmount: false },
 ] as const;
 
 export default function DepositsPage() {
@@ -350,13 +354,14 @@ export default function DepositsPage() {
   };
 
   const selectedDeposit = deposits.find((deposit) => deposit.id === processForm.depositId) || null;
-  const selectedAction = depositActionOptions.find((action) => action.value === processForm.action) || depositActionOptions[0];
+  // processForm.action giữ `key` của lựa chọn (ba kiểu hoàn cùng value REFUND nên value không đủ phân biệt).
+  const selectedAction = depositActionOptions.find((action) => action.key === processForm.action) || depositActionOptions[0];
 
   const openProcessForm = (deposit: Deposit, action = "OFFSET") => {
-    const option = depositActionOptions.find((item) => item.value === action) || depositActionOptions[0];
+    const option = depositActionOptions.find((item) => item.key === action) || depositActionOptions[0];
     setProcessForm({
       depositId: deposit.id,
-      action: option.value,
+      action: option.key,
       actionDate: new Date().toISOString().slice(0, 10),
       amount: option.requiresAmount && option.value !== "SUPPLEMENT" ? String(deposit.remainingAmount) : "",
       note: option.label,
@@ -655,10 +660,10 @@ export default function DepositsPage() {
                   <select
                     value={processForm.action}
                     onChange={(event) => {
-                      const nextAction = depositActionOptions.find((item) => item.value === event.target.value) || depositActionOptions[0];
+                      const nextAction = depositActionOptions.find((item) => item.key === event.target.value) || depositActionOptions[0];
                       setProcessForm((value) => ({
                         ...value,
-                        action: nextAction.value,
+                        action: nextAction.key,
                         amount: nextAction.requiresAmount && nextAction.value !== "SUPPLEMENT" ? String(selectedDeposit.remainingAmount) : "",
                         note: nextAction.label,
                       }));
@@ -666,7 +671,7 @@ export default function DepositsPage() {
                     className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500"
                   >
                     {depositActionOptions.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
+                      <option key={option.key} value={option.key}>{option.label}</option>
                     ))}
                   </select>
                 </label>

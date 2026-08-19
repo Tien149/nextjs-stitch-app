@@ -17,7 +17,14 @@ function normalizeCategoryText(value: string) {
 
 export function bankStatementSpecialCategory(category?: BankStatementCategoryReference | null) {
   const value = normalizeCategoryText(`${category?.code || ""} ${category?.name || ""}`);
-  if (value.includes("deposit") || (value.includes("tien") && value.includes("coc"))) return "DEPOSIT";
+  // "datcoc" bắt các mã kiểu THU_DATCOC: sau chuẩn hóa thành "thu datcoc" nên không tách
+  // được "tien"/"coc" riêng lẻ, mà danh mục thì không phải lúc nào cũng có tên đầy đủ.
+  if (
+    value.includes("deposit")
+    || value.includes("datcoc")
+    || value.includes("dat coc")
+    || (value.includes("tien") && value.includes("coc"))
+  ) return "DEPOSIT";
   if (value.includes("cong no")) return "DEBT";
   if (value.includes("phan bo")) return "ALLOCATION";
   if (value.includes("tra truoc")) return "PREPAYMENT";

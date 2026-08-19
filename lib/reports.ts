@@ -451,12 +451,21 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
    * Tiền cọc: nhận cọc là tiền vào nhưng chưa phải doanh thu, cấn trừ vào bill mới thành
    * doanh thu (và không có tiền chạy). Bảng dưới theo dõi số cọc còn nắm giữ theo từng
    * nguồn tiền: đầu kỳ mang sang - phát sinh thêm - đã dùng - cuối kỳ còn lại.
+   *
+   * Bảng tổng chỉ gồm nguồn tiền mặt/ngân hàng theo chốt nghiệp vụ: cọc đến từ nhiều nguồn
+   * (kể cả ví) nhưng bảng tổng hợp chỉ theo dõi bank và cash; cọc qua ví vẫn xem đủ ở màn
+   * Tiền cọc. Cọc chưa gắn nguồn tiền gom về một dòng riêng để không biến mất khỏi tổng.
    */
+  const UNASSIGNED_DEPOSIT_SOURCE = "CHUA_GAN_NGUON";
+  const moneySourceByCode = new Map(moneySources.map((row) => [row.code, row]));
   const depositSummary = new Map<string, { code: string; name: string; opening: number; increase: number; used: number }>();
   const touchDeposit = (code: string) => {
     const existing = depositSummary.get(code);
     if (existing) return existing;
-    const created = { code, name: moneySources.find((row) => row.code === code)?.name || code, opening: 0, increase: 0, used: 0 };
+    const name = code === UNASSIGNED_DEPOSIT_SOURCE
+      ? "Chưa gắn nguồn tiền"
+      : moneySourceByCode.get(code)?.name || code;
+    const created = { code, name, opening: 0, increase: 0, used: 0 };
     depositSummary.set(code, created);
     return created;
   };
@@ -465,7 +474,6 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     const amount = history.amount || 0;
     if (!amount) continue;
     const sourceCode = history.deposit?.moneySourceCode;
-    if (!sourceCode) continue;
     const actionDate = history.actionDate || history.createdAt;
     const signed = depositIncreaseActions.includes(history.action)
       ? amount
@@ -474,18 +482,25 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
         : history.action === "UPDATE" ? amount : 0;
     if (!signed) continue;
 
-    const row = touchDeposit(sourceCode);
-    if (actionDate < start) {
-      row.opening += signed;
-      continue;
+    const sourceGroup = sourceCode ? normalizeMoneySourceGroup(moneySourceByCode.get(sourceCode)?.group) : "";
+    const summaryRow = !sourceCode
+      ? touchDeposit(UNASSIGNED_DEPOSIT_SOURCE)
+      : sourceGroup === "WALLET" ? null : touchDeposit(sourceCode);
+    if (summaryRow) {
+      if (actionDate < start) summaryRow.opening += signed;
+      else if (signed > 0) summaryRow.increase += signed;
+      else summaryRow.used += -signed;
     }
-    if (signed > 0) row.increase += signed;
-    else row.used += -signed;
+
+    // Từ đây trở xuống là dòng tiền (Thu tiền cọc / Hoàn cọc / số dư nguồn), giữ nguyên phạm vi
+    // cũ: chỉ tính lịch sử trong kỳ và có nguồn tiền — bảng tổng phía trên đổi phạm vi hiển thị
+    // nhưng không được làm Tổng thu/Tổng chi nhảy số.
+    if (actionDate < start || !sourceCode) continue;
 
     const monthIndex = monthIndexOf(actionDate);
     if (signed > 0) {
-      // Dòng này dùng đúng cùng lịch sử với cột "Cọc phát sinh thêm trong kỳ",
-      // nên hai tổng luôn khớp và không phụ thuộc cọc được tạo trực tiếp hay qua phiếu thu.
+      // Dòng này dùng đúng cùng lịch sử với cột "Cọc phát sinh thêm trong kỳ" (cộng thêm cọc
+      // qua ví và trừ cọc chưa gắn nguồn — hai nhóm đó chỉ lệch phạm vi hiển thị bảng tổng).
       bumpCategory(income, { key: "DEPOSIT_IN", name: "Thu tiền cọc", group: "RECEIPT" }, monthCount, monthIndex, signed);
     } else if (history.action === "REFUND" || history.action === "UPDATE") {
       bumpCategory(expense, { key: "DEPOSIT_REFUND", name: "Hoàn cọc cho khách", group: "PAYMENT" }, monthCount, monthIndex, -signed);

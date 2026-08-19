@@ -13,6 +13,7 @@ import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { shiftLabel, WORK_SHIFTS } from "@/lib/shifts";
 import { type VoucherDocumentChannel, voucherChannelLabel, voucherTypeLabel } from "@/lib/voucher-channel";
+import { bankStatementSpecialCategory } from "@/lib/bank-statement-category";
 
 const MAX_BULK_SELECTION = 100;
 
@@ -1011,7 +1012,19 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                   Khoản mục thu/chi
                   <select
                     value={form.categoryCode}
-                    onChange={(event) => setForm((value) => ({ ...value, categoryCode: event.target.value }))}
+                    onChange={(event) => {
+                      const categoryCode = event.target.value;
+                      // Chọn danh mục đặt cọc thì tự bật "Thu tiền đặt cọc": nếu để trống,
+                      // phiếu sẽ không sinh sổ theo dõi cọc và server cũng sẽ từ chối lệch pha.
+                      const category = voucherCategoryOptions.find((option) => option.code === categoryCode);
+                      const isDepositCategory = form.voucherType === "RECEIPT"
+                        && bankStatementSpecialCategory(category) === "DEPOSIT";
+                      setForm((value) => ({
+                        ...value,
+                        categoryCode,
+                        depositAction: isDepositCategory && !value.depositAction ? "COLLECT" : value.depositAction,
+                      }));
+                    }}
                     className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white"
                   >
                     <option value="">-- Không phân loại --</option>

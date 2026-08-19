@@ -12,6 +12,7 @@ import { moneySourceMatchesBranch } from "@/lib/money-sources";
 import { isSameCalendarDay, normalizeCashflowCategoryType, normalizeReceiptPurpose, validateReceiptPurpose, voucherEditWindowError } from "@/lib/voucher-rules";
 import { completePendingReconciliation, releasePendingReconciliation, reopenReconciliationForReview } from "@/lib/reconciliation-links";
 import { moneySourceMatchesDocumentChannel, normalizeVoucherDocumentChannel } from "@/lib/voucher-channel";
+import { bankStatementSpecialCategory } from "@/lib/bank-statement-category";
 
 /** Trạng thái không cho sửa/xoá vì chứng từ đã ghi sổ. */
 
@@ -96,13 +97,30 @@ async function validateVoucherCategory(voucherType: string, categoryCode: string
   const category = await prisma.masterDataItem.findFirst({
     where: { type: "REVENUE_EXPENSE_CATEGORY", code: categoryCode, status: "ACTIVE" },
   });
-  if (!category) return `Khoản mục thu/chi [${categoryCode}] không tồn tại hoặc đã ngưng hoạt động`;
+  if (!category) return { error: `Khoản mục thu/chi [${categoryCode}] không tồn tại hoặc đã ngưng hoạt động`, category: null };
   if (!categoryAllowedForVoucher(voucherType, category.group)) {
-    return voucherType === "RECEIPT"
-      ? "Phiếu thu chỉ được chọn danh mục loại Thu"
-      : "Phiếu chi chỉ được chọn danh mục loại Chi";
+    return {
+      error: voucherType === "RECEIPT"
+        ? "Phiếu thu chỉ được chọn danh mục loại Thu"
+        : "Phiếu chi chỉ được chọn danh mục loại Chi",
+      category: null,
+    };
   }
-  return null;
+  return { error: null, category };
+}
+
+/**
+ * Danh mục đặt cọc mà không chọn nội dung "Thu tiền đặt cọc" thì phiếu không sinh sổ theo dõi
+ * cọc — khoản cọc biến mất khỏi màn Tiền cọc và bảng tổng. Tự gán COLLECT giống luồng import,
+ * để chỉ cần chọn đúng danh mục là cọc được theo dõi.
+ */
+function deriveReceiptDepositAction(
+  voucherType: string,
+  explicitAction: string,
+  category: { code: string; name: string } | null,
+) {
+  if (explicitAction || voucherType !== "RECEIPT" || !category) return explicitAction;
+  return bankStatementSpecialCategory(category) === "DEPOSIT" ? "COLLECT" : explicitAction;
 }
 
 async function validateVoucherPnlItem(voucherType: string, pnlItemCode: string, requireActive = true) {
@@ -320,9 +338,11 @@ export async function POST(request: Request) {
       }, { status: 400 });
     }
 
+    let voucherCategory: { code: string; name: string } | null = null;
     if (categoryCode) {
-      const categoryError = await validateVoucherCategory(voucherType, categoryCode);
-      if (categoryError) return NextResponse.json({ error: categoryError }, { status: 400 });
+      const categoryCheck = await validateVoucherCategory(voucherType, categoryCode);
+      if (categoryCheck.error) return NextResponse.json({ error: categoryCheck.error }, { status: 400 });
+      voucherCategory = categoryCheck.category;
     }
     if (pnlItemCode) {
       const pnlItemError = await validateVoucherPnlItem(voucherType, pnlItemCode);
@@ -335,9 +355,16 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Ca làm việc không hợp lệ" }, { status: 400 });
     }
 
-    const depositAction = normalizeReceiptPurpose(voucherType, body.depositAction);
-    const purposeError = validateReceiptPurpose(voucherType, body.depositAction, cleanText(body.partnerCode));
-    if (purposeError) return NextResponse.json({ error: purposeError }, { status: 400 });
+    const explicitDepositAction = normalizeReceiptPurpose(voucherType, body.depositAction);
+    const depositAction = deriveReceiptDepositAction(voucherType, explicitDepositAction, voucherCategory);
+    const purposeError = validateReceiptPurpose(voucherType, depositAction, cleanText(body.partnerCode));
+    if (purposeError) {
+      return NextResponse.json({
+        error: depositAction && !explicitDepositAction
+          ? `Danh mục [${categoryCode}] là thu tiền cọc nên phiếu sẽ theo dõi cọc: ${purposeError}`
+          : purposeError,
+      }, { status: 400 });
+    }
 
     // Phiếu tạo thủ công luôn được duyệt ngay. Không tin status do client gửi;
     // quy trình import dùng endpoint riêng nên không bị thay đổi bởi rule này.
@@ -490,11 +517,10 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
     return NextResponse.json({ error: "Ca làm việc không hợp lệ" }, { status: 400 });
   }
 
-  const depositAction = current.voucherType !== "RECEIPT"
+  const explicitDepositAction = current.voucherType !== "RECEIPT"
     ? null
     : (body.depositAction === undefined ? current.depositAction : (normalizeReceiptPurpose(current.voucherType, body.depositAction) || null));
-  const purposeError = validateReceiptPurpose(current.voucherType, depositAction, partnerCode);
-  if (purposeError) return NextResponse.json({ error: purposeError }, { status: 400 });
+  // Kiểm mục đích thu (và tự suy từ danh mục đặt cọc) nằm dưới, sau khi đã tra được danh mục.
 
   if (branchCode !== current.branchCode) {
     return NextResponse.json(
@@ -542,9 +568,11 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
     }, { status: 400 });
   }
 
+  let voucherCategory: { code: string; name: string } | null = null;
   if (categoryCode) {
-    const categoryError = await validateVoucherCategory(current.voucherType, categoryCode);
-    if (categoryError) return NextResponse.json({ error: categoryError }, { status: 400 });
+    const categoryCheck = await validateVoucherCategory(current.voucherType, categoryCode);
+    if (categoryCheck.error) return NextResponse.json({ error: categoryCheck.error }, { status: 400 });
+    voucherCategory = categoryCheck.category;
   }
   if (pnlItemCode) {
     const pnlItemError = await validateVoucherPnlItem(
@@ -553,6 +581,16 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
       pnlItemCode !== current.pnlItemCode,
     );
     if (pnlItemError) return NextResponse.json({ error: pnlItemError }, { status: 400 });
+  }
+
+  const depositAction = deriveReceiptDepositAction(current.voucherType, explicitDepositAction || "", voucherCategory) || null;
+  const purposeError = validateReceiptPurpose(current.voucherType, depositAction, partnerCode);
+  if (purposeError) {
+    return NextResponse.json({
+      error: depositAction && !explicitDepositAction
+        ? `Danh mục [${categoryCode}] là thu tiền cọc nên phiếu sẽ theo dõi cọc: ${purposeError}`
+        : purposeError,
+    }, { status: 400 });
   }
 
   const [currentPeriodLocked, nextPeriodLocked] = await Promise.all([
