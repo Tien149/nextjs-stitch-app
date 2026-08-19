@@ -19,6 +19,7 @@
     "check:bank-file": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/check-bank-statement-file.mjs",
     "test:wallet-fallback": "node --experimental-strip-types scripts/test-wallet-revenue-fallback.mjs",
     "test:wallet-settlement": "node --experimental-strip-types scripts/test-wallet-settlement-allocation.mjs",
+    "test:cost-reallocation": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-cost-reallocation.mjs",
     "repair:wallet-settlement": "node scripts/repair-wallet-settlement-group.cjs",
     "repair:wallet-revenue-date": "node scripts/repair-wallet-revenue-date.cjs",
     "test:wallet-revenue-date": "node scripts/repair-wallet-revenue-date.cjs --self-test",

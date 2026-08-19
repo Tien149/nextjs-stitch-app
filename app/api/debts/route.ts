@@ -369,6 +369,15 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: e instanceof Error ? e.message : "Không có quyền chi nhánh" }, { status: 403 });
     }
 
+    // Công nợ do phiếu phân bổ chi phí sinh ra đi kèm bút toán P&L ở hai nhà hàng. Sửa riêng
+    // khoản này sẽ làm công nợ lệch bút toán — phải sửa/xoá chính phiếu phân bổ.
+    if (current.sourceType === "COST_REALLOCATION") {
+      return NextResponse.json(
+        { error: "Công nợ nội bộ này do phiếu phân bổ chi phí sinh ra. Hãy xoá phiếu ở màn Phân bổ chi phí để hoàn tác đồng bộ cả bút toán." },
+        { status: 400 },
+      );
+    }
+
     // Đã thanh toán một phần hay tất toán thì số liệu do phiếu thu/chi quyết định.
     const settlementCount = await prisma.debtSettlement.count({ where: { debtId: id } });
     if (settlementCount > 0 || current.outstandingAmount !== current.originalAmount) {
@@ -475,6 +484,14 @@ export async function DELETE(request: Request) {
       assertBranchAccess(auth.session, current.branchCode);
     } catch (e) {
       return NextResponse.json({ error: e instanceof Error ? e.message : "Không có quyền chi nhánh" }, { status: 403 });
+    }
+
+    // Xoá riêng công nợ của phiếu phân bổ sẽ để lại bút toán P&L mồ côi ở hai nhà hàng.
+    if (current.sourceType === "COST_REALLOCATION") {
+      return NextResponse.json(
+        { error: "Công nợ nội bộ này do phiếu phân bổ chi phí sinh ra. Hãy xoá phiếu ở màn Phân bổ chi phí để hoàn tác đồng bộ cả bút toán." },
+        { status: 400 },
+      );
     }
 
     // Còn phiếu thu/chi đã đối trừ vào khoản này thì phải giữ lại để không mất dấu thanh toán.
