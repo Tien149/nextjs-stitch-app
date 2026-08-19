@@ -663,8 +663,6 @@ export default function ReportsPage() {
             </select>
           </Field>
         )}
-        {active === "revenue-settlement" && settlement && <RevenueSettlementPanel data={settlement} />}
-
         {active === "daily-cash" && (
           <>
             <Field label="Ngày thu chi">
@@ -1062,6 +1060,8 @@ export default function ReportsPage() {
           <CashSourceFlowTable cashSource={cashSource} />
         </div>
       )}
+
+      {!tabLoading && settlement && <RevenueSettlementPanel data={settlement} />}
 
       {!tabLoading && dailyCash && (
         <div className="space-y-5 report-print-area" id="daily-cash-report">
@@ -1904,6 +1904,26 @@ function partnerTypeLabel(partnerType: string | null) {
  * dòng total của hai bảng Tổng quan thu/chi phía trên.
  */
 /**
+ * Nhóm nguồn tiền của dòng đối soát. Hiện đúng mã CASH/BANK/WALLET như màn Thu chi ngày,
+ * vì hai bảng cùng lọc theo loại thu THU_BAN_HANG — đọc song song mới đối chiếu được.
+ */
+function SourceGroupTag({ group }: { group: string }) {
+  const style = {
+    CASH: { label: "Tiền mặt", className: "bg-emerald-50 text-emerald-700" },
+    BANK: { label: "Ngân hàng", className: "bg-sky-50 text-sky-700" },
+    WALLET: { label: "Ví / POS", className: "bg-violet-50 text-violet-700" },
+  }[group];
+  return (
+    <>
+      <span className={`rounded-full px-2 py-1 text-xs font-bold ${style?.className || "bg-slate-100 text-slate-600"}`}>
+        {group || "—"}
+      </span>
+      {style && <p className="mt-0.5 text-xs text-slate-500">{style.label}</p>}
+    </>
+  );
+}
+
+/**
  * Đối chiếu doanh thu với tiền thực về, theo từng Ngày và từng Nguồn tiền.
  *
  * Dựng đúng bảng khách đang theo dõi tay: doanh thu trong ngày, tiền đã vô, còn lại, và phần
@@ -1931,17 +1951,18 @@ function RevenueSettlementPanel({ data }: { data: RevenueSettlementData }) {
           subtitle="Mỗi ngày, mỗi phương thức thanh toán: doanh thu ghi nhận bao nhiêu, tiền thực về bao nhiêu, phần chênh là phí thu hộ hay tiền chưa về. Doanh thu lấy từ import POS, tiền về lấy từ sổ sao kê — hai luồng độc lập."
         />
         <div className="overflow-x-auto">
-          <Table headers={["Ngày", "Phương thức thanh toán", "Doanh thu trong ngày", "Tiền đã vô", "Còn lại", "Tên chi phí", "Trạng thái"]}>
+          <Table headers={["Ngày", "Phương thức thanh toán", "Loại nguồn", "Doanh thu trong ngày", "Tiền đã vô", "Còn lại", "Tên chi phí", "Trạng thái"]}>
             {data.rows.length === 0 && (
               <tr className="border-t border-slate-100">
                 <Cell>Chưa có doanh thu hoặc tiền về trong kỳ.</Cell>
-                <Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell>
+                <Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell>
               </tr>
             )}
             {[...byDay.entries()].map(([day, rows]) => rows.map((row, index) => (
               <tr key={`${row.date}-${row.moneySourceCode}`} className={`border-t border-slate-100 hover:bg-slate-50 ${index === 0 ? "border-t-slate-200" : ""}`}>
                 <Cell>{index === 0 ? <b>{dayLabel(day)}</b> : <span className="text-slate-300">·</span>}</Cell>
                 <Cell><b>{row.moneySourceName}</b><p className="mt-0.5 text-xs text-slate-500">{row.moneySourceCode}</p></Cell>
+                <Cell><SourceGroupTag group={row.group} /></Cell>
                 <Cell right>{money(row.revenue)} đ</Cell>
                 <Cell right><span className="text-emerald-700">{money(row.received)} đ</span></Cell>
                 <Cell right>
@@ -1972,6 +1993,7 @@ function RevenueSettlementPanel({ data }: { data: RevenueSettlementData }) {
               <tr className="border-t border-slate-200 bg-slate-50 font-bold">
                 <Cell><b>TỔNG</b></Cell>
                 <Cell><span className="text-xs font-normal text-slate-500">{data.rows.length} dòng</span></Cell>
+                <Cell>-</Cell>
                 <Cell right><b>{money(data.totals.revenue)} đ</b></Cell>
                 <Cell right><b className="text-emerald-700">{money(data.totals.received)} đ</b></Cell>
                 <Cell right><b className="text-amber-700">{money(data.totals.remaining)} đ</b></Cell>
