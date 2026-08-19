@@ -331,6 +331,7 @@ export default function ImportUploadPage({
   }, [isCheckingAuth, requiresBranch]);
 
   const errorRows = useMemo(() => preview?.rows.filter((row) => row.errors.length > 0) || [], [preview]);
+  const skippedExistingRows = useMemo(() => preview?.rows.filter((row) => row.values.import_action === "SKIP_EXISTING") || [], [preview]);
   const messageIsError = !message.startsWith("Đã ")
     && /lỗi|không|vui lòng|thất bại|sai|thiếu|bắt buộc|error|failed|invalid|khong|loi/i.test(message);
 
@@ -831,7 +832,7 @@ export default function ImportUploadPage({
 
             {preview ? (
               <>
-                <div className="grid grid-cols-3 gap-3 px-4 py-3 border-b border-slate-100">
+                <div className={`grid gap-3 px-4 py-3 border-b border-slate-100 ${skippedExistingRows.length > 0 ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-3"}`}>
                   <div className="rounded-lg bg-slate-50 px-3 py-2.5">
                     <p className="text-xs text-slate-500">Tổng dòng</p>
                     <p className="text-xl font-bold">{preview.totalRows}</p>
@@ -840,11 +841,29 @@ export default function ImportUploadPage({
                     <p className="text-xs text-emerald-700">Hợp lệ</p>
                     <p className="text-xl font-bold text-emerald-700">{preview.validRows}</p>
                   </div>
+                  {/* Khách từng import và chỉ nhận một câu "bị trùng" mà không biết trùng dòng nào.
+                      Đếm và liệt kê ngay ở preview: dòng đã có sẽ được bỏ qua khi commit, không chặn file. */}
+                  {skippedExistingRows.length > 0 && (
+                    <div className="rounded-lg bg-amber-50 px-3 py-2.5">
+                      <p className="text-xs text-amber-700">Đã có — sẽ bỏ qua</p>
+                      <p className="text-xl font-bold text-amber-700">{skippedExistingRows.length}</p>
+                    </div>
+                  )}
                   <div className="rounded-lg bg-rose-50 px-3 py-2.5">
                     <p className="text-xs text-rose-700">Lỗi</p>
                     <p className="text-xl font-bold text-rose-700">{preview.errorRows}</p>
                   </div>
                 </div>
+
+                {skippedExistingRows.length > 0 && (
+                  <div className="border-b border-slate-100 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                    <p className="font-bold">{skippedExistingRows.length} dòng đã có trong hệ thống — commit sẽ bỏ qua, không ghi trùng:</p>
+                    <p className="mt-1">
+                      {skippedExistingRows.slice(0, 8).map((row) => `dòng ${row.rowNumber}${row.values.transaction_code ? ` (${row.values.transaction_code})` : ""}`).join(", ")}
+                      {skippedExistingRows.length > 8 ? ` ... và ${skippedExistingRows.length - 8} dòng nữa` : ""}
+                    </p>
+                  </div>
+                )}
 
                 {mappingFields.some((field) => !field.hiddenFromMapping) && (
                   <div className="border-b border-slate-100 px-4 py-3">

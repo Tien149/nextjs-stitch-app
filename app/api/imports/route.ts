@@ -382,7 +382,21 @@ export async function POST(request: Request) {
     return NextResponse.json({ template, preview: parsed });
   } catch (error) {
     if (isUniqueConstraintError(error)) {
-      return NextResponse.json({ error: "Dữ liệu bị trùng với bản ghi đã tồn tại" }, { status: 409 });
+      // "Dữ liệu bị trùng" chung chung từng làm khách bế tắc: lỗi thật sự nằm ở mã chứng từ
+      // hệ thống tự sinh bị cấp trùng, không phải dữ liệu trong file. Đọc ràng buộc nào vỡ
+      // để nói đúng bệnh — người dùng sửa được file thì chỉ chỗ sửa, lỗi hệ thống thì nói
+      // thẳng là lỗi hệ thống kèm mã để dev truy.
+      const meta = (error as { meta?: { modelName?: string; target?: string[] } }).meta || {};
+      const model = meta.modelName || "";
+      const fields = Array.isArray(meta.target) ? meta.target.join(", ") : "";
+      const message = model === "BankStatementTransaction"
+        ? "Giao dịch sao kê bị trùng Tài khoản + Số tham chiếu với bản ghi đã có. Preview lại file: các dòng \"đã tồn tại\" sẽ được đánh dấu bỏ qua."
+        : model === "RevenueImportRow"
+          ? "Dòng doanh thu bị trùng Cửa hàng + Ngày + Mã tham chiếu với dữ liệu đã import trước đó."
+          : model === "FinancialVoucher" || model === "MoneyTransfer"
+            ? `Hệ thống cấp trùng mã chứng từ (${model}) — đây là lỗi hệ thống, KHÔNG phải dữ liệu trong file bị trùng. Chạy lại import; nếu vẫn lỗi, báo dev kèm nguyên văn thông báo này.`
+            : `Dữ liệu bị trùng với bản ghi đã tồn tại${model ? ` (${model}${fields ? `: ${fields}` : ""})` : ""}`;
+      return NextResponse.json({ error: message }, { status: 409 });
     }
     if (isImportTransactionTimeout(error)) {
       console.error("Import transaction timed out and was rolled back:", error);

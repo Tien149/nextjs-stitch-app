@@ -9,7 +9,7 @@ import { normalizeStockTransactionType, postInventoryTransaction } from "@/lib/i
 import { writeAuditLog } from "@/lib/audit-log";
 import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
-import { generateFormattedVoucherCode } from "@/lib/voucher-code-generator";
+import { nextSeqFromCodes, voucherCodePrefix } from "@/lib/voucher-code-generator";
 import { commonBankValue, groupBankStatementRows } from "@/lib/bank-statement-import";
 import { normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { evaluateBankStatementAutoApproval } from "@/lib/bank-statement-auto-approval";
@@ -98,12 +98,6 @@ function rowFingerprint(importType: ImportType, row: ParsedImportRow) {
     .digest("hex");
 }
 
-function monthBounds(value: Date) {
-  const start = new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), 1));
-  const end = new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth() + 1, 1));
-  return { start, end };
-}
-
 async function nextVoucherCode(
   tx: TxClient,
   voucherType: string,
@@ -111,11 +105,32 @@ async function nextVoucherCode(
   branchCode: string,
   documentChannel: "CASH" | "BANK",
 ) {
-  const { start, end } = monthBounds(voucherDate);
-  const count = await tx.financialVoucher.count({
-    where: { voucherType, documentChannel, voucherDate: { gte: start, lt: end } },
+  // Số thứ tự phải là max + 1 trong ĐÚNG chuỗi mã (loại phiếu + tháng + cửa hàng), không phải
+  // COUNT: rollback xoá phiếu làm COUNT tụt xuống và mã cấp lại đâm trúng phiếu còn sống của
+  // batch sau — người dùng chỉ thấy "Dữ liệu bị trùng" mà không có cách nào tự gỡ.
+  // Hai commit chạy song song vẫn có thể lấy cùng một số; khi đó ràng buộc unique chặn một
+  // batch với thông điệp rõ ràng, chạy lại là xong — còn hơn cấp trùng trong im lặng.
+  const prefix = voucherCodePrefix({ voucherType, documentChannel, voucherDate, branchCode });
+  const issued = await tx.financialVoucher.findMany({
+    where: { code: { startsWith: prefix } },
+    select: { code: true },
   });
-  return generateFormattedVoucherCode({ voucherType, documentChannel, voucherDate, branchCode, seqNumber: count + 1 });
+  return prefix + String(nextSeqFromCodes(issued.map((row) => row.code), prefix)).padStart(5, "0");
+}
+
+/** Cùng luật max + 1 cho mã chuyển tiền (QTVI/CTNB/NOPT nằm ở bảng MoneyTransfer). */
+async function nextTransferCode(
+  tx: TxClient,
+  voucherType: string,
+  voucherDate: Date,
+  branchCode: string,
+) {
+  const prefix = voucherCodePrefix({ voucherType, voucherDate, branchCode });
+  const issued = await tx.moneyTransfer.findMany({
+    where: { code: { startsWith: prefix } },
+    select: { code: true },
+  });
+  return prefix + String(nextSeqFromCodes(issued.map((row) => row.code), prefix)).padStart(5, "0");
 }
 
 type CommitInput = {
@@ -618,11 +633,10 @@ export async function commitImport(input: CommitInput) {
           if (!approval.autoApprove) {
             throw new BankRowNeedsFixError(approval.reason);
           }
-          const transferCount = await tx.moneyTransfer.count();
           const transfer = await tx.moneyTransfer.create({
             data: {
               importBatchId: batch.id,
-              code: generateFormattedVoucherCode({ voucherType: "QTVI", voucherDate: documentDate, branchCode, seqNumber: transferCount + 1 }),
+              code: await nextTransferCode(tx, "QTVI", documentDate, branchCode),
               transferDate: documentDate,
               branchCode,
               fromMoneySourceCode: walletSourceCode,
@@ -648,11 +662,10 @@ export async function commitImport(input: CommitInput) {
             ? `Đã ghi nhận quyết toán Ví theo gross/phí khách khai trên file với ${targetCode}`
             : `Đã ghi nhận ${targetCode} theo số tiền ngân hàng thực nhận; phí ví đối chiếu sau khi có doanh thu POS`;
         } else if (operationType === "INTERNAL_TRANSFER") {
-          const transferCount = await tx.moneyTransfer.count();
           const transfer = await tx.moneyTransfer.create({
             data: {
               importBatchId: batch.id,
-              code: generateFormattedVoucherCode({ voucherType: "CTNB", voucherDate: documentDate, branchCode, seqNumber: transferCount + 1 }),
+              code: await nextTransferCode(tx, "CTNB", documentDate, branchCode),
               transferDate: documentDate,
               branchCode,
               fromMoneySourceCode: decreaseSourceCode,
@@ -701,7 +714,6 @@ export async function commitImport(input: CommitInput) {
             : null;
           const isSalesReceipt = operationType === "REVENUE_RECEIPT";
           const businessEffect = isSalesReceipt ? "SETTLEMENT" : "RECOGNITION";
-          const voucherCount = await tx.financialVoucher.count({ where: { voucherType } });
           const counterpartyName = commonBankValue(group.rows, "partner_hint") || null;
           const depositAction = operationType === "DEPOSIT_RECEIPT" ? "COLLECT"
             : operationType === "DEPOSIT_REFUND" ? "REFUND"
@@ -710,7 +722,7 @@ export async function commitImport(input: CommitInput) {
           const voucher = await tx.financialVoucher.create({
             data: {
               importBatchId: batch.id,
-              code: generateFormattedVoucherCode({ voucherType, documentChannel: "BANK", voucherDate: documentDate, branchCode, seqNumber: voucherCount + 1 }),
+              code: await nextVoucherCode(tx, voucherType, documentDate, branchCode, "BANK"),
               sourceDocumentCode: null,
               voucherType,
               voucherDate: documentDate,

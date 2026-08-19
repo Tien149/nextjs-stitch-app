@@ -4,7 +4,7 @@ import { prisma, prismaRaw } from "@/lib/prisma";
 import { addPeriod, apiError, businessError, cleanText, isPeriodLocked, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
 import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
 import { writeAuditLog } from "@/lib/audit-log";
-import { generateFormattedVoucherCode } from "@/lib/voucher-code-generator";
+import { nextSeqFromCodes, voucherCodePrefix } from "@/lib/voucher-code-generator";
 import { moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { scopePayloadByTab } from "@/lib/tab-scope";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
@@ -531,11 +531,14 @@ export async function POST(request: Request) {
       });
       if (existing) businessError(`Ngày/ca này đã có phiếu nộp tiền ${cashDepositTargetLabels[depositTargetType]} (${existing.code}) đang xử lý.`);
 
-      const transferCount = await prisma.moneyTransfer.count();
+      // Max + 1 trong đúng chuỗi mã, không COUNT: phiếu bị xoá làm COUNT tụt và mã cấp lại
+      // đâm trúng phiếu còn sống (cùng lỗi "Dữ liệu bị trùng" của import sao kê).
+      const noptPrefix = voucherCodePrefix({ voucherType: "NOPT", voucherDate: transferDate, branchCode });
+      const issuedNopt = await prisma.moneyTransfer.findMany({ where: { code: { startsWith: noptPrefix } }, select: { code: true } });
       const reportDateCode = sourceReportDate.toISOString().slice(0, 10);
       const result = await prisma.moneyTransfer.create({
         data: {
-          code: generateFormattedVoucherCode({ voucherType: "NOPT", voucherDate: transferDate, branchCode, seqNumber: transferCount + 1 }),
+          code: noptPrefix + String(nextSeqFromCodes(issuedNopt.map((row) => row.code), noptPrefix)).padStart(5, "0"),
           transferDate,
           branchCode,
           fromMoneySourceCode,
@@ -624,10 +627,11 @@ export async function POST(request: Request) {
         businessError(`Khoản mục phí [${feeCategoryCode}] phải là danh mục loại Chi.`);
       }
 
-      const transferCount = await prisma.moneyTransfer.count();
+      const qtviPrefix = voucherCodePrefix({ voucherType: "QTVI", voucherDate: transferDate, branchCode });
+      const issuedQtvi = await prisma.moneyTransfer.findMany({ where: { code: { startsWith: qtviPrefix } }, select: { code: true } });
       const result = await prisma.moneyTransfer.create({
         data: {
-          code: generateFormattedVoucherCode({ voucherType: "QTVI", voucherDate: transferDate, branchCode, seqNumber: transferCount + 1 }),
+          code: qtviPrefix + String(nextSeqFromCodes(issuedQtvi.map((row) => row.code), qtviPrefix)).padStart(5, "0"),
           transferDate,
           branchCode,
           fromMoneySourceCode,
@@ -715,10 +719,11 @@ export async function POST(request: Request) {
       }
 
       if (await isPeriodLocked(entryDate, branchCode)) businessError("Kỳ kế toán đã khóa");
-      const adjCount = await prisma.cashbookAdjustment.count();
+      const dcqPrefix = voucherCodePrefix({ voucherType: "DCQ1", voucherDate: entryDate, branchCode });
+      const issuedDcq = await prisma.cashbookAdjustment.findMany({ where: { code: { startsWith: dcqPrefix } }, select: { code: true } });
       const result = await prisma.cashbookAdjustment.create({
         data: {
-          code: generateFormattedVoucherCode({ voucherType: "DCQ1", voucherDate: entryDate, branchCode, seqNumber: adjCount + 1 }),
+          code: dcqPrefix + String(nextSeqFromCodes(issuedDcq.map((row) => row.code), dcqPrefix)).padStart(5, "0"),
           entryDate,
           entryType: cleanText(body.entryType) || "RECEIPT",
           branchCode,
@@ -746,10 +751,11 @@ export async function POST(request: Request) {
       }
 
       const amount = totalAmount / numberOfPeriods;
-      const accrualCount = await prisma.accrual.count();
+      const pbouPrefix = voucherCodePrefix({ voucherType: "PBOU", voucherDate: `${startPeriod}-01`, branchCode });
+      const issuedPbou = await prisma.accrual.findMany({ where: { code: { startsWith: pbouPrefix } }, select: { code: true } });
       const result = await prisma.accrual.create({
         data: {
-          code: generateFormattedVoucherCode({ voucherType: "PBOU", voucherDate: `${startPeriod}-01`, branchCode, seqNumber: accrualCount + 1 }),
+          code: pbouPrefix + String(nextSeqFromCodes(issuedPbou.map((row) => row.code), pbouPrefix)).padStart(5, "0"),
           name: cleanText(body.name),
           branchCode,
           categoryCode: cleanText(body.categoryCode) || "OPEX",

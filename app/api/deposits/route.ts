@@ -3,7 +3,7 @@ import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { assertBranchAccess, branchFilterForSession, postJournalEntry } from "@/lib/accounting";
 import { depositJournalLines } from "@/lib/deposit-accounting";
 import { prisma } from "@/lib/prisma";
-import { generateFormattedVoucherCode } from "@/lib/voucher-code-generator";
+import { nextSeqFromCodes, voucherCodePrefix } from "@/lib/voucher-code-generator";
 import { isPeriodLocked } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import { duplicatedInTrashMessage, findDeletedByUnique, softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
@@ -77,23 +77,12 @@ function toDate(value: unknown, fallback = new Date()) {
 async function nextDepositCode(voucherDate?: Date | string | null, branchCode?: string | null) {
   const d = voucherDate ? new Date(voucherDate) : new Date();
   const validDate = isNaN(d.getTime()) ? new Date() : d;
-  const startOfMonth = new Date(validDate.getFullYear(), validDate.getMonth(), 1);
-  const endOfMonth = new Date(validDate.getFullYear(), validDate.getMonth() + 1, 1);
-
-  const count = await prisma.deposit.count({
-    where: {
-      ...(branchCode ? { branchCode } : {}),
-      receivedDate: { gte: startOfMonth, lt: endOfMonth },
-      code: { startsWith: "PCOC" },
-    },
-  });
-
-  return generateFormattedVoucherCode({
-    voucherType: "PCOC",
-    voucherDate: validDate,
-    branchCode,
-    seqNumber: count + 1,
-  });
+  // Max + 1 trên chính chuỗi mã thay vì COUNT theo receivedDate: phiếu cọc xoá đi làm COUNT
+  // tụt xuống và mã cấp lại trùng phiếu còn sống; ngoài ra COUNT lọc theo ngày nhận tiền
+  // trong khi mã nhúng tháng của ngày phiếu — hai bên lệch nhau là cấp nhầm chuỗi.
+  const prefix = voucherCodePrefix({ voucherType: "PCOC", voucherDate: validDate, branchCode });
+  const issued = await prisma.deposit.findMany({ where: { code: { startsWith: prefix } }, select: { code: true } });
+  return prefix + String(nextSeqFromCodes(issued.map((row) => row.code), prefix)).padStart(5, "0");
 }
 
 export async function GET(request: Request) {

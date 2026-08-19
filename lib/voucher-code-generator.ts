@@ -88,3 +88,32 @@ export function generateFormattedVoucherCode(options: VoucherCodeOptions): strin
   const seq = formatSeq5(options.seqNumber);
   return `${prefix}-${ym}-${branch}-${seq}`;
 }
+
+/**
+ * Prefix cố định của một chuỗi mã: [Mã phiếu]-[YYMM]-[Cửa hàng]- (chưa có số thứ tự).
+ * Dùng để tra các mã đã cấp trong đúng chuỗi này trước khi cấp số tiếp theo.
+ */
+export function voucherCodePrefix(options: Omit<VoucherCodeOptions, "seqNumber">): string {
+  const prefix = formatVoucherPrefix(options.voucherType, options.documentChannel);
+  const ym = formatYearMonth(options.voucherDate);
+  const branch = formatBranchCode3(options.branchCode);
+  return `${prefix}-${ym}-${branch}-`;
+}
+
+/**
+ * Số thứ tự kế tiếp = số LỚN NHẤT đã cấp + 1, tính trên danh sách mã cùng prefix.
+ *
+ * Trước đây số thứ tự lấy bằng COUNT số phiếu đang có: rollback một batch import xoá phiếu
+ * giữa chừng làm COUNT tụt xuống, mã cấp lần sau đâm trúng mã của batch sau vẫn còn sống,
+ * và người dùng nhận đúng một câu "Dữ liệu bị trùng" không rõ trùng gì. Lấy max + 1 thì
+ * mã đã xoá để lại lỗ trống nhưng không bao giờ cấp lại mã đang tồn tại.
+ */
+export function nextSeqFromCodes(codes: string[], prefix: string): number {
+  let max = 0;
+  for (const code of codes) {
+    if (!code.startsWith(prefix)) continue;
+    const seq = Number(code.slice(prefix.length));
+    if (Number.isInteger(seq) && seq > max) max = seq;
+  }
+  return max + 1;
+}
