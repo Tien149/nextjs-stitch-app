@@ -1001,7 +1001,15 @@ export async function validateImportResult(
       }
     }
     if (importType === "REVENUE_POS") {
-      if (numberValue(row.values.gross_amount) < 0 || numberValue(row.values.net_amount) < 0) addError(row, "Doanh thu không được âm");
+      if (numberValue(row.values.gross_amount) < 0 || numberValue(row.values.net_amount) < 0
+        || numberValue(row.values.fee_amount) < 0 || numberValue(row.values.vat_amount) < 0) addError(row, "Doanh thu không được âm");
+      // Tổng doanh thu là số lên báo cáo Tiền về đủ chưa, còn Doanh thu/SVC/VAT là ba phần
+      // cấu thành. File dùng công thức thì luôn khớp; lệch nghĩa là sửa tay sót — chặn ngay
+      // tại preview thay vì để số sai chảy vào đối soát. Dung sai 5 đ cho làm tròn từng món.
+      const posParts = numberValue(row.values.gross_amount) + numberValue(row.values.fee_amount) + numberValue(row.values.vat_amount);
+      if (posParts > 0 && Math.abs(posParts - numberValue(row.values.net_amount)) > 5) {
+        addError(row, `Tổng doanh thu (${numberValue(row.values.net_amount).toLocaleString("vi-VN")}) không bằng Doanh thu + SVC + VAT (${posParts.toLocaleString("vi-VN")})`);
+      }
       const productCode = text(row.values.product_code).toUpperCase();
       const productQuantity = numberValue(row.values.product_quantity);
       if (productCode || productQuantity > 0) {

@@ -55,7 +55,7 @@ const importTabs: ImportTab[] = [
     apiPath: "/api/imports?importType=REVENUE_POS&templateCode=REVENUE_POS_RAW_V1",
     templatePath: "/api/imports?importType=REVENUE_POS&templateCode=REVENUE_POS_RAW_V1&template=1",
     templateCode: "REVENUE_POS_RAW_V1",
-    primaryFields: ["sale_date", "branch_code", "channel", "payment_method", "gross_amount", "net_amount", "discount_amount"],
+    primaryFields: ["sale_date", "branch_code", "channel", "revenue_source", "payment_method", "gross_amount", "fee_amount", "vat_amount", "net_amount"],
   },
   {
     id: "payroll",

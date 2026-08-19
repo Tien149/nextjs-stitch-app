@@ -197,6 +197,12 @@ function templateExampleRows(templateCode: string): Array<Record<string, string 
       { asset_code: "CCDC-IMP-0001", asset_name: "May xay sinh to cong nghiep", branch_code: "HCM", warehouse_code: "KHO_HCM", department_code: "BAR", asset_group: "TOOL", quantity: 2, purchase_date: new Date("2026-07-21T00:00:00Z"), original_cost: 12000000, useful_life_months: 12, depreciation_start_date: new Date("2026-08-01T00:00:00Z"), residual_value: 0, supplier_code: "NCC_FOOD", supplier_name: "NCC Thiet bi F&B", status: "IN_USE", image_url: "", note: "CCDC dung tai quay" },
     ];
   }
+  if (templateCode === "REVENUE_POS_RAW_V1") {
+    return [
+      { sale_date: new Date("2026-08-01T00:00:00Z"), branch_code: "NME", channel: "Grab", revenue_source: "REV_FOOD", payment_method: "FDSGRABFOOD", gross_amount: 500000, fee_amount: 25000, vat_amount: 42000, net_amount: 567000 },
+      { sale_date: new Date("2026-08-01T00:00:00Z"), branch_code: "ASA", channel: "Tại chỗ", revenue_source: "REV_DRINK", payment_method: "ASAATIENMAT", gross_amount: 300000, fee_amount: 15000, vat_amount: 25200, net_amount: 340200 },
+    ];
+  }
   const example = templateExample(templateCode);
   return Object.keys(example).length > 0 ? [example] : [];
 }
@@ -216,7 +222,7 @@ function templateResponse(importType: ImportType, templateCode?: string) {
   XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
   const guide = XLSX.utils.aoa_to_sheet([
     ["Field", "Bắt buộc", "Kiểu dữ liệu", "Ghi chú"],
-    ...template.fields.map((field) => [field.label, field.required ? "Có" : "Không", field.type, field.hiddenFromMapping ? "Hệ thống tự điền" : ""]),
+    ...template.fields.map((field) => [field.label, field.required ? "Có" : "Không", field.type, field.hiddenFromMapping ? "Hệ thống tự điền" : (field.note || "")]),
   ]);
   guide["!cols"] = [{ wch: 28 }, { wch: 12 }, { wch: 16 }, { wch: 26 }];
   XLSX.utils.book_append_sheet(workbook, guide, "Huong dan");

@@ -43,6 +43,8 @@ export type ImportFieldDefinition = {
   type: ImportFieldType;
   aliases: string[];
   hiddenFromMapping?: boolean;
+  /** In ra cột Ghi chú của sheet "Huong dan" trong file mẫu — chỗ người dùng tra khi không biết điền gì. */
+  note?: string;
 };
 
 export type ImportTemplateDefinition = {
@@ -342,21 +344,26 @@ export const importTemplates: ImportTemplateDefinition[] = [
     code: "REVENUE_POS_RAW_V1",
     importType: "REVENUE_POS",
     name: "Doanh thu POS (file thô từ máy bán hàng)",
-    description: "Nhận thẳng file xuất từ máy bán hàng, mỗi dòng là một món. Hệ thống tự gộp thành doanh thu theo ngày và theo phương thức thanh toán, không cần sửa file.",
+    description: "Mỗi dòng một món hoặc một tổ hợp ngày + nguồn tiền. Hệ thống tự gộp theo ngày, hình thức bán, nhóm doanh thu và nguồn tiền. Cột Tổng doanh thu (= Doanh thu + SVC + VAT) là số lên báo cáo Tiền về đủ chưa.",
     preferredSheetNames: ["Import doanh thu", "Doanh thu", "Chi tiet doanh thu"],
-    // Mỗi món là một dòng nên phải gộp lại; nếu không, các dòng cùng ngày và cùng phương thức
-    // thanh toán sẽ trùng mã tham chiếu và bị báo lỗi hàng loạt.
+    // Mỗi món là một dòng nên phải gộp lại; nếu không, các dòng cùng ngày và cùng nguồn tiền
+    // sẽ trùng mã tham chiếu và bị báo lỗi hàng loạt.
     aggregate: {
       by: ["sale_date", "branch_code", "channel", "revenue_source", "payment_method"],
-      sum: ["gross_amount", "net_amount", "discount_amount"],
+      sum: ["gross_amount", "fee_amount", "vat_amount", "net_amount"],
     },
+    // Bố cục cột theo file chị Bình chốt (Zalo 18/08/2026): Ngày, Cửa hàng, Hình thức bán,
+    // Nhóm doanh thu, Nguồn tiền, Doanh thu, SVC, VAT, Tổng doanh thu. Bản trước có hai cột
+    // cùng tên "PTTT" và hai cột cùng tên "Tổng tiền" — người điền không biết cột nào là gì,
+    // còn máy thì map cả hai field về đúng một cột đầu tiên trùng tên.
     fields: [
       {
         field: "sale_date",
-        label: "Thời gian",
+        label: "Ngày",
         required: true,
         type: "date",
-        aliases: ["thoi gian", "ngay ban", "ngay", "sale date", "business date"],
+        aliases: ["ngay", "thoi gian", "ngay ban", "sale date", "business date"],
+        note: "Ngày bán hàng trên máy POS",
       },
       {
         field: "branch_code",
@@ -364,50 +371,67 @@ export const importTemplates: ImportTemplateDefinition[] = [
         required: true,
         type: "text",
         aliases: ["chi nhanh", "branch", "store"],
+        note: "Mã hoặc tên cửa hàng (NME, ASA...)",
       },
       {
         field: "channel",
-        label: "Nguồn",
+        label: "Hình thức bán",
         required: false,
         type: "text",
-        aliases: ["nguon", "kenh ban", "kenh", "channel"],
+        aliases: ["hinh thuc ban", "hinh thuc", "nguon", "kenh ban", "kenh", "channel"],
+        note: "Tại chỗ, Grab, Mang về...",
       },
       {
-        // Máy bán hàng ghi phương thức thanh toán ở cột PTTT, trùng đúng tên nguồn tiền.
         field: "revenue_source",
-        label: "PTTT",
-        required: true,
+        label: "Nhóm doanh thu",
+        required: false,
         type: "text",
-        aliases: ["pttt", "phuong thuc thanh toan", "phuong thuc", "payment method"],
+        aliases: ["nhom doanh thu", "nhom dt", "revenue group", "revenue source"],
+        note: "Mã nhóm doanh thu (REV_FOOD, REV_DRINK...)",
       },
       {
+        // Trên file của khách, cột này ghi thẳng MÃ NGUỒN TIỀN trong danh mục (FDSGRABFOOD,
+        // ASAATIENMAT...) nên báo cáo Tiền về đủ chưa nối được chính xác, không phải đoán tên.
         field: "payment_method",
-        label: "PTTT",
+        label: "Nguồn tiền",
         required: true,
         type: "text",
-        aliases: ["pttt", "phuong thuc thanh toan", "phuong thuc", "payment method"],
+        aliases: ["nguon tien", "ma nguon tien", "pttt", "phuong thuc thanh toan", "phuong thuc", "payment method"],
+        note: "Mã nguồn tiền trong danh mục (FDSGRABFOOD, ASAATIENMAT...)",
       },
       {
-        // "Tổng tiền" là số khách đang dùng để theo dõi doanh thu, đã gồm VAT và phí dịch vụ.
         field: "gross_amount",
-        label: "Tổng tiền",
-        required: true,
-        type: "number",
-        aliases: ["tong tien", "doanh thu", "thanh tien"],
-      },
-      {
-        field: "net_amount",
-        label: "Tổng tiền",
-        required: true,
-        type: "number",
-        aliases: ["tong tien", "doanh thu", "thanh tien"],
-      },
-      {
-        field: "discount_amount",
-        label: "Giảm giá",
+        label: "Doanh thu",
         required: false,
         type: "number",
-        aliases: ["giam gia", "discount"],
+        aliases: ["doanh thu", "doanh thu truoc thue"],
+        note: "Doanh thu chưa gồm SVC và VAT",
+      },
+      {
+        field: "fee_amount",
+        label: "SVC",
+        required: false,
+        type: "number",
+        aliases: ["svc", "phi dich vu", "phi phuc vu", "service charge"],
+        note: "Phí dịch vụ",
+      },
+      {
+        field: "vat_amount",
+        label: "VAT",
+        required: false,
+        type: "number",
+        aliases: ["vat", "thue gtgt", "thue vat", "tien thue"],
+        note: "Thuế GTGT",
+      },
+      {
+        // "Tổng doanh thu" = Doanh thu + SVC + VAT — đúng số tiền khách trả, và là số lên
+        // báo cáo "Tiền về đủ chưa" cột Doanh thu trong ngày để so với tiền về tài khoản.
+        field: "net_amount",
+        label: "Tổng doanh thu",
+        required: true,
+        type: "number",
+        aliases: ["tong doanh thu", "tong tien", "tong cong"],
+        note: "= Doanh thu + SVC + VAT. Số này lên báo cáo Tiền về đủ chưa",
       },
     ],
   },
