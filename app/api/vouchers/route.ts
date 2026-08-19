@@ -258,6 +258,9 @@ export async function GET(request: Request) {
           ...(endDateExclusive ? { lt: endDateExclusive } : {}),
         },
       } : {}),
+      // Lọc phiếu chưa có Khoản mục thu/chi — dòng "Chưa phân loại" trên báo cáo nguồn tiền
+      // link thẳng về đây để người dùng bổ sung danh mục từng phiếu.
+      ...(searchParams.get("missingCategory") === "1" ? { OR: [{ categoryCode: null }, { categoryCode: "" }] } : {}),
     };
 
     const totalCount = await prisma.financialVoucher.count({ where });
@@ -345,7 +348,12 @@ export async function POST(request: Request) {
     }
 
     let voucherCategory: { code: string; name: string } | null = null;
-    if (categoryCode) {
+    // Bắt buộc phân loại ngay từ lúc lập phiếu: phiếu không danh mục là nguồn sinh dòng
+    // "Chưa phân loại" trên báo cáo nguồn tiền — khách chốt mọi khoản thu/chi phải có loại cụ thể.
+    if (!categoryCode) {
+      return NextResponse.json({ error: "Phiếu thu/chi bắt buộc chọn Khoản mục thu/chi" }, { status: 400 });
+    }
+    {
       const categoryCheck = await validateVoucherCategory(voucherType, categoryCode);
       if (categoryCheck.error) return NextResponse.json({ error: categoryCheck.error }, { status: 400 });
       voucherCategory = categoryCheck.category;
@@ -637,6 +645,12 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
     }, { status: 400 });
   }
 
+  // Không cho gỡ danh mục khỏi phiếu: xoá phân loại là tái sinh dòng "Chưa phân loại".
+  // Phiếu lịch sử chưa có danh mục vẫn sửa được các trường khác, nhưng đã đụng vào ô
+  // danh mục thì phải chọn một loại cụ thể.
+  if (body.categoryCode !== undefined && !categoryCode) {
+    return NextResponse.json({ error: "Phiếu thu/chi bắt buộc chọn Khoản mục thu/chi" }, { status: 400 });
+  }
   let voucherCategory: { code: string; name: string } | null = null;
   if (categoryCode) {
     const categoryCheck = await validateVoucherCategory(current.voucherType, categoryCode);
