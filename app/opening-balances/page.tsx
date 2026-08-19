@@ -315,8 +315,14 @@ export default function OpeningBalancesPage() {
       return;
     }
 
-    if ((isInventoryType || isAssetType) && (Number(form.quantity) <= 0 || Number(form.unitCost) <= 0)) {
+    if (isInventoryType && (Number(form.quantity) <= 0 || Number(form.unitCost) <= 0)) {
       setMessage("Số lượng và đơn giá phải lớn hơn 0.");
+      return;
+    }
+
+    // Tài sản hết kỳ phân bổ vẫn còn hiện vật — đơn giá 0 hợp lệ, chỉ cấm âm.
+    if (isAssetType && (Number(form.quantity) <= 0 || Number(form.unitCost) < 0)) {
+      setMessage("Tài sản cần số lượng lớn hơn 0; đơn giá không được âm.");
       return;
     }
 

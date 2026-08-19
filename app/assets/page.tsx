@@ -715,17 +715,19 @@ export default function AssetsPage() {
                 </label>
 
                 <label className="text-xs font-bold text-slate-600 block">
-                  Nguyên giá (đ) *
+                  Nguyên giá (đ)
                   <input
                     type="number"
-                    min="1"
+                    min="0"
                     value={form.originalCost}
                     onChange={(e) => setForm((v) => ({ ...v, originalCost: e.target.value, payableAmount: v.paymentStatus === "PAYABLE" ? e.target.value : v.payableAmount }))}
                     className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
                     disabled={editingAllocatedPeriods > 0}
                     placeholder="0"
-                    required
                   />
+                  <span className="mt-1 block text-[11px] font-medium text-slate-500">
+                    Theo dõi quản trị có thể để trống; tài sản ghi công nợ mới bắt buộc nguyên giá.
+                  </span>
                 </label>
               </div>
 

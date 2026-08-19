@@ -201,8 +201,16 @@ export async function POST(request: Request) {
     const supplierName = cleanText(body.supplierName);
     const manualCode = normalizeAssetCode(body.code);
 
-    if (!name || !branchCode || !assetGroup || originalCost <= 0) {
-      return NextResponse.json({ error: "Tên tài sản, chi nhánh, nhóm tài sản và nguyên giá (lớn hơn 0) là bắt buộc" }, { status: 400 });
+    // Theo dõi quản trị không cần nguyên giá — 0 hợp lệ, chỉ cấm số âm; riêng tài sản
+    // ghi công nợ vẫn phải có nguyên giá thật vì nó sinh bút toán và sổ phải trả.
+    if (!name || !branchCode || !assetGroup) {
+      return NextResponse.json({ error: "Tên tài sản, chi nhánh và nhóm tài sản là bắt buộc" }, { status: 400 });
+    }
+    if (originalCost < 0) {
+      return NextResponse.json({ error: "Nguyên giá không được âm" }, { status: 400 });
+    }
+    if (paymentStatus === "PAYABLE" && originalCost <= 0) {
+      return NextResponse.json({ error: "Tài sản ghi công nợ phải có nguyên giá lớn hơn 0" }, { status: 400 });
     }
 
     if (quantity <= 0) {
@@ -427,8 +435,9 @@ export async function PATCH(request: Request) {
     if (body.quantity !== undefined && toAmount(body.quantity) <= 0) {
       return NextResponse.json({ error: "Số lượng phải lớn hơn 0" }, { status: 400 });
     }
-    if (body.originalCost !== undefined && toAmount(body.originalCost) <= 0) {
-      return NextResponse.json({ error: "Nguyên giá phải lớn hơn 0" }, { status: 400 });
+    // Theo dõi quản trị không cần nguyên giá — 0 hợp lệ, chỉ cấm số âm.
+    if (body.originalCost !== undefined && toAmount(body.originalCost) < 0) {
+      return NextResponse.json({ error: "Nguyên giá không được âm" }, { status: 400 });
     }
     if (body.currentValue !== undefined && toAmount(body.currentValue) < 0) {
       return NextResponse.json({ error: "Giá trị còn lại không được âm" }, { status: 400 });

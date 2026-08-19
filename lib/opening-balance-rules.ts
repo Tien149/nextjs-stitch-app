@@ -56,7 +56,12 @@ export function normalizeOpeningBalanceInput(body: Record<string, unknown>): Ope
 export async function validateOpeningBalanceInput(tx: Prisma.TransactionClient, input: OpeningBalanceInput) {
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(input.period)) throw new Error("Kỳ số dư không hợp lệ (YYYY-MM)");
   if (!OPENING_BALANCE_TYPES.includes(input.balanceType as typeof OPENING_BALANCE_TYPES[number])) throw new Error("Loại số dư không hợp lệ");
-  if (!(input.amount > 0)) throw new Error("Số tiền phải lớn hơn 0");
+  // Tài sản hết kỳ phân bổ vẫn còn hiện vật cần theo dõi — giá trị 0 hợp lệ, chỉ cấm âm.
+  if (input.balanceType === "ASSET") {
+    if (input.amount < 0) throw new Error("Giá trị tài sản đầu kỳ không được âm");
+  } else if (!(input.amount > 0)) {
+    throw new Error("Số tiền phải lớn hơn 0");
+  }
 
   const branch = await tx.masterDataItem.findUnique({ where: { type_code: { type: "BRANCH", code: input.branchCode } } });
   if (!branch || branch.status !== "ACTIVE") throw new Error(`Cửa hàng [${input.branchCode}] không tồn tại hoặc đã ngừng hoạt động`);
@@ -96,8 +101,13 @@ export async function validateOpeningBalanceInput(tx: Prisma.TransactionClient, 
       throw new Error(`Kho [${input.warehouseCode}] không còn hợp lệ hoặc không thuộc cửa hàng đã chọn`);
     }
   }
-  if (input.balanceType === "ASSET" && (!input.objectCode || !input.objectName || !(input.quantity && input.quantity > 0) || !(input.unitCost && input.unitCost > 0))) {
-    throw new Error("Tài sản đầu kỳ cần mã, tên, số lượng và nguyên giá lớn hơn 0");
+  // Nguyên giá không bắt buộc: khách theo dõi quản trị, tài sản hết khấu hao giá trị 0
+  // vẫn phải nhập được. Chỉ cần mã, tên, số lượng; đơn giá có khai thì không được âm.
+  if (input.balanceType === "ASSET" && (!input.objectCode || !input.objectName || !(input.quantity && input.quantity > 0))) {
+    throw new Error("Tài sản đầu kỳ cần mã, tên và số lượng lớn hơn 0");
+  }
+  if (input.balanceType === "ASSET" && input.unitCost !== null && input.unitCost < 0) {
+    throw new Error("Đơn giá tài sản đầu kỳ không được âm");
   }
   if (input.balanceType === "PREPAID_EXPENSE" && (!input.objectCode || !input.allocationStartPeriod || !input.allocationMonths || input.allocationMonths <= 1)) {
     throw new Error("Chi phí phân bổ cần mã, kỳ bắt đầu và số kỳ lớn hơn 1");
