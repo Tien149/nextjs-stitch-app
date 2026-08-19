@@ -34,6 +34,8 @@
     "lint": "eslint",
     "postinstall": "prisma generate",
     "check:pos-file": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/check-revenue-pos-file.mjs",
+    "report:duplicate-items": "node scripts/report-duplicate-items.cjs",
+    "test:inventory-fixes": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-inventory-fixes.mjs",
     "test:voucher-code-gap": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-voucher-code-gap.mjs",
     "test:pos-raw": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-revenue-pos-raw-import.mjs",
     "test:import-e2e": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-import-end-to-end.mjs",
