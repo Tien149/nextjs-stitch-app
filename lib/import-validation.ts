@@ -120,8 +120,18 @@ function validateBranch(row: ParsedImportRow, session: DemoSession, masterItems:
   const branch = resolveMaster(masterItems, "BRANCH", rawBranch) || resolveBranchByName(masterItems, rawBranch);
   const branchCode = (branch?.code || rawBranch).toUpperCase();
   row.values.branch_code = branchCode;
-  if (!branchCode || branchCode === "ALL") {
-    addError(row, "Cửa hàng import là bắt buộc và không được chọn Admin / Tất cả cửa hàng");
+  // Với các loại import này, cửa hàng nằm trong CỘT của từng dòng file — màn hình không có ô
+  // chọn nào cả. Thông báo cũ "không được chọn Admin / Tất cả cửa hàng" làm người dùng đi tìm
+  // một dropdown không tồn tại; phải chỉ thẳng vào ô cần sửa trong file.
+  if (!branchCode) {
+    // Cột bắt buộc đã có sẵn lỗi "Cửa hàng là bắt buộc" từ bước đọc file — không chồng thêm.
+    if (!row.errors.some((message) => message.includes("Cửa hàng là bắt buộc"))) {
+      addError(row, "Ô Cửa hàng của dòng này đang trống — điền mã (NME, ASA...) hoặc tên cửa hàng vào cột Cửa hàng trong file");
+    }
+    return;
+  }
+  if (branchCode === "ALL") {
+    addError(row, `Cột Cửa hàng đang là [${rawBranch}] — phải ghi một cửa hàng cụ thể (mã NME/ASA... hoặc tên đầy đủ), không dùng ALL`);
     return;
   }
   try {
