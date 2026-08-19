@@ -188,13 +188,6 @@ export const importTemplates: ImportTemplateDefinition[] = [
         aliases: ["loai nghiep vu dich", "loai nghiep vu", "nghiep vu dich", "operation type", "target operation"],
       },
       {
-        field: "accounting_date",
-        label: "Ngày hạch toán",
-        required: false,
-        type: "date",
-        aliases: ["ngay hach toan", "accounting date", "posting date"],
-      },
-      {
         field: "partner_code",
         label: "Mã đối tác",
         required: false,

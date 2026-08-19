@@ -682,6 +682,10 @@ function normalizeBankStatementRow(row: ParsedImportRow, masterItems: MasterItem
     decreaseSource: resolvedSources.decrease_money_source_code,
   });
   row.values.operation_type = operationType;
+  // Từ 19/08/2026 file sao kê không còn cột "Ngày hạch toán" (khách xin bỏ: 758/758 giao dịch
+  // đã import đều để trống). Cột DB và các nhánh dùng accountingDate vẫn giữ nguyên, chỉ là giá
+  // trị nay luôn suy từ Ngày giao dịch tại đây. Muốn tách kỳ P&L trở lại thì khai lại field
+  // accounting_date trong import-templates.ts, phần còn lại chạy được ngay.
   row.values.accounting_date = row.values.accounting_date || row.values.transaction_date;
   if (!operationType) {
     addError(row, "Không thể tự xác định Loại nghiệp vụ đích; hãy khai báo cột này hoặc bổ sung đủ Loại thu/chi và thông tin nghiệp vụ");
@@ -1171,7 +1175,9 @@ export async function validateImportResult(
               "pnl_item_code",
               "debt_reference",
               "deposit_code",
-              "accounting_date",
+              // Trước đây là "accounting_date"; cột đó đã bỏ nên giá trị luôn bằng Ngày giao dịch.
+              // Giữ phép kiểm bằng chính cột nguồn: các dòng cùng một mã giao dịch phải cùng ngày.
+              "transaction_date",
             ];
             const hasMixedBusinessAllocation = businessFields.some((field) => (
               new Set(group.rows.map((row) => text(row.values[field]))).size > 1
@@ -1253,13 +1259,15 @@ export async function validateImportResult(
 
     await fillWalletGrossFromPosRevenue(result.rows, masterItems);
 
-    // Commit khóa sổ theo CẢ BA mốc ngày, và chỉ cần một dòng vướng kỳ đã khóa là rollback
-    // sạch batch. Preview vì vậy phải soi đủ ba mốc, nếu không người dùng sẽ thấy file "hợp lệ"
+    // Commit khóa sổ theo CẢ HAI mốc ngày, và chỉ cần một dòng vướng kỳ đã khóa là rollback
+    // sạch batch. Preview vì vậy phải soi đủ hai mốc, nếu không người dùng sẽ thấy file "hợp lệ"
     // rồi chết ở bước Commit mà không biết dòng nào sai.
+    //
+    // Không soi accounting_date nữa: cột "Ngày hạch toán" đã bỏ khỏi file nên giá trị luôn bằng
+    // Ngày giao dịch — để lại thì thông báo lỗi chỉ vào một cột người dùng không hề có.
     const bankStatementPeriodFields = [
       { field: "transaction_date", label: "Ngày giao dịch" },
       { field: "source_date", label: "Ngày nguồn tiền" },
-      { field: "accounting_date", label: "Ngày hạch toán" },
     ];
     const periodChecks = new Map<string, { date: Date; branchCode: string; labels: Set<string>; rows: Set<ParsedImportRow> }>();
     for (const row of result.rows) {
