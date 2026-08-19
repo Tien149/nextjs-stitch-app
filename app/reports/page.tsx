@@ -1930,6 +1930,41 @@ function SourceGroupTag({ group }: { group: string }) {
  * chênh thuộc chi phí nào. Hai vế lấy từ hai luồng độc lập nên bên nào chưa có dữ liệu thì
  * hiện đúng là chưa có.
  */
+const settlementGroupNames: Record<string, string> = { CASH: "Tiền mặt", BANK: "Ngân hàng", WALLET: "Ví / POS" };
+
+/**
+ * Gộp các dòng chi tiết của một ngày về Nhóm/Loại nguồn tiền. Import khai chi tiết từng nguồn,
+ * nhưng muốn biết "thu đủ tiền chưa" thì phải so ở mức nhóm: ngân hàng hay trả gộp nhiều nguồn
+ * trong một lần chuyển, so từng nguồn chi tiết sẽ thấy Chưa về / Về dư giả trong khi cộng cả
+ * nhóm lại thì tiền không thiếu đồng nào.
+ */
+function settlementGroupSubtotals(rows: RevenueSettlementRow[]) {
+  const byGroup = new Map<string, { group: string; count: number; revenue: number; received: number }>();
+  for (const row of rows) {
+    const key = row.group || "OTHER";
+    const current = byGroup.get(key) || { group: key, count: 0, revenue: 0, received: 0 };
+    current.count += 1;
+    current.revenue += row.revenue;
+    current.received += row.received;
+    byGroup.set(key, current);
+  }
+  // Nhóm chỉ có một dòng thì dòng cộng lặp lại y hệt dòng chi tiết — bỏ cho đỡ nhiễu.
+  return [...byGroup.values()]
+    .filter((row) => row.count > 1)
+    .map((row) => {
+      const remaining = Math.round(row.revenue - row.received);
+      const status = Math.abs(remaining) < 1000
+        ? ("MATCHED" as const)
+        : remaining < 0
+          ? ("OVER" as const)
+          : row.received === 0
+            ? ("WAITING" as const)
+            : ("FEE" as const);
+      return { ...row, remaining, status };
+    })
+    .sort((a, b) => a.group.localeCompare(b.group));
+}
+
 function RevenueSettlementPanel({ data }: { data: RevenueSettlementData }) {
   const dayLabel = (value: string) => new Date(`${value}T00:00:00Z`).toLocaleDateString("vi-VN", { timeZone: "UTC" });
   const byDay = new Map<string, RevenueSettlementRow[]>();
@@ -1948,7 +1983,7 @@ function RevenueSettlementPanel({ data }: { data: RevenueSettlementData }) {
       <section className="table-panel">
         <PanelHeader
           title="Tiền về đủ chưa"
-          subtitle="Mỗi ngày, mỗi phương thức thanh toán: doanh thu ghi nhận bao nhiêu, tiền thực về bao nhiêu, phần chênh là phí thu hộ hay tiền chưa về. Doanh thu lấy từ import POS, tiền về lấy từ sổ sao kê — hai luồng độc lập."
+          subtitle="Mỗi ngày, mỗi phương thức thanh toán: doanh thu ghi nhận bao nhiêu, tiền thực về bao nhiêu, phần chênh là phí thu hộ hay tiền chưa về. Doanh thu lấy từ import POS, tiền về lấy từ sổ sao kê — hai luồng độc lập. Dòng “Cộng theo Nhóm/Loại” gộp các nguồn chi tiết lại để biết cả nhóm đã thu đủ tiền chưa, kể cả khi ngân hàng trả gộp nhiều nguồn trong một lần chuyển."
         />
         <div className="overflow-x-auto">
           <Table headers={["Ngày", "Phương thức thanh toán", "Loại nguồn", "Doanh thu trong ngày", "Tiền đã vô", "Còn lại", "Tên chi phí", "Trạng thái"]}>
@@ -1958,37 +1993,73 @@ function RevenueSettlementPanel({ data }: { data: RevenueSettlementData }) {
                 <Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell>
               </tr>
             )}
-            {[...byDay.entries()].map(([day, rows]) => rows.map((row, index) => (
-              <tr key={`${row.date}-${row.moneySourceCode}`} className={`border-t border-slate-100 hover:bg-slate-50 ${index === 0 ? "border-t-slate-200" : ""}`}>
-                <Cell>{index === 0 ? <b>{dayLabel(day)}</b> : <span className="text-slate-300">·</span>}</Cell>
-                <Cell><b>{row.moneySourceName}</b><p className="mt-0.5 text-xs text-slate-500">{row.moneySourceCode}</p></Cell>
-                <Cell><SourceGroupTag group={row.group} /></Cell>
-                <Cell right>{money(row.revenue)} đ</Cell>
-                <Cell right><span className="text-emerald-700">{money(row.received)} đ</span></Cell>
-                <Cell right>
-                  <b className={row.remaining > 0 ? "text-amber-700" : row.remaining < 0 ? "text-rose-600" : "text-slate-400"}>
-                    {money(row.remaining)} đ
-                  </b>
-                </Cell>
-                <Cell>{row.feeCategoryName || <span className="text-slate-300">—</span>}</Cell>
-                <Cell right>
-                  <span className={`rounded-full px-2 py-1 text-xs font-bold ${
-                    row.status === "MATCHED" ? "bg-emerald-50 text-emerald-700"
-                      : row.status === "FEE" ? "bg-amber-50 text-amber-800"
-                        : row.status === "OVER" ? "bg-sky-50 text-sky-700"
-                          : "bg-rose-50 text-rose-700"}`}
-                  >
-                    {row.status === "MATCHED"
-                      ? "VỀ ĐỦ"
-                      : row.status === "OVER"
-                        ? "VỀ DƯ"
-                        : row.status === "FEE"
-                          ? (row.feeCategoryName ? "CHÊNH PHÍ" : "VỀ THIẾU")
-                          : "CHƯA VỀ"}
-                  </span>
-                </Cell>
-              </tr>
-            )))}
+            {[...byDay.entries()].map(([day, rows]) => [
+              ...rows.map((row, index) => (
+                <tr key={`${row.date}-${row.moneySourceCode}`} className={`border-t border-slate-100 hover:bg-slate-50 ${index === 0 ? "border-t-slate-200" : ""}`}>
+                  <Cell>{index === 0 ? <b>{dayLabel(day)}</b> : <span className="text-slate-300">·</span>}</Cell>
+                  <Cell><b>{row.moneySourceName}</b><p className="mt-0.5 text-xs text-slate-500">{row.moneySourceCode}</p></Cell>
+                  <Cell><SourceGroupTag group={row.group} /></Cell>
+                  <Cell right>{money(row.revenue)} đ</Cell>
+                  <Cell right><span className="text-emerald-700">{money(row.received)} đ</span></Cell>
+                  <Cell right>
+                    <b className={row.remaining > 0 ? "text-amber-700" : row.remaining < 0 ? "text-rose-600" : "text-slate-400"}>
+                      {money(row.remaining)} đ
+                    </b>
+                  </Cell>
+                  <Cell>{row.feeCategoryName || <span className="text-slate-300">—</span>}</Cell>
+                  <Cell right>
+                    <span className={`rounded-full px-2 py-1 text-xs font-bold ${
+                      row.status === "MATCHED" ? "bg-emerald-50 text-emerald-700"
+                        : row.status === "FEE" ? "bg-amber-50 text-amber-800"
+                          : row.status === "OVER" ? "bg-sky-50 text-sky-700"
+                            : "bg-rose-50 text-rose-700"}`}
+                    >
+                      {row.status === "MATCHED"
+                        ? "VỀ ĐỦ"
+                        : row.status === "OVER"
+                          ? "VỀ DƯ"
+                          : row.status === "FEE"
+                            ? (row.feeCategoryName ? "CHÊNH PHÍ" : "VỀ THIẾU")
+                            : "CHƯA VỀ"}
+                    </span>
+                  </Cell>
+                </tr>
+              )),
+              ...settlementGroupSubtotals(rows).map((subtotal) => (
+                <tr key={`${day}-group-${subtotal.group}`} className="border-t border-slate-100 bg-slate-50/70">
+                  <Cell><span className="text-slate-300">·</span></Cell>
+                  <Cell>
+                    <b className="text-slate-700">Cộng {settlementGroupNames[subtotal.group] || subtotal.group}</b>
+                    <p className="mt-0.5 text-xs text-slate-500">{subtotal.count} nguồn chi tiết gộp theo Nhóm/Loại</p>
+                  </Cell>
+                  <Cell><SourceGroupTag group={subtotal.group} /></Cell>
+                  <Cell right><b>{money(Math.round(subtotal.revenue))} đ</b></Cell>
+                  <Cell right><b className="text-emerald-700">{money(Math.round(subtotal.received))} đ</b></Cell>
+                  <Cell right>
+                    <b className={subtotal.remaining > 0 ? "text-amber-700" : subtotal.remaining < 0 ? "text-rose-600" : "text-slate-400"}>
+                      {money(subtotal.remaining)} đ
+                    </b>
+                  </Cell>
+                  <Cell><span className="text-slate-300">—</span></Cell>
+                  <Cell right>
+                    <span className={`rounded-full px-2 py-1 text-xs font-bold ${
+                      subtotal.status === "MATCHED" ? "bg-emerald-50 text-emerald-700"
+                        : subtotal.status === "FEE" ? "bg-amber-50 text-amber-800"
+                          : subtotal.status === "OVER" ? "bg-sky-50 text-sky-700"
+                            : "bg-rose-50 text-rose-700"}`}
+                    >
+                      {subtotal.status === "MATCHED"
+                        ? "VỀ ĐỦ"
+                        : subtotal.status === "OVER"
+                          ? "VỀ DƯ"
+                          : subtotal.status === "FEE"
+                            ? (subtotal.group === "WALLET" ? "CHÊNH PHÍ" : "VỀ THIẾU")
+                            : "CHƯA VỀ"}
+                    </span>
+                  </Cell>
+                </tr>
+              )),
+            ])}
             {data.rows.length > 0 && (
               <tr className="border-t border-slate-200 bg-slate-50 font-bold">
                 <Cell><b>TỔNG</b></Cell>

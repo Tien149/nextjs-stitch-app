@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { appMenuItems, canAccessMenu, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import { filterMoneySources, type MoneySourceOption } from "@/lib/money-sources";
-import { visibleStoreOptions } from "@/lib/branch-labels";
+import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 
 type Allocation = { id: string; sourceRowNumber: number; sheetName: string; revenueDate: string | null; sourceDate: string | null; grossAmount: number | null; grabExpenseAmount: number; cardFeeAmount: number };
 type MatchRow = { targetCode: string; targetType: string; targetHref?: string };
@@ -12,7 +12,7 @@ type BankRow = {
   id: string; transactionDate: string; sourceDate: string | null; accountingDate: string | null;
   bankAccount: string; transactionCode: string; description: string; debitAmount: number; creditAmount: number;
   branchCode: string | null; categoryCode: string | null; operationType: string | null; partnerCode: string | null;
-  pnlItemCode: string | null; increaseMoneySourceCode: string | null; decreaseMoneySourceCode: string | null;
+  pnlItemCode: string | null; summaryMoneySourceCode: string | null; increaseMoneySourceCode: string | null; decreaseMoneySourceCode: string | null;
   reconcileStatus: string; revenueDates: string[]; allocations: Allocation[]; currentMatch: MatchRow | null;
 };
 
@@ -120,15 +120,15 @@ export default function BankStatementLedgerPage() {
       <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
         <div className="border-b border-slate-200 p-4"><h2 className="font-bold">Danh sách giao dịch sao kê đã import</h2><p className="mt-1 text-xs text-slate-500">Không cần match thủ công; file hợp lệ được ghi nhận trực tiếp khi Commit.</p></div>
         <div className="overflow-x-auto"><table className="min-w-[1500px] w-full text-left text-sm">
-          <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr>{["Ngày GD / nguồn / DT", "Sao kê", "Nợ", "Có", "Cửa hàng", "Nghiệp vụ / loại", "Nguồn tăng / giảm", "Đối tác / P&L", "Chứng từ", "Trạng thái"].map((label) => <th key={label} className="px-3 py-3">{label}</th>)}</tr></thead>
+          <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr>{["Ngày GD / nguồn / DT", "Sao kê", "Nợ", "Có", "Cửa hàng", "Nghiệp vụ / loại", "Nguồn tổng / tăng / giảm", "Đối tác / P&L", "Chứng từ", "Trạng thái"].map((label) => <th key={label} className="px-3 py-3">{label}</th>)}</tr></thead>
           <tbody>{loading ? <tr><td colSpan={10} className="p-10 text-center text-slate-400">Đang tải...</td></tr> : rows.length === 0 ? <tr><td colSpan={10} className="p-10 text-center text-slate-400">Không có giao dịch phù hợp.</td></tr> : rows.map((row) => <tr key={row.id} className="border-t border-slate-100 align-top hover:bg-slate-50">
             <td className="px-3 py-3 text-xs"><b>{dateText(row.transactionDate)}</b><p>Nguồn: {dateText(row.sourceDate)}</p><p>DT: {row.revenueDates.length ? row.revenueDates.map(dateText).join(", ") : "—"}</p></td>
             <td className="max-w-sm px-3 py-3"><b className="break-all">{row.transactionCode}</b><p className="mt-1 text-xs text-slate-500">{row.bankAccount}</p><p className="mt-1 line-clamp-3 text-xs">{row.description}</p>{row.allocations.length > 1 && <span className="mt-1 inline-block rounded bg-indigo-50 px-2 py-0.5 text-xs font-bold text-indigo-700">{row.allocations.length} dòng phân bổ</span>}</td>
             <td className="px-3 py-3 text-right font-bold text-rose-700">{row.debitAmount ? `${money(row.debitAmount)} đ` : "—"}</td>
             <td className="px-3 py-3 text-right font-bold text-emerald-700">{row.creditAmount ? `${money(row.creditAmount)} đ` : "—"}</td>
-            <td className="px-3 py-3">{row.branchCode || "—"}</td>
+            <td className="px-3 py-3"><b>{storeLabel(row.branchCode)}</b>{row.branchCode && <p className="text-xs text-slate-500">{row.branchCode}</p>}</td>
             <td className="px-3 py-3"><b>{operationLabels[row.operationType || ""] || row.operationType || "Dữ liệu cũ"}</b><p className="text-xs text-slate-500">{row.categoryCode || "—"}</p></td>
-            <td className="px-3 py-3 text-xs"><p className="text-emerald-700">+ {row.increaseMoneySourceCode || "—"}</p><p className="text-rose-700">− {row.decreaseMoneySourceCode || "—"}</p></td>
+            <td className="px-3 py-3 text-xs">{row.summaryMoneySourceCode && <p className="font-bold text-slate-700">Tổng: {row.summaryMoneySourceCode}</p>}<p className="text-emerald-700">+ {row.increaseMoneySourceCode || "—"}</p><p className="text-rose-700">− {row.decreaseMoneySourceCode || "—"}</p></td>
             <td className="px-3 py-3 text-xs"><p>{row.partnerCode || "—"}</p><p className="text-slate-500">P&amp;L: {row.pnlItemCode || "—"}</p></td>
             <td className="px-3 py-3">{row.currentMatch ? <a href={row.currentMatch.targetHref || "/bank-vouchers"} className="font-bold text-blue-700 hover:underline">{row.currentMatch.targetCode}</a> : <span className="text-xs text-slate-400">Dữ liệu lịch sử chưa liên kết</span>}</td>
             <td className="px-3 py-3"><span className={`rounded-full px-2 py-1 text-xs font-bold ${row.reconcileStatus === "MATCHED" ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>{row.reconcileStatus === "MATCHED" ? "ĐÃ GHI NHẬN" : "DỮ LIỆU CŨ"}</span></td>
