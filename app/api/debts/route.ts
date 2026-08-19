@@ -245,6 +245,108 @@ export async function GET(request: Request) {
   }
 }
 
+/**
+ * Tạo tay một khoản công nợ ngay trên màn Công nợ — khách khai các khoản phải trả NCC
+ * đã phát sinh chi phí nhưng chưa thanh toán, kèm hạng mục P&L để biết chi phí thuộc đâu.
+ * Cũng dùng cho công nợ nội bộ (nhà hàng B phải trả nhà hàng A khoản chi hộ).
+ */
+export async function POST(request: Request) {
+  try {
+    const auth = requireMenuAction(request, "/debts", "create");
+    if (!auth.ok) return auth.response;
+    const body = await request.json();
+
+    const debtType = cleanText(body.debtType).toUpperCase() || "PAYABLE";
+    const partnerGroup = cleanText(body.partnerGroup).toUpperCase() || "EXTERNAL";
+    const partnerCode = cleanText(body.partnerCode).toUpperCase();
+    const branchCode = cleanText(body.branchCode).toUpperCase();
+    const description = cleanText(body.description);
+    const originalAmount = toNumber(body.originalAmount);
+    const documentDate = toDate(body.documentDate, new Date());
+    const dueDate = cleanText(body.dueDate) ? toDate(body.dueDate) : null;
+    const pnlItemCode = cleanText(body.pnlItemCode).toUpperCase() || null;
+    const categoryCode = cleanText(body.categoryCode).toUpperCase() || null;
+
+    if (!debtTypes.includes(debtType)) return NextResponse.json({ error: "Loại công nợ chỉ nhận RECEIVABLE hoặc PAYABLE" }, { status: 400 });
+    if (!partnerGroups.includes(partnerGroup)) return NextResponse.json({ error: "Nhóm đối tác chỉ nhận EXTERNAL hoặc INTERNAL" }, { status: 400 });
+    if (!partnerCode || !branchCode || !description) {
+      return NextResponse.json({ error: "Thiếu đối tác, cửa hàng hoặc diễn giải" }, { status: 400 });
+    }
+    if (!(originalAmount > 0)) return NextResponse.json({ error: "Số tiền công nợ phải lớn hơn 0" }, { status: 400 });
+    if (dueDate && dueDate < documentDate) return NextResponse.json({ error: "Hạn thanh toán không được trước ngày chứng từ" }, { status: 400 });
+
+    try {
+      assertBranchAccess(auth.session, branchCode);
+    } catch (e) {
+      return NextResponse.json({ error: e instanceof Error ? e.message : "Không có quyền chi nhánh" }, { status: 403 });
+    }
+    if (await isPeriodLocked(documentDate, branchCode)) {
+      return NextResponse.json({ error: "Kỳ kế toán đã khóa, không thể ghi công nợ vào kỳ này" }, { status: 400 });
+    }
+
+    const partner = await prisma.masterDataItem.findFirst({
+      where: { type: "PARTNER", code: partnerCode, status: "ACTIVE", deletedAt: null },
+      select: { code: true, name: true },
+    });
+    if (!partner) return NextResponse.json({ error: `Đối tác [${partnerCode}] không tồn tại hoặc đã ngừng hoạt động` }, { status: 400 });
+    if (pnlItemCode) {
+      const pnlItem = await prisma.masterDataItem.findFirst({
+        where: { type: "PNL_ITEM", code: pnlItemCode, status: "ACTIVE", deletedAt: null },
+        select: { code: true },
+      });
+      if (!pnlItem) return NextResponse.json({ error: `Hạng mục P&L [${pnlItemCode}] không tồn tại hoặc đã ngừng hoạt động` }, { status: 400 });
+    }
+
+    // Mã tuần tự theo loại + tháng chứng từ; đụng mã (tạo song song) thì thử lại với số kế tiếp.
+    const prefix = `${debtType === "PAYABLE" ? "CNPT" : "CNTHU"}-${documentDate.toISOString().slice(0, 7).replace("-", "")}`;
+    let created = null;
+    for (let attempt = 0; attempt < 5 && !created; attempt += 1) {
+      const count = await prisma.debtRecord.count({ where: { code: { startsWith: `${prefix}-` } } });
+      const code = `${prefix}-${String(count + 1 + attempt).padStart(4, "0")}`;
+      try {
+        created = await prisma.debtRecord.create({
+          data: {
+            code,
+            debtType,
+            partnerGroup,
+            partnerCode: partner.code,
+            partnerName: partner.name,
+            branchCode,
+            documentDate,
+            dueDate,
+            categoryCode,
+            pnlItemCode,
+            originalAmount,
+            outstandingAmount: originalAmount,
+            description,
+            sourceType: "MANUAL",
+            status: "OPEN",
+          },
+        });
+      } catch (error) {
+        const isUnique = typeof error === "object" && error !== null && (error as { code?: string }).code === "P2002";
+        if (!isUnique) throw error;
+      }
+    }
+    if (!created) return NextResponse.json({ error: "Không cấp được mã công nợ, vui lòng thử lại" }, { status: 409 });
+
+    await writeAuditLog({
+      session: auth.session,
+      module: "DEBTS",
+      action: "CREATE",
+      entityType: "DebtRecord",
+      entityId: created.id,
+      entityCode: created.code,
+      branchCode,
+      metadata: { debtType, partnerCode: partner.code, originalAmount, pnlItemCode },
+    });
+    return NextResponse.json(created, { status: 201 });
+  } catch (error) {
+    console.error("Error creating debt record:", error);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+  }
+}
+
 export async function PATCH(request: Request) {
   try {
     const body = await request.json();

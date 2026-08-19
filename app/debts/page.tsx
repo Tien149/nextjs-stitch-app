@@ -5,9 +5,12 @@ import { useRouter } from "next/navigation";
 import { BranchScopeSelect, resolveInitialBranchScope } from "@/components/BranchScopeSelect";
 import { DateInput } from "@/components/DateInput";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
-import { appMenuItems, canAccessMenu, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
+import { appMenuItems, canAccessMenu, canPerformAction, canPerformMenuAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
+import { PartnerPicker } from "@/components/PartnerPicker";
+import { SearchableSelect } from "@/components/SearchableSelect";
+import { visibleStoreOptions } from "@/lib/branch-labels";
 
 type DebtRow = {
   partnerCode: string;
@@ -93,6 +96,78 @@ export default function DebtsPage() {
   const [deletingDebt, setDeletingDebt] = useState<LedgerRow | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+
+  // Tạo tay công nợ ngay trên màn này: khoản phải trả NCC đã phát sinh chi phí nhưng chưa
+  // thanh toán, hoặc công nợ nội bộ giữa hai nhà hàng (khoản chi hộ).
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createSaving, setCreateSaving] = useState(false);
+  const [createError, setCreateError] = useState("");
+  const [partners, setPartners] = useState<Array<{ id: string; code: string; name: string }>>([]);
+  const [pnlItems, setPnlItems] = useState<Array<{ id: string; code: string; name: string; group: string | null; status?: string }>>([]);
+  const [createForm, setCreateForm] = useState({
+    debtType: "PAYABLE",
+    partnerGroup: "EXTERNAL",
+    partnerCode: "",
+    branchCode: "",
+    documentDate: new Date().toISOString().slice(0, 10),
+    dueDate: "",
+    originalAmount: "",
+    pnlItemCode: "",
+    description: "",
+  });
+  const canCreateDebts = user ? canPerformAction(user, "create") : false;
+  const canCreatePartner = user ? canPerformMenuAction(user, "/settings", "config") : false;
+
+  const openCreateDialog = () => {
+    setCreateError("");
+    setCreateForm((current) => ({
+      ...current,
+      branchCode: current.branchCode || (branchScope !== "ALL" ? branchScope : visibleStoreOptions(user)[0]?.code || ""),
+    }));
+    setCreateOpen(true);
+    if (partners.length === 0) {
+      void fetch("/api/master-data?type=PARTNER&status=ACTIVE")
+        .then((response) => response.ok ? response.json() : [])
+        .then((data) => setPartners(data));
+    }
+    if (pnlItems.length === 0) {
+      void fetch("/api/master-data?type=PNL_ITEM&status=ACTIVE")
+        .then((response) => response.ok ? response.json() : [])
+        .then((data) => setPnlItems(data));
+    }
+  };
+
+  const submitCreateDebt = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (createSaving) return;
+    setCreateError("");
+    if (!createForm.partnerCode || !createForm.branchCode || !(Number(createForm.originalAmount) > 0) || !createForm.description.trim()) {
+      setCreateError("Cần chọn đối tác, cửa hàng, số tiền lớn hơn 0 và diễn giải.");
+      return;
+    }
+    setCreateSaving(true);
+    try {
+      const response = await fetch("/api/debts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(createForm),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setCreateError(payload.error || "Không tạo được công nợ.");
+        return;
+      }
+      setCreateOpen(false);
+      setCreateForm((current) => ({ ...current, partnerCode: "", originalAmount: "", pnlItemCode: "", description: "", dueDate: "" }));
+      setMessage(`Đã tạo công nợ ${payload.code}.`);
+      await loadRows();
+      if (ledger) await loadLedger(ledger.partnerCode);
+    } catch {
+      setCreateError("Không kết nối được máy chủ. Vui lòng thử lại.");
+    } finally {
+      setCreateSaving(false);
+    }
+  };
 
   useEffect(() => {
     const raw = localStorage.getItem(SESSION_KEY);
@@ -240,6 +315,15 @@ export default function DebtsPage() {
           </div>
         </div>
         <div className="flex items-center gap-3">
+          {canCreateDebts && (
+            <button
+              type="button"
+              onClick={openCreateDialog}
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700"
+            >
+              + Thêm công nợ
+            </button>
+          )}
           <BranchScopeSelect session={user} value={branchScope} onChange={setBranchScope} />
           <p className="hidden text-xs font-bold text-slate-500 sm:block">{user?.role}</p>
         </div>
@@ -491,6 +575,140 @@ export default function DebtsPage() {
               </button>
               <button type="submit" disabled={saving} className="px-4 py-2 rounded-lg text-sm font-bold bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white">
                 {saving ? "Đang lưu..." : "Lưu thay đổi"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {createOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
+          <form onSubmit={submitCreateDebt} className="max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-xl bg-white shadow-xl">
+            <div className="border-b border-slate-200 p-5">
+              <h2 className="font-bold text-slate-900">Thêm công nợ</h2>
+              <p className="mt-1 text-xs text-slate-500">
+                Khai khoản phải trả đã phát sinh chi phí nhưng chưa thanh toán, hoặc công nợ nội bộ giữa hai nhà hàng.
+                Khi thanh toán, phiếu chi/sao kê gạch thẳng vào mã công nợ này.
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-3 p-5">
+              <label className="text-xs font-bold text-slate-600 block">
+                Loại công nợ *
+                <select
+                  value={createForm.debtType}
+                  onChange={(event) => setCreateForm((value) => ({ ...value, debtType: event.target.value }))}
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500"
+                >
+                  <option value="PAYABLE">Phải trả</option>
+                  <option value="RECEIVABLE">Phải thu</option>
+                </select>
+              </label>
+              <label className="text-xs font-bold text-slate-600 block">
+                Nhóm đối tác *
+                <select
+                  value={createForm.partnerGroup}
+                  onChange={(event) => setCreateForm((value) => ({ ...value, partnerGroup: event.target.value }))}
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500"
+                >
+                  <option value="EXTERNAL">Bên ngoài (NCC/khách)</option>
+                  <option value="INTERNAL">Nội bộ (giữa nhà hàng)</option>
+                </select>
+              </label>
+              <div className="col-span-2 text-xs font-bold text-slate-600 block">
+                Đối tác *
+                <PartnerPicker
+                  className="mt-1"
+                  value={createForm.partnerCode}
+                  onChange={(partnerCode) => setCreateForm((value) => ({ ...value, partnerCode }))}
+                  options={partners.map((item) => ({ value: item.code, label: `${item.code} - ${item.name}` }))}
+                  required
+                  canCreate={canCreatePartner}
+                  defaultPartnerType={createForm.debtType === "PAYABLE" ? "SUPPLIER" : "CUSTOMER"}
+                  onCreated={(partner) => {
+                    setPartners((current) => [...current, partner]);
+                    setCreateForm((value) => ({ ...value, partnerCode: partner.code }));
+                  }}
+                />
+              </div>
+              <label className="text-xs font-bold text-slate-600 block">
+                Cửa hàng *
+                <select
+                  value={createForm.branchCode}
+                  onChange={(event) => setCreateForm((value) => ({ ...value, branchCode: event.target.value }))}
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500"
+                  required
+                >
+                  <option value="">-- Chọn cửa hàng --</option>
+                  {visibleStoreOptions(user).map((option) => (
+                    <option key={option.code} value={option.code}>{option.label}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs font-bold text-slate-600 block">
+                Số tiền (đ) *
+                <input
+                  type="number"
+                  min="1"
+                  value={createForm.originalAmount}
+                  onChange={(event) => setCreateForm((value) => ({ ...value, originalAmount: event.target.value }))}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-bold outline-none focus:border-blue-500"
+                  required
+                />
+              </label>
+              <div className="flex flex-col text-xs font-bold text-slate-600">
+                <span>Ngày chứng từ *</span>
+                <DateInput
+                  value={createForm.documentDate}
+                  onChange={(documentDate) => setCreateForm((value) => ({ ...value, documentDate }))}
+                  className="mt-1"
+                  required
+                  ariaLabel="Ngày chứng từ công nợ"
+                />
+              </div>
+              <div className="flex flex-col text-xs font-bold text-slate-600">
+                <span>Hạn thanh toán</span>
+                <DateInput
+                  value={createForm.dueDate}
+                  onChange={(dueDate) => setCreateForm((value) => ({ ...value, dueDate }))}
+                  className="mt-1"
+                  ariaLabel="Hạn thanh toán công nợ"
+                />
+              </div>
+              <div className="col-span-2 text-xs font-bold text-slate-600 block">
+                Hạng mục P&amp;L <span className="font-medium text-slate-400">(chi phí thuộc hạng mục nào)</span>
+                <SearchableSelect
+                  className="mt-1"
+                  value={createForm.pnlItemCode}
+                  onChange={(pnlItemCode) => setCreateForm((value) => ({ ...value, pnlItemCode }))}
+                  placeholder="-- Chưa phân loại P&L --"
+                  options={[
+                    { value: "", label: "-- Chưa phân loại P&L --" },
+                    ...pnlItems
+                      .filter((item) => ["OPEX", "COGS"].includes((item.group || "").toUpperCase()))
+                      .map((item) => ({ value: item.code, label: `${item.code} - ${item.name}` })),
+                  ]}
+                />
+              </div>
+              <label className="col-span-2 text-xs font-bold text-slate-600 block">
+                Diễn giải *
+                <input
+                  value={createForm.description}
+                  onChange={(event) => setCreateForm((value) => ({ ...value, description: event.target.value }))}
+                  placeholder="VD: Tiền hàng tháng 8 chưa thanh toán / B trả A khoản chi hộ..."
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
+                  required
+                />
+              </label>
+              {createError && (
+                <p className="col-span-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">{createError}</p>
+              )}
+            </div>
+            <div className="flex justify-end gap-2 border-t border-slate-200 p-4">
+              <button type="button" onClick={() => setCreateOpen(false)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50">
+                Đóng
+              </button>
+              <button type="submit" disabled={createSaving} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-60">
+                {createSaving ? "Đang tạo..." : "Tạo công nợ"}
               </button>
             </div>
           </form>

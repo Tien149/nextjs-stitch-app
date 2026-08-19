@@ -407,6 +407,8 @@ model DebtRecord {
   documentDate          DateTime
   dueDate               DateTime?
   categoryCode          String?
+  /// Hạng mục P&L của khoản chi phí đã phát sinh nhưng chưa thanh toán (khai khi tạo tay).
+  pnlItemCode           String?
   originalAmount        Float
   outstandingAmount     Float
   allocationMonths      Int?
