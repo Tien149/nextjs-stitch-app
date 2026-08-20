@@ -439,9 +439,11 @@ export async function GET(request: Request) {
   }
 }
 
-/** Các loại danh mục có tầng cha, lưu mã cha ở cột subGroup. */
+/** Các loại danh mục có tầng cha, lưu mã cha ở cột subGroup.
+ * Riêng INVENTORY_ITEM_GROUP: subGroup lưu NHÓM KHO tương ứng của phân nhóm
+ * (khớp với cột group của kho ở từng cửa hàng, ví dụ BEP / BAR / FOH). */
 function typeSupportsSubGroup(type: string) {
-  return type === "PNL_ITEM";
+  return type === "PNL_ITEM" || type === "INVENTORY_ITEM_GROUP";
 }
 
 async function validateMasterData(type: string, group: string | null, branch: string | null, partnerGroup?: string | null) {

@@ -10,14 +10,15 @@ import { useModuleAuth } from "@/lib/use-module-auth";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 
-type Item = { id: string; code: string; name: string; unit: string; itemType: string; requiresImage: boolean };
-type MasterItem = { id: string; type: string; code: string; name: string; branch: string | null; status: string };
+type Item = { id: string; code: string; name: string; unit: string; itemType: string; category: string | null; requiresImage: boolean };
+type MasterItem = { id: string; type: string; code: string; name: string; group: string | null; subGroup: string | null; branch: string | null; status: string };
+type PriceSuggestion = { price: number; source: string; supplierName?: string };
 type RequestLine = { id: string; itemId: string; quantity: number; estimatedUnitCost: number; imageUrl: string | null; item: Item };
-type Quote = { id: string; supplierCode: string; supplierName: string; totalAmount: number; deliveryDays: number | null; paymentTerms: string | null; isSelected: boolean; note: string | null; lines: Array<{ itemId: string; quantity: number; unitCost: number }> };
+type Quote = { id: string; supplierCode: string; supplierName: string; totalAmount: number; deliveryDays: number | null; paymentTerms: string | null; isSelected: boolean; note: string | null; lines: Array<{ itemId: string; quantity: number; unitCost: number; item?: Item }> };
 type PurchaseRequest = { id: string; code: string; requestDate: string; branchCode: string; departmentCode: string | null; requestedBy: string; neededDate: string | null; reason: string; status: string; approvedAt: string | null; note: string | null; lines: RequestLine[]; quotes: Quote[] };
 type OrderLine = { id: string; itemId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; imageUrl: string | null; item: Item };
 type PurchaseOrder = { id: string; code: string; requestId: string | null; orderDate: string; supplierCode: string; supplierName: string; branchCode: string; departmentCode: string | null; warehouseCode: string; expectedDate: string | null; status: string; approvedAt: string | null; note: string | null; totalAmount: number; lines: OrderLine[]; payable: { outstandingAmount: number } | null };
-type Data = { items: Item[]; requests: PurchaseRequest[]; orders: PurchaseOrder[]; departments: MasterItem[] };
+type Data = { items: Item[]; requests: PurchaseRequest[]; orders: PurchaseOrder[]; departments: MasterItem[]; itemGroups: MasterItem[]; warehouses: MasterItem[]; priceSuggestions: Record<string, PriceSuggestion> };
 /** Chứng từ mua hàng đang chờ xác nhận xoá. */
 type DeleteTarget = { type: "REQUEST" | "ORDER" | "QUOTE"; id: string; title: string; description: string; label: string };
 
@@ -32,15 +33,18 @@ const lockedOrderStatuses = ["APPROVED", "PARTIALLY_RECEIVED", "COMPLETED", "CAN
 export default function ProcurementPage() {
   const href = "/procurement";
   const { user, loading } = useModuleAuth(href);
-  const [active, setActive] = useState("requests");
-  const [data, setData] = useState<Data>({ items: [], requests: [], orders: [], departments: [] });
+  // "So sánh giá" đứng trước: chốt giá với NCC rồi mới lập yêu cầu mua.
+  const [active, setActive] = useState("quotes");
+  const [data, setData] = useState<Data>({ items: [], requests: [], orders: [], departments: [], itemGroups: [], warehouses: [], priceSuggestions: {} });
   const [message, setMessage] = useState("");
-  
+
   const [requestForm, setRequestForm] = useState({
     branchCode: "HCM",
     departmentCode: "",
     neededDate: new Date().toISOString().slice(0, 10),
     reason: "Bổ sung nguyên liệu vận hành",
+    itemGroup: "",
+    itemSearch: "",
     itemId: "",
     quantity: "10",
     estimatedUnitCost: "100000",
@@ -63,6 +67,10 @@ export default function ProcurementPage() {
   const [editingQuote, setEditingQuote] = useState<Quote | null>(null);
   const [editingOrder, setEditingOrder] = useState<PurchaseOrder | null>(null);
   const [orderForm, setOrderForm] = useState({ supplierName: "", warehouseCode: "", expectedDate: "", note: "" });
+  /** Modal gom mặt hàng theo NCC để tạo đơn đặt hàng từ các PR đã duyệt. */
+  const [poModalOpen, setPoModalOpen] = useState(false);
+  const [poWarehouseByRequest, setPoWarehouseByRequest] = useState<Record<string, string>>({});
+  const [creatingOrders, setCreatingOrders] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -85,6 +93,143 @@ export default function ProcurementPage() {
     [data.departments, requestForm.branchCode],
   );
 
+  /** Mặt hàng trên form PR: lọc theo nhóm hàng rồi theo từ khoá tìm kiếm. */
+  const itemsForRequest = useMemo(() => {
+    const query = requestForm.itemSearch.trim().toLowerCase();
+    return data.items.filter((item) =>
+      (!requestForm.itemGroup || item.category === requestForm.itemGroup) &&
+      (!query || item.name.toLowerCase().includes(query) || item.code.toLowerCase().includes(query)));
+  }, [data.items, requestForm.itemGroup, requestForm.itemSearch]);
+
+  const requestPriceSuggestion = data.priceSuggestions[requestForm.itemId];
+  const priceSourceLabel = (suggestion?: PriceSuggestion) => {
+    if (!suggestion) return "";
+    if (suggestion.source === "SELECTED_QUOTE") return `theo báo giá đã chọn của ${suggestion.supplierName}`;
+    if (suggestion.source === "QUOTE") return `theo báo giá gần nhất của ${suggestion.supplierName}`;
+    if (suggestion.source === "ORDER") return `theo đơn mua gần nhất từ ${suggestion.supplierName}`;
+    return "theo giá vốn bình quân tồn kho";
+  };
+
+  /** Chọn mặt hàng -> hệ thống tự đề xuất đơn giá theo dữ liệu mua hàng gần nhất. */
+  const pickRequestItem = (itemId: string, patch: Partial<typeof requestForm> = {}) => {
+    const suggestion = data.priceSuggestions[itemId];
+    setRequestForm((form) => ({
+      ...form,
+      ...patch,
+      itemId,
+      estimatedUnitCost: suggestion ? String(suggestion.price) : form.estimatedUnitCost,
+    }));
+  };
+
+  /** Đổi nhóm hàng / từ khoá: nếu mặt hàng đang chọn rớt khỏi danh sách lọc thì nhảy sang mặt hàng đầu tiên. */
+  const filterRequestItems = (patch: { itemGroup?: string; itemSearch?: string }) => {
+    const itemGroup = patch.itemGroup ?? requestForm.itemGroup;
+    const query = (patch.itemSearch ?? requestForm.itemSearch).trim().toLowerCase();
+    const filtered = data.items.filter((item) =>
+      (!itemGroup || item.category === itemGroup) &&
+      (!query || item.name.toLowerCase().includes(query) || item.code.toLowerCase().includes(query)));
+    if (filtered.some((item) => item.id === requestForm.itemId)) {
+      setRequestForm((form) => ({ ...form, ...patch }));
+      return;
+    }
+    const nextItemId = filtered[0]?.id || "";
+    if (nextItemId) pickRequestItem(nextItemId, patch);
+    else setRequestForm((form) => ({ ...form, ...patch, itemId: "" }));
+  };
+
+  /** PR đã duyệt, chưa sinh PO và có báo giá -> gom dòng báo giá theo NCC để đặt hàng. */
+  const supplierGroups = useMemo(() => {
+    const eligible = data.requests.filter((request) =>
+      request.status === "APPROVED" &&
+      !data.orders.some((order) => order.requestId === request.id) &&
+      request.quotes.length > 0);
+    const groups = new Map<string, { supplierCode: string; supplierName: string; entries: Array<{ request: PurchaseRequest; quote: Quote }> }>();
+    for (const request of eligible) {
+      for (const quote of request.quotes) {
+        const group = groups.get(quote.supplierCode) || { supplierCode: quote.supplierCode, supplierName: quote.supplierName, entries: [] };
+        group.entries.push({ request, quote });
+        groups.set(quote.supplierCode, group);
+      }
+    }
+    return [...groups.values()];
+  }, [data.requests, data.orders]);
+
+  const warehousesForBranch = (branchCode: string) => {
+    const matched = data.warehouses.filter((warehouse) => !warehouse.branch || warehouse.branch === "ALL" || warehouse.branch === branchCode);
+    return matched.length > 0 ? matched : data.warehouses;
+  };
+
+  const defaultWarehouseForBranch = (branchCode: string) => warehousesForBranch(branchCode)[0]?.code || `KHO_${branchCode}`;
+
+  /** Phân nhóm mặt hàng -> nhóm kho (subGroup) -> kho cùng cửa hàng có group khớp nhóm kho đó. */
+  const warehouseByItemGroup = (branchCode: string, categoryCode?: string | null) => {
+    if (!categoryCode) return null;
+    const itemGroup = data.itemGroups.find((row) => row.code === categoryCode);
+    const warehouseGroup = itemGroup?.subGroup?.toUpperCase();
+    if (!warehouseGroup) return null;
+    return warehousesForBranch(branchCode).find((warehouse) => (warehouse.group || "").toUpperCase() === warehouseGroup) || null;
+  };
+
+  /** Kho nhận gợi ý cho PR: lấy theo phân nhóm của dòng hàng đầu tiên có gán nhóm kho. */
+  const suggestedWarehouseForRequest = (request: PurchaseRequest) => {
+    for (const line of request.lines) {
+      const matched = warehouseByItemGroup(request.branchCode, line.item?.category);
+      if (matched) return matched.code;
+    }
+    return defaultWarehouseForBranch(request.branchCode);
+  };
+
+  const openPoModal = () => {
+    setPoWarehouseByRequest((current) => {
+      const defaults: Record<string, string> = { ...current };
+      for (const group of supplierGroups) {
+        for (const { request } of group.entries) {
+          if (!defaults[request.id]) defaults[request.id] = suggestedWarehouseForRequest(request);
+        }
+      }
+      return defaults;
+    });
+    setPoModalOpen(true);
+  };
+
+  /** Đặt hàng một NCC: tạo một PO nháp cho mỗi PR có báo giá của NCC đó. */
+  const createOrdersForSupplier = async (group: { supplierCode: string; supplierName: string; entries: Array<{ request: PurchaseRequest; quote: Quote }> }) => {
+    setCreatingOrders(true);
+    setMessage("");
+    try {
+      const created: string[] = [];
+      for (const { request, quote } of group.entries) {
+        const response = await fetch("/api/procurement", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "CREATE_ORDER",
+            requestId: request.id,
+            supplierCode: group.supplierCode,
+            supplierName: group.supplierName,
+            branchCode: request.branchCode,
+            departmentCode: request.departmentCode,
+            warehouseCode: poWarehouseByRequest[request.id] || suggestedWarehouseForRequest(request),
+            lines: quote.lines.map((line) => ({ itemId: line.itemId, quantity: line.quantity, unitCost: line.unitCost })),
+          }),
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          setMessage(payload.error || `Không tạo được đơn mua hàng cho ${request.code}`);
+          await loadData();
+          return;
+        }
+        created.push(payload.code as string);
+      }
+      setPoModalOpen(false);
+      setActive("orders");
+      setMessage(`Đã tạo ${created.length} PO nháp cho ${group.supplierName}: ${created.join(", ")}. Vui lòng duyệt PO rồi nhận hàng ở Kho (Nhập mua).`);
+      await loadData();
+    } finally {
+      setCreatingOrders(false);
+    }
+  };
+
   const loadData = async () => {
     const response = await fetch("/api/procurement");
     if (response.ok) {
@@ -92,9 +237,12 @@ export default function ProcurementPage() {
       setData(payload);
       setRequestForm((form) => {
         const availableDepartments = payload.departments.filter((item) => !item.branch || item.branch === "ALL" || item.branch === form.branchCode);
+        const itemId = form.itemId || payload.items[0]?.id || "";
+        const suggestion = !form.itemId && itemId ? payload.priceSuggestions[itemId] : undefined;
         return {
           ...form,
-          itemId: form.itemId || payload.items[0]?.id || "",
+          itemId,
+          estimatedUnitCost: suggestion ? String(suggestion.price) : form.estimatedUnitCost,
           departmentCode: form.departmentCode || availableDepartments[0]?.code || "",
         };
       });
@@ -160,9 +308,11 @@ export default function ProcurementPage() {
       departmentCode: data.departments.find((item) => !item.branch || item.branch === "ALL" || item.branch === "HCM")?.code || "",
       neededDate: new Date().toISOString().slice(0, 10),
       reason: "Bổ sung nguyên liệu vận hành",
+      itemGroup: "",
+      itemSearch: "",
       itemId: data.items[0]?.id || "",
       quantity: "10",
-      estimatedUnitCost: "100000",
+      estimatedUnitCost: data.items[0] ? String(data.priceSuggestions[data.items[0].id]?.price ?? "100000") : "100000",
       imageUrl: "",
     }));
   };
@@ -176,6 +326,8 @@ export default function ProcurementPage() {
       departmentCode: request.departmentCode || "",
       neededDate: (request.neededDate || request.requestDate).slice(0, 10),
       reason: request.reason,
+      itemGroup: "",
+      itemSearch: "",
       itemId: firstLine?.itemId || data.items[0]?.id || "",
       quantity: String(firstLine?.quantity ?? "1"),
       estimatedUnitCost: String(firstLine?.estimatedUnitCost ?? "0"),
@@ -315,7 +467,9 @@ export default function ProcurementPage() {
   };
 
   const createOrder = async (request: PurchaseRequest, quote: Quote) => {
-    await send("POST", { action: "CREATE_ORDER", requestId: request.id, supplierCode: quote.supplierCode, supplierName: quote.supplierName, branchCode: request.branchCode, departmentCode: request.departmentCode, warehouseCode, lines: quote.lines.map((line) => ({ itemId: line.itemId, quantity: line.quantity, unitCost: line.unitCost })) }, "Đã tạo PO nháp từ báo giá. Vui lòng duyệt PO trước khi nhận hàng.");
+    // Kho đang chọn phải thuộc cửa hàng của PR; nếu không thì lấy kho gợi ý theo phân nhóm mặt hàng.
+    const validForBranch = warehousesForBranch(request.branchCode).some((warehouse) => warehouse.code === warehouseCode);
+    await send("POST", { action: "CREATE_ORDER", requestId: request.id, supplierCode: quote.supplierCode, supplierName: quote.supplierName, branchCode: request.branchCode, departmentCode: request.departmentCode, warehouseCode: validForBranch ? warehouseCode : suggestedWarehouseForRequest(request), lines: quote.lines.map((line) => ({ itemId: line.itemId, quantity: line.quantity, unitCost: line.unitCost })) }, "Đã tạo PO nháp từ báo giá. Vui lòng duyệt PO trước khi nhận hàng.");
     setActive("orders");
   };
 
@@ -421,14 +575,41 @@ export default function ProcurementPage() {
                 </select>
               </Field>
 
+              <Field label="Nhóm hàng">
+                <select
+                  value={requestForm.itemGroup}
+                  onChange={(e) => filterRequestItems({ itemGroup: e.target.value })}
+                  className="control"
+                >
+                  <option value="">Tất cả nhóm hàng</option>
+                  {/* Nhóm thành phẩm (FINISHED) không mua vào nên không hiện ở bộ lọc PR. */}
+                  {data.itemGroups.filter((group) => (group.group || "").toUpperCase() !== "FINISHED").map((group) => (
+                    <option key={group.id} value={group.code}>
+                      {group.name} ({group.code})
+                    </option>
+                  ))}
+                </select>
+              </Field>
+
+              <Field label="Tìm mặt hàng">
+                <input
+                  type="search"
+                  placeholder="Gõ tên hoặc mã để tìm nhanh..."
+                  value={requestForm.itemSearch}
+                  onChange={(e) => filterRequestItems({ itemSearch: e.target.value })}
+                  className="control"
+                />
+              </Field>
+
               <Field label="Mặt hàng">
                 <select
                   value={requestForm.itemId}
-                  onChange={(e) => setRequestForm({ ...requestForm, itemId: e.target.value })}
+                  onChange={(e) => pickRequestItem(e.target.value)}
                   className="control"
                   required
                 >
-                  {data.items.map((item) => (
+                  {itemsForRequest.length === 0 && <option value="">Không có mặt hàng phù hợp</option>}
+                  {itemsForRequest.map((item) => (
                     <option key={item.id} value={item.id}>
                       {item.name} ({item.code}) - {item.unit}
                     </option>
@@ -460,6 +641,12 @@ export default function ProcurementPage() {
                   />
                 </Field>
               </div>
+
+              {requestPriceSuggestion && (
+                <p className="text-[11px] text-slate-500 -mt-2">
+                  Hệ thống đề xuất <b className="text-slate-700">{money(requestPriceSuggestion.price)} đ</b> {priceSourceLabel(requestPriceSuggestion)}.
+                </p>
+              )}
 
               <Field label="Ngày cần hàng">
                 <DateInput
@@ -505,7 +692,24 @@ export default function ProcurementPage() {
           )}
 
           <section className="table-panel shadow-sm">
-            <PanelTitle title="Danh sách PR" onReload={loadData} />
+            <div className="p-5 flex items-center justify-between gap-3">
+              <h2 className="font-bold">Danh sách PR</h2>
+              <div className="flex items-center gap-2">
+                {canCreate && (
+                  <button
+                    type="button"
+                    onClick={openPoModal}
+                    disabled={supplierGroups.length === 0}
+                    title={supplierGroups.length === 0 ? "Chưa có PR đã duyệt kèm báo giá để đặt hàng" : "Gom mặt hàng theo nhà cung cấp để tạo đơn đặt hàng"}
+                    className="flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white text-sm font-bold px-3 py-2"
+                  >
+                    <span className="material-symbols-outlined text-lg">local_shipping</span>
+                    Tạo đơn đặt hàng
+                  </button>
+                )}
+                <button type="button" title="Tải lại" onClick={loadData} className="icon-button"><span className="material-symbols-outlined text-lg">refresh</span></button>
+              </div>
+            </div>
             <Table
               headers={[
                 { label: "Yêu cầu" },
@@ -702,14 +906,21 @@ export default function ProcurementPage() {
           <div className="p-5 border-b border-slate-200 flex items-center justify-between">
             <div>
               <h2 className="font-bold">Đơn mua hàng (PO)</h2>
-              <p className="text-xs text-slate-500 mt-1">Duyệt PO và bấm &quot;Nhận hàng&quot; để tự động tăng tồn kho &amp; ghi nhận công nợ.</p>
+              <p className="text-xs text-slate-500 mt-1">Duyệt PO rồi nhận hàng tại Kho &amp; Định lượng → Nhập / Xuất (loại Nhập mua), hoặc bấm &quot;Nhận hàng&quot; để nhận nhanh toàn bộ.</p>
             </div>
             <div className="flex items-center gap-3">
               <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
                 Kho nhận:
                 <select value={warehouseCode} onChange={(e) => setWarehouseCode(e.target.value)} className="control py-1 px-2 text-xs">
-                  <option value="KHO_HCM">Kho Cửa hàng 1 (KHO_HCM)</option>
-                  <option value="KHO_HN">Kho Cửa hàng 2 (KHO_HN)</option>
+                  {data.warehouses.length === 0 && (
+                    <>
+                      <option value="KHO_HCM">Kho Cửa hàng 1 (KHO_HCM)</option>
+                      <option value="KHO_HN">Kho Cửa hàng 2 (KHO_HN)</option>
+                    </>
+                  )}
+                  {data.warehouses.map((warehouse) => (
+                    <option key={warehouse.id} value={warehouse.code}>{warehouse.name} ({warehouse.code})</option>
+                  ))}
                 </select>
               </label>
               <button type="button" title="Tải lại" onClick={loadData} className="icon-button"><span className="material-symbols-outlined text-lg">refresh</span></button>
@@ -796,6 +1007,94 @@ export default function ProcurementPage() {
         </section>
       )}
 
+      {poModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl w-full max-w-3xl shadow-xl max-h-[90vh] flex flex-col">
+            <div className="p-5 border-b border-slate-200 flex items-start justify-between gap-3">
+              <div>
+                <h3 className="font-bold text-slate-900">Tạo đơn đặt hàng theo nhà cung cấp</h3>
+                <p className="text-sm text-slate-500 mt-1">
+                  Mặt hàng từ các PR đã duyệt được gom theo nhà cung cấp báo giá. Chọn nhà cung cấp muốn đặt để tạo PO nháp.
+                </p>
+              </div>
+              <button type="button" onClick={() => setPoModalOpen(false)} className="icon-button" title="Đóng">
+                <span className="material-symbols-outlined text-lg">close</span>
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 overflow-y-auto">
+              {supplierGroups.length === 0 && (
+                <p className="text-sm text-slate-500">
+                  Không còn PR đã duyệt kèm báo giá để đặt hàng. Hãy duyệt PR và nhập báo giá ở tab So sánh giá trước.
+                </p>
+              )}
+              {supplierGroups.map((group) => {
+                const groupTotal = group.entries.reduce((sum, entry) => sum + entry.quote.totalAmount, 0);
+                return (
+                  <div key={group.supplierCode} className="border border-slate-200 rounded-lg overflow-hidden">
+                    <div className="px-4 py-3 bg-slate-50 flex items-center justify-between gap-3">
+                      <div>
+                        <b className="text-slate-800">{group.supplierName}</b>
+                        <span className="text-xs text-slate-500 ml-2">{group.supplierCode}</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="text-sm font-bold text-slate-700">{money(groupTotal)} đ</span>
+                        <button
+                          type="button"
+                          disabled={creatingOrders}
+                          onClick={() => void createOrdersForSupplier(group)}
+                          className="rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white text-xs font-bold px-3 py-1.5"
+                        >
+                          {creatingOrders ? "Đang tạo..." : "Đặt hàng NCC này"}
+                        </button>
+                      </div>
+                    </div>
+                    <table className="w-full text-sm">
+                      <thead className="bg-white text-xs text-slate-500 uppercase border-y border-slate-100">
+                        <tr>
+                          <th className="px-4 py-2 text-left">PR / Cửa hàng</th>
+                          <th className="px-4 py-2 text-left">Mặt hàng</th>
+                          <th className="px-4 py-2 text-right">Thành tiền</th>
+                          <th className="px-4 py-2 text-left">Kho nhận</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {group.entries.map(({ request, quote }) => (
+                          <tr key={`${group.supplierCode}-${request.id}`} className="border-t border-slate-100 align-top">
+                            <td className="px-4 py-2">
+                              <b>{request.code}</b>
+                              <small className="block text-slate-500">{storeLabel(request.branchCode)}</small>
+                            </td>
+                            <td className="px-4 py-2 text-slate-600">
+                              {quote.lines.map((line) => {
+                                const item = line.item || data.items.find((candidate) => candidate.id === line.itemId);
+                                return `${item?.name || line.itemId}: ${money(line.quantity)} ${item?.unit || ""} × ${money(line.unitCost)} đ`;
+                              }).join(", ")}
+                            </td>
+                            <td className="px-4 py-2 text-right font-semibold">{money(quote.totalAmount)} đ</td>
+                            <td className="px-4 py-2">
+                              <select
+                                value={poWarehouseByRequest[request.id] || suggestedWarehouseForRequest(request)}
+                                onChange={(e) => setPoWarehouseByRequest({ ...poWarehouseByRequest, [request.id]: e.target.value })}
+                                className="control py-1 px-2 text-xs"
+                              >
+                                {warehousesForBranch(request.branchCode).map((warehouse) => (
+                                  <option key={warehouse.id} value={warehouse.code}>{warehouse.name} ({warehouse.code})</option>
+                                ))}
+                              </select>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
       {editingOrder && (
         <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
           <form onSubmit={submitOrder} className="bg-white rounded-xl w-full max-w-md shadow-xl">
@@ -823,8 +1122,15 @@ export default function ProcurementPage() {
                   className="control"
                   required
                 >
-                  <option value="KHO_HCM">Kho Cửa hàng 1 (KHO_HCM)</option>
-                  <option value="KHO_HN">Kho Cửa hàng 2 (KHO_HN)</option>
+                  {data.warehouses.length === 0 && (
+                    <>
+                      <option value="KHO_HCM">Kho Cửa hàng 1 (KHO_HCM)</option>
+                      <option value="KHO_HN">Kho Cửa hàng 2 (KHO_HN)</option>
+                    </>
+                  )}
+                  {data.warehouses.map((warehouse) => (
+                    <option key={warehouse.id} value={warehouse.code}>{warehouse.name} ({warehouse.code})</option>
+                  ))}
                 </select>
               </Field>
 
@@ -880,7 +1186,6 @@ export default function ProcurementPage() {
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label className="block text-xs font-bold text-slate-600">{label}{children}</label>; }
-function PanelTitle({ title, onReload }: { title: string; onReload: () => void }) { return <div className="p-5 flex items-center justify-between"><h2 className="font-bold">{title}</h2><button type="button" title="Tải lại" onClick={onReload} className="icon-button"><span className="material-symbols-outlined text-lg">refresh</span></button></div>; }
 
 function Table({ headers, children }: { headers: { label: string; align?: "left" | "right" }[]; children: React.ReactNode }) {
   return (

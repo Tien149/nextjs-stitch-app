@@ -91,8 +91,9 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const branchFilter = branchFilterForSession(auth.session, searchParams.get("branchCode") || "ALL");
 
-    const [items, requests, orders, departments] = await Promise.all([
-      prisma.inventoryItem.findMany({ where: { status: "ACTIVE" }, orderBy: { name: "asc" } }),
+    const [items, requests, orders, departments, itemGroups, warehouses, quoteLines, orderLines, balances] = await Promise.all([
+      // Thành phẩm (FINISHED) bán tại POS, không mua vào nên không đưa vào danh sách chọn của PR/PO.
+      prisma.inventoryItem.findMany({ where: { status: "ACTIVE", itemType: { not: "FINISHED" } }, orderBy: { name: "asc" } }),
       prisma.purchaseRequest.findMany({
         where: { ...branchFilter },
         include: {
@@ -112,9 +113,54 @@ export async function GET(request: Request) {
         where: { type: "DEPARTMENT", status: "ACTIVE" },
         orderBy: [{ branch: "asc" }, { name: "asc" }],
       }),
+      prisma.masterDataItem.findMany({
+        where: { type: "INVENTORY_ITEM_GROUP", status: "ACTIVE" },
+        orderBy: { name: "asc" },
+      }),
+      prisma.masterDataItem.findMany({
+        where: { type: "WAREHOUSE", status: "ACTIVE" },
+        orderBy: [{ branch: "asc" }, { name: "asc" }],
+      }),
+      // Dữ liệu để đề xuất đơn giá: quan hệ lồng không được lọc xoá mềm tự động nên lọc tay qua quote/order.
+      prisma.supplierQuoteLine.findMany({
+        where: { quote: { deletedAt: null } },
+        select: { itemId: true, unitCost: true, quote: { select: { isSelected: true, supplierName: true } } },
+        orderBy: { quote: { createdAt: "desc" } },
+        take: 500,
+      }),
+      prisma.purchaseOrderLine.findMany({
+        where: { order: { deletedAt: null } },
+        select: { itemId: true, unitCost: true, order: { select: { supplierName: true } } },
+        orderBy: { order: { createdAt: "desc" } },
+        take: 500,
+      }),
+      prisma.inventoryBalance.findMany({ select: { itemId: true, averageCost: true } }),
     ]);
 
-    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, requests, orders, departments }));
+    // Giá đề xuất theo thứ tự ưu tiên: báo giá đang chọn -> báo giá mới nhất -> PO gần nhất -> giá vốn bình quân.
+    const priceSuggestions: Record<string, { price: number; source: string; supplierName?: string }> = {};
+    for (const line of quoteLines) {
+      if (line.quote.isSelected && line.unitCost > 0 && !priceSuggestions[line.itemId]) {
+        priceSuggestions[line.itemId] = { price: line.unitCost, source: "SELECTED_QUOTE", supplierName: line.quote.supplierName };
+      }
+    }
+    for (const line of quoteLines) {
+      if (line.unitCost > 0 && !priceSuggestions[line.itemId]) {
+        priceSuggestions[line.itemId] = { price: line.unitCost, source: "QUOTE", supplierName: line.quote.supplierName };
+      }
+    }
+    for (const line of orderLines) {
+      if (line.unitCost > 0 && !priceSuggestions[line.itemId]) {
+        priceSuggestions[line.itemId] = { price: line.unitCost, source: "ORDER", supplierName: line.order.supplierName };
+      }
+    }
+    for (const balance of balances) {
+      if (balance.averageCost > 0 && !priceSuggestions[balance.itemId]) {
+        priceSuggestions[balance.itemId] = { price: Math.round(balance.averageCost), source: "AVG_COST" };
+      }
+    }
+
+    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, requests, orders, departments, itemGroups, warehouses, priceSuggestions }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });
@@ -136,9 +182,12 @@ export async function POST(request: Request) {
       if (!branchCode || !reason || lines.length === 0) businessError("Cần chi nhánh, lý do và ít nhất một mặt hàng");
       assertBranchAccess(auth.session, branchCode);
 
-      // Validate requiresImage for each line
+      // Validate requiresImage cho từng dòng; chặn thành phẩm (FINISHED) vì không thuộc luồng mua hàng.
       for (const line of lines) {
         const item = await prisma.inventoryItem.findUnique({ where: { id: line.itemId } });
+        if (item?.itemType === "FINISHED") {
+          businessError(`Mặt hàng ${item.name} là Thành phẩm (FINISHED) bán tại POS, không đưa vào yêu cầu mua.`);
+        }
         if (item?.requiresImage && !line.imageUrl) {
           businessError(`Mặt hàng ${item.name} yêu cầu phải có hình ảnh khi mua.`);
         }
@@ -241,6 +290,9 @@ export async function POST(request: Request) {
         const sourceLine = sourceLines.find((item) => item.itemId === line.itemId);
         const item = sourceLine?.item || await prisma.inventoryItem.findUnique({ where: { id: line.itemId } });
         if (!item) businessError("Mặt hàng trên PO không tồn tại");
+        if (item.itemType === "FINISHED") {
+          businessError(`Mặt hàng ${item.name} là Thành phẩm (FINISHED) bán tại POS, không đưa vào đơn mua hàng.`);
+        }
         const imageUrl = line.imageUrl || sourceLine?.imageUrl || "";
         if (item.requiresImage && !imageUrl) {
           businessError(`Mặt hàng ${item.name} yêu cầu phải có hình ảnh khi tạo đơn mua hàng.`);

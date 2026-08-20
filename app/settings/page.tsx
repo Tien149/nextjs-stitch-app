@@ -97,7 +97,7 @@ const groupPlaceholders: Record<string, string> = {
   PNL_ITEM: "VD: OPEX / CAPEX / Gia von / Nguon doanh thu",
   BRANCH: "VD: Branch / Head Office",
   DEPARTMENT: "VD: Back office / Operation",
-  WAREHOUSE: "VD: Nguyen vat lieu / Thanh pham",
+  WAREHOUSE: "VD: BEP / BAR / FOH (khớp Nhóm kho của phân nhóm mặt hàng)",
   PARTNER: "VD: Khach hang / Nha cung cap / Doi tac",
   MONEY_SOURCE: "VD: Tien mat / Ngan hang / Vi/POS",
   REVENUE_EXPENSE_CATEGORY: "Chọn Thu hoặc Chi",
@@ -381,12 +381,23 @@ export default function SettingsPage() {
     [allItems, form.group, form.type],
   );
 
-  // Đổi nhóm lớn thì nhóm chi tiết cũ không còn hợp lệ.
+  /** Nhóm kho gợi ý cho phân nhóm mặt hàng: gom từ cột group của các kho và các phân nhóm đã gán. */
+  const warehouseGroupOptions = useMemo(() => {
+    const values = new Set<string>();
+    for (const item of allItems) {
+      if (item.type === "WAREHOUSE" && item.group) values.add(item.group.toUpperCase());
+      if (item.type === "INVENTORY_ITEM_GROUP" && item.subGroup) values.add(item.subGroup.toUpperCase());
+    }
+    return [...values].sort();
+  }, [allItems]);
+
+  // Đổi nhóm lớn thì nhóm chi tiết cũ không còn hợp lệ (chỉ áp dụng cho danh mục có tầng cha).
   useEffect(() => {
+    if (!parentTypeOf[form.type]) return;
     if (!form.subGroup) return;
     if (subGroupOptions.some((option) => option.code === form.subGroup)) return;
     window.setTimeout(() => setForm((value) => ({ ...value, subGroup: "" })), 0);
-  }, [form.subGroup, subGroupOptions]);
+  }, [form.type, form.subGroup, subGroupOptions]);
 
   const stats = useMemo(() => {
     return tabs.map((tab) => {
@@ -423,7 +434,7 @@ export default function SettingsPage() {
       code: item.code,
       name: item.name,
       group: normalizeGroupValue(item.type, item.group),
-      subGroup: parentTypeOf[item.type] ? item.subGroup || "" : "",
+      subGroup: parentTypeOf[item.type] || item.type === "INVENTORY_ITEM_GROUP" ? item.subGroup || "" : "",
       partnerType: normalizeGroupValue("PARTNER", item.partnerType || item.group),
       partnerGroup: item.partnerGroup || "EXTERNAL",
       branch: item.branch || "",
@@ -853,6 +864,12 @@ export default function SettingsPage() {
                                 {allItems.find((row) => row.type === parentTypeOf[item.type] && row.code === item.subGroup)?.name || item.subGroup}
                               </p>
                             )}
+                            {item.subGroup && item.type === "INVENTORY_ITEM_GROUP" && (
+                              <p className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-slate-600">
+                                <span className="material-symbols-outlined text-[13px] text-slate-300">warehouse</span>
+                                Nhóm kho: {item.subGroup}
+                              </p>
+                            )}
                             {item.type === "PARTNER" && (
                               <p className="text-[10px] text-slate-500 mt-0.5 font-bold uppercase">{item.partnerGroup || "EXTERNAL"}</p>
                             )}
@@ -1121,6 +1138,27 @@ export default function SettingsPage() {
                     </select>
                     <span className="mt-1 block text-[11px] font-medium text-slate-500">
                       {parentFieldHints[activeType]}
+                    </span>
+                  </label>
+                )}
+
+                {activeType === "INVENTORY_ITEM_GROUP" && (
+                  <label className="text-xs font-bold text-slate-700 block">
+                    Nhóm kho tương ứng
+                    <input
+                      value={form.subGroup}
+                      onChange={(event) => setForm((value) => ({ ...value, subGroup: event.target.value }))}
+                      list="warehouse-group-options"
+                      className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
+                      placeholder="VD: BEP / BAR / FOH"
+                    />
+                    <datalist id="warehouse-group-options">
+                      {warehouseGroupOptions.map((option) => (
+                        <option key={option} value={option} />
+                      ))}
+                    </datalist>
+                    <span className="mt-1 block text-[11px] font-medium text-slate-500">
+                      Khớp với ô “Nhóm / Loại” của kho ở từng cửa hàng để hệ thống tự gợi ý kho nhận khi mua hàng.
                     </span>
                   </label>
                 )}
