@@ -26,6 +26,7 @@ type MasterDataItem = {
   accountNo: string | null;
   codePrefix: string | null;
   settlementBankCode: string | null;
+  summarySourceName: string | null;
   status: string;
   note: string | null;
   createdAt: string;
@@ -49,6 +50,7 @@ type MasterDataForm = {
   accountNo: string;
   codePrefix: string;
   settlementBankCode: string;
+  summarySourceName: string;
   note: string;
   status: string;
 };
@@ -88,9 +90,13 @@ const emptyForm: MasterDataForm = {
   accountNo: "",
   codePrefix: "",
   settlementBankCode: "",
+  summarySourceName: "",
   note: "",
   status: "ACTIVE",
 };
+
+/** Giá trị ảo của ô chọn Nguồn tiền tổng để mở ô nhập tên mới. */
+const NEW_SUMMARY_SOURCE_NAME = "__NEW_SUMMARY_SOURCE__";
 
 const groupPlaceholders: Record<string, string> = {
   PNL_GROUP: "VD: OPEX / CAPEX / Gia von / Nguon doanh thu",
@@ -290,6 +296,8 @@ export default function SettingsPage() {
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   const [items, setItems] = useState<MasterDataItem[]>([]);
   const [allItems, setAllItems] = useState<MasterDataItem[]>([]);
+  /** Đang nhập một tên Nguồn tiền tổng chưa có trong danh sách. */
+  const [creatingSummaryName, setCreatingSummaryName] = useState(false);
   const [activeType, setActiveType] = useState("BRANCH");
   const [search, setSearch] = useState("");
   const [form, setForm] = useState<MasterDataForm>(emptyForm);
@@ -381,6 +389,23 @@ export default function SettingsPage() {
     [allItems, form.group, form.type],
   );
 
+  /** Tên "Nguồn tiền tổng" đã khai ở các nguồn cùng cửa hàng: chọn lại cho khỏi gõ lệch chữ,
+   *  vì báo cáo gộp theo đúng chuỗi tên nên sai một ký tự là tách thành hai dòng. */
+  const summarySourceNameOptions = useMemo(
+    () => [...new Set(
+      allItems
+        .filter((item) => item.type === "MONEY_SOURCE"
+          && item.summarySourceName
+          && moneySourceMatchesBranch(item, form.branch || null))
+        .map((item) => item.summarySourceName as string),
+    )].sort((a, b) => a.localeCompare(b, "vi")),
+    [allItems, form.branch],
+  );
+  // Tên đang giữ không nằm trong danh sách (vừa gõ mới, hoặc vừa đổi cửa hàng) thì phải
+  // hiện ô nhập để không âm thầm làm mất giá trị.
+  const showNewSummaryNameInput = creatingSummaryName
+    || (Boolean(form.summarySourceName) && !summarySourceNameOptions.includes(form.summarySourceName));
+
   // Đổi nhóm lớn thì nhóm chi tiết cũ không còn hợp lệ.
   useEffect(() => {
     if (!form.subGroup) return;
@@ -402,6 +427,7 @@ export default function SettingsPage() {
   const canManageSettings = user ? canPerformAction(user, "config") : false;
 
   const resetForm = (type = activeType) => {
+    setCreatingSummaryName(false);
     setForm({ ...emptyForm, type, partnerGroup: "EXTERNAL" });
     setSuccessMessage("");
     setErrorMessage("");
@@ -417,6 +443,7 @@ export default function SettingsPage() {
       setErrorMessage("Bạn chỉ có quyền xem danh mục.");
       return;
     }
+    setCreatingSummaryName(false);
     setForm({
       id: item.id,
       type: item.type,
@@ -434,6 +461,7 @@ export default function SettingsPage() {
       accountNo: item.accountNo || "",
       codePrefix: item.codePrefix || "",
       settlementBankCode: item.settlementBankCode || "",
+      summarySourceName: item.summarySourceName || "",
       note: item.note || "",
       status: item.status,
     });
@@ -862,8 +890,12 @@ export default function SettingsPage() {
                             <p className="font-medium text-xs text-slate-800">
                               {item.type === "ASSET_GROUP" && item.codePrefix
                                 ? <>Tiền tố mã: <CopyableText value={item.codePrefix} /></>
-                                : item.type === "MONEY_SOURCE" && item.settlementBankCode
-                                  ? <>Quyết toán về: <CopyableText value={item.settlementBankCode} /></>
+                                : item.type === "MONEY_SOURCE" && (item.summarySourceName || item.settlementBankCode)
+                                  ? <>
+                                      {item.summarySourceName && <>Tổng: {item.summarySourceName}</>}
+                                      {item.summarySourceName && item.settlementBankCode && " · "}
+                                      {item.settlementBankCode && <>Quyết toán về: <CopyableText value={item.settlementBankCode} /></>}
+                                    </>
                                   : item.contactName || (item.accountNo ? <CopyableText value={item.accountNo} /> : "-")}
                             </p>
                             <p className="text-[11px] text-slate-500 mt-0.5 italic">
@@ -1247,6 +1279,43 @@ export default function SettingsPage() {
                     />
                   </label>
                 </>
+              )}
+
+              {activeType === "MONEY_SOURCE" && (
+                <label className="text-xs font-bold text-slate-700 block">
+                  Nguồn tiền tổng
+                  <select
+                    value={showNewSummaryNameInput ? NEW_SUMMARY_SOURCE_NAME : form.summarySourceName}
+                    onChange={(event) => {
+                      const nextValue = event.target.value;
+                      if (nextValue === NEW_SUMMARY_SOURCE_NAME) {
+                        setCreatingSummaryName(true);
+                        setForm((value) => ({ ...value, summarySourceName: "" }));
+                        return;
+                      }
+                      setCreatingSummaryName(false);
+                      setForm((value) => ({ ...value, summarySourceName: nextValue }));
+                    }}
+                    className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition cursor-pointer"
+                  >
+                    <option value="">-- Không gộp, để riêng nguồn này --</option>
+                    {summarySourceNameOptions.map((name) => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                    <option value={NEW_SUMMARY_SOURCE_NAME}>+ Đặt tên nguồn tiền tổng mới...</option>
+                  </select>
+                  {showNewSummaryNameInput && (
+                    <input
+                      value={form.summarySourceName}
+                      onChange={(event) => setForm((value) => ({ ...value, summarySourceName: event.target.value }))}
+                      className="mt-2 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
+                      placeholder="VD: FDS - Vietinbank"
+                    />
+                  )}
+                  <span className="mt-1 block text-[11px] font-medium text-slate-500">
+                    Các nguồn tiền cùng tên tổng sẽ gộp thành một dòng trên Báo cáo nguồn tiền; bỏ trống thì báo cáo hiện riêng từng nguồn.
+                  </span>
+                </label>
               )}
 
               {activeType === "MONEY_SOURCE" && normalizeMoneySourceGroup(form.group) === "WALLET" && (

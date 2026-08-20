@@ -33,6 +33,14 @@ function periodBounds(period: string) {
   return { start, end };
 }
 
+/** "yyyy-mm-dd" -> Date đầu ngày; trả null nếu tham số rỗng hoặc sai định dạng. */
+function parseDayParam(value: string | null) {
+  const text = cleanText(value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
+  const parsed = new Date(`${text}T00:00:00`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 function dayBounds(date: Date) {
   const start = new Date(date);
   start.setHours(0, 0, 0, 0);
@@ -84,9 +92,23 @@ export async function GET(request: Request) {
     const branchCode = requestedBranch(auth.session, cleanText(searchParams.get("branchCode")) || "ALL");
     const { start, end } = periodBounds(period);
     const branchFilter = branchCode === "ALL" ? {} : { branchCode };
+    // Bộ lọc chi tiết cho sổ quỹ. Kỳ kế toán vẫn là gốc (số dư đầu kỳ, khóa sổ, checklist)
+    // nên khoảng ngày bị kẹp trong kỳ; chọn ngoài kỳ sẽ tự co về biên của kỳ.
+    const requestedRangeStart = parseDayParam(searchParams.get("startDate"));
+    const requestedRangeEnd = parseDayParam(searchParams.get("endDate"));
+    const rangeStart = requestedRangeStart && requestedRangeStart > start
+      ? (requestedRangeStart < end ? requestedRangeStart : new Date(end.getTime() - 86400000))
+      : start;
+    const rangeEndExclusive = (() => {
+      if (!requestedRangeEnd) return end;
+      const next = new Date(requestedRangeEnd.getTime() + 86400000);
+      if (next > end) return end;
+      return next < start ? start : next;
+    })();
+    const cashbookSource = cleanText(searchParams.get("moneySourceCode"));
 
     const [openingBalances, vouchers, adjustments, accruals, accountingPeriod, checklist, moneyTransfers] = await Promise.all([
-      prisma.openingBalance.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { branchCode }), status: { in: [...OPENING_BALANCE_EFFECTIVE_STATUSES] }, balanceType: { in: [...CASH_SOURCE_OPENING_TYPES] } } }),
+      prisma.openingBalance.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { branchCode }), ...(cashbookSource ? { moneySourceCode: cashbookSource } : {}), status: { in: [...OPENING_BALANCE_EFFECTIVE_STATUSES] }, balanceType: { in: [...CASH_SOURCE_OPENING_TYPES] } } }),
       prisma.financialVoucher.findMany({ where: { ...branchFilter, voucherDate: { gte: start, lt: end }, status: "APPROVED" }, orderBy: { voucherDate: "asc" } }),
       prisma.cashbookAdjustment.findMany({ where: { ...branchFilter, entryDate: { gte: start, lt: end } }, orderBy: { entryDate: "asc" } }),
       prisma.accrual.findMany({ where: { ...(branchCode === "ALL" ? {} : { branchCode }) }, include: { schedules: { orderBy: { period: "asc" } } }, orderBy: { createdAt: "desc" } }),
@@ -124,18 +146,26 @@ export async function GET(request: Request) {
           ...(legs.in ? [{ id: `${row.id}-in`, date: effectiveMoneyTransferDate(row), createdAt: row.createdAt, code: row.code, type: "TRANSFER_IN", moneySourceCode: row.toMoneySourceCode, description: row.description, receipt: row.amount, payment: 0 }] : []),
         ];
       }),
-    ].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
-      || new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    ]
+      .filter((entry) => !cashbookSource || entry.moneySourceCode === cashbookSource)
+      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
+        || new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
     let runningBalance = openingAmount;
-    const cashbook = entries.map((entry) => {
+    // Chạy số dư từ đầu kỳ rồi mới cắt theo khoảng ngày, để dòng đầu tiên trong khoảng
+    // vẫn nối đúng số dư luỹ kế chứ không bắt đầu lại từ số dư đầu kỳ.
+    const periodCashbook = entries.map((entry) => {
       runningBalance += entry.receipt - entry.payment;
       return { ...entry, balance: runningBalance };
     });
+    const beforeRange = periodCashbook.filter((entry) => entry.date < rangeStart);
+    const cashbook = periodCashbook.filter((entry) => entry.date >= rangeStart && entry.date < rangeEndExclusive);
+    const rangeOpeningAmount = beforeRange.length ? beforeRange[beforeRange.length - 1].balance : openingAmount;
+    const rangeClosingBalance = cashbook.length ? cashbook[cashbook.length - 1].balance : rangeOpeningAmount;
 
     const latestFirstCashbook = [...cashbook].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
       || new Date(b.date).getTime() - new Date(a.date).getTime());
 
-    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { period, branchCode, openingAmount, closingBalance: runningBalance, cashbook: latestFirstCashbook, accruals, moneyTransfers, accountingPeriod: accountingPeriod || { status: "OPEN" }, checklist }));
+    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { period, branchCode, openingAmount: rangeOpeningAmount, closingBalance: rangeClosingBalance, cashbook: latestFirstCashbook, accruals, moneyTransfers, accountingPeriod: accountingPeriod || { status: "OPEN" }, checklist }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });

@@ -222,6 +222,8 @@ export async function GET(request: Request) {
     const startDateText = cleanText(searchParams.get("startDate"));
     const endDateText = cleanText(searchParams.get("endDate"));
     const voucherTypeText = cleanText(searchParams.get("voucherType")).toUpperCase();
+    // Lọc theo nguồn tiền để đối chiếu từng quỹ / tài khoản ngân hàng đã lên đủ chứng từ chưa.
+    const moneySourceText = cleanText(searchParams.get("moneySourceCode"));
     const requestedPage = Number(searchParams.get("page") || "1");
     const requestedPageSize = Number(searchParams.get("pageSize") || "50");
 
@@ -252,6 +254,7 @@ export async function GET(request: Request) {
       documentChannel,
       deletedAt: null,
       ...(voucherTypeText && voucherTypeText !== "ALL" ? { voucherType: voucherTypeText } : {}),
+      ...(moneySourceText && moneySourceText.toUpperCase() !== "ALL" ? { moneySourceCode: moneySourceText } : {}),
       ...(startDate || endDateExclusive ? {
         voucherDate: {
           ...(startDate ? { gte: startDate } : {}),

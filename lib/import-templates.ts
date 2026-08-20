@@ -533,6 +533,8 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "group", label: "Nhóm/Phân loại", required: false, type: "text", aliases: ["nhom", "loai nhom", "group"] },
       { field: "partner_group", label: "Nhóm đối tượng", required: false, type: "text", aliases: ["nhom doi tuong", "ben trong ben ngoai", "partner group"] },
       { field: "branch", label: "Cửa hàng", required: false, type: "text", aliases: ["chi nhanh", "branch", "branch code"] },
+      // Chỉ có nghĩa với MONEY_SOURCE: các nguồn cùng tên tổng được Báo cáo nguồn tiền gộp một dòng.
+      { field: "summary_source_name", label: "Nguồn tiền tổng", required: false, type: "text", aliases: ["nguon tien tong", "nguon tong", "ten nguon tong", "summary source", "summary source name"] },
       { field: "tax_code", label: "Mã số thuế", required: false, type: "text", aliases: ["mst", "ma so thue", "tax code"] },
       { field: "account_no", label: "Số tài khoản", required: false, type: "text", aliases: ["so tai khoan", "stk", "account number", "account no"] },
       { field: "contact_name", label: "Người liên hệ", required: false, type: "text", aliases: ["nguoi lien he", "lien he", "contact", "contact name"] },

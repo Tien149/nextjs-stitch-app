@@ -1010,6 +1010,7 @@ export async function commitImport(input: CommitInput) {
             phone: asText(row.values.phone) || null,
             email: asText(row.values.email) || null,
             note: asText(row.values.note) || null,
+            summarySourceName: type === "MONEY_SOURCE" ? (asText(row.values.summary_source_name) || null) : null,
             status: masterStatus || "ACTIVE",
           },
           update: {
@@ -1020,6 +1021,7 @@ export async function commitImport(input: CommitInput) {
             ...(hasMasterColumn("phone") ? { phone: asText(row.values.phone) || null } : {}),
             ...(hasMasterColumn("email") ? { email: asText(row.values.email) || null } : {}),
             ...(hasMasterColumn("note") ? { note: asText(row.values.note) || null } : {}),
+            ...(hasMasterColumn("summary_source_name") && type === "MONEY_SOURCE" ? { summarySourceName: asText(row.values.summary_source_name) || null } : {}),
             ...(hasMasterColumn("status") && masterStatus ? { status: masterStatus } : {}),
           },
         });

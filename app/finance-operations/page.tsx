@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { DateInput, MonthInput } from "@/components/DateInput";
-import { storeLabel, visibleBranchScopeOptions, visibleStoreOptions } from "@/lib/branch-labels";
+import { storeLabel, updateDynamicBranches, visibleBranchScopeOptions, visibleStoreOptions } from "@/lib/branch-labels";
 import { canPerformMenuAction, filterModuleTabs } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
@@ -87,6 +87,9 @@ export default function FinanceOperationsPage() {
   const [active, setActive] = useState("cashbook");
   const [period, setPeriod] = useState(new Date().toISOString().slice(0, 7));
   const [branchCode, setBranchCode] = useState("ALL");
+  /** Lọc chi tiết sổ quỹ: khoảng ngày nằm trong kỳ kế toán và một nguồn tiền cụ thể. */
+  const [cashbookRange, setCashbookRange] = useState({ startDate: "", endDate: "" });
+  const [cashbookSource, setCashbookSource] = useState("");
   const [data, setData] = useState<Data>({ openingAmount: 0, closingBalance: 0, cashbook: [], accruals: [], moneyTransfers: [], accountingPeriod: { status: "OPEN" }, checklist: [] });
   const [message, setMessage] = useState("");
   const [transferQuery, setTransferQuery] = useState("");
@@ -126,6 +129,25 @@ export default function FinanceOperationsPage() {
     numberOfPeriods: "12",
     note: "",
   });
+
+  // Khoảng ngày chỉ có nghĩa trong kỳ đang xem, còn nguồn tiền gắn với cửa hàng -> đổi thì bỏ lọc cũ.
+  const changePeriod = (value: string) => {
+    setPeriod(value);
+    setCashbookRange({ startDate: "", endDate: "" });
+  };
+  const changeBranchScope = (value: string) => {
+    setBranchCode(value);
+    setCashbookSource("");
+  };
+
+  const cashbookSourceOptions = useMemo(
+    () => filterMoneySources(moneySources, branchCode),
+    [moneySources, branchCode],
+  );
+  const cashbookRangeInvalid = Boolean(
+    cashbookRange.startDate && cashbookRange.endDate && cashbookRange.startDate > cashbookRange.endDate,
+  );
+  const hasCashbookRange = Boolean(cashbookRange.startDate || cashbookRange.endDate);
 
   const visibleTabs = useMemo(() => filterModuleTabs(user, href), [user]);
   const normalizedTransferQuery = transferQuery.trim().toLowerCase();
@@ -173,26 +195,51 @@ export default function FinanceOperationsPage() {
   const canApproveTransfer = user ? canPerformMenuAction(user, href, "approve") : false;
 
   const loadData = useCallback(async () => {
-    const response = await fetch(`/api/finance-operations?period=${period}&branchCode=${branchCode}`);
+    // Từ ngày lớn hơn đến ngày thì không gọi API, tránh hiển thị sổ quỹ rỗng gây hiểu nhầm mất dữ liệu.
+    if (cashbookRange.startDate && cashbookRange.endDate && cashbookRange.startDate > cashbookRange.endDate) return;
+    const query = new URLSearchParams({ period, branchCode });
+    if (cashbookRange.startDate) query.set("startDate", cashbookRange.startDate);
+    if (cashbookRange.endDate) query.set("endDate", cashbookRange.endDate);
+    if (cashbookSource) query.set("moneySourceCode", cashbookSource);
+    const response = await fetch(`/api/finance-operations?${query.toString()}`);
     if (response.ok) setData((await response.json()) as Data);
-  }, [branchCode, period]);
+  }, [branchCode, period, cashbookRange.startDate, cashbookRange.endDate, cashbookSource]);
 
   const loadMoneySources = useCallback(async () => {
     void fetch("/api/master-data?type=REVENUE_EXPENSE_CATEGORY&status=ACTIVE")
       .then((res) => (res.ok ? res.json() : []))
       .then((items: MasterDataOption[]) => setFeeCategories(items.filter((item) => normalizeCashflowCategoryType(item.group) === "PAYMENT")))
       .catch(() => setFeeCategories([]));
+    // Danh sách cửa hàng thật phải nạp ngay tại trang này. Mã mặc định trong các form dưới là
+    // dữ liệu demo (HCM/HN): nếu không nắn về cửa hàng có thật thì ô Cửa hàng hiển thị cửa hàng
+    // đầu danh sách trong khi state vẫn giữ mã demo, khiến ô Nguồn tiền lọc ra rỗng.
+    const branchResponse = await fetch("/api/master-data?type=BRANCH&status=ACTIVE");
+    let storeCodes: string[] = [];
+    if (branchResponse.ok) {
+      const branchItems = (await branchResponse.json()) as MasterDataOption[];
+      const allowed = user?.allowedBranches?.length ? user.allowedBranches : ["ALL"];
+      const visible = allowed.includes("ALL") ? branchItems : branchItems.filter((item) => allowed.includes(item.code));
+      updateDynamicBranches(visible.map((item) => ({ code: item.code, name: item.name })));
+      storeCodes = visible.map((item) => item.code);
+    }
+
     const response = await fetch("/api/master-data?type=MONEY_SOURCE&status=ACTIVE");
     if (!response.ok) return;
     const sources = (await response.json()) as MasterDataOption[];
     setMoneySources(sources);
+    const toRealStore = (code: string) => (storeCodes.length && !storeCodes.includes(code) ? storeCodes[0] : code);
     setAdjustment((current) => {
-      const nextSource = isMoneySourceAllowed(sources, current.moneySourceCode, current.branchCode, ["CASH"])
+      const nextBranch = toRealStore(current.branchCode);
+      const nextSource = isMoneySourceAllowed(sources, current.moneySourceCode, nextBranch, ["CASH"])
         ? current.moneySourceCode
-        : firstMoneySourceCode(sources, current.branchCode, ["CASH"]);
-      return { ...current, moneySourceCode: nextSource };
+        : firstMoneySourceCode(sources, nextBranch, ["CASH"]);
+      return { ...current, branchCode: nextBranch, moneySourceCode: nextSource };
     });
-  }, []);
+    setAccrual((current) => {
+      const nextBranch = toRealStore(current.branchCode);
+      return nextBranch === current.branchCode ? current : { ...current, branchCode: nextBranch };
+    });
+  }, [user]);
 
   useEffect(() => {
     if (!loading) {
@@ -406,7 +453,7 @@ export default function FinanceOperationsPage() {
             <div className="flex flex-wrap items-center gap-4">
               <div className="flex flex-col gap-1.5">
                 <span className="text-xs font-bold text-slate-600">Kỳ kế toán</span>
-                <MonthInput className="w-44" value={period} onChange={setPeriod} ariaLabel="Kỳ sổ quỹ" />
+                <MonthInput className="w-44" value={period} onChange={changePeriod} ariaLabel="Kỳ sổ quỹ" />
               </div>
 
               <div className="flex flex-col gap-1.5">
@@ -414,12 +461,56 @@ export default function FinanceOperationsPage() {
                 <div className="relative">
                   <select
                     value={branchCode}
-                    onChange={(e) => setBranchCode(e.target.value)}
+                    onChange={(e) => changeBranchScope(e.target.value)}
                     className="w-48 pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all appearance-none cursor-pointer font-medium"
                   >
                     {visibleBranchScopeOptions(user).map((option) => (
                       <option key={option.code} value={option.code}>
                         {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none text-lg">
+                    unfold_more
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <span className="text-xs font-bold text-slate-600">Khoảng thời gian</span>
+                <div className="flex items-center gap-2">
+                  <DateInput
+                    className="w-36"
+                    value={cashbookRange.startDate}
+                    onChange={(startDate) => setCashbookRange((current) => ({ ...current, startDate }))}
+                    ariaLabel="Sổ quỹ từ ngày"
+                  />
+                  <span className="text-xs font-bold text-slate-400">→</span>
+                  <DateInput
+                    className="w-36"
+                    value={cashbookRange.endDate}
+                    onChange={(endDate) => setCashbookRange((current) => ({ ...current, endDate }))}
+                    ariaLabel="Sổ quỹ đến ngày"
+                  />
+                </div>
+                {cashbookRangeInvalid && (
+                  <span className="text-[11px] font-bold text-rose-600">Từ ngày đang lớn hơn đến ngày.</span>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <span className="text-xs font-bold text-slate-600">Nguồn tiền</span>
+                <div className="relative">
+                  <select
+                    value={cashbookSource}
+                    onChange={(event) => setCashbookSource(event.target.value)}
+                    className="w-56 pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all appearance-none cursor-pointer font-medium"
+                  >
+                    <option value="">Tất cả nguồn tiền</option>
+                    {cashbookSourceOptions.map((source) => (
+                      <option key={source.code} value={source.code} title={moneySourceDebugLabel(source)}>
+                        {moneySourceDisplayName(source)}
+                        {branchCode === "ALL" && source.branch && source.branch !== "ALL" ? ` · ${storeLabel(source.branch)}` : ""}
                       </option>
                     ))}
                   </select>
@@ -489,7 +580,7 @@ export default function FinanceOperationsPage() {
             <div className="grid sm:grid-cols-3 gap-6">
               <div className="bg-white/80 backdrop-blur-md border border-slate-200/60 shadow-lg shadow-slate-100/50 rounded-2xl p-5 flex items-center justify-between group hover:shadow-xl hover:shadow-slate-200/50 transition-all duration-300">
                 <div className="space-y-1">
-                  <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">Số dư đầu kỳ</p>
+                  <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">{hasCashbookRange ? "Số dư đầu khoảng" : "Số dư đầu kỳ"}</p>
                   <p className="text-2xl font-black text-slate-800">{money(data.openingAmount)} đ</p>
                 </div>
                 <div className="w-12 h-12 rounded-xl bg-slate-50 text-slate-600 flex items-center justify-center shadow-sm">
@@ -511,7 +602,7 @@ export default function FinanceOperationsPage() {
 
               <div className="bg-white/80 backdrop-blur-md border border-slate-200/60 shadow-lg shadow-slate-100/50 rounded-2xl p-5 flex items-center justify-between group hover:shadow-xl hover:shadow-slate-200/50 transition-all duration-300">
                 <div className="space-y-1">
-                  <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">Số dư cuối kỳ</p>
+                  <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">{hasCashbookRange ? "Số dư cuối khoảng" : "Số dư cuối kỳ"}</p>
                   <p className="text-2xl font-black text-indigo-900">{money(data.closingBalance)} đ</p>
                 </div>
                 <div className="w-12 h-12 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center shadow-sm">

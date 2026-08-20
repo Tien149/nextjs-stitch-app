@@ -84,7 +84,7 @@ const emptyForm = {
   residualValue: "0",
   supplierCode: "",
   supplierName: "",
-  paymentStatus: "PAID",
+  paymentStatus: "PAYABLE",
   payableAmount: "",
   paymentDueDate: "",
   imageUrl: "",
@@ -319,7 +319,7 @@ export default function AssetsPage() {
       residualValue: String(asset.residualValue),
       supplierCode: asset.supplierCode || "",
       supplierName: asset.supplierName || "",
-      paymentStatus: asset.paymentStatus || "PAID",
+      paymentStatus: asset.paymentStatus === "PAYABLE" ? "PAYABLE" : "PAID",
       payableAmount: asset.payableAmount ? String(asset.payableAmount) : "",
       paymentDueDate: asset.paymentDueDate ? asset.paymentDueDate.slice(0, 10) : "",
       imageUrl: asset.imageUrl || "",
@@ -741,8 +741,8 @@ export default function AssetsPage() {
                     disabled={Boolean(editingAsset)}
                     required
                   >
-                    <option value="PAID">Đã thanh toán</option>
                     <option value="PAYABLE">Công nợ phải trả NCC</option>
+                    <option value="PAID">Đã thanh toán</option>
                   </select>
                 </label>
                 <label className="text-xs font-bold text-slate-600 block">

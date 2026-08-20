@@ -48,14 +48,16 @@ type MasterDataOption = {
   branch: string | null;
 };
 
+// Không đặt sẵn số tiền hay khách hàng: giá trị mẫu bị bỏ quên sẽ tạo ra phiếu cọc sai số tiền
+// mà mọi lớp kiểm tra đều cho qua, vì nó vẫn là một số hợp lệ.
 const emptyForm = {
   receivedDate: new Date().toISOString().slice(0, 10),
-  partnerCode: "KH_ABC",
-  partnerName: "Công ty TNHH ABC",
+  partnerCode: "",
+  partnerName: "",
   objectName: "",
-  branchCode: "HCM",
-  moneySourceCode: "VCB_HCM",
-  amount: "50000000",
+  branchCode: "",
+  moneySourceCode: "",
+  amount: "",
   purpose: "Đặt cọc hợp đồng dịch vụ",
   note: "",
 };
@@ -235,13 +237,13 @@ export default function DepositsPage() {
         // Update form with default values if they are empty
         setForm(prev => {
           const firstBranch = branchScope !== "ALL" ? branchScope : activeBranches[0]?.code || "";
-          const firstPartner = activePartners[0] || null;
           const firstMoneySource = firstMoneySourceCode(activeMoneySources, firstBranch);
           return {
             ...prev,
             branchCode: branchScope !== "ALL" ? firstBranch : prev.branchCode || firstBranch,
-            partnerCode: prev.partnerCode || (firstPartner ? firstPartner.code : ""),
-            partnerName: prev.partnerName || (firstPartner ? firstPartner.name : ""),
+            // Khách hàng phải do người lập chọn, không tự lấy đối tác đầu danh mục.
+            partnerCode: prev.partnerCode,
+            partnerName: prev.partnerName,
             moneySourceCode: isMoneySourceAllowed(activeMoneySources, prev.moneySourceCode, branchScope !== "ALL" ? firstBranch : prev.branchCode || firstBranch)
               ? prev.moneySourceCode
               : firstMoneySource,
@@ -301,6 +303,15 @@ export default function DepositsPage() {
     event.preventDefault();
     if (!editingDeposit && !canCreateDeposits) {
       setMessage("Bạn chỉ có quyền xem tiền cọc.");
+      return;
+    }
+    if (!form.partnerCode.trim()) {
+      setMessage("Vui lòng chọn Khách hàng cho phiếu cọc.");
+      return;
+    }
+    const amountValue = Number(form.amount);
+    if (!form.amount.trim() || !Number.isFinite(amountValue) || amountValue <= 0) {
+      setMessage("Vui lòng nhập Số tiền cọc lớn hơn 0.");
       return;
     }
     setIsSaving(true);
@@ -545,9 +556,11 @@ export default function DepositsPage() {
             Số tiền *
             <input
               type="number"
+              min="1"
               value={form.amount}
               onChange={(e) => setForm(val => ({ ...val, amount: e.target.value }))}
               className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              placeholder="Nhập số tiền cọc"
               required
             />
           </label>

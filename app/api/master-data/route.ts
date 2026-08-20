@@ -593,6 +593,8 @@ export async function POST(request: Request) {
     const partnerGroup = type === "PARTNER" ? (cleanText(body.partnerGroup) || "EXTERNAL").toUpperCase() : null;
     let codePrefix: string | null = null;
     let settlementBankCode: string | null = null;
+    // Tên "Nguồn tiền tổng": các nguồn cùng tên sẽ được Báo cáo nguồn tiền gộp một dòng.
+    const summarySourceName = type === "MONEY_SOURCE" ? (cleanText(body.summarySourceName) || null) : null;
 
     if (!type || !code || !name) {
       return NextResponse.json({ error: "Loại danh mục, mã và tên là bắt buộc" }, { status: 400 });
@@ -632,6 +634,7 @@ export async function POST(request: Request) {
         accountNo: cleanText(body.accountNo) || null,
         codePrefix,
         settlementBankCode,
+        summarySourceName,
         note: cleanText(body.note) || null,
         status: cleanText(body.status) || "ACTIVE",
       },
@@ -680,6 +683,9 @@ export async function PATCH(request: Request) {
       : null;
     let codePrefix = current.codePrefix;
     let settlementBankCode = current.settlementBankCode;
+    const summarySourceName = current.type === "MONEY_SOURCE"
+      ? (body.summarySourceName !== undefined ? (cleanText(body.summarySourceName) || null) : current.summarySourceName)
+      : null;
 
     try {
       if (body.codePrefix !== undefined) codePrefix = normalizeAssetCodePrefix(current.type, body.codePrefix);
@@ -734,6 +740,7 @@ export async function PATCH(request: Request) {
         ...(body.accountNo !== undefined ? { accountNo: cleanText(body.accountNo) || null } : {}),
         ...(body.codePrefix !== undefined ? { codePrefix } : {}),
         settlementBankCode,
+        summarySourceName,
         ...(body.note !== undefined ? { note: cleanText(body.note) || null } : {}),
         ...(body.status !== undefined ? { status: cleanText(body.status) || "ACTIVE" } : {}),
       },

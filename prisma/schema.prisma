@@ -46,6 +46,8 @@ model MasterDataItem {
   /// Nguồn tiền ngân hàng mà ví/POS này sẽ quyết toán về. Chỉ dùng cho MONEY_SOURCE nhóm WALLET,
   /// để báo cáo nguồn tiền quy được doanh thu ví chưa về bank vào cột Dự thu trong kỳ.
   settlementBankCode String?
+  /// Tên "Nguồn tiền tổng" — các MONEY_SOURCE cùng tên tổng được Báo cáo nguồn tiền gộp thành một dòng.
+  summarySourceName String?
   status       String   @default("ACTIVE")
   note         String?
   createdAt    DateTime @default(now())
