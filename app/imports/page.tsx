@@ -221,7 +221,7 @@ const importTabs: ImportTab[] = [
     icon: "swap_horiz",
     roles: ["Admin", "Kế toán tổng hợp"],
     title: "Import Điều tiền Nội bộ",
-    subtitle: "Chuyển tiền giữa quỹ, ngân hàng hoặc ví trong cùng chi nhánh mà không tính doanh thu/chi phí.",
+    subtitle: "Chuyển tiền giữa quỹ, ngân hàng hoặc ví; nguồn nhận của nhà hàng khác thì phiếu tự sinh công nợ nội bộ hai đầu.",
     apiPath: "/api/imports?importType=INTERNAL_TRANSFER&templateCode=INTERNAL_TRANSFER_STANDARD_V1",
     templatePath: "/api/imports?importType=INTERNAL_TRANSFER&templateCode=INTERNAL_TRANSFER_STANDARD_V1&template=1",
     templateCode: "INTERNAL_TRANSFER_STANDARD_V1",

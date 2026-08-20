@@ -1689,17 +1689,24 @@ export async function commitImport(input: CommitInput) {
     }
 
     if (input.importType === "INTERNAL_TRANSFER") {
-      const transferSequence = await tx.moneyTransfer.count();
       for (let index = 0; index < input.rows.length; index += 1) {
         const row = input.rows[index];
         const transferDate = asDate(row.values.transfer_date);
-        const ym = `${transferDate.getUTCFullYear()}${String(transferDate.getUTCMonth() + 1).padStart(2, "0")}`;
+        const branchCode = asText(row.values.branch_code);
         const transfer = await tx.moneyTransfer.create({
           data: {
             importBatchId: batch.id,
-            code: `CTNB-${ym}-${String(transferSequence + index + 1).padStart(4, "0")}`,
+            // Trước đây mã tự chế bằng COUNT toàn bảng MoneyTransfer — đếm lẫn cả QTVI/NOPT và
+            // CTNB của tháng/cửa hàng khác nên số thứ tự không thuộc chuỗi mã nào, lại tụt khi
+            // rollback và cấp trúng mã đang sống. Dùng chung nextTransferCode như luồng sao kê:
+            // max + 1 trong ĐÚNG chuỗi CTNB + tháng + cửa hàng, và đúng quy tắc mã đã chốt.
+            code: await nextTransferCode(tx, "CTNB", transferDate, branchCode),
             transferDate,
-            branchCode: asText(row.values.branch_code),
+            branchCode,
+            // Điều tiền liên nhà hàng: nhớ cửa hàng của TỪNG nguồn để lúc duyệt ghi sổ đúng
+            // bên và sinh công nợ nội bộ. Cùng cửa hàng thì hai cột này bằng branchCode.
+            fromBranchCode: asText(row.values.from_branch_code) || branchCode,
+            toBranchCode: asText(row.values.to_branch_code) || branchCode,
             fromMoneySourceCode: asText(row.values.from_money_source_code),
             toMoneySourceCode: asText(row.values.to_money_source_code),
             amount: asNumber(row.values.amount),
@@ -1714,13 +1721,19 @@ export async function commitImport(input: CommitInput) {
     }
 
     if (input.importType === "DEBT_OPENING") {
-      const debtSequence = await tx.debtRecord.count();
       for (let index = 0; index < input.rows.length; index += 1) {
         const row = input.rows[index];
         const documentDate = asDate(row.values.document_date);
         const debtType = asText(row.values.debt_type);
+        // Cùng lý do với mã chuyển tiền: COUNT toàn bảng DebtRecord không thuộc chuỗi mã này
+        // và tụt sau rollback. Lấy max + 1 trong đúng chuỗi CN-PT/PP + ngày chứng từ.
+        const debtPrefix = `CN-${debtType === "RECEIVABLE" ? "PT" : "PP"}-${documentDate.toISOString().slice(0, 10).replace(/-/g, "")}-`;
+        const issuedDebtCodes = await tx.debtRecord.findMany({
+          where: { code: { startsWith: debtPrefix } },
+          select: { code: true },
+        });
         const code = asText(row.values.document_code) ||
-          `CN-${debtType === "RECEIVABLE" ? "PT" : "PP"}-${documentDate.toISOString().slice(0, 10).replace(/-/g, "")}-${String(debtSequence + index + 1).padStart(4, "0")}`;
+          debtPrefix + String(nextSeqFromCodes(issuedDebtCodes.map((item) => item.code), debtPrefix)).padStart(4, "0");
         const debt = await tx.debtRecord.create({
           data: {
             importBatchId: batch.id,
@@ -1921,6 +1934,25 @@ async function rollbackVouchers(tx: RawTxClient, batchId: string) {
 }
 
 async function rollbackTransfers(tx: RawTxClient, batchId: string) {
+  const transfers = await tx.moneyTransfer.findMany({
+    where: { importBatchId: batchId },
+    select: { id: true, internalReceivableDebtCode: true, internalPayableDebtCode: true },
+  });
+  if (transfers.length === 0) return;
+  // Phiếu liên nhà hàng đã duyệt để lại công nợ nội bộ hai đầu và bút toán ở cả hai cửa
+  // hàng; xoá phiếu mà bỏ lại hai thứ đó thì sổ của cửa hàng bên kia treo số vĩnh viễn.
+  const debtCodes = transfers
+    .flatMap((transfer) => [transfer.internalReceivableDebtCode, transfer.internalPayableDebtCode])
+    .filter((code): code is string => Boolean(code));
+  if (debtCodes.length > 0) {
+    const settled = await tx.debtSettlement.count({ where: { debt: { code: { in: debtCodes } } } });
+    if (settled > 0) throw new Error("Công nợ nội bộ của phiếu điều tiền đã có thanh toán, không thể rollback tự động");
+    await tx.debtRecord.deleteMany({ where: { code: { in: debtCodes } } });
+  }
+  const transferIds = transfers.map((transfer) => transfer.id);
+  await tx.journalEntry.deleteMany({
+    where: { sourceType: { in: ["MONEY_TRANSFER", "MONEY_TRANSFER_COUNTERPART"] }, sourceId: { in: transferIds } },
+  });
   await tx.moneyTransfer.deleteMany({ where: { importBatchId: batchId } });
 }
 

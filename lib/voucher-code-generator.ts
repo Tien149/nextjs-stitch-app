@@ -117,3 +117,29 @@ export function nextSeqFromCodes(codes: string[], prefix: string): number {
   }
   return max + 1;
 }
+
+/** Bảng nào cũng tra được danh sách mã đã cấp theo prefix — đủ để cấp số kế tiếp. */
+type CodeQueryDelegate = {
+  findMany: (args: {
+    where: { code: { startsWith: string } };
+    select: { code: true };
+  }) => Promise<Array<{ code: string }>>;
+};
+
+/**
+ * Cấp mã dạng `PREFIX-YYYY-0001` theo MAX + 1 trong đúng chuỗi mã.
+ *
+ * Trước đây các màn dùng COUNT toàn bảng: đếm lẫn mọi loại phiếu và mọi năm nên số thứ tự
+ * không thuộc chuỗi nào, và tụt xuống sau mỗi lần xoá bản ghi khiến mã cấp sau đâm trúng mã
+ * đang còn sống. Dùng hàm này để mọi nơi cấp mã theo cùng một luật.
+ */
+export async function nextYearlyCode(
+  delegate: CodeQueryDelegate,
+  prefix: string,
+  year: number = new Date().getFullYear(),
+  pad = 4,
+) {
+  const codePrefix = `${prefix}-${year}-`;
+  const issued = await delegate.findMany({ where: { code: { startsWith: codePrefix } }, select: { code: true } });
+  return codePrefix + String(nextSeqFromCodes(issued.map((row) => row.code), codePrefix)).padStart(pad, "0");
+}

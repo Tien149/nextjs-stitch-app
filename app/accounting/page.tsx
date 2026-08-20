@@ -180,6 +180,7 @@ export default function AccountingPage() {
       case "BANK_STATEMENT": return { text: "Sao kê ngân hàng", icon: "account_balance", color: "bg-cyan-50 text-cyan-700 border-cyan-100" };
       case "DEPOSIT_HISTORY": return { text: "Tiền cọc", icon: "savings", color: "bg-orange-50 text-orange-700 border-orange-100" };
       case "MONEY_TRANSFER": return { text: "Điều tiền", icon: "swap_horiz", color: "bg-blue-50 text-blue-700 border-blue-100" };
+      case "MONEY_TRANSFER_COUNTERPART": return { text: "Điều tiền (bên nhận)", icon: "swap_horiz", color: "bg-blue-50 text-blue-700 border-blue-100" };
       case "ASSET_ACQUISITION": return { text: "Mua sắm tài sản", icon: "shopping_cart", color: "bg-purple-50 text-purple-700 border-purple-100" };
       case "SUPPLIER_PAYABLE": return { text: "Nhập hàng NCC", icon: "local_shipping", color: "bg-rose-50 text-rose-700 border-rose-100" };
       case "INVENTORY_ISSUE": return { text: "Xuất kho", icon: "warehouse", color: "bg-slate-50 text-slate-700 border-slate-100" };
@@ -215,6 +216,7 @@ export default function AccountingPage() {
         }
         break;
       case "MONEY_TRANSFER":
+      case "MONEY_TRANSFER_COUNTERPART":
         router.push("/finance-operations");
         break;
       case "ASSET_ACQUISITION":

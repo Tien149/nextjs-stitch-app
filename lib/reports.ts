@@ -7,6 +7,7 @@ import { moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { CASH_SOURCE_OPENING_TYPES, OPENING_BALANCE_EFFECTIVE_STATUSES } from "@/lib/opening-balance-rules";
 import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/lib/money-transfer-date";
+import { transferLegsForBranch } from "@/lib/internal-transfer";
 import { WALLET_CARD_FEE_CATEGORY_CODE, WALLET_GRAB_EXPENSE_CATEGORY_CODE } from "@/lib/wallet-settlement-allocation";
 import { vietnamBusinessDayKey } from "@/lib/revenue-date";
 import { remainingWalletGross, selectWalletDeclaredRevenue, walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
@@ -251,9 +252,17 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
         where: { ...branchFilter, entryDate: { gte: start, lt: end } },
         select: { entryDate: true, entryType: true, amount: true, moneySourceCode: true },
       }),
+      // Phiếu điều tiền liên nhà hàng do cửa hàng bên kia lập vẫn ảnh hưởng nguồn tiền của
+      // cửa hàng đang xem, nên phải lấy theo cả hai đầu rồi mới lọc vế bên dưới.
       prisma.moneyTransfer.findMany({
-        where: { ...branchFilter, ...effectiveMoneyTransferDateFilter(start, end), status: "APPROVED" },
-        select: { transferDate: true, actualTransferDate: true, amount: true, feeAmount: true, feeCategoryCode: true, transferPurpose: true, fromMoneySourceCode: true, toMoneySourceCode: true },
+        where: {
+          ...(branchCode === "ALL"
+            ? {}
+            : { OR: [{ branchCode }, { fromBranchCode: branchCode }, { toBranchCode: branchCode }] }),
+          ...effectiveMoneyTransferDateFilter(start, end),
+          status: "APPROVED",
+        },
+        select: { transferDate: true, actualTransferDate: true, amount: true, feeAmount: true, feeCategoryCode: true, transferPurpose: true, fromMoneySourceCode: true, toMoneySourceCode: true, branchCode: true, fromBranchCode: true, toBranchCode: true },
       }),
       prisma.openingBalance.findMany({
         where: { period: months[0], ...(branchCode === "ALL" ? {} : { branchCode }), status: { in: [...OPENING_BALANCE_EFFECTIVE_STATUSES] }, balanceType: { in: cashReportOpeningTypes } },
@@ -564,14 +573,21 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
 
   for (const row of transfers) {
     // Nguồn đi giảm amount + phí/chênh lệch; nguồn nhận chỉ tăng số thực chuyển.
+    // Phiếu liên nhà hàng chỉ tính vế thuộc cửa hàng đang xem — vế kia là tiền của cửa
+    // hàng khác, cộng vào đây thì bảng nguồn tiền mọc thêm nguồn không phải của mình.
+    const legs = transferLegsForBranch(row, branchCode);
     const transferDate = effectiveMoneyTransferDate(row);
-    const fromSource = touchSource(row.fromMoneySourceCode);
-    fromSource.transferOut += row.amount + row.feeAmount;
-    bumpSourceMonth(fromSource, transferDate, -(row.amount + row.feeAmount));
-    const toSource = touchSource(row.toMoneySourceCode);
-    toSource.transferIn += row.amount;
-    bumpSourceMonth(toSource, transferDate, row.amount);
-    if (row.feeAmount !== 0) {
+    if (legs.out) {
+      const fromSource = touchSource(row.fromMoneySourceCode);
+      fromSource.transferOut += row.amount + row.feeAmount;
+      bumpSourceMonth(fromSource, transferDate, -(row.amount + row.feeAmount));
+    }
+    if (legs.in) {
+      const toSource = touchSource(row.toMoneySourceCode);
+      toSource.transferIn += row.amount;
+      bumpSourceMonth(toSource, transferDate, row.amount);
+    }
+    if (legs.out && row.feeAmount !== 0) {
       const category = resolveCategory(row.feeCategoryCode, "PAYMENT");
       const fallbackCategory = row.transferPurpose === "CASH_DEPOSIT"
         ? { key: "CASH_ROUNDING", name: "Chênh lệch làm tròn tiền nộp", group: "PAYMENT" as const }
@@ -792,7 +808,11 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
       paymentAmount: pendingOut.amount,
       paymentCount: pendingOut.count,
     },
-    internalTransfer: { total: transfers.reduce((sum, row) => sum + row.amount, 0), count: transfers.length },
+    internalTransfer: (() => {
+      // Đếm theo vế tiền ĐI để hai cửa hàng không cùng khai một phiếu liên nhà hàng.
+      const outgoing = transfers.filter((row) => transferLegsForBranch(row, branchCode).out);
+      return { total: outgoing.reduce((sum, row) => sum + row.amount, 0), count: outgoing.length };
+    })(),
     deposits: Array.from(depositSummary.values())
       .map((row) => ({ ...row, closing: row.opening + row.increase - row.used }))
       .filter((row) => Math.abs(row.opening) > 0.5 || Math.abs(row.increase) > 0.5 || Math.abs(row.used) > 0.5)

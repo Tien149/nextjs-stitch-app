@@ -5,6 +5,7 @@ import { assertBranchAccess, requestedBranch } from "@/lib/accounting";
 import { cleanText, isPeriodLocked, toDate, toNumber } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import { softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
+import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 
 const debtTypes = ["RECEIVABLE", "PAYABLE"];
 const partnerGroups = ["EXTERNAL", "INTERNAL"];
@@ -297,12 +298,17 @@ export async function POST(request: Request) {
       if (!pnlItem) return NextResponse.json({ error: `Hạng mục P&L [${pnlItemCode}] không tồn tại hoặc đã ngừng hoạt động` }, { status: 400 });
     }
 
-    // Mã tuần tự theo loại + tháng chứng từ; đụng mã (tạo song song) thì thử lại với số kế tiếp.
-    const prefix = `${debtType === "PAYABLE" ? "CNPT" : "CNTHU"}-${documentDate.toISOString().slice(0, 7).replace("-", "")}`;
+    // Mã tuần tự theo loại + tháng chứng từ, lấy MAX + 1 chứ không COUNT: công nợ bị xoá cứng
+    // ở vài luồng (xoá phiếu phân bổ, rollback import) nên COUNT tụt và cấp trúng mã đang sống.
+    // Vẫn giữ retry cho trường hợp hai người tạo cùng lúc lấy trúng một số.
+    const prefix = `${debtType === "PAYABLE" ? "CNPT" : "CNTHU"}-${documentDate.toISOString().slice(0, 7).replace("-", "")}-`;
     let created = null;
     for (let attempt = 0; attempt < 5 && !created; attempt += 1) {
-      const count = await prisma.debtRecord.count({ where: { code: { startsWith: `${prefix}-` } } });
-      const code = `${prefix}-${String(count + 1 + attempt).padStart(4, "0")}`;
+      const issuedCodes = await prisma.debtRecord.findMany({
+        where: { code: { startsWith: prefix } },
+        select: { code: true },
+      });
+      const code = prefix + String(nextSeqFromCodes(issuedCodes.map((row) => row.code), prefix) + attempt).padStart(4, "0");
       try {
         created = await prisma.debtRecord.create({
           data: {
@@ -374,6 +380,13 @@ export async function PATCH(request: Request) {
     if (current.sourceType === "COST_REALLOCATION") {
       return NextResponse.json(
         { error: "Công nợ nội bộ này do phiếu phân bổ chi phí sinh ra. Hãy xoá phiếu ở màn Phân bổ chi phí để hoàn tác đồng bộ cả bút toán." },
+        { status: 400 },
+      );
+    }
+    // Tương tự với phiếu điều tiền liên nhà hàng: công nợ nội bộ là mặt sau của chính phiếu.
+    if (current.sourceType === "MONEY_TRANSFER") {
+      return NextResponse.json(
+        { error: "Công nợ nội bộ này do phiếu điều tiền liên nhà hàng sinh ra. Hãy xử lý ở màn Vận hành tài chính để bút toán và công nợ đi cùng nhau." },
         { status: 400 },
       );
     }
@@ -490,6 +503,12 @@ export async function DELETE(request: Request) {
     if (current.sourceType === "COST_REALLOCATION") {
       return NextResponse.json(
         { error: "Công nợ nội bộ này do phiếu phân bổ chi phí sinh ra. Hãy xoá phiếu ở màn Phân bổ chi phí để hoàn tác đồng bộ cả bút toán." },
+        { status: 400 },
+      );
+    }
+    if (current.sourceType === "MONEY_TRANSFER") {
+      return NextResponse.json(
+        { error: "Công nợ nội bộ này do phiếu điều tiền liên nhà hàng sinh ra. Hãy xử lý ở màn Vận hành tài chính để bút toán và công nợ đi cùng nhau." },
         { status: 400 },
       );
     }
