@@ -1043,16 +1043,21 @@ export async function commitImport(input: CommitInput) {
         ].join("|");
         groups.set(key, [...(groups.get(key) || []), row]);
       }
-      let sequence = await tx.inventoryTransaction.count();
       for (const rows of groups.values()) {
         const first = rows[0];
         const transactionDate = asDate(first.values.transaction_date);
         const transactionType = normalizeStockTransactionType(first.values.transaction_type);
         const prefix = transactionType === "NHAP_MUA" ? "NM" : transactionType === "NHAP_KHAC" ? "NK" : transactionType === "XUAT_HUY" ? "HH" : transactionType === "DIEU_CHUYEN" ? "DCK" : "XK";
-        sequence += 1;
+        // COUNT toàn bảng đếm lẫn mọi loại phiếu (NM/NK/HH/DCK/XK) và mọi năm, lại tụt sau khi
+        // rollback xoá phiếu -> cấp trúng mã đang sống. Max + 1 trong đúng chuỗi loại + năm.
+        const stockPrefix = `${prefix}-${transactionDate.getUTCFullYear()}-`;
+        const issuedStockCodes = await tx.inventoryTransaction.findMany({
+          where: { code: { startsWith: stockPrefix } },
+          select: { code: true },
+        });
         const transaction = await postInventoryTransaction(tx, {
           importBatchId: batch.id,
-          code: asText(first.values.reference_code) || `${prefix}-${transactionDate.getUTCFullYear()}-${String(sequence).padStart(4, "0")}`,
+          code: asText(first.values.reference_code) || stockPrefix + String(nextSeqFromCodes(issuedStockCodes.map((item) => item.code), stockPrefix)).padStart(4, "0"),
           transactionType,
           transactionDate,
           branchCode: asText(first.values.branch_code),
@@ -1114,14 +1119,18 @@ export async function commitImport(input: CommitInput) {
         ].join("|");
         groups.set(key, [...(groups.get(key) || []), row]);
       }
-      let sequence = await tx.stocktakeSession.count();
       for (const rows of groups.values()) {
         const first = rows[0];
         const stocktakeDate = asDate(first.values.stocktake_date);
-        sequence += 1;
+        // Cùng lý do: COUNT toàn bảng lẫn các năm khác và tụt sau rollback.
+        const stocktakePrefix = `KK-${stocktakeDate.getUTCFullYear()}-`;
+        const issuedStocktakeCodes = await tx.stocktakeSession.findMany({
+          where: { code: { startsWith: stocktakePrefix } },
+          select: { code: true },
+        });
         const stocktake = await tx.stocktakeSession.create({
           data: {
-            code: `KK-${stocktakeDate.getUTCFullYear()}-${String(sequence).padStart(4, "0")}`,
+            code: stocktakePrefix + String(nextSeqFromCodes(issuedStocktakeCodes.map((item) => item.code), stocktakePrefix)).padStart(4, "0"),
             stocktakeDate,
             branchCode: asText(first.values.branch_code),
             warehouseCode: asText(first.values.warehouse_code),

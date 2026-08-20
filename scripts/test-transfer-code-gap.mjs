@@ -54,3 +54,20 @@ test("mã công nợ đầu kỳ cũng tính max + 1 theo đúng chuỗi ngày c
   const issued = ["CN-PP-20260804-0005", debtPrefix + "0001", debtPrefix + "0002"];
   assert.equal(nextSeqFromCodes(issued, debtPrefix), 3, "phải thu và phải trả là hai chuỗi tách biệt");
 });
+
+test("nextYearlyCode: max + 1 theo đúng chuỗi PREFIX + năm", async () => {
+  const { nextYearlyCode } = await import("../lib/voucher-code-generator.ts");
+  const rows = [
+    { code: "PR-2026-0001" },
+    { code: "PR-2026-0007" },   // 0002..0006 đã bị xoá -> phải cấp 0008, không phải 0003
+    { code: "PR-2025-0099" },   // năm khác, không được làm nhảy số
+    { code: "PO-2026-0042" },   // loại khác, không được làm nhảy số
+  ];
+  const delegate = {
+    findMany: async ({ where }) => rows.filter((row) => row.code.startsWith(where.code.startsWith)),
+  };
+  assert.equal(await nextYearlyCode(delegate, "PR", 2026), "PR-2026-0008");
+  assert.equal(await nextYearlyCode(delegate, "PO", 2026), "PO-2026-0043");
+  assert.equal(await nextYearlyCode(delegate, "PR", 2027), "PR-2027-0001", "năm mới bắt đầu lại từ 1");
+  assert.equal(await nextYearlyCode(delegate, "KK", 2026), "KK-2026-0001", "loại mới bắt đầu lại từ 1");
+});

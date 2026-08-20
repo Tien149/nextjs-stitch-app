@@ -5,14 +5,18 @@ import { addPeriod, apiError, businessError, cleanText, isPeriodLocked, normaliz
 import { assertBranchAccess, requestedBranch } from "@/lib/accounting";
 import { scopePayloadByTab } from "@/lib/tab-scope";
 import { normalizeMoneySourceGroup } from "@/lib/money-sources";
+import { nextSeqFromCodes, nextYearlyCode } from "@/lib/voucher-code-generator";
 
 const menuHref = "/assets";
 
 async function nextPaymentVoucherCode(tx: TxClient) {
   const now = new Date();
   const ym = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}`;
-  const count = await tx.financialVoucher.count({ where: { voucherType: "PAYMENT" } });
-  return `PC-${ym}-${String(count + 1).padStart(3, "0")}`;
+  // COUNT đếm mọi phiếu chi của mọi tháng (kể cả phiếu đã xoá mềm) nên số của tháng mới
+  // không bắt đầu lại và tụt sau khi xoá. Max + 1 trong đúng chuỗi PC + tháng.
+  const prefix = `PC-${ym}-`;
+  const issued = await tx.financialVoucher.findMany({ where: { code: { startsWith: prefix } }, select: { code: true } });
+  return prefix + String(nextSeqFromCodes(issued.map((row) => row.code), prefix)).padStart(3, "0");
 }
 
 async function defaultMoneySource(tx: TxClient, branchCode: string) {
@@ -32,8 +36,7 @@ async function documentChannelForSource(tx: TxClient, moneySourceCode: string) {
 }
 
 async function nextWorkItemCode(tx: TxClient) {
-  const count = await tx.workItem.count();
-  return `CV-${new Date().getFullYear()}-${String(count + 1).padStart(4, "0")}`;
+  return nextYearlyCode(tx.workItem, "CV");
 }
 
 function addMonths(date: Date, months: number) {
@@ -235,7 +238,7 @@ export async function POST(request: Request) {
       const asset = await prisma.assetRecord.findUnique({ where: { id: assetId } });
       if (!asset) businessError("Không tìm thấy tài sản");
       assertBranchAccess(auth.session, asset.branchCode);
-      const code = `BH-${new Date().getFullYear()}-${String(await prisma.assetDamageReport.count() + 1).padStart(4, "0")}`;
+      const code = await nextYearlyCode(prisma.assetDamageReport, "BH");
       const result = await prisma.$transaction(async (tx) => {
         const report = await tx.assetDamageReport.create({
           data: {
@@ -385,8 +388,10 @@ export async function POST(request: Request) {
         if (disposalAmount > 0) {
           const moneySourceCode = cleanText(body.moneySourceCode) || await defaultMoneySource(tx, asset.branchCode);
           const documentChannel = await documentChannelForSource(tx, moneySourceCode);
-          const count = await tx.financialVoucher.count({ where: { voucherType: "RECEIPT" } });
-          const voucherCode = `PTTL-${String(count + 1).padStart(4, "0")}`;
+          // Cùng lý do: COUNT mọi phiếu thu (kể cả đã xoá mềm) sẽ cấp trúng mã đang sống.
+          const disposalPrefix = "PTTL-";
+          const issuedDisposal = await tx.financialVoucher.findMany({ where: { code: { startsWith: disposalPrefix } }, select: { code: true } });
+          const voucherCode = disposalPrefix + String(nextSeqFromCodes(issuedDisposal.map((row) => row.code), disposalPrefix)).padStart(4, "0");
           await tx.financialVoucher.create({
             data: {
               code: voucherCode,

@@ -12,6 +12,7 @@ import {
 } from "@/lib/soft-delete";
 import { scopePayloadByTab } from "@/lib/tab-scope";
 import { nextAssetCode } from "@/lib/asset-code-generator";
+import { nextYearlyCode } from "@/lib/voucher-code-generator";
 
 const menuHref = "/procurement";
 
@@ -29,9 +30,8 @@ type InputLine = {
   note?: unknown;
 };
 
-async function generatedCode(prefix: string, count: number) {
-  return `${prefix}-${new Date().getFullYear()}-${String(count + 1).padStart(4, "0")}`;
-}
+// Mã cấp theo max + 1 trong đúng chuỗi PREFIX + năm (xem nextYearlyCode): COUNT toàn bảng
+// đếm lẫn các năm trước và tụt sau khi xoá bản ghi nên cấp trúng mã đang còn sống.
 
 function validLines(value: unknown) {
   if (!Array.isArray(value)) return [];
@@ -144,7 +144,7 @@ export async function POST(request: Request) {
         }
       }
 
-      const code = cleanText(body.code) || await generatedCode("PR", await prisma.purchaseRequest.count());
+      const code = cleanText(body.code) || await nextYearlyCode(prisma.purchaseRequest, "PR");
       if (await findDeletedByUnique("PurchaseRequest", { code })) {
         businessError(duplicatedInTrashMessage(code, "Đề nghị mua hàng"));
       }
@@ -254,7 +254,7 @@ export async function POST(request: Request) {
       }
       const sourceRequest = requestId ? await prisma.purchaseRequest.findUnique({ where: { id: requestId } }) : null;
       const departmentCode = bodyDepartmentCode || sourceRequest?.departmentCode || null;
-      const code = cleanText(body.code) || await generatedCode("PO", await prisma.purchaseOrder.count());
+      const code = cleanText(body.code) || await nextYearlyCode(prisma.purchaseOrder, "PO");
       if (await findDeletedByUnique("PurchaseOrder", { code })) {
         businessError(duplicatedInTrashMessage(code, "Đơn mua hàng"));
       }
@@ -573,7 +573,7 @@ export async function PATCH(request: Request) {
     }
 
     const result = await prisma.$transaction(async (tx) => {
-      const transactionCode = await generatedCode("NK", await tx.inventoryTransaction.count());
+      const transactionCode = await nextYearlyCode(tx.inventoryTransaction, "NK");
       const stockTransaction = await tx.inventoryTransaction.create({
         data: {
           code: transactionCode,

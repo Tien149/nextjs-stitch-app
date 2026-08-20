@@ -7,6 +7,7 @@ import { softDeleteRecord } from "@/lib/soft-delete";
 import { apiError, businessError, cleanText, normalizePeriod } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import type { DemoSession } from "@/lib/auth-demo";
+import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 
 const menuHref = "/work-management";
 const statuses = ["TODO", "IN_PROGRESS", "WAITING_APPROVAL", "COMPLETED", "CANCELLED"];
@@ -188,7 +189,14 @@ export async function POST(request: Request) {
     if (!priorities.includes(priority)) businessError("Mức ưu tiên không hợp lệ");
     ensureBranchAccess(auth.session, branchCode);
 
-    const code = `CV-${new Date().getFullYear()}-${String(await prisma.workItem.count() + 1).padStart(4, "0")}`;
+    // Max + 1 theo đúng chuỗi CV + năm: COUNT toàn bảng đếm lẫn công việc của các năm trước
+    // nên số thứ tự của năm mới không bắt đầu lại, và sẽ trùng nếu về sau có xoá bản ghi.
+    const workPrefix = `CV-${new Date().getFullYear()}-`;
+    const issuedWorkCodes = await prisma.workItem.findMany({
+      where: { code: { startsWith: workPrefix } },
+      select: { code: true },
+    });
+    const code = workPrefix + String(nextSeqFromCodes(issuedWorkCodes.map((row) => row.code), workPrefix)).padStart(4, "0");
     const item = await prisma.workItem.create({
       data: {
         code,

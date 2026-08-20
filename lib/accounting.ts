@@ -4,6 +4,7 @@ import type { DemoSession } from "@/lib/auth-demo";
 import { voucherJournalLines } from "@/lib/voucher-accounting";
 import { normalizeCategoryGroup } from "@/lib/voucher-rules";
 import { moneySourceAccountCode } from "@/lib/money-sources";
+import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/lib/money-transfer-date";
 
 export const defaultAccounts = [
@@ -154,10 +155,16 @@ export async function postJournalEntry(input: EntryInput) {
     });
     return "UPDATED";
   }
-  const sequence = await prisma.journalEntry.count();
+  // Bút toán bị xoá cứng ở nhiều luồng (bỏ duyệt phiếu, xoá phiếu phân bổ, rollback import)
+  // nên COUNT tụt xuống sau mỗi lần xoá và cấp lại mã đang còn sống. Lấy max + 1 trong đúng
+  // chuỗi "JE-": mã đã xoá để lại lỗ trống, nhưng không bao giờ đâm trúng mã đang tồn tại.
+  const issuedEntryCodes = await prisma.journalEntry.findMany({
+    where: { code: { startsWith: "JE-" } },
+    select: { code: true },
+  });
   await prisma.journalEntry.create({
     data: {
-      code: `JE-${String(sequence + 1).padStart(6, "0")}`,
+      code: `JE-${String(nextSeqFromCodes(issuedEntryCodes.map((row) => row.code), "JE-")).padStart(6, "0")}`,
       entryDate: input.entryDate,
       period,
       branchCode: input.branchCode,

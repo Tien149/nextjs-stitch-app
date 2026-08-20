@@ -12,6 +12,7 @@ import {
   SoftDeleteError,
 } from "@/lib/soft-delete";
 import { scopePayloadByTab } from "@/lib/tab-scope";
+import { nextYearlyCode } from "@/lib/voucher-code-generator";
 
 const menuHref = "/inventory";
 
@@ -55,9 +56,7 @@ function stocktakeLinesFrom(value: unknown) {
   })).filter((line) => (line.itemId || line.itemCode) && Number.isFinite(line.actualQuantity) && line.actualQuantity >= 0);
 }
 
-async function code(prefix: string, count: number) {
-  return `${prefix}-${new Date().getFullYear()}-${String(count + 1).padStart(4, "0")}`;
-}
+// Mã cấp bằng nextYearlyCode (max + 1 theo đúng chuỗi PREFIX + năm) thay cho COUNT toàn bảng.
 
 function stockPrefix(transactionType: string) {
   if (transactionType === "NHAP_MUA") return "NM";
@@ -433,8 +432,7 @@ export async function POST(request: Request) {
       if (!recipe || recipe.lines.length === 0) businessError(`Chua co BOM active cho ${productCode}`);
       if (await isPeriodLocked(productionDate, branchCode)) businessError("Ky ke toan da khoa");
       const result = await prisma.$transaction(async (tx) => {
-        const sequence = await tx.inventoryTransaction.count();
-        const referenceCode = cleanText(body.referenceCode) || `CB-${new Date().getFullYear()}-${String(sequence + 1).padStart(4, "0")}`;
+        const referenceCode = cleanText(body.referenceCode) || await nextYearlyCode(tx.inventoryTransaction, "CB");
         const issue = await postInventoryTransaction(tx, {
           code: `${referenceCode}-X`,
           transactionType: "XUAT_CHE_BIEN",
@@ -488,10 +486,9 @@ export async function POST(request: Request) {
         businessError(duplicatedInTrashMessage(requestedStocktakeCode, "Phiếu kiểm kê"));
       }
       const result = await prisma.$transaction(async (tx) => {
-        const sequence = await tx.stocktakeSession.count();
         const stocktake = await tx.stocktakeSession.create({
           data: {
-            code: cleanText(body.code) || `KK-${stocktakeDate.getFullYear()}-${String(sequence + 1).padStart(4, "0")}`,
+            code: cleanText(body.code) || await nextYearlyCode(tx.stocktakeSession, "KK", stocktakeDate.getFullYear()),
             stocktakeDate,
             branchCode,
             warehouseCode,
@@ -606,7 +603,7 @@ export async function POST(request: Request) {
     }
 
     const result = await prisma.$transaction(async (tx) => {
-      const transactionCode = cleanText(body.code) || await code(stockPrefix(transactionType), await tx.inventoryTransaction.count());
+      const transactionCode = cleanText(body.code) || await nextYearlyCode(tx.inventoryTransaction, stockPrefix(transactionType));
       return postInventoryTransaction(tx, {
         code: transactionCode,
         transactionType,

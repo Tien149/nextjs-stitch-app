@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { requireNamedMenuAccess, requireNamedMenuAction } from '@/lib/api-auth';
 import { prisma } from '@/lib/prisma';
+import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 
 export async function GET(request: Request) {
   try {
@@ -33,8 +34,16 @@ export async function POST(request: Request) {
     const isPayment = status === 'PENDING' || status === 'DRAFT';
     const prefix = isPayment ? 'PC' : 'PT';
     const year = new Date().getFullYear();
-    const count = await prisma.document.count();
-    const code = `${prefix}-${year}-${String(count + 125).padStart(5, '0')}`;
+    // COUNT toàn bảng đếm lẫn cả PC và PT của mọi năm nên số thứ tự không thuộc chuỗi nào;
+    // "+125" là bù trừ cho dữ liệu cũ. Max + 1 trong đúng chuỗi loại + năm giữ được số đang
+    // chạy (mã cũ đã mang sẵn phần bù) mà không bao giờ cấp lại mã đang tồn tại.
+    const documentPrefix = `${prefix}-${year}-`;
+    const issuedDocumentCodes = await prisma.document.findMany({
+      where: { code: { startsWith: documentPrefix } },
+      select: { code: true },
+    });
+    const seq = nextSeqFromCodes(issuedDocumentCodes.map((row) => row.code), documentPrefix);
+    const code = documentPrefix + String(Math.max(seq, 125)).padStart(5, '0');
 
     const newDoc = await prisma.document.create({
       data: {

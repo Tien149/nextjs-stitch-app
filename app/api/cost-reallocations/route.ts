@@ -4,6 +4,7 @@ import { prisma, prismaRaw } from "@/lib/prisma";
 import { assertBranchAccess, branchFilterForSession, ensureDefaultAccounts } from "@/lib/accounting";
 import { cleanText, isPeriodLocked, periodFromDate, toDate, toNumber } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
+import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { SoftDeleteError } from "@/lib/soft-delete";
 import {
   costReallocationTotal,
@@ -128,8 +129,10 @@ export async function POST(request: Request) {
 
     const created = await prismaRaw.$transaction(async (tx) => {
       const prefix = `PBCP-${period.replace("-", "")}`;
-      const count = await tx.costReallocation.count({ where: { code: { startsWith: `${prefix}-` } } });
-      const code = `${prefix}-${String(count + 1).padStart(4, "0")}`;
+      // Max + 1 chứ không COUNT: phiếu bị xoá làm COUNT tụt và cấp lại mã đang còn sống.
+      const codePrefix = `${prefix}-`;
+      const issuedCodes = await tx.costReallocation.findMany({ where: { code: { startsWith: codePrefix } }, select: { code: true } });
+      const code = codePrefix + String(nextSeqFromCodes(issuedCodes.map((row) => row.code), codePrefix)).padStart(4, "0");
 
       const reallocation = await tx.costReallocation.create({
         data: {
