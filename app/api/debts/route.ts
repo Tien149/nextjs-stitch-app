@@ -383,6 +383,13 @@ export async function PATCH(request: Request) {
         { status: 400 },
       );
     }
+    // Tương tự với phiếu điều tiền liên nhà hàng: công nợ nội bộ là mặt sau của chính phiếu.
+    if (current.sourceType === "MONEY_TRANSFER") {
+      return NextResponse.json(
+        { error: "Công nợ nội bộ này do phiếu điều tiền liên nhà hàng sinh ra. Hãy xử lý ở màn Vận hành tài chính để bút toán và công nợ đi cùng nhau." },
+        { status: 400 },
+      );
+    }
 
     // Đã thanh toán một phần hay tất toán thì số liệu do phiếu thu/chi quyết định.
     const settlementCount = await prisma.debtSettlement.count({ where: { debtId: id } });
@@ -496,6 +503,12 @@ export async function DELETE(request: Request) {
     if (current.sourceType === "COST_REALLOCATION") {
       return NextResponse.json(
         { error: "Công nợ nội bộ này do phiếu phân bổ chi phí sinh ra. Hãy xoá phiếu ở màn Phân bổ chi phí để hoàn tác đồng bộ cả bút toán." },
+        { status: 400 },
+      );
+    }
+    if (current.sourceType === "MONEY_TRANSFER") {
+      return NextResponse.json(
+        { error: "Công nợ nội bộ này do phiếu điều tiền liên nhà hàng sinh ra. Hãy xử lý ở màn Vận hành tài chính để bút toán và công nợ đi cùng nhau." },
         { status: 400 },
       );
     }

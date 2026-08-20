@@ -9,6 +9,7 @@ import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue
 import { groupBankStatementRows } from "@/lib/bank-statement-import";
 import { isPeriodLocked } from "@/lib/phase3";
 import { normalizeMoneySourceGroup } from "@/lib/money-sources";
+import { moneySourceBranchCode, resolveTransferMoneySource } from "@/lib/internal-transfer";
 import { bankStatementSpecialCategory } from "@/lib/bank-statement-category";
 import { evaluateBankStatementAutoApproval } from "@/lib/bank-statement-auto-approval";
 import {
@@ -242,16 +243,50 @@ function validateVoucher(row: ParsedImportRow, masterItems: MasterItem[]) {
   }
 }
 
-function validateTransfer(row: ParsedImportRow, masterItems: MasterItem[]) {
+function validateTransfer(row: ParsedImportRow, masterItems: MasterItem[], session: DemoSession) {
   if (numberValue(row.values.amount) <= 0) addError(row, "Số tiền phải lớn hơn 0");
-  const branchCode = text(row.values.branch_code);
-  const from = resolveMaster(masterItems, "MONEY_SOURCE", row.values.from_money_source_code, branchCode);
-  const to = resolveMaster(masterItems, "MONEY_SOURCE", row.values.to_money_source_code, branchCode);
-  if (!from) addError(row, `Nguồn chuyển [${text(row.values.from_money_source_code)}] không tồn tại, đã ngưng hoặc không thuộc cửa hàng [${branchCode}]`);
-  else row.values.from_money_source_code = from.code;
-  if (!to) addError(row, `Nguồn nhận [${text(row.values.to_money_source_code)}] không tồn tại, đã ngưng hoặc không thuộc cửa hàng [${branchCode}]`);
-  else row.values.to_money_source_code = to.code;
-  if (from && to && from.code === to.code) addError(row, "Nguồn chuyển và nguồn nhận không được giống nhau");
+  const branchCode = text(row.values.branch_code).toUpperCase();
+  // Nguồn tiền được phép thuộc cửa hàng KHÁC cửa hàng của dòng: tiền chạy qua lại giữa hai
+  // nhà hàng là nghiệp vụ có thật (Asa chi hộ Nam Mê), trước đây bị chặn thẳng ở preview.
+  const moneySources = masterItems.filter((item) => item.type === "MONEY_SOURCE");
+  const from = resolveTransferMoneySource(moneySources, row.values.from_money_source_code, branchCode);
+  const to = resolveTransferMoneySource(moneySources, row.values.to_money_source_code, branchCode);
+  if (from.ambiguous) addError(row, `Nguồn chuyển [${text(row.values.from_money_source_code)}] đang có ở nhiều cửa hàng — ghi đúng mã nguồn tiền của cửa hàng cần dùng`);
+  else if (!from.source) addError(row, `Nguồn chuyển [${text(row.values.from_money_source_code)}] không tồn tại hoặc đã ngưng hoạt động`);
+  else row.values.from_money_source_code = from.source.code;
+  if (to.ambiguous) addError(row, `Nguồn nhận [${text(row.values.to_money_source_code)}] đang có ở nhiều cửa hàng — ghi đúng mã nguồn tiền của cửa hàng cần dùng`);
+  else if (!to.source) addError(row, `Nguồn nhận [${text(row.values.to_money_source_code)}] không tồn tại hoặc đã ngưng hoạt động`);
+  else row.values.to_money_source_code = to.source.code;
+  if (from.source && to.source && from.source.code === to.source.code) addError(row, "Nguồn chuyển và nguồn nhận không được giống nhau");
+  if (!from.source || !to.source) return;
+
+  const fromBranch = moneySourceBranchCode(from.source, branchCode);
+  const toBranch = moneySourceBranchCode(to.source, branchCode);
+  row.values.from_branch_code = fromBranch;
+  row.values.to_branch_code = toBranch;
+  if (fromBranch === toBranch) {
+    // Cả hai nguồn cùng thuộc một cửa hàng khác hẳn cột Cửa hàng: dòng đang khai nhầm cửa hàng.
+    if (branchCode && fromBranch !== branchCode) {
+      addError(row, `Nguồn chuyển và nguồn nhận đều thuộc cửa hàng [${fromBranch}], không phải cửa hàng [${branchCode}] của dòng`);
+    }
+    return;
+  }
+
+  // Điều tiền liên nhà hàng: ghi sổ vào cả hai bên nên phải có quyền và phải là cửa hàng thật.
+  if (branchCode && branchCode !== fromBranch && branchCode !== toBranch) {
+    addError(row, `Cửa hàng [${branchCode}] của dòng không phải bên chuyển [${fromBranch}] cũng không phải bên nhận [${toBranch}]`);
+  }
+  for (const branch of [fromBranch, toBranch]) {
+    if (!resolveMaster(masterItems, "BRANCH", branch)) {
+      addError(row, `Cửa hàng [${branch}] của nguồn tiền không tồn tại hoặc ngưng hoạt động`);
+      continue;
+    }
+    try {
+      assertBranchAccess(session, branch);
+    } catch (error) {
+      addError(row, error instanceof Error ? error.message : `Không có quyền với cửa hàng ${branch}`);
+    }
+  }
 }
 
 function validateDebt(row: ParsedImportRow, masterItems: MasterItem[]) {
@@ -1004,7 +1039,7 @@ export async function validateImportResult(
     if (branchTypes.includes(importType)) validateBranch(row, session, masterItems);
 
     if (importType === "VOUCHER") validateVoucher(row, masterItems);
-    if (importType === "INTERNAL_TRANSFER") validateTransfer(row, masterItems);
+    if (importType === "INTERNAL_TRANSFER") validateTransfer(row, masterItems, session);
     if (importType === "DEBT_OPENING") validateDebt(row, masterItems);
     if (importType === "INVENTORY_TRANSACTION") validateInventoryTransaction(row, masterItems, inventoryItems, inventoryBalances);
     if (importType === "BOM") validateBom(row, inventoryItems);

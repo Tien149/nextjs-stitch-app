@@ -992,6 +992,14 @@ model MoneyTransfer {
   /// Ngày tiền mặt thực tế rời quỹ và vào nguồn nhận. Chỉ bắt buộc khi duyệt CASH_DEPOSIT mới.
   actualTransferDate  DateTime?
   branchCode          String
+  /// Cửa hàng sở hữu nguồn tiền đi / nguồn tiền nhận. Trống nghĩa là cùng `branchCode`.
+  /// Khác nhau = điều tiền liên nhà hàng: mỗi đầu ghi sổ riêng và sinh công nợ nội bộ.
+  fromBranchCode      String?
+  toBranchCode        String?
+  /// Công nợ nội bộ sinh khi duyệt phiếu liên nhà hàng: bên chuyển có phải thu, bên nhận
+  /// có phải trả. Hoàn tiền thì phiếu thu/chi gạch thẳng vào hai mã này.
+  internalReceivableDebtCode String?
+  internalPayableDebtCode    String?
   fromMoneySourceCode String
   toMoneySourceCode   String
   amount              Float
@@ -1024,6 +1032,8 @@ model MoneyTransfer {
   @@index([transferDate])
   @@index([actualTransferDate])
   @@index([branchCode])
+  @@index([fromBranchCode])
+  @@index([toBranchCode])
   @@index([status])
   @@index([transferPurpose])
   @@index([sourceReportDate])

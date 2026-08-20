@@ -8,34 +8,11 @@ import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { SoftDeleteError } from "@/lib/soft-delete";
 import {
   costReallocationTotal,
-  internalPartnerCode,
   journalIsBalanced,
   planCostReallocationJournals,
   validateCostReallocation,
 } from "@/lib/cost-reallocation";
-
-/**
- * Đối tác nội bộ đại diện một nhà hàng. Tạo sẵn khi cần để công nợ nội bộ có đối tượng cụ
- * thể — không bắt người dùng phải tự khai danh mục trước mới lập được phiếu.
- */
-async function ensureInternalPartner(tx: typeof prisma, branchCode: string) {
-  const code = internalPartnerCode(branchCode);
-  const existing = await tx.masterDataItem.findFirst({ where: { type: "PARTNER", code } });
-  if (existing) return existing;
-  const branch = await tx.masterDataItem.findFirst({ where: { type: "BRANCH", code: branchCode }, select: { name: true } });
-  return tx.masterDataItem.create({
-    data: {
-      type: "PARTNER",
-      code,
-      name: `${branch?.name || branchCode} (nội bộ)`,
-      group: "OTHER_PARTNER",
-      partnerType: "OTHER_PARTNER",
-      partnerGroup: "INTERNAL",
-      status: "ACTIVE",
-      note: "Tự tạo cho công nợ nội bộ giữa các nhà hàng",
-    },
-  });
-}
+import { ensureInternalPartner } from "@/lib/internal-partner";
 
 export async function GET(request: Request) {
   try {

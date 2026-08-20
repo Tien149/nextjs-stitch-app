@@ -6,6 +6,7 @@ import { normalizeCategoryGroup } from "@/lib/voucher-rules";
 import { moneySourceAccountCode } from "@/lib/money-sources";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/lib/money-transfer-date";
+import { planMoneyTransferJournals } from "@/lib/internal-transfer";
 
 export const defaultAccounts = [
   { code: "1111", name: "Tiền mặt", accountType: "ASSET", normalBalance: "DEBIT", reportGroup: "CASH" },
@@ -246,34 +247,45 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
 
   // Điều chuyển có chênh lệch phải giảm đủ nguồn đi, tăng nguồn nhận theo số thực chuyển
   // và đưa phần chênh vào chi phí. Cùng một logic áp dụng cho phí ví và làm tròn tiền nộp.
+  //
+  // Phiếu liên nhà hàng ghi sổ ở CẢ hai cửa hàng nên phải lấy cả phiếu do cửa hàng bên kia
+  // lập; mỗi bút toán tự kiểm kỳ khóa theo cửa hàng của chính nó trong postJournalEntry.
+  const transferBranchFilter = branchCode === "ALL"
+    ? {}
+    : { OR: [{ branchCode }, { fromBranchCode: branchCode }, { toBranchCode: branchCode }] };
   const [moneyTransfers, transferMoneySources] = await Promise.all([
-    prisma.moneyTransfer.findMany({ where: { ...branchFilter, ...effectiveMoneyTransferDateFilter(start, end), status: "APPROVED" } }),
+    prisma.moneyTransfer.findMany({ where: { ...transferBranchFilter, ...effectiveMoneyTransferDateFilter(start, end), status: "APPROVED" } }),
     prisma.masterDataItem.findMany({ where: { type: "MONEY_SOURCE" } }),
   ]);
   const transferSourceByCode = new Map(transferMoneySources.map((source) => [source.code, source]));
   for (const row of moneyTransfers) {
     const grossAmount = row.amount + row.feeAmount;
     if (grossAmount <= 0) continue;
-    const fromAccount = moneySourceAccountCode(transferSourceByCode.get(row.fromMoneySourceCode));
-    const toAccount = moneySourceAccountCode(transferSourceByCode.get(row.toMoneySourceCode));
-    const lines: EntryLine[] = [];
-    if (row.amount > 0) lines.push({ accountCode: toAccount, debit: row.amount });
-    const grabExpenseAmount = Math.min(Math.max(0, row.grabExpenseAmount), Math.max(0, row.feeAmount));
-    const cardFeeAmount = Math.max(0, row.feeAmount - grabExpenseAmount);
-    if (grabExpenseAmount > 0) lines.push({ accountCode: "6428", debit: grabExpenseAmount, categoryCode: row.grabExpenseCategoryCode });
-    if (cardFeeAmount > 0) lines.push({ accountCode: "6428", debit: cardFeeAmount, categoryCode: row.feeCategoryCode });
-    if (row.feeAmount < 0) lines.push({ accountCode: "6428", credit: -row.feeAmount, categoryCode: row.feeCategoryCode });
-    lines.push({ accountCode: fromAccount, credit: grossAmount });
-    results.push(await postJournalEntry({
-      entryDate: effectiveMoneyTransferDate(row),
+    const journals = planMoneyTransferJournals({
       branchCode: row.branchCode,
-      sourceType: "MONEY_TRANSFER",
-      sourceId: row.id,
-      sourceCode: row.code,
+      fromBranchCode: row.fromBranchCode,
+      toBranchCode: row.toBranchCode,
+      amount: row.amount,
+      feeAmount: row.feeAmount,
+      grabExpenseAmount: row.grabExpenseAmount,
+      feeCategoryCode: row.feeCategoryCode,
+      grabExpenseCategoryCode: row.grabExpenseCategoryCode,
+      fromAccountCode: moneySourceAccountCode(transferSourceByCode.get(row.fromMoneySourceCode)),
+      toAccountCode: moneySourceAccountCode(transferSourceByCode.get(row.toMoneySourceCode)),
       description: row.description,
-      createdBy: actor,
-      lines,
-    }));
+    });
+    for (const journal of journals) {
+      results.push(await postJournalEntry({
+        entryDate: effectiveMoneyTransferDate(row),
+        branchCode: journal.branchCode,
+        sourceType: journal.sourceType,
+        sourceId: row.id,
+        sourceCode: row.code,
+        description: journal.description || row.description,
+        createdBy: actor,
+        lines: journal.lines as EntryLine[],
+      }));
+    }
   }
 
   const payables = await prisma.supplierPayable.findMany({ where: { recognizedDate: { gte: start, lt: end }, ...(branchCode === "ALL" ? {} : { purchaseOrder: { branchCode } }) }, include: { purchaseOrder: true } });

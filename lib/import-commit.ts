@@ -1477,6 +1477,10 @@ export async function commitImport(input: CommitInput) {
             code: await nextTransferCode(tx, "CTNB", transferDate, branchCode),
             transferDate,
             branchCode,
+            // Điều tiền liên nhà hàng: nhớ cửa hàng của TỪNG nguồn để lúc duyệt ghi sổ đúng
+            // bên và sinh công nợ nội bộ. Cùng cửa hàng thì hai cột này bằng branchCode.
+            fromBranchCode: asText(row.values.from_branch_code) || branchCode,
+            toBranchCode: asText(row.values.to_branch_code) || branchCode,
             fromMoneySourceCode: asText(row.values.from_money_source_code),
             toMoneySourceCode: asText(row.values.to_money_source_code),
             amount: asNumber(row.values.amount),
@@ -1698,6 +1702,25 @@ async function rollbackVouchers(tx: RawTxClient, batchId: string) {
 }
 
 async function rollbackTransfers(tx: RawTxClient, batchId: string) {
+  const transfers = await tx.moneyTransfer.findMany({
+    where: { importBatchId: batchId },
+    select: { id: true, internalReceivableDebtCode: true, internalPayableDebtCode: true },
+  });
+  if (transfers.length === 0) return;
+  // Phiếu liên nhà hàng đã duyệt để lại công nợ nội bộ hai đầu và bút toán ở cả hai cửa
+  // hàng; xoá phiếu mà bỏ lại hai thứ đó thì sổ của cửa hàng bên kia treo số vĩnh viễn.
+  const debtCodes = transfers
+    .flatMap((transfer) => [transfer.internalReceivableDebtCode, transfer.internalPayableDebtCode])
+    .filter((code): code is string => Boolean(code));
+  if (debtCodes.length > 0) {
+    const settled = await tx.debtSettlement.count({ where: { debt: { code: { in: debtCodes } } } });
+    if (settled > 0) throw new Error("Công nợ nội bộ của phiếu điều tiền đã có thanh toán, không thể rollback tự động");
+    await tx.debtRecord.deleteMany({ where: { code: { in: debtCodes } } });
+  }
+  const transferIds = transfers.map((transfer) => transfer.id);
+  await tx.journalEntry.deleteMany({
+    where: { sourceType: { in: ["MONEY_TRANSFER", "MONEY_TRANSFER_COUNTERPART"] }, sourceId: { in: transferIds } },
+  });
   await tx.moneyTransfer.deleteMany({ where: { importBatchId: batchId } });
 }
 

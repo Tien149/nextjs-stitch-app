@@ -10,6 +10,7 @@ import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { shiftLabels } from "@/lib/shifts";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
+import { transferBranches } from "@/lib/internal-transfer";
 
 type CashEntry = { id: string; date: string; createdAt: string; code: string; type: string; moneySourceCode: string; description: string; receipt: number; payment: number; balance: number };
 type Schedule = { id: string; period: string; amount: number; status: string };
@@ -22,6 +23,8 @@ type MoneyTransfer = {
   transferDate: string;
   actualTransferDate?: string | null;
   branchCode: string;
+  fromBranchCode?: string | null;
+  toBranchCode?: string | null;
   fromMoneySourceCode: string;
   toMoneySourceCode: string;
   amount: number;
@@ -29,6 +32,8 @@ type MoneyTransfer = {
   description: string;
   externalRef?: string | null;
   status: string;
+  internalReceivableDebtCode?: string | null;
+  internalPayableDebtCode?: string | null;
   transferPurpose?: string | null;
   depositTargetType?: string | null;
   sourceReportDate?: string | null;
@@ -55,6 +60,23 @@ type InternalTransferEditForm = {
 };
 
 const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value);
+
+/**
+ * Nguồn tiền được chọn cho phiếu điều tiền: gồm nguồn của cửa hàng phiếu và của cửa hàng
+ * bên kia khi đây là phiếu liên nhà hàng, để sửa phiếu không làm mất nguồn của bên nhận.
+ */
+const transferSourceOptions = (sources: MasterDataOption[], transfer: MoneyTransfer) => {
+  const { fromBranchCode, toBranchCode } = transferBranches(transfer);
+  const branches = [...new Set([transfer.branchCode, fromBranchCode, toBranchCode])];
+  const seen = new Set<string>();
+  return branches.flatMap((branch) => filterMoneySources(sources, branch)
+    .filter((source) => {
+      if (seen.has(source.code)) return false;
+      seen.add(source.code);
+      return true;
+    })
+    .map((source) => ({ source, branch })));
+};
 const cashDepositTargetLabels: Record<string, string> = { PKT: "Nộp Tiền PKT", CO: "Nộp Tiền Cô" };
 const cashDepositDenominations = [500000, 200000, 100000, 50000, 20000, 10000, 5000, 2000, 1000];
 
@@ -684,9 +706,19 @@ export default function FinanceOperationsPage() {
                             )}
                           </td>
                           <td className="px-4 py-3 text-slate-500">{transfer.actualTransferDate ? new Date(transfer.actualTransferDate).toLocaleDateString("vi-VN", { timeZone: "UTC" }) : "—"}</td>
-                          <td className="px-4 py-3">{transfer.fromMoneySourceCode}</td>
+                          <td className="px-4 py-3">
+                            <p>{transfer.fromMoneySourceCode}</p>
+                            {transferBranches(transfer).isCrossBranch && (
+                              <p className="mt-1 text-[11px] font-bold text-indigo-700">{storeLabel(transferBranches(transfer).fromBranchCode)}</p>
+                            )}
+                          </td>
                           <td className="px-4 py-3">
                             <p>{transfer.toMoneySourceCode}</p>
+                            {transferBranches(transfer).isCrossBranch && (
+                              <p className="mt-1 text-[11px] font-bold text-indigo-700">
+                                {storeLabel(transferBranches(transfer).toBranchCode)} · ghi công nợ nội bộ hai đầu
+                              </p>
+                            )}
                             {transfer.denominations && transfer.denominations.length > 0 && (
                               <p className="mt-1 text-[11px] font-medium text-slate-500">
                                 {transfer.denominations.map((row) => `${money(row.denomination)} x ${row.quantity}`).join(", ")}
@@ -1301,8 +1333,8 @@ export default function FinanceOperationsPage() {
             <div className="grid gap-4 p-5 sm:grid-cols-2">
               <label className="text-xs font-bold text-slate-600">Ngày điều tiền *<DateInput className="mt-1.5 w-full" value={editingInternalTransfer.transferDate} onChange={(value) => setEditingInternalTransfer((current) => current ? { ...current, transferDate: value } : current)} ariaLabel="Ngày điều tiền nội bộ" /></label>
               <label className="text-xs font-bold text-slate-600">Số tiền *<input className="control mt-1.5 text-right" inputMode="numeric" value={editingInternalTransfer.amount} onChange={(event) => setEditingInternalTransfer((current) => current ? { ...current, amount: event.target.value.replace(/\D/g, "") } : current)} /></label>
-              <label className="text-xs font-bold text-slate-600">Từ nguồn *<select className="control mt-1.5" value={editingInternalTransfer.fromMoneySourceCode} onChange={(event) => setEditingInternalTransfer((current) => current ? { ...current, fromMoneySourceCode: event.target.value } : current)}>{filterMoneySources(moneySources, editingInternalTransfer.transfer.branchCode).map((source) => <option key={source.code} value={source.code}>{moneySourceDisplayName(source, storeLabel(editingInternalTransfer.transfer.branchCode))}</option>)}</select></label>
-              <label className="text-xs font-bold text-slate-600">Đến nguồn *<select className="control mt-1.5" value={editingInternalTransfer.toMoneySourceCode} onChange={(event) => setEditingInternalTransfer((current) => current ? { ...current, toMoneySourceCode: event.target.value } : current)}>{filterMoneySources(moneySources, editingInternalTransfer.transfer.branchCode).filter((source) => source.code !== editingInternalTransfer.fromMoneySourceCode).map((source) => <option key={source.code} value={source.code}>{moneySourceDisplayName(source, storeLabel(editingInternalTransfer.transfer.branchCode))}</option>)}</select></label>
+              <label className="text-xs font-bold text-slate-600">Từ nguồn *<select className="control mt-1.5" value={editingInternalTransfer.fromMoneySourceCode} onChange={(event) => setEditingInternalTransfer((current) => current ? { ...current, fromMoneySourceCode: event.target.value } : current)}>{transferSourceOptions(moneySources, editingInternalTransfer.transfer).map(({ source, branch }) => <option key={source.code} value={source.code}>{moneySourceDisplayName(source, storeLabel(branch))} · {storeLabel(branch)}</option>)}</select></label>
+              <label className="text-xs font-bold text-slate-600">Đến nguồn *<select className="control mt-1.5" value={editingInternalTransfer.toMoneySourceCode} onChange={(event) => setEditingInternalTransfer((current) => current ? { ...current, toMoneySourceCode: event.target.value } : current)}>{transferSourceOptions(moneySources, editingInternalTransfer.transfer).filter(({ source }) => source.code !== editingInternalTransfer.fromMoneySourceCode).map(({ source, branch }) => <option key={source.code} value={source.code}>{moneySourceDisplayName(source, storeLabel(branch))} · {storeLabel(branch)}</option>)}</select></label>
               <label className="text-xs font-bold text-slate-600 sm:col-span-2">Tham chiếu ngoài<input className="control mt-1.5" value={editingInternalTransfer.externalRef} onChange={(event) => setEditingInternalTransfer((current) => current ? { ...current, externalRef: event.target.value } : current)} /></label>
               <label className="text-xs font-bold text-slate-600 sm:col-span-2">Diễn giải *<textarea className="control mt-1.5 min-h-24" value={editingInternalTransfer.description} onChange={(event) => setEditingInternalTransfer((current) => current ? { ...current, description: event.target.value } : current)} /></label>
             </div>
