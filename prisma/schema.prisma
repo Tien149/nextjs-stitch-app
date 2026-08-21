@@ -48,6 +48,8 @@ model MasterDataItem {
   /// Nguồn tiền ngân hàng mà ví/POS này sẽ quyết toán về. Chỉ dùng cho MONEY_SOURCE nhóm WALLET,
   /// để báo cáo nguồn tiền quy được doanh thu ví chưa về bank vào cột Dự thu trong kỳ.
   settlementBankCode String?
+  /// Tên "Nguồn tiền tổng" — các MONEY_SOURCE cùng tên tổng được Báo cáo nguồn tiền gộp thành một dòng.
+  summarySourceName String?
   status       String   @default("ACTIVE")
   note         String?
   createdAt    DateTime @default(now())
@@ -174,6 +176,7 @@ model ImportBatch {
   moneyTransfers        MoneyTransfer[]
   debtRecords           DebtRecord[]
   inventoryTransactions InventoryTransaction[]
+  assetStocktakes       AssetStocktakeSession[]
 
   deletedAt DateTime?
   deletedBy String?
@@ -504,6 +507,7 @@ model AssetRecord {
   createdAt               DateTime            @default(now())
   updatedAt               DateTime            @updatedAt
   depreciations           AssetDepreciation[]
+  stocktakeLines          AssetStocktakeLine[]
   maintenances            AssetMaintenance[]
   damageReports           AssetDamageReport[]
 
@@ -676,6 +680,7 @@ model InventoryTransaction {
   referenceId     String?
   referenceCode   String?
   status          String   @default("POSTED")
+  partnerCode     String?
   note            String?
   createdBy       String?
   createdAt       DateTime @default(now())
@@ -881,6 +886,7 @@ model Recipe {
   version       Int      @default(1)
   effectiveFrom DateTime @default(now())
   status        String   @default("ACTIVE")
+  note          String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -1555,4 +1561,48 @@ model UserBranchAccess {
 
   @@unique([userId, branchCode])
   @@index([userId])
+}
+
+/// Kiểm kê CCDC & Tài sản — tách khỏi kiểm kê hàng tồn kho theo yêu cầu khách:
+/// hàng hoá kiểm ở Kho & Định lượng, CCDC/tài sản kiểm ở Tài sản & khấu hao.
+model AssetStocktakeSession {
+  id            String    @id @default(uuid())
+  importBatchId String?
+  code          String    @unique
+  stocktakeDate DateTime
+  branchCode    String
+  status        String    @default("APPROVED")
+  note          String?
+  createdBy     String?
+  approvedBy    String?
+  approvedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  importBatch ImportBatch?         @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  lines       AssetStocktakeLine[]
+
+  deletedAt DateTime?
+  deletedBy String?
+
+  @@index([branchCode])
+  @@index([stocktakeDate])
+  @@index([deletedAt])
+}
+
+model AssetStocktakeLine {
+  id               String  @id @default(uuid())
+  sessionId        String
+  assetId          String
+  systemQuantity   Float
+  actualQuantity   Float
+  varianceQuantity Float
+  condition        String?
+  note             String?
+
+  session AssetStocktakeSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  asset   AssetRecord           @relation(fields: [assetId], references: [id], onDelete: Restrict)
+
+  @@index([sessionId])
+  @@index([assetId])
 }

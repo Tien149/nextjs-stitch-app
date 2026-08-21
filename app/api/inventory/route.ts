@@ -14,7 +14,8 @@ import {
   SoftDeleteError,
 } from "@/lib/soft-delete";
 import { scopePayloadByTab } from "@/lib/tab-scope";
-import { nextYearlyCode } from "@/lib/voucher-code-generator";
+import { isWarehouseStocktakeItemType, itemCodePrefixError } from "@/lib/inventory-scope";
+import { nextStockDocCode, nextStocktakeCode } from "@/lib/inventory-stock";
 
 const menuHref = "/inventory";
 
@@ -51,15 +52,17 @@ function linesFrom(value: unknown) {
 
 function stocktakeLinesFrom(value: unknown) {
   if (!Array.isArray(value)) return [];
-  return (value as InputLine[]).map((line) => ({
+  return (value as (InputLine & { systemQuantity?: unknown })[]).map((line) => ({
     itemId: cleanText(line.itemId),
     itemCode: cleanText(line.itemCode),
     actualQuantity: toNumber(line.actualQuantity ?? line.quantity),
+    // Số tồn NGƯỜI ĐẾM đã thấy lúc chốt số — server so với tồn hiện tại để phát hiện tồn đã
+    // đổi giữa lúc mở màn hình và lúc duyệt (bán hàng trong ngày...). Không gửi thì bỏ kiểm.
+    systemQuantity: line.systemQuantity === undefined || line.systemQuantity === null || line.systemQuantity === "" ? null : toNumber(line.systemQuantity),
+    unitCost: toNumber(line.unitCost ?? line.inputUnitCost),
     reason: cleanText(line.reason),
   })).filter((line) => (line.itemId || line.itemCode) && Number.isFinite(line.actualQuantity) && line.actualQuantity >= 0);
 }
-
-// Mã cấp bằng nextYearlyCode (max + 1 theo đúng chuỗi PREFIX + năm) thay cho COUNT toàn bảng.
 
 function stockPrefix(transactionType: string) {
   if (transactionType === "NHAP_MUA") return "NM";
@@ -83,26 +86,10 @@ function normalizeItemType(value: unknown) {
   return raw;
 }
 
-/** Quy ước tiền tố mã theo loại mặt hàng, dùng chung cho lúc tạo và lúc sửa. */
+/** Quy ước tiền tố mã theo loại mặt hàng — rule nằm ở inventory-scope để import dùng chung. */
 function assertItemCodePrefix(itemType: string, uppercaseCode: string) {
-  if (itemType === "RAW_MATERIAL" && !uppercaseCode.startsWith("NVL_")) {
-    businessError("Mã nguyên vật liệu bắt buộc phải bắt đầu bằng 'NVL_' (ví dụ: NVL_SUADAC).");
-  }
-  if (itemType === "SEMI_FINISHED" && !uppercaseCode.startsWith("BTP_")) {
-    businessError("Mã bán thành phẩm bắt buộc phải bắt đầu bằng 'BTP_' (ví dụ: BTP_SOTCACHUA).");
-  }
-  if (itemType === "FINISHED" && !uppercaseCode.startsWith("SP_")) {
-    businessError("Mã thành phẩm bắt buộc phải bắt đầu bằng 'SP_' (ví dụ: SP_COMBO01).");
-  }
-  if (itemType === "PACKAGING" && !uppercaseCode.startsWith("BB_")) {
-    businessError("Mã bao bì bắt buộc phải bắt đầu bằng 'BB_' (ví dụ: BB_LYGIAY).");
-  }
-  if (itemType === "TOOL" && !uppercaseCode.startsWith("CCDC_")) {
-    businessError("Mã công cụ dụng cụ bắt buộc phải bắt đầu bằng 'CCDC_' (ví dụ: CCDC_MAYPHA).");
-  }
-  if (itemType === "ASSET" && !uppercaseCode.startsWith("TS_")) {
-    businessError("Mã tài sản bắt buộc phải bắt đầu bằng 'TS_' (ví dụ: TS_MAYPHA).");
-  }
+  const message = itemCodePrefixError(itemType, uppercaseCode);
+  if (message) businessError(message);
 }
 
 /** Phân nhóm mặt hàng phải tồn tại, còn hoạt động và thuộc đúng loại mặt hàng. */
@@ -494,10 +481,12 @@ export async function POST(request: Request) {
     }
 
     if (action === "CREATE_RECIPE") {
-      const inputLines = linesFrom(body.lines);
+      // POS luôn so mã món dạng UPPERCASE; giữ nguyên chữ thường ở đây là BOM không bao giờ khớp.
       const productCode = cleanText(body.productCode).toUpperCase();
       const productName = cleanText(body.productName);
-      if (!productCode || !productName || inputLines.length === 0) businessError("Định lượng cần mã món, tên món và nguyên liệu");
+      if (!productCode || !productName) businessError("Định lượng cần mã món, tên món và nguyên liệu");
+      // Dòng nguyên liệu lỗi phải báo rõ, không lặng lẽ loại bỏ — thiếu nguyên liệu là trừ kho thiếu vĩnh viễn.
+      const inputLines = editableRecipeLines(body.lines);
       const productItem = await prisma.inventoryItem.findUnique({ where: { code: productCode } });
       if (!productItem) businessError(`Khong tim thay san pham ${productCode}`);
       if (!["FINISHED", "SEMI_FINISHED"].includes(productItem.itemType)) {
@@ -551,11 +540,13 @@ export async function POST(request: Request) {
           code: recipeCode,
           productCode,
           productName,
+          // Cùng mặc định với import (ĐVT tồn kho của sản phẩm) — hai luồng ra dữ liệu giống nhau.
           unit: cleanText(body.unit) || productItem.unit,
           outputConversionRate,
           sellingPrice,
           effectiveFrom,
           version: (latest?.version || 0) + 1,
+          note: cleanText(body.note) || null,
           lines: { create: resolvedLines },
         },
         include: { lines: { include: { item: true } } },
@@ -574,6 +565,9 @@ export async function POST(request: Request) {
       assertBranchAccess(auth.session, branchCode);
       const [productItem, recipeVersions] = await Promise.all([
         prisma.inventoryItem.findUnique({ where: { code: productCode } }),
+        // Công thức đúng là bản có hiệu lực TẠI NGÀY CHẾ BIẾN (pickRecipeForDate bên dưới),
+        // không phải bản mới nhất: đổi định lượng hôm nay rồi lập lệnh cho tuần trước phải
+        // ăn theo công thức cũ.
         prisma.recipe.findMany({ where: { productCode }, include: { lines: { include: { item: true } } } }),
       ]);
       if (!productItem) businessError(`Khong tim thay ban thanh pham ${productCode}`);
@@ -586,7 +580,7 @@ export async function POST(request: Request) {
       const outputRate = recipe.outputConversionRate > 0 ? recipe.outputConversionRate : 1;
       const batchQuantity = productQuantity / outputRate;
       const result = await prisma.$transaction(async (tx) => {
-        const referenceCode = cleanText(body.referenceCode) || await nextYearlyCode(tx.inventoryTransaction, "CB");
+        const referenceCode = cleanText(body.referenceCode) || await nextStockDocCode(tx, "CB", productionDate);
         const issue = await postInventoryTransaction(tx, {
           code: `${referenceCode}-X`,
           transactionType: "XUAT_CHE_BIEN",
@@ -642,7 +636,7 @@ export async function POST(request: Request) {
       const result = await prisma.$transaction(async (tx) => {
         const stocktake = await tx.stocktakeSession.create({
           data: {
-            code: cleanText(body.code) || await nextYearlyCode(tx.stocktakeSession, "KK", stocktakeDate.getFullYear()),
+            code: cleanText(body.code) || await nextStocktakeCode(tx, stocktakeDate),
             stocktakeDate,
             branchCode,
             warehouseCode,
@@ -661,12 +655,23 @@ export async function POST(request: Request) {
             : await tx.inventoryItem.findUnique({ where: { code: row.itemCode.toUpperCase() } });
           if (!item) businessError(`Khong tim thay mat hang ${row.itemCode || row.itemId}`);
           // CCDC & Tài sản kiểm kê ở màn hình Tài sản & Khấu hao, không nằm trong kiểm kê kho.
-          if (item && ["TOOL", "ASSET"].includes(item.itemType)) {
-            businessError(`Mặt hàng ${item.code} thuộc nhóm CCDC/Tài sản — kiểm kê ở màn hình Tài sản & Khấu hao, không thuộc kiểm kê kho.`);
+          if (!isWarehouseStocktakeItemType(item.itemType)) {
+            businessError(`Mặt hàng ${item.code} là CCDC/Tài sản và phải được kiểm kê tại phân hệ Tài sản & khấu hao.`);
           }
           const balance = await tx.inventoryBalance.findUnique({ where: { itemId_warehouseCode: { itemId: item.id, warehouseCode } } });
           const systemQuantity = balance?.quantity || 0;
+          // Khoá lạc quan: người đếm chốt số dựa trên tồn HỌ NHÌN THẤY. Nếu tồn hệ thống đã đổi
+          // (bán hàng, nhập kho... sau lúc mở màn hình) mà cứ duyệt thì chênh lệch sẽ "hoàn lại"
+          // toàn bộ phát sinh trong ngày. Bắt tải lại danh sách thay vì âm thầm đảo số.
+          if (row.systemQuantity !== null && Math.abs(row.systemQuantity - systemQuantity) > quantityEpsilon) {
+            businessError(`Tồn của ${item.code} đã thay đổi từ lúc tải danh sách (${row.systemQuantity} → ${systemQuantity}). Bấm "Nạp danh sách kho" để lấy số mới rồi kiểm lại dòng này.`);
+          }
           const varianceQuantity = row.actualQuantity - systemQuantity;
+          // Hàng đếm THỪA mà chưa có giá vốn thì bắt khai đơn giá — nhập giá 0 là giá trị kho
+          // sai và giá vốn món ăn theo sai vĩnh viễn.
+          if (varianceQuantity > 0 && (balance?.averageCost || 0) <= 0 && row.unitCost <= 0) {
+            businessError(`${item.code} chưa có giá vốn trong kho ${warehouseCode}. Nhập "Đơn giá" cho dòng này để ghi nhận phần thừa ${varianceQuantity} ${item.unit}.`);
+          }
           await tx.stocktakeLine.create({
             data: {
               stocktakeId: stocktake.id,
@@ -677,7 +682,7 @@ export async function POST(request: Request) {
               reason: row.reason || cleanText(body.reason) || null,
             },
           });
-          if (varianceQuantity > 0) inboundLines.push({ itemId: item.id, inputQuantity: varianceQuantity, inputUnitCode: item.unit, inputUnitCost: balance?.averageCost || 0 });
+          if (varianceQuantity > 0) inboundLines.push({ itemId: item.id, inputQuantity: varianceQuantity, inputUnitCode: item.unit, inputUnitCost: (balance?.averageCost || 0) > 0 ? balance?.averageCost || 0 : row.unitCost });
           if (varianceQuantity < 0) outboundLines.push({ itemId: item.id, inputQuantity: Math.abs(varianceQuantity), inputUnitCode: item.unit, inputUnitCost: 0 });
         }
         const docs = [];
@@ -757,7 +762,7 @@ export async function POST(request: Request) {
       });
 
       const result = await prisma.$transaction(async (tx) => {
-        const runCode = await nextYearlyCode(tx.inventoryTransaction, "RA", dateTo.getFullYear());
+        const runCode = await nextStockDocCode(tx, "RA", dateTo);
         const documents = [];
         let sequence = 0;
         // 1) Chế biến từng cấp theo đúng thứ tự BTP → TP → combo.
@@ -973,7 +978,7 @@ export async function POST(request: Request) {
         businessError(duplicatedInTrashMessage(requestedCode, "Phiếu điều chuyển kho"));
       }
       const result = await prisma.$transaction(async (tx) => {
-        const transferCode = requestedCode || await nextYearlyCode(tx.inventoryTransaction, "DCK", transactionDate.getFullYear());
+        const transferCode = requestedCode || await nextStockDocCode(tx, "DCK", transactionDate);
         return postStockTransfer(tx, {
           code: transferCode,
           transactionDate,
@@ -1017,6 +1022,9 @@ export async function POST(request: Request) {
       });
       if (!destinationWarehouse) businessError(`Kho nhận ${toWarehouseCode} không tồn tại hoặc ngưng hoạt động`);
       if (destinationWarehouse?.branch) assertBranchAccess(auth.session, destinationWarehouse.branch);
+      // Điều chuyển liên nhà hàng giờ được hỗ trợ chính thức: phiếu nhớ cửa hàng nhận
+      // (toBranchCode) và postStockTransfer sinh cặp công nợ nội bộ, nên báo cáo hai bên
+      // đều giải thích được tồn tăng/giảm.
       destinationBranchCode = (destinationWarehouse?.branch || branchCode).toUpperCase();
     }
 
@@ -1070,7 +1078,7 @@ export async function POST(request: Request) {
     }
 
     const result = await prisma.$transaction(async (tx) => {
-      const transactionCode = cleanText(body.code) || await nextYearlyCode(tx.inventoryTransaction, stockPrefix(transactionType));
+      const transactionCode = cleanText(body.code) || await nextStockDocCode(tx, stockPrefix(transactionType), transactionDate);
       // Điều chuyển luôn đi qua postStockTransfer để chặn FINISHED và sinh công nợ nội bộ
       // khi kho nhận thuộc nhà hàng khác — kể cả phiếu tạo từ màn hình Nhập/Xuất cũ.
       if (transactionType === "DIEU_CHUYEN") {
@@ -1296,6 +1304,11 @@ export async function PATCH(request: Request) {
           await tx.recipeLine.deleteMany({ where: { recipeId } });
           await tx.recipeLine.createMany({ data: resolvedLines.map((line) => ({ recipeId, ...line })) });
         }
+        // Bật ACTIVE cho bản này thì hạ các bản ACTIVE khác của cùng món — hai bản cùng ACTIVE
+        // là POS chọn theo version cao nhất, chưa chắc bản người dùng vừa duyệt.
+        if (body.status !== undefined && cleanText(body.status).toUpperCase() === "ACTIVE") {
+          await tx.recipe.updateMany({ where: { productCode: recipe.productCode, status: "ACTIVE", id: { not: recipeId } }, data: { status: "INACTIVE" } });
+        }
         return tx.recipe.update({
           where: { id: recipeId },
           data: {
@@ -1304,6 +1317,7 @@ export async function PATCH(request: Request) {
             sellingPrice,
             outputConversionRate,
             ...(body.effectiveFrom !== undefined ? { effectiveFrom: toDate(body.effectiveFrom) } : {}),
+            ...(body.note !== undefined ? { note: cleanText(body.note) || null } : {}),
             ...(body.status !== undefined ? { status: cleanText(body.status).toUpperCase() || "ACTIVE" } : {}),
           },
           include: { lines: { include: { item: true } } },

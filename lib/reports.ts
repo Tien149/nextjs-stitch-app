@@ -236,7 +236,7 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
       }),
       prisma.masterDataItem.findMany({ where: { type: "REVENUE_EXPENSE_CATEGORY" }, select: { code: true, name: true, group: true } }),
       prisma.masterDataItem.findMany({ where: { type: "PARTNER" }, select: { code: true, name: true, group: true, partnerType: true } }),
-      prisma.masterDataItem.findMany({ where: { type: "MONEY_SOURCE" }, select: { code: true, name: true, group: true, branch: true, status: true, settlementBankCode: true } }),
+      prisma.masterDataItem.findMany({ where: { type: "MONEY_SOURCE" }, select: { code: true, name: true, group: true, branch: true, status: true, settlementBankCode: true, summarySourceName: true } }),
       // Doanh thu POS có thể tới hàng chục nghìn dòng mỗi năm nên gom sẵn theo ngày bán và danh mục Thu.
       prisma.revenueImportRow.groupBy({
         by: ["saleDate", "revenueSource", "paymentMethod", "channel"],
@@ -379,7 +379,7 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
   const income = new Map<string, CashCategoryRow>();
   const expense = new Map<string, CashCategoryRow>();
   const expenseByPartner = new Map<string, CashPartnerRow>();
-  const sourceFlows = new Map<string, { code: string; name: string; group: string | null; branchCode: string; opening: number; in: number; out: number; transferIn: number; transferOut: number; expectedIn: number; expectedOut: number; netByMonth: number[] }>();
+  const sourceFlows = new Map<string, { code: string; name: string; group: string | null; branchCode: string; summaryName: string | null; opening: number; in: number; out: number; transferIn: number; transferOut: number; expectedIn: number; expectedOut: number; netByMonth: number[] }>();
 
   const touchSource = (code: string) => {
     const existing = sourceFlows.get(code);
@@ -390,6 +390,7 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
       name: master?.name || code,
       group: master?.group || null,
       branchCode: master?.branch || "ALL",
+      summaryName: master?.summarySourceName || null,
       opening: 0,
       in: 0,
       out: 0,
@@ -817,21 +818,44 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
       .map((row) => ({ ...row, closing: row.opening + row.increase - row.used }))
       .filter((row) => Math.abs(row.opening) > 0.5 || Math.abs(row.increase) > 0.5 || Math.abs(row.used) > 0.5)
       .sort((a, b) => b.closing - a.closing),
-    sources: Array.from(sourceFlows.values())
-      .map((row) => {
-        // Dự thu/dự chi là tiền CHƯA vào/ra thật nên không được đụng vào số dư cuối kỳ;
-        // chúng chỉ dựng thêm một số dư dự kiến để nhìn trước dòng tiền.
-        const closing = row.opening + row.in - row.out + row.transferIn - row.transferOut;
-        // Số dư cuối mỗi tháng = đầu kỳ + cộng dồn biến động ròng của các tháng trước đó,
-        // cho bảng "Tổng quan nguồn tiền cuối mỗi tháng" của báo cáo năm.
-        let running = row.opening;
-        const closingByMonth = row.netByMonth.map((net) => (running += net));
-        return { ...row, closing, closingByMonth, expectedClosing: closing + row.expectedIn - row.expectedOut };
-      })
-      .filter((row) => ["CASH", "BANK"].includes(normalizeMoneySourceGroup(row.group)))
-      .filter((row) => moneySourceMatchesBranch({ ...row, branch: row.branchCode }, branchCode))
-      // Khách yêu cầu xếp theo tên nguồn tiền để dò bằng mắt cho nhanh.
-      .sort((a, b) => a.branchCode.localeCompare(b.branchCode) || a.name.localeCompare(b.name, "vi")),
+    sources: (() => {
+      const detailRows = Array.from(sourceFlows.values())
+        .filter((row) => ["CASH", "BANK"].includes(normalizeMoneySourceGroup(row.group)))
+        .filter((row) => moneySourceMatchesBranch({ ...row, branch: row.branchCode }, branchCode));
+      // Gộp các nguồn cùng "Nguồn tiền tổng" (khai trên danh mục) thành một dòng; gộp trước khi
+      // tính số dư vì mọi cột đều cộng tuyến tính. Nguồn không khai tên tổng giữ nguyên từng dòng.
+      const grouped = new Map<string, (typeof detailRows)[number] & { memberCodes: string[] }>();
+      for (const row of detailRows) {
+        const key = row.summaryName ? `${row.branchCode}|${row.summaryName}` : `${row.branchCode}|#${row.code}`;
+        const current = grouped.get(key);
+        if (!current) {
+          grouped.set(key, { ...row, name: row.summaryName || row.name, memberCodes: [row.code], netByMonth: [...row.netByMonth] });
+          continue;
+        }
+        current.memberCodes.push(row.code);
+        current.opening += row.opening;
+        current.in += row.in;
+        current.out += row.out;
+        current.transferIn += row.transferIn;
+        current.transferOut += row.transferOut;
+        current.expectedIn += row.expectedIn;
+        current.expectedOut += row.expectedOut;
+        row.netByMonth.forEach((net, index) => { current.netByMonth[index] += net; });
+      }
+      return Array.from(grouped.values())
+        .map((row) => {
+          // Dự thu/dự chi là tiền CHƯA vào/ra thật nên không được đụng vào số dư cuối kỳ;
+          // chúng chỉ dựng thêm một số dư dự kiến để nhìn trước dòng tiền.
+          const closing = row.opening + row.in - row.out + row.transferIn - row.transferOut;
+          // Số dư cuối mỗi tháng = đầu kỳ + cộng dồn biến động ròng của các tháng trước đó,
+          // cho bảng "Tổng quan nguồn tiền cuối mỗi tháng" của báo cáo năm.
+          let running = row.opening;
+          const closingByMonth = row.netByMonth.map((net) => (running += net));
+          return { ...row, code: row.memberCodes.join(", "), closing, closingByMonth, expectedClosing: closing + row.expectedIn - row.expectedOut };
+        })
+        // Khách yêu cầu xếp theo tên nguồn tiền để dò bằng mắt cho nhanh.
+        .sort((a, b) => a.branchCode.localeCompare(b.branchCode) || a.name.localeCompare(b.name, "vi"));
+    })(),
   };
 }
 

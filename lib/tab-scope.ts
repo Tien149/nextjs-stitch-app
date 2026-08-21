@@ -27,7 +27,9 @@ const tabDataKeys: Record<string, Record<string, string[]>> = {
     items: ["items"],
     recipes: ["recipes", "costSummary"],
     production: ["recipes", "transactions", "pendingSales"],
-    stocktake: ["stocktakes"],
+    // Form kiểm kê dựng danh sách từ balances/items — chỉ cấp "stocktakes" thì người dùng
+    // chỉ có quyền tab này sẽ nhận danh sách trống và không kiểm kê được gì.
+    stocktake: ["stocktakes", "balances", "items"],
     waste: ["transactions", "wasteReport"],
   },
   "/assets/operations": {
@@ -35,6 +37,7 @@ const tabDataKeys: Record<string, Record<string, string[]>> = {
     maintenance: ["maintenances"],
     damage: ["damageReports"],
     disposal: ["damageReports"],
+    stocktake: ["assets", "assetStocktakes"],
   },
 };
 

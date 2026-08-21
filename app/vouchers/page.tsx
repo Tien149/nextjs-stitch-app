@@ -8,7 +8,7 @@ import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { storeLabel, updateDynamicBranches } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canEditPastVoucher, canPerformAction, canPerformMenuAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import { isSameCalendarDay, normalizeCashflowCategoryType, voucherEditWindowError } from "@/lib/voucher-rules";
-import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
+import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { shiftLabel, WORK_SHIFTS } from "@/lib/shifts";
@@ -51,6 +51,8 @@ type VoucherFilters = {
   startDate: string;
   endDate: string;
   voucherType: VoucherTypeFilter;
+  /** Mã nguồn tiền (quỹ tiền mặt / tài khoản ngân hàng); rỗng nghĩa là xem tất cả nguồn. */
+  moneySourceCode: string;
   /** Chỉ hiện phiếu chưa có Khoản mục thu/chi — dòng "Chưa phân loại" trên báo cáo link về đây. */
   missingCategory?: boolean;
 };
@@ -124,6 +126,7 @@ const initialVoucherFilters: VoucherFilters = {
   startDate: "",
   endDate: "",
   voucherType: "ALL",
+  moneySourceCode: "",
 };
 
 const emptyVoucherSummary: VoucherListSummary = {
@@ -178,6 +181,8 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
   const [moneySources, setMoneySources] = useState<MasterDataOption[]>([]);
   const [moneySourcesLoading, setMoneySourcesLoading] = useState(false);
   const [moneySourcesError, setMoneySourcesError] = useState("");
+  /** Nguồn tiền dùng cho bộ lọc danh sách: tải theo mọi cửa hàng được phép nên độc lập với cửa hàng trên biểu mẫu. */
+  const [filterableMoneySources, setFilterableMoneySources] = useState<MasterDataOption[]>([]);
   const [formBranches, setFormBranches] = useState<MasterDataOption[]>([]);
   const [categories, setCategories] = useState<MasterDataOption[]>([]);
   const [pnlItems, setPnlItems] = useState<MasterDataOption[]>([]);
@@ -198,6 +203,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
       });
       if (filters.startDate) query.set("startDate", filters.startDate);
       if (filters.endDate) query.set("endDate", filters.endDate);
+      if (filters.moneySourceCode) query.set("moneySourceCode", filters.moneySourceCode);
       if (filters.missingCategory) query.set("missingCategory", "1");
 
       const response = await fetch(`/api/vouchers?${query.toString()}`);
@@ -220,11 +226,12 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
   const loadMasterData = useCallback(async (session: DemoSession, initialBranch: string) => {
     const rawSession = localStorage.getItem(SESSION_KEY);
     const headers: Record<string, string> = rawSession ? { "x-demo-session": encodeURIComponent(rawSession) } : {};
-    const [branchResponse, categoryResponse, pnlItemResponse, partnerResponse] = await Promise.all([
+    const [branchResponse, categoryResponse, pnlItemResponse, partnerResponse, moneySourceResponse] = await Promise.all([
       fetch("/api/master-data?type=BRANCH&status=ACTIVE", { headers }),
       fetch("/api/master-data?type=REVENUE_EXPENSE_CATEGORY&status=ACTIVE", { headers }),
       fetch("/api/master-data?type=PNL_ITEM", { headers }),
       fetch("/api/master-data?type=PARTNER&status=ACTIVE", { headers }),
+      fetch("/api/master-data?type=MONEY_SOURCE", { headers }),
     ]);
     if (branchResponse.ok) {
       const branchItems = (await branchResponse.json()) as MasterDataOption[];
@@ -252,6 +259,9 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
     }
     if (partnerResponse.ok) {
       setPartners((await partnerResponse.json()) as MasterDataOption[]);
+    }
+    if (moneySourceResponse.ok) {
+      setFilterableMoneySources((await moneySourceResponse.json()) as MasterDataOption[]);
     }
   }, []);
 
@@ -334,6 +344,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
           startDate: urlParams.get("from") || "",
           endDate: urlParams.get("to") || "",
           voucherType: ["RECEIPT", "PAYMENT"].includes(urlType) ? (urlType as VoucherTypeFilter) : "ALL",
+          moneySourceCode: "",
           missingCategory: true,
         }
       : initialVoucherFilters;
@@ -366,9 +377,22 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
     return () => window.clearTimeout(timer);
   }, [user, form.branchCode, loadMoneySources]);
 
+  /** Nguồn tiền đưa vào ô lọc: khớp cửa hàng đang xem và đúng kênh (tiền mặt / ngân hàng).
+      Không loại nguồn đã ngừng vì chứng từ cũ của nguồn đó vẫn cần tra lại được. */
+  const moneySourceFilterOptions = useMemo(() => (
+    filterableMoneySources
+      .filter((source) => moneySourceMatchesBranch(source, branchCode)
+        && (sourceGroups as string[]).includes(normalizeMoneySourceGroup(source.group)))
+      .sort((a, b) => moneySourceDisplayName(a).localeCompare(moneySourceDisplayName(b), "vi"))
+  ), [filterableMoneySources, branchCode, sourceGroups]);
+
   const handleBranchChange = (code: string) => {
     setBranchCode(code);
-    void loadVouchers(code, appliedFilters, 1);
+    // Nguồn tiền đang lọc có thể không thuộc cửa hàng mới -> bỏ lọc nguồn để tránh danh sách rỗng khó hiểu.
+    const nextFilters = { ...appliedFilters, moneySourceCode: "" };
+    setFilterDraft((current) => ({ ...current, moneySourceCode: "" }));
+    setAppliedFilters(nextFilters);
+    void loadVouchers(code, nextFilters, 1);
   };
 
   const applyVoucherFilters = (event: React.FormEvent) => {
@@ -1013,39 +1037,53 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                   </label>
                   <div className="space-y-2">
                     {allocationDraft.map((line, index) => (
-                      <div key={line.key} className="grid grid-cols-[1.6fr_1fr_1fr_auto] items-start gap-2">
+                      /* Cột form chỉ rộng ~1/4 trang: xếp dọc từng dòng, để 4 cột ngang thì ô chọn đối tác bị co về 0px. */
+                      <div key={line.key} className="space-y-2 rounded-lg border border-indigo-100 bg-white p-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[11px] font-bold text-slate-500">Dòng {index + 1}</span>
+                          {allocationDraft.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => setAllocationDraft((current) => current.length > 1 ? current.filter((item) => item.key !== line.key) : current)}
+                              className="rounded-lg border border-rose-200 px-2 py-0.5 text-xs font-bold text-rose-600 hover:bg-rose-50"
+                              title="Xóa dòng"
+                            >
+                              ×
+                            </button>
+                          )}
+                        </div>
                         <SearchableSelect
                           value={line.partnerCode}
                           onChange={(partnerCode) => setAllocationDraft((current) => current.map((item) => item.key === line.key ? { ...item, partnerCode } : item))}
                           options={partnerOptions.filter((partner) => partner.code).map((partner) => ({ value: partner.code, label: `${partner.code} - ${partner.name}` }))}
-                          placeholder={`Đối tác dòng ${index + 1}`}
+                          placeholder="Chọn đối tác"
                         />
-                        <input
-                          type="number"
-                          min="1"
-                          value={line.amount}
-                          onChange={(event) => setAllocationDraft((current) => current.map((item) => item.key === line.key ? { ...item, amount: event.target.value } : item))}
-                          placeholder="Số tiền"
-                          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500"
-                        />
-                        <input
-                          value={line.debtReference}
-                          onChange={(event) => setAllocationDraft((current) => current.map((item) => item.key === line.key ? { ...item, debtReference: event.target.value.toUpperCase() } : item))}
-                          placeholder="Mã công nợ (nếu có)"
-                          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setAllocationDraft((current) => current.length > 1 ? current.filter((item) => item.key !== line.key) : current)}
-                          className="mt-1 rounded-lg border border-rose-200 px-2.5 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-50"
-                          title="Xóa dòng"
-                        >
-                          ×
-                        </button>
+                        <div className="grid grid-cols-2 gap-2">
+                          <label className="block text-[11px] font-bold text-slate-600">
+                            Số tiền (đ) *
+                            <input
+                              type="number"
+                              min="1"
+                              value={line.amount}
+                              onChange={(event) => setAllocationDraft((current) => current.map((item) => item.key === line.key ? { ...item, amount: event.target.value } : item))}
+                              placeholder="0"
+                              className="mt-1 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm font-medium text-slate-800 outline-none focus:border-blue-500"
+                            />
+                          </label>
+                          <label className="block text-[11px] font-bold text-slate-600">
+                            Mã công nợ <span className="font-medium text-slate-400">(nếu có)</span>
+                            <input
+                              value={line.debtReference}
+                              onChange={(event) => setAllocationDraft((current) => current.map((item) => item.key === line.key ? { ...item, debtReference: event.target.value.toUpperCase() } : item))}
+                              placeholder="Bỏ trống"
+                              className="mt-1 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm outline-none focus:border-blue-500"
+                            />
+                          </label>
+                        </div>
                       </div>
                     ))}
                   </div>
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <button
                       type="button"
                       onClick={() => setAllocationDraft((current) => [...current, { key: Math.max(...current.map((item) => item.key)) + 1, partnerCode: "", amount: "", debtReference: "" }])}
@@ -1053,12 +1091,13 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                     >
                       + Thêm dòng đối tác
                     </button>
-                    <span className="text-sm font-bold text-slate-800">
+                    <span className="text-xs font-bold text-slate-800">
                       Tổng phân bổ: {new Intl.NumberFormat("vi-VN").format(allocationTotal)} đ · {allocationDraft.filter((line) => line.partnerCode).length} đối tác
                     </span>
                   </div>
                   <p className="text-[11px] font-medium text-slate-500">
                     Dòng có Mã công nợ sẽ gạch thẳng vào sổ nợ của đối tác đó khi phiếu được duyệt; để trống thì chỉ ghi chi cho đối tác, đối chiếu nợ sau.
+                    Mã công nợ có dạng <span className="font-bold">CNPT-YYYYMM-XXXX</span> (hoặc <span className="font-bold">CN-&lt;mã tài sản&gt;</span>), phải đúng đối tác và cùng chi nhánh với phiếu.
                   </p>
                 </div>
               ) : (
@@ -1368,6 +1407,26 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                   <option value="ALL">Tất cả thu và chi</option>
                   <option value="RECEIPT">Thu</option>
                   <option value="PAYMENT">Chi</option>
+                </select>
+              </label>
+              <label className="min-w-[190px] flex-1 text-xs font-bold text-slate-600 sm:max-w-[260px]">
+                Nguồn tiền
+                <select
+                  value={filterDraft.moneySourceCode}
+                  onChange={(event) => {
+                    setFilterDraft((current) => ({ ...current, moneySourceCode: event.target.value }));
+                    setListError("");
+                  }}
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-700 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="">Tất cả nguồn tiền</option>
+                  {moneySourceFilterOptions.map((source) => (
+                    <option key={source.id || source.code} value={source.code} title={moneySourceDebugLabel(source, storeLabel(source.branch || ""))}>
+                      {moneySourceDisplayName(source)}
+                      {branchCode === "ALL" && source.branch && source.branch !== "ALL" ? ` · ${storeLabel(source.branch)}` : ""}
+                      {source.status && source.status !== "ACTIVE" ? " (Đã ngừng)" : ""}
+                    </option>
+                  ))}
                 </select>
               </label>
               <button

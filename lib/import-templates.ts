@@ -2,6 +2,9 @@ export type ImportType =
   | "BANK_STATEMENT"
   | "REVENUE_POS"
   | "OPENING_BALANCE"
+  | "PRODUCTION"
+  | "WASTE"
+  | "ASSET_STOCKTAKE"
   | "PAYROLL"
   | "MASTER_DATA"
   | "INVENTORY_ITEM"
@@ -531,8 +534,15 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "sub_group", label: "Nhóm kho", required: false, type: "text", aliases: ["nhom kho", "nhom kho tuong ung", "sub group"], note: "Chi dung cho INVENTORY_ITEM_GROUP: nhom kho (BEP/BAR/FOH...) khop cot group cua kho WAREHOUSE." },
       { field: "partner_group", label: "Nhóm đối tượng", required: false, type: "text", aliases: ["nhom doi tuong", "ben trong ben ngoai", "partner group"] },
       { field: "branch", label: "Cửa hàng", required: false, type: "text", aliases: ["chi nhanh", "branch", "branch code"] },
+      // Chỉ có nghĩa với MONEY_SOURCE: các nguồn cùng tên tổng được Báo cáo nguồn tiền gộp một dòng.
+      { field: "summary_source_name", label: "Nguồn tiền tổng", required: false, type: "text", aliases: ["nguon tien tong", "nguon tong", "ten nguon tong", "summary source", "summary source name"] },
       { field: "tax_code", label: "Mã số thuế", required: false, type: "text", aliases: ["mst", "ma so thue", "tax code"] },
       { field: "account_no", label: "Số tài khoản", required: false, type: "text", aliases: ["so tai khoan", "stk", "account number", "account no"] },
+      { field: "contact_name", label: "Người liên hệ", required: false, type: "text", aliases: ["nguoi lien he", "lien he", "contact", "contact name"] },
+      { field: "phone", label: "Điện thoại", required: false, type: "text", aliases: ["dien thoai", "sdt", "so dien thoai", "phone"] },
+      { field: "email", label: "Email", required: false, type: "text", aliases: ["email", "thu dien tu"] },
+      { field: "note", label: "Ghi chú", required: false, type: "text", aliases: ["ghi chu", "note", "mo ta"] },
+      { field: "status", label: "Trạng thái", required: false, type: "text", aliases: ["trang thai", "status"], note: "ACTIVE hoặc INACTIVE; bỏ trống = giữ nguyên" },
     ],
   },
   {
@@ -543,12 +553,17 @@ export const importTemplates: ImportTemplateDefinition[] = [
     fields: [
       { field: "purchase_unit", label: "DVT mua", required: false, type: "text", aliases: ["dvt mua", "don vi mua", "purchase unit"] },
       { field: "conversion_rate", label: "Ty le quy doi", required: false, type: "number", aliases: ["ty le quy doi", "he so quy doi", "conversion rate"] },
+      { field: "conversion_note", label: "Ghi chu quy doi", required: false, type: "text", aliases: ["ghi chu quy doi", "conversion note"] },
       { field: "code", label: "Mã mặt hàng", required: true, type: "text", aliases: ["ma hang", "ma mat hang", "code", "item code"] },
       { field: "name", label: "Tên mặt hàng", required: true, type: "text", aliases: ["ten hang", "ten mat hang", "name", "item name"] },
       { field: "item_type", label: "Loại hàng", required: true, type: "text", aliases: ["loai hang", "loai mat hang", "item type"] },
       { field: "category", label: "Nhóm mặt hàng", required: false, type: "text", aliases: ["nhom hang", "nhom mat hang", "category", "item group"] },
       { field: "unit", label: "Đơn vị tính", required: true, type: "text", aliases: ["dvt", "don vi tinh", "unit"] },
       { field: "min_stock", label: "Tồn tối thiểu", required: false, type: "number", aliases: ["ton toi thieu", "min stock", "min_stock"] },
+      { field: "requires_image", label: "Yêu cầu hình ảnh (1/0)", required: false, type: "integer", aliases: ["yeu cau hinh anh", "bat buoc hinh anh", "requires image"] },
+      { field: "is_default_purchase", label: "ĐVT mua mặc định (1/0)", required: false, type: "integer", aliases: ["dvt mua mac dinh", "mac dinh mua", "default purchase"], note: "Khai nhiều ĐVT bằng cách lặp mã hàng trên nhiều dòng; đánh 1 cho ĐVT mua chính" },
+      { field: "note", label: "Ghi chú", required: false, type: "text", aliases: ["ghi chu", "note", "mo ta"] },
+      { field: "status", label: "Trạng thái", required: false, type: "text", aliases: ["trang thai", "status"], note: "ACTIVE hoặc INACTIVE; bỏ trống = giữ nguyên (mã mới = ACTIVE)" },
     ],
   },
   {
@@ -589,8 +604,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "ingredient_conversion_rate", label: "He so quy doi nguyen lieu", required: false, type: "number", aliases: ["he so quy doi nguyen lieu", "quy doi nguyen lieu", "ingredient conversion"], note: "So luong x he so = DVT ton kho. De trong thi tra theo DVT nguyen lieu da khai." },
       { field: "quantity", label: "So luong dinh muc", required: true, type: "number", aliases: ["so luong dinh muc", "dinh luong", "quantity"] },
       { field: "waste_rate", label: "Hao hut %", required: false, type: "number", aliases: ["hao hut", "hao hut %", "waste rate"] },
-      { field: "effective_date", label: "Ngay ap dung", required: true, type: "date", aliases: ["ngay ap dung", "effective date", "date"] },
-      { field: "version", label: "Version", required: false, type: "integer", aliases: ["version", "phien ban"] },
+      { field: "effective_date", label: "Ngay ap dung", required: true, type: "date", aliases: ["ngay ap dung", "effective date", "date"], note: "Công thức áp dụng từ ngày này; cùng món có thể khai nhiều phiên bản với ngày khác nhau" },
       { field: "note", label: "Ghi chu", required: false, type: "text", aliases: ["ghi chu", "note"] },
     ],
   },
@@ -605,7 +619,57 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "warehouse_code", label: "Kho", required: true, type: "text", aliases: ["kho", "warehouse", "warehouse code"] },
       { field: "item_code", label: "Ma hang", required: true, type: "text", aliases: ["ma hang", "ma mat hang", "item code"] },
       { field: "actual_quantity", label: "Ton thuc te", required: true, type: "number", aliases: ["ton thuc te", "actual quantity", "actual"] },
-      { field: "reason", label: "Ly do", required: false, type: "text", aliases: ["ly do", "reason", "note"] },
+      { field: "unit_cost", label: "Don gia", required: false, type: "number", aliases: ["don gia", "gia von", "unit cost"], note: "Chỉ bắt buộc khi hàng đếm THỪA mà kho chưa có giá vốn" },
+      { field: "reason", label: "Ly do", required: false, type: "text", aliases: ["ly do", "reason"] },
+      { field: "code", label: "So phieu", required: false, type: "text", aliases: ["so phieu", "ma phieu", "code"], note: "Bỏ trống để hệ thống tự đánh số KK-YYYY-####" },
+      { field: "note", label: "Ghi chu phieu", required: false, type: "text", aliases: ["ghi chu phieu", "ghi chu", "note"] },
+    ],
+  },
+  {
+    code: "PRODUCTION_STANDARD_V1",
+    importType: "PRODUCTION",
+    name: "Lenh che bien",
+    description: "Import lenh che bien ban thanh pham theo BOM: he thong tu xuat nguyen lieu theo dinh luong (co hao hut) va nhap ban thanh pham voi gia von bang tong gia tri nguyen lieu.",
+    preferredSheetNames: ["Che bien", "Lenh che bien", "Production"],
+    fields: [
+      { field: "production_date", label: "Ngay che bien", required: true, type: "date", aliases: ["ngay che bien", "ngay", "date"] },
+      { field: "branch_code", label: "Cua hang", required: true, type: "text", aliases: ["cua hang", "chi nhanh", "branch"] },
+      { field: "warehouse_code", label: "Kho xuat NVL", required: true, type: "text", aliases: ["kho xuat nvl", "kho xuat", "kho", "warehouse"] },
+      { field: "to_warehouse_code", label: "Kho nhap BTP", required: false, type: "text", aliases: ["kho nhap btp", "kho nhap", "to warehouse"], note: "Bỏ trống = nhập lại chính kho xuất" },
+      { field: "product_code", label: "Ma ban thanh pham", required: true, type: "text", aliases: ["ma ban thanh pham", "ma btp", "ma san pham", "product code"] },
+      { field: "product_quantity", label: "So luong che bien", required: true, type: "number", aliases: ["so luong che bien", "so luong", "quantity"] },
+      { field: "reference_code", label: "So chung tu", required: false, type: "text", aliases: ["so chung tu", "reference"], note: "Bỏ trống để hệ thống tự đánh số CB-YYYY-####" },
+      { field: "note", label: "Ghi chu", required: false, type: "text", aliases: ["ghi chu", "note"] },
+    ],
+  },
+  {
+    code: "WASTE_STANDARD_V1",
+    importType: "WASTE",
+    name: "Huy hang theo dinh luong",
+    description: "Import huy mon theo BOM: he thong tu xuat huy nguyen lieu theo dinh luong cua mon (co hao hut). Huy nguyen lieu le thi dung import Nhap/Xuat kho voi loai XUAT_HUY.",
+    preferredSheetNames: ["Huy hang", "Huy mon", "Waste"],
+    fields: [
+      { field: "waste_date", label: "Ngay huy", required: true, type: "date", aliases: ["ngay huy", "ngay", "date"] },
+      { field: "branch_code", label: "Cua hang", required: true, type: "text", aliases: ["cua hang", "chi nhanh", "branch"] },
+      { field: "warehouse_code", label: "Kho", required: true, type: "text", aliases: ["kho", "warehouse"] },
+      { field: "product_code", label: "Ma mon huy", required: true, type: "text", aliases: ["ma mon huy", "ma mon", "ma san pham", "product code"] },
+      { field: "product_quantity", label: "So luong mon", required: true, type: "number", aliases: ["so luong mon", "so luong", "quantity"] },
+      { field: "reason", label: "Ly do huy", required: true, type: "text", aliases: ["ly do huy", "ly do", "reason"] },
+    ],
+  },
+  {
+    code: "ASSET_STOCKTAKE_STANDARD_V1",
+    importType: "ASSET_STOCKTAKE",
+    name: "Kiem ke CCDC & Tai san",
+    description: "Import ket qua kiem ke CCDC/Tai san: so dem thuc te va tinh trang tung ma tai san. Duyet xong he thong cap nhat so luong so sach theo so dem.",
+    preferredSheetNames: ["Kiem ke tai san", "Kiem ke CCDC", "Asset stocktake"],
+    fields: [
+      { field: "stocktake_date", label: "Ngay kiem ke", required: true, type: "date", aliases: ["ngay kiem ke", "ngay", "date"] },
+      { field: "branch_code", label: "Cua hang", required: true, type: "text", aliases: ["cua hang", "chi nhanh", "branch"] },
+      { field: "asset_code", label: "Ma tai san", required: true, type: "text", aliases: ["ma tai san", "ma ccdc", "asset code"] },
+      { field: "actual_quantity", label: "So dem thuc te", required: true, type: "number", aliases: ["so dem thuc te", "so thuc te", "actual quantity"] },
+      { field: "condition", label: "Tinh trang", required: false, type: "text", aliases: ["tinh trang", "condition"], note: "Ví dụ: Tốt / Hỏng nhẹ / Chờ sửa" },
+      { field: "note", label: "Ghi chu", required: false, type: "text", aliases: ["ghi chu", "note"] },
     ],
   },
   {

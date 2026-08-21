@@ -154,7 +154,8 @@ function templateExampleRows(templateCode: string): Array<Record<string, string 
   }
   if (templateCode === "INVENTORY_ITEM_STANDARD_V1") {
     return [
-      { code: "NVL_NUOCSUOI", name: "Nuoc suoi chai", item_type: "RAW_MATERIAL", unit: "chai", purchase_unit: "thung", conversion_rate: 24, min_stock: 120 },
+      { code: "NVL_NUOCSUOI", name: "Nuoc suoi chai", item_type: "RAW_MATERIAL", unit: "chai", purchase_unit: "thung", conversion_rate: 24, conversion_note: "1 thung = 24 chai", min_stock: 120, requires_image: 0, is_default_purchase: 1 },
+      { code: "NVL_NUOCSUOI", name: "Nuoc suoi chai", item_type: "RAW_MATERIAL", unit: "chai", purchase_unit: "loc", conversion_rate: 6, conversion_note: "Lap lai ma hang de khai them DVT", min_stock: 120 },
       { code: "NVL_DUONG", name: "Duong cat", item_type: "RAW_MATERIAL", unit: "g", purchase_unit: "kg", conversion_rate: 1000, min_stock: 5000 },
       { code: "BTP_SOTCACHUA", name: "Sot ca chua", item_type: "SEMI_FINISHED", unit: "ml", purchase_unit: "lit", conversion_rate: 1000, min_stock: 3000 },
       { code: "SP_COMBO01", name: "Combo ban POS", item_type: "FINISHED", unit: "phan", min_stock: 0 },
@@ -180,7 +181,7 @@ function templateExampleRows(templateCode: string): Array<Record<string, string 
   }
   if (templateCode === "BOM_STANDARD_V1") {
     return [
-      { product_code: "SP_COMBO01", product_name: "Combo ban POS", ingredient_code: "NVL_NUOCSUOI", quantity: 1, waste_rate: 0, effective_date: new Date("2026-07-22T00:00:00Z"), version: 1, note: "1 chai/phan" },
+      { product_code: "SP_COMBO01", product_name: "Combo ban POS", selling_price: 45000, ingredient_code: "NVL_NUOCSUOI", quantity: 1, waste_rate: 0, effective_date: new Date("2026-07-22T00:00:00Z"), version: 1, note: "1 chai/phan" },
       { product_code: "SP_COMBO01", product_name: "Combo ban POS", ingredient_code: "NVL_DUONG", quantity: 20, waste_rate: 5, effective_date: new Date("2026-07-22T00:00:00Z"), version: 1, note: "20g duong/phan" },
       { product_code: "BTP_SOTCACHUA", product_name: "Sot ca chua", ingredient_code: "NVL_DUONG", quantity: 30, waste_rate: 3, effective_date: new Date("2026-07-22T00:00:00Z"), version: 1, note: "30g duong/lit sot" },
     ];
@@ -201,6 +202,22 @@ function templateExampleRows(templateCode: string): Array<Record<string, string 
     return [
       { sale_date: new Date("2026-08-01T00:00:00Z"), branch_code: "NME", channel: "Grab", revenue_source: "REV_FOOD", payment_method: "FDSGRABFOOD", gross_amount: 500000, fee_amount: 25000, vat_amount: 42000, net_amount: 567000 },
       { sale_date: new Date("2026-08-01T00:00:00Z"), branch_code: "ASA", channel: "Tại chỗ", revenue_source: "REV_DRINK", payment_method: "ASAATIENMAT", gross_amount: 300000, fee_amount: 15000, vat_amount: 25200, net_amount: 340200 },
+    ];
+  }
+  if (templateCode === "PRODUCTION_STANDARD_V1") {
+    return [
+      { production_date: new Date("2026-08-01T00:00:00Z"), branch_code: "NME", warehouse_code: "KHO_HCM", to_warehouse_code: "", product_code: "BTP_SOTCACHUA", product_quantity: 10, reference_code: "", note: "Che bien sot ca chua" },
+    ];
+  }
+  if (templateCode === "WASTE_STANDARD_V1") {
+    return [
+      { waste_date: new Date("2026-08-01T00:00:00Z"), branch_code: "NME", warehouse_code: "KHO_HCM", product_code: "SP_COMBO01", product_quantity: 2, reason: "Lam sai mon, khach tra lai" },
+    ];
+  }
+  if (templateCode === "ASSET_STOCKTAKE_STANDARD_V1") {
+    return [
+      { stocktake_date: new Date("2026-08-31T00:00:00Z"), branch_code: "NME", asset_code: "CCDCKIT0001", actual_quantity: 4, condition: "Tot", note: "Thieu 1 so voi so sach" },
+      { stocktake_date: new Date("2026-08-31T00:00:00Z"), branch_code: "NME", asset_code: "CCDCKIT0002", actual_quantity: 10, condition: "Tot", note: "" },
     ];
   }
   const example = templateExample(templateCode);

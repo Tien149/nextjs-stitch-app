@@ -7,6 +7,7 @@ import { canPerformMenuAction, SESSION_KEY, filterModuleTabs } from "@/lib/auth-
 import { useModuleAuth } from "@/lib/use-module-auth";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
+import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 
 type UnitConversion = { id: string; unitCode: string; unitName: string | null; conversionRate: number; isDefaultPurchase: boolean };
 type Item = { id: string; code: string; name: string; unit: string; itemType: string; category?: string | null; minStock: number; requiresImage: boolean; unitConversions?: UnitConversion[] };
@@ -24,7 +25,7 @@ type StockMovement = { transactionId: string; code: string; transactionType: str
 type Stocktake = { id: string; code: string; stocktakeDate: string; branchCode: string; warehouseCode: string; status: string; lines: Array<{ id: string; systemQuantity: number; actualQuantity: number; varianceQuantity: number; item: Item }> };
 type ReceivablePOLine = { id: string; itemId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; item: { code: string; name: string; unit: string } };
 type ReceivablePO = { id: string; code: string; supplierName: string; branchCode: string; warehouseCode: string; status: string; lines: ReceivablePOLine[] };
-type StocktakeDraftRow = { itemId: string; itemCode: string; itemName: string; unit: string; systemQuantity: number; actualQuantity: string; reason: string };
+type StocktakeDraftRow = { itemId: string; itemCode: string; itemName: string; unit: string; systemQuantity: number; averageCost: number; actualQuantity: string; unitCost: string; reason: string };
 type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales };
 const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value);
 const movementTypes = ["NHAP_MUA", "NHAP_KHAC", "NHAP_CHE_BIEN", "NHAP_KIEM_KE", "XUAT_BAN", "XUAT_HUY", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_CHE_BIEN", "XUAT_KIEM_KE", "DIEU_CHUYEN"];
@@ -37,29 +38,30 @@ const wasteTypeOptions = [
 ];
 const today = () => new Date().toISOString().slice(0, 10);
 
-/** Kiểm kê kho bao gồm mọi mặt hàng TRỪ CCDC & Tài sản (kiểm kê ở màn Tài sản & Khấu hao). */
-const stocktakeExcludedTypes = ["TOOL", "ASSET"];
-
 function buildStocktakeRows(warehouseCode: string, balances: Balance[], fallbackItems: Item[]): StocktakeDraftRow[] {
   const rows = balances
-    .filter((balance) => balance.warehouseCode === warehouseCode && !stocktakeExcludedTypes.includes(balance.item.itemType))
+    .filter((balance) => balance.warehouseCode === warehouseCode && isWarehouseStocktakeItemType(balance.item.itemType))
     .map((balance) => ({
       itemId: balance.item.id,
       itemCode: balance.item.code,
       itemName: balance.item.name,
       unit: balance.item.unit,
       systemQuantity: balance.quantity,
+      averageCost: balance.averageCost,
       actualQuantity: String(balance.quantity),
+      unitCost: "",
       reason: "",
     }));
   if (rows.length > 0) return rows;
-  return fallbackItems.filter((item) => !stocktakeExcludedTypes.includes(item.itemType)).slice(0, 20).map((item) => ({
+  return fallbackItems.filter((item) => isWarehouseStocktakeItemType(item.itemType)).slice(0, 20).map((item) => ({
     itemId: item.id,
     itemCode: item.code,
     itemName: item.name,
     unit: item.unit,
     systemQuantity: 0,
+    averageCost: 0,
     actualQuantity: "0",
+    unitCost: "",
     reason: "",
   }));
 }
@@ -95,7 +97,7 @@ export default function InventoryPage() {
   /** Điều chuyển kho: nhiều dòng hàng, kho nhận có thể thuộc nhà hàng khác. */
   const [transferForm, setTransferForm] = useState({ branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "", transactionDate: today(), referenceCode: "", note: "" });
   const [transferRows, setTransferRows] = useState([{ itemId: "", quantity: "1", unitCode: "" }]);
-  const [stocktakeForm, setStocktakeForm] = useState({ branchCode: "HCM", warehouseCode: "KHO_HCM", itemId: "", actualQuantity: "0", reason: "Kiem ke thuc te" });
+  const [stocktakeForm, setStocktakeForm] = useState({ branchCode: "HCM", warehouseCode: "KHO_HCM", itemId: "", actualQuantity: "0", reason: "Kiem ke thuc te", stocktakeDate: today() });
   const [stocktakeRows, setStocktakeRows] = useState<StocktakeDraftRow[]>([]);
   const [wasteForm, setWasteForm] = useState({ wasteType: "HET_HAN_SU_DUNG", mode: "ITEMS", recipeId: "", productQuantity: "1", branchCode: "HCM", warehouseCode: "KHO_HCM", referenceCode: "", note: "" });
   const [wasteRows, setWasteRows] = useState([{ itemId: "", quantity: "1", unitCode: "" }]);
@@ -121,6 +123,19 @@ export default function InventoryPage() {
   };
 
   const canCreate = user ? canPerformMenuAction(user, href, "create") : false;
+  const importTarget = active === "stock"
+    ? { tab: "opening-balance", label: "Import tồn kho đầu kỳ" }
+    : active === "items"
+      ? { tab: "inventory-item", label: "Import danh mục mặt hàng" }
+    : active === "recipes"
+      ? { tab: "bom", label: "Import định lượng/BOM" }
+      : active === "stocktake"
+        ? { tab: "stocktake", label: "Import kiểm kê kho" }
+        : active === "production"
+          ? { tab: "production", label: "Import lệnh chế biến" }
+          : active === "waste"
+            ? { tab: "waste", label: "Import hủy hàng theo món" }
+            : { tab: "inventory-transaction", label: "Import nhập/xuất kho" };
   const selectedStockItem = data.items.find((item) => item.id === stockForm.itemId);
   const stockUnits = selectedStockItem?.unitConversions?.length
     ? selectedStockItem.unitConversions
@@ -293,7 +308,13 @@ export default function InventoryPage() {
   };
 
   const totalSKUs = data.items.length;
-  const lowStockCount = data.balances.filter((b) => b.quantity < (b.item.minStock || 0)).length;
+  // Tồn tối thiểu khai theo MẶT HÀNG — phải so với tổng tồn mọi kho, so từng kho là hàng nằm
+  // 3 kho sẽ báo đỏ giả cả 3 dòng.
+  const stockTotalsByItem = new Map<string, number>();
+  for (const balance of data.balances) {
+    stockTotalsByItem.set(balance.item.id, (stockTotalsByItem.get(balance.item.id) || 0) + balance.quantity);
+  }
+  const lowStockCount = data.items.filter((item) => (item.minStock || 0) > 0 && (stockTotalsByItem.get(item.id) || 0) < item.minStock).length;
   const totalStockValue = data.balances.reduce((sum, b) => sum + b.quantity * b.averageCost, 0);
   const totalTransactions = data.transactions.length;
 
@@ -342,6 +363,18 @@ export default function InventoryPage() {
       <ModuleTabs active={active} onChange={switchTab} tabs={visibleTabs} />
       </StickyFilterBar>
       {message && <p className="mb-4 px-4 py-3 rounded-lg border border-blue-100 bg-blue-50 text-sm text-blue-700">{message}</p>}
+
+      {canCreate && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3">
+          <p className="text-sm text-blue-800">
+            Có thể nhập đầy đủ dữ liệu của màn hình này bằng file Excel theo mẫu chuẩn.
+            {active === "stocktake" && " Kiểm kê Kho không bao gồm CCDC và Tài sản."}
+          </p>
+          <a className="secondary-button bg-white" href={`/imports?tab=${importTarget.tab}`}>
+            <span className="material-symbols-outlined text-lg">upload_file</span>{importTarget.label}
+          </a>
+        </div>
+      )}
 
       {active === "stock" && (
         <section className="table-panel shadow-sm mb-5">
@@ -455,7 +488,7 @@ export default function InventoryPage() {
                 <Cell right><b>{money(row.quantity)}</b> {row.item.unit}</Cell>
                 <Cell right>{money(row.averageCost)} đ</Cell>
                 <Cell right><b>{money(row.quantity * row.averageCost)} đ</b></Cell>
-                <Cell>{row.quantity < row.item.minStock ? <span className="status bg-rose-50 text-rose-700">Dưới định mức</span> : <span className="status bg-emerald-50 text-emerald-700">Đủ tồn</span>}</Cell>
+                <Cell>{(row.item.minStock || 0) > 0 && (stockTotalsByItem.get(row.item.id) || 0) < row.item.minStock ? <span className="status bg-rose-50 text-rose-700">Dưới định mức (tổng mọi kho)</span> : <span className="status bg-emerald-50 text-emerald-700">Đủ tồn</span>}</Cell>
               </tr>
             ))}
           </Table>
@@ -1235,8 +1268,11 @@ export default function InventoryPage() {
       {active === "stocktake" && (
         <div className="space-y-5">
           {canCreate && (
-            <form onSubmit={(e) => { e.preventDefault(); void send({ action: "APPROVE_STOCKTAKE", ...stocktakeForm, lines: stocktakeRows.map((row) => ({ itemId: row.itemId, actualQuantity: row.actualQuantity, reason: row.reason || stocktakeForm.reason })) }, "Đã duyệt kiểm kê và sinh điều chỉnh."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
+            <form onSubmit={(e) => { e.preventDefault(); void send({ action: "APPROVE_STOCKTAKE", ...stocktakeForm, lines: stocktakeRows.map((row) => ({ itemId: row.itemId, actualQuantity: row.actualQuantity, systemQuantity: row.systemQuantity, unitCost: row.unitCost, reason: row.reason || stocktakeForm.reason })) }, "Đã duyệt kiểm kê và sinh điều chỉnh."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
               <h2 className="font-bold text-slate-800">Kiểm kê kho</h2>
+              <p className="rounded-md bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
+                Màn hình này kiểm kê hàng tồn kho; CCDC và Tài sản được kiểm kê tại Tài sản & khấu hao.
+              </p>
               <div className="grid grid-cols-2 gap-3">
                 <Input label="Cửa hàng">
                   <select className="control" value={stocktakeForm.branchCode} onChange={(e) => setStocktakeForm({ ...stocktakeForm, branchCode: e.target.value })}>
@@ -1249,16 +1285,21 @@ export default function InventoryPage() {
                   </select>
                 </Input>
               </div>
-              <Input label="Lý do">
-                <input className="control" value={stocktakeForm.reason} onChange={(e) => setStocktakeForm({ ...stocktakeForm, reason: e.target.value })} />
-              </Input>
+              <div className="grid grid-cols-2 gap-3">
+                <Input label="Ngày kiểm kê">
+                  <input type="date" className="control" value={stocktakeForm.stocktakeDate} onChange={(e) => setStocktakeForm({ ...stocktakeForm, stocktakeDate: e.target.value })} />
+                </Input>
+                <Input label="Lý do">
+                  <input className="control" value={stocktakeForm.reason} onChange={(e) => setStocktakeForm({ ...stocktakeForm, reason: e.target.value })} />
+                </Input>
+              </div>
               <div className="flex justify-end">
                 <button type="button" className="secondary-button" onClick={() => setStocktakeRows(buildStocktakeRows(stocktakeForm.warehouseCode, data.balances, data.items))}>
                   <span className="material-symbols-outlined text-lg">refresh</span>Nạp danh sách kho
                 </button>
               </div>
               <div className="border border-slate-200 rounded-lg overflow-hidden">
-                <Table headers={[{ label: "Mặt hàng" }, { label: "Tồn hệ thống", align: "right" }, { label: "Tồn thực tế", align: "right" }, { label: "Chênh lệch", align: "right" }, { label: "Lý do" }]}>
+                <Table headers={[{ label: "Mặt hàng" }, { label: "Tồn hệ thống", align: "right" }, { label: "Tồn thực tế", align: "right" }, { label: "Chênh lệch", align: "right" }, { label: "Đơn giá", align: "right" }, { label: "Lý do" }]}>
                   {stocktakeRows.map((row, index) => {
                     const actualQuantity = Number(row.actualQuantity || 0);
                     const variance = actualQuantity - row.systemQuantity;
@@ -1277,6 +1318,21 @@ export default function InventoryPage() {
                           />
                         </Cell>
                         <Cell right><span className={variance === 0 ? "text-slate-500" : variance > 0 ? "text-emerald-700 font-bold" : "text-rose-700 font-bold"}>{money(variance)}</span></Cell>
+                        <Cell right>
+                          {row.averageCost > 0 ? (
+                            <span className="text-slate-500">{money(row.averageCost)}</span>
+                          ) : (
+                            <input
+                              type="number"
+                              min="0"
+                              className="control text-right w-24 inline-block"
+                              placeholder="Giá vốn"
+                              title="Hàng chưa có giá vốn — bắt buộc khai khi đếm THỪA"
+                              value={row.unitCost}
+                              onChange={(e) => setStocktakeRows(stocktakeRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, unitCost: e.target.value } : candidate))}
+                            />
+                          )}
+                        </Cell>
                         <Cell>
                           <input
                             className="control"
@@ -1296,7 +1352,10 @@ export default function InventoryPage() {
           <section className="table-panel shadow-sm">
             <Panel title="Phiếu kiểm kê gần nhất" reload={loadData} />
             <Table headers={[{ label: "Phiếu" }, { label: "Kho" }, { label: "Mặt hàng" }, { label: "Chênh lệch", align: "right" }]}>
-              {data.stocktakes.map((row) => (
+              {data.stocktakes.map((row) => ({
+                ...row,
+                lines: row.lines.filter((line) => isWarehouseStocktakeItemType(line.item.itemType)),
+              })).filter((row) => row.lines.length > 0).map((row) => (
                 <tr key={row.id} className="border-t border-slate-100">
                   <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{new Date(row.stocktakeDate).toLocaleDateString("vi-VN")} · {row.status}</small></Cell>
                   <Cell>{row.warehouseCode}</Cell>
