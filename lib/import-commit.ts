@@ -6,6 +6,7 @@ import { ensureDefaultAccounts } from "@/lib/accounting";
 import { isMasterDataImportType, normalizeHeader, type ImportType } from "@/lib/import-templates";
 import { parseImportDate, type ParsedImportRow } from "@/lib/import-parser";
 import { normalizeStockTransactionType, postInventoryTransaction } from "@/lib/inventory-stock";
+import { postStockTransfer } from "@/lib/inventory-transfer";
 import { writeAuditLog } from "@/lib/audit-log";
 import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
@@ -875,61 +876,10 @@ export async function commitImport(input: CommitInput) {
         }
 
         await setImportTarget(tx, staging, row, "REVENUE_POS", revenueRow.id);
-        if (productCode && productQuantity > 0) {
-          const recipe = await tx.recipe.findFirst({
-            where: { productCode, status: "ACTIVE" },
-            include: { lines: true },
-            orderBy: { version: "desc" },
-          });
-          if (recipe) {
-            await postInventoryTransaction(tx, {
-              importBatchId: batch.id,
-              code: `XB-${asText(row.values.external_ref)}`,
-              transactionType: "XUAT_BAN",
-              transactionDate: asDate(row.values.sale_date),
-              branchCode: asText(row.values.branch_code),
-              warehouseCode: asText(row.values.warehouse_code) || "KHO_HCM",
-              referenceType: "REVENUE_POS",
-              referenceId: revenueRow.id,
-              referenceCode: asText(row.values.external_ref),
-              note: `Tu dong tru kho POS ${productCode}`,
-              createdBy: input.uploadedBy,
-              lines: recipe.lines.map((line) => ({
-                itemId: line.itemId,
-                inputQuantity: line.quantity * (1 + line.wasteRate / 100) * productQuantity,
-                inputUnitCode: "",
-                inputUnitCost: 0,
-              })),
-            });
-          } else {
-            const item = await tx.inventoryItem.findUnique({ where: { code: productCode } });
-            if (item) {
-              await postInventoryTransaction(tx, {
-                importBatchId: batch.id,
-                code: `XB-${asText(row.values.external_ref)}`,
-                transactionType: "XUAT_BAN",
-                transactionDate: asDate(row.values.sale_date),
-                branchCode: asText(row.values.branch_code),
-                warehouseCode: asText(row.values.warehouse_code) || "KHO_HCM",
-                referenceType: "REVENUE_POS",
-                referenceId: revenueRow.id,
-                referenceCode: asText(row.values.external_ref),
-                note: `Tru kho truc tiep mat hang POS ${productCode}`,
-                createdBy: input.uploadedBy,
-                lines: [{
-                  itemId: item.id,
-                  inputQuantity: productQuantity,
-                  inputUnitCode: item.unit,
-                  inputUnitCost: 0,
-                }],
-              });
-            }
-          }
-          await tx.revenueImportRow.update({
-            where: { id: revenueRow.id },
-            data: { inventoryStatus: "POSTED" },
-          });
-        }
+        // KHÔNG trừ kho ngay lúc import nữa. Dòng có mã món nằm ở trạng thái PENDING chờ
+        // nút "Rã nguyên liệu" tab Chế biến: rã theo định lượng BTP → TP → combo rồi mới
+        // sinh phiếu xuất chế biến / nhập chế biến / xuất bán — nhờ vậy một file doanh thu
+        // vừa lên doanh thu vừa đủ dữ liệu chế biến, không phải import thêm lần nào.
       }
     }
 
@@ -965,6 +915,8 @@ export async function commitImport(input: CommitInput) {
           : rawGroup;
         const partnerGroup = row.values.partner_group ? asText(row.values.partner_group).toUpperCase() : "EXTERNAL";
         const branch = row.values.branch ? asText(row.values.branch).toUpperCase() : null;
+        // Nhóm kho tương ứng của phân nhóm mặt hàng (BEP/BAR/FOH...) — chỉ INVENTORY_ITEM_GROUP dùng.
+        const subGroup = type === "INVENTORY_ITEM_GROUP" && row.values.sub_group ? asText(row.values.sub_group).toUpperCase() : null;
         if (type === "PARTNER" && (!group || !["CUSTOMER", "SUPPLIER", "BOTH", "EMPLOYEE", "OTHER_PARTNER"].includes(group))) {
           throw new Error(`Dòng ${row.rowNumber}: Nhóm đối tác không hợp lệ`);
         }
@@ -980,13 +932,14 @@ export async function commitImport(input: CommitInput) {
         const item = await tx.masterDataItem.upsert({
           where: { type_code: { type, code } },
           create: {
-            type, code, name, group, partnerType: type === "PARTNER" ? group : null, partnerGroup: type === "PARTNER" ? partnerGroup : null, branch,
+            type, code, name, group, subGroup, partnerType: type === "PARTNER" ? group : null, partnerGroup: type === "PARTNER" ? partnerGroup : null, branch,
             taxCode: row.values.tax_code ? asText(row.values.tax_code) : null,
             accountNo: row.values.account_no ? asText(row.values.account_no) : null,
             status: "ACTIVE",
           },
           update: {
             name, group, partnerType: type === "PARTNER" ? group : null, partnerGroup: type === "PARTNER" ? partnerGroup : null, branch,
+            ...(subGroup !== null ? { subGroup } : {}),
             taxCode: row.values.tax_code ? asText(row.values.tax_code) : null,
             accountNo: row.values.account_no ? asText(row.values.account_no) : null,
           },
@@ -1037,6 +990,8 @@ export async function commitImport(input: CommitInput) {
         const key = [
           referenceCode,
           transactionType,
+          // Hai loại hủy khác nhau không được gộp chung một phiếu dù cùng số chứng từ.
+          asText(row.values.waste_type).toUpperCase(),
           asText(row.values.branch_code).toUpperCase(),
           asText(row.values.warehouse_code).toUpperCase(),
           asText(row.values.to_warehouse_code).toUpperCase(),
@@ -1047,7 +1002,11 @@ export async function commitImport(input: CommitInput) {
         const first = rows[0];
         const transactionDate = asDate(first.values.transaction_date);
         const transactionType = normalizeStockTransactionType(first.values.transaction_type);
-        const prefix = transactionType === "NHAP_MUA" ? "NM" : transactionType === "NHAP_KHAC" ? "NK" : transactionType === "XUAT_HUY" ? "HH" : transactionType === "DIEU_CHUYEN" ? "DCK" : "XK";
+        const prefix = transactionType === "NHAP_MUA" ? "NM"
+          : transactionType === "NHAP_KHAC" ? "NK"
+          : transactionType === "XUAT_HUY" ? "HH"
+          : transactionType === "XUAT_TEST_MON" ? "XTM"
+          : transactionType === "DIEU_CHUYEN" ? "DCK" : "XK";
         // COUNT toàn bảng đếm lẫn mọi loại phiếu (NM/NK/HH/DCK/XK) và mọi năm, lại tụt sau khi
         // rollback xoá phiếu -> cấp trúng mã đang sống. Max + 1 trong đúng chuỗi loại + năm.
         const stockPrefix = `${prefix}-${transactionDate.getUTCFullYear()}-`;
@@ -1055,25 +1014,44 @@ export async function commitImport(input: CommitInput) {
           where: { code: { startsWith: stockPrefix } },
           select: { code: true },
         });
-        const transaction = await postInventoryTransaction(tx, {
-          importBatchId: batch.id,
-          code: asText(first.values.reference_code) || stockPrefix + String(nextSeqFromCodes(issuedStockCodes.map((item) => item.code), stockPrefix)).padStart(4, "0"),
-          transactionType,
-          transactionDate,
-          branchCode: asText(first.values.branch_code),
-          warehouseCode: asText(first.values.warehouse_code),
-          toWarehouseCode: asText(first.values.to_warehouse_code) || null,
-          referenceType: "IMPORT",
-          referenceCode: asText(first.values.reference_code) || null,
-          note: asText(first.values.note) || null,
-          createdBy: input.uploadedBy,
-          lines: rows.map((row) => ({
-            itemCode: asText(row.values.item_code).toUpperCase(),
-            inputQuantity: asNumber(row.values.quantity),
-            inputUnitCode: asText(row.values.unit_code),
-            inputUnitCost: asNumber(row.values.unit_cost),
-          })),
-        });
+        const transactionCode = asText(first.values.reference_code) || stockPrefix + String(nextSeqFromCodes(issuedStockCodes.map((item) => item.code), stockPrefix)).padStart(4, "0");
+        const lines = rows.map((row) => ({
+          itemCode: asText(row.values.item_code).toUpperCase(),
+          inputQuantity: asNumber(row.values.quantity),
+          inputUnitCode: asText(row.values.unit_code),
+          inputUnitCost: asNumber(row.values.unit_cost),
+        }));
+        // Điều chuyển đi qua postStockTransfer: chặn FINISHED + tự sinh công nợ nội bộ
+        // khi kho nhận thuộc nhà hàng khác (preview đã điền to_branch_code).
+        const transaction = transactionType === "DIEU_CHUYEN"
+          ? (await postStockTransfer(tx, {
+              importBatchId: batch.id,
+              code: transactionCode,
+              transactionDate,
+              branchCode: asText(first.values.branch_code),
+              warehouseCode: asText(first.values.warehouse_code),
+              toWarehouseCode: asText(first.values.to_warehouse_code),
+              toBranchCode: asText(first.values.to_branch_code) || null,
+              referenceCode: asText(first.values.reference_code) || null,
+              note: asText(first.values.note) || null,
+              createdBy: input.uploadedBy,
+              lines,
+            })).transaction
+          : await postInventoryTransaction(tx, {
+              importBatchId: batch.id,
+              code: transactionCode,
+              transactionType,
+              subType: transactionType === "XUAT_HUY" ? asText(first.values.waste_type) || null : null,
+              transactionDate,
+              branchCode: asText(first.values.branch_code),
+              warehouseCode: asText(first.values.warehouse_code),
+              toWarehouseCode: asText(first.values.to_warehouse_code) || null,
+              referenceType: "IMPORT",
+              referenceCode: asText(first.values.reference_code) || null,
+              note: asText(first.values.note) || null,
+              createdBy: input.uploadedBy,
+              lines,
+            });
         for (const row of rows) await setImportTarget(tx, staging, row, "INVENTORY_TRANSACTION", transaction.id);
       }
     }
@@ -1085,22 +1063,48 @@ export async function commitImport(input: CommitInput) {
         groups.set(productCode, [...(groups.get(productCode) || []), row]);
       }
       for (const [productCode, rows] of groups) {
+        const first = rows[0];
+        const productItem = await tx.inventoryItem.findUnique({ where: { code: productCode } });
+        if (!productItem) throw new Error(`Dong ${first.rowNumber}: Khong tim thay san pham ${productCode}`);
         const latest = await tx.recipe.findFirst({ where: { productCode }, orderBy: { version: "desc" } });
         await tx.recipe.updateMany({ where: { productCode, status: "ACTIVE" }, data: { status: "INACTIVE" } });
+        // Hệ số quy đổi mẻ chuẩn bị về ĐVT tồn kho (sheet Chi tiết cột "He so quy doi ve DVT ton kho").
+        const outputConversionRate = asNumber(first.values.output_conversion_rate) > 0 ? asNumber(first.values.output_conversion_rate) : 1;
         const recipe = await tx.recipe.create({
           data: {
             code: `${productCode}-V${(latest?.version || 0) + 1}`,
             productCode,
-            productName: asText(rows[0].values.product_name),
-            unit: "phan",
-            sellingPrice: 0,
+            productName: asText(first.values.product_name),
+            unit: asText(first.values.product_unit) || productItem.unit,
+            outputConversionRate,
+            // BTP không có giá bán theo file mẫu; FINISHED lấy từ cột Gia ban.
+            sellingPrice: productItem.itemType === "SEMI_FINISHED" ? 0 : asNumber(first.values.selling_price),
+            effectiveFrom: first.values.effective_date ? asDate(first.values.effective_date) : new Date(),
             version: (latest?.version || 0) + 1,
             status: "ACTIVE",
             lines: {
               create: await Promise.all(rows.map(async (row) => {
-                const item = await tx.inventoryItem.findUnique({ where: { code: asText(row.values.ingredient_code).toUpperCase() } });
+                const item = await tx.inventoryItem.findUnique({ where: { code: asText(row.values.ingredient_code).toUpperCase() }, include: { unitConversions: true } });
                 if (!item) throw new Error(`Dong ${row.rowNumber}: Khong tim thay nguyen lieu ${asText(row.values.ingredient_code)}`);
-                return { itemId: item.id, quantity: asNumber(row.values.quantity), wasteRate: asNumber(row.values.waste_rate) };
+                // ĐVT nguyên liệu có thể là ĐVT quy đổi: ưu tiên hệ số khai thẳng, sau đó tra danh mục.
+                const ingredientUnit = asText(row.values.ingredient_unit);
+                let conversionRate = asNumber(row.values.ingredient_conversion_rate);
+                if (!(conversionRate > 0)) {
+                  if (!ingredientUnit || ingredientUnit.toUpperCase() === item.unit.toUpperCase()) {
+                    conversionRate = 1;
+                  } else {
+                    const conversion = item.unitConversions.find((unit) => unit.unitCode.toUpperCase() === ingredientUnit.toUpperCase());
+                    if (!conversion) throw new Error(`Dong ${row.rowNumber}: DVT [${ingredientUnit}] chua co trong quy doi cua ${item.code}`);
+                    conversionRate = conversion.conversionRate;
+                  }
+                }
+                return {
+                  itemId: item.id,
+                  quantity: asNumber(row.values.quantity),
+                  unitCode: ingredientUnit || null,
+                  conversionRate,
+                  wasteRate: asNumber(row.values.waste_rate),
+                };
               })),
             },
           },
@@ -1619,6 +1623,14 @@ async function rollbackBankStatement(tx: RawTxClient, batchId: string) {
 }
 
 async function rollbackRevenue(tx: RawTxClient, batchId: string) {
+  // Dòng đã rã nguyên liệu (POSTED) sinh phiếu chế biến/xuất bán KHÔNG gắn batch này,
+  // rollback mù sẽ làm doanh thu biến mất nhưng kho vẫn bị trừ. Bắt xử lý phiếu rã trước.
+  const explodedRows = await tx.revenueImportRow.count({
+    where: { importBatchId: batchId, inventoryStatus: { startsWith: "POSTED" }, deletedAt: null },
+  });
+  if (explodedRows > 0) {
+    throw new Error(`Lô doanh thu này có ${explodedRows} dòng đã rã nguyên liệu ở tab Chế biến. Xoá các phiếu rã (mã RA-...) để hoàn kho trước khi rollback lô import.`);
+  }
   await rollbackInventoryTransactions(tx, batchId);
   const rows = await tx.revenueImportRow.findMany({ where: { importBatchId: batchId }, select: { id: true } });
   const ids = rows.map((row) => row.id);
@@ -1793,6 +1805,21 @@ async function rollbackInventoryTransactions(tx: RawTxClient, batchId: string) {
     include: { lines: true },
     orderBy: { createdAt: "desc" },
   });
+  // Phiếu điều chuyển liên nhà hàng kéo theo cặp công nợ nội bộ: đã gạch nợ thì phải
+  // hoàn tác phiếu gạch trước, chưa gạch thì xoá cứng cùng lô.
+  const internalDebtCodes = transactions.flatMap((transaction) =>
+    [transaction.internalReceivableDebtCode, transaction.internalPayableDebtCode].filter((value): value is string => !!value));
+  if (internalDebtCodes.length > 0) {
+    const debts = await tx.debtRecord.findMany({
+      where: { code: { in: internalDebtCodes } },
+      include: { settlements: true },
+    });
+    const settled = debts.find((debt) => debt.settlements.length > 0);
+    if (settled) {
+      throw new Error(`Công nợ nội bộ ${settled.code} (điều chuyển kho liên nhà hàng) đã được gạch nợ, không thể rollback lô import. Hoàn tác phiếu thu/chi gạch nợ trước.`);
+    }
+    await tx.debtRecord.deleteMany({ where: { code: { in: internalDebtCodes } } });
+  }
   for (const transaction of transactions) {
     for (const line of transaction.lines) {
       if (transaction.transactionType.startsWith("NHAP_")) {

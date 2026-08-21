@@ -18,6 +18,7 @@
     "test:revenue-settlement": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-revenue-settlement-report.mjs",
     "check:bank-file": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/check-bank-statement-file.mjs",
     "test:wallet-fallback": "node --experimental-strip-types scripts/test-wallet-revenue-fallback.mjs",
+    "test:production-explosion": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-production-explosion.mjs",
     "test:wallet-settlement": "node --experimental-strip-types scripts/test-wallet-settlement-allocation.mjs",
     "test:transfer-code": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-transfer-code-gap.mjs",
     "test:cost-reallocation": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-cost-reallocation.mjs",

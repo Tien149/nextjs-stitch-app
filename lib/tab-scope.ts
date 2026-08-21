@@ -21,12 +21,14 @@ const tabDataKeys: Record<string, Record<string, string[]>> = {
   },
   "/inventory": {
     stock: ["balances", "stockSummary"],
-    transactions: ["transactions", "stockMovements"],
+    inbound: ["transactions", "stockMovements"],
+    outbound: ["transactions", "stockMovements"],
+    transfer: ["transactions"],
     items: ["items"],
-    recipes: ["recipes"],
-    production: ["recipes", "transactions"],
+    recipes: ["recipes", "costSummary"],
+    production: ["recipes", "transactions", "pendingSales"],
     stocktake: ["stocktakes"],
-    waste: ["transactions"],
+    waste: ["transactions", "wasteReport"],
   },
   "/assets/operations": {
     depreciation: ["depreciations"],

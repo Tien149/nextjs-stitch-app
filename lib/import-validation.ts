@@ -3,7 +3,7 @@ import { assertBranchAccess } from "@/lib/accounting";
 import { isMasterDataImportType, normalizeHeader, type ImportType } from "@/lib/import-templates";
 import type { ParsedImportResult, ParsedImportRow } from "@/lib/import-parser";
 import type { DemoSession } from "@/lib/auth-demo";
-import { isInboundStockType, isOutboundStockType, isStockTransactionType, normalizeStockTransactionType } from "@/lib/inventory-stock";
+import { isInboundStockType, isOutboundStockType, isStockTransactionType, isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType } from "@/lib/inventory-stock";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
 import { groupBankStatementRows } from "@/lib/bank-statement-import";
@@ -350,8 +350,26 @@ function validateInventoryTransaction(
   if (transactionType === "DIEU_CHUYEN") {
     const toWarehouse = resolveMaster(masterItems, "WAREHOUSE", row.values.to_warehouse_code);
     if (!toWarehouse) addError(row, `Kho nhan [${text(row.values.to_warehouse_code)}] khong ton tai`);
-    else row.values.to_warehouse_code = toWarehouse.code;
+    else {
+      row.values.to_warehouse_code = toWarehouse.code;
+      // Kho nhận thuộc cửa hàng khác = điều chuyển liên nhà hàng, ghi sẵn để commit sinh công nợ nội bộ.
+      row.values.to_branch_code = (toWarehouse.branch || branchCode).toUpperCase();
+    }
     if (warehouse && toWarehouse && warehouse.code === toWarehouse.code) addError(row, "Kho xuat va kho nhan khong duoc giong nhau");
+  }
+
+  // Loại hủy chỉ dành cho phiếu xuất hủy và phải thuộc danh mục chuẩn.
+  if (text(row.values.waste_type)) {
+    if (transactionType !== "XUAT_HUY") {
+      addError(row, "Cot Loai huy chi dung cho giao dich XUAT_HUY");
+    } else {
+      const wasteType = normalizeWasteSubType(row.values.waste_type);
+      if (!wasteType || !isWasteSubType(wasteType)) {
+        addError(row, "Loai huy phai la HET_HAN_SU_DUNG hoac KHONG_DAM_BAO_CHAT_LUONG");
+      } else {
+        row.values.waste_type = wasteType;
+      }
+    }
   }
 
   if ((isOutboundStockType(transactionType) || transactionType === "DIEU_CHUYEN") && !text(row.values.warehouse_code)) {
@@ -379,6 +397,11 @@ function validateInventoryTransaction(
     return;
   }
   row.values.converted_quantity = quantity * conversionRate;
+
+  // Điều chuyển không nhận nhóm FINISHED: thành phẩm chỉ nhập từ chế biến, xuất qua bán/hủy.
+  if (transactionType === "DIEU_CHUYEN" && item.itemType === "FINISHED") {
+    addError(row, `Mat hang ${itemCode} thuoc nhom FINISHED nen khong duoc dieu chuyen`);
+  }
 
   if (isOutboundStockType(transactionType) || transactionType === "DIEU_CHUYEN") {
     const currentBalance = balances.find((balance) => balance.item.code.toUpperCase() === itemCode && balance.warehouseCode === text(row.values.warehouse_code));
@@ -412,6 +435,35 @@ function validateBom(
   if (productCode && ingredientCode && productCode === ingredientCode) addError(row, "BOM khong duoc tham chieu chinh san pham do");
   if (numberValue(row.values.quantity) <= 0) addError(row, "So luong dinh muc phai lon hon 0");
   if (numberValue(row.values.waste_rate) < 0) addError(row, "Hao hut khong duoc am");
+
+  // Cột Nhóm (nếu khai) phải khớp loại của mã sản phẩm — bắt lỗi dán nhầm dòng trong file.
+  const group = text(row.values.group).toUpperCase().replace(/\s+/g, "_");
+  if (group && product && product.itemType) {
+    const normalizedGroup = ["TP", "THANH_PHAM"].includes(group) ? "FINISHED"
+      : ["BTP", "BAN_THANH_PHAM"].includes(group) ? "SEMI_FINISHED" : group;
+    row.values.group = normalizedGroup;
+    if (["FINISHED", "SEMI_FINISHED"].includes(normalizedGroup) && normalizedGroup !== product.itemType) {
+      addError(row, `Nhom ${normalizedGroup} khong khop loai cua ${productCode} (${product.itemType})`);
+    }
+  }
+
+  // Hệ số quy đổi mẻ về ĐVT tồn kho phải dương nếu khai.
+  if (text(row.values.output_conversion_rate) && numberValue(row.values.output_conversion_rate) <= 0) {
+    addError(row, "He so quy doi ve DVT ton kho phai lon hon 0");
+  }
+  // BTP không có giá bán — commit sẽ ép về 0, chỉ cảnh báo khi khai nhầm số dương lớn.
+  if (product && product.itemType === "SEMI_FINISHED" && numberValue(row.values.selling_price) > 0) {
+    addError(row, `Ban thanh pham ${productCode} khong co gia ban — bo trong cot Gia ban`);
+  }
+  // ĐVT nguyên liệu phải là ĐVT tồn kho hoặc ĐVT quy đổi đã khai (trừ khi khai thẳng hệ số).
+  const ingredientUnit = text(row.values.ingredient_unit);
+  if (ingredient && ingredientUnit && numberValue(row.values.ingredient_conversion_rate) <= 0) {
+    const isBase = ingredientUnit.toUpperCase() === ingredient.unit.toUpperCase();
+    const conversion = ingredient.unitConversions.find((unit) => unit.unitCode.toUpperCase() === ingredientUnit.toUpperCase());
+    if (!isBase && !conversion) {
+      addError(row, `DVT [${ingredientUnit}] chua co trong quy doi cua ${ingredientCode} — khai quy doi o danh muc mat hang hoac dien He so quy doi nguyen lieu`);
+    }
+  }
 }
 
 function validateStocktake(
@@ -434,6 +486,10 @@ function validateStocktake(
   const item = inventoryItems.find((candidate) => candidate.code.toUpperCase() === itemCode);
   if (!item) addError(row, `Khong tim thay mat hang ${itemCode}`);
   if (item && item.status !== "ACTIVE") addError(row, `Mat hang ${itemCode} dang ngung hoat dong`);
+  // CCDC & Tài sản kiểm kê ở màn hình Tài sản & Khấu hao.
+  if (item && item.itemType && ["TOOL", "ASSET"].includes(item.itemType)) {
+    addError(row, `Mat hang ${itemCode} thuoc nhom CCDC/Tai san — kiem ke o man hinh Tai san & Khau hao`);
+  }
   if (numberValue(row.values.actual_quantity) < 0) addError(row, "Ton thuc te khong duoc am");
 }
 
@@ -1032,7 +1088,6 @@ export async function validateImportResult(
 
   const branchTypes: ImportType[] = ["VOUCHER", "INTERNAL_TRANSFER", "DEBT_OPENING", "OPENING_BALANCE", "REVENUE_POS", "PAYROLL", "INVENTORY_TRANSACTION", "STOCKTAKE", "ASSET"];
   const openingBalanceKeys = new Set<string>();
-  const revenueStockUsage = new Map<string, number>();
   const revenueReferenceRows = new Map<string, ParsedImportRow>();
   const importAssetCodes = new Set<string>();
   for (const row of result.rows) {
@@ -1062,7 +1117,15 @@ export async function validateImportResult(
       if (itemGroupInput) {
         const itemGroup = resolveMaster(masterItems, "INVENTORY_ITEM_GROUP", itemGroupInput);
         if (!itemGroup) addError(row, `Nhóm mặt hàng [${itemGroupInput}] không tồn tại hoặc ngưng hoạt động`);
-        else row.values.category = itemGroup.code;
+        else {
+          // Phân nhóm phải cùng loại với item_type (trừ nhóm OTHER dùng chung).
+          const groupType = (itemGroup.group || "").toUpperCase();
+          if (groupType && groupType !== "OTHER" && groupType !== itemType) {
+            addError(row, `Phân nhóm [${itemGroup.code}] thuộc loại ${groupType}, không gán được cho mặt hàng loại ${itemType}`);
+          } else {
+            row.values.category = itemGroup.code;
+          }
+        }
       }
       const purchaseUnit = text(row.values.purchase_unit);
       const conversionRate = numberValue(row.values.conversion_rate);
@@ -1131,31 +1194,20 @@ export async function validateImportResult(
       if (productCode || productQuantity > 0) {
         row.values.product_code = productCode;
         if (!productCode || productQuantity <= 0) addError(row, "Ma mon POS va So luong ban phai di cung nhau");
-        const warehouse = resolveMaster(masterItems, "WAREHOUSE", row.values.warehouse_code, text(row.values.branch_code).toUpperCase());
-        if (!warehouse) addError(row, "Dong POS co tru kho bat buoc co kho xuat hop le");
-        else row.values.warehouse_code = warehouse.code;
+        // Kho xuất không còn bắt buộc: kho trừ nguyên liệu chọn lúc "Rã nguyên liệu" ở tab
+        // Chế biến, không phải lúc import. Nếu file có khai thì vẫn phải là kho hợp lệ.
+        if (text(row.values.warehouse_code)) {
+          const warehouse = resolveMaster(masterItems, "WAREHOUSE", row.values.warehouse_code, text(row.values.branch_code).toUpperCase());
+          if (!warehouse) addError(row, `Kho [${text(row.values.warehouse_code)}] khong ton tai hoac khong thuoc cua hang`);
+          else row.values.warehouse_code = warehouse.code;
+        }
         const product = inventoryItems.find((item) => item.code.toUpperCase() === productCode);
         if (!product) addError(row, `Khong tim thay ma mon POS ${productCode}`);
         if (product && product.status !== "ACTIVE") addError(row, `Ma mon POS ${productCode} dang ngung hoat dong`);
         if (product?.itemType && !["FINISHED", "SEMI_FINISHED"].includes(product.itemType)) addError(row, `Ma mon POS ${productCode} phai la thanh pham hoac ban thanh pham`);
-        const activeRecipe = await prisma.recipe.findFirst({
-          where: { productCode, status: "ACTIVE" },
-          include: { lines: { include: { item: { include: { balances: true } } } } },
-          orderBy: { version: "desc" },
-        });
-        if (productCode && !activeRecipe) addError(row, `Chua co dinh luong/BOM active cho ${productCode}`);
-        if (activeRecipe && warehouse) {
-          for (const line of activeRecipe.lines) {
-            const requiredQuantity = line.quantity * (1 + line.wasteRate / 100) * productQuantity;
-            const key = `${line.itemId}|${warehouse.code}`;
-            const nextUsage = (revenueStockUsage.get(key) || 0) + requiredQuantity;
-            revenueStockUsage.set(key, nextUsage);
-            const balance = line.item.balances.find((candidate) => candidate.warehouseCode === warehouse.code);
-            if ((balance?.quantity || 0) < nextUsage) {
-              addError(row, `Khong du ton ${line.item.code} tai kho ${warehouse.code} de tru theo BOM`);
-            }
-          }
-        }
+        // Không đòi định lượng ở bước import nữa: món không có định lượng (bia, nước đóng
+        // chai) sẽ xuất bán thẳng từ tồn kho khi rã; món thiếu định lượng thật sự sẽ bị
+        // chặn ở nút Rã nguyên liệu với thông báo thiếu tồn.
       }
       ensureRevenuePosReference(row.values);
       const referenceKey = revenuePosReferenceKey(row.values);

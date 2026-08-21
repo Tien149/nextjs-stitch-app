@@ -7,6 +7,7 @@ export const STOCK_TRANSACTION_TYPES = [
   "NHAP_KIEM_KE",
   "XUAT_BAN",
   "XUAT_HUY",
+  "XUAT_TEST_MON",
   "XUAT_KHAC",
   "XUAT_CHE_BIEN",
   "XUAT_KIEM_KE",
@@ -14,6 +15,29 @@ export const STOCK_TRANSACTION_TYPES = [
 ] as const;
 
 export type StockTransactionType = typeof STOCK_TRANSACTION_TYPES[number];
+
+/**
+ * Loại hủy hàng — lưu ở InventoryTransaction.subType của phiếu XUAT_HUY để báo cáo
+ * "mã hàng nào hủy nhiều nhất" tách được nguyên nhân.
+ */
+export const WASTE_SUB_TYPES = [
+  { code: "HET_HAN_SU_DUNG", label: "Xuất hủy do hết hạn sử dụng" },
+  { code: "KHONG_DAM_BAO_CHAT_LUONG", label: "Xuất hủy do không đảm bảo chất lượng" },
+] as const;
+
+export function normalizeWasteSubType(value: unknown) {
+  const raw = text(value).toUpperCase().replace(/\s+/g, "_");
+  if (!raw) return null;
+  if (["HET_HAN_SU_DUNG", "HET_HAN", "EXPIRED", "HUY_HET_HAN"].includes(raw)) return "HET_HAN_SU_DUNG";
+  if (["KHONG_DAM_BAO_CHAT_LUONG", "CHAT_LUONG", "KEM_CHAT_LUONG", "QUALITY", "HUY_CHAT_LUONG"].includes(raw)) {
+    return "KHONG_DAM_BAO_CHAT_LUONG";
+  }
+  return raw;
+}
+
+export function isWasteSubType(value: string) {
+  return WASTE_SUB_TYPES.some((subType) => subType.code === value);
+}
 
 type Tx = TxClient;
 
@@ -32,10 +56,16 @@ export type PostInventoryTransactionInput = {
   importBatchId?: string | null;
   code: string;
   transactionType: string;
+  /** Phân loại chi tiết, hiện dùng cho loại hủy của phiếu XUAT_HUY. */
+  subType?: string | null;
   transactionDate: Date;
   branchCode: string;
   warehouseCode: string;
   toWarehouseCode?: string | null;
+  /** Cửa hàng của kho nhận khi điều chuyển liên nhà hàng. Trống = cùng branchCode. */
+  toBranchCode?: string | null;
+  internalReceivableDebtCode?: string | null;
+  internalPayableDebtCode?: string | null;
   referenceType?: string | null;
   referenceId?: string | null;
   referenceCode?: string | null;
@@ -59,6 +89,9 @@ export function normalizeStockTransactionType(value: unknown) {
   if (raw === "ISSUE" || raw === "XUAT" || raw === "XUAT_KHO") return "XUAT_KHAC";
   if (raw === "WASTE" || raw === "HUY" || raw === "HANG_HUY" || raw === "XUAT_HAO_HUT") return "XUAT_HUY";
   if (raw === "TRANSFER" || raw === "CHUYEN_KHO" || raw === "DIEU_CHUYEN_KHO") return "DIEU_CHUYEN";
+  // File import hay khai theo hai chiều "nhập/xuất điều chuyển" — đều là một phiếu điều chuyển.
+  if (raw === "NHAP_DIEU_CHUYEN" || raw === "XUAT_DIEU_CHUYEN") return "DIEU_CHUYEN";
+  if (raw === "TEST_MON" || raw === "XUAT_TEST" || raw === "MON_TEST" || raw === "XUAT_TEST_MON") return "XUAT_TEST_MON";
   if (raw === "POS_SALE" || raw === "BAN_HANG") return "XUAT_BAN";
   if (raw === "PRODUCTION_IN" || raw === "CHE_BIEN_NHAP") return "NHAP_CHE_BIEN";
   if (raw === "PRODUCTION_OUT" || raw === "CHE_BIEN_XUAT") return "XUAT_CHE_BIEN";
@@ -190,10 +223,14 @@ export async function postInventoryTransaction(tx: Tx, input: PostInventoryTrans
       importBatchId: input.importBatchId || null,
       code: input.code,
       transactionType,
+      subType: input.subType || null,
       transactionDate: input.transactionDate,
       branchCode: input.branchCode,
       warehouseCode: input.warehouseCode,
       toWarehouseCode: transactionType === "DIEU_CHUYEN" ? input.toWarehouseCode : null,
+      toBranchCode: transactionType === "DIEU_CHUYEN" ? input.toBranchCode || null : null,
+      internalReceivableDebtCode: input.internalReceivableDebtCode || null,
+      internalPayableDebtCode: input.internalPayableDebtCode || null,
       referenceType: input.referenceType || null,
       referenceId: input.referenceId || null,
       referenceCode: input.referenceCode || null,

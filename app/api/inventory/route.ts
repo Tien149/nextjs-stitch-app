@@ -3,7 +3,9 @@ import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError, businessError, cleanText, isPeriodLocked, toDate, toNumber } from "@/lib/phase3";
 import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
-import { normalizeStockTransactionType, postInventoryTransaction } from "@/lib/inventory-stock";
+import { isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType, postInventoryTransaction } from "@/lib/inventory-stock";
+import { postStockTransfer } from "@/lib/inventory-transfer";
+import { computeRecipeUnitCosts, explodeSalesDemand, pickRecipeForDate, type ExplosionRecipe } from "@/lib/production-explosion";
 import { writeAuditLog } from "@/lib/audit-log";
 import {
   duplicatedInTrashMessage,
@@ -28,7 +30,7 @@ const derivedReferenceTypes: Record<string, string> = {
   PRODUCTION: "lệnh chế biến",
 };
 
-type InputLine = { itemId?: unknown; itemCode?: unknown; quantity?: unknown; actualQuantity?: unknown; inputQuantity?: unknown; unitCode?: unknown; inputUnitCode?: unknown; unitCost?: unknown; inputUnitCost?: unknown; wasteRate?: unknown; reason?: unknown };
+type InputLine = { itemId?: unknown; itemCode?: unknown; quantity?: unknown; actualQuantity?: unknown; inputQuantity?: unknown; unitCode?: unknown; inputUnitCode?: unknown; unitCost?: unknown; inputUnitCost?: unknown; wasteRate?: unknown; conversionRate?: unknown; reason?: unknown };
 const validItemTypes = ["RAW_MATERIAL", "SEMI_FINISHED", "FINISHED", "PACKAGING", "TOOL", "ASSET"];
 
 function linesFrom(value: unknown) {
@@ -43,6 +45,7 @@ function linesFrom(value: unknown) {
     unitCost: toNumber(line.inputUnitCost ?? line.unitCost),
     inputUnitCost: toNumber(line.inputUnitCost ?? line.unitCost),
     wasteRate: toNumber(line.wasteRate),
+    conversionRate: toNumber(line.conversionRate),
   })).filter((line) => (line.itemId || line.itemCode) && line.quantity > 0);
 }
 
@@ -65,6 +68,7 @@ function stockPrefix(transactionType: string) {
   if (transactionType === "NHAP_KIEM_KE") return "NKK";
   if (transactionType === "XUAT_BAN") return "XB";
   if (transactionType === "XUAT_HUY") return "HH";
+  if (transactionType === "XUAT_TEST_MON") return "XTM";
   if (transactionType === "XUAT_CHE_BIEN") return "XCB";
   if (transactionType === "XUAT_KIEM_KE") return "XKK";
   if (transactionType === "DIEU_CHUYEN") return "DCK";
@@ -101,6 +105,21 @@ function assertItemCodePrefix(itemType: string, uppercaseCode: string) {
   }
 }
 
+/** Phân nhóm mặt hàng phải tồn tại, còn hoạt động và thuộc đúng loại mặt hàng. */
+async function resolveItemCategory(itemType: string, value: unknown) {
+  const categoryCode = cleanText(value).toUpperCase();
+  if (!categoryCode) return null;
+  const group = await prisma.masterDataItem.findFirst({
+    where: { type: "INVENTORY_ITEM_GROUP", code: categoryCode, status: "ACTIVE" },
+  });
+  if (!group) businessError(`Phân nhóm [${categoryCode}] không tồn tại hoặc đã ngưng hoạt động.`);
+  const groupType = (group?.group || "").toUpperCase();
+  if (groupType && groupType !== "OTHER" && groupType !== itemType) {
+    businessError(`Phân nhóm ${group?.name} thuộc loại ${groupType}, không gán được cho mặt hàng loại ${itemType}.`);
+  }
+  return group?.code || null;
+}
+
 /** Dòng định mức khi sửa BOM: báo lỗi rõ ràng thay vì lặng lẽ loại bỏ. */
 function editableRecipeLines(value: unknown) {
   if (!Array.isArray(value)) businessError("Danh sách nguyên liệu không hợp lệ");
@@ -108,6 +127,8 @@ function editableRecipeLines(value: unknown) {
     itemId: cleanText(line.itemId),
     itemCode: cleanText(line.itemCode),
     quantity: toNumber(line.quantity ?? line.inputQuantity),
+    unitCode: cleanText(line.unitCode ?? line.inputUnitCode),
+    conversionRate: toNumber(line.conversionRate),
     wasteRate: toNumber(line.wasteRate),
   }));
   if (lines.length === 0) businessError("Định lượng cần ít nhất một nguyên liệu");
@@ -152,7 +173,7 @@ export async function GET(request: Request) {
     });
     const warehouseCodes = allowedWarehouses.map((w) => w.code);
 
-    const [items, balances, transactions, reportTransactions, recipes, warehouses, stocktakes] = await Promise.all([
+    const [items, balances, transactions, reportTransactions, recipes, warehouses, stocktakes, itemGroups, pendingRevenueRows] = await Promise.all([
       prisma.inventoryItem.findMany({ include: { unitConversions: { orderBy: [{ isDefaultPurchase: "desc" }, { unitCode: "asc" }] } }, orderBy: { name: "asc" } }),
       prisma.inventoryBalance.findMany({
         where: { warehouseCode: { in: warehouseCodes } },
@@ -181,16 +202,69 @@ export async function GET(request: Request) {
         orderBy: { createdAt: "desc" },
         take: 20,
       }),
+      prisma.masterDataItem.findMany({
+        where: { type: "INVENTORY_ITEM_GROUP", status: "ACTIVE" },
+        orderBy: { name: "asc" },
+      }),
+      // Dòng doanh thu có mã hàng nhưng CHƯA rã nguyên liệu — nguồn của nút "Rã nguyên liệu".
+      prisma.revenueImportRow.findMany({
+        where: { inventoryStatus: "PENDING", productCode: { not: null }, deletedAt: null, ...branchFilter },
+        orderBy: [{ saleDate: "asc" }, { branchCode: "asc" }],
+        select: { id: true, saleDate: true, branchCode: true, productCode: true, productQuantity: true },
+        take: 2000,
+      }),
     ]);
-    const recipesWithCost = recipes.map((recipe) => ({
-      ...recipe,
-      estimatedCost: recipe.lines.reduce((sum, line) => {
-        const averageCost = line.item.balances.length
-          ? line.item.balances.reduce((cost, balance) => cost + balance.averageCost, 0) / line.item.balances.length
-          : 0;
-        return sum + line.quantity * (1 + line.wasteRate / 100) * averageCost;
-      }, 0),
-    }));
+
+    // Giá vốn bình quân toàn hệ thống của từng mặt hàng (tổng giá trị / tổng tồn mọi kho)
+    // — dùng cho cost định lượng, không phụ thuộc bộ lọc cửa hàng của màn hình.
+    const allBalances = await prisma.inventoryBalance.findMany({ select: { itemId: true, quantity: true, averageCost: true } });
+    const costAggregate = new Map<string, { quantity: number; value: number; lastAverage: number }>();
+    for (const balance of allBalances) {
+      const bucket = costAggregate.get(balance.itemId) || { quantity: 0, value: 0, lastAverage: 0 };
+      bucket.quantity += balance.quantity;
+      bucket.value += balance.quantity * balance.averageCost;
+      if (balance.averageCost > 0) bucket.lastAverage = balance.averageCost;
+      costAggregate.set(balance.itemId, bucket);
+    }
+    const averageCostByItemId = new Map<string, number>();
+    for (const [itemId, bucket] of costAggregate) {
+      averageCostByItemId.set(itemId, bucket.quantity > quantityEpsilon ? bucket.value / bucket.quantity : bucket.lastAverage);
+    }
+
+    // Cost đa cấp theo định lượng: BTP trong định lượng món lấy cost từ định lượng của
+    // chính BTP đó (không cần BTP có tồn kho), NVL lấy giá vốn bình quân.
+    const explosionRecipes = recipes as unknown as ExplosionRecipe[];
+    const recipeUnitCosts = computeRecipeUnitCosts(explosionRecipes, averageCostByItemId, new Date());
+    const recipesWithCost = recipes.map((recipe) => {
+      const outputRate = recipe.outputConversionRate > 0 ? recipe.outputConversionRate : 1;
+      const unitCost = recipeUnitCosts.get(recipe.productCode.toUpperCase());
+      const batchCost = Number.isFinite(unitCost) ? (unitCost as number) * outputRate : 0;
+      return { ...recipe, estimatedCost: batchCost, estimatedUnitCost: Number.isFinite(unitCost) ? unitCost : 0 };
+    });
+
+    // "Sheet tổng hợp" giá vốn & giá thành: mỗi mã sản phẩm một dòng, theo phiên bản
+    // định lượng đang áp dụng hôm nay. FINISHED tính %cost = giá cost / giá bán.
+    const productCodes = [...new Set(recipes.map((recipe) => recipe.productCode.toUpperCase()))];
+    const itemByCode = new Map(items.map((item) => [item.code.toUpperCase(), item]));
+    const costSummary = productCodes.map((productCode) => {
+      const versions = explosionRecipes.filter((recipe) => recipe.productCode.toUpperCase() === productCode);
+      const current = pickRecipeForDate(versions, new Date());
+      const productItem = itemByCode.get(productCode);
+      const unitCost = recipeUnitCosts.get(productCode) ?? 0;
+      const sellingPrice = current?.sellingPrice || 0;
+      return {
+        productCode,
+        productName: current?.productName || productItem?.name || productCode,
+        group: productItem?.itemType || "FINISHED",
+        stockUnit: productItem?.unit || "",
+        batchUnit: current?.unit || productItem?.unit || "",
+        outputConversionRate: current?.outputConversionRate || 1,
+        sellingPrice,
+        unitCost: Number.isFinite(unitCost) ? unitCost : 0,
+        costRatio: sellingPrice > 0 && Number.isFinite(unitCost) ? (unitCost as number) / sellingPrice : null,
+        version: current && "version" in current ? (current as { version?: number }).version || 0 : 0,
+      };
+    }).sort((a, b) => a.productCode.localeCompare(b.productCode));
     const movements = new Map<string, { inbound: number; outbound: number; inboundValue: number; outboundValue: number; byType: Record<string, { inbound: number; outbound: number; value: number }> }>();
     const touch = (itemId: string, warehouseCode: string) => {
       const key = `${itemId}|${warehouseCode}`;
@@ -323,7 +397,43 @@ export async function GET(request: Request) {
         movementByType: movement.byType,
       };
     });
-    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, balances, transactions, recipes: recipesWithCost, warehouses, stocktakes, stockSummary, stockMovements }));
+    // Báo cáo hủy hàng: mã nào hủy nhiều nhất, tách theo loại hủy (hết hạn / chất lượng).
+    const wasteBuckets = new Map<string, {
+      itemCode: string; itemName: string; unit: string; itemType: string;
+      totalQuantity: number; totalValue: number; documentCount: number;
+      bySubType: Record<string, { quantity: number; value: number }>;
+    }>();
+    for (const transaction of reportTransactions) {
+      if (transaction.transactionType !== "XUAT_HUY") continue;
+      const subType = transaction.subType || "KHONG_PHAN_LOAI";
+      for (const line of transaction.lines) {
+        const bucket = wasteBuckets.get(line.itemId) || {
+          itemCode: line.item.code, itemName: line.item.name, unit: line.item.unit, itemType: line.item.itemType,
+          totalQuantity: 0, totalValue: 0, documentCount: 0, bySubType: {},
+        };
+        bucket.totalQuantity += line.quantity;
+        bucket.totalValue += line.totalCost;
+        bucket.documentCount += 1;
+        bucket.bySubType[subType] ||= { quantity: 0, value: 0 };
+        bucket.bySubType[subType].quantity += line.quantity;
+        bucket.bySubType[subType].value += line.totalCost;
+        wasteBuckets.set(line.itemId, bucket);
+      }
+    }
+    const wasteReport = [...wasteBuckets.values()].sort((a, b) => b.totalValue - a.totalValue);
+
+    // Doanh thu chờ rã nguyên liệu, gom theo ngày + cửa hàng cho tab Chế biến.
+    const pendingByDay = new Map<string, { saleDate: Date; branchCode: string; rowCount: number; totalQuantity: number }>();
+    for (const row of pendingRevenueRows) {
+      const key = `${row.saleDate.toISOString().slice(0, 10)}|${row.branchCode}`;
+      const bucket = pendingByDay.get(key) || { saleDate: row.saleDate, branchCode: row.branchCode, rowCount: 0, totalQuantity: 0 };
+      bucket.rowCount += 1;
+      bucket.totalQuantity += row.productQuantity || 0;
+      pendingByDay.set(key, bucket);
+    }
+    const pendingSales = { total: pendingRevenueRows.length, byDay: [...pendingByDay.values()] };
+
+    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, balances, transactions, recipes: recipesWithCost, warehouses, stocktakes, stockSummary, stockMovements, itemGroups, costSummary, wasteReport, pendingSales }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });
@@ -360,7 +470,7 @@ export async function POST(request: Request) {
           name,
           unit,
           itemType,
-          category: cleanText(body.category) || null,
+          category: await resolveItemCategory(itemType, body.category),
           minStock: toNumber(body.minStock),
           requiresImage: !!body.requiresImage,
           note: cleanText(body.note) || null,
@@ -385,14 +495,51 @@ export async function POST(request: Request) {
 
     if (action === "CREATE_RECIPE") {
       const inputLines = linesFrom(body.lines);
-      const productCode = cleanText(body.productCode);
+      const productCode = cleanText(body.productCode).toUpperCase();
       const productName = cleanText(body.productName);
       if (!productCode || !productName || inputLines.length === 0) businessError("Định lượng cần mã món, tên món và nguyên liệu");
-      const productItem = await prisma.inventoryItem.findUnique({ where: { code: productCode.toUpperCase() } });
+      const productItem = await prisma.inventoryItem.findUnique({ where: { code: productCode } });
       if (!productItem) businessError(`Khong tim thay san pham ${productCode}`);
+      if (!["FINISHED", "SEMI_FINISHED"].includes(productItem.itemType)) {
+        businessError("Định lượng chỉ khai cho thành phẩm (SP_) hoặc bán thành phẩm (BTP_)");
+      }
       if (inputLines.some((line) => line.itemId === productItem.id || line.itemCode.toUpperCase() === productItem.code)) {
         businessError("BOM khong duoc tham chieu chinh san pham do");
       }
+
+      // Hệ số quy đổi mẻ chuẩn bị về ĐVT tồn kho (BTP nấu 1kg = 1000 gr...). Trống = 1.
+      const outputConversionRate = body.outputConversionRate !== undefined && cleanText(body.outputConversionRate) !== ""
+        ? toNumber(body.outputConversionRate)
+        : 1;
+      if (!(outputConversionRate > 0)) businessError("Hệ số quy đổi về ĐVT tồn kho phải lớn hơn 0");
+      const effectiveFrom = body.effectiveFrom ? toDate(body.effectiveFrom) : new Date();
+      // BTP không có giá bán (spec kế toán: cột giá bán bỏ với bán thành phẩm).
+      const sellingPrice = productItem.itemType === "SEMI_FINISHED" ? 0 : toNumber(body.sellingPrice);
+
+      // Nguyên liệu có thể khai bằng ĐVT quy đổi (chai830gr) — tra hệ số từ danh mục quy
+      // đổi của mặt hàng, hoặc nhận hệ số khai thẳng trên dòng (ưu tiên số khai thẳng).
+      const resolvedLines: Array<{ itemId: string; quantity: number; unitCode: string | null; conversionRate: number; wasteRate: number }> = [];
+      for (const line of inputLines) {
+        const item = line.itemId
+          ? await prisma.inventoryItem.findUnique({ where: { id: line.itemId }, include: { unitConversions: true } })
+          : await prisma.inventoryItem.findUnique({ where: { code: line.itemCode.toUpperCase() }, include: { unitConversions: true } });
+        if (!item) businessError(`Không tìm thấy nguyên liệu ${line.itemCode || line.itemId}`);
+        const unitCode = cleanText(line.unitCode);
+        let conversionRate = line.conversionRate > 0 ? line.conversionRate : 0;
+        if (!conversionRate) {
+          if (!unitCode || unitCode.toUpperCase() === item.unit.toUpperCase()) {
+            conversionRate = 1;
+          } else {
+            const conversion = item.unitConversions.find((candidate) => candidate.unitCode.toUpperCase() === unitCode.toUpperCase());
+            if (!conversion) {
+              businessError(`ĐVT [${unitCode}] chưa có trong quy đổi của ${item.code}. Khai quy đổi ở tab Mặt hàng hoặc điền hệ số quy đổi trên dòng định lượng.`);
+            }
+            conversionRate = conversion?.conversionRate || 1;
+          }
+        }
+        resolvedLines.push({ itemId: item.id, quantity: line.quantity, unitCode: unitCode || null, conversionRate, wasteRate: line.wasteRate });
+      }
+
       const latest = await prisma.recipe.findFirst({ where: { productCode }, orderBy: { version: "desc" } });
       const recipeCode = `${productCode}-V${(latest?.version || 0) + 1}`;
       if (await findDeletedByUnique("Recipe", { code: recipeCode })) {
@@ -404,10 +551,12 @@ export async function POST(request: Request) {
           code: recipeCode,
           productCode,
           productName,
-          unit: cleanText(body.unit) || "Ly",
-          sellingPrice: toNumber(body.sellingPrice),
+          unit: cleanText(body.unit) || productItem.unit,
+          outputConversionRate,
+          sellingPrice,
+          effectiveFrom,
           version: (latest?.version || 0) + 1,
-          lines: { create: inputLines.map((line) => ({ itemId: line.itemId, quantity: line.quantity, wasteRate: line.wasteRate })) },
+          lines: { create: resolvedLines },
         },
         include: { lines: { include: { item: true } } },
       });
@@ -423,14 +572,19 @@ export async function POST(request: Request) {
       const productQuantity = toNumber(body.productQuantity);
       if (!productCode || !branchCode || !warehouseCode || productQuantity <= 0) businessError("Lenh che bien can san pham, cua hang, kho va so luong > 0");
       assertBranchAccess(auth.session, branchCode);
-      const [productItem, recipe] = await Promise.all([
+      const [productItem, recipeVersions] = await Promise.all([
         prisma.inventoryItem.findUnique({ where: { code: productCode } }),
-        prisma.recipe.findFirst({ where: { productCode, status: "ACTIVE" }, include: { lines: true }, orderBy: { version: "desc" } }),
+        prisma.recipe.findMany({ where: { productCode }, include: { lines: { include: { item: true } } } }),
       ]);
       if (!productItem) businessError(`Khong tim thay ban thanh pham ${productCode}`);
       if (productItem.itemType !== "SEMI_FINISHED") businessError("Che bien chi ap dung cho mat hang ban thanh pham");
-      if (!recipe || recipe.lines.length === 0) businessError(`Chua co BOM active cho ${productCode}`);
+      // Chọn phiên bản định lượng theo ngày chế biến, không phải phiên bản mới nhất.
+      const recipe = pickRecipeForDate(recipeVersions as unknown as ExplosionRecipe[], productionDate);
+      if (!recipe || recipe.lines.length === 0) businessError(`Chua co dinh luong ap dung cho ${productCode}`);
       if (await isPeriodLocked(productionDate, branchCode)) businessError("Ky ke toan da khoa");
+      // productQuantity khai theo ĐVT tồn kho; định lượng khai cho MỘT mẻ `unit`.
+      const outputRate = recipe.outputConversionRate > 0 ? recipe.outputConversionRate : 1;
+      const batchQuantity = productQuantity / outputRate;
       const result = await prisma.$transaction(async (tx) => {
         const referenceCode = cleanText(body.referenceCode) || await nextYearlyCode(tx.inventoryTransaction, "CB");
         const issue = await postInventoryTransaction(tx, {
@@ -445,7 +599,7 @@ export async function POST(request: Request) {
           createdBy: auth.session.name,
           lines: recipe.lines.map((line) => ({
             itemId: line.itemId,
-            inputQuantity: line.quantity * (1 + line.wasteRate / 100) * productQuantity,
+            inputQuantity: line.quantity * (line.conversionRate || 1) * (1 + line.wasteRate / 100) * batchQuantity,
             inputUnitCode: "",
             inputUnitCost: 0,
           })),
@@ -506,6 +660,10 @@ export async function POST(request: Request) {
             ? await tx.inventoryItem.findUnique({ where: { id: row.itemId } })
             : await tx.inventoryItem.findUnique({ where: { code: row.itemCode.toUpperCase() } });
           if (!item) businessError(`Khong tim thay mat hang ${row.itemCode || row.itemId}`);
+          // CCDC & Tài sản kiểm kê ở màn hình Tài sản & Khấu hao, không nằm trong kiểm kê kho.
+          if (item && ["TOOL", "ASSET"].includes(item.itemType)) {
+            businessError(`Mặt hàng ${item.code} thuộc nhóm CCDC/Tài sản — kiểm kê ở màn hình Tài sản & Khấu hao, không thuộc kiểm kê kho.`);
+          }
           const balance = await tx.inventoryBalance.findUnique({ where: { itemId_warehouseCode: { itemId: item.id, warehouseCode } } });
           const systemQuantity = balance?.quantity || 0;
           const varianceQuantity = row.actualQuantity - systemQuantity;
@@ -552,6 +710,291 @@ export async function POST(request: Request) {
       return NextResponse.json(result, { status: 201 });
     }
 
+    /**
+     * Nút "Rã nguyên liệu" tab Chế biến: lấy số bán từ các dòng import doanh thu còn chờ
+     * (PENDING), rã theo định lượng đang áp dụng theo thứ tự BTP → TP → combo rồi tự sinh
+     * phiếu: XUAT_CHE_BIEN nguyên liệu + NHAP_CHE_BIEN sản phẩm cho từng cấp, cuối cùng
+     * XUAT_BAN đúng số đã bán. Món không có định lượng (bia, nước chai) xuất bán thẳng.
+     */
+    if (action === "EXPLODE_PRODUCTION") {
+      const branchCode = cleanText(body.branchCode);
+      const warehouseCode = cleanText(body.warehouseCode);
+      const toWarehouseCode = cleanText(body.toWarehouseCode) || warehouseCode;
+      const dateFrom = toDate(body.dateFrom);
+      const dateTo = toDate(body.dateTo || body.dateFrom);
+      if (!branchCode || branchCode === "ALL") businessError("Chọn cửa hàng cần rã nguyên liệu");
+      if (!warehouseCode) businessError("Chọn kho xuất nguyên liệu");
+      assertBranchAccess(auth.session, branchCode);
+      const sourceWarehouse = await prisma.masterDataItem.findFirst({ where: { type: "WAREHOUSE", code: warehouseCode, branch: branchCode } });
+      if (!sourceWarehouse) businessError(`Kho ${warehouseCode} không thuộc cửa hàng ${branchCode}.`);
+      if (dateTo.getTime() < dateFrom.getTime()) businessError("Khoảng ngày rã không hợp lệ (từ ngày sau đến ngày trước)");
+      const rangeEnd = new Date(dateTo);
+      rangeEnd.setHours(23, 59, 59, 999);
+      if (await isPeriodLocked(dateTo, branchCode)) businessError("Kỳ kế toán đã khóa");
+
+      const pendingRows = await prisma.revenueImportRow.findMany({
+        where: {
+          inventoryStatus: "PENDING",
+          productCode: { not: null },
+          productQuantity: { gt: 0 },
+          branchCode,
+          saleDate: { gte: dateFrom, lte: rangeEnd },
+          deletedAt: null,
+        },
+      });
+      if (pendingRows.length === 0) {
+        businessError("Không có dòng doanh thu nào đang chờ rã nguyên liệu trong khoảng ngày đã chọn.");
+      }
+
+      const recipeVersions = await prisma.recipe.findMany({
+        where: { deletedAt: null },
+        include: { lines: { include: { item: true } } },
+      });
+      const plan = explodeSalesDemand({
+        demands: pendingRows.map((row) => ({ productCode: row.productCode || "", quantity: row.productQuantity || 0 })),
+        recipes: recipeVersions as unknown as ExplosionRecipe[],
+        date: dateTo,
+      });
+
+      const result = await prisma.$transaction(async (tx) => {
+        const runCode = await nextYearlyCode(tx.inventoryTransaction, "RA", dateTo.getFullYear());
+        const documents = [];
+        let sequence = 0;
+        // 1) Chế biến từng cấp theo đúng thứ tự BTP → TP → combo.
+        for (const step of plan.productions) {
+          sequence += 1;
+          const productItem = await tx.inventoryItem.findUnique({ where: { code: step.productCode } });
+          if (!productItem) businessError(`Không tìm thấy sản phẩm ${step.productCode}`);
+          const issue = await postInventoryTransaction(tx, {
+            code: `${runCode}-${sequence}X`,
+            transactionType: "XUAT_CHE_BIEN",
+            transactionDate: dateTo,
+            branchCode,
+            warehouseCode,
+            referenceType: "PRODUCTION",
+            referenceCode: runCode,
+            note: `Rã nguyên liệu ${step.productCode} (${cleanText(body.note) || "theo doanh thu"})`,
+            createdBy: auth.session.name,
+            lines: step.components.map((component) => ({
+              itemId: component.item.id,
+              inputQuantity: component.quantityBase,
+              inputUnitCode: "",
+              inputUnitCost: 0,
+            })),
+          });
+          const totalCost = issue.lines.reduce((sum, line) => sum + line.totalCost, 0);
+          const receipt = await postInventoryTransaction(tx, {
+            code: `${runCode}-${sequence}N`,
+            transactionType: "NHAP_CHE_BIEN",
+            transactionDate: dateTo,
+            branchCode,
+            warehouseCode: toWarehouseCode,
+            referenceType: "PRODUCTION",
+            referenceCode: runCode,
+            note: `Nhập chế biến ${step.productCode} từ rã nguyên liệu`,
+            createdBy: auth.session.name,
+            lines: [{
+              itemId: productItem?.id || "",
+              inputQuantity: step.quantityBase,
+              inputUnitCode: productItem?.unit || "",
+              inputUnitCost: step.quantityBase > 0 ? totalCost / step.quantityBase : 0,
+            }],
+          });
+          documents.push(issue, receipt);
+        }
+        // 2) Xuất bán: sản phẩm vừa chế biến xuất từ kho nhập chế biến, hàng bán thẳng
+        //    (không định lượng) xuất từ kho nguyên liệu.
+        const saleGroups: Array<{ warehouse: string; sales: typeof plan.producedSales; label: string }> = [
+          { warehouse: toWarehouseCode, sales: plan.producedSales, label: "chế biến" },
+          { warehouse: warehouseCode, sales: plan.directSales, label: "bán thẳng" },
+        ];
+        for (const group of saleGroups) {
+          if (group.sales.length === 0) continue;
+          const lines = [];
+          for (const sale of group.sales) {
+            const item = await tx.inventoryItem.findUnique({ where: { code: sale.productCode } });
+            if (!item) businessError(`Không tìm thấy mặt hàng ${sale.productCode} để xuất bán`);
+            lines.push({ itemId: item?.id || "", inputQuantity: sale.quantityBase, inputUnitCode: item?.unit || "", inputUnitCost: 0 });
+          }
+          sequence += 1;
+          documents.push(await postInventoryTransaction(tx, {
+            code: `${runCode}-${sequence}XB`,
+            transactionType: "XUAT_BAN",
+            transactionDate: dateTo,
+            branchCode,
+            warehouseCode: group.warehouse,
+            referenceType: "PRODUCTION",
+            referenceCode: runCode,
+            note: `Xuất bán theo rã nguyên liệu ${runCode} (${group.label})`,
+            createdBy: auth.session.name,
+            lines,
+          }));
+        }
+        // 3) Đánh dấu các dòng doanh thu đã rã kèm mã lần rã, để hoàn tác được cả cụm
+        //    (REVERT_EXPLOSION) và không rã trùng lần sau.
+        await tx.revenueImportRow.updateMany({
+          where: { id: { in: pendingRows.map((row) => row.id) } },
+          data: { inventoryStatus: `POSTED:${runCode}` },
+        });
+        return { runCode, documents };
+      }, { timeout: 60000 });
+
+      await writeAuditLog({
+        session: auth.session, module: menuHref, action: "EXPLODE_PRODUCTION",
+        entityType: "InventoryTransaction", entityCode: result.runCode, branchCode,
+        metadata: {
+          dateFrom, dateTo, warehouseCode, toWarehouseCode,
+          revenueRows: pendingRows.length,
+          productions: plan.productions.map((step) => ({ productCode: step.productCode, quantityBase: step.quantityBase })),
+          documents: result.documents.map((doc) => doc.code),
+        },
+      });
+      return NextResponse.json({
+        runCode: result.runCode,
+        documentCount: result.documents.length,
+        revenueRows: pendingRows.length,
+        productions: plan.productions.map((step) => ({ productCode: step.productCode, quantityBase: step.quantityBase, batchQuantity: step.batchQuantity })),
+        directSales: plan.directSales,
+        documents: result.documents,
+      }, { status: 201 });
+    }
+
+    /**
+     * Hoàn tác nguyên một lần rã nguyên liệu: hoàn kho + xoá mềm mọi phiếu của lần rã
+     * (mã RA-...), trả các dòng doanh thu về trạng thái chờ rã. Phiếu của lần rã bị chặn
+     * xoá lẻ (referenceType PRODUCTION) nên đây là đường lùi duy nhất — và an toàn vì đi
+     * theo đúng cụm.
+     */
+    if (action === "REVERT_EXPLOSION") {
+      const runCode = cleanText(body.runCode).toUpperCase();
+      if (!runCode) businessError("Thiếu mã lần rã (RA-...)");
+      const documents = await prisma.inventoryTransaction.findMany({
+        where: { referenceType: "PRODUCTION", referenceCode: runCode, deletedAt: null },
+        include: { lines: true },
+        orderBy: { createdAt: "desc" },
+      });
+      if (documents.length === 0) businessError(`Không tìm thấy phiếu nào của lần rã ${runCode}`);
+      const branchCode = documents[0]?.branchCode || "";
+      assertBranchAccess(auth.session, branchCode);
+      if (documents[0] && await isPeriodLocked(documents[0].transactionDate, branchCode)) businessError("Kỳ kế toán đã khóa");
+
+      // Chỉ hoàn kho chính xác khi chưa có phiếu nào khác phát sinh sau trên cùng mặt hàng/kho.
+      const documentIds = documents.map((doc) => doc.id);
+      const itemIds = [...new Set(documents.flatMap((doc) => doc.lines.map((line) => line.itemId)))];
+      const warehouseCodes = [...new Set(documents.flatMap((doc) => [doc.warehouseCode, doc.toWarehouseCode]).filter((value): value is string => !!value))];
+      const earliest = documents[documents.length - 1];
+      const newer = await prisma.inventoryTransaction.findFirst({
+        where: {
+          id: { notIn: documentIds },
+          deletedAt: null,
+          createdAt: { gt: earliest?.createdAt || new Date(0) },
+          lines: { some: { itemId: { in: itemIds } } },
+          OR: [
+            { warehouseCode: { in: warehouseCodes } },
+            { toWarehouseCode: { in: warehouseCodes } },
+          ],
+        },
+      });
+      if (newer) {
+        businessError(`Đã có phiếu ${newer.code} phát sinh sau lần rã ${runCode} trên cùng mặt hàng/kho nên không thể hoàn tác chính xác. Xoá phiếu đó trước.`);
+      }
+
+      await prisma.$transaction(async (tx) => {
+        for (const doc of documents) {
+          for (const line of doc.lines) {
+            const direction = doc.transactionType.startsWith("NHAP_") ? "IN" : "OUT";
+            const balance = await tx.inventoryBalance.findUnique({
+              where: { itemId_warehouseCode: { itemId: line.itemId, warehouseCode: doc.warehouseCode } },
+            });
+            const currentQuantity = balance?.quantity || 0;
+            const currentAverage = balance?.averageCost || 0;
+            const currentValue = currentQuantity * currentAverage;
+            const newQuantity = direction === "IN" ? currentQuantity - line.quantity : currentQuantity + line.quantity;
+            if (newQuantity < -quantityEpsilon) {
+              businessError(`Tồn kho ${doc.warehouseCode} không đủ để hoàn lại phiếu ${doc.code}.`);
+            }
+            const newValue = direction === "IN" ? currentValue - line.totalCost : currentValue + line.totalCost;
+            const averageCost = newQuantity > quantityEpsilon ? Math.max(newValue / newQuantity, 0) : currentAverage;
+            await tx.inventoryBalance.upsert({
+              where: { itemId_warehouseCode: { itemId: line.itemId, warehouseCode: doc.warehouseCode } },
+              create: { itemId: line.itemId, warehouseCode: doc.warehouseCode, quantity: Math.max(newQuantity, 0), averageCost },
+              update: { quantity: Math.max(newQuantity, 0), averageCost },
+            });
+          }
+          await tx.inventoryTransaction.update({
+            where: { id: doc.id },
+            data: { deletedAt: new Date(), deletedBy: auth.session.name },
+          });
+        }
+        await tx.revenueImportRow.updateMany({
+          where: { inventoryStatus: `POSTED:${runCode}` },
+          data: { inventoryStatus: "PENDING" },
+        });
+      }, { timeout: 60000 });
+
+      await writeAuditLog({
+        session: auth.session, module: menuHref, action: "REVERT_EXPLOSION",
+        entityType: "InventoryTransaction", entityCode: runCode, branchCode,
+        metadata: { documents: documents.map((doc) => doc.code) },
+      });
+      return NextResponse.json({ runCode, revertedDocuments: documents.length });
+    }
+
+    /**
+     * Điều chuyển kho — tab riêng. Cùng nhà hàng: chỉ cộng trừ tồn giữa hai kho.
+     * Khác nhà hàng: sinh cặp công nợ nội bộ phải thu/phải trả theo trị giá xuất kho.
+     * Không cho điều chuyển nhóm FINISHED (postStockTransfer chặn tầng cuối).
+     */
+    if (action === "TRANSFER_STOCK") {
+      const branchCode = cleanText(body.branchCode);
+      const warehouseCode = cleanText(body.warehouseCode);
+      const toWarehouseCode = cleanText(body.toWarehouseCode);
+      const transactionDate = toDate(body.transactionDate);
+      if (!branchCode || !warehouseCode || !toWarehouseCode) businessError("Điều chuyển cần cửa hàng, kho xuất và kho nhận");
+      if (warehouseCode === toWarehouseCode) businessError("Kho xuất và kho nhận không được trùng nhau");
+      assertBranchAccess(auth.session, branchCode);
+      const [sourceWarehouse, destinationWarehouse] = await Promise.all([
+        prisma.masterDataItem.findFirst({ where: { type: "WAREHOUSE", code: warehouseCode, branch: branchCode } }),
+        prisma.masterDataItem.findFirst({ where: { type: "WAREHOUSE", code: toWarehouseCode, status: "ACTIVE" } }),
+      ]);
+      if (!sourceWarehouse) businessError(`Kho ${warehouseCode} không thuộc cửa hàng ${branchCode}.`);
+      if (!destinationWarehouse) businessError(`Kho nhận ${toWarehouseCode} không tồn tại hoặc ngưng hoạt động`);
+      const toBranchCode = (destinationWarehouse?.branch || branchCode).toUpperCase();
+      if (destinationWarehouse?.branch) assertBranchAccess(auth.session, destinationWarehouse.branch);
+      if (await isPeriodLocked(transactionDate, branchCode)) businessError("Kỳ kế toán đã khóa");
+      if (toBranchCode !== branchCode.toUpperCase() && await isPeriodLocked(transactionDate, toBranchCode)) {
+        businessError(`Kỳ kế toán của cửa hàng nhận ${toBranchCode} đã khóa`);
+      }
+      const inputLines = linesFrom(body.lines);
+      if (inputLines.length === 0) businessError("Cần ít nhất một dòng hàng điều chuyển");
+
+      const requestedCode = cleanText(body.code);
+      if (requestedCode && await findDeletedByUnique("InventoryTransaction", { code: requestedCode })) {
+        businessError(duplicatedInTrashMessage(requestedCode, "Phiếu điều chuyển kho"));
+      }
+      const result = await prisma.$transaction(async (tx) => {
+        const transferCode = requestedCode || await nextYearlyCode(tx.inventoryTransaction, "DCK", transactionDate.getFullYear());
+        return postStockTransfer(tx, {
+          code: transferCode,
+          transactionDate,
+          branchCode,
+          warehouseCode,
+          toWarehouseCode,
+          toBranchCode,
+          referenceCode: cleanText(body.referenceCode) || null,
+          note: cleanText(body.note) || null,
+          createdBy: auth.session.name,
+          lines: inputLines,
+        });
+      });
+      await writeAuditLog({
+        session: auth.session, module: menuHref, action: "TRANSFER_STOCK",
+        entityType: "InventoryTransaction", entityId: result.transaction.id, entityCode: result.transaction.code, branchCode,
+        metadata: { toBranchCode, warehouseCode, toWarehouseCode, crossBranch: toBranchCode !== branchCode.toUpperCase(), receivable: result.receivable?.code, payable: result.payable?.code },
+      });
+      return NextResponse.json(result, { status: 201 });
+    }
+
     const transactionType = normalizeStockTransactionType(action === "RECORD_WASTE" ? "XUAT_HUY" : body.transactionType);
     const transactionDate = toDate(body.transactionDate);
     const branchCode = cleanText(body.branchCode);
@@ -567,33 +1010,57 @@ export async function POST(request: Request) {
     if (!warehouse) {
       businessError(`Kho ${warehouseCode} không thuộc chi nhánh ${branchCode}.`);
     }
+    let destinationBranchCode: string | null = null;
     if (transactionType === "DIEU_CHUYEN") {
       const destinationWarehouse = await prisma.masterDataItem.findFirst({
         where: { type: "WAREHOUSE", code: toWarehouseCode, status: "ACTIVE" }
       });
       if (!destinationWarehouse) businessError(`Kho nhận ${toWarehouseCode} không tồn tại hoặc ngưng hoạt động`);
-      if (destinationWarehouse.branch) assertBranchAccess(auth.session, destinationWarehouse.branch);
+      if (destinationWarehouse?.branch) assertBranchAccess(auth.session, destinationWarehouse.branch);
+      destinationBranchCode = (destinationWarehouse?.branch || branchCode).toUpperCase();
     }
 
     if (await isPeriodLocked(transactionDate, branchCode)) businessError("Kỳ kế toán đã khóa");
+    if (destinationBranchCode && destinationBranchCode !== branchCode.toUpperCase() && await isPeriodLocked(transactionDate, destinationBranchCode)) {
+      businessError(`Kỳ kế toán của cửa hàng nhận ${destinationBranchCode} đã khóa`);
+    }
+
+    // Loại hủy bắt buộc khi hủy hàng từ tab Hủy hàng; phiếu XUAT_HUY khác (import cũ) thì tuỳ chọn.
+    let wasteSubType: string | null = null;
+    if (transactionType === "XUAT_HUY") {
+      wasteSubType = normalizeWasteSubType(body.wasteType ?? body.subType);
+      if (wasteSubType && !isWasteSubType(wasteSubType)) {
+        businessError("Loại hủy không hợp lệ. Chọn: Hết hạn sử dụng hoặc Không đảm bảo chất lượng.");
+      }
+      if (action === "RECORD_WASTE" && !wasteSubType) {
+        businessError("Chọn loại hủy: Hết hạn sử dụng hoặc Không đảm bảo chất lượng.");
+      }
+    }
 
     let inputLines = linesFrom(body.lines);
     if (action === "RECORD_WASTE" && cleanText(body.recipeId)) {
+      // Hủy theo món: rã định lượng của món ra nguyên liệu (kể cả hệ số quy đổi ĐVT).
       const recipe = await prisma.recipe.findUnique({ where: { id: cleanText(body.recipeId) }, include: { lines: true } });
       if (!recipe) businessError("Không tìm thấy định lượng món hủy");
       const productQuantity = toNumber(body.productQuantity);
       if (productQuantity <= 0) businessError("Số lượng món hủy phải lớn hơn 0");
-      inputLines = recipe.lines.map((line) => ({
-        itemId: line.itemId,
-        itemCode: "",
-        quantity: line.quantity * (1 + line.wasteRate / 100) * productQuantity,
-        inputQuantity: line.quantity * (1 + line.wasteRate / 100) * productQuantity,
-        unitCode: "",
-        inputUnitCode: "",
-        unitCost: 0,
-        inputUnitCost: 0,
-        wasteRate: 0,
-      }));
+      const outputRate = recipe && recipe.outputConversionRate > 0 ? recipe.outputConversionRate : 1;
+      const batches = productQuantity / outputRate;
+      inputLines = (recipe?.lines || []).map((line) => {
+        const quantity = line.quantity * (line.conversionRate || 1) * (1 + line.wasteRate / 100) * batches;
+        return {
+          itemId: line.itemId,
+          itemCode: "",
+          quantity,
+          inputQuantity: quantity,
+          unitCode: "",
+          inputUnitCode: "",
+          unitCost: 0,
+          inputUnitCost: 0,
+          wasteRate: 0,
+          conversionRate: 1,
+        };
+      });
     }
     if (inputLines.length === 0) businessError("Cần ít nhất một dòng nguyên liệu");
 
@@ -604,9 +1071,27 @@ export async function POST(request: Request) {
 
     const result = await prisma.$transaction(async (tx) => {
       const transactionCode = cleanText(body.code) || await nextYearlyCode(tx.inventoryTransaction, stockPrefix(transactionType));
+      // Điều chuyển luôn đi qua postStockTransfer để chặn FINISHED và sinh công nợ nội bộ
+      // khi kho nhận thuộc nhà hàng khác — kể cả phiếu tạo từ màn hình Nhập/Xuất cũ.
+      if (transactionType === "DIEU_CHUYEN") {
+        const transfer = await postStockTransfer(tx, {
+          code: transactionCode,
+          transactionDate,
+          branchCode,
+          warehouseCode,
+          toWarehouseCode,
+          toBranchCode: destinationBranchCode,
+          referenceCode: cleanText(body.referenceCode) || null,
+          note: cleanText(body.note) || null,
+          createdBy: auth.session.name,
+          lines: inputLines,
+        });
+        return transfer.transaction;
+      }
       return postInventoryTransaction(tx, {
         code: transactionCode,
         transactionType,
+        subType: wasteSubType,
         transactionDate,
         branchCode,
         warehouseCode,
@@ -674,7 +1159,7 @@ export async function PATCH(request: Request) {
           unit,
           itemType,
           minStock,
-          ...(body.category !== undefined ? { category: cleanText(body.category) || null } : {}),
+          ...(body.category !== undefined ? { category: await resolveItemCategory(itemType, body.category) } : {}),
           ...(body.requiresImage !== undefined ? { requiresImage: !!body.requiresImage } : {}),
           ...(body.status !== undefined ? { status: cleanText(body.status).toUpperCase() || "ACTIVE" } : {}),
           ...(body.note !== undefined ? { note: cleanText(body.note) || null } : {}),
@@ -777,18 +1262,32 @@ export async function PATCH(request: Request) {
       if (!unit) businessError("Đơn vị tính của món không được để trống");
       const sellingPrice = body.sellingPrice !== undefined ? toNumber(body.sellingPrice) : recipe.sellingPrice;
       if (sellingPrice < 0) businessError("Giá bán không được âm");
+      const outputConversionRate = body.outputConversionRate !== undefined ? toNumber(body.outputConversionRate) : recipe.outputConversionRate;
+      if (!(outputConversionRate > 0)) businessError("Hệ số quy đổi về ĐVT tồn kho phải lớn hơn 0");
 
       const nextLines = body.lines !== undefined ? editableRecipeLines(body.lines) : null;
-      const resolvedLines: { itemId: string; quantity: number; wasteRate: number }[] = [];
+      const resolvedLines: { itemId: string; quantity: number; unitCode: string | null; conversionRate: number; wasteRate: number }[] = [];
       if (nextLines) {
         const productItem = await prisma.inventoryItem.findUnique({ where: { code: recipe.productCode.toUpperCase() } });
         for (const line of nextLines) {
           const item = line.itemId
-            ? await prisma.inventoryItem.findUnique({ where: { id: line.itemId } })
-            : await prisma.inventoryItem.findUnique({ where: { code: line.itemCode.toUpperCase() } });
+            ? await prisma.inventoryItem.findUnique({ where: { id: line.itemId }, include: { unitConversions: true } })
+            : await prisma.inventoryItem.findUnique({ where: { code: line.itemCode.toUpperCase() }, include: { unitConversions: true } });
           if (!item) businessError(`Không tìm thấy nguyên liệu ${line.itemCode || line.itemId}`);
           if (productItem && item.id === productItem.id) businessError("BOM không được tham chiếu chính sản phẩm đó");
-          resolvedLines.push({ itemId: item.id, quantity: line.quantity, wasteRate: line.wasteRate });
+          let conversionRate = line.conversionRate > 0 ? line.conversionRate : 0;
+          if (!conversionRate) {
+            if (!line.unitCode || line.unitCode.toUpperCase() === item.unit.toUpperCase()) {
+              conversionRate = 1;
+            } else {
+              const conversion = item.unitConversions.find((candidate) => candidate.unitCode.toUpperCase() === line.unitCode.toUpperCase());
+              if (!conversion) {
+                businessError(`ĐVT [${line.unitCode}] chưa có trong quy đổi của ${item.code}. Khai quy đổi ở tab Mặt hàng hoặc điền hệ số quy đổi trên dòng.`);
+              }
+              conversionRate = conversion?.conversionRate || 1;
+            }
+          }
+          resolvedLines.push({ itemId: item.id, quantity: line.quantity, unitCode: line.unitCode || null, conversionRate, wasteRate: line.wasteRate });
         }
       }
 
@@ -803,6 +1302,7 @@ export async function PATCH(request: Request) {
             productName,
             unit,
             sellingPrice,
+            outputConversionRate,
             ...(body.effectiveFrom !== undefined ? { effectiveFrom: toDate(body.effectiveFrom) } : {}),
             ...(body.status !== undefined ? { status: cleanText(body.status).toUpperCase() || "ACTIVE" } : {}),
           },
@@ -961,9 +1461,26 @@ export async function DELETE(request: Request) {
         businessError(`Đã có phiếu ${newer.code} phát sinh sau phiếu ${transaction.code} trên cùng mặt hàng/kho nên không thể hoàn kho chính xác. Hãy xoá các phiếu phát sinh sau hoặc lập phiếu điều chỉnh kho.`);
       }
 
+      // Phiếu điều chuyển liên nhà hàng: phải thu hồi được cặp công nợ nội bộ trước.
+      const internalDebtCodes = [transaction.internalReceivableDebtCode, transaction.internalPayableDebtCode]
+        .filter((value): value is string => !!value);
+      if (internalDebtCodes.length > 0) {
+        const internalDebts = await prisma.debtRecord.findMany({
+          where: { code: { in: internalDebtCodes }, deletedAt: null },
+          include: { settlements: true },
+        });
+        const settled = internalDebts.find((debt) => debt.settlements.length > 0);
+        if (settled) {
+          businessError(`Công nợ nội bộ ${settled.code} của phiếu ${transaction.code} đã được gạch nợ nên không thể xoá phiếu. Hoàn tác các phiếu thu/chi gạch nợ trước.`);
+        }
+        for (const debt of internalDebts) {
+          await softDeleteRecord({ model: "DebtRecord", id: debt.id, session: auth.session, reason: `Xoá theo phiếu điều chuyển ${transaction.code}` });
+        }
+      }
+
       const reversals = await reverseTransactionStock(transaction);
       const result = await softDeleteRecord({ model: "InventoryTransaction", id, session: auth.session, reason });
-      await writeAuditLog({ session: auth.session, module: menuHref, action: "REVERSE_STOCK", entityType: "InventoryTransaction", entityId: transaction.id, entityCode: transaction.code, branchCode: transaction.branchCode, metadata: { transactionType: transaction.transactionType, reversals } });
+      await writeAuditLog({ session: auth.session, module: menuHref, action: "REVERSE_STOCK", entityType: "InventoryTransaction", entityId: transaction.id, entityCode: transaction.code, branchCode: transaction.branchCode, metadata: { transactionType: transaction.transactionType, reversals, internalDebtCodes } });
       return NextResponse.json(result);
     }
 

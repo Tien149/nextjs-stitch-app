@@ -362,18 +362,20 @@ export const moduleTabs: Record<string, Array<{ id: string; label: string }>> = 
     { id: "closing", label: "Khóa sổ kỳ kế toán" },
   ],
   "/procurement": [
-    { id: "requests", label: "Yêu cầu mua" },
     { id: "quotes", label: "So sánh giá" },
+    { id: "requests", label: "Yêu cầu mua" },
     { id: "orders", label: "Đơn mua hàng" },
   ],
   "/inventory": [
     { id: "stock", label: "Tồn kho" },
-    { id: "transactions", label: "Nhập / Xuất" },
+    { id: "inbound", label: "Nhập kho" },
+    { id: "outbound", label: "Xuất kho" },
+    { id: "transfer", label: "Điều chuyển" },
     { id: "items", label: "Mặt hàng" },
     { id: "recipes", label: "Định lượng" },
     { id: "production", label: "Chế biến" },
-    { id: "stocktake", label: "Kiểm kê" },
     { id: "waste", label: "Hủy hàng" },
+    { id: "stocktake", label: "Kiểm kê" },
   ],
   "/assets/operations": [
     { id: "depreciation", label: "Khấu hao" },
@@ -389,7 +391,7 @@ export const moduleTabIcons: Record<string, string> = {
   activity: "history", pnl: "finance", yoy: "query_stats", cashflow: "timeline", balance: "account_balance",
   cashbook: "account_balance_wallet", accruals: "calendar_month", closing: "lock",
   requests: "assignment", quotes: "compare_arrows", orders: "local_shipping",
-  stock: "inventory", transactions: "swap_horiz", items: "category", recipes: "menu_book",
+  stock: "inventory", transactions: "swap_horiz", inbound: "download", outbound: "upload", transfer: "sync_alt", items: "category", recipes: "menu_book",
   production: "blender", stocktake: "fact_check", waste: "delete_sweep",
   depreciation: "trending_down", maintenance: "build", damage: "report_problem", disposal: "delete_sweep",
 };

@@ -32,6 +32,8 @@ model MasterDataItem {
   group        String?
   /// Mã của danh mục cha trong ba tầng phân loại thu/chi:
   /// Phân cấp P&L: PNL_ITEM lưu mã PNL_GROUP. Danh mục Thu/Chi không liên kết P&L.
+  /// Riêng INVENTORY_ITEM_GROUP: lưu NHÓM KHO tương ứng của phân nhóm mặt hàng
+  /// (khớp cột group của kho WAREHOUSE ở từng cửa hàng, ví dụ BEP / BAR / FOH).
   subGroup     String?
   partnerType  String?
   partnerGroup String?
@@ -657,10 +659,19 @@ model InventoryTransaction {
   importBatchId   String?
   code            String   @unique
   transactionType String
+  /// Phân loại chi tiết trong cùng một loại giao dịch. Hiện dùng cho xuất hủy:
+  /// HET_HAN_SU_DUNG | KHONG_DAM_BAO_CHAT_LUONG.
+  subType         String?
   transactionDate DateTime @default(now())
   branchCode      String
   warehouseCode   String
   toWarehouseCode String?
+  /// Cửa hàng sở hữu kho nhận khi điều chuyển. Trống = cùng `branchCode`.
+  /// Khác nhau = điều chuyển liên nhà hàng: phát sinh công nợ nội bộ phải thu & phải trả.
+  toBranchCode    String?
+  /// Công nợ nội bộ sinh khi điều chuyển hàng liên nhà hàng, cùng cơ chế với Điều tiền.
+  internalReceivableDebtCode String?
+  internalPayableDebtCode    String?
   referenceType   String?
   referenceId     String?
   referenceCode   String?
@@ -676,9 +687,11 @@ model InventoryTransaction {
   deletedBy String?
 
   @@index([transactionType])
+  @@index([subType])
   @@index([transactionDate])
   @@index([warehouseCode])
   @@index([toWarehouseCode])
+  @@index([toBranchCode])
   @@index([importBatchId])
   @@index([deletedAt])
 }
@@ -858,7 +871,12 @@ model Recipe {
   code          String   @unique
   productCode   String
   productName   String
+  /// ĐVT của mẻ chuẩn bị (nhất là bán thành phẩm: 1kg, 400gr, 1 lít sốt...).
+  /// Để trống = trùng ĐVT tồn kho của sản phẩm.
   unit          String
+  /// Hệ số quy đổi mẻ chuẩn bị về ĐVT tồn kho: 1 `unit` = bao nhiêu ĐVT tồn kho.
+  /// Định lượng nguyên liệu khai cho MỘT mẻ `unit`, chia hệ số này ra cost/ĐVT tồn kho.
+  outputConversionRate Float @default(1)
   sellingPrice  Float    @default(0)
   version       Int      @default(1)
   effectiveFrom DateTime @default(now())
@@ -873,6 +891,7 @@ model Recipe {
 
   @@index([productCode])
   @@index([status])
+  @@index([effectiveFrom])
   @@index([deletedAt])
 }
 
@@ -881,6 +900,11 @@ model RecipeLine {
   recipeId  String
   itemId    String
   quantity  Float
+  /// ĐVT nguyên liệu khai trên định lượng (có thể là ĐVT quy đổi, vd chai830gr).
+  /// Để trống = ĐVT tồn kho của nguyên liệu.
+  unitCode       String?
+  /// Quy đổi `quantity * conversionRate` ra ĐVT tồn kho của nguyên liệu.
+  conversionRate Float  @default(1)
   wasteRate Float  @default(0)
 
   recipe Recipe        @relation(fields: [recipeId], references: [id], onDelete: Cascade)
