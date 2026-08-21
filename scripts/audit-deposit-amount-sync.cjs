@@ -248,7 +248,7 @@ async function audit() {
       type: "SAMPLE_AMOUNT_VOUCHER", fixable: false, voucherCode: voucher.code,
       partnerName: voucher.partnerName, branchCode: voucher.branchCode,
       docDate: voucher.voucherDate.toISOString().slice(0, 10), current: voucher.amount,
-      description: voucher.description, moneySourceCode: voucher.moneySourceCode,
+      description: voucher.description, moneySourceCode: voucher.moneySourceCode, status: voucher.status,
       categoryCode: voucher.categoryCode, createdBy: voucher.createdBy, linkedDepositCode: voucher.depositCode,
       note: auditTrail.get(voucher.id) || "Chưa từng được sửa số tiền",
     });
@@ -317,6 +317,7 @@ function report() {
       khach_hang: row.partnerName || "",
       ngay: row.docDate || "",
       chi_tiet: row.field || row.action || row.entryCode || row.description || "",
+      trang_thai: row.status || "",
       nguoi_lap: row.createdBy || "",
       dang_luu: row.current === undefined ? "" : money(row.current),
       so_dung: row.expected === undefined ? "" : money(row.expected),
@@ -334,7 +335,7 @@ function csvCell(value) {
 function writeReviewCsv() {
   const rows = findings.filter((row) => row.type === "SAMPLE_AMOUNT_DEPOSIT" || row.type === "SAMPLE_AMOUNT_VOUCHER");
   const csv = [
-    "loai,ma_phieu,khach_hang,cua_hang,ngay,so_dang_luu,so_tien_dung_dien_vao,noi_dung,nguon_tien,khoan_muc,nguoi_lap,ma_coc_lien_ket,ghi_chu",
+    "loai,ma_phieu,khach_hang,cua_hang,ngay,so_dang_luu,so_tien_dung_dien_vao,trang_thai,noi_dung,nguon_tien,khoan_muc,nguoi_lap,ma_coc_lien_ket,ghi_chu",
     ...rows.map((row) => [
       row.type === "SAMPLE_AMOUNT_DEPOSIT" ? "COC" : "CHUNG_TU",
       row.depositCode || row.voucherCode,
@@ -343,6 +344,7 @@ function writeReviewCsv() {
       row.docDate || "",
       row.current,
       "",
+      row.status || "",
       csvCell(row.description),
       row.moneySourceCode || "",
       row.categoryCode || "",
