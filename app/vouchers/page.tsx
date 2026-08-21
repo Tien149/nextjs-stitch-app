@@ -118,7 +118,9 @@ const emptyForm = {
   moneySourceCode: "CASH_HCM",
   categoryCode: "",
   pnlItemCode: "",
-  amount: "50000000",
+  // Không đặt sẵn số tiền: giá trị mẫu bị bỏ quên sẽ tạo ra phiếu thu/chi sai số tiền
+  // mà mọi lớp kiểm tra đều cho qua, vì nó vẫn là một số hợp lệ.
+  amount: "",
   description: "Thu tiền bán hàng hàng ngày / thanh toán đối tác",
 };
 
@@ -555,7 +557,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
       branchCode: nextBranch,
       moneySourceCode: firstMoneySourceCode(moneySources, nextBranch, sourceGroups),
       categoryCode: emptyForm.categoryCode,
-      amount: clearSavedFields ? "" : emptyForm.amount,
+      amount: "",
       description: clearSavedFields ? "" : emptyForm.description,
     });
   };
@@ -599,6 +601,12 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
     }
 
     let multiPartnerPayload: Record<string, unknown> = {};
+    if (!isMultiPartnerActive && !(Number(form.amount) > 0)) {
+      setMessage("Vui lòng nhập Số tiền lớn hơn 0 cho phiếu thu/chi.");
+      setMessageType("error");
+      return;
+    }
+
     if (isMultiPartnerActive) {
       const lines = allocationDraft.filter((line) => line.partnerCode || line.amount || line.debtReference);
       if (lines.length === 0 || lines.some((line) => !line.partnerCode || !(Number(line.amount) > 0))) {
@@ -1233,6 +1241,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                     value={isMultiPartnerActive ? allocationTotal : form.amount}
                     onChange={(event) => setForm((value) => ({ ...value, amount: event.target.value }))}
                     readOnly={isMultiPartnerActive}
+                    placeholder="Nhập số tiền"
                     className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold focus:border-blue-500 focus:ring-1 focus:ring-blue-500 read-only:bg-slate-100"
                     required
                   />
