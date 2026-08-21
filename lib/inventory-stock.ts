@@ -138,6 +138,19 @@ function stockError(message: string): never {
   throw new Error(`BUSINESS:${message}`);
 }
 
+/**
+ * Đơn giá của phiếu NHẬP MUA gần nhất cho một mặt hàng (quy về ĐVT tồn kho).
+ * Dùng làm giá ưu tiên khi điều chuyển mà kho nguồn chưa có giá vốn bình quân.
+ */
+export async function latestPurchaseUnitCost(tx: Tx, itemId: string) {
+  const line = await tx.inventoryTransactionLine.findFirst({
+    where: { itemId, unitCost: { gt: 0 }, transaction: { transactionType: "NHAP_MUA", deletedAt: null } },
+    orderBy: { transaction: { transactionDate: "desc" } },
+    select: { unitCost: true },
+  });
+  return line?.unitCost || 0;
+}
+
 async function resolveStockLine(tx: Tx, line: StockLineInput, requireInputUnitCost: boolean) {
   const itemId = text(line.itemId);
   const itemCode = text(line.itemCode).toUpperCase();
@@ -238,13 +251,18 @@ export async function postInventoryTransaction(tx: Tx, input: PostInventoryTrans
       valuedLines.push({ ...line, unitCost: valued.unitCost, totalCost: valued.totalCost });
     } else {
       const outValue = await applyBalanceChange(tx, line.itemId, input.warehouseCode, line.quantity, line.unitCost, "OUT");
-      // Giá vốn 0 mà cho qua thì kho nhận thay 0 bằng bình quân của chính nó — tổng giá trị
-      // kho tự tăng không chứng từ. Bắt khai giá vốn cho kho nguồn trước khi điều chuyển.
-      if (outValue.unitCost <= 0) {
-        stockError(`Mat hang ${line.item.code} o kho ${input.warehouseCode} chua co gia von (binh quan = 0). Nhap gia von (phieu nhap co don gia hoac so du dau ky) truoc khi dieu chuyen`);
+      // Kho nguồn chưa có giá vốn (mới lập, nhận hàng bằng phiếu không đơn giá) thì lấy
+      // GIÁ NHẬP MUA GẦN NHẤT của mặt hàng làm giá điều chuyển, thay vì chặn cứng người
+      // dùng hay để kho nhận tự thay 0 bằng bình quân của chính nó (tổng giá trị kho tự tăng).
+      let transferUnitCost = outValue.unitCost;
+      if (transferUnitCost <= 0) {
+        transferUnitCost = await latestPurchaseUnitCost(tx, line.itemId);
       }
-      await applyBalanceChange(tx, line.itemId, input.toWarehouseCode || "", line.quantity, outValue.unitCost, "IN");
-      valuedLines.push({ ...line, unitCost: outValue.unitCost, totalCost: outValue.totalCost });
+      if (transferUnitCost <= 0) {
+        stockError(`Mat hang ${line.item.code} o kho ${input.warehouseCode} chua co gia von (binh quan = 0) va cung chua co phieu nhap mua nao de lay gia. Nhap gia von (phieu nhap co don gia hoac so du dau ky) truoc khi dieu chuyen`);
+      }
+      await applyBalanceChange(tx, line.itemId, input.toWarehouseCode || "", line.quantity, transferUnitCost, "IN");
+      valuedLines.push({ ...line, unitCost: transferUnitCost, totalCost: transferUnitCost * line.quantity });
     }
   }
 

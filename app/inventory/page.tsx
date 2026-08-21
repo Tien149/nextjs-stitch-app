@@ -18,6 +18,8 @@ type Recipe = { id: string; code: string; productCode: string; productName: stri
 type CostSummaryRow = { productCode: string; productName: string; group: string; stockUnit: string; batchUnit: string; outputConversionRate: number; sellingPrice: number; unitCost: number; costRatio: number | null; version: number };
 type WasteReportRow = { itemCode: string; itemName: string; unit: string; itemType: string; totalQuantity: number; totalValue: number; documentCount: number; bySubType: Record<string, { quantity: number; value: number }> };
 type PendingSales = { total: number; byDay: Array<{ saleDate: string; branchCode: string; rowCount: number; totalQuantity: number }> };
+type CostingProduct = { productCode: string; productName: string; itemType: string; batchCost: number; unitCost: number; outputConversionRate: number; sellingPrice: number };
+type CostingResult = { costingDate: string; branchCode: string; materialCount: number; updatedBalances: number; levels: Array<{ level: number; products: CostingProduct[] }> };
 type Warehouse = { id: string; code: string; name: string; branch: string | null };
 type MovementByType = Record<string, { inbound: number; outbound: number; value: number }>;
 type StockSummary = { item: Item; warehouseCode: string; openingQuantity: number; inboundQuantity: number; outboundQuantity: number; closingQuantity: number; averageCost: number; closingValue: number; movementByType?: MovementByType };
@@ -94,6 +96,10 @@ export default function InventoryPage() {
   /** Nút Rã nguyên liệu: rã doanh thu chờ (PENDING) theo định lượng, tự sinh phiếu chế biến + xuất bán. */
   const [explodeForm, setExplodeForm] = useState({ branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HCM", dateFrom: today(), dateTo: today(), note: "" });
   const [exploding, setExploding] = useState(false);
+  /** Nút Tính giá vốn & giá thành cuối kỳ: chạy tuần tự NVL → BTP các cấp → TP → combo. */
+  const [costingForm, setCostingForm] = useState({ branchCode: "HCM", costingDate: today() });
+  const [costing, setCosting] = useState(false);
+  const [costingResult, setCostingResult] = useState<CostingResult | null>(null);
   /** Điều chuyển kho: nhiều dòng hàng, kho nhận có thể thuộc nhà hàng khác. */
   const [transferForm, setTransferForm] = useState({ branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "", transactionDate: today(), referenceCode: "", note: "" });
   const [transferRows, setTransferRows] = useState([{ itemId: "", quantity: "1", unitCode: "" }]);
@@ -971,6 +977,91 @@ export default function InventoryPage() {
             </Table>
           </section>
         </div>
+      )}
+
+      {active === "recipes" && canCreate && (
+        <section className="bg-white border border-emerald-200 rounded-lg p-5 shadow-sm mb-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="font-bold text-slate-800 flex items-center gap-2">
+                <span className="material-symbols-outlined text-emerald-600">calculate</span>
+                Tính giá vốn &amp; giá thành
+              </h2>
+              <p className="text-xs text-slate-500 mt-1 max-w-2xl leading-relaxed">
+                Chạy tuần tự: giá vốn nguyên liệu → giá thành bán thành phẩm cấp 1 → cấp 2 → … → thành phẩm → combo →
+                giá vốn cuối kỳ. Kết quả ghi đè giá bình quân của mặt hàng có định lượng, nên mọi phiếu xuất/nhập chế biến
+                và điều chỉnh sau đó đều lấy đúng giá mới.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-end gap-3">
+              <Input label="Cửa hàng">
+                <select className="control" value={costingForm.branchCode} onChange={(e) => setCostingForm({ ...costingForm, branchCode: e.target.value })}>
+                  {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
+                </select>
+              </Input>
+              <Input label="Ngày tính giá">
+                <input type="date" className="control" value={costingForm.costingDate} onChange={(e) => setCostingForm({ ...costingForm, costingDate: e.target.value })} />
+              </Input>
+              <button
+                type="button"
+                disabled={costing}
+                className="primary-button"
+                onClick={async () => {
+                  setCosting(true);
+                  setMessage("");
+                  try {
+                    const response = await fetch("/api/inventory", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json", ...getSessionHeaders() },
+                      body: JSON.stringify({ action: "RUN_COSTING", ...costingForm }),
+                    });
+                    const payload = await response.json();
+                    if (response.ok) {
+                      setCostingResult(payload as CostingResult);
+                      setMessage(`Đã tính giá: ${payload.levels?.length || 0} tầng định lượng, cập nhật ${payload.updatedBalances} dòng tồn kho.`);
+                      await loadData();
+                    } else {
+                      setMessage(payload.error || "Không tính được giá");
+                    }
+                  } finally {
+                    setCosting(false);
+                  }
+                }}
+              >
+                <span className="material-symbols-outlined text-lg">bolt</span>
+                {costing ? "Đang tính giá..." : "Tính giá"}
+              </button>
+            </div>
+          </div>
+
+          {costingResult && (
+            <div className="mt-4 space-y-3">
+              <p className="text-xs text-slate-600">
+                Giá vốn nguyên liệu: <b>{costingResult.materialCount}</b> mã · Cập nhật <b>{costingResult.updatedBalances}</b> dòng tồn kho
+                · Ngày {new Date(costingResult.costingDate).toLocaleDateString("vi-VN")}
+              </p>
+              {costingResult.levels.map((level) => (
+                <div key={level.level} className="border border-slate-200 rounded-lg overflow-hidden">
+                  <div className="bg-slate-50 px-4 py-2 text-xs font-bold text-slate-700">
+                    Tầng {level.level} — {level.level === 1 ? "bán thành phẩm cấp 1 (chỉ dùng nguyên liệu)" : `dùng sản phẩm của tầng ${level.level - 1}`}
+                  </div>
+                  <Table headers={[{ label: "Mã" }, { label: "Tên" }, { label: "Loại" }, { label: "Giá thành / mẻ", align: "right" }, { label: "Giá vốn / ĐVT tồn", align: "right" }, { label: "% Cost", align: "right" }]}>
+                    {level.products.map((product) => (
+                      <tr key={product.productCode} className="border-t border-slate-100">
+                        <Cell><b>{product.productCode}</b></Cell>
+                        <Cell>{product.productName}</Cell>
+                        <Cell><span className={`status ${product.itemType === "FINISHED" ? "bg-blue-50 text-blue-700" : "bg-violet-50 text-violet-700"}`}>{product.itemType}</span></Cell>
+                        <Cell right>{money(product.batchCost)} đ</Cell>
+                        <Cell right><b>{product.unitCost >= 100 ? money(product.unitCost) : product.unitCost.toFixed(2)} đ</b></Cell>
+                        <Cell right>{product.sellingPrice > 0 ? `${(product.unitCost / product.sellingPrice * 100).toFixed(1)}%` : "-"}</Cell>
+                      </tr>
+                    ))}
+                  </Table>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
       )}
 
       {active === "recipes" && (

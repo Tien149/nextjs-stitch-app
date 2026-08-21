@@ -251,3 +251,91 @@ export function computeRecipeUnitCosts(
   for (const code of recipeByProduct.keys()) unitCostOf(code);
   return costs;
 }
+
+export type CostingLevel = {
+  /** 1 = bán thành phẩm cấp 1 (chỉ dùng nguyên liệu), tăng dần theo độ sâu định lượng. */
+  level: number;
+  products: Array<{
+    productCode: string;
+    productName: string;
+    itemType: string;
+    /** Giá thành MỘT mẻ chuẩn bị theo định lượng. */
+    batchCost: number;
+    /** Giá vốn một ĐVT tồn kho = batchCost / hệ số quy đổi. */
+    unitCost: number;
+    outputConversionRate: number;
+    sellingPrice: number;
+  }>;
+};
+
+/**
+ * Xếp các sản phẩm có định lượng thành TẦNG để chạy tính giá đúng thứ tự kế toán:
+ * giá vốn nguyên liệu → giá bán thành phẩm cấp 1 → cấp 2 → ... → thành phẩm → combo.
+ *
+ * Tầng của một sản phẩm = tầng sâu nhất của các thành phần có định lượng + 1. Nguyên liệu
+ * (không có định lượng) là tầng 0, lấy thẳng giá vốn bình quân tồn kho.
+ */
+export function computeCostingLevels(
+  recipes: ExplosionRecipe[],
+  averageCostByItemId: Map<string, number>,
+  date: Date,
+  itemTypeByCode?: Map<string, string>,
+): CostingLevel[] {
+  const recipeByProduct = new Map<string, ExplosionRecipe[]>();
+  for (const recipe of recipes) {
+    const code = up(recipe.productCode);
+    if (!recipeByProduct.has(code)) recipeByProduct.set(code, []);
+    recipeByProduct.get(code)!.push(recipe);
+  }
+  const current = new Map<string, ExplosionRecipe>();
+  for (const [code, versions] of recipeByProduct) {
+    const picked = pickRecipeForDate(versions, date);
+    if (picked) current.set(code, picked);
+  }
+
+  // Độ sâu định lượng; định lượng khai vòng thì dừng ở tầng đang xét thay vì lặp vô hạn.
+  const depths = new Map<string, number>();
+  const visiting = new Set<string>();
+  const depthOf = (code: string): number => {
+    if (depths.has(code)) return depths.get(code)!;
+    const recipe = current.get(code);
+    if (!recipe) return 0;
+    if (visiting.has(code)) return 0;
+    visiting.add(code);
+    let depth = 1;
+    for (const line of recipe.lines) {
+      const componentCode = up(line.item.code);
+      if (current.has(componentCode)) depth = Math.max(depth, depthOf(componentCode) + 1);
+    }
+    visiting.delete(code);
+    depths.set(code, depth);
+    return depth;
+  };
+  for (const code of current.keys()) depthOf(code);
+
+  const unitCosts = computeRecipeUnitCosts(recipes, averageCostByItemId, date);
+  const byLevel = new Map<number, CostingLevel["products"]>();
+  for (const [code, recipe] of current) {
+    const level = depths.get(code) || 1;
+    const outputConversionRate = recipe.outputConversionRate > 0 ? recipe.outputConversionRate : 1;
+    const unitCost = unitCosts.get(code);
+    const safeUnitCost = Number.isFinite(unitCost) ? (unitCost as number) : 0;
+    if (!byLevel.has(level)) byLevel.set(level, []);
+    byLevel.get(level)!.push({
+      productCode: code,
+      productName: recipe.productName,
+      itemType: itemTypeByCode?.get(code) || "FINISHED",
+      batchCost: safeUnitCost * outputConversionRate,
+      unitCost: safeUnitCost,
+      outputConversionRate,
+      sellingPrice: recipe.sellingPrice || 0,
+    });
+  }
+
+  return [...byLevel.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([level, products]) => ({
+      level,
+      products: products.sort((a, b) => a.productCode.localeCompare(b.productCode)),
+    }));
+}

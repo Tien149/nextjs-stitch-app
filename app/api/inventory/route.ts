@@ -5,7 +5,7 @@ import { apiError, businessError, cleanText, isPeriodLocked, toDate, toNumber } 
 import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
 import { isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType, postInventoryTransaction } from "@/lib/inventory-stock";
 import { postStockTransfer } from "@/lib/inventory-transfer";
-import { computeRecipeUnitCosts, explodeSalesDemand, pickRecipeForDate, type ExplosionRecipe } from "@/lib/production-explosion";
+import { computeCostingLevels, computeRecipeUnitCosts, explodeSalesDemand, pickRecipeForDate, type ExplosionRecipe } from "@/lib/production-explosion";
 import { writeAuditLog } from "@/lib/audit-log";
 import {
   duplicatedInTrashMessage,
@@ -861,6 +861,92 @@ export async function POST(request: Request) {
         productions: plan.productions.map((step) => ({ productCode: step.productCode, quantityBase: step.quantityBase, batchQuantity: step.batchQuantity })),
         directSales: plan.directSales,
         documents: result.documents,
+      }, { status: 201 });
+    }
+
+    /**
+     * Nút "Tính giá vốn & giá thành" cuối kỳ.
+     *
+     * Chạy tuần tự đúng thứ tự kế toán: giá vốn nguyên liệu (bình quân gia quyền theo tồn)
+     * → giá thành bán thành phẩm cấp 1 → cấp 2 → ... → thành phẩm → combo. Kết quả ghi
+     * đè giá vốn bình quân của chính các mặt hàng có định lượng trong kho của cửa hàng,
+     * nhờ vậy mọi phiếu xuất/nhập chế biến/điều chỉnh sau đó đều lấy đúng giá mới.
+     */
+    if (action === "RUN_COSTING") {
+      const branchCode = cleanText(body.branchCode) || "ALL";
+      const costingDate = toDate(body.costingDate);
+      if (branchCode !== "ALL") assertBranchAccess(auth.session, branchCode);
+      if (branchCode !== "ALL" && await isPeriodLocked(costingDate, branchCode)) businessError("Kỳ kế toán đã khóa");
+
+      const warehouses = await prisma.masterDataItem.findMany({
+        where: { type: "WAREHOUSE", status: "ACTIVE", ...(branchCode === "ALL" ? {} : { branch: branchCode }) },
+        select: { code: true },
+      });
+      const warehouseCodes = warehouses.map((warehouse) => warehouse.code);
+      if (warehouseCodes.length === 0) businessError(`Cửa hàng ${branchCode} chưa khai kho nào để tính giá.`);
+
+      const [items, balances, recipeRows] = await Promise.all([
+        prisma.inventoryItem.findMany({ select: { id: true, code: true, itemType: true } }),
+        prisma.inventoryBalance.findMany({ select: { itemId: true, warehouseCode: true, quantity: true, averageCost: true } }),
+        prisma.recipe.findMany({ where: { deletedAt: null }, include: { lines: { include: { item: true } } } }),
+      ]);
+
+      // Bước 1 — giá vốn nguyên liệu: bình quân GIA QUYỀN theo tồn của mọi kho, kho tồn 0
+      // không kéo giá xuống. Không có tồn thì giữ giá gần nhất từng ghi nhận.
+      const aggregate = new Map<string, { quantity: number; value: number; lastAverage: number }>();
+      for (const balance of balances) {
+        const bucket = aggregate.get(balance.itemId) || { quantity: 0, value: 0, lastAverage: 0 };
+        if (balance.quantity > 0) {
+          bucket.quantity += balance.quantity;
+          bucket.value += balance.quantity * balance.averageCost;
+        }
+        if (balance.averageCost > 0) bucket.lastAverage = balance.averageCost;
+        aggregate.set(balance.itemId, bucket);
+      }
+      const averageCostByItemId = new Map<string, number>();
+      for (const [itemId, bucket] of aggregate) {
+        averageCostByItemId.set(itemId, bucket.quantity > quantityEpsilon ? bucket.value / bucket.quantity : bucket.lastAverage);
+      }
+
+      // Bước 2..n — giá thành theo tầng định lượng.
+      const itemTypeByCode = new Map(items.map((item) => [item.code.toUpperCase(), item.itemType]));
+      const levels = computeCostingLevels(recipeRows as unknown as ExplosionRecipe[], averageCostByItemId, costingDate, itemTypeByCode);
+      const itemByCode = new Map(items.map((item) => [item.code.toUpperCase(), item]));
+
+      // Bước cuối — giá vốn cuối kỳ: ghi đè bình quân của mặt hàng có định lượng trong kho
+      // của cửa hàng đang tính. Chỉ đụng mặt hàng thực sự tính được giá (> 0).
+      let updatedBalances = 0;
+      await prisma.$transaction(async (tx) => {
+        for (const level of levels) {
+          for (const product of level.products) {
+            if (!(product.unitCost > 0)) continue;
+            const item = itemByCode.get(product.productCode);
+            if (!item) continue;
+            const result = await tx.inventoryBalance.updateMany({
+              where: { itemId: item.id, warehouseCode: { in: warehouseCodes } },
+              data: { averageCost: product.unitCost },
+            });
+            updatedBalances += result.count;
+          }
+        }
+      }, { timeout: 60000 });
+
+      await writeAuditLog({
+        session: auth.session, module: menuHref, action: "RUN_COSTING",
+        entityType: "InventoryBalance", entityCode: `COSTING-${costingDate.toISOString().slice(0, 10)}`,
+        branchCode: branchCode === "ALL" ? undefined : branchCode,
+        metadata: {
+          costingDate, warehouseCodes, updatedBalances,
+          levels: levels.map((level) => ({ level: level.level, products: level.products.length })),
+        },
+      });
+
+      return NextResponse.json({
+        costingDate,
+        branchCode,
+        materialCount: averageCostByItemId.size,
+        updatedBalances,
+        levels,
       }, { status: 201 });
     }
 
