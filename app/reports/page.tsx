@@ -1069,7 +1069,7 @@ export default function ReportsPage() {
                   <Table headers={["Nguồn tiền", "Đầu kỳ", ...cashSource.months.map((item) => `T${Number(item.slice(5))}`)]}>
                     {cashSource.sources.map((row) => (
                       <tr key={row.code} className="border-t border-slate-100 hover:bg-slate-50">
-                        <Cell><b>{row.name}</b><p className="mt-0.5 text-xs text-slate-500">{row.code}</p></Cell>
+                        <Cell><b>{cashSourceLabel(row.name)}</b><p className="mt-0.5 text-xs text-slate-500">{row.code}</p></Cell>
                         <Cell right>{row.opening ? `${money(row.opening)}` : "-"}</Cell>
                         {row.closingByMonth.map((closing, index) => (
                           <Cell key={cashSource.months[index]} right>
@@ -1105,7 +1105,7 @@ export default function ReportsPage() {
                 )}
                 {cashSource.deposits.map((row) => (
                   <tr key={row.code} className="border-t border-slate-100 hover:bg-slate-50">
-                    <Cell><b>{row.name}</b><p className="text-xs text-slate-500 mt-0.5">{row.code}</p></Cell>
+                    <Cell><b>{cashSourceLabel(row.name)}</b><p className="text-xs text-slate-500 mt-0.5">{row.code}</p></Cell>
                     <Cell>{row.opening ? `${money(row.opening)} đ` : "-"}</Cell>
                     <Cell>{row.increase ? `${money(row.increase)} đ` : "-"}</Cell>
                     <Cell>{row.used ? `${money(row.used)} đ` : "-"}</Cell>
@@ -2145,6 +2145,14 @@ function RevenueSettlementPanel({ data }: { data: RevenueSettlementData }) {
   );
 }
 
+/**
+ * Tên nguồn tiền lưu kèm loại ("ASA - Chuyển Khoản Sacombank (HKD)"), nhưng ở các bảng nguồn tiền
+ * loại đã hiểu ngầm nên bỏ chữ "chuyển khoản" cho tên gọn lại. Dữ liệu gốc giữ nguyên.
+ */
+function cashSourceLabel(name: string) {
+  return name.replace(/chuyển\s+khoản/gi, " ").replace(/\s+/g, " ").trim();
+}
+
 function CashSourceFlowTable({ cashSource }: { cashSource: CashSourceData }) {
   const showBranch = cashSource.branchCode === "ALL";
   const rows = cashSource.sources;
@@ -2188,7 +2196,7 @@ function CashSourceFlowTable({ cashSource }: { cashSource: CashSourceData }) {
             <tr key={`${row.branchCode}-${row.code}`} className="border-t border-slate-100 hover:bg-slate-50">
               {showBranch && <Cell>{storeLabel(row.branchCode)}</Cell>}
               <Cell>
-                <b>{row.name}</b>
+                <b>{cashSourceLabel(row.name)}</b>
                 <p className="text-xs text-slate-500 mt-0.5">{row.code}</p>
                 {(row.transferIn !== 0 || row.transferOut !== 0) && (
                   <p className="text-xs text-slate-400 mt-0.5">
