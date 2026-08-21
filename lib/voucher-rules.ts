@@ -1,9 +1,10 @@
 /**
- * Ràng buộc cho "nội dung thu" của phiếu thu: ghi nhận doanh thu ngay, hay thu tiền cọc
- * để theo dõi số dư về sau. Tách ra khỏi route để kiểm thử được và để form/API dùng chung.
+ * Ràng buộc cho "nội dung thu" của phiếu thu: thu thường (ghi nhận trọn vẹn ngay, bản chất
+ * khoản thu do Khoản mục thu/chi quyết định), hay thu tiền cọc để theo dõi số dư về sau.
+ * Tách ra khỏi route để kiểm thử được và để form/API dùng chung.
  */
 export const RECEIPT_PURPOSES = [
-  { id: "", label: "Thu doanh thu (ghi nhận toàn bộ)", hint: "Tiền vào doanh thu ngay, không theo dõi số dư cọc." },
+  { id: "", label: "Thu thường — không theo dõi cọc", hint: "Bản chất khoản thu khai ở Khoản mục thu/chi bên dưới." },
   { id: "COLLECT", label: "Thu tiền đặt cọc (khách sẽ dùng sau)", hint: "Khi duyệt sẽ sinh một khoản tiền cọc theo dõi riêng." },
 ] as const;
 

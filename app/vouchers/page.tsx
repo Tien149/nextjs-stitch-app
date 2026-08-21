@@ -7,7 +7,7 @@ import { ModuleFrame } from "@/components/ModuleFrame";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { storeLabel, updateDynamicBranches } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canEditPastVoucher, canPerformAction, canPerformMenuAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
-import { isSameCalendarDay, normalizeCashflowCategoryType, voucherEditWindowError } from "@/lib/voucher-rules";
+import { isSameCalendarDay, normalizeCashflowCategoryType, RECEIPT_PURPOSES, voucherEditWindowError } from "@/lib/voucher-rules";
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
@@ -431,6 +431,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
     { key: 1, partnerCode: "", amount: "", debtReference: "" },
   ]);
   const allocationTotal = allocationDraft.reduce((sum, line) => sum + (Number(line.amount) || 0), 0);
+  const receiptPurposeHint = (RECEIPT_PURPOSES.find((purpose) => purpose.id === form.depositAction) || RECEIPT_PURPOSES[0]).hint;
   const canUseMultiPartner = form.voucherType === "PAYMENT" && !editingVoucher;
   const isMultiPartnerActive = multiPartnerMode && canUseMultiPartner;
   const canDelete = user ? canPerformMenuAction(user, moduleHref, "delete") : false;
@@ -981,13 +982,12 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                       onChange={(event) => setForm((value) => ({ ...value, depositAction: event.target.value, depositCode: event.target.value ? value.depositCode : "" }))}
                       className="control"
                     >
-                      <option value="">Thu doanh thu (ghi nhận toàn bộ)</option>
-                      <option value="COLLECT">Thu tiền đặt cọc (khách sẽ dùng sau)</option>
+                      {RECEIPT_PURPOSES.map((purpose) => (
+                        <option key={purpose.id} value={purpose.id}>{purpose.label}</option>
+                      ))}
                     </select>
                     <span className="mt-1 block text-[11px] font-medium text-slate-500">
-                      {form.depositAction === "COLLECT"
-                        ? "Khi duyệt sẽ sinh một khoản tiền cọc theo dõi riêng."
-                        : "Tiền vào doanh thu ngay, không theo dõi số dư cọc."}
+                      {receiptPurposeHint}
                     </span>
                   </label>
 
