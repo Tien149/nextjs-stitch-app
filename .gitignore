@@ -56,3 +56,7 @@ prisma/*.db
 
 # File UAT dựng tạm khi kiểm thử, không phải mã nguồn
 outputs/
+
+# Tài liệu hướng dẫn sử dụng: 34MB PDF + ảnh chụp màn hình, giữ ngoài git để
+# lịch sử repo không phình ra vĩnh viễn. Bản gốc nằm ở máy/kho tài liệu riêng.
+docs/huong-dan-su-dung/
