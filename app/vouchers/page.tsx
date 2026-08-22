@@ -57,6 +57,8 @@ type VoucherFilters = {
   categoryCode: string;
   /** Chỉ hiện phiếu chưa có Khoản mục thu/chi — dòng "Chưa phân loại" trên báo cáo link về đây. */
   missingCategory?: boolean;
+  /** Chỉ hiện phiếu của một đối tác — bảng "Chi theo đối tác" trên báo cáo link về đây. */
+  partnerCode?: string;
 };
 
 type VoucherListSummary = {
@@ -212,6 +214,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
       if (filters.moneySourceCode) query.set("moneySourceCode", filters.moneySourceCode);
       if (filters.categoryCode) query.set("categoryCode", filters.categoryCode);
       if (filters.missingCategory) query.set("missingCategory", "1");
+      if (filters.partnerCode) query.set("partnerCode", filters.partnerCode);
 
       const response = await fetch(`/api/vouchers?${query.toString()}`);
       const payload = await response.json().catch(() => null) as VoucherListResponse | { error?: string } | null;
@@ -345,15 +348,27 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
 
     // Link từ dòng "Chưa phân loại" trên báo cáo mang sẵn bộ lọc trong URL.
     const urlParams = new URLSearchParams(window.location.search);
+    // Link từ báo cáo mang theo cửa hàng đang xem; ưu tiên hơn cửa hàng ghi nhớ trong máy
+    // để danh sách mở ra khớp đúng con số trên báo cáo (chỉ nhận khi tài khoản có quyền).
+    const urlBranch = (urlParams.get("branchCode") || "").toUpperCase();
+    if (urlBranch) {
+      const allowed = session.allowedBranches || [];
+      if (urlBranch === "ALL" ? (!allowed.length || allowed.includes("ALL")) : (!allowed.length || allowed.includes("ALL") || allowed.includes(urlBranch))) {
+        initialBranch = urlBranch;
+      }
+    }
     const urlType = (urlParams.get("voucherType") || "").toUpperCase();
-    const urlFilters: VoucherFilters = urlParams.get("missingCategory") === "1"
+    const urlPartner = (urlParams.get("partnerCode") || "").trim();
+    const hasUrlFilters = urlParams.get("missingCategory") === "1" || Boolean(urlPartner);
+    const urlFilters: VoucherFilters = hasUrlFilters
       ? {
           startDate: urlParams.get("from") || "",
           endDate: urlParams.get("to") || "",
           voucherType: ["RECEIPT", "PAYMENT"].includes(urlType) ? (urlType as VoucherTypeFilter) : "ALL",
           moneySourceCode: "",
           categoryCode: "",
-          missingCategory: true,
+          missingCategory: urlParams.get("missingCategory") === "1",
+          partnerCode: urlPartner,
         }
       : initialVoucherFilters;
 
@@ -361,7 +376,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
       setUser(session);
       setBranchCode(initialBranch);
       setLoading(false);
-      if (urlFilters.missingCategory) {
+      if (hasUrlFilters) {
         setFilterDraft(urlFilters);
         setAppliedFilters(urlFilters);
       }
@@ -424,7 +439,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
     const nextFilters = { ...initialVoucherFilters };
     setFilterDraft(nextFilters);
     setAppliedFilters(nextFilters);
-    if (appliedFilters.missingCategory) window.history.replaceState(null, "", moduleHref);
+    if (appliedFilters.missingCategory || appliedFilters.partnerCode) window.history.replaceState(null, "", moduleHref);
     void loadVouchers(branchCode, nextFilters, 1);
   };
 
@@ -1523,6 +1538,18 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
               </button>
               {listError && <p className="w-full text-xs font-semibold text-rose-600">{listError}</p>}
             </form>
+            {appliedFilters.partnerCode && (
+              <div className="flex items-center justify-between border-b border-indigo-200 bg-indigo-50 px-4 py-2 text-xs font-semibold text-indigo-800">
+                <span>Đang lọc phiếu của đối tác <b>{appliedFilters.partnerCode}</b> (tính cả phiếu phân bổ nhiều đối tác) — link từ bảng &quot;Chi theo đối tác&quot; trên báo cáo nguồn tiền.</span>
+                <button
+                  type="button"
+                  onClick={resetVoucherFilters}
+                  className="rounded-lg border border-indigo-300 bg-white px-2.5 py-1 font-bold text-indigo-800 hover:bg-indigo-100"
+                >
+                  Bỏ lọc
+                </button>
+              </div>
+            )}
             {appliedFilters.missingCategory && (
               <div className="flex items-center justify-between border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs font-semibold text-amber-800">
                 <span>Đang lọc các phiếu CHƯA có Khoản mục thu/chi — mở từng phiếu để bổ sung danh mục, dòng &quot;Chưa phân loại&quot; trên báo cáo sẽ giảm theo.</span>

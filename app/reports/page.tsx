@@ -678,7 +678,7 @@ export default function ReportsPage() {
             </Field>
           </>
         )}
-        <button type="button" className="icon-button" title="Tải lại" onClick={() => void loadData()}>
+        <button type="button" className="icon-button" title="Tải lại số liệu và danh mục nguồn tiền — sửa Nguồn tiền tổng bên Cấu hình xong bấm nút này là thấy ngay, không cần đăng nhập lại" onClick={() => { void loadData(); void loadMoneySources(); }}>
           <span className="material-symbols-outlined text-lg">refresh</span>
         </button>
       </div>
@@ -959,7 +959,9 @@ export default function ReportsPage() {
               const firstMonth = cashSource.months[0];
               const lastMonth = cashSource.months[cashSource.months.length - 1];
               const lastDay = new Date(Number(lastMonth.slice(0, 4)), Number(lastMonth.slice(5)), 0).getDate();
-              const range = `missingCategory=1&from=${firstMonth}-01&to=${lastMonth}-${String(lastDay).padStart(2, "0")}`;
+              // Mang theo cửa hàng đang xem: trang phiếu mở tab mới sẽ lấy cửa hàng từ
+              // localStorage, khác cửa hàng của báo cáo là danh sách rỗng khó hiểu.
+              const range = `missingCategory=1&branchCode=${encodeURIComponent(branchCode)}&from=${firstMonth}-01&to=${lastMonth}-${String(lastDay).padStart(2, "0")}`;
               const linksFor = (voucherType: "RECEIPT" | "PAYMENT") => [
                 { label: "Xem phiếu tiền mặt chưa phân loại", href: `/vouchers?${range}&voucherType=${voucherType}` },
                 { label: "Xem chứng từ ngân hàng chưa phân loại", href: `/bank-vouchers?${range}&voucherType=${voucherType}` },
@@ -999,21 +1001,42 @@ export default function ReportsPage() {
               }`}
             />
             <div className="overflow-x-auto">
-              <Table headers={["Đối tác", "Mã", "Loại", "Số phiếu chi", "Tổng chi", "% trên tổng chi"]}>
-                {cashSource.expenseByPartner.length === 0 && (
-                  <tr className="border-t border-slate-100"><Cell>Chưa có phiếu chi nào trong kỳ.</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell></tr>
-                )}
-                {cashSource.expenseByPartner.map((row) => (
-                  <tr key={`${row.code}-${row.name}`} className="border-t border-slate-100 hover:bg-slate-50">
-                    <Cell><b>{row.name}</b></Cell>
-                    <Cell>{row.code || "-"}</Cell>
-                    <Cell>{partnerTypeLabel(row.partnerType)}</Cell>
-                    <Cell>{row.count}</Cell>
-                    <Cell><b>{money(row.total)} đ</b></Cell>
-                    <Cell right>{cashSource.totals.out ? ((row.total / cashSource.totals.out) * 100).toFixed(2) : "0,00"} %</Cell>
-                  </tr>
-                ))}
-              </Table>
+              {(() => {
+                // Link danh sách phiếu chi của từng đối tác (chốt meeting 22/08/2026): mở tab
+                // mới, mang sẵn kỳ + cửa hàng + mã đối tác; tách hai kênh vì phiếu tiền mặt và
+                // chứng từ ngân hàng nằm ở hai màn khác nhau.
+                const firstMonth = cashSource.months[0];
+                const lastMonth = cashSource.months[cashSource.months.length - 1];
+                const lastDay = new Date(Number(lastMonth.slice(0, 4)), Number(lastMonth.slice(5)), 0).getDate();
+                const partnerQuery = (partnerCode: string) => `voucherType=PAYMENT&partnerCode=${encodeURIComponent(partnerCode)}&branchCode=${encodeURIComponent(branchCode)}&from=${firstMonth}-01&to=${lastMonth}-${String(lastDay).padStart(2, "0")}`;
+                return (
+                  <Table headers={["Đối tác", "Mã", "Loại", "Số phiếu chi", "Tổng chi", "% trên tổng chi", "Danh sách phiếu"]}>
+                    {cashSource.expenseByPartner.length === 0 && (
+                      <tr className="border-t border-slate-100"><Cell>Chưa có phiếu chi nào trong kỳ.</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell></tr>
+                    )}
+                    {cashSource.expenseByPartner.map((row) => (
+                      <tr key={`${row.code}-${row.name}`} className="border-t border-slate-100 hover:bg-slate-50">
+                        <Cell><b>{row.name}</b></Cell>
+                        <Cell>{row.code || "-"}</Cell>
+                        <Cell>{partnerTypeLabel(row.partnerType)}</Cell>
+                        <Cell>{row.count}</Cell>
+                        <Cell><b>{money(row.total)} đ</b></Cell>
+                        <Cell>{cashSource.totals.out ? ((row.total / cashSource.totals.out) * 100).toFixed(2) : "0,00"} %</Cell>
+                        <Cell right>
+                          {row.code ? (
+                            <span className="flex justify-end gap-2 whitespace-nowrap text-xs font-bold">
+                              <a href={`/vouchers?${partnerQuery(row.code)}`} target="_blank" rel="noreferrer" className="text-blue-700 underline-offset-2 hover:underline">Tiền mặt ↗</a>
+                              <a href={`/bank-vouchers?${partnerQuery(row.code)}`} target="_blank" rel="noreferrer" className="text-blue-700 underline-offset-2 hover:underline">Ngân hàng ↗</a>
+                            </span>
+                          ) : (
+                            <span className="text-xs text-slate-400">Bổ sung mã đối tác để link</span>
+                          )}
+                        </Cell>
+                      </tr>
+                    ))}
+                  </Table>
+                );
+              })()}
             </div>
           </section>
 
@@ -2284,9 +2307,10 @@ function CashCategoryTable({
                 <p className="mt-0.5 text-xs font-normal text-slate-500">{row.count} dòng</p>
                 {row.key === "UNCLASSIFIED" && (unclassifiedLinks?.length || 0) > 0 && (
                   <p className="mt-1 flex flex-wrap gap-2 text-xs font-bold">
+                    {/* Mở tab mới (chốt meeting 22/08/2026): trang báo cáo đứng yên, sửa phiếu xong quay lại không mất bộ lọc. */}
                     {unclassifiedLinks?.map((link) => (
-                      <a key={link.href} href={link.href} className="text-blue-700 underline-offset-2 hover:underline">
-                        {link.label} →
+                      <a key={link.href} href={link.href} target="_blank" rel="noreferrer" className="text-blue-700 underline-offset-2 hover:underline">
+                        {link.label} ↗
                       </a>
                     ))}
                   </p>
