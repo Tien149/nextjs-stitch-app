@@ -10,7 +10,7 @@ import { softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
 import { canEditPastVoucher, type DemoSession } from "@/lib/auth-demo";
 import { moneySourceMatchesBranch } from "@/lib/money-sources";
 import { isSameCalendarDay, normalizeCashflowCategoryType, normalizeReceiptPurpose, validateReceiptPurpose, voucherEditWindowError } from "@/lib/voucher-rules";
-import { completePendingReconciliation, releasePendingReconciliation, reopenReconciliationForReview } from "@/lib/reconciliation-links";
+import { completePendingReconciliation, ReconciliationSyncError, releasePendingReconciliation, reopenReconciliationForReview, syncReconciledBankStatement, type BankStatementSyncResult } from "@/lib/reconciliation-links";
 import { moneySourceMatchesDocumentChannel, normalizeVoucherDocumentChannel } from "@/lib/voucher-channel";
 import { bankStatementSpecialCategory } from "@/lib/bank-statement-category";
 
@@ -705,6 +705,7 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
   // Khoá dòng chứng từ rồi hoàn tác - cập nhật - áp dụng lại - audit trong đúng một
   // transaction. Bất kỳ bước nào lỗi đều rollback, không để phiếu treo ở DRAFT.
   let voucher;
+  let bankSync: BankStatementSyncResult | null = null;
   try {
     voucher = await prismaRaw.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "id" FROM "FinancialVoucher" WHERE "id" = ${id} FOR UPDATE`;
@@ -726,6 +727,10 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
 
       if (latest.status === "APPROVED") await applyVoucherSideEffects(tx, updated, session.name);
 
+      // Phiếu sinh từ sao kê: số tiền nằm cả ở dòng sổ sao kê, không đồng bộ thì màn
+      // Sổ sao kê ngân hàng và vế chuyển khoản của báo cáo thu chi vẫn giữ số cũ.
+      bankSync = await syncReconciledBankStatement(tx, updated, session.name);
+
       await tx.auditLog.create({
         data: buildAuditLogData({
           session,
@@ -742,6 +747,7 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
             reason: requiresPastEditReason ? editReason : null,
             previousApprovedBy: latest.approvedBy,
             autoReapprovedBy: latest.status === "APPROVED" ? session.name : null,
+            bankStatementSync: bankSync,
             before: { voucherDate: latest.voucherDate, shift: latest.shift, partnerCode: latest.partnerCode, partnerName: latest.partnerName, branchCode: latest.branchCode, moneySourceCode: latest.moneySourceCode, categoryCode: latest.categoryCode, pnlItemCode: latest.pnlItemCode, amount: latest.amount, description: latest.description },
             after: { voucherDate, shift: shiftValue, partnerCode, partnerName, branchCode, moneySourceCode, categoryCode, pnlItemCode, amount, description },
           },
@@ -752,6 +758,7 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
     });
   } catch (e) {
     if (e instanceof VoucherRevertError) return NextResponse.json({ error: e.message }, { status: 400 });
+    if (e instanceof ReconciliationSyncError) return NextResponse.json({ error: e.message }, { status: 400 });
     if (e instanceof VoucherConflictError) return NextResponse.json({ error: e.message }, { status: 409 });
     throw e;
   }
