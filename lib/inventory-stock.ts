@@ -124,7 +124,14 @@ export function isOutboundStockType(value: string) {
 export async function nextStockDocCode(tx: Tx, prefix: string, docDate: Date) {
   const head = `${prefix}-${docDate.getUTCFullYear()}-`;
   const rows = await tx.$queryRaw<Array<{ code: string }>>`SELECT "code" FROM "InventoryTransaction" WHERE "code" LIKE ${head + "%"}`;
-  return head + String(nextSeqFromCodes(rows.map((row) => row.code), head)).padStart(4, "0");
+  // Mã lần rã nguyên liệu đẻ phiếu con mang hậu tố (RA-2026-0001-1X, -1N, -2XB...): phần sau
+  // head không còn là số thuần, Number() trả NaN nên max kẹt ở 0 và lần rã thứ hai trong năm
+  // lại được cấp -0001 -> đâm unique. Chỉ lấy cụm số đứng đầu để đếm đúng cả mã có hậu tố.
+  const normalizedCodes = rows
+    .map((row) => /^(\d+)/.exec(row.code.slice(head.length))?.[1])
+    .filter((seq): seq is string => Boolean(seq))
+    .map((seq) => head + seq);
+  return head + String(nextSeqFromCodes(normalizedCodes, head)).padStart(4, "0");
 }
 
 /** Cùng luật max + 1 cho số phiếu kiểm kê kho (KK-YYYY-####). */
