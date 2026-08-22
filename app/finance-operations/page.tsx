@@ -41,7 +41,7 @@ type MoneyTransfer = {
   denominations?: MoneyTransferDenomination[];
 };
 type Data = { openingAmount: number; closingBalance: number; cashbook: CashEntry[]; accruals: Accrual[]; moneyTransfers: MoneyTransfer[]; accountingPeriod: { status: string; closedBy?: string; closedAt?: string }; checklist: Check[] };
-type MasterDataOption = { id: string; type: string; code: string; name: string; group: string | null; branch: string | null; status?: string };
+type MasterDataOption = { id: string; type: string; code: string; name: string; group: string | null; branch: string | null; status?: string; summarySourceName?: string | null };
 type CashDepositEditForm = {
   transfer: MoneyTransfer;
   depositTargetType: "PKT" | "CO";
@@ -149,6 +149,16 @@ export default function FinanceOperationsPage() {
     () => summaryMoneySourceGroups(cashbookSourceOptions),
     [cashbookSourceOptions],
   );
+  // Sổ quỹ chỉ hiển thị "Nguồn tiền tổng" trên từng dòng (chốt meeting 22/08/2026): chuyển
+  // khoản hay quẹt thẻ chỉ là phương thức thanh toán, số cuối cùng vẫn về một tài khoản.
+  // Nguồn chi tiết vẫn tra được ở ô lọc và tooltip của dòng.
+  const moneySourceSummaryLabel = useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const source of moneySources) {
+      labels.set(source.code, (source.summarySourceName || "").trim() || moneySourceDisplayName(source));
+    }
+    return labels;
+  }, [moneySources]);
   const cashbookRangeInvalid = Boolean(
     cashbookRange.startDate && cashbookRange.endDate && cashbookRange.startDate > cashbookRange.endDate,
   );
@@ -158,9 +168,9 @@ export default function FinanceOperationsPage() {
   const normalizedTransferQuery = transferQuery.trim().toLowerCase();
   const filteredCashbook = useMemo(() => {
     if (!normalizedTransferQuery) return data.cashbook;
-    return data.cashbook.filter((row) => [row.code, row.moneySourceCode, row.description]
+    return data.cashbook.filter((row) => [row.code, row.moneySourceCode, moneySourceSummaryLabel.get(row.moneySourceCode) || "", row.description]
       .some((value) => value.toLowerCase().includes(normalizedTransferQuery)));
-  }, [data.cashbook, normalizedTransferQuery]);
+  }, [data.cashbook, normalizedTransferQuery, moneySourceSummaryLabel]);
   const selectedTransfer = useMemo(() => {
     if (!normalizedTransferQuery) return null;
     return data.moneyTransfers.find((row) => row.code.toLowerCase() === normalizedTransferQuery) || null;
@@ -547,9 +557,9 @@ export default function FinanceOperationsPage() {
 
             <div className="flex items-center gap-3">
               <button
-                onClick={() => void loadData()}
+                onClick={() => { void loadData(); void loadMoneySources(); }}
                 className="h-10 px-3 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-bold flex items-center gap-1.5 transition-colors bg-white shadow-sm"
-                title="Tải lại"
+                title="Tải lại số liệu và danh mục nguồn tiền — sửa Nguồn tiền tổng bên Cấu hình xong bấm nút này là thấy ngay, không cần đăng nhập lại"
               >
                 <span className="material-symbols-outlined text-sm">refresh</span>
                 Tải lại
@@ -1076,7 +1086,9 @@ export default function FinanceOperationsPage() {
                             <td className="px-5 py-4 whitespace-nowrap text-xs font-bold text-slate-800">
                               <div className="flex flex-col gap-0.5">
                                 <CopyableText value={row.code}><span>{row.code}</span></CopyableText>
-                                <span className="text-[10px] text-slate-400 font-semibold">{row.moneySourceCode}</span>
+                                <span className="text-[10px] text-slate-400 font-semibold" title={`Nguồn chi tiết: ${row.moneySourceCode}`}>
+                                  {moneySourceSummaryLabel.get(row.moneySourceCode) || row.moneySourceCode}
+                                </span>
                               </div>
                             </td>
                             <td className="px-5 py-4 text-xs font-medium text-slate-700 max-w-xs truncate">
