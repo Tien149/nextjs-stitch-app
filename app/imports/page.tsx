@@ -51,11 +51,11 @@ const importTabs: ImportTab[] = [
     icon: "receipt_long",
     roles: ["Admin", "Kế toán tổng hợp"],
     title: "Import Doanh thu POS từ file máy bán hàng",
-    subtitle: "Tải thẳng file máy bán hàng xuất ra, mỗi dòng một món. Hệ thống tự gộp theo ngày và phương thức thanh toán, không cần sửa file.",
+    subtitle: "Tải thẳng file máy bán hàng xuất ra, mỗi dòng một món. Hệ thống tự gộp theo ngày, nguồn tiền và mã hàng; dòng có mã hàng chờ nút Rã nguyên liệu bên Kho định lượng để sinh phiếu xuất bán.",
     apiPath: "/api/imports?importType=REVENUE_POS&templateCode=REVENUE_POS_RAW_V1",
     templatePath: "/api/imports?importType=REVENUE_POS&templateCode=REVENUE_POS_RAW_V1&template=1",
     templateCode: "REVENUE_POS_RAW_V1",
-    primaryFields: ["sale_date", "branch_code", "channel", "revenue_source", "payment_method", "gross_amount", "fee_amount", "vat_amount", "net_amount"],
+    primaryFields: ["sale_date", "branch_code", "product_code", "product_quantity", "payment_method", "gross_amount", "fee_amount", "vat_amount", "net_amount"],
   },
   {
     id: "payroll",

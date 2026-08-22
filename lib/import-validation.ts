@@ -1320,9 +1320,19 @@ export async function validateImportResult(
       // Tổng doanh thu là số lên báo cáo Tiền về đủ chưa, còn Doanh thu/SVC/VAT là ba phần
       // cấu thành. File dùng công thức thì luôn khớp; lệch nghĩa là sửa tay sót — chặn ngay
       // tại preview thay vì để số sai chảy vào đối soát. Dung sai 5 đ cho làm tròn từng món.
-      const posParts = numberValue(row.values.gross_amount) + numberValue(row.values.fee_amount) + numberValue(row.values.vat_amount);
-      if (posParts > 0 && Math.abs(posParts - numberValue(row.values.net_amount)) > 5) {
-        addError(row, `Tổng doanh thu (${numberValue(row.values.net_amount).toLocaleString("vi-VN")}) không bằng Doanh thu + SVC + VAT (${posParts.toLocaleString("vi-VN")})`);
+      // Riêng file POS chi tiết (sheet Import doanh thu của "Theo dõi nguồn tiền") có thêm các
+      // cột điều chỉnh không map vào hệ thống — Chiết khấu, Phiếu GG, Hoa hồng, Phí ship,
+      // Phí hỗ trợ marketing, Thuế khấu trừ, Giảm giá VAT — nên công thức ba phần không còn
+      // đúng; cột Tổng tiền do máy tự tính là số chuẩn, bỏ kiểm đẳng thức để không chặn oan.
+      const adjustmentHeaders = ["chiet khau", "phieu gg", "hoa hong", "phi ship", "phi ho tro marketing", "thue khau tru", "giam gia vat"];
+      const hasUnmappedAdjustments = result.headers.some((header) => adjustmentHeaders.includes(normalizeHeader(header)));
+      // Đẳng thức chỉ kiểm được khi file có đủ ba phần cấu thành; file chỉ có cột Tổng tiền
+      // (không tách SVC/VAT) thì Tổng tiền là số duy nhất và là số chuẩn.
+      const hasAllComponents = Boolean(result.mapping.fee_amount && result.mapping.vat_amount);
+      const posParts = numberValue(row.values.gross_amount) - numberValue(row.values.discount_amount)
+        + numberValue(row.values.fee_amount) + numberValue(row.values.vat_amount);
+      if (hasAllComponents && !hasUnmappedAdjustments && posParts > 0 && Math.abs(posParts - numberValue(row.values.net_amount)) > 5) {
+        addError(row, `Tổng doanh thu (${numberValue(row.values.net_amount).toLocaleString("vi-VN")}) không bằng Doanh thu - Giảm giá + SVC + VAT (${posParts.toLocaleString("vi-VN")})`);
       }
       const productCode = text(row.values.product_code).toUpperCase();
       const productQuantity = numberValue(row.values.product_quantity);

@@ -4,18 +4,56 @@
  *
  * Chạy: npm run test:pos-raw
  */
-import test from "node:test";
+import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { parseImportFile } from "../lib/import-parser.ts";
 import { getImportTemplate } from "../lib/import-templates.ts";
 import { validateImportResult } from "../lib/import-validation.ts";
+import { prisma, prismaRaw } from "../lib/prisma.ts";
 
 const require = createRequire(import.meta.url);
 const XLSX = require("xlsx");
 
 const session = { name: "test", role: "Admin", allowedBranches: ["ALL"] };
 const template = getImportTemplate("REVENUE_POS", "REVENUE_POS_RAW_V1");
+
+// Validation tra cửa hàng và mã món trong DB, nên test tự seed đúng những mã fixture cần
+// rồi dọn lại — không phụ thuộc máy nào đã seed dữ liệu demo của khách hay chưa.
+// Dùng prismaRaw cho cả seed lẫn dọn: client `prisma` xoá mềm (chỉ set deletedAt), lần chạy
+// sau findFirst lọc bản ghi sống sẽ không thấy nhưng create vẫn đụng unique (type, code).
+const seeded = { branch: false, item: false };
+
+before(async () => {
+  const branch = await prismaRaw.masterDataItem.findFirst({ where: { type: "BRANCH", code: "NME" } });
+  if (!branch) {
+    await prismaRaw.masterDataItem.create({
+      data: { type: "BRANCH", code: "NME", name: "NAM MÊ Kitchen & Bar", status: "ACTIVE" },
+    });
+    seeded.branch = true;
+  } else if (branch.deletedAt || branch.status !== "ACTIVE") {
+    // Xác bản ghi test cũ còn kẹt lại -> hồi sinh cho lần chạy này rồi dọn ở after().
+    await prismaRaw.masterDataItem.update({ where: { id: branch.id }, data: { deletedAt: null, status: "ACTIVE" } });
+    seeded.branch = true;
+  }
+  const item = await prismaRaw.inventoryItem.findUnique({ where: { code: "SP001" } });
+  if (!item) {
+    await prismaRaw.inventoryItem.create({
+      data: { code: "SP001", name: "Món test POS", unit: "Phần", itemType: "FINISHED", minStock: 0 },
+    });
+    seeded.item = true;
+  } else if (item.deletedAt) {
+    await prismaRaw.inventoryItem.update({ where: { id: item.id }, data: { deletedAt: null } });
+    seeded.item = true;
+  }
+});
+
+after(async () => {
+  if (seeded.branch) await prismaRaw.masterDataItem.deleteMany({ where: { type: "BRANCH", code: "NME", name: "NAM MÊ Kitchen & Bar" } });
+  if (seeded.item) await prismaRaw.inventoryItem.deleteMany({ where: { code: "SP001", name: "Món test POS" } });
+  await prisma.$disconnect();
+  await prismaRaw.$disconnect();
+});
 
 /** Dựng đúng hình dạng file máy bán hàng xuất ra: mỗi món một dòng, nhiều cột tiền gần giống nhau. */
 function posFile(rows) {
@@ -53,9 +91,11 @@ test("lấy đúng cột Tổng tiền, không lấy nhầm Thành tiền hay T�
     line("FDS - GrabFood", "TẠI CHỖ", "01/08/2026", 100, 105, 110),
   ]), template);
 
-  // File cũ không có cột "Doanh thu" nên gross bỏ trống — mọi con số tiền đi qua net_amount.
-  assert.equal(parsed.mapping.gross_amount, undefined);
+  // "Thành tiền" là doanh thu trước phí/thuế của dòng món (meeting 22/08/2026); số tiền
+  // khách trả vẫn đi qua net_amount = "Tổng tiền", không lấy nhầm cột "Tổng tiền (không bao gồm VAT)".
+  assert.equal(parsed.mapping.gross_amount, "Thành tiền");
   assert.equal(parsed.mapping.net_amount, "Tổng tiền");
+  assert.equal(parsed.rows[0].values.gross_amount, 100);
   assert.equal(parsed.rows[0].values.net_amount, 110);
 });
 

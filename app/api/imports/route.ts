@@ -200,8 +200,8 @@ function templateExampleRows(templateCode: string): Array<Record<string, string 
   }
   if (templateCode === "REVENUE_POS_RAW_V1") {
     return [
-      { sale_date: new Date("2026-08-01T00:00:00Z"), branch_code: "NME", channel: "Grab", revenue_source: "REV_FOOD", payment_method: "FDSGRABFOOD", gross_amount: 500000, fee_amount: 25000, vat_amount: 42000, net_amount: 567000 },
-      { sale_date: new Date("2026-08-01T00:00:00Z"), branch_code: "ASA", channel: "Tại chỗ", revenue_source: "REV_DRINK", payment_method: "ASAATIENMAT", gross_amount: 300000, fee_amount: 15000, vat_amount: 25200, net_amount: 340200 },
+      { sale_date: new Date("2026-08-01T00:00:00Z"), branch_code: "NME", product_code: "BBQ010", product_name: "Xúc Xích Nướng Củi (2Pcs)", product_quantity: 1, unit: "Phần", channel: "Tại chỗ", revenue_source: "ĐỒ ĂN", payment_method: "FDS - Chuyển Khoản Vietinbank", gross_amount: 150000, discount_amount: 0, fee_amount: 7500, vat_amount: 12600, net_amount: 170100 },
+      { sale_date: new Date("2026-08-01T00:00:00Z"), branch_code: "NME", product_code: "CF012", product_name: "Cà Phê Latte", product_quantity: 2, unit: "Ly", channel: "Grab", revenue_source: "ĐỒ UỐNG", payment_method: "FDSGRABFOOD", gross_amount: 110000, discount_amount: 0, fee_amount: 5500, vat_amount: 9240, net_amount: 124740 },
     ];
   }
   if (templateCode === "PRODUCTION_STANDARD_V1") {
