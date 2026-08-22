@@ -36,6 +36,23 @@ test("chuyển doanh thu không đi vào đối soát thu ngân và dòng tiền
     depositIn: { cash: 0, transfer: 0, card: 0, grab: 0, other: 0 },
     directRefundOut: { cash: 0, transfer: 0, card: 0, grab: 0, other: 0 },
     offsetDeclared: { cash: 0, transfer: 0, card: 0, grab: 0, other: 0 },
+    depositInCashBySource: {},
+  });
+});
+
+test("cọc tiền mặt tách theo từng quỹ để mỗi quỹ nộp một phiếu riêng", () => {
+  const result = summarizeDailyDepositHistories([
+    row("CREATE", 1_000_000),
+    row("CREATE", 400_000, { moneySourceCode: "FDSTIENBINH" }),
+    row("SUPPLEMENT", 200_000),
+    // Cọc chuyển khoản không phải tiền mặt nên không được lọt vào bảng tách quỹ.
+    row("CREATE", 900_000, { moneySourceGroup: "BANK", moneySourceCode: "FDSCHKHVIET" }),
+  ]);
+
+  assert.equal(result.depositIn.cash, 1_600_000);
+  assert.deepEqual(result.depositInCashBySource, {
+    FDSTIENMAT: 1_200_000,
+    FDSTIENBINH: 400_000,
   });
 });
 

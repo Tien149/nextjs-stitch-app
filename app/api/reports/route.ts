@@ -375,11 +375,29 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     return created;
   };
   const posCashByBranch = new Map<string, number>();
+  /**
+   * Tiền mặt cần nộp tách theo từng nguồn tiền mặt.
+   *
+   * Một cửa hàng có thể bán qua nhiều quỹ tiền mặt trong cùng một ngày (thu ngân giữ, quản lý
+   * giữ). Mỗi quỹ là một số dư độc lập nên phải nộp một phiếu riêng — gộp chung một cục rồi
+   * trừ hết vào một quỹ sẽ làm quỹ đó âm còn quỹ kia không bao giờ được clear.
+   * Khóa rỗng là phần chưa xác định được nguồn (doanh thu nhập tay, phương thức thanh toán
+   * không nối được về danh mục).
+   */
+  const cashToDepositBySource = new Map<string, number>();
+  const addCashToDeposit = (moneySourceCode: string | null | undefined, amount: number) => {
+    const key = (moneySourceCode || "").trim();
+    cashToDepositBySource.set(key, (cashToDepositBySource.get(key) || 0) + amount);
+  };
   for (const row of revenues) {
-    const bucketKey = classifyRevenueRow(matcherFor(row.branchCode), row.paymentMethod, row.revenueSource, row.channel);
+    const matchSource = matcherFor(row.branchCode);
+    const bucketKey = classifyRevenueRow(matchSource, row.paymentMethod, row.revenueSource, row.channel);
     addAmount(posRevenue, bucketKey, row.netAmount);
     addAmount(revenue, bucketKey, row.netAmount);
-    if (bucketKey === "cash") posCashByBranch.set(row.branchCode, (posCashByBranch.get(row.branchCode) || 0) + row.netAmount);
+    if (bucketKey === "cash") {
+      posCashByBranch.set(row.branchCode, (posCashByBranch.get(row.branchCode) || 0) + row.netAmount);
+      addCashToDeposit(matchSource(row.paymentMethod, row.revenueSource)?.code, row.netAmount);
+    }
   }
 
   // POS là nguồn doanh thu chuẩn. Nhập tay chỉ là phương án dự phòng khi ca/ngày đó
@@ -401,6 +419,8 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
       addAmount(manual, key, value);
       addAmount(revenue, key, value);
     }
+    // Doanh thu nhập tay chỉ khai theo hình thức thanh toán, không gắn nguồn tiền cụ thể.
+    addCashToDeposit("", row.cashAmount);
   }
 
   // Phiếu thu là chứng từ thu tiền thật trên hệ thống -> xếp theo nhóm nguồn tiền của phiếu.
@@ -429,6 +449,7 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     const source = sourceByCode.get(row.moneySourceCode);
     const bucketKey = classifyMoneySource(source?.group);
     addAmount(receipt, bucketKey, row.amount);
+    if (bucketKey === "cash") addCashToDeposit(row.moneySourceCode, row.amount);
   }
 
   // Phiếu thu tiền mặt loại "Thu bán hàng" chính là chứng từ của khoản doanh thu tiền mặt mà file
@@ -441,15 +462,21 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
   // theo việc trừ luôn phiếu thu tiền mặt của ASA — mất hẳn 24,8 triệu khỏi ô Tổng thu. Phải xét
   // riêng từng cửa hàng: chỉ cửa hàng nào có POS tiền mặt mới khử phiếu thu tiền mặt của chính nó.
   const salesCashReceiptByBranch = new Map<string, number>();
+  const salesCashReceiptRows: Array<{ branchCode: string; moneySourceCode: string; amount: number }> = [];
   for (const row of receiptVouchers) {
     if (["COLLECT", "SUPPLEMENT"].includes(row.depositAction || "")) continue;
     if (!restaurantSalesCategoryCodes.includes(row.categoryCode || "")) continue;
     if (normalizeMoneySourceGroup(sourceByCode.get(row.moneySourceCode)?.group) !== "CASH") continue;
     salesCashReceiptByBranch.set(row.branchCode, (salesCashReceiptByBranch.get(row.branchCode) || 0) + row.amount);
+    salesCashReceiptRows.push({ branchCode: row.branchCode, moneySourceCode: row.moneySourceCode, amount: row.amount });
   }
-  const duplicatedCashReceipts = [...posCashByBranch]
-    .filter(([, amount]) => amount > 0)
-    .reduce((sum, [branch]) => sum + (salesCashReceiptByBranch.get(branch) || 0), 0);
+  const branchesWithPosCash = new Set([...posCashByBranch].filter(([, amount]) => amount > 0).map(([branch]) => branch));
+  const duplicatedCashReceipts = [...branchesWithPosCash]
+    .reduce((sum, branch) => sum + (salesCashReceiptByBranch.get(branch) || 0), 0);
+  // Khử trùng cũng phải trừ đúng nguồn tiền của phiếu thu, không trừ vào một cục chung.
+  for (const row of salesCashReceiptRows) {
+    if (branchesWithPosCash.has(row.branchCode)) addCashToDeposit(row.moneySourceCode, -row.amount);
+  }
   const receiptRevenue: DailyCashBucket = {
     ...receipt,
     cash: receipt.cash - duplicatedCashReceipts,
@@ -458,6 +485,9 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
 
   for (const key of ["cash", "transfer", "card", "grab", "other"] as const) {
     addAmount(deposit, key, dailyDepositMovement.depositIn[key]);
+  }
+  for (const [code, amount] of Object.entries(dailyDepositMovement.depositInCashBySource)) {
+    addCashToDeposit(code, amount);
   }
 
   const voucherExpenses = vouchers.map((row) => {
@@ -501,6 +531,9 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
 
   const expenseTotal = expenses.reduce((sum, row) => sum + row.amount, 0);
   const cashExpenseTotal = expenses.filter((row) => row.isCash).reduce((sum, row) => sum + row.amount, 0);
+  for (const row of expenses) {
+    if (row.isCash) addCashToDeposit(row.moneySourceCode, -row.amount);
+  }
   // Tổng thu hiển thị đủ dòng tiền nhưng giữ ba bản chất tách biệt: doanh thu,
   // thu khác và tiền cọc. Nhờ đó phiếu thu không làm tăng doanh thu bán hàng.
   const total = {
@@ -537,12 +570,52 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     other: dailyDepositMovement.offsetDeclared.other,
   };
 
+  const cashToDeposit = total.cash - cashExpenseTotal;
+  // Phần tách theo nguồn phải cộng lại đúng bằng số tổng. Chênh lệch (làm tròn, hoặc luồng
+  // tiền chưa gắn được nguồn) dồn vào dòng "chưa xác định" để nhìn thấy, thay vì mất lặng lẽ.
+  const attributedCash = [...cashToDepositBySource.values()].reduce((sum, amount) => sum + amount, 0);
+  if (Math.abs(cashToDeposit - attributedCash) >= 1) addCashToDeposit("", cashToDeposit - attributedCash);
+  const cashToDepositSources = [...cashToDepositBySource]
+    .map(([code, amount]) => {
+      const source = code ? sourceByCode.get(code) : undefined;
+      return {
+        code,
+        name: source ? moneySourceDisplayName(source) : (code || "Chưa xác định nguồn tiền mặt"),
+        amount: Math.round(amount),
+      };
+    })
+    .filter((row) => row.amount !== 0)
+    .sort((left, right) => right.amount - left.amount);
+
+  // Phiếu nộp tiền đã lập trong ngày, để màn hình biết quỹ nào đã nộp và quỹ nào còn treo.
+  const cashDepositTransfers = await prisma.moneyTransfer.findMany({
+    where: {
+      ...branchWhere,
+      transferPurpose: "CASH_DEPOSIT",
+      sourceReportDate: { gte: dayStart, lt: dayEnd },
+      status: { in: ["PENDING_REVIEW", "APPROVED"] },
+    },
+    orderBy: [{ createdAt: "asc" }],
+  });
+
   return {
     period,
     branchCode,
     reportDate: date,
     shift,
-    summary: { revenue, posRevenue, manual, receipt, receiptRevenue, deposit, total, expenseTotal, cashExpenseTotal, cashToDeposit: total.cash - cashExpenseTotal },
+    summary: { revenue, posRevenue, manual, receipt, receiptRevenue, deposit, total, expenseTotal, cashExpenseTotal, cashToDeposit },
+    cashToDepositSources,
+    cashDeposits: cashDepositTransfers.map((row) => ({
+      id: row.id,
+      code: row.code,
+      status: row.status,
+      sourceShift: row.sourceShift,
+      depositTargetType: row.depositTargetType,
+      fromMoneySourceCode: row.fromMoneySourceCode,
+      toMoneySourceCode: row.toMoneySourceCode,
+      amount: row.amount,
+      feeAmount: row.feeAmount,
+    })),
     expenses,
     receipts,
     manualEntries: manualEntries.map((row) => ({

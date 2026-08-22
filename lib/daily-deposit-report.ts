@@ -13,6 +13,12 @@ export type DailyDepositMovement = {
   depositIn: Record<DailyDepositBucketKey, number>;
   directRefundOut: Record<DailyDepositBucketKey, number>;
   offsetDeclared: Record<DailyDepositBucketKey, number>;
+  /**
+   * Tiền cọc mặt thực nhận, tách theo từng mã nguồn tiền mặt (mã rỗng = chưa khai nguồn).
+   * Một ngày có thể nhận cọc vào nhiều quỹ tiền mặt khác nhau, mà mỗi quỹ phải nộp một
+   * phiếu riêng nên số cần nộp không thể để chung một cục.
+   */
+  depositInCashBySource: Record<string, number>;
 };
 
 const emptyBuckets = (): Record<DailyDepositBucketKey, number> => ({
@@ -48,6 +54,12 @@ export function summarizeDailyDepositHistories(rows: DailyDepositHistoryInput[])
     depositIn: emptyBuckets(),
     directRefundOut: emptyBuckets(),
     offsetDeclared: emptyBuckets(),
+    depositInCashBySource: {},
+  };
+  const addDepositInCash = (row: DailyDepositHistoryInput, bucket: DailyDepositBucketKey, amount: number) => {
+    if (bucket !== "cash") return;
+    const code = (row.moneySourceCode || "").trim();
+    result.depositInCashBySource[code] = (result.depositInCashBySource[code] || 0) + amount;
   };
 
   for (const row of rows) {
@@ -57,8 +69,12 @@ export function summarizeDailyDepositHistories(rows: DailyDepositHistoryInput[])
 
     if (["CREATE", "COLLECT", "SUPPLEMENT"].includes(row.action)) {
       result.depositIn[bucket] += Math.abs(amount);
+      addDepositInCash(row, bucket, Math.abs(amount));
     } else if (row.action === "UPDATE") {
-      if (amount > 0) result.depositIn[bucket] += amount;
+      if (amount > 0) {
+        result.depositIn[bucket] += amount;
+        addDepositInCash(row, bucket, amount);
+      }
       // UPDATE âm được ghi sổ giống hoàn cọc; chỉ cộng tại đây nếu không có phiếu chi riêng.
       else if (!row.voucherId) result.directRefundOut[bucket] += Math.abs(amount);
     } else if (row.action === "REFUND") {

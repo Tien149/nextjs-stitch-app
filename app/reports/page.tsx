@@ -76,6 +76,9 @@ type DailyCashData = {
   reportDate: string;
   shift: string;
   summary: { revenue: DailyCashBucket; posRevenue: DailyCashBucket; manual: DailyCashBucket; receipt: DailyCashBucket; receiptRevenue: DailyCashBucket; deposit: DailyCashBucket; total: DailyCashBucket; expenseTotal: number; cashExpenseTotal: number; cashToDeposit: number };
+  /** Tiền mặt cần nộp tách theo từng quỹ; mã rỗng là phần chưa xác định được nguồn. */
+  cashToDepositSources: Array<{ code: string; name: string; amount: number }>;
+  cashDeposits: Array<{ id: string; code: string; status: string; sourceShift: string | null; depositTargetType: string | null; fromMoneySourceCode: string; toMoneySourceCode: string; amount: number; feeAmount: number }>;
   expenses: DailyCashExpense[];
   receipts: DailyCashReceipt[];
   manualEntries: ManualRevenueEntry[];
@@ -403,7 +406,34 @@ export default function ReportsPage() {
   const dailyCashExpenseSum = dailyCashSummaryRows.reduce((sum, row) => sum + (row.expense || 0), 0);
   const dailyCashDepositSum = dailyCashSummaryRows.reduce((sum, row) => sum + (row.cashToDeposit || 0), 0);
 
-  const cashDepositAmount = Math.max(0, Math.round(dailyCash?.summary.cashToDeposit || 0));
+  /**
+   * Tiền mặt cần nộp của ĐÚNG quỹ đang chọn, không phải tổng cả cửa hàng.
+   *
+   * Một ngày có thể bán qua nhiều quỹ tiền mặt (thu ngân giữ, quản lý giữ); mỗi quỹ là một số dư
+   * riêng nên phải nộp một phiếu riêng. Lấy tổng rồi trừ hết vào một quỹ sẽ làm quỹ đó âm và quỹ
+   * còn lại không bao giờ được clear. Cửa hàng chỉ có một quỹ thì hai số này bằng nhau.
+   */
+  const cashToDepositSources = dailyCash?.cashToDepositSources || [];
+  const cashDepositTotalAmount = Math.max(0, Math.round(dailyCash?.summary.cashToDeposit || 0));
+  const cashDepositSelectedSource = cashToDepositSources.find((row) => row.code === cashDepositForm.fromMoneySourceCode);
+  /** Phần tiền chưa nối được về quỹ nào: doanh thu nhập tay, hoặc PTTT lạ chưa khai trong danh mục. */
+  const cashDepositUnassignedAmount = Math.round(cashToDepositSources.find((row) => !row.code)?.amount || 0);
+  const cashDepositIdentifiedTotal = cashToDepositSources
+    .filter((row) => row.code)
+    .reduce((sum, row) => sum + row.amount, 0);
+  // Không nối được quỹ nào (ngày chỉ có doanh thu nhập tay) thì cả cục thuộc quỹ đang chọn —
+  // giữ đúng cách chạy cũ. Còn khi đã nối được ít nhất một quỹ thì không đoán phần lẻ thuộc
+  // quỹ nào, vì cộng nó vào mọi quỹ sẽ nộp thừa; người dùng khai lại nguồn tiền cho đúng.
+  const cashDepositAmount = cashToDepositSources.length === 0
+    ? cashDepositTotalAmount
+    : Math.max(0, Math.round(cashDepositSelectedSource?.amount || 0) + (cashDepositIdentifiedTotal > 0 ? 0 : cashDepositUnassignedAmount));
+  /** Phiếu đã lập cho đúng ca đang xem, để biết quỹ nào nộp rồi và quỹ nào còn treo. */
+  const cashDepositExistingSlips = (dailyCash?.cashDeposits || []).filter((row) => row.sourceShift === dailyCash?.shift);
+  const cashDepositedSourceCodes = new Set(
+    cashDepositExistingSlips
+      .filter((row) => row.depositTargetType === cashDepositForm.depositTargetType)
+      .map((row) => row.fromMoneySourceCode),
+  );
   /**
    * Số thực nộp làm tròn tới nghìn gần nhất theo quy tắc 5 lên, dưới 5 xuống.
    * Chênh lệch dương là chi phí; làm tròn lên tạo chi phí âm.
@@ -415,25 +445,23 @@ export default function ReportsPage() {
     return sum + row.denomination * quantity;
   }, 0);
   const cashDepositCashSources = dailyCash ? filterMoneySources(moneySources, dailyCash.branchCode, ["CASH"]) : [];
-  const cashDepositTargetSources = dailyCash
-    ? filterMoneySources(moneySources, dailyCash.branchCode).filter((source) => source.code !== cashDepositForm.fromMoneySourceCode)
-    : [];
+  // Nộp tiền trong ngày chỉ đổi người giữ tiền mặt (nộp Cô / nộp PKT) nên nguồn nhận cũng phải
+  // là quỹ tiền mặt. Nộp tiền mặt vào ngân hàng là nghiệp vụ khác, đi bằng Điều tiền nội bộ.
+  const cashDepositTargetSources = cashDepositCashSources.filter((source) => source.code !== cashDepositForm.fromMoneySourceCode);
   const cashDepositDefaultFromSourceCode = cashDepositCashSources[0]?.code || "";
-  const cashDepositDefaultTargetSources = dailyCash
-    ? filterMoneySources(moneySources, dailyCash.branchCode).filter((source) => source.code !== cashDepositDefaultFromSourceCode)
-    : [];
+  const cashDepositDefaultTargetSources = cashDepositCashSources.filter((source) => source.code !== cashDepositDefaultFromSourceCode);
   const cashDepositDisabledReason = !canCreateCashDeposit
     ? "Bạn không có quyền tạo phiếu nộp tiền."
     : !dailyCash
       ? "Chưa có dữ liệu báo cáo thu chi ngày."
       : dailyCash.branchCode === "ALL"
         ? "Chọn một cửa hàng cụ thể để nộp tiền."
-        : cashDepositAmount <= 0
+        : cashDepositTotalAmount <= 0
           ? "Ngày/ca này chưa có tiền mặt cần nộp."
           : cashDepositCashSources.length === 0
               ? "Chưa cấu hình nguồn tiền mặt cho cửa hàng này."
               : cashDepositDefaultTargetSources.length === 0
-                ? "Chưa cấu hình nguồn tiền nhận cho cửa hàng này."
+                ? "Cửa hàng này mới có một nguồn tiền mặt; cần thêm nguồn tiền mặt nhận (nộp Cô / nộp PKT) trong Cấu hình danh mục."
                 : "";
 
   // Bản ghi nhập tay của đúng ca đang xem; xem "Cả ngày" mà đã nhập theo ca thì không sửa trực tiếp ở đây được.
@@ -536,9 +564,12 @@ export default function ReportsPage() {
 
   const pickCashDepositTarget = (targetType: "PKT" | "CO", fromMoneySourceCode: string, reportBranchCode: string) => {
     const targetHint = targetType === "PKT" ? "PKT" : "CO";
-    const options = filterMoneySources(moneySources, reportBranchCode).filter((source) => source.code !== fromMoneySourceCode);
+    // Nguồn nhận chỉ lấy trong nhóm tiền mặt. Bỏ dấu trước khi dò chữ: nguồn "Tiền Mặt Cô Giữ"
+    // có chữ "CÔ" chứ không phải "CO", so chuỗi thẳng thì không khớp và rơi về nguồn đầu danh sách.
+    const normalize = (value: string) => value.toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/Đ/g, "D");
+    const options = filterMoneySources(moneySources, reportBranchCode, ["CASH"]).filter((source) => source.code !== fromMoneySourceCode);
     return (
-      options.find((source) => `${source.code} ${source.name}`.toUpperCase().includes(targetHint))?.code ||
+      options.find((source) => normalize(`${source.code} ${source.name}`).split(/[^A-Z0-9]+/).includes(targetHint))?.code ||
       options[0]?.code ||
       ""
     );
@@ -550,13 +581,25 @@ export default function ReportsPage() {
       setMessage("Vui lòng chọn một cửa hàng cụ thể trước khi tạo phiếu nộp tiền.");
       return;
     }
-    if (cashDepositAmount <= 0) {
+    if (cashDepositTotalAmount <= 0) {
       setMessage(
         "Không có số tiền mặt cần nộp cho ngày/ca này.",
       );
       return;
     }
-    const fromMoneySourceCode = firstMoneySourceCode(moneySources, dailyCash.branchCode, ["CASH"]);
+    // Mở lên là chọn sẵn quỹ còn nhiều tiền chưa nộp nhất, không phải quỹ đầu danh sách:
+    // ngày có hai quỹ thì lần mở thứ hai người dùng cần đúng quỹ còn lại.
+    const depositedCodes = new Set(
+      (dailyCash.cashDeposits || [])
+        .filter((row) => row.sourceShift === dailyCash.shift && row.depositTargetType === "PKT")
+        .map((row) => row.fromMoneySourceCode),
+    );
+    const pendingSource = cashToDepositSources
+      .filter((row) => row.code && row.amount > 0 && !depositedCodes.has(row.code))
+      .sort((left, right) => right.amount - left.amount)[0];
+    const fromMoneySourceCode = pendingSource?.code
+      || cashToDepositSources.find((row) => row.code && row.amount > 0)?.code
+      || firstMoneySourceCode(moneySources, dailyCash.branchCode, ["CASH"]);
     const toMoneySourceCode = pickCashDepositTarget("PKT", fromMoneySourceCode, dailyCash.branchCode);
     if (!fromMoneySourceCode) {
       setMessage("Chưa cấu hình nguồn tiền mặt cho cửa hàng này.");
@@ -619,10 +662,18 @@ export default function ReportsPage() {
         setMessage(payload.error || "Không tạo được phiếu nộp tiền.");
         return;
       }
+      const fromSourceLabel = cashDepositSelectedSource?.name
+        || cashDepositCashSources.find((source) => source.code === cashDepositForm.fromMoneySourceCode)?.name
+        || cashDepositForm.fromMoneySourceCode;
+      const remainingSources = cashToDepositSources.filter((row) => row.code
+        && row.code !== cashDepositForm.fromMoneySourceCode
+        && row.amount > 0
+        && !cashDepositedSourceCodes.has(row.code));
       setMessage(
         `Đã tạo phiếu ${payload.code} chờ duyệt: thực nộp ${money(cashDepositRoundedAmount)} đ`
         + `${cashDepositRoundingDifference !== 0 ? `, chi phí làm tròn ${money(cashDepositRoundingDifference)} đ` : ""}`
-        + `, clear ${money(cashDepositAmount)} đ khỏi nguồn thu ngân.`,
+        + `, clear ${money(cashDepositAmount)} đ khỏi ${fromSourceLabel}.`
+        + `${remainingSources.length > 0 ? ` Còn ${remainingSources.length} quỹ tiền mặt chưa nộp: ${remainingSources.map((row) => `${row.name} (${money(row.amount)} đ)`).join(", ")}.` : ""}`,
       );
       setCashDepositOpen(false);
       await loadData();
@@ -1567,14 +1618,21 @@ export default function ReportsPage() {
                         toMoneySourceCode: current.toMoneySourceCode === nextFrom
                           ? pickCashDepositTarget(current.depositTargetType, nextFrom, dailyCash.branchCode)
                           : current.toMoneySourceCode,
+                        // Đổi quỹ là đổi số phải nộp, nên bảng kê mệnh giá cũ không còn đúng nữa.
+                        denominations: cashDepositDenominations.map((denomination) => ({ denomination, quantity: "" })),
                       }));
                     }}
                   >
-                    {cashDepositCashSources.map((source) => (
-                      <option key={source.code} value={source.code} title={moneySourceDebugLabel(source, storeLabel(dailyCash.branchCode))}>
-                        {moneySourceDisplayName(source, storeLabel(dailyCash.branchCode))}
-                      </option>
-                    ))}
+                    {cashDepositCashSources.map((source) => {
+                      const pending = cashToDepositSources.find((row) => row.code === source.code)?.amount || 0;
+                      return (
+                        <option key={source.code} value={source.code} title={moneySourceDebugLabel(source, storeLabel(dailyCash.branchCode))}>
+                          {moneySourceDisplayName(source, storeLabel(dailyCash.branchCode))}
+                          {cashToDepositSources.length > 0 ? ` · cần nộp ${money(pending)} đ` : ""}
+                          {cashDepositedSourceCodes.has(source.code) ? " · đã có phiếu" : ""}
+                        </option>
+                      );
+                    })}
                   </select>
                 </Field>
 
@@ -1586,7 +1644,34 @@ export default function ReportsPage() {
                       </option>
                     ))}
                   </select>
+                  <p className="mt-1 text-xs text-slate-500">Chỉ liệt kê quỹ tiền mặt: nộp tiền là đổi người giữ tiền mặt. Nộp tiền mặt vào ngân hàng thì dùng phiếu Điều tiền nội bộ.</p>
                 </Field>
+
+                {cashToDepositSources.length > 1 && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm">
+                    <p className="font-bold text-amber-900">Ngày/ca này có {cashToDepositSources.length} quỹ tiền mặt</p>
+                    <p className="mt-1 text-xs text-amber-800">Mỗi quỹ nộp một phiếu riêng. Tạo xong phiếu này thì mở lại để nộp tiếp quỹ còn lại.</p>
+                    <ul className="mt-2 space-y-1 text-xs">
+                      {cashToDepositSources.map((row) => (
+                        <li key={row.code || "UNASSIGNED"} className="flex items-center justify-between gap-3">
+                          <span className={row.code === cashDepositForm.fromMoneySourceCode ? "font-bold text-amber-900" : "text-amber-800"}>
+                            {row.name}
+                            {cashDepositedSourceCodes.has(row.code) ? " · đã có phiếu" : ""}
+                          </span>
+                          <b className="shrink-0 text-amber-900">{money(row.amount)} đ</b>
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="mt-2 border-t border-amber-200 pt-2 text-xs text-amber-800">
+                      Tổng cả ngày/ca: <b>{money(cashDepositTotalAmount)} đ</b>
+                    </p>
+                    {cashDepositUnassignedAmount !== 0 && cashDepositIdentifiedTotal > 0 && (
+                      <p className="mt-2 text-xs font-semibold text-rose-700">
+                        Còn {money(cashDepositUnassignedAmount)} đ chưa biết thuộc quỹ nào nên không nộp được. Khai nguồn tiền cho phương thức thanh toán đó trong Cấu hình danh mục rồi tải lại báo cáo.
+                      </p>
+                    )}
+                  </div>
+                )}
 
                 <div className="rounded-lg border border-blue-100 bg-blue-50 p-4 text-sm">
                   <p className="font-bold text-blue-900">Trạng thái sau khi tạo</p>
@@ -1650,7 +1735,11 @@ export default function ReportsPage() {
                     Chi phí làm tròn là <b>{money(cashDepositRoundingDifference)} đ</b>; nguồn tiền mặt được giảm đúng <b>{money(cashDepositAmount)} đ</b>.
                   </p>
                 )}
-                {cashDepositDenominationTotal !== cashDepositRoundedAmount && (
+                {cashDepositAmount <= 0 ? (
+                  <p className="border-t border-rose-100 bg-rose-50 px-4 py-3 text-xs font-bold text-rose-700">
+                    Quỹ đang chọn không còn tiền mặt cần nộp trong ngày/ca này. Chọn quỹ khác trong ô &quot;Nguồn tiền mặt đi&quot;.
+                  </p>
+                ) : cashDepositDenominationTotal !== cashDepositRoundedAmount && (
                   <p className="border-t border-rose-100 bg-rose-50 px-4 py-3 text-xs font-bold text-rose-700">
                     Tổng bảng kê phải bằng {money(cashDepositRoundedAmount)} đ.
                   </p>
@@ -1662,7 +1751,7 @@ export default function ReportsPage() {
               <button type="button" className="secondary-button" onClick={() => setCashDepositOpen(false)}>Hủy</button>
               <button
                 className="primary-button"
-                disabled={cashDepositSubmitting || cashDepositDenominationTotal !== cashDepositRoundedAmount || !cashDepositForm.fromMoneySourceCode || !cashDepositForm.toMoneySourceCode}
+                disabled={cashDepositSubmitting || cashDepositAmount <= 0 || cashDepositDenominationTotal !== cashDepositRoundedAmount || !cashDepositForm.fromMoneySourceCode || !cashDepositForm.toMoneySourceCode}
               >
                 <span className="material-symbols-outlined text-lg">send</span>
                 {cashDepositSubmitting ? "Đang tạo..." : "Tạo phiếu chờ duyệt"}

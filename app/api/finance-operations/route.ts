@@ -214,6 +214,9 @@ export async function POST(request: Request) {
       if (!fromMoneySource || !moneySourceMatchesBranch(fromMoneySource, current.branchCode)) businessError(`Nguồn tiền đi [${fromMoneySourceCode}] không tồn tại hoặc không thuộc cửa hàng của phiếu.`);
       if (!toMoneySource || !moneySourceMatchesBranch(toMoneySource, current.branchCode)) businessError(`Nguồn tiền nhận [${toMoneySourceCode}] không tồn tại hoặc không thuộc cửa hàng của phiếu.`);
       if (normalizeMoneySourceGroup(fromMoneySource.group) !== "CASH") businessError("Nguồn tiền đi của phiếu nộp tiền bắt buộc là tiền mặt.");
+      if (normalizeMoneySourceGroup(toMoneySource.group) !== "CASH") {
+        businessError("Nguồn tiền nhận của phiếu nộp tiền phải là một nguồn tiền mặt. Nộp tiền mặt vào ngân hàng thì dùng phiếu Điều tiền nội bộ.");
+      }
 
       const denominationRows: CashDepositDenominationInput[] = Array.isArray(body.denominations) ? body.denominations : [];
       const denominations: CashDepositDenominationRow[] = denominationRows
@@ -231,6 +234,8 @@ export async function POST(request: Request) {
       const reportDateCode = (current.sourceReportDate || current.transferDate).toISOString().slice(0, 10);
       const sourceShift = normalizeCashDepositShift(current.sourceShift);
       const { start, end } = dayBounds(current.sourceReportDate || current.transferDate);
+      // Trùng xét theo từng quỹ tiền mặt, giống lúc tạo mới: nhiều quỹ trong một ngày là
+      // chuyện bình thường, chỉ cấm hai phiếu cùng nộp một quỹ về cùng một nơi nhận.
       const duplicate = await prisma.moneyTransfer.findFirst({
         where: {
           id: { not: current.id },
@@ -238,13 +243,16 @@ export async function POST(request: Request) {
           transferPurpose: "CASH_DEPOSIT",
           depositTargetType,
           sourceShift,
+          fromMoneySourceCode,
           sourceReportDate: { gte: start, lt: end },
           status: { in: ["PENDING_REVIEW", "APPROVED"] },
         },
       });
-      if (duplicate) businessError(`Ngày/ca này đã có phiếu ${cashDepositTargetLabels[depositTargetType]} khác (${duplicate.code}).`);
+      if (duplicate) {
+        businessError(`Ngày/ca này đã có phiếu ${cashDepositTargetLabels[depositTargetType]} khác từ nguồn ${fromMoneySource.name || fromMoneySourceCode} (${duplicate.code}).`);
+      }
 
-      const description = `${cashDepositTargetLabels[depositTargetType]} ngày ${reportDateCode} (${sourceShift})${current.feeAmount !== 0 ? ` - chi phí làm tròn ${current.feeAmount.toLocaleString("vi-VN")} đ` : ""}`;
+      const description = `${cashDepositTargetLabels[depositTargetType]} ngày ${reportDateCode} (${sourceShift}) từ ${fromMoneySource.name || fromMoneySourceCode}${current.feeAmount !== 0 ? ` - chi phí làm tròn ${current.feeAmount.toLocaleString("vi-VN")} đ` : ""}`;
       const result = await prisma.$transaction(async (tx) => {
         // Điều kiện status trong updateMany ngăn ghi đè nếu Admin vừa duyệt trong lúc form đang mở.
         const updated = await tx.moneyTransfer.updateMany({
@@ -253,7 +261,7 @@ export async function POST(request: Request) {
             fromMoneySourceCode,
             toMoneySourceCode,
             depositTargetType,
-            externalRef: `NOPT-${reportDateCode}-${current.branchCode}-${sourceShift}-${depositTargetType}`,
+            externalRef: `NOPT-${reportDateCode}-${current.branchCode}-${sourceShift}-${depositTargetType}-${fromMoneySourceCode}`,
             description,
           },
         });
@@ -631,6 +639,12 @@ export async function POST(request: Request) {
       if (!fromMoneySource || !moneySourceMatchesBranch(fromMoneySource, branchCode)) businessError(`Nguồn tiền đi [${fromMoneySourceCode}] không tồn tại hoặc không thuộc cửa hàng đã chọn.`);
       if (!toMoneySource || !moneySourceMatchesBranch(toMoneySource, branchCode)) businessError(`Nguồn tiền nhận [${toMoneySourceCode}] không tồn tại hoặc không thuộc cửa hàng đã chọn.`);
       if (normalizeMoneySourceGroup(fromMoneySource.group) !== "CASH") businessError("Nộp tiền trong ngày bắt buộc đi từ nguồn tiền mặt.");
+      // Nộp tiền trong ngày là chuyển tiền mặt sang một quỹ tiền mặt khác (nộp Cô / nộp PKT):
+      // tiền vẫn ở dạng mặt, chỉ đổi người giữ. Nộp tiền mặt vào tài khoản ngân hàng là nghiệp
+      // vụ khác, đi bằng phiếu Điều tiền nội bộ.
+      if (normalizeMoneySourceGroup(toMoneySource.group) !== "CASH") {
+        businessError("Nguồn tiền nhận của phiếu nộp tiền phải là một nguồn tiền mặt. Nộp tiền mặt vào ngân hàng thì dùng phiếu Điều tiền nội bộ.");
+      }
 
       const denominations: CashDepositDenominationRow[] = denominationRows
         .map((row) => {
@@ -646,18 +660,24 @@ export async function POST(request: Request) {
       if (denominationTotal !== amount) businessError(`Tổng bảng kê mệnh giá (${denominationTotal.toLocaleString("vi-VN")} đ) phải bằng số tiền nộp (${amount.toLocaleString("vi-VN")} đ).`);
 
       const { start, end } = dayBounds(sourceReportDate);
+      // Chống lập trùng theo TỪNG QUỸ tiền mặt, không theo cả cửa hàng: một ngày bán qua nhiều
+      // quỹ (thu ngân giữ, quản lý giữ) thì mỗi quỹ phải nộp một phiếu riêng. Khoá theo cửa hàng
+      // như trước làm quỹ thứ hai không lập phiếu được, tiền của quỹ đó treo lại vĩnh viễn.
       const existing = await prisma.moneyTransfer.findFirst({
         where: {
           branchCode,
           transferPurpose: "CASH_DEPOSIT",
           depositTargetType,
           sourceShift,
+          fromMoneySourceCode,
           sourceReportDate: { gte: start, lt: end },
           status: { in: ["PENDING_REVIEW", "APPROVED"] },
           deletedAt: null,
         },
       });
-      if (existing) businessError(`Ngày/ca này đã có phiếu nộp tiền ${cashDepositTargetLabels[depositTargetType]} (${existing.code}) đang xử lý.`);
+      if (existing) {
+        businessError(`Ngày/ca này đã có phiếu nộp tiền ${cashDepositTargetLabels[depositTargetType]} từ nguồn ${fromMoneySource.name || fromMoneySourceCode} (${existing.code}) đang xử lý.`);
+      }
 
       // Max + 1 trong đúng chuỗi mã, không COUNT: phiếu bị xoá làm COUNT tụt và mã cấp lại
       // đâm trúng phiếu còn sống (cùng lỗi "Dữ liệu bị trùng" của import sao kê).
@@ -673,8 +693,9 @@ export async function POST(request: Request) {
           toMoneySourceCode,
           amount,
           feeAmount,
-          externalRef: `NOPT-${reportDateCode}-${branchCode}-${sourceShift}-${depositTargetType}`,
-          description: `${cashDepositTargetLabels[depositTargetType]} ngày ${reportDateCode} (${sourceShift})${feeAmount !== 0 ? ` - chi phí làm tròn ${feeAmount.toLocaleString("vi-VN")} đ` : ""}`,
+          // Khoá nghiệp vụ gồm cả quỹ nguồn: một ngày nộp từ nhiều quỹ thì mỗi phiếu một khoá.
+          externalRef: `NOPT-${reportDateCode}-${branchCode}-${sourceShift}-${depositTargetType}-${fromMoneySourceCode}`,
+          description: `${cashDepositTargetLabels[depositTargetType]} ngày ${reportDateCode} (${sourceShift}) từ ${fromMoneySource.name || fromMoneySourceCode}${feeAmount !== 0 ? ` - chi phí làm tròn ${feeAmount.toLocaleString("vi-VN")} đ` : ""}`,
           transferPurpose: "CASH_DEPOSIT",
           depositTargetType,
           sourceReportDate: new Date(`${reportDateCode}T00:00:00`),
