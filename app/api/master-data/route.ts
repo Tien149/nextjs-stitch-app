@@ -4,7 +4,7 @@ import { assertBranchAccess, getAllowedBranches } from "@/lib/accounting";
 import { prisma, prismaRaw } from "@/lib/prisma";
 import { duplicatedInTrashMessage, findDeletedByUnique, softDeleteRecord } from "@/lib/soft-delete";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
-import { normalizeMoneySourceGroup } from "@/lib/money-sources";
+import { cleanMoneySourceName, normalizeMoneySourceGroup } from "@/lib/money-sources";
 
 const defaultMasterData = [
   {
@@ -587,7 +587,9 @@ export async function POST(request: Request) {
     const body = await request.json();
     const type = cleanText(body.type);
     const code = cleanText(body.code).toUpperCase();
-    const name = cleanText(body.name);
+    // Nguồn tiền: bỏ cụm hình thức thanh toán ngay lúc lưu, để danh mục nhập sau này
+    // không lại sinh ra "FDS quẹt thẻ Vietinbank" bên cạnh "FDS Vietinbank".
+    const name = type === "MONEY_SOURCE" ? cleanMoneySourceName(body.name) : cleanText(body.name);
     const group = normalizeMasterGroup(type, cleanText(body.group) || null);
     const subGroup = typeSupportsSubGroup(type) ? (cleanText(body.subGroup).toUpperCase() || null) : null;
     const branch = cleanText(body.branch) || null;
@@ -596,7 +598,7 @@ export async function POST(request: Request) {
     let codePrefix: string | null = null;
     let settlementBankCode: string | null = null;
     // Tên "Nguồn tiền tổng": các nguồn cùng tên sẽ được Báo cáo nguồn tiền gộp một dòng.
-    const summarySourceName = type === "MONEY_SOURCE" ? (cleanText(body.summarySourceName) || null) : null;
+    const summarySourceName = type === "MONEY_SOURCE" ? (cleanMoneySourceName(body.summarySourceName) || null) : null;
 
     if (!type || !code || !name) {
       return NextResponse.json({ error: "Loại danh mục, mã và tên là bắt buộc" }, { status: 400 });
@@ -686,7 +688,7 @@ export async function PATCH(request: Request) {
     let codePrefix = current.codePrefix;
     let settlementBankCode = current.settlementBankCode;
     const summarySourceName = current.type === "MONEY_SOURCE"
-      ? (body.summarySourceName !== undefined ? (cleanText(body.summarySourceName) || null) : current.summarySourceName)
+      ? (body.summarySourceName !== undefined ? (cleanMoneySourceName(body.summarySourceName) || null) : current.summarySourceName)
       : null;
 
     try {
@@ -729,7 +731,9 @@ export async function PATCH(request: Request) {
       where: { id },
       data: {
         ...(body.code !== undefined ? { code: cleanText(body.code).toUpperCase() } : {}),
-        ...(body.name !== undefined ? { name: cleanText(body.name) } : {}),
+        ...(body.name !== undefined
+          ? { name: current.type === "MONEY_SOURCE" ? cleanMoneySourceName(body.name) : cleanText(body.name) }
+          : {}),
         group: current.type === "PARTNER" ? partnerType : group,
         subGroup,
         partnerType,

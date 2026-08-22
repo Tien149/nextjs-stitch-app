@@ -10,7 +10,16 @@ export type WalletPosRevenue = {
 };
 export type WalletManualRevenue = { cardAmount: number; grabAmount: number };
 
-const walletKeywords = ["momo", "grab", "vnpay", "shopee", "quet the"];
+/**
+ * Nhóm từ đồng nghĩa để dò ví: dòng doanh thu và nguồn tiền chỉ cần chạm CÙNG MỘT NHÓM là
+ * khớp, không bắt buộc trùng đúng chữ.
+ *
+ * Nhóm thẻ phải có cả "pos" lẫn "quet the": doanh thu POS ghi hình thức "Quẹt thẻ", còn tên
+ * nguồn tiền nay đã bỏ cụm "quẹt thẻ" (xem stripMoneySourceLabel trong lib/money-sources.ts)
+ * nên chỉ còn chữ "POS" để bám. Trước đây danh sách phẳng đòi hai bên cùng chứa một chuỗi,
+ * đổi tên nguồn tiền là mất khớp âm thầm.
+ */
+const walletKeywordGroups = [["momo"], ["grab"], ["vnpay"], ["shopee"], ["quet the", "pos", "card"]];
 
 function normalizeWalletText(value: string) {
   return value.trim().toLowerCase().normalize("NFD")
@@ -41,8 +50,8 @@ export function revenueMatchesWalletSource(row: WalletPosRevenue, source: Wallet
   if (revenueMatchesWalletSourceDefinitely(row, source)) return true;
   const sourceValues = [normalizeWalletText(source.code), normalizeWalletText(source.name)];
   const rowValues = [normalizeWalletText(row.paymentMethod), normalizeWalletText(row.revenueSource), normalizeWalletText(row.channel || "")];
-  return walletKeywords.some((keyword) => sourceValues.some((value) => value.includes(keyword))
-    && rowValues.some((value) => value.includes(keyword)));
+  return walletKeywordGroups.some((group) => group.some((keyword) => sourceValues.some((value) => value.includes(keyword)))
+    && group.some((keyword) => rowValues.some((value) => value.includes(keyword))));
 }
 
 /**

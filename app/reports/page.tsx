@@ -6,7 +6,7 @@ import { DateInput, MonthInput } from "@/components/DateInput";
 import { storeLabel, visibleBranchScopeOptions, visibleStoreOptions } from "@/lib/branch-labels";
 import { canPerformMenuAction, filterModuleTabs, moduleTabs } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
-import { filterMoneySources, firstMoneySourceCode, moneySourceDebugLabel, moneySourceDisplayName, type MoneySourceOption } from "@/lib/money-sources";
+import { filterMoneySources, firstMoneySourceCode, moneySourceDebugLabel, moneySourceDisplayName, stripMoneySourceLabel, type MoneySourceOption } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { shiftLabel, shiftLabels } from "@/lib/shifts";
@@ -2146,11 +2146,14 @@ function RevenueSettlementPanel({ data }: { data: RevenueSettlementData }) {
 }
 
 /**
- * Tên nguồn tiền lưu kèm loại ("ASA - Chuyển Khoản Sacombank (HKD)"), nhưng ở các bảng nguồn tiền
- * loại đã hiểu ngầm nên bỏ chữ "chuyển khoản" cho tên gọn lại. Dữ liệu gốc giữ nguyên.
+ * Tên nguồn tiền cũ lưu kèm hình thức thanh toán ("ASA - Chuyển Khoản Sacombank (HKD)"), nhưng ở
+ * các bảng nguồn tiền thì hình thức đã hiểu ngầm nên bỏ đi cho tên gọn lại.
+ *
+ * Danh mục nay đã cắt cụm này ngay lúc lưu; lớp cắt khi hiển thị chỉ còn để đỡ cho dữ liệu cũ
+ * chưa chạy `npm run clean:money-source-names`. Dữ liệu gốc giữ nguyên.
  */
 function cashSourceLabel(name: string) {
-  return name.replace(/chuyển\s+khoản/gi, " ").replace(/\s+/g, " ").trim();
+  return stripMoneySourceLabel(name);
 }
 
 function CashSourceFlowTable({ cashSource }: { cashSource: CashSourceData }) {

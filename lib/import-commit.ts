@@ -12,7 +12,7 @@ import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { nextSeqFromCodes, voucherCodePrefix } from "@/lib/voucher-code-generator";
 import { commonBankValue, groupBankStatementRows } from "@/lib/bank-statement-import";
-import { normalizeMoneySourceGroup } from "@/lib/money-sources";
+import { cleanMoneySourceName, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { evaluateBankStatementAutoApproval } from "@/lib/bank-statement-auto-approval";
 import { applyVoucherSideEffects } from "@/lib/voucher-side-effects";
 import { applyOpeningDeposit } from "@/lib/opening-balance-deposit";
@@ -917,7 +917,8 @@ export async function commitImport(input: CommitInput) {
       for (const row of input.rows) {
         const type = asText(row.values.type).toUpperCase();
         const code = asText(row.values.code).toUpperCase();
-        const name = asText(row.values.name);
+        // Nguồn tiền import từ file cũng phải theo cùng luật đặt tên với màn Danh mục.
+        const name = type === "MONEY_SOURCE" ? cleanMoneySourceName(asText(row.values.name)) : asText(row.values.name);
         const rawGroup = row.values.group ? asText(row.values.group).toUpperCase() : null;
         const group = type === "REVENUE_EXPENSE_CATEGORY"
           ? normalizeCashflowCategoryType(rawGroup)
@@ -954,7 +955,7 @@ export async function commitImport(input: CommitInput) {
             phone: asText(row.values.phone) || null,
             email: asText(row.values.email) || null,
             note: asText(row.values.note) || null,
-            summarySourceName: type === "MONEY_SOURCE" ? (asText(row.values.summary_source_name) || null) : null,
+            summarySourceName: type === "MONEY_SOURCE" ? (cleanMoneySourceName(asText(row.values.summary_source_name)) || null) : null,
             status: masterStatus || "ACTIVE",
           },
           update: {
@@ -966,7 +967,7 @@ export async function commitImport(input: CommitInput) {
             ...(hasMasterColumn("phone") ? { phone: asText(row.values.phone) || null } : {}),
             ...(hasMasterColumn("email") ? { email: asText(row.values.email) || null } : {}),
             ...(hasMasterColumn("note") ? { note: asText(row.values.note) || null } : {}),
-            ...(hasMasterColumn("summary_source_name") && type === "MONEY_SOURCE" ? { summarySourceName: asText(row.values.summary_source_name) || null } : {}),
+            ...(hasMasterColumn("summary_source_name") && type === "MONEY_SOURCE" ? { summarySourceName: cleanMoneySourceName(asText(row.values.summary_source_name)) || null } : {}),
             ...(hasMasterColumn("status") && masterStatus ? { status: masterStatus } : {}),
           },
         });

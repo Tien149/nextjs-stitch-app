@@ -92,3 +92,35 @@ export function moneySourceAccountCode(source: MoneySourceOption | null | undefi
   const group = normalizeMoneySourceGroup(source?.group);
   return group === "CASH" ? "1111" : "1121";
 }
+
+/**
+ * Cụm mô tả HÌNH THỨC thanh toán bị bỏ khỏi TÊN nguồn tiền: tên chỉ nên nói tiền nằm ở đâu
+ * ("FDS Vietinbank"), còn "quẹt thẻ" / "chuyển khoản" là cách tiền đi — thông tin đó đã nằm ở
+ * nhóm nguồn tiền (CASH/BANK/WALLET) và ở khoản mục thu chi, để lại trong tên chỉ làm báo cáo
+ * dài dòng và cùng một ngân hàng lại hiện thành nhiều tên khác nhau.
+ *
+ * Chỉ đụng tới TÊN. Mã nguồn tiền (code) không bao giờ được cắt: mọi phiếu thu/chi, sao kê,
+ * điều tiền đều tham chiếu theo code.
+ */
+const MONEY_SOURCE_LABEL_NOISE = /(quẹt|quet)\s*(thẻ|the)|(chuyển|chuyen)\s*(khoản|khoan)/gi;
+
+export function stripMoneySourceLabel(value: string | null | undefined) {
+  return String(value || "")
+    .replace(MONEY_SOURCE_LABEL_NOISE, " ")
+    // "(Quẹt thẻ)" cắt xong còn lại cặp ngoặc rỗng.
+    .replace(/\(\s*\)|\[\s*\]/g, " ")
+    .replace(/\s+/g, " ")
+    // "FDS - Quẹt Thẻ - Vietinbank" cắt xong còn hai dấu nối dính nhau.
+    .replace(/([-–—/|])(?:\s*[-–—/|])+/g, "$1")
+    .replace(/^[\s\-–—/|]+|[\s\-–—/|]+$/g, "")
+    .trim();
+}
+
+/**
+ * Tên đã cắt, nhưng không bao giờ trả về rỗng: nguồn tiền đặt tên đúng bằng cụm bị cắt
+ * ("Chuyển khoản") mà mất tên thì danh mục không còn chỗ dựa để nhận ra dòng.
+ */
+export function cleanMoneySourceName(value: string | null | undefined) {
+  const raw = String(value || "").trim();
+  return stripMoneySourceLabel(raw) || raw;
+}
