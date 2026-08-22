@@ -79,6 +79,8 @@ type VoucherListResponse = {
   rows: Voucher[];
   summary: VoucherListSummary;
   pagination: VoucherListPagination;
+  /** true = tài khoản không có quyền view_all/approve, chỉ đang thấy phiếu do chính mình lập. */
+  restrictedToOwn?: boolean;
 };
 
 type BulkActionKind = "APPROVE" | "UNAPPROVE" | "DELETE";
@@ -166,6 +168,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
   const [voucherSummary, setVoucherSummary] = useState<VoucherListSummary>(emptyVoucherSummary);
   const [voucherPagination, setVoucherPagination] = useState<VoucherListPagination>(initialVoucherPagination);
   const [listLoading, setListLoading] = useState(false);
+  const [restrictedToOwn, setRestrictedToOwn] = useState(false);
   const [listError, setListError] = useState("");
   const [branchCode, setBranchCode] = useState("ALL");
   const [form, setForm] = useState(emptyForm);
@@ -224,6 +227,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
       setVouchers(payload.rows);
       setVoucherSummary(payload.summary);
       setVoucherPagination(payload.pagination);
+      setRestrictedToOwn(Boolean(payload.restrictedToOwn));
       // Không giữ lựa chọn cũ sau khi đổi trang, đổi bộ lọc hoặc tải lại danh sách.
       setSelectedIds([]);
     } catch (error) {
@@ -1538,6 +1542,11 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
               </button>
               {listError && <p className="w-full text-xs font-semibold text-rose-600">{listError}</p>}
             </form>
+            {restrictedToOwn && (
+              <div className="border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-600">
+                Tài khoản của bạn chỉ xem được chứng từ do chính bạn lập. Cần xem phiếu của người khác thì nhờ Admin bật quyền <b>view_all</b> cho vai trò của bạn ở màn Phân quyền.
+              </div>
+            )}
             {appliedFilters.partnerCode && (
               <div className="flex items-center justify-between border-b border-indigo-200 bg-indigo-50 px-4 py-2 text-xs font-semibold text-indigo-800">
                 <span>Đang lọc phiếu của đối tác <b>{appliedFilters.partnerCode}</b> (tính cả phiếu phân bổ nhiều đối tác) — link từ bảng &quot;Chi theo đối tác&quot; trên báo cáo nguồn tiền.</span>

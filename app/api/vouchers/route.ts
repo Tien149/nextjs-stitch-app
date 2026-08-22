@@ -7,7 +7,7 @@ import { revertVoucherSideEffects, VoucherRevertError } from "@/lib/voucher-reve
 import { isPeriodLocked } from "@/lib/phase3";
 import { buildAuditLogData, writeAuditLog } from "@/lib/audit-log";
 import { softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
-import { canEditPastVoucher, type DemoSession } from "@/lib/auth-demo";
+import { canEditPastVoucher, canPerformMenuAction, type DemoSession } from "@/lib/auth-demo";
 import { moneySourceMatchesBranch, parseMoneySourceCodes } from "@/lib/money-sources";
 import { isSameCalendarDay, normalizeCashflowCategoryType, normalizeReceiptPurpose, validateReceiptPurpose, voucherEditWindowError } from "@/lib/voucher-rules";
 import { completePendingReconciliation, ReconciliationSyncError, releasePendingReconciliation, reopenReconciliationForReview, syncReconciledBankStatement, type BankStatementSyncResult } from "@/lib/reconciliation-links";
@@ -17,6 +17,19 @@ import { bankStatementSpecialCategory } from "@/lib/bank-statement-category";
 /** Trạng thái không cho sửa/xoá vì chứng từ đã ghi sổ. */
 
 class VoucherConflictError extends Error { }
+
+/**
+ * Ai được xem chứng từ do người khác lập.
+ *
+ * Mặc định mỗi người chỉ thấy phiếu của chính mình (thu ngân không xem phiếu của bạn khác);
+ * cấp quyền `view_all` trong Phân quyền thì thấy hết. Người có quyền duyệt nghiễm nhiên
+ * thấy hết — không thấy phiếu chờ duyệt của người khác thì không duyệt được, và các vai trò
+ * kế toán hiện hữu đều mang `approve` nên không bị đổi hành vi khi nâng cấp.
+ */
+function canViewAllVouchers(session: DemoSession, menuHref: string) {
+  if (session.role === "Admin") return true;
+  return canPerformMenuAction(session, menuHref, "view_all") || canPerformMenuAction(session, menuHref, "approve");
+}
 
 const VOUCHER_CODE_RETRY_LIMIT = 5;
 const MAX_BULK_VOUCHERS = 100;
@@ -204,19 +217,25 @@ export async function GET(request: Request) {
         include: { partnerAllocations: { orderBy: { createdAt: "asc" } } },
       });
       if (!voucher) return NextResponse.json({ error: "Không tìm thấy chứng từ" }, { status: 404 });
-      const auth = requireMenuAccess(request, voucher.documentChannel === "BANK" ? "/bank-vouchers" : "/vouchers");
+      const voucherMenuHref = voucher.documentChannel === "BANK" ? "/bank-vouchers" : "/vouchers";
+      const auth = requireMenuAccess(request, voucherMenuHref);
       if (!auth.ok) return auth.response;
       try {
         assertBranchAccess(auth.session, voucher.branchCode);
       } catch (e) {
         return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi" }, { status: 403 });
       }
+      if (!canViewAllVouchers(auth.session, voucherMenuHref) && voucher.createdBy !== auth.session.name) {
+        return NextResponse.json({ error: "Bạn chỉ được xem chứng từ do chính mình lập" }, { status: 403 });
+      }
       return NextResponse.json(voucher);
     }
 
     const documentChannel = normalizeVoucherDocumentChannel(searchParams.get("channel"));
-    const auth = requireMenuAccess(request, documentChannel === "BANK" ? "/bank-vouchers" : "/vouchers");
+    const listMenuHref = documentChannel === "BANK" ? "/bank-vouchers" : "/vouchers";
+    const auth = requireMenuAccess(request, listMenuHref);
     if (!auth.ok) return auth.response;
+    const restrictedToOwn = !canViewAllVouchers(auth.session, listMenuHref);
     const branchCode = requestedBranch(auth.session, cleanText(searchParams.get("branchCode")) || "ALL");
     const branchFilter = branchCode === "ALL" ? {} : { branchCode };
     const startDateText = cleanText(searchParams.get("startDate"));
@@ -260,6 +279,9 @@ export async function GET(request: Request) {
       ...branchFilter,
       documentChannel,
       deletedAt: null,
+      // Không có quyền view_all/approve thì chỉ thấy phiếu do chính mình lập. So theo
+      // createdBy (tên người lập lưu trên phiếu); phiếu cũ không có người lập thì ẩn luôn.
+      ...(restrictedToOwn ? { createdBy: auth.session.name } : {}),
       ...(voucherTypeText && voucherTypeText !== "ALL" ? { voucherType: voucherTypeText } : {}),
       ...(moneySourceCodes.length ? { moneySourceCode: { in: moneySourceCodes } } : {}),
       ...(categoryText && categoryText.toUpperCase() !== "ALL" ? { categoryCode: categoryText } : {}),
@@ -321,6 +343,9 @@ export async function GET(request: Request) {
         totalCount,
       },
       pagination: { page: currentPage, pageSize, totalPages, totalCount },
+      // Cho UI hiện dòng giải thích "bạn chỉ đang thấy phiếu của mình" thay vì để người
+      // dùng tưởng mất dữ liệu.
+      restrictedToOwn,
     });
   } catch (error) {
     console.error("Error fetching vouchers:", error);

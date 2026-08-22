@@ -7,7 +7,7 @@ export type DemoRole =
   | "Quản lý"
   | "Viewer";
 
-export type AppAction = "view" | "create" | "edit" | "edit_past" | "delete" | "approve" | "export" | "config";
+export type AppAction = "view" | "view_all" | "create" | "edit" | "edit_past" | "delete" | "approve" | "export" | "config";
 
 export type DemoUser = {
   id: string;
@@ -227,6 +227,10 @@ export const appMenuItems: AppMenuItem[] = [
 
 export const ALL_APP_ACTIONS: { key: AppAction; label: string; desc: string }[] = [
   { key: "view", label: "view", desc: "Xem dữ liệu" },
+  // Áp cho màn Phiếu tiền mặt / Chứng từ ngân hàng: không có quyền này thì mỗi người chỉ
+  // thấy phiếu do chính mình lập (thu ngân không xem được phiếu của bạn khác). Người có
+  // quyền duyệt (approve) nghiễm nhiên thấy hết, vì không thấy thì không duyệt được.
+  { key: "view_all", label: "view_all", desc: "Xem chứng từ do người khác lập (bỏ chọn = chỉ thấy phiếu của chính mình)" },
   { key: "create", label: "create", desc: "Tạo mới" },
   { key: "edit", label: "edit", desc: "Chỉnh sửa" },
   { key: "edit_past", label: "edit_past", desc: "Sửa và tự duyệt lại phiếu Thu/Chi ngày trước" },
@@ -238,21 +242,23 @@ export const ALL_APP_ACTIONS: { key: AppAction; label: string; desc: string }[] 
 
 export const roleActions: Record<DemoRole, AppAction[]> = {
   // edit_past: chỉ Admin và Kế toán tổng hợp được sửa chứng từ đã qua ngày.
-  Admin: ["view", "create", "edit", "edit_past", "delete", "approve", "export", "config"],
-  "Kế toán tổng hợp": ["view", "create", "edit", "edit_past", "export", "config"],
-  "Kế toán công nợ": ["view", "create", "edit", "export"],
-  "Quản lý": ["view", "approve", "export"],
-  Viewer: ["view"],
+  // view_all: các vai trò chuẩn giữ nguyên hành vi cũ là thấy phiếu của mọi người;
+  // chỉ vai trò tuỳ chỉnh (thu ngân...) không được cấp mới bị giới hạn phiếu của mình.
+  Admin: ["view", "view_all", "create", "edit", "edit_past", "delete", "approve", "export", "config"],
+  "Kế toán tổng hợp": ["view", "view_all", "create", "edit", "edit_past", "export", "config"],
+  "Kế toán công nợ": ["view", "view_all", "create", "edit", "export"],
+  "Quản lý": ["view", "view_all", "approve", "export"],
+  Viewer: ["view", "view_all"],
 };
 
 const menuActionOverrides: Partial<Record<string, Partial<Record<DemoRole, AppAction[]>>>> = {
   "/vouchers": {
     Admin: roleActions.Admin,
-    "Kế toán tổng hợp": ["view", "create", "edit", "edit_past", "approve", "export", "config"],
+    "Kế toán tổng hợp": ["view", "view_all", "create", "edit", "edit_past", "approve", "export", "config"],
   },
   "/bank-vouchers": {
     Admin: roleActions.Admin,
-    "Kế toán tổng hợp": ["view", "create", "edit", "edit_past", "approve", "export", "config"],
+    "Kế toán tổng hợp": ["view", "view_all", "create", "edit", "edit_past", "approve", "export", "config"],
   },
   "/procurement": {
     Admin: roleActions.Admin,
