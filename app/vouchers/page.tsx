@@ -53,6 +53,8 @@ type VoucherFilters = {
   voucherType: VoucherTypeFilter;
   /** Mã nguồn tiền (quỹ tiền mặt / tài khoản ngân hàng); rỗng nghĩa là xem tất cả nguồn. */
   moneySourceCode: string;
+  /** Khoản mục thu/chi; rỗng nghĩa là gộp mọi khoản mục. */
+  categoryCode: string;
   /** Chỉ hiện phiếu chưa có Khoản mục thu/chi — dòng "Chưa phân loại" trên báo cáo link về đây. */
   missingCategory?: boolean;
 };
@@ -129,6 +131,7 @@ const initialVoucherFilters: VoucherFilters = {
   endDate: "",
   voucherType: "ALL",
   moneySourceCode: "",
+  categoryCode: "",
 };
 
 const emptyVoucherSummary: VoucherListSummary = {
@@ -206,6 +209,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
       if (filters.startDate) query.set("startDate", filters.startDate);
       if (filters.endDate) query.set("endDate", filters.endDate);
       if (filters.moneySourceCode) query.set("moneySourceCode", filters.moneySourceCode);
+      if (filters.categoryCode) query.set("categoryCode", filters.categoryCode);
       if (filters.missingCategory) query.set("missingCategory", "1");
 
       const response = await fetch(`/api/vouchers?${query.toString()}`);
@@ -347,6 +351,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
           endDate: urlParams.get("to") || "",
           voucherType: ["RECEIPT", "PAYMENT"].includes(urlType) ? (urlType as VoucherTypeFilter) : "ALL",
           moneySourceCode: "",
+          categoryCode: "",
           missingCategory: true,
         }
       : initialVoucherFilters;
@@ -467,6 +472,14 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
     () => categoryOptionsForType(form.voucherType),
     [categoryOptionsForType, form.voucherType],
   );
+
+  /** Khoản mục đưa vào ô lọc: bám theo Thu/Chi đang chọn để không hiện khoản mục ngược loại. */
+  const categoryFilterOptions = useMemo(() => {
+    const source = filterDraft.voucherType === "ALL"
+      ? normalizedCategoryOptions
+      : categoryOptionsForType(filterDraft.voucherType);
+    return [...source].sort((a, b) => a.name.localeCompare(b.name, "vi"));
+  }, [categoryOptionsForType, filterDraft.voucherType, normalizedCategoryOptions]);
   const partnerOptions = useMemo(() => {
     const availablePartners = partners.filter((partner) => {
       if (partner.status && partner.status !== "ACTIVE") return false;
@@ -1408,7 +1421,17 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                 <select
                   value={filterDraft.voucherType}
                   onChange={(event) => {
-                    setFilterDraft((current) => ({ ...current, voucherType: event.target.value as VoucherTypeFilter }));
+                    const voucherType = event.target.value as VoucherTypeFilter;
+                    setFilterDraft((current) => ({
+                      ...current,
+                      voucherType,
+                      // Khoản mục đang lọc có thể ngược loại với Thu/Chi vừa chọn -> bỏ lọc
+                      // khoản mục thay vì để danh sách rỗng không rõ lý do.
+                      categoryCode: voucherType === "ALL"
+                        || categoryOptionsForType(voucherType).some((category) => category.code === current.categoryCode)
+                        ? current.categoryCode
+                        : "",
+                    }));
                     setListError("");
                   }}
                   className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-700 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
@@ -1416,6 +1439,24 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                   <option value="ALL">Tất cả thu và chi</option>
                   <option value="RECEIPT">Thu</option>
                   <option value="PAYMENT">Chi</option>
+                </select>
+              </label>
+              <label className="min-w-[190px] flex-1 text-xs font-bold text-slate-600 sm:max-w-[260px]">
+                Khoản mục thu/chi
+                <select
+                  value={filterDraft.categoryCode}
+                  onChange={(event) => {
+                    setFilterDraft((current) => ({ ...current, categoryCode: event.target.value }));
+                    setListError("");
+                  }}
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-700 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="">Tất cả khoản mục</option>
+                  {categoryFilterOptions.map((category) => (
+                    <option key={category.id || category.code} value={category.code}>
+                      {category.name}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label className="min-w-[190px] flex-1 text-xs font-bold text-slate-600 sm:max-w-[260px]">

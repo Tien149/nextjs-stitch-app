@@ -224,6 +224,9 @@ export async function GET(request: Request) {
     const voucherTypeText = cleanText(searchParams.get("voucherType")).toUpperCase();
     // Lọc theo nguồn tiền để đối chiếu từng quỹ / tài khoản ngân hàng đã lên đủ chứng từ chưa.
     const moneySourceText = cleanText(searchParams.get("moneySourceCode"));
+    // Lọc theo Khoản mục thu/chi: "Tổng thu trong kỳ" gộp cả thu bán hàng lẫn thu khác, muốn
+    // đối chiếu với báo cáo (chỉ tính doanh thu) thì phải tách được từng khoản mục.
+    const categoryText = cleanText(searchParams.get("categoryCode"));
     const requestedPage = Number(searchParams.get("page") || "1");
     const requestedPageSize = Number(searchParams.get("pageSize") || "50");
 
@@ -255,6 +258,7 @@ export async function GET(request: Request) {
       deletedAt: null,
       ...(voucherTypeText && voucherTypeText !== "ALL" ? { voucherType: voucherTypeText } : {}),
       ...(moneySourceText && moneySourceText.toUpperCase() !== "ALL" ? { moneySourceCode: moneySourceText } : {}),
+      ...(categoryText && categoryText.toUpperCase() !== "ALL" ? { categoryCode: categoryText } : {}),
       ...(startDate || endDateExclusive ? {
         voucherDate: {
           ...(startDate ? { gte: startDate } : {}),
@@ -263,7 +267,9 @@ export async function GET(request: Request) {
       } : {}),
       // Lọc phiếu chưa có Khoản mục thu/chi — dòng "Chưa phân loại" trên báo cáo nguồn tiền
       // link thẳng về đây để người dùng bổ sung danh mục từng phiếu.
-      ...(searchParams.get("missingCategory") === "1" ? { OR: [{ categoryCode: null }, { categoryCode: "" }] } : {}),
+      ...(searchParams.get("missingCategory") === "1" && !categoryText
+        ? { OR: [{ categoryCode: null }, { categoryCode: "" }] }
+        : {}),
     };
 
     const totalCount = await prisma.financialVoucher.count({ where });
