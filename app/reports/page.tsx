@@ -185,6 +185,8 @@ export default function ReportsPage() {
   const [active, setActive] = useState("dashboard");
   const [period, setPeriod] = useState(new Date().toISOString().slice(0, 7));
   const [reportDate, setReportDate] = useState(new Date().toISOString().slice(0, 10));
+  /** Báo cáo thu chi ngày nạp kèm tab Tiền về đủ chưa, cho bảng "Đối chiếu tiền vào đã đủ chưa". */
+  const [reconDailyCash, setReconDailyCash] = useState<DailyCashData | null>(null);
   const [shift, setShift] = useState("FULL");
   const [branchCode, setBranchCode] = useState("ALL");
   const [scenario, setScenario] = useState("BASE");
@@ -270,10 +272,19 @@ export default function ReportsPage() {
         params.set("shift", shift);
       }
       if (active === "cash-source") params.set("view", cashSourceView);
+      // Tab Tiền về đủ chưa mang thêm bảng "Đối chiếu tiền vào đã đủ chưa" (chuyển từ tab
+      // Thu chi ngày sang) — bảng đó tính theo ngày/ca nên nạp kèm báo cáo thu chi ngày.
+      const reconPromise = active === "revenue-settlement"
+        ? fetch(`/api/reports?${new URLSearchParams({ type: "daily-cash", period, branchCode, scenario, reportDate, shift }).toString()}`)
+        : null;
       const response = await fetch(`/api/reports?${params.toString()}`);
       if (response.ok) {
         const result = await response.json();
         setData(result);
+      }
+      if (reconPromise) {
+        const reconResponse = await reconPromise;
+        setReconDailyCash(reconResponse.ok ? ((await reconResponse.json()) as DailyCashData) : null);
       }
     } catch (e) {
       console.error("Error loading reports data:", e);
@@ -300,6 +311,7 @@ export default function ReportsPage() {
   const handleTabChange = (newTab: string) => {
     if (newTab !== active) {
       setData(null);
+      setReconDailyCash(null);
       setActive(newTab);
     }
   };
@@ -715,9 +727,10 @@ export default function ReportsPage() {
             </select>
           </Field>
         )}
-        {active === "daily-cash" && (
+        {/* Tiền về đủ chưa cũng cần Ngày + Ca cho bảng "Đối chiếu tiền vào đã đủ chưa" ở đầu tab. */}
+        {["daily-cash", "revenue-settlement"].includes(active) && (
           <>
-            <Field label="Ngày thu chi">
+            <Field label={active === "daily-cash" ? "Ngày thu chi" : "Ngày đối chiếu"}>
               <DateInput className="mt-1.5 w-40" value={reportDate} onChange={setReportDate} ariaLabel="Ngày thu chi" />
             </Field>
             <Field label="Ca">
@@ -1201,7 +1214,12 @@ export default function ReportsPage() {
         </div>
       )}
 
-      {!tabLoading && settlement && <RevenueSettlementPanel data={settlement} />}
+      {!tabLoading && settlement && (
+        <div className="space-y-5">
+          {reconDailyCash && <MoneyInReconciliationPanel dailyCash={reconDailyCash} />}
+          <RevenueSettlementPanel data={settlement} />
+        </div>
+      )}
 
       {!tabLoading && dailyCash && (
         <div className="space-y-5 report-print-area" id="daily-cash-report">
@@ -1284,105 +1302,9 @@ export default function ReportsPage() {
             </Table>
           </section>
 
-          <section className="table-panel no-print">
-            <PanelHeader
-              title="Đối chiếu tiền vào đã đủ chưa"
-              subtitle="Tiền mặt lấy tổng phiếu thu chi tiết phía dưới; Chuyển khoản và Ví lấy theo SUMIFS sao kê đúng Ngày doanh thu, Loại thu và Trừ nguồn tiền. Grab vẫn thuộc Ví; chênh lệch gross/net được tách vào chi phí trong kỳ."
-            />
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[1080px] table-fixed text-left text-sm">
-                <colgroup>
-                  <col className="w-[52%]" />
-                  <col className="w-[12%]" />
-                  <col className="w-[12%]" />
-                  <col className="w-[12%]" />
-                  <col className="w-[12%]" />
-                </colgroup>
-                <thead className="border-b border-slate-200 bg-slate-50 text-xs font-bold uppercase text-slate-500">
-                  <tr>
-                    <th className="px-4 py-3 text-left">Hình thức</th>
-                    {["Thu ngân khai", "Đã về", "Chênh lệch", "Trạng thái"].map((header) => (
-                      <th key={header} className="whitespace-nowrap px-4 py-3 text-right">{header}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                {dailyCash.moneyInReconciliation.rows.map((row) => (
-                  <tr key={row.key} className="border-t border-slate-100">
-                    <td className="px-4 py-4 align-middle text-left">
-                      <b>{row.label}</b>
-                      <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-500">{row.note}</p>
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-4 text-right align-middle tabular-nums">{money(row.declared)} đ</td>
-                    <td className="whitespace-nowrap px-4 py-4 text-right align-middle tabular-nums">{money(row.received)} đ</td>
-                    <td className="whitespace-nowrap px-4 py-4 text-right align-middle tabular-nums">
-                      <b className={row.status === "MATCHED" ? "text-slate-500" : row.status === "SHORT" ? "text-rose-600" : row.status === "OVER" ? "text-blue-600" : "text-amber-600"}>
-                        {row.difference > 0 ? "+" : ""}{money(row.difference)} đ
-                      </b>
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-4 text-right align-middle">
-                      <span className={`inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider ${
-                        row.status === "MATCHED"
-                          ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
-                          : row.status === "PENDING_CLEAR"
-                            ? "border border-violet-200 bg-violet-50 text-violet-700"
-                            : row.status === "SHORT"
-                              ? "border border-rose-200 bg-rose-50 text-rose-700"
-                              : "border border-blue-200 bg-blue-50 text-blue-700"
-                      }`}>
-                        {/* Chỉ ví mới bị trừ phí thu hộ. Tiền mặt và chuyển khoản thiếu là thiếu thật. */}
-                        {row.status === "MATCHED" ? "Đủ" : row.status === "PENDING_CLEAR" ? "Ví chưa về" : row.status === "SHORT" ? (row.key === "card" ? "Chênh phí" : "Thiếu") : "Thừa"}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="flex flex-wrap gap-3 border-t border-slate-100 px-4 py-3 text-xs text-slate-600">
-              <span>Chi phí bán hàng Grab: <b className="text-slate-900">{money(dailyCash.moneyInReconciliation.walletGrabExpense)} đ</b></span>
-              <span>Phí cà thẻ: <b className="text-slate-900">{money(dailyCash.moneyInReconciliation.walletCardFee)} đ</b></span>
-              <span>Tổng phí Ví trong kỳ: <b className="text-slate-900">{money(dailyCash.moneyInReconciliation.walletFee)} đ</b></span>
-              <span>Dòng sao kê ghi có trong ngày: <b className="text-slate-900">{dailyCash.moneyInReconciliation.bankRowCount}</b></span>
-              {/* Thay cho cột "Chưa đối soát" đã bỏ: số này nói thẳng phải đi xin file POS ngày nào. */}
-              {(dailyCash.moneyInReconciliation.walletMissingGross || 0) > 0 && (
-                <span className="text-amber-700">
-                  Chưa tính được phí ví: <b>{money(dailyCash.moneyInReconciliation.walletMissingGross || 0)} đ</b> — thiếu doanh thu POS của ngày này
-                </span>
-              )}
-              {dailyCash.moneyInReconciliation.unclassifiedBankRows > 0 && (
-                <span className="text-amber-700">
-                  {dailyCash.moneyInReconciliation.unclassifiedBankRows} dòng sao kê chưa gán loại thu/chi
-                </span>
-              )}
-            </div>
-          </section>
-
-          {(dailyCash.moneyInReconciliation.needsFix?.length || 0) > 0 && (
-            <section className="table-panel no-print border-amber-300">
-              <PanelHeader
-                title={`Chưa vào sổ — ${dailyCash.moneyInReconciliation.needsFix?.length} dòng, ${money(dailyCash.moneyInReconciliation.needsFixTotal || 0)} đ`}
-                subtitle="Tiền đã ghi nhận trên sao kê nhưng chưa lập được chứng từ, nên chưa vào sổ kế toán. File vẫn import bình thường, không mất dòng nào. Sửa theo cột Cần làm gì rồi import lại đúng dòng đó, hoặc chạy lệnh xử lý lại."
-              />
-              <Table headers={["Ngày giao dịch", "Mã giao dịch", "Diễn giải", "Số tiền", "Cần làm gì"]}>
-                {dailyCash.moneyInReconciliation.needsFix?.map((row) => (
-                  <tr key={row.id} className="border-t border-slate-100">
-                    <Cell>
-                      {new Date(row.date).toLocaleDateString("vi-VN")}
-                      {/* Ví trả tiền của ngày hôm trước, nên phải nói rõ khoản này thuộc doanh thu ngày nào. */}
-                      {row.revenueDate && (
-                        <small className="block text-slate-500">DT {new Date(row.revenueDate).toLocaleDateString("vi-VN")}</small>
-                      )}
-                    </Cell>
-                    <Cell><span className="font-mono text-xs">{row.transactionCode}</span></Cell>
-                    <Cell><span className="line-clamp-2 text-xs text-slate-600">{row.description}</span></Cell>
-                    <Cell right><b>{money(row.amount)} đ</b></Cell>
-                    <Cell><span className="text-xs text-amber-800">{row.reason}</span></Cell>
-                  </tr>
-                ))}
-              </Table>
-            </section>
-          )}
+          {/* Bảng "Đối chiếu tiền vào đã đủ chưa" và danh sách "Chưa vào sổ" đã chuyển sang
+              đầu tab Tiền về đủ chưa (yêu cầu 22/08/2026): đối soát tiền về là việc của kế
+              toán, để trên màn kết ca làm thu ngân lăn tăn những con số ngoài phần việc của họ. */}
 
           {dailyCash.manualEntries.length > 0 && (
             <section className="table-panel no-print">
@@ -2141,6 +2063,122 @@ function settlementGroupSubtotals(rows: RevenueSettlementRow[]) {
       return { ...row, remaining, status };
     })
     .sort((a, b) => a.group.localeCompare(b.group));
+}
+
+/**
+ * Bảng "Đối chiếu tiền vào đã đủ chưa" + danh sách "Chưa vào sổ" kèm theo.
+ *
+ * Nằm ở đầu tab Tiền về đủ chưa (chuyển từ tab Thu chi ngày theo yêu cầu 22/08/2026):
+ * đối soát tiền về là việc của kế toán; thu ngân kết ca không cần lăn tăn các con số này.
+ * Dữ liệu vẫn lấy từ báo cáo thu chi ngày nên cần chọn Ngày + Ca ở thanh lọc phía trên.
+ */
+function MoneyInReconciliationPanel({ dailyCash }: { dailyCash: DailyCashData }) {
+  return (
+    <div className="space-y-5">
+      <p className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-xs font-semibold text-slate-600">
+        Đối chiếu ngày {new Date(dailyCash.reportDate).toLocaleDateString("vi-VN")} · {shiftLabels[dailyCash.shift] || dailyCash.shift} · {dailyCash.branchCode === "ALL" ? "Tất cả cửa hàng" : storeLabel(dailyCash.branchCode)} — đổi ngày/ca ở thanh lọc phía trên.
+      </p>
+      <section className="table-panel no-print">
+        <PanelHeader
+          title="Đối chiếu tiền vào đã đủ chưa"
+          subtitle="Tiền mặt lấy tổng phiếu thu chi tiết phía dưới; Chuyển khoản và Ví lấy theo SUMIFS sao kê đúng Ngày doanh thu, Loại thu và Trừ nguồn tiền. Grab vẫn thuộc Ví; chênh lệch gross/net được tách vào chi phí trong kỳ."
+        />
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[1080px] table-fixed text-left text-sm">
+            <colgroup>
+              <col className="w-[52%]" />
+              <col className="w-[12%]" />
+              <col className="w-[12%]" />
+              <col className="w-[12%]" />
+              <col className="w-[12%]" />
+            </colgroup>
+            <thead className="border-b border-slate-200 bg-slate-50 text-xs font-bold uppercase text-slate-500">
+              <tr>
+                <th className="px-4 py-3 text-left">Hình thức</th>
+                {["Thu ngân khai", "Đã về", "Chênh lệch", "Trạng thái"].map((header) => (
+                  <th key={header} className="whitespace-nowrap px-4 py-3 text-right">{header}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+            {dailyCash.moneyInReconciliation.rows.map((row) => (
+              <tr key={row.key} className="border-t border-slate-100">
+                <td className="px-4 py-4 align-middle text-left">
+                  <b>{row.label}</b>
+                  <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-500">{row.note}</p>
+                </td>
+                <td className="whitespace-nowrap px-4 py-4 text-right align-middle tabular-nums">{money(row.declared)} đ</td>
+                <td className="whitespace-nowrap px-4 py-4 text-right align-middle tabular-nums">{money(row.received)} đ</td>
+                <td className="whitespace-nowrap px-4 py-4 text-right align-middle tabular-nums">
+                  <b className={row.status === "MATCHED" ? "text-slate-500" : row.status === "SHORT" ? "text-rose-600" : row.status === "OVER" ? "text-blue-600" : "text-amber-600"}>
+                    {row.difference > 0 ? "+" : ""}{money(row.difference)} đ
+                  </b>
+                </td>
+                <td className="whitespace-nowrap px-4 py-4 text-right align-middle">
+                  <span className={`inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider ${
+                    row.status === "MATCHED"
+                      ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
+                      : row.status === "PENDING_CLEAR"
+                        ? "border border-violet-200 bg-violet-50 text-violet-700"
+                        : row.status === "SHORT"
+                          ? "border border-rose-200 bg-rose-50 text-rose-700"
+                          : "border border-blue-200 bg-blue-50 text-blue-700"
+                  }`}>
+                    {/* Chỉ ví mới bị trừ phí thu hộ. Tiền mặt và chuyển khoản thiếu là thiếu thật. */}
+                    {row.status === "MATCHED" ? "Đủ" : row.status === "PENDING_CLEAR" ? "Ví chưa về" : row.status === "SHORT" ? (row.key === "card" ? "Chênh phí" : "Thiếu") : "Thừa"}
+                  </span>
+                </td>
+              </tr>
+            ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="flex flex-wrap gap-3 border-t border-slate-100 px-4 py-3 text-xs text-slate-600">
+          <span>Chi phí bán hàng Grab: <b className="text-slate-900">{money(dailyCash.moneyInReconciliation.walletGrabExpense)} đ</b></span>
+          <span>Phí cà thẻ: <b className="text-slate-900">{money(dailyCash.moneyInReconciliation.walletCardFee)} đ</b></span>
+          <span>Tổng phí Ví trong kỳ: <b className="text-slate-900">{money(dailyCash.moneyInReconciliation.walletFee)} đ</b></span>
+          <span>Dòng sao kê ghi có trong ngày: <b className="text-slate-900">{dailyCash.moneyInReconciliation.bankRowCount}</b></span>
+          {/* Thay cho cột "Chưa đối soát" đã bỏ: số này nói thẳng phải đi xin file POS ngày nào. */}
+          {(dailyCash.moneyInReconciliation.walletMissingGross || 0) > 0 && (
+            <span className="text-amber-700">
+              Chưa tính được phí ví: <b>{money(dailyCash.moneyInReconciliation.walletMissingGross || 0)} đ</b> — thiếu doanh thu POS của ngày này
+            </span>
+          )}
+          {dailyCash.moneyInReconciliation.unclassifiedBankRows > 0 && (
+            <span className="text-amber-700">
+              {dailyCash.moneyInReconciliation.unclassifiedBankRows} dòng sao kê chưa gán loại thu/chi
+            </span>
+          )}
+        </div>
+      </section>
+
+      {(dailyCash.moneyInReconciliation.needsFix?.length || 0) > 0 && (
+        <section className="table-panel no-print border-amber-300">
+          <PanelHeader
+            title={`Chưa vào sổ — ${dailyCash.moneyInReconciliation.needsFix?.length} dòng, ${money(dailyCash.moneyInReconciliation.needsFixTotal || 0)} đ`}
+            subtitle="Tiền đã ghi nhận trên sao kê nhưng chưa lập được chứng từ, nên chưa vào sổ kế toán. File vẫn import bình thường, không mất dòng nào. Sửa theo cột Cần làm gì rồi import lại đúng dòng đó, hoặc chạy lệnh xử lý lại."
+          />
+          <Table headers={["Ngày giao dịch", "Mã giao dịch", "Diễn giải", "Số tiền", "Cần làm gì"]}>
+            {dailyCash.moneyInReconciliation.needsFix?.map((row) => (
+              <tr key={row.id} className="border-t border-slate-100">
+                <Cell>
+                  {new Date(row.date).toLocaleDateString("vi-VN")}
+                  {/* Ví trả tiền của ngày hôm trước, nên phải nói rõ khoản này thuộc doanh thu ngày nào. */}
+                  {row.revenueDate && (
+                    <small className="block text-slate-500">DT {new Date(row.revenueDate).toLocaleDateString("vi-VN")}</small>
+                  )}
+                </Cell>
+                <Cell><span className="font-mono text-xs">{row.transactionCode}</span></Cell>
+                <Cell><span className="line-clamp-2 text-xs text-slate-600">{row.description}</span></Cell>
+                <Cell right><b>{money(row.amount)} đ</b></Cell>
+                <Cell><span className="text-xs text-amber-800">{row.reason}</span></Cell>
+              </tr>
+            ))}
+          </Table>
+        </section>
+      )}
+    </div>
+  );
 }
 
 function RevenueSettlementPanel({ data }: { data: RevenueSettlementData }) {

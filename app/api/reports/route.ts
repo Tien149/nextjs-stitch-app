@@ -951,8 +951,12 @@ export async function GET(request: Request) {
     const branchCode = requestedBranch(auth.session, cleanText(params.get("branchCode")) || "ALL");
 
     // Ẩn tab ở giao diện là chưa đủ: gõ thẳng URL vẫn lấy được số liệu nếu API không chặn.
+    // Riêng tab Tiền về đủ chưa mượn số liệu thu chi ngày cho bảng "Đối chiếu tiền vào đã
+    // đủ chưa" (chuyển từ tab Thu chi ngày sang 22/08/2026), nên quyền tab đó mở luôn
+    // được type=daily-cash.
     const permittedTabs = allowedMenuTabs(auth.session, menuHref);
-    if (permittedTabs && !permittedTabs.includes(type)) {
+    const effectiveType = type === "daily-cash" && permittedTabs?.includes("revenue-settlement") ? "revenue-settlement" : type;
+    if (permittedTabs && !permittedTabs.includes(type) && !permittedTabs.includes(effectiveType)) {
       return NextResponse.json({ error: "Bạn không có quyền xem báo cáo này" }, { status: 403 });
     }
     if (type === "operations") return NextResponse.json(await getOperationsReport(period, branchCode));
