@@ -8,7 +8,7 @@ import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { storeLabel, updateDynamicBranches } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canEditPastVoucher, canPerformAction, canPerformMenuAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import { isSameCalendarDay, normalizeCashflowCategoryType, RECEIPT_PURPOSES, voucherEditWindowError } from "@/lib/voucher-rules";
-import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
+import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup, summaryMoneySourceGroups } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { shiftLabel, WORK_SHIFTS } from "@/lib/shifts";
@@ -97,6 +97,7 @@ type MasterDataOption = {
   partnerType?: string | null;
   partnerGroup?: string | null;
   status?: string;
+  summarySourceName?: string | null;
 };
 
 const fallbackVoucherCategories: MasterDataOption[] = [
@@ -392,6 +393,12 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
         && (sourceGroups as string[]).includes(normalizeMoneySourceGroup(source.group)))
       .sort((a, b) => moneySourceDisplayName(a).localeCompare(moneySourceDisplayName(b), "vi"))
   ), [filterableMoneySources, branchCode, sourceGroups]);
+
+  /** Nhóm "Nguồn tiền tổng": chọn một dòng là lọc được cả cụm nguồn chi tiết cùng tài khoản. */
+  const moneySourceSummaryGroups = useMemo(
+    () => summaryMoneySourceGroups(moneySourceFilterOptions),
+    [moneySourceFilterOptions],
+  );
 
   const handleBranchChange = (code: string) => {
     setBranchCode(code);
@@ -1470,7 +1477,27 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                   className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-700 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                 >
                   <option value="">Tất cả nguồn tiền</option>
-                  {moneySourceFilterOptions.map((source) => (
+                  {moneySourceSummaryGroups.length > 0 ? (
+                    <>
+                      <optgroup label="Nguồn tiền tổng">
+                        {moneySourceSummaryGroups.map((group) => (
+                          <option key={group.value} value={group.value} title={group.codes.join(", ")}>
+                            {group.name} · Tổng {group.codes.length} nguồn
+                            {branchCode === "ALL" && group.branch && group.branch !== "ALL" ? ` · ${storeLabel(group.branch)}` : ""}
+                          </option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="Nguồn chi tiết">
+                        {moneySourceFilterOptions.map((source) => (
+                          <option key={source.id || source.code} value={source.code} title={moneySourceDebugLabel(source, storeLabel(source.branch || ""))}>
+                            {moneySourceDisplayName(source)}
+                            {branchCode === "ALL" && source.branch && source.branch !== "ALL" ? ` · ${storeLabel(source.branch)}` : ""}
+                            {source.status && source.status !== "ACTIVE" ? " (Đã ngừng)" : ""}
+                          </option>
+                        ))}
+                      </optgroup>
+                    </>
+                  ) : moneySourceFilterOptions.map((source) => (
                     <option key={source.id || source.code} value={source.code} title={moneySourceDebugLabel(source, storeLabel(source.branch || ""))}>
                       {moneySourceDisplayName(source)}
                       {branchCode === "ALL" && source.branch && source.branch !== "ALL" ? ` · ${storeLabel(source.branch)}` : ""}

@@ -5,7 +5,7 @@ import { DateInput, MonthInput } from "@/components/DateInput";
 import { storeLabel, updateDynamicBranches, visibleBranchScopeOptions, visibleStoreOptions } from "@/lib/branch-labels";
 import { canPerformMenuAction, filterModuleTabs } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
-import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
+import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName, summaryMoneySourceGroups } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { shiftLabels } from "@/lib/shifts";
@@ -143,6 +143,11 @@ export default function FinanceOperationsPage() {
   const cashbookSourceOptions = useMemo(
     () => filterMoneySources(moneySources, branchCode),
     [moneySources, branchCode],
+  );
+  /** Nhóm "Nguồn tiền tổng": chọn một dòng là lọc được cả cụm nguồn chi tiết cùng tài khoản. */
+  const cashbookSummaryGroups = useMemo(
+    () => summaryMoneySourceGroups(cashbookSourceOptions),
+    [cashbookSourceOptions],
   );
   const cashbookRangeInvalid = Boolean(
     cashbookRange.startDate && cashbookRange.endDate && cashbookRange.startDate > cashbookRange.endDate,
@@ -507,7 +512,26 @@ export default function FinanceOperationsPage() {
                     className="w-56 pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all appearance-none cursor-pointer font-medium"
                   >
                     <option value="">Tất cả nguồn tiền</option>
-                    {cashbookSourceOptions.map((source) => (
+                    {cashbookSummaryGroups.length > 0 ? (
+                      <>
+                        <optgroup label="Nguồn tiền tổng">
+                          {cashbookSummaryGroups.map((group) => (
+                            <option key={group.value} value={group.value} title={group.codes.join(", ")}>
+                              {group.name} · Tổng {group.codes.length} nguồn
+                              {branchCode === "ALL" && group.branch && group.branch !== "ALL" ? ` · ${storeLabel(group.branch)}` : ""}
+                            </option>
+                          ))}
+                        </optgroup>
+                        <optgroup label="Nguồn chi tiết">
+                          {cashbookSourceOptions.map((source) => (
+                            <option key={source.code} value={source.code} title={moneySourceDebugLabel(source)}>
+                              {moneySourceDisplayName(source)}
+                              {branchCode === "ALL" && source.branch && source.branch !== "ALL" ? ` · ${storeLabel(source.branch)}` : ""}
+                            </option>
+                          ))}
+                        </optgroup>
+                      </>
+                    ) : cashbookSourceOptions.map((source) => (
                       <option key={source.code} value={source.code} title={moneySourceDebugLabel(source)}>
                         {moneySourceDisplayName(source)}
                         {branchCode === "ALL" && source.branch && source.branch !== "ALL" ? ` · ${storeLabel(source.branch)}` : ""}

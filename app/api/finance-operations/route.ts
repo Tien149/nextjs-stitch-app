@@ -5,7 +5,7 @@ import { addPeriod, apiError, businessError, cleanText, isPeriodLocked, normaliz
 import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
 import { writeAuditLog } from "@/lib/audit-log";
 import { nextSeqFromCodes, voucherCodePrefix } from "@/lib/voucher-code-generator";
-import { moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
+import { moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup, parseMoneySourceCodes } from "@/lib/money-sources";
 import { scopePayloadByTab } from "@/lib/tab-scope";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { cashDepositRoundingExpense, cashDepositUnit, roundCashDepositAmount } from "@/lib/cash-deposit";
@@ -105,10 +105,11 @@ export async function GET(request: Request) {
       if (next > end) return end;
       return next < start ? start : next;
     })();
-    const cashbookSource = cleanText(searchParams.get("moneySourceCode"));
+    // Một mã nguồn chi tiết, hoặc nhiều mã của một "Nguồn tiền tổng" nối bằng dấu phẩy.
+    const cashbookSources = parseMoneySourceCodes(searchParams.get("moneySourceCode"));
 
     const [openingBalances, vouchers, adjustments, accruals, accountingPeriod, checklist, moneyTransfers] = await Promise.all([
-      prisma.openingBalance.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { branchCode }), ...(cashbookSource ? { moneySourceCode: cashbookSource } : {}), status: { in: [...OPENING_BALANCE_EFFECTIVE_STATUSES] }, balanceType: { in: [...CASH_SOURCE_OPENING_TYPES] } } }),
+      prisma.openingBalance.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { branchCode }), ...(cashbookSources.length ? { moneySourceCode: { in: cashbookSources } } : {}), status: { in: [...OPENING_BALANCE_EFFECTIVE_STATUSES] }, balanceType: { in: [...CASH_SOURCE_OPENING_TYPES] } } }),
       prisma.financialVoucher.findMany({ where: { ...branchFilter, voucherDate: { gte: start, lt: end }, status: "APPROVED" }, orderBy: { voucherDate: "asc" } }),
       prisma.cashbookAdjustment.findMany({ where: { ...branchFilter, entryDate: { gte: start, lt: end } }, orderBy: { entryDate: "asc" } }),
       prisma.accrual.findMany({ where: { ...(branchCode === "ALL" ? {} : { branchCode }) }, include: { schedules: { orderBy: { period: "asc" } } }, orderBy: { createdAt: "desc" } }),
@@ -147,7 +148,7 @@ export async function GET(request: Request) {
         ];
       }),
     ]
-      .filter((entry) => !cashbookSource || entry.moneySourceCode === cashbookSource)
+      .filter((entry) => cashbookSources.length === 0 || cashbookSources.includes(entry.moneySourceCode))
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
         || new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
     let runningBalance = openingAmount;

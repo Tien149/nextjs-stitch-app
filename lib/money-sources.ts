@@ -5,6 +5,8 @@ export type MoneySourceOption = {
   group: string | null;
   branch: string | null;
   status?: string;
+  /** Tên "Nguồn tiền tổng" khai trên danh mục: các nguồn cùng tên gộp thành một dòng/một lựa chọn lọc. */
+  summarySourceName?: string | null;
 };
 
 export function normalizeMoneySourceGroup(group: string | null | undefined) {
@@ -123,4 +125,49 @@ export function stripMoneySourceLabel(value: string | null | undefined) {
 export function cleanMoneySourceName(value: string | null | undefined) {
   const raw = String(value || "").trim();
   return stripMoneySourceLabel(raw) || raw;
+}
+
+export type MoneySourceSummaryGroup = {
+  /** Giá trị đưa vào ô lọc: các mã nguồn chi tiết nối bằng dấu phẩy — API tách lại bằng parseMoneySourceCodes. */
+  value: string;
+  name: string;
+  branch: string | null;
+  codes: string[];
+};
+
+/**
+ * Gom các nguồn cùng "Nguồn tiền tổng" (khai trên danh mục) thành một lựa chọn lọc, ví dụ
+ * "FDS - Quẹt Thẻ Vietinbank" + "FDS - Vietinbank" cùng tổng "FDS - Vietinbank" thì ô lọc
+ * có thêm dòng tổng chọn được cả hai. Gom theo cửa hàng, cùng luật với báo cáo nguồn tiền
+ * (lib/reports.ts) để hai nơi không ra hai cách gộp khác nhau.
+ *
+ * Nhận danh sách ĐÃ lọc theo màn hình (cửa hàng, nhóm nguồn, trạng thái) để nhóm tổng chỉ
+ * gồm những nguồn mà màn đó thực sự cho chọn. Nhóm một thành viên bị bỏ: chọn nó không khác
+ * gì chọn thẳng nguồn chi tiết, chỉ làm ô lọc dài ra.
+ */
+export function summaryMoneySourceGroups(options: MoneySourceOption[]): MoneySourceSummaryGroup[] {
+  const grouped = new Map<string, { name: string; branch: string | null; codes: string[] }>();
+  for (const option of options) {
+    const name = (option.summarySourceName || "").trim();
+    if (!name) continue;
+    const branch = (option.branch || "ALL").trim().toUpperCase();
+    const key = `${branch}|${name.toUpperCase()}`;
+    const current = grouped.get(key) || { name, branch: option.branch || null, codes: [] };
+    if (!current.codes.includes(option.code)) current.codes.push(option.code);
+    grouped.set(key, current);
+  }
+  return [...grouped.values()]
+    .filter((group) => group.codes.length > 1)
+    .map((group) => ({ ...group, codes: [...group.codes].sort(), value: [...group.codes].sort().join(",") }))
+    .sort((a, b) => a.name.localeCompare(b.name, "vi"));
+}
+
+/**
+ * Tách giá trị ô lọc nguồn tiền thành danh sách mã: một mã chi tiết, hoặc nhiều mã của một
+ * nhóm tổng nối bằng dấu phẩy. Rỗng / "ALL" nghĩa là không lọc.
+ */
+export function parseMoneySourceCodes(value: string | null | undefined): string[] {
+  const raw = (value || "").trim();
+  if (!raw || raw.toUpperCase() === "ALL") return [];
+  return [...new Set(raw.split(",").map((code) => code.trim()).filter(Boolean))];
 }

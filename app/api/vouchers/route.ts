@@ -8,7 +8,7 @@ import { isPeriodLocked } from "@/lib/phase3";
 import { buildAuditLogData, writeAuditLog } from "@/lib/audit-log";
 import { softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
 import { canEditPastVoucher, type DemoSession } from "@/lib/auth-demo";
-import { moneySourceMatchesBranch } from "@/lib/money-sources";
+import { moneySourceMatchesBranch, parseMoneySourceCodes } from "@/lib/money-sources";
 import { isSameCalendarDay, normalizeCashflowCategoryType, normalizeReceiptPurpose, validateReceiptPurpose, voucherEditWindowError } from "@/lib/voucher-rules";
 import { completePendingReconciliation, ReconciliationSyncError, releasePendingReconciliation, reopenReconciliationForReview, syncReconciledBankStatement, type BankStatementSyncResult } from "@/lib/reconciliation-links";
 import { moneySourceMatchesDocumentChannel, normalizeVoucherDocumentChannel } from "@/lib/voucher-channel";
@@ -223,7 +223,8 @@ export async function GET(request: Request) {
     const endDateText = cleanText(searchParams.get("endDate"));
     const voucherTypeText = cleanText(searchParams.get("voucherType")).toUpperCase();
     // Lọc theo nguồn tiền để đối chiếu từng quỹ / tài khoản ngân hàng đã lên đủ chứng từ chưa.
-    const moneySourceText = cleanText(searchParams.get("moneySourceCode"));
+    // Nhận một mã chi tiết hoặc nhiều mã của một "Nguồn tiền tổng" nối bằng dấu phẩy.
+    const moneySourceCodes = parseMoneySourceCodes(searchParams.get("moneySourceCode"));
     // Lọc theo Khoản mục thu/chi: "Tổng thu trong kỳ" gộp cả thu bán hàng lẫn thu khác, muốn
     // đối chiếu với báo cáo (chỉ tính doanh thu) thì phải tách được từng khoản mục.
     const categoryText = cleanText(searchParams.get("categoryCode"));
@@ -257,7 +258,7 @@ export async function GET(request: Request) {
       documentChannel,
       deletedAt: null,
       ...(voucherTypeText && voucherTypeText !== "ALL" ? { voucherType: voucherTypeText } : {}),
-      ...(moneySourceText && moneySourceText.toUpperCase() !== "ALL" ? { moneySourceCode: moneySourceText } : {}),
+      ...(moneySourceCodes.length ? { moneySourceCode: { in: moneySourceCodes } } : {}),
       ...(categoryText && categoryText.toUpperCase() !== "ALL" ? { categoryCode: categoryText } : {}),
       ...(startDate || endDateExclusive ? {
         voucherDate: {
