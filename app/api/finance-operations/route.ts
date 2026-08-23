@@ -163,8 +163,11 @@ export async function GET(request: Request) {
     const rangeOpeningAmount = beforeRange.length ? beforeRange[beforeRange.length - 1].balance : openingAmount;
     const rangeClosingBalance = cashbook.length ? cashbook[cashbook.length - 1].balance : rangeOpeningAmount;
 
-    const latestFirstCashbook = [...cashbook].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-      || new Date(b.date).getTime() - new Date(a.date).getTime());
+    // Sổ quỹ đọc từ mới về cũ: xếp theo NGÀY chứng từ giảm dần. Trước đây xếp theo giờ tạo bản
+    // ghi nên phiếu nhập/import sau lại nằm trên phiếu có ngày mới hơn, nhìn như sổ bị xáo trộn.
+    // Đảo ngược đúng thứ tự tăng dần đã dùng để chạy số dư (ngày, rồi giờ tạo), nhờ vậy cột
+    // "Số dư quỹ" đọc ngược từ trên xuống vẫn khớp với từng dòng phát sinh.
+    const latestFirstCashbook = [...cashbook].reverse();
 
     return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { period, branchCode, openingAmount: rangeOpeningAmount, closingBalance: rangeClosingBalance, cashbook: latestFirstCashbook, accruals, moneyTransfers, accountingPeriod: accountingPeriod || { status: "OPEN" }, checklist }));
   } catch (error) {
