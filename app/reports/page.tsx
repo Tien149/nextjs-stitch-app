@@ -6,7 +6,7 @@ import { DateInput, MonthInput } from "@/components/DateInput";
 import { storeLabel, visibleBranchScopeOptions, visibleStoreOptions } from "@/lib/branch-labels";
 import { canPerformMenuAction, filterModuleTabs, moduleTabs } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
-import { filterMoneySources, firstMoneySourceCode, moneySourceDebugLabel, moneySourceDisplayName, stripMoneySourceLabel, type MoneySourceOption } from "@/lib/money-sources";
+import { filterCashierCashSources, filterMoneySources, moneySourceDebugLabel, moneySourceDisplayName, stripMoneySourceLabel, type MoneySourceOption } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { shiftLabel, shiftLabels } from "@/lib/shifts";
@@ -78,6 +78,8 @@ type DailyCashData = {
   summary: { revenue: DailyCashBucket; posRevenue: DailyCashBucket; manual: DailyCashBucket; receipt: DailyCashBucket; receiptRevenue: DailyCashBucket; deposit: DailyCashBucket; total: DailyCashBucket; expenseTotal: number; cashExpenseTotal: number; cashToDeposit: number };
   /** Tiền mặt cần nộp tách theo từng quỹ; mã rỗng là phần chưa xác định được nguồn. */
   cashToDepositSources: Array<{ code: string; name: string; amount: number }>;
+  /** Quỹ tiền mặt không phải của thu ngân đã bị loại khỏi báo cáo, để màn hình nói rõ tiền nằm đâu. */
+  excludedCashSources: Array<{ code: string; name: string; inflow: number; outflow: number }>;
   cashDeposits: Array<{ id: string; code: string; status: string; sourceShift: string | null; depositTargetType: string | null; fromMoneySourceCode: string; toMoneySourceCode: string; amount: number; feeAmount: number }>;
   expenses: DailyCashExpense[];
   receipts: DailyCashReceipt[];
@@ -456,12 +458,14 @@ export default function ReportsPage() {
     const quantity = Math.max(0, Math.floor(Number(row.quantity) || 0));
     return sum + row.denomination * quantity;
   }, 0);
-  const cashDepositCashSources = dailyCash ? filterMoneySources(moneySources, dailyCash.branchCode, ["CASH"]) : [];
+  const cashDepositAllCashSources = dailyCash ? filterMoneySources(moneySources, dailyCash.branchCode, ["CASH"]) : [];
+  // Thu ngân chỉ nộp được quỹ của chính mình; các quỹ tiền mặt khác không nằm trong báo cáo này.
+  const cashDepositCashSources = dailyCash ? filterCashierCashSources(moneySources, dailyCash.branchCode) : [];
   // Nộp tiền trong ngày chỉ đổi người giữ tiền mặt (nộp Cô / nộp PKT) nên nguồn nhận cũng phải
-  // là quỹ tiền mặt. Nộp tiền mặt vào ngân hàng là nghiệp vụ khác, đi bằng Điều tiền nội bộ.
-  const cashDepositTargetSources = cashDepositCashSources.filter((source) => source.code !== cashDepositForm.fromMoneySourceCode);
+  // là quỹ tiền mặt — và thường chính là quỹ ngoài thu ngân, nên nguồn nhận vẫn liệt kê đủ.
+  const cashDepositTargetSources = cashDepositAllCashSources.filter((source) => source.code !== cashDepositForm.fromMoneySourceCode);
   const cashDepositDefaultFromSourceCode = cashDepositCashSources[0]?.code || "";
-  const cashDepositDefaultTargetSources = cashDepositCashSources.filter((source) => source.code !== cashDepositDefaultFromSourceCode);
+  const cashDepositDefaultTargetSources = cashDepositAllCashSources.filter((source) => source.code !== cashDepositDefaultFromSourceCode);
   const cashDepositDisabledReason = !canCreateCashDeposit
     ? "Bạn không có quyền tạo phiếu nộp tiền."
     : !dailyCash
@@ -611,7 +615,8 @@ export default function ReportsPage() {
       .sort((left, right) => right.amount - left.amount)[0];
     const fromMoneySourceCode = pendingSource?.code
       || cashToDepositSources.find((row) => row.code && row.amount > 0)?.code
-      || firstMoneySourceCode(moneySources, dailyCash.branchCode, ["CASH"]);
+      || filterCashierCashSources(moneySources, dailyCash.branchCode)[0]?.code
+      || "";
     const toMoneySourceCode = pickCashDepositTarget("PKT", fromMoneySourceCode, dailyCash.branchCode);
     if (!fromMoneySourceCode) {
       setMessage("Chưa cấu hình nguồn tiền mặt cho cửa hàng này.");
@@ -1276,6 +1281,22 @@ export default function ReportsPage() {
             <Kpi label="Chi tiền mặt" value={dailyCash.summary.cashExpenseTotal} icon="receipt_long" tone="amber" />
             <Kpi label="Tiền mặt cần nộp" value={dailyCash.summary.cashToDeposit} icon="savings" tone={dailyCash.summary.cashToDeposit < 0 ? "rose" : "green"} />
           </div>
+
+          {(dailyCash.excludedCashSources?.length || 0) > 0 && (
+            <div className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+              <span className="material-symbols-outlined text-lg text-slate-500">info</span>
+              <span>
+                Báo cáo này chỉ tính <b>tiền mặt của thu ngân</b>. Đã bỏ qua{" "}
+                {dailyCash.excludedCashSources.map((row, index) => (
+                  <span key={row.code || index}>
+                    {index > 0 ? ", " : ""}
+                    <b>{row.name || "Quỹ tiền mặt khác"}</b> (thu {money(row.inflow)} đ · chi {money(row.outflow)} đ)
+                  </span>
+                ))}
+                {" "}— xem các quỹ này ở báo cáo Nguồn tiền.
+              </span>
+            </div>
+          )}
 
           {dailyCash.duplicateRevenueWarning && (
             <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">

@@ -6,7 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { createMoneySourceMatcher, getBalanceSheet, getCashSourceReport, getCashflowForecast, getPnl, getRevenueSettlementReport, getTrend } from "@/lib/reports";
 import { apiError, businessError, cleanText, isPeriodLocked, normalizePeriod, toNumber } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
-import { moneySourceDisplayName, normalizeMoneySourceGroup } from "@/lib/money-sources";
+import { createCashierCashMatcher, moneySourceDisplayName, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { voucherMatchesShift } from "@/lib/shifts";
 import { summarizeDailyDepositHistories } from "@/lib/daily-deposit-report";
 
@@ -338,12 +338,55 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     }),
   ]);
 
-  // Phiếu khai ca nào thì thuộc ca đó; phiếu cũ chưa khai vẫn xét theo giờ lập như trước.
-  const vouchers = allPaymentVouchers.filter((row) => voucherMatchesShift(row.shift, row.voucherDate, shift));
-  const receiptVouchers = allReceiptVouchers.filter((row) => voucherMatchesShift(row.shift, row.voucherDate, shift));
-
   const sourceByCode = new Map(moneySources.map((source) => [source.code, source]));
-  const dailyDepositMovement = summarizeDailyDepositHistories(depositHistories.map((row) => {
+
+  /**
+   * Thu chi ngày là báo cáo CỦA THU NGÂN theo ngày/ca: phần tiền mặt chỉ được tính những quỹ
+   * thu ngân đang giữ. Các quỹ tiền mặt khác của cửa hàng (két quản lý, quỹ văn phòng) không
+   * thuộc trách nhiệm nộp của ca đó nên bị loại khỏi mọi con số — nhưng vẫn được liệt kê ở
+   * `excludedCashSources` để số tiền bị ẩn không biến mất lặng lẽ.
+   *
+   * Nguồn không nối được về danh mục thì giữ nguyên: không biết nó là quỹ nào để loại, và số
+   * đó đã hiện sẵn ở dòng "chưa xác định nguồn tiền mặt".
+   */
+  const isCashierCash = createCashierCashMatcher(moneySources);
+  const excludedCashByCode = new Map<string, { code: string; name: string; inflow: number; outflow: number }>();
+  const isOtherCashFund = (moneySourceCode: string | null | undefined) => {
+    const source = sourceByCode.get((moneySourceCode || "").trim());
+    if (!source || normalizeMoneySourceGroup(source.group) !== "CASH") return false;
+    return !isCashierCash(source);
+  };
+  const noteExcludedCash = (moneySourceCode: string | null | undefined, direction: "in" | "out", amount: number) => {
+    const code = (moneySourceCode || "").trim();
+    const source = sourceByCode.get(code);
+    const current = excludedCashByCode.get(code)
+      || { code, name: source ? moneySourceDisplayName(source) : code, inflow: 0, outflow: 0 };
+    if (direction === "in") current.inflow += Math.abs(amount);
+    else current.outflow += Math.abs(amount);
+    excludedCashByCode.set(code, current);
+  };
+  const keepCashierRow = (moneySourceCode: string | null | undefined, direction: "in" | "out", amount: number) => {
+    if (!isOtherCashFund(moneySourceCode)) return true;
+    noteExcludedCash(moneySourceCode, direction, amount);
+    return false;
+  };
+
+  // Phiếu khai ca nào thì thuộc ca đó; phiếu cũ chưa khai vẫn xét theo giờ lập như trước.
+  const vouchers = allPaymentVouchers
+    .filter((row) => voucherMatchesShift(row.shift, row.voucherDate, shift))
+    .filter((row) => keepCashierRow(row.moneySourceCode, "out", row.amount));
+  const receiptVouchers = allReceiptVouchers
+    .filter((row) => voucherMatchesShift(row.shift, row.voucherDate, shift))
+    .filter((row) => keepCashierRow(row.moneySourceCode, "in", row.amount));
+
+  // Cọc nhận vào / hoàn ra bằng quỹ tiền mặt khác cũng không phải việc của thu ngân trong ca.
+  const cashierDepositHistories = depositHistories.filter((row) => keepCashierRow(
+    row.deposit.moneySourceCode,
+    row.action === "REFUND" || (row.amount || 0) < 0 ? "out" : "in",
+    row.amount || 0,
+  ));
+
+  const dailyDepositMovement = summarizeDailyDepositHistories(cashierDepositHistories.map((row) => {
     const source = sourceByCode.get(row.deposit.moneySourceCode || "");
     return {
       action: row.action,
@@ -392,11 +435,14 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
   for (const row of revenues) {
     const matchSource = matcherFor(row.branchCode);
     const bucketKey = classifyRevenueRow(matchSource, row.paymentMethod, row.revenueSource, row.channel);
+    const matchedSourceCode = matchSource(row.paymentMethod, row.revenueSource)?.code;
+    // Doanh thu tiền mặt nhận vào quỹ khác quỹ thu ngân không thuộc báo cáo này.
+    if (bucketKey === "cash" && !keepCashierRow(matchedSourceCode, "in", row.netAmount)) continue;
     addAmount(posRevenue, bucketKey, row.netAmount);
     addAmount(revenue, bucketKey, row.netAmount);
     if (bucketKey === "cash") {
       posCashByBranch.set(row.branchCode, (posCashByBranch.get(row.branchCode) || 0) + row.netAmount);
-      addCashToDeposit(matchSource(row.paymentMethod, row.revenueSource)?.code, row.netAmount);
+      addCashToDeposit(matchedSourceCode, row.netAmount);
     }
   }
 
@@ -509,7 +555,7 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
 
   // Hoàn cọc thao tác trực tiếp không sinh FinancialVoucher, nhưng vẫn là tiền ra trong ngày.
   // Lịch sử đã gắn voucher bị loại ở helper vì phiếu chi tương ứng đã có trong voucherExpenses.
-  const directDepositRefunds = depositHistories
+  const directDepositRefunds = cashierDepositHistories
     .filter((row) => !row.voucherId && (row.action === "REFUND" || (row.action === "UPDATE" && (row.amount || 0) < 0)))
     .map((row) => {
       const source = sourceByCode.get(row.deposit.moneySourceCode || "");
@@ -605,17 +651,26 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     shift,
     summary: { revenue, posRevenue, manual, receipt, receiptRevenue, deposit, total, expenseTotal, cashExpenseTotal, cashToDeposit },
     cashToDepositSources,
-    cashDeposits: cashDepositTransfers.map((row) => ({
-      id: row.id,
-      code: row.code,
-      status: row.status,
-      sourceShift: row.sourceShift,
-      depositTargetType: row.depositTargetType,
-      fromMoneySourceCode: row.fromMoneySourceCode,
-      toMoneySourceCode: row.toMoneySourceCode,
-      amount: row.amount,
-      feeAmount: row.feeAmount,
-    })),
+    // Quỹ tiền mặt không phải của thu ngân đã bị loại khỏi mọi con số phía trên. Trả kèm danh
+    // sách để màn hình nói rõ tiền đó nằm ở đâu, thay vì để người xem thấy số vơi đi không rõ lý do.
+    excludedCashSources: [...excludedCashByCode.values()]
+      .filter((row) => Math.round(row.inflow) !== 0 || Math.round(row.outflow) !== 0)
+      .map((row) => ({ ...row, inflow: Math.round(row.inflow), outflow: Math.round(row.outflow) }))
+      .sort((left, right) => (right.inflow + right.outflow) - (left.inflow + left.outflow)),
+    cashDeposits: cashDepositTransfers
+      // Phiếu nộp của quỹ khác không thuộc ca của thu ngân này.
+      .filter((row) => !isOtherCashFund(row.fromMoneySourceCode))
+      .map((row) => ({
+        id: row.id,
+        code: row.code,
+        status: row.status,
+        sourceShift: row.sourceShift,
+        depositTargetType: row.depositTargetType,
+        fromMoneySourceCode: row.fromMoneySourceCode,
+        toMoneySourceCode: row.toMoneySourceCode,
+        amount: row.amount,
+        feeAmount: row.feeAmount,
+      })),
     expenses,
     receipts,
     manualEntries: manualEntries.map((row) => ({

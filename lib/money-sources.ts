@@ -171,3 +171,61 @@ export function parseMoneySourceCodes(value: string | null | undefined): string[
   if (!raw || raw.toUpperCase() === "ALL") return [];
   return [...new Set(raw.split(",").map((code) => code.trim()).filter(Boolean))];
 }
+
+/**
+ * Quỹ tiền mặt do THU NGÂN giữ.
+ *
+ * "Thu chi ngày" là báo cáo của thu ngân theo ngày/ca, nên phần tiền mặt chỉ được tính các quỹ
+ * thu ngân đang giữ; những quỹ tiền mặt khác (két quản lý, quỹ văn phòng) không thuộc trách
+ * nhiệm nộp của ca đó và không được hiện lên báo cáo này.
+ *
+ * Nhận diện bằng chữ "thu ngân" khai trên danh mục — ưu tiên "Nguồn tiền tổng"
+ * (summarySourceName), sau đó tới tên và mã nguồn. Viết hoa/dấu/khoảng trắng đều bỏ qua nên
+ * "Tiền mặt Thu Ngân", "TIEN MAT THU NGAN" hay mã "TM_THUNGAN_HN" đều khớp.
+ */
+function normalizeVietnameseText(value: string | null | undefined) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .replace(/Đ/g, "D");
+}
+
+const CASHIER_CASH_PATTERN = /THU\s*_?\s*NGAN/;
+
+export function isCashierCashSource(source: MoneySourceOption) {
+  if (normalizeMoneySourceGroup(source.group) !== "CASH") return false;
+  return CASHIER_CASH_PATTERN.test(normalizeVietnameseText(
+    `${source.summarySourceName || ""} ${source.name || ""} ${source.code || ""}`,
+  ));
+}
+
+/**
+ * Bộ nhận diện quỹ thu ngân dùng chung cho một danh mục nguồn tiền.
+ *
+ * Cửa hàng nào CHƯA khai quỹ nào là của thu ngân thì mọi quỹ tiền mặt của cửa hàng đó vẫn được
+ * coi là quỹ thu ngân — nếu không, báo cáo của các đơn vị chưa đặt tên theo quy ước sẽ trắng
+ * trơn phần tiền mặt. Chỉ khi đã có ít nhất một quỹ khai rõ "thu ngân" thì các quỹ còn lại mới
+ * bị loại, vì lúc đó việc tách quỹ là có chủ ý.
+ */
+export function createCashierCashMatcher(sources: MoneySourceOption[]) {
+  const branchKey = (branch: string | null | undefined) => (branch || "ALL").trim().toUpperCase() || "ALL";
+  const configuredBranches = new Set(
+    sources.filter((source) => isCashierCashSource(source)).map((source) => branchKey(source.branch)),
+  );
+  return (source: MoneySourceOption | null | undefined) => {
+    if (!source || normalizeMoneySourceGroup(source.group) !== "CASH") return false;
+    if (isCashierCashSource(source)) return true;
+    const key = branchKey(source.branch);
+    const configured = key === "ALL"
+      ? configuredBranches.size > 0
+      : configuredBranches.has(key) || configuredBranches.has("ALL");
+    return !configured;
+  };
+}
+
+/** Danh sách quỹ tiền mặt thu ngân của một cửa hàng, dùng cho ô chọn nguồn khi nộp tiền. */
+export function filterCashierCashSources(sources: MoneySourceOption[], branchCode: string | null | undefined) {
+  const isCashierCash = createCashierCashMatcher(sources);
+  return filterMoneySources(sources, branchCode, ["CASH"]).filter((source) => isCashierCash(source));
+}
