@@ -5,7 +5,7 @@ import { DateInput, MonthInput } from "@/components/DateInput";
 import { storeLabel, updateDynamicBranches, visibleBranchScopeOptions, visibleStoreOptions } from "@/lib/branch-labels";
 import { canPerformMenuAction, filterModuleTabs } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
-import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName, summaryMoneySourceGroups } from "@/lib/money-sources";
+import { filterMoneySources, moneySourceDebugLabel, moneySourceDisplayName, summaryMoneySourceGroups } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { shiftLabels } from "@/lib/shifts";
@@ -114,8 +114,10 @@ export default function FinanceOperationsPage() {
   const [adjustment, setAdjustment] = useState({
     entryDate: new Date().toISOString().slice(0, 10),
     entryType: "RECEIPT",
-    branchCode: "HCM",
-    moneySourceCode: "CASH_HCM",
+    // Cửa hàng/quỹ để trống: hai ô này bám theo bộ lọc "Phạm vi cửa hàng" của trang
+    // (xem adjustmentBranchCode), không đặt cứng một cửa hàng nào.
+    branchCode: "",
+    moneySourceCode: "",
     amount: "1000000",
     description: "Điều chỉnh kiểm kê quỹ",
   });
@@ -159,6 +161,23 @@ export default function FinanceOperationsPage() {
     }
     return labels;
   }, [moneySources]);
+  /**
+   * Form Điều chỉnh quỹ luôn bám theo bộ lọc "Phạm vi cửa hàng" của trang.
+   *
+   * Trước đây form giữ cửa hàng riêng: chọn Asa trên thanh lọc mà form vẫn còn Nam Mê của lần
+   * trước, ô Nguồn tiền cũng vẫn liệt kê quỹ của Nam Mê — người dùng ghi kiểm kê vào quỹ của
+   * cửa hàng khác lúc nào không hay. Chỉ khi lọc "Tất cả cửa hàng" thì form mới để tự chọn.
+   */
+  const adjustmentBranchCode = branchCode === "ALL" ? adjustment.branchCode : branchCode;
+  const adjustmentCashSources = useMemo(
+    () => filterMoneySources(moneySources, adjustmentBranchCode, ["CASH"]),
+    [moneySources, adjustmentBranchCode],
+  );
+  // Quỹ đã chọn của cửa hàng cũ không còn hợp lệ sau khi đổi cửa hàng -> rơi về quỹ đầu tiên.
+  const adjustmentMoneySourceCode = adjustmentCashSources.some((source) => source.code === adjustment.moneySourceCode)
+    ? adjustment.moneySourceCode
+    : (adjustmentCashSources[0]?.code || "");
+
   const cashbookRangeInvalid = Boolean(
     cashbookRange.startDate && cashbookRange.endDate && cashbookRange.startDate > cashbookRange.endDate,
   );
@@ -243,12 +262,11 @@ export default function FinanceOperationsPage() {
     const sources = (await response.json()) as MasterDataOption[];
     setMoneySources(sources);
     const toRealStore = (code: string) => (storeCodes.length && !storeCodes.includes(code) ? storeCodes[0] : code);
+    // Cửa hàng của form chỉ có nghĩa khi lọc "Tất cả cửa hàng"; danh mục về thì đưa về một cửa
+    // hàng có thật. Quỹ tiền mặt không cần chỉnh ở đây vì đã dẫn xuất theo cửa hàng đang chọn.
     setAdjustment((current) => {
       const nextBranch = toRealStore(current.branchCode);
-      const nextSource = isMoneySourceAllowed(sources, current.moneySourceCode, nextBranch, ["CASH"])
-        ? current.moneySourceCode
-        : firstMoneySourceCode(sources, nextBranch, ["CASH"]);
-      return { ...current, branchCode: nextBranch, moneySourceCode: nextSource };
+      return nextBranch === current.branchCode ? current : { ...current, branchCode: nextBranch, moneySourceCode: "" };
     });
     setAccrual((current) => {
       const nextBranch = toRealStore(current.branchCode);
@@ -414,7 +432,7 @@ export default function FinanceOperationsPage() {
           entryDate: new Date().toISOString().slice(0, 10),
           entryType: "RECEIPT",
           branchCode: adjustment.branchCode,
-          moneySourceCode: firstMoneySourceCode(moneySources, adjustment.branchCode, ["CASH"]),
+          moneySourceCode: "",
           amount: "1000000",
           description: "Điều chỉnh kiểm kê quỹ",
         });
@@ -900,7 +918,18 @@ export default function FinanceOperationsPage() {
                 <form
                   onSubmit={(e) => {
                     e.preventDefault();
-                    void send({ action: "CREATE_ADJUSTMENT", ...adjustment }, "Đã ghi nhận điều chỉnh sổ quỹ.");
+                    if (!adjustmentBranchCode) {
+                      setMessage("Chọn cửa hàng cần điều chỉnh quỹ.");
+                      return;
+                    }
+                    if (!adjustmentMoneySourceCode) {
+                      setMessage("Cửa hàng này chưa có quỹ tiền mặt để điều chỉnh.");
+                      return;
+                    }
+                    void send(
+                      { action: "CREATE_ADJUSTMENT", ...adjustment, branchCode: adjustmentBranchCode, moneySourceCode: adjustmentMoneySourceCode },
+                      "Đã ghi nhận điều chỉnh sổ quỹ.",
+                    );
                   }}
                   className="bg-white border border-slate-200 rounded-2xl shadow-lg p-6 space-y-5"
                 >
@@ -937,19 +966,15 @@ export default function FinanceOperationsPage() {
                     <div className="flex flex-col gap-1.5">
                       <span className="text-xs font-bold text-slate-600">Cửa hàng</span>
                       <select
-                        value={adjustment.branchCode}
-                        onChange={(e) => {
-                          const nextBranch = e.target.value;
-                          setAdjustment({
-                            ...adjustment,
-                            branchCode: nextBranch,
-                            moneySourceCode: isMoneySourceAllowed(moneySources, adjustment.moneySourceCode, nextBranch, ["CASH"])
-                              ? adjustment.moneySourceCode
-                              : firstMoneySourceCode(moneySources, nextBranch, ["CASH"]),
-                          });
-                        }}
-                        className="w-full pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all cursor-pointer"
+                        value={adjustmentBranchCode}
+                        // Lọc đang ở một cửa hàng cụ thể thì ô này chỉ hiển thị lại cửa hàng đó;
+                        // đổi cửa hàng bằng bộ lọc phía trên để sổ quỹ và form luôn cùng một chỗ.
+                        disabled={branchCode !== "ALL"}
+                        onChange={(e) => setAdjustment({ ...adjustment, branchCode: e.target.value, moneySourceCode: "" })}
+                        className="w-full pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all cursor-pointer disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500"
+                        title={branchCode !== "ALL" ? "Theo bộ lọc Phạm vi cửa hàng phía trên" : undefined}
                       >
+                        <option value="">-- Chọn cửa hàng --</option>
                         {visibleStoreOptions(user).map((option) => (
                           <option key={option.code} value={option.code}>
                             {storeLabel(option.code)}
@@ -961,14 +986,14 @@ export default function FinanceOperationsPage() {
                     <div className="flex flex-col gap-1.5">
                       <span className="text-xs font-bold text-slate-600">Nguồn tiền</span>
                       <select
-                        value={adjustment.moneySourceCode}
+                        value={adjustmentMoneySourceCode}
                         onChange={(e) => setAdjustment({ ...adjustment, moneySourceCode: e.target.value })}
                         className="w-full pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all cursor-pointer"
                       >
                         <option value="">-- Chọn quỹ tiền mặt --</option>
-                        {filterMoneySources(moneySources, adjustment.branchCode, ["CASH"]).map((source) => (
-                          <option key={source.id || source.code} value={source.code} title={moneySourceDebugLabel(source, storeLabel(adjustment.branchCode))}>
-                            {moneySourceDisplayName(source, storeLabel(adjustment.branchCode))}
+                        {adjustmentCashSources.map((source) => (
+                          <option key={source.id || source.code} value={source.code} title={moneySourceDebugLabel(source, storeLabel(adjustmentBranchCode))}>
+                            {moneySourceDisplayName(source, storeLabel(adjustmentBranchCode))}
                           </option>
                         ))}
                       </select>
