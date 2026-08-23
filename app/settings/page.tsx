@@ -298,6 +298,10 @@ export default function SettingsPage() {
   const [allItems, setAllItems] = useState<MasterDataItem[]>([]);
   /** Đang nhập một tên Nguồn tiền tổng chưa có trong danh sách. */
   const [creatingSummaryName, setCreatingSummaryName] = useState(false);
+  /** Tên Nguồn tiền tổng đang được sửa (rỗng = không sửa), và tên mới đang gõ. */
+  const [renamingSummaryFrom, setRenamingSummaryFrom] = useState("");
+  const [renameSummaryValue, setRenameSummaryValue] = useState("");
+  const [isRenamingSummary, setIsRenamingSummary] = useState(false);
   const [activeType, setActiveType] = useState("BRANCH");
   const [search, setSearch] = useState("");
   const [form, setForm] = useState<MasterDataForm>(emptyForm);
@@ -416,6 +420,22 @@ export default function SettingsPage() {
   const showNewSummaryNameInput = creatingSummaryName
     || (Boolean(form.summarySourceName) && !summarySourceNameOptions.includes(form.summarySourceName));
 
+  /** Các nguồn tiền đang gộp vào tên tổng đang chọn: đổi tên là sửa hết chỗ này. */
+  const summarySourceMembers = useMemo(() => {
+    const name = form.summarySourceName.trim().toLowerCase();
+    if (!name) return [] as MasterDataItem[];
+    return allItems.filter((item) => item.type === "MONEY_SOURCE"
+      && (item.summarySourceName || "").trim().toLowerCase() === name);
+  }, [allItems, form.summarySourceName]);
+
+  /** Tên mới trùng một nhóm tổng khác nghĩa là gộp hai nhóm làm một - phải nói trước. */
+  const renameMergesIntoExisting = useMemo(() => {
+    const next = renameSummaryValue.trim().toLowerCase();
+    if (!next || next === renamingSummaryFrom.trim().toLowerCase()) return false;
+    return allItems.some((item) => item.type === "MONEY_SOURCE"
+      && (item.summarySourceName || "").trim().toLowerCase() === next);
+  }, [allItems, renameSummaryValue, renamingSummaryFrom]);
+
   // Đổi nhóm lớn thì nhóm chi tiết cũ không còn hợp lệ (chỉ áp dụng cho danh mục có tầng cha).
   useEffect(() => {
     if (!parentTypeOf[form.type]) return;
@@ -439,6 +459,7 @@ export default function SettingsPage() {
 
   const resetForm = (type = activeType) => {
     setCreatingSummaryName(false);
+    setRenamingSummaryFrom("");
     setForm({ ...emptyForm, type, partnerGroup: "EXTERNAL" });
     setSuccessMessage("");
     setErrorMessage("");
@@ -455,6 +476,7 @@ export default function SettingsPage() {
       return;
     }
     setCreatingSummaryName(false);
+    setRenamingSummaryFrom("");
     setForm({
       id: item.id,
       type: item.type,
@@ -498,6 +520,57 @@ export default function SettingsPage() {
       }
       return updated;
     });
+  };
+
+  /** Mở ô sửa tên nhóm tổng đang chọn. */
+  const startRenameSummarySource = () => {
+    if (!canManageSettings) {
+      setErrorMessage("Bạn chỉ có quyền xem danh mục.");
+      return;
+    }
+    setRenamingSummaryFrom(form.summarySourceName);
+    setRenameSummaryValue(form.summarySourceName);
+  };
+
+  /** Đổi tên nhóm tổng: server sửa đồng loạt mọi nguồn đang mang tên cũ, vì báo cáo gộp theo
+   *  đúng chuỗi tên - sửa lẻ một nguồn là nhóm tách làm hai dòng. */
+  const renameSummarySource = async () => {
+    const nextName = renameSummaryValue.trim();
+    if (!canManageSettings) {
+      setErrorMessage("Bạn chỉ có quyền xem danh mục.");
+      return;
+    }
+    if (!nextName) {
+      setErrorMessage("Tên nguồn tiền tổng mới không được để trống.");
+      return;
+    }
+    if (nextName === renamingSummaryFrom) {
+      setRenamingSummaryFrom("");
+      return;
+    }
+    setIsRenamingSummary(true);
+    setSuccessMessage("");
+    setErrorMessage("");
+    try {
+      const response = await fetch("/api/master-data/summary-source", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentName: renamingSummaryFrom, nextName }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "Không đổi được tên nguồn tiền tổng");
+      }
+      const savedName = (payload.name as string) || nextName;
+      setForm((value) => ({ ...value, summarySourceName: savedName }));
+      setRenamingSummaryFrom("");
+      await loadItems();
+      setSuccessMessage(`Đã đổi tên nguồn tiền tổng thành "${savedName}" cho ${payload.updated} nguồn tiền.`);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Có lỗi khi đổi tên nguồn tiền tổng");
+    } finally {
+      setIsRenamingSummary(false);
+    }
   };
 
   const saveItem = async (event: React.FormEvent) => {
@@ -1320,6 +1393,7 @@ export default function SettingsPage() {
               )}
 
               {activeType === "MONEY_SOURCE" && (
+                <div className="space-y-2">
                 <label className="text-xs font-bold text-slate-700 block">
                   Nguồn tiền tổng
                   <select
@@ -1354,6 +1428,67 @@ export default function SettingsPage() {
                     Các nguồn tiền cùng tên tổng sẽ gộp thành một dòng trên Báo cáo nguồn tiền; bỏ trống thì báo cáo hiện riêng từng nguồn.
                   </span>
                 </label>
+
+                {/* Sửa tên nhóm tổng: nằm ngoài <label> để bấm nút không kích hoạt ô chọn ở trên. */}
+                {!showNewSummaryNameInput && Boolean(form.summarySourceName) && !renamingSummaryFrom && (
+                  <button
+                    type="button"
+                    onClick={startRenameSummarySource}
+                    disabled={!canManageSettings}
+                    className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-600 hover:text-blue-700 disabled:text-slate-400 disabled:cursor-not-allowed transition"
+                  >
+                    <span className="material-symbols-outlined text-[14px]">edit</span>
+                    Sửa tên &quot;{form.summarySourceName}&quot;
+                    {summarySourceMembers.length > 0 && <> ({summarySourceMembers.length} nguồn)</>}
+                  </button>
+                )}
+
+                {Boolean(renamingSummaryFrom) && (
+                  <div className="rounded-lg border border-blue-200 bg-blue-50/60 p-3">
+                    <span className="block text-[11px] font-bold text-slate-700">
+                      Đổi tên nguồn tiền tổng &quot;{renamingSummaryFrom}&quot;
+                    </span>
+                    <input
+                      value={renameSummaryValue}
+                      onChange={(event) => setRenameSummaryValue(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key !== "Enter") return;
+                        event.preventDefault();
+                        void renameSummarySource();
+                      }}
+                      className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
+                      placeholder="VD: FDS - Vietinbank"
+                    />
+                    <div className="mt-2 flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void renameSummarySource()}
+                        disabled={isRenamingSummary}
+                        className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 disabled:opacity-60 transition"
+                      >
+                        {isRenamingSummary ? "Đang lưu..." : "Lưu tên tổng"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRenamingSummaryFrom("")}
+                        disabled={isRenamingSummary}
+                        className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-60 transition"
+                      >
+                        Hủy
+                      </button>
+                    </div>
+                    <span className="mt-2 block text-[11px] font-medium text-slate-500">
+                      Lưu tên là đổi ngay cho cả {summarySourceMembers.length} nguồn tiền đang gộp vào tên này
+                      {summarySourceMembers.length > 0 && <> ({summarySourceMembers.map((item) => item.code).join(", ")})</>}, không cần bấm Lưu cập nhật.
+                    </span>
+                    {renameMergesIntoExisting && (
+                      <span className="mt-1 block text-[11px] font-bold text-amber-600">
+                        Tên này đã có ở nhóm khác — lưu xong hai nhóm sẽ gộp thành một dòng trên báo cáo.
+                      </span>
+                    )}
+                  </div>
+                )}
+                </div>
               )}
 
               {activeType === "MONEY_SOURCE" && normalizeMoneySourceGroup(form.group) === "WALLET" && (
