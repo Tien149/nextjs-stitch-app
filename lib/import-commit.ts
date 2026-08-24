@@ -1680,10 +1680,17 @@ export async function commitImport(input: CommitInput) {
             allocationStartPeriod: asText(row.values.allocation_start_period) || null,
             amount: asNumber(row.values.amount),
             description: asText(row.values.description),
-            status: "PENDING_REVIEW",
+            // Phiếu import được duyệt luôn (chốt với khách 24/08/2026): trước đây nằm chờ duyệt,
+            // kế toán phải vào màn Phiếu tiền mặt duyệt tay từng phiếu thì số mới lên Sổ quỹ.
+            // Đi đúng luồng phiếu lập tay tự duyệt của màn Phiếu tiền mặt: APPROVED + side
+            // effects (thu/hoàn cọc, gạch công nợ, chi phí phân bổ) trong cùng transaction.
+            // Rollback batch vẫn gỡ được trọn vẹn — rollbackVouchers vốn xử lý phiếu đã duyệt.
+            status: "APPROVED",
             createdBy: input.uploadedBy,
+            approvedBy: input.uploadedBy,
           },
         });
+        await applyVoucherSideEffects(tx as unknown as RawTxClient, voucher, input.uploadedBy);
         await setImportTarget(tx, staging, row, "VOUCHER", voucher.id);
       }
     }
