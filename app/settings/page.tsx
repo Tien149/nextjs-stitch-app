@@ -273,6 +273,17 @@ function normalizeGroupValue(type: string, group?: string | null) {
   return legacyGroupAliases[type]?.[normalized] || normalized;
 }
 
+/**
+ * Dòng này có nội dung nào để hiện ở cột "Chi tiết / Ghi chú" không.
+ * Dùng để ẩn hẳn cột khi cả danh mục không có gì: loại Thu/Chi chẳng hạn, cả 27 dòng đều
+ * trống nên cột chỉ toàn dấu gạch, vừa xấu vừa ăn mất bề ngang của bảng.
+ */
+function hasDetailContent(item: MasterDataItem) {
+  if (item.type === "ASSET_GROUP" && item.codePrefix) return true;
+  if (item.type === "MONEY_SOURCE" && (item.summarySourceName || item.settlementBankCode)) return true;
+  return Boolean(item.contactName || item.accountNo || item.phone || item.email || item.taxCode || item.note);
+}
+
 function formatGroupLabel(type: string, group?: string | null) {
   if (!group) return "-";
   const normalized = normalizeGroupValue(type, group);
@@ -456,6 +467,13 @@ export default function SettingsPage() {
   }, [allItems]);
 
   const canManageSettings = user ? canPerformAction(user, "config") : false;
+
+  // Danh mục nào không dùng tới cột nào thì bỏ hẳn cột đó: Thu/Chi không gắn cửa hàng và
+  // không có ghi chú nên trước đây bảng có hai cột chỉ toàn dấu gạch, vừa xấu vừa đẩy bảng
+  // rộng quá khung khiến phải kéo ngang.
+  const showBranchColumn = items.some((item) => Boolean(item.branch));
+  const showDetailColumn = items.some(hasDetailContent);
+  const tableColumnCount = 3 + (showBranchColumn ? 1 : 0) + (showDetailColumn ? 1 : 0) + (canManageSettings ? 1 : 0);
 
   const resetForm = (type = activeType) => {
     setCreatingSummaryName(false);
@@ -827,18 +845,21 @@ export default function SettingsPage() {
             <section className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
               {/* Toolbar */}
               <div className="p-5 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-50/50">
-                <div>
+                {/* min-w-0 + truncate: câu mô tả dài (VD "1.2 - Danh mục dòng tiền, chỉ phân loại
+                    Thu hoặc Chi") trước đây giành hết bề ngang nên cụm nút bị đẩy xuống hàng dưới.
+                    Giờ mô tả tự co lại (rê chuột xem đủ), nhường chỗ cho hàng nút. */}
+                <div className="min-w-0">
                   <h2 className="font-bold text-lg text-slate-900">{activeTab.label}</h2>
-                  <p className="text-xs text-slate-500 mt-0.5">{activeTab.hint}</p>
+                  <p className="mt-0.5 truncate text-xs text-slate-500" title={activeTab.hint}>{activeTab.hint}</p>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2 sm:flex-nowrap sm:shrink-0 sm:justify-end">
                   {/* Search Box */}
                   <div className="flex border border-slate-300 rounded-lg overflow-hidden bg-white shadow-sm focus-within:ring-2 focus-within:ring-blue-500 transition">
                     <input
                       value={search}
                       onChange={(event) => setSearch(event.target.value)}
-                      className="px-3 py-1.5 text-xs outline-none w-40 sm:w-48 text-slate-700"
+                      className="w-32 px-3 py-1.5 text-xs text-slate-700 outline-none sm:w-40"
                       placeholder="Tìm mã/tên/nhóm..."
                       onKeyDown={(e) => {
                         if (e.key === "Enter") void loadItems();
@@ -923,14 +944,20 @@ export default function SettingsPage() {
               )}
 
               {/* Data Table */}
-              <div className="overflow-x-auto">
+              {/* Cột nào cả danh mục đều trống thì bỏ hẳn, không dựng một cột toàn dấu gạch. */}
+              {/* Danh mục dài (Đối tác 109 dòng, Hạng mục P&L 46 dòng) kéo trang dài lê thê và
+                  cuộn xuống là mất luôn tiêu đề cột. Giới hạn chiều cao khung: ít dòng thì khung
+                  tự co, nhiều dòng mới hiện thanh cuộn, và tiêu đề cột dính lại trên cùng.
+                  Viền dưới của tiêu đề vẽ bằng shadow vì border-collapse làm border của thead
+                  dính sticky bị mất khi cuộn. */}
+              <div className="max-h-[70vh] overflow-auto">
                 <table className="w-full text-left text-sm">
-                  <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-bold border-b border-slate-200">
+                  <thead className="sticky top-0 z-10 bg-slate-50 text-xs font-bold uppercase tracking-wide text-slate-500 shadow-[inset_0_-1px_0_#e2e8f0] [&_th]:whitespace-nowrap">
                     <tr>
                       <th className="px-4 py-3">Mã / Tên</th>
                       <th className="px-4 py-3">Phân loại</th>
-                      <th className="px-4 py-3">Cửa hàng</th>
-                      <th className="px-4 py-3">Chi tiết / Ghi chú</th>
+                      {showBranchColumn && <th className="px-4 py-3">Cửa hàng</th>}
+                      {showDetailColumn && <th className="px-4 py-3">Chi tiết / Ghi chú</th>}
                       <th className="px-4 py-3">Trạng thái</th>
                       {canManageSettings && <th className="px-4 py-3 text-right">Thao tác</th>}
                     </tr>
@@ -938,27 +965,39 @@ export default function SettingsPage() {
                   <tbody className="divide-y divide-slate-100 text-slate-700">
                     {isLoading ? (
                       <tr>
-                        <td colSpan={canManageSettings ? 6 : 5} className="px-4 py-12 text-center text-slate-400">
+                        <td colSpan={tableColumnCount} className="px-4 py-12 text-center text-slate-400">
                           Đang tải dữ liệu danh mục...
                         </td>
                       </tr>
                     ) : items.length === 0 ? (
                       <tr>
-                        <td colSpan={canManageSettings ? 6 : 5} className="px-4 py-12 text-center text-slate-400">
+                        <td colSpan={tableColumnCount} className="px-4 py-12 text-center text-slate-400">
                           Chưa có dữ liệu cho danh mục này.
                         </td>
                       </tr>
                     ) : (
                       items.map((item) => (
-                        <tr key={item.id} className="hover:bg-slate-50 transition">
+                        <tr key={item.id} className="align-middle transition hover:bg-slate-50 [&>td]:py-3.5">
                           <td className="px-4 py-3">
-                            <p className="font-bold text-slate-900"><CopyableText value={item.code} /></p>
-                            <p className="text-xs text-slate-500 mt-0.5">{item.name}</p>
+                            <p className="break-words font-bold text-slate-900"><CopyableText value={item.code} /></p>
+                            <p className="mt-0.5 text-xs text-slate-500">{item.name}</p>
                           </td>
                           <td className="px-4 py-3">
-                            <p className="font-semibold text-xs bg-slate-100 text-slate-700 px-2 py-0.5 rounded w-fit">
-                              {item.type === "PARTNER" ? formatGroupLabel("PARTNER", item.partnerType || item.group) : formatGroupLabel(item.type, item.group)}
-                            </p>
+                            {/* Thu/Chi chỉ có đúng hai giá trị: cho ra viên màu đọc phát biết, thay vì
+                                chip xám "1 - Thu" / "2 - Chi" — số thứ tự chỉ có nghĩa trong ô chọn của form. */}
+                            {item.type === "REVENUE_EXPENSE_CATEGORY" ? (
+                              <p className={`w-fit whitespace-nowrap rounded-full border px-2.5 py-1 text-[11px] font-bold ${
+                                normalizeGroupValue(item.type, item.group) === "RECEIPT"
+                                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                  : "border-rose-200 bg-rose-50 text-rose-700"
+                              }`}>
+                                {normalizeGroupValue(item.type, item.group) === "RECEIPT" ? "Thu" : "Chi"}
+                              </p>
+                            ) : (
+                              <p className="w-fit whitespace-nowrap rounded-md bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-700">
+                                {item.type === "PARTNER" ? formatGroupLabel("PARTNER", item.partnerType || item.group) : formatGroupLabel(item.type, item.group)}
+                              </p>
+                            )}
                             {item.subGroup && parentTypeOf[item.type] && (
                               <p className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-slate-600">
                                 <span className="material-symbols-outlined text-[13px] text-slate-300">subdirectory_arrow_right</span>
@@ -975,9 +1014,12 @@ export default function SettingsPage() {
                               <p className="text-[10px] text-slate-500 mt-0.5 font-bold uppercase">{item.partnerGroup || "EXTERNAL"}</p>
                             )}
                           </td>
-                          <td className="px-4 py-3 font-medium">{storeLabel(item.branch)}</td>
-                          <td className="px-4 py-3 max-w-xs truncate">
-                            <p className="font-medium text-xs text-slate-800">
+                          {showBranchColumn && (
+                            <td className="whitespace-nowrap px-4 py-3 font-medium">{storeLabel(item.branch)}</td>
+                          )}
+                          {showDetailColumn && (
+                          <td className="max-w-xs px-4 py-3">
+                            <p className="truncate text-xs font-medium text-slate-800">
                               {item.type === "ASSET_GROUP" && item.codePrefix
                                 ? <>Tiền tố mã: <CopyableText value={item.codePrefix} /></>
                                 : item.type === "MONEY_SOURCE" && (item.summarySourceName || item.settlementBankCode)
@@ -988,13 +1030,14 @@ export default function SettingsPage() {
                                     </>
                                   : item.contactName || (item.accountNo ? <CopyableText value={item.accountNo} /> : "-")}
                             </p>
-                            <p className="text-[11px] text-slate-500 mt-0.5 italic">
+                            <p className="mt-0.5 truncate text-[11px] italic text-slate-500">
                               {item.phone ? <CopyableText value={item.phone} />
                                 : item.email ? <CopyableText value={item.email} />
                                 : item.taxCode ? <CopyableText value={item.taxCode} />
                                 : item.note || ""}
                             </p>
                           </td>
+                          )}
                           <td className="px-4 py-3">
                             <span
                               className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${
@@ -1008,26 +1051,36 @@ export default function SettingsPage() {
                           </td>
                           {canManageSettings && (
                             <td className="px-4 py-3 text-right">
-                              <button
-                                onClick={() => editItem(item)}
-                                className="text-xs font-bold text-blue-600 hover:text-blue-800 mr-4 transition"
-                              >
-                                Sửa
-                              </button>
-                              <button
-                                onClick={() => toggleStatus(item)}
-                                className={`text-xs font-bold transition ${
-                                  item.status === "ACTIVE" ? "text-slate-500 hover:text-slate-700" : "text-emerald-600 hover:text-emerald-800"
-                                }`}
-                              >
-                                {item.status === "ACTIVE" ? "Ngừng" : "Kích hoạt"}
-                              </button>
-                              <button
-                                onClick={() => deleteItem(item)}
-                                className="text-xs font-bold text-rose-600 hover:text-rose-800 ml-4 transition"
-                              >
-                                Xóa
-                              </button>
+                              {/* Cùng ngôn ngữ với cụm thao tác ở màn Tiền cọc: việc đổi trạng thái là
+                                  một nút chữ dạng viên, còn sửa/xoá là biểu tượng. whitespace-nowrap để
+                                  ba nút luôn nằm một hàng, trước đây cột hẹp là chúng xếp chồng lên nhau. */}
+                              <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
+                                <button
+                                  onClick={() => toggleStatus(item)}
+                                  title={item.status === "ACTIVE" ? "Ngừng dùng danh mục này" : "Cho phép dùng lại danh mục này"}
+                                  className={`rounded-full border px-2.5 py-1 text-[11px] font-bold transition ${
+                                    item.status === "ACTIVE"
+                                      ? "border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100"
+                                      : "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                                  }`}
+                                >
+                                  {item.status === "ACTIVE" ? "Ngừng" : "Kích hoạt"}
+                                </button>
+                                <button
+                                  onClick={() => editItem(item)}
+                                  title="Chỉnh sửa"
+                                  className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-blue-50 hover:text-blue-700"
+                                >
+                                  <span className="material-symbols-outlined text-base">edit</span>
+                                </button>
+                                <button
+                                  onClick={() => deleteItem(item)}
+                                  title="Xoá"
+                                  className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-rose-50 hover:text-rose-700"
+                                >
+                                  <span className="material-symbols-outlined text-base">delete</span>
+                                </button>
+                              </div>
                             </td>
                           )}
                         </tr>
