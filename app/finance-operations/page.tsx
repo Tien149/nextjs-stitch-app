@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { DateInput, MonthInput } from "@/components/DateInput";
 import { storeLabel, updateDynamicBranches, visibleBranchScopeOptions, visibleStoreOptions } from "@/lib/branch-labels";
-import { canPerformMenuAction, filterModuleTabs } from "@/lib/auth-demo";
+import { canPerformMenuAction, filterModuleTabs, isCashierSubject } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
-import { filterMoneySources, moneySourceDebugLabel, moneySourceDisplayName, summaryMoneySourceGroups } from "@/lib/money-sources";
+import { filterCashierCashSources, filterMoneySources, moneySourceDebugLabel, moneySourceDisplayName, summaryMoneySourceGroups } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { shiftLabels } from "@/lib/shifts";
@@ -142,9 +142,16 @@ export default function FinanceOperationsPage() {
     setCashbookSource("");
   };
 
+  /**
+   * Thu ngân chỉ nhìn thấy quỹ tiền mặt của thu ngân — cùng danh sách với màn "Thu chi ngày".
+   * API cũng lọc y hệt, chỗ này chỉ để ô lọc không chào những quỹ chọn vào cũng ra sổ trống.
+   */
+  const cashierScoped = isCashierSubject(user);
   const cashbookSourceOptions = useMemo(
-    () => filterMoneySources(moneySources, branchCode),
-    [moneySources, branchCode],
+    () => (cashierScoped
+      ? filterCashierCashSources(moneySources, branchCode)
+      : filterMoneySources(moneySources, branchCode)),
+    [moneySources, branchCode, cashierScoped],
   );
   /** Nhóm "Nguồn tiền tổng": chọn một dòng là lọc được cả cụm nguồn chi tiết cùng tài khoản. */
   const cashbookSummaryGroups = useMemo(
@@ -539,7 +546,7 @@ export default function FinanceOperationsPage() {
                     onChange={(event) => setCashbookSource(event.target.value)}
                     className="w-56 pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all appearance-none cursor-pointer font-medium"
                   >
-                    <option value="">Tất cả nguồn tiền</option>
+                    <option value="">{cashierScoped ? "Tất cả quỹ thu ngân" : "Tất cả nguồn tiền"}</option>
                     {cashbookSummaryGroups.length > 0 ? (
                       <>
                         <optgroup label="Nguồn tiền tổng">
@@ -662,6 +669,13 @@ export default function FinanceOperationsPage() {
                 </div>
               </div>
             </div>
+
+            {cashierScoped && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-medium text-amber-900">
+                Màn hình này chỉ hiện <b>quỹ tiền mặt của thu ngân</b> tại cửa hàng bạn phụ trách và chỉ để tra cứu.
+                Các quỹ khác (két quản lý, tài khoản ngân hàng, ví/POS) cùng mọi thao tác ghi sổ thuộc phần việc của kế toán.
+              </div>
+            )}
 
             {canCreate && (
               <section className="overflow-hidden rounded-xl border border-indigo-200 bg-white shadow-sm">

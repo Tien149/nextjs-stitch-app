@@ -341,6 +341,24 @@ export default function PermissionsPage() {
     }
   };
 
+  /** "/finance-operations?tab=cashbook" -> "/finance-operations" */
+  const menuBasePathOf = (href: string) => href.split("?")[0];
+
+  /**
+   * Mục trong menuAccess có thuộc dòng menu này không: chính nó, hoặc một mục "?tab=" của cùng
+   * trang mà tab ấy KHÔNG có dòng menu riêng (ví dụ "Sổ quỹ dòng tiền" nằm dưới "Sổ quỹ").
+   * Tab đã có dòng menu riêng ("Thu chi ngày" = "/reports?tab=daily-cash") thuộc về dòng riêng
+   * đó, không tính cho dòng cha — nếu không, tick một tab là cả "Báo cáo & BI" lẫn "Dòng tiền"
+   * cùng hiện "Có" vì chung "/reports". Cùng luật với canAccessMenu ở lib/auth-demo.ts.
+   */
+  const entryBelongsToMenu = (entry: string, menuHref: string) => {
+    if (entry === menuHref) return true;
+    if (menuHref.includes("?")) return false;
+    return entry.includes("?")
+      && menuBasePathOf(entry) === menuHref
+      && !appMenuItems.some((menu) => menu.href === entry);
+  };
+
   const handleToggleMenuAccess = async (role: RoleItem, menuHref: string) => {
     if (role.name === "Admin") return;
 
@@ -355,9 +373,12 @@ export default function PermissionsPage() {
         .map((item) => item.href);
     }
 
-    const isCurrentlyChecked = currentMenuAccess.includes(menuHref);
+    // Dòng cha đại diện cho cả trang: bỏ tick phải gỡ luôn các mục "?tab=..." của trang đó.
+    // Trước đây chỉ gỡ mỗi href trần, để lại mục tab mồ côi -> ma trận hiện dòng con "Có"
+    // nhưng người dùng không thấy menu đâu cả.
+    const isCurrentlyChecked = currentMenuAccess.some((href) => entryBelongsToMenu(href, menuHref));
     const newMenuAccess = isCurrentlyChecked
-      ? currentMenuAccess.filter((href) => href !== menuHref)
+      ? currentMenuAccess.filter((href) => !entryBelongsToMenu(href, menuHref))
       : [...currentMenuAccess, menuHref];
 
     setRolesList((prev) =>
@@ -715,7 +736,8 @@ export default function PermissionsPage() {
                       const isMenuChecked = isAdmin
                         ? true
                         : Array.isArray(r.menuAccess) && r.menuAccess.length > 0
-                        ? r.menuAccess.includes(item.href) || r.menuAccess.includes(item.name)
+                        ? r.menuAccess.includes(item.name)
+                          || r.menuAccess.some((entry) => entryBelongsToMenu(entry, item.href))
                         : (item.roles as string[]).includes(r.name) || (!standardRoles.includes(r.name) && (r.actions || []).includes("view"));
 
                       return (

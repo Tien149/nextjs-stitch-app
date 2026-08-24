@@ -50,6 +50,7 @@
     "test:pos-template": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-revenue-pos-raw-template.mjs",
     "test:import-e2e": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-import-end-to-end.mjs",
     "export:import-file": "node scripts/export-import-batch-file.cjs",
+    "test:cashier-scope": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-cashier-cashbook-scope.mjs",
     "test:source-matcher": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-money-source-matcher.mjs",
     "test:rollback-approved": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-rollback-after-approval.mjs",
     "test:import-needs-fix": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-import-needs-fix.mjs",

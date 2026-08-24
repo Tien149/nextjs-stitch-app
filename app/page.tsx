@@ -150,7 +150,7 @@ export default function Home() {
       const dashboardMenu = appMenuItems.find((item) => item.href === "/" && item.name === "Dashboard");
       if (!dashboardMenu || !canAccessMenu(parsedSession, dashboardMenu) || !canViewFinancialDashboard(parsedSession.role)) {
         setIsCheckingAuth(false);
-        router.replace(getDefaultRouteForRole(parsedSession.role));
+        router.replace(getDefaultRouteForRole(parsedSession));
         return;
       }
 

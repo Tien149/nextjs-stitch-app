@@ -1,4 +1,5 @@
 import { branchAccessLabel } from "@/lib/branch-labels";
+import { isCashierRoleName } from "@/lib/money-sources";
 
 export type DemoRole =
   | "Admin"
@@ -315,11 +316,21 @@ export function canViewFinancialDashboard(role: DemoRole | string) {
   return false;
 }
 
-export function getDefaultRouteForRole(role: DemoRole | string) {
-  if (canViewFinancialDashboard(role as DemoRole)) return "/";
+/**
+ * Trang mở ngay sau khi đăng nhập (và là chỗ trả về khi bị chặn ở trang khác).
+ *
+ * Truyền cả PHIÊN vào đây, đừng chỉ truyền tên vai trò: vai trò tuỳ chỉnh không có Dashboard
+ * mà vẫn trả "/" thì trang Dashboard lại đẩy về "/" một lần nữa — người dùng đứng trước bảng
+ * điều hành trắng trơn toàn số 0, đúng lỗi vai trò Thu ngân gặp phải.
+ */
+export function getDefaultRouteForRole(subject: DemoRole | DemoSession | string) {
+  const session = typeof subject === "object" && subject ? subject : null;
+  const role = session ? session.role : (subject as string);
+  const dashboard = appMenuItems.find((item) => item.href === "/" && item.name === "Dashboard");
+  if (dashboard && canAccessMenu(session || role, dashboard) && canViewFinancialDashboard(role)) return "/";
   if (role === "Kế toán công nợ") return "/debts";
   if (role === "Viewer") return "/work-management";
-  const firstAllowed = appMenuItems.find((item) => canAccessMenu(role, item));
+  const firstAllowed = appMenuItems.find((item) => item.href !== "/" && canAccessMenu(session || role, item));
   return firstAllowed?.href || "/work-management";
 }
 
@@ -462,7 +473,15 @@ export function canAccessMenu(roleOrSession: DemoRole | DemoSession | string | n
   if (roleName === "Admin") return true;
 
   if (Array.isArray(customList) && customList.length > 0) {
-    return customList.includes(item.href) || customList.includes(item.name);
+    if (customList.includes(item.href) || customList.includes(item.name)) return true;
+    // Vai trò chỉ được gán một tab ("/finance-operations?tab=cashbook") vẫn phải thấy mục cha
+    // ngoài thanh menu, nếu không thì tick "Có" trong ma trận mà người dùng không mở được gì.
+    // Chỉ áp cho mục "trần": tab nào đã có mục menu riêng (ví dụ "Thu chi ngày" =
+    // "/reports?tab=daily-cash") thì để mục riêng đó lo, tránh một trang hiện hai dòng menu.
+    if (item.href.includes("?")) return false;
+    return customList.some((entry) => entry.includes("?")
+      && menuBasePath(entry) === item.href
+      && !appMenuItems.some((menu) => menu.href === entry));
   }
 
   if (!isDemoRole(roleName)) {
@@ -496,7 +515,25 @@ export function canPerformAction(subject: ActionSubject, action: AppAction) {
   return roleActions[role]?.includes(action) ?? false;
 }
 
+/**
+ * Màn hình thu ngân chỉ được XEM, không thao tác và không xuất dữ liệu.
+ *
+ * Vai trò tuỳ chỉnh chỉ có một danh sách quyền dùng chung cho mọi màn hình, mà thu ngân thì
+ * vẫn cần create/edit ở "Thu chi ngày" để lập phiếu và nộp tiền. Không chặn riêng theo màn thì
+ * quyền đó kéo thẳng sang Sổ quỹ, hiện cả form Điều chỉnh quỹ lẫn Quyết toán ví/POS.
+ */
+const cashierReadOnlyMenus = ["/finance-operations"];
+
+export function isCashierSubject(subject: ActionSubject) {
+  return isCashierRoleName(subjectRole(subject));
+}
+
 export function canPerformMenuAction(subject: ActionSubject, href: string, action: AppAction) {
+  // Chỉ thu hẹp, không bao giờ cấp thêm: vai trò không có quyền vẫn không có sau bước này.
+  if (action !== "view" && cashierReadOnlyMenus.includes(menuBasePath(href)) && isCashierSubject(subject)) {
+    return false;
+  }
+
   const configured = sessionActions(subject);
   if (configured) return configured.includes(action);
 

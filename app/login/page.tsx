@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { AppBrand } from "@/components/AppBrand";
-import { canViewFinancialDashboard, getDefaultRouteForRole, SESSION_KEY } from "@/lib/auth-demo";
+import { getDefaultRouteForRole, SESSION_KEY } from "@/lib/auth-demo";
 
 const highlights = [
   {
@@ -68,8 +68,10 @@ export default function Login() {
       // Cookie phiên do /api/auth/login phát hành (httpOnly), client không tự ghi nữa.
 
       const next = new URLSearchParams(window.location.search).get("next");
-      const defaultRoute = getDefaultRouteForRole(session.role);
-      const targetRoute = next && (next !== "/" || canViewFinancialDashboard(session.role)) ? next : defaultRoute;
+      // Truyền cả phiên: vai trò tuỳ chỉnh không được mở Dashboard thì phải vào thẳng màn đầu
+      // tiên của họ, chứ trả "/" là rơi vào bảng điều hành trắng trơn rồi đứng luôn ở đó.
+      const defaultRoute = getDefaultRouteForRole(session);
+      const targetRoute = next && (next !== "/" || defaultRoute === "/") ? next : defaultRoute;
       window.location.href = targetRoute;
     } catch (e) {
       setError(e instanceof Error ? e.message : "Không thể đăng nhập. Vui lòng thử lại.");

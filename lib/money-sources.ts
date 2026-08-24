@@ -191,11 +191,23 @@ function normalizeVietnameseText(value: string | null | undefined) {
     .replace(/Đ/g, "D");
 }
 
-const CASHIER_CASH_PATTERN = /THU\s*_?\s*NGAN/;
+const CASHIER_PATTERN = /THU\s*_?\s*NGAN/;
+
+/**
+ * Vai trò thu ngân, nhận theo TÊN vai trò khai ở màn Phân quyền ("Thu ngân", "THU NGAN",
+ * "Thu ngân ca tối"...). Dùng chung đúng bộ chữ với quỹ tiền mặt thu ngân ở trên, để danh mục
+ * và phân quyền không hiểu hai kiểu khác nhau.
+ *
+ * Đánh đổi đã chốt với khách: đổi tên vai trò sang chữ không có "thu ngân" thì các giới hạn
+ * dành cho thu ngân hết hiệu lực, vai trò đó quay về quyền bình thường.
+ */
+export function isCashierRoleName(role: string | null | undefined) {
+  return CASHIER_PATTERN.test(normalizeVietnameseText(role));
+}
 
 export function isCashierCashSource(source: MoneySourceOption) {
   if (normalizeMoneySourceGroup(source.group) !== "CASH") return false;
-  return CASHIER_CASH_PATTERN.test(normalizeVietnameseText(
+  return CASHIER_PATTERN.test(normalizeVietnameseText(
     `${source.summarySourceName || ""} ${source.name || ""} ${source.code || ""}`,
   ));
 }

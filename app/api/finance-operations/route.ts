@@ -5,7 +5,7 @@ import { addPeriod, apiError, businessError, cleanText, isPeriodLocked, normaliz
 import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
 import { writeAuditLog } from "@/lib/audit-log";
 import { nextSeqFromCodes, voucherCodePrefix } from "@/lib/voucher-code-generator";
-import { moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup, parseMoneySourceCodes } from "@/lib/money-sources";
+import { filterCashierCashSources, isCashierRoleName, moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup, parseMoneySourceCodes } from "@/lib/money-sources";
 import { scopePayloadByTab } from "@/lib/tab-scope";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { cashDepositRoundingExpense, cashDepositUnit, roundCashDepositAmount } from "@/lib/cash-deposit";
@@ -83,6 +83,19 @@ async function closingChecklist(period: string, branchCode: string) {
   ];
 }
 
+/**
+ * Mã các quỹ tiền mặt do thu ngân giữ, đọc thẳng từ danh mục nguồn tiền.
+ *
+ * Dùng lại đúng bộ nhận diện của màn "Thu chi ngày" (`filterCashierCashSources`) để hai màn
+ * không ra hai danh sách quỹ khác nhau. Cửa hàng chưa khai quỹ nào là của thu ngân thì luật
+ * đó trả về toàn bộ quỹ tiền mặt của cửa hàng — cố ý, để nơi chưa đặt tên theo quy ước không
+ * bị sổ trắng.
+ */
+async function cashierCashSourceCodes(branchCode: string) {
+  const sources = await prisma.masterDataItem.findMany({ where: { type: "MONEY_SOURCE", status: "ACTIVE" } });
+  return filterCashierCashSources(sources, branchCode).map((source) => source.code);
+}
+
 export async function GET(request: Request) {
   try {
     const auth = requireMenuAccess(request, menuHref);
@@ -107,9 +120,22 @@ export async function GET(request: Request) {
     })();
     // Một mã nguồn chi tiết, hoặc nhiều mã của một "Nguồn tiền tổng" nối bằng dấu phẩy.
     const cashbookSources = parseMoneySourceCodes(searchParams.get("moneySourceCode"));
+    /**
+     * Thu ngân chỉ được xem quỹ tiền mặt của thu ngân. Phải lọc ở API chứ không chỉ bó ô lọc
+     * ngoài giao diện: gõ thẳng ?moneySourceCode=... vẫn đọc được số dư quỹ khác.
+     */
+    const cashierSourceCodes = isCashierRoleName(auth.session.role)
+      ? await cashierCashSourceCodes(branchCode)
+      : null;
+    const scopedSources = cashierSourceCodes
+      ? (cashbookSources.length ? cashbookSources.filter((code) => cashierSourceCodes.includes(code)) : cashierSourceCodes)
+      : cashbookSources;
+    // Thu ngân mà cửa hàng không có quỹ nào hợp lệ thì phải ra sổ TRỐNG, không được rơi về
+    // nhánh "không lọc" như khi người dùng bình thường chưa chọn nguồn nào.
+    const limitSources = Boolean(cashierSourceCodes) || scopedSources.length > 0;
 
     const [openingBalances, vouchers, adjustments, accruals, accountingPeriod, checklist, moneyTransfers] = await Promise.all([
-      prisma.openingBalance.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { branchCode }), ...(cashbookSources.length ? { moneySourceCode: { in: cashbookSources } } : {}), status: { in: [...OPENING_BALANCE_EFFECTIVE_STATUSES] }, balanceType: { in: [...CASH_SOURCE_OPENING_TYPES] } } }),
+      prisma.openingBalance.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { branchCode }), ...(limitSources ? { moneySourceCode: { in: scopedSources } } : {}), status: { in: [...OPENING_BALANCE_EFFECTIVE_STATUSES] }, balanceType: { in: [...CASH_SOURCE_OPENING_TYPES] } } }),
       prisma.financialVoucher.findMany({ where: { ...branchFilter, voucherDate: { gte: start, lt: end }, status: "APPROVED" }, orderBy: { voucherDate: "asc" } }),
       prisma.cashbookAdjustment.findMany({ where: { ...branchFilter, entryDate: { gte: start, lt: end } }, orderBy: { entryDate: "asc" } }),
       prisma.accrual.findMany({ where: { ...(branchCode === "ALL" ? {} : { branchCode }) }, include: { schedules: { orderBy: { period: "asc" } } }, orderBy: { createdAt: "desc" } }),
@@ -148,7 +174,7 @@ export async function GET(request: Request) {
         ];
       }),
     ]
-      .filter((entry) => cashbookSources.length === 0 || cashbookSources.includes(entry.moneySourceCode))
+      .filter((entry) => !limitSources || scopedSources.includes(entry.moneySourceCode))
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
         || new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
     let runningBalance = openingAmount;
@@ -169,7 +195,14 @@ export async function GET(request: Request) {
     // "Số dư quỹ" đọc ngược từ trên xuống vẫn khớp với từng dòng phát sinh.
     const latestFirstCashbook = [...cashbook].reverse();
 
-    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { period, branchCode, openingAmount: rangeOpeningAmount, closingBalance: rangeClosingBalance, cashbook: latestFirstCashbook, accruals, moneyTransfers, accountingPeriod: accountingPeriod || { status: "OPEN" }, checklist }));
+    // Phiếu điều tiền chỉ giữ lại khi có ít nhất một vế nằm ở quỹ của thu ngân: phiếu nộp tiền
+    // của chính họ (quỹ thu ngân -> quỹ PKT/Cô) vì thế vẫn hiện, còn phiếu của quỹ khác thì không.
+    const visibleMoneyTransfers = cashierSourceCodes
+      ? moneyTransfers.filter((row) => cashierSourceCodes.includes(row.fromMoneySourceCode)
+        || cashierSourceCodes.includes(row.toMoneySourceCode))
+      : moneyTransfers;
+
+    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { period, branchCode, openingAmount: rangeOpeningAmount, closingBalance: rangeClosingBalance, cashbook: latestFirstCashbook, accruals, moneyTransfers: visibleMoneyTransfers, accountingPeriod: accountingPeriod || { status: "OPEN" }, checklist }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });
