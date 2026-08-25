@@ -214,6 +214,17 @@ export default function FinanceOperationsPage() {
     const eligibleIds = new Set(pendingCashDeposits.map((row) => row.id));
     return selectedCashDepositIds.filter((id) => eligibleIds.has(id));
   }, [pendingCashDeposits, selectedCashDepositIds]);
+  /**
+   * Tổng của riêng các phiếu đang tick, để kế toán đối chiếu với số tiền bó lại đem nộp
+   * trước khi bấm duyệt. Cộng cả clear vì đó mới là số thực nộp sau chi phí làm tròn.
+   */
+  const selectedCashDepositTotals = useMemo(() => {
+    const selected = new Set(activeSelectedCashDepositIds);
+    return pendingCashDeposits.filter((row) => selected.has(row.id)).reduce(
+      (sum, row) => ({ count: sum.count + 1, amount: sum.amount + row.amount, feeAmount: sum.feeAmount + row.feeAmount }),
+      { count: 0, amount: 0, feeAmount: 0 },
+    );
+  }, [pendingCashDeposits, activeSelectedCashDepositIds]);
 
   // Deep-link từ màn Đối soát: mở đúng kỳ/cửa hàng và định vị phiếu QTVI thay vì chỉ mở trang chung.
   useEffect(() => {
@@ -927,6 +938,31 @@ export default function FinanceOperationsPage() {
                         </tr>
                       ))}
                     </tbody>
+                    {canApproveTransfer && pendingCashDeposits.length > 0 && (
+                      <tfoot className="border-t-2 border-slate-300 bg-slate-50">
+                        <tr>
+                          <td className="px-3 py-3" />
+                          <td className="px-4 py-3" colSpan={4}>
+                            {selectedCashDepositTotals.count > 0 ? (
+                              <b className="text-slate-900">Tổng đã chọn · {selectedCashDepositTotals.count}/{pendingCashDeposits.length} phiếu nộp tiền mặt</b>
+                            ) : (
+                              <span className="text-slate-400">Tick ô đầu dòng để cộng tổng số tiền cần nộp</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <p className={`text-sm font-bold ${selectedCashDepositTotals.count > 0 ? "text-slate-900" : "text-slate-400"}`}>
+                              {money(selectedCashDepositTotals.amount)} đ
+                            </p>
+                            {selectedCashDepositTotals.feeAmount !== 0 && (
+                              <p className={`mt-1 text-[11px] font-medium ${selectedCashDepositTotals.feeAmount > 0 ? "text-amber-700" : "text-emerald-700"}`}>
+                                Chi phí làm tròn: {money(selectedCashDepositTotals.feeAmount)} đ · Clear: {money(selectedCashDepositTotals.amount + selectedCashDepositTotals.feeAmount)} đ
+                              </p>
+                            )}
+                          </td>
+                          <td className="px-4 py-3" />
+                        </tr>
+                      </tfoot>
+                    )}
                   </table>
                 </div>
               </section>
