@@ -134,6 +134,12 @@ async function createOrUpdateConversion(itemId: string, purchaseUnit: string, co
   if (conversionRate < 1) businessError("Tỷ lệ quy đổi phải tính từ ĐVT mua về ĐVT cơ bản và không được nhỏ hơn 1");
   const unitCode = purchaseUnit.toUpperCase();
   if (unitCode.length > 32) businessError("ĐVT mua không được vượt quá 32 ký tự");
+  // "1 KG = 1000 KG" là khai sai (đúng ra ĐVT tồn là G). Chặn tại đây để không đẻ thêm dữ liệu
+  // hỏng — thứ đã làm 1.277 mặt hàng trong danh mục nhân sai số lượng gấp 1000 lần.
+  const owner = await prisma.inventoryItem.findUnique({ where: { id: itemId }, select: { unit: true, code: true } });
+  if (owner && unitCode === owner.unit.trim().toUpperCase() && conversionRate !== 1) {
+    businessError(`ĐVT mua [${purchaseUnit}] trùng ĐVT tồn kho của ${owner.code} nên tỷ lệ quy đổi phải là 1. Nếu ý bạn là "1 ${purchaseUnit} = ${conversionRate} đơn vị nhỏ hơn" thì hãy sửa ĐVT tồn kho của mặt hàng thành đơn vị nhỏ đó (ví dụ ĐVT tồn G, ĐVT mua KG, tỷ lệ 1000).`);
+  }
   return prisma.itemUnitConversion.upsert({
     where: { itemId_unitCode: { itemId, unitCode } },
     create: { itemId, unitCode, unitName: purchaseUnit, conversionRate, isDefaultPurchase: conversionRate > 1, note: note || null },

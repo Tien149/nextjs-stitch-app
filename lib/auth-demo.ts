@@ -380,6 +380,9 @@ export const moduleTabs: Record<string, Array<{ id: string; label: string }>> = 
   ],
   "/procurement": [
     { id: "quotes", label: "So sánh giá" },
+    // "Đặt theo mẫu" là màn nhân viên nhà hàng dùng trên điện thoại: mở mẫu set sẵn,
+    // điền số lượng là ra PR — gán riêng tab này cho vai trò cửa hàng là đủ.
+    { id: "templates", label: "Đặt theo mẫu" },
     { id: "requests", label: "Yêu cầu mua" },
     { id: "orders", label: "Đơn mua hàng" },
   ],
@@ -409,7 +412,7 @@ export const moduleTabIcons: Record<string, string> = {
   dashboard: "dashboard", operations: "fact_check", budget: "price_check", "daily-cash": "receipt", "cash-source": "savings", "revenue-settlement": "rule",
   activity: "history", pnl: "finance", yoy: "query_stats", cashflow: "timeline", balance: "account_balance",
   cashbook: "account_balance_wallet", accruals: "calendar_month", closing: "lock",
-  requests: "assignment", quotes: "compare_arrows", orders: "local_shipping",
+  requests: "assignment", quotes: "compare_arrows", orders: "local_shipping", templates: "playlist_add_check",
   stock: "inventory", transactions: "swap_horiz", inbound: "download", outbound: "upload", transfer: "sync_alt", items: "category", recipes: "menu_book",
   production: "blender", stocktake: "fact_check", waste: "delete_sweep",
   depreciation: "trending_down", maintenance: "build", damage: "report_problem", disposal: "delete_sweep",

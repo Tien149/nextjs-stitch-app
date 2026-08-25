@@ -77,7 +77,9 @@ export function assertBranchAccess(session: DemoSession, payloadBranch: string) 
   const allowedBranches = session.allowedBranches || [];
   if (!requested || requested === "ALL") return;
   if (!allowedBranches.includes(requested)) {
-    throw new Error(`Bạn không có quyền thao tác ngoài cửa hàng được phân công (${allowedBranches.join(", ")}).`);
+    // Ném BUSINESS để người dùng nhận đúng câu giải thích. Ném Error thường thì apiError coi là
+    // lỗi hệ thống và trả "Internal Server Error" 500 — người bị chặn không hiểu vì sao.
+    businessError(`Bạn không có quyền thao tác ngoài cửa hàng được phân công (${allowedBranches.join(", ")}).`);
   }
 }
 

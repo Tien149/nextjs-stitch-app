@@ -36,30 +36,34 @@ function resolveActiveHref(items: AppMenuItem[], pathname: string, search: strin
   return best.href;
 }
 
-export function AppSidebar() {
+/** Đọc phiên đăng nhập từ localStorage, dùng chung cho lần dựng đầu và mỗi lần đổi route. */
+function readSession(): DemoSession | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    return raw ? (JSON.parse(raw) as DemoSession) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function AppSidebar({ onNavigate, inDrawer = false }: { onNavigate?: () => void; inDrawer?: boolean } = {}) {
   const router = useRouter();
   const pathname = usePathname();
-  const [session, setSession] = useState<DemoSession | null>(null);
-  const [search, setSearch] = useState("");
+  // Drawer trên điện thoại dựng lại component từ đầu mỗi lần mở. Nếu chờ effect mới nạp phiên
+  // thì lần nào bấm menu cũng thấy drawer TRỐNG TRƠN một nhịp rồi menu mới hiện ra.
+  const [session, setSession] = useState<DemoSession | null>(() => (inDrawer ? readSession() : null));
+  const [search, setSearch] = useState(() => (inDrawer && typeof window !== "undefined" ? window.location.search : ""));
 
   // Doc lai session + query moi khi doi route de sidebar luon dung quyen va menu dang mo.
   useEffect(() => {
     const currentSearch = window.location.search;
-    const raw = localStorage.getItem(SESSION_KEY);
-
-    let nextSession: DemoSession | null = null;
-    if (raw) {
-      try {
-        nextSession = JSON.parse(raw) as DemoSession;
-      } catch {
-        nextSession = null;
-      }
-    }
-
-    window.setTimeout(() => {
+    const nextSession = readSession();
+    const timer = window.setTimeout(() => {
       setSearch(currentSearch);
       setSession(nextSession);
     }, 0);
+    return () => window.clearTimeout(timer);
   }, [pathname]);
 
   const allowedMenuItems = useMemo(
@@ -78,7 +82,9 @@ export function AppSidebar() {
   };
 
   return (
-    <aside className="w-64 h-screen fixed left-0 top-0 bg-[#0f172a] flex flex-col py-6 shadow-xl z-50 overflow-hidden">
+    // h-dvh thay h-screen: trên Safari/Chrome iOS, 100vh cao hơn vùng nhìn thấy nên khối chân
+    // trang ("Trợ giúp", "Đăng xuất") bị đẩy khỏi màn hình và không cuộn tới được.
+    <aside className="w-64 h-dvh fixed left-0 top-0 bg-[#0f172a] flex flex-col py-6 shadow-xl z-50 overflow-hidden">
       <div className="px-6 mb-8 shrink-0">
         <AppBrand compact />
       </div>
@@ -87,7 +93,10 @@ export function AppSidebar() {
           <Link
             key={item.name}
             href={item.href}
-            onClick={() => setSearch(splitHref(item.href).query ? `?${splitHref(item.href).query}` : "")}
+            onClick={() => {
+              setSearch(splitHref(item.href).query ? `?${splitHref(item.href).query}` : "");
+              onNavigate?.();
+            }}
             className={`w-full flex items-center px-6 py-3 text-left transition-all active:scale-[0.98] duration-150 ${
               activeHref === item.href
                 ? "bg-[#1e293b] text-white border-l-4 border-[#2563eb]"

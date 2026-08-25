@@ -18,6 +18,7 @@ const tabDataKeys: Record<string, Record<string, string[]>> = {
     requests: ["requests"],
     quotes: ["requests"],
     orders: ["orders"],
+    templates: ["templates"],
   },
   "/inventory": {
     stock: ["balances", "stockSummary"],

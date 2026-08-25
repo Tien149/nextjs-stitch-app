@@ -38,6 +38,7 @@ export const TRASH_ENTITIES: TrashEntity[] = [
   { model: "StocktakeSession", label: "Phiếu kiểm kê", module: "/inventory", codeField: "code", titleField: "note", branchField: "branchCode" },
   { model: "Recipe", label: "Định mức (BOM)", module: "/inventory", codeField: "code", titleField: "productName" },
 
+  { model: "PurchaseRequestTemplate", label: "Mẫu yêu cầu mua hàng", module: "/procurement", codeField: "code", titleField: "name", branchField: "branchCode" },
   {
     model: "PurchaseRequest", label: "Đề nghị mua hàng", module: "/procurement", codeField: "code", titleField: "reason", branchField: "branchCode",
     cascade: [{ model: "SupplierQuote", foreignKey: "requestId" }],

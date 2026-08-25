@@ -1005,6 +1005,13 @@ export async function commitImport(input: CommitInput) {
           const conversionRateRepeat = row.values.conversion_rate ? asNumber(row.values.conversion_rate) : 0;
           if (purchaseUnitRepeat || conversionRateRepeat) {
             if (!purchaseUnitRepeat || conversionRateRepeat < 1) throw new Error(`Dòng ${row.rowNumber}: ĐVT mua và tỷ lệ quy đổi phải hợp lệ`);
+            // Cùng luật với dòng đầu: ĐVT mua trùng ĐVT tồn thì tỷ lệ bắt buộc là 1. Thiếu chốt
+            // này thì dòng lặp mã GHI ĐÈ luôn tỷ lệ của dòng ĐVT cơ bản (1 -> 1000) — đúng cơ chế
+            // đã đẻ ra 1.277 mặt hàng khai sai trong danh mục hiện tại.
+            const baseUnitRepeat = (await tx.inventoryItem.findUnique({ where: { id: repeatedItemId }, select: { unit: true } }))?.unit || "";
+            if (purchaseUnitRepeat.trim().toUpperCase() === baseUnitRepeat.trim().toUpperCase() && conversionRateRepeat !== 1) {
+              throw new Error(`Dòng ${row.rowNumber}: ĐVT mua [${purchaseUnitRepeat}] trùng ĐVT tồn kho nên tỷ lệ quy đổi phải là 1. Muốn khai "1 ${purchaseUnitRepeat} = ${conversionRateRepeat} đơn vị nhỏ" thì cột ĐVT tồn kho phải là đơn vị nhỏ đó.`);
+            }
             const explicitDefaultRepeat = hasColumn("is_default_purchase") ? asFlag(row.values.is_default_purchase) : !seenDefaultPurchase.has(code);
             const isDefaultRepeat = explicitDefaultRepeat && !seenDefaultPurchase.has(code);
             if (isDefaultRepeat) seenDefaultPurchase.add(code);
@@ -1043,6 +1050,11 @@ export async function commitImport(input: CommitInput) {
         const conversionRate = row.values.conversion_rate ? asNumber(row.values.conversion_rate) : 0;
         if (purchaseUnit || conversionRate) {
           if (!purchaseUnit || conversionRate < 1) throw new Error(`Dòng ${row.rowNumber}: ĐVT mua và tỷ lệ quy đổi phải hợp lệ`);
+          // Chặn khai "1 KG = 1000 KG": ĐVT mua trùng ĐVT tồn thì tỷ lệ bắt buộc là 1, nếu không
+          // mọi phiếu sau này nhân sai gấp `conversionRate` lần (xem lib/unit-conversion.ts).
+          if (purchaseUnit.trim().toUpperCase() === unit.trim().toUpperCase() && conversionRate !== 1) {
+            throw new Error(`Dòng ${row.rowNumber}: ĐVT mua [${purchaseUnit}] trùng ĐVT tồn kho nên tỷ lệ quy đổi phải là 1. Muốn khai "1 ${purchaseUnit} = ${conversionRate} đơn vị nhỏ" thì cột ĐVT tồn kho phải là đơn vị nhỏ đó.`);
+          }
           const explicitDefault = hasColumn("is_default_purchase") ? asFlag(row.values.is_default_purchase) : !seenDefaultPurchase.has(code);
           const isDefaultPurchase = explicitDefault && !seenDefaultPurchase.has(code);
           if (isDefaultPurchase) seenDefaultPurchase.add(code);

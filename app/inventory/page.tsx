@@ -8,6 +8,7 @@ import { useModuleAuth } from "@/lib/use-module-auth";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
+import { safeConversionRate } from "@/lib/unit-conversion";
 
 type UnitConversion = { id: string; unitCode: string; unitName: string | null; conversionRate: number; isDefaultPurchase: boolean };
 type Item = { id: string; code: string; name: string; unit: string; itemType: string; category?: string | null; minStock: number; requiresImage: boolean; unitConversions?: UnitConversion[] };
@@ -105,6 +106,8 @@ export default function InventoryPage() {
   const [transferRows, setTransferRows] = useState([{ itemId: "", quantity: "1", unitCode: "" }]);
   const [stocktakeForm, setStocktakeForm] = useState({ branchCode: "HCM", warehouseCode: "KHO_HCM", itemId: "", actualQuantity: "0", reason: "Kiem ke thuc te", stocktakeDate: today() });
   const [stocktakeRows, setStocktakeRows] = useState<StocktakeDraftRow[]>([]);
+  /** Tìm nhanh mặt hàng khi kiểm kê trên điện thoại — danh sách kho dài, cuộn tay rất lâu. */
+  const [stocktakeSearch, setStocktakeSearch] = useState("");
   const [wasteForm, setWasteForm] = useState({ wasteType: "HET_HAN_SU_DUNG", mode: "ITEMS", recipeId: "", productQuantity: "1", branchCode: "HCM", warehouseCode: "KHO_HCM", referenceCode: "", note: "" });
   const [wasteRows, setWasteRows] = useState([{ itemId: "", quantity: "1", unitCode: "" }]);
   
@@ -150,7 +153,9 @@ export default function InventoryPage() {
       : [];
   const selectedStockUnit = stockUnits.find((unit) => unit.unitCode === stockForm.inputUnitCode) || stockUnits[0];
   const stockInputQuantity = Number(stockForm.quantity || 0);
-  const stockConversionRate = selectedStockUnit?.conversionRate || 1;
+  // Dùng chung luật quy đổi với máy chủ (lib/unit-conversion.ts). Đọc thẳng conversionRate thì
+  // với mã khai sai "1 LIT = 1000 LIT", ô xem trước ghi 1.000.000 lít trong khi lưu vào chỉ 1.000.
+  const stockConversionRate = safeConversionRate(selectedStockItem?.unit || "", selectedStockUnit);
   const stockBaseQuantity = stockInputQuantity * stockConversionRate;
   const stockInputUnitCost = Number(stockForm.unitCost || 0);
   const stockBaseUnitCost = stockInputUnitCost > 0 ? stockInputUnitCost / stockConversionRate : 0;
@@ -275,10 +280,13 @@ export default function InventoryPage() {
   const receiveFromPO = async () => {
     if (!grpoOrder) return;
     setMessage("");
-    const lines = grpoOrder.lines
-      .map((line) => ({ itemId: line.itemId, quantity: Number(grpoQuantities[line.id] ?? 0) }))
-      .filter((line) => line.quantity > 0);
-    if (lines.length === 0) {
+    // Gửi đủ mọi dòng kèm lineId, kể cả dòng để 0 (xem chú thích cùng nội dung ở màn Mua hàng).
+    const lines = grpoOrder.lines.map((line) => ({
+      lineId: line.id,
+      itemId: line.itemId,
+      quantity: Number(grpoQuantities[line.id] ?? 0) || 0,
+    }));
+    if (lines.every((line) => line.quantity <= 0)) {
       setMessage("Chưa nhập số lượng cần nhận từ PO.");
       return;
     }
@@ -288,9 +296,15 @@ export default function InventoryPage() {
       body: JSON.stringify({ action: "RECEIVE_ORDER", orderId: grpoOrder.id, lines, note: stockForm.note }),
     });
     const payload = await response.json();
-    setMessage(response.ok
-      ? `Đã nhập mua hàng từ ${grpoOrder.code} vào kho ${grpoOrder.warehouseCode}.`
-      : payload.error || "Không nhận được hàng từ PO");
+    if (response.ok) {
+      // Nói rõ hàng đã đi đâu: phiếu nhập kho cho hàng hoá, sổ tài sản cho dòng TOOL/ASSET.
+      const parts: string[] = [];
+      if (payload.receiptCode) parts.push(`phiếu ${payload.receiptCode} vào kho ${grpoOrder.warehouseCode}`);
+      if (payload.assetsCreated > 0) parts.push(`${payload.assetsCreated} tài sản/CCDC đã vào sổ Tài sản & Khấu hao`);
+      setMessage(`Đã nhận hàng từ ${grpoOrder.code}: ${parts.join(" · ") || "cập nhật thành công"}.`);
+    } else {
+      setMessage(payload.error || "Không nhận được hàng từ PO");
+    }
     if (response.ok) {
       setGrpoOrderId("");
       setGrpoQuantities({});
@@ -706,6 +720,7 @@ export default function InventoryPage() {
                             min="0"
                             max={remaining}
                             step="any"
+                            inputMode="decimal"
                             className="control w-24 text-right"
                             value={grpoQuantities[line.id] ?? String(remaining)}
                             onChange={(e) => setGrpoQuantities({ ...grpoQuantities, [line.id]: e.target.value })}
@@ -1359,7 +1374,7 @@ export default function InventoryPage() {
       {active === "stocktake" && (
         <div className="space-y-5">
           {canCreate && (
-            <form onSubmit={(e) => { e.preventDefault(); void send({ action: "APPROVE_STOCKTAKE", ...stocktakeForm, lines: stocktakeRows.map((row) => ({ itemId: row.itemId, actualQuantity: row.actualQuantity, systemQuantity: row.systemQuantity, unitCost: row.unitCost, reason: row.reason || stocktakeForm.reason })) }, "Đã duyệt kiểm kê và sinh điều chỉnh."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
+            <form onSubmit={(e) => { e.preventDefault(); void send({ action: "APPROVE_STOCKTAKE", ...stocktakeForm, lines: stocktakeRows.map((row) => ({ itemId: row.itemId, actualQuantity: row.actualQuantity, systemQuantity: row.systemQuantity, unitCost: row.unitCost, reason: row.reason || stocktakeForm.reason })) }, "Đã duyệt kiểm kê và sinh điều chỉnh."); }} className="bg-white border border-slate-200 rounded-lg p-4 sm:p-5 space-y-4 h-fit shadow-sm">
               <h2 className="font-bold text-slate-800">Kiểm kê kho</h2>
               <p className="rounded-md bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
                 Màn hình này kiểm kê hàng tồn kho; CCDC và Tài sản được kiểm kê tại Tài sản & khấu hao.
@@ -1384,60 +1399,143 @@ export default function InventoryPage() {
                   <input className="control" value={stocktakeForm.reason} onChange={(e) => setStocktakeForm({ ...stocktakeForm, reason: e.target.value })} />
                 </Input>
               </div>
-              <div className="flex justify-end">
-                <button type="button" className="secondary-button" onClick={() => setStocktakeRows(buildStocktakeRows(stocktakeForm.warehouseCode, data.balances, data.items))}>
+              <div className="flex flex-wrap items-end justify-between gap-3">
+                <input
+                  type="search"
+                  className="control !mt-0 flex-1 min-w-[200px]"
+                  placeholder="Tìm nhanh mặt hàng đang kiểm..."
+                  value={stocktakeSearch}
+                  onChange={(e) => setStocktakeSearch(e.target.value)}
+                />
+                <button type="button" className="secondary-button" onClick={() => { setStocktakeRows(buildStocktakeRows(stocktakeForm.warehouseCode, data.balances, data.items)); setStocktakeSearch(""); }}>
                   <span className="material-symbols-outlined text-lg">refresh</span>Nạp danh sách kho
                 </button>
               </div>
-              <div className="border border-slate-200 rounded-lg overflow-hidden">
-                <Table headers={[{ label: "Mặt hàng" }, { label: "Tồn hệ thống", align: "right" }, { label: "Tồn thực tế", align: "right" }, { label: "Chênh lệch", align: "right" }, { label: "Đơn giá", align: "right" }, { label: "Lý do" }]}>
-                  {stocktakeRows.map((row, index) => {
-                    const actualQuantity = Number(row.actualQuantity || 0);
-                    const variance = actualQuantity - row.systemQuantity;
-                    return (
-                      <tr key={row.itemId} className="border-t border-slate-100">
-                        <Cell><b>{row.itemCode}</b><small>{row.itemName} · {row.unit}</small></Cell>
-                        <Cell right>{money(row.systemQuantity)}</Cell>
-                        <Cell right>
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.001"
-                            className="control text-right w-28 inline-block"
-                            value={row.actualQuantity}
-                            onChange={(e) => setStocktakeRows(stocktakeRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, actualQuantity: e.target.value } : candidate))}
-                          />
-                        </Cell>
-                        <Cell right><span className={variance === 0 ? "text-slate-500" : variance > 0 ? "text-emerald-700 font-bold" : "text-rose-700 font-bold"}>{money(variance)}</span></Cell>
-                        <Cell right>
-                          {row.averageCost > 0 ? (
-                            <span className="text-slate-500">{money(row.averageCost)}</span>
-                          ) : (
-                            <input
-                              type="number"
-                              min="0"
-                              className="control text-right w-24 inline-block"
-                              placeholder="Giá vốn"
-                              title="Hàng chưa có giá vốn — bắt buộc khai khi đếm THỪA"
-                              value={row.unitCost}
-                              onChange={(e) => setStocktakeRows(stocktakeRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, unitCost: e.target.value } : candidate))}
-                            />
-                          )}
-                        </Cell>
-                        <Cell>
-                          <input
-                            className="control"
-                            value={row.reason}
-                            placeholder={stocktakeForm.reason}
-                            onChange={(e) => setStocktakeRows(stocktakeRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, reason: e.target.value } : candidate))}
-                          />
-                        </Cell>
-                      </tr>
-                    );
-                  })}
-                </Table>
+              {(() => {
+                const keyword = stocktakeSearch.trim().toLowerCase();
+                const visibleRows = stocktakeRows.filter((row) =>
+                  !keyword || row.itemCode.toLowerCase().includes(keyword) || row.itemName.toLowerCase().includes(keyword));
+                const varianceCount = stocktakeRows.filter((row) => Number(row.actualQuantity || 0) !== row.systemQuantity).length;
+                const patchRow = (itemId: string, patch: Partial<StocktakeDraftRow>) =>
+                  setStocktakeRows((rows) => rows.map((candidate) => candidate.itemId === itemId ? { ...candidate, ...patch } : candidate));
+                return (
+                  <>
+                    <p className="text-xs text-slate-500">
+                      {visibleRows.length}/{stocktakeRows.length} mặt hàng · <b className={varianceCount > 0 ? "text-amber-700" : "text-emerald-700"}>{varianceCount} dòng lệch tồn</b>
+                    </p>
+
+                    {/* Mobile: thẻ từng mặt hàng — nhập tồn thực tế bằng bàn phím số */}
+                    <div className="md:hidden space-y-2">
+                      {visibleRows.map((row) => {
+                        const actualQuantity = Number(row.actualQuantity || 0);
+                        const variance = actualQuantity - row.systemQuantity;
+                        return (
+                          <div key={row.itemId} className={`rounded-xl border p-3 space-y-2 ${variance !== 0 ? "border-amber-300 bg-amber-50/50" : "border-slate-200 bg-white"}`}>
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="min-w-0">
+                                <p className="font-bold text-sm truncate">{row.itemName}</p>
+                                <p className="text-xs text-slate-500">{row.itemCode} · Tồn hệ thống: <b>{money(row.systemQuantity)} {row.unit}</b></p>
+                              </div>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.001"
+                                  inputMode="decimal"
+                                  className="control !mt-0 w-24 text-right text-base"
+                                  value={row.actualQuantity}
+                                  onChange={(e) => patchRow(row.itemId, { actualQuantity: e.target.value })}
+                                  aria-label={`Tồn thực tế ${row.itemName}`}
+                                />
+                                <span className="text-xs text-slate-500 w-8 truncate">{row.unit}</span>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 text-xs">
+                              <span className={variance === 0 ? "text-slate-500" : variance > 0 ? "text-emerald-700 font-bold" : "text-rose-700 font-bold"}>
+                                Lệch: {money(variance)}
+                              </span>
+                              {row.averageCost <= 0 && (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  inputMode="numeric"
+                                  className="control !mt-0 w-24 text-right"
+                                  placeholder="Giá vốn"
+                                  title="Hàng chưa có giá vốn — bắt buộc khai khi đếm THỪA"
+                                  value={row.unitCost}
+                                  onChange={(e) => patchRow(row.itemId, { unitCost: e.target.value })}
+                                />
+                              )}
+                              <input
+                                className="control !mt-0 flex-1"
+                                value={row.reason}
+                                placeholder="Lý do (nếu lệch)"
+                                onChange={(e) => patchRow(row.itemId, { reason: e.target.value })}
+                              />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Desktop: bảng như cũ */}
+                    <div className="hidden md:block border border-slate-200 rounded-lg overflow-hidden">
+                      <Table headers={[{ label: "Mặt hàng" }, { label: "Tồn hệ thống", align: "right" }, { label: "Tồn thực tế", align: "right" }, { label: "Chênh lệch", align: "right" }, { label: "Đơn giá", align: "right" }, { label: "Lý do" }]}>
+                        {visibleRows.map((row) => {
+                          const actualQuantity = Number(row.actualQuantity || 0);
+                          const variance = actualQuantity - row.systemQuantity;
+                          return (
+                            <tr key={row.itemId} className="border-t border-slate-100">
+                              <Cell><b>{row.itemCode}</b><small>{row.itemName} · {row.unit}</small></Cell>
+                              <Cell right>{money(row.systemQuantity)}</Cell>
+                              <Cell right>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.001"
+                                  inputMode="decimal"
+                                  className="control text-right w-28 inline-block"
+                                  value={row.actualQuantity}
+                                  onChange={(e) => patchRow(row.itemId, { actualQuantity: e.target.value })}
+                                />
+                              </Cell>
+                              <Cell right><span className={variance === 0 ? "text-slate-500" : variance > 0 ? "text-emerald-700 font-bold" : "text-rose-700 font-bold"}>{money(variance)}</span></Cell>
+                              <Cell right>
+                                {row.averageCost > 0 ? (
+                                  <span className="text-slate-500">{money(row.averageCost)}</span>
+                                ) : (
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    inputMode="numeric"
+                                    className="control text-right w-24 inline-block"
+                                    placeholder="Giá vốn"
+                                    title="Hàng chưa có giá vốn — bắt buộc khai khi đếm THỪA"
+                                    value={row.unitCost}
+                                    onChange={(e) => patchRow(row.itemId, { unitCost: e.target.value })}
+                                  />
+                                )}
+                              </Cell>
+                              <Cell>
+                                <input
+                                  className="control"
+                                  value={row.reason}
+                                  placeholder={stocktakeForm.reason}
+                                  onChange={(e) => patchRow(row.itemId, { reason: e.target.value })}
+                                />
+                              </Cell>
+                            </tr>
+                          );
+                        })}
+                      </Table>
+                    </div>
+                  </>
+                );
+              })()}
+              {/* Nút duyệt dính đáy màn hình khi danh sách dài — chừa chỗ nút menu nổi bên trái */}
+              <div className="sticky bottom-0 z-20 -mx-4 sm:-mx-5 -mb-4 sm:-mb-5 border-t border-slate-200 bg-white/95 backdrop-blur px-4 py-3 rounded-b-lg pl-20 lg:pl-4">
+                <button className="primary-button w-full !min-h-12">Duyệt kiểm kê</button>
               </div>
-              <button className="primary-button w-full">Duyệt kiểm kê</button>
             </form>
           )}
           <section className="table-panel shadow-sm">

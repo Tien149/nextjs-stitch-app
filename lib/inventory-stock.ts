@@ -1,5 +1,6 @@
 import type { TxClient } from "@/lib/prisma";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
+import { safeConversionRate } from "@/lib/unit-conversion";
 
 export const STOCK_TRANSACTION_TYPES = [
   "NHAP_MUA",
@@ -161,9 +162,12 @@ export async function latestPurchaseUnitCost(tx: Tx, itemId: string) {
 async function resolveStockLine(tx: Tx, line: StockLineInput, requireInputUnitCost: boolean) {
   const itemId = text(line.itemId);
   const itemCode = text(line.itemCode).toUpperCase();
+  // Lọc quy đổi đã xoá mềm: quan hệ lồng không được lớp xoá mềm lọc tự động, không lọc tay thì
+  // ĐVT người dùng đã xoá vẫn được chấp nhận và vẫn nhân tỷ lệ vào phiếu kho.
+  const conversionFilter = { unitConversions: { where: { deletedAt: null } } } as const;
   const item = itemId
-    ? await tx.inventoryItem.findUnique({ where: { id: itemId }, include: { unitConversions: true } })
-    : await tx.inventoryItem.findUnique({ where: { code: itemCode }, include: { unitConversions: true } });
+    ? await tx.inventoryItem.findUnique({ where: { id: itemId }, include: conversionFilter })
+    : await tx.inventoryItem.findUnique({ where: { code: itemCode }, include: conversionFilter });
 
   if (!item) stockError(`Khong tim thay mat hang ${itemCode || itemId}`);
   if (item.status !== "ACTIVE") stockError(`Mat hang ${item.code} dang ngung hoat dong`);
@@ -179,10 +183,10 @@ async function resolveStockLine(tx: Tx, line: StockLineInput, requireInputUnitCo
     stockError(`DVT ${rawUnitCode} khong ton tai trong quy doi cua mat hang ${item.code}`);
   }
 
-  const conversionRate = conversion?.conversionRate || 1;
-  if (!Number.isFinite(conversionRate) || conversionRate <= 0) {
-    stockError(`Ty le quy doi cua ${item.code} khong hop le`);
-  }
+  // Ghi số theo ĐÚNG ĐVT tồn kho thì tỷ lệ luôn là 1, kể cả khi danh mục có dòng quy đổi
+  // khai sai "1 LIT = 1000 LIT" (xem lib/unit-conversion.ts) — nếu không, nhận 1.000 lít
+  // sẽ cộng 1.000.000 lít vào tồn kho.
+  const conversionRate = isBaseUnit ? 1 : safeConversionRate(item.unit, conversion);
 
   const inputUnitCost = numberValue(line.inputUnitCost ?? line.unitCost);
   if (requireInputUnitCost && inputUnitCost <= 0) stockError(`Nhap mua ${item.code} bat buoc co don gia`);

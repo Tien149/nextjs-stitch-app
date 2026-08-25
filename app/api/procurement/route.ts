@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
+import { randomBytes } from "crypto";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError, businessError, cleanText, isPeriodLocked, toDate, toNumber } from "@/lib/phase3";
 import { assertBranchAccess, branchFilterForSession } from "@/lib/accounting";
+import type { DemoSession } from "@/lib/auth-demo";
 import { writeAuditLog } from "@/lib/audit-log";
 import {
   duplicatedInTrashMessage,
@@ -13,12 +15,28 @@ import {
 import { scopePayloadByTab } from "@/lib/tab-scope";
 import { nextAssetCode } from "@/lib/asset-code-generator";
 import { postInventoryTransaction, nextStockDocCode } from "@/lib/inventory-stock";
+import { defaultPurchaseUnit } from "@/lib/unit-conversion";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 
 const menuHref = "/procurement";
 
-/** PR đã chốt thì không cho sửa/xoá nữa. */
-const lockedRequestStatuses = ["APPROVED", "ORDERED", "COMPLETED", "CANCELLED"];
+/**
+ * Yêu cầu mua KHÔNG còn bước duyệt (chốt với khách 26/08): bộ phận gửi phiếu là mua hàng
+ * báo giá được ngay. Vì vậy phiếu chỉ khoá khi đã đi tiếp trong luồng — đã sinh PO, đã
+ * hoàn tất hoặc đã bị từ chối; còn "đang chờ mua hàng xử lý" thì vẫn sửa/xoá được.
+ * Bước duyệt vẫn giữ ở PO, vì đó mới là lúc chốt tiền với nhà cung cấp.
+ */
+const lockedRequestStatuses = ["ORDERED", "COMPLETED", "CANCELLED", "REJECTED"];
+/**
+ * Trạng thái yêu cầu mua mà mua hàng được phép báo giá / lập PO.
+ *
+ * Bỏ bước duyệt nhưng vẫn GIỮ NGUYÊN mã trạng thái "APPROVED" cho phiếu mới: mọi báo cáo,
+ * màn kho và tài liệu sẵn có đều đang lọc theo mã này, đặt thêm mã mới là phải sửa hết và
+ * chỉ cần sót một chỗ là phiếu biến mất khỏi báo cáo. Nay "APPROVED" đọc là "đã gửi, chờ
+ * mua hàng xử lý" (approvedBy để trống vì không còn ai duyệt) — giao diện hiển thị đúng
+ * nghĩa đó. PENDING_APPROVAL là phiếu cũ còn treo từ thời có bước duyệt, vẫn xử lý bình thường.
+ */
+const quotableRequestStatuses = ["APPROVED", "PENDING_APPROVAL", "ORDERED"];
 /** PO chỉ còn sửa/xoá được khi đang ở trạng thái nháp. */
 const lockedOrderStatuses = ["APPROVED", "PARTIALLY_RECEIVED", "COMPLETED", "CANCELLED"];
 
@@ -93,6 +111,86 @@ function assetGroupFromItemType(itemType: string) {
   return itemType || "ASSET";
 }
 
+/**
+ * Quyền trên mẫu yêu cầu mua hàng. Mẫu có `branchCode = null` là mẫu DÙNG CHUNG mọi cửa hàng
+ * nên sửa/xoá nó ảnh hưởng toàn hệ thống — chỉ người có quyền toàn bộ cửa hàng được đụng vào.
+ */
+function assertTemplateBranchAccess(session: DemoSession, branchCode: string | null) {
+  if (branchCode) {
+    assertBranchAccess(session, branchCode);
+    return;
+  }
+  if (!session.allowedBranches?.includes("ALL")) {
+    businessError("Mẫu dùng chung cho mọi cửa hàng chỉ người quản trị toàn hệ thống mới được tạo/sửa/xoá.");
+  }
+}
+
+/** Mặt hàng đưa vào mẫu phải mua được: đang hoạt động và không phải thành phẩm bán tại POS. */
+async function assertTemplateItems(itemIds: string[]) {
+  for (const itemId of itemIds) {
+    const item = await prisma.inventoryItem.findUnique({ where: { id: itemId } });
+    if (!item) businessError("Mặt hàng trên mẫu không tồn tại");
+    if (item.status !== "ACTIVE") businessError(`Mặt hàng ${item.code} đang ngưng hoạt động, không đưa vào mẫu mua hàng.`);
+    if (item.itemType === "FINISHED") businessError(`Mặt hàng ${item.name} là Thành phẩm (FINISHED), không đưa vào mẫu mua hàng.`);
+  }
+}
+
+/** Mã mẫu yêu cầu mua hàng: MAU-0001, max + 1 (đếm cả bản ghi trong thùng rác). */
+async function generatedTemplateCode() {
+  const head = "MAU-";
+  const rows = await prisma.$queryRaw<Array<{ code: string }>>`SELECT "code" FROM "PurchaseRequestTemplate" WHERE "code" LIKE ${head + "%"}`;
+  return head + String(nextSeqFromCodes(rows.map((row) => row.code), head)).padStart(4, "0");
+}
+
+type PriceSuggestion = { price: number; source: string; supplierName?: string };
+
+/**
+ * Giá đề xuất theo thứ tự ưu tiên: báo giá đang chọn -> báo giá mới nhất -> PO gần nhất
+ * -> giá vốn bình quân. Dùng cho cả màn hình (GET) lẫn tạo PR từ mẫu (giá dự kiến tự điền).
+ */
+async function buildPriceSuggestions(itemIds?: string[]) {
+  const itemFilter = itemIds && itemIds.length > 0 ? { itemId: { in: itemIds } } : {};
+  const [quoteLines, orderLines, balances] = await Promise.all([
+    // Quan hệ lồng không được lọc xoá mềm tự động nên lọc tay qua quote/order.
+    prisma.supplierQuoteLine.findMany({
+      where: { ...itemFilter, quote: { deletedAt: null } },
+      select: { itemId: true, unitCost: true, quote: { select: { isSelected: true, supplierName: true } } },
+      orderBy: { quote: { createdAt: "desc" } },
+      take: 500,
+    }),
+    prisma.purchaseOrderLine.findMany({
+      where: { ...itemFilter, order: { deletedAt: null } },
+      select: { itemId: true, unitCost: true, order: { select: { supplierName: true } } },
+      orderBy: { order: { createdAt: "desc" } },
+      take: 500,
+    }),
+    prisma.inventoryBalance.findMany({ where: { ...itemFilter }, select: { itemId: true, averageCost: true } }),
+  ]);
+
+  const priceSuggestions: Record<string, PriceSuggestion> = {};
+  for (const line of quoteLines) {
+    if (line.quote.isSelected && line.unitCost > 0 && !priceSuggestions[line.itemId]) {
+      priceSuggestions[line.itemId] = { price: line.unitCost, source: "SELECTED_QUOTE", supplierName: line.quote.supplierName };
+    }
+  }
+  for (const line of quoteLines) {
+    if (line.unitCost > 0 && !priceSuggestions[line.itemId]) {
+      priceSuggestions[line.itemId] = { price: line.unitCost, source: "QUOTE", supplierName: line.quote.supplierName };
+    }
+  }
+  for (const line of orderLines) {
+    if (line.unitCost > 0 && !priceSuggestions[line.itemId]) {
+      priceSuggestions[line.itemId] = { price: line.unitCost, source: "ORDER", supplierName: line.order.supplierName };
+    }
+  }
+  for (const balance of balances) {
+    if (balance.averageCost > 0 && !priceSuggestions[balance.itemId]) {
+      priceSuggestions[balance.itemId] = { price: Math.round(balance.averageCost), source: "AVG_COST" };
+    }
+  }
+  return priceSuggestions;
+}
+
 export async function GET(request: Request) {
   try {
     const auth = requireMenuAccess(request, menuHref);
@@ -101,9 +199,9 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const branchFilter = branchFilterForSession(auth.session, searchParams.get("branchCode") || "ALL");
 
-    const [items, requests, orders, departments, itemGroups, warehouses, quoteLines, orderLines, balances] = await Promise.all([
+    const [items, requests, orders, departments, itemGroups, warehouses, templates, suppliers, priceSuggestions] = await Promise.all([
       // Thành phẩm (FINISHED) bán tại POS, không mua vào nên không đưa vào danh sách chọn của PR/PO.
-      prisma.inventoryItem.findMany({ where: { status: "ACTIVE", itemType: { not: "FINISHED" } }, orderBy: { name: "asc" } }),
+      prisma.inventoryItem.findMany({ where: { status: "ACTIVE", itemType: { not: "FINISHED" } }, include: { unitConversions: { where: { deletedAt: null } } }, orderBy: { name: "asc" } }),
       prisma.purchaseRequest.findMany({
         where: { ...branchFilter },
         include: {
@@ -131,46 +229,39 @@ export async function GET(request: Request) {
         where: { type: "WAREHOUSE", status: "ACTIVE" },
         orderBy: [{ branch: "asc" }, { name: "asc" }],
       }),
-      // Dữ liệu để đề xuất đơn giá: quan hệ lồng không được lọc xoá mềm tự động nên lọc tay qua quote/order.
-      prisma.supplierQuoteLine.findMany({
-        where: { quote: { deletedAt: null } },
-        select: { itemId: true, unitCost: true, quote: { select: { isSelected: true, supplierName: true } } },
-        orderBy: { quote: { createdAt: "desc" } },
-        take: 500,
+      // Mẫu yêu cầu mua hàng: kèm dòng hàng + ĐVT quy đổi để màn "Đặt theo mẫu" hiển thị đúng ĐVT.
+      // Chỉ trả mẫu dùng chung + mẫu của cửa hàng người dùng được phép: mẫu riêng của cửa hàng
+      // khác vừa lộ danh mục hàng vừa là ngõ cụt (bấm đặt là bị chặn quyền).
+      prisma.purchaseRequestTemplate.findMany({
+        where: {
+          status: "ACTIVE",
+          ...("branchCode" in branchFilter ? { OR: [{ branchCode: null }, branchFilter] } : {}),
+        },
+        include: {
+          lines: {
+            include: { item: { include: { unitConversions: { where: { deletedAt: null }, orderBy: { conversionRate: "desc" } } } } },
+            orderBy: { sortOrder: "asc" },
+          },
+        },
+        orderBy: { name: "asc" },
       }),
-      prisma.purchaseOrderLine.findMany({
-        where: { order: { deletedAt: null } },
-        select: { itemId: true, unitCost: true, order: { select: { supplierName: true } } },
-        orderBy: { order: { createdAt: "desc" } },
-        take: 500,
+      // Nhà cung cấp từ danh mục đối tác — thay cho danh sách NCC hard-code cũ trên form báo giá.
+      prisma.masterDataItem.findMany({
+        where: {
+          type: "PARTNER",
+          status: "ACTIVE",
+          OR: [
+            { partnerType: { in: ["SUPPLIER", "BOTH"] } },
+            { partnerGroup: { in: ["SUPPLIER", "BOTH"] } },
+            { group: { in: ["SUPPLIER", "BOTH"] } },
+          ],
+        },
+        orderBy: { name: "asc" },
       }),
-      prisma.inventoryBalance.findMany({ select: { itemId: true, averageCost: true } }),
+      buildPriceSuggestions(),
     ]);
 
-    // Giá đề xuất theo thứ tự ưu tiên: báo giá đang chọn -> báo giá mới nhất -> PO gần nhất -> giá vốn bình quân.
-    const priceSuggestions: Record<string, { price: number; source: string; supplierName?: string }> = {};
-    for (const line of quoteLines) {
-      if (line.quote.isSelected && line.unitCost > 0 && !priceSuggestions[line.itemId]) {
-        priceSuggestions[line.itemId] = { price: line.unitCost, source: "SELECTED_QUOTE", supplierName: line.quote.supplierName };
-      }
-    }
-    for (const line of quoteLines) {
-      if (line.unitCost > 0 && !priceSuggestions[line.itemId]) {
-        priceSuggestions[line.itemId] = { price: line.unitCost, source: "QUOTE", supplierName: line.quote.supplierName };
-      }
-    }
-    for (const line of orderLines) {
-      if (line.unitCost > 0 && !priceSuggestions[line.itemId]) {
-        priceSuggestions[line.itemId] = { price: line.unitCost, source: "ORDER", supplierName: line.order.supplierName };
-      }
-    }
-    for (const balance of balances) {
-      if (balance.averageCost > 0 && !priceSuggestions[balance.itemId]) {
-        priceSuggestions[balance.itemId] = { price: Math.round(balance.averageCost), source: "AVG_COST" };
-      }
-    }
-
-    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, requests, orders, departments, itemGroups, warehouses, priceSuggestions }));
+    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, requests, orders, departments, itemGroups, warehouses, templates, suppliers, priceSuggestions }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });
@@ -203,7 +294,9 @@ export async function POST(request: Request) {
         }
       }
 
-      const code = cleanText(body.code) || await generatedCode("PR", "PurchaseRequest");
+      // Mã và trạng thái do MÁY CHỦ quyết định. Nhận từ client thì người chỉ có quyền tạo có thể
+      // gửi kèm status/code tuỳ ý để nhảy cóc trạng thái hoặc phá dãy mã chứng từ.
+      const code = await generatedCode("PR", "PurchaseRequest");
       if (await findDeletedByUnique("PurchaseRequest", { code })) {
         businessError(duplicatedInTrashMessage(code, "Đề nghị mua hàng"));
       }
@@ -216,7 +309,8 @@ export async function POST(request: Request) {
           requestDate: toDate(body.requestDate),
           neededDate: body.neededDate ? toDate(body.neededDate) : null,
           reason,
-          status: cleanText(body.status) || "PENDING_APPROVAL",
+          // Không còn bước duyệt: phiếu gửi lên là mua hàng báo giá được ngay.
+          status: "APPROVED",
           note: cleanText(body.note) || null,
           lines: {
             create: lines.map((line) => ({
@@ -244,6 +338,12 @@ export async function POST(request: Request) {
       const pr = await prisma.purchaseRequest.findUnique({ where: { id: requestId } });
       if (!pr) businessError("Không tìm thấy yêu cầu mua hàng");
       assertBranchAccess(auth.session, pr.branchCode);
+      // Mỗi NCC chỉ một báo giá trên một PR. Không chặn ở đây thì ràng buộc unique của database
+      // ném lỗi thô và người dùng nhận "Internal Server Error" không hiểu vì sao.
+      const existingQuote = await prisma.supplierQuote.findFirst({ where: { requestId, supplierCode } });
+      if (existingQuote) {
+        businessError(`${supplierName} đã có báo giá trên ${pr.code}. Hãy sửa báo giá đó thay vì thêm mới.`);
+      }
       if (await findDeletedByUnique("SupplierQuote", { requestId, supplierCode })) {
         businessError(duplicatedInTrashMessage(supplierCode, `Báo giá của ${supplierName} trên ${pr.code}`));
       }
@@ -312,11 +412,21 @@ export async function POST(request: Request) {
 
       if (requestId) {
         const source = await prisma.purchaseRequest.findUnique({ where: { id: requestId } });
-        if (!source || !["APPROVED", "ORDERED"].includes(source.status)) businessError("PR phải được duyệt trước khi tạo PO");
+        if (!source) businessError("Không tìm thấy yêu cầu mua hàng nguồn");
+        // Phải có quyền trên chính chi nhánh của PR nguồn, và PO không được đặt hộ chi nhánh khác:
+        // thiếu hai chốt này thì người ở cửa hàng A lập PO từ PR của cửa hàng B và khoá cứng PR đó.
+        assertBranchAccess(auth.session, source.branchCode);
+        if (source.branchCode !== branchCode) {
+          businessError(`Yêu cầu mua ${source.code} thuộc cửa hàng ${source.branchCode}, không lập được đơn mua hàng cho ${branchCode}.`);
+        }
+        if (!quotableRequestStatuses.includes(source.status)) {
+          businessError(`Yêu cầu mua ${source.code} đang ở trạng thái ${source.status} nên không lập được đơn mua hàng.`);
+        }
       }
       const sourceRequest = requestId ? await prisma.purchaseRequest.findUnique({ where: { id: requestId } }) : null;
       const departmentCode = bodyDepartmentCode || sourceRequest?.departmentCode || null;
-      const code = cleanText(body.code) || await generatedCode("PO", "PurchaseOrder");
+      // Mã do máy chủ cấp, không nhận từ client (xem chú thích ở CREATE_REQUEST).
+      const code = await generatedCode("PO", "PurchaseOrder");
       if (await findDeletedByUnique("PurchaseOrder", { code })) {
         businessError(duplicatedInTrashMessage(code, "Đơn mua hàng"));
       }
@@ -333,7 +443,9 @@ export async function POST(request: Request) {
             warehouseCode,
             expectedDate: body.expectedDate ? toDate(body.expectedDate) : null,
             totalAmount,
-            status: cleanText(body.status) || "DRAFT",
+            // Luôn ra bản nháp — duyệt PO là quyền riêng, không cho client tự đặt "APPROVED"
+            // rồi gửi thẳng cho nhà cung cấp.
+            status: "DRAFT",
             createdBy: auth.session.name,
             note: cleanText(body.note) || null,
             lines: {
@@ -352,6 +464,109 @@ export async function POST(request: Request) {
         return order;
       });
       await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "CREATE_ORDER", entityType: "PurchaseOrder", entityId: result.id, entityCode: result.code, branchCode, metadata: { requestId, supplierCode, supplierName, departmentCode, warehouseCode, totalAmount } });
+      return NextResponse.json(result, { status: 201 });
+    }
+
+    if (action === "CREATE_TEMPLATE") {
+      const name = cleanText(body.name);
+      const rawLines = Array.isArray(body.lines) ? (body.lines as Array<{ itemId?: unknown; unitCode?: unknown; note?: unknown }>) : [];
+      const lines = rawLines
+        .map((line) => ({ itemId: cleanText(line.itemId), unitCode: cleanText(line.unitCode) || null, note: cleanText(line.note) || null }))
+        .filter((line) => line.itemId);
+      if (!name || lines.length === 0) businessError("Mẫu cần tên và ít nhất một mặt hàng");
+      await assertTemplateItems(lines.map((line) => line.itemId));
+      const branchCode = cleanText(body.branchCode) || null;
+      assertTemplateBranchAccess(auth.session, branchCode);
+      const result = await prisma.purchaseRequestTemplate.create({
+        data: {
+          code: await generatedTemplateCode(),
+          name,
+          branchCode,
+          departmentCode: cleanText(body.departmentCode) || null,
+          note: cleanText(body.note) || null,
+          createdBy: auth.session.name,
+          lines: { create: lines.map((line, index) => ({ itemId: line.itemId, unitCode: line.unitCode, sortOrder: index, note: line.note })) },
+        },
+        include: { lines: { include: { item: true } }, },
+      });
+      await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "CREATE_TEMPLATE", entityType: "PurchaseRequestTemplate", entityId: result.id, entityCode: result.code, branchCode, metadata: { name, lines: result.lines.length } });
+      return NextResponse.json(result, { status: 201 });
+    }
+
+    if (action === "CREATE_REQUEST_FROM_TEMPLATE") {
+      const templateId = cleanText(body.templateId);
+      const branchCode = cleanText(body.branchCode);
+      if (!templateId || !branchCode) businessError("Thiếu mẫu hoặc cửa hàng đặt hàng");
+      assertBranchAccess(auth.session, branchCode);
+
+      const template = await prisma.purchaseRequestTemplate.findUnique({
+        where: { id: templateId },
+        include: { lines: { include: { item: { include: { unitConversions: { where: { deletedAt: null } } } } }, orderBy: { sortOrder: "asc" } } },
+      });
+      if (!template) businessError("Không tìm thấy mẫu yêu cầu mua hàng");
+      if (template.status !== "ACTIVE") businessError(`Mẫu ${template.name} đang ngưng sử dụng`);
+      if (template.branchCode && template.branchCode !== branchCode) {
+        businessError(`Mẫu ${template.name} chỉ dùng cho cửa hàng ${template.branchCode}`);
+      }
+
+      // Người đặt chỉ gửi (dòng mẫu, số lượng); dòng bỏ trống/0 nghĩa là không đặt.
+      const requested = Array.isArray(body.lines) ? (body.lines as Array<{ lineId?: unknown; quantity?: unknown }>) : [];
+      const quantities = new Map<string, number>();
+      for (const row of requested) {
+        const lineId = cleanText(row.lineId);
+        const quantity = toNumber(row.quantity);
+        if (lineId && quantity > 0) quantities.set(lineId, quantity);
+      }
+      if (quantities.size === 0) businessError("Chưa điền số lượng cho dòng nào của mẫu");
+
+      const pickedLines = template.lines.filter((line) => quantities.has(line.id));
+      // Số lượng gửi lên nhưng không khớp dòng nào của mẫu (mẫu vừa bị sửa/xoá dòng ở tab khác,
+      // hoặc dữ liệu gửi sai) — không được tạo yêu cầu mua rỗng dòng hàng.
+      if (pickedLines.length === 0) {
+        businessError(`Các dòng gửi lên không còn thuộc mẫu ${template.name}. Hãy mở lại mẫu và điền số lượng.`);
+      }
+      // Mất một phần dòng = mẫu vừa bị sửa trong lúc người kia đang điền. Báo rõ thay vì lặng lẽ
+      // tạo phiếu thiếu hàng — người đặt tưởng đã gửi đủ, đến lúc nhận mới phát hiện thiếu.
+      if (pickedLines.length !== quantities.size) {
+        businessError(`Mẫu ${template.name} vừa được cập nhật nên ${quantities.size - pickedLines.length} dòng bạn điền không còn tồn tại. Hãy mở lại mẫu và nhập lại để không gửi thiếu hàng.`);
+      }
+      const priceSuggestions = await buildPriceSuggestions(pickedLines.map((line) => line.itemId));
+
+      const prLines = pickedLines.map((line) => {
+        const orderedQuantity = quantities.get(line.id) || 0;
+        // ĐVT trên mẫu (hoặc ĐVT mua mặc định) quy về ĐVT tồn kho của mặt hàng.
+        // Tỷ lệ lấy qua defaultPurchaseUnit: danh mục còn nhiều dòng khai sai "1 LIT = 1000 LIT",
+        // tin thẳng conversionRate là người đặt gõ 1 lít mà PR ghi 1.000 lít.
+        const { unitLabel, conversionRate: rate } = defaultPurchaseUnit(line.item.unit, line.item.unitConversions, line.unitCode);
+        const baseQuantity = orderedQuantity * rate;
+        const suggestion = priceSuggestions[line.itemId];
+        return {
+          itemId: line.itemId,
+          quantity: baseQuantity,
+          estimatedUnitCost: suggestion?.price || 0,
+          note: rate !== 1 ? `Đặt ${orderedQuantity} ${unitLabel}` : null,
+        };
+      });
+
+      const departmentCode = cleanText(body.departmentCode) || template.departmentCode || null;
+      const code = await generatedCode("PR", "PurchaseRequest");
+      const result = await prisma.purchaseRequest.create({
+        data: {
+          code,
+          branchCode,
+          departmentCode,
+          requestedBy: auth.session.name,
+          requestDate: new Date(),
+          neededDate: body.neededDate ? toDate(body.neededDate) : null,
+          reason: cleanText(body.reason) || `Đặt hàng theo mẫu ${template.name}`,
+          // Không còn bước duyệt: nhà hàng gửi mẫu là mua hàng so sánh giá được ngay.
+          status: "APPROVED",
+          note: cleanText(body.note) || `Theo mẫu ${template.code}`,
+          lines: { create: prLines },
+        },
+        include: { lines: { include: { item: true } } },
+      });
+      await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "CREATE_REQUEST_FROM_TEMPLATE", entityType: "PurchaseRequest", entityId: result.id, entityCode: result.code, branchCode, metadata: { templateId, templateCode: template.code, departmentCode, lines: result.lines.length } });
       return NextResponse.json(result, { status: 201 });
     }
 
@@ -400,6 +615,11 @@ export async function PATCH(request: Request) {
       const pr = await prisma.purchaseRequest.findUnique({ where: { id: requestId } });
       if (!pr) businessError("Không tìm thấy yêu cầu mua hàng");
       assertBranchAccess(auth.session, pr.branchCode);
+      // Không cho từ chối/duyệt ngược phiếu đã đi tiếp: từ chối một PR đã có PO và đã nhận hàng
+      // sẽ để lại hàng trong kho + công nợ trong khi phiếu ghi "đã từ chối".
+      if (lockedRequestStatuses.includes(pr.status)) {
+        businessError(`Yêu cầu mua ${pr.code} đang ở trạng thái ${pr.status} nên không đổi được nữa.`);
+      }
       const status = action === "APPROVE_REQUEST" ? "APPROVED" : "REJECTED";
       const result = await prisma.purchaseRequest.update({
         where: { id: requestId },
@@ -409,23 +629,102 @@ export async function PATCH(request: Request) {
       return NextResponse.json(result);
     }
 
+    if (["CREATE_SHARE_LINK", "REVOKE_SHARE_LINK"].includes(action)) {
+      // Gửi PO cho NCC là việc của người đặt hàng (Quản lý/KTTH) nên gác bằng quyền create,
+      // không đòi edit — Quản lý không có edit nhưng vẫn phải gửi được phiếu.
+      const auth = requireMenuAction(request, menuHref, "create");
+      if (!auth.ok) return auth.response;
+      const orderId = cleanText(body.orderId);
+      const order = await prisma.purchaseOrder.findUnique({ where: { id: orderId } });
+      if (!order) businessError("Không tìm thấy PO");
+      assertBranchAccess(auth.session, order.branchCode);
+
+      if (action === "REVOKE_SHARE_LINK") {
+        const result = await prisma.purchaseOrder.update({ where: { id: orderId }, data: { shareToken: null } });
+        await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "REVOKE_SHARE_LINK", entityType: "PurchaseOrder", entityId: order.id, entityCode: order.code, branchCode: order.branchCode });
+        return NextResponse.json({ ok: true, shareToken: result.shareToken });
+      }
+
+      if (order.status === "DRAFT") businessError("PO còn nháp — duyệt PO trước khi gửi nhà cung cấp");
+      // Đã có link thì trả lại link cũ để mã QR/link đã gửi NCC không bị vô hiệu.
+      const shareToken = order.shareToken || randomBytes(24).toString("base64url");
+      if (!order.shareToken) {
+        await prisma.purchaseOrder.update({ where: { id: orderId }, data: { shareToken } });
+        await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "CREATE_SHARE_LINK", entityType: "PurchaseOrder", entityId: order.id, entityCode: order.code, branchCode: order.branchCode });
+      }
+      return NextResponse.json({ ok: true, shareToken });
+    }
+
     const auth = requireMenuAction(request, menuHref, "edit");
     if (!auth.ok) return auth.response;
+
+    if (action === "UPDATE_TEMPLATE") {
+      const templateId = cleanText(body.templateId) || cleanText(body.id);
+      if (!templateId) businessError("Thiếu mẫu cần sửa");
+      const template = await prisma.purchaseRequestTemplate.findUnique({ where: { id: templateId } });
+      if (!template) businessError("Không tìm thấy mẫu yêu cầu mua hàng");
+      // Phải có quyền trên chi nhánh HIỆN TẠI của mẫu trước đã: chỉ kiểm chi nhánh mới thì gửi
+      // branchCode rỗng là sửa được mẫu của cửa hàng khác mà không qua kiểm tra nào.
+      assertTemplateBranchAccess(auth.session, template.branchCode);
+
+      const name = body.name !== undefined ? cleanText(body.name) : template.name;
+      if (!name) businessError("Tên mẫu không được để trống");
+      const branchCode = body.branchCode !== undefined ? (cleanText(body.branchCode) || null) : template.branchCode;
+      if (branchCode !== template.branchCode) assertTemplateBranchAccess(auth.session, branchCode);
+
+      const rawLines = body.lines !== undefined
+        ? (Array.isArray(body.lines) ? (body.lines as Array<{ itemId?: unknown; unitCode?: unknown; note?: unknown }>) : [])
+        : null;
+      const nextLines = rawLines
+        ? rawLines
+            .map((line) => ({ itemId: cleanText(line.itemId), unitCode: cleanText(line.unitCode) || null, note: cleanText(line.note) || null }))
+            .filter((line) => line.itemId)
+        : null;
+      if (nextLines && nextLines.length === 0) businessError("Mẫu cần ít nhất một mặt hàng");
+      if (nextLines) await assertTemplateItems(nextLines.map((line) => line.itemId));
+
+      const result = await prisma.$transaction(async (tx) => {
+        if (nextLines) {
+          await tx.purchaseRequestTemplateLine.deleteMany({ where: { templateId } });
+          await tx.purchaseRequestTemplateLine.createMany({
+            data: nextLines.map((line, index) => ({ templateId, itemId: line.itemId, unitCode: line.unitCode, sortOrder: index, note: line.note })),
+          });
+        }
+        return tx.purchaseRequestTemplate.update({
+          where: { id: templateId },
+          data: {
+            name,
+            branchCode,
+            ...(body.departmentCode !== undefined ? { departmentCode: cleanText(body.departmentCode) || null } : {}),
+            ...(body.status !== undefined ? { status: cleanText(body.status) || "ACTIVE" } : {}),
+            ...(body.note !== undefined ? { note: cleanText(body.note) || null } : {}),
+          },
+          include: { lines: { include: { item: true } } },
+        });
+      });
+      await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "UPDATE_TEMPLATE", entityType: "PurchaseRequestTemplate", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { changedFields: Object.keys(body).filter((field) => field !== "action" && field !== "templateId"), lines: result.lines.length } });
+      return NextResponse.json(result);
+    }
 
     if (action === "UPDATE_REQUEST") {
       const requestId = cleanText(body.requestId) || cleanText(body.id);
       if (!requestId) businessError("Thiếu PR cần sửa");
       const pr = await prisma.purchaseRequest.findUnique({
         where: { id: requestId },
-        include: { orders: true },
+        include: { orders: true, quotes: true },
       });
       if (!pr) businessError("Không tìm thấy yêu cầu mua hàng");
       assertBranchAccess(auth.session, pr.branchCode);
-      if (pr.approvedAt || lockedRequestStatuses.includes(pr.status)) {
-        businessError(`Đề nghị mua hàng ${pr.code} đã được duyệt/chốt nên không thể sửa.`);
+      if (lockedRequestStatuses.includes(pr.status)) {
+        businessError(`Đề nghị mua hàng ${pr.code} đang ở trạng thái ${pr.status} nên không thể sửa.`);
       }
       if (pr.orders.length > 0) {
         businessError(`Đề nghị mua hàng ${pr.code} đã sinh đơn mua hàng nên không thể sửa.`);
+      }
+      // Sửa dòng hàng sau khi đã có báo giá sẽ làm báo giá treo theo mặt hàng không còn được
+      // yêu cầu nữa (so sánh giá lệch, tạo PO ra sai). Bỏ báo giá trước rồi hãy sửa.
+      if (pr.quotes.length > 0) {
+        businessError(`Đề nghị mua hàng ${pr.code} đã có ${pr.quotes.length} báo giá nhà cung cấp nên không thể sửa. Hãy xoá báo giá ở tab So sánh giá trước.`);
       }
 
       const branchCode = body.branchCode !== undefined ? cleanText(body.branchCode) : pr.branchCode;
@@ -461,7 +760,9 @@ export async function PATCH(request: Request) {
               : {}),
             ...(body.requestDate !== undefined ? { requestDate: toDate(body.requestDate) } : {}),
             ...(body.neededDate !== undefined ? { neededDate: body.neededDate ? toDate(body.neededDate) : null } : {}),
-            ...(body.status !== undefined && !lockedRequestStatuses.includes(cleanText(body.status))
+            // Chỉ nhận đúng những trạng thái hợp lệ của luồng, không nhận chuỗi tuỳ ý từ client
+            // (gán "XYZ" là phiếu rơi ra ngoài mọi bộ lọc, hiện trên màn hình mà không xử lý được).
+            ...(body.status !== undefined && quotableRequestStatuses.includes(cleanText(body.status))
               ? { status: cleanText(body.status) }
               : {}),
             ...(body.note !== undefined ? { note: cleanText(body.note) || null } : {}),
@@ -620,11 +921,46 @@ export async function PATCH(request: Request) {
     const receivedDate = toDate(body.receivedDate);
     if (await isPeriodLocked(receivedDate, order.branchCode)) businessError("Kỳ kế toán đã khóa");
 
-    const requestedLines = validLines(body.lines);
+    /**
+     * Khớp số lượng nhận theo ID DÒNG PO, không theo mặt hàng: một PO có thể có hai dòng cùng
+     * mặt hàng (hai mức giá), khớp theo itemId là cả hai dòng cùng nhận -> tồn kho và công nợ
+     * gấp đôi. Dòng người dùng cố tình để 0 (giao thiếu) phải hiểu là KHÔNG nhận, chứ không
+     * được rơi vào nhánh mặc định "nhận hết phần còn lại".
+     */
+    const hasLinePayload = Array.isArray(body.lines) && body.lines.length > 0;
+    const requestedByLineId = new Map<string, number>();
+    const requestedByItemId = new Map<string, number>();
+    if (hasLinePayload) {
+      for (const row of body.lines as Array<{ lineId?: unknown; id?: unknown; itemId?: unknown; quantity?: unknown }>) {
+        const quantity = toNumber(row.quantity);
+        if (!(quantity >= 0)) continue;
+        const lineId = cleanText(row.lineId) || cleanText(row.id);
+        if (lineId) requestedByLineId.set(lineId, quantity);
+        else {
+          const itemId = cleanText(row.itemId);
+          // Payload cũ chỉ có itemId: cộng dồn để hai dòng cùng mặt hàng không nhân đôi.
+          if (itemId) requestedByItemId.set(itemId, (requestedByItemId.get(itemId) || 0) + quantity);
+        }
+      }
+    }
+
+    // Dòng cuối cùng của mỗi mặt hàng nhận nốt phần dư, để số gửi vượt vẫn chạm được chốt chặn
+    // "nhận vượt số đã đặt" bên dưới thay vì bị âm thầm cắt bớt.
+    const lastLineIdOfItem = new Map<string, string>();
+    for (const line of order.lines) lastLineIdOfItem.set(line.itemId, line.id);
+
     const receiveLines = order.lines.map((line) => {
-      const requested = requestedLines.find((item) => item.itemId === line.itemId);
       const remaining = line.orderedQuantity - line.receivedQuantity;
-      return { ...line, receiveQuantity: requested ? requested.quantity : remaining };
+      if (!hasLinePayload) return { ...line, receiveQuantity: remaining };
+      if (requestedByLineId.has(line.id)) return { ...line, receiveQuantity: requestedByLineId.get(line.id) as number };
+      if (requestedByItemId.has(line.itemId)) {
+        const left = requestedByItemId.get(line.itemId) as number;
+        const take = lastLineIdOfItem.get(line.itemId) === line.id ? left : Math.min(remaining, left);
+        requestedByItemId.set(line.itemId, left - take);
+        return { ...line, receiveQuantity: take };
+      }
+      // Có gửi danh sách dòng mà dòng này không nằm trong đó = không nhận dòng này.
+      return { ...line, receiveQuantity: 0 };
     }).filter((line) => line.receiveQuantity > 0);
     if (receiveLines.length === 0) businessError("Không có số lượng cần nhận");
     for (const line of receiveLines) {
@@ -702,17 +1038,23 @@ export async function PATCH(request: Request) {
       const remainingLines = await tx.purchaseOrderLine.findMany({ where: { orderId: order.id } });
       const completed = remainingLines.every((line) => line.receivedQuantity >= line.orderedQuantity);
       await tx.purchaseOrder.update({ where: { id: order.id }, data: { status: completed ? "COMPLETED" : "PARTIALLY_RECEIVED" } });
-      const payable = await tx.supplierPayable.findUnique({ where: { purchaseOrderId: order.id } });
+      // Cộng dồn bằng `increment` chứ không đọc-rồi-ghi: hai lần nhận hàng chạy song song mà
+      // đọc cùng số cũ thì một khoản công nợ bị nuốt mất (lost update).
       await tx.supplierPayable.upsert({
         where: { purchaseOrderId: order.id },
         create: { purchaseOrderId: order.id, supplierCode: order.supplierCode, supplierName: order.supplierName, recognizedDate: receivedDate, originalAmount: receivedValue, outstandingAmount: receivedValue },
-        update: { originalAmount: (payable?.originalAmount || 0) + receivedValue, outstandingAmount: (payable?.outstandingAmount || 0) + receivedValue },
+        update: { originalAmount: { increment: receivedValue }, outstandingAmount: { increment: receivedValue } },
       });
       return { stockTransaction, assetsCreated: assetLines.length };
     });
 
     await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "RECEIVE_ORDER", entityType: "PurchaseOrder", entityId: order.id, entityCode: order.code, branchCode: order.branchCode, metadata: { receiptId: result.stockTransaction?.id || null, receiptCode: result.stockTransaction?.code || null, assetsCreated: result.assetsCreated, lines: receiveLines.length } });
-    return NextResponse.json(result.stockTransaction || { assetsCreated: result.assetsCreated });
+    // Trả cả phiếu kho lẫn số tài sản/CCDC đã tạo để màn hình báo đúng "hàng đi đâu".
+    return NextResponse.json({
+      stockTransaction: result.stockTransaction,
+      receiptCode: result.stockTransaction?.code || null,
+      assetsCreated: result.assetsCreated,
+    });
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });
@@ -741,8 +1083,8 @@ export async function DELETE(request: Request) {
       });
       if (!pr) businessError("Không tìm thấy đề nghị mua hàng");
       assertBranchAccess(auth.session, pr.branchCode);
-      if (pr.approvedAt || lockedRequestStatuses.includes(pr.status)) {
-        businessError(`Đề nghị mua hàng ${pr.code} đã được duyệt/chốt nên không thể xoá.`);
+      if (lockedRequestStatuses.includes(pr.status)) {
+        businessError(`Đề nghị mua hàng ${pr.code} đang ở trạng thái ${pr.status} nên không thể xoá.`);
       }
       if (pr.orders.length > 0) {
         businessError(`Đề nghị mua hàng ${pr.code} đã sinh ${pr.orders.length} đơn mua hàng nên không thể xoá. Hãy xoá đơn mua hàng trước.`);
@@ -767,7 +1109,23 @@ export async function DELETE(request: Request) {
       if (order.payable) {
         businessError(`Đơn mua hàng ${order.code} đã sinh công nợ phải trả nhà cung cấp nên không thể xoá. Hãy tất toán công nợ trước.`);
       }
-      return NextResponse.json(await softDeleteRecord({ model: "PurchaseOrder", id, session: auth.session, reason }));
+      const deleted = await softDeleteRecord({ model: "PurchaseOrder", id, session: auth.session, reason });
+      // Trả yêu cầu mua nguồn về trạng thái chờ mua hàng: lập PO đã đẩy nó sang ORDERED (khoá
+      // sửa/xoá), xoá PO mà không trả lại thì phiếu kẹt vĩnh viễn dù không còn đơn nào.
+      if (order.requestId) {
+        const siblings = await prisma.purchaseOrder.count({ where: { requestId: order.requestId } });
+        if (siblings === 0) {
+          await prisma.purchaseRequest.updateMany({ where: { id: order.requestId, status: "ORDERED" }, data: { status: "APPROVED" } });
+        }
+      }
+      return NextResponse.json(deleted);
+    }
+
+    if (["TEMPLATE", "PURCHASE_REQUEST_TEMPLATE", "PURCHASEREQUESTTEMPLATE"].includes(type)) {
+      const template = await prisma.purchaseRequestTemplate.findUnique({ where: { id } });
+      if (!template) businessError("Không tìm thấy mẫu yêu cầu mua hàng");
+      assertTemplateBranchAccess(auth.session, template.branchCode);
+      return NextResponse.json(await softDeleteRecord({ model: "PurchaseRequestTemplate", id, session: auth.session, reason }));
     }
 
     if (["QUOTE", "SUPPLIER_QUOTE", "SUPPLIERQUOTE"].includes(type)) {
@@ -786,7 +1144,7 @@ export async function DELETE(request: Request) {
       return NextResponse.json(await softDeleteRecord({ model: "SupplierQuote", id, session: auth.session, reason }));
     }
 
-    return businessError(`Loại chứng từ "${type || "(trống)"}" không được hỗ trợ. Dùng type=REQUEST, ORDER hoặc QUOTE.`);
+    return businessError(`Loại chứng từ "${type || "(trống)"}" không được hỗ trợ. Dùng type=REQUEST, ORDER, QUOTE hoặc TEMPLATE.`);
   } catch (error) {
     if (error instanceof SoftDeleteError) {
       return NextResponse.json({ error: error.message }, { status: error.status });

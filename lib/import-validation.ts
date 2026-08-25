@@ -400,7 +400,9 @@ function validateInventoryTransaction(
   const unitCode = text(row.values.unit_code) || item.unit;
   row.values.unit_code = unitCode;
   const conversion = item.unitConversions.find((unit) => unit.unitCode.toUpperCase() === unitCode.toUpperCase());
-  const conversionRate = conversion?.conversionRate || (unitCode.toUpperCase() === item.unit.toUpperCase() ? 1 : 0);
+  // ĐVT trùng ĐVT tồn kho thì tỷ lệ luôn 1 — danh mục còn nhiều dòng khai sai "1 KG = 1000 KG"
+  // (xem lib/unit-conversion.ts), tin thẳng tỷ lệ đó là import vào kho gấp 1000 lần.
+  const conversionRate = unitCode.toUpperCase() === item.unit.toUpperCase() ? 1 : (conversion?.conversionRate || 0);
   if (!conversionRate) {
     addError(row, `DVT ${unitCode} khong ton tai trong quy doi cua mat hang ${itemCode}`);
     return;
@@ -1266,6 +1268,12 @@ export async function validateImportResult(
       const conversionRate = numberValue(row.values.conversion_rate);
       if ((purchaseUnit || conversionRate > 0) && (!purchaseUnit || conversionRate < 1)) {
         addError(row, "ĐVT mua và tỷ lệ quy đổi phải hợp lệ");
+      }
+      // Bắt ngay ở bước xem trước, cùng luật với lúc ghi (lib/import-commit.ts): nếu để lọt thì
+      // cả lô vài nghìn dòng bị rollback ở bước ghi kèm lỗi thô, người dùng không biết dòng nào sai.
+      const baseUnitRow = text(row.values.unit);
+      if (purchaseUnit && baseUnitRow && purchaseUnit.toUpperCase() === baseUnitRow.toUpperCase() && conversionRate !== 1) {
+        addError(row, `ĐVT mua [${purchaseUnit}] trùng ĐVT tồn kho nên tỷ lệ quy đổi phải là 1. Muốn khai "1 ${purchaseUnit} = ${conversionRate} đơn vị nhỏ" thì cột ĐVT tồn kho phải là đơn vị nhỏ đó.`);
       }
     }
     if (importType === "OPENING_BALANCE") {

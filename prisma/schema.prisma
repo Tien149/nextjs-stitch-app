@@ -571,6 +571,7 @@ model InventoryItem {
   requestLines     PurchaseRequestLine[]
   orderLines       PurchaseOrderLine[]
   quoteLines       SupplierQuoteLine[]
+  templateLines    PurchaseRequestTemplateLine[]
 
   deletedAt DateTime?
   deletedBy String?
@@ -720,6 +721,48 @@ model InventoryTransactionLine {
   @@index([itemId])
 }
 
+/// Mẫu yêu cầu mua hàng do quản lý set sẵn (tên hàng + ĐVT). Bộ phận cần đặt chỉ mở mẫu,
+/// điền số lượng vào các dòng cần mua rồi gửi — hệ thống tạo PR nhiều dòng từ mẫu.
+model PurchaseRequestTemplate {
+  id             String   @id @default(uuid())
+  code           String   @unique
+  name           String
+  /// Trống = mẫu dùng chung cho mọi cửa hàng.
+  branchCode     String?
+  /// Bộ phận mặc định điền sẵn khi đặt theo mẫu (bếp, bar...); người đặt vẫn đổi được.
+  departmentCode String?
+  status         String   @default("ACTIVE")
+  note           String?
+  createdBy      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  lines PurchaseRequestTemplateLine[]
+
+  deletedAt DateTime?
+  deletedBy String?
+
+  @@index([status])
+  @@index([branchCode])
+  @@index([deletedAt])
+}
+
+model PurchaseRequestTemplateLine {
+  id         String  @id @default(uuid())
+  templateId String
+  itemId     String
+  /// ĐVT đặt hàng trên mẫu (mã trong ItemUnitConversion). Trống = ĐVT mua mặc định của mặt hàng.
+  unitCode   String?
+  sortOrder  Int     @default(0)
+  note       String?
+
+  template PurchaseRequestTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  item     InventoryItem           @relation(fields: [itemId], references: [id])
+
+  @@index([templateId])
+  @@index([itemId])
+}
+
 model PurchaseRequest {
   id             String    @id @default(uuid())
   code           String    @unique
@@ -820,6 +863,8 @@ model PurchaseOrder {
   approvedAt     DateTime?
   note           String?
   createdBy      String?
+  /// Token link công khai gửi nhà cung cấp xem phiếu không cần đăng nhập. Null = chưa chia sẻ.
+  shareToken     String?   @unique
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
