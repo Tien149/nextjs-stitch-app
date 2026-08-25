@@ -953,13 +953,17 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
         </div>
         </StickyFilterBar>
 
-        <main className="grid gap-4 items-start xl:grid-cols-[calc((100%-3rem)/4)_minmax(0,1fr)]">
+        {/* Cột form khóa theo pixel như các màn Sổ quỹ/Đặt cọc/Tài sản, không lấy 1/4 bề ngang:
+            màn 1280px thì một phần tư chỉ còn ~295px, không đủ chỗ cho cặp ô nhập nào. */}
+        <main className="grid gap-4 items-start xl:grid-cols-[360px_minmax(0,1fr)] 2xl:grid-cols-[400px_minmax(0,1fr)]">
           {(canCreate || editingVoucher) && (
             <form
               onSubmit={submitVoucher}
               onChangeCapture={clearPreviousSuccess}
               onInvalidCapture={clearPreviousSuccess}
-              className="bg-white border border-slate-200 rounded-2xl shadow-sm p-5 space-y-4"
+              /* @container: các cặp ô bên trong xuống dòng theo bề ngang thật của form,
+                 không theo bề ngang màn hình - nhờ vậy cột hẹp và điện thoại đều đúng. */
+              className="@container bg-white border border-slate-200 rounded-2xl shadow-sm p-5 space-y-4"
             >
               <div>
                 <span className="text-[10px] font-bold text-blue-600 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-full uppercase">
@@ -970,7 +974,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                 </h2>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 @sm:grid-cols-2 gap-3">
                 <label className="text-xs font-bold text-slate-600 block">
                   Loại chứng từ *
                   <select
@@ -1021,7 +1025,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
               </label>}
 
               {form.voucherType === "RECEIPT" && (
-                <div className={`grid gap-3 ${form.depositAction === "COLLECT" ? "grid-cols-2" : "grid-cols-1"}`}>
+                <div className={`grid gap-3 ${form.depositAction === "COLLECT" ? "grid-cols-1 @sm:grid-cols-2" : "grid-cols-1"}`}>
                   <label className="text-xs font-bold text-slate-600 block">
                     Nội dung thu *
                     <select
@@ -1105,7 +1109,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                           options={partnerOptions.filter((partner) => partner.code).map((partner) => ({ value: partner.code, label: `${partner.code} - ${partner.name}` }))}
                           placeholder="Chọn đối tác"
                         />
-                        <div className="grid grid-cols-2 gap-2">
+                        <div className="grid grid-cols-1 @sm:grid-cols-2 gap-2">
                           <label className="block text-[11px] font-bold text-slate-600">
                             Số tiền (đ) *
                             <input
@@ -1148,7 +1152,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                   </p>
                 </div>
               ) : (
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 @sm:grid-cols-2 gap-3">
                   <label className="text-xs font-bold text-slate-600 block">
                     Mã đối tác
                     <input
@@ -1187,7 +1191,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 @sm:grid-cols-2 gap-3">
                 <label className="text-xs font-bold text-slate-600 block">
                   Cửa hàng *
                   <select
@@ -1248,7 +1252,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                 </label>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 @sm:grid-cols-2 gap-3">
                 <div className="text-xs font-bold text-slate-600 block">
                   Khoản mục thu/chi *
                   {/* Danh mục dài nên dùng ô chọn gõ-tìm; logic tự bật thu cọc giữ nguyên.

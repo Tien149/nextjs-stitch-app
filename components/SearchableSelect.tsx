@@ -115,9 +115,10 @@ export function SearchableSelect({
         </svg>
       </button>
 
-      {/* Popover Dropdown */}
+      {/* Popover Dropdown: panel rộng theo nội dung chứ không bó đúng bề ngang ô, vì ô hẹp
+          thì tên đối tác dài bị xuống dòng từng ký tự. Không bao giờ hẹp hơn ô, không tràn màn hình. */}
       {isOpen && (
-        <div className="absolute left-0 top-full mt-1.5 w-full min-w-0 bg-white border border-slate-200 rounded-xl shadow-2xl z-50 overflow-hidden animate-in fade-in-50 zoom-in-95 duration-100">
+        <div className="absolute left-0 top-full mt-1.5 w-max min-w-full max-w-[min(24rem,calc(100vw-2rem))] bg-white border border-slate-200 rounded-xl shadow-2xl z-50 overflow-hidden animate-in fade-in-50 zoom-in-95 duration-100">
           {/* Search Box */}
           <div className="p-2 border-b border-slate-100 bg-slate-50/80 sticky top-0 z-10">
             <div className="relative">
