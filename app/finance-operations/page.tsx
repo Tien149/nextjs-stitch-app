@@ -653,7 +653,7 @@ export default function FinanceOperationsPage() {
         {active === "cashbook" && (
           <div className="space-y-6">
             {/* KPI Metrics */}
-            <div className="grid sm:grid-cols-3 gap-6">
+            <div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-6">
               <div className="bg-white/80 backdrop-blur-md border border-slate-200/60 shadow-lg shadow-slate-100/50 rounded-2xl p-5 flex items-center justify-between group hover:shadow-xl hover:shadow-slate-200/50 transition-all duration-300">
                 <div className="space-y-1">
                   <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">{hasCashbookRange ? "Số dư đầu khoảng" : "Số dư đầu kỳ"}</p>
@@ -673,6 +673,18 @@ export default function FinanceOperationsPage() {
                 </div>
                 <div className="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shadow-sm">
                   <span className="material-symbols-outlined text-2xl font-bold">arrow_downward</span>
+                </div>
+              </div>
+
+              <div className="bg-white/80 backdrop-blur-md border border-slate-200/60 shadow-lg shadow-slate-100/50 rounded-2xl p-5 flex items-center justify-between group hover:shadow-xl hover:shadow-slate-200/50 transition-all duration-300">
+                <div className="space-y-1">
+                  <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">Tổng phát sinh Chi</p>
+                  <p className="text-2xl font-black text-rose-800">
+                    -{money(data.cashbook.reduce((sum, row) => sum + row.payment, 0))} đ
+                  </p>
+                </div>
+                <div className="w-12 h-12 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center shadow-sm">
+                  <span className="material-symbols-outlined text-2xl font-bold">arrow_upward</span>
                 </div>
               </div>
 
