@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import {
   appMenuItems,
   canAccessMenu,
+  canCreateCashDeposit,
   canOpenPath,
   canPerformAction,
   canPerformMenuAction,
@@ -119,6 +120,26 @@ export function requireMenuAction(request: Request, href: string, action: AppAct
   if (!auth.ok) return auth;
 
   if (!canPerformMenuAction(auth.session, href, action)) {
+    return { ok: false, response: forbidden() };
+  }
+
+  return auth;
+}
+
+/**
+ * Gác cổng riêng cho phiếu nộp tiền: form nằm ở "Thu chi ngày" nên phiên chỉ cần mở được một
+ * trong hai màn liên quan, còn quyền thao tác do canCreateCashDeposit quyết định.
+ */
+export function requireCashDepositCreate(request: Request): ApiAuthResult {
+  const auth = getRequestSession(request);
+  if (!auth.ok) return auth;
+
+  const reachesForm = canOpenPath(auth.session, "/finance-operations") || canOpenPath(auth.session, "/reports");
+  if (!reachesForm) {
+    return { ok: false, response: forbidden("Khong co quyen truy cap module nay") };
+  }
+
+  if (!canCreateCashDeposit(auth.session)) {
     return { ok: false, response: forbidden() };
   }
 

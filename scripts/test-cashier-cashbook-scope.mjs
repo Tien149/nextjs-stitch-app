@@ -4,6 +4,7 @@ import {
   appMenuItems,
   allowedMenuTabs,
   canAccessMenu,
+  canCreateCashDeposit,
   canOpenPath,
   canPerformMenuAction,
   getDefaultRouteForRole,
@@ -68,6 +69,16 @@ test("Sổ quỹ với thu ngân là chỉ đọc, các màn khác giữ nguyên
   // Vẫn phải lập được phiếu và nộp tiền ở màn của ca.
   assert.equal(canPerformMenuAction(cashier, "/reports", "create"), true);
   assert.equal(canPerformMenuAction(cashier, "/vouchers", "edit"), true);
+});
+
+test("thu ngân vẫn lập được phiếu nộp tiền trên Thu chi ngày", () => {
+  // Nút "Nộp tiền" nằm ở /reports; gác cổng theo quyền create của Sổ quỹ là chặn nhầm thu ngân.
+  assert.equal(canCreateCashDeposit(cashier), true);
+  assert.equal(canCreateCashDeposit({ ...cashier, actions: ["view", "export"] }), false);
+  // Không nới cho vai trò khác: vẫn phải có create ở Sổ quỹ.
+  assert.equal(canCreateCashDeposit({ ...cashier, role: "Kế toán tổng hợp", menuAccess: [], actions: [] }), true);
+  assert.equal(canCreateCashDeposit({ ...cashier, role: "Quản lý", menuAccess: [], actions: [] }), false);
+  assert.equal(canCreateCashDeposit({ ...cashier, role: "Kế toán công nợ", menuAccess: [], actions: [] }), false);
 });
 
 test("vai trò khác không bị màn Sổ quỹ thu hẹp quyền", () => {

@@ -543,6 +543,18 @@ export function canPerformMenuAction(subject: ActionSubject, href: string, actio
 }
 
 /**
+ * Quyền lập phiếu nộp tiền.
+ *
+ * Nút "Nộp tiền" nằm trên màn "Thu chi ngày" (/reports) chứ không phải Sổ quỹ, nên thu ngân —
+ * vốn bị khóa read-only ở /finance-operations để giấu Điều chỉnh quỹ và Quyết toán ví/POS —
+ * vẫn phải lập được phiếu. Các vai trò khác giữ nguyên gác cổng cũ theo quyền create của Sổ quỹ.
+ */
+export function canCreateCashDeposit(subject: ActionSubject) {
+  if (canPerformMenuAction(subject, "/finance-operations", "create")) return true;
+  return isCashierSubject(subject) && canPerformMenuAction(subject, "/reports", "create");
+}
+
+/**
  * Quyền nhạy cảm riêng của phiếu Thu/Chi ngày cũ.
  *
  * Không dùng fallback quyền cứng của vai trò chuẩn: phiên đăng nhập phải thực sự mang

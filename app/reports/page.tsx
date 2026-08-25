@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { DateInput, MonthInput } from "@/components/DateInput";
 import { storeLabel, visibleBranchScopeOptions, visibleStoreOptions } from "@/lib/branch-labels";
-import { canPerformMenuAction, filterModuleTabs, moduleTabs } from "@/lib/auth-demo";
+import { canCreateCashDeposit as canCreateCashDepositSlip, canPerformMenuAction, filterModuleTabs, moduleTabs } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import { filterCashierCashSources, filterMoneySources, moneySourceDebugLabel, moneySourceDisplayName, stripMoneySourceLabel, type MoneySourceOption } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
@@ -243,7 +243,7 @@ export default function ReportsPage() {
   // Vai trò được gán riêng một tab (ví dụ thu ngân chỉ có "Thu chi ngày") thì chỉ thấy tab đó.
   const visibleTabs = useMemo(() => filterModuleTabs(user, href), [user]);
   const canConfigure = user ? canPerformMenuAction(user, href, "create") : false;
-  const canCreateCashDeposit = user ? canPerformMenuAction(user, "/finance-operations", "create") : false;
+  const canCreateCashDeposit = user ? canCreateCashDepositSlip(user) : false;
   const canEnterManualRevenue = user ? canPerformMenuAction(user, href, "create") : false;
   const canAdminPeriod = user?.role === "Admin";
 

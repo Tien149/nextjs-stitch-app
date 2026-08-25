@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { isAdmin, requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
+import { isAdmin, requireCashDepositCreate, requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma, prismaRaw } from "@/lib/prisma";
 import { addPeriod, apiError, businessError, cleanText, isPeriodLocked, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
 import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
@@ -633,7 +633,8 @@ export async function POST(request: Request) {
     }
 
     if (action === "CREATE_CASH_DEPOSIT_TRANSFER") {
-      const auth = requireMenuAction(request, menuHref, "create");
+      // Phiếu nộp tiền lập từ màn "Thu chi ngày" nên thu ngân (chỉ được xem Sổ quỹ) vẫn phải tạo được.
+      const auth = requireCashDepositCreate(request);
       if (!auth.ok) return auth.response;
 
       const transferDate = toDate(body.transferDate || body.sourceReportDate);
