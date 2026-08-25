@@ -309,7 +309,14 @@ body {
     background: #ffffff !important;
   }
 
-  body * {
+  /* Quy tắc "giấu hết trừ báo cáo Thu chi ngày" chỉ được áp trên đúng trang có báo cáo đó.
+     Trước đây viết trần cho mọi trang nên trang in Phiếu thu/chi (không có #daily-cash-report)
+     bị giấu sạch, bấm In ra tờ giấy trắng trơn.
+
+     Bọc :has() trong :where() để trọng số selector giữ nguyên như cũ. Viết thẳng
+     "body:has(#id) *" là selector mang thêm trọng số của một ID, vượt mặt luôn quy tắc
+     "#daily-cash-report * { visible }" bên dưới -> đến lượt báo cáo Thu chi ngày in ra trắng. */
+  body:where(:has(#daily-cash-report)) * {
     visibility: hidden !important;
   }
 
