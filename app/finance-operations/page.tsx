@@ -60,6 +60,11 @@ type InternalTransferEditForm = {
 };
 
 const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value);
+/** Ngày hôm nay theo giờ máy trạm, tránh lệch một ngày khi ca tối duyệt sau 0h. */
+const todayInput = () => {
+  const now = new Date();
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+};
 
 /**
  * Nguồn tiền được chọn cho phiếu điều tiền: gồm nguồn của cửa hàng phiếu và của cửa hàng
@@ -349,9 +354,10 @@ export default function FinanceOperationsPage() {
     }
   };
 
+  /** Mở popup duyệt: mặc định lấy ngày bấm duyệt, kế toán duyệt trễ thì sửa lại đúng ngày nộp tiền thực tế. */
   const openCashApproval = (ids: string[]) => {
     if (ids.length === 0) return;
-    setCashApproval({ ids, actualTransferDate: "" });
+    setCashApproval({ ids, actualTransferDate: todayInput() });
     setMessage("");
   };
 
@@ -1468,6 +1474,7 @@ export default function FinanceOperationsPage() {
               <label className="block text-xs font-bold text-slate-600">
                 Ngày thực tế nộp tiền *
                 <DateInput className="mt-1.5 w-full" value={cashApproval.actualTransferDate} onChange={(value) => setCashApproval((current) => current ? { ...current, actualTransferDate: value } : current)} ariaLabel="Ngày thực tế nộp tiền" />
+                <p className="mt-1.5 text-[11px] font-medium text-slate-500">Mặc định là ngày bấm duyệt. Nếu duyệt trễ, sửa lại đúng ngày tiền thực nộp.</p>
               </label>
               <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-4 text-xs text-emerald-900">
                 <p className="font-bold">Tổng tiền: {money(data.moneyTransfers.filter((row) => cashApproval.ids.includes(row.id)).reduce((sum, row) => sum + row.amount, 0))} đ</p>
