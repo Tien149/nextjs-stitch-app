@@ -35,16 +35,32 @@ export default function Login() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const handleLogin = async (event: React.FormEvent) => {
+  const handleLogin = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError("");
+
+    // Đọc trực tiếp từ DOM qua FormData để bắt được cả giá trị do trình duyệt
+    // tự điền (autofill) — trường hợp autofill gán value nhưng không kích hoạt
+    // onChange nên React state có thể vẫn rỗng, gây lỗi "Thiếu email/mật khẩu".
+    const formData = new FormData(event.currentTarget);
+    const emailValue = String(formData.get("username") ?? userId).trim();
+    const passwordValue = String(formData.get("password") ?? password).trim();
+
+    if (!emailValue || !passwordValue) {
+      setError("Vui lòng nhập đầy đủ email/tên đăng nhập và mật khẩu.");
+      return;
+    }
+
+    // Đồng bộ lại state phòng khi giá trị đến từ autofill.
+    setUserId(emailValue);
+    setPassword(passwordValue);
     setLoading(true);
 
     try {
       const response = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: userId.trim(), password: password.trim(), rememberMe }),
+        body: JSON.stringify({ email: emailValue, password: passwordValue, rememberMe }),
       });
 
       if (!response.ok) {
@@ -130,6 +146,7 @@ export default function Login() {
               </label>
               <input
                 id="login-user"
+                name="username"
                 type="text"
                 value={userId}
                 onChange={(event) => setUserId(event.target.value)}
@@ -147,6 +164,7 @@ export default function Login() {
               <div className="relative mt-2">
                 <input
                   id="login-password"
+                  name="password"
                   type={showPassword ? "text" : "password"}
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
