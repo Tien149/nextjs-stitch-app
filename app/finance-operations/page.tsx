@@ -5,7 +5,7 @@ import { DateInput, MonthInput } from "@/components/DateInput";
 import { storeLabel, updateDynamicBranches, visibleBranchScopeOptions, visibleStoreOptions } from "@/lib/branch-labels";
 import { canPerformMenuAction, filterModuleTabs, isCashierSubject } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
-import { filterCashierCashSources, filterMoneySources, moneySourceDebugLabel, moneySourceDisplayName, summaryMoneySourceGroups } from "@/lib/money-sources";
+import { filterCashierCashSources, filterMoneySources, isGrabMoneySource, moneySourceDebugLabel, moneySourceDisplayName, summaryMoneySourceGroups } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { shiftLabels } from "@/lib/shifts";
@@ -29,6 +29,8 @@ type MoneyTransfer = {
   toMoneySourceCode: string;
   amount: number;
   feeAmount: number;
+  /** Phần chi phí bán hàng Grab nằm trong feeAmount; phần còn lại là phí quẹt thẻ bán hàng. */
+  grabExpenseAmount?: number;
   description: string;
   externalRef?: string | null;
   status: string;
@@ -60,6 +62,29 @@ type InternalTransferEditForm = {
 };
 
 const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value);
+const WALLET_GRAB_EXPENSE_LABEL = "Chi phí bán hàng Grab";
+const WALLET_CARD_FEE_LABEL = "Chi phí quẹt thẻ bán hàng";
+/**
+ * Phí của phiếu quyết toán ví gọi đúng tên khoản mục nó sẽ vào trên Báo cáo nguồn tiền:
+ * phần chi phí bán hàng Grab tách riêng, phần còn lại là phí quẹt thẻ bán hàng. Phiếu nộp
+ * tiền mặt vẫn là chênh lệch làm tròn như cũ.
+ */
+function transferFeeLabels(transfer: MoneyTransfer, fromSourceName?: string | null) {
+  if (transfer.transferPurpose !== "WALLET_SETTLEMENT") {
+    return [{ label: "Chi phí làm tròn", amount: transfer.feeAmount }];
+  }
+  const grabExpense = transfer.grabExpenseAmount || 0;
+  const cardFee = transfer.feeAmount - grabExpense;
+  if (grabExpense && cardFee) {
+    return [{ label: WALLET_GRAB_EXPENSE_LABEL, amount: grabExpense }, { label: WALLET_CARD_FEE_LABEL, amount: cardFee }];
+  }
+  if (grabExpense) return [{ label: WALLET_GRAB_EXPENSE_LABEL, amount: grabExpense }];
+  // Chưa tách phần Grab thì cả cục phí về khoản mục của ví: ví Grab -> Grab, còn lại -> quẹt thẻ.
+  return [{
+    label: isGrabMoneySource(transfer.fromMoneySourceCode, fromSourceName) ? WALLET_GRAB_EXPENSE_LABEL : WALLET_CARD_FEE_LABEL,
+    amount: transfer.feeAmount,
+  }];
+}
 /** Ngày hôm nay theo giờ máy trạm, tránh lệch một ngày khi ca tối duyệt sau 0h. */
 const todayInput = () => {
   const now = new Date();
@@ -104,6 +129,8 @@ export default function FinanceOperationsPage() {
   const [selectedCashDepositIds, setSelectedCashDepositIds] = useState<string[]>([]);
   const [cashApproval, setCashApproval] = useState<{ ids: string[]; actualTransferDate: string } | null>(null);
   const [moneySources, setMoneySources] = useState<MasterDataOption[]>([]);
+  /** Tra tên nguồn tiền theo mã: nhãn phí quyết toán ví đọc theo cả mã lẫn tên, giống báo cáo. */
+  const moneySourceNameByCode = useMemo(() => new Map(moneySources.map((row) => [row.code, row.name])), [moneySources]);
   const [feeCategories, setFeeCategories] = useState<MasterDataOption[]>([]);
   const [settlement, setSettlement] = useState({
     transferDate: new Date().toISOString().slice(0, 10),
@@ -915,7 +942,7 @@ export default function FinanceOperationsPage() {
                             <p className="font-bold">{money(transfer.amount)} đ</p>
                             {transfer.feeAmount !== 0 && (
                               <p className={`mt-1 text-[11px] font-medium ${transfer.feeAmount > 0 ? "text-amber-700" : "text-emerald-700"}`}>
-                                {transfer.transferPurpose === "WALLET_SETTLEMENT" ? "Phí ví/POS" : "Chi phí làm tròn"}: {money(transfer.feeAmount)} đ · Clear: {money(transfer.amount + transfer.feeAmount)} đ
+                                {transferFeeLabels(transfer, moneySourceNameByCode.get(transfer.fromMoneySourceCode)).map((line) => `${line.label}: ${money(line.amount)} đ`).join(" · ")} · Clear: {money(transfer.amount + transfer.feeAmount)} đ
                               </p>
                             )}
                           </td>

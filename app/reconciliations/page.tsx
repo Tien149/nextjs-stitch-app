@@ -27,7 +27,7 @@ function dateText(value: string | null | undefined) {
   return value ? new Date(value).toLocaleDateString("vi-VN", { timeZone: "UTC" }) : "—";
 }
 
-const emptyFilters = { from: "", to: "", dateType: "TRANSACTION", branchCode: "ALL", moneySource: "", category: "", operationType: "", q: "" };
+const emptyFilters = { from: "", to: "", dateType: "TRANSACTION", branchCode: "ALL", moneySource: "", category: "", operationType: "", q: "", missingCategory: "" };
 
 export default function BankStatementLedgerPage() {
   const router = useRouter();
@@ -49,9 +49,26 @@ export default function BankStatementLedgerPage() {
     if (!raw) return void router.push("/login?next=/reconciliations");
     const session = JSON.parse(raw) as DemoSession;
     if (!menu || !canAccessMenu(session.role, menu)) return void router.push("/");
+    // Link từ dòng "Chưa phân loại" của Báo cáo nguồn tiền mang sẵn kỳ + cửa hàng + cờ lọc,
+    // để mở ra là thấy đúng những dòng sao kê đang thiếu Loại thu/chi.
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlDateType = (urlParams.get("dateType") || "").toUpperCase();
+    const urlFilters = {
+      ...emptyFilters,
+      from: urlParams.get("from") || "",
+      to: urlParams.get("to") || "",
+      dateType: ["TRANSACTION", "SOURCE", "REVENUE"].includes(urlDateType) ? urlDateType : emptyFilters.dateType,
+      branchCode: (urlParams.get("branchCode") || "ALL").toUpperCase() || "ALL",
+      missingCategory: urlParams.get("missingCategory") === "1" ? "1" : "",
+    };
+    const hasUrlFilters = Boolean(urlFilters.from || urlFilters.to || urlFilters.missingCategory);
     window.setTimeout(() => {
       setUser(session);
-      setBatchId(new URLSearchParams(window.location.search).get("batchId")?.trim() || "");
+      setBatchId(urlParams.get("batchId")?.trim() || "");
+      if (hasUrlFilters) {
+        setFilters(urlFilters);
+        setApplied(urlFilters);
+      }
     }, 0);
     void fetch("/api/master-data?type=MONEY_SOURCE&status=ACTIVE")
       .then((response) => response.ok ? response.json() : [])
@@ -110,6 +127,7 @@ export default function BankStatementLedgerPage() {
           <label className="text-xs font-bold text-slate-600">Nguồn tiền<select className="control" value={filters.moneySource} onChange={(e) => setFilters({ ...filters, moneySource: e.target.value })}><option value="">Tất cả nguồn tiền</option>{filterMoneySources(moneySources, filters.branchCode, ["BANK", "WALLET", "CASH"]).map((item) => <option key={item.code} value={item.code}>{item.name}</option>)}</select></label>
           <label className="text-xs font-bold text-slate-600">Loại thu/chi<select className="control" value={filters.category} onChange={(e) => setFilters({ ...filters, category: e.target.value })}><option value="">Tất cả loại thu/chi</option>{categories.map((item) => <option key={item.id || item.code} value={item.code}>{item.code} - {item.name}</option>)}</select></label>
           <label className="text-xs font-bold text-slate-600">Loại nghiệp vụ<select className="control" value={filters.operationType} onChange={(e) => setFilters({ ...filters, operationType: e.target.value })}><option value="">Tất cả nghiệp vụ</option>{Object.entries(operationLabels).map(([code, label]) => <option key={code} value={code}>{label}</option>)}</select></label>
+          <label className="text-xs font-bold text-slate-600">Loại thu/chi đã gán<select className="control" value={filters.missingCategory} onChange={(e) => setFilters({ ...filters, missingCategory: e.target.value })}><option value="">Tất cả dòng</option><option value="1">Chưa gán loại thu/chi</option></select></label>
           <label className="text-xs font-bold text-slate-600">Từ khóa<input className="control" value={filters.q} onChange={(e) => setFilters({ ...filters, q: e.target.value })} onKeyDown={(e) => e.key === "Enter" && applyFilters()} placeholder="Mã GD, diễn giải, chứng từ..." /></label>
         </div>
         <div className="mt-3 flex justify-end gap-2"><button onClick={clearFilters} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-bold">Xóa lọc</button><button onClick={applyFilters} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white">Lọc dữ liệu</button></div>

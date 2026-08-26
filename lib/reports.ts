@@ -2,8 +2,8 @@ import { prisma } from "@/lib/prisma";
 import { addPeriod } from "@/lib/phase3";
 import { periodBounds } from "@/lib/accounting";
 import { depositDecreaseActions, depositIncreaseActions } from "@/lib/deposit-accounting";
-import { bankStatementSpecialCategory } from "@/lib/bank-statement-category";
-import { moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
+import { depositCategoryDirection } from "@/lib/bank-statement-category";
+import { isGrabMoneySource, moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { CASH_SOURCE_OPENING_TYPES, OPENING_BALANCE_EFFECTIVE_STATUSES } from "@/lib/opening-balance-rules";
 import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/lib/money-transfer-date";
@@ -159,6 +159,13 @@ const cashReportPendingStatuses = ["DRAFT", "PENDING_REVIEW"];
 const cashReportOpeningTypes = [...CASH_SOURCE_OPENING_TYPES];
 const supplierPartnerTypes = ["SUPPLIER", "BOTH"];
 const unclassifiedKey = "UNCLASSIFIED";
+/**
+ * Hai dòng cọc trên bảng thu/chi theo danh mục. Chứng từ mang danh mục cọc phải gom về đúng
+ * hai dòng này chứ không mọc thêm dòng riêng theo tên khoản mục — cùng một nghiệp vụ mà nằm
+ * hai dòng trùng tên thì khách không cộng được.
+ */
+const depositInRow = { key: "DEPOSIT_IN", name: "Thu tiền cọc", group: "RECEIPT" as const };
+const depositRefundRow = { key: "DEPOSIT_REFUND", name: "Hoàn cọc cho khách", group: "PAYMENT" as const };
 
 function periodOfDate(value: Date) {
   const date = new Date(value);
@@ -262,7 +269,7 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
           ...effectiveMoneyTransferDateFilter(start, end),
           status: "APPROVED",
         },
-        select: { transferDate: true, actualTransferDate: true, amount: true, feeAmount: true, feeCategoryCode: true, transferPurpose: true, fromMoneySourceCode: true, toMoneySourceCode: true, branchCode: true, fromBranchCode: true, toBranchCode: true },
+        select: { transferDate: true, actualTransferDate: true, amount: true, feeAmount: true, feeCategoryCode: true, grabExpenseAmount: true, grabExpenseCategoryCode: true, transferPurpose: true, fromMoneySourceCode: true, toMoneySourceCode: true, branchCode: true, fromBranchCode: true, toBranchCode: true },
       }),
       prisma.openingBalance.findMany({
         where: { period: months[0], ...(branchCode === "ALL" ? {} : { branchCode }), status: { in: [...OPENING_BALANCE_EFFECTIVE_STATUSES] }, balanceType: { in: cashReportOpeningTypes } },
@@ -426,6 +433,28 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
 
   let unclassifiedIncome = 0;
   let unclassifiedExpense = 0;
+  // Dòng "Chưa phân loại" gom dữ liệu từ nhiều màn khác nhau (phiếu tiền mặt, sổ sao kê ngân
+  // hàng, điều chỉnh quỹ, phí điều tiền). Đếm riêng theo từng nguồn để báo cáo chỉ hiện link
+  // tới đúng màn đang thực sự có dòng cần bổ sung — trước đây link nào cũng hiện, bấm vào là
+  // danh sách rỗng vì tiền nằm ở màn khác.
+  const emptyUnclassifiedOrigins = () => ({
+    voucher: { count: 0, amount: 0 },
+    bankStatement: { count: 0, amount: 0 },
+    adjustment: { count: 0, amount: 0 },
+    transferFee: { count: 0, amount: 0 },
+  });
+  const unclassifiedOrigins = { RECEIPT: emptyUnclassifiedOrigins(), PAYMENT: emptyUnclassifiedOrigins() };
+  const bumpUnclassified = (
+    expectedType: "RECEIPT" | "PAYMENT",
+    origin: keyof ReturnType<typeof emptyUnclassifiedOrigins>,
+    amount: number,
+  ) => {
+    if (expectedType === "RECEIPT") unclassifiedIncome += amount;
+    else unclassifiedExpense += amount;
+    const stat = unclassifiedOrigins[expectedType][origin];
+    stat.count += 1;
+    stat.amount += amount;
+  };
   const moneySourceByCode = new Map(moneySources.map((row) => [row.code, row]));
   const allocationsByVoucher = new Map<string, typeof voucherPartnerAllocations>();
   for (const line of voucherPartnerAllocations) {
@@ -442,26 +471,29 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     // ngân hàng vì thế không vào bảng danh mục — tiền của nó sẽ hiện khi sao kê được import —
     // nhưng vẫn cộng vào số dư quỹ như cũ.
     const voucherIsCash = normalizeMoneySourceGroup(moneySourceByCode.get(voucher.moneySourceCode)?.group) === "CASH";
-    // Phiếu mang danh mục đặt cọc/hoàn cọc mà thiếu depositAction (dữ liệu cũ) cũng bị loại
-    // như phiếu cọc chuẩn: sổ cọc là nguồn sự thật duy nhất cho hai dòng cọc trên bảng danh mục.
+    // Phiếu mang danh mục cọc mà thiếu depositAction (dữ liệu cũ) thì sổ cọc không có nó.
+    // Thu cọc vẫn loại như phiếu cọc chuẩn — dòng "Thu tiền cọc" phải bằng đúng cột "Cọc phát
+    // sinh thêm trong kỳ" để khách đối chiếu. Hoàn cọc thì gom vào dòng "Hoàn cọc cho khách"
+    // sẵn có: loại hẳn là mất tiền khỏi bảng, để riêng là mọc dòng thứ hai trùng tên.
     const voucherCategoryForCheck = resolveCategory(voucher.categoryCode, isIncome ? "RECEIPT" : "PAYMENT");
-    const isDepositCategory = bankStatementSpecialCategory({ code: voucher.categoryCode, name: voucherCategoryForCheck?.name }) === "DEPOSIT";
-    if (!isDepositMovement && !isDepositCategory && voucher.businessEffect !== "SETTLEMENT" && voucherIsCash) {
+    const voucherDepositKind = depositCategoryDirection({ code: voucher.categoryCode, name: voucherCategoryForCheck?.name });
+    const voucherIsDepositRefund = voucherDepositKind === "REFUND" && !isIncome;
+    const skipAsDepositCategory = Boolean(voucherDepositKind) && !voucherIsDepositRefund;
+    if (!isDepositMovement && !skipAsDepositCategory && voucher.businessEffect !== "SETTLEMENT" && voucherIsCash) {
       const expectedType = isIncome ? "RECEIPT" : "PAYMENT";
       const category = resolveCategory(voucher.categoryCode, expectedType);
       bumpCategory(
         isIncome ? income : expense,
-        category
-          ? { key: category.code, name: category.name, group: expectedType }
-          : { key: unclassifiedKey, name: "Chưa phân loại", group: expectedType },
+        voucherIsDepositRefund
+          ? depositRefundRow
+          : category
+            ? { key: category.code, name: category.name, group: expectedType }
+            : { key: unclassifiedKey, name: "Chưa phân loại", group: expectedType },
         monthCount,
         monthIndex,
         voucher.amount,
       );
-      if (!category) {
-        if (isIncome) unclassifiedIncome += voucher.amount;
-        else unclassifiedExpense += voucher.amount;
-      }
+      if (!category && !voucherIsDepositRefund) bumpUnclassified(expectedType, "voucher", voucher.amount);
     }
 
     const source = touchSource(voucher.moneySourceCode);
@@ -537,23 +569,25 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     if (!amount) continue;
     const expectedType = isIncome ? ("RECEIPT" as const) : ("PAYMENT" as const);
     const category = resolveCategory(row.categoryCode, expectedType);
-    // Dòng mang danh mục đặt cọc/hoàn cọc (kể cả dữ liệu cũ thiếu Loại nghiệp vụ đích) cũng
-    // bỏ qua nốt: sổ cọc là nguồn sự thật DUY NHẤT cho hai dòng cọc, không thì bảng danh mục
-    // mọc thêm dòng "Thu Tiền Từ Khách Đặt Cọc" lệch với "Cọc phát sinh thêm trong kỳ".
-    if (bankStatementSpecialCategory({ code: row.categoryCode, name: category?.name }) === "DEPOSIT") continue;
+    // Dòng mang danh mục thu cọc (kể cả dữ liệu cũ thiếu Loại nghiệp vụ đích) bỏ qua: sổ cọc
+    // là nguồn sự thật DUY NHẤT cho dòng "Thu tiền cọc", không thì bảng danh mục mọc thêm dòng
+    // "Thu Tiền Từ Khách Đặt Cọc" lệch với "Cọc phát sinh thêm trong kỳ". Hoàn cọc thì gom vào
+    // dòng "Hoàn cọc cho khách" sẵn có, giống cách xử lý ở vòng phiếu thu/chi.
+    const rowDepositKind = depositCategoryDirection({ code: row.categoryCode, name: category?.name });
+    const rowIsDepositRefund = rowDepositKind === "REFUND" && !isIncome;
+    if (rowDepositKind && !rowIsDepositRefund) continue;
     bumpCategory(
       isIncome ? income : expense,
-      category
-        ? { key: category.code, name: category.name, group: expectedType }
-        : { key: unclassifiedKey, name: "Chưa phân loại", group: expectedType },
+      rowIsDepositRefund
+        ? depositRefundRow
+        : category
+          ? { key: category.code, name: category.name, group: expectedType }
+          : { key: unclassifiedKey, name: "Chưa phân loại", group: expectedType },
       monthCount,
       monthIndexOf(row.effectiveDate),
       amount,
     );
-    if (!category) {
-      if (isIncome) unclassifiedIncome += amount;
-      else unclassifiedExpense += amount;
-    }
+    if (!category && !rowIsDepositRefund) bumpUnclassified(expectedType, "bankStatement", amount);
   }
 
   for (const row of adjustments) {
@@ -561,12 +595,12 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     const source = touchSource(row.moneySourceCode);
     if (row.entryType === "RECEIPT") {
       bumpCategory(income, { key: unclassifiedKey, name: "Chưa phân loại", group: "RECEIPT" }, monthCount, monthIndex, row.amount);
-      unclassifiedIncome += row.amount;
+      bumpUnclassified("RECEIPT", "adjustment", row.amount);
       source.in += row.amount;
       bumpSourceMonth(source, row.entryDate, row.amount);
     } else {
       bumpCategory(expense, { key: unclassifiedKey, name: "Chưa phân loại", group: "PAYMENT" }, monthCount, monthIndex, row.amount);
-      unclassifiedExpense += row.amount;
+      bumpUnclassified("PAYMENT", "adjustment", row.amount);
       source.out += row.amount;
       bumpSourceMonth(source, row.entryDate, -row.amount);
     }
@@ -589,22 +623,51 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
       bumpSourceMonth(toSource, transferDate, row.amount);
     }
     if (legs.out && row.feeAmount !== 0) {
-      const category = resolveCategory(row.feeCategoryCode, "PAYMENT");
-      const fallbackCategory = row.transferPurpose === "CASH_DEPOSIT"
-        ? { key: "CASH_ROUNDING", name: "Chênh lệch làm tròn tiền nộp", group: "PAYMENT" as const }
-        : row.transferPurpose === "WALLET_SETTLEMENT"
-          ? { key: "WALLET_FEE", name: "Phí ví/POS", group: "PAYMENT" as const }
-          : { key: unclassifiedKey, name: "Chưa phân loại", group: "PAYMENT" as const };
-      bumpCategory(
-        expense,
-        category
-          ? { key: category.code, name: category.name, group: "PAYMENT" }
-          : fallbackCategory,
-        monthCount,
-        monthIndexOf(effectiveMoneyTransferDate(row)),
-        row.feeAmount,
-      );
-      if (!category && !["CASH_DEPOSIT", "WALLET_SETTLEMENT"].includes(row.transferPurpose || "")) unclassifiedExpense += row.feeAmount;
+      const isWalletSettlement = row.transferPurpose === "WALLET_SETTLEMENT";
+      // Phí quyết toán ví về đúng khoản mục của khách chứ không gom một dòng "Phí ví/POS":
+      // phần chi phí bán hàng Grab tách riêng, phần còn lại là phí quẹt thẻ bán hàng. Ví nào
+      // là Grab thì đọc theo nhãn nguồn tiền, giống cách màn Tiền về đủ chưa đang gán phí.
+      const fromSourceRow = moneySourceByCode.get(row.fromMoneySourceCode);
+      const walletFeeCategoryCode = isGrabMoneySource(row.fromMoneySourceCode, fromSourceRow?.name)
+        ? WALLET_GRAB_EXPENSE_CATEGORY_CODE
+        : WALLET_CARD_FEE_CATEGORY_CODE;
+      const monthIndex = monthIndexOf(effectiveMoneyTransferDate(row));
+      /** Khoản mục đã khai trên phiếu; thiếu thì suy theo loại phiếu (quyết toán ví / nộp tiền). */
+      const categoryFor = (declaredCode: string | null | undefined, walletCode: string) => {
+        const declared = resolveCategory(declaredCode, "PAYMENT");
+        if (declared) return { key: declared.code, name: declared.name, group: "PAYMENT" as const };
+        if (isWalletSettlement) {
+          const walletCategory = resolveCategory(walletCode, "PAYMENT");
+          // Danh mục chưa khai hai khoản mục này thì vẫn hiện đúng tên để khách biết đường bổ sung.
+          return walletCategory
+            ? { key: walletCategory.code, name: walletCategory.name, group: "PAYMENT" as const }
+            : {
+                key: walletCode,
+                name: walletCode === WALLET_GRAB_EXPENSE_CATEGORY_CODE ? "Chi phí bán hàng Grab" : "Chi phí quẹt thẻ bán hàng",
+                group: "PAYMENT" as const,
+              };
+        }
+        if (row.transferPurpose === "CASH_DEPOSIT") {
+          return { key: "CASH_ROUNDING", name: "Chênh lệch làm tròn tiền nộp", group: "PAYMENT" as const };
+        }
+        return null;
+      };
+      const bumpFee = (declaredCode: string | null | undefined, walletCode: string, amount: number) => {
+        if (!amount) return;
+        const category = categoryFor(declaredCode, walletCode);
+        bumpCategory(
+          expense,
+          category || { key: unclassifiedKey, name: "Chưa phân loại", group: "PAYMENT" },
+          monthCount,
+          monthIndex,
+          amount,
+        );
+        if (!category) bumpUnclassified("PAYMENT", "transferFee", amount);
+      };
+      // grabExpenseAmount là phần Grab NẰM TRONG feeAmount, nên phần quẹt thẻ là số còn lại.
+      const grabExpense = isWalletSettlement ? row.grabExpenseAmount : 0;
+      bumpFee(row.grabExpenseCategoryCode, WALLET_GRAB_EXPENSE_CATEGORY_CODE, grabExpense);
+      bumpFee(row.feeCategoryCode, walletFeeCategoryCode, row.feeAmount - grabExpense);
     }
   }
 
@@ -661,9 +724,9 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     // phải dòng tiền, chỉ làm tăng cột "Cọc đã sử dụng" và doanh thu đã có bên luồng POS.
     if (summaryRow) {
       if (signed > 0) {
-        bumpCategory(income, { key: "DEPOSIT_IN", name: "Thu tiền cọc", group: "RECEIPT" }, monthCount, monthIndex, signed);
+        bumpCategory(income, depositInRow, monthCount, monthIndex, signed);
       } else if (history.action === "REFUND" || history.action === "UPDATE") {
-        bumpCategory(expense, { key: "DEPOSIT_REFUND", name: "Hoàn cọc cho khách", group: "PAYMENT" }, monthCount, monthIndex, -signed);
+        bumpCategory(expense, depositRefundRow, monthCount, monthIndex, -signed);
       }
     }
 
@@ -802,7 +865,7 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     expenseByPartner: partnerRows.slice(0, 30),
     expensePartnerCount: partnerRows.length,
     supplierExpense: { total: supplierRows.reduce((sum, row) => sum + row.total, 0), count: supplierRows.length },
-    unclassified: { income: unclassifiedIncome, expense: unclassifiedExpense },
+    unclassified: { income: unclassifiedIncome, expense: unclassifiedExpense, origins: unclassifiedOrigins },
     pending: {
       receiptAmount: pendingIn.amount,
       receiptCount: pendingIn.count,
@@ -1065,7 +1128,7 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
     if (group === "CASH") return "cash" as const;
     if (group === "BANK") return "bank" as const;
     if (group !== "WALLET") return null;
-    return normalizeSourceLabel(`${source.code} ${source.name}`).includes("grab") ? ("grab" as const) : ("card" as const);
+    return isGrabMoneySource(source.code, source.name) ? ("grab" as const) : ("card" as const);
   };
 
   for (const row of allocations) {
@@ -1103,7 +1166,7 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
     .filter((row) => Math.abs(row.revenue) > 0.5 || Math.abs(row.received) > 0.5)
     .map((row) => {
       const remaining = Math.round(row.revenue - row.received);
-      const isGrab = normalizeSourceLabel(`${row.moneySourceCode} ${row.moneySourceName}`).includes("grab");
+      const isGrab = isGrabMoneySource(row.moneySourceCode, row.moneySourceName);
       const feeCategoryCode = row.group === "WALLET" && remaining > 0
         ? (isGrab ? WALLET_GRAB_EXPENSE_CATEGORY_CODE : WALLET_CARD_FEE_CATEGORY_CODE)
         : null;

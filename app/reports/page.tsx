@@ -107,6 +107,8 @@ type CashCategoryRow = {
   months: number[];
   ratio: number;
 };
+type UnclassifiedOrigin = "voucher" | "bankStatement" | "adjustment" | "transferFee";
+
 type CashPartnerRow = { code: string; name: string; partnerType: string | null; total: number; count: number };
 type CashSourceFlow = { code: string; name: string; group: string | null; branchCode: string; opening: number; in: number; out: number; transferIn: number; transferOut: number; closing: number; closingByMonth: number[]; expectedIn: number; expectedOut: number; expectedClosing: number };
 type CashSourceData = {
@@ -122,7 +124,12 @@ type CashSourceData = {
   expenseByPartner: CashPartnerRow[];
   expensePartnerCount: number;
   supplierExpense: { total: number; count: number };
-  unclassified: { income: number; expense: number };
+  unclassified: {
+    income: number;
+    expense: number;
+    /** Số dòng "Chưa phân loại" tách theo màn đang giữ dữ liệu, để chỉ hiện link tới đúng chỗ. */
+    origins?: Record<"RECEIPT" | "PAYMENT", Record<UnclassifiedOrigin, { count: number; amount: number }>>;
+  };
   pending: { receiptAmount: number; receiptCount: number; paymentAmount: number; paymentCount: number };
   internalTransfer: { total: number; count: number };
   sources: CashSourceFlow[];
@@ -1030,11 +1037,44 @@ export default function ReportsPage() {
               const lastDay = new Date(Number(lastMonth.slice(0, 4)), Number(lastMonth.slice(5)), 0).getDate();
               // Mang theo cửa hàng đang xem: trang phiếu mở tab mới sẽ lấy cửa hàng từ
               // localStorage, khác cửa hàng của báo cáo là danh sách rỗng khó hiểu.
-              const range = `missingCategory=1&branchCode=${encodeURIComponent(branchCode)}&from=${firstMonth}-01&to=${lastMonth}-${String(lastDay).padStart(2, "0")}`;
-              const linksFor = (voucherType: "RECEIPT" | "PAYMENT") => [
-                { label: "Xem phiếu tiền mặt chưa phân loại", href: `/vouchers?${range}&voucherType=${voucherType}` },
-                { label: "Xem chứng từ ngân hàng chưa phân loại", href: `/bank-vouchers?${range}&voucherType=${voucherType}` },
-              ];
+              const range = `branchCode=${encodeURIComponent(branchCode)}&from=${firstMonth}-01&to=${lastMonth}-${String(lastDay).padStart(2, "0")}`;
+              // Kỳ một tháng thì mở Sổ quỹ đúng tháng đó; báo cáo năm để Sổ quỹ giữ kỳ mặc định.
+              const cashbookQuery = `branchCode=${encodeURIComponent(branchCode)}${cashSource.months.length === 1 ? `&period=${firstMonth}` : ""}`;
+              // Chỉ hiện link tới màn ĐANG THỰC SỰ có dòng chưa phân loại. Số tiền ở dòng này
+              // gom từ bốn nơi khác nhau (phiếu tiền mặt, sổ sao kê, điều chỉnh quỹ, phí điều
+              // tiền) nên hiện đủ mọi link như trước là bấm vào ra danh sách rỗng.
+              const linksFor = (voucherType: "RECEIPT" | "PAYMENT") => {
+                const origins = cashSource.unclassified.origins?.[voucherType];
+                if (!origins) return [];
+                const links: Array<{ label: string; href: string }> = [];
+                if (origins.voucher.count > 0) {
+                  links.push({
+                    label: `Xem ${origins.voucher.count} phiếu tiền mặt chưa phân loại`,
+                    href: `/vouchers?missingCategory=1&${range}&voucherType=${voucherType}`,
+                  });
+                }
+                if (origins.bankStatement.count > 0) {
+                  // Tiền "không phải tiền mặt" của bảng này đọc từ SỔ SAO KÊ, không phải từ
+                  // chứng từ ngân hàng — link cũ trỏ sang /bank-vouchers nên luôn rỗng.
+                  links.push({
+                    label: `Xem ${origins.bankStatement.count} dòng sao kê chưa gán loại thu/chi`,
+                    href: `/reconciliations?missingCategory=1&dateType=SOURCE&${range}`,
+                  });
+                }
+                if (origins.adjustment.count > 0) {
+                  links.push({
+                    label: `Xem ${origins.adjustment.count} bút toán điều chỉnh quỹ trên Sổ quỹ`,
+                    href: `/finance-operations?${cashbookQuery}`,
+                  });
+                }
+                if (origins.transferFee.count > 0) {
+                  links.push({
+                    label: `Xem ${origins.transferFee.count} phí điều tiền chưa gán loại chi`,
+                    href: `/finance-operations?${cashbookQuery}`,
+                  });
+                }
+                return links;
+              };
               return (
                 <>
                   <CashCategoryTable

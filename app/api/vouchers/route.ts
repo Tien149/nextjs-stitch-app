@@ -12,7 +12,8 @@ import { moneySourceMatchesBranch, parseMoneySourceCodes } from "@/lib/money-sou
 import { isSameCalendarDay, normalizeCashflowCategoryType, normalizeReceiptPurpose, validateReceiptPurpose, voucherEditWindowError } from "@/lib/voucher-rules";
 import { completePendingReconciliation, ReconciliationSyncError, releasePendingReconciliation, reopenReconciliationForReview, syncReconciledBankStatement, type BankStatementSyncResult } from "@/lib/reconciliation-links";
 import { moneySourceMatchesDocumentChannel, normalizeVoucherDocumentChannel } from "@/lib/voucher-channel";
-import { bankStatementSpecialCategory } from "@/lib/bank-statement-category";
+import { depositCategoryDirection } from "@/lib/bank-statement-category";
+import { resolvableCategoryCodes } from "@/lib/cashflow-categories";
 
 /** Trạng thái không cho sửa/xoá vì chứng từ đã ghi sổ. */
 
@@ -133,7 +134,7 @@ function deriveReceiptDepositAction(
   category: { code: string; name: string } | null,
 ) {
   if (explicitAction || voucherType !== "RECEIPT" || !category) return explicitAction;
-  return bankStatementSpecialCategory(category) === "DEPOSIT" ? "COLLECT" : explicitAction;
+  return depositCategoryDirection(category) === "RECEIPT" ? "COLLECT" : explicitAction;
 }
 
 async function validateVoucherPnlItem(voucherType: string, pnlItemCode: string, requireActive = true) {
@@ -275,6 +276,11 @@ export async function GET(request: Request) {
       ? Math.min(Math.max(requestedPageSize, 10), 100)
       : 50;
     const endDateExclusive = endDate ? new Date(endDate.getTime() + 24 * 60 * 60 * 1000) : null;
+    // Dòng "Chưa phân loại" trên báo cáo gom cả phiếu bỏ trống mã LẪN phiếu mang mã không còn
+    // trong danh mục / sai nhóm. Lọc theo đúng cách hiểu đó, không thì bấm link từ báo cáo
+    // sang đây lại ra danh sách rỗng dù báo cáo vẫn báo có tiền chưa phân loại.
+    const missingCategoryOnly = searchParams.get("missingCategory") === "1" && !categoryText;
+    const knownCategoryCodes = missingCategoryOnly ? await resolvableCategoryCodes() : null;
     const where = {
       ...branchFilter,
       documentChannel,
@@ -296,8 +302,15 @@ export async function GET(request: Request) {
         const conditions: Array<Record<string, unknown>> = [];
         // Lọc phiếu chưa có Khoản mục thu/chi — dòng "Chưa phân loại" trên báo cáo nguồn tiền
         // link thẳng về đây để người dùng bổ sung danh mục từng phiếu.
-        if (searchParams.get("missingCategory") === "1" && !categoryText) {
-          conditions.push({ OR: [{ categoryCode: null }, { categoryCode: "" }] });
+        if (missingCategoryOnly && knownCategoryCodes) {
+          conditions.push({
+            OR: [
+              { categoryCode: null },
+              { categoryCode: "" },
+              { voucherType: "RECEIPT", NOT: { categoryCode: { in: knownCategoryCodes.RECEIPT } } },
+              { voucherType: "PAYMENT", NOT: { categoryCode: { in: knownCategoryCodes.PAYMENT } } },
+            ],
+          });
         }
         if (partnerText) {
           conditions.push({

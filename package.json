@@ -55,6 +55,7 @@
     "test:rollback-approved": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-rollback-after-approval.mjs",
     "test:import-needs-fix": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-import-needs-fix.mjs",
     "test:all-branches": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-all-branches-additivity.mjs",
+    "test:unclassified-filter": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-unclassified-category-filter.mjs",
     "seed:revenue-31-07": "node scripts/seed-manual-revenue-20260731.cjs"
   },
   "dependencies": {

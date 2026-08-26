@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { resolvableCategoryCodes, type ResolvableCategoryCodes } from "@/lib/cashflow-categories";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 import { assertBranchAccess, branchFilterForSession } from "@/lib/accounting";
@@ -191,14 +192,49 @@ export async function GET(request: Request) {
     const toDate = /^\d{4}-\d{2}-\d{2}$/.test(toText) ? new Date(`${toText}T00:00:00.000Z`) : null;
     if (toDate) toDate.setUTCDate(toDate.getUTCDate() + 1);
     const dateRange = fromDate || toDate ? { ...(fromDate ? { gte: fromDate } : {}), ...(toDate ? { lt: toDate } : {}) } : null;
+    // Lọc theo Ngày nguồn tiền phải xếp kỳ y như Báo cáo nguồn tiền: dòng chưa khai Ngày
+    // nguồn tiền rơi về Ngày giao dịch. Thiếu vế fallback này thì lọc theo Ngày nguồn tiền
+    // là mất sạch dòng chưa khai — trong khi báo cáo vẫn đang tính chúng vào kỳ.
+    const sourceDateFilter = dateRange ? {
+      OR: [
+        { allocations: { none: {} }, OR: [{ sourceDate: dateRange }, { sourceDate: null, transactionDate: dateRange }] },
+        { allocations: { some: { sourceDate: dateRange } } },
+        { allocations: { some: { sourceDate: null } }, transactionDate: dateRange },
+      ],
+    } : {};
     const dateFilter = dateRange
-      ? dateType === "SOURCE" ? { OR: [{ sourceDate: dateRange }, { allocations: { some: { sourceDate: dateRange } } }] }
+      ? dateType === "SOURCE" ? sourceDateFilter
         : dateType === "REVENUE" ? { OR: [{ revenueDate: dateRange }, { allocations: { some: { revenueDate: dateRange } } }] }
           : { transactionDate: dateRange }
       : {};
     const page = Math.max(1, Number.parseInt(searchParams.get("page") || "1", 10) || 1);
     const pageSize = 50;
     const branchFilter = branchFilterForSession(auth.session, searchParams.get("branchCode") || "ALL");
+    // Lọc "chưa gán Loại thu/chi": dòng "Chưa phân loại" trên Báo cáo nguồn tiền link thẳng về
+    // đây. Phải hiểu y hệt báo cáo — mã trống, mã không còn trong danh mục, hoặc mã sai nhóm
+    // (mã Chi trên dòng ghi Có) đều là chưa phân loại — không thì bấm link ra danh sách rỗng.
+    const missingCategory = searchParams.get("missingCategory") === "1" && !category;
+    const knownCategoryCodes = missingCategory ? await resolvableCategoryCodes() : null;
+    const emptyCategory = { OR: [{ categoryCode: null }, { categoryCode: "" }] };
+    // Phải liệt kê riêng ô trống: điều kiện NOT ... IN của Prisma bỏ luôn dòng có mã NULL,
+    // mà dòng bỏ trống Loại thu/chi mới đúng là thứ cần tìm nhất.
+    const unresolvedCategory = (codes: ResolvableCategoryCodes) => ({
+      OR: [
+        ...emptyCategory.OR,
+        { creditAmount: { gt: 0 }, NOT: { categoryCode: { in: codes.RECEIPT } } },
+        { creditAmount: { lte: 0 }, NOT: { categoryCode: { in: codes.PAYMENT } } },
+      ],
+    });
+    const missingCategoryFilter = knownCategoryCodes ? [{
+      OR: [
+        // Giao dịch không có dòng phân bổ: đọc thẳng mã trên giao dịch.
+        { allocations: { none: {} }, ...unresolvedCategory(knownCategoryCodes) },
+        // Có phân bổ: mỗi dòng phân bổ mang mã riêng...
+        { allocations: { some: { AND: [{ NOT: emptyCategory }, unresolvedCategory(knownCategoryCodes)] } } },
+        // ...dòng phân bổ bỏ trống mã thì rơi về mã của giao dịch.
+        { AND: [{ allocations: { some: emptyCategory } }, unresolvedCategory(knownCategoryCodes)] },
+      ],
+    }] : [];
     const bankWhere = {
       ...branchFilter,
       ...(batchId ? { importBatchId: batchId } : {}),
@@ -227,6 +263,7 @@ export async function GET(request: Request) {
             { allocations: { some: { categoryCode: category } } },
           ],
         }] : []),
+        ...missingCategoryFilter,
         ...(search ? [{
           OR: [
             { transactionCode: { contains: search, mode: "insensitive" as const } },

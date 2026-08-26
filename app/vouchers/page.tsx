@@ -13,7 +13,7 @@ import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { shiftLabel, WORK_SHIFTS } from "@/lib/shifts";
 import { type VoucherDocumentChannel, voucherChannelLabel, voucherTypeLabel } from "@/lib/voucher-channel";
-import { bankStatementSpecialCategory } from "@/lib/bank-statement-category";
+import { depositCategoryDirection } from "@/lib/bank-statement-category";
 import { PartnerPicker } from "@/components/PartnerPicker";
 import { SearchableSelect } from "@/components/SearchableSelect";
 
@@ -1265,7 +1265,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                       // phiếu sẽ không sinh sổ theo dõi cọc và server cũng sẽ từ chối lệch pha.
                       const category = voucherCategoryOptions.find((option) => option.code === categoryCode);
                       const isDepositCategory = form.voucherType === "RECEIPT"
-                        && bankStatementSpecialCategory(category) === "DEPOSIT";
+                        && depositCategoryDirection(category) === "RECEIPT";
                       setForm((value) => ({
                         ...value,
                         categoryCode,

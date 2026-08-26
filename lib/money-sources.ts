@@ -127,6 +127,19 @@ export function cleanMoneySourceName(value: string | null | undefined) {
   return stripMoneySourceLabel(raw) || raw;
 }
 
+/**
+ * Ví Grab hay ví/máy POS quẹt thẻ? Quy tắc duy nhất của hệ thống: nhãn nguồn tiền (mã + tên)
+ * có chữ "grab" thì là Grab. Dùng chung cho báo cáo nguồn tiền, màn Tiền về đủ chưa và Sổ quỹ
+ * để phí quyết toán ví ở ba nơi luôn về cùng một khoản mục.
+ */
+export function isGrabMoneySource(code: string | null | undefined, name?: string | null) {
+  return `${code || ""} ${name || ""}`
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .includes("grab");
+}
+
 export type MoneySourceSummaryGroup = {
   /** Giá trị đưa vào ô lọc: các mã nguồn chi tiết nối bằng dấu phẩy — API tách lại bằng parseMoneySourceCodes. */
   value: string;
