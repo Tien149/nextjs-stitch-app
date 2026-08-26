@@ -13,6 +13,7 @@
     "audit:bank-settlements": "node scripts/review-bank-voucher-settlements.cjs",
     "audit:bank-auto-approve": "node scripts/auto-approve-pending-bank-statements.cjs",
     "check:opening-balances": "node scripts/check-opening-balance-consistency.cjs",
+    "check:cash-source-tie": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/check-cash-source-tie.mjs",
     "test:wallet-hints": "node --experimental-strip-types --no-warnings --test scripts/test-bank-statement-wallet-hints.mjs",
     "test:wallet-gross": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-wallet-gross-from-pos.mjs",
     "test:revenue-settlement": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-revenue-settlement-report.mjs",

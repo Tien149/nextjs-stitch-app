@@ -164,6 +164,8 @@ const unclassifiedKey = "UNCLASSIFIED";
  * hai dòng này chứ không mọc thêm dòng riêng theo tên khoản mục — cùng một nghiệp vụ mà nằm
  * hai dòng trùng tên thì khách không cộng được.
  */
+/** Khoản thu/chi không tra được nguồn tiền vẫn phải có chỗ đứng, không thì hai tổng lệch nhau. */
+const UNASSIGNED_FLOW_SOURCE = "CHUA_GAN_NGUON_TIEN";
 const depositInRow = { key: "DEPOSIT_IN", name: "Thu tiền cọc", group: "RECEIPT" as const };
 const depositRefundRow = { key: "DEPOSIT_REFUND", name: "Hoàn cọc cho khách", group: "PAYMENT" as const };
 
@@ -219,7 +221,7 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
   const monthIndexOf = (date: Date) => months.indexOf(periodOfDate(date));
 
-  const [vouchers, pendingVouchers, categories, partners, moneySources, posRevenues, manualEntries, adjustments, transfers, openingBalances, walletSettlements, depositHistories, bankAllocationRows, legacyBankRows, cashRemainingTargets, voucherPartnerAllocations] =
+  const [vouchers, pendingVouchers, categories, partners, moneySources, posRevenues, manualEntries, adjustments, transfers, openingBalances, walletSettlements, depositHistories, bankAllocationRows, legacyBankRows, cashRemainingTargets, voucherPartnerAllocations, reconciledVoucherLinks] =
     await Promise.all([
       prisma.financialVoucher.findMany({
         where: {
@@ -324,7 +326,10 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
           categoryCode: true,
           operationType: true,
           depositCode: true,
-          bankTransaction: { select: { transactionDate: true, categoryCode: true, operationType: true, depositCode: true } },
+          summaryMoneySourceCode: true,
+          increaseMoneySourceCode: true,
+          decreaseMoneySourceCode: true,
+          bankTransaction: { select: { transactionDate: true, categoryCode: true, operationType: true, depositCode: true, summaryMoneySourceCode: true, increaseMoneySourceCode: true, decreaseMoneySourceCode: true } },
         },
       }),
       // Dữ liệu lịch sử không có dòng phân bổ thì đọc thẳng giao dịch, tránh cộng trùng.
@@ -347,6 +352,9 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
           categoryCode: true,
           operationType: true,
           depositCode: true,
+          summaryMoneySourceCode: true,
+          increaseMoneySourceCode: true,
+          decreaseMoneySourceCode: true,
         },
       }),
       // Mục tiêu "Nguồn tiền còn lại" khai theo từng tháng ở màn Ngân sách, để báo cáo
@@ -369,7 +377,14 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
         },
         select: { voucherId: true, partnerCode: true, partnerName: true, amount: true },
       }),
+      // Chứng từ ngân hàng ĐÃ khớp với một dòng sao kê thì dòng sao kê mới là bản ghi được
+      // tính; chứng từ chỉ là bản đối ứng. Không loại ra là cùng một đồng tiền vào hai lần.
+      prisma.reconciliationMatch.findMany({
+        where: { deletedAt: null, targetType: "VOUCHER", bankTransaction: { is: { deletedAt: null } } },
+        select: { targetId: true },
+      }),
     ]);
+  const reconciledVoucherIds = new Set(reconciledVoucherLinks.map((row) => row.targetId));
 
   const categoryByCode = new Map(categories.map((row) => [row.code, row]));
   const categoryByNormalizedCode = new Map(categories.map((row) => [row.code.trim().toUpperCase(), row]));
@@ -456,21 +471,43 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     stat.amount += amount;
   };
   const moneySourceByCode = new Map(moneySources.map((row) => [row.code, row]));
+  /**
+   * Ghi MỘT khoản thu/chi vào đồng thời bảng danh mục và cột Thu/Chi của nguồn tiền.
+   *
+   * Khách dùng dòng TỔNG của bảng nguồn tiền để soi ngược lên Tổng thu/Tổng chi nên hai bên
+   * phải bằng nhau. Cách chắc chắn duy nhất là mọi khoản đều đi qua đúng cửa này — không có
+   * đường nào ghi riêng một bên — nên hai tổng bằng nhau theo cấu trúc, không phải do trùng.
+   * Điều tiền nội bộ KHÔNG đi qua đây: nó không phải thu/chi, nằm ở cột điều tiền riêng.
+   */
+  const recordFlow = (
+    expectedType: "RECEIPT" | "PAYMENT",
+    category: { key: string; name: string; group: "RECEIPT" | "PAYMENT" },
+    moneySourceCode: string | null | undefined,
+    date: Date,
+    amount: number,
+  ) => {
+    if (!amount) return;
+    bumpCategory(expectedType === "RECEIPT" ? income : expense, category, monthCount, monthIndexOf(date), amount);
+    const source = touchSource(moneySourceCode || UNASSIGNED_FLOW_SOURCE);
+    if (expectedType === "RECEIPT") source.in += amount;
+    else source.out += amount;
+    bumpSourceMonth(source, date, expectedType === "RECEIPT" ? amount : -amount);
+  };
   const allocationsByVoucher = new Map<string, typeof voucherPartnerAllocations>();
   for (const line of voucherPartnerAllocations) {
     allocationsByVoucher.set(line.voucherId, [...(allocationsByVoucher.get(line.voucherId) || []), line]);
   }
   for (const voucher of vouchers) {
-    const monthIndex = monthIndexOf(voucher.voucherDate);
     const isIncome = voucher.voucherType === "RECEIPT";
     const isDepositMovement = isIncome
       ? ["COLLECT", "SUPPLEMENT"].includes(voucher.depositAction || "")
       : voucher.depositAction === "REFUND";
-    // Bảng thu/chi theo danh mục tính theo TIỀN THỰC THU (chốt 19/08/2026): tiền mặt lấy từ
-    // phiếu thu/chi đã duyệt, còn lại lấy từ sổ sao kê ngân hàng ở vòng dưới. Phiếu gắn nguồn
-    // ngân hàng vì thế không vào bảng danh mục — tiền của nó sẽ hiện khi sao kê được import —
-    // nhưng vẫn cộng vào số dư quỹ như cũ.
+    // Tiền ngân hàng đếm MỘT lần theo nguyên tắc gộp: sổ sao kê là bản ghi chính, chứng từ
+    // ngân hàng chỉ vào bảng khi CHƯA khớp được dòng sao kê nào — nếu không thì hoặc bỏ sót
+    // chứng từ chưa có sao kê, hoặc cộng đôi chứng từ đã khớp. Phiếu SETTLEMENT chỉ xác nhận
+    // dòng tiền của nghiệp vụ đã ghi nhận nên luôn nhường chỗ cho dòng sao kê.
     const voucherIsCash = normalizeMoneySourceGroup(moneySourceByCode.get(voucher.moneySourceCode)?.group) === "CASH";
+    const voucherCountsAsFlow = voucherIsCash || !reconciledVoucherIds.has(voucher.id);
     // Phiếu mang danh mục cọc mà thiếu depositAction (dữ liệu cũ) thì sổ cọc không có nó.
     // Thu cọc vẫn loại như phiếu cọc chuẩn — dòng "Thu tiền cọc" phải bằng đúng cột "Cọc phát
     // sinh thêm trong kỳ" để khách đối chiếu. Hoàn cọc thì gom vào dòng "Hoàn cọc cho khách"
@@ -479,27 +516,26 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     const voucherDepositKind = depositCategoryDirection({ code: voucher.categoryCode, name: voucherCategoryForCheck?.name });
     const voucherIsDepositRefund = voucherDepositKind === "REFUND" && !isIncome;
     const skipAsDepositCategory = Boolean(voucherDepositKind) && !voucherIsDepositRefund;
-    if (!isDepositMovement && !skipAsDepositCategory && voucher.businessEffect !== "SETTLEMENT" && voucherIsCash) {
+    if (!isDepositMovement && !skipAsDepositCategory && voucher.businessEffect !== "SETTLEMENT" && voucherCountsAsFlow) {
       const expectedType = isIncome ? "RECEIPT" : "PAYMENT";
       const category = resolveCategory(voucher.categoryCode, expectedType);
-      bumpCategory(
-        isIncome ? income : expense,
+      recordFlow(
+        expectedType,
         voucherIsDepositRefund
           ? depositRefundRow
           : category
             ? { key: category.code, name: category.name, group: expectedType }
             : { key: unclassifiedKey, name: "Chưa phân loại", group: expectedType },
-        monthCount,
-        monthIndex,
+        voucher.moneySourceCode,
+        voucher.voucherDate,
         voucher.amount,
       );
       if (!category && !voucherIsDepositRefund) bumpUnclassified(expectedType, "voucher", voucher.amount);
+    } else {
+      // Phiếu nhường chỗ cho bản ghi khác (sổ sao kê / sổ cọc) vẫn phải hiện ra để nguồn tiền
+      // được liệt kê, nhưng không cộng tiền — bản ghi kia mới là nơi ghi khoản đó.
+      touchSource(voucher.moneySourceCode);
     }
-
-    const source = touchSource(voucher.moneySourceCode);
-    if (isIncome) source.in += voucher.amount;
-    else source.out += voucher.amount;
-    bumpSourceMonth(source, voucher.voucherDate, isIncome ? voucher.amount : -voucher.amount);
 
     if (!isIncome) {
       // Phiếu đại diện chi cho nhiều đối tác: tính theo từng dòng phân bổ, không đổ cả
@@ -546,6 +582,9 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
       categoryCode: row.categoryCode || row.bankTransaction.categoryCode,
       operationType: row.operationType || row.bankTransaction.operationType,
       depositCode: row.depositCode || row.bankTransaction.depositCode,
+      summaryMoneySourceCode: row.summaryMoneySourceCode || row.bankTransaction.summaryMoneySourceCode,
+      increaseMoneySourceCode: row.increaseMoneySourceCode || row.bankTransaction.increaseMoneySourceCode,
+      decreaseMoneySourceCode: row.decreaseMoneySourceCode || row.bankTransaction.decreaseMoneySourceCode,
     })),
     ...legacyBankRows.map((row) => ({
       debitAmount: row.debitAmount,
@@ -555,6 +594,9 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
       categoryCode: row.categoryCode,
       operationType: row.operationType,
       depositCode: row.depositCode,
+      summaryMoneySourceCode: row.summaryMoneySourceCode,
+      increaseMoneySourceCode: row.increaseMoneySourceCode,
+      decreaseMoneySourceCode: row.decreaseMoneySourceCode,
     })),
   ];
   for (const row of bankLedgerRows) {
@@ -576,34 +618,36 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     const rowDepositKind = depositCategoryDirection({ code: row.categoryCode, name: category?.name });
     const rowIsDepositRefund = rowDepositKind === "REFUND" && !isIncome;
     if (rowDepositKind && !rowIsDepositRefund) continue;
-    bumpCategory(
-      isIncome ? income : expense,
+    // Nguồn tiền của dòng sao kê: khoản CHI làm giảm chính tài khoản ngân hàng đó. Khoản THU
+    // mà có khai "nguồn giảm" là tiền từ ví/cổng chuyển về — doanh thu thuộc về ví, còn vế
+    // tiền vào ngân hàng đã nằm ở phiếu điều tiền nên không lặp lại ở cột Thu của ngân hàng.
+    const rowSourceCode = isIncome
+      ? row.decreaseMoneySourceCode || row.increaseMoneySourceCode || row.summaryMoneySourceCode
+      : row.decreaseMoneySourceCode || row.summaryMoneySourceCode;
+    recordFlow(
+      expectedType,
       rowIsDepositRefund
         ? depositRefundRow
         : category
           ? { key: category.code, name: category.name, group: expectedType }
           : { key: unclassifiedKey, name: "Chưa phân loại", group: expectedType },
-      monthCount,
-      monthIndexOf(row.effectiveDate),
+      rowSourceCode,
+      row.effectiveDate,
       amount,
     );
     if (!category && !rowIsDepositRefund) bumpUnclassified(expectedType, "bankStatement", amount);
   }
 
   for (const row of adjustments) {
-    const monthIndex = monthIndexOf(row.entryDate);
-    const source = touchSource(row.moneySourceCode);
-    if (row.entryType === "RECEIPT") {
-      bumpCategory(income, { key: unclassifiedKey, name: "Chưa phân loại", group: "RECEIPT" }, monthCount, monthIndex, row.amount);
-      bumpUnclassified("RECEIPT", "adjustment", row.amount);
-      source.in += row.amount;
-      bumpSourceMonth(source, row.entryDate, row.amount);
-    } else {
-      bumpCategory(expense, { key: unclassifiedKey, name: "Chưa phân loại", group: "PAYMENT" }, monthCount, monthIndex, row.amount);
-      bumpUnclassified("PAYMENT", "adjustment", row.amount);
-      source.out += row.amount;
-      bumpSourceMonth(source, row.entryDate, -row.amount);
-    }
+    const expectedType = row.entryType === "RECEIPT" ? ("RECEIPT" as const) : ("PAYMENT" as const);
+    recordFlow(
+      expectedType,
+      { key: unclassifiedKey, name: "Chưa phân loại", group: expectedType },
+      row.moneySourceCode,
+      row.entryDate,
+      row.amount,
+    );
+    bumpUnclassified(expectedType, "adjustment", row.amount);
   }
 
   for (const row of transfers) {
@@ -614,8 +658,10 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     const transferDate = effectiveMoneyTransferDate(row);
     if (legs.out) {
       const fromSource = touchSource(row.fromMoneySourceCode);
-      fromSource.transferOut += row.amount + row.feeAmount;
-      bumpSourceMonth(fromSource, transferDate, -(row.amount + row.feeAmount));
+      // Phí KHÔNG nằm trong cột điều tiền: bảng danh mục tính nó là một khoản chi, nên cột Chi
+      // của nguồn tiền phải nhận nó thì hai tổng mới bằng nhau. Phần phí được ghi ở khối dưới.
+      fromSource.transferOut += row.amount;
+      bumpSourceMonth(fromSource, transferDate, -row.amount);
     }
     if (legs.in) {
       const toSource = touchSource(row.toMoneySourceCode);
@@ -631,7 +677,6 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
       const walletFeeCategoryCode = isGrabMoneySource(row.fromMoneySourceCode, fromSourceRow?.name)
         ? WALLET_GRAB_EXPENSE_CATEGORY_CODE
         : WALLET_CARD_FEE_CATEGORY_CODE;
-      const monthIndex = monthIndexOf(effectiveMoneyTransferDate(row));
       /** Khoản mục đã khai trên phiếu; thiếu thì suy theo loại phiếu (quyết toán ví / nộp tiền). */
       const categoryFor = (declaredCode: string | null | undefined, walletCode: string) => {
         const declared = resolveCategory(declaredCode, "PAYMENT");
@@ -655,11 +700,11 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
       const bumpFee = (declaredCode: string | null | undefined, walletCode: string, amount: number) => {
         if (!amount) return;
         const category = categoryFor(declaredCode, walletCode);
-        bumpCategory(
-          expense,
+        recordFlow(
+          "PAYMENT",
           category || { key: unclassifiedKey, name: "Chưa phân loại", group: "PAYMENT" },
-          monthCount,
-          monthIndex,
+          row.fromMoneySourceCode,
+          effectiveMoneyTransferDate(row),
           amount,
         );
         if (!category) bumpUnclassified("PAYMENT", "transferFee", amount);
@@ -717,31 +762,19 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
 
     if (actionDate < start) continue;
 
-    const monthIndex = monthIndexOf(actionDate);
     // Dòng "Thu tiền cọc"/"Hoàn cọc cho khách" bump theo ĐÚNG các lịch sử đã vào bảng tổng
     // cọc (summaryRow), để "Thu tiền cọc" luôn bằng tổng cột "Cọc phát sinh thêm trong kỳ"
     // — khách đối chiếu hai số này với nhau. Cấn trừ vào bill không nằm ở đây: nó không
     // phải dòng tiền, chỉ làm tăng cột "Cọc đã sử dụng" và doanh thu đã có bên luồng POS.
+    // Sổ cọc là bản ghi DUY NHẤT của tiền cọc: phiếu thu/chi mang thao tác cọc đã nhường chỗ
+    // ở vòng chứng từ, kể cả khi lịch sử này sinh ra từ một phiếu (history.voucherId).
+    // Cấn trừ/chuyển doanh thu không có tiền chạy nên chỉ hoàn cọc mới là dòng tiền chi.
     if (summaryRow) {
       if (signed > 0) {
-        bumpCategory(income, depositInRow, monthCount, monthIndex, signed);
+        recordFlow("RECEIPT", depositInRow, sourceCode, actionDate, signed);
       } else if (history.action === "REFUND" || history.action === "UPDATE") {
-        bumpCategory(expense, depositRefundRow, monthCount, monthIndex, -signed);
+        recordFlow("PAYMENT", depositRefundRow, sourceCode, actionDate, -signed);
       }
-    }
-
-    // Số dư nguồn tiền thì bắt buộc phải biết nguồn; và chỉ thao tác làm trực tiếp trên màn
-    // Tiền cọc mới cần cộng ở đây — thao tác đi kèm phiếu thu/chi đã nằm trong phần chứng từ.
-    if (!sourceCode) continue;
-    if (history.voucherId) continue;
-    const source = touchSource(sourceCode);
-    if (signed > 0) {
-      source.in += signed;
-      bumpSourceMonth(source, actionDate, signed);
-    } else if (history.action === "REFUND" || history.action === "UPDATE") {
-      // Cấn trừ/chuyển doanh thu không có tiền ra; chỉ hoàn cọc mới là dòng tiền chi.
-      source.out += -signed;
-      bumpSourceMonth(source, actionDate, signed);
     }
   }
 
@@ -882,8 +915,12 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
       .filter((row) => Math.abs(row.opening) > 0.5 || Math.abs(row.increase) > 0.5 || Math.abs(row.used) > 0.5)
       .sort((a, b) => b.closing - a.closing),
     sources: (() => {
+      // Ví/cổng thanh toán vốn không thuộc bảng sổ quỹ, nhưng doanh thu ví là một khoản THU
+      // trên bảng danh mục nên phải có chỗ đứng ở đây, không thì dòng TỔNG không bao giờ khớp
+      // Tổng thu. Chỉ hiện khi thực sự có phát sinh trong kỳ.
       const detailRows = Array.from(sourceFlows.values())
-        .filter((row) => ["CASH", "BANK"].includes(normalizeMoneySourceGroup(row.group)))
+        .filter((row) => ["CASH", "BANK"].includes(normalizeMoneySourceGroup(row.group))
+          || row.in !== 0 || row.out !== 0)
         .filter((row) => moneySourceMatchesBranch({ ...row, branch: row.branchCode }, branchCode));
       // Gộp các nguồn cùng "Nguồn tiền tổng" (khai trên danh mục) thành một dòng; gộp trước khi
       // tính số dư vì mọi cột đều cộng tuyến tính. Nguồn không khai tên tổng giữ nguyên từng dòng.

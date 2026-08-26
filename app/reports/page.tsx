@@ -2382,8 +2382,9 @@ function CashSourceFlowTable({ cashSource }: { cashSource: CashSourceData }) {
     }),
     { opening: 0, in: 0, out: 0, closing: 0, expectedIn: 0, expectedOut: 0, expectedClosing: 0 },
   );
-  // Khách dùng dòng TỔNG để soi ngược lên hai bảng Tổng quan thu/chi. Hai con số chỉ bằng nhau
-  // khi mọi khoản thu/chi đều đã gắn nguồn tiền, nên chênh lệch phải được nói rõ thay vì giấu đi.
+  // Khách dùng dòng TỔNG để soi ngược lên hai bảng Tổng quan thu/chi. Hai con số nay bằng nhau
+  // theo cấu trúc (mọi khoản đi qua cùng một cửa ghi nhận), nên còn lệch là dấu hiệu dữ liệu
+  // hỏng chứ không phải chuyện bình thường — phải nói rõ thay vì giấu đi.
   const incomeGap = Math.round(cashSource.totals.in - totals.in);
   const expenseGap = Math.round(cashSource.totals.out - totals.out);
   const headers = [
@@ -2395,7 +2396,7 @@ function CashSourceFlowTable({ cashSource }: { cashSource: CashSourceData }) {
     <section className="table-panel">
       <PanelHeader
         title="Biến động nguồn tiền (sổ quỹ)"
-        subtitle="Thu/Chi gồm phiếu thu/chi, điều chỉnh quỹ, điều tiền nội bộ và tiền cọc nhận/hoàn trực tiếp. Dự thu là doanh thu ví chưa quyết toán về ngân hàng, dự chi là phiếu chi còn nháp/chờ duyệt — cả hai chưa vào số dư Cuối kỳ."
+        subtitle="Cột Thu/Chi là chính hai bảng Tổng quan thu/chi ở trên tách theo từng nguồn tiền, nên dòng TỔNG luôn bằng Tổng thu/Tổng chi. Điều tiền nội bộ KHÔNG nằm trong Thu/Chi mà ở dòng ghi chú riêng của từng nguồn. Ví/cổng thanh toán chỉ hiện khi có phát sinh trong kỳ. Dự thu là doanh thu ví chưa quyết toán về ngân hàng, dự chi là phiếu chi còn nháp/chờ duyệt — cả hai chưa vào số dư Cuối kỳ."
       />
       <div className="overflow-x-auto">
         <Table headers={headers}>
@@ -2447,9 +2448,9 @@ function CashSourceFlowTable({ cashSource }: { cashSource: CashSourceData }) {
                 thu {money(cashSource.totals.in)} đ{incomeGap !== 0 ? ` (lệch ${money(incomeGap)} đ)` : " — khớp"} ·
                 chi {money(cashSource.totals.out)} đ{expenseGap !== 0 ? ` (lệch ${money(expenseGap)} đ)` : " — khớp"}.
                 {(incomeGap !== 0 || expenseGap !== 0) && (
-                  <> Phần lệch có chủ đích: Tổng quan thu tính doanh thu ví GROSS trước phí và cả dòng sao kê
-                  chưa lập được chứng từ, còn sổ quỹ ghi số tiền THỰC vào/ra tài khoản (net sau phí);
-                  tiền ví về ngân hàng nằm ở nhóm điều tiền nên không lặp lại ở cột Thu.</>
+                  <> Hai bảng lấy chung một nguồn ghi nhận nên bình thường phải khớp tuyệt đối.
+                  Còn lệch nghĩa là có khoản thu/chi chưa gắn được nguồn tiền — kiểm tra lại
+                  nguồn tiền khai trên chứng từ và trên sổ sao kê của kỳ này.</>
                 )}
               </td>
             </tr>
