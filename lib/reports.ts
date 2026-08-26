@@ -4,7 +4,7 @@ import { periodBounds } from "@/lib/accounting";
 import { depositDecreaseActions, depositIncreaseActions } from "@/lib/deposit-accounting";
 import { depositCategoryDirection } from "@/lib/bank-statement-category";
 import { isGrabMoneySource, moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
-import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
+import { normalizeCashflowCategoryType, SALES_RECEIPT_CATEGORY_CODES } from "@/lib/voucher-rules";
 import { CASH_SOURCE_OPENING_TYPES, OPENING_BALANCE_EFFECTIVE_STATUSES } from "@/lib/opening-balance-rules";
 import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/lib/money-transfer-date";
 import { transferLegsForBranch } from "@/lib/internal-transfer";
@@ -976,7 +976,7 @@ export type RevenueSettlementRow = {
 };
 
 /** Chỉ những khoản thu này mới là tiền về của doanh thu bán hàng. */
-const revenueSettlementCategoryCodes = ["THU_BAN_HANG"];
+const revenueSettlementCategoryCodes = SALES_RECEIPT_CATEGORY_CODES;
 
 /** Tên phương thức thanh toán trên file POS chính là tên nguồn tiền, nên so khớp theo nhãn. */
 function normalizeSourceLabel(value: unknown) {

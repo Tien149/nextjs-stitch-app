@@ -11,6 +11,7 @@ import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { shiftLabel, shiftLabels } from "@/lib/shifts";
 import { cashDepositRoundingExpense, roundCashDepositAmount } from "@/lib/cash-deposit";
+import { buildDailyCashSummaryRows } from "@/lib/daily-cash-receipts";
 
 type Pnl = {
   revenue: number;
@@ -75,7 +76,7 @@ type DailyCashData = {
   branchCode: string;
   reportDate: string;
   shift: string;
-  summary: { revenue: DailyCashBucket; posRevenue: DailyCashBucket; manual: DailyCashBucket; receipt: DailyCashBucket; receiptRevenue: DailyCashBucket; deposit: DailyCashBucket; total: DailyCashBucket; expenseTotal: number; cashExpenseTotal: number; cashToDeposit: number };
+  summary: { revenue: DailyCashBucket; posRevenue: DailyCashBucket; manual: DailyCashBucket; receipt: DailyCashBucket; receiptRevenue: DailyCashBucket; receiptSalesRevenue?: DailyCashBucket; receiptOther?: DailyCashBucket; deposit: DailyCashBucket; total: DailyCashBucket; expenseTotal: number; cashExpenseTotal: number; cashToDeposit: number };
   /** Tiền mặt cần nộp tách theo từng quỹ; mã rỗng là phần chưa xác định được nguồn. */
   cashToDepositSources: Array<{ code: string; name: string; amount: number }>;
   /** Quỹ tiền mặt không phải của thu ngân đã bị loại khỏi báo cáo, để màn hình nói rõ tiền nằm đâu. */
@@ -397,33 +398,10 @@ export default function ReportsPage() {
    * Bảng "Tổng hợp thu trong ngày": mỗi dòng tự tính số nộp = tiền mặt của dòng đó
    * trừ chi tiền mặt phân bổ cho dòng đó. Dòng TOTAL chỉ cộng dồn hai cột này lại.
    */
-  const dailyCashSummaryRows = useMemo(() => {
-    if (!dailyCash) return [] as Array<{ label: string; bucket: DailyCashBucket; expense?: number; cashToDeposit?: number }>;
-    // Phiếu thu tiền mặt chi tiết là số tiền bán hàng thực thu của ca/ngày.
-    // Gộp vào dòng doanh thu để bảng tổng hợp khớp với phần chi tiết bên dưới,
-    // nhưng vẫn giữ summary.receipt riêng cho bảng chứng từ.
-    // Dùng receiptRevenue, không dùng receipt: khi file POS đã ghi doanh thu tiền mặt của ngày
-    // thì phiếu thu bán hàng bằng tiền mặt là chứng từ của chính khoản đó, đã được trừ ra ở API.
-    const cashReceipts = dailyCash.summary.receiptRevenue || dailyCash.summary.receipt;
-    const revenueWithCashReceipts: DailyCashBucket = {
-      total: dailyCash.summary.revenue.total + cashReceipts.total,
-      cash: dailyCash.summary.revenue.cash + cashReceipts.cash,
-      transfer: dailyCash.summary.revenue.transfer + cashReceipts.transfer,
-      card: dailyCash.summary.revenue.card + cashReceipts.card,
-      grab: dailyCash.summary.revenue.grab + cashReceipts.grab,
-      other: dailyCash.summary.revenue.other + cashReceipts.other,
-    };
-    return [
-      {
-        label: "Doanh thu bán hàng",
-        bucket: revenueWithCashReceipts,
-        expense: dailyCash.summary.cashExpenseTotal,
-        cashToDeposit: revenueWithCashReceipts.cash - dailyCash.summary.cashExpenseTotal,
-      },
-      // Đặt cọc không gánh chi tiền mặt nên số nộp đúng bằng phần tiền mặt của nó.
-      { label: "Đặt cọc", bucket: dailyCash.summary.deposit, cashToDeposit: dailyCash.summary.deposit.cash },
-    ];
-  }, [dailyCash]);
+  const dailyCashSummaryRows = useMemo(
+    () => (dailyCash ? buildDailyCashSummaryRows(dailyCash.summary) : []),
+    [dailyCash],
+  );
   const dailyCashExpenseSum = dailyCashSummaryRows.reduce((sum, row) => sum + (row.expense || 0), 0);
   const dailyCashDepositSum = dailyCashSummaryRows.reduce((sum, row) => sum + (row.cashToDeposit || 0), 0);
 
@@ -1348,7 +1326,7 @@ export default function ReportsPage() {
           )}
 
           <section className="table-panel">
-            <PanelHeader title="Tổng hợp thu trong ngày" subtitle="Doanh thu bán hàng gồm số liệu POS (hoặc nhập tay khi chưa có POS) và các phiếu thu tiền mặt chi tiết trong ngày/ca; tiền cọc được theo dõi riêng." />
+            <PanelHeader title="Tổng hợp thu trong ngày" subtitle="Doanh thu bán hàng gồm số liệu POS (hoặc nhập tay khi chưa có POS) và phiếu thu loại Thu bán hàng; các khoản thu khác (hoàn tiền NCC, thu ngoài bán hàng) và tiền cọc tách dòng riêng nhưng phần tiền mặt vẫn tính vào số nộp." />
             <Table headers={["Loại", "Tổng thu", "Tiền mặt", "Chuyển khoản", "Quẹt thẻ/Ví", "Grab", "Khác", "Tổng chi tiền mặt", "Nộp tiền"]}>
               {dailyCashSummaryRows.map((row) => (
                 <DailyCashSummaryRow key={row.label} label={row.label} bucket={row.bucket} expense={row.expense} cashToDeposit={row.cashToDeposit} />

@@ -35,6 +35,48 @@ export function normalizeCashflowCategoryType(group: string | null | undefined) 
   return raw || null;
 }
 
+/**
+ * Khoản mục thu được coi là DOANH THU BÁN HÀNG. Dòng "Doanh thu bán hàng" trên Thu chi ngày,
+ * đối soát tiền về và SUMIFS sao kê đều lọc theo danh sách này. Các loại thu khác (hoàn tiền
+ * NCC chi trùng, thu hoàn tạm ứng...) là tiền vào quỹ thật nhưng không phải doanh thu.
+ */
+export const SALES_RECEIPT_CATEGORY_CODES = ["THU_BAN_HANG"];
+
+export function isSalesReceiptCategory(categoryCode: string | null | undefined) {
+  return SALES_RECEIPT_CATEGORY_CODES.includes((categoryCode || "").trim().toUpperCase());
+}
+
+/**
+ * Đối tác này có được chọn trên chứng từ đang lập không.
+ *
+ * Chứng từ ngân hàng mở cả hai chiều: có khoản thu chi hộ nên phiếu chi ngân hàng phải chọn
+ * được khách hàng, phiếu thu ngân hàng chọn được NCC hoàn tiền.
+ *
+ * Phiếu thu TIỀN MẶT bó theo bản chất khoản thu, không bó cứng theo chiều đối tác:
+ * - Thu bán hàng (hoặc chưa chọn khoản mục): chỉ khách hàng — để thu ngân không chọn nhầm NCC.
+ * - Khoản thu khác (NCC hoàn tiền chi trùng, thu hoàn tạm ứng nhân viên...): mở đủ mọi loại
+ *   đối tác, vì tiền vào từ NCC/nhân viên là nghiệp vụ có thật.
+ */
+export function isPartnerAllowedForVoucher({
+  voucherType,
+  categoryCode,
+  isBankChannel = false,
+  partnerType,
+}: {
+  voucherType: string;
+  categoryCode?: string | null;
+  isBankChannel?: boolean;
+  partnerType?: string | null;
+}) {
+  if (isBankChannel) return true;
+  const type = (partnerType || "").toUpperCase();
+  if (voucherType === "RECEIPT") {
+    if (categoryCode && !isSalesReceiptCategory(categoryCode)) return true;
+    return ["CUSTOMER", "BOTH", "OTHER_PARTNER"].includes(type);
+  }
+  return ["SUPPLIER", "BOTH", "EMPLOYEE", "OTHER_PARTNER"].includes(type);
+}
+
 /** Chuẩn hoá nhóm P&L; có fallback cho danh mục Thu/Chi mới khi định khoản. */
 export function normalizeCategoryGroup(group: string | null | undefined) {
   const raw = (group || "").toUpperCase();

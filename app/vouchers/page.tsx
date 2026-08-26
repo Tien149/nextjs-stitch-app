@@ -7,7 +7,7 @@ import { ModuleFrame } from "@/components/ModuleFrame";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { storeLabel, updateDynamicBranches } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canEditPastVoucher, canPerformAction, canPerformMenuAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
-import { isSameCalendarDay, normalizeCashflowCategoryType, RECEIPT_PURPOSES, voucherEditWindowError } from "@/lib/voucher-rules";
+import { isPartnerAllowedForVoucher, isSameCalendarDay, normalizeCashflowCategoryType, RECEIPT_PURPOSES, voucherEditWindowError } from "@/lib/voucher-rules";
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup, summaryMoneySourceGroups } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
@@ -511,16 +511,12 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
       if (partner.status && partner.status !== "ACTIVE") return false;
       if (!partner.branch || partner.branch === "ALL") return true;
       return partner.branch === form.branchCode;
-    }).filter((partner) => {
-      // Chứng từ ngân hàng mở cả hai chiều đối tác: có khoản thu chi hộ nên phiếu chi
-      // ngân hàng phải chọn được đối tác phải thu (khách hàng), phiếu thu ngân hàng
-      // chọn được NCC hoàn tiền. Phiếu tiền mặt của thu ngân vẫn bó theo chiều để
-      // tránh chọn nhầm.
-      if (isBankChannel) return true;
-      const type = (partner.partnerType || partner.group || "").toUpperCase();
-      if (form.voucherType === "RECEIPT") return ["CUSTOMER", "BOTH", "OTHER_PARTNER"].includes(type);
-      return ["SUPPLIER", "BOTH", "EMPLOYEE", "OTHER_PARTNER"].includes(type);
-    });
+    }).filter((partner) => isPartnerAllowedForVoucher({
+      voucherType: form.voucherType,
+      categoryCode: form.categoryCode,
+      isBankChannel,
+      partnerType: partner.partnerType || partner.group,
+    }));
     const retailOption = { id: "retail-customer", type: "PARTNER", code: "", name: "Khách hàng mua lẻ", group: "CUSTOMER", branch: null };
     return form.voucherType === "RECEIPT" ? [
       retailOption,
@@ -528,7 +524,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
     ] : [
       ...availablePartners,
     ];
-  }, [form.branchCode, form.voucherType, isBankChannel, partners]);
+  }, [form.branchCode, form.categoryCode, form.voucherType, isBankChannel, partners]);
 
   const partnerSelectValue = useMemo(() => {
     const selected = partnerOptions.find((partner) =>

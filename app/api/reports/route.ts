@@ -9,9 +9,11 @@ import { writeAuditLog } from "@/lib/audit-log";
 import { createCashierCashMatcher, moneySourceDisplayName, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { voucherMatchesShift } from "@/lib/shifts";
 import { summarizeDailyDepositHistories } from "@/lib/daily-deposit-report";
+import { summarizeDailyCashReceiptVouchers } from "@/lib/daily-cash-receipts";
+import { SALES_RECEIPT_CATEGORY_CODES } from "@/lib/voucher-rules";
 
 const menuHref = "/reports";
-const restaurantSalesCategoryCodes = ["THU_BAN_HANG"];
+const restaurantSalesCategoryCodes = SALES_RECEIPT_CATEGORY_CODES;
 
 type DailyCashBucket = { total: number; cash: number; transfer: number; card: number; grab: number; other: number };
 
@@ -402,7 +404,6 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
   const revenue = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
   const posRevenue = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
   const manual = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
-  const receipt = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
   const deposit = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
 
   // Nối nguồn tiền theo cửa hàng CỦA CHÍNH DÒNG đó, không theo bộ lọc của báo cáo. Xem "Tất cả
@@ -488,46 +489,29 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     };
   });
 
-  // Phiếu thu là dòng tiền độc lập, không mặc định là doanh thu bán hàng. Khoản thu cọc
-  // đã được tổng hợp từ bảng Deposit nên không cộng lại vào nhóm "Thu khác".
-  for (const row of receiptVouchers) {
-    if (["COLLECT", "SUPPLEMENT"].includes(row.depositAction || "")) continue;
-    const source = sourceByCode.get(row.moneySourceCode);
-    const bucketKey = classifyMoneySource(source?.group);
-    addAmount(receipt, bucketKey, row.amount);
-    if (bucketKey === "cash") addCashToDeposit(row.moneySourceCode, row.amount);
-  }
-
-  // Phiếu thu tiền mặt loại "Thu bán hàng" chính là chứng từ của khoản doanh thu tiền mặt mà file
-  // POS đã ghi trong cùng ngày, không phải một khoản doanh thu thứ hai. Cộng cả hai vào dòng
-  // "Doanh thu bán hàng" là đếm một khoản tiền hai lần, và số "Tiền mặt cần nộp" cũng gấp đôi
-  // số thu ngân thật sự đang giữ. Vẫn giữ nguyên `receipt` cho bảng đối chiếu tiền vào, vì bảng
-  // đó cố ý lấy phiếu thu làm số đã xác nhận của tiền mặt.
-  //
-  // Khử trùng theo TẪT CẢ cửa hàng thì sai: xem "Tất cả cửa hàng", NAM MÊ có POS tiền mặt sẽ kéo
-  // theo việc trừ luôn phiếu thu tiền mặt của ASA — mất hẳn 24,8 triệu khỏi ô Tổng thu. Phải xét
-  // riêng từng cửa hàng: chỉ cửa hàng nào có POS tiền mặt mới khử phiếu thu tiền mặt của chính nó.
-  const salesCashReceiptByBranch = new Map<string, number>();
-  const salesCashReceiptRows: Array<{ branchCode: string; moneySourceCode: string; amount: number }> = [];
-  for (const row of receiptVouchers) {
-    if (["COLLECT", "SUPPLEMENT"].includes(row.depositAction || "")) continue;
-    if (!restaurantSalesCategoryCodes.includes(row.categoryCode || "")) continue;
-    if (normalizeMoneySourceGroup(sourceByCode.get(row.moneySourceCode)?.group) !== "CASH") continue;
-    salesCashReceiptByBranch.set(row.branchCode, (salesCashReceiptByBranch.get(row.branchCode) || 0) + row.amount);
-    salesCashReceiptRows.push({ branchCode: row.branchCode, moneySourceCode: row.moneySourceCode, amount: row.amount });
-  }
+  // Phiếu thu là dòng tiền độc lập, không mặc định là doanh thu bán hàng. Tách phiếu thu loại
+  // Thu bán hàng khỏi các khoản thu khác (hoàn tiền NCC chi trùng, thu hoàn tạm ứng...) và khử
+  // trùng với doanh thu POS theo từng cửa hàng — toàn bộ quy tắc nằm ở helper để kiểm thử được.
+  // Vẫn giữ nguyên `receipt` (đủ mọi loại thu) cho bảng đối chiếu tiền vào, vì bảng đó cố ý lấy
+  // phiếu thu làm số đã xác nhận của tiền mặt.
   const branchesWithPosCash = new Set([...posCashByBranch].filter(([, amount]) => amount > 0).map(([branch]) => branch));
-  const duplicatedCashReceipts = [...branchesWithPosCash]
-    .reduce((sum, branch) => sum + (salesCashReceiptByBranch.get(branch) || 0), 0);
-  // Khử trùng cũng phải trừ đúng nguồn tiền của phiếu thu, không trừ vào một cục chung.
-  for (const row of salesCashReceiptRows) {
-    if (branchesWithPosCash.has(row.branchCode)) addCashToDeposit(row.moneySourceCode, -row.amount);
-  }
-  const receiptRevenue: DailyCashBucket = {
-    ...receipt,
-    cash: receipt.cash - duplicatedCashReceipts,
-    total: receipt.total - duplicatedCashReceipts,
-  };
+  const receiptSummary = summarizeDailyCashReceiptVouchers(
+    receiptVouchers.map((row) => {
+      const source = sourceByCode.get(row.moneySourceCode);
+      return {
+        branchCode: row.branchCode,
+        moneySourceCode: row.moneySourceCode,
+        amount: row.amount,
+        categoryCode: row.categoryCode,
+        depositAction: row.depositAction,
+        bucketKey: classifyMoneySource(source?.group),
+        isCashSource: normalizeMoneySourceGroup(source?.group) === "CASH",
+      };
+    }),
+    branchesWithPosCash,
+  );
+  const { receipt, receiptOther, receiptSalesRevenue, receiptRevenue } = receiptSummary;
+  for (const entry of receiptSummary.cashToDepositBySource) addCashToDeposit(entry.moneySourceCode, entry.amount);
 
   for (const key of ["cash", "transfer", "card", "grab", "other"] as const) {
     addAmount(deposit, key, dailyDepositMovement.depositIn[key]);
@@ -649,7 +633,7 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     branchCode,
     reportDate: date,
     shift,
-    summary: { revenue, posRevenue, manual, receipt, receiptRevenue, deposit, total, expenseTotal, cashExpenseTotal, cashToDeposit },
+    summary: { revenue, posRevenue, manual, receipt, receiptRevenue, receiptSalesRevenue, receiptOther, deposit, total, expenseTotal, cashExpenseTotal, cashToDeposit },
     cashToDepositSources,
     // Quỹ tiền mặt không phải của thu ngân đã bị loại khỏi mọi con số phía trên. Trả kèm danh
     // sách để màn hình nói rõ tiền đó nằm ở đâu, thay vì để người xem thấy số vơi đi không rõ lý do.

@@ -57,6 +57,8 @@
     "test:import-needs-fix": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-import-needs-fix.mjs",
     "test:all-branches": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-all-branches-additivity.mjs",
     "test:unclassified-filter": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-unclassified-category-filter.mjs",
+    "test:daily-cash-receipts": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-daily-cash-receipts.mjs",
+    "test:hoan-ncc-e2e": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-daily-cash-hoan-ncc-e2e.mjs",
     "seed:revenue-31-07": "node scripts/seed-manual-revenue-20260731.cjs"
   },
   "dependencies": {
