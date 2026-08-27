@@ -12,7 +12,7 @@ import { WALLET_CARD_FEE_CATEGORY_CODE, WALLET_GRAB_EXPENSE_CATEGORY_CODE } from
 import { vietnamBusinessDayKey } from "@/lib/revenue-date";
 import { remainingWalletGross, selectWalletDeclaredRevenue, walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
 
-type PnlBucket = {
+export type PnlBucket = {
   revenue: number;
   cogs: number;
   payroll: number;
@@ -56,17 +56,24 @@ export function finalizePnl(bucket: PnlBucket) {
 
 export async function getPnl(period: string, branchCode: string) {
   const { start, end } = periodBounds(period);
-  const [entries, pnlItems] = await Promise.all([
+  const [entries, pnlItems, pnlGroups] = await Promise.all([
     prisma.journalEntry.findMany({
       where: { entryDate: { gte: start, lt: end }, status: "POSTED", ...(branchCode === "ALL" ? {} : { branchCode }) },
       include: { lines: { include: { account: true } } },
     }),
+    // subGroup của PNL_ITEM là mã PNL_GROUP cha (ba tầng phân loại — xem MasterDataItem);
+    // cột group chỉ là loại thô (OPEX/CAPEX...) nên nhóm hiển thị phải lấy theo subGroup.
     prisma.masterDataItem.findMany({
       where: { type: "PNL_ITEM" },
-      select: { code: true, name: true, group: true },
+      select: { code: true, name: true, group: true, subGroup: true },
+    }),
+    prisma.masterDataItem.findMany({
+      where: { type: "PNL_GROUP" },
+      select: { code: true, name: true },
     }),
   ]);
   const pnlItemByCode = new Map(pnlItems.map((item) => [item.code, item]));
+  const pnlGroupName = new Map(pnlGroups.map((item) => [item.code, item.name]));
   const pnlItemBreakdown = new Map<string, PnlItemBreakdown>();
   const total = emptyPnl();
   const branches = new Map<string, PnlBucket>();
@@ -82,7 +89,7 @@ export async function getPnl(period: string, branchCode: string) {
         const current = pnlItemBreakdown.get(code) || {
           code,
           name: item?.name || (line.pnlItemCode ? `Hạng mục P&L [${line.pnlItemCode}]` : "Chưa phân loại P&L"),
-          group: item?.group || null,
+          group: item ? (item.subGroup ? pnlGroupName.get(item.subGroup) || item.subGroup : item.group) : null,
           amount: 0,
         };
         current.amount += line.debit - line.credit;

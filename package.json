@@ -34,6 +34,7 @@
     "test:import-dates": "node --experimental-strip-types scripts/test-import-date-parser.mjs",
     "test:money-transfer-dates": "node --experimental-strip-types scripts/test-money-transfer-effective-date.mjs",
     "backfill:bank-deposits": "node scripts/backfill-bank-deposits.cjs",
+    "backfill:revenue-department": "node --experimental-strip-types --no-warnings scripts/backfill-revenue-department.mjs",
     "repair:deposit-correction": "node scripts/repair-deposit-correction.cjs",
     "audit:deposit-amounts": "node scripts/audit-deposit-amount-sync.cjs",
     "start": "next start",
@@ -68,6 +69,7 @@
     "qrcode": "^1.5.4",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "recharts": "^3.10.1",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {

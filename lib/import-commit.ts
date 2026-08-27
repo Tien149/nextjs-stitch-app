@@ -9,6 +9,7 @@ import { normalizeStockTransactionType, postInventoryTransaction } from "@/lib/i
 import { postStockTransfer } from "@/lib/inventory-transfer";
 import { writeAuditLog } from "@/lib/audit-log";
 import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
+import { buildRevenueDepartmentResolver } from "@/lib/revenue-department";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { nextSeqFromCodes, voucherCodePrefix } from "@/lib/voucher-code-generator";
 import { commonBankValue, groupBankStatementRows } from "@/lib/bank-statement-import";
@@ -844,6 +845,13 @@ export async function commitImport(input: CommitInput) {
     }
 
     if (input.importType === "REVENUE_POS") {
+      // Gắn bộ phận (Bếp/Bar/FOH) ngay lúc import để báo cáo ngân sách nhân sự so được
+      // doanh thu từng bộ phận với tỷ trọng lương chuẩn. Mã hàng mới toanh trong chính
+      // file này chưa có nhóm mặt hàng nên rơi về suy từ nguồn doanh thu — đúng ý muốn.
+      const resolveRevenueDepartment = await buildRevenueDepartmentResolver(
+        tx as unknown as Prisma.TransactionClient,
+        input.rows.map((row) => asText(row.values.product_code).toUpperCase()),
+      );
       for (const row of input.rows) {
         const productCode = asText(row.values.product_code).toUpperCase();
         const productQuantity = asNumber(row.values.product_quantity);
@@ -865,6 +873,7 @@ export async function commitImport(input: CommitInput) {
             productCode: productCode || null,
             productQuantity: productQuantity > 0 ? productQuantity : null,
             inventoryStatus: productCode && productQuantity > 0 ? "PENDING" : "NOT_REQUIRED",
+            departmentCode: resolveRevenueDepartment({ productCode, revenueSource: asText(row.values.revenue_source) }),
           },
         });
 

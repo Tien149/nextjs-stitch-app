@@ -4,6 +4,7 @@ import { allowedMenuTabs, canViewFinancialDashboard } from "@/lib/auth-demo";
 import { requestedBranch } from "@/lib/accounting";
 import { prisma } from "@/lib/prisma";
 import { createMoneySourceMatcher, getBalanceSheet, getCashSourceReport, getCashflowForecast, getPnl, getRevenueSettlementReport, getTrend } from "@/lib/reports";
+import { getPayrollBudgetReport, getPnlMatrix, getRevenueTrendReport } from "@/lib/report-budget";
 import { apiError, businessError, cleanText, isPeriodLocked, normalizePeriod, toNumber } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import { createCashierCashMatcher, moneySourceDisplayName, normalizeMoneySourceGroup } from "@/lib/money-sources";
@@ -235,15 +236,31 @@ async function getBudgetReport(period: string, branchCode: string) {
   const targets = await prisma.reportTarget.findMany({
     where: { period, branchCode },
   });
-  const targetMap = new Map(targets.map((target) => [target.metric, target.targetValue]));
+  const targetByMetric = new Map(targets.map((target) => [target.metric, target]));
+  // Ngân sách % doanh thu quy ra tiền theo TARGET doanh thu; song song đó "mức chuẩn"
+  // quy theo doanh thu THỰC TẾ — đúng khái niệm "Lương theo tiêu chuẩn" trong feedback
+  // chị Bình 26/08/2026: doanh thu chạy tới đâu thì ngân sách chi phí co giãn tới đó.
+  const revenueTargetValue = targetByMetric.get("revenue")?.targetValue || 0;
+  const resolveTarget = (metric: string) => {
+    const target = targetByMetric.get(metric);
+    if (!target) return { target: 0, targetPercent: null as number | null, standard: null as number | null };
+    if (target.targetMode === "PERCENT_REVENUE" && target.targetPercent) {
+      return {
+        target: revenueTargetValue * target.targetPercent,
+        targetPercent: target.targetPercent,
+        standard: pnl.total.revenue * target.targetPercent,
+      };
+    }
+    return { target: target.targetValue, targetPercent: null, standard: null };
+  };
 
   const rows = budgetMetrics.map((item) => {
     const actual = pnl.total[item.metric];
-    const target = targetMap.get(item.metric) || 0;
+    const { target, targetPercent, standard } = resolveTarget(item.metric);
     const variance = actual - target;
     const usageRate = target ? actual / target : null;
     const isGood = item.kind === "REVENUE" || item.kind === "PROFIT" ? variance >= 0 : variance <= 0;
-    return { ...item, actual, target, variance, usageRate, isGood };
+    return { ...item, actual, target, targetPercent, standard, variance, usageRate, isGood };
   });
 
   return {
@@ -254,7 +271,7 @@ async function getBudgetReport(period: string, branchCode: string) {
       expenseActual: pnl.total.cogs + pnl.total.payroll + pnl.total.otherOpex + pnl.total.depreciation,
       expenseTarget: rows.filter((row) => row.kind === "EXPENSE").reduce((sum, row) => sum + row.target, 0),
       revenueActual: pnl.total.revenue,
-      revenueTarget: targetMap.get("revenue") || 0,
+      revenueTarget: revenueTargetValue,
     },
   };
 }
@@ -995,7 +1012,11 @@ export async function GET(request: Request) {
     // được type=daily-cash.
     const permittedTabs = allowedMenuTabs(auth.session, menuHref);
     const effectiveType = type === "daily-cash" && permittedTabs?.includes("revenue-settlement") ? "revenue-settlement" : type;
-    if (permittedTabs && !permittedTabs.includes(type) && !permittedTabs.includes(effectiveType)) {
+    // pnl-matrix và revenue-trend là góc nhìn phụ nằm trong tab P&L đa chiều / Biến động
+    // YoY — quyền đi theo tab chứa nó, không phải tab riêng.
+    const subViewTab: Record<string, string> = { "pnl-matrix": "pnl", "revenue-trend": "yoy" };
+    const containerTab = subViewTab[type] || type;
+    if (permittedTabs && !permittedTabs.includes(type) && !permittedTabs.includes(effectiveType) && !permittedTabs.includes(containerTab)) {
       return NextResponse.json({ error: "Bạn không có quyền xem báo cáo này" }, { status: 403 });
     }
     if (type === "operations") return NextResponse.json(await getOperationsReport(period, branchCode));
@@ -1019,6 +1040,10 @@ export async function GET(request: Request) {
       return NextResponse.json({ period, view, year, ...(await getCashSourceReport(months, branchCode)) });
     }
     if (type === "revenue-settlement") return NextResponse.json(await getRevenueSettlementReport(period, branchCode));
+    // Ba báo cáo theo feedback chị Bình 26/08/2026 — đều chạy theo NĂM của kỳ đang chọn.
+    if (type === "payroll-budget") return NextResponse.json(await getPayrollBudgetReport(period.slice(0, 4), branchCode));
+    if (type === "pnl-matrix") return NextResponse.json(await getPnlMatrix(period.slice(0, 4), branchCode));
+    if (type === "revenue-trend") return NextResponse.json(await getRevenueTrendReport(period, branchCode, 3));
     if (type === "cashflow") return NextResponse.json({ period, branchCode, ...(await getCashflowForecast(period, branchCode, cleanText(params.get("scenario")) || "BASE")) });
     if (type === "balance") return NextResponse.json({ period, branchCode, ...(await getBalanceSheet(period, branchCode)) });
     const [pnl, trend, balance, targets] = await Promise.all([getPnl(period, branchCode), getTrend(period, branchCode), getBalanceSheet(period, branchCode), prisma.reportTarget.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { branchCode }) } })]);
@@ -1144,7 +1169,18 @@ export async function POST(request: Request) {
     if (action === "UPSERT_TARGET") {
       const metric = cleanText(body.metric);
       if (!metric) businessError("Thiếu chỉ tiêu KPI");
-      const result = await prisma.reportTarget.upsert({ where: { period_branchCode_metric: { period, branchCode, metric } }, create: { period, branchCode, metric, targetValue: toNumber(body.targetValue) }, update: { targetValue: toNumber(body.targetValue) } });
+      // Ngân sách set theo % doanh thu (feedback chị Bình 26/08/2026): nhập 12.8 nghĩa là
+      // 12.8% doanh thu — lưu dạng 0.128, số tiền quy đổi tính lúc xem báo cáo.
+      const targetMode = cleanText(body.targetMode) === "PERCENT_REVENUE" ? "PERCENT_REVENUE" : "AMOUNT";
+      let targetPercent: number | null = null;
+      if (targetMode === "PERCENT_REVENUE") {
+        if (metric === "revenue") businessError("Doanh thu là gốc quy đổi, chỉ set được trị giá tuyệt đối.");
+        const percentInput = toNumber(body.targetPercent);
+        if (percentInput <= 0 || percentInput > 100) businessError("Tỷ lệ % doanh thu phải lớn hơn 0 và không quá 100.");
+        targetPercent = percentInput / 100;
+      }
+      const data = { targetValue: toNumber(body.targetValue), targetMode, targetPercent };
+      const result = await prisma.reportTarget.upsert({ where: { period_branchCode_metric: { period, branchCode, metric } }, create: { period, branchCode, metric, ...data }, update: data });
       await writeAuditLog({
         session: auth.session,
         module: "REPORTS",
@@ -1153,7 +1189,51 @@ export async function POST(request: Request) {
         entityId: result.id,
         entityCode: `${result.period}-${result.metric}`,
         branchCode,
-        metadata: { period, metric, targetValue: result.targetValue },
+        metadata: { period, metric, targetValue: result.targetValue, targetMode: result.targetMode, targetPercent: result.targetPercent },
+      });
+      return NextResponse.json(result);
+    }
+    // Tỷ trọng lương chuẩn của từng bộ phận so với doanh thu, set một lần cho cả năm.
+    if (action === "UPSERT_DEPARTMENT_RATIO") {
+      if (branchCode === "ALL") businessError("Chọn một cửa hàng cụ thể trước khi set tỷ trọng bộ phận.");
+      const departmentCode = cleanText(body.departmentCode).toUpperCase();
+      if (!departmentCode) businessError("Thiếu bộ phận");
+      const department = await prisma.masterDataItem.findUnique({ where: { type_code: { type: "DEPARTMENT", code: departmentCode } } });
+      if (!department || department.deletedAt) businessError(`Bộ phận ${departmentCode} chưa có trong Danh mục phòng ban.`);
+      const year = period.slice(0, 4);
+      const ratioInput = toNumber(body.ratioPercent);
+      if (ratioInput < 0 || ratioInput > 100) businessError("Tỷ trọng phải nằm trong khoảng 0 - 100%.");
+      const industryMinInput = toNumber(body.industryMinPercent);
+      const industryMaxInput = toNumber(body.industryMaxPercent);
+      const result = await prisma.departmentCostRatio.upsert({
+        where: { year_branchCode_departmentCode_metric: { year, branchCode, departmentCode, metric: "payroll" } },
+        create: {
+          year,
+          branchCode,
+          departmentCode,
+          metric: "payroll",
+          ratio: ratioInput / 100,
+          industryMin: industryMinInput > 0 ? industryMinInput / 100 : null,
+          industryMax: industryMaxInput > 0 ? industryMaxInput / 100 : null,
+          note: cleanText(body.note) || null,
+          createdBy: auth.session.name,
+        },
+        update: {
+          ratio: ratioInput / 100,
+          industryMin: industryMinInput > 0 ? industryMinInput / 100 : null,
+          industryMax: industryMaxInput > 0 ? industryMaxInput / 100 : null,
+          note: cleanText(body.note) || null,
+        },
+      });
+      await writeAuditLog({
+        session: auth.session,
+        module: "REPORTS",
+        action: "UPSERT_DEPARTMENT_RATIO",
+        entityType: "DepartmentCostRatio",
+        entityId: result.id,
+        entityCode: `${year}-${branchCode}-${departmentCode}`,
+        branchCode,
+        metadata: { year, departmentCode, ratio: result.ratio, industryMin: result.industryMin, industryMax: result.industryMax },
       });
       return NextResponse.json(result);
     }

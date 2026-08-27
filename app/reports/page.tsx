@@ -12,6 +12,9 @@ import StickyFilterBar from "@/components/StickyFilterBar";
 import { shiftLabel, shiftLabels } from "@/lib/shifts";
 import { cashDepositRoundingExpense, roundCashDepositAmount } from "@/lib/cash-deposit";
 import { buildDailyCashSummaryRows } from "@/lib/daily-cash-receipts";
+import PayrollBudgetTab, { type PayrollBudgetData } from "@/components/reports/PayrollBudgetTab";
+import PnlMatrixTab from "@/components/reports/PnlMatrixTab";
+import RevenueTrendTab from "@/components/reports/RevenueTrendTab";
 
 type Pnl = {
   revenue: number;
@@ -52,7 +55,7 @@ type OperationsData = {
   groups: Record<OperationKey, OperationGroup[]>;
   details: Record<OperationKey, OperationDetail[]>;
 };
-type BudgetRow = { metric: string; label: string; kind: "REVENUE" | "EXPENSE" | "PROFIT"; actual: number; target: number; variance: number; usageRate: number | null; isGood: boolean };
+type BudgetRow = { metric: string; label: string; kind: "REVENUE" | "EXPENSE" | "PROFIT"; actual: number; target: number; targetPercent: number | null; standard: number | null; variance: number; usageRate: number | null; isGood: boolean };
 type BudgetData = { summary: { expenseActual: number; expenseTarget: number; revenueActual: number; revenueTarget: number }; rows: BudgetRow[] };
 type DailyCashBucket = { total: number; cash: number; transfer: number; card: number; grab: number; other: number };
 type DailyCashExpense = { id: string; code: string; date: string; shift: string | null; description: string; partnerName: string; moneySourceCode: string; moneySourceName: string; moneySourceGroup: string | null; amount: number; isCash: boolean };
@@ -217,7 +220,9 @@ export default function ReportsPage() {
   const [manualRevenueSubmitting, setManualRevenueSubmitting] = useState(false);
   const [manualRevenueForm, setManualRevenueForm] = useState<ManualRevenueForm>(emptyManualRevenueForm);
   const [forecast, setForecast] = useState({ period: new Date().toISOString().slice(0, 7), branchCode: "HCM", scenario: "BASE", assumptionType: "INFLOW", amount: "100000000", note: "Kế hoạch dòng tiền" });
-  const [targetForm, setTargetForm] = useState({ metric: "otherOpex", targetValue: "50000000" });
+  const [targetForm, setTargetForm] = useState({ metric: "otherOpex", targetValue: "50000000", targetMode: "AMOUNT", targetPercent: "10" });
+  /** Góc nhìn trong tab P&L đa chiều: một kỳ như cũ hoặc ma trận 12 tháng (feedback 26/08/2026). */
+  const [pnlView, setPnlView] = useState<"period" | "year">("period");
   const [reopenReason, setReopenReason] = useState("Bổ sung hoặc điều chỉnh dữ liệu kỳ trước");
 
   const [expandedMetric, setExpandedMetric] = useState<string | null>(null);
@@ -353,7 +358,7 @@ export default function ReportsPage() {
     const response = await fetch("/api/reports", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "UPSERT_TARGET", period, branchCode, metric: targetForm.metric, targetValue: targetForm.targetValue }),
+      body: JSON.stringify({ action: "UPSERT_TARGET", period, branchCode, metric: targetForm.metric, targetValue: targetForm.targetValue, targetMode: targetForm.targetMode, targetPercent: targetForm.targetPercent }),
     });
     const payload = await response.json();
     setMessage(response.ok ? "Đã lưu ngân sách/target báo cáo." : payload.error || "Không lưu được ngân sách");
@@ -382,6 +387,7 @@ export default function ReportsPage() {
   const activity = active === "activity" && data && typeof data === "object" && "periods" in data ? (data as ActivityData) : null;
   const cashSource = active === "cash-source" && data && typeof data === "object" && "totals" in data && "income" in data ? (data as CashSourceData) : null;
   const settlement = active === "revenue-settlement" && data && typeof data === "object" && "rows" in data && "totals" in data && !("income" in data) ? (data as RevenueSettlementData) : null;
+  const payrollBudget = active === "payroll-budget" && data && typeof data === "object" && "standard" in data && "headcount" in data ? (data as unknown as PayrollBudgetData) : null;
 
   const operationRows = useMemo(() => {
     if (!operations) return [] as Array<OperationDetail & { module: string }>;
@@ -815,9 +821,36 @@ export default function ReportsPage() {
                     <option value="cashRemaining">Nguồn tiền còn lại (báo cáo nguồn tiền)</option>
                   </select>
                 </Field>
-                <Field label="Giá trị ngân sách/target">
-                  <input type="number" min="0" className="control" value={targetForm.targetValue} onChange={(event) => setTargetForm({ ...targetForm, targetValue: event.target.value })} />
-                </Field>
+                {/* Ngân sách chi phí set được theo % doanh thu (feedback 26/08/2026): số tiền
+                    quy đổi theo target doanh thu, doanh thu chạy tới đâu mức chuẩn theo tới đó. */}
+                {targetForm.metric !== "revenue" && targetForm.metric !== "cashRemaining" && (
+                  <Field label="Cách set ngân sách">
+                    <div className="flex gap-4 text-sm">
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input type="radio" name="targetMode" checked={targetForm.targetMode === "AMOUNT"} onChange={() => setTargetForm({ ...targetForm, targetMode: "AMOUNT" })} />
+                        Trị giá
+                      </label>
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input type="radio" name="targetMode" checked={targetForm.targetMode === "PERCENT_REVENUE"} onChange={() => setTargetForm({ ...targetForm, targetMode: "PERCENT_REVENUE" })} />
+                        % doanh thu
+                      </label>
+                    </div>
+                  </Field>
+                )}
+                {targetForm.targetMode === "PERCENT_REVENUE" && targetForm.metric !== "revenue" && targetForm.metric !== "cashRemaining" ? (
+                  <Field label="Tỷ lệ % trên doanh thu">
+                    <input type="number" min="0" max="100" step="0.1" className="control" value={targetForm.targetPercent} onChange={(event) => setTargetForm({ ...targetForm, targetPercent: event.target.value })} />
+                    <p className="text-xs text-slate-500 mt-1">
+                      {budget.summary.revenueTarget
+                        ? `≈ ${money(Math.round(budget.summary.revenueTarget * (Number(targetForm.targetPercent) || 0) / 100))} đ theo target doanh thu kỳ này`
+                        : "Set target Doanh thu trước để hệ thống quy đổi ra tiền."}
+                    </p>
+                  </Field>
+                ) : (
+                  <Field label="Giá trị ngân sách/target">
+                    <input type="number" min="0" className="control" value={targetForm.targetValue} onChange={(event) => setTargetForm({ ...targetForm, targetValue: event.target.value })} />
+                  </Field>
+                )}
                 <button className="primary-button w-full">
                   <span className="material-symbols-outlined text-lg">save</span>Lưu ngân sách
                 </button>
@@ -828,7 +861,9 @@ export default function ReportsPage() {
               <div className="max-h-[560px] overflow-auto">
                 <Table headers={["Chỉ tiêu", "Thực tế", "Ngân sách/Target", "Chênh lệch", "Tỷ lệ dùng & Tiến trình", "Đối chiếu"]}>
                   {budget.rows.map((row) => {
-                    const hasTarget = !!row.target;
+                    // Set theo % mà chưa có target doanh thu thì target quy đổi = 0 — vẫn phải
+                    // hiện cái % đã set kèm nhắc set target doanh thu, không được báo "Chưa gán".
+                    const hasTarget = !!row.target || row.targetPercent !== null;
                     const rateVal = row.usageRate !== null ? Math.round(row.usageRate * 100) : 0;
 
                     let barColor = "bg-slate-300";
@@ -868,7 +903,22 @@ export default function ReportsPage() {
                             </div>
                           </Cell>
                           <Cell right><b>{money(row.actual)} đ</b></Cell>
-                          <Cell right>{hasTarget ? `${money(row.target)} đ` : <span className="text-slate-400 font-normal">Chưa gán</span>}</Cell>
+                          <Cell right>
+                            {hasTarget ? (
+                              <span>
+                                {row.target ? `${money(row.target)} đ` : <span className="text-amber-600 font-bold">Chưa quy đổi được</span>}
+                                {row.targetPercent !== null && (
+                                  <span className="block text-[11px] font-normal text-slate-500">
+                                    = {(row.targetPercent * 100).toLocaleString("vi-VN", { maximumFractionDigits: 2 })}% DT kế hoạch
+                                    {!row.target && " — set target Doanh thu của kỳ này trước"}
+                                    {row.standard !== null && row.standard > 0 && ` · chuẩn theo DT thực tế: ${money(Math.round(row.standard))} đ`}
+                                  </span>
+                                )}
+                              </span>
+                            ) : (
+                              <span className="text-slate-400 font-normal">Chưa gán</span>
+                            )}
+                          </Cell>
                           <Cell right>
                             {hasTarget ? (
                               <span className={`font-bold ${row.isGood ? "text-emerald-600" : "text-rose-600"}`}>
@@ -955,6 +1005,10 @@ export default function ReportsPage() {
             </section>
           </div>
         </div>
+      )}
+
+      {!tabLoading && payrollBudget && (
+        <PayrollBudgetTab data={payrollBudget} period={period} branchCode={branchCode} canConfigure={canConfigure} onSaved={loadData} setMessage={setMessage} />
       )}
 
       {!tabLoading && cashSource && (
@@ -1815,33 +1869,52 @@ export default function ReportsPage() {
 
       {!tabLoading && pnl && (
         <div className="space-y-5">
-          <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-            <PanelHeader title="Báo cáo Kết quả Kinh doanh" subtitle="Đơn vị: VND" />
-            <PnlTable value={pnl.total} />
-          </section>
-          <PnlItemTable rows={pnl.byPnlItem} />
-          <div className="grid xl:grid-cols-2 gap-5">
-            <CutTable title="Theo cửa hàng" rows={pnl.byBranch} />
-            <CutTable title="Theo phòng ban" rows={pnl.byDepartment} />
+          {/* Ma trận 12 tháng (feedback 26/08/2026) nằm chung tab với P&L một kỳ. */}
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={() => setPnlView("period")} className={`text-xs font-bold px-3 py-1.5 rounded border ${pnlView === "period" ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>
+              Kỳ {period}
+            </button>
+            <button type="button" onClick={() => setPnlView("year")} className={`text-xs font-bold px-3 py-1.5 rounded border ${pnlView === "year" ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>
+              Cả năm {period.slice(0, 4)} (12 tháng)
+            </button>
           </div>
+          {pnlView === "year" ? (
+            <PnlMatrixTab period={period} branchCode={branchCode} />
+          ) : (
+            <>
+              <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+                <PanelHeader title="Báo cáo Kết quả Kinh doanh" subtitle="Đơn vị: VND" />
+                <PnlTable value={pnl.total} />
+              </section>
+              <PnlItemTable rows={pnl.byPnlItem} />
+              <div className="grid xl:grid-cols-2 gap-5">
+                <CutTable title="Theo cửa hàng" rows={pnl.byBranch} />
+                <CutTable title="Theo phòng ban" rows={pnl.byDepartment} />
+              </div>
+            </>
+          )}
         </div>
       )}
 
       {!tabLoading && yoy && (
-        <section className="table-panel">
-          <PanelHeader title={`So sánh ${period} với ${yoy.previousPeriod}`} subtitle="Chỉ hiển thị tỷ lệ khi kỳ trước có dữ liệu." />
-          <Table headers={["Chỉ tiêu", period, yoy.previousPeriod, "Chênh lệch", "Tỷ lệ"]}>
-            {(yoy.rows || []).map((row) => (
-              <tr key={row.metric} className="border-t border-slate-100">
-                <Cell><b>{metricLabels[row.metric] || row.metric}</b></Cell>
-                <Cell right>{money(row.currentValue)} đ</Cell>
-                <Cell right>{money(row.previousValue)} đ</Cell>
-                <Cell right><span className={`font-bold ${row.variance >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{row.variance > 0 ? "+" : ""}{money(row.variance)} đ</span></Cell>
-                <Cell right>{row.varianceRate !== null ? `${(row.varianceRate * 100).toFixed(1)}%` : "-"}</Cell>
-              </tr>
-            ))}
-          </Table>
-        </section>
+        <div className="space-y-5">
+          {/* Chart kế hoạch/thực hiện + cùng kỳ nhiều năm (feedback 26/08/2026 mục 5). */}
+          <RevenueTrendTab period={period} branchCode={branchCode} />
+          <section className="table-panel">
+            <PanelHeader title={`So sánh ${period} với ${yoy.previousPeriod}`} subtitle="Chỉ hiển thị tỷ lệ khi kỳ trước có dữ liệu." />
+            <Table headers={["Chỉ tiêu", period, yoy.previousPeriod, "Chênh lệch", "Tỷ lệ"]}>
+              {(yoy.rows || []).map((row) => (
+                <tr key={row.metric} className="border-t border-slate-100">
+                  <Cell><b>{metricLabels[row.metric] || row.metric}</b></Cell>
+                  <Cell right>{money(row.currentValue)} đ</Cell>
+                  <Cell right>{money(row.previousValue)} đ</Cell>
+                  <Cell right><span className={`font-bold ${row.variance >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{row.variance > 0 ? "+" : ""}{money(row.variance)} đ</span></Cell>
+                  <Cell right>{row.varianceRate !== null ? `${(row.varianceRate * 100).toFixed(1)}%` : "-"}</Cell>
+                </tr>
+              ))}
+            </Table>
+          </section>
+        </div>
       )}
 
       {!tabLoading && cashflow && (

@@ -319,6 +319,10 @@ model RevenueImportRow {
   productCode     String?
   productQuantity Float?
   inventoryStatus String?
+  /// Bộ phận tạo ra doanh thu (DEPARTMENT: KIT/BAR/FOH...) — gắn lúc import để so với
+  /// tỷ trọng lương từng bộ phận. Ưu tiên suy từ mã hàng -> nhóm mặt hàng -> nhóm kho;
+  /// dòng không có mã hàng suy từ nguồn doanh thu (REV_FOOD -> Bếp, REV_DRINK -> Bar).
+  departmentCode  String?
   createdAt       DateTime @default(now())
 
   importBatch ImportBatch @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
@@ -332,6 +336,7 @@ model RevenueImportRow {
   @@index([paymentMethod])
   @@index([productCode])
   @@index([inventoryStatus])
+  @@index([departmentCode])
   @@index([deletedAt])
 }
 
@@ -1552,6 +1557,11 @@ model ReportTarget {
   branchCode  String
   metric      String
   targetValue Float
+  /// AMOUNT: ngân sách là số tiền tuyệt đối (targetValue).
+  /// PERCENT_REVENUE: ngân sách set theo % doanh thu (targetPercent) — số tiền ngân sách
+  /// quy đổi theo target doanh thu của kỳ, còn "mức chuẩn" quy đổi theo doanh thu thực tế.
+  targetMode    String  @default("AMOUNT")
+  targetPercent Float?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -1560,6 +1570,34 @@ model ReportTarget {
 
   @@unique([period, branchCode, metric])
   @@index([period])
+  @@index([deletedAt])
+}
+
+/// Tỷ trọng chi phí chuẩn của từng bộ phận so với doanh thu (feedback chị Bình 26/08/2026):
+/// ví dụ lương Bếp 12.8%, Bar 2%, FOH 7%... "Lương theo tiêu chuẩn" của kỳ = doanh thu kỳ đó
+/// nhân tỷ trọng, đem so với lương thực chi trả từ import bảng lương.
+model DepartmentCostRatio {
+  id             String   @id @default(uuid())
+  /// Áp theo năm (ví dụ "2026") — set một lần dùng cho cả 12 tháng của năm đó.
+  year           String
+  branchCode     String
+  departmentCode String
+  metric         String   @default("payroll")
+  /// Khoảng tỷ trọng tham chiếu của ngành F&B (0.10 - 0.12 = 10-12%), chỉ để hiển thị.
+  industryMin    Float?
+  industryMax    Float?
+  /// Tỷ trọng áp dụng thực tế, 0.128 = 12.8% doanh thu.
+  ratio          Float
+  note           String?
+  createdBy      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  deletedAt DateTime?
+  deletedBy String?
+
+  @@unique([year, branchCode, departmentCode, metric])
+  @@index([year])
   @@index([deletedAt])
 }
 

@@ -225,7 +225,9 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   }
 
   const revenues = await prisma.revenueImportRow.findMany({ where: { ...branchFilter, saleDate: { gte: start, lt: end } } });
-  for (const row of revenues) results.push(await postJournalEntry({ entryDate: row.saleDate, branchCode: row.branchCode, sourceType: "REVENUE_POS", sourceId: row.id, sourceCode: row.externalRef, description: `Doanh thu ${row.externalRef}`, createdBy: actor, lines: [{ accountCode: row.paymentMethod.toUpperCase().includes("CASH") ? "1111" : "1121", debit: row.netAmount }, { accountCode: "511", credit: row.netAmount, categoryCode: row.revenueSource }] }));
+  // Dòng doanh thu mang bộ phận (Bếp/Bar/FOH) sang bút toán 511 để P&L cắt được doanh thu
+  // theo phòng ban — nền của báo cáo ngân sách nhân sự (feedback chị Bình 26/08/2026).
+  for (const row of revenues) results.push(await postJournalEntry({ entryDate: row.saleDate, branchCode: row.branchCode, sourceType: "REVENUE_POS", sourceId: row.id, sourceCode: row.externalRef, description: `Doanh thu ${row.externalRef}`, createdBy: actor, lines: [{ accountCode: row.paymentMethod.toUpperCase().includes("CASH") ? "1111" : "1121", debit: row.netAmount }, { accountCode: "511", credit: row.netAmount, categoryCode: row.revenueSource, departmentCode: row.departmentCode }] }));
 
   const vouchers = await prisma.financialVoucher.findMany({ where: { ...branchFilter, voucherDate: { gte: start, lt: end }, status: "APPROVED" } });
   // Nhóm khoản mục quyết định phiếu chi vào chi phí, giá vốn hay tài sản.
