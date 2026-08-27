@@ -155,42 +155,52 @@ export default function PayrollBudgetTab({
         <KpiBox label="Nhân sự tháng gần nhất" value={`${headcountLatest} người`} icon="groups" tone="text-slate-800" />
       </div>
 
-      <div className="grid xl:grid-cols-[420px_1fr] gap-5">
+      <div className="grid xl:grid-cols-[440px_1fr] gap-5">
         {canConfigure && (
           <form onSubmit={saveRatios} className="bg-white border border-slate-200 rounded-lg h-fit overflow-hidden">
             <PanelHeader
               title={`Tỷ trọng lương theo bộ phận — năm ${data.year}`}
-              subtitle={branchCode === "ALL" ? "Chọn một cửa hàng cụ thể ở bộ lọc trên để set tỷ trọng." : "Nhập %, ví dụ 12.8 = 12.8% doanh thu (gồm SVC). Cột Ngành là khoảng tham chiếu F&B."}
+              subtitle={branchCode === "ALL" ? "Đang xem Tất cả cửa hàng — chọn một cửa hàng cụ thể ở bộ lọc trên để set tỷ trọng." : `Áp cho cả 12 tháng ${data.year} của ${data.branchCode}. Nhập 12.8 nghĩa là 12.8% doanh thu (gồm SVC).`}
             />
-            <div className="overflow-x-auto">
-              <Table headers={["Bộ phận", "Ngành %", "Áp dụng %"]}>
-                {data.departments.map((department) => {
-                  const draft = ratioDrafts[department.code] || { ratio: "", industryMin: "", industryMax: "", note: "" };
-                  return (
-                    <tr key={department.code} className="border-t border-slate-100">
-                      <Cell>
-                        <b>{department.name}</b>
-                        <p className="text-xs text-slate-400">{department.code}</p>
-                      </Cell>
-                      <Cell>
-                        <div className="flex items-center gap-1">
-                          <input className="control w-16 text-right" placeholder="10" value={draft.industryMin} disabled={branchCode === "ALL"} onChange={(event) => setRatioDrafts({ ...ratioDrafts, [department.code]: { ...draft, industryMin: event.target.value } })} />
-                          <span className="text-slate-400">-</span>
-                          <input className="control w-16 text-right" placeholder="12" value={draft.industryMax} disabled={branchCode === "ALL"} onChange={(event) => setRatioDrafts({ ...ratioDrafts, [department.code]: { ...draft, industryMax: event.target.value } })} />
-                        </div>
-                      </Cell>
-                      <Cell right>
-                        <input className="control w-20 text-right font-bold" placeholder="0" value={draft.ratio} disabled={branchCode === "ALL"} onChange={(event) => setRatioDrafts({ ...ratioDrafts, [department.code]: { ...draft, ratio: event.target.value } })} />
-                      </Cell>
-                    </tr>
-                  );
-                })}
-                <tr className="border-t border-slate-200 bg-slate-50 font-bold">
-                  <Cell><b>Tổng CP lương cho NLĐ</b></Cell>
-                  <Cell> </Cell>
-                  <Cell right><b className={draftTotal > 35 ? "text-rose-600" : "text-blue-700"}>{draftTotal.toLocaleString("vi-VN", { maximumFractionDigits: 2 })} %</b></Cell>
-                </tr>
-              </Table>
+            {/* Hàng tiêu đề + hàng nhập tự dựng bằng flex thay vì <Table> nowrap — bảng cũ
+                tràn ngang làm cột "Áp dụng %" (cột chính) bị đẩy khuất khỏi card. */}
+            <div className="flex items-center gap-2 px-4 py-2 text-[11px] font-bold uppercase tracking-wider text-slate-400 border-b border-slate-100">
+              <span className="flex-1">Bộ phận</span>
+              <span className="w-[104px] text-center">Ngành tham chiếu</span>
+              <span className="w-[74px] text-right pr-1">Áp dụng</span>
+            </div>
+            <div className="divide-y divide-slate-100">
+              {data.departments.map((department) => {
+                const draft = ratioDrafts[department.code] || { ratio: "", industryMin: "", industryMax: "", note: "" };
+                const inputClass = "rounded-md border border-slate-300 bg-white px-1.5 py-1.5 text-sm text-right outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-50 disabled:text-slate-400";
+                const hasRatio = Number(draft.ratio.replace(",", ".")) > 0;
+                return (
+                  <div key={department.code} className={`flex items-center gap-2 px-4 py-2 ${hasRatio ? "bg-blue-50/40" : ""}`}>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-bold text-sm text-slate-800 truncate">{department.name}</p>
+                      <p className="text-[11px] text-slate-400">{department.code}</p>
+                    </div>
+                    <div className="flex w-[104px] items-center gap-1 justify-center">
+                      <input className={`${inputClass} w-11`} value={draft.industryMin} disabled={branchCode === "ALL"} onChange={(event) => setRatioDrafts({ ...ratioDrafts, [department.code]: { ...draft, industryMin: event.target.value } })} />
+                      <span className="text-slate-300">–</span>
+                      <input className={`${inputClass} w-11`} value={draft.industryMax} disabled={branchCode === "ALL"} onChange={(event) => setRatioDrafts({ ...ratioDrafts, [department.code]: { ...draft, industryMax: event.target.value } })} />
+                    </div>
+                    <div className="flex w-[74px] items-center gap-1 justify-end">
+                      <input className={`${inputClass} w-14 font-bold`} value={draft.ratio} disabled={branchCode === "ALL"} onChange={(event) => setRatioDrafts({ ...ratioDrafts, [department.code]: { ...draft, ratio: event.target.value } })} />
+                      <span className="text-xs font-bold text-slate-400">%</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="flex items-center gap-2 px-4 py-3 border-t-2 border-slate-200 bg-slate-50">
+              <div className="flex-1">
+                <p className="font-bold text-sm">Tổng CP lương cho NLĐ</p>
+                <p className="text-[11px] text-slate-400">Chuỗi F&amp;B thường khoán 25–30% doanh thu</p>
+              </div>
+              <b className={`text-lg ${draftTotal > 35 ? "text-rose-600" : draftTotal > 0 ? "text-blue-700" : "text-slate-300"}`}>
+                {draftTotal.toLocaleString("vi-VN", { maximumFractionDigits: 2 })} %
+              </b>
             </div>
             <div className="p-4 border-t border-slate-100">
               <button className="primary-button w-full" disabled={saving || branchCode === "ALL"}>
@@ -223,9 +233,21 @@ export default function PayrollBudgetTab({
           </div>
           <div className="p-4">
             {!hasRatio && !hasPayroll ? (
-              <p className="py-10 text-center text-sm text-slate-400">
-                Chưa có tỷ trọng bộ phận lẫn dữ liệu bảng lương năm {data.year}. Set tỷ trọng ở bảng bên trái và import bảng lương (Import → Bảng lương) để lên chart.
-              </p>
+              <div className="py-8 flex flex-col items-center text-center">
+                <span className="material-symbols-outlined text-5xl text-slate-200">monitoring</span>
+                <p className="mt-2 font-bold text-slate-600">Chart cần hai nguồn số liệu — làm theo 2 bước:</p>
+                <div className="mt-4 space-y-3 text-left text-sm max-w-md">
+                  <div className="flex gap-3 items-start">
+                    <span className="mt-0.5 w-6 h-6 shrink-0 rounded-full bg-blue-600 text-white text-xs font-bold flex items-center justify-center">1</span>
+                    <p><b>Set tỷ trọng bộ phận</b> ở bảng bên trái (cột &quot;Áp dụng&quot;) rồi bấm Lưu — ra đường <b>Lương ngân sách</b>. {branchCode === "ALL" && "Chọn một cửa hàng cụ thể ở bộ lọc trên trước."}</p>
+                  </div>
+                  <div className="flex gap-3 items-start">
+                    <span className="mt-0.5 w-6 h-6 shrink-0 rounded-full bg-blue-600 text-white text-xs font-bold flex items-center justify-center">2</span>
+                    <p><b>Import bảng lương</b> các tháng {data.year} ở menu <a href="/imports/payroll" className="text-blue-700 font-bold underline-offset-2 hover:underline">Import → Bảng lương ↗</a> — ra cột <b>Lương thực tế</b>.</p>
+                  </div>
+                </div>
+                <p className="mt-4 text-xs text-slate-400">Làm xong một trong hai là chart bắt đầu hiện; đủ cả hai mới so sánh được.</p>
+              </div>
             ) : (
               <PlanActualComboChart labels={standardRollup.labels} planName="Lương ngân sách" actualName="Lương thực tế" plan={standardRollup.values} actual={actualRollup.values} />
             )}
@@ -244,17 +266,32 @@ export default function PayrollBudgetTab({
               <MonthRow key={`rev-${row.code}`} label={`Doanh thu ${row.name}`} values={row.months} muted />
             ))}
             <SectionRow label="LƯƠNG THEO TIÊU CHUẨN (tỷ trọng × doanh thu)" span={14} />
-            {data.standard.byDepartment.map((row) => (
-              <MonthRow key={`std-${row.code}`} label={row.name} values={row.months} />
-            ))}
-            <MonthRow label="Tổng lương tiêu chuẩn" values={data.standard.total} bold />
+            {data.standard.byDepartment.length === 0 ? (
+              <EmptySectionRow span={14} message={`Chưa set tỷ trọng bộ phận năm ${data.year}${branchCode === "ALL" ? " cho cửa hàng nào" : ""} — điền bảng "Tỷ trọng lương theo bộ phận" phía trên rồi bấm Lưu.`} />
+            ) : (
+              <>
+                {data.standard.byDepartment.map((row) => (
+                  <MonthRow key={`std-${row.code}`} label={row.name} values={row.months} />
+                ))}
+                <MonthRow label="Tổng lương tiêu chuẩn" values={data.standard.total} bold />
+              </>
+            )}
             <SectionRow label="LƯƠNG THỰC CHI TRẢ (import bảng lương)" span={14} />
-            {data.actual.byDepartment.map((row) => (
-              <MonthRow key={`act-${row.code}`} label={row.name} values={row.months} />
-            ))}
-            <MonthRow label="Tổng lương thực chi" values={data.actual.total} bold />
-            <MonthRow label="Chênh lệch (thực chi - tiêu chuẩn)" values={data.months.map((_, index) => data.actual.total[index] - data.standard.total[index])} variance />
+            {data.actual.byDepartment.length === 0 ? (
+              <EmptySectionRow span={14} message={`Chưa import bảng lương tháng nào của năm ${data.year} — nạp file ở menu Import → Bảng lương.`} />
+            ) : (
+              <>
+                {data.actual.byDepartment.map((row) => (
+                  <MonthRow key={`act-${row.code}`} label={row.name} values={row.months} />
+                ))}
+                <MonthRow label="Tổng lương thực chi" values={data.actual.total} bold />
+              </>
+            )}
+            {hasRatio && hasPayroll && (
+              <MonthRow label="Chênh lệch (thực chi - tiêu chuẩn)" values={data.months.map((_, index) => data.actual.total[index] - data.standard.total[index])} variance />
+            )}
             {/* Dòng % CP lương/doanh thu như file gốc của chị Bình — so ngay được với tổng tỷ trọng đã set. */}
+            {hasPayroll && (
             <tr className="border-t border-slate-200 bg-slate-50">
               <Cell><b>% lương thực chi / doanh thu</b></Cell>
               {data.months.map((month, index) => {
@@ -274,6 +311,7 @@ export default function PayrollBudgetTab({
                 })()}
               </Cell>
             </tr>
+            )}
           </Table>
         </div>
         {data.revenue.byDepartment.some((row) => row.code === "UNASSIGNED") && (
@@ -283,19 +321,27 @@ export default function PayrollBudgetTab({
         )}
       </section>
 
+      {data.headcount.byDepartment.length === 0 ? (
+        <section className="bg-white border border-slate-200 rounded-lg p-5 flex items-center gap-4">
+          <span className="material-symbols-outlined text-4xl text-slate-200">groups</span>
+          <div>
+            <p className="font-bold text-slate-600">Biến động số lượng nhân sự — chưa có dữ liệu</p>
+            <p className="text-sm text-slate-400 mt-0.5">
+              Chart và bảng nhân sự lấy từ file bảng lương. Import các tháng {data.year} ở{" "}
+              <a href="/imports/payroll" className="text-blue-700 font-bold underline-offset-2 hover:underline">Import → Bảng lương ↗</a> là hai khối này tự hiện.
+            </p>
+          </div>
+        </section>
+      ) : (
       <div className="grid xl:grid-cols-2 gap-5">
         <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
           <PanelHeader title="Biến động số lượng nhân sự" subtitle="Đếm số nhân viên có tên trong bảng lương từng tháng, tách theo bộ phận." />
           <div className="p-4">
-            {data.headcount.byDepartment.length === 0 ? (
-              <p className="py-10 text-center text-sm text-slate-400">Chưa import bảng lương nên chưa có số lượng nhân sự. Import ở màn Import → Bảng lương.</p>
-            ) : (
-              <MoneyLineChart
-                labels={monthHeaders}
-                series={data.headcount.byDepartment.map((row) => ({ name: row.name, values: row.months }))}
-                countMode
-              />
-            )}
+            <MoneyLineChart
+              labels={monthHeaders}
+              series={data.headcount.byDepartment.map((row) => ({ name: row.name, values: row.months }))}
+              countMode
+            />
           </div>
         </section>
         <section className="table-panel">
@@ -326,6 +372,7 @@ export default function PayrollBudgetTab({
           </div>
         </section>
       </div>
+      )}
     </div>
   );
 }
@@ -346,6 +393,15 @@ function SectionRow({ label, span }: { label: string; span: number }) {
   return (
     <tr className="border-t border-slate-200 bg-slate-50">
       <td colSpan={span} className="px-4 py-2 text-xs font-bold uppercase tracking-wider text-slate-600">{label}</td>
+    </tr>
+  );
+}
+
+/** Dòng thay cho cả khối khi khối chưa có dữ liệu — nói rõ thiếu gì và bổ sung ở đâu. */
+function EmptySectionRow({ span, message }: { span: number; message: string }) {
+  return (
+    <tr className="border-t border-slate-100">
+      <td colSpan={span} className="px-4 py-3 text-xs text-slate-400 italic">{message}</td>
     </tr>
   );
 }
