@@ -391,6 +391,15 @@ export default function SettingsPage() {
         fetch("/api/master-data"),
       ]);
 
+      // Cookie phiên hết hạn (8 tiếng) trong khi localStorage vẫn còn phiên: màn hình vẫn mở
+      // được nhưng mọi API trả 401, người dùng chỉ thấy "Không tải được danh mục" mà không hiểu
+      // vì sao. Dọn phiên cũ và đưa thẳng về đăng nhập.
+      if (activeResponse.status === 401 || allResponse.status === 401) {
+        localStorage.removeItem(SESSION_KEY);
+        router.push("/login?next=/settings");
+        return;
+      }
+
       if (!activeResponse.ok || !allResponse.ok) {
         throw new Error("Không tải được danh mục");
       }
