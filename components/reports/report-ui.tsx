@@ -1,6 +1,8 @@
 "use client";
 
 import React from "react";
+import ExportExcelButton from "@/components/ExportExcelButton";
+import { toFileSlug } from "@/lib/export-table-excel";
 
 /**
  * Bản sao gọn của các primitive trong app/reports/page.tsx cho các tab báo cáo tách file
@@ -10,11 +12,14 @@ import React from "react";
 
 export const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value);
 
-export function PanelHeader({ title, subtitle }: { title: string; subtitle: string }) {
+export function PanelHeader({ title, subtitle, exportFileName, exportable = true }: { title: string; subtitle: string; exportFileName?: string; exportable?: boolean }) {
   return (
-    <div className="p-4 border-b border-slate-200">
-      <h2 className="font-bold">{title}</h2>
-      <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>
+    <div className="p-4 border-b border-slate-200 flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <h2 className="font-bold">{title}</h2>
+        <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>
+      </div>
+      {exportable && <ExportExcelButton fileName={exportFileName || toFileSlug(title)} sheetName={title.slice(0, 31)} />}
     </div>
   );
 }

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { displayRoleName, storeLabel } from "@/lib/branch-labels";
+import { exportRowsToExcel } from "@/lib/export-table-excel";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import { logout } from "@/lib/session-client";
 import { MonthInput } from "@/components/DateInput";
@@ -27,6 +28,7 @@ type MasterDataItem = {
   codePrefix: string | null;
   settlementBankCode: string | null;
   summarySourceName: string | null;
+  matchKeywords: string | null;
   status: string;
   note: string | null;
   createdAt: string;
@@ -51,11 +53,23 @@ type MasterDataForm = {
   codePrefix: string;
   settlementBankCode: string;
   summarySourceName: string;
+  matchKeywords: string;
   note: string;
   status: string;
 };
 
 type GroupOption = { value: string; label: string };
+
+/** Kết quả API chuẩn hoá nhóm doanh thu của dữ liệu đã import (app/api/master-data/revenue-normalize). */
+type RevenueNormalizeResult = {
+  applied: boolean;
+  total: number;
+  unchanged: number;
+  unresolved: number;
+  changedRows: number;
+  journalLines: number;
+  groups: { revenueSource: string; departmentCode: string | null; rows: number }[];
+};
 
 const tabs = [
   { type: "BRANCH", label: "Cửa hàng", icon: "storefront", hint: "1.1 - Đơn vị vận hành" },
@@ -91,6 +105,7 @@ const emptyForm: MasterDataForm = {
   codePrefix: "",
   settlementBankCode: "",
   summarySourceName: "",
+  matchKeywords: "",
   note: "",
   status: "ACTIVE",
 };
@@ -281,6 +296,7 @@ function normalizeGroupValue(type: string, group?: string | null) {
 function hasDetailContent(item: MasterDataItem) {
   if (item.type === "ASSET_GROUP" && item.codePrefix) return true;
   if (item.type === "MONEY_SOURCE" && (item.summarySourceName || item.settlementBankCode)) return true;
+  if (item.type === "REVENUE_EXPENSE_CATEGORY" && item.matchKeywords) return true;
   return Boolean(item.contactName || item.accountNo || item.phone || item.email || item.taxCode || item.note);
 }
 
@@ -313,11 +329,18 @@ export default function SettingsPage() {
   const [renamingSummaryFrom, setRenamingSummaryFrom] = useState("");
   const [renameSummaryValue, setRenameSummaryValue] = useState("");
   const [isRenamingSummary, setIsRenamingSummary] = useState(false);
+  /** Nguồn tiền CHI TIẾT đang được sửa tên nhanh trong danh sách nhóm tổng (rỗng = không sửa). */
+  const [renamingMemberId, setRenamingMemberId] = useState("");
+  const [renameMemberValue, setRenameMemberValue] = useState("");
+  const [isRenamingMember, setIsRenamingMember] = useState(false);
   const [activeType, setActiveType] = useState("BRANCH");
   const [search, setSearch] = useState("");
   const [form, setForm] = useState<MasterDataForm>(emptyForm);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  // Kết quả lần bấm "Chuẩn hoá nhóm doanh thu đã import" gần nhất: xem trước rồi mới ghi.
+  const [revenueNormalize, setRevenueNormalize] = useState<RevenueNormalizeResult | null>(null);
+  const [isNormalizing, setIsNormalizing] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [showDrawer, setShowDrawer] = useState(false);
@@ -478,6 +501,7 @@ export default function SettingsPage() {
   const resetForm = (type = activeType) => {
     setCreatingSummaryName(false);
     setRenamingSummaryFrom("");
+    setRenamingMemberId("");
     setForm({ ...emptyForm, type, partnerGroup: "EXTERNAL" });
     setSuccessMessage("");
     setErrorMessage("");
@@ -495,6 +519,7 @@ export default function SettingsPage() {
     }
     setCreatingSummaryName(false);
     setRenamingSummaryFrom("");
+    setRenamingMemberId("");
     setForm({
       id: item.id,
       type: item.type,
@@ -513,6 +538,7 @@ export default function SettingsPage() {
       codePrefix: item.codePrefix || "",
       settlementBankCode: item.settlementBankCode || "",
       summarySourceName: item.summarySourceName || "",
+      matchKeywords: item.matchKeywords || "",
       note: item.note || "",
       status: item.status,
     });
@@ -591,6 +617,61 @@ export default function SettingsPage() {
     }
   };
 
+  /** Mở ô sửa tên nhanh cho một nguồn tiền chi tiết trong nhóm tổng. */
+  const startRenameMemberSource = (item: MasterDataItem) => {
+    if (!canManageSettings) {
+      setErrorMessage("Bạn chỉ có quyền xem danh mục.");
+      return;
+    }
+    setRenamingSummaryFrom("");
+    setRenamingMemberId(item.id);
+    setRenameMemberValue(item.name);
+  };
+
+  /** Đổi TÊN một nguồn tiền chi tiết ngay tại drawer, khỏi phải đóng ra rồi mở lại từng nguồn.
+   *  Chỉ gửi id + name nên mã, cửa hàng, phân loại và tên tổng giữ nguyên - đổi mã/cửa hàng là
+   *  việc khác, có ràng buộc chứng từ riêng nên vẫn phải làm qua form đầy đủ. */
+  const renameMemberSource = async (item: MasterDataItem) => {
+    const nextName = renameMemberValue.trim();
+    if (!canManageSettings) {
+      setErrorMessage("Bạn chỉ có quyền xem danh mục.");
+      return;
+    }
+    if (!nextName) {
+      setErrorMessage("Tên nguồn tiền chi tiết không được để trống.");
+      return;
+    }
+    if (nextName === item.name) {
+      setRenamingMemberId("");
+      return;
+    }
+    setIsRenamingMember(true);
+    setSuccessMessage("");
+    setErrorMessage("");
+    try {
+      const response = await fetch("/api/master-data", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: item.id, name: nextName }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "Không đổi được tên nguồn tiền chi tiết");
+      }
+      const savedName = (payload.name as string) || nextName;
+      // Đang sửa đúng nguồn mở trong form thì phải đồng bộ ô "Tên danh mục", nếu không bấm Lưu
+      // sẽ ghi đè lại tên cũ.
+      if (form.id === item.id) setForm((value) => ({ ...value, name: savedName }));
+      setRenamingMemberId("");
+      await loadItems();
+      setSuccessMessage(`Đã đổi tên nguồn tiền chi tiết ${item.code} thành "${savedName}".`);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Có lỗi khi đổi tên nguồn tiền chi tiết");
+    } finally {
+      setIsRenamingMember(false);
+    }
+  };
+
   const saveItem = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!canManageSettings) {
@@ -618,6 +699,39 @@ export default function SettingsPage() {
       setErrorMessage(error instanceof Error ? error.message : "Có lỗi khi lưu danh mục");
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  /**
+   * Chạy lại luật nhóm doanh thu cho dữ liệu doanh thu ĐÃ import. apply = false chỉ đếm thử,
+   * để kế toán nhìn con số rồi mới quyết định ghi — không ai phải gõ lệnh backfill nữa.
+   */
+  const runRevenueNormalize = async (apply: boolean) => {
+    if (!canManageSettings) {
+      setErrorMessage("Bạn chỉ có quyền xem danh mục.");
+      return;
+    }
+    setIsNormalizing(true);
+    setSuccessMessage("");
+    setErrorMessage("");
+    try {
+      const response = await fetch("/api/master-data/revenue-normalize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apply }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Không chuẩn hoá được nhóm doanh thu");
+      setRevenueNormalize(payload as RevenueNormalizeResult);
+      if (apply) {
+        setSuccessMessage(payload.changedRows > 0
+          ? `Đã chuẩn hoá ${payload.changedRows} dòng doanh thu và ${payload.journalLines} dòng bút toán 511.`
+          : "Không có dòng nào cần đổi.");
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Có lỗi khi chuẩn hoá nhóm doanh thu");
+    } finally {
+      setIsNormalizing(false);
     }
   };
 
@@ -672,38 +786,25 @@ export default function SettingsPage() {
     }
   };
 
-  const exportToCSV = () => {
+  /** Nút ghi "Xuất Excel" nên xuất .xlsx thật, không phải CSV đổi tên. */
+  const exportDanhMuc = async () => {
     if (items.length === 0) {
       alert("Không có dữ liệu để xuất");
       return;
     }
-
-    const headers = ["Mã danh mục", "Tên hiển thị", "Phân loại/Nhóm", "Cửa hàng", "MST/STK/Ghi chú", "Trạng thái"];
-    const rows = items.map((item) => [
-      item.code,
-      item.name,
-      item.type === "PARTNER"
-        ? `${formatGroupLabel("PARTNER", item.partnerType || item.group)} (${item.partnerGroup || "EXTERNAL"})`
-        : formatGroupLabel(item.type, item.group),
-      storeLabel(item.branch),
-      item.contactName || item.accountNo || item.note || "-",
-      item.status === "ACTIVE" ? "Hoạt động" : "Ngừng hoạt động",
-    ]);
-
-    const csvContent = "\uFEFF" + [
-      headers.join(","),
-      ...rows.map(e => e.map(val => `"${val.replace(/"/g, '""')}"`).join(","))
-    ].join("\n");
-
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.setAttribute("href", url);
-    link.setAttribute("download", `danh_muc_${activeType.toLowerCase()}_${new Date().toISOString().slice(0, 10)}.csv`);
-    link.style.visibility = "hidden";
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    await exportRowsToExcel(
+      items.map((item) => ({
+        "Mã danh mục": item.code,
+        "Tên hiển thị": item.name,
+        "Phân loại/Nhóm": item.type === "PARTNER"
+          ? `${formatGroupLabel("PARTNER", item.partnerType || item.group)} (${item.partnerGroup || "EXTERNAL"})`
+          : formatGroupLabel(item.type, item.group),
+        "Cửa hàng": storeLabel(item.branch),
+        "MST/STK/Ghi chú": item.contactName || item.accountNo || item.note || "-",
+        "Trạng thái": item.status === "ACTIVE" ? "Hoạt động" : "Ngừng hoạt động",
+      })),
+      { fileName: `danh_muc_${activeType.toLowerCase()}`, sheetName: "Danh muc" },
+    );
   };
 
   const handleLogoUpload = (file: File | null) => {
@@ -896,7 +997,7 @@ export default function SettingsPage() {
                   </button>
 
                   <button
-                    onClick={exportToCSV}
+                    onClick={() => void exportDanhMuc()}
                     className="bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-sm"
                   >
                     <span className="material-symbols-outlined text-[16px]">download</span>
@@ -904,6 +1005,76 @@ export default function SettingsPage() {
                   </button>
                 </div>
               </div>
+
+              {/* Nhóm doanh thu là thứ quyết định doanh thu lên dòng nào của P&L, mà file POS lại
+                  ghi bằng chữ. Khai từ khoá ngay trên danh mục rồi bấm chuẩn hoá là xong, không
+                  cần ai vào sửa mã nguồn hay chạy lệnh backfill. */}
+              {activeType === "REVENUE_EXPENSE_CATEGORY" && (
+                <div className="border-b border-slate-200 bg-white px-5 py-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div className="max-w-2xl">
+                      <h3 className="text-sm font-bold text-slate-900">Nhóm doanh thu khi import</h3>
+                      <p className="mt-0.5 text-xs text-slate-500">
+                        File doanh thu ghi &quot;ĐỒ ĂN&quot;, &quot;ĐỒ UỐNG&quot;... thay vì mã danh mục thì mở danh mục Thu tương ứng,
+                        khai chữ đó vào ô <b>Từ khoá nhận dạng khi import</b>. Món nào file để trống cột này thì hệ thống lấy
+                        Nhóm doanh thu khai ở <b>Kho &amp; Định lượng &gt; Danh mục mặt hàng</b>. Sửa xong bấm nút bên cạnh để áp
+                        cho cả doanh thu đã import trước đó (chỉ đổi nhãn phân loại, không đụng số tiền).
+                      </p>
+                    </div>
+                    {canManageSettings && (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void runRevenueNormalize(false)}
+                          disabled={isNormalizing}
+                          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
+                        >
+                          {isNormalizing ? "Đang kiểm tra..." : "Kiểm tra dữ liệu đã import"}
+                        </button>
+                        {revenueNormalize && !revenueNormalize.applied && revenueNormalize.changedRows > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => void runRevenueNormalize(true)}
+                            disabled={isNormalizing}
+                            className="rounded-lg bg-blue-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-blue-700 disabled:opacity-60"
+                          >
+                            Chuẩn hoá {revenueNormalize.changedRows} dòng
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {revenueNormalize && (
+                    <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-700">
+                      <p className="font-bold text-slate-900">
+                        {revenueNormalize.applied
+                          ? `Đã chuẩn hoá ${revenueNormalize.changedRows} dòng doanh thu (${revenueNormalize.journalLines} dòng bút toán 511).`
+                          : revenueNormalize.changedRows > 0
+                            ? `Có ${revenueNormalize.changedRows}/${revenueNormalize.total} dòng doanh thu sẽ đổi nhóm:`
+                            : `Cả ${revenueNormalize.total} dòng doanh thu đã đúng nhóm, không phải sửa gì.`}
+                      </p>
+                      {revenueNormalize.groups.length > 0 && (
+                        <ul className="mt-1.5 space-y-0.5">
+                          {revenueNormalize.groups.map((group) => (
+                            <li key={`${group.revenueSource}|${group.departmentCode || ""}`}>
+                              <b>{group.revenueSource}</b>
+                              {group.departmentCode ? ` / bộ phận ${group.departmentCode}` : " / chưa suy được bộ phận"}
+                              : {group.rows} dòng
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      {revenueNormalize.unresolved > 0 && (
+                        <p className="mt-1.5 font-bold text-amber-700">
+                          {revenueNormalize.unresolved} dòng chưa quy được nhóm — khai thêm từ khoá ở đây, hoặc gán Nhóm doanh thu
+                          cho món đó bên Kho &amp; Định lượng &gt; Danh mục mặt hàng rồi kiểm tra lại.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {activeType === "SYSTEM_PARAM" && (
                 <div className="border-b border-slate-200 bg-white px-5 py-4">
@@ -1028,7 +1199,9 @@ export default function SettingsPage() {
                                       {item.summarySourceName && item.settlementBankCode && " · "}
                                       {item.settlementBankCode && <>Quyết toán về: <CopyableText value={item.settlementBankCode} /></>}
                                     </>
-                                  : item.contactName || (item.accountNo ? <CopyableText value={item.accountNo} /> : "-")}
+                                  : item.type === "REVENUE_EXPENSE_CATEGORY" && item.matchKeywords
+                                    ? <>Từ khoá import: {item.matchKeywords}</>
+                                    : item.contactName || (item.accountNo ? <CopyableText value={item.accountNo} /> : "-")}
                             </p>
                             <p className="mt-0.5 truncate text-[11px] italic text-slate-500">
                               {item.phone ? <CopyableText value={item.phone} />
@@ -1541,6 +1714,91 @@ export default function SettingsPage() {
                     )}
                   </div>
                 )}
+
+                {/* Sửa tên từng NGUỒN CHI TIẾT đang gộp vào tên tổng: báo cáo chỉ hiện dòng tổng,
+                    nên muốn dò xem tên nào đang lệch phải mở lần lượt từng nguồn - liệt kê sẵn ở
+                    đây để sửa tại chỗ. Chỉ đổi tên; mã/cửa hàng/phân loại vẫn phải sửa qua form. */}
+                {summarySourceMembers.length > 0 && (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
+                    <span className="block text-[11px] font-bold text-slate-700">
+                      Nguồn tiền chi tiết trong nhóm này ({summarySourceMembers.length})
+                    </span>
+                    <ul className="mt-2 space-y-1.5">
+                      {summarySourceMembers.map((item) => (
+                        <li key={item.id} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">
+                          {renamingMemberId === item.id ? (
+                            <>
+                              <input
+                                value={renameMemberValue}
+                                onChange={(event) => setRenameMemberValue(event.target.value)}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Escape") {
+                                    event.preventDefault();
+                                    setRenamingMemberId("");
+                                    return;
+                                  }
+                                  if (event.key !== "Enter") return;
+                                  event.preventDefault();
+                                  void renameMemberSource(item);
+                                }}
+                                autoFocus
+                                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
+                                placeholder="VD: KCF - Vietcombank (HKD)"
+                              />
+                              <div className="mt-2 flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => void renameMemberSource(item)}
+                                  disabled={isRenamingMember}
+                                  className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 disabled:opacity-60 transition"
+                                >
+                                  {isRenamingMember ? "Đang lưu..." : "Lưu tên"}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setRenamingMemberId("")}
+                                  disabled={isRenamingMember}
+                                  className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-60 transition"
+                                >
+                                  Hủy
+                                </button>
+                                <span className="text-[11px] font-medium text-slate-500">{item.code}</span>
+                              </div>
+                            </>
+                          ) : (
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="min-w-0">
+                                <p className="text-xs font-bold text-slate-800 truncate">
+                                  {item.name}
+                                  {form.id === item.id && <span className="ml-1 font-medium text-blue-600">(đang mở)</span>}
+                                </p>
+                                <p className="text-[11px] font-medium text-slate-500">
+                                  {item.code}
+                                  {item.branch && <> · {item.branch}</>}
+                                  {item.status !== "ACTIVE" && <> · Ngừng dùng</>}
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => startRenameMemberSource(item)}
+                                disabled={!canManageSettings}
+                                className="shrink-0 inline-flex items-center gap-1 text-[11px] font-bold text-blue-600 hover:text-blue-700 disabled:text-slate-400 disabled:cursor-not-allowed transition"
+                              >
+                                <span className="material-symbols-outlined text-[14px]">edit</span>
+                                Sửa tên
+                              </button>
+                            </div>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                    <span className="mt-2 block text-[11px] font-medium text-slate-500">
+                      Sửa ở đây là đổi ngay tên của riêng nguồn chi tiết đó, không cần bấm Lưu cập nhật và
+                      không ảnh hưởng tên tổng. Đổi mã, cửa hàng hay phân loại thì vẫn phải mở đúng nguồn ở
+                      danh sách bên ngoài.
+                    </span>
+                  </div>
+                )}
                 </div>
               )}
 
@@ -1582,6 +1840,23 @@ export default function SettingsPage() {
                     {activeType === "DEPARTMENT"
                       ? "Đúng 3 ký tự. Để trống sẽ dùng mã phòng ban nếu mã đó có đúng 3 ký tự."
                       : "Đúng 4 ký tự. Để trống sẽ dùng mặc định CCDC hoặc TSCD theo phân loại nhóm."}
+                  </span>
+                </label>
+              )}
+
+              {activeType === "REVENUE_EXPENSE_CATEGORY" && (
+                <label className="text-xs font-bold text-slate-700 block">
+                  Từ khoá nhận dạng khi import
+                  <input
+                    value={form.matchKeywords}
+                    onChange={(event) => setForm((value) => ({ ...value, matchKeywords: event.target.value }))}
+                    className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
+                    placeholder="VD: ĐỒ ĂN, MÓN ĂN, FOOD"
+                  />
+                  <span className="mt-1 block text-[11px] font-medium text-slate-500">
+                    File doanh thu ghi chữ thay vì mã danh mục thì khai chữ đó ở đây, ngăn nhau bằng dấu phẩy.
+                    Import gặp đúng chữ này sẽ tính vào danh mục hiện tại. Sửa xong bấm
+                    &quot;Chuẩn hoá nhóm doanh thu đã import&quot; ở màn hình danh sách để áp cho dữ liệu cũ.
                   </span>
                 </label>
               )}

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import ExportExcelButton from "@/components/ExportExcelButton";
 import { useRouter } from "next/navigation";
 import { branchScopeOptions, displayRoleName } from "@/lib/branch-labels";
 import { ALL_APP_ACTIONS, appMenuItems, type AppAction, type DemoSession, SESSION_KEY, moduleTabs } from "@/lib/auth-demo";
@@ -609,6 +610,7 @@ export default function PermissionsPage() {
               <span className="text-xs bg-emerald-50 text-emerald-700 px-2.5 py-1 rounded-full font-bold border border-emerald-100">
                 {usersList.length} tài khoản
               </span>
+              <ExportExcelButton fileName="danh_sach_tai_khoan" sheetName="Tai khoan" targetId="user-list-table" />
               <button
                 onClick={handleOpenCreateUserModal}
                 className="bg-blue-600 hover:bg-blue-700 active:scale-95 text-white px-3.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-sm transition"
@@ -618,7 +620,7 @@ export default function PermissionsPage() {
               </button>
             </div>
           </div>
-          <div className="overflow-x-auto">
+          <div id="user-list-table" className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-bold">
                 <tr>
@@ -707,9 +709,12 @@ export default function PermissionsPage() {
 
         {/* Menu Access Matrix Grid */}
         <section className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
-          <div className="p-5 border-b border-slate-200">
-            <h2 className="font-bold text-slate-900">Ma trận truy cập Menu chức năng</h2>
-            <p className="text-xs text-slate-500 mt-1">Tổng quan quyền mở các trang chức năng trên thanh Sidebar</p>
+          <div className="p-5 border-b border-slate-200 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="font-bold text-slate-900">Ma trận truy cập Menu chức năng</h2>
+              <p className="text-xs text-slate-500 mt-1">Tổng quan quyền mở các trang chức năng trên thanh Sidebar</p>
+            </div>
+            <ExportExcelButton fileName="ma_tran_quyen_menu" sheetName="Quyen menu" />
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">

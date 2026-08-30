@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
+import ExportExcelButton from "@/components/ExportExcelButton";
 import { useRouter } from "next/navigation";
 import { BranchScopeSelect, resolveInitialBranchScope } from "@/components/BranchScopeSelect";
 import { DateInput } from "@/components/DateInput";
@@ -622,6 +623,7 @@ export default function DepositsPage() {
                 placeholder="Tìm mã/khách hàng/đối tượng..."
               />
               <button onClick={() => void loadDeposits()} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50">Tìm</button>
+              <ExportExcelButton fileName="tien_coc" sheetName="Tien coc" targetId="deposit-table" className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50 inline-flex items-center gap-1.5" />
               {(search || focusedCode) && (
                 <button
                   type="button"
@@ -727,7 +729,7 @@ export default function DepositsPage() {
             </form>
           )}
 
-          <div className="min-h-0 flex-1 overflow-x-auto overflow-y-auto custom-scrollbar">
+          <div id="deposit-table" className="min-h-0 flex-1 overflow-x-auto overflow-y-auto custom-scrollbar">
             <table className="w-full min-w-[1030px] text-left text-sm">
               <thead className="bg-slate-50 text-slate-500 text-xs uppercase border-b border-slate-200 sticky top-0 z-10 shadow-sm">
                 <tr>

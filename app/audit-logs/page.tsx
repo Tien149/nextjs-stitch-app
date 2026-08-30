@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import ExportExcelButton from "@/components/ExportExcelButton";
 import { useRouter } from "next/navigation";
 import { ModuleFrame } from "@/components/ModuleFrame";
 import { DateInput } from "@/components/DateInput";
@@ -162,13 +163,16 @@ export default function AuditLogsPage() {
         <div className="p-4 border-b border-slate-200 bg-slate-50/70 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="font-bold text-slate-900 text-base">Tra cứu hoạt động</h2>
-            <button
-              onClick={() => void loadLogs()}
-              className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 transition-colors inline-flex items-center gap-1.5"
-            >
-              <span className="material-symbols-outlined text-base">refresh</span>
-              Tải lại
-            </button>
+            <div className="flex items-center gap-2">
+              <ExportExcelButton fileName="nhat_ky_hoat_dong" sheetName="Nhat ky" targetId="audit-log-table" className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 transition-colors inline-flex items-center gap-1.5" />
+              <button
+                onClick={() => void loadLogs()}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 transition-colors inline-flex items-center gap-1.5"
+              >
+                <span className="material-symbols-outlined text-base">refresh</span>
+                Tải lại
+              </button>
+            </div>
           </div>
 
           <div className="grid grid-cols-2 md:grid-cols-5 gap-2.5">
@@ -245,7 +249,7 @@ export default function AuditLogsPage() {
         {message && <p className="p-3 text-sm text-red-700 bg-red-50 border-b border-red-100">{message}</p>}
 
         {/* Table logs */}
-        <div className="overflow-x-auto overflow-y-auto max-h-[580px] custom-scrollbar">
+        <div id="audit-log-table" className="overflow-x-auto overflow-y-auto max-h-[580px] custom-scrollbar">
           <table className="w-full text-left text-xs min-w-[900px]">
             <thead className="bg-slate-50 text-slate-500 uppercase font-bold border-b border-slate-200 sticky top-0 z-10 shadow-sm">
               <tr>

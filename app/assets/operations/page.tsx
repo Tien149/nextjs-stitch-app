@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import ExportExcelButton from "@/components/ExportExcelButton";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { DateInput, MonthInput } from "@/components/DateInput";
 import { canPerformMenuAction, SESSION_KEY, filterModuleTabs } from "@/lib/auth-demo";
@@ -309,7 +310,7 @@ export default function AssetOperationsPage() {
             </form>
           )}
           <section className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden h-fit">
-            <div className="px-4 py-3 border-b border-slate-200"><h2 className="font-bold">Phiên kiểm kê gần nhất</h2></div>
+            <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3"><h2 className="font-bold">Phiên kiểm kê gần nhất</h2><ExportExcelButton fileName="phien_kiem_ke_tai_san" sheetName="Kiem ke" /></div>
             <table className="w-full text-left text-sm">
               <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
                 <tr><th className="px-3 py-2">Phiên</th><th className="px-3 py-2">Cửa hàng</th><th className="px-3 py-2 text-right">Dòng</th><th className="px-3 py-2 text-right">Chênh lệch</th></tr>
@@ -383,7 +384,7 @@ export default function AssetOperationsPage() {
           </div>
 
           <section className="table-panel">
-            <Panel title="Lịch sử khấu hao" reload={loadData} />
+            <Panel title="Lịch sử khấu hao" reload={loadData} exportFileName="lich_su_khau_hao" />
             <Table headers={[{ label: "Kỳ" }, { label: "Tài sản" }, { label: "Khấu hao tháng", align: "right" }, { label: "Lũy kế", align: "right" }, { label: "Giá trị còn lại", align: "right" }]}>
               {data.depreciations.map((row) => (
                 <tr key={row.id} className="border-t border-slate-100">
@@ -453,7 +454,7 @@ export default function AssetOperationsPage() {
           )}
 
           <section className="table-panel">
-            <Panel title="Lịch bảo trì" reload={loadData} />
+            <Panel title="Lịch bảo trì" reload={loadData} exportFileName="lich_bao_tri" />
             <Table headers={[{ label: "Tài sản" }, { label: "Nội dung" }, { label: "Ngày dự kiến" }, { label: "Lặp" }, { label: "Task" }, { label: "Chi phí", align: "right" }, { label: "Trạng thái" }, { label: "Thao tác", align: "right" }]}>
               {data.maintenances.map((row) => (
                 <tr key={row.id} className="border-t border-slate-100">
@@ -569,7 +570,7 @@ export default function AssetOperationsPage() {
             )}
 
             <section className="table-panel">
-              <Panel title="Phiếu báo hỏng & sửa chữa" reload={loadData} />
+              <Panel title="Phiếu báo hỏng & sửa chữa" reload={loadData} exportFileName="phieu_bao_hong_sua_chua" />
               <Table headers={[{ label: "Phiếu" }, { label: "Tài sản" }, { label: "Mức độ" }, { label: "Mô tả" }, { label: "Task" }, { label: "Xử lý" }, { label: "Thao tác", align: "right" }]}>
                 {data.damageReports.map((row) => (
                   <tr key={row.id} className="border-t border-slate-100">
@@ -627,7 +628,7 @@ export default function AssetOperationsPage() {
           )}
 
           <section className="table-panel">
-            <Panel title="Danh sách tài sản đã thanh lý" reload={loadData} />
+            <Panel title="Danh sách tài sản đã thanh lý" reload={loadData} exportFileName="tai_san_da_thanh_ly" />
             <Table headers={[{ label: "Mã & tên tài sản" }, { label: "Nguyên giá", align: "right" }, { label: "Tiền thu thanh lý", align: "right" }, { label: "Trạng thái" }]}>
               {data.assets.filter((a) => a.status === "DISPOSED").length === 0 ? (
                 <tr><td colSpan={4} className="px-4 py-8 text-center text-slate-400">Chưa có tài sản nào được thanh lý.</td></tr>
@@ -679,13 +680,16 @@ function AssetSelect({ assets, value, onChange }: { assets: Asset[]; value: stri
   );
 }
 
-function Panel({ title, reload }: { title: string; reload: () => void }) {
+function Panel({ title, reload, exportFileName }: { title: string; reload: () => void; exportFileName?: string }) {
   return (
-    <div className="p-5 flex justify-between">
+    <div className="p-5 flex justify-between items-center gap-3">
       <h2 className="font-bold">{title}</h2>
-      <button type="button" title="Tải lại" onClick={reload} className="icon-button">
-        <span className="material-symbols-outlined text-lg">refresh</span>
-      </button>
+      <div className="flex items-center gap-2">
+        {exportFileName && <ExportExcelButton fileName={exportFileName} sheetName={title.slice(0, 31)} />}
+        <button type="button" title="Tải lại" onClick={reload} className="icon-button">
+          <span className="material-symbols-outlined text-lg">refresh</span>
+        </button>
+      </div>
     </div>
   );
 }

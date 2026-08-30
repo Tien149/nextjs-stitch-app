@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import ExportExcelButton from "@/components/ExportExcelButton";
 import { DateInput, MonthInput } from "@/components/DateInput";
 import { storeLabel, updateDynamicBranches, visibleBranchScopeOptions, visibleStoreOptions } from "@/lib/branch-labels";
 import { canPerformMenuAction, filterModuleTabs, isCashierSubject } from "@/lib/auth-demo";
@@ -872,9 +873,10 @@ export default function FinanceOperationsPage() {
                     <span className="rounded-full bg-white px-2.5 py-1 text-xs font-bold text-amber-800">
                       {data.moneyTransfers.filter((transfer) => transfer.status === "PENDING_REVIEW").length}
                     </span>
+                    <ExportExcelButton fileName="dieu_tien_cho_duyet" sheetName="Cho duyet" targetId="pending-transfer-table" />
                   </div>
                 </div>
-                <div className="overflow-x-auto">
+                <div id="pending-transfer-table" className="overflow-x-auto">
                   <table className="w-full text-left text-xs">
                     <thead className="bg-slate-50 text-slate-500">
                       <tr>
@@ -1149,6 +1151,7 @@ export default function FinanceOperationsPage() {
                     {transferQuery && (
                       <button type="button" onClick={() => setTransferQuery("")} className="h-10 rounded-lg border border-slate-300 px-3 text-sm font-bold text-slate-600 hover:bg-slate-50">Xóa</button>
                     )}
+                    <ExportExcelButton fileName="dong_tien_trong_ky" sheetName="Dong tien" targetId="cashflow-movement-table" className="h-10 shrink-0 rounded-lg border border-slate-300 bg-white px-3 text-sm font-bold text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1.5" />
                   </div>
                 </div>
 
@@ -1178,7 +1181,7 @@ export default function FinanceOperationsPage() {
                   </div>
                 )}
 
-                <div className="max-h-[640px] overflow-auto overscroll-contain [scrollbar-gutter:stable]">
+                <div id="cashflow-movement-table" className="max-h-[640px] overflow-auto overscroll-contain [scrollbar-gutter:stable]">
                   <table className="min-w-[1050px] w-full text-left text-sm">
                     <thead className="sticky top-0 z-10 bg-slate-50 text-xs font-bold text-slate-500 uppercase tracking-wider border-b border-slate-200 shadow-[0_1px_0_rgba(148,163,184,0.25)]">
                       <tr>

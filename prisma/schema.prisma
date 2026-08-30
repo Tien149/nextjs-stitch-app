@@ -50,6 +50,10 @@ model MasterDataItem {
   settlementBankCode String?
   /// Tên "Nguồn tiền tổng" — các MONEY_SOURCE cùng tên tổng được Báo cáo nguồn tiền gộp thành một dòng.
   summarySourceName String?
+  /// Từ khoá người dùng tự khai để import nhận ra danh mục này khi file ghi bằng chữ thay vì mã.
+  /// Hiện dùng cho REVENUE_EXPENSE_CATEGORY nhóm Thu: "ĐỒ ĂN, MÓN ĂN" -> nhóm doanh thu bếp.
+  /// Nhiều từ khoá ngăn bằng dấu phẩy hoặc xuống dòng (lib/revenue-source.ts).
+  matchKeywords String?
   status       String   @default("ACTIVE")
   note         String?
   createdAt    DateTime @default(now())
@@ -561,6 +565,10 @@ model InventoryItem {
   itemType      String
   unit          String
   category      String?
+  /// Nhóm doanh thu của món: mã danh mục Thu/Chi (REVENUE_EXPENSE_CATEGORY nhóm RECEIPT).
+  /// File POS của khách để trống cột "Nhóm doanh thu" nên import lấy giá trị này theo mã hàng
+  /// (lib/revenue-source.ts) để lên đúng danh mục 511 và bộ phận Bếp/Bar.
+  revenueGroup  String?
   requiresImage Boolean  @default(false)
   minStock      Float    @default(0)
   status        String   @default("ACTIVE")
@@ -583,6 +591,7 @@ model InventoryItem {
 
   @@index([itemType])
   @@index([status])
+  @@index([revenueGroup])
   @@index([deletedAt])
 }
 

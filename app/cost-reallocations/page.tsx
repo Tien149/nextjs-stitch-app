@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import ExportExcelButton from "@/components/ExportExcelButton";
 import { useRouter } from "next/navigation";
 import { BranchScopeSelect, resolveInitialBranchScope } from "@/components/BranchScopeSelect";
 import { DateInput } from "@/components/DateInput";
@@ -189,13 +190,16 @@ export default function CostReallocationsPage() {
       {message && <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">{message}</p>}
 
       <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-        <div className="border-b border-slate-200 p-4">
-          <h2 className="font-bold">Danh sách phiếu phân bổ</h2>
-          <p className="mt-1 text-xs text-slate-500">
-            Phiếu ghi sổ ngay khi lập: không có dòng tiền nào chạy, tiền chỉ chạy khi nhà hàng kia hoàn lại bằng phiếu thu/chi gạch vào mã công nợ bên dưới.
-          </p>
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 p-4">
+          <div>
+            <h2 className="font-bold">Danh sách phiếu phân bổ</h2>
+            <p className="mt-1 text-xs text-slate-500">
+              Phiếu ghi sổ ngay khi lập: không có dòng tiền nào chạy, tiền chỉ chạy khi nhà hàng kia hoàn lại bằng phiếu thu/chi gạch vào mã công nợ bên dưới.
+            </p>
+          </div>
+          <ExportExcelButton fileName="phieu_phan_bo_chi_phi" sheetName="Phan bo" targetId="cost-reallocation-table" />
         </div>
-        <div className="overflow-x-auto">
+        <div id="cost-reallocation-table" className="overflow-x-auto">
           <table className="w-full min-w-[900px] text-left text-sm">
             <thead className="bg-slate-50 text-xs uppercase text-slate-500">
               <tr>

@@ -5,12 +5,15 @@
  * Thứ tự suy luận, dừng ở bước đầu tiên ra kết quả:
  *  1. Mã hàng -> InventoryItem.category (mã nhóm mặt hàng) -> MasterDataItem
  *     INVENTORY_ITEM_GROUP.subGroup (nhóm kho: "KHO BẾP"/"KHO BAR"/"KHO FOH") -> bộ phận.
- *  2. Nguồn doanh thu: REV_FOOD/bếp -> KIT, REV_DRINK/bar -> BAR (file tổng hợp
- *     không có mã hàng — toàn bộ dữ liệu đang chạy thuộc dạng này).
+ *  2. Nguồn doanh thu: REV_FOOD/bếp/"đồ ăn" -> KIT, REV_DRINK/bar/"đồ uống" -> BAR (file tổng
+ *     hợp không có mã hàng — toàn bộ dữ liệu đang chạy thuộc dạng này).
  * Không suy được thì để null, báo cáo dồn vào "Chưa gán bộ phận" thay vì đoán bừa.
  */
 
 import type { Prisma } from "@prisma/custom-client";
+// Script backfill nạp thẳng file này bằng node nên phải chạy kèm ./scripts/register-alias.mjs
+// để alias "@/" resolve được (xem package.json).
+import { revenueKindFromText } from "@/lib/revenue-source";
 
 /** Mã DEPARTMENT trong danh mục hiện hành (Team Bếp = KIT, không phải BEP). */
 export const REVENUE_DEPARTMENT_CODES = { KITCHEN: "KIT", BAR: "BAR", FOH: "FOH" } as const;
@@ -29,12 +32,15 @@ export function departmentFromWarehouseGroup(group: unknown): string | null {
   return null;
 }
 
-/** REV_FOOD / "Doanh thu bếp" -> KIT; REV_DRINK / "Doanh thu bar" -> BAR. */
+/**
+ * REV_FOOD / "Doanh thu bếp" / "ĐỒ ĂN" -> KIT; REV_DRINK / "Doanh thu bar" / "ĐỒ UỐNG" -> BAR.
+ * Dùng chung bộ nhận dạng loại món với nhóm doanh thu để hai chỗ không lệch luật nhau: dòng cũ
+ * còn ghi chữ thô trong file vẫn suy được bộ phận.
+ */
 export function departmentFromRevenueSource(revenueSource: unknown): string | null {
-  const normalized = stripDiacritics(String(revenueSource || "")).toUpperCase();
-  if (!normalized) return null;
-  if (normalized.includes("FOOD") || normalized.includes("BEP") || normalized.includes("KITCHEN")) return REVENUE_DEPARTMENT_CODES.KITCHEN;
-  if (normalized.includes("DRINK") || normalized.includes("BAR")) return REVENUE_DEPARTMENT_CODES.BAR;
+  const kind = revenueKindFromText(revenueSource);
+  if (kind === "FOOD") return REVENUE_DEPARTMENT_CODES.KITCHEN;
+  if (kind === "DRINK") return REVENUE_DEPARTMENT_CODES.BAR;
   return null;
 }
 
@@ -49,12 +55,23 @@ type ItemLookupClient = Pick<Prisma.TransactionClient, "inventoryItem" | "master
 export async function buildRevenueDepartmentResolver(client: ItemLookupClient, productCodes: string[]): Promise<RevenueDepartmentResolver> {
   const codes = [...new Set(productCodes.map((code) => (code || "").toUpperCase()).filter(Boolean))];
   // deletedAt lọc tường minh vì script backfill chạy PrismaClient thô, không qua extension xoá mềm.
-  const [items, groups] = await Promise.all([
+  const [items, groups, categories] = await Promise.all([
     codes.length > 0
       ? client.inventoryItem.findMany({ where: { code: { in: codes }, deletedAt: null }, select: { code: true, category: true } })
       : Promise.resolve([]),
     client.masterDataItem.findMany({ where: { type: "INVENTORY_ITEM_GROUP", deletedAt: null }, select: { code: true, subGroup: true } }),
+    // Nhóm doanh thu lưu bằng MÃ danh mục, mà mã do khách tự đặt nên có thể chẳng nói lên
+    // bếp hay bar ("DT01"). Suy bộ phận theo cả tên và từ khoá khai tay của danh mục đó.
+    client.masterDataItem.findMany({ where: { type: "REVENUE_EXPENSE_CATEGORY", deletedAt: null }, select: { code: true, name: true, matchKeywords: true } }),
   ]);
+  const categoryDepartment = new Map<string, string | null>();
+  for (const category of categories) {
+    const kind = revenueKindFromText(`${category.code} ${category.name} ${category.matchKeywords || ""}`);
+    categoryDepartment.set(
+      category.code.toUpperCase(),
+      kind === "FOOD" ? REVENUE_DEPARTMENT_CODES.KITCHEN : kind === "DRINK" ? REVENUE_DEPARTMENT_CODES.BAR : null,
+    );
+  }
   const groupDepartment = new Map(groups.map((group) => [group.code, departmentFromWarehouseGroup(group.subGroup)]));
   const productDepartment = new Map<string, string | null>();
   for (const item of items) {
@@ -62,6 +79,7 @@ export async function buildRevenueDepartmentResolver(client: ItemLookupClient, p
   }
   return ({ productCode, revenueSource }) => {
     const byProduct = productCode ? productDepartment.get(productCode.toUpperCase()) : null;
-    return byProduct || departmentFromRevenueSource(revenueSource) || null;
+    const byCategory = revenueSource ? categoryDepartment.get(revenueSource.toUpperCase()) : null;
+    return byProduct || byCategory || departmentFromRevenueSource(revenueSource) || null;
   };
 }

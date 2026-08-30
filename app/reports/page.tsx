@@ -8,6 +8,8 @@ import { canCreateCashDeposit as canCreateCashDepositSlip, canPerformMenuAction,
 import { useModuleAuth } from "@/lib/use-module-auth";
 import { filterCashierCashSources, filterMoneySources, moneySourceDebugLabel, moneySourceDisplayName, stripMoneySourceLabel, type MoneySourceOption } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
+import ExportExcelButton from "@/components/ExportExcelButton";
+import { toFileSlug } from "@/lib/export-table-excel";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { shiftLabel, shiftLabels } from "@/lib/shifts";
 import { cashDepositRoundingExpense, roundCashDepositAmount } from "@/lib/cash-deposit";
@@ -38,7 +40,10 @@ type PnlItemBreakdown = { code: string; name: string; group: string | null; amou
 type BalanceRow = { code: string; name: string; accountType: string; reportGroup: string; amount: number };
 type BalanceData = { rows: BalanceRow[]; assets: number; liabilities: number; contributedEquity: number; retainedEarnings: number; equity: number; difference: number; balanced: boolean };
 type DashboardData = { pnl: { total: Pnl; byBranch: PnlCut[] }; trend: Array<Pnl & { period: string }>; balance: BalanceData; targets: Array<{ metric: string; targetValue: number }> };
-type PnlData = { total: Pnl; byBranch: PnlCut[]; byDepartment: PnlCut[]; byPnlItem: PnlItemBreakdown[] };
+type PnlDetailItem = { code: string; name: string; amount: number };
+type PnlDetailGroup = PnlDetailItem & { items: PnlDetailItem[] };
+type PnlStatementLine = { key: string; label: string; amount: number; subtotal: boolean; groups: PnlDetailGroup[] };
+type PnlData = { total: Pnl; statement: PnlStatementLine[]; byBranch: PnlCut[]; byDepartment: PnlCut[]; byPnlItem: PnlItemBreakdown[] };
 type YoyData = { previousPeriod: string; rows: Array<{ metric: string; currentValue: number; previousValue: number; variance: number; varianceRate: number | null }> };
 type CashflowData = { scenario: string; startingCash: number; schedule: Array<{ period: string; inflow: number; outflow: number; closingCash: number; risk: boolean }> };
 type OperationGroup = { departmentCode: string; departmentName: string; count: number; amount: number; statusCounts: Record<string, number>; overdue?: number };
@@ -1882,11 +1887,7 @@ export default function ReportsPage() {
             <PnlMatrixTab period={period} branchCode={branchCode} />
           ) : (
             <>
-              <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-                <PanelHeader title="Báo cáo Kết quả Kinh doanh" subtitle="Đơn vị: VND" />
-                <PnlTable value={pnl.total} />
-              </section>
-              <PnlItemTable rows={pnl.byPnlItem} />
+              <PnlStatementTable period={period} branchCode={branchCode} lines={pnl.statement} value={pnl.total} />
               <div className="grid xl:grid-cols-2 gap-5">
                 <CutTable title="Theo cửa hàng" rows={pnl.byBranch} />
                 <CutTable title="Theo phòng ban" rows={pnl.byDepartment} />
@@ -2069,11 +2070,18 @@ function OpsKpi({ label, count, amount, extra, icon }: { label: string; count: n
   );
 }
 
-function PanelHeader({ title, subtitle }: { title: string; subtitle: string }) {
+/**
+ * Mọi bảng báo cáo đều xuất được Excel: nút nằm sẵn trên tiêu đề panel, tên file suy từ tiêu đề.
+ * Truyền exportFileName khi muốn đặt tên khác, hoặc exportable={false} cho panel không có bảng.
+ */
+function PanelHeader({ title, subtitle, exportFileName, exportable = true }: { title: string; subtitle: string; exportFileName?: string; exportable?: boolean }) {
   return (
-    <div className="p-4 border-b border-slate-200">
-      <h2 className="font-bold">{title}</h2>
-      <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>
+    <div className="p-4 border-b border-slate-200 flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <h2 className="font-bold">{title}</h2>
+        <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>
+      </div>
+      {exportable && <ExportExcelButton fileName={exportFileName || toFileSlug(title)} sheetName={title.slice(0, 31)} />}
     </div>
   );
 }
@@ -2612,50 +2620,135 @@ function CashMonthMatrix({ title, months, rows }: { title: string; months: strin
   );
 }
 
-function PnlTable({ value }: { value?: Pnl }) {
+/**
+ * Báo cáo KQKD một kỳ, group cha - con như file Excel: mỗi dòng chỉ tiêu bung ra nhóm
+ * hạng mục P&L (PNL_GROUP) rồi tới từng hạng mục (PNL_ITEM). Danh mục được nạp đủ nên
+ * hạng mục chưa phát sinh trong kỳ vẫn hiện ở số 0 — bấm "Ẩn dòng bằng 0" để gọn lại.
+ */
+function PnlStatementTable({ period, branchCode, lines, value }: { period: string; branchCode: string; lines?: PnlStatementLine[]; value?: Pnl }) {
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [hideEmpty, setHideEmpty] = useState(false);
   if (!value) return null;
-  const rows = [
-    { label: "1. Doanh thu bán hàng và cung cấp dịch vụ", val: value.revenue },
-    { label: "2. Giá vốn hàng bán", val: value.cogs },
-    { label: "3. Lợi nhuận gộp", val: value.grossProfit, bold: true },
-    { label: "4. Chi phí nhân sự", val: value.payroll },
-    { label: "5. Chi phí hoạt động khác (OPEX)", val: value.otherOpex },
-    { label: "6. Khấu hao tài sản/CCDC", val: value.depreciation },
-    { label: "7. EBITDA", val: value.ebitda, bold: true },
-    { label: "8. Thu nhập khác", val: value.otherIncome },
-    { label: "9. Chi phí khác", val: value.otherExpense },
-    { label: "10. Lợi nhuận ròng", val: value.netProfit, bold: true },
-  ];
+  const rows = lines || [];
+  const revenue = value.revenue;
+  const percent = (amount: number) => (revenue ? `${((amount / revenue) * 100).toFixed(1)}%` : "-");
+  const isEmpty = (amount: number) => Math.abs(amount) <= 0.5;
+  const toggle = (key: string) => setCollapsed((current) => ({ ...current, [key]: !current[key] }));
+  const setAll = (nextCollapsed: boolean) => {
+    const next: Record<string, boolean> = {};
+    if (nextCollapsed) {
+      for (const line of rows) {
+        if (line.groups.length > 0) next[line.key] = true;
+        for (const group of line.groups) if (group.items.length > 0) next[`${line.key}:${group.code}`] = true;
+      }
+    }
+    setCollapsed(next);
+  };
 
-  return (
-    <div className="overflow-x-auto">
-      <Table headers={["Chỉ tiêu", "Số tiền (VND)"]}>
-        {rows.map((r) => (
-          <tr key={r.label} className={`border-t border-slate-100 ${r.bold ? "bg-slate-50 font-bold" : ""}`}>
-            <Cell>{r.label}</Cell>
-            <Cell right><span className={r.bold ? "text-blue-700" : ""}>{money(r.val)} đ</span></Cell>
-          </tr>
-        ))}
-      </Table>
-    </div>
-  );
-}
+  const exportExcel = async () => {
+    // xlsx chỉ nạp khi bấm xuất — giống tab P&L 12 tháng, tránh cộng vào bundle trang báo cáo.
+    const XLSX = await import("xlsx");
+    const data: Array<Array<string | number>> = [["Chỉ tiêu", "Số tiền (VND)", "% doanh thu"]];
+    const push = (prefix: string, label: string, amount: number) => data.push([`${prefix}${label}`, Math.round(amount), revenue ? Number(((amount / revenue) * 100).toFixed(2)) : 0]);
+    for (const line of rows) {
+      push("", line.label, line.amount);
+      for (const group of line.groups) {
+        if (hideEmpty && isEmpty(group.amount)) continue;
+        push("    ", group.name, group.amount);
+        for (const item of group.items) {
+          if (hideEmpty && isEmpty(item.amount)) continue;
+          push("        ", `${item.code === "UNCLASSIFIED" ? "" : `${item.code} - `}${item.name}`, item.amount);
+        }
+      }
+    }
+    const sheet = XLSX.utils.aoa_to_sheet(data);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, `KQKD ${period}`);
+    XLSX.writeFile(workbook, `kqkd_${period}_${branchCode}.xlsx`);
+  };
 
-function PnlItemTable({ rows }: { rows?: PnlItemBreakdown[] }) {
-  if (!rows || rows.length === 0) return null;
   return (
     <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-      <PanelHeader title="Chi phí theo hạng mục P&L" subtitle="Khoản chưa chọn hạng mục được giữ ở dòng Chưa phân loại P&L." />
-      <Table headers={["Mã", "Hạng mục P&L", "Nhóm", "Số tiền (VND)"]}>
-        {rows.map((row) => (
-          <tr key={row.code} className={`border-t border-slate-100 ${row.code === "UNCLASSIFIED" ? "bg-amber-50" : ""}`}>
-            <Cell><b>{row.code === "UNCLASSIFIED" ? "-" : row.code}</b></Cell>
-            <Cell>{row.name}</Cell>
-            <Cell>{row.group || "-"}</Cell>
-            <Cell right><b>{money(row.amount)} đ</b></Cell>
-          </tr>
-        ))}
-      </Table>
+      <div className="p-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="font-bold">Báo cáo Kết quả Kinh doanh</h2>
+          <p className="text-xs text-slate-500 mt-0.5">Đơn vị: VND. Bấm tên chỉ tiêu hoặc tên nhóm để mở/thu gọn hạng mục P&L bên dưới.</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-1.5 text-xs text-slate-600">
+            <input type="checkbox" checked={hideEmpty} onChange={(event) => setHideEmpty(event.target.checked)} />
+            Ẩn dòng bằng 0
+          </label>
+          <button type="button" onClick={() => setAll(false)} className="text-xs font-bold text-slate-600 border border-slate-200 rounded px-3 py-1.5 hover:bg-slate-50">Mở tất cả</button>
+          <button type="button" onClick={() => setAll(true)} className="text-xs font-bold text-slate-600 border border-slate-200 rounded px-3 py-1.5 hover:bg-slate-50">Thu gọn tất cả</button>
+          <button type="button" onClick={() => void exportExcel()} className="flex items-center gap-1 text-xs font-bold text-blue-700 border border-blue-200 rounded px-3 py-1.5 hover:bg-blue-50">
+            <span className="material-symbols-outlined text-base">download</span>Xuất Excel
+          </button>
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <Table headers={["Chỉ tiêu", "Số tiền (VND)", "% doanh thu"]}>
+          {rows.map((line) => {
+            const lineCollapsed = collapsed[line.key];
+            const groups = hideEmpty ? line.groups.filter((group) => !isEmpty(group.amount)) : line.groups;
+            return (
+              <React.Fragment key={line.key}>
+                <tr
+                  className={`border-t border-slate-200 ${line.subtotal ? "bg-blue-50/60 font-bold" : "bg-slate-50 font-bold"} ${groups.length > 0 ? "cursor-pointer hover:bg-slate-100" : ""}`}
+                  onClick={groups.length > 0 ? () => toggle(line.key) : undefined}
+                >
+                  <Cell>
+                    <span className="flex items-center gap-1">
+                      {groups.length === 0
+                        ? <span className="w-4" />
+                        : <span className="material-symbols-outlined text-base text-slate-400">{lineCollapsed ? "chevron_right" : "expand_more"}</span>}
+                      {line.label}
+                    </span>
+                  </Cell>
+                  <Cell right><span className={line.subtotal ? (line.amount < 0 ? "text-rose-600" : "text-blue-700") : ""}>{money(line.amount)} đ</span></Cell>
+                  <Cell right>{percent(line.amount)}</Cell>
+                </tr>
+                {!lineCollapsed && groups.map((group) => {
+                  const groupKey = `${line.key}:${group.code}`;
+                  const groupCollapsed = collapsed[groupKey];
+                  const items = hideEmpty ? group.items.filter((item) => !isEmpty(item.amount)) : group.items;
+                  return (
+                    <React.Fragment key={groupKey}>
+                      <tr
+                        className={`border-t border-slate-100 ${group.code === "UNGROUPED" ? "bg-amber-50/60" : "bg-white"} ${items.length > 0 ? "cursor-pointer hover:bg-slate-50" : ""}`}
+                        onClick={items.length > 0 ? () => toggle(groupKey) : undefined}
+                      >
+                        <Cell>
+                          <span className="flex items-center gap-1 pl-6">
+                            {items.length === 0
+                              ? <span className="w-4" />
+                              : <span className="material-symbols-outlined text-base text-slate-300">{groupCollapsed ? "chevron_right" : "expand_more"}</span>}
+                            <b className="text-slate-700">{group.name}</b>
+                          </span>
+                        </Cell>
+                        <Cell right><b>{money(group.amount)} đ</b></Cell>
+                        <Cell right>{percent(group.amount)}</Cell>
+                      </tr>
+                      {!groupCollapsed && items.map((item) => (
+                        <tr key={`${groupKey}:${item.code}`} className={`border-t border-slate-100 ${item.code === "UNCLASSIFIED" ? "bg-amber-50/60" : ""}`}>
+                          <Cell>
+                            <span className="pl-16 text-slate-600">
+                              {item.code !== "UNCLASSIFIED" && <span className="text-[11px] text-slate-400 mr-1.5">{item.code}</span>}
+                              {item.name}
+                            </span>
+                          </Cell>
+                          <Cell right>{money(item.amount)} đ</Cell>
+                          <Cell right>{percent(item.amount)}</Cell>
+                        </tr>
+                      ))}
+                    </React.Fragment>
+                  );
+                })}
+              </React.Fragment>
+            );
+          })}
+        </Table>
+      </div>
     </section>
   );
 }

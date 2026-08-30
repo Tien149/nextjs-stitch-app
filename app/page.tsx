@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import ExportExcelButton from "@/components/ExportExcelButton";
 import { useRouter } from "next/navigation";
 import { MonthInput } from "@/components/DateInput";
 import { displayRoleName, updateDynamicBranches, visibleBranchScopeOptions } from "@/lib/branch-labels";
@@ -400,10 +401,12 @@ export default function Home() {
                 <option value="DRAFT">Lưu nháp</option>
               </select>
               {canExportDocuments && (
-                <button className="bg-white border border-slate-200 text-slate-700 px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-2 hover:bg-slate-50 transition-colors shadow-sm">
-                  <span className="material-symbols-outlined text-[16px]">download</span>
-                  Xuất Excel
-                </button>
+                <ExportExcelButton
+                  fileName="chung_tu_van_hanh"
+                  sheetName="Chung tu"
+                  targetId="dashboard-document-table"
+                  className="bg-white border border-slate-200 text-slate-700 px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-2 hover:bg-slate-50 transition-colors shadow-sm"
+                />
               )}
             </div>
           </div>
@@ -595,7 +598,7 @@ export default function Home() {
                 </button>
               )}
             </div>
-            <div className="overflow-x-auto">
+            <div id="dashboard-document-table" className="overflow-x-auto">
               <table className="w-full text-left">
                 <thead className="bg-slate-50 border-b border-slate-100">
                   <tr>

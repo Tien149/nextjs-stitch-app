@@ -6,13 +6,16 @@ import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { canPerformMenuAction, SESSION_KEY, filterModuleTabs } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import CopyableText from "@/components/CopyableText";
+import ExportExcelButton from "@/components/ExportExcelButton";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 import { safeConversionRate } from "@/lib/unit-conversion";
 
 type UnitConversion = { id: string; unitCode: string; unitName: string | null; conversionRate: number; isDefaultPurchase: boolean };
-type Item = { id: string; code: string; name: string; unit: string; itemType: string; category?: string | null; minStock: number; requiresImage: boolean; unitConversions?: UnitConversion[] };
+type Item = { id: string; code: string; name: string; unit: string; itemType: string; category?: string | null; revenueGroup?: string | null; minStock: number; requiresImage: boolean; unitConversions?: UnitConversion[] };
 type ItemGroup = { id: string; code: string; name: string; group: string | null; subGroup: string | null };
+/** Danh mục Thu dùng làm Nhóm doanh thu của mặt hàng (REVENUE_EXPENSE_CATEGORY nhóm Thu). */
+type RevenueGroup = { id: string; code: string; name: string; group: string | null };
 type Balance = { id: string; warehouseCode: string; quantity: number; averageCost: number; item: Item };
 type Transaction = { id: string; code: string; transactionType: string; subType: string | null; transactionDate: string; branchCode: string; warehouseCode: string; toWarehouseCode: string | null; toBranchCode: string | null; internalReceivableDebtCode: string | null; internalPayableDebtCode: string | null; referenceCode: string | null; note?: string | null; lines: Array<{ id: string; inputQuantity: number | null; inputUnitCode: string | null; conversionRate: number; quantity: number; unitCost: number; inputUnitCost: number | null; totalCost: number; item: Item }> };
 type Recipe = { id: string; code: string; productCode: string; productName: string; unit: string; outputConversionRate: number; sellingPrice: number; estimatedCost: number; estimatedUnitCost: number; version: number; effectiveFrom: string; status: string; lines: Array<{ quantity: number; unitCode: string | null; conversionRate: number; wasteRate: number; item: Item }> };
@@ -29,7 +32,7 @@ type Stocktake = { id: string; code: string; stocktakeDate: string; branchCode: 
 type ReceivablePOLine = { id: string; itemId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; item: { code: string; name: string; unit: string } };
 type ReceivablePO = { id: string; code: string; supplierName: string; branchCode: string; warehouseCode: string; status: string; lines: ReceivablePOLine[] };
 type StocktakeDraftRow = { itemId: string; itemCode: string; itemName: string; unit: string; systemQuantity: number; averageCost: number; actualQuantity: string; unitCost: string; reason: string };
-type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales };
+type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales };
 const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value);
 const movementTypes = ["NHAP_MUA", "NHAP_KHAC", "NHAP_CHE_BIEN", "NHAP_KIEM_KE", "XUAT_BAN", "XUAT_HUY", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_CHE_BIEN", "XUAT_KIEM_KE", "DIEU_CHUYEN"];
 /** Loại hiển thị trên hai màn hình Nhập/Xuất. Điều chuyển hiện ở CẢ hai: vế xuất ở kho đi, vế nhập ở kho nhận. */
@@ -73,7 +76,7 @@ export default function InventoryPage() {
   const href = "/inventory";
   const { user, loading } = useModuleAuth(href);
   const [active, setActive] = useState("stock");
-  const [data, setData] = useState<Data>({ items: [], balances: [], transactions: [], recipes: [], warehouses: [], stocktakes: [], stockSummary: [], stockMovements: [], itemGroups: [], costSummary: [], wasteReport: [], pendingSales: { total: 0, byDay: [] } });
+  const [data, setData] = useState<Data>({ items: [], balances: [], transactions: [], recipes: [], warehouses: [], stocktakes: [], stockSummary: [], stockMovements: [], itemGroups: [], revenueGroups: [], costSummary: [], wasteReport: [], pendingSales: { total: 0, byDay: [] } });
   const [message, setMessage] = useState("");
   const [reportWarehouse, setReportWarehouse] = useState("ALL");
   const [reportType, setReportType] = useState("ALL");
@@ -82,9 +85,11 @@ export default function InventoryPage() {
   const [inboundType, setInboundType] = useState("ALL");
   const [outboundType, setOutboundType] = useState("ALL");
 
-  const [itemForm, setItemForm] = useState({ code: "NVL_001", name: "Nguyên liệu mẫu", unit: "g", itemType: "RAW_MATERIAL", category: "", purchaseUnit: "kg", conversionRate: "1000", minStock: "500", requiresImage: false });
+  const [itemForm, setItemForm] = useState({ code: "NVL_001", name: "Nguyên liệu mẫu", unit: "g", itemType: "RAW_MATERIAL", category: "", revenueGroup: "", purchaseUnit: "kg", conversionRate: "1000", minStock: "500", requiresImage: false });
   const [itemSearch, setItemSearch] = useState("");
   const [itemTypeFilter, setItemTypeFilter] = useState("ALL");
+  /** ALL / MISSING (chưa gán) / mã danh mục Thu cụ thể — lọc để gán hàng loạt cho nhanh. */
+  const [revenueGroupFilter, setRevenueGroupFilter] = useState("ALL");
   const [conversionForm, setConversionForm] = useState({ itemId: "", purchaseUnit: "thung", conversionRate: "24", note: "" });
   const [stockForm, setStockForm] = useState({ transactionType: "NHAP_MUA", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HN", itemId: "", inputUnitCode: "", quantity: "10", unitCost: "100000", referenceCode: "", note: "Nhap kho van hanh" });
   /** Nhập mua theo PO (GRPO): PO đã duyệt còn hàng chưa nhận + số lượng nhận trên từng dòng. */
@@ -132,6 +137,8 @@ export default function InventoryPage() {
   };
 
   const canCreate = user ? canPerformMenuAction(user, href, "create") : false;
+  /** Gán Nhóm doanh thu ngay trên bảng danh mục là hành vi SỬA mặt hàng, không phải tạo mới. */
+  const canEditItem = user ? canPerformMenuAction(user, href, "edit") : false;
   const importTarget = active === "stock"
     ? { tab: "opening-balance", label: "Import tồn kho đầu kỳ" }
     : active === "items"
@@ -208,10 +215,15 @@ export default function InventoryPage() {
 
   const filteredItems = data.items.filter((item) => {
     if (itemTypeFilter !== "ALL" && item.itemType !== itemTypeFilter) return false;
+    if (revenueGroupFilter === "MISSING" && item.revenueGroup) return false;
+    if (revenueGroupFilter !== "ALL" && revenueGroupFilter !== "MISSING" && item.revenueGroup !== revenueGroupFilter) return false;
     const keyword = itemSearch.trim().toLowerCase();
     if (!keyword) return true;
     return item.code.toLowerCase().includes(keyword) || item.name.toLowerCase().includes(keyword);
   });
+  // Chỉ món bán (FINISHED) mới lên doanh thu POS — nguyên liệu thô không cần nhóm doanh thu,
+  // đếm cả kho vào đây thì con số cảnh báo vô nghĩa.
+  const missingRevenueGroupCount = data.items.filter((item) => item.itemType === "FINISHED" && !item.revenueGroup).length;
 
   const getSessionHeaders = (): Record<string, string> => {
     if (typeof window === "undefined") return {};
@@ -327,6 +339,19 @@ export default function InventoryPage() {
     if (response.ok) await loadData();
   };
 
+  /** Sửa nhanh một trường của mặt hàng ngay trên bảng danh mục (UPDATE_ITEM nằm ở PATCH). */
+  const patchItem = async (itemId: string, changes: object, success: string) => {
+    setMessage("");
+    const response = await fetch("/api/inventory", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...getSessionHeaders() },
+      body: JSON.stringify({ action: "UPDATE_ITEM", itemId, ...changes }),
+    });
+    const payload = await response.json();
+    setMessage(response.ok ? success : payload.error || "Không cập nhật được mặt hàng");
+    if (response.ok) await loadData();
+  };
+
   const totalSKUs = data.items.length;
   // Tồn tối thiểu khai theo MẶT HÀNG — phải so với tổng tồn mọi kho, so từng kho là hàng nằm
   // 3 kho sẽ báo đỏ giả cả 3 dòng.
@@ -398,7 +423,7 @@ export default function InventoryPage() {
 
       {active === "stock" && (
         <section className="table-panel shadow-sm mb-5">
-          <Panel title="Nhập - Xuất - Tồn cơ bản theo kho" reload={loadData} />
+          <Panel title="Nhập - Xuất - Tồn cơ bản theo kho" reload={loadData} exportFileName="nhap_xuat_ton_theo_kho" />
           <div className="px-5 pb-4 grid sm:grid-cols-2 gap-3">
             <Input label="Kho">
               <select className="control" value={reportWarehouse} onChange={(e) => setReportWarehouse(e.target.value)}>
@@ -456,7 +481,7 @@ export default function InventoryPage() {
 
       {active === "stock" && (
         <section className="table-panel shadow-sm mb-5">
-          <Panel title="Chi tiết phát sinh theo loại giao dịch" reload={loadData} />
+          <Panel title="Chi tiết phát sinh theo loại giao dịch" reload={loadData} exportFileName="chi_tiet_phat_sinh_kho" />
           <Table
             headers={[
               { label: "Ngày" },
@@ -487,7 +512,7 @@ export default function InventoryPage() {
 
       {active === "stock" && (
         <section className="table-panel shadow-sm">
-          <Panel title="Tồn kho theo kho" reload={loadData} />
+          <Panel title="Tồn kho theo kho" reload={loadData} exportFileName="ton_kho_theo_kho" />
           <Table
             headers={[
               { label: "Mặt hàng" },
@@ -563,6 +588,15 @@ export default function InventoryPage() {
                 </select>
               </Input>
 
+              <Input label="Nhóm doanh thu (dùng khi file POS không khai được)">
+                <select className="control" value={itemForm.revenueGroup} onChange={(e) => setItemForm({ ...itemForm, revenueGroup: e.target.value })}>
+                  <option value="">-- Chưa gán nhóm doanh thu --</option>
+                  {data.revenueGroups.map((group) => (
+                    <option key={group.code} value={group.code}>{group.code} - {group.name}</option>
+                  ))}
+                </select>
+              </Input>
+
               <div className="grid grid-cols-2 gap-3">
                 <Input label="ĐVT mua">
                   <input className="control" value={itemForm.purchaseUnit} onChange={(e) => setItemForm({ ...itemForm, purchaseUnit: e.target.value })} placeholder="vd: thùng, kg, bao" />
@@ -610,8 +644,8 @@ export default function InventoryPage() {
           )}
           
           <section className="table-panel shadow-sm">
-            <Panel title="Danh mục mặt hàng" reload={loadData} />
-            <div className="px-5 pb-4 grid sm:grid-cols-[minmax(0,1fr)_220px] gap-3">
+            <Panel title="Danh mục mặt hàng" reload={loadData} exportFileName="danh_muc_mat_hang" />
+            <div className="px-5 pb-4 grid sm:grid-cols-[minmax(0,1fr)_220px_220px] gap-3">
               <Input label="Tìm kiếm">
                 <input className="control" placeholder="Gõ mã hoặc tên mặt hàng..." value={itemSearch} onChange={(e) => setItemSearch(e.target.value)} />
               </Input>
@@ -626,15 +660,30 @@ export default function InventoryPage() {
                   <option value="ASSET">Tài sản</option>
                 </select>
               </Input>
+              <Input label="Nhóm doanh thu">
+                <select className="control" value={revenueGroupFilter} onChange={(e) => setRevenueGroupFilter(e.target.value)}>
+                  <option value="ALL">Tất cả nhóm doanh thu</option>
+                  <option value="MISSING">Chưa gán nhóm doanh thu</option>
+                  {data.revenueGroups.map((group) => (
+                    <option key={group.code} value={group.code}>{group.code} - {group.name}</option>
+                  ))}
+                </select>
+              </Input>
             </div>
-            <p className="px-5 pb-2 text-[11px] text-slate-500">{filteredItems.length}/{data.items.length} mặt hàng</p>
+            <p className="px-5 pb-2 text-[11px] text-slate-500">
+              {filteredItems.length}/{data.items.length} mặt hàng
+              {missingRevenueGroupCount > 0 && (
+                <> · <span className="text-amber-700 font-bold">{missingRevenueGroupCount} món chưa gán Nhóm doanh thu</span> — file POS để trống hoặc ghi chữ lạ ở cột này thì hệ thống lấy theo đây.</>
+              )}
+            </p>
             <Table
-              tableClassName="min-w-[1050px]"
+              tableClassName="min-w-[1250px]"
               headers={[
                 { label: "Mã" },
                 { label: "Tên" },
                 { label: "Loại" },
                 { label: "Phân nhóm" },
+                { label: "Nhóm doanh thu" },
                 { label: "Đơn vị" },
                 { label: "Quy đổi mua" },
                 { label: "Tồn tối thiểu", align: "right" },
@@ -647,6 +696,26 @@ export default function InventoryPage() {
                   <Cell>{item.name}</Cell>
                   <Cell>{item.itemType}</Cell>
                   <Cell>{data.itemGroups.find((group) => group.code === item.category)?.name || item.category || "-"}</Cell>
+                  <Cell>
+                    {canEditItem ? (
+                      <select
+                        className="control !py-1 !text-[12px] min-w-[170px]"
+                        value={item.revenueGroup || ""}
+                        onChange={(e) => void patchItem(item.id, { revenueGroup: e.target.value }, `Đã gán nhóm doanh thu cho ${item.code}.`)}
+                      >
+                        <option value="">-- Chưa gán --</option>
+                        {data.revenueGroups.map((group) => (
+                          <option key={group.code} value={group.code}>{group.code} - {group.name}</option>
+                        ))}
+                        {/* Mã cũ không còn trong danh mục vẫn phải hiện, nếu không đổi ô là mất dữ liệu. */}
+                        {item.revenueGroup && !data.revenueGroups.some((group) => group.code === item.revenueGroup) && (
+                          <option value={item.revenueGroup}>{item.revenueGroup} (ngoài danh mục)</option>
+                        )}
+                      </select>
+                    ) : (
+                      data.revenueGroups.find((group) => group.code === item.revenueGroup)?.name || item.revenueGroup || "-"
+                    )}
+                  </Cell>
                   <Cell>{item.unit}</Cell>
                   <Cell>{item.unitConversions?.filter((unit) => unit.conversionRate > 1).map((unit) => `1 ${unit.unitName || unit.unitCode} = ${money(unit.conversionRate)} ${item.unit}`).join(", ") || "-"}</Cell>
                   <Cell right>{money(item.minStock)}</Cell>
@@ -805,7 +874,7 @@ export default function InventoryPage() {
           )}
 
           <section className="table-panel shadow-sm">
-            <Panel title={active === "inbound" ? "Phiếu nhập kho gần nhất" : "Phiếu xuất kho gần nhất"} reload={loadData} />
+            <Panel title={active === "inbound" ? "Phiếu nhập kho gần nhất" : "Phiếu xuất kho gần nhất"} reload={loadData} exportFileName={active === "inbound" ? "phieu_nhap_kho" : "phieu_xuat_kho"} />
             <div className="px-5 pb-4 grid sm:grid-cols-2 gap-3">
               <Input label="Nhà hàng">
                 <select className="control" value={flowBranch} onChange={(e) => setFlowBranch(e.target.value)}>
@@ -956,7 +1025,7 @@ export default function InventoryPage() {
           )}
 
           <section className="table-panel shadow-sm">
-            <Panel title="Phiếu điều chuyển gần nhất" reload={loadData} />
+            <Panel title="Phiếu điều chuyển gần nhất" reload={loadData} exportFileName="phieu_dieu_chuyen" />
             <Table
               headers={[
                 { label: "Chứng từ" },
@@ -1171,7 +1240,7 @@ export default function InventoryPage() {
           
           <div className="space-y-5 min-w-0">
             <section className="table-panel shadow-sm">
-              <Panel title="Sheet tổng hợp — Giá vốn & giá thành theo định lượng đang áp dụng" reload={loadData} />
+              <Panel title="Sheet tổng hợp — Giá vốn & giá thành theo định lượng đang áp dụng" reload={loadData} exportFileName="gia_von_gia_thanh" />
               <Table
                 headers={[
                   { label: "Nhóm" },
@@ -1198,7 +1267,7 @@ export default function InventoryPage() {
             </section>
 
             <section className="table-panel shadow-sm">
-              <Panel title="Chi tiết các phiên bản định lượng" reload={loadData} />
+              <Panel title="Chi tiết các phiên bản định lượng" reload={loadData} exportFileName="phien_ban_dinh_luong" />
               <Table
                 headers={[
                   { label: "Sản phẩm" },
@@ -1334,7 +1403,7 @@ export default function InventoryPage() {
             </form>
           )}
           <section className="table-panel shadow-sm">
-            <Panel title="Giao dịch chế biến gần nhất" reload={loadData} />
+            <Panel title="Giao dịch chế biến gần nhất" reload={loadData} exportFileName="giao_dich_che_bien" />
             {canCreate && (() => {
               const runCodes = [...new Set(data.transactions
                 .filter((row) => (row.referenceCode || "").startsWith("RA-"))
@@ -1539,7 +1608,7 @@ export default function InventoryPage() {
             </form>
           )}
           <section className="table-panel shadow-sm">
-            <Panel title="Phiếu kiểm kê gần nhất" reload={loadData} />
+            <Panel title="Phiếu kiểm kê gần nhất" reload={loadData} exportFileName="phieu_kiem_ke" />
             <Table headers={[{ label: "Phiếu" }, { label: "Kho" }, { label: "Mặt hàng" }, { label: "Chênh lệch", align: "right" }]}>
               {data.stocktakes.map((row) => ({
                 ...row,
@@ -1675,7 +1744,7 @@ export default function InventoryPage() {
 
           <div className="space-y-5 min-w-0">
             <section className="table-panel shadow-sm">
-              <Panel title="Mã hàng hủy nhiều nhất (theo trị giá)" reload={loadData} />
+              <Panel title="Mã hàng hủy nhiều nhất (theo trị giá)" reload={loadData} exportFileName="hang_huy_nhieu_nhat" />
               <Table
                 headers={[
                   { label: "Mặt hàng" },
@@ -1700,7 +1769,7 @@ export default function InventoryPage() {
             </section>
 
             <section className="table-panel shadow-sm">
-              <Panel title="Phiếu hủy gần nhất" reload={loadData} />
+              <Panel title="Phiếu hủy gần nhất" reload={loadData} exportFileName="phieu_huy_gan_nhat" />
               <Table headers={[{ label: "Chứng từ" }, { label: "Loại hủy" }, { label: "Nhà hàng / Kho" }, { label: "Mặt hàng" }, { label: "Trị giá", align: "right" }]}>
                 {data.transactions.filter((row) => row.transactionType === "XUAT_HUY").map((row) => (
                   <tr key={row.id} className="border-t border-slate-100">
@@ -1747,7 +1816,17 @@ function wasteSubTypeLabel(subType: string | null): string {
 
 function Input({ label, children }: { label: string; children: React.ReactNode }) { return <label className="block text-xs font-bold text-slate-600">{label}{children}</label>; }
 function ItemSelect({ items, value, onChange }: { items: Item[]; value: string; onChange: (value: string) => void }) { return <select className="control" value={value} onChange={(e) => onChange(e.target.value)}><option value="">Chọn mặt hàng</option>{items.map((item) => <option key={item.id} value={item.id}>{item.code} - {item.name}</option>)}</select>; }
-function Panel({ title, reload }: { title: string; reload: () => void }) { return <div className="p-5 flex justify-between"><h2 className="font-bold text-slate-800">{title}</h2><button type="button" title="Tải lại" onClick={reload} className="icon-button"><span className="material-symbols-outlined text-lg">refresh</span></button></div>; }
+function Panel({ title, reload, exportFileName }: { title: string; reload: () => void; exportFileName?: string }) {
+  return (
+    <div className="p-5 flex justify-between items-center gap-3">
+      <h2 className="font-bold text-slate-800">{title}</h2>
+      <div className="flex items-center gap-2">
+        {exportFileName && <ExportExcelButton fileName={exportFileName} sheetName={title.slice(0, 31)} />}
+        <button type="button" title="Tải lại" onClick={reload} className="icon-button"><span className="material-symbols-outlined text-lg">refresh</span></button>
+      </div>
+    </div>
+  );
+}
 
 function Table({
   headers,

@@ -199,7 +199,7 @@ export default function PnlMatrixTab({ period, branchCode }: { period: string; b
           </div>
         </section>
         <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-          <PanelHeader title="Doanh thu theo tỷ trọng phân bổ theo nguồn" subtitle="Cùng số tiền đó nhưng tách theo kênh bán (Tại chỗ, Grab...), kèm SVC và thuế GTGT." />
+          <PanelHeader title="Doanh thu theo tỷ trọng phân bổ theo nguồn" subtitle="Cùng số tiền đó nhưng tách theo kênh bán (Tại chỗ, Grab...), kèm SVC và thuế GTGT." exportable={false} />
           <div className="p-4">
             <ShareDonutChart data={pickPie(data.revenueSplit.byChannel)} />
           </div>
@@ -208,7 +208,7 @@ export default function PnlMatrixTab({ period, branchCode }: { period: string; b
 
       <div className="grid xl:grid-cols-2 gap-5">
         <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-          <PanelHeader title="COGS so với doanh thu" subtitle="Giá vốn từng bộ phận và tổng, đặt cạnh doanh thu từng bộ phận và tổng doanh thu." />
+          <PanelHeader title="COGS so với doanh thu" subtitle="Giá vốn từng bộ phận và tổng, đặt cạnh doanh thu từng bộ phận và tổng doanh thu." exportable={false} />
           <div className="p-4">
             <MoneyLineChart
               labels={monthHeaders}
@@ -225,7 +225,7 @@ export default function PnlMatrixTab({ period, branchCode }: { period: string; b
           </div>
         </section>
         <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-          <PanelHeader title="Lương so với doanh thu" subtitle="Lương, SVC & KPI, bảo hiểm trên nền doanh thu tháng — cùng bộ đường như file của chị Bình." />
+          <PanelHeader title="Lương so với doanh thu" subtitle="Lương, SVC & KPI, bảo hiểm trên nền doanh thu tháng — cùng bộ đường như file của chị Bình." exportable={false} />
           <div className="p-4">
             <MoneyLineChart
               labels={monthHeaders}

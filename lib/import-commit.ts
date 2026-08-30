@@ -10,6 +10,7 @@ import { postStockTransfer } from "@/lib/inventory-transfer";
 import { writeAuditLog } from "@/lib/audit-log";
 import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
 import { buildRevenueDepartmentResolver } from "@/lib/revenue-department";
+import { buildRevenueSourceResolver, cleanRevenueSourceInput, loadRevenueCategoryIndex, pickRevenueSource } from "@/lib/revenue-source";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { nextSeqFromCodes, voucherCodePrefix } from "@/lib/voucher-code-generator";
 import { commonBankValue, groupBankStatementRows } from "@/lib/bank-statement-import";
@@ -848,20 +849,32 @@ export async function commitImport(input: CommitInput) {
       // Gắn bộ phận (Bếp/Bar/FOH) ngay lúc import để báo cáo ngân sách nhân sự so được
       // doanh thu từng bộ phận với tỷ trọng lương chuẩn. Mã hàng mới toanh trong chính
       // file này chưa có nhóm mặt hàng nên rơi về suy từ nguồn doanh thu — đúng ý muốn.
+      const productCodes = input.rows.map((row) => asText(row.values.product_code).toUpperCase());
       const resolveRevenueDepartment = await buildRevenueDepartmentResolver(
         tx as unknown as Prisma.TransactionClient,
-        input.rows.map((row) => asText(row.values.product_code).toUpperCase()),
+        productCodes,
       );
+      // File POS xuất ra cột "Nhóm doanh thu" toàn dấu "-": lấy nhóm doanh thu đã khai sẵn
+      // trên danh mục mặt hàng theo mã hàng. Ô nào trong file có giá trị thật thì file thắng.
+      const resolveRevenueSource = await buildRevenueSourceResolver(
+        tx as unknown as Prisma.TransactionClient,
+        productCodes,
+      );
+      // File của khách ghi cột này bằng chữ ("ĐỒ ĂN"/"ĐỒ UỐNG") chứ không phải mã danh mục:
+      // quy về mã trước khi lưu, nếu không dòng Có 511 mang chữ đó làm categoryCode và doanh
+      // thu nằm ở "Chưa phân loại". Chữ không quy được thì nhường danh mục mặt hàng.
+      const revenueCategoryIndex = await loadRevenueCategoryIndex(tx as unknown as Prisma.TransactionClient);
       for (const row of input.rows) {
         const productCode = asText(row.values.product_code).toUpperCase();
         const productQuantity = asNumber(row.values.product_quantity);
+        const revenueSource = pickRevenueSource(row.values.revenue_source, resolveRevenueSource(productCode), revenueCategoryIndex);
         const revenueRow = await tx.revenueImportRow.create({
           data: {
             importBatchId: batch.id,
             saleDate: asDate(row.values.sale_date),
             branchCode: asText(row.values.branch_code),
             channel: row.values.channel === null ? null : asText(row.values.channel),
-            revenueSource: asText(row.values.revenue_source),
+            revenueSource,
             paymentMethod: asText(row.values.payment_method),
             orderCount: row.values.order_count === null ? null : asInteger(row.values.order_count),
             grossAmount: asNumber(row.values.gross_amount),
@@ -873,7 +886,7 @@ export async function commitImport(input: CommitInput) {
             productCode: productCode || null,
             productQuantity: productQuantity > 0 ? productQuantity : null,
             inventoryStatus: productCode && productQuantity > 0 ? "PENDING" : "NOT_REQUIRED",
-            departmentCode: resolveRevenueDepartment({ productCode, revenueSource: asText(row.values.revenue_source) }),
+            departmentCode: resolveRevenueDepartment({ productCode, revenueSource }),
           },
         });
 
@@ -993,11 +1006,17 @@ export async function commitImport(input: CommitInput) {
       // thành ngẫu nhiên theo thứ tự alphabet.
       const seenDefaultPurchase = new Set<string>();
       const upsertedItemIds = new Map<string, string>();
+      // Cột Nhóm doanh thu trên file danh mục cũng hay ghi chữ ("Đồ ăn") thay vì mã.
+      const revenueCategoryIndex = await loadRevenueCategoryIndex(tx as unknown as Prisma.TransactionClient);
       for (const row of input.rows) {
         const code = asText(row.values.code).toUpperCase();
         const name = asText(row.values.name);
         const itemType = normalizeInventoryItemType(row.values.item_type);
         const category = asText(row.values.category).toUpperCase() || null;
+        // Nhóm doanh thu khai bằng MÃ danh mục Thu (REV_FOOD...) nên chuẩn hoá hoa như category.
+        // Mã lạ vẫn giữ nguyên để giao diện hiện "(ngoài danh mục)" thay vì im lặng nuốt mất.
+        const revenueGroupInput = cleanRevenueSourceInput(row.values.revenue_group);
+        const revenueGroup = revenueCategoryIndex.toCode(revenueGroupInput) || revenueGroupInput.toUpperCase() || null;
         const unit = asText(row.values.unit);
         if (!['RAW_MATERIAL', 'SEMI_FINISHED', 'FINISHED', 'PACKAGING', 'TOOL', 'ASSET'].includes(itemType)) {
           throw new Error(`Dòng ${row.rowNumber}: Loại hàng không hợp lệ`);
@@ -1036,7 +1055,7 @@ export async function commitImport(input: CommitInput) {
         const item = await tx.inventoryItem.upsert({
           where: { code },
           create: {
-            code, name, itemType, category, unit,
+            code, name, itemType, category, revenueGroup, unit,
             minStock: asNumber(row.values.min_stock),
             requiresImage: asFlag(row.values.requires_image),
             note: asText(row.values.note) || null,
@@ -1044,6 +1063,7 @@ export async function commitImport(input: CommitInput) {
           },
           update: {
             name, itemType, category, unit,
+            ...(hasColumn("revenue_group") ? { revenueGroup } : {}),
             ...(hasColumn("min_stock") ? { minStock: asNumber(row.values.min_stock) } : {}),
             ...(hasColumn("requires_image") ? { requiresImage: asFlag(row.values.requires_image) } : {}),
             ...(hasColumn("note") ? { note: asText(row.values.note) || null } : {}),

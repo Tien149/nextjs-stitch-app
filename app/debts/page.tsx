@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import ExportExcelButton from "@/components/ExportExcelButton";
 import { useRouter } from "next/navigation";
 import { BranchScopeSelect, resolveInitialBranchScope } from "@/components/BranchScopeSelect";
 import { DateInput } from "@/components/DateInput";
@@ -383,8 +384,9 @@ export default function DebtsPage() {
               <option value="DUE_7">Sắp đến hạn 7 ngày</option>
               <option value="OPEN">Còn hạn</option>
             </select>
+            <ExportExcelButton fileName="cong_no_doi_tac" sheetName="Cong no" targetId="debt-summary-table" className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 inline-flex items-center gap-1.5" />
           </div>
-          <div className="overflow-x-auto max-h-[560px] overflow-y-auto custom-scrollbar">
+          <div id="debt-summary-table" className="overflow-x-auto max-h-[560px] overflow-y-auto custom-scrollbar">
             <table className="w-full text-left text-sm">
               <thead className="bg-slate-50 text-slate-500 text-xs uppercase border-b border-slate-200 sticky top-0 z-10 shadow-sm">
                 <tr>
@@ -449,9 +451,12 @@ export default function DebtsPage() {
                   <p className="mt-2 text-sm rounded-lg bg-blue-50 border border-blue-100 text-blue-700 px-3 py-2">{message}</p>
                 )}
               </div>
-              <button onClick={() => setLedger(null)} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50">Đóng</button>
+              <div className="flex items-center gap-2">
+                <ExportExcelButton fileName={`ledger_cong_no_${ledger.partnerCode || ledger.partnerName}`} sheetName="Ledger" targetId="debt-ledger-table" className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50 inline-flex items-center gap-1.5" />
+                <button onClick={() => setLedger(null)} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50">Đóng</button>
+              </div>
             </div>
-            <div className="overflow-x-auto max-h-[420px]">
+            <div id="debt-ledger-table" className="overflow-x-auto max-h-[420px]">
               <table className="w-full text-left text-sm">
                 <thead className="bg-slate-50 text-slate-500 text-xs uppercase sticky top-0">
                   <tr>

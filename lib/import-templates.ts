@@ -438,7 +438,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
         required: false,
         type: "text",
         aliases: ["nhom doanh thu", "nhom dt", "loai mon", "revenue group", "revenue source"],
-        note: "Nhóm doanh thu hoặc Loại món (ĐỒ ĂN, ĐỒ UỐNG...)",
+        note: "Nhóm doanh thu hoặc Loại món. Ghi mã (REV_FOOD), tên danh mục, hay chữ \"ĐỒ ĂN\"/\"ĐỒ UỐNG\" đều được — hệ thống tự quy về mã danh mục Thu. Để trống hoặc ghi chữ lạ thì lấy Nhóm doanh thu khai ở Danh mục mặt hàng theo mã hàng.",
       },
       {
         // Trên file của khách, cột này ghi MÃ hoặc TÊN nguồn tiền trong danh mục
@@ -605,6 +605,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "name", label: "Tên mặt hàng", required: true, type: "text", aliases: ["ten hang", "ten mat hang", "name", "item name"] },
       { field: "item_type", label: "Loại hàng", required: true, type: "text", aliases: ["loai hang", "loai mat hang", "item type"] },
       { field: "category", label: "Nhóm mặt hàng", required: false, type: "text", aliases: ["nhom hang", "nhom mat hang", "category", "item group"] },
+      { field: "revenue_group", label: "Nhóm doanh thu", required: false, type: "text", aliases: ["nhom doanh thu", "nhom dt", "loai mon", "revenue group", "revenue source"], note: "Ma danh muc Thu (vd REV_FOOD, REV_DRINK) hoac chu \"Do an\"/\"Do uong\". Import doanh thu POS lay cot nay khi file POS khong khai duoc Nhom doanh thu." },
       { field: "unit", label: "Đơn vị tính", required: true, type: "text", aliases: ["dvt", "don vi tinh", "unit"] },
       { field: "min_stock", label: "Tồn tối thiểu", required: false, type: "number", aliases: ["ton toi thieu", "min stock", "min_stock"] },
       { field: "requires_image", label: "Yêu cầu hình ảnh (1/0)", required: false, type: "integer", aliases: ["yeu cau hinh anh", "bat buoc hinh anh", "requires image"] },

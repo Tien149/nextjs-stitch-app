@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import ExportExcelButton from "@/components/ExportExcelButton";
 import { useRouter } from "next/navigation";
 import { DateInput } from "@/components/DateInput";
 import { SearchableSelect } from "@/components/SearchableSelect";
@@ -65,6 +66,15 @@ type TemplateField = {
 
 type BranchOption = { code: string; name: string };
 
+type ImportApiPayload = {
+  error?: string;
+  template?: { fields?: TemplateField[] } | null;
+  preview?: PreviewPayload;
+  batch?: (BatchDetail & {
+    needsFix?: Array<{ transactionCode: string; amount: number; reason: string }>;
+  }) | null;
+};
+
 type ImportUploadPageProps = {
   title: string;
   subtitle: string;
@@ -83,6 +93,56 @@ function withQuery(url: string, values: Record<string, string>) {
   const params = new URLSearchParams(query);
   Object.entries(values).forEach(([key, value]) => params.set(key, value));
   return `${path}?${params.toString()}`;
+}
+
+function formatMb(bytes: number) {
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * Dịch một response KHÔNG phải JSON ra thông báo đúng bệnh.
+ *
+ * App chạy sau reverse proxy (nginx) thì file upload vượt `client_max_body_size` bị proxy
+ * chặn TRƯỚC khi tới Next, và proxy trả về trang HTML lỗi của chính nó
+ * (`<html>\r\n<head><title>413 Request Entity Too Large</title>...`). API import không hề
+ * được gọi, nên mọi thông báo lỗi tiếng Việt trong route đều vô dụng ở tình huống này.
+ * Không dịch ra thì người dùng chỉ thấy "Unexpected token '<'" và đi tìm lỗi trong file Excel.
+ */
+function describeNonJsonResponse(response: Response, body: string, fileSize?: number) {
+  const looksLikeProxyPage = /^\s*(<!doctype|<html|<head)/i.test(body);
+  const sizeNote = fileSize ? ` File đang gửi nặng ${formatMb(fileSize)}.` : "";
+  if (response.status === 413 || /request entity too large|payload too large/i.test(body)) {
+    return "Không gửi được file lên hệ thống: máy chủ web (nginx/proxy) chặn vì file vượt giới hạn"
+      + ` dung lượng upload của nó, file chưa hề tới hệ thống import.${sizeNote}`
+      + " Nhờ quản trị tăng client_max_body_size lên tối thiểu 10 MB (bằng giới hạn của hệ thống),"
+      + " hoặc tạm thời chia file thành nhiều file nhỏ hơn 1 MB rồi import lần lượt.";
+  }
+  if (response.status === 504 || response.status === 408) {
+    return "Không import được: máy chủ web đóng kết nối vì xử lý file quá lâu (timeout của proxy)."
+      + `${sizeNote} Hãy chia file thành các file nhỏ hơn (tối đa 500 dòng) rồi import lần lượt.`;
+  }
+  if (response.status === 502 || response.status === 503) {
+    return "Máy chủ ứng dụng không phản hồi (proxy trả 502/503). Kiểm tra service còn chạy không rồi thử lại.";
+  }
+  if (response.status === 401 || response.status === 403) {
+    return "Phiên đăng nhập không còn hợp lệ hoặc không đủ quyền import. Hãy đăng nhập lại rồi thử lại.";
+  }
+  const snippet = body.replace(/\s+/g, " ").trim().slice(0, 160);
+  return `Máy chủ trả về nội dung không phải JSON (HTTP ${response.status}${looksLikeProxyPage ? ", là trang lỗi của web server chứ không phải của hệ thống import" : ""}).`
+    + (snippet ? ` Nội dung nhận được: ${snippet}` : "");
+}
+
+/**
+ * Đọc body JSON của API import. Dùng thay cho response.json() ở mọi chỗ có thể bị proxy
+ * chen ngang, để lỗi hạ tầng không hiện ra dưới dạng lỗi cú pháp JSON khó hiểu.
+ */
+async function readJsonBody<T = ImportApiPayload>(response: Response, fileSize?: number) {
+  const body = await response.text();
+  try {
+    return JSON.parse(body) as T;
+  } catch {
+    throw new Error(describeNonJsonResponse(response, body, fileSize));
+  }
 }
 
 function statusBadgeClass(status: string) {
@@ -164,6 +224,8 @@ type MasterOption = { code: string; name: string; group?: string | null; partner
 const masterDataFieldTypes: Record<string, string> = {
   partner_code: "PARTNER",
   category_code: "REVENUE_EXPENSE_CATEGORY",
+  // Cột Nhóm doanh thu của danh mục mặt hàng: chọn mã danh mục Thu thay vì gõ tay.
+  revenue_group: "REVENUE_EXPENSE_CATEGORY",
   money_source_code: "MONEY_SOURCE",
   from_money_source_code: "MONEY_SOURCE",
   to_money_source_code: "MONEY_SOURCE",
@@ -235,6 +297,11 @@ function filterMasterOptions(
       if (isReceivable) return cashflowType === "RECEIPT";
       return true;
     });
+  }
+
+  // Nhóm doanh thu chỉ có nghĩa với danh mục Thu — gợi ý cả khoản mục chi là điền sai chắc chắn.
+  if (fieldName === "revenue_group") {
+    return scopedOptions.filter((option) => normalizeCashflowCategoryType(option.group) !== "PAYMENT");
   }
 
   return scopedOptions;
@@ -347,14 +414,14 @@ export default function ImportUploadPage({
     setBatchDetailError("");
     try {
       const response = await fetch(withQuery(apiPath, { batchId }));
-      const payload = await response.json();
+      const payload = await readJsonBody<BatchDetail & { error?: string }>(response);
       if (!response.ok) {
         setBatchDetailError(payload.error || "Không tải được chi tiết batch import.");
         return;
       }
-      setSelectedBatch(payload as BatchDetail);
-    } catch {
-      setBatchDetailError("Không tải được chi tiết batch import.");
+      setSelectedBatch(payload);
+    } catch (error) {
+      setBatchDetailError(error instanceof Error ? error.message : "Không tải được chi tiết batch import.");
     } finally {
       setBatchDetailLoading(false);
     }
@@ -464,7 +531,7 @@ export default function ImportUploadPage({
         method: "POST",
         body: formData,
       });
-      const payload = await response.json();
+      const payload = await readJsonBody(response, file.size);
       const previewPayload = payload.preview as PreviewPayload | undefined;
       if (previewPayload) {
         setPreview(previewPayload);
@@ -555,7 +622,7 @@ export default function ImportUploadPage({
         method: "POST",
         body: formData,
       });
-      const payload = await response.json();
+      const payload = await readJsonBody(response, manualFile.size);
       const previewPayload = payload.preview as PreviewPayload | undefined;
       if (previewPayload) {
         setPreview(previewPayload);
@@ -579,29 +646,55 @@ export default function ImportUploadPage({
     }
   };
 
-  const downloadPreviewErrors = async () => {
-    if (!preview || errorRows.length === 0) return;
+  /** Ghi một mảng object ra file xlsx — dùng chung cho file lỗi và file preview đầy đủ. */
+  const downloadJsonSheet = async (rows: Record<string, unknown>[], sheetName: string, fileName: string) => {
     const XLSX = await import("xlsx");
-    const rows = errorRows.map((row) => ({
-      sheet: row.sheetName,
-      row_number: row.rowNumber,
-      errors: row.errors.join("; "),
-      ...Object.fromEntries(Object.entries(row.values).map(([key, value]) => [key, value ?? ""])),
-    }));
     const worksheet = XLSX.utils.json_to_sheet(rows);
     worksheet["!cols"] = Object.keys(rows[0] || {}).map((key) => ({ wch: Math.min(Math.max(key.length + 8, 16), 44) }));
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Dong loi");
+    XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
     const buffer = XLSX.write(workbook, { type: "array", bookType: "xlsx", compression: true });
     const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `preview_errors_${templateCode.toLowerCase()}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    link.download = fileName;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  };
+
+  const downloadPreviewErrors = async () => {
+    if (!preview || errorRows.length === 0) return;
+    await downloadJsonSheet(
+      errorRows.map((row) => ({
+        sheet: row.sheetName,
+        row_number: row.rowNumber,
+        errors: row.errors.join("; "),
+        ...Object.fromEntries(Object.entries(row.values).map(([key, value]) => [key, value ?? ""])),
+      })),
+      "Dong loi",
+      `preview_errors_${templateCode.toLowerCase()}_${new Date().toISOString().slice(0, 10)}.xlsx`,
+    );
+  };
+
+  /**
+   * Xuất TOÀN BỘ dòng của file đang preview — bảng bên dưới chỉ vẽ 100 dòng đầu, nên đây là
+   * cách duy nhất soát đủ chi tiết trước khi bấm commit.
+   */
+  const downloadPreviewRows = async () => {
+    if (!preview || preview.rows.length === 0) return;
+    await downloadJsonSheet(
+      preview.rows.map((row) => ({
+        sheet: row.sheetName,
+        row_number: row.rowNumber,
+        ...Object.fromEntries(Object.entries(row.values).map(([key, value]) => [key, value ?? ""])),
+        errors: row.errors.join("; "),
+      })),
+      "Preview",
+      `preview_${templateCode.toLowerCase()}_${new Date().toISOString().slice(0, 10)}.xlsx`,
+    );
   };
 
   const downloadBatchErrors = async (batchId: string) => {
@@ -619,6 +712,16 @@ export default function ImportUploadPage({
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  };
+
+  /** Xuất toàn bộ dòng đã import của batch đang mở (bảng chỉ vẽ 100 dòng đầu). */
+  const downloadBatchRows = async () => {
+    if (selectedBatchRows.length === 0) return;
+    await downloadJsonSheet(
+      selectedBatchRows.map((row) => Object.fromEntries(selectedBatchColumns.map((key) => [key, formatDetailValue(row[key])]))),
+      "Chi tiet batch",
+      `batch_${(selectedBatch?.fileName || selectedBatchId).replace(/[^\w.-]+/g, "_")}_${new Date().toISOString().slice(0, 10)}.xlsx`,
+    );
   };
 
   const openRollbackDialog = (batch: Batch) => {
@@ -643,7 +746,7 @@ export default function ImportUploadPage({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "ROLLBACK_BATCH", batchId: rollbackTarget.id, note }),
       });
-      const payload = await response.json();
+      const payload = await readJsonBody(response);
       if (!response.ok) {
         setRollbackError(payload.error || "Rollback batch thất bại.");
         await loadBatches();
@@ -655,8 +758,8 @@ export default function ImportUploadPage({
       setSelectedBatch(null);
       setMessage(`Đã rollback batch ${fileName}.`);
       await loadBatches();
-    } catch {
-      setRollbackError("Không thể kết nối để rollback batch. Vui lòng thử lại.");
+    } catch (error) {
+      setRollbackError(error instanceof Error ? error.message : "Không thể kết nối để rollback batch. Vui lòng thử lại.");
     } finally {
       setRollbackSaving(false);
     }
@@ -831,11 +934,24 @@ export default function ImportUploadPage({
           </div>
 
           <section className="min-w-0 bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden">
-            <div className="px-4 py-3 border-b border-slate-200">
-              <h2 className="font-bold">Preview dữ liệu</h2>
-              <p className="text-xs text-slate-500 mt-1">
-                Hệ thống tự nhận header theo alias. Dòng lỗi sẽ bị chặn khi commit vào dữ liệu vận hành.
-              </p>
+            <div className="px-4 py-3 border-b border-slate-200 flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="font-bold">Preview dữ liệu</h2>
+                <p className="text-xs text-slate-500 mt-1">
+                  Hệ thống tự nhận header theo alias. Dòng lỗi sẽ bị chặn khi commit vào dữ liệu vận hành.
+                </p>
+              </div>
+              {preview && preview.rows.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => void downloadPreviewRows()}
+                  title={`Xuất đủ ${preview.rows.length} dòng của file, không chỉ 100 dòng đang hiển thị`}
+                  className="bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 px-3 py-1.5 rounded-lg text-xs font-bold transition inline-flex items-center gap-1.5 shadow-sm"
+                >
+                  <span className="material-symbols-outlined text-[16px]">download</span>
+                  Xuất Excel ({preview.rows.length} dòng)
+                </button>
+              )}
             </div>
 
             {preview ? (
@@ -976,11 +1092,14 @@ export default function ImportUploadPage({
               <h2 className="font-bold">Lịch sử import</h2>
               <p className="text-xs text-slate-500 mt-1">20 batch gần nhất, bấm một dòng để xem chi tiết.</p>
             </div>
-            <button onClick={() => void loadBatches()} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50">
-              Tải lại
-            </button>
+            <div className="flex items-center gap-2">
+              <ExportExcelButton fileName={`lich_su_import_${templateCode.toLowerCase()}`} sheetName="Lich su import" targetId="import-history-table" />
+              <button onClick={() => void loadBatches()} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50">
+                Tải lại
+              </button>
+            </div>
           </div>
-          <div className="max-h-[420px] overflow-auto">
+          <div id="import-history-table" className="max-h-[420px] overflow-auto">
             <table className="w-full text-left text-sm">
               <thead className="sticky top-0 bg-slate-50 text-slate-500 text-xs uppercase">
                 <tr>
@@ -1063,16 +1182,29 @@ export default function ImportUploadPage({
                   ) : "Chọn một dòng lịch sử để xem chi tiết dữ liệu đã import."}
                 </p>
               </div>
-              <button
-                onClick={() => {
-                  setSelectedBatch(null);
-                  setSelectedBatchId("");
-                  setBatchDetailError("");
-                }}
-                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50"
-              >
-                Đóng
-              </button>
+              <div className="flex items-center gap-2">
+                {selectedBatchRows.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => void downloadBatchRows()}
+                    title={`Xuất đủ ${selectedBatchRows.length} dòng đã import của batch này`}
+                    className="bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 px-3 py-2 rounded-lg text-sm font-bold transition inline-flex items-center gap-1.5"
+                  >
+                    <span className="material-symbols-outlined text-[16px]">download</span>
+                    Xuất Excel ({selectedBatchRows.length} dòng)
+                  </button>
+                )}
+                <button
+                  onClick={() => {
+                    setSelectedBatch(null);
+                    setSelectedBatchId("");
+                    setBatchDetailError("");
+                  }}
+                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50"
+                >
+                  Đóng
+                </button>
+              </div>
             </div>
             <div className="relative overflow-x-auto max-h-[420px] min-h-[140px]">
               {batchDetailLoading && (

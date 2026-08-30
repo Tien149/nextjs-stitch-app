@@ -599,6 +599,9 @@ export async function POST(request: Request) {
     let settlementBankCode: string | null = null;
     // Tên "Nguồn tiền tổng": các nguồn cùng tên sẽ được Báo cáo nguồn tiền gộp một dòng.
     const summarySourceName = type === "MONEY_SOURCE" ? (cleanMoneySourceName(body.summarySourceName) || null) : null;
+    // Từ khoá nhận dạng khi import: chỉ danh mục Thu/Chi dùng, để khách tự khai "ĐỒ ĂN" thuộc
+    // nhóm doanh thu nào mà không phải nhờ sửa mã nguồn (lib/revenue-source.ts).
+    const matchKeywords = type === "REVENUE_EXPENSE_CATEGORY" ? (cleanText(body.matchKeywords) || null) : null;
 
     if (!type || !code || !name) {
       return NextResponse.json({ error: "Loại danh mục, mã và tên là bắt buộc" }, { status: 400 });
@@ -639,6 +642,7 @@ export async function POST(request: Request) {
         codePrefix,
         settlementBankCode,
         summarySourceName,
+        matchKeywords,
         note: cleanText(body.note) || null,
         status: cleanText(body.status) || "ACTIVE",
       },
@@ -687,6 +691,9 @@ export async function PATCH(request: Request) {
       : null;
     let codePrefix = current.codePrefix;
     let settlementBankCode = current.settlementBankCode;
+    const matchKeywords = current.type === "REVENUE_EXPENSE_CATEGORY"
+      ? (body.matchKeywords !== undefined ? (cleanText(body.matchKeywords) || null) : current.matchKeywords)
+      : null;
     const summarySourceName = current.type === "MONEY_SOURCE"
       ? (body.summarySourceName !== undefined ? (cleanMoneySourceName(body.summarySourceName) || null) : current.summarySourceName)
       : null;
@@ -747,6 +754,7 @@ export async function PATCH(request: Request) {
         ...(body.codePrefix !== undefined ? { codePrefix } : {}),
         settlementBankCode,
         summarySourceName,
+        matchKeywords,
         ...(body.note !== undefined ? { note: cleanText(body.note) || null } : {}),
         ...(body.status !== undefined ? { status: cleanText(body.status) || "ACTIVE" } : {}),
       },

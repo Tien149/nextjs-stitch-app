@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import ExportExcelButton from "@/components/ExportExcelButton";
 import { useRouter } from "next/navigation";
 import { DateInput, MonthInput } from "@/components/DateInput";
 import { ModuleFrame } from "@/components/ModuleFrame";
@@ -231,8 +232,16 @@ export default function WorkManagementPage() {
         </div>
       </StickyFilterBar>
 
-      <section className="table-panel">
-        {view === "LIST" && <ListView items={data.items} onOpen={(id) => router.push(`/work-management/${id}`)} />}
+      <section className="table-panel" id="work-item-table">
+        {view === "LIST" && (
+          <>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+              <p className="text-sm font-bold text-slate-700">{data.items.length} công việc</p>
+              <ExportExcelButton fileName="danh_sach_cong_viec" sheetName="Cong viec" targetId="work-item-table" />
+            </div>
+            <ListView items={data.items} onOpen={(id) => router.push(`/work-management/${id}`)} />
+          </>
+        )}
         {view === "KANBAN" && (
           <KanbanView
             items={data.items}

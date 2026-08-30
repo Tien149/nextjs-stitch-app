@@ -107,6 +107,23 @@ async function resolveItemCategory(itemType: string, value: unknown) {
   return group?.code || null;
 }
 
+/**
+ * Nhóm doanh thu của mặt hàng: mã danh mục Thu/Chi thuộc nhóm Thu (RECEIPT). Kiểm tra tồn tại
+ * để danh mục không đọng mã rác — import doanh thu POS dùng đúng mã này làm categoryCode 511.
+ */
+async function resolveItemRevenueGroup(value: unknown) {
+  const code = cleanText(value).toUpperCase();
+  if (!code) return null;
+  const category = await prisma.masterDataItem.findFirst({
+    where: { type: "REVENUE_EXPENSE_CATEGORY", code, status: "ACTIVE" },
+  });
+  if (!category) businessError(`Nhóm doanh thu [${code}] không tồn tại hoặc đã ngưng hoạt động.`);
+  if ((category?.group || "").toUpperCase() === "PAYMENT") {
+    businessError(`Danh mục ${category?.name} là danh mục Chi, không dùng làm nhóm doanh thu được.`);
+  }
+  return category?.code || null;
+}
+
 /** Dòng định mức khi sửa BOM: báo lỗi rõ ràng thay vì lặng lẽ loại bỏ. */
 function editableRecipeLines(value: unknown) {
   if (!Array.isArray(value)) businessError("Danh sách nguyên liệu không hợp lệ");
@@ -166,7 +183,7 @@ export async function GET(request: Request) {
     });
     const warehouseCodes = allowedWarehouses.map((w) => w.code);
 
-    const [items, balances, transactions, reportTransactions, recipes, warehouses, stocktakes, itemGroups, pendingRevenueRows] = await Promise.all([
+    const [items, balances, transactions, reportTransactions, recipes, warehouses, stocktakes, itemGroups, revenueGroups, pendingRevenueRows] = await Promise.all([
       prisma.inventoryItem.findMany({ include: { unitConversions: { orderBy: [{ isDefaultPurchase: "desc" }, { unitCode: "asc" }] } }, orderBy: { name: "asc" } }),
       prisma.inventoryBalance.findMany({
         where: { warehouseCode: { in: warehouseCodes } },
@@ -197,6 +214,13 @@ export async function GET(request: Request) {
       }),
       prisma.masterDataItem.findMany({
         where: { type: "INVENTORY_ITEM_GROUP", status: "ACTIVE" },
+        orderBy: { name: "asc" },
+      }),
+      // Danh mục Thu dùng làm "Nhóm doanh thu" của mặt hàng. Lọc bỏ nhóm Chi ngay từ query
+      // để ô chọn trên danh mục mặt hàng không lẫn hạng mục chi phí.
+      prisma.masterDataItem.findMany({
+        where: { type: "REVENUE_EXPENSE_CATEGORY", status: "ACTIVE", NOT: { group: "PAYMENT" } },
+        select: { id: true, code: true, name: true, group: true },
         orderBy: { name: "asc" },
       }),
       // Dòng doanh thu có mã hàng nhưng CHƯA rã nguyên liệu — nguồn của nút "Rã nguyên liệu".
@@ -426,7 +450,7 @@ export async function GET(request: Request) {
     }
     const pendingSales = { total: pendingRevenueRows.length, byDay: [...pendingByDay.values()] };
 
-    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, balances, transactions, recipes: recipesWithCost, warehouses, stocktakes, stockSummary, stockMovements, itemGroups, costSummary, wasteReport, pendingSales }));
+    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, balances, transactions, recipes: recipesWithCost, warehouses, stocktakes, stockSummary, stockMovements, itemGroups, revenueGroups, costSummary, wasteReport, pendingSales }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });
@@ -464,6 +488,7 @@ export async function POST(request: Request) {
           unit,
           itemType,
           category: await resolveItemCategory(itemType, body.category),
+          revenueGroup: await resolveItemRevenueGroup(body.revenueGroup),
           minStock: toNumber(body.minStock),
           requiresImage: !!body.requiresImage,
           note: cleanText(body.note) || null,
@@ -1260,6 +1285,7 @@ export async function PATCH(request: Request) {
           itemType,
           minStock,
           ...(body.category !== undefined ? { category: await resolveItemCategory(itemType, body.category) } : {}),
+          ...(body.revenueGroup !== undefined ? { revenueGroup: await resolveItemRevenueGroup(body.revenueGroup) } : {}),
           ...(body.requiresImage !== undefined ? { requiresImage: !!body.requiresImage } : {}),
           ...(body.status !== undefined ? { status: cleanText(body.status).toUpperCase() || "ACTIVE" } : {}),
           ...(body.note !== undefined ? { note: cleanText(body.note) || null } : {}),

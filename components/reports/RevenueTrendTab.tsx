@@ -74,6 +74,7 @@ export default function RevenueTrendTab({ period, branchCode }: { period: string
         <PanelHeader
           title={`Doanh thu ${data.year}: kế hoạch vs thực hiện`}
           subtitle={hasPlan ? "Kế hoạch lấy từ target Doanh thu của từng kỳ ở tab Ngân sách." : "Chưa set target Doanh thu cho các kỳ — vào tab Ngân sách để set kế hoạch từng tháng."}
+        exportable={false}
         />
         <div className="p-4">
           <MoneyLineChart
@@ -91,6 +92,7 @@ export default function RevenueTrendTab({ period, branchCode }: { period: string
           <PanelHeader
             title={`Tỷ lệ thực hiện đến ${data.period}`}
             subtitle="Cột trái: kế hoạch cả năm. Cột phải: thực hiện luỹ kế tới kỳ đang xem — đúng cách đọc trong file gốc."
+          exportable={false}
           />
           <div className="p-4">
             <MoneyBarChart
@@ -107,7 +109,7 @@ export default function RevenueTrendTab({ period, branchCode }: { period: string
           </div>
         </section>
         <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-          <PanelHeader title="Biến động doanh thu cùng kỳ qua các năm" subtitle="Mỗi đường một năm — nhìn ngay tháng nào lệch nhịp so với cùng kỳ." />
+          <PanelHeader title="Biến động doanh thu cùng kỳ qua các năm" subtitle="Mỗi đường một năm — nhìn ngay tháng nào lệch nhịp so với cùng kỳ." exportable={false} />
           <div className="p-4">
             <MoneyLineChart
               labels={monthHeaders}

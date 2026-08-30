@@ -16,6 +16,7 @@ import { type VoucherDocumentChannel, voucherChannelLabel, voucherTypeLabel } fr
 import { depositCategoryDirection } from "@/lib/bank-statement-category";
 import { PartnerPicker } from "@/components/PartnerPicker";
 import { SearchableSelect } from "@/components/SearchableSelect";
+import { exportRowsToExcel } from "@/lib/export-table-excel";
 
 const MAX_BULK_SELECTION = 100;
 
@@ -198,6 +199,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
   const [categories, setCategories] = useState<MasterDataOption[]>([]);
   const [pnlItems, setPnlItems] = useState<MasterDataOption[]>([]);
   const [partners, setPartners] = useState<MasterDataOption[]>([]);
+  const [isExporting, setIsExporting] = useState(false);
   const moneySourceRequestRef = useRef(0);
   const selectAllRef = useRef<HTMLInputElement>(null);
 
@@ -236,6 +238,65 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
       setListLoading(false);
     }
   }, [documentChannel]);
+
+  /**
+   * Danh sách chứng từ phân trang phía máy chủ nên nút xuất phải quét hết các trang của đúng
+   * bộ lọc đang áp dụng; xuất theo bảng thì chỉ được số phiếu của trang đang xem.
+   */
+  const exportVouchers = async () => {
+    if (voucherPagination.totalCount === 0) return void window.alert("Không có chứng từ nào để xuất.");
+    setIsExporting(true);
+    try {
+      const collected: Voucher[] = [];
+      const pageSize = 100;
+      const lastPage = Math.max(1, Math.ceil(voucherPagination.totalCount / pageSize));
+      for (let current = 1; current <= lastPage; current += 1) {
+        const query = new URLSearchParams({
+          branchCode,
+          channel: documentChannel,
+          voucherType: appliedFilters.voucherType,
+          page: String(current),
+          pageSize: String(pageSize),
+        });
+        if (appliedFilters.startDate) query.set("startDate", appliedFilters.startDate);
+        if (appliedFilters.endDate) query.set("endDate", appliedFilters.endDate);
+        if (appliedFilters.moneySourceCode) query.set("moneySourceCode", appliedFilters.moneySourceCode);
+        if (appliedFilters.categoryCode) query.set("categoryCode", appliedFilters.categoryCode);
+        if (appliedFilters.missingCategory) query.set("missingCategory", "1");
+        if (appliedFilters.partnerCode) query.set("partnerCode", appliedFilters.partnerCode);
+        const response = await fetch(`/api/vouchers?${query.toString()}`);
+        const payload = await response.json().catch(() => null) as VoucherListResponse | { error?: string } | null;
+        if (!response.ok || !payload || !("rows" in payload)) {
+          throw new Error(payload && "error" in payload ? payload.error || "Không tải được chứng từ để xuất" : "Không tải được chứng từ để xuất");
+        }
+        collected.push(...payload.rows);
+      }
+      await exportRowsToExcel(
+        collected.map((voucher) => ({
+          "Mã chứng từ": voucher.code,
+          "Ngày chứng từ": new Date(voucher.voucherDate).toLocaleDateString("vi-VN"),
+          "Loại": voucher.voucherType === "RECEIPT" ? "Phiếu thu" : "Phiếu chi",
+          "Cửa hàng": storeLabel(voucher.branchCode),
+          "Đối tác": voucher.partnerCode || "",
+          "Người nhận/nộp": voucher.recipientName || "",
+          "Nguồn tiền": voucher.moneySourceCode,
+          "Khoản mục thu/chi": voucher.categoryCode || "",
+          "Hạng mục P&L": voucher.pnlItemCode || "",
+          "Số tiền": voucher.amount,
+          "Diễn giải": voucher.description,
+          "Ca": voucher.shift || "",
+          "Chứng từ nguồn": voucher.sourceDocumentCode || "",
+          "Trạng thái": voucher.status,
+          "Cập nhật": new Date(voucher.updatedAt).toLocaleString("vi-VN"),
+        })),
+        { fileName: "chung_tu_thu_chi", sheetName: "Chung tu" },
+      );
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Không xuất được file Excel");
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   const loadMasterData = useCallback(async (session: DemoSession, initialBranch: string) => {
     const rawSession = localStorage.getItem(SESSION_KEY);
@@ -1539,6 +1600,16 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                 className="h-[38px] rounded-lg border border-slate-300 bg-white px-4 text-sm font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
               >
                 Xóa lọc
+              </button>
+              <button
+                type="button"
+                disabled={isExporting || listLoading}
+                onClick={() => void exportVouchers()}
+                title="Xuất đủ chứng từ của bộ lọc hiện tại, không chỉ trang đang xem"
+                className="inline-flex h-[38px] items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 text-sm font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+              >
+                <span className="material-symbols-outlined text-[18px]">download</span>
+                {isExporting ? "Đang xuất..." : `Xuất Excel (${voucherPagination.totalCount})`}
               </button>
               {listError && <p className="w-full text-xs font-semibold text-rose-600">{listError}</p>}
             </form>

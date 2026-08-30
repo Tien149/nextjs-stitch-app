@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import ExportExcelButton from "@/components/ExportExcelButton";
 import { useRouter } from "next/navigation";
 import { BranchScopeSelect, resolveInitialBranchScope } from "@/components/BranchScopeSelect";
 import { MonthInput } from "@/components/DateInput";
@@ -947,13 +948,19 @@ export default function OpeningBalancesPage() {
                   <option value="CONFIRMED">Đã chốt</option>
                   <option value="POSTED">Đã ghi sổ (Import)</option>
                 </select>
+                <ExportExcelButton
+                  fileName="so_du_dau_ky"
+                  sheetName="So du dau ky"
+                  targetId="opening-balance-table"
+                  className="rounded-lg border border-slate-200 bg-white text-slate-700 px-3 py-2 text-sm font-bold hover:bg-slate-50 transition inline-flex items-center gap-1.5"
+                />
                 <button onClick={loadBalances} className="rounded-lg border border-slate-200 bg-white text-slate-700 px-3 py-2 text-sm font-bold hover:bg-slate-50 transition">
                   Tải lại
                 </button>
               </div>
             </div>
 
-            <div className="overflow-x-auto">
+            <div id="opening-balance-table" className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-bold border-b border-slate-200">
                   <tr>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import ExportExcelButton from "@/components/ExportExcelButton";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { DateInput } from "@/components/DateInput";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
@@ -857,6 +858,7 @@ export default function ProcurementPage() {
                     Tạo đơn đặt hàng
                   </button>
                 )}
+                <ExportExcelButton fileName="danh_sach_pr" sheetName="PR" />
                 <button type="button" title="Tải lại" onClick={loadData} className="icon-button"><span className="material-symbols-outlined text-lg">refresh</span></button>
               </div>
             </div>
@@ -1201,6 +1203,7 @@ export default function ProcurementPage() {
               <h2 className="font-bold">Đơn mua hàng (PO)</h2>
               <p className="text-xs text-slate-500 mt-1">Duyệt PO → &quot;Gửi NCC&quot; để mở phiếu chia sẻ (kèm QR) → nhận hàng tại đây hoặc ở Kho &amp; Định lượng.</p>
             </div>
+            <ExportExcelButton fileName="don_mua_hang" sheetName="PO" />
             <div className="flex items-center gap-3">
               <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
                 Kho nhận:

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { appMenuItems, canAccessMenu, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import { filterMoneySources, type MoneySourceOption } from "@/lib/money-sources";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
+import { exportRowsToExcel } from "@/lib/export-table-excel";
 
 type Allocation = { id: string; sourceRowNumber: number; sheetName: string; revenueDate: string | null; sourceDate: string | null; grossAmount: number | null; grabExpenseAmount: number; cardFeeAmount: number };
 type MatchRow = { targetCode: string; targetType: string; targetHref?: string };
@@ -42,6 +43,7 @@ export default function BankStatementLedgerPage() {
   const [batchId, setBatchId] = useState("");
   const [filters, setFilters] = useState(emptyFilters);
   const [applied, setApplied] = useState(emptyFilters);
+  const [isExporting, setIsExporting] = useState(false);
 
   useEffect(() => {
     const raw = localStorage.getItem(SESSION_KEY);
@@ -109,6 +111,59 @@ export default function BankStatementLedgerPage() {
   const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
   const recorded = rows.filter((row) => row.reconcileStatus === "MATCHED").length;
 
+  /**
+   * Trang này phân trang phía máy chủ (50 dòng/trang) nên nút xuất phải gọi lần lượt hết các
+   * trang của đúng bộ lọc đang áp dụng — kế toán cần soát đủ cả kỳ chứ không phải trang đang xem.
+   */
+  const exportAllRows = async () => {
+    if (total === 0) return void window.alert("Không có giao dịch nào để xuất.");
+    setIsExporting(true);
+    try {
+      const collected: BankRow[] = [];
+      for (let current = 1; current <= totalPages; current += 1) {
+        const params = new URLSearchParams({ status: "ALL", ledger: "1", page: String(current), dateType: applied.dateType });
+        Object.entries(applied).forEach(([key, value]) => {
+          if (value && !["dateType", "branchCode"].includes(key)) params.set(key, value);
+        });
+        if (applied.branchCode !== "ALL") params.set("branchCode", applied.branchCode);
+        if (batchId) params.set("batchId", batchId);
+        const response = await fetch(`/api/reconciliations?${params}`);
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload?.error || "Không tải được dữ liệu để xuất");
+        collected.push(...((payload.rows || []) as BankRow[]));
+      }
+      await exportRowsToExcel(
+        collected.map((row) => ({
+          "Ngày giao dịch": dateText(row.transactionDate),
+          "Ngày nguồn tiền": dateText(row.sourceDate),
+          "Ngày doanh thu": row.revenueDates.map(dateText).join(", "),
+          "Mã giao dịch": row.transactionCode,
+          "Tài khoản": row.bankAccount,
+          "Diễn giải": row.description,
+          "Nợ": row.debitAmount,
+          "Có": row.creditAmount,
+          "Cửa hàng": storeLabel(row.branchCode),
+          "Mã cửa hàng": row.branchCode || "",
+          "Nghiệp vụ": operationLabels[row.operationType || ""] || row.operationType || "",
+          "Loại thu/chi": row.categoryCode || "",
+          "Nguồn tiền tổng": row.summaryMoneySourceCode || "",
+          "Nguồn tiền tăng": row.increaseMoneySourceCode || "",
+          "Nguồn tiền giảm": row.decreaseMoneySourceCode || "",
+          "Đối tác": row.partnerCode || "",
+          "Hạng mục P&L": row.pnlItemCode || "",
+          "Chứng từ": row.currentMatch?.targetCode || "",
+          "Số dòng phân bổ": row.allocations.length,
+          "Trạng thái": row.reconcileStatus === "MATCHED" ? "ĐÃ GHI NHẬN" : "DỮ LIỆU CŨ",
+        })),
+        { fileName: "so_sao_ke_ngan_hang", sheetName: "Sao ke" },
+      );
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Không xuất được file Excel");
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   return <div className="min-h-screen bg-slate-100 text-slate-800">
     <header className="border-b border-slate-200 bg-white px-6 py-4 shadow-sm">
       <div className="mx-auto flex max-w-[1800px] items-center justify-between gap-4">
@@ -141,7 +196,13 @@ export default function BankStatementLedgerPage() {
       </section>
 
       <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-        <div className="border-b border-slate-200 p-4"><h2 className="font-bold">Danh sách giao dịch sao kê đã import</h2><p className="mt-1 text-xs text-slate-500">Không cần match thủ công; file hợp lệ được ghi nhận trực tiếp khi Commit.</p></div>
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 p-4">
+          <div><h2 className="font-bold">Danh sách giao dịch sao kê đã import</h2><p className="mt-1 text-xs text-slate-500">Không cần match thủ công; file hợp lệ được ghi nhận trực tiếp khi Commit.</p></div>
+          <button type="button" onClick={() => void exportAllRows()} disabled={isExporting} title="Xuất đủ toàn bộ giao dịch của bộ lọc hiện tại, không chỉ trang đang xem" className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-60">
+            <span className="material-symbols-outlined text-[16px]">download</span>
+            {isExporting ? "Đang xuất..." : `Xuất Excel (${total} dòng)`}
+          </button>
+        </div>
         <div className="overflow-x-auto"><table className="min-w-[1500px] w-full text-left text-sm">
           <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr>{["Ngày GD / nguồn / DT", "Sao kê", "Nợ", "Có", "Cửa hàng", "Nghiệp vụ / loại", "Nguồn tổng / tăng / giảm", "Đối tác / P&L", "Chứng từ", "Trạng thái"].map((label) => <th key={label} className="px-3 py-3">{label}</th>)}</tr></thead>
           <tbody>{loading ? <tr><td colSpan={10} className="p-10 text-center text-slate-400">Đang tải...</td></tr> : rows.length === 0 ? <tr><td colSpan={10} className="p-10 text-center text-slate-400">Không có giao dịch phù hợp.</td></tr> : rows.map((row) => <tr key={row.id} className="border-t border-slate-100 align-top hover:bg-slate-50">

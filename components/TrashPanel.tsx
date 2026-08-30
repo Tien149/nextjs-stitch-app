@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import ExportExcelButton from "@/components/ExportExcelButton";
 import { canPerformMenuAction, SESSION_KEY, type DemoSession } from "@/lib/auth-demo";
 
 type TrashRow = {
@@ -193,7 +194,10 @@ export function TrashPanel({
         </p>
       )}
 
-      <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+      <div className="bg-white border border-slate-200 rounded-xl overflow-hidden" data-export-root>
+        <div className="flex justify-end border-b border-slate-200 px-4 py-2">
+          <ExportExcelButton fileName="thung_rac" sheetName="Thung rac" />
+        </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-slate-50 border-b border-slate-200">

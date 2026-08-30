@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import ExportExcelButton from "@/components/ExportExcelButton";
 import { useRouter } from "next/navigation";
 import { MonthInput, DateInput } from "@/components/DateInput";
 import { storeLabel, visibleBranchScopeOptions, visibleStoreOptions } from "@/lib/branch-labels";
@@ -497,6 +498,12 @@ export default function AccountingPage() {
                     Hiển thị định khoản kế toán (Nợ/Có)
                   </label>
                   
+                  <ExportExcelButton
+                    fileName="so_cai_ke_toan"
+                    sheetName="So cai"
+                    targetId="accounting-ledger-table"
+                    className="h-9 px-3 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-bold flex items-center gap-1.5 transition-colors shadow-sm"
+                  />
                   <button
                     onClick={loadData}
                     className="h-9 px-3 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-bold flex items-center gap-1.5 transition-colors shadow-sm"
@@ -507,7 +514,7 @@ export default function AccountingPage() {
                 </div>
               </div>
 
-              <div className="overflow-x-auto">
+              <div id="accounting-ledger-table" className="overflow-x-auto">
                 {showAccountingDetails ? (
                   // Traditional Double-entry Accounting Table
                   <table className="w-full text-left text-sm">
@@ -844,12 +851,15 @@ export default function AccountingPage() {
         {/* TAB 3: Chart of Accounts */}
         {active === "accounts" && (
           <section className="bg-white border border-slate-200 rounded-2xl shadow-lg overflow-hidden">
-            <div className="px-6 py-5 border-b border-slate-200">
-              <h3 className="font-bold text-slate-900">Hệ thống Tài khoản Kế toán</h3>
-              <p className="text-xs text-slate-500 mt-1">Danh mục tài khoản kế toán áp dụng cho hệ thống ERP nội bộ.</p>
+            <div className="px-6 py-5 border-b border-slate-200 flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="font-bold text-slate-900">Hệ thống Tài khoản Kế toán</h3>
+                <p className="text-xs text-slate-500 mt-1">Danh mục tài khoản kế toán áp dụng cho hệ thống ERP nội bộ.</p>
+              </div>
+              <ExportExcelButton fileName="he_thong_tai_khoan" sheetName="Tai khoan" targetId="chart-of-accounts-table" />
             </div>
-            
-            <div className="overflow-x-auto">
+
+            <div id="chart-of-accounts-table" className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead className="bg-slate-50/80 backdrop-blur-sm text-xs font-bold text-slate-500 uppercase tracking-wider border-b border-slate-200">
                   <tr>
