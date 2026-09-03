@@ -42,3 +42,23 @@ export function Table({ headers, children }: { headers: string[]; children: Reac
 export function Cell({ children, right, center }: { children: React.ReactNode; right?: boolean; center?: boolean }) {
   return <td className={`px-4 py-3 whitespace-nowrap ${right ? "text-right" : center ? "text-center" : ""}`}>{children}</td>;
 }
+
+export function Kpi({ label, value, icon, tone = "default" }: { label: string; value: number; icon: string; tone?: "default" | "green" | "blue" | "rose" | "amber" }) {
+  const toneClasses = {
+    default: "text-slate-800",
+    green: "text-emerald-600",
+    blue: "text-blue-600",
+    rose: "text-rose-600",
+    amber: "text-amber-600",
+  }[tone];
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4">
+      <div className="flex items-center justify-between text-slate-400">
+        <span className="text-xs font-semibold text-slate-500">{label}</span>
+        <span className="material-symbols-outlined text-xl">{icon}</span>
+      </div>
+      <p className={`text-xl font-bold mt-2 ${toneClasses}`}>{money(value)} đ</p>
+    </div>
+  );
+}

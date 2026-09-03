@@ -46,7 +46,7 @@ function emptyPnl(): PnlBucket {
 }
 
 /** Dòng nào của báo cáo KQKD nhận bút toán này — dùng chung cho cả số tổng lẫn cây hạng mục. */
-function pnlLineKeyOf(account: { accountType: string; reportGroup: string }): PnlLineKey | null {
+export function pnlLineKeyOf(account: { accountType: string; reportGroup: string }): PnlLineKey | null {
   if (account.accountType === "REVENUE") return "revenue";
   if (account.accountType === "COGS") return "cogs";
   if (account.accountType === "OPEX") {

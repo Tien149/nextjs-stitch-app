@@ -3,7 +3,7 @@ import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { allowedMenuTabs, canViewFinancialDashboard } from "@/lib/auth-demo";
 import { requestedBranch } from "@/lib/accounting";
 import { prisma } from "@/lib/prisma";
-import { createMoneySourceMatcher, getBalanceSheet, getCashSourceReport, getCashflowForecast, getPnl, getRevenueSettlementReport, getTrend } from "@/lib/reports";
+import { createMoneySourceMatcher, getBalanceSheet, getCashSourceReport, getCashflowForecast, getPnl, getRevenueSettlementReport, getTrend, PNL_UNGROUPED_CODE } from "@/lib/reports";
 import { getPayrollBudgetReport, getPnlMatrix, getRevenueTrendReport } from "@/lib/report-budget";
 import { apiError, businessError, cleanText, isPeriodLocked, normalizePeriod, toNumber } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
@@ -221,47 +221,208 @@ async function getOperationsReport(period: string, branchCode: string) {
   };
 }
 
-const budgetMetrics = [
-  { metric: "revenue", label: "Doanh thu", kind: "REVENUE" },
-  { metric: "cogs", label: "Giá vốn", kind: "EXPENSE" },
-  { metric: "payroll", label: "Chi phí nhân sự", kind: "EXPENSE" },
-  { metric: "otherOpex", label: "OPEX khác", kind: "EXPENSE" },
-  { metric: "depreciation", label: "Khấu hao", kind: "EXPENSE" },
-  { metric: "opexBeforeDepreciation", label: "OPEX trước khấu hao", kind: "EXPENSE" },
-  { metric: "ebitda", label: "EBITDA", kind: "PROFIT" },
-] as const;
+/**
+ * Tab Ngân sách bám theo cây hạng mục P&L khai ở Cài đặt > Danh mục (feedback 03/09/2026):
+ * dòng KQKD -> nhóm PNL_GROUP -> hạng mục PNL_ITEM. Hai kiểu set:
+ *  - TOTAL: chỉ set một con số tổng cho cả dòng (Doanh thu, Giá vốn, Nhân sự, Khấu hao).
+ *  - DETAIL: set từng hạng mục (marketing, điện nước, mặt bằng...) rồi cộng ngược lên
+ *    nhóm và lên dòng; dòng OPEX không set trực tiếp nữa.
+ * Lợi nhuận gộp và EBITDA suy từ các target đã set, không nhập tay để khỏi lệch nhau.
+ */
+type BudgetKind = "REVENUE" | "EXPENSE" | "PROFIT" | "CASH";
+type BudgetScope = "TOTAL" | "DETAIL" | "DERIVED" | "ROLLUP" | "INFO";
+type BudgetLineConfig = { key: string; label: string; kind: BudgetKind; scope: "TOTAL" | "DETAIL" | "DERIVED"; hint: string | null };
+type BudgetRow = {
+  key: string;
+  parentKey: string | null;
+  level: number;
+  label: string;
+  code: string | null;
+  kind: BudgetKind;
+  scope: BudgetScope;
+  /** Khoá ReportTarget.metric nếu dòng này set được ngân sách trực tiếp. */
+  metric: string | null;
+  drilldown: { metric: string; line: string } | null;
+  actual: number | null;
+  target: number;
+  targetMode: string | null;
+  targetPercent: number | null;
+  standard: number | null;
+  variance: number | null;
+  usageRate: number | null;
+  isGood: boolean;
+  hasTarget: boolean;
+  hint: string | null;
+  warning: string | null;
+};
+
+const budgetLines: BudgetLineConfig[] = [
+  { key: "revenue", label: "Doanh thu", kind: "REVENUE", scope: "TOTAL", hint: "Set một target tổng. Doanh thu theo nguồn thu chỉ để theo dõi." },
+  { key: "cogs", label: "Giá vốn hàng bán", kind: "EXPENSE", scope: "TOTAL", hint: "Set tổng cho cả dòng; hạng mục giá vốn bên dưới chỉ theo dõi." },
+  { key: "grossProfit", label: "Lợi nhuận gộp", kind: "PROFIT", scope: "DERIVED", hint: "= Target doanh thu − ngân sách giá vốn." },
+  { key: "payroll", label: "Chi phí nhân sự", kind: "EXPENSE", scope: "TOTAL", hint: "Set tổng ở đây; tỷ trọng lương từng bộ phận set ở tab Ngân sách nhân sự." },
+  { key: "otherOpex", label: "Chi phí hoạt động khác (OPEX)", kind: "EXPENSE", scope: "DETAIL", hint: "Set ngân sách từng hạng mục P&L; dòng tổng và nhóm tự cộng." },
+  { key: "depreciation", label: "Khấu hao tài sản/CCDC", kind: "EXPENSE", scope: "TOTAL", hint: "Set tổng; số thực tế chạy từ phân hệ tài sản." },
+  { key: "ebitda", label: "EBITDA", kind: "PROFIT", scope: "DERIVED", hint: "= Lợi nhuận gộp − ngân sách nhân sự − ngân sách OPEX." },
+  { key: "cashRemaining", label: "Nguồn tiền còn lại", kind: "CASH", scope: "TOTAL", hint: "Target tiền còn lại cuối kỳ, đối chiếu ở tab Nguồn tiền." },
+];
+const PNL_ITEM_METRIC_PREFIX = "pnlItem:";
+const BUDGET_TOTAL_METRICS = budgetLines.filter((line) => line.scope === "TOTAL").map((line) => line.key);
+const BUDGET_EXPENSE_LINES = budgetLines.filter((line) => line.kind === "EXPENSE").map((line) => line.key);
 
 async function getBudgetReport(period: string, branchCode: string) {
   const pnl = await getPnl(period, branchCode);
-  const targets = await prisma.reportTarget.findMany({
-    where: { period, branchCode },
-  });
+  const targets = await prisma.reportTarget.findMany({ where: { period, branchCode, deletedAt: null } });
   const targetByMetric = new Map(targets.map((target) => [target.metric, target]));
   // Ngân sách % doanh thu quy ra tiền theo TARGET doanh thu; song song đó "mức chuẩn"
   // quy theo doanh thu THỰC TẾ — đúng khái niệm "Lương theo tiêu chuẩn" trong feedback
   // chị Bình 26/08/2026: doanh thu chạy tới đâu thì ngân sách chi phí co giãn tới đó.
   const revenueTargetValue = targetByMetric.get("revenue")?.targetValue || 0;
-  const resolveTarget = (metric: string) => {
+  type Resolved = { target: number; targetMode: string | null; targetPercent: number | null; standard: number | null; hasTarget: boolean };
+  const noTarget: Resolved = { target: 0, targetMode: null, targetPercent: null, standard: null, hasTarget: false };
+  const resolveTarget = (metric: string): Resolved => {
     const target = targetByMetric.get(metric);
-    if (!target) return { target: 0, targetPercent: null as number | null, standard: null as number | null };
+    if (!target) return noTarget;
     if (target.targetMode === "PERCENT_REVENUE" && target.targetPercent) {
-      return {
-        target: revenueTargetValue * target.targetPercent,
-        targetPercent: target.targetPercent,
-        standard: pnl.total.revenue * target.targetPercent,
-      };
+      return { target: revenueTargetValue * target.targetPercent, targetMode: "PERCENT_REVENUE", targetPercent: target.targetPercent, standard: pnl.total.revenue * target.targetPercent, hasTarget: true };
     }
-    return { target: target.targetValue, targetPercent: null, standard: null };
+    return { target: target.targetValue, targetMode: "AMOUNT", targetPercent: null, standard: null, hasTarget: target.targetValue > 0 };
   };
-
-  const rows = budgetMetrics.map((item) => {
-    const actual = pnl.total[item.metric];
-    const { target, targetPercent, standard } = resolveTarget(item.metric);
+  const measure = (kind: BudgetKind, actual: number | null, target: number, hasTarget: boolean) => {
+    if (actual === null || !hasTarget) return { variance: null, usageRate: null, isGood: true };
     const variance = actual - target;
-    const usageRate = target ? actual / target : null;
-    const isGood = item.kind === "REVENUE" || item.kind === "PROFIT" ? variance >= 0 : variance <= 0;
-    return { ...item, actual, target, targetPercent, standard, variance, usageRate, isGood };
-  });
+    return { variance, usageRate: target ? actual / target : null, isGood: kind === "EXPENSE" ? variance <= 0 : variance >= 0 };
+  };
+  const makeRow = (
+    base: Pick<BudgetRow, "key" | "parentKey" | "level" | "label" | "code" | "kind" | "scope" | "metric" | "drilldown" | "hint" | "warning">,
+    actual: number | null,
+    resolved: Resolved,
+  ): BudgetRow => ({ ...base, actual, ...resolved, ...measure(base.kind, actual, resolved.target, resolved.hasTarget) });
+
+  const statementByKey = new Map(pnl.statement.map((line) => [line.key, line]));
+  const totals = pnl.total as unknown as Record<string, number>;
+  const rows: BudgetRow[] = [];
+  const lineTarget: Record<string, number> = {};
+  const lineHasTarget: Record<string, boolean> = {};
+
+  for (const line of budgetLines) {
+    const actual = line.key === "cashRemaining" ? null : totals[line.key] ?? 0;
+    if (line.scope === "DERIVED") {
+      // Dòng suy ra chỉ có target khi đã set target doanh thu — gốc của mọi phép trừ.
+      const hasTarget = !!lineHasTarget.revenue;
+      const target = line.key === "grossProfit"
+        ? (lineTarget.revenue || 0) - (lineTarget.cogs || 0)
+        : (lineTarget.grossProfit || 0) - (lineTarget.payroll || 0) - (lineTarget.otherOpex || 0);
+      lineTarget[line.key] = target;
+      lineHasTarget[line.key] = hasTarget;
+      rows.push(makeRow(
+        { key: line.key, parentKey: null, level: 0, label: line.label, code: null, kind: line.kind, scope: "DERIVED", metric: null, drilldown: line.key === "ebitda" ? { metric: line.key, line: line.key } : null, hint: line.hint, warning: null },
+        actual,
+        { target, targetMode: null, targetPercent: null, standard: null, hasTarget },
+      ));
+      continue;
+    }
+
+    const statement = statementByKey.get(line.key);
+    const children: BudgetRow[] = [];
+    let detailTarget = 0;
+    let detailStandard = 0;
+    let detailHasTarget = false;
+    let detailHasStandard = false;
+    for (const group of statement?.groups || []) {
+      const groupKey = `${line.key}:${group.code}`;
+      const itemRows: BudgetRow[] = [];
+      let groupTarget = 0;
+      let groupHasTarget = false;
+      for (const item of group.items) {
+        const configured = item.code !== "UNCLASSIFIED";
+        const editable = line.scope === "DETAIL" && configured;
+        const metric = editable ? `${PNL_ITEM_METRIC_PREFIX}${item.code}` : null;
+        const resolved = metric ? resolveTarget(metric) : noTarget;
+        groupTarget += resolved.target;
+        groupHasTarget = groupHasTarget || resolved.hasTarget;
+        if (resolved.standard !== null) {
+          detailStandard += resolved.standard;
+          detailHasStandard = true;
+        } else {
+          detailStandard += resolved.target;
+        }
+        itemRows.push(makeRow(
+          {
+            key: `${groupKey}:${item.code}`,
+            parentKey: groupKey,
+            level: 2,
+            label: item.name,
+            code: configured ? item.code : null,
+            kind: line.kind,
+            scope: editable ? "DETAIL" : "INFO",
+            metric,
+            drilldown: { metric: `${PNL_ITEM_METRIC_PREFIX}${item.code}`, line: line.key },
+            hint: null,
+            warning: configured ? null : "Chứng từ chưa gán hạng mục P&L — không set ngân sách được, cần phân loại lại.",
+          },
+          item.amount,
+          resolved,
+        ));
+      }
+      detailTarget += groupTarget;
+      detailHasTarget = detailHasTarget || groupHasTarget;
+      children.push(makeRow(
+        {
+          key: groupKey,
+          parentKey: line.key,
+          level: 1,
+          label: group.name,
+          code: group.code === PNL_UNGROUPED_CODE || group.code === "UNCLASSIFIED" ? null : group.code,
+          kind: line.kind,
+          scope: line.scope === "DETAIL" ? "ROLLUP" : "INFO",
+          metric: null,
+          drilldown: null,
+          hint: null,
+          warning: group.code === PNL_UNGROUPED_CODE ? "Hạng mục chưa gắn nhóm P&L — khai nhóm ở Cài đặt > Danh mục." : null,
+        },
+        group.amount,
+        line.scope === "DETAIL" ? { target: groupTarget, targetMode: null, targetPercent: null, standard: null, hasTarget: groupHasTarget } : noTarget,
+      ), ...itemRows);
+    }
+
+    let resolved: Resolved;
+    let warning: string | null = null;
+    if (line.scope === "DETAIL") {
+      if (detailHasTarget) {
+        resolved = { target: detailTarget, targetMode: null, targetPercent: null, standard: detailHasStandard ? detailStandard : null, hasTarget: true };
+      } else {
+        // Dữ liệu cũ set tổng thẳng vào dòng OPEX: vẫn dùng để so sánh, nhưng nhắc chuyển
+        // sang set theo hạng mục để khớp cách cấu hình danh mục.
+        resolved = resolveTarget(line.key);
+        if (resolved.hasTarget) warning = "Ngân sách đang set tổng theo cách cũ. Set từng hạng mục bên dưới thì dòng này sẽ tự cộng lại.";
+      }
+    } else {
+      resolved = resolveTarget(line.key);
+    }
+    lineTarget[line.key] = resolved.target;
+    lineHasTarget[line.key] = resolved.hasTarget;
+    rows.push(
+      makeRow(
+        {
+          key: line.key,
+          parentKey: null,
+          level: 0,
+          label: line.label,
+          code: null,
+          kind: line.kind,
+          scope: line.scope,
+          metric: line.scope === "TOTAL" ? line.key : null,
+          drilldown: actual === null ? null : { metric: line.key, line: line.key },
+          hint: line.hint,
+          warning,
+        },
+        actual,
+        resolved,
+      ),
+      ...children,
+    );
+  }
 
   return {
     period,
@@ -269,7 +430,7 @@ async function getBudgetReport(period: string, branchCode: string) {
     rows,
     summary: {
       expenseActual: pnl.total.cogs + pnl.total.payroll + pnl.total.otherOpex + pnl.total.depreciation,
-      expenseTarget: rows.filter((row) => row.kind === "EXPENSE").reduce((sum, row) => sum + row.target, 0),
+      expenseTarget: BUDGET_EXPENSE_LINES.reduce((sum, key) => sum + (lineTarget[key] || 0), 0),
       revenueActual: pnl.total.revenue,
       revenueTarget: revenueTargetValue,
     },
@@ -1169,6 +1330,23 @@ export async function POST(request: Request) {
     if (action === "UPSERT_TARGET") {
       const metric = cleanText(body.metric);
       if (!metric) businessError("Thiếu chỉ tiêu KPI");
+      // Chỉ nhận đúng hai kiểu khoá: dòng set tổng (revenue/cogs/payroll/depreciation/cashRemaining)
+      // hoặc hạng mục P&L đang khai trong danh mục. Dòng OPEX, Lợi nhuận gộp, EBITDA tự cộng/suy ra.
+      if (metric.startsWith(PNL_ITEM_METRIC_PREFIX)) {
+        const itemCode = metric.slice(PNL_ITEM_METRIC_PREFIX.length);
+        const item = await prisma.masterDataItem.findFirst({ where: { type: "PNL_ITEM", code: itemCode, deletedAt: null } });
+        if (!item) businessError(`Hạng mục P&L "${itemCode}" không có trong danh mục. Khai ở Cài đặt > Danh mục > Hạng mục P&L trước.`);
+      } else if (!BUDGET_TOTAL_METRICS.includes(metric)) {
+        businessError("Chỉ tiêu này không set trực tiếp được: dòng OPEX cộng từ hạng mục, Lợi nhuận gộp và EBITDA suy từ các target đã set.");
+      }
+      // Trị giá 0 nghĩa là bỏ ngân sách — xoá hẳn dòng thay vì để một target bằng 0 gây hiểu nhầm.
+      if (cleanText(body.targetMode) !== "PERCENT_REVENUE" && toNumber(body.targetValue) <= 0) {
+        const removed = await prisma.reportTarget.deleteMany({ where: { period, branchCode, metric } });
+        if (removed.count > 0) {
+          await writeAuditLog({ session: auth.session, module: "REPORTS", action: "DELETE_TARGET", entityType: "ReportTarget", entityId: `${period}-${branchCode}-${metric}`, entityCode: `${period}-${metric}`, branchCode, metadata: { period, metric } });
+        }
+        return NextResponse.json({ deleted: removed.count });
+      }
       // Ngân sách set theo % doanh thu (feedback chị Bình 26/08/2026): nhập 12.8 nghĩa là
       // 12.8% doanh thu — lưu dạng 0.128, số tiền quy đổi tính lúc xem báo cáo.
       const targetMode = cleanText(body.targetMode) === "PERCENT_REVENUE" ? "PERCENT_REVENUE" : "AMOUNT";

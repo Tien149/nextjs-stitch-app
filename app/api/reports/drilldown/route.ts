@@ -3,6 +3,10 @@ import { requireMenuAccess } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 import { periodBounds } from "@/lib/accounting";
 import { apiError, businessError, cleanText, normalizePeriod } from "@/lib/phase3";
+import { pnlLineKeyOf } from "@/lib/reports";
+
+/** Khoá drilldown cho một hạng mục P&L: `pnlItem:<mã>`; `pnlItem:UNCLASSIFIED` là chứng từ chưa gán hạng mục. */
+const PNL_ITEM_METRIC_PREFIX = "pnlItem:";
 
 export async function GET(request: Request) {
   try {
@@ -13,6 +17,10 @@ export async function GET(request: Request) {
     const period = normalizePeriod(searchParams.get("period") || "");
     const branchCode = searchParams.get("branchCode") || "ALL";
     const metric = cleanText(searchParams.get("metric") || "");
+    // Dòng KQKD mà hạng mục đang đứng dưới (tab Ngân sách): cùng một mã hạng mục có thể
+    // dính bút toán lương lẫn OPEX, chỉ lấy đúng phần thuộc dòng đang xem cho khớp số.
+    const lineKey = cleanText(searchParams.get("line") || "");
+    const pnlItemCode = metric.startsWith(PNL_ITEM_METRIC_PREFIX) ? metric.slice(PNL_ITEM_METRIC_PREFIX.length) : null;
 
     if (!period || !metric) {
       businessError("Thiếu kỳ báo cáo hoặc chỉ tiêu");
@@ -52,7 +60,15 @@ export async function GET(request: Request) {
 
         const { accountType, reportGroup } = line.account;
 
-        if (metric === "revenue" && accountType === "REVENUE") {
+        if (pnlItemCode !== null) {
+          const accountLine = pnlLineKeyOf(line.account);
+          const isExpenseLine = accountLine !== null && accountLine !== "revenue" && accountLine !== "otherIncome";
+          const sameItem = pnlItemCode === "UNCLASSIFIED" ? !line.pnlItemCode : line.pnlItemCode === pnlItemCode;
+          if (isExpenseLine && sameItem && (!lineKey || lineKey === accountLine)) {
+            isMatch = true;
+            lineAmount = line.debit - line.credit;
+          }
+        } else if (metric === "revenue" && accountType === "REVENUE") {
           isMatch = true;
           lineAmount = line.credit - line.debit;
         } else if (metric === "cogs" && accountType === "COGS") {

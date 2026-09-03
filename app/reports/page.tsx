@@ -15,6 +15,7 @@ import { shiftLabel, shiftLabels } from "@/lib/shifts";
 import { cashDepositRoundingExpense, roundCashDepositAmount } from "@/lib/cash-deposit";
 import { buildDailyCashSummaryRows } from "@/lib/daily-cash-receipts";
 import PayrollBudgetTab, { type PayrollBudgetData } from "@/components/reports/PayrollBudgetTab";
+import BudgetTab, { type BudgetData } from "@/components/reports/BudgetTab";
 import PnlMatrixTab from "@/components/reports/PnlMatrixTab";
 import RevenueTrendTab from "@/components/reports/RevenueTrendTab";
 
@@ -60,8 +61,6 @@ type OperationsData = {
   groups: Record<OperationKey, OperationGroup[]>;
   details: Record<OperationKey, OperationDetail[]>;
 };
-type BudgetRow = { metric: string; label: string; kind: "REVENUE" | "EXPENSE" | "PROFIT"; actual: number; target: number; targetPercent: number | null; standard: number | null; variance: number; usageRate: number | null; isGood: boolean };
-type BudgetData = { summary: { expenseActual: number; expenseTarget: number; revenueActual: number; revenueTarget: number }; rows: BudgetRow[] };
 type DailyCashBucket = { total: number; cash: number; transfer: number; card: number; grab: number; other: number };
 type DailyCashExpense = { id: string; code: string; date: string; shift: string | null; description: string; partnerName: string; moneySourceCode: string; moneySourceName: string; moneySourceGroup: string | null; amount: number; isCash: boolean };
 type DailyCashReceipt = DailyCashExpense & { status: string };
@@ -166,7 +165,6 @@ type ActivityLog = { id: string; time: string; module: string; action: string; a
 type AccountingPeriodStatus = { period: string; branchCode: string; status: string; closedBy: string | null; closedAt: string | null; reopenedBy: string | null; reopenedAt: string | null; reason: string | null };
 type ActivityData = { accountingPeriod: AccountingPeriodStatus; periods: AccountingPeriodStatus[]; logs: ActivityLog[] };
 type ReportData = DashboardData | PnlData | YoyData | CashflowData | BalanceData | OperationsData | BudgetData | DailyCashData | ActivityData | CashSourceData | RevenueSettlementData;
-type DrilldownRow = { id: string; date: string; code: string; accountCode: string; accountName: string; description: string; amount: number };
 type CashDepositDenomination = { denomination: number; quantity: string };
 type CashDepositForm = { depositTargetType: "PKT" | "CO"; fromMoneySourceCode: string; toMoneySourceCode: string; denominations: CashDepositDenomination[] };
 
@@ -225,38 +223,9 @@ export default function ReportsPage() {
   const [manualRevenueSubmitting, setManualRevenueSubmitting] = useState(false);
   const [manualRevenueForm, setManualRevenueForm] = useState<ManualRevenueForm>(emptyManualRevenueForm);
   const [forecast, setForecast] = useState({ period: new Date().toISOString().slice(0, 7), branchCode: "HCM", scenario: "BASE", assumptionType: "INFLOW", amount: "100000000", note: "Kế hoạch dòng tiền" });
-  const [targetForm, setTargetForm] = useState({ metric: "otherOpex", targetValue: "50000000", targetMode: "AMOUNT", targetPercent: "10" });
   /** Góc nhìn trong tab P&L đa chiều: một kỳ như cũ hoặc ma trận 12 tháng (feedback 26/08/2026). */
   const [pnlView, setPnlView] = useState<"period" | "year">("period");
   const [reopenReason, setReopenReason] = useState("Bổ sung hoặc điều chỉnh dữ liệu kỳ trước");
-
-  const [expandedMetric, setExpandedMetric] = useState<string | null>(null);
-  const [drilldownData, setDrilldownData] = useState<DrilldownRow[]>([]);
-  const [drilldownLoading, setDrilldownLoading] = useState(false);
-
-  const handleToggleExpand = async (metric: string) => {
-    if (expandedMetric === metric) {
-      setExpandedMetric(null);
-      setDrilldownData([]);
-      return;
-    }
-
-    setExpandedMetric(metric);
-    setDrilldownData([]);
-    setDrilldownLoading(true);
-
-    try {
-      const res = await fetch(`/api/reports/drilldown?period=${period}&branchCode=${branchCode}&metric=${metric}`);
-      if (res.ok) {
-        const payload = await res.json();
-        setDrilldownData(payload);
-      }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setDrilldownLoading(false);
-    }
-  };
 
   // Vai trò được gán riêng một tab (ví dụ thu ngân chỉ có "Thu chi ngày") thì chỉ thấy tab đó.
   const visibleTabs = useMemo(() => filterModuleTabs(user, href), [user]);
@@ -355,18 +324,6 @@ export default function ReportsPage() {
     const response = await fetch("/api/reports", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "UPSERT_FORECAST", ...forecast }) });
     const payload = await response.json();
     setMessage(response.ok ? "Đã lưu giả định dự báo." : payload.error || "Không lưu được giả định");
-    if (response.ok) await loadData();
-  };
-
-  const saveTarget = async (event: React.FormEvent) => {
-    event.preventDefault();
-    const response = await fetch("/api/reports", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "UPSERT_TARGET", period, branchCode, metric: targetForm.metric, targetValue: targetForm.targetValue, targetMode: targetForm.targetMode, targetPercent: targetForm.targetPercent }),
-    });
-    const payload = await response.json();
-    setMessage(response.ok ? "Đã lưu ngân sách/target báo cáo." : payload.error || "Không lưu được ngân sách");
     if (response.ok) await loadData();
   };
 
@@ -802,214 +759,7 @@ export default function ReportsPage() {
       )}
 
       {!tabLoading && budget && (
-        <div className="space-y-5">
-          <div className="grid md:grid-cols-4 gap-4">
-            <Kpi label="Doanh thu thực tế" value={budget.summary.revenueActual} icon="payments" tone="blue" />
-            <Kpi label="Target doanh thu" value={budget.summary.revenueTarget} icon="flag" />
-            <Kpi label="Chi phí thực tế" value={budget.summary.expenseActual} icon="receipt_long" tone="amber" />
-            <Kpi label="Ngân sách chi phí" value={budget.summary.expenseTarget} icon="price_check" tone="green" />
-          </div>
-
-          <div className="grid xl:grid-cols-[360px_1fr] gap-5">
-            {canConfigure && (
-              <form onSubmit={saveTarget} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit">
-                <h2 className="font-bold">Thiết lập ngân sách/target</h2>
-                <Field label="Chỉ tiêu">
-                  <select className="control" value={targetForm.metric} onChange={(event) => setTargetForm({ ...targetForm, metric: event.target.value })}>
-                    <option value="revenue">Doanh thu</option>
-                    <option value="cogs">Giá vốn</option>
-                    <option value="payroll">Chi phí nhân sự</option>
-                    <option value="otherOpex">OPEX khác</option>
-                    <option value="depreciation">Khấu hao</option>
-                    <option value="opexBeforeDepreciation">OPEX trước khấu hao</option>
-                    <option value="ebitda">EBITDA</option>
-                    <option value="cashRemaining">Nguồn tiền còn lại (báo cáo nguồn tiền)</option>
-                  </select>
-                </Field>
-                {/* Ngân sách chi phí set được theo % doanh thu (feedback 26/08/2026): số tiền
-                    quy đổi theo target doanh thu, doanh thu chạy tới đâu mức chuẩn theo tới đó. */}
-                {targetForm.metric !== "revenue" && targetForm.metric !== "cashRemaining" && (
-                  <Field label="Cách set ngân sách">
-                    <div className="flex gap-4 text-sm">
-                      <label className="flex items-center gap-1.5 cursor-pointer">
-                        <input type="radio" name="targetMode" checked={targetForm.targetMode === "AMOUNT"} onChange={() => setTargetForm({ ...targetForm, targetMode: "AMOUNT" })} />
-                        Trị giá
-                      </label>
-                      <label className="flex items-center gap-1.5 cursor-pointer">
-                        <input type="radio" name="targetMode" checked={targetForm.targetMode === "PERCENT_REVENUE"} onChange={() => setTargetForm({ ...targetForm, targetMode: "PERCENT_REVENUE" })} />
-                        % doanh thu
-                      </label>
-                    </div>
-                  </Field>
-                )}
-                {targetForm.targetMode === "PERCENT_REVENUE" && targetForm.metric !== "revenue" && targetForm.metric !== "cashRemaining" ? (
-                  <Field label="Tỷ lệ % trên doanh thu">
-                    <input type="number" min="0" max="100" step="0.1" className="control" value={targetForm.targetPercent} onChange={(event) => setTargetForm({ ...targetForm, targetPercent: event.target.value })} />
-                    <p className="text-xs text-slate-500 mt-1">
-                      {budget.summary.revenueTarget
-                        ? `≈ ${money(Math.round(budget.summary.revenueTarget * (Number(targetForm.targetPercent) || 0) / 100))} đ theo target doanh thu kỳ này`
-                        : "Set target Doanh thu trước để hệ thống quy đổi ra tiền."}
-                    </p>
-                  </Field>
-                ) : (
-                  <Field label="Giá trị ngân sách/target">
-                    <input type="number" min="0" className="control" value={targetForm.targetValue} onChange={(event) => setTargetForm({ ...targetForm, targetValue: event.target.value })} />
-                  </Field>
-                )}
-                <button className="primary-button w-full">
-                  <span className="material-symbols-outlined text-lg">save</span>Lưu ngân sách
-                </button>
-              </form>
-            )}
-            <section className="table-panel">
-              <PanelHeader title="So sánh thực tế với ngân sách" subtitle="Bấm vào từng chỉ tiêu để xem chi tiết đối chiếu chứng từ gốc phát sinh chi phí thực tế." />
-              <div className="max-h-[560px] overflow-auto">
-                <Table headers={["Chỉ tiêu", "Thực tế", "Ngân sách/Target", "Chênh lệch", "Tỷ lệ dùng & Tiến trình", "Đối chiếu"]}>
-                  {budget.rows.map((row) => {
-                    // Set theo % mà chưa có target doanh thu thì target quy đổi = 0 — vẫn phải
-                    // hiện cái % đã set kèm nhắc set target doanh thu, không được báo "Chưa gán".
-                    const hasTarget = !!row.target || row.targetPercent !== null;
-                    const rateVal = row.usageRate !== null ? Math.round(row.usageRate * 100) : 0;
-
-                    let barColor = "bg-slate-300";
-
-                    if (row.kind === "EXPENSE") {
-                      if (rateVal <= 80) {
-                        barColor = "bg-emerald-500";
-                      } else if (rateVal <= 100) {
-                        barColor = "bg-amber-500";
-                      } else {
-                        barColor = "bg-rose-500";
-                      }
-                    } else {
-                      if (rateVal >= 100) {
-                        barColor = "bg-emerald-500";
-                      } else if (rateVal >= 80) {
-                        barColor = "bg-amber-500";
-                      } else {
-                        barColor = "bg-rose-500";
-                      }
-                    }
-
-                    const isExpanded = expandedMetric === row.metric;
-
-                    return (
-                      <React.Fragment key={row.metric}>
-                        <tr
-                          className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer transition-colors"
-                          onClick={() => void handleToggleExpand(row.metric)}
-                        >
-                          <Cell>
-                            <div className="flex flex-col">
-                              <span className="font-bold text-slate-800">{row.label}</span>
-                              <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider mt-0.5">
-                                {row.kind === "EXPENSE" ? "Chi phí" : row.kind === "REVENUE" ? "Doanh thu" : "Lợi nhuận"}
-                              </span>
-                            </div>
-                          </Cell>
-                          <Cell right><b>{money(row.actual)} đ</b></Cell>
-                          <Cell right>
-                            {hasTarget ? (
-                              <span>
-                                {row.target ? `${money(row.target)} đ` : <span className="text-amber-600 font-bold">Chưa quy đổi được</span>}
-                                {row.targetPercent !== null && (
-                                  <span className="block text-[11px] font-normal text-slate-500">
-                                    = {(row.targetPercent * 100).toLocaleString("vi-VN", { maximumFractionDigits: 2 })}% DT kế hoạch
-                                    {!row.target && " — set target Doanh thu của kỳ này trước"}
-                                    {row.standard !== null && row.standard > 0 && ` · chuẩn theo DT thực tế: ${money(Math.round(row.standard))} đ`}
-                                  </span>
-                                )}
-                              </span>
-                            ) : (
-                              <span className="text-slate-400 font-normal">Chưa gán</span>
-                            )}
-                          </Cell>
-                          <Cell right>
-                            {hasTarget ? (
-                              <span className={`font-bold ${row.isGood ? "text-emerald-600" : "text-rose-600"}`}>
-                                {row.variance > 0 ? "+" : ""}{money(row.variance)} đ
-                              </span>
-                            ) : (
-                              "-"
-                            )}
-                          </Cell>
-                          <Cell>
-                            {hasTarget ? (
-                              <div className="flex items-center gap-3">
-                                <div className="flex-1 bg-slate-100 h-2.5 rounded-full overflow-hidden">
-                                  <div className={`h-full ${barColor} transition-all duration-500 rounded-full`} style={{ width: `${Math.min(100, Math.max(0, rateVal))}%` }} />
-                                </div>
-                                <span className={`text-xs font-bold w-12 text-right ${row.isGood ? "text-emerald-600" : "text-rose-600"}`}>
-                                  {rateVal}%
-                                </span>
-                              </div>
-                            ) : (
-                              <span className="text-slate-400 text-xs">Chưa lập target</span>
-                            )}
-                          </Cell>
-                          <Cell center>
-                            <button
-                              type="button"
-                              className="text-xs text-blue-600 font-bold hover:underline flex items-center justify-center gap-1 mx-auto"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                void handleToggleExpand(row.metric);
-                              }}
-                            >
-                              <span>{isExpanded ? "Thu gọn" : "Xem phát sinh"}</span>
-                              <span className="material-symbols-outlined text-sm">
-                                {isExpanded ? "expand_less" : "expand_more"}
-                              </span>
-                            </button>
-                          </Cell>
-                        </tr>
-
-                        {isExpanded && (
-                          <tr className="bg-slate-50 border-t border-b border-slate-200">
-                            <td colSpan={6} className="p-4">
-                              <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
-                                <div className="flex items-center justify-between mb-3 border-b border-slate-100 pb-2">
-                                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
-                                    <span className="material-symbols-outlined text-blue-600 text-base">receipt_long</span>
-                                    Bảng kê chi tiết phát sinh chứng từ cho chỉ tiêu: <span className="text-blue-600 font-extrabold">{row.label}</span>
-                                  </h4>
-                                  <span className="text-xs text-slate-500">
-                                    Kỳ {period} - {branchCode === "ALL" ? "Tất cả cửa hàng" : storeLabel(branchCode)}
-                                  </span>
-                                </div>
-
-                                {drilldownLoading ? (
-                                  <p className="py-6 text-center text-xs text-slate-500 animate-pulse">Đang truy xuất bảng kê sổ cái phát sinh...</p>
-                                ) : drilldownData.length === 0 ? (
-                                  <p className="py-6 text-center text-xs text-slate-400">Không có chứng từ nào ghi nhận chi phí thực tế cho chỉ tiêu này trong kỳ.</p>
-                                ) : (
-                                  <div className="overflow-x-auto">
-                                    <Table headers={["Ngày ghi sổ", "Mã chứng từ", "Mã tài khoản", "Tên tài khoản kế toán", "Diễn giải nghiệp vụ", "Số tiền (đ)"]}>
-                                      {drilldownData.map((item) => (
-                                        <tr key={item.id} className="border-t border-slate-100 text-xs hover:bg-slate-50">
-                                          <Cell>{item.date}</Cell>
-                                          <Cell><CopyableText value={item.code}><b>{item.code}</b></CopyableText></Cell>
-                                          <Cell><span className="bg-blue-50 text-blue-700 font-bold px-2 py-0.5 rounded">{item.accountCode}</span></Cell>
-                                          <Cell>{item.accountName}</Cell>
-                                          <Cell>{item.description}</Cell>
-                                          <Cell right><b>{money(item.amount)} đ</b></Cell>
-                                        </tr>
-                                      ))}
-                                    </Table>
-                                  </div>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                        )}
-                      </React.Fragment>
-                    );
-                  })}
-                </Table>
-              </div>
-            </section>
-          </div>
-        </div>
+        <BudgetTab key={`${period}-${branchCode}`} data={budget} period={period} branchCode={branchCode} branchLabel={branchCode === "ALL" ? "Tất cả cửa hàng" : storeLabel(branchCode)} canConfigure={canConfigure} onSaved={loadData} setMessage={setMessage} />
       )}
 
       {!tabLoading && payrollBudget && (
