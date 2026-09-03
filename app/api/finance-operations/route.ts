@@ -10,7 +10,7 @@ import { scopePayloadByTab } from "@/lib/tab-scope";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { cashDepositRoundingExpense, cashDepositUnit, roundCashDepositAmount } from "@/lib/cash-deposit";
 import { completePendingReconciliation, releasePendingReconciliation } from "@/lib/reconciliation-links";
-import { CASH_SOURCE_OPENING_TYPES, OPENING_BALANCE_EFFECTIVE_STATUSES } from "@/lib/opening-balance-rules";
+import { cashOpeningBalance } from "@/lib/cash-opening-balance";
 import { parseImportDate } from "@/lib/import-parser";
 import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/lib/money-transfer-date";
 import {
@@ -134,8 +134,9 @@ export async function GET(request: Request) {
     // nhánh "không lọc" như khi người dùng bình thường chưa chọn nguồn nào.
     const limitSources = Boolean(cashierSourceCodes) || scopedSources.length > 0;
 
-    const [openingBalances, vouchers, adjustments, accruals, accountingPeriod, checklist, moneyTransfers] = await Promise.all([
-      prisma.openingBalance.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { branchCode }), ...(limitSources ? { moneySourceCode: { in: scopedSources } } : {}), status: { in: [...OPENING_BALANCE_EFFECTIVE_STATUSES] }, balanceType: { in: [...CASH_SOURCE_OPENING_TYPES] } } }),
+    const [opening, vouchers, adjustments, accruals, accountingPeriod, checklist, moneyTransfers] = await Promise.all([
+      // Số dư đầu kỳ kế thừa từ số dư cuối kỳ trước; kế toán chỉ khai tay một lần ở kỳ gốc.
+      cashOpeningBalance({ period, branchCode, moneySourceCodes: scopedSources, limitSources }),
       prisma.financialVoucher.findMany({ where: { ...branchFilter, voucherDate: { gte: start, lt: end }, status: "APPROVED" }, orderBy: { voucherDate: "asc" } }),
       prisma.cashbookAdjustment.findMany({ where: { ...branchFilter, entryDate: { gte: start, lt: end } }, orderBy: { entryDate: "asc" } }),
       prisma.accrual.findMany({ where: { ...(branchCode === "ALL" ? {} : { branchCode }) }, include: { schedules: { orderBy: { period: "asc" } } }, orderBy: { createdAt: "desc" } }),
@@ -159,7 +160,7 @@ export async function GET(request: Request) {
       }),
     ]);
 
-    const openingAmount = openingBalances.reduce((sum, row) => sum + row.amount, 0);
+    const openingAmount = opening.total;
     const entries = [
       ...vouchers.map((row) => ({ id: row.id, date: row.voucherDate, createdAt: row.createdAt, code: row.code, type: row.voucherType, moneySourceCode: row.moneySourceCode, description: row.description, receipt: row.voucherType === "RECEIPT" ? row.amount : 0, payment: row.voucherType === "PAYMENT" ? row.amount : 0 })),
       ...adjustments.map((row) => ({ id: row.id, date: row.entryDate, createdAt: row.createdAt, code: row.code, type: "ADJUSTMENT", moneySourceCode: row.moneySourceCode, description: row.description, receipt: entryTypeToReceipt(row.entryType, row.amount), payment: entryTypeToPayment(row.entryType, row.amount) })),
@@ -202,7 +203,7 @@ export async function GET(request: Request) {
         || cashierSourceCodes.includes(row.toMoneySourceCode))
       : moneyTransfers;
 
-    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { period, branchCode, openingAmount: rangeOpeningAmount, closingBalance: rangeClosingBalance, cashbook: latestFirstCashbook, accruals, moneyTransfers: visibleMoneyTransfers, accountingPeriod: accountingPeriod || { status: "OPEN" }, checklist }));
+    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { period, branchCode, openingAmount: rangeOpeningAmount, openingBasis: { anchorPeriod: opening.anchorPeriod, declaredThisPeriod: opening.declaredThisPeriod }, closingBalance: rangeClosingBalance, cashbook: latestFirstCashbook, accruals, moneyTransfers: visibleMoneyTransfers, accountingPeriod: accountingPeriod || { status: "OPEN" }, checklist }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });

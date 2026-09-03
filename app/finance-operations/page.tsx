@@ -43,7 +43,8 @@ type MoneyTransfer = {
   sourceShift?: string | null;
   denominations?: MoneyTransferDenomination[];
 };
-type Data = { openingAmount: number; closingBalance: number; cashbook: CashEntry[]; accruals: Accrual[]; moneyTransfers: MoneyTransfer[]; accountingPeriod: { status: string; closedBy?: string; closedAt?: string }; checklist: Check[] };
+type OpeningBasis = { anchorPeriod: string | null; declaredThisPeriod: boolean };
+type Data = { openingAmount: number; openingBasis: OpeningBasis; closingBalance: number; cashbook: CashEntry[]; accruals: Accrual[]; moneyTransfers: MoneyTransfer[]; accountingPeriod: { status: string; closedBy?: string; closedAt?: string }; checklist: Check[] };
 type MasterDataOption = { id: string; type: string; code: string; name: string; group: string | null; branch: string | null; status?: string; summarySourceName?: string | null };
 type CashDepositEditForm = {
   transfer: MoneyTransfer;
@@ -63,6 +64,12 @@ type InternalTransferEditForm = {
 };
 
 const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value);
+/** Kỳ liền trước, dạng YYYY-MM. Tự tính tại đây để màn client không phải kéo theo lib server. */
+const previousPeriod = (period: string) => {
+  const [year, month] = period.split("-").map(Number);
+  const date = new Date(year, (month || 1) - 2, 1);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+};
 const WALLET_GRAB_EXPENSE_LABEL = "Chi phí bán hàng Grab";
 const WALLET_CARD_FEE_LABEL = "Chi phí quẹt thẻ bán hàng";
 /**
@@ -121,7 +128,7 @@ export default function FinanceOperationsPage() {
   /** Lọc chi tiết sổ quỹ: khoảng ngày nằm trong kỳ kế toán và một nguồn tiền cụ thể. */
   const [cashbookRange, setCashbookRange] = useState({ startDate: "", endDate: "" });
   const [cashbookSource, setCashbookSource] = useState("");
-  const [data, setData] = useState<Data>({ openingAmount: 0, closingBalance: 0, cashbook: [], accruals: [], moneyTransfers: [], accountingPeriod: { status: "OPEN" }, checklist: [] });
+  const [data, setData] = useState<Data>({ openingAmount: 0, openingBasis: { anchorPeriod: null, declaredThisPeriod: false }, closingBalance: 0, cashbook: [], accruals: [], moneyTransfers: [], accountingPeriod: { status: "OPEN" }, checklist: [] });
   const [message, setMessage] = useState("");
   const [transferQuery, setTransferQuery] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -222,6 +229,18 @@ export default function FinanceOperationsPage() {
     cashbookRange.startDate && cashbookRange.endDate && cashbookRange.startDate > cashbookRange.endDate,
   );
   const hasCashbookRange = Boolean(cashbookRange.startDate || cashbookRange.endDate);
+  /**
+   * Số dư đầu kỳ chỉ khai tay một lần ở kỳ gốc, các kỳ sau kế thừa số dư cuối kỳ trước.
+   * Ghi rõ số đang đứng đây đến từ đâu để không ai đi nhập lại số dư mỗi tháng nữa.
+   */
+  const openingBasisHint = useMemo(() => {
+    const { anchorPeriod, declaredThisPeriod } = data.openingBasis;
+    const label = (value: string) => `${value.slice(5, 7)}/${value.slice(0, 4)}`;
+    const previous = label(previousPeriod(period));
+    if (declaredThisPeriod) return { label: `Khai số dư gốc kỳ ${label(period)}`, title: "Kỳ này có bản khai số dư đầu kỳ nhập tay — thường chỉ dùng cho kỳ đầu tiên dùng hệ thống hoặc khi cần chốt lại sổ." };
+    if (anchorPeriod) return { label: `Kế thừa số dư cuối kỳ ${previous}`, title: `Số dư gốc khai ở kỳ ${label(anchorPeriod)}, cộng toàn bộ phát sinh thu/chi/điều tiền tới hết kỳ ${previous}.` };
+    return { label: "Chưa khai số dư gốc — đang cộng từ phát sinh", title: "Chưa có bản khai số dư đầu kỳ nào cho phạm vi này. Số đang hiện là tổng phát sinh thu/chi/điều tiền trước kỳ này. Vào màn Số dư đầu kỳ khai một lần cho kỳ đầu tiên dùng hệ thống." };
+  }, [data.openingBasis, period]);
 
   const visibleTabs = useMemo(() => filterModuleTabs(user, href), [user]);
   const normalizedTransferQuery = transferQuery.trim().toLowerCase();
@@ -686,6 +705,9 @@ export default function FinanceOperationsPage() {
                 <div className="space-y-1">
                   <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">{hasCashbookRange ? "Số dư đầu khoảng" : "Số dư đầu kỳ"}</p>
                   <p className="text-2xl font-black text-slate-800">{money(data.openingAmount)} đ</p>
+                  {!hasCashbookRange && (
+                    <p className="text-[11px] font-medium text-slate-400" title={openingBasisHint.title}>{openingBasisHint.label}</p>
+                  )}
                 </div>
                 <div className="w-12 h-12 rounded-xl bg-slate-50 text-slate-600 flex items-center justify-center shadow-sm">
                   <span className="material-symbols-outlined text-2xl font-bold">payments</span>

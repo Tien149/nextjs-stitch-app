@@ -505,6 +505,13 @@ export default function OpeningBalancesPage() {
               <h2 className="font-bold text-lg mt-1 text-slate-900">Nhập số dư</h2>
             </div>
 
+            <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-medium leading-relaxed text-amber-900">
+              Số dư quỹ / ngân hàng / ví chỉ nhập <b>một lần</b> cho kỳ đầu tiên dùng hệ thống.
+              Các kỳ sau, sổ quỹ tự kế thừa số dư cuối kỳ trước — <b>không nhập lại mỗi tháng</b>.
+              Nhập số dư cho một kỳ sau đồng nghĩa <b>chốt lại</b> nguồn tiền đó: từ kỳ ấy hệ thống lấy số vừa nhập
+              làm gốc và bỏ qua phát sinh trước đó.
+            </p>
+
             <div className="grid grid-cols-2 gap-3">
               <label className="text-xs font-bold text-slate-600 block">
                 Kỳ *

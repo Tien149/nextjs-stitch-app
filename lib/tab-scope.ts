@@ -10,7 +10,7 @@ import { allowedMenuTabs, type DemoSession } from "@/lib/auth-demo";
  */
 const tabDataKeys: Record<string, Record<string, string[]>> = {
   "/finance-operations": {
-    cashbook: ["openingAmount", "closingBalance", "cashbook", "moneyTransfers"],
+    cashbook: ["openingAmount", "openingBasis", "closingBalance", "cashbook", "moneyTransfers"],
     accruals: ["accruals"],
     closing: ["accountingPeriod", "checklist"],
   },
