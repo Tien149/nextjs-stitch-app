@@ -14,7 +14,7 @@ import {
   SoftDeleteError,
 } from "@/lib/soft-delete";
 import { scopePayloadByTab } from "@/lib/tab-scope";
-import { isWarehouseStocktakeItemType, itemCodePrefixError } from "@/lib/inventory-scope";
+import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 import { nextStockDocCode, nextStocktakeCode } from "@/lib/inventory-stock";
 import { isRevenueGroupCategory, normalizeRevenueExpenseGroup } from "@/lib/voucher-rules";
 
@@ -87,11 +87,6 @@ function normalizeItemType(value: unknown) {
   return raw;
 }
 
-/** Quy ước tiền tố mã theo loại mặt hàng — rule nằm ở inventory-scope để import dùng chung. */
-function assertItemCodePrefix(itemType: string, uppercaseCode: string) {
-  const message = itemCodePrefixError(itemType, uppercaseCode);
-  if (message) businessError(message);
-}
 
 /** Phân nhóm mặt hàng phải tồn tại, còn hoạt động và thuộc đúng loại mặt hàng. */
 async function resolveItemCategory(itemType: string, value: unknown) {
@@ -487,7 +482,6 @@ export async function POST(request: Request) {
 
       if (!validItemTypes.includes(itemType)) businessError("Loại mặt hàng không hợp lệ");
       const uppercaseCode = itemCode.toUpperCase();
-      assertItemCodePrefix(itemType, uppercaseCode);
       if (await findDeletedByUnique("InventoryItem", { code: uppercaseCode })) {
         businessError(duplicatedInTrashMessage(uppercaseCode, "Hàng hoá / Nguyên vật liệu"));
       }
@@ -1286,8 +1280,6 @@ export async function PATCH(request: Request) {
       if (hasHistory && itemType !== item.itemType) {
         businessError(`Mặt hàng ${item.code} đã phát sinh giao dịch/tồn kho nên không thể đổi loại mặt hàng.`);
       }
-      if (itemType !== item.itemType) assertItemCodePrefix(itemType, item.code.toUpperCase());
-
       const result = await prisma.inventoryItem.update({
         where: { id: itemId },
         data: {

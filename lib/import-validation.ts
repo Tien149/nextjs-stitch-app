@@ -19,7 +19,7 @@ import {
 } from "@/lib/bank-statement-wallet-hints";
 import { selectWalletDeclaredRevenue, walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
 import { vietnamBusinessDayBounds, vietnamBusinessDayKey } from "@/lib/revenue-date";
-import { isWarehouseStocktakeItemType, itemCodePrefixError } from "@/lib/inventory-scope";
+import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 
 type MasterItem = {
   type: string;
@@ -1233,13 +1233,6 @@ export async function validateImportResult(
         addError(row, "Trạng thái chỉ nhận ACTIVE hoặc INACTIVE");
       }
       const importItemCode = text(row.values.code).toUpperCase();
-      const existingItem = inventoryItems.find((candidate) => candidate.code.toUpperCase() === importItemCode);
-      // Rule tiền tố mã chỉ áp cho mã TẠO MỚI — danh mục cũ có hàng nghìn mã đặt trước khi có
-      // rule (G00024, ITEM-XXXX...), bắt cả mã cũ là không re-import được danh mục đang dùng.
-      if (importItemCode && !existingItem) {
-        const prefixMessage = itemCodePrefixError(itemType, importItemCode);
-        if (prefixMessage) addError(row, prefixMessage);
-      }
       // Nhiều dòng cùng mã = khai thêm ĐVT quy đổi; nhưng các cột master phải giống hệt nhau,
       // vì dòng sau sẽ ghi đè dòng trước trong cùng lượt import.
       if (importItemCode) {
