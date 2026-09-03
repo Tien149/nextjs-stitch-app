@@ -434,8 +434,14 @@ export async function GET(request: Request) {
     });
 
     return NextResponse.json(items);
-  } catch {
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+  } catch (error) {
+    // Nuốt lỗi im lặng thì màn hình chỉ hiện "Không tải được danh mục" mà log máy chủ trống,
+    // không có manh mối nào để tìm nguyên nhân. Luôn in ra log.
+    console.error("Lỗi khi đọc danh mục (GET /api/master-data):", error);
+    return NextResponse.json(
+      { error: error instanceof Error ? `Lỗi máy chủ khi đọc danh mục: ${error.message}` : "Internal Server Error" },
+      { status: 500 },
+    );
   }
 }
 

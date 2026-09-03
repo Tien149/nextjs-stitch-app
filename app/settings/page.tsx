@@ -400,8 +400,21 @@ export default function SettingsPage() {
         return;
       }
 
+      // Báo đúng lý do máy chủ từ chối (mã HTTP + thông báo của API) thay vì một câu chung chung:
+      // "Không tải được danh mục" không cho biết là hết quyền, lỗi dữ liệu hay máy chủ chết.
       if (!activeResponse.ok || !allResponse.ok) {
-        throw new Error("Không tải được danh mục");
+        const failed = !activeResponse.ok ? activeResponse : allResponse;
+        const detail = await failed.text().then(
+          (body) => {
+            try {
+              return (JSON.parse(body) as { error?: string }).error || "";
+            } catch {
+              return body.replace(/\s+/g, " ").trim().slice(0, 200);
+            }
+          },
+          () => "",
+        );
+        throw new Error(`Không tải được danh mục (HTTP ${failed.status})${detail ? `: ${detail}` : ""}`);
       }
 
       setItems((await activeResponse.json()) as MasterDataItem[]);
