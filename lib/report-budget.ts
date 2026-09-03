@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/custom-client";
 import { prisma } from "@/lib/prisma";
-import { finalizePnl, type PnlBucket } from "@/lib/reports";
+import { finalizePnl, pnlLineKeyOf, type PnlBucket, type PnlItemRef } from "@/lib/reports";
+import { comparePnlGroups, comparePnlItems } from "@/lib/pnl-ordering";
 
 /* ------------------------------------------------------------------------- *
  * Báo cáo theo feedback chị Bình 26/08/2026 (report_Feedback.pdf):
@@ -36,6 +37,23 @@ function sortedSeries(map: Map<string, MatrixSeries>) {
   return Array.from(map.values())
     .filter((row) => Math.abs(row.total) > 0.5)
     .sort((a, b) => (a.code === "UNCLASSIFIED" || a.code === UNASSIGNED_DEPARTMENT ? 1 : b.code === "UNCLASSIFIED" || b.code === UNASSIGNED_DEPARTMENT ? -1 : b.total - a.total));
+}
+
+/** Hạng mục trong một nhóm chi: abc theo tên, dòng chưa phân loại xuống cuối (feedback 03/09/2026). */
+function sortedSeriesByName(map: Map<string, MatrixSeries>) {
+  return Array.from(map.values())
+    .filter((row) => Math.abs(row.total) > 0.5)
+    .sort((a, b) => comparePnlItems({ name: a.name, last: a.code === "UNCLASSIFIED" }, { name: b.name, last: b.code === "UNCLASSIFIED" }));
+}
+
+/** Tầng của nhóm chi trên bảng 12 tháng: giá vốn (0) -> OPEX (1) -> nhóm khác (2) -> nhóm gom tạm (3). */
+function expenseGroupTier(code: string, kindByCode: Map<string, string>) {
+  if (code === "TYPE:COGS") return 0;
+  if (code.startsWith("TYPE:")) return 3;
+  const kind = kindByCode.get(code);
+  if (kind === "COGS") return 0;
+  if (kind === "OPEX" || !kind) return 1;
+  return 2;
 }
 
 type MatrixLineRow = {
@@ -81,7 +99,7 @@ export async function getPnlMatrix(year: string, branchCode: string) {
   const [rows, pnlItems, pnlGroups, categories, departments, revenueRows, payrollRows, targets] = await Promise.all([
     loadYearJournalLines(months[0], months[11], branchCode),
     prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true, subGroup: true } }),
-    prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true } }),
+    prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true, group: true } }),
     prisma.masterDataItem.findMany({ where: { type: "REVENUE_EXPENSE_CATEGORY" }, select: { code: true, name: true } }),
     prisma.masterDataItem.findMany({ where: { type: "DEPARTMENT" }, select: { code: true, name: true } }),
     // Pie tỷ trọng phải tách được SVC và thuế GTGT thành lát riêng (đúng ảnh feedback:
@@ -104,6 +122,13 @@ export async function getPnlMatrix(year: string, branchCode: string) {
   ]);
   const pnlItemByCode = new Map(pnlItems.map((item) => [item.code, item]));
   const pnlGroupNameByCode = new Map(pnlGroups.map((item) => [item.code, item.name]));
+  const pnlGroupKindByCode = new Map(pnlGroups.map((item) => [item.code, (item.group || "").toUpperCase()]));
+  // Hạng mục lương/nhân sự khai dưới nhóm OPEX vẫn tính vào dòng Chi phí nhân sự (cùng luật với getPnl).
+  const pnlItemRefOf = (pnlItemCode: string | null): PnlItemRef => {
+    const item = pnlItemCode ? pnlItemByCode.get(pnlItemCode) : null;
+    if (!item) return null;
+    return { name: item.name, groupName: item.subGroup ? pnlGroupNameByCode.get(item.subGroup) || null : null };
+  };
   const categoryName = new Map(categories.map((item) => [item.code, item.name]));
   const departmentName = new Map(departments.map((item) => [item.code, item.name]));
   const deptLabel = (code: string) => (code === UNASSIGNED_DEPARTMENT ? "Chưa gán bộ phận" : departmentName.get(code) || code);
@@ -130,13 +155,14 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     const bucket = totals[monthIndex];
     const expense = row.debit - row.credit;
     const income = row.credit - row.debit;
-    if (row.accountType === "REVENUE") bucket.revenue += income;
-    else if (row.accountType === "COGS") bucket.cogs += expense;
-    else if (row.accountType === "OPEX" && row.reportGroup === "PAYROLL") bucket.payroll += expense;
-    else if (row.accountType === "OPEX" && row.reportGroup === "DEPRECIATION") bucket.depreciation += expense;
-    else if (row.accountType === "OPEX") bucket.otherOpex += expense;
-    else if (row.accountType === "OTHER_INCOME") bucket.otherIncome += income;
-    else if (row.accountType === "OTHER_EXPENSE") bucket.otherExpense += expense;
+    const lineKey = pnlLineKeyOf(row, pnlItemRefOf(row.pnlItemCode));
+    if (lineKey === "revenue") bucket.revenue += income;
+    else if (lineKey === "cogs") bucket.cogs += expense;
+    else if (lineKey === "payroll") bucket.payroll += expense;
+    else if (lineKey === "depreciation") bucket.depreciation += expense;
+    else if (lineKey === "otherOpex") bucket.otherOpex += expense;
+    else if (lineKey === "otherIncome") bucket.otherIncome += income;
+    else if (lineKey === "otherExpense") bucket.otherExpense += expense;
 
     if (row.accountType === "REVENUE") {
       const code = row.categoryCode || "UNCLASSIFIED";
@@ -162,7 +188,7 @@ export async function getPnlMatrix(year: string, branchCode: string) {
       group.total += expense;
       bumpSeries(group.itemMap, itemCode, item?.name || (row.pnlItemCode ? `Hạng mục P&L [${row.pnlItemCode}]` : "Chưa phân loại P&L"), monthIndex, expense);
       expenseGroups.set(groupInfo.code, group);
-      if (row.accountType === "OPEX" && row.reportGroup === "PAYROLL") {
+      if (lineKey === "payroll") {
         const dept = row.departmentCode || UNASSIGNED_DEPARTMENT;
         bumpSeries(payrollByDepartment, dept, deptLabel(dept), monthIndex, expense);
       }
@@ -260,10 +286,12 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     /** Ngân sách tháng đã quy đổi % — đường so sánh trên chart COGS/LƯƠNG. */
     budgets,
     incomeGroups,
+    // Nhóm chi: giá vốn trước, rồi OPEX theo cố định -> marketing -> biến đổi -> nhóm khác,
+    // nhóm gom tạm (TYPE:*) và chi phí khác đứng cuối; hạng mục trong nhóm xếp abc.
     expenseGroups: Array.from(expenseGroups.values())
-      .map(({ itemMap, ...group }) => ({ ...group, items: sortedSeries(itemMap) }))
+      .map(({ itemMap, ...group }) => ({ ...group, items: sortedSeriesByName(itemMap) }))
       .filter((group) => Math.abs(group.total) > 0.5)
-      .sort((a, b) => (a.code.startsWith("TYPE:") === b.code.startsWith("TYPE:") ? b.total - a.total : a.code.startsWith("TYPE:") ? 1 : -1)),
+      .sort((a, b) => expenseGroupTier(a.code, pnlGroupKindByCode) - expenseGroupTier(b.code, pnlGroupKindByCode) || comparePnlGroups(a, b)),
     revenueByDepartment: sortedSeries(revenueByDepartment),
     payrollByDepartment: sortedSeries(payrollByDepartment),
     cogsByDepartment: sortedSeries(cogsByDepartment),

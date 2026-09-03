@@ -27,6 +27,14 @@ export async function GET(request: Request) {
     }
 
     const { start, end } = periodBounds(period);
+    // Hạng mục lương/nhân sự hạch toán 6428 vẫn thuộc dòng Chi phí nhân sự — phải bắt đúng
+    // dòng như lib/reports.ts, không thì bấm dòng nhân sự thiếu tiền, bấm OPEX lại thừa.
+    const [pnlItems, pnlGroups] = await Promise.all([
+      prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true, subGroup: true } }),
+      prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true } }),
+    ]);
+    const pnlGroupName = new Map(pnlGroups.map((group) => [group.code, group.name]));
+    const pnlItemRefByCode = new Map(pnlItems.map((item) => [item.code, { name: item.name, groupName: item.subGroup ? pnlGroupName.get(item.subGroup) || null : null }]));
     const entries = await prisma.journalEntry.findMany({
       where: {
         entryDate: { gte: start, lt: end },
@@ -59,9 +67,9 @@ export async function GET(request: Request) {
         let lineAmount = 0;
 
         const { accountType, reportGroup } = line.account;
+        const accountLine = pnlLineKeyOf(line.account, line.pnlItemCode ? pnlItemRefByCode.get(line.pnlItemCode) : null);
 
         if (pnlItemCode !== null) {
-          const accountLine = pnlLineKeyOf(line.account);
           const isExpenseLine = accountLine !== null && accountLine !== "revenue" && accountLine !== "otherIncome";
           const sameItem = pnlItemCode === "UNCLASSIFIED" ? !line.pnlItemCode : line.pnlItemCode === pnlItemCode;
           if (isExpenseLine && sameItem && (!lineKey || lineKey === accountLine)) {
@@ -74,18 +82,13 @@ export async function GET(request: Request) {
         } else if (metric === "cogs" && accountType === "COGS") {
           isMatch = true;
           lineAmount = line.debit - line.credit;
-        } else if (metric === "payroll" && accountType === "OPEX" && reportGroup === "PAYROLL") {
+        } else if (metric === "payroll" && accountLine === "payroll") {
           isMatch = true;
           lineAmount = line.debit - line.credit;
         } else if (metric === "depreciation" && accountType === "OPEX" && reportGroup === "DEPRECIATION") {
           isMatch = true;
           lineAmount = line.debit - line.credit;
-        } else if (
-          metric === "otherOpex" &&
-          accountType === "OPEX" &&
-          reportGroup !== "PAYROLL" &&
-          reportGroup !== "DEPRECIATION"
-        ) {
+        } else if (metric === "otherOpex" && accountLine === "otherOpex") {
           isMatch = true;
           lineAmount = line.debit - line.credit;
         } else if (
