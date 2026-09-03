@@ -2,17 +2,19 @@
 
 import React, { useCallback, useEffect, useState } from "react";
 import { MoneyLineChart, ShareDonutChart } from "@/components/charts/ReportCharts";
-import { Cell, PanelHeader, money } from "@/components/reports/report-ui";
+import { PanelHeader, money } from "@/components/reports/report-ui";
 
 /**
- * Góc nhìn "Cả năm 12 tháng" trong tab P&L đa chiều (feedback chị Bình 26/08/2026 mục 4):
- * đưa hết hạng mục doanh thu - chi phí vào một bảng liền mạch, group theo nhóm P&L,
- * kèm pie tỷ trọng doanh thu và line COGS/Lương so với doanh thu. Tự fetch
+ * Góc nhìn "Cả năm 12 tháng" trong tab P&L đa chiều (feedback chị Bình 26/08/2026 mục 4,
+ * chỉnh lại 03/09/2026): bảng KQKD có ĐÚNG cấu trúc như bảng một kỳ — 10 dòng chỉ tiêu,
+ * bung ra nhóm hạng mục rồi hạng mục — nhưng mỗi tháng một cột để nhìn biến động giữa
+ * các tháng. Kèm pie tỷ trọng doanh thu và line COGS/Lương so với doanh thu. Tự fetch
  * type=pnl-matrix vì tab P&L mặc định vẫn nạp số liệu một kỳ.
  */
 
 type MatrixSeries = { code: string; name: string; months: number[]; total: number };
 type MatrixGroup = MatrixSeries & { items: MatrixSeries[] };
+type MatrixStatementLine = { key: string; label: string; subtotal: boolean; months: number[]; total: number; groups: MatrixGroup[] };
 type MatrixTotals = {
   revenue: number; cogs: number; payroll: number; depreciation: number; otherOpex: number;
   otherIncome: number; otherExpense: number; grossProfit: number; opexBeforeDepreciation: number;
@@ -26,20 +28,21 @@ type PnlMatrixData = {
   revenueSplit: { byDepartment: MatrixSeries[]; byChannel: MatrixSeries[]; svc: number[]; vat: number[] };
   payrollSplit: { bonus: number[]; insurance: number[] };
   budgets: { revenue: number[]; cogs: number[]; payroll: number[] };
-  incomeGroups: MatrixGroup[];
-  expenseGroups: MatrixGroup[];
+  statement: MatrixStatementLine[];
   revenueByDepartment: MatrixSeries[];
   payrollByDepartment: MatrixSeries[];
   cogsByDepartment: MatrixSeries[];
 };
 
 const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
+const isEmptySeries = (row: { months: number[]; total: number }) => Math.abs(row.total) <= 0.5 && row.months.every((value) => Math.abs(value) <= 0.5);
 
 export default function PnlMatrixTab({ period, branchCode }: { period: string; branchCode: string }) {
   const [data, setData] = useState<PnlMatrixData | null>(null);
   const [loading, setLoading] = useState(false);
   const [pieMonth, setPieMonth] = useState<number>(-1); // -1 = cả năm
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [hideEmpty, setHideEmpty] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -64,6 +67,8 @@ export default function PnlMatrixTab({ period, branchCode }: { period: string; b
 
   const monthHeaders = data.months.map((month) => `T${Number(month.slice(5))}`);
   const yearRevenue = sum(data.totals.map((total) => total.revenue));
+  const percent = (value: number) => (yearRevenue ? `${((value / yearRevenue) * 100).toFixed(1)}%` : "-");
+  const cell = (value: number) => (Math.abs(value) > 0.5 ? money(Math.round(value)) : "-");
   const pickAt = (values: number[]) => (pieMonth < 0 ? values.reduce((total, value) => total + value, 0) : values[pieMonth] || 0);
   /**
    * Pie tỷ trọng lấy đúng cấu thành tiền khách trả như file của chị Bình: phần doanh thu
@@ -75,106 +80,150 @@ export default function PnlMatrixTab({ period, branchCode }: { period: string; b
     { name: "Thuế GTGT", value: pickAt(data.revenueSplit.vat) },
   ];
 
+  const toggle = (key: string) => setCollapsed((current) => ({ ...current, [key]: !current[key] }));
+  const setAll = (nextCollapsed: boolean) => {
+    const next: Record<string, boolean> = {};
+    if (nextCollapsed) {
+      for (const line of data.statement) {
+        if (line.groups.length > 0) next[line.key] = true;
+        for (const group of line.groups) if (group.items.length > 0) next[`${line.key}:${group.code}`] = true;
+      }
+    }
+    setCollapsed(next);
+  };
+
   const exportExcel = async () => {
     // xlsx chỉ nạp khi bấm xuất — tránh cộng vào bundle của trang báo cáo.
     const XLSX = await import("xlsx");
-    const header = ["Hạng mục", ...monthHeaders, "Cả năm", "% doanh thu"];
+    const header = ["Chỉ tiêu", ...monthHeaders, "Cả năm", "% doanh thu"];
     const rows: Array<Array<string | number>> = [header];
-    const pushSeries = (prefix: string, series: MatrixSeries) => {
-      rows.push([`${prefix}${series.name}`, ...series.months.map((value) => Math.round(value)), Math.round(series.total), yearRevenue ? Number(((series.total / yearRevenue) * 100).toFixed(2)) : 0]);
+    const push = (prefix: string, label: string, series: { months: number[]; total: number }) => {
+      rows.push([`${prefix}${label}`, ...series.months.map((value) => Math.round(value)), Math.round(series.total), yearRevenue ? Number(((series.total / yearRevenue) * 100).toFixed(2)) : 0]);
     };
-    for (const group of data.incomeGroups) {
-      pushSeries("", group);
-      for (const item of group.items) pushSeries("    ", item);
+    for (const line of data.statement) {
+      push("", line.label, line);
+      for (const group of line.groups) {
+        if (hideEmpty && isEmptySeries(group)) continue;
+        push("    ", group.name, group);
+        for (const item of group.items) {
+          if (hideEmpty && isEmptySeries(item)) continue;
+          push("        ", `${item.code === "UNCLASSIFIED" ? "" : `${item.code} - `}${item.name}`, item);
+        }
+      }
     }
-    for (const group of data.expenseGroups) {
-      pushSeries("", group);
-      for (const item of group.items) pushSeries("    ", item);
-    }
-    rows.push(["EBITDA", ...data.totals.map((total) => Math.round(total.ebitda)), Math.round(sum(data.totals.map((total) => total.ebitda))), ""]);
-    rows.push(["Lợi nhuận ròng", ...data.totals.map((total) => Math.round(total.netProfit)), Math.round(sum(data.totals.map((total) => total.netProfit))), ""]);
     const sheet = XLSX.utils.aoa_to_sheet(rows);
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, sheet, `PnL ${data.year}`);
-    XLSX.writeFile(workbook, `pnl_12_thang_${data.year}_${data.branchCode}.xlsx`);
+    XLSX.utils.book_append_sheet(workbook, sheet, `KQKD ${data.year}`);
+    XLSX.writeFile(workbook, `kqkd_12_thang_${data.year}_${data.branchCode}.xlsx`);
   };
 
-  const summaryRows: Array<{ label: string; pick: (total: MatrixTotals) => number; bold?: boolean }> = [
-    { label: "Lợi nhuận gộp", pick: (total) => total.grossProfit, bold: true },
-    { label: "EBITDA", pick: (total) => total.ebitda, bold: true },
-    { label: "Lợi nhuận ròng", pick: (total) => total.netProfit, bold: true },
-  ];
+  // Cột đầu dính bên trái khi cuộn ngang 12 tháng; phải tô nền cho ô đó cùng màu với dòng
+  // để số của các cột tháng không hiện xuyên qua.
+  const numberCells = (series: { months: number[]; total: number }, bold: boolean, tone = "") => (
+    <>
+      {series.months.map((value, index) => (
+        <td key={data.months[index]} className={`px-3 py-2.5 text-right whitespace-nowrap ${tone}`}>{bold ? <b>{cell(value)}</b> : cell(value)}</td>
+      ))}
+      <td className={`px-3 py-2.5 text-right whitespace-nowrap border-l border-slate-200 ${tone}`}><b>{cell(series.total)}</b></td>
+      <td className={`px-3 py-2.5 text-right whitespace-nowrap ${tone}`}>{percent(series.total)}</td>
+    </>
+  );
 
   return (
     <div className="space-y-5">
       <section className="table-panel">
         <div className="p-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="font-bold">Bảng P&L đầy đủ {data.year}</h2>
-            <p className="text-xs text-slate-500 mt-0.5">Toàn bộ hạng mục doanh thu - chi phí group theo nhóm P&L, trải 12 tháng. Bấm tên nhóm để thu gọn/mở chi tiết.</p>
+            <h2 className="font-bold">Báo cáo Kết quả Kinh doanh cả năm {data.year}</h2>
+            <p className="text-xs text-slate-500 mt-0.5">Cùng cấu trúc với bảng một kỳ, mỗi tháng một cột để nhìn biến động. Bấm tên chỉ tiêu hoặc tên nhóm để mở/thu gọn.</p>
           </div>
-          <button type="button" onClick={() => void exportExcel()} className="secondary-button flex items-center gap-1 text-xs font-bold text-blue-700 border border-blue-200 rounded px-3 py-1.5 hover:bg-blue-50">
-            <span className="material-symbols-outlined text-base">download</span>Xuất Excel
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-1.5 text-xs text-slate-600">
+              <input type="checkbox" checked={hideEmpty} onChange={(event) => setHideEmpty(event.target.checked)} />
+              Ẩn dòng bằng 0
+            </label>
+            <button type="button" onClick={() => setAll(false)} className="text-xs font-bold text-slate-600 border border-slate-200 rounded px-3 py-1.5 hover:bg-slate-50">Mở tất cả</button>
+            <button type="button" onClick={() => setAll(true)} className="text-xs font-bold text-slate-600 border border-slate-200 rounded px-3 py-1.5 hover:bg-slate-50">Thu gọn tất cả</button>
+            <button type="button" onClick={() => void exportExcel()} className="secondary-button flex items-center gap-1 text-xs font-bold text-blue-700 border border-blue-200 rounded px-3 py-1.5 hover:bg-blue-50">
+              <span className="material-symbols-outlined text-base">download</span>Xuất Excel
+            </button>
+          </div>
         </div>
-        <div className="overflow-x-auto max-h-[640px] overflow-y-auto">
+        <div className="overflow-x-auto max-h-[720px] overflow-y-auto">
           <table className="w-full text-left text-sm">
-            <thead className="sticky top-0 bg-white shadow-sm z-10">
+            <thead className="sticky top-0 bg-white shadow-sm z-20">
               <tr className="text-xs uppercase tracking-wide text-slate-500">
-                <th className="px-4 py-3 font-semibold whitespace-nowrap">Hạng mục</th>
+                <th className="px-4 py-3 font-semibold whitespace-nowrap sticky left-0 bg-white z-10 min-w-[260px]">Chỉ tiêu</th>
                 {monthHeaders.map((header) => (
-                  <th key={header} className="px-4 py-3 font-semibold whitespace-nowrap text-right">{header}</th>
+                  <th key={header} className="px-3 py-3 font-semibold whitespace-nowrap text-right">{header}</th>
                 ))}
-                <th className="px-4 py-3 font-semibold whitespace-nowrap text-right">Cả năm</th>
-                <th className="px-4 py-3 font-semibold whitespace-nowrap text-right">% DT</th>
+                <th className="px-3 py-3 font-semibold whitespace-nowrap text-right border-l border-slate-200">Cả năm</th>
+                <th className="px-3 py-3 font-semibold whitespace-nowrap text-right">% DT</th>
               </tr>
             </thead>
             <tbody>
-              {[...data.incomeGroups, ...data.expenseGroups].map((group) => {
-                const isIncome = data.incomeGroups.includes(group);
-                const isCollapsed = collapsed[group.code];
+              {data.statement.map((line) => {
+                const lineCollapsed = collapsed[line.key];
+                const groups = hideEmpty ? line.groups.filter((group) => !isEmptySeries(group)) : line.groups;
+                const lineBg = line.subtotal ? "bg-blue-50" : "bg-slate-50";
+                const lineTone = line.subtotal ? (line.total < 0 ? "text-rose-600" : "text-blue-700") : "";
                 return (
-                  <React.Fragment key={group.code}>
+                  <React.Fragment key={line.key}>
                     <tr
-                      className={`border-t border-slate-200 cursor-pointer font-bold ${isIncome ? "bg-emerald-50/70 hover:bg-emerald-50" : "bg-slate-50 hover:bg-slate-100"}`}
-                      onClick={() => setCollapsed({ ...collapsed, [group.code]: !isCollapsed })}
+                      className={`border-t border-slate-200 font-bold ${lineBg} ${groups.length > 0 ? "cursor-pointer hover:bg-slate-100" : ""}`}
+                      onClick={groups.length > 0 ? () => toggle(line.key) : undefined}
                     >
-                      <Cell>
+                      <td className={`px-4 py-2.5 whitespace-nowrap sticky left-0 z-10 ${lineBg}`}>
                         <span className="flex items-center gap-1">
-                          <span className="material-symbols-outlined text-base text-slate-400">{isCollapsed ? "chevron_right" : "expand_more"}</span>
-                          <b>{group.name}</b>
+                          {groups.length === 0
+                            ? <span className="w-4" />
+                            : <span className="material-symbols-outlined text-base text-slate-400">{lineCollapsed ? "chevron_right" : "expand_more"}</span>}
+                          {line.label}
                         </span>
-                      </Cell>
-                      {group.months.map((value, index) => (
-                        <Cell key={data.months[index]} right><b>{value ? money(Math.round(value)) : "-"}</b></Cell>
-                      ))}
-                      <Cell right><b>{money(Math.round(group.total))}</b></Cell>
-                      <Cell right><b>{yearRevenue ? `${((group.total / yearRevenue) * 100).toFixed(1)}%` : "-"}</b></Cell>
+                      </td>
+                      {numberCells(line, true, lineTone)}
                     </tr>
-                    {!isCollapsed && group.items.map((item) => (
-                      <tr key={`${group.code}-${item.code}`} className={`border-t border-slate-100 hover:bg-slate-50 ${item.code === "UNCLASSIFIED" ? "bg-amber-50/60" : ""}`}>
-                        <Cell><span className="pl-7 text-slate-600">{item.name}</span></Cell>
-                        {item.months.map((value, index) => (
-                          <Cell key={data.months[index]} right>{value ? money(Math.round(value)) : "-"}</Cell>
-                        ))}
-                        <Cell right><b>{money(Math.round(item.total))}</b></Cell>
-                        <Cell right>{yearRevenue ? `${((item.total / yearRevenue) * 100).toFixed(1)}%` : "-"}</Cell>
-                      </tr>
-                    ))}
+                    {!lineCollapsed && groups.map((group) => {
+                      const groupKey = `${line.key}:${group.code}`;
+                      const groupCollapsed = collapsed[groupKey];
+                      const items = hideEmpty ? group.items.filter((item) => !isEmptySeries(item)) : group.items;
+                      const groupBg = group.code === "UNGROUPED" ? "bg-amber-50" : "bg-white";
+                      return (
+                        <React.Fragment key={groupKey}>
+                          <tr
+                            className={`border-t border-slate-100 ${groupBg} ${items.length > 0 ? "cursor-pointer hover:bg-slate-50" : ""}`}
+                            onClick={items.length > 0 ? () => toggle(groupKey) : undefined}
+                          >
+                            <td className={`px-4 py-2.5 whitespace-nowrap sticky left-0 z-10 ${groupBg}`}>
+                              <span className="flex items-center gap-1 pl-6">
+                                {items.length === 0
+                                  ? <span className="w-4" />
+                                  : <span className="material-symbols-outlined text-base text-slate-300">{groupCollapsed ? "chevron_right" : "expand_more"}</span>}
+                                <b className="text-slate-700">{group.name}</b>
+                              </span>
+                            </td>
+                            {numberCells(group, true)}
+                          </tr>
+                          {!groupCollapsed && items.map((item) => {
+                            const itemBg = item.code === "UNCLASSIFIED" ? "bg-amber-50" : "bg-white";
+                            return (
+                              <tr key={`${groupKey}:${item.code}`} className={`border-t border-slate-100 ${itemBg} hover:bg-slate-50`}>
+                                <td className={`px-4 py-2.5 whitespace-nowrap sticky left-0 z-10 ${itemBg}`}>
+                                  <span className="pl-16 text-slate-600">
+                                    {item.code !== "UNCLASSIFIED" && <span className="text-[11px] text-slate-400 mr-1.5">{item.code}</span>}
+                                    {item.name}
+                                  </span>
+                                </td>
+                                {numberCells(item, false)}
+                              </tr>
+                            );
+                          })}
+                        </React.Fragment>
+                      );
+                    })}
                   </React.Fragment>
                 );
               })}
-              {summaryRows.map((row) => (
-                <tr key={row.label} className="border-t border-slate-200 bg-blue-50/50 font-bold">
-                  <Cell><b className="text-blue-700">{row.label}</b></Cell>
-                  {data.totals.map((total, index) => {
-                    const value = row.pick(total);
-                    return <Cell key={data.months[index]} right><b className={value < 0 ? "text-rose-600" : "text-blue-700"}>{value ? money(Math.round(value)) : "-"}</b></Cell>;
-                  })}
-                  <Cell right><b className="text-blue-700">{money(Math.round(sum(data.totals.map(row.pick))))}</b></Cell>
-                  <Cell right><b>{yearRevenue ? `${((sum(data.totals.map(row.pick)) / yearRevenue) * 100).toFixed(1)}%` : "-"}</b></Cell>
-                </tr>
-              ))}
             </tbody>
           </table>
         </div>

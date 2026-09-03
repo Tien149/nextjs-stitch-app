@@ -113,6 +113,127 @@ function sortDetailItems<T extends { code: string; name: string }>(rows: T[]) {
   return rows.sort((a, b) => comparePnlItems({ name: a.name, last: isUnclassifiedDetailCode(a.code) }, { name: b.name, last: isUnclassifiedDetailCode(b.code) }));
 }
 
+/** Nhãn + thứ tự 10 dòng của báo cáo KQKD — bảng một kỳ và bảng 12 tháng dùng chung một bộ. */
+export const PNL_STATEMENT_LINES: Array<{ key: PnlLineKey | "grossProfit" | "ebitda" | "netProfit"; label: string; subtotal: boolean }> = [
+  { key: "revenue", label: "1. Doanh thu bán hàng và cung cấp dịch vụ", subtotal: false },
+  { key: "cogs", label: "2. Giá vốn hàng bán", subtotal: false },
+  { key: "grossProfit", label: "3. Lợi nhuận gộp", subtotal: true },
+  { key: "payroll", label: "4. Chi phí nhân sự", subtotal: false },
+  { key: "otherOpex", label: "5. Chi phí hoạt động khác (OPEX)", subtotal: false },
+  { key: "depreciation", label: "6. Khấu hao tài sản/CCDC", subtotal: false },
+  { key: "ebitda", label: "7. EBITDA", subtotal: true },
+  { key: "otherIncome", label: "8. Thu nhập khác", subtotal: false },
+  { key: "otherExpense", label: "9. Chi phí khác", subtotal: false },
+  { key: "netProfit", label: "10. Lợi nhuận ròng", subtotal: true },
+];
+
+export type PnlCatalog = {
+  pnlItems: Array<{ code: string; name: string; group: string | null; subGroup: string | null }>;
+  pnlGroups: Array<{ code: string; name: string; group: string | null }>;
+  categories: Array<{ code: string; name: string }>;
+};
+/** Một dòng chi tiết với N cột số (N = 1 cho bảng một kỳ, 12 cho bảng cả năm). */
+export type PnlSeriesItem = { code: string; name: string; months: number[]; total: number };
+export type PnlSeriesGroup = PnlSeriesItem & { items: PnlSeriesItem[] };
+export type PnlJournalLineLike = {
+  account: { accountType: string; reportGroup: string };
+  pnlItemCode: string | null;
+  categoryCode: string | null;
+  debit: number;
+  credit: number;
+};
+
+/**
+ * Cây chi tiết dưới từng dòng KQKD: dòng -> nhóm PNL_GROUP -> hạng mục PNL_ITEM, mỗi nút giữ
+ * `monthCount` cột số. Bảng một kỳ và bảng 12 tháng cùng đi qua đây nên cùng một luật: lương
+ * lên dòng nhân sự, nhóm OPEX xếp cố định -> marketing -> biến đổi, hạng mục xếp abc, và
+ * danh mục được nạp sẵn để hạng mục chưa phát sinh vẫn có chỗ (số 0).
+ */
+export function createPnlDetailTree(catalog: PnlCatalog, monthCount: number) {
+  const { pnlItems, pnlGroups, categories } = catalog;
+  const pnlItemByCode = new Map(pnlItems.map((item) => [item.code, item]));
+  const pnlGroupByCode = new Map(pnlGroups.map((item) => [item.code, item]));
+  const pnlGroupName = new Map(pnlGroups.map((item) => [item.code, item.name]));
+  const categoryName = new Map(categories.map((item) => [item.code, item.name]));
+  const zeros = () => Array.from({ length: monthCount }, () => 0);
+
+  type DetailItem = { code: string; name: string; months: number[] };
+  type DetailNode = { code: string; name: string; months: number[]; items: Map<string, DetailItem> };
+  const detail = new Map<PnlLineKey, Map<string, DetailNode>>();
+  const touchGroup = (lineKey: PnlLineKey, group: { code: string; name: string }) => {
+    const groups = detail.get(lineKey) || new Map<string, DetailNode>();
+    detail.set(lineKey, groups);
+    const node = groups.get(group.code) || { code: group.code, name: group.name, months: zeros(), items: new Map<string, DetailItem>() };
+    groups.set(group.code, node);
+    return node;
+  };
+  const bumpDetail = (lineKey: PnlLineKey, group: { code: string; name: string }, item: { code: string; name: string } | null, monthIndex: number, amount: number) => {
+    const node = touchGroup(lineKey, group);
+    node.months[monthIndex] += amount;
+    if (!item) return;
+    const current = node.items.get(item.code) || { code: item.code, name: item.name, months: zeros() };
+    current.months[monthIndex] += amount;
+    node.items.set(item.code, current);
+  };
+
+  // Hạng mục lương/nhân sự khai dưới nhóm OPEX vẫn phải đứng ở dòng Chi phí nhân sự.
+  const pnlItemRefOf = (pnlItemCode: string | null): PnlItemRef => {
+    const item = pnlItemCode ? pnlItemByCode.get(pnlItemCode) : null;
+    if (!item) return null;
+    return { name: item.name, groupName: item.subGroup ? pnlGroupName.get(item.subGroup) || null : null };
+  };
+
+  // Nạp sẵn toàn bộ danh mục P&L. CAPEX không vào KQKD (ghi tăng tài sản), REVENUE_SOURCE
+  // tách theo nguồn thu lúc có bút toán.
+  const seedLineOf = (rawGroup: string | null | undefined): PnlLineKey | null => {
+    const value = (rawGroup || "").toUpperCase();
+    if (value === "COGS") return "cogs";
+    if (value === "OPEX") return "otherOpex";
+    return null;
+  };
+  for (const group of pnlGroups) {
+    const lineKey = seedLineOf(group.group);
+    if (!lineKey) continue;
+    touchGroup(lineKey === "otherOpex" && isPayrollPnlItem({ name: group.name }) ? "payroll" : lineKey, group);
+  }
+  for (const item of pnlItems) {
+    const parent = item.subGroup ? pnlGroupByCode.get(item.subGroup) : null;
+    let lineKey = seedLineOf(parent?.group ?? item.group);
+    if (lineKey === "otherOpex" && isPayrollPnlItem({ name: item.name, groupName: parent?.name })) lineKey = "payroll";
+    if (!lineKey) continue;
+    bumpDetail(lineKey, parent ? { code: parent.code, name: parent.name } : expenseGroupOf(item.code, pnlItemByCode, pnlGroupName), item, 0, 0);
+  }
+
+  /** Cộng một bút toán vào cột `monthIndex`; trả về dòng KQKD nó thuộc về (null nếu không vào KQKD). */
+  const add = (line: PnlJournalLineLike, monthIndex: number): PnlLineKey | null => {
+    const lineKey = pnlLineKeyOf(line.account, pnlItemRefOf(line.pnlItemCode));
+    if (!lineKey) return null;
+    if (PNL_INCOME_LINES.includes(lineKey)) {
+      const code = line.categoryCode || "UNCLASSIFIED";
+      const name = categoryName.get(code) || (line.categoryCode ? `Nguồn thu [${line.categoryCode}]` : "Chưa phân loại nguồn thu");
+      bumpDetail(lineKey, { code, name }, null, monthIndex, line.credit - line.debit);
+    } else {
+      const code = line.pnlItemCode || "UNCLASSIFIED";
+      const item = pnlItemByCode.get(code);
+      const name = item?.name || (line.pnlItemCode ? `Hạng mục P&L [${line.pnlItemCode}]` : "Chưa phân loại P&L");
+      bumpDetail(lineKey, expenseGroupOf(line.pnlItemCode, pnlItemByCode, pnlGroupName), { code, name }, monthIndex, line.debit - line.credit);
+    }
+    return lineKey;
+  };
+
+  const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
+  const groupsOf = (lineKey: PnlLineKey): PnlSeriesGroup[] =>
+    sortDetailGroups(Array.from(detail.get(lineKey)?.values() || [], (node) => ({
+      code: node.code,
+      name: node.name,
+      months: node.months,
+      total: sum(node.months),
+      items: sortDetailItems(Array.from(node.items.values(), (item) => ({ ...item, total: sum(item.months) }))),
+    })));
+
+  return { pnlItemRefOf, add, groupsOf };
+}
+
 export async function getPnl(period: string, branchCode: string) {
   const { start, end } = periodBounds(period);
   const [entries, pnlItems, pnlGroups, categories] = await Promise.all([
@@ -136,80 +257,21 @@ export async function getPnl(period: string, branchCode: string) {
     }),
   ]);
   const pnlItemByCode = new Map(pnlItems.map((item) => [item.code, item]));
-  const pnlGroupByCode = new Map(pnlGroups.map((item) => [item.code, item]));
   const pnlGroupName = new Map(pnlGroups.map((item) => [item.code, item.name]));
-  const categoryName = new Map(categories.map((item) => [item.code, item.name]));
   const pnlItemBreakdown = new Map<string, PnlItemBreakdown>();
   const total = emptyPnl();
   const branches = new Map<string, PnlBucket>();
   const departments = new Map<string, PnlBucket>();
-
-  // Cây chi tiết dưới từng dòng KQKD: dòng -> nhóm -> hạng mục.
-  type DetailNode = { code: string; name: string; amount: number; items: Map<string, PnlDetailItem> };
-  const detail = new Map<PnlLineKey, Map<string, DetailNode>>();
-  const touchGroup = (lineKey: PnlLineKey, group: { code: string; name: string }) => {
-    const groups = detail.get(lineKey) || new Map<string, DetailNode>();
-    detail.set(lineKey, groups);
-    const node = groups.get(group.code) || { code: group.code, name: group.name, amount: 0, items: new Map<string, PnlDetailItem>() };
-    groups.set(group.code, node);
-    return node;
-  };
-  const bumpDetail = (lineKey: PnlLineKey, group: { code: string; name: string }, item: { code: string; name: string } | null, amount: number) => {
-    const node = touchGroup(lineKey, group);
-    node.amount += amount;
-    if (!item) return;
-    const current = node.items.get(item.code) || { code: item.code, name: item.name, amount: 0 };
-    current.amount += amount;
-    node.items.set(item.code, current);
-  };
-  // Nạp sẵn toàn bộ danh mục P&L để bảng hiện đủ hạng mục kể cả kỳ này chưa phát sinh.
-  // CAPEX không vào KQKD (ghi tăng tài sản), REVENUE_SOURCE tách theo nguồn thu ở dưới.
-  const seedLineOf = (rawGroup: string | null | undefined): PnlLineKey | null => {
-    const value = (rawGroup || "").toUpperCase();
-    if (value === "COGS") return "cogs";
-    if (value === "OPEX") return "otherOpex";
-    return null;
-  };
-  // Hạng mục lương/nhân sự khai dưới nhóm OPEX vẫn phải đứng ở dòng Chi phí nhân sự.
-  const pnlItemRefOf = (pnlItemCode: string | null): PnlItemRef => {
-    const item = pnlItemCode ? pnlItemByCode.get(pnlItemCode) : null;
-    if (!item) return null;
-    return { name: item.name, groupName: item.subGroup ? pnlGroupName.get(item.subGroup) || null : null };
-  };
-  const seedLineOfItem = (item: { code: string; name: string; group: string | null }, parent: { name: string; group: string | null } | null | undefined) => {
-    const lineKey = seedLineOf(parent?.group ?? item.group);
-    if (lineKey === "otherOpex" && isPayrollPnlItem({ name: item.name, groupName: parent?.name })) return "payroll";
-    return lineKey;
-  };
-  for (const group of pnlGroups) {
-    const lineKey = seedLineOf(group.group);
-    if (!lineKey) continue;
-    touchGroup(lineKey === "otherOpex" && isPayrollPnlItem({ name: group.name }) ? "payroll" : lineKey, group);
-  }
-  for (const item of pnlItems) {
-    const parent = item.subGroup ? pnlGroupByCode.get(item.subGroup) : null;
-    const lineKey = seedLineOfItem(item, parent);
-    if (!lineKey) continue;
-    bumpDetail(lineKey, parent ? { code: parent.code, name: parent.name } : expenseGroupOf(item.code, pnlItemByCode, pnlGroupName), item, 0);
-  }
+  // Cây chi tiết dòng -> nhóm -> hạng mục, một cột số cho kỳ này (cùng luật với bảng 12 tháng).
+  const tree = createPnlDetailTree({ pnlItems, pnlGroups, categories }, 1);
 
   for (const entry of entries) {
     const branch = branches.get(entry.branchCode) || emptyPnl();
     for (const line of entry.lines) {
-      const pnlItemRef = pnlItemRefOf(line.pnlItemCode);
+      const pnlItemRef = tree.pnlItemRefOf(line.pnlItemCode);
       addLine(total, line, pnlItemRef);
       addLine(branch, line, pnlItemRef);
-      const lineKey = pnlLineKeyOf(line.account, pnlItemRef);
-      if (lineKey && PNL_INCOME_LINES.includes(lineKey)) {
-        const code = line.categoryCode || "UNCLASSIFIED";
-        const name = categoryName.get(code) || (line.categoryCode ? `Nguồn thu [${line.categoryCode}]` : "Chưa phân loại nguồn thu");
-        bumpDetail(lineKey, { code, name }, null, line.credit - line.debit);
-      } else if (lineKey) {
-        const code = line.pnlItemCode || "UNCLASSIFIED";
-        const item = pnlItemByCode.get(code);
-        const name = item?.name || (line.pnlItemCode ? `Hạng mục P&L [${line.pnlItemCode}]` : "Chưa phân loại P&L");
-        bumpDetail(lineKey, expenseGroupOf(line.pnlItemCode, pnlItemByCode, pnlGroupName), { code, name }, line.debit - line.credit);
-      }
+      tree.add(line, 0);
       if (["COGS", "OPEX", "OTHER_EXPENSE"].includes(line.account.accountType)) {
         const code = line.pnlItemCode || "UNCLASSIFIED";
         const item = line.pnlItemCode ? pnlItemByCode.get(line.pnlItemCode) : null;
@@ -231,24 +293,20 @@ export async function getPnl(period: string, branchCode: string) {
   }
   const finalized = finalizePnl(total);
   const groupsOf = (lineKey: PnlLineKey): PnlDetailGroup[] =>
-    sortDetailGroups(Array.from(detail.get(lineKey)?.values() || [], (node) => ({
-      code: node.code,
-      name: node.name,
-      amount: node.amount,
-      items: sortDetailItems(Array.from(node.items.values())),
-    })));
-  const statement: PnlStatementLine[] = [
-    { key: "revenue", label: "1. Doanh thu bán hàng và cung cấp dịch vụ", amount: finalized.revenue, subtotal: false, groups: groupsOf("revenue") },
-    { key: "cogs", label: "2. Giá vốn hàng bán", amount: finalized.cogs, subtotal: false, groups: groupsOf("cogs") },
-    { key: "grossProfit", label: "3. Lợi nhuận gộp", amount: finalized.grossProfit, subtotal: true, groups: [] },
-    { key: "payroll", label: "4. Chi phí nhân sự", amount: finalized.payroll, subtotal: false, groups: groupsOf("payroll") },
-    { key: "otherOpex", label: "5. Chi phí hoạt động khác (OPEX)", amount: finalized.otherOpex, subtotal: false, groups: groupsOf("otherOpex") },
-    { key: "depreciation", label: "6. Khấu hao tài sản/CCDC", amount: finalized.depreciation, subtotal: false, groups: groupsOf("depreciation") },
-    { key: "ebitda", label: "7. EBITDA", amount: finalized.ebitda, subtotal: true, groups: [] },
-    { key: "otherIncome", label: "8. Thu nhập khác", amount: finalized.otherIncome, subtotal: false, groups: groupsOf("otherIncome") },
-    { key: "otherExpense", label: "9. Chi phí khác", amount: finalized.otherExpense, subtotal: false, groups: groupsOf("otherExpense") },
-    { key: "netProfit", label: "10. Lợi nhuận ròng", amount: finalized.netProfit, subtotal: true, groups: [] },
-  ];
+    tree.groupsOf(lineKey).map((group) => ({
+      code: group.code,
+      name: group.name,
+      amount: group.total,
+      items: group.items.map((item) => ({ code: item.code, name: item.name, amount: item.total })),
+    }));
+  const finalizedByKey = finalized as unknown as Record<string, number>;
+  const statement: PnlStatementLine[] = PNL_STATEMENT_LINES.map((line) => ({
+    key: line.key,
+    label: line.label,
+    amount: finalizedByKey[line.key] || 0,
+    subtotal: line.subtotal,
+    groups: line.subtotal ? [] : groupsOf(line.key as PnlLineKey),
+  }));
   return {
     total: finalized,
     statement,

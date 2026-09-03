@@ -1,7 +1,6 @@
 import { Prisma } from "@prisma/custom-client";
 import { prisma } from "@/lib/prisma";
-import { finalizePnl, pnlLineKeyOf, type PnlBucket, type PnlItemRef } from "@/lib/reports";
-import { comparePnlGroups, comparePnlItems } from "@/lib/pnl-ordering";
+import { createPnlDetailTree, finalizePnl, PNL_STATEMENT_LINES, type PnlBucket, type PnlLineKey, type PnlSeriesGroup } from "@/lib/reports";
 
 /* ------------------------------------------------------------------------- *
  * Báo cáo theo feedback chị Bình 26/08/2026 (report_Feedback.pdf):
@@ -14,7 +13,8 @@ import { comparePnlGroups, comparePnlItems } from "@/lib/pnl-ordering";
  * ------------------------------------------------------------------------- */
 
 export type MatrixSeries = { code: string; name: string; months: number[]; total: number };
-export type MatrixGroup = MatrixSeries & { items: MatrixSeries[] };
+/** Một dòng KQKD trên bảng cả năm: cùng nhãn/thứ tự với bảng một kỳ, mỗi tháng một cột. */
+export type MatrixStatementLine = { key: string; label: string; subtotal: boolean; months: number[]; total: number; groups: PnlSeriesGroup[] };
 
 export const UNASSIGNED_DEPARTMENT = "UNASSIGNED";
 
@@ -37,23 +37,6 @@ function sortedSeries(map: Map<string, MatrixSeries>) {
   return Array.from(map.values())
     .filter((row) => Math.abs(row.total) > 0.5)
     .sort((a, b) => (a.code === "UNCLASSIFIED" || a.code === UNASSIGNED_DEPARTMENT ? 1 : b.code === "UNCLASSIFIED" || b.code === UNASSIGNED_DEPARTMENT ? -1 : b.total - a.total));
-}
-
-/** Hạng mục trong một nhóm chi: abc theo tên, dòng chưa phân loại xuống cuối (feedback 03/09/2026). */
-function sortedSeriesByName(map: Map<string, MatrixSeries>) {
-  return Array.from(map.values())
-    .filter((row) => Math.abs(row.total) > 0.5)
-    .sort((a, b) => comparePnlItems({ name: a.name, last: a.code === "UNCLASSIFIED" }, { name: b.name, last: b.code === "UNCLASSIFIED" }));
-}
-
-/** Tầng của nhóm chi trên bảng 12 tháng: giá vốn (0) -> OPEX (1) -> nhóm khác (2) -> nhóm gom tạm (3). */
-function expenseGroupTier(code: string, kindByCode: Map<string, string>) {
-  if (code === "TYPE:COGS") return 0;
-  if (code.startsWith("TYPE:")) return 3;
-  const kind = kindByCode.get(code);
-  if (kind === "COGS") return 0;
-  if (kind === "OPEX" || !kind) return 1;
-  return 2;
 }
 
 type MatrixLineRow = {
@@ -98,7 +81,7 @@ export async function getPnlMatrix(year: string, branchCode: string) {
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
   const [rows, pnlItems, pnlGroups, categories, departments, revenueRows, payrollRows, targets] = await Promise.all([
     loadYearJournalLines(months[0], months[11], branchCode),
-    prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true, subGroup: true } }),
+    prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true, group: true, subGroup: true } }),
     prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true, group: true } }),
     prisma.masterDataItem.findMany({ where: { type: "REVENUE_EXPENSE_CATEGORY" }, select: { code: true, name: true } }),
     prisma.masterDataItem.findMany({ where: { type: "DEPARTMENT" }, select: { code: true, name: true } }),
@@ -120,105 +103,29 @@ export async function getPnlMatrix(year: string, branchCode: string) {
       where: { period: { startsWith: `${year}-` }, metric: { in: ["revenue", "cogs", "payroll"] }, ...branchFilter },
     }),
   ]);
-  const pnlItemByCode = new Map(pnlItems.map((item) => [item.code, item]));
-  const pnlGroupNameByCode = new Map(pnlGroups.map((item) => [item.code, item.name]));
-  const pnlGroupKindByCode = new Map(pnlGroups.map((item) => [item.code, (item.group || "").toUpperCase()]));
-  // Hạng mục lương/nhân sự khai dưới nhóm OPEX vẫn tính vào dòng Chi phí nhân sự (cùng luật với getPnl).
-  const pnlItemRefOf = (pnlItemCode: string | null): PnlItemRef => {
-    const item = pnlItemCode ? pnlItemByCode.get(pnlItemCode) : null;
-    if (!item) return null;
-    return { name: item.name, groupName: item.subGroup ? pnlGroupNameByCode.get(item.subGroup) || null : null };
-  };
-  const categoryName = new Map(categories.map((item) => [item.code, item.name]));
   const departmentName = new Map(departments.map((item) => [item.code, item.name]));
   const deptLabel = (code: string) => (code === UNASSIGNED_DEPARTMENT ? "Chưa gán bộ phận" : departmentName.get(code) || code);
+  // Cây dòng KQKD -> nhóm -> hạng mục với 12 cột tháng, đi qua cùng builder với bảng một kỳ
+  // nên lương lên dòng nhân sự, nhóm OPEX và hạng mục xếp cùng một thứ tự.
+  const tree = createPnlDetailTree({ pnlItems, pnlGroups, categories }, 12);
 
   const totals = months.map(() => emptyBucket());
-  const revenueByCategory = new Map<string, MatrixSeries>();
-  const otherIncomeByCategory = new Map<string, MatrixSeries>();
   const revenueByDepartment = new Map<string, MatrixSeries>();
   const payrollByDepartment = new Map<string, MatrixSeries>();
   const cogsByDepartment = new Map<string, MatrixSeries>();
-  // Hạng mục chi gom hai tầng: nhóm PNL_GROUP -> hạng mục PNL_ITEM.
-  const expenseGroups = new Map<string, MatrixGroup & { itemMap: Map<string, MatrixSeries> }>();
-  const expenseGroupOf = (accountType: string, pnlItemCode: string | null) => {
-    const item = pnlItemCode ? pnlItemByCode.get(pnlItemCode) : null;
-    if (item?.subGroup) return { code: item.subGroup, name: pnlGroupNameByCode.get(item.subGroup) || item.subGroup };
-    if (accountType === "COGS") return { code: "TYPE:COGS", name: "Giá vốn hàng bán" };
-    if (accountType === "OTHER_EXPENSE") return { code: "TYPE:OTHER", name: "Chi phí khác" };
-    return { code: "TYPE:OPEX", name: "Chi phí vận hành" };
-  };
 
   for (const row of rows) {
     const monthIndex = months.indexOf(row.period);
     if (monthIndex < 0) continue;
-    const bucket = totals[monthIndex];
     const expense = row.debit - row.credit;
     const income = row.credit - row.debit;
-    const lineKey = pnlLineKeyOf(row, pnlItemRefOf(row.pnlItemCode));
-    if (lineKey === "revenue") bucket.revenue += income;
-    else if (lineKey === "cogs") bucket.cogs += expense;
-    else if (lineKey === "payroll") bucket.payroll += expense;
-    else if (lineKey === "depreciation") bucket.depreciation += expense;
-    else if (lineKey === "otherOpex") bucket.otherOpex += expense;
-    else if (lineKey === "otherIncome") bucket.otherIncome += income;
-    else if (lineKey === "otherExpense") bucket.otherExpense += expense;
-
-    if (row.accountType === "REVENUE") {
-      const code = row.categoryCode || "UNCLASSIFIED";
-      bumpSeries(revenueByCategory, code, categoryName.get(code) || (row.categoryCode ? row.categoryCode : "Chưa phân loại nguồn"), monthIndex, income);
-      const dept = row.departmentCode || UNASSIGNED_DEPARTMENT;
-      bumpSeries(revenueByDepartment, dept, deptLabel(dept), monthIndex, income);
-    } else if (row.accountType === "OTHER_INCOME") {
-      const code = row.categoryCode || "UNCLASSIFIED";
-      bumpSeries(otherIncomeByCategory, code, categoryName.get(code) || (row.categoryCode ? row.categoryCode : "Chưa phân loại nguồn"), monthIndex, income);
-    } else {
-      const itemCode = row.pnlItemCode || "UNCLASSIFIED";
-      const item = row.pnlItemCode ? pnlItemByCode.get(row.pnlItemCode) : null;
-      const groupInfo = expenseGroupOf(row.accountType, row.pnlItemCode);
-      const group = expenseGroups.get(groupInfo.code) || {
-        code: groupInfo.code,
-        name: groupInfo.name,
-        months: Array.from({ length: 12 }, () => 0),
-        total: 0,
-        items: [],
-        itemMap: new Map<string, MatrixSeries>(),
-      };
-      group.months[monthIndex] += expense;
-      group.total += expense;
-      bumpSeries(group.itemMap, itemCode, item?.name || (row.pnlItemCode ? `Hạng mục P&L [${row.pnlItemCode}]` : "Chưa phân loại P&L"), monthIndex, expense);
-      expenseGroups.set(groupInfo.code, group);
-      if (lineKey === "payroll") {
-        const dept = row.departmentCode || UNASSIGNED_DEPARTMENT;
-        bumpSeries(payrollByDepartment, dept, deptLabel(dept), monthIndex, expense);
-      }
-      if (row.accountType === "COGS") {
-        const dept = row.departmentCode || UNASSIGNED_DEPARTMENT;
-        bumpSeries(cogsByDepartment, dept, deptLabel(dept), monthIndex, expense);
-      }
-    }
-  }
-
-  const incomeGroups: MatrixGroup[] = [];
-  const revenueItems = sortedSeries(revenueByCategory);
-  if (revenueItems.length > 0) {
-    incomeGroups.push({
-      code: "REVENUE",
-      name: "Doanh thu bán hàng",
-      months: months.map((_, index) => totals[index].revenue),
-      total: totals.reduce((sum, bucket) => sum + bucket.revenue, 0),
-      items: revenueItems,
-    });
-  }
-  const otherIncomeItems = sortedSeries(otherIncomeByCategory);
-  if (otherIncomeItems.length > 0) {
-    incomeGroups.push({
-      code: "OTHER_INCOME",
-      name: "Thu nhập khác",
-      months: months.map((_, index) => totals[index].otherIncome),
-      total: totals.reduce((sum, bucket) => sum + bucket.otherIncome, 0),
-      items: otherIncomeItems,
-    });
+    const lineKey = tree.add({ account: row, pnlItemCode: row.pnlItemCode, categoryCode: row.categoryCode, debit: row.debit, credit: row.credit }, monthIndex);
+    if (!lineKey) continue;
+    totals[monthIndex][lineKey] += lineKey === "revenue" || lineKey === "otherIncome" ? income : expense;
+    const dept = row.departmentCode || UNASSIGNED_DEPARTMENT;
+    if (lineKey === "revenue") bumpSeries(revenueByDepartment, dept, deptLabel(dept), monthIndex, income);
+    if (lineKey === "payroll") bumpSeries(payrollByDepartment, dept, deptLabel(dept), monthIndex, expense);
+    if (lineKey === "cogs") bumpSeries(cogsByDepartment, dept, deptLabel(dept), monthIndex, expense);
   }
 
   // Tách doanh thu thu được thành: phần thuần theo bộ phận / theo kênh bán, cộng SVC và thuế
@@ -269,11 +176,24 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     }
   }
 
+  const finalizedTotals = totals.map((bucket) => finalizePnl(bucket));
+  const statement: MatrixStatementLine[] = PNL_STATEMENT_LINES.map((line) => {
+    const monthValues = finalizedTotals.map((total) => (total as unknown as Record<string, number>)[line.key] || 0);
+    return {
+      key: line.key,
+      label: line.label,
+      subtotal: line.subtotal,
+      months: monthValues,
+      total: monthValues.reduce((sum, value) => sum + value, 0),
+      groups: line.subtotal ? [] : tree.groupsOf(line.key as PnlLineKey),
+    };
+  });
+
   return {
     year,
     branchCode,
     months,
-    totals: totals.map((bucket) => finalizePnl(bucket)),
+    totals: finalizedTotals,
     /** Cấu thành doanh thu cho pie tỷ trọng và các đường DT bếp/DT bar trên chart COGS. */
     revenueSplit: {
       byDepartment: sortedSeries(netRevenueByDepartment),
@@ -285,13 +205,8 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     payrollSplit: { bonus: payrollBonusMonths, insurance: payrollInsuranceMonths },
     /** Ngân sách tháng đã quy đổi % — đường so sánh trên chart COGS/LƯƠNG. */
     budgets,
-    incomeGroups,
-    // Nhóm chi: giá vốn trước, rồi OPEX theo cố định -> marketing -> biến đổi -> nhóm khác,
-    // nhóm gom tạm (TYPE:*) và chi phí khác đứng cuối; hạng mục trong nhóm xếp abc.
-    expenseGroups: Array.from(expenseGroups.values())
-      .map(({ itemMap, ...group }) => ({ ...group, items: sortedSeriesByName(itemMap) }))
-      .filter((group) => Math.abs(group.total) > 0.5)
-      .sort((a, b) => expenseGroupTier(a.code, pnlGroupKindByCode) - expenseGroupTier(b.code, pnlGroupKindByCode) || comparePnlGroups(a, b)),
+    /** Bảng KQKD cả năm: 10 dòng -> nhóm -> hạng mục, mỗi tháng một cột. */
+    statement,
     revenueByDepartment: sortedSeries(revenueByDepartment),
     payrollByDepartment: sortedSeries(payrollByDepartment),
     cogsByDepartment: sortedSeries(cogsByDepartment),
