@@ -5,7 +5,8 @@
  * revenueSource chính là categoryCode của dòng Có 511 khi ghi sổ (lib/accounting.ts) và là
  * căn cứ suy bộ phận Bếp/Bar khi mã hàng chưa gán nhóm (lib/revenue-department.ts).
  * Vì vậy nhóm doanh thu được khai một lần trên DANH MỤC MẶT HÀNG (InventoryItem.revenueGroup,
- * chọn từ danh mục Thu/Chi nhóm Thu) rồi import tra theo mã hàng.
+ * chọn từ danh mục Thu/Chi nhóm NHÓM DOANH THU — không phải mọi loại thu quỹ) rồi import tra
+ * theo mã hàng.
  *
  * File của khách còn ghi cột này bằng CHỮ ("ĐỒ ĂN" / "ĐỒ UỐNG") thay vì mã danh mục, mà chữ
  * đó không phải categoryCode nào nên doanh thu rơi vào "Chưa phân loại". Vì vậy giá trị trong
@@ -18,6 +19,7 @@
  */
 
 import type { Prisma } from "@prisma/custom-client";
+import { isRevenueGroupCategory } from "@/lib/voucher-rules";
 
 /**
  * Ô "trống" trên file POS không phải lúc nào cũng là chuỗi rỗng: bản xuất của khách điền "-",
@@ -117,8 +119,10 @@ export async function loadRevenueCategoryIndex(client: CategoryLookupClient): Pr
     select: { code: true, name: true, group: true, matchKeywords: true },
     orderBy: { code: "asc" },
   });
-  // Danh mục Chi không bao giờ là nhóm doanh thu, loại ra để chữ "bar" không dính vào phí bar.
-  const revenueCategories = categories.filter((category) => (category.group || "").toUpperCase() !== "PAYMENT");
+  // Chỉ danh mục khai là NHÓM DOANH THU mới được nhận: danh mục Chi thì chữ "bar" dính vào phí
+  // bar, còn loại thu quỹ (thu tiền thừa, thu đặt cọc...) tuy là tiền vào nhưng không phải
+  // doanh thu, quy chữ trong file POS về đó là sai ngay từ gốc.
+  const revenueCategories = categories.filter((category) => isRevenueGroupCategory(category.group));
   const byCode = new Map(revenueCategories.map((category) => [category.code.toUpperCase(), category.code] as const));
   const byName = new Map(revenueCategories.map((category) => [normalizeKindText(category.name), category.code] as const).filter(([name]) => name));
   // Từ khoá khai tay thắng cả nhận dạng sẵn có: khách tự dạy hệ thống đọc file của mình.

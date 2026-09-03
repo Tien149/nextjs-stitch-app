@@ -3,7 +3,7 @@ import { getRequestSession, requireMenuAction } from "@/lib/api-auth";
 import { assertBranchAccess, getAllowedBranches } from "@/lib/accounting";
 import { prisma, prismaRaw } from "@/lib/prisma";
 import { duplicatedInTrashMessage, findDeletedByUnique, softDeleteRecord } from "@/lib/soft-delete";
-import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
+import { normalizeRevenueExpenseGroup } from "@/lib/voucher-rules";
 import { cleanMoneySourceName, normalizeMoneySourceGroup } from "@/lib/money-sources";
 
 const defaultMasterData = [
@@ -124,7 +124,7 @@ const defaultMasterData = [
     type: "REVENUE_EXPENSE_CATEGORY",
     code: "REV_FOOD",
     name: "Doanh thu do uong va banh",
-    group: "RECEIPT",
+    group: "REVENUE_SOURCE",
     note: "Dung phan loai doanh thu import tu POS",
     status: "ACTIVE",
   },
@@ -489,8 +489,8 @@ async function validateMasterData(type: string, group: string | null, branch: st
     }
   }
   if (type === "REVENUE_EXPENSE_CATEGORY") {
-    if (!["RECEIPT", "PAYMENT"].includes(normalizeCashflowCategoryType(group) || "")) {
-      throw new Error("Loại Thu/Chi bắt buộc là Thu hoặc Chi.");
+    if (!["REVENUE_SOURCE", "RECEIPT", "PAYMENT"].includes(normalizeRevenueExpenseGroup(group) || "")) {
+      throw new Error("Loại Thu/Chi bắt buộc là Nhóm doanh thu, Thu khác hoặc Chi.");
     }
   }
   /** Phân cấp P&L độc lập với danh mục Thu/Chi. */
@@ -522,10 +522,11 @@ const legacyGroupAliases: Record<string, Record<string, string>> = {
   REVENUE_EXPENSE_CATEGORY: {
     THU: "RECEIPT",
     INCOME: "RECEIPT",
-    REVENUE_SOURCE: "RECEIPT",
-    "NGUON DOANH THU": "RECEIPT",
-    "NGUỒN DOANH THU": "RECEIPT",
-    "DOANH THU": "RECEIPT",
+    // Nhóm doanh thu là một nhóm RIÊNG của danh mục Thu, không được quy về "Thu" chung:
+    // mặt hàng chỉ được gán nhóm doanh thu, còn thu tiền thừa/đặt cọc/lãi ngân hàng thì không.
+    "NGUON DOANH THU": "REVENUE_SOURCE",
+    "NGUỒN DOANH THU": "REVENUE_SOURCE",
+    "DOANH THU": "REVENUE_SOURCE",
     CHI: "PAYMENT",
     EXPENSE: "PAYMENT",
     OPEX: "PAYMENT",

@@ -14,7 +14,11 @@ import { safeConversionRate } from "@/lib/unit-conversion";
 type UnitConversion = { id: string; unitCode: string; unitName: string | null; conversionRate: number; isDefaultPurchase: boolean };
 type Item = { id: string; code: string; name: string; unit: string; itemType: string; category?: string | null; revenueGroup?: string | null; minStock: number; requiresImage: boolean; unitConversions?: UnitConversion[] };
 type ItemGroup = { id: string; code: string; name: string; group: string | null; subGroup: string | null };
-/** Danh mục Thu dùng làm Nhóm doanh thu của mặt hàng (REVENUE_EXPENSE_CATEGORY nhóm Thu). */
+/**
+ * Nhóm doanh thu của mặt hàng: danh mục Thu/Chi khai ở nhóm NHÓM DOANH THU (REVENUE_SOURCE).
+ * `receiptCategories` là các LOẠI THU quỹ còn lại (thu tiền thừa, thu đặt cọc, NCC hoàn tiền...)
+ * — không gán được cho mặt hàng, chỉ dùng để gọi tên mã mà dữ liệu cũ lỡ gán vào đây.
+ */
 type RevenueGroup = { id: string; code: string; name: string; group: string | null };
 type Balance = { id: string; warehouseCode: string; quantity: number; averageCost: number; item: Item };
 type Transaction = { id: string; code: string; transactionType: string; subType: string | null; transactionDate: string; branchCode: string; warehouseCode: string; toWarehouseCode: string | null; toBranchCode: string | null; internalReceivableDebtCode: string | null; internalPayableDebtCode: string | null; referenceCode: string | null; note?: string | null; lines: Array<{ id: string; inputQuantity: number | null; inputUnitCode: string | null; conversionRate: number; quantity: number; unitCost: number; inputUnitCost: number | null; totalCost: number; item: Item }> };
@@ -32,7 +36,7 @@ type Stocktake = { id: string; code: string; stocktakeDate: string; branchCode: 
 type ReceivablePOLine = { id: string; itemId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; item: { code: string; name: string; unit: string } };
 type ReceivablePO = { id: string; code: string; supplierName: string; branchCode: string; warehouseCode: string; status: string; lines: ReceivablePOLine[] };
 type StocktakeDraftRow = { itemId: string; itemCode: string; itemName: string; unit: string; systemQuantity: number; averageCost: number; actualQuantity: string; unitCost: string; reason: string };
-type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales };
+type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales };
 const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value);
 const movementTypes = ["NHAP_MUA", "NHAP_KHAC", "NHAP_CHE_BIEN", "NHAP_KIEM_KE", "XUAT_BAN", "XUAT_HUY", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_CHE_BIEN", "XUAT_KIEM_KE", "DIEU_CHUYEN"];
 /** Loại hiển thị trên hai màn hình Nhập/Xuất. Điều chuyển hiện ở CẢ hai: vế xuất ở kho đi, vế nhập ở kho nhận. */
@@ -76,7 +80,7 @@ export default function InventoryPage() {
   const href = "/inventory";
   const { user, loading } = useModuleAuth(href);
   const [active, setActive] = useState("stock");
-  const [data, setData] = useState<Data>({ items: [], balances: [], transactions: [], recipes: [], warehouses: [], stocktakes: [], stockSummary: [], stockMovements: [], itemGroups: [], revenueGroups: [], costSummary: [], wasteReport: [], pendingSales: { total: 0, byDay: [] } });
+  const [data, setData] = useState<Data>({ items: [], balances: [], transactions: [], recipes: [], warehouses: [], stocktakes: [], stockSummary: [], stockMovements: [], itemGroups: [], revenueGroups: [], receiptCategories: [], costSummary: [], wasteReport: [], pendingSales: { total: 0, byDay: [] } });
   const [message, setMessage] = useState("");
   const [reportWarehouse, setReportWarehouse] = useState("ALL");
   const [reportType, setReportType] = useState("ALL");
@@ -213,10 +217,23 @@ export default function InventoryPage() {
   const transferDestination = warehouseOptions.find((warehouse) => warehouse.code === transferForm.toWarehouseCode);
   const transferCrossBranch = !!transferDestination && !!transferDestination.branch && transferDestination.branch !== transferForm.branchCode;
 
+  /**
+   * Mã đang gán ở ô Nhóm doanh thu nhưng KHÔNG nằm trong danh mục nhóm doanh thu: hoặc là loại
+   * thu quỹ gán nhầm từ trước, hoặc là mã đã bị bỏ khỏi danh mục.
+   */
+  const isMisassignedRevenueGroup = (code?: string | null) =>
+    Boolean(code) && !data.revenueGroups.some((group) => group.code === code);
+  /** Nhãn cho mã gán sai: gọi đúng tên loại thu nếu tra được, không thì nói thẳng là ngoài danh mục. */
+  const revenueGroupIssueLabel = (code: string) => {
+    const receipt = data.receiptCategories.find((category) => category.code === code);
+    return receipt ? `${code} - ${receipt.name} (loại thu, không phải nhóm doanh thu)` : `${code} (ngoài danh mục nhóm doanh thu)`;
+  };
+
   const filteredItems = data.items.filter((item) => {
     if (itemTypeFilter !== "ALL" && item.itemType !== itemTypeFilter) return false;
     if (revenueGroupFilter === "MISSING" && item.revenueGroup) return false;
-    if (revenueGroupFilter !== "ALL" && revenueGroupFilter !== "MISSING" && item.revenueGroup !== revenueGroupFilter) return false;
+    if (revenueGroupFilter === "INVALID" && !isMisassignedRevenueGroup(item.revenueGroup)) return false;
+    if (!["ALL", "MISSING", "INVALID"].includes(revenueGroupFilter) && item.revenueGroup !== revenueGroupFilter) return false;
     const keyword = itemSearch.trim().toLowerCase();
     if (!keyword) return true;
     return item.code.toLowerCase().includes(keyword) || item.name.toLowerCase().includes(keyword);
@@ -224,6 +241,9 @@ export default function InventoryPage() {
   // Chỉ món bán (FINISHED) mới lên doanh thu POS — nguyên liệu thô không cần nhóm doanh thu,
   // đếm cả kho vào đây thì con số cảnh báo vô nghĩa.
   const missingRevenueGroupCount = data.items.filter((item) => item.itemType === "FINISHED" && !item.revenueGroup).length;
+  // Dữ liệu cũ gán nhầm LOẠI THU (thu tiền thừa, thu đặt cọc...) vào ô nhóm doanh thu: giữ
+  // nguyên để không mất dữ liệu, nhưng phải đập vào mắt để người dùng gán lại cho đúng.
+  const misassignedRevenueGroupCount = data.items.filter((item) => isMisassignedRevenueGroup(item.revenueGroup)).length;
 
   const getSessionHeaders = (): Record<string, string> => {
     if (typeof window === "undefined") return {};
@@ -595,6 +615,11 @@ export default function InventoryPage() {
                     <option key={group.code} value={group.code}>{group.code} - {group.name}</option>
                   ))}
                 </select>
+                {data.revenueGroups.length === 0 && (
+                  <p className="mt-1 text-[11px] font-bold text-amber-700">
+                    Chưa khai nhóm doanh thu nào. Vào Cài đặt &gt; Thu / Chi, thêm danh mục với nhóm “Thu: Nhóm doanh thu (bán hàng)” — loại thu quỹ (thu tiền thừa, thu đặt cọc...) không gán cho mặt hàng được.
+                  </p>
+                )}
               </Input>
 
               <div className="grid grid-cols-2 gap-3">
@@ -664,6 +689,7 @@ export default function InventoryPage() {
                 <select className="control" value={revenueGroupFilter} onChange={(e) => setRevenueGroupFilter(e.target.value)}>
                   <option value="ALL">Tất cả nhóm doanh thu</option>
                   <option value="MISSING">Chưa gán nhóm doanh thu</option>
+                  <option value="INVALID">Đang gán sai (loại thu / mã ngoài danh mục)</option>
                   {data.revenueGroups.map((group) => (
                     <option key={group.code} value={group.code}>{group.code} - {group.name}</option>
                   ))}
@@ -674,6 +700,9 @@ export default function InventoryPage() {
               {filteredItems.length}/{data.items.length} mặt hàng
               {missingRevenueGroupCount > 0 && (
                 <> · <span className="text-amber-700 font-bold">{missingRevenueGroupCount} món chưa gán Nhóm doanh thu</span> — file POS để trống hoặc ghi chữ lạ ở cột này thì hệ thống lấy theo đây.</>
+              )}
+              {misassignedRevenueGroupCount > 0 && (
+                <> · <span className="text-rose-700 font-bold">{misassignedRevenueGroupCount} món đang gán loại thu thay vì nhóm doanh thu</span> — lọc “Đang gán sai” để sửa; nhóm doanh thu khai ở Cài đặt &gt; Thu / Chi với nhóm “Thu: Nhóm doanh thu (bán hàng)”.</>
               )}
             </p>
             <Table
@@ -699,7 +728,7 @@ export default function InventoryPage() {
                   <Cell>
                     {canEditItem ? (
                       <select
-                        className="control !py-1 !text-[12px] min-w-[170px]"
+                        className={`control !py-1 !text-[12px] min-w-[170px] ${isMisassignedRevenueGroup(item.revenueGroup) ? "!border-rose-400 !text-rose-700 !bg-rose-50 font-bold" : ""}`}
                         value={item.revenueGroup || ""}
                         onChange={(e) => void patchItem(item.id, { revenueGroup: e.target.value }, `Đã gán nhóm doanh thu cho ${item.code}.`)}
                       >
@@ -707,13 +736,16 @@ export default function InventoryPage() {
                         {data.revenueGroups.map((group) => (
                           <option key={group.code} value={group.code}>{group.code} - {group.name}</option>
                         ))}
-                        {/* Mã cũ không còn trong danh mục vẫn phải hiện, nếu không đổi ô là mất dữ liệu. */}
-                        {item.revenueGroup && !data.revenueGroups.some((group) => group.code === item.revenueGroup) && (
-                          <option value={item.revenueGroup}>{item.revenueGroup} (ngoài danh mục)</option>
+                        {/* Mã đang gán sai (loại thu quỹ, mã đã bỏ) vẫn phải hiện, nếu không đổi ô là
+                            mất dữ liệu — nhưng gọi rõ nó sai ở đâu để người dùng chọn lại. */}
+                        {isMisassignedRevenueGroup(item.revenueGroup) && item.revenueGroup && (
+                          <option value={item.revenueGroup}>{revenueGroupIssueLabel(item.revenueGroup)}</option>
                         )}
                       </select>
+                    ) : isMisassignedRevenueGroup(item.revenueGroup) && item.revenueGroup ? (
+                      <span className="text-rose-700 font-bold">{revenueGroupIssueLabel(item.revenueGroup)}</span>
                     ) : (
-                      data.revenueGroups.find((group) => group.code === item.revenueGroup)?.name || item.revenueGroup || "-"
+                      data.revenueGroups.find((group) => group.code === item.revenueGroup)?.name || "-"
                     )}
                   </Cell>
                   <Cell>{item.unit}</Cell>

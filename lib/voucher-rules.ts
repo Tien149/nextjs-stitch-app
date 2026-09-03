@@ -36,6 +36,28 @@ export function normalizeCashflowCategoryType(group: string | null | undefined) 
 }
 
 /**
+ * Danh mục Thu/Chi có BA nhóm, không phải hai:
+ * - REVENUE_SOURCE: NHÓM DOANH THU — khoản thu là doanh thu bán hàng (Doanh thu bếp, bar...).
+ *   Đây là thứ gán cho mặt hàng ở Danh mục mặt hàng, đi vào categoryCode của dòng Có 511 và
+ *   tách thành dòng chi tiết doanh thu trên P&L.
+ * - RECEIPT: loại thu quỹ khác (thu tiền thừa, thu đặt cọc, NCC hoàn tiền, thu lãi ngân hàng...)
+ *   — tiền vào quỹ thật nhưng KHÔNG phải doanh thu, nên không được phép gán cho mặt hàng.
+ * - PAYMENT: chi.
+ * Về chiều tiền thì REVENUE_SOURCE vẫn là Thu (xem normalizeCashflowCategoryType).
+ */
+export function normalizeRevenueExpenseGroup(group: string | null | undefined) {
+  const raw = (group || "").trim().toUpperCase();
+  if (!raw) return null;
+  if (["REVENUE_SOURCE", "REVENUE", "NGUON DOANH THU", "NGUỒN DOANH THU", "DOANH THU"].includes(raw)) return "REVENUE_SOURCE";
+  return normalizeCashflowCategoryType(raw);
+}
+
+/** Danh mục này có phải một nhóm doanh thu (gán được cho mặt hàng) không. */
+export function isRevenueGroupCategory(group: string | null | undefined) {
+  return normalizeRevenueExpenseGroup(group) === "REVENUE_SOURCE";
+}
+
+/**
  * Khoản mục thu được coi là DOANH THU BÁN HÀNG. Dòng "Doanh thu bán hàng" trên Thu chi ngày,
  * đối soát tiền về và SUMIFS sao kê đều lọc theo danh sách này. Các loại thu khác (hoàn tiền
  * NCC chi trùng, thu hoàn tạm ứng...) là tiền vào quỹ thật nhưng không phải doanh thu.

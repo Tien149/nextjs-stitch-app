@@ -79,7 +79,7 @@ const tabs = [
   { type: "MONEY_SOURCE", label: "Nguồn tiền", icon: "account_balance_wallet", hint: "1.1 - Quỹ/Ngân hàng/Ví" },
   { type: "PNL_GROUP", label: "Nhóm hạng mục P&L", icon: "account_tree", hint: "1.2 - Nhóm lớn trên báo cáo P&L" },
   { type: "PNL_ITEM", label: "Hạng mục P&L", icon: "list_alt", hint: "1.2 - Dòng chi tiết trong từng nhóm P&L" },
-  { type: "REVENUE_EXPENSE_CATEGORY", label: "Thu / Chi", icon: "category", hint: "1.2 - Danh mục dòng tiền, chỉ phân loại Thu hoặc Chi" },
+  { type: "REVENUE_EXPENSE_CATEGORY", label: "Thu / Chi", icon: "category", hint: "1.2 - Danh mục dòng tiền: nhóm doanh thu, thu khác, chi" },
   { type: "ASSET_GROUP", label: "Nhóm tài sản", icon: "precision_manufacturing", hint: "1.2 - Tài sản/CCDC" },
   { type: "INVENTORY_ITEM_GROUP", label: "Nhóm mặt hàng", icon: "inventory_2", hint: "1.2 - Nguyên liệu, hàng hóa" },
   { type: "ACCOUNTING_PERIOD", label: "Kỳ kế toán", icon: "calendar_month", hint: "1.4 - Mở/khóa kỳ ghi sổ" },
@@ -121,7 +121,7 @@ const groupPlaceholders: Record<string, string> = {
   WAREHOUSE: "VD: BEP / BAR / FOH (khớp Nhóm kho của phân nhóm mặt hàng)",
   PARTNER: "VD: Khach hang / Nha cung cap / Doi tac",
   MONEY_SOURCE: "VD: Tien mat / Ngan hang / Vi/POS",
-  REVENUE_EXPENSE_CATEGORY: "Chọn Thu hoặc Chi",
+  REVENUE_EXPENSE_CATEGORY: "Nhóm doanh thu (bán hàng) / Thu khác / Chi",
   ASSET_GROUP: "VD: Tai san co dinh / CCDC / May moc",
   INVENTORY_ITEM_GROUP: "VD: Nguyen lieu / Ban thanh pham / Thanh pham",
   ACCOUNTING_PERIOD: "VD: OPEN / CLOSED",
@@ -188,8 +188,10 @@ const groupOptions: Record<string, GroupOption[]> = {
     { value: "WALLET", label: "WALLET - Ví điện tử / Cổng POS" },
   ],
   REVENUE_EXPENSE_CATEGORY: [
-    { value: "RECEIPT", label: "1 - Thu" },
-    { value: "PAYMENT", label: "2 - Chi" },
+    // Thu tách làm hai: chỉ NHÓM DOANH THU mới gán được cho mặt hàng và lên dòng doanh thu P&L.
+    { value: "REVENUE_SOURCE", label: "1 - Thu: Nhóm doanh thu (bán hàng)" },
+    { value: "RECEIPT", label: "2 - Thu: Loại thu khác (không phải doanh thu)" },
+    { value: "PAYMENT", label: "3 - Chi" },
   ],
   PNL_GROUP: [
     { value: "OPEX", label: "OPEX - Chi phí vận hành" },
@@ -249,7 +251,7 @@ const groupEmptyLabels: Record<string, string> = {
   PNL_ITEM: "-- Chọn nhóm lớn --",
   PARTNER: "-- Chọn loại đối tác --",
   MONEY_SOURCE: "-- Chọn nhóm nguồn tiền --",
-  REVENUE_EXPENSE_CATEGORY: "-- Chọn Thu hoặc Chi --",
+  REVENUE_EXPENSE_CATEGORY: "-- Chọn nhóm doanh thu / thu khác / chi --",
   ASSET_GROUP: "-- Chọn nhóm tài sản --",
   INVENTORY_ITEM_GROUP: "-- Chọn nhóm mặt hàng --",
   ACCOUNTING_PERIOD: "-- Chọn trạng thái kỳ --",
@@ -260,10 +262,9 @@ const legacyGroupAliases: Record<string, Record<string, string>> = {
   REVENUE_EXPENSE_CATEGORY: {
     THU: "RECEIPT",
     INCOME: "RECEIPT",
-    REVENUE_SOURCE: "RECEIPT",
-    "NGUON DOANH THU": "RECEIPT",
-    "NGUỒN DOANH THU": "RECEIPT",
-    "DOANH THU": "RECEIPT",
+    "NGUON DOANH THU": "REVENUE_SOURCE",
+    "NGUỒN DOANH THU": "REVENUE_SOURCE",
+    "DOANH THU": "REVENUE_SOURCE",
     CHI: "PAYMENT",
     EXPENSE: "PAYMENT",
     OPEX: "PAYMENT",
@@ -1176,15 +1177,20 @@ export default function SettingsPage() {
                             <p className="mt-0.5 text-xs text-slate-500">{item.name}</p>
                           </td>
                           <td className="px-4 py-3">
-                            {/* Thu/Chi chỉ có đúng hai giá trị: cho ra viên màu đọc phát biết, thay vì
-                                chip xám "1 - Thu" / "2 - Chi" — số thứ tự chỉ có nghĩa trong ô chọn của form. */}
+                            {/* Thu/Chi cho ra viên màu đọc phát biết, thay vì chip xám "1 - Thu" —
+                                số thứ tự chỉ có nghĩa trong ô chọn của form. Nhóm doanh thu là một
+                                loại Thu riêng nên có viên riêng: chỉ nó mới gán được cho mặt hàng. */}
                             {item.type === "REVENUE_EXPENSE_CATEGORY" ? (
                               <p className={`w-fit whitespace-nowrap rounded-full border px-2.5 py-1 text-[11px] font-bold ${
-                                normalizeGroupValue(item.type, item.group) === "RECEIPT"
-                                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                                  : "border-rose-200 bg-rose-50 text-rose-700"
+                                normalizeGroupValue(item.type, item.group) === "REVENUE_SOURCE"
+                                  ? "border-blue-200 bg-blue-50 text-blue-700"
+                                  : normalizeGroupValue(item.type, item.group) === "RECEIPT"
+                                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                    : "border-rose-200 bg-rose-50 text-rose-700"
                               }`}>
-                                {normalizeGroupValue(item.type, item.group) === "RECEIPT" ? "Thu" : "Chi"}
+                                {normalizeGroupValue(item.type, item.group) === "REVENUE_SOURCE"
+                                  ? "Nhóm doanh thu"
+                                  : normalizeGroupValue(item.type, item.group) === "RECEIPT" ? "Thu khác" : "Chi"}
                               </p>
                             ) : (
                               <p className="w-fit whitespace-nowrap rounded-md bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-700">

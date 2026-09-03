@@ -16,6 +16,7 @@ import {
 import { scopePayloadByTab } from "@/lib/tab-scope";
 import { isWarehouseStocktakeItemType, itemCodePrefixError } from "@/lib/inventory-scope";
 import { nextStockDocCode, nextStocktakeCode } from "@/lib/inventory-stock";
+import { isRevenueGroupCategory, normalizeRevenueExpenseGroup } from "@/lib/voucher-rules";
 
 const menuHref = "/inventory";
 
@@ -108,18 +109,23 @@ async function resolveItemCategory(itemType: string, value: unknown) {
 }
 
 /**
- * Nhóm doanh thu của mặt hàng: mã danh mục Thu/Chi thuộc nhóm Thu (RECEIPT). Kiểm tra tồn tại
- * để danh mục không đọng mã rác — import doanh thu POS dùng đúng mã này làm categoryCode 511.
+ * Nhóm doanh thu của mặt hàng: mã danh mục Thu/Chi khai ở nhóm NHÓM DOANH THU (REVENUE_SOURCE).
+ * Loại thu quỹ (thu tiền thừa, thu đặt cọc, NCC hoàn tiền...) là tiền vào thật nhưng không phải
+ * doanh thu nên không gán được — import doanh thu POS dùng đúng mã này làm categoryCode 511.
+ *
+ * `currentCode` là giá trị đang lưu của mặt hàng: dữ liệu cũ lỡ gán loại thu vẫn sửa được các
+ * trường khác mà không bị chặn, giao diện lo phần cảnh báo để người dùng gán lại.
  */
-async function resolveItemRevenueGroup(value: unknown) {
+async function resolveItemRevenueGroup(value: unknown, currentCode?: string | null) {
   const code = cleanText(value).toUpperCase();
   if (!code) return null;
+  if (code === (currentCode || "").toUpperCase()) return currentCode || null;
   const category = await prisma.masterDataItem.findFirst({
     where: { type: "REVENUE_EXPENSE_CATEGORY", code, status: "ACTIVE" },
   });
   if (!category) businessError(`Nhóm doanh thu [${code}] không tồn tại hoặc đã ngưng hoạt động.`);
-  if ((category?.group || "").toUpperCase() === "PAYMENT") {
-    businessError(`Danh mục ${category?.name} là danh mục Chi, không dùng làm nhóm doanh thu được.`);
+  if (!isRevenueGroupCategory(category?.group)) {
+    businessError(`Danh mục ${category?.name} là ${normalizeRevenueExpenseGroup(category?.group) === "PAYMENT" ? "danh mục Chi" : "loại thu khác, không phải nhóm doanh thu"}. Khai lại ở Cài đặt > Thu/Chi với nhóm "Thu: Nhóm doanh thu (bán hàng)" rồi gán.`);
   }
   return category?.code || null;
 }
@@ -183,7 +189,7 @@ export async function GET(request: Request) {
     });
     const warehouseCodes = allowedWarehouses.map((w) => w.code);
 
-    const [items, balances, transactions, reportTransactions, recipes, warehouses, stocktakes, itemGroups, revenueGroups, pendingRevenueRows] = await Promise.all([
+    const [items, balances, transactions, reportTransactions, recipes, warehouses, stocktakes, itemGroups, receiptCategoryList, pendingRevenueRows] = await Promise.all([
       prisma.inventoryItem.findMany({ include: { unitConversions: { orderBy: [{ isDefaultPurchase: "desc" }, { unitCode: "asc" }] } }, orderBy: { name: "asc" } }),
       prisma.inventoryBalance.findMany({
         where: { warehouseCode: { in: warehouseCodes } },
@@ -216,8 +222,9 @@ export async function GET(request: Request) {
         where: { type: "INVENTORY_ITEM_GROUP", status: "ACTIVE" },
         orderBy: { name: "asc" },
       }),
-      // Danh mục Thu dùng làm "Nhóm doanh thu" của mặt hàng. Lọc bỏ nhóm Chi ngay từ query
-      // để ô chọn trên danh mục mặt hàng không lẫn hạng mục chi phí.
+      // Danh mục Thu để phục vụ cột "Nhóm doanh thu" của mặt hàng: lấy cả nhóm doanh thu (ô chọn)
+      // lẫn loại thu quỹ (chỉ để gọi tên mã đang bị gán sai), bỏ hẳn nhóm Chi. Việc tách hai
+      // danh sách làm ở dưới cho khỏi phải hai lần truy vấn.
       prisma.masterDataItem.findMany({
         where: { type: "REVENUE_EXPENSE_CATEGORY", status: "ACTIVE", NOT: { group: "PAYMENT" } },
         select: { id: true, code: true, name: true, group: true },
@@ -449,8 +456,12 @@ export async function GET(request: Request) {
       pendingByDay.set(key, bucket);
     }
     const pendingSales = { total: pendingRevenueRows.length, byDay: [...pendingByDay.values()] };
+    // Ô chọn của mặt hàng chỉ nhận nhóm doanh thu; loại thu quỹ trả riêng để màn hình gọi đúng
+    // tên mã đang bị gán sai thay vì hiện trơ mã "(ngoài danh mục)".
+    const revenueGroups = receiptCategoryList.filter((category) => isRevenueGroupCategory(category.group));
+    const receiptCategories = receiptCategoryList.filter((category) => !isRevenueGroupCategory(category.group));
 
-    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, balances, transactions, recipes: recipesWithCost, warehouses, stocktakes, stockSummary, stockMovements, itemGroups, revenueGroups, costSummary, wasteReport, pendingSales }));
+    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, balances, transactions, recipes: recipesWithCost, warehouses, stocktakes, stockSummary, stockMovements, itemGroups, revenueGroups, receiptCategories, costSummary, wasteReport, pendingSales }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });
@@ -1285,7 +1296,7 @@ export async function PATCH(request: Request) {
           itemType,
           minStock,
           ...(body.category !== undefined ? { category: await resolveItemCategory(itemType, body.category) } : {}),
-          ...(body.revenueGroup !== undefined ? { revenueGroup: await resolveItemRevenueGroup(body.revenueGroup) } : {}),
+          ...(body.revenueGroup !== undefined ? { revenueGroup: await resolveItemRevenueGroup(body.revenueGroup, item.revenueGroup) } : {}),
           ...(body.requiresImage !== undefined ? { requiresImage: !!body.requiresImage } : {}),
           ...(body.status !== undefined ? { status: cleanText(body.status).toUpperCase() || "ACTIVE" } : {}),
           ...(body.note !== undefined ? { note: cleanText(body.note) || null } : {}),

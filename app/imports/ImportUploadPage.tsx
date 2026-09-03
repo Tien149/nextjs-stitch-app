@@ -8,7 +8,7 @@ import { SearchableSelect } from "@/components/SearchableSelect";
 import { displayRoleName, storeLabel } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import { getImportTemplate, type ImportFieldDefinition, type ImportType } from "@/lib/import-templates";
-import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
+import { normalizeCashflowCategoryType, isRevenueGroupCategory } from "@/lib/voucher-rules";
 
 type PreviewRow = {
   sheetName: string;
@@ -299,9 +299,10 @@ function filterMasterOptions(
     });
   }
 
-  // Nhóm doanh thu chỉ có nghĩa với danh mục Thu — gợi ý cả khoản mục chi là điền sai chắc chắn.
+  // Nhóm doanh thu chỉ gán được cho danh mục khai đúng NHÓM DOANH THU — khoản chi hay loại thu
+  // quỹ khác (thu tiền thừa, thu đặt cọc...) gợi ý vào đây đều là điền sai chắc chắn.
   if (fieldName === "revenue_group") {
-    return scopedOptions.filter((option) => normalizeCashflowCategoryType(option.group) !== "PAYMENT");
+    return scopedOptions.filter((option) => isRevenueGroupCategory(option.group));
   }
 
   return scopedOptions;

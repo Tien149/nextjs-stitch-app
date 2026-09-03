@@ -4,7 +4,7 @@ import { isMasterDataImportType, normalizeHeader, type ImportType } from "@/lib/
 import type { ParsedImportResult, ParsedImportRow } from "@/lib/import-parser";
 import type { DemoSession } from "@/lib/auth-demo";
 import { isInboundStockType, isOutboundStockType, isStockTransactionType, isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType } from "@/lib/inventory-stock";
-import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
+import { normalizeCashflowCategoryType, normalizeRevenueExpenseGroup } from "@/lib/voucher-rules";
 import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
 import { groupBankStatementRows } from "@/lib/bank-statement-import";
 import { isPeriodLocked } from "@/lib/phase3";
@@ -1396,10 +1396,12 @@ export async function validateImportResult(
       } else if (masterType === "MONEY_SOURCE" && !["CASH", "BANK", "WALLET"].includes(group)) {
         addError(row, "Nguồn tiền phải có Nhóm/Phân loại là CASH, BANK hoặc WALLET");
       } else if (masterType === "REVENUE_EXPENSE_CATEGORY") {
-        const cashflowType = normalizeCashflowCategoryType(text(row.values.group));
-        row.values.group = cashflowType;
-        if (!["RECEIPT", "PAYMENT"].includes(cashflowType || "")) {
-          addError(row, "Danh mục Thu/Chi phải có Nhóm/Phân loại là Thu hoặc Chi");
+        // Giữ nguyên REVENUE_SOURCE: nhóm doanh thu là loại Thu riêng, quy về "Thu" chung là
+        // mất luôn thứ phân biệt được doanh thu bán hàng với thu tiền thừa/đặt cọc.
+        const categoryGroup = normalizeRevenueExpenseGroup(text(row.values.group));
+        row.values.group = categoryGroup;
+        if (!["REVENUE_SOURCE", "RECEIPT", "PAYMENT"].includes(categoryGroup || "")) {
+          addError(row, "Danh mục Thu/Chi phải có Nhóm/Phân loại là Nhóm doanh thu, Thu khác hoặc Chi");
         }
       }
     }
