@@ -457,7 +457,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
         required: false,
         type: "number",
         aliases: ["doanh thu", "thanh tien", "doanh thu truoc thue"],
-        note: "Doanh thu chưa gồm phí và thuế (cột Thành tiền của file POS)",
+        note: "Doanh thu chưa gồm phí và thuế (cột Thành tiền của file POS). Doanh thu − Giảm giá lên P&L theo nhóm doanh thu (bếp / bar / phụ thu)",
       },
       {
         field: "discount_amount",
@@ -473,7 +473,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
         required: false,
         type: "number",
         aliases: ["svc", "phi dich vu", "phi phuc vu", "service charge"],
-        note: "Phí dịch vụ",
+        note: "Phí dịch vụ — lên P&L thành dòng Doanh thu SVC",
       },
       {
         field: "vat_amount",
@@ -481,7 +481,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
         required: false,
         type: "number",
         aliases: ["thue gtgt", "thue vat", "tien thue", "vat"],
-        note: "Tiền thuế GTGT (cột Thuế, không phải cột VAT %)",
+        note: "Tiền thuế GTGT (cột Thuế, không phải cột VAT %) — lên P&L thành dòng Doanh thu thuế GTGT",
       },
       {
         // "Tổng tiền" = số tiền khách thực trả cho dòng đó, và là số lên báo cáo

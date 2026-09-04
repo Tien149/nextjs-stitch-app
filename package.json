@@ -52,6 +52,7 @@
     "test:bank-statement-sync": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-reconciled-bank-statement-sync.mjs",
     "test:voucher-code-gap": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-voucher-code-gap.mjs",
     "test:pos-raw": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-revenue-pos-raw-import.mjs",
+    "test:pos-journal": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-revenue-pos-journal.mjs",
     "test:pos-template": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-revenue-pos-raw-template.mjs",
     "test:import-e2e": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-import-end-to-end.mjs",
     "export:import-file": "node scripts/export-import-batch-file.cjs",

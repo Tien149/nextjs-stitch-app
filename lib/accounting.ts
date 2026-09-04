@@ -7,6 +7,7 @@ import { moneySourceAccountCode } from "@/lib/money-sources";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/lib/money-transfer-date";
 import { planMoneyTransferJournals } from "@/lib/internal-transfer";
+import { REVENUE_COMPONENT_CATEGORIES, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 
 export const defaultAccounts = [
   { code: "1111", name: "Tiền mặt", accountType: "ASSET", normalBalance: "DEBIT", reportGroup: "CASH" },
@@ -182,6 +183,23 @@ export async function postJournalEntry(input: EntryInput) {
   return "CREATED";
 }
 
+/**
+ * Danh mục Thu cho các dòng doanh thu tách riêng khi ghi sổ (Doanh thu SVC, Doanh thu thuế
+ * GTGT, Điều chỉnh). Là nhóm doanh thu để lên dòng 1 của P&L, nhưng không theo dõi tồn kho.
+ * Chỉ tạo khi thiếu; người dùng đã đổi tên trên màn Danh mục thì giữ nguyên tên của họ.
+ */
+export async function ensureRevenueComponentCategories() {
+  const codes = REVENUE_COMPONENT_CATEGORIES.map((category) => category.code);
+  const existing = await prisma.masterDataItem.findMany({ where: { type: "REVENUE_EXPENSE_CATEGORY", code: { in: codes } }, select: { code: true } });
+  const present = new Set(existing.map((item) => item.code.toUpperCase()));
+  for (const category of REVENUE_COMPONENT_CATEGORIES) {
+    if (present.has(category.code)) continue;
+    await prisma.masterDataItem.create({
+      data: { type: "REVENUE_EXPENSE_CATEGORY", code: category.code, name: category.name, group: "REVENUE_SOURCE", skipInventory: true, note: category.note, status: "ACTIVE" },
+    });
+  }
+}
+
 export async function syncAccountingPeriod(period: string, branchCode: string, actor: string) {
   const { start, end } = periodBounds(period);
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
@@ -227,7 +245,11 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   const revenues = await prisma.revenueImportRow.findMany({ where: { ...branchFilter, saleDate: { gte: start, lt: end } } });
   // Dòng doanh thu mang bộ phận (Bếp/Bar/FOH) sang bút toán 511 để P&L cắt được doanh thu
   // theo phòng ban — nền của báo cáo ngân sách nhân sự (feedback chị Bình 26/08/2026).
-  for (const row of revenues) results.push(await postJournalEntry({ entryDate: row.saleDate, branchCode: row.branchCode, sourceType: "REVENUE_POS", sourceId: row.id, sourceCode: row.externalRef, description: `Doanh thu ${row.externalRef}`, createdBy: actor, lines: [{ accountCode: row.paymentMethod.toUpperCase().includes("CASH") ? "1111" : "1121", debit: row.netAmount }, { accountCode: "511", credit: row.netAmount, categoryCode: row.revenueSource, departmentCode: row.departmentCode }] }));
+  // Có 511 tách ba phần: nhóm doanh thu của món = Doanh thu − Giảm giá, "Doanh thu SVC" = cột
+  // SVC, "Doanh thu thuế GTGT" = cột Thuế (lib/revenue-pos-journal.ts). Danh mục cho hai dòng
+  // tách riêng phải có sẵn, nếu không P&L hiện mã trơ "Nguồn thu [REV_SVC]".
+  if (revenues.length > 0) await ensureRevenueComponentCategories();
+  for (const row of revenues) results.push(await postJournalEntry({ entryDate: row.saleDate, branchCode: row.branchCode, sourceType: "REVENUE_POS", sourceId: row.id, sourceCode: row.externalRef, description: `Doanh thu ${row.externalRef}`, createdBy: actor, lines: revenuePosJournalLines(row) }));
 
   const vouchers = await prisma.financialVoucher.findMany({ where: { ...branchFilter, voucherDate: { gte: start, lt: end }, status: "APPROVED" } });
   // Nhóm khoản mục quyết định phiếu chi vào chi phí, giá vốn hay tài sản.

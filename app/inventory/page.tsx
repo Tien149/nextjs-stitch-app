@@ -25,7 +25,12 @@ type Transaction = { id: string; code: string; transactionType: string; subType:
 type Recipe = { id: string; code: string; productCode: string; productName: string; unit: string; outputConversionRate: number; sellingPrice: number; estimatedCost: number; estimatedUnitCost: number; version: number; effectiveFrom: string; status: string; lines: Array<{ quantity: number; unitCode: string | null; conversionRate: number; wasteRate: number; item: Item }> };
 type CostSummaryRow = { productCode: string; productName: string; group: string; stockUnit: string; batchUnit: string; outputConversionRate: number; sellingPrice: number; unitCost: number; costRatio: number | null; version: number };
 type WasteReportRow = { itemCode: string; itemName: string; unit: string; itemType: string; totalQuantity: number; totalValue: number; documentCount: number; bySubType: Record<string, { quantity: number; value: number }> };
-type PendingSales = { total: number; byDay: Array<{ saleDate: string; branchCode: string; rowCount: number; totalQuantity: number }> };
+type PendingSales = {
+  total: number;
+  byDay: Array<{ saleDate: string; branchCode: string; rowCount: number; totalQuantity: number }>;
+  /** Danh sách xuất bán chờ rã gom theo mã hàng — số lượng sẽ chạy định lượng (chỉ Đồ ăn / Đồ uống). */
+  byItem: Array<{ productCode: string; productName: string; revenueSource: string; rowCount: number; totalQuantity: number }>;
+};
 type CostingProduct = { productCode: string; productName: string; itemType: string; batchCost: number; unitCost: number; outputConversionRate: number; sellingPrice: number };
 type CostingResult = { costingDate: string; branchCode: string; materialCount: number; updatedBalances: number; levels: Array<{ level: number; products: CostingProduct[] }> };
 type Warehouse = { id: string; code: string; name: string; branch: string | null };
@@ -80,7 +85,7 @@ export default function InventoryPage() {
   const href = "/inventory";
   const { user, loading } = useModuleAuth(href);
   const [active, setActive] = useState("stock");
-  const [data, setData] = useState<Data>({ items: [], balances: [], transactions: [], recipes: [], warehouses: [], stocktakes: [], stockSummary: [], stockMovements: [], itemGroups: [], revenueGroups: [], receiptCategories: [], costSummary: [], wasteReport: [], pendingSales: { total: 0, byDay: [] } });
+  const [data, setData] = useState<Data>({ items: [], balances: [], transactions: [], recipes: [], warehouses: [], stocktakes: [], stockSummary: [], stockMovements: [], itemGroups: [], revenueGroups: [], receiptCategories: [], costSummary: [], wasteReport: [], pendingSales: { total: 0, byDay: [], byItem: [] } });
   const [message, setMessage] = useState("");
   const [reportWarehouse, setReportWarehouse] = useState("ALL");
   const [reportType, setReportType] = useState("ALL");
@@ -1378,6 +1383,42 @@ export default function InventoryPage() {
                 </span>
               ))}
             </div>
+          )}
+          {/* Danh sách xuất bán lấy từ import doanh thu: chỉ nhóm Đồ ăn / Đồ uống (nhóm dịch vụ
+              không theo dõi tồn kho nên không có ở đây). Đây là số lượng sẽ chạy định lượng. */}
+          {data.pendingSales.byItem.length > 0 && (
+            <details className="mt-3 rounded-lg border border-slate-200 bg-slate-50">
+              <summary className="cursor-pointer px-3 py-2 text-xs font-bold text-slate-700">
+                Danh sách xuất bán chờ rã ({data.pendingSales.byItem.length} mặt hàng)
+              </summary>
+              <div className="overflow-x-auto px-3 pb-3">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-left text-slate-500">
+                      <th className="py-1 pr-3">Mã hàng</th>
+                      <th className="py-1 pr-3">Tên hàng</th>
+                      <th className="py-1 pr-3">Nhóm doanh thu</th>
+                      <th className="py-1 pr-3 text-right">Số lượng bán</th>
+                      <th className="py-1 text-right">Dòng</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.pendingSales.byItem.slice(0, 50).map((item) => (
+                      <tr key={item.productCode} className="border-t border-slate-200">
+                        <td className="py-1 pr-3 font-mono">{item.productCode}</td>
+                        <td className="py-1 pr-3">{item.productName}</td>
+                        <td className="py-1 pr-3">{data.revenueGroups.find((group) => group.code === item.revenueSource)?.name || item.revenueSource || "-"}</td>
+                        <td className="py-1 pr-3 text-right">{money(item.totalQuantity)}</td>
+                        <td className="py-1 text-right">{item.rowCount}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {data.pendingSales.byItem.length > 50 && (
+                  <p className="mt-1 text-[11px] text-slate-500">Chỉ hiện 50 mặt hàng bán nhiều nhất.</p>
+                )}
+              </div>
+            </details>
           )}
           <button
             type="button"
