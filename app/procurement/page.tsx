@@ -12,6 +12,7 @@ import { canPerformMenuAction, filterModuleTabs } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
+import { assetGroupCandidates, assetGroupTypeLabel } from "@/lib/asset-group-rules";
 import { TemplatesTab, type PurchaseTemplate, type TemplateUnitConversion } from "./templates-tab";
 
 type Item = { id: string; code: string; name: string; unit: string; itemType: string; category: string | null; requiresImage: boolean; unitConversions?: TemplateUnitConversion[] };
@@ -23,7 +24,7 @@ type Quote = { id: string; supplierCode: string; supplierName: string; totalAmou
 type PurchaseRequest = { id: string; code: string; requestDate: string; branchCode: string; departmentCode: string | null; requestedBy: string; neededDate: string | null; reason: string; status: string; approvedAt: string | null; note: string | null; lines: RequestLine[]; quotes: Quote[] };
 type OrderLine = { id: string; itemId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; imageUrl: string | null; item: Item };
 type PurchaseOrder = { id: string; code: string; requestId: string | null; orderDate: string; supplierCode: string; supplierName: string; branchCode: string; departmentCode: string | null; warehouseCode: string; expectedDate: string | null; status: string; approvedAt: string | null; note: string | null; totalAmount: number; shareToken: string | null; lines: OrderLine[]; payable: { outstandingAmount: number } | null };
-type Data = { items: Item[]; requests: PurchaseRequest[]; orders: PurchaseOrder[]; departments: MasterItem[]; itemGroups: MasterItem[]; warehouses: MasterItem[]; templates: PurchaseTemplate[]; suppliers: Supplier[]; priceSuggestions: Record<string, PriceSuggestion> };
+type Data = { items: Item[]; requests: PurchaseRequest[]; orders: PurchaseOrder[]; departments: MasterItem[]; itemGroups: MasterItem[]; warehouses: MasterItem[]; assetGroups: MasterItem[]; templates: PurchaseTemplate[]; suppliers: Supplier[]; priceSuggestions: Record<string, PriceSuggestion> };
 /** Chứng từ mua hàng đang chờ xác nhận xoá. */
 type DeleteTarget = { type: "REQUEST" | "ORDER" | "QUOTE"; id: string; title: string; description: string; label: string };
 /** Một dòng hàng trên form PR nhiều dòng. */
@@ -78,7 +79,7 @@ export default function ProcurementPage() {
   const { user, loading } = useModuleAuth(href);
   // "So sánh giá" đứng trước: chốt giá với NCC rồi mới lập yêu cầu mua.
   const [active, setActive] = useState("quotes");
-  const [data, setData] = useState<Data>({ items: [], requests: [], orders: [], departments: [], itemGroups: [], warehouses: [], templates: [], suppliers: [], priceSuggestions: {} });
+  const [data, setData] = useState<Data>({ items: [], requests: [], orders: [], departments: [], itemGroups: [], warehouses: [], assetGroups: [], templates: [], suppliers: [], priceSuggestions: {} });
   const [message, setMessage] = useState("");
 
   /** Form PR nhiều dòng: thông tin chung + danh sách dòng hàng. */
@@ -114,6 +115,8 @@ export default function ProcurementPage() {
   /** Modal nhận hàng theo PO: nhập số lượng nhận từng dòng thay vì nhận trọn gói. */
   const [receivingOrder, setReceivingOrder] = useState<PurchaseOrder | null>(null);
   const [receiveQuantities, setReceiveQuantities] = useState<Record<string, string>>({});
+  /** Nhóm tài sản chọn cho từng dòng Tài sản/CCDC khi nhận hàng, khoá theo lineId. */
+  const [receiveAssetGroups, setReceiveAssetGroups] = useState<Record<string, string>>({});
   const [receiveNote, setReceiveNote] = useState("");
   const [receiving, setReceiving] = useState(false);
   const [sharingOrderId, setSharingOrderId] = useState("");
@@ -533,14 +536,23 @@ export default function ProcurementPage() {
     if (ok) setEditingOrder(null);
   };
 
+  /** Nhóm tài sản dùng được cho một dòng PO — cùng luật với API (lib/asset-group-rules.ts). */
+  const assetGroupOptionsFor = (itemType: string) => assetGroupCandidates(itemType, data.assetGroups);
+
   /** Mở modal nhận hàng: điền sẵn số lượng còn phải nhận trên từng dòng. */
   const startReceiving = (order: PurchaseOrder) => {
     const quantities: Record<string, string> = {};
+    const assetGroups: Record<string, string> = {};
     for (const line of order.lines) {
       const remaining = line.orderedQuantity - line.receivedQuantity;
       if (remaining > 0) quantities[line.id] = String(remaining);
+      // Chỉ có đúng một nhóm hợp lệ thì chọn sẵn, khỏi bắt bấm thừa; nhiều nhóm thì để trống
+      // để người nhận hàng tự chọn — hồ sơ tài sản mang nhóm nào là quyết định của họ.
+      const options = assetGroupOptionsFor(line.item.itemType);
+      if (options.length === 1) assetGroups[line.id] = options[0].code;
     }
     setReceiveQuantities(quantities);
+    setReceiveAssetGroups(assetGroups);
     setReceiveNote("");
     setReceivingOrder(order);
   };
@@ -553,6 +565,7 @@ export default function ProcurementPage() {
       lineId: line.id,
       itemId: line.itemId,
       quantity: Number(receiveQuantities[line.id] ?? 0) || 0,
+      assetGroup: receiveAssetGroups[line.id] || "",
     }));
     if (lines.every((line) => line.quantity <= 0)) {
       setMessage("Chưa nhập số lượng cần nhận.");
@@ -1464,23 +1477,50 @@ export default function ProcurementPage() {
                 const remaining = line.orderedQuantity - line.receivedQuantity;
                 if (remaining <= 0) return null;
                 const isAsset = ["TOOL", "ASSET"].includes(line.item.itemType);
+                const groupOptions = isAsset ? assetGroupOptionsFor(line.item.itemType) : [];
                 return (
-                  <div key={line.id} className="flex items-center gap-3">
-                    <div className="flex-1 min-w-0">
-                      <p className="font-bold text-sm truncate">{line.item.name} {isAsset && <span className="status bg-indigo-50 text-indigo-700 ml-1">Tài sản/CCDC</span>}</p>
-                      <p className="text-xs text-slate-500">Còn phải nhận: {money(remaining)} {line.item.unit} · {money(line.unitCost)} đ/{line.item.unit}</p>
+                  <div key={line.id} className="space-y-2">
+                    <div className="flex items-center gap-3">
+                      <div className="flex-1 min-w-0">
+                        <p className="font-bold text-sm truncate">{line.item.name} {isAsset && <span className="status bg-indigo-50 text-indigo-700 ml-1">Tài sản/CCDC</span>}</p>
+                        <p className="text-xs text-slate-500">Còn phải nhận: {money(remaining)} {line.item.unit} · {money(line.unitCost)} đ/{line.item.unit}</p>
+                      </div>
+                      <input
+                        type="number"
+                        min="0"
+                        max={remaining}
+                        step="any"
+                        inputMode="decimal"
+                        className="control !mt-0 w-24 text-right"
+                        value={receiveQuantities[line.id] ?? ""}
+                        onChange={(e) => setReceiveQuantities({ ...receiveQuantities, [line.id]: e.target.value })}
+                        aria-label={`Số lượng nhận ${line.item.name}`}
+                      />
                     </div>
-                    <input
-                      type="number"
-                      min="0"
-                      max={remaining}
-                      step="any"
-                      inputMode="decimal"
-                      className="control !mt-0 w-24 text-right"
-                      value={receiveQuantities[line.id] ?? ""}
-                      onChange={(e) => setReceiveQuantities({ ...receiveQuantities, [line.id]: e.target.value })}
-                      aria-label={`Số lượng nhận ${line.item.name}`}
-                    />
+                    {/* Nhóm tài sản quyết định tiền tố mã hồ sơ (CCDCBAR0001...) và mã đã cấp là
+                        không sửa được, nên phải chọn ngay tại đây thay vì để hệ thống đoán. */}
+                    {isAsset && (
+                      <label className="block pl-1 text-[11px] font-bold text-slate-600">
+                        Nhóm tài sản
+                        <select
+                          className="control !mt-1 !py-1.5 text-xs"
+                          value={receiveAssetGroups[line.id] || ""}
+                          onChange={(e) => setReceiveAssetGroups({ ...receiveAssetGroups, [line.id]: e.target.value })}
+                          aria-label={`Nhóm tài sản của ${line.item.name}`}
+                        >
+                          <option value="">-- Chọn nhóm tài sản --</option>
+                          {groupOptions.map((group) => (
+                            <option key={group.code} value={group.code}>{group.code} - {group.name}</option>
+                          ))}
+                        </select>
+                        {groupOptions.length === 0 && (
+                          <span className="mt-1 block font-medium text-amber-700">
+                            Chưa khai Nhóm tài sản nào thuộc phân loại {assetGroupTypeLabel(line.item.itemType)}.
+                            Thêm ở Cài đặt &gt; Danh mục &gt; Nhóm tài sản rồi nhận lại.
+                          </span>
+                        )}
+                      </label>
+                    )}
                   </div>
                 );
               })}

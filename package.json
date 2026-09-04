@@ -47,6 +47,7 @@
     "test:pnl-ordering": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-pnl-ordering.mjs",
     "test:money-source-names": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-money-source-name-cleanup.mjs",
     "clean:money-source-names": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/clean-money-source-names.mjs",
+    "test:asset-group": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-asset-group-receive.mjs",
     "test:asset-code": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-asset-code-prefix.mjs",
     "test:revenue-group": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-revenue-group-mapping.mjs",
     "test:inventory-fixes": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-inventory-fixes.mjs",

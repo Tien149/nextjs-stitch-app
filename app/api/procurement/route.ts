@@ -6,6 +6,7 @@ import { apiError, businessError, cleanText, isPeriodLocked, toDate, toNumber } 
 import { assertBranchAccess, branchFilterForSession } from "@/lib/accounting";
 import type { DemoSession } from "@/lib/auth-demo";
 import { writeAuditLog } from "@/lib/audit-log";
+import { resolveAssetGroupForReceive } from "@/lib/asset-group-rules";
 import {
   duplicatedInTrashMessage,
   findDeletedByUnique,
@@ -105,12 +106,6 @@ async function assertImageRequirement(lines: { itemId: string; imageUrl: string 
   }
 }
 
-function assetGroupFromItemType(itemType: string) {
-  if (itemType === "TOOL") return "CCDC";
-  if (itemType === "ASSET") return "ASSET";
-  return itemType || "ASSET";
-}
-
 /**
  * Quyền trên mẫu yêu cầu mua hàng. Mẫu có `branchCode = null` là mẫu DÙNG CHUNG mọi cửa hàng
  * nên sửa/xoá nó ảnh hưởng toàn hệ thống — chỉ người có quyền toàn bộ cửa hàng được đụng vào.
@@ -199,7 +194,7 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const branchFilter = branchFilterForSession(auth.session, searchParams.get("branchCode") || "ALL");
 
-    const [items, requests, orders, departments, itemGroups, warehouses, templates, suppliers, priceSuggestions] = await Promise.all([
+    const [items, requests, orders, departments, itemGroups, warehouses, assetGroups, templates, suppliers, priceSuggestions] = await Promise.all([
       // Thành phẩm (FINISHED) bán tại POS, không mua vào nên không đưa vào danh sách chọn của PR/PO.
       prisma.inventoryItem.findMany({ where: { status: "ACTIVE", itemType: { not: "FINISHED" } }, include: { unitConversions: { where: { deletedAt: null } } }, orderBy: { name: "asc" } }),
       prisma.purchaseRequest.findMany({
@@ -228,6 +223,11 @@ export async function GET(request: Request) {
       prisma.masterDataItem.findMany({
         where: { type: "WAREHOUSE", status: "ACTIVE" },
         orderBy: [{ branch: "asc" }, { name: "asc" }],
+      }),
+      // Nhóm tài sản: form nhận hàng phải cho chọn nhóm cho dòng Tài sản/CCDC.
+      prisma.masterDataItem.findMany({
+        where: { type: "ASSET_GROUP", status: "ACTIVE" },
+        orderBy: { name: "asc" },
       }),
       // Mẫu yêu cầu mua hàng: kèm dòng hàng + ĐVT quy đổi để màn "Đặt theo mẫu" hiển thị đúng ĐVT.
       // Chỉ trả mẫu dùng chung + mẫu của cửa hàng người dùng được phép: mẫu riêng của cửa hàng
@@ -261,7 +261,7 @@ export async function GET(request: Request) {
       buildPriceSuggestions(),
     ]);
 
-    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, requests, orders, departments, itemGroups, warehouses, templates, suppliers, priceSuggestions }));
+    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, requests, orders, departments, itemGroups, warehouses, assetGroups, templates, suppliers, priceSuggestions }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });
@@ -930,11 +930,14 @@ export async function PATCH(request: Request) {
     const hasLinePayload = Array.isArray(body.lines) && body.lines.length > 0;
     const requestedByLineId = new Map<string, number>();
     const requestedByItemId = new Map<string, number>();
+    // Nhóm tài sản người nhận hàng chọn cho từng dòng Tài sản/CCDC (chỉ khớp được theo lineId).
+    const requestedAssetGroupByLineId = new Map<string, string>();
     if (hasLinePayload) {
-      for (const row of body.lines as Array<{ lineId?: unknown; id?: unknown; itemId?: unknown; quantity?: unknown }>) {
+      for (const row of body.lines as Array<{ lineId?: unknown; id?: unknown; itemId?: unknown; quantity?: unknown; assetGroup?: unknown }>) {
         const quantity = toNumber(row.quantity);
         if (!(quantity >= 0)) continue;
         const lineId = cleanText(row.lineId) || cleanText(row.id);
+        if (lineId && cleanText(row.assetGroup)) requestedAssetGroupByLineId.set(lineId, cleanText(row.assetGroup).toUpperCase());
         if (lineId) requestedByLineId.set(lineId, quantity);
         else {
           const itemId = cleanText(row.itemId);
@@ -975,6 +978,27 @@ export async function PATCH(request: Request) {
     // đó vĩnh viễn không điều chỉnh được. Sổ tài sản là sổ gốc duy nhất cho TOOL/ASSET.
     const stockLines = receiveLines.filter((line) => !["TOOL", "ASSET"].includes(line.item.itemType));
     const assetLines = receiveLines.filter((line) => ["TOOL", "ASSET"].includes(line.item.itemType));
+    // Chốt Nhóm tài sản của từng dòng TRƯỚC khi vào transaction: thiếu thì dừng ngay với thông
+    // báo chọn nhóm nào, chứ không cấp mã rồi mới phát hiện nhóm không có trong danh mục.
+    const assetGroupCatalog = assetLines.length > 0
+      ? await prisma.masterDataItem.findMany({
+          where: { type: "ASSET_GROUP", status: "ACTIVE" },
+          select: { code: true, name: true, group: true },
+          orderBy: { code: "asc" },
+        })
+      : [];
+    const assetGroupByLineId = new Map<string, string>();
+    for (const line of assetLines) {
+      const resolved = resolveAssetGroupForReceive({
+        itemType: line.item.itemType,
+        itemCode: line.item.code,
+        requestedCode: requestedAssetGroupByLineId.get(line.id),
+        catalog: assetGroupCatalog,
+      });
+      if (!resolved.ok) businessError(resolved.error);
+      assetGroupByLineId.set(line.id, resolved.code);
+    }
+
     const freeStockLine = stockLines.find((line) => line.unitCost <= 0);
     if (freeStockLine) {
       // Nhập mua giá 0 kéo giá vốn bình quân về sai — hàng tặng kèm thì sửa đơn giá PO
@@ -1011,7 +1035,7 @@ export async function PATCH(request: Request) {
       }
       for (const line of assetLines) {
         const receivedLineValue = line.receiveQuantity * line.unitCost;
-        const assetGroup = assetGroupFromItemType(line.item.itemType);
+        const assetGroup = assetGroupByLineId.get(line.id) as string;
         await tx.assetRecord.create({
           data: {
             code: await nextAssetCode(tx, assetGroup, order.departmentCode || ""),
