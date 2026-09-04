@@ -42,6 +42,7 @@
     "lint": "eslint",
     "postinstall": "prisma generate",
     "check:pos-file": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/check-revenue-pos-file.mjs",
+    "report:asset-groups": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/report-asset-group-mismatch.mjs",
     "report:duplicate-items": "node scripts/report-duplicate-items.cjs",
     "test:money-source-groups": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-money-source-summary-groups.mjs",
     "test:pnl-ordering": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-pnl-ordering.mjs",
