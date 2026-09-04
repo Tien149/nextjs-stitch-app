@@ -35,15 +35,34 @@ function requirePrefix(value: string | null | undefined, length: number, label: 
 
 type AssetCodeTx = RawTxClient | TxClient;
 
+/**
+ * Tiền tố mặc định khi Nhóm tài sản chưa khai "Tiền tố mã": CCDC/Dụng cụ vận hành -> CCDC,
+ * còn lại -> TSCD.
+ *
+ * Xét cả MÃ nhóm lẫn PHÂN LOẠI vì khách đặt mã theo họ ("CCDC_BAR", "CCDC_FOH", "TOOL_OPS")
+ * chứ không dùng đúng ba mã cũ CCDC/TOOL/ASSET của bản đầu. Luật cũ so khớp nguyên văn nên
+ * "CCDC_BAR" trượt hết và rơi về TSCD — dụng cụ khu vực bar bị cấp mã TSCDBAR0001. Đây cũng
+ * chính là luật màn hình Tài sản dùng để hiện "Mã dự kiến", nên hai bên không được lệch nhau.
+ */
+export function defaultAssetCodePrefix(assetGroupCode: unknown, assetGroupType: unknown) {
+  const haystack = `${normalizeAssetCode(assetGroupCode)} ${normalizeAssetCode(assetGroupType)}`;
+  return haystack.includes("CCDC") || haystack.includes("TOOL") ? DEFAULT_TOOL_PREFIX : DEFAULT_FIXED_ASSET_PREFIX;
+}
+
 export async function resolveAssetCodePrefix(tx: AssetCodeTx, assetGroupCode: string) {
   const client = tx as RawTxClient;
+  // Không lọc status: nhóm vừa bị ngưng vẫn phải cho ra đúng tiền tố của nó. Chặn nhóm ngưng
+  // hoạt động là việc của form tạo tài sản, không phải của chỗ cấp mã — cấp nhầm tiền tố thì
+  // sai vĩnh viễn vì mã đã phát sinh chứng từ là không đổi được nữa.
   const group = await client.masterDataItem.findFirst({
-    where: { type: "ASSET_GROUP", code: assetGroupCode, status: "ACTIVE", deletedAt: null },
+    where: { type: "ASSET_GROUP", code: assetGroupCode, deletedAt: null },
     select: { group: true, codePrefix: true },
   });
-  const isTool = ["CCDC", "TOOL"].includes((group?.group || "").toUpperCase())
-    || ["CCDC", "TOOL"].includes(assetGroupCode.toUpperCase());
-  return requirePrefix(group?.codePrefix || (isTool ? DEFAULT_TOOL_PREFIX : DEFAULT_FIXED_ASSET_PREFIX), 4, "Tiền tố Nhóm tài sản/CCDC");
+  return requirePrefix(
+    group?.codePrefix || defaultAssetCodePrefix(assetGroupCode, group?.group),
+    4,
+    "Tiền tố Nhóm tài sản/CCDC",
+  );
 }
 
 export async function resolveDepartmentCodePrefix(tx: AssetCodeTx, departmentCode: string) {

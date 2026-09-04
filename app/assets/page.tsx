@@ -11,6 +11,7 @@ import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSIO
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { resolveInitialBranchScope } from "@/components/BranchScopeSelect";
+import { defaultAssetCodePrefix } from "@/lib/asset-code-generator";
 
 type MasterItem = {
   id: string;
@@ -267,7 +268,9 @@ export default function AssetsPage() {
   const autoCodePreview = useMemo(() => {
     const group = assetGroups.find((item) => item.code === form.assetGroup);
     const department = departments.find((item) => item.code === form.departmentCode);
-    const groupRaw = (group?.codePrefix || (["CCDC", "TOOL"].some((value) => `${form.assetGroup} ${group?.group || ""}`.toUpperCase().includes(value)) ? "CCDC" : "TSCD"))
+    // Dùng chung luật với chỗ cấp mã thật (lib/asset-code-generator.ts) để "Mã dự kiến" trên
+    // form không bao giờ khác mã hệ thống ghi xuống.
+    const groupRaw = (group?.codePrefix || defaultAssetCodePrefix(form.assetGroup, group?.group))
       .replace(/[-_]/g, "").toUpperCase();
     const departmentRaw = (department?.codePrefix || department?.code || "").replace(/[-_]/g, "").toUpperCase();
     if (!/^[A-Z0-9]{4}$/.test(groupRaw) || !/^[A-Z0-9]{3}$/.test(departmentRaw)) return "";
