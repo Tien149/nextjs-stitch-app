@@ -22,14 +22,15 @@ export async function POST(request: Request) {
     // như trong import (lib/import-commit.ts cũng ép kiểu y hệt).
     const result = await normalizeRevenueSources(prisma as unknown as NormalizeClient, { apply });
 
-    if (result.applied && result.changedRows > 0) {
+    if (result.applied && (result.changedRows > 0 || result.releasedRows > 0)) {
       await writeAuditLog({
         session: auth.session,
         module: "/settings",
         action: "NORMALIZE_REVENUE_SOURCE",
         entityType: "RevenueImportRow",
-        message: `Chuẩn hoá nhóm doanh thu cho ${result.changedRows} dòng doanh thu và ${result.journalLines} dòng bút toán 511`,
-        metadata: { groups: result.groups },
+        message: `Chuẩn hoá nhóm doanh thu cho ${result.changedRows} dòng doanh thu và ${result.journalLines} dòng bút toán 511`
+          + (result.releasedRows > 0 ? `, thả ${result.releasedRows} dòng khỏi hàng chờ rã nguyên liệu` : ""),
+        metadata: { groups: result.groups, releasedRows: result.releasedRows },
       });
     }
 

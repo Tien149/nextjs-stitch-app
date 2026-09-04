@@ -15,6 +15,8 @@ import { getImportTemplate } from "../lib/import-templates.ts";
 import { validateImportResult } from "../lib/import-validation.ts";
 import { commitImport, rollbackImportBatch } from "../lib/import-commit.ts";
 import { normalizeRevenueSources } from "../lib/revenue-source-normalize.ts";
+import { ensureRevenueComponentCategories, postJournalEntry } from "../lib/accounting.ts";
+import { REVENUE_SVC_CATEGORY_CODE, REVENUE_VAT_CATEGORY_CODE, revenuePosJournalLines } from "../lib/revenue-pos-journal.ts";
 
 const require = createRequire(import.meta.url);
 const XLSX = require("xlsx");
@@ -30,6 +32,9 @@ const NEW_ITEM = "SP_RGTEST_NEW";
 const FOOD_CODE = "REV_FOOD";
 const BAR_CODE = "REV_BAR";
 const COMBO_CODE = "DT_RGTEST_COMBO";
+// Nhóm doanh thu không theo dõi tồn kho: phụ thu / dịch vụ (mã REV_PHU của khách).
+const SERVICE_CODE = "DT_RGTEST_PHU";
+const SERVICE_ITEM = "ET_RGTEST_SVC";
 const batchIds = [];
 const seededCategories = [];
 let seededBranch = false;
@@ -63,14 +68,16 @@ async function seed() {
   }
   // Danh mục thứ ba cố tình đặt mã vô nghĩa và chỉ khai TỪ KHOÁ: đây là đường người dùng tự
   // dạy hệ thống đọc file mà không cần đụng mã nguồn.
-  for (const [code, name, keywords] of [
-    [FOOD_CODE, "Doanh Thu Bếp", null],
-    [BAR_CODE, "Doanh Thu Bar", null],
-    [COMBO_CODE, "Doanh thu combo", "Set combo; COMBO TRUA"],
+  for (const [code, name, keywords, skipInventory] of [
+    [FOOD_CODE, "Doanh Thu Bếp", null, false],
+    [BAR_CODE, "Doanh Thu Bar", null, false],
+    [COMBO_CODE, "Doanh thu combo", "Set combo; COMBO TRUA", false],
+    // Phụ thu dịch vụ: bán ra không rút gì khỏi kho nên khai cờ không theo dõi tồn kho.
+    [SERVICE_CODE, "Doanh Thu Phụ Thu", "DỊCH VỤ, PHỤ THU", true],
   ]) {
     const existing = await prisma.masterDataItem.findFirst({ where: { type: "REVENUE_EXPENSE_CATEGORY", code, deletedAt: null } });
     if (existing) continue;
-    await prisma.masterDataItem.create({ data: { type: "REVENUE_EXPENSE_CATEGORY", code, name, matchKeywords: keywords, group: "REVENUE_SOURCE", status: "ACTIVE" } });
+    await prisma.masterDataItem.create({ data: { type: "REVENUE_EXPENSE_CATEGORY", code, name, matchKeywords: keywords, skipInventory, group: "REVENUE_SOURCE", status: "ACTIVE" } });
     seededCategories.push(code);
   }
   // Món ăn đã khai nhóm doanh thu trong danh mục; món uống cố tình để trống để test đường lùi.
@@ -194,4 +201,123 @@ test("sửa từ khoá trên danh mục rồi bấm chuẩn hoá: doanh thu đã
   // Chạy lại lần nữa không đổi gì thêm.
   const again = await normalizeRevenueSources(prisma, { apply: false });
   assert.equal(again.changedRows, 0);
+});
+
+test("nhóm doanh thu không theo dõi tồn kho: doanh thu vẫn ghi nhận, dòng bán không vào hàng chờ rã", async (t) => {
+  t.after(async () => { await cleanup(); await prisma.$disconnect(); });
+  await cleanup();
+  await seed();
+
+  await runImport("REVENUE_POS", "REVENUE_POS_RAW_V1", fileFrom(POS_HEADERS, [
+    posLine(SERVICE_ITEM, "Phụ thu dịch vụ không gian", "DỊCH VỤ", 700),
+    posLine(FOOD_ITEM, "Món ăn test", "ĐỒ ĂN", 100),
+  ], "Import doanh thu", "pos-rgtest-service.xlsx"));
+
+  const service = await prisma.revenueImportRow.findFirst({
+    where: { productCode: SERVICE_ITEM },
+    select: { revenueSource: true, netAmount: true, inventoryStatus: true },
+  });
+  // Doanh thu vẫn về đúng nhóm và đủ tiền — chỉ phần kho là được miễn.
+  assert.equal(service.revenueSource, SERVICE_CODE);
+  assert.equal(service.netAmount, 700);
+  assert.equal(service.inventoryStatus, "NOT_REQUIRED", "dòng dịch vụ không được vào hàng chờ rã nguyên liệu");
+  // Mã phụ thu không phải mặt hàng kho: import không được đẻ thêm "thành phẩm" cho nó.
+  const item = await prisma.inventoryItem.findUnique({ where: { code: SERVICE_ITEM } });
+  assert.equal(item, null);
+
+  const food = await prisma.revenueImportRow.findFirst({ where: { productCode: FOOD_ITEM }, select: { inventoryStatus: true } });
+  assert.equal(food.inventoryStatus, "PENDING", "món ăn vẫn phải chờ rã như cũ");
+});
+
+test("khai cờ không theo dõi tồn kho sau khi đã import: bấm chuẩn hoá là thả khỏi hàng chờ rã", async (t) => {
+  t.after(async () => { await cleanup(); await prisma.$disconnect(); });
+  await cleanup();
+  await seed();
+
+  // Lúc import chưa ai khai cờ — đúng tình huống dữ liệu cũ đang kẹt ở hàng chờ: mã phụ thu
+  // buộc phải nằm trong danh mục mặt hàng thì file POS mới qua được bước kiểm.
+  await prisma.masterDataItem.updateMany({
+    where: { type: "REVENUE_EXPENSE_CATEGORY", code: SERVICE_CODE },
+    data: { skipInventory: false },
+  });
+  await prisma.inventoryItem.create({ data: { code: SERVICE_ITEM, name: "Phụ thu dịch vụ", unit: "Lần", itemType: "FINISHED", minStock: 0 } });
+  await runImport("REVENUE_POS", "REVENUE_POS_RAW_V1", fileFrom(POS_HEADERS, [
+    posLine(SERVICE_ITEM, "Phụ thu dịch vụ không gian", "DỊCH VỤ", 700),
+  ], "Import doanh thu", "pos-rgtest-service-late.xlsx"));
+  const before = await prisma.revenueImportRow.findFirst({ where: { productCode: SERVICE_ITEM }, select: { id: true, inventoryStatus: true } });
+  assert.equal(before.inventoryStatus, "PENDING");
+
+  await prisma.masterDataItem.updateMany({
+    where: { type: "REVENUE_EXPENSE_CATEGORY", code: SERVICE_CODE },
+    data: { skipInventory: true },
+  });
+
+  // Chạy thử: đếm đúng một dòng sẽ thả, và tuyệt đối chưa ghi gì.
+  const preview = await normalizeRevenueSources(prisma, { apply: false });
+  assert.equal(preview.releasedRows, 1);
+  const stillPending = await prisma.revenueImportRow.findUnique({ where: { id: before.id }, select: { inventoryStatus: true } });
+  assert.equal(stillPending.inventoryStatus, "PENDING");
+
+  const applied = await normalizeRevenueSources(prisma, { apply: true });
+  assert.equal(applied.releasedRows, 1);
+  const after = await prisma.revenueImportRow.findUnique({ where: { id: before.id }, select: { inventoryStatus: true } });
+  assert.equal(after.inventoryStatus, "NOT_REQUIRED");
+
+  // Chạy lại lần nữa không còn gì để thả.
+  const again = await normalizeRevenueSources(prisma, { apply: false });
+  assert.equal(again.releasedRows, 0);
+});
+
+test("ghi sổ doanh thu POS: nhóm doanh thu = Doanh thu − Giảm giá, SVC và thuế GTGT tách dòng riêng, chuẩn hoá không ghi đè", async (t) => {
+  t.after(async () => { await cleanup(); await prisma.$disconnect(); });
+  await cleanup();
+  await seed();
+
+  const headers = ["Ngày", "Cửa hàng", "Mã hàng", "Tên hàng", "Số lượng", "Hình thức bán", "Nhóm doanh thu", "Nguồn tiền", "Doanh thu", "Giảm giá", "SVC", "VAT", "Tổng doanh thu"];
+  // Nhóm doanh thu ghi chữ lạ chưa ai khai: giữ chữ thô, lát nữa khai từ khoá rồi chuẩn hoá.
+  await runImport("REVENUE_POS", "REVENUE_POS_RAW_V1", fileFrom(headers, [
+    ["01/08/2026", BRANCH, FOOD_ITEM, "Món ăn test", 2, "Tại chỗ", "Tiệc cưới RGTEST", "FDSTIENMAT", 500000, 50000, 22500, 37800, 510300],
+  ], "Import doanh thu", "pos-rgtest-journal.xlsx"));
+  const row = await prisma.revenueImportRow.findFirst({ where: { productCode: FOOD_ITEM } });
+  assert.equal(row.revenueSource, "Tiệc cưới RGTEST");
+  assert.equal(row.netAmount, 510300, "Tổng tiền (số lên Tiền về đủ chưa) giữ nguyên");
+
+  // Ghi sổ đúng như syncAccountingPeriod làm cho từng dòng doanh thu.
+  await ensureRevenueComponentCategories();
+  const posted = await postJournalEntry({
+    entryDate: row.saleDate, branchCode: row.branchCode, sourceType: "REVENUE_POS", sourceId: row.id,
+    sourceCode: row.externalRef, description: `Doanh thu ${row.externalRef}`, createdBy: session.name,
+    lines: revenuePosJournalLines(row),
+  });
+  if (posted === "SKIPPED_LOCKED") { t.skip("kỳ 2026-08 của NME đang khoá trên DB này"); return; }
+  const readLines = async () => {
+    const entry = await prisma.journalEntry.findUnique({
+      where: { sourceType_sourceId: { sourceType: "REVENUE_POS", sourceId: row.id } },
+      include: { lines: { include: { account: true } } },
+    });
+    return entry.lines.map((line) => ({ account: line.account.code, debit: line.debit, credit: line.credit, categoryCode: line.categoryCode })).sort((a, b) => a.credit - b.credit);
+  };
+  assert.deepEqual(await readLines(), [
+    { account: "1121", debit: 510300, credit: 0, categoryCode: null },
+    { account: "511", debit: 0, credit: 22500, categoryCode: REVENUE_SVC_CATEGORY_CODE },
+    { account: "511", debit: 0, credit: 37800, categoryCode: REVENUE_VAT_CATEGORY_CODE },
+    { account: "511", debit: 0, credit: 450000, categoryCode: "Tiệc cưới RGTEST" },
+  ]);
+  // Danh mục cho hai dòng tách riêng phải có tên để P&L không hiện mã trơ.
+  const svc = await prisma.masterDataItem.findFirst({ where: { type: "REVENUE_EXPENSE_CATEGORY", code: REVENUE_SVC_CATEGORY_CODE, deletedAt: null } });
+  assert.ok(svc && svc.skipInventory === true && svc.group === "REVENUE_SOURCE", "Doanh thu SVC là nhóm doanh thu không theo dõi tồn kho");
+
+  // Khai từ khoá rồi chuẩn hoá: chỉ dòng nhóm doanh thu của món đổi mã, SVC / thuế giữ nguyên.
+  await prisma.masterDataItem.updateMany({
+    where: { type: "REVENUE_EXPENSE_CATEGORY", code: COMBO_CODE },
+    data: { matchKeywords: "Set combo; COMBO TRUA; Tiệc cưới RGTEST" },
+  });
+  const applied = await normalizeRevenueSources(prisma, { apply: true });
+  assert.ok(applied.journalLines >= 1);
+  assert.deepEqual(await readLines(), [
+    { account: "1121", debit: 510300, credit: 0, categoryCode: null },
+    { account: "511", debit: 0, credit: 22500, categoryCode: REVENUE_SVC_CATEGORY_CODE },
+    { account: "511", debit: 0, credit: 37800, categoryCode: REVENUE_VAT_CATEGORY_CODE },
+    { account: "511", debit: 0, credit: 450000, categoryCode: COMBO_CODE },
+  ]);
 });

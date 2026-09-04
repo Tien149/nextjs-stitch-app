@@ -10,7 +10,7 @@ import { postStockTransfer } from "@/lib/inventory-transfer";
 import { writeAuditLog } from "@/lib/audit-log";
 import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
 import { buildRevenueDepartmentResolver } from "@/lib/revenue-department";
-import { buildRevenueSourceResolver, cleanRevenueSourceInput, loadRevenueCategoryIndex, pickRevenueSource } from "@/lib/revenue-source";
+import { buildRevenueSourceResolver, cleanRevenueSourceInput, loadNonInventoryRevenueGroups, loadRevenueCategoryIndex, pickRevenueSource, tracksInventory } from "@/lib/revenue-source";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { nextSeqFromCodes, voucherCodePrefix } from "@/lib/voucher-code-generator";
 import { commonBankValue, groupBankStatementRows } from "@/lib/bank-statement-import";
@@ -864,10 +864,14 @@ export async function commitImport(input: CommitInput) {
       // quy về mã trước khi lưu, nếu không dòng Có 511 mang chữ đó làm categoryCode và doanh
       // thu nằm ở "Chưa phân loại". Chữ không quy được thì nhường danh mục mặt hàng.
       const revenueCategoryIndex = await loadRevenueCategoryIndex(tx as unknown as Prisma.TransactionClient);
+      // Nhóm doanh thu khai "không theo dõi tồn kho" (phụ thu, dịch vụ...): dòng bán ra không
+      // rút gì khỏi kho nên không được vào hàng chờ rã nguyên liệu, cũng không tự sinh mặt hàng.
+      const nonInventoryGroups = await loadNonInventoryRevenueGroups(tx as unknown as Prisma.TransactionClient);
       for (const row of input.rows) {
         const productCode = asText(row.values.product_code).toUpperCase();
         const productQuantity = asNumber(row.values.product_quantity);
         const revenueSource = pickRevenueSource(row.values.revenue_source, resolveRevenueSource(productCode), revenueCategoryIndex);
+        const needsInventory = tracksInventory(revenueSource, nonInventoryGroups);
         const revenueRow = await tx.revenueImportRow.create({
           data: {
             importBatchId: batch.id,
@@ -885,12 +889,14 @@ export async function commitImport(input: CommitInput) {
             externalRef: asText(row.values.external_ref),
             productCode: productCode || null,
             productQuantity: productQuantity > 0 ? productQuantity : null,
-            inventoryStatus: productCode && productQuantity > 0 ? "PENDING" : "NOT_REQUIRED",
+            inventoryStatus: productCode && productQuantity > 0 && needsInventory ? "PENDING" : "NOT_REQUIRED",
             departmentCode: resolveRevenueDepartment({ productCode, revenueSource }),
           },
         });
 
-        if (productCode) {
+        // Mã của nhóm không theo dõi tồn kho (ET040 phụ thu dịch vụ...) không phải mặt hàng kho,
+        // tạo ra chỉ làm bẩn danh mục và đẻ thêm dòng "thành phẩm thiếu nhóm doanh thu".
+        if (productCode && needsInventory) {
           const productName = asText(row.values.product_name) || `Mặt hàng ${productCode}`;
           const unit = asText(row.values.unit) || "Cái";
           await tx.inventoryItem.upsert({

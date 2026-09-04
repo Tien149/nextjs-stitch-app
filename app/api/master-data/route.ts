@@ -3,7 +3,7 @@ import { getRequestSession, requireMenuAction } from "@/lib/api-auth";
 import { assertBranchAccess, getAllowedBranches } from "@/lib/accounting";
 import { prisma, prismaRaw } from "@/lib/prisma";
 import { duplicatedInTrashMessage, findDeletedByUnique, softDeleteRecord } from "@/lib/soft-delete";
-import { normalizeRevenueExpenseGroup } from "@/lib/voucher-rules";
+import { isRevenueGroupCategory, normalizeRevenueExpenseGroup } from "@/lib/voucher-rules";
 import { cleanMoneySourceName, normalizeMoneySourceGroup } from "@/lib/money-sources";
 
 const defaultMasterData = [
@@ -126,6 +126,26 @@ const defaultMasterData = [
     name: "Doanh thu do uong va banh",
     group: "REVENUE_SOURCE",
     note: "Dung phan loai doanh thu import tu POS",
+    status: "ACTIVE",
+  },
+  // Hai dòng doanh thu tách riêng trên P&L khi ghi sổ doanh thu POS (lib/revenue-pos-journal.ts):
+  // là nhóm doanh thu nhưng không có mã hàng nào thuộc về, nên không theo dõi tồn kho.
+  {
+    type: "REVENUE_EXPENSE_CATEGORY",
+    code: "REV_SVC",
+    name: "Doanh thu SVC",
+    group: "REVENUE_SOURCE",
+    skipInventory: true,
+    note: "Phí dịch vụ (cột SVC file POS) — tự tách khi ghi sổ doanh thu",
+    status: "ACTIVE",
+  },
+  {
+    type: "REVENUE_EXPENSE_CATEGORY",
+    code: "REV_VAT",
+    name: "Doanh thu thuế GTGT",
+    group: "REVENUE_SOURCE",
+    skipInventory: true,
+    note: "Thuế GTGT (cột Thuế file POS) — tự tách khi ghi sổ doanh thu",
     status: "ACTIVE",
   },
   {
@@ -609,6 +629,10 @@ export async function POST(request: Request) {
     // Từ khoá nhận dạng khi import: chỉ danh mục Thu/Chi dùng, để khách tự khai "ĐỒ ĂN" thuộc
     // nhóm doanh thu nào mà không phải nhờ sửa mã nguồn (lib/revenue-source.ts).
     const matchKeywords = type === "REVENUE_EXPENSE_CATEGORY" ? (cleanText(body.matchKeywords) || null) : null;
+    // Cờ "không theo dõi tồn kho" chỉ có nghĩa với NHÓM DOANH THU: phụ thu / dịch vụ bán ra không
+    // rút gì khỏi kho nên dòng doanh thu của nhóm này không vào hàng chờ rã nguyên liệu
+    // (lib/revenue-source.ts). Loại thu quỹ và danh mục Chi không bao giờ đi kèm mã hàng.
+    const skipInventory = type === "REVENUE_EXPENSE_CATEGORY" && isRevenueGroupCategory(group) && body.skipInventory === true;
 
     if (!type || !code || !name) {
       return NextResponse.json({ error: "Loại danh mục, mã và tên là bắt buộc" }, { status: 400 });
@@ -650,6 +674,7 @@ export async function POST(request: Request) {
         settlementBankCode,
         summarySourceName,
         matchKeywords,
+        skipInventory,
         note: cleanText(body.note) || null,
         status: cleanText(body.status) || "ACTIVE",
       },
@@ -704,6 +729,10 @@ export async function PATCH(request: Request) {
     const summarySourceName = current.type === "MONEY_SOURCE"
       ? (body.summarySourceName !== undefined ? (cleanMoneySourceName(body.summarySourceName) || null) : current.summarySourceName)
       : null;
+    // Đổi danh mục sang loại thu quỹ / Chi thì cờ tồn kho hết nghĩa, bỏ luôn cho khỏi mồ côi.
+    const skipInventory = current.type === "REVENUE_EXPENSE_CATEGORY" && isRevenueGroupCategory(group)
+      ? (body.skipInventory !== undefined ? body.skipInventory === true : current.skipInventory)
+      : false;
 
     try {
       if (body.codePrefix !== undefined) codePrefix = normalizeAssetCodePrefix(current.type, body.codePrefix);
@@ -762,6 +791,7 @@ export async function PATCH(request: Request) {
         settlementBankCode,
         summarySourceName,
         matchKeywords,
+        skipInventory,
         ...(body.note !== undefined ? { note: cleanText(body.note) || null } : {}),
         ...(body.status !== undefined ? { status: cleanText(body.status) || "ACTIVE" } : {}),
       },

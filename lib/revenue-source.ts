@@ -67,8 +67,12 @@ export function pickRevenueSource(fileValue: unknown, catalogValue: string, inde
   return index.toCode(fromFile) || catalogValue || fromFile;
 }
 
-/** Loại món suy từ chữ tự do — nền của cả nhóm doanh thu lẫn bộ phận Bếp/Bar. */
-export type RevenueKind = "FOOD" | "DRINK";
+/**
+ * Loại món suy từ chữ tự do — nền của cả nhóm doanh thu lẫn bộ phận Bếp/Bar.
+ * SERVICE là dịch vụ / phụ thu (spec 04/09/2026: "Dịch vụ" lên Doanh thu phụ thu) — không có
+ * bộ phận Bếp/Bar và không theo dõi tồn kho.
+ */
+export type RevenueKind = "FOOD" | "DRINK" | "SERVICE";
 
 /** "ĐỒ ĂN" -> "DO AN", "REV_FOOD" -> "REV FOOD": bỏ dấu, hoa hết, mọi ký tự lạ thành khoảng trắng. */
 function normalizeKindText(value: unknown) {
@@ -95,18 +99,21 @@ export function revenueKindFromText(value: unknown): RevenueKind | null {
   if (food && drink) return null;
   if (food) return "FOOD";
   if (drink) return "DRINK";
+  // "Dịch vụ", "Phụ thu", "Service charge"... — chỉ khi không dính chữ ăn/uống nào.
+  if (/\bDICH VU\b|\bPHU THU\b|SERVICE|SURCHARGE/.test(text)) return "SERVICE";
   return null;
 }
 
 /** Quy chữ trong file về mã danh mục Thu. Trả "" khi không nhận ra. */
 export type RevenueCategoryIndex = { toCode: (value: unknown) => string };
 
-type CategoryLookupClient = Pick<Prisma.TransactionClient, "masterDataItem">;
+export type CategoryLookupClient = Pick<Prisma.TransactionClient, "masterDataItem">;
 
 /** Mã ưu tiên khi danh mục có nhiều nhóm cùng loại món, để kết quả không phụ thuộc thứ tự alphabet. */
 const preferredCodes: Record<RevenueKind, string[]> = {
   FOOD: ["REV_FOOD", "REV_KITCHEN", "REV_BEP"],
   DRINK: ["REV_DRINK", "REV_BAR"],
+  SERVICE: ["REV_SERVICE", "REV_PHU", "REV_PHUTHU", "REV_SURCHARGE", "REV_DICHVU"],
 };
 
 /**
@@ -134,7 +141,7 @@ export async function loadRevenueCategoryIndex(client: CategoryLookupClient): Pr
     }
   }
   const byKind = new Map<RevenueKind, string>();
-  for (const kind of ["FOOD", "DRINK"] as RevenueKind[]) {
+  for (const kind of ["FOOD", "DRINK", "SERVICE"] as RevenueKind[]) {
     const matched = revenueCategories.filter((category) => revenueKindFromText(`${category.code} ${category.name}`) === kind);
     const picked = preferredCodes[kind].map((code) => matched.find((category) => category.code.toUpperCase() === code)).find(Boolean) || matched[0];
     if (picked) byKind.set(kind, picked.code);
@@ -150,6 +157,33 @@ export async function loadRevenueCategoryIndex(client: CategoryLookupClient): Pr
       return (kind && byKind.get(kind)) || "";
     },
   };
+}
+
+/**
+ * Mã các nhóm doanh thu khai "không theo dõi tồn kho" trên danh mục Thu/Chi (viết hoa).
+ *
+ * Phụ thu / dịch vụ / thuê không gian bán ra không rút thứ gì khỏi kho, nhưng file POS vẫn ghi
+ * chúng thành dòng có mã hàng + số lượng nên trước đây bị đẩy vào hàng chờ "Rã nguyên liệu":
+ * nút Rã hoặc báo lỗi không tìm thấy mặt hàng, hoặc xuất bán thẳng làm tồn âm. Khai cờ trên
+ * danh mục là đủ cho cả cụm mã cùng nhóm, không phải khai lại từng mã hàng.
+ * deletedAt lọc tường minh vì script backfill chạy PrismaClient thô, không có extension xoá mềm.
+ */
+export async function loadNonInventoryRevenueGroups(client: CategoryLookupClient): Promise<Set<string>> {
+  const categories = await client.masterDataItem.findMany({
+    where: { type: "REVENUE_EXPENSE_CATEGORY", skipInventory: true, deletedAt: null },
+    select: { code: true, group: true },
+  });
+  // Cờ chỉ có nghĩa với nhóm doanh thu: loại thu quỹ và danh mục Chi không bao giờ đi kèm mã hàng.
+  return new Set(categories.filter((category) => isRevenueGroupCategory(category.group)).map((category) => category.code.toUpperCase()));
+}
+
+/**
+ * Dòng doanh thu này có phải theo dõi tồn kho (vào hàng chờ rã nguyên liệu) không.
+ * Chưa quy được về mã danh mục nào thì vẫn coi là có, để không bỏ sót hàng thật.
+ */
+export function tracksInventory(revenueSource: unknown, nonInventoryGroups: Set<string>) {
+  const code = String(revenueSource ?? "").trim().toUpperCase();
+  return !code || !nonInventoryGroups.has(code);
 }
 
 /** Ô từ khoá là chữ tự do: tách theo dấu phẩy, chấm phẩy, gạch đứng hoặc xuống dòng. */

@@ -1168,16 +1168,12 @@ export async function GET(request: Request) {
     const branchCode = requestedBranch(auth.session, cleanText(params.get("branchCode")) || "ALL");
 
     // Ẩn tab ở giao diện là chưa đủ: gõ thẳng URL vẫn lấy được số liệu nếu API không chặn.
-    // Riêng tab Tiền về đủ chưa mượn số liệu thu chi ngày cho bảng "Đối chiếu tiền vào đã
-    // đủ chưa" (chuyển từ tab Thu chi ngày sang 22/08/2026), nên quyền tab đó mở luôn
-    // được type=daily-cash.
     const permittedTabs = allowedMenuTabs(auth.session, menuHref);
-    const effectiveType = type === "daily-cash" && permittedTabs?.includes("revenue-settlement") ? "revenue-settlement" : type;
     // pnl-matrix và revenue-trend là góc nhìn phụ nằm trong tab P&L đa chiều / Biến động
     // YoY — quyền đi theo tab chứa nó, không phải tab riêng.
     const subViewTab: Record<string, string> = { "pnl-matrix": "pnl", "revenue-trend": "yoy" };
     const containerTab = subViewTab[type] || type;
-    if (permittedTabs && !permittedTabs.includes(type) && !permittedTabs.includes(effectiveType) && !permittedTabs.includes(containerTab)) {
+    if (permittedTabs && !permittedTabs.includes(type) && !permittedTabs.includes(containerTab)) {
       return NextResponse.json({ error: "Bạn không có quyền xem báo cáo này" }, { status: 403 });
     }
     if (type === "operations") return NextResponse.json(await getOperationsReport(period, branchCode));

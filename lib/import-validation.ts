@@ -6,6 +6,7 @@ import type { DemoSession } from "@/lib/auth-demo";
 import { isInboundStockType, isOutboundStockType, isStockTransactionType, isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType } from "@/lib/inventory-stock";
 import { normalizeCashflowCategoryType, normalizeRevenueExpenseGroup } from "@/lib/voucher-rules";
 import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
+import { loadNonInventoryRevenueGroups, loadRevenueCategoryIndex, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
 import { groupBankStatementRows } from "@/lib/bank-statement-import";
 import { isPeriodLocked } from "@/lib/phase3";
 import { normalizeMoneySourceGroup } from "@/lib/money-sources";
@@ -1114,6 +1115,16 @@ export async function validateImportResult(
   const assetsForStocktake = importType === "ASSET_STOCKTAKE"
     ? await prisma.assetRecord.findMany({ select: { code: true, branchCode: true, quantity: true } })
     : [];
+  // Nhóm doanh thu khai "không theo dõi tồn kho" (phụ thu, dịch vụ, thuê không gian): mã trong
+  // cột Mã hàng của file POS không phải mặt hàng kho nên không đòi nó có trong danh mục mặt
+  // hàng. Cột nhóm doanh thu ghi bằng chữ nên phải quy về mã danh mục trước (lib/revenue-source.ts).
+  // prisma ở đây đã gắn extension xoá mềm, kiểu không khớp TransactionClient thuần.
+  const [revenueCategoryIndex, nonInventoryRevenueGroups] = importType === "REVENUE_POS"
+    ? await Promise.all([
+        loadRevenueCategoryIndex(prisma as unknown as CategoryLookupClient),
+        loadNonInventoryRevenueGroups(prisma as unknown as CategoryLookupClient),
+      ])
+    : [null, new Set<string>()];
 
   const branchTypes: ImportType[] = ["VOUCHER", "INTERNAL_TRANSFER", "DEBT_OPENING", "OPENING_BALANCE", "REVENUE_POS", "PAYROLL", "INVENTORY_TRANSACTION", "STOCKTAKE", "ASSET", "PRODUCTION", "WASTE", "ASSET_STOCKTAKE"];
   const openingBalanceKeys = new Set<string>();
@@ -1347,10 +1358,15 @@ export async function validateImportResult(
           if (!warehouse) addError(row, `Kho [${text(row.values.warehouse_code)}] khong ton tai hoac khong thuoc cua hang`);
           else row.values.warehouse_code = warehouse.code;
         }
-        const product = inventoryItems.find((item) => item.code.toUpperCase() === productCode);
-        if (!product) addError(row, `Khong tim thay ma mon POS ${productCode}`);
-        if (product && product.status !== "ACTIVE") addError(row, `Ma mon POS ${productCode} dang ngung hoat dong`);
-        if (product?.itemType && !["FINISHED", "SEMI_FINISHED"].includes(product.itemType)) addError(row, `Ma mon POS ${productCode} phai la thanh pham hoac ban thanh pham`);
+        // Dòng thuộc nhóm doanh thu không theo dõi tồn kho (phụ thu dịch vụ...) vẫn ghi nhận
+        // doanh thu bình thường nhưng không dính gì tới kho, nên bỏ qua cả cụm kiểm mặt hàng.
+        const revenueGroupCode = revenueCategoryIndex?.toCode(row.values.revenue_source) || "";
+        if (tracksInventory(revenueGroupCode, nonInventoryRevenueGroups)) {
+          const product = inventoryItems.find((item) => item.code.toUpperCase() === productCode);
+          if (!product) addError(row, `Khong tim thay ma mon POS ${productCode}`);
+          if (product && product.status !== "ACTIVE") addError(row, `Ma mon POS ${productCode} dang ngung hoat dong`);
+          if (product?.itemType && !["FINISHED", "SEMI_FINISHED"].includes(product.itemType)) addError(row, `Ma mon POS ${productCode} phai la thanh pham hoac ban thanh pham`);
+        }
         // Không đòi định lượng ở bước import nữa: món không có định lượng (bia, nước đóng
         // chai) sẽ xuất bán thẳng từ tồn kho khi rã; món thiếu định lượng thật sự sẽ bị
         // chặn ở nút Rã nguyên liệu với thông báo thiếu tồn.

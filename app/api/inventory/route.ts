@@ -17,6 +17,7 @@ import { scopePayloadByTab } from "@/lib/tab-scope";
 import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 import { nextStockDocCode, nextStocktakeCode } from "@/lib/inventory-stock";
 import { isRevenueGroupCategory, normalizeRevenueExpenseGroup } from "@/lib/voucher-rules";
+import { loadNonInventoryRevenueGroups, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
 
 const menuHref = "/inventory";
 
@@ -229,7 +230,7 @@ export async function GET(request: Request) {
       prisma.revenueImportRow.findMany({
         where: { inventoryStatus: "PENDING", productCode: { not: null }, deletedAt: null, ...branchFilter },
         orderBy: [{ saleDate: "asc" }, { branchCode: "asc" }],
-        select: { id: true, saleDate: true, branchCode: true, productCode: true, productQuantity: true },
+        select: { id: true, saleDate: true, branchCode: true, productCode: true, productQuantity: true, revenueSource: true },
         take: 2000,
       }),
     ]);
@@ -441,16 +442,40 @@ export async function GET(request: Request) {
     }
     const wasteReport = [...wasteBuckets.values()].sort((a, b) => b.totalValue - a.totalValue);
 
-    // Doanh thu chờ rã nguyên liệu, gom theo ngày + cửa hàng cho tab Chế biến.
+    // Doanh thu chờ rã nguyên liệu, gom theo ngày + cửa hàng cho tab Chế biến. Dòng thuộc nhóm
+    // doanh thu khai "không theo dõi tồn kho" (phụ thu, dịch vụ) bị loại ngay ở đây: dữ liệu
+    // import trước khi khai cờ vẫn đang mang trạng thái PENDING, đếm vào là báo sai việc phải làm.
+    const nonInventoryGroups = await loadNonInventoryRevenueGroups(prisma as unknown as CategoryLookupClient);
+    const inventoryPendingRows = pendingRevenueRows.filter((row) => tracksInventory(row.revenueSource, nonInventoryGroups));
     const pendingByDay = new Map<string, { saleDate: Date; branchCode: string; rowCount: number; totalQuantity: number }>();
-    for (const row of pendingRevenueRows) {
+    for (const row of inventoryPendingRows) {
       const key = `${row.saleDate.toISOString().slice(0, 10)}|${row.branchCode}`;
       const bucket = pendingByDay.get(key) || { saleDate: row.saleDate, branchCode: row.branchCode, rowCount: 0, totalQuantity: 0 };
       bucket.rowCount += 1;
       bucket.totalQuantity += row.productQuantity || 0;
       pendingByDay.set(key, bucket);
     }
-    const pendingSales = { total: pendingRevenueRows.length, byDay: [...pendingByDay.values()] };
+    // Danh sách xuất bán chờ rã, gom theo mã hàng: đây là số lượng sẽ chạy định lượng (chỉ nhóm
+    // Đồ ăn / Đồ uống — dịch vụ đã bị loại ở trên). Tên và nhóm doanh thu lấy từ danh mục mặt hàng.
+    const pendingByItem = new Map<string, { productCode: string; productName: string; revenueSource: string; rowCount: number; totalQuantity: number }>();
+    for (const row of inventoryPendingRows) {
+      const code = (row.productCode || "").toUpperCase();
+      const bucket = pendingByItem.get(code) || {
+        productCode: code,
+        productName: itemByCode.get(code)?.name || code,
+        revenueSource: row.revenueSource || itemByCode.get(code)?.revenueGroup || "",
+        rowCount: 0,
+        totalQuantity: 0,
+      };
+      bucket.rowCount += 1;
+      bucket.totalQuantity += row.productQuantity || 0;
+      pendingByItem.set(code, bucket);
+    }
+    const pendingSales = {
+      total: inventoryPendingRows.length,
+      byDay: [...pendingByDay.values()],
+      byItem: [...pendingByItem.values()].sort((a, b) => b.totalQuantity - a.totalQuantity),
+    };
     // Ô chọn của mặt hàng chỉ nhận nhóm doanh thu; loại thu quỹ trả riêng để màn hình gọi đúng
     // tên mã đang bị gán sai thay vì hiện trơ mã "(ngoài danh mục)".
     const revenueGroups = receiptCategoryList.filter((category) => isRevenueGroupCategory(category.group));
@@ -787,12 +812,25 @@ export async function POST(request: Request) {
         businessError("Không có dòng doanh thu nào đang chờ rã nguyên liệu trong khoảng ngày đã chọn.");
       }
 
+      // Phụ thu / dịch vụ không rút gì khỏi kho: loại khỏi lần rã này rồi thả hẳn khỏi hàng chờ,
+      // nếu không nút Rã sẽ chết vì "không tìm thấy mặt hàng" hoặc xuất bán thẳng làm tồn âm.
+      const nonInventoryGroups = await loadNonInventoryRevenueGroups(prisma as unknown as CategoryLookupClient);
+      const skippedRows = pendingRows.filter((row) => !tracksInventory(row.revenueSource, nonInventoryGroups));
+      const inventoryRows = pendingRows.filter((row) => tracksInventory(row.revenueSource, nonInventoryGroups));
+      if (inventoryRows.length === 0) {
+        await prisma.revenueImportRow.updateMany({
+          where: { id: { in: skippedRows.map((row) => row.id) } },
+          data: { inventoryStatus: "NOT_REQUIRED" },
+        });
+        businessError(`Cả ${skippedRows.length} dòng doanh thu trong khoảng ngày này đều thuộc nhóm doanh thu không theo dõi tồn kho — đã bỏ khỏi hàng chờ, không có gì để rã.`);
+      }
+
       const recipeVersions = await prisma.recipe.findMany({
         where: { deletedAt: null },
         include: { lines: { include: { item: true } } },
       });
       const plan = explodeSalesDemand({
-        demands: pendingRows.map((row) => ({ productCode: row.productCode || "", quantity: row.productQuantity || 0 })),
+        demands: inventoryRows.map((row) => ({ productCode: row.productCode || "", quantity: row.productQuantity || 0 })),
         recipes: recipeVersions as unknown as ExplosionRecipe[],
         date: dateTo,
       });
@@ -874,9 +912,17 @@ export async function POST(request: Request) {
         // 3) Đánh dấu các dòng doanh thu đã rã kèm mã lần rã, để hoàn tác được cả cụm
         //    (REVERT_EXPLOSION) và không rã trùng lần sau.
         await tx.revenueImportRow.updateMany({
-          where: { id: { in: pendingRows.map((row) => row.id) } },
+          where: { id: { in: inventoryRows.map((row) => row.id) } },
           data: { inventoryStatus: `POSTED:${runCode}` },
         });
+        // Dòng không theo dõi tồn kho thì thả hẳn, KHÔNG gắn mã lần rã: hoàn tác lần rã này
+        // cũng không được đẩy chúng trở lại hàng chờ.
+        if (skippedRows.length > 0) {
+          await tx.revenueImportRow.updateMany({
+            where: { id: { in: skippedRows.map((row) => row.id) } },
+            data: { inventoryStatus: "NOT_REQUIRED" },
+          });
+        }
         return { runCode, documents };
       }, { timeout: 60000 });
 
@@ -885,7 +931,8 @@ export async function POST(request: Request) {
         entityType: "InventoryTransaction", entityCode: result.runCode, branchCode,
         metadata: {
           dateFrom, dateTo, warehouseCode, toWarehouseCode,
-          revenueRows: pendingRows.length,
+          revenueRows: inventoryRows.length,
+          skippedRows: skippedRows.length,
           productions: plan.productions.map((step) => ({ productCode: step.productCode, quantityBase: step.quantityBase })),
           documents: result.documents.map((doc) => doc.code),
         },
@@ -893,7 +940,8 @@ export async function POST(request: Request) {
       return NextResponse.json({
         runCode: result.runCode,
         documentCount: result.documents.length,
-        revenueRows: pendingRows.length,
+        revenueRows: inventoryRows.length,
+        skippedRows: skippedRows.length,
         productions: plan.productions.map((step) => ({ productCode: step.productCode, quantityBase: step.quantityBase, batchQuantity: step.batchQuantity })),
         directSales: plan.directSales,
         documents: result.documents,

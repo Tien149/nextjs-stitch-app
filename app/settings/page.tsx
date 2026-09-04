@@ -29,6 +29,7 @@ type MasterDataItem = {
   settlementBankCode: string | null;
   summarySourceName: string | null;
   matchKeywords: string | null;
+  skipInventory: boolean;
   status: string;
   note: string | null;
   createdAt: string;
@@ -54,6 +55,7 @@ type MasterDataForm = {
   settlementBankCode: string;
   summarySourceName: string;
   matchKeywords: string;
+  skipInventory: boolean;
   note: string;
   status: string;
 };
@@ -68,6 +70,8 @@ type RevenueNormalizeResult = {
   unresolved: number;
   changedRows: number;
   journalLines: number;
+  /** Dòng của nhóm doanh thu không theo dõi tồn kho được thả khỏi hàng chờ rã nguyên liệu. */
+  releasedRows: number;
   groups: { revenueSource: string; departmentCode: string | null; rows: number }[];
 };
 
@@ -106,6 +110,7 @@ const emptyForm: MasterDataForm = {
   settlementBankCode: "",
   summarySourceName: "",
   matchKeywords: "",
+  skipInventory: false,
   note: "",
   status: "ACTIVE",
 };
@@ -562,6 +567,7 @@ export default function SettingsPage() {
       settlementBankCode: item.settlementBankCode || "",
       summarySourceName: item.summarySourceName || "",
       matchKeywords: item.matchKeywords || "",
+      skipInventory: item.skipInventory === true,
       note: item.note || "",
       status: item.status,
     });
@@ -1054,14 +1060,14 @@ export default function SettingsPage() {
                         >
                           {isNormalizing ? "Đang kiểm tra..." : "Kiểm tra dữ liệu đã import"}
                         </button>
-                        {revenueNormalize && !revenueNormalize.applied && revenueNormalize.changedRows > 0 && (
+                        {revenueNormalize && !revenueNormalize.applied && (revenueNormalize.changedRows > 0 || revenueNormalize.releasedRows > 0) && (
                           <button
                             type="button"
                             onClick={() => void runRevenueNormalize(true)}
                             disabled={isNormalizing}
                             className="rounded-lg bg-blue-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-blue-700 disabled:opacity-60"
                           >
-                            Chuẩn hoá {revenueNormalize.changedRows} dòng
+                            Chuẩn hoá {revenueNormalize.changedRows + revenueNormalize.releasedRows} dòng
                           </button>
                         )}
                       </div>
@@ -1075,8 +1081,18 @@ export default function SettingsPage() {
                           ? `Đã chuẩn hoá ${revenueNormalize.changedRows} dòng doanh thu (${revenueNormalize.journalLines} dòng bút toán 511).`
                           : revenueNormalize.changedRows > 0
                             ? `Có ${revenueNormalize.changedRows}/${revenueNormalize.total} dòng doanh thu sẽ đổi nhóm:`
-                            : `Cả ${revenueNormalize.total} dòng doanh thu đã đúng nhóm, không phải sửa gì.`}
+                            : revenueNormalize.releasedRows > 0
+                              ? `Nhóm doanh thu đã đúng cả ${revenueNormalize.total} dòng, chỉ còn việc thả hàng chờ rã nguyên liệu.`
+                              : `Cả ${revenueNormalize.total} dòng doanh thu đã đúng nhóm, không phải sửa gì.`}
                       </p>
+                      {/* Dòng của nhóm khai "không theo dõi tồn kho" đang kẹt ở hàng chờ rã nguyên
+                          liệu (import trước khi khai cờ) sẽ được thả ra ngay trong lần chuẩn hoá này. */}
+                      {revenueNormalize.releasedRows > 0 && (
+                        <p className="mt-1.5 font-bold text-blue-700">
+                          {revenueNormalize.applied ? "Đã thả" : "Sẽ thả"} {revenueNormalize.releasedRows} dòng thuộc nhóm doanh thu
+                          không theo dõi tồn kho khỏi hàng chờ &quot;Rã nguyên liệu&quot;.
+                        </p>
+                      )}
                       {revenueNormalize.groups.length > 0 && (
                         <ul className="mt-1.5 space-y-0.5">
                           {revenueNormalize.groups.map((group) => (
@@ -1195,6 +1211,14 @@ export default function SettingsPage() {
                             ) : (
                               <p className="w-fit whitespace-nowrap rounded-md bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-700">
                                 {item.type === "PARTNER" ? formatGroupLabel("PARTNER", item.partnerType || item.group) : formatGroupLabel(item.type, item.group)}
+                              </p>
+                            )}
+                            {/* Nhóm doanh thu miễn kho: doanh thu vẫn lên đủ nhưng dòng bán không vào
+                                hàng chờ Rã nguyên liệu — phải thấy ngay trên bảng vì nó đổi việc của kho. */}
+                            {item.type === "REVENUE_EXPENSE_CATEGORY" && item.skipInventory && (
+                              <p className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-amber-700">
+                                <span className="material-symbols-outlined text-[13px]">inventory_2</span>
+                                Không theo dõi tồn kho
                               </p>
                             )}
                             {item.subGroup && parentTypeOf[item.type] && (
@@ -1885,6 +1909,28 @@ export default function SettingsPage() {
                     File doanh thu ghi chữ thay vì mã danh mục thì khai chữ đó ở đây, ngăn nhau bằng dấu phẩy.
                     Import gặp đúng chữ này sẽ tính vào danh mục hiện tại. Sửa xong bấm
                     &quot;Chuẩn hoá nhóm doanh thu đã import&quot; ở màn hình danh sách để áp cho dữ liệu cũ.
+                  </span>
+                </label>
+              )}
+
+              {/* Phụ thu / dịch vụ / thuê không gian: file POS vẫn ghi thành dòng có mã hàng và số
+                  lượng, nhưng bán ra không rút gì khỏi kho. Khai một lần cho cả nhóm thay vì phải
+                  khai lại từng mã hàng. */}
+              {activeType === "REVENUE_EXPENSE_CATEGORY" && normalizeGroupValue(activeType, form.group) === "REVENUE_SOURCE" && (
+                <label className="flex items-start gap-2.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+                  <input
+                    type="checkbox"
+                    checked={form.skipInventory}
+                    onChange={(event) => setForm((value) => ({ ...value, skipInventory: event.target.checked }))}
+                    className="mt-0.5 h-4 w-4 accent-blue-600"
+                  />
+                  <span className="text-xs font-bold text-slate-700">
+                    Không theo dõi tồn kho
+                    <span className="mt-1 block text-[11px] font-medium text-slate-500">
+                      Doanh thu vẫn ghi nhận đủ và lên P&amp;L như thường, nhưng dòng bán của nhóm này không
+                      vào hàng chờ &quot;Rã nguyên liệu&quot; và import không tự tạo mặt hàng cho mã của nó.
+                      Dùng cho phụ thu / dịch vụ / thuê không gian.
+                    </span>
                   </span>
                 </label>
               )}
