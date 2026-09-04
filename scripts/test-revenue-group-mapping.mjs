@@ -274,11 +274,14 @@ test("ghi sổ doanh thu POS: nhóm doanh thu = Doanh thu − Giảm giá, SVC v
   await seed();
 
   const headers = ["Ngày", "Cửa hàng", "Mã hàng", "Tên hàng", "Số lượng", "Hình thức bán", "Nhóm doanh thu", "Nguồn tiền", "Doanh thu", "Giảm giá", "SVC", "VAT", "Tổng doanh thu"];
-  // Nhóm doanh thu ghi chữ lạ chưa ai khai: giữ chữ thô, lát nữa khai từ khoá rồi chuẩn hoá.
+  // Mặt hàng chưa khai nhóm doanh thu + file ghi chữ lạ chưa ai khai: giữ chữ thô, lát nữa khai
+  // từ khoá rồi chuẩn hoá để thấy chuẩn hoá chỉ đổi dòng nhóm doanh thu của món.
+  const JOURNAL_ITEM = "SP_RGTEST_JOURNAL";
+  await prisma.inventoryItem.create({ data: { code: JOURNAL_ITEM, name: "Món test ghi sổ", unit: "Phần", itemType: "FINISHED", minStock: 0 } });
   await runImport("REVENUE_POS", "REVENUE_POS_RAW_V1", fileFrom(headers, [
-    ["01/08/2026", BRANCH, FOOD_ITEM, "Món ăn test", 2, "Tại chỗ", "Tiệc cưới RGTEST", "FDSTIENMAT", 500000, 50000, 22500, 37800, 510300],
+    ["01/08/2026", BRANCH, JOURNAL_ITEM, "Món test ghi sổ", 2, "Tại chỗ", "Tiệc cưới RGTEST", "FDSTIENMAT", 500000, 50000, 22500, 37800, 510300],
   ], "Import doanh thu", "pos-rgtest-journal.xlsx"));
-  const row = await prisma.revenueImportRow.findFirst({ where: { productCode: FOOD_ITEM } });
+  const row = await prisma.revenueImportRow.findFirst({ where: { productCode: JOURNAL_ITEM } });
   assert.equal(row.revenueSource, "Tiệc cưới RGTEST");
   assert.equal(row.netAmount, 510300, "Tổng tiền (số lên Tiền về đủ chưa) giữ nguyên");
 
