@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/custom-client";
 import { prisma } from "@/lib/prisma";
-import { createPnlDetailTree, finalizePnl, PNL_STATEMENT_LINES, type PnlBucket, type PnlLineKey, type PnlSeriesGroup } from "@/lib/reports";
+import { createPnlDetailTree, finalizePnl, PNL_STATEMENT_LINES, type PnlBucket, type PnlLineKey, type PnlSeriesGroup, type PnlSeriesItem } from "@/lib/reports";
 
 /* ------------------------------------------------------------------------- *
  * Báo cáo theo feedback chị Bình 26/08/2026 (report_Feedback.pdf):
@@ -13,8 +13,11 @@ import { createPnlDetailTree, finalizePnl, PNL_STATEMENT_LINES, type PnlBucket, 
  * ------------------------------------------------------------------------- */
 
 export type MatrixSeries = { code: string; name: string; months: number[]; total: number };
-/** Một dòng KQKD trên bảng cả năm: cùng nhãn/thứ tự với bảng một kỳ, mỗi tháng một cột. */
-export type MatrixStatementLine = { key: string; label: string; subtotal: boolean; months: number[]; total: number; groups: PnlSeriesGroup[] };
+/** Nút chi tiết (nhóm/hạng mục) kèm kế hoạch 12 tháng — null khi cấp đó không set kế hoạch được. */
+export type MatrixPlannedItem = PnlSeriesItem & { plan: number[] | null; planTotal: number | null };
+export type MatrixPlannedGroup = MatrixPlannedItem & { items: MatrixPlannedItem[] };
+/** Một dòng KQKD trên bảng cả năm: cùng nhãn/thứ tự với bảng một kỳ, mỗi tháng một cột, kèm kế hoạch. */
+export type MatrixStatementLine = { key: string; label: string; subtotal: boolean; months: number[]; total: number; plan: number[]; planTotal: number; groups: MatrixPlannedGroup[] };
 
 export const UNASSIGNED_DEPARTMENT = "UNASSIGNED";
 
@@ -41,6 +44,7 @@ function sortedSeries(map: Map<string, MatrixSeries>) {
 
 type MatrixLineRow = {
   period: string;
+  branchCode: string;
   accountType: string;
   reportGroup: string;
   pnlItemCode: string | null;
@@ -54,6 +58,7 @@ type MatrixLineRow = {
 async function loadYearJournalLines(firstPeriod: string, lastPeriod: string, branchCode: string) {
   return prisma.$queryRaw<MatrixLineRow[]>(Prisma.sql`
     SELECT e."period",
+           e."branchCode"     AS "branchCode",
            a."accountType"    AS "accountType",
            a."reportGroup"    AS "reportGroup",
            l."pnlItemCode"    AS "pnlItemCode",
@@ -70,7 +75,7 @@ async function loadYearJournalLines(firstPeriod: string, lastPeriod: string, bra
       AND e."period" >= ${firstPeriod} AND e."period" <= ${lastPeriod}
       AND a."accountType" IN ('REVENUE', 'COGS', 'OPEX', 'OTHER_INCOME', 'OTHER_EXPENSE')
       ${branchCode === "ALL" ? Prisma.empty : Prisma.sql`AND e."branchCode" = ${branchCode}`}
-    GROUP BY 1, 2, 3, 4, 5, 6
+    GROUP BY 1, 2, 3, 4, 5, 6, 7
   `);
 }
 
@@ -100,7 +105,7 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     // sách đã được setup" — feedback mục 4). Target % doanh thu quy ra tiền theo target
     // doanh thu của chính kỳ đó.
     prisma.reportTarget.findMany({
-      where: { period: { startsWith: `${year}-` }, metric: { in: ["revenue", "cogs", "payroll"] }, ...branchFilter },
+      where: { period: { startsWith: `${year}-` }, deletedAt: null, ...branchFilter },
     }),
   ]);
   const departmentName = new Map(departments.map((item) => [item.code, item.name]));
@@ -110,6 +115,8 @@ export async function getPnlMatrix(year: string, branchCode: string) {
   const tree = createPnlDetailTree({ pnlItems, pnlGroups, categories }, 12);
 
   const totals = months.map(() => emptyBucket());
+  /** Thực tế từng cửa hàng × 12 tháng — cho bảng "hiệu quả theo cửa hàng" và so hòa vốn theo cửa hàng. */
+  const branchTotals = new Map<string, PnlBucket[]>();
   const revenueByDepartment = new Map<string, MatrixSeries>();
   const payrollByDepartment = new Map<string, MatrixSeries>();
   const cogsByDepartment = new Map<string, MatrixSeries>();
@@ -121,7 +128,11 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     const income = row.credit - row.debit;
     const lineKey = tree.add({ account: row, pnlItemCode: row.pnlItemCode, categoryCode: row.categoryCode, debit: row.debit, credit: row.credit }, monthIndex);
     if (!lineKey) continue;
-    totals[monthIndex][lineKey] += lineKey === "revenue" || lineKey === "otherIncome" ? income : expense;
+    const signed = lineKey === "revenue" || lineKey === "otherIncome" ? income : expense;
+    totals[monthIndex][lineKey] += signed;
+    const branchBuckets = branchTotals.get(row.branchCode) || months.map(() => emptyBucket());
+    branchBuckets[monthIndex][lineKey] += signed;
+    branchTotals.set(row.branchCode, branchBuckets);
     const dept = row.departmentCode || UNASSIGNED_DEPARTMENT;
     if (lineKey === "revenue") bumpSeries(revenueByDepartment, dept, deptLabel(dept), monthIndex, income);
     if (lineKey === "payroll") bumpSeries(payrollByDepartment, dept, deptLabel(dept), monthIndex, expense);
@@ -155,37 +166,138 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     payrollInsuranceMonths[monthIndex] += row.insuranceAmount;
   }
 
-  // Ngân sách tháng: cộng target các cửa hàng; target % doanh thu quy theo target doanh thu
-  // của cùng kỳ + cùng cửa hàng (chưa set target doanh thu thì phần % chưa quy được — để 0).
-  const budgets = { revenue: Array.from({ length: 12 }, () => 0), cogs: Array.from({ length: 12 }, () => 0), payroll: Array.from({ length: 12 }, () => 0) };
+  // Kế hoạch (ngân sách) từng tháng, quy về tiền: target % doanh thu nhân với target doanh
+  // thu của cùng kỳ + cùng cửa hàng (chưa set target doanh thu thì phần % chưa quy được — để 0).
+  // Hạng mục P&L set riêng (metric "pnlItem:<code>") cộng lên dòng chứa nó; dòng OPEX ưu tiên
+  // tổng các hạng mục, chỉ dùng target set thẳng vào dòng khi chưa có hạng mục nào (dữ liệu cũ).
   const revenueTargetByPeriodBranch = new Map<string, number>();
   for (const target of targets) {
-    if (target.metric === "revenue") {
-      revenueTargetByPeriodBranch.set(`${target.period}|${target.branchCode}`, target.targetValue);
-    }
+    if (target.metric === "revenue") revenueTargetByPeriodBranch.set(`${target.period}|${target.branchCode}`, target.targetValue);
   }
+  const resolveTargetAmount = (target: { period: string; branchCode: string; targetMode: string; targetPercent: number | null; targetValue: number }) =>
+    target.targetMode === "PERCENT_REVENUE" && target.targetPercent
+      ? (revenueTargetByPeriodBranch.get(`${target.period}|${target.branchCode}`) || 0) * target.targetPercent
+      : target.targetValue;
+  const zeros12 = () => Array.from({ length: 12 }, () => 0);
+  /** Target hạng mục theo "<phạm vi>|<mã hạng mục>" — gộp lại sau theo cùng luật ALL-trước. */
+  const planItemByScope = new Map<string, number[]>();
+  const itemLineByCode = new Map<string, PnlLineKey>();
+  for (const line of PNL_STATEMENT_LINES) {
+    if (line.subtotal) continue;
+    for (const group of tree.groupsOf(line.key as PnlLineKey)) for (const item of group.items) itemLineByCode.set(item.code, line.key as PnlLineKey);
+  }
+  type PlanBucket = Record<PnlLineKey, number[]>;
+  const emptyPlanBucket = (): PlanBucket => ({ revenue: zeros12(), cogs: zeros12(), payroll: zeros12(), depreciation: zeros12(), otherOpex: zeros12(), otherIncome: zeros12(), otherExpense: zeros12() });
+  /** Target set thẳng vào dòng, theo cửa hàng. */
+  const linePlanByBranch = new Map<string, PlanBucket>();
+  /** Tổng target hạng mục theo dòng, theo cửa hàng. */
+  const itemPlanByBranch = new Map<string, PlanBucket>();
+  const touchPlan = (map: Map<string, PlanBucket>, branch: string) => {
+    const current = map.get(branch) || emptyPlanBucket();
+    map.set(branch, current);
+    return current;
+  };
+  let hasPlan = false;
   for (const target of targets) {
     const monthIndex = months.indexOf(target.period);
     if (monthIndex < 0) continue;
-    const bucket = budgets[target.metric as keyof typeof budgets];
-    if (!bucket) continue;
-    if (target.targetMode === "PERCENT_REVENUE" && target.targetPercent) {
-      bucket[monthIndex] += (revenueTargetByPeriodBranch.get(`${target.period}|${target.branchCode}`) || 0) * target.targetPercent;
-    } else {
-      bucket[monthIndex] += target.targetValue;
+    const amount = resolveTargetAmount(target);
+    if (target.metric.startsWith("pnlItem:")) {
+      const code = target.metric.slice("pnlItem:".length);
+      const lineKey = itemLineByCode.get(code);
+      if (!lineKey) continue;
+      const scopeKey = `${target.branchCode}|${code}`;
+      const series = planItemByScope.get(scopeKey) || zeros12();
+      series[monthIndex] += amount;
+      planItemByScope.set(scopeKey, series);
+      touchPlan(itemPlanByBranch, target.branchCode)[lineKey][monthIndex] += amount;
+      hasPlan = true;
+      continue;
     }
+    const lineKey = target.metric as PnlLineKey;
+    if (!(lineKey in emptyBucket())) continue;
+    touchPlan(linePlanByBranch, target.branchCode)[lineKey][monthIndex] += amount;
+    hasPlan = true;
   }
+  /**
+   * Kế hoạch của một phạm vi (cửa hàng hoặc "ALL"): dòng OPEX ưu tiên tổng hạng mục, dòng khác
+   * lấy target set thẳng. Trả về 7 dòng gốc chưa suy ra để còn gộp nhiều phạm vi.
+   */
+  const rawPlan = (branch: string): PlanBucket => {
+    const lines = linePlanByBranch.get(branch) || emptyPlanBucket();
+    const items = itemPlanByBranch.get(branch) || emptyPlanBucket();
+    const result = emptyPlanBucket();
+    for (const key of Object.keys(result) as PnlLineKey[]) {
+      result[key] = months.map((_, monthIndex) => (key === "otherOpex" && items.otherOpex.some((value) => value > 0) ? items.otherOpex[monthIndex] : lines[key][monthIndex]));
+    }
+    return result;
+  };
+  const finalizeRaw = (raw: PlanBucket) => months.map((_, monthIndex) => finalizePnl({
+    revenue: raw.revenue[monthIndex], cogs: raw.cogs[monthIndex], payroll: raw.payroll[monthIndex], depreciation: raw.depreciation[monthIndex],
+    otherOpex: raw.otherOpex[monthIndex], otherIncome: raw.otherIncome[monthIndex], otherExpense: raw.otherExpense[monthIndex],
+  }));
+  // Ngân sách có thể set ở cấp "ALL" (toàn hệ thống) lẫn từng cửa hàng (tab Ngân sách xem theo
+  // phạm vi nào thì set ở phạm vi đó). Xem toàn hệ thống: tháng nào có số ở cấp ALL thì lấy số
+  // đó, không thì cộng các cửa hàng — tránh cộng trùng hai cấp.
+  const realBranches = Array.from(new Set<string>([...linePlanByBranch.keys(), ...itemPlanByBranch.keys()])).filter((code) => code !== "ALL");
+  const planByBranch = new Map<string, ReturnType<typeof finalizeRaw>>();
+  for (const branch of realBranches) planByBranch.set(branch, finalizeRaw(rawPlan(branch)));
+  const allLevel = rawPlan("ALL");
+  const branchRaws = realBranches.map((branch) => rawPlan(branch));
+  const mergedRaw = emptyPlanBucket();
+  for (const key of Object.keys(mergedRaw) as PnlLineKey[]) {
+    mergedRaw[key] = months.map((_, monthIndex) => (allLevel[key][monthIndex] > 0 ? allLevel[key][monthIndex] : branchRaws.reduce((sum, raw) => sum + raw[key][monthIndex], 0)));
+  }
+  const plans = finalizeRaw(mergedRaw);
+  const planBranches = new Set<string>(realBranches);
+  const planLine = (key: string) => plans.map((bucket) => (bucket as unknown as Record<string, number>)[key] || 0);
+  // Đường ngân sách trên chart COGS/LƯƠNG (giữ nguyên hợp đồng cũ).
+  const budgets = { revenue: planLine("revenue"), cogs: planLine("cogs"), payroll: planLine("payroll") };
+
+  const planItemByCode = new Map<string, number[]>();
+  for (const [scopeKey, series] of planItemByScope) {
+    const [scope, code] = scopeKey.split("|");
+    const merged = planItemByCode.get(code) || zeros12();
+    const allSeries = planItemByScope.get(`ALL|${code}`);
+    for (let monthIndex = 0; monthIndex < 12; monthIndex += 1) {
+      if (allSeries && allSeries[monthIndex] > 0) merged[monthIndex] = allSeries[monthIndex];
+      else if (scope !== "ALL") merged[monthIndex] += series[monthIndex];
+    }
+    planItemByCode.set(code, merged);
+  }
+
+  /** Kế hoạch đính kèm từng nhóm/hạng mục: dòng OPEX set theo hạng mục nên nhóm = tổng hạng mục; dòng khác chỉ có kế hoạch ở cấp dòng. */
+  const withPlan = (lineKey: PnlLineKey, groups: PnlSeriesGroup[]) => groups.map((group) => {
+    const items = group.items.map((item) => {
+      const plan = planItemByCode.get(item.code) || null;
+      return { ...item, plan, planTotal: plan ? plan.reduce((sum, value) => sum + value, 0) : null };
+    });
+    const detailLine = lineKey === "otherOpex";
+    const plan = detailLine ? months.map((_, monthIndex) => items.reduce((sum, item) => sum + (item.plan?.[monthIndex] || 0), 0)) : null;
+    return { ...group, items, plan, planTotal: plan ? plan.reduce((sum, value) => sum + value, 0) : null };
+  });
+
+  // Thực tế + kế hoạch theo cửa hàng (xếp theo doanh thu thực tế giảm dần, cửa hàng chỉ có kế hoạch đứng sau).
+  const branchCodes = new Set<string>([...branchTotals.keys(), ...planBranches]);
+  const byBranch = Array.from(branchCodes, (code) => {
+    const actual = (branchTotals.get(code) || months.map(() => emptyBucket())).map((bucket) => finalizePnl(bucket));
+    const plan = planByBranch.get(code) || months.map(() => finalizePnl(emptyBucket()));
+    return { code, actual, plan };
+  }).sort((a, b) => b.actual.reduce((sum, bucket) => sum + bucket.revenue, 0) - a.actual.reduce((sum, bucket) => sum + bucket.revenue, 0));
 
   const finalizedTotals = totals.map((bucket) => finalizePnl(bucket));
   const statement: MatrixStatementLine[] = PNL_STATEMENT_LINES.map((line) => {
     const monthValues = finalizedTotals.map((total) => (total as unknown as Record<string, number>)[line.key] || 0);
+    const plan = planLine(line.key);
     return {
       key: line.key,
       label: line.label,
       subtotal: line.subtotal,
       months: monthValues,
       total: monthValues.reduce((sum, value) => sum + value, 0),
-      groups: line.subtotal ? [] : tree.groupsOf(line.key as PnlLineKey),
+      plan,
+      planTotal: plan.reduce((sum, value) => sum + value, 0),
+      groups: line.subtotal ? [] : withPlan(line.key as PnlLineKey, tree.groupsOf(line.key as PnlLineKey)),
     };
   });
 
@@ -205,6 +317,12 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     payrollSplit: { bonus: payrollBonusMonths, insurance: payrollInsuranceMonths },
     /** Ngân sách tháng đã quy đổi % — đường so sánh trên chart COGS/LƯƠNG. */
     budgets,
+    /** Có set kế hoạch nào trong năm chưa — chưa có thì các màn Dự báo/Định mức nhắc set ở tab Ngân sách. */
+    hasPlan,
+    /** Kế hoạch 12 tháng đã cộng mọi cửa hàng, đủ các dòng suy ra (LN gộp, EBITDA, LN ròng). */
+    plans,
+    /** Thực tế + kế hoạch từng cửa hàng — bảng hiệu quả theo cửa hàng và hòa vốn theo cửa hàng. */
+    byBranch,
     /** Bảng KQKD cả năm: 10 dòng -> nhóm -> hạng mục, mỗi tháng một cột. */
     statement,
     revenueByDepartment: sortedSeries(revenueByDepartment),

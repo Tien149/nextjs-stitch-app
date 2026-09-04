@@ -3,6 +3,7 @@
 import React from "react";
 import {
   Bar,
+  BarChart,
   CartesianGrid,
   Cell,
   ComposedChart,
@@ -41,7 +42,11 @@ export type ChartSeries = { name: string; values: number[]; color?: string; /** 
 function toRows(labels: string[], series: ChartSeries[]) {
   return labels.map((label, index) => {
     const row: Record<string, number | string> = { label };
-    for (const item of series) row[item.name] = Math.round(item.values[index] || 0);
+    // NaN = "chưa có số" (ví dụ tháng chưa tới) — recharts bỏ trống điểm đó thay vì vẽ 0.
+    for (const item of series) {
+      const value = item.values[index];
+      row[item.name] = Number.isFinite(value) ? Math.round(value) : (null as unknown as number);
+    }
     return row;
   });
 }
@@ -147,5 +152,107 @@ export function ShareDonutChart({ data, height = 280 }: { data: Array<{ name: st
         <Tooltip {...tooltipProps} />
       </PieChart>
     </ResponsiveContainer>
+  );
+}
+
+/** Bar + line trộn: cột kế hoạch/thực tế đứng cạnh nhau, đường lợi nhuận đè lên — chart chính của Dashboard P&L. */
+export function MixedChart({ labels, bars, lines, height = 280 }: { labels: string[]; bars: ChartSeries[]; lines: ChartSeries[]; height?: number }) {
+  const rows = toRows(labels, [...bars, ...lines]);
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <ComposedChart data={rows} margin={{ top: 8, right: 16, bottom: 0, left: 4 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+        <XAxis dataKey="label" {...axisProps} />
+        <YAxis {...axisProps} width={56} tickFormatter={(value: number) => compactVnd(value)} />
+        <Tooltip {...tooltipProps} />
+        <Legend wrapperStyle={{ fontSize: 12 }} />
+        {bars.map((item, index) => (
+          <Bar key={item.name} dataKey={item.name} fill={item.color || CHART_COLORS[index % CHART_COLORS.length]} radius={[3, 3, 0, 0]} maxBarSize={22} />
+        ))}
+        {lines.map((item, index) => (
+          <Line key={item.name} type="monotone" dataKey={item.name} stroke={item.color || CHART_COLORS[(bars.length + index) % CHART_COLORS.length]} strokeWidth={2} strokeDasharray={item.dashed ? "6 4" : undefined} dot={{ r: 3 }} />
+        ))}
+      </ComposedChart>
+    </ResponsiveContainer>
+  );
+}
+
+/** Line theo % (biên lợi nhuận, tỷ lệ tiêu hao). `values` là tỷ lệ 0..1. */
+export function PercentLineChart({ labels, series, height = 280 }: { labels: string[]; series: ChartSeries[]; height?: number }) {
+  const rows = labels.map((label, index) => {
+    const row: Record<string, number | string> = { label };
+    for (const item of series) row[item.name] = Number(((item.values[index] || 0) * 100).toFixed(1));
+    return row;
+  });
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <LineChart data={rows} margin={{ top: 8, right: 16, bottom: 0, left: 4 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+        <XAxis dataKey="label" {...axisProps} />
+        <YAxis {...axisProps} width={44} tickFormatter={(value: number) => `${value}%`} />
+        <Tooltip formatter={(value: unknown) => `${Number(value ?? 0).toFixed(1)}%`} contentStyle={tooltipProps.contentStyle} />
+        <Legend wrapperStyle={{ fontSize: 12 }} />
+        {series.map((item, index) => (
+          <Line key={item.name} type="monotone" dataKey={item.name} stroke={item.color || CHART_COLORS[index % CHART_COLORS.length]} strokeWidth={2} strokeDasharray={item.dashed ? "6 4" : undefined} dot={{ r: 3 }} />
+        ))}
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+
+/** Bar ngang: độ lệch theo cửa hàng — dương xanh, âm đỏ. */
+export function HorizontalBarChart({ rows, height = 260 }: { rows: Array<{ name: string; value: number }>; height?: number }) {
+  const data = rows.map((row) => ({ name: row.name, value: Math.round(row.value) }));
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <BarChart data={data} layout="vertical" margin={{ top: 8, right: 24, bottom: 0, left: 8 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
+        <XAxis type="number" {...axisProps} tickFormatter={(value: number) => compactVnd(value)} />
+        <YAxis type="category" dataKey="name" {...axisProps} width={130} />
+        <Tooltip {...tooltipProps} />
+        <Bar dataKey="value" radius={[0, 4, 4, 0]} maxBarSize={22}>
+          {data.map((row) => (
+            <Cell key={row.name} fill={row.value >= 0 ? "#10b981" : "#f43f5e"} />
+          ))}
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+/** Donut gọn kèm chú giải bên phải (top N + "Khác") — cụm 3 donut cơ cấu của Dashboard P&L. */
+export function DonutLegendChart({ data, height = 200, top = 5, colors = CHART_COLORS }: { data: Array<{ name: string; value: number }>; height?: number; top?: number; colors?: string[] }) {
+  const alive = data.filter((item) => item.value > 0.5).sort((a, b) => b.value - a.value);
+  const shown = alive.slice(0, top);
+  const rest = alive.slice(top).reduce((sum, item) => sum + item.value, 0);
+  if (rest > 0.5) shown.push({ name: "Khác", value: rest });
+  const total = shown.reduce((sum, item) => sum + item.value, 0);
+  if (shown.length === 0 || total <= 0) {
+    return <p className="py-8 text-center text-sm text-slate-400">Chưa có dữ liệu để vẽ tỷ trọng.</p>;
+  }
+  return (
+    <div className="flex items-center gap-3">
+      <div className="w-1/2 min-w-0" style={{ height }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie data={shown} dataKey="value" nameKey="name" innerRadius="55%" outerRadius="90%" paddingAngle={1} stroke="#fff">
+              {shown.map((item, index) => (
+                <Cell key={item.name} fill={colors[index % colors.length]} />
+              ))}
+            </Pie>
+            <Tooltip {...tooltipProps} />
+          </PieChart>
+        </ResponsiveContainer>
+      </div>
+      <ul className="w-1/2 min-w-0 space-y-1.5 text-[11px]">
+        {shown.map((item, index) => (
+          <li key={item.name} className="flex items-center gap-1.5 min-w-0">
+            <span className="h-2.5 w-2.5 rounded-sm shrink-0" style={{ background: colors[index % colors.length] }} />
+            <span className="truncate text-slate-600" title={item.name}>{item.name}</span>
+            <span className="ml-auto font-bold text-slate-700 shrink-0">{((item.value / total) * 100).toFixed(1)}%</span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

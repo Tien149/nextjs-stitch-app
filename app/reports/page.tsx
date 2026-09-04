@@ -16,7 +16,7 @@ import { cashDepositRoundingExpense, roundCashDepositAmount } from "@/lib/cash-d
 import { buildDailyCashSummaryRows } from "@/lib/daily-cash-receipts";
 import PayrollBudgetTab, { type PayrollBudgetData } from "@/components/reports/PayrollBudgetTab";
 import BudgetTab, { type BudgetData } from "@/components/reports/BudgetTab";
-import PnlMatrixTab from "@/components/reports/PnlMatrixTab";
+import FinancialPlanningWorkspace from "@/components/reports/planning/FinancialPlanningWorkspace";
 import RevenueTrendTab from "@/components/reports/RevenueTrendTab";
 
 type Pnl = {
@@ -221,8 +221,6 @@ export default function ReportsPage() {
   const [manualRevenueSubmitting, setManualRevenueSubmitting] = useState(false);
   const [manualRevenueForm, setManualRevenueForm] = useState<ManualRevenueForm>(emptyManualRevenueForm);
   const [forecast, setForecast] = useState({ period: new Date().toISOString().slice(0, 7), branchCode: "HCM", scenario: "BASE", assumptionType: "INFLOW", amount: "100000000", note: "Kế hoạch dòng tiền" });
-  /** Góc nhìn trong tab P&L đa chiều: một kỳ như cũ hoặc ma trận 12 tháng (feedback 26/08/2026). */
-  const [pnlView, setPnlView] = useState<"period" | "year">("period");
   const [reopenReason, setReopenReason] = useState("Bổ sung hoặc điều chỉnh dữ liệu kỳ trước");
 
   // Vai trò được gán riêng một tab (ví dụ thu ngân chỉ có "Thu chi ngày") thì chỉ thấy tab đó.
@@ -1603,28 +1601,22 @@ export default function ReportsPage() {
       )}
 
       {!tabLoading && pnl && (
-        <div className="space-y-5">
-          {/* Ma trận 12 tháng (feedback 26/08/2026) nằm chung tab với P&L một kỳ. */}
-          <div className="flex items-center gap-2">
-            <button type="button" onClick={() => setPnlView("period")} className={`text-xs font-bold px-3 py-1.5 rounded border ${pnlView === "period" ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>
-              Kỳ {period}
-            </button>
-            <button type="button" onClick={() => setPnlView("year")} className={`text-xs font-bold px-3 py-1.5 rounded border ${pnlView === "year" ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>
-              Cả năm {period.slice(0, 4)} (12 tháng)
-            </button>
-          </div>
-          {pnlView === "year" ? (
-            <PnlMatrixTab period={period} branchCode={branchCode} />
-          ) : (
-            <>
+        /* Cụm Hoạch định tài chính (học theo Omni Plan, 09/2026): Kỳ tháng như cũ + Dự báo P&L,
+           Dashboard P&L, Định mức, Điểm hòa vốn, Giả định tài chính chạy theo năm của kỳ. */
+        <FinancialPlanningWorkspace
+          period={period}
+          branchCode={branchCode}
+          onOpenBudget={visibleTabs.some((tab) => tab.id === "budget") ? () => handleTabChange("budget") : undefined}
+          periodView={(
+            <div className="space-y-5">
               <PnlStatementTable period={period} branchCode={branchCode} lines={pnl.statement} value={pnl.total} />
               <div className="grid xl:grid-cols-2 gap-5">
                 <CutTable title="Theo cửa hàng" rows={pnl.byBranch} />
                 <CutTable title="Theo phòng ban" rows={pnl.byDepartment} />
               </div>
-            </>
+            </div>
           )}
-        </div>
+        />
       )}
 
       {!tabLoading && yoy && (

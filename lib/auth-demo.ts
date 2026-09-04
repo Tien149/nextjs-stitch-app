@@ -369,7 +369,7 @@ export const moduleTabs: Record<string, Array<{ id: string; label: string }>> = 
     { id: "cash-source", label: "Nguồn tiền" },
     { id: "revenue-settlement", label: "Tiền về đủ chưa" },
     { id: "activity", label: "Kỳ & Log" },
-    { id: "pnl", label: "P&L đa chiều" },
+    { id: "pnl", label: "Hoạch định P&L" },
     { id: "yoy", label: "Biến động YoY" },
     { id: "cashflow", label: "Dự báo dòng tiền" },
     { id: "balance", label: "Bảng cân đối" },
