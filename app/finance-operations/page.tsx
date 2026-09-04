@@ -165,12 +165,19 @@ export default function FinanceOperationsPage() {
   const [accrual, setAccrual] = useState({
     name: "Chi phí trả trước",
     branchCode: "HCM",
-    categoryCode: "OPEX",
+    categoryCode: "",
     totalAmount: "12000000",
     startPeriod: new Date().toISOString().slice(0, 7),
     numberOfPeriods: "12",
     note: "",
   });
+
+  // Khoản trích trước cũ lưu nhóm P&L (OPEX/CAPEX/COGS) chứ chưa gắn khoản mục chi cụ thể,
+  // nên khi không tra được tên trong danh mục thì vẫn hiển thị nguyên mã đã lưu.
+  const feeCategoryLabel = useCallback(
+    (code: string) => feeCategories.find((category) => category.code === code)?.name || code,
+    [feeCategories],
+  );
 
   // Khoảng ngày chỉ có nghĩa trong kỳ đang xem, còn nguồn tiền gắn với cửa hàng -> đổi thì bỏ lọc cũ.
   const changePeriod = (value: string) => {
@@ -1313,10 +1320,14 @@ export default function FinanceOperationsPage() {
                       value={accrual.categoryCode}
                       onChange={(e) => setAccrual({ ...accrual, categoryCode: e.target.value })}
                       className="w-full pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all cursor-pointer"
+                      required
                     >
-                      <option value="OPEX">OPEX (Vận hành)</option>
-                      <option value="CAPEX">CAPEX (Đầu tư)</option>
-                      <option value="COGS">COGS (Giá vốn)</option>
+                      <option value="">{feeCategories.length === 0 ? "-- Chưa khai báo khoản mục chi phí --" : "-- Chọn khoản mục chi phí --"}</option>
+                      {feeCategories.map((category) => (
+                        <option key={category.code} value={category.code}>
+                          {category.name}
+                        </option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -1383,7 +1394,7 @@ export default function FinanceOperationsPage() {
                         </span>
                         <h4 className="font-bold text-slate-900 mt-1">{row.name}</h4>
                         <p className="text-xs text-slate-500 font-semibold mt-0.5">
-                          Cửa hàng: {storeLabel(row.branchCode)} · Nhóm: {row.categoryCode} · Thời gian: {row.numberOfPeriods} kỳ
+                          Cửa hàng: {storeLabel(row.branchCode)} · Khoản mục: {feeCategoryLabel(row.categoryCode)} · Thời gian: {row.numberOfPeriods} kỳ
                         </p>
                       </div>
 
