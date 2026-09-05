@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { money } from "@/components/reports/report-ui";
+import { money, statValueTextClass } from "@/components/reports/report-ui";
 import { compactVnd } from "@/components/charts/ReportCharts";
 
 /**
@@ -11,6 +11,7 @@ import { compactVnd } from "@/components/charts/ReportCharts";
  * slate/indigo để đồng bộ với phần còn lại của app.
  */
 
+export { statValueTextClass };
 export const fmtMoney = (value: number) => `${money(Math.round(value))} đ`;
 export const fmtCompact = (value: number) => compactVnd(value);
 export const ratioOf = (numerator: number, denominator: number) => (denominator ? numerator / denominator : null);
@@ -76,22 +77,6 @@ export function MonthChips({ upTo, onChange, label = "Lũy kế tháng" }: { upT
       <span className="ml-auto text-xs font-semibold text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1">Tổng lũy kế: {upTo + 1} tháng</span>
     </div>
   );
-}
-
-/**
- * Cỡ chữ của số trên thẻ KPI, tự co theo độ dài.
- *
- * Số tiền của chuỗi lên tới hàng tỷ ("3.928.699.540 đ" = 15 ký tự), trước đây thẻ để cỡ cố
- * định kèm `truncate` nên khách chỉ thấy "3.928.699.54..." — mất đúng phần cần đọc. Giờ số
- * dài thì chữ nhỏ lại một nấc để LUÔN hiện đủ chữ số, thay vì cắt đuôi.
- */
-export function statValueTextClass(value: string) {
-  const length = value.length;
-  if (length <= 13) return "text-2xl";
-  if (length <= 16) return "text-xl";
-  if (length <= 19) return "text-lg";
-  if (length <= 23) return "text-base";
-  return "text-sm";
 }
 
 /** Thẻ KPI: nhãn màu chữ hoa, số lớn màu, dòng phụ "Thực đạt" + chip %. */

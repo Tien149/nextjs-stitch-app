@@ -18,6 +18,7 @@ import PayrollBudgetTab, { type PayrollBudgetData } from "@/components/reports/P
 import BudgetTab, { type BudgetData } from "@/components/reports/BudgetTab";
 import FinancialPlanningWorkspace from "@/components/reports/planning/FinancialPlanningWorkspace";
 import RevenueTrendTab from "@/components/reports/RevenueTrendTab";
+import { statValueTextClass } from "@/components/reports/report-ui";
 
 type Pnl = {
   revenue: number;
@@ -1773,7 +1774,7 @@ function Kpi({ label, value, icon, tone = "default" }: { label: string; value: n
         <span className="text-xs font-semibold text-slate-500">{label}</span>
         <span className="material-symbols-outlined text-xl">{icon}</span>
       </div>
-      <p className={`text-xl font-bold mt-2 ${toneClasses}`}>{money(value)} đ</p>
+      <p className={`font-bold mt-2 leading-tight tabular-nums whitespace-nowrap ${statValueTextClass(`${money(value)} đ`)} ${toneClasses}`}>{money(value)} đ</p>
     </div>
   );
 }
@@ -1787,7 +1788,7 @@ function OpsKpi({ label, count, amount, extra, icon }: { label: string; count: n
       </div>
       <div className="mt-2 flex items-baseline justify-between">
         <p className="text-xl font-bold text-slate-800">{count}</p>
-        {amount !== undefined && <span className="text-xs font-bold text-blue-600">{money(amount)} đ</span>}
+        {amount !== undefined && <span className="text-xs font-bold text-blue-600 tabular-nums whitespace-nowrap">{money(amount)} đ</span>}
         {extra && <span className="text-xs font-bold text-rose-600">{extra}</span>}
       </div>
     </div>
@@ -1811,22 +1812,29 @@ function PanelHeader({ title, subtitle, exportFileName, exportable = true }: { t
 }
 
 function Table({ headers, children }: { headers: string[]; children: React.ReactNode }) {
+  // Bọc khung cuộn ngang ngay tại đây: số ghi đủ chữ số nên bảng nhiều cột dễ vượt bề ngang,
+  // để bảng tự cuộn còn hơn bóp cột lại rồi cắt số. Nút Xuất Excel tìm <table> theo
+  // querySelector nên thêm một lớp div không ảnh hưởng.
   return (
-    <table className="w-full text-left text-sm">
-      <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-bold border-b border-slate-200">
-        <tr>
-          {headers.map((h, i) => (
-            <th key={h} className={`px-4 py-3 ${i === headers.length - 1 ? "text-right" : i === 0 ? "text-left" : "text-left"}`}>{h}</th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>{children}</tbody>
-    </table>
+    <div className="overflow-x-auto">
+      <table className="w-full text-left text-sm">
+        <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-bold border-b border-slate-200">
+          <tr>
+            {headers.map((h, i) => (
+              <th key={h} className={`px-4 py-3 whitespace-nowrap ${i === headers.length - 1 ? "text-right" : i === 0 ? "text-left" : "text-left"}`}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>{children}</tbody>
+      </table>
+    </div>
   );
 }
 
+// Cột canh phải là cột số: cấm ngắt dòng giữa số và thêm tabular-nums cho chữ số thẳng hàng.
+// Cột canh trái vẫn được xuống dòng vì chứa diễn giải dài.
 function Cell({ children, right, center }: { children: React.ReactNode; right?: boolean; center?: boolean }) {
-  return <td className={`px-4 py-3 ${right ? "text-right" : center ? "text-center" : "text-left"}`}>{children}</td>;
+  return <td className={`px-4 py-3 ${right ? "text-right tabular-nums whitespace-nowrap" : center ? "text-center" : "text-left"}`}>{children}</td>;
 }
 
 function partnerTypeLabel(partnerType: string | null) {
