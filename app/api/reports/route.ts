@@ -1170,8 +1170,10 @@ export async function GET(request: Request) {
     // Ẩn tab ở giao diện là chưa đủ: gõ thẳng URL vẫn lấy được số liệu nếu API không chặn.
     const permittedTabs = allowedMenuTabs(auth.session, menuHref);
     // pnl-matrix và revenue-trend là góc nhìn phụ nằm trong tab P&L đa chiều / Biến động
-    // YoY — quyền đi theo tab chứa nó, không phải tab riêng.
-    const subViewTab: Record<string, string> = { "pnl-matrix": "pnl", "revenue-trend": "yoy" };
+    // YoY — quyền đi theo tab chứa nó, không phải tab riêng. daily-cash vừa là tab riêng
+    // (Thu chi ngày) vừa là nguồn số của bảng "Đối chiếu tiền vào đã đủ chưa" nằm ở đầu tab
+    // Tiền về đủ chưa (chuyển sang 05/09/2026), nên ai có MỘT TRONG HAI tab đều gọi được.
+    const subViewTab: Record<string, string> = { "pnl-matrix": "pnl", "revenue-trend": "yoy", "daily-cash": "revenue-settlement" };
     const containerTab = subViewTab[type] || type;
     if (permittedTabs && !permittedTabs.includes(type) && !permittedTabs.includes(containerTab)) {
       return NextResponse.json({ error: "Bạn không có quyền xem báo cáo này" }, { status: 403 });

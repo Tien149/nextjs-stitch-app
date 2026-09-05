@@ -202,6 +202,8 @@ export default function ReportsPage() {
   const [active, setActive] = useState("dashboard");
   const [period, setPeriod] = useState(new Date().toISOString().slice(0, 7));
   const [reportDate, setReportDate] = useState(new Date().toISOString().slice(0, 10));
+  /** Báo cáo thu chi ngày nạp kèm tab Tiền về đủ chưa, cho bảng "Đối chiếu tiền vào đã đủ chưa". */
+  const [reconDailyCash, setReconDailyCash] = useState<DailyCashData | null>(null);
   const [shift, setShift] = useState("FULL");
   const [branchCode, setBranchCode] = useState("ALL");
   const [scenario, setScenario] = useState("BASE");
@@ -258,10 +260,19 @@ export default function ReportsPage() {
         params.set("shift", shift);
       }
       if (active === "cash-source") params.set("view", cashSourceView);
+      // Tab Tiền về đủ chưa mang thêm bảng "Đối chiếu tiền vào đã đủ chưa" (chuyển từ tab
+      // Thu chi ngày sang) — bảng đó tính theo ngày/ca nên nạp kèm báo cáo thu chi ngày.
+      const reconPromise = active === "revenue-settlement"
+        ? fetch(`/api/reports?${new URLSearchParams({ type: "daily-cash", period, branchCode, scenario, reportDate, shift }).toString()}`)
+        : null;
       const response = await fetch(`/api/reports?${params.toString()}`);
       if (response.ok) {
         const result = await response.json();
         setData(result);
+      }
+      if (reconPromise) {
+        const reconResponse = await reconPromise;
+        setReconDailyCash(reconResponse.ok ? ((await reconResponse.json()) as DailyCashData) : null);
       }
     } catch (e) {
       console.error("Error loading reports data:", e);
@@ -288,6 +299,7 @@ export default function ReportsPage() {
   const handleTabChange = (newTab: string) => {
     if (newTab !== active) {
       setData(null);
+      setReconDailyCash(null);
       setActive(newTab);
     }
   };
@@ -674,10 +686,11 @@ export default function ReportsPage() {
             </select>
           </Field>
         )}
-        {active === "daily-cash" && (
+        {/* Tiền về đủ chưa cũng cần Ngày + Ca cho bảng "Đối chiếu tiền vào đã đủ chưa" ở đầu tab. */}
+        {["daily-cash", "revenue-settlement"].includes(active) && (
           <>
-            <Field label="Ngày thu chi">
-              <DateInput className="mt-1.5 w-40" value={reportDate} onChange={setReportDate} ariaLabel="Ngày thu chi" />
+            <Field label={active === "daily-cash" ? "Ngày thu chi" : "Ngày đối chiếu"}>
+              <DateInput className="mt-1.5 w-40" value={reportDate} onChange={setReportDate} ariaLabel={active === "daily-cash" ? "Ngày thu chi" : "Ngày đối chiếu"} />
             </Field>
             <Field label="Ca">
               <select className="control w-36" value={shift} onChange={(event) => setShift(event.target.value)}>
@@ -1034,7 +1047,12 @@ export default function ReportsPage() {
         </div>
       )}
 
-      {!tabLoading && settlement && <RevenueSettlementPanel data={settlement} />}
+      {!tabLoading && settlement && (
+        <div className="space-y-5">
+          {reconDailyCash && <MoneyInReconciliationPanel dailyCash={reconDailyCash} showContextLine />}
+          <RevenueSettlementPanel data={settlement} />
+        </div>
+      )}
 
       {!tabLoading && dailyCash && (
         <div className="space-y-5 report-print-area" id="daily-cash-report">
@@ -1133,7 +1151,9 @@ export default function ReportsPage() {
             </Table>
           </section>
 
-          <MoneyInReconciliationPanel dailyCash={dailyCash} />
+          {/* Bảng "Đối chiếu tiền vào đã đủ chưa" và danh sách "Chưa vào sổ" đã chuyển sang
+              đầu tab Tiền về đủ chưa (yêu cầu 05/09/2026): đối soát tiền về là việc của kế
+              toán, để trên màn kết ca làm thu ngân lăn tăn những con số ngoài phần việc của họ. */}
 
           {dailyCash.manualEntries.length > 0 && (
             <section className="table-panel no-print">
@@ -1924,10 +1944,22 @@ function settlementGroupSubtotals(rows: RevenueSettlementRow[]) {
     .sort((a, b) => a.group.localeCompare(b.group));
 }
 
-/** Bảng "Đối chiếu tiền vào đã đủ chưa" + danh sách "Chưa vào sổ" kèm theo, trong tab Thu chi ngày. */
-function MoneyInReconciliationPanel({ dailyCash }: { dailyCash: DailyCashData }) {
+/**
+ * Bảng "Đối chiếu tiền vào đã đủ chưa" + danh sách "Chưa vào sổ" kèm theo.
+ *
+ * Nằm ở đầu tab Tiền về đủ chưa (chuyển từ tab Thu chi ngày theo yêu cầu 05/09/2026):
+ * đối soát tiền về là việc của kế toán; thu ngân kết ca không cần lăn tăn các con số này.
+ * Dữ liệu vẫn lấy từ báo cáo thu chi ngày nên `showContextLine` nói rõ đang xem ngày/ca nào —
+ * tab đối soát lọc theo tháng, không có dòng này thì người xem tưởng bảng cũng theo tháng.
+ */
+function MoneyInReconciliationPanel({ dailyCash, showContextLine }: { dailyCash: DailyCashData; showContextLine?: boolean }) {
   return (
     <>
+      {showContextLine && (
+        <p className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-xs font-semibold text-slate-600">
+          Đối chiếu ngày {new Date(dailyCash.reportDate).toLocaleDateString("vi-VN")} · {shiftLabels[dailyCash.shift] || dailyCash.shift} · {dailyCash.branchCode === "ALL" ? "Tất cả cửa hàng" : storeLabel(dailyCash.branchCode)} — đổi ngày/ca ở thanh lọc phía trên.
+        </p>
+      )}
       <section className="table-panel no-print">
         <PanelHeader
           title="Đối chiếu tiền vào đã đủ chưa"
