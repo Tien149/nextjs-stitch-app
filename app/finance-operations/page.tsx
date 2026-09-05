@@ -1708,7 +1708,10 @@ export default function FinanceOperationsPage() {
                 </div>
               </div>
 
-              <div className="overflow-hidden rounded-xl border border-slate-200">
+              {/* self-start: ô lưới bị kéo giãn bằng chiều cao hàng mà khung này overflow-hidden
+                  nên phần bảng vượt ra bị cắt thẳng, không sinh thanh cuộn. Xem chú thích cùng
+                  chỗ ở màn Báo cáo (Nộp tiền trong ngày). */}
+              <div className="self-start overflow-hidden rounded-xl border border-slate-200">
                 <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
                   <div>
                     <h3 className="text-sm font-bold text-slate-900">Bảng kê mệnh giá</h3>
@@ -1721,20 +1724,23 @@ export default function FinanceOperationsPage() {
                     </p>
                   </div>
                 </div>
-                <div className="max-h-[430px] overflow-auto">
+                {/* Không giới hạn chiều cao: 9 mệnh giá cần ~520px, khung cũ 430px nên dòng
+                    đầu và dòng cuối bị giấu sau một thanh cuộn lồng bên trong hộp thoại.
+                    Xem chú thích cùng chỗ ở màn Báo cáo (Nộp tiền trong ngày). */}
+                <div className="overflow-x-auto">
                   <table className="w-full text-left text-sm">
                     <thead className="sticky top-0 bg-white text-xs uppercase text-slate-500 shadow-[inset_0_-1px_0_#e2e8f0]">
-                      <tr><th className="px-4 py-3">Mệnh giá</th><th className="px-4 py-3">Số tờ</th><th className="px-4 py-3 text-right">Thành tiền</th></tr>
+                      <tr><th className="px-4 py-2.5">Mệnh giá</th><th className="px-4 py-2.5">Số tờ</th><th className="px-4 py-2.5 text-right">Thành tiền</th></tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {editingCashDeposit.denominations.map((row) => {
                         const quantity = Math.max(0, Math.floor(Number(row.quantity) || 0));
                         return (
                           <tr key={row.denomination}>
-                            <td className="px-4 py-2.5 font-bold">{money(row.denomination)} đ</td>
-                            <td className="px-4 py-2.5">
+                            <td className="px-4 py-1 font-bold tabular-nums whitespace-nowrap">{money(row.denomination)} đ</td>
+                            <td className="px-4 py-1">
                               <input
-                                className="control mt-0 h-9 w-28 py-1.5 text-right"
+                                className="control mt-0 h-8 w-28 py-1 text-right tabular-nums"
                                 inputMode="numeric"
                                 value={row.quantity}
                                 placeholder="0"
@@ -1747,7 +1753,7 @@ export default function FinanceOperationsPage() {
                                 }}
                               />
                             </td>
-                            <td className="px-4 py-2.5 text-right font-bold">{money(row.denomination * quantity)} đ</td>
+                            <td className="px-4 py-1 text-right font-bold tabular-nums whitespace-nowrap">{money(row.denomination * quantity)} đ</td>
                           </tr>
                         );
                       })}

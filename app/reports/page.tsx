@@ -1323,7 +1323,7 @@ export default function ReportsPage() {
 
       {cashDepositOpen && dailyCash && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/45 p-4 no-print">
-          <form onSubmit={submitCashDeposit} className="flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg bg-white shadow-2xl">
+          <form onSubmit={submitCashDeposit} className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg bg-white shadow-2xl">
             <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-200 p-5">
               <div>
                 <p className="text-xs font-bold uppercase tracking-wider text-blue-600">Nộp tiền trong ngày</p>
@@ -1337,7 +1337,7 @@ export default function ReportsPage() {
               </button>
             </div>
 
-            <div className="grid gap-5 overflow-y-auto p-5 lg:grid-cols-[0.85fr_1.35fr]">
+            <div className="grid gap-4 overflow-y-auto p-4 lg:grid-cols-[0.85fr_1.35fr]">
               <div className="space-y-4">
                 <Field label="Loại nộp tiền">
                   <select
@@ -1430,7 +1430,11 @@ export default function ReportsPage() {
                 </div>
               </div>
 
-              <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+              {/* self-start bắt buộc: ô lưới mặc định bị kéo giãn bằng chiều cao hàng, mà khung
+                  này lại overflow-hidden (để bo góc) nên phần bảng vượt ra bị CẮT THẲNG, không
+                  sinh thanh cuộn nào — đó là lý do dòng 1.000 đ coi như biến mất. Cho khung cao
+                  đúng nội dung thì phần thân hộp thoại mới cuộn được tới dòng cuối. */}
+              <div className="self-start overflow-hidden rounded-lg border border-slate-200 bg-white">
                 <div className="grid gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 sm:grid-cols-[1fr_auto] sm:items-center">
                   <div>
                     <h3 className="text-sm font-bold text-slate-900">Bảng kê mệnh giá</h3>
@@ -1449,13 +1453,18 @@ export default function ReportsPage() {
                     </div>
                   </div>
                 </div>
-                <div className="max-h-[440px] overflow-auto">
+                {/* Không giới hạn chiều cao ở đây nữa. Khung cũ cao 440px trong khi 9 mệnh giá
+                    cần ~520px, nên hai dòng đầu (500.000 / 200.000) và dòng cuối (1.000) nằm
+                    ngoài tầm nhìn sau một thanh cuộn lồng bên trong hộp thoại — người dùng
+                    không thấy là còn cuộn được. Giờ liệt kê đủ 9 dòng, hộp thoại chỉ còn MỘT
+                    thanh cuộn duy nhất khi màn hình quá thấp. */}
+                <div className="overflow-x-auto">
                   <table className="w-full text-left text-sm">
                     <thead className="sticky top-0 z-10 bg-white text-xs uppercase text-slate-500 shadow-[inset_0_-1px_0_#e2e8f0]">
                       <tr>
-                        <th className="px-4 py-3">Mệnh giá</th>
-                        <th className="px-4 py-3">Số tờ</th>
-                        <th className="px-4 py-3 text-right">Thành tiền</th>
+                        <th className="px-4 py-2.5">Mệnh giá</th>
+                        <th className="px-4 py-2.5">Số tờ</th>
+                        <th className="px-4 py-2.5 text-right">Thành tiền</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -1463,17 +1472,17 @@ export default function ReportsPage() {
                         const quantity = Math.max(0, Math.floor(Number(row.quantity) || 0));
                         return (
                           <tr key={row.denomination}>
-                            <td className="px-4 py-2.5 font-bold">{money(row.denomination)} đ</td>
-                            <td className="px-4 py-2.5">
+                            <td className="px-4 py-1 font-bold tabular-nums whitespace-nowrap">{money(row.denomination)} đ</td>
+                            <td className="px-4 py-1">
                               <input
-                                className="control mt-0 h-9 w-28 py-1.5 text-right"
+                                className="control mt-0 h-8 w-28 py-1 text-right tabular-nums"
                                 inputMode="numeric"
                                 placeholder="0"
                                 value={row.quantity}
                                 onChange={(event) => updateCashDepositDenomination(row.denomination, event.target.value)}
                               />
                             </td>
-                            <td className="px-4 py-2.5 text-right font-bold">{money(row.denomination * quantity)} đ</td>
+                            <td className="px-4 py-1 text-right font-bold tabular-nums whitespace-nowrap">{money(row.denomination * quantity)} đ</td>
                           </tr>
                         );
                       })}
