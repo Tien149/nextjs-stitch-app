@@ -1198,7 +1198,8 @@ export async function GET(request: Request) {
     }
     if (type === "revenue-settlement") return NextResponse.json(await getRevenueSettlementReport(period, branchCode));
     // Ba báo cáo theo feedback chị Bình 26/08/2026 — đều chạy theo NĂM của kỳ đang chọn.
-    if (type === "payroll-budget") return NextResponse.json(await getPayrollBudgetReport(period.slice(0, 4), branchCode));
+    // Ngân sách nhân sự nhận nguyên kỳ: bảng vẫn trải 12 tháng, nhưng form tỷ trọng là bộ có hiệu lực ở tháng đó.
+    if (type === "payroll-budget") return NextResponse.json(await getPayrollBudgetReport(period, branchCode));
     if (type === "pnl-matrix") return NextResponse.json(await getPnlMatrix(period.slice(0, 4), branchCode));
     if (type === "revenue-trend") return NextResponse.json(await getRevenueTrendReport(period, branchCode, 3));
     if (type === "cashflow") return NextResponse.json({ period, branchCode, ...(await getCashflowForecast(period, branchCode, cleanText(params.get("scenario")) || "BASE")) });
@@ -1367,22 +1368,22 @@ export async function POST(request: Request) {
       });
       return NextResponse.json(result);
     }
-    // Tỷ trọng lương chuẩn của từng bộ phận so với doanh thu, set một lần cho cả năm.
+    // Tỷ trọng lương chuẩn của từng bộ phận so với doanh thu, khóa theo THÁNG BẮT ĐẦU ÁP DỤNG:
+    // có hiệu lực từ kỳ này cho tới khi có bộ mới ở tháng sau (chốt quý xong phân bổ lại quý kế).
     if (action === "UPSERT_DEPARTMENT_RATIO") {
       if (branchCode === "ALL") businessError("Chọn một cửa hàng cụ thể trước khi set tỷ trọng bộ phận.");
       const departmentCode = cleanText(body.departmentCode).toUpperCase();
       if (!departmentCode) businessError("Thiếu bộ phận");
       const department = await prisma.masterDataItem.findUnique({ where: { type_code: { type: "DEPARTMENT", code: departmentCode } } });
       if (!department || department.deletedAt) businessError(`Bộ phận ${departmentCode} chưa có trong Danh mục phòng ban.`);
-      const year = period.slice(0, 4);
       const ratioInput = toNumber(body.ratioPercent);
       if (ratioInput < 0 || ratioInput > 100) businessError("Tỷ trọng phải nằm trong khoảng 0 - 100%.");
       const industryMinInput = toNumber(body.industryMinPercent);
       const industryMaxInput = toNumber(body.industryMaxPercent);
       const result = await prisma.departmentCostRatio.upsert({
-        where: { year_branchCode_departmentCode_metric: { year, branchCode, departmentCode, metric: "payroll" } },
+        where: { period_branchCode_departmentCode_metric: { period, branchCode, departmentCode, metric: "payroll" } },
         create: {
-          year,
+          period,
           branchCode,
           departmentCode,
           metric: "payroll",
@@ -1405,9 +1406,9 @@ export async function POST(request: Request) {
         action: "UPSERT_DEPARTMENT_RATIO",
         entityType: "DepartmentCostRatio",
         entityId: result.id,
-        entityCode: `${year}-${branchCode}-${departmentCode}`,
+        entityCode: `${period}-${branchCode}-${departmentCode}`,
         branchCode,
-        metadata: { year, departmentCode, ratio: result.ratio, industryMin: result.industryMin, industryMax: result.industryMax },
+        metadata: { period, departmentCode, ratio: result.ratio, industryMin: result.industryMin, industryMax: result.industryMax },
       });
       return NextResponse.json(result);
     }

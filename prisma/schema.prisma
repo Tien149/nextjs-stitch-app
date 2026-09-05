@@ -1591,8 +1591,10 @@ model ReportTarget {
 /// nhân tỷ trọng, đem so với lương thực chi trả từ import bảng lương.
 model DepartmentCostRatio {
   id             String   @id @default(uuid())
-  /// Áp theo năm (ví dụ "2026") — set một lần dùng cho cả 12 tháng của năm đó.
-  year           String
+  /// Tháng bắt đầu áp dụng (YYYY-MM). Bộ tỷ trọng có hiệu lực từ tháng này cho tới khi có bộ
+  /// mới ở tháng sau — chốt quý xong chỉ cần set lại ở tháng đầu quý kế tiếp, các tháng chưa set
+  /// riêng tự kế thừa bộ gần nhất trước đó.
+  period         String
   branchCode     String
   departmentCode String
   metric         String   @default("payroll")
@@ -1609,8 +1611,8 @@ model DepartmentCostRatio {
   deletedAt DateTime?
   deletedBy String?
 
-  @@unique([year, branchCode, departmentCode, metric])
-  @@index([year])
+  @@unique([period, branchCode, departmentCode, metric])
+  @@index([period])
   @@index([deletedAt])
 }
 

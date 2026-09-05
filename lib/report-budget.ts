@@ -350,25 +350,50 @@ export async function getPnlMatrix(year: string, branchCode: string) {
 export type DepartmentRatioRow = {
   branchCode: string;
   departmentCode: string;
+  /** Tháng bộ tỷ trọng này được set (YYYY-MM) — khác kỳ đang xem nghĩa là đang kế thừa. */
+  period: string;
   ratio: number;
   industryMin: number | null;
   industryMax: number | null;
   note: string | null;
 };
 
+type RatioRecord = { branchCode: string; departmentCode: string; period: string; ratio: number; industryMin: number | null; industryMax: number | null; note: string | null };
+
+/**
+ * Bộ tỷ trọng có hiệu lực ở một tháng = bản set gần nhất có period <= tháng đó (mỗi cửa hàng +
+ * bộ phận một dòng). Chốt quý xong đổi tỷ lệ thì set ở tháng đầu quý mới, các tháng sau tự theo.
+ */
+function effectiveRatiosAt(rows: RatioRecord[], month: string) {
+  const picked = new Map<string, RatioRecord>();
+  for (const row of rows) {
+    if (row.period > month) continue;
+    const key = `${row.branchCode}|${row.departmentCode}`;
+    const current = picked.get(key);
+    if (!current || row.period > current.period) picked.set(key, row);
+  }
+  return [...picked.values()];
+}
+
 /**
  * Lương chuẩn của một bộ phận = tỷ trọng bộ phận × TỔNG doanh thu (gồm SVC) của cửa hàng
  * trong tháng — đúng bảng "Tỷ trọng ngành F&B đối với các bộ phận" trong feedback: Bếp
  * 12.8% nghĩa là 12.8% doanh thu toàn nhà hàng, không phải 12.8% doanh thu món bếp.
+ * Báo cáo trải 12 tháng của năm chứa `period`; form tỷ trọng hiện bộ có hiệu lực ở `period`.
  */
-export async function getPayrollBudgetReport(year: string, branchCode: string) {
+export async function getPayrollBudgetReport(period: string, branchCode: string) {
+  const year = period.slice(0, 4);
   const months = yearMonths(year);
   const start = new Date(`${year}-01-01T00:00:00`);
   const end = new Date(`${Number(year) + 1}-01-01T00:00:00`);
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
-  const [departments, ratios, revenueRows, payrollRows] = await Promise.all([
+  const [departments, ratioRows, revenueRows, payrollRows] = await Promise.all([
     prisma.masterDataItem.findMany({ where: { type: "DEPARTMENT", status: "ACTIVE" }, select: { code: true, name: true }, orderBy: { code: "asc" } }),
-    prisma.departmentCostRatio.findMany({ where: { year, metric: "payroll", ...branchFilter } }),
+    // Lấy cả bộ set từ các năm trước: tháng 1 chưa set riêng thì kế thừa bộ cuối của năm trước.
+    prisma.departmentCostRatio.findMany({
+      where: { period: { lte: months[11] }, metric: "payroll", deletedAt: null, ...branchFilter },
+      select: { branchCode: true, departmentCode: true, period: true, ratio: true, industryMin: true, industryMax: true, note: true },
+    }),
     prisma.revenueImportRow.findMany({
       where: { saleDate: { gte: start, lt: end }, ...branchFilter },
       select: { saleDate: true, branchCode: true, departmentCode: true, grossAmount: true, feeAmount: true },
@@ -406,18 +431,27 @@ export async function getPayrollBudgetReport(year: string, branchCode: string) {
   for (const values of revenueTotalByBranch.values()) values.forEach((value, index) => { revenueTotal[index] += value; });
   for (const values of svcTotalByBranch.values()) values.forEach((value, index) => { svcTotal[index] += value; });
 
-  // Lương chuẩn: cộng theo từng cửa hàng vì mỗi cửa hàng có bộ tỷ trọng riêng.
+  // Lương chuẩn: cộng theo từng cửa hàng vì mỗi cửa hàng có bộ tỷ trọng riêng, và từng tháng
+  // vì bộ tỷ trọng đổi theo mốc set (chốt quý xong phân bổ lại cho quý sau).
   const standardByDepartment = new Map<string, MatrixSeries>();
-  for (const ratio of ratios) {
-    if (!ratio.ratio) continue;
-    const gross = revenueTotalByBranch.get(ratio.branchCode);
-    const svc = svcTotalByBranch.get(ratio.branchCode);
-    if (!gross && !svc) continue;
-    for (let index = 0; index < 12; index += 1) {
-      const base = (gross?.[index] || 0) + (svc?.[index] || 0);
-      if (base) bumpSeries(standardByDepartment, ratio.departmentCode, deptLabel(ratio.departmentCode), index, base * ratio.ratio);
+  const ratioTotalByMonth = monthArray();
+  months.forEach((month, index) => {
+    let baseTotal = 0;
+    let standardTotal = 0;
+    for (const ratio of effectiveRatiosAt(ratioRows, month)) {
+      const base = (revenueTotalByBranch.get(ratio.branchCode)?.[index] || 0) + (svcTotalByBranch.get(ratio.branchCode)?.[index] || 0);
+      if (!base) continue;
+      baseTotal += base;
+      if (!ratio.ratio) continue;
+      standardTotal += base * ratio.ratio;
+      bumpSeries(standardByDepartment, ratio.departmentCode, deptLabel(ratio.departmentCode), index, base * ratio.ratio);
     }
-  }
+    // Tổng tỷ trọng đang áp ở tháng đó (xem nhiều cửa hàng thì là bình quân gia quyền theo doanh thu).
+    ratioTotalByMonth[index] = baseTotal ? standardTotal / baseTotal : 0;
+  });
+  // Bộ có hiệu lực ở kỳ đang chọn — form "Tỷ trọng lương theo bộ phận" nạp từ đây.
+  const ratios = effectiveRatiosAt(ratioRows, period);
+  const ratioPeriods = [...new Set(ratioRows.filter((row) => row.period.startsWith(`${year}-`)).map((row) => row.period))].sort();
 
   // Lương thực chi + đầu người từ import bảng lương (gross khớp bút toán 6421: lương + phụ cấp + thưởng).
   const actualByDepartment = new Map<string, MatrixSeries>();
@@ -452,12 +486,18 @@ export async function getPayrollBudgetReport(year: string, branchCode: string) {
 
   return {
     year,
+    period,
     branchCode,
     months,
     departments,
+    /** Các tháng trong năm có set bộ tỷ trọng riêng — để người dùng thấy mốc đã chốt. */
+    ratioPeriods,
+    /** Tổng tỷ trọng có hiệu lực từng tháng — dòng "% lương thực chi / doanh thu" so với số này. */
+    ratioTotalByMonth,
     ratios: ratios.map((row): DepartmentRatioRow => ({
       branchCode: row.branchCode,
       departmentCode: row.departmentCode,
+      period: row.period,
       ratio: row.ratio,
       industryMin: row.industryMin,
       industryMax: row.industryMax,

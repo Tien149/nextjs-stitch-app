@@ -7,6 +7,8 @@ import { Cell, PanelHeader, Table, money } from "@/components/reports/report-ui"
 /**
  * Tab "Ngân sách nhân sự" (feedback chị Bình 26/08/2026, mục 2 & 3):
  *  - Set tỷ trọng lương chuẩn của từng bộ phận so với doanh thu (12.8% Bếp, 2% Bar...).
+ *    Bộ tỷ trọng khóa theo THÁNG BẮT ĐẦU ÁP DỤNG: có hiệu lực từ kỳ đang chọn cho tới khi có
+ *    bộ mới — chốt quý xong đổi tỷ lệ thì đứng ở tháng đầu quý sau sửa, các tháng sau tự theo.
  *  - Bảng lương 12 tháng: doanh thu tham chiếu, lương theo tiêu chuẩn (= tỷ trọng ×
  *    tổng doanh thu gồm SVC), lương thực chi trả từ import bảng lương.
  *  - Chart so sánh chuẩn/thực chi theo tháng-quý-năm, toàn nhà hàng hoặc từng bộ phận.
@@ -16,10 +18,16 @@ import { Cell, PanelHeader, Table, money } from "@/components/reports/report-ui"
 export type PayrollBudgetSeries = { code: string; name: string; months: number[]; total: number };
 export type PayrollBudgetData = {
   year: string;
+  /** Kỳ đang chọn (YYYY-MM) — form tỷ trọng là bộ có hiệu lực ở tháng này. */
+  period: string;
   branchCode: string;
   months: string[];
   departments: Array<{ code: string; name: string }>;
-  ratios: Array<{ branchCode: string; departmentCode: string; ratio: number; industryMin: number | null; industryMax: number | null; note: string | null }>;
+  /** Các tháng trong năm đã set bộ tỷ trọng riêng. */
+  ratioPeriods: string[];
+  /** Tổng tỷ trọng có hiệu lực từng tháng (0.25 = 25%). */
+  ratioTotalByMonth: number[];
+  ratios: Array<{ branchCode: string; departmentCode: string; period: string; ratio: number; industryMin: number | null; industryMax: number | null; note: string | null }>;
   revenue: { totalGross: number[]; totalSvc: number[]; byDepartment: PayrollBudgetSeries[]; svcByDepartment: PayrollBudgetSeries[] };
   standard: { byDepartment: PayrollBudgetSeries[]; total: number[] };
   actual: { byDepartment: PayrollBudgetSeries[]; total: number[]; insurance: number[] };
@@ -29,6 +37,8 @@ export type PayrollBudgetData = {
 type RatioDraft = { ratio: string; industryMin: string; industryMax: string; note: string };
 
 const percentText = (value: number | null | undefined) => (value ? (value * 100).toLocaleString("vi-VN", { maximumFractionDigits: 2 }) : "");
+const monthLabel = (period: string) => `${Number(period.slice(5, 7))}/${period.slice(0, 4)}`;
+const parsePercent = (text: string) => Number(text.replace(",", ".")) || 0;
 
 function rollup(values: number[], view: "month" | "quarter" | "year", year: string) {
   if (view === "month") return { labels: values.map((_, index) => `T${index + 1}`), values };
@@ -68,7 +78,7 @@ export default function PayrollBudgetTab({
     [data.ratios, branchCode],
   );
 
-  // Nạp lại form tỷ trọng mỗi khi đổi cửa hàng/năm — giữ nguyên khi đang gõ dở cùng bộ dữ liệu.
+  // Nạp lại form tỷ trọng mỗi khi đổi cửa hàng/kỳ — giữ nguyên khi đang gõ dở cùng bộ dữ liệu.
   // setTimeout 0 để tránh setState đồng bộ trong effect — cùng pattern với app/reports/page.tsx.
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -86,20 +96,35 @@ export default function PayrollBudgetTab({
     }, 0);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data.year, branchCode, data.ratios]);
+  }, [data.period, branchCode, data.ratios]);
 
-  const draftTotal = data.departments.reduce((total, department) => total + (Number(ratioDrafts[department.code]?.ratio?.replace(",", ".")) || 0), 0);
+  const draftTotal = data.departments.reduce((total, department) => total + parsePercent(ratioDrafts[department.code]?.ratio || ""), 0);
+  const periodLabel = monthLabel(data.period);
+  // Bộ đang hiện là set riêng cho tháng này hay kế thừa từ mốc trước — để người dùng biết lưu sẽ tạo mốc mới.
+  const ownPeriodRows = branchRatios.filter((row) => row.period === data.period);
+  const inheritedFrom = branchRatios.filter((row) => row.period < data.period).map((row) => row.period).sort().pop() || null;
 
   const saveRatios = async (event: React.FormEvent) => {
     event.preventDefault();
     setSaving(true);
     try {
+      let savedCount = 0;
       for (const department of data.departments) {
         const draft = ratioDrafts[department.code];
         if (!draft) continue;
         const existing = branchRatios.find((row) => row.departmentCode === department.code);
-        const ratioValue = Number(draft.ratio.replace(",", ".")) || 0;
+        const ratioValue = parsePercent(draft.ratio);
+        const industryMinValue = parsePercent(draft.industryMin);
+        const industryMaxValue = parsePercent(draft.industryMax);
         if (!existing && ratioValue === 0 && !draft.note) continue; // chưa từng set và vẫn để trống -> bỏ qua
+        // Bộ phận không đổi so với bộ đang có hiệu lực (kể cả kế thừa) thì không ghi mốc mới ở tháng này —
+        // tránh mỗi lần bấm Lưu lại đóng băng một bản sao, sau quay về sửa mốc cũ không thấy lan xuống.
+        const unchanged = existing
+          && Math.abs(existing.ratio * 100 - ratioValue) < 1e-9
+          && Math.abs((existing.industryMin || 0) * 100 - industryMinValue) < 1e-9
+          && Math.abs((existing.industryMax || 0) * 100 - industryMaxValue) < 1e-9
+          && (existing.note || "") === draft.note;
+        if (unchanged) continue;
         const response = await fetch("/api/reports", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -109,8 +134,8 @@ export default function PayrollBudgetTab({
             branchCode,
             departmentCode: department.code,
             ratioPercent: ratioValue,
-            industryMinPercent: Number(draft.industryMin.replace(",", ".")) || 0,
-            industryMaxPercent: Number(draft.industryMax.replace(",", ".")) || 0,
+            industryMinPercent: industryMinValue,
+            industryMaxPercent: industryMaxValue,
             note: draft.note,
           }),
         });
@@ -120,8 +145,13 @@ export default function PayrollBudgetTab({
           setSaving(false);
           return;
         }
+        savedCount += 1;
       }
-      setMessage(`Đã lưu tỷ trọng bộ phận năm ${data.year}.`);
+      if (savedCount === 0) {
+        setMessage(`Tỷ trọng không đổi so với bộ đang áp cho tháng ${periodLabel} — chưa có gì để lưu.`);
+        return;
+      }
+      setMessage(`Đã lưu tỷ trọng ${savedCount} bộ phận, áp từ tháng ${periodLabel} trở đi cho tới khi có bộ mới.`);
       await onSaved();
     } finally {
       setSaving(false);
@@ -159,9 +189,23 @@ export default function PayrollBudgetTab({
         {canConfigure && (
           <form onSubmit={saveRatios} className="bg-white border border-slate-200 rounded-lg h-fit overflow-hidden">
             <PanelHeader
-              title={`Tỷ trọng lương theo bộ phận — năm ${data.year}`}
-              subtitle={branchCode === "ALL" ? "Đang xem Tất cả cửa hàng — chọn một cửa hàng cụ thể ở bộ lọc trên để set tỷ trọng." : `Áp cho cả 12 tháng ${data.year} của ${data.branchCode}. Nhập 12.8 nghĩa là 12.8% doanh thu (gồm SVC).`}
+              title={`Tỷ trọng lương theo bộ phận — từ tháng ${periodLabel}`}
+              subtitle={branchCode === "ALL"
+                ? "Đang xem Tất cả cửa hàng — chọn một cửa hàng cụ thể ở bộ lọc trên để set tỷ trọng."
+                : `Áp cho ${data.branchCode} từ tháng ${periodLabel} trở đi, tới khi có bộ mới ở tháng sau. Đổi kỳ báo cáo ở trên để set cho mốc khác. Nhập 12.8 nghĩa là 12.8% doanh thu (gồm SVC).`}
             />
+            {branchCode !== "ALL" && (
+              <div className={`px-4 py-2 text-xs border-b ${ownPeriodRows.length > 0 ? "bg-blue-50 border-blue-100 text-blue-800" : inheritedFrom ? "bg-amber-50 border-amber-100 text-amber-800" : "bg-slate-50 border-slate-100 text-slate-500"}`}>
+                {ownPeriodRows.length > 0
+                  ? <>Tháng {periodLabel} đã có bộ tỷ trọng riêng{inheritedFrom && ownPeriodRows.length < branchRatios.length ? `, bộ phận chưa set ở mốc này kế thừa từ tháng ${monthLabel(inheritedFrom)}` : ""}.</>
+                  : inheritedFrom
+                    ? <>Tháng {periodLabel} chưa set riêng — đang kế thừa bộ tỷ trọng từ tháng {monthLabel(inheritedFrom)}. Sửa rồi bấm Lưu sẽ tạo mốc mới từ tháng {periodLabel}.</>
+                    : <>Chưa có bộ tỷ trọng nào cho {data.branchCode} tính tới tháng {periodLabel}.</>}
+                {data.ratioPeriods.length > 0 && (
+                  <span className="block mt-0.5 text-[11px] opacity-80">Các mốc đã set trong năm {data.year}: {data.ratioPeriods.map((item) => `T${Number(item.slice(5))}`).join(", ")}.</span>
+                )}
+              </div>
+            )}
             {/* Hàng tiêu đề + hàng nhập tự dựng bằng flex thay vì <Table> nowrap — bảng cũ
                 tràn ngang làm cột "Áp dụng %" (cột chính) bị đẩy khuất khỏi card. */}
             <div className="flex items-center gap-2 px-4 py-2 text-[11px] font-bold uppercase tracking-wider text-slate-400 border-b border-slate-100">
@@ -205,7 +249,7 @@ export default function PayrollBudgetTab({
             <div className="p-4 border-t border-slate-100">
               <button className="primary-button w-full" disabled={saving || branchCode === "ALL"}>
                 <span className="material-symbols-outlined text-lg">save</span>
-                {saving ? "Đang lưu..." : "Lưu tỷ trọng cả năm"}
+                {saving ? "Đang lưu..." : `Lưu tỷ trọng từ tháng ${periodLabel}`}
               </button>
             </div>
           </form>
@@ -267,7 +311,7 @@ export default function PayrollBudgetTab({
             ))}
             <SectionRow label="LƯƠNG THEO TIÊU CHUẨN (tỷ trọng × doanh thu)" span={14} />
             {data.standard.byDepartment.length === 0 ? (
-              <EmptySectionRow span={14} message={`Chưa set tỷ trọng bộ phận năm ${data.year}${branchCode === "ALL" ? " cho cửa hàng nào" : ""} — điền bảng "Tỷ trọng lương theo bộ phận" phía trên rồi bấm Lưu.`} />
+              <EmptySectionRow span={14} message={`Chưa có bộ tỷ trọng bộ phận nào có hiệu lực trong năm ${data.year}${branchCode === "ALL" ? " cho cửa hàng nào" : ""} — điền bảng "Tỷ trọng lương theo bộ phận" phía trên rồi bấm Lưu.`} />
             ) : (
               <>
                 {data.standard.byDepartment.map((row) => (
@@ -290,16 +334,18 @@ export default function PayrollBudgetTab({
             {hasRatio && hasPayroll && (
               <MonthRow label="Chênh lệch (thực chi - tiêu chuẩn)" values={data.months.map((_, index) => data.actual.total[index] - data.standard.total[index])} variance />
             )}
-            {/* Dòng % CP lương/doanh thu như file gốc của chị Bình — so ngay được với tổng tỷ trọng đã set. */}
+            {/* Dòng % CP lương/doanh thu như file gốc của chị Bình — so với tổng tỷ trọng có hiệu lực
+                của ĐÚNG tháng đó (tỷ trọng đổi theo mốc set, không dùng con số đang gõ trên form). */}
             {hasPayroll && (
             <tr className="border-t border-slate-200 bg-slate-50">
               <Cell><b>% lương thực chi / doanh thu</b></Cell>
               {data.months.map((month, index) => {
                 const base = data.revenue.totalGross[index] + data.revenue.totalSvc[index];
                 const rate = base > 0 ? (data.actual.total[index] / base) * 100 : null;
+                const limit = data.ratioTotalByMonth[index] * 100;
                 return (
                   <Cell key={month} right>
-                    {rate === null ? "-" : <b className={rate > draftTotal && draftTotal > 0 ? "text-rose-600" : "text-emerald-700"}>{rate.toFixed(1)}%</b>}
+                    {rate === null ? "-" : <b className={rate > limit && limit > 0 ? "text-rose-600" : "text-emerald-700"}>{rate.toFixed(1)}%</b>}
                   </Cell>
                 );
               })}
@@ -307,7 +353,8 @@ export default function PayrollBudgetTab({
                 {(() => {
                   const baseYear = sum(data.revenue.totalGross) + sum(data.revenue.totalSvc);
                   const rate = baseYear > 0 ? (sum(data.actual.total) / baseYear) * 100 : null;
-                  return rate === null ? "-" : <b className={rate > draftTotal && draftTotal > 0 ? "text-rose-600" : "text-emerald-700"}>{rate.toFixed(1)}%</b>;
+                  const limit = baseYear > 0 ? (standardYearTotal / baseYear) * 100 : 0;
+                  return rate === null ? "-" : <b className={rate > limit && limit > 0 ? "text-rose-600" : "text-emerald-700"}>{rate.toFixed(1)}%</b>;
                 })()}
               </Cell>
             </tr>
