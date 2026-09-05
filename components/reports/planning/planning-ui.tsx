@@ -78,6 +78,22 @@ export function MonthChips({ upTo, onChange, label = "Lũy kế tháng" }: { upT
   );
 }
 
+/**
+ * Cỡ chữ của số trên thẻ KPI, tự co theo độ dài.
+ *
+ * Số tiền của chuỗi lên tới hàng tỷ ("3.928.699.540 đ" = 15 ký tự), trước đây thẻ để cỡ cố
+ * định kèm `truncate` nên khách chỉ thấy "3.928.699.54..." — mất đúng phần cần đọc. Giờ số
+ * dài thì chữ nhỏ lại một nấc để LUÔN hiện đủ chữ số, thay vì cắt đuôi.
+ */
+export function statValueTextClass(value: string) {
+  const length = value.length;
+  if (length <= 13) return "text-2xl";
+  if (length <= 16) return "text-xl";
+  if (length <= 19) return "text-lg";
+  if (length <= 23) return "text-base";
+  return "text-sm";
+}
+
 /** Thẻ KPI: nhãn màu chữ hoa, số lớn màu, dòng phụ "Thực đạt" + chip %. */
 export function StatCard({ label, value, tone = "indigo", sub, rate, rateGood, hint, icon }: {
   label: string; value: string; tone?: Tone; sub?: string; rate?: number | null; rateGood?: boolean | null; hint?: string; icon?: string;
@@ -88,10 +104,12 @@ export function StatCard({ label, value, tone = "indigo", sub, rate, rateGood, h
         <p className={`text-[10px] font-bold uppercase tracking-wider ${toneText[tone]}`}>{label}</p>
         {icon && <span className={`material-symbols-outlined text-lg ${toneText[tone]} opacity-70`}>{icon}</span>}
       </div>
-      <p className={`mt-1.5 text-xl font-extrabold tracking-tight truncate ${toneText[tone]}`} title={value}>{value}</p>
+      {/* Không truncate: thà chữ nhỏ hơn một nấc còn hơn giấu mất chữ số cuối. */}
+      <p className={`mt-1.5 font-extrabold tracking-tight leading-tight tabular-nums whitespace-nowrap ${statValueTextClass(value)} ${toneText[tone]}`} title={value}>{value}</p>
       {(sub || rate !== undefined) && (
-        <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-slate-500">
-          <span className="truncate">{sub}</span>
+        // Dòng phụ cũng mang số tiền đủ chữ số nên cho xuống dòng khi thẻ hẹp, không cắt đuôi.
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-[11px] text-slate-500">
+          <span className="min-w-0 tabular-nums">{sub}</span>
           {rate !== undefined && <RateChip rate={rate} good={rateGood ?? null} />}
         </div>
       )}

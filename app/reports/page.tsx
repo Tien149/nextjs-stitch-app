@@ -643,7 +643,9 @@ export default function ReportsPage() {
   if (loading) return <div className="h-screen grid place-items-center bg-slate-100">Đang tải...</div>;
 
   return (
-    <ModuleFrame title="Báo cáo & BI" subtitle="GĐ4 - Dashboard, báo cáo vận hành, ngân sách, kỳ kế toán và nhật ký" role={user?.role}>
+    // Màn báo cáo toàn bảng nhiều cột và thẻ KPI số tiền hàng tỷ; khung 7xl (1280px) để thừa
+    // hai dải trắng hai bên mà số vẫn bị bóp. Nới bằng các màn Kho / Chứng từ đang dùng.
+    <ModuleFrame title="Báo cáo & BI" subtitle="GĐ4 - Dashboard, báo cáo vận hành, ngân sách, kỳ kế toán và nhật ký" role={user?.role} contentClassName="max-w-[1680px]">
       <StickyFilterBar>
       <div className="flex flex-wrap items-end gap-3">
         <Field label="Kỳ báo cáo">

@@ -3,7 +3,7 @@
 import React, { useState } from "react";
 import { storeLabel } from "@/lib/branch-labels";
 import { DonutLegendChart, MixedChart, MoneyLineChart, PercentLineChart, ShareDonutChart } from "@/components/charts/ReportCharts";
-import { Card, MonthChips, NoPlanNotice, PlanActualCell, RateChip, Segmented, StatCard, Tag, fmtCompact, fmtMoney, ratioOf, type Tone } from "@/components/reports/planning/planning-ui";
+import { Card, MonthChips, NoPlanNotice, PlanActualCell, RateChip, Segmented, StatCard, Tag, fmtMoney, ratioOf, type Tone } from "@/components/reports/planning/planning-ui";
 import { bucketOperatingCost, bucketSum, nodeValue, type PlanningData, type PnlBucket, type Series, type StatementLine } from "@/components/reports/planning/planning-types";
 
 /**
@@ -96,7 +96,9 @@ export default function PnlDashboardTab({ data, upTo, onChangeUpTo }: { data: Pl
       {!data.hasPlan && <NoPlanNotice year={data.year} />}
       <MonthChips upTo={upTo} onChange={onChangeUpTo} />
 
-      <div className="grid grid-cols-2 md:grid-cols-3 2xl:grid-cols-6 gap-3">
+      {/* Sáu thẻ KPI mang số tiền hàng tỷ: chỉ xếp 6 cột khi màn đủ rộng, còn lại 2-3 cột cho
+          thẻ rộng ra để số hiện đủ chữ số thay vì bị cắt. */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6 gap-3">
         {kpis.map((kpi) => {
           const rate = data.hasPlan ? ratioOf(kpi.actual, kpi.plan) : null;
           return (
@@ -106,7 +108,7 @@ export default function PnlDashboardTab({ data, upTo, onChangeUpTo }: { data: Pl
               tone={kpi.tone}
               icon={kpi.icon}
               value={fmtMoney(data.hasPlan ? kpi.plan : kpi.actual)}
-              sub={data.hasPlan ? `Thực đạt: ${fmtCompact(kpi.actual)}` : "Thực tế lũy kế (chưa có KH)"}
+              sub={data.hasPlan ? `Thực đạt: ${fmtMoney(kpi.actual)}` : "Thực tế lũy kế (chưa có KH)"}
               rate={rate}
               rateGood={rate === null ? null : kpi.income ? rate >= 1 : rate <= 1}
               hint={data.hasPlan ? `Kế hoạch ${fmtMoney(kpi.plan)} · Thực đạt ${fmtMoney(kpi.actual)}` : undefined}
