@@ -1249,7 +1249,7 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
   const { start, end } = periodBounds(period);
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
 
-  const [moneySources, posRevenues, manualEntries, allocations, cashReceipts, feeCategories] = await Promise.all([
+  const [moneySources, posRevenues, allocations, cashReceipts, feeCategories] = await Promise.all([
     prisma.masterDataItem.findMany({
       where: { type: "MONEY_SOURCE", status: "ACTIVE" },
       select: { code: true, name: true, group: true, branch: true },
@@ -1258,10 +1258,6 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
       by: ["saleDate", "branchCode", "paymentMethod", "revenueSource", "channel"],
       where: { ...branchFilter, saleDate: { gte: start, lt: end } },
       _sum: { netAmount: true },
-    }),
-    prisma.manualRevenueEntry.findMany({
-      where: { ...branchFilter, reportDate: { gte: start, lt: end } },
-      select: { reportDate: true, branchCode: true, cashAmount: true, transferAmount: true, cardAmount: true, grabAmount: true },
     }),
     // Tiền về của đúng Ngày doanh thu, lấy từ sổ sao kê đã ghi nhận.
     prisma.bankStatementAllocation.findMany({
@@ -1295,11 +1291,10 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
     }),
   ]);
 
-  // Doanh thu nhập tay lưu nửa đêm giờ Việt Nam, doanh thu import và sao kê lưu UTC midnight.
+  // Doanh thu import và sao kê lưu UTC midnight, phiếu thu có thể lưu nửa đêm giờ Việt Nam.
   // Quy về cùng ngày nghiệp vụ để hai vế không lệch nhau một ngày.
   const dayKey = vietnamBusinessDayKey;
   const sourceByCode = new Map(moneySources.map((row) => [row.code, row]));
-  const visibleSources = moneySources.filter((row) => moneySourceMatchesBranch(row, branchCode));
   // Nối theo cửa hàng của chính dòng doanh thu; lọc theo "ALL" thì mã rút gọn "MOMO_EDC" có nhiều
   // ứng viên nên không phân định được và doanh thu ví bị bỏ ra ngoài.
   const matcherByBranch = new Map<string, ReturnType<typeof createMoneySourceMatcher>>();
@@ -1331,9 +1326,6 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
     return created;
   };
 
-  // Khoá theo cả cửa hàng: xem "Tất cả cửa hàng" mà chỉ khoá theo ngày thì cửa hàng có POS sẽ nuốt
-  // luôn số nhập tay của cửa hàng khác, làm doanh thu thiếu hẳn một cửa hàng.
-  const posDays = new Set(posRevenues.map((row) => `${row.branchCode}|${dayKey(row.saleDate)}`));
   for (const row of posRevenues) {
     const source = matchSource(row.paymentMethod, row.revenueSource, row.channel, row.branchCode);
     // Không gán được về nguồn tiền nào thì vẫn phải hiện ra, kèm nhãn nói rõ lý do. Bỏ qua
@@ -1346,40 +1338,13 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
     touch(dayKey(row.saleDate), target).revenue += row._sum.netAmount || 0;
   }
 
-  // Ngày không có dòng POS nào thì mới dùng số thu ngân nhập tay, tránh cộng chồng.
-  //
-  // Số nhập tay chỉ có 4 ô tổng (chuyển khoản / thẻ+ví / Grab / tiền mặt), KHÔNG nói tiền thuộc
-  // nguồn tiền cụ thể nào. Bản trước đoán nguồn theo tên và đoán sai — từ khoá "vi" (Ví) khớp
-  // luôn "Vietinbank", nên tiền thẻ bị gán vào tài khoản ngân hàng, còn tiền chuyển khoản gán
-  // vào tài khoản đứng đầu danh sách; khách nhìn thấy Chưa về / Về dư giả trong khi tiền không
-  // hề sai. Ngày dùng số nhập tay thì so ở ĐÚNG độ mịn của dữ liệu: mỗi ô một dòng gộp, tiền về
-  // của cả nhóm nguồn đổ vào dòng đó — khớp từng số với màn Thu chi ngày.
-  const manualBucketDays = new Set<string>();
-  const manualBucketSource = (branch: string, bucket: "bank" | "card" | "grab" | "cash") => ({
-    bank: { code: `NHAPTAY_CK_${branch}`, name: `Chuyển khoản — thu ngân khai (${branch})`, group: "BANK" },
-    card: { code: `NHAPTAY_THEVI_${branch}`, name: `Quẹt thẻ / Ví — thu ngân khai (${branch})`, group: "WALLET" },
-    grab: { code: `NHAPTAY_GRAB_${branch}`, name: `Grab — thu ngân khai (${branch})`, group: "WALLET" },
-    cash: { code: `NHAPTAY_TM_${branch}`, name: `Tiền mặt — thu ngân khai (${branch})`, group: "CASH" },
-  }[bucket]);
-  for (const row of manualEntries) {
-    const day = dayKey(row.reportDate);
-    if (posDays.has(`${row.branchCode}|${day}`)) continue;
-    manualBucketDays.add(`${row.branchCode}|${day}`);
-    if (row.transferAmount) touch(day, manualBucketSource(row.branchCode, "bank")).revenue += row.transferAmount;
-    if (row.cardAmount) touch(day, manualBucketSource(row.branchCode, "card")).revenue += row.cardAmount;
-    if (row.grabAmount) touch(day, manualBucketSource(row.branchCode, "grab")).revenue += row.grabAmount;
-    // Tiền mặt không cộng ở đây: ô tiền mặt của thu ngân bị khoá (luôn 0), cả hai vế của dòng
-    // tiền mặt cùng lấy từ phiếu thu đã duyệt ở vòng phiếu thu bên dưới.
-  }
-  // Ngày nhập tay thì tiền về cũng phải gộp theo nhóm, không thì vế khai nằm ở dòng gộp còn vế
-  // tiền về nằm ở dòng nguồn cụ thể — hai vế không bao giờ gặp nhau.
-  const bucketFor = (source: { code: string; name: string; group?: string | null }) => {
-    const group = normalizeMoneySourceGroup(source.group);
-    if (group === "CASH") return "cash" as const;
-    if (group === "BANK") return "bank" as const;
-    if (group !== "WALLET") return null;
-    return isGrabMoneySource(source.code, source.name) ? ("grab" as const) : ("card" as const);
-  };
+  // Không dùng số thu ngân nhập tay ở đây. Chị Bình chốt (09/2026): bảng này đối chiếu theo
+  // TỪNG nguồn tiền chi tiết trong danh mục (FDS - VPBank, FDS - Vietinbank...), còn số thu
+  // ngân khai chỉ có 4 ô tổng (CK / thẻ+ví / Grab / tiền mặt), không nói tiền thuộc nguồn nào.
+  // Bản trước có lúc đoán nguồn theo tên (gán sai), có lúc gộp thành 4 dòng "thu ngân khai" —
+  // cả hai đều không phải bảng chị theo dõi. Ngày chưa import file POS thì vế doanh thu để
+  // trống, vế tiền về vẫn hiện theo từng nguồn (trạng thái "Về dư, chưa có doanh thu") để
+  // người xem biết cần import doanh thu POS của ngày đó.
 
   for (const row of allocations) {
     if (!row.revenueDate || !row.decreaseMoneySourceCode) continue;
@@ -1387,11 +1352,7 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
     if (!source || !moneySourceMatchesBranch(source, branchCode)) continue;
     // Đúng như bảng khách theo dõi tay: cột "đã vô" là số tiền THỰC NHẬN, nên phần chênh
     // so với doanh thu chính là phí thu hộ (ví) hoặc phần tiền chưa về (ngân hàng).
-    const day = dayKey(row.revenueDate);
-    const bucket = source.branch && source.branch !== "ALL" && manualBucketDays.has(`${source.branch}|${day}`)
-      ? bucketFor(source)
-      : null;
-    touch(day, bucket ? manualBucketSource(source.branch as string, bucket) : source).received += row.creditAmount;
+    touch(dayKey(row.revenueDate), source).received += row.creditAmount;
   }
 
   for (const row of cashReceipts) {
@@ -1399,16 +1360,7 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
     const source = sourceByCode.get(row.moneySourceCode);
     if (!source || normalizeMoneySourceGroup(source.group) !== "CASH") continue;
     if (!moneySourceMatchesBranch(source, branchCode)) continue;
-    const day = dayKey(row.voucherDate);
-    if (source.branch && source.branch !== "ALL" && manualBucketDays.has(`${source.branch}|${day}`)) {
-      // Thu ngân không gõ ô tiền mặt (bị khoá) nên vế khai cũng lấy từ phiếu thu — dòng tiền mặt
-      // của ngày nhập tay luôn ĐỦ; hiện ra để khách thấy đã đối chiếu, không phải để bắt lệch.
-      const cell = touch(day, manualBucketSource(source.branch, "cash"));
-      cell.revenue += row.amount;
-      cell.received += row.amount;
-    } else {
-      touch(day, source).received += row.amount;
-    }
+    touch(dayKey(row.voucherDate), source).received += row.amount;
   }
 
   const feeNameByCode = new Map(feeCategories.map((row) => [row.code, row.name]));
