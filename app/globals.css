@@ -398,6 +398,14 @@ body {
     word-break: break-word !important;
   }
 
+  /* Tiêu đề cột để whitespace-nowrap (trên màn hình bảng tự cuộn ngang nên không sao),
+     nhưng khi in table-layout: fixed ép cột hẹp lại -> chữ tiêu đề tràn ra ngoài ô và
+     đè lên tiêu đề cột bên cạnh. Khi in cho phép tiêu đề xuống dòng. */
+  #daily-cash-report th {
+    white-space: normal !important;
+    overflow-wrap: anywhere !important;
+  }
+
   /* Cột STT của 2 bảng chi tiết: table-layout: fixed chia đều mọi cột nên ô số thứ tự
      rộng bằng ô diễn giải, in ra thừa cả khoảng trắng. Ghim cứng bề ngang cho nó,
      phần dư trả lại cho các cột chữ. Loại trừ ô colspan (dòng "không có dữ liệu"). */
