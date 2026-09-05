@@ -34,6 +34,8 @@ export type PlanningData = {
   totals: PnlBucket[];
   plans: PnlBucket[];
   hasPlan: boolean;
+  /** Kỳ "YYYY-MM" đã import doanh thu nhưng chưa "Đồng bộ ghi sổ" ở màn Kế toán -> P&L còn trống. */
+  unpostedMonths?: string[];
   byBranch: BranchPlanning[];
   revenueSplit: { byDepartment: Series[]; byChannel: Series[]; svc: number[]; vat: number[] };
   payrollSplit: { bonus: number[]; insurance: number[] };

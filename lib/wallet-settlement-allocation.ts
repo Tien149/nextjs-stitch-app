@@ -1,6 +1,26 @@
 export const WALLET_CARD_FEE_CATEGORY_CODE = "CHI_PHI_QUET_THE";
 export const WALLET_GRAB_EXPENSE_CATEGORY_CODE = "CHI_PHI_BAN_HANG_GRAB";
 
+/**
+ * Hạng mục P&L của hai khoản phí quyết toán ví. Dòng phí trước đây chỉ mang danh mục Thu/Chi
+ * (`categoryCode`) — mà bảng P&L gom chi phí theo HẠNG MỤC P&L (`pnlItemCode`), nên phí cà thẻ
+ * và phí bán hàng qua app rơi hết vào ô vàng "Chưa phân loại P&L" thay vì đứng tên riêng.
+ * Hai tầng danh mục không liên kết nhau trong MasterDataItem nên phải khai cặp đôi ở đây.
+ */
+export const WALLET_CARD_FEE_PNL_ITEM_CODE = "PNL_CP_QUETTHE";
+export const WALLET_GRAB_EXPENSE_PNL_ITEM_CODE = "PNL_CP_BANHANG_GRAB";
+
+export const WALLET_FEE_PNL_ITEMS = [
+  { code: WALLET_CARD_FEE_PNL_ITEM_CODE, name: "Chi phí quẹt thẻ / phí ví", categoryCode: WALLET_CARD_FEE_CATEGORY_CODE },
+  { code: WALLET_GRAB_EXPENSE_PNL_ITEM_CODE, name: "Chi phí bán hàng qua app", categoryCode: WALLET_GRAB_EXPENSE_CATEGORY_CODE },
+] as const;
+
+/** Hạng mục P&L tương ứng với danh mục phí ví; danh mục khác (người dùng tự chọn) giữ nguyên null. */
+export function walletFeePnlItemCode(categoryCode: string | null | undefined) {
+  const code = String(categoryCode ?? "").trim().toUpperCase();
+  return WALLET_FEE_PNL_ITEMS.find((item) => item.categoryCode === code)?.code ?? null;
+}
+
 export type WalletSettlementInput = { id: string; netAmount: number };
 
 export type WalletSettlementAllocation = WalletSettlementInput & {

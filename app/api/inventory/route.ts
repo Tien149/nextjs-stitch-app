@@ -66,6 +66,11 @@ function stocktakeLinesFrom(value: unknown) {
   })).filter((line) => (line.itemId || line.itemCode) && Number.isFinite(line.actualQuantity) && line.actualQuantity >= 0);
 }
 
+/** Ngày theo lịch máy chủ dạng YYYY-MM-DD — toISOString đổi sang UTC nên lệch ngày ở múi giờ +07. */
+function isoDay(value: Date) {
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+}
+
 function stockPrefix(transactionType: string) {
   if (transactionType === "NHAP_MUA") return "NM";
   if (transactionType === "NHAP_KHAC") return "NK";
@@ -175,6 +180,20 @@ export async function GET(request: Request) {
     const branchCode = requestedBranch(auth.session, searchParams.get("branchCode") || "ALL");
     const branchFilter = branchCode === "ALL" ? {} : { branchCode };
 
+    /**
+     * Khoảng ngày của danh sách phiếu trên hai màn Nhập kho / Xuất kho. Trước đây chỉ lấy 100
+     * chứng từ mới nhất theo createdAt, nên rã nguyên liệu cả tháng xong là phiếu xuất bán của
+     * những ngày đầu rơi mất và người dùng tưởng hệ thống không sinh phiếu (feedback khách
+     * 05/09/2026). Mặc định 90 ngày gần nhất; người dùng chọn lại khoảng ngày thì lấy đúng khoảng đó.
+     */
+    const flowTo = new Date(searchParams.get("flowTo") || Date.now());
+    if (Number.isNaN(flowTo.getTime())) flowTo.setTime(Date.now());
+    flowTo.setHours(23, 59, 59, 999);
+    const flowFromParam = searchParams.get("flowFrom");
+    const flowFrom = flowFromParam ? new Date(flowFromParam) : new Date(flowTo.getTime() - 90 * 24 * 60 * 60 * 1000);
+    if (Number.isNaN(flowFrom.getTime())) flowFrom.setTime(flowTo.getTime() - 90 * 24 * 60 * 60 * 1000);
+    flowFrom.setHours(0, 0, 0, 0);
+
     // Get warehouses belonging to this branch
     const allowedWarehouses = await prisma.masterDataItem.findMany({
       where: {
@@ -185,7 +204,7 @@ export async function GET(request: Request) {
     });
     const warehouseCodes = allowedWarehouses.map((w) => w.code);
 
-    const [items, balances, transactions, reportTransactions, recipes, warehouses, stocktakes, itemGroups, receiptCategoryList, pendingRevenueRows] = await Promise.all([
+    const [items, balances, transactions, flowTransactions, reportTransactions, recipes, warehouses, stocktakes, itemGroups, receiptCategoryList, pendingRevenueRows] = await Promise.all([
       prisma.inventoryItem.findMany({ include: { unitConversions: { orderBy: [{ isDefaultPurchase: "desc" }, { unitCode: "asc" }] } }, orderBy: { name: "asc" } }),
       prisma.inventoryBalance.findMany({
         where: { warehouseCode: { in: warehouseCodes } },
@@ -197,6 +216,14 @@ export async function GET(request: Request) {
         include: { lines: { include: { item: true } } },
         orderBy: { createdAt: "desc" },
         take: 100
+      }),
+      // Danh sách phiếu của hai màn Nhập kho / Xuất kho: lọc theo NGÀY CHỨNG TỪ chứ không cắt
+      // 100 dòng mới nhất, để phiếu xuất bán của cả kỳ đã rã đều hiện đủ.
+      prisma.inventoryTransaction.findMany({
+        where: { ...branchFilter, transactionDate: { gte: flowFrom, lte: flowTo } },
+        include: { lines: { include: { item: true } } },
+        orderBy: { transactionDate: "desc" },
+        take: 2000,
       }),
       prisma.inventoryTransaction.findMany({
         where: { ...branchFilter },
@@ -481,7 +508,7 @@ export async function GET(request: Request) {
     const revenueGroups = receiptCategoryList.filter((category) => isRevenueGroupCategory(category.group));
     const receiptCategories = receiptCategoryList.filter((category) => !isRevenueGroupCategory(category.group));
 
-    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, balances, transactions, recipes: recipesWithCost, warehouses, stocktakes, stockSummary, stockMovements, itemGroups, revenueGroups, receiptCategories, costSummary, wasteReport, pendingSales }));
+    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, balances, transactions, flowTransactions, flowRange: { from: isoDay(flowFrom), to: isoDay(flowTo) }, recipes: recipesWithCost, warehouses, stocktakes, stockSummary, stockMovements, itemGroups, revenueGroups, receiptCategories, costSummary, wasteReport, pendingSales }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });

@@ -17,6 +17,7 @@
 
 import { INTERNAL_PAYABLE_ACCOUNT, INTERNAL_RECEIVABLE_ACCOUNT, internalPartnerCode } from "@/lib/cost-reallocation";
 import { normalizeHeader } from "@/lib/import-templates";
+import { walletFeePnlItemCode } from "@/lib/wallet-settlement-allocation";
 
 function up(value: string | null | undefined) {
   return (value || "").trim().toUpperCase();
@@ -126,6 +127,8 @@ export type TransferJournalLine = {
   credit?: number;
   partnerCode?: string | null;
   categoryCode?: string | null;
+  /** Hạng mục P&L — bảng P&L gom chi phí theo cột này, thiếu là rơi vào "Chưa phân loại P&L". */
+  pnlItemCode?: string | null;
 };
 
 export type TransferJournal = {
@@ -168,10 +171,14 @@ export function planMoneyTransferJournals(input: MoneyTransferJournalInput): Tra
 
   const grabExpenseAmount = Math.min(Math.max(0, input.grabExpenseAmount || 0), Math.max(0, feeAmount));
   const cardFeeAmount = Math.max(0, feeAmount - grabExpenseAmount);
+  // Phí quyết toán ví mang sẵn hạng mục P&L "Chi phí quẹt thẻ" / "Chi phí bán hàng qua app",
+  // nếu không P&L chỉ thấy một cục "Chưa phân loại P&L" (feedback khách 05/09/2026). Phiếu điều
+  // tiền thường do người dùng tự chọn danh mục thì không suy ra được — để trống như cũ.
+  const feePnlItem = (categoryCode: string | null | undefined) => walletFeePnlItemCode(categoryCode);
   const feeLines: TransferJournalLine[] = [];
-  if (grabExpenseAmount > 0) feeLines.push({ accountCode: "6428", debit: grabExpenseAmount, categoryCode: input.grabExpenseCategoryCode });
-  if (cardFeeAmount > 0) feeLines.push({ accountCode: "6428", debit: cardFeeAmount, categoryCode: input.feeCategoryCode });
-  if (feeAmount < 0) feeLines.push({ accountCode: "6428", credit: -feeAmount, categoryCode: input.feeCategoryCode });
+  if (grabExpenseAmount > 0) feeLines.push({ accountCode: "6428", debit: grabExpenseAmount, categoryCode: input.grabExpenseCategoryCode, pnlItemCode: feePnlItem(input.grabExpenseCategoryCode) });
+  if (cardFeeAmount > 0) feeLines.push({ accountCode: "6428", debit: cardFeeAmount, categoryCode: input.feeCategoryCode, pnlItemCode: feePnlItem(input.feeCategoryCode) });
+  if (feeAmount < 0) feeLines.push({ accountCode: "6428", credit: -feeAmount, categoryCode: input.feeCategoryCode, pnlItemCode: feePnlItem(input.feeCategoryCode) });
 
   if (!isCrossBranch) {
     const lines: TransferJournalLine[] = [];

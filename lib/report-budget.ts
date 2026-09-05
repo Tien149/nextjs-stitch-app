@@ -95,7 +95,7 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     // ba phần nên không tách được — phải đọc thẳng dòng doanh thu import.
     prisma.revenueImportRow.findMany({
       where: { saleDate: { gte: yearStart, lt: yearEnd }, ...branchFilter },
-      select: { saleDate: true, departmentCode: true, channel: true, grossAmount: true, discountAmount: true, feeAmount: true, vatAmount: true },
+      select: { saleDate: true, departmentCode: true, channel: true, grossAmount: true, discountAmount: true, feeAmount: true, vatAmount: true, netAmount: true },
     }),
     prisma.payrollImportRow.findMany({
       where: { period: { startsWith: `${year}-` }, ...branchFilter },
@@ -145,10 +145,13 @@ export async function getPnlMatrix(year: string, branchCode: string) {
   const netRevenueByChannel = new Map<string, MatrixSeries>();
   const svcMonths = Array.from({ length: 12 }, () => 0);
   const vatMonths = Array.from({ length: 12 }, () => 0);
+  /** Tiền doanh thu ĐÃ IMPORT từng tháng — so với doanh thu đã ghi sổ để biết tháng nào còn treo. */
+  const importedNetMonths = Array.from({ length: 12 }, () => 0);
   for (const row of revenueRows) {
     const date = new Date(row.saleDate);
     if (date.getFullYear() !== Number(year)) continue;
     const monthIndex = date.getMonth();
+    importedNetMonths[monthIndex] += row.netAmount;
     const net = row.grossAmount - row.discountAmount;
     const dept = row.departmentCode || UNASSIGNED_DEPARTMENT;
     bumpSeries(netRevenueByDepartment, dept, dept === UNASSIGNED_DEPARTMENT ? "Chưa gán bộ phận" : `DT ${departmentName.get(dept) || dept}`, monthIndex, net);
@@ -286,6 +289,13 @@ export async function getPnlMatrix(year: string, branchCode: string) {
   }).sort((a, b) => b.actual.reduce((sum, bucket) => sum + bucket.revenue, 0) - a.actual.reduce((sum, bucket) => sum + bucket.revenue, 0));
 
   const finalizedTotals = totals.map((bucket) => finalizePnl(bucket));
+  /**
+   * Tháng đã import doanh thu nhưng sổ cái chưa có đồng nào — nguyên nhân số 1 khiến khách mở
+   * Dự báo P&L thấy trắng bảng (feedback khách 05/09/2026). Import doanh thu KHÔNG tự ghi sổ:
+   * phải bấm "Đồng bộ ghi sổ" ở màn Kế toán cho từng kỳ. Trả về đây để màn hình nói thẳng ra
+   * thay vì để người dùng đoán.
+   */
+  const unpostedMonths = months.filter((_, index) => importedNetMonths[index] > 0.5 && Math.abs(totals[index].revenue) <= 0.5);
   const statement: MatrixStatementLine[] = PNL_STATEMENT_LINES.map((line) => {
     const monthValues = finalizedTotals.map((total) => (total as unknown as Record<string, number>)[line.key] || 0);
     const plan = planLine(line.key);
@@ -319,6 +329,8 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     budgets,
     /** Có set kế hoạch nào trong năm chưa — chưa có thì các màn Dự báo/Định mức nhắc set ở tab Ngân sách. */
     hasPlan,
+    /** Kỳ đã import doanh thu mà chưa "Đồng bộ ghi sổ" — cụm Hoạch định hiện cảnh báo nhắc bấm. */
+    unpostedMonths,
     /** Kế hoạch 12 tháng đã cộng mọi cửa hàng, đủ các dòng suy ra (LN gộp, EBITDA, LN ròng). */
     plans,
     /** Thực tế + kế hoạch từng cửa hàng — bảng hiệu quả theo cửa hàng và hòa vốn theo cửa hàng. */

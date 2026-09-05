@@ -9,6 +9,7 @@ import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/
 import { planMoneyTransferJournals } from "@/lib/internal-transfer";
 import { revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { ensureRevenueCategories, type CategoryLookupClient } from "@/lib/revenue-source";
+import { WALLET_FEE_PNL_ITEMS } from "@/lib/wallet-settlement-allocation";
 
 export const defaultAccounts = [
   { code: "1111", name: "Tiền mặt", accountType: "ASSET", normalBalance: "DEBIT", reportGroup: "CASH" },
@@ -194,6 +195,43 @@ export async function ensureRevenueComponentCategories() {
   await ensureRevenueCategories(prisma as unknown as CategoryLookupClient);
 }
 
+/**
+ * Hạng mục P&L cho hai khoản phí quyết toán ví ("Chi phí quẹt thẻ", "Chi phí bán hàng qua app").
+ * Bút toán phí đã mang sẵn mã hạng mục (lib/internal-transfer.ts); thiếu bản ghi danh mục thì
+ * bảng P&L chỉ in được mã trơ "Hạng mục P&L [PNL_CP_QUETTHE]". Chỉ tạo khi thiếu — người dùng
+ * đã đổi tên hoặc gắn nhóm khác trên màn Danh mục thì giữ nguyên khai báo của họ.
+ */
+export async function ensureWalletFeePnlItems() {
+  const codes = WALLET_FEE_PNL_ITEMS.map((item) => item.code);
+  const existing = await prisma.masterDataItem.findMany({
+    where: { type: "PNL_ITEM", code: { in: codes } },
+    select: { code: true },
+  });
+  const present = new Set(existing.map((item) => item.code.toUpperCase()));
+  const missing = WALLET_FEE_PNL_ITEMS.filter((item) => !present.has(item.code));
+  if (missing.length === 0) return;
+  // Nhóm cha: nhóm P&L loại OPEX đang có sẵn (Chi phí vận hành nhà hàng...). Chưa khai nhóm nào
+  // thì để trống — hạng mục vẫn đứng đúng tên, chỉ nằm ở "Chưa gắn nhóm hạng mục P&L".
+  const opexGroup = await prisma.masterDataItem.findFirst({
+    where: { type: "PNL_GROUP", group: "OPEX", status: "ACTIVE" },
+    orderBy: { code: "asc" },
+    select: { code: true },
+  });
+  for (const item of missing) {
+    await prisma.masterDataItem.create({
+      data: {
+        type: "PNL_ITEM",
+        code: item.code,
+        name: item.name,
+        group: "OPEX",
+        subGroup: opexGroup?.code || null,
+        status: "ACTIVE",
+        note: "Tự tạo khi ghi sổ phí quyết toán ví/sao kê ngân hàng",
+      },
+    });
+  }
+}
+
 export async function syncAccountingPeriod(period: string, branchCode: string, actor: string) {
   const { start, end } = periodBounds(period);
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
@@ -288,6 +326,9 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
     prisma.masterDataItem.findMany({ where: { type: "MONEY_SOURCE" } }),
   ]);
   const transferSourceByCode = new Map(transferMoneySources.map((source) => [source.code, source]));
+  // Phí cà thẻ / phí bán hàng qua app phải có hạng mục P&L trước khi ghi sổ, nếu không bảng P&L
+  // chỉ in được mã trơ thay vì tên khoản chi.
+  if (moneyTransfers.some((row) => row.feeAmount !== 0)) await ensureWalletFeePnlItems();
   for (const row of moneyTransfers) {
     const grossAmount = row.amount + row.feeAmount;
     if (grossAmount <= 0) continue;

@@ -193,6 +193,25 @@ export function NoPlanNotice({ year }: { year: string }) {
   );
 }
 
+/**
+ * Cảnh báo "kỳ chưa ghi sổ" — cụm Hoạch định đọc từ SỔ CÁI, mà import doanh thu không tự ghi sổ.
+ * Không có dòng này thì khách import xong mở Dự báo P&L thấy trắng bảng và tưởng mất dữ liệu
+ * (feedback khách 05/09/2026).
+ */
+export function UnpostedPeriodsNotice({ periods }: { periods: string[] }) {
+  if (periods.length === 0) return null;
+  const label = periods.map((period) => `tháng ${Number(period.slice(5))}`).join(", ");
+  return (
+    <div className="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+      <span className="material-symbols-outlined text-xl">report</span>
+      <div>
+        <b>Đã import doanh thu {label} nhưng chưa ghi sổ.</b> Cụm Hoạch định P&L lấy số từ sổ cái, nên các kỳ này còn hiện 0 đ.
+        Vào màn <b>Kế toán</b>, chọn đúng kỳ và cửa hàng rồi bấm <b>&quot;Đồng bộ ghi sổ&quot;</b> cho từng kỳ, sau đó quay lại làm mới bảng này.
+      </div>
+    </div>
+  );
+}
+
 /** Ô "Kế hoạch (đậm) + Thực đạt (chip màu) + %" dùng trong bảng Dự báo P&L và bảng theo cửa hàng. */
 export function PlanActualCell({ plan, actual, income, align = "right", compact = false }: { plan: number | null; actual: number; income: boolean; align?: "right" | "left"; compact?: boolean }) {
   const fmt = compact ? fmtCompact : (value: number) => money(Math.round(value));

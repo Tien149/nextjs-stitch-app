@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useState } from "react";
 import { storeLabel } from "@/lib/branch-labels";
-import { PillTabs, Tag } from "@/components/reports/planning/planning-ui";
+import { PillTabs, Tag, UnpostedPeriodsNotice } from "@/components/reports/planning/planning-ui";
 import { type PlanningData } from "@/components/reports/planning/planning-types";
 import PnlForecastTab from "@/components/reports/planning/PnlForecastTab";
 import PnlDashboardTab from "@/components/reports/planning/PnlDashboardTab";
@@ -72,12 +72,17 @@ export default function FinancialPlanningWorkspace({ period, branchCode, periodV
     if (loading && !data) return <p className="py-14 text-center text-sm text-slate-500 animate-pulse">Đang tổng hợp số liệu hoạch định năm {year}...</p>;
     if (error) return <p className="py-10 text-center text-sm text-rose-600">{error}</p>;
     if (!data) return null;
-    if (tab === "forecast") return <PnlForecastTab data={data} onRefresh={() => void load()} onOpenBudget={onOpenBudget} />;
-    if (tab === "dashboard") return <PnlDashboardTab data={data} upTo={upTo} onChangeUpTo={setUpTo} />;
-    if (tab === "control") return <BudgetControlTab data={data} upTo={upTo} onChangeUpTo={setUpTo} onOpenBudget={onOpenBudget} />;
-    if (tab === "breakeven") return <BreakEvenTab data={data} upTo={upTo} onChangeUpTo={setUpTo} />;
-    if (tab === "scenario") return <ScenarioTab data={data} upTo={upTo} onChangeUpTo={setUpTo} />;
-    return null;
+    // Cảnh báo kỳ chưa ghi sổ đứng trên MỌI màn của cụm — cả 5 màn đều đọc cùng một sổ cái.
+    const notice = <UnpostedPeriodsNotice periods={data.unpostedMonths || []} />;
+    const body = () => {
+      if (tab === "forecast") return <PnlForecastTab data={data} onRefresh={() => void load()} onOpenBudget={onOpenBudget} />;
+      if (tab === "dashboard") return <PnlDashboardTab data={data} upTo={upTo} onChangeUpTo={setUpTo} />;
+      if (tab === "control") return <BudgetControlTab data={data} upTo={upTo} onChangeUpTo={setUpTo} onOpenBudget={onOpenBudget} />;
+      if (tab === "breakeven") return <BreakEvenTab data={data} upTo={upTo} onChangeUpTo={setUpTo} />;
+      if (tab === "scenario") return <ScenarioTab data={data} upTo={upTo} onChangeUpTo={setUpTo} />;
+      return null;
+    };
+    return <div className="space-y-4">{notice}{body()}</div>;
   };
 
   return (

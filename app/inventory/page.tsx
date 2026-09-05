@@ -42,7 +42,7 @@ type Stocktake = { id: string; code: string; stocktakeDate: string; branchCode: 
 type ReceivablePOLine = { id: string; itemId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; item: { code: string; name: string; unit: string } };
 type ReceivablePO = { id: string; code: string; supplierName: string; branchCode: string; warehouseCode: string; status: string; lines: ReceivablePOLine[] };
 type StocktakeDraftRow = { itemId: string; itemCode: string; itemName: string; unit: string; systemQuantity: number; averageCost: number; actualQuantity: string; unitCost: string; reason: string };
-type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales };
+type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales };
 const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value);
 const movementTypes = ["NHAP_MUA", "NHAP_KHAC", "NHAP_CHE_BIEN", "NHAP_KIEM_KE", "XUAT_BAN", "XUAT_HUY", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_CHE_BIEN", "XUAT_KIEM_KE", "DIEU_CHUYEN"];
 /** Loại hiển thị trên hai màn hình Nhập/Xuất. Điều chuyển hiện ở CẢ hai: vế xuất ở kho đi, vế nhập ở kho nhận. */
@@ -53,6 +53,20 @@ const wasteTypeOptions = [
   { code: "KHONG_DAM_BAO_CHAT_LUONG", label: "Xuất hủy do không đảm bảo chất lượng" },
 ];
 const today = () => new Date().toISOString().slice(0, 10);
+const daysAgo = (days: number) => new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+/**
+ * Cột SL của phiếu nhập/xuất. Phiếu một mặt hàng thì ghi thẳng số + đơn vị; phiếu xuất bán sinh
+ * từ rã nguyên liệu có hàng trăm dòng nhiều đơn vị khác nhau nên cộng dồn là vô nghĩa — ghi tổng
+ * theo đơn vị khi cả phiếu cùng đơn vị, còn lại ghi số mặt hàng (bảng Sổ kho xem chi tiết từng dòng).
+ */
+function flowQuantityText(lines: Array<{ quantity: number; item: { unit: string } }>) {
+  if (lines.length === 0) return "-";
+  const units = new Set(lines.map((line) => line.item.unit));
+  const total = lines.reduce((sum, line) => sum + line.quantity, 0);
+  if (units.size === 1) return `${money(total)} ${lines[0].item.unit}`;
+  return `${money(lines.length)} mặt hàng`;
+}
 
 function buildStocktakeRows(warehouseCode: string, balances: Balance[], fallbackItems: Item[]): StocktakeDraftRow[] {
   const rows = balances
@@ -86,14 +100,18 @@ export default function InventoryPage() {
   const href = "/inventory";
   const { user, loading } = useModuleAuth(href);
   const [active, setActive] = useState("stock");
-  const [data, setData] = useState<Data>({ items: [], balances: [], transactions: [], recipes: [], warehouses: [], stocktakes: [], stockSummary: [], stockMovements: [], itemGroups: [], revenueGroups: [], receiptCategories: [], costSummary: [], wasteReport: [], pendingSales: { total: 0, byDay: [], byItem: [] } });
+  const [data, setData] = useState<Data>({ items: [], balances: [], transactions: [], flowTransactions: [], recipes: [], warehouses: [], stocktakes: [], stockSummary: [], stockMovements: [], itemGroups: [], revenueGroups: [], receiptCategories: [], costSummary: [], wasteReport: [], pendingSales: { total: 0, byDay: [], byItem: [] } });
   const [message, setMessage] = useState("");
   const [reportWarehouse, setReportWarehouse] = useState("ALL");
   const [reportType, setReportType] = useState("ALL");
+  /** Khoảng ngày của bảng "Chi tiết phát sinh theo loại giao dịch" — trước đây luôn cắt 100 dòng cuối. */
+  const [reportRange, setReportRange] = useState({ from: daysAgo(90), to: today() });
   // Bộ lọc hai màn hình Nhập kho / Xuất kho: theo nhà hàng + theo loại nhập/xuất.
   const [flowBranch, setFlowBranch] = useState("ALL");
   const [inboundType, setInboundType] = useState("ALL");
   const [outboundType, setOutboundType] = useState("ALL");
+  /** Khoảng NGÀY CHỨNG TỪ của danh sách phiếu nhập/xuất — mặc định 90 ngày gần nhất, gửi lên server. */
+  const [flowRange, setFlowRange] = useState({ from: daysAgo(90), to: today() });
 
   const [itemForm, setItemForm] = useState({ code: "NVL_001", name: "Nguyên liệu mẫu", unit: "g", itemType: "RAW_MATERIAL", category: "", revenueGroup: "", purchaseUnit: "kg", conversionRate: "1000", minStock: "500", requiresImage: false });
   const [itemSearch, setItemSearch] = useState("");
@@ -193,14 +211,19 @@ export default function InventoryPage() {
   const filteredStockMovements = data.stockMovements.filter((row) => {
     if (reportWarehouse !== "ALL" && row.warehouseCode !== reportWarehouse) return false;
     if (reportType !== "ALL" && row.transactionType !== reportType) return false;
+    const day = String(row.transactionDate).slice(0, 10);
+    if (reportRange.from && day < reportRange.from) return false;
+    if (reportRange.to && day > reportRange.to) return false;
     return true;
-  }).slice(-100).reverse();
+  }).reverse();
+  /** Bảng chỉ vẽ 500 dòng mới nhất trong khoảng ngày — hẹp khoảng ngày lại để xem phần còn lại. */
+  const stockMovementRows = filteredStockMovements.slice(0, 500);
 
   /**
    * Phiếu kho quy về hai chiều Nhập/Xuất. Điều chuyển góp một dòng cho MỖI màn hình:
    * "Xuất điều chuyển" đứng ở cửa hàng/kho đi, "Nhập điều chuyển" ở cửa hàng/kho nhận.
    */
-  const flowRows = (direction: "IN" | "OUT") => data.transactions.flatMap((transaction) => {
+  const flowRows = (direction: "IN" | "OUT") => data.flowTransactions.flatMap((transaction) => {
     const rows: Array<{ transaction: Transaction; displayType: string; branchCode: string; warehouseCode: string }> = [];
     if (transaction.transactionType === "DIEU_CHUYEN") {
       if (direction === "OUT") rows.push({ transaction, displayType: "XUAT_DIEU_CHUYEN", branchCode: transaction.branchCode, warehouseCode: transaction.warehouseCode });
@@ -276,7 +299,7 @@ export default function InventoryPage() {
 
   const loadData = async () => {
     void loadReceivablePOs();
-    const response = await fetch("/api/inventory", {
+    const response = await fetch(`/api/inventory?flowFrom=${flowRange.from}&flowTo=${flowRange.to}`, {
       headers: getSessionHeaders(),
     });
     if (!response.ok) return;
@@ -297,7 +320,10 @@ export default function InventoryPage() {
     setConversionForm((form) => ({ ...form, itemId: form.itemId || firstItem }));
   };
 
-  useEffect(() => { if (!loading) window.setTimeout(() => void loadData(), 0); }, [loading]);
+  // Đổi khoảng ngày của danh sách phiếu nhập/xuất thì phải hỏi lại server: phiếu ngoài khoảng
+  // không nằm sẵn trên trình duyệt.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!loading) window.setTimeout(() => void loadData(), 0); }, [loading, flowRange.from, flowRange.to]);
 
   const grpoOrder = stockForm.transactionType === "NHAP_MUA"
     ? receivablePOs.find((order) => order.id === grpoOrderId) || null
@@ -508,6 +534,19 @@ export default function InventoryPage() {
       {active === "stock" && (
         <section className="table-panel shadow-sm mb-5">
           <Panel title="Chi tiết phát sinh theo loại giao dịch" reload={loadData} exportFileName="chi_tiet_phat_sinh_kho" />
+          <div className="px-5 pb-4 grid sm:grid-cols-2 gap-3">
+            <Input label="Từ ngày">
+              <input type="date" className="control" value={reportRange.from} onChange={(e) => setReportRange({ ...reportRange, from: e.target.value })} />
+            </Input>
+            <Input label="Đến ngày">
+              <input type="date" className="control" value={reportRange.to} onChange={(e) => setReportRange({ ...reportRange, to: e.target.value })} />
+            </Input>
+          </div>
+          {filteredStockMovements.length > stockMovementRows.length && (
+            <p className="px-5 pb-3 text-xs text-amber-700">
+              Khoảng ngày này có {money(filteredStockMovements.length)} dòng, bảng đang hiện 500 dòng mới nhất — thu hẹp khoảng ngày để xem phần còn lại.
+            </p>
+          )}
           <Table
             headers={[
               { label: "Ngày" },
@@ -520,7 +559,7 @@ export default function InventoryPage() {
               { label: "Giá trị", align: "right" },
             ]}
           >
-            {filteredStockMovements.map((row) => (
+            {stockMovementRows.map((row) => (
               <tr key={`${row.transactionId}-${row.itemCode}-${row.warehouseCode}-${row.inboundQuantity}-${row.outboundQuantity}`} className="border-t border-slate-100">
                 <Cell>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}</Cell>
                 <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{row.referenceCode || "-"}</small></Cell>
@@ -913,7 +952,27 @@ export default function InventoryPage() {
 
           <section className="table-panel shadow-sm">
             <Panel title={active === "inbound" ? "Phiếu nhập kho gần nhất" : "Phiếu xuất kho gần nhất"} reload={loadData} exportFileName={active === "inbound" ? "phieu_nhap_kho" : "phieu_xuat_kho"} />
-            <div className="px-5 pb-4 grid sm:grid-cols-2 gap-3">
+            {active === "outbound" && data.pendingSales.total > 0 && (
+              <div className="mx-5 mb-4 flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+                <span className="material-symbols-outlined text-lg">info</span>
+                <div className="flex-1">
+                  <b>Còn {money(data.pendingSales.total)} dòng doanh thu chưa rã nguyên liệu.</b> Import doanh thu không tự trừ kho:
+                  phiếu <b>Xuất bán</b> chỉ sinh sau khi bấm <b>Rã nguyên liệu</b> ở tab Chế biến (chọn cửa hàng, kho và khoảng ngày bán).
+                </div>
+                {visibleTabs.some((tab) => tab.id === "production") && (
+                  <button type="button" onClick={() => switchTab("production")} className="shrink-0 font-bold text-amber-900 border border-amber-300 rounded-lg px-3 py-1.5 bg-white hover:bg-amber-100">
+                    Sang tab Chế biến
+                  </button>
+                )}
+              </div>
+            )}
+            <div className="px-5 pb-4 grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              <Input label="Từ ngày chứng từ">
+                <input type="date" className="control" value={flowRange.from} onChange={(e) => setFlowRange({ ...flowRange, from: e.target.value })} />
+              </Input>
+              <Input label="Đến ngày chứng từ">
+                <input type="date" className="control" value={flowRange.to} onChange={(e) => setFlowRange({ ...flowRange, to: e.target.value })} />
+              </Input>
               <Input label="Nhà hàng">
                 <select className="control" value={flowBranch} onChange={(e) => setFlowBranch(e.target.value)}>
                   <option value="ALL">Tất cả nhà hàng</option>
@@ -941,10 +1000,14 @@ export default function InventoryPage() {
                 { label: "Nhà hàng" },
                 { label: "Kho" },
                 { label: "Mặt hàng" },
+                { label: "SL", align: "right" },
                 { label: "Giá trị", align: "right" },
               ]}
             >
-              {(active === "inbound" ? inboundRows : outboundRows).map((row) => (
+              {(active === "inbound" ? inboundRows : outboundRows).map((row) => {
+                const lines = row.transaction.lines;
+                const preview = lines.slice(0, 3);
+                return (
                 <tr key={`${row.transaction.id}-${row.displayType}`} className="border-t border-slate-100">
                   <Cell><CopyableText value={row.transaction.code}><b>{row.transaction.code}</b></CopyableText><small>{new Date(row.transaction.transactionDate).toLocaleDateString("vi-VN")}{row.transaction.referenceCode ? ` · ${row.transaction.referenceCode}` : ""}</small></Cell>
                   <Cell>
@@ -953,10 +1016,17 @@ export default function InventoryPage() {
                   </Cell>
                   <Cell>{storeLabel(row.branchCode)}</Cell>
                   <Cell>{row.transaction.transactionType === "DIEU_CHUYEN" ? `${row.transaction.warehouseCode} → ${row.transaction.toWarehouseCode}` : row.warehouseCode}</Cell>
-                  <Cell>{row.transaction.lines.map((line) => `${line.item.name}: ${money(line.inputQuantity || line.quantity)} ${line.inputUnitCode || line.item.unit} = ${money(line.quantity)} ${line.item.unit}`).join(", ")}</Cell>
-                  <Cell right><b>{money(row.transaction.lines.reduce((sum, line) => sum + line.totalCost, 0))} đ</b></Cell>
+                  <Cell>
+                    {preview.map((line) => (
+                      <span key={line.id} className="block">{line.item.name}: <b>{money(line.quantity)}</b> {line.item.unit}</span>
+                    ))}
+                    {lines.length > preview.length && <small>… và {lines.length - preview.length} mặt hàng khác</small>}
+                  </Cell>
+                  <Cell right>{flowQuantityText(lines)}</Cell>
+                  <Cell right><b>{money(lines.reduce((sum, line) => sum + line.totalCost, 0))} đ</b></Cell>
                 </tr>
-              ))}
+                );
+              })}
             </Table>
           </section>
         </div>
