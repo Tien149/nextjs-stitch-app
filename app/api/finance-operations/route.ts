@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { isAdmin, requireCashDepositCreate, requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
+import { getExpenseSummary } from "@/lib/expense-summary";
 import { prisma, prismaRaw } from "@/lib/prisma";
 import { addPeriod, apiError, businessError, cleanText, isPeriodLocked, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
 import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
@@ -134,7 +135,7 @@ export async function GET(request: Request) {
     // nhánh "không lọc" như khi người dùng bình thường chưa chọn nguồn nào.
     const limitSources = Boolean(cashierSourceCodes) || scopedSources.length > 0;
 
-    const [opening, vouchers, adjustments, accruals, accountingPeriod, checklist, moneyTransfers] = await Promise.all([
+    const [opening, vouchers, adjustments, accruals, accountingPeriod, checklist, moneyTransfers, expenseSummary] = await Promise.all([
       // Số dư đầu kỳ kế thừa từ số dư cuối kỳ trước; kế toán chỉ khai tay một lần ở kỳ gốc.
       cashOpeningBalance({ period, branchCode, moneySourceCodes: scopedSources, limitSources }),
       prisma.financialVoucher.findMany({ where: { ...branchFilter, voucherDate: { gte: start, lt: end }, status: "APPROVED" }, orderBy: { voucherDate: "asc" } }),
@@ -158,6 +159,8 @@ export async function GET(request: Request) {
         include: { denominations: { orderBy: { denomination: "desc" } } },
         orderBy: [{ createdAt: "desc" }, { transferDate: "desc" }],
       }),
+      // Tab "Tổng hợp chi phí": gom bút toán chi phí của cả kỳ theo nguồn phát sinh + hạng mục P&L.
+      getExpenseSummary(period, branchCode),
     ]);
 
     const openingAmount = opening.total;
@@ -203,7 +206,7 @@ export async function GET(request: Request) {
         || cashierSourceCodes.includes(row.toMoneySourceCode))
       : moneyTransfers;
 
-    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { period, branchCode, openingAmount: rangeOpeningAmount, openingBasis: { anchorPeriod: opening.anchorPeriod, declaredThisPeriod: opening.declaredThisPeriod }, closingBalance: rangeClosingBalance, cashbook: latestFirstCashbook, accruals, moneyTransfers: visibleMoneyTransfers, accountingPeriod: accountingPeriod || { status: "OPEN" }, checklist }));
+    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { period, branchCode, openingAmount: rangeOpeningAmount, openingBasis: { anchorPeriod: opening.anchorPeriod, declaredThisPeriod: opening.declaredThisPeriod }, closingBalance: rangeClosingBalance, cashbook: latestFirstCashbook, accruals, moneyTransfers: visibleMoneyTransfers, accountingPeriod: accountingPeriod || { status: "OPEN" }, checklist, expenseSummary }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });

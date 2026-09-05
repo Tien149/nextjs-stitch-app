@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { DateInput, MonthInput } from "@/components/DateInput";
 import { storeLabel, updateDynamicBranches, visibleBranchScopeOptions, visibleStoreOptions } from "@/lib/branch-labels";
@@ -12,6 +12,7 @@ import StickyFilterBar from "@/components/StickyFilterBar";
 import { shiftLabels } from "@/lib/shifts";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { transferBranches } from "@/lib/internal-transfer";
+import type { ExpenseSummary } from "@/lib/expense-summary";
 
 type CashEntry = { id: string; date: string; createdAt: string; code: string; type: string; moneySourceCode: string; description: string; receipt: number; payment: number; balance: number };
 type Schedule = { id: string; period: string; amount: number; status: string };
@@ -44,7 +45,8 @@ type MoneyTransfer = {
   denominations?: MoneyTransferDenomination[];
 };
 type OpeningBasis = { anchorPeriod: string | null; declaredThisPeriod: boolean };
-type Data = { openingAmount: number; openingBasis: OpeningBasis; closingBalance: number; cashbook: CashEntry[]; accruals: Accrual[]; moneyTransfers: MoneyTransfer[]; accountingPeriod: { status: string; closedBy?: string; closedAt?: string }; checklist: Check[] };
+type Data = { openingAmount: number; openingBasis: OpeningBasis; closingBalance: number; cashbook: CashEntry[]; accruals: Accrual[]; moneyTransfers: MoneyTransfer[]; accountingPeriod: { status: string; closedBy?: string; closedAt?: string }; checklist: Check[]; expenseSummary: ExpenseSummary };
+const emptyExpenseSummary: ExpenseSummary = { period: "", branchCode: "ALL", postedTotal: 0, pendingTotal: 0, bySource: [], byLine: [], pending: [] };
 type MasterDataOption = { id: string; type: string; code: string; name: string; group: string | null; branch: string | null; status?: string; summarySourceName?: string | null };
 type CashDepositEditForm = {
   transfer: MoneyTransfer;
@@ -128,7 +130,7 @@ export default function FinanceOperationsPage() {
   /** Lọc chi tiết sổ quỹ: khoảng ngày nằm trong kỳ kế toán và một nguồn tiền cụ thể. */
   const [cashbookRange, setCashbookRange] = useState({ startDate: "", endDate: "" });
   const [cashbookSource, setCashbookSource] = useState("");
-  const [data, setData] = useState<Data>({ openingAmount: 0, openingBasis: { anchorPeriod: null, declaredThisPeriod: false }, closingBalance: 0, cashbook: [], accruals: [], moneyTransfers: [], accountingPeriod: { status: "OPEN" }, checklist: [] });
+  const [data, setData] = useState<Data>({ openingAmount: 0, openingBasis: { anchorPeriod: null, declaredThisPeriod: false }, closingBalance: 0, cashbook: [], accruals: [], moneyTransfers: [], accountingPeriod: { status: "OPEN" }, checklist: [], expenseSummary: emptyExpenseSummary });
   const [message, setMessage] = useState("");
   const [transferQuery, setTransferQuery] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -286,7 +288,9 @@ export default function FinanceOperationsPage() {
     const linkedPeriod = params.get("period") || "";
     const linkedBranch = params.get("branchCode") || "";
     const linkedTransfer = params.get("transfer") || "";
+    const linkedTab = params.get("tab") || "";
     window.setTimeout(() => {
+      if (linkedTab) setActive(linkedTab);
       if (/^\d{4}-\d{2}$/.test(linkedPeriod)) setPeriod(linkedPeriod);
       if (linkedBranch) setBranchCode(linkedBranch);
       if (linkedTransfer) setTransferQuery(linkedTransfer);
@@ -313,7 +317,10 @@ export default function FinanceOperationsPage() {
     if (cashbookRange.endDate) query.set("endDate", cashbookRange.endDate);
     if (cashbookSource) query.set("moneySourceCode", cashbookSource);
     const response = await fetch(`/api/finance-operations?${query.toString()}`);
-    if (response.ok) setData((await response.json()) as Data);
+    if (response.ok) {
+      const payload = (await response.json()) as Data;
+      setData({ ...payload, expenseSummary: payload.expenseSummary?.bySource ? payload.expenseSummary : emptyExpenseSummary });
+    }
   }, [branchCode, period, cashbookRange.startDate, cashbookRange.endDate, cashbookSource]);
 
   const loadMoneySources = useCallback(async () => {
@@ -1459,6 +1466,169 @@ export default function FinanceOperationsPage() {
         )}
 
         {/* TAB 3: Closing Period */}
+        {active === "expenses" && (
+          <div className="space-y-6">
+            <div className="grid md:grid-cols-3 gap-4">
+              <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Chi phí đã vào sổ kỳ {period.slice(5, 7)}/{period.slice(0, 4)}</p>
+                <p className="text-2xl font-black text-slate-900 mt-1">{money(data.expenseSummary.postedTotal)} đ</p>
+                <p className="text-xs text-slate-500 mt-1">Khớp phần chi phí trên báo cáo KQKD cùng kỳ và cửa hàng.</p>
+              </div>
+              <div className={`border rounded-2xl p-5 shadow-sm ${data.expenseSummary.pending.length ? "bg-amber-50/60 border-amber-200" : "bg-white border-slate-200"}`}>
+                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Chờ hạch toán</p>
+                <p className={`text-2xl font-black mt-1 ${data.expenseSummary.pending.length ? "text-amber-700" : "text-slate-900"}`}>{money(data.expenseSummary.pendingTotal)} đ</p>
+                <p className="text-xs text-slate-500 mt-1">
+                  {data.expenseSummary.pending.length
+                    ? `${data.expenseSummary.pending.reduce((sum, row) => sum + row.count, 0)} bản ghi đã nhập nhưng chưa thành bút toán.`
+                    : "Mọi bản ghi chi phí của kỳ đã vào sổ."}
+                </p>
+              </div>
+              <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Nguồn phát sinh</p>
+                <p className="text-2xl font-black text-slate-900 mt-1">{data.expenseSummary.bySource.length} nguồn</p>
+                <p className="text-xs text-slate-500 mt-1">
+                  {data.expenseSummary.byLine.reduce((sum, line) => sum + line.items.length, 0)} hạng mục P&L có phát sinh trong kỳ.
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-500 flex items-center gap-1.5">
+              <span className="material-symbols-outlined text-base text-slate-400">info</span>
+              Tab này gom theo kỳ kế toán và phạm vi cửa hàng. Bộ lọc khoảng thời gian và nguồn tiền phía trên chỉ áp dụng cho Sổ quỹ dòng tiền.
+              Muốn thêm hoặc sửa một khoản chi phí, bấm vào nguồn tương ứng để mở đúng màn hình gốc.
+            </p>
+
+            {data.expenseSummary.bySource.length === 0 ? (
+              <div className="bg-white border border-slate-200 rounded-2xl p-10 text-center text-slate-400 font-medium shadow-sm">
+                Kỳ này chưa có bút toán chi phí nào. Nếu đã nhập phiếu chi, lương hay khấu hao, chạy hạch toán kỳ trên Sổ cái Kế toán rồi tải lại.
+              </div>
+            ) : (
+              <div className="grid xl:grid-cols-2 gap-6 items-start">
+                <section className="bg-white border border-slate-200 rounded-2xl shadow-lg overflow-hidden" data-export-root>
+                  <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between gap-3">
+                    <div>
+                      <h3 className="font-bold text-slate-900">Theo nguồn phát sinh</h3>
+                      <p className="text-xs text-slate-500 mt-0.5">Mỗi dòng là một màn hình nhập chi phí; bấm để mở màn đó.</p>
+                    </div>
+                    <ExportExcelButton fileName={`tong_hop_chi_phi_theo_nguon_${period}`} sheetName="Theo nguon" className="h-9 shrink-0 rounded-lg border border-slate-300 bg-white px-3 text-xs font-bold text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1.5" />
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                      <thead className="bg-slate-50/40 text-[10px] font-bold text-slate-500 uppercase tracking-wider border-b border-slate-100">
+                        <tr>
+                          <th className="px-5 py-2.5">Nguồn</th>
+                          <th className="px-5 py-2.5 text-right">Số bút toán</th>
+                          <th className="px-5 py-2.5 text-right">Số tiền (đ)</th>
+                          <th className="px-5 py-2.5 text-right">Tỷ trọng</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {data.expenseSummary.bySource.map((row) => (
+                          <tr key={row.key} className="hover:bg-slate-50/40 transition-colors">
+                            <td className="px-5 py-3">
+                              <a href={row.href} className="font-bold text-indigo-700 hover:underline inline-flex items-center gap-1" title={row.hint}>
+                                {row.label}
+                                <span className="material-symbols-outlined text-sm">open_in_new</span>
+                              </a>
+                              <p className="text-[11px] text-slate-500 mt-0.5">{row.hint}</p>
+                            </td>
+                            <td className="px-5 py-3 text-right text-slate-600">{row.entries}</td>
+                            <td className="px-5 py-3 text-right font-bold text-slate-900">{money(row.amount)}</td>
+                            <td className="px-5 py-3 text-right text-slate-600">
+                              {data.expenseSummary.postedTotal ? `${Math.round((row.amount / data.expenseSummary.postedTotal) * 1000) / 10}%` : "-"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot className="bg-slate-50/60 border-t border-slate-200 font-bold text-slate-900">
+                        <tr>
+                          <td className="px-5 py-3">Tổng chi phí đã vào sổ</td>
+                          <td className="px-5 py-3 text-right">{data.expenseSummary.bySource.reduce((sum, row) => sum + row.entries, 0)}</td>
+                          <td className="px-5 py-3 text-right">{money(data.expenseSummary.postedTotal)}</td>
+                          <td className="px-5 py-3 text-right">100%</td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                </section>
+
+                <section className="bg-white border border-slate-200 rounded-2xl shadow-lg overflow-hidden" data-export-root>
+                  <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between gap-3">
+                    <div>
+                      <h3 className="font-bold text-slate-900">Theo hạng mục P&L</h3>
+                      <p className="text-xs text-slate-500 mt-0.5">Cùng cách xếp dòng với báo cáo KQKD; hạng mục chưa phân loại đứng cuối mỗi nhóm.</p>
+                    </div>
+                    <ExportExcelButton fileName={`tong_hop_chi_phi_theo_hang_muc_${period}`} sheetName="Theo hang muc" className="h-9 shrink-0 rounded-lg border border-slate-300 bg-white px-3 text-xs font-bold text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1.5" />
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                      <thead className="bg-slate-50/40 text-[10px] font-bold text-slate-500 uppercase tracking-wider border-b border-slate-100">
+                        <tr>
+                          <th className="px-5 py-2.5">Dòng KQKD / hạng mục</th>
+                          <th className="px-5 py-2.5 text-right">Số tiền (đ)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {data.expenseSummary.byLine.map((line) => (
+                          <React.Fragment key={line.key}>
+                            <tr className="bg-slate-50/60">
+                              <td className="px-5 py-2.5 font-bold text-slate-900">{line.label}</td>
+                              <td className="px-5 py-2.5 text-right font-bold text-slate-900">{money(line.amount)}</td>
+                            </tr>
+                            {line.items.map((item) => (
+                              <tr key={`${line.key}-${item.code}`} className="hover:bg-slate-50/40 transition-colors">
+                                <td className={`px-5 py-2 pl-10 ${item.code === "UNCLASSIFIED" ? "text-amber-700 font-semibold" : "text-slate-700"}`}>{item.name}</td>
+                                <td className="px-5 py-2 text-right text-slate-800">{money(item.amount)}</td>
+                              </tr>
+                            ))}
+                          </React.Fragment>
+                        ))}
+                      </tbody>
+                      <tfoot className="bg-slate-50/60 border-t border-slate-200 font-bold text-slate-900">
+                        <tr>
+                          <td className="px-5 py-3">Tổng chi phí đã vào sổ</td>
+                          <td className="px-5 py-3 text-right">{money(data.expenseSummary.postedTotal)}</td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                </section>
+              </div>
+            )}
+
+            <section className="bg-white border border-slate-200 rounded-2xl shadow-lg overflow-hidden">
+              <div className="px-6 py-4 border-b border-slate-200">
+                <h3 className="font-bold text-slate-900">Chờ hạch toán</h3>
+                <p className="text-xs text-slate-500 mt-0.5">Bản ghi đã nhập ở màn gốc nhưng chưa thành bút toán, nên chưa nằm trong số phía trên và chưa lên báo cáo KQKD.</p>
+              </div>
+              {data.expenseSummary.pending.length === 0 ? (
+                <div className="px-6 py-8 text-center text-emerald-700 font-medium text-sm flex items-center justify-center gap-2">
+                  <span className="material-symbols-outlined">check_circle</span>
+                  Không còn khoản chi phí nào chờ hạch toán trong kỳ này.
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-100">
+                  {data.expenseSummary.pending.map((row) => (
+                    <div key={row.key} className="px-6 py-4 flex items-center justify-between gap-4 hover:bg-slate-50/20 transition-colors">
+                      <div className="flex items-center gap-3">
+                        <span className="material-symbols-outlined text-2xl text-amber-500">pending_actions</span>
+                        <div>
+                          <a href={row.href} className="text-sm font-bold text-slate-800 hover:text-indigo-700 hover:underline">{row.label}</a>
+                          <p className="text-xs text-slate-500 mt-0.5">{row.hint}</p>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-sm font-bold text-slate-900">{money(row.amount)} đ</p>
+                        <p className="text-[11px] text-slate-500">{row.count} bản ghi</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          </div>
+        )}
+
         {active === "closing" && (
           <div className="grid lg:grid-cols-[1fr_340px] gap-6 items-start">
             {/* Checklist */}

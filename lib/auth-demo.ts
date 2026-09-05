@@ -377,6 +377,7 @@ export const moduleTabs: Record<string, Array<{ id: string; label: string }>> = 
   "/finance-operations": [
     { id: "cashbook", label: "Sổ quỹ dòng tiền" },
     { id: "accruals", label: "Trích trước & Phân bổ" },
+    { id: "expenses", label: "Tổng hợp chi phí" },
     { id: "closing", label: "Khóa sổ kỳ kế toán" },
   ],
   "/procurement": [
@@ -412,7 +413,7 @@ export const moduleTabs: Record<string, Array<{ id: string; label: string }>> = 
 export const moduleTabIcons: Record<string, string> = {
   dashboard: "dashboard", operations: "fact_check", budget: "price_check", "payroll-budget": "groups", "daily-cash": "receipt", "cash-source": "savings", "revenue-settlement": "rule",
   activity: "history", pnl: "finance", yoy: "query_stats", cashflow: "timeline", balance: "account_balance",
-  cashbook: "account_balance_wallet", accruals: "calendar_month", closing: "lock",
+  cashbook: "account_balance_wallet", accruals: "calendar_month", expenses: "payments", closing: "lock",
   requests: "assignment", quotes: "compare_arrows", orders: "local_shipping", templates: "playlist_add_check",
   stock: "inventory", transactions: "swap_horiz", inbound: "download", outbound: "upload", transfer: "sync_alt", items: "category", recipes: "menu_book",
   production: "blender", stocktake: "fact_check", waste: "delete_sweep",

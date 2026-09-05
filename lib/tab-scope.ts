@@ -12,6 +12,7 @@ const tabDataKeys: Record<string, Record<string, string[]>> = {
   "/finance-operations": {
     cashbook: ["openingAmount", "openingBasis", "closingBalance", "cashbook", "moneyTransfers"],
     accruals: ["accruals"],
+    expenses: ["expenseSummary"],
     closing: ["accountingPeriod", "checklist"],
   },
   "/procurement": {
