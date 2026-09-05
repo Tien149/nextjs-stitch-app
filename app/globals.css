@@ -330,16 +330,10 @@ body {
     inset: 0 auto auto 0 !important;
     width: 100% !important;
     margin: 0 !important;
-    padding: 0 0 42mm 0 !important;
+    padding: 0 !important;
     background: #ffffff !important;
     color: #0f172a !important;
     font-size: 11px !important;
-  }
-
-  #daily-cash-report::after {
-    content: "";
-    display: block;
-    height: 28mm;
   }
 
   #daily-cash-report .no-print {
@@ -351,10 +345,18 @@ body {
     display: block !important;
   }
 
-  #daily-cash-report .daily-cash-print-space {
-    display: block !important;
-    min-height: 52mm !important;
-    border: 1px solid transparent !important;
+  /* Chỗ ký nằm ngay dưới chữ "Thu ngân"/"Quản lý" chứ không phải một khối trắng rời
+     đặt sau báo cáo: trước đây chừa chỗ ký bằng 42mm padding + 28mm ::after + 52mm
+     spacer = 122mm trắng ở đuôi, gặp báo cáo kết thúc gần cuối trang là tràn hẳn ra
+     một tờ trắng. Nay chỗ ký đi liền khối chữ ký và cấm ngắt trang giữa khối, nên
+     cùng lắm cả khối rớt sang trang sau — trang đó vẫn có chữ ký, không còn tờ trắng. */
+  #daily-cash-report .daily-cash-signature {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  #daily-cash-report .daily-cash-signature > div {
+    padding-bottom: 30mm !important;
   }
 
   #daily-cash-report .table-panel,

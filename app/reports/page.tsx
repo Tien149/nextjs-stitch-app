@@ -1248,12 +1248,10 @@ export default function ReportsPage() {
             </div>
           </section>
 
-          <section className="grid grid-cols-2 gap-8 bg-white border border-slate-200 rounded-lg p-6 text-center text-sm font-bold text-slate-700">
+          <section className="daily-cash-signature grid grid-cols-2 gap-8 bg-white border border-slate-200 rounded-lg p-6 text-center text-sm font-bold text-slate-700">
             <div className="pt-8 border-t border-dashed border-slate-300">Thu ngân</div>
             <div className="pt-8 border-t border-dashed border-slate-300">Quản lý</div>
           </section>
-
-          <section className="daily-cash-print-space print-only" aria-hidden="true" />
         </div>
       )}
 
