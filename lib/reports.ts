@@ -1,11 +1,11 @@
 import { prisma } from "@/lib/prisma";
+import { CASH_SOURCE_OPENING_TYPES, OPENING_BALANCE_EFFECTIVE_STATUSES } from "@/lib/opening-balance-rules";
 import { addPeriod } from "@/lib/phase3";
 import { periodBounds } from "@/lib/accounting";
 import { depositDecreaseActions, depositIncreaseActions } from "@/lib/deposit-accounting";
 import { depositCategoryDirection } from "@/lib/bank-statement-category";
 import { isGrabMoneySource, moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { normalizeCashflowCategoryType, SALES_RECEIPT_CATEGORY_CODES } from "@/lib/voucher-rules";
-import { CASH_SOURCE_OPENING_TYPES, OPENING_BALANCE_EFFECTIVE_STATUSES } from "@/lib/opening-balance-rules";
 import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/lib/money-transfer-date";
 import { transferLegsForBranch } from "@/lib/internal-transfer";
 import { WALLET_CARD_FEE_CATEGORY_CODE, WALLET_GRAB_EXPENSE_CATEGORY_CODE } from "@/lib/wallet-settlement-allocation";
@@ -369,7 +369,6 @@ export type CashPartnerRow = { code: string; name: string; partnerType: string |
 /** Chỉ tiền đã thực sự vào/ra sổ quỹ mới lên báo cáo; phiếu nháp/chờ duyệt đếm riêng để cảnh báo. */
 const cashReportVoucherStatuses = ["APPROVED", "POSTED"];
 const cashReportPendingStatuses = ["DRAFT", "PENDING_REVIEW"];
-const cashReportOpeningTypes = [...CASH_SOURCE_OPENING_TYPES];
 const supplierPartnerTypes = ["SUPPLIER", "BOTH"];
 const unclassifiedKey = "UNCLASSIFIED";
 /**
@@ -434,7 +433,7 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
   const monthIndexOf = (date: Date) => months.indexOf(periodOfDate(date));
 
-  const [vouchers, pendingVouchers, categories, partners, moneySources, posRevenues, manualEntries, adjustments, transfers, openingBalances, walletSettlements, depositHistories, bankAllocationRows, legacyBankRows, cashRemainingTargets, voucherPartnerAllocations, reconciledVoucherLinks] =
+  const [vouchers, pendingVouchers, categories, partners, moneySources, posRevenues, manualEntries, adjustments, transfers, openingBySource, walletSettlements, depositHistories, bankAllocationRows, legacyBankRows, cashRemainingTargets, voucherPartnerAllocations, reconciledVoucherLinks] =
     await Promise.all([
       prisma.financialVoucher.findMany({
         where: {
@@ -486,10 +485,8 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
         },
         select: { transferDate: true, actualTransferDate: true, amount: true, feeAmount: true, feeCategoryCode: true, grabExpenseAmount: true, grabExpenseCategoryCode: true, transferPurpose: true, fromMoneySourceCode: true, toMoneySourceCode: true, branchCode: true, fromBranchCode: true, toBranchCode: true },
       }),
-      prisma.openingBalance.findMany({
-        where: { period: months[0], ...(branchCode === "ALL" ? {} : { branchCode }), status: { in: [...OPENING_BALANCE_EFFECTIVE_STATUSES] }, balanceType: { in: cashReportOpeningTypes } },
-        select: { moneySourceCode: true, amount: true },
-      }),
+      // Số dư đầu kỳ: xem chú thích của cashSourceOpeningByCode ngay dưới hàm này.
+      cashSourceOpeningByCode(months[0], branchCode),
       // Quyết toán ví bám theo NGÀY DOANH THU chứ không phải ngày tiền về, để doanh thu ví
       // cuối kỳ đã được sao kê ở kỳ sau vẫn trừ đúng vào dự thu của kỳ phát sinh.
       // Lưu ý: một đợt quyết toán gộp nhiều ngày chỉ giữ được ngày doanh thu đầu tiên.
@@ -654,9 +651,10 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     touchSource(source.code);
   }
 
-  for (const row of openingBalances) {
-    if (!row.moneySourceCode) continue;
-    touchSource(row.moneySourceCode).opening += row.amount;
+  // Tiền của chứng từ chưa gắn nguồn vẫn phải mang theo số dư đầu kỳ của nó, nếu không dòng
+  // "Chưa gán nguồn tiền" có phát sinh mà không có số dư mở đầu.
+  for (const [moneySourceCode, amount] of Object.entries(openingBySource)) {
+    touchSource(moneySourceCode || UNASSIGNED_FLOW_SOURCE).opening += amount;
   }
 
   let unclassifiedIncome = 0;
@@ -1127,13 +1125,22 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
       .map((row) => ({ ...row, closing: row.opening + row.increase - row.used }))
       .filter((row) => Math.abs(row.opening) > 0.5 || Math.abs(row.increase) > 0.5 || Math.abs(row.used) > 0.5)
       .sort((a, b) => b.closing - a.closing),
+    // Số dư cuối kỳ tách theo TỪNG mã nguồn (chưa gộp theo "Nguồn tiền tổng"). Kỳ kế tiếp lấy
+    // đúng bản đồ này làm số dư đầu kỳ, nhờ vậy "đầu kỳ tháng này = cuối kỳ tháng trước" luôn
+    // đúng bằng định nghĩa chứ không phải trùng hợp.
+    closingBySource: Object.fromEntries(
+      [...sourceFlows.values()].map((row) => [row.code, row.opening + row.in - row.out + row.transferIn - row.transferOut]),
+    ) as Record<string, number>,
     sources: (() => {
       // Ví/cổng thanh toán vốn không thuộc bảng sổ quỹ, nhưng doanh thu ví là một khoản THU
       // trên bảng danh mục nên phải có chỗ đứng ở đây, không thì dòng TỔNG không bao giờ khớp
       // Tổng thu. Chỉ hiện khi thực sự có phát sinh trong kỳ.
       const detailRows = Array.from(sourceFlows.values())
         .filter((row) => ["CASH", "BANK"].includes(normalizeMoneySourceGroup(row.group))
-          || row.in !== 0 || row.out !== 0)
+          || row.in !== 0 || row.out !== 0
+          // Ví im lặng cả kỳ nhưng vẫn còn số dư mang sang thì PHẢI hiện, không thì tiền của nó
+          // rơi ra khỏi dòng TỔNG và "đầu kỳ tháng này = cuối kỳ tháng trước" đứt ngay ở tổng.
+          || Math.abs(row.opening) > 0.5 || row.transferIn !== 0 || row.transferOut !== 0)
         .filter((row) => moneySourceMatchesBranch({ ...row, branch: row.branchCode }, branchCode));
       // Gộp các nguồn cùng "Nguồn tiền tổng" (khai trên danh mục) thành một dòng; gộp trước khi
       // tính số dư vì mọi cột đều cộng tuyến tính. Nguồn không khai tên tổng giữ nguyên từng dòng.
@@ -1170,6 +1177,60 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
         .sort((a, b) => a.branchCode.localeCompare(b.branchCode) || a.name.localeCompare(b.name, "vi"));
     })(),
   };
+}
+
+/**
+ * Số dư đầu kỳ của bảng "Biến động nguồn tiền", tách theo từng mã nguồn tiền.
+ *
+ * Kế toán chỉ khai số dư MỘT LẦN ở kỳ gốc (lúc bắt đầu dùng hệ thống). Bản cũ đọc thẳng bảng
+ * `OpeningBalance` theo ĐÚNG kỳ đang xem, nên tháng nào không ai khai lại là cả cột Đầu kỳ ra
+ * 0 đ, kéo theo cột Cuối kỳ âm — khách mở tháng 9 thấy quỹ tiền mặt âm 23 triệu trong khi tiền
+ * không hề sai.
+ *
+ * Cách tính: kỳ gốc thì lấy đúng số khai tay; kỳ sau thì số dư đầu kỳ CHÍNH LÀ số dư cuối kỳ
+ * của khoảng [kỳ gốc .. kỳ liền trước], tính bằng chính bảng này. Nhờ dùng lại đúng một bộ
+ * luật (gồm cả sổ sao kê ngân hàng, quyết toán ví, điều tiền nội bộ — những thứ sổ quỹ không
+ * mô hình hoá), đẳng thức "đầu kỳ tháng này = cuối kỳ tháng trước" đúng theo định nghĩa.
+ *
+ * Đệ quy chỉ đi đúng một tầng: lời gọi bên trong luôn có kỳ đầu = kỳ gốc nên rẽ vào nhánh
+ * khai tay và dừng.
+ */
+async function cashSourceOpeningByCode(period: string, branchCode: string): Promise<Record<string, number>> {
+  const branchFilter = branchCode === "ALL" ? {} : { branchCode };
+  const openingWhere = {
+    ...branchFilter,
+    status: { in: [...OPENING_BALANCE_EFFECTIVE_STATUSES] },
+    balanceType: { in: [...CASH_SOURCE_OPENING_TYPES] },
+  };
+
+  // Kỳ gốc = kỳ khai số dư sớm nhất còn hiệu lực. Khai lại giữa chừng vẫn coi kỳ sớm nhất là
+  // gốc, phần khai sau được cộng vào đúng kỳ của nó qua nhánh dưới.
+  const anchorRow = await prisma.openingBalance.findFirst({
+    where: { ...openingWhere, period: { lte: period } },
+    orderBy: { period: "asc" },
+    select: { period: true },
+  });
+
+  const declaredFor = async (target: string) => {
+    const rows = await prisma.openingBalance.findMany({
+      where: { ...openingWhere, period: target },
+      select: { moneySourceCode: true, amount: true },
+    });
+    const map: Record<string, number> = {};
+    for (const row of rows) {
+      const code = row.moneySourceCode || "";
+      map[code] = (map[code] || 0) + row.amount;
+    }
+    return map;
+  };
+
+  // Chưa khai kỳ nào, hoặc đang xem đúng kỳ gốc: giữ nguyên cách cũ.
+  if (!anchorRow || anchorRow.period >= period) return declaredFor(period);
+
+  const monthsBefore: string[] = [];
+  for (let month = anchorRow.period; month < period; month = addPeriod(month, 1)) monthsBefore.push(month);
+  const prior = await getCashSourceReport(monthsBefore, branchCode);
+  return prior.closingBySource;
 }
 
 export type RevenueSettlementRow = {
