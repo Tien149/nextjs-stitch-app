@@ -328,11 +328,31 @@ export const importTemplates: ImportTemplateDefinition[] = [
         aliases: ["vat", "vat amount", "thue vat"],
       },
       {
+        // Cột này LUÔN là doanh thu (phụ thu dịch vụ), không phải chi phí. Nhãn cũ "Phí nền tảng"
+        // làm khách tưởng đây là chỗ khai phí Grab/cà thẻ, mà khai vào đây thì phí bị cộng vào
+        // doanh thu. Phí khai ở hai cột riêng bên dưới; alias cũ giữ lại cho file đã phát hành.
         field: "fee_amount",
-        label: "Phí nền tảng",
+        label: "SVC (phụ thu dịch vụ)",
         required: false,
         type: "number",
-        aliases: ["phi nen tang", "platform fee", "fee"],
+        aliases: ["svc", "phu thu dich vu", "phi dich vu", "service charge", "phi nen tang", "platform fee", "fee"],
+        note: "Phụ thu dịch vụ — lên P&L thành dòng Doanh thu SVC. KHÔNG phải phí Grab/cà thẻ",
+      },
+      {
+        field: "card_fee_amount",
+        label: "Phí cà thẻ",
+        required: false,
+        type: "number",
+        aliases: ["phi ca the", "phi quet the", "phi the", "card fee"],
+        note: "Phí máy POS/ngân hàng giữ lại — vào chi phí, tiền về giảm đúng số này. Để trống nếu phí chỉ lộ ra khi đối chiếu sao kê",
+      },
+      {
+        field: "app_fee_amount",
+        label: "Phí bán hàng qua app",
+        required: false,
+        type: "number",
+        aliases: ["phi ban hang qua app", "phi app", "phi grab", "phi san", "hoa hong app", "chiet khau app", "app fee", "commission"],
+        note: "Hoa hồng Grab/ShopeeFood/Be giữ lại — vào chi phí, tiền về giảm đúng số này",
       },
       {
         field: "net_amount",
@@ -364,7 +384,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
     // để giữ số lượng bán từng món cho bước rã định lượng.
     aggregate: {
       by: ["sale_date", "branch_code", "channel", "revenue_source", "payment_method", "product_code"],
-      sum: ["gross_amount", "discount_amount", "fee_amount", "vat_amount", "net_amount", "product_quantity"],
+      sum: ["gross_amount", "discount_amount", "fee_amount", "card_fee_amount", "app_fee_amount", "vat_amount", "net_amount", "product_quantity"],
     },
     // Bố cục cột theo file "Theo dõi nguồn tiền" chị Bình chốt (meeting 22/08/2026), sheet
     // Import doanh thu: Cửa hàng, Mã hàng, Tên hàng, ..., PTTT, Nguồn, ..., Thời gian, Số lượng,
@@ -473,7 +493,23 @@ export const importTemplates: ImportTemplateDefinition[] = [
         required: false,
         type: "number",
         aliases: ["svc", "phi dich vu", "phi phuc vu", "service charge"],
-        note: "Phí dịch vụ — lên P&L thành dòng Doanh thu SVC",
+        note: "Phí dịch vụ — lên P&L thành dòng Doanh thu SVC (là doanh thu, không phải chi phí)",
+      },
+      {
+        field: "card_fee_amount",
+        label: "Phí cà thẻ",
+        required: false,
+        type: "number",
+        aliases: ["phi ca the", "phi quet the", "phi the", "card fee"],
+        note: "Phí máy POS/ngân hàng giữ lại trên dòng này — vào chi phí, tiền về giảm đúng số này",
+      },
+      {
+        field: "app_fee_amount",
+        label: "Phí bán hàng qua app",
+        required: false,
+        type: "number",
+        aliases: ["phi ban hang qua app", "phi app", "phi grab", "phi san", "hoa hong app", "chiet khau app", "app fee", "commission"],
+        note: "Hoa hồng Grab/ShopeeFood/Be giữ lại trên dòng này — vào chi phí, tiền về giảm đúng số này",
       },
       {
         field: "vat_amount",

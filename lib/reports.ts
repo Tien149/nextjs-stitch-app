@@ -211,7 +211,13 @@ export function createPnlDetailTree(catalog: PnlCatalog, monthCount: number) {
     if (PNL_INCOME_LINES.includes(lineKey)) {
       const code = line.categoryCode || "UNCLASSIFIED";
       const name = categoryName.get(code) || (line.categoryCode ? `Nguồn thu [${line.categoryCode}]` : "Chưa phân loại nguồn thu");
-      bumpDetail(lineKey, { code, name }, null, monthIndex, line.credit - line.debit);
+      // Hạng mục P&L của dòng thu là KÊNH BÁN (tại chỗ / mang về / giao hàng qua app). Không có
+      // thì để trống như cũ — nhóm nguồn thu vẫn đủ số, chỉ không xoè ra được từng kênh.
+      const channelItem = line.pnlItemCode ? pnlItemByCode.get(line.pnlItemCode) : null;
+      const item = line.pnlItemCode
+        ? { code: line.pnlItemCode, name: channelItem?.name || `Hạng mục P&L [${line.pnlItemCode}]` }
+        : null;
+      bumpDetail(lineKey, { code, name }, item, monthIndex, line.credit - line.debit);
     } else {
       const code = line.pnlItemCode || "UNCLASSIFIED";
       const item = pnlItemByCode.get(code);

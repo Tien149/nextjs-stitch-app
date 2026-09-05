@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { comparePnlGroups, comparePnlItems, isPayrollPnlItem, isPayrollPnlName, opexGroupRank } from "../lib/pnl-ordering.ts";
-import { pnlLineKeyOf } from "../lib/reports.ts";
+import { createPnlDetailTree, pnlLineKeyOf } from "../lib/reports.ts";
 
 test("hạng mục lương / nhân sự nhận diện được cả có dấu lẫn không dấu", () => {
   assert.equal(isPayrollPnlName("Chi phí lương người lao động"), true);
@@ -74,4 +74,34 @@ test("hạng mục trong nhóm xếp abc tiếng Việt, chưa phân loại cu�
     "Chi phí thuê mặt bằng",
     "Chưa phân loại P&L",
   ]);
+});
+
+/**
+ * Dòng Doanh thu phải xoè ra theo KÊNH BÁN (05/09/2026). Trước đây bút toán 511 chỉ mang danh
+ * mục nguồn thu nên cả năm hiện đúng một dòng "Thu bán hàng trong ngày" không bóc tách được.
+ */
+test("dòng Doanh thu tách theo kênh bán: nhóm là nguồn thu, hạng mục là kênh", () => {
+  const catalog = {
+    pnlItems: [
+      { code: "PNL_DT_TAICHO", name: "Doanh thu tại chỗ", group: "REVENUE_SOURCE", subGroup: "PNL_DOANHTHU" },
+      { code: "PNL_DT_MANGVE", name: "Doanh thu mang về", group: "REVENUE_SOURCE", subGroup: "PNL_DOANHTHU" },
+    ],
+    pnlGroups: [{ code: "PNL_DOANHTHU", name: "Doanh thu bán hàng", group: "REVENUE_SOURCE" }],
+    categories: [{ code: "THU_BANHANG", name: "Thu bán hàng trong ngày" }],
+  };
+  const tree = createPnlDetailTree(catalog, 1);
+  const revenueAccount = { accountType: "REVENUE", reportGroup: "REVENUE" };
+  tree.add({ account: revenueAccount, pnlItemCode: "PNL_DT_TAICHO", categoryCode: "THU_BANHANG", debit: 0, credit: 800 }, 0);
+  tree.add({ account: revenueAccount, pnlItemCode: "PNL_DT_MANGVE", categoryCode: "THU_BANHANG", debit: 0, credit: 200 }, 0);
+  tree.add({ account: revenueAccount, pnlItemCode: null, categoryCode: "THU_BANHANG", debit: 0, credit: 50 }, 0);
+
+  const groups = tree.groupsOf("revenue");
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].code, "THU_BANHANG");
+  assert.equal(groups[0].total, 1050, "tổng nhóm vẫn là toàn bộ doanh thu, kể cả dòng chưa rõ kênh");
+  assert.deepEqual(
+    groups[0].items.map((item) => [item.code, item.total]),
+    [[ "PNL_DT_MANGVE", 200 ], [ "PNL_DT_TAICHO", 800 ]],
+    "chỉ dòng có kênh mới thành hạng mục con, xếp abc theo tên",
+  );
 });

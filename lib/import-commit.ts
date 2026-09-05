@@ -623,6 +623,26 @@ export async function commitImport(input: CommitInput) {
             });
           }
           const feeAmount = grossAmount - bankAmount;
+          // Phí đã khai trên file doanh thu POS thì đã vào chi phí ngay từ bút toán doanh thu.
+          // Ghi thêm lần nữa ở đây là chi phí lên gấp đôi — chặn ngay và chỉ đúng chỗ phải sửa,
+          // thay vì để số sai âm thầm chạy vào P&L.
+          if (feeAmount > 0) {
+            const revenueDates = allocationGross
+              .map((item) => item.rowRevenueDate)
+              .filter((date): date is Date => Boolean(date));
+            if (revenueDates.length > 0) {
+              const declaredPosFee = await tx.revenueImportRow.aggregate({
+                where: { branchCode, saleDate: { in: revenueDates }, deletedAt: null },
+                _sum: { cardFeeAmount: true, appFeeAmount: true },
+              });
+              const posFeeTotal = (declaredPosFee._sum.cardFeeAmount || 0) + (declaredPosFee._sum.appFeeAmount || 0);
+              if (posFeeTotal > 0) {
+                throw new BankRowNeedsFixError(
+                  `Ngày doanh thu này đã khai phí ${Math.round(posFeeTotal).toLocaleString("vi-VN")} đ trên file doanh thu POS (cột Phí cà thẻ / Phí bán hàng qua app), phí đó đã vào chi phí rồi. Bỏ trống cột Gross ví trên file sao kê để hệ thống chỉ ghi nhận tiền thực về, nếu không chi phí sẽ bị tính hai lần.`,
+                );
+              }
+            }
+          }
           const grabExpenseAmount = allocationGross.reduce((sum, item) => sum + item.grabExpenseAmount, 0);
           const cardFeeAmount = allocationGross.reduce((sum, item) => sum + item.cardFeeAmount, 0);
           if (declaredGross && Math.abs(feeAmount - grabExpenseAmount - cardFeeAmount) > 1) {
@@ -888,6 +908,9 @@ export async function commitImport(input: CommitInput) {
             discountAmount: asNumber(row.values.discount_amount),
             vatAmount: asNumber(row.values.vat_amount),
             feeAmount: asNumber(row.values.fee_amount),
+            // Phí sàn giữ lại: là CHI PHÍ của nhà hàng, khác hẳn cột SVC (doanh thu) ở trên.
+            cardFeeAmount: Math.max(0, asNumber(row.values.card_fee_amount)),
+            appFeeAmount: Math.max(0, asNumber(row.values.app_fee_amount)),
             netAmount: asNumber(row.values.net_amount),
             externalRef: asText(row.values.external_ref),
             productCode: productCode || null,

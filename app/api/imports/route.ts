@@ -199,9 +199,19 @@ function templateExampleRows(templateCode: string): Array<Record<string, string 
     ];
   }
   if (templateCode === "REVENUE_POS_RAW_V1") {
+    // Dòng Grab có phí app, dòng quẹt thẻ có phí cà thẻ: hai cột phí là CHI PHÍ (tiền sàn giữ
+    // lại), khác hẳn cột SVC là doanh thu — mẫu phải cho thấy rõ để khách khỏi nhập lẫn.
     return [
-      { sale_date: new Date("2026-08-01T00:00:00Z"), branch_code: "NME", product_code: "BBQ010", product_name: "Xúc Xích Nướng Củi (2Pcs)", product_quantity: 1, unit: "Phần", channel: "Tại chỗ", revenue_source: "ĐỒ ĂN", payment_method: "FDS - Chuyển Khoản Vietinbank", gross_amount: 150000, discount_amount: 0, fee_amount: 7500, vat_amount: 12600, net_amount: 170100 },
-      { sale_date: new Date("2026-08-01T00:00:00Z"), branch_code: "NME", product_code: "CF012", product_name: "Cà Phê Latte", product_quantity: 2, unit: "Ly", channel: "Grab", revenue_source: "ĐỒ UỐNG", payment_method: "FDSGRABFOOD", gross_amount: 110000, discount_amount: 0, fee_amount: 5500, vat_amount: 9240, net_amount: 124740 },
+      { sale_date: new Date("2026-08-01T00:00:00Z"), branch_code: "NME", product_code: "BBQ010", product_name: "Xúc Xích Nướng Củi (2Pcs)", product_quantity: 1, unit: "Phần", channel: "Tại chỗ", revenue_source: "ĐỒ ĂN", payment_method: "FDS - Quẹt Thẻ Vietinbank", gross_amount: 150000, discount_amount: 0, fee_amount: 7500, card_fee_amount: 2600, app_fee_amount: 0, vat_amount: 12600, net_amount: 170100 },
+      { sale_date: new Date("2026-08-01T00:00:00Z"), branch_code: "NME", product_code: "CF012", product_name: "Cà Phê Latte", product_quantity: 2, unit: "Ly", channel: "Grab", revenue_source: "ĐỒ UỐNG", payment_method: "FDSGRABFOOD", gross_amount: 110000, discount_amount: 0, fee_amount: 5500, card_fee_amount: 0, app_fee_amount: 27500, vat_amount: 9240, net_amount: 124740 },
+    ];
+  }
+  if (templateCode === "REVENUE_POS_STANDARD_V1") {
+    // Ba kênh bán để thấy dòng Doanh thu của P&L tách được Tại chỗ / Mang về / Giao hàng.
+    return [
+      { sale_date: new Date("2026-08-01T00:00:00Z"), branch_code: "HCM", channel: "Tại chỗ", revenue_source: "THU_BANHANG", payment_method: "TM_HCM", order_count: 51, gross_amount: 21762000, discount_amount: 0, vat_amount: 1741000, fee_amount: 0, card_fee_amount: 0, app_fee_amount: 0, net_amount: 23503000, external_ref: "POS-20260801-HCM-TM_HCM" },
+      { sale_date: new Date("2026-08-01T00:00:00Z"), branch_code: "HCM", channel: "Mang về", revenue_source: "THU_BANHANG", payment_method: "POS_HCM", order_count: 18, gross_amount: 7300000, discount_amount: 0, vat_amount: 584000, fee_amount: 0, card_fee_amount: 94000, app_fee_amount: 0, net_amount: 7884000, external_ref: "POS-20260801-HCM-POS_HCM" },
+      { sale_date: new Date("2026-08-01T00:00:00Z"), branch_code: "HCM", channel: "Grab", revenue_source: "THU_BANHANG", payment_method: "FDSGRABFOOD", order_count: 12, gross_amount: 5400000, discount_amount: 0, vat_amount: 432000, fee_amount: 0, card_fee_amount: 0, app_fee_amount: 1458000, net_amount: 5832000, external_ref: "POS-20260801-HCM-GRAB" },
     ];
   }
   if (templateCode === "PRODUCTION_STANDARD_V1") {

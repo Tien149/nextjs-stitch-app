@@ -7,7 +7,7 @@ import { moneySourceAccountCode } from "@/lib/money-sources";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/lib/money-transfer-date";
 import { planMoneyTransferJournals } from "@/lib/internal-transfer";
-import { revenuePosJournalLines } from "@/lib/revenue-pos-journal";
+import { REVENUE_CHANNEL_PNL_ITEMS, revenuePosFees, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { ensureRevenueCategories, type CategoryLookupClient } from "@/lib/revenue-source";
 import { WALLET_FEE_PNL_ITEMS } from "@/lib/wallet-settlement-allocation";
 
@@ -202,6 +202,25 @@ export async function ensureRevenueComponentCategories() {
  * đã đổi tên hoặc gắn nhóm khác trên màn Danh mục thì giữ nguyên khai báo của họ.
  */
 export async function ensureWalletFeePnlItems() {
+  // Danh mục Thu/Chi của hai khoản phí cũng phải có bản ghi: dòng phí mang sẵn categoryCode nên
+  // thiếu danh mục thì các màn đọc theo khoản mục chỉ in được mã trơ "CHI_PHI_BAN_HANG_GRAB".
+  for (const item of WALLET_FEE_PNL_ITEMS) {
+    const existingCategory = await prisma.masterDataItem.findFirst({
+      where: { type: "REVENUE_EXPENSE_CATEGORY", code: item.categoryCode },
+      select: { id: true },
+    });
+    if (existingCategory) continue;
+    await prisma.masterDataItem.create({
+      data: {
+        type: "REVENUE_EXPENSE_CATEGORY",
+        code: item.categoryCode,
+        name: item.name,
+        group: "PAYMENT",
+        status: "ACTIVE",
+        note: "Tự tạo khi ghi sổ phí bán hàng (file doanh thu POS hoặc quyết toán ví)",
+      },
+    });
+  }
   const codes = WALLET_FEE_PNL_ITEMS.map((item) => item.code);
   const existing = await prisma.masterDataItem.findMany({
     where: { type: "PNL_ITEM", code: { in: codes } },
@@ -227,6 +246,41 @@ export async function ensureWalletFeePnlItems() {
         subGroup: opexGroup?.code || null,
         status: "ACTIVE",
         note: "Tự tạo khi ghi sổ phí quyết toán ví/sao kê ngân hàng",
+      },
+    });
+  }
+}
+
+/**
+ * Hạng mục P&L của kênh bán ("Doanh thu tại chỗ / mang về / giao hàng qua app"). Dòng Có 511 mang
+ * sẵn mã này (lib/revenue-pos-journal.ts); thiếu bản ghi danh mục thì P&L chỉ in được mã trơ.
+ * Nhóm cha là nhóm P&L loại REVENUE_SOURCE đang có sẵn. Chỉ tạo khi thiếu — người dùng đã đổi
+ * tên trên màn Danh mục thì giữ nguyên khai báo của họ.
+ */
+export async function ensureRevenueChannelPnlItems() {
+  const codes = REVENUE_CHANNEL_PNL_ITEMS.map((item) => item.code);
+  const existing = await prisma.masterDataItem.findMany({
+    where: { type: "PNL_ITEM", code: { in: codes } },
+    select: { code: true },
+  });
+  const present = new Set(existing.map((item) => item.code.toUpperCase()));
+  const missing = REVENUE_CHANNEL_PNL_ITEMS.filter((item) => !present.has(item.code));
+  if (missing.length === 0) return;
+  const revenueGroup = await prisma.masterDataItem.findFirst({
+    where: { type: "PNL_GROUP", group: "REVENUE_SOURCE", status: "ACTIVE" },
+    orderBy: { code: "asc" },
+    select: { code: true },
+  });
+  for (const item of missing) {
+    await prisma.masterDataItem.create({
+      data: {
+        type: "PNL_ITEM",
+        code: item.code,
+        name: item.name,
+        group: "REVENUE_SOURCE",
+        subGroup: revenueGroup?.code || null,
+        status: "ACTIVE",
+        note: "Tự tạo khi ghi sổ doanh thu POS theo kênh bán",
       },
     });
   }
@@ -280,7 +334,13 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   // Có 511 tách ba phần: nhóm doanh thu của món = Doanh thu − Giảm giá, "Doanh thu SVC" = cột
   // SVC, "Doanh thu thuế GTGT" = cột Thuế (lib/revenue-pos-journal.ts). Danh mục cho hai dòng
   // tách riêng phải có sẵn, nếu không P&L hiện mã trơ "Nguồn thu [REV_SVC]".
-  if (revenues.length > 0) await ensureRevenueComponentCategories();
+  if (revenues.length > 0) {
+    await ensureRevenueComponentCategories();
+    await ensureRevenueChannelPnlItems();
+    // File doanh thu khai phí sàn thì phí đi thẳng vào chi phí ngay từ bút toán doanh thu,
+    // dùng chung hạng mục P&L với phí quyết toán ví để hai nguồn cộng vào cùng một dòng.
+    if (revenues.some((row) => revenuePosFees(row).total > 0)) await ensureWalletFeePnlItems();
+  }
   for (const row of revenues) {
     const lines = revenuePosJournalLines(row);
     // Dòng 0 đồng (đá, cà phê free, món tặng kèm...) có số lượng để rã kho nhưng không có tiền

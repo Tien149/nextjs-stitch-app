@@ -321,7 +321,13 @@ model RevenueImportRow {
   grossAmount     Float
   discountAmount  Float    @default(0)
   vatAmount       Float    @default(0)
+  /// Phụ thu dịch vụ (cột SVC file POS) — là DOANH THU, lên P&L thành dòng "Doanh thu SVC".
   feeAmount       Float    @default(0)
+  /// Phí quẹt thẻ / phí ví nhà hàng chịu trên dòng doanh thu này — là CHI PHÍ, nhà hàng nhận
+  /// về ít hơn đúng số này. Để trống nếu phí chỉ lộ ra khi quyết toán ví theo sao kê.
+  cardFeeAmount   Float    @default(0)
+  /// Phí sàn / hoa hồng bán hàng qua app (Grab, ShopeeFood, Be...) — cùng luật với cardFeeAmount.
+  appFeeAmount    Float    @default(0)
   netAmount       Float
   externalRef     String
   productCode     String?

@@ -111,3 +111,43 @@ test("file thô đợt trước (Ngày/Nguồn tiền/Tổng doanh thu) vẫn đ
   assert.equal(parsed.rows[0].values.net_amount, 680400);
   assert.equal(parsed.rows[0].values.product_code, null);
 });
+
+/**
+ * Hai cột phí mới (05/09/2026): phí cà thẻ và phí bán hàng qua app là CHI PHÍ, phải đứng riêng
+ * khỏi cột SVC (là doanh thu). File gộp nhiều dòng thì phí cộng dồn như các cột tiền khác.
+ */
+test("file thô khai phí cà thẻ / phí app: map đúng cột và cộng dồn khi gộp dòng", async () => {
+  const file = fileFromRows("Import doanh thu", [
+    ["Ngày", "Cửa hàng", "Hình thức bán", "Nhóm doanh thu", "Nguồn tiền", "Doanh thu", "SVC", "Phí cà thẻ", "Phí bán hàng qua app", "VAT", "Tổng doanh thu"],
+    ["01/08/2026", "NME", "Grab", "REV_FOOD", "FDSGRABFOOD", 500000, 25000, 0, 125000, 42000, 567000],
+    ["01/08/2026", "NME", "Grab", "REV_FOOD", "FDSGRABFOOD", 100000, 5000, 3000, 25000, 8400, 113400],
+  ]);
+
+  const parsed = await parseImportFile(file, template);
+
+  assert.equal(parsed.mapping.card_fee_amount, "Phí cà thẻ");
+  assert.equal(parsed.mapping.app_fee_amount, "Phí bán hàng qua app");
+  assert.equal(parsed.mapping.fee_amount, "SVC", "SVC vẫn là cột doanh thu riêng, không bị hai cột phí chiếm mất");
+  assert.equal(parsed.errorRows, 0, JSON.stringify(parsed.rows.flatMap((row) => row.errors)));
+  assert.equal(parsed.rows.length, 1);
+  assert.equal(parsed.rows[0].values.card_fee_amount, 3000);
+  assert.equal(parsed.rows[0].values.app_fee_amount, 150000);
+  assert.equal(parsed.rows[0].values.fee_amount, 30000);
+});
+
+test("template chuẩn: cột 'Phí nền tảng' của file cũ vẫn vào đúng ô SVC, không nhảy sang cột phí", async () => {
+  const standard = getImportTemplate("REVENUE_POS", "REVENUE_POS_STANDARD_V1");
+  const file = fileFromRows("Doanh thu", [
+    ["Ngày bán", "Cửa hàng", "Kênh bán", "Nguồn doanh thu", "Phương thức thanh toán", "Doanh thu gross", "Giảm giá", "VAT", "Phí nền tảng", "Phí cà thẻ", "Phí bán hàng qua app", "Doanh thu net", "Mã tham chiếu POS"],
+    ["01/08/2026", "HCM", "Tại chỗ", "THU_BANHANG", "TM_HCM", 1000000, 0, 80000, 50000, 12000, 0, 1130000, "POS-1"],
+  ]);
+
+  const parsed = await parseImportFile(file, standard);
+
+  assert.equal(parsed.mapping.fee_amount, "Phí nền tảng");
+  assert.equal(parsed.mapping.card_fee_amount, "Phí cà thẻ");
+  assert.equal(parsed.mapping.app_fee_amount, "Phí bán hàng qua app");
+  assert.equal(parsed.errorRows, 0, JSON.stringify(parsed.rows.flatMap((row) => row.errors)));
+  assert.equal(parsed.rows[0].values.fee_amount, 50000);
+  assert.equal(parsed.rows[0].values.card_fee_amount, 12000);
+});
