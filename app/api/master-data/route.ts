@@ -148,6 +148,17 @@ const defaultMasterData = [
     note: "Thuế GTGT (cột Thuế file POS) — tự tách khi ghi sổ doanh thu",
     status: "ACTIVE",
   },
+  // Nhóm "Dịch vụ" của file POS lên P&L thành Doanh thu phụ thu (spec 04/09/2026); bán ra không
+  // rút gì khỏi kho nên không theo dõi tồn kho.
+  {
+    type: "REVENUE_EXPENSE_CATEGORY",
+    code: "REV_SERVICE",
+    name: "Doanh thu phụ thu",
+    group: "REVENUE_SOURCE",
+    skipInventory: true,
+    note: "Nhóm doanh thu Dịch vụ trên file POS (phụ thu, không theo dõi tồn kho)",
+    status: "ACTIVE",
+  },
   {
     type: "REVENUE_EXPENSE_CATEGORY",
     code: "COGS_FOOD",

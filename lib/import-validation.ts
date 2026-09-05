@@ -1360,10 +1360,13 @@ export async function validateImportResult(
         }
         // Dòng thuộc nhóm doanh thu không theo dõi tồn kho (phụ thu dịch vụ...) vẫn ghi nhận
         // doanh thu bình thường nhưng không dính gì tới kho, nên bỏ qua cả cụm kiểm mặt hàng.
+        // Chưa quy được về mã thì đưa chữ thô vào để vẫn nhận ra nhóm "Dịch vụ" (không theo dõi kho).
         const revenueGroupCode = revenueCategoryIndex?.toCode(row.values.revenue_source) || "";
-        if (tracksInventory(revenueGroupCode, nonInventoryRevenueGroups)) {
+        if (tracksInventory(revenueGroupCode || text(row.values.revenue_source), nonInventoryRevenueGroups)) {
           const product = inventoryItems.find((item) => item.code.toUpperCase() === productCode);
-          if (!product) addError(row, `Khong tim thay ma mon POS ${productCode}`);
+          // Mã món chưa có trong danh mục: file có cột Tên hàng thì commit tự tạo thành phẩm mới
+          // (đúng ghi chú của template file POS thô) — chỉ chặn khi file không có tên để tạo.
+          if (!product && !result.mapping.product_name) addError(row, `Khong tim thay ma mon POS ${productCode} (file khong co cot Ten hang de he thong tu tao mat hang)`);
           if (product && product.status !== "ACTIVE") addError(row, `Ma mon POS ${productCode} dang ngung hoat dong`);
           if (product?.itemType && !["FINISHED", "SEMI_FINISHED"].includes(product.itemType)) addError(row, `Ma mon POS ${productCode} phai la thanh pham hoac ban thanh pham`);
         }

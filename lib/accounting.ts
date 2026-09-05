@@ -7,7 +7,8 @@ import { moneySourceAccountCode } from "@/lib/money-sources";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/lib/money-transfer-date";
 import { planMoneyTransferJournals } from "@/lib/internal-transfer";
-import { REVENUE_COMPONENT_CATEGORIES, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
+import { revenuePosJournalLines } from "@/lib/revenue-pos-journal";
+import { ensureRevenueCategories, type CategoryLookupClient } from "@/lib/revenue-source";
 
 export const defaultAccounts = [
   { code: "1111", name: "Tiền mặt", accountType: "ASSET", normalBalance: "DEBIT", reportGroup: "CASH" },
@@ -189,15 +190,8 @@ export async function postJournalEntry(input: EntryInput) {
  * Chỉ tạo khi thiếu; người dùng đã đổi tên trên màn Danh mục thì giữ nguyên tên của họ.
  */
 export async function ensureRevenueComponentCategories() {
-  const codes = REVENUE_COMPONENT_CATEGORIES.map((category) => category.code);
-  const existing = await prisma.masterDataItem.findMany({ where: { type: "REVENUE_EXPENSE_CATEGORY", code: { in: codes } }, select: { code: true } });
-  const present = new Set(existing.map((item) => item.code.toUpperCase()));
-  for (const category of REVENUE_COMPONENT_CATEGORIES) {
-    if (present.has(category.code)) continue;
-    await prisma.masterDataItem.create({
-      data: { type: "REVENUE_EXPENSE_CATEGORY", code: category.code, name: category.name, group: "REVENUE_SOURCE", skipInventory: true, note: category.note, status: "ACTIVE" },
-    });
-  }
+  // Cùng một bộ với import doanh thu (lib/revenue-source.ts) để hai chỗ không lệch danh mục.
+  await ensureRevenueCategories(prisma as unknown as CategoryLookupClient);
 }
 
 export async function syncAccountingPeriod(period: string, branchCode: string, actor: string) {
@@ -249,7 +243,17 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   // SVC, "Doanh thu thuế GTGT" = cột Thuế (lib/revenue-pos-journal.ts). Danh mục cho hai dòng
   // tách riêng phải có sẵn, nếu không P&L hiện mã trơ "Nguồn thu [REV_SVC]".
   if (revenues.length > 0) await ensureRevenueComponentCategories();
-  for (const row of revenues) results.push(await postJournalEntry({ entryDate: row.saleDate, branchCode: row.branchCode, sourceType: "REVENUE_POS", sourceId: row.id, sourceCode: row.externalRef, description: `Doanh thu ${row.externalRef}`, createdBy: actor, lines: revenuePosJournalLines(row) }));
+  for (const row of revenues) {
+    const lines = revenuePosJournalLines(row);
+    // Dòng 0 đồng (đá, cà phê free, món tặng kèm...) có số lượng để rã kho nhưng không có tiền
+    // để ghi sổ: bút toán Nợ 0 / Có 0 bị postJournalEntry chặn là "không cân" và làm hỏng cả
+    // kỳ, nên bỏ qua thay vì đổ lỗi cho file POS.
+    if (!lines.some((line) => (line.debit || 0) > 0)) {
+      results.push("SKIPPED_ZERO");
+      continue;
+    }
+    results.push(await postJournalEntry({ entryDate: row.saleDate, branchCode: row.branchCode, sourceType: "REVENUE_POS", sourceId: row.id, sourceCode: row.externalRef, description: `Doanh thu ${row.externalRef}`, createdBy: actor, lines }));
+  }
 
   const vouchers = await prisma.financialVoucher.findMany({ where: { ...branchFilter, voucherDate: { gte: start, lt: end }, status: "APPROVED" } });
   // Nhóm khoản mục quyết định phiếu chi vào chi phí, giá vốn hay tài sản.

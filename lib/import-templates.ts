@@ -398,7 +398,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
         required: false,
         type: "text",
         aliases: ["ma hang", "ma mon", "ma mon pos", "ma mat hang", "ma san pham", "product code", "item code"],
-        note: "Mã món bán ra — dòng có mã hàng + số lượng sẽ chờ Rã nguyên liệu bên Kho định lượng",
+        note: "Mã món bán ra — dòng có mã hàng + số lượng (nhóm Đồ ăn / Đồ uống) sẽ chờ Rã nguyên liệu bên Kho định lượng; mã chưa có trong danh mục thì hệ thống tự tạo thành phẩm theo Tên hàng và Đơn vị tính",
       },
       {
         field: "product_name",
@@ -438,7 +438,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
         required: false,
         type: "text",
         aliases: ["nhom doanh thu", "nhom dt", "loai mon", "revenue group", "revenue source"],
-        note: "Nhóm doanh thu hoặc Loại món. Ghi mã (REV_FOOD), tên danh mục, hay chữ \"ĐỒ ĂN\"/\"ĐỒ UỐNG\" đều được — hệ thống tự quy về mã danh mục Thu. Để trống hoặc ghi chữ lạ thì lấy Nhóm doanh thu khai ở Danh mục mặt hàng theo mã hàng.",
+        note: "Nhóm doanh thu hoặc Loại món: Đồ ăn -> Doanh thu bếp, Đồ uống -> Doanh thu bar, Dịch vụ -> Doanh thu phụ thu (không theo dõi tồn kho). Ghi mã (REV_FOOD), tên danh mục hay chữ \"ĐỒ ĂN\"/\"ĐỒ UỐNG\"/\"DỊCH VỤ\" đều được — hệ thống tự quy về mã danh mục Thu. Để trống hoặc ghi chữ lạ thì lấy Nhóm doanh thu khai ở Danh mục mặt hàng theo mã hàng.",
       },
       {
         // Trên file của khách, cột này ghi MÃ hoặc TÊN nguồn tiền trong danh mục

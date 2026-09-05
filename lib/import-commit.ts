@@ -10,7 +10,7 @@ import { postStockTransfer } from "@/lib/inventory-transfer";
 import { writeAuditLog } from "@/lib/audit-log";
 import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
 import { buildRevenueDepartmentResolver } from "@/lib/revenue-department";
-import { buildRevenueSourceResolver, cleanRevenueSourceInput, loadNonInventoryRevenueGroups, loadRevenueCategoryIndex, pickRevenueSource, tracksInventory } from "@/lib/revenue-source";
+import { buildRevenueSourceResolver, cleanRevenueSourceInput, ensureRevenueCategories, loadNonInventoryRevenueGroups, loadRevenueCategoryIndex, pickRevenueSource, tracksInventory } from "@/lib/revenue-source";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { nextSeqFromCodes, voucherCodePrefix } from "@/lib/voucher-code-generator";
 import { commonBankValue, groupBankStatementRows } from "@/lib/bank-statement-import";
@@ -863,6 +863,9 @@ export async function commitImport(input: CommitInput) {
       // File của khách ghi cột này bằng chữ ("ĐỒ ĂN"/"ĐỒ UỐNG") chứ không phải mã danh mục:
       // quy về mã trước khi lưu, nếu không dòng Có 511 mang chữ đó làm categoryCode và doanh
       // thu nằm ở "Chưa phân loại". Chữ không quy được thì nhường danh mục mặt hàng.
+      // Nhóm "Dịch vụ" (-> Doanh thu phụ thu) và các dòng SVC / thuế GTGT tách riêng khi ghi sổ
+      // cần danh mục có sẵn trước khi quy chữ, nếu không "DỊCH VỤ" rơi vào "Chưa phân loại".
+      await ensureRevenueCategories(tx as unknown as Prisma.TransactionClient);
       const revenueCategoryIndex = await loadRevenueCategoryIndex(tx as unknown as Prisma.TransactionClient);
       // Nhóm doanh thu khai "không theo dõi tồn kho" (phụ thu, dịch vụ...): dòng bán ra không
       // rút gì khỏi kho nên không được vào hàng chờ rã nguyên liệu, cũng không tự sinh mặt hàng.
@@ -896,6 +899,9 @@ export async function commitImport(input: CommitInput) {
 
         // Mã của nhóm không theo dõi tồn kho (ET040 phụ thu dịch vụ...) không phải mặt hàng kho,
         // tạo ra chỉ làm bẩn danh mục và đẻ thêm dòng "thành phẩm thiếu nhóm doanh thu".
+        // Mã mới toanh thì tạo thành phẩm theo Tên hàng / ĐVT trong file và gán luôn nhóm doanh
+        // thu đã quy được (Đồ ăn -> bếp, Đồ uống -> bar) để danh mục mặt hàng khỏi thiếu nhóm;
+        // mặt hàng đã có thì giữ nguyên khai báo của người dùng.
         if (productCode && needsInventory) {
           const productName = asText(row.values.product_name) || `Mặt hàng ${productCode}`;
           const unit = asText(row.values.unit) || "Cái";
@@ -907,6 +913,7 @@ export async function commitImport(input: CommitInput) {
               unit,
               itemType: "FINISHED",
               minStock: 0,
+              revenueGroup: revenueCategoryIndex.toCode(revenueSource) || null,
             },
             update: {},
           });

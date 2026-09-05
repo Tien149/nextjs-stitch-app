@@ -20,6 +20,7 @@
 
 import type { Prisma } from "@prisma/custom-client";
 import { isRevenueGroupCategory } from "@/lib/voucher-rules";
+import { REVENUE_COMPONENT_CATEGORIES } from "@/lib/revenue-pos-journal";
 
 /**
  * Ô "trống" trên file POS không phải lúc nào cũng là chuỗi rỗng: bản xuất của khách điền "-",
@@ -183,7 +184,47 @@ export async function loadNonInventoryRevenueGroups(client: CategoryLookupClient
  */
 export function tracksInventory(revenueSource: unknown, nonInventoryGroups: Set<string>) {
   const code = String(revenueSource ?? "").trim().toUpperCase();
-  return !code || !nonInventoryGroups.has(code);
+  if (!code) return true;
+  if (nonInventoryGroups.has(code)) return false;
+  // Nhóm "Dịch vụ" (spec 04/09/2026) không theo dõi tồn kho kể cả khi chưa ai khai cờ hay chưa
+  // có danh mục: file ghi chữ "DỊCH VỤ" hoặc mã REV_SERVICE đều nhận ra bằng loại món.
+  return revenueKindFromText(code) !== "SERVICE";
+}
+
+/**
+ * Danh mục Thu cho nhóm "Dịch vụ" của file POS (spec 04/09/2026: Dịch vụ -> Doanh thu phụ thu).
+ * Là nhóm doanh thu lên dòng 1 của P&L nhưng không theo dõi tồn kho.
+ */
+export const REVENUE_SERVICE_CATEGORY = {
+  code: "REV_SERVICE",
+  name: "Doanh thu phụ thu",
+  note: "Nhóm doanh thu Dịch vụ trên file POS (phụ thu, không theo dõi tồn kho) — tự tạo khi import doanh thu",
+} as const;
+
+/**
+ * Bảo đảm có đủ danh mục Thu mà import / ghi sổ doanh thu POS cần: ba dòng tách riêng khi ghi
+ * sổ (Doanh thu SVC, Doanh thu thuế GTGT, Điều chỉnh) tra theo MÃ; nhóm "Dịch vụ" tra theo LOẠI
+ * MÓN — khách đã có danh mục phụ thu mang mã riêng (REV_PHU, "Doanh Thu Phụ Thu"...) thì dùng
+ * của họ, không đẻ thêm REV_SERVICE trùng nghĩa. Chỉ tạo khi thiếu; tên người dùng đã sửa trên
+ * màn Danh mục giữ nguyên. Không có bước này, chữ "DỊCH VỤ" trong file không quy được về mã nào,
+ * doanh thu dịch vụ rơi vào "Chưa phân loại" trên P&L.
+ */
+export async function ensureRevenueCategories(client: CategoryLookupClient) {
+  const codes = [...REVENUE_COMPONENT_CATEGORIES.map((category) => category.code), REVENUE_SERVICE_CATEGORY.code];
+  const existing = await client.masterDataItem.findMany({ where: { type: "REVENUE_EXPENSE_CATEGORY", code: { in: codes } }, select: { code: true } });
+  const present = new Set(existing.map((item) => item.code.toUpperCase()));
+  for (const category of REVENUE_COMPONENT_CATEGORIES) {
+    if (present.has(category.code)) continue;
+    await client.masterDataItem.create({
+      data: { type: "REVENUE_EXPENSE_CATEGORY", code: category.code, name: category.name, group: "REVENUE_SOURCE", skipInventory: true, note: category.note, status: "ACTIVE" },
+    });
+  }
+  if (present.has(REVENUE_SERVICE_CATEGORY.code)) return;
+  const index = await loadRevenueCategoryIndex(client);
+  if (index.toCode("Dịch vụ")) return;
+  await client.masterDataItem.create({
+    data: { type: "REVENUE_EXPENSE_CATEGORY", code: REVENUE_SERVICE_CATEGORY.code, name: REVENUE_SERVICE_CATEGORY.name, group: "REVENUE_SOURCE", skipInventory: true, note: REVENUE_SERVICE_CATEGORY.note, status: "ACTIVE" },
+  });
 }
 
 /** Ô từ khoá là chữ tự do: tách theo dấu phẩy, chấm phẩy, gạch đứng hoặc xuống dòng. */

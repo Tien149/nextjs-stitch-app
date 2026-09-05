@@ -15,8 +15,9 @@ import { getImportTemplate } from "../lib/import-templates.ts";
 import { validateImportResult } from "../lib/import-validation.ts";
 import { commitImport, rollbackImportBatch } from "../lib/import-commit.ts";
 import { normalizeRevenueSources } from "../lib/revenue-source-normalize.ts";
-import { ensureRevenueComponentCategories, postJournalEntry } from "../lib/accounting.ts";
+import { ensureRevenueComponentCategories, postJournalEntry, syncAccountingPeriod } from "../lib/accounting.ts";
 import { REVENUE_SVC_CATEGORY_CODE, REVENUE_VAT_CATEGORY_CODE, revenuePosJournalLines } from "../lib/revenue-pos-journal.ts";
+import { REVENUE_SERVICE_CATEGORY } from "../lib/revenue-source.ts";
 
 const require = createRequire(import.meta.url);
 const XLSX = require("xlsx");
@@ -38,6 +39,7 @@ const SERVICE_ITEM = "ET_RGTEST_SVC";
 const batchIds = [];
 const seededCategories = [];
 let seededBranch = false;
+let autoServiceCategory = false;
 
 function fileFrom(headers, rows, sheetName, fileName) {
   const sheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
@@ -85,17 +87,31 @@ async function seed() {
   await prisma.inventoryItem.create({ data: { code: DRINK_ITEM, name: "Món uống test", unit: "Ly", itemType: "FINISHED", minStock: 0 } });
 }
 
+const ZERO_BRANCH = "RGTBR";
+
 async function cleanup() {
-  for (const batchId of batchIds.reverse()) {
+  for (const batchId of batchIds.splice(0).reverse()) {
     await rollbackImportBatch({ batchId, actor: session.name, note: "don test" }).catch(() => undefined);
-    await prisma.importBatch.deleteMany({ where: { id: batchId } }).catch(() => undefined);
+    await prisma.importBatch.deleteMany({ where: { id: batchId } }).catch((error) => console.error("don batch", batchId, error.message));
   }
+  // Lần chạy trước hỏng giữa chừng có thể để lại batch/bút toán: dọn theo tên file và cửa hàng test.
+  const staleRows = await prisma.revenueImportRow.findMany({ where: { OR: [{ productCode: { contains: "RGTEST" } }, { branchCode: ZERO_BRANCH }] }, select: { id: true } });
+  const staleEntries = await prisma.journalEntry.findMany({ where: { sourceType: "REVENUE_POS", sourceId: { in: staleRows.map((row) => row.id) } }, select: { id: true } });
+  // JournalLine xoá theo (onDelete: Cascade) khi xoá JournalEntry.
+  await prisma.journalEntry.deleteMany({ where: { id: { in: staleEntries.map((entry) => entry.id) } } });
+  await prisma.importBatch.deleteMany({ where: { OR: [{ fileName: { startsWith: "pos-rgtest" } }, { fileName: { startsWith: "item-rgtest" } }] } });
   const items = await prisma.inventoryItem.findMany({ where: { code: { contains: "RGTEST" } }, select: { id: true } });
   const itemIds = items.map((item) => item.id);
   await prisma.itemUnitConversion.deleteMany({ where: { itemId: { in: itemIds } } });
   await prisma.inventoryItem.deleteMany({ where: { code: { contains: "RGTEST" } } });
   if (seededCategories.length > 0) {
     await prisma.masterDataItem.deleteMany({ where: { type: "REVENUE_EXPENSE_CATEGORY", code: { in: seededCategories } } });
+  }
+  // REV_SERVICE do import tự tạo trong test "file ghi Dịch vụ mà chưa có danh mục": chỉ dọn khi
+  // chính test này sinh ra (DB đã có sẵn từ trước thì giữ).
+  if (autoServiceCategory) {
+    await prisma.masterDataItem.deleteMany({ where: { type: "REVENUE_EXPENSE_CATEGORY", code: REVENUE_SERVICE_CATEGORY.code } });
+    autoServiceCategory = false;
   }
   if (seededBranch) await prisma.masterDataItem.deleteMany({ where: { type: "BRANCH", code: BRANCH, name: "NAM MÊ Kitchen & Bar" } });
 }
@@ -323,4 +339,95 @@ test("ghi sổ doanh thu POS: nhóm doanh thu = Doanh thu − Giảm giá, SVC v
     { account: "511", debit: 0, credit: 37800, categoryCode: REVENUE_VAT_CATEGORY_CODE },
     { account: "511", debit: 0, credit: 450000, categoryCode: COMBO_CODE },
   ]);
+});
+
+test("file ghi Dịch vụ mà chưa có danh mục phụ thu: import tự tạo Doanh thu phụ thu, không vào hàng chờ rã, không tạo mặt hàng", async (t) => {
+  t.after(async () => { await cleanup(); await prisma.$disconnect(); });
+  await cleanup();
+  await seed();
+  // Xoá danh mục phụ thu seed sẵn để mô phỏng DB chưa ai khai nhóm Dịch vụ.
+  await prisma.masterDataItem.deleteMany({ where: { type: "REVENUE_EXPENSE_CATEGORY", code: SERVICE_CODE } });
+  seededCategories.splice(seededCategories.indexOf(SERVICE_CODE), 1);
+  const preExisting = await prisma.masterDataItem.findFirst({ where: { type: "REVENUE_EXPENSE_CATEGORY", code: REVENUE_SERVICE_CATEGORY.code, deletedAt: null } });
+  if (preExisting) { t.skip("DB này đã có REV_SERVICE sẵn"); return; }
+  autoServiceCategory = true;
+
+  await runImport("REVENUE_POS", "REVENUE_POS_RAW_V1", fileFrom(POS_HEADERS, [
+    posLine(SERVICE_ITEM, "Phụ thu dịch vụ không gian", "DỊCH VỤ", 5400000),
+  ], "Import doanh thu", "pos-rgtest-service-auto.xlsx"));
+
+  const row = await prisma.revenueImportRow.findFirst({ where: { productCode: SERVICE_ITEM }, select: { revenueSource: true, inventoryStatus: true, departmentCode: true } });
+  assert.equal(row.revenueSource, REVENUE_SERVICE_CATEGORY.code, "DỊCH VỤ phải quy về danh mục Doanh thu phụ thu vừa tự tạo");
+  assert.equal(row.inventoryStatus, "NOT_REQUIRED");
+  assert.equal(row.departmentCode, null, "dịch vụ không thuộc Bếp hay Bar");
+  const category = await prisma.masterDataItem.findFirst({ where: { type: "REVENUE_EXPENSE_CATEGORY", code: REVENUE_SERVICE_CATEGORY.code, deletedAt: null } });
+  assert.equal(category.name, "Doanh thu phụ thu");
+  assert.equal(category.skipInventory, true);
+  assert.equal(category.group, "REVENUE_SOURCE", "phải là nhóm doanh thu để lên dòng 1 của P&L");
+  assert.equal(await prisma.inventoryItem.findUnique({ where: { code: SERVICE_ITEM } }), null, "mã dịch vụ không được thành mặt hàng kho");
+});
+
+test("mã món chưa có trong danh mục: file có Tên hàng thì tự tạo thành phẩm kèm nhóm doanh thu, vẫn chờ rã", async (t) => {
+  t.after(async () => { await cleanup(); await prisma.$disconnect(); });
+  await cleanup();
+  await seed();
+
+  await runImport("REVENUE_POS", "REVENUE_POS_RAW_V1", fileFrom(POS_HEADERS, [
+    posLine(NEW_ITEM, "Bún chả giò thịt nướng", "ĐỒ ĂN", 285000),
+  ], "Import doanh thu", "pos-rgtest-new-item.xlsx"));
+
+  const item = await prisma.inventoryItem.findUnique({ where: { code: NEW_ITEM } });
+  assert.ok(item, "thành phẩm mới phải được tạo từ Tên hàng trong file");
+  assert.equal(item.name, "Bún chả giò thịt nướng");
+  assert.equal(item.itemType, "FINISHED");
+  assert.equal(item.revenueGroup, FOOD_CODE, "nhóm doanh thu quy từ ĐỒ ĂN gán luôn cho mặt hàng mới");
+  const row = await prisma.revenueImportRow.findFirst({ where: { productCode: NEW_ITEM }, select: { inventoryStatus: true, productQuantity: true, departmentCode: true } });
+  assert.equal(row.inventoryStatus, "PENDING", "số lượng bán chờ nút Rã nguyên liệu để sinh phiếu Xuất bán");
+  assert.equal(row.productQuantity, 1);
+  assert.equal(row.departmentCode, "KIT");
+
+  // Không có cột Tên hàng thì không có gì để tạo mặt hàng: vẫn chặn như cũ.
+  const headersNoName = POS_HEADERS.filter((header) => header !== "Tên hàng");
+  const template = getImportTemplate("REVENUE_POS", "REVENUE_POS_RAW_V1");
+  const parsed = await parseImportFile(fileFrom(headersNoName, [
+    ["01/08/2026", BRANCH, "SP_RGTEST_NONAME", 1, "Tại chỗ", "ĐỒ ĂN", "FDSTIENMAT", 100, 0, 0, 100],
+  ], "Import doanh thu", "pos-rgtest-noname.xlsx"), template);
+  await validateImportResult(parsed, "REVENUE_POS", session, {});
+  assert.match(parsed.rows[0].errors.join(" / "), /Khong tim thay ma mon POS SP_RGTEST_NONAME/);
+});
+
+test("ghi sổ cả kỳ: dòng 0 đồng (đá, cà phê free) không làm hỏng kỳ, vẫn nằm ở hàng chờ rã", async (t) => {
+  // Cửa hàng riêng để syncAccountingPeriod chỉ đụng dữ liệu của test này.
+  const ZERO_ITEM = "SP_RGTEST_ZERO";
+  const seededZeroBranch = !(await prisma.masterDataItem.findFirst({ where: { type: "BRANCH", code: ZERO_BRANCH, deletedAt: null } }));
+  if (seededZeroBranch) await prisma.masterDataItem.create({ data: { type: "BRANCH", code: ZERO_BRANCH, name: "Cửa hàng test ghi sổ", status: "ACTIVE" } });
+  t.after(async () => {
+    await cleanup();
+    if (seededZeroBranch) await prisma.masterDataItem.deleteMany({ where: { type: "BRANCH", code: ZERO_BRANCH } });
+    await prisma.$disconnect();
+  });
+  await cleanup();
+  await seed();
+
+  const line = (code, name, group, qty, amount) => ["01/08/2026", ZERO_BRANCH, code, name, qty, "Tại chỗ", group, "FDSTIENMAT", amount, 0, 0, amount];
+  await runImport("REVENUE_POS", "REVENUE_POS_RAW_V1", fileFrom(POS_HEADERS, [
+    line(ZERO_ITEM, "Đá", "ĐỒ UỐNG", 3, 0),
+    line(FOOD_ITEM, "Món ăn test", "ĐỒ ĂN", 1, 100),
+  ], "Import doanh thu", "pos-rgtest-zero.xlsx"));
+
+  const summary = await syncAccountingPeriod("2026-08", ZERO_BRANCH, session.name);
+  if (summary.skipped > 0 && summary.created + summary.updated === 0) {
+    const zeroRow = await prisma.revenueImportRow.findFirst({ where: { productCode: ZERO_ITEM }, select: { inventoryStatus: true } });
+    assert.equal(zeroRow.inventoryStatus, "PENDING");
+    t.skip("kỳ 2026-08 của cửa hàng test đang khoá trên DB này"); return;
+  }
+  // Kỳ còn các bút toán khác (khấu hao, phân bổ...) cũng báo SKIPPED nên không đếm đúng 1;
+  // chốt bằng chính bút toán của hai dòng.
+  assert.ok(summary.skipped >= 1, "dòng 0 đồng phải được bỏ qua chứ không làm hỏng kỳ");
+  const foodRow = await prisma.revenueImportRow.findFirst({ where: { productCode: FOOD_ITEM, branchCode: ZERO_BRANCH }, select: { id: true } });
+  assert.ok(await prisma.journalEntry.findFirst({ where: { sourceType: "REVENUE_POS", sourceId: foodRow.id } }), "dòng có tiền vẫn ghi sổ bình thường");
+  const zeroRow = await prisma.revenueImportRow.findFirst({ where: { productCode: ZERO_ITEM }, select: { id: true, inventoryStatus: true, productQuantity: true } });
+  assert.equal(zeroRow.inventoryStatus, "PENDING", "đá vẫn phải rã kho dù không thu tiền");
+  assert.equal(zeroRow.productQuantity, 3);
+  assert.equal(await prisma.journalEntry.findFirst({ where: { sourceType: "REVENUE_POS", sourceId: zeroRow.id } }), null, "dòng 0 đồng không có bút toán");
 });
