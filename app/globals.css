@@ -398,6 +398,17 @@ body {
     word-break: break-word !important;
   }
 
+  /* Cột STT của 2 bảng chi tiết: table-layout: fixed chia đều mọi cột nên ô số thứ tự
+     rộng bằng ô diễn giải, in ra thừa cả khoảng trắng. Ghim cứng bề ngang cho nó,
+     phần dư trả lại cho các cột chữ. Loại trừ ô colspan (dòng "không có dữ liệu"). */
+  #daily-cash-report .daily-cash-detail th:first-child,
+  #daily-cash-report .daily-cash-detail td:first-child:not([colspan]) {
+    width: 9mm !important;
+    padding-left: 2px !important;
+    padding-right: 2px !important;
+    text-align: center !important;
+  }
+
   #daily-cash-report .material-symbols-outlined {
     display: none !important;
   }

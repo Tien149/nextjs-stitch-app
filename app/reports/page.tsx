@@ -1170,7 +1170,7 @@ export default function ReportsPage() {
             </section>
           )}
 
-          <section className="table-panel">
+          <section className="table-panel daily-cash-detail">
             <PanelHeader title="Các khoản thu chi tiết" subtitle="Lấy từ phiếu thu trong ngày/ca. Cột nguồn tiền cho biết khoản nào là tiền mặt, cộng vào số tiền cần nộp." />
             <div className="max-h-[520px] overflow-auto">
               <Table headers={["STT", "Mã phiếu", "Nội dung thu", "Tên khách hàng/đối tượng", "Nguồn tiền", "Trạng thái", "Số tiền"]}>
@@ -1212,7 +1212,7 @@ export default function ReportsPage() {
             </div>
           </section>
 
-          <section className="table-panel">
+          <section className="table-panel daily-cash-detail">
             <PanelHeader title="Các khoản chi/tiền ra chi tiết" subtitle="Lấy từ phiếu chi và khoản hoàn cọc trong ngày/ca. Hoàn cọc là tiền ra để tính số tiền cần nộp nhưng không phải chi phí P&L." />
             <div className="max-h-[520px] overflow-auto">
               <Table headers={["STT", "Mã phiếu", "Khoản chi chi tiết", "Tên nhà cung cấp/đối tượng", "Nguồn tiền", "Số tiền"]}>
