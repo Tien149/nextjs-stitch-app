@@ -3,7 +3,7 @@
 import React, { useMemo, useState } from "react";
 import { opexGroupRank } from "@/lib/pnl-ordering";
 import { DonutLegendChart, MoneyLineChart } from "@/components/charts/ReportCharts";
-import { Card, MonthChips, NoPlanNotice, ProgressBar, StatCard, StatusBadge, Tag, budgetStatusOf, fmtCompact, fmtMoney, pctText, ratioOf, type Tone } from "@/components/reports/planning/planning-ui";
+import { Card, MonthChips, NoPlanNotice, ProgressBar, StatCard, StatusBadge, Tag, budgetStatusOf, fmtMoney, pctText, ratioOf, type Tone } from "@/components/reports/planning/planning-ui";
 import { EXPENSE_LINE_KEYS, LINE_SHORT_LABEL, sumAll, sumRange, type PlanningData, type StatementLine } from "@/components/reports/planning/planning-types";
 
 /**
@@ -132,7 +132,7 @@ export default function BudgetControlTab({ data, upTo, onChangeUpTo, onOpenBudge
 
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
         <StatCard label="Tổng ngân sách" tone="indigo" icon="account_balance_wallet" value={fmtMoney(totalPlan)} sub={`Lũy kế ${upTo + 1} tháng năm ${data.year}`} />
-        <StatCard label="Thực tế đã chi" tone="blue" icon="payments" value={fmtMoney(totalActual)} sub={totalPlan > 0 ? `Trên dòng có ngân sách: ${fmtCompact(spentOnPlanned)}` : "Từ bút toán đã ghi sổ"} />
+        <StatCard label="Thực tế đã chi" tone="blue" icon="payments" value={fmtMoney(totalActual)} sub={totalPlan > 0 ? `Trên dòng có ngân sách: ${fmtMoney(spentOnPlanned)}` : "Từ bút toán đã ghi sổ"} />
         <StatCard label="Còn lại / Chênh lệch" tone={totalPlan - spentOnPlanned >= 0 ? "emerald" : "rose"} icon="savings" value={fmtMoney(totalPlan - spentOnPlanned)} sub="Ngân sách trừ thực chi" />
         <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
           <p className="text-[10px] font-bold uppercase tracking-wider text-amber-600">Tỷ lệ tiêu hao</p>
@@ -180,9 +180,9 @@ export default function BudgetControlTab({ data, upTo, onChangeUpTo, onOpenBudge
                     </span>
                   </td>
                   <td className="px-3 py-2.5"><Tag tone={row.level === 0 ? "indigo" : "slate"}>{row.level === 0 ? "Tổng nhóm" : natureLabel(row.lineKey, row.groupName)}</Tag></td>
-                  <td className="px-3 py-2.5 text-right font-bold whitespace-nowrap">{row.plan !== null ? fmtCompact(row.plan) : <span className="text-slate-300">—</span>}</td>
-                  <td className="px-3 py-2.5 text-right font-semibold whitespace-nowrap">{fmtCompact(row.actual)}</td>
-                  <td className={`px-3 py-2.5 text-right font-bold whitespace-nowrap ${remaining === null ? "text-slate-300" : remaining < 0 ? "text-rose-600" : "text-emerald-600"}`}>{remaining === null ? "—" : fmtCompact(remaining)}</td>
+                  <td className="px-3 py-2.5 text-right font-bold whitespace-nowrap tabular-nums">{row.plan !== null ? fmtMoney(row.plan) : <span className="text-slate-300">—</span>}</td>
+                  <td className="px-3 py-2.5 text-right font-semibold whitespace-nowrap tabular-nums">{fmtMoney(row.actual)}</td>
+                  <td className={`px-3 py-2.5 text-right font-bold whitespace-nowrap tabular-nums ${remaining === null ? "text-slate-300" : remaining < 0 ? "text-rose-600" : "text-emerald-600"}`}>{remaining === null ? "—" : fmtMoney(remaining)}</td>
                   <td className="px-3 py-2.5">
                     <div className="flex items-center gap-2">
                       <ProgressBar rate={rate} className="flex-1" />
@@ -196,7 +196,7 @@ export default function BudgetControlTab({ data, upTo, onChangeUpTo, onOpenBudge
             {filteredRows.length === 0 && <tr><td colSpan={7} className="px-4 py-8 text-center text-sm text-slate-400">Không có hạng mục nào khớp bộ lọc.</td></tr>}
           </tbody>
         </table>
-        <p className="px-4 py-2.5 border-t border-slate-100 text-[11px] text-slate-400">Đúng định mức: dưới 90% · Cần chú ý: 90–100% · Vượt ngân sách: trên 100%. Tổng nhóm không set được ngân sách ở cấp hạng mục (giá vốn, nhân sự, khấu hao) thì chỉ có kế hoạch ở dòng tổng. Cả năm thực chi {fmtCompact(sumAll(monthlyActual))}.</p>
+        <p className="px-4 py-2.5 border-t border-slate-100 text-[11px] text-slate-400">Đúng định mức: dưới 90% · Cần chú ý: 90–100% · Vượt ngân sách: trên 100%. Tổng nhóm không set được ngân sách ở cấp hạng mục (giá vốn, nhân sự, khấu hao) thì chỉ có kế hoạch ở dòng tổng. Cả năm thực chi {fmtMoney(sumAll(monthlyActual))}.</p>
       </Card>
     </div>
   );

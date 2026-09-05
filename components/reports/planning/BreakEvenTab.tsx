@@ -92,6 +92,8 @@ export default function BreakEvenTab({ data, upTo, onChangeUpTo }: { data: Plann
   // Đồ thị giao cắt: doanh thu tăng dần từ 0 tới ~1,3 lần max(doanh thu, hòa vốn).
   const crossMax = Math.max(model.revenue, model.bep || 0, 1) * 1.3;
   const crossSteps = Array.from({ length: 7 }, (_, index) => (crossMax * index) / 6);
+  // Nhãn TRỤC chart vẫn rút gọn: 7 mốc ghi đủ chữ số sẽ chồng đè lên nhau, không đọc được.
+  // Mọi số đọc-để-lấy-số (bảng, thẻ, chú thích) đều để đủ chữ số.
   const crossLabels = crossSteps.map((value) => fmtCompact(value));
 
   const branchRows = data.byBranch.map((branch) => {
@@ -169,10 +171,10 @@ export default function BreakEvenTab({ data, upTo, onChangeUpTo }: { data: Plann
                 return (
                   <tr key={label} className={`border-t border-slate-100 ${known ? "" : "text-slate-400"}`}>
                     <td className="px-3 py-1.5 font-semibold">Tháng {index + 1}{!known && <span className="ml-1 text-[10px] font-normal">(theo KH)</span>}</td>
-                    <td className="px-3 py-1.5 text-right">{fmtCompact(planCumulative[index])}</td>
-                    <td className="px-3 py-1.5 text-right font-bold text-emerald-700">{known ? fmtCompact(actualCumulative[index]) : "—"}</td>
-                    <td className="px-3 py-1.5 text-right text-rose-600 font-semibold">{model.bep === null ? "—" : fmtCompact(model.bep)}</td>
-                    <td className={`px-3 py-1.5 text-right font-bold ${diff === null ? "" : diff >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{diff === null ? "—" : `${diff >= 0 ? "+" : "−"}${fmtCompact(Math.abs(diff))}`}</td>
+                    <td className="px-3 py-1.5 text-right tabular-nums whitespace-nowrap">{fmtMoney(planCumulative[index])}</td>
+                    <td className="px-3 py-1.5 text-right font-bold text-emerald-700 tabular-nums whitespace-nowrap">{known ? fmtMoney(actualCumulative[index]) : "—"}</td>
+                    <td className="px-3 py-1.5 text-right text-rose-600 font-semibold tabular-nums whitespace-nowrap">{model.bep === null ? "—" : fmtMoney(model.bep)}</td>
+                    <td className={`px-3 py-1.5 text-right font-bold tabular-nums whitespace-nowrap ${diff === null ? "" : diff >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{diff === null ? "—" : signedMoney(diff)}</td>
                   </tr>
                 );
               })}
@@ -219,7 +221,7 @@ export default function BreakEvenTab({ data, upTo, onChangeUpTo }: { data: Plann
                       <span className="material-symbols-outlined text-sm">{row.delta < 0 ? "arrow_drop_down" : row.delta > 0 ? "arrow_drop_up" : "remove"}</span>
                       FC {row.delta === 0 ? "hiện tại" : `${row.delta > 0 ? "+" : ""}${Math.round(row.delta * 100)}%`}
                     </span>
-                    <span className="block text-[10px] text-slate-400 ml-5">Định phí {fmtCompact(row.fixed)}</span>
+                    <span className="block text-[10px] text-slate-400 ml-5 tabular-nums">Định phí {fmtMoney(row.fixed)}</span>
                   </td>
                   <td className="px-3 py-2 text-right font-bold whitespace-nowrap">{row.bep === null ? "—" : fmtMoney(row.bep)}</td>
                   <td className={`px-3 py-2 text-right font-semibold whitespace-nowrap ${row.diff === null ? "" : row.diff > 0 ? "text-rose-600" : row.diff < 0 ? "text-emerald-600" : "text-slate-500"}`}>{row.diff === null ? "—" : signedMoney(row.diff)}</td>
@@ -238,7 +240,7 @@ export default function BreakEvenTab({ data, upTo, onChangeUpTo }: { data: Plann
               ]}
               height={260}
             />
-            <p className="text-[10px] text-slate-400 text-center">Trục ngang: mức doanh thu. Hai đường cắt nhau tại mốc hòa vốn {model.bep === null ? "—" : fmtCompact(model.bep)}.</p>
+            <p className="text-[10px] text-slate-400 text-center">Trục ngang: mức doanh thu. Hai đường cắt nhau tại mốc hòa vốn {model.bep === null ? "—" : fmtMoney(model.bep)}.</p>
           </div>
         </div>
       </Card>

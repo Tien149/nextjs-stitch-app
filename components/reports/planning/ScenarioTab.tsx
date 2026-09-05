@@ -4,7 +4,7 @@ import React, { useMemo, useState } from "react";
 import { storeLabel } from "@/lib/branch-labels";
 import { HorizontalBarChart, MixedChart } from "@/components/charts/ReportCharts";
 import { buildBreakEvenModel } from "@/components/reports/planning/BreakEvenTab";
-import { Card, MonthChips, NoPlanNotice, Tag, fmtCompact, fmtMoney, pctText, ratioOf, signedMoney, type Tone } from "@/components/reports/planning/planning-ui";
+import { Card, MonthChips, NoPlanNotice, Tag, fmtMoney, pctText, ratioOf, signedMoney, statValueTextClass, type Tone } from "@/components/reports/planning/planning-ui";
 import { bucketOperatingCost, bucketSum, cumulative, finalizeBucket, sumAll, type PlanningData, type PnlBucket } from "@/components/reports/planning/planning-types";
 
 /**
@@ -133,10 +133,10 @@ export default function ScenarioTab({ data, upTo, onChangeUpTo }: { data: Planni
                     <span className="px-1.5 text-[11px] font-bold text-slate-400 bg-slate-50">%</span>
                   </div>
                 </div>
-                <div className="mt-2 flex items-center justify-between text-[11px] text-slate-500">
-                  <span>Gốc: <b className="text-slate-700">{fmtCompact(original)}</b></span>
+                <div className="mt-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-[11px] text-slate-500">
+                  <span className="tabular-nums">Gốc: <b className="text-slate-700">{fmtMoney(original)}</b></span>
                   <span className="material-symbols-outlined text-sm text-slate-300">arrow_forward</span>
-                  <span className={`font-bold ${changed > original ? "text-emerald-700" : changed < original ? "text-rose-700" : "text-slate-700"}`}>{fmtCompact(changed)}</span>
+                  <span className={`font-bold tabular-nums ${changed > original ? "text-emerald-700" : changed < original ? "text-rose-700" : "text-slate-700"}`}>{fmtMoney(changed)}</span>
                 </div>
               </div>
             );
@@ -153,17 +153,18 @@ export default function ScenarioTab({ data, upTo, onChangeUpTo }: { data: Planni
               return (
                 <div key={card.label} className="bg-white border border-slate-200 rounded-xl p-3.5 shadow-sm min-w-0">
                   <p className={`text-[10px] font-bold uppercase tracking-wider ${{ blue: "text-blue-600", emerald: "text-emerald-600", rose: "text-rose-600", indigo: "text-indigo-600" }[card.tone as "blue" | "emerald" | "rose" | "indigo"]}`}>{card.label}</p>
+                  {/* Số đủ chữ số, không truncate: thẻ hẹp thì cho nhãn và số xuống dòng. */}
                   <dl className="mt-2 space-y-1.5 text-[11px]">
-                    <div className="flex items-center justify-between gap-1"><dt className="text-slate-400">{baseLabel}:</dt><dd className="font-bold text-slate-700 truncate">{fmtCompact(card.plan || (data.hasPlan ? 0 : card.actual))}</dd></div>
-                    <div className="flex items-center justify-between gap-1"><dt className="text-slate-400">Thực đạt:</dt><dd className="font-bold text-slate-700 truncate flex items-center gap-1">{fmtCompact(card.actual)}{data.hasPlan && <span className={`text-[10px] ${goodActual ? "text-emerald-600" : "text-rose-600"}`}>{actualVsPlan >= 0 ? "+" : "−"}{fmtCompact(Math.abs(actualVsPlan))}</span>}</dd></div>
-                    <div className="flex items-center justify-between gap-1 border-t border-dashed border-slate-200 pt-1.5"><dt className="text-indigo-500 font-semibold">Giả định:</dt><dd className={`font-extrabold truncate flex items-center gap-1 ${goodWhat ? "text-emerald-700" : "text-rose-700"}`}>{fmtCompact(card.what)}<span className="text-[10px]">{whatVsPlan >= 0 ? "+" : "−"}{fmtCompact(Math.abs(whatVsPlan))}</span></dd></div>
+                    <div className="flex flex-wrap items-center justify-between gap-x-1.5 gap-y-0.5"><dt className="text-slate-400">{baseLabel}:</dt><dd className="font-bold text-slate-700 tabular-nums">{fmtMoney(card.plan || (data.hasPlan ? 0 : card.actual))}</dd></div>
+                    <div className="flex flex-wrap items-center justify-between gap-x-1.5 gap-y-0.5"><dt className="text-slate-400">Thực đạt:</dt><dd className="font-bold text-slate-700 tabular-nums flex flex-wrap items-center justify-end gap-x-1.5">{fmtMoney(card.actual)}{data.hasPlan && <span className={`text-[10px] ${goodActual ? "text-emerald-600" : "text-rose-600"}`}>{signedMoney(actualVsPlan)}</span>}</dd></div>
+                    <div className="flex flex-wrap items-center justify-between gap-x-1.5 gap-y-0.5 border-t border-dashed border-slate-200 pt-1.5"><dt className="text-indigo-500 font-semibold">Giả định:</dt><dd className={`font-extrabold tabular-nums flex flex-wrap items-center justify-end gap-x-1.5 ${goodWhat ? "text-emerald-700" : "text-rose-700"}`}>{fmtMoney(card.what)}<span className="text-[10px]">{signedMoney(whatVsPlan)}</span></dd></div>
                   </dl>
                 </div>
               );
             })}
             <div className={`rounded-xl border p-3.5 grid place-items-center text-center ${netDelta >= 0 ? "bg-emerald-50 border-emerald-200" : "bg-rose-50 border-rose-200"}`}>
               <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Độ lệch của tổng lợi nhuận ròng</p>
-              <p className={`mt-1 text-2xl font-extrabold ${netDelta >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{netDelta >= 0 ? "+" : "−"}{fmtCompact(Math.abs(netDelta))}</p>
+              <p className={`mt-1 font-extrabold leading-tight tabular-nums ${statValueTextClass(signedMoney(netDelta))} ${netDelta >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{signedMoney(netDelta)}</p>
               <p className="text-[10px] text-slate-500">so với {baseLabel.toLowerCase()} lũy kế {upTo + 1} tháng</p>
             </div>
           </div>
@@ -172,7 +173,7 @@ export default function ScenarioTab({ data, upTo, onChangeUpTo }: { data: Planni
             <p className="text-sm font-bold text-indigo-800 flex items-center gap-1.5"><span className="material-symbols-outlined text-lg">balance</span>Phân tích điểm hòa vốn (BEP) theo kịch bản — cả năm</p>
             <div className="mt-3 grid sm:grid-cols-2 xl:grid-cols-4 gap-3">
               {[
-                { label: "Doanh thu hòa vốn", value: scenarioModel.bep === null ? "—" : fmtCompact(scenarioModel.bep), basis: bepBase.bep === null ? "—" : fmtCompact(bepBase.bep), good: scenarioModel.bep !== null && bepBase.bep !== null ? scenarioModel.bep <= bepBase.bep : null },
+                { label: "Doanh thu hòa vốn", value: scenarioModel.bep === null ? "—" : fmtMoney(scenarioModel.bep), basis: bepBase.bep === null ? "—" : fmtMoney(bepBase.bep), good: scenarioModel.bep !== null && bepBase.bep !== null ? scenarioModel.bep <= bepBase.bep : null },
                 { label: "Biên an toàn", value: pctText(mos), basis: pctText(mosBase), good: mos !== null && mosBase !== null ? mos >= mosBase : null },
                 { label: "Thời điểm hòa vốn", value: bepMonth >= 0 ? `Tháng ${bepMonth + 1}` : "Chưa đạt", basis: bepMonthBase >= 0 ? `Tháng ${bepMonthBase + 1}` : "Chưa đạt", good: bepMonth >= 0 && (bepMonthBase < 0 || bepMonth <= bepMonthBase) },
                 { label: "Đòn bẩy (DOL)", value: dol === null ? "—" : `${dol.toFixed(2)}x`, basis: dolBase === null ? "—" : `${dolBase.toFixed(2)}x`, good: null },
