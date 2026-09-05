@@ -10,6 +10,7 @@ import ExportExcelButton from "@/components/ExportExcelButton";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 import { safeConversionRate } from "@/lib/unit-conversion";
+import { statValueTextClass } from "@/components/reports/report-ui";
 
 type UnitConversion = { id: string; unitCode: string; unitName: string | null; conversionRate: number; isDefaultPurchase: boolean };
 type Item = { id: string; code: string; name: string; unit: string; itemType: string; category?: string | null; revenueGroup?: string | null; minStock: number; requiresImage: boolean; unitConversions?: UnitConversion[] };
@@ -419,7 +420,7 @@ export default function InventoryPage() {
             <span className="text-xs font-semibold text-slate-500">Tổng giá trị tồn kho</span>
             <span className="material-symbols-outlined text-emerald-500 text-xl">payments</span>
           </div>
-          <p className="text-lg font-bold text-emerald-600 mt-1">{money(totalStockValue)} đ</p>
+          <p className={`font-bold text-emerald-600 mt-1 leading-tight tabular-nums whitespace-nowrap ${statValueTextClass(`${money(totalStockValue)} đ`)}`}>{money(totalStockValue)} đ</p>
         </div>
         <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
           <div className="flex items-center justify-between">
@@ -1408,7 +1409,7 @@ export default function InventoryPage() {
                         <td className="py-1 pr-3 font-mono">{item.productCode}</td>
                         <td className="py-1 pr-3">{item.productName}</td>
                         <td className="py-1 pr-3">{data.revenueGroups.find((group) => group.code === item.revenueSource)?.name || item.revenueSource || "-"}</td>
-                        <td className="py-1 pr-3 text-right">{money(item.totalQuantity)}</td>
+                        <td className="py-1 pr-3 text-right tabular-nums whitespace-nowrap">{money(item.totalQuantity)}</td>
                         <td className="py-1 text-right">{item.rowCount}</td>
                       </tr>
                     ))}
@@ -1918,7 +1919,7 @@ function Table({
             {headers.map((header, i) => (
               <th
                 key={i}
-                className={`px-4 py-3 font-bold ${header.align === "right" ? "text-right" : "text-left"}`}
+                className={`px-4 py-3 font-bold whitespace-nowrap ${header.align === "right" ? "text-right" : "text-left"}`}
               >
                 {header.label}
               </th>
@@ -1931,4 +1932,6 @@ function Table({
   );
 }
 
-function Cell({ children, right = false }: { children: React.ReactNode; right?: boolean }) { return <td className={`cell ${right ? "text-right" : ""}`}>{children}</td>; }
+// Cột canh phải là cột số: tabular-nums cho chữ số thẳng hàng, nowrap để không bẻ đôi giữa số.
+// Bảng đã có khung cuộn ngang sẵn nên số dài chỉ làm bảng cuộn, không bị bóp.
+function Cell({ children, right = false }: { children: React.ReactNode; right?: boolean }) { return <td className={`cell ${right ? "text-right tabular-nums whitespace-nowrap" : ""}`}>{children}</td>; }

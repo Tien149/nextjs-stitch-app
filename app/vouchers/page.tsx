@@ -17,6 +17,7 @@ import { depositCategoryDirection } from "@/lib/bank-statement-category";
 import { PartnerPicker } from "@/components/PartnerPicker";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { exportRowsToExcel } from "@/lib/export-table-excel";
+import { statValueTextClass } from "@/components/reports/report-ui";
 
 const MAX_BULK_SELECTION = 100;
 
@@ -984,14 +985,14 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
               <span className="text-xs font-semibold text-slate-500">Tổng thu trong kỳ</span>
               <span className="material-symbols-outlined text-emerald-500 text-xl">arrow_downward</span>
             </div>
-            <p className="text-lg font-bold text-emerald-600 mt-1">{money(totalReceipts)} đ</p>
+            <p className={`font-bold text-emerald-600 mt-1 leading-tight tabular-nums whitespace-nowrap ${statValueTextClass(`${money(totalReceipts)} đ`)}`}>{money(totalReceipts)} đ</p>
           </div>
           <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold text-slate-500">Tổng chi trong kỳ</span>
               <span className="material-symbols-outlined text-rose-500 text-xl">arrow_upward</span>
             </div>
-            <p className="text-lg font-bold text-rose-600 mt-1">{money(totalPayments)} đ</p>
+            <p className={`font-bold text-rose-600 mt-1 leading-tight tabular-nums whitespace-nowrap ${statValueTextClass(`${money(totalPayments)} đ`)}`}>{money(totalPayments)} đ</p>
           </div>
           <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
             <div className="flex items-center justify-between">
@@ -1643,7 +1644,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
               </div>
             )}
             <div className="h-[calc(100vh-245px)] min-h-[720px] max-h-[900px] overflow-auto overscroll-contain">
-              <table className="w-full min-w-[820px] table-fixed text-left text-sm">
+              <table className="w-full min-w-[890px] table-fixed text-left text-sm">
                 <thead className="sticky top-0 z-10 bg-slate-50 text-slate-500 text-xs uppercase font-bold border-b border-slate-200 shadow-[0_1px_0_0_rgb(226_232_240)]">
                   <tr>
                     <th className="w-10 px-4 py-3 text-left">
@@ -1659,7 +1660,10 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                     </th>
                     <th className="w-[200px] px-4 py-3 text-left">Chứng từ</th>
                     <th className="w-[180px] px-4 py-3 text-left">Đối tác</th>
-                    <th className="w-[120px] px-4 py-3 text-right">Số tiền</th>
+                    {/* Bảng table-fixed nên cột không tự nới theo nội dung: cột 120px cũ không
+                        chứa nổi số hàng tỷ ("3.928.699.540 đ" cần ~102px chữ + 32px padding).
+                        190px đủ chỗ cho tới số 15 chữ số mà vẫn còn dư. */}
+                    <th className="w-[190px] px-4 py-3 text-right whitespace-nowrap">Số tiền</th>
                     <th className="w-[135px] px-4 py-3 text-left">Trạng thái</th>
                     <th className="w-[145px] px-4 py-3 text-right">Thao tác</th>
                   </tr>
@@ -1746,7 +1750,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                           </p>
                         )}
                       </td>
-                      <td className="px-4 py-3.5 text-right font-bold text-slate-900 whitespace-nowrap">{money(voucher.amount)} đ</td>
+                      <td className="px-4 py-3.5 text-right font-bold text-slate-900 whitespace-nowrap tabular-nums">{money(voucher.amount)} đ</td>
                       <td className="px-4 py-3.5 whitespace-nowrap">
                         <span className={`text-[11px] font-bold px-2.5 py-1 rounded-full uppercase tracking-wider ${
                           voucher.status === "APPROVED"
