@@ -12,6 +12,8 @@ export type PnlBucket = {
   otherOpex: number;
   otherIncome: number;
   otherExpense: number;
+  /** Tiền mua tài sản/CCDC trong tháng — dòng thông tin, KHÔNG trừ vào EBITDA hay lợi nhuận ròng. */
+  capex: number;
   grossProfit: number;
   opexBeforeDepreciation: number;
   ebitda: number;
@@ -60,22 +62,46 @@ export const LINE_SHORT_LABEL: Record<string, string> = {
   ebitda: "EBITDA",
   otherIncome: "Thu nhập khác",
   otherExpense: "Chi phí khác",
+  capex: "Chi phí đầu tư tài sản/CCDC (CAPEX)",
   netProfit: "Lợi nhuận ròng",
 };
 
 /** Chi phí hoạt động = nhân sự + OPEX khác + khấu hao (mọi thứ giữa LN gộp và LN hoạt động). */
 export const operatingCostOf = (bucket: PnlBucket) => bucket.payroll + bucket.otherOpex + bucket.depreciation;
 
-export const sumRange = (values: number[], upTo: number) => values.slice(0, upTo + 1).reduce((total, value) => total + value, 0);
+/**
+ * Các tháng (0-based) đang được tick trên chip "Lũy kế tháng". Trước đây chỉ có một số `upTo`
+ * nên bấm T8 luôn kéo theo T1..T8; khách muốn tick tự do từng tháng (feedback 06/09/2026),
+ * ví dụ chỉ xem riêng T8 hoặc T3 + T7 + T9. Mảng rỗng nghĩa là chưa chọn tháng nào.
+ */
+export type MonthPick = number[];
+
+export const sumMonths = (values: number[], picked: MonthPick) => picked.reduce((total, index) => total + (values[index] || 0), 0);
 export const sumAll = (values: number[]) => values.reduce((total, value) => total + value, 0);
 export const cumulative = (values: number[]) => values.reduce<number[]>((acc, value) => [...acc, (acc[acc.length - 1] || 0) + value], []);
 
-/** Cộng dồn một trường của bucket tới tháng `upTo` (0-based). */
-export const bucketSum = (buckets: PnlBucket[], key: keyof PnlBucket, upTo: number) => sumRange(buckets.map((bucket) => bucket[key]), upTo);
-export const bucketOperatingCost = (buckets: PnlBucket[], upTo: number) => sumRange(buckets.map(operatingCostOf), upTo);
+/** Tháng lớn nhất đang tick — mốc "đã biết số thực tế" của các bảng/chart lũy kế. */
+export const lastPicked = (picked: MonthPick) => (picked.length === 0 ? -1 : Math.max(...picked));
+
+/** Nhãn gọn của vùng tháng đang tick: "T8", "T1–T8" khi liền mạch, "T2, T5, T9" khi rời rạc. */
+export function monthPickLabel(picked: MonthPick) {
+  const sorted = [...picked].sort((a, b) => a - b);
+  if (sorted.length === 0) return "chưa chọn tháng";
+  if (sorted.length === 1) return `T${sorted[0] + 1}`;
+  const contiguous = sorted.every((value, index) => index === 0 || value === sorted[index - 1] + 1);
+  if (contiguous) return `T${sorted[0] + 1}–T${sorted[sorted.length - 1] + 1}`;
+  return sorted.map((index) => `T${index + 1}`).join(", ");
+}
+
+/** "8 tháng (T1–T8)" — dùng cho subtitle của thẻ và bảng. */
+export const monthPickSummary = (picked: MonthPick) => (picked.length === 0 ? "chưa chọn tháng" : `${picked.length} tháng (${monthPickLabel(picked)})`);
+
+/** Cộng một trường của bucket trên đúng các tháng đang tick. */
+export const bucketSum = (buckets: PnlBucket[], key: keyof PnlBucket, picked: MonthPick) => sumMonths(buckets.map((bucket) => bucket[key]), picked);
+export const bucketOperatingCost = (buckets: PnlBucket[], picked: MonthPick) => sumMonths(buckets.map(operatingCostOf), picked);
 
 /** Bản client của finalizePnl (lib/reports.ts) — dùng cho kịch bản giả định tính ngay trên trình duyệt. */
-export function finalizeBucket(base: Pick<PnlBucket, "revenue" | "cogs" | "payroll" | "depreciation" | "otherOpex" | "otherIncome" | "otherExpense">): PnlBucket {
+export function finalizeBucket(base: Pick<PnlBucket, "revenue" | "cogs" | "payroll" | "depreciation" | "otherOpex" | "otherIncome" | "otherExpense" | "capex">): PnlBucket {
   const grossProfit = base.revenue - base.cogs;
   const opexBeforeDepreciation = base.payroll + base.otherOpex;
   const ebitda = grossProfit - opexBeforeDepreciation;
@@ -84,8 +110,8 @@ export function finalizeBucket(base: Pick<PnlBucket, "revenue" | "cogs" | "payro
   return { ...base, grossProfit, opexBeforeDepreciation, ebitda, operatingProfit, netProfit, grossMargin: base.revenue ? grossProfit / base.revenue : 0, ebitdaMargin: base.revenue ? ebitda / base.revenue : 0 };
 }
 
-export const emptyBucket = (): PnlBucket => finalizeBucket({ revenue: 0, cogs: 0, payroll: 0, depreciation: 0, otherOpex: 0, otherIncome: 0, otherExpense: 0 });
+export const emptyBucket = (): PnlBucket => finalizeBucket({ revenue: 0, cogs: 0, payroll: 0, depreciation: 0, otherOpex: 0, otherIncome: 0, otherExpense: 0, capex: 0 });
 
-/** Tổng của một nhóm/hạng mục tới tháng upTo, theo chế độ kế hoạch hay thực tế. */
-export const nodeValue = (node: { months: number[]; plan: number[] | null }, upTo: number, mode: "plan" | "actual") =>
-  mode === "plan" ? (node.plan ? sumRange(node.plan, upTo) : 0) : sumRange(node.months, upTo);
+/** Tổng của một nhóm/hạng mục trên các tháng đang tick, theo chế độ kế hoạch hay thực tế. */
+export const nodeValue = (node: { months: number[]; plan: number[] | null }, picked: MonthPick, mode: "plan" | "actual") =>
+  mode === "plan" ? (node.plan ? sumMonths(node.plan, picked) : 0) : sumMonths(node.months, picked);

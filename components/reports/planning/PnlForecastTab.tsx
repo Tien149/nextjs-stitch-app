@@ -22,6 +22,7 @@ const LINE_STYLE: Record<string, LineStyle> = {
   payroll: { tone: "sky", icon: "groups", title: "CHI PHÍ NHÂN SỰ", band: "bg-sky-50 text-sky-700", total: "bg-sky-100 text-sky-900" },
   otherOpex: { tone: "blue", icon: "receipt_long", title: "CHI PHÍ HOẠT ĐỘNG (OPEX)", band: "bg-blue-50 text-blue-700", total: "bg-blue-100 text-blue-900" },
   depreciation: { tone: "slate", icon: "trending_down", title: "KHẤU HAO TÀI SẢN/CCDC", band: "bg-slate-50 text-slate-600", total: "bg-slate-200/70 text-slate-800" },
+  capex: { tone: "orange", icon: "domain_add", title: "CHI PHÍ ĐẦU TƯ TÀI SẢN/CCDC (CAPEX)", band: "bg-orange-50 text-orange-700", total: "bg-orange-100 text-orange-900" },
   ebitda: { tone: "violet", icon: "functions", title: "EBITDA (LN HOẠT ĐỘNG TRƯỚC KHẤU HAO)", band: "", total: "bg-violet-200/60 text-violet-900" },
   otherIncome: { tone: "teal", icon: "savings", title: "THU NHẬP KHÁC", band: "bg-teal-50 text-teal-700", total: "bg-teal-100 text-teal-900" },
   otherExpense: { tone: "rose", icon: "money_off", title: "CHI PHÍ KHÁC", band: "bg-rose-50 text-rose-700", total: "bg-rose-100 text-rose-900" },
@@ -45,7 +46,10 @@ function natureTag(lineKey: string, name: string) {
 
 export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data: PlanningData; onRefresh: () => void; onOpenBudget?: () => void }) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  const [hideEmpty, setHideEmpty] = useState(true);
+  // Mặc định hiện HẾT danh mục, kể cả hạng mục chưa phát sinh đồng nào (yêu cầu khách
+  // 07/09/2026: danh mục có bao nhiêu hạng mục thì P&L phải show đủ bấy nhiêu). Ai muốn bảng
+  // gọn thì tự tick "Ẩn dòng bằng 0".
+  const [hideEmpty, setHideEmpty] = useState(false);
   const monthHeaders = data.months.map((month) => `T${Number(month.slice(5))}`);
   const toggle = (key: string) => setCollapsed((current) => ({ ...current, [key]: !current[key] }));
   const setAll = (next: boolean) => {
@@ -182,7 +186,9 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
       );
     }
     const groups = hideEmpty ? line.groups.filter((group) => !isEmptyNode(group)) : line.groups;
-    const itemCount = line.groups.reduce((sum, group) => sum + group.items.length, 0);
+    // Đếm theo đúng những gì đang vẽ: trước đây badge đếm cả nhóm/hạng mục vừa bị "Ẩn dòng
+    // bằng 0" giấu đi nên bảng ghi "4 nhóm" mà chỉ thấy 3.
+    const itemCount = groups.reduce((sum, group) => sum + (hideEmpty ? group.items.filter((item) => !isEmptyNode(item)).length : group.items.length), 0);
     return (
       <React.Fragment key={line.key}>
         <tr className={`border-t border-slate-200 ${style.band} ${groups.length > 0 ? "cursor-pointer" : ""}`} onClick={groups.length > 0 ? () => toggle(line.key) : undefined}>
@@ -190,10 +196,14 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
             <p className="text-[12px] font-extrabold tracking-wide flex items-center gap-1.5 whitespace-nowrap">
               <span className="material-symbols-outlined text-base">{groups.length === 0 ? style.icon : collapsed[line.key] ? "chevron_right" : "expand_more"}</span>
               {style.title}
-              <span className="ml-1 rounded-md bg-white/70 px-1.5 py-0.5 text-[10px] font-bold">{itemCount > 0 ? `${line.groups.length} nhóm · ${itemCount} hạng mục` : `${line.groups.length} nguồn`}</span>
+              <span className="ml-1 rounded-md bg-white/70 px-1.5 py-0.5 text-[10px] font-bold">{itemCount > 0 ? `${groups.length} nhóm · ${itemCount} hạng mục` : `${groups.length} nguồn`}</span>
             </p>
           ))}
-          <td colSpan={13} className="px-3 py-2 text-[11px] font-semibold opacity-80 whitespace-nowrap">Kế hoạch (đậm) · Thực đạt (chip) · % hoàn thành</td>
+          <td colSpan={13} className="px-3 py-2 text-[11px] font-semibold opacity-80 whitespace-nowrap">
+            {line.key === "capex"
+              ? "Tiền mua tài sản/CCDC trong kỳ — dòng thông tin, KHÔNG trừ vào EBITDA và lợi nhuận ròng (chi phí của tài sản đã nằm ở dòng Khấu hao)"
+              : "Kế hoạch (đậm) · Thực đạt (chip) · % hoàn thành"}
+          </td>
         </tr>
         {!collapsed[line.key] && groups.map((group) => renderGroup(line, group))}
         <tr className={`border-t border-slate-200 ${style.total}`}>

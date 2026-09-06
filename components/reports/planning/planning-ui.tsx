@@ -3,6 +3,7 @@
 import React from "react";
 import { money, statValueTextClass } from "@/components/reports/report-ui";
 import { compactVnd } from "@/components/charts/ReportCharts";
+import { monthPickSummary, type MonthPick } from "@/components/reports/planning/planning-types";
 
 /**
  * Bộ primitive giao diện cho cụm màn "Hoạch định tài chính" — học theo bố cục phần mềm
@@ -57,7 +58,15 @@ export function PillTabs({ tabs, active, onChange }: { tabs: Array<{ id: string;
 }
 
 /** Chip "LŨY KẾ THÁNG: T1 ... T12" — chọn tháng cuối của khoảng lũy kế (0-based). */
-export function MonthChips({ upTo, onChange, label = "Lũy kế tháng" }: { upTo: number; onChange: (index: number) => void; label?: string }) {
+export function MonthChips({ picked, onChange, label = "Lũy kế tháng" }: { picked: MonthPick; onChange: (picked: MonthPick) => void; label?: string }) {
+  const isOn = (index: number) => picked.includes(index);
+  const sortAsc = (values: number[]) => [...new Set(values)].sort((a, b) => a - b);
+  // Bấm thường: bật/tắt riêng tháng đó. Giữ Shift: chọn nhanh lũy kế T1 tới tháng vừa bấm —
+  // giữ lại thao tác quen thuộc cũ mà không ép người dùng lúc nào cũng phải cộng dồn từ T1.
+  const click = (index: number, cumulative: boolean) => {
+    if (cumulative) return onChange(Array.from({ length: index + 1 }, (_, month) => month));
+    onChange(isOn(index) ? picked.filter((month) => month !== index) : sortAsc([...picked, index]));
+  };
   return (
     <div className="flex flex-wrap items-center gap-2 bg-white border border-slate-200 rounded-xl px-4 py-2.5">
       <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 mr-1 flex items-center gap-1">
@@ -67,14 +76,33 @@ export function MonthChips({ upTo, onChange, label = "Lũy kế tháng" }: { upT
         <button
           key={index}
           type="button"
-          onClick={() => onChange(index)}
-          className={`h-7 min-w-8 px-2 rounded-md text-xs font-bold transition-colors ${index <= upTo ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200"}`}
-          title={index <= upTo ? `Đang gộp tới tháng ${index + 1}` : `Gộp tới tháng ${index + 1}`}
+          onClick={(event) => click(index, event.shiftKey)}
+          className={`h-7 min-w-8 px-2 rounded-md text-xs font-bold transition-colors ${isOn(index) ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200"}`}
+          title={`${isOn(index) ? "Bỏ" : "Cộng"} tháng ${index + 1} — giữ Shift để lấy lũy kế T1 tới T${index + 1}`}
         >
           T{index + 1}
         </button>
       ))}
-      <span className="ml-auto text-xs font-semibold text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1">Tổng lũy kế: {upTo + 1} tháng</span>
+      <button
+        type="button"
+        onClick={() => onChange(Array.from({ length: 12 }, (_, month) => month))}
+        className="h-7 px-2.5 rounded-md text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition-colors"
+        title="Chọn cả 12 tháng"
+      >
+        Cả năm
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange([])}
+        disabled={picked.length === 0}
+        className="h-7 px-2.5 rounded-md text-xs font-bold text-slate-500 bg-slate-100 hover:bg-slate-200 transition-colors disabled:opacity-40 disabled:hover:bg-slate-100"
+        title="Bỏ chọn hết"
+      >
+        Bỏ chọn
+      </button>
+      <span className={`ml-auto text-xs font-semibold rounded-lg px-2.5 py-1 border ${picked.length === 0 ? "text-amber-700 bg-amber-50 border-amber-200" : "text-slate-500 bg-slate-50 border-slate-200"}`}>
+        {picked.length === 0 ? "Chưa chọn tháng nào — bảng đang trống" : `Đang cộng: ${monthPickSummary(picked)}`}
+      </span>
     </div>
   );
 }
@@ -205,7 +233,8 @@ export function UnpostedPeriodsNotice({ periods }: { periods: string[] }) {
     <div className="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
       <span className="material-symbols-outlined text-xl">report</span>
       <div>
-        <b>Đã import doanh thu {label} nhưng chưa ghi sổ.</b> Cụm Hoạch định P&L lấy số từ sổ cái, nên các kỳ này còn hiện 0 đ.
+        <b>Đã import doanh thu {label} nhưng chưa ghi sổ.</b> Dòng Doanh thu vẫn đủ (lấy thẳng từ file import), nhưng giá vốn và
+        chi phí của các kỳ này lấy từ sổ cái nên còn hiện 0 đ — lợi nhuận đang bị thổi lên.
         Vào màn <b>Kế toán</b>, chọn đúng kỳ và cửa hàng rồi bấm <b>&quot;Đồng bộ ghi sổ&quot;</b> cho từng kỳ, sau đó quay lại làm mới bảng này.
       </div>
     </div>

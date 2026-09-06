@@ -12,6 +12,8 @@ import { WALLET_CARD_FEE_CATEGORY_CODE, WALLET_GRAB_EXPENSE_CATEGORY_CODE } from
 import { vietnamBusinessDayKey } from "@/lib/revenue-date";
 import { remainingWalletGross, selectWalletDeclaredRevenue, walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
 import { comparePnlGroups, comparePnlItems, isPayrollPnlItem } from "@/lib/pnl-ordering";
+import { isRevenueComponentCategory, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
+import { REVENUE_PNL_UNCLASSIFIED, loadRevenuePnlGroups, type CategoryLookupClient } from "@/lib/revenue-source";
 
 export type PnlBucket = {
   revenue: number;
@@ -21,6 +23,12 @@ export type PnlBucket = {
   otherOpex: number;
   otherIncome: number;
   otherExpense: number;
+  /**
+   * Tiền đầu tư tài sản / CCDC trong kỳ (ghi Nợ 211, 242). KHÔNG phải chi phí của kỳ — chi phí
+   * của tài sản đã vào P&L qua dòng Khấu hao — nên không trừ vào EBITDA hay lợi nhuận ròng;
+   * đứng trên bảng như một dòng thông tin để thấy tiền bỏ ra mua sắm (yêu cầu khách 07/09/2026).
+   */
+  capex: number;
 };
 
 export type PnlItemBreakdown = {
@@ -43,7 +51,7 @@ export type PnlDetailGroup = PnlDetailItem & { items: PnlDetailItem[] };
 export type PnlStatementLine = { key: string; label: string; amount: number; subtotal: boolean; groups: PnlDetailGroup[] };
 
 function emptyPnl(): PnlBucket {
-  return { revenue: 0, cogs: 0, payroll: 0, depreciation: 0, otherOpex: 0, otherIncome: 0, otherExpense: 0 };
+  return { revenue: 0, cogs: 0, payroll: 0, depreciation: 0, otherOpex: 0, otherIncome: 0, otherExpense: 0, capex: 0 };
 }
 
 /** Hạng mục P&L gắn trên bút toán (tên + tên nhóm cha) — đủ để biết nó có phải chi phí lương không. */
@@ -54,6 +62,9 @@ export type PnlItemRef = { name: string; groupName?: string | null } | null | un
  * Phiếu chi gắn hạng mục "Chi phí lương người lao động" hạch toán 6428 như OPEX thường,
  * nhưng bản chất là chi phí nhân sự nên phải đứng ở dòng Chi phí nhân sự (feedback 03/09/2026).
  */
+/** Tài khoản tài sản mà một bút toán ghi Nợ nghĩa là mua sắm đầu tư: TSCĐ (211) và CCDC (242). */
+export const CAPEX_REPORT_GROUPS = ["FIXED_ASSET", "PREPAID_EXPENSE"];
+
 export function pnlLineKeyOf(account: { accountType: string; reportGroup: string }, pnlItem?: PnlItemRef): PnlLineKey | null {
   if (account.accountType === "REVENUE") return "revenue";
   if (account.accountType === "COGS") return "cogs";
@@ -65,6 +76,10 @@ export function pnlLineKeyOf(account: { accountType: string; reportGroup: string
   }
   if (account.accountType === "OTHER_INCOME") return "otherIncome";
   if (account.accountType === "OTHER_EXPENSE") return "otherExpense";
+  // Ghi tăng tài sản (211) / CCDC (242) là tiền đầu tư, không phải chi phí trong kỳ — vào dòng
+  // CAPEX đứng riêng, không trừ vào lợi nhuận. Các tài khoản tài sản khác (tiền, kho, phải thu)
+  // không lên KQKD.
+  if (account.accountType === "ASSET") return CAPEX_REPORT_GROUPS.includes(account.reportGroup) ? "capex" : null;
   return null;
 }
 
@@ -101,7 +116,7 @@ function expenseGroupOf(
   return { code: PNL_UNGROUPED_CODE, name: "Chưa gắn nhóm hạng mục P&L" };
 }
 
-const isUnclassifiedDetailCode = (code: string) => code === "UNCLASSIFIED" || code === PNL_UNGROUPED_CODE;
+const isUnclassifiedDetailCode = (code: string) => code === "UNCLASSIFIED" || code === PNL_UNGROUPED_CODE || code === REVENUE_PNL_UNCLASSIFIED.code;
 
 /** Nhóm: cố định -> marketing -> biến đổi -> nhóm khác, trong đó xếp abc; phần chưa phân loại luôn cuối. */
 function sortDetailGroups<T extends { code: string; name: string }>(rows: T[]) {
@@ -121,6 +136,9 @@ export const PNL_STATEMENT_LINES: Array<{ key: PnlLineKey | "grossProfit" | "ebi
   { key: "payroll", label: "4. Chi phí nhân sự", subtotal: false },
   { key: "otherOpex", label: "5. Chi phí hoạt động khác (OPEX)", subtotal: false },
   { key: "depreciation", label: "6. Khấu hao tài sản/CCDC", subtotal: false },
+  // Dòng thông tin, cố ý KHÔNG đánh số: tiền mua tài sản không nằm trong mạch tính lợi nhuận
+  // bên dưới (đã vào P&L qua Khấu hao), đánh số sẽ khiến người đọc tưởng nó bị trừ.
+  { key: "capex", label: "Chi phí đầu tư tài sản/CCDC (CAPEX) — không trừ vào lợi nhuận", subtotal: false },
   { key: "ebitda", label: "7. EBITDA", subtotal: true },
   { key: "otherIncome", label: "8. Thu nhập khác", subtotal: false },
   { key: "otherExpense", label: "9. Chi phí khác", subtotal: false },
@@ -128,10 +146,13 @@ export const PNL_STATEMENT_LINES: Array<{ key: PnlLineKey | "grossProfit" | "ebi
 ];
 
 export type PnlCatalog = {
-  pnlItems: Array<{ code: string; name: string; group: string | null; subGroup: string | null }>;
-  pnlGroups: Array<{ code: string; name: string; group: string | null }>;
+  pnlItems: Array<{ code: string; name: string; group: string | null; subGroup: string | null; status?: string | null }>;
+  pnlGroups: Array<{ code: string; name: string; group: string | null; status?: string | null }>;
   categories: Array<{ code: string; name: string }>;
 };
+
+/** Danh mục đã bấm "Ngừng" không được nạp sẵn vào bảng; có phát sinh trong kỳ thì vẫn hiện. */
+const isRetiredCatalogItem = (item: { status?: string | null }) => String(item.status ?? "ACTIVE").toUpperCase() !== "ACTIVE";
 /** Một dòng chi tiết với N cột số (N = 1 cho bảng một kỳ, 12 cho bảng cả năm). */
 export type PnlSeriesItem = { code: string; name: string; months: number[]; total: number };
 export type PnlSeriesGroup = PnlSeriesItem & { items: PnlSeriesItem[] };
@@ -183,20 +204,25 @@ export function createPnlDetailTree(catalog: PnlCatalog, monthCount: number) {
     return { name: item.name, groupName: item.subGroup ? pnlGroupName.get(item.subGroup) || null : null };
   };
 
-  // Nạp sẵn toàn bộ danh mục P&L. CAPEX không vào KQKD (ghi tăng tài sản), REVENUE_SOURCE
-  // tách theo nguồn thu lúc có bút toán.
+  // Nạp sẵn TOÀN BỘ danh mục P&L đang hoạt động, kể cả nhóm/hạng mục chưa phát sinh đồng nào:
+  // khách khai thêm hạng mục trên màn Danh mục là bảng P&L có ngay dòng đó (số 0), không phải
+  // chờ tới lúc có bút toán. CAPEX đứng ở dòng đầu tư riêng (không trừ vào lợi nhuận),
+  // REVENUE_SOURCE tách theo nguồn thu lúc có bút toán.
   const seedLineOf = (rawGroup: string | null | undefined): PnlLineKey | null => {
     const value = (rawGroup || "").toUpperCase();
     if (value === "COGS") return "cogs";
     if (value === "OPEX") return "otherOpex";
+    if (value === "CAPEX") return "capex";
     return null;
   };
   for (const group of pnlGroups) {
+    if (isRetiredCatalogItem(group)) continue;
     const lineKey = seedLineOf(group.group);
     if (!lineKey) continue;
     touchGroup(lineKey === "otherOpex" && isPayrollPnlItem({ name: group.name }) ? "payroll" : lineKey, group);
   }
   for (const item of pnlItems) {
+    if (isRetiredCatalogItem(item)) continue;
     const parent = item.subGroup ? pnlGroupByCode.get(item.subGroup) : null;
     let lineKey = seedLineOf(parent?.group ?? item.group);
     if (lineKey === "otherOpex" && isPayrollPnlItem({ name: item.name, groupName: parent?.name })) lineKey = "payroll";
@@ -240,22 +266,73 @@ export function createPnlDetailTree(catalog: PnlCatalog, monthCount: number) {
   return { pnlItemRefOf, add, groupsOf };
 }
 
+/**
+ * Kênh bán khai trên danh mục Hạng mục P&L (nhóm lớn REVENUE_SOURCE): Tại chỗ / Mang về /
+ * Giao hàng qua app. Chỉ lấy hạng mục đang hoạt động, cùng luật với phần nạp sẵn OPEX/COGS.
+ */
+export function revenueChannelItemsOf(catalog: PnlCatalog) {
+  const groupByCode = new Map(catalog.pnlGroups.map((group) => [group.code, group]));
+  return catalog.pnlItems.filter((item) => {
+    if (isRetiredCatalogItem(item)) return false;
+    const parent = item.subGroup ? groupByCode.get(item.subGroup) : null;
+    return String(parent?.group ?? item.group ?? "").toUpperCase() === "REVENUE_SOURCE";
+  });
+}
+
+/**
+ * Nạp sẵn ma trận NHÓM DOANH THU × KÊNH BÁN vào dòng Doanh thu (yêu cầu khách 07/09/2026:
+ * kênh bán show hết dưới từng nhóm doanh thu). Cộng số 0 nên chỉ tạo chỗ đứng, không đổi tổng;
+ * tháng nào có tiền thì bút toán cộng đè lên đúng ô đó.
+ */
+export function seedRevenueChannels(
+  tree: { add: (line: PnlJournalLineLike, monthIndex: number) => PnlLineKey | null },
+  groups: Array<{ code: string }>,
+  channels: Array<{ code: string }>,
+) {
+  const account = { accountType: "REVENUE", reportGroup: "REVENUE" };
+  for (const group of groups) {
+    tree.add({ account, pnlItemCode: null, categoryCode: group.code, debit: 0, credit: 0 }, 0);
+    for (const channel of channels) {
+      tree.add({ account, pnlItemCode: channel.code, categoryCode: group.code, debit: 0, credit: 0 }, 0);
+    }
+  }
+}
+
+/**
+ * Danh mục dựng cây P&L, có thêm ba nhóm doanh thu cố định (bếp / bar / phụ thu) và rổ chưa
+ * phân loại — để dòng Doanh thu hiện tên nhóm chứ không phải mã trơ khi khách chưa khai danh mục.
+ */
+function withRevenuePnlGroups(categories: Array<{ code: string; name: string }>, revenueGroups: Array<{ code: string; name: string }>) {
+  const present = new Set(categories.map((category) => category.code.toUpperCase()));
+  return [...categories, ...revenueGroups.filter((group) => !present.has(group.code.toUpperCase()))];
+}
+
 export async function getPnl(period: string, branchCode: string) {
   const { start, end } = periodBounds(period);
-  const [entries, pnlItems, pnlGroups, categories] = await Promise.all([
+  const [entries, revenueRows, revenueGroups, pnlItems, pnlGroups, categories] = await Promise.all([
     prisma.journalEntry.findMany({
       where: { entryDate: { gte: start, lt: end }, status: "POSTED", ...(branchCode === "ALL" ? {} : { branchCode }) },
       include: { lines: { include: { account: true } } },
     }),
+    // Dòng Doanh thu lấy thẳng từ file import doanh thu, không lấy từ sổ cái — xem chú thích
+    // ở vòng lặp bên dưới. Cùng luật với bảng 12 tháng (getPnlMatrix).
+    prisma.revenueImportRow.findMany({
+      where: { saleDate: { gte: start, lt: end }, ...(branchCode === "ALL" ? {} : { branchCode }) },
+      select: {
+        branchCode: true, departmentCode: true, channel: true, paymentMethod: true, revenueSource: true,
+        grossAmount: true, discountAmount: true, feeAmount: true, vatAmount: true, cardFeeAmount: true, appFeeAmount: true, netAmount: true,
+      },
+    }),
+    loadRevenuePnlGroups(prisma as unknown as CategoryLookupClient),
     // subGroup của PNL_ITEM là mã PNL_GROUP cha (ba tầng phân loại — xem MasterDataItem);
     // cột group chỉ là loại thô (OPEX/CAPEX...) nên nhóm hiển thị phải lấy theo subGroup.
     prisma.masterDataItem.findMany({
       where: { type: "PNL_ITEM" },
-      select: { code: true, name: true, group: true, subGroup: true },
+      select: { code: true, name: true, group: true, subGroup: true, status: true },
     }),
     prisma.masterDataItem.findMany({
       where: { type: "PNL_GROUP" },
-      select: { code: true, name: true, group: true },
+      select: { code: true, name: true, group: true, status: true },
     }),
     prisma.masterDataItem.findMany({
       where: { type: "REVENUE_EXPENSE_CATEGORY" },
@@ -269,11 +346,20 @@ export async function getPnl(period: string, branchCode: string) {
   const branches = new Map<string, PnlBucket>();
   const departments = new Map<string, PnlBucket>();
   // Cây chi tiết dòng -> nhóm -> hạng mục, một cột số cho kỳ này (cùng luật với bảng 12 tháng).
-  const tree = createPnlDetailTree({ pnlItems, pnlGroups, categories }, 1);
+  const catalog: PnlCatalog = { pnlItems, pnlGroups, categories: withRevenuePnlGroups(categories, revenueGroups.categories) };
+  const tree = createPnlDetailTree(catalog, 1);
+  seedRevenueChannels(tree, revenueGroups.seedGroups, revenueChannelItemsOf(catalog));
 
   for (const entry of entries) {
     const branch = branches.get(entry.branchCode) || emptyPnl();
     for (const line of entry.lines) {
+      // Số dư đầu kỳ ghi Nợ 211 để dựng lại tài sản đã có từ trước — không phải tiền đầu tư
+      // trong kỳ, nên không được lên dòng CAPEX.
+      if (entry.sourceType === "OPENING_BALANCE" && line.account.accountType === "ASSET") continue;
+      // Bút toán 511 không lên dòng Doanh thu: phiếu thu công nợ / hoàn tạm ứng cũng ghi Có 511
+      // (mọi khoản mục nhóm "Thu" đều quy về REVENUE_SOURCE) nên doanh thu bị thổi lên, và kỳ
+      // chưa "Đồng bộ ghi sổ" thì lại bằng 0. Dòng Doanh thu dựng từ file import ở khối dưới.
+      if (line.account.accountType === "REVENUE") continue;
       const pnlItemRef = tree.pnlItemRefOf(line.pnlItemCode);
       addLine(total, line, pnlItemRef);
       addLine(branch, line, pnlItemRef);
@@ -297,6 +383,40 @@ export async function getPnl(period: string, branchCode: string) {
     }
     branches.set(entry.branchCode, branch);
   }
+
+  /**
+   * Dòng Doanh thu = file import doanh thu (spec khách 06/09/2026): nhóm doanh thu của món lấy
+   * "Doanh thu − Giảm giá" (Đồ ăn -> DT bếp, Đồ uống -> DT bar, Dịch vụ -> DT phụ thu), thêm
+   * hai dòng riêng "Doanh thu SVC" = cột SVC và "Doanh thu thuế GTGT" = cột Thuế. Đi qua đúng
+   * revenuePosJournalLines đang dùng lúc ghi sổ nên P&L và sổ cái tách y hệt nhau.
+   */
+  const revenueAccount = { accountType: "REVENUE", reportGroup: "REVENUE" };
+  for (const row of revenueRows) {
+    const branch = branches.get(row.branchCode) || emptyPnl();
+    for (const posLine of revenuePosJournalLines(row)) {
+      if (posLine.accountCode !== "511") continue;
+      // Nhóm của dòng món quy về Đồ ăn / Đồ uống / Dịch vụ; dòng SVC / thuế GTGT / điều chỉnh
+      // đã mang sẵn danh mục riêng nên giữ nguyên.
+      const componentLine = isRevenueComponentCategory(posLine.categoryCode);
+      const line = {
+        account: revenueAccount,
+        pnlItemCode: posLine.pnlItemCode ?? null,
+        categoryCode: componentLine ? posLine.categoryCode ?? null : revenueGroups.groupOf(row.revenueSource).code,
+        departmentCode: posLine.departmentCode ?? null,
+        debit: posLine.debit || 0,
+        credit: posLine.credit || 0,
+      };
+      addLine(total, line);
+      addLine(branch, line);
+      tree.add(line, 0);
+      const departmentCode = line.departmentCode || "UNALLOCATED";
+      const department = departments.get(departmentCode) || emptyPnl();
+      addLine(department, line);
+      departments.set(departmentCode, department);
+    }
+    branches.set(row.branchCode, branch);
+  }
+
   const finalized = finalizePnl(total);
   const groupsOf = (lineKey: PnlLineKey): PnlDetailGroup[] =>
     tree.groupsOf(lineKey).map((group) => ({

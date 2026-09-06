@@ -5,7 +5,7 @@ import { storeLabel } from "@/lib/branch-labels";
 import { opexGroupRank } from "@/lib/pnl-ordering";
 import { DonutLegendChart, MoneyBarChart, MoneyLineChart } from "@/components/charts/ReportCharts";
 import { Card, MonthChips, StatCard, Tag, fmtCompact, fmtMoney, pctText, ratioOf, signedMoney } from "@/components/reports/planning/planning-ui";
-import { bucketSum, cumulative, sumAll, type PlanningData, type PnlBucket } from "@/components/reports/planning/planning-types";
+import { bucketSum, cumulative, lastPicked, monthPickLabel, sumAll, type MonthPick, type PlanningData, type PnlBucket } from "@/components/reports/planning/planning-types";
 
 /**
  * Màn "Điểm hòa vốn" học theo phần mềm mẫu: 3 thẻ (DT hòa vốn, định phí, biến phí dự kiến),
@@ -73,12 +73,15 @@ export function buildBreakEvenModel(data: PlanningData, buckets: PnlBucket[], ba
   };
 }
 
-export default function BreakEvenTab({ data, upTo, onChangeUpTo }: { data: PlanningData; upTo: number; onChangeUpTo: (index: number) => void }) {
+export default function BreakEvenTab({ data, picked, onChangePicked }: { data: PlanningData; picked: MonthPick; onChangePicked: (picked: MonthPick) => void }) {
   const monthHeaders = data.months.map((month) => `T${Number(month.slice(5))}`);
   const model = useMemo(() => buildBreakEvenModel(data, data.hasPlan ? data.plans : data.totals, data.hasPlan ? "kế hoạch cả năm" : "thực tế cả năm"), [data]);
   const actualCumulative = cumulative(data.totals.map((bucket) => bucket.revenue));
   const planCumulative = cumulative(data.plans.map((bucket) => bucket.revenue));
-  const actualToDate = actualCumulative[upTo] || 0;
+  // Doanh thu đem so mốc hòa vốn = tổng đúng các tháng đang tick (không nhất thiết liền mạch
+  // từ T1 nữa). Bảng và chart lũy kế bên dưới vẫn vẽ tới tháng lớn nhất đang tick.
+  const knownUpTo = lastPicked(picked);
+  const actualToDate = bucketSum(data.totals, "revenue", picked);
   const reached = model.bep !== null && actualToDate >= model.bep;
   const marginOfSafety = model.bep !== null && actualToDate > 0 ? (actualToDate - model.bep) / actualToDate : null;
   const bepMonthActual = model.bep === null ? -1 : actualCumulative.findIndex((value) => value >= (model.bep as number));
@@ -101,7 +104,7 @@ export default function BreakEvenTab({ data, upTo, onChangeUpTo }: { data: Plann
     const branchHasPlan = branch.plan.some((bucket) => bucket.revenue > 0);
     const base = data.hasPlan && branchHasPlan ? branch.plan : branch.actual;
     const revenuePlan = sumAll(base.map((bucket) => bucket.revenue));
-    const revenueActual = bucketSum(branch.actual, "revenue", upTo);
+    const revenueActual = bucketSum(branch.actual, "revenue", picked);
     const opex = sumAll(base.map((bucket) => bucket.otherOpex));
     const fixed = sumAll(base.map((bucket) => bucket.payroll + bucket.depreciation)) + opex * model.fixedShareOfOpex;
     const variable = sumAll(base.map((bucket) => bucket.cogs)) + opex * (1 - model.fixedShareOfOpex);
@@ -125,7 +128,7 @@ export default function BreakEvenTab({ data, upTo, onChangeUpTo }: { data: Plann
 
   return (
     <div className="space-y-4">
-      <MonthChips upTo={upTo} onChange={onChangeUpTo} label="Doanh thu thực đạt lũy kế tới" />
+      <MonthChips picked={picked} onChange={onChangePicked} label="Doanh thu thực đạt của tháng" />
       <div className="grid md:grid-cols-3 gap-3">
         <div className="bg-rose-50 border border-rose-100 rounded-xl p-4 flex items-center gap-3">
           <span className="h-10 w-10 rounded-full bg-white text-rose-500 grid place-items-center shadow-sm"><span className="material-symbols-outlined">target</span></span>
@@ -147,7 +150,7 @@ export default function BreakEvenTab({ data, upTo, onChangeUpTo }: { data: Plann
           <div className="min-w-0">
             <p className={`text-base font-extrabold uppercase tracking-wide ${reached ? "text-emerald-800" : "text-amber-800"}`}>{model.bep === null ? "Chưa tính được điểm hòa vốn" : reached ? "Đã vượt điểm hòa vốn" : "Chưa đạt điểm hòa vốn"}</p>
             <div className="mt-1.5 flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-600">
-              <span>DT thực đạt (T1–T{upTo + 1}): <b className="text-slate-800">{fmtMoney(actualToDate)}</b></span>
+              <span>DT thực đạt ({monthPickLabel(picked)}): <b className="text-slate-800">{fmtMoney(actualToDate)}</b></span>
               <span>Mốc hòa vốn: <b className="text-slate-800">{model.bep === null ? "—" : fmtMoney(model.bep)}</b></span>
               <span>Chênh lệch: <b className={`rounded px-1.5 py-0.5 text-white ${reached ? "bg-emerald-500" : "bg-amber-500"}`}>{model.bep === null ? "—" : signedMoney(actualToDate - model.bep)}</b></span>
               {bepMonthActual >= 0 && <span>Đạt hòa vốn từ <b className="text-slate-800">tháng {bepMonthActual + 1}</b></span>}
@@ -165,7 +168,7 @@ export default function BreakEvenTab({ data, upTo, onChangeUpTo }: { data: Plann
             <thead><tr className="text-[10px] uppercase tracking-wide text-slate-500 border-b border-slate-200 bg-rose-50/60"><th className="px-3 py-2 font-bold">Thời gian</th><th className="px-3 py-2 font-bold text-right">DT lũy kế KH</th><th className="px-3 py-2 font-bold text-right">DT lũy kế TT</th><th className="px-3 py-2 font-bold text-right">Mốc hòa vốn</th><th className="px-3 py-2 font-bold text-right">Chênh lệch</th></tr></thead>
             <tbody>
               {monthHeaders.map((label, index) => {
-                const known = index <= upTo;
+                const known = index <= knownUpTo;
                 const compare = known ? actualCumulative[index] : planCumulative[index];
                 const diff = model.bep === null ? null : compare - model.bep;
                 return (
@@ -186,7 +189,7 @@ export default function BreakEvenTab({ data, upTo, onChangeUpTo }: { data: Plann
             labels={monthHeaders}
             series={[
               { name: "DT lũy kế kế hoạch", values: planCumulative, color: "#4f46e5" },
-              { name: "DT lũy kế thực tế", values: actualCumulative.map((value, index) => (index <= upTo ? value : Number.NaN)), color: "#10b981" },
+              { name: "DT lũy kế thực tế", values: actualCumulative.map((value, index) => (index <= knownUpTo ? value : Number.NaN)), color: "#10b981" },
               { name: "Mốc hòa vốn", values: data.months.map(() => model.bep ?? Number.NaN), color: "#f43f5e", dashed: true },
             ]}
             height={330}

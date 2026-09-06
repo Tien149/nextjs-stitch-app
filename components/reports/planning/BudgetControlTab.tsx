@@ -4,7 +4,7 @@ import React, { useMemo, useState } from "react";
 import { opexGroupRank } from "@/lib/pnl-ordering";
 import { DonutLegendChart, MoneyLineChart } from "@/components/charts/ReportCharts";
 import { Card, MonthChips, NoPlanNotice, ProgressBar, StatCard, StatusBadge, Tag, budgetStatusOf, fmtMoney, pctText, ratioOf, type Tone } from "@/components/reports/planning/planning-ui";
-import { EXPENSE_LINE_KEYS, LINE_SHORT_LABEL, sumAll, sumRange, type PlanningData, type StatementLine } from "@/components/reports/planning/planning-types";
+import { EXPENSE_LINE_KEYS, LINE_SHORT_LABEL, monthPickSummary, sumAll, sumMonths, type MonthPick, type PlanningData, type StatementLine } from "@/components/reports/planning/planning-types";
 
 /**
  * Màn "Định mức chi phí & ngân sách" học theo phần mềm mẫu: 5 thẻ (tổng ngân sách, đã chi,
@@ -33,7 +33,7 @@ function natureLabel(lineKey: string, groupName: string | null) {
   return rank === 0 ? "Cố định" : rank === 1 ? "Marketing" : rank === 2 ? "Biến đổi" : "Khác";
 }
 
-export default function BudgetControlTab({ data, upTo, onChangeUpTo, onOpenBudget }: { data: PlanningData; upTo: number; onChangeUpTo: (index: number) => void; onOpenBudget?: () => void }) {
+export default function BudgetControlTab({ data, picked, onChangePicked, onOpenBudget }: { data: PlanningData; picked: MonthPick; onChangePicked: (picked: MonthPick) => void; onOpenBudget?: () => void }) {
   const [lineFilter, setLineFilter] = useState<string>("ALL");
   const [groupFilter, setGroupFilter] = useState<string>("ALL");
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
@@ -48,18 +48,18 @@ export default function BudgetControlTab({ data, upTo, onChangeUpTo, onOpenBudge
   // Kế hoạch cấp dòng: dòng OPEX = tổng hạng mục (khi có), dòng khác = target set thẳng.
   const rows: ControlRow[] = [];
   for (const line of visibleLines) {
-    const linePlan = sumRange(line.plan, upTo);
-    rows.push({ key: line.key, level: 0, label: LINE_SHORT_LABEL[line.key] || line.label, lineKey: line.key, groupName: null, plan: linePlan > 0 ? linePlan : null, actual: sumRange(line.months, upTo), code: null });
+    const linePlan = sumMonths(line.plan, picked);
+    rows.push({ key: line.key, level: 0, label: LINE_SHORT_LABEL[line.key] || line.label, lineKey: line.key, groupName: null, plan: linePlan > 0 ? linePlan : null, actual: sumMonths(line.months, picked), code: null });
     for (const group of line.groups) {
       const groupKey = `${line.key}:${group.code}`;
       if (groupFilter !== "ALL" && groupFilter !== groupKey) continue;
-      const groupPlan = group.plan ? sumRange(group.plan, upTo) : null;
-      const groupActual = sumRange(group.months, upTo);
+      const groupPlan = group.plan ? sumMonths(group.plan, picked) : null;
+      const groupActual = sumMonths(group.months, picked);
       if (!groupPlan && Math.abs(groupActual) <= 0.5) continue;
       rows.push({ key: groupKey, level: 1, label: group.name, lineKey: line.key, groupName: group.name, plan: groupPlan && groupPlan > 0 ? groupPlan : null, actual: groupActual, code: group.code === "UNGROUPED" ? null : group.code });
       for (const item of group.items) {
-        const itemPlan = item.plan ? sumRange(item.plan, upTo) : null;
-        const itemActual = sumRange(item.months, upTo);
+        const itemPlan = item.plan ? sumMonths(item.plan, picked) : null;
+        const itemActual = sumMonths(item.months, picked);
         if (!itemPlan && Math.abs(itemActual) <= 0.5) continue;
         rows.push({ key: `${groupKey}:${item.code}`, level: 2, label: item.name, lineKey: line.key, groupName: group.name, plan: itemPlan && itemPlan > 0 ? itemPlan : null, actual: itemActual, code: item.code === "UNCLASSIFIED" ? null : item.code });
       }
@@ -68,10 +68,10 @@ export default function BudgetControlTab({ data, upTo, onChangeUpTo, onOpenBudge
   const filteredRows = statusFilter === "ALL" ? rows : rows.filter((row) => row.level === 0 || budgetStatusOf(ratioOf(row.actual, row.plan || 0)) === statusFilter);
 
   // KPI: chỉ cộng những dòng đã set ngân sách để tỷ lệ tiêu hao không bị méo bởi dòng chưa set.
-  const plannedLines = visibleLines.filter((line) => sumRange(line.plan, upTo) > 0);
-  const totalPlan = plannedLines.reduce((sum, line) => sum + sumRange(line.plan, upTo), 0);
-  const spentOnPlanned = plannedLines.reduce((sum, line) => sum + sumRange(line.months, upTo), 0);
-  const totalActual = visibleLines.reduce((sum, line) => sum + sumRange(line.months, upTo), 0);
+  const plannedLines = visibleLines.filter((line) => sumMonths(line.plan, picked) > 0);
+  const totalPlan = plannedLines.reduce((sum, line) => sum + sumMonths(line.plan, picked), 0);
+  const spentOnPlanned = plannedLines.reduce((sum, line) => sum + sumMonths(line.months, picked), 0);
+  const totalActual = visibleLines.reduce((sum, line) => sum + sumMonths(line.months, picked), 0);
   const usage = ratioOf(spentOnPlanned, totalPlan);
   const leafRows = rows.filter((row) => row.level === 2 || (row.level === 1 && !rows.some((child) => child.key.startsWith(`${row.key}:`))));
   const leafWithPlan = leafRows.filter((row) => row.plan !== null);
@@ -80,8 +80,8 @@ export default function BudgetControlTab({ data, upTo, onChangeUpTo, onOpenBudge
   const monthlyPlan = data.months.map((_, index) => visibleLines.reduce((sum, line) => sum + (line.plan[index] || 0), 0));
   const monthlyActual = data.months.map((_, index) => visibleLines.reduce((sum, line) => sum + (line.months[index] || 0), 0));
   const donutData = lineFilter === "ALL"
-    ? expenseLines.map((line) => ({ name: LINE_SHORT_LABEL[line.key] || line.label, value: sumRange(line.months, upTo) }))
-    : visibleLines.flatMap((line) => line.groups.map((group) => ({ name: group.name, value: sumRange(group.months, upTo) })));
+    ? expenseLines.map((line) => ({ name: LINE_SHORT_LABEL[line.key] || line.label, value: sumMonths(line.months, picked) }))
+    : visibleLines.flatMap((line) => line.groups.map((group) => ({ name: group.name, value: sumMonths(group.months, picked) })));
 
   const indent = { 0: "", 1: "pl-5", 2: "pl-10" } as const;
 
@@ -104,7 +104,7 @@ export default function BudgetControlTab({ data, upTo, onChangeUpTo, onOpenBudge
             </button>
           )}
         </div>
-        <div className="mt-4"><MonthChips upTo={upTo} onChange={onChangeUpTo} /></div>
+        <div className="mt-4"><MonthChips picked={picked} onChange={onChangePicked} /></div>
         <div className="mt-3 grid sm:grid-cols-3 gap-3">
           <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Nhóm lớn
             <select className="control mt-1 py-2 text-xs font-semibold normal-case" value={lineFilter} onChange={(event) => { setLineFilter(event.target.value); setGroupFilter("ALL"); }}>
@@ -131,7 +131,7 @@ export default function BudgetControlTab({ data, upTo, onChangeUpTo, onOpenBudge
       </Card>
 
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
-        <StatCard label="Tổng ngân sách" tone="indigo" icon="account_balance_wallet" value={fmtMoney(totalPlan)} sub={`Lũy kế ${upTo + 1} tháng năm ${data.year}`} />
+        <StatCard label="Tổng ngân sách" tone="indigo" icon="account_balance_wallet" value={fmtMoney(totalPlan)} sub={`Cộng ${monthPickSummary(picked)} năm ${data.year}`} />
         <StatCard label="Thực tế đã chi" tone="blue" icon="payments" value={fmtMoney(totalActual)} sub={totalPlan > 0 ? `Trên dòng có ngân sách: ${fmtMoney(spentOnPlanned)}` : "Từ bút toán đã ghi sổ"} />
         <StatCard label="Còn lại / Chênh lệch" tone={totalPlan - spentOnPlanned >= 0 ? "emerald" : "rose"} icon="savings" value={fmtMoney(totalPlan - spentOnPlanned)} sub="Ngân sách trừ thực chi" />
         <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
@@ -147,12 +147,12 @@ export default function BudgetControlTab({ data, upTo, onChangeUpTo, onOpenBudge
         <Card title="Biến động theo tháng" subtitle="So sánh ngân sách kế hoạch và chi phí thực tế theo từng tháng" icon="show_chart" right={<Tag tone="indigo">{lineFilter === "ALL" ? "Tất cả chi phí" : LINE_SHORT_LABEL[lineFilter]}</Tag>} bodyClassName="px-2 pb-3">
           <MoneyLineChart labels={monthHeaders} series={[{ name: "Kế hoạch", values: monthlyPlan, color: "#6366f1", dashed: true }, { name: "Thực tế", values: monthlyActual, color: "#f97316" }]} height={260} />
         </Card>
-        <Card title="Cơ cấu chi phí" subtitle={`Thực tế lũy kế ${upTo + 1} tháng`} icon="donut_small" bodyClassName="px-4 pb-4">
+        <Card title="Cơ cấu chi phí" subtitle={`Thực tế cộng ${monthPickSummary(picked)}`} icon="donut_small" bodyClassName="px-4 pb-4">
           <DonutLegendChart data={donutData} height={220} top={6} />
         </Card>
       </div>
 
-      <Card title="Bảng kiểm soát định mức" subtitle={`Các dòng chi phí đang lọc theo lũy kế ${upTo + 1} tháng năm ${data.year}`} icon="rule" right={<span className="text-xs font-bold text-slate-500">{filteredRows.filter((row) => row.level > 0).length} hạng mục</span>} bodyClassName="overflow-x-auto">
+      <Card title="Bảng kiểm soát định mức" subtitle={`Các dòng chi phí đang lọc theo ${monthPickSummary(picked)} năm ${data.year}`} icon="rule" right={<span className="text-xs font-bold text-slate-500">{filteredRows.filter((row) => row.level > 0).length} hạng mục</span>} bodyClassName="overflow-x-auto">
         <table className="w-full text-left text-sm">
           <thead>
             <tr className="text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">

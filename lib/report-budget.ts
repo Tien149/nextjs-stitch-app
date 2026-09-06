@@ -1,6 +1,8 @@
 import { Prisma } from "@prisma/custom-client";
 import { prisma } from "@/lib/prisma";
-import { createPnlDetailTree, finalizePnl, PNL_STATEMENT_LINES, type PnlBucket, type PnlLineKey, type PnlSeriesGroup, type PnlSeriesItem } from "@/lib/reports";
+import { createPnlDetailTree, finalizePnl, PNL_STATEMENT_LINES, revenueChannelItemsOf, seedRevenueChannels, type PnlBucket, type PnlCatalog, type PnlLineKey, type PnlSeriesGroup, type PnlSeriesItem } from "@/lib/reports";
+import { isRevenueComponentCategory, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
+import { loadRevenuePnlGroups, type CategoryLookupClient } from "@/lib/revenue-source";
 
 /* ------------------------------------------------------------------------- *
  * Báo cáo theo feedback chị Bình 26/08/2026 (report_Feedback.pdf):
@@ -26,7 +28,7 @@ function yearMonths(year: string) {
 }
 
 function emptyBucket(): PnlBucket {
-  return { revenue: 0, cogs: 0, payroll: 0, depreciation: 0, otherOpex: 0, otherIncome: 0, otherExpense: 0 };
+  return { revenue: 0, cogs: 0, payroll: 0, depreciation: 0, otherOpex: 0, otherIncome: 0, otherExpense: 0, capex: 0 };
 }
 
 function bumpSeries(map: Map<string, MatrixSeries>, code: string, name: string, monthIndex: number, amount: number) {
@@ -73,7 +75,12 @@ async function loadYearJournalLines(firstPeriod: string, lastPeriod: string, bra
       AND e."deletedAt" IS NULL
       AND a."deletedAt" IS NULL
       AND e."period" >= ${firstPeriod} AND e."period" <= ${lastPeriod}
-      AND a."accountType" IN ('REVENUE', 'COGS', 'OPEX', 'OTHER_INCOME', 'OTHER_EXPENSE')
+      -- Dòng CAPEX lấy bút toán ghi tăng TSCĐ (211) / CCDC (242); số dư đầu kỳ chỉ dựng lại
+      -- tài sản đã có từ trước nên không phải tiền đầu tư trong kỳ.
+      AND (
+        a."accountType" IN ('REVENUE', 'COGS', 'OPEX', 'OTHER_INCOME', 'OTHER_EXPENSE')
+        OR (a."accountType" = 'ASSET' AND a."reportGroup" IN ('FIXED_ASSET', 'PREPAID_EXPENSE') AND e."sourceType" <> 'OPENING_BALANCE')
+      )
       ${branchCode === "ALL" ? Prisma.empty : Prisma.sql`AND e."branchCode" = ${branchCode}`}
     GROUP BY 1, 2, 3, 4, 5, 6, 7
   `);
@@ -84,18 +91,23 @@ export async function getPnlMatrix(year: string, branchCode: string) {
   const yearStart = new Date(`${year}-01-01T00:00:00`);
   const yearEnd = new Date(`${Number(year) + 1}-01-01T00:00:00`);
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
-  const [rows, pnlItems, pnlGroups, categories, departments, revenueRows, payrollRows, targets] = await Promise.all([
+  const [rows, pnlItems, pnlGroups, categories, revenueGroups, departments, revenueRows, payrollRows, targets] = await Promise.all([
     loadYearJournalLines(months[0], months[11], branchCode),
-    prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true, group: true, subGroup: true } }),
-    prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true, group: true } }),
+    prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true, group: true, subGroup: true, status: true } }),
+    prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true, group: true, status: true } }),
     prisma.masterDataItem.findMany({ where: { type: "REVENUE_EXPENSE_CATEGORY" }, select: { code: true, name: true } }),
+    loadRevenuePnlGroups(prisma as unknown as CategoryLookupClient),
     prisma.masterDataItem.findMany({ where: { type: "DEPARTMENT" }, select: { code: true, name: true } }),
-    // Pie tỷ trọng phải tách được SVC và thuế GTGT thành lát riêng (đúng ảnh feedback:
-    // DT bếp + DT bar + SVC + Thuế GTGT = 100%). Bút toán 511 chỉ ghi netAmount đã gộp cả
-    // ba phần nên không tách được — phải đọc thẳng dòng doanh thu import.
+    // NGUỒN DUY NHẤT của dòng Doanh thu trên P&L (chốt với khách 06/09/2026): nhóm doanh thu
+    // lấy "Doanh thu − Giảm giá", cộng hai dòng đứng riêng "Doanh thu SVC" = cột SVC và
+    // "Doanh thu thuế GTGT" = cột Thuế. Cũng là nguồn của pie tỷ trọng (DT bếp + DT bar +
+    // SVC + Thuế GTGT = 100%) mà bút toán 511 gộp một cục netAmount không tách ra được.
     prisma.revenueImportRow.findMany({
       where: { saleDate: { gte: yearStart, lt: yearEnd }, ...branchFilter },
-      select: { saleDate: true, departmentCode: true, channel: true, grossAmount: true, discountAmount: true, feeAmount: true, vatAmount: true, netAmount: true },
+      select: {
+        saleDate: true, branchCode: true, departmentCode: true, channel: true, paymentMethod: true, revenueSource: true,
+        grossAmount: true, discountAmount: true, feeAmount: true, vatAmount: true, cardFeeAmount: true, appFeeAmount: true, netAmount: true,
+      },
     }),
     prisma.payrollImportRow.findMany({
       where: { period: { startsWith: `${year}-` }, ...branchFilter },
@@ -112,7 +124,16 @@ export async function getPnlMatrix(year: string, branchCode: string) {
   const deptLabel = (code: string) => (code === UNASSIGNED_DEPARTMENT ? "Chưa gán bộ phận" : departmentName.get(code) || code);
   // Cây dòng KQKD -> nhóm -> hạng mục với 12 cột tháng, đi qua cùng builder với bảng một kỳ
   // nên lương lên dòng nhân sự, nhóm OPEX và hạng mục xếp cùng một thứ tự.
-  const tree = createPnlDetailTree({ pnlItems, pnlGroups, categories }, 12);
+  const treeCategories = [
+    ...categories,
+    // Ba nhóm doanh thu cố định + rổ chưa phân loại, thêm vào để dòng Doanh thu hiện tên nhóm
+    // chứ không phải mã trơ khi khách chưa khai danh mục tương ứng.
+    ...revenueGroups.categories.filter((group) => !categories.some((category) => category.code.toUpperCase() === group.code.toUpperCase())),
+  ];
+  const catalog: PnlCatalog = { pnlItems, pnlGroups, categories: treeCategories };
+  const tree = createPnlDetailTree(catalog, 12);
+  // Kênh bán (Tại chỗ / Mang về / Grab) hiện đủ dưới từng nhóm doanh thu, kể cả khi chưa có tiền.
+  seedRevenueChannels(tree, revenueGroups.seedGroups, revenueChannelItemsOf(catalog));
 
   const totals = months.map(() => emptyBucket());
   /** Thực tế từng cửa hàng × 12 tháng — cho bảng "hiệu quả theo cửa hàng" và so hòa vốn theo cửa hàng. */
@@ -121,20 +142,29 @@ export async function getPnlMatrix(year: string, branchCode: string) {
   const payrollByDepartment = new Map<string, MatrixSeries>();
   const cogsByDepartment = new Map<string, MatrixSeries>();
 
+  /** Doanh thu ĐÃ ghi sổ từng tháng — chỉ để cảnh báo kỳ chưa "Đồng bộ ghi sổ", không lên P&L. */
+  const postedRevenueMonths = Array.from({ length: 12 }, () => 0);
+
   for (const row of rows) {
     const monthIndex = months.indexOf(row.period);
     if (monthIndex < 0) continue;
     const expense = row.debit - row.credit;
     const income = row.credit - row.debit;
+    // Dòng Doanh thu KHÔNG lấy từ sổ cái: bút toán 511 vừa phụ thuộc việc đã bấm "Đồng bộ ghi
+    // sổ" (chưa bấm là báo cáo trắng), vừa cộng thêm phiếu thu ghi doanh thu tay nên đè lên
+    // doanh thu POS của cùng ngày thành số gấp đôi. Dựng lại từ file import ở khối bên dưới.
+    if (row.accountType === "REVENUE") {
+      postedRevenueMonths[monthIndex] += income;
+      continue;
+    }
     const lineKey = tree.add({ account: row, pnlItemCode: row.pnlItemCode, categoryCode: row.categoryCode, debit: row.debit, credit: row.credit }, monthIndex);
     if (!lineKey) continue;
-    const signed = lineKey === "revenue" || lineKey === "otherIncome" ? income : expense;
+    const signed = lineKey === "otherIncome" ? income : expense;
     totals[monthIndex][lineKey] += signed;
     const branchBuckets = branchTotals.get(row.branchCode) || months.map(() => emptyBucket());
     branchBuckets[monthIndex][lineKey] += signed;
     branchTotals.set(row.branchCode, branchBuckets);
     const dept = row.departmentCode || UNASSIGNED_DEPARTMENT;
-    if (lineKey === "revenue") bumpSeries(revenueByDepartment, dept, deptLabel(dept), monthIndex, income);
     if (lineKey === "payroll") bumpSeries(payrollByDepartment, dept, deptLabel(dept), monthIndex, expense);
     if (lineKey === "cogs") bumpSeries(cogsByDepartment, dept, deptLabel(dept), monthIndex, expense);
   }
@@ -152,6 +182,28 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     if (date.getFullYear() !== Number(year)) continue;
     const monthIndex = date.getMonth();
     importedNetMonths[monthIndex] += row.netAmount;
+
+    // Dòng Doanh thu của P&L dựng thẳng từ dòng import, đi qua đúng bộ luật đang dùng lúc ghi
+    // sổ (revenuePosJournalLines) nên bảng P&L và sổ cái vẫn cùng một cách tách: nhóm doanh
+    // thu của món = Doanh thu − Giảm giá, thêm dòng SVC và dòng thuế GTGT, cắt theo kênh bán
+    // bằng hạng mục P&L. Chỉ lấy vế Có 511; các dòng phí/tiền nhận là việc của sổ cái.
+    const branchBuckets = branchTotals.get(row.branchCode) || months.map(() => emptyBucket());
+    for (const line of revenuePosJournalLines(row)) {
+      if (line.accountCode !== "511") continue;
+      const debit = line.debit || 0;
+      const credit = line.credit || 0;
+      const amount = credit - debit;
+      // Nhóm của dòng món quy về Đồ ăn / Đồ uống / Dịch vụ; dòng SVC / thuế GTGT / điều chỉnh
+      // đã mang sẵn danh mục riêng nên giữ nguyên.
+      const categoryCode = isRevenueComponentCategory(line.categoryCode) ? line.categoryCode ?? null : revenueGroups.groupOf(row.revenueSource).code;
+      tree.add({ account: { accountType: "REVENUE", reportGroup: "" }, pnlItemCode: line.pnlItemCode ?? null, categoryCode, debit, credit }, monthIndex);
+      totals[monthIndex].revenue += amount;
+      branchBuckets[monthIndex].revenue += amount;
+      const lineDept = line.departmentCode || UNASSIGNED_DEPARTMENT;
+      bumpSeries(revenueByDepartment, lineDept, deptLabel(lineDept), monthIndex, amount);
+    }
+    branchTotals.set(row.branchCode, branchBuckets);
+
     const net = row.grossAmount - row.discountAmount;
     const dept = row.departmentCode || UNASSIGNED_DEPARTMENT;
     bumpSeries(netRevenueByDepartment, dept, dept === UNASSIGNED_DEPARTMENT ? "Chưa gán bộ phận" : `DT ${departmentName.get(dept) || dept}`, monthIndex, net);
@@ -190,7 +242,7 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     for (const group of tree.groupsOf(line.key as PnlLineKey)) for (const item of group.items) itemLineByCode.set(item.code, line.key as PnlLineKey);
   }
   type PlanBucket = Record<PnlLineKey, number[]>;
-  const emptyPlanBucket = (): PlanBucket => ({ revenue: zeros12(), cogs: zeros12(), payroll: zeros12(), depreciation: zeros12(), otherOpex: zeros12(), otherIncome: zeros12(), otherExpense: zeros12() });
+  const emptyPlanBucket = (): PlanBucket => ({ revenue: zeros12(), cogs: zeros12(), payroll: zeros12(), depreciation: zeros12(), otherOpex: zeros12(), otherIncome: zeros12(), otherExpense: zeros12(), capex: zeros12() });
   /** Target set thẳng vào dòng, theo cửa hàng. */
   const linePlanByBranch = new Map<string, PlanBucket>();
   /** Tổng target hạng mục theo dòng, theo cửa hàng. */
@@ -238,6 +290,7 @@ export async function getPnlMatrix(year: string, branchCode: string) {
   const finalizeRaw = (raw: PlanBucket) => months.map((_, monthIndex) => finalizePnl({
     revenue: raw.revenue[monthIndex], cogs: raw.cogs[monthIndex], payroll: raw.payroll[monthIndex], depreciation: raw.depreciation[monthIndex],
     otherOpex: raw.otherOpex[monthIndex], otherIncome: raw.otherIncome[monthIndex], otherExpense: raw.otherExpense[monthIndex],
+    capex: raw.capex[monthIndex],
   }));
   // Ngân sách có thể set ở cấp "ALL" (toàn hệ thống) lẫn từng cửa hàng (tab Ngân sách xem theo
   // phạm vi nào thì set ở phạm vi đó). Xem toàn hệ thống: tháng nào có số ở cấp ALL thì lấy số
@@ -290,12 +343,11 @@ export async function getPnlMatrix(year: string, branchCode: string) {
 
   const finalizedTotals = totals.map((bucket) => finalizePnl(bucket));
   /**
-   * Tháng đã import doanh thu nhưng sổ cái chưa có đồng nào — nguyên nhân số 1 khiến khách mở
-   * Dự báo P&L thấy trắng bảng (feedback khách 05/09/2026). Import doanh thu KHÔNG tự ghi sổ:
-   * phải bấm "Đồng bộ ghi sổ" ở màn Kế toán cho từng kỳ. Trả về đây để màn hình nói thẳng ra
-   * thay vì để người dùng đoán.
+   * Tháng đã import doanh thu nhưng sổ cái chưa ghi đồng doanh thu nào. Dòng Doanh thu của P&L
+   * không còn phụ thuộc việc ghi sổ, nhưng giá vốn và chi phí thì có — kỳ chưa "Đồng bộ ghi sổ"
+   * ở màn Kế toán sẽ ra lãi ảo. Trả về đây để màn hình nói thẳng ra thay vì để người dùng đoán.
    */
-  const unpostedMonths = months.filter((_, index) => importedNetMonths[index] > 0.5 && Math.abs(totals[index].revenue) <= 0.5);
+  const unpostedMonths = months.filter((_, index) => importedNetMonths[index] > 0.5 && Math.abs(postedRevenueMonths[index]) <= 0.5);
   const statement: MatrixStatementLine[] = PNL_STATEMENT_LINES.map((line) => {
     const monthValues = finalizedTotals.map((total) => (total as unknown as Record<string, number>)[line.key] || 0);
     const plan = planLine(line.key);

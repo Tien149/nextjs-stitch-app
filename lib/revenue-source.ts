@@ -20,7 +20,7 @@
 
 import type { Prisma } from "@prisma/custom-client";
 import { isRevenueGroupCategory } from "@/lib/voucher-rules";
-import { REVENUE_COMPONENT_CATEGORIES } from "@/lib/revenue-pos-journal";
+import { REVENUE_COMPONENT_CATEGORIES, REVENUE_SVC_CATEGORY_CODE, REVENUE_VAT_CATEGORY_CODE } from "@/lib/revenue-pos-journal";
 
 /**
  * Ô "trống" trên file POS không phải lúc nào cũng là chuỗi rỗng: bản xuất của khách điền "-",
@@ -157,6 +157,86 @@ export async function loadRevenueCategoryIndex(client: CategoryLookupClient): Pr
       const kind = revenueKindFromText(text);
       return (kind && byKind.get(kind)) || "";
     },
+  };
+}
+
+/**
+ * Nhóm doanh thu hiển thị dưới dòng "Doanh thu" của P&L.
+ *
+ * Spec khách 06/09/2026: dòng Doanh thu chỉ được có 5 nhóm — Doanh thu bếp / bar / phụ thu
+ * (cột "Doanh thu − Giảm giá" cắt theo nhóm doanh thu Đồ ăn / Đồ uống / Dịch vụ), cộng
+ * "Doanh thu SVC" (cột SVC) và "Doanh thu thuế GTGT" (cột Thuế). Doanh thu KHÁC với loại thu:
+ * phiếu thu quỹ không bao giờ được đứng ở đây.
+ *
+ * Cột nhóm doanh thu trong file POS là chữ tự do ("ĐỒ ĂN", "Set combo", "REV_FOOD"...), nên
+ * P&L quy về LOẠI MÓN chứ không lấy thẳng chữ đó làm nhóm — nếu không, mỗi cách gõ lại đẻ ra
+ * một nhóm mới và bảng có 9 dòng doanh thu như bản trước.
+ */
+export const REVENUE_PNL_GROUP_FALLBACKS: Record<RevenueKind, { code: string; name: string }> = {
+  FOOD: { code: "REV_FOOD", name: "Doanh thu bếp" },
+  DRINK: { code: "REV_BAR", name: "Doanh thu bar" },
+  SERVICE: { code: "REV_SERVICE", name: "Doanh thu phụ thu" },
+};
+
+/** Rổ cho dòng import mà chữ nhóm doanh thu không quy được về món nào — để tiền không rơi mất. */
+export const REVENUE_PNL_UNCLASSIFIED = { code: "REV_UNCLASSIFIED", name: "Chưa phân loại nhóm doanh thu" } as const;
+
+export type RevenuePnlGroup = { code: string; name: string };
+export type RevenuePnlGroupResolver = {
+  /** Nhóm P&L của một dòng import: luôn là một trong ba nhóm món, hoặc rổ chưa phân loại. */
+  groupOf: (revenueSource: unknown) => RevenuePnlGroup;
+  /**
+   * Năm nhóm cố định của dòng Doanh thu (bếp / bar / phụ thu / SVC / thuế GTGT) — nạp sẵn vào
+   * cây P&L để tháng chưa có doanh thu vẫn thấy đủ nhóm, và để treo kênh bán bên dưới.
+   */
+  seedGroups: RevenuePnlGroup[];
+  /** Danh mục cần nạp thêm vào cây P&L để nhóm hiện đúng tên thay vì mã trơ. */
+  categories: RevenuePnlGroup[];
+};
+
+/**
+ * Bộ quy nhóm doanh thu cho P&L. Ưu tiên mã danh mục của chính khách (tra "Đồ ăn"/"Đồ uống"/
+ * "Dịch vụ" qua loadRevenueCategoryIndex nên nhận cả từ khoá họ tự khai); khách chưa có danh
+ * mục nào cho loại món đó thì dùng mã dự phòng để bảng vẫn đủ 5 dòng.
+ */
+export async function loadRevenuePnlGroups(client: CategoryLookupClient): Promise<RevenuePnlGroupResolver> {
+  const [index, categories] = await Promise.all([
+    loadRevenueCategoryIndex(client),
+    client.masterDataItem.findMany({
+      where: { type: "REVENUE_EXPENSE_CATEGORY", deletedAt: null },
+      select: { code: true, name: true },
+    }),
+  ]);
+  const nameByCode = new Map(categories.map((category) => [category.code.toUpperCase(), category.name]));
+  const samples: Array<[RevenueKind, string]> = [["FOOD", "Đồ ăn"], ["DRINK", "Đồ uống"], ["SERVICE", "Dịch vụ"]];
+  const groupByKind = new Map<RevenueKind, RevenuePnlGroup>();
+  for (const [kind, sample] of samples) {
+    const fallback = REVENUE_PNL_GROUP_FALLBACKS[kind];
+    const code = index.toCode(sample) || fallback.code;
+    groupByKind.set(kind, { code, name: nameByCode.get(code.toUpperCase()) || fallback.name });
+  }
+  // Chữ trong file quy thẳng ra loại món; là mã danh mục thì đọc tiếp TÊN của danh mục đó
+  // ("REV_KITCHEN" một mình không có chữ ăn/bếp nào, nhưng tên "Doanh thu bếp" thì có).
+  const kindOf = (revenueSource: unknown): RevenueKind | null => {
+    const direct = revenueKindFromText(revenueSource);
+    if (direct) return direct;
+    const code = String(revenueSource ?? "").trim().toUpperCase();
+    const name = code ? nameByCode.get(code) : undefined;
+    return name ? revenueKindFromText(`${code} ${name}`) : null;
+  };
+  // Hai dòng doanh thu đứng riêng: SVC và thuế GTGT. Lấy tên trên danh mục nếu khách đã có,
+  // không thì tên mặc định — bảng vẫn đủ 5 nhóm thay vì hiện mã trơ.
+  const componentGroups = REVENUE_COMPONENT_CATEGORIES
+    .filter((category) => category.code === REVENUE_SVC_CATEGORY_CODE || category.code === REVENUE_VAT_CATEGORY_CODE)
+    .map((category) => ({ code: category.code, name: nameByCode.get(category.code.toUpperCase()) || category.name }));
+  const seedGroups = [...groupByKind.values(), ...componentGroups];
+  return {
+    groupOf(revenueSource) {
+      const kind = kindOf(revenueSource);
+      return (kind && groupByKind.get(kind)) || { ...REVENUE_PNL_UNCLASSIFIED };
+    },
+    seedGroups,
+    categories: [...seedGroups, { ...REVENUE_PNL_UNCLASSIFIED }],
   };
 }
 

@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { storeLabel } from "@/lib/branch-labels";
 import { PillTabs, Tag, UnpostedPeriodsNotice } from "@/components/reports/planning/planning-ui";
-import { type PlanningData } from "@/components/reports/planning/planning-types";
+import { type MonthPick, type PlanningData } from "@/components/reports/planning/planning-types";
 import PnlForecastTab from "@/components/reports/planning/PnlForecastTab";
 import PnlDashboardTab from "@/components/reports/planning/PnlDashboardTab";
 import BudgetControlTab from "@/components/reports/planning/BudgetControlTab";
@@ -27,19 +27,23 @@ const TABS: Array<{ id: PlanningTabId; label: string; icon: string }> = [
   { id: "scenario", label: "Giả định tài chính", icon: "tune" },
 ];
 
+/** Tick sẵn T1 tới tháng của kỳ đang xem — trạng thái mặc định của chip khi mở/đổi kỳ. */
+const monthsUpToPeriod = (period: string) => Array.from({ length: Math.max(1, Math.min(12, Number(period.slice(5)) || 1)) }, (_, index) => index);
+
 export default function FinancialPlanningWorkspace({ period, branchCode, periodView, onOpenBudget, initialTab = "dashboard" }: {
   period: string; branchCode: string; periodView: React.ReactNode; onOpenBudget?: () => void; initialTab?: PlanningTabId;
 }) {
   const [tab, setTab] = useState<PlanningTabId>(initialTab);
   const year = period.slice(0, 4);
-  // Lũy kế mặc định tới tháng của kỳ đang chọn — đổi kỳ thì chip lũy kế đi theo.
-  const [upTo, setUpTo] = useState(Math.max(0, Math.min(11, Number(period.slice(5)) - 1)));
+  // Mặc định tick T1 tới tháng của kỳ đang chọn — đổi kỳ thì chip đi theo. Sau đó người dùng
+  // tự bật/tắt từng tháng nên state là danh sách tháng, không còn là một mốc "tới tháng N".
+  const [picked, setPicked] = useState<MonthPick>(() => monthsUpToPeriod(period));
   const [data, setData] = useState<PlanningData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    window.setTimeout(() => setUpTo(Math.max(0, Math.min(11, Number(period.slice(5)) - 1))), 0);
+    window.setTimeout(() => setPicked(monthsUpToPeriod(period)), 0);
   }, [period]);
 
   const load = useCallback(async () => {
@@ -76,10 +80,10 @@ export default function FinancialPlanningWorkspace({ period, branchCode, periodV
     const notice = <UnpostedPeriodsNotice periods={data.unpostedMonths || []} />;
     const body = () => {
       if (tab === "forecast") return <PnlForecastTab data={data} onRefresh={() => void load()} onOpenBudget={onOpenBudget} />;
-      if (tab === "dashboard") return <PnlDashboardTab data={data} upTo={upTo} onChangeUpTo={setUpTo} />;
-      if (tab === "control") return <BudgetControlTab data={data} upTo={upTo} onChangeUpTo={setUpTo} onOpenBudget={onOpenBudget} />;
-      if (tab === "breakeven") return <BreakEvenTab data={data} upTo={upTo} onChangeUpTo={setUpTo} />;
-      if (tab === "scenario") return <ScenarioTab data={data} upTo={upTo} onChangeUpTo={setUpTo} />;
+      if (tab === "dashboard") return <PnlDashboardTab data={data} picked={picked} onChangePicked={setPicked} />;
+      if (tab === "control") return <BudgetControlTab data={data} picked={picked} onChangePicked={setPicked} onOpenBudget={onOpenBudget} />;
+      if (tab === "breakeven") return <BreakEvenTab data={data} picked={picked} onChangePicked={setPicked} />;
+      if (tab === "scenario") return <ScenarioTab data={data} picked={picked} onChangePicked={setPicked} />;
       return null;
     };
     return <div className="space-y-4">{notice}{body()}</div>;

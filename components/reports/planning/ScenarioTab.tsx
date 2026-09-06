@@ -5,7 +5,7 @@ import { storeLabel } from "@/lib/branch-labels";
 import { HorizontalBarChart, MixedChart } from "@/components/charts/ReportCharts";
 import { buildBreakEvenModel } from "@/components/reports/planning/BreakEvenTab";
 import { Card, MonthChips, NoPlanNotice, Tag, fmtMoney, pctText, ratioOf, signedMoney, statValueTextClass, type Tone } from "@/components/reports/planning/planning-ui";
-import { bucketOperatingCost, bucketSum, cumulative, finalizeBucket, sumAll, type PlanningData, type PnlBucket } from "@/components/reports/planning/planning-types";
+import { bucketOperatingCost, bucketSum, cumulative, finalizeBucket, lastPicked, monthPickSummary, sumAll, type MonthPick, type PlanningData, type PnlBucket } from "@/components/reports/planning/planning-types";
 
 /**
  * Màn "Giả định tài chính" (what-if) học theo phần mềm mẫu: bảng kịch bản bên trái với các biến
@@ -39,11 +39,13 @@ function applyScenario(base: PnlBucket[], adjustments: Record<VariableKey, Adjus
       depreciation: bucket.depreciation * factor("depreciation"),
       otherIncome: bucket.otherIncome,
       otherExpense: bucket.otherExpense,
+      // Kịch bản chỉ vặn doanh thu / chi phí vận hành; tiền đầu tư tài sản giữ nguyên.
+      capex: bucket.capex,
     });
   });
 }
 
-export default function ScenarioTab({ data, upTo, onChangeUpTo }: { data: PlanningData; upTo: number; onChangeUpTo: (index: number) => void }) {
+export default function ScenarioTab({ data, picked, onChangePicked }: { data: PlanningData; picked: MonthPick; onChangePicked: (picked: MonthPick) => void }) {
   const [adjustments, setAdjustments] = useState<Record<VariableKey, Adjustment>>(defaultAdjustments);
   const [fromMonth, setFromMonth] = useState(0);
   const monthHeaders = data.months.map((month) => `T${Number(month.slice(5))}`);
@@ -55,12 +57,12 @@ export default function ScenarioTab({ data, upTo, onChangeUpTo }: { data: Planni
   const update = (key: VariableKey, patch: Partial<Adjustment>) => setAdjustments((current) => ({ ...current, [key]: { ...current[key], ...patch } }));
 
   const cards: Array<{ label: string; tone: Tone; income: boolean; plan: number; actual: number; what: number }> = [
-    { label: "Tổng doanh thu", tone: "blue", income: true, plan: bucketSum(data.plans, "revenue", upTo), actual: bucketSum(data.totals, "revenue", upTo), what: bucketSum(scenario, "revenue", upTo) },
-    { label: "Tổng lợi nhuận gộp", tone: "emerald", income: true, plan: bucketSum(data.plans, "grossProfit", upTo), actual: bucketSum(data.totals, "grossProfit", upTo), what: bucketSum(scenario, "grossProfit", upTo) },
-    { label: "Chi phí hoạt động (OPEX)", tone: "rose", income: false, plan: bucketOperatingCost(data.plans, upTo), actual: bucketOperatingCost(data.totals, upTo), what: bucketOperatingCost(scenario, upTo) },
-    { label: "Tổng lợi nhuận ròng", tone: "indigo", income: true, plan: bucketSum(data.plans, "netProfit", upTo), actual: bucketSum(data.totals, "netProfit", upTo), what: bucketSum(scenario, "netProfit", upTo) },
+    { label: "Tổng doanh thu", tone: "blue", income: true, plan: bucketSum(data.plans, "revenue", picked), actual: bucketSum(data.totals, "revenue", picked), what: bucketSum(scenario, "revenue", picked) },
+    { label: "Tổng lợi nhuận gộp", tone: "emerald", income: true, plan: bucketSum(data.plans, "grossProfit", picked), actual: bucketSum(data.totals, "grossProfit", picked), what: bucketSum(scenario, "grossProfit", picked) },
+    { label: "Chi phí hoạt động (OPEX)", tone: "rose", income: false, plan: bucketOperatingCost(data.plans, picked), actual: bucketOperatingCost(data.totals, picked), what: bucketOperatingCost(scenario, picked) },
+    { label: "Tổng lợi nhuận ròng", tone: "indigo", income: true, plan: bucketSum(data.plans, "netProfit", picked), actual: bucketSum(data.totals, "netProfit", picked), what: bucketSum(scenario, "netProfit", picked) },
   ];
-  const netDelta = bucketSum(scenario, "netProfit", upTo) - bucketSum(base, "netProfit", upTo);
+  const netDelta = bucketSum(scenario, "netProfit", picked) - bucketSum(base, "netProfit", picked);
 
   // Hòa vốn theo kịch bản (cả năm) so với gốc.
   const bepBase = useMemo(() => buildBreakEvenModel(data, base, baseLabel), [data, base, baseLabel]);
@@ -90,7 +92,7 @@ export default function ScenarioTab({ data, upTo, onChangeUpTo }: { data: Planni
   const branchDeviation = data.byBranch.map((branch) => {
     const branchBase = data.hasPlan && branch.plan.some((bucket) => bucket.revenue > 0) ? branch.plan : branch.actual;
     const branchScenario = applyScenario(branchBase, adjustments, fromMonth);
-    return { name: storeLabel(branch.code), value: bucketSum(branchScenario, "netProfit", upTo) - bucketSum(branchBase, "netProfit", upTo) };
+    return { name: storeLabel(branch.code), value: bucketSum(branchScenario, "netProfit", picked) - bucketSum(branchBase, "netProfit", picked) };
   });
 
   const impactedMonths = data.months.map((_, index) => index).filter((index) => index >= fromMonth);
@@ -99,7 +101,7 @@ export default function ScenarioTab({ data, upTo, onChangeUpTo }: { data: Planni
     <div className="space-y-4">
       {!data.hasPlan && <NoPlanNotice year={data.year} />}
       <div className="flex flex-wrap items-center gap-3">
-        <div className="flex-1 min-w-[320px]"><MonthChips upTo={upTo} onChange={onChangeUpTo} /></div>
+        <div className="flex-1 min-w-[320px]"><MonthChips picked={picked} onChange={onChangePicked} /></div>
         <button type="button" onClick={() => { setAdjustments(defaultAdjustments()); setFromMonth(0); }} className="flex items-center gap-1 text-xs font-bold text-slate-600 border border-slate-200 rounded-lg px-3 py-2 bg-white hover:bg-slate-50">
           <span className="material-symbols-outlined text-base">restart_alt</span>Đặt lại tất cả
         </button>
@@ -165,7 +167,7 @@ export default function ScenarioTab({ data, upTo, onChangeUpTo }: { data: Planni
             <div className={`rounded-xl border p-3.5 grid place-items-center text-center ${netDelta >= 0 ? "bg-emerald-50 border-emerald-200" : "bg-rose-50 border-rose-200"}`}>
               <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Độ lệch của tổng lợi nhuận ròng</p>
               <p className={`mt-1 font-extrabold leading-tight tabular-nums ${statValueTextClass(signedMoney(netDelta))} ${netDelta >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{signedMoney(netDelta)}</p>
-              <p className="text-[10px] text-slate-500">so với {baseLabel.toLowerCase()} lũy kế {upTo + 1} tháng</p>
+              <p className="text-[10px] text-slate-500">so với {baseLabel.toLowerCase()}, cộng {monthPickSummary(picked)}</p>
             </div>
           </div>
 
@@ -195,11 +197,11 @@ export default function ScenarioTab({ data, upTo, onChangeUpTo }: { data: Planni
                   { name: `LN ròng ${baseLabel}`, values: base.map((bucket) => bucket.netProfit), color: "#c7d2fe" },
                   { name: "LN ròng kịch bản", values: scenario.map((bucket) => bucket.netProfit), color: "#4f46e5" },
                 ]}
-                lines={[{ name: "LN ròng thực đạt", values: data.totals.map((bucket, index) => (index <= upTo ? bucket.netProfit : Number.NaN)), color: "#059669" }]}
+                lines={[{ name: "LN ròng thực đạt", values: data.totals.map((bucket, index) => (index <= lastPicked(picked) ? bucket.netProfit : Number.NaN)), color: "#059669" }]}
                 height={280}
               />
             </Card>
-            <Card title="Độ lệch của tổng lợi nhuận ròng theo cửa hàng" subtitle={`Kịch bản trừ ${baseLabel.toLowerCase()}, lũy kế ${upTo + 1} tháng`} icon="storefront" bodyClassName="px-2 pb-3">
+            <Card title="Độ lệch của tổng lợi nhuận ròng theo cửa hàng" subtitle={`Kịch bản trừ ${baseLabel.toLowerCase()}, cộng ${monthPickSummary(picked)}`} icon="storefront" bodyClassName="px-2 pb-3">
               {branchDeviation.length > 0 ? <HorizontalBarChart rows={branchDeviation} height={Math.max(200, 40 * branchDeviation.length + 60)} /> : <p className="py-10 text-center text-sm text-slate-400">Chưa có dữ liệu theo cửa hàng.</p>}
             </Card>
           </div>

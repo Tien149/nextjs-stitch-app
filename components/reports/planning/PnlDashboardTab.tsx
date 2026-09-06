@@ -4,7 +4,7 @@ import React, { useState } from "react";
 import { storeLabel } from "@/lib/branch-labels";
 import { DonutLegendChart, MixedChart, MoneyLineChart, PercentLineChart, ShareDonutChart } from "@/components/charts/ReportCharts";
 import { Card, MonthChips, NoPlanNotice, PlanActualCell, RateChip, Segmented, StatCard, Tag, fmtMoney, ratioOf, type Tone } from "@/components/reports/planning/planning-ui";
-import { bucketOperatingCost, bucketSum, nodeValue, type PlanningData, type PnlBucket, type Series, type StatementLine } from "@/components/reports/planning/planning-types";
+import { bucketOperatingCost, bucketSum, monthPickSummary, nodeValue, type MonthPick, type PlanningData, type PnlBucket, type Series, type StatementLine } from "@/components/reports/planning/planning-types";
 
 /**
  * Màn "Dashboard P&L" học theo phần mềm mẫu: chip lũy kế tháng, 6 thẻ KPI (số kế hoạch màu +
@@ -15,29 +15,32 @@ import { bucketOperatingCost, bucketSum, nodeValue, type PlanningData, type PnlB
 
 const BRANCH_TONES: Tone[] = ["blue", "rose", "amber", "emerald", "violet", "teal", "orange", "sky"];
 type Mode = "plan" | "actual";
+/** Hai cách xem cơ cấu doanh thu (spec khách 07/09/2026): theo nhóm doanh thu, hoặc theo kênh bán. */
+type RevenueView = "group" | "channel";
 
-function shareOf(line: StatementLine | undefined, upTo: number, mode: Mode) {
+function shareOf(line: StatementLine | undefined, picked: MonthPick, mode: Mode) {
   if (!line) return [];
   const groups = line.groups;
   // Dòng chỉ có một nhóm thì bung hạng mục bên trong để donut có nhiều lát hơn.
   const nodes = groups.length === 1 && groups[0].items.length > 1 ? groups[0].items : groups;
-  return nodes.map((node) => ({ name: node.name, value: nodeValue(node, upTo, mode) }));
+  return nodes.map((node) => ({ name: node.name, value: nodeValue(node, picked, mode) }));
 }
 
-export default function PnlDashboardTab({ data, upTo, onChangeUpTo }: { data: PlanningData; upTo: number; onChangeUpTo: (index: number) => void }) {
+export default function PnlDashboardTab({ data, picked, onChangePicked }: { data: PlanningData; picked: MonthPick; onChangePicked: (picked: MonthPick) => void }) {
   const [mixMode, setMixMode] = useState<Mode>(data.hasPlan ? "plan" : "actual");
   const [opexMode, setOpexMode] = useState<Mode>("actual");
+  const [revenueView, setRevenueView] = useState<RevenueView>("group");
   const [pieMonth, setPieMonth] = useState<number>(-1);
   const monthHeaders = data.months.map((month) => `T${Number(month.slice(5))}`);
-  const actual = (key: keyof PnlBucket) => bucketSum(data.totals, key, upTo);
-  const plan = (key: keyof PnlBucket) => bucketSum(data.plans, key, upTo);
+  const actual = (key: keyof PnlBucket) => bucketSum(data.totals, key, picked);
+  const plan = (key: keyof PnlBucket) => bucketSum(data.plans, key, picked);
   const statementOf = (key: string) => data.statement.find((line) => line.key === key);
 
   const kpis: Array<{ label: string; tone: Tone; income: boolean; icon: string; actual: number; plan: number }> = [
     { label: "Doanh thu", tone: "blue", income: true, icon: "payments", actual: actual("revenue"), plan: plan("revenue") },
     { label: "Giá vốn (COGS)", tone: "amber", income: false, icon: "inventory_2", actual: actual("cogs"), plan: plan("cogs") },
     { label: "Lợi nhuận gộp", tone: "emerald", income: true, icon: "trending_up", actual: actual("grossProfit"), plan: plan("grossProfit") },
-    { label: "Chi phí hoạt động", tone: "rose", income: false, icon: "receipt_long", actual: bucketOperatingCost(data.totals, upTo), plan: bucketOperatingCost(data.plans, upTo) },
+    { label: "Chi phí hoạt động", tone: "rose", income: false, icon: "receipt_long", actual: bucketOperatingCost(data.totals, picked), plan: bucketOperatingCost(data.plans, picked) },
     { label: "EBITDA", tone: "violet", income: true, icon: "monitoring", actual: actual("ebitda"), plan: plan("ebitda") },
     { label: "Lợi nhuận ròng", tone: "indigo", income: true, icon: "workspace_premium", actual: actual("netProfit"), plan: plan("netProfit") },
   ];
@@ -46,13 +49,13 @@ export default function PnlDashboardTab({ data, upTo, onChangeUpTo }: { data: Pl
 
   // Cơ cấu 1 đồng doanh thu (lũy kế): giá vốn / nhân sự / OPEX khác / khấu hao / phần còn lại là LN.
   const mixBuckets = mixMode === "plan" ? data.plans : data.totals;
-  const mixRevenue = bucketSum(mixBuckets, "revenue", upTo);
+  const mixRevenue = bucketSum(mixBuckets, "revenue", picked);
   const mixParts: Array<{ label: string; value: number; color: string }> = [
-    { label: "Giá vốn hàng bán", value: bucketSum(mixBuckets, "cogs", upTo), color: "#f59e0b" },
-    { label: "Chi phí nhân sự", value: bucketSum(mixBuckets, "payroll", upTo), color: "#0ea5e9" },
-    { label: "OPEX khác", value: bucketSum(mixBuckets, "otherOpex", upTo), color: "#2563eb" },
-    { label: "Khấu hao", value: bucketSum(mixBuckets, "depreciation", upTo), color: "#94a3b8" },
-    { label: "Lợi nhuận ròng", value: bucketSum(mixBuckets, "netProfit", upTo), color: "#10b981" },
+    { label: "Giá vốn hàng bán", value: bucketSum(mixBuckets, "cogs", picked), color: "#f59e0b" },
+    { label: "Chi phí nhân sự", value: bucketSum(mixBuckets, "payroll", picked), color: "#0ea5e9" },
+    { label: "OPEX khác", value: bucketSum(mixBuckets, "otherOpex", picked), color: "#2563eb" },
+    { label: "Khấu hao", value: bucketSum(mixBuckets, "depreciation", picked), color: "#94a3b8" },
+    { label: "Lợi nhuận ròng", value: bucketSum(mixBuckets, "netProfit", picked), color: "#10b981" },
   ];
 
   const pickAt = (values: number[]) => (pieMonth < 0 ? values.reduce((total, value) => total + value, 0) : values[pieMonth] || 0);
@@ -65,18 +68,46 @@ export default function PnlDashboardTab({ data, upTo, onChangeUpTo }: { data: Pl
   const branchRows = data.byBranch.map((branch, index) => ({
     code: branch.code,
     tone: BRANCH_TONES[index % BRANCH_TONES.length],
-    revenue: { plan: bucketSum(branch.plan, "revenue", upTo), actual: bucketSum(branch.actual, "revenue", upTo) },
-    cogs: { plan: bucketSum(branch.plan, "cogs", upTo), actual: bucketSum(branch.actual, "cogs", upTo) },
-    grossProfit: { plan: bucketSum(branch.plan, "grossProfit", upTo), actual: bucketSum(branch.actual, "grossProfit", upTo) },
-    operating: { plan: bucketOperatingCost(branch.plan, upTo), actual: bucketOperatingCost(branch.actual, upTo) },
-    netProfit: { plan: bucketSum(branch.plan, "netProfit", upTo), actual: bucketSum(branch.actual, "netProfit", upTo) },
+    revenue: { plan: bucketSum(branch.plan, "revenue", picked), actual: bucketSum(branch.actual, "revenue", picked) },
+    cogs: { plan: bucketSum(branch.plan, "cogs", picked), actual: bucketSum(branch.actual, "cogs", picked) },
+    grossProfit: { plan: bucketSum(branch.plan, "grossProfit", picked), actual: bucketSum(branch.actual, "grossProfit", picked) },
+    operating: { plan: bucketOperatingCost(branch.plan, picked), actual: bucketOperatingCost(branch.actual, picked) },
+    netProfit: { plan: bucketSum(branch.plan, "netProfit", picked), actual: bucketSum(branch.actual, "netProfit", picked) },
   }));
   const totalRow = {
     revenue: { plan: plan("revenue"), actual: actual("revenue") },
     cogs: { plan: plan("cogs"), actual: actual("cogs") },
     grossProfit: { plan: plan("grossProfit"), actual: actual("grossProfit") },
-    operating: { plan: bucketOperatingCost(data.plans, upTo), actual: bucketOperatingCost(data.totals, upTo) },
+    operating: { plan: bucketOperatingCost(data.plans, picked), actual: bucketOperatingCost(data.totals, picked) },
     netProfit: { plan: plan("netProfit"), actual: actual("netProfit") },
+  };
+
+  /**
+   * Cơ cấu doanh thu xem được theo hai cách (spec khách 07/09/2026):
+   *  - Nhóm doanh thu: DT bếp / DT bar / DT phụ thu / SVC / Thuế GTGT — chính là các nhóm dưới
+   *    dòng Doanh thu của P&L.
+   *  - Kênh bán: Tại chỗ / Mang về / Giao hàng qua app — gộp hạng mục P&L của mọi nhóm lại.
+   * Phần doanh thu chưa gắn kênh bán được tách riêng để hai cách xem luôn cộng ra cùng một tổng.
+   */
+  const revenueShare = () => {
+    const groups = statementOf("revenue")?.groups || [];
+    if (revenueView === "group") return groups.map((group) => ({ name: group.name, value: nodeValue(group, picked, "actual") }));
+    const byChannel = new Map<string, { name: string; value: number }>();
+    let unknown = 0;
+    for (const group of groups) {
+      let covered = 0;
+      for (const item of group.items) {
+        const value = nodeValue(item, picked, "actual");
+        covered += value;
+        const current = byChannel.get(item.code) || { name: item.name, value: 0 };
+        current.value += value;
+        byChannel.set(item.code, current);
+      }
+      unknown += nodeValue(group, picked, "actual") - covered;
+    }
+    const rows = Array.from(byChannel.values());
+    if (Math.abs(unknown) > 0.5) rows.push({ name: "Chưa rõ kênh bán", value: unknown });
+    return rows;
   };
 
   const donutCard = (title: string, subtitle: string, line: StatementLine | undefined, mode: Mode, onMode?: (mode: Mode) => void) => (
@@ -87,14 +118,14 @@ export default function PnlDashboardTab({ data, upTo, onChangeUpTo }: { data: Pl
       right={onMode && <Segmented value={mode} onChange={onMode} options={[{ id: "plan", label: "Kế hoạch" }, { id: "actual", label: "Thực tế" }]} />}
       bodyClassName="px-4 pb-4"
     >
-      <DonutLegendChart data={shareOf(line, upTo, mode)} />
+      <DonutLegendChart data={shareOf(line, picked, mode)} />
     </Card>
   );
 
   return (
     <div className="space-y-4">
       {!data.hasPlan && <NoPlanNotice year={data.year} />}
-      <MonthChips upTo={upTo} onChange={onChangeUpTo} />
+      <MonthChips picked={picked} onChange={onChangePicked} />
 
       {/* Sáu thẻ KPI mang số tiền hàng tỷ: chỉ xếp 6 cột khi màn đủ rộng, còn lại 2-3 cột cho
           thẻ rộng ra để số hiện đủ chữ số thay vì bị cắt. */}
@@ -108,7 +139,7 @@ export default function PnlDashboardTab({ data, upTo, onChangeUpTo }: { data: Pl
               tone={kpi.tone}
               icon={kpi.icon}
               value={fmtMoney(data.hasPlan ? kpi.plan : kpi.actual)}
-              sub={data.hasPlan ? `Thực đạt: ${fmtMoney(kpi.actual)}` : "Thực tế lũy kế (chưa có KH)"}
+              sub={data.hasPlan ? `Thực đạt: ${fmtMoney(kpi.actual)}` : "Thực tế các tháng đã chọn (chưa có KH)"}
               rate={rate}
               rateGood={rate === null ? null : kpi.income ? rate >= 1 : rate <= 1}
               hint={data.hasPlan ? `Kế hoạch ${fmtMoney(kpi.plan)} · Thực đạt ${fmtMoney(kpi.actual)}` : undefined}
@@ -146,7 +177,7 @@ export default function PnlDashboardTab({ data, upTo, onChangeUpTo }: { data: Pl
 
       <Card
         title="Cơ cấu 1 đồng doanh thu"
-        subtitle={`Lũy kế ${upTo + 1} tháng — mỗi 100 đồng doanh thu chia cho giá vốn, nhân sự, OPEX, khấu hao và phần còn lại là lợi nhuận`}
+        subtitle={`Cộng ${monthPickSummary(picked)} — mỗi 100 đồng doanh thu chia cho giá vốn, nhân sự, OPEX, khấu hao và phần còn lại là lợi nhuận`}
         icon="stacked_bar_chart"
         right={<Segmented value={mixMode} onChange={setMixMode} options={[{ id: "plan", label: "Theo kế hoạch" }, { id: "actual", label: "Theo thực tế" }]} />}
         bodyClassName="px-4 pb-4"
@@ -177,12 +208,20 @@ export default function PnlDashboardTab({ data, upTo, onChangeUpTo }: { data: Pl
       </Card>
 
       <div className="grid md:grid-cols-3 gap-4">
-        {donutCard("Cơ cấu doanh thu", "Theo nguồn thu (lũy kế)", statementOf("revenue"), "actual")}
+        <Card
+          title="Cơ cấu doanh thu"
+          subtitle={revenueView === "group" ? `Theo nhóm doanh thu — cộng ${monthPickSummary(picked)}` : `Theo kênh bán — cộng ${monthPickSummary(picked)}`}
+          icon="donut_small"
+          right={<Segmented value={revenueView} onChange={setRevenueView} options={[{ id: "group", label: "Nhóm doanh thu" }, { id: "channel", label: "Kênh bán" }]} />}
+          bodyClassName="px-4 pb-4"
+        >
+          <DonutLegendChart data={revenueShare()} />
+        </Card>
         {donutCard("Cơ cấu giá vốn", "Theo nhóm/hạng mục giá vốn (lũy kế)", statementOf("cogs"), "actual")}
         {donutCard("Cơ cấu chi phí hoạt động (OPEX)", "Theo nhóm OPEX — chọn kế hoạch hoặc thực tế", statementOf("otherOpex"), opexMode, setOpexMode)}
       </div>
 
-      <Card title="Phân tích hiệu quả theo cửa hàng" subtitle={`Doanh thu, chi phí, lợi nhuận từng cửa hàng — kế hoạch đậm, thực đạt chip màu (lũy kế ${upTo + 1} tháng)`} icon="storefront" bodyClassName="overflow-x-auto">
+      <Card title="Phân tích hiệu quả theo cửa hàng" subtitle={`Doanh thu, chi phí, lợi nhuận từng cửa hàng — kế hoạch đậm, thực đạt chip màu (cộng ${monthPickSummary(picked)})`} icon="storefront" bodyClassName="overflow-x-auto">
         <table className="w-full text-left text-sm">
           <thead>
             <tr className="text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">

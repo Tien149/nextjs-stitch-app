@@ -1601,7 +1601,7 @@ export default function ReportsPage() {
           <div className="grid xl:grid-cols-[1.4fr_1fr] gap-5">
             <section className="bg-white border border-slate-200 rounded-lg p-5">
               <h2 className="font-bold">Xu hướng 6 tháng</h2>
-              <p className="text-xs text-slate-500 mt-1">Doanh thu và EBITDA từ dữ liệu đã ghi sổ.</p>
+              <p className="text-xs text-slate-500 mt-1">Doanh thu lấy từ file import doanh thu; chi phí và EBITDA từ dữ liệu đã ghi sổ.</p>
               <div className="mt-6 space-y-4">
                 {(dashboard.trend || []).map((row) => {
                   const max = Math.max(...(dashboard.trend || []).map((item) => Math.abs(item.revenue)), 1);
