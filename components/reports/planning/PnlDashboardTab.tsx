@@ -7,8 +7,8 @@ import { Card, MonthChips, NoPlanNotice, PlanActualCell, RateChip, Segmented, St
 import { bucketOperatingCost, bucketSum, monthPickSummary, nodeValue, type MonthPick, type PlanningData, type PnlBucket, type Series, type StatementLine } from "@/components/reports/planning/planning-types";
 
 /**
- * Màn "Dashboard P&L" học theo phần mềm mẫu: chip lũy kế tháng, 6 thẻ KPI (số kế hoạch màu +
- * Thực đạt + % hoàn thành), chart Doanh thu & LN ròng KH/TT, chart % biên lợi nhuận, thanh
+ * Màn "Dashboard P&L" học theo phần mềm mẫu: chip lũy kế tháng, 6 thẻ KPI (số THỰC ĐẠT in to +
+ * kế hoạch dòng phụ + % hoàn thành), chart Doanh thu & LN ròng KH/TT, chart % biên lợi nhuận, thanh
  * "cơ cấu 1 đồng doanh thu", ba donut cơ cấu, bảng hiệu quả theo cửa hàng. Cuối màn giữ
  * nguyên bộ chart theo file của chị Bình (tỷ trọng DT theo bộ phận/kênh, COGS và Lương so DT).
  */
@@ -128,7 +128,8 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
       <MonthChips picked={picked} onChange={onChangePicked} />
 
       {/* Sáu thẻ KPI mang số tiền hàng tỷ: chỉ xếp 6 cột khi màn đủ rộng, còn lại 2-3 cột cho
-          thẻ rộng ra để số hiện đủ chữ số thay vì bị cắt. */}
+          thẻ rộng ra để số hiện đủ chữ số thay vì bị cắt. Số in to là THỰC ĐẠT, kế hoạch đứng ở
+          dòng phụ (feedback chị Bình 06/09/2026: bản trước in kế hoạch to, thực đạt nhỏ — ngược). */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6 gap-3">
         {kpis.map((kpi) => {
           const rate = data.hasPlan ? ratioOf(kpi.actual, kpi.plan) : null;
@@ -138,8 +139,8 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
               label={kpi.label}
               tone={kpi.tone}
               icon={kpi.icon}
-              value={fmtMoney(data.hasPlan ? kpi.plan : kpi.actual)}
-              sub={data.hasPlan ? `Thực đạt: ${fmtMoney(kpi.actual)}` : "Thực tế các tháng đã chọn (chưa có KH)"}
+              value={fmtMoney(kpi.actual)}
+              sub={data.hasPlan ? `Kế hoạch: ${fmtMoney(kpi.plan)}` : "Thực tế các tháng đã chọn (chưa có KH)"}
               rate={rate}
               rateGood={rate === null ? null : kpi.income ? rate >= 1 : rate <= 1}
               hint={data.hasPlan ? `Kế hoạch ${fmtMoney(kpi.plan)} · Thực đạt ${fmtMoney(kpi.actual)}` : undefined}
