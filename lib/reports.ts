@@ -11,7 +11,7 @@ import { transferLegsForBranch } from "@/lib/internal-transfer";
 import { WALLET_CARD_FEE_CATEGORY_CODE, WALLET_GRAB_EXPENSE_CATEGORY_CODE } from "@/lib/wallet-settlement-allocation";
 import { vietnamBusinessDayKey } from "@/lib/revenue-date";
 import { remainingWalletGross, selectWalletDeclaredRevenue, walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
-import { comparePnlGroups, comparePnlItems, isPayrollPnlItem } from "@/lib/pnl-ordering";
+import { comparePnlGroups, comparePnlItems, isDepreciationPnlName, isPayrollPnlItem } from "@/lib/pnl-ordering";
 import { isRevenueComponentCategory, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { REVENUE_PNL_UNCLASSIFIED, loadRevenuePnlGroups, type CategoryLookupClient } from "@/lib/revenue-source";
 
@@ -19,14 +19,19 @@ export type PnlBucket = {
   revenue: number;
   cogs: number;
   payroll: number;
-  depreciation: number;
+  /**
+   * Chi phí hoạt động, ĐÃ GỒM khấu hao: theo danh mục của khách, khấu hao là hạng mục
+   * "CPCĐ - CP Khấu Hao" trong nhóm Chi phí cố định nên P&L không còn dòng Khấu hao riêng
+   * (nét vẽ chị Bình 06/09/2026). Bút toán khấu hao tự động (TK 6424) được gán vào hạng mục đó.
+   */
   otherOpex: number;
   otherIncome: number;
   otherExpense: number;
   /**
    * Tiền đầu tư tài sản / CCDC trong kỳ (ghi Nợ 211, 242). KHÔNG phải chi phí của kỳ — chi phí
-   * của tài sản đã vào P&L qua dòng Khấu hao — nên không trừ vào EBITDA hay lợi nhuận ròng;
-   * đứng trên bảng như một dòng thông tin để thấy tiền bỏ ra mua sắm (yêu cầu khách 07/09/2026).
+   * của tài sản vào P&L qua hạng mục CP Khấu Hao — nên không trừ vào lợi nhuận hoạt động hay
+   * lợi nhuận ròng; đứng trên bảng như một dòng thông tin ngay dưới Chi phí nhân sự để thấy
+   * tiền bỏ ra mua sắm (yêu cầu khách 06-07/09/2026).
    */
   capex: number;
 };
@@ -51,7 +56,7 @@ export type PnlDetailGroup = PnlDetailItem & { items: PnlDetailItem[] };
 export type PnlStatementLine = { key: string; label: string; amount: number; subtotal: boolean; groups: PnlDetailGroup[] };
 
 function emptyPnl(): PnlBucket {
-  return { revenue: 0, cogs: 0, payroll: 0, depreciation: 0, otherOpex: 0, otherIncome: 0, otherExpense: 0, capex: 0 };
+  return { revenue: 0, cogs: 0, payroll: 0, otherOpex: 0, otherIncome: 0, otherExpense: 0, capex: 0 };
 }
 
 /** Hạng mục P&L gắn trên bút toán (tên + tên nhóm cha) — đủ để biết nó có phải chi phí lương không. */
@@ -70,8 +75,8 @@ export function pnlLineKeyOf(account: { accountType: string; reportGroup: string
   if (account.accountType === "COGS") return "cogs";
   if (account.accountType === "OPEX") {
     if (account.reportGroup === "PAYROLL") return "payroll";
-    if (account.reportGroup === "DEPRECIATION") return "depreciation";
     if (isPayrollPnlItem(pnlItem)) return "payroll";
+    // Khấu hao (6424) cũng là OPEX: nằm ở hạng mục CP Khấu Hao trong Chi phí cố định.
     return "otherOpex";
   }
   if (account.accountType === "OTHER_INCOME") return "otherIncome";
@@ -93,9 +98,11 @@ function addLine(bucket: PnlBucket, line: { debit: number; credit: number; accou
 
 export function finalizePnl(bucket: PnlBucket) {
   const grossProfit = bucket.revenue - bucket.cogs;
+  // OPEX đã gồm khấu hao nên "ebitda" chính là lợi nhuận hoạt động; giữ tên trường để không đổi
+  // hợp đồng API với các màn đang đọc, nhãn hiển thị là "Lợi nhuận hoạt động".
   const opexBeforeDepreciation = bucket.payroll + bucket.otherOpex;
   const ebitda = grossProfit - opexBeforeDepreciation;
-  const operatingProfit = ebitda - bucket.depreciation;
+  const operatingProfit = ebitda;
   const netProfit = operatingProfit + bucket.otherIncome - bucket.otherExpense;
   return { ...bucket, grossProfit, opexBeforeDepreciation, ebitda, operatingProfit, netProfit, grossMargin: bucket.revenue ? grossProfit / bucket.revenue : 0, ebitdaMargin: bucket.revenue ? ebitda / bucket.revenue : 0 };
 }
@@ -128,21 +135,24 @@ function sortDetailItems<T extends { code: string; name: string }>(rows: T[]) {
   return rows.sort((a, b) => comparePnlItems({ name: a.name, last: isUnclassifiedDetailCode(a.code) }, { name: b.name, last: isUnclassifiedDetailCode(b.code) }));
 }
 
-/** Nhãn + thứ tự 10 dòng của báo cáo KQKD — bảng một kỳ và bảng 12 tháng dùng chung một bộ. */
+/**
+ * Nhãn + thứ tự các dòng của báo cáo KQKD — bảng một kỳ và bảng 12 tháng dùng chung một bộ.
+ * Thứ tự theo nét vẽ chị Bình 06/09/2026: Nhân sự -> CAPEX -> OPEX; khấu hao là hạng mục
+ * trong Chi phí cố định (nhóm OPEX), không còn dòng riêng.
+ */
 export const PNL_STATEMENT_LINES: Array<{ key: PnlLineKey | "grossProfit" | "ebitda" | "netProfit"; label: string; subtotal: boolean }> = [
   { key: "revenue", label: "1. Doanh thu bán hàng và cung cấp dịch vụ", subtotal: false },
   { key: "cogs", label: "2. Giá vốn hàng bán", subtotal: false },
   { key: "grossProfit", label: "3. Lợi nhuận gộp", subtotal: true },
   { key: "payroll", label: "4. Chi phí nhân sự", subtotal: false },
-  { key: "otherOpex", label: "5. Chi phí hoạt động khác (OPEX)", subtotal: false },
-  { key: "depreciation", label: "6. Khấu hao tài sản/CCDC", subtotal: false },
   // Dòng thông tin, cố ý KHÔNG đánh số: tiền mua tài sản không nằm trong mạch tính lợi nhuận
-  // bên dưới (đã vào P&L qua Khấu hao), đánh số sẽ khiến người đọc tưởng nó bị trừ.
+  // bên dưới (vào P&L qua hạng mục CP Khấu Hao), đánh số sẽ khiến người đọc tưởng nó bị trừ.
   { key: "capex", label: "Chi phí đầu tư tài sản/CCDC (CAPEX) — không trừ vào lợi nhuận", subtotal: false },
-  { key: "ebitda", label: "7. EBITDA", subtotal: true },
-  { key: "otherIncome", label: "8. Thu nhập khác", subtotal: false },
-  { key: "otherExpense", label: "9. Chi phí khác", subtotal: false },
-  { key: "netProfit", label: "10. Lợi nhuận ròng", subtotal: true },
+  { key: "otherOpex", label: "5. Chi phí hoạt động (OPEX)", subtotal: false },
+  { key: "ebitda", label: "6. Lợi nhuận hoạt động", subtotal: true },
+  { key: "otherIncome", label: "7. Thu nhập khác", subtotal: false },
+  { key: "otherExpense", label: "8. Chi phí khác", subtotal: false },
+  { key: "netProfit", label: "9. Lợi nhuận ròng", subtotal: true },
 ];
 
 export type PnlCatalog = {
@@ -153,6 +163,23 @@ export type PnlCatalog = {
 
 /** Danh mục đã bấm "Ngừng" không được nạp sẵn vào bảng; có phát sinh trong kỳ thì vẫn hiện. */
 const isRetiredCatalogItem = (item: { status?: string | null }) => String(item.status ?? "ACTIVE").toUpperCase() !== "ACTIVE";
+
+/**
+ * Mã hạng mục "khấu hao" trong danh mục (VD CPCD_KHAUHAO "CPCĐ - CP Khấu Hao"). Bút toán khấu hao
+ * tự động (TK 6424) không mang hạng mục nên được gán vào đây để đứng đúng chỗ trong Chi phí cố
+ * định. Ưu tiên hạng mục đã gắn nhóm; không khai thì rơi vào "Chưa phân loại P&L" như bút toán
+ * thiếu hạng mục khác.
+ */
+export function depreciationCatalogItemCode(pnlItems: Array<{ code: string; name: string; subGroup?: string | null; status?: string | null }>) {
+  const candidates = pnlItems.filter((item) => !isRetiredCatalogItem(item) && isDepreciationPnlName(item.name));
+  return (candidates.find((item) => item.subGroup) || candidates[0])?.code ?? null;
+}
+
+/** Hạng mục P&L thực tế của một bút toán chi: mã đã gắn, hoặc hạng mục khấu hao nếu là bút toán 6424. */
+export function resolvePnlItemCode(line: { pnlItemCode: string | null; account: { reportGroup: string } }, depreciationItemCode: string | null) {
+  if (line.pnlItemCode) return line.pnlItemCode;
+  return line.account.reportGroup === "DEPRECIATION" ? depreciationItemCode : null;
+}
 /** Một dòng chi tiết với N cột số (N = 1 cho bảng một kỳ, 12 cho bảng cả năm). */
 export type PnlSeriesItem = { code: string; name: string; months: number[]; total: number };
 export type PnlSeriesGroup = PnlSeriesItem & { items: PnlSeriesItem[] };
@@ -230,6 +257,9 @@ export function createPnlDetailTree(catalog: PnlCatalog, monthCount: number) {
     bumpDetail(lineKey, parent ? { code: parent.code, name: parent.name } : expenseGroupOf(item.code, pnlItemByCode, pnlGroupName), item, 0, 0);
   }
 
+  const depreciationItemCode = depreciationCatalogItemCode(pnlItems);
+  const resolveItemCode = (line: PnlJournalLineLike) => resolvePnlItemCode(line, depreciationItemCode);
+
   /** Cộng một bút toán vào cột `monthIndex`; trả về dòng KQKD nó thuộc về (null nếu không vào KQKD). */
   const add = (line: PnlJournalLineLike, monthIndex: number): PnlLineKey | null => {
     const lineKey = pnlLineKeyOf(line.account, pnlItemRefOf(line.pnlItemCode));
@@ -245,10 +275,11 @@ export function createPnlDetailTree(catalog: PnlCatalog, monthCount: number) {
         : null;
       bumpDetail(lineKey, { code, name }, item, monthIndex, line.credit - line.debit);
     } else {
-      const code = line.pnlItemCode || "UNCLASSIFIED";
+      const pnlItemCode = resolveItemCode(line);
+      const code = pnlItemCode || "UNCLASSIFIED";
       const item = pnlItemByCode.get(code);
-      const name = item?.name || (line.pnlItemCode ? `Hạng mục P&L [${line.pnlItemCode}]` : "Chưa phân loại P&L");
-      bumpDetail(lineKey, expenseGroupOf(line.pnlItemCode, pnlItemByCode, pnlGroupName), { code, name }, monthIndex, line.debit - line.credit);
+      const name = item?.name || (pnlItemCode ? `Hạng mục P&L [${pnlItemCode}]` : "Chưa phân loại P&L");
+      bumpDetail(lineKey, expenseGroupOf(pnlItemCode, pnlItemByCode, pnlGroupName), { code, name }, monthIndex, line.debit - line.credit);
     }
     return lineKey;
   };
@@ -263,7 +294,7 @@ export function createPnlDetailTree(catalog: PnlCatalog, monthCount: number) {
       items: sortDetailItems(Array.from(node.items.values(), (item) => ({ ...item, total: sum(item.months) }))),
     })));
 
-  return { pnlItemRefOf, add, groupsOf };
+  return { pnlItemRefOf, add, groupsOf, resolveItemCode };
 }
 
 /**
@@ -365,11 +396,12 @@ export async function getPnl(period: string, branchCode: string) {
       addLine(branch, line, pnlItemRef);
       tree.add(line, 0);
       if (["COGS", "OPEX", "OTHER_EXPENSE"].includes(line.account.accountType)) {
-        const code = line.pnlItemCode || "UNCLASSIFIED";
-        const item = line.pnlItemCode ? pnlItemByCode.get(line.pnlItemCode) : null;
+        const pnlItemCode = tree.resolveItemCode(line);
+        const code = pnlItemCode || "UNCLASSIFIED";
+        const item = pnlItemCode ? pnlItemByCode.get(pnlItemCode) : null;
         const current = pnlItemBreakdown.get(code) || {
           code,
-          name: item?.name || (line.pnlItemCode ? `Hạng mục P&L [${line.pnlItemCode}]` : "Chưa phân loại P&L"),
+          name: item?.name || (pnlItemCode ? `Hạng mục P&L [${pnlItemCode}]` : "Chưa phân loại P&L"),
           group: item ? (item.subGroup ? pnlGroupName.get(item.subGroup) || item.subGroup : item.group) : null,
           amount: 0,
         };

@@ -38,10 +38,9 @@ export function buildBreakEvenModel(data: PlanningData, buckets: PnlBucket[], ba
   const fixedParts: Array<{ name: string; value: number }> = [];
   const variableParts: Array<{ name: string; value: number }> = [];
   const payroll = sumAll(buckets.map((bucket) => bucket.payroll));
-  const depreciation = sumAll(buckets.map((bucket) => bucket.depreciation));
   const cogs = sumAll(buckets.map((bucket) => bucket.cogs));
   if (payroll > 0) fixedParts.push({ name: "Chi phí nhân sự", value: payroll });
-  if (depreciation > 0) fixedParts.push({ name: "Khấu hao tài sản/CCDC", value: depreciation });
+  // Khấu hao là hạng mục trong nhóm Chi phí cố định của OPEX nên tự vào định phí ở vòng lặp nhóm bên dưới.
   if (cogs > 0) variableParts.push({ name: "Giá vốn hàng bán", value: cogs });
   let fixedOpex = 0;
   let variableOpex = 0;
@@ -55,7 +54,7 @@ export function buildBreakEvenModel(data: PlanningData, buckets: PnlBucket[], ba
   const unassignedOpex = opexTotal - fixedOpex - variableOpex;
   if (unassignedOpex > 0.5) { fixedOpex += unassignedOpex; fixedParts.push({ name: "OPEX khác (chưa gắn nhóm)", value: unassignedOpex }); }
   const revenue = sumAll(buckets.map((bucket) => bucket.revenue));
-  const fixed = payroll + depreciation + fixedOpex;
+  const fixed = payroll + fixedOpex;
   const variable = cogs + variableOpex;
   const variableRatio = revenue > 0 ? variable / revenue : 0;
   const cmRatio = 1 - variableRatio;
@@ -106,7 +105,7 @@ export default function BreakEvenTab({ data, picked, onChangePicked }: { data: P
     const revenuePlan = sumAll(base.map((bucket) => bucket.revenue));
     const revenueActual = bucketSum(branch.actual, "revenue", picked);
     const opex = sumAll(base.map((bucket) => bucket.otherOpex));
-    const fixed = sumAll(base.map((bucket) => bucket.payroll + bucket.depreciation)) + opex * model.fixedShareOfOpex;
+    const fixed = sumAll(base.map((bucket) => bucket.payroll)) + opex * model.fixedShareOfOpex;
     const variable = sumAll(base.map((bucket) => bucket.cogs)) + opex * (1 - model.fixedShareOfOpex);
     const cm = revenuePlan > 0 ? 1 - variable / revenuePlan : 0;
     const bep = cm > 0 ? fixed / cm : null;

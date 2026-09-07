@@ -34,10 +34,27 @@ export function isPayrollPnlName(name: string | null | undefined) {
   return /(?<!\b(?:so|nang|khoi|dinh|chat|trong|san|luu|dung|do|lieu|ham|thanh) )\bluong\b/.test(text);
 }
 
-/** Hạng mục P&L thuộc dòng Chi phí nhân sự khi chính nó hoặc nhóm cha mang tên lương/nhân sự. */
+/**
+ * Hạng mục P&L thuộc dòng Chi phí nhân sự khi NHÓM CHA của nó là nhóm lương/nhân sự.
+ * Yêu cầu chị Bình 06/09/2026: bảng P&L phải xếp theo đúng cột "Phân loại" của danh mục,
+ * nên hạng mục đứng ở nhóm nào thì lên theo nhóm đó — "CP Lương Tháng 13" khai trong Chi phí
+ * cố định thì ở lại Chi phí cố định, không bị tên "lương" kéo sang dòng nhân sự nữa.
+ * Chỉ khi hạng mục chưa gắn nhóm mới đoán theo tên của chính nó.
+ */
 export function isPayrollPnlItem(item: { name: string | null | undefined; groupName?: string | null } | null | undefined) {
   if (!item) return false;
-  return isPayrollPnlName(item.name) || isPayrollPnlName(item.groupName);
+  if (item.groupName) return isPayrollPnlName(item.groupName);
+  return isPayrollPnlName(item.name);
+}
+
+/**
+ * Hạng mục "khấu hao" trong danh mục (VD "CPCĐ - CP Khấu Hao"): bút toán khấu hao tự động
+ * (TK 6424, không gắn hạng mục) sẽ đứng vào hạng mục này trong Chi phí cố định — P&L không còn
+ * dòng Khấu hao riêng (feedback chị Bình 06/09/2026).
+ */
+export function isDepreciationPnlName(name: string | null | undefined) {
+  const text = normalizeName(name);
+  return /\bkhau hao\b|\bdepreciation\b/.test(text);
 }
 
 /**
@@ -69,4 +86,35 @@ export function comparePnlGroups(a: { name: string; last?: boolean }, b: { name:
 export function comparePnlItems(a: { name: string; last?: boolean }, b: { name: string; last?: boolean }) {
   if (!!a.last !== !!b.last) return a.last ? 1 : -1;
   return comparePnlName(a.name, b.name);
+}
+
+/** Thứ tự loại lớn trên cột "Phân loại" — trùng thứ tự các dòng trên bảng P&L. */
+const PNL_TYPE_RANK: Record<string, number> = { REVENUE_SOURCE: 0, COGS: 1, OPEX: 2, CAPEX: 3 };
+
+type PnlCatalogRow = { type: string; code: string; name: string; group: string | null; subGroup: string | null };
+
+/**
+ * Sắp danh mục Nhóm hạng mục P&L / Hạng mục P&L trên màn Tham số theo đúng cột "Phân loại"
+ * (yêu cầu chị Bình 06/09/2026): loại lớn (Doanh thu -> Giá vốn -> OPEX -> CAPEX) -> nhóm P&L
+ * (cùng thứ tự nhóm với bảng P&L) -> mã hạng mục. Trước đây xếp theo ngày tạo nên hai màn nhìn
+ * khác nhau. Các loại danh mục khác giữ nguyên chỗ.
+ */
+export function sortPnlCatalogRows<T extends PnlCatalogRow>(rows: T[]): T[] {
+  const isPnl = (row: PnlCatalogRow) => row.type === "PNL_GROUP" || row.type === "PNL_ITEM";
+  const groupByCode = new Map(rows.filter((row) => row.type === "PNL_GROUP").map((row) => [row.code, row]));
+  const parentOf = (row: PnlCatalogRow) => (row.type === "PNL_ITEM" && row.subGroup ? groupByCode.get(row.subGroup) || null : null);
+  const typeRank = (row: PnlCatalogRow) => PNL_TYPE_RANK[(parentOf(row)?.group ?? row.group ?? "").toUpperCase()] ?? 9;
+  const groupKey = (row: PnlCatalogRow) => {
+    if (row.type === "PNL_GROUP") return { name: row.name, last: false };
+    const parent = parentOf(row);
+    return { name: parent?.name || row.subGroup || "", last: !row.subGroup };
+  };
+  const sorted = rows.filter(isPnl).sort((a, b) =>
+    a.type.localeCompare(b.type)
+    || typeRank(a) - typeRank(b)
+    || comparePnlGroups(groupKey(a), groupKey(b))
+    || a.code.localeCompare(b.code, "vi", { sensitivity: "base" }),
+  );
+  let index = 0;
+  return rows.map((row) => (isPnl(row) ? sorted[index++] : row));
 }

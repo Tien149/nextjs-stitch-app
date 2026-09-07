@@ -5,6 +5,7 @@ import { prisma, prismaRaw } from "@/lib/prisma";
 import { duplicatedInTrashMessage, findDeletedByUnique, softDeleteRecord } from "@/lib/soft-delete";
 import { isRevenueGroupCategory, normalizeRevenueExpenseGroup } from "@/lib/voucher-rules";
 import { cleanMoneySourceName, normalizeMoneySourceGroup } from "@/lib/money-sources";
+import { sortPnlCatalogRows } from "@/lib/pnl-ordering";
 
 const defaultMasterData = [
   {
@@ -464,7 +465,8 @@ export async function GET(request: Request) {
       orderBy: [{ type: "asc" }, { createdAt: "desc" }],
     });
 
-    return NextResponse.json(items);
+    // Nhóm/Hạng mục P&L xếp theo cột "Phân loại" cho khớp thứ tự trên bảng P&L (các loại khác giữ mới nhất trước).
+    return NextResponse.json(sortPnlCatalogRows(items));
   } catch (error) {
     // Nuốt lỗi im lặng thì màn hình chỉ hiện "Không tải được danh mục" mà log máy chủ trống,
     // không có manh mối nào để tìm nguyên nhân. Luôn in ra log.

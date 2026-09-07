@@ -8,7 +8,7 @@ export type PnlBucket = {
   revenue: number;
   cogs: number;
   payroll: number;
-  depreciation: number;
+  /** OPEX đã gồm cả khấu hao (khấu hao là hạng mục trong Chi phí cố định, không còn dòng riêng). */
   otherOpex: number;
   otherIncome: number;
   otherExpense: number;
@@ -49,7 +49,7 @@ export type PlanningData = {
 };
 
 /** Các dòng chi phí trên KQKD (không tính chi phí khác — không set kế hoạch được). */
-export const EXPENSE_LINE_KEYS = ["cogs", "payroll", "otherOpex", "depreciation"] as const;
+export const EXPENSE_LINE_KEYS = ["cogs", "payroll", "otherOpex"] as const;
 export type ExpenseLineKey = (typeof EXPENSE_LINE_KEYS)[number];
 
 export const LINE_SHORT_LABEL: Record<string, string> = {
@@ -57,17 +57,16 @@ export const LINE_SHORT_LABEL: Record<string, string> = {
   cogs: "Giá vốn hàng bán",
   grossProfit: "Lợi nhuận gộp",
   payroll: "Chi phí nhân sự",
-  otherOpex: "Chi phí hoạt động khác (OPEX)",
-  depreciation: "Khấu hao tài sản/CCDC",
-  ebitda: "EBITDA",
+  otherOpex: "Chi phí hoạt động (OPEX)",
+  ebitda: "Lợi nhuận hoạt động",
   otherIncome: "Thu nhập khác",
   otherExpense: "Chi phí khác",
   capex: "Chi phí đầu tư tài sản/CCDC (CAPEX)",
   netProfit: "Lợi nhuận ròng",
 };
 
-/** Chi phí hoạt động = nhân sự + OPEX khác + khấu hao (mọi thứ giữa LN gộp và LN hoạt động). */
-export const operatingCostOf = (bucket: PnlBucket) => bucket.payroll + bucket.otherOpex + bucket.depreciation;
+/** Chi phí hoạt động = nhân sự + OPEX (OPEX đã gồm khấu hao) — mọi thứ giữa LN gộp và LN hoạt động. */
+export const operatingCostOf = (bucket: PnlBucket) => bucket.payroll + bucket.otherOpex;
 
 /**
  * Các tháng (0-based) đang được tick trên chip "Lũy kế tháng". Trước đây chỉ có một số `upTo`
@@ -101,16 +100,18 @@ export const bucketSum = (buckets: PnlBucket[], key: keyof PnlBucket, picked: Mo
 export const bucketOperatingCost = (buckets: PnlBucket[], picked: MonthPick) => sumMonths(buckets.map(operatingCostOf), picked);
 
 /** Bản client của finalizePnl (lib/reports.ts) — dùng cho kịch bản giả định tính ngay trên trình duyệt. */
-export function finalizeBucket(base: Pick<PnlBucket, "revenue" | "cogs" | "payroll" | "depreciation" | "otherOpex" | "otherIncome" | "otherExpense" | "capex">): PnlBucket {
+export function finalizeBucket(base: Pick<PnlBucket, "revenue" | "cogs" | "payroll" | "otherOpex" | "otherIncome" | "otherExpense" | "capex">): PnlBucket {
   const grossProfit = base.revenue - base.cogs;
+  // Khấu hao đã nằm trong OPEX nên "ebitda" ở đây chính là lợi nhuận hoạt động; giữ tên trường
+  // để không phải đổi hợp đồng API, nhãn hiển thị là "Lợi nhuận hoạt động".
   const opexBeforeDepreciation = base.payroll + base.otherOpex;
   const ebitda = grossProfit - opexBeforeDepreciation;
-  const operatingProfit = ebitda - base.depreciation;
+  const operatingProfit = ebitda;
   const netProfit = operatingProfit + base.otherIncome - base.otherExpense;
   return { ...base, grossProfit, opexBeforeDepreciation, ebitda, operatingProfit, netProfit, grossMargin: base.revenue ? grossProfit / base.revenue : 0, ebitdaMargin: base.revenue ? ebitda / base.revenue : 0 };
 }
 
-export const emptyBucket = (): PnlBucket => finalizeBucket({ revenue: 0, cogs: 0, payroll: 0, depreciation: 0, otherOpex: 0, otherIncome: 0, otherExpense: 0, capex: 0 });
+export const emptyBucket = (): PnlBucket => finalizeBucket({ revenue: 0, cogs: 0, payroll: 0, otherOpex: 0, otherIncome: 0, otherExpense: 0, capex: 0 });
 
 /** Tổng của một nhóm/hạng mục trên các tháng đang tick, theo chế độ kế hoạch hay thực tế. */
 export const nodeValue = (node: { months: number[]; plan: number[] | null }, picked: MonthPick, mode: "plan" | "actual") =>

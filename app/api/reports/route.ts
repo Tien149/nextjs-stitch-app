@@ -261,9 +261,10 @@ const budgetLines: BudgetLineConfig[] = [
   { key: "cogs", label: "Giá vốn hàng bán", kind: "EXPENSE", scope: "TOTAL", hint: "Set tổng cho cả dòng; hạng mục giá vốn bên dưới chỉ theo dõi." },
   { key: "grossProfit", label: "Lợi nhuận gộp", kind: "PROFIT", scope: "DERIVED", hint: "= Target doanh thu − ngân sách giá vốn." },
   { key: "payroll", label: "Chi phí nhân sự", kind: "EXPENSE", scope: "TOTAL", hint: "Set tổng ở đây; tỷ trọng lương từng bộ phận set ở tab Ngân sách nhân sự." },
-  { key: "otherOpex", label: "Chi phí hoạt động khác (OPEX)", kind: "EXPENSE", scope: "DETAIL", hint: "Set ngân sách từng hạng mục P&L; dòng tổng và nhóm tự cộng." },
-  { key: "depreciation", label: "Khấu hao tài sản/CCDC", kind: "EXPENSE", scope: "TOTAL", hint: "Set tổng; số thực tế chạy từ phân hệ tài sản." },
-  { key: "ebitda", label: "EBITDA", kind: "PROFIT", scope: "DERIVED", hint: "= Lợi nhuận gộp − ngân sách nhân sự − ngân sách OPEX." },
+  // Khấu hao là hạng mục "CP Khấu Hao" trong Chi phí cố định (set ngân sách như hạng mục OPEX khác),
+  // không còn dòng Khấu hao riêng — theo nét vẽ chị Bình 06/09/2026.
+  { key: "otherOpex", label: "Chi phí hoạt động (OPEX)", kind: "EXPENSE", scope: "DETAIL", hint: "Set ngân sách từng hạng mục P&L (kể cả CP Khấu Hao); dòng tổng và nhóm tự cộng." },
+  { key: "ebitda", label: "Lợi nhuận hoạt động", kind: "PROFIT", scope: "DERIVED", hint: "= Lợi nhuận gộp − ngân sách nhân sự − ngân sách OPEX." },
   { key: "cashRemaining", label: "Nguồn tiền còn lại", kind: "CASH", scope: "TOTAL", hint: "Target tiền còn lại cuối kỳ, đối chiếu ở tab Nguồn tiền." },
 ];
 const PNL_ITEM_METRIC_PREFIX = "pnlItem:";
@@ -429,7 +430,7 @@ async function getBudgetReport(period: string, branchCode: string) {
     branchCode,
     rows,
     summary: {
-      expenseActual: pnl.total.cogs + pnl.total.payroll + pnl.total.otherOpex + pnl.total.depreciation,
+      expenseActual: pnl.total.cogs + pnl.total.payroll + pnl.total.otherOpex,
       expenseTarget: BUDGET_EXPENSE_LINES.reduce((sum, key) => sum + (lineTarget[key] || 0), 0),
       revenueActual: pnl.total.revenue,
       revenueTarget: revenueTargetValue,
@@ -1329,14 +1330,14 @@ export async function POST(request: Request) {
     if (action === "UPSERT_TARGET") {
       const metric = cleanText(body.metric);
       if (!metric) businessError("Thiếu chỉ tiêu KPI");
-      // Chỉ nhận đúng hai kiểu khoá: dòng set tổng (revenue/cogs/payroll/depreciation/cashRemaining)
-      // hoặc hạng mục P&L đang khai trong danh mục. Dòng OPEX, Lợi nhuận gộp, EBITDA tự cộng/suy ra.
+      // Chỉ nhận đúng hai kiểu khoá: dòng set tổng (revenue/cogs/payroll/cashRemaining)
+      // hoặc hạng mục P&L đang khai trong danh mục. Dòng OPEX, Lợi nhuận gộp, LN hoạt động tự cộng/suy ra.
       if (metric.startsWith(PNL_ITEM_METRIC_PREFIX)) {
         const itemCode = metric.slice(PNL_ITEM_METRIC_PREFIX.length);
         const item = await prisma.masterDataItem.findFirst({ where: { type: "PNL_ITEM", code: itemCode, deletedAt: null } });
         if (!item) businessError(`Hạng mục P&L "${itemCode}" không có trong danh mục. Khai ở Cài đặt > Danh mục > Hạng mục P&L trước.`);
       } else if (!BUDGET_TOTAL_METRICS.includes(metric)) {
-        businessError("Chỉ tiêu này không set trực tiếp được: dòng OPEX cộng từ hạng mục, Lợi nhuận gộp và EBITDA suy từ các target đã set.");
+        businessError("Chỉ tiêu này không set trực tiếp được: dòng OPEX cộng từ hạng mục, Lợi nhuận gộp và Lợi nhuận hoạt động suy từ các target đã set.");
       }
       // Trị giá 0 nghĩa là bỏ ngân sách — xoá hẳn dòng thay vì để một target bằng 0 gây hiểu nhầm.
       if (cleanText(body.targetMode) !== "PERCENT_REVENUE" && toNumber(body.targetValue) <= 0) {

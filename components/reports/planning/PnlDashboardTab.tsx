@@ -41,20 +41,19 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
     { label: "Giá vốn (COGS)", tone: "amber", income: false, icon: "inventory_2", actual: actual("cogs"), plan: plan("cogs") },
     { label: "Lợi nhuận gộp", tone: "emerald", income: true, icon: "trending_up", actual: actual("grossProfit"), plan: plan("grossProfit") },
     { label: "Chi phí hoạt động", tone: "rose", income: false, icon: "receipt_long", actual: bucketOperatingCost(data.totals, picked), plan: bucketOperatingCost(data.plans, picked) },
-    { label: "EBITDA", tone: "violet", income: true, icon: "monitoring", actual: actual("ebitda"), plan: plan("ebitda") },
+    { label: "Lợi nhuận hoạt động", tone: "violet", income: true, icon: "monitoring", actual: actual("ebitda"), plan: plan("ebitda") },
     { label: "Lợi nhuận ròng", tone: "indigo", income: true, icon: "workspace_premium", actual: actual("netProfit"), plan: plan("netProfit") },
   ];
 
   const marginSeries = (key: "grossProfit" | "netProfit", buckets: PnlBucket[]) => buckets.map((bucket) => (bucket.revenue ? bucket[key] / bucket.revenue : 0));
 
-  // Cơ cấu 1 đồng doanh thu (lũy kế): giá vốn / nhân sự / OPEX khác / khấu hao / phần còn lại là LN.
+  // Cơ cấu 1 đồng doanh thu (lũy kế): giá vốn / nhân sự / OPEX (đã gồm khấu hao) / phần còn lại là LN.
   const mixBuckets = mixMode === "plan" ? data.plans : data.totals;
   const mixRevenue = bucketSum(mixBuckets, "revenue", picked);
   const mixParts: Array<{ label: string; value: number; color: string }> = [
     { label: "Giá vốn hàng bán", value: bucketSum(mixBuckets, "cogs", picked), color: "#f59e0b" },
     { label: "Chi phí nhân sự", value: bucketSum(mixBuckets, "payroll", picked), color: "#0ea5e9" },
-    { label: "OPEX khác", value: bucketSum(mixBuckets, "otherOpex", picked), color: "#2563eb" },
-    { label: "Khấu hao", value: bucketSum(mixBuckets, "depreciation", picked), color: "#94a3b8" },
+    { label: "Chi phí hoạt động (OPEX)", value: bucketSum(mixBuckets, "otherOpex", picked), color: "#2563eb" },
     { label: "Lợi nhuận ròng", value: bucketSum(mixBuckets, "netProfit", picked), color: "#10b981" },
   ];
 
@@ -200,7 +199,7 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
               {mixParts.map((part) => (
                 <span key={part.label} className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm" style={{ background: part.color }} />{part.label}: <b>{((part.value / mixRevenue) * 100).toFixed(1)}%</b></span>
               ))}
-              {mixParts[4].value < 0 && <span className="text-rose-600 font-semibold">Lợi nhuận âm — chi phí đang vượt doanh thu.</span>}
+              {(mixParts.find((part) => part.label === "Lợi nhuận ròng")?.value ?? 0) < 0 && <span className="text-rose-600 font-semibold">Lợi nhuận âm — chi phí đang vượt doanh thu.</span>}
             </div>
           </>
         ) : (

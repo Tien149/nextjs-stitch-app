@@ -24,11 +24,11 @@ type ControlRow = {
   code: string | null;
 };
 
-const LINE_TONE: Record<string, Tone> = { cogs: "amber", payroll: "sky", otherOpex: "blue", depreciation: "slate" };
+const LINE_TONE: Record<string, Tone> = { cogs: "amber", payroll: "sky", otherOpex: "blue" };
 
 function natureLabel(lineKey: string, groupName: string | null) {
   if (lineKey === "cogs") return "Biến đổi";
-  if (lineKey === "payroll" || lineKey === "depreciation") return "Cố định";
+  if (lineKey === "payroll") return "Cố định";
   const rank = opexGroupRank(groupName);
   return rank === 0 ? "Cố định" : rank === 1 ? "Marketing" : rank === 2 ? "Biến đổi" : "Khác";
 }

@@ -3,7 +3,7 @@ import { requireMenuAccess } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 import { periodBounds } from "@/lib/accounting";
 import { apiError, businessError, cleanText, normalizePeriod } from "@/lib/phase3";
-import { pnlLineKeyOf } from "@/lib/reports";
+import { depreciationCatalogItemCode, pnlLineKeyOf, resolvePnlItemCode } from "@/lib/reports";
 
 /** Khoá drilldown cho một hạng mục P&L: `pnlItem:<mã>`; `pnlItem:UNCLASSIFIED` là chứng từ chưa gán hạng mục. */
 const PNL_ITEM_METRIC_PREFIX = "pnlItem:";
@@ -30,11 +30,14 @@ export async function GET(request: Request) {
     // Hạng mục lương/nhân sự hạch toán 6428 vẫn thuộc dòng Chi phí nhân sự — phải bắt đúng
     // dòng như lib/reports.ts, không thì bấm dòng nhân sự thiếu tiền, bấm OPEX lại thừa.
     const [pnlItems, pnlGroups] = await Promise.all([
-      prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true, subGroup: true } }),
+      prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true, subGroup: true, status: true } }),
       prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true } }),
     ]);
     const pnlGroupName = new Map(pnlGroups.map((group) => [group.code, group.name]));
     const pnlItemRefByCode = new Map(pnlItems.map((item) => [item.code, { name: item.name, groupName: item.subGroup ? pnlGroupName.get(item.subGroup) || null : null }]));
+    // Bút toán khấu hao tự động (6424) không gắn hạng mục nhưng trên P&L đứng ở hạng mục CP Khấu Hao —
+    // bấm vào hạng mục đó phải thấy đúng các phiếu này (cùng luật với lib/reports.ts).
+    const depreciationItemCode = depreciationCatalogItemCode(pnlItems);
     const entries = await prisma.journalEntry.findMany({
       where: {
         entryDate: { gte: start, lt: end },
@@ -66,12 +69,13 @@ export async function GET(request: Request) {
         let isMatch = false;
         let lineAmount = 0;
 
-        const { accountType, reportGroup } = line.account;
+        const { accountType } = line.account;
         const accountLine = pnlLineKeyOf(line.account, line.pnlItemCode ? pnlItemRefByCode.get(line.pnlItemCode) : null);
 
         if (pnlItemCode !== null) {
           const isExpenseLine = accountLine !== null && accountLine !== "revenue" && accountLine !== "otherIncome";
-          const sameItem = pnlItemCode === "UNCLASSIFIED" ? !line.pnlItemCode : line.pnlItemCode === pnlItemCode;
+          const effectiveItemCode = resolvePnlItemCode(line, depreciationItemCode);
+          const sameItem = pnlItemCode === "UNCLASSIFIED" ? !effectiveItemCode : effectiveItemCode === pnlItemCode;
           if (isExpenseLine && sameItem && (!lineKey || lineKey === accountLine)) {
             isMatch = true;
             lineAmount = line.debit - line.credit;
@@ -85,22 +89,16 @@ export async function GET(request: Request) {
         } else if (metric === "payroll" && accountLine === "payroll") {
           isMatch = true;
           lineAmount = line.debit - line.credit;
-        } else if (metric === "depreciation" && accountType === "OPEX" && reportGroup === "DEPRECIATION") {
-          isMatch = true;
-          lineAmount = line.debit - line.credit;
         } else if (metric === "otherOpex" && accountLine === "otherOpex") {
           isMatch = true;
           lineAmount = line.debit - line.credit;
-        } else if (
-          metric === "opexBeforeDepreciation" &&
-          accountType === "OPEX" &&
-          reportGroup !== "DEPRECIATION"
-        ) {
+        } else if (metric === "opexBeforeDepreciation" && accountType === "OPEX") {
+          // Chi phí hoạt động = toàn bộ OPEX (khấu hao đã nằm trong OPEX, không còn dòng riêng).
           isMatch = true;
           lineAmount = line.debit - line.credit;
         } else if (metric === "ebitda") {
-          // EBITDA includes COGS, PAYROLL, OTHER_OPEX
-          if (accountType === "COGS" || (accountType === "OPEX" && reportGroup !== "DEPRECIATION")) {
+          // Lợi nhuận hoạt động = doanh thu − giá vốn − toàn bộ OPEX (gồm nhân sự và khấu hao).
+          if (accountType === "COGS" || accountType === "OPEX") {
             isMatch = true;
             lineAmount = line.debit - line.credit;
           } else if (accountType === "REVENUE") {

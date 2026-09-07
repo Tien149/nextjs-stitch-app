@@ -24,7 +24,6 @@ type Pnl = {
   revenue: number;
   cogs: number;
   payroll: number;
-  depreciation: number;
   otherOpex: number;
   otherIncome: number;
   otherExpense: number;
@@ -175,10 +174,9 @@ const metricLabels: Record<string, string> = {
   cogs: "Giá vốn",
   grossProfit: "Lợi nhuận gộp",
   payroll: "Chi phí nhân sự",
-  otherOpex: "OPEX khác",
-  depreciation: "Khấu hao",
-  opexBeforeDepreciation: "OPEX trước khấu hao",
-  ebitda: "EBITDA",
+  otherOpex: "Chi phí hoạt động (OPEX)",
+  opexBeforeDepreciation: "Chi phí hoạt động (nhân sự + OPEX)",
+  ebitda: "Lợi nhuận hoạt động",
   netProfit: "Lợi nhuận ròng",
 };
 const reportTabs = moduleTabs["/reports"];
@@ -1595,13 +1593,13 @@ export default function ReportsPage() {
           <div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-4">
             <Kpi label="Doanh thu" value={dashboard.pnl?.total?.revenue || 0} icon="payments" />
             <Kpi label="Lợi nhuận gộp" value={dashboard.pnl?.total?.grossProfit || 0} icon="trending_up" tone="green" />
-            <Kpi label="EBITDA" value={dashboard.pnl?.total?.ebitda || 0} icon="monitoring" tone="blue" />
+            <Kpi label="LN hoạt động" value={dashboard.pnl?.total?.ebitda || 0} icon="monitoring" tone="blue" />
             <Kpi label="Tiền hiện có" value={dashboard.balance?.rows?.filter((row) => row.reportGroup === "CASH")?.reduce((sum, row) => sum + row.amount, 0) || 0} icon="account_balance_wallet" tone="amber" />
           </div>
           <div className="grid xl:grid-cols-[1.4fr_1fr] gap-5">
             <section className="bg-white border border-slate-200 rounded-lg p-5">
               <h2 className="font-bold">Xu hướng 6 tháng</h2>
-              <p className="text-xs text-slate-500 mt-1">Doanh thu lấy từ file import doanh thu; chi phí và EBITDA từ dữ liệu đã ghi sổ.</p>
+              <p className="text-xs text-slate-500 mt-1">Doanh thu lấy từ file import doanh thu; chi phí và lợi nhuận hoạt động từ dữ liệu đã ghi sổ.</p>
               <div className="mt-6 space-y-4">
                 {(dashboard.trend || []).map((row) => {
                   const max = Math.max(...(dashboard.trend || []).map((item) => Math.abs(item.revenue)), 1);
@@ -1621,7 +1619,7 @@ export default function ReportsPage() {
                 {(!dashboard.pnl?.byBranch || dashboard.pnl.byBranch.length === 0) ? <p className="py-8 text-center text-sm text-slate-400">Chưa có dữ liệu ghi sổ.</p> : dashboard.pnl.byBranch.map((row) => (
                   <div key={row.code} className="py-3 flex justify-between gap-3">
                     <div><b>{storeLabel(row.code)}</b><p className="text-xs text-slate-500 mt-1">Biên gộp {(row.grossMargin * 100).toFixed(1)}%</p></div>
-                    <div className="text-right"><b>{money(row.revenue)} đ</b><p className={`text-xs mt-1 ${row.ebitda >= 0 ? "text-emerald-600" : "text-rose-600"}`}>EBITDA {money(row.ebitda)} đ</p></div>
+                    <div className="text-right"><b>{money(row.revenue)} đ</b><p className={`text-xs mt-1 ${row.ebitda >= 0 ? "text-emerald-600" : "text-rose-600"}`}>LN hoạt động {money(row.ebitda)} đ</p></div>
                   </div>
                 ))}
               </div>
@@ -2519,8 +2517,8 @@ function CutTable({ title, rows }: { title: string; rows?: PnlCut[] }) {
   if (!rows || rows.length === 0) return null;
   return (
     <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-      <PanelHeader title={title} subtitle="Chi tiết doanh thu, chi phí và EBITDA" />
-      <Table headers={["Đơn vị", "Doanh thu", "Giá vốn", "Lợi nhuận gộp", "EBITDA"]}>
+      <PanelHeader title={title} subtitle="Chi tiết doanh thu, chi phí và lợi nhuận hoạt động" />
+      <Table headers={["Đơn vị", "Doanh thu", "Giá vốn", "Lợi nhuận gộp", "LN hoạt động"]}>
         {rows.map((r) => (
           <tr key={r.code} className="border-t border-slate-100">
             <Cell><b>{storeLabel(r.code)}</b></Cell>

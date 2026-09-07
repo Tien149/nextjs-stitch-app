@@ -15,17 +15,16 @@ import { bucketOperatingCost, bucketSum, cumulative, finalizeBucket, lastPicked,
  * P&L các tháng bị tác động. Tính ngay trên trình duyệt, không ghi vào kế hoạch.
  */
 
-type VariableKey = "revenue" | "cogs" | "payroll" | "otherOpex" | "depreciation";
+type VariableKey = "revenue" | "cogs" | "payroll" | "otherOpex";
 const VARIABLES: Array<{ key: VariableKey; label: string; hint: string; tone: Tone }> = [
   { key: "revenue", label: "Doanh thu", hint: "Tăng/giảm doanh thu mọi cửa hàng", tone: "blue" },
   { key: "cogs", label: "Giá vốn hàng bán", hint: "Giá nguyên liệu, định lượng", tone: "amber" },
   { key: "payroll", label: "Chi phí nhân sự", hint: "Lương, thưởng, bảo hiểm", tone: "sky" },
-  { key: "otherOpex", label: "Chi phí OPEX khác", hint: "Thuê mặt bằng, marketing, điện nước...", tone: "indigo" },
-  { key: "depreciation", label: "Khấu hao", hint: "Tài sản, CCDC", tone: "slate" },
+  { key: "otherOpex", label: "Chi phí hoạt động (OPEX)", hint: "Thuê mặt bằng, marketing, điện nước, khấu hao...", tone: "indigo" },
 ];
 type Adjustment = { enabled: boolean; pct: number };
 const defaultAdjustments = (): Record<VariableKey, Adjustment> => ({
-  revenue: { enabled: true, pct: 0 }, cogs: { enabled: false, pct: 0 }, payroll: { enabled: false, pct: 0 }, otherOpex: { enabled: false, pct: 0 }, depreciation: { enabled: false, pct: 0 },
+  revenue: { enabled: true, pct: 0 }, cogs: { enabled: false, pct: 0 }, payroll: { enabled: false, pct: 0 }, otherOpex: { enabled: false, pct: 0 },
 });
 
 function applyScenario(base: PnlBucket[], adjustments: Record<VariableKey, Adjustment>, fromMonth: number) {
@@ -36,7 +35,6 @@ function applyScenario(base: PnlBucket[], adjustments: Record<VariableKey, Adjus
       cogs: bucket.cogs * factor("cogs"),
       payroll: bucket.payroll * factor("payroll"),
       otherOpex: bucket.otherOpex * factor("otherOpex"),
-      depreciation: bucket.depreciation * factor("depreciation"),
       otherIncome: bucket.otherIncome,
       otherExpense: bucket.otherExpense,
       // Kịch bản chỉ vặn doanh thu / chi phí vận hành; tiền đầu tư tài sản giữ nguyên.
@@ -70,9 +68,9 @@ export default function ScenarioTab({ data, picked, onChangePicked }: { data: Pl
     const model = buildBreakEvenModel(data, scenario, "kịch bản");
     // buildBreakEvenModel đọc nhóm OPEX từ statement (số gốc); scale phần OPEX theo hệ số kịch bản để giữ cùng tỷ lệ.
     const opexFactor = adjustments.otherOpex.enabled ? 1 + adjustments.otherOpex.pct / 100 : 1;
-    const fixedOpex = (bepBase.fixed - sumAll(base.map((bucket) => bucket.payroll + bucket.depreciation))) * opexFactor;
+    const fixedOpex = (bepBase.fixed - sumAll(base.map((bucket) => bucket.payroll))) * opexFactor;
     const variableOpex = (bepBase.variable - sumAll(base.map((bucket) => bucket.cogs))) * opexFactor;
-    const fixed = sumAll(scenario.map((bucket) => bucket.payroll + bucket.depreciation)) + fixedOpex;
+    const fixed = sumAll(scenario.map((bucket) => bucket.payroll)) + fixedOpex;
     const variable = sumAll(scenario.map((bucket) => bucket.cogs)) + variableOpex;
     const revenue = model.revenue;
     const variableRatio = revenue > 0 ? variable / revenue : 0;

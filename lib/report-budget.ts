@@ -28,7 +28,7 @@ function yearMonths(year: string) {
 }
 
 function emptyBucket(): PnlBucket {
-  return { revenue: 0, cogs: 0, payroll: 0, depreciation: 0, otherOpex: 0, otherIncome: 0, otherExpense: 0, capex: 0 };
+  return { revenue: 0, cogs: 0, payroll: 0, otherOpex: 0, otherIncome: 0, otherExpense: 0, capex: 0 };
 }
 
 function bumpSeries(map: Map<string, MatrixSeries>, code: string, name: string, monthIndex: number, amount: number) {
@@ -242,7 +242,7 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     for (const group of tree.groupsOf(line.key as PnlLineKey)) for (const item of group.items) itemLineByCode.set(item.code, line.key as PnlLineKey);
   }
   type PlanBucket = Record<PnlLineKey, number[]>;
-  const emptyPlanBucket = (): PlanBucket => ({ revenue: zeros12(), cogs: zeros12(), payroll: zeros12(), depreciation: zeros12(), otherOpex: zeros12(), otherIncome: zeros12(), otherExpense: zeros12(), capex: zeros12() });
+  const emptyPlanBucket = (): PlanBucket => ({ revenue: zeros12(), cogs: zeros12(), payroll: zeros12(), otherOpex: zeros12(), otherIncome: zeros12(), otherExpense: zeros12(), capex: zeros12() });
   /** Target set thẳng vào dòng, theo cửa hàng. */
   const linePlanByBranch = new Map<string, PlanBucket>();
   /** Tổng target hạng mục theo dòng, theo cửa hàng. */
@@ -288,7 +288,7 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     return result;
   };
   const finalizeRaw = (raw: PlanBucket) => months.map((_, monthIndex) => finalizePnl({
-    revenue: raw.revenue[monthIndex], cogs: raw.cogs[monthIndex], payroll: raw.payroll[monthIndex], depreciation: raw.depreciation[monthIndex],
+    revenue: raw.revenue[monthIndex], cogs: raw.cogs[monthIndex], payroll: raw.payroll[monthIndex],
     otherOpex: raw.otherOpex[monthIndex], otherIncome: raw.otherIncome[monthIndex], otherExpense: raw.otherExpense[monthIndex],
     capex: raw.capex[monthIndex],
   }));

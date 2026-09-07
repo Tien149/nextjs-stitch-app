@@ -20,16 +20,17 @@ const LINE_STYLE: Record<string, LineStyle> = {
   cogs: { tone: "amber", icon: "inventory_2", title: "GIÁ VỐN HÀNG BÁN (COGS)", band: "bg-amber-50 text-amber-700", total: "bg-amber-100 text-amber-900" },
   grossProfit: { tone: "emerald", icon: "functions", title: "LỢI NHUẬN GỘP", band: "", total: "bg-emerald-200/70 text-emerald-900" },
   payroll: { tone: "sky", icon: "groups", title: "CHI PHÍ NHÂN SỰ", band: "bg-sky-50 text-sky-700", total: "bg-sky-100 text-sky-900" },
-  otherOpex: { tone: "blue", icon: "receipt_long", title: "CHI PHÍ HOẠT ĐỘNG (OPEX)", band: "bg-blue-50 text-blue-700", total: "bg-blue-100 text-blue-900" },
-  depreciation: { tone: "slate", icon: "trending_down", title: "KHẤU HAO TÀI SẢN/CCDC", band: "bg-slate-50 text-slate-600", total: "bg-slate-200/70 text-slate-800" },
+  // Thứ tự dòng theo nét vẽ của chị Bình 06/09/2026: Nhân sự -> CAPEX -> OPEX (khấu hao là hạng
+  // mục trong Chi phí cố định, không còn dòng Khấu hao riêng).
   capex: { tone: "orange", icon: "domain_add", title: "CHI PHÍ ĐẦU TƯ TÀI SẢN/CCDC (CAPEX)", band: "bg-orange-50 text-orange-700", total: "bg-orange-100 text-orange-900" },
-  ebitda: { tone: "violet", icon: "functions", title: "EBITDA (LN HOẠT ĐỘNG TRƯỚC KHẤU HAO)", band: "", total: "bg-violet-200/60 text-violet-900" },
+  otherOpex: { tone: "blue", icon: "receipt_long", title: "CHI PHÍ HOẠT ĐỘNG (OPEX)", band: "bg-blue-50 text-blue-700", total: "bg-blue-100 text-blue-900" },
+  ebitda: { tone: "violet", icon: "functions", title: "LỢI NHUẬN HOẠT ĐỘNG", band: "", total: "bg-violet-200/60 text-violet-900" },
   otherIncome: { tone: "teal", icon: "savings", title: "THU NHẬP KHÁC", band: "bg-teal-50 text-teal-700", total: "bg-teal-100 text-teal-900" },
   otherExpense: { tone: "rose", icon: "money_off", title: "CHI PHÍ KHÁC", band: "bg-rose-50 text-rose-700", total: "bg-rose-100 text-rose-900" },
   netProfit: { tone: "indigo", icon: "workspace_premium", title: "LỢI NHUẬN RÒNG", band: "", total: "bg-indigo-200/60 text-indigo-900" },
 };
 const INCOME_LINES = new Set(["revenue", "otherIncome", "grossProfit", "ebitda", "netProfit"]);
-const RATIO_AFTER: Record<string, string> = { grossProfit: "Tỷ suất LN gộp", ebitda: "Tỷ suất EBITDA", netProfit: "Tỷ suất LN ròng" };
+const RATIO_AFTER: Record<string, string> = { grossProfit: "Tỷ suất LN gộp", ebitda: "Tỷ suất LN hoạt động", netProfit: "Tỷ suất LN ròng" };
 
 const isEmptyNode = (node: { months: number[]; plan: number[] | null }) =>
   node.months.every((value) => Math.abs(value) <= 0.5) && (!node.plan || node.plan.every((value) => Math.abs(value) <= 0.5));
@@ -201,7 +202,7 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
           ))}
           <td colSpan={13} className="px-3 py-2 text-[11px] font-semibold opacity-80 whitespace-nowrap">
             {line.key === "capex"
-              ? "Tiền mua tài sản/CCDC trong kỳ — dòng thông tin, KHÔNG trừ vào EBITDA và lợi nhuận ròng (chi phí của tài sản đã nằm ở dòng Khấu hao)"
+              ? "Tiền mua tài sản/CCDC trong kỳ — dòng thông tin, KHÔNG trừ vào lợi nhuận (chi phí của tài sản vào P&L qua hạng mục CP Khấu Hao trong Chi phí cố định)"
               : "Kế hoạch (đậm) · Thực đạt (chip) · % hoàn thành"}
           </td>
         </tr>

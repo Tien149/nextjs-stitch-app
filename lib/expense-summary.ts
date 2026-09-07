@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { periodBounds } from "@/lib/accounting";
-import { pnlLineKeyOf, type PnlItemRef, type PnlLineKey } from "@/lib/reports";
+import { depreciationCatalogItemCode, pnlLineKeyOf, resolvePnlItemCode, type PnlItemRef, type PnlLineKey } from "@/lib/reports";
 import { comparePnlItems } from "@/lib/pnl-ordering";
 
 /**
@@ -37,13 +37,12 @@ export const EXPENSE_LINE_LABELS: Record<PnlLineKey, string> = {
   revenue: "Doanh thu",
   cogs: "Giá vốn hàng bán",
   payroll: "Chi phí nhân sự",
-  depreciation: "Chi phí khấu hao",
-  otherOpex: "Chi phí vận hành khác",
+  otherOpex: "Chi phí vận hành (OPEX, gồm khấu hao)",
   otherIncome: "Thu nhập khác",
   otherExpense: "Chi phí khác",
   capex: "Chi phí đầu tư tài sản/CCDC",
 };
-const EXPENSE_LINE_ORDER: PnlLineKey[] = ["cogs", "payroll", "depreciation", "otherOpex", "otherExpense"];
+const EXPENSE_LINE_ORDER: PnlLineKey[] = ["cogs", "payroll", "otherOpex", "otherExpense"];
 
 type SourceGroup = { key: string; label: string; hint: string; href: (branchCode: string) => string };
 
@@ -89,7 +88,7 @@ export async function getExpenseSummary(period: string, branchCode: string): Pro
       where: { entryDate: { gte: start, lt: end }, status: "POSTED", ...branchFilter },
       select: { sourceType: true, sourceId: true, lines: { select: { debit: true, credit: true, pnlItemCode: true, account: { select: { accountType: true, reportGroup: true } } } } },
     }),
-    prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true, subGroup: true } }),
+    prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true, subGroup: true, status: true } }),
     prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true } }),
     // Phiếu chi còn nháp: chưa duyệt nên chưa có bút toán. Chỉ đếm phiếu ghi nhận nghiệp vụ
     // mới; phiếu SETTLEMENT (sao kê khớp doanh thu) không bao giờ thành chi phí.
@@ -102,6 +101,7 @@ export async function getExpenseSummary(period: string, branchCode: string): Pro
 
   const pnlItemByCode = new Map(pnlItems.map((item) => [item.code, item]));
   const pnlGroupName = new Map(pnlGroups.map((group) => [group.code, group.name]));
+  const depreciationItemCode = depreciationCatalogItemCode(pnlItems);
   const pnlItemRefOf = (code: string | null): PnlItemRef => {
     const item = code ? pnlItemByCode.get(code) : null;
     if (!item) return null;
@@ -127,8 +127,10 @@ export async function getExpenseSummary(period: string, branchCode: string): Pro
       entryAmount += amount;
       const bucket = lineTotals.get(lineKey) || { amount: 0, items: new Map<string, ExpenseItemRow>() };
       bucket.amount += amount;
-      const code = line.pnlItemCode || "UNCLASSIFIED";
-      const item = bucket.items.get(code) || { code, name: pnlItemByCode.get(code)?.name || (line.pnlItemCode ? `Hạng mục P&L [${line.pnlItemCode}]` : "Chưa phân loại hạng mục P&L"), amount: 0 };
+      // Bút toán khấu hao tự động (6424) đứng ở hạng mục CP Khấu Hao như trên P&L.
+      const pnlItemCode = resolvePnlItemCode(line, depreciationItemCode);
+      const code = pnlItemCode || "UNCLASSIFIED";
+      const item = bucket.items.get(code) || { code, name: pnlItemByCode.get(code)?.name || (pnlItemCode ? `Hạng mục P&L [${pnlItemCode}]` : "Chưa phân loại hạng mục P&L"), amount: 0 };
       item.amount += amount;
       bucket.items.set(code, item);
       lineTotals.set(lineKey, bucket);
