@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { useRouter } from "next/navigation";
 import { BranchScopeSelect, resolveInitialBranchScope } from "@/components/BranchScopeSelect";
@@ -36,6 +36,8 @@ type DebtRow = {
 type LedgerRow = {
   /** Chỉ dòng đến từ khoản công nợ (RECEIVABLE/PAYABLE) mới có id để sửa/xoá. */
   id?: string;
+  /** Mã phiếu cha khi khoản này là một dòng của phiếu công nợ nhiều hạng mục P&L. */
+  groupCode?: string | null;
   date: string;
   dueDate?: string | null;
   source: string;
@@ -69,6 +71,10 @@ const emptyDebtForm = {
   originalAmount: "",
 };
 
+/** Một dòng hạng mục trong popup Thêm công nợ; `key` chỉ để React theo dõi khi thêm/xoá dòng. */
+type CreateLine = { key: number; pnlItemCode: string; amount: string; note: string };
+const emptyCreateLine = (key: number): CreateLine => ({ key, pnlItemCode: "", amount: "", note: "" });
+
 const isReceivableBalance = (balance: number) => balance < 0;
 const isPayableBalance = (balance: number) => balance > 0;
 
@@ -95,6 +101,8 @@ export default function DebtsPage() {
   const [saving, setSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
   const [deletingDebt, setDeletingDebt] = useState<LedgerRow | null>(null);
+  /** Phiếu nhiều hạng mục đang chờ xoá cả cụm (mọi dòng `<mã phiếu>/n`). */
+  const [deletingGroup, setDeletingGroup] = useState<{ groupCode: string; rows: LedgerRow[] } | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
 
@@ -112,11 +120,18 @@ export default function DebtsPage() {
     branchCode: "",
     documentDate: new Date().toISOString().slice(0, 10),
     dueDate: "",
-    originalAmount: "",
-    pnlItemCode: "",
     description: "",
   });
+  // Bảng chi tiết của phiếu: mỗi dòng một hạng mục P&L + số tiền riêng (trích trước cuối tháng
+  // cùng NCC nhưng nhiều hạng mục). Một dòng thì tạo khoản đơn như trước.
+  const [createLines, setCreateLines] = useState<CreateLine[]>([emptyCreateLine(1)]);
+  const createTotal = createLines.reduce((sum, line) => sum + (Number(line.amount) > 0 ? Number(line.amount) : 0), 0);
+  const updateCreateLine = (key: number, patch: Partial<CreateLine>) =>
+    setCreateLines((current) => current.map((line) => (line.key === key ? { ...line, ...patch } : line)));
+  const addCreateLine = () => setCreateLines((current) => [...current, emptyCreateLine(Math.max(...current.map((line) => line.key)) + 1)]);
+  const removeCreateLine = (key: number) => setCreateLines((current) => (current.length > 1 ? current.filter((line) => line.key !== key) : current));
   const canCreateDebts = user ? canPerformAction(user, "create") : false;
+  const canDeleteDebts = user ? canPerformAction(user, "delete") : false;
   const canCreatePartner = user ? canPerformMenuAction(user, "/settings", "config") : false;
 
   const openCreateDialog = () => {
@@ -142,8 +157,13 @@ export default function DebtsPage() {
     event.preventDefault();
     if (createSaving) return;
     setCreateError("");
-    if (!createForm.partnerCode || !createForm.branchCode || !(Number(createForm.originalAmount) > 0) || !createForm.description.trim()) {
-      setCreateError("Cần chọn đối tác, cửa hàng, số tiền lớn hơn 0 và diễn giải.");
+    if (!createForm.partnerCode || !createForm.branchCode || !createForm.description.trim()) {
+      setCreateError("Cần chọn đối tác, cửa hàng và diễn giải.");
+      return;
+    }
+    const badLine = createLines.findIndex((line) => !(Number(line.amount) > 0));
+    if (badLine >= 0) {
+      setCreateError(createLines.length === 1 ? "Số tiền phải lớn hơn 0." : `Dòng ${badLine + 1}: số tiền phải lớn hơn 0.`);
       return;
     }
     setCreateSaving(true);
@@ -151,7 +171,10 @@ export default function DebtsPage() {
       const response = await fetch("/api/debts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(createForm),
+        body: JSON.stringify({
+          ...createForm,
+          lines: createLines.map((line) => ({ pnlItemCode: line.pnlItemCode, amount: line.amount, note: line.note })),
+        }),
       });
       const payload = await response.json();
       if (!response.ok) {
@@ -159,8 +182,9 @@ export default function DebtsPage() {
         return;
       }
       setCreateOpen(false);
-      setCreateForm((current) => ({ ...current, partnerCode: "", originalAmount: "", pnlItemCode: "", description: "", dueDate: "" }));
-      setMessage(`Đã tạo công nợ ${payload.code}.`);
+      setCreateForm((current) => ({ ...current, partnerCode: "", description: "", dueDate: "" }));
+      setCreateLines([emptyCreateLine(1)]);
+      setMessage(payload.lineCount > 1 ? `Đã tạo phiếu công nợ ${payload.code} gồm ${payload.lineCount} dòng hạng mục.` : `Đã tạo công nợ ${payload.code}.`);
       await loadRows();
       if (ledger) await loadLedger(ledger.partnerCode);
     } catch {
@@ -287,6 +311,45 @@ export default function DebtsPage() {
       setDeleting(false);
     }
   };
+
+  /** Xoá cả phiếu nhiều hạng mục: API kiểm tra từng dòng, một dòng vướng thì không xoá dòng nào. */
+  const confirmDeleteGroup = async (reason: string) => {
+    if (!deletingGroup) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const query = new URLSearchParams({ groupCode: deletingGroup.groupCode });
+      if (reason) query.set("reason", reason);
+      const response = await fetch(`/api/debts?${query.toString()}`, { method: "DELETE" });
+      const payload = await response.json();
+      if (!response.ok) {
+        setDeleteError(payload.error || "Không xoá được phiếu công nợ");
+        return;
+      }
+      const deletedGroup = deletingGroup.groupCode;
+      if (editingDebt?.groupCode === deletedGroup) setEditingDebt(null);
+      setDeletingGroup(null);
+      await loadRows();
+      if (ledger) await loadLedger(ledger.partnerCode);
+      setMessage(`Đã chuyển cả phiếu công nợ ${deletedGroup} (${payload.deleted?.length || 0} dòng) vào Thùng rác.`);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  /**
+   * Dòng công nợ đầu tiên của mỗi phiếu nhiều hạng mục trong sổ, kèm các dòng còn lại — để chèn
+   * một dải tiêu đề phiếu ngay phía trên dòng đầu (sổ đã xếp các dòng cùng phiếu liền nhau).
+   */
+  const ledgerGroupStarts = (() => {
+    const starts = new Map<number, LedgerRow[]>();
+    if (!ledger) return starts;
+    ledger.rows.forEach((row, index) => {
+      if (!row.groupCode || ledger.rows[index - 1]?.groupCode === row.groupCode) return;
+      starts.set(index, ledger.rows.filter((item) => item.groupCode === row.groupCode));
+    });
+    return starts;
+  })();
 
   const filteredRows = rows.filter((row) => {
     if (partnerGroup !== "ALL" && row.partnerGroup !== partnerGroup) return false;
@@ -472,8 +535,36 @@ export default function DebtsPage() {
                 <tbody className="divide-y divide-slate-100">
                   {ledger.rows.length === 0 ? (
                     <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-400">Chưa có phát sinh.</td></tr>
-                  ) : ledger.rows.map((item, index) => (
-                    <tr key={`${item.source}-${item.code}-${index}`} className="hover:bg-slate-50">
+                  ) : ledger.rows.map((item, index) => {
+                    const groupRows = ledgerGroupStarts.get(index);
+                    const groupTotal = groupRows ? groupRows.reduce((sum, row) => sum + Math.abs(row.amount), 0) : 0;
+                    const groupLocked = groupRows ? groupRows.map(debtLockReason).find(Boolean) || null : null;
+                    return (
+                    <Fragment key={`${item.source}-${item.code}-${index}`}>
+                    {groupRows && (
+                      <tr className="bg-blue-50/70">
+                        <td colSpan={6} className="px-4 py-2 text-xs font-bold text-blue-700">
+                          Phiếu {item.groupCode} · {groupRows.length} dòng hạng mục · {money(groupTotal)} đ
+                        </td>
+                        <td className="px-4 py-2 text-right">
+                          {canDeleteDebts && (
+                            <button
+                              type="button"
+                              disabled={Boolean(groupLocked)}
+                              title={groupLocked || "Chuyển cả phiếu (mọi dòng) vào Thùng rác"}
+                              onClick={() => {
+                                setDeleteError(null);
+                                setDeletingGroup({ groupCode: item.groupCode!, rows: groupRows });
+                              }}
+                              className="rounded-lg border border-blue-200 bg-white px-2.5 py-1 text-[11px] font-bold text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              Xoá cả phiếu
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                    <tr className="hover:bg-slate-50">
                       <td className="px-4 py-3">{new Date(item.date).toLocaleDateString("vi-VN")}</td>
                       <td className="px-4 py-3">{item.source}</td>
                       <td className="px-4 py-3 font-bold"><CopyableText value={item.code} /></td>
@@ -500,7 +591,9 @@ export default function DebtsPage() {
                         />
                       </td>
                     </tr>
-                  ))}
+                    </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -588,7 +681,7 @@ export default function DebtsPage() {
 
       {createOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
-          <form onSubmit={submitCreateDebt} className="max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-xl bg-white shadow-xl">
+          <form onSubmit={submitCreateDebt} className="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-xl bg-white shadow-xl">
             <div className="border-b border-slate-200 p-5">
               <h2 className="font-bold text-slate-900">Thêm công nợ</h2>
               <p className="mt-1 text-xs text-slate-500">
@@ -649,17 +742,6 @@ export default function DebtsPage() {
                   ))}
                 </select>
               </label>
-              <label className="text-xs font-bold text-slate-600 block">
-                Số tiền (đ) *
-                <input
-                  type="number"
-                  min="1"
-                  value={createForm.originalAmount}
-                  onChange={(event) => setCreateForm((value) => ({ ...value, originalAmount: event.target.value }))}
-                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-bold outline-none focus:border-blue-500"
-                  required
-                />
-              </label>
               <div className="flex flex-col text-xs font-bold text-slate-600">
                 <span>Ngày chứng từ *</span>
                 <DateInput
@@ -679,31 +761,107 @@ export default function DebtsPage() {
                   ariaLabel="Hạn thanh toán công nợ"
                 />
               </div>
-              <div className="col-span-2 text-xs font-bold text-slate-600 block">
-                Hạng mục P&amp;L <span className="font-medium text-slate-400">(chi phí thuộc hạng mục nào)</span>
-                <SearchableSelect
-                  className="mt-1"
-                  value={createForm.pnlItemCode}
-                  onChange={(pnlItemCode) => setCreateForm((value) => ({ ...value, pnlItemCode }))}
-                  placeholder="-- Chưa phân loại P&L --"
-                  options={[
-                    { value: "", label: "-- Chưa phân loại P&L --" },
-                    ...pnlItems
-                      .filter((item) => ["OPEX", "COGS"].includes((item.group || "").toUpperCase()))
-                      .map((item) => ({ value: item.code, label: `${item.code} - ${item.name}` })),
-                  ]}
-                />
-              </div>
               <label className="col-span-2 text-xs font-bold text-slate-600 block">
-                Diễn giải *
+                Diễn giải chung *
                 <input
                   value={createForm.description}
                   onChange={(event) => setCreateForm((value) => ({ ...value, description: event.target.value }))}
-                  placeholder="VD: Tiền hàng tháng 8 chưa thanh toán / B trả A khoản chi hộ..."
+                  placeholder="VD: Trích trước chi phí tháng 9 / Tiền hàng tháng 8 chưa thanh toán / B trả A khoản chi hộ..."
                   className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
                   required
                 />
               </label>
+
+              {/* Mỗi dòng một hạng mục P&L + số tiền riêng; nhiều dòng → phiếu chung mã cha, dòng mang mã /1, /2... */}
+              <div className="col-span-2">
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="text-xs font-bold text-slate-600">Chi tiết theo hạng mục P&amp;L *</span>
+                  <span className="text-[11px] text-slate-400">Mỗi dòng một hạng mục · số tiền riêng · nhiều dòng sẽ chung một số phiếu</span>
+                </div>
+                {/* Không overflow-hidden: dropdown chọn hạng mục là absolute bên trong bảng, cắt là mất danh sách. */}
+                <div className="mt-1 rounded-lg border border-slate-200">
+                  <table className="w-full text-left text-sm">
+                    <thead className="text-[11px] uppercase text-slate-500 [&_th]:bg-slate-50 [&_th:first-child]:rounded-tl-lg [&_th:last-child]:rounded-tr-lg">
+                      <tr>
+                        <th className="w-8 px-3 py-2">#</th>
+                        <th className="px-3 py-2">Hạng mục P&amp;L</th>
+                        <th className="w-40 px-3 py-2 text-right">Số tiền (đ)</th>
+                        <th className="w-44 px-3 py-2">Ghi chú dòng</th>
+                        <th className="w-10 px-3 py-2"></th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {createLines.map((line, index) => (
+                        <tr key={line.key}>
+                          <td className="px-3 py-2 text-xs font-bold text-slate-400">{index + 1}</td>
+                          <td className="px-3 py-2">
+                            <SearchableSelect
+                              value={line.pnlItemCode}
+                              onChange={(pnlItemCode) => updateCreateLine(line.key, { pnlItemCode })}
+                              placeholder="-- Chưa phân loại P&L --"
+                              options={[
+                                { value: "", label: "-- Chưa phân loại P&L --" },
+                                ...pnlItems
+                                  .filter((item) => ["OPEX", "COGS"].includes((item.group || "").toUpperCase()))
+                                  .map((item) => ({ value: item.code, label: `${item.code} - ${item.name}` })),
+                              ]}
+                            />
+                          </td>
+                          <td className="px-3 py-2">
+                            <input
+                              type="number"
+                              min="1"
+                              value={line.amount}
+                              onChange={(event) => updateCreateLine(line.key, { amount: event.target.value })}
+                              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-right text-sm font-bold outline-none focus:border-blue-500"
+                              required
+                            />
+                          </td>
+                          <td className="px-3 py-2">
+                            <input
+                              value={line.note}
+                              onChange={(event) => updateCreateLine(line.key, { note: event.target.value })}
+                              placeholder="VD: Điện tháng 9"
+                              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
+                            />
+                          </td>
+                          <td className="px-3 py-2 text-center">
+                            <button
+                              type="button"
+                              onClick={() => removeCreateLine(line.key)}
+                              disabled={createLines.length === 1}
+                              title={createLines.length === 1 ? "Phiếu cần ít nhất một dòng" : "Bỏ dòng này"}
+                              className="text-slate-400 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-30"
+                              aria-label={`Bỏ dòng ${index + 1}`}
+                            >
+                              <span className="material-symbols-outlined text-[18px] leading-none">delete</span>
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr className="border-t border-slate-200">
+                        <td colSpan={5} className="px-3 py-2">
+                          <button
+                            type="button"
+                            onClick={addCreateLine}
+                            className="inline-flex items-center gap-1 rounded-lg border border-dashed border-blue-300 bg-blue-50 px-3 py-1.5 text-xs font-bold text-blue-700 hover:bg-blue-100"
+                          >
+                            <span className="material-symbols-outlined text-[16px] leading-none">add</span>
+                            Thêm dòng hạng mục
+                          </button>
+                        </td>
+                      </tr>
+                      <tr className="border-t border-slate-200 [&_td]:bg-slate-50 [&_td:first-child]:rounded-bl-lg [&_td:last-child]:rounded-br-lg">
+                        <td colSpan={2} className="px-3 py-2 text-xs font-bold text-slate-600">Tổng cộng · {createLines.length} {createLines.length > 1 ? "hạng mục" : "dòng"}</td>
+                        <td className="px-3 py-2 text-right text-sm font-extrabold text-slate-900">{money(createTotal)}</td>
+                        <td colSpan={2}></td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </div>
               {createError && (
                 <p className="col-span-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">{createError}</p>
               )}
@@ -731,6 +889,19 @@ export default function DebtsPage() {
           setDeleteError(null);
         }}
         onConfirm={confirmDeleteDebt}
+      />
+
+      <ConfirmDeleteDialog
+        open={Boolean(deletingGroup)}
+        title={`Xoá cả phiếu công nợ ${deletingGroup?.groupCode || ""}?`}
+        description={deletingGroup ? `${deletingGroup.rows.length} dòng hạng mục · ${money(deletingGroup.rows.reduce((sum, row) => sum + Math.abs(row.amount), 0))} đ sẽ cùng chuyển vào Thùng rác.` : undefined}
+        submitting={deleting}
+        error={deleteError}
+        onCancel={() => {
+          setDeletingGroup(null);
+          setDeleteError(null);
+        }}
+        onConfirm={confirmDeleteGroup}
       />
     </div>
   );

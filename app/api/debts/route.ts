@@ -6,6 +6,7 @@ import { cleanText, isPeriodLocked, toDate, toNumber } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import { softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
+import { debtGroupCode, stripDebtLineSuffix } from "@/lib/debt-group";
 
 const debtTypes = ["RECEIVABLE", "PAYABLE"];
 const partnerGroups = ["EXTERNAL", "INTERNAL"];
@@ -32,6 +33,8 @@ type DebtRow = {
 type LedgerRow = {
   /** Chỉ có với dòng đến từ DebtRecord, để màn hình công nợ gọi được PATCH/DELETE. */
   id?: string;
+  /** Mã phiếu cha khi khoản này là một dòng của phiếu công nợ nhiều hạng mục. */
+  groupCode?: string | null;
   date: Date;
   dueDate?: Date | null;
   source: string;
@@ -150,6 +153,7 @@ export async function GET(request: Request) {
       for (const item of debtRecords.filter((row) => row.partnerCode === partnerCode && row.outstandingAmount > 0)) {
         ledger.push({
           id: item.id,
+          groupCode: debtGroupCode(item.code),
           date: item.documentDate,
           source: item.debtType,
           code: item.code,
@@ -161,7 +165,8 @@ export async function GET(request: Request) {
         });
       }
 
-      const sortedLedger = ledger.sort((a, b) => b.date.getTime() - a.date.getTime());
+      // Cùng ngày thì xếp theo mã để các dòng của một phiếu nhiều hạng mục đứng liền nhau.
+      const sortedLedger = ledger.sort((a, b) => b.date.getTime() - a.date.getTime() || a.code.localeCompare(b.code, "vi", { numeric: true }));
       const balance = sortedLedger.reduce((sum, row) => sum + row.amount, 0);
       const partner = partners.find((item) => item.code === partnerCode);
       return NextResponse.json({
@@ -246,10 +251,36 @@ export async function GET(request: Request) {
   }
 }
 
+/** Một dòng chi tiết của phiếu công nợ: một hạng mục P&L, một số tiền. */
+type DebtLineInput = { pnlItemCode: string | null; amount: number; note: string };
+
 /**
- * Tạo tay một khoản công nợ ngay trên màn Công nợ — khách khai các khoản phải trả NCC
- * đã phát sinh chi phí nhưng chưa thanh toán, kèm hạng mục P&L để biết chi phí thuộc đâu.
- * Cũng dùng cho công nợ nội bộ (nhà hàng B phải trả nhà hàng A khoản chi hộ).
+ * Nhận `lines` (nhiều dòng) hoặc bộ `originalAmount` + `pnlItemCode` cũ (một dòng) — client cũ
+ * và import vẫn gọi theo kiểu một dòng nên giữ tương thích.
+ */
+function parseDebtLines(body: Record<string, unknown>): DebtLineInput[] {
+  if (Array.isArray(body.lines)) {
+    return body.lines.map((line) => {
+      const raw = (typeof line === "object" && line !== null ? line : {}) as Record<string, unknown>;
+      return {
+        pnlItemCode: cleanText(raw.pnlItemCode).toUpperCase() || null,
+        amount: toNumber(raw.amount),
+        note: cleanText(raw.note),
+      };
+    });
+  }
+  return [{ pnlItemCode: cleanText(body.pnlItemCode).toUpperCase() || null, amount: toNumber(body.originalAmount), note: "" }];
+}
+
+/**
+ * Tạo tay công nợ ngay trên màn Công nợ — khách khai các khoản phải trả NCC đã phát sinh
+ * chi phí nhưng chưa thanh toán, kèm hạng mục P&L để biết chi phí thuộc đâu. Cũng dùng cho
+ * công nợ nội bộ (nhà hàng B phải trả nhà hàng A khoản chi hộ).
+ *
+ * Một phiếu có thể nhiều dòng (trích trước cuối tháng: cùng NCC, nhiều hạng mục P&L). Mỗi dòng
+ * là một DebtRecord riêng để sổ nợ gạch và báo cáo P&L tách đúng hạng mục; các dòng dùng chung
+ * mã phiếu cha `CNPT-YYYYMM-0007` và mang mã `CNPT-YYYYMM-0007/1`, `/2`... Phiếu một dòng giữ
+ * mã phẳng như trước.
  */
 export async function POST(request: Request) {
   try {
@@ -262,18 +293,22 @@ export async function POST(request: Request) {
     const partnerCode = cleanText(body.partnerCode).toUpperCase();
     const branchCode = cleanText(body.branchCode).toUpperCase();
     const description = cleanText(body.description);
-    const originalAmount = toNumber(body.originalAmount);
     const documentDate = toDate(body.documentDate, new Date());
     const dueDate = cleanText(body.dueDate) ? toDate(body.dueDate) : null;
-    const pnlItemCode = cleanText(body.pnlItemCode).toUpperCase() || null;
     const categoryCode = cleanText(body.categoryCode).toUpperCase() || null;
+    const lines = parseDebtLines(body);
 
     if (!debtTypes.includes(debtType)) return NextResponse.json({ error: "Loại công nợ chỉ nhận RECEIVABLE hoặc PAYABLE" }, { status: 400 });
     if (!partnerGroups.includes(partnerGroup)) return NextResponse.json({ error: "Nhóm đối tác chỉ nhận EXTERNAL hoặc INTERNAL" }, { status: 400 });
     if (!partnerCode || !branchCode || !description) {
       return NextResponse.json({ error: "Thiếu đối tác, cửa hàng hoặc diễn giải" }, { status: 400 });
     }
-    if (!(originalAmount > 0)) return NextResponse.json({ error: "Số tiền công nợ phải lớn hơn 0" }, { status: 400 });
+    if (lines.length === 0) return NextResponse.json({ error: "Phiếu công nợ cần ít nhất một dòng hạng mục" }, { status: 400 });
+    if (lines.length > 50) return NextResponse.json({ error: "Một phiếu công nợ tối đa 50 dòng" }, { status: 400 });
+    const badLine = lines.findIndex((line) => !(line.amount > 0));
+    if (badLine >= 0) {
+      return NextResponse.json({ error: lines.length === 1 ? "Số tiền công nợ phải lớn hơn 0" : `Dòng ${badLine + 1}: số tiền phải lớn hơn 0` }, { status: 400 });
+    }
     if (dueDate && dueDate < documentDate) return NextResponse.json({ error: "Hạn thanh toán không được trước ngày chứng từ" }, { status: 400 });
 
     try {
@@ -290,45 +325,61 @@ export async function POST(request: Request) {
       select: { code: true, name: true },
     });
     if (!partner) return NextResponse.json({ error: `Đối tác [${partnerCode}] không tồn tại hoặc đã ngừng hoạt động` }, { status: 400 });
-    if (pnlItemCode) {
-      const pnlItem = await prisma.masterDataItem.findFirst({
-        where: { type: "PNL_ITEM", code: pnlItemCode, status: "ACTIVE", deletedAt: null },
+    const pnlItemCodes = Array.from(new Set(lines.map((line) => line.pnlItemCode).filter((code): code is string => Boolean(code))));
+    if (pnlItemCodes.length > 0) {
+      const pnlItems = await prisma.masterDataItem.findMany({
+        where: { type: "PNL_ITEM", code: { in: pnlItemCodes }, status: "ACTIVE", deletedAt: null },
         select: { code: true },
       });
-      if (!pnlItem) return NextResponse.json({ error: `Hạng mục P&L [${pnlItemCode}] không tồn tại hoặc đã ngừng hoạt động` }, { status: 400 });
+      const known = new Set(pnlItems.map((item) => item.code));
+      const missing = pnlItemCodes.find((code) => !known.has(code));
+      if (missing) return NextResponse.json({ error: `Hạng mục P&L [${missing}] không tồn tại hoặc đã ngừng hoạt động` }, { status: 400 });
     }
 
     // Mã tuần tự theo loại + tháng chứng từ, lấy MAX + 1 chứ không COUNT: công nợ bị xoá cứng
     // ở vài luồng (xoá phiếu phân bổ, rollback import) nên COUNT tụt và cấp trúng mã đang sống.
-    // Vẫn giữ retry cho trường hợp hai người tạo cùng lúc lấy trúng một số.
+    // Vẫn giữ retry cho trường hợp hai người tạo cùng lúc lấy trúng một số. Phiếu nhiều dòng
+    // cấp MỘT số phiếu rồi gắn "/1", "/2"... và ghi cả cụm trong một transaction.
     const prefix = `${debtType === "PAYABLE" ? "CNPT" : "CNTHU"}-${documentDate.toISOString().slice(0, 7).replace("-", "")}-`;
-    let created = null;
+    const multiLine = lines.length > 1;
+    let created: Awaited<ReturnType<typeof prisma.debtRecord.create>>[] | null = null;
+    let groupCode = "";
     for (let attempt = 0; attempt < 5 && !created; attempt += 1) {
+      // `deletedAt: undefined` tắt bộ lọc "còn sống" của client (lib/prisma.ts) để MAX tính cả mã
+      // đang nằm trong Thùng rác: mã unique vẫn bị chiếm, cấp lại sẽ đâm P2002 và phục hồi từ
+      // Thùng rác cũng không được.
       const issuedCodes = await prisma.debtRecord.findMany({
-        where: { code: { startsWith: prefix } },
+        where: { code: { startsWith: prefix }, deletedAt: undefined },
         select: { code: true },
       });
-      const code = prefix + String(nextSeqFromCodes(issuedCodes.map((row) => row.code), prefix) + attempt).padStart(4, "0");
+      const issued = issuedCodes.map((row) => stripDebtLineSuffix(row.code));
+      groupCode = prefix + String(nextSeqFromCodes(issued, prefix) + attempt).padStart(4, "0");
       try {
-        created = await prisma.debtRecord.create({
-          data: {
-            code,
-            debtType,
-            partnerGroup,
-            partnerCode: partner.code,
-            partnerName: partner.name,
-            branchCode,
-            documentDate,
-            dueDate,
-            categoryCode,
-            pnlItemCode,
-            originalAmount,
-            outstandingAmount: originalAmount,
-            description,
-            sourceType: "MANUAL",
-            status: "OPEN",
-          },
-        });
+        created = await prisma.$transaction(
+          lines.map((line, index) =>
+            prisma.debtRecord.create({
+              data: {
+                code: multiLine ? `${groupCode}/${index + 1}` : groupCode,
+                debtType,
+                partnerGroup,
+                partnerCode: partner.code,
+                partnerName: partner.name,
+                branchCode,
+                documentDate,
+                dueDate,
+                categoryCode,
+                pnlItemCode: line.pnlItemCode,
+                originalAmount: line.amount,
+                outstandingAmount: line.amount,
+                // Diễn giải dòng = diễn giải chung + hạng mục/ghi chú riêng để nhìn trên sổ nợ
+                // và trên phiếu chi vẫn biết dòng này là khoản gì.
+                description: multiLine ? [description, [line.pnlItemCode, line.note].filter(Boolean).join(" ")].filter(Boolean).join(" · ") : description,
+                sourceType: "MANUAL",
+                status: "OPEN",
+              },
+            }),
+          ),
+        );
       } catch (error) {
         const isUnique = typeof error === "object" && error !== null && (error as { code?: string }).code === "P2002";
         if (!isUnique) throw error;
@@ -336,17 +387,27 @@ export async function POST(request: Request) {
     }
     if (!created) return NextResponse.json({ error: "Không cấp được mã công nợ, vui lòng thử lại" }, { status: 409 });
 
-    await writeAuditLog({
-      session: auth.session,
-      module: "DEBTS",
-      action: "CREATE",
-      entityType: "DebtRecord",
-      entityId: created.id,
-      entityCode: created.code,
-      branchCode,
-      metadata: { debtType, partnerCode: partner.code, originalAmount, pnlItemCode },
-    });
-    return NextResponse.json(created, { status: 201 });
+    const totalAmount = lines.reduce((sum, line) => sum + line.amount, 0);
+    for (const record of created) {
+      await writeAuditLog({
+        session: auth.session,
+        module: "DEBTS",
+        action: "CREATE",
+        entityType: "DebtRecord",
+        entityId: record.id,
+        entityCode: record.code,
+        branchCode,
+        metadata: {
+          debtType,
+          partnerCode: partner.code,
+          originalAmount: record.originalAmount,
+          pnlItemCode: record.pnlItemCode,
+          ...(multiLine ? { groupCode, lineCount: created.length, groupTotal: totalAmount } : {}),
+        },
+      });
+    }
+    // Client cũ đọc `code` của bản ghi trả về; phiếu nhiều dòng trả mã phiếu cha kèm các dòng.
+    return NextResponse.json({ ...created[0], code: groupCode, lineCount: created.length, totalAmount, lines: created }, { status: 201 });
   } catch (error) {
     console.error("Error creating debt record:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
@@ -480,6 +541,25 @@ export async function PATCH(request: Request) {
   }
 }
 
+/** Lý do không xoá được một khoản công nợ tại màn Công nợ, hoặc null nếu xoá được. */
+async function debtDeleteBlocker(current: { id: string; sourceType: string; status: string; originalAmount: number; outstandingAmount: number; documentDate: Date; branchCode: string }) {
+  // Xoá riêng công nợ của phiếu phân bổ sẽ để lại bút toán P&L mồ côi ở hai nhà hàng.
+  if (current.sourceType === "COST_REALLOCATION") {
+    return "Công nợ nội bộ này do phiếu phân bổ chi phí sinh ra. Hãy xoá phiếu ở màn Phân bổ chi phí để hoàn tác đồng bộ cả bút toán.";
+  }
+  if (current.sourceType === "MONEY_TRANSFER") {
+    return "Công nợ nội bộ này do phiếu điều tiền liên nhà hàng sinh ra. Hãy xử lý ở màn Vận hành tài chính để bút toán và công nợ đi cùng nhau.";
+  }
+  // Còn phiếu thu/chi đã đối trừ vào khoản này thì phải giữ lại để không mất dấu thanh toán.
+  const settlementCount = await prisma.debtSettlement.count({ where: { debtId: current.id } });
+  if (settlementCount > 0) return "Khoản công nợ đã được thanh toán bằng phiếu thu/chi, không thể xóa.";
+  if (current.outstandingAmount !== current.originalAmount || current.status !== "OPEN") {
+    return "Khoản công nợ đã phát sinh thanh toán hoặc đã tất toán, không thể xóa.";
+  }
+  if (await isPeriodLocked(current.documentDate, current.branchCode)) return "Kỳ kế toán đã khóa, không thể xóa công nợ";
+  return null;
+}
+
 export async function DELETE(request: Request) {
   try {
     const auth = requireMenuAction(request, "/debts", "delete");
@@ -487,53 +567,30 @@ export async function DELETE(request: Request) {
 
     const { searchParams } = new URL(request.url);
     const id = cleanText(searchParams.get("id"));
+    const groupCode = cleanText(searchParams.get("groupCode")).toUpperCase();
     const reason = cleanText(searchParams.get("reason")) || null;
-    if (!id) return NextResponse.json({ error: "Thiếu ID công nợ" }, { status: 400 });
+    if (!id && !groupCode) return NextResponse.json({ error: "Thiếu ID công nợ" }, { status: 400 });
 
-    const current = await prisma.debtRecord.findUnique({ where: { id } });
-    if (!current) return NextResponse.json({ error: "Không tìm thấy khoản công nợ" }, { status: 404 });
+    // Xoá cả phiếu nhiều hạng mục = xoá mọi dòng `<mã phiếu>/n`; một dòng vướng thì không xoá dòng nào.
+    const targets = id
+      ? [await prisma.debtRecord.findUnique({ where: { id } })].filter((row): row is NonNullable<typeof row> => Boolean(row))
+      : await prisma.debtRecord.findMany({ where: { code: { startsWith: `${groupCode}/` } }, orderBy: { code: "asc" } });
+    if (targets.length === 0) return NextResponse.json({ error: id ? "Không tìm thấy khoản công nợ" : `Không tìm thấy dòng nào của phiếu ${groupCode}` }, { status: 404 });
 
-    try {
-      assertBranchAccess(auth.session, current.branchCode);
-    } catch (e) {
-      return NextResponse.json({ error: e instanceof Error ? e.message : "Không có quyền chi nhánh" }, { status: 403 });
+    for (const current of targets) {
+      try {
+        assertBranchAccess(auth.session, current.branchCode);
+      } catch (e) {
+        return NextResponse.json({ error: e instanceof Error ? e.message : "Không có quyền chi nhánh" }, { status: 403 });
+      }
+      const blocker = await debtDeleteBlocker(current);
+      if (blocker) return NextResponse.json({ error: targets.length > 1 ? `${current.code}: ${blocker}` : blocker }, { status: 400 });
     }
 
-    // Xoá riêng công nợ của phiếu phân bổ sẽ để lại bút toán P&L mồ côi ở hai nhà hàng.
-    if (current.sourceType === "COST_REALLOCATION") {
-      return NextResponse.json(
-        { error: "Công nợ nội bộ này do phiếu phân bổ chi phí sinh ra. Hãy xoá phiếu ở màn Phân bổ chi phí để hoàn tác đồng bộ cả bút toán." },
-        { status: 400 },
-      );
+    for (const current of targets) {
+      await softDeleteRecord({ model: "DebtRecord", id: current.id, session: auth.session, reason });
     }
-    if (current.sourceType === "MONEY_TRANSFER") {
-      return NextResponse.json(
-        { error: "Công nợ nội bộ này do phiếu điều tiền liên nhà hàng sinh ra. Hãy xử lý ở màn Vận hành tài chính để bút toán và công nợ đi cùng nhau." },
-        { status: 400 },
-      );
-    }
-
-    // Còn phiếu thu/chi đã đối trừ vào khoản này thì phải giữ lại để không mất dấu thanh toán.
-    const settlementCount = await prisma.debtSettlement.count({ where: { debtId: id } });
-    if (settlementCount > 0) {
-      return NextResponse.json(
-        { error: "Khoản công nợ đã được thanh toán bằng phiếu thu/chi, không thể xóa." },
-        { status: 400 },
-      );
-    }
-    if (current.outstandingAmount !== current.originalAmount || current.status !== "OPEN") {
-      return NextResponse.json(
-        { error: "Khoản công nợ đã phát sinh thanh toán hoặc đã tất toán, không thể xóa." },
-        { status: 400 },
-      );
-    }
-
-    if (await isPeriodLocked(current.documentDate, current.branchCode)) {
-      return NextResponse.json({ error: "Kỳ kế toán đã khóa, không thể xóa công nợ" }, { status: 400 });
-    }
-
-    await softDeleteRecord({ model: "DebtRecord", id, session: auth.session, reason });
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, deleted: targets.map((row) => row.code) });
   } catch (error) {
     if (error instanceof SoftDeleteError) {
       return NextResponse.json({ error: error.message }, { status: error.status });

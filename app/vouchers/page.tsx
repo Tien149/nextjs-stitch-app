@@ -1206,7 +1206,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                   </div>
                   <p className="text-[11px] font-medium text-slate-500">
                     Dòng có Mã công nợ sẽ gạch thẳng vào sổ nợ của đối tác đó khi phiếu được duyệt; để trống thì chỉ ghi chi cho đối tác, đối chiếu nợ sau.
-                    Mã công nợ có dạng <span className="font-bold">CNPT-YYYYMM-XXXX</span> (hoặc <span className="font-bold">CN-&lt;mã tài sản&gt;</span>), phải đúng đối tác và cùng chi nhánh với phiếu.
+                    Mã công nợ có dạng <span className="font-bold">CNPT-YYYYMM-XXXX</span>, hoặc <span className="font-bold">CNPT-YYYYMM-XXXX/1</span>, <span className="font-bold">/2</span>... với từng dòng của phiếu nhiều hạng mục (hoặc <span className="font-bold">CN-&lt;mã tài sản&gt;</span>), phải đúng đối tác và cùng chi nhánh với phiếu.
                   </p>
                 </div>
               ) : (

@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 export type OptionItem = {
   value: string;
@@ -34,7 +35,45 @@ export function SearchableSelect({
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  /**
+   * Vị trí panel tính theo viewport. Panel render qua portal lên <body> (position: fixed) để không
+   * bị khung cha `overflow: hidden/auto` (bảng, hộp thoại cuộn) cắt mất danh sách. Sát đáy màn hình
+   * thì lật lên phía trên; chiều cao danh sách co theo khoảng trống còn lại.
+   */
+  const [placement, setPlacement] = useState<{ left: number; width: number; top?: number; bottom?: number; listMaxHeight: number } | null>(null);
+  const updatePlacement = useCallback(() => {
+    const trigger = containerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const gap = 6;
+    const searchBoxHeight = 52;
+    const spaceBelow = window.innerHeight - rect.bottom - gap - 12;
+    const spaceAbove = rect.top - gap - 12;
+    const preferred = 320;
+    const openUp = spaceBelow < Math.min(preferred, 200) && spaceAbove > spaceBelow;
+    const room = (openUp ? spaceAbove : spaceBelow) - searchBoxHeight;
+    setPlacement({
+      left: rect.left,
+      width: rect.width,
+      ...(openUp ? { bottom: window.innerHeight - rect.top + gap } : { top: rect.bottom + gap }),
+      listMaxHeight: Math.max(120, Math.min(preferred, room)),
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    updatePlacement();
+    window.addEventListener("resize", updatePlacement);
+    // capture: true để bắt cả cuộn của hộp thoại/bảng bên trong, không chỉ cuộn trang.
+    window.addEventListener("scroll", updatePlacement, true);
+    return () => {
+      window.removeEventListener("resize", updatePlacement);
+      window.removeEventListener("scroll", updatePlacement, true);
+    };
+  }, [isOpen, updatePlacement]);
 
   const selectedOption = options.find((opt) => opt.value === value);
 
@@ -51,10 +90,10 @@ export function SearchableSelect({
   // Close dropdown on click outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-        setSearch("");
-      }
+      const target = event.target as Node;
+      if (containerRef.current?.contains(target) || panelRef.current?.contains(target)) return;
+      setIsOpen(false);
+      setSearch("");
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
@@ -116,9 +155,20 @@ export function SearchableSelect({
       </button>
 
       {/* Popover Dropdown: panel rộng theo nội dung chứ không bó đúng bề ngang ô, vì ô hẹp
-          thì tên đối tác dài bị xuống dòng từng ký tự. Không bao giờ hẹp hơn ô, không tràn màn hình. */}
-      {isOpen && (
-        <div className="absolute left-0 top-full mt-1.5 w-max min-w-full max-w-[min(24rem,calc(100vw-2rem))] bg-white border border-slate-200 rounded-xl shadow-2xl z-50 overflow-hidden animate-in fade-in-50 zoom-in-95 duration-100">
+          thì tên đối tác dài bị xuống dòng từng ký tự. Không bao giờ hẹp hơn ô, không tràn màn hình.
+          Render qua portal + fixed (xem updatePlacement) nên z-index phải cao hơn hộp thoại (z-50). */}
+      {isOpen && placement && createPortal(
+        <div
+          ref={panelRef}
+          style={{
+            left: Math.max(8, Math.min(placement.left, window.innerWidth - 8 - placement.width)),
+            top: placement.top,
+            bottom: placement.bottom,
+            minWidth: placement.width,
+            maxWidth: `min(24rem, calc(100vw - 1rem))`,
+          }}
+          className="fixed w-max bg-white border border-slate-200 rounded-xl shadow-2xl z-[70] overflow-hidden animate-in fade-in-50 zoom-in-95 duration-100"
+        >
           {/* Search Box */}
           <div className="p-2 border-b border-slate-100 bg-slate-50/80 sticky top-0 z-10">
             <div className="relative">
@@ -156,7 +206,7 @@ export function SearchableSelect({
           </div>
 
           {/* Options List */}
-          <ul className="max-h-52 overflow-y-auto overscroll-contain py-1 text-sm divide-y divide-slate-50">
+          <ul style={{ maxHeight: placement.listMaxHeight }} className="overflow-y-auto overscroll-contain py-1 text-sm divide-y divide-slate-50">
             {filteredOptions.length === 0 ? (
               <li className="px-3 py-4 text-xs text-center text-slate-400 italic">
                 {options.length === 0 ? "Chưa có dữ liệu danh mục" : "Không tìm thấy kết quả phù hợp"}
@@ -196,7 +246,8 @@ export function SearchableSelect({
               })
             )}
           </ul>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
