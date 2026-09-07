@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ExportExcelButton from "@/components/ExportExcelButton";
+import RevenueDaySummary from "@/app/imports/RevenueDaySummary";
+import { type RevenueDayInput } from "@/lib/revenue-day-summary";
 import { useRouter } from "next/navigation";
 import { DateInput } from "@/components/DateInput";
 import { SearchableSelect } from "@/components/SearchableSelect";
@@ -400,6 +402,40 @@ export default function ImportUploadPage({
 
   const errorRows = useMemo(() => preview?.rows.filter((row) => row.errors.length > 0) || [], [preview]);
   const skippedExistingRows = useMemo(() => preview?.rows.filter((row) => row.values.import_action === "SKIP_EXISTING") || [], [preview]);
+
+  /**
+   * Bảng "Doanh thu theo ngày" chỉ có nghĩa với file doanh thu POS; các loại import khác
+   * (sao kê, lương, danh mục...) không có ngày bán lẫn tiền hàng nên không dựng bảng.
+   */
+  const isRevenueImport = templateCode.startsWith("REVENUE_POS");
+  /** Số của FILE đang xem trước: chỉ cộng dòng hợp lệ vì dòng lỗi bị chặn khi commit. */
+  const previewRevenueDays = useMemo<RevenueDayInput[]>(() => {
+    if (!isRevenueImport || !preview) return [];
+    return preview.rows
+      .filter((row) => row.errors.length === 0)
+      .map((row) => ({
+        saleDate: row.values.sale_date,
+        branchCode: row.values.branch_code,
+        grossAmount: row.values.gross_amount,
+        discountAmount: row.values.discount_amount,
+        feeAmount: row.values.fee_amount,
+        vatAmount: row.values.vat_amount,
+        netAmount: row.values.net_amount,
+      }));
+  }, [isRevenueImport, preview]);
+  /** Số THẬT đã nằm trong hệ thống của batch đang mở. */
+  const batchRevenueDays = useMemo<RevenueDayInput[]>(
+    () => (selectedBatch?.revenueRows || []).map((row) => ({
+      saleDate: row.saleDate,
+      branchCode: row.branchCode,
+      grossAmount: row.grossAmount,
+      discountAmount: row.discountAmount,
+      feeAmount: row.feeAmount,
+      vatAmount: row.vatAmount,
+      netAmount: row.netAmount,
+    })),
+    [selectedBatch],
+  );
   const messageIsError = !message.startsWith("Đã ")
     && /lỗi|không|vui lòng|thất bại|sai|thiếu|bắt buộc|error|failed|invalid|khong|loi/i.test(message);
 
@@ -1051,6 +1087,15 @@ export default function ImportUploadPage({
                   </div>
                 )}
 
+                {/* Cộng theo ngày đứng TRÊN bảng dòng chi tiết: file doanh thu vài nghìn dòng,
+                    nhìn số tổng từng ngày trước rồi mới soi dòng nào sai (yêu cầu 08/09/2026). */}
+                <RevenueDaySummary
+                  rows={previewRevenueDays}
+                  tableId="preview-revenue-day-table"
+                  fileName={`doanh_thu_theo_ngay_preview_${templateCode.toLowerCase()}`}
+                  subtitle={`Số của file đang xem trước, cộng ${previewRevenueDays.length} dòng hợp lệ (dòng lỗi không tính)`}
+                />
+
                 <div className="max-h-[calc(100vh-365px)] min-h-[330px] overflow-auto">
                   <table className="w-full text-left text-sm">
                     <thead className="sticky top-0 bg-slate-50 text-slate-500 text-xs uppercase">
@@ -1207,6 +1252,15 @@ export default function ImportUploadPage({
                 </button>
               </div>
             </div>
+            {/* Số đã vào hệ thống của batch này, cộng theo ngày — đứng trên bảng dòng chi tiết
+                (bảng đó chỉ vẽ 100 dòng đầu nên không tự cộng ra được ngày nào bao nhiêu). */}
+            <RevenueDaySummary
+              rows={batchRevenueDays}
+              tableId="batch-revenue-day-table"
+              fileName={`doanh_thu_theo_ngay_${(selectedBatch?.fileName || "batch").replace(/[^\w.-]+/g, "_")}`}
+              subtitle="Số đã import vào hệ thống của batch này"
+            />
+
             <div className="relative overflow-x-auto max-h-[420px] min-h-[140px]">
               {batchDetailLoading && (
                 <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/75 text-sm font-semibold text-blue-700 backdrop-blur-[1px]">
