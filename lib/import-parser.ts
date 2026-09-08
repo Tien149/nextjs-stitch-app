@@ -312,3 +312,60 @@ export async function parseImportFile(
     errorRows: rows.filter((row) => row.errors.length > 0).length,
   };
 }
+
+/**
+ * Một dòng người dùng sửa tay trên popup xem trước: định danh theo sheet + số dòng của file,
+ * giá trị gửi lên là chuỗi đúng như ô nhập (ngày dạng yyyy-mm-dd, số dạng chữ số).
+ */
+export type ImportRowEdit = {
+  sheetName: string;
+  rowNumber: number;
+  values: Record<string, string>;
+};
+
+const rowEditKey = (sheetName: string, rowNumber: number) => `${sheetName}#${rowNumber}`;
+
+/**
+ * Áp các ô đã sửa lên kết quả đọc file. Server luôn đọc lại file gốc mỗi lần preview/commit
+ * nên bản sửa phải đi kèm từng lần gọi; đây là chỗ ghép hai thứ lại rồi ép kiểu và chấm lỗi
+ * lại cho riêng những dòng bị đụng. Dòng không sửa giữ nguyên, kể cả lỗi cũ.
+ *
+ * Với dòng bị sửa, lỗi được chấm lại từ đầu qua coerceValue cho toàn bộ cột: lỗi "Không tìm
+ * thấy cột X" của file gốc biến mất nếu người dùng đã điền X tay, còn cột bắt buộc bị xoá
+ * trắng thì báo "X là bắt buộc". Giá trị sửa cũng ghi vào rawValues để dấu vết import
+ * (importRows.rawJson) cho thấy con số cuối cùng là do người nhập quyết định.
+ */
+export function applyImportRowEdits(
+  result: ParsedImportResult,
+  template: ImportTemplateDefinition,
+  edits: ImportRowEdit[],
+): ParsedImportResult {
+  if (edits.length === 0) return result;
+  const editsByRow = new Map(edits.map((edit) => [rowEditKey(edit.sheetName, edit.rowNumber), edit.values]));
+
+  const rows = result.rows.map((row) => {
+    const edited = editsByRow.get(rowEditKey(row.sheetName, row.rowNumber));
+    if (!edited) return row;
+
+    const values: ParsedImportRow["values"] = {};
+    const rawValues = { ...row.rawValues };
+    const errors: string[] = [];
+    for (const field of template.fields) {
+      const hasEdit = Object.prototype.hasOwnProperty.call(edited, field.field);
+      const rawValue = hasEdit ? edited[field.field] : row.values[field.field];
+      const coerced = coerceValue(field, rawValue);
+      values[field.field] = coerced.value ?? null;
+      if (coerced.error) errors.push(coerced.error);
+      if (hasEdit) rawValues[result.mapping[field.field] || field.label] = edited[field.field];
+    }
+    return { ...row, values, rawValues, errors };
+  });
+
+  return {
+    ...result,
+    rows,
+    totalRows: rows.length,
+    validRows: rows.filter((row) => row.errors.length === 0).length,
+    errorRows: rows.filter((row) => row.errors.length > 0).length,
+  };
+}

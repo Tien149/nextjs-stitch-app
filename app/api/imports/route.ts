@@ -5,7 +5,7 @@ import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { assertBranchAccess, requestedBranch } from "@/lib/accounting";
 import { commitImport, isUniqueConstraintError, rollbackImportBatch } from "@/lib/import-commit";
 import { getImportTemplate, type ImportType } from "@/lib/import-templates";
-import { parseImportFile } from "@/lib/import-parser";
+import { applyImportRowEdits, parseImportFile, type ImportRowEdit } from "@/lib/import-parser";
 import { validateImportResult } from "@/lib/import-validation";
 import { prisma } from "@/lib/prisma";
 
@@ -45,6 +45,30 @@ function parseMapping(value: FormDataEntryValue | null) {
     );
   } catch {
     throw new Error("Mapping cột không đúng định dạng");
+  }
+}
+
+/**
+ * Các ô người dùng sửa trên popup xem trước (trường rowEditsJson). Chỉ nhận giá trị chuỗi:
+ * client gửi đúng chuỗi trong ô nhập, server ép kiểu lại theo template ở applyImportRowEdits.
+ */
+function parseRowEdits(value: FormDataEntryValue | null): ImportRowEdit[] {
+  if (typeof value !== "string" || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) throw new Error("not-array");
+    return parsed.map((item) => {
+      const candidate = item as { sheetName?: unknown; rowNumber?: unknown; values?: unknown };
+      if (typeof candidate.sheetName !== "string" || !Number.isInteger(candidate.rowNumber) || !candidate.values || typeof candidate.values !== "object") {
+        throw new Error("bad-row");
+      }
+      const values = Object.fromEntries(
+        Object.entries(candidate.values as Record<string, unknown>).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+      );
+      return { sheetName: candidate.sheetName, rowNumber: candidate.rowNumber as number, values };
+    });
+  } catch {
+    throw new Error("Dữ liệu dòng đã sửa không đúng định dạng");
   }
 }
 
@@ -386,10 +410,17 @@ export async function POST(request: Request) {
     const expectedMasterType = cleanText(formData.get("expectedMasterType")).toUpperCase();
     if (branchCode) assertBranchAccess(auth.session, branchCode);
     const mapping = parseMapping(formData.get("mappingJson"));
-    const parsed = await parseImportFile(file, template, {
-      mapping,
-      defaultValues: branchCode ? { branch_code: branchCode } : {},
-    });
+    const rowEdits = parseRowEdits(formData.get("rowEditsJson"));
+    // Bản sửa tay từ popup xem trước áp lên TRƯỚC bước validate, để lỗi nghiệp vụ (cửa hàng,
+    // mã hàng, trùng tham chiếu...) được chấm trên đúng con số sẽ ghi vào hệ thống.
+    const parsed = applyImportRowEdits(
+      await parseImportFile(file, template, {
+        mapping,
+        defaultValues: branchCode ? { branch_code: branchCode } : {},
+      }),
+      template,
+      rowEdits,
+    );
     await validateImportResult(parsed, importType, auth.session, { expectedMasterType });
 
     if (mode === "commit") {

@@ -3,6 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import RevenueDaySummary from "@/app/imports/RevenueDaySummary";
+import RevenuePreviewEditor, {
+  previewRowKey,
+  rowEditsToPayload,
+  type PreviewPayload,
+  type RowEdits,
+} from "@/app/imports/RevenuePreviewEditor";
 import { type RevenueDayInput } from "@/lib/revenue-day-summary";
 import { useRouter } from "next/navigation";
 import { DateInput } from "@/components/DateInput";
@@ -11,24 +17,6 @@ import { displayRoleName, storeLabel } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import { getImportTemplate, type ImportFieldDefinition, type ImportType } from "@/lib/import-templates";
 import { normalizeCashflowCategoryType, isRevenueGroupCategory } from "@/lib/voucher-rules";
-
-type PreviewRow = {
-  sheetName: string;
-  rowNumber: number;
-  values: Record<string, string | number | null>;
-  errors: string[];
-};
-
-type PreviewPayload = {
-  sheetName: string;
-  headerRowNumber: number;
-  headers: string[];
-  mapping: Record<string, string>;
-  rows: PreviewRow[];
-  totalRows: number;
-  validRows: number;
-  errorRows: number;
-};
 
 type Batch = {
   id: string;
@@ -337,6 +325,14 @@ export default function ImportUploadPage({
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<PreviewPayload | null>(null);
+  /**
+   * Popup sửa file doanh thu: ô đã sửa giữ ở client (key sheet#dòng) và gửi kèm mỗi lần
+   * preview/commit vì server luôn đọc lại file gốc. `editsDirty` = có ô sửa sau lần server
+   * chấm lỗi gần nhất, để biết số lỗi đang hiện chưa tính bản sửa.
+   */
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [rowEdits, setRowEdits] = useState<RowEdits>({});
+  const [editsDirty, setEditsDirty] = useState(false);
   const [batches, setBatches] = useState<Batch[]>([]);
   const [selectedBatch, setSelectedBatch] = useState<BatchDetail | null>(null);
   const [selectedBatchId, setSelectedBatchId] = useState("");
@@ -543,6 +539,20 @@ export default function ImportUploadPage({
     return () => window.clearTimeout(timer);
   }, [branchCode, expectedMasterType, manualFields, manualOpen]);
 
+  const editPreviewCell = (rowKey: string, field: string, value: string) => {
+    setRowEdits((current) => ({ ...current, [rowKey]: { ...(current[rowKey] || {}), [field]: value } }));
+    setEditsDirty(true);
+  };
+
+  const resetPreviewRow = (rowKey: string) => {
+    setRowEdits((current) => {
+      const next = { ...current };
+      delete next[rowKey];
+      return next;
+    });
+    setEditsDirty(true);
+  };
+
   const upload = async (mode: "preview" | "commit") => {
     if (!file) {
       setMessage("Vui lòng chọn file Excel trước.");
@@ -563,6 +573,8 @@ export default function ImportUploadPage({
       if (branchCode) formData.append("branchCode", branchCode);
       if (expectedMasterType) formData.append("expectedMasterType", expectedMasterType);
       if (Object.keys(mapping).length > 0) formData.append("mappingJson", JSON.stringify(mapping));
+      const editPayload = isRevenueImport ? rowEditsToPayload(rowEdits) : [];
+      if (editPayload.length > 0) formData.append("rowEditsJson", JSON.stringify(editPayload));
 
       const response = await fetch(withQuery(apiPath, { mode }), {
         method: "POST",
@@ -575,8 +587,18 @@ export default function ImportUploadPage({
         setMapping(previewPayload.mapping || {});
         setMappingFields((payload.template?.fields || []) as TemplateField[]);
         setMappingDirty(false);
+        // Server vừa chấm lại với bản sửa: số lỗi trên bảng đã khớp.
+        setEditsDirty(false);
+        // Chỉ giữ bản sửa của dòng còn tồn tại (file đổi mapping có thể đổi cách gộp dòng).
+        const liveKeys = new Set(previewPayload.rows.map((row) => previewRowKey(row)));
+        setRowEdits((current) => Object.fromEntries(Object.entries(current).filter(([key]) => liveKeys.has(key))));
+        if (isRevenueImport && mode === "preview") setEditorOpen(true);
       }
       if (!response.ok) throw new Error(payload.error || "Không xử lý được file import");
+      if (mode === "commit" && isRevenueImport) {
+        setEditorOpen(false);
+        setRowEdits({});
+      }
 
       if (mode === "preview" && previewPayload && previewPayload.errorRows > 0) {
         setMessage(`File có ${previewPayload.errorRows} dòng lỗi, vui lòng kiểm tra phần màu đỏ.`);
@@ -606,7 +628,13 @@ export default function ImportUploadPage({
         const committedBatchId = typeof payload.batch?.id === "string" ? payload.batch.id : "";
         setManualReviewBatch(recordedCount > 0 && committedBatchId ? { id: committedBatchId, count: recordedCount } : null);
       } else {
-        setMessage(mode === "preview" ? "Đã đọc file, vui lòng kiểm tra preview." : "Đã commit dữ liệu import.");
+        setMessage(
+          mode === "preview"
+            ? "Đã đọc file, vui lòng kiểm tra preview."
+            : isRevenueImport
+              ? "Đã lưu import doanh thu vào hệ thống."
+              : "Đã commit dữ liệu import.",
+        );
       }
       if (mode === "commit") await loadBatches();
     } catch (error) {
@@ -921,6 +949,9 @@ export default function ImportUploadPage({
                   setMapping({});
                   setMappingFields([]);
                   setMappingDirty(false);
+                  setEditorOpen(false);
+                  setRowEdits({});
+                  setEditsDirty(false);
                 }}
                 className="sr-only"
               />
@@ -934,19 +965,34 @@ export default function ImportUploadPage({
               >
                 <span className="inline-flex items-center gap-1.5">
                   <span className="material-symbols-outlined text-base">visibility</span>
-                  Preview
+                  {isRevenueImport ? "Xem trước" : "Preview"}
                 </span>
               </button>
-              <button
-                onClick={() => upload("commit")}
-                disabled={isUploading || !preview || preview.errorRows > 0 || mappingDirty}
-                className="h-9 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg px-4 text-xs font-bold shadow-sm"
-              >
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-base">check_circle</span>
-                  Commit
-                </span>
-              </button>
+              {isRevenueImport ? (
+                // Doanh thu POS: không commit thẳng từ trang; mọi lần lưu đi qua popup sửa để
+                // người nhập thấy đúng số sắp vào hệ thống rồi mới bấm Lưu.
+                <button
+                  onClick={() => setEditorOpen(true)}
+                  disabled={isUploading || !preview}
+                  className="h-9 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg px-4 text-xs font-bold shadow-sm"
+                >
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-base">edit_note</span>
+                    Chỉnh sửa &amp; lưu
+                  </span>
+                </button>
+              ) : (
+                <button
+                  onClick={() => upload("commit")}
+                  disabled={isUploading || !preview || preview.errorRows > 0 || mappingDirty}
+                  className="h-9 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg px-4 text-xs font-bold shadow-sm"
+                >
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-base">check_circle</span>
+                    Commit
+                  </span>
+                </button>
+              )}
             </div>
 
             {message && (
@@ -1301,6 +1347,27 @@ export default function ImportUploadPage({
           </section>
         )}
       </main>
+
+      {isRevenueImport && editorOpen && preview && file && (
+        <RevenuePreviewEditor
+          fileName={file.name}
+          preview={preview}
+          fields={manualFields}
+          edits={rowEdits}
+          editsDirty={editsDirty}
+          mappingDirty={mappingDirty}
+          busy={isUploading}
+          message={message}
+          messageIsError={messageIsError}
+          summaryRows={previewRevenueDays}
+          templateCode={templateCode}
+          onEdit={editPreviewCell}
+          onResetRow={resetPreviewRow}
+          onRecheck={() => void upload("preview")}
+          onSave={() => void upload("commit")}
+          onClose={() => setEditorOpen(false)}
+        />
+      )}
 
       {rollbackTarget && (
         <div className="fixed inset-0 z-[60] grid place-items-center bg-slate-950/50 px-4 backdrop-blur-[1px]">
