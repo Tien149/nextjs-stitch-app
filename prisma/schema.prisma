@@ -1194,6 +1194,9 @@ model Accrual {
   name            String
   branchCode      String
   categoryCode    String
+  /// Hạng mục P&L của khoản chi được phân bổ. Bút toán phân bổ hàng kỳ mang mã này, nếu
+  /// không thì số phân bổ chỉ là bút toán 6428 trơ, không xếp được vào dòng chi phí nào.
+  pnlItemCode     String?
   totalAmount     Float
   startPeriod     String
   numberOfPeriods Int

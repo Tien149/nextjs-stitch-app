@@ -432,7 +432,7 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   for (const row of depreciation) results.push(await postJournalEntry({ entryDate: new Date(`${period}-28T00:00:00`), branchCode: row.asset.branchCode, sourceType: "DEPRECIATION", sourceId: row.id, sourceCode: row.asset.code, description: `Khấu hao ${row.asset.name}`, createdBy: actor, lines: [{ accountCode: "6424", debit: row.depreciationAmount }, { accountCode: "214", credit: row.depreciationAmount }] }));
 
   const accruals = await prisma.accrualSchedule.findMany({ where: { period, status: "POSTED", ...(branchCode === "ALL" ? {} : { accrual: { branchCode } }) }, include: { accrual: true } });
-  for (const row of accruals) results.push(await postJournalEntry({ entryDate: row.postedAt || new Date(`${period}-28T00:00:00`), branchCode: row.accrual.branchCode, sourceType: "ACCRUAL", sourceId: row.id, sourceCode: row.accrual.code, description: `Phân bổ ${row.accrual.name}`, createdBy: actor, lines: [{ accountCode: "6428", debit: row.amount, categoryCode: row.accrual.categoryCode }, { accountCode: "335", credit: row.amount }] }));
+  for (const row of accruals) results.push(await postJournalEntry({ entryDate: row.postedAt || new Date(`${period}-28T00:00:00`), branchCode: row.accrual.branchCode, sourceType: "ACCRUAL", sourceId: row.id, sourceCode: row.accrual.code, description: `Phân bổ ${row.accrual.name}`, createdBy: actor, lines: [{ accountCode: "6428", debit: row.amount, categoryCode: row.accrual.categoryCode, pnlItemCode: row.accrual.pnlItemCode }, { accountCode: "335", credit: row.amount }] }));
 
   const payroll = await prisma.payrollImportRow.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { branchCode }) } });
   for (const row of payroll) {

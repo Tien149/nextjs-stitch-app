@@ -41,6 +41,7 @@ type VoucherForSideEffects = {
   branchCode: string;
   moneySourceCode: string;
   categoryCode: string | null;
+  pnlItemCode?: string | null;
   amount: number;
   description: string;
   depositAction: string | null;
@@ -226,6 +227,9 @@ export async function applyVoucherSideEffects(
           name: voucher.description,
           branchCode: voucher.branchCode,
           categoryCode: voucher.categoryCode || "OPEX",
+          // Giữ đúng hạng mục P&L của phiếu để từng kỳ phân bổ lên đúng dòng chi phí,
+          // thay vì thành bút toán 6428 không phân loại được.
+          pnlItemCode: voucher.pnlItemCode || null,
           totalAmount: voucher.amount,
           actualAmount: voucher.amount,
           startPeriod: voucher.allocationStartPeriod,

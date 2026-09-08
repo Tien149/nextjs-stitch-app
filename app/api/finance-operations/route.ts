@@ -883,7 +883,7 @@ export async function POST(request: Request) {
       return NextResponse.json(result);
     }
 
-    const auth = requireMenuAction(request, menuHref, action === "POST_ACCRUAL" ? "edit" : "create");
+    const auth = requireMenuAction(request, menuHref, ["POST_ACCRUAL", "UPDATE_ACCRUAL_PNL_ITEM"].includes(action) ? "edit" : "create");
     if (!auth.ok) return auth.response;
 
     if (action === "CREATE_ADJUSTMENT") {
@@ -940,6 +940,17 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi" }, { status: 403 });
       }
 
+      // Hạng mục P&L quyết định số phân bổ hàng kỳ đứng ở dòng chi phí nào; để trống thì bút
+      // toán chỉ là 6428 trơ và rơi ra khỏi bảng Tổng hợp chi phí.
+      const pnlItemCode = cleanText(body.pnlItemCode).toUpperCase() || null;
+      if (pnlItemCode) {
+        const pnlItem = await prisma.masterDataItem.findFirst({
+          where: { type: "PNL_ITEM", code: pnlItemCode, status: "ACTIVE", deletedAt: null },
+          select: { code: true },
+        });
+        if (!pnlItem) businessError(`Hạng mục P&L [${pnlItemCode}] không tồn tại hoặc đã ngừng hoạt động`);
+      }
+
       const amount = totalAmount / numberOfPeriods;
       const pbouPrefix = voucherCodePrefix({ voucherType: "PBOU", voucherDate: `${startPeriod}-01`, branchCode });
       const issuedPbou = await prisma.accrual.findMany({ where: { code: { startsWith: pbouPrefix } }, select: { code: true } });
@@ -949,6 +960,7 @@ export async function POST(request: Request) {
           name: cleanText(body.name),
           branchCode,
           categoryCode: cleanText(body.categoryCode) || "OPEX",
+          pnlItemCode,
           totalAmount,
           startPeriod,
           numberOfPeriods,
@@ -958,8 +970,34 @@ export async function POST(request: Request) {
         },
         include: { schedules: true },
       });
-      await writeAuditLog({ session: auth.session, module: "FINANCE_OPERATIONS", action: "CREATE_ACCRUAL", entityType: "Accrual", entityId: result.id, entityCode: result.code, branchCode, metadata: { totalAmount, startPeriod, numberOfPeriods } });
+      await writeAuditLog({ session: auth.session, module: "FINANCE_OPERATIONS", action: "CREATE_ACCRUAL", entityType: "Accrual", entityId: result.id, entityCode: result.code, branchCode, metadata: { totalAmount, startPeriod, numberOfPeriods, pnlItemCode } });
       return NextResponse.json(result, { status: 201 });
+    }
+
+    // Khoản trích trước cũ chưa khai hạng mục P&L vẫn phải sửa được, nếu không các kỳ còn lại
+    // của nó sẽ mãi nằm ngoài bảng Tổng hợp chi phí. Chỉ cho sửa đúng ô hạng mục.
+    if (action === "UPDATE_ACCRUAL_PNL_ITEM") {
+      const accrualId = cleanText(body.accrualId);
+      const pnlItemCode = cleanText(body.pnlItemCode).toUpperCase() || null;
+      const accrual = accrualId ? await prisma.accrual.findUnique({ where: { id: accrualId } }) : null;
+      if (!accrual || accrual.deletedAt) businessError("Không tìm thấy khoản trích trước");
+
+      try {
+        assertBranchAccess(auth.session, accrual!.branchCode);
+      } catch (e) {
+        return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi" }, { status: 403 });
+      }
+      if (pnlItemCode) {
+        const pnlItem = await prisma.masterDataItem.findFirst({
+          where: { type: "PNL_ITEM", code: pnlItemCode, status: "ACTIVE", deletedAt: null },
+          select: { code: true },
+        });
+        if (!pnlItem) businessError(`Hạng mục P&L [${pnlItemCode}] không tồn tại hoặc đã ngừng hoạt động`);
+      }
+
+      const updated = await prisma.accrual.update({ where: { id: accrual!.id }, data: { pnlItemCode } });
+      await writeAuditLog({ session: auth.session, module: "FINANCE_OPERATIONS", action: "UPDATE_ACCRUAL_PNL_ITEM", entityType: "Accrual", entityId: updated.id, entityCode: updated.code, branchCode: updated.branchCode, metadata: { before: accrual!.pnlItemCode, after: pnlItemCode } });
+      return NextResponse.json(updated);
     }
 
     if (action === "POST_ACCRUAL") {

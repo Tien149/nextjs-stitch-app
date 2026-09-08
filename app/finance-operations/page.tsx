@@ -16,7 +16,7 @@ import type { ExpenseSummary } from "@/lib/expense-summary";
 
 type CashEntry = { id: string; date: string; createdAt: string; code: string; type: string; moneySourceCode: string; description: string; receipt: number; payment: number; balance: number };
 type Schedule = { id: string; period: string; amount: number; status: string };
-type Accrual = { id: string; code: string; name: string; branchCode: string; categoryCode: string; totalAmount: number; startPeriod: string; numberOfPeriods: number; status: string; schedules: Schedule[] };
+type Accrual = { id: string; code: string; name: string; branchCode: string; categoryCode: string; pnlItemCode: string | null; totalAmount: number; startPeriod: string; numberOfPeriods: number; status: string; schedules: Schedule[] };
 type Check = { key: string; label: string; passed: boolean; count: number };
 type MoneyTransferDenomination = { id: string; denomination: number; quantity: number; amount: number };
 type MoneyTransfer = {
@@ -162,6 +162,8 @@ export default function FinanceOperationsPage() {
   /** Tra tên nguồn tiền theo mã: nhãn phí quyết toán ví đọc theo cả mã lẫn tên, giống báo cáo. */
   const moneySourceNameByCode = useMemo(() => new Map(moneySources.map((row) => [row.code, row.name])), [moneySources]);
   const [feeCategories, setFeeCategories] = useState<MasterDataOption[]>([]);
+  /** Hạng mục P&L để gắn cho khoản trích trước; thiếu nó thì số phân bổ không lên bảng chi phí. */
+  const [pnlItems, setPnlItems] = useState<MasterDataOption[]>([]);
   const [settlement, setSettlement] = useState({
     transferDate: new Date().toISOString().slice(0, 10),
     branchCode: "",
@@ -188,6 +190,7 @@ export default function FinanceOperationsPage() {
     name: "Chi phí trả trước",
     branchCode: "HCM",
     categoryCode: "",
+    pnlItemCode: "",
     totalAmount: "12000000",
     startPeriod: new Date().toISOString().slice(0, 7),
     numberOfPeriods: "12",
@@ -348,6 +351,10 @@ export default function FinanceOperationsPage() {
       .then((res) => (res.ok ? res.json() : []))
       .then((items: MasterDataOption[]) => setFeeCategories(items.filter((item) => normalizeCashflowCategoryType(item.group) === "PAYMENT")))
       .catch(() => setFeeCategories([]));
+    void fetch("/api/master-data?type=PNL_ITEM&status=ACTIVE")
+      .then((res) => (res.ok ? res.json() : []))
+      .then((items: MasterDataOption[]) => setPnlItems(items.filter((item) => ["OPEX", "COGS"].includes((item.group || "").toUpperCase()))))
+      .catch(() => setPnlItems([]));
     // Danh sách cửa hàng thật phải nạp ngay tại trang này. Mã mặc định trong các form dưới là
     // dữ liệu demo (HCM/HN): nếu không nắn về cửa hàng có thật thì ô Cửa hàng hiển thị cửa hàng
     // đầu danh sách trong khi state vẫn giữ mã demo, khiến ô Nguồn tiền lọc ra rỗng.
@@ -1359,6 +1366,26 @@ export default function FinanceOperationsPage() {
                   </div>
                 </div>
 
+                {/* Không có hạng mục P&L thì bút toán phân bổ hàng kỳ chỉ là 6428 trơ và rơi
+                    ra khỏi bảng Tổng hợp chi phí, nên bắt buộc chọn ngay từ lúc tạo. */}
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-xs font-bold text-slate-600">Hạng mục P&amp;L *</span>
+                  <select
+                    value={accrual.pnlItemCode}
+                    onChange={(e) => setAccrual({ ...accrual, pnlItemCode: e.target.value })}
+                    className="w-full pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all cursor-pointer"
+                    required
+                  >
+                    <option value="">{pnlItems.length === 0 ? "-- Chưa khai báo hạng mục P&L --" : "-- Chọn hạng mục P&L --"}</option>
+                    {pnlItems.map((item) => (
+                      <option key={item.code} value={item.code}>{item.code} - {item.name}</option>
+                    ))}
+                  </select>
+                  <span className="text-[11px] font-medium text-slate-500">
+                    Quyết định số phân bổ từng kỳ đứng ở dòng chi phí nào trên P&amp;L và tab Tổng hợp chi phí.
+                  </span>
+                </div>
+
                 <div className="flex flex-col gap-1.5">
                   <span className="text-xs font-bold text-slate-600">Tổng giá trị phân bổ (đ) *</span>
                   <input
@@ -1423,6 +1450,29 @@ export default function FinanceOperationsPage() {
                         <p className="text-xs text-slate-500 font-semibold mt-0.5">
                           Cửa hàng: {storeLabel(row.branchCode)} · Khoản mục: {feeCategoryLabel(row.categoryCode)} · Thời gian: {row.numberOfPeriods} kỳ
                         </p>
+                        {/* Khoản tạo trước khi có ô hạng mục vẫn phải khai bù được, nếu không các
+                            kỳ còn lại của nó sẽ mãi nằm ngoài bảng Tổng hợp chi phí. */}
+                        <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                          <span className={`text-[11px] font-bold ${row.pnlItemCode ? "text-slate-500" : "text-amber-700"}`}>
+                            Hạng mục P&amp;L:
+                          </span>
+                          {canEdit ? (
+                            <select
+                              value={row.pnlItemCode || ""}
+                              onChange={(e) => void send({ action: "UPDATE_ACCRUAL_PNL_ITEM", accrualId: row.id, pnlItemCode: e.target.value }, "Đã cập nhật hạng mục P&L. Chạy lại hạch toán kỳ trên Sổ cái để bút toán phân bổ nhận hạng mục mới.")}
+                              className={`rounded-lg border px-2 py-1 text-[11px] font-bold outline-none ${row.pnlItemCode ? "border-slate-300 bg-white text-slate-700" : "border-amber-300 bg-amber-50 text-amber-800"}`}
+                            >
+                              <option value="">-- Chưa phân loại, chưa lên bảng chi phí --</option>
+                              {pnlItems.map((item) => (
+                                <option key={item.code} value={item.code}>{item.code} - {item.name}</option>
+                              ))}
+                            </select>
+                          ) : (
+                            <span className="text-[11px] font-bold text-slate-700">
+                              {row.pnlItemCode || "Chưa phân loại"}
+                            </span>
+                          )}
+                        </div>
                       </div>
 
                       <div className="text-right">
