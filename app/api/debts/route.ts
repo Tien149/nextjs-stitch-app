@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
-import { assertBranchAccess, requestedBranch } from "@/lib/accounting";
+import { assertBranchAccess, periodBounds, requestedBranch } from "@/lib/accounting";
 import { cleanText, isPeriodLocked, toDate, toNumber } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import { softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
@@ -57,6 +57,32 @@ function agingBucket(dueDate?: Date | null) {
   return "OPEN";
 }
 
+/**
+ * Khoảng thời gian người dùng chọn trên màn Công nợ (yêu cầu 08/09/2026: đối chiếu được ở
+ * từng thời điểm). Phát sinh TRƯỚC `from` gộp vào Đầu kỳ, SAU `toExclusive` bỏ hẳn; không
+ * chọn gì thì mọi phát sinh đều "trong kỳ" như trước.
+ */
+type DateRange = { from: Date | null; toExclusive: Date | null; fromDate: string; toDate: string };
+
+function parseDateRange(fromRaw: string | null, toRaw: string | null): DateRange {
+  const isDay = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value);
+  const fromDate = (fromRaw || "").trim();
+  const toDate = (toRaw || "").trim();
+  const from = isDay(fromDate) ? new Date(`${fromDate}T00:00:00`) : null;
+  const to = isDay(toDate) ? new Date(`${toDate}T00:00:00`) : null;
+  if (to) to.setDate(to.getDate() + 1);
+  return { from, toExclusive: to, fromDate: from ? fromDate : "", toDate: to ? toDate : "" };
+}
+
+function dateBucket(date: Date, range: DateRange): "BEFORE" | "IN" | "AFTER" {
+  if (range.toExclusive && date >= range.toExclusive) return "AFTER";
+  if (range.from && date < range.from) return "BEFORE";
+  return "IN";
+}
+
+/** Ngày nghiệp vụ của số dư đầu kỳ là ngày đầu kỳ khai, không phải lúc bấm lưu. */
+const openingBalanceDate = (period: string) => periodBounds(period).start;
+
 function addDebt(rows: Map<string, DebtRow>, code: string, name: string, patch: Partial<DebtRow>) {
   if (!code) return;
   const current =
@@ -92,6 +118,7 @@ export async function GET(request: Request) {
     const partnerCode = searchParams.get("partnerCode")?.trim();
     const branchCode = requestedBranch(auth.session, searchParams.get("branchCode")?.trim() || "ALL");
     const branchFilter = branchCode === "ALL" ? {} : { branchCode };
+    const range = parseDateRange(searchParams.get("fromDate"), searchParams.get("toDate"));
 
     const [partners, openingBalances, deposits, bankRows, vouchers, purchasePayables, debtRecords] = await Promise.all([
       prisma.masterDataItem.findMany({ where: { type: "PARTNER" } }),
@@ -107,7 +134,7 @@ export async function GET(request: Request) {
       const ledger: LedgerRow[] = [];
       for (const item of openingBalances.filter((row) => row.objectCode === partnerCode)) {
         ledger.push({
-          date: item.createdAt,
+          date: openingBalanceDate(item.period),
           source: "OPENING_BALANCE",
           code: `${item.period}-${item.balanceType}`,
           description: item.note || "Số dư đầu kỳ",
@@ -165,30 +192,58 @@ export async function GET(request: Request) {
         });
       }
 
-      // Cùng ngày thì xếp theo mã để các dòng của một phiếu nhiều hạng mục đứng liền nhau.
-      const sortedLedger = ledger.sort((a, b) => b.date.getTime() - a.date.getTime() || a.code.localeCompare(b.code, "vi", { numeric: true }));
-      const balance = sortedLedger.reduce((sum, row) => sum + row.amount, 0);
+      // Phát sinh trước khoảng chọn gộp thành một số Đầu kỳ; sau khoảng chọn bỏ hẳn. Xếp
+      // tăng dần theo ngày để cộng dồn "Số dư sau" từng dòng (đối chiếu tại từng thời điểm),
+      // rồi trả về giảm dần như cũ; cùng ngày thì xếp theo mã để các dòng của một phiếu
+      // nhiều hạng mục đứng liền nhau.
+      const openingBalance = ledger
+        .filter((row) => dateBucket(row.date, range) === "BEFORE")
+        .reduce((sum, row) => sum + row.amount, 0);
+      const inRange = ledger
+        .filter((row) => dateBucket(row.date, range) === "IN")
+        .sort((a, b) => a.date.getTime() - b.date.getTime() || a.code.localeCompare(b.code, "vi", { numeric: true }));
+      let running = openingBalance;
+      const withRunning = inRange.map((row) => {
+        running += row.amount;
+        return { ...row, runningBalance: running };
+      });
+      const movementTotal = withRunning.reduce((sum, row) => sum + row.amount, 0);
       const partner = partners.find((item) => item.code === partnerCode);
       return NextResponse.json({
         partnerCode,
         partnerName: partner?.name || partnerCode,
-        balance,
-        rows: sortedLedger,
+        balance: openingBalance + movementTotal,
+        openingBalance,
+        movementTotal,
+        fromDate: range.fromDate,
+        toDate: range.toDate,
+        rows: withRunning.reverse(),
       });
     }
 
     const rows = new Map<string, DebtRow>();
     for (const partner of partners) addDebt(rows, partner.code, partner.name, { partnerGroup: partner.partnerGroup || "EXTERNAL" });
 
+    // Phát sinh trước khoảng chọn không đứng ở cột riêng mà gộp vào Đầu kỳ, với đúng dấu nó
+    // cộng vào Số dư (cùng dấu với dòng ledger). Phát sinh sau khoảng chọn bỏ hẳn.
+    const carryForward = (code: string, name: string, amount: number) => {
+      const current = rows.get(code);
+      addDebt(rows, code, name, { openingAmount: (current?.openingAmount || 0) + amount });
+    };
+
     for (const item of openingBalances) {
       if (!item.objectCode) continue;
-      const current = rows.get(item.objectCode);
-      addDebt(rows, item.objectCode, item.objectName || item.objectCode, {
-        openingAmount: (current?.openingAmount || 0) + item.amount,
-      });
+      if (dateBucket(openingBalanceDate(item.period), range) === "AFTER") continue;
+      carryForward(item.objectCode, item.objectName || item.objectCode, item.amount);
     }
 
     for (const item of deposits) {
+      const bucket = dateBucket(item.receivedDate, range);
+      if (bucket === "AFTER") continue;
+      if (bucket === "BEFORE") {
+        carryForward(item.partnerCode, item.partnerName, -item.remainingAmount);
+        continue;
+      }
       const current = rows.get(item.partnerCode);
       addDebt(rows, item.partnerCode, item.partnerName, {
         depositHolding: (current?.depositHolding || 0) + item.remainingAmount,
@@ -197,6 +252,12 @@ export async function GET(request: Request) {
 
     for (const item of bankRows) {
       if (!item.partnerHint) continue;
+      const bucket = dateBucket(item.transactionDate, range);
+      if (bucket === "AFTER") continue;
+      if (bucket === "BEFORE") {
+        carryForward(item.partnerHint, item.partnerHint, -(item.creditAmount - item.debitAmount));
+        continue;
+      }
       const current = rows.get(item.partnerHint);
       addDebt(rows, item.partnerHint, item.partnerHint, {
         bankMatched: (current?.bankMatched || 0) + item.creditAmount - item.debitAmount,
@@ -205,14 +266,26 @@ export async function GET(request: Request) {
 
     for (const item of vouchers) {
       if (!item.partnerCode) continue;
-      const current = rows.get(item.partnerCode);
+      const bucket = dateBucket(item.voucherDate, range);
+      if (bucket === "AFTER") continue;
       const signedAmount = item.voucherType === "RECEIPT" ? item.amount : -item.amount;
+      if (bucket === "BEFORE") {
+        carryForward(item.partnerCode, item.partnerName, -signedAmount);
+        continue;
+      }
+      const current = rows.get(item.partnerCode);
       addDebt(rows, item.partnerCode, item.partnerName, {
         voucherNet: (current?.voucherNet || 0) + signedAmount,
       });
     }
 
     for (const item of purchasePayables) {
+      const bucket = dateBucket(item.recognizedDate, range);
+      if (bucket === "AFTER") continue;
+      if (bucket === "BEFORE") {
+        carryForward(item.supplierCode, item.supplierName, item.outstandingAmount);
+        continue;
+      }
       const current = rows.get(item.supplierCode);
       addDebt(rows, item.supplierCode, item.supplierName, {
         purchasePayable: (current?.purchasePayable || 0) + item.outstandingAmount,
@@ -220,15 +293,20 @@ export async function GET(request: Request) {
     }
 
     for (const item of debtRecords) {
+      const dateSlot = dateBucket(item.documentDate, range);
+      if (dateSlot === "AFTER") continue;
       const current = rows.get(item.partnerCode);
       const bucket = agingBucket(item.dueDate);
       const currentDue = current?.nearestDueDate || null;
       const nextDue = item.outstandingAmount > 0 && item.dueDate && (!currentDue || item.dueDate < currentDue) ? item.dueDate : currentDue;
       const hasOpenDebt = item.outstandingAmount > 0 && item.status !== "SETTLED";
+      // Khoản mở trước khoảng chọn vẫn tính hạn/quá hạn (vẫn đang nợ), chỉ số tiền dồn về Đầu kỳ.
+      const inRange = dateSlot === "IN";
       addDebt(rows, item.partnerCode, item.partnerName, {
         partnerGroup: item.partnerGroup,
-        debtReceivable: (current?.debtReceivable || 0) + (item.debtType === "RECEIVABLE" ? item.outstandingAmount : 0),
-        debtPayable: (current?.debtPayable || 0) + (item.debtType === "PAYABLE" ? item.outstandingAmount : 0),
+        openingAmount: (current?.openingAmount || 0) + (inRange ? 0 : item.debtType === "RECEIVABLE" ? item.outstandingAmount : -item.outstandingAmount),
+        debtReceivable: (current?.debtReceivable || 0) + (inRange && item.debtType === "RECEIVABLE" ? item.outstandingAmount : 0),
+        debtPayable: (current?.debtPayable || 0) + (inRange && item.debtType === "PAYABLE" ? item.outstandingAmount : 0),
         nearestDueDate: nextDue,
         overdueAmount: (current?.overdueAmount || 0) + (bucket === "OVERDUE" ? item.outstandingAmount : 0),
         dueSoonAmount: (current?.dueSoonAmount || 0) + (bucket === "DUE_7" ? item.outstandingAmount : 0),
