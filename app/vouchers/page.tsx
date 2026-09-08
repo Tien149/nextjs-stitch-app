@@ -2,12 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { DateInput } from "@/components/DateInput";
+import { DateInput, MonthInput } from "@/components/DateInput";
 import { ModuleFrame } from "@/components/ModuleFrame";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { storeLabel, updateDynamicBranches } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canEditPastVoucher, canPerformAction, canPerformMenuAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
-import { ADVANCE_RECEIVABLE_ACTION, DEBT_COLLECTION_PURPOSE, isPartnerAllowedForVoucher, isSameCalendarDay, normalizeCashflowCategoryType, PAYMENT_PURPOSES, RECEIPT_PURPOSES, voucherEditWindowError } from "@/lib/voucher-rules";
+import { ADVANCE_RECEIVABLE_ACTION, DEBT_COLLECTION_PURPOSE, isPartnerAllowedForVoucher, isSameCalendarDay, normalizeCashflowCategoryType, PAYMENT_PURPOSES, PREPAID_ALLOCATION_ACTION, RECEIPT_PURPOSES, voucherEditWindowError } from "@/lib/voucher-rules";
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup, summaryMoneySourceGroups } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
@@ -47,6 +47,9 @@ type Voucher = {
   debtReference: string | null;
   receivablePartnerCode?: string | null;
   receivablePartnerName?: string | null;
+  /** Chi trả trước: số kỳ và kỳ bắt đầu của lịch phân bổ sinh từ phiếu (mã PB-<mã phiếu>). */
+  allocationMonths?: number | null;
+  allocationStartPeriod?: string | null;
   recipientName?: string | null;
   partnerAllocations?: Array<{ id: string; partnerCode: string; partnerName: string; amount: number; debtReference: string | null }>;
   updatedAt: string;
@@ -129,6 +132,8 @@ const emptyForm = {
   debtAction: "",
   debtReference: "",
   receivablePartnerCode: "",
+  allocationMonths: "",
+  allocationStartPeriod: "",
   partnerCode: "",
   partnerName: "Khách hàng mua lẻ",
   branchCode: "HCM",
@@ -542,6 +547,8 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
   const isDebtCollection = form.voucherType === "RECEIPT" && form.depositAction === DEBT_COLLECTION_PURPOSE;
   /** Chi hộ: phiếu treo phải thu của đối tác khác, không vào chi phí và không có hạng mục P&L. */
   const isAdvanceReceivable = form.voucherType === "PAYMENT" && form.debtAction === ADVANCE_RECEIVABLE_ACTION;
+  /** Chi trả trước: phiếu treo 242 và tự sinh lịch phân bổ, không vào chi phí ngay trong kỳ chi. */
+  const isPrepaidAllocation = form.voucherType === "PAYMENT" && form.debtAction === PREPAID_ALLOCATION_ACTION;
   const canDelete = user ? canPerformMenuAction(user, moduleHref, "delete") : false;
   /** Quyền sửa/bỏ duyệt chứng từ đã qua ngày (mặc định Admin và Kế toán tổng hợp). */
   const canEditPast = canEditPastVoucher(user);
@@ -726,8 +733,12 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
       depositCode: voucher.depositCode || "",
       debtReference: voucher.debtReference || "",
       // Chỉ nạp lại nội dung chi do form này quản; phiếu gạch nợ (SETTLE) từ import giữ nguyên.
-      debtAction: voucher.debtAction === ADVANCE_RECEIVABLE_ACTION ? ADVANCE_RECEIVABLE_ACTION : "",
+      debtAction: voucher.debtAction === ADVANCE_RECEIVABLE_ACTION || voucher.debtAction === PREPAID_ALLOCATION_ACTION
+        ? voucher.debtAction
+        : "",
       receivablePartnerCode: voucher.receivablePartnerCode || "",
+      allocationMonths: voucher.allocationMonths ? String(voucher.allocationMonths) : "",
+      allocationStartPeriod: voucher.allocationStartPeriod || "",
       voucherDate: voucher.voucherDate.slice(0, 10),
       partnerCode: voucher.partnerCode || "",
       partnerName: voucher.partnerName,
@@ -762,6 +773,24 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
       setMessage("Chi hộ phải chọn đối tác sẽ trả lại tiền — không có đối tác thì khoản phải thu sinh ra không ai đòi.");
       setMessageType("error");
       return;
+    }
+
+    if (isPrepaidAllocation) {
+      if (!(Number(form.allocationMonths) > 1)) {
+        setMessage("Chi trả trước phải khai số kỳ phân bổ từ 2 trở lên — một kỳ thì đó là chi phí thường của tháng này.");
+        setMessageType("error");
+        return;
+      }
+      if (!form.allocationStartPeriod) {
+        setMessage("Chi trả trước phải chọn kỳ bắt đầu phân bổ.");
+        setMessageType("error");
+        return;
+      }
+      if (!form.pnlItemCode) {
+        setMessage("Chi trả trước phải chọn Hạng mục P&L — không có thì các kỳ phân bổ không lên được dòng chi phí nào.");
+        setMessageType("error");
+        return;
+      }
     }
 
     let multiPartnerPayload: Record<string, unknown> = {};
@@ -1231,7 +1260,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
               )}
 
               {form.voucherType === "PAYMENT" && !isMultiPartnerActive && (
-                <div className={`grid gap-3 ${isAdvanceReceivable ? "grid-cols-1 @sm:grid-cols-2" : "grid-cols-1"}`}>
+                <div className={`grid gap-3 ${isAdvanceReceivable || isPrepaidAllocation ? "grid-cols-1 @sm:grid-cols-2" : "grid-cols-1"}`}>
                   <label className="text-xs font-bold text-slate-600 block">
                     Nội dung chi *
                     <select
@@ -1239,9 +1268,16 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                       onChange={(event) => setForm((value) => ({
                         ...value,
                         debtAction: event.target.value,
-                        receivablePartnerCode: event.target.value ? value.receivablePartnerCode : "",
+                        receivablePartnerCode: event.target.value === ADVANCE_RECEIVABLE_ACTION ? value.receivablePartnerCode : "",
                         // Chi hộ không lên P&L nên hạng mục P&L đã khai trước đó phải bỏ đi.
+                        // Chi trả trước thì giữ: chính hạng mục đó đi vào lịch phân bổ.
                         pnlItemCode: event.target.value === ADVANCE_RECEIVABLE_ACTION ? "" : value.pnlItemCode,
+                        // Kỳ bắt đầu mặc định là kỳ của ngày phiếu — khoản trả trước gần như
+                        // luôn bắt đầu phục vụ ngay từ tháng chi tiền.
+                        allocationStartPeriod: event.target.value === PREPAID_ALLOCATION_ACTION
+                          ? (value.allocationStartPeriod || value.voucherDate.slice(0, 7))
+                          : "",
+                        allocationMonths: event.target.value === PREPAID_ALLOCATION_ACTION ? value.allocationMonths : "",
                       }))}
                       className="control"
                     >
@@ -1274,10 +1310,41 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                       </span>
                     </div>
                   )}
+
+                  {isPrepaidAllocation && (
+                    <div className="grid grid-cols-2 gap-3">
+                      <label className="text-xs font-bold text-slate-600 block">
+                        Số kỳ phân bổ *
+                        <input
+                          type="number"
+                          min={2}
+                          step={1}
+                          value={form.allocationMonths}
+                          onChange={(event) => setForm((value) => ({ ...value, allocationMonths: event.target.value }))}
+                          placeholder="VD: 12"
+                          className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                        />
+                      </label>
+                      <div className="text-xs font-bold text-slate-600 block">
+                        Từ kỳ kế toán *
+                        <MonthInput
+                          className="mt-1"
+                          value={form.allocationStartPeriod}
+                          onChange={(allocationStartPeriod) => setForm((value) => ({ ...value, allocationStartPeriod }))}
+                          ariaLabel="Kỳ bắt đầu phân bổ"
+                        />
+                      </div>
+                      <span className="col-span-2 text-[11px] font-medium text-slate-500">
+                        {Number(form.allocationMonths) > 1 && Number(form.amount) > 0
+                          ? <>Mỗi kỳ <span className="font-bold text-slate-700">{money(Math.round(Number(form.amount) / Number(form.allocationMonths)))} đ</span> × {Number(form.allocationMonths)} kỳ, bắt đầu từ {form.allocationStartPeriod || "kỳ chưa chọn"}. Khi duyệt, lịch phân bổ <span className="font-bold">PB-&lt;mã phiếu&gt;</span> tự hiện ở tab Trích trước &amp; Phân bổ — không phải khai lại.</>
+                          : <>Khai số kỳ rồi hệ thống tự chia đều số tiền phiếu và sinh lịch phân bổ <span className="font-bold">PB-&lt;mã phiếu&gt;</span> ở tab Trích trước &amp; Phân bổ.</>}
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
 
-              {canUseMultiPartner && !isAdvanceReceivable && (
+              {canUseMultiPartner && !isAdvanceReceivable && !isPrepaidAllocation && (
                 <label className="flex items-center gap-2 rounded-lg border border-indigo-100 bg-indigo-50/60 px-3 py-2 text-xs font-bold text-indigo-800">
                   <input
                     type="checkbox"
@@ -1510,7 +1577,9 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
 
               {form.voucherType === "PAYMENT" && !isAdvanceReceivable && (
                 <div className="text-xs font-bold text-slate-600 block">
-                  Hạng mục P&amp;L <span className="font-medium text-slate-400">(không bắt buộc)</span>
+                  {/* Chi trả trước bắt buộc khai: hạng mục này chính là hạng mục mà từng kỳ
+                      phân bổ mang theo, để trống thì cả 12 kỳ rơi khỏi bảng Tổng hợp chi phí. */}
+                  Hạng mục P&amp;L {isPrepaidAllocation ? "*" : <span className="font-medium text-slate-400">(không bắt buộc)</span>}
                   {/* Danh mục P&L dài vài chục dòng nên dùng ô chọn gõ-tìm thay dropdown thường. */}
                   <SearchableSelect
                     className="mt-1"
@@ -1530,7 +1599,9 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                     ]}
                   />
                   <span className="mt-1 block text-[11px] font-medium text-slate-500">
-                    Dùng để phân loại chi tiết trên báo cáo P&amp;L; không thay thế khoản mục thu/chi của báo cáo dòng tiền.
+                    {isPrepaidAllocation
+                      ? "Quyết định số phân bổ từng kỳ đứng ở dòng chi phí nào trên P&L; phiếu chi trả trước bắt buộc khai."
+                      : "Dùng để phân loại chi tiết trên báo cáo P&L; không thay thế khoản mục thu/chi của báo cáo dòng tiền."}
                   </span>
                 </div>
               )}
@@ -1877,6 +1948,14 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                               Chi hộ
                             </span>
                           )}
+                          {voucher.debtAction === PREPAID_ALLOCATION_ACTION && (
+                            <span
+                              className="rounded border border-indigo-200 bg-indigo-50 px-1.5 py-0.5 text-[10px] font-bold text-indigo-700"
+                              title={`Chi trả trước — treo chi phí trả trước, phân bổ ${voucher.allocationMonths || "?"} kỳ từ ${voucher.allocationStartPeriod || "?"} theo lịch PB-${voucher.code}. Không vào chi phí ngay trong kỳ chi.`}
+                            >
+                              Trả trước {voucher.allocationMonths || "?"} kỳ
+                            </span>
+                          )}
                           <CopyableText value={voucher.code}><b className="text-slate-800 font-semibold">{voucher.code}</b></CopyableText>
                         </div>
                         <p className="mt-0.5 text-xs leading-4 text-slate-500">{categoryName(voucher.categoryCode)}</p>
@@ -1907,6 +1986,11 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                           )}
                         </b>
                         <p className="mt-0.5 text-xs leading-4 text-slate-500 whitespace-normal break-words">{voucher.description}</p>
+                        {voucher.debtAction === PREPAID_ALLOCATION_ACTION && voucher.allocationStartPeriod && (
+                          <p className="mt-1 text-[11px] font-medium text-indigo-600">
+                            Phân bổ: PB-{voucher.code} · {voucher.allocationMonths} kỳ từ {voucher.allocationStartPeriod}
+                          </p>
+                        )}
                         {voucher.debtAction === ADVANCE_RECEIVABLE_ACTION && voucher.receivablePartnerCode && (
                           <p className="mt-1 text-[11px] font-medium text-violet-700">
                             Thu lại của: {voucher.receivablePartnerName || voucher.receivablePartnerCode} · CNTHU-{voucher.code}

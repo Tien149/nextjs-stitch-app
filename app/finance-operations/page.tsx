@@ -16,7 +16,7 @@ import type { ExpenseSummary } from "@/lib/expense-summary";
 
 type CashEntry = { id: string; date: string; createdAt: string; code: string; type: string; moneySourceCode: string; description: string; receipt: number; payment: number; balance: number };
 type Schedule = { id: string; period: string; amount: number; status: string };
-type Accrual = { id: string; code: string; name: string; branchCode: string; categoryCode: string; pnlItemCode: string | null; totalAmount: number; startPeriod: string; numberOfPeriods: number; status: string; schedules: Schedule[] };
+type Accrual = { id: string; code: string; name: string; branchCode: string; categoryCode: string; pnlItemCode: string | null; totalAmount: number; startPeriod: string; numberOfPeriods: number; status: string; sourceType: string | null; schedules: Schedule[] };
 type Check = { key: string; label: string; passed: boolean; count: number };
 type MoneyTransferDenomination = { id: string; denomination: number; quantity: number; amount: number };
 type MoneyTransfer = {
@@ -1446,6 +1446,16 @@ export default function FinanceOperationsPage() {
                         <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-full uppercase">
                           {row.code}
                         </span>
+                        {/* Khoản sinh từ phiếu chi trả trước: tiền đã ra quỹ và đang treo 242,
+                            mỗi kỳ ghi nhận là rút dần 242 chứ không phải khoản còn phải trả. */}
+                        {row.sourceType === "VOUCHER" && (
+                          <span
+                            className="ml-1.5 text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full"
+                            title={`Sinh tự động từ phiếu chi ${row.code.replace(/^PB-/, "")}. Tiền đã chi và đang treo chi phí trả trước (242); mỗi kỳ ghi nhận sẽ rút dần khoản treo đó vào chi phí.`}
+                          >
+                            Đã chi tiền · từ phiếu {row.code.replace(/^PB-/, "")}
+                          </span>
+                        )}
                         <h4 className="font-bold text-slate-900 mt-1">{row.name}</h4>
                         <p className="text-xs text-slate-500 font-semibold mt-0.5">
                           Cửa hàng: {storeLabel(row.branchCode)} · Khoản mục: {feeCategoryLabel(row.categoryCode)} · Thời gian: {row.numberOfPeriods} kỳ

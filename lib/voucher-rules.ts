@@ -24,6 +24,15 @@ export const RECEIPT_PURPOSES = [
  */
 export const ADVANCE_RECEIVABLE_ACTION = "ACCRUE_RECEIVABLE";
 
+/**
+ * "Chi trả trước" là khoản đã trả đứt một cục nhưng phục vụ nhiều tháng (thuê nhà cả năm,
+ * gia hạn phần mềm 13 tháng, bảo hiểm...). Nếu để nó vào 6428 ngay thì tháng chi bị thổi
+ * chi phí còn các tháng sau trống trơn; tệ hơn, kế toán thường gõ thêm một khoản phân bổ
+ * tay cho đúng các tháng sau và thế là CHI PHÍ BỊ TÍNH HAI LẦN. Phiếu đánh dấu nội dung này
+ * treo Nợ 242 và tự sinh lịch phân bổ từ chính số liệu của phiếu, không phải gõ lại.
+ */
+export const PREPAID_ALLOCATION_ACTION = "ALLOCATE_PREPAID";
+
 export const PAYMENT_PURPOSES = [
   { id: "", label: "Chi thường — vào chi phí theo khoản mục", hint: "Bản chất khoản chi khai ở Khoản mục thu/chi bên dưới." },
   {
@@ -31,23 +40,48 @@ export const PAYMENT_PURPOSES = [
     label: "Chi hộ — thu lại của đối tác khác",
     hint: "Không tính vào chi phí: phiếu treo phải thu và tự sinh một khoản công nợ để thu lại.",
   },
+  {
+    id: PREPAID_ALLOCATION_ACTION,
+    label: "Chi trả trước — phân bổ nhiều kỳ",
+    hint: "Chưa vào chi phí ngay: phiếu treo chi phí trả trước và tự sinh lịch phân bổ ở tab Trích trước & Phân bổ.",
+  },
 ] as const;
 
 /** Chỉ phiếu Chi mới có nội dung chi; giá trị lạ coi như chi thường. */
 export function normalizePaymentPurpose(voucherType: string, value: unknown) {
   if (voucherType !== "PAYMENT") return "";
   const raw = typeof value === "string" ? value.trim().toUpperCase() : "";
-  return raw === ADVANCE_RECEIVABLE_ACTION ? raw : "";
+  return raw === ADVANCE_RECEIVABLE_ACTION || raw === PREPAID_ALLOCATION_ACTION ? raw : "";
 }
 
-/** Trả về thông báo lỗi, hoặc null nếu hợp lệ. */
+/** Số kỳ phân bổ hợp lệ của phiếu chi trả trước; 0 nghĩa là phiếu không phân bổ. */
+export function normalizeAllocationMonths(value: unknown) {
+  const months = Math.floor(Number(value));
+  return Number.isFinite(months) && months > 1 ? months : 0;
+}
+
+/**
+ * Trả về thông báo lỗi, hoặc null nếu hợp lệ.
+ *
+ * `allocation` chỉ cần cho nội dung Chi trả trước; hai màn gọi hàm này (phiếu chi tiền mặt và
+ * chứng từ ngân hàng) đều truyền vào, còn chỗ nào chưa quan tâm thì bỏ qua như trước.
+ */
 export function validatePaymentPurpose(
   voucherType: string,
   value: unknown,
   receivablePartnerCode: string | null | undefined,
+  allocation?: { months: unknown; startPeriod: string | null | undefined; pnlItemCode?: string | null },
 ) {
   const purpose = normalizePaymentPurpose(voucherType, value);
   if (!purpose) return null;
+  if (purpose === PREPAID_ALLOCATION_ACTION) {
+    if (normalizeAllocationMonths(allocation?.months) <= 0) return "Chi trả trước phải khai số kỳ phân bổ từ 2 trở lên.";
+    if (!(allocation?.startPeriod || "").trim()) return "Chi trả trước phải khai kỳ bắt đầu phân bổ.";
+    // Không có hạng mục P&L thì số phân bổ hàng kỳ chỉ là bút toán 6428 trơ, rơi khỏi bảng
+    // Tổng hợp chi phí — đúng thứ khoản chi này sinh ra để tránh.
+    if (allocation && !(allocation.pnlItemCode || "").trim()) return "Chi trả trước phải chọn hạng mục P&L để số phân bổ lên đúng dòng chi phí.";
+    return null;
+  }
   // Không có đối tác cụ thể thì khoản phải thu sinh ra không ai đòi được.
   if (!(receivablePartnerCode || "").trim()) return "Chi hộ phải chọn đối tác sẽ trả lại tiền.";
   return null;

@@ -215,6 +215,8 @@ export async function applyVoucherSideEffects(
     }
   }
 
+  // Chi trả trước: phiếu khai sẵn số kỳ nên lịch phân bổ sinh thẳng từ số liệu của phiếu,
+  // kế toán không phải gõ lại ở tab Trích trước & Phân bổ. Idempotent theo mã sinh từ mã phiếu.
   if (voucher.voucherType === "PAYMENT" && (voucher.allocationMonths || 0) > 1) {
     if (!voucher.allocationStartPeriod) throw new Error("Chi phí phân bổ bắt buộc có kỳ bắt đầu");
     const code = `PB-${voucher.code}`;
@@ -235,6 +237,10 @@ export async function applyVoucherSideEffects(
           startPeriod: voucher.allocationStartPeriod,
           numberOfPeriods,
           note: `Tạo từ chứng từ ${voucher.code}`,
+          // Nguồn gốc quyết định vế Có của bút toán phân bổ hàng kỳ: khoản sinh từ phiếu chi
+          // đã trả tiền nên rút dần 242, khoản khai tay chưa trả tiền thì treo 335.
+          sourceType: "VOUCHER",
+          sourceId: voucher.id,
           createdBy: actor,
           schedules: {
             create: Array.from({ length: numberOfPeriods }, (_, index) => ({

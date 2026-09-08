@@ -9,7 +9,7 @@ import { buildAuditLogData, writeAuditLog } from "@/lib/audit-log";
 import { softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
 import { canEditPastVoucher, canPerformMenuAction, type DemoSession } from "@/lib/auth-demo";
 import { moneySourceMatchesBranch, parseMoneySourceCodes } from "@/lib/money-sources";
-import { ADVANCE_RECEIVABLE_ACTION, DEBT_COLLECTION_PURPOSE, isSameCalendarDay, normalizeCashflowCategoryType, normalizePaymentPurpose, normalizeReceiptPurpose, validatePaymentPurpose, validateReceiptPurpose, voucherEditWindowError } from "@/lib/voucher-rules";
+import { ADVANCE_RECEIVABLE_ACTION, DEBT_COLLECTION_PURPOSE, isSameCalendarDay, normalizeAllocationMonths, normalizeCashflowCategoryType, normalizePaymentPurpose, normalizeReceiptPurpose, PREPAID_ALLOCATION_ACTION, validatePaymentPurpose, validateReceiptPurpose, voucherEditWindowError } from "@/lib/voucher-rules";
 import { completePendingReconciliation, ReconciliationSyncError, releasePendingReconciliation, reopenReconciliationForReview, syncReconciledBankStatement, type BankStatementSyncResult } from "@/lib/reconciliation-links";
 import { moneySourceMatchesDocumentChannel, normalizeVoucherDocumentChannel } from "@/lib/voucher-channel";
 import { depositCategoryDirection } from "@/lib/bank-statement-category";
@@ -456,12 +456,22 @@ export async function POST(request: Request) {
 
     // Chi hộ: tiền ra nhưng một đối tác khác sẽ hoàn lại. Phiếu treo phải thu của đối tác đó
     // chứ không vào chi phí, nên hạng mục P&L cũng bị bỏ luôn cho khỏi hiểu nhầm.
+    //
+    // Chi trả trước thì ngược lại: hạng mục P&L PHẢI giữ, vì lịch phân bổ sinh ra từ phiếu
+    // lấy chính hạng mục đó để từng kỳ lên đúng dòng chi phí.
     const paymentPurpose = normalizePaymentPurpose(voucherType, body.debtAction);
-    const requestedReceivablePartner = paymentPurpose ? cleanText(body.receivablePartnerCode).toUpperCase() : "";
-    const paymentPurposeError = validatePaymentPurpose(voucherType, paymentPurpose, requestedReceivablePartner);
+    const isPrepaidAllocation = paymentPurpose === PREPAID_ALLOCATION_ACTION;
+    const allocationMonths = isPrepaidAllocation ? normalizeAllocationMonths(body.allocationMonths) : 0;
+    const allocationStartPeriod = isPrepaidAllocation ? cleanText(body.allocationStartPeriod) : "";
+    const requestedReceivablePartner = isPrepaidAllocation ? "" : (paymentPurpose ? cleanText(body.receivablePartnerCode).toUpperCase() : "");
+    const paymentPurposeError = validatePaymentPurpose(voucherType, paymentPurpose, requestedReceivablePartner, {
+      months: allocationMonths,
+      startPeriod: allocationStartPeriod,
+      pnlItemCode,
+    });
     if (paymentPurposeError) return NextResponse.json({ error: paymentPurposeError }, { status: 400 });
     let receivablePartner: { code: string; name: string } | null = null;
-    if (paymentPurpose) {
+    if (paymentPurpose && !isPrepaidAllocation) {
       receivablePartner = await prisma.masterDataItem.findFirst({
         where: { type: "PARTNER", code: requestedReceivablePartner, status: "ACTIVE", deletedAt: null },
         select: { code: true, name: true },
@@ -480,9 +490,14 @@ export async function POST(request: Request) {
       if (voucherType !== "PAYMENT") {
         return NextResponse.json({ error: "Danh sách nhiều đối tác chỉ dùng cho phiếu Chi" }, { status: 400 });
       }
-      // Mỗi dòng phân bổ là một đối tác riêng nên không suy ra được một khoản phải thu duy nhất.
+      // Mỗi dòng phân bổ là một đối tác riêng nên không suy ra được một khoản phải thu duy nhất,
+      // và một lịch phân bổ nhiều kỳ cũng không cắt được theo từng đối tác.
       if (paymentPurpose) {
-        return NextResponse.json({ error: "Phiếu chi nhiều đối tác chưa dùng được nội dung Chi hộ. Hãy lập phiếu chi hộ riêng." }, { status: 400 });
+        return NextResponse.json({
+          error: isPrepaidAllocation
+            ? "Phiếu chi nhiều đối tác chưa dùng được nội dung Chi trả trước. Hãy lập phiếu riêng cho khoản cần phân bổ."
+            : "Phiếu chi nhiều đối tác chưa dùng được nội dung Chi hộ. Hãy lập phiếu chi hộ riêng.",
+        }, { status: 400 });
       }
       const lineCodes = rawAllocations.map((line) => cleanText(line.partnerCode).toUpperCase()).filter(Boolean);
       if (lineCodes.length !== rawAllocations.length) {
@@ -541,11 +556,13 @@ export async function POST(request: Request) {
               businessEffect: "RECOGNITION",
               moneySourceCode,
               categoryCode: categoryCode || null,
-              pnlItemCode: paymentPurpose ? null : (pnlItemCode || null),
+              pnlItemCode: paymentPurpose && !isPrepaidAllocation ? null : (pnlItemCode || null),
               debtAction: paymentPurpose || (isDebtCollection ? "SETTLE" : null),
               debtReference: debtReference || null,
               receivablePartnerCode: receivablePartner?.code || null,
               receivablePartnerName: receivablePartner?.name || null,
+              allocationMonths: allocationMonths || null,
+              allocationStartPeriod: allocationStartPeriod || null,
               amount,
               description,
               status: "APPROVED",
@@ -788,15 +805,32 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
             ? current.debtAction
             : (normalizePaymentPurpose(current.voucherType, body.debtAction) || null)));
   const isAdvanceReceivable = debtAction === ADVANCE_RECEIVABLE_ACTION;
+  const isPrepaidAllocation = debtAction === PREPAID_ALLOCATION_ACTION;
   const requestedReceivablePartner = isAdvanceReceivable
     ? (body.receivablePartnerCode === undefined
         ? (current.receivablePartnerCode || "")
         : cleanText(body.receivablePartnerCode).toUpperCase())
     : "";
-  const paymentPurposeError = validatePaymentPurpose(current.voucherType, debtAction, requestedReceivablePartner);
+  // Lịch phân bổ được xoá và dựng lại theo số liệu mới trong cùng transaction sửa phiếu
+  // (revert -> update -> apply), nên số kỳ/kỳ bắt đầu sửa được như mọi trường khác.
+  const allocationMonths = isPrepaidAllocation
+    ? normalizeAllocationMonths(body.allocationMonths === undefined ? current.allocationMonths : body.allocationMonths)
+    : 0;
+  const allocationStartPeriod = isPrepaidAllocation
+    ? (body.allocationStartPeriod === undefined ? (current.allocationStartPeriod || "") : cleanText(body.allocationStartPeriod))
+    : "";
+  const paymentPurposeError = validatePaymentPurpose(current.voucherType, debtAction, requestedReceivablePartner, {
+    months: allocationMonths,
+    startPeriod: allocationStartPeriod,
+    pnlItemCode,
+  });
   if (paymentPurposeError) return NextResponse.json({ error: paymentPurposeError }, { status: 400 });
-  if (isAdvanceReceivable && allocationCount > 0) {
-    return NextResponse.json({ error: "Phiếu chi nhiều đối tác chưa dùng được nội dung Chi hộ. Hãy hủy phiếu và lập phiếu chi hộ riêng." }, { status: 400 });
+  if ((isAdvanceReceivable || isPrepaidAllocation) && allocationCount > 0) {
+    return NextResponse.json({
+      error: isPrepaidAllocation
+        ? "Phiếu chi nhiều đối tác chưa dùng được nội dung Chi trả trước. Hãy hủy phiếu và lập phiếu riêng cho khoản cần phân bổ."
+        : "Phiếu chi nhiều đối tác chưa dùng được nội dung Chi hộ. Hãy hủy phiếu và lập phiếu chi hộ riêng.",
+    }, { status: 400 });
   }
   let receivablePartner: { code: string; name: string } | null = null;
   if (isAdvanceReceivable) {
@@ -855,6 +889,8 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
     debtReference: current.voucherType === "RECEIPT" ? (requestedDebtReference || null) : current.debtReference,
     receivablePartnerCode: receivablePartner?.code || null,
     receivablePartnerName: receivablePartner?.name || null,
+    allocationMonths: allocationMonths || null,
+    allocationStartPeriod: allocationStartPeriod || null,
     amount,
     description,
   };

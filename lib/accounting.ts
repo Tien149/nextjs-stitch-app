@@ -432,7 +432,12 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   for (const row of depreciation) results.push(await postJournalEntry({ entryDate: new Date(`${period}-28T00:00:00`), branchCode: row.asset.branchCode, sourceType: "DEPRECIATION", sourceId: row.id, sourceCode: row.asset.code, description: `Khấu hao ${row.asset.name}`, createdBy: actor, lines: [{ accountCode: "6424", debit: row.depreciationAmount }, { accountCode: "214", credit: row.depreciationAmount }] }));
 
   const accruals = await prisma.accrualSchedule.findMany({ where: { period, status: "POSTED", ...(branchCode === "ALL" ? {} : { accrual: { branchCode } }) }, include: { accrual: true } });
-  for (const row of accruals) results.push(await postJournalEntry({ entryDate: row.postedAt || new Date(`${period}-28T00:00:00`), branchCode: row.accrual.branchCode, sourceType: "ACCRUAL", sourceId: row.id, sourceCode: row.accrual.code, description: `Phân bổ ${row.accrual.name}`, createdBy: actor, lines: [{ accountCode: "6428", debit: row.amount, categoryCode: row.accrual.categoryCode, pnlItemCode: row.accrual.pnlItemCode }, { accountCode: "335", credit: row.amount }] }));
+  // Vế Có phụ thuộc khoản này ĐÃ TRẢ TIỀN hay chưa:
+  // - Sinh từ phiếu chi trả trước (sourceType VOUCHER): tiền đã ra quỹ và đang treo Nợ 242,
+  //   nên mỗi kỳ phân bổ là rút dần 242 xuống. Ghi Có 335 ở đây sẽ đẻ ra một khoản phải trả
+  //   ảo không ai trả, đồng thời 242 nằm treo mãi trên bảng cân đối.
+  // - Khai tay ở tab Trích trước (chưa chi tiền): vẫn là Có 335 — chi phí phải trả.
+  for (const row of accruals) results.push(await postJournalEntry({ entryDate: row.postedAt || new Date(`${period}-28T00:00:00`), branchCode: row.accrual.branchCode, sourceType: "ACCRUAL", sourceId: row.id, sourceCode: row.accrual.code, description: `Phân bổ ${row.accrual.name}`, createdBy: actor, lines: [{ accountCode: "6428", debit: row.amount, categoryCode: row.accrual.categoryCode, pnlItemCode: row.accrual.pnlItemCode }, { accountCode: row.accrual.sourceType === "VOUCHER" ? "242" : "335", credit: row.amount }] }));
 
   const payroll = await prisma.payrollImportRow.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { branchCode }) } });
   for (const row of payroll) {
