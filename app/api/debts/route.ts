@@ -330,8 +330,12 @@ export async function GET(request: Request) {
   }
 }
 
-/** Một dòng chi tiết của phiếu công nợ: một hạng mục P&L, một số tiền. */
-type DebtLineInput = { pnlItemCode: string | null; amount: number; note: string };
+/**
+ * Một dòng chi tiết của phiếu công nợ: một số tiền + một mã phân loại P&L.
+ * Phải trả khai tới HẠNG MỤC chi phí (`pnlItemCode`); phải thu chỉ khai tới NHÓM hạng mục
+ * (`pnlGroupCode`) vì khoản thu về không thuộc một hạng mục chi phí nào.
+ */
+type DebtLineInput = { pnlItemCode: string | null; pnlGroupCode: string | null; amount: number; note: string };
 
 /**
  * Nhận `lines` (nhiều dòng) hoặc bộ `originalAmount` + `pnlItemCode` cũ (một dòng) — client cũ
@@ -343,18 +347,25 @@ function parseDebtLines(body: Record<string, unknown>): DebtLineInput[] {
       const raw = (typeof line === "object" && line !== null ? line : {}) as Record<string, unknown>;
       return {
         pnlItemCode: cleanText(raw.pnlItemCode).toUpperCase() || null,
+        pnlGroupCode: cleanText(raw.pnlGroupCode).toUpperCase() || null,
         amount: toNumber(raw.amount),
         note: cleanText(raw.note),
       };
     });
   }
-  return [{ pnlItemCode: cleanText(body.pnlItemCode).toUpperCase() || null, amount: toNumber(body.originalAmount), note: "" }];
+  return [{
+    pnlItemCode: cleanText(body.pnlItemCode).toUpperCase() || null,
+    pnlGroupCode: cleanText(body.pnlGroupCode).toUpperCase() || null,
+    amount: toNumber(body.originalAmount),
+    note: "",
+  }];
 }
 
 /**
  * Tạo tay công nợ ngay trên màn Công nợ — khách khai các khoản phải trả NCC đã phát sinh
- * chi phí nhưng chưa thanh toán, kèm hạng mục P&L để biết chi phí thuộc đâu. Cũng dùng cho
- * công nợ nội bộ (nhà hàng B phải trả nhà hàng A khoản chi hộ).
+ * chi phí nhưng chưa thanh toán, kèm hạng mục P&L để biết chi phí thuộc đâu. Khoản PHẢI THU
+ * khai tới nhóm hạng mục P&L thay vì hạng mục (khoản thu về không thuộc hạng mục chi phí nào).
+ * Cũng dùng cho công nợ nội bộ (nhà hàng B phải trả nhà hàng A khoản chi hộ).
  *
  * Một phiếu có thể nhiều dòng (trích trước cuối tháng: cùng NCC, nhiều hạng mục P&L). Mỗi dòng
  * là một DebtRecord riêng để sổ nợ gạch và báo cáo P&L tách đúng hạng mục; các dòng dùng chung
@@ -404,15 +415,29 @@ export async function POST(request: Request) {
       select: { code: true, name: true },
     });
     if (!partner) return NextResponse.json({ error: `Đối tác [${partnerCode}] không tồn tại hoặc đã ngừng hoạt động` }, { status: 400 });
-    const pnlItemCodes = Array.from(new Set(lines.map((line) => line.pnlItemCode).filter((code): code is string => Boolean(code))));
-    if (pnlItemCodes.length > 0) {
-      const pnlItems = await prisma.masterDataItem.findMany({
-        where: { type: "PNL_ITEM", code: { in: pnlItemCodes }, status: "ACTIVE", deletedAt: null },
+    // Phải thu chỉ khai tới nhóm hạng mục, phải trả chỉ khai tới hạng mục: bỏ mã của tầng
+    // không dùng để đổi loại công nợ trên popup không để lại mã cũ của tầng kia.
+    const isReceivable = debtType === "RECEIVABLE";
+    const classifiedLines = lines.map((line) => ({
+      ...line,
+      pnlItemCode: isReceivable ? null : line.pnlItemCode,
+      pnlGroupCode: isReceivable ? line.pnlGroupCode : null,
+    }));
+    const pnlCodes = Array.from(new Set(
+      classifiedLines
+        .map((line) => (isReceivable ? line.pnlGroupCode : line.pnlItemCode))
+        .filter((code): code is string => Boolean(code)),
+    ));
+    if (pnlCodes.length > 0) {
+      const pnlType = isReceivable ? "PNL_GROUP" : "PNL_ITEM";
+      const pnlLabel = isReceivable ? "Nhóm hạng mục P&L" : "Hạng mục P&L";
+      const pnlRecords = await prisma.masterDataItem.findMany({
+        where: { type: pnlType, code: { in: pnlCodes }, status: "ACTIVE", deletedAt: null },
         select: { code: true },
       });
-      const known = new Set(pnlItems.map((item) => item.code));
-      const missing = pnlItemCodes.find((code) => !known.has(code));
-      if (missing) return NextResponse.json({ error: `Hạng mục P&L [${missing}] không tồn tại hoặc đã ngừng hoạt động` }, { status: 400 });
+      const known = new Set(pnlRecords.map((item) => item.code));
+      const missing = pnlCodes.find((code) => !known.has(code));
+      if (missing) return NextResponse.json({ error: `${pnlLabel} [${missing}] không tồn tại hoặc đã ngừng hoạt động` }, { status: 400 });
     }
 
     // Mã tuần tự theo loại + tháng chứng từ, lấy MAX + 1 chứ không COUNT: công nợ bị xoá cứng
@@ -435,7 +460,7 @@ export async function POST(request: Request) {
       groupCode = prefix + String(nextSeqFromCodes(issued, prefix) + attempt).padStart(4, "0");
       try {
         created = await prisma.$transaction(
-          lines.map((line, index) =>
+          classifiedLines.map((line, index) =>
             prisma.debtRecord.create({
               data: {
                 code: multiLine ? `${groupCode}/${index + 1}` : groupCode,
@@ -448,11 +473,12 @@ export async function POST(request: Request) {
                 dueDate,
                 categoryCode,
                 pnlItemCode: line.pnlItemCode,
+                pnlGroupCode: line.pnlGroupCode,
                 originalAmount: line.amount,
                 outstandingAmount: line.amount,
                 // Diễn giải dòng = diễn giải chung + hạng mục/ghi chú riêng để nhìn trên sổ nợ
                 // và trên phiếu chi vẫn biết dòng này là khoản gì.
-                description: multiLine ? [description, [line.pnlItemCode, line.note].filter(Boolean).join(" ")].filter(Boolean).join(" · ") : description,
+                description: multiLine ? [description, [line.pnlItemCode || line.pnlGroupCode, line.note].filter(Boolean).join(" ")].filter(Boolean).join(" · ") : description,
                 sourceType: "MANUAL",
                 status: "OPEN",
               },
@@ -481,6 +507,7 @@ export async function POST(request: Request) {
           partnerCode: partner.code,
           originalAmount: record.originalAmount,
           pnlItemCode: record.pnlItemCode,
+          pnlGroupCode: record.pnlGroupCode,
           ...(multiLine ? { groupCode, lineCount: created.length, groupTotal: totalAmount } : {}),
         },
       });

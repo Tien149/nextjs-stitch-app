@@ -437,7 +437,11 @@ model DebtRecord {
   dueDate               DateTime?
   categoryCode          String?
   /// Hạng mục P&L của khoản chi phí đã phát sinh nhưng chưa thanh toán (khai khi tạo tay).
+  /// Chỉ dùng cho công nợ PHẢI TRẢ - khoản phải thu khai ở nhóm hạng mục (pnlGroupCode).
   pnlItemCode           String?
+  /// Nhóm hạng mục P&L (mã PNL_GROUP) của khoản PHẢI THU: khoản thu về không cần chi tiết tới
+  /// từng hạng mục chi phí, chỉ cần biết thuộc nhóm nào trên báo cáo P&L.
+  pnlGroupCode          String?
   originalAmount        Float
   outstandingAmount     Float
   allocationMonths      Int?

@@ -83,9 +83,11 @@ const emptyDebtForm = {
   originalAmount: "",
 };
 
-/** Một dòng hạng mục trong popup Thêm công nợ; `key` chỉ để React theo dõi khi thêm/xoá dòng. */
-type CreateLine = { key: number; pnlItemCode: string; amount: string; note: string };
-const emptyCreateLine = (key: number): CreateLine => ({ key, pnlItemCode: "", amount: "", note: "" });
+/** Một dòng hạng mục trong popup Thêm công nợ; `key` chỉ để React theo dõi khi thêm/xoá dòng.
+ * Phải trả khai tới hạng mục chi phí (`pnlItemCode`); phải thu chỉ khai tới nhóm hạng mục
+ * (`pnlGroupCode`) — hai tầng dùng hai ô khác nhau nên giữ riêng hai trường. */
+type CreateLine = { key: number; pnlItemCode: string; pnlGroupCode: string; amount: string; note: string };
+const emptyCreateLine = (key: number): CreateLine => ({ key, pnlItemCode: "", pnlGroupCode: "", amount: "", note: "" });
 
 const isReceivableBalance = (balance: number) => balance < 0;
 const isPayableBalance = (balance: number) => balance > 0;
@@ -130,6 +132,8 @@ export default function DebtsPage() {
   const [createError, setCreateError] = useState("");
   const [partners, setPartners] = useState<Array<{ id: string; code: string; name: string }>>([]);
   const [pnlItems, setPnlItems] = useState<Array<{ id: string; code: string; name: string; group: string | null; status?: string }>>([]);
+  /** Nhóm hạng mục P&L (tầng cha) — ô chọn của phiếu PHẢI THU. */
+  const [pnlGroups, setPnlGroups] = useState<Array<{ id: string; code: string; name: string; group: string | null; status?: string }>>([]);
   const [createForm, setCreateForm] = useState({
     debtType: "PAYABLE",
     partnerGroup: "EXTERNAL",
@@ -143,6 +147,9 @@ export default function DebtsPage() {
   // cùng NCC nhưng nhiều hạng mục). Một dòng thì tạo khoản đơn như trước.
   const [createLines, setCreateLines] = useState<CreateLine[]>([emptyCreateLine(1)]);
   const createTotal = createLines.reduce((sum, line) => sum + (Number(line.amount) > 0 ? Number(line.amount) : 0), 0);
+  /** Phải thu phân loại theo NHÓM hạng mục P&L; phải trả theo từng hạng mục chi phí. */
+  const createIsReceivable = createForm.debtType === "RECEIVABLE";
+  const createPnlLabel = createIsReceivable ? "Nhóm hạng mục P&L" : "Hạng mục P&L";
   const updateCreateLine = (key: number, patch: Partial<CreateLine>) =>
     setCreateLines((current) => current.map((line) => (line.key === key ? { ...line, ...patch } : line)));
   const addCreateLine = () => setCreateLines((current) => [...current, emptyCreateLine(Math.max(...current.map((line) => line.key)) + 1)]);
@@ -168,6 +175,11 @@ export default function DebtsPage() {
         .then((response) => response.ok ? response.json() : [])
         .then((data) => setPnlItems(data));
     }
+    if (pnlGroups.length === 0) {
+      void fetch("/api/master-data?type=PNL_GROUP&status=ACTIVE")
+        .then((response) => response.ok ? response.json() : [])
+        .then((data) => setPnlGroups(data));
+    }
   };
 
   const submitCreateDebt = async (event: React.FormEvent) => {
@@ -190,7 +202,7 @@ export default function DebtsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...createForm,
-          lines: createLines.map((line) => ({ pnlItemCode: line.pnlItemCode, amount: line.amount, note: line.note })),
+          lines: createLines.map((line) => ({ pnlItemCode: line.pnlItemCode, pnlGroupCode: line.pnlGroupCode, amount: line.amount, note: line.note })),
         }),
       });
       const payload = await response.json();
@@ -811,7 +823,12 @@ export default function DebtsPage() {
                 Loại công nợ *
                 <select
                   value={createForm.debtType}
-                  onChange={(event) => setCreateForm((value) => ({ ...value, debtType: event.target.value }))}
+                  onChange={(event) => {
+                    // Đổi loại công nợ là đổi tầng phân loại: xoá mã đã chọn của tầng cũ, nếu
+                    // không thì phiếu phải thu vẫn mang mã hạng mục chi phí vừa chọn.
+                    setCreateForm((value) => ({ ...value, debtType: event.target.value }));
+                    setCreateLines((current) => current.map((line) => ({ ...line, pnlItemCode: "", pnlGroupCode: "" })));
+                  }}
                   className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500"
                 >
                   <option value="PAYABLE">Phải trả</option>
@@ -892,8 +909,8 @@ export default function DebtsPage() {
               {/* Mỗi dòng một hạng mục P&L + số tiền riêng; nhiều dòng → phiếu chung mã cha, dòng mang mã /1, /2... */}
               <div className="col-span-2">
                 <div className="flex items-baseline justify-between gap-3">
-                  <span className="text-xs font-bold text-slate-600">Chi tiết theo hạng mục P&amp;L *</span>
-                  <span className="text-[11px] text-slate-400">Mỗi dòng một hạng mục · số tiền riêng · nhiều dòng sẽ chung một số phiếu</span>
+                  <span className="text-xs font-bold text-slate-600">Chi tiết theo {createIsReceivable ? "nhóm hạng mục" : "hạng mục"} P&amp;L *</span>
+                  <span className="text-[11px] text-slate-400">Mỗi dòng một {createIsReceivable ? "nhóm hạng mục" : "hạng mục"} · số tiền riêng · nhiều dòng sẽ chung một số phiếu</span>
                 </div>
                 {/* Không overflow-hidden: dropdown chọn hạng mục là absolute bên trong bảng, cắt là mất danh sách. */}
                 <div className="mt-1 rounded-lg border border-slate-200">
@@ -901,7 +918,7 @@ export default function DebtsPage() {
                     <thead className="text-[11px] uppercase text-slate-500 [&_th]:bg-slate-50 [&_th:first-child]:rounded-tl-lg [&_th:last-child]:rounded-tr-lg">
                       <tr>
                         <th className="w-8 px-3 py-2">#</th>
-                        <th className="px-3 py-2">Hạng mục P&amp;L</th>
+                        <th className="px-3 py-2">{createPnlLabel}</th>
                         <th className="w-40 px-3 py-2 text-right">Số tiền (đ)</th>
                         <th className="w-44 px-3 py-2">Ghi chú dòng</th>
                         <th className="w-10 px-3 py-2"></th>
@@ -912,17 +929,31 @@ export default function DebtsPage() {
                         <tr key={line.key}>
                           <td className="px-3 py-2 text-xs font-bold text-slate-400">{index + 1}</td>
                           <td className="px-3 py-2">
-                            <SearchableSelect
-                              value={line.pnlItemCode}
-                              onChange={(pnlItemCode) => updateCreateLine(line.key, { pnlItemCode })}
-                              placeholder="-- Chưa phân loại P&L --"
-                              options={[
-                                { value: "", label: "-- Chưa phân loại P&L --" },
-                                ...pnlItems
-                                  .filter((item) => ["OPEX", "COGS"].includes((item.group || "").toUpperCase()))
-                                  .map((item) => ({ value: item.code, label: `${item.code} - ${item.name}` })),
-                              ]}
-                            />
+                            {/* Phải thu: chọn NHÓM hạng mục P&L (khoản thu về không thuộc hạng mục chi
+                                phí nào). Phải trả: chọn hạng mục chi phí OPEX/COGS như trước. */}
+                            {createIsReceivable ? (
+                              <SearchableSelect
+                                value={line.pnlGroupCode}
+                                onChange={(pnlGroupCode) => updateCreateLine(line.key, { pnlGroupCode })}
+                                placeholder="-- Chưa phân loại P&L --"
+                                options={[
+                                  { value: "", label: "-- Chưa phân loại P&L --" },
+                                  ...pnlGroups.map((item) => ({ value: item.code, label: `${item.code} - ${item.name}` })),
+                                ]}
+                              />
+                            ) : (
+                              <SearchableSelect
+                                value={line.pnlItemCode}
+                                onChange={(pnlItemCode) => updateCreateLine(line.key, { pnlItemCode })}
+                                placeholder="-- Chưa phân loại P&L --"
+                                options={[
+                                  { value: "", label: "-- Chưa phân loại P&L --" },
+                                  ...pnlItems
+                                    .filter((item) => ["OPEX", "COGS"].includes((item.group || "").toUpperCase()))
+                                    .map((item) => ({ value: item.code, label: `${item.code} - ${item.name}` })),
+                                ]}
+                              />
+                            )}
                           </td>
                           <td className="px-3 py-2">
                             <input
@@ -966,12 +997,12 @@ export default function DebtsPage() {
                             className="inline-flex items-center gap-1 rounded-lg border border-dashed border-blue-300 bg-blue-50 px-3 py-1.5 text-xs font-bold text-blue-700 hover:bg-blue-100"
                           >
                             <span className="material-symbols-outlined text-[16px] leading-none">add</span>
-                            Thêm dòng hạng mục
+                            Thêm dòng {createIsReceivable ? "nhóm hạng mục" : "hạng mục"}
                           </button>
                         </td>
                       </tr>
                       <tr className="border-t border-slate-200 [&_td]:bg-slate-50 [&_td:first-child]:rounded-bl-lg [&_td:last-child]:rounded-br-lg">
-                        <td colSpan={2} className="px-3 py-2 text-xs font-bold text-slate-600">Tổng cộng · {createLines.length} {createLines.length > 1 ? "hạng mục" : "dòng"}</td>
+                        <td colSpan={2} className="px-3 py-2 text-xs font-bold text-slate-600">Tổng cộng · {createLines.length} {createLines.length > 1 ? (createIsReceivable ? "nhóm hạng mục" : "hạng mục") : "dòng"}</td>
                         <td className="px-3 py-2 text-right text-sm font-extrabold text-slate-900">{money(createTotal)}</td>
                         <td colSpan={2}></td>
                       </tr>
