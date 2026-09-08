@@ -388,6 +388,10 @@ model FinancialVoucher {
   depositCode             String?
   debtAction              String?
   debtReference           String?
+  /// Chi hộ (debtAction = "ACCRUE_RECEIVABLE"): đối tác sẽ hoàn lại tiền cho phiếu chi này,
+  /// thường khác đối tác thực nhận tiền. Phiếu treo Nợ 131 của đối tác này thay vì vào chi phí.
+  receivablePartnerCode   String?
+  receivablePartnerName   String?
   allocationMonths        Int?
   allocationStartPeriod   String?
   amount                  Float

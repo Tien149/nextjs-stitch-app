@@ -3,10 +3,55 @@
  * khoản thu do Khoản mục thu/chi quyết định), hay thu tiền cọc để theo dõi số dư về sau.
  * Tách ra khỏi route để kiểm thử được và để form/API dùng chung.
  */
+export const DEBT_COLLECTION_PURPOSE = "SETTLE_DEBT";
+
 export const RECEIPT_PURPOSES = [
   { id: "", label: "Thu thường — không theo dõi cọc", hint: "Bản chất khoản thu khai ở Khoản mục thu/chi bên dưới." },
   { id: "COLLECT", label: "Thu tiền đặt cọc (khách sẽ dùng sau)", hint: "Khi duyệt sẽ sinh một khoản tiền cọc theo dõi riêng." },
+  {
+    id: DEBT_COLLECTION_PURPOSE,
+    label: "Thu lại công nợ phải thu (chi hộ, khách còn nợ)",
+    hint: "Gạch thẳng vào mã công nợ phải thu — tiền vào quỹ nhưng không phải doanh thu mới.",
+  },
 ] as const;
+
+/**
+ * Nội dung chi có ảnh hưởng đến bản chất bút toán.
+ *
+ * "Chi hộ" là khoản tiền nhà hàng ứng ra nhưng một đối tác KHÁC sẽ trả lại (chi hộ đối tác,
+ * trả giùm rồi thu lại). Về bản chất đây là khoản phải thu, không phải chi phí: nếu để rơi
+ * vào 6428 thì P&L bị thổi lên ở đầu chi, và khi thu lại còn bị thổi thêm lần nữa ở đầu thu.
+ */
+export const ADVANCE_RECEIVABLE_ACTION = "ACCRUE_RECEIVABLE";
+
+export const PAYMENT_PURPOSES = [
+  { id: "", label: "Chi thường — vào chi phí theo khoản mục", hint: "Bản chất khoản chi khai ở Khoản mục thu/chi bên dưới." },
+  {
+    id: ADVANCE_RECEIVABLE_ACTION,
+    label: "Chi hộ — thu lại của đối tác khác",
+    hint: "Không tính vào chi phí: phiếu treo phải thu và tự sinh một khoản công nợ để thu lại.",
+  },
+] as const;
+
+/** Chỉ phiếu Chi mới có nội dung chi; giá trị lạ coi như chi thường. */
+export function normalizePaymentPurpose(voucherType: string, value: unknown) {
+  if (voucherType !== "PAYMENT") return "";
+  const raw = typeof value === "string" ? value.trim().toUpperCase() : "";
+  return raw === ADVANCE_RECEIVABLE_ACTION ? raw : "";
+}
+
+/** Trả về thông báo lỗi, hoặc null nếu hợp lệ. */
+export function validatePaymentPurpose(
+  voucherType: string,
+  value: unknown,
+  receivablePartnerCode: string | null | undefined,
+) {
+  const purpose = normalizePaymentPurpose(voucherType, value);
+  if (!purpose) return null;
+  // Không có đối tác cụ thể thì khoản phải thu sinh ra không ai đòi được.
+  if (!(receivablePartnerCode || "").trim()) return "Chi hộ phải chọn đối tác sẽ trả lại tiền.";
+  return null;
+}
 
 export function normalizeReceiptPurpose(voucherType: string, value: unknown) {
   if (voucherType !== "RECEIPT") return "";
@@ -14,9 +59,19 @@ export function normalizeReceiptPurpose(voucherType: string, value: unknown) {
 }
 
 /** Trả về thông báo lỗi, hoặc null nếu hợp lệ. */
-export function validateReceiptPurpose(voucherType: string, value: unknown, partnerCode: string | null | undefined) {
+export function validateReceiptPurpose(
+  voucherType: string,
+  value: unknown,
+  partnerCode: string | null | undefined,
+  debtReference?: string | null,
+) {
   const purpose = normalizeReceiptPurpose(voucherType, value);
   if (!purpose) return null;
+  if (purpose === DEBT_COLLECTION_PURPOSE) {
+    // Không có mã công nợ thì phiếu thu không biết gạch vào khoản nào.
+    if (!(debtReference || "").trim()) return "Thu lại công nợ phải nhập mã công nợ cần gạch.";
+    return null;
+  }
   if (purpose !== "COLLECT") return "Nội dung thu không hợp lệ";
   // Thu cọc phải gắn được vào một khách hàng cụ thể thì mới theo dõi số dư về sau.
   if (!(partnerCode || "").trim()) return "Thu tiền cọc phải chọn đối tác có mã khách hàng.";

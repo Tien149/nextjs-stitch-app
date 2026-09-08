@@ -1,3 +1,5 @@
+import { ADVANCE_RECEIVABLE_ACTION } from "@/lib/voucher-rules";
+
 /**
  * Định khoản cho phiếu thu/chi.
  *
@@ -12,6 +14,8 @@ export type VoucherForPosting = {
   amount: number;
   moneySourceCode: string;
   partnerCode: string | null;
+  /** Chi hộ: đối tác sẽ hoàn lại tiền — vế Nợ 131 mang mã này, không mang mã người nhận tiền. */
+  receivablePartnerCode?: string | null;
   categoryCode: string | null;
   pnlItemCode: string | null;
   depositAction: string | null;
@@ -59,6 +63,9 @@ export function paymentCounterAccount(voucher: VoucherForPosting, categoryGroup:
   if (voucher.debtAction === "SETTLE") {
     return { account: "331", reason: "Trả nợ nhà cung cấp — không phải chi phí phát sinh mới" };
   }
+  if (voucher.debtAction === ADVANCE_RECEIVABLE_ACTION) {
+    return { account: "131", reason: "Chi hộ — treo phải thu của đối tác sẽ hoàn lại, không phải chi phí" };
+  }
   if (categoryGroup === "CAPEX") {
     return { account: "211", reason: "Chi đầu tư tài sản — ghi tăng tài sản, không vào P&L" };
   }
@@ -83,10 +90,19 @@ export function voucherJournalLines(voucher: VoucherForPosting, categoryGroup: s
   // Khi kế toán chọn Hạng mục P&L riêng, nhóm của hạng mục đó quyết định dòng P&L.
   // Nếu để trống, giữ cách hạch toán cũ theo Khoản mục thu/chi để dữ liệu lịch sử không đổi.
   const { account, reason } = paymentCounterAccount(voucher, pnlItemGroup || categoryGroup);
+  // Chi hộ: khoản nợ thuộc về đối tác sẽ hoàn tiền, và phiếu không có mặt trên P&L nên
+  // hạng mục P&L (nếu ai đó lỡ khai) không được đi kèm dòng 131.
+  const isAdvanceReceivable = voucher.debtAction === ADVANCE_RECEIVABLE_ACTION;
   return {
     reason,
     lines: [
-      { accountCode: account, debit: voucher.amount, partnerCode: voucher.partnerCode, categoryCode: voucher.categoryCode, pnlItemCode: voucher.pnlItemCode },
+      {
+        accountCode: account,
+        debit: voucher.amount,
+        partnerCode: isAdvanceReceivable ? (voucher.receivablePartnerCode || voucher.partnerCode) : voucher.partnerCode,
+        categoryCode: voucher.categoryCode,
+        pnlItemCode: isAdvanceReceivable ? null : voucher.pnlItemCode,
+      },
       { accountCode: cashAccount, credit: voucher.amount },
     ] as JournalLineInput[],
   };

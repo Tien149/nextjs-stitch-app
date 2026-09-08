@@ -9,7 +9,7 @@ import { buildAuditLogData, writeAuditLog } from "@/lib/audit-log";
 import { softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
 import { canEditPastVoucher, canPerformMenuAction, type DemoSession } from "@/lib/auth-demo";
 import { moneySourceMatchesBranch, parseMoneySourceCodes } from "@/lib/money-sources";
-import { isSameCalendarDay, normalizeCashflowCategoryType, normalizeReceiptPurpose, validateReceiptPurpose, voucherEditWindowError } from "@/lib/voucher-rules";
+import { ADVANCE_RECEIVABLE_ACTION, DEBT_COLLECTION_PURPOSE, isSameCalendarDay, normalizeCashflowCategoryType, normalizePaymentPurpose, normalizeReceiptPurpose, validatePaymentPurpose, validateReceiptPurpose, voucherEditWindowError } from "@/lib/voucher-rules";
 import { completePendingReconciliation, ReconciliationSyncError, releasePendingReconciliation, reopenReconciliationForReview, syncReconciledBankStatement, type BankStatementSyncResult } from "@/lib/reconciliation-links";
 import { moneySourceMatchesDocumentChannel, normalizeVoucherDocumentChannel } from "@/lib/voucher-channel";
 import { depositCategoryDirection } from "@/lib/bank-statement-category";
@@ -433,15 +433,42 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Ca làm việc không hợp lệ" }, { status: 400 });
     }
 
-    const explicitDepositAction = normalizeReceiptPurpose(voucherType, body.depositAction);
-    const depositAction = deriveReceiptDepositAction(voucherType, explicitDepositAction, voucherCategory);
-    const purposeError = validateReceiptPurpose(voucherType, depositAction, cleanText(body.partnerCode));
+    // "Thu lại công nợ" là nội dung thu thứ ba: không đụng tới sổ cọc mà gạch thẳng vào một
+    // khoản phải thu (ví dụ khoản chi hộ đã treo trước đó).
+    const explicitReceiptPurpose = normalizeReceiptPurpose(voucherType, body.depositAction);
+    const isDebtCollection = explicitReceiptPurpose === DEBT_COLLECTION_PURPOSE;
+    const debtReference = isDebtCollection ? cleanText(body.debtReference).toUpperCase() : "";
+    const explicitDepositAction = isDebtCollection ? "" : explicitReceiptPurpose;
+    const depositAction = isDebtCollection ? "" : deriveReceiptDepositAction(voucherType, explicitDepositAction, voucherCategory);
+    const purposeError = validateReceiptPurpose(
+      voucherType,
+      isDebtCollection ? DEBT_COLLECTION_PURPOSE : depositAction,
+      cleanText(body.partnerCode),
+      debtReference,
+    );
     if (purposeError) {
       return NextResponse.json({
         error: depositAction && !explicitDepositAction
           ? `Danh mục [${categoryCode}] là thu tiền cọc nên phiếu sẽ theo dõi cọc: ${purposeError}`
           : purposeError,
       }, { status: 400 });
+    }
+
+    // Chi hộ: tiền ra nhưng một đối tác khác sẽ hoàn lại. Phiếu treo phải thu của đối tác đó
+    // chứ không vào chi phí, nên hạng mục P&L cũng bị bỏ luôn cho khỏi hiểu nhầm.
+    const paymentPurpose = normalizePaymentPurpose(voucherType, body.debtAction);
+    const requestedReceivablePartner = paymentPurpose ? cleanText(body.receivablePartnerCode).toUpperCase() : "";
+    const paymentPurposeError = validatePaymentPurpose(voucherType, paymentPurpose, requestedReceivablePartner);
+    if (paymentPurposeError) return NextResponse.json({ error: paymentPurposeError }, { status: 400 });
+    let receivablePartner: { code: string; name: string } | null = null;
+    if (paymentPurpose) {
+      receivablePartner = await prisma.masterDataItem.findFirst({
+        where: { type: "PARTNER", code: requestedReceivablePartner, status: "ACTIVE", deletedAt: null },
+        select: { code: true, name: true },
+      });
+      if (!receivablePartner) {
+        return NextResponse.json({ error: `Đối tác sẽ trả lại tiền [${requestedReceivablePartner}] không tồn tại hoặc đã ngừng hoạt động` }, { status: 400 });
+      }
     }
 
     // Phiếu đại diện: một người nhận, danh sách nhiều đối tác. Chỉ áp cho phiếu Chi —
@@ -452,6 +479,10 @@ export async function POST(request: Request) {
     if (rawAllocations.length > 0) {
       if (voucherType !== "PAYMENT") {
         return NextResponse.json({ error: "Danh sách nhiều đối tác chỉ dùng cho phiếu Chi" }, { status: 400 });
+      }
+      // Mỗi dòng phân bổ là một đối tác riêng nên không suy ra được một khoản phải thu duy nhất.
+      if (paymentPurpose) {
+        return NextResponse.json({ error: "Phiếu chi nhiều đối tác chưa dùng được nội dung Chi hộ. Hãy lập phiếu chi hộ riêng." }, { status: 400 });
       }
       const lineCodes = rawAllocations.map((line) => cleanText(line.partnerCode).toUpperCase()).filter(Boolean);
       if (lineCodes.length !== rawAllocations.length) {
@@ -510,7 +541,11 @@ export async function POST(request: Request) {
               businessEffect: "RECOGNITION",
               moneySourceCode,
               categoryCode: categoryCode || null,
-              pnlItemCode: pnlItemCode || null,
+              pnlItemCode: paymentPurpose ? null : (pnlItemCode || null),
+              debtAction: paymentPurpose || (isDebtCollection ? "SETTLE" : null),
+              debtReference: debtReference || null,
+              receivablePartnerCode: receivablePartner?.code || null,
+              receivablePartnerName: receivablePartner?.name || null,
               amount,
               description,
               status: "APPROVED",
@@ -658,9 +693,21 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
     return NextResponse.json({ error: "Ca làm việc không hợp lệ" }, { status: 400 });
   }
 
-  const explicitDepositAction = current.voucherType !== "RECEIPT"
+  // Nội dung thu của phiếu đang sửa. Phiếu gạch nợ (debtAction = SETTLE) hiện lên form dưới
+  // dạng "Thu lại công nợ", nên khi client không gửi gì thì phải suy ngược về đúng nội dung đó
+  // — gửi rỗng mà hiểu là "thu thường" sẽ âm thầm gỡ liên kết gạch nợ của phiếu.
+  const requestedReceiptPurpose = current.voucherType !== "RECEIPT"
+    ? ""
+    : (body.depositAction === undefined
+        ? (current.debtAction === "SETTLE" ? DEBT_COLLECTION_PURPOSE : (current.depositAction || ""))
+        : (normalizeReceiptPurpose(current.voucherType, body.depositAction) || ""));
+  const isDebtCollection = requestedReceiptPurpose === DEBT_COLLECTION_PURPOSE;
+  const requestedDebtReference = isDebtCollection
+    ? (body.debtReference === undefined ? (current.debtReference || "") : cleanText(body.debtReference).toUpperCase())
+    : "";
+  const explicitDepositAction = current.voucherType !== "RECEIPT" || isDebtCollection
     ? null
-    : (body.depositAction === undefined ? current.depositAction : (normalizeReceiptPurpose(current.voucherType, body.depositAction) || null));
+    : (requestedReceiptPurpose || null);
   // Kiểm mục đích thu (và tự suy từ danh mục đặt cọc) nằm dưới, sau khi đã tra được danh mục.
 
   if (branchCode !== current.branchCode) {
@@ -730,8 +777,53 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
     if (pnlItemError) return NextResponse.json({ error: pnlItemError }, { status: 400 });
   }
 
-  const depositAction = deriveReceiptDepositAction(current.voucherType, explicitDepositAction || "", voucherCategory) || null;
-  const purposeError = validateReceiptPurpose(current.voucherType, depositAction, partnerCode);
+  // Nội dung chi "Chi hộ". Phiếu đã mang debtAction khác (SETTLE sinh từ import sao kê) giữ
+  // nguyên: form thu/chi không phải chỗ đổi cách gạch nợ của phiếu đó.
+  const debtAction = current.voucherType === "RECEIPT"
+    ? (isDebtCollection ? "SETTLE" : null)
+    // Phiếu chi gạch nợ nhà cung cấp (sinh từ import sao kê) không đổi qua form thu/chi.
+    : (current.debtAction === "SETTLE"
+        ? "SETTLE"
+        : (body.debtAction === undefined
+            ? current.debtAction
+            : (normalizePaymentPurpose(current.voucherType, body.debtAction) || null)));
+  const isAdvanceReceivable = debtAction === ADVANCE_RECEIVABLE_ACTION;
+  const requestedReceivablePartner = isAdvanceReceivable
+    ? (body.receivablePartnerCode === undefined
+        ? (current.receivablePartnerCode || "")
+        : cleanText(body.receivablePartnerCode).toUpperCase())
+    : "";
+  const paymentPurposeError = validatePaymentPurpose(current.voucherType, debtAction, requestedReceivablePartner);
+  if (paymentPurposeError) return NextResponse.json({ error: paymentPurposeError }, { status: 400 });
+  if (isAdvanceReceivable && allocationCount > 0) {
+    return NextResponse.json({ error: "Phiếu chi nhiều đối tác chưa dùng được nội dung Chi hộ. Hãy hủy phiếu và lập phiếu chi hộ riêng." }, { status: 400 });
+  }
+  let receivablePartner: { code: string; name: string } | null = null;
+  if (isAdvanceReceivable) {
+    receivablePartner = await prisma.masterDataItem.findFirst({
+      where: {
+        type: "PARTNER",
+        code: requestedReceivablePartner,
+        // Phiếu cũ vẫn giữ được đối tác đã ngừng khi chỉ sửa nội dung khác.
+        ...(requestedReceivablePartner === current.receivablePartnerCode ? {} : { status: "ACTIVE" }),
+        deletedAt: null,
+      },
+      select: { code: true, name: true },
+    });
+    if (!receivablePartner) {
+      return NextResponse.json({ error: `Đối tác sẽ trả lại tiền [${requestedReceivablePartner}] không tồn tại hoặc đã ngừng hoạt động` }, { status: 400 });
+    }
+  }
+
+  const depositAction = isDebtCollection
+    ? null
+    : (deriveReceiptDepositAction(current.voucherType, explicitDepositAction || "", voucherCategory) || null);
+  const purposeError = validateReceiptPurpose(
+    current.voucherType,
+    isDebtCollection ? DEBT_COLLECTION_PURPOSE : depositAction,
+    partnerCode,
+    requestedDebtReference,
+  );
   if (purposeError) {
     return NextResponse.json({
       error: depositAction && !explicitDepositAction
@@ -758,7 +850,11 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
     branchCode,
     moneySourceCode,
     categoryCode: categoryCode || null,
-    pnlItemCode: pnlItemCode || null,
+    pnlItemCode: isAdvanceReceivable ? null : (pnlItemCode || null),
+    debtAction,
+    debtReference: current.voucherType === "RECEIPT" ? (requestedDebtReference || null) : current.debtReference,
+    receivablePartnerCode: receivablePartner?.code || null,
+    receivablePartnerName: receivablePartner?.name || null,
     amount,
     description,
   };
@@ -809,8 +905,8 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
             previousApprovedBy: latest.approvedBy,
             autoReapprovedBy: latest.status === "APPROVED" ? session.name : null,
             bankStatementSync: bankSync,
-            before: { voucherDate: latest.voucherDate, shift: latest.shift, partnerCode: latest.partnerCode, partnerName: latest.partnerName, branchCode: latest.branchCode, moneySourceCode: latest.moneySourceCode, categoryCode: latest.categoryCode, pnlItemCode: latest.pnlItemCode, amount: latest.amount, description: latest.description },
-            after: { voucherDate, shift: shiftValue, partnerCode, partnerName, branchCode, moneySourceCode, categoryCode, pnlItemCode, amount, description },
+            before: { voucherDate: latest.voucherDate, shift: latest.shift, partnerCode: latest.partnerCode, partnerName: latest.partnerName, branchCode: latest.branchCode, moneySourceCode: latest.moneySourceCode, categoryCode: latest.categoryCode, pnlItemCode: latest.pnlItemCode, debtAction: latest.debtAction, receivablePartnerCode: latest.receivablePartnerCode, amount: latest.amount, description: latest.description },
+            after: { voucherDate, shift: shiftValue, partnerCode, partnerName, branchCode, moneySourceCode, categoryCode, pnlItemCode, debtAction, receivablePartnerCode: receivablePartner?.code || null, amount, description },
           },
         }),
       });

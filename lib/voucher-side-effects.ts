@@ -1,5 +1,11 @@
 import type { RawTxClient } from "@/lib/prisma";
 import { addPeriod } from "@/lib/phase3";
+import { ADVANCE_RECEIVABLE_ACTION } from "@/lib/voucher-rules";
+
+/** Mã khoản phải thu sinh từ phiếu chi hộ — suy được từ mã phiếu nên duyệt lại không tạo trùng. */
+export function advanceReceivableDebtCode(voucherCode: string) {
+  return `CNTHU-${voucherCode}`;
+}
 
 /** Gạch một khoản công nợ cho phiếu: dùng chung cho phiếu 1 đối tác lẫn từng dòng phân bổ. */
 async function settleDebtLine(
@@ -41,6 +47,8 @@ type VoucherForSideEffects = {
   depositCode: string | null;
   debtAction: string | null;
   debtReference: string | null;
+  receivablePartnerCode?: string | null;
+  receivablePartnerName?: string | null;
   allocationMonths: number | null;
   allocationStartPeriod: string | null;
 };
@@ -150,6 +158,38 @@ export async function applyVoucherSideEffects(
         partnerCode: voucher.partnerCode,
         amount: voucher.amount,
       }, actor);
+    }
+  }
+
+  // Chi hộ: tiền ra nhưng một đối tác khác sẽ trả lại -> sinh luôn khoản phải thu để tab
+  // Công nợ đòi được và phiếu thu sau này gạch bằng mã này. Idempotent theo mã sinh từ mã
+  // phiếu: duyệt lại hoặc sửa phiếu không được tạo thành hai khoản nợ.
+  if (voucher.voucherType === "PAYMENT" && voucher.debtAction === ADVANCE_RECEIVABLE_ACTION) {
+    if (!voucher.receivablePartnerCode) throw new Error("Chi hộ bắt buộc chọn đối tác sẽ trả lại tiền");
+    const code = advanceReceivableDebtCode(voucher.code);
+    const existing = await tx.debtRecord.findUnique({ where: { code } });
+    if (existing?.deletedAt) {
+      throw new Error(`Khoản phải thu ${code} đang nằm trong Thùng rác. Hãy khôi phục hoặc xóa hẳn trước khi duyệt lại phiếu.`);
+    }
+    if (!existing) {
+      await tx.debtRecord.create({
+        data: {
+          code,
+          debtType: "RECEIVABLE",
+          partnerGroup: "EXTERNAL",
+          partnerCode: voucher.receivablePartnerCode,
+          partnerName: voucher.receivablePartnerName || voucher.receivablePartnerCode,
+          branchCode: voucher.branchCode,
+          documentDate: voucher.voucherDate,
+          categoryCode: voucher.categoryCode,
+          originalAmount: voucher.amount,
+          outstandingAmount: voucher.amount,
+          description: `Chi hộ theo chứng từ ${voucher.code}: ${voucher.description}`,
+          sourceType: "VOUCHER",
+          sourceId: voucher.id,
+          status: "OPEN",
+        },
+      });
     }
   }
 

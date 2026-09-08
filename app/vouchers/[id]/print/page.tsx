@@ -21,6 +21,9 @@ type Voucher = {
   createdBy: string | null;
   approvedBy: string | null;
   recipientName?: string | null;
+  debtAction?: string | null;
+  receivablePartnerName?: string | null;
+  receivablePartnerCode?: string | null;
   partnerAllocations?: Array<{ id: string; partnerCode: string; partnerName: string; amount: number; debtReference: string | null }>;
 };
 
@@ -84,6 +87,13 @@ export default function VoucherPrintPage() {
           <div className="grid grid-cols-[160px_1fr] gap-3"><b>Đối tác</b><span>{voucher.partnerName}</span></div>
           <div className="grid grid-cols-[160px_1fr] gap-3"><b>Nguồn tiền</b><span>{moneySourceName}</span></div>
           <div className="grid grid-cols-[160px_1fr] gap-3"><b>Nội dung</b><span>{voucher.description}</span></div>
+          {/* Chi hộ: người ký duyệt phải thấy ngay đây là khoản sẽ đòi lại, không phải chi phí. */}
+          {voucher.debtAction === "ACCRUE_RECEIVABLE" && (
+            <div className="grid grid-cols-[160px_1fr] gap-3">
+              <b>Chi hộ, thu lại của</b>
+              <span>{voucher.receivablePartnerName || voucher.receivablePartnerCode} · Công nợ CNTHU-{voucher.code}</span>
+            </div>
+          )}
           <div className="grid grid-cols-[160px_1fr] gap-3"><b>Số tiền</b><span className="text-xl font-bold">{money(voucher.amount)} đ</span></div>
         </div>
 

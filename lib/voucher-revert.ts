@@ -1,4 +1,6 @@
 import type { RawTxClient } from "@/lib/prisma";
+import { advanceReceivableDebtCode } from "@/lib/voucher-side-effects";
+import { ADVANCE_RECEIVABLE_ACTION } from "@/lib/voucher-rules";
 
 /**
  * Hoàn tác những gì lúc duyệt chứng từ đã sinh ra (xem lib/voucher-side-effects.ts):
@@ -116,6 +118,22 @@ async function revertDebtSettlement(tx: RawTxClient, voucher: VoucherForRevert) 
   }
 }
 
+/** Phiếu chi hộ: trả lại khoản phải thu đã sinh lúc duyệt, trừ khi nó đã được thu một phần. */
+async function revertAdvanceReceivable(tx: RawTxClient, voucher: VoucherForRevert) {
+  if (voucher.voucherType !== "PAYMENT" || voucher.debtAction !== ADVANCE_RECEIVABLE_ACTION) return;
+
+  const code = advanceReceivableDebtCode(voucher.code);
+  const debt = await tx.debtRecord.findFirst({ where: { code, deletedAt: null } });
+  if (!debt) return;
+
+  const settlements = await tx.debtSettlement.count({ where: { debtId: debt.id } });
+  if (settlements > 0) {
+    fail(`Khoản phải thu ${code} đã được thu một phần. Hãy bỏ duyệt phiếu thu đó trước khi sửa/bỏ duyệt phiếu chi hộ.`);
+  }
+
+  await tx.debtRecord.delete({ where: { id: debt.id } });
+}
+
 async function revertAccrual(tx: RawTxClient, voucher: VoucherForRevert) {
   if (voucher.voucherType !== "PAYMENT" || (voucher.allocationMonths || 0) <= 1) return;
 
@@ -137,5 +155,6 @@ export async function revertVoucherSideEffects(tx: RawTxClient, voucher: Voucher
   if (voucher.depositAction) await revertDeposit(tx, voucher);
   // Không chỉ dựa vào debtAction: phiếu đại diện gạch nợ theo dòng phân bổ có debtAction rỗng.
   await revertDebtSettlement(tx, voucher);
+  await revertAdvanceReceivable(tx, voucher);
   await revertAccrual(tx, voucher);
 }
