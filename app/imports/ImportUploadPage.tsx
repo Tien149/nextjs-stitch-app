@@ -39,6 +39,7 @@ type BatchDetail = Batch & {
   bankTransactions?: DetailRow[];
   revenueRows?: DetailRow[];
   payrollRows?: DetailRow[];
+  payrollDeptRows?: DetailRow[];
   importRows?: DetailRow[];
   vouchers?: DetailRow[];
   moneyTransfers?: DetailRow[];
@@ -834,6 +835,7 @@ export default function ImportUploadPage({
     selectedBatch.bankTransactions,
     selectedBatch.revenueRows,
     selectedBatch.payrollRows,
+    selectedBatch.payrollDeptRows,
     selectedBatch.vouchers,
     selectedBatch.moneyTransfers,
     selectedBatch.debtRecords,

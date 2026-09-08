@@ -91,7 +91,7 @@ export async function getPnlMatrix(year: string, branchCode: string) {
   const yearStart = new Date(`${year}-01-01T00:00:00`);
   const yearEnd = new Date(`${Number(year) + 1}-01-01T00:00:00`);
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
-  const [rows, pnlItems, pnlGroups, categories, revenueGroups, departments, revenueRows, payrollRows, targets] = await Promise.all([
+  const [rows, pnlItems, pnlGroups, categories, revenueGroups, departments, revenueRows, payrollRows, payrollDeptRows, targets] = await Promise.all([
     loadYearJournalLines(months[0], months[11], branchCode),
     prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true, group: true, subGroup: true, status: true } }),
     prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true, group: true, status: true } }),
@@ -112,6 +112,11 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     prisma.payrollImportRow.findMany({
       where: { period: { startsWith: `${year}-` }, ...branchFilter },
       select: { period: true, insuranceAmount: true, bonusAmount: true },
+    }),
+    // Bảng lương mẫu theo bộ phận: KPI đứng chỗ khoản thưởng, bảo hiểm là phần công ty chịu.
+    prisma.payrollDepartmentRow.findMany({
+      where: { period: { startsWith: `${year}-` }, ...branchFilter },
+      select: { period: true, companyInsurance: true, kpiAmount: true },
     }),
     // Ngân sách từng tháng để chart COGS/LƯƠNG vẽ đường so sánh ("so sánh dựa vào ngân
     // sách đã được setup" — feedback mục 4). Target % doanh thu quy ra tiền theo target
@@ -219,6 +224,12 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     if (monthIndex < 0) continue;
     payrollBonusMonths[monthIndex] += row.bonusAmount;
     payrollInsuranceMonths[monthIndex] += row.insuranceAmount;
+  }
+  for (const row of payrollDeptRows) {
+    const monthIndex = months.indexOf(row.period);
+    if (monthIndex < 0) continue;
+    payrollBonusMonths[monthIndex] += row.kpiAmount;
+    payrollInsuranceMonths[monthIndex] += row.companyInsurance;
   }
 
   // Kế hoạch (ngân sách) từng tháng, quy về tiền: target % doanh thu nhân với target doanh
@@ -439,7 +450,7 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
   const start = new Date(`${year}-01-01T00:00:00`);
   const end = new Date(`${Number(year) + 1}-01-01T00:00:00`);
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
-  const [departments, ratioRows, revenueRows, payrollRows] = await Promise.all([
+  const [departments, ratioRows, revenueRows, payrollRows, payrollDeptRows] = await Promise.all([
     prisma.masterDataItem.findMany({ where: { type: "DEPARTMENT", status: "ACTIVE" }, select: { code: true, name: true }, orderBy: { code: "asc" } }),
     // Lấy cả bộ set từ các năm trước: tháng 1 chưa set riêng thì kế thừa bộ cuối của năm trước.
     prisma.departmentCostRatio.findMany({
@@ -453,6 +464,10 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
     prisma.payrollImportRow.findMany({
       where: { period: { startsWith: `${year}-` }, ...branchFilter },
       select: { period: true, branchCode: true, departmentCode: true, employeeCode: true, baseSalary: true, allowanceAmount: true, bonusAmount: true, insuranceAmount: true, netAmount: true },
+    }),
+    prisma.payrollDepartmentRow.findMany({
+      where: { period: { startsWith: `${year}-` }, ...branchFilter },
+      select: { period: true, branchCode: true, departmentCode: true, headcount: true, totalCompanyCost: true, companyInsurance: true, netAmount: true },
     }),
   ]);
   const departmentName = new Map(departments.map((item) => [item.code, item.name]));
@@ -523,12 +538,27 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
     headcountSets.set(key, set);
     totalHeadcountSets[monthIndex].add(row.employeeCode);
   }
+  // Mẫu theo bộ phận không còn mã nhân viên để đếm, mà khai thẳng số lượng nhân sự; lương
+  // thực chi của nó là TỔNG CHI PHÍ CÔNG TY để khớp đúng bút toán 6421.
+  const headcountNumbers = new Map<string, number>();
+  const totalHeadcountNumbers = monthArray();
+  for (const row of payrollDeptRows) {
+    const monthIndex = months.indexOf(row.period);
+    if (monthIndex < 0) continue;
+    const dept = row.departmentCode || UNASSIGNED_DEPARTMENT;
+    bumpSeries(actualByDepartment, dept, deptLabel(dept), monthIndex, row.totalCompanyCost);
+    insuranceTotal[monthIndex] += row.companyInsurance;
+    const key = `${dept}|${monthIndex}`;
+    headcountNumbers.set(key, (headcountNumbers.get(key) || 0) + row.headcount);
+    totalHeadcountNumbers[monthIndex] += row.headcount;
+  }
+
   const headcountByDepartment: MatrixSeries[] = [];
-  const headcountDeptCodes = [...new Set([...headcountSets.keys()].map((key) => key.split("|")[0]))];
+  const headcountDeptCodes = [...new Set([...headcountSets.keys(), ...headcountNumbers.keys()].map((key) => key.split("|")[0]))];
   for (const dept of headcountDeptCodes) {
     const series = { code: dept, name: deptLabel(dept), months: monthArray(), total: 0 };
     for (let index = 0; index < 12; index += 1) {
-      const count = headcountSets.get(`${dept}|${index}`)?.size || 0;
+      const count = (headcountSets.get(`${dept}|${index}`)?.size || 0) + (headcountNumbers.get(`${dept}|${index}`) || 0);
       series.months[index] = count;
       series.total += count;
     }
@@ -572,7 +602,7 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
     },
     headcount: {
       byDepartment: headcountByDepartment,
-      total: totalHeadcountSets.map((set) => set.size),
+      total: totalHeadcountSets.map((set, index) => set.size + totalHeadcountNumbers[index]),
     },
   };
 }

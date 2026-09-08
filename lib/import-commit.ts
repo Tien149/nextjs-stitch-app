@@ -340,7 +340,19 @@ export async function commitImport(input: CommitInput) {
       if (duplicateKeys.some(Boolean)) throw new Error("File có dòng doanh thu trùng với dữ liệu đã import");
     }
 
-    if (input.importType === "PAYROLL") {
+    if (input.importType === "PAYROLL" && input.rows.some((row) => row.values.total_company_cost !== undefined)) {
+      const duplicateKeys = await Promise.all(input.rows.map((row) => tx.payrollDepartmentRow.findUnique({
+        where: {
+          period_branchCode_departmentCode: {
+            period: asText(row.values.period),
+            branchCode: asText(row.values.branch_code),
+            departmentCode: asText(row.values.department_code),
+          },
+        },
+        select: { id: true },
+      })));
+      if (duplicateKeys.some(Boolean)) throw new Error("File có bộ phận trùng kỳ lương và cửa hàng với dữ liệu đã import");
+    } else if (input.importType === "PAYROLL") {
       const duplicateKeys = await Promise.all(input.rows.map((row) => tx.payrollImportRow.findUnique({
         where: {
           period_employeeCode_branchCode: {
@@ -950,7 +962,9 @@ export async function commitImport(input: CommitInput) {
       }
     }
 
-    if (input.importType === "PAYROLL") {
+    if (input.importType === "PAYROLL" && input.rows.some((row) => row.values.total_company_cost !== undefined)) {
+      await commitDepartmentPayroll(tx, batch.id, input.rows);
+    } else if (input.importType === "PAYROLL") {
       await tx.payrollImportRow.createMany({
         data: input.rows.map((row) => ({
           importBatchId: batch.id,
@@ -1880,10 +1894,11 @@ export async function commitImport(input: CommitInput) {
           : false,
         revenueRows: input.importType === "REVENUE_POS",
         payrollRows: input.importType === "PAYROLL",
+        payrollDeptRows: input.importType === "PAYROLL",
         importRows: { orderBy: [{ sheetName: "asc" }, { sourceRowNumber: "asc" }] },
         vouchers: ["VOUCHER", "BANK_STATEMENT"].includes(input.importType),
         moneyTransfers: ["INTERNAL_TRANSFER", "BANK_STATEMENT"].includes(input.importType),
-        debtRecords: input.importType === "DEBT_OPENING",
+        debtRecords: ["DEBT_OPENING", "PAYROLL"].includes(input.importType),
         inventoryTransactions: ["INVENTORY_TRANSACTION", "PRODUCTION", "WASTE"].includes(input.importType),
         assetStocktakes: input.importType === "ASSET_STOCKTAKE" ? { include: { lines: { include: { asset: true } } } } : false,
       },
@@ -1952,6 +1967,98 @@ async function rollbackRevenue(tx: RawTxClient, batchId: string) {
   await tx.revenueImportRow.deleteMany({ where: { importBatchId: batchId } });
 }
 
+/**
+ * Ghi bảng lương theo bộ phận và sinh luôn công nợ phải trả người lao động.
+ *
+ * Khoản nợ mang số LƯƠNG THỰC NHẬN chứ không phải TỔNG CHI PHÍ CÔNG TY: phần chênh giữa hai
+ * cột là bảo hiểm công ty chịu, tiền đó công ty nộp cho cơ quan bảo hiểm chứ không đưa nhân
+ * viên. Mã nợ suy được từ kỳ + cửa hàng + bộ phận nên import lại đúng bộ đó sẽ đụng khoá
+ * trùng thay vì lặng lẽ tạo hai khoản nợ.
+ */
+async function commitDepartmentPayroll(tx: TxClient, batchId: string, rows: ParsedImportRow[]) {
+  const branchCodes = [...new Set(rows.map((row) => asText(row.values.branch_code).toUpperCase()))];
+  const departmentCodes = [...new Set(rows.map((row) => asText(row.values.department_code).toUpperCase()))];
+  const masters = await tx.masterDataItem.findMany({
+    where: { type: { in: ["BRANCH", "DEPARTMENT"] }, code: { in: [...branchCodes, ...departmentCodes] } },
+    select: { type: true, code: true, name: true },
+  });
+  const nameOf = (type: string, code: string) =>
+    masters.find((item) => item.type === type && item.code === code)?.name || code;
+
+  for (const row of rows) {
+    const period = asText(row.values.period);
+    const branchCode = asText(row.values.branch_code).toUpperCase();
+    const departmentCode = asText(row.values.department_code).toUpperCase();
+    const headcount = Math.max(0, Math.round(asNumber(row.values.headcount)));
+    const netAmount = asNumber(row.values.net_amount);
+
+    const created = await tx.payrollDepartmentRow.create({
+      data: {
+        importBatchId: batchId,
+        period,
+        branchCode,
+        departmentCode,
+        headcount,
+        monthlySalary: asNumber(row.values.monthly_salary),
+        hourlySalary: asNumber(row.values.hourly_salary),
+        mealAllowance: asNumber(row.values.meal_allowance),
+        parkingAllowance: asNumber(row.values.parking_allowance),
+        svcAmount: asNumber(row.values.svc_amount),
+        kpiAmount: asNumber(row.values.kpi_amount),
+        otherAllowance: asNumber(row.values.other_allowance),
+        companyInsurance: asNumber(row.values.company_insurance),
+        totalCompanyCost: asNumber(row.values.total_company_cost),
+        netAmount,
+        externalRef: row.values.external_ref === null || row.values.external_ref === undefined ? null : asText(row.values.external_ref),
+      },
+    });
+
+    if (netAmount <= 0) continue;
+
+    // Nợ lương theo dõi trên một đối tác riêng của từng bộ phận: file lương không còn mã nhân
+    // viên nên không thể ghi nợ cho từng người, mà gộp hết một đối tác thì không tách được
+    // nợ lương của bếp với của bar.
+    const partnerCode = `NV-${branchCode}-${departmentCode}`;
+    const partnerName = `Nhân sự ${nameOf("DEPARTMENT", departmentCode)} - ${nameOf("BRANCH", branchCode)}`;
+    const partner = await tx.masterDataItem.findFirst({ where: { type: "PARTNER", code: partnerCode }, select: { code: true, name: true, status: true } });
+    if (!partner) {
+      await tx.masterDataItem.create({
+        data: {
+          type: "PARTNER",
+          code: partnerCode,
+          name: partnerName,
+          partnerType: "EMPLOYEE",
+          partnerGroup: "EXTERNAL",
+          branch: branchCode,
+          status: "ACTIVE",
+          note: "Tự tạo khi import bảng lương theo bộ phận",
+        },
+      });
+    } else if (partner.status !== "ACTIVE") {
+      throw new Error(`Đối tác lương [${partnerCode}] đang ngừng hoạt động, hãy bật lại trước khi import bảng lương`);
+    }
+
+    await tx.debtRecord.create({
+      data: {
+        importBatchId: batchId,
+        code: `CNPT-LUONG-${period.replace("-", "")}-${branchCode}-${departmentCode}`,
+        debtType: "PAYABLE",
+        partnerGroup: "EXTERNAL",
+        partnerCode,
+        partnerName: partner?.name || partnerName,
+        branchCode,
+        documentDate: new Date(`${period}-28T00:00:00`),
+        originalAmount: netAmount,
+        outstandingAmount: netAmount,
+        description: `Lương thực nhận ${period} - ${nameOf("DEPARTMENT", departmentCode)}${headcount > 0 ? ` (${headcount} nhân sự)` : ""}`,
+        sourceType: "PAYROLL",
+        sourceId: created.id,
+        status: "OPEN",
+      },
+    });
+  }
+}
+
 async function rollbackPayroll(tx: RawTxClient, batchId: string) {
   const rows = await tx.payrollImportRow.findMany({ where: { importBatchId: batchId }, select: { id: true } });
   const ids = rows.map((row) => row.id);
@@ -1959,6 +2066,21 @@ async function rollbackPayroll(tx: RawTxClient, batchId: string) {
     await tx.journalEntry.deleteMany({ where: { sourceType: "PAYROLL", sourceId: { in: ids } } });
   }
   await tx.payrollImportRow.deleteMany({ where: { importBatchId: batchId } });
+
+  // Mẫu theo bộ phận còn kéo theo công nợ phải trả người lao động. Đã trả bớt lương rồi thì
+  // không được rollback âm thầm — trả lại đúng trạng thái trước khi import là bất khả.
+  const deptRows = await tx.payrollDepartmentRow.findMany({ where: { importBatchId: batchId }, select: { id: true } });
+  const deptIds = deptRows.map((row) => row.id);
+  if (deptIds.length === 0) return;
+  const debts = await tx.debtRecord.findMany({ where: { importBatchId: batchId, sourceType: "PAYROLL" }, select: { id: true } });
+  const debtIds = debts.map((debt) => debt.id);
+  if (debtIds.length > 0) {
+    const settled = await tx.debtSettlement.count({ where: { debtId: { in: debtIds } } });
+    if (settled > 0) throw new Error("Bảng lương này đã có phiếu chi trả lương gạch công nợ, không thể rollback tự động");
+    await tx.debtRecord.deleteMany({ where: { id: { in: debtIds } } });
+  }
+  await tx.journalEntry.deleteMany({ where: { sourceType: "PAYROLL_DEPARTMENT", sourceId: { in: deptIds } } });
+  await tx.payrollDepartmentRow.deleteMany({ where: { importBatchId: batchId } });
 }
 
 async function rollbackVouchers(tx: RawTxClient, batchId: string) {

@@ -337,6 +337,7 @@ export async function GET(request: Request) {
           bankTransactions: { include: { allocations: { orderBy: { sourceRowNumber: "asc" } } } },
           revenueRows: true,
           payrollRows: true,
+          payrollDeptRows: true,
           importRows: { orderBy: [{ sheetName: "asc" }, { sourceRowNumber: "asc" }] },
           vouchers: true,
           moneyTransfers: true,

@@ -179,6 +179,7 @@ model ImportBatch {
   bankTransactions      BankStatementTransaction[]
   revenueRows           RevenueImportRow[]
   payrollRows           PayrollImportRow[]
+  payrollDeptRows       PayrollDepartmentRow[]
   importRows            ImportRow[]
   vouchers              FinancialVoucher[]
   moneyTransfers        MoneyTransfer[]
@@ -1435,6 +1436,51 @@ model PayrollImportRow {
   deletedBy String?
 
   @@unique([period, employeeCode, branchCode])
+  @@index([period])
+  @@index([branchCode])
+  @@index([departmentCode])
+  @@index([deletedAt])
+}
+
+/// Bảng lương gom theo bộ phận (mẫu PAYROLL_DEPARTMENT_V1).
+///
+/// Khác `PayrollImportRow` ở chỗ một dòng là một BỘ PHẬN của một cửa hàng trong kỳ, không
+/// phải một nhân viên: file lương khách gửi từ 2026-09 bỏ hẳn cột Mã/Tên nhân viên và thay
+/// bằng số lượng nhân sự. Hai bảng sống song song để các kỳ đã chốt theo mẫu cũ giữ nguyên số.
+///
+/// `totalCompanyCost` là tiền công ty thực sự bỏ ra (cột TỔNG CHI PHÍ CÔNG TY = tổng bảy cột
+/// từ Tổng lương theo giờ công đến Bảo hiểm công ty chịu) — đây mới là chi phí nhân sự trên
+/// P&L. `netAmount` là tiền thực đưa người lao động, và là số của khoản công nợ phải trả.
+model PayrollDepartmentRow {
+  id               String   @id @default(uuid())
+  importBatchId    String
+  period           String
+  branchCode       String
+  departmentCode   String
+  /// Số lượng nhân sự của bộ phận trong kỳ — thay cho việc đếm dòng nhân viên ở mẫu cũ.
+  headcount        Int      @default(0)
+  /// TỔNG LƯƠNG/THÁNG: lương tháng theo hợp đồng, chỉ để tham chiếu, KHÔNG cộng vào chi phí.
+  monthlySalary    Float    @default(0)
+  /// TỔNG LƯƠNG THEO GIỜ CÔNG: phần lương thực tế theo công, mở đầu dải cột cộng vào chi phí.
+  hourlySalary     Float    @default(0)
+  mealAllowance    Float    @default(0)
+  parkingAllowance Float    @default(0)
+  svcAmount        Float    @default(0)
+  kpiAmount        Float    @default(0)
+  otherAllowance   Float    @default(0)
+  /// Bảo hiểm phần công ty chịu: là chi phí của công ty nhưng không trả cho người lao động.
+  companyInsurance Float    @default(0)
+  totalCompanyCost Float
+  netAmount        Float
+  externalRef      String?
+  createdAt        DateTime @default(now())
+
+  importBatch ImportBatch @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
+
+  deletedAt DateTime?
+  deletedBy String?
+
+  @@unique([period, branchCode, departmentCode])
   @@index([period])
   @@index([branchCode])
   @@index([departmentCode])

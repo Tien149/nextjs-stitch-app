@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { periodBounds } from "@/lib/accounting";
-import { depreciationCatalogItemCode, pnlLineKeyOf, resolvePnlItemCode, type PnlItemRef, type PnlLineKey } from "@/lib/reports";
+import { depreciationCatalogItemCode, payrollCatalogItemCode, pnlLineKeyOf, resolvePnlItemCode, type PnlItemRef, type PnlLineKey } from "@/lib/reports";
 import { comparePnlItems } from "@/lib/pnl-ordering";
 
 /**
@@ -102,6 +102,8 @@ const SOURCE_GROUPS: Record<string, SourceGroup> = {
 
 function sourceGroupOf(sourceType: string, voucherChannel: string | undefined): SourceGroup {
   if (sourceType === "VOUCHER" || sourceType === "IMPORT") return voucherChannel === "BANK" ? SOURCE_GROUPS.VOUCHER_BANK : SOURCE_GROUPS.VOUCHER_CASH;
+  // PAYROLL (mẫu theo nhân viên) và PAYROLL_DEPARTMENT (mẫu theo bộ phận) cùng là lương.
+  if (sourceType.startsWith("PAYROLL")) return SOURCE_GROUPS.PAYROLL;
   if (sourceType.startsWith("MONEY_TRANSFER")) return SOURCE_GROUPS.MONEY_TRANSFER;
   if (sourceType.startsWith("COST_REALLOCATION")) return SOURCE_GROUPS.COST_REALLOCATION;
   if (sourceType.startsWith("INVENTORY")) return SOURCE_GROUPS.INVENTORY;
@@ -114,7 +116,7 @@ const round = (value: number) => Math.round(value);
 export async function getExpenseSummary(period: string, branchCode: string): Promise<ExpenseSummary> {
   const { start, end } = periodBounds(period);
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
-  const [entries, pnlItems, pnlGroups, draftVouchers, approvedVouchers, plannedSchedules, depreciations, payrollRows] = await Promise.all([
+  const [entries, pnlItems, pnlGroups, draftVouchers, approvedVouchers, plannedSchedules, depreciations, payrollRows, payrollDeptRows] = await Promise.all([
     prisma.journalEntry.findMany({
       where: { entryDate: { gte: start, lt: end }, status: "POSTED", ...branchFilter },
       select: {
@@ -149,11 +151,13 @@ export async function getExpenseSummary(period: string, branchCode: string): Pro
     prisma.accrualSchedule.findMany({ where: { period, status: "PLANNED", ...(branchCode === "ALL" ? {} : { accrual: { branchCode } }) }, select: { amount: true } }),
     prisma.assetDepreciation.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { asset: { branchCode } }) }, select: { id: true, depreciationAmount: true } }),
     prisma.payrollImportRow.findMany({ where: { period, ...branchFilter }, select: { id: true, baseSalary: true, allowanceAmount: true, bonusAmount: true } }),
+    prisma.payrollDepartmentRow.findMany({ where: { period, ...branchFilter }, select: { id: true, totalCompanyCost: true } }),
   ]);
 
   const pnlItemByCode = new Map(pnlItems.map((item) => [item.code, item]));
   const pnlGroupName = new Map(pnlGroups.map((group) => [group.code, group.name]));
   const depreciationItemCode = depreciationCatalogItemCode(pnlItems);
+  const payrollItemCode = payrollCatalogItemCode(pnlItems);
   const pnlItemRefOf = (code: string | null): PnlItemRef => {
     const item = code ? pnlItemByCode.get(code) : null;
     if (!item) return null;
@@ -177,8 +181,9 @@ export async function getExpenseSummary(period: string, branchCode: string): Pro
       if (!EXPENSE_ACCOUNT_TYPES.has(line.account.accountType)) continue;
       const amount = line.debit - line.credit;
       if (amount === 0) continue;
-      // Bút toán khấu hao tự động (6424) đứng ở hạng mục CP Khấu Hao như trên P&L.
-      const pnlItemCode = resolvePnlItemCode(line, depreciationItemCode);
+      // Bút toán máy tự sinh (khấu hao 6424, lương 6421) không có chỗ khai hạng mục nên suy
+      // theo tài khoản, đúng như cách chúng lên dòng chi phí trên P&L.
+      const pnlItemCode = resolvePnlItemCode(line, depreciationItemCode, payrollItemCode);
       // Chưa gán hạng mục P&L thì mới là khoản chi tiền, chưa phân bổ được vào dòng chi phí
       // nào — đếm riêng và để màn hình nhắc đi phân loại, không cộng vào bảng.
       if (!pnlItemCode) {
@@ -248,12 +253,24 @@ export async function getExpenseSummary(period: string, branchCode: string): Pro
   const unpostedApproved = approvedVouchers.filter((row) => !postedSourceIds.has(`VOUCHER:${row.id}`));
   const unpostedDepreciation = depreciations.filter((row) => !postedSourceIds.has(`DEPRECIATION:${row.id}`));
   const unpostedPayroll = payrollRows.filter((row) => !postedSourceIds.has(`PAYROLL:${row.id}`));
+  const unpostedDeptPayroll = payrollDeptRows.filter((row) => !postedSourceIds.has(`PAYROLL_DEPARTMENT:${row.id}`));
   const pendingCandidates: ExpensePendingRow[] = [
     { key: "VOUCHER_DRAFT", label: "Phiếu chi chưa duyệt", hint: "Phiếu chi còn nháp / chờ duyệt; duyệt xong mới thành chi phí", href: SOURCE_GROUPS.VOUCHER_CASH.href(branchCode), count: draftVouchers.length, amount: round(sum(draftVouchers.map((row) => row.amount))) },
     { key: "VOUCHER_UNPOSTED", label: "Phiếu chi đã duyệt nhưng chưa ghi sổ", hint: "Chạy hạch toán kỳ trên Sổ cái để đưa vào bút toán", href: "/accounting", count: unpostedApproved.length, amount: round(sum(unpostedApproved.map((row) => row.amount))) },
     { key: "ACCRUAL_PLANNED", label: "Lịch phân bổ chờ ghi nhận", hint: "Bấm ghi nhận từng kỳ ở tab Trích trước & Phân bổ", href: "/finance-operations?tab=accruals", count: plannedSchedules.length, amount: round(sum(plannedSchedules.map((row) => row.amount))) },
     { key: "DEPRECIATION_UNPOSTED", label: "Khấu hao đã chạy nhưng chưa ghi sổ", hint: "Chạy hạch toán kỳ trên Sổ cái", href: "/accounting", count: unpostedDepreciation.length, amount: round(sum(unpostedDepreciation.map((row) => row.depreciationAmount))) },
-    { key: "PAYROLL_UNPOSTED", label: "Bảng lương đã import nhưng chưa ghi sổ", hint: "Chạy hạch toán kỳ trên Sổ cái", href: "/accounting", count: unpostedPayroll.length, amount: round(sum(unpostedPayroll.map((row) => row.baseSalary + row.allowanceAmount + row.bonusAmount))) },
+    {
+      key: "PAYROLL_UNPOSTED",
+      label: "Bảng lương đã import nhưng chưa ghi sổ",
+      hint: "Chạy hạch toán kỳ trên Sổ cái",
+      href: "/accounting",
+      count: unpostedPayroll.length + unpostedDeptPayroll.length,
+      // Mẫu theo bộ phận vào chi phí bằng TỔNG CHI PHÍ CÔNG TY, mẫu cũ bằng lương + phụ cấp + thưởng.
+      amount: round(
+        sum(unpostedPayroll.map((row) => row.baseSalary + row.allowanceAmount + row.bonusAmount))
+        + sum(unpostedDeptPayroll.map((row) => row.totalCompanyCost)),
+      ),
+    },
   ];
   const pending = pendingCandidates.filter((row) => row.count > 0);
 

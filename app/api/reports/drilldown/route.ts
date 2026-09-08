@@ -3,7 +3,7 @@ import { requireMenuAccess } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 import { periodBounds } from "@/lib/accounting";
 import { apiError, businessError, cleanText, normalizePeriod } from "@/lib/phase3";
-import { depreciationCatalogItemCode, pnlLineKeyOf, resolvePnlItemCode } from "@/lib/reports";
+import { depreciationCatalogItemCode, payrollCatalogItemCode, pnlLineKeyOf, resolvePnlItemCode } from "@/lib/reports";
 
 /** Khoá drilldown cho một hạng mục P&L: `pnlItem:<mã>`; `pnlItem:UNCLASSIFIED` là chứng từ chưa gán hạng mục. */
 const PNL_ITEM_METRIC_PREFIX = "pnlItem:";
@@ -38,6 +38,7 @@ export async function GET(request: Request) {
     // Bút toán khấu hao tự động (6424) không gắn hạng mục nhưng trên P&L đứng ở hạng mục CP Khấu Hao —
     // bấm vào hạng mục đó phải thấy đúng các phiếu này (cùng luật với lib/reports.ts).
     const depreciationItemCode = depreciationCatalogItemCode(pnlItems);
+    const payrollItemCode = payrollCatalogItemCode(pnlItems);
     const entries = await prisma.journalEntry.findMany({
       where: {
         entryDate: { gte: start, lt: end },
@@ -74,7 +75,7 @@ export async function GET(request: Request) {
 
         if (pnlItemCode !== null) {
           const isExpenseLine = accountLine !== null && accountLine !== "revenue" && accountLine !== "otherIncome";
-          const effectiveItemCode = resolvePnlItemCode(line, depreciationItemCode);
+          const effectiveItemCode = resolvePnlItemCode(line, depreciationItemCode, payrollItemCode);
           const sameItem = pnlItemCode === "UNCLASSIFIED" ? !effectiveItemCode : effectiveItemCode === pnlItemCode;
           if (isExpenseLine && sameItem && (!lineKey || lineKey === accountLine)) {
             isMatch = true;

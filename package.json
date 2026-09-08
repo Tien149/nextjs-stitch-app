@@ -21,6 +21,7 @@
     "test:wallet-fallback": "node --experimental-strip-types scripts/test-wallet-revenue-fallback.mjs",
     "test:production-explosion": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-production-explosion.mjs",
     "test:wallet-settlement": "node --experimental-strip-types scripts/test-wallet-settlement-allocation.mjs",
+    "test:payroll-department": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-payroll-department.mjs",
     "test:advance-receivable": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-voucher-advance-receivable.mjs",
     "test:debt-group": "node --experimental-strip-types --no-warnings --test scripts/test-debt-group.mjs",
     "test:import-row-edits": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-import-row-edits.mjs",

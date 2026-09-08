@@ -1,7 +1,7 @@
 import { prisma, prismaRaw } from "@/lib/prisma";
 import { assertBranchAccess } from "@/lib/accounting";
 import { isMasterDataImportType, normalizeHeader, type ImportType } from "@/lib/import-templates";
-import type { ParsedImportResult, ParsedImportRow } from "@/lib/import-parser";
+import { parseImportDate, type ParsedImportResult, type ParsedImportRow } from "@/lib/import-parser";
 import type { DemoSession } from "@/lib/auth-demo";
 import { isInboundStockType, isOutboundStockType, isStockTransactionType, isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType } from "@/lib/inventory-stock";
 import { normalizeCashflowCategoryType, normalizeRevenueExpenseGroup } from "@/lib/voucher-rules";
@@ -99,9 +99,34 @@ function addError(row: ParsedImportRow, message: string) {
   if (!row.errors.includes(message)) row.errors.push(message);
 }
 
+/**
+ * Kỳ kế toán trên file: chuẩn hoá về YYYY-MM trước khi chấm lỗi.
+ *
+ * Excel rất hay tự nuốt ô "2026-10" thành một ngày rồi xuất ra serial (46296.29...), và kế
+ * toán cũng quen gõ "10/2026". Bắt lỗi thẳng những giá trị đó chỉ khiến người nhập loay hoay
+ * sửa định dạng ô, trong khi ý họ đã rõ ràng.
+ */
 function validatePeriod(row: ParsedImportRow, field: string, label: string) {
-  const value = text(row.values[field]);
-  if (value && !/^\d{4}-(0[1-9]|1[0-2])$/.test(value)) addError(row, `${label} phải có dạng YYYY-MM`);
+  const raw = row.values[field];
+  const value = text(raw);
+  if (!value) return;
+  if (/^\d{4}-(0[1-9]|1[0-2])$/.test(value)) return;
+
+  const slash = /^(0?[1-9]|1[0-2])[/-](\d{4})$/.exec(value);
+  if (slash) {
+    row.values[field] = `${slash[2]}-${String(Number(slash[1])).padStart(2, "0")}`;
+    return;
+  }
+  // Serial ngày của Excel có thể tới đây dưới dạng chuỗi ("46296.29..."). Chỉ nhận dải serial
+  // của các năm đời thật (1954 - 2119) để "202610" gõ liền không bị hiểu thành một ngày.
+  const numeric = Number(value);
+  const serial = Number.isFinite(numeric) && numeric >= 20000 && numeric <= 80000 ? numeric : null;
+  const parsed = parseImportDate(serial ?? (typeof raw === "string" ? value : raw));
+  if (parsed) {
+    row.values[field] = `${parsed.getUTCFullYear()}-${String(parsed.getUTCMonth() + 1).padStart(2, "0")}`;
+    return;
+  }
+  addError(row, `${label} phải có dạng YYYY-MM`);
 }
 
 /**
@@ -1419,10 +1444,36 @@ export async function validateImportResult(
     }
     if (importType === "PAYROLL") {
       validatePeriod(row, "period", "Kỳ lương");
-      const gross = numberValue(row.values.base_salary) + numberValue(row.values.allowance_amount) + numberValue(row.values.bonus_amount);
-      const deductions = numberValue(row.values.insurance_amount) + numberValue(row.values.tax_amount) + numberValue(row.values.deduction_amount);
-      if (Math.abs(gross - deductions - numberValue(row.values.net_amount)) > 1) {
-        addError(row, "Thực nhận không khớp thu nhập trừ các khoản khấu trừ");
+      // Hai mẫu lương sống song song. Mẫu theo bộ phận nhận diện bằng chính cột riêng của nó
+      // (Tổng chi phí công ty), không cần biết template nào đã được chọn ở màn import.
+      const isDepartmentPayroll = row.values.total_company_cost !== undefined;
+      if (isDepartmentPayroll) {
+        // Đúng công thức khách khai trong file: tổng bảy cột từ lương theo giờ công đến
+        // bảo hiểm công ty chịu. Lương tháng theo hợp đồng nằm ngoài, chỉ để tham chiếu.
+        const companyCost = numberValue(row.values.hourly_salary)
+          + numberValue(row.values.meal_allowance)
+          + numberValue(row.values.parking_allowance)
+          + numberValue(row.values.svc_amount)
+          + numberValue(row.values.kpi_amount)
+          + numberValue(row.values.other_allowance)
+          + numberValue(row.values.company_insurance);
+        const declaredCost = numberValue(row.values.total_company_cost);
+        if (Math.abs(companyCost - declaredCost) > 1) {
+          addError(row, "TỔNG CHI PHÍ CÔNG TY không khớp tổng các cột từ Tổng lương theo giờ công đến Bảo hiểm (công ty chịu)");
+        }
+        const netAmount = numberValue(row.values.net_amount);
+        if (netAmount <= 0) addError(row, "LƯƠNG THỰC NHẬN phải lớn hơn 0");
+        // Thực nhận lớn hơn tiền công ty bỏ ra là sai số liệu: phần chênh chính là các khoản
+        // công ty chịu hộ, không bao giờ âm.
+        if (netAmount - declaredCost > 1) addError(row, "LƯƠNG THỰC NHẬN không được lớn hơn TỔNG CHI PHÍ CÔNG TY");
+        if (numberValue(row.values.headcount) < 0) addError(row, "Số lượng nhân sự không được âm");
+        if (!text(row.values.department_code)) addError(row, "Bảng lương theo bộ phận bắt buộc có Phòng ban");
+      } else {
+        const gross = numberValue(row.values.base_salary) + numberValue(row.values.allowance_amount) + numberValue(row.values.bonus_amount);
+        const deductions = numberValue(row.values.insurance_amount) + numberValue(row.values.tax_amount) + numberValue(row.values.deduction_amount);
+        if (Math.abs(gross - deductions - numberValue(row.values.net_amount)) > 1) {
+          addError(row, "Thực nhận không khớp thu nhập trừ các khoản khấu trừ");
+        }
       }
     }
     if (importType === "BANK_STATEMENT") {

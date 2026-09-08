@@ -440,6 +440,29 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
     results.push(await postJournalEntry({ entryDate: new Date(`${period}-28T00:00:00`), branchCode: row.branchCode, sourceType: "PAYROLL", sourceId: row.id, sourceCode: row.externalRef || row.employeeCode, description: `Lương ${row.employeeName} ${period}`, createdBy: actor, lines: [{ accountCode: "6421", debit: gross, departmentCode: row.departmentCode }, { accountCode: "334", credit: row.netAmount, departmentCode: row.departmentCode }, { accountCode: "338", credit: row.insuranceAmount, departmentCode: row.departmentCode }, { accountCode: "3335", credit: row.taxAmount, departmentCode: row.departmentCode }, { accountCode: "3388", credit: row.deductionAmount, departmentCode: row.departmentCode }] }));
   }
 
+  // Bảng lương theo bộ phận: chi phí nhân sự là TỔNG CHI PHÍ CÔNG TY, còn phải trả người lao
+  // động chỉ là phần thực nhận. Phần chênh giữa hai số là các khoản công ty chịu hộ (bảo hiểm
+  // công ty đóng), treo ở 338 cho tới khi nộp — không được nhét vào 334 vì không nợ nhân viên.
+  const departmentPayroll = await prisma.payrollDepartmentRow.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { branchCode }) } });
+  for (const row of departmentPayroll) {
+    const companyBorne = Math.max(0, row.totalCompanyCost - row.netAmount);
+    const lines = [
+      { accountCode: "6421", debit: row.totalCompanyCost, departmentCode: row.departmentCode },
+      { accountCode: "334", credit: row.netAmount, departmentCode: row.departmentCode },
+      { accountCode: "338", credit: companyBorne, departmentCode: row.departmentCode },
+    ];
+    results.push(await postJournalEntry({
+      entryDate: new Date(`${period}-28T00:00:00`),
+      branchCode: row.branchCode,
+      sourceType: "PAYROLL_DEPARTMENT",
+      sourceId: row.id,
+      sourceCode: row.externalRef || `${row.branchCode}-${row.departmentCode}`,
+      description: `Lương ${period} - bộ phận ${row.departmentCode}${row.headcount > 0 ? ` (${row.headcount} nhân sự)` : ""}`,
+      createdBy: actor,
+      lines,
+    }));
+  }
+
   return {
     total: results.length,
     created: results.filter((value) => value === "CREATED").length,

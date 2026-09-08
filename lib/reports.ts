@@ -11,7 +11,7 @@ import { transferLegsForBranch } from "@/lib/internal-transfer";
 import { WALLET_CARD_FEE_CATEGORY_CODE, WALLET_GRAB_EXPENSE_CATEGORY_CODE } from "@/lib/wallet-settlement-allocation";
 import { vietnamBusinessDayKey } from "@/lib/revenue-date";
 import { remainingWalletGross, selectWalletDeclaredRevenue, walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
-import { comparePnlGroups, comparePnlItems, isDepreciationPnlName, isPayrollPnlItem } from "@/lib/pnl-ordering";
+import { comparePnlGroups, comparePnlItems, isDepreciationPnlName, isPayrollPnlItem, isPayrollPnlName } from "@/lib/pnl-ordering";
 import { isRevenueComponentCategory, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { REVENUE_PNL_UNCLASSIFIED, loadRevenuePnlGroups, type CategoryLookupClient } from "@/lib/revenue-source";
 
@@ -175,10 +175,25 @@ export function depreciationCatalogItemCode(pnlItems: Array<{ code: string; name
   return (candidates.find((item) => item.subGroup) || candidates[0])?.code ?? null;
 }
 
-/** Hạng mục P&L thực tế của một bút toán chi: mã đã gắn, hoặc hạng mục khấu hao nếu là bút toán 6424. */
-export function resolvePnlItemCode(line: { pnlItemCode: string | null; account: { reportGroup: string } }, depreciationItemCode: string | null) {
+/** Hạng mục lương trong danh mục P&L — bút toán 6421 do máy sinh không mang mã hạng mục. */
+export function payrollCatalogItemCode(pnlItems: Array<{ code: string; name: string; subGroup?: string | null; status?: string | null }>) {
+  const candidates = pnlItems.filter((item) => !isRetiredCatalogItem(item) && isPayrollPnlName(item.name));
+  return (candidates.find((item) => item.subGroup) || candidates[0])?.code ?? null;
+}
+
+/**
+ * Hạng mục P&L thực tế của một bút toán chi: mã đã gắn, hoặc hạng mục suy ra cho các bút toán
+ * máy tự sinh không có chỗ khai mã — khấu hao (6424) và lương (6421).
+ */
+export function resolvePnlItemCode(
+  line: { pnlItemCode: string | null; account: { reportGroup: string } },
+  depreciationItemCode: string | null,
+  payrollItemCode: string | null = null,
+) {
   if (line.pnlItemCode) return line.pnlItemCode;
-  return line.account.reportGroup === "DEPRECIATION" ? depreciationItemCode : null;
+  if (line.account.reportGroup === "DEPRECIATION") return depreciationItemCode;
+  if (line.account.reportGroup === "PAYROLL") return payrollItemCode;
+  return null;
 }
 /** Một dòng chi tiết với N cột số (N = 1 cho bảng một kỳ, 12 cho bảng cả năm). */
 export type PnlSeriesItem = { code: string; name: string; months: number[]; total: number };
@@ -258,7 +273,8 @@ export function createPnlDetailTree(catalog: PnlCatalog, monthCount: number) {
   }
 
   const depreciationItemCode = depreciationCatalogItemCode(pnlItems);
-  const resolveItemCode = (line: PnlJournalLineLike) => resolvePnlItemCode(line, depreciationItemCode);
+  const payrollItemCode = payrollCatalogItemCode(pnlItems);
+  const resolveItemCode = (line: PnlJournalLineLike) => resolvePnlItemCode(line, depreciationItemCode, payrollItemCode);
 
   /** Cộng một bút toán vào cột `monthIndex`; trả về dòng KQKD nó thuộc về (null nếu không vào KQKD). */
   const add = (line: PnlJournalLineLike, monthIndex: number): PnlLineKey | null => {
