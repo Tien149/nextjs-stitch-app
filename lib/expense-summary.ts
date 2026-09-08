@@ -12,9 +12,13 @@ import { comparePnlItems } from "@/lib/pnl-ordering";
  * và nhóm theo nguồn phát sinh + hạng mục P&L; việc nhập/sửa vẫn ở màn gốc vì mỗi loại
  * có luật riêng (phiếu chi chạm quỹ, khấu hao chạm tài sản, lương sinh phải trả).
  *
- * Con số "đã vào sổ" ở đây đúng bằng phần chi phí trên báo cáo KQKD cùng kỳ/cửa hàng
- * (cùng nguồn JournalLine, cùng luật xếp dòng pnlLineKeyOf). Phần "chờ hạch toán" liệt kê
- * những bản ghi gốc đã có nhưng chưa thành bút toán, để người xem hiểu vì sao hai số lệch.
+ * Tab này chỉ nhận chi phí ĐÃ GÁN HẠNG MỤC P&L. Dòng chi chưa phân loại mới chỉ là một
+ * khoản chi tiền, chưa biết thuộc dòng chi phí nào, để lẫn vào đây thì bảng phân bổ bị thổi
+ * bằng chính tiền chưa phân loại. Số bị loại ra vẫn trả về ở `unclassifiedTotal` để màn hình
+ * nói rõ còn bao nhiêu chờ phân loại chứ không giấu đi.
+ *
+ * Phần "chờ hạch toán" liệt kê những bản ghi gốc đã có nhưng chưa thành bút toán, để người
+ * xem hiểu vì sao số trên tab này và số bản ghi gốc lệch nhau.
  */
 
 const EXPENSE_ACCOUNT_TYPES = new Set(["COGS", "OPEX", "OTHER_EXPENSE"]);
@@ -51,6 +55,9 @@ export type ExpenseSummary = {
   branchCode: string;
   postedTotal: number;
   pendingTotal: number;
+  /** Chi phí đã vào sổ nhưng chưa gán hạng mục P&L — không nằm trong postedTotal. */
+  unclassifiedTotal: number;
+  unclassifiedLines: number;
   bySource: ExpenseSourceRow[];
   byLine: ExpenseLineRow[];
   pending: ExpensePendingRow[];
@@ -161,6 +168,8 @@ export async function getExpenseSummary(period: string, branchCode: string): Pro
   const lineTotals = new Map<PnlLineKey, { amount: number; items: Map<string, ExpenseItemRow> }>();
   const details: ExpenseDetailRow[] = [];
   let postedTotal = 0;
+  let unclassifiedTotal = 0;
+  let unclassifiedLines = 0;
   for (const entry of entries) {
     const group = sourceGroupOf(entry.sourceType, voucherChannelById.get(entry.sourceId));
     let entryAmount = 0;
@@ -168,15 +177,22 @@ export async function getExpenseSummary(period: string, branchCode: string): Pro
       if (!EXPENSE_ACCOUNT_TYPES.has(line.account.accountType)) continue;
       const amount = line.debit - line.credit;
       if (amount === 0) continue;
+      // Bút toán khấu hao tự động (6424) đứng ở hạng mục CP Khấu Hao như trên P&L.
+      const pnlItemCode = resolvePnlItemCode(line, depreciationItemCode);
+      // Chưa gán hạng mục P&L thì mới là khoản chi tiền, chưa phân bổ được vào dòng chi phí
+      // nào — đếm riêng và để màn hình nhắc đi phân loại, không cộng vào bảng.
+      if (!pnlItemCode) {
+        unclassifiedTotal += amount;
+        unclassifiedLines += 1;
+        continue;
+      }
       const lineKey = pnlLineKeyOf(line.account, pnlItemRefOf(line.pnlItemCode));
       if (!lineKey) continue;
       entryAmount += amount;
       const bucket = lineTotals.get(lineKey) || { amount: 0, items: new Map<string, ExpenseItemRow>() };
       bucket.amount += amount;
-      // Bút toán khấu hao tự động (6424) đứng ở hạng mục CP Khấu Hao như trên P&L.
-      const pnlItemCode = resolvePnlItemCode(line, depreciationItemCode);
-      const code = pnlItemCode || "UNCLASSIFIED";
-      const item = bucket.items.get(code) || { code, name: pnlItemByCode.get(code)?.name || (pnlItemCode ? `Hạng mục P&L [${pnlItemCode}]` : "Chưa phân loại hạng mục P&L"), amount: 0 };
+      const code = pnlItemCode;
+      const item = bucket.items.get(code) || { code, name: pnlItemByCode.get(code)?.name || `Hạng mục P&L [${pnlItemCode}]`, amount: 0 };
       item.amount += amount;
       bucket.items.set(code, item);
       lineTotals.set(lineKey, bucket);
@@ -222,7 +238,7 @@ export async function getExpenseSummary(period: string, branchCode: string): Pro
     .map((key) => {
       const bucket = lineTotals.get(key)!;
       const items = Array.from(bucket.items.values())
-        .map((item) => ({ ...item, amount: round(item.amount), last: item.code === "UNCLASSIFIED" }))
+        .map((item) => ({ ...item, amount: round(item.amount) }))
         .sort((a, b) => comparePnlItems(a, b))
         .map((item) => ({ code: item.code, name: item.name, amount: item.amount }));
       return { key, label: EXPENSE_LINE_LABELS[key], amount: round(bucket.amount), items };
@@ -246,6 +262,8 @@ export async function getExpenseSummary(period: string, branchCode: string): Pro
     branchCode,
     postedTotal: round(postedTotal),
     pendingTotal: round(sum(pending.map((row) => row.amount))),
+    unclassifiedTotal: round(unclassifiedTotal),
+    unclassifiedLines,
     bySource,
     byLine,
     pending,

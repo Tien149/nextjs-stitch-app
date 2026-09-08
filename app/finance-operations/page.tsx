@@ -46,7 +46,7 @@ type MoneyTransfer = {
 };
 type OpeningBasis = { anchorPeriod: string | null; declaredThisPeriod: boolean };
 type Data = { openingAmount: number; openingBasis: OpeningBasis; closingBalance: number; cashbook: CashEntry[]; accruals: Accrual[]; moneyTransfers: MoneyTransfer[]; accountingPeriod: { status: string; closedBy?: string; closedAt?: string }; checklist: Check[]; expenseSummary: ExpenseSummary };
-const emptyExpenseSummary: ExpenseSummary = { period: "", branchCode: "ALL", postedTotal: 0, pendingTotal: 0, bySource: [], byLine: [], pending: [], details: [] };
+const emptyExpenseSummary: ExpenseSummary = { period: "", branchCode: "ALL", postedTotal: 0, pendingTotal: 0, unclassifiedTotal: 0, unclassifiedLines: 0, bySource: [], byLine: [], pending: [], details: [] };
 /** Bộ lọc bảng chi tiết chi phí: rỗng = không lọc. */
 type ExpenseDetailFilter = { source: string; line: string; item: string; query: string };
 const emptyExpenseDetailFilter: ExpenseDetailFilter = { source: "", line: "", item: "", query: "" };
@@ -1492,7 +1492,7 @@ export default function FinanceOperationsPage() {
               <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
                 <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Chi phí đã vào sổ kỳ {period.slice(5, 7)}/{period.slice(0, 4)}</p>
                 <p className="text-2xl font-black text-slate-900 mt-1">{money(data.expenseSummary.postedTotal)} đ</p>
-                <p className="text-xs text-slate-500 mt-1">Khớp phần chi phí trên báo cáo KQKD cùng kỳ và cửa hàng.</p>
+                <p className="text-xs text-slate-500 mt-1">Chỉ gồm chi phí đã gán hạng mục P&amp;L; khoản chưa phân loại không tính vào đây.</p>
               </div>
               <div className={`border rounded-2xl p-5 shadow-sm ${data.expenseSummary.pending.length ? "bg-amber-50/60 border-amber-200" : "bg-white border-slate-200"}`}>
                 <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Chờ hạch toán</p>
@@ -1511,6 +1511,33 @@ export default function FinanceOperationsPage() {
                 </p>
               </div>
             </div>
+
+            {/* Tiền đã chi nhưng chưa gán hạng mục P&L không phân bổ được vào dòng chi phí nào,
+                nên không cộng vào bảng. Vẫn phải hiện số để kế toán biết còn bao nhiêu phải đi
+                phân loại, chứ không im lặng bỏ qua. */}
+            {data.expenseSummary.unclassifiedTotal !== 0 && (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50/60 p-4">
+                <div className="flex items-start gap-2">
+                  <span className="material-symbols-outlined text-base text-amber-600">rule</span>
+                  <div>
+                    <p className="text-sm font-bold text-amber-800">
+                      Chưa phân loại hạng mục P&amp;L: {money(data.expenseSummary.unclassifiedTotal)} đ
+                      <span className="font-medium"> · {data.expenseSummary.unclassifiedLines} dòng bút toán</span>
+                    </p>
+                    <p className="text-xs text-amber-700 mt-0.5">
+                      Đây mới là khoản chi tiền, chưa gán hạng mục nên không được cộng vào bảng phân bổ bên dưới.
+                      Mở phiếu gốc bổ sung Hạng mục P&amp;L thì số sẽ tự chạy vào đúng dòng chi phí.
+                    </p>
+                  </div>
+                </div>
+                <a
+                  href={`/vouchers${branchCode === "ALL" ? "?voucherType=PAYMENT" : `?voucherType=PAYMENT&branchCode=${branchCode}`}`}
+                  className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-bold text-amber-800 hover:bg-amber-100"
+                >
+                  Mở phiếu chi để phân loại
+                </a>
+              </div>
+            )}
 
             <p className="text-xs text-slate-500 flex items-center gap-1.5">
               <span className="material-symbols-outlined text-base text-slate-400">info</span>
@@ -1586,7 +1613,7 @@ export default function FinanceOperationsPage() {
                   <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between gap-3">
                     <div>
                       <h3 className="font-bold text-slate-900">Theo hạng mục P&L</h3>
-                      <p className="text-xs text-slate-500 mt-0.5">Cùng cách xếp dòng với báo cáo KQKD; hạng mục chưa phân loại đứng cuối mỗi nhóm.</p>
+                      <p className="text-xs text-slate-500 mt-0.5">Cùng cách xếp dòng với báo cáo KQKD; chỉ gồm phiếu đã gán hạng mục P&amp;L.</p>
                     </div>
                     <ExportExcelButton fileName={`tong_hop_chi_phi_theo_hang_muc_${period}`} sheetName="Theo hang muc" className="h-9 shrink-0 rounded-lg border border-slate-300 bg-white px-3 text-xs font-bold text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1.5" />
                   </div>
