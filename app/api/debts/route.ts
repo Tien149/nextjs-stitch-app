@@ -7,6 +7,7 @@ import { writeAuditLog } from "@/lib/audit-log";
 import { softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { debtGroupCode, stripDebtLineSuffix } from "@/lib/debt-group";
+import { bankSigned, debtBalanceOf, debtRecordSigned, depositSigned, openingBalanceSigned, voucherSigned } from "@/lib/debt-balance";
 
 const debtTypes = ["RECEIVABLE", "PAYABLE"];
 const partnerGroups = ["EXTERNAL", "INTERNAL"];
@@ -138,7 +139,7 @@ export async function GET(request: Request) {
           source: "OPENING_BALANCE",
           code: `${item.period}-${item.balanceType}`,
           description: item.note || "Số dư đầu kỳ",
-          amount: item.amount,
+          amount: openingBalanceSigned(item.balanceType, item.amount),
         });
       }
       for (const item of deposits.filter((row) => row.partnerCode === partnerCode)) {
@@ -147,7 +148,7 @@ export async function GET(request: Request) {
           source: "DEPOSIT",
           code: item.code,
           description: item.purpose,
-          amount: -item.remainingAmount,
+          amount: depositSigned(item.remainingAmount),
         });
       }
       for (const item of bankRows.filter((row) => row.partnerHint === partnerCode)) {
@@ -156,7 +157,7 @@ export async function GET(request: Request) {
           source: "BANK_STATEMENT",
           code: item.transactionCode,
           description: item.description,
-          amount: -(item.creditAmount - item.debitAmount),
+          amount: bankSigned(item.creditAmount, item.debitAmount),
         });
       }
       for (const item of vouchers.filter((row) => row.partnerCode === partnerCode)) {
@@ -165,7 +166,7 @@ export async function GET(request: Request) {
           source: "VOUCHER",
           code: item.code,
           description: item.description,
-          amount: item.voucherType === "RECEIPT" ? -item.amount : item.amount,
+          amount: voucherSigned(item.voucherType, item.amount),
         });
       }
       for (const item of purchasePayables.filter((row) => row.supplierCode === partnerCode)) {
@@ -186,7 +187,7 @@ export async function GET(request: Request) {
           code: item.code,
           dueDate: item.dueDate,
           description: `${item.description}${item.dueDate ? ` · Hạn ${item.dueDate.toLocaleDateString("vi-VN")}` : ""}`,
-          amount: item.debtType === "RECEIVABLE" ? item.outstandingAmount : -item.outstandingAmount,
+          amount: debtRecordSigned(item.debtType, item.outstandingAmount),
           status: item.status,
           agingBucket: agingBucket(item.dueDate),
         });
@@ -234,14 +235,14 @@ export async function GET(request: Request) {
     for (const item of openingBalances) {
       if (!item.objectCode) continue;
       if (dateBucket(openingBalanceDate(item.period), range) === "AFTER") continue;
-      carryForward(item.objectCode, item.objectName || item.objectCode, item.amount);
+      carryForward(item.objectCode, item.objectName || item.objectCode, openingBalanceSigned(item.balanceType, item.amount));
     }
 
     for (const item of deposits) {
       const bucket = dateBucket(item.receivedDate, range);
       if (bucket === "AFTER") continue;
       if (bucket === "BEFORE") {
-        carryForward(item.partnerCode, item.partnerName, -item.remainingAmount);
+        carryForward(item.partnerCode, item.partnerName, depositSigned(item.remainingAmount));
         continue;
       }
       const current = rows.get(item.partnerCode);
@@ -255,7 +256,7 @@ export async function GET(request: Request) {
       const bucket = dateBucket(item.transactionDate, range);
       if (bucket === "AFTER") continue;
       if (bucket === "BEFORE") {
-        carryForward(item.partnerHint, item.partnerHint, -(item.creditAmount - item.debitAmount));
+        carryForward(item.partnerHint, item.partnerHint, bankSigned(item.creditAmount, item.debitAmount));
         continue;
       }
       const current = rows.get(item.partnerHint);
@@ -268,9 +269,9 @@ export async function GET(request: Request) {
       if (!item.partnerCode) continue;
       const bucket = dateBucket(item.voucherDate, range);
       if (bucket === "AFTER") continue;
-      const signedAmount = item.voucherType === "RECEIPT" ? item.amount : -item.amount;
+      const signedAmount = voucherSigned(item.voucherType, item.amount);
       if (bucket === "BEFORE") {
-        carryForward(item.partnerCode, item.partnerName, -signedAmount);
+        carryForward(item.partnerCode, item.partnerName, signedAmount);
         continue;
       }
       const current = rows.get(item.partnerCode);
@@ -304,7 +305,7 @@ export async function GET(request: Request) {
       const inRange = dateSlot === "IN";
       addDebt(rows, item.partnerCode, item.partnerName, {
         partnerGroup: item.partnerGroup,
-        openingAmount: (current?.openingAmount || 0) + (inRange ? 0 : item.debtType === "RECEIVABLE" ? item.outstandingAmount : -item.outstandingAmount),
+        openingAmount: (current?.openingAmount || 0) + (inRange ? 0 : debtRecordSigned(item.debtType, item.outstandingAmount)),
         debtReceivable: (current?.debtReceivable || 0) + (inRange && item.debtType === "RECEIVABLE" ? item.outstandingAmount : 0),
         debtPayable: (current?.debtPayable || 0) + (inRange && item.debtType === "PAYABLE" ? item.outstandingAmount : 0),
         nearestDueDate: nextDue,
@@ -318,7 +319,7 @@ export async function GET(request: Request) {
     const result = Array.from(rows.values())
       .map((row) => ({
         ...row,
-        balance: row.openingAmount + row.purchasePayable + row.debtReceivable - row.debtPayable - row.depositHolding - row.bankMatched - row.voucherNet,
+        balance: debtBalanceOf(row),
       }))
       .sort((a, b) => Math.abs(b.balance) - Math.abs(a.balance));
 
