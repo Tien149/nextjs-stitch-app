@@ -16,6 +16,7 @@ import { type VoucherDocumentChannel, voucherChannelLabel, voucherTypeLabel } fr
 import { depositCategoryDirection } from "@/lib/bank-statement-category";
 import { PartnerPicker } from "@/components/PartnerPicker";
 import { SearchableSelect } from "@/components/SearchableSelect";
+import { MoneyInput } from "@/components/MoneyInput";
 import { exportRowsToExcel } from "@/lib/export-table-excel";
 import { statValueTextClass } from "@/components/reports/report-ui";
 
@@ -1328,11 +1329,9 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                         <div className="grid grid-cols-1 @sm:grid-cols-2 gap-2">
                           <label className="block text-[11px] font-bold text-slate-600">
                             Số tiền (đ) *
-                            <input
-                              type="number"
-                              min="1"
+                            <MoneyInput
                               value={line.amount}
-                              onChange={(event) => setAllocationDraft((current) => current.map((item) => item.key === line.key ? { ...item, amount: event.target.value } : item))}
+                              onChange={(amount) => setAllocationDraft((current) => current.map((item) => item.key === line.key ? { ...item, amount } : item))}
                               placeholder="0"
                               className="mt-1 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm font-medium text-slate-800 outline-none focus:border-blue-500"
                             />
@@ -1495,10 +1494,9 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
 
                 <label className="text-xs font-bold text-slate-600 block">
                   Số tiền (đ) *
-                  <input
-                    type="number"
-                    value={isMultiPartnerActive ? allocationTotal : form.amount}
-                    onChange={(event) => setForm((value) => ({ ...value, amount: event.target.value }))}
+                  <MoneyInput
+                    value={isMultiPartnerActive ? String(allocationTotal) : form.amount}
+                    onChange={(amount) => setForm((value) => ({ ...value, amount }))}
                     readOnly={isMultiPartnerActive}
                     placeholder="Nhập số tiền"
                     className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold focus:border-blue-500 focus:ring-1 focus:ring-blue-500 read-only:bg-slate-100"
