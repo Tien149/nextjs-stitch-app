@@ -46,7 +46,10 @@ type MoneyTransfer = {
 };
 type OpeningBasis = { anchorPeriod: string | null; declaredThisPeriod: boolean };
 type Data = { openingAmount: number; openingBasis: OpeningBasis; closingBalance: number; cashbook: CashEntry[]; accruals: Accrual[]; moneyTransfers: MoneyTransfer[]; accountingPeriod: { status: string; closedBy?: string; closedAt?: string }; checklist: Check[]; expenseSummary: ExpenseSummary };
-const emptyExpenseSummary: ExpenseSummary = { period: "", branchCode: "ALL", postedTotal: 0, pendingTotal: 0, bySource: [], byLine: [], pending: [] };
+const emptyExpenseSummary: ExpenseSummary = { period: "", branchCode: "ALL", postedTotal: 0, pendingTotal: 0, bySource: [], byLine: [], pending: [], details: [] };
+/** Bộ lọc bảng chi tiết chi phí: rỗng = không lọc. */
+type ExpenseDetailFilter = { source: string; line: string; item: string; query: string };
+const emptyExpenseDetailFilter: ExpenseDetailFilter = { source: "", line: "", item: "", query: "" };
 type MasterDataOption = { id: string; type: string; code: string; name: string; group: string | null; branch: string | null; status?: string; summarySourceName?: string | null };
 type CashDepositEditForm = {
   transfer: MoneyTransfer;
@@ -132,6 +135,23 @@ export default function FinanceOperationsPage() {
   const [cashbookSource, setCashbookSource] = useState("");
   const [data, setData] = useState<Data>({ openingAmount: 0, openingBasis: { anchorPeriod: null, declaredThisPeriod: false }, closingBalance: 0, cashbook: [], accruals: [], moneyTransfers: [], accountingPeriod: { status: "OPEN" }, checklist: [], expenseSummary: emptyExpenseSummary });
   const [message, setMessage] = useState("");
+  const [expenseFilter, setExpenseFilter] = useState<ExpenseDetailFilter>(emptyExpenseDetailFilter);
+  const expenseDetailRows = useMemo(() => {
+    const query = expenseFilter.query.trim().toLowerCase();
+    return (data.expenseSummary.details || []).filter((row) =>
+      (!expenseFilter.source || row.sourceKey === expenseFilter.source)
+      && (!expenseFilter.line || row.lineKey === expenseFilter.line)
+      && (!expenseFilter.item || row.itemCode === expenseFilter.item)
+      && (!query || [row.entryCode, row.sourceCode, row.description, row.partnerCode, row.accountCode, row.itemName]
+        .some((value) => (value || "").toLowerCase().includes(query))));
+  }, [data.expenseSummary.details, expenseFilter]);
+  const expenseDetailTotal = useMemo(() => expenseDetailRows.reduce((sum, row) => sum + row.amount, 0), [expenseDetailRows]);
+  const expenseFilterActive = Boolean(expenseFilter.source || expenseFilter.line || expenseFilter.item || expenseFilter.query.trim());
+  /** Từ hai bảng gom bấm xuống bảng chi tiết với bộ lọc tương ứng. */
+  const focusExpenseDetail = (patch: Partial<ExpenseDetailFilter>) => {
+    setExpenseFilter({ ...emptyExpenseDetailFilter, ...patch });
+    window.setTimeout(() => document.getElementById("expense-detail-section")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+  };
   const [transferQuery, setTransferQuery] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [editingCashDeposit, setEditingCashDeposit] = useState<CashDepositEditForm | null>(null);
@@ -1532,7 +1552,17 @@ export default function FinanceOperationsPage() {
                               </a>
                               <p className="text-[11px] text-slate-500 mt-0.5">{row.hint}</p>
                             </td>
-                            <td className="px-5 py-3 text-right text-slate-600">{row.entries}</td>
+                            <td className="px-5 py-3 text-right text-slate-600">
+                              <button
+                                type="button"
+                                onClick={() => focusExpenseDetail({ source: row.key })}
+                                title="Xem từng bút toán của nguồn này ở bảng chi tiết"
+                                className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 hover:bg-indigo-50 hover:text-indigo-700"
+                              >
+                                {row.entries}
+                                <span className="material-symbols-outlined text-sm">filter_alt</span>
+                              </button>
+                            </td>
                             <td className="px-5 py-3 text-right font-bold text-slate-900">{money(row.amount)}</td>
                             <td className="px-5 py-3 text-right text-slate-600">
                               {data.expenseSummary.postedTotal ? `${Math.round((row.amount / data.expenseSummary.postedTotal) * 1000) / 10}%` : "-"}
@@ -1577,7 +1607,17 @@ export default function FinanceOperationsPage() {
                             </tr>
                             {line.items.map((item) => (
                               <tr key={`${line.key}-${item.code}`} className="hover:bg-slate-50/40 transition-colors">
-                                <td className={`px-5 py-2 pl-10 ${item.code === "UNCLASSIFIED" ? "text-amber-700 font-semibold" : "text-slate-700"}`}>{item.name}</td>
+                                <td className={`px-5 py-2 pl-10 ${item.code === "UNCLASSIFIED" ? "text-amber-700 font-semibold" : "text-slate-700"}`}>
+                                  <button
+                                    type="button"
+                                    onClick={() => focusExpenseDetail({ line: line.key, item: item.code })}
+                                    title="Xem từng bút toán của hạng mục này ở bảng chi tiết"
+                                    className="inline-flex items-center gap-1 rounded-md text-left hover:text-indigo-700 hover:underline"
+                                  >
+                                    {item.name}
+                                    <span className="material-symbols-outlined text-sm text-slate-400">filter_alt</span>
+                                  </button>
+                                </td>
                                 <td className="px-5 py-2 text-right text-slate-800">{money(item.amount)}</td>
                               </tr>
                             ))}
@@ -1594,6 +1634,148 @@ export default function FinanceOperationsPage() {
                   </div>
                 </section>
               </div>
+            )}
+
+            {/* Bảng chi tiết từng bút toán (yêu cầu 08/09/2026): chi phí nhập ở nhiều màn nên cần
+                một chỗ liệt kê hết, lọc được theo loại phiếu và hạng mục P&L để soát "đủ chưa".
+                Tổng khi không lọc phải bằng đúng Tổng chi phí đã vào sổ ở hai bảng gom. */}
+            {data.expenseSummary.details.length > 0 && (
+              <section id="expense-detail-section" className="bg-white border border-slate-200 rounded-2xl shadow-lg overflow-hidden scroll-mt-4">
+                <div className="px-6 py-4 border-b border-slate-200 flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h3 className="font-bold text-slate-900">Chi tiết bút toán chi phí</h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Mỗi dòng là một dòng Nợ tài khoản chi phí trên sổ nhật ký. Lọc theo loại phiếu / hạng mục P&L để đối chiếu với hai bảng gom phía trên; bấm mã chứng từ để mở màn hình gốc.
+                    </p>
+                  </div>
+                  <ExportExcelButton fileName={`chi_tiet_chi_phi_${period}${expenseFilter.source ? `_${expenseFilter.source.toLowerCase()}` : ""}`} sheetName="Chi tiet chi phi" targetId="expense-detail-table" className="h-9 shrink-0 rounded-lg border border-slate-300 bg-white px-3 text-xs font-bold text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1.5" />
+                </div>
+                <div className="px-6 py-3 border-b border-slate-100 bg-slate-50/40 flex flex-wrap items-end gap-3">
+                  <label className="text-[11px] font-bold text-slate-600">
+                    Loại phiếu / nguồn
+                    <select
+                      value={expenseFilter.source}
+                      onChange={(event) => setExpenseFilter((current) => ({ ...current, source: event.target.value }))}
+                      className="mt-1 block h-9 min-w-[200px] rounded-lg border border-slate-300 bg-white px-2 text-sm font-normal"
+                    >
+                      <option value="">Tất cả nguồn</option>
+                      {data.expenseSummary.bySource.map((row) => (
+                        <option key={row.key} value={row.key}>{row.label} ({row.entries})</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="text-[11px] font-bold text-slate-600">
+                    Dòng KQKD
+                    <select
+                      value={expenseFilter.line}
+                      onChange={(event) => setExpenseFilter((current) => ({ ...current, line: event.target.value, item: "" }))}
+                      className="mt-1 block h-9 min-w-[180px] rounded-lg border border-slate-300 bg-white px-2 text-sm font-normal"
+                    >
+                      <option value="">Tất cả dòng</option>
+                      {data.expenseSummary.byLine.map((line) => (
+                        <option key={line.key} value={line.key}>{line.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="text-[11px] font-bold text-slate-600">
+                    Hạng mục P&L
+                    <select
+                      value={expenseFilter.item}
+                      onChange={(event) => setExpenseFilter((current) => ({ ...current, item: event.target.value }))}
+                      className="mt-1 block h-9 min-w-[220px] max-w-[320px] rounded-lg border border-slate-300 bg-white px-2 text-sm font-normal"
+                    >
+                      <option value="">Tất cả hạng mục</option>
+                      {data.expenseSummary.byLine
+                        .filter((line) => !expenseFilter.line || line.key === expenseFilter.line)
+                        .flatMap((line) => line.items.map((item) => (
+                          <option key={`${line.key}-${item.code}`} value={item.code}>{item.name}</option>
+                        )))}
+                    </select>
+                  </label>
+                  <label className="text-[11px] font-bold text-slate-600">
+                    Tìm
+                    <input
+                      type="text"
+                      value={expenseFilter.query}
+                      onChange={(event) => setExpenseFilter((current) => ({ ...current, query: event.target.value }))}
+                      placeholder="Mã chứng từ, diễn giải, đối tác, TK"
+                      className="mt-1 block h-9 w-[240px] rounded-lg border border-slate-300 bg-white px-3 text-sm font-normal"
+                    />
+                  </label>
+                  {expenseFilterActive && (
+                    <button
+                      type="button"
+                      onClick={() => setExpenseFilter(emptyExpenseDetailFilter)}
+                      className="h-9 rounded-lg border border-slate-300 bg-white px-3 text-xs font-bold text-slate-600 hover:bg-slate-50"
+                    >
+                      Bỏ lọc
+                    </button>
+                  )}
+                  <div className="ml-auto text-right">
+                    <p className="text-sm font-bold text-slate-900">{expenseDetailRows.length} dòng · {money(expenseDetailTotal)} đ</p>
+                    {expenseFilterActive ? (
+                      <p className="text-[11px] text-slate-500">Theo bộ lọc · toàn kỳ {money(data.expenseSummary.postedTotal)} đ</p>
+                    ) : Math.abs(expenseDetailTotal - data.expenseSummary.postedTotal) <= expenseDetailRows.length ? (
+                      <p className="text-[11px] font-semibold text-emerald-700 inline-flex items-center gap-1">
+                        <span className="material-symbols-outlined text-sm">check_circle</span>
+                        Khớp Tổng chi phí đã vào sổ
+                      </p>
+                    ) : (
+                      <p className="text-[11px] font-semibold text-rose-700">Lệch {money(expenseDetailTotal - data.expenseSummary.postedTotal)} đ so với tổng đã vào sổ</p>
+                    )}
+                  </div>
+                </div>
+                <div className="max-h-[640px] overflow-auto">
+                  <table id="expense-detail-table" className="w-full text-left text-sm">
+                    <thead className="sticky top-0 z-10 bg-slate-50 text-[10px] font-bold text-slate-500 uppercase tracking-wider border-b border-slate-100">
+                      <tr>
+                        <th className="px-4 py-2.5 whitespace-nowrap">Ngày</th>
+                        <th className="px-4 py-2.5">Chứng từ</th>
+                        <th className="px-4 py-2.5">Loại phiếu</th>
+                        <th className="px-4 py-2.5">Diễn giải</th>
+                        <th className="px-4 py-2.5">Hạng mục P&L</th>
+                        <th className="px-4 py-2.5">Tài khoản</th>
+                        <th className="px-4 py-2.5 text-right">Số tiền (đ)</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {expenseDetailRows.length === 0 && (
+                        <tr>
+                          <td colSpan={7} className="px-4 py-8 text-center text-slate-400">Không có bút toán nào theo bộ lọc này.</td>
+                        </tr>
+                      )}
+                      {expenseDetailRows.map((row) => (
+                        <tr key={row.id} className="hover:bg-slate-50/40 transition-colors align-top">
+                          <td className="px-4 py-2 whitespace-nowrap text-slate-700">{new Date(`${row.date}T00:00:00Z`).toLocaleDateString("vi-VN", { timeZone: "UTC" })}</td>
+                          <td className="px-4 py-2 whitespace-nowrap">
+                            <a href={row.href} className="font-bold text-indigo-700 hover:underline" title={`Mở ${row.sourceLabel}`}>{row.sourceCode || row.entryCode}</a>
+                            {row.sourceCode && <p className="text-[11px] text-slate-400">{row.entryCode}</p>}
+                          </td>
+                          <td className="px-4 py-2 whitespace-nowrap text-slate-700">{row.sourceLabel}</td>
+                          <td className="px-4 py-2 max-w-[360px] text-slate-700">
+                            <span className="line-clamp-2" title={row.description}>{row.description || "-"}</span>
+                            {(row.partnerCode || row.departmentCode) && (
+                              <p className="text-[11px] text-slate-400">{[row.partnerCode, row.departmentCode].filter(Boolean).join(" · ")}</p>
+                            )}
+                          </td>
+                          <td className={`px-4 py-2 ${row.itemCode === "UNCLASSIFIED" ? "text-amber-700 font-semibold" : "text-slate-700"}`}>
+                            {row.itemName}
+                            <p className="text-[11px] font-normal text-slate-400">{row.lineLabel}</p>
+                          </td>
+                          <td className="px-4 py-2 whitespace-nowrap text-slate-600" title={row.accountName}>{row.accountCode}</td>
+                          <td className={`px-4 py-2 text-right font-bold whitespace-nowrap ${row.amount < 0 ? "text-rose-700" : "text-slate-900"}`}>{money(row.amount)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot className="sticky bottom-0 bg-slate-50/95 border-t border-slate-200 font-bold text-slate-900">
+                      <tr>
+                        <td colSpan={6} className="px-4 py-3">{expenseFilterActive ? "Cộng theo bộ lọc" : "Tổng chi phí đã vào sổ"} ({expenseDetailRows.length} dòng)</td>
+                        <td className="px-4 py-3 text-right">{money(expenseDetailTotal)}</td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </section>
             )}
 
             <section className="bg-white border border-slate-200 rounded-2xl shadow-lg overflow-hidden">

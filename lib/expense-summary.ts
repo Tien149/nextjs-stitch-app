@@ -23,6 +23,29 @@ export type ExpenseSourceRow = { key: string; label: string; hint: string; href:
 export type ExpenseItemRow = { code: string; name: string; amount: number };
 export type ExpenseLineRow = { key: PnlLineKey; label: string; amount: number; items: ExpenseItemRow[] };
 export type ExpensePendingRow = { key: string; label: string; hint: string; href: string; count: number; amount: number };
+/**
+ * Một dòng Nợ tài khoản chi phí trên sổ nhật ký, kèm đủ nhãn để bảng chi tiết lọc được theo
+ * loại phiếu (nguồn phát sinh) và hạng mục P&L. Cộng hết `details` ra đúng postedTotal.
+ */
+export type ExpenseDetailRow = {
+  id: string;
+  entryCode: string;
+  date: string;
+  sourceKey: string;
+  sourceLabel: string;
+  sourceCode: string | null;
+  href: string;
+  description: string;
+  lineKey: PnlLineKey;
+  lineLabel: string;
+  itemCode: string;
+  itemName: string;
+  accountCode: string;
+  accountName: string;
+  partnerCode: string | null;
+  departmentCode: string | null;
+  amount: number;
+};
 export type ExpenseSummary = {
   period: string;
   branchCode: string;
@@ -31,6 +54,7 @@ export type ExpenseSummary = {
   bySource: ExpenseSourceRow[];
   byLine: ExpenseLineRow[];
   pending: ExpensePendingRow[];
+  details: ExpenseDetailRow[];
 };
 
 export const EXPENSE_LINE_LABELS: Record<PnlLineKey, string> = {
@@ -86,7 +110,28 @@ export async function getExpenseSummary(period: string, branchCode: string): Pro
   const [entries, pnlItems, pnlGroups, draftVouchers, approvedVouchers, plannedSchedules, depreciations, payrollRows] = await Promise.all([
     prisma.journalEntry.findMany({
       where: { entryDate: { gte: start, lt: end }, status: "POSTED", ...branchFilter },
-      select: { sourceType: true, sourceId: true, lines: { select: { debit: true, credit: true, pnlItemCode: true, account: { select: { accountType: true, reportGroup: true } } } } },
+      select: {
+        id: true,
+        code: true,
+        entryDate: true,
+        sourceType: true,
+        sourceId: true,
+        sourceCode: true,
+        description: true,
+        lines: {
+          select: {
+            id: true,
+            debit: true,
+            credit: true,
+            pnlItemCode: true,
+            description: true,
+            partnerCode: true,
+            departmentCode: true,
+            account: { select: { code: true, name: true, accountType: true, reportGroup: true } },
+          },
+        },
+      },
+      orderBy: [{ entryDate: "asc" }, { code: "asc" }],
     }),
     prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true, subGroup: true, status: true } }),
     prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true } }),
@@ -114,6 +159,7 @@ export async function getExpenseSummary(period: string, branchCode: string): Pro
 
   const sourceTotals = new Map<string, { entries: number; amount: number }>();
   const lineTotals = new Map<PnlLineKey, { amount: number; items: Map<string, ExpenseItemRow> }>();
+  const details: ExpenseDetailRow[] = [];
   let postedTotal = 0;
   for (const entry of entries) {
     const group = sourceGroupOf(entry.sourceType, voucherChannelById.get(entry.sourceId));
@@ -134,6 +180,26 @@ export async function getExpenseSummary(period: string, branchCode: string): Pro
       item.amount += amount;
       bucket.items.set(code, item);
       lineTotals.set(lineKey, bucket);
+      // Cùng một vòng lặp với số tổng nên bảng chi tiết không bao giờ lệch hai bảng gom.
+      details.push({
+        id: line.id,
+        entryCode: entry.code,
+        date: entry.entryDate.toISOString().slice(0, 10),
+        sourceKey: group.key,
+        sourceLabel: group.label,
+        sourceCode: entry.sourceCode,
+        href: group.href(branchCode),
+        description: line.description || entry.description,
+        lineKey,
+        lineLabel: EXPENSE_LINE_LABELS[lineKey],
+        itemCode: code,
+        itemName: item.name,
+        accountCode: line.account.code,
+        accountName: line.account.name,
+        partnerCode: line.partnerCode,
+        departmentCode: line.departmentCode,
+        amount: round(amount),
+      });
     }
     if (entryAmount === 0) continue;
     postedTotal += entryAmount;
@@ -183,5 +249,6 @@ export async function getExpenseSummary(period: string, branchCode: string): Pro
     bySource,
     byLine,
     pending,
+    details,
   };
 }
