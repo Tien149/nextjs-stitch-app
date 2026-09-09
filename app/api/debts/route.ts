@@ -721,6 +721,9 @@ export async function DELETE(request: Request) {
 
     for (const current of targets) {
       await softDeleteRecord({ model: "DebtRecord", id: current.id, session: auth.session, reason });
+      // Khoản phải trả khai tay đã ghi nhận chi phí (Nợ hạng mục / Có 331) khi đồng bộ ghi sổ.
+      // Xoá khoản nợ mà để bút toán lại thì chi phí vẫn nằm trên P&L, không cách nào gỡ.
+      await prisma.journalEntry.deleteMany({ where: { sourceType: "DEBT_PAYABLE", sourceId: current.id } });
     }
     return NextResponse.json({ ok: true, deleted: targets.map((row) => row.code) });
   } catch (error) {

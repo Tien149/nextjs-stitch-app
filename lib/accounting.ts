@@ -373,6 +373,43 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
     results.push(await postJournalEntry({ entryDate: row.voucherDate, branchCode: row.branchCode, sourceType: "VOUCHER", sourceId: row.id, sourceCode: row.code, description: row.description, createdBy: actor, lines }));
   }
 
+  /**
+   * Công nợ phải trả khai tay ở màn Công nợ Đối tác: chi phí ĐÃ phát sinh nhưng chưa trả tiền.
+   * Không ghi sổ ở đây thì khoản đó không có mặt ở bất kỳ báo cáo nào — phiếu chi trả nợ sau
+   * này chỉ ghi Nợ 331 ("trả nợ, không phải chi phí mới") nên chi phí biến mất luôn, còn Hạng
+   * mục P&L khai trên khoản nợ thì chỉ nằm để nhìn.
+   *
+   * CHỈ lấy `sourceType = MANUAL`. Công nợ sinh tự động (lương, tài sản, nhập mua, điều chuyển
+   * chi phí, điều chuyển kho) chỉ là VẾ PHẢI TRẢ của một nghiệp vụ đã có bút toán chi phí riêng,
+   * còn công nợ đầu kỳ (IMPORT / DEBT_OPENING) là số dư mang sang — ghi thêm ở đây là tính chi
+   * phí hai lần. Số tiền lấy `originalAmount`: chi phí ghi nhận một lần theo số gốc, các lần
+   * trả tiền sau đó chỉ rút dần 331 xuống.
+   */
+  const manualPayables = await prisma.debtRecord.findMany({
+    where: { ...branchFilter, debtType: "PAYABLE", sourceType: "MANUAL", documentDate: { gte: start, lt: end } },
+  });
+  for (const row of manualPayables) {
+    const debtGroup = row.pnlItemCode
+      ? pnlItemGroupByCode.get(row.pnlItemCode) ?? null
+      : (row.categoryCode ? categoryGroupByCode.get(row.categoryCode) ?? null : null);
+    // Cùng luật với phiếu chi: nhóm của hạng mục quyết định khoản nợ này là giá vốn, chi phí
+    // vận hành hay tiền mua tài sản (không vào P&L).
+    const debitAccount = debtGroup === "CAPEX" ? "211" : debtGroup === "COGS" ? "632" : "6428";
+    results.push(await postJournalEntry({
+      entryDate: row.documentDate,
+      branchCode: row.branchCode,
+      sourceType: "DEBT_PAYABLE",
+      sourceId: row.id,
+      sourceCode: row.code,
+      description: row.description,
+      createdBy: actor,
+      lines: [
+        { accountCode: debitAccount, debit: row.originalAmount, partnerCode: row.partnerCode, categoryCode: row.categoryCode, pnlItemCode: row.pnlItemCode },
+        { accountCode: "331", credit: row.originalAmount, partnerCode: row.partnerCode },
+      ],
+    }));
+  }
+
   // Điều chuyển có chênh lệch phải giảm đủ nguồn đi, tăng nguồn nhận theo số thực chuyển
   // và đưa phần chênh vào chi phí. Cùng một logic áp dụng cho phí ví và làm tròn tiền nộp.
   //

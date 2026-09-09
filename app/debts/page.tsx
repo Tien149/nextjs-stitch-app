@@ -864,6 +864,10 @@ export default function DebtsPage() {
               <p className="mt-1 text-xs text-slate-500">
                 Khai khoản phải trả đã phát sinh chi phí nhưng chưa thanh toán, hoặc công nợ nội bộ giữa hai nhà hàng.
                 Khi thanh toán, phiếu chi/sao kê gạch thẳng vào mã công nợ này.
+                <span className="mt-1 block font-medium text-amber-700">
+                  Khoản phải trả vào chi phí ngay theo ngày chứng từ (sau khi Đồng bộ ghi sổ). Lúc trả tiền nhớ chọn
+                  &ldquo;Thanh toán công nợ&rdquo; trên phiếu chi — khai như phiếu chi thường sẽ tính chi phí hai lần.
+                </span>
               </p>
             </div>
             <div className="grid grid-cols-2 gap-3 p-5">

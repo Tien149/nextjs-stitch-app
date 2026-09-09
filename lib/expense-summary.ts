@@ -93,6 +93,7 @@ const SOURCE_GROUPS: Record<string, SourceGroup> = {
   DEPRECIATION: { key: "DEPRECIATION", label: "Khấu hao tài sản", hint: "Khấu hao đã chạy cho kỳ này", href: () => "/assets/operations" },
   PAYROLL: { key: "PAYROLL", label: "Lương nhân sự", hint: "Bảng lương đã import cho kỳ này", href: () => "/imports?tab=payroll" },
   COST_REALLOCATION: { key: "COST_REALLOCATION", label: "Điều chuyển chi phí liên nhà hàng", hint: "Nhà hàng nhận chi phí tăng, nhà hàng gánh hộ giảm", href: () => "/cost-reallocations" },
+  DEBT_PAYABLE: { key: "DEBT_PAYABLE", label: "Công nợ phải trả", hint: "Chi phí đã phát sinh, ghi nhận bên Công nợ Đối tác và chưa trả tiền", href: () => "/debts" },
   INVENTORY: { key: "INVENTORY", label: "Xuất kho / hủy hàng", hint: "Giá vốn xuất kho và hàng hủy đã vào sổ", href: () => "/inventory" },
   ASSET: { key: "ASSET", label: "Sửa chữa / thanh lý tài sản", hint: "Chi phí phát sinh từ nghiệp vụ tài sản", href: () => "/assets/operations" },
   REVENUE_POS: { key: "REVENUE_POS", label: "Phí kèm doanh thu POS", hint: "Chi phí tách ra khi ghi nhận doanh thu POS", href: () => "/imports" },
@@ -116,7 +117,7 @@ const round = (value: number) => Math.round(value);
 export async function getExpenseSummary(period: string, branchCode: string): Promise<ExpenseSummary> {
   const { start, end } = periodBounds(period);
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
-  const [entries, pnlItems, pnlGroups, draftVouchers, approvedVouchers, plannedSchedules, depreciations, payrollRows, payrollDeptRows] = await Promise.all([
+  const [entries, pnlItems, pnlGroups, draftVouchers, approvedVouchers, plannedSchedules, depreciations, payrollRows, payrollDeptRows, manualPayables] = await Promise.all([
     prisma.journalEntry.findMany({
       where: { entryDate: { gte: start, lt: end }, status: "POSTED", ...branchFilter },
       select: {
@@ -152,6 +153,9 @@ export async function getExpenseSummary(period: string, branchCode: string): Pro
     prisma.assetDepreciation.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { asset: { branchCode } }) }, select: { id: true, depreciationAmount: true } }),
     prisma.payrollImportRow.findMany({ where: { period, ...branchFilter }, select: { id: true, baseSalary: true, allowanceAmount: true, bonusAmount: true } }),
     prisma.payrollDepartmentRow.findMany({ where: { period, ...branchFilter }, select: { id: true, totalCompanyCost: true } }),
+    // Công nợ phải trả khai tay là chi phí đã phát sinh; chỉ thành bút toán sau khi Đồng bộ ghi
+    // sổ, nên khoản chưa ghi sổ phải hiện ở khối chờ hạch toán chứ không im lặng biến mất.
+    prisma.debtRecord.findMany({ where: { ...branchFilter, debtType: "PAYABLE", sourceType: "MANUAL", documentDate: { gte: start, lt: end } }, select: { id: true, originalAmount: true } }),
   ]);
 
   const pnlItemByCode = new Map(pnlItems.map((item) => [item.code, item]));
@@ -254,6 +258,7 @@ export async function getExpenseSummary(period: string, branchCode: string): Pro
   const unpostedDepreciation = depreciations.filter((row) => !postedSourceIds.has(`DEPRECIATION:${row.id}`));
   const unpostedPayroll = payrollRows.filter((row) => !postedSourceIds.has(`PAYROLL:${row.id}`));
   const unpostedDeptPayroll = payrollDeptRows.filter((row) => !postedSourceIds.has(`PAYROLL_DEPARTMENT:${row.id}`));
+  const unpostedPayables = manualPayables.filter((row) => !postedSourceIds.has(`DEBT_PAYABLE:${row.id}`));
   const pendingCandidates: ExpensePendingRow[] = [
     { key: "VOUCHER_DRAFT", label: "Phiếu chi chưa duyệt", hint: "Phiếu chi còn nháp / chờ duyệt; duyệt xong mới thành chi phí", href: SOURCE_GROUPS.VOUCHER_CASH.href(branchCode), count: draftVouchers.length, amount: round(sum(draftVouchers.map((row) => row.amount))) },
     { key: "VOUCHER_UNPOSTED", label: "Phiếu chi đã duyệt nhưng chưa ghi sổ", hint: "Chạy hạch toán kỳ trên Sổ cái để đưa vào bút toán", href: "/accounting", count: unpostedApproved.length, amount: round(sum(unpostedApproved.map((row) => row.amount))) },
@@ -270,6 +275,14 @@ export async function getExpenseSummary(period: string, branchCode: string): Pro
         sum(unpostedPayroll.map((row) => row.baseSalary + row.allowanceAmount + row.bonusAmount))
         + sum(unpostedDeptPayroll.map((row) => row.totalCompanyCost)),
       ),
+    },
+    {
+      key: "DEBT_PAYABLE_UNPOSTED",
+      label: "Công nợ phải trả chưa ghi sổ",
+      hint: "Khoản phải trả khai tay đã ghi nhận chi phí; chạy hạch toán kỳ trên Sổ cái để vào bút toán",
+      href: "/accounting",
+      count: unpostedPayables.length,
+      amount: round(sum(unpostedPayables.map((row) => row.originalAmount))),
     },
   ];
   const pending = pendingCandidates.filter((row) => row.count > 0);
