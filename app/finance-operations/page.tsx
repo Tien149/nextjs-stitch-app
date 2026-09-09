@@ -42,6 +42,8 @@ type MoneyTransfer = {
   depositTargetType?: string | null;
   sourceReportDate?: string | null;
   sourceShift?: string | null;
+  /** Người bấm duyệt — hiện ở bảng phiếu đã duyệt để biết hỏi ai trước khi mở lại. */
+  approvedBy?: string | null;
   denominations?: MoneyTransferDenomination[];
 };
 type OpeningBasis = { anchorPeriod: string | null; declaredThisPeriod: boolean };
@@ -287,6 +289,11 @@ export default function FinanceOperationsPage() {
   }, [data.moneyTransfers, normalizedTransferQuery]);
   const pendingCashDeposits = useMemo(
     () => data.moneyTransfers.filter((row) => row.status === "PENDING_REVIEW" && row.transferPurpose === "CASH_DEPOSIT"),
+    [data.moneyTransfers],
+  );
+  /** Phiếu nộp tiền đã duyệt trong kỳ — nơi duy nhất mở lại được khi duyệt xong mới thấy sai. */
+  const approvedCashDeposits = useMemo(
+    () => data.moneyTransfers.filter((row) => row.status === "APPROVED" && row.transferPurpose === "CASH_DEPOSIT"),
     [data.moneyTransfers],
   );
   const activeSelectedCashDepositIds = useMemo(() => {
@@ -1067,6 +1074,87 @@ export default function FinanceOperationsPage() {
                         </tr>
                       </tfoot>
                     )}
+                  </table>
+                </div>
+              </section>
+            )}
+
+            {approvedCashDeposits.length > 0 && (
+              <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50 px-5 py-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900">Phiếu nộp tiền đã duyệt</h3>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      Duyệt xong mới thấy sai thì bấm Mở lại: phiếu quay về chờ duyệt để sửa, bút toán đã ghi sổ được gỡ theo.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="rounded-full bg-white px-2.5 py-1 text-xs font-bold text-slate-700">{approvedCashDeposits.length}</span>
+                    <ExportExcelButton fileName="nop_tien_da_duyet" sheetName="Da duyet" targetId="approved-cash-deposit-table" />
+                  </div>
+                </div>
+                <div id="approved-cash-deposit-table" className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-50 text-slate-500">
+                      <tr>
+                        <th className="px-4 py-3">Ngày / Mã</th>
+                        <th className="px-4 py-3">Ngày thực tế nộp tiền</th>
+                        <th className="px-4 py-3">Từ nguồn</th>
+                        <th className="px-4 py-3">Đến nguồn</th>
+                        <th className="px-4 py-3 text-right">Số tiền</th>
+                        <th className="px-4 py-3 text-right">Thao tác</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {approvedCashDeposits.map((transfer) => (
+                        <tr key={transfer.id}>
+                          <td className="px-4 py-3">
+                            <CopyableText value={transfer.code}><b>{transfer.code}</b></CopyableText>
+                            <p className="text-slate-500">{new Date(transfer.transferDate).toLocaleDateString("vi-VN")}</p>
+                            <p className="mt-1 inline-flex rounded bg-blue-50 px-2 py-0.5 text-[11px] font-bold text-blue-700">
+                              {cashDepositTargetLabels[transfer.depositTargetType || ""] || "Nộp tiền"} · {shiftLabels[transfer.sourceShift || ""] || transfer.sourceShift}
+                            </p>
+                          </td>
+                          <td className="px-4 py-3 text-slate-500">
+                            {transfer.actualTransferDate ? new Date(transfer.actualTransferDate).toLocaleDateString("vi-VN", { timeZone: "UTC" }) : "—"}
+                            {transfer.approvedBy && <p className="mt-1 text-[11px] text-slate-400">Duyệt bởi {transfer.approvedBy}</p>}
+                          </td>
+                          <td className="px-4 py-3">{transfer.fromMoneySourceCode}</td>
+                          <td className="px-4 py-3">
+                            <p>{transfer.toMoneySourceCode}</p>
+                            {transfer.denominations && transfer.denominations.length > 0 && (
+                              <p className="mt-1 text-[11px] font-medium text-slate-500">
+                                {transfer.denominations.map((row) => `${money(row.denomination)} x ${row.quantity}`).join(", ")}
+                              </p>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <p className="font-bold">{money(transfer.amount)} đ</p>
+                            {transfer.feeAmount !== 0 && (
+                              <p className={`mt-1 text-[11px] font-medium ${transfer.feeAmount > 0 ? "text-amber-700" : "text-emerald-700"}`}>
+                                {transferFeeLabels(transfer, moneySourceNameByCode.get(transfer.fromMoneySourceCode)).map((line) => `${line.label}: ${money(line.amount)} đ`).join(" · ")} · Clear: {money(transfer.amount + transfer.feeAmount)} đ
+                              </p>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            {canApproveTransfer ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const reason = window.prompt(`Lý do mở lại phiếu ${transfer.code}?`);
+                                  if (reason) void send({ action: "REOPEN_CASH_DEPOSIT_TRANSFER", id: transfer.id, reason }, `Đã mở lại phiếu ${transfer.code}, phiếu đang chờ duyệt để sửa.`);
+                                }}
+                                className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 font-bold text-amber-800 hover:bg-amber-100"
+                              >
+                                Mở lại
+                              </button>
+                            ) : (
+                              <span className="text-slate-400">Chờ Admin</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
                   </table>
                 </div>
               </section>

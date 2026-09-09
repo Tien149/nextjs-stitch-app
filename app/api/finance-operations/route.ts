@@ -636,6 +636,74 @@ export async function POST(request: Request) {
       return NextResponse.json(result);
     }
 
+    /**
+     * Mở lại một phiếu nộp tiền đã duyệt để sửa.
+     *
+     * Duyệt xong mới phát hiện sai (nhầm quỹ nguồn, nhầm nơi nhận, bảng kê mệnh giá sai) thì
+     * trước đây không còn đường lui: nút Sửa chỉ ăn phiếu chờ duyệt, mà Hủy cũng chỉ hủy được
+     * phiếu chờ duyệt. Mở lại đưa phiếu về đúng trạng thái chờ duyệt để dùng lại nút Sửa sẵn có.
+     *
+     * Duyệt phiếu nộp tiền không sinh công nợ hay đối soát (những thứ đó là của phiếu liên nhà
+     * hàng và quyết toán ví), nên hệ quả duy nhất phải trả lại là bút toán đã ghi sổ. Không xoá
+     * thì bút toán treo lại trong sổ cái trong khi phiếu đã quay về chờ duyệt, sổ quỹ và sổ cái
+     * lệch nhau.
+     */
+    if (action === "REOPEN_CASH_DEPOSIT_TRANSFER") {
+      const auth = requireMenuAction(request, menuHref, "approve");
+      if (!auth.ok) return auth.response;
+      const id = cleanText(body.id);
+      const reason = cleanText(body.reason);
+      if (!reason) businessError("Mở lại phiếu nộp tiền bắt buộc nhập lý do.");
+
+      const transfer = await prisma.moneyTransfer.findUnique({ where: { id } });
+      if (!transfer || transfer.deletedAt) businessError("Không tìm thấy phiếu nộp tiền.");
+      assertBranchAccess(auth.session, transfer.branchCode);
+      if (transfer.transferPurpose !== "CASH_DEPOSIT") {
+        businessError("Chỉ mở lại được phiếu nộp tiền mặt. Phiếu điều tiền liên nhà hàng và quyết toán ví còn kéo theo công nợ/đối soát nên phải xử lý ở đúng luồng của nó.");
+      }
+      if (transfer.status !== "APPROVED") businessError("Chỉ mở lại được phiếu đã duyệt.");
+      // Khoá theo cả hai ngày: bút toán ghi ở ngày thực tế nộp, còn phiếu thuộc kỳ của ngày lập.
+      // Mở lại mà một trong hai kỳ đã khoá thì bút toán xoá đi không dựng lại được.
+      if (await isPeriodLocked(transfer.transferDate, transfer.branchCode)) businessError("Kỳ kế toán của ngày lập phiếu đã khóa, không thể mở lại.");
+      if (await isPeriodLocked(effectiveMoneyTransferDate(transfer), transfer.branchCode)) businessError("Kỳ kế toán của ngày thực tế nộp tiền đã khóa, không thể mở lại.");
+
+      const result = await prismaRaw.$transaction(async (tx) => {
+        const updated = await tx.moneyTransfer.updateMany({
+          where: { id, status: "APPROVED", transferPurpose: "CASH_DEPOSIT", deletedAt: null },
+          data: { status: "PENDING_REVIEW", actualTransferDate: null, approvedBy: null, approvedAt: null },
+        });
+        if (updated.count !== 1) businessError("Phiếu vừa được người khác xử lý, vui lòng tải lại danh sách.");
+        await tx.journalEntry.deleteMany({
+          where: { sourceType: { in: ["MONEY_TRANSFER", "MONEY_TRANSFER_COUNTERPART"] }, sourceId: id },
+        });
+        return tx.moneyTransfer.findUniqueOrThrow({ where: { id } });
+      });
+
+      await writeAuditLog({
+        session: auth.session,
+        module: "FINANCE_OPERATIONS",
+        action: "REOPEN_CASH_DEPOSIT_TRANSFER",
+        entityType: "MoneyTransfer",
+        entityId: result.id,
+        entityCode: result.code,
+        branchCode: result.branchCode,
+        message: reason,
+        metadata: {
+          statusBefore: "APPROVED",
+          statusAfter: "PENDING_REVIEW",
+          previousApprovedBy: transfer.approvedBy,
+          previousApprovedAt: transfer.approvedAt,
+          previousActualTransferDate: transfer.actualTransferDate,
+          amount: transfer.amount,
+          feeAmount: transfer.feeAmount,
+          from: transfer.fromMoneySourceCode,
+          to: transfer.toMoneySourceCode,
+          reason,
+        },
+      });
+      return NextResponse.json(result);
+    }
+
     if (action === "CREATE_CASH_DEPOSIT_TRANSFER") {
       // Phiếu nộp tiền lập từ màn "Thu chi ngày" nên thu ngân (chỉ được xem Sổ quỹ) vẫn phải tạo được.
       const auth = requireCashDepositCreate(request);
