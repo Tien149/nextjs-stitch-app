@@ -109,7 +109,10 @@ export async function validateOpeningBalanceInput(tx: Prisma.TransactionClient, 
   if (input.balanceType === "ASSET" && input.unitCost !== null && input.unitCost < 0) {
     throw new Error("Đơn giá tài sản đầu kỳ không được âm");
   }
-  if (input.balanceType === "PREPAID_EXPENSE" && (!input.objectCode || !input.allocationStartPeriod || !input.allocationMonths || input.allocationMonths <= 1)) {
-    throw new Error("Chi phí phân bổ cần mã, kỳ bắt đầu và số kỳ lớn hơn 1");
+  // Số kỳ = 1 hợp lệ: phần đuôi còn lại đúng một tháng của một khoản trả trước cũ vẫn là số dư
+  // đầu kỳ phải khai. Khác với phiếu chi trả trước (bắt từ 2 kỳ) vì ở đó một kỳ nghĩa là chi phí
+  // thường của chính tháng đang chi.
+  if (input.balanceType === "PREPAID_EXPENSE" && (!input.objectCode || !input.allocationStartPeriod || !input.allocationMonths || input.allocationMonths < 1)) {
+    throw new Error("Chi phí phân bổ cần mã, kỳ bắt đầu và số kỳ từ 1 trở lên");
   }
 }

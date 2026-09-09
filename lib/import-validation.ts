@@ -1348,7 +1348,7 @@ export async function validateImportResult(
       }
       if (balanceType === "PREPAID_EXPENSE") {
         validatePeriod(row, "allocation_start_period", "Kỳ bắt đầu phân bổ");
-        if (numberValue(row.values.allocation_months) <= 1) addError(row, "Chi phí phân bổ đầu kỳ cần số kỳ phân bổ > 1");
+        if (numberValue(row.values.allocation_months) < 1) addError(row, "Chi phí phân bổ đầu kỳ cần số kỳ phân bổ từ 1 trở lên");
       }
     }
     if (importType === "REVENUE_POS") {

@@ -332,8 +332,10 @@ export default function OpeningBalancesPage() {
       return;
     }
 
-    if (isPrepaidType && (!form.objectCode || !form.allocationStartPeriod || Number(form.allocationMonths) <= 1)) {
-      setMessage("Đối với chi phí phân bổ, bắt buộc nhập mã chi phí, số kỳ > 1 và kỳ bắt đầu.");
+    // Số kỳ phân bổ nhận từ 1: khoản còn đúng một tháng cuối vẫn phải khai được ở đầu kỳ,
+    // chặn từ 2 thì kế toán không có chỗ nhập phần đuôi của chi phí trả trước cũ.
+    if (isPrepaidType && (!form.objectCode || !form.allocationStartPeriod || Number(form.allocationMonths) < 1)) {
+      setMessage("Đối với chi phí phân bổ, bắt buộc nhập mã chi phí, số kỳ từ 1 trở lên và kỳ bắt đầu.");
       return;
     }
 
@@ -856,6 +858,8 @@ export default function OpeningBalancesPage() {
                     Số kỳ phân bổ (Tháng) *
                     <input
                       type="number"
+                      min="1"
+                      step="1"
                       value={form.allocationMonths}
                       onChange={(event) => setForm((value) => ({ ...value, allocationMonths: event.target.value }))}
                       className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500"
