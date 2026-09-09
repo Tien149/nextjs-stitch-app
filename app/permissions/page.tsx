@@ -428,32 +428,42 @@ export default function PermissionsPage() {
   };
 
   /**
-   * Bật/tắt một tab con. Vai trò đang được gán nguyên trang thì lần đầu bỏ tick một tab
-   * sẽ chuyển sang liệt kê từng tab còn lại, để không vô tình cắt hết quyền.
+   * Tập tab thực sự mở được của một trang, đúng luật allowedMenuTabs bên lib/auth-demo:
+   * có mục "?tab=" thì phạm vi đúng bằng những tab đó, không có mục nào thì mục "trần"
+   * ("/reports") mở toàn bộ tab. Ma trận phải đọc theo luật này, nếu không tick một tab
+   * mà vẫn còn mục trần sẽ hiện cả 12 tab đều "Có" trong khi thực tế chỉ mở được vài tab.
+   */
+  const effectiveTabIdsOf = (role: RoleItem, menuHref: string) => {
+    const access = currentMenuAccessOf(role);
+    const all = moduleTabs[menuHref] || [];
+    const picked = access
+      .filter((entry) => menuBasePathOf(entry) === menuHref && entry.includes("?"))
+      .map((entry) => new URLSearchParams(entry.split("?")[1] || "").get("tab"))
+      .filter((tab): tab is string => Boolean(tab));
+    if (picked.length > 0) return new Set(picked);
+    return new Set(access.includes(menuHref) ? all.map((tab) => tab.id) : []);
+  };
+
+  /**
+   * Bật/tắt một tab con: dựng lại toàn bộ mục của trang theo tập tab sau khi tick, thay vì
+   * chắp thêm mục. Đủ tab thì chỉ giữ mục trần; còn thiếu tab thì chỉ liệt kê "?tab=" —
+   * không kèm mục trần, vì mục trần đồng nghĩa "mở mọi tab". Mục cha vẫn hiện ngoài menu
+   * nhờ luật trong canAccessMenu (một mục "?tab=" không phải menu riêng là đủ).
    */
   const handleToggleTabAccess = async (role: RoleItem, menuHref: string, tabId: string) => {
     if (role.name === "Admin") return;
     const all = moduleTabs[menuHref] || [];
     const current = currentMenuAccessOf(role);
-    const tabEntry = `${menuHref}?tab=${tabId}`;
-    const hasWholePage = current.includes(menuHref);
-    const checked = hasWholePage || current.includes(tabEntry);
+    const picked = effectiveTabIdsOf(role, menuHref);
+    if (picked.has(tabId)) picked.delete(tabId);
+    else picked.add(tabId);
 
-    const tabEntries = all.map((tab) => `${menuHref}?tab=${tab.id}`);
+    const rest = current.filter((entry) => menuBasePathOf(entry) !== menuHref);
     let next: string[];
-    if (checked) {
-      const remaining = tabEntries.filter((entry) => (hasWholePage || current.includes(entry)) && entry !== tabEntry);
-      next = [...current.filter((entry) => !tabEntries.includes(entry)), ...remaining];
-      // Bỏ tick tab cuối cùng thì gỡ luôn menu khỏi vai trò.
-      if (remaining.length === 0) next = next.filter((entry) => entry !== menuHref);
-    } else {
-      next = [...current, tabEntry];
-    }
-    // Menu cha luôn phải còn để mục này hiện ngoài thanh menu; bật đủ tab thì chỉ cần menu cha.
-    if (next.some((entry) => tabEntries.includes(entry)) && !next.includes(menuHref)) next.push(menuHref);
-    if (tabEntries.every((entry) => next.includes(entry))) {
-      next = next.filter((entry) => !tabEntries.includes(entry));
-    }
+    if (picked.size === 0) next = rest; // bỏ tick tab cuối cùng thì gỡ luôn trang khỏi vai trò
+    else if (picked.size >= all.length) next = [...rest, menuHref];
+    else next = [...rest, ...all.filter((tab) => picked.has(tab.id)).map((tab) => `${menuHref}?tab=${tab.id}`)];
+
     await saveMenuAccess(role, [...new Set(next)]);
   };
 
@@ -774,8 +784,7 @@ export default function PermissionsPage() {
                       </td>
                       {rolesList.map((r) => {
                         const isAdmin = r.name === "Admin";
-                        const access = currentMenuAccessOf(r);
-                        const isTabChecked = isAdmin || access.includes(item.href) || access.includes(`${item.href}?tab=${tab.id}`);
+                        const isTabChecked = isAdmin || effectiveTabIdsOf(r, item.href).has(tab.id);
                         return (
                           <td key={r.id} className="px-4 py-2">
                             <label
