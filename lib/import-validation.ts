@@ -1449,7 +1449,8 @@ export async function validateImportResult(
       const isDepartmentPayroll = row.values.total_company_cost !== undefined;
       if (isDepartmentPayroll) {
         // Đúng công thức khách khai trong file: tổng bảy cột từ lương theo giờ công đến
-        // bảo hiểm công ty chịu. Lương tháng theo hợp đồng nằm ngoài, chỉ để tham chiếu.
+        // bảo hiểm công ty chịu. Lương tháng theo hợp đồng và bảo hiểm bắt buộc (người lao
+        // động tự đóng) nằm ngoài, không phải tiền công ty bỏ ra.
         const companyCost = numberValue(row.values.hourly_salary)
           + numberValue(row.values.meal_allowance)
           + numberValue(row.values.parking_allowance)
@@ -1461,11 +1462,26 @@ export async function validateImportResult(
         if (Math.abs(companyCost - declaredCost) > 1) {
           addError(row, "TỔNG CHI PHÍ CÔNG TY không khớp tổng các cột từ Tổng lương theo giờ công đến Bảo hiểm (công ty chịu)");
         }
+        // Bảo hiểm bắt buộc trừ vào lương người lao động nên nằm ngoài công thức trên; nó chỉ
+        // đi cùng bảo hiểm công ty chịu thành khoản phải trả cơ quan BHXH.
+        const companyInsurance = numberValue(row.values.company_insurance);
+        const mandatoryInsurance = numberValue(row.values.mandatory_insurance);
+        if (mandatoryInsurance < 0) addError(row, "Bảo hiểm bắt buộc không được âm");
+        if (companyInsurance < 0) addError(row, "Bảo hiểm (công ty chịu) không được âm");
         const netAmount = numberValue(row.values.net_amount);
         if (netAmount <= 0) addError(row, "LƯƠNG THỰC NHẬN phải lớn hơn 0");
-        // Thực nhận lớn hơn tiền công ty bỏ ra là sai số liệu: phần chênh chính là các khoản
-        // công ty chịu hộ, không bao giờ âm.
-        if (netAmount - declaredCost > 1) addError(row, "LƯƠNG THỰC NHẬN không được lớn hơn TỔNG CHI PHÍ CÔNG TY");
+        // Một đồng trong TỔNG CHI PHÍ CÔNG TY chỉ đi được về một chỗ: hoặc vào tay người lao
+        // động (thực nhận), hoặc nộp cơ quan BHXH (hai cột bảo hiểm), hoặc là thuế/khấu trừ
+        // khác. Ba khoản đầu cộng lại mà vượt tổng chi phí nghĩa là file khai sai — cứ để
+        // import thì hai phiếu phải trả sinh ra sẽ lớn hơn chi phí đã ghi nhận, công nợ treo
+        // nhiều hơn số tiền công ty thực sự phải chi.
+        const payables = netAmount + companyInsurance + mandatoryInsurance;
+        if (payables - declaredCost > 1) {
+          addError(
+            row,
+            `LƯƠNG THỰC NHẬN + Bảo hiểm (công ty chịu) + Bảo hiểm bắt buộc = ${Math.round(payables).toLocaleString("vi-VN")} đang lớn hơn TỔNG CHI PHÍ CÔNG TY ${Math.round(declaredCost).toLocaleString("vi-VN")}`,
+          );
+        }
         if (numberValue(row.values.headcount) < 0) addError(row, "Số lượng nhân sự không được âm");
         if (!text(row.values.department_code)) addError(row, "Bảng lương theo bộ phận bắt buộc có Phòng ban");
       } else {

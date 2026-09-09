@@ -1474,6 +1474,9 @@ model PayrollDepartmentRow {
   otherAllowance   Float    @default(0)
   /// Bảo hiểm phần công ty chịu: là chi phí của công ty nhưng không trả cho người lao động.
   companyInsurance Float    @default(0)
+  /// Bảo hiểm bắt buộc phần người lao động đóng: trừ vào lương nên KHÔNG cộng vào chi phí công
+  /// ty, nhưng vẫn phải nộp cho cơ quan BHXH nên gộp với companyInsurance thành khoản phải trả.
+  mandatoryInsurance Float  @default(0)
   totalCompanyCost Float
   netAmount        Float
   externalRef      String?

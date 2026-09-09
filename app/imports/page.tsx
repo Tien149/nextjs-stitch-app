@@ -63,7 +63,7 @@ const importTabs: ImportTab[] = [
     icon: "request_quote",
     roles: ["Admin", "Kế toán tổng hợp"],
     title: "Import Bảng lương theo bộ phận",
-    subtitle: "Mỗi dòng là một bộ phận của một cửa hàng trong kỳ. TỔNG CHI PHÍ CÔNG TY lên chi phí nhân sự trên P&L; LƯƠNG THỰC NHẬN thành công nợ phải trả người lao động của bộ phận đó.",
+    subtitle: "Mỗi dòng là một bộ phận của một cửa hàng trong kỳ. TỔNG CHI PHÍ CÔNG TY lên chi phí nhân sự trên P&L; LƯƠNG THỰC NHẬN thành công nợ phải trả người lao động của bộ phận đó; Bảo hiểm (công ty chịu) + Bảo hiểm bắt buộc thành công nợ phải trả cơ quan BHXH.",
     apiPath: "/api/imports?importType=PAYROLL&templateCode=PAYROLL_DEPARTMENT_V1",
     templatePath: "/api/imports?importType=PAYROLL&templateCode=PAYROLL_DEPARTMENT_V1&template=1",
     templateCode: "PAYROLL_DEPARTMENT_V1",

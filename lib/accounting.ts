@@ -446,15 +446,21 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   }
 
   // Bảng lương theo bộ phận: chi phí nhân sự là TỔNG CHI PHÍ CÔNG TY, còn phải trả người lao
-  // động chỉ là phần thực nhận. Phần chênh giữa hai số là các khoản công ty chịu hộ (bảo hiểm
-  // công ty đóng), treo ở 338 cho tới khi nộp — không được nhét vào 334 vì không nợ nhân viên.
+  // động chỉ là phần thực nhận. Phần chênh giữa hai số là các khoản trừ khỏi lương và khoản
+  // công ty chịu hộ — không được nhét vào 334 vì không nợ nhân viên. Trong phần chênh đó, hai
+  // cột bảo hiểm (công ty chịu + bắt buộc) nộp cơ quan BHXH nên treo 338; phần còn lại là thuế
+  // và khấu trừ khác, treo 3388. Bảo hiểm bị chặn trên tổng phần chênh để bút toán luôn cân
+  // ngay cả khi file khai thực nhận cao bất thường.
   const departmentPayroll = await prisma.payrollDepartmentRow.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { branchCode }) } });
   for (const row of departmentPayroll) {
     const companyBorne = Math.max(0, row.totalCompanyCost - row.netAmount);
+    const insuranceCredit = Math.min(companyBorne, row.companyInsurance + row.mandatoryInsurance);
+    const otherCredit = companyBorne - insuranceCredit;
     const lines = [
       { accountCode: "6421", debit: row.totalCompanyCost, departmentCode: row.departmentCode },
       { accountCode: "334", credit: row.netAmount, departmentCode: row.departmentCode },
-      { accountCode: "338", credit: companyBorne, departmentCode: row.departmentCode },
+      { accountCode: "338", credit: insuranceCredit, departmentCode: row.departmentCode },
+      { accountCode: "3388", credit: otherCredit, departmentCode: row.departmentCode },
     ];
     results.push(await postJournalEntry({
       entryDate: new Date(`${period}-28T00:00:00`),

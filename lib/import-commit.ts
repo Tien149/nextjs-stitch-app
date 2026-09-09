@@ -1967,13 +1967,54 @@ async function rollbackRevenue(tx: RawTxClient, batchId: string) {
   await tx.revenueImportRow.deleteMany({ where: { importBatchId: batchId } });
 }
 
+/** Đối tác nhận tiền bảo hiểm — mã do khách chốt trong danh mục nhà cung cấp. */
+const SOCIAL_INSURANCE_PARTNER_CODE = "VE00117";
+const SOCIAL_INSURANCE_PARTNER_NAME = "Bảo Hiểm Xã Hội";
+
+/** Tìm đối tác theo mã, chưa có thì tạo; đang ngừng hoạt động thì báo lỗi thay vì tự bật lại. */
+async function ensurePayrollPartner(
+  tx: TxClient,
+  input: { code: string; name: string; partnerType: string; branchCode?: string },
+) {
+  const partner = await tx.masterDataItem.findFirst({
+    where: { type: "PARTNER", code: input.code },
+    select: { name: true, status: true, partnerType: true },
+  });
+  if (!partner) {
+    await tx.masterDataItem.create({
+      data: {
+        type: "PARTNER",
+        code: input.code,
+        name: input.name,
+        partnerType: input.partnerType,
+        partnerGroup: "EXTERNAL",
+        branch: input.branchCode,
+        status: "ACTIVE",
+        note: "Tự tạo khi import bảng lương theo bộ phận",
+      },
+    });
+    return input.name;
+  }
+  if (partner.status !== "ACTIVE") {
+    throw new Error(`Đối tác [${input.code}] đang ngừng hoạt động, hãy bật lại trước khi import bảng lương`);
+  }
+  // Công nợ phải trả chỉ gạch được bằng phiếu chi cho đối tác thuộc nhóm trả tiền được. Nếu
+  // đối tác đang khai sai loại thì phải chặn ngay ở import, chứ để sinh nợ rồi mới phát hiện
+  // thì khoản nợ nằm đó không có cách nào thanh toán.
+  if (!["SUPPLIER", "BOTH", "EMPLOYEE", "OTHER_PARTNER"].includes(partner.partnerType || "")) {
+    throw new Error(`Đối tác [${input.code}] đang khai loại "${partner.partnerType || "chưa khai"}" nên không nhận được công nợ phải trả — sửa loại đối tác thành SUPPLIER, BOTH, EMPLOYEE hoặc OTHER_PARTNER rồi import lại`);
+  }
+  return partner.name;
+}
+
 /**
- * Ghi bảng lương theo bộ phận và sinh luôn công nợ phải trả người lao động.
+ * Ghi bảng lương theo bộ phận và sinh luôn hai khoản phải trả cho mỗi dòng.
  *
- * Khoản nợ mang số LƯƠNG THỰC NHẬN chứ không phải TỔNG CHI PHÍ CÔNG TY: phần chênh giữa hai
- * cột là bảo hiểm công ty chịu, tiền đó công ty nộp cho cơ quan bảo hiểm chứ không đưa nhân
- * viên. Mã nợ suy được từ kỳ + cửa hàng + bộ phận nên import lại đúng bộ đó sẽ đụng khoá
- * trùng thay vì lặng lẽ tạo hai khoản nợ.
+ * Tiền công ty bỏ ra (TỔNG CHI PHÍ CÔNG TY) chảy về hai chỗ khác nhau nên không thể treo chung
+ * một chủ nợ: phần LƯƠNG THỰC NHẬN là nợ người lao động, còn hai cột bảo hiểm — công ty chịu
+ * và bắt buộc trừ vào lương — đều nộp cho cơ quan BHXH nên gộp lại thành nợ của đối tác BHXH.
+ * Mã nợ suy được từ kỳ + cửa hàng + bộ phận nên import lại đúng bộ đó sẽ đụng khoá trùng thay
+ * vì lặng lẽ tạo hai khoản nợ.
  */
 async function commitDepartmentPayroll(tx: TxClient, batchId: string, rows: ParsedImportRow[]) {
   const branchCodes = [...new Set(rows.map((row) => asText(row.values.branch_code).toUpperCase()))];
@@ -1991,6 +2032,10 @@ async function commitDepartmentPayroll(tx: TxClient, batchId: string, rows: Pars
     const departmentCode = asText(row.values.department_code).toUpperCase();
     const headcount = Math.max(0, Math.round(asNumber(row.values.headcount)));
     const netAmount = asNumber(row.values.net_amount);
+    const companyInsurance = asNumber(row.values.company_insurance);
+    const mandatoryInsurance = asNumber(row.values.mandatory_insurance);
+    const insurancePayable = companyInsurance + mandatoryInsurance;
+    const documentDate = new Date(`${period}-28T00:00:00`);
 
     const created = await tx.payrollDepartmentRow.create({
       data: {
@@ -2006,56 +2051,74 @@ async function commitDepartmentPayroll(tx: TxClient, batchId: string, rows: Pars
         svcAmount: asNumber(row.values.svc_amount),
         kpiAmount: asNumber(row.values.kpi_amount),
         otherAllowance: asNumber(row.values.other_allowance),
-        companyInsurance: asNumber(row.values.company_insurance),
+        companyInsurance,
+        mandatoryInsurance,
         totalCompanyCost: asNumber(row.values.total_company_cost),
         netAmount,
         externalRef: row.values.external_ref === null || row.values.external_ref === undefined ? null : asText(row.values.external_ref),
       },
     });
 
-    if (netAmount <= 0) continue;
+    if (netAmount > 0) {
+      // Nợ lương theo dõi trên một đối tác riêng của từng bộ phận: file lương không còn mã nhân
+      // viên nên không thể ghi nợ cho từng người, mà gộp hết một đối tác thì không tách được
+      // nợ lương của bếp với của bar.
+      const partnerCode = `NV-${branchCode}-${departmentCode}`;
+      const partnerName = await ensurePayrollPartner(tx, {
+        code: partnerCode,
+        name: `Nhân sự ${nameOf("DEPARTMENT", departmentCode)} - ${nameOf("BRANCH", branchCode)}`,
+        partnerType: "EMPLOYEE",
+        branchCode,
+      });
 
-    // Nợ lương theo dõi trên một đối tác riêng của từng bộ phận: file lương không còn mã nhân
-    // viên nên không thể ghi nợ cho từng người, mà gộp hết một đối tác thì không tách được
-    // nợ lương của bếp với của bar.
-    const partnerCode = `NV-${branchCode}-${departmentCode}`;
-    const partnerName = `Nhân sự ${nameOf("DEPARTMENT", departmentCode)} - ${nameOf("BRANCH", branchCode)}`;
-    const partner = await tx.masterDataItem.findFirst({ where: { type: "PARTNER", code: partnerCode }, select: { code: true, name: true, status: true } });
-    if (!partner) {
-      await tx.masterDataItem.create({
+      await tx.debtRecord.create({
         data: {
-          type: "PARTNER",
-          code: partnerCode,
-          name: partnerName,
-          partnerType: "EMPLOYEE",
+          importBatchId: batchId,
+          code: `CNPT-LUONG-${period.replace("-", "")}-${branchCode}-${departmentCode}`,
+          debtType: "PAYABLE",
           partnerGroup: "EXTERNAL",
-          branch: branchCode,
-          status: "ACTIVE",
-          note: "Tự tạo khi import bảng lương theo bộ phận",
+          partnerCode,
+          partnerName,
+          branchCode,
+          documentDate,
+          originalAmount: netAmount,
+          outstandingAmount: netAmount,
+          description: `Lương thực nhận ${period} - ${nameOf("DEPARTMENT", departmentCode)}${headcount > 0 ? ` (${headcount} nhân sự)` : ""}`,
+          sourceType: "PAYROLL",
+          sourceId: created.id,
+          status: "OPEN",
         },
       });
-    } else if (partner.status !== "ACTIVE") {
-      throw new Error(`Đối tác lương [${partnerCode}] đang ngừng hoạt động, hãy bật lại trước khi import bảng lương`);
     }
 
-    await tx.debtRecord.create({
-      data: {
-        importBatchId: batchId,
-        code: `CNPT-LUONG-${period.replace("-", "")}-${branchCode}-${departmentCode}`,
-        debtType: "PAYABLE",
-        partnerGroup: "EXTERNAL",
-        partnerCode,
-        partnerName: partner?.name || partnerName,
-        branchCode,
-        documentDate: new Date(`${period}-28T00:00:00`),
-        originalAmount: netAmount,
-        outstandingAmount: netAmount,
-        description: `Lương thực nhận ${period} - ${nameOf("DEPARTMENT", departmentCode)}${headcount > 0 ? ` (${headcount} nhân sự)` : ""}`,
-        sourceType: "PAYROLL",
-        sourceId: created.id,
-        status: "OPEN",
-      },
-    });
+    if (insurancePayable > 0) {
+      // Cơ quan BHXH là đối tác dùng chung mọi cửa hàng nên không gắn branch cho danh mục,
+      // còn khoản nợ vẫn mang cửa hàng của bộ phận để đối chiếu công nợ theo chi nhánh.
+      const insurancePartnerName = await ensurePayrollPartner(tx, {
+        code: SOCIAL_INSURANCE_PARTNER_CODE,
+        name: SOCIAL_INSURANCE_PARTNER_NAME,
+        partnerType: "SUPPLIER",
+      });
+
+      await tx.debtRecord.create({
+        data: {
+          importBatchId: batchId,
+          code: `CNPT-BHXH-${period.replace("-", "")}-${branchCode}-${departmentCode}`,
+          debtType: "PAYABLE",
+          partnerGroup: "EXTERNAL",
+          partnerCode: SOCIAL_INSURANCE_PARTNER_CODE,
+          partnerName: insurancePartnerName,
+          branchCode,
+          documentDate,
+          originalAmount: insurancePayable,
+          outstandingAmount: insurancePayable,
+          description: `Bảo hiểm ${period} - ${nameOf("DEPARTMENT", departmentCode)} (công ty chịu ${Math.round(companyInsurance).toLocaleString("vi-VN")} đ + bắt buộc ${Math.round(mandatoryInsurance).toLocaleString("vi-VN")} đ)`,
+          sourceType: "PAYROLL",
+          sourceId: created.id,
+          status: "OPEN",
+        },
+      });
+    }
   }
 }
 

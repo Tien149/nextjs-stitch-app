@@ -248,6 +248,31 @@ function templateExampleRows(templateCode: string): Array<Record<string, string 
       { waste_date: new Date("2026-08-01T00:00:00Z"), branch_code: "NME", warehouse_code: "KHO_HCM", product_code: "SP_COMBO01", product_quantity: 2, reason: "Lam sai mon, khach tra lai" },
     ];
   }
+  if (templateCode === "PAYROLL_DEPARTMENT_V1") {
+    // Dòng mẫu cho thấy đúng chỗ đặt hai cột bảo hiểm: chỉ phần công ty chịu nằm trong TỔNG CHI
+    // PHÍ CÔNG TY (18.000.000 = 12.000.000 + 900.000 + 300.000 + 1.500.000 + 1.200.000 +
+    // 600.000 + 1.500.000), còn bảo hiểm bắt buộc trừ vào lương nên thực nhận chỉ còn 15.700.000.
+    return [
+      {
+        period: "2026-07",
+        branch_code: "HCM",
+        department_code: "BEP",
+        headcount: 3,
+        monthly_salary: 36000000,
+        hourly_salary: 12000000,
+        meal_allowance: 900000,
+        parking_allowance: 300000,
+        svc_amount: 1500000,
+        kpi_amount: 1200000,
+        other_allowance: 600000,
+        company_insurance: 1500000,
+        mandatory_insurance: 800000,
+        total_company_cost: 18000000,
+        net_amount: 15700000,
+        external_ref: "PAY-202607-HCM-BEP",
+      },
+    ];
+  }
   if (templateCode === "ASSET_STOCKTAKE_STANDARD_V1") {
     return [
       { stocktake_date: new Date("2026-08-31T00:00:00Z"), branch_code: "NME", asset_code: "CCDCKIT0001", actual_quantity: 4, condition: "Tot", note: "Thieu 1 so voi so sach" },
