@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/custom-client";
 import { prisma } from "@/lib/prisma";
-import { createPnlDetailTree, finalizePnl, PNL_STATEMENT_LINES, revenueChannelItemsOf, seedRevenueChannels, type PnlBucket, type PnlCatalog, type PnlLineKey, type PnlSeriesGroup, type PnlSeriesItem } from "@/lib/reports";
+import { createPnlDetailTree, finalizePnl, PNL_STATEMENT_LINES, PNL_UNGROUPED_CODE, revenueChannelItemsOf, seedRevenueChannels, type PnlBucket, type PnlCatalog, type PnlLineKey, type PnlSeriesGroup, type PnlSeriesItem } from "@/lib/reports";
 import { isRevenueComponentCategory, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { loadRevenuePnlGroups, type CategoryLookupClient } from "@/lib/revenue-source";
 
@@ -333,6 +333,26 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     planItemByCode.set(code, merged);
   }
 
+  /**
+   * Bảng hoạch định KHÔNG hiện hạng mục "Chưa phân loại P&L" (yêu cầu 09/09/2026): không ai
+   * set được kế hoạch cho một rổ chứng từ chưa gán hạng mục, để đó chỉ làm bảng rối.
+   *
+   * Chỉ ẩn dòng chi tiết — số tiền vẫn nằm trong dòng TỔNG của chỉ tiêu (OPEX, giá vốn...) và
+   * vẫn trừ vào lợi nhuận như cũ, nên dòng tổng có thể lớn hơn tổng các dòng nhìn thấy. Muốn
+   * biết còn bao nhiêu chưa phân loại thì xem tab Tổng hợp chi phí bên Sổ quỹ. Nhóm "Chưa gắn
+   * nhóm hạng mục P&L" còn hạng mục thật thì vẫn giữ, chỉ trừ đi phần vừa ẩn để nhóm khớp với
+   * các hạng mục bên dưới nó.
+   */
+  const hideUnclassifiedDetail = (groups: PnlSeriesGroup[]) => groups
+    .map((group) => {
+      const hidden = group.items.filter((item) => item.code === "UNCLASSIFIED");
+      if (hidden.length === 0) return group;
+      const items = group.items.filter((item) => item.code !== "UNCLASSIFIED");
+      const months = group.months.map((value, monthIndex) => value - hidden.reduce((sum, item) => sum + item.months[monthIndex], 0));
+      return { ...group, items, months, total: months.reduce((sum, value) => sum + value, 0) };
+    })
+    .filter((group) => group.items.length > 0 || Math.abs(group.total) > 0.5 || group.code !== PNL_UNGROUPED_CODE);
+
   /** Kế hoạch đính kèm từng nhóm/hạng mục: dòng OPEX set theo hạng mục nên nhóm = tổng hạng mục; dòng khác chỉ có kế hoạch ở cấp dòng. */
   const withPlan = (lineKey: PnlLineKey, groups: PnlSeriesGroup[]) => groups.map((group) => {
     const items = group.items.map((item) => {
@@ -370,7 +390,7 @@ export async function getPnlMatrix(year: string, branchCode: string) {
       total: monthValues.reduce((sum, value) => sum + value, 0),
       plan,
       planTotal: plan.reduce((sum, value) => sum + value, 0),
-      groups: line.subtotal ? [] : withPlan(line.key as PnlLineKey, tree.groupsOf(line.key as PnlLineKey)),
+      groups: line.subtotal ? [] : withPlan(line.key as PnlLineKey, hideUnclassifiedDetail(tree.groupsOf(line.key as PnlLineKey))),
     };
   });
 
