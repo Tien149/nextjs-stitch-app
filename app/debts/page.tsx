@@ -48,6 +48,9 @@ type LedgerRow = {
   agingBucket?: string;
   /** Số dư sau khi cộng dòng này (cộng dồn từ Đầu kỳ theo ngày tăng dần). */
   runningBalance?: number;
+  /** Hạng mục P&L của khoản phải trả; phải thu dùng `pnlGroupCode`. */
+  pnlItemCode?: string | null;
+  pnlGroupCode?: string | null;
 };
 
 type LedgerDetail = {
@@ -81,6 +84,9 @@ const emptyDebtForm = {
   dueDate: "",
   description: "",
   originalAmount: "",
+  /** Giữ riêng hai tầng như popup Thêm công nợ: phải trả sửa hạng mục, phải thu sửa nhóm hạng mục. */
+  pnlItemCode: "",
+  pnlGroupCode: "",
 };
 
 /** Một dòng hạng mục trong popup Thêm công nợ; `key` chỉ để React theo dõi khi thêm/xoá dòng.
@@ -150,6 +156,19 @@ export default function DebtsPage() {
   /** Phải thu phân loại theo NHÓM hạng mục P&L; phải trả theo từng hạng mục chi phí. */
   const createIsReceivable = createForm.debtType === "RECEIVABLE";
   const createPnlLabel = createIsReceivable ? "Nhóm hạng mục P&L" : "Hạng mục P&L";
+  /** Popup Sửa công nợ: cùng luật hai tầng như popup Thêm, nhưng loại lấy từ chính khoản đang sửa. */
+  const editIsReceivable = editingDebt?.source === "RECEIVABLE";
+  const editPnlCode = editIsReceivable ? debtForm.pnlGroupCode : debtForm.pnlItemCode;
+  const editPnlSource = editIsReceivable ? pnlGroups : pnlItems.filter((item) => ["OPEX", "COGS"].includes((item.group || "").toUpperCase()));
+  const editPnlOptions = [
+    { value: "", label: "-- Chưa phân loại P&L --" },
+    ...editPnlSource.map((item) => ({ value: item.code, label: `${item.code} - ${item.name}` })),
+    // Hạng mục đã chuyển sang Ngừng không còn trong danh sách ACTIVE. Vẫn phải hiện ra, nếu
+    // không thì ô trông như chưa phân loại và người sửa vô tình xoá mất phân loại cũ.
+    ...(editPnlCode && !editPnlSource.some((item) => item.code.toUpperCase() === editPnlCode.toUpperCase())
+      ? [{ value: editPnlCode, label: `${editPnlCode} - (đã ngừng hoạt động)` }]
+      : []),
+  ];
   const updateCreateLine = (key: number, patch: Partial<CreateLine>) =>
     setCreateLines((current) => current.map((line) => (line.key === key ? { ...line, ...patch } : line)));
   const addCreateLine = () => setCreateLines((current) => [...current, emptyCreateLine(Math.max(...current.map((line) => line.key)) + 1)]);
@@ -157,6 +176,20 @@ export default function DebtsPage() {
   const canCreateDebts = user ? canPerformAction(user, "create") : false;
   const canDeleteDebts = user ? canPerformAction(user, "delete") : false;
   const canCreatePartner = user ? canPerformMenuAction(user, "/settings", "config") : false;
+
+  /** Danh mục P&L cho ô chọn hạng mục — dùng chung cho popup Thêm và popup Sửa công nợ. */
+  const loadPnlOptions = () => {
+    if (pnlItems.length === 0) {
+      void fetch("/api/master-data?type=PNL_ITEM&status=ACTIVE")
+        .then((response) => response.ok ? response.json() : [])
+        .then((data) => setPnlItems(data));
+    }
+    if (pnlGroups.length === 0) {
+      void fetch("/api/master-data?type=PNL_GROUP&status=ACTIVE")
+        .then((response) => response.ok ? response.json() : [])
+        .then((data) => setPnlGroups(data));
+    }
+  };
 
   const openCreateDialog = () => {
     setCreateError("");
@@ -170,16 +203,7 @@ export default function DebtsPage() {
         .then((response) => response.ok ? response.json() : [])
         .then((data) => setPartners(data));
     }
-    if (pnlItems.length === 0) {
-      void fetch("/api/master-data?type=PNL_ITEM&status=ACTIVE")
-        .then((response) => response.ok ? response.json() : [])
-        .then((data) => setPnlItems(data));
-    }
-    if (pnlGroups.length === 0) {
-      void fetch("/api/master-data?type=PNL_GROUP&status=ACTIVE")
-        .then((response) => response.ok ? response.json() : [])
-        .then((data) => setPnlGroups(data));
-    }
+    loadPnlOptions();
   };
 
   const submitCreateDebt = async (event: React.FormEvent) => {
@@ -292,7 +316,10 @@ export default function DebtsPage() {
       dueDate: row.dueDate ? row.dueDate.slice(0, 10) : "",
       description: row.description,
       originalAmount: String(Math.abs(row.amount)),
+      pnlItemCode: row.pnlItemCode || "",
+      pnlGroupCode: row.pnlGroupCode || "",
     });
+    loadPnlOptions();
   };
 
   const submitDebtEdit = async (event: React.FormEvent) => {
@@ -311,6 +338,8 @@ export default function DebtsPage() {
           dueDate: debtForm.dueDate,
           description: debtForm.description,
           originalAmount: debtForm.originalAmount,
+          pnlItemCode: debtForm.pnlItemCode,
+          pnlGroupCode: debtForm.pnlGroupCode,
         }),
       });
       const payload = await response.json();
@@ -773,6 +802,25 @@ export default function DebtsPage() {
                   required
                 />
               </label>
+
+              {/* Hạng mục P&L phải sửa được ngay ở đây: user tạo phiếu chọn nhầm hạng mục thì
+                  khoản chi phí nằm sai dòng trên P&L, mà không có ô này thì chỉ còn cách xoá
+                  phiếu tạo lại. Phải trả sửa hạng mục chi phí, phải thu sửa nhóm hạng mục. */}
+              <div className="text-xs font-bold text-slate-600">
+                {editIsReceivable ? "Nhóm hạng mục P&L" : "Hạng mục P&L"}
+                <SearchableSelect
+                  className="mt-1"
+                  value={editIsReceivable ? debtForm.pnlGroupCode : debtForm.pnlItemCode}
+                  onChange={(code) => setDebtForm((value) => (editIsReceivable ? { ...value, pnlGroupCode: code } : { ...value, pnlItemCode: code }))}
+                  placeholder="-- Chưa phân loại P&L --"
+                  options={editPnlOptions}
+                />
+                <p className="mt-1 font-normal text-[11px] text-slate-400">
+                  {editIsReceivable
+                    ? "Khoản thu về chỉ khai tới nhóm hạng mục trên P&L."
+                    : "Hạng mục quyết định khoản chi phí này nằm ở dòng nào trên P&L."}
+                </p>
+              </div>
 
               <label className="text-xs font-bold text-slate-600 block">
                 Diễn giải *

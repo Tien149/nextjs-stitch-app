@@ -44,6 +44,10 @@ type LedgerRow = {
   amount: number;
   status?: string;
   agingBucket?: string;
+  /** Hạng mục P&L của khoản PHẢI TRẢ — trả về để màn Công nợ mở sửa lại được khi user chọn nhầm. */
+  pnlItemCode?: string | null;
+  /** Nhóm hạng mục P&L của khoản PHẢI THU. */
+  pnlGroupCode?: string | null;
 };
 
 function agingBucket(dueDate?: Date | null) {
@@ -190,6 +194,8 @@ export async function GET(request: Request) {
           amount: debtRecordSigned(item.debtType, item.outstandingAmount),
           status: item.status,
           agingBucket: agingBucket(item.dueDate),
+          pnlItemCode: item.pnlItemCode,
+          pnlGroupCode: item.pnlGroupCode,
         });
       }
 
@@ -577,6 +583,13 @@ export async function PATCH(request: Request) {
     const branchCode = body.branchCode === undefined ? current.branchCode : cleanText(body.branchCode);
     const description = body.description === undefined ? current.description : cleanText(body.description);
     const categoryCode = body.categoryCode === undefined ? current.categoryCode : cleanText(body.categoryCode) || null;
+    // Hai tầng phân loại đi theo loại công nợ: phải trả khai HẠNG MỤC chi phí, phải thu khai
+    // NHÓM hạng mục. Chuẩn hoá ngay ở đây để đổi loại công nợ không để sót mã của tầng cũ.
+    const isReceivableDebt = debtType === "RECEIVABLE";
+    const rawPnlItemCode = body.pnlItemCode === undefined ? current.pnlItemCode : cleanText(body.pnlItemCode).toUpperCase() || null;
+    const rawPnlGroupCode = body.pnlGroupCode === undefined ? current.pnlGroupCode : cleanText(body.pnlGroupCode).toUpperCase() || null;
+    const pnlItemCode = isReceivableDebt ? null : rawPnlItemCode;
+    const pnlGroupCode = isReceivableDebt ? rawPnlGroupCode : null;
     const originalAmount = body.originalAmount === undefined ? current.originalAmount : toNumber(body.originalAmount);
     const documentDate = body.documentDate === undefined ? current.documentDate : toDate(body.documentDate, current.documentDate);
     const dueDate = body.dueDate === undefined ? current.dueDate : body.dueDate ? toDate(body.dueDate, current.documentDate) : null;
@@ -592,6 +605,17 @@ export async function PATCH(request: Request) {
     }
     if (dueDate && dueDate < documentDate) {
       return NextResponse.json({ error: "Hạn thanh toán không được trước ngày chứng từ" }, { status: 400 });
+    }
+    // Cùng luật với lúc tạo phiếu: không cho sửa sang một mã đã ngừng hoạt động, vì hạng mục
+    // Ngừng không lên bảng P&L nữa và khoản công nợ sẽ rơi khỏi báo cáo mà không ai biết.
+    const pnlCode = isReceivableDebt ? pnlGroupCode : pnlItemCode;
+    if (pnlCode && pnlCode !== (isReceivableDebt ? current.pnlGroupCode : current.pnlItemCode)) {
+      const pnlLabel = isReceivableDebt ? "Nhóm hạng mục P&L" : "Hạng mục P&L";
+      const pnlRecord = await prisma.masterDataItem.findFirst({
+        where: { type: isReceivableDebt ? "PNL_GROUP" : "PNL_ITEM", code: pnlCode, status: "ACTIVE", deletedAt: null },
+        select: { code: true },
+      });
+      if (!pnlRecord) return NextResponse.json({ error: `${pnlLabel} [${pnlCode}] không tồn tại hoặc đã ngừng hoạt động` }, { status: 400 });
     }
 
     try {
@@ -619,6 +643,8 @@ export async function PATCH(request: Request) {
         documentDate,
         dueDate,
         categoryCode,
+        pnlItemCode,
+        pnlGroupCode,
         originalAmount,
         // Chưa phát sinh thanh toán nên dư nợ luôn bằng số tiền gốc.
         outstandingAmount: originalAmount,
@@ -635,8 +661,8 @@ export async function PATCH(request: Request) {
       entityCode: debt.code,
       branchCode: debt.branchCode,
       metadata: {
-        before: { debtType: current.debtType, partnerGroup: current.partnerGroup, partnerCode: current.partnerCode, partnerName: current.partnerName, branchCode: current.branchCode, documentDate: current.documentDate, dueDate: current.dueDate, categoryCode: current.categoryCode, originalAmount: current.originalAmount, description: current.description },
-        after: { debtType, partnerGroup, partnerCode, partnerName, branchCode, documentDate, dueDate, categoryCode, originalAmount, description },
+        before: { debtType: current.debtType, partnerGroup: current.partnerGroup, partnerCode: current.partnerCode, partnerName: current.partnerName, branchCode: current.branchCode, documentDate: current.documentDate, dueDate: current.dueDate, categoryCode: current.categoryCode, pnlItemCode: current.pnlItemCode, pnlGroupCode: current.pnlGroupCode, originalAmount: current.originalAmount, description: current.description },
+        after: { debtType, partnerGroup, partnerCode, partnerName, branchCode, documentDate, dueDate, categoryCode, pnlItemCode, pnlGroupCode, originalAmount, description },
       },
     });
 
