@@ -188,6 +188,26 @@ export default function FinanceOperationsPage() {
     description: "Điều chỉnh kiểm kê quỹ",
   });
 
+  /** "2026-09" -> "09/2026" cho câu thông báo, đọc giống ô chọn tháng. */
+  const monthLabel = (value: string) => `${value.slice(5, 7)}/${value.slice(0, 4)}`;
+  /** Tháng đang ngắm của thanh "Ghi nhận theo tháng" ở tab Trích trước & Phân bổ. */
+  const [accrualBulkPeriod, setAccrualBulkPeriod] = useState(new Date().toISOString().slice(0, 7));
+  /**
+   * Số kỳ phân bổ của tháng đang ngắm, tách theo trạng thái — nút bấm nói thẳng sẽ đụng vào
+   * bao nhiêu dòng, bao nhiêu tiền, thay vì bấm xong mới biết.
+   */
+  const accrualBulkStats = useMemo(() => {
+    const stats = { planned: 0, plannedAmount: 0, posted: 0, postedAmount: 0 };
+    for (const row of data.accruals) {
+      for (const schedule of row.schedules) {
+        if (schedule.period !== accrualBulkPeriod) continue;
+        if (schedule.status === "POSTED") { stats.posted += 1; stats.postedAmount += schedule.amount; }
+        else { stats.planned += 1; stats.plannedAmount += schedule.amount; }
+      }
+    }
+    return stats;
+  }, [data.accruals, accrualBulkPeriod]);
+
   const [accrual, setAccrual] = useState({
     name: "Chi phí trả trước",
     branchCode: "HCM",
@@ -534,7 +554,7 @@ export default function FinanceOperationsPage() {
     }
   };
 
-  const send = async (body: object, success: string) => {
+  const send = async (body: object, success: string | ((payload: Record<string, unknown>) => string)) => {
     if (submitting) return;
     setSubmitting(true);
     setMessage("");
@@ -546,7 +566,7 @@ export default function FinanceOperationsPage() {
       });
       const payload = await response.json();
       if (response.ok) {
-        setMessage(success);
+        setMessage(typeof success === "function" ? success(payload || {}) : success);
         setAdjustment({
           entryDate: new Date().toISOString().slice(0, 10),
           entryType: "RECEIPT",
@@ -1522,6 +1542,49 @@ export default function FinanceOperationsPage() {
 
             {/* Accruals List */}
             <section className="space-y-6">
+              {/* Ghi nhận cả tháng một lần: mỗi khoản trả trước đẻ ra 10-12 dòng, bấm từng dòng
+                  không xuể (yêu cầu 09/09/2026). Bấm lại nhiều lần không ghi trùng — nút chỉ ăn
+                  dòng còn "Chờ phân bổ", nên khoản thêm sau chỉ việc bấm lại đúng tháng đó. */}
+              {canEdit && (
+                <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-4 flex flex-wrap items-end gap-3">
+                  <label className="text-xs font-bold text-slate-600 block">
+                    Ghi nhận theo tháng
+                    <MonthInput className="w-40 mt-1" value={accrualBulkPeriod} onChange={setAccrualBulkPeriod} ariaLabel="Tháng cần ghi nhận chi phí phân bổ" />
+                  </label>
+                  <button
+                    type="button"
+                    disabled={submitting || accrualBulkStats.planned === 0}
+                    onClick={() => void send(
+                      { action: "POST_ACCRUAL_MONTH", period: accrualBulkPeriod, branchCode },
+                      (payload) => {
+                        const locked = (payload.lockedBranches as string[] | undefined) || [];
+                        const lockNote = locked.length ? ` Bỏ qua ${locked.map(storeLabel).join(", ")} vì kỳ đã khóa sổ.` : "";
+                        return `Đã ghi nhận ${payload.changed ?? 0} kỳ phân bổ của tháng ${monthLabel(accrualBulkPeriod)} (${money(Number(payload.amount || 0))} đ). Chạy Đồng bộ ghi sổ trên Sổ cái để lên bút toán.${lockNote}`;
+                      },
+                    )}
+                    className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-bold text-white shadow-md transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                  >
+                    Ghi nhận {accrualBulkStats.planned} kỳ chờ · {money(accrualBulkStats.plannedAmount)} đ
+                  </button>
+                  <button
+                    type="button"
+                    disabled={submitting || accrualBulkStats.posted === 0}
+                    onClick={() => {
+                      if (!confirm(`Bỏ ghi nhận ${accrualBulkStats.posted} kỳ phân bổ của tháng ${monthLabel(accrualBulkPeriod)}? Bút toán phân bổ của các kỳ này sẽ bị xoá khỏi sổ cái.`)) return;
+                      void send(
+                        { action: "UNPOST_ACCRUAL_MONTH", period: accrualBulkPeriod, branchCode },
+                        (payload) => `Đã bỏ ghi nhận ${payload.changed ?? 0} kỳ phân bổ của tháng ${monthLabel(accrualBulkPeriod)}. Sửa lại hạng mục rồi ghi nhận lại là số vào đúng chỗ.`,
+                      );
+                    }}
+                    className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-bold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
+                  >
+                    Bỏ ghi nhận {accrualBulkStats.posted} kỳ đã ghi
+                  </button>
+                  <p className="text-[11px] text-slate-500 basis-full">
+                    Chỉ đụng tới các khoản của {branchCode === "ALL" ? "tất cả cửa hàng" : storeLabel(branchCode)} theo bộ lọc phía trên. Bấm lại sau khi thêm khoản mới cũng không ghi trùng: nút chỉ ăn dòng còn chờ.
+                  </p>
+                </div>
+              )}
               {data.accruals.length === 0 ? (
                 <div className="bg-white border border-slate-200 rounded-2xl p-10 text-center text-slate-400 font-medium shadow-sm">
                   Chưa có khoản phân bổ chi phí trích trước nào được tạo.
@@ -1618,7 +1681,20 @@ export default function FinanceOperationsPage() {
                                   </button>
                                 )}
                                 {schedule.status === "POSTED" && (
-                                  <span className="text-slate-400 font-semibold text-[10px]">Đã ghi sổ cái</span>
+                                  canEdit ? (
+                                    <button
+                                      onClick={() => {
+                                        if (!confirm(`Bỏ ghi nhận kỳ ${schedule.period} của ${row.name}? Bút toán phân bổ của kỳ này sẽ bị xoá khỏi sổ cái.`)) return;
+                                        void send({ action: "UNPOST_ACCRUAL", scheduleId: schedule.id }, "Đã bỏ ghi nhận kỳ phân bổ.");
+                                      }}
+                                      className="text-xs font-bold text-slate-400 hover:text-rose-600 hover:underline"
+                                      title="Đưa kỳ này về Chờ phân bổ và xoá bút toán phân bổ tương ứng"
+                                    >
+                                      Bỏ ghi nhận
+                                    </button>
+                                  ) : (
+                                    <span className="text-slate-400 font-semibold text-[10px]">Đã ghi sổ cái</span>
+                                  )
                                 )}
                               </td>
                             </tr>

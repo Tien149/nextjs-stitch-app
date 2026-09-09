@@ -3,7 +3,7 @@ import { isAdmin, requireCashDepositCreate, requireMenuAccess, requireMenuAction
 import { getExpenseSummary } from "@/lib/expense-summary";
 import { prisma, prismaRaw } from "@/lib/prisma";
 import { addPeriod, apiError, businessError, cleanText, isPeriodLocked, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
-import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
+import { requestedBranch, assertBranchAccess, branchFilterForSession } from "@/lib/accounting";
 import { writeAuditLog } from "@/lib/audit-log";
 import { nextSeqFromCodes, voucherCodePrefix } from "@/lib/voucher-code-generator";
 import { filterCashierCashSources, isCashierRoleName, moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup, parseMoneySourceCodes } from "@/lib/money-sources";
@@ -951,7 +951,7 @@ export async function POST(request: Request) {
       return NextResponse.json(result);
     }
 
-    const auth = requireMenuAction(request, menuHref, ["POST_ACCRUAL", "UPDATE_ACCRUAL_PNL_ITEM"].includes(action) ? "edit" : "create");
+    const auth = requireMenuAction(request, menuHref, ["POST_ACCRUAL", "POST_ACCRUAL_MONTH", "UNPOST_ACCRUAL", "UNPOST_ACCRUAL_MONTH", "UPDATE_ACCRUAL_PNL_ITEM"].includes(action) ? "edit" : "create");
     if (!auth.ok) return auth.response;
 
     if (action === "CREATE_ADJUSTMENT") {
@@ -1085,6 +1085,103 @@ export async function POST(request: Request) {
       if (remaining === 0) await prisma.accrual.update({ where: { id: schedule.accrualId }, data: { status: "COMPLETED" } });
       await writeAuditLog({ session: auth.session, module: "FINANCE_OPERATIONS", action: "POST_ACCRUAL", entityType: "AccrualSchedule", entityId: result.id, entityCode: `${schedule.accrual.code}-${schedule.period}`, branchCode: schedule.accrual.branchCode, metadata: { period: schedule.period, amount: schedule.amount } });
       return NextResponse.json(result);
+    }
+
+    /**
+     * Bỏ ghi nhận một kỳ phân bổ: đưa về "Chờ phân bổ" và XOÁ luôn bút toán phân bổ của kỳ đó.
+     * Không xoá bút toán thì chi phí vẫn nằm trên P&L trong khi bảng lại ghi là chưa phân bổ.
+     * Cần nút này vì ghi nhận hàng loạt theo tháng rất dễ lỡ tay, và khoản ghi nhầm kỳ/nhầm
+     * khoản chỉ có cách gỡ ra ghi lại.
+     */
+    if (action === "UNPOST_ACCRUAL") {
+      const scheduleId = cleanText(body.scheduleId);
+      const schedule = scheduleId ? await prisma.accrualSchedule.findUnique({ where: { id: scheduleId }, include: { accrual: true } }) : null;
+      if (!schedule) businessError("Không tìm thấy kỳ phân bổ");
+      if (schedule!.status !== "POSTED") businessError("Kỳ phân bổ này chưa ghi nhận");
+
+      try {
+        assertBranchAccess(auth.session, schedule!.accrual.branchCode);
+      } catch (e) {
+        return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi" }, { status: 403 });
+      }
+      if (await isPeriodLocked(new Date(`${schedule!.period}-01T00:00:00`), schedule!.accrual.branchCode)) businessError("Kỳ kế toán đã khóa");
+
+      // prismaRaw: bút toán phải XOÁ HẲN, không xoá mềm. JournalEntry unique theo
+      // (sourceType, sourceId) — để lại bản ghi đã xoá mềm thì lần Đồng bộ ghi sổ sau không
+      // tạo lại được bút toán cho chính kỳ này (đâm P2002). Cùng cách làm với mở lại phiếu
+      // nộp tiền và xoá phiếu phân bổ chi phí.
+      const result = await prismaRaw.$transaction(async (tx) => {
+        await tx.journalEntry.deleteMany({ where: { sourceType: "ACCRUAL", sourceId: schedule!.id } });
+        const updated = await tx.accrualSchedule.update({ where: { id: schedule!.id }, data: { status: "PLANNED", postedAt: null } });
+        await tx.accrual.update({ where: { id: schedule!.accrualId }, data: { status: "ACTIVE" } });
+        return updated;
+      });
+      await writeAuditLog({ session: auth.session, module: "FINANCE_OPERATIONS", action: "UNPOST_ACCRUAL", entityType: "AccrualSchedule", entityId: result.id, entityCode: `${schedule!.accrual.code}-${schedule!.period}`, branchCode: schedule!.accrual.branchCode, metadata: { period: schedule!.period, amount: schedule!.amount } });
+      return NextResponse.json(result);
+    }
+
+    /**
+     * Ghi nhận (hoặc bỏ ghi nhận) HÀNG LOẠT mọi kỳ phân bổ của một tháng, trong phạm vi cửa
+     * hàng đang xem: khoản trả trước nhiều tới mức bấm từng dòng không xuể (yêu cầu 09/09/2026).
+     *
+     * Chỉ đụng vào dòng đang ở đúng trạng thái cần đổi, nên bấm lại nhiều lần không ghi trùng —
+     * khoản mới thêm sau đó chỉ việc bấm lại đúng tháng ấy là xong. Cửa hàng nào đã khóa sổ thì
+     * bỏ qua và trả về danh sách để màn hình nói rõ, chứ không chặn cả mẻ.
+     */
+    if (action === "POST_ACCRUAL_MONTH" || action === "UNPOST_ACCRUAL_MONTH") {
+      const posting = action === "POST_ACCRUAL_MONTH";
+      const period = normalizePeriod(cleanText(body.period));
+      if (!period) businessError("Thiếu kỳ phân bổ cần ghi nhận");
+      const accrualFilter = branchFilterForSession(auth.session, cleanText(body.branchCode));
+      const schedules = await prisma.accrualSchedule.findMany({
+        where: { period, status: posting ? "PLANNED" : "POSTED", accrual: { ...accrualFilter, deletedAt: null } },
+        include: { accrual: true },
+      });
+      if (schedules.length === 0) {
+        return NextResponse.json({ period, changed: 0, amount: 0, lockedBranches: [] });
+      }
+
+      const branches = [...new Set(schedules.map((row) => row.accrual.branchCode))];
+      const lockedBranches: string[] = [];
+      for (const branch of branches) {
+        if (await isPeriodLocked(new Date(`${period}-01T00:00:00`), branch)) lockedBranches.push(branch);
+      }
+      const targets = schedules.filter((row) => !lockedBranches.includes(row.accrual.branchCode));
+      if (targets.length === 0) businessError(`Kỳ ${period} đã khóa sổ ở các cửa hàng liên quan, không ghi nhận được`);
+
+      const ids = targets.map((row) => row.id);
+      // prismaRaw vì nhánh bỏ ghi nhận phải xoá HẲN bút toán — xem chú thích ở UNPOST_ACCRUAL.
+      await prismaRaw.$transaction(async (tx) => {
+        if (posting) {
+          await tx.accrualSchedule.updateMany({ where: { id: { in: ids } }, data: { status: "POSTED", postedAt: new Date() } });
+        } else {
+          await tx.journalEntry.deleteMany({ where: { sourceType: "ACCRUAL", sourceId: { in: ids } } });
+          await tx.accrualSchedule.updateMany({ where: { id: { in: ids } }, data: { status: "PLANNED", postedAt: null } });
+        }
+        const accrualIds = [...new Set(targets.map((row) => row.accrualId))];
+        if (posting) {
+          // Khoản nào vừa ghi nhận nốt kỳ cuối thì đóng lại, khoản còn kỳ chờ vẫn để ACTIVE.
+          const stillPlanned = await tx.accrualSchedule.groupBy({ by: ["accrualId"], where: { accrualId: { in: accrualIds }, status: "PLANNED" }, _count: { _all: true } });
+          const pending = new Set(stillPlanned.map((row) => row.accrualId));
+          const completed = accrualIds.filter((id) => !pending.has(id));
+          if (completed.length > 0) await tx.accrual.updateMany({ where: { id: { in: completed } }, data: { status: "COMPLETED" } });
+        } else {
+          await tx.accrual.updateMany({ where: { id: { in: accrualIds } }, data: { status: "ACTIVE" } });
+        }
+      });
+
+      const amount = targets.reduce((sum, row) => sum + row.amount, 0);
+      await writeAuditLog({
+        session: auth.session,
+        module: "FINANCE_OPERATIONS",
+        action,
+        entityType: "AccrualSchedule",
+        entityId: period,
+        entityCode: `PHANBO-${period}`,
+        branchCode: cleanText(body.branchCode) || "ALL",
+        metadata: { period, changed: targets.length, amount, lockedBranches },
+      });
+      return NextResponse.json({ period, changed: targets.length, amount, lockedBranches });
     }
 
     businessError("Thao tác tài chính không hợp lệ");
