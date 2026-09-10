@@ -1356,6 +1356,15 @@ export async function validateImportResult(
       if (balanceType === "PREPAID_EXPENSE") {
         validatePeriod(row, "allocation_start_period", "Kỳ bắt đầu phân bổ");
         if (numberValue(row.values.allocation_months) < 1) addError(row, "Chi phí phân bổ đầu kỳ cần số kỳ phân bổ từ 1 trở lên");
+        // Hạng mục P&L không bắt buộc; khai sai mã thì chặn ngay ở preview thay vì để khoản
+        // phân bổ sinh ra với mã rỗng rồi phải dò lại trên tab Trích trước.
+        if (text(row.values.pnl_item_code)) {
+          const pnlItem = resolveMaster(masterItems, "PNL_ITEM", row.values.pnl_item_code, text(row.values.branch_code));
+          if (!pnlItem) addError(row, `Hạng mục P&L [${text(row.values.pnl_item_code)}] không tồn tại hoặc đã ngưng hoạt động`);
+          else row.values.pnl_item_code = pnlItem.code;
+        }
+      } else {
+        row.values.pnl_item_code = null;
       }
     }
     if (importType === "REVENUE_POS") {

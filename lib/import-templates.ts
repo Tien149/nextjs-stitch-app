@@ -659,6 +659,9 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "unit_cost", label: "Đơn giá", required: false, type: "number", aliases: ["don gia", "unit cost", "unit_cost"] },
       { field: "allocation_months", label: "Số kỳ phân bổ", required: false, type: "integer", aliases: ["so ky phan bo", "so thang phan bo"] },
       { field: "allocation_start_period", label: "Kỳ bắt đầu phân bổ", required: false, type: "text", aliases: ["ky bat dau phan bo", "bat dau phan bo"] },
+      // Khai hạng mục P&L ngay trên file: khoản phân bổ sinh ra khi commit mang luôn mã này,
+      // khỏi phải mở tab Trích trước gán lại từng khoản sau khi import.
+      { field: "pnl_item_code", label: "Hạng mục P&L", required: false, type: "text", aliases: ["hang muc p&l", "hang muc pnl", "ma hang muc p&l", "pnl item", "pnl item code"] },
       { field: "amount", label: "Số tiền", required: true, type: "number", aliases: ["so tien", "amount"] },
       { field: "note", label: "Ghi chú", required: false, type: "text", aliases: ["ghi chu", "note"] },
     ],

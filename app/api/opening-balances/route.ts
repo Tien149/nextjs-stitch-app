@@ -34,7 +34,7 @@ function currentAsInput(current: Record<string, unknown>, body: Record<string, u
   for (const key of [
     "period", "branchCode", "balanceType", "objectCode", "objectName", "moneySourceCode",
     "warehouseCode", "departmentCode", "quantity", "unitCost", "allocationMonths",
-    "allocationStartPeriod", "amount", "note",
+    "allocationStartPeriod", "pnlItemCode", "amount", "note",
   ]) merged[key] = body[key] !== undefined ? body[key] : current[key];
   return normalizeOpeningBalanceInput(merged);
 }
@@ -78,6 +78,9 @@ async function applySideEffects(tx: Prisma.TransactionClient, current: OpeningBa
     const accrual = await tx.accrual.create({ data: {
       code, name: current.objectName || code, branchCode: current.branchCode,
       categoryCode: current.moneySourceCode || "OPEX", totalAmount: current.amount,
+      // Hạng mục P&L khai sẵn ở số dư đầu kỳ đi thẳng sang khoản phân bổ, nên bút toán phân bổ
+      // hàng kỳ đứng đúng dòng P&L mà không phải mở tab Trích trước gán lại từng khoản.
+      pnlItemCode: current.pnlItemCode || null,
       startPeriod: current.allocationStartPeriod || current.period,
       numberOfPeriods: current.allocationMonths || 1, actualAmount: current.amount,
       sourceType: "OPENING_BALANCE", sourceId: current.id,

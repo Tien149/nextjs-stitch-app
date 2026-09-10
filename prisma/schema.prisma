@@ -137,6 +137,9 @@ model OpeningBalance {
   unitCost              Float?
   allocationMonths      Int?
   allocationStartPeriod String?
+  /// Hạng mục P&L của chi phí phân bổ đầu kỳ, khai ngay lúc nhập số dư. Khi chốt số dư,
+  /// khoản phân bổ sinh ra mang luôn mã này nên bút toán phân bổ hàng kỳ đứng đúng dòng P&L.
+  pnlItemCode           String?
   amount                Float
   note                  String?
   status                String   @default("DRAFT")

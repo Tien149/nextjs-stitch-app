@@ -23,6 +23,7 @@ type OpeningBalance = {
   unitCost: number | null;
   allocationMonths: number | null;
   allocationStartPeriod: string | null;
+  pnlItemCode: string | null;
   amount: number;
   note: string | null;
   status: string;
@@ -43,6 +44,7 @@ type OpeningBalanceForm = {
   unitCost: string;
   allocationMonths: string;
   allocationStartPeriod: string;
+  pnlItemCode: string;
   amount: string;
   note: string;
   status: string;
@@ -82,6 +84,7 @@ const emptyForm: OpeningBalanceForm = {
   unitCost: "",
   allocationMonths: "",
   allocationStartPeriod: "2026-07",
+  pnlItemCode: "",
   amount: "10000000",
   note: "",
   status: "DRAFT",
@@ -122,6 +125,7 @@ export default function OpeningBalancesPage() {
   const [moneySources, setMoneySources] = useState<MasterDataOption[]>([]);
   const [warehouses, setWarehouses] = useState<MasterDataOption[]>([]);
   const [departments, setDepartments] = useState<MasterDataOption[]>([]);
+  const [pnlItems, setPnlItems] = useState<MasterDataOption[]>([]);
   const [inventoryItems, setInventoryItems] = useState<{ id: string; code: string; name: string; unit: string }[]>([]);
 
   useEffect(() => {
@@ -182,7 +186,9 @@ export default function OpeningBalancesPage() {
         const activeMoneySources = data.filter((item) => item.type === "MONEY_SOURCE");
         const activeWarehouses = data.filter((item) => item.type === "WAREHOUSE");
         const activeDepartments = data.filter((item) => item.type === "DEPARTMENT");
+        const activePnlItems = data.filter((item) => item.type === "PNL_ITEM");
 
+        setPnlItems(activePnlItems);
         setBranches(activeBranches);
         setPartners(activePartners);
         setMoneySources(activeMoneySources);
@@ -353,6 +359,7 @@ export default function OpeningBalancesPage() {
         unitCost: (isInventoryType || isAssetType) ? Number(form.unitCost) : undefined,
         allocationMonths: (isAssetType || isPrepaidType) ? Number(form.allocationMonths) : undefined,
         allocationStartPeriod: (isAssetType || isPrepaidType) ? form.allocationStartPeriod : "",
+        pnlItemCode: isPrepaidType ? form.pnlItemCode : "",
         amount: Number(effectiveAmount),
       };
 
@@ -400,6 +407,7 @@ export default function OpeningBalancesPage() {
       unitCost: balance.unitCost === null ? "" : String(balance.unitCost),
       allocationMonths: balance.allocationMonths === null ? "" : String(balance.allocationMonths),
       allocationStartPeriod: balance.allocationStartPeriod || balance.period,
+      pnlItemCode: balance.pnlItemCode || "",
       amount: String(balance.amount),
       note: balance.note || "",
       status: "DRAFT",
@@ -869,6 +877,25 @@ export default function OpeningBalancesPage() {
                   </label>
                 </div>
 
+                {/* Hạng mục P&L khai ngay tại đây (yêu cầu khách 10/09/2026): trước đây phải chốt
+                    số dư rồi mở tab Trích trước gán lại cho từng khoản mới lên đúng dòng P&L. */}
+                <label className="text-xs font-bold text-slate-600 block">
+                  Hạng mục P&L
+                  <select
+                    value={form.pnlItemCode}
+                    onChange={(event) => setForm((value) => ({ ...value, pnlItemCode: event.target.value }))}
+                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500"
+                  >
+                    <option value="">-- Chưa xếp hạng mục --</option>
+                    {pnlItems.map((item) => (
+                      <option key={item.code} value={item.code}>{item.code} - {item.name}</option>
+                    ))}
+                  </select>
+                  <small className="block mt-1 font-normal text-slate-500">
+                    Để trống thì chi phí phân bổ hàng tháng nằm ở nhóm chưa phân loại trên P&L; vẫn sửa lại được ở tab Trích trước/Phân bổ.
+                  </small>
+                </label>
+
                 <label className="text-xs font-bold text-slate-600 block">
                   Kỳ bắt đầu phân bổ *
                   <MonthInput
@@ -1029,7 +1056,7 @@ export default function OpeningBalancesPage() {
                             {/* Prepaid Detail */}
                             {balance.balanceType === "PREPAID_EXPENSE" && (
                               <span className="text-[11px] text-slate-500 font-bold block mt-0.5">
-                                Phân bổ: {balance.allocationMonths} tháng · BĐ: {balance.allocationStartPeriod} · Loại: {balance.moneySourceCode || "OPEX"}
+                                Phân bổ: {balance.allocationMonths} tháng · BĐ: {balance.allocationStartPeriod} · Loại: {balance.moneySourceCode || "OPEX"} · P&L: {balance.pnlItemCode || "chưa xếp"}
                               </span>
                             )}
 

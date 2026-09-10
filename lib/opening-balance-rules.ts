@@ -22,6 +22,7 @@ export type OpeningBalanceInput = {
   unitCost: number | null;
   allocationMonths: number | null;
   allocationStartPeriod: string | null;
+  pnlItemCode: string | null;
   amount: number;
   note: string | null;
 };
@@ -48,6 +49,7 @@ export function normalizeOpeningBalanceInput(body: Record<string, unknown>): Ope
     unitCost: nullableNumber(body.unitCost),
     allocationMonths: nullableNumber(body.allocationMonths) === null ? null : Math.floor(number(body.allocationMonths)),
     allocationStartPeriod: nullableText(body.allocationStartPeriod),
+    pnlItemCode: nullableText(body.pnlItemCode)?.toUpperCase() || null,
     amount: number(body.amount),
     note: nullableText(body.note),
   };
@@ -114,5 +116,15 @@ export async function validateOpeningBalanceInput(tx: Prisma.TransactionClient, 
   // thường của chính tháng đang chi.
   if (input.balanceType === "PREPAID_EXPENSE" && (!input.objectCode || !input.allocationStartPeriod || !input.allocationMonths || input.allocationMonths < 1)) {
     throw new Error("Chi phí phân bổ cần mã, kỳ bắt đầu và số kỳ từ 1 trở lên");
+  }
+  // Hạng mục P&L khai ngay tại đây thay vì phải mở tab Trích trước gán lại sau khi chốt.
+  // Không bắt buộc: dữ liệu cũ và các khoản chưa xếp được hạng mục vẫn phải khai được.
+  if (input.pnlItemCode) {
+    if (input.balanceType !== "PREPAID_EXPENSE") {
+      input.pnlItemCode = null;
+    } else {
+      const pnlItem = await tx.masterDataItem.findUnique({ where: { type_code: { type: "PNL_ITEM", code: input.pnlItemCode } } });
+      if (!pnlItem || pnlItem.status !== "ACTIVE") throw new Error(`Hạng mục P&L [${input.pnlItemCode}] không tồn tại hoặc đã ngừng hoạt động`);
+    }
   }
 }

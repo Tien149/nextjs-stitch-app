@@ -1544,6 +1544,7 @@ export async function commitImport(input: CommitInput) {
             unitCost: row.values.unit_cost ? asNumber(row.values.unit_cost) : null,
             allocationMonths: row.values.allocation_months ? asInteger(row.values.allocation_months) : null,
             allocationStartPeriod: row.values.allocation_start_period ? asText(row.values.allocation_start_period) : null,
+            pnlItemCode: row.values.pnl_item_code ? asText(row.values.pnl_item_code).toUpperCase() : null,
             amount: asNumber(row.values.amount),
             note: row.values.note ? asText(row.values.note) : null,
             status: "POSTED",
@@ -1626,6 +1627,7 @@ export async function commitImport(input: CommitInput) {
                 startPeriod,
                 numberOfPeriods: months,
                 sourceType: "OPENING_BALANCE",
+                pnlItemCode: asText(row.values.pnl_item_code).toUpperCase() || null,
                 note: asText(row.values.note) || "Cập nhật từ chi phí phân bổ đầu kỳ",
                 schedules: { create: Array.from({ length: months }, (_, index) => ({ period: addPeriod(startPeriod, index), amount: amount / months })) },
               },
@@ -1643,6 +1645,8 @@ export async function commitImport(input: CommitInput) {
                 numberOfPeriods: months,
                 // Tiền đã chi trước khi lên hệ thống: vế Có của bút toán phân bổ là 242, không phải 335.
                 sourceType: "OPENING_BALANCE",
+                // Hạng mục P&L khai sẵn trên file, khỏi gán lại từng khoản sau khi import.
+                pnlItemCode: asText(row.values.pnl_item_code).toUpperCase() || null,
                 note: asText(row.values.note) || "Tạo từ chi phí phân bổ đầu kỳ",
                 createdBy: input.uploadedBy,
                 schedules: { create: Array.from({ length: months }, (_, index) => ({ period: addPeriod(startPeriod, index), amount: amount / months })) },
