@@ -737,7 +737,7 @@ function normalizeBankStatementRow(row: ParsedImportRow, masterItems: MasterItem
   const debit = numberValue(row.values.debit_amount);
   const credit = numberValue(row.values.credit_amount);
   if ((debit <= 0 && credit <= 0) || (debit > 0 && credit > 0)) {
-    addError(row, "Mỗi dòng sao kê phải có đúng một bên Ghi nợ hoặc Ghi có");
+    addError(row, "Mỗi dòng sao kê phải có đúng một bên: tiền ra điền cột Ghi nợ, tiền vào điền cột Ghi có, bên còn lại để trống hoặc 0");
   }
 
   // Số tài khoản trên sao kê là căn cứ chắc nhất: một tài khoản chỉ thuộc một nguồn tiền.
@@ -846,7 +846,14 @@ function normalizeBankStatementRow(row: ParsedImportRow, masterItems: MasterItem
   // accounting_date trong import-templates.ts, phần còn lại chạy được ngay.
   row.values.accounting_date = row.values.accounting_date || row.values.transaction_date;
   if (!operationType) {
-    addError(row, "Không thể tự xác định Loại nghiệp vụ đích; hãy khai báo cột này hoặc bổ sung đủ Loại thu/chi và thông tin nghiệp vụ");
+    addError(
+      row,
+      "Không tự xác định được Loại nghiệp vụ đích (chứng từ hệ thống sẽ tạo khi Commit). "
+      + "Hay gặp nhất là Loại thu/chi ngược chiều tiền: Ghi nợ = tiền ra, Ghi có = tiền vào. "
+      + "Nếu chiều đã đúng thì bổ sung Mã đối tác / Mã công nợ / Mã tiền cọc / nguồn tiền tăng - giảm, "
+      + "hoặc khai thẳng cột Loại nghiệp vụ đích: Thu doanh thu, Thu công nợ, Trả công nợ, Chi phí trực tiếp, "
+      + "Thu tiền cọc, Hoàn tiền cọc, Điều tiền nội bộ, Quyết toán ví, Phí ngân hàng, Thu khác, Chi khác.",
+    );
   } else if (!supportedOperations.has(operationType)) {
     addError(row, `Loại nghiệp vụ đích [${operationType}] không được hỗ trợ`);
   }
@@ -1545,7 +1552,20 @@ export async function validateImportResult(
         const directionMismatch = (group.creditAmount > 0 && categoryType !== "RECEIPT")
           || (group.debitAmount > 0 && categoryType !== "PAYMENT");
         if (directionMismatch) {
-          addError(row, `Loại thu/chi [${text(row.values.category_code)}] ngược chiều Nợ/Có của giao dịch`);
+          // Kế toán quen nhìn theo sổ 112 (tiền về là Nợ 112) nên hay điền ngược hai cột của
+          // sao kê. Nói thẳng quy ước cột và hai đường sửa, đừng chỉ báo "ngược chiều".
+          const isInflow = group.creditAmount > 0;
+          const columnLabel = isInflow ? "Ghi có" : "Ghi nợ";
+          const otherColumn = isInflow ? "Ghi nợ" : "Ghi có";
+          const needType = isInflow ? "Thu" : "Chi";
+          const currentType = categoryType === "RECEIPT" ? "loại Thu" : categoryType === "PAYMENT" ? "loại Chi" : "chưa phân loại Thu/Chi";
+          addError(
+            row,
+            `Số tiền đang nằm ở cột ${columnLabel} nghĩa là tiền ${isInflow ? "VÀO" : "RA"} tài khoản `
+            + `(Ghi nợ = tiền ra, Ghi có = tiền vào), nên Loại thu/chi phải là ${needType}; `
+            + `[${text(row.values.category_code)}] đang là ${currentType}. `
+            + `Sửa một trong hai: chuyển số tiền sang cột ${otherColumn} nếu điền nhầm cột, hoặc đổi Loại thu/chi sang loại ${needType}.`,
+          );
         }
       }
 
