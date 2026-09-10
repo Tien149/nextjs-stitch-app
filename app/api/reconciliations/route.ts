@@ -16,6 +16,9 @@ import {
   WALLET_GRAB_EXPENSE_CATEGORY_CODE,
 } from "@/lib/wallet-settlement-allocation";
 import { generateFormattedVoucherCode } from "@/lib/voucher-code-generator";
+import { planRevenueDateSplit, RevenueSplitError } from "@/lib/bank-statement-revenue-split";
+import { buildAuditLogData } from "@/lib/audit-log";
+import { periodFromDate } from "@/lib/phase3";
 
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -659,6 +662,146 @@ export async function POST(request: Request) {
     return NextResponse.json(match, { status: 201 });
   } catch (error) {
     console.error("Error creating reconciliation match:", error);
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Internal Server Error" }, { status: 500 });
+  }
+}
+
+/**
+ * Sửa Ngày doanh thu ngay trên dòng sổ sao kê, không phải rollback lô rồi import lại.
+ *
+ * Người dùng hay quên tách một lần ví/ngân hàng trả gộp thành từng ngày doanh thu, làm bảng
+ * "Tiền về đủ chưa" báo ngày này về dư còn ngày kia thiếu tiền. Ở đây chỉ chia lại các dòng
+ * phân bổ: tổng Nợ/Có, gross ví và hai khoản phí giữ nguyên đến từng đồng nên Sổ quỹ, chứng
+ * từ đã lập và bút toán không đổi.
+ */
+export async function PATCH(request: Request) {
+  try {
+    const auth = requireMenuAction(request, "/reconciliations", "edit");
+    if (!auth.ok) return auth.response;
+
+    const body = await request.json();
+    if (cleanText(body.action) !== "SPLIT_REVENUE_DATES") {
+      return NextResponse.json({ error: "Thao tác không hợp lệ" }, { status: 400 });
+    }
+    const bankTransactionId = cleanText(body.bankTransactionId);
+    if (!bankTransactionId) return NextResponse.json({ error: "Thiếu giao dịch sao kê cần tách" }, { status: 400 });
+
+    const bank = await prisma.bankStatementTransaction.findFirst({
+      where: { id: bankTransactionId, deletedAt: null },
+      include: { allocations: { orderBy: { sourceRowNumber: "asc" } } },
+    });
+    if (!bank) return NextResponse.json({ error: "Không tìm thấy giao dịch sao kê" }, { status: 404 });
+    if (bank.branchCode) {
+      try {
+        assertBranchAccess(auth.session, bank.branchCode);
+      } catch (error) {
+        return NextResponse.json({ error: error instanceof Error ? error.message : "Không có quyền chi nhánh" }, { status: 403 });
+      }
+    }
+
+    // Khóa sổ theo đúng kỳ mà tiền đã ghi nhận (ngày giao dịch + ngày hạch toán), giống lúc
+    // commit lô import. Ngày doanh thu chỉ là chỗ đứng trên báo cáo đối chiếu nên không khóa
+    // theo nó, nếu không thì tháng trước vừa chốt là hết đường sửa nhầm lẫn phân loại.
+    const lockedPeriods = [...new Set([bank.transactionDate, bank.accountingDate || bank.transactionDate].map(periodFromDate))];
+    if (bank.branchCode) {
+      const locked = await prisma.accountingPeriod.findFirst({
+        where: { period: { in: lockedPeriods }, status: "CLOSED", branchCode: { in: [bank.branchCode, "ALL"] } },
+        select: { period: true },
+      });
+      if (locked) return NextResponse.json({ error: `Kỳ ${locked.period} của cửa hàng ${bank.branchCode} đã khóa, không sửa được Ngày doanh thu` }, { status: 400 });
+    }
+
+    let plan;
+    try {
+      plan = planRevenueDateSplit({ transaction: bank, existing: bank.allocations, lines: body.lines });
+    } catch (error) {
+      if (error instanceof RevenueSplitError) return NextResponse.json({ error: error.message }, { status: 400 });
+      throw error;
+    }
+
+    const previous = bank.allocations.map((row) => ({
+      revenueDate: row.revenueDate, debitAmount: row.debitAmount, creditAmount: row.creditAmount, grossAmount: row.grossAmount,
+    }));
+
+    await prisma.$transaction(async (tx) => {
+      if (plan.removedIds.length > 0) {
+        await tx.bankStatementAllocation.deleteMany({ where: { id: { in: plan.removedIds }, bankTransactionId: bank.id } });
+      }
+      for (const line of plan.lines) {
+        const data = {
+          revenueDate: line.revenueDate,
+          debitAmount: line.debitAmount,
+          creditAmount: line.creditAmount,
+          grossAmount: line.grossAmount,
+          grabExpenseAmount: line.grabExpenseAmount,
+          cardFeeAmount: line.cardFeeAmount,
+        };
+        if (line.id) {
+          await tx.bankStatementAllocation.update({ where: { id: line.id }, data });
+          continue;
+        }
+        // Dòng mới thừa hưởng toàn bộ cách phân loại của giao dịch: chỉ Ngày doanh thu và số
+        // tiền được chia lại, còn khoản mục/nguồn tiền/đối tác phải y hệt dòng gốc.
+        await tx.bankStatementAllocation.create({
+          data: {
+            ...data,
+            bankTransactionId: bank.id,
+            sheetName: line.sheetName,
+            sourceRowNumber: line.sourceRowNumber,
+            description: bank.description,
+            sourceDate: bank.sourceDate,
+            categoryCode: bank.categoryCode,
+            summaryMoneySourceCode: bank.summaryMoneySourceCode,
+            increaseMoneySourceCode: bank.increaseMoneySourceCode,
+            decreaseMoneySourceCode: bank.decreaseMoneySourceCode,
+            operationType: bank.operationType,
+            accountingDate: bank.accountingDate,
+            partnerCode: bank.partnerCode,
+            pnlItemCode: bank.pnlItemCode,
+            debtReference: bank.debtReference,
+            depositCode: bank.depositCode,
+            autoProcessType: bank.autoProcessType,
+            autoProcessNote: bank.autoProcessNote,
+          },
+        });
+      }
+      await tx.bankStatementTransaction.update({
+        where: { id: bank.id },
+        data: {
+          revenueDate: plan.transactionRevenueDate,
+          autoProcessNote: `Tách lại Ngày doanh thu thành ${plan.lines.length} dòng (${auth.session.name})`,
+        },
+      });
+      await tx.auditLog.create({
+        data: buildAuditLogData({
+          session: auth.session,
+          module: "BANK_STATEMENT",
+          action: "SPLIT_REVENUE_DATES",
+          entityType: "BankStatementTransaction",
+          entityId: bank.id,
+          entityCode: bank.transactionCode,
+          branchCode: bank.branchCode,
+          message: `Tách ${bank.transactionCode} thành ${plan.lines.length} dòng Ngày doanh thu`,
+          metadata: {
+            before: previous,
+            after: plan.lines.map((line) => ({
+              revenueDate: line.revenueDate, debitAmount: line.debitAmount, creditAmount: line.creditAmount, grossAmount: line.grossAmount,
+            })),
+          },
+        }),
+      });
+    });
+
+    const updated = await prisma.bankStatementTransaction.findUnique({
+      where: { id: bank.id },
+      include: { allocations: { orderBy: { sourceRowNumber: "asc" } } },
+    });
+    return NextResponse.json({
+      transaction: updated,
+      revenueDates: plan.lines.map((line) => line.revenueDate.toISOString()),
+    });
+  } catch (error) {
+    console.error("Error splitting bank statement revenue dates:", error);
     return NextResponse.json({ error: error instanceof Error ? error.message : "Internal Server Error" }, { status: 500 });
   }
 }

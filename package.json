@@ -27,6 +27,7 @@
     "test:prepaid-allocation": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-voucher-prepaid-allocation.mjs",
     "test:debt-group": "node --experimental-strip-types --no-warnings --test scripts/test-debt-group.mjs",
     "test:import-row-edits": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-import-row-edits.mjs",
+    "test:revenue-split": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-bank-statement-revenue-split.mjs",
     "test:transfer-code": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-transfer-code-gap.mjs",
     "test:cost-reallocation": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-cost-reallocation.mjs",
     "test:internal-transfer": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-internal-transfer.mjs",

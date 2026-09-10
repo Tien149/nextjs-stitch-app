@@ -2,12 +2,14 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { appMenuItems, canAccessMenu, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
+import { appMenuItems, canAccessMenu, canPerformMenuAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
+import { DateInput } from "@/components/DateInput";
+import { MoneyInput } from "@/components/MoneyInput";
 import { filterMoneySources, type MoneySourceOption } from "@/lib/money-sources";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { exportRowsToExcel } from "@/lib/export-table-excel";
 
-type Allocation = { id: string; sourceRowNumber: number; sheetName: string; revenueDate: string | null; sourceDate: string | null; grossAmount: number | null; grabExpenseAmount: number; cardFeeAmount: number };
+type Allocation = { id: string; sourceRowNumber: number; sheetName: string; revenueDate: string | null; sourceDate: string | null; debitAmount: number; creditAmount: number; grossAmount: number | null; grabExpenseAmount: number; cardFeeAmount: number };
 type MatchRow = { targetCode: string; targetType: string; targetHref?: string };
 type BankRow = {
   id: string; transactionDate: string; sourceDate: string | null; accountingDate: string | null;
@@ -28,6 +30,20 @@ function dateText(value: string | null | undefined) {
   return value ? new Date(value).toLocaleDateString("vi-VN", { timeZone: "UTC" }) : "—";
 }
 
+/** Ngày lưu ở UTC nửa đêm nên cắt chuỗi ISO là đúng ngày nghiệp vụ, không lệch múi giờ. */
+function dateInputValue(value: string | null | undefined) {
+  return value ? String(value).slice(0, 10) : "";
+}
+
+/** Một dòng Ngày doanh thu đang sửa trong bảng tách; `id` rỗng là dòng mới thêm. */
+type SplitLine = { key: string; id: string | null; revenueDate: string; amount: string };
+
+let splitLineSeq = 0;
+function newSplitKey() {
+  splitLineSeq += 1;
+  return `new-${splitLineSeq}`;
+}
+
 const emptyFilters = { from: "", to: "", dateType: "TRANSACTION", branchCode: "ALL", moneySource: "", category: "", operationType: "", q: "", missingCategory: "" };
 
 export default function BankStatementLedgerPage() {
@@ -44,6 +60,10 @@ export default function BankStatementLedgerPage() {
   const [filters, setFilters] = useState(emptyFilters);
   const [applied, setApplied] = useState(emptyFilters);
   const [isExporting, setIsExporting] = useState(false);
+  const [splitRow, setSplitRow] = useState<BankRow | null>(null);
+  const [splitLines, setSplitLines] = useState<SplitLine[]>([]);
+  const [splitError, setSplitError] = useState("");
+  const [splitSaving, setSplitSaving] = useState(false);
 
   useEffect(() => {
     const raw = localStorage.getItem(SESSION_KEY);
@@ -110,6 +130,99 @@ export default function BankStatementLedgerPage() {
   };
   const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
   const recorded = rows.filter((row) => row.reconcileStatus === "MATCHED").length;
+  const canEdit = Boolean(user && canPerformMenuAction(user, "/reconciliations", "edit"));
+
+  /**
+   * Sửa Ngày doanh thu ngay trên dòng sao kê. File của khách hay gộp 3-4 ngày doanh thu vào
+   * cùng một lần ví trả tiền; trước đây chỉ có đường rollback lô rồi import lại, còn bảng
+   * "Tiền về đủ chưa" thì dồn hết tiền vào một ngày và báo các ngày kia thiếu tiền.
+   */
+  const splitTotal = splitRow ? Math.round(splitRow.creditAmount || splitRow.debitAmount) : 0;
+  const splitAssigned = splitLines.reduce((sum, line) => sum + (Number(line.amount) || 0), 0);
+  const splitRemaining = splitTotal - splitAssigned;
+
+  const openSplit = (row: BankRow) => {
+    const lines: SplitLine[] = row.allocations.length > 0
+      ? row.allocations.map((allocation) => ({
+          key: allocation.id,
+          id: allocation.id,
+          revenueDate: dateInputValue(allocation.revenueDate),
+          amount: String(Math.round(allocation.creditAmount || allocation.debitAmount || 0)),
+        }))
+      : [{
+          key: newSplitKey(),
+          id: null,
+          revenueDate: dateInputValue(row.revenueDates[0] || row.sourceDate || row.transactionDate),
+          amount: String(Math.round(row.creditAmount || row.debitAmount)),
+        }];
+    setSplitRow(row);
+    setSplitLines(lines);
+    setSplitError("");
+  };
+
+  const updateSplitLine = (key: string, patch: Partial<SplitLine>) => {
+    setSplitLines((current) => current.map((line) => line.key === key ? { ...line, ...patch } : line));
+  };
+
+  /** Tách đôi số tiền của một dòng: tổng không đổi nên người dùng chỉ còn phải sửa ngày. */
+  const halveSplitLine = (key: string) => {
+    setSplitLines((current) => current.flatMap((line) => {
+      if (line.key !== key) return [line];
+      const amount = Math.round(Number(line.amount) || 0);
+      const half = Math.floor(amount / 2);
+      return [
+        { ...line, amount: String(amount - half) },
+        { key: newSplitKey(), id: null, revenueDate: line.revenueDate, amount: String(half) },
+      ];
+    }));
+  };
+
+  const addSplitLine = () => {
+    setSplitLines((current) => [...current, {
+      key: newSplitKey(),
+      id: null,
+      revenueDate: "",
+      amount: splitRemaining > 0 ? String(splitRemaining) : "",
+    }]);
+  };
+
+  /** Xoá dòng thì dồn tiền của nó về dòng đầu còn lại, để tổng luôn khớp số tiền giao dịch. */
+  const removeSplitLine = (key: string) => {
+    setSplitLines((current) => {
+      if (current.length <= 1) return current;
+      const removed = current.find((line) => line.key === key);
+      const rest = current.filter((line) => line.key !== key);
+      const moved = Math.round(Number(removed?.amount) || 0);
+      if (moved > 0) rest[0] = { ...rest[0], amount: String(Math.round(Number(rest[0].amount) || 0) + moved) };
+      return rest;
+    });
+  };
+
+  const saveSplit = async () => {
+    if (!splitRow) return;
+    setSplitSaving(true);
+    setSplitError("");
+    try {
+      const response = await fetch("/api/reconciliations", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "SPLIT_REVENUE_DATES",
+          bankTransactionId: splitRow.id,
+          lines: splitLines.map((line) => ({ id: line.id, revenueDate: line.revenueDate, amount: Number(line.amount) || 0 })),
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error || "Không lưu được Ngày doanh thu");
+      setSplitRow(null);
+      setSplitLines([]);
+      await loadRows();
+    } catch (error) {
+      setSplitError(error instanceof Error ? error.message : "Không lưu được Ngày doanh thu");
+    } finally {
+      setSplitSaving(false);
+    }
+  };
 
   /**
    * Trang này phân trang phía máy chủ (50 dòng/trang) nên nút xuất phải gọi lần lượt hết các
@@ -206,7 +319,7 @@ export default function BankStatementLedgerPage() {
         <div className="overflow-x-auto"><table className="min-w-[1500px] w-full text-left text-sm">
           <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr>{["Ngày GD / nguồn / DT", "Sao kê", "Nợ", "Có", "Cửa hàng", "Nghiệp vụ / loại", "Nguồn tổng / tăng / giảm", "Đối tác / P&L", "Chứng từ", "Trạng thái"].map((label) => <th key={label} className="px-3 py-3">{label}</th>)}</tr></thead>
           <tbody>{loading ? <tr><td colSpan={10} className="p-10 text-center text-slate-400">Đang tải...</td></tr> : rows.length === 0 ? <tr><td colSpan={10} className="p-10 text-center text-slate-400">Không có giao dịch phù hợp.</td></tr> : rows.map((row) => <tr key={row.id} className="border-t border-slate-100 align-top hover:bg-slate-50">
-            <td className="px-3 py-3 text-xs"><b>{dateText(row.transactionDate)}</b><p>Nguồn: {dateText(row.sourceDate)}</p><p>DT: {row.revenueDates.length ? row.revenueDates.map(dateText).join(", ") : "—"}</p></td>
+            <td className="px-3 py-3 text-xs"><b>{dateText(row.transactionDate)}</b><p>Nguồn: {dateText(row.sourceDate)}</p><p>DT: {row.revenueDates.length ? row.revenueDates.map(dateText).join(", ") : "—"}</p>{canEdit && <button type="button" onClick={() => openSplit(row)} title="Tách hoặc sửa Ngày doanh thu ngay trên dòng này, không phải import lại" className="mt-1.5 inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] font-bold text-blue-700 hover:bg-blue-50"><span className="material-symbols-outlined text-[14px]">call_split</span>Sửa ngày DT</button>}</td>
             <td className="max-w-sm px-3 py-3"><b className="break-all">{row.transactionCode}</b><p className="mt-1 text-xs text-slate-500">{row.bankAccount}</p><p className="mt-1 line-clamp-3 text-xs">{row.description}</p>{row.allocations.length > 1 && <span className="mt-1 inline-block rounded bg-indigo-50 px-2 py-0.5 text-xs font-bold text-indigo-700">{row.allocations.length} dòng phân bổ</span>}</td>
             <td className="px-3 py-3 text-right font-bold text-rose-700">{row.debitAmount ? `${money(row.debitAmount)} đ` : "—"}</td>
             <td className="px-3 py-3 text-right font-bold text-emerald-700">{row.creditAmount ? `${money(row.creditAmount)} đ` : "—"}</td>
@@ -221,5 +334,48 @@ export default function BankStatementLedgerPage() {
         <div className="flex items-center justify-between border-t border-slate-200 p-4 text-sm"><span>Trang {page}/{totalPages} · {total} giao dịch</span><div className="flex gap-2"><button disabled={page <= 1} onClick={() => setPage(page - 1)} className="rounded border px-3 py-1.5 disabled:opacity-40">Trang trước</button><button disabled={page >= totalPages} onClick={() => setPage(page + 1)} className="rounded border px-3 py-1.5 disabled:opacity-40">Trang sau</button></div></div>
       </section>
     </main>
+
+    {splitRow && <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 p-4">
+      <div className="mt-8 w-full max-w-3xl rounded-xl bg-white shadow-xl">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200 p-4">
+          <div>
+            <h3 className="font-bold">Tách Ngày doanh thu</h3>
+            <p className="mt-1 text-xs text-slate-500">{splitRow.transactionCode} · {dateText(splitRow.transactionDate)} · {storeLabel(splitRow.branchCode)} · {splitRow.creditAmount ? "Ghi có" : "Ghi nợ"} <b className="text-slate-700">{money(splitTotal)} đ</b></p>
+            <p className="mt-1 text-xs text-slate-500">Chia số tiền này về đúng từng ngày doanh thu. Tổng tiền, chứng từ {splitRow.currentMatch?.targetCode || "đã lập"} và bút toán không đổi — chỉ đổi chỗ đứng trên bảng &quot;Tiền về đủ chưa&quot;.</p>
+          </div>
+          <button type="button" onClick={() => setSplitRow(null)} className="rounded p-1 text-slate-400 hover:bg-slate-100"><span className="material-symbols-outlined">close</span></button>
+        </div>
+
+        <div className="space-y-3 p-4">
+          <table className="w-full text-sm">
+            <thead className="text-xs uppercase text-slate-500"><tr><th className="w-10 py-2 text-left">#</th><th className="py-2 text-left">Ngày doanh thu</th><th className="py-2 text-left">Số tiền</th><th className="w-24 py-2"></th></tr></thead>
+            <tbody>{splitLines.map((line, index) => <tr key={line.key} className="border-t border-slate-100">
+              <td className="py-2 text-xs text-slate-500">{index + 1}</td>
+              <td className="py-2 pr-3"><DateInput value={line.revenueDate} onChange={(value) => updateSplitLine(line.key, { revenueDate: value })} ariaLabel={`Ngày doanh thu dòng ${index + 1}`} /></td>
+              <td className="py-2 pr-3"><MoneyInput value={line.amount} onChange={(value) => updateSplitLine(line.key, { amount: value })} className="control text-right" ariaLabel={`Số tiền dòng ${index + 1}`} /></td>
+              <td className="py-2 text-right">
+                <button type="button" onClick={() => halveSplitLine(line.key)} title="Tách đôi dòng này (tổng không đổi)" className="rounded p-1 text-slate-500 hover:bg-slate-100"><span className="material-symbols-outlined text-[18px]">call_split</span></button>
+                <button type="button" disabled={splitLines.length <= 1} onClick={() => removeSplitLine(line.key)} title="Xoá dòng, dồn tiền về dòng đầu" className="rounded p-1 text-rose-600 hover:bg-rose-50 disabled:opacity-30"><span className="material-symbols-outlined text-[18px]">delete</span></button>
+              </td>
+            </tr>)}</tbody>
+          </table>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2 text-sm">
+            <button type="button" onClick={addSplitLine} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50"><span className="material-symbols-outlined text-[16px]">add</span>Thêm ngày doanh thu</button>
+            <p>Đã phân bổ <b>{money(splitAssigned)} đ</b> / {money(splitTotal)} đ · {splitRemaining === 0
+              ? <b className="text-emerald-700">khớp đủ</b>
+              : <b className="text-rose-700">{splitRemaining > 0 ? "còn thiếu" : "đang dư"} {money(Math.abs(splitRemaining))} đ</b>}</p>
+          </div>
+
+          <p className="text-xs text-slate-500">Gross ví và hai khoản phí (Grab, cà thẻ) được chia theo tỷ trọng số tiền của từng dòng, tổng giữ nguyên đến từng đồng.</p>
+          {splitError && <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">{splitError}</p>}
+        </div>
+
+        <div className="flex justify-end gap-2 border-t border-slate-200 p-4">
+          <button type="button" onClick={() => setSplitRow(null)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-bold">Hủy</button>
+          <button type="button" onClick={() => void saveSplit()} disabled={splitSaving || splitRemaining !== 0 || splitLines.some((line) => !line.revenueDate)} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">{splitSaving ? "Đang lưu..." : "Lưu Ngày doanh thu"}</button>
+        </div>
+      </div>
+    </div>}
   </div>;
 }
