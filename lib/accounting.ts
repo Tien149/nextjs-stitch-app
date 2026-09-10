@@ -298,7 +298,14 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   const openingSourceGroups = new Map(openingSources.map((source) => [source.code, (source.group || "").toUpperCase()]));
   for (const row of openingBalances) {
     const sourceAccount = openingSourceGroups.get(row.moneySourceCode || "") === "BANK" ? "1121" : "1111";
-    const assetAccount = row.balanceType === "AR" ? "131" : row.balanceType === "INVENTORY" ? "152" : row.balanceType === "ASSET" ? "211" : sourceAccount;
+    // PREPAID_EXPENSE là phần chi phí trả trước còn lại chưa phân bổ: tiền đã chi từ trước
+    // khi lên hệ thống, nên phải treo Nợ 242 rồi rút dần qua các kỳ phân bổ. Rơi vào nhánh
+    // mặc định (tài khoản tiền) thì số dư quỹ/ngân hàng đầu kỳ bị thổi lên đúng bằng khoản này.
+    const assetAccount = row.balanceType === "AR" ? "131"
+      : row.balanceType === "INVENTORY" ? "152"
+      : row.balanceType === "ASSET" ? "211"
+      : row.balanceType === "PREPAID_EXPENSE" ? "242"
+      : sourceAccount;
     const isLiability = row.balanceType === "AP";
     const isCustomerDeposit = row.balanceType === "DEPOSIT";
     results.push(await postJournalEntry({
@@ -473,8 +480,16 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   // - Sinh từ phiếu chi trả trước (sourceType VOUCHER): tiền đã ra quỹ và đang treo Nợ 242,
   //   nên mỗi kỳ phân bổ là rút dần 242 xuống. Ghi Có 335 ở đây sẽ đẻ ra một khoản phải trả
   //   ảo không ai trả, đồng thời 242 nằm treo mãi trên bảng cân đối.
+  // - Sinh từ số dư đầu kỳ (sourceType OPENING_BALANCE, mã PB-DK-*): tiền cũng đã chi từ
+  //   trước khi lên hệ thống và số dư đầu kỳ đã treo Nợ 242, nên vế Có cũng là 242. Khoản
+  //   cũ tạo trước 10/09/2026 chưa có sourceType nên vẫn nhận diện thêm theo tiền tố mã.
   // - Khai tay ở tab Trích trước (chưa chi tiền): vẫn là Có 335 — chi phí phải trả.
-  for (const row of accruals) results.push(await postJournalEntry({ entryDate: row.postedAt || new Date(`${period}-28T00:00:00`), branchCode: row.accrual.branchCode, sourceType: "ACCRUAL", sourceId: row.id, sourceCode: row.accrual.code, description: `Phân bổ ${row.accrual.name}`, createdBy: actor, lines: [{ accountCode: "6428", debit: row.amount, categoryCode: row.accrual.categoryCode, pnlItemCode: row.accrual.pnlItemCode }, { accountCode: row.accrual.sourceType === "VOUCHER" ? "242" : "335", credit: row.amount }] }));
+  for (const row of accruals) {
+    const alreadyPaid = row.accrual.sourceType === "VOUCHER"
+      || row.accrual.sourceType === "OPENING_BALANCE"
+      || row.accrual.code.startsWith("PB-DK-");
+    results.push(await postJournalEntry({ entryDate: row.postedAt || new Date(`${period}-28T00:00:00`), branchCode: row.accrual.branchCode, sourceType: "ACCRUAL", sourceId: row.id, sourceCode: row.accrual.code, description: `Phân bổ ${row.accrual.name}`, createdBy: actor, lines: [{ accountCode: "6428", debit: row.amount, categoryCode: row.accrual.categoryCode, pnlItemCode: row.accrual.pnlItemCode }, { accountCode: alreadyPaid ? "242" : "335", credit: row.amount }] }));
+  }
 
   const payroll = await prisma.payrollImportRow.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { branchCode }) } });
   for (const row of payroll) {

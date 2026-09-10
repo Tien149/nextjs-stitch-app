@@ -73,11 +73,14 @@ async function applySideEffects(tx: Prisma.TransactionClient, current: OpeningBa
   if (current.balanceType === "PREPAID_EXPENSE") {
     const code = `PB-DK-${(current.objectCode || "").toUpperCase()}`;
     if (await tx.accrual.findUnique({ where: { code } })) throw new Error(`Chi phí phân bổ mã ${current.objectCode} đã tồn tại`);
+    // sourceType quyết định vế Có của bút toán phân bổ hàng kỳ: khoản đầu kỳ là tiền đã chi
+    // từ trước, số dư đầu kỳ treo Nợ 242 nên mỗi kỳ phải rút 242 xuống, không phải ghi Có 335.
     const accrual = await tx.accrual.create({ data: {
       code, name: current.objectName || code, branchCode: current.branchCode,
       categoryCode: current.moneySourceCode || "OPEX", totalAmount: current.amount,
       startPeriod: current.allocationStartPeriod || current.period,
       numberOfPeriods: current.allocationMonths || 1, actualAmount: current.amount,
+      sourceType: "OPENING_BALANCE", sourceId: current.id,
       status: "ACTIVE", note: current.note || "Khởi tạo từ số dư đầu kỳ",
     } });
     await tx.accrualSchedule.createMany({ data: Array.from({ length: current.allocationMonths || 1 }, (_, index) => ({

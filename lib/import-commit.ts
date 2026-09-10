@@ -1625,6 +1625,7 @@ export async function commitImport(input: CommitInput) {
                 totalAmount: amount,
                 startPeriod,
                 numberOfPeriods: months,
+                sourceType: "OPENING_BALANCE",
                 note: asText(row.values.note) || "Cập nhật từ chi phí phân bổ đầu kỳ",
                 schedules: { create: Array.from({ length: months }, (_, index) => ({ period: addPeriod(startPeriod, index), amount: amount / months })) },
               },
@@ -1640,6 +1641,8 @@ export async function commitImport(input: CommitInput) {
                 totalAmount: amount,
                 startPeriod,
                 numberOfPeriods: months,
+                // Tiền đã chi trước khi lên hệ thống: vế Có của bút toán phân bổ là 242, không phải 335.
+                sourceType: "OPENING_BALANCE",
                 note: asText(row.values.note) || "Tạo từ chi phí phân bổ đầu kỳ",
                 createdBy: input.uploadedBy,
                 schedules: { create: Array.from({ length: months }, (_, index) => ({ period: addPeriod(startPeriod, index), amount: amount / months })) },
