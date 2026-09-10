@@ -92,6 +92,8 @@ type Data = {
 
 const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value || 0);
 
+const MONTH_HEADERS = Array.from({ length: 12 }, (_, index) => ({ label: `T${index + 1}`, align: "right" as const }));
+
 export default function AssetOperationsPage() {
   const href = "/assets";
   const { user, loading } = useModuleAuth(href);
@@ -109,6 +111,7 @@ export default function AssetOperationsPage() {
     residualValue: "0",
   });
   const [period, setPeriod] = useState(new Date().toISOString().slice(0, 7));
+  const [depreciationYear, setDepreciationYear] = useState(new Date().toISOString().slice(0, 4));
   const [maintenance, setMaintenance] = useState({
     maintenanceType: "Bảo trì định kỳ",
     scheduledDate: new Date().toISOString().slice(0, 10),
@@ -194,6 +197,50 @@ export default function AssetOperationsPage() {
     setMessage(response.ok ? success : payload.error || "Không thực hiện được thao tác");
     if (response.ok) await loadData();
   };
+
+  const depreciationYears = useMemo(() => {
+    const years = new Set<string>();
+    data.depreciations.forEach((row) => {
+      if (row.period && row.period.length >= 4) years.add(row.period.slice(0, 4));
+    });
+    years.add(new Date().toISOString().slice(0, 4));
+    return [...years].sort((a, b) => b.localeCompare(a));
+  }, [data.depreciations]);
+
+  // Năm đang chọn có thể biến mất sau khi tải lại dữ liệu, khi đó rơi về năm mới nhất còn số liệu.
+  const activeDepreciationYear = depreciationYears.includes(depreciationYear) ? depreciationYear : depreciationYears[0];
+
+  // Mỗi tài sản một dòng: 12 cột là số khấu hao từng tháng của năm đang chọn, lũy kế và
+  // giá trị còn lại lấy theo kỳ gần nhất mà tài sản đó đã chạy trong năm.
+  const depreciationMatrix = useMemo(() => {
+    const rows = new Map<string, { asset: Asset; months: number[]; total: number; accumulated: number; remaining: number; lastPeriod: string }>();
+    data.depreciations.forEach((row) => {
+      if (!row.period?.startsWith(activeDepreciationYear)) return;
+      const monthIndex = Number(row.period.slice(5, 7)) - 1;
+      if (!(monthIndex >= 0 && monthIndex <= 11)) return;
+      const entry = rows.get(row.asset.id) || { asset: row.asset, months: Array(12).fill(0) as number[], total: 0, accumulated: 0, remaining: 0, lastPeriod: "" };
+      entry.months[monthIndex] += row.depreciationAmount || 0;
+      entry.total += row.depreciationAmount || 0;
+      if (row.period >= entry.lastPeriod) {
+        entry.lastPeriod = row.period;
+        entry.accumulated = row.accumulatedDepreciation;
+        entry.remaining = row.remainingValue;
+        entry.asset = row.asset;
+      }
+      rows.set(row.asset.id, entry);
+    });
+    return [...rows.values()].sort((a, b) => a.asset.code.localeCompare(b.asset.code, "vi"));
+  }, [data.depreciations, activeDepreciationYear]);
+
+  const depreciationTotals = useMemo(() => {
+    const months = Array(12).fill(0) as number[];
+    let total = 0;
+    depreciationMatrix.forEach((row) => {
+      row.months.forEach((amount, index) => { months[index] += amount; });
+      total += row.total;
+    });
+    return { months, total };
+  }, [depreciationMatrix]);
 
   const getTreatmentLabel = (treatment?: string | null, cost?: number | null) => {
     if (!treatment) return "-";
@@ -384,18 +431,61 @@ export default function AssetOperationsPage() {
           </div>
 
           <section className="table-panel">
-            <Panel title="Lịch sử khấu hao" reload={loadData} exportFileName="lich_su_khau_hao" />
-            <Table headers={[{ label: "Kỳ" }, { label: "Tài sản" }, { label: "Khấu hao tháng", align: "right" }, { label: "Lũy kế", align: "right" }, { label: "Giá trị còn lại", align: "right" }]}>
-              {data.depreciations.map((row) => (
-                <tr key={row.id} className="border-t border-slate-100">
-                  <Cell>{row.period}</Cell>
-                  <Cell><b><CopyableText value={row.asset.code} /> - {row.asset.name}</b></Cell>
-                  <Cell right>{money(row.depreciationAmount)} đ</Cell>
-                  <Cell right>{money(row.accumulatedDepreciation)} đ</Cell>
-                  <Cell right><b>{money(row.remainingValue)} đ</b></Cell>
+            <Panel title="Lịch sử khấu hao" reload={loadData} exportFileName="lich_su_khau_hao">
+              <select
+                className="control h-8 w-32 text-xs py-0"
+                value={activeDepreciationYear}
+                onChange={(e) => setDepreciationYear(e.target.value)}
+                aria-label="Năm khấu hao"
+                data-no-export
+              >
+                {depreciationYears.map((year) => (
+                  <option key={year} value={year}>Năm {year}</option>
+                ))}
+              </select>
+            </Panel>
+            <Table
+              headers={[
+                { label: "Tài sản", sticky: true },
+                ...MONTH_HEADERS,
+                { label: "Cộng năm", align: "right" as const },
+                { label: "Lũy kế", align: "right" as const },
+                { label: "Còn lại", align: "right" as const },
+              ]}
+            >
+              {depreciationMatrix.map((row) => (
+                <tr key={row.asset.id} className="border-t border-slate-100">
+                  <Cell sticky><b><CopyableText value={row.asset.code} /> - {row.asset.name}</b></Cell>
+                  {row.months.map((amount, index) => (
+                    <Cell key={index} right className={`whitespace-nowrap ${amount ? "" : "text-slate-300"}`}>
+                      {amount ? money(amount) : "—"}
+                    </Cell>
+                  ))}
+                  <Cell right className="whitespace-nowrap"><b>{money(row.total)}</b></Cell>
+                  <Cell right className="whitespace-nowrap">{money(row.accumulated)}</Cell>
+                  <Cell right className="whitespace-nowrap"><b>{money(row.remaining)}</b></Cell>
                 </tr>
               ))}
+              {depreciationMatrix.length > 0 && (
+                <tr className="border-t border-slate-200 bg-slate-50 font-bold">
+                  <Cell sticky className="!bg-slate-50">Tổng cộng</Cell>
+                  {depreciationTotals.months.map((amount, index) => (
+                    <Cell key={index} right className={`whitespace-nowrap ${amount ? "" : "text-slate-300"}`}>
+                      {amount ? money(amount) : "—"}
+                    </Cell>
+                  ))}
+                  <Cell right className="whitespace-nowrap">{money(depreciationTotals.total)}</Cell>
+                  <Cell right>—</Cell>
+                  <Cell right>—</Cell>
+                </tr>
+              )}
+              {depreciationMatrix.length === 0 && (
+                <tr className="border-t border-slate-100">
+                  <td colSpan={16} className="px-4 py-6 text-center text-slate-500">Năm {activeDepreciationYear} chưa chạy khấu hao cho tài sản nào.</td>
+                </tr>
+              )}
             </Table>
+            <p className="px-5 py-3 text-xs text-slate-500">Số liệu tính bằng đồng. Lũy kế và Còn lại lấy theo kỳ gần nhất tài sản đã chạy trong năm {activeDepreciationYear}.</p>
           </section>
         </div>
       )}
@@ -680,11 +770,12 @@ function AssetSelect({ assets, value, onChange }: { assets: Asset[]; value: stri
   );
 }
 
-function Panel({ title, reload, exportFileName }: { title: string; reload: () => void; exportFileName?: string }) {
+function Panel({ title, reload, exportFileName, children }: { title: string; reload: () => void; exportFileName?: string; children?: React.ReactNode }) {
   return (
     <div className="p-5 flex justify-between items-center gap-3">
       <h2 className="font-bold">{title}</h2>
       <div className="flex items-center gap-2">
+        {children}
         {exportFileName && <ExportExcelButton fileName={exportFileName} sheetName={title.slice(0, 31)} />}
         <button type="button" title="Tải lại" onClick={reload} className="icon-button">
           <span className="material-symbols-outlined text-lg">refresh</span>
@@ -694,14 +785,19 @@ function Panel({ title, reload, exportFileName }: { title: string; reload: () =>
   );
 }
 
-function Table({ headers, children }: { headers: { label: string; align?: "left" | "right" }[]; children: React.ReactNode }) {
+function Table({ headers, children }: { headers: { label: string; align?: "left" | "right"; sticky?: boolean }[]; children: React.ReactNode }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead className="bg-slate-50 text-xs uppercase text-slate-500">
           <tr>
             {headers.map((header) => (
-              <th key={header.label} className={`px-4 py-3 ${header.align === "right" ? "text-right" : "text-left"}`}>{header.label}</th>
+              <th
+                key={header.label}
+                className={`px-4 py-3 ${header.align === "right" ? "text-right" : "text-left"} ${header.sticky ? "sticky left-0 z-10 bg-slate-50" : ""}`}
+              >
+                {header.label}
+              </th>
             ))}
           </tr>
         </thead>
@@ -711,6 +807,10 @@ function Table({ headers, children }: { headers: { label: string; align?: "left"
   );
 }
 
-function Cell({ children, right }: { children: React.ReactNode; right?: boolean }) {
-  return <td className={`px-4 py-3 align-top ${right ? "text-right" : ""}`}>{children}</td>;
+function Cell({ children, right, sticky, className }: { children: React.ReactNode; right?: boolean; sticky?: boolean; className?: string }) {
+  return (
+    <td className={`px-4 py-3 align-top ${right ? "text-right" : ""} ${sticky ? "sticky left-0 z-10 bg-white" : ""} ${className || ""}`}>
+      {children}
+    </td>
+  );
 }
