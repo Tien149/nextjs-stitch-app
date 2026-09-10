@@ -83,7 +83,7 @@ type DailyCashData = {
   branchCode: string;
   reportDate: string;
   shift: string;
-  summary: { revenue: DailyCashBucket; posRevenue: DailyCashBucket; manual: DailyCashBucket; receipt: DailyCashBucket; receiptRevenue: DailyCashBucket; receiptSalesRevenue?: DailyCashBucket; receiptOther?: DailyCashBucket; deposit: DailyCashBucket; total: DailyCashBucket; expenseTotal: number; cashExpenseTotal: number; cashToDeposit: number };
+  summary: { revenue: DailyCashBucket; unshiftedRevenue?: DailyCashBucket; posRevenue: DailyCashBucket; manual: DailyCashBucket; receipt: DailyCashBucket; receiptRevenue: DailyCashBucket; receiptSalesRevenue?: DailyCashBucket; receiptOther?: DailyCashBucket; deposit: DailyCashBucket; total: DailyCashBucket; expenseTotal: number; cashExpenseTotal: number; cashToDeposit: number };
   /** Tiền mặt cần nộp tách theo từng quỹ; mã rỗng là phần chưa xác định được nguồn. */
   cashToDepositSources: Array<{ code: string; name: string; amount: number }>;
   /** Quỹ tiền mặt không phải của thu ngân đã bị loại khỏi báo cáo, để màn hình nói rõ tiền nằm đâu. */
@@ -367,8 +367,12 @@ export default function ReportsPage() {
     () => (dailyCash ? buildDailyCashSummaryRows(dailyCash.summary) : []),
     [dailyCash],
   );
-  const dailyCashExpenseSum = dailyCashSummaryRows.reduce((sum, row) => sum + (row.expense || 0), 0);
-  const dailyCashDepositSum = dailyCashSummaryRows.reduce((sum, row) => sum + (row.cashToDeposit || 0), 0);
+  // Doanh thu POS chưa tách được ca đứng SAU dòng TOTAL: nó là số của cả ngày, không thuộc ca
+  // đang xem, nên không được cộng vào tổng lẫn số nộp của ca.
+  const dailyCashShiftRows = dailyCashSummaryRows.filter((row) => !row.outsideTotal);
+  const dailyCashOutsideRows = dailyCashSummaryRows.filter((row) => row.outsideTotal);
+  const dailyCashExpenseSum = dailyCashShiftRows.reduce((sum, row) => sum + (row.expense || 0), 0);
+  const dailyCashDepositSum = dailyCashShiftRows.reduce((sum, row) => sum + (row.cashToDeposit || 0), 0);
 
   /**
    * Tiền mặt cần nộp của ĐÚNG quỹ đang chọn, không phải tổng cả cửa hàng.
@@ -1134,9 +1138,9 @@ export default function ReportsPage() {
           )}
 
           <section className="table-panel">
-            <PanelHeader title="Tổng hợp thu trong ngày" subtitle="Doanh thu bán hàng gồm số liệu POS (hoặc nhập tay khi chưa có POS) và phiếu thu loại Thu bán hàng; các khoản thu khác (hoàn tiền NCC, thu ngoài bán hàng) và tiền cọc tách dòng riêng nhưng phần tiền mặt vẫn tính vào số nộp." />
+            <PanelHeader title="Tổng hợp thu trong ngày" subtitle="Doanh thu bán hàng gồm số liệu POS (hoặc nhập tay khi chưa có POS) và phiếu thu loại Thu bán hàng; các khoản thu khác (hoàn tiền NCC, thu ngoài bán hàng) và tiền cọc tách dòng riêng nhưng phần tiền mặt vẫn tính vào số nộp. Xem theo ca thì doanh thu POS đứng riêng một dòng dưới TOTAL vì file POS chỉ khai ngày, không khai ca." />
             <Table headers={["Loại", "Tổng thu", "Tiền mặt", "Chuyển khoản", "Quẹt thẻ/Ví", "Grab", "Khác", "Tổng chi tiền mặt", "Nộp tiền"]}>
-              {dailyCashSummaryRows.map((row) => (
+              {dailyCashShiftRows.map((row) => (
                 <DailyCashSummaryRow key={row.label} label={row.label} bucket={row.bucket} expense={row.expense} cashToDeposit={row.cashToDeposit} />
               ))}
               <DailyCashSummaryRow
@@ -1146,6 +1150,9 @@ export default function ReportsPage() {
                 cashToDeposit={dailyCashDepositSum}
                 strong
               />
+              {dailyCashOutsideRows.map((row) => (
+                <DailyCashSummaryRow key={row.label} label={row.label} bucket={row.bucket} note={row.note} muted />
+              ))}
             </Table>
           </section>
 
@@ -1763,11 +1770,14 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
  * tiền mặt và số nộp (tiền mặt - tổng chi), dòng TOTAL là tổng của hai cột đó.
  * Dòng không nhận giá trị thì để dấu "-".
  */
-function DailyCashSummaryRow({ label, bucket, expense, cashToDeposit, strong = false }: { label: string; bucket: DailyCashBucket; expense?: number; cashToDeposit?: number; strong?: boolean }) {
-  const contentClass = strong ? "font-bold text-slate-900 bg-slate-50" : "";
+function DailyCashSummaryRow({ label, bucket, expense, cashToDeposit, strong = false, muted = false, note }: { label: string; bucket: DailyCashBucket; expense?: number; cashToDeposit?: number; strong?: boolean; muted?: boolean; note?: string }) {
+  const contentClass = strong ? "font-bold text-slate-900 bg-slate-50" : muted ? "text-slate-500 bg-slate-50/60" : "";
   return (
     <tr className={`border-t border-slate-100 ${contentClass}`}>
-      <Cell><b>{label}</b></Cell>
+      <Cell>
+        <b>{label}</b>
+        {note && <small className="block font-normal text-slate-500">{note}</small>}
+      </Cell>
       <Cell right>{money(bucket.total)} đ</Cell>
       <Cell right>{money(bucket.cash)} đ</Cell>
       <Cell right>{money(bucket.transfer)} đ</Cell>

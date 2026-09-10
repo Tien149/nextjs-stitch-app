@@ -20,7 +20,15 @@ export function emptyDailyCashBucket(): DailyCashBucket {
   return { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
 }
 
-export type DailyCashSummaryRow = { label: string; bucket: DailyCashBucket; expense?: number; cashToDeposit?: number };
+export type DailyCashSummaryRow = {
+  label: string;
+  bucket: DailyCashBucket;
+  expense?: number;
+  cashToDeposit?: number;
+  /** Dòng nằm NGOÀI tổng của ca (doanh thu POS chưa tách được ca) — màn hình xếp sau dòng TOTAL. */
+  outsideTotal?: boolean;
+  note?: string;
+};
 
 /**
  * Các dòng của bảng "Tổng hợp thu trong ngày".
@@ -39,6 +47,8 @@ export function buildDailyCashSummaryRows(summary: {
   receiptOther?: DailyCashBucket;
   deposit: DailyCashBucket;
   cashExpenseTotal: number;
+  /** Doanh thu POS của cả ngày khi đang xem một ca: POS chỉ có ngày nên không thuộc ca nào. */
+  unshiftedRevenue?: DailyCashBucket;
 }): DailyCashSummaryRow[] {
   const salesReceipts = summary.receiptSalesRevenue || summary.receiptRevenue || summary.receipt;
   const otherReceipts = summary.receiptSalesRevenue ? summary.receiptOther : null;
@@ -64,6 +74,16 @@ export function buildDailyCashSummaryRows(summary: {
   }
   // Đặt cọc không gánh chi tiền mặt nên số nộp đúng bằng phần tiền mặt của nó.
   rows.push({ label: "Đặt cọc", bucket: summary.deposit, cashToDeposit: summary.deposit.cash });
+  // File POS chỉ khai ngày, không khai ca. Khi xem một ca cụ thể, số này của CẢ NGÀY nên đứng
+  // ngoài tổng của ca thay vì dồn hết vào ca sáng như trước.
+  if (summary.unshiftedRevenue && Math.round(summary.unshiftedRevenue.total) !== 0) {
+    rows.push({
+      label: "Doanh thu POS cả ngày (chưa tách ca)",
+      bucket: summary.unshiftedRevenue,
+      outsideTotal: true,
+      note: "File POS chỉ khai ngày nên số này không thuộc ca nào — không tính vào tổng và số nộp của ca. Chọn Cả ngày để đối chiếu.",
+    });
+  }
   return rows;
 }
 

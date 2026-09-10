@@ -167,6 +167,41 @@ test("payload cũ chưa tách trường thì giữ nguyên hành vi cũ, không 
 
 /* ---- Đối tác được chọn trên phiếu ---- */
 
+test("xem theo ca: doanh thu POS chưa tách ca đứng ngoài tổng của ca", () => {
+  // File POS chỉ khai ngày nên không thuộc ca nào; trước đây số này dồn hết vào ca sáng và
+  // làm bảng tổng hợp vênh với danh sách phiếu thu vốn có ca thật.
+  const rows = buildDailyCashSummaryRows({
+    revenue: bucket(0),
+    receipt: bucket(14_087_220),
+    receiptRevenue: bucket(14_087_220),
+    receiptSalesRevenue: bucket(14_087_220),
+    receiptOther: zero(),
+    deposit: zero(),
+    cashExpenseTotal: 0,
+    unshiftedRevenue: bucket(67_352_250),
+  });
+  assert.deepEqual(labelsOf(rows), ["Doanh thu bán hàng", "Đặt cọc", "Doanh thu POS cả ngày (chưa tách ca)"]);
+  const outside = rows.find((row) => row.outsideTotal);
+  assert.equal(outside.bucket.total, 67_352_250);
+  // Dòng ngoài tổng không mang số nộp: tiền mặt của nó không thuộc ca đang xem.
+  assert.equal(outside.cashToDeposit, undefined);
+  assert.equal(rows.filter((row) => row.outsideTotal).length, 1);
+});
+
+test("xem cả ngày: không có dòng chưa tách ca", () => {
+  const rows = buildDailyCashSummaryRows({
+    revenue: bucket(4_000_000),
+    receipt: zero(),
+    receiptRevenue: zero(),
+    receiptSalesRevenue: zero(),
+    receiptOther: zero(),
+    deposit: zero(),
+    cashExpenseTotal: 0,
+    unshiftedRevenue: zero(),
+  });
+  assert.equal(rows.some((row) => row.outsideTotal), false);
+});
+
 test("phiếu thu tiền mặt: NCC/nhân viên mở theo loại thu, thu bán hàng vẫn bó khách hàng", () => {
   const receipt = (partnerType, categoryCode) => isPartnerAllowedForVoucher({ voucherType: "RECEIPT", partnerType, categoryCode });
   assert.equal(receipt("SUPPLIER", "THU_HOAN_NCC"), true);

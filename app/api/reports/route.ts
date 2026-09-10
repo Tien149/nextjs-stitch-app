@@ -10,7 +10,7 @@ import { writeAuditLog } from "@/lib/audit-log";
 import { createCashierCashMatcher, moneySourceDisplayName, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { voucherMatchesShift } from "@/lib/shifts";
 import { summarizeDailyDepositHistories } from "@/lib/daily-deposit-report";
-import { summarizeDailyCashReceiptVouchers } from "@/lib/daily-cash-receipts";
+import { emptyDailyCashBucket, summarizeDailyCashReceiptVouchers } from "@/lib/daily-cash-receipts";
 import { SALES_RECEIPT_CATEGORY_CODES } from "@/lib/voucher-rules";
 
 const menuHref = "/reports";
@@ -450,8 +450,11 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
   const dayEnd = new Date(`${date}T24:00:00`);
 
   const [revenues, depositHistories, allPaymentVouchers, allReceiptVouchers, moneySources, manualEntries] = await Promise.all([
+    // Lấy theo CẢ NGÀY: doanh thu POS không có ca nên khi xem ca tối vẫn phải nhìn thấy nó ở
+    // dòng "chưa tách ca", thay vì biến mất chỉ vì ngày được lưu lúc 00:00 (rơi vào khung sáng).
+    // Phần cộng vào `revenue` phía dưới vẫn giới hạn trong khung giờ của ca như trước.
     prisma.revenueImportRow.findMany({
-      where: { ...branchWhere, saleDate: { gte: start, lt: end } },
+      where: { ...branchWhere, saleDate: { gte: dayStart, lt: dayEnd } },
       orderBy: [{ saleDate: "asc" }, { externalRef: "asc" }],
       take: 1000,
     }),
@@ -580,6 +583,14 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
   }));
   // Ba nguồn doanh thu đổ chung vào một dòng "Doanh thu bán hàng"; vẫn giữ tổng riêng
   // từng nguồn để cảnh báo trùng và để các bảng chi tiết đối chiếu.
+  /**
+   * Doanh thu POS chỉ có NGÀY, không có ca: RevenueImportRow không có cột shift và file POS
+   * chỉ khai "Ngày bán". Báo cáo lại cắt ca theo giờ (dayRange), nên ngày lưu lúc 00:00 làm
+   * TOÀN BỘ doanh thu của ngày rơi vào ca sáng còn ca tối luôn bằng 0 — bảng tổng hợp vênh
+   * hẳn với danh sách phiếu thu vốn có ca thật. Khi xem một ca cụ thể, doanh thu POS vì vậy
+   * không thuộc ca nào: tách riêng dòng "chưa tách ca", không cộng vào số nộp của ca.
+   */
+  const posOutsideShift = shift !== "FULL";
   const revenue = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
   const posRevenue = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
   const manual = { total: 0, cash: 0, transfer: 0, card: 0, grab: 0, other: 0 };
@@ -612,17 +623,22 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     const key = (moneySourceCode || "").trim();
     cashToDepositBySource.set(key, (cashToDepositBySource.get(key) || 0) + amount);
   };
+  const unshiftedRevenue = emptyDailyCashBucket();
   for (const row of revenues) {
     const matchSource = matcherFor(row.branchCode);
     const bucketKey = classifyRevenueRow(matchSource, row.paymentMethod, row.revenueSource, row.channel);
     const matchedSourceCode = matchSource(row.paymentMethod, row.revenueSource)?.code;
     // Doanh thu tiền mặt nhận vào quỹ khác quỹ thu ngân không thuộc báo cáo này.
     if (bucketKey === "cash" && !keepCashierRow(matchedSourceCode, "in", row.netAmount)) continue;
+    if (posOutsideShift) addAmount(unshiftedRevenue, bucketKey, row.netAmount);
+    // `revenue` và `posRevenue` nuôi bảng đối chiếu tiền vào nên giữ nguyên phạm vi cũ: chỉ
+    // các dòng nằm trong khung giờ của ca đang xem.
+    if (row.saleDate < start || row.saleDate >= end) continue;
     addAmount(posRevenue, bucketKey, row.netAmount);
     addAmount(revenue, bucketKey, row.netAmount);
     if (bucketKey === "cash") {
       posCashByBranch.set(row.branchCode, (posCashByBranch.get(row.branchCode) || 0) + row.netAmount);
-      addCashToDeposit(matchedSourceCode, row.netAmount);
+      if (!posOutsideShift) addCashToDeposit(matchedSourceCode, row.netAmount);
     }
   }
 
@@ -673,7 +689,9 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
   // trùng với doanh thu POS theo từng cửa hàng — toàn bộ quy tắc nằm ở helper để kiểm thử được.
   // Vẫn giữ nguyên `receipt` (đủ mọi loại thu) cho bảng đối chiếu tiền vào, vì bảng đó cố ý lấy
   // phiếu thu làm số đã xác nhận của tiền mặt.
-  const branchesWithPosCash = new Set([...posCashByBranch].filter(([, amount]) => amount > 0).map(([branch]) => branch));
+  const branchesWithPosCash = posOutsideShift
+    ? new Set<string>()
+    : new Set([...posCashByBranch].filter(([, amount]) => amount > 0).map(([branch]) => branch));
   const receiptSummary = summarizeDailyCashReceiptVouchers(
     receiptVouchers.map((row) => {
       const source = sourceByCode.get(row.moneySourceCode);
@@ -745,13 +763,16 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
   }
   // Tổng thu hiển thị đủ dòng tiền nhưng giữ ba bản chất tách biệt: doanh thu,
   // thu khác và tiền cọc. Nhờ đó phiếu thu không làm tăng doanh thu bán hàng.
+  // Xem theo ca: chỉ phần có ca thật (doanh thu nhập tay khai ca, phiếu thu, cọc) mới thuộc ca.
+  // Doanh thu POS đứng riêng ở `unshiftedRevenue` để màn hình hiện thành một dòng ngoài tổng.
+  const revenueInShift = posOutsideShift ? manual : revenue;
   const total = {
-    total: revenue.total + receiptRevenue.total + deposit.total,
-    cash: revenue.cash + receiptRevenue.cash + deposit.cash,
-    transfer: revenue.transfer + receiptRevenue.transfer + deposit.transfer,
-    card: revenue.card + receiptRevenue.card + deposit.card,
-    grab: revenue.grab + receiptRevenue.grab + deposit.grab,
-    other: revenue.other + receiptRevenue.other + deposit.other,
+    total: revenueInShift.total + receiptRevenue.total + deposit.total,
+    cash: revenueInShift.cash + receiptRevenue.cash + deposit.cash,
+    transfer: revenueInShift.transfer + receiptRevenue.transfer + deposit.transfer,
+    card: revenueInShift.card + receiptRevenue.card + deposit.card,
+    grab: revenueInShift.grab + receiptRevenue.grab + deposit.grab,
+    other: revenueInShift.other + receiptRevenue.other + deposit.other,
   };
   // "Thu ngân khai" ở dòng tiền mặt lấy đúng tổng phiếu thu tiền mặt chi tiết phía dưới
   // cộng phần cọc đã cấn trừ vào bill đúng ngày. Tiền cọc mới nhận thuộc dòng Đặt cọc,
@@ -812,7 +833,9 @@ async function getDailyCashReport(period: string, branchCode: string, reportDate
     branchCode,
     reportDate: date,
     shift,
-    summary: { revenue, posRevenue, manual, receipt, receiptRevenue, receiptSalesRevenue, receiptOther, deposit, total, expenseTotal, cashExpenseTotal, cashToDeposit },
+    // `revenue` gửi cho màn hình là phần thuộc ca đang xem; `unshiftedRevenue` là doanh thu POS
+    // của cả ngày khi POS chưa tách được ca. Đối chiếu tiền vào phía dưới vẫn dùng số cả ngày.
+    summary: { revenue: revenueInShift, unshiftedRevenue, posRevenue, manual, receipt, receiptRevenue, receiptSalesRevenue, receiptOther, deposit, total, expenseTotal, cashExpenseTotal, cashToDeposit },
     cashToDepositSources,
     // Quỹ tiền mặt không phải của thu ngân đã bị loại khỏi mọi con số phía trên. Trả kèm danh
     // sách để màn hình nói rõ tiền đó nằm ở đâu, thay vì để người xem thấy số vơi đi không rõ lý do.
