@@ -1451,17 +1451,24 @@ export async function validateImportResult(
         // Đúng công thức khách khai trong file: tổng bảy cột từ lương theo giờ công đến
         // bảo hiểm công ty chịu. Lương tháng theo hợp đồng và bảo hiểm bắt buộc (người lao
         // động tự đóng) nằm ngoài, không phải tiền công ty bỏ ra.
-        const companyCost = numberValue(row.values.hourly_salary)
-          + numberValue(row.values.meal_allowance)
-          + numberValue(row.values.parking_allowance)
-          + numberValue(row.values.svc_amount)
-          + numberValue(row.values.kpi_amount)
-          + numberValue(row.values.other_allowance)
-          + numberValue(row.values.company_insurance);
+        const companyCostFields = [
+          "hourly_salary",
+          "meal_allowance",
+          "parking_allowance",
+          "svc_amount",
+          "kpi_amount",
+          "other_allowance",
+          "company_insurance",
+        ];
+        const companyCost = companyCostFields.reduce((sum, field) => sum + numberValue(row.values[field]), 0);
+        // TỔNG CHI PHÍ CÔNG TY là số dẫn xuất, không phải số khai độc lập: file khách gửi hay
+        // có ô tổng còn giữ công thức cũ (thiếu một cột phụ cấp, hoặc sửa tay cột con mà quên
+        // kéo lại tổng). Chặn lỗi ở preview chỉ bắt kế toán về sửa Excel rồi import lại, trong
+        // khi số đúng đã nằm sẵn ở bảy cột con — nên lấy luôn tổng bảy cột đó làm số ghi sổ.
+        // Chỉ tính lại khi file thực sự có cột con; file chỉ khai mỗi ô tổng thì tổng là số duy nhất.
+        const hasCompanyCostColumns = companyCostFields.some((field) => Boolean(result.mapping[field]));
+        if (hasCompanyCostColumns) row.values.total_company_cost = companyCost;
         const declaredCost = numberValue(row.values.total_company_cost);
-        if (Math.abs(companyCost - declaredCost) > 1) {
-          addError(row, "TỔNG CHI PHÍ CÔNG TY không khớp tổng các cột từ Tổng lương theo giờ công đến Bảo hiểm (công ty chịu)");
-        }
         // Bảo hiểm bắt buộc trừ vào lương người lao động nên nằm ngoài công thức trên; nó chỉ
         // đi cùng bảo hiểm công ty chịu thành khoản phải trả cơ quan BHXH.
         const companyInsurance = numberValue(row.values.company_insurance);
@@ -1479,7 +1486,7 @@ export async function validateImportResult(
         if (payables - declaredCost > 1) {
           addError(
             row,
-            `LƯƠNG THỰC NHẬN + Bảo hiểm (công ty chịu) + Bảo hiểm bắt buộc = ${Math.round(payables).toLocaleString("vi-VN")} đang lớn hơn TỔNG CHI PHÍ CÔNG TY ${Math.round(declaredCost).toLocaleString("vi-VN")}`,
+            `LƯƠNG THỰC NHẬN + Bảo hiểm (công ty chịu) + Bảo hiểm bắt buộc = ${Math.round(payables).toLocaleString("vi-VN")} đang lớn hơn TỔNG CHI PHÍ CÔNG TY ${Math.round(declaredCost).toLocaleString("vi-VN")}${hasCompanyCostColumns ? " (tổng các cột từ Tổng lương theo giờ công đến Bảo hiểm công ty chịu)" : ""}`,
           );
         }
         if (numberValue(row.values.headcount) < 0) addError(row, "Số lượng nhân sự không được âm");
