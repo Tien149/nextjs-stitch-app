@@ -33,9 +33,11 @@ const selfTest = args.includes("--self-test");
 const dayTolerance = Number(valueOf("--day-tolerance") || "3");
 /** Soi chi tiết vài ngày: bóc từng dòng sổ quỹ đối lấy từng dòng sao kê. */
 const explainDays = valueOf("--explain").split(",").map((value) => value.trim()).filter(Boolean);
+/** Tách chênh theo từng tài khoản ngân hàng — lộ ra tài khoản nào không hề có sao kê để đối. */
+const bySource = args.includes("--by-source");
 
 function usageError(message) {
-  throw new Error(`${message}\nDùng: node scripts/audit-wallet-settlement-duplicates.cjs --branch NME --period 2026-08 [--explain 2026-08-25,2026-08-06] [--day-tolerance 3] [--json]`);
+  throw new Error(`${message}\nDùng: node scripts/audit-wallet-settlement-duplicates.cjs --branch NME --period 2026-08 [--by-source] [--explain 2026-08-25,2026-08-06] [--day-tolerance 3] [--json]`);
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +169,33 @@ function matchDayEntries(cashRows, statementRows) {
   return { matched, unmatchedCash, unmatchedStatement: pool.filter((item) => !item.used).map((item) => item.row) };
 }
 
+/**
+ * Chênh theo từng tài khoản ngân hàng.
+ *
+ * Sổ quỹ phủ mọi nguồn tiền, còn sao kê chỉ phủ những tài khoản thật sự có file import. Tài
+ * khoản nào 0 dòng sao kê thì mọi đồng vào đó đều đội lên thành "chênh" mà chẳng có gì sai —
+ * phải tách ra thì phần chênh còn lại mới là số đáng đi soi.
+ *
+ * Đếm CẢ dòng Nợ lẫn dòng Có: một tài khoản chỉ có dòng chi trong kỳ vẫn là đã import sao kê.
+ */
+function summariseBySource(cashRows, allStatementRows) {
+  const map = new Map();
+  const touch = (code) => {
+    const key = normalizeRef(code);
+    if (!map.has(key)) map.set(key, { code: key, cashbook: 0, statement: 0, statementLines: 0 });
+    return map.get(key);
+  };
+  for (const row of cashRows) touch(row.moneySourceCode).cashbook += row.amount;
+  for (const row of allStatementRows) {
+    const item = touch(row.bankAccount);
+    item.statementLines += 1;
+    item.statement += row.creditAmount || 0;
+  }
+  return [...map.values()]
+    .map((row) => ({ ...row, diff: Math.round(row.cashbook - row.statement) }))
+    .sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+}
+
 function money(value) {
   return Math.round(value || 0).toLocaleString("vi-VN");
 }
@@ -245,6 +274,22 @@ function runSelfTest() {
   assert.equal(otherAccount.matched.length, 0);
   assert.equal(otherAccount.unmatchedCash.length, 1);
   assert.equal(otherAccount.unmatchedStatement.length, 1);
+
+  // --- Tách theo tài khoản ---
+  const sources = summariseBySource(
+    [cash("PT-A", 150000000, null, "TK_CHAU"), cash("PT-B", 1000000, null, "VIETINBANK")],
+    [
+      { bankAccount: "VIETINBANK", creditAmount: 1000000 },
+      // Dòng chi: không cộng vào cột Có nhưng vẫn tính là tài khoản đã có sao kê.
+      { bankAccount: "VIETINBANK", creditAmount: 0 },
+    ],
+  );
+  // Xếp theo độ lớn của chênh, tài khoản đáng ngờ nhất nằm trên.
+  assert.deepEqual(sources.map((row) => row.code), ["TK_CHAU", "VIETINBANK"]);
+  assert.equal(sources[0].statementLines, 0);
+  assert.equal(sources[0].diff, 150000000);
+  assert.equal(sources[1].statementLines, 2);
+  assert.equal(sources[1].diff, 0);
 
   console.log("Self-test OK");
 }
@@ -393,8 +438,12 @@ async function main() {
       };
     });
 
+    // --- Phần D: tách chênh theo từng tài khoản ngân hàng ---
+    const sourceSummary = bySource || asJson ? summariseBySource(cashRows, statements) : [];
+    const coveredDiff = sourceSummary.filter((row) => row.statementLines > 0).reduce((sum, row) => sum + row.diff, 0);
+
     if (asJson) {
-      console.log(JSON.stringify({ branchCode, period, daily, findings, explained, summary: { walletSettlements: walletSettlements.length, certain: certain.length, suspect: suspect.length, overstated } }, null, 2));
+      console.log(JSON.stringify({ branchCode, period, daily, findings, explained, bySource: sourceSummary, summary: { walletSettlements: walletSettlements.length, certain: certain.length, suspect: suspect.length, overstated, coveredDiff } }, null, 2));
       return;
     }
 
@@ -473,6 +522,20 @@ async function main() {
 
       console.log(`   C3. Đã khớp được: ${detail.matched.length} cặp, ${money(detail.matched.reduce((sum, row) => sum + row.cash.amount, 0))} đ`);
       console.log("");
+    }
+
+    if (bySource) {
+      console.log("D. Chênh theo từng tài khoản ngân hàng");
+      console.log(`   ${"Tài khoản".padEnd(38)}${"Sổ quỹ thu".padStart(15)}${"Sao kê Có".padStart(15)}${"Chênh".padStart(15)}${"Dòng SK".padStart(9)}`);
+      for (const row of sourceSummary) {
+        const label = `${row.code} (${nameByCode.get(row.code) || "?"})`;
+        console.log(`   ${label.slice(0, 37).padEnd(38)}${money(row.cashbook).padStart(15)}${money(row.statement).padStart(15)}${money(row.diff).padStart(15)}${String(row.statementLines).padStart(9)}${row.statementLines === 0 ? "  ⚠ không có sao kê" : ""}`);
+      }
+      const uncovered = sourceSummary.filter((row) => row.statementLines === 0);
+      console.log("");
+      console.log(`   Tài khoản không có dòng sao kê nào trong kỳ: ${uncovered.length} — đang gánh ${money(uncovered.reduce((sum, row) => sum + row.diff, 0))} đ chênh.`);
+      console.log("   Không có sao kê thì không đối được, chênh ở đó không nói lên điều gì.");
+      console.log(`   ➜ Chênh THẬT SỰ đáng soi (chỉ tính tài khoản có sao kê): ${money(coveredDiff)} đ\n`);
     }
 
     console.log("Cách xử lý (làm tay trên giao diện, script này không sửa gì):");
