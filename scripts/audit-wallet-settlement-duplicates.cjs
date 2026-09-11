@@ -31,9 +31,11 @@ const asJson = args.includes("--json");
 const selfTest = args.includes("--self-test");
 /** Phiếu thu lập tay thường lệch ngày so với phiếu quyết toán vài hôm. */
 const dayTolerance = Number(valueOf("--day-tolerance") || "3");
+/** Soi chi tiết vài ngày: bóc từng dòng sổ quỹ đối lấy từng dòng sao kê. */
+const explainDays = valueOf("--explain").split(",").map((value) => value.trim()).filter(Boolean);
 
 function usageError(message) {
-  throw new Error(`${message}\nDùng: node scripts/audit-wallet-settlement-duplicates.cjs --branch NME --period 2026-08 [--day-tolerance 3] [--json]`);
+  throw new Error(`${message}\nDùng: node scripts/audit-wallet-settlement-duplicates.cjs --branch NME --period 2026-08 [--explain 2026-08-25,2026-08-06] [--day-tolerance 3] [--json]`);
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +123,50 @@ function findDuplicateReceipts(transfer, receipts, options = {}) {
   return hits.sort((a, b) => (a.confidence === b.confidence ? 0 : a.confidence === "CHAC_CHAN" ? -1 : 1));
 }
 
+/**
+ * Soi một ngày: ghép từng dòng tiền vào của sổ quỹ với từng dòng Có của sao kê.
+ *
+ * Ghép hai vòng, vòng sau chỉ xét những dòng vòng trước chưa dùng:
+ *   1. theo số tham chiếu sao kê — chắc chắn cùng một lần tiền về;
+ *   2. theo cùng tài khoản + cùng số tiền, mỗi dòng sao kê chỉ được dùng một lần.
+ *
+ * Dòng sổ quỹ còn trơ lại = sổ quỹ ghi tiền vào mà ngân hàng không báo (nghi thừa).
+ * Dòng sao kê còn trơ lại = ngân hàng báo tiền vào mà chưa lập chứng từ (nghi thiếu).
+ */
+function matchDayEntries(cashRows, statementRows) {
+  const pool = statementRows.map((row) => ({ row, used: false }));
+  const matched = [];
+  const pending = [];
+
+  for (const cash of cashRows) {
+    const ref = normalizeRef(cash.externalRef);
+    const hit = ref && pool.find((item) => !item.used
+      && normalizeRef(item.row.bankAccount) === normalizeRef(cash.moneySourceCode)
+      && normalizeRef(item.row.transactionCode) === ref);
+    if (hit) {
+      hit.used = true;
+      matched.push({ cash, statement: hit.row, reason: "THAM_CHIEU" });
+    } else {
+      pending.push(cash);
+    }
+  }
+
+  const unmatchedCash = [];
+  for (const cash of pending) {
+    const hit = pool.find((item) => !item.used
+      && normalizeRef(item.row.bankAccount) === normalizeRef(cash.moneySourceCode)
+      && Math.abs(item.row.creditAmount - cash.amount) < 1);
+    if (hit) {
+      hit.used = true;
+      matched.push({ cash, statement: hit.row, reason: "SO_TIEN" });
+    } else {
+      unmatchedCash.push(cash);
+    }
+  }
+
+  return { matched, unmatchedCash, unmatchedStatement: pool.filter((item) => !item.used).map((item) => item.row) };
+}
+
 function money(value) {
   return Math.round(value || 0).toLocaleString("vi-VN");
 }
@@ -170,6 +216,36 @@ function runSelfTest() {
   assert.equal(mixed.length, 2);
   assert.equal(mixed[0].confidence, "CHAC_CHAN");
 
+  // --- Soi một ngày ---
+  const stm = (code, amount, bank = "FDSCHKHVIET") => ({ transactionCode: code, bankAccount: bank, creditAmount: amount, description: code });
+  const cash = (code, amount, ref = null, bank = "FDSCHKHVIET") => ({ kind: "PHIEU_THU", code, moneySourceCode: bank, amount, externalRef: ref, description: code });
+
+  // Tham chiếu được ưu tiên: dòng sao kê cùng số tiền không được "cướp" mất của dòng có ref.
+  const byRefFirst = matchDayEntries(
+    [cash("PT-A", 1000000), cash("PT-B", 1000000, "REF-B")],
+    [stm("REF-B", 1000000), stm("REF-C", 1000000)],
+  );
+  assert.equal(byRefFirst.matched.length, 2);
+  assert.equal(byRefFirst.matched.find((row) => row.cash.code === "PT-B").reason, "THAM_CHIEU");
+  assert.equal(byRefFirst.matched.find((row) => row.cash.code === "PT-A").statement.transactionCode, "REF-C");
+
+  // Mỗi dòng sao kê chỉ gánh được một chứng từ: hai phiếu cùng số tiền mà sao kê chỉ báo một lần
+  // thì phiếu thứ hai phải trơ ra — đúng dạng ghi hai lần.
+  const doubled = matchDayEntries([cash("PT-A", 1977869), cash("PT-B", 1977869)], [stm("REF-A", 1977869)]);
+  assert.equal(doubled.matched.length, 1);
+  assert.deepEqual(doubled.unmatchedCash.map((row) => row.code), ["PT-B"]);
+  assert.deepEqual(doubled.unmatchedStatement, []);
+
+  // Ngân hàng báo mà chưa lập chứng từ.
+  const missing = matchDayEntries([], [stm("REF-A", 500000)]);
+  assert.deepEqual(missing.unmatchedStatement.map((row) => row.transactionCode), ["REF-A"]);
+
+  // Khác tài khoản thì không ghép.
+  const otherAccount = matchDayEntries([cash("PT-A", 500000, null, "BANK_X")], [stm("REF-A", 500000)]);
+  assert.equal(otherAccount.matched.length, 0);
+  assert.equal(otherAccount.unmatchedCash.length, 1);
+  assert.equal(otherAccount.unmatchedStatement.length, 1);
+
   console.log("Self-test OK");
 }
 
@@ -198,12 +274,12 @@ async function main() {
     const [vouchers, adjustments, transfers, statements] = await Promise.all([
       prisma.financialVoucher.findMany({
         where: { branchCode, voucherDate: { gte: start, lt: end }, status: "APPROVED", deletedAt: null },
-        select: { code: true, voucherType: true, voucherDate: true, moneySourceCode: true, amount: true, externalRef: true, description: true, sourceScope: true, businessEffect: true, categoryCode: true, documentChannel: true },
+        select: { code: true, voucherType: true, voucherDate: true, moneySourceCode: true, amount: true, externalRef: true, description: true, sourceScope: true, businessEffect: true, categoryCode: true, documentChannel: true, createdBy: true, partnerName: true },
         orderBy: { voucherDate: "asc" },
       }),
       prisma.cashbookAdjustment.findMany({
         where: { branchCode, entryDate: { gte: start, lt: end }, deletedAt: null },
-        select: { code: true, entryDate: true, entryType: true, moneySourceCode: true, amount: true },
+        select: { code: true, entryDate: true, entryType: true, moneySourceCode: true, amount: true, description: true },
       }),
       prisma.moneyTransfer.findMany({
         where: {
@@ -222,37 +298,36 @@ async function main() {
     ]);
 
     // --- Phần A: cân sổ quỹ với sao kê theo ngày, chỉ nguồn tiền nhóm Ngân hàng ---
+    const transfersInPeriod = transfers.filter((row) => {
+      const date = effectiveMoneyTransferDate(row);
+      return date >= start && date < end;
+    });
+    /** Mọi dòng làm tiền VÀO một tài khoản ngân hàng trong sổ quỹ, cùng một hình dạng. */
+    const cashRows = [
+      ...vouchers
+        .filter((row) => row.voucherType === "RECEIPT" && isBank(row.moneySourceCode))
+        .map((row) => ({ kind: "PHIEU_THU", day: dayKey(row.voucherDate), code: row.code, moneySourceCode: row.moneySourceCode, amount: row.amount, externalRef: row.externalRef, description: row.description, note: `${row.categoryCode || "(trống khoản mục)"} · ${row.sourceScope} · ${row.businessEffect} · ${row.partnerName} · người lập ${row.createdBy || "?"}` })),
+      ...adjustments
+        .filter((row) => row.entryType === "RECEIPT" && isBank(row.moneySourceCode))
+        .map((row) => ({ kind: "DIEU_CHINH", day: dayKey(row.entryDate), code: row.code, moneySourceCode: row.moneySourceCode, amount: row.amount, externalRef: null, description: row.description || "", note: "điều chỉnh quỹ" })),
+      ...transfersInPeriod
+        .filter((row) => transferLegsForBranch(row, branchCode).in && isBank(row.toMoneySourceCode))
+        .map((row) => ({ kind: "DIEU_TIEN", day: dayKey(effectiveMoneyTransferDate(row)), code: row.code, moneySourceCode: row.toMoneySourceCode, amount: row.amount, externalRef: row.externalRef, description: row.description, note: `${row.transferPurpose || "điều tiền"} · từ ${row.fromMoneySourceCode} · người lập ${row.createdBy || "?"}` })),
+    ];
+    const statementRows = statements.filter((row) => row.creditAmount > 0).map((row) => ({ ...row, day: dayKey(row.transactionDate) }));
+
     const days = new Map();
     const touch = (key) => {
       if (!days.has(key)) days.set(key, { day: key, cashbook: 0, statement: 0, fromReceipts: 0, fromTransfers: 0, fromAdjustments: 0 });
       return days.get(key);
     };
-    for (const row of vouchers) {
-      if (row.voucherType !== "RECEIPT" || !isBank(row.moneySourceCode)) continue;
-      const day = touch(dayKey(row.voucherDate));
+    const bucketOf = { PHIEU_THU: "fromReceipts", DIEU_TIEN: "fromTransfers", DIEU_CHINH: "fromAdjustments" };
+    for (const row of cashRows) {
+      const day = touch(row.day);
       day.cashbook += row.amount;
-      day.fromReceipts += row.amount;
+      day[bucketOf[row.kind]] += row.amount;
     }
-    for (const row of adjustments) {
-      if (row.entryType !== "RECEIPT" || !isBank(row.moneySourceCode)) continue;
-      const day = touch(dayKey(row.entryDate));
-      day.cashbook += row.amount;
-      day.fromAdjustments += row.amount;
-    }
-    const transfersInPeriod = transfers.filter((row) => {
-      const date = effectiveMoneyTransferDate(row);
-      return date >= start && date < end;
-    });
-    for (const row of transfersInPeriod) {
-      if (!transferLegsForBranch(row, branchCode).in || !isBank(row.toMoneySourceCode)) continue;
-      const day = touch(dayKey(effectiveMoneyTransferDate(row)));
-      day.cashbook += row.amount;
-      day.fromTransfers += row.amount;
-    }
-    for (const row of statements) {
-      if (!row.creditAmount) continue;
-      touch(dayKey(row.transactionDate)).statement += row.creditAmount;
-    }
+    for (const row of statementRows) touch(row.day).statement += row.creditAmount;
     const daily = [...days.values()]
       .map((row) => ({ ...row, diff: Math.round(row.cashbook - row.statement) }))
       .sort((a, b) => a.day.localeCompare(b.day));
@@ -299,8 +374,27 @@ async function main() {
     const suspect = findings.filter((row) => !row.receipts.some((hit) => hit.confidence === "CHAC_CHAN"));
     const overstated = findings.reduce((sum, row) => sum + row.amount, 0);
 
+    // --- Phần C: soi từng ngày được chỉ đích danh ---
+    const explained = explainDays.map((day) => {
+      const dayCash = cashRows.filter((row) => row.day === day).sort((a, b) => b.amount - a.amount);
+      const dayStatement = statementRows.filter((row) => row.day === day).sort((a, b) => b.creditAmount - a.creditAmount);
+      const result = matchDayEntries(dayCash, dayStatement);
+      // Dòng trơ ra có thể chỉ là lệch ngày: tiền về hôm sau, hoặc phiếu ghi trước ngày sao kê.
+      const nearby = statementRows.filter((row) => row.day !== day && dayDistance(new Date(row.day), new Date(day)) <= dayTolerance);
+      return {
+        day,
+        ...result,
+        unmatchedCash: result.unmatchedCash.map((cash) => ({
+          ...cash,
+          nearbyStatement: nearby.filter((row) => normalizeRef(row.bankAccount) === normalizeRef(cash.moneySourceCode) && Math.abs(row.creditAmount - cash.amount) < 1),
+        })),
+        cashTotal: dayCash.reduce((sum, row) => sum + row.amount, 0),
+        statementTotal: dayStatement.reduce((sum, row) => sum + row.creditAmount, 0),
+      };
+    });
+
     if (asJson) {
-      console.log(JSON.stringify({ branchCode, period, daily, findings, summary: { walletSettlements: walletSettlements.length, certain: certain.length, suspect: suspect.length, overstated } }, null, 2));
+      console.log(JSON.stringify({ branchCode, period, daily, findings, explained, summary: { walletSettlements: walletSettlements.length, certain: certain.length, suspect: suspect.length, overstated } }, null, 2));
       return;
     }
 
@@ -352,12 +446,44 @@ async function main() {
       console.log("");
     }
 
+    for (const detail of explained) {
+      console.log(`C. Soi ngày ${detail.day} — sổ quỹ ${money(detail.cashTotal)} đ / sao kê ${money(detail.statementTotal)} đ / chênh ${money(detail.cashTotal - detail.statementTotal)} đ\n`);
+
+      const unmatchedCashTotal = detail.unmatchedCash.reduce((sum, row) => sum + row.amount, 0);
+      console.log(`   C1. Sổ quỹ ghi tiền vào mà sao kê ngày đó không báo: ${detail.unmatchedCash.length} dòng, ${money(unmatchedCashTotal)} đ`);
+      if (!detail.unmatchedCash.length) console.log("       (không có)");
+      for (const row of detail.unmatchedCash) {
+        console.log(`       [${row.kind}] ${row.code}  ${money(row.amount)} đ  → ${row.moneySourceCode} (${nameByCode.get(normalizeRef(row.moneySourceCode)) || "?"})`);
+        console.log(`          ${row.note}`);
+        console.log(`          ${row.description}`);
+        for (const near of row.nearbyStatement) {
+          console.log(`          ↔ có thể là dòng sao kê ${near.transactionCode} ngày ${near.day} Có ${money(near.creditAmount)} đ (lệch ngày, không phải thừa tiền)`);
+        }
+      }
+      console.log("");
+
+      const unmatchedStatementTotal = detail.unmatchedStatement.reduce((sum, row) => sum + row.creditAmount, 0);
+      console.log(`   C2. Sao kê báo tiền vào mà sổ quỹ chưa ghi: ${detail.unmatchedStatement.length} dòng, ${money(unmatchedStatementTotal)} đ`);
+      if (!detail.unmatchedStatement.length) console.log("       (không có)");
+      for (const row of detail.unmatchedStatement) {
+        console.log(`       ${row.transactionCode}  ${money(row.creditAmount)} đ  → ${row.bankAccount}  [${row.reconcileStatus}${row.autoProcessType ? ` / ${row.autoProcessType}` : ""}]`);
+        console.log(`          ${row.description}`);
+      }
+      console.log("");
+
+      console.log(`   C3. Đã khớp được: ${detail.matched.length} cặp, ${money(detail.matched.reduce((sum, row) => sum + row.cash.amount, 0))} đ`);
+      console.log("");
+    }
+
     console.log("Cách xử lý (làm tay trên giao diện, script này không sửa gì):");
     console.log("  - Theo thiết kế thì GIỮ phiếu quyết toán ví, XOÁ phiếu thu: phiếu quyết toán làm ba việc một");
     console.log("    lúc — cộng tiền vào ngân hàng, rút số treo ở ví về 0, đẩy phí lên P&L. Xoá nó thay vì xoá");
     console.log("    phiếu thu thì ví treo mãi và phí biến mất khỏi P&L.");
-    console.log("  - Xoá phiếu thu xong nhớ đưa dòng sao kê về đúng trạng thái ở màn Đối chiếu tiền vào");
-    console.log("    (Quyết toán nhóm ví) để lần import sau không lập lại phiếu thu cho chính dòng đó.\n");
+    if (findings.some((row) => row.statement && row.statement.reconcileStatus !== "MATCHED")) {
+      console.log("  - Xoá phiếu thu xong nhớ đưa dòng sao kê về đúng trạng thái ở màn Đối chiếu tiền vào");
+      console.log("    (Quyết toán nhóm ví) để lần import sau không lập lại phiếu thu cho chính dòng đó.");
+    }
+    console.log("");
   } finally {
     await prisma.$disconnect();
   }
