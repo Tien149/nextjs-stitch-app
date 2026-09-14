@@ -239,6 +239,102 @@ export async function POST(request: Request) {
 type DepositRecord = NonNullable<Awaited<ReturnType<typeof prisma.deposit.findUnique>>>;
 
 /**
+ * Dựng lại số dư và trạng thái phiếu cọc bằng cách chạy lại toàn bộ lịch sử từ đầu.
+ *
+ * Chạy lại thay vì tính ngược từng thao tác: chỉ cần một phép nghịch đảo viết sai là số dư
+ * lệch âm thầm, còn chạy lại thì luôn ra đúng thứ mà chuỗi thao tác còn lại đáng ra phải cho.
+ * Luật ở đây phải khớp từng dòng với nhánh PATCH bên dưới.
+ */
+function replayDepositHistories(histories: Array<{ action: string; amount: number | null }>) {
+  let amount = 0;
+  let remainingAmount = 0;
+  let status = "HOLDING";
+  for (const history of histories) {
+    const value = history.amount || 0;
+    // CREATE (lập tay), COLLECT (sinh từ phiếu thu) và OPENING (số dư đầu kỳ) đều là dòng khai
+    // sinh của phiếu cọc; SUPPLEMENT là nộp thêm. Cả bốn cùng làm tăng tiền đang giữ
+    // (`depositIncreaseActions` bên lib/deposit-accounting), nên gộp chung một luật.
+    if (["CREATE", "COLLECT", "OPENING"].includes(history.action)) {
+      amount = value;
+      remainingAmount = value;
+      status = "HOLDING";
+    } else if (history.action === "SUPPLEMENT") {
+      amount += value;
+      remainingAmount += value;
+      status = "HOLDING";
+    } else if (history.action === "OFFSET") {
+      remainingAmount -= value;
+      status = remainingAmount === 0 ? "OFFSET" : "HOLDING";
+    } else if (history.action === "REFUND") {
+      remainingAmount = 0;
+      status = "REFUNDED";
+    } else if (history.action === "CANCEL") {
+      remainingAmount = 0;
+      status = "CANCELLED";
+    } else if (history.action === "TRANSFER_REVENUE") {
+      remainingAmount = 0;
+      status = "REVENUE";
+    }
+  }
+  return { amount, remainingAmount, status };
+}
+
+/**
+ * Hoàn tác lần xử lý gần nhất của phiếu cọc.
+ *
+ * Cấn trừ / hoàn / huỷ / chuyển doanh thu đều là một chiều: xong là phiếu rời khỏi trạng thái
+ * HOLDING và `updateDeposit` chặn không cho sửa nữa, bấm nhầm nút là khoản cọc hỏng vĩnh viễn.
+ * Hoàn tác gỡ đúng bản ghi lịch sử cuối cùng kèm bút toán của nó, rồi dựng lại số dư bằng cách
+ * chạy lại phần lịch sử còn lại.
+ *
+ * Thao tác sinh từ phiếu thu/chi thì không gỡ ở đây: phiếu mới là gốc, gỡ một đầu sẽ để phiếu
+ * kia treo lơ lửng.
+ */
+async function reopenDeposit(session: DemoSession, current: DepositRecord) {
+  const histories = await prisma.depositHistory.findMany({ where: { depositId: current.id }, orderBy: { createdAt: "asc" } });
+  const last = histories[histories.length - 1];
+  if (!last || ["CREATE", "COLLECT", "OPENING"].includes(last.action)) {
+    return NextResponse.json({ error: "Phiếu cọc chưa có lần xử lý nào để hoàn tác." }, { status: 400 });
+  }
+  if (last.voucherId) {
+    const voucher = await prisma.financialVoucher.findUnique({ where: { id: last.voucherId }, select: { code: true } });
+    return NextResponse.json(
+      { error: `Lần xử lý gần nhất sinh từ chứng từ ${voucher?.code || "thu/chi"}. Hãy bỏ duyệt hoặc xoá chứng từ đó ở màn Phiếu thu/chi, số cọc sẽ tự trả về.` },
+      { status: 400 },
+    );
+  }
+
+  const locked = await lockedPeriodResponse(
+    [{ date: last.actionDate || last.createdAt, branchCode: current.branchCode }, { date: current.receivedDate, branchCode: current.branchCode }],
+    "hoàn tác xử lý phiếu cọc",
+  );
+  if (locked) return locked;
+
+  const replayed = replayDepositHistories(histories.slice(0, -1));
+  const deposit = await prisma.$transaction(async (tx) => {
+    await tx.journalEntry.deleteMany({ where: { sourceType: "DEPOSIT_HISTORY", sourceId: last.id } });
+    await tx.depositHistory.delete({ where: { id: last.id } });
+    return tx.deposit.update({
+      where: { id: current.id },
+      data: { amount: replayed.amount, remainingAmount: replayed.remainingAmount, status: replayed.status },
+      include: { histories: { orderBy: { createdAt: "desc" } } },
+    });
+  });
+
+  await writeAuditLog({
+    session,
+    module: "/deposits",
+    action: "REOPEN_DEPOSIT",
+    entityType: "Deposit",
+    entityId: current.id,
+    entityCode: current.code,
+    branchCode: current.branchCode,
+    metadata: { undoneAction: last.action, undoneAmount: last.amount, before: { status: current.status, remainingAmount: current.remainingAmount }, after: replayed },
+  });
+  return NextResponse.json(deposit);
+}
+
+/**
  * Sửa thông tin nghiệp vụ của phiếu cọc còn đang giữ tiền.
  * Trường nào không gửi lên thì giữ nguyên giá trị cũ.
  */
@@ -413,7 +509,7 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: "Khong tim thay phieu coc" }, { status: 404 });
     }
 
-    if (current.remainingAmount <= 0 && action !== "SUPPLEMENT" && action !== "UPDATE") {
+    if (current.remainingAmount <= 0 && !["SUPPLEMENT", "UPDATE", "REOPEN"].includes(action)) {
       return NextResponse.json({ error: "Phieu coc da het so du xu ly" }, { status: 400 });
     }
 
@@ -424,6 +520,7 @@ export async function PATCH(request: Request) {
     }
 
     if (action === "UPDATE") return await updateDeposit(auth.session, current, body);
+    if (action === "REOPEN") return await reopenDeposit(auth.session, current);
 
     // Cấn trừ / hoàn / huỷ / chuyển doanh thu đều sinh bút toán theo `actionDate`, đồng thời
     // làm đổi số dư của phiếu cọc gốc — nên chặn cả kỳ của ngày xử lý lẫn kỳ của ngày nhận cọc.

@@ -1570,6 +1570,30 @@ export default function InventoryPage() {
                 </div>
               );
             })()}
+            {canEditItem && (() => {
+              // Lệnh chế biến cũng là một chùm phiếu PRODUCTION dùng chung mã CB-, hoàn tác y
+              // như lần rã: hoàn kho nguyên liệu đã xuất và gỡ bán thành phẩm đã nhập.
+              const batchCodes = [...new Set(data.transactions
+                .filter((row) => (row.referenceCode || "").startsWith("CB-"))
+                .map((row) => row.referenceCode as string))].slice(0, 6);
+              if (batchCodes.length === 0) return null;
+              return (
+                <div className="px-5 pb-3 flex flex-wrap items-center gap-2 text-xs">
+                  <span className="font-bold text-slate-600">Hoàn tác lệnh chế biến:</span>
+                  {batchCodes.map((referenceCode) => (
+                    <button
+                      key={referenceCode}
+                      type="button"
+                      className="status bg-rose-50 text-rose-700 hover:bg-rose-100 cursor-pointer"
+                      title={`Hoàn lại nguyên liệu đã xuất và gỡ bán thành phẩm đã nhập của ${referenceCode}`}
+                      onClick={() => { if (window.confirm(`Hoàn tác lệnh chế biến ${referenceCode}? Nguyên liệu đã xuất được trả lại kho và bán thành phẩm đã nhập bị gỡ ra.`)) void send({ action: "REVERT_PRODUCTION", referenceCode }, `Đã hoàn tác lệnh chế biến ${referenceCode}. Lập lại với số đúng nếu cần.`); }}
+                    >
+                      ↩ {referenceCode}
+                    </button>
+                  ))}
+                </div>
+              );
+            })()}
             <Table headers={[{ label: "Chứng từ" }, { label: "Loại" }, { label: "Kho" }, { label: "Mặt hàng" }]}>
               {data.transactions.filter((row) => row.transactionType.includes("CHE_BIEN") || (row.referenceCode || "").startsWith("RA-")).map((row) => (
                 <tr key={row.id} className="border-t border-slate-100">

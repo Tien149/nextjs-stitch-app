@@ -520,7 +520,7 @@ export async function POST(request: Request) {
     const body = await request.json();
     const action = cleanText(body.action);
     // Mở lại phiếu đã duyệt là sửa lại số đã chốt, không phải lập chứng từ mới -> quyền "edit".
-    const auth = requireMenuAction(request, menuHref, action === "REOPEN_STOCKTAKE" ? "edit" : "create");
+    const auth = requireMenuAction(request, menuHref, ["REOPEN_STOCKTAKE", "REVERT_PRODUCTION"].includes(action) ? "edit" : "create");
     if (!auth.ok) return auth.response;
 
     if (action === "CREATE_ITEM") {
@@ -1133,18 +1133,25 @@ export async function POST(request: Request) {
      * xoá lẻ (referenceType PRODUCTION) nên đây là đường lùi duy nhất — và an toàn vì đi
      * theo đúng cụm.
      */
-    if (action === "REVERT_EXPLOSION") {
-      const runCode = cleanText(body.runCode).toUpperCase();
-      if (!runCode) businessError("Thiếu mã lần rã (RA-...)");
+    /**
+     * Hoàn tác một lần sinh phiếu kho theo cặp: rã nguyên liệu (RA-...) và chế biến bán thành
+     * phẩm (CB-...) đều đẻ ra một chùm phiếu PRODUCTION dùng chung `referenceCode`, nên hoàn
+     * tác y hệt nhau — hoàn kho từng dòng rồi xoá cả chùm. Chế biến trước đây không có đường
+     * lùi: lập nhầm số mẻ là nguyên liệu đã trừ khỏi kho mà không gỡ lại được.
+     */
+    if (action === "REVERT_EXPLOSION" || action === "REVERT_PRODUCTION") {
+      const runCode = (cleanText(body.runCode) || cleanText(body.referenceCode)).toUpperCase();
+      const runLabel = action === "REVERT_PRODUCTION" ? "lệnh chế biến" : "lần rã";
+      if (!runCode) businessError(action === "REVERT_PRODUCTION" ? "Thiếu mã lệnh chế biến (CB-...)" : "Thiếu mã lần rã (RA-...)");
       const documents = await prisma.inventoryTransaction.findMany({
         where: { referenceType: "PRODUCTION", referenceCode: runCode, deletedAt: null },
         include: { lines: true },
         orderBy: { createdAt: "desc" },
       });
-      if (documents.length === 0) businessError(`Không tìm thấy phiếu nào của lần rã ${runCode}`);
+      if (documents.length === 0) businessError(`Không tìm thấy phiếu nào của ${runLabel} ${runCode}`);
       const branchCode = documents[0]?.branchCode || "";
       assertBranchAccess(auth.session, branchCode);
-      if (documents[0] && await isPeriodLocked(documents[0].transactionDate, branchCode)) businessError("Kỳ kế toán đã khóa");
+      await assertPeriodOpen(documents.map((doc) => ({ date: doc.transactionDate, branchCode: doc.branchCode })), `hoàn tác ${runLabel}`);
 
       // Chỉ hoàn kho chính xác khi chưa có phiếu nào khác phát sinh sau trên cùng mặt hàng/kho.
       const documentIds = documents.map((doc) => doc.id);
@@ -1164,7 +1171,7 @@ export async function POST(request: Request) {
         },
       });
       if (newer) {
-        businessError(`Đã có phiếu ${newer.code} phát sinh sau lần rã ${runCode} trên cùng mặt hàng/kho nên không thể hoàn tác chính xác. Xoá phiếu đó trước.`);
+        businessError(`Đã có phiếu ${newer.code} phát sinh sau ${runLabel} ${runCode} trên cùng mặt hàng/kho nên không thể hoàn tác chính xác. Xoá phiếu đó trước.`);
       }
 
       await prisma.$transaction(async (tx) => {
@@ -1201,7 +1208,7 @@ export async function POST(request: Request) {
       }, { timeout: 60000 });
 
       await writeAuditLog({
-        session: auth.session, module: menuHref, action: "REVERT_EXPLOSION",
+        session: auth.session, module: menuHref, action,
         entityType: "InventoryTransaction", entityCode: runCode, branchCode,
         metadata: { documents: documents.map((doc) => doc.code) },
       });

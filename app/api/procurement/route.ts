@@ -582,9 +582,40 @@ export async function PATCH(request: Request) {
     const body = await request.json();
     const action = cleanText(body.action);
 
-    if (["APPROVE_REQUEST", "REJECT_REQUEST", "SELECT_QUOTE", "APPROVE_ORDER"].includes(action)) {
+    if (["APPROVE_REQUEST", "REJECT_REQUEST", "SELECT_QUOTE", "APPROVE_ORDER", "UNAPPROVE_ORDER"].includes(action)) {
       const auth = requireMenuAction(request, menuHref, "approve");
       if (!auth.ok) return auth.response;
+      /**
+       * Bỏ duyệt đơn mua hàng để sửa lại.
+       *
+       * Duyệt PO là chốt tiền với nhà cung cấp, và UPDATE_ORDER chặn mọi đơn đã có `approvedAt`
+       * — nên duyệt nhầm số lượng hay đơn giá là hết đường sửa, chỉ còn cách lập đơn mới. Bỏ
+       * duyệt đưa đơn về Nháp để sửa rồi duyệt lại.
+       *
+       * Chỉ bỏ được khi đơn chưa đi tiếp: đã nhận hàng hay đã sinh công nợ thì con số đã lan
+       * sang kho và sổ công nợ, kéo ngược về nháp sẽ để lại hàng trong kho của một đơn "chưa
+       * duyệt". Link đã gửi NCC bị thu hồi vì số sắp đổi, không để họ xem bản cũ.
+       */
+      if (action === "UNAPPROVE_ORDER") {
+        const orderId = cleanText(body.orderId) || cleanText(body.id);
+        if (!orderId) businessError("Thiếu PO cần bỏ duyệt");
+        const order = await prisma.purchaseOrder.findUnique({ where: { id: orderId }, include: { lines: true, payable: true } });
+        if (!order) businessError("Không tìm thấy PO");
+        assertBranchAccess(auth.session, order.branchCode);
+        if (order.status !== "APPROVED") businessError(`Đơn mua hàng ${order.code} đang ở trạng thái ${order.status}, không phải đơn vừa duyệt nên không bỏ duyệt được.`);
+        if (order.lines.some((line) => line.receivedQuantity > 0)) {
+          businessError(`Đơn mua hàng ${order.code} đã nhận hàng vào kho nên không bỏ duyệt được. Hãy xoá phiếu nhập kho của đơn này trước, hoặc lập phiếu xuất trả hàng.`);
+        }
+        if (order.payable) {
+          businessError(`Đơn mua hàng ${order.code} đã sinh công nợ phải trả nhà cung cấp nên không bỏ duyệt được. Hãy tất toán hoặc xoá công nợ trước.`);
+        }
+        const result = await prisma.purchaseOrder.update({
+          where: { id: orderId },
+          data: { status: "DRAFT", approvedBy: null, approvedAt: null, shareToken: null, note: cleanText(body.note) || undefined },
+        });
+        await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "UNAPPROVE_ORDER", entityType: "PurchaseOrder", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { previousStatus: order.status, approvedBy: order.approvedBy, approvedAt: order.approvedAt, shareLinkRevoked: Boolean(order.shareToken) } });
+        return NextResponse.json(result);
+      }
       if (action === "APPROVE_ORDER") {
         const orderId = cleanText(body.orderId);
         const order = await prisma.purchaseOrder.findUnique({ where: { id: orderId } });

@@ -74,6 +74,18 @@ const statusLabels: Record<string, string> = {
 /** Các bút toán lịch sử chỉ mang tính ghi nhận ban đầu, không tính là đã xử lý cọc. */
 const initialDepositActions = ["CREATE", "COLLECT", "UPDATE"];
 
+/** Tên tiếng Việt của từng thao tác trong lịch sử, dùng khi hỏi lại lúc hoàn tác. */
+const historyActionLabels: Record<string, string> = {
+  CREATE: "Ghi nhận cọc",
+  COLLECT: "Thu cọc",
+  OPENING: "Số dư đầu kỳ",
+  SUPPLEMENT: "Bổ sung cọc",
+  OFFSET: "Cấn trừ vào bill",
+  REFUND: "Hoàn cọc",
+  CANCEL: "Huỷ cọc",
+  TRANSFER_REVENUE: "Chuyển doanh thu",
+};
+
 // Ba lựa chọn hoàn cùng ghi sổ REFUND, chỉ khác lý do (lưu ở treatmentNote) để thống kê
 // được vì sao hoàn — theo đúng các hướng xử lý trên file theo dõi cọc của khách.
 const depositActionOptions = [
@@ -417,6 +429,28 @@ export default function DepositsPage() {
     }
     setProcessForm({ depositId: "", action: "OFFSET", actionDate: new Date().toISOString().slice(0, 10), amount: "", note: "" });
     setMessage("Đã xử lý phiếu cọc.");
+    await loadDeposits();
+  };
+
+  /**
+   * Hoàn tác lần xử lý gần nhất, đưa phiếu cọc về lại trạng thái giữ tiền để sửa hoặc xử lý lại.
+   * Máy chủ tự dựng lại số dư bằng cách chạy lại phần lịch sử còn lại.
+   */
+  const reopenDeposit = async (deposit: Deposit) => {
+    const last = deposit.histories?.[0];
+    const label = last ? (historyActionLabels[last.action] || last.action) : "lần xử lý gần nhất";
+    if (!window.confirm(`Hoàn tác "${label}" của phiếu cọc ${deposit.code}? Số dư cọc và bút toán của lần xử lý đó được gỡ ra, phiếu quay về trạng thái giữ tiền.`)) return;
+    const response = await fetch("/api/deposits", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: deposit.id, action: "REOPEN", actor: user?.name }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      setMessage(payload.error || "Không hoàn tác được phiếu cọc");
+      return;
+    }
+    setMessage(`Đã hoàn tác lần xử lý gần nhất của ${deposit.code}.`);
     await loadDeposits();
   };
 
@@ -785,6 +819,15 @@ export default function DepositsPage() {
                             <button onClick={() => openProcessForm(deposit, "SUPPLEMENT")} className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-bold text-slate-700 transition hover:bg-slate-100">Bổ sung</button>
                             <button onClick={() => openProcessForm(deposit, "REFUND")} disabled={deposit.remainingAmount <= 0} className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700 transition hover:bg-emerald-100 disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-300">Hoàn</button>
                             <button onClick={() => openProcessForm(deposit, "TRANSFER_REVENUE")} disabled={deposit.remainingAmount <= 0} className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-700 transition hover:bg-amber-100 disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-300">Chuyển DT</button>
+                            {deposit.histories?.some((history) => !["CREATE", "COLLECT", "OPENING"].includes(history.action)) && (
+                              <button
+                                onClick={() => void reopenDeposit(deposit)}
+                                className="rounded-full border border-slate-200 px-2.5 py-1 text-[11px] font-bold text-slate-400 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600"
+                                title="Gỡ lần xử lý gần nhất và đưa phiếu về trạng thái giữ tiền"
+                              >
+                                Hoàn tác
+                              </button>
+                            )}
                           </>
                         )}
                         <RowActions

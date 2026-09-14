@@ -47,6 +47,11 @@ export default function AccountingPage() {
 
   const canCreate = user ? canPerformMenuAction(user, href, "create") : false;
   const canSync = user ? canPerformMenuAction(user, href, "config") : false;
+  const canEdit = user ? canPerformMenuAction(user, href, "edit") : false;
+  const canDelete = user ? canPerformMenuAction(user, href, "delete") : false;
+
+  // Khác rỗng = form Bút toán tay đang ở chế độ sửa bút toán này, không phải lập bút toán mới.
+  const [editingEntry, setEditingEntry] = useState<Entry | null>(null);
 
   const loadData = useCallback(async () => {
     const response = await fetch(`/api/accounting?period=${period}&branchCode=${branchCode}`);
@@ -114,7 +119,8 @@ export default function AccountingPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "CREATE_MANUAL",
+          action: editingEntry ? "UPDATE_MANUAL" : "CREATE_MANUAL",
+          ...(editingEntry ? { entryId: editingEntry.id } : {}),
           entryDate: manual.entryDate,
           branchCode: manual.branchCode,
           description: manual.description,
@@ -126,11 +132,12 @@ export default function AccountingPage() {
       });
       const payload = await response.json();
       if (response.ok) {
-        setMessage("Đã ghi thành công bút toán điều chỉnh.");
-        setManual((prev) => ({ ...prev, amount: "1000000", description: "Bút toán điều chỉnh" }));
+        setMessage(editingEntry ? `Đã sửa bút toán ${editingEntry.code}.` : "Đã ghi thành công bút toán điều chỉnh.");
+        setEditingEntry(null);
+        setManual((prev) => ({ ...prev, amount: "1000000", description: "Bút toán điều chỉnh", moneySourceCode: "" }));
         await loadData();
       } else {
-        setMessage(payload.error || "Không ghi được bút toán.");
+        setMessage(payload.error || (editingEntry ? "Không sửa được bút toán." : "Không ghi được bút toán."));
       }
     } catch {
       setMessage("Lỗi kết nối máy chủ.");
@@ -142,6 +149,53 @@ export default function AccountingPage() {
   const toNumber = (val: string) => {
     const parsed = parseFloat(val);
     return isNaN(parsed) ? 0 : parsed;
+  };
+
+  /**
+   * Nạp một bút toán tay trở lại form để sửa.
+   *
+   * Loại / danh mục / số tiền đọc ngược được từ chính hai vế của bút toán. Riêng NGUỒN TIỀN thì
+   * không: sổ cái chỉ lưu tài khoản (1111, 1121...) chứ không lưu quỹ nào đã sinh ra nó. Để
+   * trống nghĩa là giữ nguyên tài khoản tiền cũ — chọn lại chỉ khi thực sự muốn đổi quỹ.
+   */
+  const startEditEntry = (entry: Entry) => {
+    const revenueLine = entry.lines.find((line) => line.account.code === "511");
+    const entryType = revenueLine && revenueLine.credit > 0 ? "INCOME" : "EXPENSE";
+    const categoryLine = entry.lines.find((line) => line.categoryCode);
+    setEditingEntry(entry);
+    setManual({
+      entryDate: entry.entryDate.slice(0, 10),
+      branchCode: entry.branchCode,
+      description: entry.description,
+      entryType,
+      categoryCode: categoryLine?.categoryCode || "",
+      moneySourceCode: "",
+      amount: String(entry.lines.reduce((sum, line) => sum + line.debit, 0)),
+    });
+    setActive("manual");
+    setMessage(`Đang sửa bút toán ${entry.code}. Để trống Nguồn tiền là giữ nguyên tài khoản tiền cũ.`);
+  };
+
+  const deleteEntry = async (entry: Entry) => {
+    if (!window.confirm(`Xoá bút toán tay ${entry.code} (${money(entry.lines.reduce((sum, line) => sum + line.debit, 0))} đ)? Bút toán vào Thùng rác, lấy lại được nếu bấm nhầm.`)) return;
+    setMessage("");
+    try {
+      const response = await fetch("/api/accounting", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "DELETE_MANUAL", entryId: entry.id }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setMessage(payload.error || "Không xoá được bút toán.");
+        return;
+      }
+      if (editingEntry?.id === entry.id) setEditingEntry(null);
+      setMessage(`Đã xoá bút toán ${entry.code}.`);
+      await loadData();
+    } catch {
+      setMessage("Lỗi kết nối máy chủ.");
+    }
   };
 
   if (loading) {
@@ -665,6 +719,27 @@ export default function AccountingPage() {
                                     <span className="material-symbols-outlined text-xs">edit_square</span>
                                     Sửa nguồn
                                   </button>
+                                ) : (canEdit || canDelete) ? (
+                                  <div className="flex items-center justify-center gap-1">
+                                    {canEdit && (
+                                      <button
+                                        onClick={() => startEditEntry(entry)}
+                                        className="px-2.5 py-1 rounded bg-fuchsia-50 hover:bg-fuchsia-100 text-fuchsia-700 font-bold border border-fuchsia-100 transition-colors active:scale-95 shadow-sm"
+                                        title="Nạp bút toán tay này trở lại form để sửa"
+                                      >
+                                        Sửa
+                                      </button>
+                                    )}
+                                    {canDelete && (
+                                      <button
+                                        onClick={() => void deleteEntry(entry)}
+                                        className="px-2.5 py-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 font-bold border border-transparent hover:border-rose-100 transition-colors active:scale-95"
+                                        title="Xoá bút toán tay (vào Thùng rác, lấy lại được)"
+                                      >
+                                        Xoá
+                                      </button>
+                                    )}
+                                  </div>
                                 ) : (
                                   <span className="text-slate-400 text-[10px]">Bút toán tay</span>
                                 )}
@@ -684,7 +759,7 @@ export default function AccountingPage() {
         {/* TAB 2: Manual Adjustment */}
         {active === "manual" && (
           <div className="max-w-2xl mx-auto">
-            {canCreate ? (
+            {(canCreate || (canEdit && editingEntry)) ? (
               <form
                 onSubmit={handleManualSubmit}
                 className="bg-white border border-slate-200 rounded-2xl shadow-xl p-6 space-y-5"
@@ -693,9 +768,13 @@ export default function AccountingPage() {
                   <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-full uppercase tracking-wider">
                     Ghi sổ thủ công (Adjustment)
                   </span>
-                  <h2 className="font-bold text-lg text-slate-900 mt-2">Tạo bút toán tay điều chỉnh</h2>
+                  <h2 className="font-bold text-lg text-slate-900 mt-2">
+                    {editingEntry ? `Sửa bút toán ${editingEntry.code}` : "Tạo bút toán tay điều chỉnh"}
+                  </h2>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    Hệ thống sẽ tự động hạch toán kép đối xứng cân bằng Nợ/Có.
+                    {editingEntry
+                      ? "Bút toán giữ nguyên mã, hai vế Nợ/Có được ghi lại theo số mới. Để trống Nguồn tiền là giữ nguyên tài khoản tiền cũ."
+                      : "Hệ thống sẽ tự động hạch toán kép đối xứng cân bằng Nợ/Có."}
                   </p>
                 </div>
 
@@ -830,14 +909,29 @@ export default function AccountingPage() {
                   />
                 </div>
 
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  className="w-full bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 text-white rounded-xl py-3 text-sm font-bold shadow-md hover:shadow-lg transition-all active:scale-98 flex items-center justify-center gap-2"
-                >
-                  <span className="material-symbols-outlined text-lg">save</span>
-                  {submitting ? "Đang lưu..." : "Ghi sổ bút toán"}
-                </button>
+                <div className="flex gap-3">
+                  <button
+                    type="submit"
+                    disabled={submitting}
+                    className="flex-1 bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 text-white rounded-xl py-3 text-sm font-bold shadow-md hover:shadow-lg transition-all active:scale-98 flex items-center justify-center gap-2"
+                  >
+                    <span className="material-symbols-outlined text-lg">save</span>
+                    {submitting ? "Đang lưu..." : editingEntry ? "Lưu bút toán đã sửa" : "Ghi sổ bút toán"}
+                  </button>
+                  {editingEntry && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingEntry(null);
+                        setManual((prev) => ({ ...prev, amount: "1000000", description: "Bút toán điều chỉnh", moneySourceCode: "" }));
+                        setMessage("");
+                      }}
+                      className="px-4 rounded-xl border border-slate-300 text-sm font-bold text-slate-600 hover:bg-slate-50 transition-colors"
+                    >
+                      Huỷ sửa
+                    </button>
+                  )}
+                </div>
               </form>
             ) : (
               <div className="bg-white border border-slate-200 rounded-xl p-8 text-center text-slate-500">

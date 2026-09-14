@@ -1261,6 +1261,18 @@ export default function ProcurementPage() {
                       {canApprove && order.status === "DRAFT" && (
                         <button onClick={() => void send("PATCH", { action: "APPROVE_ORDER", orderId: order.id }, "Đã duyệt PO.")} className="rounded-lg bg-blue-600 text-white text-xs font-bold px-3 py-2">Duyệt PO</button>
                       )}
+                      {canApprove && order.status === "APPROVED" && totalReceived === 0 && !order.payable && (
+                        <button
+                          onClick={() => {
+                            if (!window.confirm(`Bỏ duyệt đơn ${order.code}? Đơn quay về Nháp để sửa, và link đã gửi nhà cung cấp sẽ bị thu hồi.`)) return;
+                            void send("PATCH", { action: "UNAPPROVE_ORDER", orderId: order.id }, `Đã bỏ duyệt ${order.code}. Sửa lại rồi duyệt PO lần nữa.`);
+                          }}
+                          className="rounded-lg border border-slate-300 text-slate-600 text-xs font-bold px-3 py-2"
+                          title="Đưa đơn về Nháp để sửa lại số lượng/đơn giá"
+                        >
+                          Bỏ duyệt
+                        </button>
+                      )}
                       {canCreate && order.status !== "DRAFT" && (
                         <button disabled={sharingOrderId === order.id} onClick={() => void sharePO(order)} className="rounded-lg bg-sky-50 text-sky-700 text-xs font-bold px-3 py-2 inline-flex items-center gap-1">
                           <span className="material-symbols-outlined text-sm">qr_code_2</span>
@@ -1324,6 +1336,18 @@ export default function ProcurementPage() {
                       {canApprove && order.status === "DRAFT" && (
                         <button onClick={() => void send("PATCH", { action: "APPROVE_ORDER", orderId: order.id }, "Đã duyệt PO.")} className="action-link text-blue-700 hover:underline">
                           Duyệt PO
+                        </button>
+                      )}
+                      {canApprove && order.status === "APPROVED" && order.lines.every((line) => line.receivedQuantity === 0) && !order.payable && (
+                        <button
+                          onClick={() => {
+                            if (!window.confirm(`Bỏ duyệt đơn ${order.code}? Đơn quay về Nháp để sửa, và link đã gửi nhà cung cấp sẽ bị thu hồi.`)) return;
+                            void send("PATCH", { action: "UNAPPROVE_ORDER", orderId: order.id }, `Đã bỏ duyệt ${order.code}. Sửa lại rồi duyệt PO lần nữa.`);
+                          }}
+                          className="action-link text-slate-500 hover:underline"
+                          title="Đưa đơn về Nháp để sửa lại số lượng/đơn giá"
+                        >
+                          Bỏ duyệt
                         </button>
                       )}
                       {canCreate && order.status !== "DRAFT" && (
