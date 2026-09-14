@@ -17,7 +17,10 @@ const menuHref = "/assets";
  */
 async function nextPaymentVoucherCode(tx: TxClient, voucherDate: Date, branchCode: string, documentChannel: string) {
   const prefix = voucherCodePrefix({ voucherType: "PAYMENT", documentChannel, voucherDate, branchCode });
-  const issued = await tx.financialVoucher.findMany({ where: { code: { startsWith: prefix } }, select: { code: true } });
+  // Đọc bằng SQL thô để thấy CẢ phiếu đã xoá mềm. Client thường lọc deletedAt nên mã của
+  // phiếu nằm trong thùng rác trở nên vô hình, trong khi ràng buộc unique vẫn giữ chỗ — cấp
+  // lại đúng mã đó là vỡ "Unique constraint failed on the fields: (code)" giữa transaction.
+  const issued = await tx.$queryRaw<Array<{ code: string }>>`SELECT "code" FROM "FinancialVoucher" WHERE "code" LIKE ${prefix + "%"}`;
   return prefix + String(nextSeqFromCodes(issued.map((row) => row.code), prefix)).padStart(5, "0");
 }
 
@@ -89,7 +92,7 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const action = cleanText(body.action);
-    const requiredAction = ["RUN_DEPRECIATION", "REOPEN_DEPRECIATION", "REOPEN_ASSET_STOCKTAKE", "COMPLETE_MAINTENANCE", "RESOLVE_DAMAGE", "CONFIGURE_DEPRECIATION"].includes(action) ? "edit" : "create";
+    const requiredAction = ["RUN_DEPRECIATION", "REOPEN_DEPRECIATION", "REOPEN_ASSET_STOCKTAKE", "REOPEN_MAINTENANCE", "REOPEN_DAMAGE", "REOPEN_DISPOSAL", "COMPLETE_MAINTENANCE", "RESOLVE_DAMAGE", "CONFIGURE_DEPRECIATION"].includes(action) ? "edit" : "create";
     const auth = requireMenuAction(request, menuHref, requiredAction);
     if (!auth.ok) return auth.response;
 
@@ -400,6 +403,150 @@ export async function POST(request: Request) {
       return NextResponse.json(result);
     }
 
+    /**
+     * Mở lại lịch bảo trì đã hoàn tất: đưa về Đang chờ, xoá ngày hoàn thành và mở lại công
+     * việc liên quan. Chi phí ghi nhầm chỉ sửa được bằng cách bấm Hoàn tất lại với số đúng.
+     */
+    if (action === "REOPEN_MAINTENANCE") {
+      const id = cleanText(body.id);
+      if (!id) businessError("Thiếu lịch bảo trì cần mở lại");
+      const maintenance = await prisma.assetMaintenance.findUnique({ where: { id }, include: { asset: true } });
+      if (!maintenance) businessError("Không tìm thấy lịch bảo trì");
+      assertBranchAccess(auth.session, maintenance.asset.branchCode);
+      if (maintenance.status !== "COMPLETED") businessError("Lịch bảo trì này chưa hoàn tất nên không có gì để mở lại.");
+      await assertPeriodOpen({ date: maintenance.completedDate || maintenance.scheduledDate, branchCode: maintenance.asset.branchCode }, "mở lại lịch bảo trì");
+
+      const result = await prisma.assetMaintenance.update({ where: { id }, data: { status: "SCHEDULED", completedDate: null } });
+      if (maintenance.linkedWorkItemId) {
+        await prisma.workItem.update({
+          where: { id: maintenance.linkedWorkItemId },
+          data: {
+            status: "TODO",
+            completedAt: null,
+            histories: { create: { action: "REOPENED_FROM_ASSET_MAINTENANCE", fromStatus: "COMPLETED", toStatus: "TODO", actor: auth.session.name, note: cleanText(body.note) || null } },
+          },
+        });
+      }
+      await writeAuditLog({ session: auth.session, module: "/assets", action: "REOPEN_MAINTENANCE", entityType: "AssetMaintenance", entityId: id, entityCode: maintenance.asset.code, branchCode: maintenance.asset.branchCode, metadata: { cost: maintenance.cost, completedDate: maintenance.completedDate } });
+      return NextResponse.json(result);
+    }
+
+    /**
+     * Mở lại báo hỏng đã xử lý.
+     *
+     * RESOLVE_DAMAGE rẽ bốn nhánh và nhánh nào cũng để lại dấu vết ngoài bản ghi báo hỏng:
+     * tăng nguyên giá, sinh phiếu phân bổ, sinh công nợ NCC, hoặc lập phiếu chi. Chọn nhầm
+     * cách xử lý mà không mở lại được thì mỗi lần nhầm là một chứng từ rác nằm lại trong sổ.
+     * Mở lại gỡ đúng thứ mà lần xử lý đó đã tạo ra rồi đưa báo hỏng về Chờ xử lý.
+     */
+    if (action === "REOPEN_DAMAGE") {
+      const id = cleanText(body.id);
+      if (!id) businessError("Thiếu báo hỏng cần mở lại");
+      const report = await prisma.assetDamageReport.findUnique({ where: { id }, include: { asset: true } });
+      if (!report) businessError("Không tìm thấy báo hỏng");
+      assertBranchAccess(auth.session, report.asset.branchCode);
+      if (report.status !== "COMPLETED") businessError(`Báo hỏng ${report.code} chưa xử lý xong nên không có gì để mở lại.`);
+      const resolvedAt = report.resolvedAt || new Date();
+      await assertPeriodOpen({ date: resolvedAt, branchCode: report.asset.branchCode }, "mở lại báo hỏng");
+
+      const undone: string[] = [];
+      if (report.repairTreatment === "CAPITALIZE" && report.repairCost > 0) {
+        await prisma.assetRecord.update({ where: { id: report.assetId }, data: { originalCost: { decrement: report.repairCost }, currentValue: { decrement: report.repairCost } } });
+        undone.push(`giảm lại nguyên giá ${report.repairCost}`);
+      }
+      if (report.repairTreatment === "ALLOCATE") {
+        const accrual = await prisma.accrual.findFirst({ where: { sourceType: "ASSET_REPAIR", sourceId: report.id }, include: { schedules: true } });
+        if (accrual) {
+          // Kỳ nào đã ghi nhận chi phí thì số đã nằm trên P&L — bắt bỏ ghi nhận ở màn Sổ quỹ
+          // trước, chứ xoá thẳng phiếu phân bổ sẽ để lại bút toán 6428 không còn gốc.
+          const posted = accrual.schedules.filter((schedule) => schedule.status === "POSTED");
+          if (posted.length > 0) {
+            businessError(`Phiếu phân bổ ${accrual.code} đã ghi nhận ${posted.length} kỳ (${posted.map((schedule) => schedule.period).join(", ")}). Bỏ ghi nhận các kỳ đó ở tab Trích trước rồi mới mở lại báo hỏng.`);
+          }
+          await prisma.accrual.delete({ where: { id: accrual.id } });
+          undone.push(`xoá phiếu phân bổ ${accrual.code}`);
+        }
+      }
+      if (report.repairTreatment === "DEBT") {
+        const debt = await prisma.debtRecord.findFirst({ where: { sourceType: "ASSET_REPAIR", sourceId: report.id }, include: { settlements: true } });
+        if (debt) {
+          if (debt.settlements.length > 0) {
+            businessError(`Công nợ ${debt.code} của báo hỏng này đã được gạch nợ. Hoàn tác các phiếu thu/chi gạch nợ trước rồi mới mở lại.`);
+          }
+          await prisma.debtRecord.delete({ where: { id: debt.id } });
+          await prisma.journalEntry.deleteMany({ where: { sourceType: "DEBT_PAYABLE", sourceId: debt.id } });
+          undone.push(`xoá công nợ ${debt.code}`);
+        }
+      }
+      if (report.repairTreatment === "EXPENSE") {
+        const voucher = await prisma.financialVoucher.findFirst({ where: { sourceDocumentCode: report.code, voucherType: "PAYMENT" } });
+        if (voucher) {
+          await prisma.financialVoucher.delete({ where: { id: voucher.id } });
+          await prisma.journalEntry.deleteMany({ where: { sourceType: "VOUCHER", sourceId: voucher.id } });
+          undone.push(`xoá phiếu chi ${voucher.code}`);
+        }
+      }
+
+      const result = await prisma.assetDamageReport.update({
+        where: { id },
+        data: { status: "NEW", repairCost: 0, repairTreatment: null, resolvedAt: null, resolvedBy: null },
+      });
+      if (report.linkedWorkItemId) {
+        await prisma.workItem.update({
+          where: { id: report.linkedWorkItemId },
+          data: {
+            status: "TODO",
+            completedAt: null,
+            histories: { create: { action: "REOPENED_FROM_ASSET_REPAIR", fromStatus: "COMPLETED", toStatus: "TODO", actor: auth.session.name, note: cleanText(body.note) || null } },
+          },
+        });
+      }
+      await writeAuditLog({ session: auth.session, module: "/assets", action: "REOPEN_DAMAGE", entityType: "AssetDamageReport", entityId: id, entityCode: report.code, branchCode: report.asset.branchCode, metadata: { treatment: report.repairTreatment, repairCost: report.repairCost, undone } });
+      return NextResponse.json({ ...result, undone });
+    }
+
+    /**
+     * Mở lại tài sản đã thanh lý.
+     *
+     * Thanh lý ép giá trị còn lại về 0 và không lưu lại giá trị trước đó, nên khôi phục bằng
+     * cách dựng lại theo đúng công thức mà mọi luồng khác vẫn giữ: nguyên giá trừ tổng khấu
+     * hao đã chạy. Ghi tăng đặt giá trị còn lại = nguyên giá, khấu hao trừ dần, sửa chữa ghi
+     * tăng cộng vào cả hai vế — nên đẳng thức này luôn đúng ngoài lúc đã thanh lý.
+     */
+    if (action === "REOPEN_DISPOSAL") {
+      const assetId = cleanText(body.assetId) || cleanText(body.id);
+      if (!assetId) businessError("Thiếu tài sản cần mở lại");
+      const asset = await prisma.assetRecord.findUnique({ where: { id: assetId } });
+      if (!asset) businessError("Không tìm thấy tài sản");
+      assertBranchAccess(auth.session, asset.branchCode);
+      if (asset.status !== "DISPOSED") businessError(`Tài sản ${asset.code} chưa thanh lý nên không có gì để mở lại.`);
+      const disposalDate = asset.disposalDate || new Date();
+      await assertPeriodOpen({ date: disposalDate, branchCode: asset.branchCode }, "mở lại thanh lý tài sản");
+
+      const depreciated = await prisma.assetDepreciation.aggregate({ where: { assetId }, _sum: { depreciationAmount: true } });
+      const restoredValue = Math.max(0, asset.originalCost - (depreciated._sum.depreciationAmount || 0));
+
+      const receipt = await prisma.financialVoucher.findFirst({ where: { sourceDocumentCode: asset.code, voucherType: "RECEIPT", categoryCode: "ASSET_DISPOSAL" } });
+      if (receipt) {
+        await prisma.financialVoucher.delete({ where: { id: receipt.id } });
+        await prisma.journalEntry.deleteMany({ where: { sourceType: "VOUCHER", sourceId: receipt.id } });
+      }
+
+      const result = await prisma.assetRecord.update({
+        where: { id: assetId },
+        data: {
+          status: "IN_USE",
+          disposalStatus: null,
+          disposalDate: null,
+          disposalAmount: 0,
+          disposalNote: null,
+          currentValue: restoredValue,
+        },
+      });
+      await writeAuditLog({ session: auth.session, module: "/assets", action: "REOPEN_DISPOSAL", entityType: "AssetRecord", entityId: assetId, entityCode: asset.code, branchCode: asset.branchCode, metadata: { disposalAmount: asset.disposalAmount, restoredValue, removedVoucher: receipt?.code || null } });
+      return NextResponse.json(result);
+    }
+
     if (action === "REPORT_DAMAGE") {
       const assetId = cleanText(body.assetId);
       const description = cleanText(body.description);
@@ -557,9 +704,10 @@ export async function POST(request: Request) {
         if (disposalAmount > 0) {
           const moneySourceCode = cleanText(body.moneySourceCode) || await defaultMoneySource(tx, asset.branchCode);
           const documentChannel = await documentChannelForSource(tx, moneySourceCode);
-          // Cùng lý do: COUNT mọi phiếu thu (kể cả đã xoá mềm) sẽ cấp trúng mã đang sống.
+          // Cùng lý do: COUNT mọi phiếu thu (kể cả đã xoá mềm) sẽ cấp trúng mã đang sống. Và
+          // cũng phải đọc thô để thấy phiếu trong thùng rác, nếu không lại đâm trúng mã của nó.
           const disposalPrefix = "PTTL-";
-          const issuedDisposal = await tx.financialVoucher.findMany({ where: { code: { startsWith: disposalPrefix } }, select: { code: true } });
+          const issuedDisposal = await tx.$queryRaw<Array<{ code: string }>>`SELECT "code" FROM "FinancialVoucher" WHERE "code" LIKE ${disposalPrefix + "%"}`;
           const voucherCode = disposalPrefix + String(nextSeqFromCodes(issuedDisposal.map((row) => row.code), disposalPrefix)).padStart(4, "0");
           await tx.financialVoucher.create({
             data: {

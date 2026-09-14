@@ -610,6 +610,18 @@ export default function AssetOperationsPage() {
                         Hoàn thành
                       </button>
                     )}
+                    {canEdit && row.status === "COMPLETED" && (
+                      <button
+                        className="action-link text-slate-400 hover:text-rose-600"
+                        title="Đưa lịch bảo trì về Chờ làm và mở lại công việc liên quan"
+                        onClick={() => {
+                          if (!window.confirm(`Mở lại lịch bảo trì ${row.maintenanceType} của ${row.asset.code}? Lịch quay về Chờ làm và công việc liên quan mở lại.`)) return;
+                          void send({ action: "REOPEN_MAINTENANCE", id: row.id }, "Đã mở lại lịch bảo trì. Sửa chi phí rồi bấm Hoàn thành lại.");
+                        }}
+                      >
+                        Mở lại
+                      </button>
+                    )}
                   </Cell>
                 </tr>
               ))}
@@ -723,6 +735,18 @@ export default function AssetOperationsPage() {
                       {canEdit && row.status !== "COMPLETED" && (
                         <button className="action-link text-blue-700" onClick={() => setResolveDamage({ ...resolveDamage, id: row.id, supplierName: row.asset.supplierName || "" })}>Xử lý</button>
                       )}
+                      {canEdit && row.status === "COMPLETED" && (
+                        <button
+                          className="action-link text-slate-400 hover:text-rose-600"
+                          title="Gỡ chứng từ mà lần xử lý đã sinh ra và đưa báo hỏng về Chờ xử lý"
+                          onClick={() => {
+                            if (!window.confirm(`Mở lại báo hỏng ${row.code}? Chứng từ mà lần xử lý đã sinh ra (phiếu chi, công nợ, phiếu phân bổ hoặc phần tăng nguyên giá) sẽ bị gỡ bỏ.`)) return;
+                            void send({ action: "REOPEN_DAMAGE", id: row.id }, `Đã mở lại báo hỏng ${row.code}. Chọn lại cách xử lý rồi lưu.`);
+                          }}
+                        >
+                          Mở lại
+                        </button>
+                      )}
                     </Cell>
                   </tr>
                 ))}
@@ -768,9 +792,9 @@ export default function AssetOperationsPage() {
 
           <section className="table-panel">
             <Panel title="Danh sách tài sản đã thanh lý" reload={loadData} exportFileName="tai_san_da_thanh_ly" />
-            <Table headers={[{ label: "Mã & tên tài sản" }, { label: "Nguyên giá", align: "right" }, { label: "Tiền thu thanh lý", align: "right" }, { label: "Trạng thái" }]}>
+            <Table headers={[{ label: "Mã & tên tài sản" }, { label: "Nguyên giá", align: "right" }, { label: "Tiền thu thanh lý", align: "right" }, { label: "Trạng thái" }, { label: "Thao tác", align: "right" }]}>
               {data.assets.filter((a) => a.status === "DISPOSED").length === 0 ? (
-                <tr><td colSpan={4} className="px-4 py-8 text-center text-slate-400">Chưa có tài sản nào được thanh lý.</td></tr>
+                <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">Chưa có tài sản nào được thanh lý.</td></tr>
               ) : (
                 data.assets.filter((a) => a.status === "DISPOSED").map((row) => (
                   <tr key={row.id} className="border-t border-slate-100">
@@ -778,6 +802,20 @@ export default function AssetOperationsPage() {
                     <Cell right>{money(row.originalCost)} đ</Cell>
                     <Cell right><b className="text-emerald-700">{money(row.disposalAmount || 0)} đ</b></Cell>
                     <Cell><span className="status bg-rose-100 text-rose-800">Đã thanh lý</span></Cell>
+                    <Cell right>
+                      {canEdit && (
+                        <button
+                          className="action-link text-slate-400 hover:text-rose-600"
+                          title="Đưa tài sản về Đang dùng, dựng lại giá trị còn lại và xoá phiếu thu thanh lý"
+                          onClick={() => {
+                            if (!window.confirm(`Mở lại thanh lý ${row.code}? Tài sản quay về Đang dùng, giá trị còn lại dựng lại theo nguyên giá trừ khấu hao đã chạy, và phiếu thu tiền thanh lý bị xoá.`)) return;
+                            void send({ action: "REOPEN_DISPOSAL", assetId: row.id }, `Đã mở lại thanh lý ${row.code}. Thanh lý lại với số đúng nếu cần.`);
+                          }}
+                        >
+                          Mở lại
+                        </button>
+                      )}
+                    </Cell>
                   </tr>
                 ))
               )}
