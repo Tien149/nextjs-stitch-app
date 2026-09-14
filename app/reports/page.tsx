@@ -173,6 +173,7 @@ type RevenueLedgerRow = {
   appFeeAmount: number;
   netAmount: number;
   lineCount: number;
+  previousNetAmount: number;
 };
 type RevenueLedgerDetailRow = {
   id: string;
@@ -2152,6 +2153,34 @@ function MoneyInReconciliationPanel({ dailyCash, showContextLine }: { dailyCash:
 }
 
 /**
+ * Ô so sánh với cùng kỳ tháng trước: số của tháng trước ở trên, mức tăng giảm ở dưới.
+ *
+ * Tháng trước bằng 0 thì KHÔNG hiện "+100%" — chia cho 0 ra một con số vô nghĩa, mà ngày đó
+ * có thể chỉ là chưa import hoặc nghỉ bán chứ không phải tăng trưởng thật. Hiện "chưa có số"
+ * để người đọc tự hiểu là không so được.
+ */
+function RevenueComparison({ current, previous }: { current: number; previous: number }) {
+  if (previous <= 0) {
+    return (
+      <span className="text-slate-300" title="Cùng ngày tháng trước không có doanh thu nào được import">
+        —
+      </span>
+    );
+  }
+  const delta = current - previous;
+  const percent = Math.round((delta / previous) * 100);
+  const tone = delta > 0 ? "text-emerald-700" : delta < 0 ? "text-rose-600" : "text-slate-400";
+  return (
+    <span className="inline-block whitespace-nowrap text-right">
+      <span className="text-slate-500">{money(previous)}</span>
+      <span className={`mt-0.5 block text-xs font-bold ${tone}`}>
+        {delta > 0 ? "▲" : delta < 0 ? "▼" : "="} {delta === 0 ? "0%" : `${percent > 0 ? "+" : ""}${percent}%`}
+      </span>
+    </span>
+  );
+}
+
+/**
  * Sổ doanh thu: mỗi ngày bán tách sẵn theo từng kênh, bấm vào dòng thì xoè ra từng dòng hoá đơn.
  *
  * Chi tiết nạp riêng lúc bấm chứ không gửi kèm bảng tổng — doanh thu POS có thể tới hàng chục
@@ -2196,7 +2225,7 @@ function RevenueLedgerPanel({ data, branchCode }: { data: RevenueLedgerData; bra
         <Kpi label="Doanh thu thuần" value={data.totals.netAmount} icon="point_of_sale" tone="green" />
         <Kpi label="Doanh thu gộp" value={data.totals.grossAmount} icon="receipt_long" />
         <Kpi label="Giảm giá" value={data.totals.discountAmount} icon="sell" tone="amber" />
-        <Kpi label="Phí thẻ + phí app" value={data.totals.cardFeeAmount + data.totals.appFeeAmount} icon="percent" tone="rose" />
+        <Kpi label="Cùng kỳ tháng trước" value={data.totals.previousNetAmount} icon="calendar_month" />
       </section>
 
       <section className="table-panel">
@@ -2205,11 +2234,11 @@ function RevenueLedgerPanel({ data, branchCode }: { data: RevenueLedgerData; bra
           subtitle={`Từ ${dayLabel(data.dateFrom)} đến ${dayLabel(data.dateTo)}. Mỗi ngày bán tách sẵn theo từng kênh bán, lấy thẳng từ file import POS — cùng nguồn với dòng Doanh thu của P&L. Bấm vào một dòng để xem từng hoá đơn của ngày đó.`}
           exportFileName="so_doanh_thu"
         />
-        <Table headers={["Ngày", "Kênh bán", "Hoá đơn", "Doanh thu gộp", "Giảm giá", "VAT", "Phụ thu SVC", "Phí thẻ", "Phí app", "Doanh thu thuần"]}>
+        <Table headers={["Ngày", "Kênh bán", "Hoá đơn", "Doanh thu gộp", "Giảm giá", "VAT", "Phụ thu SVC", "Phí thẻ", "Phí app", "Doanh thu thuần", "Cùng kỳ tháng trước"]}>
           {data.rows.length === 0 && (
             <tr className="border-t border-slate-100">
               <Cell>Chưa có doanh thu nào trong khoảng ngày này.</Cell>
-              <Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell>
+              <Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell>
             </tr>
           )}
           {[...byDay.entries()].flatMap(([day, rows]) => rows.flatMap((row, index) => {
@@ -2237,13 +2266,14 @@ function RevenueLedgerPanel({ data, branchCode }: { data: RevenueLedgerData; bra
                 <Cell right>{row.cardFeeAmount ? <span className="text-rose-600">{money(row.cardFeeAmount)}</span> : <span className="text-slate-300">—</span>}</Cell>
                 <Cell right>{row.appFeeAmount ? <span className="text-rose-600">{money(row.appFeeAmount)}</span> : <span className="text-slate-300">—</span>}</Cell>
                 <Cell right><b className="text-emerald-700">{money(row.netAmount)}</b></Cell>
+                <Cell right><RevenueComparison current={row.netAmount} previous={row.previousNetAmount} /></Cell>
               </tr>,
               ...(isOpen ? [(
                 // data-no-export: Xuất Excel đọc thẳng DOM, mà cả bảng chi tiết nằm gọn trong
                 // một ô colSpan nên sẽ bị dồn thành một chuỗi chữ dài vô nghĩa. Bỏ dòng xoè ra
                 // khỏi file xuất để bản Excel đúng bằng bảng tổng người dùng đang nhìn.
                 <tr key={`${key}-detail`} data-no-export className="border-t border-slate-100 bg-slate-50/60">
-                  <td colSpan={10} className="px-4 py-3">
+                  <td colSpan={11} className="px-4 py-3">
                     {loadingKey === key ? (
                       <p className="text-xs text-slate-500">Đang tải chi tiết...</p>
                     ) : detailRows.length === 0 ? (
@@ -2297,6 +2327,7 @@ function RevenueLedgerPanel({ data, branchCode }: { data: RevenueLedgerData; bra
               <Cell right>{money(data.totals.cardFeeAmount)}</Cell>
               <Cell right>{money(data.totals.appFeeAmount)}</Cell>
               <Cell right><b className="text-emerald-700">{money(data.totals.netAmount)}</b></Cell>
+              <Cell right><RevenueComparison current={data.totals.netAmount} previous={data.totals.previousNetAmount} /></Cell>
             </tr>
           )}
         </Table>

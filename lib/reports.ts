@@ -1484,6 +1484,8 @@ export type RevenueLedgerRow = {
   appFeeAmount: number;
   netAmount: number;
   lineCount: number;
+  /** Doanh thu thuần của ĐÚNG ngày này tháng trước, cùng kênh bán. */
+  previousNetAmount: number;
 };
 
 export type RevenueLedgerDetailRow = {
@@ -1509,6 +1511,34 @@ export type RevenueLedgerDetailRow = {
 
 /** Nhãn cho dòng doanh thu chưa khai kênh bán — để trống thì bảng có một ô rỗng khó hiểu. */
 const UNSPECIFIED_CHANNEL = "Chưa phân kênh";
+
+/**
+ * Cùng ngày đó của tháng trước, tính thẳng trên chuỗi "YYYY-MM-DD".
+ *
+ * Không dùng `new Date(...).setMonth(-1)`: ngày 31/3 lùi một tháng sẽ bị JS đẩy thành 3/3 vì
+ * tháng 2 không có ngày 31 — so cùng kỳ mà nhảy sang ngày khác thì sai lặng lẽ. Ghép chuỗi
+ * thì ngày không tồn tại (31/2) chỉ đơn giản là không khớp dòng nào, tức cùng kỳ bằng 0.
+ */
+function previousMonthSameDay(dateKey: string) {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  const previousYear = month === 1 ? year - 1 : year;
+  const previousMonth = month === 1 ? 12 : month - 1;
+  return `${previousYear}-${String(previousMonth).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+/**
+ * Cùng ngày tháng trước, nhưng kẹp lại vào ngày cuối tháng nếu ngày đó không tồn tại.
+ *
+ * CHỈ dùng để đặt hai đầu khoảng ngày của kỳ so sánh. Tuyệt đối không dùng để dò từng dòng:
+ * 31/3 mà kẹp thành 28/2 là đem doanh thu của một ngày khác ra so, sai mà không ai thấy.
+ */
+function previousMonthBoundary(dateKey: string) {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  const previousYear = month === 1 ? year - 1 : year;
+  const previousMonth = month === 1 ? 12 : month - 1;
+  const lastDay = new Date(Date.UTC(previousYear, previousMonth, 0)).getUTCDate();
+  return `${previousYear}-${String(previousMonth).padStart(2, "0")}-${String(Math.min(day, lastDay)).padStart(2, "0")}`;
+}
 
 function revenueLedgerBounds(dateFrom: string, dateTo: string, period: string) {
   // Mặc định là cả tháng đang chọn; có khoảng ngày thì ưu tiên khoảng ngày, và tự đảo lại
@@ -1557,7 +1587,7 @@ export async function getRevenueLedger(period: string, branchCode: string, dateF
     const current = cells.get(key) || {
       date, channel: rowChannel, orderCount: 0, lineCount: 0,
       grossAmount: 0, discountAmount: 0, vatAmount: 0, serviceAmount: 0,
-      cardFeeAmount: 0, appFeeAmount: 0, netAmount: 0,
+      cardFeeAmount: 0, appFeeAmount: 0, netAmount: 0, previousNetAmount: 0,
     };
     current.orderCount += row.orderCount || 0;
     current.lineCount += 1;
@@ -1574,6 +1604,31 @@ export async function getRevenueLedger(period: string, branchCode: string, dateF
   // Ngày mới nhất lên trước như sổ sao kê; trong cùng một ngày thì xếp kênh theo bảng chữ cái
   // để thứ tự không nhảy lung tung giữa các lần tải.
   const ledgerRows = [...cells.values()].sort((a, b) => (a.date === b.date ? a.channel.localeCompare(b.channel, "vi") : b.date.localeCompare(a.date)));
+
+  // Cùng kỳ tháng trước: lấy ĐÚNG khoảng ngày đang xem lùi lại một tháng, không suy từ những
+  // ngày có số của kỳ này — kỳ này nghỉ bán vài ngày thì khoảng so sánh sẽ co lại theo và
+  // tổng cùng kỳ bị hụt đúng những ngày đó.
+  const previousFrom = previousMonthBoundary(vietnamBusinessDayKey(start));
+  const previousTo = previousMonthBoundary(vietnamBusinessDayKey(new Date(end.getTime() - 1)));
+  const previousRows = await prisma.revenueImportRow.findMany({
+    where: {
+      saleDate: { gte: new Date(`${previousFrom}T00:00:00+07:00`), lt: new Date(`${previousTo}T24:00:00+07:00`) },
+      ...(branchCode === "ALL" ? {} : { branchCode }),
+    },
+    select: { saleDate: true, channel: true, netAmount: true },
+  });
+  const previousByKey = new Map<string, number>();
+  let previousTotal = 0;
+  for (const row of previousRows) {
+    const rowChannel = (row.channel || "").trim() || UNSPECIFIED_CHANNEL;
+    if (channel && rowChannel !== channel) continue;
+    previousByKey.set(`${vietnamBusinessDayKey(row.saleDate)}|${rowChannel}`, (previousByKey.get(`${vietnamBusinessDayKey(row.saleDate)}|${rowChannel}`) || 0) + row.netAmount);
+    previousTotal += row.netAmount;
+  }
+  for (const row of ledgerRows) {
+    row.previousNetAmount = previousByKey.get(`${previousMonthSameDay(row.date)}|${row.channel}`) || 0;
+  }
+
   const totals = ledgerRows.reduce((sum, row) => ({
     orderCount: sum.orderCount + row.orderCount,
     lineCount: sum.lineCount + row.lineCount,
@@ -1591,10 +1646,14 @@ export async function getRevenueLedger(period: string, branchCode: string, dateF
     branchCode,
     dateFrom: vietnamBusinessDayKey(start),
     dateTo: vietnamBusinessDayKey(new Date(end.getTime() - 1)),
+    previousFrom,
+    previousTo,
     channel,
     channels: [...channels].sort((a, b) => a.localeCompare(b, "vi")),
     rows: ledgerRows,
-    totals,
+    // Tổng cùng kỳ là TOÀN BỘ kỳ trước, không phải tổng các dòng khớp được: ngày tháng trước
+    // có bán mà tháng này nghỉ vẫn phải được tính, nếu không thì so sánh cả kỳ bị thổi phồng.
+    totals: { ...totals, previousNetAmount: previousTotal },
   };
 }
 
