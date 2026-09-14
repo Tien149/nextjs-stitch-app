@@ -176,6 +176,7 @@ type RevenueLedgerRow = {
   netAmount: number;
   lineCount: number;
   previousNetAmount: number;
+  noteCount: number;
 };
 type RevenueLedgerDetailRow = {
   id: string;
@@ -188,6 +189,7 @@ type RevenueLedgerDetailRow = {
   productCode: string | null;
   productQuantity: number | null;
   departmentCode: string | null;
+  note: string | null;
   orderCount: number | null;
   grossAmount: number;
   discountAmount: number;
@@ -2157,6 +2159,47 @@ function MoneyInReconciliationPanel({ dailyCash, showContextLine }: { dailyCash:
 }
 
 /**
+ * Ô nhập Ghi chú của một dòng doanh thu.
+ *
+ * Giữ chữ đang gõ trong state riêng và chỉ gọi máy chủ khi rời ô (hoặc bấm Enter) — gọi theo
+ * từng phím gõ thì mỗi chữ cái là một lần lưu kèm một lần tải lại cả bảng.
+ *
+ * Ghi chú từ bên ngoài đổi (tải lại bảng) thì đồng bộ ngay trong lúc render thay vì qua
+ * useEffect: chỉnh state theo prop bằng effect sẽ render hai lượt, và React khuyến nghị đúng
+ * cách so-với-lượt-trước này.
+ */
+function NoteInput({ value, disabled, onCommit }: { value: string; disabled: boolean; onCommit: (note: string) => void }) {
+  const [draft, setDraft] = useState(value);
+  const [syncedValue, setSyncedValue] = useState(value);
+  if (value !== syncedValue) {
+    setSyncedValue(value);
+    setDraft(value);
+  }
+
+  const commit = () => {
+    if (draft.trim() === value.trim()) return;
+    onCommit(draft.trim());
+  };
+
+  return (
+    <input
+      className="w-40 rounded border border-slate-300 bg-white px-1.5 py-1 text-xs disabled:opacity-50"
+      value={draft}
+      disabled={disabled}
+      placeholder="Ghi chú..."
+      maxLength={500}
+      title="Ghi chú tự do cho dòng này — lưu khi bấm ra ngoài hoặc nhấn Enter"
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+        if (event.key === "Escape") { setDraft(value); event.currentTarget.blur(); }
+      }}
+    />
+  );
+}
+
+/**
  * Ô so sánh với cùng kỳ tháng trước: số của tháng trước ở trên, mức tăng giảm ở dưới.
  *
  * Tháng trước bằng 0 thì KHÔNG hiện "+100%" — chia cho 0 ra một con số vô nghĩa, mà ngày đó
@@ -2222,7 +2265,7 @@ function RevenueLedgerPanel({ data, branchCode, moneySources, canEdit, onSaved }
    * Lưu lại phân loại của một dòng hoá đơn rồi tải lại cả bảng: đổi Nguồn doanh thu hay Nguồn
    * tiền là đổi luôn số tổng của ngày đó, giữ nguyên bảng cũ sẽ cho người dùng nhìn số sai.
    */
-  const saveRow = async (detail: RevenueLedgerDetailRow, patch: { revenueSource?: string; paymentMethod?: string }) => {
+  const saveRow = async (detail: RevenueLedgerDetailRow, patch: { revenueSource?: string; paymentMethod?: string; note?: string }) => {
     setSavingRowId(detail.id);
     setRowError(null);
     try {
@@ -2289,14 +2332,14 @@ function RevenueLedgerPanel({ data, branchCode, moneySources, canEdit, onSaved }
       <section className="table-panel">
         <PanelHeader
           title="Sổ doanh thu"
-          subtitle={`Từ ${dayLabel(data.dateFrom)} đến ${dayLabel(data.dateTo)}. Mỗi ngày bán tách sẵn theo từng kênh bán, lấy thẳng từ file import POS — cùng nguồn với dòng Doanh thu của P&L. Bấm vào một dòng để xem từng hoá đơn của ngày đó${canEdit ? ", và sửa lại Nguồn doanh thu / Nguồn tiền nếu file khai nhầm" : ""}.`}
+          subtitle={`Từ ${dayLabel(data.dateFrom)} đến ${dayLabel(data.dateTo)}. Mỗi ngày bán tách sẵn theo từng kênh bán, lấy thẳng từ file import POS — cùng nguồn với dòng Doanh thu của P&L. Bấm vào một dòng để xem từng hoá đơn của ngày đó${canEdit ? ", sửa lại Nguồn doanh thu / Nguồn tiền nếu file khai nhầm, và ghi chú lại dòng nào đã soát" : ""}. Cột Ghi chú đếm số dòng đã có ghi chú trong ô đó.`}
           exportFileName="so_doanh_thu"
         />
-        <Table headers={["Ngày", "Kênh bán", "Hoá đơn", "Doanh thu gộp", "Giảm giá", "VAT", "Phụ thu SVC", "Phí thẻ", "Phí app", "Doanh thu thuần", "Cùng kỳ tháng trước"]}>
+        <Table headers={["Ngày", "Kênh bán", "Ghi chú", "Hoá đơn", "Doanh thu gộp", "Giảm giá", "VAT", "Phụ thu SVC", "Phí thẻ", "Phí app", "Doanh thu thuần", "Cùng kỳ tháng trước"]}>
           {data.rows.length === 0 && (
             <tr className="border-t border-slate-100">
               <Cell>Chưa có doanh thu nào trong khoảng ngày này.</Cell>
-              <Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell>
+              <Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell>
             </tr>
           )}
           {[...byDay.entries()].flatMap(([day, rows]) => rows.flatMap((row, index) => {
@@ -2316,6 +2359,14 @@ function RevenueLedgerPanel({ data, branchCode, moneySources, canEdit, onSaved }
                     <b>{row.channel}</b>
                   </span>
                 </Cell>
+                <Cell>
+                  {row.noteCount > 0 ? (
+                    <span className="inline-flex items-center gap-0.5 text-xs font-bold text-amber-700" title={`${row.noteCount} dòng trong ô này đã có ghi chú`}>
+                      <span className="material-symbols-outlined text-sm">sticky_note_2</span>
+                      {row.noteCount}
+                    </span>
+                  ) : <span className="text-slate-300">—</span>}
+                </Cell>
                 <Cell right>{row.orderCount > 0 ? money(row.orderCount) : <span className="text-slate-300">—</span>}</Cell>
                 <Cell right>{money(row.grossAmount)}</Cell>
                 <Cell right>{row.discountAmount ? <span className="text-amber-700">{money(row.discountAmount)}</span> : <span className="text-slate-300">—</span>}</Cell>
@@ -2331,7 +2382,7 @@ function RevenueLedgerPanel({ data, branchCode, moneySources, canEdit, onSaved }
                 // một ô colSpan nên sẽ bị dồn thành một chuỗi chữ dài vô nghĩa. Bỏ dòng xoè ra
                 // khỏi file xuất để bản Excel đúng bằng bảng tổng người dùng đang nhìn.
                 <tr key={`${key}-detail`} data-no-export className="border-t border-slate-100 bg-slate-50/60">
-                  <td colSpan={11} className="px-4 py-3">
+                  <td colSpan={12} className="px-4 py-3">
                     {rowError && <p className="mb-2 rounded border border-rose-200 bg-rose-50 px-2 py-1.5 text-xs font-bold text-rose-700">{rowError}</p>}
                     {loadingKey === key ? (
                       <p className="text-xs text-slate-500">Đang tải chi tiết...</p>
@@ -2342,8 +2393,8 @@ function RevenueLedgerPanel({ data, branchCode, moneySources, canEdit, onSaved }
                         <table className="w-full text-left text-xs">
                           <thead className="text-slate-500 uppercase">
                             <tr>
-                              {["Mã hoá đơn", "Nguồn doanh thu", "Phương thức", "Bộ phận", "Mặt hàng", "SL", "Gộp", "Giảm giá", "VAT", "SVC", "Phí thẻ", "Phí app", "Thuần"].map((label, columnIndex) => (
-                                <th key={label} className={`px-2 py-1.5 whitespace-nowrap ${columnIndex >= 5 ? "text-right" : ""}`}>{label}</th>
+                              {["Mã hoá đơn", "Nguồn doanh thu", "Phương thức", "Bộ phận", "Mặt hàng", "Ghi chú", "SL", "Gộp", "Giảm giá", "VAT", "SVC", "Phí thẻ", "Phí app", "Thuần"].map((label, columnIndex) => (
+                                <th key={label} className={`px-2 py-1.5 whitespace-nowrap ${columnIndex >= 6 ? "text-right" : ""}`}>{label}</th>
                               ))}
                             </tr>
                           </thead>
@@ -2391,6 +2442,15 @@ function RevenueLedgerPanel({ data, branchCode, moneySources, canEdit, onSaved }
                                 </td>
                                 <td className="px-2 py-1.5 whitespace-nowrap">{detail.departmentCode || "—"}</td>
                                 <td className="px-2 py-1.5 whitespace-nowrap">{detail.productCode || "—"}</td>
+                                <td className="px-2 py-1.5">
+                                  {canEdit ? (
+                                    <NoteInput
+                                      value={detail.note || ""}
+                                      disabled={savingRowId === detail.id}
+                                      onCommit={(note) => void saveRow(detail, { note })}
+                                    />
+                                  ) : (detail.note || <span className="text-slate-300">—</span>)}
+                                </td>
                                 <td className="px-2 py-1.5 text-right whitespace-nowrap">{detail.productQuantity ? money(detail.productQuantity) : "—"}</td>
                                 <td className="px-2 py-1.5 text-right whitespace-nowrap">{money(detail.grossAmount)}</td>
                                 <td className="px-2 py-1.5 text-right whitespace-nowrap">{detail.discountAmount ? money(detail.discountAmount) : "—"}</td>
@@ -2414,6 +2474,7 @@ function RevenueLedgerPanel({ data, branchCode, moneySources, canEdit, onSaved }
             <tr className="border-t-2 border-slate-300 bg-slate-50 font-bold">
               <Cell><b>Tổng cộng</b></Cell>
               <Cell><span className="text-slate-500">{byDay.size} ngày</span></Cell>
+              <Cell>{data.totals.noteCount > 0 ? <span className="text-amber-700">{data.totals.noteCount} ghi chú</span> : "—"}</Cell>
               <Cell right>{data.totals.orderCount > 0 ? money(data.totals.orderCount) : "—"}</Cell>
               <Cell right>{money(data.totals.grossAmount)}</Cell>
               <Cell right>{money(data.totals.discountAmount)}</Cell>

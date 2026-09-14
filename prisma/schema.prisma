@@ -337,6 +337,9 @@ model RevenueImportRow {
   productCode     String?
   productQuantity Float?
   inventoryStatus String?
+  /// Ghi chú tự do của người dùng trên từng dòng doanh thu. Không tham gia vào bất kỳ phép
+  /// tính nào — chỗ để đánh dấu khi soát tay một tháng dữ liệu ("đã đối chiếu", "chờ NCC").
+  note            String?
   /// Bộ phận tạo ra doanh thu (DEPARTMENT: KIT/BAR/FOH...) — gắn lúc import để so với
   /// tỷ trọng lương từng bộ phận. Ưu tiên suy từ mã hàng -> nhóm mặt hàng -> nhóm kho;
   /// dòng không có mã hàng suy từ nguồn doanh thu (REV_FOOD -> Bếp, REV_DRINK -> Bar).

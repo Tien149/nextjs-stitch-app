@@ -1486,6 +1486,8 @@ export type RevenueLedgerRow = {
   lineCount: number;
   /** Doanh thu thuần của ĐÚNG ngày này tháng trước, cùng kênh bán. */
   previousNetAmount: number;
+  /** Số dòng hoá đơn trong ô này đã có ghi chú — để thấy ngay mà không phải xoè từng dòng. */
+  noteCount: number;
 };
 
 export type RevenueLedgerDetailRow = {
@@ -1499,6 +1501,7 @@ export type RevenueLedgerDetailRow = {
   productCode: string | null;
   productQuantity: number | null;
   departmentCode: string | null;
+  note: string | null;
   orderCount: number | null;
   grossAmount: number;
   discountAmount: number;
@@ -1570,7 +1573,7 @@ export async function getRevenueLedger(period: string, branchCode: string, dateF
       ...(branchCode === "ALL" ? {} : { branchCode }),
     },
     select: {
-      saleDate: true, channel: true, orderCount: true,
+      saleDate: true, channel: true, orderCount: true, note: true,
       grossAmount: true, discountAmount: true, vatAmount: true, feeAmount: true,
       cardFeeAmount: true, appFeeAmount: true, netAmount: true,
     },
@@ -1587,7 +1590,7 @@ export async function getRevenueLedger(period: string, branchCode: string, dateF
     const current = cells.get(key) || {
       date, channel: rowChannel, orderCount: 0, lineCount: 0,
       grossAmount: 0, discountAmount: 0, vatAmount: 0, serviceAmount: 0,
-      cardFeeAmount: 0, appFeeAmount: 0, netAmount: 0, previousNetAmount: 0,
+      cardFeeAmount: 0, appFeeAmount: 0, netAmount: 0, previousNetAmount: 0, noteCount: 0,
     };
     current.orderCount += row.orderCount || 0;
     current.lineCount += 1;
@@ -1598,6 +1601,7 @@ export async function getRevenueLedger(period: string, branchCode: string, dateF
     current.cardFeeAmount += row.cardFeeAmount;
     current.appFeeAmount += row.appFeeAmount;
     current.netAmount += row.netAmount;
+    if ((row.note || "").trim()) current.noteCount += 1;
     cells.set(key, current);
   }
 
@@ -1639,7 +1643,8 @@ export async function getRevenueLedger(period: string, branchCode: string, dateF
     cardFeeAmount: sum.cardFeeAmount + row.cardFeeAmount,
     appFeeAmount: sum.appFeeAmount + row.appFeeAmount,
     netAmount: sum.netAmount + row.netAmount,
-  }), { orderCount: 0, lineCount: 0, grossAmount: 0, discountAmount: 0, vatAmount: 0, serviceAmount: 0, cardFeeAmount: 0, appFeeAmount: 0, netAmount: 0 });
+    noteCount: sum.noteCount + row.noteCount,
+  }), { orderCount: 0, lineCount: 0, grossAmount: 0, discountAmount: 0, vatAmount: 0, serviceAmount: 0, cardFeeAmount: 0, appFeeAmount: 0, netAmount: 0, noteCount: 0 });
 
   return {
     period,
@@ -1679,6 +1684,7 @@ export async function getRevenueLedgerDetail(date: string, branchCode: string, c
       productCode: row.productCode,
       productQuantity: row.productQuantity,
       departmentCode: row.departmentCode,
+      note: row.note,
       orderCount: row.orderCount,
       grossAmount: row.grossAmount,
       discountAmount: row.discountAmount,

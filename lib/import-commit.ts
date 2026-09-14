@@ -929,6 +929,7 @@ export async function commitImport(input: CommitInput) {
             appFeeAmount: Math.max(0, asNumber(row.values.app_fee_amount)),
             netAmount: asNumber(row.values.net_amount),
             externalRef: asText(row.values.external_ref),
+            note: asText(row.values.note) || null,
             productCode: productCode || null,
             productQuantity: productQuantity > 0 ? productQuantity : null,
             inventoryStatus: productCode && productQuantity > 0 && needsInventory ? "PENDING" : "NOT_REQUIRED",

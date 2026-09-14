@@ -368,6 +368,15 @@ export const importTemplates: ImportTemplateDefinition[] = [
         type: "text",
         aliases: ["ma tham chieu pos", "external ref", "pos ref", "reference"],
       },
+      {
+        // Cột tự do: hệ thống chỉ lưu lại nguyên văn để người soát đánh dấu, không tính toán gì.
+        field: "note",
+        label: "Ghi chú",
+        required: false,
+        type: "text",
+        aliases: ["ghi chu", "note", "notes", "dien giai", "remark", "ghi chu them"],
+        note: "Ghi chú tự do trên từng dòng, sửa lại được ở tab Sổ doanh thu",
+      },
       { field: "product_code", label: "Ma mon POS", required: false, type: "text", aliases: ["ma mon pos", "ma mon", "product code", "item code"] },
       { field: "product_quantity", label: "So luong ban", required: false, type: "number", aliases: ["so luong ban", "quantity sold", "qty", "product quantity"] },
       { field: "warehouse_code", label: "Kho xuat", required: false, type: "text", aliases: ["kho xuat", "kho", "warehouse", "warehouse code"] },
@@ -528,6 +537,15 @@ export const importTemplates: ImportTemplateDefinition[] = [
         type: "number",
         aliases: ["tong tien", "tong doanh thu", "tong cong"],
         note: "Số tiền khách trả. Số này lên báo cáo Tiền về đủ chưa",
+      },
+      {
+        // Cột tự do: hệ thống chỉ lưu lại nguyên văn để người soát đánh dấu, không tính toán gì.
+        field: "note",
+        label: "Ghi chú",
+        required: false,
+        type: "text",
+        aliases: ["ghi chu", "note", "notes", "dien giai", "remark", "ghi chu them"],
+        note: "Ghi chú tự do trên từng dòng, sửa lại được ở tab Sổ doanh thu",
       },
     ],
   },

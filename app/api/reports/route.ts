@@ -1283,6 +1283,8 @@ export async function POST(request: Request) {
 
       const nextRevenueSource = body.revenueSource === undefined ? row.revenueSource : cleanText(body.revenueSource);
       const nextPaymentMethod = body.paymentMethod === undefined ? row.paymentMethod : cleanText(body.paymentMethod);
+      // Ghi chú là chữ tự do, chỉ cắt bớt cho khỏi phình cột và quy chuỗi rỗng về null.
+      const nextNote = body.note === undefined ? row.note : (cleanText(body.note).slice(0, 500) || null);
       if (!nextRevenueSource) businessError("Nguồn doanh thu không được để trống");
       if (!nextPaymentMethod) businessError("Nguồn tiền không được để trống");
 
@@ -1312,15 +1314,19 @@ export async function POST(request: Request) {
 
       const updated = await prisma.revenueImportRow.update({
         where: { id },
-        data: { revenueSource: nextRevenueSource, paymentMethod: nextPaymentMethod },
+        data: { revenueSource: nextRevenueSource, paymentMethod: nextPaymentMethod, note: nextNote },
       });
 
       // Chỉ ghi lại bút toán nếu dòng này ĐÃ lên sổ cái. Chưa đồng bộ thì không tự tạo bút toán
       // mới ở đây — để nút Đồng bộ ghi sổ làm đúng lượt của nó.
-      const posted = await prisma.journalEntry.findUnique({
-        where: { sourceType_sourceId: { sourceType: "REVENUE_POS", sourceId: id } },
-        select: { id: true },
-      });
+      // Ghi chú không tham gia bút toán, nên sửa mỗi ghi chú thì khỏi đụng tới sổ cái.
+      const classificationChanged = nextRevenueSource !== row.revenueSource || nextPaymentMethod !== row.paymentMethod;
+      const posted = classificationChanged
+        ? await prisma.journalEntry.findUnique({
+          where: { sourceType_sourceId: { sourceType: "REVENUE_POS", sourceId: id } },
+          select: { id: true },
+        })
+        : null;
       let journalStatus: string | null = null;
       if (posted) {
         await ensureRevenueComponentCategories();
@@ -1348,8 +1354,8 @@ export async function POST(request: Request) {
         entityCode: updated.externalRef,
         branchCode: updated.branchCode,
         metadata: {
-          before: { revenueSource: row.revenueSource, paymentMethod: row.paymentMethod },
-          after: { revenueSource: updated.revenueSource, paymentMethod: updated.paymentMethod },
+          before: { revenueSource: row.revenueSource, paymentMethod: row.paymentMethod, note: row.note },
+          after: { revenueSource: updated.revenueSource, paymentMethod: updated.paymentMethod, note: updated.note },
           journalStatus,
         },
       });
