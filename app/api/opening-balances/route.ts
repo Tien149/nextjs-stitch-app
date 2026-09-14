@@ -7,6 +7,7 @@ import { prisma, prismaRaw } from "@/lib/prisma";
 import { applyOpeningDeposit, revertOpeningDeposit } from "@/lib/opening-balance-deposit";
 import { normalizeOpeningBalanceInput, validateOpeningBalanceInput, type OpeningBalanceInput } from "@/lib/opening-balance-rules";
 import { assertAssetCodeAvailable } from "@/lib/asset-code-generator";
+import { assertPeriodOpen as assertAccountingPeriodOpen } from "@/lib/phase3";
 
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -21,12 +22,16 @@ function addPeriod(period: string, monthsToAdd: number): string {
   return `${year}-${String(month).padStart(2, "0")}`;
 }
 
+/**
+ * Luật khoá sổ dùng chung (lib/phase3). Màn này trả thẳng `error.message` cho người dùng nên
+ * phải bóc tiền tố BUSINESS: kẻo câu báo lỗi lộ ra ở dạng thô.
+ */
 async function assertPeriodOpen(tx: Prisma.TransactionClient, period: string, branchCode: string) {
-  const locked = await tx.accountingPeriod.findFirst({
-    where: { period, status: "CLOSED", branchCode: { in: [branchCode, "ALL"] } },
-    select: { id: true },
-  });
-  if (locked) throw new Error(`Kỳ ${period} đã khóa, không thể thay đổi số dư đầu kỳ`);
+  try {
+    await assertAccountingPeriodOpen({ period, branchCode }, "thay đổi số dư đầu kỳ", tx);
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message.replace(/^BUSINESS:/, "") : String(error));
+  }
 }
 
 function currentAsInput(current: Record<string, unknown>, body: Record<string, unknown>) {

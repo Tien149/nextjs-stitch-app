@@ -4,7 +4,7 @@ import { assertBranchAccess, branchFilterForSession, postJournalEntry } from "@/
 import { depositJournalLines } from "@/lib/deposit-accounting";
 import { prisma } from "@/lib/prisma";
 import { nextSeqFromCodes, voucherCodePrefix } from "@/lib/voucher-code-generator";
-import { isPeriodLocked } from "@/lib/phase3";
+import { closedPeriodMessage, findClosedPeriod, isPeriodLocked } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import { duplicatedInTrashMessage, findDeletedByUnique, softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
 import type { DemoSession } from "@/lib/auth-demo";
@@ -126,6 +126,16 @@ export async function GET(request: Request) {
   }
 }
 
+/**
+ * Luật khoá sổ cho màn Tiền cọc. Màn này trả JSON lỗi thủ công chứ không đi qua `apiError`,
+ * nên trả về Response thay vì ném — gọi xong phải `if (locked) return locked;`.
+ */
+async function lockedPeriodResponse(targets: Parameters<typeof findClosedPeriod>[0], what: string) {
+  const closed = await findClosedPeriod(targets);
+  if (!closed) return null;
+  return NextResponse.json({ error: closedPeriodMessage(closed, what) }, { status: 400 });
+}
+
 export async function POST(request: Request) {
   try {
     const auth = requireMenuAction(request, "/deposits", "create");
@@ -176,6 +186,11 @@ export async function POST(request: Request) {
     }
 
     const receivedDate = toDate(body.receivedDate);
+    // Không có nhánh này thì phiếu cọc vẫn lập được vào tháng đã chốt sổ: bản ghi cọc sinh ra
+    // bình thường, còn bút toán 3387 bị `postJournalEntry` bỏ qua vì kỳ khoá — tiền cọc treo
+    // trên màn Tiền cọc mà sổ cái không có gì.
+    const lockedCreate = await lockedPeriodResponse({ date: receivedDate, branchCode }, "lập phiếu cọc");
+    if (lockedCreate) return lockedCreate;
     const code = await nextDepositCode(receivedDate, branchCode);
 
     // Mã sinh tự động có thể trùng với phiếu cọc đang nằm trong thùng rác -> báo rõ để xử lý.
@@ -409,6 +424,14 @@ export async function PATCH(request: Request) {
     }
 
     if (action === "UPDATE") return await updateDeposit(auth.session, current, body);
+
+    // Cấn trừ / hoàn / huỷ / chuyển doanh thu đều sinh bút toán theo `actionDate`, đồng thời
+    // làm đổi số dư của phiếu cọc gốc — nên chặn cả kỳ của ngày xử lý lẫn kỳ của ngày nhận cọc.
+    const lockedAction = await lockedPeriodResponse(
+      [{ date: actionDate, branchCode: current.branchCode }, { date: current.receivedDate, branchCode: current.branchCode }],
+      "xử lý phiếu cọc",
+    );
+    if (lockedAction) return lockedAction;
 
     if (["SUPPLEMENT", "REFUND"].includes(action) && !current.moneySourceCode) {
       return NextResponse.json(

@@ -18,7 +18,7 @@ import {
 import { generateFormattedVoucherCode } from "@/lib/voucher-code-generator";
 import { planRevenueDateSplit, RevenueSplitError } from "@/lib/bank-statement-revenue-split";
 import { buildAuditLogData } from "@/lib/audit-log";
-import { periodFromDate } from "@/lib/phase3";
+import { closedPeriodMessage, findClosedPeriod } from "@/lib/phase3";
 
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -522,6 +522,15 @@ export async function POST(request: Request) {
       if (!financeAuth.ok) return financeAuth.response;
       const preview = await buildWalletGroupPreview(cleanText(body.bankTransactionId));
       assertBranchAccess(auth.session, preview.branchCode);
+      // Quyết toán ví sinh phiếu điều chuyển tiền có ngày tháng, nên phải theo đúng luật khoá
+      // sổ như mọi chứng từ khác. Trước đây nhánh này không kiểm nên ví vẫn quyết toán được
+      // vào tháng đã chốt sổ.
+      const lockedSettle = await findClosedPeriod(
+        preview.transactions.map((row) => ({ date: row.transactionDate, branchCode: preview.branchCode })),
+      );
+      if (lockedSettle) {
+        return NextResponse.json({ error: closedPeriodMessage(lockedSettle, "quyết toán ví") }, { status: 400 });
+      }
       const categories = await prisma.masterDataItem.findMany({
         where: {
           type: "REVENUE_EXPENSE_CATEGORY",
@@ -702,13 +711,11 @@ export async function PATCH(request: Request) {
     // Khóa sổ theo đúng kỳ mà tiền đã ghi nhận (ngày giao dịch + ngày hạch toán), giống lúc
     // commit lô import. Ngày doanh thu chỉ là chỗ đứng trên báo cáo đối chiếu nên không khóa
     // theo nó, nếu không thì tháng trước vừa chốt là hết đường sửa nhầm lẫn phân loại.
-    const lockedPeriods = [...new Set([bank.transactionDate, bank.accountingDate || bank.transactionDate].map(periodFromDate))];
-    if (bank.branchCode) {
-      const locked = await prisma.accountingPeriod.findFirst({
-        where: { period: { in: lockedPeriods }, status: "CLOSED", branchCode: { in: [bank.branchCode, "ALL"] } },
-        select: { period: true },
-      });
-      if (locked) return NextResponse.json({ error: `Kỳ ${locked.period} của cửa hàng ${bank.branchCode} đã khóa, không sửa được Ngày doanh thu` }, { status: 400 });
+    const locked = await findClosedPeriod(
+      [bank.transactionDate, bank.accountingDate || bank.transactionDate].map((date) => ({ date, branchCode: bank.branchCode })),
+    );
+    if (locked) {
+      return NextResponse.json({ error: closedPeriodMessage(locked, "sửa Ngày doanh thu") }, { status: 400 });
     }
 
     let plan;

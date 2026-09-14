@@ -4,7 +4,7 @@ import { prisma, prismaRaw, type RawTxClient } from "@/lib/prisma";
 import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
 import { applyVoucherSideEffects } from "@/lib/voucher-side-effects";
 import { revertVoucherSideEffects, VoucherRevertError } from "@/lib/voucher-revert";
-import { isPeriodLocked } from "@/lib/phase3";
+import { closedPeriodMessage, findClosedPeriod, isPeriodLocked } from "@/lib/phase3";
 import { buildAuditLogData, writeAuditLog } from "@/lib/audit-log";
 import { softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
 import { canEditPastVoucher, canPerformMenuAction, type DemoSession } from "@/lib/auth-demo";
@@ -428,6 +428,13 @@ export async function POST(request: Request) {
     }
 
     const voucherDate = body.voucherDate ? new Date(String(body.voucherDate)) : new Date();
+    // Phiếu lập ở màn này ra đời với trạng thái APPROVED, tức là đã ghi sổ ngay. Thiếu nhánh
+    // chặn này thì lập được phiếu lùi ngày vào tháng đã chốt: phiếu hiện trên sổ quỹ còn bút
+    // toán thì `postJournalEntry` bỏ qua vì kỳ khoá, hai bên lệch nhau mà không ai báo.
+    const lockedVoucher = await findClosedPeriod({ date: voucherDate, branchCode });
+    if (lockedVoucher) {
+      return NextResponse.json({ error: closedPeriodMessage(lockedVoucher, "lập chứng từ") }, { status: 400 });
+    }
     const shiftValue = cleanText(body.shift).toUpperCase();
     if (shiftValue && !isWorkShift(shiftValue)) {
       return NextResponse.json({ error: "Ca làm việc không hợp lệ" }, { status: 400 });

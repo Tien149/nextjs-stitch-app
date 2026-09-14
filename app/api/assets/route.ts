@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma, prismaRaw } from "@/lib/prisma";
 import { requestedBranch, assertBranchAccess, ensureDefaultAccounts } from "@/lib/accounting";
-import { isPeriodLocked, periodFromDate } from "@/lib/phase3";
+import { closedPeriodMessage, findClosedPeriod, isPeriodLocked, periodFromDate } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import { assertAssetCodeAvailable, AssetCodeError, nextAssetCode, normalizeAssetCode } from "@/lib/asset-code-generator";
 import {
@@ -292,8 +292,12 @@ export async function POST(request: Request) {
       }
     }
 
-    if (paymentStatus === "PAYABLE" && await isPeriodLocked(purchaseDate, branchCode)) {
-      return NextResponse.json({ error: `Kỳ ${periodFromDate(purchaseDate)} đã khóa nên không thể ghi nhận công nợ tài sản` }, { status: 409 });
+    // Ghi tăng tài sản luôn sinh bút toán Nợ 211/242 dù trả tiền ngay hay còn nợ, nên luật
+    // khoá sổ áp cho mọi hình thức thanh toán. Bản cũ chỉ chặn nhánh PAYABLE: mua trả tiền
+    // ngay vẫn ghi tăng được vào tháng đã chốt, tài sản lên danh sách mà sổ cái không có gì.
+    const lockedAsset = await findClosedPeriod({ date: purchaseDate, branchCode });
+    if (lockedAsset) {
+      return NextResponse.json({ error: closedPeriodMessage(lockedAsset, "ghi tăng tài sản") }, { status: 409 });
     }
     const accounts = paymentStatus === "PAYABLE" ? await ensureDefaultAccounts() : [];
     const accountByCode = new Map(accounts.map((account) => [account.code, account.id]));

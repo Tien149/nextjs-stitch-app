@@ -1,5 +1,6 @@
 import { prisma, prismaRaw, isSoftDeletable } from "@/lib/prisma";
 import { writeAuditLog } from "@/lib/audit-log";
+import { closedPeriodMessage, findClosedPeriod } from "@/lib/phase3";
 import type { DemoSession } from "@/lib/auth-demo";
 
 /**
@@ -10,6 +11,9 @@ import type { DemoSession } from "@/lib/auth-demo";
  * - `module`  : href của menu, dùng để kiểm tra quyền và điều hướng
  * - `codeField` / `titleField`: cột dùng để mô tả bản ghi trong danh sách thùng rác
  * - `cascade` : các quan hệ con cũng bị xoá mềm/khôi phục theo bản ghi cha
+ * - `dateField` / `periodField`: cột quyết định bản ghi thuộc kỳ kế toán nào. Khai một trong
+ *   hai (kèm `branchField`) thì xoá và khôi phục từ Thùng rác chịu chung luật khoá sổ với màn
+ *   nghiệp vụ. Bỏ trống = bản ghi không dính kỳ kế toán (danh mục, người dùng, công việc).
  */
 export type TrashEntity = {
   model: string;
@@ -18,24 +22,26 @@ export type TrashEntity = {
   codeField?: string;
   titleField?: string;
   branchField?: string;
+  dateField?: string;
+  periodField?: string;
   cascade?: { model: string; foreignKey: string }[];
 };
 
 export const TRASH_ENTITIES: TrashEntity[] = [
-  { model: "FinancialVoucher", label: "Phiếu thu/chi", module: "/vouchers", codeField: "code", titleField: "description", branchField: "branchCode" },
-  { model: "Deposit", label: "Tiền cọc", module: "/deposits", codeField: "code", titleField: "partnerName", branchField: "branchCode" },
-  { model: "DebtRecord", label: "Công nợ", module: "/debts", codeField: "code", titleField: "partnerName", branchField: "branchCode" },
-  { model: "MoneyTransfer", label: "Chuyển tiền nội bộ", module: "/finance-operations", codeField: "code", titleField: "description", branchField: "branchCode" },
-  { model: "CashbookAdjustment", label: "Điều chỉnh sổ quỹ", module: "/finance-operations", codeField: "code", titleField: "description", branchField: "branchCode" },
-  { model: "Accrual", label: "Chi phí trả trước", module: "/finance-operations", codeField: "code", titleField: "name", branchField: "branchCode" },
-  { model: "OpeningBalance", label: "Số dư đầu kỳ", module: "/opening-balances", codeField: "objectCode", titleField: "objectName", branchField: "branchCode" },
+  { model: "FinancialVoucher", label: "Phiếu thu/chi", module: "/vouchers", codeField: "code", titleField: "description", branchField: "branchCode", dateField: "voucherDate" },
+  { model: "Deposit", label: "Tiền cọc", module: "/deposits", codeField: "code", titleField: "partnerName", branchField: "branchCode", dateField: "receivedDate" },
+  { model: "DebtRecord", label: "Công nợ", module: "/debts", codeField: "code", titleField: "partnerName", branchField: "branchCode", dateField: "documentDate" },
+  { model: "MoneyTransfer", label: "Chuyển tiền nội bộ", module: "/finance-operations", codeField: "code", titleField: "description", branchField: "branchCode", dateField: "transferDate" },
+  { model: "CashbookAdjustment", label: "Điều chỉnh sổ quỹ", module: "/finance-operations", codeField: "code", titleField: "description", branchField: "branchCode", dateField: "entryDate" },
+  { model: "Accrual", label: "Chi phí trả trước", module: "/finance-operations", codeField: "code", titleField: "name", branchField: "branchCode", periodField: "startPeriod" },
+  { model: "OpeningBalance", label: "Số dư đầu kỳ", module: "/opening-balances", codeField: "objectCode", titleField: "objectName", branchField: "branchCode", periodField: "period" },
 
   {
     model: "InventoryItem", label: "Hàng hoá / Nguyên vật liệu", module: "/inventory", codeField: "code", titleField: "name",
     cascade: [{ model: "ItemUnitConversion", foreignKey: "itemId" }],
   },
-  { model: "InventoryTransaction", label: "Phiếu nhập/xuất kho", module: "/inventory", codeField: "code", titleField: "note", branchField: "branchCode" },
-  { model: "StocktakeSession", label: "Phiếu kiểm kê", module: "/inventory", codeField: "code", titleField: "note", branchField: "branchCode" },
+  { model: "InventoryTransaction", label: "Phiếu nhập/xuất kho", module: "/inventory", codeField: "code", titleField: "note", branchField: "branchCode", dateField: "transactionDate" },
+  { model: "StocktakeSession", label: "Phiếu kiểm kê", module: "/inventory", codeField: "code", titleField: "note", branchField: "branchCode", dateField: "stocktakeDate" },
   { model: "Recipe", label: "Định mức (BOM)", module: "/inventory", codeField: "code", titleField: "productName" },
 
   { model: "PurchaseRequestTemplate", label: "Mẫu yêu cầu mua hàng", module: "/procurement", codeField: "code", titleField: "name", branchField: "branchCode" },
@@ -47,7 +53,7 @@ export const TRASH_ENTITIES: TrashEntity[] = [
   { model: "SupplierQuote", label: "Báo giá nhà cung cấp", module: "/procurement", codeField: "supplierCode", titleField: "supplierName" },
 
   {
-    model: "AssetRecord", label: "Tài sản", module: "/assets", codeField: "code", titleField: "name", branchField: "branchCode",
+    model: "AssetRecord", label: "Tài sản", module: "/assets", codeField: "code", titleField: "name", branchField: "branchCode", dateField: "purchaseDate",
     cascade: [
       { model: "AssetMaintenance", foreignKey: "assetId" },
       { model: "AssetDamageReport", foreignKey: "assetId" },
@@ -58,7 +64,7 @@ export const TRASH_ENTITIES: TrashEntity[] = [
 
   { model: "MasterDataItem", label: "Danh mục", module: "/settings", codeField: "code", titleField: "name", branchField: "branch" },
   { model: "AccountingAccount", label: "Tài khoản kế toán", module: "/accounting", codeField: "code", titleField: "name" },
-  { model: "JournalEntry", label: "Bút toán", module: "/accounting", codeField: "code", titleField: "description", branchField: "branchCode" },
+  { model: "JournalEntry", label: "Bút toán", module: "/accounting", codeField: "code", titleField: "description", branchField: "branchCode", dateField: "entryDate" },
   { model: "PostingRule", label: "Quy tắc hạch toán", module: "/accounting", codeField: "ruleCode", titleField: "name" },
 
   {
@@ -78,13 +84,13 @@ export const TRASH_ENTITIES: TrashEntity[] = [
 
   { model: "ImportBatch", label: "Lô import", module: "/imports", codeField: "templateCode", titleField: "fileName", branchField: "branchCode" },
   {
-    model: "BankStatementTransaction", label: "Giao dịch sao kê", module: "/imports", codeField: "transactionCode", titleField: "description", branchField: "branchCode",
+    model: "BankStatementTransaction", label: "Giao dịch sao kê", module: "/imports", codeField: "transactionCode", titleField: "description", branchField: "branchCode", dateField: "transactionDate",
     // Xoá giao dịch sao kê thì các cặp đối soát trỏ vào nó cũng phải ẩn theo,
     // nếu không màn hình Đối soát sẽ còn lại những cặp mồ côi.
     cascade: [{ model: "ReconciliationMatch", foreignKey: "bankTransactionId" }],
   },
-  { model: "RevenueImportRow", label: "Dòng doanh thu", module: "/imports", codeField: "externalRef", titleField: "revenueSource", branchField: "branchCode" },
-  { model: "PayrollImportRow", label: "Dòng lương", module: "/imports", codeField: "employeeCode", titleField: "employeeName", branchField: "branchCode" },
+  { model: "RevenueImportRow", label: "Dòng doanh thu", module: "/imports", codeField: "externalRef", titleField: "revenueSource", branchField: "branchCode", dateField: "saleDate" },
+  { model: "PayrollImportRow", label: "Dòng lương", module: "/imports", codeField: "employeeCode", titleField: "employeeName", branchField: "branchCode", periodField: "period" },
   { model: "ReconciliationMatch", label: "Cặp đối soát", module: "/reconciliations", codeField: "targetCode", titleField: "note" },
 ];
 
@@ -141,6 +147,26 @@ function assertKnownModel(model: string) {
   }
 }
 
+/**
+ * Luật khoá sổ cho màn Thùng rác.
+ *
+ * Xoá và khôi phục ở đây chạm thẳng vào bảng, không đi qua route nghiệp vụ, nên trước đây là
+ * đường vòng duy nhất còn sửa được số của kỳ đã chốt sổ: phiếu chi tháng trước xoá được từ
+ * Thùng rác dù màn Phiếu chi đã chặn. Khôi phục cũng chặn — dựng lại một chứng từ vào kỳ đã
+ * chốt cũng là làm đổi số của kỳ đó.
+ */
+async function assertTrashPeriodOpen(entity: TrashEntity | undefined, row: Record<string, unknown>, what: string) {
+  if (!entity || (!entity.dateField && !entity.periodField)) return;
+  const rawDate = entity.dateField ? row[entity.dateField] : null;
+  const closed = await findClosedPeriod({
+    date: rawDate instanceof Date ? rawDate : rawDate ? new Date(String(rawDate)) : null,
+    period: entity.periodField ? fieldText(row, entity.periodField) : null,
+    branchCode: fieldText(row, entity.branchField),
+  });
+  if (!closed) return;
+  throw new SoftDeleteError(closedPeriodMessage(closed, `${what} ${entity.label.toLowerCase()} này`), 400);
+}
+
 type ActionInput = {
   model: string;
   id: string;
@@ -161,6 +187,7 @@ export async function softDeleteRecord({ model, id, session, reason }: ActionInp
   const current = await delegate.findUnique({ where: { id } });
   if (!current) throw new SoftDeleteError("Không tìm thấy bản ghi cần xoá", 404);
   if (current.deletedAt) throw new SoftDeleteError("Bản ghi này đã bị xoá trước đó", 400);
+  await assertTrashPeriodOpen(entity, current, "xoá");
 
   const deletedAt = new Date();
   const deletedBy = session?.name || session?.email || null;
@@ -202,6 +229,7 @@ export async function restoreRecord({ model, id, session }: ActionInput) {
   const current = await delegate.findUnique({ where: { id } });
   if (!current) throw new SoftDeleteError("Không tìm thấy bản ghi cần khôi phục", 404);
   if (!current.deletedAt) throw new SoftDeleteError("Bản ghi này đang hoạt động, không cần khôi phục", 400);
+  await assertTrashPeriodOpen(entity, current, "khôi phục");
 
   await prismaRaw.$transaction(async (tx) => {
     const txDelegate = (tx as unknown as Record<string, DynamicDelegate>)[clientKey(model)];

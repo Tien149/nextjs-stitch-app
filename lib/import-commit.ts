@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { Prisma } from "@prisma/custom-client";
 import { prisma, prismaRaw, type RawTxClient, type TxClient } from "@/lib/prisma";
-import { addPeriod, isPeriodLocked, periodFromDate } from "@/lib/phase3";
+import { addPeriod, assertPeriodOpen as assertAccountingPeriodOpen, isPeriodLocked, periodFromDate } from "@/lib/phase3";
 import { ensureDefaultAccounts } from "@/lib/accounting";
 import { isMasterDataImportType, normalizeHeader, type ImportType } from "@/lib/import-templates";
 import { parseImportDate, type ParsedImportRow } from "@/lib/import-parser";
@@ -170,19 +170,23 @@ function parseStoredJson(value: string | null) {
   }
 }
 
+/** Luật khoá sổ dùng chung (lib/phase3), chỉ đổi lại câu động từ cho đúng ngữ cảnh import. */
 async function assertPeriodOpen(
   tx: RawTxClient,
   period: string,
   branchCode?: string | null,
   action: "commit" | "rollback" = "rollback",
 ) {
-  if (!period || !branchCode) return;
-  const [branchPeriod, allBranchPeriod] = await Promise.all([
-    tx.accountingPeriod.findUnique({ where: { period_branchCode: { period, branchCode } } }),
-    tx.accountingPeriod.findUnique({ where: { period_branchCode: { period, branchCode: "ALL" } } }),
-  ]);
-  if (branchPeriod?.status === "CLOSED" || allBranchPeriod?.status === "CLOSED") {
-    throw new Error(`Kỳ ${period} của cửa hàng ${branchCode} đã khóa, không thể ${action} batch import`);
+  try {
+    await assertAccountingPeriodOpen(
+      { period, branchCode },
+      action === "commit" ? "ghi lô import" : "huỷ lô import",
+      tx,
+    );
+  } catch (error) {
+    // Các route import trả thẳng `error.message` cho người dùng chứ không đi qua `apiError`,
+    // nên phải bóc tiền tố BUSINESS: ở đây, kẻo câu báo lỗi lộ ra ở dạng thô.
+    throw new Error(error instanceof Error ? error.message.replace(/^BUSINESS:/, "") : String(error));
   }
 }
 

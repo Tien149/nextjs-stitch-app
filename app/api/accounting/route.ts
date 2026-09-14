@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { ensureDefaultAccounts, periodBounds, postJournalEntry, requestedBranch, syncAccountingPeriod } from "@/lib/accounting";
 import { prisma } from "@/lib/prisma";
-import { apiError, businessError, cleanText, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
+import { apiError, assertPeriodOpen, businessError, cleanText, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
 import { moneySourceAccountCode, moneySourceMatchesBranch } from "@/lib/money-sources";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 
@@ -61,6 +61,10 @@ export async function POST(request: Request) {
     if (action === "CREATE_MANUAL") {
       const entryDate = toDate(body.entryDate);
       const branchCode = requestedBranch(auth.session, cleanText(body.branchCode));
+      // `postJournalEntry` gặp kỳ khoá thì trả "SKIPPED_LOCKED" và đi tiếp — đúng cho nút Đồng
+      // bộ ghi sổ hàng loạt, nhưng ở đây là người dùng lập tay một bút toán: im lặng bỏ qua
+      // thì màn hình báo tạo thành công trong khi sổ cái không có gì. Chặn thẳng từ đầu.
+      await assertPeriodOpen({ date: entryDate, branchCode }, "lập bút toán tay");
       const description = cleanText(body.description) || "Bút toán điều chỉnh";
       const sourceId = crypto.randomUUID();
 
