@@ -19,6 +19,7 @@ import BudgetTab, { type BudgetData } from "@/components/reports/BudgetTab";
 import FinancialPlanningWorkspace from "@/components/reports/planning/FinancialPlanningWorkspace";
 import RevenueTrendTab from "@/components/reports/RevenueTrendTab";
 import { statValueTextClass } from "@/components/reports/report-ui";
+import { isRevenueGroupCategory } from "@/lib/voucher-rules";
 
 type Pnl = {
   revenue: number;
@@ -161,6 +162,7 @@ type RevenueSettlementData = {
   rows: RevenueSettlementRow[];
   totals: { revenue: number; received: number; remaining: number; waiting: number; fee: number; over: number };
 };
+type MasterDataOption = { id: string; type: string; code: string; name: string; group: string | null; branch: string | null };
 type RevenueLedgerRow = {
   date: string;
   channel: string;
@@ -277,6 +279,8 @@ export default function ReportsPage() {
   const canConfigure = user ? canPerformMenuAction(user, href, "create") : false;
   const canCreateCashDeposit = user ? canCreateCashDepositSlip(user) : false;
   const canEnterManualRevenue = user ? canPerformMenuAction(user, href, "create") : false;
+  // Sửa phân loại dòng doanh thu đã import (Sổ doanh thu) — sửa số cũ nên đi theo quyền edit.
+  const canEditRevenueRow = user ? canPerformMenuAction(user, href, "edit") : false;
   const canAdminPeriod = user?.role === "Admin";
 
   useEffect(() => {
@@ -1135,7 +1139,7 @@ export default function ReportsPage() {
         </div>
       )}
 
-      {!tabLoading && ledger && <RevenueLedgerPanel data={ledger} branchCode={branchCode} />}
+      {!tabLoading && ledger && <RevenueLedgerPanel data={ledger} branchCode={branchCode} moneySources={moneySources} canEdit={canEditRevenueRow} onSaved={() => void loadData()} />}
 
       {!tabLoading && dailyCash && (
         <div className="space-y-5 report-print-area" id="daily-cash-report">
@@ -2186,10 +2190,64 @@ function RevenueComparison({ current, previous }: { current: number; previous: n
  * Chi tiết nạp riêng lúc bấm chứ không gửi kèm bảng tổng — doanh thu POS có thể tới hàng chục
  * nghìn dòng mỗi năm. Đã nạp rồi thì giữ lại, bấm đóng mở lại không gọi mạng lần nữa.
  */
-function RevenueLedgerPanel({ data, branchCode }: { data: RevenueLedgerData; branchCode: string }) {
+function RevenueLedgerPanel({ data, branchCode, moneySources, canEdit, onSaved }: {
+  data: RevenueLedgerData;
+  branchCode: string;
+  moneySources: MoneySourceOption[];
+  canEdit: boolean;
+  onSaved: () => void;
+}) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [details, setDetails] = useState<Record<string, RevenueLedgerDetailRow[]>>({});
   const [loadingKey, setLoadingKey] = useState<string | null>(null);
+  const [revenueCategories, setRevenueCategories] = useState<MasterDataOption[]>([]);
+  const [savingRowId, setSavingRowId] = useState<string | null>(null);
+  const [rowError, setRowError] = useState<string | null>(null);
+
+  // Danh mục Nguồn doanh thu chỉ cần cho ô sửa nên nạp ngay trong panel, không kéo thêm một
+  // lượt tải vào những tab không dùng tới.
+  useEffect(() => {
+    if (!canEdit) return;
+    let alive = true;
+    void (async () => {
+      const response = await fetch("/api/master-data?type=REVENUE_EXPENSE_CATEGORY&status=ACTIVE");
+      if (!response.ok || !alive) return;
+      const payload = (await response.json()) as MasterDataOption[];
+      if (alive) setRevenueCategories(payload.filter((item) => isRevenueGroupCategory(item.group)));
+    })();
+    return () => { alive = false; };
+  }, [canEdit]);
+
+  /**
+   * Lưu lại phân loại của một dòng hoá đơn rồi tải lại cả bảng: đổi Nguồn doanh thu hay Nguồn
+   * tiền là đổi luôn số tổng của ngày đó, giữ nguyên bảng cũ sẽ cho người dùng nhìn số sai.
+   */
+  const saveRow = async (detail: RevenueLedgerDetailRow, patch: { revenueSource?: string; paymentMethod?: string }) => {
+    setSavingRowId(detail.id);
+    setRowError(null);
+    try {
+      const response = await fetch("/api/reports", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "UPDATE_REVENUE_ROW", id: detail.id, ...patch }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setRowError(payload.error || "Không sửa được dòng doanh thu");
+        return;
+      }
+      setDetails((current) => {
+        const next: Record<string, RevenueLedgerDetailRow[]> = {};
+        for (const [key, rows] of Object.entries(current)) {
+          next[key] = rows.map((row) => (row.id === detail.id ? { ...row, ...patch } : row));
+        }
+        return next;
+      });
+      onSaved();
+    } finally {
+      setSavingRowId(null);
+    }
+  };
 
   const dayLabel = (value: string) => new Date(`${value}T00:00:00Z`).toLocaleDateString("vi-VN", { timeZone: "UTC" });
 
@@ -2231,7 +2289,7 @@ function RevenueLedgerPanel({ data, branchCode }: { data: RevenueLedgerData; bra
       <section className="table-panel">
         <PanelHeader
           title="Sổ doanh thu"
-          subtitle={`Từ ${dayLabel(data.dateFrom)} đến ${dayLabel(data.dateTo)}. Mỗi ngày bán tách sẵn theo từng kênh bán, lấy thẳng từ file import POS — cùng nguồn với dòng Doanh thu của P&L. Bấm vào một dòng để xem từng hoá đơn của ngày đó.`}
+          subtitle={`Từ ${dayLabel(data.dateFrom)} đến ${dayLabel(data.dateTo)}. Mỗi ngày bán tách sẵn theo từng kênh bán, lấy thẳng từ file import POS — cùng nguồn với dòng Doanh thu của P&L. Bấm vào một dòng để xem từng hoá đơn của ngày đó${canEdit ? ", và sửa lại Nguồn doanh thu / Nguồn tiền nếu file khai nhầm" : ""}.`}
           exportFileName="so_doanh_thu"
         />
         <Table headers={["Ngày", "Kênh bán", "Hoá đơn", "Doanh thu gộp", "Giảm giá", "VAT", "Phụ thu SVC", "Phí thẻ", "Phí app", "Doanh thu thuần", "Cùng kỳ tháng trước"]}>
@@ -2274,6 +2332,7 @@ function RevenueLedgerPanel({ data, branchCode }: { data: RevenueLedgerData; bra
                 // khỏi file xuất để bản Excel đúng bằng bảng tổng người dùng đang nhìn.
                 <tr key={`${key}-detail`} data-no-export className="border-t border-slate-100 bg-slate-50/60">
                   <td colSpan={11} className="px-4 py-3">
+                    {rowError && <p className="mb-2 rounded border border-rose-200 bg-rose-50 px-2 py-1.5 text-xs font-bold text-rose-700">{rowError}</p>}
                     {loadingKey === key ? (
                       <p className="text-xs text-slate-500">Đang tải chi tiết...</p>
                     ) : detailRows.length === 0 ? (
@@ -2292,8 +2351,44 @@ function RevenueLedgerPanel({ data, branchCode }: { data: RevenueLedgerData; bra
                             {detailRows.map((detail) => (
                               <tr key={detail.id} className="border-t border-slate-200/70">
                                 <td className="px-2 py-1.5 font-bold whitespace-nowrap">{detail.externalRef}</td>
-                                <td className="px-2 py-1.5 whitespace-nowrap">{detail.revenueSource}</td>
-                                <td className="px-2 py-1.5 whitespace-nowrap">{detail.paymentMethod}</td>
+                                <td className="px-2 py-1.5 whitespace-nowrap">
+                                  {canEdit ? (
+                                    <select
+                                      className="rounded border border-slate-300 bg-white px-1.5 py-1 text-xs disabled:opacity-50"
+                                      value={detail.revenueSource}
+                                      disabled={savingRowId === detail.id}
+                                      onChange={(event) => void saveRow(detail, { revenueSource: event.target.value })}
+                                      title="Chọn lại nhóm doanh thu nếu file import khai nhầm"
+                                    >
+                                      {/* Giá trị cũ do file để lại có thể không nằm trong danh mục — giữ lại
+                                          làm một lựa chọn để ô không tự nhảy sang mã khác khi mở ra. */}
+                                      {!revenueCategories.some((item) => item.code === detail.revenueSource) && (
+                                        <option value={detail.revenueSource}>{detail.revenueSource} (ngoài danh mục)</option>
+                                      )}
+                                      {revenueCategories.map((item) => (
+                                        <option key={item.id} value={item.code}>[{item.code}] {item.name}</option>
+                                      ))}
+                                    </select>
+                                  ) : detail.revenueSource}
+                                </td>
+                                <td className="px-2 py-1.5 whitespace-nowrap">
+                                  {canEdit ? (
+                                    <select
+                                      className="rounded border border-slate-300 bg-white px-1.5 py-1 text-xs disabled:opacity-50"
+                                      value={detail.paymentMethod}
+                                      disabled={savingRowId === detail.id}
+                                      onChange={(event) => void saveRow(detail, { paymentMethod: event.target.value })}
+                                      title="Chọn lại nguồn tiền chi tiết nếu file import khai nhầm"
+                                    >
+                                      {!filterMoneySources(moneySources, detail.branchCode).some((item) => item.code === detail.paymentMethod) && (
+                                        <option value={detail.paymentMethod}>{detail.paymentMethod} (ngoài danh mục)</option>
+                                      )}
+                                      {filterMoneySources(moneySources, detail.branchCode).map((item) => (
+                                        <option key={item.id} value={item.code}>{moneySourceDisplayName(item, storeLabel(detail.branchCode))}</option>
+                                      ))}
+                                    </select>
+                                  ) : detail.paymentMethod}
+                                </td>
                                 <td className="px-2 py-1.5 whitespace-nowrap">{detail.departmentCode || "—"}</td>
                                 <td className="px-2 py-1.5 whitespace-nowrap">{detail.productCode || "—"}</td>
                                 <td className="px-2 py-1.5 text-right whitespace-nowrap">{detail.productQuantity ? money(detail.productQuantity) : "—"}</td>

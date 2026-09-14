@@ -1,17 +1,18 @@
 import { NextResponse } from "next/server";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { allowedMenuTabs, canViewFinancialDashboard } from "@/lib/auth-demo";
-import { requestedBranch } from "@/lib/accounting";
+import { assertBranchAccess, ensureRevenueComponentCategories, postJournalEntry, requestedBranch } from "@/lib/accounting";
 import { prisma } from "@/lib/prisma";
 import { createMoneySourceMatcher, getBalanceSheet, getCashSourceReport, getCashflowForecast, getPnl, getRevenueLedger, getRevenueLedgerDetail, getRevenueSettlementReport, getTrend, PNL_UNGROUPED_CODE } from "@/lib/reports";
 import { getPayrollBudgetReport, getPnlMatrix, getRevenueTrendReport } from "@/lib/report-budget";
-import { apiError, businessError, cleanText, isPeriodLocked, normalizePeriod, toNumber } from "@/lib/phase3";
+import { apiError, assertPeriodOpen, businessError, cleanText, isPeriodLocked, normalizePeriod, toNumber } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
-import { createCashierCashMatcher, moneySourceDisplayName, normalizeMoneySourceGroup } from "@/lib/money-sources";
+import { createCashierCashMatcher, moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { voucherMatchesShift } from "@/lib/shifts";
 import { summarizeDailyDepositHistories } from "@/lib/daily-deposit-report";
 import { emptyDailyCashBucket, summarizeDailyCashReceiptVouchers } from "@/lib/daily-cash-receipts";
-import { SALES_RECEIPT_CATEGORY_CODES } from "@/lib/voucher-rules";
+import { isRevenueGroupCategory, SALES_RECEIPT_CATEGORY_CODES } from "@/lib/voucher-rules";
+import { revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 
 const menuHref = "/reports";
 const restaurantSalesCategoryCodes = SALES_RECEIPT_CATEGORY_CODES;
@@ -1255,10 +1256,106 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const auth = requireMenuAction(request, menuHref, "create");
-    if (!auth.ok) return auth.response;
     const body = await request.json();
     const action = cleanText(body.action);
+    // Sửa phân loại một dòng doanh thu đã import là sửa số cũ, không phải lập số mới -> "edit".
+    const auth = requireMenuAction(request, menuHref, action === "UPDATE_REVENUE_ROW" ? "edit" : "create");
+    if (!auth.ok) return auth.response;
+
+    /**
+     * Sửa Nguồn doanh thu / Nguồn tiền chi tiết của một dòng doanh thu đã import.
+     *
+     * Hai cột này khai sai lúc import thì kéo theo cả chuỗi: Nguồn doanh thu là mã danh mục Thu
+     * gắn vào vế Có 511 nên P&L xếp doanh thu sai dòng; Nguồn tiền quyết định tài khoản tiền của
+     * vế Nợ và là căn cứ để báo cáo "Tiền về đủ chưa" ghép với sao kê. Trước đây sửa được chỉ
+     * bằng cách rollback cả lô import rồi nạp lại file — quá nặng cho một ô gõ nhầm.
+     *
+     * Sửa xong ghi lại luôn bút toán của chính dòng đó nếu kỳ đã đồng bộ sổ cái, để sổ cái
+     * không còn giữ cách phân loại cũ cho tới lần đồng bộ sau.
+     */
+    if (action === "UPDATE_REVENUE_ROW") {
+      const id = cleanText(body.id);
+      if (!id) businessError("Thiếu dòng doanh thu cần sửa");
+      const row = await prisma.revenueImportRow.findUnique({ where: { id } });
+      if (!row) businessError("Không tìm thấy dòng doanh thu");
+      assertBranchAccess(auth.session, row.branchCode);
+      await assertPeriodOpen({ date: row.saleDate, branchCode: row.branchCode }, "sửa dòng doanh thu");
+
+      const nextRevenueSource = body.revenueSource === undefined ? row.revenueSource : cleanText(body.revenueSource);
+      const nextPaymentMethod = body.paymentMethod === undefined ? row.paymentMethod : cleanText(body.paymentMethod);
+      if (!nextRevenueSource) businessError("Nguồn doanh thu không được để trống");
+      if (!nextPaymentMethod) businessError("Nguồn tiền không được để trống");
+
+      // Giá trị MỚI phải là mã có thật trong danh mục. Giá trị cũ do file import để lại có thể
+      // là chữ tự do ("CASH", "CARD") nên không đụng tới — chỉ chặn khi người dùng đổi sang mã
+      // khác, tránh bắt họ dọn dữ liệu lịch sử mới sửa được một ô.
+      if (nextRevenueSource !== row.revenueSource) {
+        const category = await prisma.masterDataItem.findFirst({
+          where: { type: "REVENUE_EXPENSE_CATEGORY", code: nextRevenueSource, status: "ACTIVE" },
+          select: { code: true, name: true, group: true },
+        });
+        if (!category) businessError(`Nguồn doanh thu [${nextRevenueSource}] không có trong danh mục hoặc đã ngưng hoạt động`);
+        if (!isRevenueGroupCategory(category.group)) {
+          businessError(`Danh mục ${category.name} không phải nhóm doanh thu. Khai lại ở Cấu hình Danh mục > Thu/Chi với nhóm "Thu: Nhóm doanh thu (bán hàng)" rồi chọn.`);
+        }
+      }
+      if (nextPaymentMethod !== row.paymentMethod) {
+        const source = await prisma.masterDataItem.findFirst({
+          where: { type: "MONEY_SOURCE", code: nextPaymentMethod, status: "ACTIVE" },
+          select: { code: true, name: true, branch: true, group: true },
+        });
+        if (!source) businessError(`Nguồn tiền [${nextPaymentMethod}] không có trong danh mục hoặc đã ngưng hoạt động`);
+        if (!moneySourceMatchesBranch(source, row.branchCode)) {
+          businessError(`Nguồn tiền ${source.name} không thuộc cửa hàng ${row.branchCode}`);
+        }
+      }
+
+      const updated = await prisma.revenueImportRow.update({
+        where: { id },
+        data: { revenueSource: nextRevenueSource, paymentMethod: nextPaymentMethod },
+      });
+
+      // Chỉ ghi lại bút toán nếu dòng này ĐÃ lên sổ cái. Chưa đồng bộ thì không tự tạo bút toán
+      // mới ở đây — để nút Đồng bộ ghi sổ làm đúng lượt của nó.
+      const posted = await prisma.journalEntry.findUnique({
+        where: { sourceType_sourceId: { sourceType: "REVENUE_POS", sourceId: id } },
+        select: { id: true },
+      });
+      let journalStatus: string | null = null;
+      if (posted) {
+        await ensureRevenueComponentCategories();
+        const lines = revenuePosJournalLines(updated);
+        journalStatus = lines.some((line) => (line.debit || 0) > 0)
+          ? await postJournalEntry({
+            entryDate: updated.saleDate,
+            branchCode: updated.branchCode,
+            sourceType: "REVENUE_POS",
+            sourceId: updated.id,
+            sourceCode: updated.externalRef,
+            description: `Doanh thu ${updated.externalRef}`,
+            createdBy: auth.session.name,
+            lines,
+          })
+          : "SKIPPED_ZERO";
+      }
+
+      await writeAuditLog({
+        session: auth.session,
+        module: menuHref,
+        action: "UPDATE_REVENUE_ROW",
+        entityType: "RevenueImportRow",
+        entityId: id,
+        entityCode: updated.externalRef,
+        branchCode: updated.branchCode,
+        metadata: {
+          before: { revenueSource: row.revenueSource, paymentMethod: row.paymentMethod },
+          after: { revenueSource: updated.revenueSource, paymentMethod: updated.paymentMethod },
+          journalStatus,
+        },
+      });
+      return NextResponse.json({ ...updated, journalStatus });
+    }
+
     const period = normalizePeriod(body.period);
     const branchCode = requestedBranch(auth.session, cleanText(body.branchCode));
     if (!period || !branchCode) businessError("Thiếu kỳ hoặc chi nhánh");
