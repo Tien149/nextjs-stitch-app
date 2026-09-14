@@ -161,10 +161,53 @@ type RevenueSettlementData = {
   rows: RevenueSettlementRow[];
   totals: { revenue: number; received: number; remaining: number; waiting: number; fee: number; over: number };
 };
+type RevenueLedgerRow = {
+  date: string;
+  channel: string;
+  orderCount: number;
+  grossAmount: number;
+  discountAmount: number;
+  vatAmount: number;
+  serviceAmount: number;
+  cardFeeAmount: number;
+  appFeeAmount: number;
+  netAmount: number;
+  lineCount: number;
+};
+type RevenueLedgerDetailRow = {
+  id: string;
+  saleDate: string;
+  branchCode: string;
+  channel: string;
+  revenueSource: string;
+  paymentMethod: string;
+  externalRef: string;
+  productCode: string | null;
+  productQuantity: number | null;
+  departmentCode: string | null;
+  orderCount: number | null;
+  grossAmount: number;
+  discountAmount: number;
+  vatAmount: number;
+  serviceAmount: number;
+  cardFeeAmount: number;
+  appFeeAmount: number;
+  netAmount: number;
+};
+type RevenueLedgerData = {
+  period: string;
+  branchCode: string;
+  dateFrom: string;
+  dateTo: string;
+  channel: string;
+  channels: string[];
+  rows: RevenueLedgerRow[];
+  totals: Omit<RevenueLedgerRow, "date" | "channel">;
+};
 type ActivityLog = { id: string; time: string; module: string; action: string; actor: string; branchCode: string; code: string; note: string };
 type AccountingPeriodStatus = { period: string; branchCode: string; status: string; closedBy: string | null; closedAt: string | null; reopenedBy: string | null; reopenedAt: string | null; reason: string | null };
 type ActivityData = { accountingPeriod: AccountingPeriodStatus; periods: AccountingPeriodStatus[]; logs: ActivityLog[] };
-type ReportData = DashboardData | PnlData | YoyData | CashflowData | BalanceData | OperationsData | BudgetData | DailyCashData | ActivityData | CashSourceData | RevenueSettlementData;
+type ReportData = DashboardData | PnlData | YoyData | CashflowData | BalanceData | OperationsData | BudgetData | DailyCashData | ActivityData | CashSourceData | RevenueSettlementData | RevenueLedgerData;
 type CashDepositDenomination = { denomination: number; quantity: string };
 type CashDepositForm = { depositTargetType: "PKT" | "CO"; fromMoneySourceCode: string; toMoneySourceCode: string; denominations: CashDepositDenomination[] };
 
@@ -206,6 +249,10 @@ export default function ReportsPage() {
   const [branchCode, setBranchCode] = useState("ALL");
   const [scenario, setScenario] = useState("BASE");
   const [cashSourceView, setCashSourceView] = useState<"month" | "year">("month");
+  // Sổ doanh thu: để trống khoảng ngày = lấy trọn tháng đang chọn, giống mọi tab khác.
+  const [ledgerFrom, setLedgerFrom] = useState("");
+  const [ledgerTo, setLedgerTo] = useState("");
+  const [ledgerChannel, setLedgerChannel] = useState("");
   const [data, setData] = useState<ReportData | null>(null);
   const [tabLoading, setTabLoading] = useState(false);
   const [message, setMessage] = useState("");
@@ -258,6 +305,11 @@ export default function ReportsPage() {
         params.set("shift", shift);
       }
       if (active === "cash-source") params.set("view", cashSourceView);
+      if (active === "revenue-ledger") {
+        if (ledgerFrom) params.set("dateFrom", ledgerFrom);
+        if (ledgerTo) params.set("dateTo", ledgerTo);
+        if (ledgerChannel) params.set("channel", ledgerChannel);
+      }
       // Tab Tiền về đủ chưa mang thêm bảng "Đối chiếu tiền vào đã đủ chưa" (chuyển từ tab
       // Thu chi ngày sang) — bảng đó tính theo ngày/ca nên nạp kèm báo cáo thu chi ngày.
       const reconPromise = active === "revenue-settlement"
@@ -277,7 +329,7 @@ export default function ReportsPage() {
     } finally {
       setTabLoading(false);
     }
-  }, [active, branchCode, cashSourceView, period, reportDate, scenario, shift]);
+  }, [active, branchCode, cashSourceView, ledgerChannel, ledgerFrom, ledgerTo, period, reportDate, scenario, shift]);
 
   const loadMoneySources = useCallback(async () => {
     const response = await fetch("/api/master-data?type=MONEY_SOURCE&status=ACTIVE");
@@ -346,6 +398,7 @@ export default function ReportsPage() {
   const activity = active === "activity" && data && typeof data === "object" && "periods" in data ? (data as ActivityData) : null;
   const cashSource = active === "cash-source" && data && typeof data === "object" && "totals" in data && "income" in data ? (data as CashSourceData) : null;
   const settlement = active === "revenue-settlement" && data && typeof data === "object" && "rows" in data && "totals" in data && !("income" in data) ? (data as RevenueSettlementData) : null;
+  const ledger = active === "revenue-ledger" && data && typeof data === "object" && "rows" in data && "channels" in data ? (data as RevenueLedgerData) : null;
   const payrollBudget = active === "payroll-budget" && data && typeof data === "object" && "standard" in data && "headcount" in data ? (data as unknown as PayrollBudgetData) : null;
 
   const operationRows = useMemo(() => {
@@ -703,6 +756,31 @@ export default function ReportsPage() {
             </Field>
           </>
         )}
+        {active === "revenue-ledger" && (
+          <>
+            <Field label="Từ ngày">
+              <DateInput className="mt-1.5 w-40" value={ledgerFrom} onChange={setLedgerFrom} ariaLabel="Doanh thu từ ngày" />
+            </Field>
+            <Field label="Đến ngày">
+              <DateInput className="mt-1.5 w-40" value={ledgerTo} onChange={setLedgerTo} ariaLabel="Doanh thu đến ngày" />
+            </Field>
+            <Field label="Kênh bán">
+              <select className="control w-44" value={ledgerChannel} onChange={(event) => setLedgerChannel(event.target.value)}>
+                <option value="">Tất cả kênh</option>
+                {ledger?.channels.map((name) => <option key={name} value={name}>{name}</option>)}
+              </select>
+            </Field>
+            {(ledgerFrom || ledgerTo || ledgerChannel) && (
+              <button
+                type="button"
+                className="self-end rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50"
+                onClick={() => { setLedgerFrom(""); setLedgerTo(""); setLedgerChannel(""); }}
+              >
+                Bỏ lọc
+              </button>
+            )}
+          </>
+        )}
         <button type="button" className="icon-button" title="Tải lại số liệu và danh mục nguồn tiền — sửa Nguồn tiền tổng bên Cấu hình xong bấm nút này là thấy ngay, không cần đăng nhập lại" onClick={() => { void loadData(); void loadMoneySources(); }}>
           <span className="material-symbols-outlined text-lg">refresh</span>
         </button>
@@ -1055,6 +1133,8 @@ export default function ReportsPage() {
           <RevenueSettlementPanel data={settlement} />
         </div>
       )}
+
+      {!tabLoading && ledger && <RevenueLedgerPanel data={ledger} branchCode={branchCode} />}
 
       {!tabLoading && dailyCash && (
         <div className="space-y-5 report-print-area" id="daily-cash-report">
@@ -2068,6 +2148,160 @@ function MoneyInReconciliationPanel({ dailyCash, showContextLine }: { dailyCash:
         </section>
       )}
     </>
+  );
+}
+
+/**
+ * Sổ doanh thu: mỗi ngày bán tách sẵn theo từng kênh, bấm vào dòng thì xoè ra từng dòng hoá đơn.
+ *
+ * Chi tiết nạp riêng lúc bấm chứ không gửi kèm bảng tổng — doanh thu POS có thể tới hàng chục
+ * nghìn dòng mỗi năm. Đã nạp rồi thì giữ lại, bấm đóng mở lại không gọi mạng lần nữa.
+ */
+function RevenueLedgerPanel({ data, branchCode }: { data: RevenueLedgerData; branchCode: string }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [details, setDetails] = useState<Record<string, RevenueLedgerDetailRow[]>>({});
+  const [loadingKey, setLoadingKey] = useState<string | null>(null);
+
+  const dayLabel = (value: string) => new Date(`${value}T00:00:00Z`).toLocaleDateString("vi-VN", { timeZone: "UTC" });
+
+  const toggleRow = async (row: RevenueLedgerRow) => {
+    const key = `${row.date}|${row.channel}`;
+    if (expanded === key) {
+      setExpanded(null);
+      return;
+    }
+    setExpanded(key);
+    if (details[key]) return;
+    setLoadingKey(key);
+    try {
+      const params = new URLSearchParams({ type: "revenue-ledger-detail", date: row.date, branchCode, channel: row.channel });
+      const response = await fetch(`/api/reports?${params.toString()}`);
+      if (response.ok) {
+        const payload = (await response.json()) as { rows: RevenueLedgerDetailRow[] };
+        setDetails((current) => ({ ...current, [key]: payload.rows }));
+      }
+    } finally {
+      setLoadingKey(null);
+    }
+  };
+
+  // Cột tổng cuối bảng và nhóm ngày: mỗi ngày hiện tên ngày ở dòng kênh đầu tiên rồi thôi,
+  // đọc dọc xuống không bị lặp lại ngày ở từng dòng như bảng thô.
+  const byDay = new Map<string, RevenueLedgerRow[]>();
+  for (const row of data.rows) byDay.set(row.date, [...(byDay.get(row.date) || []), row]);
+
+  return (
+    <div className="space-y-5">
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Kpi label="Doanh thu thuần" value={data.totals.netAmount} icon="point_of_sale" tone="green" />
+        <Kpi label="Doanh thu gộp" value={data.totals.grossAmount} icon="receipt_long" />
+        <Kpi label="Giảm giá" value={data.totals.discountAmount} icon="sell" tone="amber" />
+        <Kpi label="Phí thẻ + phí app" value={data.totals.cardFeeAmount + data.totals.appFeeAmount} icon="percent" tone="rose" />
+      </section>
+
+      <section className="table-panel">
+        <PanelHeader
+          title="Sổ doanh thu"
+          subtitle={`Từ ${dayLabel(data.dateFrom)} đến ${dayLabel(data.dateTo)}. Mỗi ngày bán tách sẵn theo từng kênh bán, lấy thẳng từ file import POS — cùng nguồn với dòng Doanh thu của P&L. Bấm vào một dòng để xem từng hoá đơn của ngày đó.`}
+          exportFileName="so_doanh_thu"
+        />
+        <Table headers={["Ngày", "Kênh bán", "Hoá đơn", "Doanh thu gộp", "Giảm giá", "VAT", "Phụ thu SVC", "Phí thẻ", "Phí app", "Doanh thu thuần"]}>
+          {data.rows.length === 0 && (
+            <tr className="border-t border-slate-100">
+              <Cell>Chưa có doanh thu nào trong khoảng ngày này.</Cell>
+              <Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell>
+            </tr>
+          )}
+          {[...byDay.entries()].flatMap(([day, rows]) => rows.flatMap((row, index) => {
+            const key = `${row.date}|${row.channel}`;
+            const isOpen = expanded === key;
+            const detailRows = details[key] || [];
+            return [
+              <tr
+                key={key}
+                onClick={() => void toggleRow(row)}
+                className={`cursor-pointer border-t hover:bg-slate-50 ${index === 0 ? "border-t-slate-200" : "border-t-slate-100"} ${isOpen ? "bg-blue-50/60" : ""}`}
+              >
+                <Cell>{index === 0 ? <b>{dayLabel(day)}</b> : <span className="text-slate-300">·</span>}</Cell>
+                <Cell>
+                  <span className="inline-flex items-center gap-1">
+                    <span className={`material-symbols-outlined text-sm text-slate-400 transition-transform ${isOpen ? "rotate-90" : ""}`}>chevron_right</span>
+                    <b>{row.channel}</b>
+                  </span>
+                </Cell>
+                <Cell right>{row.orderCount > 0 ? money(row.orderCount) : <span className="text-slate-300">—</span>}</Cell>
+                <Cell right>{money(row.grossAmount)}</Cell>
+                <Cell right>{row.discountAmount ? <span className="text-amber-700">{money(row.discountAmount)}</span> : <span className="text-slate-300">—</span>}</Cell>
+                <Cell right>{row.vatAmount ? money(row.vatAmount) : <span className="text-slate-300">—</span>}</Cell>
+                <Cell right>{row.serviceAmount ? money(row.serviceAmount) : <span className="text-slate-300">—</span>}</Cell>
+                <Cell right>{row.cardFeeAmount ? <span className="text-rose-600">{money(row.cardFeeAmount)}</span> : <span className="text-slate-300">—</span>}</Cell>
+                <Cell right>{row.appFeeAmount ? <span className="text-rose-600">{money(row.appFeeAmount)}</span> : <span className="text-slate-300">—</span>}</Cell>
+                <Cell right><b className="text-emerald-700">{money(row.netAmount)}</b></Cell>
+              </tr>,
+              ...(isOpen ? [(
+                // data-no-export: Xuất Excel đọc thẳng DOM, mà cả bảng chi tiết nằm gọn trong
+                // một ô colSpan nên sẽ bị dồn thành một chuỗi chữ dài vô nghĩa. Bỏ dòng xoè ra
+                // khỏi file xuất để bản Excel đúng bằng bảng tổng người dùng đang nhìn.
+                <tr key={`${key}-detail`} data-no-export className="border-t border-slate-100 bg-slate-50/60">
+                  <td colSpan={10} className="px-4 py-3">
+                    {loadingKey === key ? (
+                      <p className="text-xs text-slate-500">Đang tải chi tiết...</p>
+                    ) : detailRows.length === 0 ? (
+                      <p className="text-xs text-slate-500">Không có dòng chi tiết nào.</p>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="text-slate-500 uppercase">
+                            <tr>
+                              {["Mã hoá đơn", "Nguồn doanh thu", "Phương thức", "Bộ phận", "Mặt hàng", "SL", "Gộp", "Giảm giá", "VAT", "SVC", "Phí thẻ", "Phí app", "Thuần"].map((label, columnIndex) => (
+                                <th key={label} className={`px-2 py-1.5 whitespace-nowrap ${columnIndex >= 5 ? "text-right" : ""}`}>{label}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {detailRows.map((detail) => (
+                              <tr key={detail.id} className="border-t border-slate-200/70">
+                                <td className="px-2 py-1.5 font-bold whitespace-nowrap">{detail.externalRef}</td>
+                                <td className="px-2 py-1.5 whitespace-nowrap">{detail.revenueSource}</td>
+                                <td className="px-2 py-1.5 whitespace-nowrap">{detail.paymentMethod}</td>
+                                <td className="px-2 py-1.5 whitespace-nowrap">{detail.departmentCode || "—"}</td>
+                                <td className="px-2 py-1.5 whitespace-nowrap">{detail.productCode || "—"}</td>
+                                <td className="px-2 py-1.5 text-right whitespace-nowrap">{detail.productQuantity ? money(detail.productQuantity) : "—"}</td>
+                                <td className="px-2 py-1.5 text-right whitespace-nowrap">{money(detail.grossAmount)}</td>
+                                <td className="px-2 py-1.5 text-right whitespace-nowrap">{detail.discountAmount ? money(detail.discountAmount) : "—"}</td>
+                                <td className="px-2 py-1.5 text-right whitespace-nowrap">{detail.vatAmount ? money(detail.vatAmount) : "—"}</td>
+                                <td className="px-2 py-1.5 text-right whitespace-nowrap">{detail.serviceAmount ? money(detail.serviceAmount) : "—"}</td>
+                                <td className="px-2 py-1.5 text-right whitespace-nowrap">{detail.cardFeeAmount ? money(detail.cardFeeAmount) : "—"}</td>
+                                <td className="px-2 py-1.5 text-right whitespace-nowrap">{detail.appFeeAmount ? money(detail.appFeeAmount) : "—"}</td>
+                                <td className="px-2 py-1.5 text-right whitespace-nowrap font-bold text-emerald-700">{money(detail.netAmount)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              )] : []),
+            ];
+          }))}
+          {data.rows.length > 0 && (
+            <tr className="border-t-2 border-slate-300 bg-slate-50 font-bold">
+              <Cell><b>Tổng cộng</b></Cell>
+              <Cell><span className="text-slate-500">{byDay.size} ngày</span></Cell>
+              <Cell right>{data.totals.orderCount > 0 ? money(data.totals.orderCount) : "—"}</Cell>
+              <Cell right>{money(data.totals.grossAmount)}</Cell>
+              <Cell right>{money(data.totals.discountAmount)}</Cell>
+              <Cell right>{money(data.totals.vatAmount)}</Cell>
+              <Cell right>{money(data.totals.serviceAmount)}</Cell>
+              <Cell right>{money(data.totals.cardFeeAmount)}</Cell>
+              <Cell right>{money(data.totals.appFeeAmount)}</Cell>
+              <Cell right><b className="text-emerald-700">{money(data.totals.netAmount)}</b></Cell>
+            </tr>
+          )}
+        </Table>
+      </section>
+    </div>
   );
 }
 

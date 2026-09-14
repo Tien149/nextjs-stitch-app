@@ -367,6 +367,7 @@ export const moduleTabs: Record<string, Array<{ id: string; label: string }>> = 
     { id: "payroll-budget", label: "Ngân sách nhân sự" },
     { id: "daily-cash", label: "Thu chi ngày" },
     { id: "cash-source", label: "Nguồn tiền" },
+    { id: "revenue-ledger", label: "Sổ doanh thu" },
     { id: "revenue-settlement", label: "Tiền về đủ chưa" },
     { id: "activity", label: "Kỳ & Log" },
     { id: "pnl", label: "Hoạch định P&L" },
@@ -411,7 +412,7 @@ export const moduleTabs: Record<string, Array<{ id: string; label: string }>> = 
 
 /** Biểu tượng hiển thị của từng tab, tách khỏi khai báo quyền để giữ moduleTabs gọn. */
 export const moduleTabIcons: Record<string, string> = {
-  dashboard: "dashboard", operations: "fact_check", budget: "price_check", "payroll-budget": "groups", "daily-cash": "receipt", "cash-source": "savings", "revenue-settlement": "rule",
+  dashboard: "dashboard", operations: "fact_check", budget: "price_check", "payroll-budget": "groups", "daily-cash": "receipt", "cash-source": "savings", "revenue-ledger": "point_of_sale", "revenue-settlement": "rule",
   activity: "history", pnl: "finance", yoy: "query_stats", cashflow: "timeline", balance: "account_balance",
   cashbook: "account_balance_wallet", accruals: "calendar_month", expenses: "payments", closing: "lock",
   requests: "assignment", quotes: "compare_arrows", orders: "local_shipping", templates: "playlist_add_check",

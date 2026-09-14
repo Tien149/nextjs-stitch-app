@@ -3,7 +3,7 @@ import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { allowedMenuTabs, canViewFinancialDashboard } from "@/lib/auth-demo";
 import { requestedBranch } from "@/lib/accounting";
 import { prisma } from "@/lib/prisma";
-import { createMoneySourceMatcher, getBalanceSheet, getCashSourceReport, getCashflowForecast, getPnl, getRevenueSettlementReport, getTrend, PNL_UNGROUPED_CODE } from "@/lib/reports";
+import { createMoneySourceMatcher, getBalanceSheet, getCashSourceReport, getCashflowForecast, getPnl, getRevenueLedger, getRevenueLedgerDetail, getRevenueSettlementReport, getTrend, PNL_UNGROUPED_CODE } from "@/lib/reports";
 import { getPayrollBudgetReport, getPnlMatrix, getRevenueTrendReport } from "@/lib/report-budget";
 import { apiError, businessError, cleanText, isPeriodLocked, normalizePeriod, toNumber } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
@@ -1197,7 +1197,8 @@ export async function GET(request: Request) {
     // YoY — quyền đi theo tab chứa nó, không phải tab riêng. daily-cash vừa là tab riêng
     // (Thu chi ngày) vừa là nguồn số của bảng "Đối chiếu tiền vào đã đủ chưa" nằm ở đầu tab
     // Tiền về đủ chưa (chuyển sang 05/09/2026), nên ai có MỘT TRONG HAI tab đều gọi được.
-    const subViewTab: Record<string, string> = { "pnl-matrix": "pnl", "revenue-trend": "yoy", "daily-cash": "revenue-settlement" };
+    // "revenue-ledger-detail" là phần xoè chi tiết của chính tab Sổ doanh thu, không phải tab riêng.
+    const subViewTab: Record<string, string> = { "pnl-matrix": "pnl", "revenue-trend": "yoy", "daily-cash": "revenue-settlement", "revenue-ledger-detail": "revenue-ledger" };
     const containerTab = subViewTab[type] || type;
     if (permittedTabs && !permittedTabs.includes(type) && !permittedTabs.includes(containerTab)) {
       return NextResponse.json({ error: "Bạn không có quyền xem báo cáo này" }, { status: 403 });
@@ -1223,6 +1224,20 @@ export async function GET(request: Request) {
       return NextResponse.json({ period, view, year, ...(await getCashSourceReport(months, branchCode)) });
     }
     if (type === "revenue-settlement") return NextResponse.json(await getRevenueSettlementReport(period, branchCode));
+    if (type === "revenue-ledger") {
+      return NextResponse.json(await getRevenueLedger(
+        period,
+        branchCode,
+        cleanText(params.get("dateFrom")),
+        cleanText(params.get("dateTo")),
+        cleanText(params.get("channel")),
+      ));
+    }
+    if (type === "revenue-ledger-detail") {
+      const date = cleanText(params.get("date"));
+      if (!date) return NextResponse.json({ error: "Thiếu ngày cần xem chi tiết" }, { status: 400 });
+      return NextResponse.json(await getRevenueLedgerDetail(date, branchCode, cleanText(params.get("channel"))));
+    }
     // Ba báo cáo theo feedback chị Bình 26/08/2026 — đều chạy theo NĂM của kỳ đang chọn.
     // Ngân sách nhân sự nhận nguyên kỳ: bảng vẫn trải 12 tháng, nhưng form tỷ trọng là bộ có hiệu lực ở tháng đó.
     if (type === "payroll-budget") return NextResponse.json(await getPayrollBudgetReport(period, branchCode));

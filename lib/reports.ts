@@ -1472,6 +1472,166 @@ export function createMoneySourceMatcher<T extends MatchableMoneySource>(sources
   };
 }
 
+export type RevenueLedgerRow = {
+  date: string;
+  channel: string;
+  orderCount: number;
+  grossAmount: number;
+  discountAmount: number;
+  vatAmount: number;
+  serviceAmount: number;
+  cardFeeAmount: number;
+  appFeeAmount: number;
+  netAmount: number;
+  lineCount: number;
+};
+
+export type RevenueLedgerDetailRow = {
+  id: string;
+  saleDate: string;
+  branchCode: string;
+  channel: string;
+  revenueSource: string;
+  paymentMethod: string;
+  externalRef: string;
+  productCode: string | null;
+  productQuantity: number | null;
+  departmentCode: string | null;
+  orderCount: number | null;
+  grossAmount: number;
+  discountAmount: number;
+  vatAmount: number;
+  serviceAmount: number;
+  cardFeeAmount: number;
+  appFeeAmount: number;
+  netAmount: number;
+};
+
+/** Nhãn cho dòng doanh thu chưa khai kênh bán — để trống thì bảng có một ô rỗng khó hiểu. */
+const UNSPECIFIED_CHANNEL = "Chưa phân kênh";
+
+function revenueLedgerBounds(dateFrom: string, dateTo: string, period: string) {
+  // Mặc định là cả tháng đang chọn; có khoảng ngày thì ưu tiên khoảng ngày, và tự đảo lại
+  // nếu người dùng chọn ngược (từ 20 đến 10) thay vì trả bảng trắng.
+  if (!dateFrom && !dateTo) return periodBounds(period);
+  const from = dateFrom || dateTo;
+  const to = dateTo || dateFrom;
+  const [first, last] = from <= to ? [from, to] : [to, from];
+  return { start: new Date(`${first}T00:00:00+07:00`), end: new Date(`${last}T24:00:00+07:00`) };
+}
+
+/**
+ * Sổ doanh thu: mỗi ngày bán tách sẵn theo từng kênh bán.
+ *
+ * Đọc thẳng từ dòng import POS chứ không qua sổ cái — cùng nguồn với dòng Doanh thu của P&L
+ * (xem `getPnl`), nên hai bên không bao giờ lệch nhau. Ngày gom theo ngày nghiệp vụ Việt Nam
+ * vì file import cũ lưu nửa đêm giờ địa phương còn file mới lưu UTC; không quy về cùng múi thì
+ * một ngày bán bị xé làm hai dòng.
+ *
+ * Chỉ trả phần tổng theo ngày × kênh. Chi tiết từng dòng hoá đơn nạp riêng khi người dùng bấm
+ * xoè (`getRevenueLedgerDetail`) — doanh thu POS có thể tới hàng chục nghìn dòng mỗi năm, trả
+ * hết một lượt là treo màn hình.
+ */
+export async function getRevenueLedger(period: string, branchCode: string, dateFrom = "", dateTo = "", channel = "") {
+  const { start, end } = revenueLedgerBounds(dateFrom, dateTo, period);
+  const rows = await prisma.revenueImportRow.findMany({
+    where: {
+      saleDate: { gte: start, lt: end },
+      ...(branchCode === "ALL" ? {} : { branchCode }),
+    },
+    select: {
+      saleDate: true, channel: true, orderCount: true,
+      grossAmount: true, discountAmount: true, vatAmount: true, feeAmount: true,
+      cardFeeAmount: true, appFeeAmount: true, netAmount: true,
+    },
+  });
+
+  const cells = new Map<string, RevenueLedgerRow>();
+  const channels = new Set<string>();
+  for (const row of rows) {
+    const rowChannel = (row.channel || "").trim() || UNSPECIFIED_CHANNEL;
+    channels.add(rowChannel);
+    if (channel && rowChannel !== channel) continue;
+    const date = vietnamBusinessDayKey(row.saleDate);
+    const key = `${date}|${rowChannel}`;
+    const current = cells.get(key) || {
+      date, channel: rowChannel, orderCount: 0, lineCount: 0,
+      grossAmount: 0, discountAmount: 0, vatAmount: 0, serviceAmount: 0,
+      cardFeeAmount: 0, appFeeAmount: 0, netAmount: 0,
+    };
+    current.orderCount += row.orderCount || 0;
+    current.lineCount += 1;
+    current.grossAmount += row.grossAmount;
+    current.discountAmount += row.discountAmount;
+    current.vatAmount += row.vatAmount;
+    current.serviceAmount += row.feeAmount;
+    current.cardFeeAmount += row.cardFeeAmount;
+    current.appFeeAmount += row.appFeeAmount;
+    current.netAmount += row.netAmount;
+    cells.set(key, current);
+  }
+
+  // Ngày mới nhất lên trước như sổ sao kê; trong cùng một ngày thì xếp kênh theo bảng chữ cái
+  // để thứ tự không nhảy lung tung giữa các lần tải.
+  const ledgerRows = [...cells.values()].sort((a, b) => (a.date === b.date ? a.channel.localeCompare(b.channel, "vi") : b.date.localeCompare(a.date)));
+  const totals = ledgerRows.reduce((sum, row) => ({
+    orderCount: sum.orderCount + row.orderCount,
+    lineCount: sum.lineCount + row.lineCount,
+    grossAmount: sum.grossAmount + row.grossAmount,
+    discountAmount: sum.discountAmount + row.discountAmount,
+    vatAmount: sum.vatAmount + row.vatAmount,
+    serviceAmount: sum.serviceAmount + row.serviceAmount,
+    cardFeeAmount: sum.cardFeeAmount + row.cardFeeAmount,
+    appFeeAmount: sum.appFeeAmount + row.appFeeAmount,
+    netAmount: sum.netAmount + row.netAmount,
+  }), { orderCount: 0, lineCount: 0, grossAmount: 0, discountAmount: 0, vatAmount: 0, serviceAmount: 0, cardFeeAmount: 0, appFeeAmount: 0, netAmount: 0 });
+
+  return {
+    period,
+    branchCode,
+    dateFrom: vietnamBusinessDayKey(start),
+    dateTo: vietnamBusinessDayKey(new Date(end.getTime() - 1)),
+    channel,
+    channels: [...channels].sort((a, b) => a.localeCompare(b, "vi")),
+    rows: ledgerRows,
+    totals,
+  };
+}
+
+/** Từng dòng hoá đơn của một ô ngày × kênh bán, nạp khi người dùng bấm xoè dòng đó. */
+export async function getRevenueLedgerDetail(date: string, branchCode: string, channel: string) {
+  const start = new Date(`${date}T00:00:00+07:00`);
+  const end = new Date(`${date}T24:00:00+07:00`);
+  const rows = await prisma.revenueImportRow.findMany({
+    where: { saleDate: { gte: start, lt: end }, ...(branchCode === "ALL" ? {} : { branchCode }) },
+    orderBy: [{ externalRef: "asc" }, { createdAt: "asc" }],
+    take: 500,
+  });
+  const detail: RevenueLedgerDetailRow[] = rows
+    .filter((row) => !channel || ((row.channel || "").trim() || UNSPECIFIED_CHANNEL) === channel)
+    .map((row) => ({
+      id: row.id,
+      saleDate: vietnamBusinessDayKey(row.saleDate),
+      branchCode: row.branchCode,
+      channel: (row.channel || "").trim() || UNSPECIFIED_CHANNEL,
+      revenueSource: row.revenueSource,
+      paymentMethod: row.paymentMethod,
+      externalRef: row.externalRef,
+      productCode: row.productCode,
+      productQuantity: row.productQuantity,
+      departmentCode: row.departmentCode,
+      orderCount: row.orderCount,
+      grossAmount: row.grossAmount,
+      discountAmount: row.discountAmount,
+      vatAmount: row.vatAmount,
+      serviceAmount: row.feeAmount,
+      cardFeeAmount: row.cardFeeAmount,
+      appFeeAmount: row.appFeeAmount,
+      netAmount: row.netAmount,
+    }));
+  return { date, branchCode, channel, rows: detail };
+}
+
 /**
  * Đối chiếu doanh thu bán hàng với tiền thực về, theo từng Ngày và từng Nguồn tiền.
  *
