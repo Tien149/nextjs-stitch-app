@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
-import { apiError, businessError, cleanText, isPeriodLocked, toDate, toNumber } from "@/lib/phase3";
+import { apiError, assertPeriodOpen, businessError, cleanText, isPeriodLocked, toDate, toNumber } from "@/lib/phase3";
 import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
 import { isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType, postInventoryTransaction } from "@/lib/inventory-stock";
 import { postStockTransfer } from "@/lib/inventory-transfer";
@@ -517,10 +517,11 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const auth = requireMenuAction(request, menuHref, "create");
-    if (!auth.ok) return auth.response;
     const body = await request.json();
     const action = cleanText(body.action);
+    // Mở lại phiếu đã duyệt là sửa lại số đã chốt, không phải lập chứng từ mới -> quyền "edit".
+    const auth = requireMenuAction(request, menuHref, action === "REOPEN_STOCKTAKE" ? "edit" : "create");
+    if (!auth.ok) return auth.response;
 
     if (action === "CREATE_ITEM") {
       const itemCode = cleanText(body.code);
@@ -801,6 +802,71 @@ export async function POST(request: Request) {
         return { stocktake: await tx.stocktakeSession.findUnique({ where: { id: stocktake.id }, include: { lines: { include: { item: true } } } }), transactions: docs };
       });
       return NextResponse.json(result, { status: 201 });
+    }
+
+    /**
+     * Mở lại phiếu kiểm kê đã duyệt.
+     *
+     * Duyệt kiểm kê là thao tác một chiều: phiếu sinh ra ở trạng thái APPROVED kèm 1-2 phiếu
+     * nhập/xuất điều chỉnh tồn, mà cả UPDATE_STOCKTAKE lẫn DELETE đều chặn phiếu đã duyệt.
+     * Đếm nhầm một dòng là không còn đường sửa, chỉ còn cách lập phiếu điều chỉnh tay.
+     *
+     * Mở lại = hoàn kho đúng bằng hai phiếu điều chỉnh đó rồi xoá chúng, đưa phiếu kiểm kê về
+     * Nháp. Số đã đếm giữ nguyên trên phiếu để đối chiếu; đếm lại thì lập phiếu mới, còn phiếu
+     * nháp cũ xoá được như thường vì không còn phiếu kho nào trỏ vào.
+     */
+    if (action === "REOPEN_STOCKTAKE") {
+      const stocktakeId = cleanText(body.stocktakeId) || cleanText(body.id);
+      if (!stocktakeId) businessError("Thiếu phiếu kiểm kê cần mở lại");
+      const stocktake = await prisma.stocktakeSession.findUnique({ where: { id: stocktakeId } });
+      if (!stocktake) businessError("Không tìm thấy phiếu kiểm kê");
+      assertBranchAccess(auth.session, stocktake.branchCode);
+      if (stocktake.status !== "APPROVED") businessError(`Phiếu kiểm kê ${stocktake.code} đang ở trạng thái ${stocktake.status}, chưa duyệt nên không có gì để mở lại.`);
+      await assertPeriodOpen({ date: stocktake.stocktakeDate, branchCode: stocktake.branchCode }, "mở lại phiếu kiểm kê");
+
+      const documents = await prisma.inventoryTransaction.findMany({
+        where: { referenceType: "STOCKTAKE", referenceId: stocktake.id },
+        include: { lines: true },
+      });
+
+      // Cùng luật với xoá phiếu kho: chỉ hoàn kho chính xác được khi chưa có phiếu nào phát
+      // sinh sau trên cùng mặt hàng/kho. Có phiếu sau mà cứ hoàn thì số tồn sẽ nhảy sai.
+      const documentIds = documents.map((document) => document.id);
+      const itemIds = [...new Set(documents.flatMap((document) => document.lines.map((line) => line.itemId)))];
+      const warehouseCodes = [...new Set(documents.flatMap((document) => [document.warehouseCode, document.toWarehouseCode].filter((value): value is string => !!value)))];
+      if (documentIds.length > 0) {
+        const newer = await prisma.inventoryTransaction.findFirst({
+          where: {
+            id: { notIn: documentIds },
+            createdAt: { gt: documents[0].createdAt },
+            lines: { some: { itemId: { in: itemIds } } },
+            OR: [{ warehouseCode: { in: warehouseCodes } }, { toWarehouseCode: { in: warehouseCodes } }],
+          },
+          orderBy: { createdAt: "asc" },
+        });
+        if (newer) {
+          businessError(`Đã có phiếu ${newer.code} phát sinh sau phiếu kiểm kê ${stocktake.code} trên cùng mặt hàng/kho nên không hoàn kho chính xác được. Hãy xoá các phiếu phát sinh sau, hoặc lập phiếu điều chỉnh kho thay vì mở lại.`);
+        }
+      }
+
+      const reversals = [];
+      for (const document of documents) {
+        reversals.push({ code: document.code, lines: await reverseTransactionStock(document) });
+        await softDeleteRecord({ model: "InventoryTransaction", id: document.id, session: auth.session, reason: `Mở lại phiếu kiểm kê ${stocktake.code}` });
+      }
+      // Phiếu kiểm kê hiện chưa lên sổ cái (nhánh giá vốn từ kho đang tắt), nhưng vẫn dọn theo
+      // để ngày nào bật lên thì mở lại không để sót bút toán mồ côi.
+      if (documentIds.length > 0) {
+        await prisma.journalEntry.deleteMany({ where: { sourceType: "INVENTORY_ISSUE", sourceId: { in: documentIds } } });
+      }
+
+      const result = await prisma.stocktakeSession.update({
+        where: { id: stocktakeId },
+        data: { status: "DRAFT", approvedBy: null, approvedAt: null },
+        include: { lines: { include: { item: true } } },
+      });
+      await writeAuditLog({ session: auth.session, module: menuHref, action: "REOPEN_STOCKTAKE", entityType: "StocktakeSession", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { reversedDocuments: documents.map((document) => document.code), reversals } });
+      return NextResponse.json(result);
     }
 
     /**

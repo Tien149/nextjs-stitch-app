@@ -371,11 +371,11 @@ export default function AssetOperationsPage() {
             <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3"><h2 className="font-bold">Phiên kiểm kê gần nhất</h2><ExportExcelButton fileName="phien_kiem_ke_tai_san" sheetName="Kiem ke" /></div>
             <table className="w-full text-left text-sm">
               <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
-                <tr><th className="px-3 py-2">Phiên</th><th className="px-3 py-2">Cửa hàng</th><th className="px-3 py-2 text-right">Dòng</th><th className="px-3 py-2 text-right">Chênh lệch</th></tr>
+                <tr><th className="px-3 py-2">Phiên</th><th className="px-3 py-2">Cửa hàng</th><th className="px-3 py-2 text-right">Dòng</th><th className="px-3 py-2 text-right">Chênh lệch</th><th className="px-3 py-2 text-right"></th></tr>
               </thead>
               <tbody>
                 {data.assetStocktakes.length === 0 && (
-                  <tr><td className="px-3 py-4 text-slate-500" colSpan={4}>Chưa có phiên kiểm kê nào.</td></tr>
+                  <tr><td className="px-3 py-4 text-slate-500" colSpan={5}>Chưa có phiên kiểm kê nào.</td></tr>
                 )}
                 {data.assetStocktakes.map((session) => (
                   <tr key={session.id} className="border-t border-slate-100">
@@ -386,6 +386,21 @@ export default function AssetOperationsPage() {
                       <b className={session.lines.some((line) => line.varianceQuantity !== 0) ? "text-rose-700" : "text-slate-400"}>
                         {money(session.lines.reduce((sum, line) => sum + Math.abs(line.varianceQuantity), 0))}
                       </b>
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      {canEdit && session.status === "APPROVED" && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!window.confirm(`Mở lại phiên kiểm kê ${session.code}? Số lượng của ${session.lines.length} tài sản trong phiên sẽ quay về đúng số sổ sách trước lúc duyệt.`)) return;
+                            void send({ action: "REOPEN_ASSET_STOCKTAKE", sessionId: session.id }, `Đã mở lại phiên ${session.code} và trả số lượng tài sản về như trước khi duyệt. Kiểm lại rồi duyệt phiên mới.`);
+                          }}
+                          className="text-xs font-bold text-slate-400 hover:text-rose-600 hover:underline whitespace-nowrap"
+                          title="Trả số lượng tài sản về số sổ sách trước lúc duyệt và đưa phiên về Nháp"
+                        >
+                          Mở lại
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}

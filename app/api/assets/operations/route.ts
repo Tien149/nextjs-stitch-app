@@ -89,7 +89,7 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const action = cleanText(body.action);
-    const requiredAction = ["RUN_DEPRECIATION", "REOPEN_DEPRECIATION", "COMPLETE_MAINTENANCE", "RESOLVE_DAMAGE", "CONFIGURE_DEPRECIATION"].includes(action) ? "edit" : "create";
+    const requiredAction = ["RUN_DEPRECIATION", "REOPEN_DEPRECIATION", "REOPEN_ASSET_STOCKTAKE", "COMPLETE_MAINTENANCE", "RESOLVE_DAMAGE", "CONFIGURE_DEPRECIATION"].includes(action) ? "edit" : "create";
     const auth = requireMenuAction(request, menuHref, requiredAction);
     if (!auth.ok) return auth.response;
 
@@ -152,6 +152,42 @@ export async function POST(request: Request) {
 
       await writeAuditLog({ session: auth.session, module: "/assets", action: "APPROVE_ASSET_STOCKTAKE", entityType: "AssetStocktakeSession", entityId: result?.id || null, entityCode: result?.code || null, branchCode, metadata: { lines: lines.length } });
       return NextResponse.json(result, { status: 201 });
+    }
+
+    /**
+     * Mở lại phiên kiểm kê tài sản đã duyệt.
+     *
+     * Duyệt kiểm kê ghi thẳng số đếm vào `quantity` của tài sản và không giữ đường lùi: đếm
+     * nhầm là số sổ sách sai vĩnh viễn. Mỗi dòng kiểm kê có lưu `systemQuantity` — số sổ sách
+     * ngay trước lúc duyệt — nên mở lại chỉ việc trả từng tài sản về đúng số đó.
+     *
+     * Chặn khi số hiện tại đã khác số đã duyệt: giữa chừng có người sửa tay hoặc có phiên kiểm
+     * kê sau, trả về số cũ sẽ xoá mất thay đổi đó mà không ai hay.
+     */
+    if (action === "REOPEN_ASSET_STOCKTAKE") {
+      const sessionId = cleanText(body.sessionId) || cleanText(body.id);
+      if (!sessionId) businessError("Thiếu phiên kiểm kê cần mở lại");
+      const stocktake = await prisma.assetStocktakeSession.findUnique({ where: { id: sessionId }, include: { lines: { include: { asset: true } } } });
+      if (!stocktake) businessError("Không tìm thấy phiên kiểm kê tài sản");
+      assertBranchAccess(auth.session, stocktake.branchCode);
+      if (stocktake.status !== "APPROVED") businessError(`Phiên kiểm kê ${stocktake.code} đang ở trạng thái ${stocktake.status}, chưa duyệt nên không có gì để mở lại.`);
+      await assertPeriodOpen({ date: stocktake.stocktakeDate, branchCode: stocktake.branchCode }, "mở lại phiên kiểm kê tài sản");
+
+      const changed = stocktake.lines.find((line) => Math.abs(line.asset.quantity - line.actualQuantity) > 0.000001);
+      if (changed) {
+        businessError(`Số lượng của ${changed.asset.code} đã đổi từ sau lần duyệt (${changed.actualQuantity} → ${changed.asset.quantity}). Mở lại sẽ xoá mất thay đổi đó, nên hãy kiểm lại bằng một phiên kiểm kê mới thay vì mở lại phiên này.`);
+      }
+
+      const result = await prisma.$transaction(async (tx) => {
+        for (const line of stocktake.lines) {
+          await tx.assetRecord.update({ where: { id: line.assetId }, data: { quantity: line.systemQuantity } });
+        }
+        await tx.assetStocktakeSession.update({ where: { id: sessionId }, data: { status: "DRAFT", approvedBy: null, approvedAt: null } });
+        return tx.assetStocktakeSession.findUnique({ where: { id: sessionId }, include: { lines: { include: { asset: true } } } });
+      });
+
+      await writeAuditLog({ session: auth.session, module: "/assets", action: "REOPEN_ASSET_STOCKTAKE", entityType: "AssetStocktakeSession", entityId: sessionId, entityCode: stocktake.code, branchCode: stocktake.branchCode, metadata: { restored: stocktake.lines.map((line) => ({ code: line.asset.code, from: line.actualQuantity, to: line.systemQuantity })) } });
+      return NextResponse.json(result);
     }
 
     if (action === "CONFIGURE_DEPRECIATION") {

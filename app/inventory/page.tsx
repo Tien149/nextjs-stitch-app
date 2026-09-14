@@ -1753,7 +1753,7 @@ export default function InventoryPage() {
           )}
           <section className="table-panel shadow-sm">
             <Panel title="Phiếu kiểm kê gần nhất" reload={loadData} exportFileName="phieu_kiem_ke" />
-            <Table headers={[{ label: "Phiếu" }, { label: "Kho" }, { label: "Mặt hàng" }, { label: "Chênh lệch", align: "right" }]}>
+            <Table headers={[{ label: "Phiếu" }, { label: "Kho" }, { label: "Mặt hàng" }, { label: "Chênh lệch", align: "right" }, { label: "", align: "right" }]}>
               {data.stocktakes.map((row) => ({
                 ...row,
                 lines: row.lines.filter((line) => isWarehouseStocktakeItemType(line.item.itemType)),
@@ -1763,6 +1763,21 @@ export default function InventoryPage() {
                   <Cell>{row.warehouseCode}</Cell>
                   <Cell>{row.lines.map((line) => line.item.code).join(", ")}</Cell>
                   <Cell right>{money(row.lines.reduce((sum, line) => sum + line.varianceQuantity, 0))}</Cell>
+                  <Cell right>
+                    {canEditItem && row.status === "APPROVED" && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!window.confirm(`Mở lại phiếu kiểm kê ${row.code}? Hai phiếu điều chỉnh tồn do lần duyệt này sinh ra sẽ được hoàn kho rồi xoá, phiếu kiểm kê quay về Nháp để đếm lại.`)) return;
+                          void send({ action: "REOPEN_STOCKTAKE", stocktakeId: row.id }, `Đã mở lại phiếu kiểm kê ${row.code} và hoàn kho. Đếm lại rồi duyệt phiếu mới.`);
+                        }}
+                        className="text-xs font-bold text-slate-400 hover:text-rose-600 hover:underline whitespace-nowrap"
+                        title="Hoàn kho phần đã điều chỉnh và đưa phiếu về Nháp để kiểm lại"
+                      >
+                        Mở lại
+                      </button>
+                    )}
+                  </Cell>
                 </tr>
               ))}
             </Table>
