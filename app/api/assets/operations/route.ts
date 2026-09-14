@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma, type TxClient } from "@/lib/prisma";
-import { addPeriod, apiError, businessError, cleanText, isPeriodLocked, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
+import { addPeriod, apiError, assertPeriodOpen, businessError, cleanText, isPeriodLocked, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
 import { assertBranchAccess, requestedBranch } from "@/lib/accounting";
 import { scopePayloadByTab } from "@/lib/tab-scope";
 import { normalizeMoneySourceGroup } from "@/lib/money-sources";
@@ -89,7 +89,7 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const action = cleanText(body.action);
-    const requiredAction = ["RUN_DEPRECIATION", "COMPLETE_MAINTENANCE", "RESOLVE_DAMAGE", "CONFIGURE_DEPRECIATION"].includes(action) ? "edit" : "create";
+    const requiredAction = ["RUN_DEPRECIATION", "REOPEN_DEPRECIATION", "COMPLETE_MAINTENANCE", "RESOLVE_DAMAGE", "CONFIGURE_DEPRECIATION"].includes(action) ? "edit" : "create";
     const auth = requireMenuAction(request, menuHref, requiredAction);
     if (!auth.ok) return auth.response;
 
@@ -212,6 +212,75 @@ export async function POST(request: Request) {
         totalAmount += amount;
       }
       return NextResponse.json({ created, totalAmount });
+    }
+
+    /**
+     * Mở lại kỳ khấu hao đã chạy để chạy lại.
+     *
+     * Chạy khấu hao là thao tác một chiều: RUN_DEPRECIATION bỏ qua tài sản đã có dòng của kỳ,
+     * nên khai sai số tháng / giá trị còn lại xong mới phát hiện thì không có đường sửa. Mở lại
+     * = xoá dòng khấu hao của kỳ, cộng trả giá trị còn lại của tài sản và xoá luôn bút toán
+     * 6424/214 đã đẩy sang sổ cái, đưa tài sản về đúng trạng thái trước khi chạy.
+     *
+     * Chỉ mở được kỳ SAU CÙNG của mỗi tài sản: lũy kế và giá trị còn lại của các kỳ sau được
+     * tính chồng lên kỳ này, xoá kỳ giữa sẽ để lại dãy lũy kế sai mà không ai nhìn ra. Kỳ sau
+     * còn số thì trả về đúng danh sách kỳ để người dùng lùi dần từ kỳ mới nhất.
+     */
+    if (action === "REOPEN_DEPRECIATION") {
+      const period = normalizePeriod(body.period);
+      const branchCode = requestedBranch(auth.session, cleanText(body.branchCode) || "ALL");
+      const assetId = cleanText(body.assetId);
+      if (!period) businessError("Kỳ khấu hao phải có dạng YYYY-MM");
+      const rows = await prisma.assetDepreciation.findMany({
+        where: {
+          period,
+          ...(assetId ? { assetId } : {}),
+          ...(branchCode !== "ALL" ? { asset: { branchCode } } : {}),
+        },
+        include: { asset: true },
+      });
+      if (rows.length === 0) businessError(`Kỳ ${period} chưa chạy khấu hao cho tài sản nào, không có gì để mở lại`);
+      for (const row of rows) assertBranchAccess(auth.session, row.asset.branchCode);
+
+      // Kỳ khóa sổ chặn theo đúng cửa hàng của từng tài sản, không chỉ cửa hàng đang lọc.
+      await assertPeriodOpen(
+        [...new Set(rows.map((row) => row.asset.branchCode))].map((branch) => ({ period, branchCode: branch })),
+        "mở lại khấu hao",
+      );
+
+      const laterPeriods = await prisma.assetDepreciation.findMany({
+        where: { assetId: { in: rows.map((row) => row.assetId) }, period: { gt: period } },
+        select: { period: true },
+        distinct: ["period"],
+        orderBy: { period: "desc" },
+      });
+      if (laterPeriods.length > 0) {
+        businessError(`Các kỳ sau đã chạy khấu hao (${laterPeriods.map((row) => row.period).join(", ")}). Mở lại từ kỳ mới nhất rồi lùi dần về ${period}.`);
+      }
+
+      const restorable = rows.filter((row) => row.asset.status !== "DISPOSED");
+      const totalAmount = rows.reduce((sum, row) => sum + row.depreciationAmount, 0);
+      await prisma.$transaction(async (tx) => {
+        await tx.journalEntry.deleteMany({ where: { sourceType: "DEPRECIATION", sourceId: { in: rows.map((row) => row.id) } } });
+        await tx.assetDepreciation.deleteMany({ where: { id: { in: rows.map((row) => row.id) } } });
+        // Tài sản đã thanh lý bị ép giá trị còn lại về 0 lúc thanh lý; cộng trả vào đó là dựng
+        // lại giá trị cho một tài sản không còn dùng, nên chỉ hoàn cho tài sản đang sử dụng.
+        for (const row of restorable) {
+          await tx.assetRecord.update({ where: { id: row.assetId }, data: { currentValue: { increment: row.depreciationAmount } } });
+        }
+      });
+
+      await writeAuditLog({
+        session: auth.session,
+        module: "/assets",
+        action: "REOPEN_DEPRECIATION",
+        entityType: "AssetDepreciation",
+        entityId: assetId || null,
+        entityCode: period,
+        branchCode,
+        metadata: { period, reopened: rows.length, totalAmount, skippedDisposed: rows.length - restorable.length },
+      });
+      return NextResponse.json({ reopened: rows.length, totalAmount, restored: restorable.length, period });
     }
 
     if (action === "SCHEDULE_MAINTENANCE") {

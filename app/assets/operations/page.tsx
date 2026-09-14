@@ -184,7 +184,7 @@ export default function AssetOperationsPage() {
     if (!loading) window.setTimeout(() => void loadData(), 0);
   }, [loading]);
 
-  const send = async (body: object, success: string) => {
+  const send = async (body: object, success: string | ((payload: Record<string, unknown>) => string)) => {
     const response = await fetch("/api/assets/operations", {
       method: "POST",
       headers: {
@@ -194,8 +194,19 @@ export default function AssetOperationsPage() {
       body: JSON.stringify(body),
     });
     const payload = await response.json();
-    setMessage(response.ok ? success : payload.error || "Không thực hiện được thao tác");
+    setMessage(response.ok ? (typeof success === "function" ? success(payload) : success) : payload.error || "Không thực hiện được thao tác");
     if (response.ok) await loadData();
+  };
+
+  // Mở lại kỳ đã chạy để chạy lại sau khi sửa cấu hình khấu hao. Xoá số đã ghi nên luôn hỏi lại,
+  // và nói thẳng là bút toán trên sổ cái cũng mất theo.
+  const reopenDepreciation = (targetPeriod: string, asset?: Asset) => {
+    const scope = asset ? `${asset.code} - ${asset.name}` : "tất cả tài sản";
+    if (!window.confirm(`Mở lại khấu hao kỳ ${targetPeriod} của ${scope}? Số đã chạy và bút toán khấu hao của kỳ này sẽ bị xoá khỏi sổ cái, giá trị còn lại của tài sản được cộng trả về như trước khi chạy.`)) return;
+    void send(
+      { action: "REOPEN_DEPRECIATION", period: targetPeriod, branchCode: "ALL", ...(asset ? { assetId: asset.id } : {}) },
+      (payload) => `Đã mở lại ${payload.reopened ?? 0} dòng khấu hao kỳ ${targetPeriod} (${money(Number(payload.totalAmount || 0))} đ). Sửa cấu hình rồi chạy lại kỳ này.`,
+    );
   };
 
   const depreciationYears = useMemo(() => {
@@ -426,6 +437,15 @@ export default function AssetOperationsPage() {
                 </Field>
                 <p className="text-xs text-slate-500">Hệ thống bỏ qua tài sản đã chạy trong kỳ và không khấu hao thấp hơn giá trị còn lại.</p>
                 <button className="primary-button w-full"><span className="material-symbols-outlined text-lg">play_arrow</span>Chạy khấu hao</button>
+                <button
+                  type="button"
+                  onClick={() => reopenDepreciation(period)}
+                  className="secondary-button w-full"
+                  title="Xoá số khấu hao đã chạy của kỳ này để chạy lại sau khi sửa cấu hình"
+                >
+                  <span className="material-symbols-outlined text-lg">lock_open</span>Mở lại kỳ để chạy lại
+                </button>
+                <p className="text-xs text-slate-500">Chạy sai số thì mở lại kỳ, sửa cấu hình tài sản rồi chạy lại. Mỗi tài sản chỉ mở được kỳ sau cùng đã chạy, nên đã chạy nhiều tháng thì lùi dần từ tháng mới nhất.</p>
               </form>
             )}
           </div>
@@ -458,7 +478,18 @@ export default function AssetOperationsPage() {
                   <Cell sticky><b><CopyableText value={row.asset.code} /> - {row.asset.name}</b></Cell>
                   {row.months.map((amount, index) => (
                     <Cell key={index} right className={`whitespace-nowrap ${amount ? "" : "text-slate-300"}`}>
-                      {amount ? money(amount) : "—"}
+                      {amount ? (
+                        canEdit ? (
+                          <button
+                            type="button"
+                            onClick={() => reopenDepreciation(`${activeDepreciationYear}-${String(index + 1).padStart(2, "0")}`, row.asset)}
+                            className="underline decoration-dotted underline-offset-4 hover:text-rose-600"
+                            title={`Mở lại khấu hao T${index + 1}/${activeDepreciationYear} của ${row.asset.code} để chạy lại`}
+                          >
+                            {money(amount)}
+                          </button>
+                        ) : money(amount)
+                      ) : "—"}
                     </Cell>
                   ))}
                   <Cell right className="whitespace-nowrap"><b>{money(row.total)}</b></Cell>
@@ -485,7 +516,10 @@ export default function AssetOperationsPage() {
                 </tr>
               )}
             </Table>
-            <p className="px-5 py-3 text-xs text-slate-500">Số liệu tính bằng đồng. Lũy kế và Còn lại lấy theo kỳ gần nhất tài sản đã chạy trong năm {activeDepreciationYear}.</p>
+            <p className="px-5 py-3 text-xs text-slate-500">
+              Số liệu tính bằng đồng. Lũy kế và Còn lại lấy theo kỳ gần nhất tài sản đã chạy trong năm {activeDepreciationYear}.
+              {canEdit && " Bấm vào số của một tháng để mở lại đúng tháng đó của riêng tài sản trên dòng."}
+            </p>
           </section>
         </div>
       )}
