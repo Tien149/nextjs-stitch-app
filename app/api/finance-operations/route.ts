@@ -14,6 +14,8 @@ import { completePendingReconciliation, releasePendingReconciliation } from "@/l
 import { cashOpeningBalance } from "@/lib/cash-opening-balance";
 import { parseImportDate } from "@/lib/import-parser";
 import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/lib/money-transfer-date";
+import { checkWalletFeeRate, walletFeeRateMessage } from "@/lib/wallet-settlement-allocation";
+import { walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
 import {
   internalTransferDebtCodes,
   internalTransferDebtDescriptions,
@@ -165,16 +167,16 @@ export async function GET(request: Request) {
 
     const openingAmount = opening.total;
     const entries = [
-      ...vouchers.map((row) => ({ id: row.id, date: row.voucherDate, createdAt: row.createdAt, code: row.code, type: row.voucherType, moneySourceCode: row.moneySourceCode, description: row.description, receipt: row.voucherType === "RECEIPT" ? row.amount : 0, payment: row.voucherType === "PAYMENT" ? row.amount : 0 })),
-      ...adjustments.map((row) => ({ id: row.id, date: row.entryDate, createdAt: row.createdAt, code: row.code, type: "ADJUSTMENT", moneySourceCode: row.moneySourceCode, description: row.description, receipt: entryTypeToReceipt(row.entryType, row.amount), payment: entryTypeToPayment(row.entryType, row.amount) })),
+      ...vouchers.map((row) => ({ id: row.id, date: row.voucherDate, createdAt: row.createdAt, code: row.code, type: row.voucherType, branchCode: row.branchCode, moneySourceCode: row.moneySourceCode, description: row.description, receipt: row.voucherType === "RECEIPT" ? row.amount : 0, payment: row.voucherType === "PAYMENT" ? row.amount : 0 })),
+      ...adjustments.map((row) => ({ id: row.id, date: row.entryDate, createdAt: row.createdAt, code: row.code, type: "ADJUSTMENT", branchCode: row.branchCode, moneySourceCode: row.moneySourceCode, description: row.description, receipt: entryTypeToReceipt(row.entryType, row.amount), payment: entryTypeToPayment(row.entryType, row.amount) })),
       // Quyết toán ví: tiền rời ví = số về ngân hàng + phí, nên số dư ví mới về đúng 0.
       // Phiếu liên nhà hàng chỉ góp một vế cho mỗi cửa hàng: bên chuyển thấy tiền ra, bên
       // nhận thấy tiền vào. Lấy cả hai vế sẽ cộng nhầm nguồn tiền của cửa hàng kia vào sổ.
       ...moneyTransfers.filter((row) => row.status === "APPROVED").flatMap((row) => {
         const legs = transferLegsForBranch(row, branchCode);
         return [
-          ...(legs.out ? [{ id: `${row.id}-out`, date: effectiveMoneyTransferDate(row), createdAt: row.createdAt, code: row.code, type: "TRANSFER_OUT", moneySourceCode: row.fromMoneySourceCode, description: row.description, receipt: 0, payment: row.amount + row.feeAmount }] : []),
-          ...(legs.in ? [{ id: `${row.id}-in`, date: effectiveMoneyTransferDate(row), createdAt: row.createdAt, code: row.code, type: "TRANSFER_IN", moneySourceCode: row.toMoneySourceCode, description: row.description, receipt: row.amount, payment: 0 }] : []),
+          ...(legs.out ? [{ id: `${row.id}-out`, date: effectiveMoneyTransferDate(row), createdAt: row.createdAt, code: row.code, type: "TRANSFER_OUT", branchCode: row.branchCode, moneySourceCode: row.fromMoneySourceCode, description: row.description, receipt: 0, payment: row.amount + row.feeAmount }] : []),
+          ...(legs.in ? [{ id: `${row.id}-in`, date: effectiveMoneyTransferDate(row), createdAt: row.createdAt, code: row.code, type: "TRANSFER_IN", branchCode: row.branchCode, moneySourceCode: row.toMoneySourceCode, description: row.description, receipt: row.amount, payment: 0 }] : []),
         ];
       }),
     ]
@@ -884,6 +886,22 @@ export async function POST(request: Request) {
       if (feeCategory && normalizeCashflowCategoryType(feeCategory.group) !== "PAYMENT") {
         businessError(`Khoản mục phí [${feeCategoryCode}] phải là danh mục loại Chi.`);
       }
+      /**
+       * Phí vượt trần thì bắt xác nhận lại chứ không nhận ngay.
+       *
+       * Khai Số gốc ở ví bằng doanh thu cả ngày trong khi ngân hàng mới trả một đợt là lỗi
+       * thường gặp nhất ở form này — phần chưa về biến thành phí và đi thẳng lên P&L. Khác với
+       * import (chặn hẳn vì chạy hàng loạt), ở đây người dùng đang nhìn từng số nên vẫn cho ghi
+       * nếu họ chủ động xác nhận: có ví thu phí cao thật, chặn cứng sẽ kẹt nghiệp vụ.
+       */
+      if (feeAmount > 0 && !body.acknowledgeHighFee) {
+        const feeCheck = checkWalletFeeRate(
+          walletRevenueBucket({ code: fromMoneySourceCode, name: fromMoneySource.name || "" }),
+          grossAmount,
+          amount,
+        );
+        if (!feeCheck.ok) businessError(`${walletFeeRateMessage(feeCheck, grossAmount, amount)} Nếu số này đúng, tích ô xác nhận phí cao rồi ghi nhận lại.`);
+      }
 
       const qtviPrefix = voucherCodePrefix({ voucherType: "QTVI", voucherDate: transferDate, branchCode });
       const issuedQtvi = await prisma.moneyTransfer.findMany({ where: { code: { startsWith: qtviPrefix } }, select: { code: true } });
@@ -951,7 +969,7 @@ export async function POST(request: Request) {
       return NextResponse.json(result);
     }
 
-    const auth = requireMenuAction(request, menuHref, ["POST_ACCRUAL", "POST_ACCRUAL_MONTH", "UNPOST_ACCRUAL", "UNPOST_ACCRUAL_MONTH", "UPDATE_ACCRUAL_PNL_ITEM"].includes(action) ? "edit" : "create");
+    const auth = requireMenuAction(request, menuHref, ["POST_ACCRUAL", "POST_ACCRUAL_MONTH", "UNPOST_ACCRUAL", "UNPOST_ACCRUAL_MONTH", "UPDATE_ACCRUAL_PNL_ITEM", "UPDATE_ADJUSTMENT"].includes(action) ? "edit" : "create");
     if (!auth.ok) return auth.response;
 
     if (action === "CREATE_ADJUSTMENT") {
@@ -993,6 +1011,79 @@ export async function POST(request: Request) {
       });
       await writeAuditLog({ session: auth.session, module: "FINANCE_OPERATIONS", action: "CREATE_ADJUSTMENT", entityType: "CashbookAdjustment", entityId: result.id, entityCode: result.code, branchCode, metadata: { amount: result.amount, entryType: result.entryType, moneySourceCode: result.moneySourceCode } });
       return NextResponse.json(result, { status: 201 });
+    }
+
+    /**
+     * Sửa lại một phiếu điều chỉnh quỹ đã ghi, miễn kỳ còn mở.
+     *
+     * Phiếu DCQ không sinh bút toán, không sinh công nợ: số dư quỹ, sổ quỹ và Báo cáo nguồn
+     * tiền đều tính lại từ chính bản ghi này mỗi lần đọc. Vì thế sửa tại chỗ là đủ, không cần
+     * bắt kế toán ghi một phiếu đảo chiều rồi ghi lại phiếu đúng (làm sổ quỹ phình ba dòng
+     * cho một lần nhập sai). Chặn duy nhất vẫn là khóa sổ.
+     */
+    if (action === "UPDATE_ADJUSTMENT") {
+      const id = cleanText(body.id);
+      const current = id ? await prisma.cashbookAdjustment.findUnique({ where: { id } }) : null;
+      if (!current) businessError("Không tìm thấy phiếu điều chỉnh quỹ");
+
+      const entryDate = toDate(body.entryDate);
+      const entryType = cleanText(body.entryType).toUpperCase() || "RECEIPT";
+      // Bỏ trống cửa hàng thì giữ nguyên cửa hàng cũ, để màn hình chỉ sửa số tiền vẫn gửi được.
+      const branchCode = cleanText(body.branchCode) || current!.branchCode;
+      const moneySourceCode = cleanText(body.moneySourceCode);
+      const amount = toNumber(body.amount);
+      const description = cleanText(body.description);
+      if (!["RECEIPT", "PAYMENT"].includes(entryType)) businessError("Loại điều chỉnh chỉ nhận Thu (Tăng) hoặc Chi (Giảm)");
+      if (!moneySourceCode || amount <= 0 || !description) businessError("Bút toán điều chỉnh thiếu thông tin bắt buộc");
+
+      try {
+        // Đổi cửa hàng thì phải có quyền ở CẢ hai đầu, nếu không sẽ đẩy được phiếu ra khỏi
+        // phạm vi mình quản rồi không ai sửa lại được.
+        assertBranchAccess(auth.session, current!.branchCode);
+        assertBranchAccess(auth.session, branchCode);
+      } catch (e) {
+        // Bóc tiền tố BUSINESS: kẻo câu báo lỗi lộ ra ở dạng thô trên giao diện.
+        return NextResponse.json({ error: e instanceof Error ? e.message.replace(/^BUSINESS:/, "") : "Lỗi" }, { status: 403 });
+      }
+
+      const moneySource = await prisma.masterDataItem.findFirst({
+        where: { type: "MONEY_SOURCE", code: moneySourceCode, status: "ACTIVE" },
+      });
+      if (!moneySource || !moneySourceMatchesBranch(moneySource, branchCode)) {
+        businessError(`Nguồn tiền [${moneySourceCode}] không tồn tại hoặc không thuộc cửa hàng đã chọn`);
+      }
+      if (normalizeMoneySourceGroup(moneySource!.group) !== "CASH") {
+        businessError("Sổ quỹ chỉ được điều chỉnh các nguồn tiền mặt.");
+      }
+
+      // Khóa cả kỳ CŨ lẫn kỳ MỚI, ở cả cửa hàng cũ lẫn cửa hàng mới: rút phiếu ra khỏi một kỳ
+      // đã chốt hay đẩy phiếu vào một kỳ đã chốt đều làm lệch số dư kỳ đó.
+      for (const branch of [...new Set([current!.branchCode, branchCode])]) {
+        if (await isPeriodLocked(current!.entryDate, branch) || await isPeriodLocked(entryDate, branch)) {
+          businessError(`Kỳ kế toán của ${branch} ở ngày cũ hoặc ngày mới đã khóa, không thể sửa phiếu.`);
+        }
+      }
+
+      const updated = await prisma.cashbookAdjustment.updateMany({
+        where: { id: current!.id, deletedAt: null },
+        data: { entryDate, entryType, branchCode, moneySourceCode, amount, description },
+      });
+      if (updated.count !== 1) businessError("Phiếu đã bị xóa bởi yêu cầu khác.");
+      const result = await prisma.cashbookAdjustment.findUniqueOrThrow({ where: { id: current!.id } });
+      await writeAuditLog({
+        session: auth.session,
+        module: "FINANCE_OPERATIONS",
+        action: "UPDATE_ADJUSTMENT",
+        entityType: "CashbookAdjustment",
+        entityId: result.id,
+        entityCode: result.code,
+        branchCode: result.branchCode,
+        metadata: {
+          before: { entryDate: current!.entryDate, entryType: current!.entryType, branchCode: current!.branchCode, moneySourceCode: current!.moneySourceCode, amount: current!.amount, description: current!.description },
+          after: { entryDate, entryType, branchCode, moneySourceCode, amount, description },
+        },
+      });
+      return NextResponse.json(result);
     }
 
     if (action === "CREATE_ACCRUAL") {

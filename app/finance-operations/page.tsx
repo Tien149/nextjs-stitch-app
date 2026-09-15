@@ -12,9 +12,11 @@ import StickyFilterBar from "@/components/StickyFilterBar";
 import { shiftLabels } from "@/lib/shifts";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { transferBranches } from "@/lib/internal-transfer";
+import { checkWalletFeeRate } from "@/lib/wallet-settlement-allocation";
+import { walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
 import type { ExpenseSummary } from "@/lib/expense-summary";
 
-type CashEntry = { id: string; date: string; createdAt: string; code: string; type: string; moneySourceCode: string; description: string; receipt: number; payment: number; balance: number };
+type CashEntry = { id: string; date: string; createdAt: string; code: string; type: string; branchCode: string; moneySourceCode: string; description: string; receipt: number; payment: number; balance: number };
 type Schedule = { id: string; period: string; amount: number; status: string };
 type Accrual = { id: string; code: string; name: string; branchCode: string; categoryCode: string; pnlItemCode: string | null; totalAmount: number; startPeriod: string; numberOfPeriods: number; status: string; sourceType: string | null; schedules: Schedule[] };
 type Check = { key: string; label: string; passed: boolean; count: number };
@@ -67,6 +69,20 @@ type InternalTransferEditForm = {
   toMoneySourceCode: string;
   amount: string;
   externalRef: string;
+  description: string;
+};
+/**
+ * Form sửa một phiếu điều chỉnh quỹ (DCQ) đang có trên sổ. Giữ lại mã phiếu để hiển thị,
+ * còn lại là đúng các ô của form tạo mới: nhập sai ô nào thì sửa lại ô đó.
+ */
+type AdjustmentEditForm = {
+  id: string;
+  code: string;
+  entryDate: string;
+  entryType: string;
+  branchCode: string;
+  moneySourceCode: string;
+  amount: string;
   description: string;
 };
 
@@ -158,6 +174,7 @@ export default function FinanceOperationsPage() {
   const [submitting, setSubmitting] = useState(false);
   const [editingCashDeposit, setEditingCashDeposit] = useState<CashDepositEditForm | null>(null);
   const [editingInternalTransfer, setEditingInternalTransfer] = useState<InternalTransferEditForm | null>(null);
+  const [editingAdjustment, setEditingAdjustment] = useState<AdjustmentEditForm | null>(null);
   const [selectedCashDepositIds, setSelectedCashDepositIds] = useState<string[]>([]);
   const [cashApproval, setCashApproval] = useState<{ ids: string[]; actualTransferDate: string } | null>(null);
   const [moneySources, setMoneySources] = useState<MasterDataOption[]>([]);
@@ -175,6 +192,7 @@ export default function FinanceOperationsPage() {
     amount: "",
     feeCategoryCode: "",
     externalRef: "",
+    acknowledgeHighFee: false,
   });
 
   const [adjustment, setAdjustment] = useState({
@@ -358,6 +376,16 @@ export default function FinanceOperationsPage() {
   const canEdit = user ? canPerformMenuAction(user, href, "edit") : false;
   const canClose = user?.role === "Admin";
   const canApproveTransfer = user ? canPerformMenuAction(user, href, "approve") : false;
+  /**
+   * Nút "Sửa" của dòng điều chỉnh quỹ: cần quyền sửa và kỳ đang xem còn mở. Kỳ đã khóa thì
+   * ẩn nút thay vì để người dùng bấm vào rồi nhận lỗi từ API.
+   */
+  const canEditAdjustment = canEdit && data.accountingPeriod.status !== "CLOSED";
+  /** Quỹ tiền mặt được chọn cho phiếu điều chỉnh đang sửa, theo cửa hàng đang chọn trong form. */
+  const editingAdjustmentSources = useMemo(
+    () => (editingAdjustment ? filterMoneySources(moneySources, editingAdjustment.branchCode, ["CASH"]) : []),
+    [moneySources, editingAdjustment],
+  );
 
   const loadData = useCallback(async () => {
     // Từ ngày lớn hơn đến ngày thì không gọi API, tránh hiển thị sổ quỹ rỗng gây hiểu nhầm mất dữ liệu.
@@ -422,6 +450,22 @@ export default function FinanceOperationsPage() {
   }, [loading, loadData, loadMoneySources]);
 
   const settlementFee = Math.max(0, Number(settlement.grossAmount || 0)) - Math.max(0, Number(settlement.amount || 0));
+  /**
+   * Cảnh báo phí cao ngay lúc gõ, không đợi bấm Ghi nhận rồi mới báo lỗi.
+   *
+   * Khai Số gốc ở ví bằng doanh thu cả ngày trong khi ngân hàng mới trả một đợt là lỗi hay gặp
+   * nhất ở form này: phần chưa về biến thành phí và đi thẳng lên P&L (tháng 08/2026 có phiếu ra
+   * phí 98%). Dùng chung ngưỡng với import sao kê và script backfill.
+   */
+  const settlementWallet = moneySources.find((source) => source.code === settlement.fromMoneySourceCode);
+  const settlementFeeCheck = settlementFee > 0
+    ? checkWalletFeeRate(
+        walletRevenueBucket({ code: settlement.fromMoneySourceCode, name: settlementWallet?.name || "" }),
+        Number(settlement.grossAmount || 0),
+        Number(settlement.amount || 0),
+      )
+    : null;
+  const settlementFeeTooHigh = Boolean(settlementFeeCheck && !settlementFeeCheck.ok);
   const editingDenominationTotal = editingCashDeposit?.denominations.reduce((sum, row) => {
     return sum + row.denomination * Math.max(0, Math.floor(Number(row.quantity) || 0));
   }, 0) || 0;
@@ -475,6 +519,61 @@ export default function FinanceOperationsPage() {
       await loadData();
     } catch {
       setMessage("Lỗi kết nối máy chủ khi sửa phiếu điều tiền nội bộ.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  /**
+   * Mở form sửa một dòng điều chỉnh quỹ ngay trên sổ quỹ.
+   *
+   * Dòng sổ quỹ chỉ mang cột Thu/Chi nên loại điều chỉnh suy ra từ đó: có số ở cột Thu là
+   * phiếu Thu (Tăng), còn lại là Chi (Giảm).
+   */
+  const openAdjustmentEdit = (row: CashEntry) => {
+    setEditingAdjustment({
+      id: row.id,
+      code: row.code,
+      entryDate: row.date.slice(0, 10),
+      entryType: row.receipt > 0 ? "RECEIPT" : "PAYMENT",
+      branchCode: row.branchCode,
+      moneySourceCode: row.moneySourceCode,
+      amount: String(Math.round(row.receipt > 0 ? row.receipt : row.payment)),
+      description: row.description,
+    });
+    setMessage("");
+  };
+
+  const saveAdjustmentEdit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!editingAdjustment || submitting) return;
+    setSubmitting(true);
+    setMessage("");
+    try {
+      const response = await fetch("/api/finance-operations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "UPDATE_ADJUSTMENT",
+          id: editingAdjustment.id,
+          entryDate: editingAdjustment.entryDate,
+          entryType: editingAdjustment.entryType,
+          branchCode: editingAdjustment.branchCode,
+          moneySourceCode: editingAdjustment.moneySourceCode,
+          amount: editingAdjustment.amount,
+          description: editingAdjustment.description,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setMessage(payload.error || "Không sửa được phiếu điều chỉnh quỹ.");
+        return;
+      }
+      setEditingAdjustment(null);
+      setMessage(`Đã sửa phiếu ${payload.code}; số dư quỹ đã tính lại theo số mới.`);
+      await loadData();
+    } catch {
+      setMessage("Lỗi kết nối máy chủ khi sửa phiếu điều chỉnh quỹ.");
     } finally {
       setSubmitting(false);
     }
@@ -866,7 +965,7 @@ export default function FinanceOperationsPage() {
                     <select
                       className="control"
                       value={settlement.fromMoneySourceCode}
-                      onChange={(event) => setSettlement({ ...settlement, fromMoneySourceCode: event.target.value })}
+                      onChange={(event) => setSettlement({ ...settlement, fromMoneySourceCode: event.target.value, acknowledgeHighFee: false })}
                       required
                     >
                       <option value="">-- Chọn ví --</option>
@@ -896,7 +995,7 @@ export default function FinanceOperationsPage() {
                       inputMode="numeric"
                       placeholder="50000000"
                       value={settlement.grossAmount}
-                      onChange={(event) => setSettlement({ ...settlement, grossAmount: event.target.value.replace(/\D/g, "") })}
+                      onChange={(event) => setSettlement({ ...settlement, grossAmount: event.target.value.replace(/\D/g, ""), acknowledgeHighFee: false })}
                       required
                     />
                   </label>
@@ -907,7 +1006,7 @@ export default function FinanceOperationsPage() {
                       inputMode="numeric"
                       placeholder="49000000"
                       value={settlement.amount}
-                      onChange={(event) => setSettlement({ ...settlement, amount: event.target.value.replace(/\D/g, "") })}
+                      onChange={(event) => setSettlement({ ...settlement, amount: event.target.value.replace(/\D/g, ""), acknowledgeHighFee: false })}
                       required
                     />
                   </label>
@@ -935,14 +1034,43 @@ export default function FinanceOperationsPage() {
                     />
                   </label>
                   <div className="flex items-end gap-3 md:col-span-2">
-                    <div className="flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
-                      <p className="text-[11px] font-semibold text-slate-500">Phí quẹt thẻ</p>
-                      <p className={`text-sm font-bold ${settlementFee < 0 ? "text-rose-600" : "text-slate-900"}`}>{money(settlementFee)} đ</p>
+                    <div className={`flex-1 rounded-lg border px-3 py-2 ${settlementFeeTooHigh ? "border-rose-300 bg-rose-50" : "border-slate-200 bg-slate-50"}`}>
+                      <p className="text-[11px] font-semibold text-slate-500">
+                        Phí quẹt thẻ
+                        {settlementFeeCheck?.rate !== null && settlementFeeCheck !== null
+                          ? ` · ${(settlementFeeCheck.rate * 100).toFixed(1)}%`
+                          : ""}
+                      </p>
+                      <p className={`text-sm font-bold ${settlementFee < 0 || settlementFeeTooHigh ? "text-rose-600" : "text-slate-900"}`}>{money(settlementFee)} đ</p>
                     </div>
-                    <button type="submit" disabled={submitting || settlementFee < 0} className="h-10 rounded-lg bg-indigo-600 px-4 text-sm font-bold text-white hover:bg-indigo-700 disabled:opacity-50">
+                    <button
+                      type="submit"
+                      disabled={submitting || settlementFee < 0 || (settlementFeeTooHigh && !settlement.acknowledgeHighFee)}
+                      className="h-10 rounded-lg bg-indigo-600 px-4 text-sm font-bold text-white hover:bg-indigo-700 disabled:opacity-50"
+                    >
                       Ghi nhận
                     </button>
                   </div>
+                  {settlementFeeTooHigh && settlementFeeCheck && (
+                    <div className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-2.5 md:col-span-3 xl:col-span-6">
+                      <p className="text-xs font-bold text-rose-700">
+                        Phí {(settlementFeeCheck.rate! * 100).toFixed(1)}% — vượt ngưỡng {(settlementFeeCheck.limit * 100).toFixed(0)}% của nhóm ví này.
+                      </p>
+                      <p className="mt-1 text-[11px] leading-relaxed text-rose-700">
+                        Thường là do tiền về làm nhiều đợt mà Số gốc ở ví lại khai cho cả ngày — phần chưa về sẽ bị ghi thành
+                        chi phí trên P&amp;L. Hãy khai số gốc đúng phần tương ứng với số đã thực nhận. Nếu ví này thu phí cao thật
+                        thì tích ô dưới đây.
+                      </p>
+                      <label className="mt-2 flex items-center gap-2 text-[11px] font-bold text-rose-700">
+                        <input
+                          type="checkbox"
+                          checked={settlement.acknowledgeHighFee}
+                          onChange={(event) => setSettlement({ ...settlement, acknowledgeHighFee: event.target.checked })}
+                        />
+                        Tôi xác nhận số phí này đúng
+                      </label>
+                    </div>
+                  )}
                 </form>
               </section>
             )}
@@ -1362,12 +1490,14 @@ export default function FinanceOperationsPage() {
                         <th className="px-5 py-3.5 text-right">Phát sinh Thu</th>
                         <th className="px-5 py-3.5 text-right">Phát sinh Chi</th>
                         <th className="px-5 py-3.5 text-right">Số dư quỹ</th>
+                        {/* Ghim sang phải: bảng sổ quỹ luôn phải cuộn ngang, không ghim thì nút Sửa nằm ngoài vùng nhìn. */}
+                        {canEditAdjustment && <th className="sticky right-0 z-20 border-l border-slate-200 bg-slate-50 px-5 py-3.5 text-right">Thao tác</th>}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {filteredCashbook.length === 0 ? (
                         <tr>
-                          <td colSpan={6} className="px-5 py-12 text-center text-slate-400 font-medium">
+                          <td colSpan={canEditAdjustment ? 7 : 6} className="px-5 py-12 text-center text-slate-400 font-medium">
                             Chưa có phát sinh dòng tiền nào trong kỳ này.
                           </td>
                         </tr>
@@ -1397,6 +1527,23 @@ export default function FinanceOperationsPage() {
                             <td className="px-5 py-4 whitespace-nowrap text-right text-xs font-bold text-slate-900">
                               {money(row.balance)} đ
                             </td>
+                            {/* Chỉ phiếu điều chỉnh quỹ sửa được tại đây; phiếu thu/chi sửa ở màn
+                                Phiếu thu/chi, phiếu điều tiền sửa ở bảng phiếu phía trên. */}
+                            {canEditAdjustment && (
+                              <td className="sticky right-0 border-l border-slate-100 bg-white px-5 py-4 whitespace-nowrap text-right">
+                                {row.type === "ADJUSTMENT" ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => openAdjustmentEdit(row)}
+                                    className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-bold text-indigo-700 hover:bg-indigo-100"
+                                  >
+                                    Sửa
+                                  </button>
+                                ) : (
+                                  <span className="text-slate-300">-</span>
+                                )}
+                              </td>
+                            )}
                           </tr>
                         ))
                       )}
@@ -2229,6 +2376,81 @@ export default function FinanceOperationsPage() {
             <div className="flex justify-end gap-2 border-t border-slate-200 bg-slate-50 p-4">
               <button type="button" onClick={() => setEditingInternalTransfer(null)} className="secondary-button">Hủy</button>
               <button disabled={submitting || !editingInternalTransfer.transferDate || !editingInternalTransfer.amount || !editingInternalTransfer.fromMoneySourceCode || !editingInternalTransfer.toMoneySourceCode || editingInternalTransfer.fromMoneySourceCode === editingInternalTransfer.toMoneySourceCode || !editingInternalTransfer.description.trim()} className="primary-button disabled:opacity-50">{submitting ? "Đang lưu..." : "Lưu thay đổi"}</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {editingAdjustment && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/45 p-4 backdrop-blur-sm">
+          <form onSubmit={saveAdjustmentEdit} className="w-full max-w-2xl rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-start justify-between border-b border-slate-200 px-5 py-4">
+              <div>
+                <p className="text-[11px] font-bold uppercase tracking-wide text-indigo-600">Sửa phiếu điều chỉnh quỹ</p>
+                <h2 className="mt-1 text-lg font-bold text-slate-900">{editingAdjustment.code}</h2>
+                <p className="mt-1 text-xs text-slate-500">Sửa trực tiếp trên phiếu cũ, không sinh phiếu đảo. Số dư quỹ tính lại ngay sau khi lưu.</p>
+              </div>
+              <button type="button" onClick={() => setEditingAdjustment(null)} className="grid h-9 w-9 place-items-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50">
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+            <div className="grid gap-4 p-5 sm:grid-cols-2">
+              <label className="text-xs font-bold text-slate-600">
+                Ngày điều chỉnh *
+                <DateInput className="mt-1.5 w-full" value={editingAdjustment.entryDate} onChange={(value) => setEditingAdjustment((current) => current ? { ...current, entryDate: value } : current)} ariaLabel="Ngày điều chỉnh quỹ" />
+              </label>
+              <label className="text-xs font-bold text-slate-600">
+                Loại điều chỉnh *
+                <select className="control mt-1.5" value={editingAdjustment.entryType} onChange={(event) => setEditingAdjustment((current) => current ? { ...current, entryType: event.target.value } : current)}>
+                  <option value="RECEIPT">Thu (Tăng tiền)</option>
+                  <option value="PAYMENT">Chi (Giảm tiền)</option>
+                </select>
+              </label>
+              <label className="text-xs font-bold text-slate-600">
+                Cửa hàng *
+                {/* Đổi cửa hàng thì quỹ cũ không còn hợp lệ, bỏ trống để buộc chọn lại quỹ của cửa hàng mới. */}
+                <select className="control mt-1.5" value={editingAdjustment.branchCode} onChange={(event) => setEditingAdjustment((current) => current ? { ...current, branchCode: event.target.value, moneySourceCode: "" } : current)}>
+                  {visibleStoreOptions(user).map((option) => (
+                    <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs font-bold text-slate-600">
+                Nguồn tiền *
+                <select className="control mt-1.5" value={editingAdjustment.moneySourceCode} onChange={(event) => setEditingAdjustment((current) => current ? { ...current, moneySourceCode: event.target.value } : current)}>
+                  <option value="">-- Chọn quỹ tiền mặt --</option>
+                  {/* Quỹ trên phiếu cũ đã bị Ngừng hoạt động vẫn phải hiện, nếu không select sẽ
+                      âm thầm nhảy sang quỹ khác và lưu sai nguồn. */}
+                  {editingAdjustment.moneySourceCode && !editingAdjustmentSources.some((source) => source.code === editingAdjustment.moneySourceCode) && (
+                    <option value={editingAdjustment.moneySourceCode}>
+                      {moneySourceSummaryLabel.get(editingAdjustment.moneySourceCode) || editingAdjustment.moneySourceCode} (quỹ cũ)
+                    </option>
+                  )}
+                  {editingAdjustmentSources.map((source) => (
+                    <option key={source.id || source.code} value={source.code} title={moneySourceDebugLabel(source, storeLabel(editingAdjustment.branchCode))}>
+                      {moneySourceDisplayName(source, storeLabel(editingAdjustment.branchCode))}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs font-bold text-slate-600 sm:col-span-2">
+                Số tiền (đ) *
+                <input className="control mt-1.5 text-right font-bold" inputMode="numeric" value={editingAdjustment.amount} onChange={(event) => setEditingAdjustment((current) => current ? { ...current, amount: event.target.value.replace(/\D/g, "") } : current)} />
+              </label>
+              <label className="text-xs font-bold text-slate-600 sm:col-span-2">
+                Diễn giải lý do *
+                <textarea className="control mt-1.5 min-h-24" value={editingAdjustment.description} onChange={(event) => setEditingAdjustment((current) => current ? { ...current, description: event.target.value } : current)} />
+              </label>
+            </div>
+            {message && <p className="mx-5 mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700">{message}</p>}
+            <div className="flex justify-end gap-2 border-t border-slate-200 bg-slate-50 p-4">
+              <button type="button" onClick={() => setEditingAdjustment(null)} className="secondary-button">Hủy</button>
+              <button
+                disabled={submitting || !editingAdjustment.entryDate || !editingAdjustment.branchCode || !editingAdjustment.moneySourceCode || Number(editingAdjustment.amount) <= 0 || !editingAdjustment.description.trim()}
+                className="primary-button disabled:opacity-50"
+              >
+                {submitting ? "Đang lưu..." : "Lưu thay đổi"}
+              </button>
             </div>
           </form>
         </div>

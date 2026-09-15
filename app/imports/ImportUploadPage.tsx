@@ -63,6 +63,10 @@ type ImportApiPayload = {
   preview?: PreviewPayload;
   batch?: (BatchDetail & {
     needsFix?: Array<{ transactionCode: string; amount: number; reason: string }>;
+    staleWalletSettlements?: Array<{
+      code: string; branchCode: string; reportDate: string; walletCode: string;
+      settledGross: number; currentRevenue: number; feeAmount: number;
+    }>;
   }) | null;
 };
 
@@ -629,12 +633,24 @@ export default function ImportUploadPage({
         const committedBatchId = typeof payload.batch?.id === "string" ? payload.batch.id : "";
         setManualReviewBatch(recordedCount > 0 && committedBatchId ? { id: committedBatchId, count: recordedCount } : null);
       } else {
+        // Import lại doanh thu của ngày đã quyết toán ví: phiếu quyết toán cũ giữ số doanh thu
+        // cũ, phần chênh nằm lại thành "phí" trên P&L. Báo ngay, kèm đúng mã phiếu phải chạy lại.
+        const stale = payload.batch?.staleWalletSettlements || [];
         setMessage(
-          mode === "preview"
+          (mode === "preview"
             ? "Đã đọc file, vui lòng kiểm tra preview."
             : isRevenueImport
               ? "Đã lưu import doanh thu vào hệ thống."
-              : "Đã commit dữ liệu import.",
+              : "Đã commit dữ liệu import.")
+          + (mode === "commit" && stale.length
+            ? `\n\n⚠ ${stale.length} phiếu quyết toán ví của những ngày vừa import đang giữ số doanh thu CŨ.`
+              + ` Phần chênh đang nằm trên P&L dưới dạng phí — cần chạy lại quyết toán cho các phiếu này:\n`
+              + stale.slice(0, 5).map((row) => `• ${row.code} (${row.walletCode}, ngày DT ${row.reportDate}):`
+                + ` phiếu ghi ${row.settledGross.toLocaleString("vi-VN")} đ,`
+                + ` doanh thu hiện tại ${row.currentRevenue.toLocaleString("vi-VN")} đ,`
+                + ` phí đang ghi ${row.feeAmount.toLocaleString("vi-VN")} đ`).join("\n")
+              + (stale.length > 5 ? `\n• ... còn ${stale.length - 5} phiếu nữa` : "")
+            : ""),
         );
       }
       if (mode === "commit") await loadBatches();

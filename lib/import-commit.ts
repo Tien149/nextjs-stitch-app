@@ -24,7 +24,11 @@ import { nextStockDocCode, nextStocktakeCode } from "@/lib/inventory-stock";
 import {
   WALLET_CARD_FEE_CATEGORY_CODE,
   WALLET_GRAB_EXPENSE_CATEGORY_CODE,
+  checkWalletFeeRate,
+  walletFeeRateMessage,
 } from "@/lib/wallet-settlement-allocation";
+import { walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
+import { findStaleWalletSettlements } from "@/lib/wallet-settlement-staleness";
 
 /**
  * Một dòng sao kê không đủ điều kiện lập chứng từ tự động.
@@ -663,6 +667,16 @@ export async function commitImport(input: CommitInput) {
           const cardFeeAmount = allocationGross.reduce((sum, item) => sum + item.cardFeeAmount, 0);
           if (declaredGross && Math.abs(feeAmount - grabExpenseAmount - cardFeeAmount) > 1) {
             throw new BankRowNeedsFixError("Tổng phí ví không bằng Phí Grab cộng Phí cà thẻ — sửa hai cột phí trên file cho khớp");
+          }
+          // Gross khai quá tay thì phần chưa về bị ghi hết thành phí. Chặn tại đây, dòng rơi về
+          // danh sách xử lý tay kèm lý do — nhập hàng loạt mà sai âm thầm thì không ai soát nổi.
+          if (declaredGross && feeAmount > 0) {
+            const feeCheck = checkWalletFeeRate(
+              walletRevenueBucket({ code: walletSourceCode, name: decreaseSource?.name || "" }),
+              grossAmount,
+              bankAmount,
+            );
+            if (!feeCheck.ok) throw new BankRowNeedsFixError(walletFeeRateMessage(feeCheck, grossAmount, bankAmount));
           }
           const approval = evaluateBankStatementAutoApproval({
             autoProcessType,
@@ -1927,6 +1941,14 @@ export async function commitImport(input: CommitInput) {
       amount: Math.round(row.creditAmount || row.debitAmount),
       reason: row.autoProcessNote || "Chưa rõ lý do",
     }));
+  // Import lại doanh thu của ngày đã quyết toán ví thì phiếu quyết toán cũ thành số lạc hậu.
+  // Báo ngay tại đây, lúc người dùng còn đang mở file — phát hiện sau vài tuần thì phí ảo đã
+  // nằm trong P&L và không ai truy được vì sao.
+  const staleWalletSettlements = input.importType === "REVENUE_POS"
+    ? await findStaleWalletSettlements(
+        (batchResult?.revenueRows || []).map((row) => ({ branchCode: row.branchCode, saleDate: row.saleDate })),
+      )
+    : [];
   await writeAuditLog({
     actorName: input.uploadedBy,
     module: "IMPORT",
@@ -1942,9 +1964,10 @@ export async function commitImport(input: CommitInput) {
       bankAutoApproved,
       bankNeedsFix: bankNeedsFix.length,
       bankRecordingMode: input.importType === "BANK_STATEMENT" ? "DIRECT_INGESTION" : null,
+      staleWalletSettlements: staleWalletSettlements.map((row) => row.code),
     },
   });
-  return batchResult ? { ...batchResult, needsFix: bankNeedsFix } : batchResult;
+  return batchResult ? { ...batchResult, needsFix: bankNeedsFix, staleWalletSettlements } : batchResult;
 }
 
 async function rollbackBankStatement(tx: RawTxClient, batchId: string) {

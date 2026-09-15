@@ -12,8 +12,12 @@ const fromText = valueOf("--from");
 const toText = valueOf("--to");
 const apply = args.includes("--apply");
 const confirmBranch = valueOf("--confirm").trim().toUpperCase();
-const maxCardFeeRate = Number(valueOf("--max-card-fee-rate") || "0.10");
-const maxGrabFeeRate = Number(valueOf("--max-grab-fee-rate") || "0.35");
+// Ngưỡng phí dùng CHUNG với import sao kê và form Ghi nhận quyết toán ví (lib/wallet-fee-limits.json
+// -> lib/wallet-settlement-allocation.ts). Script này là .cjs nên đọc thẳng JSON thay vì import TS;
+// đừng chép số vào đây, sửa một nơi là cả ba cửa đổi theo.
+const walletFeeLimits = require("../lib/wallet-fee-limits.json");
+const maxCardFeeRate = Number(valueOf("--max-card-fee-rate") || walletFeeLimits.CARD_WALLET);
+const maxGrabFeeRate = Number(valueOf("--max-grab-fee-rate") || walletFeeLimits.GRAB);
 const transactionCode = valueOf("--transaction").trim().toUpperCase();
 const selfTest = args.includes("--self-test");
 const BUSINESS_TIMEZONE_OFFSET_MS = 7 * 60 * 60 * 1000;
