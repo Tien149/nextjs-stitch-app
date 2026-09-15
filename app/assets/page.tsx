@@ -143,7 +143,8 @@ export default function AssetsPage() {
   }, [router]);
 
   const canCreate = user ? canPerformAction(user, "create") : false;
-  const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
+  // Khấu hao/phân bổ chia theo số kỳ nên hay ra số lẻ; bảng tài sản chỉ đọc tới đồng.
+  const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value || 0);
   /** Biểu mẫu bên trái hiện ra khi được tạo mới hoặc khi đang sửa một tài sản. */
   const showAssetForm = canCreate || Boolean(editingAsset);
   /** Số kỳ đã trích khấu hao của tài sản đang sửa; lớn hơn 0 thì các trường tài chính bị khoá. */
