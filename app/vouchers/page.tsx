@@ -8,7 +8,7 @@ import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { storeLabel, updateDynamicBranches } from "@/lib/branch-labels";
 import { isInternalPartnerCode } from "@/lib/cost-reallocation";
 import { appMenuItems, canAccessMenu, canEditPastVoucher, canPerformAction, canPerformMenuAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
-import { ADVANCE_RECEIVABLE_ACTION, DEBT_COLLECTION_PURPOSE, isPartnerAllowedForVoucher, isSameCalendarDay, normalizeCashflowCategoryType, PAYMENT_PURPOSES, PREPAID_ALLOCATION_ACTION, RECEIPT_PURPOSES, voucherEditWindowError } from "@/lib/voucher-rules";
+import { ADVANCE_RECEIVABLE_ACTION, DEBT_COLLECTION_PURPOSE, isPartnerAllowedForVoucher, isSameCalendarDay, isUndeclaredPartnerName, normalizeCashflowCategoryType, PAYMENT_PURPOSES, PREPAID_ALLOCATION_ACTION, RECEIPT_PURPOSES, UNDECLARED_PARTNER_NAME, voucherEditWindowError, voucherPartnerRequirement } from "@/lib/voucher-rules";
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup, summaryMoneySourceGroups } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
@@ -123,6 +123,9 @@ const fallbackVoucherCategories: MasterDataOption[] = [
   { id: "fallback-exp-marketing", type: "REVENUE_EXPENSE_CATEGORY", code: "EXP_MARKETING", name: "Chi phi Marketing", group: "PAYMENT", branch: null },
   { id: "fallback-exp-other", type: "REVENUE_EXPENSE_CATEGORY", code: "EXP_OTHER", name: "Chi phi khac", group: "PAYMENT", branch: null },
 ];
+
+/** Giá trị riêng của ô chọn đối tác cho lựa chọn "để trống" — không đụng tới mã đối tác thật nào. */
+const NO_PARTNER_OPTION = "__NO_PARTNER__";
 
 const emptyForm = {
   voucherType: "RECEIPT",
@@ -649,7 +652,21 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
     return partner.branch === form.branchCode;
   }), [form.branchCode, partners]);
 
+  /**
+   * Chứng từ đang lập có bắt buộc khai đối tác không — cùng luật với preview import sao kê.
+   * Khoản phí ngân hàng, lãi tiền gửi... đưa thẳng vào P&L nên để trống được; nghiệp vụ đụng
+   * sổ nợ/sổ cọc thì vẫn bắt.
+   */
+  const partnerRequirement = useMemo(() => voucherPartnerRequirement({
+    depositAction: form.voucherType === "RECEIPT" && form.depositAction !== DEBT_COLLECTION_PURPOSE ? form.depositAction : "",
+    debtAction: form.voucherType === "RECEIPT"
+      ? (form.depositAction === DEBT_COLLECTION_PURPOSE ? "SETTLE" : "")
+      : form.debtAction,
+    category: voucherCategoryOptions.find((option) => option.code === form.categoryCode) || null,
+  }), [form.categoryCode, form.debtAction, form.depositAction, form.voucherType, voucherCategoryOptions]);
+
   const partnerSelectValue = useMemo(() => {
+    if (!form.partnerCode && isUndeclaredPartnerName(form.partnerName)) return NO_PARTNER_OPTION;
     const selected = partnerOptions.find((partner) =>
       (partner.code && partner.code === form.partnerCode) || partner.name === form.partnerName
     );
@@ -657,6 +674,10 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
   }, [form.partnerCode, form.partnerName, partnerOptions]);
 
   const applyPartnerSelection = (selectedKey: string) => {
+    if (selectedKey === NO_PARTNER_OPTION) {
+      setForm((current) => ({ ...current, partnerCode: "", partnerName: UNDECLARED_PARTNER_NAME }));
+      return;
+    }
     const selected = partnerOptions.find((partner) => (partner.id || partner.code || partner.name) === selectedKey);
     if (!selected) return;
     setForm((current) => ({
@@ -668,6 +689,8 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
 
   useEffect(() => {
     if (editingVoucher || partnerOptions.length === 0) return;
+    // Người dùng chủ động chọn "Chưa khai đối tác" thì đừng kéo họ về đối tác đầu danh sách.
+    if (!form.partnerCode && isUndeclaredPartnerName(form.partnerName)) return;
     const currentPartnerStillAllowed = partnerOptions.some((partner) =>
       (partner.code && partner.code === form.partnerCode) || partner.name === form.partnerName
     );
@@ -681,6 +704,16 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
       }));
     }, 0);
   }, [editingVoucher, form.partnerCode, form.partnerName, partnerOptions]);
+
+  // Đổi sang khoản mục công nợ/tiền cọc sau khi đã chọn "Chưa khai đối tác": bỏ lựa chọn đó
+  // đi để ô đối tác quay về bắt buộc, thay vì giữ một giá trị không còn nằm trong danh sách.
+  useEffect(() => {
+    if (!partnerRequirement) return;
+    if (form.partnerCode || !isUndeclaredPartnerName(form.partnerName)) return;
+    window.setTimeout(() => {
+      setForm((current) => ({ ...current, partnerName: "" }));
+    }, 0);
+  }, [form.partnerCode, form.partnerName, partnerRequirement]);
 
   useEffect(() => {
     if (!form.categoryCode || voucherCategoryOptions.length === 0) return;
@@ -765,6 +798,13 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
 
     if (!form.categoryCode) {
       setMessage("Phiếu thu/chi bắt buộc chọn Khoản mục thu/chi — mọi khoản thu/chi phải có loại cụ thể trên báo cáo.");
+      setMessageType("error");
+      return;
+    }
+
+    // Phiếu đại diện nhiều đối tác khai đối tác ở từng dòng phân bổ, không ở ô này.
+    if (partnerRequirement && !isMultiPartnerActive && !form.partnerCode && (!form.partnerName || isUndeclaredPartnerName(form.partnerName))) {
+      setMessage(partnerRequirement);
       setMessageType("error");
       return;
     }
@@ -1456,7 +1496,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                   </label>
 
                   <div className="text-xs font-bold text-slate-600 block">
-                    Tên đối tác *
+                    Tên đối tác {partnerRequirement ? "*" : ""}
                     <PartnerPicker
                       className="mt-1"
                       value={partnerSelectValue}
@@ -1465,12 +1505,16 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                         ...(partnerSelectValue === "__CURRENT__"
                           ? [{ value: "__CURRENT__", label: form.partnerName || "-- Chọn đối tác --" }]
                           : []),
+                        // Khoản chi thẳng vào P&L (phí ngân hàng, phí duy trì...) không có đối
+                        // tác nào để theo dõi công nợ — import sao kê vốn đã cho qua, nên lập
+                        // phiếu lẻ cũng phải có lựa chọn này thay vì bịa một đối tác rác.
+                        ...(partnerRequirement ? [] : [{ value: NO_PARTNER_OPTION, label: `— ${UNDECLARED_PARTNER_NAME} —` }]),
                         ...partnerOptions.map((partner) => ({
                           value: partner.id || partner.code || partner.name,
                           label: partner.code ? `${partner.code} - ${partner.name}` : partner.name,
                         })),
                       ]}
-                      required
+                      required={Boolean(partnerRequirement)}
                       canCreate={canCreatePartner}
                       defaultPartnerType={form.voucherType === "RECEIPT" ? "CUSTOMER" : "SUPPLIER"}
                       onCreated={(partner) => {
@@ -1478,6 +1522,11 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                         setForm((current) => ({ ...current, partnerCode: partner.code, partnerName: partner.name }));
                       }}
                     />
+                    <span className="mt-1 block text-[11px] font-medium text-slate-500">
+                      {partnerRequirement
+                        ? partnerRequirement
+                        : <>Không bắt buộc: khoản đưa thẳng vào P&amp;L (phí ngân hàng, phí duy trì...) chọn <span className="font-bold">— {UNDECLARED_PARTNER_NAME} —</span> như dòng import sao kê.</>}
+                    </span>
                   </div>
                 </div>
               )}

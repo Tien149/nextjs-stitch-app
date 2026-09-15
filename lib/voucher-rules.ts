@@ -1,3 +1,5 @@
+import { bankStatementSpecialCategory, type BankStatementCategoryReference } from "@/lib/bank-statement-category";
+
 /**
  * Ràng buộc cho "nội dung thu" của phiếu thu: thu thường (ghi nhận trọn vẹn ngay, bản chất
  * khoản thu do Khoản mục thu/chi quyết định), hay thu tiền cọc để theo dõi số dư về sau.
@@ -84,6 +86,54 @@ export function validatePaymentPurpose(
   }
   // Không có đối tác cụ thể thì khoản phải thu sinh ra không ai đòi được.
   if (!(receivablePartnerCode || "").trim()) return "Chi hộ phải chọn đối tác sẽ trả lại tiền.";
+  return null;
+}
+
+/**
+ * Tên hiển thị của chứng từ KHÔNG khai đối tác.
+ *
+ * Import sao kê vốn đã cho phép: phí ngân hàng, phí duy trì, lãi tiền gửi... là khoản đưa
+ * thẳng vào P&L, không có đối tác nào để theo dõi công nợ. Lập phiếu lẻ phải mở đúng như
+ * vậy, nếu không kế toán buộc phải bịa một đối tác rác chỉ để lưu được phiếu.
+ * Dùng chung một chuỗi với lib/import-commit.ts để hai cửa ra cùng một tên trên báo cáo.
+ */
+export const UNDECLARED_PARTNER_NAME = "Chưa khai đối tác";
+
+/**
+ * Tên này có phải chỗ trống đang được đặt tên cho dễ đọc không. Cần vì chứng từ đã lưu mang
+ * sẵn chuỗi đó: mở ra sửa mà coi là "đã có đối tác" thì mọi ràng buộc bên dưới bị bỏ qua.
+ */
+export function isUndeclaredPartnerName(value: string | null | undefined) {
+  return (value || "").trim().toLowerCase() === UNDECLARED_PARTNER_NAME.toLowerCase();
+}
+
+/**
+ * Chứng từ này có BẮT BUỘC khai đối tác không — trả về câu giải thích, hoặc null nếu để
+ * trống cũng được. Cùng luật với preview import sao kê (lib/import-validation.ts): nghiệp
+ * vụ nào đụng tới sổ nợ/sổ cọc thì không có đối tác là dữ liệu hỏng, còn lại thì thôi.
+ */
+export function voucherPartnerRequirement(input: {
+  depositAction?: string | null;
+  debtAction?: string | null;
+  category?: BankStatementCategoryReference | null;
+}) {
+  if ((input.depositAction || "").trim()) {
+    return "Phiếu tiền cọc bắt buộc chọn đối tác — không có đối tác thì sổ cọc không biết đang giữ tiền của ai.";
+  }
+  const debtAction = (input.debtAction || "").trim().toUpperCase();
+  if (debtAction === "SETTLE") {
+    return "Phiếu gạch công nợ bắt buộc chọn đối tác — không có đối tác thì không biết gạch vào sổ nợ của ai.";
+  }
+  if (debtAction === ADVANCE_RECEIVABLE_ACTION) {
+    return "Phiếu chi hộ bắt buộc chọn đối tác nhận tiền — vế công nợ bên nhà hàng được chi hộ ghi theo đối tác này.";
+  }
+  const special = bankStatementSpecialCategory(input.category);
+  if (special === "DEBT") {
+    return "Khoản mục thu/chi công nợ bắt buộc chọn đối tác — để trống thì báo cáo công nợ dồn thành một cục vô danh.";
+  }
+  if (special === "DEPOSIT") {
+    return "Khoản mục tiền cọc bắt buộc chọn đối tác.";
+  }
   return null;
 }
 

@@ -9,7 +9,7 @@ import { buildAuditLogData, writeAuditLog } from "@/lib/audit-log";
 import { softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
 import { canEditPastVoucher, canPerformMenuAction, type DemoSession } from "@/lib/auth-demo";
 import { moneySourceMatchesBranch, parseMoneySourceCodes } from "@/lib/money-sources";
-import { ADVANCE_RECEIVABLE_ACTION, DEBT_COLLECTION_PURPOSE, isSameCalendarDay, normalizeAllocationMonths, normalizeCashflowCategoryType, normalizePaymentPurpose, normalizeReceiptPurpose, PREPAID_ALLOCATION_ACTION, validatePaymentPurpose, validateReceiptPurpose, voucherEditWindowError } from "@/lib/voucher-rules";
+import { ADVANCE_RECEIVABLE_ACTION, DEBT_COLLECTION_PURPOSE, isSameCalendarDay, normalizeAllocationMonths, normalizeCashflowCategoryType, normalizePaymentPurpose, normalizeReceiptPurpose, PREPAID_ALLOCATION_ACTION, isUndeclaredPartnerName, UNDECLARED_PARTNER_NAME, validatePaymentPurpose, validateReceiptPurpose, voucherPartnerRequirement, voucherEditWindowError } from "@/lib/voucher-rules";
 import { completePendingReconciliation, ReconciliationSyncError, releasePendingReconciliation, reopenReconciliationForReview, syncReconciledBankStatement, type BankStatementSyncResult } from "@/lib/reconciliation-links";
 import { moneySourceMatchesDocumentChannel, normalizeVoucherDocumentChannel } from "@/lib/voucher-channel";
 import { depositCategoryDirection } from "@/lib/bank-statement-category";
@@ -398,10 +398,12 @@ export async function POST(request: Request) {
     if (!["RECEIPT", "PAYMENT"].includes(voucherType)) {
       return NextResponse.json({ error: "Loại chứng từ không hợp lệ" }, { status: 400 });
     }
-    // Phiếu đại diện nhiều đối tác không cần "Tên đối tác" đơn — tên hiển thị lấy từ người nhận.
-    const hasPartnerAllocations = Array.isArray(body.allocations) && (body.allocations as unknown[]).length > 0;
-    if ((!partnerName && !hasPartnerAllocations) || !branchCode || !moneySourceCode || amount <= 0 || !description) {
-      return NextResponse.json({ error: "Thiếu đối tác, chi nhánh, nguồn tiền, số tiền hoặc nội dung" }, { status: 400 });
+    // Đối tác KHÔNG nằm trong bộ bắt buộc chung: phí ngân hàng, phí duy trì, lãi tiền gửi...
+    // đi thẳng vào P&L và không có ai để theo dõi công nợ — import sao kê vốn đã cho qua.
+    // Nghiệp vụ nào thật sự cần đối tác thì chặn riêng ở `voucherPartnerRequirement` bên dưới,
+    // sau khi đã tra được danh mục và nội dung thu/chi của phiếu.
+    if (!branchCode || !moneySourceCode || amount <= 0 || !description) {
+      return NextResponse.json({ error: "Thiếu chi nhánh, nguồn tiền, số tiền hoặc nội dung" }, { status: 400 });
     }
 
     try {
@@ -491,6 +493,18 @@ export async function POST(request: Request) {
       pnlItemCode,
     });
     if (paymentPurposeError) return NextResponse.json({ error: paymentPurposeError }, { status: 400 });
+
+    const hasPartnerAllocations = Array.isArray(body.allocations) && (body.allocations as unknown[]).length > 0;
+    const hasPartner = Boolean(cleanText(body.partnerCode)) || (Boolean(partnerName) && !isUndeclaredPartnerName(partnerName));
+    if (!hasPartner && !hasPartnerAllocations) {
+      const partnerRequirement = voucherPartnerRequirement({
+        depositAction,
+        debtAction: paymentPurpose || (isDebtCollection ? "SETTLE" : null),
+        category: voucherCategory,
+      });
+      if (partnerRequirement) return NextResponse.json({ error: partnerRequirement }, { status: 400 });
+    }
+
     let receivablePartner: { code: string; name: string } | null = null;
     if (paymentPurpose && !isPrepaidAllocation) {
       receivablePartner = await prisma.masterDataItem.findFirst({
@@ -570,7 +584,7 @@ export async function POST(request: Request) {
               partnerCode: partnerAllocations.length > 0 ? null : cleanText(body.partnerCode) || null,
               partnerName: partnerAllocations.length > 0
                 ? (recipientName || `${partnerAllocations.length} đối tác`)
-                : partnerName,
+                : (partnerName || UNDECLARED_PARTNER_NAME),
               recipientName: recipientName || null,
               branchCode,
               documentChannel,
@@ -760,8 +774,8 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
       { status: 400 },
     );
   }
-  if (!partnerName || !branchCode || !moneySourceCode || amount <= 0 || !description) {
-    return NextResponse.json({ error: "Thiếu đối tác, chi nhánh, nguồn tiền, số tiền hoặc nội dung" }, { status: 400 });
+  if (!branchCode || !moneySourceCode || amount <= 0 || !description) {
+    return NextResponse.json({ error: "Thiếu chi nhánh, nguồn tiền, số tiền hoặc nội dung" }, { status: 400 });
   }
 
   try {
@@ -887,6 +901,12 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
     }, { status: 400 });
   }
 
+  const hasPartner = Boolean(partnerCode) || (Boolean(partnerName) && !isUndeclaredPartnerName(partnerName));
+  if (!hasPartner && allocationCount === 0) {
+    const partnerRequirement = voucherPartnerRequirement({ depositAction, debtAction, category: voucherCategory });
+    if (partnerRequirement) return NextResponse.json({ error: partnerRequirement }, { status: 400 });
+  }
+
   const [currentPeriodLocked, nextPeriodLocked] = await Promise.all([
     isPeriodLocked(current.voucherDate, current.branchCode),
     isPeriodLocked(voucherDate, branchCode),
@@ -901,7 +921,7 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
     depositAction,
     depositCode: depositAction ? (body.depositCode === undefined ? current.depositCode : (cleanText(body.depositCode) || null)) : null,
     partnerCode,
-    partnerName,
+    partnerName: partnerName || UNDECLARED_PARTNER_NAME,
     branchCode,
     moneySourceCode,
     categoryCode: categoryCode || null,
