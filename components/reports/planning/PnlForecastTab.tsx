@@ -1,11 +1,11 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { storeLabel } from "@/lib/branch-labels";
 import { opexGroupRank } from "@/lib/pnl-ordering";
 import { money } from "@/components/reports/report-ui";
 import { Card, NoPlanNotice, PlanActualCell, Tag, pctText, ratioOf, type Tone } from "@/components/reports/planning/planning-ui";
-import { type PlanningData, type PlannedGroup, type PlannedItem, type StatementLine } from "@/components/reports/planning/planning-types";
+import { type PlanningData, type PlannedGroup, type PlannedItem, type Series, type StatementLine } from "@/components/reports/planning/planning-types";
 
 /**
  * Màn "Dự báo P&L" — bảng hoạch định 12 tháng học theo phần mềm mẫu: mỗi khối (Doanh thu,
@@ -35,6 +35,21 @@ const RATIO_AFTER: Record<string, string> = { grossProfit: "Tỷ suất LN gộp
 const isEmptyNode = (node: { months: number[]; plan: number[] | null }) =>
   node.months.every((value) => Math.abs(value) <= 0.5) && (!node.plan || node.plan.every((value) => Math.abs(value) <= 0.5));
 
+/**
+ * Khối DOANH THU không xoè theo cây "nhóm doanh thu × kênh bán" nữa.
+ *
+ * Cây đó nhân chéo 5 nhóm với mọi kênh bán ra 15 dòng, phần lớn bằng 0 (chốt với khách
+ * 15/09/2026). File Excel khách đang dùng chia doanh thu làm HAI CÁCH NHÌN phẳng, mỗi cách
+ * đọc từ một cột khác nhau của file POS và cùng cộng ra một tổng:
+ *   - Theo nguồn:   cột Kênh bán  (Tại chỗ / Grab / Mang về...)  + SVC + Thuế GTGT
+ *   - Theo bộ phận: cột Bộ phận   (Bếp / Bar / Phụ thu...)        + SVC + Thuế GTGT
+ * Số lấy thẳng từ `revenueSplit` mà server đã dựng sẵn cho các chart — không tính lại.
+ */
+type BreakdownRow = Series & { hint?: string };
+type RevenueBreakdown = { key: string; title: string; hint: string; rows: BreakdownRow[]; months: number[]; total: number };
+
+const sumMonths = (months: number[]) => months.reduce((total, value) => total + value, 0);
+
 /** Chip CĐ/MKT/BĐ cho nhóm OPEX — đọc từ tên nhóm giống thứ tự sắp xếp trên bảng. */
 function natureTag(lineKey: string, name: string) {
   if (lineKey !== "otherOpex") return null;
@@ -59,6 +74,24 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
    */
   const [hideEmpty, setHideEmpty] = useState(true);
   const monthHeaders = data.months.map((month) => `T${Number(month.slice(5))}`);
+  const revenueBreakdowns = useMemo<RevenueBreakdown[]>(() => {
+    const { byChannel, byDepartment, svc, vat } = data.revenueSplit;
+    // SVC và thuế GTGT là hai cột riêng trên file POS, không thuộc kênh bán hay bộ phận nào,
+    // nên đứng thành dòng riêng ở CẢ HAI cách nhìn — giống hệt file Excel khách đang dùng.
+    const tail: BreakdownRow[] = [
+      { code: "__SVC", name: "Phụ thu SVC", months: svc, total: sumMonths(svc) },
+      { code: "__VAT", name: "Thuế GTGT", months: vat, total: sumMonths(vat) },
+    ];
+    const build = (key: string, title: string, hint: string, series: Series[]): RevenueBreakdown => {
+      const rows = [...series, ...tail];
+      const months = data.months.map((_, index) => rows.reduce((total, row) => total + (row.months[index] || 0), 0));
+      return { key, title, hint, rows, months, total: sumMonths(months) };
+    };
+    return [
+      build("rev-by-channel", "Doanh thu theo nguồn", "Cột Kênh bán trên file POS", byChannel),
+      build("rev-by-department", "Doanh thu theo bộ phận", "Cột Bộ phận trên file POS", byDepartment),
+    ];
+  }, [data.revenueSplit, data.months]);
   const toggle = (key: string) => setCollapsed((current) => ({ ...current, [key]: !current[key] }));
   const setAll = (next: boolean) => {
     const map: Record<string, boolean> = {};
@@ -83,6 +116,17 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
     };
     for (const line of data.statement) {
       push("", line.label, line);
+      // Khối doanh thu xuất đúng cái đang thấy trên màn: hai cách nhìn phẳng, không phải cây cũ.
+      if (line.key === "revenue") {
+        for (const breakdown of revenueBreakdowns) {
+          push("    ", breakdown.title, { months: breakdown.months, total: breakdown.total, plan: null, planTotal: null });
+          for (const row of breakdown.rows) {
+            if (hideEmpty && isEmptyNode({ months: row.months, plan: null })) continue;
+            push("        ", row.name, { months: row.months, total: row.total, plan: null, planTotal: null });
+          }
+        }
+        continue;
+      }
       for (const group of line.groups) {
         if (hideEmpty && isEmptyNode(group)) continue;
         push("    ", group.name, group);
@@ -159,6 +203,56 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
     );
   };
 
+  /** Một cách nhìn doanh thu: dòng tiêu đề thu gọn được + các dòng con + dòng Cộng. */
+  const renderRevenueBreakdown = (line: StatementLine, breakdown: RevenueBreakdown) => {
+    const key = `${line.key}:${breakdown.key}`;
+    const rows = hideEmpty
+      ? breakdown.rows.filter((row) => !isEmptyNode({ months: row.months, plan: null }))
+      : breakdown.rows;
+    // Doanh thu trên P&L đọc từ bút toán 511, hai bảng này đọc từ file POS. Bình thường bằng
+    // nhau; lệch là có doanh thu ghi bằng phiếu thu tay hoặc file chưa ghi sổ — phải hiện ra
+    // chứ không được lặng lẽ vẽ một cái tổng khác với dòng TỔNG DOANH THU ngay bên dưới.
+    const gap = line.months.map((value, index) => value - (breakdown.months[index] || 0));
+    const hasGap = gap.some((value) => Math.abs(value) > 1);
+    return (
+      <React.Fragment key={key}>
+        <tr className="border-t border-slate-100 bg-slate-50/60 cursor-pointer hover:bg-slate-100" onClick={() => toggle(key)}>
+          {stickyCell("bg-slate-50/60", (
+            <div className="pl-5 flex items-center gap-1.5">
+              <span className="material-symbols-outlined text-base text-slate-400">{collapsed[key] ? "chevron_right" : "expand_more"}</span>
+              <div>
+                <p className="text-[13px] font-bold text-slate-700 whitespace-nowrap">{breakdown.title}</p>
+                <p className="mt-0.5 text-[10px] text-slate-400">{breakdown.hint} · {rows.length} dòng</p>
+              </div>
+            </div>
+          ))}
+          {cells({ months: breakdown.months, total: breakdown.total, plan: null, planTotal: null }, true)}
+        </tr>
+        {!collapsed[key] && rows.map((row) => (
+          <tr key={`${key}:${row.code}`} className="border-t border-slate-100 bg-white hover:bg-slate-50">
+            {stickyCell("bg-white", (
+              <div className="pl-12">
+                <p className="text-[13px] font-semibold text-slate-700 whitespace-nowrap">{row.name}</p>
+                <p className="mt-0.5 text-[10px] text-slate-400">KH set ở cấp dòng</p>
+              </div>
+            ))}
+            {cells({ months: row.months, total: row.total, plan: null, planTotal: null }, true)}
+          </tr>
+        ))}
+        {!collapsed[key] && hasGap && (
+          <tr className="border-t border-slate-100 bg-amber-50">
+            {stickyCell("bg-amber-50", (
+              <p className="pl-12 text-[12px] font-semibold text-amber-800 whitespace-nowrap" title="Doanh thu trên sổ cái (TK 511) trừ đi tổng của bảng này. Khác 0 nghĩa là có doanh thu không đến từ file POS, hoặc file đã import mà chưa Đồng bộ ghi sổ.">
+                Chênh với sổ cái
+              </p>
+            ))}
+            {cells({ months: gap, total: line.total - breakdown.total, plan: null, planTotal: null }, true)}
+          </tr>
+        )}
+      </React.Fragment>
+    );
+  };
+
   const renderRatioRow = (line: StatementLine) => {
     const revenue = data.statement.find((row) => row.key === "revenue");
     if (!revenue) return null;
@@ -193,27 +287,36 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
         </React.Fragment>
       );
     }
+    const isRevenue = line.key === "revenue";
     const groups = hideEmpty ? line.groups.filter((group) => !isEmptyNode(group)) : line.groups;
     // Đếm theo đúng những gì đang vẽ: trước đây badge đếm cả nhóm/hạng mục vừa bị "Ẩn dòng
     // bằng 0" giấu đi nên bảng ghi "4 nhóm" mà chỉ thấy 3.
     const itemCount = groups.reduce((sum, group) => sum + (hideEmpty ? group.items.filter((item) => !isEmptyNode(item)).length : group.items.length), 0);
+    const expandable = isRevenue ? revenueBreakdowns.length > 0 : groups.length > 0;
+    const badge = isRevenue
+      ? `${revenueBreakdowns.length} cách nhìn`
+      : itemCount > 0 ? `${groups.length} nhóm · ${itemCount} hạng mục` : `${groups.length} nguồn`;
     return (
       <React.Fragment key={line.key}>
-        <tr className={`border-t border-slate-200 ${style.band} ${groups.length > 0 ? "cursor-pointer" : ""}`} onClick={groups.length > 0 ? () => toggle(line.key) : undefined}>
+        <tr className={`border-t border-slate-200 ${style.band} ${expandable ? "cursor-pointer" : ""}`} onClick={expandable ? () => toggle(line.key) : undefined}>
           {stickyCell(style.band, (
             <p className="text-[12px] font-extrabold tracking-wide flex items-center gap-1.5 whitespace-nowrap">
-              <span className="material-symbols-outlined text-base">{groups.length === 0 ? style.icon : collapsed[line.key] ? "chevron_right" : "expand_more"}</span>
+              <span className="material-symbols-outlined text-base">{!expandable ? style.icon : collapsed[line.key] ? "chevron_right" : "expand_more"}</span>
               {style.title}
-              <span className="ml-1 rounded-md bg-white/70 px-1.5 py-0.5 text-[10px] font-bold">{itemCount > 0 ? `${groups.length} nhóm · ${itemCount} hạng mục` : `${groups.length} nguồn`}</span>
+              <span className="ml-1 rounded-md bg-white/70 px-1.5 py-0.5 text-[10px] font-bold">{badge}</span>
             </p>
           ))}
           <td colSpan={13} className="px-3 py-2 text-[11px] font-semibold opacity-80 whitespace-nowrap">
             {line.key === "capex"
               ? "Tiền mua tài sản/CCDC trong kỳ — dòng thông tin, KHÔNG trừ vào lợi nhuận (chi phí của tài sản vào P&L qua hạng mục CP Khấu Hao trong Chi phí cố định)"
-              : "Kế hoạch (đậm) · Thực đạt (chip) · % hoàn thành"}
+              : isRevenue
+                ? "Hai cách nhìn cùng một doanh thu: theo nguồn (kênh bán) và theo bộ phận — kế hoạch set ở cấp dòng"
+                : "Kế hoạch (đậm) · Thực đạt (chip) · % hoàn thành"}
           </td>
         </tr>
-        {!collapsed[line.key] && groups.map((group) => renderGroup(line, group))}
+        {!collapsed[line.key] && (isRevenue
+          ? revenueBreakdowns.map((breakdown) => renderRevenueBreakdown(line, breakdown))
+          : groups.map((group) => renderGroup(line, group)))}
         <tr className={`border-t border-slate-200 ${style.total}`}>
           {stickyCell(style.total, <p className="text-[12px] font-extrabold tracking-wide whitespace-nowrap">TỔNG {style.title}</p>)}
           {cells(line, income)}
