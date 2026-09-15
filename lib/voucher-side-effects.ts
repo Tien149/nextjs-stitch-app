@@ -1,10 +1,37 @@
-import type { RawTxClient } from "@/lib/prisma";
+import type { prisma, RawTxClient } from "@/lib/prisma";
+import { branchCodeFromInternalPartner } from "@/lib/cost-reallocation";
+import { ensureInternalPartner } from "@/lib/internal-partner";
 import { buildAllocationSchedules } from "@/lib/phase3";
 import { ADVANCE_RECEIVABLE_ACTION } from "@/lib/voucher-rules";
 
 /** Mã khoản phải thu sinh từ phiếu chi hộ — suy được từ mã phiếu nên duyệt lại không tạo trùng. */
 export function advanceReceivableDebtCode(voucherCode: string) {
   return `CNTHU-${voucherCode}`;
+}
+
+/**
+ * Mã khoản PHẢI TRẢ nội bộ ở sổ nhà hàng được chi hộ — vế đối ứng của `CNTHU-<mã phiếu>`.
+ * Cùng quy ước đuôi "-PTR" với phiếu điều tiền và phiếu điều chuyển kho liên nhà hàng.
+ */
+export function advanceReceivableCounterpartDebtCode(voucherCode: string) {
+  return `${advanceReceivableDebtCode(voucherCode)}-PTR`;
+}
+
+/**
+ * Nhà hàng được chi hộ, khi "đối tác sẽ trả lại tiền" là một nhà hàng trong nhà.
+ * Chi hộ cho đối tác BÊN NGOÀI trả null: khoản nợ đó không thuộc sổ của nhà hàng nào khác.
+ */
+export function advanceReceivableBeneficiaryBranch(voucher: {
+  voucherType: string;
+  branchCode: string;
+  debtAction: string | null;
+  receivablePartnerCode?: string | null;
+}) {
+  if (voucher.voucherType !== "PAYMENT" || voucher.debtAction !== ADVANCE_RECEIVABLE_ACTION) return null;
+  const beneficiaryBranch = branchCodeFromInternalPartner(voucher.receivablePartnerCode);
+  const payerBranch = (voucher.branchCode || "").trim().toUpperCase();
+  if (!beneficiaryBranch || !payerBranch || beneficiaryBranch === payerBranch) return null;
+  return beneficiaryBranch;
 }
 
 /** Gạch một khoản công nợ cho phiếu: dùng chung cho phiếu 1 đối tác lẫn từng dòng phân bổ. */
@@ -167,6 +194,7 @@ export async function applyVoucherSideEffects(
   // phiếu: duyệt lại hoặc sửa phiếu không được tạo thành hai khoản nợ.
   if (voucher.voucherType === "PAYMENT" && voucher.debtAction === ADVANCE_RECEIVABLE_ACTION) {
     if (!voucher.receivablePartnerCode) throw new Error("Chi hộ bắt buộc chọn đối tác sẽ trả lại tiền");
+    const beneficiaryBranch = advanceReceivableBeneficiaryBranch(voucher);
     const code = advanceReceivableDebtCode(voucher.code);
     const existing = await tx.debtRecord.findUnique({ where: { code } });
     if (existing?.deletedAt) {
@@ -177,7 +205,9 @@ export async function applyVoucherSideEffects(
         data: {
           code,
           debtType: "RECEIVABLE",
-          partnerGroup: "EXTERNAL",
+          // Chi hộ một nhà hàng khác là công nợ nội bộ; để EXTERNAL thì màn Công nợ xếp nhà
+          // hàng nhà mình vào nhóm "Bên ngoài" và bộ lọc Nội bộ không thấy khoản này.
+          partnerGroup: beneficiaryBranch ? "INTERNAL" : "EXTERNAL",
           partnerCode: voucher.receivablePartnerCode,
           partnerName: voucher.receivablePartnerName || voucher.receivablePartnerCode,
           branchCode: voucher.branchCode,
@@ -191,6 +221,38 @@ export async function applyVoucherSideEffects(
           status: "OPEN",
         },
       });
+    }
+
+    // Vế còn lại nằm ở sổ nhà hàng được chi hộ: nó thôi nợ NCC (tiền đã trả rồi) và quay
+    // sang nợ nhà hàng đã ứng tiền. Thiếu khoản này thì công nợ NCC bên đó treo mãi, còn
+    // nhìn toàn công ty thì khoản phải thu nội bộ không có gì triệt tiêu.
+    if (beneficiaryBranch) {
+      const counterpartCode = advanceReceivableCounterpartDebtCode(voucher.code);
+      const existingCounterpart = await tx.debtRecord.findUnique({ where: { code: counterpartCode } });
+      if (existingCounterpart?.deletedAt) {
+        throw new Error(`Khoản phải trả nội bộ ${counterpartCode} đang nằm trong Thùng rác. Hãy khôi phục hoặc xóa hẳn trước khi duyệt lại phiếu.`);
+      }
+      if (!existingCounterpart) {
+        const payerPartner = await ensureInternalPartner(tx as unknown as typeof prisma, voucher.branchCode);
+        await tx.debtRecord.create({
+          data: {
+            code: counterpartCode,
+            debtType: "PAYABLE",
+            partnerGroup: "INTERNAL",
+            partnerCode: payerPartner.code,
+            partnerName: payerPartner.name,
+            branchCode: beneficiaryBranch,
+            documentDate: voucher.voucherDate,
+            categoryCode: voucher.categoryCode,
+            originalAmount: voucher.amount,
+            outstandingAmount: voucher.amount,
+            description: `Hoàn lại ${voucher.branchCode} khoản đã chi hộ theo chứng từ ${voucher.code}: ${voucher.description}`,
+            sourceType: "VOUCHER",
+            sourceId: voucher.id,
+            status: "OPEN",
+          },
+        });
+      }
     }
   }
 

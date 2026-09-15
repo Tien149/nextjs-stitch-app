@@ -6,6 +6,7 @@ import { DateInput, MonthInput } from "@/components/DateInput";
 import { ModuleFrame } from "@/components/ModuleFrame";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { storeLabel, updateDynamicBranches } from "@/lib/branch-labels";
+import { isInternalPartnerCode } from "@/lib/cost-reallocation";
 import { appMenuItems, canAccessMenu, canEditPastVoucher, canPerformAction, canPerformMenuAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import { ADVANCE_RECEIVABLE_ACTION, DEBT_COLLECTION_PURPOSE, isPartnerAllowedForVoucher, isSameCalendarDay, normalizeCashflowCategoryType, PAYMENT_PURPOSES, PREPAID_ALLOCATION_ACTION, RECEIPT_PURPOSES, voucherEditWindowError } from "@/lib/voucher-rules";
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup, summaryMoneySourceGroups } from "@/lib/money-sources";
@@ -1312,6 +1313,9 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                       />
                       <span className="mt-1 block text-[11px] font-medium text-slate-500">
                         Khi duyệt, phiếu sinh một khoản phải thu <span className="font-bold">CNTHU-&lt;mã phiếu&gt;</span> cho đối tác này. Lúc họ trả tiền thì lập phiếu thu gạch đúng mã đó.
+                        {isInternalPartnerCode(form.receivablePartnerCode) && (
+                          <> Chi hộ nhà hàng khác còn ghi thêm vế bên đó: <span className="font-bold">giảm công nợ nhà cung cấp</span> và chuyển thành khoản phải trả nội bộ cho {form.branchCode || "nhà hàng lập phiếu"}.</>
+                        )}
                       </span>
                     </div>
                   )}

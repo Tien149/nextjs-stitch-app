@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { paymentCounterAccount, voucherJournalLines } from "../lib/voucher-accounting.ts";
+import { advanceReceivableCounterpartJournal, paymentCounterAccount, voucherJournalLines } from "../lib/voucher-accounting.ts";
 import { ADVANCE_RECEIVABLE_ACTION, normalizePaymentPurpose, validatePaymentPurpose } from "../lib/voucher-rules.ts";
-import { advanceReceivableDebtCode } from "../lib/voucher-side-effects.ts";
+import {
+  advanceReceivableBeneficiaryBranch,
+  advanceReceivableCounterpartDebtCode,
+  advanceReceivableDebtCode,
+} from "../lib/voucher-side-effects.ts";
 
 const chiHo = {
   voucherType: "PAYMENT",
@@ -54,4 +58,50 @@ test("nội dung chi chỉ áp cho phiếu Chi và bắt buộc có đối tác 
 
 test("mã khoản phải thu suy được từ mã phiếu nên duyệt lại không tạo trùng", () => {
   assert.equal(advanceReceivableDebtCode("UNC-2608-NME-00104"), "CNTHU-UNC-2608-NME-00104");
+});
+
+/**
+ * Nam Mê trả tiền cho NCC thay Asa. Vế bên Nam Mê (tiền ra, treo phải thu nội bộ) vốn đã
+ * chạy đúng; thứ còn thiếu là vế bên Asa — nợ NCC của Asa phải tụt xuống và chuyển thành
+ * nợ Nam Mê, nếu không Asa treo công nợ NCC mãi dù tiền đã trả.
+ */
+const chiHoNoiBo = {
+  ...chiHo,
+  branchCode: "NME",
+  receivablePartnerCode: "NB-ASA",
+};
+
+test("chi hộ nhà hàng khác treo phải thu NỘI BỘ 1368, không phải 131", () => {
+  assert.equal(paymentCounterAccount(chiHoNoiBo, "OPEX").account, "1368");
+  const debit = voucherJournalLines(chiHoNoiBo, "OPEX", "OPEX").lines.find((line) => line.debit);
+  assert.equal(debit.accountCode, "1368");
+  assert.equal(debit.partnerCode, "NB-ASA");
+  // Chi hộ đối tác bên ngoài không đổi: vẫn là phải thu 131 như trước.
+  assert.equal(paymentCounterAccount(chiHo, "OPEX").account, "131");
+});
+
+test("nhà hàng được chi hộ suy từ đối tác nội bộ, đối tác ngoài thì không có", () => {
+  assert.equal(advanceReceivableBeneficiaryBranch(chiHoNoiBo), "ASA");
+  assert.equal(advanceReceivableBeneficiaryBranch({ ...chiHo, branchCode: "NME" }), null);
+  // Chọn đúng nhà hàng của chính phiếu thì không có vế đối ứng nào cả.
+  assert.equal(advanceReceivableBeneficiaryBranch({ ...chiHoNoiBo, receivablePartnerCode: "NB-NME" }), null);
+  assert.equal(advanceReceivableBeneficiaryBranch({ ...chiHoNoiBo, debtAction: null }), null);
+});
+
+test("bút toán đối ứng ghi ở sổ nhà hàng được chi hộ: giảm 331 NCC, tăng 3368 nội bộ", () => {
+  const counterpart = advanceReceivableCounterpartJournal(chiHoNoiBo);
+  assert.equal(counterpart.branchCode, "ASA");
+  const debit = counterpart.lines.find((line) => line.debit);
+  assert.equal(debit.accountCode, "331");
+  assert.equal(debit.debit, 6_000_000);
+  assert.equal(debit.partnerCode, "NCC001");
+  const credit = counterpart.lines.find((line) => line.credit);
+  assert.equal(credit.accountCode, "3368");
+  assert.equal(credit.partnerCode, "NB-NME");
+  // Chi hộ đối tác bên ngoài là nợ của chính nhà hàng lập phiếu — không có sổ nào khác để ghi.
+  assert.equal(advanceReceivableCounterpartJournal({ ...chiHo, branchCode: "NME" }), null);
+});
+
+test("mã công nợ hai vế suy được từ mã phiếu nên duyệt lại không tạo trùng", () => {
+  assert.equal(advanceReceivableCounterpartDebtCode("UNC-2608-NME-00166"), "CNTHU-UNC-2608-NME-00166-PTR");
 });

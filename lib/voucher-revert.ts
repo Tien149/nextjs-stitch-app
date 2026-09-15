@@ -1,5 +1,5 @@
 import type { RawTxClient } from "@/lib/prisma";
-import { advanceReceivableDebtCode } from "@/lib/voucher-side-effects";
+import { advanceReceivableCounterpartDebtCode, advanceReceivableDebtCode } from "@/lib/voucher-side-effects";
 import { ADVANCE_RECEIVABLE_ACTION } from "@/lib/voucher-rules";
 
 /**
@@ -118,20 +118,28 @@ async function revertDebtSettlement(tx: RawTxClient, voucher: VoucherForRevert) 
   }
 }
 
-/** Phiếu chi hộ: trả lại khoản phải thu đã sinh lúc duyệt, trừ khi nó đã được thu một phần. */
+/**
+ * Phiếu chi hộ: trả lại khoản phải thu đã sinh lúc duyệt, trừ khi nó đã được thu một phần.
+ * Chi hộ nhà hàng khác còn có vế phải trả nội bộ ở sổ bên kia — gỡ luôn, nếu không bên đó
+ * còn treo một khoản nợ của phiếu không còn tồn tại.
+ */
 async function revertAdvanceReceivable(tx: RawTxClient, voucher: VoucherForRevert) {
   if (voucher.voucherType !== "PAYMENT" || voucher.debtAction !== ADVANCE_RECEIVABLE_ACTION) return;
 
-  const code = advanceReceivableDebtCode(voucher.code);
-  const debt = await tx.debtRecord.findFirst({ where: { code, deletedAt: null } });
-  if (!debt) return;
+  for (const [code, label] of [
+    [advanceReceivableDebtCode(voucher.code), "phải thu"],
+    [advanceReceivableCounterpartDebtCode(voucher.code), "phải trả nội bộ"],
+  ] as const) {
+    const debt = await tx.debtRecord.findFirst({ where: { code, deletedAt: null } });
+    if (!debt) continue;
 
-  const settlements = await tx.debtSettlement.count({ where: { debtId: debt.id } });
-  if (settlements > 0) {
-    fail(`Khoản phải thu ${code} đã được thu một phần. Hãy bỏ duyệt phiếu thu đó trước khi sửa/bỏ duyệt phiếu chi hộ.`);
+    const settlements = await tx.debtSettlement.count({ where: { debtId: debt.id } });
+    if (settlements > 0) {
+      fail(`Khoản ${label} ${code} đã được gạch một phần. Hãy bỏ duyệt phiếu gạch nợ đó trước khi sửa/bỏ duyệt phiếu chi hộ.`);
+    }
+
+    await tx.debtRecord.delete({ where: { id: debt.id } });
   }
-
-  await tx.debtRecord.delete({ where: { id: debt.id } });
 }
 
 async function revertAccrual(tx: RawTxClient, voucher: VoucherForRevert) {

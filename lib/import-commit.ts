@@ -2181,7 +2181,7 @@ async function rollbackVouchers(tx: RawTxClient, batchId: string) {
   const voucherIds = vouchers.map((voucher) => voucher.id);
   if (voucherIds.length === 0) return;
 
-  await tx.journalEntry.deleteMany({ where: { sourceType: "VOUCHER", sourceId: { in: voucherIds } } });
+  await tx.journalEntry.deleteMany({ where: { sourceType: { in: ["VOUCHER", "VOUCHER_COUNTERPART"] }, sourceId: { in: voucherIds } } });
 
   const histories = await tx.depositHistory.findMany({
     where: { voucherId: { in: voucherIds } },

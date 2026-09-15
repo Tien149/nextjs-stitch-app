@@ -24,6 +24,23 @@ export function internalPartnerCode(branchCode: string) {
   return `NB-${branchCode.trim().toUpperCase()}`;
 }
 
+const INTERNAL_PARTNER_PREFIX = "NB-";
+
+/** Đối tác này là một nhà hàng trong nhà (công nợ nội bộ) hay đối tác bên ngoài. */
+export function isInternalPartnerCode(partnerCode: string | null | undefined) {
+  return (partnerCode || "").trim().toUpperCase().startsWith(INTERNAL_PARTNER_PREFIX);
+}
+
+/**
+ * Nhà hàng đứng sau một mã đối tác nội bộ; trả null nếu đó là đối tác bên ngoài.
+ * Dùng để biết khoản chi hộ đang gánh nợ cho nhà hàng nào.
+ */
+export function branchCodeFromInternalPartner(partnerCode: string | null | undefined) {
+  const code = (partnerCode || "").trim().toUpperCase();
+  if (!code.startsWith(INTERNAL_PARTNER_PREFIX)) return null;
+  return code.slice(INTERNAL_PARTNER_PREFIX.length) || null;
+}
+
 export type CostReallocationLineInput = {
   toBranchCode: string;
   amount: number;

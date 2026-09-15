@@ -1,12 +1,14 @@
 import { prisma } from "@/lib/prisma";
 import { addPeriod, businessError, isPeriodLocked, periodFromDate } from "@/lib/phase3";
 import type { DemoSession } from "@/lib/auth-demo";
-import { voucherJournalLines } from "@/lib/voucher-accounting";
+import { advanceReceivableCounterpartJournal, voucherJournalLines } from "@/lib/voucher-accounting";
 import { normalizeCategoryGroup } from "@/lib/voucher-rules";
 import { moneySourceAccountCode } from "@/lib/money-sources";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/lib/money-transfer-date";
 import { planMoneyTransferJournals } from "@/lib/internal-transfer";
+import { internalPartnerCode } from "@/lib/cost-reallocation";
+import { ADVANCE_RECEIVABLE_ACTION } from "@/lib/voucher-rules";
 import { REVENUE_CHANNEL_PNL_ITEMS, revenuePosFees, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { ensureRevenueCategories, type CategoryLookupClient } from "@/lib/revenue-source";
 import { WALLET_FEE_PNL_ITEMS } from "@/lib/wallet-settlement-allocation";
@@ -364,7 +366,12 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
     results.push(await postJournalEntry({ entryDate: row.saleDate, branchCode: row.branchCode, sourceType: "REVENUE_POS", sourceId: row.id, sourceCode: row.externalRef, description: `Doanh thu ${row.externalRef}`, createdBy: actor, lines }));
   }
 
-  const vouchers = await prisma.financialVoucher.findMany({ where: { ...branchFilter, voucherDate: { gte: start, lt: end }, status: "APPROVED" } });
+  // Phiếu chi hộ nhà hàng khác ghi sổ ở CẢ hai cửa hàng (bên ứng tiền và bên được chi hộ),
+  // nên khi ghi sổ một cửa hàng phải lấy thêm phiếu do cửa hàng bên kia lập.
+  const voucherBranchFilter = branchCode === "ALL"
+    ? {}
+    : { OR: [{ branchCode }, { debtAction: ADVANCE_RECEIVABLE_ACTION, receivablePartnerCode: internalPartnerCode(branchCode) }] };
+  const vouchers = await prisma.financialVoucher.findMany({ where: { ...voucherBranchFilter, voucherDate: { gte: start, lt: end }, status: "APPROVED" } });
   // Nhóm khoản mục quyết định phiếu chi vào chi phí, giá vốn hay tài sản.
   const [voucherCategories, pnlItems] = await Promise.all([
     prisma.masterDataItem.findMany({ where: { type: "REVENUE_EXPENSE_CATEGORY" } }),
@@ -382,6 +389,20 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
       row.pnlItemCode ? pnlItemGroupByCode.get(row.pnlItemCode) ?? null : null,
     );
     results.push(await postJournalEntry({ entryDate: row.voucherDate, branchCode: row.branchCode, sourceType: "VOUCHER", sourceId: row.id, sourceCode: row.code, description: row.description, createdBy: actor, lines }));
+    // Vế đối ứng ở sổ nhà hàng được chi hộ: giảm phải trả NCC, tăng phải trả nội bộ.
+    const counterpart = advanceReceivableCounterpartJournal(row);
+    if (counterpart) {
+      results.push(await postJournalEntry({
+        entryDate: row.voucherDate,
+        branchCode: counterpart.branchCode,
+        sourceType: "VOUCHER_COUNTERPART",
+        sourceId: row.id,
+        sourceCode: row.code,
+        description: `${row.branchCode} chi hộ: ${row.description}`,
+        createdBy: actor,
+        lines: counterpart.lines as EntryLine[],
+      }));
+    }
   }
 
   /**

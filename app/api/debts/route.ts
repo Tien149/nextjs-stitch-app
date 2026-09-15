@@ -7,6 +7,9 @@ import { writeAuditLog } from "@/lib/audit-log";
 import { softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { debtGroupCode, stripDebtLineSuffix } from "@/lib/debt-group";
+import { internalPartnerCode } from "@/lib/cost-reallocation";
+import { ADVANCE_RECEIVABLE_ACTION } from "@/lib/voucher-rules";
+import { advanceReceivableBeneficiaryBranch } from "@/lib/voucher-side-effects";
 import { bankSigned, debtBalanceOf, debtRecordSigned, depositSigned, openingBalanceSigned, voucherSigned } from "@/lib/debt-balance";
 
 const debtTypes = ["RECEIVABLE", "PAYABLE"];
@@ -125,15 +128,35 @@ export async function GET(request: Request) {
     const branchFilter = branchCode === "ALL" ? {} : { branchCode };
     const range = parseDateRange(searchParams.get("fromDate"), searchParams.get("toDate"));
 
-    const [partners, openingBalances, deposits, bankRows, vouchers, purchasePayables, debtRecords] = await Promise.all([
+    const [partners, openingBalances, deposits, bankRows, ownVouchers, advanceVouchers, purchasePayables, debtRecords] = await Promise.all([
       prisma.masterDataItem.findMany({ where: { type: "PARTNER" } }),
       prisma.openingBalance.findMany({ where: { balanceType: { in: ["AR", "AP"] }, ...branchFilter } }),
       prisma.deposit.findMany({ where: branchFilter }),
       prisma.bankStatementTransaction.findMany({ where: { partnerHint: { not: null }, ...(branchCode === "ALL" ? {} : { branchCode }) } }),
       prisma.financialVoucher.findMany({ where: { partnerCode: { not: null }, status: "APPROVED", debtAction: null, ...branchFilter } }),
+      // Phiếu chi hộ NHÀ HÀNG KHÁC lập ở cửa hàng đã ứng tiền, nhưng khoản NCC nó trả là nợ
+      // của cửa hàng được chi hộ — nên phải lấy theo "đối tác sẽ trả lại tiền", không theo
+      // cửa hàng của phiếu. Thiếu vế này thì công nợ NCC bên được chi hộ treo mãi dù tiền
+      // đã trả (feedback khách 15/09/2026).
+      prisma.financialVoucher.findMany({
+        where: {
+          voucherType: "PAYMENT",
+          status: "APPROVED",
+          debtAction: ADVANCE_RECEIVABLE_ACTION,
+          partnerCode: { not: null },
+          ...(branchCode === "ALL" ? { receivablePartnerCode: { not: null } } : { receivablePartnerCode: internalPartnerCode(branchCode) }),
+        },
+      }),
       prisma.supplierPayable.findMany({ where: branchCode === "ALL" ? {} : { purchaseOrder: { branchCode } }, include: { purchaseOrder: true } }),
       prisma.debtRecord.findMany({ where: branchFilter }),
     ]);
+
+    // Chi hộ đối tác BÊN NGOÀI không nằm ở đây: khoản đó là nợ của chính cửa hàng lập phiếu,
+    // đã treo phải thu CNTHU rồi, gạch thêm vào NCC nữa là trừ hai lần.
+    const vouchers = [
+      ...ownVouchers,
+      ...advanceVouchers.filter((row) => advanceReceivableBeneficiaryBranch(row) !== null),
+    ];
 
     if (partnerCode) {
       const ledger: LedgerRow[] = [];
@@ -169,7 +192,11 @@ export async function GET(request: Request) {
           date: item.voucherDate,
           source: "VOUCHER",
           code: item.code,
-          description: item.description,
+          // Dòng chi hộ là phiếu của cửa hàng KHÁC đứng ra trả: nói rõ ai trả, nếu không kế
+          // toán mở sổ ra thấy một mã phiếu lạ không thuộc cửa hàng đang xem.
+          description: item.debtAction === ADVANCE_RECEIVABLE_ACTION
+            ? `${item.branchCode} chi hộ theo chứng từ ${item.code}: ${item.description}`
+            : item.description,
           amount: voucherSigned(item.voucherType, item.amount),
         });
       }

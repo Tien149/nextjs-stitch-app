@@ -37,6 +37,7 @@
     "repair:wallet-revenue-date": "node scripts/repair-wallet-revenue-date.cjs",
     "test:wallet-revenue-date": "node scripts/repair-wallet-revenue-date.cjs --self-test",
     "backfill:wallet-manual": "node scripts/backfill-wallet-manual-reconciliation.cjs",
+    "backfill:chi-ho-noi-bo": "node scripts/backfill-advance-receivable-counterpart.cjs",
     "test:wallet-backfill": "node scripts/backfill-wallet-manual-reconciliation.cjs --self-test",
     "test:daily-deposits": "node --experimental-strip-types scripts/test-daily-deposit-report.mjs",
     "test:bank-deposits": "node --experimental-strip-types scripts/test-bank-statement-deposit.mjs",

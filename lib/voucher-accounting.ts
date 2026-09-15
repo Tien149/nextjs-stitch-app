@@ -1,3 +1,10 @@
+import {
+  branchCodeFromInternalPartner,
+  INTERNAL_PAYABLE_ACCOUNT,
+  INTERNAL_RECEIVABLE_ACCOUNT,
+  internalPartnerCode,
+  isInternalPartnerCode,
+} from "@/lib/cost-reallocation";
 import { ADVANCE_RECEIVABLE_ACTION, PREPAID_ALLOCATION_ACTION } from "@/lib/voucher-rules";
 
 /**
@@ -79,6 +86,12 @@ export function paymentCounterAccount(voucher: VoucherForPosting, categoryGroup:
     return { account: "331", reason: "Trả nợ nhà cung cấp — không phải chi phí phát sinh mới" };
   }
   if (voucher.debtAction === ADVANCE_RECEIVABLE_ACTION) {
+    // Chi hộ một nhà hàng khác là công nợ NỘI BỘ: để ở 131 thì toàn công ty thấy một khoản
+    // phải thu bên ngoài không bao giờ triệt tiêu, trong khi 1368 khớp thẳng với 3368 mà nhà
+    // hàng thụ hưởng ghi ở bút toán đối ứng.
+    if (isInternalPartnerCode(voucher.receivablePartnerCode)) {
+      return { account: INTERNAL_RECEIVABLE_ACCOUNT, reason: "Chi hộ nhà hàng khác — treo phải thu nội bộ, không phải chi phí" };
+    }
     return { account: "131", reason: "Chi hộ — treo phải thu của đối tác sẽ hoàn lại, không phải chi phí" };
   }
   // Chi trả trước: tiền ra một cục nhưng chi phí thuộc về nhiều kỳ sau. Vào chi phí ngay ở đây
@@ -132,6 +145,38 @@ export function voucherJournalLines(voucher: VoucherForPosting, categoryGroup: s
         pnlItemCode: isAdvanceReceivable || isPrepaidAllocation ? null : voucher.pnlItemCode,
       },
       { accountCode: cashAccount, credit: voucher.amount },
+    ] as JournalLineInput[],
+  };
+}
+
+/**
+ * Bút toán ĐỐI ỨNG của phiếu chi hộ nhà hàng khác, ghi ở sổ của nhà hàng được chi hộ.
+ *
+ * Nam Mê trả tiền cho NCC thay Asa thì bên Nam Mê chỉ có "tiền ra, treo phải thu nội bộ".
+ * Nếu dừng ở đó, khoản NCC mà Asa đang nợ vẫn nằm nguyên trên sổ Asa dù tiền đã trả — đúng
+ * lỗi khách báo. Vế còn lại của nghiệp vụ nằm ở sổ Asa: GIẢM phải trả NCC, chuyển sang PHẢI
+ * TRẢ NỘI BỘ Nam Mê. Hai tài khoản 1368/3368 triệt tiêu nhau khi xem toàn công ty.
+ *
+ * Trả null khi phiếu không phải chi hộ nội bộ (chi hộ đối tác bên ngoài giữ nguyên như cũ).
+ */
+export function advanceReceivableCounterpartJournal(voucher: {
+  voucherType: string;
+  amount: number;
+  branchCode: string;
+  partnerCode: string | null;
+  receivablePartnerCode?: string | null;
+  debtAction: string | null;
+}) {
+  if (voucher.voucherType !== "PAYMENT" || voucher.debtAction !== ADVANCE_RECEIVABLE_ACTION) return null;
+  const beneficiaryBranch = branchCodeFromInternalPartner(voucher.receivablePartnerCode);
+  const payerBranch = (voucher.branchCode || "").trim().toUpperCase();
+  if (!beneficiaryBranch || !payerBranch || beneficiaryBranch === payerBranch) return null;
+  if (!(voucher.amount > 0)) return null;
+  return {
+    branchCode: beneficiaryBranch,
+    lines: [
+      { accountCode: "331", debit: voucher.amount, partnerCode: voucher.partnerCode },
+      { accountCode: INTERNAL_PAYABLE_ACCOUNT, credit: voucher.amount, partnerCode: internalPartnerCode(payerBranch) },
     ] as JournalLineInput[],
   };
 }

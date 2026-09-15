@@ -1,4 +1,4 @@
-import { prisma } from "@/lib/prisma";
+import type { prisma } from "@/lib/prisma";
 import { internalPartnerCode } from "@/lib/cost-reallocation";
 
 /**
