@@ -37,6 +37,10 @@ export const defaultAccounts = [
   { code: "6424", name: "Chi phí khấu hao", accountType: "OPEX", normalBalance: "DEBIT", reportGroup: "DEPRECIATION" },
   { code: "6428", name: "Chi phí vận hành khác", accountType: "OPEX", normalBalance: "DEBIT", reportGroup: "OPEX" },
   { code: "711", name: "Thu nhập khác", accountType: "OTHER_INCOME", normalBalance: "CREDIT", reportGroup: "OTHER_INCOME" },
+  // Dòng "8. Chi phí khác" của KQKD vốn không có tài khoản nào đổ vào: phạt, bồi thường, lỗ
+  // thanh lý đều bị nhét chung vào 6428 nên tỷ lệ OPEX/doanh thu phồng lên vì những khoản
+  // không thuộc vận hành. Phiếu chi chọn hạng mục P&L nhóm Chi phí khác thì đi vào đây.
+  { code: "811", name: "Chi phí khác", accountType: "OTHER_EXPENSE", normalBalance: "DEBIT", reportGroup: "OTHER_EXPENSE" },
 ];
 
 export async function ensureDefaultAccounts() {

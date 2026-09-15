@@ -255,6 +255,10 @@ export function createPnlDetailTree(catalog: PnlCatalog, monthCount: number) {
     if (value === "COGS") return "cogs";
     if (value === "OPEX") return "otherOpex";
     if (value === "CAPEX") return "capex";
+    if (value === "OTHER_EXPENSE") return "otherExpense";
+    // OTHER_INCOME cố ý KHÔNG nạp sẵn: dòng thu nhóm theo KHOẢN MỤC THU của phiếu
+    // (xem nhánh PNL_INCOME_LINES trong `add`), không theo nhóm P&L cha. Nạp sẵn theo nhóm P&L
+    // sẽ đẻ ra một nhóm rỗng đứng cạnh nhóm thật, cùng một hạng mục hiện hai chỗ.
     return null;
   };
   for (const group of pnlGroups) {

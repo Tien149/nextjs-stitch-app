@@ -35,8 +35,16 @@ export function cashAccountFor(moneySourceCode: string) {
   return moneySourceCode.toUpperCase().includes("CASH") ? "1111" : "1121";
 }
 
-/** Tài khoản đối ứng của phiếu THU, kèm lý do để hiển thị/kiểm thử. */
-export function receiptCounterAccount(voucher: VoucherForPosting, categoryGroup: string | null) {
+/**
+ * Tài khoản đối ứng của phiếu THU, kèm lý do để hiển thị/kiểm thử.
+ *
+ * `pnlItemGroup` là nhóm lớn của Hạng mục P&L kế toán chọn trên phiếu. Chọn hạng mục thuộc
+ * nhóm Thu nhập khác là khai rõ "khoản này là thu nhập khác" (lãi ngân hàng, thanh lý tài sản,
+ * bồi thường...), nên nó thắng cái fallback "có đối tác thì treo 131" bên dưới — nếu không,
+ * khoản thu nhập khác có ghi tên đối tác sẽ nằm im ở phải thu và không bao giờ lên dòng
+ * "7. Thu nhập khác" của P&L.
+ */
+export function receiptCounterAccount(voucher: VoucherForPosting, categoryGroup: string | null, pnlItemGroup: string | null = null) {
   if (voucher.depositAction === "COLLECT" || voucher.depositAction === "SUPPLEMENT") {
     return { account: "3387", reason: "Nhận tiền cọc — khách ứng trước, chưa phải doanh thu" };
   }
@@ -46,8 +54,15 @@ export function receiptCounterAccount(voucher: VoucherForPosting, categoryGroup:
   if (voucher.debtAction === "SETTLE") {
     return { account: "131", reason: "Thu hồi công nợ phải thu — không phát sinh doanh thu mới" };
   }
+  // Khoản mục thu/chi là tầng chốt: khai nhóm doanh thu thì đó là doanh thu bán hàng, dù ai đó
+  // lỡ gắn thêm hạng mục P&L thu nhập khác. Để hạng mục thắng ở đây thì một khoản doanh thu
+  // rơi xuống dòng 7 và biến mất khỏi doanh thu thuần — sai lệch nặng hơn nhiều so với việc bỏ
+  // qua một hạng mục khai nhầm.
   if (categoryGroup === "REVENUE_SOURCE") {
     return { account: "511", reason: "Doanh thu bán hàng" };
+  }
+  if (pnlItemGroup === "OTHER_INCOME") {
+    return { account: "711", reason: "Thu nhập khác theo hạng mục P&L đã chọn" };
   }
   if (voucher.partnerCode) {
     return { account: "131", reason: "Thu của đối tác, chưa gán khoản mục doanh thu" };
@@ -77,13 +92,18 @@ export function paymentCounterAccount(voucher: VoucherForPosting, categoryGroup:
   if (categoryGroup === "COGS") {
     return { account: "632", reason: "Giá vốn hàng bán" };
   }
+  // Chi phí khác (811) không phải chi phí vận hành: phạt, bồi thường, lỗ thanh lý tài sản...
+  // Đứng ở dòng "8. Chi phí khác" dưới lợi nhuận hoạt động, không làm hỏng tỷ lệ OPEX/doanh thu.
+  if (categoryGroup === "OTHER_EXPENSE") {
+    return { account: "811", reason: "Chi phí khác" };
+  }
   return { account: "6428", reason: "Chi phí vận hành" };
 }
 
 export function voucherJournalLines(voucher: VoucherForPosting, categoryGroup: string | null, pnlItemGroup: string | null = null) {
   const cashAccount = cashAccountFor(voucher.moneySourceCode);
   if (voucher.voucherType === "RECEIPT") {
-    const { account, reason } = receiptCounterAccount(voucher, categoryGroup);
+    const { account, reason } = receiptCounterAccount(voucher, categoryGroup, pnlItemGroup);
     return {
       reason,
       lines: [

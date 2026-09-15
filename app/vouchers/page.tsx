@@ -549,6 +549,11 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
   const isAdvanceReceivable = form.voucherType === "PAYMENT" && form.debtAction === ADVANCE_RECEIVABLE_ACTION;
   /** Chi trả trước: phiếu treo 242 và tự sinh lịch phân bổ, không vào chi phí ngay trong kỳ chi. */
   const isPrepaidAllocation = form.voucherType === "PAYMENT" && form.debtAction === PREPAID_ALLOCATION_ACTION;
+  /**
+   * Hạng mục P&L chọn được theo loại phiếu — phải khớp VOUCHER_PNL_GROUPS ở app/api/vouchers,
+   * nếu không người dùng chọn được thứ mà máy chủ từ chối lúc lưu.
+   */
+  const voucherPnlGroups = form.voucherType === "RECEIPT" ? ["OTHER_INCOME"] : ["OPEX", "COGS", "OTHER_EXPENSE"];
   const canDelete = user ? canPerformMenuAction(user, moduleHref, "delete") : false;
   /** Quyền sửa/bỏ duyệt chứng từ đã qua ngày (mặc định Admin và Kế toán tổng hợp). */
   const canEditPast = canEditPastVoucher(user);
@@ -1575,7 +1580,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                 </label>
               </div>
 
-              {form.voucherType === "PAYMENT" && !isAdvanceReceivable && (
+              {(form.voucherType === "PAYMENT" || form.voucherType === "RECEIPT") && !isAdvanceReceivable && (
                 <div className="text-xs font-bold text-slate-600 block">
                   {/* Chi trả trước bắt buộc khai: hạng mục này chính là hạng mục mà từng kỳ
                       phân bổ mang theo, để trống thì cả 12 kỳ rơi khỏi bảng Tổng hợp chi phí. */}
@@ -1594,14 +1599,16 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                             .map((item) => ({ value: item.code, label: `${item.name} (Đã ngừng)` }))
                         : []),
                       ...pnlItems
-                        .filter((item) => item.status === "ACTIVE" && ["OPEX", "COGS"].includes((item.group || "").toUpperCase()))
+                        .filter((item) => item.status === "ACTIVE" && voucherPnlGroups.includes((item.group || "").toUpperCase()))
                         .map((item) => ({ value: item.code, label: `${item.code} - ${item.name}` })),
                     ]}
                   />
                   <span className="mt-1 block text-[11px] font-medium text-slate-500">
                     {isPrepaidAllocation
                       ? "Quyết định số phân bổ từng kỳ đứng ở dòng chi phí nào trên P&L; phiếu chi trả trước bắt buộc khai."
-                      : "Dùng để phân loại chi tiết trên báo cáo P&L; không thay thế khoản mục thu/chi của báo cáo dòng tiền."}
+                      : form.voucherType === "RECEIPT"
+                        ? "Khoản thu ngoài bán hàng (lãi ngân hàng, thanh lý tài sản, bồi thường): chọn hạng mục để tách dòng \"Thu nhập khác\" trên P&L. Để trống vẫn vào Thu nhập khác nhưng gom một cục."
+                        : "Dùng để phân loại chi tiết trên báo cáo P&L; không thay thế khoản mục thu/chi của báo cáo dòng tiền."}
                   </span>
                 </div>
               )}

@@ -529,8 +529,8 @@ async function validateMasterData(type: string, group: string | null, branch: st
   /** Phân cấp P&L độc lập với danh mục Thu/Chi. */
   // REVENUE_EXPENSE_SUBGROUP là tên cũ của PNL_GROUP, giữ lại để dữ liệu cũ vẫn sửa được.
   if (["PNL_GROUP", "PNL_ITEM", "REVENUE_EXPENSE_SUBGROUP"].includes(type)) {
-    if (!group || !["OPEX", "CAPEX", "COGS", "REVENUE_SOURCE"].includes(group.toUpperCase())) {
-      throw new Error("Nhóm lớn của hạng mục P&L bắt buộc là OPEX, CAPEX, COGS hoặc REVENUE_SOURCE.");
+    if (!group || !["OPEX", "CAPEX", "COGS", "REVENUE_SOURCE", "OTHER_INCOME", "OTHER_EXPENSE"].includes(group.toUpperCase())) {
+      throw new Error("Nhóm lớn của hạng mục P&L bắt buộc là OPEX, CAPEX, COGS, REVENUE_SOURCE, OTHER_INCOME hoặc OTHER_EXPENSE.");
     }
   }
   if (type === "ASSET_GROUP") {

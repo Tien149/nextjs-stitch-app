@@ -137,8 +137,22 @@ function deriveReceiptDepositAction(
   return depositCategoryDirection(category) === "RECEIPT" ? "COLLECT" : explicitAction;
 }
 
+/**
+ * Hạng mục P&L nào hợp lệ cho từng loại phiếu.
+ *
+ * Phiếu THU mở cho nhóm Thu nhập khác: khoản lãi ngân hàng / thanh lý tài sản / bồi thường
+ * trước đây chỉ vào được TK 711 gom một cục, không tách được hạng mục trên dòng "7. Thu nhập
+ * khác". Phiếu CHI thêm nhóm Chi phí khác (811) vì phạt / bồi thường / lỗ thanh lý không phải
+ * chi phí vận hành, nhét vào 6428 làm phồng tỷ lệ OPEX trên doanh thu.
+ */
+const VOUCHER_PNL_GROUPS: Record<string, { groups: string[]; label: string }> = {
+  PAYMENT: { groups: ["OPEX", "COGS", "OTHER_EXPENSE"], label: "OPEX, Giá vốn hoặc Chi phí khác" },
+  RECEIPT: { groups: ["OTHER_INCOME"], label: "Thu nhập khác" },
+};
+
 async function validateVoucherPnlItem(voucherType: string, pnlItemCode: string, requireActive = true) {
-  if (voucherType !== "PAYMENT") return "Chỉ phiếu chi mới được chọn hạng mục P&L chi phí";
+  const allowed = VOUCHER_PNL_GROUPS[voucherType];
+  if (!allowed) return "Loại phiếu này không chọn được hạng mục P&L";
   const pnlItem = await prisma.masterDataItem.findFirst({
     where: {
       type: "PNL_ITEM",
@@ -148,8 +162,8 @@ async function validateVoucherPnlItem(voucherType: string, pnlItemCode: string, 
   });
   if (!pnlItem) return `Hạng mục P&L [${pnlItemCode}] không tồn tại hoặc đã ngừng hoạt động`;
   const group = (pnlItem.group || "").toUpperCase();
-  if (!["OPEX", "COGS"].includes(group)) {
-    return "Phiếu chi chỉ được chọn hạng mục P&L thuộc nhóm OPEX hoặc Giá vốn";
+  if (!allowed.groups.includes(group)) {
+    return `${voucherType === "RECEIPT" ? "Phiếu thu" : "Phiếu chi"} chỉ được chọn hạng mục P&L thuộc nhóm ${allowed.label}`;
   }
   return null;
 }

@@ -203,12 +203,16 @@ const groupOptions: Record<string, GroupOption[]> = {
     { value: "CAPEX", label: "CAPEX - Chi phí đầu tư" },
     { value: "COGS", label: "COGS - Giá vốn" },
     { value: "REVENUE_SOURCE", label: "REVENUE_SOURCE - Nguồn doanh thu" },
+    { value: "OTHER_INCOME", label: "OTHER_INCOME - Thu nhập khác" },
+    { value: "OTHER_EXPENSE", label: "OTHER_EXPENSE - Chi phí khác" },
   ],
   PNL_ITEM: [
     { value: "OPEX", label: "OPEX - Chi phí vận hành" },
     { value: "CAPEX", label: "CAPEX - Chi phí đầu tư" },
     { value: "COGS", label: "COGS - Giá vốn" },
     { value: "REVENUE_SOURCE", label: "REVENUE_SOURCE - Nguồn doanh thu" },
+    { value: "OTHER_INCOME", label: "OTHER_INCOME - Thu nhập khác" },
+    { value: "OTHER_EXPENSE", label: "OTHER_EXPENSE - Chi phí khác" },
   ],
   ASSET_GROUP: [
     { value: "FIXED_ASSET", label: "FIXED_ASSET - Tài sản cố định" },
