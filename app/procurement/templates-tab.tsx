@@ -6,6 +6,7 @@ import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { defaultPurchaseUnit } from "@/lib/unit-conversion";
+import { quantity as formatQuantity } from "@/lib/format-number";
 import type { DemoSession } from "@/lib/auth-demo";
 
 export type TemplateUnitConversion = { id: string; unitCode: string; unitName: string | null; conversionRate: number; isDefaultPurchase: boolean };
@@ -76,7 +77,7 @@ function baseQuantityHint(line: { unitCode: string | null; item: TemplateItem },
   const { conversionRate } = defaultPurchaseUnit(line.item.unit, line.item.unitConversions, line.unitCode);
   const value = Number(quantity || 0);
   if (conversionRate === 1 || !(value > 0)) return "";
-  return `= ${new Intl.NumberFormat("vi-VN").format(value * conversionRate)} ${line.item.unit}`;
+  return `= ${formatQuantity(value * conversionRate)} ${line.item.unit}`;
 }
 
 /**

@@ -10,6 +10,7 @@ import ExportExcelButton from "@/components/ExportExcelButton";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 import { safeConversionRate } from "@/lib/unit-conversion";
+import { money, quantity as qty, unitPrice } from "@/lib/format-number";
 import { statValueTextClass } from "@/components/reports/report-ui";
 
 type UnitConversion = { id: string; unitCode: string; unitName: string | null; conversionRate: number; isDefaultPurchase: boolean };
@@ -43,7 +44,6 @@ type ReceivablePOLine = { id: string; itemId: string; orderedQuantity: number; r
 type ReceivablePO = { id: string; code: string; supplierName: string; branchCode: string; warehouseCode: string; status: string; lines: ReceivablePOLine[] };
 type StocktakeDraftRow = { itemId: string; itemCode: string; itemName: string; unit: string; systemQuantity: number; averageCost: number; actualQuantity: string; unitCost: string; reason: string };
 type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales };
-const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value);
 const movementTypes = ["NHAP_MUA", "NHAP_KHAC", "NHAP_CHE_BIEN", "NHAP_KIEM_KE", "XUAT_BAN", "XUAT_HUY", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_CHE_BIEN", "XUAT_KIEM_KE", "DIEU_CHUYEN"];
 /** Loại hiển thị trên hai màn hình Nhập/Xuất. Điều chuyển hiện ở CẢ hai: vế xuất ở kho đi, vế nhập ở kho nhận. */
 const inboundTypes = ["NHAP_MUA", "NHAP_CHE_BIEN", "NHAP_DIEU_CHUYEN", "NHAP_KHAC", "NHAP_KIEM_KE"];
@@ -64,8 +64,8 @@ function flowQuantityText(lines: Array<{ quantity: number; item: { unit: string 
   if (lines.length === 0) return "-";
   const units = new Set(lines.map((line) => line.item.unit));
   const total = lines.reduce((sum, line) => sum + line.quantity, 0);
-  if (units.size === 1) return `${money(total)} ${lines[0].item.unit}`;
-  return `${money(lines.length)} mặt hàng`;
+  if (units.size === 1) return `${qty(total)} ${lines[0].item.unit}`;
+  return `${qty(lines.length)} mặt hàng`;
 }
 
 function buildStocktakeRows(warehouseCode: string, balances: Balance[], fallbackItems: Item[]): StocktakeDraftRow[] {
@@ -519,11 +519,11 @@ export default function InventoryPage() {
                   <small>{row.item.unit}</small>
                 </Cell>
                 <Cell>{row.warehouseCode}</Cell>
-                <Cell right>{money(row.openingQuantity)}</Cell>
-                <Cell right>{money(row.inboundQuantity)}</Cell>
-                <Cell right>{money(row.outboundQuantity)}</Cell>
-                <Cell right><b>{money(row.closingQuantity)}</b></Cell>
-                <Cell right>{money(row.averageCost)} đ</Cell>
+                <Cell right>{qty(row.openingQuantity)}</Cell>
+                <Cell right>{qty(row.inboundQuantity)}</Cell>
+                <Cell right>{qty(row.outboundQuantity)}</Cell>
+                <Cell right><b>{qty(row.closingQuantity)}</b></Cell>
+                <Cell right>{unitPrice(row.averageCost)} đ</Cell>
                 <Cell right><b>{money(row.closingValue)} đ</b></Cell>
               </tr>
             ))}
@@ -544,7 +544,7 @@ export default function InventoryPage() {
           </div>
           {filteredStockMovements.length > stockMovementRows.length && (
             <p className="px-5 pb-3 text-xs text-amber-700">
-              Khoảng ngày này có {money(filteredStockMovements.length)} dòng, bảng đang hiện 500 dòng mới nhất — thu hẹp khoảng ngày để xem phần còn lại.
+              Khoảng ngày này có {qty(filteredStockMovements.length)} dòng, bảng đang hiện 500 dòng mới nhất — thu hẹp khoảng ngày để xem phần còn lại.
             </p>
           )}
           <Table
@@ -566,8 +566,8 @@ export default function InventoryPage() {
                 <Cell><span className="status bg-slate-100">{movementTypeLabel(row.transactionType)}</span></Cell>
                 <Cell>{row.warehouseCode}</Cell>
                 <Cell><b>{row.itemCode}</b><small>{row.itemName}</small></Cell>
-                <Cell right>{row.inboundQuantity ? `${money(row.inboundQuantity)} ${row.unit}` : "-"}</Cell>
-                <Cell right>{row.outboundQuantity ? `${money(row.outboundQuantity)} ${row.unit}` : "-"}</Cell>
+                <Cell right>{row.inboundQuantity ? `${qty(row.inboundQuantity)} ${row.unit}` : "-"}</Cell>
+                <Cell right>{row.outboundQuantity ? `${qty(row.outboundQuantity)} ${row.unit}` : "-"}</Cell>
                 <Cell right>{money(row.value)} đ</Cell>
               </tr>
             ))}
@@ -595,8 +595,8 @@ export default function InventoryPage() {
                   <small>{row.item.itemType} · {row.item.unit}</small>
                 </Cell>
                 <Cell>{row.warehouseCode}</Cell>
-                <Cell right><b>{money(row.quantity)}</b> {row.item.unit}</Cell>
-                <Cell right>{money(row.averageCost)} đ</Cell>
+                <Cell right><b>{qty(row.quantity)}</b> {row.item.unit}</Cell>
+                <Cell right>{unitPrice(row.averageCost)} đ</Cell>
                 <Cell right><b>{money(row.quantity * row.averageCost)} đ</b></Cell>
                 <Cell>{(row.item.minStock || 0) > 0 && (stockTotalsByItem.get(row.item.id) || 0) < row.item.minStock ? <span className="status bg-rose-50 text-rose-700">Dưới định mức (tổng mọi kho)</span> : <span className="status bg-emerald-50 text-emerald-700">Đủ tồn</span>}</Cell>
               </tr>
@@ -794,8 +794,8 @@ export default function InventoryPage() {
                     )}
                   </Cell>
                   <Cell>{item.unit}</Cell>
-                  <Cell>{item.unitConversions?.filter((unit) => unit.conversionRate > 1).map((unit) => `1 ${unit.unitName || unit.unitCode} = ${money(unit.conversionRate)} ${item.unit}`).join(", ") || "-"}</Cell>
-                  <Cell right>{money(item.minStock)}</Cell>
+                  <Cell>{item.unitConversions?.filter((unit) => unit.conversionRate > 1).map((unit) => `1 ${unit.unitName || unit.unitCode} = ${qty(unit.conversionRate)} ${item.unit}`).join(", ") || "-"}</Cell>
+                  <Cell right>{qty(item.minStock)}</Cell>
                   <Cell>
                     {item.requiresImage ? (
                       <span className="status bg-indigo-50 text-indigo-700 font-bold px-2 py-0.5 rounded text-[11px]">Bắt buộc</span>
@@ -859,7 +859,7 @@ export default function InventoryPage() {
                         <div key={line.id} className="flex items-center gap-2 text-sm">
                           <div className="flex-1 min-w-0">
                             <b className="block truncate">{line.item.name}</b>
-                            <small className="text-slate-500">Còn phải nhận: {money(remaining)} {line.item.unit} · {money(line.unitCost)} đ/{line.item.unit}</small>
+                            <small className="text-slate-500">Còn phải nhận: {qty(remaining)} {line.item.unit} · {unitPrice(line.unitCost)} đ/{line.item.unit}</small>
                           </div>
                           <input
                             type="number"
@@ -934,10 +934,10 @@ export default function InventoryPage() {
 
               {selectedStockItem && (
                 <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-800">
-                  <b>Preview:</b> {money(stockInputQuantity)} {selectedStockUnit?.unitName || selectedStockUnit?.unitCode || selectedStockItem.unit}
+                  <b>Preview:</b> {qty(stockInputQuantity)} {selectedStockUnit?.unitName || selectedStockUnit?.unitCode || selectedStockItem.unit}
                   {" = "}
-                  {money(stockBaseQuantity)} {selectedStockItem.unit}
-                  {active === "inbound" && stockBaseUnitCost > 0 ? ` · Don gia quy doi ${money(stockBaseUnitCost)} d/${selectedStockItem.unit} · Thanh tien ${money(stockLineValue)} d` : ""}
+                  {qty(stockBaseQuantity)} {selectedStockItem.unit}
+                  {active === "inbound" && stockBaseUnitCost > 0 ? ` · Don gia quy doi ${unitPrice(stockBaseUnitCost)} d/${selectedStockItem.unit} · Thanh tien ${money(stockLineValue)} d` : ""}
                 </div>
               )}
 
@@ -956,7 +956,7 @@ export default function InventoryPage() {
               <div className="mx-5 mb-4 flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
                 <span className="material-symbols-outlined text-lg">info</span>
                 <div className="flex-1">
-                  <b>Còn {money(data.pendingSales.total)} dòng doanh thu chưa rã nguyên liệu.</b> Import doanh thu không tự trừ kho:
+                  <b>Còn {qty(data.pendingSales.total)} dòng doanh thu chưa rã nguyên liệu.</b> Import doanh thu không tự trừ kho:
                   phiếu <b>Xuất bán</b> chỉ sinh sau khi bấm <b>Rã nguyên liệu</b> ở tab Chế biến (chọn cửa hàng, kho và khoảng ngày bán).
                 </div>
                 {visibleTabs.some((tab) => tab.id === "production") && (
@@ -1018,7 +1018,7 @@ export default function InventoryPage() {
                   <Cell>{row.transaction.transactionType === "DIEU_CHUYEN" ? `${row.transaction.warehouseCode} → ${row.transaction.toWarehouseCode}` : row.warehouseCode}</Cell>
                   <Cell>
                     {preview.map((line) => (
-                      <span key={line.id} className="block">{line.item.name}: <b>{money(line.quantity)}</b> {line.item.unit}</span>
+                      <span key={line.id} className="block">{line.item.name}: <b>{qty(line.quantity)}</b> {line.item.unit}</span>
                     ))}
                     {lines.length > preview.length && <small>… và {lines.length - preview.length} mặt hàng khác</small>}
                   </Cell>
@@ -1157,7 +1157,7 @@ export default function InventoryPage() {
                       ? <span className="status bg-amber-50 text-amber-700">Liên nhà hàng</span>
                       : <span className="status bg-slate-100">Nội bộ 1 nhà hàng</span>}
                     </Cell>
-                    <Cell>{row.lines.map((line) => `${line.item.name}: ${money(line.quantity)} ${line.item.unit}`).join(", ")}</Cell>
+                    <Cell>{row.lines.map((line) => `${line.item.name}: ${qty(line.quantity)} ${line.item.unit}`).join(", ")}</Cell>
                     <Cell>{crossBranch && row.internalReceivableDebtCode
                       ? <><b><CopyableText value={row.internalReceivableDebtCode} /></b><small>Phải trả: {row.internalPayableDebtCode}</small></>
                       : <span className="text-slate-400">-</span>}
@@ -1244,7 +1244,7 @@ export default function InventoryPage() {
                         <Cell>{product.productName}</Cell>
                         <Cell><span className={`status ${product.itemType === "FINISHED" ? "bg-blue-50 text-blue-700" : "bg-violet-50 text-violet-700"}`}>{product.itemType}</span></Cell>
                         <Cell right>{money(product.batchCost)} đ</Cell>
-                        <Cell right><b>{product.unitCost >= 100 ? money(product.unitCost) : product.unitCost.toFixed(2)} đ</b></Cell>
+                        <Cell right><b>{unitPrice(product.unitCost)} đ</b></Cell>
                         <Cell right>{product.sellingPrice > 0 ? `${(product.unitCost / product.sellingPrice * 100).toFixed(1)}%` : "-"}</Cell>
                       </tr>
                     ))}
@@ -1365,9 +1365,9 @@ export default function InventoryPage() {
                     <Cell><span className={`status ${row.group === "FINISHED" ? "bg-blue-50 text-blue-700" : "bg-violet-50 text-violet-700"}`}>{row.group}</span></Cell>
                     <Cell><CopyableText value={row.productCode}><b>{row.productCode}</b></CopyableText><small>V{row.version}</small></Cell>
                     <Cell>{row.productName}</Cell>
-                    <Cell>{row.stockUnit}{row.outputConversionRate !== 1 ? <small>1 {row.batchUnit} = {money(row.outputConversionRate)} {row.stockUnit}</small> : null}</Cell>
+                    <Cell>{row.stockUnit}{row.outputConversionRate !== 1 ? <small>1 {row.batchUnit} = {qty(row.outputConversionRate)} {row.stockUnit}</small> : null}</Cell>
                     <Cell right>{row.group === "FINISHED" ? `${money(row.sellingPrice)} đ` : "-"}</Cell>
-                    <Cell right><b>{row.unitCost >= 100 ? money(row.unitCost) : row.unitCost.toFixed(2)} đ</b></Cell>
+                    <Cell right><b>{unitPrice(row.unitCost)} đ</b></Cell>
                     <Cell right>{row.costRatio !== null ? <b className={row.costRatio > 0.4 ? "text-rose-600" : "text-emerald-700"}>{(row.costRatio * 100).toFixed(1)}%</b> : "-"}</Cell>
                   </tr>
                 ))}
@@ -1388,7 +1388,7 @@ export default function InventoryPage() {
               >
                 {data.recipes.map((recipe) => (
                   <tr key={recipe.id} className="border-t border-slate-100">
-                    <Cell><b>{recipe.productCode} - {recipe.productName}</b><small>Mẻ: {recipe.unit}{recipe.outputConversionRate !== 1 ? ` (= ${money(recipe.outputConversionRate)} ĐVT tồn)` : ""}</small></Cell>
+                    <Cell><b>{recipe.productCode} - {recipe.productName}</b><small>Mẻ: {recipe.unit}{recipe.outputConversionRate !== 1 ? ` (= ${qty(recipe.outputConversionRate)} ĐVT tồn)` : ""}</small></Cell>
                     <Cell>V{recipe.version}<small>Áp dụng {new Date(recipe.effectiveFrom).toLocaleDateString("vi-VN")}{recipe.status === "ACTIVE" ? "" : " · cũ"}</small></Cell>
                     <Cell>{recipe.lines.map((line) => `${line.item.name}: ${line.quantity}${line.unitCode ? ` ${line.unitCode}` : ""} (+${line.wasteRate}%)`).join(", ")}</Cell>
                     <Cell right><b>{money(recipe.estimatedCost)} đ</b></Cell>
@@ -1450,7 +1450,7 @@ export default function InventoryPage() {
             <div className="mt-3 flex flex-wrap gap-2">
               {data.pendingSales.byDay.slice(0, 12).map((day) => (
                 <span key={`${day.saleDate}-${day.branchCode}`} className="status bg-slate-100 text-slate-600">
-                  {new Date(day.saleDate).toLocaleDateString("vi-VN")} · {storeLabel(day.branchCode)}: {day.rowCount} dòng / {money(day.totalQuantity)} món
+                  {new Date(day.saleDate).toLocaleDateString("vi-VN")} · {storeLabel(day.branchCode)}: {day.rowCount} dòng / {qty(day.totalQuantity)} món
                 </span>
               ))}
             </div>
@@ -1479,7 +1479,7 @@ export default function InventoryPage() {
                         <td className="py-1 pr-3 font-mono">{item.productCode}</td>
                         <td className="py-1 pr-3">{item.productName}</td>
                         <td className="py-1 pr-3">{data.revenueGroups.find((group) => group.code === item.revenueSource)?.name || item.revenueSource || "-"}</td>
-                        <td className="py-1 pr-3 text-right tabular-nums whitespace-nowrap">{money(item.totalQuantity)}</td>
+                        <td className="py-1 pr-3 text-right tabular-nums whitespace-nowrap">{qty(item.totalQuantity)}</td>
                         <td className="py-1 text-right">{item.rowCount}</td>
                       </tr>
                     ))}
@@ -1600,7 +1600,7 @@ export default function InventoryPage() {
                   <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}{row.referenceCode ? ` · ${row.referenceCode}` : ""}</small></Cell>
                   <Cell>{movementTypeLabel(row.transactionType)}</Cell>
                   <Cell>{row.warehouseCode}</Cell>
-                  <Cell>{row.lines.map((line) => `${line.item.code}: ${money(line.quantity)} ${line.item.unit}`).join(", ")}</Cell>
+                  <Cell>{row.lines.map((line) => `${line.item.code}: ${qty(line.quantity)} ${line.item.unit}`).join(", ")}</Cell>
                 </tr>
               ))}
             </Table>
@@ -1671,7 +1671,7 @@ export default function InventoryPage() {
                             <div className="flex items-center justify-between gap-2">
                               <div className="min-w-0">
                                 <p className="font-bold text-sm truncate">{row.itemName}</p>
-                                <p className="text-xs text-slate-500">{row.itemCode} · Tồn hệ thống: <b>{money(row.systemQuantity)} {row.unit}</b></p>
+                                <p className="text-xs text-slate-500">{row.itemCode} · Tồn hệ thống: <b>{qty(row.systemQuantity)} {row.unit}</b></p>
                               </div>
                               <div className="flex items-center gap-1.5 shrink-0">
                                 <input
@@ -1689,7 +1689,7 @@ export default function InventoryPage() {
                             </div>
                             <div className="flex items-center gap-2 text-xs">
                               <span className={variance === 0 ? "text-slate-500" : variance > 0 ? "text-emerald-700 font-bold" : "text-rose-700 font-bold"}>
-                                Lệch: {money(variance)}
+                                Lệch: {qty(variance)}
                               </span>
                               {row.averageCost <= 0 && (
                                 <input
@@ -1724,7 +1724,7 @@ export default function InventoryPage() {
                           return (
                             <tr key={row.itemId} className="border-t border-slate-100">
                               <Cell><b>{row.itemCode}</b><small>{row.itemName} · {row.unit}</small></Cell>
-                              <Cell right>{money(row.systemQuantity)}</Cell>
+                              <Cell right>{qty(row.systemQuantity)}</Cell>
                               <Cell right>
                                 <input
                                   type="number"
@@ -1736,10 +1736,10 @@ export default function InventoryPage() {
                                   onChange={(e) => patchRow(row.itemId, { actualQuantity: e.target.value })}
                                 />
                               </Cell>
-                              <Cell right><span className={variance === 0 ? "text-slate-500" : variance > 0 ? "text-emerald-700 font-bold" : "text-rose-700 font-bold"}>{money(variance)}</span></Cell>
+                              <Cell right><span className={variance === 0 ? "text-slate-500" : variance > 0 ? "text-emerald-700 font-bold" : "text-rose-700 font-bold"}>{qty(variance)}</span></Cell>
                               <Cell right>
                                 {row.averageCost > 0 ? (
-                                  <span className="text-slate-500">{money(row.averageCost)}</span>
+                                  <span className="text-slate-500">{unitPrice(row.averageCost)}</span>
                                 ) : (
                                   <input
                                     type="number"
@@ -1786,7 +1786,7 @@ export default function InventoryPage() {
                   <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{new Date(row.stocktakeDate).toLocaleDateString("vi-VN")} · {row.status}</small></Cell>
                   <Cell>{row.warehouseCode}</Cell>
                   <Cell>{row.lines.map((line) => line.item.code).join(", ")}</Cell>
-                  <Cell right>{money(row.lines.reduce((sum, line) => sum + line.varianceQuantity, 0))}</Cell>
+                  <Cell right>{qty(row.lines.reduce((sum, line) => sum + line.varianceQuantity, 0))}</Cell>
                   <Cell right>
                     {canEditItem && row.status === "APPROVED" && (
                       <button
@@ -1942,9 +1942,9 @@ export default function InventoryPage() {
                   <tr key={row.itemCode} className="border-t border-slate-100">
                     <Cell><b><CopyableText value={row.itemCode} /></b><small>{row.itemName}</small></Cell>
                     <Cell>{row.itemType}</Cell>
-                    <Cell right><b>{money(row.totalQuantity)}</b> {row.unit}</Cell>
-                    <Cell right>{row.bySubType.HET_HAN_SU_DUNG ? `${money(row.bySubType.HET_HAN_SU_DUNG.quantity)} ${row.unit}` : "-"}</Cell>
-                    <Cell right>{row.bySubType.KHONG_DAM_BAO_CHAT_LUONG ? `${money(row.bySubType.KHONG_DAM_BAO_CHAT_LUONG.quantity)} ${row.unit}` : "-"}</Cell>
+                    <Cell right><b>{qty(row.totalQuantity)}</b> {row.unit}</Cell>
+                    <Cell right>{row.bySubType.HET_HAN_SU_DUNG ? `${qty(row.bySubType.HET_HAN_SU_DUNG.quantity)} ${row.unit}` : "-"}</Cell>
+                    <Cell right>{row.bySubType.KHONG_DAM_BAO_CHAT_LUONG ? `${qty(row.bySubType.KHONG_DAM_BAO_CHAT_LUONG.quantity)} ${row.unit}` : "-"}</Cell>
                     <Cell right><b className="text-rose-600">{money(row.totalValue)} đ</b></Cell>
                   </tr>
                 ))}
@@ -1959,7 +1959,7 @@ export default function InventoryPage() {
                     <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}</small></Cell>
                     <Cell><span className="status bg-rose-50 text-rose-700">{wasteSubTypeLabel(row.subType)}</span></Cell>
                     <Cell>{storeLabel(row.branchCode)}<small>{row.warehouseCode}</small></Cell>
-                    <Cell>{row.lines.map((line) => `${line.item.name}: ${money(line.quantity)} ${line.item.unit}`).join(", ")}</Cell>
+                    <Cell>{row.lines.map((line) => `${line.item.name}: ${qty(line.quantity)} ${line.item.unit}`).join(", ")}</Cell>
                     <Cell right><b>{money(row.lines.reduce((sum, line) => sum + line.totalCost, 0))} đ</b></Cell>
                   </tr>
                 ))}

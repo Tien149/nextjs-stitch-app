@@ -13,6 +13,7 @@ import { useModuleAuth } from "@/lib/use-module-auth";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { assetGroupCandidates, assetGroupTypeLabel } from "@/lib/asset-group-rules";
+import { money, quantity as qty, unitPrice } from "@/lib/format-number";
 import { TemplatesTab, type PurchaseTemplate, type TemplateUnitConversion } from "./templates-tab";
 
 type Item = { id: string; code: string; name: string; unit: string; itemType: string; category: string | null; requiresImage: boolean; unitConversions?: TemplateUnitConversion[] };
@@ -30,7 +31,6 @@ type DeleteTarget = { type: "REQUEST" | "ORDER" | "QUOTE"; id: string; title: st
 /** Một dòng hàng trên form PR nhiều dòng. */
 type RequestRow = { itemId: string; quantity: string; estimatedUnitCost: string; imageUrl: string };
 
-const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
 
 /**
  * Yêu cầu mua không còn bước duyệt: "APPROVED" nay nghĩa là đã gửi, chờ mua hàng báo giá
@@ -800,7 +800,7 @@ export default function ProcurementPage() {
                       </div>
                       {suggestion && (
                         <p className="text-[11px] text-slate-500">
-                          Đề xuất <b className="text-slate-700">{money(suggestion.price)} đ</b> {priceSourceLabel(suggestion)}.
+                          Đề xuất <b className="text-slate-700">{unitPrice(suggestion.price)} đ</b> {priceSourceLabel(suggestion)}.
                         </p>
                       )}
                       {rowItem?.requiresImage && (
@@ -888,7 +888,7 @@ export default function ProcurementPage() {
                     <span className={`status ${requestStatusStyle(request.status)} shrink-0`}>{requestStatusLabel(request.status)}</span>
                   </div>
                   <p className="text-sm text-slate-700">{request.reason}</p>
-                  <p className="text-xs text-slate-500">{request.lines.map((line) => `${line.item.name}: ${money(line.quantity)} ${line.item.unit}`).join(", ")}</p>
+                  <p className="text-xs text-slate-500">{request.lines.map((line) => `${line.item.name}: ${qty(line.quantity)} ${line.item.unit}`).join(", ")}</p>
                   <div className="flex items-center justify-between pt-1 border-t border-slate-100">
                     <b className="text-sm">{money(requestTotal(request))} đ</b>
                     <div className="flex items-center gap-1">
@@ -1035,7 +1035,7 @@ export default function ProcurementPage() {
                       <div key={line.itemId} className="flex items-center gap-2">
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-semibold text-slate-800 truncate">{item?.name || line.itemId}</p>
-                          <p className="text-[11px] text-slate-500">{money(line.quantity)} {item?.unit || ""}</p>
+                          <p className="text-[11px] text-slate-500">{qty(line.quantity)} {item?.unit || ""}</p>
                         </div>
                         <input
                           type="number"
@@ -1179,13 +1179,13 @@ export default function ProcurementPage() {
                         <tbody>
                           {request.lines.map((line) => (
                             <tr key={line.itemId} className="border-t border-slate-100">
-                              <td className="px-3 py-1.5">{line.item.name} <small className="text-slate-400">× {money(line.quantity)} {line.item.unit}</small></td>
+                              <td className="px-3 py-1.5">{line.item.name} <small className="text-slate-400">× {qty(line.quantity)} {line.item.unit}</small></td>
                               {request.quotes.map((quote) => {
                                 const cost = quote.lines.find((quoteLine) => quoteLine.itemId === line.itemId)?.unitCost || 0;
                                 const best = cost > 0 && bestCost.get(line.itemId) === cost;
                                 return (
                                   <td key={quote.id} className={`px-3 py-1.5 text-right ${best ? "bg-emerald-50 text-emerald-800 font-bold" : ""}`}>
-                                    {cost > 0 ? `${money(cost)} đ` : "-"}
+                                    {cost > 0 ? `${unitPrice(cost)} đ` : "-"}
                                   </td>
                                 );
                               })}
@@ -1251,11 +1251,11 @@ export default function ProcurementPage() {
                     <span className={`status ${orderStatusStyle(order.status)} shrink-0`}>{orderStatusLabel(order.status)}</span>
                   </div>
                   <p className="text-sm font-semibold text-slate-800">{order.supplierName}</p>
-                  <p className="text-xs text-slate-500">{order.lines.map((line) => `${line.item.name} (${money(line.receivedQuantity)}/${money(line.orderedQuantity)})`).join(", ")}</p>
+                  <p className="text-xs text-slate-500">{order.lines.map((line) => `${line.item.name} (${qty(line.receivedQuantity)}/${qty(line.orderedQuantity)})`).join(", ")}</p>
                   <div className="flex items-center justify-between pt-1 border-t border-slate-100">
                     <div>
                       <b className="text-sm">{money(order.totalAmount)} đ</b>
-                      <p className="text-[11px] text-slate-500">Đã nhận {money(totalReceived)}/{money(totalOrdered)}</p>
+                      <p className="text-[11px] text-slate-500">Đã nhận {qty(totalReceived)}/{qty(totalOrdered)}</p>
                     </div>
                     <div className="flex items-center gap-1.5 flex-wrap justify-end">
                       {canApprove && order.status === "DRAFT" && (
@@ -1454,7 +1454,7 @@ export default function ProcurementPage() {
                             <td className="px-4 py-2 text-slate-600">
                               {quote.lines.map((line) => {
                                 const item = line.item || data.items.find((candidate) => candidate.id === line.itemId);
-                                return `${item?.name || line.itemId}: ${money(line.quantity)} ${item?.unit || ""} × ${money(line.unitCost)} đ`;
+                                return `${item?.name || line.itemId}: ${qty(line.quantity)} ${item?.unit || ""} × ${unitPrice(line.unitCost)} đ`;
                               }).join(", ")}
                             </td>
                             <td className="px-4 py-2 text-right font-semibold">{money(quote.totalAmount)} đ</td>
@@ -1507,7 +1507,7 @@ export default function ProcurementPage() {
                     <div className="flex items-center gap-3">
                       <div className="flex-1 min-w-0">
                         <p className="font-bold text-sm truncate">{line.item.name} {isAsset && <span className="status bg-indigo-50 text-indigo-700 ml-1">Tài sản/CCDC</span>}</p>
-                        <p className="text-xs text-slate-500">Còn phải nhận: {money(remaining)} {line.item.unit} · {money(line.unitCost)} đ/{line.item.unit}</p>
+                        <p className="text-xs text-slate-500">Còn phải nhận: {qty(remaining)} {line.item.unit} · {unitPrice(line.unitCost)} đ/{line.item.unit}</p>
                       </div>
                       <input
                         type="number"
