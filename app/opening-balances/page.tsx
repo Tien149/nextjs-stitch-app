@@ -1077,12 +1077,20 @@ export default function OpeningBalancesPage() {
                           {canManageOpeningBalances && (
                             <td className="px-4 py-3 text-right">
                               {balance.status !== "DRAFT" ? (
-                                balance.status === "CONFIRMED" && canReopenOpeningBalances ? (
-                                  <button onClick={() => updateStatus(balance, "DRAFT")} className="text-xs font-bold text-slate-500 hover:text-slate-800 transition">
+                                // Số dư nạp bằng import (POSTED) cũng mở lại được như số dư chốt
+                                // tay — đây mới là phần lớn số dư đầu kỳ thật.
+                                ["CONFIRMED", "POSTED"].includes(balance.status) && canReopenOpeningBalances ? (
+                                  <button
+                                    onClick={() => {
+                                      if (!window.confirm(`Mở lại số dư ${balance.objectCode || balance.balanceType}? Khoản phân bổ / tài sản / tồn kho mà số dư này sinh ra sẽ được gỡ bỏ, số dư quay về Nháp để sửa rồi chốt lại.`)) return;
+                                      void updateStatus(balance, "DRAFT");
+                                    }}
+                                    className="text-xs font-bold text-slate-500 hover:text-slate-800 transition"
+                                  >
                                     Mở lại
                                   </button>
                                 ) : (
-                                  <span className="text-xs font-bold text-slate-400">Đã khóa</span>
+                                  <span className="text-xs font-bold text-slate-400" title={canReopenOpeningBalances ? "" : "Chỉ Admin được mở lại số dư đã chốt"}>Đã khóa</span>
                                 )
                               ) : (
                                 <div className="flex justify-end gap-3">

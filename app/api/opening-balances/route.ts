@@ -89,6 +89,51 @@ async function applySideEffects(tx: Prisma.TransactionClient, current: OpeningBa
   }
 }
 
+/**
+ * Chặn mở lại khi số dư đầu kỳ đã đẻ ra nghiệp vụ ở nơi khác.
+ *
+ * `revertSideEffects` xoá thẳng khoản phân bổ / tài sản / tồn kho mà số dư này sinh ra. Nếu
+ * chúng đã chạy tiếp — phân bổ đã ghi nhận vài kỳ, tài sản đã trích khấu hao, kho đã có phiếu
+ * nhập xuất — thì xoá đi sẽ để lại bút toán mồ côi và số tồn nhảy sai. Bắt gỡ ở chứng từ con
+ * trước, rồi mới mở lại số dư gốc; đúng thứ tự thì không mất dấu vết nào.
+ */
+async function assertSideEffectsRevertible(tx: Prisma.TransactionClient, current: OpeningBalanceInput & { id: string }) {
+  if (current.balanceType === "PREPAID_EXPENSE") {
+    const accrual = await tx.accrual.findFirst({
+      where: { code: `PB-DK-${(current.objectCode || "").toUpperCase()}`, branchCode: current.branchCode },
+      include: { schedules: true },
+    });
+    const posted = (accrual?.schedules || []).filter((schedule) => schedule.status === "POSTED");
+    if (posted.length > 0) {
+      throw new Error(`Khoản phân bổ ${accrual?.code} đã ghi nhận ${posted.length} kỳ (${posted.map((schedule) => schedule.period).join(", ")}). Vào Sổ quỹ > Trích trước & Phân bổ bỏ ghi nhận các kỳ đó rồi mới mở lại số dư đầu kỳ này.`);
+    }
+    return;
+  }
+  if (current.balanceType === "ASSET") {
+    const asset = await tx.assetRecord.findFirst({ where: { code: current.objectCode || "", branchCode: current.branchCode } });
+    if (!asset) return;
+    const runs = await tx.assetDepreciation.count({ where: { assetId: asset.id } });
+    if (runs > 0) {
+      throw new Error(`Tài sản ${asset.code} đã trích khấu hao ${runs} kỳ. Vào Tài sản & Khấu hao mở lại các kỳ đó rồi mới mở lại số dư đầu kỳ này.`);
+    }
+    if (asset.status === "DISPOSED") {
+      throw new Error(`Tài sản ${asset.code} đã thanh lý. Mở lại thanh lý ở tab Thanh lý rồi mới mở lại số dư đầu kỳ này.`);
+    }
+    return;
+  }
+  if (current.balanceType === "INVENTORY") {
+    const item = await tx.inventoryItem.findUnique({ where: { code: current.objectCode || "" } });
+    if (!item) return;
+    // Mở lại là ép tồn kho về 0. Đã có phiếu nhập/xuất sau đó thì số 0 đó sai ngay lập tức.
+    const movements = await tx.inventoryTransactionLine.count({
+      where: { itemId: item.id, transaction: { is: { deletedAt: null, branchCode: current.branchCode } } },
+    });
+    if (movements > 0) {
+      throw new Error(`Mặt hàng ${item.code} đã có ${movements} dòng phiếu nhập/xuất kho sau số dư đầu kỳ. Mở lại sẽ ép tồn về 0 và làm lệch kho, hãy lập phiếu điều chỉnh kho thay vì mở lại số dư này.`);
+    }
+  }
+}
+
 async function revertSideEffects(tx: Prisma.TransactionClient, current: OpeningBalanceInput & { id: string }) {
   if (current.balanceType === "DEPOSIT") return revertOpeningDeposit(tx, current.id);
   if (current.balanceType === "INVENTORY") {
@@ -152,11 +197,20 @@ export async function PATCH(request: Request) {
     if (!current) return NextResponse.json({ error: "Không tìm thấy số dư đầu kỳ" }, { status: 404 });
     assertBranchAccess(auth.session, current.branchCode);
     const requestedStatus = body.status === undefined ? undefined : cleanText(body.status).toUpperCase();
-    const reopen = current.status === "CONFIRMED" && requestedStatus === "DRAFT";
+    // POSTED là số dư nạp bằng file import. Trước đây trạng thái này bị chặn sửa hoàn toàn, mà
+    // phần lớn số dư đầu kỳ thật lại vào bằng import — khai nhầm loại số dư, sai số tiền hay
+    // sai số tháng phân bổ là hết đường sửa trên giao diện. Nay mở lại được y như số dư chốt
+    // tay: gỡ tác động, về Nháp, sửa, chốt lại.
+    const reopenableStatuses = ["CONFIRMED", "POSTED"];
+    const reopen = reopenableStatuses.includes(current.status) && requestedStatus === "DRAFT";
     const confirm = current.status === "DRAFT" && requestedStatus === "CONFIRMED";
     if (reopen && !isAdmin(auth.session.role)) return NextResponse.json({ error: "Chỉ Admin được mở lại số dư đã chốt" }, { status: 403 });
-    if (!["DRAFT", "CONFIRMED"].includes(current.status)) return NextResponse.json({ error: "Số dư import đã ghi sổ, không thể sửa tại màn hình này" }, { status: 409 });
-    if (current.status === "CONFIRMED" && !reopen) return NextResponse.json({ error: "Số dư đã chốt; hãy mở lại trước khi sửa" }, { status: 409 });
+    if (!["DRAFT", ...reopenableStatuses].includes(current.status)) {
+      return NextResponse.json({ error: `Số dư đang ở trạng thái ${current.status}, không sửa được tại màn hình này` }, { status: 409 });
+    }
+    if (reopenableStatuses.includes(current.status) && !reopen) {
+      return NextResponse.json({ error: "Số dư đã chốt; hãy bấm Mở lại trước khi sửa" }, { status: 409 });
+    }
     if (requestedStatus && !["DRAFT", "CONFIRMED"].includes(requestedStatus)) return NextResponse.json({ error: "Trạng thái không hợp lệ" }, { status: 400 });
 
     const next = currentAsInput(current as unknown as Record<string, unknown>, body);
@@ -166,7 +220,13 @@ export async function PATCH(request: Request) {
       if (next.period !== current.period || next.branchCode !== current.branchCode) await assertPeriodOpen(tx, next.period, next.branchCode);
       await validateOpeningBalanceInput(tx, next);
       if (confirm) await applySideEffects(tx, { id, ...next }, auth.session.name);
-      if (reopen) await revertSideEffects(tx, { id, ...next });
+      if (reopen) {
+        // Gỡ theo dữ liệu ĐANG lưu, không phải theo `next`: người mở lại có thể gửi kèm thay
+        // đổi, mà thứ cần gỡ là tác động mà bản cũ đã sinh ra.
+        const stored = currentAsInput(current as unknown as Record<string, unknown>, {});
+        await assertSideEffectsRevertible(tx, { id, ...stored });
+        await revertSideEffects(tx, { id, ...stored });
+      }
       const updated = await tx.openingBalance.update({ where: { id }, data: reopen ? { status: "DRAFT" } : { ...next, status: confirm ? "CONFIRMED" : "DRAFT" } });
       await tx.auditLog.create({ data: buildAuditLogData({ session: auth.session, module: "OPENING_BALANCE", action: confirm ? "CONFIRM" : reopen ? "REOPEN" : "UPDATE", entityType: "OpeningBalance", entityId: id, branchCode: updated.branchCode, metadata: { before: current, after: updated } }) });
       return updated;
