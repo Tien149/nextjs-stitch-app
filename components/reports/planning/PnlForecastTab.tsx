@@ -47,10 +47,17 @@ function natureTag(lineKey: string, name: string) {
 
 export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data: PlanningData; onRefresh: () => void; onOpenBudget?: () => void }) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  // Mặc định hiện HẾT danh mục, kể cả hạng mục chưa phát sinh đồng nào (yêu cầu khách
-  // 07/09/2026: danh mục có bao nhiêu hạng mục thì P&L phải show đủ bấy nhiêu). Ai muốn bảng
-  // gọn thì tự tick "Ẩn dòng bằng 0".
-  const [hideEmpty, setHideEmpty] = useState(false);
+  /**
+   * Mặc định ẨN dòng bằng 0 (chốt lại 15/09/2026 — bảng dài quá không đọc nổi).
+   *
+   * Server vẫn nạp sẵn TOÀN BỘ danh mục P&L như yêu cầu 07/09/2026 (khai thêm hạng mục là có
+   * ngay dòng đó), chỉ đổi cái mặc định của bộ lọc: bỏ tick "Ẩn dòng bằng 0" là thấy lại đủ.
+   * Không đụng tới dữ liệu nên đảo lại lúc nào cũng được.
+   *
+   * Dòng ĐÃ SET KẾ HOẠCH không bị coi là rỗng (xem isEmptyNode) nên vẫn luôn hiện, kể cả chưa
+   * phát sinh đồng thực tế nào — đã bỏ công đặt kế hoạch thì phải theo dõi được % hoàn thành.
+   */
+  const [hideEmpty, setHideEmpty] = useState(true);
   const monthHeaders = data.months.map((month) => `T${Number(month.slice(5))}`);
   const toggle = (key: string) => setCollapsed((current) => ({ ...current, [key]: !current[key] }));
   const setAll = (next: boolean) => {
@@ -226,7 +233,8 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white">
-              <input type="checkbox" checked={hideEmpty} onChange={(event) => setHideEmpty(event.target.checked)} />Ẩn dòng bằng 0
+              <input type="checkbox" checked={hideEmpty} onChange={(event) => setHideEmpty(event.target.checked)} />
+              <span title="Bỏ tick để xem đủ mọi hạng mục trong danh mục, kể cả hạng mục chưa phát sinh.">Ẩn dòng bằng 0</span>
             </label>
             <button type="button" onClick={() => setAll(false)} className="text-xs font-bold text-slate-600 border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50">Mở tất cả</button>
             <button type="button" onClick={() => setAll(true)} className="text-xs font-bold text-slate-600 border border-slate-200 rounded-lg px-3 py-1.5 bg-white hover:bg-slate-50">Thu gọn</button>
