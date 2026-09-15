@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma, type TxClient } from "@/lib/prisma";
-import { addPeriod, apiError, assertPeriodOpen, businessError, cleanText, isPeriodLocked, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
+import { apiError, assertPeriodOpen, buildAllocationSchedules, businessError, cleanText, isPeriodLocked, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
 import { assertBranchAccess, requestedBranch } from "@/lib/accounting";
 import { scopePayloadByTab } from "@/lib/tab-scope";
 import { normalizeMoneySourceGroup } from "@/lib/money-sources";
@@ -230,10 +230,16 @@ export async function POST(request: Request) {
       for (const asset of assets) {
         const exists = await prisma.assetDepreciation.findUnique({ where: { assetId_period: { assetId: asset.id, period } } });
         if (exists) continue;
-        const monthlyAmount = (asset.originalCost - asset.residualValue) / (asset.usefulLifeMonths || 1);
-        const amount = Math.max(0, Math.min(monthlyAmount, asset.currentValue - asset.residualValue));
+        const previous = await prisma.assetDepreciation.aggregate({ where: { assetId: asset.id }, _sum: { depreciationAmount: true }, _count: { _all: true } });
+        // Số khấu hao tháng làm tròn tới đồng; phần còn lại có thể trích nốt = giá trị còn lại −
+        // giá trị thanh lý. Cùng luật với chi phí phân bổ (`splitAmountByPeriods`): các kỳ đầu
+        // lấy số tròn, KỲ CUỐI lấy đúng phần còn lại — nếu không thì làm tròn dồn qua 60 tháng
+        // để lại vài đồng lẻ treo mãi trên giá trị tài sản, hoặc đẻ thêm một kỳ khấu hao 1 đồng.
+        const remaining = Math.max(0, Math.round(asset.currentValue - asset.residualValue));
+        const monthlyAmount = Math.round((asset.originalCost - asset.residualValue) / (asset.usefulLifeMonths || 1));
+        const isFinalPeriod = previous._count._all + 1 >= (asset.usefulLifeMonths || 1);
+        const amount = isFinalPeriod ? remaining : Math.min(monthlyAmount, remaining);
         if (amount <= 0) continue;
-        const previous = await prisma.assetDepreciation.aggregate({ where: { assetId: asset.id }, _sum: { depreciationAmount: true } });
         await prisma.$transaction([
           prisma.assetDepreciation.create({
             data: {
@@ -605,7 +611,6 @@ export async function POST(request: Request) {
         if (treatment === "ALLOCATE" && repairCost > 0) {
           const periods = Math.max(2, Math.floor(toNumber(body.numberOfPeriods || body.allocationMonths) || 6));
           const startPeriod = `${resolvedAt.getFullYear()}-${String(resolvedAt.getMonth() + 1).padStart(2, "0")}`;
-          const amount = repairCost / periods;
           const categoryCode = cleanText(body.categoryCode) || "REPAIR";
           await tx.accrual.create({
             data: {
@@ -619,7 +624,7 @@ export async function POST(request: Request) {
               sourceType: "ASSET_REPAIR",
               sourceId: report.id,
               createdBy: auth.session.name,
-              schedules: { create: Array.from({ length: periods }, (_, index) => ({ period: addPeriod(startPeriod, index), amount })) },
+              schedules: { create: buildAllocationSchedules(startPeriod, repairCost, periods) },
             },
           });
         }

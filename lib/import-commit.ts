@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { Prisma } from "@prisma/custom-client";
 import { prisma, prismaRaw, type RawTxClient, type TxClient } from "@/lib/prisma";
-import { addPeriod, assertPeriodOpen as assertAccountingPeriodOpen, isPeriodLocked, periodFromDate } from "@/lib/phase3";
+import { assertPeriodOpen as assertAccountingPeriodOpen, buildAllocationSchedules, isPeriodLocked, periodFromDate } from "@/lib/phase3";
 import { ensureDefaultAccounts } from "@/lib/accounting";
 import { isMasterDataImportType, normalizeHeader, type ImportType } from "@/lib/import-templates";
 import { parseImportDate, type ParsedImportRow } from "@/lib/import-parser";
@@ -1634,7 +1634,7 @@ export async function commitImport(input: CommitInput) {
                 sourceType: "OPENING_BALANCE",
                 pnlItemCode: asText(row.values.pnl_item_code).toUpperCase() || null,
                 note: asText(row.values.note) || "Cập nhật từ chi phí phân bổ đầu kỳ",
-                schedules: { create: Array.from({ length: months }, (_, index) => ({ period: addPeriod(startPeriod, index), amount: amount / months })) },
+                schedules: { create: buildAllocationSchedules(startPeriod, amount, months) },
               },
             });
             await setImportTarget(tx, staging, row, "ACCRUAL", existing.id);
@@ -1654,7 +1654,7 @@ export async function commitImport(input: CommitInput) {
                 pnlItemCode: asText(row.values.pnl_item_code).toUpperCase() || null,
                 note: asText(row.values.note) || "Tạo từ chi phí phân bổ đầu kỳ",
                 createdBy: input.uploadedBy,
-                schedules: { create: Array.from({ length: months }, (_, index) => ({ period: addPeriod(startPeriod, index), amount: amount / months })) },
+                schedules: { create: buildAllocationSchedules(startPeriod, amount, months) },
               },
             });
             await setImportTarget(tx, staging, row, "ACCRUAL", accrual.id);
@@ -1881,12 +1881,7 @@ export async function commitImport(input: CommitInput) {
               numberOfPeriods: allocationMonths,
               note: `Tạo từ công nợ đầu kỳ ${code}`,
               createdBy: input.uploadedBy,
-              schedules: {
-                create: Array.from({ length: allocationMonths }, (_, scheduleIndex) => ({
-                  period: addPeriod(startPeriod, scheduleIndex),
-                  amount: asNumber(row.values.amount) / allocationMonths,
-                })),
-              },
+              schedules: { create: buildAllocationSchedules(startPeriod, asNumber(row.values.amount), allocationMonths) },
             },
           });
         }

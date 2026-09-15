@@ -31,6 +31,31 @@ export function addPeriod(startPeriod: string, offset: number) {
 }
 
 /**
+ * Chia một khoản tiền đều cho N kỳ, làm tròn tới đồng, kỳ CUỐI nhận phần còn lại.
+ *
+ * Chia thẳng 1.000.000 / 3 rồi lưu là 333.333,33 nằm trong sổ, cộng ba kỳ lên P&L thành
+ * 999.999,99 — lệch một đồng so với phiếu gốc và không ai truy được vì sao. Luật ở đây: các kỳ
+ * đầu lấy số tròn, kỳ cuối = tổng − những kỳ trước, nên cộng lại LUÔN bằng đúng tổng.
+ *
+ * Dùng chung cho chi phí phân bổ (trích trước, số dư đầu kỳ, phiếu chi trả trước, sửa chữa
+ * tài sản) và là luật tham chiếu cho khấu hao — khấu hao chạy từng tháng nên tự tính phần
+ * còn lại tại `RUN_DEPRECIATION`, nhưng theo đúng tinh thần này.
+ */
+export function splitAmountByPeriods(total: number, periods: number) {
+  const count = Math.max(1, Math.floor(periods));
+  const rounded = Math.round(total);
+  // Làm tròn XUỐNG ở các kỳ đầu để phần dồn về kỳ cuối không bao giờ âm: 5 đồng chia 10 kỳ
+  // mà làm tròn thường thì 9 kỳ đầu mỗi kỳ 1 đồng, kỳ cuối phải gánh −4.
+  const base = Math.floor(rounded / count);
+  return Array.from({ length: count }, (_, index) => (index === count - 1 ? rounded - base * (count - 1) : base));
+}
+
+/** Lịch phân bổ `{ period, amount }` từ kỳ bắt đầu, số tiền theo luật `splitAmountByPeriods`. */
+export function buildAllocationSchedules(startPeriod: string, total: number, periods: number) {
+  return splitAmountByPeriods(total, periods).map((amount, index) => ({ period: addPeriod(startPeriod, index), amount }));
+}
+
+/**
  * Client tối thiểu để tra kỳ kế toán.
  *
  * Khai theo hình dạng chứ không theo kiểu sinh sẵn của Prisma để nhận được cả `prisma`,

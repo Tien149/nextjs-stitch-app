@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { isAdmin, requireCashDepositCreate, requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { getExpenseSummary } from "@/lib/expense-summary";
 import { prisma, prismaRaw } from "@/lib/prisma";
-import { addPeriod, apiError, businessError, cleanText, isPeriodLocked, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
+import { addPeriod, apiError, buildAllocationSchedules, businessError, cleanText, isPeriodLocked, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
 import { requestedBranch, assertBranchAccess, branchFilterForSession } from "@/lib/accounting";
 import { writeAuditLog } from "@/lib/audit-log";
 import { nextSeqFromCodes, voucherCodePrefix } from "@/lib/voucher-code-generator";
@@ -1019,7 +1019,6 @@ export async function POST(request: Request) {
         if (!pnlItem) businessError(`Hạng mục P&L [${pnlItemCode}] không tồn tại hoặc đã ngừng hoạt động`);
       }
 
-      const amount = totalAmount / numberOfPeriods;
       const pbouPrefix = voucherCodePrefix({ voucherType: "PBOU", voucherDate: `${startPeriod}-01`, branchCode });
       const issuedPbou = await prisma.accrual.findMany({ where: { code: { startsWith: pbouPrefix } }, select: { code: true } });
       const result = await prisma.accrual.create({
@@ -1034,7 +1033,7 @@ export async function POST(request: Request) {
           numberOfPeriods,
           note: cleanText(body.note) || null,
           createdBy: auth.session.name,
-          schedules: { create: Array.from({ length: numberOfPeriods }, (_, index) => ({ period: addPeriod(startPeriod, index), amount })) },
+          schedules: { create: buildAllocationSchedules(startPeriod, totalAmount, numberOfPeriods) },
         },
         include: { schedules: true },
       });

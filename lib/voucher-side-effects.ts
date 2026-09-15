@@ -1,5 +1,5 @@
 import type { RawTxClient } from "@/lib/prisma";
-import { addPeriod } from "@/lib/phase3";
+import { buildAllocationSchedules } from "@/lib/phase3";
 import { ADVANCE_RECEIVABLE_ACTION } from "@/lib/voucher-rules";
 
 /** Mã khoản phải thu sinh từ phiếu chi hộ — suy được từ mã phiếu nên duyệt lại không tạo trùng. */
@@ -242,12 +242,7 @@ export async function applyVoucherSideEffects(
           sourceType: "VOUCHER",
           sourceId: voucher.id,
           createdBy: actor,
-          schedules: {
-            create: Array.from({ length: numberOfPeriods }, (_, index) => ({
-              period: addPeriod(voucher.allocationStartPeriod || "", index),
-              amount: voucher.amount / numberOfPeriods,
-            })),
-          },
+          schedules: { create: buildAllocationSchedules(voucher.allocationStartPeriod || "", voucher.amount, numberOfPeriods) },
         },
       });
     }

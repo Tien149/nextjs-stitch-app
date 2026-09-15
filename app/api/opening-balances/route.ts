@@ -7,19 +7,10 @@ import { prisma, prismaRaw } from "@/lib/prisma";
 import { applyOpeningDeposit, revertOpeningDeposit } from "@/lib/opening-balance-deposit";
 import { normalizeOpeningBalanceInput, validateOpeningBalanceInput, type OpeningBalanceInput } from "@/lib/opening-balance-rules";
 import { assertAssetCodeAvailable } from "@/lib/asset-code-generator";
-import { assertPeriodOpen as assertAccountingPeriodOpen } from "@/lib/phase3";
+import { assertPeriodOpen as assertAccountingPeriodOpen, buildAllocationSchedules } from "@/lib/phase3";
 
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
-}
-
-function addPeriod(period: string, monthsToAdd: number): string {
-  const [yearStr, monthStr] = period.split("-");
-  let year = parseInt(yearStr, 10);
-  let month = parseInt(monthStr, 10) + monthsToAdd - 1;
-  year += Math.floor(month / 12);
-  month = (month % 12) + 1;
-  return `${year}-${String(month).padStart(2, "0")}`;
 }
 
 /**
@@ -91,10 +82,10 @@ async function applySideEffects(tx: Prisma.TransactionClient, current: OpeningBa
       sourceType: "OPENING_BALANCE", sourceId: current.id,
       status: "ACTIVE", note: current.note || "Khởi tạo từ số dư đầu kỳ",
     } });
-    await tx.accrualSchedule.createMany({ data: Array.from({ length: current.allocationMonths || 1 }, (_, index) => ({
-      accrualId: accrual.id, period: addPeriod(current.allocationStartPeriod || current.period, index),
-      amount: current.amount / (current.allocationMonths || 1), status: "PLANNED",
-    })) });
+    await tx.accrualSchedule.createMany({
+      data: buildAllocationSchedules(current.allocationStartPeriod || current.period, current.amount, current.allocationMonths || 1)
+        .map((schedule) => ({ accrualId: accrual.id, ...schedule, status: "PLANNED" })),
+    });
   }
 }
 
