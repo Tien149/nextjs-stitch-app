@@ -10,21 +10,64 @@
  * giảm công nợ NCC là do màn Công nợ đọc thẳng phiếu chi hộ theo nhà hàng được chi hộ nên
  * tự đúng, không cần bù dữ liệu.
  *
- * Chạy thử:  node scripts/backfill-advance-receivable-counterpart.cjs
- * Ghi thật:  node scripts/backfill-advance-receivable-counterpart.cjs --apply
+ * CHỈ nhận mã đối tác NB-<X> khi X có thật trong danh mục Cửa hàng. Khách đã tự đặt mã kiểu
+ * NB-THOA, NB-CHAU cho cá nhân; hiểu nhầm là nhà hàng thì khoản phải trả đối ứng rơi vào một
+ * cửa hàng không tồn tại, không màn hình nào nhìn thấy để sửa.
+ *
+ * Chạy thử:   node scripts/backfill-advance-receivable-counterpart.cjs
+ * Ghi thật:   node scripts/backfill-advance-receivable-counterpart.cjs --apply
+ * Dọn nhầm:   node scripts/backfill-advance-receivable-counterpart.cjs --clean-orphans [--apply]
+ *   (xoá các khoản CNTHU-*-PTR đã tạo cho một "cửa hàng" không có trong danh mục; chỉ xoá
+ *    khoản chưa bị gạch nợ lần nào)
  */
 const { PrismaClient } = require("@prisma/custom-client");
 
 const prisma = new PrismaClient();
 const args = process.argv.slice(2);
 const apply = args.includes("--apply");
+const cleanOrphans = args.includes("--clean-orphans");
 
 const INTERNAL_PARTNER_PREFIX = "NB-";
 const internalPartnerCode = (branchCode) => `${INTERNAL_PARTNER_PREFIX}${String(branchCode || "").trim().toUpperCase()}`;
-function branchCodeFromInternalPartner(partnerCode) {
+function branchCodeFromInternalPartner(partnerCode, knownBranchCodes) {
   const code = String(partnerCode || "").trim().toUpperCase();
   if (!code.startsWith(INTERNAL_PARTNER_PREFIX)) return null;
-  return code.slice(INTERNAL_PARTNER_PREFIX.length) || null;
+  const branchCode = code.slice(INTERNAL_PARTNER_PREFIX.length) || null;
+  if (!branchCode) return null;
+  return knownBranchCodes.has(branchCode) ? branchCode : null;
+}
+
+async function loadBranchCodes() {
+  const branches = await prisma.masterDataItem.findMany({ where: { type: "BRANCH" }, select: { code: true } });
+  return new Set(branches.map((row) => String(row.code || "").trim().toUpperCase()));
+}
+
+/**
+ * Dọn các khoản phải trả đối ứng đã tạo cho một "cửa hàng" không có trong danh mục — hệ quả
+ * của lần chạy trước khi script biết kiểm tra danh mục Cửa hàng.
+ */
+async function cleanOrphanCounterparts(knownBranchCodes) {
+  const suspects = await prisma.debtRecord.findMany({
+    where: { code: { startsWith: "CNTHU-", endsWith: "-PTR" }, deletedAt: null },
+  });
+  const orphans = suspects.filter((row) => !knownBranchCodes.has(String(row.branchCode || "").trim().toUpperCase()));
+  if (orphans.length === 0) {
+    console.log("Không có khoản phải trả nội bộ nào nằm ở cửa hàng lạ.");
+    return;
+  }
+  let removed = 0;
+  for (const debt of orphans) {
+    const settlements = await prisma.debtSettlement.count({ where: { debtId: debt.id } });
+    if (settlements > 0) {
+      console.log(`GIỮ LẠI ${debt.code} (cửa hàng lạ "${debt.branchCode}") — đã bị gạch ${settlements} lần, phải bỏ duyệt phiếu gạch trước rồi xoá tay.`);
+      continue;
+    }
+    console.log(`${apply ? "XOÁ" : "SẼ XOÁ"} ${debt.code}: cửa hàng lạ "${debt.branchCode}", ${debt.outstandingAmount.toLocaleString("vi-VN")} đ`);
+    removed += 1;
+    if (apply) await prisma.debtRecord.delete({ where: { id: debt.id } });
+  }
+  console.log(`\nTổng: ${orphans.length} khoản nằm ở cửa hàng lạ · ${removed} khoản ${apply ? "đã xoá" : "sẽ xoá"}`);
+  if (!apply) console.log("Chạy thử — thêm --apply để xoá thật.");
 }
 
 async function ensureInternalPartner(branchCode) {
@@ -48,6 +91,9 @@ async function ensureInternalPartner(branchCode) {
 }
 
 async function main() {
+  const knownBranchCodes = await loadBranchCodes();
+  if (cleanOrphans) return cleanOrphanCounterparts(knownBranchCodes);
+
   const vouchers = await prisma.financialVoucher.findMany({
     where: {
       voucherType: "PAYMENT",
@@ -61,10 +107,17 @@ async function main() {
 
   let created = 0;
   let skipped = 0;
+  let notBranch = 0;
   for (const voucher of vouchers) {
-    const beneficiaryBranch = branchCodeFromInternalPartner(voucher.receivablePartnerCode);
+    const beneficiaryBranch = branchCodeFromInternalPartner(voucher.receivablePartnerCode, knownBranchCodes);
     const payerBranch = String(voucher.branchCode || "").trim().toUpperCase();
-    if (!beneficiaryBranch || beneficiaryBranch === payerBranch) { skipped += 1; continue; }
+    if (!beneficiaryBranch) {
+      // Mã NB-<gì đó> nhưng không phải cửa hàng: chi hộ đối tác bên ngoài, một vế là đủ.
+      console.log(`BỎ QUA ${voucher.code}: đối tác thu lại [${voucher.receivablePartnerCode}] không có trong danh mục Cửa hàng`);
+      notBranch += 1;
+      continue;
+    }
+    if (beneficiaryBranch === payerBranch) { skipped += 1; continue; }
 
     const code = `CNTHU-${voucher.code}-PTR`;
     const existing = await prisma.debtRecord.findUnique({ where: { code } });
@@ -97,10 +150,10 @@ async function main() {
 
   // Khoản CNTHU cũ bị gắn nhãn EXTERNAL nên màn Công nợ xếp nhà hàng nhà mình vào nhóm
   // "Bên ngoài" và bộ lọc Nội bộ không thấy.
-  const mislabeled = await prisma.debtRecord.findMany({
+  const mislabeled = (await prisma.debtRecord.findMany({
     where: { code: { startsWith: "CNTHU-" }, partnerGroup: "EXTERNAL", partnerCode: { startsWith: INTERNAL_PARTNER_PREFIX }, deletedAt: null },
-    select: { id: true, code: true },
-  });
+    select: { id: true, code: true, partnerCode: true },
+  })).filter((row) => branchCodeFromInternalPartner(row.partnerCode, knownBranchCodes));
   if (mislabeled.length > 0) {
     console.log(`${apply ? "SỬA" : "SẼ SỬA"} nhãn nội bộ cho ${mislabeled.length} khoản CNTHU: ${mislabeled.map((row) => row.code).join(", ")}`);
     if (apply) {
@@ -108,7 +161,7 @@ async function main() {
     }
   }
 
-  console.log(`\nTổng: ${vouchers.length} phiếu chi hộ nội bộ · ${created} khoản phải trả ${apply ? "đã tạo" : "sẽ tạo"} · ${skipped} phiếu bỏ qua (đã có hoặc không liên nhà hàng)`);
+  console.log(`\nTổng: ${vouchers.length} phiếu · ${created} khoản phải trả ${apply ? "đã tạo" : "sẽ tạo"} · ${skipped} phiếu bỏ qua (đã có hoặc không liên nhà hàng) · ${notBranch} phiếu chi hộ đối tác không phải nhà hàng`);
   if (!apply) console.log("Chạy thử — thêm --apply để ghi thật.");
 }
 

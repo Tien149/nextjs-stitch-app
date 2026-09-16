@@ -20,15 +20,16 @@ export function advanceReceivableCounterpartDebtCode(voucherCode: string) {
 /**
  * Nhà hàng được chi hộ, khi "đối tác sẽ trả lại tiền" là một nhà hàng trong nhà.
  * Chi hộ cho đối tác BÊN NGOÀI trả null: khoản nợ đó không thuộc sổ của nhà hàng nào khác.
+ * `knownBranchCodes` phải là danh mục cửa hàng thật — xem branchCodeFromInternalPartner.
  */
 export function advanceReceivableBeneficiaryBranch(voucher: {
   voucherType: string;
   branchCode: string;
   debtAction: string | null;
   receivablePartnerCode?: string | null;
-}) {
+}, knownBranchCodes?: Iterable<string> | null) {
   if (voucher.voucherType !== "PAYMENT" || voucher.debtAction !== ADVANCE_RECEIVABLE_ACTION) return null;
-  const beneficiaryBranch = branchCodeFromInternalPartner(voucher.receivablePartnerCode);
+  const beneficiaryBranch = branchCodeFromInternalPartner(voucher.receivablePartnerCode, knownBranchCodes);
   const payerBranch = (voucher.branchCode || "").trim().toUpperCase();
   if (!beneficiaryBranch || !payerBranch || beneficiaryBranch === payerBranch) return null;
   return beneficiaryBranch;
@@ -194,7 +195,11 @@ export async function applyVoucherSideEffects(
   // phiếu: duyệt lại hoặc sửa phiếu không được tạo thành hai khoản nợ.
   if (voucher.voucherType === "PAYMENT" && voucher.debtAction === ADVANCE_RECEIVABLE_ACTION) {
     if (!voucher.receivablePartnerCode) throw new Error("Chi hộ bắt buộc chọn đối tác sẽ trả lại tiền");
-    const beneficiaryBranch = advanceReceivableBeneficiaryBranch(voucher);
+    // Danh mục cửa hàng quyết định "đối tác sẽ trả lại tiền" có phải nhà hàng trong nhà không.
+    // Đọc từ DB chứ không tin tiền tố NB- của mã đối tác: mã đó người dùng tự đặt được.
+    const branchCodes = (await tx.masterDataItem.findMany({ where: { type: "BRANCH" }, select: { code: true } }))
+      .map((row) => row.code);
+    const beneficiaryBranch = advanceReceivableBeneficiaryBranch(voucher, branchCodes);
     const code = advanceReceivableDebtCode(voucher.code);
     const existing = await tx.debtRecord.findUnique({ where: { code } });
     if (existing?.deletedAt) {

@@ -373,10 +373,14 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
     : { OR: [{ branchCode }, { debtAction: ADVANCE_RECEIVABLE_ACTION, receivablePartnerCode: internalPartnerCode(branchCode) }] };
   const vouchers = await prisma.financialVoucher.findMany({ where: { ...voucherBranchFilter, voucherDate: { gte: start, lt: end }, status: "APPROVED" } });
   // Nhóm khoản mục quyết định phiếu chi vào chi phí, giá vốn hay tài sản.
-  const [voucherCategories, pnlItems] = await Promise.all([
+  const [voucherCategories, pnlItems, branchItems] = await Promise.all([
     prisma.masterDataItem.findMany({ where: { type: "REVENUE_EXPENSE_CATEGORY" } }),
     prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" } }),
+    // Chỉ mã có trong danh mục Cửa hàng mới được coi là nhà hàng trong nhà; đối tác đặt mã
+    // NB-<tên người> không được kéo bút toán sang một cửa hàng không tồn tại.
+    prisma.masterDataItem.findMany({ where: { type: "BRANCH" }, select: { code: true } }),
   ]);
+  const knownBranchCodes = branchItems.map((item) => item.code);
   const categoryGroupByCode = new Map(voucherCategories.map((item) => [item.code, normalizeCategoryGroup(item.group)]));
   const pnlItemGroupByCode = new Map(pnlItems.map((item) => [item.code, normalizeCategoryGroup(item.group)]));
   for (const row of vouchers) {
@@ -387,10 +391,11 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
       row,
       row.categoryCode ? categoryGroupByCode.get(row.categoryCode) ?? null : null,
       row.pnlItemCode ? pnlItemGroupByCode.get(row.pnlItemCode) ?? null : null,
+      knownBranchCodes,
     );
     results.push(await postJournalEntry({ entryDate: row.voucherDate, branchCode: row.branchCode, sourceType: "VOUCHER", sourceId: row.id, sourceCode: row.code, description: row.description, createdBy: actor, lines }));
     // Vế đối ứng ở sổ nhà hàng được chi hộ: giảm phải trả NCC, tăng phải trả nội bộ.
-    const counterpart = advanceReceivableCounterpartJournal(row);
+    const counterpart = advanceReceivableCounterpartJournal(row, knownBranchCodes);
     if (counterpart) {
       results.push(await postJournalEntry({
         entryDate: row.voucherDate,

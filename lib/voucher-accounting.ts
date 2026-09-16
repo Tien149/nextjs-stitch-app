@@ -3,7 +3,6 @@ import {
   INTERNAL_PAYABLE_ACCOUNT,
   INTERNAL_RECEIVABLE_ACCOUNT,
   internalPartnerCode,
-  isInternalPartnerCode,
 } from "@/lib/cost-reallocation";
 import { ADVANCE_RECEIVABLE_ACTION, PREPAID_ALLOCATION_ACTION } from "@/lib/voucher-rules";
 
@@ -77,8 +76,17 @@ export function receiptCounterAccount(voucher: VoucherForPosting, categoryGroup:
   return { account: "711", reason: "Thu nhập khác" };
 }
 
-/** Tài khoản đối ứng của phiếu CHI, kèm lý do. */
-export function paymentCounterAccount(voucher: VoucherForPosting, categoryGroup: string | null) {
+/**
+ * Tài khoản đối ứng của phiếu CHI, kèm lý do.
+ *
+ * `knownBranchCodes` là danh mục cửa hàng có thật — cần để biết "đối tác sẽ trả lại tiền" của
+ * phiếu chi hộ là một nhà hàng trong nhà (1368) hay chỉ là đối tác có mã bắt đầu bằng NB- (131).
+ */
+export function paymentCounterAccount(
+  voucher: VoucherForPosting,
+  categoryGroup: string | null,
+  knownBranchCodes?: Iterable<string> | null,
+) {
   if (voucher.depositAction === "REFUND") {
     return { account: "3387", reason: "Hoàn tiền cọc — giảm khoản khách ứng trước, không phải chi phí" };
   }
@@ -89,7 +97,7 @@ export function paymentCounterAccount(voucher: VoucherForPosting, categoryGroup:
     // Chi hộ một nhà hàng khác là công nợ NỘI BỘ: để ở 131 thì toàn công ty thấy một khoản
     // phải thu bên ngoài không bao giờ triệt tiêu, trong khi 1368 khớp thẳng với 3368 mà nhà
     // hàng thụ hưởng ghi ở bút toán đối ứng.
-    if (isInternalPartnerCode(voucher.receivablePartnerCode)) {
+    if (branchCodeFromInternalPartner(voucher.receivablePartnerCode, knownBranchCodes)) {
       return { account: INTERNAL_RECEIVABLE_ACCOUNT, reason: "Chi hộ nhà hàng khác — treo phải thu nội bộ, không phải chi phí" };
     }
     return { account: "131", reason: "Chi hộ — treo phải thu của đối tác sẽ hoàn lại, không phải chi phí" };
@@ -113,7 +121,12 @@ export function paymentCounterAccount(voucher: VoucherForPosting, categoryGroup:
   return { account: "6428", reason: "Chi phí vận hành" };
 }
 
-export function voucherJournalLines(voucher: VoucherForPosting, categoryGroup: string | null, pnlItemGroup: string | null = null) {
+export function voucherJournalLines(
+  voucher: VoucherForPosting,
+  categoryGroup: string | null,
+  pnlItemGroup: string | null = null,
+  knownBranchCodes?: Iterable<string> | null,
+) {
   const cashAccount = cashAccountFor(voucher.moneySourceCode);
   if (voucher.voucherType === "RECEIPT") {
     const { account, reason } = receiptCounterAccount(voucher, categoryGroup, pnlItemGroup);
@@ -127,7 +140,7 @@ export function voucherJournalLines(voucher: VoucherForPosting, categoryGroup: s
   }
   // Khi kế toán chọn Hạng mục P&L riêng, nhóm của hạng mục đó quyết định dòng P&L.
   // Nếu để trống, giữ cách hạch toán cũ theo Khoản mục thu/chi để dữ liệu lịch sử không đổi.
-  const { account, reason } = paymentCounterAccount(voucher, pnlItemGroup || categoryGroup);
+  const { account, reason } = paymentCounterAccount(voucher, pnlItemGroup || categoryGroup, knownBranchCodes);
   // Chi hộ: khoản nợ thuộc về đối tác sẽ hoàn tiền, và phiếu không có mặt trên P&L nên
   // hạng mục P&L (nếu ai đó lỡ khai) không được đi kèm dòng 131.
   const isAdvanceReceivable = voucher.debtAction === ADVANCE_RECEIVABLE_ACTION;
@@ -166,9 +179,9 @@ export function advanceReceivableCounterpartJournal(voucher: {
   partnerCode: string | null;
   receivablePartnerCode?: string | null;
   debtAction: string | null;
-}) {
+}, knownBranchCodes?: Iterable<string> | null) {
   if (voucher.voucherType !== "PAYMENT" || voucher.debtAction !== ADVANCE_RECEIVABLE_ACTION) return null;
-  const beneficiaryBranch = branchCodeFromInternalPartner(voucher.receivablePartnerCode);
+  const beneficiaryBranch = branchCodeFromInternalPartner(voucher.receivablePartnerCode, knownBranchCodes);
   const payerBranch = (voucher.branchCode || "").trim().toUpperCase();
   if (!beneficiaryBranch || !payerBranch || beneficiaryBranch === payerBranch) return null;
   if (!(voucher.amount > 0)) return null;

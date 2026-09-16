@@ -71,25 +71,43 @@ const chiHoNoiBo = {
   receivablePartnerCode: "NB-ASA",
 };
 
+/** Danh mục Cửa hàng thật. NB-THOA (một cá nhân ai đó đặt mã) không nằm trong đây. */
+const BRANCHES = ["NME", "ASA"];
+
 test("chi hộ nhà hàng khác treo phải thu NỘI BỘ 1368, không phải 131", () => {
-  assert.equal(paymentCounterAccount(chiHoNoiBo, "OPEX").account, "1368");
-  const debit = voucherJournalLines(chiHoNoiBo, "OPEX", "OPEX").lines.find((line) => line.debit);
+  assert.equal(paymentCounterAccount(chiHoNoiBo, "OPEX", BRANCHES).account, "1368");
+  const debit = voucherJournalLines(chiHoNoiBo, "OPEX", "OPEX", BRANCHES).lines.find((line) => line.debit);
   assert.equal(debit.accountCode, "1368");
   assert.equal(debit.partnerCode, "NB-ASA");
   // Chi hộ đối tác bên ngoài không đổi: vẫn là phải thu 131 như trước.
-  assert.equal(paymentCounterAccount(chiHo, "OPEX").account, "131");
+  assert.equal(paymentCounterAccount(chiHo, "OPEX", BRANCHES).account, "131");
 });
 
 test("nhà hàng được chi hộ suy từ đối tác nội bộ, đối tác ngoài thì không có", () => {
-  assert.equal(advanceReceivableBeneficiaryBranch(chiHoNoiBo), "ASA");
-  assert.equal(advanceReceivableBeneficiaryBranch({ ...chiHo, branchCode: "NME" }), null);
+  assert.equal(advanceReceivableBeneficiaryBranch(chiHoNoiBo, BRANCHES), "ASA");
+  assert.equal(advanceReceivableBeneficiaryBranch({ ...chiHo, branchCode: "NME" }, BRANCHES), null);
   // Chọn đúng nhà hàng của chính phiếu thì không có vế đối ứng nào cả.
-  assert.equal(advanceReceivableBeneficiaryBranch({ ...chiHoNoiBo, receivablePartnerCode: "NB-NME" }), null);
-  assert.equal(advanceReceivableBeneficiaryBranch({ ...chiHoNoiBo, debtAction: null }), null);
+  assert.equal(advanceReceivableBeneficiaryBranch({ ...chiHoNoiBo, receivablePartnerCode: "NB-NME" }, BRANCHES), null);
+  assert.equal(advanceReceivableBeneficiaryBranch({ ...chiHoNoiBo, debtAction: null }, BRANCHES), null);
+});
+
+/**
+ * Mã đối tác bắt đầu bằng NB- KHÔNG phải bằng chứng đó là nhà hàng: khách đã tự đặt NB-THOA,
+ * NB-CHAU cho cá nhân. Hiểu nhầm thì công nợ đối ứng và bút toán rơi vào một cửa hàng không
+ * tồn tại, không màn hình nào nhìn thấy để sửa.
+ */
+test("mã NB- không có trong danh mục Cửa hàng thì coi như đối tác bên ngoài", () => {
+  const chiHoCaNhan = { ...chiHoNoiBo, receivablePartnerCode: "NB-THOA" };
+  assert.equal(advanceReceivableBeneficiaryBranch(chiHoCaNhan, BRANCHES), null);
+  assert.equal(advanceReceivableCounterpartJournal(chiHoCaNhan, BRANCHES), null);
+  assert.equal(paymentCounterAccount(chiHoCaNhan, "OPEX", BRANCHES).account, "131");
+  // Quên truyền danh mục cửa hàng thì sai theo hướng an toàn: không sinh vế đối ứng nào.
+  assert.equal(advanceReceivableBeneficiaryBranch(chiHoNoiBo), null);
+  assert.equal(advanceReceivableCounterpartJournal(chiHoNoiBo), null);
 });
 
 test("bút toán đối ứng ghi ở sổ nhà hàng được chi hộ: giảm 331 NCC, tăng 3368 nội bộ", () => {
-  const counterpart = advanceReceivableCounterpartJournal(chiHoNoiBo);
+  const counterpart = advanceReceivableCounterpartJournal(chiHoNoiBo, BRANCHES);
   assert.equal(counterpart.branchCode, "ASA");
   const debit = counterpart.lines.find((line) => line.debit);
   assert.equal(debit.accountCode, "331");
@@ -99,7 +117,7 @@ test("bút toán đối ứng ghi ở sổ nhà hàng được chi hộ: giảm 
   assert.equal(credit.accountCode, "3368");
   assert.equal(credit.partnerCode, "NB-NME");
   // Chi hộ đối tác bên ngoài là nợ của chính nhà hàng lập phiếu — không có sổ nào khác để ghi.
-  assert.equal(advanceReceivableCounterpartJournal({ ...chiHo, branchCode: "NME" }), null);
+  assert.equal(advanceReceivableCounterpartJournal({ ...chiHo, branchCode: "NME" }, BRANCHES), null);
 });
 
 test("mã công nợ hai vế suy được từ mã phiếu nên duyệt lại không tạo trùng", () => {

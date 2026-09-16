@@ -34,11 +34,23 @@ export function isInternalPartnerCode(partnerCode: string | null | undefined) {
 /**
  * Nhà hàng đứng sau một mã đối tác nội bộ; trả null nếu đó là đối tác bên ngoài.
  * Dùng để biết khoản chi hộ đang gánh nợ cho nhà hàng nào.
+ *
+ * `knownBranchCodes` là danh sách mã cửa hàng có thật trong danh mục. BẮT BUỘC truyền ở mọi
+ * chỗ ghi sổ: tiền tố "NB-" không phải bằng chứng — người dùng có thể tự đặt mã kiểu NB-THOA,
+ * NB-CHAU cho một cá nhân, và hiểu nhầm nó là nhà hàng thì khoản công nợ đối ứng rơi vào một
+ * cửa hàng không tồn tại, không màn hình nào nhìn thấy để sửa. Không truyền thì mặc định coi
+ * là đối tác bên ngoài — sai theo hướng an toàn.
  */
-export function branchCodeFromInternalPartner(partnerCode: string | null | undefined) {
+export function branchCodeFromInternalPartner(
+  partnerCode: string | null | undefined,
+  knownBranchCodes?: Iterable<string> | null,
+) {
   const code = (partnerCode || "").trim().toUpperCase();
   if (!code.startsWith(INTERNAL_PARTNER_PREFIX)) return null;
-  return code.slice(INTERNAL_PARTNER_PREFIX.length) || null;
+  const branchCode = code.slice(INTERNAL_PARTNER_PREFIX.length) || null;
+  if (!branchCode) return null;
+  const known = new Set([...(knownBranchCodes || [])].map((item) => (item || "").trim().toUpperCase()));
+  return known.has(branchCode) ? branchCode : null;
 }
 
 export type CostReallocationLineInput = {

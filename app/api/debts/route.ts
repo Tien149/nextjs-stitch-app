@@ -128,8 +128,11 @@ export async function GET(request: Request) {
     const branchFilter = branchCode === "ALL" ? {} : { branchCode };
     const range = parseDateRange(searchParams.get("fromDate"), searchParams.get("toDate"));
 
-    const [partners, openingBalances, deposits, bankRows, ownVouchers, advanceVouchers, purchasePayables, debtRecords] = await Promise.all([
+    const [partners, branchItems, openingBalances, deposits, bankRows, ownVouchers, advanceVouchers, purchasePayables, debtRecords] = await Promise.all([
       prisma.masterDataItem.findMany({ where: { type: "PARTNER" } }),
+      // Danh mục Cửa hàng: dùng để chắc chắn "đối tác sẽ trả lại tiền" của phiếu chi hộ là
+      // một nhà hàng thật, không phải đối tác tự đặt mã bắt đầu bằng NB-.
+      prisma.masterDataItem.findMany({ where: { type: "BRANCH" }, select: { code: true } }),
       prisma.openingBalance.findMany({ where: { balanceType: { in: ["AR", "AP"] }, ...branchFilter } }),
       prisma.deposit.findMany({ where: branchFilter }),
       prisma.bankStatementTransaction.findMany({ where: { partnerHint: { not: null }, ...(branchCode === "ALL" ? {} : { branchCode }) } }),
@@ -153,9 +156,10 @@ export async function GET(request: Request) {
 
     // Chi hộ đối tác BÊN NGOÀI không nằm ở đây: khoản đó là nợ của chính cửa hàng lập phiếu,
     // đã treo phải thu CNTHU rồi, gạch thêm vào NCC nữa là trừ hai lần.
+    const knownBranchCodes = branchItems.map((item) => item.code);
     const vouchers = [
       ...ownVouchers,
-      ...advanceVouchers.filter((row) => advanceReceivableBeneficiaryBranch(row) !== null),
+      ...advanceVouchers.filter((row) => advanceReceivableBeneficiaryBranch(row, knownBranchCodes) !== null),
     ];
 
     if (partnerCode) {
