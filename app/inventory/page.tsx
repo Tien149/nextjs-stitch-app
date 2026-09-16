@@ -190,6 +190,20 @@ export default function InventoryPage() {
   const selectedStockUnit = stockUnits.find((unit) => unit.unitCode === stockForm.inputUnitCode) || stockUnits[0];
   /** Mặt hàng đang chọn ở form "Cập nhật ĐVT quy đổi", để soi ngay ĐVT mua hiện có của nó. */
   const conversionItem = data.items.find((item) => item.id === conversionForm.itemId);
+  /**
+   * Câu báo sau khi lưu quy đổi. Nói thẳng vừa ghi được gì, vì khai ĐVT mua TRÙNG ĐVT tồn kho
+   * thì bảng danh mục không đổi một chữ nào (không có gì để quy đổi) — người khai tưởng nút
+   * Lưu không ăn và bấm đi bấm lại.
+   */
+  const conversionSavedMessage = () => {
+    const unit = conversionItem?.unit || "";
+    const purchaseUnit = conversionForm.purchaseUnit.trim();
+    const label = conversionItem ? `${conversionItem.code}` : "mặt hàng";
+    if (unit && purchaseUnit.toUpperCase() === unit.trim().toUpperCase()) {
+      return `${label}: ĐVT mua [${purchaseUnit}] trùng ĐVT tồn kho nên không sinh dòng quy đổi — phiếu nhập/xuất vẫn tính theo ${unit}.`;
+    }
+    return `Đã lưu quy đổi cho ${label}: 1 ${purchaseUnit} = ${conversionForm.conversionRate} ${unit}.`;
+  };
   const stockInputQuantity = Number(stockForm.quantity || 0);
   // Dùng chung luật quy đổi với máy chủ (lib/unit-conversion.ts). Đọc thẳng conversionRate thì
   // với mã khai sai "1 LIT = 1000 LIT", ô xem trước ghi 1.000.000 lít trong khi lưu vào chỉ 1.000.
@@ -693,7 +707,7 @@ export default function InventoryPage() {
                 <span className="material-symbols-outlined text-lg">add</span>Thêm mặt hàng
               </button>
             </form>
-            <form onSubmit={(e) => { e.preventDefault(); void send({ action: "UPSERT_UNIT_CONVERSION", ...conversionForm }, "Đã cập nhật ĐVT quy đổi."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
+            <form onSubmit={(e) => { e.preventDefault(); void send({ action: "UPSERT_UNIT_CONVERSION", ...conversionForm }, conversionSavedMessage()); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
               <h2 className="font-bold text-slate-800">Cập nhật ĐVT quy đổi</h2>
               <Input label="Mặt hàng">
                 <ItemSelect items={data.items} value={conversionForm.itemId} onChange={(itemId) => setConversionForm({ ...conversionForm, itemId })} />
