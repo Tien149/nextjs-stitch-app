@@ -11,7 +11,7 @@ import { transferLegsForBranch } from "@/lib/internal-transfer";
 import { WALLET_CARD_FEE_CATEGORY_CODE, WALLET_GRAB_EXPENSE_CATEGORY_CODE } from "@/lib/wallet-settlement-allocation";
 import { vietnamBusinessDayKey } from "@/lib/revenue-date";
 import { remainingWalletGross, selectWalletDeclaredRevenue, walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
-import { comparePnlGroups, comparePnlItems, isDepreciationPnlName, isPayrollPnlItem, isPayrollPnlName } from "@/lib/pnl-ordering";
+import { comparePnlGroups, comparePnlItems, isDepreciationPnlName, isPayrollPnlItem, isPayrollPnlName, otherIncomePnlItemNameOf, samePnlName } from "@/lib/pnl-ordering";
 import { isRevenueComponentCategory, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { REVENUE_PNL_UNCLASSIFIED, loadRevenuePnlGroups, type CategoryLookupClient } from "@/lib/revenue-source";
 
@@ -182,6 +182,20 @@ export function payrollCatalogItemCode(pnlItems: Array<{ code: string; name: str
 }
 
 /**
+ * Hạng mục P&L mà một khoản mục thu "luôn là thu nhập khác" quy về (lãi ngân hàng -> "Doanh thu
+ * tài chính"). Tra theo tên trong danh mục, cùng cách đã dùng cho khấu hao/lương: bút toán 711
+ * sinh từ phiếu không gắn hạng mục nên phải suy ngược ra.
+ */
+export function otherIncomeCatalogItemCode(
+  pnlItems: Array<{ code: string; name: string; status?: string | null }>,
+  categoryCode: string | null,
+) {
+  const target = otherIncomePnlItemNameOf(categoryCode);
+  if (!target) return null;
+  return pnlItems.find((item) => !isRetiredCatalogItem(item) && samePnlName(item.name, target))?.code ?? null;
+}
+
+/**
  * Hạng mục P&L thực tế của một bút toán chi: mã đã gắn, hoặc hạng mục suy ra cho các bút toán
  * máy tự sinh không có chỗ khai mã — khấu hao (6424) và lương (6421).
  */
@@ -256,9 +270,10 @@ export function createPnlDetailTree(catalog: PnlCatalog, monthCount: number) {
     if (value === "OPEX") return "otherOpex";
     if (value === "CAPEX") return "capex";
     if (value === "OTHER_EXPENSE") return "otherExpense";
-    // OTHER_INCOME cố ý KHÔNG nạp sẵn: dòng thu nhóm theo KHOẢN MỤC THU của phiếu
-    // (xem nhánh PNL_INCOME_LINES trong `add`), không theo nhóm P&L cha. Nạp sẵn theo nhóm P&L
-    // sẽ đẻ ra một nhóm rỗng đứng cạnh nhóm thật, cùng một hạng mục hiện hai chỗ.
+    // OTHER_INCOME nạp sẵn như các dòng chi phí (chốt 16/09/2026): khối "Thu nhập khác" giờ gom
+    // theo HẠNG MỤC P&L chứ không theo khoản mục thu nữa, nên khai thêm hạng mục ở màn Danh mục
+    // là có ngay dòng đó với số 0 — trước đây khối này luôn hiện "0 nguồn".
+    if (value === "OTHER_INCOME") return "otherIncome";
     return null;
   };
   for (const group of pnlGroups) {
@@ -279,11 +294,29 @@ export function createPnlDetailTree(catalog: PnlCatalog, monthCount: number) {
   const depreciationItemCode = depreciationCatalogItemCode(pnlItems);
   const payrollItemCode = payrollCatalogItemCode(pnlItems);
   const resolveItemCode = (line: PnlJournalLineLike) => resolvePnlItemCode(line, depreciationItemCode, payrollItemCode);
+  /**
+   * Hạng mục P&L của một dòng thu nhập khác: mã kế toán đã chọn trên phiếu, hoặc suy từ khoản
+   * mục thu "luôn là thu nhập khác" (lãi ngân hàng -> Doanh thu tài chính) cho phiếu bỏ trống ô
+   * hạng mục — phiếu sinh tự động từ sao kê không có chỗ khai mã.
+   */
+  const otherIncomeItemCode = (line: PnlJournalLineLike) =>
+    line.pnlItemCode || otherIncomeCatalogItemCode(pnlItems, line.categoryCode);
 
   /** Cộng một bút toán vào cột `monthIndex`; trả về dòng KQKD nó thuộc về (null nếu không vào KQKD). */
   const add = (line: PnlJournalLineLike, monthIndex: number): PnlLineKey | null => {
     const lineKey = pnlLineKeyOf(line.account, pnlItemRefOf(line.pnlItemCode));
     if (!lineKey) return null;
+    // Thu nhập khác gom theo HẠNG MỤC P&L (nhóm cha -> hạng mục) giống các dòng chi phí, chỉ
+    // khác dấu. Gom theo khoản mục thu như dòng doanh thu thì hai hạng mục khách vừa khai
+    // ("Doanh thu tài chính", "Thu nhập khác") không bao giờ đứng thành dòng riêng được.
+    if (lineKey === "otherIncome") {
+      const pnlItemCode = otherIncomeItemCode(line);
+      const code = pnlItemCode || "UNCLASSIFIED";
+      const item = pnlItemByCode.get(code);
+      const name = item?.name || (pnlItemCode ? `Hạng mục P&L [${pnlItemCode}]` : "Chưa phân loại P&L");
+      bumpDetail(lineKey, expenseGroupOf(pnlItemCode, pnlItemByCode, pnlGroupName), { code, name }, monthIndex, line.credit - line.debit);
+      return lineKey;
+    }
     if (PNL_INCOME_LINES.includes(lineKey)) {
       const code = line.categoryCode || "UNCLASSIFIED";
       const name = categoryName.get(code) || (line.categoryCode ? `Nguồn thu [${line.categoryCode}]` : "Chưa phân loại nguồn thu");

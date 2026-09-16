@@ -1094,9 +1094,9 @@ export default function FinanceOperationsPage() {
                     <ExportExcelButton fileName="dieu_tien_cho_duyet" sheetName="Cho duyet" targetId="pending-transfer-table" />
                   </div>
                 </div>
-                <div id="pending-transfer-table" className="overflow-x-auto">
+                <div id="pending-transfer-table" className="max-h-[520px] overflow-auto overscroll-contain [scrollbar-gutter:stable]">
                   <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-50 text-slate-500">
+                    <thead className="sticky top-0 z-10 bg-slate-50 text-slate-500 shadow-[0_1px_0_rgba(148,163,184,0.25)]">
                       <tr>
                         <th className="w-10 px-3 py-3 text-center">
                           {canApproveTransfer && (
@@ -1241,9 +1241,11 @@ export default function FinanceOperationsPage() {
                     <ExportExcelButton fileName="nop_tien_da_duyet" sheetName="Da duyet" targetId="approved-cash-deposit-table" />
                   </div>
                 </div>
-                <div id="approved-cash-deposit-table" className="overflow-x-auto">
+                {/* Khung cuộn cố định: danh sách đã duyệt dài dần theo kỳ, để tự do thì cả trang
+                    giãn ra và form Điều chỉnh quỹ ở dưới bị đẩy khuất. */}
+                <div id="approved-cash-deposit-table" className="max-h-[520px] overflow-auto overscroll-contain [scrollbar-gutter:stable]">
                   <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-50 text-slate-500">
+                    <thead className="sticky top-0 z-10 bg-slate-50 text-slate-500 shadow-[0_1px_0_rgba(148,163,184,0.25)]">
                       <tr>
                         <th className="px-4 py-3">Ngày / Mã</th>
                         <th className="px-4 py-3">Ngày thực tế nộp tiền</th>

@@ -341,6 +341,26 @@ function errorWorkbookResponse(batch: { id: string; fileName: string; importRows
   });
 }
 
+/**
+ * Phân trang lịch sử import.
+ *
+ * Mặc định 20 batch cho lần mở màn đầu; màn hình xin thêm bằng `limit`/`offset` khi người
+ * dùng bấm "Xem thêm"/"Xem tất cả". Trần 500 để một request lỡ tay không kéo cả bảng.
+ */
+export const BATCH_LIST_DEFAULT_LIMIT = 20;
+export const BATCH_LIST_MAX_LIMIT = 500;
+
+function batchListLimit(raw: string | null) {
+  const value = Number.parseInt(cleanText(raw), 10);
+  if (!Number.isFinite(value) || value <= 0) return BATCH_LIST_DEFAULT_LIMIT;
+  return Math.min(value, BATCH_LIST_MAX_LIMIT);
+}
+
+function batchListOffset(raw: string | null) {
+  const value = Number.parseInt(cleanText(raw), 10);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
 export async function GET(request: Request) {
   try {
     const auth = requireMenuAccess(request, menuHref);
@@ -374,11 +394,34 @@ export async function GET(request: Request) {
       return NextResponse.json(batch);
     }
 
-    return NextResponse.json(await prisma.importBatch.findMany({
-      where: { importType, ...(templateCode ? { templateCode } : {}), ...branchWhere },
-      orderBy: { createdAt: "desc" },
-      take: 20,
-    }));
+    // Danh sách chỉ cần đủ cột để vẽ bảng. Không kéo mappingJson/errorJson (có batch nặng
+    // vài trăm KB) để người dùng bấm "Xem tất cả" không kéo theo cả đống JSON không dùng tới.
+    const listWhere = { importType, ...(templateCode ? { templateCode } : {}), ...branchWhere };
+    const limit = batchListLimit(searchParams.get("limit"));
+    const offset = batchListOffset(searchParams.get("offset"));
+    const [items, total] = await Promise.all([
+      prisma.importBatch.findMany({
+        where: listWhere,
+        orderBy: { createdAt: "desc" },
+        skip: offset,
+        take: limit,
+        select: {
+          id: true,
+          fileName: true,
+          status: true,
+          totalRows: true,
+          validRows: true,
+          errorRows: true,
+          uploadedBy: true,
+          createdAt: true,
+          rolledBackAt: true,
+          rolledBackBy: true,
+          rollbackNote: true,
+        },
+      }),
+      prisma.importBatch.count({ where: listWhere }),
+    ]);
+    return NextResponse.json({ items, total, limit, offset });
   } catch (error) {
     console.error("Error fetching import batches:", error);
     return NextResponse.json({ error: error instanceof Error ? error.message : "Internal Server Error" }, { status: 500 });

@@ -4,6 +4,13 @@ import { ensureInternalPartner } from "@/lib/internal-partner";
 import { buildAllocationSchedules } from "@/lib/phase3";
 import { ADVANCE_RECEIVABLE_ACTION } from "@/lib/voucher-rules";
 
+/**
+ * Lỗi nghiệp vụ khi áp hệ quả của phiếu (gạch nợ, tiền cọc, chi hộ, phân bổ).
+ * Tách riêng khỏi Error thường để route trả đúng 400 kèm câu giải thích cho người dùng,
+ * thay vì để lọt xuống catch cuối và hiện "Internal Server Error".
+ */
+export class VoucherSideEffectError extends Error {}
+
 /** Mã khoản phải thu sinh từ phiếu chi hộ — suy được từ mã phiếu nên duyệt lại không tạo trùng. */
 export function advanceReceivableDebtCode(voucherCode: string) {
   return `CNTHU-${voucherCode}`;
@@ -43,11 +50,35 @@ async function settleDebtLine(
   actor: string,
 ) {
   const debt = await tx.debtRecord.findFirst({ where: { code: line.debtReference, deletedAt: null } });
-  if (!debt || debt.branchCode !== voucher.branchCode) throw new Error(`Không tìm thấy công nợ ${line.debtReference} trong chi nhánh`);
+  // Ô "Mã công nợ cần gạch" hay bị điền nhầm mã đối tác, nên nói rõ đây là hai thứ khác nhau.
+  if (!debt) {
+    throw new VoucherSideEffectError(
+      `Không có khoản công nợ nào mang mã [${line.debtReference}]. Mã công nợ khác mã đối tác — hãy lấy đúng mã ở tab Công nợ.`,
+    );
+  }
+  if (debt.branchCode !== voucher.branchCode) {
+    throw new VoucherSideEffectError(
+      `Công nợ ${debt.code} thuộc cửa hàng ${debt.branchCode}, không gạch được bằng phiếu của cửa hàng ${voucher.branchCode}.`,
+    );
+  }
   const expectedDebtType = voucher.voucherType === "RECEIPT" ? "RECEIVABLE" : "PAYABLE";
-  if (debt.debtType !== expectedDebtType) throw new Error(`Phiếu ${voucher.voucherType === "RECEIPT" ? "Thu" : "Chi"} không khớp loại công nợ ${debt.code}`);
-  if (line.partnerCode && line.partnerCode !== debt.partnerCode) throw new Error(`Đối tượng không khớp công nợ ${debt.code}`);
-  if (line.amount > debt.outstandingAmount) throw new Error(`Số tiền thanh toán vượt dư nợ ${debt.code}`);
+  if (debt.debtType !== expectedDebtType) {
+    throw new VoucherSideEffectError(
+      voucher.voucherType === "RECEIPT"
+        ? `Công nợ ${debt.code} là khoản PHẢI TRẢ, phiếu thu chỉ gạch được khoản phải thu.`
+        : `Công nợ ${debt.code} là khoản PHẢI THU, phiếu chi chỉ gạch được khoản phải trả.`,
+    );
+  }
+  if (line.partnerCode && line.partnerCode !== debt.partnerCode) {
+    throw new VoucherSideEffectError(
+      `Công nợ ${debt.code} đứng tên đối tác ${debt.partnerCode}, không khớp đối tác ${line.partnerCode} trên phiếu.`,
+    );
+  }
+  if (line.amount > debt.outstandingAmount) {
+    throw new VoucherSideEffectError(
+      `Số tiền ${line.amount.toLocaleString("vi-VN")} đ vượt dư nợ còn lại ${debt.outstandingAmount.toLocaleString("vi-VN")} đ của công nợ ${debt.code}.`,
+    );
+  }
   const outstandingAmount = debt.outstandingAmount - line.amount;
   await tx.debtSettlement.create({
     data: { debtId: debt.id, voucherId: voucher.id, settlementDate: voucher.voucherDate, amount: line.amount, createdBy: actor },
@@ -93,7 +124,7 @@ export async function applyVoucherSideEffects(
     });
     if (!previousHistory) {
       if (voucher.depositAction === "COLLECT") {
-        if (!voucher.partnerCode) throw new Error("Thu tiền cọc bắt buộc có mã khách hàng");
+        if (!voucher.partnerCode) throw new VoucherSideEffectError("Thu tiền cọc bắt buộc có mã khách hàng");
         const code = voucher.depositCode || `COC-${voucher.code}`;
         await tx.deposit.create({
           data: {
@@ -113,11 +144,11 @@ export async function applyVoucherSideEffects(
           },
         });
       } else if (voucher.depositAction === "SUPPLEMENT") {
-        if (!voucher.partnerCode) throw new Error("Khách chuyển bổ sung tiền cọc bắt buộc có mã khách hàng");
+        if (!voucher.partnerCode) throw new VoucherSideEffectError("Khách chuyển bổ sung tiền cọc bắt buộc có mã khách hàng");
         const code = voucher.depositCode || `COC-${voucher.code}`;
         const deposit = await tx.deposit.findFirst({ where: { code, deletedAt: null } });
         if (deposit) {
-          if (deposit.branchCode !== voucher.branchCode) throw new Error(`Tiền cọc ${code} không thuộc chi nhánh chứng từ`);
+          if (deposit.branchCode !== voucher.branchCode) throw new VoucherSideEffectError(`Tiền cọc ${code} không thuộc chi nhánh chứng từ`);
           await tx.deposit.update({
             where: { id: deposit.id },
             data: {
@@ -149,10 +180,10 @@ export async function applyVoucherSideEffects(
           });
         }
       } else {
-        if (!voucher.depositCode) throw new Error("Trừ/hoàn/chuyển doanh thu tiền cọc bắt buộc có mã tiền cọc");
+        if (!voucher.depositCode) throw new VoucherSideEffectError("Trừ/hoàn/chuyển doanh thu tiền cọc bắt buộc có mã tiền cọc");
         const deposit = await tx.deposit.findUnique({ where: { code: voucher.depositCode } });
-        if (!deposit || deposit.branchCode !== voucher.branchCode) throw new Error(`Không tìm thấy tiền cọc ${voucher.depositCode} trong chi nhánh`);
-        if (voucher.amount > deposit.remainingAmount) throw new Error(`Số tiền xử lý vượt số dư cọc ${voucher.depositCode}`);
+        if (!deposit || deposit.branchCode !== voucher.branchCode) throw new VoucherSideEffectError(`Không tìm thấy tiền cọc ${voucher.depositCode} trong chi nhánh`);
+        if (voucher.amount > deposit.remainingAmount) throw new VoucherSideEffectError(`Số tiền xử lý vượt số dư cọc ${voucher.depositCode}`);
         const remainingAmount = deposit.remainingAmount - voucher.amount;
         await tx.deposit.update({
           where: { id: deposit.id },
@@ -179,7 +210,7 @@ export async function applyVoucherSideEffects(
   }
 
   if (voucher.debtAction === "SETTLE") {
-    if (!voucher.debtReference) throw new Error("Thanh toán công nợ bắt buộc có mã công nợ");
+    if (!voucher.debtReference) throw new VoucherSideEffectError("Thanh toán công nợ bắt buộc có mã công nợ");
     const previousSettlement = await tx.debtSettlement.findFirst({ where: { voucherId: voucher.id } });
     if (!previousSettlement) {
       await settleDebtLine(tx, voucher, {
@@ -194,7 +225,7 @@ export async function applyVoucherSideEffects(
   // Công nợ đòi được và phiếu thu sau này gạch bằng mã này. Idempotent theo mã sinh từ mã
   // phiếu: duyệt lại hoặc sửa phiếu không được tạo thành hai khoản nợ.
   if (voucher.voucherType === "PAYMENT" && voucher.debtAction === ADVANCE_RECEIVABLE_ACTION) {
-    if (!voucher.receivablePartnerCode) throw new Error("Chi hộ bắt buộc chọn đối tác sẽ trả lại tiền");
+    if (!voucher.receivablePartnerCode) throw new VoucherSideEffectError("Chi hộ bắt buộc chọn đối tác sẽ trả lại tiền");
     // Danh mục cửa hàng quyết định "đối tác sẽ trả lại tiền" có phải nhà hàng trong nhà không.
     // Đọc từ DB chứ không tin tiền tố NB- của mã đối tác: mã đó người dùng tự đặt được.
     const branchCodes = (await tx.masterDataItem.findMany({ where: { type: "BRANCH" }, select: { code: true } }))
@@ -203,7 +234,7 @@ export async function applyVoucherSideEffects(
     const code = advanceReceivableDebtCode(voucher.code);
     const existing = await tx.debtRecord.findUnique({ where: { code } });
     if (existing?.deletedAt) {
-      throw new Error(`Khoản phải thu ${code} đang nằm trong Thùng rác. Hãy khôi phục hoặc xóa hẳn trước khi duyệt lại phiếu.`);
+      throw new VoucherSideEffectError(`Khoản phải thu ${code} đang nằm trong Thùng rác. Hãy khôi phục hoặc xóa hẳn trước khi duyệt lại phiếu.`);
     }
     if (!existing) {
       await tx.debtRecord.create({
@@ -235,7 +266,7 @@ export async function applyVoucherSideEffects(
       const counterpartCode = advanceReceivableCounterpartDebtCode(voucher.code);
       const existingCounterpart = await tx.debtRecord.findUnique({ where: { code: counterpartCode } });
       if (existingCounterpart?.deletedAt) {
-        throw new Error(`Khoản phải trả nội bộ ${counterpartCode} đang nằm trong Thùng rác. Hãy khôi phục hoặc xóa hẳn trước khi duyệt lại phiếu.`);
+        throw new VoucherSideEffectError(`Khoản phải trả nội bộ ${counterpartCode} đang nằm trong Thùng rác. Hãy khôi phục hoặc xóa hẳn trước khi duyệt lại phiếu.`);
       }
       if (!existingCounterpart) {
         const payerPartner = await ensureInternalPartner(tx as unknown as typeof prisma, voucher.branchCode);
@@ -285,7 +316,7 @@ export async function applyVoucherSideEffects(
   // Chi trả trước: phiếu khai sẵn số kỳ nên lịch phân bổ sinh thẳng từ số liệu của phiếu,
   // kế toán không phải gõ lại ở tab Trích trước & Phân bổ. Idempotent theo mã sinh từ mã phiếu.
   if (voucher.voucherType === "PAYMENT" && (voucher.allocationMonths || 0) > 1) {
-    if (!voucher.allocationStartPeriod) throw new Error("Chi phí phân bổ bắt buộc có kỳ bắt đầu");
+    if (!voucher.allocationStartPeriod) throw new VoucherSideEffectError("Chi phí phân bổ bắt buộc có kỳ bắt đầu");
     const code = `PB-${voucher.code}`;
     const existing = await tx.accrual.findFirst({ where: { code, deletedAt: null } });
     if (!existing) {

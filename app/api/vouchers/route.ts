@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma, prismaRaw, type RawTxClient } from "@/lib/prisma";
 import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
-import { applyVoucherSideEffects } from "@/lib/voucher-side-effects";
+import { applyVoucherSideEffects, VoucherSideEffectError } from "@/lib/voucher-side-effects";
 import { revertVoucherSideEffects, VoucherRevertError } from "@/lib/voucher-revert";
 import { closedPeriodMessage, findClosedPeriod, isPeriodLocked } from "@/lib/phase3";
 import { buildAuditLogData, writeAuditLog } from "@/lib/audit-log";
@@ -391,7 +391,10 @@ export async function POST(request: Request) {
     const auth = requireMenuAction(request, documentChannel === "BANK" ? "/bank-vouchers" : "/vouchers", "create");
     if (!auth.ok) return auth.response;
     const categoryCode = cleanText(body.categoryCode);
-    const pnlItemCode = voucherType === "PAYMENT" ? cleanText(body.pnlItemCode) : "";
+    // Phiếu THU cũng khai được hạng mục P&L (nhóm Thu nhập khác) — VOUCHER_PNL_GROUPS đã mở
+    // và màn hình đã hiện ô này, nhưng chỗ đọc body trước đây vứt mã đi nên khoản lãi ngân
+    // hàng / bồi thường không bao giờ tách được dòng trên P&L.
+    const pnlItemCode = VOUCHER_PNL_GROUPS[voucherType] ? cleanText(body.pnlItemCode) : "";
     const amount = toAmount(body.amount);
     const description = cleanText(body.description);
 
@@ -639,6 +642,9 @@ export async function POST(request: Request) {
     return NextResponse.json(voucher, { status: 201 });
   } catch (error) {
     console.error("Error creating voucher:", error);
+    if (error instanceof VoucherSideEffectError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
     const friendlyError = formatApiErrorMessage(error, "Không thể tạo chứng từ do sự cố dữ liệu. Vui lòng thử lại.");
     return NextResponse.json({ error: friendlyError }, { status: isFinancialVoucherCodeUniqueError(error) ? 409 : 500 });
   }
@@ -736,7 +742,7 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
   const amount = body.amount === undefined ? current.amount : toAmount(body.amount);
   const partnerCode = body.partnerCode === undefined ? current.partnerCode : cleanText(body.partnerCode) || null;
   const categoryCode = body.categoryCode === undefined ? current.categoryCode || "" : cleanText(body.categoryCode);
-  const pnlItemCode = current.voucherType === "PAYMENT"
+  const pnlItemCode = VOUCHER_PNL_GROUPS[current.voucherType]
     ? (body.pnlItemCode === undefined ? current.pnlItemCode || "" : cleanText(body.pnlItemCode))
     : "";
   const voucherDate = requestedVoucherDate;
@@ -992,6 +998,9 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
     });
   } catch (e) {
     if (e instanceof VoucherRevertError) return NextResponse.json({ error: e.message }, { status: 400 });
+    // Sửa phiếu đã duyệt sẽ áp lại hệ quả (gạch nợ, cọc, chi hộ). Hỏng ở bước này là lỗi
+    // dữ liệu người dùng nhập — phải nói rõ hỏng ở đâu, không nuốt thành 500.
+    if (e instanceof VoucherSideEffectError) return NextResponse.json({ error: e.message }, { status: 400 });
     if (e instanceof ReconciliationSyncError) return NextResponse.json({ error: e.message }, { status: 400 });
     if (e instanceof VoucherConflictError) return NextResponse.json({ error: e.message }, { status: 409 });
     throw e;
@@ -1108,6 +1117,7 @@ async function changeVoucherStatus(
       return { ok: true, code: result.reverted.code };
     } catch (e) {
       if (e instanceof VoucherRevertError) return { ok: false, code: current.code, error: e.message };
+      if (e instanceof VoucherSideEffectError) return { ok: false, code: current.code, error: e.message };
       if (e instanceof VoucherConflictError) return { ok: false, code: current.code, error: e.message };
       throw e;
     }
@@ -1152,6 +1162,7 @@ async function changeVoucherStatus(
     });
     return { ok: true, code: result.voucher.code };
   } catch (e) {
+    if (e instanceof VoucherSideEffectError) return { ok: false, code: current.code, error: e.message };
     if (e instanceof VoucherConflictError) return { ok: false, code: current.code, error: e.message };
     throw e;
   }
@@ -1207,7 +1218,13 @@ export async function PATCH(request: Request) {
     return NextResponse.json(await prisma.financialVoucher.findUnique({ where: { id } }));
   } catch (error) {
     console.error("Error updating voucher:", error);
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    if (error instanceof VoucherSideEffectError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    return NextResponse.json(
+      { error: formatApiErrorMessage(error, "Không lưu được thay đổi do sự cố dữ liệu. Vui lòng thử lại.") },
+      { status: 500 },
+    );
   }
 }
 

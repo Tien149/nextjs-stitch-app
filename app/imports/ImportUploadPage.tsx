@@ -83,6 +83,9 @@ type ImportUploadPageProps = {
   expectedMasterType?: string;
 };
 
+/** Lấy lịch sử import theo trang; khớp trần BATCH_LIST_MAX_LIMIT của /api/imports. */
+const BATCH_PAGE_SIZE = 100;
+
 function withQuery(url: string, values: Record<string, string>) {
   const [path, query = ""] = url.split("?");
   const params = new URLSearchParams(query);
@@ -339,6 +342,8 @@ export default function ImportUploadPage({
   const [rowEdits, setRowEdits] = useState<RowEdits>({});
   const [editsDirty, setEditsDirty] = useState(false);
   const [batches, setBatches] = useState<Batch[]>([]);
+  const [batchTotal, setBatchTotal] = useState(0);
+  const [batchListLoading, setBatchListLoading] = useState(false);
   const [selectedBatch, setSelectedBatch] = useState<BatchDetail | null>(null);
   const [selectedBatchId, setSelectedBatchId] = useState("");
   const [batchDetailLoading, setBatchDetailLoading] = useState(false);
@@ -440,10 +445,64 @@ export default function ImportUploadPage({
   const messageIsError = !message.startsWith("Đã ")
     && /lỗi|không|vui lòng|thất bại|sai|thiếu|bắt buộc|error|failed|invalid|khong|loi/i.test(message);
 
-  const loadBatches = useCallback(async (signal?: AbortSignal) => {
-    const response = await fetch(apiPath, { signal });
-    if (response.ok && !signal?.aborted) setBatches((await response.json()) as Batch[]);
+  /**
+   * Lịch sử import lấy theo trang. `keep` = số dòng đang hiển thị cần giữ lại sau khi tải
+   * lại, để nút "Tải lại" không thu danh sách người dùng vừa mở rộng về 20 dòng đầu.
+   */
+  const loadBatches = useCallback(async (signal?: AbortSignal, keep = 0) => {
+    setBatchListLoading(true);
+    try {
+      const rows: Batch[] = [];
+      let total = 0;
+      // Server chặn trần 500 dòng mỗi request nên phải xin nhiều lượt khi giữ danh sách dài.
+      do {
+        const response = await fetch(
+          withQuery(apiPath, { limit: String(BATCH_PAGE_SIZE), offset: String(rows.length) }),
+          { signal },
+        );
+        if (!response.ok || signal?.aborted) return;
+        const payload = await response.json() as { items?: Batch[]; total?: number };
+        const page = payload.items || [];
+        total = Number(payload.total) || 0;
+        rows.push(...page);
+        if (page.length < BATCH_PAGE_SIZE) break;
+      } while (rows.length < Math.min(keep, total));
+      if (signal?.aborted) return;
+      setBatches(rows);
+      setBatchTotal(total);
+    } finally {
+      if (!signal?.aborted) setBatchListLoading(false);
+    }
   }, [apiPath]);
+
+  /** "Xem thêm"/"Xem tất cả": nối thêm trang kế tiếp vào danh sách đang hiển thị. */
+  const loadMoreBatches = useCallback(async (all = false) => {
+    setBatchListLoading(true);
+    try {
+      let offset = batches.length;
+      const added: Batch[] = [];
+      let total = batchTotal;
+      do {
+        const response = await fetch(
+          withQuery(apiPath, { limit: String(BATCH_PAGE_SIZE), offset: String(offset) }),
+        );
+        if (!response.ok) {
+          setMessage("Không tải thêm được lịch sử import.");
+          return;
+        }
+        const payload = await response.json() as { items?: Batch[]; total?: number };
+        const page = payload.items || [];
+        total = Number(payload.total) || 0;
+        added.push(...page);
+        offset += page.length;
+        if (page.length < BATCH_PAGE_SIZE) break;
+      } while (all && offset < total);
+      setBatches((current) => [...current, ...added]);
+      setBatchTotal(total);
+    } finally {
+      setBatchListLoading(false);
+    }
+  }, [apiPath, batches.length, batchTotal]);
 
   const loadBatchDetail = async (batchId: string) => {
     if (selectedBatchId === batchId && selectedBatch && !batchDetailError) return;
@@ -482,6 +541,7 @@ export default function ImportUploadPage({
       setMappingFields([]);
       setMappingDirty(false);
       setBatches([]);
+      setBatchTotal(0);
       setSelectedBatch(null);
       setSelectedBatchId("");
       setBatchDetailLoading(false);
@@ -653,7 +713,7 @@ export default function ImportUploadPage({
             : ""),
         );
       }
-      if (mode === "commit") await loadBatches();
+      if (mode === "commit") await loadBatches(undefined, batches.length);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Có lỗi khi import file");
     } finally {
@@ -720,7 +780,7 @@ export default function ImportUploadPage({
       setManualOpen(false);
       setManualValues({});
       setMessage("Đã thêm mới 1 dòng dữ liệu và commit vào hệ thống.");
-      await loadBatches();
+      await loadBatches(undefined, batches.length);
     } catch (error) {
       setManualError(error instanceof Error ? error.message : "Có lỗi khi thêm mới dữ liệu.");
     } finally {
@@ -831,7 +891,7 @@ export default function ImportUploadPage({
       const payload = await readJsonBody(response);
       if (!response.ok) {
         setRollbackError(payload.error || "Rollback batch thất bại.");
-        await loadBatches();
+        await loadBatches(undefined, batches.length);
         return;
       }
       const fileName = rollbackTarget.fileName;
@@ -839,7 +899,7 @@ export default function ImportUploadPage({
       setRollbackNote("");
       setSelectedBatch(null);
       setMessage(`Đã rollback batch ${fileName}.`);
-      await loadBatches();
+      await loadBatches(undefined, batches.length);
     } catch (error) {
       setRollbackError(error instanceof Error ? error.message : "Không thể kết nối để rollback batch. Vui lòng thử lại.");
     } finally {
@@ -1200,11 +1260,21 @@ export default function ImportUploadPage({
           <div className="p-5 border-b border-slate-200 flex items-center justify-between">
             <div>
               <h2 className="font-bold">Lịch sử import</h2>
-              <p className="text-xs text-slate-500 mt-1">20 batch gần nhất, bấm một dòng để xem chi tiết.</p>
+              <p className="text-xs text-slate-500 mt-1">
+                {batchTotal === 0
+                  ? "Bấm một dòng để xem chi tiết."
+                  : batchTotal > batches.length
+                    ? `Đang xem ${batches.length}/${batchTotal} batch mới nhất, bấm một dòng để xem chi tiết.`
+                    : `Tất cả ${batchTotal} batch, bấm một dòng để xem chi tiết.`}
+              </p>
             </div>
             <div className="flex items-center gap-2">
               <ExportExcelButton fileName={`lich_su_import_${templateCode.toLowerCase()}`} sheetName="Lich su import" targetId="import-history-table" />
-              <button onClick={() => void loadBatches()} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50">
+              <button
+                onClick={() => void loadBatches(undefined, batches.length)}
+                disabled={batchListLoading}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50 disabled:opacity-50"
+              >
                 Tải lại
               </button>
             </div>
@@ -1276,6 +1346,26 @@ export default function ImportUploadPage({
               </tbody>
             </table>
           </div>
+          {batchTotal > batches.length && (
+            <div className="flex items-center justify-center gap-2 border-t border-slate-200 bg-slate-50/60 px-4 py-3">
+              <button
+                type="button"
+                onClick={() => void loadMoreBatches()}
+                disabled={batchListLoading}
+                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-bold hover:bg-slate-50 disabled:opacity-50"
+              >
+                {batchListLoading ? "Đang tải…" : `Xem thêm ${Math.min(BATCH_PAGE_SIZE, batchTotal - batches.length)} batch`}
+              </button>
+              <button
+                type="button"
+                onClick={() => void loadMoreBatches(true)}
+                disabled={batchListLoading}
+                className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-bold text-blue-700 hover:bg-blue-100 disabled:opacity-50"
+              >
+                Xem tất cả ({batchTotal})
+              </button>
+            </div>
+          )}
         </section>
 
         {(selectedBatchId || selectedBatch || batchDetailLoading || batchDetailError) && (

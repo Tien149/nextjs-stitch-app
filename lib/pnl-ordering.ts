@@ -118,3 +118,35 @@ export function sortPnlCatalogRows<T extends PnlCatalogRow>(rows: T[]): T[] {
   let index = 0;
   return rows.map((row) => (isPnl(row) ? sorted[index++] : row));
 }
+
+/**
+ * Khoản mục thu LUÔN là thu nhập khác, kèm TÊN hạng mục P&L mà nó quy về.
+ *
+ * Danh mục Thu/Chi không có chỗ khai liên kết sang P&L (xem ghi chú `subGroup` ở model
+ * MasterDataItem: "Danh mục Thu/Chi không liên kết P&L"), nên ánh xạ này buộc phải nằm ở code.
+ * Chốt với chị Bình 16/09/2026: thu lãi ngân hàng đứng ở dòng "Doanh thu tài chính" của khối
+ * Thu nhập khác, kể cả khi phiếu có ghi tên ngân hàng ở ô đối tác.
+ *
+ * Tra theo TÊN chứ không theo mã hạng mục — cùng cách đã dùng cho khấu hao và lương, để khách
+ * tự đặt mã kiểu gì trên màn Danh mục thì báo cáo vẫn tìm ra.
+ */
+export const OTHER_INCOME_CATEGORY_ITEMS: Record<string, string> = {
+  THU_LAI_NGAN_HANG: "Doanh thu tài chính",
+};
+
+/** Khoản mục thu này luôn là thu nhập khác (ghi Có 711), không phải doanh thu cũng không phải phải thu. */
+export function isOtherIncomeCategory(categoryCode: string | null | undefined) {
+  return otherIncomePnlItemNameOf(categoryCode) !== null;
+}
+
+/** Tên hạng mục P&L mà một khoản mục thu "luôn là thu nhập khác" quy về; null nếu không có luật. */
+export function otherIncomePnlItemNameOf(categoryCode: string | null | undefined) {
+  const code = (categoryCode || "").trim().toUpperCase();
+  return code ? OTHER_INCOME_CATEGORY_ITEMS[code] ?? null : null;
+}
+
+/** So khớp tên hạng mục/nhóm P&L bỏ qua dấu, hoa thường và khoảng trắng thừa. */
+export function samePnlName(left: string | null | undefined, right: string | null | undefined) {
+  const a = normalizeName(left);
+  return a !== "" && a === normalizeName(right);
+}

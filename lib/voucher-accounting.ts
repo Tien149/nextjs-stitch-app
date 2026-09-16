@@ -4,6 +4,7 @@ import {
   INTERNAL_RECEIVABLE_ACCOUNT,
   internalPartnerCode,
 } from "@/lib/cost-reallocation";
+import { isOtherIncomeCategory } from "@/lib/pnl-ordering";
 import { ADVANCE_RECEIVABLE_ACTION, PREPAID_ALLOCATION_ACTION } from "@/lib/voucher-rules";
 
 /**
@@ -28,6 +29,13 @@ export type VoucherForPosting = {
   debtAction: string | null;
 };
 
+/**
+ * Tín hiệu định khoản phiếu THU mà nhóm khoản mục đã chuẩn hoá không diễn đạt được.
+ * `isRevenueSourceCategory`: khoản mục thu/chi khai THẬT nhóm "Nguồn doanh thu" trong danh mục,
+ * phân biệt với nhóm "Thu khác" (RECEIPT) vốn bị normalizeCategoryGroup gộp chung.
+ */
+export type ReceiptPostingOptions = { isRevenueSourceCategory?: boolean };
+
 export type JournalLineInput = {
   accountCode: string;
   debit?: number;
@@ -50,7 +58,12 @@ export function cashAccountFor(moneySourceCode: string) {
  * khoản thu nhập khác có ghi tên đối tác sẽ nằm im ở phải thu và không bao giờ lên dòng
  * "7. Thu nhập khác" của P&L.
  */
-export function receiptCounterAccount(voucher: VoucherForPosting, categoryGroup: string | null, pnlItemGroup: string | null = null) {
+export function receiptCounterAccount(
+  voucher: VoucherForPosting,
+  categoryGroup: string | null,
+  pnlItemGroup: string | null = null,
+  options: ReceiptPostingOptions = {},
+) {
   if (voucher.depositAction === "COLLECT" || voucher.depositAction === "SUPPLEMENT") {
     return { account: "3387", reason: "Nhận tiền cọc — khách ứng trước, chưa phải doanh thu" };
   }
@@ -64,11 +77,31 @@ export function receiptCounterAccount(voucher: VoucherForPosting, categoryGroup:
   // lỡ gắn thêm hạng mục P&L thu nhập khác. Để hạng mục thắng ở đây thì một khoản doanh thu
   // rơi xuống dòng 7 và biến mất khỏi doanh thu thuần — sai lệch nặng hơn nhiều so với việc bỏ
   // qua một hạng mục khai nhầm.
-  if (categoryGroup === "REVENUE_SOURCE") {
+  //
+  // Chỉ tin khoản mục khai THẬT nhóm doanh thu (`isRevenueSourceCategory`). Biến `categoryGroup`
+  // đi qua normalizeCategoryGroup, nơi gộp luôn nhóm "Thu khác" (RECEIPT) về REVENUE_SOURCE —
+  // dùng nó ở đây thì MỌI phiếu thu đều ghi Có 511 và không khoản nào lên được dòng Thu nhập
+  // khác, kể cả khi kế toán đã chọn đúng hạng mục.
+  //
+  // Nơi gọi không truyền cờ thì mặc định quay về đúng hành vi cũ (nhóm đã chuẩn hoá), để phiếu
+  // ghi sổ qua đường khác không đổi tài khoản chỉ vì thêm tham số.
+  const isRevenueSourceCategory = options.isRevenueSourceCategory ?? (categoryGroup === "REVENUE_SOURCE");
+  if (isRevenueSourceCategory) {
     return { account: "511", reason: "Doanh thu bán hàng" };
   }
   if (pnlItemGroup === "OTHER_INCOME") {
     return { account: "711", reason: "Thu nhập khác theo hạng mục P&L đã chọn" };
+  }
+  // Khoản mục thu luôn là thu nhập khác (lãi ngân hàng) phải thắng nhánh "có đối tác thì treo
+  // 131" bên dưới: phiếu lãi ngân hàng gần như luôn ghi tên ngân hàng ở ô đối tác, để rơi
+  // xuống 131 thì tiền nằm im ở công nợ phải thu và dòng "7. Thu nhập khác" mãi bằng 0.
+  if (isOtherIncomeCategory(voucher.categoryCode)) {
+    return { account: "711", reason: "Thu nhập khác theo khoản mục thu đã chọn" };
+  }
+  // Nhóm "Thu khác" được normalizeCategoryGroup gộp về REVENUE_SOURCE từ trước: phiếu thu khác
+  // không khai hạng mục vẫn ghi Có 511 y như cũ, không đụng tới dữ liệu lịch sử.
+  if (categoryGroup === "REVENUE_SOURCE") {
+    return { account: "511", reason: "Doanh thu bán hàng" };
   }
   if (voucher.partnerCode) {
     return { account: "131", reason: "Thu của đối tác, chưa gán khoản mục doanh thu" };
@@ -126,10 +159,11 @@ export function voucherJournalLines(
   categoryGroup: string | null,
   pnlItemGroup: string | null = null,
   knownBranchCodes?: Iterable<string> | null,
+  receiptOptions: ReceiptPostingOptions = {},
 ) {
   const cashAccount = cashAccountFor(voucher.moneySourceCode);
   if (voucher.voucherType === "RECEIPT") {
-    const { account, reason } = receiptCounterAccount(voucher, categoryGroup, pnlItemGroup);
+    const { account, reason } = receiptCounterAccount(voucher, categoryGroup, pnlItemGroup, receiptOptions);
     return {
       reason,
       lines: [

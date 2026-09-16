@@ -382,6 +382,11 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   ]);
   const knownBranchCodes = branchItems.map((item) => item.code);
   const categoryGroupByCode = new Map(voucherCategories.map((item) => [item.code, normalizeCategoryGroup(item.group)]));
+  // Nhóm THẬT trong danh mục, chưa qua normalizeCategoryGroup — định khoản phiếu thu cần phân
+  // biệt "Nguồn doanh thu" với "Thu khác", hai thứ mà hàm chuẩn hoá gộp làm một.
+  const revenueSourceCategoryCodes = new Set(
+    voucherCategories.filter((item) => (item.group || "").toUpperCase() === "REVENUE_SOURCE").map((item) => item.code),
+  );
   const pnlItemGroupByCode = new Map(pnlItems.map((item) => [item.code, normalizeCategoryGroup(item.group)]));
   for (const row of vouchers) {
     // Sao kê khớp doanh thu POS chỉ xác nhận dòng tiền; doanh thu và bút toán đối ứng
@@ -392,6 +397,7 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
       row.categoryCode ? categoryGroupByCode.get(row.categoryCode) ?? null : null,
       row.pnlItemCode ? pnlItemGroupByCode.get(row.pnlItemCode) ?? null : null,
       knownBranchCodes,
+      { isRevenueSourceCategory: Boolean(row.categoryCode && revenueSourceCategoryCodes.has(row.categoryCode)) },
     );
     results.push(await postJournalEntry({ entryDate: row.voucherDate, branchCode: row.branchCode, sourceType: "VOUCHER", sourceId: row.id, sourceCode: row.code, description: row.description, createdBy: actor, lines }));
     // Vế đối ứng ở sổ nhà hàng được chi hộ: giảm phải trả NCC, tăng phải trả nội bộ.
