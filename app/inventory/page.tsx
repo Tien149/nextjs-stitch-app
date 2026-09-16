@@ -8,6 +8,7 @@ import { useModuleAuth } from "@/lib/use-module-auth";
 import CopyableText from "@/components/CopyableText";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import StickyFilterBar from "@/components/StickyFilterBar";
+import { SearchableSelect } from "@/components/SearchableSelect";
 import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 import { safeConversionRate } from "@/lib/unit-conversion";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
@@ -187,6 +188,8 @@ export default function InventoryPage() {
       ? [{ id: "base", unitCode: selectedStockItem.unit.toUpperCase(), unitName: selectedStockItem.unit, conversionRate: 1, isDefaultPurchase: true }]
       : [];
   const selectedStockUnit = stockUnits.find((unit) => unit.unitCode === stockForm.inputUnitCode) || stockUnits[0];
+  /** Mặt hàng đang chọn ở form "Cập nhật ĐVT quy đổi", để soi ngay ĐVT mua hiện có của nó. */
+  const conversionItem = data.items.find((item) => item.id === conversionForm.itemId);
   const stockInputQuantity = Number(stockForm.quantity || 0);
   // Dùng chung luật quy đổi với máy chủ (lib/unit-conversion.ts). Đọc thẳng conversionRate thì
   // với mã khai sai "1 LIT = 1000 LIT", ô xem trước ghi 1.000.000 lít trong khi lưu vào chỉ 1.000.
@@ -695,6 +698,19 @@ export default function InventoryPage() {
               <Input label="Mặt hàng">
                 <ItemSelect items={data.items} value={conversionForm.itemId} onChange={(itemId) => setConversionForm({ ...conversionForm, itemId })} />
               </Input>
+              {/* Không có ô này thì bấm Lưu xong màn hình y hệt lúc trước: bảng danh mục nằm xa
+                  bên dưới, người khai không biết vừa ghi được gì. */}
+              {conversionItem && (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] leading-5 text-slate-600">
+                  <div>ĐVT tồn kho: <b className="text-slate-800">{conversionItem.unit}</b></div>
+                  <div>
+                    ĐVT mua đang có:{" "}
+                    {purchaseConversionLabel(conversionItem)
+                      ? <b className="text-slate-800">{purchaseConversionLabel(conversionItem)}</b>
+                      : <span className="text-amber-700 font-bold">chưa khai</span>}
+                  </div>
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 <Input label="ĐVT mua">
                   <input className="control" value={conversionForm.purchaseUnit} onChange={(e) => setConversionForm({ ...conversionForm, purchaseUnit: e.target.value })} />
@@ -794,7 +810,10 @@ export default function InventoryPage() {
                     )}
                   </Cell>
                   <Cell>{item.unit}</Cell>
-                  <Cell>{item.unitConversions?.filter((unit) => unit.conversionRate > 1).map((unit) => `1 ${unit.unitName || unit.unitCode} = ${qty(unit.conversionRate)} ${item.unit}`).join(", ") || "-"}</Cell>
+                  {/* Lọc theo conversionRate > 1 là ĐVT mua khai tỷ lệ 1 (mua và tồn cùng đơn vị,
+                      hoặc đơn vị khác nhưng bằng nhau) lưu xong vẫn hiện "-", người khai tưởng
+                      bấm Lưu không ăn. Lọc đúng phải là "khác ĐVT tồn kho". */}
+                  <Cell>{purchaseConversionLabel(item) || "-"}</Cell>
                   <Cell right>{qty(item.minStock)}</Cell>
                   <Cell>
                     {item.requiresImage ? (
@@ -1998,7 +2017,39 @@ function wasteSubTypeLabel(subType: string | null): string {
 }
 
 function Input({ label, children }: { label: string; children: React.ReactNode }) { return <label className="block text-xs font-bold text-slate-600">{label}{children}</label>; }
-function ItemSelect({ items, value, onChange }: { items: Item[]; value: string; onChange: (value: string) => void }) { return <select className="control" value={value} onChange={(e) => onChange(e.target.value)}><option value="">Chọn mặt hàng</option>{items.map((item) => <option key={item.id} value={item.id}>{item.code} - {item.name}</option>)}</select>; }
+/**
+ * Ô chọn mặt hàng dùng chung cho mọi form của màn Kho.
+ *
+ * Danh mục thật có hàng nghìn mã nên thẻ <select> trơn là không dùng được: phải cuộn tay tìm
+ * từng mã. SearchableSelect cho gõ mã/tên để lọc, cùng một ô chọn với màn Thu/Chi.
+ */
+/**
+ * Các ĐVT MUA của mặt hàng, tức mọi dòng quy đổi khác ĐVT tồn kho. Dòng ĐVT tồn kho (tỷ lệ 1,
+ * note "ĐVT cơ bản") luôn tồn tại nên không kể vào đây.
+ */
+function purchaseConversions(item: { unit: string; unitConversions?: UnitConversion[] }) {
+  const baseUnit = (item.unit || "").trim().toUpperCase();
+  return (item.unitConversions || []).filter((unit) => unit.unitCode.trim().toUpperCase() !== baseUnit);
+}
+
+/** Chuỗi hiển thị ĐVT mua trên bảng danh mục: "1 THUNG = 24 chai". */
+function purchaseConversionLabel(item: { unit: string; unitConversions?: UnitConversion[] }) {
+  return purchaseConversions(item)
+    .map((unit) => `1 ${unit.unitName || unit.unitCode} = ${qty(safeConversionRate(item.unit, unit))} ${item.unit}`)
+    .join(", ");
+}
+
+function ItemSelect({ items, value, onChange }: { items: Item[]; value: string; onChange: (value: string) => void }) {
+  return (
+    <SearchableSelect
+      value={value}
+      onChange={onChange}
+      placeholder="Chọn mặt hàng"
+      searchPlaceholder="Gõ mã hoặc tên mặt hàng..."
+      options={items.map((item) => ({ value: item.id, label: `${item.code} - ${item.name}`, subLabel: item.unit }))}
+    />
+  );
+}
 function Panel({ title, reload, exportFileName }: { title: string; reload: () => void; exportFileName?: string }) {
   return (
     <div className="p-5 flex justify-between items-center gap-3">

@@ -1131,7 +1131,11 @@ export async function commitImport(input: CommitInput) {
             status: statusValue || "ACTIVE",
           },
           update: {
-            name, itemType, category, unit,
+            name, itemType, unit,
+            // Nhóm mặt hàng cũng phải theo luật "cột không map thì không ghi đè". File bổ sung
+            // ĐVT mua thường chỉ mang Mã/Tên/Loại/ĐVT — để category ngoài guard này thì mỗi lần
+            // import bổ sung là xoá sạch phân nhóm của toàn bộ mã trong file.
+            ...(hasColumn("category") ? { category } : {}),
             ...(hasColumn("revenue_group") ? { revenueGroup } : {}),
             ...(hasColumn("min_stock") ? { minStock: asNumber(row.values.min_stock) } : {}),
             ...(hasColumn("requires_image") ? { requiresImage: asFlag(row.values.requires_image) } : {}),
