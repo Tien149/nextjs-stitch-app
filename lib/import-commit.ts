@@ -28,7 +28,8 @@ import {
   walletFeeRateMessage,
 } from "@/lib/wallet-settlement-allocation";
 import { walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
-import { findStaleWalletSettlements } from "@/lib/wallet-settlement-staleness";
+import { findStaleWalletSettlements, findWalletSettlementsOnDays } from "@/lib/wallet-settlement-staleness";
+import { pickRevenueRowsOfDay, revenueDayKey, revenueDayLabel } from "@/lib/revenue-day-summary";
 
 /**
  * Một dòng sao kê không đủ điều kiện lập chứng từ tự động.
@@ -345,7 +346,19 @@ export async function commitImport(input: CommitInput) {
         },
         select: { id: true },
       })));
-      if (duplicateKeys.some(Boolean)) throw new Error("File có dòng doanh thu trùng với dữ liệu đã import");
+      // Nói rõ TRÙNG NGÀY NÀO: từ khi xoá được doanh thu theo ngày, ca hay gặp nhất là nạp lại
+      // nguyên file cả tháng trong khi chỉ một ngày vừa bị xoá — người dùng phải biết ngay là
+      // cần cắt file lại còn đúng ngày đó chứ không phải đi rollback cả lô.
+      const duplicateDays = [...new Set(input.rows
+        .filter((_, index) => duplicateKeys[index])
+        .map((row) => `${revenueDayLabel(revenueDayKey(asDate(row.values.sale_date)))} (${asText(row.values.branch_code)})`))];
+      if (duplicateDays.length > 0) {
+        throw new Error([
+          `File có dòng doanh thu trùng với dữ liệu đã import: ${duplicateDays.slice(0, 5).join(", ")}`,
+          duplicateDays.length > 5 ? ` và ${duplicateDays.length - 5} ngày khác` : "",
+          ". Những ngày này đã nằm trong hệ thống — chỉ nạp lại file của ngày đã xoá, hoặc xoá ngày đó trước khi nạp.",
+        ].join(""));
+      }
     }
 
     if (input.importType === "PAYROLL" && input.rows.some((row) => row.values.total_company_cost !== undefined)) {
@@ -2344,6 +2357,28 @@ async function rollbackInventoryTransactions(tx: RawTxClient, batchId: string) {
     include: { lines: true },
     orderBy: { createdAt: "desc" },
   });
+  await unwindInventoryTransactions(tx, transactions);
+}
+
+/**
+ * Hoàn tồn kho rồi xoá cứng đúng những phiếu được truyền vào.
+ *
+ * Tách khỏi `rollbackInventoryTransactions` để xoá doanh thu MỘT NGÀY còn dùng lại được: lô
+ * import cũ (trước 09/2026) trừ kho ngay lúc import, nên chỉ được hoàn phiếu của ngày bị xoá,
+ * không đụng tới phiếu của những ngày khác trong cùng lô.
+ */
+type UnwindInventoryTransaction = {
+  id: string;
+  transactionType: string;
+  warehouseCode: string;
+  toWarehouseCode: string | null;
+  internalReceivableDebtCode: string | null;
+  internalPayableDebtCode: string | null;
+  lines: Array<{ itemId: string; quantity: number; totalCost: number }>;
+};
+
+async function unwindInventoryTransactions(tx: RawTxClient, transactions: UnwindInventoryTransaction[]) {
+  if (transactions.length === 0) return;
   // Phiếu điều chuyển liên nhà hàng kéo theo cặp công nợ nội bộ: đã gạch nợ thì phải
   // hoàn tác phiếu gạch trước, chưa gạch thì xoá cứng cùng lô.
   const internalDebtCodes = transactions.flatMap((transaction) =>
@@ -2371,7 +2406,7 @@ async function rollbackInventoryTransactions(tx: RawTxClient, batchId: string) {
       }
     }
   }
-  await tx.inventoryTransaction.deleteMany({ where: { importBatchId: batchId } });
+  await tx.inventoryTransaction.deleteMany({ where: { id: { in: transactions.map((transaction) => transaction.id) } } });
 }
 
 async function rollbackBom(tx: RawTxClient, batchId: string) {
@@ -2583,6 +2618,143 @@ export async function rollbackImportBatch(input: RollbackInput) {
     metadata: { importType: result.importType, totalRows: result.totalRows },
   });
   return result;
+}
+
+type DeleteRevenueDayInput = {
+  batchId: string;
+  /** Ngày bán nghiệp vụ "YYYY-MM-DD" — đúng ô Ngày của bảng "Doanh thu theo ngày". */
+  day: string;
+  /** Một cửa hàng cụ thể; bỏ trống là mọi cửa hàng của ngày đó trong lô. */
+  branchCode?: string | null;
+  actor: string;
+  note: string;
+};
+
+/**
+ * Xoá doanh thu của ĐÚNG MỘT NGÀY trong một lô import đã commit.
+ *
+ * Khách import cả tháng trong một lần; sai một ngày mà phải rollback cả lô rồi nạp lại toàn bộ
+ * file là quá nặng (yêu cầu chị Bình 17/09/2026). Hàm này cắt đúng phần của ngày đó ra, những
+ * ngày khác trong lô giữ nguyên, rồi người dùng nạp lại file CHỈ CHỨA ngày vừa xoá.
+ *
+ * Xoá CỨNG như rollback chứ không xoá mềm: khoá unique (branchCode, saleDate, externalRef) phải
+ * được giải phóng, để lại dòng xoá mềm thì nạp lại chính ngày đó sẽ báo trùng dữ liệu đã import.
+ */
+export async function deleteRevenueImportDay(input: DeleteRevenueDayInput) {
+  const day = revenueDayKey(input.day);
+  if (!day) throw new Error(`Ngày cần xoá không hợp lệ: ${input.day || "(trống)"}`);
+  const dayText = revenueDayLabel(day);
+
+  const result = await prismaRaw.$transaction(async (tx) => {
+    const batch = await tx.importBatch.findUnique({ where: { id: input.batchId } });
+    if (!batch) throw new Error("Không tìm thấy batch import");
+    if (batch.importType !== "REVENUE_POS") throw new Error("Chỉ lô import doanh thu POS mới xoá được theo ngày");
+    if (!["COMMITTED", "APPROVED", "COMMITTED_WITH_ERRORS"].includes(batch.status)) {
+      throw new Error(`Batch trạng thái ${batch.status} không xoá được theo ngày`);
+    }
+
+    const rows = await tx.revenueImportRow.findMany({
+      where: { importBatchId: batch.id },
+      select: { id: true, saleDate: true, branchCode: true, inventoryStatus: true },
+    });
+    const target = pickRevenueRowsOfDay(rows, day, input.branchCode);
+    if (target.length === 0) throw new Error(`Lô này không còn dòng doanh thu nào của ngày ${dayText}`);
+
+    // Cùng luật với rollback cả lô: dòng đã rã nguyên liệu sinh phiếu kho KHÔNG gắn lô này,
+    // xoá mù thì doanh thu biến mất mà kho vẫn bị trừ.
+    const exploded = target.filter((row) => (row.inventoryStatus || "").startsWith("POSTED")).length;
+    if (exploded > 0) {
+      throw new Error(`Ngày ${dayText} có ${exploded} dòng đã rã nguyên liệu ở tab Chế biến. Xoá các phiếu rã (mã RA-...) để hoàn kho trước khi xoá doanh thu ngày này.`);
+    }
+
+    // Khoá sổ kiểm theo đúng kỳ của ngày bị xoá, không kiểm cả lô: lô trải nhiều tháng mà
+    // tháng khác đã chốt sổ vẫn được xoá một ngày của tháng đang mở.
+    for (const key of new Set(target.map((row) => `${periodFromDate(row.saleDate)}|${row.branchCode}`))) {
+      const [period, branchCode] = key.split("|");
+      await assertPeriodOpen(tx, period, branchCode);
+    }
+
+    // Lô cũ (trước 09/2026) còn trừ kho ngay lúc import — hoàn đúng phiếu của ngày này.
+    // Lô mới không sinh phiếu nào lúc import nên danh sách này rỗng.
+    const stockDocs = await tx.inventoryTransaction.findMany({
+      where: { importBatchId: batch.id },
+      include: { lines: true },
+      orderBy: { createdAt: "desc" },
+    });
+    await unwindInventoryTransactions(
+      tx,
+      stockDocs.filter((doc) => pickRevenueRowsOfDay(
+        [{ saleDate: doc.transactionDate, branchCode: doc.branchCode }],
+        day,
+        input.branchCode,
+      ).length > 0),
+    );
+
+    const ids = target.map((row) => row.id);
+    await tx.journalEntry.deleteMany({ where: { sourceType: "REVENUE_POS", sourceId: { in: ids } } });
+    // Dòng staging của ngày này cũng phải đi, nếu không lô vẫn khai là có ngày đó và bảng
+    // chi tiết vẫn vẽ ra những dòng không còn tồn tại.
+    await tx.importRow.deleteMany({ where: { importBatchId: batch.id, targetType: "REVENUE_POS", targetId: { in: ids } } });
+    await tx.revenueImportRow.deleteMany({ where: { id: { in: ids } } });
+
+    const remainingRows = rows.length - target.length;
+    const branches = [...new Set(target.map((row) => row.branchCode))];
+    const noteLine = `${new Date().toISOString().slice(0, 10)} · ${input.actor} xoá ngày ${dayText}${branches.length === 1 ? ` (${branches[0]})` : ""}: ${target.length} dòng — ${input.note}`;
+    const updated = await tx.importBatch.update({
+      where: { id: batch.id },
+      data: {
+        totalRows: Math.max(batch.totalRows - target.length, 0),
+        validRows: Math.max(batch.validRows - target.length, 0),
+        // Xoá tới ngày cuối cùng thì lô này không còn gì: hạ về ROLLED_BACK để lịch sử không
+        // treo một lô COMMITTED rỗng, và để đúng file đó nạp lại được (chặn trùng file chỉ
+        // soi các lô COMMITTED/APPROVED).
+        ...(remainingRows === 0
+          ? { status: "ROLLED_BACK", rolledBackAt: new Date(), rolledBackBy: input.actor }
+          : {}),
+        rollbackNote: [batch.rollbackNote, noteLine].filter(Boolean).join("\n"),
+      },
+    });
+    return {
+      batch: updated,
+      deletedRows: target.length,
+      remainingRows,
+      branches,
+      saleDates: target.map((row) => ({ branchCode: row.branchCode, saleDate: row.saleDate })),
+    };
+  }, {
+    maxWait: 10_000,
+    timeout: 120_000,
+  });
+
+  // Phiếu quyết toán ví của ngày vừa xoá giờ không còn căn cứ: nhắc ngay, vì phát hiện sau
+  // vài tuần thì phí ảo đã nằm trong P&L và không ai truy được vì sao.
+  const walletSettlements = await findWalletSettlementsOnDays(result.saleDates);
+  await writeAuditLog({
+    actorName: input.actor,
+    module: "IMPORT",
+    action: "DELETE_REVENUE_DAY",
+    entityType: "ImportBatch",
+    entityId: result.batch.id,
+    entityCode: result.batch.fileName,
+    branchCode: result.batch.branchCode || null,
+    message: `Xoá doanh thu ngày ${dayText}: ${result.deletedRows} dòng — ${input.note}`,
+    metadata: {
+      day,
+      branchCode: input.branchCode || null,
+      deletedRows: result.deletedRows,
+      remainingRows: result.remainingRows,
+      branches: result.branches,
+      walletSettlements: walletSettlements.map((row) => row.code),
+    },
+  });
+  return {
+    batch: result.batch,
+    day,
+    dayLabel: dayText,
+    deletedRows: result.deletedRows,
+    remainingRows: result.remainingRows,
+    walletSettlements,
+  };
 }
 
 export function isUniqueConstraintError(error: unknown) {

@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { assertBranchAccess, requestedBranch } from "@/lib/accounting";
-import { commitImport, isUniqueConstraintError, rollbackImportBatch } from "@/lib/import-commit";
+import { commitImport, deleteRevenueImportDay, isUniqueConstraintError, rollbackImportBatch } from "@/lib/import-commit";
 import { getImportTemplate, type ImportType } from "@/lib/import-templates";
 import { applyImportRowEdits, parseImportFile, type ImportRowEdit } from "@/lib/import-parser";
 import { validateImportResult } from "@/lib/import-validation";
@@ -438,10 +438,12 @@ export async function POST(request: Request) {
       if (!auth.ok) return auth.response;
       const body = await request.json();
       const action = cleanText(body.action);
-      if (action !== "ROLLBACK_BATCH") return NextResponse.json({ error: "Thao tác import không hợp lệ" }, { status: 400 });
+      if (action !== "ROLLBACK_BATCH" && action !== "DELETE_REVENUE_DAY") {
+        return NextResponse.json({ error: "Thao tác import không hợp lệ" }, { status: 400 });
+      }
       const batchId = cleanText(body.batchId);
       const note = cleanText(body.note);
-      if (!batchId) return NextResponse.json({ error: "Thiếu batchId cần rollback" }, { status: 400 });
+      if (!batchId) return NextResponse.json({ error: "Thiếu batchId cần xử lý" }, { status: 400 });
 
       const scopedBranch = requestedBranch(auth.session, "ALL");
       const batch = await prisma.importBatch.findFirst({
@@ -449,6 +451,37 @@ export async function POST(request: Request) {
       });
       if (!batch) return NextResponse.json({ error: "Không tìm thấy batch import hoặc không thuộc phạm vi cửa hàng của bạn" }, { status: 404 });
       if (batch.branchCode) assertBranchAccess(auth.session, batch.branchCode);
+
+      /**
+       * Xoá doanh thu đúng một ngày trong lô, những ngày khác giữ nguyên (yêu cầu chị Bình
+       * 17/09/2026: import cả tháng một lần, sai một ngày thì chỉ muốn sửa ngày đó).
+       *
+       * Khác rollback ở chỗ KHÔNG hạ trạng thái lô khi vẫn còn ngày khác, và lỗi ở đây không
+       * bao giờ để lại dở dang (cả thao tác nằm trong một transaction) nên không đánh dấu
+       * ROLLBACK_FAILED — cứ trả nguyên câu lỗi cho người dùng sửa rồi bấm lại.
+       */
+      if (action === "DELETE_REVENUE_DAY") {
+        const day = cleanText(body.day);
+        const dayBranchCode = cleanText(body.branchCode);
+        if (!day) return NextResponse.json({ error: "Thiếu ngày doanh thu cần xoá" }, { status: 400 });
+        if (!note) return NextResponse.json({ error: "Vui lòng nhập lý do xoá ngày doanh thu" }, { status: 400 });
+        if (dayBranchCode) assertBranchAccess(auth.session, dayBranchCode);
+        try {
+          const deleted = await deleteRevenueImportDay({
+            batchId,
+            day,
+            branchCode: dayBranchCode || null,
+            actor: auth.session.name,
+            note,
+          });
+          return NextResponse.json(deleted);
+        } catch (error) {
+          return NextResponse.json(
+            { error: error instanceof Error ? error.message : "Xoá doanh thu theo ngày thất bại" },
+            { status: 400 },
+          );
+        }
+      }
 
       try {
         const rolledBack = await rollbackImportBatch({ batchId, actor: auth.session.name, note });

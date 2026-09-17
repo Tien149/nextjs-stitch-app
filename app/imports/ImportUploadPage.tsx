@@ -9,7 +9,7 @@ import RevenuePreviewEditor, {
   type PreviewPayload,
   type RowEdits,
 } from "@/app/imports/RevenuePreviewEditor";
-import { type RevenueDayInput } from "@/lib/revenue-day-summary";
+import { type RevenueDayInput, type RevenueDayRow } from "@/lib/revenue-day-summary";
 import { useRouter } from "next/navigation";
 import { DateInput } from "@/components/DateInput";
 import { SearchableSelect } from "@/components/SearchableSelect";
@@ -365,6 +365,14 @@ export default function ImportUploadPage({
   const [rollbackNote, setRollbackNote] = useState("");
   const [rollbackError, setRollbackError] = useState("");
   const [rollbackSaving, setRollbackSaving] = useState(false);
+  /**
+   * Xoá doanh thu một ngày trong lô đang mở (yêu cầu chị Bình 17/09/2026). Giữ nguyên dòng
+   * của bảng "Doanh thu theo ngày" để hộp thoại nói rõ xoá bao nhiêu dòng, bao nhiêu tiền.
+   */
+  const [deleteDayTarget, setDeleteDayTarget] = useState<RevenueDayRow | null>(null);
+  const [deleteDayNote, setDeleteDayNote] = useState("");
+  const [deleteDayError, setDeleteDayError] = useState("");
+  const [deleteDaySaving, setDeleteDaySaving] = useState(false);
   const [masterOptions, setMasterOptions] = useState<Record<string, MasterOption[]>>({});
   const alwaysShowTemplateLink = templateCode === "OPENING_BALANCE_STANDARD_V1";
   const importType = importTypeFromApiPath(apiPath);
@@ -504,8 +512,8 @@ export default function ImportUploadPage({
     }
   }, [apiPath, batches.length, batchTotal]);
 
-  const loadBatchDetail = async (batchId: string) => {
-    if (selectedBatchId === batchId && selectedBatch && !batchDetailError) return;
+  const loadBatchDetail = async (batchId: string, force = false) => {
+    if (!force && selectedBatchId === batchId && selectedBatch && !batchDetailError) return;
     setSelectedBatchId(batchId);
     setBatchDetailLoading(true);
     setBatchDetailError("");
@@ -906,6 +914,67 @@ export default function ImportUploadPage({
       setRollbackSaving(false);
     }
   };
+
+  /**
+   * Xoá doanh thu đúng một ngày của lô đang mở. Các ngày khác giữ nguyên, nên sửa xong chỉ
+   * cần nạp lại file của riêng ngày đó — không phải rollback rồi import lại cả tháng.
+   */
+  const deleteRevenueDay = async () => {
+    if (!deleteDayTarget || !selectedBatch) return;
+    const note = deleteDayNote.trim();
+    if (!note) {
+      setDeleteDayError("Vui lòng nhập lý do xoá ngày này.");
+      return;
+    }
+    setDeleteDaySaving(true);
+    setDeleteDayError("");
+    setMessage("");
+    try {
+      const response = await fetch(apiPath, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "DELETE_REVENUE_DAY",
+          batchId: selectedBatch.id,
+          day: deleteDayTarget.date,
+          // "—" là chỗ bảng điền cho dòng không khai cửa hàng: gửi rỗng = mọi cửa hàng của ngày.
+          branchCode: deleteDayTarget.branchCode === "—" ? "" : deleteDayTarget.branchCode,
+          note,
+        }),
+      });
+      const payload = await readJsonBody<{
+        error?: string;
+        dayLabel?: string;
+        deletedRows?: number;
+        remainingRows?: number;
+        walletSettlements?: Array<{ code: string }>;
+      }>(response);
+      if (!response.ok) {
+        setDeleteDayError(payload.error || "Xoá ngày doanh thu thất bại.");
+        return;
+      }
+      const walletCodes = (payload.walletSettlements || []).map((row) => row.code);
+      setDeleteDayTarget(null);
+      setDeleteDayNote("");
+      setMessage([
+        `Đã xoá ${payload.deletedRows} dòng doanh thu ngày ${payload.dayLabel}, lô còn ${payload.remainingRows} dòng.`,
+        "Nạp lại bằng file CHỈ CHỨA ngày này — file nguyên tháng sẽ bị chặn vì trùng các ngày còn lại của lô.",
+        walletCodes.length > 0
+          ? `Lưu ý: ngày này đã có phiếu quyết toán ví ${walletCodes.join(", ")}, xem lại sau khi nạp file mới.`
+          : "",
+      ].filter(Boolean).join(" "));
+      await loadBatchDetail(selectedBatch.id, true);
+      await loadBatches(undefined, batches.length);
+    } catch (error) {
+      setDeleteDayError(error instanceof Error ? error.message : "Không thể kết nối để xoá ngày doanh thu. Vui lòng thử lại.");
+    } finally {
+      setDeleteDaySaving(false);
+    }
+  };
+
+  // Lô đã rollback hoặc còn ở bản nháp thì không có gì để xoá theo ngày.
+  const canDeleteRevenueDay = isRevenueImport && !!selectedBatch
+    && ["COMMITTED", "APPROVED", "COMMITTED_WITH_ERRORS"].includes(selectedBatch.status);
 
   const selectedBatchRows = selectedBatch ? firstNonEmptyRows(
     selectedBatch.bankTransactions,
@@ -1378,6 +1447,12 @@ export default function ImportUploadPage({
                     <>
                       {selectedBatch.validRows}/{selectedBatch.totalRows} dòng, trạng thái {selectedBatch.status}
                       {selectedBatch.rolledBackAt ? `, rollback lúc ${new Date(selectedBatch.rolledBackAt).toLocaleString("vi-VN")}` : ""}.
+                      {/* Nhật ký xoá theo ngày: lô thiếu ngày thì phải thấy được vì sao, xoá lúc nào, ai xoá. */}
+                      {selectedBatch.rollbackNote && (
+                        <span className="mt-1 block whitespace-pre-line text-[11px] leading-5 text-rose-700">
+                          {selectedBatch.rollbackNote}
+                        </span>
+                      )}
                     </>
                   ) : "Chọn một dòng lịch sử để xem chi tiết dữ liệu đã import."}
                 </p>
@@ -1413,6 +1488,12 @@ export default function ImportUploadPage({
               tableId="batch-revenue-day-table"
               fileName={`doanh_thu_theo_ngay_${(selectedBatch?.fileName || "batch").replace(/[^\w.-]+/g, "_")}`}
               subtitle="Số đã import vào hệ thống của batch này"
+              onDeleteDay={canDeleteRevenueDay ? (row) => {
+                setDeleteDayTarget(row);
+                setDeleteDayNote("");
+                setDeleteDayError("");
+              } : undefined}
+              deletingKey={deleteDaySaving && deleteDayTarget ? `${deleteDayTarget.date}-${deleteDayTarget.branchCode}` : ""}
             />
 
             <div className="relative overflow-x-auto max-h-[420px] min-h-[140px]">
@@ -1568,6 +1649,113 @@ export default function ImportUploadPage({
                     Đang rollback...
                   </>
                 ) : rollbackTarget.status === "ROLLBACK_FAILED" ? "Thử rollback lại" : "Xác nhận rollback"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {deleteDayTarget && (
+        <div className="fixed inset-0 z-[60] grid place-items-center bg-slate-950/50 px-4 backdrop-blur-[1px]">
+          <button
+            type="button"
+            aria-label="Đóng hộp thoại xoá ngày doanh thu"
+            className="absolute inset-0 cursor-default"
+            onClick={() => !deleteDaySaving && setDeleteDayTarget(null)}
+          />
+          <form
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-day-dialog-title"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void deleteRevenueDay();
+            }}
+            className="relative w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+          >
+            <div className="flex items-start gap-3 border-b border-slate-100 px-5 py-4">
+              <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-rose-50 text-rose-600">
+                <span className="material-symbols-outlined">event_busy</span>
+              </div>
+              <div className="min-w-0 flex-1">
+                <h2 id="delete-day-dialog-title" className="text-base font-bold text-slate-900">
+                  Xoá doanh thu ngày {deleteDayTarget.date ? new Date(`${deleteDayTarget.date}T00:00:00Z`).toLocaleDateString("vi-VN", { timeZone: "UTC" }) : ""}
+                </h2>
+                <p className="mt-1 text-xs leading-5 text-slate-500">
+                  Chỉ ngày này bị xoá khỏi lô, các ngày khác giữ nguyên. Bút toán doanh thu của ngày cũng bị xoá theo.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDeleteDayTarget(null)}
+                disabled={deleteDaySaving}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-50"
+              >
+                <span className="material-symbols-outlined text-xl">close</span>
+              </button>
+            </div>
+
+            <div className="space-y-4 px-5 py-4">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Sẽ xoá</p>
+                <p className="mt-1 text-sm font-semibold text-slate-800">
+                  {deleteDayTarget.rowCount} dòng · {deleteDayTarget.branchCode === "—" ? "không rõ cửa hàng" : storeLabel(deleteDayTarget.branchCode)} ·{" "}
+                  {new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(Math.round(deleteDayTarget.net))} đ
+                </p>
+                <p className="mt-1 truncate text-xs text-slate-500" title={selectedBatch?.fileName}>
+                  Lô: {selectedBatch?.fileName}
+                </p>
+              </div>
+
+              {/* Nói trước cái bẫy hay gặp nhất: nạp lại nguyên file cũ sẽ bị chặn vì các ngày
+                  còn lại vẫn nằm trong hệ thống. */}
+              <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 font-semibold text-amber-800">
+                Sau khi xoá, nạp lại bằng file chỉ chứa riêng ngày này. Ngày đã rã nguyên liệu hoặc kỳ đã khoá sổ thì không xoá được.
+              </p>
+
+              <label className="block text-sm font-semibold text-slate-700">
+                Lý do xoá <span className="text-rose-600">*</span>
+                <textarea
+                  autoFocus
+                  rows={3}
+                  value={deleteDayNote}
+                  onChange={(event) => {
+                    setDeleteDayNote(event.target.value);
+                    if (deleteDayError) setDeleteDayError("");
+                  }}
+                  disabled={deleteDaySaving}
+                  placeholder="Ví dụ: File POS ngày này thiếu ca tối, nạp lại bản đủ"
+                  className="mt-2 w-full resize-none rounded-xl border border-slate-300 px-3 py-2.5 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100"
+                />
+              </label>
+
+              {deleteDayError && (
+                <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">
+                  {deleteDayError}
+                </p>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2 border-t border-slate-100 bg-slate-50 px-5 py-4">
+              <button
+                type="button"
+                onClick={() => setDeleteDayTarget(null)}
+                disabled={deleteDaySaving}
+                className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+              >
+                Hủy
+              </button>
+              <button
+                type="submit"
+                disabled={deleteDaySaving}
+                className="inline-flex min-w-[132px] items-center justify-center gap-2 rounded-lg bg-rose-600 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {deleteDaySaving ? (
+                  <>
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                    Đang xoá...
+                  </>
+                ) : "Xác nhận xoá ngày"}
               </button>
             </div>
           </form>

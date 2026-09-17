@@ -38,12 +38,21 @@ export default function RevenueDaySummary({
   tableId,
   fileName,
   subtitle,
+  onDeleteDay,
+  deletingKey,
 }: {
   rows: RevenueDayInput[];
   /** id của khối bảng — nút Xuất Excel trỏ vào đây vì nút nằm ngoài khối. */
   tableId: string;
   fileName: string;
   subtitle: string;
+  /**
+   * Có truyền thì mỗi dòng mọc thêm nút "Xoá ngày". Chỉ màn chi tiết lô đã import truyền vào;
+   * bảng xem trước file thì không có gì để xoá.
+   */
+  onDeleteDay?: (row: RevenueDayRow) => void;
+  /** `${date}-${branchCode}` của dòng đang chờ server trả lời — khoá nút cho khỏi bấm hai lần. */
+  deletingKey?: string;
 }) {
   const summary = buildRevenueDaySummary(rows);
   if (summary.rows.length === 0) return null;
@@ -77,6 +86,8 @@ export default function RevenueDaySummary({
               {columns.map((column) => (
                 <th key={column.key} className="whitespace-nowrap px-4 py-3 text-right">{column.label}</th>
               ))}
+              {/* Nhãn nằm trong span data-no-export để cột thao tác không lẫn vào file Excel. */}
+              {onDeleteDay && <th className="px-4 py-3 text-right"><span data-no-export>Thao tác</span></th>}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
@@ -92,6 +103,20 @@ export default function RevenueDaySummary({
                       : money(row[column.key] as number)}
                   </td>
                 ))}
+                {onDeleteDay && (
+                  <td className="whitespace-nowrap px-4 py-2.5 text-right">
+                    <button
+                      type="button"
+                      onClick={() => onDeleteDay(row)}
+                      disabled={!!deletingKey}
+                      title={`Xoá ${row.rowCount} dòng doanh thu ngày ${dayLabel(row.date)} khỏi lô này, các ngày khác giữ nguyên`}
+                      className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-white px-2.5 py-1 text-xs font-bold text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <span className="material-symbols-outlined text-[14px]">delete</span>
+                      {deletingKey === `${row.date}-${row.branchCode}` ? "Đang xoá..." : "Xoá ngày"}
+                    </button>
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
@@ -107,6 +132,7 @@ export default function RevenueDaySummary({
                   {money(summary.totals[column.key] as number)}
                 </td>
               ))}
+              {onDeleteDay && <td className="px-4 py-3" />}
             </tr>
           </tfoot>
         </table>

@@ -95,3 +95,40 @@ export async function findStaleWalletSettlements(
     // Doanh thu về 0 nghĩa là ví này không khớp mã nào trong file — cũng không kết luận được.
     .filter((row) => row.currentRevenue > 0 && Math.abs(row.settledGross - row.currentRevenue) > 1);
 }
+
+/**
+ * Phiếu quyết toán ví đã lập cho những ngày sắp bị xoá doanh thu.
+ *
+ * Khác `findStaleWalletSettlements` ở chỗ KHÔNG so số: khi xoá doanh thu một ngày thì doanh thu
+ * của ví về 0, mà hàm kia cố ý bỏ qua trường hợp 0 (không kết luận được). Ở đây chỉ cần liệt kê
+ * để màn Import nhắc người dùng xem lại phiếu sau khi nạp lại file ngày đó — phiếu vẫn giữ số
+ * cũ trong khi căn cứ đã bị xoá.
+ */
+export async function findWalletSettlementsOnDays(
+  revenueRows: Array<{ branchCode: string; saleDate: Date }>,
+): Promise<Array<{ code: string; branchCode: string; reportDate: string; walletCode: string }>> {
+  if (revenueRows.length === 0) return [];
+  const branches = [...new Set(revenueRows.map((row) => row.branchCode))];
+  const days = [...new Set(revenueRows.map((row) => dayKey(row.saleDate)))];
+  const times = revenueRows.map((row) => row.saleDate.getTime());
+
+  const settlements = await prisma.moneyTransfer.findMany({
+    where: {
+      transferPurpose: "WALLET_SETTLEMENT",
+      status: "APPROVED",
+      deletedAt: null,
+      branchCode: { in: branches },
+      sourceReportDate: { gte: new Date(Math.min(...times)), lt: new Date(Math.max(...times) + 86_400_000) },
+    },
+    select: { code: true, branchCode: true, sourceReportDate: true, fromMoneySourceCode: true },
+  });
+
+  return settlements
+    .filter((row) => row.sourceReportDate && days.includes(dayKey(row.sourceReportDate)))
+    .map((row) => ({
+      code: row.code,
+      branchCode: row.branchCode,
+      reportDate: dayKey(row.sourceReportDate as Date),
+      walletCode: row.fromMoneySourceCode,
+    }));
+}

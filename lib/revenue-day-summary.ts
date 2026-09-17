@@ -134,3 +134,42 @@ export function buildRevenueDaySummary(rows: RevenueDayInput[]): { rows: Revenue
   });
   return { rows: sorted, totals };
 }
+
+/**
+ * Mã cửa hàng quy chuẩn để so khớp: bỏ khoảng trắng thừa, viết hoa. Trống = không lọc.
+ * Dấu "—" là chỗ bảng trên kia điền cho dòng không khai cửa hàng, nên coi như trống —
+ * bấm xoá ở đúng dòng đó phải ra đúng những dòng không có cửa hàng.
+ */
+export function revenueBranchKey(value: unknown): string {
+  const text = String(value ?? "").trim().toUpperCase();
+  return text === "—" ? "" : text;
+}
+
+/**
+ * Lọc đúng những dòng thuộc MỘT ngày bán (và một cửa hàng nếu có) — dùng cho nút "Xoá ngày"
+ * trên chi tiết lô import (yêu cầu chị Bình 17/09/2026: import cả tháng một lần, sai một ngày
+ * thì chỉ muốn xoá ngày đó nạp lại, không phải rollback rồi nạp lại cả file).
+ *
+ * Cố ý dùng chung `revenueDayKey` với bảng "Doanh thu theo ngày": người dùng bấm xoá ở dòng
+ * nào thì xoá đúng những dòng đã cộng vào dòng đó, không lệch một ngày vì múi giờ.
+ *
+ * `branchCode` bỏ trống (undefined/null/chuỗi rỗng) = mọi cửa hàng của ngày đó.
+ */
+export function pickRevenueRowsOfDay<T extends { saleDate: unknown; branchCode: unknown }>(
+  rows: T[],
+  day: unknown,
+  branchCode?: unknown,
+): T[] {
+  const wantedDay = revenueDayKey(day);
+  if (!wantedDay) return [];
+  const allBranches = branchCode === undefined || branchCode === null || String(branchCode).trim() === "";
+  const wantedBranch = revenueBranchKey(branchCode);
+  return rows.filter((row) => revenueDayKey(row.saleDate) === wantedDay
+    && (allBranches || revenueBranchKey(row.branchCode) === wantedBranch));
+}
+
+/** "2026-08-02" -> "02/08/2026" cho câu thông báo; chuỗi lạ thì trả nguyên văn. */
+export function revenueDayLabel(day: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day.trim());
+  return match ? `${match[3]}/${match[2]}/${match[1]}` : day;
+}
