@@ -47,6 +47,7 @@
     "test:import-dates": "node --experimental-strip-types scripts/test-import-date-parser.mjs",
     "test:revenue-day-summary": "node --experimental-strip-types --no-warnings --test scripts/test-revenue-day-summary.mjs",
     "test:revenue-day-delete": "node --experimental-strip-types --no-warnings --test scripts/test-revenue-day-delete-pick.mjs",
+    "test:wallet-rerun": "node --experimental-strip-types --no-warnings --test scripts/test-wallet-settlement-rerun.mjs",
     "test:money-transfer-dates": "node --experimental-strip-types scripts/test-money-transfer-effective-date.mjs",
     "backfill:bank-deposits": "node scripts/backfill-bank-deposits.cjs",
     "backfill:revenue-department": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/backfill-revenue-department.mjs",

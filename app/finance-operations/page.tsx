@@ -653,6 +653,79 @@ export default function FinanceOperationsPage() {
     }
   };
 
+  /**
+   * Chạy lại quyết toán ví theo doanh thu hiện tại.
+   *
+   * Phiếu chốt gross lúc lập, nên doanh thu ngày đó nạp lại với số khác là phiếu thành lạc
+   * hậu — phần chênh nằm trên P&L dưới dạng phí. Bấm nút này server tính lại phí cho cả nhóm
+   * phiếu của (cửa hàng × ngày doanh thu × ví), giữ nguyên số tiền thật đã về ngân hàng.
+   *
+   * Hai bước: xin bảng số trước (preview, không ghi gì) để người dùng nhìn số cũ/số mới rồi
+   * mới xác nhận — sửa phí là sửa thẳng chi phí trên P&L, không cho bấm nhầm một phát là xong.
+   */
+  const rerunWalletSettlement = async (transfer: MoneyTransfer) => {
+    if (submitting) return;
+    setSubmitting(true);
+    setMessage("");
+    try {
+      const ask = async (payload: object) => {
+        const response = await fetch("/api/finance-operations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "RERUN_WALLET_SETTLEMENT", id: transfer.id, ...payload }),
+        });
+        return { ok: response.ok, payload: await response.json() as Record<string, never> };
+      };
+
+      const preview = await ask({ preview: true });
+      if (!preview.ok) {
+        setMessage(String(preview.payload.error || "Không xem trước được số chạy lại."));
+        return;
+      }
+      const plan = preview.payload as unknown as {
+        changed: boolean;
+        currentGross: number; nextGross: number;
+        currentFee: number; nextFee: number;
+        totalAmount: number;
+        walletLabel: string; reportDate: string;
+        highFeeMessage: string | null;
+        changes: Array<{ code: string; feeBefore: number; feeAfter: number }>;
+      };
+      const dayText = new Date(`${plan.reportDate}T00:00:00Z`).toLocaleDateString("vi-VN", { timeZone: "UTC" });
+      if (!plan.changed) {
+        setMessage(`Phiếu ${transfer.code} đang khớp doanh thu hiện tại của ${plan.walletLabel} ngày ${dayText} (${money(plan.nextGross)} đ) — không cần chạy lại.`);
+        return;
+      }
+      const confirmed = window.confirm([
+        `Chạy lại quyết toán ${plan.walletLabel} — ngày doanh thu ${dayText}`,
+        "",
+        `Tiền thật về ngân hàng: ${money(plan.totalAmount)} đ (giữ nguyên)`,
+        `Gross: ${money(plan.currentGross)} đ  ->  ${money(plan.nextGross)} đ (doanh thu hiện tại)`,
+        `Phí: ${money(plan.currentFee)} đ  ->  ${money(plan.nextFee)} đ`,
+        "",
+        `${plan.changes.length} phiếu đổi số:`,
+        ...plan.changes.map((row) => `• ${row.code}: phí ${money(row.feeBefore)} -> ${money(row.feeAfter)} đ`),
+        ...(plan.highFeeMessage ? ["", `⚠ ${plan.highFeeMessage}`] : []),
+        "",
+        "Xác nhận ghi số mới?",
+      ].join("\n"));
+      if (!confirmed) return;
+
+      const applied = await ask({ acknowledgeHighFee: true });
+      if (!applied.ok) {
+        setMessage(String(applied.payload.error || "Chạy lại quyết toán thất bại."));
+        return;
+      }
+      const result = applied.payload as unknown as { updated: number; nextFee: number; nextGross: number };
+      setMessage(`Đã chạy lại quyết toán ${plan.walletLabel} ngày ${dayText}: ${result.updated} phiếu, gross ${money(result.nextGross)} đ, phí ${money(result.nextFee)} đ.`);
+      await loadData();
+    } catch {
+      setMessage("Lỗi kết nối máy chủ.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const send = async (body: object, success: string | ((payload: Record<string, unknown>) => string)) => {
     if (submitting) return;
     setSubmitting(true);
@@ -1479,6 +1552,25 @@ export default function FinanceOperationsPage() {
                         </div>
                       </div>
                     </div>
+                    {/* Doanh thu ngày đó được nạp lại thì phiếu này vẫn giữ gross cũ. Nút dưới
+                        tính lại phí theo doanh thu hiện tại, giữ nguyên số tiền thật đã về. */}
+                    {canEdit && selectedTransfer.status === "APPROVED" && (
+                      <div className="mt-3 flex flex-wrap items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => void rerunWalletSettlement(selectedTransfer)}
+                          disabled={submitting}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-300 bg-white px-3 py-2 text-xs font-bold text-indigo-700 shadow-sm transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          <span className="material-symbols-outlined text-[16px]">refresh</span>
+                          Chạy lại theo doanh thu hiện tại
+                        </button>
+                        <p className="text-[11px] leading-5 text-slate-600">
+                          Dùng khi đã nạp lại doanh thu của ngày {selectedTransfer.sourceReportDate ? new Date(selectedTransfer.sourceReportDate).toLocaleDateString("vi-VN", { timeZone: "UTC" }) : "doanh thu"}:
+                          hệ thống tính lại phí theo doanh thu mới, số tiền thật về ngân hàng giữ nguyên. Xem số trước khi xác nhận.
+                        </p>
+                      </div>
+                    )}
                   </div>
                 )}
 

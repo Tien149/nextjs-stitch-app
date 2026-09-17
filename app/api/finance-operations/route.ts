@@ -14,11 +14,21 @@ import { completePendingReconciliation, releasePendingReconciliation } from "@/l
 import { cashOpeningBalance } from "@/lib/cash-opening-balance";
 import { parseImportDate } from "@/lib/import-parser";
 import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/lib/money-transfer-date";
-import { checkWalletFeeRate, walletFeeRateMessage } from "@/lib/wallet-settlement-allocation";
+import {
+  WALLET_CARD_FEE_CATEGORY_CODE,
+  WALLET_GRAB_EXPENSE_CATEGORY_CODE,
+  checkWalletFeeRate,
+  walletFeeRateMessage,
+} from "@/lib/wallet-settlement-allocation";
+import { planWalletSettlementRerun } from "@/lib/wallet-settlement-rerun";
+import { pickRevenueRowsOfDay, revenueDayKey } from "@/lib/revenue-day-summary";
+import { ensureWalletFeePnlItems, postJournalEntry } from "@/lib/accounting";
+import { moneySourceAccountCode } from "@/lib/money-sources";
 import { walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
 import {
   internalTransferDebtCodes,
   internalTransferDebtDescriptions,
+  planMoneyTransferJournals,
   transferBranches,
   transferLegsForBranch,
 } from "@/lib/internal-transfer";
@@ -938,6 +948,212 @@ export async function POST(request: Request) {
         metadata: { grossAmount, amount, feeAmount, feeCategoryCode, from: fromMoneySourceCode, to: toMoneySourceCode, externalRef, sourceReportDate },
       });
       return NextResponse.json(result, { status: 201 });
+    }
+
+    /**
+     * Chạy lại quyết toán ví theo doanh thu hiện tại.
+     *
+     * Phiếu quyết toán chốt gross tại thời điểm lập, nên nạp lại doanh thu của ngày đó (sửa
+     * file POS, xoá ngày rồi import lại) là phiếu thành lạc hậu: phần chênh nằm trên P&L dưới
+     * dạng phí mà không ai truy được. Trước đây phải sửa tay dưới database (yêu cầu chị Bình
+     * 17/09/2026: cho một nút bấm là phiếu tự tính lại).
+     *
+     * Tính theo NHÓM cửa hàng × ngày doanh thu × ví: một ngày ví có thể trả nhiều đợt, mỗi đợt
+     * một phiếu, cộng lại mới bằng doanh thu ngày đó. Số THỰC NHẬN của từng phiếu giữ nguyên
+     * (tiền thật đã về theo sao kê, sửa là vỡ đối chiếu), chỉ phí được tính lại.
+     *
+     * `preview: true` chỉ trả về bảng số sẽ đổi, không ghi gì — màn hình cho người dùng nhìn
+     * số cũ/số mới rồi mới xác nhận.
+     */
+    if (action === "RERUN_WALLET_SETTLEMENT") {
+      const auth = requireMenuAction(request, menuHref, "edit");
+      if (!auth.ok) return auth.response;
+      const id = cleanText(body.id);
+      const preview = body.preview === true;
+      if (!id) businessError("Thiếu phiếu quyết toán cần chạy lại.");
+
+      const transfer = await prisma.moneyTransfer.findFirst({
+        where: { id, transferPurpose: "WALLET_SETTLEMENT", deletedAt: null },
+      });
+      if (!transfer) businessError("Không tìm thấy phiếu quyết toán ví này.");
+      if (transfer.status !== "APPROVED") businessError(`Phiếu đang ở trạng thái ${transfer.status}, chỉ phiếu đã duyệt mới chạy lại được.`);
+      if (!transfer.sourceReportDate) businessError("Phiếu này không ghi Ngày doanh thu nên không biết lấy doanh thu ngày nào để tính lại. Cần sửa tay theo sao kê.");
+      try {
+        assertBranchAccess(auth.session, transfer.branchCode);
+      } catch (e) {
+        return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi" }, { status: 403 });
+      }
+
+      const reportDay = revenueDayKey(transfer.sourceReportDate);
+      const dayRange = {
+        gte: new Date(`${reportDay}T00:00:00.000Z`),
+        lt: new Date(new Date(`${reportDay}T00:00:00.000Z`).getTime() + 2 * 86_400_000),
+      };
+      // Quét rộng hơn một ngày rồi lọc bằng revenueDayKey: dòng doanh thu cũ lưu nửa đêm giờ
+      // máy chủ (17:00Z hôm trước) nên so thẳng mốc UTC sẽ bỏ sót đúng những ngày cũ nhất.
+      const [groupRows, revenueRows] = await Promise.all([
+        prisma.moneyTransfer.findMany({
+          where: {
+            transferPurpose: "WALLET_SETTLEMENT",
+            status: "APPROVED",
+            deletedAt: null,
+            branchCode: transfer.branchCode,
+            fromMoneySourceCode: transfer.fromMoneySourceCode,
+            sourceReportDate: { gte: new Date(dayRange.gte.getTime() - 86_400_000), lt: dayRange.lt },
+          },
+          orderBy: { code: "asc" },
+        }),
+        prisma.revenueImportRow.findMany({
+          where: {
+            deletedAt: null,
+            branchCode: transfer.branchCode,
+            paymentMethod: transfer.fromMoneySourceCode,
+            saleDate: { gte: new Date(dayRange.gte.getTime() - 86_400_000), lt: dayRange.lt },
+          },
+          select: { saleDate: true, branchCode: true, netAmount: true },
+        }),
+      ]);
+      const group = groupRows.filter((row) => row.sourceReportDate && revenueDayKey(row.sourceReportDate) === reportDay);
+      const currentRevenue = pickRevenueRowsOfDay(revenueRows, reportDay, transfer.branchCode)
+        .reduce((sum, row) => sum + row.netAmount, 0);
+
+      const walletSource = await prisma.masterDataItem.findFirst({
+        where: { type: "MONEY_SOURCE", code: transfer.fromMoneySourceCode },
+      });
+      const walletLabel = walletSource ? moneySourceDisplayName(walletSource) : transfer.fromMoneySourceCode;
+      const planned = planWalletSettlementRerun({ vouchers: group, currentRevenue, walletLabel });
+      if (!planned.ok) businessError(planned.reason);
+      const plan = planned.ok ? planned.plan : null;
+      if (!plan) businessError("Không dựng được phương án chạy lại.");
+
+      // Phí vượt trần: cùng luật với form lập phiếu — vẫn cho ghi nhưng người dùng phải nhìn
+      // số rồi chủ động xác nhận, vì có ví thu phí cao thật.
+      const feeCheck = plan.nextFee > 0
+        ? checkWalletFeeRate(
+          walletRevenueBucket({ code: transfer.fromMoneySourceCode, name: walletSource?.name || "" }),
+          plan.nextGross,
+          plan.totalAmount,
+        )
+        : null;
+      const highFeeMessage = feeCheck && !feeCheck.ok
+        ? walletFeeRateMessage(feeCheck, plan.nextGross, plan.totalAmount)
+        : null;
+
+      if (preview) {
+        return NextResponse.json({
+          ...plan,
+          reportDate: reportDay,
+          walletCode: transfer.fromMoneySourceCode,
+          walletLabel,
+          highFeeMessage,
+        });
+      }
+      if (!plan.changed) businessError("Phiếu đang khớp đúng doanh thu hiện tại, không có gì để chạy lại.");
+      if (highFeeMessage && body.acknowledgeHighFee !== true) {
+        businessError(`${highFeeMessage} Nếu số này đúng, xác nhận lại để ghi nhận.`);
+      }
+
+      // Phiếu nằm trong kỳ đã khoá thì không được sửa số — luật chung của mọi chứng từ.
+      for (const row of group) {
+        if (await isPeriodLocked(effectiveMoneyTransferDate(row), row.branchCode)) {
+          businessError(`Phiếu ${row.code} thuộc kỳ đã khoá sổ, mở lại kỳ rồi mới chạy lại quyết toán được.`);
+        }
+      }
+      // Phí quẹt thẻ phải có khoản mục chi để lên đúng dòng P&L; phiếu cũ chưa gắn thì gắn
+      // khoản mục chuẩn, thiếu khoản mục này trong danh mục thì báo để khai trước.
+      const needsFeeCategory = plan.changes.some((change) => {
+        const row = group.find((item) => item.id === change.id);
+        return change.feeAfter > (row?.grabExpenseAmount || 0) && !row?.feeCategoryCode;
+      });
+      if (needsFeeCategory) {
+        const feeCategory = await prisma.masterDataItem.findFirst({
+          where: { type: "REVENUE_EXPENSE_CATEGORY", code: WALLET_CARD_FEE_CATEGORY_CODE, group: "PAYMENT", status: "ACTIVE", deletedAt: null },
+          select: { code: true },
+        });
+        if (!feeCategory) businessError(`Thiếu khoản mục ${WALLET_CARD_FEE_CATEGORY_CODE} trong danh mục Thu/Chi, khai trước rồi chạy lại quyết toán.`);
+      }
+
+      const moneySources = await prisma.masterDataItem.findMany({ where: { type: "MONEY_SOURCE" } });
+      const sourceByCode = new Map(moneySources.map((source) => [source.code, source]));
+      const updatedRows = [];
+      const journalStatuses: Record<string, string> = {};
+      for (const change of plan.changes) {
+        const row = group.find((item) => item.id === change.id);
+        if (!row || change.feeAfter === change.feeBefore) continue;
+        const grabAmount = Math.min(Math.max(0, row.grabExpenseAmount || 0), Math.max(0, change.feeAfter));
+        const cardFee = change.feeAfter - grabAmount;
+        const updated = await prisma.moneyTransfer.update({
+          where: { id: row.id },
+          data: {
+            feeAmount: change.feeAfter,
+            grabExpenseAmount: grabAmount,
+            grabExpenseCategoryCode: grabAmount > 0 ? (row.grabExpenseCategoryCode || WALLET_GRAB_EXPENSE_CATEGORY_CODE) : null,
+            feeCategoryCode: cardFee > 0 ? (row.feeCategoryCode || WALLET_CARD_FEE_CATEGORY_CODE) : null,
+          },
+        });
+        updatedRows.push(updated);
+
+        // Ghi lại bút toán ngay nếu phiếu ĐÃ lên sổ cái, để sổ cái không giữ số phí cũ cho tới
+        // lần đồng bộ sau. Chưa lên sổ thì để nút Đồng bộ ghi sổ làm đúng lượt của nó.
+        const posted = await prisma.journalEntry.findUnique({
+          where: { sourceType_sourceId: { sourceType: "MONEY_TRANSFER", sourceId: updated.id } },
+          select: { id: true },
+        });
+        if (posted) {
+          await ensureWalletFeePnlItems();
+          const [journal] = planMoneyTransferJournals({
+            branchCode: updated.branchCode,
+            fromBranchCode: updated.fromBranchCode,
+            toBranchCode: updated.toBranchCode,
+            amount: updated.amount,
+            feeAmount: updated.feeAmount,
+            grabExpenseAmount: updated.grabExpenseAmount,
+            feeCategoryCode: updated.feeCategoryCode,
+            grabExpenseCategoryCode: updated.grabExpenseCategoryCode,
+            fromAccountCode: moneySourceAccountCode(sourceByCode.get(updated.fromMoneySourceCode)),
+            toAccountCode: moneySourceAccountCode(sourceByCode.get(updated.toMoneySourceCode)),
+            description: updated.description,
+          });
+          journalStatuses[updated.code] = await postJournalEntry({
+            entryDate: effectiveMoneyTransferDate(updated),
+            branchCode: journal.branchCode,
+            sourceType: journal.sourceType,
+            sourceId: updated.id,
+            sourceCode: updated.code,
+            description: journal.description || updated.description,
+            createdBy: auth.session.name,
+            lines: journal.lines as Parameters<typeof postJournalEntry>[0]["lines"],
+          });
+        }
+      }
+
+      await writeAuditLog({
+        session: auth.session,
+        module: menuHref,
+        action: "RERUN_WALLET_SETTLEMENT",
+        entityType: "MoneyTransfer",
+        entityId: transfer.id,
+        entityCode: transfer.code,
+        branchCode: transfer.branchCode,
+        message: `Chạy lại quyết toán ${walletLabel} ngày doanh thu ${reportDay}`,
+        metadata: {
+          reportDate: reportDay,
+          walletCode: transfer.fromMoneySourceCode,
+          grossBefore: plan.currentGross,
+          grossAfter: plan.nextGross,
+          feeBefore: plan.currentFee,
+          feeAfter: plan.nextFee,
+          vouchers: plan.changes,
+          journalStatuses,
+        },
+      });
+      return NextResponse.json({
+        ...plan,
+        reportDate: reportDay,
+        walletLabel,
+        updated: updatedRows.length,
+        journalStatuses,
+      });
     }
 
     if (["CLOSE_PERIOD", "REOPEN_PERIOD"].includes(action)) {
