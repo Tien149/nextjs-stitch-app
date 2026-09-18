@@ -11,6 +11,7 @@ import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { PartnerPicker } from "@/components/PartnerPicker";
 import { SearchableSelect } from "@/components/SearchableSelect";
+import { MoneyInput } from "@/components/MoneyInput";
 import { visibleStoreOptions } from "@/lib/branch-labels";
 
 type DebtRow = {
@@ -315,7 +316,9 @@ export default function DebtsPage() {
       documentDate: row.date.slice(0, 10),
       dueDate: row.dueDate ? row.dueDate.slice(0, 10) : "",
       description: row.description,
-      originalAmount: String(Math.abs(row.amount)),
+      // Làm tròn về đồng: ô nhập tiền chỉ nhận chữ số (dấu chấm là phân cách hàng nghìn), số lẻ
+      // thập phân lọt vào đây sẽ bị đọc thành hàng nghìn — "1234.56" thành 123.456.
+      originalAmount: String(Math.round(Math.abs(row.amount))),
       pnlItemCode: row.pnlItemCode || "",
       pnlGroupCode: row.pnlGroupCode || "",
     });
@@ -793,13 +796,13 @@ export default function DebtsPage() {
 
               <label className="text-xs font-bold text-slate-600 block">
                 Số tiền (đ) *
-                <input
-                  type="number"
-                  min="1"
+                <MoneyInput
                   value={debtForm.originalAmount}
-                  onChange={(event) => setDebtForm((value) => ({ ...value, originalAmount: event.target.value }))}
-                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  onChange={(originalAmount) => setDebtForm((value) => ({ ...value, originalAmount }))}
+                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold tabular-nums outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  placeholder="0"
                   required
+                  ariaLabel="Số tiền công nợ"
                 />
               </label>
 
@@ -858,7 +861,7 @@ export default function DebtsPage() {
 
       {createOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
-          <form onSubmit={submitCreateDebt} className="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-xl bg-white shadow-xl">
+          <form onSubmit={submitCreateDebt} className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-xl bg-white shadow-xl">
             <div className="border-b border-slate-200 p-5">
               <h2 className="font-bold text-slate-900">Thêm công nợ</h2>
               <p className="mt-1 text-xs text-slate-500">
@@ -966,13 +969,15 @@ export default function DebtsPage() {
                 </div>
                 {/* Không overflow-hidden: dropdown chọn hạng mục là absolute bên trong bảng, cắt là mất danh sách. */}
                 <div className="mt-1 rounded-lg border border-slate-200">
-                  <table className="w-full text-left text-sm">
+                  {/* table-fixed: bảng tự dàn cột thì tên hạng mục dài bóp ô số tiền còn vài chữ số,
+                      nhìn không ra số đang nhập. Cột số tiền chốt 190px — đủ chỗ cho số hàng tỷ. */}
+                  <table className="w-full table-fixed text-left text-sm">
                     <thead className="text-[11px] uppercase text-slate-500 [&_th]:bg-slate-50 [&_th:first-child]:rounded-tl-lg [&_th:last-child]:rounded-tr-lg">
                       <tr>
                         <th className="w-8 px-3 py-2">#</th>
                         <th className="px-3 py-2">{createPnlLabel}</th>
-                        <th className="w-40 px-3 py-2 text-right">Số tiền (đ)</th>
-                        <th className="w-44 px-3 py-2">Ghi chú dòng</th>
+                        <th className="w-[190px] px-3 py-2 text-right whitespace-nowrap">Số tiền (đ)</th>
+                        <th className="w-[170px] px-3 py-2">Ghi chú dòng</th>
                         <th className="w-10 px-3 py-2"></th>
                       </tr>
                     </thead>
@@ -1008,13 +1013,13 @@ export default function DebtsPage() {
                             )}
                           </td>
                           <td className="px-3 py-2">
-                            <input
-                              type="number"
-                              min="1"
+                            <MoneyInput
                               value={line.amount}
-                              onChange={(event) => updateCreateLine(line.key, { amount: event.target.value })}
-                              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-right text-sm font-bold outline-none focus:border-blue-500"
+                              onChange={(amount) => updateCreateLine(line.key, { amount })}
+                              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-right text-sm font-bold tabular-nums outline-none focus:border-blue-500"
+                              placeholder="0"
                               required
+                              ariaLabel={`Số tiền dòng ${index + 1}`}
                             />
                           </td>
                           <td className="px-3 py-2">
@@ -1055,7 +1060,7 @@ export default function DebtsPage() {
                       </tr>
                       <tr className="border-t border-slate-200 [&_td]:bg-slate-50 [&_td:first-child]:rounded-bl-lg [&_td:last-child]:rounded-br-lg">
                         <td colSpan={2} className="px-3 py-2 text-xs font-bold text-slate-600">Tổng cộng · {createLines.length} {createLines.length > 1 ? (createIsReceivable ? "nhóm hạng mục" : "hạng mục") : "dòng"}</td>
-                        <td className="px-3 py-2 text-right text-sm font-extrabold text-slate-900">{money(createTotal)}</td>
+                        <td className="px-3 py-2 text-right text-sm font-extrabold tabular-nums text-slate-900">{money(createTotal)}</td>
                         <td colSpan={2}></td>
                       </tr>
                     </tfoot>

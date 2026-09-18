@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { voucherJournalLines, receiptCounterAccount, paymentCounterAccount } from "../lib/voucher-accounting.ts";
 import { createPnlDetailTree } from "../lib/reports.ts";
+import { BANK_STATEMENT_SPLIT_SOURCE_SCOPE, isCollectOnBehalfCategory } from "../lib/voucher-rules.ts";
 
 const base = {
   voucherType: "RECEIPT",
@@ -120,4 +121,92 @@ test("dong doanh thu van gom theo khoan mục thu, khong bi doi theo khoi Thu nh
   tree.add({ account: { accountType: "REVENUE", reportGroup: "REVENUE" }, pnlItemCode: null, categoryCode: "THU_KHAC", debit: 0, credit: 1_000_000 }, 0);
   const groups = tree.groupsOf("revenue");
   assert.deepEqual(groups.map((group) => [group.name, group.total]), [["Thu khác", 1_000_000]]);
+});
+
+/**
+ * Tách một lần quẹt thành tiền bán hàng + tiền thu hộ: phần thu hộ là tiền của đối tác, phải
+ * treo 131. Khoản mục thu nào cũng thuộc nhóm "Thu" nên nếu không có luật riêng, nó rơi thẳng
+ * vào Có 511 và biến tiền thu hộ thành doanh thu trên sổ.
+ */
+test("phiếu tách từ dòng sao kê treo công nợ đối tác, không ghi doanh thu", () => {
+  const { lines, reason } = voucherJournalLines(
+    {
+      voucherType: "RECEIPT",
+      amount: 500_000,
+      moneySourceCode: "MOMO_HCM",
+      partnerCode: "KH-001",
+      categoryCode: "THU_KHAC",
+      pnlItemCode: null,
+      depositAction: null,
+      debtAction: null,
+      sourceScope: BANK_STATEMENT_SPLIT_SOURCE_SCOPE,
+    },
+    "REVENUE_SOURCE",
+  );
+
+  assert.match(reason, /thu hộ/i);
+  assert.deepEqual(lines.map((line) => line.accountCode), ["1121", "131"]);
+  assert.equal(lines[1].credit, 500_000);
+  assert.equal(lines[1].partnerCode, "KH-001");
+});
+
+test("phiếu thu thường của cùng khoản mục vẫn ghi Có 511 như cũ", () => {
+  const { lines } = voucherJournalLines(
+    {
+      voucherType: "RECEIPT",
+      amount: 500_000,
+      moneySourceCode: "MOMO_HCM",
+      partnerCode: "KH-001",
+      categoryCode: "THU_KHAC",
+      pnlItemCode: null,
+      depositAction: null,
+      debtAction: null,
+    },
+    "REVENUE_SOURCE",
+  );
+
+  assert.deepEqual(lines.map((line) => line.accountCode), ["1121", "511"]);
+});
+
+/**
+ * Khoản mục "Thu hộ" trong danh mục thuộc nhóm Thu khác, mà mọi khoản mục nhóm Thu đều ghi
+ * Có 511. Phải nhận diện theo mã, nếu không phiếu thu hộ lập tay lại thành doanh thu.
+ */
+test("phiếu thu khoản mục Thu hộ treo công nợ đối tác thay vì ghi doanh thu", () => {
+  assert.equal(isCollectOnBehalfCategory("thu_ho"), true);
+  const { lines, reason } = voucherJournalLines(
+    {
+      voucherType: "RECEIPT",
+      amount: 1_400_000,
+      moneySourceCode: "VCB_HCM",
+      partnerCode: "KH_LE",
+      categoryCode: "THU_HO",
+      pnlItemCode: null,
+      depositAction: null,
+      debtAction: null,
+    },
+    "REVENUE_SOURCE",
+  );
+
+  assert.match(reason, /thu hộ/i);
+  assert.deepEqual(lines.map((line) => line.accountCode), ["1121", "131"]);
+  assert.equal(lines[1].partnerCode, "KH_LE");
+});
+
+test("thu hộ chưa khai đối tác treo phải trả khác, vẫn không phải doanh thu", () => {
+  const { lines } = voucherJournalLines(
+    {
+      voucherType: "RECEIPT",
+      amount: 1_400_000,
+      moneySourceCode: "VCB_HCM",
+      partnerCode: null,
+      categoryCode: "THU_HO",
+      pnlItemCode: null,
+      depositAction: null,
+      debtAction: null,
+    },
+    "REVENUE_SOURCE",
+  );
+
+  assert.deepEqual(lines.map((line) => line.accountCode), ["1121", "3388"]);
 });

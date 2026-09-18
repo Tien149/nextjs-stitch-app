@@ -153,7 +153,7 @@ export function validateReceiptPurpose(
   if (!purpose) return null;
   if (purpose === DEBT_COLLECTION_PURPOSE) {
     // Không có mã công nợ thì phiếu thu không biết gạch vào khoản nào.
-    if (!(debtReference || "").trim()) return "Thu lại công nợ phải nhập mã công nợ cần gạch.";
+    if (!(debtReference || "").trim()) return "Chưa chọn khoản nợ cần gạch. Chọn đối tác trước, các khoản phải thu đang mở của họ sẽ hiện ngay dưới ô để bấm chọn.";
     return null;
   }
   if (purpose !== "COLLECT") return "Nội dung thu không hợp lệ";
@@ -202,6 +202,28 @@ export function isRevenueGroupCategory(group: string | null | undefined) {
  * NCC chi trùng, thu hoàn tạm ứng...) là tiền vào quỹ thật nhưng không phải doanh thu.
  */
 export const SALES_RECEIPT_CATEGORY_CODES = ["THU_BAN_HANG"];
+
+/**
+ * Phiếu thu sinh ra khi tách một dòng sao kê theo Loại thu/chi (một lần quẹt gồm cả tiền bán
+ * hàng lẫn tiền thu hộ). Phần tách ra là tiền của người khác, phải treo công nợ đối tác chứ
+ * không được ghi Có 511 như mọi khoản mục nhóm "Thu" khác — xem receiptCounterAccount.
+ */
+export const BANK_STATEMENT_SPLIT_SOURCE_SCOPE = "BANK_STATEMENT_SPLIT";
+
+/**
+ * Khoản mục THU HỘ: tiền về tài khoản nhưng là của người khác, phải trả lại.
+ *
+ * Danh mục Thu/Chi chỉ có ba nhóm (Nguồn doanh thu / Thu khác / Chi), và mọi khoản mục nhóm
+ * "Thu khác" đều rơi vào Có 511 khi ghi sổ. Thu hộ mà đi đường đó thì tiền của người khác
+ * thành doanh thu của nhà hàng — nên nhận diện thẳng theo mã khoản mục ở đây.
+ *
+ * Khách đặt mã khác (THU_HO_KHACH, THUHO...) thì thêm vào danh sách này.
+ */
+export const COLLECT_ON_BEHALF_CATEGORY_CODES = ["THU_HO"];
+
+export function isCollectOnBehalfCategory(categoryCode: string | null | undefined) {
+  return COLLECT_ON_BEHALF_CATEGORY_CODES.includes((categoryCode || "").trim().toUpperCase());
+}
 
 export function isSalesReceiptCategory(categoryCode: string | null | undefined) {
   return SALES_RECEIPT_CATEGORY_CODES.includes((categoryCode || "").trim().toUpperCase());

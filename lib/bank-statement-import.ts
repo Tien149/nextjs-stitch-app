@@ -13,6 +13,31 @@ export function bankStatementImportKey(row: ParsedImportRow) {
   return `${text(row.values.bank_account).toUpperCase()}|${text(row.values.transaction_code).toUpperCase()}`;
 }
 
+/**
+ * Khoá "nghi trùng" của một giao dịch sao kê: tài khoản + ngày + số tiền, KHÔNG có số tham chiếu.
+ *
+ * Chống trùng cứng chạy theo `bankStatementImportKey` (tài khoản + số tham chiếu) vì đó là ràng
+ * buộc @@unique của bảng. Nhưng file khách sửa rồi import lại hay đổi chính cột số tham chiếu
+ * (bị cắt bớt, đổi định dạng), nên cùng một lần chuyển tiền của ngân hàng lọt vào sổ hai lần —
+ * và dòng thừa đó cộng thêm vào "Tiền đã vô" của báo cáo Tiền về đủ chưa.
+ *
+ * Ngày quy về YYYY-MM-DD theo UTC (sao kê lưu UTC nửa đêm) và số tiền làm tròn về đồng, để dòng
+ * trong file và dòng đã nằm trong CSDL so được với nhau.
+ */
+export function bankStatementSuspectKey(
+  bankAccount: unknown,
+  date: Date,
+  debitAmount: number,
+  creditAmount: number,
+) {
+  return [
+    text(bankAccount).toUpperCase(),
+    date.toISOString().slice(0, 10),
+    Math.round(amount(debitAmount)),
+    Math.round(amount(creditAmount)),
+  ].join("|");
+}
+
 export type BankStatementImportGroup = {
   key: string;
   rows: ParsedImportRow[];

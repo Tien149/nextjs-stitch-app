@@ -160,6 +160,17 @@ const defaultMasterData = [
     note: "Nhóm doanh thu Dịch vụ trên file POS (phụ thu, không theo dõi tồn kho)",
     status: "ACTIVE",
   },
+  // Tiền thu hộ đi chung một lần khách quẹt/chuyển khoản: tiền về tài khoản nhưng là của người
+  // khác. Phải có khoản mục riêng thì bảng "Tiền về đủ chưa" mới không đếm nó là doanh thu về,
+  // và ghi sổ mới treo được công nợ thay vì ghi Có 511 (lib/voucher-accounting.ts).
+  {
+    type: "REVENUE_EXPENSE_CATEGORY",
+    code: "THU_HO",
+    name: "Thu hộ",
+    group: "RECEIPT",
+    note: "Tiền thu hộ người khác — không phải doanh thu, treo công nợ đối tác",
+    status: "ACTIVE",
+  },
   {
     type: "REVENUE_EXPENSE_CATEGORY",
     code: "COGS_FOOD",

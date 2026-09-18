@@ -8,16 +8,37 @@ import { MoneyInput } from "@/components/MoneyInput";
 import { filterMoneySources, type MoneySourceOption } from "@/lib/money-sources";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { exportRowsToExcel } from "@/lib/export-table-excel";
+import { ConfirmDeleteDialog } from "@/components/RowActions";
 
-type Allocation = { id: string; sourceRowNumber: number; sheetName: string; revenueDate: string | null; sourceDate: string | null; debitAmount: number; creditAmount: number; grossAmount: number | null; grabExpenseAmount: number; cardFeeAmount: number };
+type Allocation = { id: string; sourceRowNumber: number; sheetName: string; revenueDate: string | null; sourceDate: string | null; debitAmount: number; creditAmount: number; grossAmount: number | null; grabExpenseAmount: number; cardFeeAmount: number; categoryCode: string | null; partnerCode: string | null };
 type MatchRow = { targetCode: string; targetType: string; targetHref?: string };
 type BankRow = {
   id: string; transactionDate: string; sourceDate: string | null; accountingDate: string | null;
   bankAccount: string; transactionCode: string; description: string; debitAmount: number; creditAmount: number;
   branchCode: string | null; categoryCode: string | null; operationType: string | null; partnerCode: string | null;
   pnlItemCode: string | null; summaryMoneySourceCode: string | null; increaseMoneySourceCode: string | null; decreaseMoneySourceCode: string | null;
-  reconcileStatus: string; revenueDates: string[]; allocations: Allocation[]; currentMatch: MatchRow | null;
+  reconcileStatus: string; autoProcessType: string | null; autoProcessNote: string | null;
+  revenueDates: string[]; allocations: Allocation[]; currentMatch: MatchRow | null; otherMatches?: MatchRow[];
+  settlementCandidates?: SettlementCandidate[];
 };
+/** Phiếu quyết toán ví đã có, chưa nối dòng sao kê nào, cùng cửa hàng và cùng số tiền thực về. */
+type SettlementCandidate = {
+  id: string; code: string; transferDate: string; sourceReportDate: string | null;
+  amount: number; feeAmount: number; fromMoneySourceCode: string; toMoneySourceCode: string;
+};
+
+/**
+ * Dòng import ghi được tiền nhưng không tự lập được chứng từ. Khác "dữ liệu cũ" (import từ
+ * thời chưa có luồng tự lập chứng từ): dòng này có lý do cụ thể và có nút xử lý ngay tại chỗ.
+ */
+function needsPosting(row: BankRow) {
+  return row.reconcileStatus !== "MATCHED" && row.autoProcessType === "MANUAL_REQUIRED";
+}
+
+function statusLabel(row: BankRow) {
+  if (row.reconcileStatus === "MATCHED") return "ĐÃ VÀO SỔ";
+  return needsPosting(row) ? "CHƯA VÀO SỔ" : "DỮ LIỆU CŨ";
+}
 
 const operationLabels: Record<string, string> = {
   REVENUE_RECEIPT: "Thu doanh thu", DIRECT_EXPENSE: "Chi phí trực tiếp", AR_COLLECTION: "Thu công nợ",
@@ -35,8 +56,13 @@ function dateInputValue(value: string | null | undefined) {
   return value ? String(value).slice(0, 10) : "";
 }
 
-/** Một dòng Ngày doanh thu đang sửa trong bảng tách; `id` rỗng là dòng mới thêm. */
-type SplitLine = { key: string; id: string | null; revenueDate: string; amount: string };
+/**
+ * Một dòng đang sửa trong bảng tách; `id` rỗng là dòng mới thêm.
+ *
+ * `categoryCode` khác loại của giao dịch nghĩa là phần tiền này không phải doanh thu về (tiền
+ * thu hộ đi chung một lần quẹt) — server sẽ lập chứng từ riêng cho nó, nên phải có đối tác.
+ */
+type SplitLine = { key: string; id: string | null; revenueDate: string; amount: string; categoryCode: string; partnerCode: string };
 
 let splitLineSeq = 0;
 function newSplitKey() {
@@ -52,6 +78,7 @@ export default function BankStatementLedgerPage() {
   const [rows, setRows] = useState<BankRow[]>([]);
   const [moneySources, setMoneySources] = useState<MoneySourceOption[]>([]);
   const [categories, setCategories] = useState<Array<{ id: string; code: string; name: string }>>([]);
+  const [partners, setPartners] = useState<Array<{ id: string; code: string; name: string }>>([]);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
@@ -64,6 +91,15 @@ export default function BankStatementLedgerPage() {
   const [splitLines, setSplitLines] = useState<SplitLine[]>([]);
   const [splitError, setSplitError] = useState("");
   const [splitSaving, setSplitSaving] = useState(false);
+  const [deletingRow, setDeletingRow] = useState<BankRow | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [postingRow, setPostingRow] = useState<BankRow | null>(null);
+  const [postingMode, setPostingMode] = useState<"NET" | "LINK">("NET");
+  const [postingTransferId, setPostingTransferId] = useState("");
+  const [postingError, setPostingError] = useState("");
+  const [postingSaving, setPostingSaving] = useState(false);
+  const [postedNotice, setPostedNotice] = useState<{ code: string; href: string; created: boolean } | null>(null);
 
   useEffect(() => {
     const raw = localStorage.getItem(SESSION_KEY);
@@ -81,9 +117,14 @@ export default function BankStatementLedgerPage() {
       to: urlParams.get("to") || "",
       dateType: ["TRANSACTION", "SOURCE", "REVENUE"].includes(urlDateType) ? urlDateType : emptyFilters.dateType,
       branchCode: (urlParams.get("branchCode") || "ALL").toUpperCase() || "ALL",
+      // Bấm từ dòng "VỀ DƯ" của bảng Tiền về đủ chưa: link mang sẵn nguồn tiền để mở ra đúng
+      // những dòng sao kê đã cộng thành cột "Tiền đã vô" của ngày đó.
+      moneySource: (urlParams.get("moneySource") || "").toUpperCase(),
       missingCategory: urlParams.get("missingCategory") === "1" ? "1" : "",
+      // Nút "Vào sổ" ở Báo cáo → Thu chi ngày mang theo mã giao dịch để mở đúng một dòng.
+      q: (urlParams.get("q") || "").trim().slice(0, 100),
     };
-    const hasUrlFilters = Boolean(urlFilters.from || urlFilters.to || urlFilters.missingCategory);
+    const hasUrlFilters = Boolean(urlFilters.from || urlFilters.to || urlFilters.missingCategory || urlFilters.moneySource || urlFilters.q);
     window.setTimeout(() => {
       setUser(session);
       setBatchId(urlParams.get("batchId")?.trim() || "");
@@ -98,6 +139,9 @@ export default function BankStatementLedgerPage() {
     void fetch("/api/master-data?type=REVENUE_EXPENSE_CATEGORY&status=ACTIVE")
       .then((response) => response.ok ? response.json() : [])
       .then((data: Array<{ id: string; code: string; name: string }>) => setCategories(data));
+    void fetch("/api/master-data?type=PARTNER&status=ACTIVE")
+      .then((response) => response.ok ? response.json() : [])
+      .then((data: Array<{ id: string; code: string; name: string }>) => setPartners(data));
   }, [router]);
 
   const loadRows = useCallback(async () => {
@@ -130,7 +174,9 @@ export default function BankStatementLedgerPage() {
   };
   const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
   const recorded = rows.filter((row) => row.reconcileStatus === "MATCHED").length;
+  const pendingOnPage = rows.filter(needsPosting).length;
   const canEdit = Boolean(user && canPerformMenuAction(user, "/reconciliations", "edit"));
+  const canDelete = Boolean(user && canPerformMenuAction(user, "/reconciliations", "delete"));
 
   /**
    * Sửa Ngày doanh thu ngay trên dòng sao kê. File của khách hay gộp 3-4 ngày doanh thu vào
@@ -140,6 +186,20 @@ export default function BankStatementLedgerPage() {
   const splitTotal = splitRow ? Math.round(splitRow.creditAmount || splitRow.debitAmount) : 0;
   const splitAssigned = splitLines.reduce((sum, line) => sum + (Number(line.amount) || 0), 0);
   const splitRemaining = splitTotal - splitAssigned;
+  /**
+   * Dòng đổi Loại thu/chi so với giao dịch = phần tiền KHÔNG phải doanh thu về (tiền thu hộ
+   * đi chung một lần quẹt). Server lập chứng từ riêng cho từng cụm (loại × đối tác) nên ở đây
+   * bắt buộc phải chọn đối tác, và báo trước sẽ lập thêm mấy phiếu.
+   */
+  const splitOriginalCategory = (splitRow?.categoryCode || "").toUpperCase();
+  const isSplitOffLine = (line: SplitLine) => (line.categoryCode || "").toUpperCase() !== splitOriginalCategory;
+  const splitOffLines = splitLines.filter(isSplitOffLine);
+  const splitOffTotal = splitOffLines.reduce((sum, line) => sum + (Number(line.amount) || 0), 0);
+  const splitOffVoucherCount = new Set(splitOffLines.map((line) => `${line.categoryCode}|${line.partnerCode}`)).size;
+  const splitMissingPartner = splitOffLines.some((line) => !line.partnerCode);
+  const splitMissingCategory = splitLines.some((line) => !line.categoryCode);
+  // Đổi loại cả dòng sẽ để lại chứng từ gốc 0 đ; server chặn, nên chặn luôn ở nút cho khỏi mất công.
+  const splitAllChanged = splitLines.length > 0 && splitOffLines.length === splitLines.length;
 
   const openSplit = (row: BankRow) => {
     const lines: SplitLine[] = row.allocations.length > 0
@@ -148,12 +208,16 @@ export default function BankStatementLedgerPage() {
           id: allocation.id,
           revenueDate: dateInputValue(allocation.revenueDate),
           amount: String(Math.round(allocation.creditAmount || allocation.debitAmount || 0)),
+          categoryCode: allocation.categoryCode || row.categoryCode || "",
+          partnerCode: allocation.partnerCode || row.partnerCode || "",
         }))
       : [{
           key: newSplitKey(),
           id: null,
           revenueDate: dateInputValue(row.revenueDates[0] || row.sourceDate || row.transactionDate),
           amount: String(Math.round(row.creditAmount || row.debitAmount)),
+          categoryCode: row.categoryCode || "",
+          partnerCode: row.partnerCode || "",
         }];
     setSplitRow(row);
     setSplitLines(lines);
@@ -172,7 +236,7 @@ export default function BankStatementLedgerPage() {
       const half = Math.floor(amount / 2);
       return [
         { ...line, amount: String(amount - half) },
-        { key: newSplitKey(), id: null, revenueDate: line.revenueDate, amount: String(half) },
+        { ...line, key: newSplitKey(), id: null, amount: String(half) },
       ];
     }));
   };
@@ -181,8 +245,10 @@ export default function BankStatementLedgerPage() {
     setSplitLines((current) => [...current, {
       key: newSplitKey(),
       id: null,
-      revenueDate: "",
+      revenueDate: current[current.length - 1]?.revenueDate || "",
       amount: splitRemaining > 0 ? String(splitRemaining) : "",
+      categoryCode: splitRow?.categoryCode || "",
+      partnerCode: "",
     }]);
   };
 
@@ -209,7 +275,13 @@ export default function BankStatementLedgerPage() {
         body: JSON.stringify({
           action: "SPLIT_REVENUE_DATES",
           bankTransactionId: splitRow.id,
-          lines: splitLines.map((line) => ({ id: line.id, revenueDate: line.revenueDate, amount: Number(line.amount) || 0 })),
+          lines: splitLines.map((line) => ({
+            id: line.id,
+            revenueDate: line.revenueDate,
+            amount: Number(line.amount) || 0,
+            categoryCode: line.categoryCode,
+            partnerCode: line.partnerCode,
+          })),
         }),
       });
       const payload = await response.json();
@@ -221,6 +293,77 @@ export default function BankStatementLedgerPage() {
       setSplitError(error instanceof Error ? error.message : "Không lưu được Ngày doanh thu");
     } finally {
       setSplitSaving(false);
+    }
+  };
+
+  /**
+   * Xoá một dòng sao kê khỏi sổ.
+   *
+   * Import lại file đã sửa mà số tham chiếu đổi thì cùng một lần chuyển tiền của ngân hàng
+   * thành hai dòng (chống trùng chỉ theo Tài khoản + Số tham chiếu). Xoá chứng từ bên màn
+   * Chứng từ ngân hàng KHÔNG gỡ được dòng thừa — nó chỉ cắt liên kết đối soát, còn "Tiền đã vô"
+   * của báo cáo Tiền về đủ chưa đọc thẳng sổ sao kê nên vẫn cộng dòng đó.
+   */
+  const confirmDeleteRow = async (reason: string) => {
+    if (!deletingRow) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const query = new URLSearchParams({ id: deletingRow.id });
+      if (reason) query.set("reason", reason);
+      const response = await fetch(`/api/reconciliations?${query.toString()}`, { method: "DELETE" });
+      const payload = await response.json();
+      if (!response.ok) {
+        setDeleteError(payload?.error || "Không xoá được dòng sao kê");
+        return;
+      }
+      setDeletingRow(null);
+      await loadRows();
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : "Không xoá được dòng sao kê");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  /**
+   * "Vào sổ" một dòng quyết toán ví mà import không tự lập được chứng từ.
+   *
+   * Import chặn dòng (phí vượt trần, gross không cân...) và chỉ lưu lý do; trước đây người
+   * dùng không có cách nào đi tiếp ngoài sửa file rồi import lại — mà ví trả nhiều đợt thì
+   * sửa file cũng không xong. Hai cách: lập phiếu đúng số tiền đã về (phí tính sau bằng nút
+   * "Chạy lại theo doanh thu hiện tại" trên phiếu), hoặc nối vào phiếu quyết toán đã có sẵn.
+   */
+  const openPosting = (row: BankRow) => {
+    const candidates = row.settlementCandidates || [];
+    setPostingRow(row);
+    setPostingMode(candidates.length > 0 ? "LINK" : "NET");
+    setPostingTransferId(candidates[0]?.id || "");
+    setPostingError("");
+    setPostedNotice(null);
+  };
+
+  const confirmPosting = async () => {
+    if (!postingRow) return;
+    setPostingSaving(true);
+    setPostingError("");
+    try {
+      const response = await fetch("/api/reconciliations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(postingMode === "LINK"
+          ? { action: "LINK_WALLET_SETTLEMENT", bankTransactionId: postingRow.id, transferId: postingTransferId }
+          : { action: "RECORD_WALLET_NET", bankTransactionId: postingRow.id }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error || "Không vào sổ được dòng này");
+      setPostedNotice({ code: payload.transfer?.code || "", href: payload.href || "/finance-operations", created: Boolean(payload.created) });
+      setPostingRow(null);
+      await loadRows();
+    } catch (error) {
+      setPostingError(error instanceof Error ? error.message : "Không vào sổ được dòng này");
+    } finally {
+      setPostingSaving(false);
     }
   };
 
@@ -266,7 +409,8 @@ export default function BankStatementLedgerPage() {
           "Hạng mục P&L": row.pnlItemCode || "",
           "Chứng từ": row.currentMatch?.targetCode || "",
           "Số dòng phân bổ": row.allocations.length,
-          "Trạng thái": row.reconcileStatus === "MATCHED" ? "ĐÃ GHI NHẬN" : "DỮ LIỆU CŨ",
+          "Trạng thái": statusLabel(row),
+          "Vì sao chưa vào sổ": needsPosting(row) ? row.autoProcessNote || "" : "",
         })),
         { fileName: "so_sao_ke_ngan_hang", sheetName: "Sao ke" },
       );
@@ -302,9 +446,13 @@ export default function BankStatementLedgerPage() {
       </section>
 
       {batchId && <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">Đang hiển thị {total} giao dịch của batch vừa import.</div>}
+      {postedNotice && <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
+        <span>{postedNotice.created ? `Đã vào sổ bằng phiếu ${postedNotice.code}. Tiền đã lên Sổ quỹ; phí sẽ tính khi bấm "Chạy lại theo doanh thu hiện tại" trên phiếu.` : `Đã nối với phiếu ${postedNotice.code} có sẵn.`}</span>
+        <a href={postedNotice.href} className="rounded-lg border border-emerald-300 bg-white px-3 py-1 text-xs font-bold text-emerald-800 hover:bg-emerald-100">Mở phiếu →</a>
+      </div>}
       <section className="grid gap-3 sm:grid-cols-3">
         <div className="rounded-xl border border-slate-200 bg-white p-4"><p className="text-xs text-slate-500">Tổng giao dịch</p><b className="text-2xl">{total}</b></div>
-        <div className="rounded-xl border border-slate-200 bg-white p-4"><p className="text-xs text-slate-500">Đã ghi nhận trên trang</p><b className="text-2xl text-emerald-700">{recorded}</b></div>
+        <div className="rounded-xl border border-slate-200 bg-white p-4"><p className="text-xs text-slate-500">Đã vào sổ trên trang</p><b className="text-2xl text-emerald-700">{recorded}</b>{pendingOnPage > 0 && <p className="mt-1 text-xs font-bold text-amber-700">{pendingOnPage} dòng chưa vào sổ</p>}</div>
         <div className="rounded-xl border border-slate-200 bg-white p-4"><p className="text-xs text-slate-500">Chế độ</p><b className="text-lg">Tra cứu tích lũy</b></div>
       </section>
 
@@ -317,9 +465,9 @@ export default function BankStatementLedgerPage() {
           </button>
         </div>
         <div className="overflow-x-auto"><table className="min-w-[1500px] w-full text-left text-sm">
-          <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr>{["Ngày GD / nguồn / DT", "Sao kê", "Nợ", "Có", "Cửa hàng", "Nghiệp vụ / loại", "Nguồn tổng / tăng / giảm", "Đối tác / P&L", "Chứng từ", "Trạng thái"].map((label) => <th key={label} className="px-3 py-3">{label}</th>)}</tr></thead>
-          <tbody>{loading ? <tr><td colSpan={10} className="p-10 text-center text-slate-400">Đang tải...</td></tr> : rows.length === 0 ? <tr><td colSpan={10} className="p-10 text-center text-slate-400">Không có giao dịch phù hợp.</td></tr> : rows.map((row) => <tr key={row.id} className="border-t border-slate-100 align-top hover:bg-slate-50">
-            <td className="px-3 py-3 text-xs"><b>{dateText(row.transactionDate)}</b><p>Nguồn: {dateText(row.sourceDate)}</p><p>DT: {row.revenueDates.length ? row.revenueDates.map(dateText).join(", ") : "—"}</p>{canEdit && <button type="button" onClick={() => openSplit(row)} title="Tách hoặc sửa Ngày doanh thu ngay trên dòng này, không phải import lại" className="mt-1.5 inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] font-bold text-blue-700 hover:bg-blue-50"><span className="material-symbols-outlined text-[14px]">call_split</span>Sửa ngày DT</button>}</td>
+          <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr>{["Ngày GD / nguồn / DT", "Sao kê", "Nợ", "Có", "Cửa hàng", "Nghiệp vụ / loại", "Nguồn tổng / tăng / giảm", "Đối tác / P&L", "Chứng từ", "Trạng thái", ""].map((label, index) => <th key={label || `actions-${index}`} className="px-3 py-3">{label}</th>)}</tr></thead>
+          <tbody>{loading ? <tr><td colSpan={11} className="p-10 text-center text-slate-400">Đang tải...</td></tr> : rows.length === 0 ? <tr><td colSpan={11} className="p-10 text-center text-slate-400">Không có giao dịch phù hợp.</td></tr> : rows.map((row) => <tr key={row.id} className="border-t border-slate-100 align-top hover:bg-slate-50">
+            <td className="px-3 py-3 text-xs"><b>{dateText(row.transactionDate)}</b><p>Nguồn: {dateText(row.sourceDate)}</p><p>DT: {row.revenueDates.length ? row.revenueDates.map(dateText).join(", ") : "—"}</p>{canEdit && <button type="button" onClick={() => openSplit(row)} title="Tách hoặc sửa Ngày doanh thu ngay trên dòng này, không phải import lại" className="mt-1.5 inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] font-bold text-blue-700 hover:bg-blue-50"><span className="material-symbols-outlined text-[14px]">call_split</span>Tách / sửa dòng</button>}</td>
             <td className="max-w-sm px-3 py-3"><b className="break-all">{row.transactionCode}</b><p className="mt-1 text-xs text-slate-500">{row.bankAccount}</p><p className="mt-1 line-clamp-3 text-xs">{row.description}</p>{row.allocations.length > 1 && <span className="mt-1 inline-block rounded bg-indigo-50 px-2 py-0.5 text-xs font-bold text-indigo-700">{row.allocations.length} dòng phân bổ</span>}</td>
             <td className="px-3 py-3 text-right font-bold text-rose-700">{row.debitAmount ? `${money(row.debitAmount)} đ` : "—"}</td>
             <td className="px-3 py-3 text-right font-bold text-emerald-700">{row.creditAmount ? `${money(row.creditAmount)} đ` : "—"}</td>
@@ -327,8 +475,33 @@ export default function BankStatementLedgerPage() {
             <td className="px-3 py-3"><b>{operationLabels[row.operationType || ""] || row.operationType || "Dữ liệu cũ"}</b><p className="text-xs text-slate-500">{row.categoryCode || "—"}</p></td>
             <td className="px-3 py-3 text-xs">{row.summaryMoneySourceCode && <p className="font-bold text-slate-700">Tổng: {row.summaryMoneySourceCode}</p>}<p className="text-emerald-700">+ {row.increaseMoneySourceCode || "—"}</p><p className="text-rose-700">− {row.decreaseMoneySourceCode || "—"}</p></td>
             <td className="px-3 py-3 text-xs"><p>{row.partnerCode || "—"}</p><p className="text-slate-500">P&amp;L: {row.pnlItemCode || "—"}</p></td>
-            <td className="px-3 py-3">{row.currentMatch ? <a href={row.currentMatch.targetHref || "/bank-vouchers"} className="font-bold text-blue-700 hover:underline">{row.currentMatch.targetCode}</a> : <span className="text-xs text-slate-400">Dữ liệu lịch sử chưa liên kết</span>}</td>
-            <td className="px-3 py-3"><span className={`rounded-full px-2 py-1 text-xs font-bold ${row.reconcileStatus === "MATCHED" ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>{row.reconcileStatus === "MATCHED" ? "ĐÃ GHI NHẬN" : "DỮ LIỆU CŨ"}</span></td>
+            <td className="max-w-xs px-3 py-3">{row.currentMatch
+              ? <><a href={row.currentMatch.targetHref || "/bank-vouchers"} className="font-bold text-blue-700 hover:underline">{row.currentMatch.targetCode}</a>{(row.otherMatches || []).map((match) => <a key={match.targetCode} href={match.targetHref || "/bank-vouchers"} className="mt-0.5 block text-xs font-bold text-blue-700 hover:underline">{match.targetCode}</a>)}</>
+              : needsPosting(row)
+                ? <div>
+                    <p className="text-xs font-bold text-amber-700">Chưa lập được chứng từ</p>
+                    <p className="mt-1 line-clamp-4 text-[11px] leading-4 text-slate-600" title={row.autoProcessNote || ""}>{row.autoProcessNote}</p>
+                    {canEdit && row.creditAmount > 0 && row.operationType === "WALLET_SETTLEMENT" && (
+                      <button type="button" onClick={() => openPosting(row)} className="mt-2 inline-flex items-center gap-1 rounded-lg bg-amber-600 px-2.5 py-1 text-xs font-bold text-white hover:bg-amber-700">
+                        <span className="material-symbols-outlined text-[14px]">task_alt</span>Vào sổ
+                      </button>
+                    )}
+                  </div>
+                : <span className="text-xs text-slate-400">Dữ liệu cũ, chưa nối chứng từ</span>}</td>
+            <td className="px-3 py-3"><span className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-bold ${row.reconcileStatus === "MATCHED" ? "bg-emerald-50 text-emerald-700" : needsPosting(row) ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-600"}`}>{statusLabel(row)}</span></td>
+            {canDelete && <td className="px-3 py-3 text-right">
+              <button
+                type="button"
+                onClick={() => { setDeleteError(null); setDeletingRow(row); }}
+                disabled={Boolean(row.currentMatch)}
+                title={row.currentMatch
+                  ? `Còn liên kết với ${row.currentMatch.targetCode}. Xoá chứng từ đó trước rồi mới xoá được dòng sao kê.`
+                  : "Xoá dòng sao kê khỏi sổ (chuyển vào Thùng rác)"}
+                className="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-rose-50 hover:text-rose-700 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-slate-500"
+              >
+                <span className="material-symbols-outlined text-lg">delete</span>
+              </button>
+            </td>}
           </tr>)}</tbody>
         </table></div>
         <div className="flex items-center justify-between border-t border-slate-200 p-4 text-sm"><span>Trang {page}/{totalPages} · {total} giao dịch</span><div className="flex gap-2"><button disabled={page <= 1} onClick={() => setPage(page - 1)} className="rounded border px-3 py-1.5 disabled:opacity-40">Trang trước</button><button disabled={page >= totalPages} onClick={() => setPage(page + 1)} className="rounded border px-3 py-1.5 disabled:opacity-40">Trang sau</button></div></div>
@@ -336,23 +509,42 @@ export default function BankStatementLedgerPage() {
     </main>
 
     {splitRow && <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 p-4">
-      <div className="mt-8 w-full max-w-3xl rounded-xl bg-white shadow-xl">
+      <div className="mt-8 w-full max-w-5xl rounded-xl bg-white shadow-xl">
         <div className="flex items-start justify-between gap-4 border-b border-slate-200 p-4">
           <div>
-            <h3 className="font-bold">Tách Ngày doanh thu</h3>
+            <h3 className="font-bold">Tách dòng tiền về</h3>
             <p className="mt-1 text-xs text-slate-500">{splitRow.transactionCode} · {dateText(splitRow.transactionDate)} · {storeLabel(splitRow.branchCode)} · {splitRow.creditAmount ? "Ghi có" : "Ghi nợ"} <b className="text-slate-700">{money(splitTotal)} đ</b></p>
-            <p className="mt-1 text-xs text-slate-500">Chia số tiền này về đúng từng ngày doanh thu. Tổng tiền, chứng từ {splitRow.currentMatch?.targetCode || "đã lập"} và bút toán không đổi — chỉ đổi chỗ đứng trên bảng &quot;Tiền về đủ chưa&quot;.</p>
+            <p className="mt-1 text-xs text-slate-500">Chia số tiền này về đúng từng Ngày doanh thu, và đổi Loại thu/chi cho phần không phải tiền bán hàng (tiền thu hộ về chung một lần quẹt). Tổng tiền không đổi.{" "}
+              {splitRow.currentMatch && (splitRow.currentMatch.targetType === "WALLET_SETTLEMENT"
+                // Quyết toán ví là phiếu chuyển tiền ví → ngân hàng: tiền vẫn đi đủ cả cục dù
+                // từng phần khác bản chất, nên số của nó không được đụng vào.
+                ? <>Phiếu quyết toán {splitRow.currentMatch.targetCode} giữ nguyên số tiền; phần đổi loại được lập phiếu thu riêng.</>
+                : <>Chứng từ {splitRow.currentMatch.targetCode} chỉ còn giữ phần đúng loại ban đầu.</>)}
+            </p>
           </div>
           <button type="button" onClick={() => setSplitRow(null)} className="rounded p-1 text-slate-400 hover:bg-slate-100"><span className="material-symbols-outlined">close</span></button>
         </div>
 
         <div className="space-y-3 p-4">
           <table className="w-full text-sm">
-            <thead className="text-xs uppercase text-slate-500"><tr><th className="w-10 py-2 text-left">#</th><th className="py-2 text-left">Ngày doanh thu</th><th className="py-2 text-left">Số tiền</th><th className="w-24 py-2"></th></tr></thead>
+            <thead className="text-xs uppercase text-slate-500"><tr><th className="w-10 py-2 text-left">#</th><th className="w-44 py-2 text-left">Ngày doanh thu</th><th className="w-40 py-2 text-left">Số tiền</th><th className="py-2 text-left">Loại thu/chi</th><th className="py-2 text-left">Đối tác</th><th className="w-24 py-2"></th></tr></thead>
             <tbody>{splitLines.map((line, index) => <tr key={line.key} className="border-t border-slate-100">
               <td className="py-2 text-xs text-slate-500">{index + 1}</td>
               <td className="py-2 pr-3"><DateInput value={line.revenueDate} onChange={(value) => updateSplitLine(line.key, { revenueDate: value })} ariaLabel={`Ngày doanh thu dòng ${index + 1}`} /></td>
               <td className="py-2 pr-3"><MoneyInput value={line.amount} onChange={(value) => updateSplitLine(line.key, { amount: value })} className="control text-right" ariaLabel={`Số tiền dòng ${index + 1}`} /></td>
+              <td className="py-2 pr-3">
+                <select className="control" aria-label={`Loại thu/chi dòng ${index + 1}`} value={line.categoryCode} onChange={(e) => updateSplitLine(line.key, { categoryCode: e.target.value })}>
+                  <option value="">— chọn loại thu/chi —</option>
+                  {categories.map((item) => <option key={item.id || item.code} value={item.code}>{item.code} - {item.name}</option>)}
+                </select>
+                {isSplitOffLine(line) && <p className="mt-1 text-[11px] font-bold text-amber-700">Không tính là doanh thu về · sẽ lập phiếu thu riêng</p>}
+              </td>
+              <td className="py-2 pr-3">
+                <select className="control" aria-label={`Đối tác dòng ${index + 1}`} value={line.partnerCode} onChange={(e) => updateSplitLine(line.key, { partnerCode: e.target.value })}>
+                  <option value="">{isSplitOffLine(line) ? "— bắt buộc chọn đối tác —" : "— không khai —"}</option>
+                  {partners.map((item) => <option key={item.id || item.code} value={item.code}>{item.code} - {item.name}</option>)}
+                </select>
+              </td>
               <td className="py-2 text-right">
                 <button type="button" onClick={() => halveSplitLine(line.key)} title="Tách đôi dòng này (tổng không đổi)" className="rounded p-1 text-slate-500 hover:bg-slate-100"><span className="material-symbols-outlined text-[18px]">call_split</span></button>
                 <button type="button" disabled={splitLines.length <= 1} onClick={() => removeSplitLine(line.key)} title="Xoá dòng, dồn tiền về dòng đầu" className="rounded p-1 text-rose-600 hover:bg-rose-50 disabled:opacity-30"><span className="material-symbols-outlined text-[18px]">delete</span></button>
@@ -367,15 +559,99 @@ export default function BankStatementLedgerPage() {
               : <b className="text-rose-700">{splitRemaining > 0 ? "còn thiếu" : "đang dư"} {money(Math.abs(splitRemaining))} đ</b>}</p>
           </div>
 
-          <p className="text-xs text-slate-500">Gross ví và hai khoản phí (Grab, cà thẻ) được chia theo tỷ trọng số tiền của từng dòng, tổng giữ nguyên đến từng đồng.</p>
+          {splitOffTotal > 0 && <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            <b>{money(splitOffTotal)} đ</b> được tách khỏi tiền bán hàng về. Lưu xong hệ thống lập {splitOffVoucherCount} phiếu thu ngân hàng cho phần này (treo công nợ của đối tác đã chọn), phiếu gốc chỉ còn <b>{money(splitTotal - splitOffTotal)} đ</b>. Sửa lại lần nữa thì phiếu vừa lập bị xoá và lập lại theo số mới.
+          </div>}
+          <p className="text-xs text-slate-500">Gross ví và hai khoản phí (Grab, cà thẻ) chia theo tỷ trọng của các dòng còn giữ loại thu/chi gốc — phần tách ra không gánh phí thu hộ. Tổng giữ nguyên đến từng đồng.</p>
           {splitError && <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">{splitError}</p>}
         </div>
 
         <div className="flex justify-end gap-2 border-t border-slate-200 p-4">
           <button type="button" onClick={() => setSplitRow(null)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-bold">Hủy</button>
-          <button type="button" onClick={() => void saveSplit()} disabled={splitSaving || splitRemaining !== 0 || splitLines.some((line) => !line.revenueDate)} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">{splitSaving ? "Đang lưu..." : "Lưu Ngày doanh thu"}</button>
+          <button
+            type="button"
+            onClick={() => void saveSplit()}
+            disabled={splitSaving || splitRemaining !== 0 || splitMissingCategory || splitMissingPartner || splitAllChanged || splitLines.some((line) => !line.revenueDate)}
+            title={splitMissingPartner
+              ? "Dòng đổi Loại thu/chi phải chọn Đối tác để sổ treo đúng công nợ"
+              : splitAllChanged
+                ? "Phải còn ít nhất một dòng giữ Loại thu/chi gốc — đổi cả dòng thì sửa trên file rồi import lại"
+                : splitMissingCategory ? "Còn dòng chưa chọn Loại thu/chi" : undefined}
+            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-50"
+          >{splitSaving ? "Đang lưu..." : "Lưu dòng tiền về"}</button>
         </div>
       </div>
     </div>}
+
+    {postingRow && <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 p-4">
+      <div className="mt-8 w-full max-w-2xl rounded-xl bg-white shadow-xl">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200 p-4">
+          <div>
+            <h3 className="font-bold">Vào sổ dòng sao kê {postingRow.transactionCode}</h3>
+            <p className="mt-1 text-xs text-slate-500">{dateText(postingRow.transactionDate)} · {storeLabel(postingRow.branchCode)} · Tiền về ngân hàng <b className="text-emerald-700">{money(Math.round(postingRow.creditAmount))} đ</b>{postingRow.revenueDates.length > 0 && <> · Doanh thu ngày {postingRow.revenueDates.map(dateText).join(", ")}</>}</p>
+          </div>
+          <button type="button" onClick={() => setPostingRow(null)} className="rounded p-1 text-slate-400 hover:bg-slate-100"><span className="material-symbols-outlined">close</span></button>
+        </div>
+
+        <div className="space-y-3 p-4 text-sm">
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5">
+            <p className="text-xs font-bold uppercase tracking-wide text-amber-700">Vì sao chưa vào sổ</p>
+            <p className="mt-1 text-xs leading-5 text-amber-900">{postingRow.autoProcessNote || "Hệ thống không tự lập được chứng từ cho dòng này."}</p>
+          </div>
+
+          <p className="text-xs text-slate-500">Chọn một cách xử lý:</p>
+          <label className={`block cursor-pointer rounded-lg border p-3 ${postingMode === "NET" ? "border-blue-400 bg-blue-50/60" : "border-slate-200"}`}>
+            <div className="flex items-start gap-2">
+              <input type="radio" name="posting-mode" className="mt-1" checked={postingMode === "NET"} onChange={() => setPostingMode("NET")} />
+              <div>
+                <p className="font-bold text-slate-900">Ghi nhận đúng số tiền đã về: {money(Math.round(postingRow.creditAmount))} đ</p>
+                <p className="mt-1 text-xs leading-5 text-slate-600">
+                  Lập phiếu quyết toán ví với số thực nhận này, phí tạm ghi 0 đ. Tiền lên Sổ quỹ ngay.
+                  Khi tiền của ngày doanh thu này về đủ, mở phiếu ở Vận hành tài chính và bấm &quot;Chạy lại theo doanh thu hiện tại&quot; để hệ thống tự tính phí cho cả các đợt.
+                </p>
+              </div>
+            </div>
+          </label>
+          <label className={`block rounded-lg border p-3 ${(postingRow.settlementCandidates || []).length === 0 ? "cursor-not-allowed opacity-60" : "cursor-pointer"} ${postingMode === "LINK" ? "border-blue-400 bg-blue-50/60" : "border-slate-200"}`}>
+            <div className="flex items-start gap-2">
+              <input type="radio" name="posting-mode" className="mt-1" disabled={(postingRow.settlementCandidates || []).length === 0} checked={postingMode === "LINK"} onChange={() => setPostingMode("LINK")} />
+              <div className="min-w-0 flex-1">
+                <p className="font-bold text-slate-900">Nối với phiếu quyết toán đã có</p>
+                {(postingRow.settlementCandidates || []).length === 0
+                  ? <p className="mt-1 text-xs leading-5 text-slate-600">Không có phiếu quyết toán ví nào của {storeLabel(postingRow.branchCode)} với số thực nhận {money(Math.round(postingRow.creditAmount))} đ đang chờ nối.</p>
+                  : <>
+                      <p className="mt-1 text-xs leading-5 text-slate-600">Phiếu này đã có trên Sổ quỹ (lập tay hoặc còn lại sau khi rollback lô cũ) nhưng chưa nối với dòng sao kê nào. Nối vào để không lập phiếu thứ hai làm tiền về bị tính hai lần.</p>
+                      <select className="control mt-2" value={postingTransferId} disabled={postingMode !== "LINK"} onChange={(event) => setPostingTransferId(event.target.value)}>
+                        {(postingRow.settlementCandidates || []).map((candidate) => (
+                          <option key={candidate.id} value={candidate.id}>
+                            {candidate.code} · ngày {dateText(candidate.transferDate)} · {candidate.fromMoneySourceCode} → {candidate.toMoneySourceCode} · thực nhận {money(Math.round(candidate.amount))} đ · phí {money(Math.round(candidate.feeAmount))} đ
+                          </option>
+                        ))}
+                      </select>
+                    </>}
+              </div>
+            </div>
+          </label>
+          {postingError && <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">{postingError}</p>}
+        </div>
+
+        <div className="flex justify-end gap-2 border-t border-slate-200 p-4">
+          <button type="button" onClick={() => setPostingRow(null)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-bold">Hủy</button>
+          <button type="button" onClick={() => void confirmPosting()} disabled={postingSaving || (postingMode === "LINK" && !postingTransferId)} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">{postingSaving ? "Đang vào sổ..." : postingMode === "LINK" ? "Nối với phiếu này" : "Vào sổ"}</button>
+        </div>
+      </div>
+    </div>}
+
+    <ConfirmDeleteDialog
+      open={Boolean(deletingRow)}
+      title={`Xoá dòng sao kê ${deletingRow?.transactionCode || ""}?`}
+      description={deletingRow
+        ? `${dateText(deletingRow.transactionDate)} · ${storeLabel(deletingRow.branchCode)} · ${deletingRow.creditAmount ? "Ghi có" : "Ghi nợ"} ${money(deletingRow.creditAmount || deletingRow.debitAmount)} đ. Số tiền này sẽ không còn tính vào cột "Tiền đã vô" của báo cáo Tiền về đủ chưa.`
+        : undefined}
+      submitting={deleting}
+      error={deleteError}
+      onCancel={() => { setDeletingRow(null); setDeleteError(null); }}
+      onConfirm={confirmDeleteRow}
+    />
   </div>;
 }

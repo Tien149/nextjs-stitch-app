@@ -170,8 +170,10 @@ export async function postJournalEntry(input: EntryInput) {
   // Bút toán bị xoá cứng ở nhiều luồng (bỏ duyệt phiếu, xoá phiếu phân bổ, rollback import)
   // nên COUNT tụt xuống sau mỗi lần xoá và cấp lại mã đang còn sống. Lấy max + 1 trong đúng
   // chuỗi "JE-": mã đã xoá để lại lỗ trống, nhưng không bao giờ đâm trúng mã đang tồn tại.
+  // `deletedAt: undefined` để client không tự lọc mất bút toán đã xoá mềm: mã của chúng vẫn
+  // nằm trong bảng và vẫn dính ràng buộc unique, bỏ qua là cấp lại đúng mã đó rồi vỡ ghi sổ.
   const issuedEntryCodes = await prisma.journalEntry.findMany({
-    where: { code: { startsWith: "JE-" } },
+    where: { code: { startsWith: "JE-" }, deletedAt: undefined },
     select: { code: true },
   });
   await prisma.journalEntry.create({

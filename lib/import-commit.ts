@@ -49,6 +49,16 @@ export class BankRowNeedsFixError extends Error {
   }
 }
 
+/**
+ * Câu chỉ đường nối sau lý do "chưa vào sổ" của dòng quyết toán ví.
+ *
+ * Lý do được lưu nguyên văn vào autoProcessNote và hiện ở ba chỗ (kết quả import, sổ sao kê,
+ * Thu chi ngày), nên chính câu này phải nói luôn bấm gì ở đâu — người dùng không tech đọc
+ * xong lý do mà không biết làm gì tiếp là tiền nằm ngoài sổ hàng tuần. Nút "Vào sổ" nằm trên
+ * dòng sao kê (màn Sổ sao kê), ghi đúng số tiền đã về và để phí tính sau.
+ */
+const WALLET_NEEDS_FIX_HINT = " Cách xử lý nhanh: mở Sổ sao kê (nút \"Xem giao dịch vừa import\"), tìm dòng có nhãn CHƯA VÀO SỔ và bấm \"Vào sổ\" để ghi nhận đúng số tiền đã về; phí sẽ tính sau khi tiền của ngày đó về đủ.";
+
 function asText(value: unknown) {
   return String(value || "").trim();
 }
@@ -495,6 +505,17 @@ export async function commitImport(input: CommitInput) {
           continue;
         }
 
+        // Kế toán đã tick "bỏ qua dòng nghi trùng" ở bước xem trước: giao dịch này trùng tài
+        // khoản + ngày + số tiền với một dòng đã có, chỉ khác số tham chiếu nên ràng buộc
+        // @@unique không bắt được. Vẫn lưu dấu vết ở ImportRow, chỉ không ghi thêm dòng sao kê.
+        if (commonBankValue(group.rows, "import_action") === "SKIP_SUSPECT_DUPLICATE") {
+          const suspectId = asText(firstRow.values.suspect_duplicate_id);
+          for (const row of group.rows) {
+            await setImportTarget(tx, staging, row, "BANK_STATEMENT_SUSPECT_DUPLICATE", suspectId);
+          }
+          continue;
+        }
+
         const sourceDateText = commonBankValue(group.rows, "source_date");
         const revenueDateText = commonBankValue(group.rows, "revenue_date");
         const sourceDate = sourceDateText ? asDate(sourceDateText) : null;
@@ -587,7 +608,7 @@ export async function commitImport(input: CommitInput) {
 
         if (autoProcessType === "NET_ZERO") continue;
         try {
-        if (autoProcessType === "MANUAL_REQUIRED") throw new BankRowNeedsFixError("Dòng này cần khảo sát tay: Preview đã đánh dấu không tự lập được chứng từ");
+        if (autoProcessType === "MANUAL_REQUIRED") throw new BankRowNeedsFixError("Hệ thống chưa đủ thông tin để tự lập chứng từ cho dòng này (bước Preview đã đánh dấu). Kiểm tra lại Loại nghiệp vụ, Loại thu/chi và nguồn tiền của dòng này trên file rồi import lại.");
         const branchCode = asText(firstRow.values.branch_code);
         const transactionDate = asDate(firstRow.values.transaction_date);
         const accountingDateText = commonBankValue(group.rows, "accounting_date");
@@ -644,7 +665,13 @@ export async function commitImport(input: CommitInput) {
           const grossAmount = declaredGross
             ? allocationGross.reduce((sum, item) => sum + item.grossAmount, 0)
             : bankAmount;
-          if (invalidAllocation || grossAmount < bankAmount) throw new BankRowNeedsFixError("Gross ví khai trên file không cân với số tiền ngân hàng ghi có — sửa cột Gross/Phí trên file rồi import lại, hoặc để trống để hệ thống tự suy từ doanh thu POS");
+          if (invalidAllocation || grossAmount < bankAmount) {
+            throw new BankRowNeedsFixError(
+              "Dòng này thiếu Ngày doanh thu, hoặc số gốc ở ví (cột Gross) trên file nhỏ hơn số tiền ngân hàng đã trả. "
+              + "Sửa lại cột Gross / Ngày doanh thu trên file rồi import lại, hoặc để trống cột Gross để hệ thống chỉ ghi số tiền thực về."
+              + WALLET_NEEDS_FIX_HINT,
+            );
+          }
           for (const allocation of allocationGross) {
             await tx.bankStatementAllocation.updateMany({
               where: {
@@ -671,7 +698,9 @@ export async function commitImport(input: CommitInput) {
               const posFeeTotal = (declaredPosFee._sum.cardFeeAmount || 0) + (declaredPosFee._sum.appFeeAmount || 0);
               if (posFeeTotal > 0) {
                 throw new BankRowNeedsFixError(
-                  `Ngày doanh thu này đã khai phí ${Math.round(posFeeTotal).toLocaleString("vi-VN")} đ trên file doanh thu POS (cột Phí cà thẻ / Phí bán hàng qua app), phí đó đã vào chi phí rồi. Bỏ trống cột Gross ví trên file sao kê để hệ thống chỉ ghi nhận tiền thực về, nếu không chi phí sẽ bị tính hai lần.`,
+                  `Ngày doanh thu này đã khai phí ${Math.round(posFeeTotal).toLocaleString("vi-VN")} đ trên file doanh thu POS (cột Phí cà thẻ / Phí bán hàng qua app) và phí đó đã vào chi phí rồi. `
+                  + "Nếu ghi thêm phí từ sao kê nữa thì chi phí bị tính hai lần, nên hệ thống dừng lại."
+                  + WALLET_NEEDS_FIX_HINT,
                 );
               }
             }
@@ -679,7 +708,10 @@ export async function commitImport(input: CommitInput) {
           const grabExpenseAmount = allocationGross.reduce((sum, item) => sum + item.grabExpenseAmount, 0);
           const cardFeeAmount = allocationGross.reduce((sum, item) => sum + item.cardFeeAmount, 0);
           if (declaredGross && Math.abs(feeAmount - grabExpenseAmount - cardFeeAmount) > 1) {
-            throw new BankRowNeedsFixError("Tổng phí ví không bằng Phí Grab cộng Phí cà thẻ — sửa hai cột phí trên file cho khớp");
+            throw new BankRowNeedsFixError(
+              "Trên file, số gốc ở ví trừ tiền về ngân hàng không bằng Phí Grab cộng Phí cà thẻ. Sửa hai cột phí trên file cho khớp rồi import lại."
+              + WALLET_NEEDS_FIX_HINT,
+            );
           }
           // Gross khai quá tay thì phần chưa về bị ghi hết thành phí. Chặn tại đây, dòng rơi về
           // danh sách xử lý tay kèm lý do — nhập hàng loạt mà sai âm thầm thì không ai soát nổi.
@@ -689,7 +721,7 @@ export async function commitImport(input: CommitInput) {
               grossAmount,
               bankAmount,
             );
-            if (!feeCheck.ok) throw new BankRowNeedsFixError(walletFeeRateMessage(feeCheck, grossAmount, bankAmount));
+            if (!feeCheck.ok) throw new BankRowNeedsFixError(walletFeeRateMessage(feeCheck, grossAmount, bankAmount) + WALLET_NEEDS_FIX_HINT);
           }
           const approval = evaluateBankStatementAutoApproval({
             autoProcessType,

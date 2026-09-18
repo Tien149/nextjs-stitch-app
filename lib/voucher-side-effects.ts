@@ -42,6 +42,47 @@ export function advanceReceivableBeneficiaryBranch(voucher: {
   return beneficiaryBranch;
 }
 
+const vnd = (value: number) => `${value.toLocaleString("vi-VN")} đ`;
+
+/**
+ * Câu gợi ý đi kèm lỗi gạch nợ: chỉ thẳng ra mã nào điền được, hoặc vì sao chưa có mã nào.
+ * Người dùng hay bí ở đúng chỗ này — biết "sai" rồi vẫn không biết phải gõ gì vào ô.
+ */
+async function openDebtHint(
+  tx: RawTxClient,
+  voucher: { voucherType: string; branchCode: string },
+  partnerCode: string | null,
+) {
+  const debtType = voucher.voucherType === "RECEIPT" ? "RECEIVABLE" : "PAYABLE";
+  const label = debtType === "RECEIVABLE" ? "phải thu" : "phải trả";
+  if (!partnerCode) {
+    return `Chọn đối tác trên phiếu trước, hệ thống sẽ hiện sẵn các khoản ${label} đang mở của họ để bấm chọn.`;
+  }
+  const open = await tx.debtRecord.findMany({
+    where: { partnerCode, branchCode: voucher.branchCode, debtType, outstandingAmount: { gt: 0 }, deletedAt: null },
+    orderBy: { documentDate: "desc" },
+    take: 5,
+    select: { code: true, outstandingAmount: true },
+  });
+  if (open.length > 0) {
+    const list = open.map((item) => `${item.code} (còn ${vnd(item.outstandingAmount)})`).join(", ");
+    return `Khoản ${label} đang mở của đối tác này tại ${voucher.branchCode}: ${list}. Chép đúng một trong các mã trên.`;
+  }
+  // Gặp nhiều nhất: khoản nợ có thật nhưng nằm ở sổ cửa hàng đã bỏ tiền ra, không phải cửa hàng đang lập phiếu.
+  const elsewhere = await tx.debtRecord.findMany({
+    where: { partnerCode, debtType, outstandingAmount: { gt: 0 }, deletedAt: null, branchCode: { not: voucher.branchCode } },
+    take: 3,
+    select: { code: true, branchCode: true },
+  });
+  if (elsewhere.length > 0) {
+    const list = elsewhere.map((item) => `${item.code} ở ${item.branchCode}`).join(", ");
+    return `Đối tác này không có khoản ${label} nào đang mở tại cửa hàng ${voucher.branchCode}, nhưng có ở cửa hàng khác: ${list}. Đổi ô Cửa hàng của phiếu sang đúng cửa hàng đó.`;
+  }
+  return voucher.voucherType === "RECEIPT"
+    ? `Đối tác này chưa có khoản phải thu nào đang mở. Khoản chi hộ chỉ sinh ra khi phiếu chi đã được DUYỆT — kiểm tra phiếu chi hộ còn đang Nháp/Chờ duyệt không. Nợ có từ trước khi dùng phần mềm thì khai tay ở tab Công nợ rồi quay lại thu.`
+    : `Đối tác này chưa có khoản phải trả nào đang mở tại cửa hàng ${voucher.branchCode}. Khai khoản phải trả ở tab Công nợ trước, rồi mới lập phiếu chi để gạch.`;
+}
+
 /** Gạch một khoản công nợ cho phiếu: dùng chung cho phiếu 1 đối tác lẫn từng dòng phân bổ. */
 async function settleDebtLine(
   tx: RawTxClient,
@@ -50,33 +91,58 @@ async function settleDebtLine(
   actor: string,
 ) {
   const debt = await tx.debtRecord.findFirst({ where: { code: line.debtReference, deletedAt: null } });
-  // Ô "Mã công nợ cần gạch" hay bị điền nhầm mã đối tác, nên nói rõ đây là hai thứ khác nhau.
   if (!debt) {
+    const hint = await openDebtHint(tx, voucher, line.partnerCode);
+    // Ô "Mã công nợ cần gạch" hay bị điền nhầm mã đối tác. Nhận ra được thì nói thẳng tên
+    // đối tác đó ra, người dùng hiểu ngay mình vừa chép nhầm ô nào.
+    const partner = await tx.masterDataItem.findFirst({
+      where: { type: "PARTNER", code: line.debtReference },
+      select: { name: true },
+    });
+    if (partner) {
+      throw new VoucherSideEffectError(
+        `[${line.debtReference}] là MÃ ĐỐI TÁC (${partner.name}), không phải mã khoản nợ. Ô này cần mã của từng KHOẢN NỢ — mỗi lần phát sinh một mã riêng, dạng CNTHU-<mã phiếu chi>. ${hint}`,
+      );
+    }
+    const trashed = await tx.debtRecord.findFirst({
+      where: { code: line.debtReference, deletedAt: { not: null } },
+      select: { code: true },
+    });
+    if (trashed) {
+      throw new VoucherSideEffectError(
+        `Khoản nợ ${trashed.code} đang nằm trong Thùng rác nên không gạch được. Vào tab Công nợ khôi phục lại, rồi lưu phiếu này lần nữa.`,
+      );
+    }
     throw new VoucherSideEffectError(
-      `Không có khoản công nợ nào mang mã [${line.debtReference}]. Mã công nợ khác mã đối tác — hãy lấy đúng mã ở tab Công nợ.`,
+      `Không có khoản nợ nào mang mã [${line.debtReference}]. Ô này cần mã KHOẢN NỢ lấy ở tab Công nợ (dạng CNTHU-<mã phiếu chi>), không phải mã đối tác hay mã phiếu. ${hint}`,
     );
   }
   if (debt.branchCode !== voucher.branchCode) {
     throw new VoucherSideEffectError(
-      `Công nợ ${debt.code} thuộc cửa hàng ${debt.branchCode}, không gạch được bằng phiếu của cửa hàng ${voucher.branchCode}.`,
+      `Khoản nợ ${debt.code} nằm ở sổ cửa hàng ${debt.branchCode}, còn phiếu này lập ở ${voucher.branchCode} — tiền của hai cửa hàng không gạch chéo nhau được. Đổi ô Cửa hàng của phiếu sang ${debt.branchCode}, hoặc chọn khoản nợ của ${voucher.branchCode}.`,
     );
   }
   const expectedDebtType = voucher.voucherType === "RECEIPT" ? "RECEIVABLE" : "PAYABLE";
   if (debt.debtType !== expectedDebtType) {
     throw new VoucherSideEffectError(
       voucher.voucherType === "RECEIPT"
-        ? `Công nợ ${debt.code} là khoản PHẢI TRẢ, phiếu thu chỉ gạch được khoản phải thu.`
-        : `Công nợ ${debt.code} là khoản PHẢI THU, phiếu chi chỉ gạch được khoản phải trả.`,
+        ? `Khoản ${debt.code} là khoản PHẢI TRẢ — mình đang nợ ${debt.partnerName}, không phải họ nợ mình. Phiếu THU chỉ gạch được khoản phải thu; muốn trả tiền cho họ thì lập phiếu CHI.`
+        : `Khoản ${debt.code} là khoản PHẢI THU — ${debt.partnerName} đang nợ mình, không phải mình nợ họ. Phiếu CHI chỉ gạch được khoản phải trả; muốn thu tiền về thì lập phiếu THU, nội dung "Thu lại công nợ phải thu".`,
     );
   }
   if (line.partnerCode && line.partnerCode !== debt.partnerCode) {
     throw new VoucherSideEffectError(
-      `Công nợ ${debt.code} đứng tên đối tác ${debt.partnerCode}, không khớp đối tác ${line.partnerCode} trên phiếu.`,
+      `Khoản nợ ${debt.code} đứng tên ${debt.partnerCode} — ${debt.partnerName}, còn phiếu đang chọn đối tác ${line.partnerCode}. Sửa ô Tên đối tác trên phiếu thành ${debt.partnerName}, hoặc chọn khoản nợ khác đúng của ${line.partnerCode}.`,
+    );
+  }
+  if (debt.outstandingAmount <= 0) {
+    throw new VoucherSideEffectError(
+      `Khoản nợ ${debt.code} đã tất toán (không còn dư nợ), gạch thêm lần nữa là trừ khống. Mở tab Công nợ xem khoản này đã được gạch bằng phiếu nào trước đó.`,
     );
   }
   if (line.amount > debt.outstandingAmount) {
     throw new VoucherSideEffectError(
-      `Số tiền ${line.amount.toLocaleString("vi-VN")} đ vượt dư nợ còn lại ${debt.outstandingAmount.toLocaleString("vi-VN")} đ của công nợ ${debt.code}.`,
+      `Phiếu ghi ${vnd(line.amount)} nhưng khoản nợ ${debt.code} chỉ còn ${vnd(debt.outstandingAmount)} (phần còn lại đã gạch bằng phiếu khác). Hạ số tiền xuống tối đa ${vnd(debt.outstandingAmount)}; ${vnd(line.amount - debt.outstandingAmount)} dôi ra thì tách sang phiếu riêng hoặc gạch vào khoản nợ khác.`,
     );
   }
   const outstandingAmount = debt.outstandingAmount - line.amount;
@@ -210,7 +276,7 @@ export async function applyVoucherSideEffects(
   }
 
   if (voucher.debtAction === "SETTLE") {
-    if (!voucher.debtReference) throw new VoucherSideEffectError("Thanh toán công nợ bắt buộc có mã công nợ");
+    if (!voucher.debtReference) throw new VoucherSideEffectError("Phiếu gạch công nợ phải điền ô \"Mã công nợ cần gạch\" — chọn đối tác rồi bấm vào khoản nợ hiện ra bên dưới ô, hoặc chép mã ở tab Công nợ.");
     const previousSettlement = await tx.debtSettlement.findFirst({ where: { voucherId: voucher.id } });
     if (!previousSettlement) {
       await settleDebtLine(tx, voucher, {
@@ -225,7 +291,7 @@ export async function applyVoucherSideEffects(
   // Công nợ đòi được và phiếu thu sau này gạch bằng mã này. Idempotent theo mã sinh từ mã
   // phiếu: duyệt lại hoặc sửa phiếu không được tạo thành hai khoản nợ.
   if (voucher.voucherType === "PAYMENT" && voucher.debtAction === ADVANCE_RECEIVABLE_ACTION) {
-    if (!voucher.receivablePartnerCode) throw new VoucherSideEffectError("Chi hộ bắt buộc chọn đối tác sẽ trả lại tiền");
+    if (!voucher.receivablePartnerCode) throw new VoucherSideEffectError("Phiếu chi hộ phải khai ô \"Đối tác sẽ trả lại tiền\" — khoản phải thu sẽ đứng tên người đó, sau này thu lại mới gạch được.");
     // Danh mục cửa hàng quyết định "đối tác sẽ trả lại tiền" có phải nhà hàng trong nhà không.
     // Đọc từ DB chứ không tin tiền tố NB- của mã đối tác: mã đó người dùng tự đặt được.
     const branchCodes = (await tx.masterDataItem.findMany({ where: { type: "BRANCH" }, select: { code: true } }))

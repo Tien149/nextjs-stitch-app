@@ -8,7 +8,7 @@ test("ca that 08/2026: phi 98% cua vi Momo ASA phai bi chan", () => {
   const check = checkWalletFeeRate("CARD_WALLET", 22_615_005, 328_391);
   assert.equal(check.ok, false);
   assert.ok(check.rate > 0.98);
-  assert.match(walletFeeRateMessage(check, 22_615_005, 328_391), /vượt ngưỡng 10%/);
+  assert.match(walletFeeRateMessage(check, 22_615_005, 328_391), /không quá 10%/);
 });
 
 test("phi quet the that (1,6%) van di qua", () => {

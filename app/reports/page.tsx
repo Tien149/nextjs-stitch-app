@@ -151,6 +151,8 @@ type RevenueSettlementRow = {
   group: string;
   revenue: number;
   received: number;
+  /** Phần trong `received` là cọc cấn trừ / chuyển doanh thu đúng ngày — không có trên sao kê. */
+  depositApplied: number;
   remaining: number;
   feeCategoryCode: string | null;
   feeCategoryName: string | null;
@@ -2133,9 +2135,9 @@ function MoneyInReconciliationPanel({ dailyCash, showContextLine }: { dailyCash:
         <section className="table-panel no-print border-amber-300">
           <PanelHeader
             title={`Chưa vào sổ — ${dailyCash.moneyInReconciliation.needsFix?.length} dòng, ${money(dailyCash.moneyInReconciliation.needsFixTotal || 0)} đ`}
-            subtitle="Tiền đã ghi nhận trên sao kê nhưng chưa lập được chứng từ, nên chưa vào sổ kế toán. File vẫn import bình thường, không mất dòng nào. Sửa theo cột Cần làm gì rồi import lại đúng dòng đó, hoặc chạy lệnh xử lý lại."
+            subtitle="Tiền đã vào ngân hàng và đã ghi nhận trên sao kê, nhưng chưa lập được chứng từ nên chưa lên Sổ quỹ. Không mất dòng nào. Bấm “Vào sổ” ở cột cuối để mở đúng dòng đó trên Sổ sao kê và ghi nhận."
           />
-          <Table headers={["Ngày giao dịch", "Mã giao dịch", "Diễn giải", "Số tiền", "Cần làm gì"]}>
+          <Table headers={["Ngày giao dịch", "Mã giao dịch", "Diễn giải", "Số tiền", "Vì sao chưa vào sổ", ""]}>
             {dailyCash.moneyInReconciliation.needsFix?.map((row) => (
               <tr key={row.id} className="border-t border-slate-100">
                 <Cell>
@@ -2149,6 +2151,15 @@ function MoneyInReconciliationPanel({ dailyCash, showContextLine }: { dailyCash:
                 <Cell><span className="line-clamp-2 text-xs text-slate-600">{row.description}</span></Cell>
                 <Cell right><b>{money(row.amount)} đ</b></Cell>
                 <Cell><span className="text-xs text-amber-800">{row.reason}</span></Cell>
+                <Cell>
+                  {/* Mở Sổ sao kê lọc đúng mã giao dịch: nút "Vào sổ" nằm ngay trên dòng đó. */}
+                  <a
+                    href={`/reconciliations?q=${encodeURIComponent(row.transactionCode)}`}
+                    className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-xs font-bold text-amber-800 hover:bg-amber-50"
+                  >
+                    Vào sổ →
+                  </a>
+                </Cell>
               </tr>
             ))}
           </Table>
@@ -2494,6 +2505,20 @@ function RevenueLedgerPanel({ data, branchCode, moneySources, canEdit, onSaved }
 
 function RevenueSettlementPanel({ data }: { data: RevenueSettlementData }) {
   const dayLabel = (value: string) => new Date(`${value}T00:00:00Z`).toLocaleDateString("vi-VN", { timeZone: "UTC" });
+  /**
+   * Bấm vào số "Tiền đã vô" là mở đúng những dòng sổ sao kê đã cộng thành số đó.
+   *
+   * Ngày báo VỀ DƯ thường là một lần quẹt gộp cả tiền bán hàng lẫn tiền thu hộ, hoặc ngân hàng
+   * trả gộp nhiều ngày — cả hai đều sửa ngay trên dòng sao kê (nút "Tách / sửa dòng"), chứ mở
+   * chứng từ ra sửa thì bảng này không đổi số: nó đọc sổ sao kê, không đọc chứng từ.
+   */
+  const ledgerHref = (row: RevenueSettlementRow) => `/reconciliations?${new URLSearchParams({
+    dateType: "REVENUE",
+    from: row.date,
+    to: row.date,
+    moneySource: row.moneySourceCode,
+    branchCode: data.branchCode || "ALL",
+  })}`;
   const byDay = new Map<string, RevenueSettlementRow[]>();
   for (const row of data.rows) byDay.set(row.date, [...(byDay.get(row.date) || []), row]);
 
@@ -2510,7 +2535,7 @@ function RevenueSettlementPanel({ data }: { data: RevenueSettlementData }) {
       <section className="table-panel">
         <PanelHeader
           title="Tiền về đủ chưa"
-          subtitle="Mỗi ngày, mỗi phương thức thanh toán: doanh thu ghi nhận bao nhiêu, tiền thực về bao nhiêu, phần chênh là phí thu hộ hay tiền chưa về. Doanh thu lấy từ import POS, tiền về lấy từ sổ sao kê — hai luồng độc lập. Dòng “Cộng theo Nhóm/Loại” gộp các nguồn chi tiết lại để biết cả nhóm đã thu đủ tiền chưa, kể cả khi ngân hàng trả gộp nhiều nguồn trong một lần chuyển."
+          subtitle="Mỗi ngày, mỗi phương thức thanh toán: doanh thu ghi nhận bao nhiêu, tiền thực về bao nhiêu, phần chênh là phí thu hộ hay tiền chưa về. Doanh thu lấy từ import POS, tiền về lấy từ sổ sao kê — hai luồng độc lập. Bill trả bằng tiền cọc (cấn trừ / chuyển doanh thu) được cộng vào tiền đã vô của ngày cấn trừ, vì khách đã chuyển tiền từ ngày đặt cọc. Dòng “Cộng theo Nhóm/Loại” gộp các nguồn chi tiết lại để biết cả nhóm đã thu đủ tiền chưa, kể cả khi ngân hàng trả gộp nhiều nguồn trong một lần chuyển."
         />
         <div className="overflow-x-auto">
           <Table headers={["Ngày", "Phương thức thanh toán", "Loại nguồn", "Doanh thu trong ngày", "Tiền đã vô", "Còn lại", "Tên chi phí", "Trạng thái"]}>
@@ -2527,7 +2552,14 @@ function RevenueSettlementPanel({ data }: { data: RevenueSettlementData }) {
                   <Cell><b>{row.moneySourceName}</b><p className="mt-0.5 text-xs text-slate-500">{row.moneySourceCode}</p></Cell>
                   <Cell><SourceGroupTag group={row.group} /></Cell>
                   <Cell right>{money(row.revenue)} đ</Cell>
-                  <Cell right><span className="text-emerald-700">{money(row.received)} đ</span></Cell>
+                  <Cell right>
+                    <a href={ledgerHref(row)} title="Mở sổ sao kê đúng ngày doanh thu và nguồn tiền này để soát/tách lại dòng tiền về" className="font-semibold text-emerald-700 underline decoration-dotted underline-offset-2 hover:text-emerald-800">
+                      {money(row.received)} đ
+                    </a>
+                    {row.depositApplied > 0 && (
+                      <p className="mt-0.5 text-xs text-slate-500">gồm {money(row.depositApplied)} đ cọc cấn trừ</p>
+                    )}
+                  </Cell>
                   <Cell right>
                     <b className={row.remaining > 0 ? "text-amber-700" : row.remaining < 0 ? "text-rose-600" : "text-slate-400"}>
                       {money(row.remaining)} đ

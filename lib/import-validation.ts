@@ -7,7 +7,7 @@ import { isInboundStockType, isOutboundStockType, isStockTransactionType, isWast
 import { normalizeCashflowCategoryType, normalizeRevenueExpenseGroup } from "@/lib/voucher-rules";
 import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
 import { loadNonInventoryRevenueGroups, loadRevenueCategoryIndex, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
-import { groupBankStatementRows } from "@/lib/bank-statement-import";
+import { bankStatementSuspectKey, groupBankStatementRows, type BankStatementImportGroup } from "@/lib/bank-statement-import";
 import { isPeriodLocked } from "@/lib/phase3";
 import { normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { moneySourceBranchCode, resolveTransferMoneySource } from "@/lib/internal-transfer";
@@ -1026,11 +1026,14 @@ async function fillWalletGrossFromPosRevenue(rows: ParsedImportRow[], masterItem
       select: { reportDate: true, branchCode: true, cardAmount: true, grabAmount: true },
     }),
     // Phần doanh thu ví đã được quyết toán ở các batch trước, để không clear trùng.
+    // Phải bỏ dòng sao kê đã xoá: giao dịch trong Thùng rác không còn clear doanh thu nào,
+    // tính vào đây thì lần quyết toán sau nhận thiếu gross và phí ví bị hụt đúng phần đó.
     prisma.bankStatementAllocation.findMany({
       where: {
         revenueDate: { gte: rangeStart, lt: rangeEnd },
         decreaseMoneySourceCode: { in: walletCodes },
         grossAmount: { not: null },
+        bankTransaction: { deletedAt: null },
       },
       select: { revenueDate: true, decreaseMoneySourceCode: true, grossAmount: true },
     }),
@@ -1121,7 +1124,7 @@ export async function validateImportResult(
   result: ParsedImportResult,
   importType: ImportType,
   session: DemoSession,
-  options: { expectedMasterType?: string } = {},
+  options: { expectedMasterType?: string; skipSuspectedDuplicates?: boolean } = {},
 ) {
   const expectedMasterType = text(options.expectedMasterType).toUpperCase();
   if (importType === "MASTER_DATA" && expectedMasterType && !isMasterDataImportType(expectedMasterType)) {
@@ -1535,8 +1538,80 @@ export async function validateImportResult(
       : [];
     const existingKeys = new Set(existing.map((row) => `${row.bankAccount}|${row.transactionCode}`.toUpperCase()));
 
+    /**
+     * Giao dịch đang nằm trong Thùng rác.
+     *
+     * `prisma` tự lọc bản ghi đã xoá nên truy vấn trên coi như không có, nhưng ràng buộc
+     * @@unique(bankAccount, transactionCode) ở tầng CSDL thì vẫn tính cả dòng đã xoá — cứ để
+     * commit chạy thì vỡ ở bước create với thông báo "đã tồn tại" trong khi preview vừa bảo là
+     * chưa có. Nói thẳng ra ở bước xem trước, kèm đường xử lý.
+     */
+    const deletedExisting = groups.length > 0
+      ? await prismaRaw.bankStatementTransaction.findMany({
+          where: {
+            deletedAt: { not: null },
+            OR: groups.map((group) => ({
+              bankAccount: text(group.rows[0].values.bank_account),
+              transactionCode: text(group.rows[0].values.transaction_code),
+            })),
+          },
+          select: { bankAccount: true, transactionCode: true },
+        })
+      : [];
+    const deletedKeys = new Set(deletedExisting.map((row) => `${row.bankAccount}|${row.transactionCode}`.toUpperCase()));
+
+    /**
+     * Nghi trùng: cùng tài khoản + cùng ngày + cùng số tiền nhưng KHÁC số tham chiếu.
+     *
+     * Chống trùng cứng chỉ chạy theo (Tài khoản, Số tham chiếu) — đúng ràng buộc @@unique của
+     * bảng. Khi khách sửa rồi import lại, cột Số tham chiếu hay đổi (bị cắt bớt, đổi định
+     * dạng), thế là một lần chuyển tiền của ngân hàng nằm hai dòng trong sổ. Dòng thừa đó
+     * không gỡ được bằng cách xoá chứng từ — xoá chứng từ chỉ cắt liên kết đối soát — mà vẫn
+     * cộng vào "Tiền đã vô" của báo cáo Tiền về đủ chưa, nên báo cáo lệch đúng số tiền của nó.
+     *
+     * Không chặn cứng: ngân hàng hoàn toàn có thể có hai giao dịch giống hệt nhau trong ngày
+     * (hai bill cà thẻ cùng giá). Chỉ đánh dấu để kế toán quyết ở bước xem trước.
+     */
+    const groupDate = (group: BankStatementImportGroup) => {
+      const value = group.rows[0].values.transaction_date;
+      return value instanceof Date ? value : parseImportDate(value);
+    };
+    const pendingGroups = groups.filter((group) => !existingKeys.has(
+      `${text(group.rows[0].values.bank_account)}|${text(group.rows[0].values.transaction_code)}`.toUpperCase(),
+    ) && groupDate(group));
+    const suspectCandidates = pendingGroups.length > 0
+      ? await prisma.bankStatementTransaction.findMany({
+          where: {
+            deletedAt: null,
+            OR: pendingGroups.map((group) => ({
+              bankAccount: text(group.rows[0].values.bank_account),
+              transactionDate: groupDate(group) as Date,
+              debitAmount: group.debitAmount,
+              creditAmount: group.creditAmount,
+            })),
+          },
+          select: { id: true, bankAccount: true, transactionCode: true, transactionDate: true, debitAmount: true, creditAmount: true },
+        })
+      : [];
+    const suspectByKey = new Map<string, { id: string; transactionCode: string }>();
+    for (const candidate of suspectCandidates) {
+      const key = bankStatementSuspectKey(candidate.bankAccount, candidate.transactionDate, candidate.debitAmount, candidate.creditAmount);
+      if (!suspectByKey.has(key)) suspectByKey.set(key, { id: candidate.id, transactionCode: candidate.transactionCode });
+    }
+
     for (const group of groups) {
       const existingKey = `${text(group.rows[0].values.bank_account)}|${text(group.rows[0].values.transaction_code)}`.toUpperCase();
+      if (deletedKeys.has(existingKey)) {
+        for (const row of group.rows) {
+          addError(
+            row,
+            `Giao dịch ${text(group.rows[0].values.transaction_code)} đang nằm trong Thùng rác (đã xoá khỏi sổ sao kê). `
+            + "Khôi phục lại từ Thùng rác nếu muốn giữ, hoặc bỏ dòng này khỏi file — import lại cùng số tham chiếu sẽ vỡ ràng buộc dữ liệu.",
+          );
+        }
+        continue;
+      }
+
       if (existingKeys.has(existingKey)) {
         for (const row of group.rows) {
           row.values.import_action = "SKIP_EXISTING";
@@ -1544,6 +1619,27 @@ export async function validateImportResult(
           row.values.auto_process_note = "Giao dịch đã tồn tại trong hệ thống — commit sẽ bỏ qua, không làm lỗi cả batch";
         }
         continue;
+      }
+
+      const groupDateValue = groupDate(group);
+      const suspect = groupDateValue
+        ? suspectByKey.get(bankStatementSuspectKey(group.rows[0].values.bank_account, groupDateValue, group.debitAmount, group.creditAmount))
+        : undefined;
+      // Cờ riêng, không mượn `import_action`: các nhánh bên dưới còn ghi đè trường đó
+      // (NET_ZERO, GROUP_ALLOCATION) nên cảnh báo sẽ bị mất.
+      if (suspect && suspect.transactionCode.toUpperCase() !== text(group.rows[0].values.transaction_code).toUpperCase()) {
+        for (const row of group.rows) {
+          row.values.suspect_duplicate_id = suspect.id;
+          row.values.suspect_duplicate_code = suspect.transactionCode;
+        }
+        if (options.skipSuspectedDuplicates) {
+          for (const row of group.rows) {
+            row.values.import_action = "SKIP_SUSPECT_DUPLICATE";
+            row.values.auto_process_type = "SKIP_SUSPECT_DUPLICATE";
+            row.values.auto_process_note = `Nghi trùng với giao dịch ${suspect.transactionCode} (cùng tài khoản, cùng ngày, cùng số tiền) — kế toán chọn bỏ qua khi Commit`;
+          }
+          continue;
+        }
       }
 
       if (group.isNetZero) {

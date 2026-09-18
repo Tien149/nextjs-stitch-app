@@ -124,13 +124,19 @@ export function checkWalletFeeRate(bucket: WalletFeeBucket, grossAmount: number,
 /**
  * Câu báo lỗi cho người nhập: nói đúng số, đúng ngưỡng, và chỉ ra nguyên nhân hay gặp nhất
  * (tiền về nhiều đợt) thay vì chỉ "số không hợp lệ".
+ *
+ * Viết cho kế toán/chủ quán đọc, không phải lập trình viên: không dùng "Gross", "ngưỡng",
+ * "net" — nói "số gốc ở ví", "tiền về ngân hàng", "phí". Câu này dùng chung cho import sao
+ * kê, form Ghi nhận quyết toán ví và nút Chạy lại, nên chỉ mô tả vấn đề; chỗ gọi tự nối
+ * thêm cách xử lý phù hợp với màn hình của nó.
  */
 export function walletFeeRateMessage(check: WalletFeeCheck, grossAmount: number, netAmount: number) {
   const money = (value: number) => Math.round(value).toLocaleString("vi-VN");
   if (check.rate === null) {
-    return `Số gốc ở ví (${money(grossAmount)} đ) phải lớn hơn 0 và không được nhỏ hơn số thực nhận (${money(netAmount)} đ).`;
+    return `Số gốc ở ví (${money(grossAmount)} đ) phải lớn hơn 0 và không được nhỏ hơn số tiền đã về ngân hàng (${money(netAmount)} đ).`;
   }
-  return `Phí ${money(check.feeAmount)} đ trên số gốc ${money(grossAmount)} đ là ${(check.rate * 100).toFixed(1)}%, vượt ngưỡng ${(check.limit * 100).toFixed(0)}%. `
-    + `Thường là do tiền về làm nhiều đợt mà Gross lại khai cho cả ngày — hãy khai Gross đúng phần tương ứng với ${money(netAmount)} đ đã về, `
-    + `hoặc để trống Gross để hệ thống chỉ ghi nhận tiền thực về và tính phí sau khi có đủ doanh thu.`;
+  return `Tiền về ngân hàng ${money(netAmount)} đ nhưng số gốc ở ví khai ${money(grossAmount)} đ, `
+    + `tức là ${money(check.feeAmount)} đ (${Math.round(check.rate * 100)}% doanh thu) đang bị coi là phí ví. `
+    + `Phí ví bình thường không quá ${(check.limit * 100).toFixed(0)}%, nên số này gần như chắc chắn sai. `
+    + `Nguyên nhân hay gặp: ví trả tiền làm nhiều đợt, mà số gốc lại khai doanh thu của cả ngày.`;
 }

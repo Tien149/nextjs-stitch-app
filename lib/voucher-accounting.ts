@@ -5,7 +5,12 @@ import {
   internalPartnerCode,
 } from "@/lib/cost-reallocation";
 import { isOtherIncomeCategory } from "@/lib/pnl-ordering";
-import { ADVANCE_RECEIVABLE_ACTION, PREPAID_ALLOCATION_ACTION } from "@/lib/voucher-rules";
+import {
+  ADVANCE_RECEIVABLE_ACTION,
+  BANK_STATEMENT_SPLIT_SOURCE_SCOPE,
+  isCollectOnBehalfCategory,
+  PREPAID_ALLOCATION_ACTION,
+} from "@/lib/voucher-rules";
 
 /**
  * Định khoản cho phiếu thu/chi.
@@ -27,6 +32,8 @@ export type VoucherForPosting = {
   pnlItemCode: string | null;
   depositAction: string | null;
   debtAction: string | null;
+  /** Nguồn gốc chứng từ; phiếu tách từ dòng sao kê có luật định khoản riêng. */
+  sourceScope?: string | null;
 };
 
 /**
@@ -72,6 +79,17 @@ export function receiptCounterAccount(
   }
   if (voucher.debtAction === "SETTLE") {
     return { account: "131", reason: "Thu hồi công nợ phải thu — không phát sinh doanh thu mới" };
+  }
+  // THU HỘ: tiền về tài khoản nhưng là của người khác, phải trả lại. Mọi khoản mục nhóm "Thu"
+  // bên dưới đều rơi vào Có 511, nên không chặn ở đây thì tiền thu hộ vừa bị gỡ khỏi "Tiền đã
+  // vô" lại quay vào sổ thành doanh thu. Nhận diện theo khoản mục (phiếu thu lập tay cũng
+  // đúng) và theo phiếu tách từ dòng sao kê (khách chưa có mã Thu hộ vẫn an toàn).
+  if (isCollectOnBehalfCategory(voucher.categoryCode) || voucher.sourceScope === BANK_STATEMENT_SPLIT_SOURCE_SCOPE) {
+    return voucher.partnerCode
+      ? { account: "131", reason: "Thu hộ — treo công nợ của đối tác sẽ nhận lại tiền, không phải doanh thu" }
+      // Không biết thu hộ cho ai thì vẫn không được ghi doanh thu: treo phải trả khác cho tới
+      // khi kế toán bổ sung đối tác.
+      : { account: "3388", reason: "Thu hộ chưa khai đối tác — treo phải trả khác, không phải doanh thu" };
   }
   // Khoản mục thu/chi là tầng chốt: khai nhóm doanh thu thì đó là doanh thu bán hàng, dù ai đó
   // lỡ gắn thêm hạng mục P&L thu nhập khác. Để hạng mục thắng ở đây thì một khoản doanh thu

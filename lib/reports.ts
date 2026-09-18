@@ -2,7 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { CASH_SOURCE_OPENING_TYPES, OPENING_BALANCE_EFFECTIVE_STATUSES } from "@/lib/opening-balance-rules";
 import { addPeriod } from "@/lib/phase3";
 import { periodBounds } from "@/lib/accounting";
-import { depositDecreaseActions, depositIncreaseActions } from "@/lib/deposit-accounting";
+import { depositDecreaseActions, depositIncreaseActions, depositRevenueActions } from "@/lib/deposit-accounting";
 import { depositCategoryDirection } from "@/lib/bank-statement-category";
 import { isGrabMoneySource, moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { normalizeCashflowCategoryType, SALES_RECEIPT_CATEGORY_CODES } from "@/lib/voucher-rules";
@@ -1451,8 +1451,14 @@ export type RevenueSettlementRow = {
   group: string;
   /** Doanh thu bán hàng ghi nhận trong ngày theo phương thức thanh toán. */
   revenue: number;
-  /** Số tiền thực sự đã về nguồn tiền đó cho đúng ngày doanh thu này. */
+  /** Số tiền thực sự đã về nguồn tiền đó cho đúng ngày doanh thu này (đã gồm `depositApplied`). */
   received: number;
+  /**
+   * Phần trong `received` là tiền cọc cấn trừ vào bill / chuyển doanh thu đúng ngày này.
+   * Tiền đó đã vào nguồn từ ngày nhận cọc nên sao kê hôm nay không có — hiện riêng để người
+   * xem hiểu vì sao "tiền đã vô" nhiều hơn sao kê.
+   */
+  depositApplied: number;
   /** Chênh lệch: phí thu hộ, hoặc tiền chưa về. */
   remaining: number;
   feeCategoryCode: string | null;
@@ -1462,6 +1468,20 @@ export type RevenueSettlementRow = {
 
 /** Chỉ những khoản thu này mới là tiền về của doanh thu bán hàng. */
 const revenueSettlementCategoryCodes = SALES_RECEIPT_CATEGORY_CODES;
+
+/**
+ * Lịch sử cọc làm cọc biến thành doanh thu. Thao tác trên màn Tiền cọc ghi OFFSET /
+ * TRANSFER_REVENUE (`depositRevenueActions`); phiếu thu có depositAction = "REVENUE" thì
+ * lib/voucher-side-effects ghi lịch sử bằng đúng chữ "REVENUE", nên phải nhận thêm mã đó.
+ */
+const depositAppliedActions = [...depositRevenueActions, "REVENUE"];
+
+/** Dòng "chưa gán nguồn tiền" cho cọc đầu kỳ chưa khai nguồn — hiện ra chứ không bỏ qua lặng lẽ. */
+const DEPOSIT_WITHOUT_SOURCE_ROW = {
+  code: "COC_CHUA_GAN_NGUON",
+  name: "Tiền cọc cấn trừ — cọc chưa gán nguồn tiền",
+  group: null,
+};
 
 /** Tên phương thức thanh toán trên file POS chính là tên nguồn tiền, nên so khớp theo nhãn. */
 function normalizeSourceLabel(value: unknown) {
@@ -1746,7 +1766,7 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
   const { start, end } = periodBounds(period);
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
 
-  const [moneySources, posRevenues, allocations, cashReceipts, feeCategories] = await Promise.all([
+  const [moneySources, posRevenues, allocations, cashReceipts, depositApplications, feeCategories] = await Promise.all([
     prisma.masterDataItem.findMany({
       where: { type: "MONEY_SOURCE", status: "ACTIVE" },
       select: { code: true, name: true, group: true, branch: true },
@@ -1782,6 +1802,21 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
       },
       select: { voucherDate: true, moneySourceCode: true, amount: true, depositAction: true },
     }),
+    // Cọc cấn trừ vào bill / chuyển doanh thu trong kỳ. Khách đã chuyển tiền cọc từ trước
+    // (ngày nhận cọc), hôm cấn trừ POS ghi doanh thu nhưng sao kê không có đồng nào về —
+    // không cộng phần này thì ngày cấn trừ luôn báo "VỀ THIẾU" đúng bằng số cọc.
+    prisma.depositHistory.findMany({
+      where: {
+        action: { in: depositAppliedActions },
+        // Lịch sử cũ có thể thiếu actionDate: lấy theo ngày tạo, giống lúc ghi sổ.
+        OR: [
+          { actionDate: { gte: start, lt: end } },
+          { actionDate: null, createdAt: { gte: start, lt: end } },
+        ],
+        deposit: { deletedAt: null, ...branchFilter },
+      },
+      select: { actionDate: true, createdAt: true, amount: true, deposit: { select: { moneySourceCode: true } } },
+    }),
     prisma.masterDataItem.findMany({
       where: { type: "REVENUE_EXPENSE_CATEGORY", code: { in: [WALLET_CARD_FEE_CATEGORY_CODE, WALLET_GRAB_EXPENSE_CATEGORY_CODE] } },
       select: { code: true, name: true },
@@ -1814,6 +1849,7 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
       group: normalizeMoneySourceGroup(source.group),
       revenue: 0,
       received: 0,
+      depositApplied: 0,
       remaining: 0,
       feeCategoryCode: null,
       feeCategoryName: null,
@@ -1860,6 +1896,19 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
     touch(dayKey(row.voucherDate), source).received += row.amount;
   }
 
+  // Cọc cấn trừ / chuyển doanh thu: cộng vào "tiền đã vô" của đúng ngày xử lý, đúng nguồn tiền
+  // đã nhận cọc (POS ghi bill trả bằng cọc theo phương thức khách đã chuyển cọc). Cọc đầu kỳ
+  // chưa khai nguồn thì đứng thành dòng riêng để người xem biết mà bổ sung nguồn cho phiếu cọc.
+  for (const row of depositApplications) {
+    const amount = Math.abs(row.amount || 0);
+    if (amount <= 0) continue;
+    const source = row.deposit.moneySourceCode ? sourceByCode.get(row.deposit.moneySourceCode) : null;
+    if (source && !moneySourceMatchesBranch(source, branchCode)) continue;
+    const cell = touch(dayKey(row.actionDate || row.createdAt), source || DEPOSIT_WITHOUT_SOURCE_ROW);
+    cell.received += amount;
+    cell.depositApplied += amount;
+  }
+
   const feeNameByCode = new Map(feeCategories.map((row) => [row.code, row.name]));
   const rows = [...cells.values()]
     .filter((row) => Math.abs(row.revenue) > 0.5 || Math.abs(row.received) > 0.5)
@@ -1873,6 +1922,7 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
         ...row,
         revenue: Math.round(row.revenue),
         received: Math.round(row.received),
+        depositApplied: Math.round(row.depositApplied),
         remaining,
         feeCategoryCode,
         feeCategoryName: feeCategoryCode ? feeNameByCode.get(feeCategoryCode) || feeCategoryCode : null,

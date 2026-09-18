@@ -810,7 +810,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
     }
 
     if (isDebtCollection && !form.debtReference) {
-      setMessage("Thu lại công nợ phải nhập mã công nợ cần gạch — chọn từ danh sách gợi ý hoặc lấy mã ở tab Công nợ.");
+      setMessage("Chưa chọn khoản nợ cần gạch. Chọn đối tác trước, các khoản phải thu đang mở của họ sẽ hiện thành nút ngay dưới ô — bấm vào là điền sẵn cả mã lẫn số tiền.");
       setMessageType("error");
       return;
     }
@@ -1280,8 +1280,8 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                       ) : (
                         <span className="mt-1 block text-[11px] font-medium text-slate-500">
                           {form.partnerCode
-                            ? "Đối tác này chưa có khoản phải thu nào đang mở — kiểm tra lại ở tab Công nợ."
-                            : "Chọn đối tác để hiện các khoản phải thu đang mở của họ."}
+                            ? "Đối tác này chưa có khoản phải thu nào đang mở ở cửa hàng đang chọn. Khoản chi hộ chỉ hiện ra sau khi phiếu chi đã được DUYỆT; khoản nợ nằm ở sổ cửa hàng đã bỏ tiền ra, nên có thể phải đổi ô Cửa hàng. Nợ có từ trước thì khai ở tab Công nợ rồi quay lại."
+                            : "Chọn đối tác để hiện các khoản phải thu đang mở của họ — bấm vào là điền sẵn cả mã lẫn số tiền, khỏi gõ tay."}
                         </span>
                       )}
                     </label>

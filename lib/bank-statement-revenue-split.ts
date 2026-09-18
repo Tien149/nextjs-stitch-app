@@ -10,12 +10,20 @@ import { parseImportDate } from "@/lib/import-date";
  *
  * Chỉ chia lại phần phân bổ: tổng Nợ/Có, gross ví và hai khoản phí được giữ nguyên đến từng
  * đồng, nên dòng tiền và chi phí trên sổ không đổi — chỉ đổi chỗ đứng theo Ngày doanh thu.
+ *
+ * Mỗi dòng còn mang được LOẠI THU/CHI riêng, cho đúng case một lần khách quẹt gồm cả tiền bán
+ * hàng lẫn tiền thu hộ: để nguyên một loại thì cột "Tiền đã vô" đếm cả phần thu hộ là doanh thu
+ * về và ngày đó báo VỀ DƯ. Phần tách sang loại khác không còn là tiền doanh thu về, và bên gọi
+ * (app/api/reconciliations) lập chứng từ riêng cho nó để sổ có bút toán đối ứng.
  */
 
 export type RevenueSplitLineInput = {
   id?: unknown;
   revenueDate?: unknown;
   amount?: unknown;
+  /** Bỏ trống = giữ nguyên Loại thu/chi của giao dịch. */
+  categoryCode?: unknown;
+  partnerCode?: unknown;
 };
 
 export type RevenueSplitTransaction = {
@@ -24,6 +32,9 @@ export type RevenueSplitTransaction = {
   grossAmount: number | null;
   grabExpenseAmount: number;
   cardFeeAmount: number;
+  /** Loại thu/chi gốc của giao dịch — dòng không khai gì thì giữ nguyên loại này. */
+  categoryCode?: string | null;
+  partnerCode?: string | null;
 };
 
 export type RevenueSplitAllocation = {
@@ -33,6 +44,8 @@ export type RevenueSplitAllocation = {
   grossAmount: number | null;
   grabExpenseAmount: number;
   cardFeeAmount: number;
+  categoryCode?: string | null;
+  partnerCode?: string | null;
 };
 
 export type RevenueSplitLine = {
@@ -45,6 +58,10 @@ export type RevenueSplitLine = {
   grossAmount: number | null;
   grabExpenseAmount: number;
   cardFeeAmount: number;
+  categoryCode: string | null;
+  partnerCode: string | null;
+  /** Dòng vẫn mang đúng loại thu/chi gốc — không cần lập chứng từ riêng. */
+  keepsOriginalCategory: boolean;
 };
 
 export type RevenueSplitPlan = {
@@ -54,11 +71,22 @@ export type RevenueSplitPlan = {
   removedIds: string[];
   /** Giao dịch chỉ mang Ngày doanh thu khi mọi dòng cùng một ngày, đúng như lúc import. */
   transactionRevenueDate: Date | null;
+  /**
+   * Các cụm tiền đã tách sang Loại thu/chi khác loại gốc, gom theo (loại × đối tác).
+   * Mỗi cụm là một chứng từ mà bên gọi phải lập để sổ ghi nhận khoản đó.
+   */
+  splitCategories: Array<{ categoryCode: string; partnerCode: string | null; amount: number }>;
 };
 
 export const DEFAULT_SPLIT_SHEET_NAME = "Sửa tay";
 
 export class RevenueSplitError extends Error {}
+
+/** Mã danh mục viết hoa, bỏ khoảng trắng; rỗng trả null để so sánh không lệch vì hoa/thường. */
+function cleanCode(value: unknown): string | null {
+  const text = String(value ?? "").trim().toUpperCase();
+  return text || null;
+}
 
 function moneyText(value: number) {
   return `${Math.round(value).toLocaleString("vi-VN")} đ`;
@@ -118,7 +146,8 @@ export function planRevenueDateSplit(input: {
 
   const existingById = new Map(input.existing.map((row) => [row.id, row]));
   const usedIds = new Set<string>();
-  const seenDates = new Set<string>();
+  const seenKeys = new Set<string>();
+  const originalCategory = cleanCode(input.transaction.categoryCode);
   const parsed = rawLines.map((line, index) => {
     const id = typeof line.id === "string" && line.id.trim() ? line.id.trim() : null;
     if (id) {
@@ -128,14 +157,26 @@ export function planRevenueDateSplit(input: {
     }
     const revenueDate = parseImportDate(line.revenueDate);
     if (!revenueDate) throw new RevenueSplitError(`Dòng ${index + 1} thiếu Ngày doanh thu hợp lệ.`);
+    const existing = id ? existingById.get(id)! : null;
+    // Bỏ trống Loại thu/chi = giữ nguyên cách phân loại đang có, y như trước khi có cột này.
+    const categoryCode = cleanCode(line.categoryCode) || cleanCode(existing?.categoryCode) || originalCategory;
+    // Đối tác của giao dịch chỉ rơi xuống dòng còn giữ loại gốc. Dòng đã đổi loại mà tự mượn
+    // đối tác của giao dịch (ví POS, ngân hàng...) thì khoản thu hộ treo nhầm tên người.
+    const keepsOriginalCategory = categoryCode === originalCategory;
+    const partnerCode = cleanCode(line.partnerCode)
+      || cleanCode(existing?.partnerCode)
+      || (keepsOriginalCategory ? cleanCode(input.transaction.partnerCode) : null);
+    // Cùng một ngày được phép có hai dòng khi khác Loại thu/chi (tiền bán hàng và tiền thu hộ
+    // về chung một lần quẹt); trùng cả ngày lẫn loại mới là khai thừa.
     const dateKey = revenueDate.toISOString().slice(0, 10);
-    if (seenDates.has(dateKey)) {
-      throw new RevenueSplitError(`Ngày doanh thu ${revenueDate.toLocaleDateString("vi-VN", { timeZone: "UTC" })} bị khai hai lần — gộp lại thành một dòng.`);
+    const lineKey = `${dateKey}|${categoryCode || ""}|${partnerCode || ""}`;
+    if (seenKeys.has(lineKey)) {
+      throw new RevenueSplitError(`Ngày doanh thu ${revenueDate.toLocaleDateString("vi-VN", { timeZone: "UTC" })} với cùng Loại thu/chi bị khai hai lần — gộp lại thành một dòng.`);
     }
-    seenDates.add(dateKey);
+    seenKeys.add(lineKey);
     const amount = Math.round(Number(line.amount));
     if (!Number.isFinite(amount) || amount <= 0) throw new RevenueSplitError(`Dòng ${index + 1} phải có số tiền lớn hơn 0.`);
-    return { id, revenueDate, amount, existing: id ? existingById.get(id)! : null };
+    return { id, revenueDate, amount, categoryCode, partnerCode, keepsOriginalCategory, existing };
   });
 
   const declaredTotal = parsed.reduce((sum, line) => sum + line.amount, 0);
@@ -150,14 +191,20 @@ export function planRevenueDateSplit(input: {
   const grabTotal = totalFee(input.existing, input.transaction.grabExpenseAmount, "grabExpenseAmount");
   const cardTotal = totalFee(input.existing, input.transaction.cardFeeAmount, "cardFeeAmount");
   const amounts = parsed.map((line) => line.amount);
+  // Gross ví và phí thuộc về phần DOANH THU: dòng tách sang loại khác (tiền thu hộ) không sinh
+  // phí thu hộ nào cả. Chia phí theo đúng những dòng giữ loại gốc; không dòng nào giữ loại gốc
+  // thì quay về chia đều theo số tiền như cũ.
+  const feeWeights = parsed.some((line) => line.keepsOriginalCategory)
+    ? parsed.map((line) => (line.keepsOriginalCategory ? line.amount : 0))
+    : amounts;
   // Chia phần phí (gross − thực nhận) thay vì chia thẳng gross: dòng nào cũng chắc chắn có
   // gross ≥ số tiền thực về, không sinh ra phí âm vì làm tròn.
   const feeTotal = grossTotal !== null && grossTotal >= totalAmount ? grossTotal - totalAmount : 0;
-  const feeSplit = allocateInteger(feeTotal, amounts);
-  const grabSplit = allocateInteger(grabTotal, feeTotal > 0 ? feeSplit : amounts);
+  const feeSplit = allocateInteger(feeTotal, feeWeights);
+  const grabSplit = allocateInteger(grabTotal, feeTotal > 0 ? feeSplit : feeWeights);
   const cardSplit = grabTotal + cardTotal === feeTotal
     ? feeSplit.map((value, index) => value - grabSplit[index])
-    : allocateInteger(cardTotal, feeTotal > 0 ? feeSplit : amounts);
+    : allocateInteger(cardTotal, feeTotal > 0 ? feeSplit : feeWeights);
   const grossSplit = grossTotal === null
     ? amounts.map(() => null)
     : feeTotal > 0 || grossTotal === totalAmount
@@ -177,9 +224,23 @@ export function planRevenueDateSplit(input: {
     grossAmount: grossSplit[index],
     grabExpenseAmount: grabSplit[index],
     cardFeeAmount: cardSplit[index],
+    categoryCode: line.categoryCode,
+    partnerCode: line.partnerCode,
+    keepsOriginalCategory: line.keepsOriginalCategory,
   }));
 
   const dateKeys = new Set(lines.map((line) => line.revenueDate.toISOString()));
+
+  // Gom các dòng đã đổi loại thành từng cụm (loại × đối tác): mỗi cụm một chứng từ, chứ không
+  // phải mỗi ngày doanh thu một chứng từ — tiền vẫn về đúng một lần.
+  const splitByKey = new Map<string, { categoryCode: string; partnerCode: string | null; amount: number }>();
+  for (const line of lines) {
+    if (line.keepsOriginalCategory || !line.categoryCode) continue;
+    const key = `${line.categoryCode}|${line.partnerCode || ""}`;
+    const current = splitByKey.get(key) || { categoryCode: line.categoryCode, partnerCode: line.partnerCode, amount: 0 };
+    current.amount += line.creditAmount || line.debitAmount;
+    splitByKey.set(key, current);
+  }
 
   return {
     direction,
@@ -187,5 +248,6 @@ export function planRevenueDateSplit(input: {
     lines,
     removedIds: input.existing.filter((row) => !usedIds.has(row.id)).map((row) => row.id),
     transactionRevenueDate: dateKeys.size === 1 ? lines[0].revenueDate : null,
+    splitCategories: [...splitByKey.values()],
   };
 }

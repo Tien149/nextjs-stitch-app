@@ -416,6 +416,16 @@ export default function ImportUploadPage({
 
   const errorRows = useMemo(() => preview?.rows.filter((row) => row.errors.length > 0) || [], [preview]);
   const skippedExistingRows = useMemo(() => preview?.rows.filter((row) => row.values.import_action === "SKIP_EXISTING") || [], [preview]);
+  /**
+   * Dòng nghi trùng: cùng tài khoản + ngày + số tiền với một giao dịch đã có trong sổ, chỉ khác
+   * số tham chiếu nên chống trùng cứng (@@unique theo Tài khoản + Số tham chiếu) không bắt được.
+   * Không chặn file — ngân hàng vẫn có thể có hai giao dịch giống hệt trong ngày — nhưng phải
+   * hỏi kế toán, vì dòng thừa sẽ cộng thêm vào "Tiền đã vô" của báo cáo Tiền về đủ chưa.
+   */
+  const suspectDuplicateRows = useMemo(
+    () => preview?.rows.filter((row) => Boolean(row.values.suspect_duplicate_code)) || [],
+    [preview],
+  );
 
   /**
    * Bảng "Doanh thu theo ngày" chỉ có nghĩa với file doanh thu POS; các loại import khác
@@ -612,6 +622,8 @@ export default function ImportUploadPage({
     return () => window.clearTimeout(timer);
   }, [branchCode, expectedMasterType, manualFields, manualOpen]);
 
+  const [skipSuspectedDuplicates, setSkipSuspectedDuplicates] = useState(true);
+
   const editPreviewCell = (rowKey: string, field: string, value: string) => {
     setRowEdits((current) => ({ ...current, [rowKey]: { ...(current[rowKey] || {}), [field]: value } }));
     setEditsDirty(true);
@@ -648,6 +660,7 @@ export default function ImportUploadPage({
       if (Object.keys(mapping).length > 0) formData.append("mappingJson", JSON.stringify(mapping));
       const editPayload = isRevenueImport ? rowEditsToPayload(rowEdits) : [];
       if (editPayload.length > 0) formData.append("rowEditsJson", JSON.stringify(editPayload));
+      if (skipSuspectedDuplicates) formData.append("skipSuspectedDuplicates", "1");
 
       const response = await fetch(withQuery(apiPath, { mode }), {
         method: "POST",
@@ -685,17 +698,27 @@ export default function ImportUploadPage({
           .filter((row: { autoProcessType?: string }) => row.autoProcessType !== "NET_ZERO").length;
         const skippedCount = previewPayload?.rows.filter((row) => row.values.import_action === "SKIP_EXISTING").length || 0;
         const netZeroCount = previewPayload?.rows.filter((row) => row.values.import_action === "NET_ZERO").length || 0;
+        const suspectSkippedCount = previewPayload?.rows.filter((row) => row.values.import_action === "SKIP_SUSPECT_DUPLICATE").length || 0;
         // Dòng ghi được tiền nhưng chưa lập được chứng từ phải báo ngay tại đây, lúc người dùng
         // còn đang mở file. Để phát hiện sau vài tuần thì không ai nhớ file nào, dòng nào.
         const needsFix = (payload.batch?.needsFix || []) as Array<{ transactionCode: string; amount: number; reason: string }>;
         const needsFixTotal = needsFix.reduce((sum, row) => sum + (row.amount || 0), 0);
+        // Viết cho người không tech: mỗi con số một câu ngắn, số 0 thì không nhắc.
+        const summaryParts = [
+          `Đã ghi nhận ${recordedCount} giao dịch từ file sao kê.`,
+          autoApprovedCount ? `Hệ thống tự lập ${autoApprovedCount} chứng từ và đưa vào sổ.` : "",
+          skippedCount ? `Bỏ qua ${skippedCount} dòng vì đã có từ lần import trước.` : "",
+          netZeroCount ? `${netZeroCount} dòng ngân hàng ghi rồi hoàn lại (ròng 0 đ) chỉ lưu dấu vết, không vào sổ.` : "",
+          suspectSkippedCount ? `Bỏ qua thêm ${suspectSkippedCount} dòng nghi trùng (cùng ngày, cùng số tiền, khác số tham chiếu).` : "",
+        ].filter(Boolean);
         setMessage(
-          `Đã import và ghi nhận ${recordedCount} giao dịch sao kê, tự động tạo ${autoApprovedCount} chứng từ đã duyệt, bỏ qua ${skippedCount} dòng đã có và lưu dấu vết ${netZeroCount} dòng đảo Nợ/Có ròng 0 đ.`
+          summaryParts.join(" ")
           + (needsFix.length
-            ? `\n\n⚠ ${needsFix.length} dòng CHƯA VÀO SỔ (${needsFixTotal.toLocaleString("vi-VN")} đ): tiền đã ghi nhận nhưng chưa lập được chứng từ.\n`
+            ? `\n\n⚠ ${needsFix.length} dòng tiền đã vào ngân hàng nhưng CHƯA VÀO SỔ (${needsFixTotal.toLocaleString("vi-VN")} đ).`
+              + " Tiền vẫn được ghi nhận, chỉ chưa lập được chứng từ nên chưa lên Sổ quỹ và báo cáo.\n"
               + needsFix.slice(0, 5).map((row) => `• ${row.transactionCode} — ${row.amount.toLocaleString("vi-VN")} đ: ${row.reason}`).join("\n")
               + (needsFix.length > 5 ? `\n• ... còn ${needsFix.length - 5} dòng nữa` : "")
-              + `\nXem đầy đủ ở Báo cáo → Thu chi ngày → mục "Chưa vào sổ".`
+              + `\nĐể xử lý: bấm "Xem giao dịch vừa import" bên dưới, tìm dòng có nhãn CHƯA VÀO SỔ rồi bấm "Vào sổ". Danh sách đầy đủ còn ở Báo cáo → Tiền về đủ chưa → mục "Chưa vào sổ".`
             : ""),
         );
         const committedBatchId = typeof payload.batch?.id === "string" ? payload.batch.id : "";
@@ -1216,6 +1239,38 @@ export default function ImportUploadPage({
                       {skippedExistingRows.slice(0, 8).map((row) => `dòng ${row.rowNumber}${row.values.transaction_code ? ` (${row.values.transaction_code})` : ""}`).join(", ")}
                       {skippedExistingRows.length > 8 ? ` ... và ${skippedExistingRows.length - 8} dòng nữa` : ""}
                     </p>
+                  </div>
+                )}
+
+                {suspectDuplicateRows.length > 0 && (
+                  <div className="border-b border-slate-100 bg-orange-50 px-4 py-3 text-sm text-orange-900">
+                    <p className="font-bold">
+                      {suspectDuplicateRows.length} dòng NGHI TRÙNG với giao dịch đã có trong sổ — cùng tài khoản, cùng ngày, cùng số tiền, chỉ khác số tham chiếu:
+                    </p>
+                    <ul className="mt-1 space-y-0.5">
+                      {suspectDuplicateRows.slice(0, 8).map((row) => (
+                        <li key={`${row.sheetName}:${row.rowNumber}`}>
+                          • dòng {row.rowNumber}
+                          {row.values.transaction_code ? ` (${row.values.transaction_code})` : ""} — trùng với {String(row.values.suspect_duplicate_code)}
+                        </li>
+                      ))}
+                      {suspectDuplicateRows.length > 8 && <li>• ... và {suspectDuplicateRows.length - 8} dòng nữa</li>}
+                    </ul>
+                    <label className="mt-2 flex items-start gap-2 font-bold">
+                      <input
+                        type="checkbox"
+                        checked={skipSuspectedDuplicates}
+                        onChange={(event) => setSkipSuspectedDuplicates(event.target.checked)}
+                        className="mt-0.5"
+                      />
+                      <span>
+                        Bỏ qua các dòng này khi Commit
+                        <span className="block font-normal">
+                          Bỏ tick nếu ngân hàng thật sự có hai giao dịch giống hệt nhau trong ngày (ví dụ hai bill cà thẻ cùng giá).
+                          Ghi trùng thì số tiền thừa sẽ cộng vào cột &quot;Tiền đã vô&quot; của báo cáo Tiền về đủ chưa.
+                        </span>
+                      </span>
+                    </label>
                   </div>
                 )}
 

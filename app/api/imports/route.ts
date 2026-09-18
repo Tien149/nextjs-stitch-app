@@ -523,7 +523,10 @@ export async function POST(request: Request) {
       template,
       rowEdits,
     );
-    await validateImportResult(parsed, importType, auth.session, { expectedMasterType });
+    // Kế toán tick ở bước xem trước: các dòng nghi trùng (cùng tài khoản + ngày + số tiền,
+    // khác số tham chiếu) sẽ được bỏ qua khi Commit thay vì ghi thêm một dòng sao kê nữa.
+    const skipSuspectedDuplicates = cleanText(formData.get("skipSuspectedDuplicates")) === "1";
+    await validateImportResult(parsed, importType, auth.session, { expectedMasterType, skipSuspectedDuplicates });
 
     if (mode === "commit") {
       if (parsed.errorRows > 0) {
