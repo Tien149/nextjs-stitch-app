@@ -315,7 +315,20 @@ export default function ReportsPage() {
     }, 0);
   }, [active, visibleTabs]);
 
+  /**
+   * Sổ doanh thu đứng chờ: mở tab ra chưa gọi số liệu, phải bấm "Tải dữ liệu" mới chạy.
+   *
+   * Tab này quét toàn bộ dòng doanh thu POS của kỳ (hàng nghìn dòng mỗi tháng) nên ai lỡ bấm
+   * qua cũng kéo theo một lượt tính nặng, trong khi phần lớn thời gian người xem chỉ đi ngang.
+   * Rời tab là trở lại trạng thái chờ, quay lại thì tự bấm (yêu cầu 18/09/2026).
+   */
+  const [ledgerArmed, setLedgerArmed] = useState(false);
+
   const loadData = useCallback(async () => {
+    if (active === "revenue-ledger" && !ledgerArmed) {
+      setTabLoading(false);
+      return;
+    }
     try {
       setTabLoading(true);
       const params = new URLSearchParams({ type: active, period, branchCode, scenario });
@@ -348,7 +361,7 @@ export default function ReportsPage() {
     } finally {
       setTabLoading(false);
     }
-  }, [active, branchCode, cashSourceView, ledgerChannel, ledgerFrom, ledgerTo, period, reportDate, scenario, shift]);
+  }, [active, branchCode, cashSourceView, ledgerArmed, ledgerChannel, ledgerFrom, ledgerTo, period, reportDate, scenario, shift]);
 
   const loadMoneySources = useCallback(async () => {
     const response = await fetch("/api/master-data?type=MONEY_SOURCE&status=ACTIVE");
@@ -369,6 +382,7 @@ export default function ReportsPage() {
     if (newTab !== active) {
       setData(null);
       setReconDailyCash(null);
+      setLedgerArmed(false);
       setActive(newTab);
     }
   };
@@ -1153,7 +1167,25 @@ export default function ReportsPage() {
         </div>
       )}
 
-      {!tabLoading && ledger && <RevenueLedgerPanel data={ledger} branchCode={branchCode} moneySources={moneySources} canEdit={canEditRevenueRow} onSaved={() => void loadData()} />}
+      {active === "revenue-ledger" && !ledgerArmed && (
+        <section className="rounded-xl border border-slate-200 bg-white p-10 text-center shadow-sm">
+          <span className="material-symbols-outlined text-4xl text-slate-300">point_of_sale</span>
+          <h3 className="mt-2 font-bold text-slate-700">Sổ doanh thu đang chờ</h3>
+          <p className="mx-auto mt-1 max-w-xl text-sm text-slate-500">
+            Báo cáo này quét toàn bộ dòng doanh thu POS của kỳ nên không tự chạy. Chọn kỳ, cửa hàng và khoảng ngày ở thanh lọc phía trên rồi bấm nút dưới đây.
+          </p>
+          <button
+            type="button"
+            onClick={() => setLedgerArmed(true)}
+            className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700"
+          >
+            <span className="material-symbols-outlined text-base">play_arrow</span>
+            Tải dữ liệu
+          </button>
+        </section>
+      )}
+
+      {!tabLoading && ledger && ledgerArmed && <RevenueLedgerPanel data={ledger} branchCode={branchCode} moneySources={moneySources} canEdit={canEditRevenueRow} onSaved={() => void loadData()} />}
 
       {!tabLoading && dailyCash && (
         <div className="space-y-5 report-print-area" id="daily-cash-report">

@@ -624,9 +624,68 @@ export default function ImportUploadPage({
 
   const [skipSuspectedDuplicates, setSkipSuspectedDuplicates] = useState(true);
 
+  /**
+   * Gán nguồn tiền hàng loạt ngay trên bảng xem trước (sao kê ngân hàng).
+   *
+   * File ngân hàng gửi về hầu như không bao giờ có cột "Trừ nguồn tiền chi tiết", mà thiếu cột
+   * đó thì tiền về không lên được bảng "Tiền về đủ chưa". Trước đây phải mở Excel điền tay cả
+   * trăm dòng rồi import lại; giờ tick dòng (hoặc điền một phát cho mọi dòng còn trống) là xong
+   * (yêu cầu 18/09/2026).
+   */
+  const supportsBulkSource = templateCode.startsWith("BANK_STATEMENT");
+  const bulkSourceFields = [
+    { field: "decrease_money_source_code", label: "Trừ nguồn tiền chi tiết" },
+    { field: "increase_money_source_code", label: "Tăng nguồn tiền chi tiết" },
+    { field: "summary_money_source_code", label: "Nguồn tiền tổng" },
+  ];
+  const [bulkField, setBulkField] = useState(bulkSourceFields[0].field);
+  const [bulkSource, setBulkSource] = useState("");
+  const [selectedPreviewRows, setSelectedPreviewRows] = useState<string[]>([]);
+
+  /** Giá trị đang hiển thị của một ô: bản sửa tay thắng giá trị đọc từ file. */
+  const previewCellValue = (row: PreviewPayload["rows"][number], field: string) => {
+    const edited = rowEdits[previewRowKey(row)]?.[field];
+    return edited !== undefined ? edited : row.values[field];
+  };
+  /** Bảng chỉ vẽ 100 dòng đầu; nút "điền tất cả dòng còn trống" thì chạy trên cả file. */
+  const visiblePreviewRows = (preview?.rows || []).slice(0, 100);
+  const emptyBulkFieldCount = (preview?.rows || [])
+    .filter((row) => !String(previewCellValue(row, bulkField) ?? "").trim()).length;
+
+  // Thanh gán hàng loạt cần danh mục nguồn tiền ngay cả khi chưa mở popup thêm danh mục.
+  useEffect(() => {
+    if (!supportsBulkSource || !preview || masterOptions.MONEY_SOURCE) return;
+    const controller = new AbortController();
+    void fetch("/api/master-data?type=MONEY_SOURCE&status=ACTIVE", { signal: controller.signal })
+      .then((response) => (response.ok ? response.json() : []))
+      .then((options: MasterOption[]) => setMasterOptions((current) => ({ ...current, MONEY_SOURCE: options })))
+      .catch(() => {});
+    return () => controller.abort();
+  }, [masterOptions.MONEY_SOURCE, preview, supportsBulkSource]);
+
   const editPreviewCell = (rowKey: string, field: string, value: string) => {
     setRowEdits((current) => ({ ...current, [rowKey]: { ...(current[rowKey] || {}), [field]: value } }));
     setEditsDirty(true);
+  };
+
+  /** Gán một nguồn tiền cho danh sách dòng chỉ định; `onlyEmpty` = chỉ điền vào ô còn trống. */
+  const applyBulkSource = (scope: "SELECTED" | "EMPTY") => {
+    if (!preview || !bulkSource) return;
+    const targets = preview.rows.filter((row) => {
+      if (scope === "SELECTED") return selectedPreviewRows.includes(previewRowKey(row));
+      return !String(previewCellValue(row, bulkField) ?? "").trim();
+    });
+    if (targets.length === 0) return;
+    setRowEdits((current) => {
+      const next = { ...current };
+      for (const row of targets) {
+        const key = previewRowKey(row);
+        next[key] = { ...(next[key] || {}), [bulkField]: bulkSource };
+      }
+      return next;
+    });
+    setEditsDirty(true);
+    setSelectedPreviewRows([]);
   };
 
   const resetPreviewRow = (rowKey: string) => {
@@ -658,7 +717,9 @@ export default function ImportUploadPage({
       if (branchCode) formData.append("branchCode", branchCode);
       if (expectedMasterType) formData.append("expectedMasterType", expectedMasterType);
       if (Object.keys(mapping).length > 0) formData.append("mappingJson", JSON.stringify(mapping));
-      const editPayload = isRevenueImport ? rowEditsToPayload(rowEdits) : [];
+      // Sao kê cũng gửi bản sửa: server luôn đọc lại file gốc nên không gửi là mất sạch phần
+      // nguồn tiền vừa gán hàng loạt.
+      const editPayload = isRevenueImport || supportsBulkSource ? rowEditsToPayload(rowEdits) : [];
       if (editPayload.length > 0) formData.append("rowEditsJson", JSON.stringify(editPayload));
       if (skipSuspectedDuplicates) formData.append("skipSuspectedDuplicates", "1");
 
@@ -1154,7 +1215,7 @@ export default function ImportUploadPage({
               ) : (
                 <button
                   onClick={() => upload("commit")}
-                  disabled={isUploading || !preview || preview.errorRows > 0 || mappingDirty}
+                  disabled={isUploading || !preview || preview.errorRows > 0 || mappingDirty || (supportsBulkSource && editsDirty)}
                   className="h-9 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg px-4 text-xs font-bold shadow-sm"
                 >
                   <span className="inline-flex items-center gap-1.5">
@@ -1344,10 +1405,76 @@ export default function ImportUploadPage({
                   subtitle={`Số của file đang xem trước, cộng ${previewRevenueDays.length} dòng hợp lệ (dòng lỗi không tính)`}
                 />
 
+                {supportsBulkSource && (
+                  <div className="flex flex-wrap items-end gap-2 border-b border-slate-100 bg-slate-50 px-4 py-3">
+                    <label className="text-[11px] font-bold uppercase text-slate-500">
+                      Cột cần điền
+                      <select
+                        value={bulkField}
+                        onChange={(event) => setBulkField(event.target.value)}
+                        className="mt-1 block rounded-lg border border-slate-300 bg-white px-2 py-2 text-sm font-normal"
+                      >
+                        {bulkSourceFields.map((item) => <option key={item.field} value={item.field}>{item.label}</option>)}
+                      </select>
+                    </label>
+                    <label className="text-[11px] font-bold uppercase text-slate-500">
+                      Nguồn tiền
+                      <select
+                        value={bulkSource}
+                        onChange={(event) => setBulkSource(event.target.value)}
+                        className="mt-1 block w-64 rounded-lg border border-slate-300 bg-white px-2 py-2 text-sm font-normal"
+                      >
+                        <option value="">— chọn nguồn tiền —</option>
+                        {filterMasterOptions(bulkField, templateCode, masterOptions.MONEY_SOURCE || [], { branch_code: branchCode })
+                          .map((option) => <option key={option.code} value={option.code}>{option.code} - {option.name}</option>)}
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      disabled={!bulkSource || selectedPreviewRows.length === 0}
+                      onClick={() => applyBulkSource("SELECTED")}
+                      className="h-9 rounded-lg bg-blue-600 px-3 text-xs font-bold text-white hover:bg-blue-700 disabled:opacity-40"
+                    >
+                      Gán cho {selectedPreviewRows.length} dòng đã chọn
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!bulkSource || emptyBulkFieldCount === 0}
+                      onClick={() => applyBulkSource("EMPTY")}
+                      title="Điền cho mọi dòng của file còn trống cột này, kể cả dòng chưa hiện trên bảng"
+                      className="h-9 rounded-lg border border-blue-200 bg-white px-3 text-xs font-bold text-blue-700 hover:bg-blue-50 disabled:opacity-40"
+                    >
+                      Điền tất cả dòng còn trống ({emptyBulkFieldCount})
+                    </button>
+                    {Object.keys(rowEdits).length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => { setRowEdits({}); setEditsDirty(true); setSelectedPreviewRows([]); }}
+                        className="h-9 rounded-lg border border-slate-300 bg-white px-3 text-xs font-bold text-slate-600 hover:bg-slate-50"
+                      >
+                        Bỏ hết bản sửa
+                      </button>
+                    )}
+                    {editsDirty && (
+                      <p className="text-xs font-semibold text-amber-700">Đã sửa {Object.keys(rowEdits).length} dòng — bấm Preview để chấm lại lỗi rồi mới Commit.</p>
+                    )}
+                  </div>
+                )}
+
                 <div className="max-h-[calc(100vh-365px)] min-h-[330px] overflow-auto">
                   <table className="w-full text-left text-sm">
                     <thead className="sticky top-0 bg-slate-50 text-slate-500 text-xs uppercase">
                       <tr>
+                        {supportsBulkSource && (
+                          <th className="px-3 py-3">
+                            <input
+                              type="checkbox"
+                              aria-label="Chọn tất cả dòng đang hiện"
+                              checked={visiblePreviewRows.length > 0 && visiblePreviewRows.every((row) => selectedPreviewRows.includes(previewRowKey(row)))}
+                              onChange={(event) => setSelectedPreviewRows(event.target.checked ? visiblePreviewRows.map((row) => previewRowKey(row)) : [])}
+                            />
+                          </th>
+                        )}
                         <th className="px-4 py-3">Dòng</th>
                         {primaryFields.map((field) => (
                           <th key={field} className="px-4 py-3">{field}</th>
@@ -1356,19 +1483,37 @@ export default function ImportUploadPage({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {preview.rows.slice(0, 100).map((row) => (
-                        <tr key={row.rowNumber} className={row.errors.length > 0 ? "bg-rose-50/70 hover:bg-rose-50" : "hover:bg-slate-50"}>
-                          <td className="px-4 py-3 font-bold">{row.rowNumber}</td>
-                          {primaryFields.map((field) => (
-                            <td key={field} className="px-4 py-3 whitespace-nowrap">
-                              {String(row.values[field] ?? "-")}
+                      {visiblePreviewRows.map((row) => {
+                        const rowKey = previewRowKey(row);
+                        return (
+                        <tr key={rowKey} className={row.errors.length > 0 ? "bg-rose-50/70 hover:bg-rose-50" : "hover:bg-slate-50"}>
+                          {supportsBulkSource && (
+                            <td className="px-3 py-3">
+                              <input
+                                type="checkbox"
+                                aria-label={`Chọn dòng ${row.rowNumber}`}
+                                checked={selectedPreviewRows.includes(rowKey)}
+                                onChange={(event) => setSelectedPreviewRows((current) => event.target.checked
+                                  ? [...current, rowKey]
+                                  : current.filter((key) => key !== rowKey))}
+                              />
                             </td>
-                          ))}
+                          )}
+                          <td className="px-4 py-3 font-bold">{row.rowNumber}</td>
+                          {primaryFields.map((field) => {
+                            const edited = rowEdits[rowKey]?.[field] !== undefined;
+                            return (
+                              <td key={field} className={`px-4 py-3 whitespace-nowrap ${edited ? "bg-amber-50 font-bold text-amber-800" : ""}`}>
+                                {String(previewCellValue(row, field) ?? "") || "-"}
+                              </td>
+                            );
+                          })}
                           <td className={`px-4 py-3 ${row.errors.length > 0 ? "font-semibold text-rose-700" : "text-slate-400"}`}>
                             {row.errors.join("; ") || "-"}
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
