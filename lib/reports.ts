@@ -5,7 +5,7 @@ import { periodBounds } from "@/lib/accounting";
 import { depositDecreaseActions, depositIncreaseActions, depositRevenueActions } from "@/lib/deposit-accounting";
 import { depositCategoryDirection } from "@/lib/bank-statement-category";
 import { isGrabMoneySource, moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
-import { normalizeCashflowCategoryType, SALES_RECEIPT_CATEGORY_CODES } from "@/lib/voucher-rules";
+import { isSalesReceiptCategory, normalizeCashflowCategoryType, SALES_RECEIPT_CATEGORY_CODES } from "@/lib/voucher-rules";
 import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/lib/money-transfer-date";
 import { transferLegsForBranch } from "@/lib/internal-transfer";
 import { WALLET_CARD_FEE_CATEGORY_CODE, WALLET_GRAB_EXPENSE_CATEGORY_CODE } from "@/lib/wallet-settlement-allocation";
@@ -1466,6 +1466,23 @@ export type RevenueSettlementRow = {
   status: "MATCHED" | "FEE" | "WAITING" | "OVER";
 };
 
+/**
+ * Phiếu thu bán hàng lập tay mà KHÔNG gắn với dòng sao kê nào.
+ *
+ * Cột "Tiền đã vô" của nguồn ngân hàng/ví đọc sổ sao kê chứ không đọc chứng từ — sao kê mới là
+ * bằng chứng tiền đã về, còn phiếu lập tay chỉ là lời khai; đếm cả hai thì hôm import sao kê là
+ * cùng một khoản vào hai lần. Nhưng im lặng bỏ qua thì kế toán thấy phiếu nằm sờ sờ bên Chứng
+ * từ ngân hàng mà bảng vẫn báo chưa về, không hiểu vì sao (khách hỏi 18/09/2026).
+ */
+export type RevenueSettlementLooseVoucher = {
+  code: string;
+  date: string;
+  moneySourceCode: string;
+  moneySourceName: string;
+  partnerName: string;
+  amount: number;
+};
+
 /** Chỉ những khoản thu này mới là tiền về của doanh thu bán hàng. */
 const revenueSettlementCategoryCodes = SALES_RECEIPT_CATEGORY_CODES;
 
@@ -1766,7 +1783,7 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
   const { start, end } = periodBounds(period);
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
 
-  const [moneySources, posRevenues, allocations, cashReceipts, depositApplications, feeCategories] = await Promise.all([
+  const [moneySources, posRevenues, allocations, cashReceipts, reconciledVoucherLinks, depositApplications, feeCategories] = await Promise.all([
     prisma.masterDataItem.findMany({
       where: { type: "MONEY_SOURCE", status: "ACTIVE" },
       select: { code: true, name: true, group: true, branch: true },
@@ -1800,7 +1817,12 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
         voucherDate: { gte: start, lt: end },
         deletedAt: null,
       },
-      select: { voucherDate: true, moneySourceCode: true, amount: true, depositAction: true },
+      select: { id: true, code: true, voucherDate: true, moneySourceCode: true, amount: true, depositAction: true, categoryCode: true, partnerName: true },
+    }),
+    // Phiếu đã gắn dòng sao kê thì sao kê là bản ghi chính, không phải phiếu "lạc".
+    prisma.reconciliationMatch.findMany({
+      where: { deletedAt: null, targetType: "VOUCHER", bankTransaction: { is: { deletedAt: null } } },
+      select: { targetId: true },
     }),
     // Cọc cấn trừ vào bill / chuyển doanh thu trong kỳ. Khách đã chuyển tiền cọc từ trước
     // (ngày nhận cọc), hôm cấn trừ POS ghi doanh thu nhưng sao kê không có đồng nào về —
@@ -1896,6 +1918,28 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
     touch(dayKey(row.voucherDate), source).received += row.amount;
   }
 
+  // Phiếu thu bán hàng của nguồn ngân hàng/ví mà chưa có dòng sao kê nào: không cộng vào
+  // "Tiền đã vô" (xem RevenueSettlementLooseVoucher) nhưng phải liệt kê ra. Nguồn tiền mặt
+  // không có sao kê để đối chiếu nên không tính là lạc.
+  const reconciledVoucherIds = new Set(reconciledVoucherLinks.map((row) => row.targetId));
+  const looseVouchers: RevenueSettlementLooseVoucher[] = cashReceipts
+    .filter((row) => !row.depositAction
+      && isSalesReceiptCategory(row.categoryCode)
+      && !reconciledVoucherIds.has(row.id))
+    .map((row) => ({ row, source: sourceByCode.get(row.moneySourceCode) }))
+    .filter(({ source }) => source
+      && normalizeMoneySourceGroup(source.group) !== "CASH"
+      && moneySourceMatchesBranch(source, branchCode))
+    .map(({ row, source }) => ({
+      code: row.code,
+      date: dayKey(row.voucherDate),
+      moneySourceCode: row.moneySourceCode,
+      moneySourceName: source?.name || row.moneySourceCode,
+      partnerName: row.partnerName || "",
+      amount: Math.round(row.amount),
+    }))
+    .sort((a, b) => a.date.localeCompare(b.date) || a.code.localeCompare(b.code));
+
   // Cọc cấn trừ / chuyển doanh thu: cộng vào "tiền đã vô" của đúng ngày xử lý, đúng nguồn tiền
   // đã nhận cọc (POS ghi bill trả bằng cọc theo phương thức khách đã chuyển cọc). Cọc đầu kỳ
   // chưa khai nguồn thì đứng thành dòng riêng để người xem biết mà bổ sung nguồn cho phiếu cọc.
@@ -1943,8 +1987,10 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
     period,
     branchCode,
     rows,
+    looseVouchers,
     totals: {
       revenue: rows.reduce((sum, row) => sum + row.revenue, 0),
+      looseVoucherAmount: looseVouchers.reduce((sum, row) => sum + row.amount, 0),
       received: rows.reduce((sum, row) => sum + row.received, 0),
       remaining: rows.reduce((sum, row) => sum + row.remaining, 0),
       waiting: rows.filter((row) => row.status === "WAITING").reduce((sum, row) => sum + row.remaining, 0),

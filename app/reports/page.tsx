@@ -158,11 +158,21 @@ type RevenueSettlementRow = {
   feeCategoryName: string | null;
   status: "MATCHED" | "FEE" | "WAITING" | "OVER";
 };
+/** Phiếu thu bán hàng lập tay chưa có dòng sao kê nào đối chiếu — xem khối cảnh báo dưới bảng. */
+type RevenueSettlementLooseVoucher = {
+  code: string;
+  date: string;
+  moneySourceCode: string;
+  moneySourceName: string;
+  partnerName: string;
+  amount: number;
+};
 type RevenueSettlementData = {
   period: string;
   branchCode: string;
   rows: RevenueSettlementRow[];
-  totals: { revenue: number; received: number; remaining: number; waiting: number; fee: number; over: number };
+  looseVouchers?: RevenueSettlementLooseVoucher[];
+  totals: { revenue: number; received: number; remaining: number; waiting: number; fee: number; over: number; looseVoucherAmount?: number };
 };
 type MasterDataOption = { id: string; type: string; code: string; name: string; group: string | null; branch: string | null };
 type RevenueLedgerRow = {
@@ -2512,6 +2522,7 @@ function RevenueSettlementPanel({ data }: { data: RevenueSettlementData }) {
    * trả gộp nhiều ngày — cả hai đều sửa ngay trên dòng sao kê (nút "Tách / sửa dòng"), chứ mở
    * chứng từ ra sửa thì bảng này không đổi số: nó đọc sổ sao kê, không đọc chứng từ.
    */
+  const looseVouchers = data.looseVouchers || [];
   const ledgerHref = (row: RevenueSettlementRow) => `/reconciliations?${new URLSearchParams({
     dateType: "REVENUE",
     from: row.date,
@@ -2524,6 +2535,43 @@ function RevenueSettlementPanel({ data }: { data: RevenueSettlementData }) {
 
   return (
     <div className="space-y-5">
+      {looseVouchers.length > 0 && (
+        <section className="rounded-xl border border-amber-300 bg-amber-50 p-4">
+          <div className="flex items-start gap-3">
+            <span className="material-symbols-outlined text-amber-700">report</span>
+            <div className="min-w-0 flex-1">
+              <h3 className="font-bold text-amber-900">
+                {looseVouchers.length} phiếu thu bán hàng chưa có dòng sao kê đối chiếu · {money(data.totals.looseVoucherAmount || 0)} đ
+              </h3>
+              <p className="mt-1 text-xs leading-5 text-amber-900">
+                Bảng này đọc <b>sổ sao kê ngân hàng</b>, không đọc chứng từ — sao kê mới là bằng chứng tiền đã về, còn phiếu lập tay là lời khai;
+                đếm cả hai thì hôm import sao kê là cùng một khoản vào hai lần. Nên số tiền dưới đây <b>chưa</b>{" "}nằm trong cột &quot;Tiền đã vô&quot;.
+                Tiền đã thật sự về thì import sao kê của tài khoản đó rồi <b>xoá phiếu lập tay</b> (để lại là Báo cáo nguồn tiền cộng dư đúng số này);
+                tiền chưa về thì cứ để nguyên, bảng đang báo đúng.
+              </p>
+              <div className="mt-3 overflow-x-auto rounded-lg border border-amber-200 bg-white">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-amber-100/60 uppercase text-amber-900">
+                    <tr><th className="px-3 py-2">Ngày</th><th className="px-3 py-2">Chứng từ</th><th className="px-3 py-2">Nguồn tiền</th><th className="px-3 py-2">Đối tác</th><th className="px-3 py-2 text-right">Số tiền</th></tr>
+                  </thead>
+                  <tbody>
+                    {looseVouchers.map((voucher) => (
+                      <tr key={voucher.code} className="border-t border-amber-100">
+                        <td className="whitespace-nowrap px-3 py-2">{dayLabel(voucher.date)}</td>
+                        <td className="px-3 py-2"><a href="/bank-vouchers" className="font-bold text-blue-700 hover:underline">{voucher.code}</a></td>
+                        <td className="px-3 py-2">{voucher.moneySourceName}<span className="ml-1 text-slate-400">{voucher.moneySourceCode}</span></td>
+                        <td className="px-3 py-2">{voucher.partnerName || "—"}</td>
+                        <td className="whitespace-nowrap px-3 py-2 text-right font-bold tabular-nums">{money(voucher.amount)} đ</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Kpi label="Doanh thu trong kỳ" value={data.totals.revenue} icon="point_of_sale" />
         <Kpi label="Tiền đã về" value={data.totals.received} icon="account_balance" tone="green" />
