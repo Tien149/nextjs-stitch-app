@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
-import { canPerformMenuAction, SESSION_KEY, filterModuleTabs } from "@/lib/auth-demo";
+import { canPerformMenuAction, canOpenPath, SESSION_KEY, filterModuleTabs } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import CopyableText from "@/components/CopyableText";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
@@ -175,6 +175,12 @@ export default function InventoryPage() {
   };
 
   const canCreate = user ? canPerformMenuAction(user, href, "create") : false;
+  /**
+   * Nút "Import ..." trước đây chỉ xét quyền TẠO của màn Kho, trong khi màn Import là một menu
+   * riêng mà vai Quản lý/Viewer không có. Bấm vào là bị đá ngược về Dashboard không một lời
+   * giải thích, nên người dùng kết luận "hệ thống không có chỗ đẩy file" (phản hồi 19/09/2026).
+   */
+  const canOpenImports = user ? canOpenPath(user, "/imports") : false;
   /** Gán Nhóm doanh thu ngay trên bảng danh mục là hành vi SỬA mặt hàng, không phải tạo mới. */
   const canEditItem = user ? canPerformMenuAction(user, href, "edit") : false;
   const importTarget = active === "stock"
@@ -579,14 +585,17 @@ export default function InventoryPage() {
       {message && <p className="mb-4 px-4 py-3 rounded-lg border border-blue-100 bg-blue-50 text-sm text-blue-700">{message}</p>}
 
       {canCreate && (
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3">
-          <p className="text-sm text-blue-800">
+        <div className={`mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3 ${canOpenImports ? "border-blue-100 bg-blue-50" : "border-amber-200 bg-amber-50"}`}>
+          <p className={`text-sm ${canOpenImports ? "text-blue-800" : "text-amber-800"}`}>
             Có thể nhập đầy đủ dữ liệu của màn hình này bằng file Excel theo mẫu chuẩn.
             {active === "stocktake" && " Kiểm kê Kho không bao gồm CCDC và Tài sản."}
+            {!canOpenImports && " Tài khoản của bạn chưa được cấp menu Import dữ liệu nên chưa mở được màn hình đẩy file — liên hệ Admin để cấp quyền hoặc nhờ import giúp."}
           </p>
-          <a className="secondary-button bg-white" href={`/imports?tab=${importTarget.tab}`}>
-            <span className="material-symbols-outlined text-lg">upload_file</span>{importTarget.label}
-          </a>
+          {canOpenImports && (
+            <a className="secondary-button bg-white" href={`/imports?tab=${importTarget.tab}`}>
+              <span className="material-symbols-outlined text-lg">upload_file</span>{importTarget.label}
+            </a>
+          )}
         </div>
       )}
 
@@ -809,6 +818,22 @@ export default function InventoryPage() {
             </form>
             <form onSubmit={(e) => { e.preventDefault(); void send({ action: "UPSERT_UNIT_CONVERSION", ...conversionForm }, conversionSavedMessage()); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
               <h2 className="font-bold text-slate-800">Cập nhật ĐVT quy đổi</h2>
+              {/* Khung này sửa LẺ từng mã. Người cần khai vài trăm mã đứng đúng ở đây và không
+                  có gì chỉ sang đường đi file Excel, nên kết luận hệ thống không cho đẩy file
+                  (phản hồi 19/09/2026). Nói thẳng đường đi ngay tại chỗ. */}
+              {canOpenImports ? (
+                <p className="text-[11px] leading-5 text-slate-500">
+                  Khung này khai lẻ từng mã. Nhiều mã một lúc thì{" "}
+                  <a className="font-bold text-blue-700 hover:underline" href="/imports?tab=inventory-item">
+                    khai hàng loạt bằng file Excel
+                  </a>
+                  {" "}— tải file mẫu, điền cột ĐVT mua và Tỷ lệ quy đổi, mã đã có thì cập nhật chứ không tạo trùng.
+                </p>
+              ) : (
+                <p className="text-[11px] leading-5 text-slate-500">
+                  Khung này khai lẻ từng mã. Khai hàng loạt bằng file Excel thì cần menu Import dữ liệu — tài khoản của bạn chưa được cấp, liên hệ Admin.
+                </p>
+              )}
               <Input label="Mặt hàng">
                 <ItemSelect items={data.items} value={conversionForm.itemId} onChange={(itemId) => setConversionForm({ ...conversionForm, itemId })} />
               </Input>
