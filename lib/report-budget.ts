@@ -133,6 +133,13 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     prisma.debtRecord.findMany({
       where: { debtType: "PAYABLE", recognizeExpense: true, documentDate: { gte: yearStart, lt: yearEnd }, ...branchFilter },
       select: { id: true, code: true, documentDate: true, originalAmount: true },
+      // Cờ recognizeExpense là cột mới: môi trường chạy code mới mà CHƯA chạy migration (hoặc
+      // server còn giữ Prisma Client cũ trong bộ nhớ) sẽ ném ngay ở đây và giết cả bảng P&L —
+      // đúng lỗi "Internal Server Error" khách gặp 19/09/2026. Cảnh báo công nợ chỉ là phần phụ,
+      // không được phép kéo theo toàn bộ số liệu, nên hỏng thì bỏ cảnh báo chứ không hỏng bảng.
+    }).catch((error: unknown) => {
+      console.error("Không đọc được công nợ phải trả cho cảnh báo chưa ghi sổ (bỏ qua cảnh báo):", error);
+      return [] as Array<{ id: string; code: string; documentDate: Date; originalAmount: number }>;
     }),
   ]);
   const postedDebtIds = new Set(
