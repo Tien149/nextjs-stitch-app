@@ -890,7 +890,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Thiếu thông tin đối soát" }, { status: 400 });
     }
 
-    const bank = await prisma.bankStatementTransaction.findUnique({ where: { id: bankTransactionId } });
+    const bank = await prisma.bankStatementTransaction.findUnique({
+      where: { id: bankTransactionId },
+      include: { allocations: true },
+    });
     if (!bank) return NextResponse.json({ error: "Không tìm thấy giao dịch sao kê" }, { status: 404 });
     if (bank.branchCode) {
       try {
@@ -923,12 +926,52 @@ export async function POST(request: Request) {
         },
       });
 
+      /**
+       * Nối xong thì điền luôn những ô còn trống để tiền hiện ra ngay trên "Tiền về đủ chưa",
+       * thay vì bắt kế toán sang Sổ sao kê gõ lại (khách góp ý 19/09/2026).
+       *
+       * - Ngày doanh thu = NGÀY TIỀN VỀ. Kế toán chỉ lập phiếu tay khi đã nhìn thấy tiền trên
+       *   sao kê nên ngày phiếu cũng chính là ngày tiền về; đoán như vậy đúng gần hết, sai thì
+       *   sửa ngay trên dòng bằng "Tách / sửa dòng" — rẻ hơn nhiều so với quên điền rồi tiền
+       *   không đứng vào ngày nào cả.
+       * - Loại thu/chi và Trừ nguồn tiền chi tiết lấy theo chứng từ vừa nối: thiếu hai ô này
+       *   thì bảng vẫn bỏ qua dòng sao kê dù đã có Ngày doanh thu, người dùng bấm Nối xong
+       *   không thấy gì đổi và không hiểu vì sao.
+       *
+       * CHỈ điền ô đang TRỐNG — đã khai rồi là ý của người dùng, không đè.
+       */
+      const linkedVoucher = targetType === "VOUCHER"
+        ? await tx.financialVoucher.findUnique({ where: { id: targetId }, select: { moneySourceCode: true, categoryCode: true } })
+        : null;
+      const filled: string[] = [];
+      if (bank.creditAmount > 0 && linkedVoucher) {
+        const revenueDate = bank.sourceDate || bank.transactionDate;
+        const noRevenueDate = !bank.revenueDate && bank.allocations.every((row) => !row.revenueDate);
+        const noCategory = !bank.categoryCode && bank.allocations.every((row) => !row.categoryCode);
+        const noDecreaseSource = !bank.decreaseMoneySourceCode && bank.allocations.every((row) => !row.decreaseMoneySourceCode);
+
+        const patch: Record<string, unknown> = {};
+        if (noRevenueDate) { patch.revenueDate = revenueDate; filled.push("Ngày doanh thu"); }
+        if (noCategory && linkedVoucher.categoryCode) { patch.categoryCode = linkedVoucher.categoryCode; filled.push("Loại thu/chi"); }
+        if (noDecreaseSource && linkedVoucher.moneySourceCode) { patch.decreaseMoneySourceCode = linkedVoucher.moneySourceCode; filled.push("Trừ nguồn tiền chi tiết"); }
+
+        if (Object.keys(patch).length > 0) {
+          await tx.bankStatementTransaction.update({ where: { id: bankTransactionId }, data: patch });
+          for (const [field, value] of Object.entries(patch)) {
+            await tx.bankStatementAllocation.updateMany({
+              where: { bankTransactionId, [field]: null },
+              data: { [field]: value },
+            });
+          }
+        }
+      }
+
       await tx.bankStatementTransaction.update({
         where: { id: bankTransactionId },
         data: { reconcileStatus: "MATCHED" },
       });
 
-      return created;
+      return { ...created, filledFields: filled };
     });
 
     return NextResponse.json(match, { status: 201 });

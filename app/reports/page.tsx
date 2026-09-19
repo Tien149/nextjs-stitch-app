@@ -2623,8 +2623,12 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
               <p className="mt-1 text-xs leading-5 text-amber-900">
                 Bảng này đọc <b>sổ sao kê ngân hàng</b>, không đọc chứng từ — sao kê mới là bằng chứng tiền đã về, còn phiếu lập tay là lời khai;
                 đếm cả hai thì hôm import sao kê là cùng một khoản vào hai lần. Nên số tiền dưới đây <b>chưa</b>{" "}nằm trong cột &quot;Tiền đã vô&quot;.
-                Tiền đã thật sự về thì import sao kê của tài khoản đó rồi <b>xoá phiếu lập tay</b> (để lại là Báo cáo nguồn tiền cộng dư đúng số này);
-                tiền chưa về thì cứ để nguyên, bảng đang báo đúng.
+              </p>
+              <p className="mt-1 text-xs leading-5 text-amber-900">
+                Dòng nào tìm được dòng sao kê khớp thì bấm <b>Nối</b>: hệ thống lấy luôn <b>ngày tiền về làm Ngày doanh thu</b>{" "}(kèm Loại thu/chi và
+                Trừ nguồn tiền theo phiếu), nên tiền hiện ra ngay ở đúng ngày đó — bán hàng ngày khác thì sửa lại bằng nút &quot;Tách / sửa dòng&quot; trên Sổ sao kê.
+                Dòng chưa tìm được thì hoặc sao kê chưa import (import xong hệ thống tự nối), hoặc dòng sao kê đã có chứng từ riêng — khi đó phiếu lập tay là
+                bản trùng, <b>xoá phiếu lập tay</b> đi (để lại là Báo cáo nguồn tiền cộng dư đúng số này).
               </p>
               {canLink && linkableVouchers.length > 0 && (
                 <button

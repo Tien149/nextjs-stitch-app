@@ -871,6 +871,23 @@ export async function commitImport(input: CommitInput) {
                   : {}),
               },
             });
+            // Cùng luật với nút "Nối" trên báo cáo: file sao kê không khai Ngày doanh thu /
+            // Trừ nguồn tiền thì lấy ngày tiền về và nguồn tiền của chính phiếu tay, để tiền
+            // hiện ra ngay trên "Tiền về đủ chưa" thay vì nằm im chờ ai đó phát hiện.
+            const groupRevenueDate = group.rows.some((row) => row.values.revenue_date);
+            const groupDecreaseSource = group.rows.some((row) => asText(row.values.decrease_money_source_code));
+            if (!groupRevenueDate || !groupDecreaseSource) {
+              const patch: Record<string, unknown> = {};
+              if (!groupRevenueDate) patch.revenueDate = sourceDate || transactionDate;
+              if (!groupDecreaseSource && manual.moneySourceCode) patch.decreaseMoneySourceCode = manual.moneySourceCode;
+              await tx.bankStatementTransaction.update({ where: { id: bankTransaction.id }, data: patch });
+              for (const [field, value] of Object.entries(patch)) {
+                await tx.bankStatementAllocation.updateMany({
+                  where: { bankTransactionId: bankTransaction.id, [field]: null },
+                  data: { [field]: value },
+                });
+              }
+            }
             targetId = manual.id;
             targetCode = manual.code;
             linkedManualVoucher = true;
