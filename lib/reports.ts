@@ -1484,11 +1484,24 @@ export type RevenueSettlementLooseVoucher = {
   partnerName: string;
   amount: number;
   /**
-   * Dòng sao kê CHƯA có chứng từ nào, cùng số tiền, lệch vài ngày — nối được ngay trên báo cáo.
-   * Rỗng thì hoặc sao kê chưa import, hoặc dòng sao kê đã có chứng từ riêng (phiếu tay là bản
-   * trùng, phải xoá chứ không phải nối).
+   * Dòng sao kê CHƯA có chứng từ nào, cùng số tiền — nối được ngay trên báo cáo. `exact` là
+   * dòng khớp chắc (lệch ≤ 3 ngày, đúng nguồn tiền); dòng lệch xa hơn vẫn liệt kê kèm số ngày
+   * lệch để kế toán tự quyết, nhưng không nằm trong diện "Nối tất cả".
    */
-  candidates: Array<{ id: string; transactionCode: string; transactionDate: string; bankAccount: string }>;
+  candidates: Array<{
+    id: string;
+    transactionCode: string;
+    transactionDate: string;
+    bankAccount: string;
+    dayGap: number;
+    sourceMismatch: boolean;
+    exact: boolean;
+  }>;
+  /**
+   * Dòng sao kê cùng số tiền nhưng ĐÃ có chứng từ riêng — phiếu tay này là bản trùng, việc cần
+   * làm là xoá phiếu tay. Rỗng cùng với `candidates` nghĩa là sao kê của tài khoản đó chưa import.
+   */
+  takenLines: Array<{ transactionCode: string; transactionDate: string; voucherCode: string }>;
 };
 
 /** Chỉ những khoản thu này mới là tiền về của doanh thu bán hàng. */
@@ -1950,40 +1963,65 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
     }))
     .sort((a, b) => a.date.localeCompare(b.date) || a.code.localeCompare(b.code));
 
-  // Gợi ý dòng sao kê để nối: chỉ dòng CHƯA có chứng từ nào. Dòng đã có chứng từ riêng nghĩa là
-  // phiếu tay bị trùng — nối vào đó là hai chứng từ cho một đồng tiền, phải xoá phiếu tay.
-  const looseCandidateRows = looseRows.length > 0
+  /**
+   * Tìm dòng sao kê cùng số tiền để nối, VÀ nói rõ vì sao không nối được khi không tìm thấy.
+   *
+   * Trước đây chỗ này chỉ lấy dòng chưa có chứng từ, nên khi trống thì bảng gộp hai chuyện
+   * hoàn toàn khác nhau vào một câu "sao kê chưa import, hoặc dòng đã có chứng từ riêng" —
+   * kế toán nhìn cả cột toàn chữ đó, không biết mình phải import hay phải xoá phiếu trùng, và
+   * hỏi thẳng "không thấy nút nối đâu?" (19/09/2026). Giờ quét rộng hơn (cả dòng đã có chứng
+   * từ, cả dòng lệch ngày) rồi xếp loại cho từng phiếu.
+   */
+  const LOOSE_SCAN_DAY_GAP = 31;
+  const looseScanRows = looseRows.length > 0
     ? await prisma.bankStatementTransaction.findMany({
         where: {
           deletedAt: null,
           ...(branchCode === "ALL" ? {} : { branchCode }),
           creditAmount: { in: [...new Set(looseRows.map((row) => row.amount))] },
           transactionDate: {
-            gte: new Date(Math.min(...looseRows.map((row) => row.voucherDate.getTime())) - MANUAL_VOUCHER_MATCH_DAY_GAP * 86_400_000),
-            lte: new Date(Math.max(...looseRows.map((row) => row.voucherDate.getTime())) + MANUAL_VOUCHER_MATCH_DAY_GAP * 86_400_000),
+            gte: new Date(Math.min(...looseRows.map((row) => row.voucherDate.getTime())) - LOOSE_SCAN_DAY_GAP * 86_400_000),
+            lte: new Date(Math.max(...looseRows.map((row) => row.voucherDate.getTime())) + LOOSE_SCAN_DAY_GAP * 86_400_000),
           },
-          matches: { none: { deletedAt: null } },
         },
-        select: { id: true, transactionCode: true, transactionDate: true, bankAccount: true, creditAmount: true, increaseMoneySourceCode: true },
+        select: {
+          id: true, transactionCode: true, transactionDate: true, bankAccount: true, creditAmount: true,
+          increaseMoneySourceCode: true, reconcileStatus: true,
+          matches: { where: { deletedAt: null }, select: { targetCode: true }, take: 1 },
+        },
       })
     : [];
 
-  const looseVouchers: RevenueSettlementLooseVoucher[] = looseRows.map(({ voucherDate, ...row }) => ({
-    ...row,
-    candidates: looseCandidateRows
-      .filter((bank) => Math.round(bank.creditAmount) === row.amount
-        && Math.abs(bank.transactionDate.getTime() - voucherDate.getTime()) <= MANUAL_VOUCHER_MATCH_DAY_GAP * 86_400_000
-        // Nguồn tiền tăng của dòng sao kê phải là nguồn của phiếu; khai trống thì vẫn cho gợi ý
-        // để kế toán tự nhìn, nhưng khai khác hẳn thì chắc chắn không phải khoản này.
-        && (!bank.increaseMoneySourceCode || bank.increaseMoneySourceCode === row.moneySourceCode))
-      .slice(0, 3)
-      .map((bank) => ({
+  const looseVouchers: RevenueSettlementLooseVoucher[] = looseRows.map(({ voucherDate, ...row }) => {
+    const sameAmount = looseScanRows.filter((bank) => Math.round(bank.creditAmount) === row.amount);
+    const dayGapOf = (bank: (typeof looseScanRows)[number]) =>
+      Math.round(Math.abs(bank.transactionDate.getTime() - voucherDate.getTime()) / 86_400_000);
+    // Dòng đã có chứng từ (hoặc đã đối soát) thì nối vào là hai chứng từ cho một đồng tiền —
+    // đó là dấu hiệu phiếu tay bị trùng, việc cần làm là xoá phiếu tay chứ không phải nối.
+    const isTaken = (bank: (typeof looseScanRows)[number]) => bank.matches.length > 0 || bank.reconcileStatus === "MATCHED";
+    const free = sameAmount.filter((bank) => !isTaken(bank)).sort((a, b) => dayGapOf(a) - dayGapOf(b));
+
+    return {
+      ...row,
+      candidates: free.slice(0, 3).map((bank) => ({
         id: bank.id,
         transactionCode: bank.transactionCode,
         transactionDate: bank.transactionDate.toISOString().slice(0, 10),
         bankAccount: bank.bankAccount,
+        dayGap: dayGapOf(bank),
+        // Nguồn tiền tăng khác hẳn nguồn của phiếu: vẫn cho nhìn thấy để tự quyết, nhưng không
+        // nằm trong diện "Nối tất cả" tự động.
+        sourceMismatch: Boolean(bank.increaseMoneySourceCode && bank.increaseMoneySourceCode !== row.moneySourceCode),
+        exact: dayGapOf(bank) <= MANUAL_VOUCHER_MATCH_DAY_GAP
+          && (!bank.increaseMoneySourceCode || bank.increaseMoneySourceCode === row.moneySourceCode),
       })),
-  }));
+      takenLines: sameAmount.filter(isTaken).slice(0, 2).map((bank) => ({
+        transactionCode: bank.transactionCode,
+        transactionDate: bank.transactionDate.toISOString().slice(0, 10),
+        voucherCode: bank.matches[0]?.targetCode || "",
+      })),
+    };
+  });
 
   // Cọc cấn trừ / chuyển doanh thu: cộng vào "tiền đã vô" của đúng ngày xử lý, đúng nguồn tiền
   // đã nhận cọc (POS ghi bill trả bằng cọc theo phương thức khách đã chuyển cọc). Cọc đầu kỳ

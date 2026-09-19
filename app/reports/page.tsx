@@ -167,8 +167,10 @@ type RevenueSettlementLooseVoucher = {
   moneySourceName: string;
   partnerName: string;
   amount: number;
-  /** Dòng sao kê chưa có chứng từ nào, khớp số tiền + ngày — nối được ngay tại đây. */
-  candidates: Array<{ id: string; transactionCode: string; transactionDate: string; bankAccount: string }>;
+  /** Dòng sao kê chưa có chứng từ nào, cùng số tiền — nối được ngay tại đây. */
+  candidates: Array<{ id: string; transactionCode: string; transactionDate: string; bankAccount: string; dayGap: number; sourceMismatch: boolean; exact: boolean }>;
+  /** Dòng sao kê cùng số tiền nhưng đã có chứng từ riêng — phiếu tay là bản trùng. */
+  takenLines?: Array<{ transactionCode: string; transactionDate: string; voucherCode: string }>;
 };
 type RevenueSettlementData = {
   period: string;
@@ -2560,7 +2562,9 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
    * chứng từ ra sửa thì bảng này không đổi số: nó đọc sổ sao kê, không đọc chứng từ.
    */
   const looseVouchers = data.looseVouchers || [];
-  const linkableVouchers = looseVouchers.filter((voucher) => voucher.candidates.length === 1);
+  // Chỉ tự nối hàng loạt những phiếu có đúng MỘT dòng khớp chắc (đúng nguồn tiền, lệch ≤ 3
+  // ngày). Dòng lệch xa hay khác nguồn vẫn hiện nút Nối riêng để kế toán tự quyết từng cái.
+  const linkableVouchers = looseVouchers.filter((voucher) => voucher.candidates.length === 1 && voucher.candidates[0].exact);
   const [linking, setLinking] = useState("");
   const [linkError, setLinkError] = useState("");
 
@@ -2627,8 +2631,8 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
               <p className="mt-1 text-xs leading-5 text-amber-900">
                 Dòng nào tìm được dòng sao kê khớp thì bấm <b>Nối</b>: hệ thống lấy luôn <b>ngày tiền về làm Ngày doanh thu</b>{" "}(kèm Loại thu/chi và
                 Trừ nguồn tiền theo phiếu), nên tiền hiện ra ngay ở đúng ngày đó — bán hàng ngày khác thì sửa lại bằng nút &quot;Tách / sửa dòng&quot; trên Sổ sao kê.
-                Dòng chưa tìm được thì hoặc sao kê chưa import (import xong hệ thống tự nối), hoặc dòng sao kê đã có chứng từ riêng — khi đó phiếu lập tay là
-                bản trùng, <b>xoá phiếu lập tay</b> đi (để lại là Báo cáo nguồn tiền cộng dư đúng số này).
+                Không có nút Nối nghĩa là chưa tìm thấy dòng sao kê nào cùng số tiền còn trống chứng từ — cột <b>&quot;Dòng sao kê khớp&quot;</b> nói rõ từng phiếu
+                là do <b>sao kê chưa import</b> hay do <b>phiếu bị trùng</b> (dòng sao kê đã có chứng từ riêng, khi đó xoá phiếu lập tay đi).
               </p>
               {canLink && linkableVouchers.length > 0 && (
                 <button
@@ -2657,12 +2661,18 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
                         <td className="px-3 py-2">{voucher.partnerName || "—"}</td>
                         <td className="whitespace-nowrap px-3 py-2 text-right font-bold tabular-nums">{money(voucher.amount)} đ</td>
                         <td className="px-3 py-2">
-                          {voucher.candidates.length === 0
-                            ? <span className="text-slate-400">Chưa có — sao kê chưa import, hoặc dòng sao kê đã có chứng từ riêng (phiếu này là bản trùng)</span>
-                            : voucher.candidates.map((candidate) => (
+                          {voucher.candidates.length > 0
+                            ? voucher.candidates.map((candidate) => (
                                 <span key={candidate.id} className="mr-2 inline-flex items-center gap-1.5">
                                   <span className="font-semibold">{candidate.transactionCode}</span>
                                   <span className="text-slate-400">{dayLabel(candidate.transactionDate)} · {candidate.bankAccount}</span>
+                                  {!candidate.exact && (
+                                    <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">
+                                      {candidate.dayGap > 0 ? `lệch ${candidate.dayGap} ngày` : ""}
+                                      {candidate.dayGap > 0 && candidate.sourceMismatch ? " · " : ""}
+                                      {candidate.sourceMismatch ? "khác nguồn tiền" : ""}
+                                    </span>
+                                  )}
                                   {canLink && (
                                     <button
                                       type="button"
@@ -2674,7 +2684,16 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
                                     </button>
                                   )}
                                 </span>
-                              ))}
+                              ))
+                            : (voucher.takenLines || []).length > 0
+                              ? (
+                                <span className="text-slate-500">
+                                  Dòng {(voucher.takenLines || []).map((line) => line.transactionCode).join(", ")} cùng số tiền nhưng <b>đã có chứng từ</b>
+                                  {(voucher.takenLines || [])[0]?.voucherCode ? ` ${(voucher.takenLines || [])[0].voucherCode}` : ""} — phiếu này là bản trùng,{" "}
+                                  <a href="/bank-vouchers" className="font-bold text-blue-700 hover:underline">xoá phiếu lập tay</a>.
+                                </span>
+                              )
+                              : <span className="text-slate-400">Không có dòng sao kê nào cùng số tiền ở cửa hàng này — <b>sao kê của tài khoản đó chưa import</b>. Import xong hệ thống tự nối.</span>}
                         </td>
                       </tr>
                     ))}
