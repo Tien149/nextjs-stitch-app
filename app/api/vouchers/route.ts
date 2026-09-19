@@ -9,7 +9,7 @@ import { buildAuditLogData, writeAuditLog } from "@/lib/audit-log";
 import { softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
 import { canEditPastVoucher, canPerformMenuAction, type DemoSession } from "@/lib/auth-demo";
 import { moneySourceMatchesBranch, parseMoneySourceCodes } from "@/lib/money-sources";
-import { ADVANCE_RECEIVABLE_ACTION, DEBT_COLLECTION_PURPOSE, isSameCalendarDay, normalizeAllocationMonths, normalizeCashflowCategoryType, normalizePaymentPurpose, normalizeReceiptPurpose, PREPAID_ALLOCATION_ACTION, isUndeclaredPartnerName, UNDECLARED_PARTNER_NAME, validatePaymentPurpose, validateReceiptPurpose, voucherPartnerRequirement, voucherEditWindowError } from "@/lib/voucher-rules";
+import { ADVANCE_RECEIVABLE_ACTION, DEBT_COLLECTION_PURPOSE, PARTNER_COLLECTION_ACTION, PARTNER_COLLECTION_PURPOSE, isSameCalendarDay, normalizeAllocationMonths, normalizeCashflowCategoryType, normalizePaymentPurpose, normalizeReceiptPurpose, PREPAID_ALLOCATION_ACTION, isUndeclaredPartnerName, UNDECLARED_PARTNER_NAME, validatePaymentPurpose, validateReceiptPurpose, voucherPartnerRequirement, voucherEditWindowError } from "@/lib/voucher-rules";
 import { completePendingReconciliation, ReconciliationSyncError, releasePendingReconciliation, reopenReconciliationForReview, syncReconciledBankStatement, type BankStatementSyncResult } from "@/lib/reconciliation-links";
 import { moneySourceMatchesDocumentChannel, normalizeVoucherDocumentChannel } from "@/lib/voucher-channel";
 import { depositCategoryDirection } from "@/lib/bank-statement-category";
@@ -463,12 +463,16 @@ export async function POST(request: Request) {
     // khoản phải thu (ví dụ khoản chi hộ đã treo trước đó).
     const explicitReceiptPurpose = normalizeReceiptPurpose(voucherType, body.depositAction);
     const isDebtCollection = explicitReceiptPurpose === DEBT_COLLECTION_PURPOSE;
+    // "Thu lại tiền chi hộ theo đối tác": không có mã khoản nợ, không đụng sổ cọc — hệ quả gạch
+    // nợ do applyVoucherSideEffects tự tìm theo đối tác.
+    const isPartnerCollection = explicitReceiptPurpose === PARTNER_COLLECTION_PURPOSE;
+    const receiptDebtAction = isDebtCollection ? "SETTLE" : isPartnerCollection ? PARTNER_COLLECTION_ACTION : null;
     const debtReference = isDebtCollection ? cleanText(body.debtReference).toUpperCase() : "";
-    const explicitDepositAction = isDebtCollection ? "" : explicitReceiptPurpose;
-    const depositAction = isDebtCollection ? "" : deriveReceiptDepositAction(voucherType, explicitDepositAction, voucherCategory);
+    const explicitDepositAction = isDebtCollection || isPartnerCollection ? "" : explicitReceiptPurpose;
+    const depositAction = isDebtCollection || isPartnerCollection ? "" : deriveReceiptDepositAction(voucherType, explicitDepositAction, voucherCategory);
     const purposeError = validateReceiptPurpose(
       voucherType,
-      isDebtCollection ? DEBT_COLLECTION_PURPOSE : depositAction,
+      isDebtCollection ? DEBT_COLLECTION_PURPOSE : isPartnerCollection ? PARTNER_COLLECTION_PURPOSE : depositAction,
       cleanText(body.partnerCode),
       debtReference,
     );
@@ -502,7 +506,7 @@ export async function POST(request: Request) {
     if (!hasPartner && !hasPartnerAllocations) {
       const partnerRequirement = voucherPartnerRequirement({
         depositAction,
-        debtAction: paymentPurpose || (isDebtCollection ? "SETTLE" : null),
+        debtAction: paymentPurpose || receiptDebtAction,
         category: voucherCategory,
       });
       if (partnerRequirement) return NextResponse.json({ error: partnerRequirement }, { status: 400 });
@@ -595,7 +599,7 @@ export async function POST(request: Request) {
               moneySourceCode,
               categoryCode: categoryCode || null,
               pnlItemCode: paymentPurpose && !isPrepaidAllocation ? null : (pnlItemCode || null),
-              debtAction: paymentPurpose || (isDebtCollection ? "SETTLE" : null),
+              debtAction: paymentPurpose || receiptDebtAction,
               debtReference: debtReference || null,
               receivablePartnerCode: receivablePartner?.code || null,
               receivablePartnerName: receivablePartner?.name || null,
@@ -757,13 +761,18 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
   const requestedReceiptPurpose = current.voucherType !== "RECEIPT"
     ? ""
     : (body.depositAction === undefined
-        ? (current.debtAction === "SETTLE" ? DEBT_COLLECTION_PURPOSE : (current.depositAction || ""))
+        ? (current.debtAction === "SETTLE"
+            ? DEBT_COLLECTION_PURPOSE
+            : current.debtAction === PARTNER_COLLECTION_ACTION
+              ? PARTNER_COLLECTION_PURPOSE
+              : (current.depositAction || ""))
         : (normalizeReceiptPurpose(current.voucherType, body.depositAction) || ""));
   const isDebtCollection = requestedReceiptPurpose === DEBT_COLLECTION_PURPOSE;
+  const isPartnerCollection = requestedReceiptPurpose === PARTNER_COLLECTION_PURPOSE;
   const requestedDebtReference = isDebtCollection
     ? (body.debtReference === undefined ? (current.debtReference || "") : cleanText(body.debtReference).toUpperCase())
     : "";
-  const explicitDepositAction = current.voucherType !== "RECEIPT" || isDebtCollection
+  const explicitDepositAction = current.voucherType !== "RECEIPT" || isDebtCollection || isPartnerCollection
     ? null
     : (requestedReceiptPurpose || null);
   // Kiểm mục đích thu (và tự suy từ danh mục đặt cọc) nằm dưới, sau khi đã tra được danh mục.
@@ -838,7 +847,7 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
   // Nội dung chi "Chi hộ". Phiếu đã mang debtAction khác (SETTLE sinh từ import sao kê) giữ
   // nguyên: form thu/chi không phải chỗ đổi cách gạch nợ của phiếu đó.
   const debtAction = current.voucherType === "RECEIPT"
-    ? (isDebtCollection ? "SETTLE" : null)
+    ? (isDebtCollection ? "SETTLE" : isPartnerCollection ? PARTNER_COLLECTION_ACTION : null)
     // Phiếu chi gạch nợ nhà cung cấp (sinh từ import sao kê) không đổi qua form thu/chi.
     : (current.debtAction === "SETTLE"
         ? "SETTLE"
@@ -890,12 +899,12 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
     }
   }
 
-  const depositAction = isDebtCollection
+  const depositAction = isDebtCollection || isPartnerCollection
     ? null
     : (deriveReceiptDepositAction(current.voucherType, explicitDepositAction || "", voucherCategory) || null);
   const purposeError = validateReceiptPurpose(
     current.voucherType,
-    isDebtCollection ? DEBT_COLLECTION_PURPOSE : depositAction,
+    isDebtCollection ? DEBT_COLLECTION_PURPOSE : isPartnerCollection ? PARTNER_COLLECTION_PURPOSE : depositAction,
     partnerCode,
     requestedDebtReference,
   );

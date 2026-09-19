@@ -2,7 +2,7 @@ import type { prisma, RawTxClient } from "@/lib/prisma";
 import { branchCodeFromInternalPartner } from "@/lib/cost-reallocation";
 import { ensureInternalPartner } from "@/lib/internal-partner";
 import { buildAllocationSchedules } from "@/lib/phase3";
-import { ADVANCE_RECEIVABLE_ACTION } from "@/lib/voucher-rules";
+import { ADVANCE_RECEIVABLE_ACTION, PARTNER_COLLECTION_ACTION } from "@/lib/voucher-rules";
 
 /**
  * Lỗi nghiệp vụ khi áp hệ quả của phiếu (gạch nợ, tiền cọc, chi hộ, phân bổ).
@@ -271,6 +271,34 @@ export async function applyVoucherSideEffects(
             },
           },
         });
+      }
+    }
+  }
+
+  // Thu lại tiền chi hộ theo đối tác: không cần mã khoản nợ, hệ thống tự gạch các khoản phải
+  // thu đang mở của đối tác tại cửa hàng lập phiếu, cũ trước mới sau, tới khi hết tiền trên
+  // phiếu. Phần dôi ra (không còn khoản nào để gạch) không gạch gì — bút toán vẫn ghi Có 131 của
+  // đối tác nên sổ công nợ tự thấy họ đang trả dư. Idempotent theo voucherId như gạch nợ theo mã.
+  if (voucher.debtAction === PARTNER_COLLECTION_ACTION) {
+    if (!voucher.partnerCode) throw new VoucherSideEffectError("Thu lại tiền chi hộ phải chọn đối tác — hệ thống gạch các khoản phải thu đang mở của đúng người đó.");
+    const previousSettlement = await tx.debtSettlement.findFirst({ where: { voucherId: voucher.id } });
+    if (!previousSettlement) {
+      const openReceivables = await tx.debtRecord.findMany({
+        where: {
+          partnerCode: voucher.partnerCode,
+          branchCode: voucher.branchCode,
+          debtType: "RECEIVABLE",
+          outstandingAmount: { gt: 0 },
+          deletedAt: null,
+        },
+        orderBy: { documentDate: "asc" },
+      });
+      let remaining = Math.round(voucher.amount);
+      for (const debt of openReceivables) {
+        if (remaining <= 0) break;
+        const amount = Math.min(remaining, Math.round(debt.outstandingAmount));
+        await settleDebtLine(tx, voucher, { debtReference: debt.code, partnerCode: voucher.partnerCode, amount }, actor);
+        remaining -= amount;
       }
     }
   }

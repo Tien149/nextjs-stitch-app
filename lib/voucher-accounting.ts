@@ -9,6 +9,7 @@ import {
   ADVANCE_RECEIVABLE_ACTION,
   BANK_STATEMENT_SPLIT_SOURCE_SCOPE,
   isCollectOnBehalfCategory,
+  PARTNER_COLLECTION_ACTION,
   PREPAID_ALLOCATION_ACTION,
 } from "@/lib/voucher-rules";
 
@@ -70,6 +71,7 @@ export function receiptCounterAccount(
   categoryGroup: string | null,
   pnlItemGroup: string | null = null,
   options: ReceiptPostingOptions = {},
+  knownBranchCodes?: Iterable<string> | null,
 ) {
   if (voucher.depositAction === "COLLECT" || voucher.depositAction === "SUPPLEMENT") {
     return { account: "3387", reason: "Nhận tiền cọc — khách ứng trước, chưa phải doanh thu" };
@@ -79,6 +81,15 @@ export function receiptCounterAccount(
   }
   if (voucher.debtAction === "SETTLE") {
     return { account: "131", reason: "Thu hồi công nợ phải thu — không phát sinh doanh thu mới" };
+  }
+  // Thu lại tiền chi hộ theo đối tác: cùng bản chất với gạch nợ, chỉ khác là hệ thống tự tìm
+  // khoản nợ. Đối tác là nhà hàng trong nhà thì khoản chi hộ trước đó đã treo 1368, nên thu về
+  // phải ghi Có đúng 1368 để hai vế triệt tiêu — để 131 là phải thu nội bộ treo mãi.
+  if (voucher.debtAction === PARTNER_COLLECTION_ACTION) {
+    if (branchCodeFromInternalPartner(voucher.partnerCode, knownBranchCodes)) {
+      return { account: INTERNAL_RECEIVABLE_ACCOUNT, reason: "Thu lại tiền chi hộ nhà hàng khác — giảm phải thu nội bộ, không phải doanh thu" };
+    }
+    return { account: "131", reason: "Thu lại tiền chi hộ của đối tác — giảm phải thu, không phải doanh thu" };
   }
   // THU HỘ: tiền về tài khoản nhưng là của người khác, phải trả lại. Mọi khoản mục nhóm "Thu"
   // bên dưới đều rơi vào Có 511, nên không chặn ở đây thì tiền thu hộ vừa bị gỡ khỏi "Tiền đã
@@ -181,7 +192,7 @@ export function voucherJournalLines(
 ) {
   const cashAccount = cashAccountFor(voucher.moneySourceCode);
   if (voucher.voucherType === "RECEIPT") {
-    const { account, reason } = receiptCounterAccount(voucher, categoryGroup, pnlItemGroup, receiptOptions);
+    const { account, reason } = receiptCounterAccount(voucher, categoryGroup, pnlItemGroup, receiptOptions, knownBranchCodes);
     return {
       reason,
       lines: [

@@ -34,6 +34,7 @@
     "test:import-row-edits": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-import-row-edits.mjs",
     "test:suspect-duplicate": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-bank-statement-suspect-duplicate.mjs",
     "test:debt-expense-type": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-debt-expense-type.mjs",
+    "test:partner-collection": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-voucher-partner-collection.mjs",
     "test:voucher-match": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-bank-statement-voucher-match.mjs",
     "test:revenue-split": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-bank-statement-revenue-split.mjs",
     "test:transfer-code": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-transfer-code-gap.mjs",

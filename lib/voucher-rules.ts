@@ -7,12 +7,32 @@ import { bankStatementSpecialCategory, type BankStatementCategoryReference } fro
  */
 export const DEBT_COLLECTION_PURPOSE = "SETTLE_DEBT";
 
+/**
+ * "Thu lại tiền chi hộ theo đối tác": chỉ cần chọn đối tác, không phải gõ mã khoản nợ.
+ *
+ * Khách góp ý 19/09/2026: bên phiếu chi có "Chi hộ" chỉ cần chọn đối tác là xong, còn phiếu
+ * thu bắt phải chép đúng mã khoản nợ (dạng CNTHU-<mã phiếu chi>) — kế toán điền nhầm mã đối
+ * tác vào ô đó suốt. Với nội dung này, khi duyệt hệ thống tự gạch các khoản phải thu đang mở
+ * của đối tác (cũ trước, mới sau); phần chưa có khoản nợ nào thì treo phải thu của đối tác —
+ * tiền vào quỹ nhưng không phải doanh thu, y như phiếu gạch nợ.
+ *
+ * Hai hằng: `PURPOSE` là giá trị ô "Nội dung thu" trên form, `ACTION` là debtAction lưu trên
+ * phiếu (cùng chỗ với "SETTLE" của phiếu gạch nợ theo mã).
+ */
+export const PARTNER_COLLECTION_PURPOSE = "COLLECT_FROM_PARTNER";
+export const PARTNER_COLLECTION_ACTION = "SETTLE_PARTNER";
+
 export const RECEIPT_PURPOSES = [
   { id: "", label: "Thu thường — không theo dõi cọc", hint: "Bản chất khoản thu khai ở Khoản mục thu/chi bên dưới." },
   { id: "COLLECT", label: "Thu tiền đặt cọc (khách sẽ dùng sau)", hint: "Khi duyệt sẽ sinh một khoản tiền cọc theo dõi riêng." },
   {
+    id: PARTNER_COLLECTION_PURPOSE,
+    label: "Thu lại tiền chi hộ — chọn đối tác, tự gạch nợ",
+    hint: "Chỉ cần chọn đối tác: khi duyệt, hệ thống tự gạch các khoản phải thu đang mở của họ (cũ trước, mới sau); phần chưa có khoản nợ thì treo phải thu của đối tác. Không phải doanh thu.",
+  },
+  {
     id: DEBT_COLLECTION_PURPOSE,
-    label: "Thu lại công nợ phải thu (chi hộ, khách còn nợ)",
+    label: "Thu lại công nợ phải thu — gạch đúng một mã khoản nợ",
     hint: "Gạch thẳng vào mã công nợ phải thu — tiền vào quỹ nhưng không phải doanh thu mới.",
   },
 ] as const;
@@ -124,6 +144,9 @@ export function voucherPartnerRequirement(input: {
   if (debtAction === "SETTLE") {
     return "Phiếu gạch công nợ bắt buộc chọn đối tác — không có đối tác thì không biết gạch vào sổ nợ của ai.";
   }
+  if (debtAction === PARTNER_COLLECTION_ACTION) {
+    return "Thu lại tiền chi hộ bắt buộc chọn đối tác — hệ thống gạch các khoản phải thu đang mở của đúng người đó.";
+  }
   if (debtAction === ADVANCE_RECEIVABLE_ACTION) {
     return "Phiếu chi hộ bắt buộc chọn đối tác nhận tiền — vế công nợ bên nhà hàng được chi hộ ghi theo đối tác này.";
   }
@@ -154,6 +177,11 @@ export function validateReceiptPurpose(
   if (purpose === DEBT_COLLECTION_PURPOSE) {
     // Không có mã công nợ thì phiếu thu không biết gạch vào khoản nào.
     if (!(debtReference || "").trim()) return "Chưa chọn khoản nợ cần gạch. Chọn đối tác trước, các khoản phải thu đang mở của họ sẽ hiện ngay dưới ô để bấm chọn.";
+    return null;
+  }
+  if (purpose === PARTNER_COLLECTION_PURPOSE) {
+    // Không có đối tác thì không biết gạch sổ nợ của ai, cũng không biết treo phải thu cho ai.
+    if (!(partnerCode || "").trim()) return "Thu lại tiền chi hộ phải chọn đối tác — hệ thống gạch các khoản phải thu đang mở của đúng người đó.";
     return null;
   }
   if (purpose !== "COLLECT") return "Nội dung thu không hợp lệ";

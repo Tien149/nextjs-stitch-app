@@ -8,7 +8,7 @@ import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { storeLabel, updateDynamicBranches } from "@/lib/branch-labels";
 import { branchCodeFromInternalPartner } from "@/lib/cost-reallocation";
 import { appMenuItems, canAccessMenu, canEditPastVoucher, canPerformAction, canPerformMenuAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
-import { ADVANCE_RECEIVABLE_ACTION, DEBT_COLLECTION_PURPOSE, isPartnerAllowedForVoucher, isSameCalendarDay, isUndeclaredPartnerName, normalizeCashflowCategoryType, PAYMENT_PURPOSES, PREPAID_ALLOCATION_ACTION, RECEIPT_PURPOSES, UNDECLARED_PARTNER_NAME, voucherEditWindowError, voucherPartnerRequirement } from "@/lib/voucher-rules";
+import { ADVANCE_RECEIVABLE_ACTION, DEBT_COLLECTION_PURPOSE, PARTNER_COLLECTION_ACTION, PARTNER_COLLECTION_PURPOSE, isPartnerAllowedForVoucher, isSameCalendarDay, isUndeclaredPartnerName, normalizeCashflowCategoryType, PAYMENT_PURPOSES, PREPAID_ALLOCATION_ACTION, RECEIPT_PURPOSES, UNDECLARED_PARTNER_NAME, voucherEditWindowError, voucherPartnerRequirement } from "@/lib/voucher-rules";
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup, summaryMoneySourceGroups } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
@@ -549,6 +549,8 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
   const paymentPurposeHint = (PAYMENT_PURPOSES.find((purpose) => purpose.id === form.debtAction) || PAYMENT_PURPOSES[0]).hint;
   /** Thu lại công nợ: gạch thẳng vào một khoản phải thu (khoản chi hộ, khách còn nợ). */
   const isDebtCollection = form.voucherType === "RECEIPT" && form.depositAction === DEBT_COLLECTION_PURPOSE;
+  /** Thu lại tiền chi hộ theo đối tác: không cần mã nợ, hệ thống tự gạch khoản phải thu đang mở của đối tác. */
+  const isPartnerCollection = form.voucherType === "RECEIPT" && form.depositAction === PARTNER_COLLECTION_PURPOSE;
   /** Chi hộ: phiếu treo phải thu của đối tác khác, không vào chi phí và không có hạng mục P&L. */
   const isAdvanceReceivable = form.voucherType === "PAYMENT" && form.debtAction === ADVANCE_RECEIVABLE_ACTION;
   /** Chi trả trước: phiếu treo 242 và tự sinh lịch phân bổ, không vào chi phí ngay trong kỳ chi. */
@@ -622,7 +624,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
   // Gợi ý các khoản phải thu đang mở của đối tác đã chọn để khỏi phải nhớ mã công nợ.
   // Kết quả mang theo khoá đối tác/cửa hàng đã hỏi, nên đổi đối tác là danh sách cũ tự hết
   // hiệu lực mà không cần xoá state trong effect.
-  const receivableLookupKey = isDebtCollection && form.partnerCode ? `${form.partnerCode}|${form.branchCode || "ALL"}` : "";
+  const receivableLookupKey = (isDebtCollection || isPartnerCollection) && form.partnerCode ? `${form.partnerCode}|${form.branchCode || "ALL"}` : "";
   const [receivableCache, setReceivableCache] = useState<{ key: string; rows: Array<{ code: string; amount: number; description: string }> }>({ key: "", rows: [] });
   useEffect(() => {
     if (!receivableLookupKey) return;
@@ -635,9 +637,12 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
         if (cancelled) return;
         setReceivableCache({
           key: receivableLookupKey,
+          // Sổ công nợ trả số ÂM cho khoản phải thu (quy ước dấu của bảng đối chiếu), nên lọc
+          // `> 0` như trước là không bao giờ thấy chip nào — kế toán tưởng chưa có khoản nợ và
+          // đi gõ tay mã đối tác vào ô mã nợ (case khách 19/09/2026). Lấy trị tuyệt đối.
           rows: (payload.rows || [])
-            .filter((row) => row.source === "RECEIVABLE" && (row.amount || 0) > 0 && row.code)
-            .map((row) => ({ code: row.code as string, amount: row.amount || 0, description: row.description || "" })),
+            .filter((row) => row.source === "RECEIVABLE" && Math.abs(row.amount || 0) > 0 && row.code)
+            .map((row) => ({ code: row.code as string, amount: Math.abs(row.amount || 0), description: row.description || "" })),
         });
       })
       .catch(() => { if (!cancelled) setReceivableCache({ key: receivableLookupKey, rows: [] }); });
@@ -658,9 +663,9 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
    * sổ nợ/sổ cọc thì vẫn bắt.
    */
   const partnerRequirement = useMemo(() => voucherPartnerRequirement({
-    depositAction: form.voucherType === "RECEIPT" && form.depositAction !== DEBT_COLLECTION_PURPOSE ? form.depositAction : "",
+    depositAction: form.voucherType === "RECEIPT" && form.depositAction !== DEBT_COLLECTION_PURPOSE && form.depositAction !== PARTNER_COLLECTION_PURPOSE ? form.depositAction : "",
     debtAction: form.voucherType === "RECEIPT"
-      ? (form.depositAction === DEBT_COLLECTION_PURPOSE ? "SETTLE" : "")
+      ? (form.depositAction === DEBT_COLLECTION_PURPOSE ? "SETTLE" : form.depositAction === PARTNER_COLLECTION_PURPOSE ? PARTNER_COLLECTION_ACTION : "")
       : form.debtAction,
     category: voucherCategoryOptions.find((option) => option.code === form.categoryCode) || null,
   }), [form.categoryCode, form.debtAction, form.depositAction, form.voucherType, voucherCategoryOptions]);
@@ -768,7 +773,9 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
       // Phiếu thu gạch nợ không có depositAction; hiện lên form dưới dạng "Thu lại công nợ".
       depositAction: voucher.voucherType === "RECEIPT" && voucher.debtAction === "SETTLE"
         ? DEBT_COLLECTION_PURPOSE
-        : (voucher.depositAction || ""),
+        : voucher.voucherType === "RECEIPT" && voucher.debtAction === PARTNER_COLLECTION_ACTION
+          ? PARTNER_COLLECTION_PURPOSE
+          : (voucher.depositAction || ""),
       depositCode: voucher.depositCode || "",
       debtReference: voucher.debtReference || "",
       // Chỉ nạp lại nội dung chi do form này quản; phiếu gạch nợ (SETTLE) từ import giữ nguyên.
@@ -1285,6 +1292,32 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                         </span>
                       )}
                     </label>
+                  )}
+
+                  {isPartnerCollection && (
+                    <div className="text-xs font-bold text-slate-600 block">
+                      Khoản phải thu sẽ được gạch
+                      {!form.partnerCode ? (
+                        <span className="mt-1 block text-[11px] font-medium text-slate-500">Chọn đối tác ở ô Tên đối tác — không cần gõ mã khoản nợ.</span>
+                      ) : openReceivables.length > 0 ? (
+                        <>
+                          <span className="mt-1 flex flex-wrap gap-1">
+                            {openReceivables.map((debt) => (
+                              <span key={debt.code} title={debt.description} className="rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700">
+                                {debt.code} · {money(debt.amount)} đ
+                              </span>
+                            ))}
+                          </span>
+                          <span className="mt-1 block text-[11px] font-medium text-slate-500">
+                            Khi duyệt sẽ gạch lần lượt từ khoản cũ nhất cho tới hết {form.amount ? `${money(Number(form.amount) || 0)} đ` : "số tiền trên phiếu"}. Thu nhiều hơn tổng nợ thì phần dư treo phải thu của đối tác.
+                          </span>
+                        </>
+                      ) : (
+                        <span className="mt-1 block text-[11px] font-medium text-amber-700">
+                          Đối tác này chưa có khoản phải thu nào đang mở ở cửa hàng đang chọn — phiếu vẫn lưu được, tiền sẽ treo phải thu của họ (không phải doanh thu). Khoản chi hộ chỉ hiện sau khi phiếu chi đã DUYỆT, và nằm ở sổ cửa hàng đã bỏ tiền ra.
+                        </span>
+                      )}
+                    </div>
                   )}
 
                   {form.depositAction === "COLLECT" && (
@@ -2054,6 +2087,11 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                         {voucher.debtAction === ADVANCE_RECEIVABLE_ACTION && voucher.receivablePartnerCode && (
                           <p className="mt-1 text-[11px] font-medium text-violet-700">
                             Thu lại của: {voucher.receivablePartnerName || voucher.receivablePartnerCode} · CNTHU-{voucher.code}
+                          </p>
+                        )}
+                        {voucher.debtAction === PARTNER_COLLECTION_ACTION && (
+                          <p className="mt-1 text-[11px] font-medium text-violet-700">
+                            Thu lại tiền chi hộ theo đối tác — tự gạch khoản phải thu đang mở của {voucher.partnerName}
                           </p>
                         )}
                         {isBankChannel && (
