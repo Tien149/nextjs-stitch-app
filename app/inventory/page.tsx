@@ -6,6 +6,7 @@ import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { canPerformMenuAction, SESSION_KEY, filterModuleTabs } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import CopyableText from "@/components/CopyableText";
+import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { SearchableSelect } from "@/components/SearchableSelect";
@@ -15,7 +16,7 @@ import { money, quantity as qty, unitPrice } from "@/lib/format-number";
 import { statValueTextClass } from "@/components/reports/report-ui";
 
 type UnitConversion = { id: string; unitCode: string; unitName: string | null; conversionRate: number; isDefaultPurchase: boolean };
-type Item = { id: string; code: string; name: string; unit: string; itemType: string; category?: string | null; revenueGroup?: string | null; minStock: number; requiresImage: boolean; unitConversions?: UnitConversion[] };
+type Item = { id: string; code: string; name: string; unit: string; itemType: string; category?: string | null; revenueGroup?: string | null; minStock: number; requiresImage: boolean; status?: string | null; note?: string | null; unitConversions?: UnitConversion[] };
 type ItemGroup = { id: string; code: string; name: string; group: string | null; subGroup: string | null };
 /**
  * Nhóm doanh thu của mặt hàng: danh mục Thu/Chi khai ở nhóm NHÓM DOANH THU (REVENUE_SOURCE).
@@ -115,6 +116,14 @@ export default function InventoryPage() {
   const [flowRange, setFlowRange] = useState({ from: daysAgo(90), to: today() });
 
   const [itemForm, setItemForm] = useState({ code: "NVL_001", name: "Nguyên liệu mẫu", unit: "g", itemType: "RAW_MATERIAL", category: "", revenueGroup: "", purchaseUnit: "kg", conversionRate: "1000", minStock: "500", requiresImage: false });
+  /** Sửa mặt hàng trên bảng danh mục: mã hàng KHÔNG nằm trong form vì API không cho đổi mã. */
+  const [editingItem, setEditingItem] = useState<Item | null>(null);
+  const [itemEditForm, setItemEditForm] = useState({ name: "", unit: "", itemType: "RAW_MATERIAL", category: "", revenueGroup: "", minStock: "0", requiresImage: false, status: "ACTIVE", note: "" });
+  const [itemEditError, setItemEditError] = useState<string | null>(null);
+  const [itemEditSaving, setItemEditSaving] = useState(false);
+  const [deletingItem, setDeletingItem] = useState<Item | null>(null);
+  const [itemDeleteError, setItemDeleteError] = useState<string | null>(null);
+  const [itemDeleting, setItemDeleting] = useState(false);
   const [itemSearch, setItemSearch] = useState("");
   const [itemTypeFilter, setItemTypeFilter] = useState("ALL");
   /** ALL / MISSING (chưa gán) / mã danh mục Thu cụ thể — lọc để gán hàng loạt cho nhanh. */
@@ -431,6 +440,97 @@ export default function InventoryPage() {
   const lowStockCount = data.items.filter((item) => (item.minStock || 0) > 0 && (stockTotalsByItem.get(item.id) || 0) < item.minStock).length;
   const totalStockValue = data.balances.reduce((sum, b) => sum + b.quantity * b.averageCost, 0);
   const totalTransactions = data.transactions.length;
+
+  // Mặt hàng đang nằm trong định lượng nào thì API chặn xoá — đếm sẵn để khoá nút ngay trên
+  // bảng, người dùng biết lý do trước khi bấm thay vì bấm xong mới ăn lỗi.
+  const recipeUsageByItem = new Map<string, number>();
+  for (const recipe of data.recipes) {
+    for (const itemId of new Set(recipe.lines.map((line) => line.item.id))) {
+      recipeUsageByItem.set(itemId, (recipeUsageByItem.get(itemId) || 0) + 1);
+    }
+  }
+  /**
+   * Lý do không xoá được mà màn hình tự biết (tồn kho, định lượng). Các điều kiện còn lại —
+   * đã phát sinh phiếu nhập/xuất, đang nằm trong đề nghị/đơn mua hàng — chỉ server biết đủ,
+   * hộp thoại xác nhận sẽ hiện nguyên văn lỗi trả về.
+   */
+  const itemDeleteLockReason = (item: Item) => {
+    const onHand = stockTotalsByItem.get(item.id) || 0;
+    if (Math.abs(onHand) > 0.000001) return `Còn tồn ${qty(onHand)} ${item.unit} nên không xoá được. Hãy xuất hết tồn trước.`;
+    const recipeCount = recipeUsageByItem.get(item.id) || 0;
+    if (recipeCount > 0) return `Đang dùng trong ${recipeCount} định lượng (BOM) nên không xoá được.`;
+    return null;
+  };
+
+  const startEditItem = (item: Item) => {
+    setItemEditError(null);
+    setEditingItem(item);
+    setItemEditForm({
+      name: item.name,
+      unit: item.unit,
+      itemType: item.itemType,
+      category: item.category || "",
+      revenueGroup: item.revenueGroup || "",
+      minStock: String(item.minStock ?? 0),
+      requiresImage: !!item.requiresImage,
+      status: (item.status || "ACTIVE").toUpperCase(),
+      note: item.note || "",
+    });
+  };
+
+  const submitItemEdit = async () => {
+    if (!editingItem) return;
+    setItemEditSaving(true);
+    setItemEditError(null);
+    try {
+      const response = await fetch("/api/inventory", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...getSessionHeaders() },
+        body: JSON.stringify({
+          action: "UPDATE_ITEM",
+          itemId: editingItem.id,
+          ...itemEditForm,
+          minStock: Number(itemEditForm.minStock) || 0,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setItemEditError(payload.error || "Không cập nhật được mặt hàng");
+        return;
+      }
+      setMessage(`Đã cập nhật mặt hàng ${editingItem.code}.`);
+      setEditingItem(null);
+      await loadData();
+    } finally {
+      setItemEditSaving(false);
+    }
+  };
+
+  const confirmDeleteItem = async (reason: string) => {
+    if (!deletingItem) return;
+    setItemDeleting(true);
+    setItemDeleteError(null);
+    try {
+      const query = new URLSearchParams({ id: deletingItem.id, type: "ITEM" });
+      if (reason) query.set("reason", reason);
+      const response = await fetch(`/api/inventory?${query.toString()}`, {
+        method: "DELETE",
+        headers: getSessionHeaders(),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setItemDeleteError(payload.error || "Không xoá được mặt hàng");
+        return;
+      }
+      // Xoá mềm vẫn giữ chỗ mã hàng (unique code): phải nói trước, nếu không người dùng tạo lại
+      // đúng mã đó sẽ ăn lỗi "đang nằm trong Thùng rác" mà không hiểu vì sao.
+      setMessage(`Đã chuyển mặt hàng ${deletingItem.code} vào Thùng rác. Mã ${deletingItem.code} chưa dùng lại được chừng nào bản ghi còn trong Thùng rác.`);
+      setDeletingItem(null);
+      await loadData();
+    } finally {
+      setItemDeleting(false);
+    }
+  };
 
   if (loading) return <div className="h-screen grid place-items-center bg-slate-100">Đang tải...</div>;
   
@@ -781,7 +881,7 @@ export default function InventoryPage() {
               )}
             </p>
             <Table
-              tableClassName="min-w-[1250px]"
+              tableClassName="min-w-[1360px]"
               headers={[
                 { label: "Mã" },
                 { label: "Tên" },
@@ -792,11 +892,17 @@ export default function InventoryPage() {
                 { label: "Quy đổi mua" },
                 { label: "Tồn tối thiểu", align: "right" },
                 { label: "Yêu cầu ảnh" },
+                { label: "Thao tác", align: "right" },
               ]}
             >
               {filteredItems.map((item) => (
                 <tr key={item.id} className="border-t border-slate-100">
-                  <Cell><CopyableText value={item.code}><b>{item.code}</b></CopyableText></Cell>
+                  <Cell>
+                    <CopyableText value={item.code}><b>{item.code}</b></CopyableText>
+                    {(item.status || "ACTIVE").toUpperCase() !== "ACTIVE" && (
+                      <span className="ml-2 status bg-slate-100 text-slate-600 font-bold px-2 py-0.5 rounded text-[11px]">Ngưng</span>
+                    )}
+                  </Cell>
                   <Cell>{item.name}</Cell>
                   <Cell>{item.itemType}</Cell>
                   <Cell>{data.itemGroups.find((group) => group.code === item.category)?.name || item.category || "-"}</Cell>
@@ -836,10 +942,152 @@ export default function InventoryPage() {
                       <span className="text-slate-400">-</span>
                     )}
                   </Cell>
+                  <Cell right>
+                    <RowActions
+                      session={user}
+                      module={href}
+                      compact
+                      onEdit={() => startEditItem(item)}
+                      onDelete={() => {
+                        setItemDeleteError(null);
+                        setDeletingItem(item);
+                      }}
+                      deleteDisabledReason={itemDeleteLockReason(item)}
+                    />
+                  </Cell>
                 </tr>
               ))}
             </Table>
           </section>
+
+          {editingItem && (
+            <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+              <form
+                onSubmit={(e) => { e.preventDefault(); void submitItemEdit(); }}
+                className="bg-white rounded-xl w-full max-w-lg shadow-xl max-h-[92vh] overflow-y-auto"
+              >
+                <div className="p-5 border-b border-slate-200">
+                  <h3 className="font-bold text-slate-900">Sửa mặt hàng {editingItem.code}</h3>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Mã hàng cố định sau khi tạo, không sửa được. Cần đổi mã thì tạo mặt hàng mới rồi ngưng (hoặc xoá) mã cũ.
+                  </p>
+                </div>
+
+                <div className="p-5 space-y-4">
+                  <Input label="Mã (không sửa được)">
+                    <input className="control bg-slate-100 text-slate-500" value={editingItem.code} readOnly disabled />
+                  </Input>
+
+                  <Input label="Tên">
+                    <input className="control" value={itemEditForm.name} onChange={(e) => setItemEditForm({ ...itemEditForm, name: e.target.value })} required />
+                  </Input>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <Input label="Đơn vị">
+                      <input className="control" value={itemEditForm.unit} onChange={(e) => setItemEditForm({ ...itemEditForm, unit: e.target.value })} required />
+                    </Input>
+                    <Input label="Tồn tối thiểu">
+                      <input type="number" className="control" value={itemEditForm.minStock} onChange={(e) => setItemEditForm({ ...itemEditForm, minStock: e.target.value })} />
+                    </Input>
+                  </div>
+
+                  <Input label="Loại">
+                    <select className="control" value={itemEditForm.itemType} onChange={(e) => setItemEditForm({ ...itemEditForm, itemType: e.target.value, category: "" })}>
+                      <option value="RAW_MATERIAL">Nguyên liệu thô</option>
+                      <option value="SEMI_FINISHED">Bán thành phẩm</option>
+                      <option value="FINISHED">Thành phẩm</option>
+                      <option value="PACKAGING">Bao bì</option>
+                      <option value="TOOL">CCDC</option>
+                      <option value="ASSET">Tài sản</option>
+                    </select>
+                  </Input>
+
+                  <p className="text-[11px] bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-3 py-2 flex items-start gap-2">
+                    <span className="material-symbols-outlined text-base shrink-0">info</span>
+                    Đơn vị tính và Loại chỉ đổi được khi mặt hàng chưa phát sinh giao dịch kho và không còn tồn. Đã phát sinh rồi thì khai ĐVT quy đổi thay vì sửa ĐVT gốc.
+                  </p>
+
+                  <Input label="Phân nhóm (đi theo kho tương ứng)">
+                    <select className="control" value={itemEditForm.category} onChange={(e) => setItemEditForm({ ...itemEditForm, category: e.target.value })}>
+                      <option value="">-- Chưa gán phân nhóm --</option>
+                      {data.itemGroups
+                        .filter((group) => !group.group || group.group === "OTHER" || group.group === itemEditForm.itemType)
+                        .map((group) => (
+                          <option key={group.code} value={group.code}>
+                            {group.name}{group.subGroup ? ` (kho ${group.subGroup})` : ""}
+                          </option>
+                        ))}
+                    </select>
+                  </Input>
+
+                  <Input label="Nhóm doanh thu (dùng khi file POS không khai được)">
+                    <select className="control" value={itemEditForm.revenueGroup} onChange={(e) => setItemEditForm({ ...itemEditForm, revenueGroup: e.target.value })}>
+                      <option value="">-- Chưa gán nhóm doanh thu --</option>
+                      {data.revenueGroups.map((group) => (
+                        <option key={group.code} value={group.code}>{group.code} - {group.name}</option>
+                      ))}
+                      {/* Mã đang gán sai vẫn phải nằm trong danh sách, nếu không mở hộp thoại sửa
+                          tên là ô này tự nhảy về rỗng, bấm Lưu một phát mất luôn dữ liệu cũ. */}
+                      {isMisassignedRevenueGroup(itemEditForm.revenueGroup) && itemEditForm.revenueGroup && (
+                        <option value={itemEditForm.revenueGroup}>{revenueGroupIssueLabel(itemEditForm.revenueGroup)}</option>
+                      )}
+                    </select>
+                  </Input>
+
+                  <Input label="Trạng thái">
+                    <select className="control" value={itemEditForm.status} onChange={(e) => setItemEditForm({ ...itemEditForm, status: e.target.value })}>
+                      <option value="ACTIVE">Đang hoạt động</option>
+                      <option value="INACTIVE">Ngưng hoạt động</option>
+                    </select>
+                  </Input>
+
+                  <Input label="Ghi chú">
+                    <textarea className="control" rows={2} value={itemEditForm.note} onChange={(e) => setItemEditForm({ ...itemEditForm, note: e.target.value })} />
+                  </Input>
+
+                  <label className="flex items-center gap-2 text-xs font-bold text-slate-600 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={itemEditForm.requiresImage}
+                      onChange={(e) => setItemEditForm({ ...itemEditForm, requiresImage: e.target.checked })}
+                      className="rounded text-blue-600 focus:ring-blue-500"
+                    />
+                    Yêu cầu ảnh khi mua / nhận hàng
+                  </label>
+
+                  {itemEditError && (
+                    <p className="text-sm bg-rose-50 border border-rose-200 text-rose-700 rounded-lg px-3 py-2.5 flex items-start gap-2">
+                      <span className="material-symbols-outlined text-lg shrink-0">error</span>
+                      {itemEditError}
+                    </p>
+                  )}
+                </div>
+
+                <div className="p-5 border-t border-slate-200 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => { setEditingItem(null); setItemEditError(null); }}
+                    className="px-4 py-2 rounded-lg text-sm font-bold text-slate-600 hover:bg-slate-100"
+                  >
+                    Huỷ
+                  </button>
+                  <button type="submit" disabled={itemEditSaving} className="primary-button">
+                    {itemEditSaving ? "Đang lưu..." : "Lưu thay đổi"}
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+
+          <ConfirmDeleteDialog
+            open={Boolean(deletingItem)}
+            title={`Xoá mặt hàng ${deletingItem?.code || ""}?`}
+            description={deletingItem ? `${deletingItem.name} · ĐVT ${deletingItem.unit}. Mã này chưa tạo lại được chừng nào bản ghi còn nằm trong Thùng rác.` : undefined}
+            submitting={itemDeleting}
+            error={itemDeleteError}
+            onCancel={() => { setDeletingItem(null); setItemDeleteError(null); }}
+            onConfirm={confirmDeleteItem}
+          />
         </div>
       )}
 
