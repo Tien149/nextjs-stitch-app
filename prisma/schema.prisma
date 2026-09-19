@@ -455,6 +455,11 @@ model DebtRecord {
   description           String
   sourceType            String    @default("IMPORT")
   sourceId              String?
+  /// Khoản PHẢI TRẢ này có phải chi phí PHÁT SINH TRONG KỲ không (ghi Nợ 632/6428 ngay khi
+  /// khai, xem lib/accounting.ts). false = số dư đầu kỳ mang sang: chi phí đã phát sinh ở kỳ
+  /// trước, ghi lại lần nữa là tính hai lần. Khai tay trên màn Công nợ Đối tác luôn là true;
+  /// file import mặc định false, muốn ghi chi phí thì khai cột "Loại phát sinh".
+  recognizeExpense      Boolean   @default(false)
   status                String    @default("OPEN")
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt

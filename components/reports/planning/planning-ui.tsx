@@ -226,16 +226,48 @@ export function NoPlanNotice({ year }: { year: string }) {
  * Không có dòng này thì khách import xong mở Dự báo P&L thấy trắng bảng và tưởng mất dữ liệu
  * (feedback khách 05/09/2026).
  */
-export function UnpostedPeriodsNotice({ periods }: { periods: string[] }) {
-  if (periods.length === 0) return null;
-  const label = periods.map((period) => `tháng ${Number(period.slice(5))}`).join(", ");
+export function UnpostedPeriodsNotice({ periods, debts, syncing, onSync }: {
+  periods: string[];
+  /** Công nợ phải trả khai "phát sinh trong kỳ" mà chưa ghi sổ (xem getPnlMatrix). */
+  debts?: { count: number; amount: number; months: string[] };
+  syncing?: boolean;
+  /** Bấm là gọi "Đồng bộ ghi sổ" cho đúng những kỳ đang thiếu rồi tải lại bảng. */
+  onSync?: (months: string[]) => void;
+}) {
+  const debtCount = debts?.count || 0;
+  if (periods.length === 0 && debtCount === 0) return null;
+  const monthLabel = (list: string[]) => list.map((period) => `tháng ${Number(period.slice(5))}`).join(", ");
+  // Gộp kỳ của cả hai loại thiếu sót để một cú bấm là đồng bộ hết.
+  const allMonths = [...new Set([...periods, ...(debts?.months || [])])].sort();
   return (
     <div className="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
       <span className="material-symbols-outlined text-xl">report</span>
-      <div>
-        <b>Đã import doanh thu {label} nhưng chưa ghi sổ.</b> Dòng Doanh thu vẫn đủ (lấy thẳng từ file import), nhưng giá vốn và
-        chi phí của các kỳ này lấy từ sổ cái nên còn hiện 0 đ — lợi nhuận đang bị thổi lên.
-        Vào màn <b>Kế toán</b>, chọn đúng kỳ và cửa hàng rồi bấm <b>&quot;Đồng bộ ghi sổ&quot;</b> cho từng kỳ, sau đó quay lại làm mới bảng này.
+      <div className="min-w-0 flex-1">
+        {periods.length > 0 && (
+          <p>
+            <b>Đã import doanh thu {monthLabel(periods)} nhưng chưa ghi sổ.</b> Dòng Doanh thu vẫn đủ (lấy thẳng từ file import), nhưng giá vốn và
+            chi phí của các kỳ này lấy từ sổ cái nên còn hiện 0 đ — lợi nhuận đang bị thổi lên.
+          </p>
+        )}
+        {debtCount > 0 && (
+          <p className={periods.length > 0 ? "mt-2" : undefined}>
+            <b>{debtCount} khoản công nợ phải trả ({money(debts?.amount || 0)} đ) khai là chi phí phát sinh nhưng chưa ghi sổ</b> — {monthLabel(debts?.months || [])}.
+            Chi phí đó chưa có mặt ở bất kỳ dòng nào của bảng này.
+          </p>
+        )}
+        {onSync
+          ? (
+            <button
+              type="button"
+              disabled={syncing}
+              onClick={() => onSync(allMonths)}
+              className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-rose-700 disabled:opacity-50"
+            >
+              <span className="material-symbols-outlined text-[16px]">sync</span>
+              {syncing ? "Đang ghi sổ..." : `Đồng bộ ghi sổ ${allMonths.length} kỳ ngay tại đây`}
+            </button>
+          )
+          : <p className="mt-2">Vào màn <b>Kế toán</b>, chọn đúng kỳ và cửa hàng rồi bấm <b>&quot;Đồng bộ ghi sổ&quot;</b>, sau đó quay lại làm mới bảng này.</p>}
       </div>
     </div>
   );

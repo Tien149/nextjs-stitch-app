@@ -91,7 +91,7 @@ export async function getPnlMatrix(year: string, branchCode: string) {
   const yearStart = new Date(`${year}-01-01T00:00:00`);
   const yearEnd = new Date(`${Number(year) + 1}-01-01T00:00:00`);
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
-  const [rows, pnlItems, pnlGroups, categories, revenueGroups, departments, revenueRows, payrollRows, payrollDeptRows, targets] = await Promise.all([
+  const [rows, pnlItems, pnlGroups, categories, revenueGroups, departments, revenueRows, payrollRows, payrollDeptRows, targets, payableDebts] = await Promise.all([
     loadYearJournalLines(months[0], months[11], branchCode),
     prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true, group: true, subGroup: true, status: true } }),
     prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true, group: true, status: true } }),
@@ -124,7 +124,29 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     prisma.reportTarget.findMany({
       where: { period: { startsWith: `${year}-` }, deletedAt: null, ...branchFilter },
     }),
+    /**
+     * Công nợ phải trả khai là CHI PHÍ PHÁT SINH nhưng chưa có bút toán: chi phí đó chưa có
+     * mặt ở bất kỳ dòng P&L nào. Khác cảnh báo doanh thu bên dưới — kỳ có thể đã ghi sổ từ
+     * trước rồi mới nhập thêm công nợ, lúc đó doanh thu vẫn đủ mà chi phí thì thiếu, nhìn
+     * bảng không tài nào biết (khách báo 19/09/2026).
+     */
+    prisma.debtRecord.findMany({
+      where: { debtType: "PAYABLE", recognizeExpense: true, documentDate: { gte: yearStart, lt: yearEnd }, ...branchFilter },
+      select: { id: true, code: true, documentDate: true, originalAmount: true },
+    }),
   ]);
+  const postedDebtIds = new Set(
+    payableDebts.length === 0 ? [] : (await prisma.journalEntry.findMany({
+      where: { sourceType: "DEBT_PAYABLE", sourceId: { in: payableDebts.map((row) => row.id) } },
+      select: { sourceId: true },
+    })).map((row) => row.sourceId),
+  );
+  const unpostedDebtRows = payableDebts.filter((row) => !postedDebtIds.has(row.id));
+  const unpostedDebts = {
+    count: unpostedDebtRows.length,
+    amount: Math.round(unpostedDebtRows.reduce((sum, row) => sum + row.originalAmount, 0)),
+    months: [...new Set(unpostedDebtRows.map((row) => row.documentDate.toISOString().slice(0, 7)))].sort(),
+  };
   const departmentName = new Map(departments.map((item) => [item.code, item.name]));
   const deptLabel = (code: string) => (code === UNASSIGNED_DEPARTMENT ? "Chưa gán bộ phận" : departmentName.get(code) || code);
   // Cây dòng KQKD -> nhóm -> hạng mục với 12 cột tháng, đi qua cùng builder với bảng một kỳ
@@ -414,6 +436,8 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     hasPlan,
     /** Kỳ đã import doanh thu mà chưa "Đồng bộ ghi sổ" — cụm Hoạch định hiện cảnh báo nhắc bấm. */
     unpostedMonths,
+    /** Công nợ phải trả khai "phát sinh trong kỳ" mà chưa ghi sổ: chi phí chưa lên P&L. */
+    unpostedDebts,
     /** Kế hoạch 12 tháng đã cộng mọi cửa hàng, đủ các dòng suy ra (LN gộp, EBITDA, LN ròng). */
     plans,
     /** Thực tế + kế hoạch từng cửa hàng — bảng hiệu quả theo cửa hàng và hòa vốn theo cửa hàng. */

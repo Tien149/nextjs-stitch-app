@@ -41,6 +41,8 @@ export default function FinancialPlanningWorkspace({ period, branchCode, periodV
   const [data, setData] = useState<PlanningData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState("");
 
   useEffect(() => {
     window.setTimeout(() => setPicked(monthsUpToPeriod(period)), 0);
@@ -72,12 +74,49 @@ export default function FinancialPlanningWorkspace({ period, branchCode, periodV
     return () => window.clearTimeout(timer);
   }, [load]);
 
+  /**
+   * Ghi sổ ngay tại chỗ cho những kỳ đang thiếu, thay vì bắt người xem sang màn Kế toán bấm
+   * từng kỳ rồi quay lại. Chạy tuần tự vì mỗi kỳ là một lượt dựng lại bút toán khá nặng.
+   */
+  const syncPeriods = async (months: string[]) => {
+    setSyncing(true);
+    setSyncError("");
+    try {
+      for (const month of months) {
+        const response = await fetch("/api/accounting", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "SYNC_PERIOD", period: month, branchCode }),
+        });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(payload.error || `Không ghi sổ được kỳ ${month}`);
+        }
+      }
+      await load();
+    } catch (syncFailure) {
+      setSyncError(syncFailure instanceof Error ? syncFailure.message : "Không ghi sổ được, vui lòng thử lại.");
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const yearContent = () => {
     if (loading && !data) return <p className="py-14 text-center text-sm text-slate-500 animate-pulse">Đang tổng hợp số liệu hoạch định năm {year}...</p>;
     if (error) return <p className="py-10 text-center text-sm text-rose-600">{error}</p>;
     if (!data) return null;
     // Cảnh báo kỳ chưa ghi sổ đứng trên MỌI màn của cụm — cả 5 màn đều đọc cùng một sổ cái.
-    const notice = <UnpostedPeriodsNotice periods={data.unpostedMonths || []} />;
+    const notice = (
+      <>
+        <UnpostedPeriodsNotice
+          periods={data.unpostedMonths || []}
+          debts={data.unpostedDebts}
+          syncing={syncing}
+          onSync={(months) => void syncPeriods(months)}
+        />
+        {syncError && <p className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-700">{syncError}</p>}
+      </>
+    );
     const body = () => {
       if (tab === "forecast") return <PnlForecastTab data={data} onRefresh={() => void load()} onOpenBudget={onOpenBudget} />;
       if (tab === "dashboard") return <PnlDashboardTab data={data} picked={picked} onChangePicked={setPicked} />;

@@ -10,6 +10,7 @@ import { loadNonInventoryRevenueGroups, loadRevenueCategoryIndex, tracksInventor
 import { bankStatementSuspectKey, groupBankStatementRows, type BankStatementImportGroup } from "@/lib/bank-statement-import";
 import { isPeriodLocked } from "@/lib/phase3";
 import { normalizeMoneySourceGroup } from "@/lib/money-sources";
+import { DEBT_EXPENSE_TYPE_ERROR, parseDebtExpenseType } from "@/lib/debt-expense-type";
 import { moneySourceBranchCode, resolveTransferMoneySource } from "@/lib/internal-transfer";
 import { bankStatementSpecialCategory } from "@/lib/bank-statement-category";
 import { evaluateBankStatementAutoApproval } from "@/lib/bank-statement-auto-approval";
@@ -347,6 +348,29 @@ function validateDebt(row: ParsedImportRow, masterItems: MasterItem[]) {
   if (allocationMonths > 1) {
     validatePeriod(row, "allocation_start_period", "Kỳ bắt đầu phân bổ");
     if (!text(row.values.allocation_start_period)) addError(row, "Công nợ phân bổ bắt buộc có kỳ bắt đầu");
+  }
+
+  // "Loại phát sinh" quyết định khoản phải trả có ghi chi phí lên P&L hay chỉ là số dư mang
+  // sang. Khai chữ lạ mà đoán bừa là lệch hẳn một dòng chi phí, nên chặn ngay ở xem trước.
+  const expenseType = parseDebtExpenseType(row.values.expense_type);
+  if (expenseType === null) addError(row, DEBT_EXPENSE_TYPE_ERROR);
+  if (debtType === "PAYABLE" && expenseType === "INCURRED" && allocationMonths > 1) {
+    addError(row, 'Khoản đã khai "Số kỳ phân bổ" thì chi phí vào P&L dần theo lịch phân bổ — bỏ cột "Loại phát sinh" hoặc bỏ số kỳ phân bổ, khai cả hai là ghi chi phí hai lần.');
+  }
+  const pnlItemCode = text(row.values.pnl_item_code);
+  if (pnlItemCode) {
+    if (debtType !== "PAYABLE") {
+      addError(row, "Hạng mục P&L chỉ khai cho công nợ Phải trả");
+    } else {
+      const pnlItem = resolveMaster(masterItems, "PNL_ITEM", pnlItemCode);
+      if (!pnlItem) addError(row, `Hạng mục P&L [${pnlItemCode}] không tồn tại`);
+      else row.values.pnl_item_code = pnlItem.code;
+    }
+  }
+  // Chi phí phát sinh mà không có hạng mục thì lên P&L nằm ở rổ chưa phân loại — cảnh báo sớm
+  // còn hơn để kế toán đi tìm sau.
+  if (debtType === "PAYABLE" && expenseType === "INCURRED" && !pnlItemCode && !text(row.values.category_code)) {
+    addError(row, 'Khoản "Phát sinh" phải khai Hạng mục P&L hoặc Loại chi phí, nếu không chi phí lên P&L không biết xếp vào dòng nào');
   }
 }
 

@@ -6,6 +6,7 @@ import { depositDecreaseActions, depositIncreaseActions, depositRevenueActions }
 import { depositCategoryDirection } from "@/lib/bank-statement-category";
 import { isGrabMoneySource, moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { isSalesReceiptCategory, normalizeCashflowCategoryType, SALES_RECEIPT_CATEGORY_CODES } from "@/lib/voucher-rules";
+import { MANUAL_VOUCHER_MATCH_DAY_GAP } from "@/lib/bank-statement-voucher-match";
 import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/lib/money-transfer-date";
 import { transferLegsForBranch } from "@/lib/internal-transfer";
 import { WALLET_CARD_FEE_CATEGORY_CODE, WALLET_GRAB_EXPENSE_CATEGORY_CODE } from "@/lib/wallet-settlement-allocation";
@@ -1475,12 +1476,19 @@ export type RevenueSettlementRow = {
  * từ ngân hàng mà bảng vẫn báo chưa về, không hiểu vì sao (khách hỏi 18/09/2026).
  */
 export type RevenueSettlementLooseVoucher = {
+  id: string;
   code: string;
   date: string;
   moneySourceCode: string;
   moneySourceName: string;
   partnerName: string;
   amount: number;
+  /**
+   * Dòng sao kê CHƯA có chứng từ nào, cùng số tiền, lệch vài ngày — nối được ngay trên báo cáo.
+   * Rỗng thì hoặc sao kê chưa import, hoặc dòng sao kê đã có chứng từ riêng (phiếu tay là bản
+   * trùng, phải xoá chứ không phải nối).
+   */
+  candidates: Array<{ id: string; transactionCode: string; transactionDate: string; bankAccount: string }>;
 };
 
 /** Chỉ những khoản thu này mới là tiền về của doanh thu bán hàng. */
@@ -1922,7 +1930,7 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
   // "Tiền đã vô" (xem RevenueSettlementLooseVoucher) nhưng phải liệt kê ra. Nguồn tiền mặt
   // không có sao kê để đối chiếu nên không tính là lạc.
   const reconciledVoucherIds = new Set(reconciledVoucherLinks.map((row) => row.targetId));
-  const looseVouchers: RevenueSettlementLooseVoucher[] = cashReceipts
+  const looseRows = cashReceipts
     .filter((row) => !row.depositAction
       && isSalesReceiptCategory(row.categoryCode)
       && !reconciledVoucherIds.has(row.id))
@@ -1931,14 +1939,51 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
       && normalizeMoneySourceGroup(source.group) !== "CASH"
       && moneySourceMatchesBranch(source, branchCode))
     .map(({ row, source }) => ({
+      id: row.id,
       code: row.code,
       date: dayKey(row.voucherDate),
+      voucherDate: row.voucherDate,
       moneySourceCode: row.moneySourceCode,
       moneySourceName: source?.name || row.moneySourceCode,
       partnerName: row.partnerName || "",
       amount: Math.round(row.amount),
     }))
     .sort((a, b) => a.date.localeCompare(b.date) || a.code.localeCompare(b.code));
+
+  // Gợi ý dòng sao kê để nối: chỉ dòng CHƯA có chứng từ nào. Dòng đã có chứng từ riêng nghĩa là
+  // phiếu tay bị trùng — nối vào đó là hai chứng từ cho một đồng tiền, phải xoá phiếu tay.
+  const looseCandidateRows = looseRows.length > 0
+    ? await prisma.bankStatementTransaction.findMany({
+        where: {
+          deletedAt: null,
+          ...(branchCode === "ALL" ? {} : { branchCode }),
+          creditAmount: { in: [...new Set(looseRows.map((row) => row.amount))] },
+          transactionDate: {
+            gte: new Date(Math.min(...looseRows.map((row) => row.voucherDate.getTime())) - MANUAL_VOUCHER_MATCH_DAY_GAP * 86_400_000),
+            lte: new Date(Math.max(...looseRows.map((row) => row.voucherDate.getTime())) + MANUAL_VOUCHER_MATCH_DAY_GAP * 86_400_000),
+          },
+          matches: { none: { deletedAt: null } },
+        },
+        select: { id: true, transactionCode: true, transactionDate: true, bankAccount: true, creditAmount: true, increaseMoneySourceCode: true },
+      })
+    : [];
+
+  const looseVouchers: RevenueSettlementLooseVoucher[] = looseRows.map(({ voucherDate, ...row }) => ({
+    ...row,
+    candidates: looseCandidateRows
+      .filter((bank) => Math.round(bank.creditAmount) === row.amount
+        && Math.abs(bank.transactionDate.getTime() - voucherDate.getTime()) <= MANUAL_VOUCHER_MATCH_DAY_GAP * 86_400_000
+        // Nguồn tiền tăng của dòng sao kê phải là nguồn của phiếu; khai trống thì vẫn cho gợi ý
+        // để kế toán tự nhìn, nhưng khai khác hẳn thì chắc chắn không phải khoản này.
+        && (!bank.increaseMoneySourceCode || bank.increaseMoneySourceCode === row.moneySourceCode))
+      .slice(0, 3)
+      .map((bank) => ({
+        id: bank.id,
+        transactionCode: bank.transactionCode,
+        transactionDate: bank.transactionDate.toISOString().slice(0, 10),
+        bankAccount: bank.bankAccount,
+      })),
+  }));
 
   // Cọc cấn trừ / chuyển doanh thu: cộng vào "tiền đã vô" của đúng ngày xử lý, đúng nguồn tiền
   // đã nhận cọc (POS ghi bill trả bằng cọc theo phương thức khách đã chuyển cọc). Cọc đầu kỳ

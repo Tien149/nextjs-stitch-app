@@ -424,14 +424,17 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
    * này chỉ ghi Nợ 331 ("trả nợ, không phải chi phí mới") nên chi phí biến mất luôn, còn Hạng
    * mục P&L khai trên khoản nợ thì chỉ nằm để nhìn.
    *
-   * CHỈ lấy `sourceType = MANUAL`. Công nợ sinh tự động (lương, tài sản, nhập mua, điều chuyển
-   * chi phí, điều chuyển kho) chỉ là VẾ PHẢI TRẢ của một nghiệp vụ đã có bút toán chi phí riêng,
-   * còn công nợ đầu kỳ (IMPORT / DEBT_OPENING) là số dư mang sang — ghi thêm ở đây là tính chi
-   * phí hai lần. Số tiền lấy `originalAmount`: chi phí ghi nhận một lần theo số gốc, các lần
-   * trả tiền sau đó chỉ rút dần 331 xuống.
+   * Lấy theo cờ `recognizeExpense` chứ không theo nguồn tạo nữa (19/09/2026). Công nợ sinh tự
+   * động (lương, tài sản, nhập mua, điều chuyển chi phí, điều chuyển kho) chỉ là VẾ PHẢI TRẢ của
+   * một nghiệp vụ đã có bút toán chi phí riêng, còn số dư đầu kỳ là khoản đã phát sinh từ kỳ
+   * trước — cả hai để cờ false, ghi thêm ở đây là tính chi phí hai lần. Khoản khai tay và khoản
+   * import khai rõ "phát sinh trong kỳ" thì bật cờ, và chỉ chúng mới vào P&L.
+   *
+   * Số tiền lấy `originalAmount`: chi phí ghi nhận một lần theo số gốc, các lần trả tiền sau đó
+   * chỉ rút dần 331 xuống.
    */
   const manualPayables = await prisma.debtRecord.findMany({
-    where: { ...branchFilter, debtType: "PAYABLE", sourceType: "MANUAL", documentDate: { gte: start, lt: end } },
+    where: { ...branchFilter, debtType: "PAYABLE", recognizeExpense: true, documentDate: { gte: start, lt: end } },
   });
   for (const row of manualPayables) {
     const debtGroup = row.pnlItemCode

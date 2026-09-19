@@ -517,6 +517,9 @@ export async function POST(request: Request) {
                 // và trên phiếu chi vẫn biết dòng này là khoản gì.
                 description: multiLine ? [description, [line.pnlItemCode || line.pnlGroupCode, line.note].filter(Boolean).join(" ")].filter(Boolean).join(" · ") : description,
                 sourceType: "MANUAL",
+                // Khai tay = chi phí phát sinh trong kỳ, ghi sổ ngay (số dư đầu kỳ đi đường
+                // import và mặc định không ghi chi phí — xem lib/accounting.ts).
+                recognizeExpense: debtType === "PAYABLE",
                 status: "OPEN",
               },
             }),

@@ -160,12 +160,15 @@ type RevenueSettlementRow = {
 };
 /** Phiếu thu bán hàng lập tay chưa có dòng sao kê nào đối chiếu — xem khối cảnh báo dưới bảng. */
 type RevenueSettlementLooseVoucher = {
+  id: string;
   code: string;
   date: string;
   moneySourceCode: string;
   moneySourceName: string;
   partnerName: string;
   amount: number;
+  /** Dòng sao kê chưa có chứng từ nào, khớp số tiền + ngày — nối được ngay tại đây. */
+  candidates: Array<{ id: string; transactionCode: string; transactionDate: string; bankAccount: string }>;
 };
 type RevenueSettlementData = {
   period: string;
@@ -295,6 +298,8 @@ export default function ReportsPage() {
   const canEnterManualRevenue = user ? canPerformMenuAction(user, href, "create") : false;
   // Sửa phân loại dòng doanh thu đã import (Sổ doanh thu) — sửa số cũ nên đi theo quyền edit.
   const canEditRevenueRow = user ? canPerformMenuAction(user, href, "edit") : false;
+  /** Nối phiếu tay vào dòng sao kê là thao tác của màn Sổ sao kê, nên xin quyền của màn đó. */
+  const canEditReconciliation = user ? canPerformMenuAction(user, "/reconciliations", "edit") : false;
   const canAdminPeriod = user?.role === "Admin";
 
   useEffect(() => {
@@ -1163,7 +1168,7 @@ export default function ReportsPage() {
       {!tabLoading && settlement && (
         <div className="space-y-5">
           {reconDailyCash && <MoneyInReconciliationPanel dailyCash={reconDailyCash} showContextLine />}
-          <RevenueSettlementPanel data={settlement} />
+          <RevenueSettlementPanel data={settlement} canLink={canEditReconciliation} onLinked={() => void loadData()} />
         </div>
       )}
 
@@ -2545,7 +2550,7 @@ function RevenueLedgerPanel({ data, branchCode, moneySources, canEdit, onSaved }
   );
 }
 
-function RevenueSettlementPanel({ data }: { data: RevenueSettlementData }) {
+function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSettlementData; canLink: boolean; onLinked: () => void }) {
   const dayLabel = (value: string) => new Date(`${value}T00:00:00Z`).toLocaleDateString("vi-VN", { timeZone: "UTC" });
   /**
    * Bấm vào số "Tiền đã vô" là mở đúng những dòng sổ sao kê đã cộng thành số đó.
@@ -2555,6 +2560,46 @@ function RevenueSettlementPanel({ data }: { data: RevenueSettlementData }) {
    * chứng từ ra sửa thì bảng này không đổi số: nó đọc sổ sao kê, không đọc chứng từ.
    */
   const looseVouchers = data.looseVouchers || [];
+  const linkableVouchers = looseVouchers.filter((voucher) => voucher.candidates.length === 1);
+  const [linking, setLinking] = useState("");
+  const [linkError, setLinkError] = useState("");
+
+  /**
+   * Nối phiếu lập tay vào một dòng sao kê: dùng đúng API đối soát của màn Sổ sao kê, nên luật
+   * quyền và luật khớp số tiền vẫn do bên đó giữ. Nối xong tải lại báo cáo để số cập nhật ngay.
+   */
+  const linkVoucher = async (voucher: RevenueSettlementLooseVoucher, bankTransactionId: string) => {
+    setLinking(voucher.code);
+    setLinkError("");
+    try {
+      const response = await fetch("/api/reconciliations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bankTransactionId,
+          targetType: "VOUCHER",
+          targetId: voucher.id,
+          targetCode: voucher.code,
+          targetAmount: voucher.amount,
+          note: "Nối phiếu lập tay từ báo cáo Tiền về đủ chưa",
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error || "Không nối được phiếu với dòng sao kê");
+      onLinked();
+    } catch (error) {
+      setLinkError(error instanceof Error ? error.message : "Không nối được phiếu với dòng sao kê");
+    } finally {
+      setLinking("");
+    }
+  };
+
+  /** Nối một lượt mọi phiếu chỉ có đúng một dòng sao kê khớp — phần việc tay lặp đi lặp lại. */
+  const linkAllObvious = async () => {
+    for (const voucher of linkableVouchers) {
+      await linkVoucher(voucher, voucher.candidates[0].id);
+    }
+  };
   const ledgerHref = (row: RevenueSettlementRow) => `/reconciliations?${new URLSearchParams({
     dateType: "REVENUE",
     from: row.date,
@@ -2581,10 +2626,23 @@ function RevenueSettlementPanel({ data }: { data: RevenueSettlementData }) {
                 Tiền đã thật sự về thì import sao kê của tài khoản đó rồi <b>xoá phiếu lập tay</b> (để lại là Báo cáo nguồn tiền cộng dư đúng số này);
                 tiền chưa về thì cứ để nguyên, bảng đang báo đúng.
               </p>
+              {canLink && linkableVouchers.length > 0 && (
+                <button
+                  type="button"
+                  disabled={Boolean(linking)}
+                  onClick={() => void linkAllObvious()}
+                  className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  <span className="material-symbols-outlined text-[16px]">link</span>
+                  {linking ? "Đang nối..." : `Nối tất cả ${linkableVouchers.length} phiếu có đúng một dòng khớp`}
+                </button>
+              )}
+              {linkError && <p className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">{linkError}</p>}
+
               <div className="mt-3 overflow-x-auto rounded-lg border border-amber-200 bg-white">
                 <table className="w-full text-left text-xs">
                   <thead className="bg-amber-100/60 uppercase text-amber-900">
-                    <tr><th className="px-3 py-2">Ngày</th><th className="px-3 py-2">Chứng từ</th><th className="px-3 py-2">Nguồn tiền</th><th className="px-3 py-2">Đối tác</th><th className="px-3 py-2 text-right">Số tiền</th></tr>
+                    <tr><th className="px-3 py-2">Ngày</th><th className="px-3 py-2">Chứng từ</th><th className="px-3 py-2">Nguồn tiền</th><th className="px-3 py-2">Đối tác</th><th className="px-3 py-2 text-right">Số tiền</th><th className="px-3 py-2">Dòng sao kê khớp</th></tr>
                   </thead>
                   <tbody>
                     {looseVouchers.map((voucher) => (
@@ -2594,6 +2652,26 @@ function RevenueSettlementPanel({ data }: { data: RevenueSettlementData }) {
                         <td className="px-3 py-2">{voucher.moneySourceName}<span className="ml-1 text-slate-400">{voucher.moneySourceCode}</span></td>
                         <td className="px-3 py-2">{voucher.partnerName || "—"}</td>
                         <td className="whitespace-nowrap px-3 py-2 text-right font-bold tabular-nums">{money(voucher.amount)} đ</td>
+                        <td className="px-3 py-2">
+                          {voucher.candidates.length === 0
+                            ? <span className="text-slate-400">Chưa có — sao kê chưa import, hoặc dòng sao kê đã có chứng từ riêng (phiếu này là bản trùng)</span>
+                            : voucher.candidates.map((candidate) => (
+                                <span key={candidate.id} className="mr-2 inline-flex items-center gap-1.5">
+                                  <span className="font-semibold">{candidate.transactionCode}</span>
+                                  <span className="text-slate-400">{dayLabel(candidate.transactionDate)} · {candidate.bankAccount}</span>
+                                  {canLink && (
+                                    <button
+                                      type="button"
+                                      disabled={Boolean(linking)}
+                                      onClick={() => void linkVoucher(voucher, candidate.id)}
+                                      className="rounded border border-emerald-300 bg-white px-2 py-0.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
+                                    >
+                                      {linking === voucher.code ? "Đang nối..." : "Nối"}
+                                    </button>
+                                  )}
+                                </span>
+                              ))}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

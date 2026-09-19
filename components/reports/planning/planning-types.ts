@@ -38,6 +38,8 @@ export type PlanningData = {
   hasPlan: boolean;
   /** Kỳ "YYYY-MM" đã import doanh thu nhưng chưa "Đồng bộ ghi sổ" ở màn Kế toán -> P&L còn trống. */
   unpostedMonths?: string[];
+  /** Công nợ phải trả khai "phát sinh trong kỳ" mà chưa ghi sổ — chi phí chưa có trên P&L. */
+  unpostedDebts?: { count: number; amount: number; months: string[] };
   byBranch: BranchPlanning[];
   revenueSplit: { byDepartment: Series[]; byChannel: Series[]; svc: number[]; vat: number[] };
   payrollSplit: { bonus: number[]; insurance: number[] };

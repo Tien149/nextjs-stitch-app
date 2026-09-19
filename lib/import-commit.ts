@@ -29,6 +29,12 @@ import {
 } from "@/lib/wallet-settlement-allocation";
 import { walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
 import { findStaleWalletSettlements, findWalletSettlementsOnDays } from "@/lib/wallet-settlement-staleness";
+import { parseDebtExpenseType } from "@/lib/debt-expense-type";
+import {
+  MACHINE_VOUCHER_SOURCE_SCOPES,
+  MANUAL_VOUCHER_MATCH_DAY_GAP,
+  pickManualVoucherForStatement,
+} from "@/lib/bank-statement-voucher-match";
 import { pickRevenueRowsOfDay, revenueDayKey, revenueDayLabel } from "@/lib/revenue-day-summary";
 
 /**
@@ -640,6 +646,8 @@ export async function commitImport(input: CommitInput) {
         let targetType = "VOUCHER";
         let targetId = "";
         let targetCode = "";
+        /** Có nối vào chứng từ kế toán lập tay không — câu ghi chú cuối phải nói đúng chuyện đó. */
+        let linkedManualVoucher = false;
 
         if (autoProcessType === "WALLET_SETTLEMENT") {
           const walletSourceCode = decreaseSourceCode;
@@ -812,97 +820,156 @@ export async function commitImport(input: CommitInput) {
           if (!approval.autoApprove) {
             throw new BankRowNeedsFixError(approval.reason);
           }
-          const partnerCode = commonBankValue(group.rows, "partner_code") || null;
-          const partner = partnerCode
-            ? await tx.masterDataItem.findFirst({
-                where: { type: "PARTNER", code: partnerCode, status: "ACTIVE", deletedAt: null },
-                select: { code: true, name: true },
-              })
-            : null;
-          // Một mã giao dịch trả cho nhiều đối tác: các dòng file khác đối tác/mã công nợ
-          // thành bảng phân bổ trên chứng từ, gạch nợ từng dòng — commonBankValue lúc này
-          // trả rỗng nên partner tổng của phiếu để trống, tên phiếu ghi số đối tác.
-          const rowPartnerCodes = group.rows.map((row) => asText(row.values.partner_code)).filter(Boolean);
-          const isMultiPartnerGroup = group.rows.length > 1 && !partnerCode && rowPartnerCodes.length > 0;
-          const multiPartnerByCode = isMultiPartnerGroup
-            ? new Map((await tx.masterDataItem.findMany({
-                where: { type: "PARTNER", code: { in: [...new Set(rowPartnerCodes)] }, deletedAt: null },
-                select: { code: true, name: true },
-              })).map((row) => [row.code, row.name]))
-            : new Map<string, string>();
-          const isSalesReceipt = operationType === "REVENUE_RECEIPT";
-          const businessEffect = isSalesReceipt ? "SETTLEMENT" : "RECOGNITION";
-          const counterpartyName = commonBankValue(group.rows, "partner_hint") || null;
-          const depositAction = operationType === "DEPOSIT_RECEIPT" ? "COLLECT"
-            : operationType === "DEPOSIT_REFUND" ? "REFUND"
-            : null;
-          // Chỉ gạch sổ nợ (SETTLE) khi file khai Mã công nợ cụ thể. Khai mỗi Mã đối tác
-          // phải thu/phải trả thì chứng từ vẫn lập và gắn đối tác — trước đây các dòng này
-          // kẹt lại vì SETTLE bắt buộc có mã công nợ, đúng case "thanh toán công nợ chưa
-          // bắt hết" khách báo.
-          const debtAction = ["AR_COLLECTION", "AP_PAYMENT"].includes(operationType)
-            && commonBankValue(group.rows, "debt_reference") ? "SETTLE" : null;
-          const voucher = await tx.financialVoucher.create({
-            data: {
-              importBatchId: batch.id,
-              code: await nextVoucherCode(tx, voucherType, documentDate, branchCode, "BANK"),
-              sourceDocumentCode: null,
-              voucherType,
-              voucherDate: documentDate,
-              partnerCode: partner?.code || null,
-              partnerName: partner?.name
-                || (isMultiPartnerGroup ? `${new Set(rowPartnerCodes).size} đối tác theo sao kê` : null)
-                || counterpartyName
-                // Tên trung thực thay cho "Đối tác theo sao kê" cũ: dòng này thiếu Mã đối tác
-                // thật trên file (chỉ còn xảy ra với loại chi phí không bắt buộc đối tác).
-                || "Chưa khai đối tác",
+          /**
+           * Kế toán đã lập phiếu tay cho đúng khoản này thì NỐI vào phiếu đó, không lập phiếu
+           * thứ hai: giữ nguyên ghi chú họ đã ghi, và dòng sao kê có chứng từ nên bảng "Tiền về
+           * đủ chưa" cùng Báo cáo nguồn tiền đọc đúng một lần. Mập mờ (nhiều phiếu cùng số tiền
+           * trong vài ngày) thì không đoán — cứ lập phiếu như cũ, để kế toán tự nối trên báo cáo.
+           */
+          const manualCandidates = await tx.financialVoucher.findMany({
+            where: {
               branchCode,
-              sourceScope: "BANK_STATEMENT_AUTO",
+              voucherType,
               documentChannel: "BANK",
-              businessEffect,
-              moneySourceCode,
-              categoryCode: categoryCode || null,
-              pnlItemCode: commonBankValue(group.rows, "pnl_item_code") || null,
-              counterpartyAccountName: counterpartyName,
-              depositAction,
-              depositCode: commonBankValue(group.rows, "deposit_code") || null,
-              debtAction,
-              debtReference: commonBankValue(group.rows, "debt_reference") || null,
-              externalRef: transactionCode,
+              status: { in: ["APPROVED", "POSTED"] },
+              deletedAt: null,
+              sourceScope: { notIn: MACHINE_VOUCHER_SOURCE_SCOPES },
+              moneySourceCode: moneySourceCode || undefined,
               amount: bankAmount,
-              description: group.rows.length === 1
-                ? asText(firstRow.values.description)
-                : `${asText(firstRow.values.description)} (${group.rows.length} dòng phân bổ)`,
-              status: "APPROVED",
-              createdBy: input.uploadedBy,
-              approvedBy: input.uploadedBy,
+              voucherDate: {
+                gte: new Date(documentDate.getTime() - MANUAL_VOUCHER_MATCH_DAY_GAP * 86_400_000),
+                lte: new Date(documentDate.getTime() + MANUAL_VOUCHER_MATCH_DAY_GAP * 86_400_000),
+              },
+              // Phiếu đã gắn một dòng sao kê khác thì không phải khoản này.
+              id: { notIn: (await tx.reconciliationMatch.findMany({
+                where: { targetType: "VOUCHER", deletedAt: null },
+                select: { targetId: true },
+              })).map((row) => row.targetId) },
+            },
+            select: {
+              id: true, code: true, voucherType: true, documentChannel: true, sourceScope: true,
+              moneySourceCode: true, amount: true, voucherDate: true, externalRef: true, businessEffect: true,
             },
           });
-          if (isMultiPartnerGroup) {
-            await tx.voucherAllocation.createMany({
-              data: group.rows
-                .filter((row) => asText(row.values.partner_code))
-                .map((row) => ({
-                  voucherId: voucher.id,
-                  partnerCode: asText(row.values.partner_code),
-                  partnerName: multiPartnerByCode.get(asText(row.values.partner_code)) || asText(row.values.partner_code),
-                  amount: asNumber(row.values.credit_amount) || asNumber(row.values.debit_amount),
-                  debtReference: asText(row.values.debt_reference) || null,
-                  note: asText(row.values.description) || null,
-                })),
+          const manualPick = pickManualVoucherForStatement(manualCandidates, {
+            voucherType,
+            moneySourceCode,
+            amount: bankAmount,
+            documentDate,
+          });
+
+          if (manualPick.voucher) {
+            const manual = manualPick.voucher;
+            await tx.financialVoucher.update({
+              where: { id: manual.id },
+              data: {
+                externalRef: manual.externalRef || transactionCode,
+                // Thu doanh thu: doanh thu đã ghi từ file POS, phiếu chỉ còn xác nhận dòng tiền —
+                // đúng như phiếu mà import tự lập. Không đổi thì khoản này ghi Có 511 lần nữa.
+                ...(operationType === "REVENUE_RECEIPT" && manual.businessEffect === "RECOGNITION"
+                  ? { businessEffect: "SETTLEMENT" }
+                  : {}),
+              },
             });
+            targetId = manual.id;
+            targetCode = manual.code;
+            linkedManualVoucher = true;
+          } else {
+            const partnerCode = commonBankValue(group.rows, "partner_code") || null;
+            const partner = partnerCode
+              ? await tx.masterDataItem.findFirst({
+                  where: { type: "PARTNER", code: partnerCode, status: "ACTIVE", deletedAt: null },
+                  select: { code: true, name: true },
+                })
+              : null;
+            // Một mã giao dịch trả cho nhiều đối tác: các dòng file khác đối tác/mã công nợ
+            // thành bảng phân bổ trên chứng từ, gạch nợ từng dòng — commonBankValue lúc này
+            // trả rỗng nên partner tổng của phiếu để trống, tên phiếu ghi số đối tác.
+            const rowPartnerCodes = group.rows.map((row) => asText(row.values.partner_code)).filter(Boolean);
+            const isMultiPartnerGroup = group.rows.length > 1 && !partnerCode && rowPartnerCodes.length > 0;
+            const multiPartnerByCode = isMultiPartnerGroup
+              ? new Map((await tx.masterDataItem.findMany({
+                  where: { type: "PARTNER", code: { in: [...new Set(rowPartnerCodes)] }, deletedAt: null },
+                  select: { code: true, name: true },
+                })).map((row) => [row.code, row.name]))
+              : new Map<string, string>();
+            const isSalesReceipt = operationType === "REVENUE_RECEIPT";
+            const businessEffect = isSalesReceipt ? "SETTLEMENT" : "RECOGNITION";
+            const counterpartyName = commonBankValue(group.rows, "partner_hint") || null;
+            const depositAction = operationType === "DEPOSIT_RECEIPT" ? "COLLECT"
+              : operationType === "DEPOSIT_REFUND" ? "REFUND"
+              : null;
+            // Chỉ gạch sổ nợ (SETTLE) khi file khai Mã công nợ cụ thể. Khai mỗi Mã đối tác
+            // phải thu/phải trả thì chứng từ vẫn lập và gắn đối tác — trước đây các dòng này
+            // kẹt lại vì SETTLE bắt buộc có mã công nợ, đúng case "thanh toán công nợ chưa
+            // bắt hết" khách báo.
+            const debtAction = ["AR_COLLECTION", "AP_PAYMENT"].includes(operationType)
+              && commonBankValue(group.rows, "debt_reference") ? "SETTLE" : null;
+            const voucher = await tx.financialVoucher.create({
+              data: {
+                importBatchId: batch.id,
+                code: await nextVoucherCode(tx, voucherType, documentDate, branchCode, "BANK"),
+                sourceDocumentCode: null,
+                voucherType,
+                voucherDate: documentDate,
+                partnerCode: partner?.code || null,
+                partnerName: partner?.name
+                  || (isMultiPartnerGroup ? `${new Set(rowPartnerCodes).size} đối tác theo sao kê` : null)
+                  || counterpartyName
+                  // Tên trung thực thay cho "Đối tác theo sao kê" cũ: dòng này thiếu Mã đối tác
+                  // thật trên file (chỉ còn xảy ra với loại chi phí không bắt buộc đối tác).
+                  || "Chưa khai đối tác",
+                branchCode,
+                sourceScope: "BANK_STATEMENT_AUTO",
+                documentChannel: "BANK",
+                businessEffect,
+                moneySourceCode,
+                categoryCode: categoryCode || null,
+                pnlItemCode: commonBankValue(group.rows, "pnl_item_code") || null,
+                counterpartyAccountName: counterpartyName,
+                depositAction,
+                depositCode: commonBankValue(group.rows, "deposit_code") || null,
+                debtAction,
+                debtReference: commonBankValue(group.rows, "debt_reference") || null,
+                externalRef: transactionCode,
+                amount: bankAmount,
+                description: group.rows.length === 1
+                  ? asText(firstRow.values.description)
+                  : `${asText(firstRow.values.description)} (${group.rows.length} dòng phân bổ)`,
+                status: "APPROVED",
+                createdBy: input.uploadedBy,
+                approvedBy: input.uploadedBy,
+              },
+            });
+            if (isMultiPartnerGroup) {
+              await tx.voucherAllocation.createMany({
+                data: group.rows
+                  .filter((row) => asText(row.values.partner_code))
+                  .map((row) => ({
+                    voucherId: voucher.id,
+                    partnerCode: asText(row.values.partner_code),
+                    partnerName: multiPartnerByCode.get(asText(row.values.partner_code)) || asText(row.values.partner_code),
+                    amount: asNumber(row.values.credit_amount) || asNumber(row.values.debit_amount),
+                    debtReference: asText(row.values.debt_reference) || null,
+                    note: asText(row.values.description) || null,
+                  })),
+              });
+            }
+            if (depositAction || debtAction || isMultiPartnerGroup) {
+              await applyVoucherSideEffects(tx as unknown as RawTxClient, voucher, input.uploadedBy);
+            }
+            targetId = voucher.id;
+            targetCode = voucher.code;
+            autoProcessNote = `Đã tạo ${targetCode} theo Loại nghiệp vụ đích ${operationType}`;
           }
-          if (depositAction || debtAction || isMultiPartnerGroup) {
-            await applyVoucherSideEffects(tx as unknown as RawTxClient, voucher, input.uploadedBy);
-          }
-          targetId = voucher.id;
-          targetCode = voucher.code;
-          autoProcessNote = `Đã tạo ${targetCode} theo Loại nghiệp vụ đích ${operationType}`;
+
         }
 
         autoProcessNote = autoProcessType === "WALLET_SETTLEMENT" && autoProcessNote
           ? autoProcessNote
-          : `Đã tự động duyệt và đối soát với ${targetCode}`;
+          : linkedManualVoucher
+            ? `Đã nối vào chứng từ lập tay ${targetCode}, không lập phiếu mới`
+            : `Đã tự động duyệt và đối soát với ${targetCode}`;
         await tx.reconciliationMatch.create({
           data: {
             bankTransactionId: bankTransaction.id,
@@ -1919,12 +1986,19 @@ export async function commitImport(input: CommitInput) {
             documentDate,
             dueDate: row.values.due_date ? asDate(row.values.due_date) : null,
             categoryCode: asText(row.values.category_code) || null,
+            pnlItemCode: debtType === "PAYABLE" ? asText(row.values.pnl_item_code) || null : null,
             originalAmount: asNumber(row.values.amount),
             outstandingAmount: asNumber(row.values.amount),
             allocationMonths: row.values.allocation_months ? asInteger(row.values.allocation_months) : null,
             allocationStartPeriod: asText(row.values.allocation_start_period) || null,
             description: asText(row.values.description),
             sourceType: "IMPORT",
+            // Chỉ khoản khai rõ "phát sinh trong kỳ" mới ghi chi phí; bỏ trống vẫn là số dư đầu
+            // kỳ như mọi file cũ. Khoản có lịch phân bổ thì chi phí đi theo lịch, bật cờ ở đây
+            // nữa là tính hai lần.
+            recognizeExpense: debtType === "PAYABLE"
+              && parseDebtExpenseType(row.values.expense_type) === "INCURRED"
+              && asInteger(row.values.allocation_months) <= 1,
             status: "OPEN",
           },
         });
@@ -2020,9 +2094,41 @@ export async function commitImport(input: CommitInput) {
 }
 
 async function rollbackBankStatement(tx: RawTxClient, batchId: string) {
-  const bankRows = await tx.bankStatementTransaction.findMany({ where: { importBatchId: batchId }, select: { id: true } });
+  const bankRows = await tx.bankStatementTransaction.findMany({
+    where: { importBatchId: batchId },
+    select: { id: true, transactionCode: true },
+  });
   const bankIds = bankRows.map((row) => row.id);
-  if (bankIds.length > 0) await tx.reconciliationMatch.deleteMany({ where: { bankTransactionId: { in: bankIds } } });
+  if (bankIds.length > 0) {
+    // Lô này có thể đã NỐI vào chứng từ kế toán lập tay (không thuộc batch nên rollback không
+    // xoá). Trả phiếu đó về đúng trạng thái trước khi nối: bỏ số tham chiếu vừa ghi và trả lại
+    // vế ghi nhận — để nguyên SETTLEMENT là phiếu hết sinh bút toán, tiền biến mất khỏi sổ.
+    const linkedManual = await tx.financialVoucher.findMany({
+      where: {
+        id: { in: (await tx.reconciliationMatch.findMany({
+          where: { bankTransactionId: { in: bankIds }, targetType: "VOUCHER" },
+          select: { targetId: true },
+        })).map((row) => row.targetId) },
+        // Phiếu lập tay có importBatchId NULL; `not: batchId` không bắt được NULL (so sánh với
+        // NULL luôn ra NULL trong SQL) nên phải kể tường minh, nếu không rollback bỏ sót đúng
+        // những phiếu cần trả về trạng thái cũ.
+        OR: [{ importBatchId: null }, { importBatchId: { not: batchId } }],
+        sourceScope: { notIn: MACHINE_VOUCHER_SOURCE_SCOPES },
+      },
+      select: { id: true, externalRef: true, businessEffect: true },
+    });
+    const rolledCodes = new Set(bankRows.map((row) => row.transactionCode));
+    for (const voucher of linkedManual) {
+      await tx.financialVoucher.update({
+        where: { id: voucher.id },
+        data: {
+          ...(voucher.externalRef && rolledCodes.has(voucher.externalRef) ? { externalRef: null } : {}),
+          ...(voucher.businessEffect === "SETTLEMENT" ? { businessEffect: "RECOGNITION" } : {}),
+        },
+      });
+    }
+    await tx.reconciliationMatch.deleteMany({ where: { bankTransactionId: { in: bankIds } } });
+  }
   await rollbackVouchers(tx, batchId);
   await rollbackTransfers(tx, batchId);
   await tx.bankStatementTransaction.deleteMany({ where: { importBatchId: batchId } });
@@ -2322,6 +2428,9 @@ async function rollbackDebtOpening(tx: RawTxClient, batchId: string) {
   const postedSchedules = await tx.accrualSchedule.count({ where: { accrual: { code: { in: accrualCodes } }, status: "POSTED" } });
   if (postedSchedules > 0) throw new Error("Batch công nợ đã tạo phân bổ và có kỳ đã ghi nhận, không thể rollback");
   await tx.accrual.deleteMany({ where: { code: { in: accrualCodes } } });
+  // Khoản khai "phát sinh trong kỳ" đã ghi Nợ 632/6428 khi đồng bộ sổ; xoá mỗi khoản nợ thì
+  // bút toán chi phí nằm lại mồ côi và P&L vẫn gánh số của một lô đã rollback.
+  await tx.journalEntry.deleteMany({ where: { sourceType: "DEBT_PAYABLE", sourceId: { in: debtIds } } });
   await tx.debtRecord.deleteMany({ where: { id: { in: debtIds } } });
 }
 

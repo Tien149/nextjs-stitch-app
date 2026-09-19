@@ -981,6 +981,10 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "due_date", label: "Hạn thanh toán", required: false, type: "date", aliases: ["han thanh toan", "ngay den han"] },
       { field: "allocation_months", label: "Số kỳ phân bổ", required: false, type: "integer", aliases: ["so ky phan bo", "so thang phan bo"] },
       { field: "allocation_start_period", label: "Kỳ bắt đầu phân bổ", required: false, type: "text", aliases: ["ky bat dau phan bo", "bat dau phan bo"] },
+      // Chi phí phát sinh trong kỳ hay số dư mang sang: quyết định khoản này có lên P&L không.
+      // Bỏ trống = số dư đầu kỳ, giữ đúng cách hiểu của các file đã import trước đây.
+      { field: "expense_type", label: "Loại phát sinh", required: false, type: "text", aliases: ["loai phat sinh", "phat sinh trong ky", "so du dau ky", "ghi chi phi"] },
+      { field: "pnl_item_code", label: "Hạng mục P&L", required: false, type: "text", aliases: ["hang muc p&l", "hang muc pnl", "ma hang muc p&l", "pnl item", "pnl item code"] },
     ],
   },
   {
@@ -1029,6 +1033,10 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "due_date", label: "Hạn thanh toán", required: false, type: "date", aliases: ["han thanh toan", "ngay den han"] },
       { field: "allocation_months", label: "Số kỳ phân bổ", required: false, type: "integer", aliases: ["so ky phan bo", "so thang phan bo"] },
       { field: "allocation_start_period", label: "Kỳ bắt đầu phân bổ", required: false, type: "text", aliases: ["ky bat dau phan bo", "bat dau phan bo"] },
+      // Chi phí phát sinh trong kỳ hay số dư mang sang: quyết định khoản này có lên P&L không.
+      // Bỏ trống = số dư đầu kỳ, giữ đúng cách hiểu của các file đã import trước đây.
+      { field: "expense_type", label: "Loại phát sinh", required: false, type: "text", aliases: ["loai phat sinh", "phat sinh trong ky", "so du dau ky", "ghi chi phi"] },
+      { field: "pnl_item_code", label: "Hạng mục P&L", required: false, type: "text", aliases: ["hang muc p&l", "hang muc pnl", "ma hang muc p&l", "pnl item", "pnl item code"] },
     ],
   },
   {
