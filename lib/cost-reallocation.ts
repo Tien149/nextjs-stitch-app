@@ -152,3 +152,33 @@ export function journalIsBalanced(journal: PlannedJournal) {
   const credit = journal.lines.reduce((sum, line) => sum + line.credit, 0);
   return Math.abs(debit - credit) < 0.5;
 }
+
+const vnd = (value: number) => `${new Intl.NumberFormat("vi-VN").format(Math.round(value))} đ`;
+
+/**
+ * Phiếu phân bổ chỉ CHIA LẠI chi phí đã có trên sổ của nhà hàng đã trả, trong ĐÚNG kỳ của
+ * phiếu. Phân bổ nhiều hơn số đang có nghĩa là một trong ba ô khai sai:
+ *  - Ngày chứng từ: chi phí gốc nằm ở kỳ khác (hay gặp nhất — form mặc định ngày hôm nay,
+ *    trong khi kế toán đang soát kỳ tháng trước);
+ *  - Nhà hàng đã trả: chọn nhầm nhà hàng;
+ *  - Hạng mục P&L: chi phí gốc đang đứng ở hạng mục khác.
+ * Cả ba đều im lặng nếu cứ cho ghi sổ: kỳ của phiếu ôm một khoản chi phí âm không ai nhìn ra,
+ * còn kỳ có chi phí gốc vẫn nguyên si — đúng lỗi "đã phân bổ giảm rồi mà Tổng hợp chi phí vẫn
+ * hiện đủ số" (feedback 19/09/2026).
+ *
+ * Trả null khi phiếu hợp lệ.
+ */
+export function reallocationOverspendMessage(input: {
+  period: string;
+  fromBranchCode: string;
+  pnlItemName: string;
+  /** Chi phí của hạng mục đó ở nhà hàng đã trả, trong kỳ của phiếu, đã trừ các phiếu phân bổ trước. */
+  postedAmount: number;
+  total: number;
+}) {
+  if (input.total <= input.postedAmount) return null;
+  const head = input.postedAmount > 0
+    ? `Kỳ ${input.period} ở ${input.fromBranchCode} chỉ còn ${vnd(input.postedAmount)} chi phí ở hạng mục "${input.pnlItemName}", không đủ để phân bổ ${vnd(input.total)}.`
+    : `Kỳ ${input.period} ở ${input.fromBranchCode} chưa có đồng chi phí nào ở hạng mục "${input.pnlItemName}" để phân bổ ${vnd(input.total)}.`;
+  return `${head} Kiểm tra lại Ngày chứng từ (chi phí gốc nằm ở kỳ nào thì phiếu phân bổ phải nằm ở kỳ đó), nhà hàng đã trả và hạng mục P&L.`;
+}

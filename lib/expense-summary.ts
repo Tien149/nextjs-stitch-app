@@ -300,3 +300,36 @@ export async function getExpenseSummary(period: string, branchCode: string): Pro
     details,
   };
 }
+
+/**
+ * Chi phí ĐÃ VÀO SỔ của một hạng mục P&L ở một nhà hàng trong kỳ.
+ *
+ * Dùng chung luật với bảng "Theo hạng mục P&L" ở trên — kể cả phần suy hạng mục cho bút toán
+ * máy tự sinh (khấu hao 6424, lương 6421 không mang mã hạng mục) — nên số dùng để chặn phiếu
+ * phân bổ luôn đúng bằng con số người dùng đang nhìn trên tab Tổng hợp chi phí, không phải
+ * một cách đếm thứ hai.
+ *
+ * Khoản giảm do phiếu phân bổ trước đó đã trừ sẵn trong số này (bút toán ghi Có), nên phân bổ
+ * nhiều lần cho cùng một hạng mục vẫn bị chặn đúng ở phần còn lại.
+ */
+export async function postedExpenseForPnlItem(period: string, branchCode: string, pnlItemCode: string) {
+  const { start, end } = periodBounds(period);
+  const [entries, pnlItems] = await Promise.all([
+    prisma.journalEntry.findMany({
+      where: { entryDate: { gte: start, lt: end }, status: "POSTED", branchCode },
+      select: { lines: { select: { debit: true, credit: true, pnlItemCode: true, account: { select: { accountType: true, reportGroup: true } } } } },
+    }),
+    prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true, subGroup: true, status: true } }),
+  ]);
+  const depreciationItemCode = depreciationCatalogItemCode(pnlItems);
+  const payrollItemCode = payrollCatalogItemCode(pnlItems);
+  let total = 0;
+  for (const entry of entries) {
+    for (const line of entry.lines) {
+      if (!EXPENSE_ACCOUNT_TYPES.has(line.account.accountType)) continue;
+      if (resolvePnlItemCode(line, depreciationItemCode, payrollItemCode) !== pnlItemCode) continue;
+      total += line.debit - line.credit;
+    }
+  }
+  return round(total);
+}

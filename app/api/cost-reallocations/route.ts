@@ -10,8 +10,10 @@ import {
   costReallocationTotal,
   journalIsBalanced,
   planCostReallocationJournals,
+  reallocationOverspendMessage,
   validateCostReallocation,
 } from "@/lib/cost-reallocation";
+import { postedExpenseForPnlItem } from "@/lib/expense-summary";
 import { ensureInternalPartner } from "@/lib/internal-partner";
 
 export async function GET(request: Request) {
@@ -103,6 +105,13 @@ export async function POST(request: Request) {
 
     const totalAmount = costReallocationTotal(lines);
     const period = periodFromDate(documentDate);
+
+    // Không có chi phí để chia thì phiếu này không phải phân bổ, mà là khai sai kỳ / nhà hàng /
+    // hạng mục. Chặn tại đây vì sau khi ghi sổ thì hậu quả nằm rải ở hai nhà hàng và chỉ lộ ra
+    // khi ai đó đối chiếu Tổng hợp chi phí với chứng từ gốc.
+    const postedAmount = await postedExpenseForPnlItem(period, fromBranchCode, pnlItemCode);
+    const overspend = reallocationOverspendMessage({ period, fromBranchCode, pnlItemName: pnlItem.name, postedAmount, total: totalAmount });
+    if (overspend) return NextResponse.json({ error: overspend }, { status: 400 });
 
     const created = await prismaRaw.$transaction(async (tx) => {
       const prefix = `PBCP-${period.replace("-", "")}`;

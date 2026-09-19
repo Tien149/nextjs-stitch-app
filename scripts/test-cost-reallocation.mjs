@@ -6,6 +6,7 @@ import {
   internalPartnerCode,
   journalIsBalanced,
   planCostReallocationJournals,
+  reallocationOverspendMessage,
   validateCostReallocation,
 } from "../lib/cost-reallocation.ts";
 
@@ -87,4 +88,35 @@ test("công nợ nội bộ gắn đúng đối tác đại diện nhà hàng", 
   assert.equal(internalPartnerCode("nme"), "NB-NME");
   const journals = planCostReallocationJournals(baseInput, "OPEX");
   assert.equal(journals[1].lines.find((line) => line.accountCode === "3368").partnerCode, "NB-NME");
+});
+
+test("phân bổ ở kỳ không có chi phí gốc bị chặn và chỉ ra ba ô hay khai sai", () => {
+  const message = reallocationOverspendMessage({
+    period: "2026-09",
+    fromBranchCode: "NME",
+    pnlItemName: "CPNLD Lương Bảo Trì & Sửa Chữa",
+    postedAmount: 0,
+    total: 2_500_000,
+  });
+  assert.ok(message.includes("chưa có đồng chi phí nào"));
+  assert.ok(message.includes("2026-09"));
+  assert.ok(message.includes("Ngày chứng từ"));
+});
+
+test("phân bổ quá phần chi phí còn lại bị chặn, kèm số còn lại", () => {
+  const message = reallocationOverspendMessage({
+    period: "2026-08",
+    fromBranchCode: "NME",
+    pnlItemName: "CPNLD Lương Bảo Trì & Sửa Chữa",
+    postedAmount: 1_200_000,
+    total: 2_500_000,
+  });
+  assert.ok(message.includes("chỉ còn 1.200.000 đ"));
+});
+
+test("phân bổ đúng kỳ, trong phần chi phí đang có thì cho qua", () => {
+  const ok = { period: "2026-08", fromBranchCode: "NME", pnlItemName: "Lương BTSC", postedAmount: 6_700_000 };
+  assert.equal(reallocationOverspendMessage({ ...ok, total: 2_500_000 }), null);
+  // Phân bổ trọn vẹn cả khoản chi phí vẫn hợp lệ: nhà hàng trả hộ 100% cho nhà hàng khác.
+  assert.equal(reallocationOverspendMessage({ ...ok, total: 6_700_000 }), null);
 });
