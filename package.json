@@ -58,6 +58,7 @@
     "backfill:revenue-department": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/backfill-revenue-department.mjs",
     "backfill:revenue-source": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/backfill-revenue-source.mjs",
     "repair:deposit-correction": "node scripts/repair-deposit-correction.cjs",
+    "repair:opening-accrual": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/repair-opening-accrual-category.mjs",
     "audit:deposit-amounts": "node scripts/audit-deposit-amount-sync.cjs",
     "start": "next start",
     "lint": "eslint",

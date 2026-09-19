@@ -408,7 +408,11 @@ export default function FinanceOperationsPage() {
       .catch(() => setFeeCategories([]));
     void fetch("/api/master-data?type=PNL_ITEM&status=ACTIVE")
       .then((res) => (res.ok ? res.json() : []))
-      .then((items: MasterDataOption[]) => setPnlItems(items.filter((item) => ["OPEX", "COGS"].includes((item.group || "").toUpperCase()))))
+      // CAPEX phải nằm trong danh sách: chi phí đầu tư ban đầu khai ở Số dư đầu kỳ chính là một
+      // khoản phân bổ nhiều kỳ mang hạng mục nhóm CAPEX. Lọc mất nhóm đó thì select ở đây không
+      // tìm thấy mã đang lưu nên hiện trắng như chưa phân loại, và chỉ cần chạm vào là ghi đè
+      // rỗng lên hạng mục kế toán đã khai bên Số dư đầu kỳ.
+      .then((items: MasterDataOption[]) => setPnlItems(items.filter((item) => ["OPEX", "COGS", "CAPEX"].includes((item.group || "").toUpperCase()))))
       .catch(() => setPnlItems([]));
     // Danh sách cửa hàng thật phải nạp ngay tại trang này. Mã mặc định trong các form dưới là
     // dữ liệu demo (HCM/HN): nếu không nắn về cửa hàng có thật thì ô Cửa hàng hiển thị cửa hàng

@@ -71,6 +71,15 @@ const balanceTypes = [
   { value: "PREPAID_EXPENSE", label: "Chi phí phân bổ đầu kỳ", icon: "event_repeat" },
 ];
 
+/**
+ * Với PREPAID_EXPENSE, ô `moneySourceCode` không phải nguồn tiền mà là Nhóm chi phí/Tài khoản
+ * (OPEX / CAPEX) — nó đi thẳng vào `categoryCode` của khoản phân bổ khi chốt số dư.
+ */
+const PREPAID_CATEGORY_CODES = ["OPEX", "CAPEX"];
+
+const prepaidCategoryOf = (value: string) =>
+  PREPAID_CATEGORY_CODES.includes((value || "").toUpperCase()) ? value.toUpperCase() : "OPEX";
+
 const emptyForm: OpeningBalanceForm = {
   period: "2026-07",
   branchCode: "HCM",
@@ -352,7 +361,9 @@ export default function OpeningBalancesPage() {
         ...form,
         objectCode: (isObjectType || isInventoryType || isAssetType || isPrepaidType) ? form.objectCode : "",
         objectName: (isObjectType || isAssetType || isPrepaidType) ? form.objectName : "",
-        moneySourceCode: isSourceType ? form.moneySourceCode : "",
+        // Chi phí phân bổ dùng lại ô này làm Nhóm chi phí (OPEX/CAPEX). Bỏ qua ở đây thì server
+        // nhận null và rơi về mặc định OPEX — chọn CAPEX xong lưu lại vẫn ra OPEX.
+        moneySourceCode: (isSourceType || isPrepaidType) ? form.moneySourceCode : "",
         warehouseCode: isInventoryType ? form.warehouseCode : "",
         departmentCode: isAssetType ? form.departmentCode : "",
         quantity: (isInventoryType || isAssetType) ? Number(form.quantity) : undefined,
@@ -379,7 +390,11 @@ export default function OpeningBalancesPage() {
         balanceType: form.balanceType,
         objectCode: partners[0]?.code || "",
         objectName: partners[0]?.name || "",
-        moneySourceCode: firstMoneySourceCode(moneySources, form.branchCode, sourceMoneyGroups),
+        // Form giữ nguyên loại số dư để nhập tiếp, nên ô này cũng phải giữ đúng nghĩa của loại đó:
+        // với chi phí phân bổ là Nhóm chi phí, không phải một mã nguồn tiền.
+        moneySourceCode: isPrepaidType
+          ? prepaidCategoryOf(form.moneySourceCode)
+          : firstMoneySourceCode(moneySources, form.branchCode, sourceMoneyGroups),
         warehouseCode: warehouses.find(w => w.branch === form.branchCode)?.code || warehouses[0]?.code || "",
         departmentCode: departments.find(d => d.branch === form.branchCode)?.code || departments[0]?.code || "",
       });
@@ -577,9 +592,15 @@ export default function OpeningBalancesPage() {
                     balanceType: nextBalanceType,
                     objectCode: nextBalanceType === "DEPOSIT" ? partners.find((item) => item.code === "KH_LE")?.code || "" : "",
                     objectName: nextBalanceType === "DEPOSIT" ? partners.find((item) => item.code === "KH_LE")?.name || "" : "",
-                    moneySourceCode: nextGroups && isMoneySourceAllowed(moneySources, value.moneySourceCode, value.branchCode, nextGroups)
-                      ? value.moneySourceCode
-                      : firstMoneySourceCode(moneySources, value.branchCode, nextGroups),
+                    // Ô này đổi nghĩa theo loại số dư: nguồn tiền với quỹ/ngân hàng/ví, nhưng là
+                    // Nhóm chi phí (OPEX/CAPEX) với chi phí phân bổ. Không nắn thì select nhóm chi
+                    // phí nhận một mã nguồn tiền không có trong options, hiện ra OPEX mà state vẫn
+                    // giữ mã nguồn tiền và lưu nhầm mã đó thành khoản mục của khoản phân bổ.
+                    moneySourceCode: nextBalanceType === "PREPAID_EXPENSE"
+                      ? prepaidCategoryOf(value.moneySourceCode)
+                      : nextGroups && isMoneySourceAllowed(moneySources, value.moneySourceCode, value.branchCode, nextGroups)
+                        ? value.moneySourceCode
+                        : firstMoneySourceCode(moneySources, value.branchCode, nextGroups),
                   }));
                 }}
                 className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 cursor-pointer"
@@ -860,6 +881,11 @@ export default function OpeningBalancesPage() {
                     >
                       <option value="OPEX">OPEX (Chi phí vận hành)</option>
                       <option value="CAPEX">CAPEX (Chi phí đầu tư)</option>
+                      {/* Số dư nạp bằng import có thể mang mã khác; hiện ra để sửa chứ không
+                          âm thầm đổi thành OPEX khi kế toán mở phiếu ra xem. */}
+                      {form.moneySourceCode && !PREPAID_CATEGORY_CODES.includes(form.moneySourceCode.toUpperCase()) && (
+                        <option value={form.moneySourceCode}>{form.moneySourceCode} (mã cũ)</option>
+                      )}
                     </select>
                   </label>
                   <label className="text-xs font-bold text-slate-600 block">
