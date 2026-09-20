@@ -2567,6 +2567,41 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
   const linkableVouchers = looseVouchers.filter((voucher) => voucher.candidates.length === 1 && voucher.candidates[0].exact);
   const [linking, setLinking] = useState("");
   const [linkError, setLinkError] = useState("");
+  // Phiếu được tick để dựng dòng sao kê hàng loạt. Chỉ tick được phiếu CHƯA tìm ra dòng sao kê
+  // nào: phiếu đã có ứng viên thì bấm Nối là đúng hơn, dựng thêm dòng là tự tạo dữ liệu thừa.
+  const [pickedVouchers, setPickedVouchers] = useState<string[]>([]);
+  const [drafting, setDrafting] = useState(false);
+  const draftableVouchers = looseVouchers.filter((voucher) => voucher.candidates.length === 0 && (voucher.takenLines || []).length === 0);
+  const pickedDraftables = draftableVouchers.filter((voucher) => pickedVouchers.includes(voucher.id));
+
+  /**
+   * Dựng dòng sao kê từ chính các phiếu đã tick rồi nối luôn — lối thoát khi sao kê của tài
+   * khoản đó chưa import mà kế toán không muốn đi làm file Excel cho vài dòng.
+   *
+   * Dòng dựng ra mang nhãn "Dựng tay", vẫn là lời khai chứ không phải sao kê thật; khi file sao
+   * kê thật được import sau thì dòng thật thay chỗ nó nên tiền không bị đếm hai lần.
+   */
+  const draftStatementRows = async () => {
+    if (pickedDraftables.length === 0) return;
+    if (!window.confirm(`Dựng ${pickedDraftables.length} dòng sao kê từ các phiếu đã chọn? Dòng dựng tay là lời khai, sẽ được sao kê thật thay thế khi bạn import file sau này.`)) return;
+    setDrafting(true);
+    setLinkError("");
+    try {
+      const response = await fetch("/api/reconciliations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "CREATE_STATEMENT_FROM_VOUCHERS", voucherIds: pickedDraftables.map((voucher) => voucher.id) }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error || "Không dựng được dòng sao kê");
+      setPickedVouchers([]);
+      onLinked();
+    } catch (error) {
+      setLinkError(error instanceof Error ? error.message : "Không dựng được dòng sao kê");
+    } finally {
+      setDrafting(false);
+    }
+  };
 
   /**
    * Nối phiếu lập tay vào một dòng sao kê: dùng đúng API đối soát của màn Sổ sao kê, nên luật
@@ -2645,16 +2680,51 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
                   {linking ? "Đang nối..." : `Nối tất cả ${linkableVouchers.length} phiếu có đúng một dòng khớp`}
                 </button>
               )}
+              {canLink && draftableVouchers.length > 0 && (
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={drafting || pickedDraftables.length === 0}
+                    onClick={() => void draftStatementRows()}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-300 bg-white px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
+                  >
+                    <span className="material-symbols-outlined text-[16px]">playlist_add</span>
+                    {drafting ? "Đang dựng..." : `Dựng dòng sao kê cho ${pickedDraftables.length || 0} phiếu đã chọn`}
+                  </button>
+                  <button
+                    type="button"
+                    className="text-xs font-bold text-blue-700 hover:underline"
+                    onClick={() => setPickedVouchers(pickedDraftables.length === draftableVouchers.length ? [] : draftableVouchers.map((voucher) => voucher.id))}
+                  >
+                    {pickedDraftables.length === draftableVouchers.length ? "Bỏ chọn tất cả" : `Chọn tất cả ${draftableVouchers.length} phiếu chưa có sao kê`}
+                  </button>
+                  <span className="text-[11px] text-amber-900">
+                    Dùng khi sao kê của tài khoản đó chưa import: dòng dựng ra mang nhãn <b>Dựng tay</b> (vẫn là lời khai), và sẽ được
+                    <b> sao kê thật thay thế</b> khi bạn import file sau này — không đếm hai lần.
+                  </span>
+                </div>
+              )}
               {linkError && <p className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">{linkError}</p>}
 
               <div className="mt-3 overflow-x-auto rounded-lg border border-amber-200 bg-white">
                 <table className="w-full text-left text-xs">
                   <thead className="bg-amber-100/60 uppercase text-amber-900">
-                    <tr><th className="px-3 py-2">Ngày</th><th className="px-3 py-2">Chứng từ</th><th className="px-3 py-2">Nguồn tiền</th><th className="px-3 py-2">Đối tác</th><th className="px-3 py-2 text-right">Số tiền</th><th className="px-3 py-2">Dòng sao kê khớp</th></tr>
+                    <tr><th className="px-3 py-2 w-8">{canLink && draftableVouchers.length > 0 ? "Chọn" : ""}</th><th className="px-3 py-2">Ngày</th><th className="px-3 py-2">Chứng từ</th><th className="px-3 py-2">Nguồn tiền</th><th className="px-3 py-2">Đối tác</th><th className="px-3 py-2 text-right">Số tiền</th><th className="px-3 py-2">Dòng sao kê khớp</th></tr>
                   </thead>
                   <tbody>
                     {looseVouchers.map((voucher) => (
                       <tr key={voucher.code} className="border-t border-amber-100">
+                        <td className="px-3 py-2">
+                          {canLink && voucher.candidates.length === 0 && (voucher.takenLines || []).length === 0 && (
+                            <input
+                              type="checkbox"
+                              checked={pickedVouchers.includes(voucher.id)}
+                              onChange={(e) => setPickedVouchers(e.target.checked
+                                ? [...pickedVouchers, voucher.id]
+                                : pickedVouchers.filter((id) => id !== voucher.id))}
+                            />
+                          )}
+                        </td>
                         <td className="whitespace-nowrap px-3 py-2">{dayLabel(voucher.date)}</td>
                         <td className="px-3 py-2"><a href="/bank-vouchers" className="font-bold text-blue-700 hover:underline">{voucher.code}</a></td>
                         <td className="px-3 py-2">{voucher.moneySourceName}<span className="ml-1 text-slate-400">{voucher.moneySourceCode}</span></td>

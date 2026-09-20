@@ -249,6 +249,10 @@ model BankStatementTransaction {
   grossAmount             Float?
   grabExpenseAmount       Float     @default(0)
   cardFeeAmount           Float     @default(0)
+  /// Nguồn gốc dòng sao kê. NULL = đọc từ file sao kê ngân hàng (bằng chứng tiền đã về).
+  /// "MANUAL_VOUCHER" = kế toán tự dựng từ phiếu thu lập tay khi sao kê chưa import — vẫn là
+  /// lời khai, nên có nhãn riêng và bị dòng sao kê thật thay thế khi file được import sau.
+  entrySource             String?
   /// Kết quả lập chứng từ tự động hoặc lý do phải xử lý thủ công.
   autoProcessType         String?
   autoProcessNote         String?
@@ -271,6 +275,7 @@ model BankStatementTransaction {
   @@index([partnerCode])
   @@index([pnlItemCode])
   @@index([autoProcessType])
+  @@index([entrySource])
   @@index([reconcileStatus])
   @@index([deletedAt])
 }

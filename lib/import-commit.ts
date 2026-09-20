@@ -826,6 +826,47 @@ export async function commitImport(input: CommitInput) {
            * đủ chưa" cùng Báo cáo nguồn tiền đọc đúng một lần. Mập mờ (nhiều phiếu cùng số tiền
            * trong vài ngày) thì không đoán — cứ lập phiếu như cũ, để kế toán tự nối trên báo cáo.
            */
+          /**
+           * Dòng sao kê DỰNG TAY từ phiếu thu (entrySource = MANUAL_VOUCHER) phải nhường chỗ cho
+           * sao kê thật: gỡ liên kết rồi xoá mềm dòng dựng tay, trả phiếu về trạng thái "chưa
+           * nối" để chính luồng nối bên dưới gắn phiếu vào dòng thật. Không làm bước này thì
+           * bảng "Tiền về đủ chưa" đếm cả dòng dựng tay lẫn dòng thật — đúng cái đếm hai lần mà
+           * luật "chỉ đọc sổ sao kê" sinh ra để tránh.
+           */
+          const draftRows = await tx.bankStatementTransaction.findMany({
+            where: {
+              entrySource: "MANUAL_VOUCHER",
+              deletedAt: null,
+              branchCode,
+              ...(voucherType === "RECEIPT" ? { creditAmount: bankAmount } : { debitAmount: bankAmount }),
+              transactionDate: {
+                gte: new Date(documentDate.getTime() - MANUAL_VOUCHER_MATCH_DAY_GAP * 86_400_000),
+                lte: new Date(documentDate.getTime() + MANUAL_VOUCHER_MATCH_DAY_GAP * 86_400_000),
+              },
+            },
+            select: {
+              id: true, transactionCode: true,
+              matches: { where: { deletedAt: null, targetType: "VOUCHER" }, select: { id: true, targetId: true } },
+            },
+          });
+          for (const draft of draftRows) {
+            const draftVoucherIds = draft.matches.map((match) => match.targetId);
+            // Chỉ nhường chỗ khi phiếu đứng sau dòng dựng tay đúng là khoản này (cùng nguồn tiền).
+            const sameSource = draftVoucherIds.length > 0 && await tx.financialVoucher.count({
+              where: { id: { in: draftVoucherIds }, moneySourceCode: moneySourceCode || undefined, deletedAt: null },
+            }) > 0;
+            if (!sameSource) continue;
+            await tx.reconciliationMatch.deleteMany({ where: { id: { in: draft.matches.map((match) => match.id) } } });
+            await tx.bankStatementTransaction.update({
+              where: { id: draft.id },
+              data: {
+                deletedAt: new Date(),
+                deletedBy: input.uploadedBy || "Import sao kê",
+                autoProcessNote: `Đã có sao kê thật ${transactionCode} cho khoản này`,
+              },
+            });
+          }
+
           const manualCandidates = await tx.financialVoucher.findMany({
             where: {
               branchCode,

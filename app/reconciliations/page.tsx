@@ -18,6 +18,8 @@ type BankRow = {
   branchCode: string | null; categoryCode: string | null; operationType: string | null; partnerCode: string | null;
   pnlItemCode: string | null; summaryMoneySourceCode: string | null; increaseMoneySourceCode: string | null; decreaseMoneySourceCode: string | null;
   reconcileStatus: string; autoProcessType: string | null; autoProcessNote: string | null;
+  /** "MANUAL_VOUCHER" = dòng dựng tay từ phiếu thu, chưa có sao kê ngân hàng đối chiếu. */
+  entrySource?: string | null;
   revenueDates: string[]; allocations: Allocation[]; currentMatch: MatchRow | null; otherMatches?: MatchRow[];
   settlementCandidates?: SettlementCandidate[];
 };
@@ -468,7 +470,7 @@ export default function BankStatementLedgerPage() {
           <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr>{["Ngày GD / nguồn / DT", "Sao kê", "Nợ", "Có", "Cửa hàng", "Nghiệp vụ / loại", "Nguồn tổng / tăng / giảm", "Đối tác / P&L", "Chứng từ", "Trạng thái", ""].map((label, index) => <th key={label || `actions-${index}`} className="px-3 py-3">{label}</th>)}</tr></thead>
           <tbody>{loading ? <tr><td colSpan={11} className="p-10 text-center text-slate-400">Đang tải...</td></tr> : rows.length === 0 ? <tr><td colSpan={11} className="p-10 text-center text-slate-400">Không có giao dịch phù hợp.</td></tr> : rows.map((row) => <tr key={row.id} className="border-t border-slate-100 align-top hover:bg-slate-50">
             <td className="px-3 py-3 text-xs"><b>{dateText(row.transactionDate)}</b><p>Nguồn: {dateText(row.sourceDate)}</p><p>DT: {row.revenueDates.length ? row.revenueDates.map(dateText).join(", ") : "—"}</p>{canEdit && <button type="button" onClick={() => openSplit(row)} title="Tách hoặc sửa Ngày doanh thu ngay trên dòng này, không phải import lại" className="mt-1.5 inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] font-bold text-blue-700 hover:bg-blue-50"><span className="material-symbols-outlined text-[14px]">call_split</span>Tách / sửa dòng</button>}</td>
-            <td className="max-w-sm px-3 py-3"><b className="break-all">{row.transactionCode}</b><p className="mt-1 text-xs text-slate-500">{row.bankAccount}</p><p className="mt-1 line-clamp-3 text-xs">{row.description}</p>{row.allocations.length > 1 && <span className="mt-1 inline-block rounded bg-indigo-50 px-2 py-0.5 text-xs font-bold text-indigo-700">{row.allocations.length} dòng phân bổ</span>}</td>
+            <td className="max-w-sm px-3 py-3"><b className="break-all">{row.transactionCode}</b>{row.entrySource === "MANUAL_VOUCHER" && <span className="ml-2 rounded bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-800" title="Dòng dựng tay từ phiếu thu, chưa có sao kê ngân hàng đối chiếu. Import sao kê thật thì dòng thật thay chỗ nó.">Dựng tay</span>}<p className="mt-1 text-xs text-slate-500">{row.bankAccount}</p><p className="mt-1 line-clamp-3 text-xs">{row.description}</p>{row.allocations.length > 1 && <span className="mt-1 inline-block rounded bg-indigo-50 px-2 py-0.5 text-xs font-bold text-indigo-700">{row.allocations.length} dòng phân bổ</span>}</td>
             <td className="px-3 py-3 text-right font-bold text-rose-700">{row.debitAmount ? `${money(row.debitAmount)} đ` : "—"}</td>
             <td className="px-3 py-3 text-right font-bold text-emerald-700">{row.creditAmount ? `${money(row.creditAmount)} đ` : "—"}</td>
             <td className="px-3 py-3"><b>{storeLabel(row.branchCode)}</b>{row.branchCode && <p className="text-xs text-slate-500">{row.branchCode}</p>}</td>

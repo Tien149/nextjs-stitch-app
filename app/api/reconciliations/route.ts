@@ -18,6 +18,7 @@ import {
 import { generateFormattedVoucherCode, nextSeqFromCodes, voucherCodePrefix } from "@/lib/voucher-code-generator";
 import { planRevenueDateSplit, RevenueSplitError } from "@/lib/bank-statement-revenue-split";
 import { BANK_STATEMENT_SPLIT_SOURCE_SCOPE } from "@/lib/voucher-rules";
+import { MACHINE_VOUCHER_SOURCE_SCOPES } from "@/lib/bank-statement-voucher-match";
 import { buildAuditLogData } from "@/lib/audit-log";
 import { closedPeriodMessage, findClosedPeriod } from "@/lib/phase3";
 import { softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
@@ -880,6 +881,162 @@ export async function POST(request: Request) {
         cardFeeAmount: preview.transactions.reduce((sum, row) => sum + row.cardFeeAmount, 0),
       }, { status: 201 });
     }
+    /**
+     * Dựng dòng sao kê từ chính các phiếu thu lập tay đang treo, nối luôn, nhiều phiếu một lúc.
+     *
+     * Bảng "Tiền về đủ chưa" chỉ đọc sổ sao kê — đúng, vì sao kê mới là bằng chứng tiền đã về.
+     * Nhưng khi sao kê của tài khoản đó chưa import thì kế toán không có đường nào khác ngoài
+     * đi làm file Excel cho vài dòng (khách hỏi 20/09/2026). Chỗ này cho tick nhiều phiếu rồi
+     * dựng một dòng sao kê cho mỗi phiếu.
+     *
+     * Dòng dựng ra mang entrySource = "MANUAL_VOUCHER": VẪN LÀ LỜI KHAI, không phải sao kê thật.
+     * Nó có nhãn riêng trên Sổ sao kê, và khi file sao kê thật được import sau thì dòng thật
+     * thay chỗ nó (lib/import-commit.ts), nên tiền không bao giờ được đếm hai lần.
+     */
+    if (cleanText(body.action) === "CREATE_STATEMENT_FROM_VOUCHERS") {
+      const voucherIds = [...new Set((Array.isArray(body.voucherIds) ? body.voucherIds : [])
+        .map((value: unknown) => cleanText(value))
+        .filter(Boolean))] as string[];
+      if (voucherIds.length === 0) {
+        return NextResponse.json({ error: "Chưa chọn phiếu nào để dựng dòng sao kê" }, { status: 400 });
+      }
+
+      const vouchers = await prisma.financialVoucher.findMany({
+        where: { id: { in: voucherIds }, deletedAt: null },
+        select: {
+          id: true, code: true, voucherType: true, voucherDate: true, amount: true, branchCode: true,
+          moneySourceCode: true, categoryCode: true, documentChannel: true, sourceScope: true,
+          partnerName: true, status: true,
+        },
+      });
+      if (vouchers.length !== voucherIds.length) {
+        return NextResponse.json({ error: "Có phiếu không còn tồn tại, vui lòng tải lại báo cáo" }, { status: 400 });
+      }
+
+      for (const voucher of vouchers) {
+        if (voucher.documentChannel !== "BANK") {
+          return NextResponse.json({ error: `${voucher.code} là phiếu tiền mặt, không dựng được dòng sao kê ngân hàng` }, { status: 400 });
+        }
+        if (MACHINE_VOUCHER_SOURCE_SCOPES.includes(voucher.sourceScope)) {
+          return NextResponse.json({ error: `${voucher.code} do chính luồng import sao kê sinh ra, đã có dòng sao kê của nó` }, { status: 400 });
+        }
+        if (!(voucher.amount > 0)) {
+          return NextResponse.json({ error: `${voucher.code} không có số tiền hợp lệ` }, { status: 400 });
+        }
+        try {
+          assertBranchAccess(auth.session, voucher.branchCode);
+        } catch (e) {
+          return NextResponse.json({ error: e instanceof Error ? e.message : "Không có quyền chi nhánh" }, { status: 403 });
+        }
+      }
+
+      // Dòng sao kê có ngày tháng nên phải theo luật khoá sổ như mọi chứng từ khác.
+      const lockedEntry = await findClosedPeriod(vouchers.map((voucher) => ({ date: voucher.voucherDate, branchCode: voucher.branchCode })));
+      if (lockedEntry) {
+        return NextResponse.json({ error: closedPeriodMessage(lockedEntry, "dựng dòng sao kê") }, { status: 400 });
+      }
+
+      const linkedIds = new Set((await prisma.reconciliationMatch.findMany({
+        where: { targetType: "VOUCHER", targetId: { in: voucherIds }, deletedAt: null },
+        select: { targetId: true },
+      })).map((row) => row.targetId));
+      const pending = vouchers.filter((voucher) => !linkedIds.has(voucher.id));
+      if (pending.length === 0) {
+        return NextResponse.json({ error: "Các phiếu đã chọn đều đã có dòng sao kê" }, { status: 400 });
+      }
+
+      // Số tài khoản của nguồn tiền để dòng đứng đúng tài khoản trên Sổ sao kê; nguồn chưa khai
+      // số tài khoản thì lấy chính mã nguồn, vẫn tra ngược được.
+      const moneySources = await prisma.masterDataItem.findMany({
+        where: { type: "MONEY_SOURCE", code: { in: [...new Set(pending.map((voucher) => voucher.moneySourceCode))] } },
+        select: { code: true, accountNo: true, name: true },
+      });
+      const accountOf = (code: string) => {
+        const source = moneySources.find((row) => row.code === code);
+        return cleanText(source?.accountNo) || code;
+      };
+
+      const created = await prisma.$transaction(async (tx) => {
+        const batch = await tx.importBatch.create({
+          data: {
+            importType: "BANK_STATEMENT",
+            templateCode: "BANK_STATEMENT_MANUAL_ENTRY",
+            fileName: `Dựng tay từ ${pending.length} phiếu thu`,
+            uploadedBy: auth.session.name,
+            status: "COMMITTED",
+            totalRows: pending.length,
+            validRows: pending.length,
+            errorRows: 0,
+            committedAt: new Date(),
+          },
+        });
+
+        const rows = [];
+        for (const voucher of pending) {
+          const bankAccount = accountOf(voucher.moneySourceCode);
+          const transactionCode = `TAY-${voucher.code}`;
+          const existed = await tx.bankStatementTransaction.findFirst({
+            where: { bankAccount, transactionCode },
+            select: { id: true },
+          });
+          if (existed) throw new Error(`${voucher.code} đã có dòng sao kê dựng tay (${transactionCode})`);
+
+          const bankRow = await tx.bankStatementTransaction.create({
+            data: {
+              importBatchId: batch.id,
+              entrySource: "MANUAL_VOUCHER",
+              transactionDate: voucher.voucherDate,
+              bankAccount,
+              transactionCode,
+              description: `Dựng tay từ phiếu ${voucher.code}${voucher.partnerName ? ` · ${voucher.partnerName}` : ""}`,
+              creditAmount: voucher.amount,
+              branchCode: voucher.branchCode,
+              // Điền sẵn đúng những ô mà nút "Nối" vẫn điền, để tiền hiện ngay trên báo cáo.
+              revenueDate: voucher.voucherDate,
+              accountingDate: voucher.voucherDate,
+              categoryCode: voucher.categoryCode,
+              decreaseMoneySourceCode: voucher.moneySourceCode,
+              autoProcessType: "RECEIPT",
+              autoProcessNote: "Dòng dựng tay từ phiếu thu — chưa có sao kê ngân hàng đối chiếu",
+              reconcileStatus: "MATCHED",
+            },
+          });
+          await tx.reconciliationMatch.create({
+            data: {
+              bankTransactionId: bankRow.id,
+              targetType: "VOUCHER",
+              targetId: voucher.id,
+              targetCode: voucher.code,
+              targetDate: voucher.voucherDate,
+              targetAmount: voucher.amount,
+              matchedAmount: voucher.amount,
+              note: "Dòng sao kê dựng tay từ phiếu thu (sao kê chưa import)",
+              matchedBy: auth.session.name,
+            },
+          });
+          rows.push({ voucherCode: voucher.code, transactionCode, amount: voucher.amount });
+        }
+
+        await tx.auditLog.create({
+          data: buildAuditLogData({
+            session: auth.session,
+            module: "/reconciliations",
+            action: "CREATE_STATEMENT_FROM_VOUCHERS",
+            entityType: "BankStatementTransaction",
+            entityId: batch.id,
+            metadata: { count: rows.length, vouchers: rows.map((row) => row.voucherCode) },
+          }),
+        });
+        return rows;
+      });
+
+      return NextResponse.json({
+        created: created.length,
+        skipped: vouchers.length - created.length,
+        rows: created,
+      }, { status: 201 });
+    }
+
     const bankTransactionId = cleanText(body.bankTransactionId);
     const targetType = cleanText(body.targetType);
     const targetId = cleanText(body.targetId);
