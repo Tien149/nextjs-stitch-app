@@ -375,9 +375,10 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
     : { OR: [{ branchCode }, { debtAction: ADVANCE_RECEIVABLE_ACTION, receivablePartnerCode: internalPartnerCode(branchCode) }] };
   const vouchers = await prisma.financialVoucher.findMany({ where: { ...voucherBranchFilter, voucherDate: { gte: start, lt: end }, status: "APPROVED" } });
   // Nhóm khoản mục quyết định phiếu chi vào chi phí, giá vốn hay tài sản.
-  const [voucherCategories, pnlItems, branchItems] = await Promise.all([
+  const [voucherCategories, pnlItems, pnlGroups, branchItems] = await Promise.all([
     prisma.masterDataItem.findMany({ where: { type: "REVENUE_EXPENSE_CATEGORY" } }),
     prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" } }),
+    prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, group: true } }),
     // Chỉ mã có trong danh mục Cửa hàng mới được coi là nhà hàng trong nhà; đối tác đặt mã
     // NB-<tên người> không được kéo bút toán sang một cửa hàng không tồn tại.
     prisma.masterDataItem.findMany({ where: { type: "BRANCH" }, select: { code: true } }),
@@ -389,7 +390,19 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   const revenueSourceCategoryCodes = new Set(
     voucherCategories.filter((item) => (item.group || "").toUpperCase() === "REVENUE_SOURCE").map((item) => item.code),
   );
-  const pnlItemGroupByCode = new Map(pnlItems.map((item) => [item.code, normalizeCategoryGroup(item.group)]));
+  /**
+   * Nhóm lớn (OPEX / COGS / OTHER_INCOME...) của một hạng mục P&L.
+   *
+   * Hạng mục khai trên màn Danh mục thường CHỈ chọn nhóm cha (`subGroup` trỏ tới PNL_GROUP),
+   * còn ô `group` của chính nó để trống. Đọc mỗi `item.group` như trước thì hạng mục "Thu nhập
+   * khác" nằm trong nhóm Thu nhập khác vẫn ra null, phiếu rơi về 511/131 và khối "7. Thu nhập
+   * khác" của P&L mãi bằng 0 dù kế toán đã chọn đúng hạng mục (khách báo 20/09/2026).
+   */
+  const pnlGroupGroupByCode = new Map(pnlGroups.map((group) => [group.code, group.group]));
+  const pnlItemGroupByCode = new Map(pnlItems.map((item) => [
+    item.code,
+    normalizeCategoryGroup(item.group || (item.subGroup ? pnlGroupGroupByCode.get(item.subGroup) ?? null : null)),
+  ]));
   for (const row of vouchers) {
     // Sao kê khớp doanh thu POS chỉ xác nhận dòng tiền; doanh thu và bút toán đối ứng
     // đã được ghi từ RevenueImportRow nên không được tạo thêm bút toán voucher.

@@ -161,7 +161,13 @@ async function validateVoucherPnlItem(voucherType: string, pnlItemCode: string, 
     },
   });
   if (!pnlItem) return `Hạng mục P&L [${pnlItemCode}] không tồn tại hoặc đã ngừng hoạt động`;
-  const group = (pnlItem.group || "").toUpperCase();
+  // Hạng mục khai trên màn Danh mục thường chỉ chọn NHÓM CHA (subGroup), ô nhóm của chính nó để
+  // trống. Đọc mỗi `pnlItem.group` thì hạng mục "Thu nhập khác" nằm trong nhóm Thu nhập khác bị
+  // chặn ngay lúc lưu phiếu — kế toán không có cách nào chọn đúng (khách báo 20/09/2026).
+  const parentGroup = pnlItem.subGroup
+    ? (await prisma.masterDataItem.findFirst({ where: { type: "PNL_GROUP", code: pnlItem.subGroup }, select: { group: true } }))?.group || ""
+    : "";
+  const group = (pnlItem.group || parentGroup || "").toUpperCase();
   if (!allowed.groups.includes(group)) {
     return `${voucherType === "RECEIPT" ? "Phiếu thu" : "Phiếu chi"} chỉ được chọn hạng mục P&L thuộc nhóm ${allowed.label}`;
   }
