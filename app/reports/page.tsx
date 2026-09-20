@@ -44,7 +44,11 @@ type BalanceData = { rows: BalanceRow[]; assets: number; liabilities: number; co
 type DashboardData = { pnl: { total: Pnl; byBranch: PnlCut[] }; trend: Array<Pnl & { period: string }>; balance: BalanceData; targets: Array<{ metric: string; targetValue: number }> };
 type PnlDetailItem = { code: string; name: string; amount: number };
 type PnlDetailGroup = PnlDetailItem & { items: PnlDetailItem[] };
-type PnlStatementLine = { key: string; label: string; amount: number; subtotal: boolean; groups: PnlDetailGroup[] };
+type PnlStatementLine = {
+  key: string; label: string; amount: number; subtotal: boolean; groups: PnlDetailGroup[];
+  /** Chứng từ chưa gắn hạng mục P&L — đứng NGOÀI `amount`, chỉ hiện làm dòng thông tin. */
+  unclassified?: number;
+};
 type PnlData = { total: Pnl; statement: PnlStatementLine[]; byBranch: PnlCut[]; byDepartment: PnlCut[]; byPnlItem: PnlItemBreakdown[] };
 type YoyData = { previousPeriod: string; rows: Array<{ metric: string; currentValue: number; previousValue: number; variance: number; varianceRate: number | null }> };
 type CashflowData = { scenario: string; startingCash: number; schedule: Array<{ period: string; inflow: number; outflow: number; closingCash: number; risk: boolean }> };
@@ -3131,9 +3135,10 @@ function PnlStatementTable({ period, branchCode, lines, value }: { period: strin
         push("    ", group.name, group.amount);
         for (const item of group.items) {
           if (hideEmpty && isEmpty(item.amount)) continue;
-          push("        ", `${item.code === "UNCLASSIFIED" ? "" : `${item.code} - `}${item.name}`, item.amount);
+          push("        ", `${item.code} - ${item.name}`, item.amount);
         }
       }
+      if (Math.abs(line.unclassified || 0) > 0.5) push("    ", "Chưa gán hạng mục P&L (KHÔNG tính vào P&L)", line.unclassified || 0);
     }
     const sheet = XLSX.utils.aoa_to_sheet(data);
     const workbook = XLSX.utils.book_new();
@@ -3204,7 +3209,7 @@ function PnlStatementTable({ period, branchCode, lines, value }: { period: strin
                         <Cell right>{percent(group.amount)}</Cell>
                       </tr>
                       {!groupCollapsed && items.map((item) => (
-                        <tr key={`${groupKey}:${item.code}`} className={`border-t border-slate-100 ${item.code === "UNCLASSIFIED" ? "bg-amber-50/60" : ""}`}>
+                        <tr key={`${groupKey}:${item.code}`} className="border-t border-slate-100">
                           <Cell>
                             <span className="pl-16 text-slate-600">
                               {item.code !== "UNCLASSIFIED" && <span className="text-[11px] text-slate-400 mr-1.5">{item.code}</span>}
@@ -3218,6 +3223,21 @@ function PnlStatementTable({ period, branchCode, lines, value }: { period: strin
                     </React.Fragment>
                   );
                 })}
+                {/* Chứng từ chưa khai Hạng mục P&L: KHÔNG nằm trong dòng TỔNG (chốt chị Bình
+                    20/09/2026 — P&L chỉ tính khoản đã có hạng mục), chỉ hiện để biết còn bao
+                    nhiêu tiền phải đi phân loại. */}
+                {!lineCollapsed && Math.abs(line.unclassified || 0) > 0.5 && (
+                  <tr className="border-t border-slate-100 bg-amber-50">
+                    <Cell>
+                      <span className="pl-6 flex flex-col">
+                        <b className="text-amber-800">Chưa gán hạng mục P&amp;L — KHÔNG tính vào P&amp;L</b>
+                        <span className="text-[11px] text-amber-700">Dòng thông tin, đứng ngoài tổng. Gán hạng mục trên chứng từ thì số về đúng nhóm; tiền vẫn đủ ở Tổng hợp chi phí.</span>
+                      </span>
+                    </Cell>
+                    <Cell right><b className="text-amber-800">{money(line.unclassified || 0)} đ</b></Cell>
+                    <Cell right>{percent(line.unclassified || 0)}</Cell>
+                  </tr>
+                )}
               </React.Fragment>
             );
           })}

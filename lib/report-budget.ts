@@ -191,8 +191,12 @@ export async function getPnlMatrix(year: string, branchCode: string) {
       postedRevenueMonths[monthIndex] += income;
       continue;
     }
-    const lineKey = tree.add({ account: row, pnlItemCode: row.pnlItemCode, categoryCode: row.categoryCode, debit: row.debit, credit: row.credit }, monthIndex);
+    const journalLine = { account: row, pnlItemCode: row.pnlItemCode, categoryCode: row.categoryCode, debit: row.debit, credit: row.credit };
+    const lineKey = tree.add(journalLine, monthIndex);
     if (!lineKey) continue;
+    // Chi phí / thu nhập khác chưa gắn hạng mục P&L chỉ đứng ở dòng thông tin, không cộng vào
+    // các con số của P&L (chốt chị Bình 20/09/2026) — nhờ vậy TỔNG = cộng các nhóm bên dưới.
+    if (!tree.countsInPnl(journalLine)) continue;
     const signed = lineKey === "otherIncome" ? income : expense;
     totals[monthIndex][lineKey] += signed;
     const branchBuckets = branchTotals.get(row.branchCode) || months.map(() => emptyBucket());

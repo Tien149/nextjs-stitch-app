@@ -323,17 +323,16 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
         {!collapsed[line.key] && (isRevenue
           ? revenueBreakdowns.map((breakdown) => renderRevenueBreakdown(line, breakdown))
           : groups.map((group) => renderGroup(line, group)))}
-        {/* Chứng từ chưa khai Hạng mục P&L: không set kế hoạch được nên không nằm trong nhóm nào,
-            nhưng vẫn cộng vào dòng TỔNG. Giấu hẳn thì dòng TỔNG to hơn tổng các dòng nhìn thấy và
-            không ai giải thích được (khách báo 20/09/2026). */}
+        {/* Chứng từ chưa khai Hạng mục P&L: KHÔNG nằm trong P&L (chốt chị Bình 20/09/2026), nên
+            dòng này đứng NGOÀI tổng — chỉ để biết còn bao nhiêu tiền phải đi gán hạng mục. */}
         {!collapsed[line.key] && !isRevenue && unclassifiedLine && (
           <tr className="border-t border-slate-100 bg-amber-50">
             {stickyCell("bg-amber-50", (
               <div className="pl-5">
                 <p className="text-[13px] font-bold text-amber-800 whitespace-nowrap flex items-center gap-1">
-                  <span className="material-symbols-outlined text-sm">help</span>Chưa gán hạng mục P&amp;L
+                  <span className="material-symbols-outlined text-sm">help</span>Chưa gán hạng mục P&amp;L — KHÔNG tính vào P&amp;L
                 </p>
-                <p className="mt-0.5 text-[10px] text-amber-700">Chứng từ chưa khai Hạng mục P&amp;L — vẫn nằm trong dòng TỔNG, không set kế hoạch được. Gán hạng mục trên chứng từ để số về đúng nhóm.</p>
+                <p className="mt-0.5 text-[10px] text-amber-700">Dòng thông tin, đứng NGOÀI tổng: P&amp;L chỉ tính khoản đã có hạng mục. Gán hạng mục trên chứng từ thì số tự về đúng nhóm; tiền vẫn còn đủ ở Sổ quỹ &gt; Tổng hợp chi phí.</p>
               </div>
             ))}
             {cells(unclassifiedLine, income)}

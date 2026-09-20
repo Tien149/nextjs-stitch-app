@@ -54,7 +54,11 @@ export type PnlLineKey = keyof PnlBucket;
  */
 export type PnlDetailItem = { code: string; name: string; amount: number };
 export type PnlDetailGroup = PnlDetailItem & { items: PnlDetailItem[] };
-export type PnlStatementLine = { key: string; label: string; amount: number; subtotal: boolean; groups: PnlDetailGroup[] };
+export type PnlStatementLine = {
+  key: string; label: string; amount: number; subtotal: boolean; groups: PnlDetailGroup[];
+  /** Chứng từ chưa gắn hạng mục P&L — KHÔNG nằm trong `amount`, chỉ để bảng hiện dòng thông tin. */
+  unclassified?: number;
+};
 
 function emptyPnl(): PnlBucket {
   return { revenue: 0, cogs: 0, payroll: 0, otherOpex: 0, otherIncome: 0, otherExpense: 0, capex: 0 };
@@ -338,6 +342,24 @@ export function createPnlDetailTree(catalog: PnlCatalog, monthCount: number) {
     return lineKey;
   };
 
+  /**
+   * Dòng nào của KQKD bắt buộc phải có HẠNG MỤC P&L mới được tính.
+   *
+   * Chốt với chị Bình 20/09/2026: "P&L cái nào có hạng mục thì mới vô, không tính việc chưa
+   * phân loại" — P&L là bảng quản trị theo hạng mục, khác sổ thu chi (nơi vẫn giữ đủ mọi đồng).
+   * Nhờ vậy dòng TỔNG bằng đúng tổng các nhóm bên dưới, như subtotal trong file Excel.
+   *
+   * Doanh thu gom theo NGUỒN THU (không theo hạng mục) và CAPEX là bút toán tài sản (không có
+   * hạng mục P&L) nên hai dòng đó không nằm trong luật này.
+   */
+  const PNL_ITEM_REQUIRED_LINES: PnlLineKey[] = ["cogs", "payroll", "otherOpex", "otherExpense", "otherIncome"];
+  const countsInPnl = (line: PnlJournalLineLike) => {
+    const lineKey = pnlLineKeyOf(line.account, pnlItemRefOf(line.pnlItemCode));
+    if (!lineKey) return false;
+    if (!PNL_ITEM_REQUIRED_LINES.includes(lineKey)) return true;
+    return Boolean(lineKey === "otherIncome" ? otherIncomeItemCode(line) : resolveItemCode(line));
+  };
+
   const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
   const groupsOf = (lineKey: PnlLineKey): PnlSeriesGroup[] =>
     sortDetailGroups(Array.from(detail.get(lineKey)?.values() || [], (node) => ({
@@ -348,7 +370,7 @@ export function createPnlDetailTree(catalog: PnlCatalog, monthCount: number) {
       items: sortDetailItems(Array.from(node.items.values(), (item) => ({ ...item, total: sum(item.months) }))),
     })));
 
-  return { pnlItemRefOf, add, groupsOf, resolveItemCode };
+  return { pnlItemRefOf, add, groupsOf, resolveItemCode, countsInPnl };
 }
 
 /**
@@ -446,8 +468,14 @@ export async function getPnl(period: string, branchCode: string) {
       // chưa "Đồng bộ ghi sổ" thì lại bằng 0. Dòng Doanh thu dựng từ file import ở khối dưới.
       if (line.account.accountType === "REVENUE") continue;
       const pnlItemRef = tree.pnlItemRefOf(line.pnlItemCode);
-      addLine(total, line, pnlItemRef);
-      addLine(branch, line, pnlItemRef);
+      // Chi phí / thu nhập khác chưa gắn hạng mục P&L KHÔNG vào các con số của P&L (chốt chị
+      // Bình 20/09/2026). Vẫn đưa vào cây chi tiết để bảng hiện được một dòng thông tin
+      // "Chưa gán hạng mục P&L" đứng NGOÀI tổng, và vẫn nằm đủ trong Tổng hợp chi phí.
+      const counted = tree.countsInPnl(line);
+      if (counted) {
+        addLine(total, line, pnlItemRef);
+        addLine(branch, line, pnlItemRef);
+      }
       tree.add(line, 0);
       if (["COGS", "OPEX", "OTHER_EXPENSE"].includes(line.account.accountType)) {
         const pnlItemCode = tree.resolveItemCode(line);
@@ -464,7 +492,7 @@ export async function getPnl(period: string, branchCode: string) {
       }
       const departmentCode = line.departmentCode || "UNALLOCATED";
       const department = departments.get(departmentCode) || emptyPnl();
-      addLine(department, line, pnlItemRef);
+      if (counted) addLine(department, line, pnlItemRef);
       departments.set(departmentCode, department);
     }
     branches.set(entry.branchCode, branch);
@@ -504,13 +532,28 @@ export async function getPnl(period: string, branchCode: string) {
   }
 
   const finalized = finalizePnl(total);
-  const groupsOf = (lineKey: PnlLineKey): PnlDetailGroup[] =>
-    tree.groupsOf(lineKey).map((group) => ({
-      code: group.code,
-      name: group.name,
-      amount: group.total,
-      items: group.items.map((item) => ({ code: item.code, name: item.name, amount: item.total })),
-    }));
+  /**
+   * Hạng mục "Chưa phân loại P&L" ra khỏi cây nhóm: P&L chỉ tính khoản đã có hạng mục (chốt
+   * chị Bình 20/09/2026), nên để nó nằm trong nhóm thì nhóm lại lớn hơn dòng TỔNG. Số tiền đó
+   * trả riêng ở `unclassified` của từng dòng — bảng hiện thành dòng thông tin ngoài tổng, và
+   * vẫn còn nguyên trong `byPnlItem` (Tổng hợp chi phí) để đi phân loại.
+   */
+  const unclassifiedOf = (lineKey: PnlLineKey) => tree.groupsOf(lineKey)
+    .reduce((sum, group) => sum + group.items
+      .filter((item) => item.code === "UNCLASSIFIED")
+      .reduce((itemSum, item) => itemSum + item.total, 0), 0);
+  const groupsOf = (lineKey: PnlLineKey): PnlDetailGroup[] => tree.groupsOf(lineKey)
+    .map((group) => {
+      const items = group.items.filter((item) => item.code !== "UNCLASSIFIED");
+      const hidden = group.items.filter((item) => item.code === "UNCLASSIFIED").reduce((sum, item) => sum + item.total, 0);
+      return {
+        code: group.code,
+        name: group.name,
+        amount: group.total - hidden,
+        items: items.map((item) => ({ code: item.code, name: item.name, amount: item.total })),
+      };
+    })
+    .filter((group) => group.items.length > 0 || Math.abs(group.amount) > 0.5 || group.code !== PNL_UNGROUPED_CODE);
   const finalizedByKey = finalized as unknown as Record<string, number>;
   const statement: PnlStatementLine[] = PNL_STATEMENT_LINES.map((line) => ({
     key: line.key,
@@ -518,6 +561,7 @@ export async function getPnl(period: string, branchCode: string) {
     amount: finalizedByKey[line.key] || 0,
     subtotal: line.subtotal,
     groups: line.subtotal ? [] : groupsOf(line.key as PnlLineKey),
+    unclassified: line.subtotal ? 0 : unclassifiedOf(line.key as PnlLineKey),
   }));
   return {
     total: finalized,
