@@ -57,3 +57,21 @@ test("tiền vào tài khoản làm giảm phải thu, tiền ra làm giảm ph�
 test("khoản phải thu và phải trả của cùng một đối tác bù trừ nhau", () => {
   assert.equal(debtBalanceOf({ ...emptyRow, debtPayable: 10_000_000, debtReceivable: 3_000_000 }), 7_000_000);
 });
+
+test("thu lại chi hộ nhiều hơn khoản đã chi hộ thì đảo thành mình nợ đối tác (Cô Thoa 20/09/2026)", async () => {
+  // Chi hộ 59.847.554 treo phải thu; Cô Thoa chuyển 60.000.000 rồi 59.000.000 để trả lại.
+  // Sổ ghi gộp: khoản nợ đứng số phát sinh (còn nợ 0 + đã gạch 59.847.554), hai phiếu thu
+  // đứng đúng số tiền trên phiếu — phần thu dư 59.152.446 là mình đang nợ lại cô.
+  const { debtRecordGrossSigned } = await import("../lib/debt-balance.ts");
+  const chiHo = debtRecordGrossSigned("RECEIVABLE", 0, 59_847_554);
+  assert.equal(chiHo, -59_847_554);
+  const balance = debtBalanceOf({
+    ...emptyRow,
+    debtReceivable: 59_847_554,
+    voucherNet: voucherSigned("RECEIPT", 60_000_000) + voucherSigned("RECEIPT", 59_000_000),
+  });
+  assert.equal(balance, 59_152_446);
+  assert.ok(balance > 0, "đối tác chuyển nhiều hơn thì số dư phải là PHẢI TRẢ, không phải Đã cân");
+  // Ghi theo số còn nợ như trước: khoản chi hộ về 0 và hai phiếu thu bị giấu -> "Đã cân" (sai).
+  assert.equal(debtBalanceOf({ ...emptyRow, debtReceivable: 0 }), 0);
+});

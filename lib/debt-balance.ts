@@ -22,6 +22,22 @@ export function debtRecordSigned(debtType: string, outstandingAmount: number) {
   return debtType === "PAYABLE" ? outstandingAmount : -outstandingAmount;
 }
 
+/**
+ * Khoản công nợ ghi theo số PHÁT SINH (còn nợ + đã gạch), không phải số còn nợ.
+ *
+ * Sổ công nợ ghi gộp: khoản nợ đứng nguyên số phát sinh, phiếu thu/chi gạch nợ đứng thành dòng
+ * riêng đúng ngày và đúng số tiền của phiếu. Ghi theo số còn nợ như trước thì phiếu gạch nợ phải
+ * giấu đi (kẻo trừ hai lần), và phần đối tác trả DƯ — tiền vào nhiều hơn khoản họ nợ — biến mất
+ * khỏi sổ: khách báo 20/09/2026 Cô Thoa chuyển 119 triệu trả khoản chi hộ 59,8 triệu mà bảng
+ * công nợ ghi "Đã cân" thay vì mình đang nợ lại cô 59,1 triệu.
+ *
+ * Cộng "còn nợ + đã gạch" thay vì lấy số gốc để số dư luôn khớp số còn nợ thật, kể cả khi khoản
+ * nợ từng được sửa số gốc sau khi đã gạch một phần.
+ */
+export function debtRecordGrossSigned(debtType: string, outstandingAmount: number, settledAmount: number) {
+  return debtRecordSigned(debtType, outstandingAmount + settledAmount);
+}
+
 /** Tiền khách đặt cọc còn giữ: đang cầm tiền của khách nên là một khoản phải trả. */
 export function depositSigned(remainingAmount: number) {
   return remainingAmount;

@@ -8,9 +8,9 @@ import { softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { debtGroupCode, stripDebtLineSuffix } from "@/lib/debt-group";
 import { internalPartnerCode } from "@/lib/cost-reallocation";
-import { ADVANCE_RECEIVABLE_ACTION } from "@/lib/voucher-rules";
+import { ADVANCE_RECEIVABLE_ACTION, PARTNER_COLLECTION_ACTION } from "@/lib/voucher-rules";
 import { advanceReceivableBeneficiaryBranch } from "@/lib/voucher-side-effects";
-import { bankSigned, debtBalanceOf, debtRecordSigned, depositSigned, openingBalanceSigned, voucherSigned } from "@/lib/debt-balance";
+import { bankSigned, debtBalanceOf, debtRecordGrossSigned, debtRecordSigned, depositSigned, openingBalanceSigned, voucherSigned } from "@/lib/debt-balance";
 
 const debtTypes = ["RECEIVABLE", "PAYABLE"];
 const partnerGroups = ["EXTERNAL", "INTERNAL"];
@@ -52,6 +52,8 @@ type LedgerRow = {
   /** Nhóm hạng mục P&L của khoản PHẢI THU. */
   pnlGroupCode?: string | null;
 };
+
+const money = (value: number) => new Intl.NumberFormat("vi-VN").format(Math.round(value));
 
 function agingBucket(dueDate?: Date | null) {
   if (!dueDate) return "NO_DUE_DATE";
@@ -128,7 +130,7 @@ export async function GET(request: Request) {
     const branchFilter = branchCode === "ALL" ? {} : { branchCode };
     const range = parseDateRange(searchParams.get("fromDate"), searchParams.get("toDate"));
 
-    const [partners, branchItems, openingBalances, deposits, bankRows, ownVouchers, advanceVouchers, purchasePayables, debtRecords] = await Promise.all([
+    const [partners, branchItems, openingBalances, deposits, bankRows, ownVouchers, advanceVouchers, purchasePayables, debtRecords, settlementVouchers, allocationVouchers, settlements] = await Promise.all([
       prisma.masterDataItem.findMany({ where: { type: "PARTNER" } }),
       // Danh mục Cửa hàng: dùng để chắc chắn "đối tác sẽ trả lại tiền" của phiếu chi hộ là
       // một nhà hàng thật, không phải đối tác tự đặt mã bắt đầu bằng NB-.
@@ -152,7 +154,77 @@ export async function GET(request: Request) {
       }),
       prisma.supplierPayable.findMany({ where: branchCode === "ALL" ? {} : { purchaseOrder: { branchCode } }, include: { purchaseOrder: true } }),
       prisma.debtRecord.findMany({ where: branchFilter }),
+      // Phiếu GẠCH NỢ (thu lại công nợ theo mã, thu lại chi hộ theo đối tác): trước đây bị bỏ
+      // hẳn khỏi sổ vì khoản nợ đã ghi số CÒN NỢ. Nay sổ ghi gộp — khoản nợ đứng nguyên số phát
+      // sinh, phiếu gạch đứng thành dòng riêng — nên phiếu phải có mặt với ĐÚNG số tiền trên
+      // phiếu, kể cả phần trả dư không còn khoản nào để gạch (feedback khách 20/09/2026).
+      prisma.financialVoucher.findMany({
+        where: { status: "APPROVED", debtAction: { in: ["SETTLE", PARTNER_COLLECTION_ACTION] }, ...branchFilter },
+      }),
+      // Phiếu đại diện (một người nhận, nhiều đối tác) không có partnerCode nên trước đây cũng
+      // vắng mặt; từng dòng phân bổ là phát sinh của đúng đối tác trên dòng đó.
+      prisma.financialVoucher.findMany({
+        where: { status: "APPROVED", partnerCode: null, partnerAllocations: { some: {} }, ...branchFilter },
+        include: { partnerAllocations: true },
+      }),
+      prisma.debtSettlement.findMany({
+        where: { debt: branchFilter },
+        select: { debtId: true, voucherId: true, amount: true, debt: { select: { code: true, partnerCode: true } } },
+      }),
     ]);
+
+    // Đã gạch bao nhiêu trên từng khoản nợ (để ghi khoản nợ theo số phát sinh) và từng phiếu
+    // gạch đã áp vào những khoản nào (để ghi rõ trên dòng phiếu, phần dôi ra gọi tên "trả dư").
+    const settledByDebt = new Map<string, { amount: number; voucherIds: string[] }>();
+    const settledByVoucher = new Map<string, { amount: number; debtCodes: string[]; partnerCodes: string[] }>();
+    for (const row of settlements) {
+      const byDebt = settledByDebt.get(row.debtId) || { amount: 0, voucherIds: [] };
+      byDebt.amount += row.amount;
+      if (!byDebt.voucherIds.includes(row.voucherId)) byDebt.voucherIds.push(row.voucherId);
+      settledByDebt.set(row.debtId, byDebt);
+      const byVoucher = settledByVoucher.get(row.voucherId) || { amount: 0, debtCodes: [], partnerCodes: [] };
+      byVoucher.amount += row.amount;
+      if (!byVoucher.debtCodes.includes(row.debt.code)) byVoucher.debtCodes.push(row.debt.code);
+      if (!byVoucher.partnerCodes.includes(row.debt.partnerCode)) byVoucher.partnerCodes.push(row.debt.partnerCode);
+      settledByVoucher.set(row.voucherId, byVoucher);
+    }
+    const voucherCodeById = new Map([...settlementVouchers, ...ownVouchers, ...allocationVouchers].map((row) => [row.id, row.code]));
+    const settledNote = (debtId: string) => {
+      const settled = settledByDebt.get(debtId);
+      if (!settled || settled.amount <= 0) return "";
+      const codes = settled.voucherIds.map((id) => voucherCodeById.get(id) || "phiếu không còn hiệu lực").join(", ");
+      return ` · đã gạch ${money(settled.amount)} bằng ${codes}`;
+    };
+    /**
+     * Dòng phát sinh của một phiếu gạch nợ, đứng tên đối tác trên phiếu (thu lại chi hộ theo đối
+     * tác bắt buộc có đối tác; gạch theo mã mà bỏ trống đối tác thì lấy đối tác của khoản nợ đã
+     * gạch). Số tiền là số trên phiếu: phần áp vào khoản nợ + phần trả dư.
+     */
+    const settlementLines = settlementVouchers.map((item) => {
+      const applied = settledByVoucher.get(item.id);
+      const partner = item.partnerCode || applied?.partnerCodes[0] || null;
+      const excess = Math.round(item.amount - (applied?.amount || 0));
+      const detail = applied && applied.debtCodes.length > 0 ? ` · gạch ${applied.debtCodes.join(", ")}` : "";
+      const excessNote = excess > 0
+        ? ` · ${item.debtAction === PARTNER_COLLECTION_ACTION ? "thu dư" : "trả dư"} ${money(excess)} (không còn khoản nào để gạch)`
+        : "";
+      return {
+        partnerCode: partner,
+        partnerName: item.partnerName,
+        date: item.voucherDate,
+        code: item.code,
+        description: `${item.description}${detail}${excessNote}`,
+        amount: voucherSigned(item.voucherType, item.amount),
+      };
+    }).filter((line): line is typeof line & { partnerCode: string } => Boolean(line.partnerCode));
+    const allocationLines = allocationVouchers.flatMap((item) => item.partnerAllocations.map((line) => ({
+      partnerCode: line.partnerCode,
+      partnerName: line.partnerName,
+      date: item.voucherDate,
+      code: item.code,
+      description: `${item.description}${line.debtReference ? ` · gạch ${line.debtReference}` : ""}${line.note ? ` · ${line.note}` : ""}`,
+      amount: voucherSigned(item.voucherType, line.amount),
+    })));
 
     // Chi hộ đối tác BÊN NGOÀI không nằm ở đây: khoản đó là nợ của chính cửa hàng lập phiếu,
     // đã treo phải thu CNTHU rồi, gạch thêm vào NCC nữa là trừ hai lần.
@@ -204,6 +276,9 @@ export async function GET(request: Request) {
           amount: voucherSigned(item.voucherType, item.amount),
         });
       }
+      for (const line of [...settlementLines, ...allocationLines].filter((row) => row.partnerCode === partnerCode)) {
+        ledger.push({ date: line.date, source: "VOUCHER", code: line.code, description: line.description, amount: line.amount });
+      }
       for (const item of purchasePayables.filter((row) => row.supplierCode === partnerCode)) {
         ledger.push({
           date: item.recognizedDate,
@@ -213,7 +288,9 @@ export async function GET(request: Request) {
           amount: item.outstandingAmount,
         });
       }
-      for (const item of debtRecords.filter((row) => row.partnerCode === partnerCode && row.outstandingAmount > 0)) {
+      // Khoản đã gạch hết vẫn đứng trên sổ theo số phát sinh — dòng phiếu gạch bên dưới trừ lại.
+      // Bỏ dòng này đi (như trước) thì đối tác trả dư nhìn vào sổ chỉ thấy... không có gì.
+      for (const item of debtRecords.filter((row) => row.partnerCode === partnerCode && row.outstandingAmount + (settledByDebt.get(row.id)?.amount || 0) > 0)) {
         ledger.push({
           id: item.id,
           groupCode: debtGroupCode(item.code),
@@ -221,8 +298,8 @@ export async function GET(request: Request) {
           source: item.debtType,
           code: item.code,
           dueDate: item.dueDate,
-          description: `${item.description}${item.dueDate ? ` · Hạn ${item.dueDate.toLocaleDateString("vi-VN")}` : ""}`,
-          amount: debtRecordSigned(item.debtType, item.outstandingAmount),
+          description: `${item.description}${item.dueDate ? ` · Hạn ${item.dueDate.toLocaleDateString("vi-VN")}` : ""}${settledNote(item.id)}`,
+          amount: debtRecordGrossSigned(item.debtType, item.outstandingAmount, settledByDebt.get(item.id)?.amount || 0),
           status: item.status,
           agingBucket: agingBucket(item.dueDate),
           pnlItemCode: item.pnlItemCode,
@@ -317,6 +394,19 @@ export async function GET(request: Request) {
       });
     }
 
+    for (const line of [...settlementLines, ...allocationLines]) {
+      const bucket = dateBucket(line.date, range);
+      if (bucket === "AFTER") continue;
+      if (bucket === "BEFORE") {
+        carryForward(line.partnerCode, line.partnerName, line.amount);
+        continue;
+      }
+      const current = rows.get(line.partnerCode);
+      addDebt(rows, line.partnerCode, line.partnerName, {
+        voucherNet: (current?.voucherNet || 0) + line.amount,
+      });
+    }
+
     for (const item of purchasePayables) {
       const bucket = dateBucket(item.recognizedDate, range);
       if (bucket === "AFTER") continue;
@@ -340,11 +430,14 @@ export async function GET(request: Request) {
       const hasOpenDebt = item.outstandingAmount > 0 && item.status !== "SETTLED";
       // Khoản mở trước khoảng chọn vẫn tính hạn/quá hạn (vẫn đang nợ), chỉ số tiền dồn về Đầu kỳ.
       const inRange = dateSlot === "IN";
+      // Cột CN phải thu / phải trả là số PHÁT SINH (còn nợ + đã gạch); phiếu gạch nợ đứng ở cột
+      // Phiếu thu/chi. Hạn, quá hạn và số khoản mở vẫn tính trên số còn nợ.
+      const grossAmount = item.outstandingAmount + (settledByDebt.get(item.id)?.amount || 0);
       addDebt(rows, item.partnerCode, item.partnerName, {
         partnerGroup: item.partnerGroup,
-        openingAmount: (current?.openingAmount || 0) + (inRange ? 0 : debtRecordSigned(item.debtType, item.outstandingAmount)),
-        debtReceivable: (current?.debtReceivable || 0) + (inRange && item.debtType === "RECEIVABLE" ? item.outstandingAmount : 0),
-        debtPayable: (current?.debtPayable || 0) + (inRange && item.debtType === "PAYABLE" ? item.outstandingAmount : 0),
+        openingAmount: (current?.openingAmount || 0) + (inRange ? 0 : debtRecordSigned(item.debtType, grossAmount)),
+        debtReceivable: (current?.debtReceivable || 0) + (inRange && item.debtType === "RECEIVABLE" ? grossAmount : 0),
+        debtPayable: (current?.debtPayable || 0) + (inRange && item.debtType === "PAYABLE" ? grossAmount : 0),
         nearestDueDate: nextDue,
         overdueAmount: (current?.overdueAmount || 0) + (bucket === "OVERDUE" ? item.outstandingAmount : 0),
         dueSoonAmount: (current?.dueSoonAmount || 0) + (bucket === "DUE_7" ? item.outstandingAmount : 0),

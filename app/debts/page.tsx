@@ -499,7 +499,10 @@ export default function DebtsPage() {
           <div className="p-5 border-b border-slate-200 flex items-center justify-between">
             <div>
               <h2 className="font-bold">Bảng công nợ đối tác</h2>
-              <p className="text-xs text-slate-500 mt-1">Số dư âm được phân loại là Phải thu, số dư dương là Phải trả. Bấm đối tác để xem ledger.</p>
+              <p className="text-xs text-slate-500 mt-1">
+                Số dư âm được phân loại là Phải thu, số dư dương là Phải trả. Bấm đối tác để xem ledger.
+                Sổ ghi gộp: cột CN phải thu / phải trả là số <b>phát sinh</b> (kể cả phần đã gạch), phiếu gạch nợ và thu lại chi hộ đứng ở cột Phiếu thu/chi — chỉ cột Số dư mới là còn nợ.
+              </p>
               {rangeActive && (
                 <p className="mt-1 text-xs font-semibold text-indigo-700">
                   Đang xem {dateRange.fromDate ? `từ ${dayLabel(dateRange.fromDate)}` : "từ đầu"} {dateRange.toDate ? `đến ${dayLabel(dateRange.toDate)}` : "đến nay"}:
@@ -592,12 +595,12 @@ export default function DebtsPage() {
                   <th className="px-4 py-3 text-right" title={dateRange.fromDate ? `Số dư đầu kỳ khai + mọi phát sinh trước ${dayLabel(dateRange.fromDate)}` : "Số dư đầu kỳ đã khai"}>
                     {dateRange.fromDate ? `Đầu kỳ (trước ${dayLabel(dateRange.fromDate)})` : "Đầu kỳ"}
                   </th>
-                  <th className="px-4 py-3 text-right">CN phải thu</th>
-                  <th className="px-4 py-3 text-right">CN phải trả</th>
+                  <th className="px-4 py-3 text-right" title="Phát sinh phải thu trong kỳ, kể cả phần đã được gạch bằng phiếu thu">CN phải thu</th>
+                  <th className="px-4 py-3 text-right" title="Phát sinh phải trả trong kỳ, kể cả phần đã được gạch bằng phiếu chi">CN phải trả</th>
                   <th className="px-4 py-3 text-right">Nhập hàng</th>
                   <th className="px-4 py-3 text-right">Cọc còn giữ</th>
                   <th className="px-4 py-3 text-right">Sao kê match</th>
-                  <th className="px-4 py-3 text-right">Phiếu thu/chi</th>
+                  <th className="px-4 py-3 text-right" title="Phiếu thu/chi của đối tác, gồm cả phiếu gạch nợ và thu lại tiền chi hộ (phần trả dư nằm ở đây)">Phiếu thu/chi</th>
                   <th className="px-4 py-3 text-right">Số dư</th>
                 </tr>
               </thead>
