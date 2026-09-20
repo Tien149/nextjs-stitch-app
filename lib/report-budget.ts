@@ -372,6 +372,17 @@ export async function getPnlMatrix(year: string, branchCode: string) {
    * nhóm hạng mục P&L" còn hạng mục thật thì vẫn giữ, chỉ trừ đi phần vừa ẩn để nhóm khớp với
    * các hạng mục bên dưới nó.
    */
+  /**
+   * Phần đang bị ẩn, cộng theo tháng — để bảng hiện lại thành MỘT dòng "Chưa gán hạng mục P&L"
+   * ở cuối khối. Không có dòng này thì dòng TỔNG lớn hơn hẳn tổng các dòng nhìn thấy mà không
+   * ai hiểu vì sao: khách nhìn OPEX tháng 8 thấy 281,7 tr ở ba nhóm nhưng tổng ghi 1.484,9 tr
+   * và tưởng hệ thống cộng khống (khách báo 20/09/2026).
+   */
+  const unclassifiedMonthsOf = (groups: PnlSeriesGroup[]) => months.map((_, monthIndex) => groups
+    .reduce((sum, group) => sum + group.items
+      .filter((item) => item.code === "UNCLASSIFIED")
+      .reduce((itemSum, item) => itemSum + (item.months[monthIndex] || 0), 0), 0));
+
   const hideUnclassifiedDetail = (groups: PnlSeriesGroup[]) => groups
     .map((group) => {
       const hidden = group.items.filter((item) => item.code === "UNCLASSIFIED");
@@ -411,6 +422,8 @@ export async function getPnlMatrix(year: string, branchCode: string) {
   const statement: MatrixStatementLine[] = PNL_STATEMENT_LINES.map((line) => {
     const monthValues = finalizedTotals.map((total) => (total as unknown as Record<string, number>)[line.key] || 0);
     const plan = planLine(line.key);
+    const rawGroups = line.subtotal ? [] : tree.groupsOf(line.key as PnlLineKey);
+    const unclassified = unclassifiedMonthsOf(rawGroups);
     return {
       key: line.key,
       label: line.label,
@@ -419,7 +432,10 @@ export async function getPnlMatrix(year: string, branchCode: string) {
       total: monthValues.reduce((sum, value) => sum + value, 0),
       plan,
       planTotal: plan.reduce((sum, value) => sum + value, 0),
-      groups: line.subtotal ? [] : withPlan(line.key as PnlLineKey, hideUnclassifiedDetail(tree.groupsOf(line.key as PnlLineKey))),
+      groups: line.subtotal ? [] : withPlan(line.key as PnlLineKey, hideUnclassifiedDetail(rawGroups)),
+      /** Chứng từ chưa khai Hạng mục P&L: không set kế hoạch được nhưng vẫn nằm trong dòng TỔNG. */
+      unclassified,
+      unclassifiedTotal: unclassified.reduce((sum, value) => sum + value, 0),
     };
   });
 

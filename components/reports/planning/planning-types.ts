@@ -26,7 +26,17 @@ export type PnlBucket = {
 export type Series = { code: string; name: string; months: number[]; total: number };
 export type PlannedItem = Series & { plan: number[] | null; planTotal: number | null };
 export type PlannedGroup = PlannedItem & { items: PlannedItem[] };
-export type StatementLine = { key: string; label: string; subtotal: boolean; months: number[]; total: number; plan: number[]; planTotal: number; groups: PlannedGroup[] };
+export type StatementLine = {
+  key: string; label: string; subtotal: boolean;
+  months: number[]; total: number; plan: number[]; planTotal: number; groups: PlannedGroup[];
+  /**
+   * Phần chứng từ CHƯA khai Hạng mục P&L của dòng này. Không set kế hoạch được nên không đứng
+   * trong `groups`, nhưng vẫn nằm trong `months`/`total` — bảng phải hiện thành một dòng riêng,
+   * không thì dòng TỔNG lớn hơn tổng các dòng nhìn thấy mà không ai giải thích được.
+   */
+  unclassified?: number[];
+  unclassifiedTotal?: number;
+};
 export type BranchPlanning = { code: string; actual: PnlBucket[]; plan: PnlBucket[] };
 
 export type PlanningData = {
