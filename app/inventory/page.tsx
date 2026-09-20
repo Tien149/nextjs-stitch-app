@@ -37,7 +37,7 @@ type PendingSales = {
 };
 type CostingProduct = { productCode: string; productName: string; itemType: string; batchCost: number; unitCost: number; outputConversionRate: number; sellingPrice: number };
 type CostingResult = { costingDate: string; branchCode: string; materialCount: number; updatedBalances: number; levels: Array<{ level: number; products: CostingProduct[] }> };
-type Warehouse = { id: string; code: string; name: string; branch: string | null };
+type Warehouse = { id: string; code: string; name: string; branch: string | null; group?: string | null };
 type MovementByType = Record<string, { inbound: number; outbound: number; value: number }>;
 type StockSummary = { item: Item; warehouseCode: string; openingQuantity: number; inboundQuantity: number; outboundQuantity: number; closingQuantity: number; averageCost: number; closingValue: number; movementByType?: MovementByType };
 type StockMovement = { transactionId: string; code: string; transactionType: string; transactionDate: string; warehouseCode: string; toWarehouseCode: string | null; itemCode: string; itemName: string; unit: string; quantity: number; inboundQuantity: number; outboundQuantity: number; value: number; referenceCode: string | null };
@@ -143,7 +143,11 @@ export default function InventoryPage() {
   const [recipeRows, setRecipeRows] = useState([{ itemId: "", quantity: "1", unitCode: "", wasteRate: "0" }, { itemId: "", quantity: "20", unitCode: "", wasteRate: "5" }]);
   const [productionForm, setProductionForm] = useState({ productCode: "BTP_SOTCACHUA", productQuantity: "2", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HCM", referenceCode: "", note: "Che bien ban thanh pham" });
   /** Nút Rã nguyên liệu: rã doanh thu chờ (PENDING) theo định lượng, tự sinh phiếu chế biến + xuất bán. */
-  const [explodeForm, setExplodeForm] = useState({ branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HCM", dateFrom: today(), dateTo: today(), note: "" });
+  /**
+   * `kitchenWarehouseCode` / `barWarehouseCode`: đồ ăn trừ kho Bếp, đồ uống trừ kho Bar.
+   * Để trống ô nào thì món của bộ phận đó đi theo kho mặc định như trước.
+   */
+  const [explodeForm, setExplodeForm] = useState({ branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HCM", kitchenWarehouseCode: "", barWarehouseCode: "", dateFrom: today(), dateTo: today(), note: "" });
   const [exploding, setExploding] = useState(false);
   /** Nút Tính giá vốn & giá thành cuối kỳ: chạy tuần tự NVL → BTP các cấp → TP → combo. */
   const [costingForm, setCostingForm] = useState({ branchCode: "HCM", costingDate: today() });
@@ -232,6 +236,25 @@ export default function InventoryPage() {
   const stockInputUnitCost = Number(stockForm.unitCost || 0);
   const stockBaseUnitCost = stockInputUnitCost > 0 ? stockInputUnitCost / stockConversionRate : 0;
   const stockLineValue = stockInputUnitCost * stockInputQuantity;
+  const explodeWarehouses = (data.warehouses || []).filter((warehouse) => warehouse.branch === explodeForm.branchCode || !warehouse.branch);
+  /** Gợi ý sẵn kho Bếp / kho Bar theo Nhóm kho đã khai trong danh mục, người dùng vẫn đổi được. */
+  const warehouseByGroup = (keyword: string) => explodeWarehouses.find((warehouse) => {
+    const group = (warehouse.group || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
+    return group.includes(keyword);
+  })?.code || "";
+  /**
+   * Ô để trống = lấy gợi ý theo Nhóm kho đã khai; chọn "NONE" = không tách theo bộ phận, mọi
+   * món đi kho mặc định như trước. Giữ lựa chọn của người dùng trong state, phần gợi ý tính
+   * tại chỗ nên đổi cửa hàng là ô tự cập nhật mà không cần ghi đè state.
+   */
+  const pickedDepartmentWarehouse = (picked: string, keyword: string) => {
+    if (picked === "NONE") return "";
+    const suggestion = warehouseByGroup(keyword);
+    const code = picked || suggestion;
+    return explodeWarehouses.some((warehouse) => warehouse.code === code) ? code : "";
+  };
+  const kitchenWarehouseCode = pickedDepartmentWarehouse(explodeForm.kitchenWarehouseCode, "BEP");
+  const barWarehouseCode = pickedDepartmentWarehouse(explodeForm.barWarehouseCode, "BAR");
   const warehouseOptions = data.warehouses.length ? data.warehouses : [
     { id: "KHO_HCM", code: "KHO_HCM", name: "Kho Cua hang 1", branch: "HCM" },
     { id: "KHO_HN", code: "KHO_HN", name: "Kho Cua hang 2", branch: "HN" },
@@ -429,6 +452,7 @@ export default function InventoryPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { if (!loading) window.setTimeout(() => void loadData(), 0); }, [loading, flowRange.from, flowRange.to]);
 
+
   const grpoOrder = stockForm.transactionType === "NHAP_MUA"
     ? receivablePOs.find((order) => order.id === grpoOrderId) || null
     : null;
@@ -493,6 +517,7 @@ export default function InventoryPage() {
     const payload = await response.json();
     setMessage(response.ok ? success : payload.error || "Không thực hiện được thao tác");
     if (response.ok) await loadData();
+    return response.ok ? payload : null;
   };
 
   /** Sửa nhanh một trường của mặt hàng ngay trên bảng danh mục (UPDATE_ITEM nằm ở PATCH). */
@@ -1872,7 +1897,7 @@ export default function InventoryPage() {
               Đang chờ rã: <b>{data.pendingSales.total}</b> dòng doanh thu
             </div>
           </div>
-          <div className="grid md:grid-cols-5 gap-3 mt-4">
+          <div className="grid md:grid-cols-4 gap-3 mt-4">
             <Input label="Cửa hàng">
               <select className="control" value={explodeForm.branchCode} onChange={(e) => setExplodeForm({ ...explodeForm, branchCode: e.target.value })}>
                 {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
@@ -1898,7 +1923,30 @@ export default function InventoryPage() {
                 ))}
               </select>
             </Input>
+            {/* Đồ ăn trừ kho Bếp, đồ uống trừ kho Bar: hai ô này đè lên hai ô kho mặc định ở
+                trên cho đúng nhóm món. Để trống = món nhóm đó vẫn đi kho mặc định. */}
+            <Input label="Kho ĐỒ ĂN (bếp)">
+              <select className="control" value={explodeForm.kitchenWarehouseCode === "NONE" ? "NONE" : kitchenWarehouseCode} onChange={(e) => setExplodeForm({ ...explodeForm, kitchenWarehouseCode: e.target.value })}>
+                <option value="NONE">— Không tách, dùng kho mặc định —</option>
+                {explodeWarehouses.map((warehouse) => (
+                  <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>
+                ))}
+              </select>
+            </Input>
+            <Input label="Kho ĐỒ UỐNG (bar)">
+              <select className="control" value={explodeForm.barWarehouseCode === "NONE" ? "NONE" : barWarehouseCode} onChange={(e) => setExplodeForm({ ...explodeForm, barWarehouseCode: e.target.value })}>
+                <option value="NONE">— Không tách, dùng kho mặc định —</option>
+                {explodeWarehouses.map((warehouse) => (
+                  <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>
+                ))}
+              </select>
+            </Input>
           </div>
+          <p className="mt-2 text-[11px] text-slate-500 leading-relaxed">
+            Khai hai ô trên thì món <b>Đồ ăn</b> trừ và nhập lại ở kho Bếp, món <b>Đồ uống</b> ở kho Bar — theo Nhóm doanh thu của món
+            (hoặc Phân nhóm mặt hàng nếu đã khai). Bán thành phẩm dùng chung, combo gồm cả ăn lẫn uống và món chưa gán nhóm vẫn đi
+            kho mặc định, và được đếm lại trong thông báo sau khi rã.
+          </p>
           {data.pendingSales.byDay.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-2">
               {data.pendingSales.byDay.slice(0, 12).map((day) => (
@@ -1951,7 +1999,17 @@ export default function InventoryPage() {
             onClick={async () => {
               setExploding(true);
               try {
-                await send({ action: "EXPLODE_PRODUCTION", ...explodeForm }, "Đã rã nguyên liệu và sinh phiếu chế biến + xuất bán.");
+                const payload = await send(
+                  { action: "EXPLODE_PRODUCTION", ...explodeForm, kitchenWarehouseCode, barWarehouseCode },
+                  "Đã rã nguyên liệu và sinh phiếu chế biến + xuất bán.",
+                );
+                // Món không suy được bếp/bar vẫn chạy, nhưng phải nói ra để người dùng đi gán
+                // Nhóm doanh thu cho đúng, nếu không kho Bếp/Bar sẽ thiếu phần của những mã này.
+                const undecided = Number(payload?.undecidedCount || 0);
+                if (undecided > 0) {
+                  const codes = (payload?.undecidedProducts || []) as string[];
+                  setMessage(`Đã rã nguyên liệu và sinh phiếu chế biến + xuất bán. ${undecided} mã hàng chưa xác định được Bếp hay Bar nên đi kho mặc định${codes.length ? `: ${codes.slice(0, 8).join(", ")}${undecided > codes.slice(0, 8).length ? "..." : ""}` : ""}. Gán Nhóm doanh thu cho các mã này ở tab Mặt hàng để lần rã sau vào đúng kho.`);
+                }
               } finally {
                 setExploding(false);
               }

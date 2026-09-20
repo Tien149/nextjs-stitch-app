@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import type { Prisma } from "@prisma/custom-client";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError, assertPeriodOpen, businessError, cleanText, isPeriodLocked, toDate, toNumber } from "@/lib/phase3";
@@ -18,6 +19,7 @@ import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 import { nextStockDocCode, nextStocktakeCode } from "@/lib/inventory-stock";
 import { isRevenueGroupCategory, normalizeRevenueExpenseGroup } from "@/lib/voucher-rules";
 import { loadNonInventoryRevenueGroups, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
+import { buildRevenueDepartmentResolver, departmentFromWarehouseGroup, REVENUE_DEPARTMENT_CODES } from "@/lib/revenue-department";
 
 const menuHref = "/inventory";
 
@@ -935,6 +937,20 @@ export async function POST(request: Request) {
       assertBranchAccess(auth.session, branchCode);
       const sourceWarehouse = await prisma.masterDataItem.findFirst({ where: { type: "WAREHOUSE", code: warehouseCode, branch: branchCode } });
       if (!sourceWarehouse) businessError(`Kho ${warehouseCode} không thuộc cửa hàng ${branchCode}.`);
+      /**
+       * Đồ ăn trừ kho Bếp, đồ uống trừ kho Bar (khách chốt 20/09/2026). Bộ phận của từng món do
+       * lib/revenue-department suy ra: nhóm mặt hàng -> nhóm kho, hoặc nhóm doanh thu
+       * (REV_FOOD / "ĐỒ ĂN" -> Bếp, REV_BAR / "ĐỒ UỐNG" -> Bar). Món không suy được (bán thành
+       * phẩm dùng chung, combo gồm cả ăn lẫn uống, món chưa gán nhóm doanh thu) vẫn đi kho mặc
+       * định như trước, và được đếm lại để người dùng biết mà gán dần.
+       */
+      const kitchenWarehouseCode = cleanText(body.kitchenWarehouseCode);
+      const barWarehouseCode = cleanText(body.barWarehouseCode);
+      for (const [label, code] of [["Bếp", kitchenWarehouseCode], ["Bar", barWarehouseCode]] as const) {
+        if (!code) continue;
+        const warehouse = await prisma.masterDataItem.findFirst({ where: { type: "WAREHOUSE", code, branch: branchCode } });
+        if (!warehouse) businessError(`Kho ${label} (${code}) không thuộc cửa hàng ${branchCode}.`);
+      }
       if (dateTo.getTime() < dateFrom.getTime()) businessError("Khoảng ngày rã không hợp lệ (từ ngày sau đến ngày trước)");
       const rangeEnd = new Date(dateTo);
       rangeEnd.setHours(23, 59, 59, 999);
@@ -979,6 +995,49 @@ export async function POST(request: Request) {
         branchCode,
       });
 
+      // Mã món có mặt trong lần rã: cả món bán lẫn bán thành phẩm trung gian.
+      const planProductCodes = [
+        ...plan.productions.map((step) => step.productCode),
+        ...plan.producedSales.map((sale) => sale.productCode),
+        ...plan.directSales.map((sale) => sale.productCode),
+      ];
+      // prisma ở đây đã gắn extension xoá mềm nên kiểu không khớp TransactionClient thuần,
+      // giống cách các chỗ khác gọi resolver này.
+      const resolveDepartment = await buildRevenueDepartmentResolver(
+        prisma as unknown as Prisma.TransactionClient,
+        planProductCodes,
+      );
+      // Nhóm doanh thu ghi trên chính dòng POS: món chưa gán nhóm trong danh mục vẫn suy được
+      // bếp/bar nếu file POS có khai.
+      const revenueSourceByProduct = new Map<string, string | null>();
+      for (const row of inventoryRows) {
+        const code = (row.productCode || "").toUpperCase();
+        if (code && !revenueSourceByProduct.has(code)) revenueSourceByProduct.set(code, row.revenueSource);
+      }
+      // Nhóm doanh thu khai sẵn trên danh mục mặt hàng: dùng khi dòng POS không nói được gì.
+      const itemRevenueGroups = await prisma.inventoryItem.findMany({
+        where: { code: { in: [...new Set(planProductCodes.map((code) => code.toUpperCase()))] } },
+        select: { code: true, revenueGroup: true },
+      });
+      const revenueGroupByItem = new Map(itemRevenueGroups.map((item) => [item.code.toUpperCase(), item.revenueGroup]));
+      const undecidedProducts = new Set<string>();
+      /**
+       * Kho của một món theo bộ phận; không suy được bộ phận thì trả null để dùng kho mặc định.
+       *
+       * Xét NHÓM DOANH THU trước (đúng câu khách nói: đồ ăn về bếp, đồ uống về bar), chỉ khi
+       * món không có nhóm doanh thu mới rơi về Phân nhóm mặt hàng. Ngược thứ tự thì món cà phê
+       * lỡ gán phân nhóm "Món Bếp" sẽ bị trừ kho Bếp dù nhóm doanh thu là Đồ uống.
+       */
+      const departmentWarehouseOf = (productCode: string) => {
+        const code = (productCode || "").toUpperCase();
+        const revenueSource = revenueSourceByProduct.get(code) || revenueGroupByItem.get(code) || null;
+        const department = resolveDepartment({ revenueSource }) || resolveDepartment({ productCode: code });
+        if (department === REVENUE_DEPARTMENT_CODES.KITCHEN && kitchenWarehouseCode) return kitchenWarehouseCode;
+        if (department === REVENUE_DEPARTMENT_CODES.BAR && barWarehouseCode) return barWarehouseCode;
+        if (!department && (kitchenWarehouseCode || barWarehouseCode)) undecidedProducts.add(code);
+        return null;
+      };
+
       const result = await prisma.$transaction(async (tx) => {
         const runCode = await nextStockDocCode(tx, "RA", dateTo);
         const documents = [];
@@ -988,12 +1047,14 @@ export async function POST(request: Request) {
           sequence += 1;
           const productItem = await tx.inventoryItem.findUnique({ where: { code: step.productCode } });
           if (!productItem) businessError(`Không tìm thấy sản phẩm ${step.productCode}`);
+          // Nguyên liệu trừ ở kho của bộ phận làm ra món, thành phẩm cũng nhập lại đúng kho đó.
+          const stepWarehouse = departmentWarehouseOf(step.productCode);
           const issue = await postInventoryTransaction(tx, {
             code: `${runCode}-${sequence}X`,
             transactionType: "XUAT_CHE_BIEN",
             transactionDate: dateTo,
             branchCode,
-            warehouseCode,
+            warehouseCode: stepWarehouse || warehouseCode,
             referenceType: "PRODUCTION",
             referenceCode: runCode,
             note: `Rã nguyên liệu ${step.productCode} (${cleanText(body.note) || "theo doanh thu"})`,
@@ -1011,7 +1072,7 @@ export async function POST(request: Request) {
             transactionType: "NHAP_CHE_BIEN",
             transactionDate: dateTo,
             branchCode,
-            warehouseCode: toWarehouseCode,
+            warehouseCode: stepWarehouse || toWarehouseCode,
             referenceType: "PRODUCTION",
             referenceCode: runCode,
             note: `Nhập chế biến ${step.productCode} từ rã nguyên liệu`,
@@ -1027,10 +1088,19 @@ export async function POST(request: Request) {
         }
         // 2) Xuất bán: sản phẩm vừa chế biến xuất từ kho nhập chế biến, hàng bán thẳng
         //    (không định lượng) xuất từ kho nguyên liệu.
-        const saleGroups: Array<{ warehouse: string; sales: typeof plan.producedSales; label: string }> = [
-          { warehouse: toWarehouseCode, sales: plan.producedSales, label: "chế biến" },
-          { warehouse: warehouseCode, sales: plan.directSales, label: "bán thẳng" },
-        ];
+        // Món chế biến xuất bán từ đúng kho vừa nhập vào, hàng bán thẳng xuất từ kho nguyên
+        // liệu của bộ phận bán món đó — nên phải gom lại theo KHO THỰC TẾ, không phải hai nhóm
+        // cố định như trước.
+        const saleGroupMap = new Map<string, { warehouse: string; sales: typeof plan.producedSales; label: string }>();
+        const pushSale = (sale: typeof plan.producedSales[number], warehouse: string, label: string) => {
+          const key = `${warehouse}|${label}`;
+          const group = saleGroupMap.get(key) || { warehouse, sales: [], label };
+          group.sales.push(sale);
+          saleGroupMap.set(key, group);
+        };
+        for (const sale of plan.producedSales) pushSale(sale, departmentWarehouseOf(sale.productCode) || toWarehouseCode, "chế biến");
+        for (const sale of plan.directSales) pushSale(sale, departmentWarehouseOf(sale.productCode) || warehouseCode, "bán thẳng");
+        const saleGroups = [...saleGroupMap.values()];
         for (const group of saleGroups) {
           if (group.sales.length === 0) continue;
           const lines = [];
@@ -1069,14 +1139,16 @@ export async function POST(request: Request) {
         }
         return { runCode, documents };
       }, { timeout: 60000 });
+      const undecidedCount = undecidedProducts.size;
 
       await writeAuditLog({
         session: auth.session, module: menuHref, action: "EXPLODE_PRODUCTION",
         entityType: "InventoryTransaction", entityCode: result.runCode, branchCode,
         metadata: {
-          dateFrom, dateTo, warehouseCode, toWarehouseCode,
+          dateFrom, dateTo, warehouseCode, toWarehouseCode, kitchenWarehouseCode, barWarehouseCode,
           revenueRows: inventoryRows.length,
           skippedRows: skippedRows.length,
+          undecidedProducts: [...undecidedProducts],
           productions: plan.productions.map((step) => ({ productCode: step.productCode, quantityBase: step.quantityBase })),
           documents: result.documents.map((doc) => doc.code),
         },
@@ -1086,6 +1158,10 @@ export async function POST(request: Request) {
         documentCount: result.documents.length,
         revenueRows: inventoryRows.length,
         skippedRows: skippedRows.length,
+        // Số món phải dùng kho mặc định vì không suy được bếp/bar — để màn hình nhắc người dùng
+        // gán Nhóm doanh thu cho những mã này.
+        undecidedCount,
+        undecidedProducts: [...undecidedProducts].slice(0, 20),
         productions: plan.productions.map((step) => ({ productCode: step.productCode, quantityBase: step.quantityBase, batchQuantity: step.batchQuantity })),
         directSales: plan.directSales,
         documents: result.documents,
