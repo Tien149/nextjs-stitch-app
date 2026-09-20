@@ -17,7 +17,7 @@ import {
 } from "@/lib/wallet-settlement-allocation";
 import { generateFormattedVoucherCode, nextSeqFromCodes, voucherCodePrefix } from "@/lib/voucher-code-generator";
 import { planRevenueDateSplit, RevenueSplitError } from "@/lib/bank-statement-revenue-split";
-import { BANK_STATEMENT_SPLIT_SOURCE_SCOPE } from "@/lib/voucher-rules";
+import { BANK_STATEMENT_SPLIT_SOURCE_SCOPE, SALES_RECEIPT_CATEGORY_CODES } from "@/lib/voucher-rules";
 import { MACHINE_VOUCHER_SOURCE_SCOPES } from "@/lib/bank-statement-voucher-match";
 import { buildAuditLogData } from "@/lib/audit-log";
 import { closedPeriodMessage, findClosedPeriod } from "@/lib/phase3";
@@ -981,6 +981,12 @@ export async function POST(request: Request) {
           });
           if (existed) throw new Error(`${voucher.code} đã có dòng sao kê dựng tay (${transactionCode})`);
 
+          const description = `Dựng tay từ phiếu ${voucher.code}${voucher.partnerName ? ` · ${voucher.partnerName}` : ""}`;
+          // Loại nghiệp vụ đích phải khai đúng như dòng import, nếu không Sổ sao kê hiện
+          // "Dữ liệu cũ" và các báo cáo đọc theo nghiệp vụ bỏ qua dòng này.
+          const operationType = SALES_RECEIPT_CATEGORY_CODES.includes(voucher.categoryCode || "")
+            ? "REVENUE_RECEIPT"
+            : "OTHER_RECEIPT";
           const bankRow = await tx.bankStatementTransaction.create({
             data: {
               importBatchId: batch.id,
@@ -988,17 +994,41 @@ export async function POST(request: Request) {
               transactionDate: voucher.voucherDate,
               bankAccount,
               transactionCode,
-              description: `Dựng tay từ phiếu ${voucher.code}${voucher.partnerName ? ` · ${voucher.partnerName}` : ""}`,
+              description,
               creditAmount: voucher.amount,
               branchCode: voucher.branchCode,
               // Điền sẵn đúng những ô mà nút "Nối" vẫn điền, để tiền hiện ngay trên báo cáo.
               revenueDate: voucher.voucherDate,
               accountingDate: voucher.voucherDate,
               categoryCode: voucher.categoryCode,
+              increaseMoneySourceCode: voucher.moneySourceCode,
               decreaseMoneySourceCode: voucher.moneySourceCode,
+              operationType,
               autoProcessType: "RECEIPT",
               autoProcessNote: "Dòng dựng tay từ phiếu thu — chưa có sao kê ngân hàng đối chiếu",
               reconcileStatus: "MATCHED",
+            },
+          });
+          /**
+           * Dòng PHÂN BỔ là thứ mà báo cáo thật sự đọc: "Tiền về đủ chưa" cộng tiền về từ
+           * bankStatementAllocation (lib/reports.ts), không đọc thẳng giao dịch. Thiếu dòng này
+           * thì dòng dựng tay nằm trong Sổ sao kê, đã nối chứng từ, mà bảng vẫn báo CHƯA VỀ —
+           * đúng cái khách gặp ngay hôm bấm nút (20/09/2026).
+           */
+          await tx.bankStatementAllocation.create({
+            data: {
+              bankTransactionId: bankRow.id,
+              sourceRowNumber: 1,
+              sheetName: "Dựng tay",
+              description,
+              creditAmount: voucher.amount,
+              revenueDate: voucher.voucherDate,
+              accountingDate: voucher.voucherDate,
+              categoryCode: voucher.categoryCode,
+              increaseMoneySourceCode: voucher.moneySourceCode,
+              decreaseMoneySourceCode: voucher.moneySourceCode,
+              operationType,
+              autoProcessType: "RECEIPT",
             },
           });
           await tx.reconciliationMatch.create({
