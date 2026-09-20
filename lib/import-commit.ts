@@ -351,14 +351,15 @@ export async function commitImport(input: CommitInput) {
       // làm — và chỉ đúng chỗ xem lại.
       if (duplicateBatch) {
         const at = duplicateBatch.committedAt || duplicateBatch.createdAt;
-        throw new Error(
-          `File này đã được import rồi nên hệ thống không ghi lần hai: lô "${duplicateBatch.fileName}" `
-          + `ghi ${duplicateBatch.validRows} dòng lúc ${at.toLocaleString("vi-VN")}`
-          + `${duplicateBatch.uploadedBy ? ` do ${duplicateBatch.uploadedBy} thực hiện` : ""}. `
-          + `Xem lại ở tab "Lịch sử import" (lô ${duplicateBatch.id}) — mở lô ra sẽ thấy đúng những dòng đã ghi. `
-          + `Số liệu chưa hiện ở màn nghiệp vụ thì kiểm tra bộ lọc NGÀY và CỬA HÀNG trước, vì dữ liệu đứng theo ngày ghi trong file. `
-          + `Muốn ghi đè thì rollback lô cũ rồi import lại.`,
-        );
+        const by = duplicateBatch.uploadedBy ? ` do ${duplicateBatch.uploadedBy} thực hiện` : "";
+        const duplicateFileMessage = [
+          `File này đã được import rồi nên hệ thống không ghi lần hai:`,
+          `lô ${duplicateBatch.fileName} ghi ${duplicateBatch.validRows} dòng lúc ${at.toLocaleString("vi-VN")}${by}.`,
+          `Xem lại ở tab Lịch sử import (lô ${duplicateBatch.id}) — mở lô ra sẽ thấy đúng những dòng đã ghi.`,
+          "Số liệu chưa hiện ở màn nghiệp vụ thì kiểm tra bộ lọc NGÀY và CỬA HÀNG trước, vì dữ liệu đứng theo ngày ghi trong file.",
+          "Muốn ghi đè thì rollback lô cũ rồi import lại.",
+        ].join(" ");
+        throw new Error(duplicateFileMessage);
       }
     }
 
@@ -419,16 +420,63 @@ export async function commitImport(input: CommitInput) {
 
     if (["VOUCHER", "INTERNAL_TRANSFER", "DEBT_OPENING", "INVENTORY_TRANSACTION", "BOM", "STOCKTAKE", "ASSET"].includes(input.importType)) {
       const fingerprints = input.rows.map((row) => rowFingerprint(input.importType, row));
-      if (new Set(fingerprints).size !== fingerprints.length) throw new Error("File có các dòng nghiệp vụ bị trùng nhau");
-      const existing = await tx.importRow.findFirst({
+      /**
+       * Hai dòng GIỐNG HỆT NHAU TỪNG Ô là dấu hiệu file bị lặp (copy nhầm, xuất hai lần), nên
+       * chặn trước khi ghi. Nhưng "File có các dòng nghiệp vụ bị trùng nhau" mà không chỉ dòng
+       * nào thì với file 5.843 dòng người dùng không có cách nào dò ra (khách hỏi 20/09/2026).
+       * Chỉ thẳng từng cặp dòng, và nói luôn cách hợp lệ hoá nếu đó là hai nghiệp vụ thật.
+       */
+      const rowsByFingerprint = new Map<string, number[]>();
+      fingerprints.forEach((fingerprint, index) => {
+        rowsByFingerprint.set(fingerprint, [...(rowsByFingerprint.get(fingerprint) || []), input.rows[index].rowNumber]);
+      });
+      const duplicateGroups = [...rowsByFingerprint.values()].filter((rowNumbers) => rowNumbers.length > 1);
+      if (duplicateGroups.length > 0) {
+        const samples = duplicateGroups.slice(0, 5)
+          .map((rowNumbers) => `dòng ${rowNumbers.slice(1).join(", ")} trùng hệt dòng ${rowNumbers[0]}`)
+          .join("; ");
+        const duplicateRowCount = duplicateGroups.reduce((sum, rowNumbers) => sum + rowNumbers.length - 1, 0);
+        const more = duplicateGroups.length > 5 ? `; ... còn ${duplicateGroups.length - 5} nhóm nữa` : "";
+        const duplicateMessage = [
+          `File có ${duplicateRowCount} dòng bị lặp (giống hệt nhau ở MỌI cột): ${samples}${more}.`,
+          "Xoá bớt dòng thừa rồi import lại.",
+          "Nếu đúng là hai nghiệp vụ khác nhau (mua hai lần cùng ngày, cùng số lượng, cùng giá) thì phải phân biệt được bằng dữ liệu:",
+          "điền Số chứng từ riêng cho từng lần, hoặc ghi chú khác nhau.",
+        ].join(" ");
+        throw new Error(duplicateMessage);
+      }
+      const existingRows = await tx.importRow.findMany({
         where: {
           rowFingerprint: { in: fingerprints },
           targetType: input.importType,
           importBatch: { status: { in: ["COMMITTED", "APPROVED"] } },
         },
-        select: { importBatchId: true, sourceRowNumber: true },
+        select: { importBatchId: true, sourceRowNumber: true, rowFingerprint: true },
+        take: 5,
       });
-      if (existing) throw new Error(`Dữ liệu đã tồn tại trong batch ${existing.importBatchId}, dòng ${existing.sourceRowNumber}`);
+      if (existingRows.length > 0) {
+        // Nói rõ dòng nào của FILE ĐANG IMPORT đã có rồi, kèm lô cũ — người dùng mở lô đó ra đối
+        // chiếu được, thay vì chỉ nhận một uuid trơ trọi.
+        const oldBatch = await tx.importBatch.findUnique({
+          where: { id: existingRows[0].importBatchId },
+          select: { fileName: true, committedAt: true, createdAt: true },
+        });
+        const samples = existingRows
+          .map((existing) => {
+            const index = fingerprints.indexOf(existing.rowFingerprint || "");
+            const currentRow = index >= 0 ? input.rows[index].rowNumber : null;
+            return `${currentRow ? `dòng ${currentRow}` : "một dòng"} (đã ghi ở dòng ${existing.sourceRowNumber} của lô cũ)`;
+          })
+          .join("; ");
+        const at = oldBatch?.committedAt || oldBatch?.createdAt;
+        const oldBatchLabel = `${oldBatch?.fileName || existingRows[0].importBatchId}${at ? ` (${at.toLocaleString("vi-VN")})` : ""}`;
+        const existedMessage = [
+          `Những nghiệp vụ này đã được import trước đó nên hệ thống không ghi lần hai: ${samples}.`,
+          `Lô cũ: ${oldBatchLabel} — xem ở tab Lịch sử import.`,
+          "Bỏ những dòng đã có ra khỏi file rồi import phần còn lại, hoặc rollback lô cũ nếu muốn ghi lại từ đầu.",
+        ].join(" ");
+        throw new Error(existedMessage);
+      }
     }
 
     if (input.importType === "ASSET") {
