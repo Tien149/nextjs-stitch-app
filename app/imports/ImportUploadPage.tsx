@@ -633,6 +633,19 @@ export default function ImportUploadPage({
    * (yêu cầu 18/09/2026).
    */
   const supportsBulkSource = templateCode.startsWith("BANK_STATEMENT");
+  /**
+   * Vì sao nút Commit đang bấm không được. Trước đây nút chỉ mờ đi: người dùng bấm mãi không
+   * thấy phản ứng, tưởng hệ thống nuốt mất dữ liệu.
+   */
+  const commitBlockedReason = !preview
+    ? "Bấm Preview trước để hệ thống đọc file."
+    : preview.errorRows > 0
+      ? `File còn ${preview.errorRows} dòng lỗi (phần màu đỏ) — sửa file rồi Preview lại mới Commit được.`
+      : mappingDirty
+        ? "Vừa đổi mapping cột — bấm \"Áp dụng mapping\" / Preview lại rồi mới Commit được."
+        : supportsBulkSource && editsDirty
+          ? "Có ô vừa sửa tay chưa được chấm lại — bấm Preview lại rồi mới Commit được."
+          : "";
   const bulkSourceFields = [
     { field: "decrease_money_source_code", label: "Trừ nguồn tiền chi tiết" },
     { field: "increase_money_source_code", label: "Tăng nguồn tiền chi tiết" },
@@ -788,12 +801,18 @@ export default function ImportUploadPage({
         // Import lại doanh thu của ngày đã quyết toán ví: phiếu quyết toán cũ giữ số doanh thu
         // cũ, phần chênh nằm lại thành "phí" trên P&L. Báo ngay, kèm đúng mã phiếu phải chạy lại.
         const stale = payload.batch?.staleWalletSettlements || [];
+        // Commit xong phải nói ĐÃ GHI BAO NHIÊU DÒNG và chỉ chỗ xem lại: "Đã commit dữ liệu
+        // import" chung chung làm người dùng không biết dữ liệu có vào hay không, đi tìm ở màn
+        // nghiệp vụ mà lọc sai ngày thì tưởng import hỏng (khách báo 20/09/2026).
+        const committedRows = typeof payload.batch?.validRows === "number" ? payload.batch.validRows : null;
         setMessage(
           (mode === "preview"
             ? "Đã đọc file, vui lòng kiểm tra preview."
             : isRevenueImport
               ? "Đã lưu import doanh thu vào hệ thống."
-              : "Đã commit dữ liệu import.")
+              : `Đã ghi ${committedRows ?? 0} dòng của file vào hệ thống.`
+                + " Xem lại lô vừa ghi ở mục \"Lịch sử import\" ngay bên dưới."
+                + " Chưa thấy số liệu ở màn nghiệp vụ thì kiểm tra bộ lọc NGÀY và CỬA HÀNG — dữ liệu đứng theo ngày ghi trong file.")
           + (mode === "commit" && stale.length
             ? `\n\n⚠ ${stale.length} phiếu quyết toán ví của những ngày vừa import đang giữ số doanh thu CŨ.`
               + ` Phần chênh đang nằm trên P&L dưới dạng phí — cần chạy lại quyết toán cho các phiếu này:\n`
@@ -1213,16 +1232,27 @@ export default function ImportUploadPage({
                   </span>
                 </button>
               ) : (
-                <button
-                  onClick={() => upload("commit")}
-                  disabled={isUploading || !preview || preview.errorRows > 0 || mappingDirty || (supportsBulkSource && editsDirty)}
-                  className="h-9 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg px-4 text-xs font-bold shadow-sm"
-                >
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="material-symbols-outlined text-base">check_circle</span>
-                    Commit
-                  </span>
-                </button>
+                <>
+                  <button
+                    onClick={() => upload("commit")}
+                    disabled={Boolean(commitBlockedReason) || isUploading}
+                    title={commitBlockedReason || "Ghi dữ liệu của file vào hệ thống"}
+                    className="h-9 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg px-4 text-xs font-bold shadow-sm"
+                  >
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-base">check_circle</span>
+                      Commit
+                    </span>
+                  </button>
+                  {/* Nút khoá mà không nói vì sao thì người dùng bấm hoài không thấy gì rồi kết
+                      luận "commit xong không lên dữ liệu" (khách báo 20/09/2026). */}
+                  {commitBlockedReason && !isUploading && (
+                    <span className="inline-flex items-center gap-1 text-xs font-semibold text-amber-700">
+                      <span className="material-symbols-outlined text-sm">info</span>
+                      {commitBlockedReason}
+                    </span>
+                  )}
+                </>
               )}
             </div>
 
