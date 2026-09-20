@@ -1400,6 +1400,22 @@ export async function PATCH(request: Request) {
     const body = await request.json();
     const action = cleanText(body.action);
 
+    // Bật/ngưng hàng loạt: rollback lô import ngưng cả danh mục (lib/import-commit.ts),
+    // import lại KHÔNG bật lại được nếu file thiếu cột Trạng thái — 3.500 mã kẹt "Ngưng" thì
+    // không thể sửa tay từng mã, và mọi file BOM/nhập kho đều bị chặn.
+    if (action === "BULK_SET_ITEM_STATUS") {
+      const status = cleanText(body.status).toUpperCase() || "ACTIVE";
+      if (!["ACTIVE", "INACTIVE"].includes(status)) businessError("Trạng thái chỉ nhận ACTIVE hoặc INACTIVE");
+      const itemIds = Array.isArray(body.itemIds) ? body.itemIds.map((id: unknown) => cleanText(id)).filter(Boolean) : [];
+      if (itemIds.length === 0) businessError("Chưa chọn mặt hàng nào để đổi trạng thái");
+      const result = await prisma.inventoryItem.updateMany({
+        where: { id: { in: itemIds }, deletedAt: null, status: { not: status } },
+        data: { status },
+      });
+      await writeAuditLog({ session: auth.session, module: menuHref, action: "BULK_SET_ITEM_STATUS", entityType: "InventoryItem", metadata: { status, requested: itemIds.length, changed: result.count } });
+      return NextResponse.json({ status, requested: itemIds.length, changed: result.count });
+    }
+
     if (action === "UPDATE_ITEM") {
       const itemId = cleanText(body.itemId) || cleanText(body.id);
       if (!itemId) businessError("Thiếu mặt hàng cần sửa");

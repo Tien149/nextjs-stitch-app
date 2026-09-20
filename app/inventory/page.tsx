@@ -128,6 +128,9 @@ export default function InventoryPage() {
   const [itemTypeFilter, setItemTypeFilter] = useState("ALL");
   /** ALL / MISSING (chưa gán) / mã danh mục Thu cụ thể — lọc để gán hàng loạt cho nhanh. */
   const [revenueGroupFilter, setRevenueGroupFilter] = useState("ALL");
+  /** ALL / ACTIVE / INACTIVE — mã bị ngưng vẫn phải nhìn thấy được để bật lại hàng loạt. */
+  const [itemStatusFilter, setItemStatusFilter] = useState("ALL");
+  const [bulkStatusRunning, setBulkStatusRunning] = useState(false);
   const [conversionForm, setConversionForm] = useState({ itemId: "", purchaseUnit: "thung", conversionRate: "24", note: "" });
   const [stockForm, setStockForm] = useState({ transactionType: "NHAP_MUA", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HN", itemId: "", inputUnitCode: "", quantity: "10", unitCost: "100000", referenceCode: "", note: "Nhap kho van hanh" });
   /** Nhập mua theo PO (GRPO): PO đã duyệt còn hàng chưa nhận + số lượng nhận trên từng dòng. */
@@ -290,8 +293,10 @@ export default function InventoryPage() {
     return receipt ? `${code} - ${receipt.name} (loại thu, không phải nhóm doanh thu)` : `${code} (ngoài danh mục nhóm doanh thu)`;
   };
 
+  const itemStatusOf = (item: Item) => (item.status || "ACTIVE").toUpperCase();
   const filteredItems = data.items.filter((item) => {
     if (itemTypeFilter !== "ALL" && item.itemType !== itemTypeFilter) return false;
+    if (itemStatusFilter !== "ALL" && itemStatusOf(item) !== itemStatusFilter) return false;
     if (revenueGroupFilter === "MISSING" && item.revenueGroup) return false;
     if (revenueGroupFilter === "INVALID" && !isMisassignedRevenueGroup(item.revenueGroup)) return false;
     if (!["ALL", "MISSING", "INVALID"].includes(revenueGroupFilter) && item.revenueGroup !== revenueGroupFilter) return false;
@@ -305,6 +310,11 @@ export default function InventoryPage() {
   // Dữ liệu cũ gán nhầm LOẠI THU (thu tiền thừa, thu đặt cọc...) vào ô nhóm doanh thu: giữ
   // nguyên để không mất dữ liệu, nhưng phải đập vào mắt để người dùng gán lại cho đúng.
   const misassignedRevenueGroupCount = data.items.filter((item) => isMisassignedRevenueGroup(item.revenueGroup)).length;
+  // Rollback một lô import ngưng cả danh mục mặt hàng, và import lại KHÔNG bật lại được nếu file
+  // thiếu cột Trạng thái — mã kẹt "Ngưng" thì mọi file BOM/nhập kho đều bị chặn. Cho bật lại
+  // theo đúng bộ lọc đang xem thay vì bắt sửa tay từng mã.
+  const inactiveItemCount = data.items.filter((item) => itemStatusOf(item) !== "ACTIVE").length;
+  const inactiveFilteredItems = filteredItems.filter((item) => itemStatusOf(item) !== "ACTIVE");
 
   const getSessionHeaders = (): Record<string, string> => {
     if (typeof window === "undefined") return {};
@@ -434,6 +444,27 @@ export default function InventoryPage() {
     const payload = await response.json();
     setMessage(response.ok ? success : payload.error || "Không cập nhật được mặt hàng");
     if (response.ok) await loadData();
+  };
+
+  /** Bật/ngưng hàng loạt đúng danh sách đang lọc — dùng để cứu danh mục bị ngưng cả loạt. */
+  const bulkSetItemStatus = async (items: Item[], status: "ACTIVE" | "INACTIVE") => {
+    if (items.length === 0) return;
+    const verb = status === "ACTIVE" ? "Bật lại" : "Ngưng";
+    if (!window.confirm(`${verb} ${items.length} mặt hàng đang hiển thị?`)) return;
+    setMessage("");
+    setBulkStatusRunning(true);
+    try {
+      const response = await fetch("/api/inventory", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...getSessionHeaders() },
+        body: JSON.stringify({ action: "BULK_SET_ITEM_STATUS", status, itemIds: items.map((item) => item.id) }),
+      });
+      const payload = await response.json();
+      setMessage(response.ok ? `Đã ${verb.toLowerCase()} ${payload.changed} mặt hàng.` : payload.error || "Không đổi được trạng thái mặt hàng");
+      if (response.ok) await loadData();
+    } finally {
+      setBulkStatusRunning(false);
+    }
   };
 
   const totalSKUs = data.items.length;
@@ -870,7 +901,7 @@ export default function InventoryPage() {
           
           <section className="table-panel shadow-sm">
             <Panel title="Danh mục mặt hàng" reload={loadData} exportFileName="danh_muc_mat_hang" />
-            <div className="px-5 pb-4 grid sm:grid-cols-[minmax(0,1fr)_220px_220px] gap-3">
+            <div className="px-5 pb-4 grid sm:grid-cols-[minmax(0,1fr)_200px_200px_180px] gap-3">
               <Input label="Tìm kiếm">
                 <input className="control" placeholder="Gõ mã hoặc tên mặt hàng..." value={itemSearch} onChange={(e) => setItemSearch(e.target.value)} />
               </Input>
@@ -895,6 +926,13 @@ export default function InventoryPage() {
                   ))}
                 </select>
               </Input>
+              <Input label="Trạng thái">
+                <select className="control" value={itemStatusFilter} onChange={(e) => setItemStatusFilter(e.target.value)}>
+                  <option value="ALL">Tất cả trạng thái</option>
+                  <option value="ACTIVE">Đang dùng</option>
+                  <option value="INACTIVE">Đang ngưng</option>
+                </select>
+              </Input>
             </div>
             <p className="px-5 pb-2 text-[11px] text-slate-500">
               {filteredItems.length}/{data.items.length} mặt hàng
@@ -904,7 +942,23 @@ export default function InventoryPage() {
               {misassignedRevenueGroupCount > 0 && (
                 <> · <span className="text-rose-700 font-bold">{misassignedRevenueGroupCount} món đang gán loại thu thay vì nhóm doanh thu</span> — lọc “Đang gán sai” để sửa; nhóm doanh thu khai ở Cài đặt &gt; Thu / Chi với nhóm “Thu: Nhóm doanh thu (bán hàng)”.</>
               )}
+              {inactiveItemCount > 0 && (
+                <> · <span className="text-rose-700 font-bold">{inactiveItemCount} mã đang Ngưng</span> — mã Ngưng bị chặn ở mọi file import BOM / nhập xuất kho.</>
+              )}
             </p>
+            {canEditItem && inactiveFilteredItems.length > 0 && (
+              <div className="px-5 pb-3">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={bulkStatusRunning}
+                  onClick={() => void bulkSetItemStatus(inactiveFilteredItems, "ACTIVE")}
+                >
+                  <span className="material-symbols-outlined text-lg">restart_alt</span>
+                  Bật lại {inactiveFilteredItems.length} mã đang Ngưng (theo bộ lọc đang xem)
+                </button>
+              </div>
+            )}
             <Table
               tableClassName="min-w-[1360px]"
               headers={[

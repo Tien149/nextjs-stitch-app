@@ -727,7 +727,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "requires_image", label: "Yêu cầu hình ảnh (1/0)", required: false, type: "integer", aliases: ["yeu cau hinh anh", "bat buoc hinh anh", "requires image"] },
       { field: "is_default_purchase", label: "ĐVT mua mặc định (1/0)", required: false, type: "integer", aliases: ["dvt mua mac dinh", "mac dinh mua", "default purchase"], note: "Khai nhiều ĐVT bằng cách lặp mã hàng trên nhiều dòng; đánh 1 cho ĐVT mua chính" },
       { field: "note", label: "Ghi chú", required: false, type: "text", aliases: ["ghi chu", "note", "mo ta"] },
-      { field: "status", label: "Trạng thái", required: false, type: "text", aliases: ["trang thai", "status"], note: "ACTIVE hoặc INACTIVE; bỏ trống = giữ nguyên (mã mới = ACTIVE)" },
+      { field: "status", label: "Trạng thái", required: false, type: "text", aliases: ["trang thai", "status"], note: "ACTIVE hoặc INACTIVE; ô trống = giữ nguyên. Không có cột này thì mọi mã trong file được bật ACTIVE (mã đang Ngưng sẽ bật lại)." },
     ],
   },
   {

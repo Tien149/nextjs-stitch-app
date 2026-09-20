@@ -1269,7 +1269,12 @@ export async function commitImport(input: CommitInput) {
             ...(hasColumn("min_stock") ? { minStock: asNumber(row.values.min_stock) } : {}),
             ...(hasColumn("requires_image") ? { requiresImage: asFlag(row.values.requires_image) } : {}),
             ...(hasColumn("note") ? { note: asText(row.values.note) || null } : {}),
-            ...(hasColumn("status") && statusValue ? { status: statusValue } : {}),
+            // Có mặt trong file danh mục = mã còn dùng, nên bật lại ACTIVE khi file KHÔNG khai
+            // cột Trạng thái. Không có luật này thì mã bị rollback lô import ngưng hàng loạt
+            // (rollbackInventoryItems) kẹt "Ngưng" vĩnh viễn: import lại vẫn không bật lên được
+            // và mọi file BOM/nhập kho sau đó đều bị chặn "dang ngung hoat dong".
+            // File khai rõ INACTIVE thì vẫn tôn trọng file.
+            ...(hasColumn("status") ? (statusValue ? { status: statusValue } : {}) : { status: "ACTIVE" }),
           },
         });
         await tx.itemUnitConversion.upsert({
