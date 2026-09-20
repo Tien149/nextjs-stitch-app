@@ -159,7 +159,7 @@ export async function latestPurchaseUnitCost(tx: Tx, itemId: string) {
   return line?.unitCost || 0;
 }
 
-async function resolveStockLine(tx: Tx, line: StockLineInput, requireInputUnitCost: boolean) {
+async function resolveStockLine(tx: Tx, line: StockLineInput) {
   const itemId = text(line.itemId);
   const itemCode = text(line.itemCode).toUpperCase();
   // Lọc quy đổi đã xoá mềm: quan hệ lồng không được lớp xoá mềm lọc tự động, không lọc tay thì
@@ -189,7 +189,6 @@ async function resolveStockLine(tx: Tx, line: StockLineInput, requireInputUnitCo
   const conversionRate = isBaseUnit ? 1 : safeConversionRate(item.unit, conversion);
 
   const inputUnitCost = numberValue(line.inputUnitCost ?? line.unitCost);
-  if (requireInputUnitCost && inputUnitCost <= 0) stockError(`Nhap mua ${item.code} bat buoc co don gia`);
 
   return {
     item,
@@ -246,10 +245,12 @@ export async function postInventoryTransaction(tx: Tx, input: PostInventoryTrans
   }
   if (!input.lines.length) stockError("Can it nhat mot dong mat hang");
 
-  const requireInputUnitCost = transactionType === "NHAP_MUA";
+  // Nhập mua đơn giá 0 là hợp lệ: hàng khuyến mãi / tặng kèm nhận về đúng 0 đ (khách chốt
+  // 20/09/2026). Dòng 0 đ được tính theo giá bình quân đang có của kho như mọi phiếu nhập khác,
+  // nên giá vốn tồn kho không bị kéo xuống bởi hàng tặng.
   const resolvedLines = [];
   for (const line of input.lines) {
-    resolvedLines.push(await resolveStockLine(tx, line, requireInputUnitCost));
+    resolvedLines.push(await resolveStockLine(tx, line));
   }
 
   const valuedLines = [];

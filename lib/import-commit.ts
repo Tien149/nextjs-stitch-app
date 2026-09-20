@@ -343,9 +343,23 @@ export async function commitImport(input: CommitInput) {
           branchCode: input.branchCode || null,
           status: { in: ["COMMITTED", "APPROVED"] },
         },
-        select: { id: true, fileName: true },
+        select: { id: true, fileName: true, committedAt: true, createdAt: true, uploadedBy: true, validRows: true },
       });
-      if (duplicateBatch) throw new Error(`File này đã được commit trong batch ${duplicateBatch.id} (${duplicateBatch.fileName})`);
+      // "Đã commit trong batch <uuid>" làm người dùng tưởng dữ liệu chưa vào: họ không có cách
+      // nào tra uuid đó, đi tìm ở màn nghiệp vụ không thấy (lọc sai ngày/cửa hàng) rồi kết luận
+      // import hỏng (khách báo 20/09/2026). Nói thẳng lô đó đã ghi bao nhiêu dòng, lúc nào, ai
+      // làm — và chỉ đúng chỗ xem lại.
+      if (duplicateBatch) {
+        const at = duplicateBatch.committedAt || duplicateBatch.createdAt;
+        throw new Error(
+          `File này đã được import rồi nên hệ thống không ghi lần hai: lô "${duplicateBatch.fileName}" `
+          + `ghi ${duplicateBatch.validRows} dòng lúc ${at.toLocaleString("vi-VN")}`
+          + `${duplicateBatch.uploadedBy ? ` do ${duplicateBatch.uploadedBy} thực hiện` : ""}. `
+          + `Xem lại ở tab "Lịch sử import" (lô ${duplicateBatch.id}) — mở lô ra sẽ thấy đúng những dòng đã ghi. `
+          + `Số liệu chưa hiện ở màn nghiệp vụ thì kiểm tra bộ lọc NGÀY và CỬA HÀNG trước, vì dữ liệu đứng theo ngày ghi trong file. `
+          + `Muốn ghi đè thì rollback lô cũ rồi import lại.`,
+        );
+      }
     }
 
     // BANK_STATEMENT được kiểm tra theo nhóm khi ghi: dòng trùng trong file có thể là

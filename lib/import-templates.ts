@@ -745,7 +745,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "item_code", label: "Ma mat hang", required: true, type: "text", aliases: ["ma mat hang", "ma hang", "item code", "code"] },
       { field: "quantity", label: "So luong", required: true, type: "number", aliases: ["so luong", "quantity", "qty"] },
       { field: "unit_code", label: "DVT", required: true, type: "text", aliases: ["dvt", "don vi tinh", "unit", "unit code"] },
-      { field: "unit_cost", label: "Don gia", required: false, type: "number", aliases: ["don gia", "unit cost", "price"] },
+      { field: "unit_cost", label: "Don gia", required: false, type: "number", aliases: ["don gia", "unit cost", "price"], note: "De trong hoac 0 cung duoc (hang khuyen mai, tang kem): dong do nhan theo gia binh quan dang co cua kho." },
       { field: "reference_code", label: "So chung tu", required: false, type: "text", aliases: ["so chung tu", "ma chung tu", "reference", "external ref"] },
       { field: "partner_code", label: "NCC / Doi tuong", required: false, type: "text", aliases: ["ncc", "ma ncc", "doi tuong", "partner"] },
       { field: "note", label: "Ghi chu", required: false, type: "text", aliases: ["ghi chu", "note", "dien giai"] },

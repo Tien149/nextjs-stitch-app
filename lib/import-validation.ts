@@ -399,7 +399,9 @@ function validateInventoryTransaction(
   if (!isStockTransactionType(transactionType)) addError(row, "Loai giao dich kho khong hop le");
   const quantity = numberValue(row.values.quantity);
   if (quantity <= 0) addError(row, "So luong phai lon hon 0");
-  if (transactionType === "NHAP_MUA" && numberValue(row.values.unit_cost) <= 0) addError(row, "Nhap mua bat buoc co don gia");
+  // Đơn giá 0 KHÔNG còn là lỗi: hàng khuyến mãi / tặng kèm nhận về đúng nghĩa là 0 đ (khách
+  // chốt 20/09/2026). Dòng để trống đơn giá được nhận theo giá bình quân đang có của kho, đúng
+  // như mọi loại phiếu nhập khác (lib/inventory-stock.ts).
 
   const branchCode = text(row.values.branch_code).toUpperCase();
   const warehouse = resolveMaster(masterItems, "WAREHOUSE", row.values.warehouse_code, branchCode);
