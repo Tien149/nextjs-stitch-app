@@ -965,6 +965,10 @@ model Recipe {
   code          String   @unique
   productCode   String
   productName   String
+  /// Cửa hàng áp dụng công thức. NULL = công thức DÙNG CHUNG cho mọi cửa hàng.
+  /// Cùng một món (nhất là bán thành phẩm) mỗi cửa hàng có thể pha khác nhau; nơi nào khai
+  /// riêng thì dùng bản riêng, nơi chưa khai thì ăn bản chung (lib/production-explosion.ts).
+  branchCode    String?
   /// ĐVT của mẻ chuẩn bị (nhất là bán thành phẩm: 1kg, 400gr, 1 lít sốt...).
   /// Để trống = trùng ĐVT tồn kho của sản phẩm.
   unit          String
@@ -985,6 +989,7 @@ model Recipe {
   deletedBy String?
 
   @@index([productCode])
+  @@index([branchCode])
   @@index([status])
   @@index([effectiveFrom])
   @@index([deletedAt])

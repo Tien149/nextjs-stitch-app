@@ -33,6 +33,8 @@ export type ExplosionRecipe = {
   id: string;
   productCode: string;
   productName: string;
+  /** Cửa hàng áp dụng; rỗng/null = công thức dùng chung cho mọi cửa hàng. */
+  branchCode?: string | null;
   unit: string;
   /** 1 mẻ `unit` = bao nhiêu ĐVT tồn kho của sản phẩm. */
   outputConversionRate: number;
@@ -71,15 +73,42 @@ function explosionError(message: string): never {
   throw new Error(`BUSINESS:${message}`);
 }
 
+export function recipeBranchOf(recipe: ExplosionRecipe) {
+  const branch = up(recipe.branchCode || "");
+  return branch === "ALL" ? "" : branch;
+}
+
 /**
- * Chọn phiên bản định lượng theo ngày áp dụng: phiên bản có effectiveFrom muộn nhất nhưng
- * không vượt quá ngày bán (trùng ngày thì lấy version lớn hơn). Món bán trước khi mọi
- * phiên bản có hiệu lực thì đành dùng phiên bản sớm nhất — còn hơn là không rã được.
+ * Thu hẹp danh sách phiên bản về đúng phạm vi cửa hàng.
+ *
+ * Luật (khách chốt 20/09/2026): cửa hàng nào khai công thức RIÊNG thì dùng bản riêng, nơi
+ * chưa khai thì ăn bản DÙNG CHUNG (branchCode rỗng). Bản riêng của cửa hàng khác không bao
+ * giờ được đem sang — pha kiểu cửa hàng A mà trừ kho cửa hàng B là sai cả giá vốn lẫn tồn.
+ *
+ * Không truyền cửa hàng (bảng giá thành chạy cho "Tất cả cửa hàng") thì lấy bản chung; món
+ * nào chỉ có bản riêng thì đành gộp mọi bản riêng lại để món đó vẫn lên bảng, thay vì biến mất.
  */
-export function pickRecipeForDate(recipes: ExplosionRecipe[], date: Date): ExplosionRecipe | null {
-  if (recipes.length === 0) return null;
+function scopeRecipesToBranch(recipes: ExplosionRecipe[], branchCode?: string | null): ExplosionRecipe[] {
+  if (recipes.length === 0) return recipes;
+  const branch = up(branchCode || "");
+  const shared = recipes.filter((recipe) => !recipeBranchOf(recipe));
+  if (!branch || branch === "ALL") return shared.length > 0 ? shared : recipes;
+  const own = recipes.filter((recipe) => recipeBranchOf(recipe) === branch);
+  if (own.length > 0) return own;
+  return shared;
+}
+
+/**
+ * Chọn phiên bản định lượng theo cửa hàng + ngày áp dụng: trong phạm vi cửa hàng đã chọn,
+ * lấy phiên bản có effectiveFrom muộn nhất nhưng không vượt quá ngày bán (trùng ngày thì lấy
+ * version lớn hơn). Món bán trước khi mọi phiên bản có hiệu lực thì đành dùng phiên bản sớm
+ * nhất — còn hơn là không rã được.
+ */
+export function pickRecipeForDate(recipes: ExplosionRecipe[], date: Date, branchCode?: string | null): ExplosionRecipe | null {
+  const scoped = scopeRecipesToBranch(recipes, branchCode);
+  if (scoped.length === 0) return null;
   const time = date.getTime();
-  const sorted = [...recipes].sort((a, b) => {
+  const sorted = [...scoped].sort((a, b) => {
     const diff = new Date(a.effectiveFrom).getTime() - new Date(b.effectiveFrom).getTime();
     return diff !== 0 ? diff : a.version - b.version;
   });
@@ -94,6 +123,8 @@ export type ExplosionInput = {
   recipes: ExplosionRecipe[];
   /** Ngày dùng để chọn phiên bản định lượng. */
   date: Date;
+  /** Cửa hàng đang rã: quyết định dùng công thức riêng của cửa hàng hay bản dùng chung. */
+  branchCode?: string | null;
 };
 
 /**
@@ -113,7 +144,7 @@ export function explodeSalesDemand(input: ExplosionInput): ExplosionPlan {
   const pickedRecipe = new Map<string, ExplosionRecipe | null>();
   const recipeFor = (code: string) => {
     if (!pickedRecipe.has(code)) {
-      pickedRecipe.set(code, pickRecipeForDate(recipeByProduct.get(code) || [], input.date));
+      pickedRecipe.set(code, pickRecipeForDate(recipeByProduct.get(code) || [], input.date, input.branchCode));
     }
     return pickedRecipe.get(code)!;
   };
@@ -215,6 +246,7 @@ export function computeRecipeUnitCosts(
   recipes: ExplosionRecipe[],
   averageCostByItemId: Map<string, number>,
   date: Date,
+  branchCode?: string | null,
 ): Map<string, number> {
   const recipeByProduct = new Map<string, ExplosionRecipe[]>();
   for (const recipe of recipes) {
@@ -228,7 +260,7 @@ export function computeRecipeUnitCosts(
   const unitCostOf = (code: string): number => {
     if (costs.has(code)) return costs.get(code)!;
     if (visiting.has(code)) return Number.NaN;
-    const recipe = pickRecipeForDate(recipeByProduct.get(code) || [], date);
+    const recipe = pickRecipeForDate(recipeByProduct.get(code) || [], date, branchCode);
     if (!recipe) return Number.NaN;
     visiting.add(code);
     const outputRate = recipe.outputConversionRate > 0 ? recipe.outputConversionRate : 1;
@@ -280,6 +312,7 @@ export function computeCostingLevels(
   averageCostByItemId: Map<string, number>,
   date: Date,
   itemTypeByCode?: Map<string, string>,
+  branchCode?: string | null,
 ): CostingLevel[] {
   const recipeByProduct = new Map<string, ExplosionRecipe[]>();
   for (const recipe of recipes) {
@@ -289,7 +322,7 @@ export function computeCostingLevels(
   }
   const current = new Map<string, ExplosionRecipe>();
   for (const [code, versions] of recipeByProduct) {
-    const picked = pickRecipeForDate(versions, date);
+    const picked = pickRecipeForDate(versions, date, branchCode);
     if (picked) current.set(code, picked);
   }
 
@@ -313,7 +346,7 @@ export function computeCostingLevels(
   };
   for (const code of current.keys()) depthOf(code);
 
-  const unitCosts = computeRecipeUnitCosts(recipes, averageCostByItemId, date);
+  const unitCosts = computeRecipeUnitCosts(recipes, averageCostByItemId, date, branchCode);
   const byLevel = new Map<number, CostingLevel["products"]>();
   for (const [code, recipe] of current) {
     const level = depths.get(code) || 1;

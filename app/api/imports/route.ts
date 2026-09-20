@@ -205,9 +205,11 @@ function templateExampleRows(templateCode: string): Array<Record<string, string 
   }
   if (templateCode === "BOM_STANDARD_V1") {
     return [
-      { product_code: "SP_COMBO01", product_name: "Combo ban POS", selling_price: 45000, ingredient_code: "NVL_NUOCSUOI", quantity: 1, waste_rate: 0, effective_date: new Date("2026-07-22T00:00:00Z"), version: 1, note: "1 chai/phan" },
-      { product_code: "SP_COMBO01", product_name: "Combo ban POS", ingredient_code: "NVL_DUONG", quantity: 20, waste_rate: 5, effective_date: new Date("2026-07-22T00:00:00Z"), version: 1, note: "20g duong/phan" },
-      { product_code: "BTP_SOTCACHUA", product_name: "Sot ca chua", ingredient_code: "NVL_DUONG", quantity: 30, waste_rate: 3, effective_date: new Date("2026-07-22T00:00:00Z"), version: 1, note: "30g duong/lit sot" },
+      // Cot Cua hang de trong = cong thuc dung chung; khai ma cua hang = ban rieng cua noi do.
+      { branch_code: "", product_code: "SP_COMBO01", product_name: "Combo ban POS", selling_price: 45000, ingredient_code: "NVL_NUOCSUOI", quantity: 1, waste_rate: 0, effective_date: new Date("2026-07-22T00:00:00Z"), version: 1, note: "1 chai/phan" },
+      { branch_code: "", product_code: "SP_COMBO01", product_name: "Combo ban POS", ingredient_code: "NVL_DUONG", quantity: 20, waste_rate: 5, effective_date: new Date("2026-07-22T00:00:00Z"), version: 1, note: "20g duong/phan" },
+      { branch_code: "", product_code: "BTP_SOTCACHUA", product_name: "Sot ca chua", ingredient_code: "NVL_DUONG", quantity: 30, waste_rate: 3, effective_date: new Date("2026-07-22T00:00:00Z"), version: 1, note: "30g duong/lit sot" },
+      { branch_code: "HCM", product_code: "BTP_SOTCACHUA", product_name: "Sot ca chua", ingredient_code: "NVL_DUONG", quantity: 45, waste_rate: 3, effective_date: new Date("2026-07-22T00:00:00Z"), version: 1, note: "Cua hang HCM pha ngot hon" },
     ];
   }
   if (templateCode === "STOCKTAKE_STANDARD_V1") {

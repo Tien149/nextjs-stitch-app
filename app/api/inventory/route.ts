@@ -281,26 +281,47 @@ export async function GET(request: Request) {
     // Cost đa cấp theo định lượng: BTP trong định lượng món lấy cost từ định lượng của
     // chính BTP đó (không cần BTP có tồn kho), NVL lấy giá vốn bình quân.
     const explosionRecipes = recipes as unknown as ExplosionRecipe[];
-    const recipeUnitCosts = computeRecipeUnitCosts(explosionRecipes, averageCostByItemId, new Date());
+    // Định lượng khai theo cửa hàng: cùng một món mỗi nơi pha một kiểu nên cost phải tính
+    // RIÊNG từng phạm vi — bản dùng chung, rồi từng cửa hàng có công thức riêng. Tính một
+    // lần cho tất cả rồi tra ra là bản riêng của cửa hàng không bị gán cost của bản chung.
+    const recipeScopes = [...new Set(["", ...explosionRecipes.map((recipe) => (recipe.branchCode || "").toUpperCase())])];
+    const unitCostsByScope = new Map(recipeScopes.map((scope) => [
+      scope,
+      computeRecipeUnitCosts(explosionRecipes, averageCostByItemId, new Date(), scope || undefined),
+    ]));
+    const unitCostOfRecipe = (productCode: string, branchCode?: string | null) => {
+      const scope = (branchCode || "").toUpperCase();
+      const costs = unitCostsByScope.get(scope) || unitCostsByScope.get("");
+      return costs?.get(productCode.toUpperCase());
+    };
     const recipesWithCost = recipes.map((recipe) => {
       const outputRate = recipe.outputConversionRate > 0 ? recipe.outputConversionRate : 1;
-      const unitCost = recipeUnitCosts.get(recipe.productCode.toUpperCase());
+      const unitCost = unitCostOfRecipe(recipe.productCode, recipe.branchCode);
       const batchCost = Number.isFinite(unitCost) ? (unitCost as number) * outputRate : 0;
       return { ...recipe, estimatedCost: batchCost, estimatedUnitCost: Number.isFinite(unitCost) ? unitCost : 0 };
     });
 
     // "Sheet tổng hợp" giá vốn & giá thành: mỗi mã sản phẩm một dòng, theo phiên bản
     // định lượng đang áp dụng hôm nay. FINISHED tính %cost = giá cost / giá bán.
-    const productCodes = [...new Set(recipes.map((recipe) => recipe.productCode.toUpperCase()))];
+    // Mỗi MÓN + PHẠM VI một dòng: món khai công thức riêng ở 2 cửa hàng thì có 2 dòng giá
+    // thành khác nhau, gộp một dòng như trước là che mất chênh lệch giữa hai nơi.
+    const summaryScopes = new Map<string, { productCode: string; branchCode: string }>();
+    for (const recipe of explosionRecipes) {
+      const productCode = recipe.productCode.toUpperCase();
+      const branchCode = (recipe.branchCode || "").toUpperCase();
+      summaryScopes.set(`${productCode}|${branchCode}`, { productCode, branchCode });
+    }
     const itemByCode = new Map(items.map((item) => [item.code.toUpperCase(), item]));
-    const costSummary = productCodes.map((productCode) => {
-      const versions = explosionRecipes.filter((recipe) => recipe.productCode.toUpperCase() === productCode);
-      const current = pickRecipeForDate(versions, new Date());
+    const costSummary = [...summaryScopes.values()].map(({ productCode, branchCode }) => {
+      const versions = explosionRecipes.filter((recipe) =>
+        recipe.productCode.toUpperCase() === productCode && (recipe.branchCode || "").toUpperCase() === branchCode);
+      const current = pickRecipeForDate(versions, new Date(), branchCode || undefined);
       const productItem = itemByCode.get(productCode);
-      const unitCost = recipeUnitCosts.get(productCode) ?? 0;
+      const unitCost = unitCostOfRecipe(productCode, branchCode) ?? 0;
       const sellingPrice = current?.sellingPrice || 0;
       return {
         productCode,
+        branchCode,
         productName: current?.productName || productItem?.name || productCode,
         group: productItem?.itemType || "FINISHED",
         stockUnit: productItem?.unit || "",
@@ -311,7 +332,7 @@ export async function GET(request: Request) {
         costRatio: sellingPrice > 0 && Number.isFinite(unitCost) ? (unitCost as number) / sellingPrice : null,
         version: current && "version" in current ? (current as { version?: number }).version || 0 : 0,
       };
-    }).sort((a, b) => a.productCode.localeCompare(b.productCode));
+    }).sort((a, b) => a.productCode.localeCompare(b.productCode) || a.branchCode.localeCompare(b.branchCode));
     const movements = new Map<string, { inbound: number; outbound: number; inboundValue: number; outboundValue: number; byType: Record<string, { inbound: number; outbound: number; value: number }> }>();
     const touch = (itemId: string, warehouseCode: string) => {
       const key = `${itemId}|${warehouseCode}`;
@@ -574,6 +595,24 @@ export async function POST(request: Request) {
       const productCode = cleanText(body.productCode).toUpperCase();
       const productName = cleanText(body.productName);
       if (!productCode || !productName) businessError("Định lượng cần mã món, tên món và nguyên liệu");
+      // Cửa hàng áp dụng: trống = công thức dùng chung cho mọi cửa hàng, khai mã = bản riêng
+      // của cửa hàng đó (cùng món mỗi nơi pha một kiểu — khách chốt 20/09/2026).
+      //
+      // Khai được NHIỀU cửa hàng một lần, đúng kiểu một mặt hàng khai nhiều ĐVT mua: công thức
+      // giống nhau thì chọn hết các cửa hàng dùng chung công thức đó, hệ thống lưu mỗi nơi một
+      // bản và màn hình gom lại thành MỘT dòng. Cửa hàng nào sau này pha khác thì khai riêng
+      // cho nơi đó, dòng tự tách ra.
+      const requestedBranches = Array.isArray(body.branchCodes) ? body.branchCodes : [body.branchCode];
+      const recipeBranchCodes = [...new Set(requestedBranches
+        .map((value: unknown) => cleanText(value).toUpperCase())
+        .filter((value: string) => value && value !== "ALL"))] as string[];
+      for (const branch of recipeBranchCodes) {
+        assertBranchAccess(auth.session, branch);
+        const branchMaster = await prisma.masterDataItem.findFirst({ where: { type: "BRANCH", code: branch, status: "ACTIVE" } });
+        if (!branchMaster) businessError(`Cửa hàng ${branch} không tồn tại hoặc ngưng hoạt động`);
+      }
+      // Không chọn cửa hàng nào = bản dùng chung (một "phạm vi" rỗng).
+      const recipeScopes = recipeBranchCodes.length > 0 ? recipeBranchCodes : [""];
       // Dòng nguyên liệu lỗi phải báo rõ, không lặng lẽ loại bỏ — thiếu nguyên liệu là trừ kho thiếu vĩnh viễn.
       const inputLines = editableRecipeLines(body.lines);
       const productItem = await prisma.inventoryItem.findUnique({ where: { code: productCode } });
@@ -618,29 +657,38 @@ export async function POST(request: Request) {
         resolvedLines.push({ itemId: item.id, quantity: line.quantity, unitCode: unitCode || null, conversionRate, wasteRate: line.wasteRate });
       }
 
-      const latest = await prisma.recipe.findFirst({ where: { productCode }, orderBy: { version: "desc" } });
-      const recipeCode = `${productCode}-V${(latest?.version || 0) + 1}`;
-      if (await findDeletedByUnique("Recipe", { code: recipeCode })) {
-        businessError(duplicatedInTrashMessage(recipeCode, "Định mức (BOM)"));
+      // Phiên bản đếm riêng trong từng phạm vi: bản chung và bản của mỗi cửa hàng có chuỗi
+      // version độc lập, và tạo bản này chỉ hạ bản ACTIVE cùng phạm vi.
+      const createdRecipes = [];
+      for (const scopeBranch of recipeScopes) {
+        const recipeScope = { productCode, branchCode: scopeBranch || null };
+        const latest = await prisma.recipe.findFirst({ where: recipeScope, orderBy: { version: "desc" } });
+        const recipeCode = `${productCode}${scopeBranch ? `-${scopeBranch}` : ""}-V${(latest?.version || 0) + 1}`;
+        if (await findDeletedByUnique("Recipe", { code: recipeCode })) {
+          businessError(duplicatedInTrashMessage(recipeCode, "Định mức (BOM)"));
+        }
+        if (latest) await prisma.recipe.updateMany({ where: { ...recipeScope, status: "ACTIVE" }, data: { status: "INACTIVE" } });
+        createdRecipes.push(await prisma.recipe.create({
+          data: {
+            code: recipeCode,
+            productCode,
+            branchCode: scopeBranch || null,
+            productName,
+            // Cùng mặc định với import (ĐVT tồn kho của sản phẩm) — hai luồng ra dữ liệu giống nhau.
+            unit: cleanText(body.unit) || productItem.unit,
+            outputConversionRate,
+            sellingPrice,
+            effectiveFrom,
+            version: (latest?.version || 0) + 1,
+            note: cleanText(body.note) || null,
+            lines: { create: resolvedLines },
+          },
+          include: { lines: { include: { item: true } } },
+        }));
       }
-      if (latest) await prisma.recipe.updateMany({ where: { productCode, status: "ACTIVE" }, data: { status: "INACTIVE" } });
-      const recipe = await prisma.recipe.create({
-        data: {
-          code: recipeCode,
-          productCode,
-          productName,
-          // Cùng mặc định với import (ĐVT tồn kho của sản phẩm) — hai luồng ra dữ liệu giống nhau.
-          unit: cleanText(body.unit) || productItem.unit,
-          outputConversionRate,
-          sellingPrice,
-          effectiveFrom,
-          version: (latest?.version || 0) + 1,
-          note: cleanText(body.note) || null,
-          lines: { create: resolvedLines },
-        },
-        include: { lines: { include: { item: true } } },
-      });
-      return NextResponse.json(recipe, { status: 201 });
+      // Giữ nguyên hình dạng cũ của response (một định lượng) để màn hình cũ không vỡ, kèm
+      // danh sách đầy đủ khi khai một lúc nhiều cửa hàng.
+      return NextResponse.json({ ...createdRecipes[0], recipes: createdRecipes }, { status: 201 });
     }
 
     if (action === "PRODUCE_SEMI_FINISHED") {
@@ -662,8 +710,9 @@ export async function POST(request: Request) {
       if (!productItem) businessError(`Khong tim thay ban thanh pham ${productCode}`);
       if (productItem.itemType !== "SEMI_FINISHED") businessError("Che bien chi ap dung cho mat hang ban thanh pham");
       // Chọn phiên bản định lượng theo ngày chế biến, không phải phiên bản mới nhất.
-      const recipe = pickRecipeForDate(recipeVersions as unknown as ExplosionRecipe[], productionDate);
-      if (!recipe || recipe.lines.length === 0) businessError(`Chua co dinh luong ap dung cho ${productCode}`);
+      // Công thức của CHÍNH cửa hàng đang chế biến; nơi chưa khai riêng thì dùng bản chung.
+      const recipe = pickRecipeForDate(recipeVersions as unknown as ExplosionRecipe[], productionDate, branchCode);
+      if (!recipe || recipe.lines.length === 0) businessError(`Chua co dinh luong ap dung cho ${productCode} tai cua hang ${branchCode}`);
       if (await isPeriodLocked(productionDate, branchCode)) businessError("Ky ke toan da khoa");
       // productQuantity khai theo ĐVT tồn kho; định lượng khai cho MỘT mẻ `unit`.
       const outputRate = recipe.outputConversionRate > 0 ? recipe.outputConversionRate : 1;
@@ -926,6 +975,8 @@ export async function POST(request: Request) {
         demands: inventoryRows.map((row) => ({ productCode: row.productCode || "", quantity: row.productQuantity || 0 })),
         recipes: recipeVersions as unknown as ExplosionRecipe[],
         date: dateTo,
+        // Rã theo công thức của đúng cửa hàng này; nơi chưa khai riêng thì ăn bản dùng chung.
+        branchCode,
       });
 
       const result = await prisma.$transaction(async (tx) => {
@@ -1087,7 +1138,15 @@ export async function POST(request: Request) {
 
       // Bước 2..n — giá thành theo tầng định lượng.
       const itemTypeByCode = new Map(items.map((item) => [item.code.toUpperCase(), item.itemType]));
-      const levels = computeCostingLevels(recipeRows as unknown as ExplosionRecipe[], averageCostByItemId, costingDate, itemTypeByCode);
+      // Tính giá cho cửa hàng nào thì ăn công thức của chính cửa hàng đó; chạy "Tất cả cửa
+      // hàng" thì lấy bản dùng chung (món chỉ có bản riêng vẫn lên bảng, xem scopeRecipesToBranch).
+      const levels = computeCostingLevels(
+        recipeRows as unknown as ExplosionRecipe[],
+        averageCostByItemId,
+        costingDate,
+        itemTypeByCode,
+        branchCode === "ALL" ? undefined : branchCode,
+      );
       const itemByCode = new Map(items.map((item) => [item.code.toUpperCase(), item]));
 
       // Bước cuối — giá vốn cuối kỳ: ghi đè bình quân của mặt hàng có định lượng trong kho
@@ -1592,7 +1651,7 @@ export async function PATCH(request: Request) {
         // Bật ACTIVE cho bản này thì hạ các bản ACTIVE khác của cùng món — hai bản cùng ACTIVE
         // là POS chọn theo version cao nhất, chưa chắc bản người dùng vừa duyệt.
         if (body.status !== undefined && cleanText(body.status).toUpperCase() === "ACTIVE") {
-          await tx.recipe.updateMany({ where: { productCode: recipe.productCode, status: "ACTIVE", id: { not: recipeId } }, data: { status: "INACTIVE" } });
+          await tx.recipe.updateMany({ where: { productCode: recipe.productCode, branchCode: recipe.branchCode, status: "ACTIVE", id: { not: recipeId } }, data: { status: "INACTIVE" } });
         }
         return tx.recipe.update({
           where: { id: recipeId },
@@ -1803,7 +1862,7 @@ export async function DELETE(request: Request) {
       const recipe = await prisma.recipe.findUnique({ where: { id } });
       if (!recipe) businessError("Không tìm thấy định lượng");
       const newerVersion = await prisma.recipe.count({
-        where: { productCode: recipe.productCode, version: { gt: recipe.version } },
+        where: { productCode: recipe.productCode, branchCode: recipe.branchCode, version: { gt: recipe.version } },
       });
       if (recipe.status === "ACTIVE" && newerVersion === 0) {
         const usedInProduction = await prisma.inventoryTransaction.count({

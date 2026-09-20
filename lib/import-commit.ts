@@ -1382,24 +1382,40 @@ export async function commitImport(input: CommitInput) {
       const groups = new Map<string, ParsedImportRow[]>();
       for (const row of input.rows) {
         const productCode = asText(row.values.product_code).toUpperCase();
+        // Cột Cửa hàng để trống = công thức dùng chung; khai mã = bản riêng của cửa hàng đó.
+        // Phải nằm trong khoá nhóm, nếu không hai cửa hàng pha khác nhau sẽ dính thành một
+        // công thức cộng dồn nguyên liệu.
+        const branchCode = asText(row.values.branch_code).toUpperCase();
         const effective = asDate(row.values.effective_date).toISOString().slice(0, 10);
-        groups.set(`${productCode}|${effective}`, [...(groups.get(`${productCode}|${effective}`) || []), row]);
+        const key = `${productCode}|${branchCode}|${effective}`;
+        groups.set(key, [...(groups.get(key) || []), row]);
       }
       // Tạo theo thứ tự ngày hiệu lực tăng dần để version tăng cùng chiều thời gian.
       const orderedGroups = [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
       for (const [groupKey, rows] of orderedGroups) {
-        const productCode = groupKey.split("|")[0];
+        const [productCode, branchList] = groupKey.split("|");
         const first = rows[0];
         const productItem = await tx.inventoryItem.findUnique({ where: { code: productCode } });
         if (!productItem) throw new Error(`Dong ${first.rowNumber}: Khong tim thay san pham ${productCode}`);
-        const latest = await tx.recipe.findFirst({ where: { productCode }, orderBy: { version: "desc" } });
-        await tx.recipe.updateMany({ where: { productCode, status: "ACTIVE" }, data: { status: "INACTIVE" } });
+        // Một ô Cửa hàng khai nhiều nơi ("NME,ASA") = cùng một công thức áp cho từng nơi đó:
+        // lưu mỗi cửa hàng một bản, màn hình gom lại thành một dòng. Ô trống = một bản chung.
+        const branchScopes = branchList ? branchList.split(",").filter(Boolean) : [""];
+        const createdForGroup = [];
+        for (const branchCode of branchScopes) {
+        // Phiên bản và việc hạ bản cũ chỉ tính TRONG phạm vi của chính nó: import bản dùng
+        // chung không được đụng tới công thức riêng của cửa hàng nào (khách chốt 20/09/2026),
+        // và ngược lại.
+        const branchScope = branchCode ? { branchCode } : { branchCode: null };
+        const latest = await tx.recipe.findFirst({ where: { productCode, ...branchScope }, orderBy: { version: "desc" } });
+        await tx.recipe.updateMany({ where: { productCode, ...branchScope, status: "ACTIVE" }, data: { status: "INACTIVE" } });
         // Hệ số quy đổi mẻ chuẩn bị về ĐVT tồn kho (sheet Chi tiết cột "He so quy doi ve DVT ton kho").
         const outputConversionRate = asNumber(first.values.output_conversion_rate) > 0 ? asNumber(first.values.output_conversion_rate) : 1;
         const recipe = await tx.recipe.create({
           data: {
-            code: `${productCode}-V${(latest?.version || 0) + 1}`,
+            // Mã bản riêng có thêm mã cửa hàng để không đụng mã bản chung (code là UNIQUE).
+            code: `${productCode}${branchCode ? `-${branchCode}` : ""}-V${(latest?.version || 0) + 1}`,
             productCode,
+            branchCode: branchCode || null,
             productName: asText(first.values.product_name),
             unit: asText(first.values.product_unit) || productItem.unit,
             outputConversionRate,
@@ -1436,7 +1452,11 @@ export async function commitImport(input: CommitInput) {
             },
           },
         });
-        for (const row of rows) await setImportTarget(tx, staging, row, "BOM", recipe.id);
+        createdForGroup.push(recipe);
+        }
+        // Gắn dòng file với bản ĐẦU TIÊN đã tạo (rollback tra theo mã món + cửa hàng trong
+        // normalizedJson nên vẫn hạ/bật đúng mọi bản của nhóm).
+        for (const row of rows) await setImportTarget(tx, staging, row, "BOM", createdForGroup[0].id);
       }
     }
 
@@ -2580,15 +2600,42 @@ async function rollbackBom(tx: RawTxClient, batchId: string) {
   const recipeIds = Array.from(new Set(targets.map((target) => target.targetId).filter(Boolean))) as string[];
   if (recipeIds.length === 0) return;
 
-  await tx.recipe.deleteMany({ where: { id: { in: recipeIds } } });
-
   const affectedProducts = await tx.importRow.findMany({
     where: { importBatchId: batchId, targetType: "BOM" },
     select: { normalizedJson: true },
   });
-  const productCodes = Array.from(new Set(affectedProducts.map((row) => asText(parseStoredJson(row.normalizedJson).product_code).toUpperCase()).filter(Boolean)));
-  for (const productCode of productCodes) {
-    const latest = await tx.recipe.findFirst({ where: { productCode }, orderBy: { version: "desc" } });
+  // Phạm vi mà lô import đã đụng tới: món + từng cửa hàng khai trong ô (một ô khai nhiều nơi
+  // sinh nhiều bản, ImportRow chỉ trỏ được về một bản nên phải tra lại theo chính dữ liệu dòng).
+  const scopes = new Map<string, { productCode: string; branchCode: string | null }>();
+  for (const row of affectedProducts) {
+    const values = parseStoredJson(row.normalizedJson);
+    const productCode = asText(values.product_code).toUpperCase();
+    if (!productCode) continue;
+    const branchList = asText(values.branch_code).toUpperCase().split(",").map((value) => value.trim()).filter(Boolean);
+    const branches: Array<string | null> = branchList.length > 0 ? branchList : [null];
+    for (const branchCode of branches) {
+      scopes.set(`${productCode}|${branchCode || ""}`, { productCode, branchCode });
+    }
+  }
+
+  const batch = await tx.importBatch.findUnique({ where: { id: batchId }, select: { createdAt: true } });
+  const createdAtFloor = batch?.createdAt || new Date(0);
+  // Xoá cả những bản "anh em" do chính lô này tạo cho các cửa hàng còn lại của cùng một dòng:
+  // chúng sinh ra trong lúc commit nên createdAt không thể sớm hơn thời điểm tạo lô.
+  for (const scope of scopes.values()) {
+    await tx.recipe.deleteMany({
+      where: { productCode: scope.productCode, branchCode: scope.branchCode, createdAt: { gte: createdAtFloor } },
+    });
+  }
+  await tx.recipe.deleteMany({ where: { id: { in: recipeIds } } });
+
+  // Bật lại bản ACTIVE trong ĐÚNG phạm vi đã bị lô import hạ xuống: món + cửa hàng. Gom theo
+  // mỗi mã món như trước thì rollback một lô BOM riêng của cửa hàng lại đi bật bản chung lên.
+  for (const scope of scopes.values()) {
+    const latest = await tx.recipe.findFirst({
+      where: { productCode: scope.productCode, branchCode: scope.branchCode },
+      orderBy: { version: "desc" },
+    });
     if (latest) await tx.recipe.update({ where: { id: latest.id }, data: { status: "ACTIVE" } });
   }
 }

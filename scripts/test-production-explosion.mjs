@@ -175,3 +175,53 @@ test("nguyên liệu khai bằng ĐVT quy đổi nhân đúng hệ số", () => 
   });
   assert.equal(plan.productions[0].components[0].quantityBase, 1660);
 });
+
+/**
+ * BOM theo cửa hàng (khách chốt 20/09/2026): cùng mã bán thành phẩm nhưng mỗi cửa hàng pha
+ * một công thức. Bản khai không có cửa hàng = dùng chung; nơi khai riêng thì dùng bản riêng.
+ */
+const sharedSauce = recipes[0];
+const asaSauce = {
+  ...recipes[0],
+  id: "r-sot-asa",
+  branchCode: "ASA",
+  lines: [{ itemId: items.duong.id, quantity: 45, conversionRate: 1, wasteRate: 3, item: items.duong }],
+};
+
+test("cửa hàng có công thức riêng thì rã theo bản riêng, nơi khác ăn bản chung", () => {
+  const branchRecipes = [sharedSauce, asaSauce];
+  const asa = explodeSalesDemand({
+    demands: [{ productCode: "BTP_SOTCACHUA", quantity: 1000 }],
+    recipes: branchRecipes,
+    date: new Date("2026-08-01"),
+    branchCode: "ASA",
+  });
+  // 1 mẻ 1000 gr sốt ở ASA: 45 gr đường * 1.03.
+  assert.ok(Math.abs(asa.productions[0].components[0].quantityBase - 45 * 1.03) < 1e-9);
+
+  const nme = explodeSalesDemand({
+    demands: [{ productCode: "BTP_SOTCACHUA", quantity: 1000 }],
+    recipes: branchRecipes,
+    date: new Date("2026-08-01"),
+    branchCode: "NME",
+  });
+  // NME chưa khai riêng -> bản dùng chung: 30 gr đường * 1.03.
+  assert.ok(Math.abs(nme.productions[0].components[0].quantityBase - 30 * 1.03) < 1e-9);
+});
+
+test("bản riêng của cửa hàng khác không bao giờ bị đem sang", () => {
+  // Món CHỈ có bản riêng của ASA: cửa hàng NME không được lấy bản đó để rã.
+  const onlyAsa = [asaSauce];
+  const picked = pickRecipeForDate(onlyAsa, new Date("2026-08-01"), "NME");
+  assert.equal(picked, null);
+  assert.equal(pickRecipeForDate(onlyAsa, new Date("2026-08-01"), "ASA").id, "r-sot-asa");
+});
+
+test("giá thành tính riêng theo từng cửa hàng", () => {
+  const averageCosts = new Map([[items.duong.id, 0.5]]);
+  const branchRecipes = [sharedSauce, asaSauce];
+  const shared = computeRecipeUnitCosts(branchRecipes, averageCosts, new Date("2026-08-01"));
+  const asa = computeRecipeUnitCosts(branchRecipes, averageCosts, new Date("2026-08-01"), "ASA");
+  assert.ok(Math.abs(shared.get("BTP_SOTCACHUA") - 30 * 1.03 * 0.5 / 1000) < 1e-12);
+  assert.ok(Math.abs(asa.get("BTP_SOTCACHUA") - 45 * 1.03 * 0.5 / 1000) < 1e-12);
+});

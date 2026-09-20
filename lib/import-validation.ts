@@ -489,7 +489,34 @@ function validateBom(
     unit: string;
     unitConversions: Array<{ unitCode: string; conversionRate: number }>;
   }>,
+  masterItems: MasterItem[],
+  session: DemoSession,
 ) {
+  // Cột Cửa hàng của file BOM là TUỲ CHỌN, khác mọi import khác: để trống = công thức dùng
+  // chung cho mọi cửa hàng (khách chốt 20/09/2026), khai mã thì phải là cửa hàng có thật và
+  // người import phải có quyền với cửa hàng đó.
+  // Một ô được phép khai NHIỀU cửa hàng dùng chung một công thức (ngăn bằng dấu phẩy hoặc
+  // chấm phẩy) — giống khai nhiều ĐVT mua cho một mặt hàng. Chuẩn hoá về danh sách mã, commit
+  // sẽ tạo mỗi cửa hàng một bản và màn hình gom lại thành một dòng.
+  const rawBranch = text(row.values.branch_code);
+  const branchCodes: string[] = [];
+  for (const part of rawBranch.split(/[,;]/).map((value) => value.trim()).filter(Boolean)) {
+    const branch = resolveMaster(masterItems, "BRANCH", part) || resolveBranchByName(masterItems, part);
+    const branchCode = (branch?.code || part).toUpperCase();
+    if (branchCode === "ALL") continue;
+    if (!branch) {
+      addError(row, `Cua hang [${branchCode}] khong ton tai hoac ngung hoat dong`);
+      continue;
+    }
+    try {
+      assertBranchAccess(session, branchCode);
+    } catch (error) {
+      addError(row, error instanceof Error ? error.message : "Khong co quyen voi cua hang nay");
+      continue;
+    }
+    if (!branchCodes.includes(branchCode)) branchCodes.push(branchCode);
+  }
+  row.values.branch_code = branchCodes.join(",");
   const productCode = text(row.values.product_code).toUpperCase();
   const ingredientCode = text(row.values.ingredient_code).toUpperCase();
   row.values.product_code = productCode;
@@ -1204,8 +1231,10 @@ export async function validateImportResult(
     if (importType === "DEBT_OPENING") validateDebt(row, masterItems);
     if (importType === "INVENTORY_TRANSACTION") validateInventoryTransaction(row, masterItems, inventoryItems, inventoryBalances, transactionStockUsage);
     if (importType === "BOM") {
-      validateBom(row, inventoryItems);
-      const bomKey = `${text(row.values.product_code).toUpperCase()}|${text(row.values.effective_date)}`;
+      validateBom(row, inventoryItems, masterItems, session);
+      // Khoá nhóm phải kèm cửa hàng: cùng món cùng ngày nhưng khác cửa hàng là HAI công thức
+      // khác nhau, gộp chung thì bắt lỗi "khai tên/giá khác nhau" oan.
+      const bomKey = `${text(row.values.product_code).toUpperCase()}|${text(row.values.branch_code).toUpperCase()}|${text(row.values.effective_date)}`;
       const header = bomGroupHeader.get(bomKey);
       const rowName = text(row.values.product_name);
       const rowPrice = numberValue(row.values.selling_price);

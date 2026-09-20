@@ -26,8 +26,8 @@ type ItemGroup = { id: string; code: string; name: string; group: string | null;
 type RevenueGroup = { id: string; code: string; name: string; group: string | null };
 type Balance = { id: string; warehouseCode: string; quantity: number; averageCost: number; item: Item };
 type Transaction = { id: string; code: string; transactionType: string; subType: string | null; transactionDate: string; branchCode: string; warehouseCode: string; toWarehouseCode: string | null; toBranchCode: string | null; internalReceivableDebtCode: string | null; internalPayableDebtCode: string | null; referenceCode: string | null; note?: string | null; lines: Array<{ id: string; inputQuantity: number | null; inputUnitCode: string | null; conversionRate: number; quantity: number; unitCost: number; inputUnitCost: number | null; totalCost: number; item: Item }> };
-type Recipe = { id: string; code: string; productCode: string; productName: string; unit: string; outputConversionRate: number; sellingPrice: number; estimatedCost: number; estimatedUnitCost: number; version: number; effectiveFrom: string; status: string; lines: Array<{ quantity: number; unitCode: string | null; conversionRate: number; wasteRate: number; item: Item }> };
-type CostSummaryRow = { productCode: string; productName: string; group: string; stockUnit: string; batchUnit: string; outputConversionRate: number; sellingPrice: number; unitCost: number; costRatio: number | null; version: number };
+type Recipe = { id: string; code: string; productCode: string; branchCode?: string | null; productName: string; unit: string; outputConversionRate: number; sellingPrice: number; estimatedCost: number; estimatedUnitCost: number; version: number; effectiveFrom: string; status: string; lines: Array<{ quantity: number; unitCode: string | null; conversionRate: number; wasteRate: number; item: Item }> };
+type CostSummaryRow = { productCode: string; branchCode: string; productName: string; group: string; stockUnit: string; batchUnit: string; outputConversionRate: number; sellingPrice: number; unitCost: number; costRatio: number | null; version: number };
 type WasteReportRow = { itemCode: string; itemName: string; unit: string; itemType: string; totalQuantity: number; totalValue: number; documentCount: number; bySubType: Record<string, { quantity: number; value: number }> };
 type PendingSales = {
   total: number;
@@ -138,6 +138,8 @@ export default function InventoryPage() {
   const [grpoOrderId, setGrpoOrderId] = useState("");
   const [grpoQuantities, setGrpoQuantities] = useState<Record<string, string>>({});
   const [recipeForm, setRecipeForm] = useState({ productCode: "SP_COMBO01", productName: "Combo ban POS", sellingPrice: "45000", unit: "", outputConversionRate: "1", effectiveFrom: today(), itemId: "", quantity: "0.02", wasteRate: "3" });
+  /** Cửa hàng áp dụng công thức: rỗng = dùng chung, nhiều mã = các nơi pha giống hệt nhau. */
+  const [recipeBranchCodes, setRecipeBranchCodes] = useState<string[]>([]);
   const [recipeRows, setRecipeRows] = useState([{ itemId: "", quantity: "1", unitCode: "", wasteRate: "0" }, { itemId: "", quantity: "20", unitCode: "", wasteRate: "5" }]);
   const [productionForm, setProductionForm] = useState({ productCode: "BTP_SOTCACHUA", productQuantity: "2", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HCM", referenceCode: "", note: "Che bien ban thanh pham" });
   /** Nút Rã nguyên liệu: rã doanh thu chờ (PENDING) theo định lượng, tự sinh phiếu chế biến + xuất bán. */
@@ -310,6 +312,66 @@ export default function InventoryPage() {
   // Dữ liệu cũ gán nhầm LOẠI THU (thu tiền thừa, thu đặt cọc...) vào ô nhóm doanh thu: giữ
   // nguyên để không mất dữ liệu, nhưng phải đập vào mắt để người dùng gán lại cho đúng.
   const misassignedRevenueGroupCount = data.items.filter((item) => isMisassignedRevenueGroup(item.revenueGroup)).length;
+
+  // Định lượng khai theo cửa hàng: mỗi nơi lưu một bản, nhưng các nơi pha GIỐNG HỆT nhau thì
+  // bảng gom về một dòng và liệt kê cửa hàng — đúng kiểu một mặt hàng có một ĐVT tồn kho kèm
+  // nhiều ĐVT mua. Bản dùng chung luôn đứng riêng vì ý nghĩa khác: nó áp cho mọi nơi CHƯA khai.
+  const recipeSignature = (recipe: Recipe) => JSON.stringify({
+    product: recipe.productCode.toUpperCase(),
+    effectiveFrom: String(recipe.effectiveFrom).slice(0, 10),
+    unit: recipe.unit,
+    outputConversionRate: recipe.outputConversionRate,
+    sellingPrice: recipe.sellingPrice,
+    status: recipe.status,
+    lines: recipe.lines
+      .map((line) => [line.item.code, line.quantity, line.unitCode || "", line.conversionRate, line.wasteRate].join("|"))
+      .sort(),
+  });
+  type RecipeGroup = { key: string; recipe: Recipe; branchCodes: string[]; versions: number[] };
+  const groupedRecipes: RecipeGroup[] = (() => {
+    const groups = new Map<string, RecipeGroup>();
+    for (const recipe of data.recipes) {
+      const branchCode = (recipe.branchCode || "").toUpperCase();
+      const key = branchCode ? `BRANCH|${recipeSignature(recipe)}` : `SHARED|${recipe.id}`;
+      const existing = groups.get(key);
+      if (existing) {
+        if (branchCode && !existing.branchCodes.includes(branchCode)) existing.branchCodes.push(branchCode);
+        if (!existing.versions.includes(recipe.version)) existing.versions.push(recipe.version);
+      } else {
+        groups.set(key, { key, recipe, branchCodes: branchCode ? [branchCode] : [], versions: [recipe.version] });
+      }
+    }
+    return [...groups.values()];
+  })();
+
+  type CostSummaryGroup = { key: string; row: CostSummaryRow; branchCodes: string[]; versions: number[] };
+  const groupedCostSummary: CostSummaryGroup[] = (() => {
+    const groups = new Map<string, CostSummaryGroup>();
+    for (const row of data.costSummary) {
+      const branchCode = (row.branchCode || "").toUpperCase();
+      // Giá thành bằng nhau ở nhiều cửa hàng = một dòng; lệch một đồng là tách ra để thấy ngay.
+      const key = branchCode
+        ? `BRANCH|${row.productCode}|${row.unitCost}|${row.sellingPrice}|${row.outputConversionRate}`
+        : `SHARED|${row.productCode}`;
+      const existing = groups.get(key);
+      if (existing) {
+        if (branchCode && !existing.branchCodes.includes(branchCode)) existing.branchCodes.push(branchCode);
+        if (!existing.versions.includes(row.version)) existing.versions.push(row.version);
+      } else {
+        groups.set(key, { key, row, branchCodes: branchCode ? [branchCode] : [], versions: [row.version] });
+      }
+    }
+    return [...groups.values()];
+  })();
+
+  /** Ô "Cửa hàng" của hai bảng định lượng: không có cửa hàng nào = bản dùng chung. */
+  const branchScopeCell = (branchCodes: string[]) => (
+    branchCodes.length === 0
+      ? <span className="status bg-slate-100 text-slate-600">Dùng chung</span>
+      : <span className="flex flex-wrap gap-1">
+          {branchCodes.map((code) => <span key={code} className="status bg-amber-50 text-amber-700">{storeLabel(code)}</span>)}
+        </span>
+  );
   // Rollback một lô import ngưng cả danh mục mặt hàng, và import lại KHÔNG bật lại được nếu file
   // thiếu cột Trạng thái — mã kẹt "Ngưng" thì mọi file BOM/nhập kho đều bị chặn. Cho bật lại
   // theo đúng bộ lọc đang xem thay vì bắt sửa tay từng mã.
@@ -1619,7 +1681,7 @@ export default function InventoryPage() {
       {active === "recipes" && (
         <div className="grid lg:grid-cols-[380px_1fr] gap-5">
           {canCreate && (
-            <form onSubmit={(e) => { e.preventDefault(); void send({ action: "CREATE_RECIPE", ...recipeForm, lines: recipeRows.filter((row) => row.itemId).map((row) => ({ itemId: row.itemId, quantity: row.quantity, unitCode: row.unitCode || undefined, wasteRate: row.wasteRate })) }, "Đã tạo phiên bản định lượng mới."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
+            <form onSubmit={(e) => { e.preventDefault(); void send({ action: "CREATE_RECIPE", ...recipeForm, branchCodes: recipeBranchCodes, lines: recipeRows.filter((row) => row.itemId).map((row) => ({ itemId: row.itemId, quantity: row.quantity, unitCode: row.unitCode || undefined, wasteRate: row.wasteRate })) }, "Đã tạo phiên bản định lượng mới."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
               <h2 className="font-bold text-slate-800">Tạo định lượng</h2>
 
               <div className="grid grid-cols-2 gap-3">
@@ -1634,6 +1696,33 @@ export default function InventoryPage() {
               <Input label="Tên món">
                 <input className="control" value={recipeForm.productName} onChange={(e) => setRecipeForm({ ...recipeForm, productName: e.target.value })} />
               </Input>
+
+              <div className="flex flex-col gap-1">
+                <span className="text-xs font-bold text-slate-600">Cửa hàng áp dụng</span>
+                <div className="border border-slate-200 rounded-lg p-2.5 bg-slate-50/50 space-y-1.5">
+                  <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
+                    <input type="checkbox" checked={recipeBranchCodes.length === 0} onChange={() => setRecipeBranchCodes([])} />
+                    Dùng chung cho mọi cửa hàng
+                  </label>
+                  {visibleStoreOptions(user).filter((option) => option.code !== "ALL").map((option) => (
+                    <label key={option.code} className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={recipeBranchCodes.includes(option.code)}
+                        onChange={(e) => setRecipeBranchCodes(e.target.checked
+                          ? [...recipeBranchCodes, option.code]
+                          : recipeBranchCodes.filter((code) => code !== option.code))}
+                      />
+                      {storeLabel(option.code)}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-500 leading-relaxed !mt-1">
+                Giống khai nhiều ĐVT mua cho một mặt hàng: <b>tích nhiều cửa hàng pha giống nhau</b> thì lưu một công thức cho mỗi nơi và bảng bên
+                phải gom lại thành <b>một dòng</b>. Nơi nào pha khác thì khai riêng cho nơi đó, dòng tự tách ra. Không tích cửa hàng nào = bản dùng
+                chung, áp cho mọi nơi chưa khai riêng.
+              </p>
 
               <div className="grid grid-cols-3 gap-3">
                 <Input label="ĐVT mẻ chuẩn bị">
@@ -1713,6 +1802,7 @@ export default function InventoryPage() {
                 headers={[
                   { label: "Nhóm" },
                   { label: "Mã sản phẩm" },
+                  { label: "Cửa hàng" },
                   { label: "Tên sản phẩm" },
                   { label: "ĐVT tồn kho" },
                   { label: "Giá bán", align: "right" },
@@ -1720,10 +1810,11 @@ export default function InventoryPage() {
                   { label: "% Cost", align: "right" },
                 ]}
               >
-                {data.costSummary.map((row) => (
-                  <tr key={row.productCode} className="border-t border-slate-100">
+                {groupedCostSummary.map(({ key, row, branchCodes, versions }) => (
+                  <tr key={key} className="border-t border-slate-100">
                     <Cell><span className={`status ${row.group === "FINISHED" ? "bg-blue-50 text-blue-700" : "bg-violet-50 text-violet-700"}`}>{row.group}</span></Cell>
-                    <Cell><CopyableText value={row.productCode}><b>{row.productCode}</b></CopyableText><small>V{row.version}</small></Cell>
+                    <Cell><CopyableText value={row.productCode}><b>{row.productCode}</b></CopyableText><small>{versions.sort((a, b) => a - b).map((version) => `V${version}`).join(" / ")}</small></Cell>
+                    <Cell>{branchScopeCell(branchCodes)}</Cell>
                     <Cell>{row.productName}</Cell>
                     <Cell>{row.stockUnit}{row.outputConversionRate !== 1 ? <small>1 {row.batchUnit} = {qty(row.outputConversionRate)} {row.stockUnit}</small> : null}</Cell>
                     <Cell right>{row.group === "FINISHED" ? `${money(row.sellingPrice)} đ` : "-"}</Cell>
@@ -1739,6 +1830,7 @@ export default function InventoryPage() {
               <Table
                 headers={[
                   { label: "Sản phẩm" },
+                  { label: "Cửa hàng" },
                   { label: "Phiên bản" },
                   { label: "Nguyên liệu" },
                   { label: "Cost / mẻ", align: "right" },
@@ -1746,10 +1838,11 @@ export default function InventoryPage() {
                   { label: "Tỷ lệ cost", align: "right" },
                 ]}
               >
-                {data.recipes.map((recipe) => (
-                  <tr key={recipe.id} className="border-t border-slate-100">
+                {groupedRecipes.map(({ key, recipe, branchCodes, versions }) => (
+                  <tr key={key} className="border-t border-slate-100">
                     <Cell><b>{recipe.productCode} - {recipe.productName}</b><small>Mẻ: {recipe.unit}{recipe.outputConversionRate !== 1 ? ` (= ${qty(recipe.outputConversionRate)} ĐVT tồn)` : ""}</small></Cell>
-                    <Cell>V{recipe.version}<small>Áp dụng {new Date(recipe.effectiveFrom).toLocaleDateString("vi-VN")}{recipe.status === "ACTIVE" ? "" : " · cũ"}</small></Cell>
+                    <Cell>{branchScopeCell(branchCodes)}</Cell>
+                    <Cell>{versions.sort((a, b) => a - b).map((version) => `V${version}`).join(" / ")}<small>Áp dụng {new Date(recipe.effectiveFrom).toLocaleDateString("vi-VN")}{recipe.status === "ACTIVE" ? "" : " · cũ"}</small></Cell>
                     <Cell>{recipe.lines.map((line) => `${line.item.name}: ${line.quantity}${line.unitCode ? ` ${line.unitCode}` : ""} (+${line.wasteRate}%)`).join(", ")}</Cell>
                     <Cell right><b>{money(recipe.estimatedCost)} đ</b></Cell>
                     <Cell right>{money(recipe.sellingPrice)} đ</Cell>

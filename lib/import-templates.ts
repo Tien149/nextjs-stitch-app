@@ -758,6 +758,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
     description: "Import dinh luong thanh pham va ban thanh pham theo sheet Chi tiet: moi dong mot nguyen lieu, DVT co the la DVT quy doi.",
     fields: [
       { field: "group", label: "Nhom", required: false, type: "text", aliases: ["nhom", "group", "loai"], note: "FINISHED hoac SEMI_FINISHED. De trong thi lay theo loai cua ma san pham." },
+      { field: "branch_code", label: "Cua hang", required: false, type: "text", aliases: ["cua hang", "chi nhanh", "ma cua hang", "branch", "branch code"], note: "Ma cua hang (NME, ASA...) hoac ten day du. Nhieu cua hang pha giong nhau thi khai chung mot o, ngan bang dau phay: \"NME,ASA\". DE TRONG = cong thuc dung chung cho moi cua hang; noi nao khai rieng thi dung ban rieng." },
       { field: "product_code", label: "Ma san pham", required: true, type: "text", aliases: ["ma san pham", "ma mon", "product code"] },
       { field: "product_name", label: "Ten san pham", required: true, type: "text", aliases: ["ten san pham", "ten mon", "product name"] },
       { field: "product_unit", label: "DVT san pham", required: false, type: "text", aliases: ["dvt", "dvt san pham", "don vi tinh san pham", "product unit"], note: "DVT cua me chuan bi (1kg, 400gr, lit sot...). De trong = DVT ton kho." },

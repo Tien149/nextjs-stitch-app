@@ -10,6 +10,7 @@
     "db:migrate:status": "prisma migrate status",
     "db:push": "prisma db push",
     "db:apply-debt-recognize-expense": "prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20260919090000_debt_recognize_expense/migration.sql",
+    "db:apply-recipe-branch": "prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20260920090000_recipe_branch_scope/migration.sql",
     "db:clear-data": "node scripts/clear_operational_data.js",
     "audit:other-income": "node scripts/report-other-income-misposted.cjs",
     "audit:bank-settlements": "node scripts/review-bank-voucher-settlements.cjs",
