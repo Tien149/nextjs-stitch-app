@@ -1415,6 +1415,10 @@ export async function commitImport(input: CommitInput) {
         const referenceCode = asText(row.values.reference_code) || `ROW-${row.rowNumber}`;
         const key = [
           referenceCode,
+          // NGÀY phải nằm trong khoá gom: cùng một hoá đơn mà hàng về hai ngày thì phải ra hai
+          // phiếu. Thiếu ngày (như trước) thì hai ngày dính làm một và cả lô ghi vào ngày của
+          // dòng ĐẦU TIÊN — tồn kho đứng sai ngày mà không ai thấy (khách chốt 20/09/2026).
+          asDate(row.values.transaction_date).toISOString().slice(0, 10),
           transactionType,
           // Hai loại hủy khác nhau không được gộp chung một phiếu dù cùng số chứng từ.
           asText(row.values.waste_type).toUpperCase(),
@@ -1433,9 +1437,18 @@ export async function commitImport(input: CommitInput) {
           : transactionType === "XUAT_HUY" ? "HH"
           : transactionType === "XUAT_TEST_MON" ? "XTM"
           : transactionType === "DIEU_CHUYEN" ? "DCK" : "XK";
-        // nextStockDocCode tra bằng SQL thô nên thấy cả phiếu đã xoá mềm: max + 1 trong
-        // đúng chuỗi loại + năm, không bao giờ cấp trúng mã đang sống.
-        const transactionCode = asText(first.values.reference_code) || await nextStockDocCode(tx, prefix, transactionDate);
+        /**
+         * Mã phiếu LUÔN do hệ thống cấp; số chứng từ của NCC chỉ nằm ở cột `referenceCode`.
+         *
+         * Trước đây mã phiếu lấy thẳng số chứng từ, mà `code` là duy nhất toàn hệ thống: một
+         * hoá đơn về hai kho, hoặc số hoá đơn đã dùng ở lô import trước / phiếu lập tay, là
+         * commit chết với "Dữ liệu bị trùng với bản ghi đã tồn tại (InventoryTransaction: code)"
+         * — khách gặp đúng lỗi này ngày 20/09/2026 và không có cách nào tự gỡ.
+         *
+         * nextStockDocCode tra bằng SQL thô nên thấy cả phiếu đã xoá mềm: max + 1 trong đúng
+         * chuỗi loại + năm, không bao giờ cấp trúng mã đang sống.
+         */
+        const transactionCode = await nextStockDocCode(tx, prefix, transactionDate);
         const lines = rows.map((row) => ({
           itemCode: asText(row.values.item_code).toUpperCase(),
           inputQuantity: asNumber(row.values.quantity),
@@ -1661,10 +1674,14 @@ export async function commitImport(input: CommitInput) {
           orderBy: [{ effectiveFrom: "desc" }, { version: "desc" }],
         });
         if (!recipe || recipe.lines.length === 0) throw new Error(`Dong ${row.rowNumber}: Chua co BOM hieu luc tai ngay ${asText(row.values.production_date)} cho ${productCode}`);
-        const referenceCode = asText(row.values.reference_code) || await nextStockDocCode(tx, "CB", productionDate);
+        // Cùng luật với import Nhập/Xuất kho: mã phiếu do hệ thống cấp, số chứng từ của người
+        // dùng chỉ nằm ở cột referenceCode. Lấy số chứng từ làm mã thì hai lệnh chế biến khai
+        // cùng số là commit chết vì trùng mã, không tự gỡ được.
+        const runCode = await nextStockDocCode(tx, "CB", productionDate);
+        const referenceCode = asText(row.values.reference_code) || runCode;
         const issue = await postInventoryTransaction(tx, {
           importBatchId: batch.id,
-          code: `${referenceCode}-X`,
+          code: `${runCode}-X`,
           transactionType: "XUAT_CHE_BIEN",
           transactionDate: productionDate,
           branchCode,
@@ -1683,7 +1700,7 @@ export async function commitImport(input: CommitInput) {
         const totalCost = issue.lines.reduce((sum, line) => sum + line.totalCost, 0);
         await postInventoryTransaction(tx, {
           importBatchId: batch.id,
-          code: `${referenceCode}-N`,
+          code: `${runCode}-N`,
           transactionType: "NHAP_CHE_BIEN",
           transactionDate: productionDate,
           branchCode,
