@@ -14,6 +14,7 @@
     "db:apply-bank-entry-source": "prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20260920120000_bank_statement_entry_source/migration.sql",
     "backfill:manual-statement-allocations": "node scripts/backfill-manual-statement-allocations.cjs",
     "backfill:purchase-payables": "node scripts/backfill-purchase-payables.cjs",
+    "backfill:cash-deposit-actual-date": "node scripts/backfill-cash-deposit-actual-date.cjs",
     "db:clear-data": "node scripts/clear_operational_data.js",
     "audit:other-income": "node scripts/report-other-income-misposted.cjs",
     "audit:bank-settlements": "node scripts/review-bank-voucher-settlements.cjs",

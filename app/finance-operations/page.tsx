@@ -116,12 +116,6 @@ function transferFeeLabels(transfer: MoneyTransfer, fromSourceName?: string | nu
     amount: transfer.feeAmount,
   }];
 }
-/** Ngày hôm nay theo giờ máy trạm, tránh lệch một ngày khi ca tối duyệt sau 0h. */
-const todayInput = () => {
-  const now = new Date();
-  return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
-};
-
 /**
  * Nguồn tiền được chọn cho phiếu điều tiền: gồm nguồn của cửa hàng phiếu và của cửa hàng
  * bên kia khi đây là phiếu liên nhà hàng, để sửa phiếu không làm mất nguồn của bên nhận.
@@ -583,16 +577,20 @@ export default function FinanceOperationsPage() {
     }
   };
 
-  /** Mở popup duyệt: mặc định lấy ngày bấm duyệt, kế toán duyệt trễ thì sửa lại đúng ngày nộp tiền thực tế. */
+  /**
+   * Mở popup duyệt. Ô ngày để TRỐNG: mỗi phiếu tự lấy ngày chứng từ của nó.
+   * Trước đây mặc định là ngày bấm duyệt rồi áp cho cả lô — duyệt trễ một tuần là cả lô phiếu
+   * của nhiều ngày cùng nhảy về ngày duyệt.
+   */
   const openCashApproval = (ids: string[]) => {
     if (ids.length === 0) return;
-    setCashApproval({ ids, actualTransferDate: todayInput() });
+    setCashApproval({ ids, actualTransferDate: "" });
     setMessage("");
   };
 
   const approveCashDeposits = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!cashApproval || !cashApproval.actualTransferDate || submitting) return;
+    if (!cashApproval || submitting) return;
     setSubmitting(true);
     setMessage("");
     try {
@@ -608,7 +606,9 @@ export default function FinanceOperationsPage() {
       }
       setCashApproval(null);
       setSelectedCashDepositIds([]);
-      setMessage(`Đã duyệt ${payload.count} phiếu theo ngày thực tế ${new Date(`${payload.actualTransferDate.slice(0, 10)}T00:00:00`).toLocaleDateString("vi-VN")}.`);
+      setMessage(payload.actualTransferDate
+        ? `Đã duyệt ${payload.count} phiếu, ghi nhận tiền thực nộp ngày ${new Date(`${String(payload.actualTransferDate).slice(0, 10)}T00:00:00`).toLocaleDateString("vi-VN")}.`
+        : `Đã duyệt ${payload.count} phiếu theo đúng ngày chứng từ của từng phiếu.`);
       await loadData();
     } catch {
       setMessage("Lỗi kết nối máy chủ khi duyệt phiếu nộp tiền.");
@@ -2422,7 +2422,7 @@ export default function FinanceOperationsPage() {
             <div className="flex items-start justify-between border-b border-slate-200 px-5 py-4">
               <div>
                 <p className="text-[11px] font-bold uppercase tracking-wide text-emerald-600">Xác nhận duyệt tiền mặt</p>
-                <h2 className="mt-1 text-lg font-bold text-slate-900">Ngày thực tế nộp tiền</h2>
+                <h2 className="mt-1 text-lg font-bold text-slate-900">Duyệt phiếu nộp tiền</h2>
                 <p className="mt-1 text-xs text-slate-500">Áp dụng cho {cashApproval.ids.length} phiếu đã chọn.</p>
               </div>
               <button type="button" onClick={() => setCashApproval(null)} className="grid h-9 w-9 place-items-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50">
@@ -2431,19 +2431,24 @@ export default function FinanceOperationsPage() {
             </div>
             <div className="space-y-4 p-5">
               <label className="block text-xs font-bold text-slate-600">
-                Ngày thực tế nộp tiền *
+                Ngày thực tế nộp tiền (không bắt buộc)
                 <DateInput className="mt-1.5 w-full" value={cashApproval.actualTransferDate} onChange={(value) => setCashApproval((current) => current ? { ...current, actualTransferDate: value } : current)} ariaLabel="Ngày thực tế nộp tiền" />
-                <p className="mt-1.5 text-[11px] font-medium text-slate-500">Mặc định là ngày bấm duyệt. Nếu duyệt trễ, sửa lại đúng ngày tiền thực nộp.</p>
+                <p className="mt-1.5 text-[11px] font-medium text-slate-500">
+                  Bỏ trống thì mỗi phiếu lấy đúng ngày chứng từ của nó. Chỉ điền khi cả lô này thật sự được giao tiền vào cùng một ngày khác.
+                </p>
               </label>
               <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-4 text-xs text-emerald-900">
                 <p className="font-bold">Tổng tiền: {money(data.moneyTransfers.filter((row) => cashApproval.ids.includes(row.id)).reduce((sum, row) => sum + row.amount, 0))} đ</p>
-                <p className="mt-1">Ngày này sẽ là ngày giảm nguồn tiền mặt và tăng nguồn nhận trên Báo cáo nguồn tiền, Sổ quỹ và Sổ cái.</p>
+                <p className="mt-1">
+                  Sổ quỹ, Báo cáo nguồn tiền và Sổ cái ghi giảm nguồn tiền mặt theo <b>ngày chứng từ</b> của phiếu.
+                  Ngày thực tế nộp chỉ để đối chiếu xem tiền tới tay người nhận ngày nào.
+                </p>
               </div>
             </div>
             {message && <p className="mx-5 mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700">{message}</p>}
             <div className="flex justify-end gap-2 border-t border-slate-200 bg-slate-50 p-4">
               <button type="button" onClick={() => setCashApproval(null)} className="secondary-button">Hủy</button>
-              <button disabled={submitting || !cashApproval.actualTransferDate} className="primary-button disabled:opacity-50">{submitting ? "Đang duyệt..." : `Xác nhận duyệt (${cashApproval.ids.length})`}</button>
+              <button disabled={submitting} className="primary-button disabled:opacity-50">{submitting ? "Đang duyệt..." : `Xác nhận duyệt (${cashApproval.ids.length})`}</button>
             </div>
           </form>
         </div>

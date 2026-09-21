@@ -436,8 +436,14 @@ export async function POST(request: Request) {
       )];
       if (ids.length === 0) businessError("Vui lòng chọn ít nhất một phiếu nộp tiền.");
       if (ids.length > 100) businessError("Mỗi lần chỉ được duyệt tối đa 100 phiếu.");
-      const actualTransferDate = parseImportDate(cleanText(body.actualTransferDate));
-      if (!actualTransferDate) businessError("Ngày thực tế nộp tiền là bắt buộc.");
+      /**
+       * Ngày thực tế nộp tiền giờ chỉ để ĐỐI CHIẾU, không còn quyết định ngày ghi sổ (sổ quỹ
+       * trừ theo ngày chứng từ — xem lib/money-transfer-date.ts). Bỏ trống thì mỗi phiếu lấy
+       * đúng ngày chứng từ CỦA NÓ, thay vì bắt kế toán gõ một ngày rồi áp cho cả lô phiếu
+       * nhiều ngày khác nhau — chính chỗ đó đẻ ra ngày thực tế sai.
+       */
+      const requestedActualDate = cleanText(body.actualTransferDate) ? parseImportDate(cleanText(body.actualTransferDate)) : null;
+      if (cleanText(body.actualTransferDate) && !requestedActualDate) businessError("Ngày thực tế nộp tiền không hợp lệ.");
 
       const transfers = await prisma.moneyTransfer.findMany({ where: { id: { in: ids }, deletedAt: null } });
       if (transfers.length !== ids.length) businessError("Có phiếu không tồn tại hoặc đã bị xóa.");
@@ -449,7 +455,8 @@ export async function POST(request: Request) {
         if (transfer.transferPurpose !== "CASH_DEPOSIT") businessError(`Phiếu ${transfer.code} không phải phiếu nộp tiền mặt.`);
         if (transfer.status !== "PENDING_REVIEW") businessError(`Phiếu ${transfer.code} không còn chờ duyệt.`);
         if (transfer.fromMoneySourceCode === transfer.toMoneySourceCode) businessError(`Phiếu ${transfer.code} có nguồn đi và nguồn nhận trùng nhau.`);
-        if (await isPeriodLocked(actualTransferDate, transfer.branchCode)) businessError(`Kỳ kế toán ngày thực tế của phiếu ${transfer.code} đã khóa.`);
+        // Khoá sổ xét theo ngày GHI SỔ, tức ngày chứng từ của phiếu.
+        if (await isPeriodLocked(transfer.transferDate, transfer.branchCode)) businessError(`Kỳ kế toán của phiếu ${transfer.code} đã khóa.`);
         const fromMoneySource = sourceByCode.get(transfer.fromMoneySourceCode);
         const toMoneySource = sourceByCode.get(transfer.toMoneySourceCode);
         if (!fromMoneySource || !moneySourceMatchesBranch(fromMoneySource, transfer.branchCode) || normalizeMoneySourceGroup(fromMoneySource.group) !== "CASH") {
@@ -460,11 +467,20 @@ export async function POST(request: Request) {
 
       const approvedAt = new Date();
       const results = await prismaRaw.$transaction(async (tx) => {
-        const updated = await tx.moneyTransfer.updateMany({
-          where: { id: { in: ids }, status: "PENDING_REVIEW", transferPurpose: "CASH_DEPOSIT", deletedAt: null },
-          data: { status: "APPROVED", actualTransferDate, approvedAt, approvedBy: auth.session.name },
-        });
-        if (updated.count !== ids.length) businessError("Một hoặc nhiều phiếu vừa được người khác xử lý; chưa phiếu nào được duyệt.");
+        let updatedCount = 0;
+        for (const transfer of transfers) {
+          const updated = await tx.moneyTransfer.updateMany({
+            where: { id: transfer.id, status: "PENDING_REVIEW", transferPurpose: "CASH_DEPOSIT", deletedAt: null },
+            data: {
+              status: "APPROVED",
+              actualTransferDate: requestedActualDate ?? transfer.transferDate,
+              approvedAt,
+              approvedBy: auth.session.name,
+            },
+          });
+          updatedCount += updated.count;
+        }
+        if (updatedCount !== ids.length) businessError("Một hoặc nhiều phiếu vừa được người khác xử lý; chưa phiếu nào được duyệt.");
         return tx.moneyTransfer.findMany({ where: { id: { in: ids } } });
       });
       for (const result of results) {
@@ -476,10 +492,10 @@ export async function POST(request: Request) {
           entityId: result.id,
           entityCode: result.code,
           branchCode: result.branchCode,
-          metadata: { statusBefore: "PENDING_REVIEW", statusAfter: "APPROVED", actualTransferDate, approvedAt, amount: result.amount },
+          metadata: { statusBefore: "PENDING_REVIEW", statusAfter: "APPROVED", actualTransferDate: result.actualTransferDate, approvedAt, amount: result.amount },
         });
       }
-      return NextResponse.json({ count: results.length, actualTransferDate, transfers: results });
+      return NextResponse.json({ count: results.length, actualTransferDate: requestedActualDate, transfers: results });
     }
 
     if (action === "APPROVE_TRANSFER") {
