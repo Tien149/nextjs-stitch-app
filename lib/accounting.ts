@@ -12,6 +12,7 @@ import { ADVANCE_RECEIVABLE_ACTION } from "@/lib/voucher-rules";
 import { REVENUE_CHANNEL_PNL_ITEMS, revenuePosFees, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { ensureRevenueCategories, type CategoryLookupClient } from "@/lib/revenue-source";
 import { WALLET_FEE_PNL_ITEMS } from "@/lib/wallet-settlement-allocation";
+import { roundJournalLines } from "@/lib/money-rounding";
 
 export const defaultAccounts = [
   { code: "1111", name: "Tiền mặt", accountType: "ASSET", normalBalance: "DEBIT", reportGroup: "CASH" },
@@ -128,6 +129,12 @@ type EntryInput = {
 };
 
 export async function postJournalEntry(input: EntryInput) {
+  /**
+   * Tròn tới đồng NGAY TỪ ĐÂY, không để lớp ghi tự tròn từng dòng: tròn rời rạc làm hai vế
+   * lệch nhau 1 đồng rồi bút toán rớt ngay ở câu kiểm tra Nợ/Có bên dưới. `roundJournalLines`
+   * dồn phần dôi vào dòng lớn nhất của vế thiếu nên sổ luôn cân.
+   */
+  input = { ...input, lines: roundJournalLines(input.lines) };
   const debit = input.lines.reduce((sum, line) => sum + (line.debit || 0), 0);
   const credit = input.lines.reduce((sum, line) => sum + (line.credit || 0), 0);
   if (Math.abs(debit - credit) > 0.5 || debit <= 0) businessError(`Bút toán ${input.sourceCode || input.sourceId} không cân Nợ/Có`);

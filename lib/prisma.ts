@@ -1,4 +1,5 @@
 import { Prisma, PrismaClient } from '@prisma/custom-client';
+import { roundMoneyWrite } from '@/lib/money-rounding';
 
 const globalForPrisma = global as unknown as {
   prismaBase: PrismaClient;
@@ -68,7 +69,44 @@ function delegateOf(model: string): AnyDelegate {
  * `include`/`select` KHÔNG được lọc tự động — nơi nào cần thì lọc thủ công bằng
  * `where: { deletedAt: null }`.
  */
-export const prisma = basePrisma.$extends({
+/**
+ * Lớp làm tròn TIỀN, đứng dưới lớp xoá mềm để mọi đường ghi qua `prisma` đều đi qua nó —
+ * kể cả ghi lồng (phiếu + các dòng con). Xem lib/money-rounding.ts.
+ *
+ * `prismaRaw` KHÔNG có lớp này, nhưng nó chỉ dùng cho xoá/khôi phục và rollback import —
+ * những chỗ đó không sinh số tiền mới, chỉ chép lại số đã tròn sẵn hoặc sửa tồn kho (tồn kho
+ * cố ý không làm tròn).
+ */
+const moneyRoundedPrisma = basePrisma.$extends({
+  query: {
+    $allModels: {
+      async create({ model, args, query }) {
+        roundMoneyWrite(model, (args as { data?: unknown }).data);
+        return query(args);
+      },
+      async createMany({ model, args, query }) {
+        roundMoneyWrite(model, (args as { data?: unknown }).data);
+        return query(args);
+      },
+      async update({ model, args, query }) {
+        roundMoneyWrite(model, (args as { data?: unknown }).data);
+        return query(args);
+      },
+      async updateMany({ model, args, query }) {
+        roundMoneyWrite(model, (args as { data?: unknown }).data);
+        return query(args);
+      },
+      async upsert({ model, args, query }) {
+        const upsertArgs = args as { create?: unknown; update?: unknown };
+        roundMoneyWrite(model, upsertArgs.create);
+        roundMoneyWrite(model, upsertArgs.update);
+        return query(args);
+      },
+    },
+  },
+});
+
+export const prisma = moneyRoundedPrisma.$extends({
   query: {
     $allModels: {
       async findMany({ model, args, query }) {

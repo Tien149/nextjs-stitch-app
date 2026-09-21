@@ -49,7 +49,8 @@ async function main() {
   const skipped = { daCo: 0, giaTriKhong: 0, ncCLa: 0 };
   for (const transaction of transactions) {
     if (existingCodes.has(`CN-${transaction.code}`)) { skipped.daCo += 1; continue; }
-    const amount = transaction.lines.reduce((sum, line) => sum + line.totalCost, 0);
+    // Script chạy bằng client thô nên không có lớp làm tròn của lib/prisma.ts — tròn tay ở đây.
+    const amount = Math.round(transaction.lines.reduce((sum, line) => sum + line.totalCost, 0));
     if (amount <= 0) { skipped.giaTriKhong += 1; continue; }
     const partner = partnerByCode.get(transaction.partnerCode);
     if (!partner) { skipped.ncCLa += 1; continue; }
