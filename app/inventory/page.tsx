@@ -107,7 +107,15 @@ export default function InventoryPage() {
   const { user, loading } = useModuleAuth(href);
   const [active, setActive] = useState("stock");
   const [data, setData] = useState<Data>({ items: [], balances: [], transactions: [], flowTransactions: [], recipes: [], warehouses: [], stocktakes: [], stockSummary: [], stockMovements: [], itemGroups: [], revenueGroups: [], receiptCategories: [], costSummary: [], wasteReport: [], pendingSales: { total: 0, byDay: [], byItem: [] }, partners: [] });
-  const [message, setMessage] = useState("");
+  const [message, setMessageText] = useState("");
+  /**
+   * Bấm lại một nút và nhận ĐÚNG lời báo lỗi như lần trước thì `message` không đổi giá trị,
+   * React không render lại gì và hiệu ứng cuộn cũng không chạy — nhìn y như nút chết, không
+   * có phản hồi nào (khách báo 21/09/2026: "bấm rã cả tháng không thấy trigger gì").
+   * Bộ đếm này để mỗi lần đặt thông báo đều là một sự kiện mới, kể cả khi chữ giống hệt.
+   */
+  const [messageSeq, setMessageSeq] = useState(0);
+  const setMessage = (text: string) => { setMessageText(text); setMessageSeq((seq) => seq + 1); };
   const messageRef = useRef<HTMLParagraphElement>(null);
   const [reportWarehouse, setReportWarehouse] = useState("ALL");
   const [reportType, setReportType] = useState("ALL");
@@ -185,7 +193,14 @@ export default function InventoryPage() {
   useEffect(() => {
     if (!message) return;
     messageRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [message]);
+    // Nhấp nháy một nhịp để lần báo lỗi thứ hai giống hệt lần đầu vẫn nhìn thấy được.
+    const node = messageRef.current;
+    if (!node) return;
+    node.animate?.(
+      [{ opacity: 1 }, { opacity: 0.35 }, { opacity: 1 }],
+      { duration: 420, easing: "ease-in-out" },
+    );
+  }, [message, messageSeq]);
 
   // Tab mặc định có thể nằm ngoài quyền -> chuyển về tab đầu tiên được phép.
   useEffect(() => {
@@ -366,6 +381,20 @@ export default function InventoryPage() {
    */
   const sumTransactions = (rows: Array<{ transaction: Transaction }>) =>
     sumStockDocuments(rows.map((row) => row.transaction));
+
+  /**
+   * Kho của màn "Rã nguyên liệu từ doanh thu", CHUẨN HOÁ theo cửa hàng đang chọn.
+   *
+   * Form khởi tạo cứng `warehouseCode: "KHO_HCM"`, mà đổi cửa hàng thì chỉ đổi `branchCode`.
+   * Mã kho cũ không còn trong danh sách option nên trình duyệt hiện ô TRỐNG, còn state vẫn
+   * giữ mã cũ và `onChange` không bao giờ chạy vì người dùng đâu có đụng vào. Bấm nút là gửi
+   * đi mã kho của cửa hàng khác rồi nhận lỗi "Kho X không thuộc cửa hàng Y" — đúng lỗi khách
+   * gặp 21/09/2026, và vì lỗi lặp lại y hệt nên nhìn như nút không phản ứng gì.
+   */
+  const pickWarehouse = (code: string, fallback: string) =>
+    (explodeWarehouses.some((warehouse) => warehouse.code === code) ? code : fallback);
+  const explodeWarehouseCode = pickWarehouse(explodeForm.warehouseCode, explodeWarehouses[0]?.code || "");
+  const explodeToWarehouseCode = pickWarehouse(explodeForm.toWarehouseCode, explodeWarehouseCode);
 
   /** Phiếu chế biến / rã nguyên liệu đang hiện. */
   const productionTransactions = data.transactions.filter((row) =>
@@ -2395,15 +2424,15 @@ export default function InventoryPage() {
               <input type="date" className="control" value={explodeForm.dateTo} onChange={(e) => setExplodeForm({ ...explodeForm, dateTo: e.target.value })} />
             </Input>
             <Input label="Kho xuất NVL">
-              <select className="control" value={explodeForm.warehouseCode} onChange={(e) => setExplodeForm({ ...explodeForm, warehouseCode: e.target.value })}>
-                {warehouseOptions.filter((warehouse) => warehouse.branch === explodeForm.branchCode || !warehouse.branch).map((warehouse) => (
+              <select className="control" value={explodeWarehouseCode} onChange={(e) => setExplodeForm({ ...explodeForm, warehouseCode: e.target.value })}>
+                {explodeWarehouses.map((warehouse) => (
                   <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>
                 ))}
               </select>
             </Input>
             <Input label="Kho nhập BTP/TP">
-              <select className="control" value={explodeForm.toWarehouseCode} onChange={(e) => setExplodeForm({ ...explodeForm, toWarehouseCode: e.target.value })}>
-                {warehouseOptions.filter((warehouse) => warehouse.branch === explodeForm.branchCode || !warehouse.branch).map((warehouse) => (
+              <select className="control" value={explodeToWarehouseCode} onChange={(e) => setExplodeForm({ ...explodeForm, toWarehouseCode: e.target.value })}>
+                {explodeWarehouses.map((warehouse) => (
                   <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>
                 ))}
               </select>
@@ -2479,13 +2508,22 @@ export default function InventoryPage() {
           )}
           <button
             type="button"
-            disabled={exploding}
+            disabled={exploding || explodeWarehouses.length === 0}
+            title={explodeWarehouses.length === 0 ? "Cửa hàng này chưa khai kho nào trong Danh mục" : undefined}
             className="primary-button mt-4"
             onClick={async () => {
               setExploding(true);
               try {
                 const payload = await send(
-                  { action: "EXPLODE_PRODUCTION", ...explodeForm, kitchenWarehouseCode, barWarehouseCode },
+                  {
+                    action: "EXPLODE_PRODUCTION",
+                    ...explodeForm,
+                    // Gửi mã kho ĐÃ CHUẨN HOÁ, không gửi giá trị chết còn sót của cửa hàng cũ.
+                    warehouseCode: explodeWarehouseCode,
+                    toWarehouseCode: explodeToWarehouseCode,
+                    kitchenWarehouseCode,
+                    barWarehouseCode,
+                  },
                   "Đã rã nguyên liệu và sinh phiếu chế biến + xuất bán.",
                 );
                 // Món không suy được bếp/bar vẫn chạy, nhưng phải nói ra để người dùng đi gán
