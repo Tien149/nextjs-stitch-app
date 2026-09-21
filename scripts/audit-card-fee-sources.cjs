@@ -110,17 +110,47 @@ async function main() {
   const { PrismaClient } = require("@prisma/custom-client");
   const prisma = new PrismaClient();
   try {
-    // Hạng mục P&L của phí quẹt thẻ: mỗi khách đặt một mã (mã chuẩn PNL_CP_QUETTHE, khách có
-    // thể dùng mã riêng như CPBD_CPNH), nên cho khai thẳng, không khai thì dò theo TÊN.
-    let pnlItemCodes = pnlItemArg ? [pnlItemArg] : [];
-    if (pnlItemCodes.length === 0) {
-      const items = await prisma.masterDataItem.findMany({
-        where: { type: "PNL_ITEM", deletedAt: null },
-        select: { code: true, name: true },
-      });
-      pnlItemCodes = items
-        .filter((item) => /quet the|quẹt thẻ|ca the|cà thẻ/i.test(`${item.name}`.normalize("NFC")))
-        .map((item) => item.code);
+    /**
+     * Tìm MÃ HẠNG MỤC P&L của phí quẹt thẻ.
+     *
+     * Bảng Tổng hợp chi phí in dòng theo dạng "<mã NHÓM> - <tên hạng mục>", nên rất dễ tưởng
+     * phần đầu là mã hạng mục rồi truyền nhầm vào --pnl-item (khách gặp đúng 21/09/2026: gõ
+     * CPBD_CPNH ra "0 đ trên 0 dòng" mà không biết vì sao). Nhận cả ba kiểu khai:
+     *   - đúng mã hạng mục   -> dùng luôn
+     *   - mã NHÓM P&L        -> lấy mọi hạng mục thuộc nhóm đó
+     *   - không khai gì      -> dò theo TÊN hạng mục
+     */
+    const allItems = await prisma.masterDataItem.findMany({
+      where: { type: "PNL_ITEM", deletedAt: null },
+      select: { code: true, name: true, subGroup: true },
+    });
+    const byName = allItems.filter((item) => /quet the|quẹt thẻ|ca the|cà thẻ/i.test(`${item.name}`.normalize("NFC")));
+    let pnlItemCodes = [];
+    let how = "";
+    if (pnlItemArg) {
+      const exact = allItems.find((item) => item.code.toUpperCase() === pnlItemArg);
+      if (exact) {
+        pnlItemCodes = [exact.code];
+        how = `hạng mục ${exact.code} (${exact.name})`;
+      } else {
+        const inGroup = allItems.filter((item) => String(item.subGroup || "").toUpperCase() === pnlItemArg);
+        if (inGroup.length > 0) {
+          pnlItemCodes = inGroup.map((item) => item.code);
+          how = `NHÓM ${pnlItemArg} — gồm ${inGroup.length} hạng mục: ${inGroup.map((item) => `${item.code} (${item.name})`).join(", ")}`;
+          console.log(`Lưu ý: "${pnlItemArg}" là mã NHÓM P&L, không phải mã hạng mục — đã tự lấy toàn bộ hạng mục trong nhóm.`);
+        } else {
+          console.error(`Không có hạng mục P&L nào mã "${pnlItemArg}", cũng không có nhóm P&L nào mã đó.`);
+          if (byName.length > 0) {
+            console.error("Hạng mục có tên liên quan tới quẹt thẻ:");
+            for (const item of byName) console.error(`  ${item.code}  ${item.name}  (nhóm ${item.subGroup || "—"})`);
+            console.error("Chạy lại không kèm --pnl-item là script tự dùng những mã trên.");
+          }
+          process.exit(1);
+        }
+      }
+    } else {
+      pnlItemCodes = byName.map((item) => item.code);
+      how = byName.map((item) => `${item.code} (${item.name})`).join(", ");
       if (pnlItemCodes.length === 0) {
         console.error("Không tìm thấy hạng mục P&L nào tên chứa \"quẹt thẻ\". Khai thẳng bằng --pnl-item <MÃ>.");
         process.exit(1);
@@ -182,7 +212,8 @@ async function main() {
     }
 
     const result = summarize(lines);
-    console.log(`Cửa hàng ${branchCode} · kỳ ${period} · hạng mục: ${pnlItemCodes.join(", ")}`);
+    console.log(`Cửa hàng ${branchCode} · kỳ ${period}`);
+    console.log(`Đang soát: ${how}`);
     console.log("");
     console.log("ĐỐI CHIẾU PHÍ QUYẾT TOÁN VÍ QUA TỪNG CHẶNG");
     console.log(`  1. Phí ghi trên phiếu quyết toán ví        ${money(transferFeeTotal).padStart(16)} đ  (${transfers.length} phiếu)`);
