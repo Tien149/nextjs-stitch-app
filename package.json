@@ -57,6 +57,8 @@
     "test:transfer-code": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-transfer-code-gap.mjs",
     "test:cost-reallocation": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-cost-reallocation.mjs",
     "test:internal-transfer": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-internal-transfer.mjs",
+    "audit:card-fee-sources": "node scripts/audit-card-fee-sources.cjs",
+    "test:card-fee-sources": "node scripts/audit-card-fee-sources.cjs --self-test",
     "repair:wallet-settlement": "node scripts/repair-wallet-settlement-group.cjs",
     "repair:wallet-revenue-date": "node scripts/repair-wallet-revenue-date.cjs",
     "test:wallet-revenue-date": "node scripts/repair-wallet-revenue-date.cjs --self-test",
