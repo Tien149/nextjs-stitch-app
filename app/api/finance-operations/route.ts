@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { isAdmin, requireCashDepositCreate, requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { getExpenseSummary } from "@/lib/expense-summary";
-import { CASH_MOVING_ADJUSTMENT_FILTER } from "@/lib/revenue-settlement-writeoff";
+import { CASH_MOVING_ADJUSTMENT_FILTER, REVENUE_SETTLEMENT_WRITEOFF_SOURCE } from "@/lib/revenue-settlement-writeoff";
 import { prisma, prismaRaw } from "@/lib/prisma";
 import { addPeriod, apiError, buildAllocationSchedules, businessError, cleanText, isPeriodLocked, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
 import { requestedBranch, assertBranchAccess, branchFilterForSession } from "@/lib/accounting";
@@ -1246,7 +1246,15 @@ export async function POST(request: Request) {
       return NextResponse.json(result);
     }
 
-    const auth = requireMenuAction(request, menuHref, ["POST_ACCRUAL", "POST_ACCRUAL_MONTH", "UNPOST_ACCRUAL", "UNPOST_ACCRUAL_MONTH", "UPDATE_ACCRUAL_PNL_ITEM", "UPDATE_ADJUSTMENT"].includes(action) ? "edit" : "create");
+    // Gỡ khoản chênh là XOÁ một bản ghi đã vào sổ, nên soi quyền "delete" chứ không phải
+    // quyền tạo — người chỉ được nhập liệu không được phép rút một khoản ra khỏi chi phí.
+    const auth = requireMenuAction(
+      request,
+      menuHref,
+      action === "REMOVE_SETTLEMENT_ADJUSTMENTS"
+        ? "delete"
+        : ["POST_ACCRUAL", "POST_ACCRUAL_MONTH", "UNPOST_ACCRUAL", "UNPOST_ACCRUAL_MONTH", "UPDATE_ACCRUAL_PNL_ITEM", "UPDATE_ADJUSTMENT"].includes(action) ? "edit" : "create",
+    );
     if (!auth.ok) return auth.response;
 
     if (action === "CREATE_ADJUSTMENT") {
@@ -1280,7 +1288,9 @@ export async function POST(request: Request) {
 
       if (await isPeriodLocked(entryDate, branchCode)) businessError("Kỳ kế toán đã khóa");
       const dcqPrefix = voucherCodePrefix({ voucherType: "DCQ1", voucherDate: entryDate, branchCode });
-      const issuedDcq = await prisma.cashbookAdjustment.findMany({ where: { code: { startsWith: dcqPrefix } }, select: { code: true } });
+      // `deletedAt: undefined` để client KHÔNG tự lọc mất phiếu đã xoá mềm: mã của chúng vẫn
+      // nằm trong chỉ mục duy nhất, bỏ qua là cấp lại đúng mã đó rồi vỡ khi ghi.
+      const issuedDcq = await prisma.cashbookAdjustment.findMany({ where: { code: { startsWith: dcqPrefix }, deletedAt: undefined }, select: { code: true } });
       const result = await prisma.cashbookAdjustment.create({
         data: {
           code: dcqPrefix + String(nextSeqFromCodes(issuedDcq.map((row) => row.code), dcqPrefix)).padStart(5, "0"),
@@ -1340,7 +1350,7 @@ export async function POST(request: Request) {
       const created = [];
       for (const entry of prepared) {
         const dcqPrefix = voucherCodePrefix({ voucherType: "DCQ1", voucherDate: entry.entryDate, branchCode: entry.branchCode });
-        const issuedDcq = await prisma.cashbookAdjustment.findMany({ where: { code: { startsWith: dcqPrefix } }, select: { code: true } });
+        const issuedDcq = await prisma.cashbookAdjustment.findMany({ where: { code: { startsWith: dcqPrefix }, deletedAt: undefined }, select: { code: true } });
         const result = await prisma.cashbookAdjustment.create({
           data: {
             code: dcqPrefix + String(nextSeqFromCodes(issuedDcq.map((row) => row.code), dcqPrefix)).padStart(5, "0"),
@@ -1366,6 +1376,54 @@ export async function POST(request: Request) {
         });
       }
       return NextResponse.json({ count: created.length, total: created.reduce((sum, row) => sum + row.amount, 0), adjustments: created }, { status: 201 });
+    }
+
+    /**
+     * Gỡ khoản chênh đã đưa vào chi phí, trả dòng "Tiền về đủ chưa" về đúng trạng thái VỀ THIẾU.
+     *
+     * Cần có vì khung phía trên giờ gom MỌI dòng còn thiếu tiền chứ không riêng chênh vài đồng
+     * (khách chốt 21/09/2026), nên tick nhầm một dòng thật ra là "tiền chưa về" là chuyện sẽ xảy
+     * ra. Không có đường gỡ thì khoản đó nằm vĩnh viễn trong chi phí.
+     *
+     * Xoá CẢ BÚT TOÁN: chỉ xoá bản ghi gốc thì số vẫn treo nguyên trên Tổng hợp chi phí và P&L
+     * cho tới lần Đồng bộ ghi sổ kế tiếp — mà người gỡ thì tưởng đã xong.
+     */
+    if (action === "REMOVE_SETTLEMENT_ADJUSTMENTS") {
+      const entries = (Array.isArray(body.entries) ? body.entries : []) as Array<Record<string, unknown>>;
+      if (entries.length === 0) businessError("Chưa chọn khoản nào để gỡ.");
+      if (entries.length > 200) businessError("Mỗi lần chỉ gỡ tối đa 200 dòng.");
+
+      const targets = [];
+      for (const entry of entries) {
+        const entryDate = toDate(entry.entryDate);
+        const branchCode = cleanText(entry.branchCode);
+        const moneySourceCode = cleanText(entry.moneySourceCode);
+        if (!branchCode || !moneySourceCode) businessError("Dòng cần gỡ thiếu cửa hàng hoặc nguồn tiền.");
+        assertBranchAccess(auth.session, branchCode);
+        if (await isPeriodLocked(entryDate, branchCode)) {
+          businessError(`Kỳ kế toán của ${branchCode} ngày ${entryDate.toISOString().slice(0, 10)} đã khóa nên không gỡ được.`);
+        }
+        // Một ngày + một nguồn tiền có thể đã đẩy nhiều lần (đẩy thiếu rồi đẩy bù), gỡ hết.
+        const rows = await prisma.cashbookAdjustment.findMany({
+          where: { entryDate, branchCode, moneySourceCode, sourceType: REVENUE_SETTLEMENT_WRITEOFF_SOURCE },
+        });
+        targets.push(...rows);
+      }
+      if (targets.length === 0) businessError("Không tìm thấy khoản chênh nào đã đưa vào chi phí ở những dòng này.");
+
+      const ids = targets.map((row) => row.id);
+      await prisma.$transaction(async (tx) => {
+        await tx.journalEntry.deleteMany({ where: { sourceType: "CASHBOOK_ADJUSTMENT", sourceId: { in: ids } } });
+        await tx.cashbookAdjustment.deleteMany({ where: { id: { in: ids } } });
+      });
+      for (const row of targets) {
+        await writeAuditLog({
+          session: auth.session, module: "FINANCE_OPERATIONS", action: "DELETE_ADJUSTMENT",
+          entityType: "CashbookAdjustment", entityId: row.id, entityCode: row.code, branchCode: row.branchCode,
+          metadata: { amount: row.amount, moneySourceCode: row.moneySourceCode, from: "REVENUE_SETTLEMENT" },
+        });
+      }
+      return NextResponse.json({ count: targets.length, total: targets.reduce((sum, row) => sum + row.amount, 0) });
     }
 
     /**

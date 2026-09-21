@@ -2636,6 +2636,39 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
   };
 
   /**
+   * Gỡ khoản chênh đã đưa vào chi phí của MỘT dòng, trả nó về đúng trạng thái VỀ THIẾU.
+   *
+   * Cần thiết vì khung phía trên giờ gom mọi dòng còn thiếu tiền, nên sẽ có lúc tick nhầm một
+   * dòng thật ra là tiền chưa về. Gỡ xoá cả bút toán nên Tổng hợp chi phí và P&L tụt lại ngay,
+   * không phải chờ Đồng bộ ghi sổ.
+   */
+  const [removingWriteOff, setRemovingWriteOff] = useState("");
+  const removeWriteOff = async (row: RevenueSettlementRow) => {
+    const amount = row.writtenOff || 0;
+    if (amount <= 0) return;
+    if (!window.confirm(`Gỡ ${money(amount)} đ khỏi chi phí? Dòng ${row.moneySourceName} ngày ${row.date} sẽ quay lại trạng thái còn thiếu tiền.`)) return;
+    setRemovingWriteOff(writeOffKey(row));
+    setLinkError("");
+    try {
+      const response = await fetch("/api/finance-operations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "REMOVE_SETTLEMENT_ADJUSTMENTS",
+          entries: [{ entryDate: row.date, branchCode: row.branchCode, moneySourceCode: row.moneySourceCode }],
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error || "Không gỡ được khoản chênh khỏi chi phí");
+      onLinked();
+    } catch (error) {
+      setLinkError(error instanceof Error ? error.message : "Không gỡ được khoản chênh khỏi chi phí");
+    } finally {
+      setRemovingWriteOff("");
+    }
+  };
+
+  /**
    * Dựng dòng sao kê từ chính các phiếu đã tick rồi nối luôn — lối thoát khi sao kê của tài
    * khoản đó chưa import mà kế toán không muốn đi làm file Excel cho vài dòng.
    *
@@ -2937,7 +2970,18 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
                       {money(row.remaining)} đ
                     </b>
                     {(row.writtenOff || 0) > 0 && (
-                      <p className="mt-0.5 text-xs text-slate-500">đã đưa {money(row.writtenOff || 0)} đ vào chi phí</p>
+                      <p className="mt-0.5 text-xs text-slate-500">
+                        đã đưa {money(row.writtenOff || 0)} đ vào chi phí
+                        <button
+                          type="button"
+                          onClick={() => void removeWriteOff(row)}
+                          disabled={removingWriteOff === writeOffKey(row)}
+                          title="Gỡ khoản này khỏi chi phí, trả dòng về trạng thái còn thiếu tiền"
+                          className="ml-1.5 rounded border border-slate-300 px-1.5 py-0.5 text-[11px] font-bold text-slate-600 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-50"
+                        >
+                          {removingWriteOff === writeOffKey(row) ? "Đang gỡ..." : "Gỡ"}
+                        </button>
+                      </p>
                     )}
                   </Cell>
                   <Cell>{row.feeCategoryName || <span className="text-slate-300">—</span>}</Cell>
