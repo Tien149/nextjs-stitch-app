@@ -24,6 +24,7 @@ type BankRow = {
   entrySource?: string | null;
   revenueDates: string[]; allocations: Allocation[]; currentMatch: MatchRow | null; otherMatches?: MatchRow[];
   settlementCandidates?: SettlementCandidate[];
+  voucherCandidates?: VoucherCandidate[];
 };
 /** Phiếu quyết toán ví đã có, chưa nối dòng sao kê nào, cùng cửa hàng và cùng số tiền thực về. */
 type SettlementCandidate = {
@@ -43,6 +44,12 @@ function needsPosting(row: BankRow) {
 function statusLabel(row: BankRow) {
   return BANK_POSTING_STATUS_LABELS[bankPostingStatusOf(row)];
 }
+
+/** Chứng từ ngân hàng nối được vào dòng sao kê đang còn chờ xử. */
+type VoucherCandidate = {
+  id: string; code: string; voucherType: string; voucherDate: string; amount: number;
+  description: string; moneySourceCode: string;
+};
 
 const operationLabels: Record<string, string> = {
   REVENUE_RECEIPT: "Thu doanh thu", DIRECT_EXPENSE: "Chi phí trực tiếp", AR_COLLECTION: "Thu công nợ",
@@ -342,6 +349,41 @@ export default function BankStatementLedgerPage() {
    * sửa file cũng không xong. Hai cách: lập phiếu đúng số tiền đã về (phí tính sau bằng nút
    * "Chạy lại theo doanh thu hiện tại" trên phiếu), hoặc nối vào phiếu quyết toán đã có sẵn.
    */
+  /**
+   * Nối tay dòng sao kê với chứng từ ngân hàng đã có — lối xử cho những dòng CHƯA VÀO SỔ
+   * không phải quyết toán ví (chi lương, chi bảo hiểm, trả NCC...). Trước đây các dòng này
+   * mang nhãn "chưa vào sổ" mà trên màn hình không có nút nào để làm gì cả.
+   */
+  const [linkingRow, setLinkingRow] = useState<BankRow | null>(null);
+  const [linkVoucherId, setLinkVoucherId] = useState("");
+  const [linkError, setLinkError] = useState("");
+  const [linkSaving, setLinkSaving] = useState(false);
+  const openVoucherLink = (row: BankRow) => {
+    setLinkingRow(row);
+    setLinkVoucherId(row.voucherCandidates?.[0]?.id || "");
+    setLinkError("");
+  };
+  const confirmVoucherLink = async () => {
+    if (!linkingRow || !linkVoucherId) return;
+    setLinkSaving(true);
+    setLinkError("");
+    try {
+      const response = await fetch("/api/reconciliations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "LINK_BANK_VOUCHER", bankTransactionId: linkingRow.id, voucherId: linkVoucherId }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error || "Không nối được chứng từ");
+      setLinkingRow(null);
+      await loadRows();
+    } catch (error) {
+      setLinkError(error instanceof Error ? error.message : "Không nối được chứng từ");
+    } finally {
+      setLinkSaving(false);
+    }
+  };
+
   const openPosting = (row: BankRow) => {
     const candidates = row.settlementCandidates || [];
     setPostingRow(row);
@@ -505,10 +547,29 @@ export default function BankStatementLedgerPage() {
                 ? <div>
                     <p className="text-xs font-bold text-amber-700">Chưa lập được chứng từ</p>
                     <p className="mt-1 line-clamp-4 text-[11px] leading-4 text-slate-600" title={row.autoProcessNote || ""}>{row.autoProcessNote}</p>
+                    {/* Quyết toán ví có luồng riêng (lập phiếu QTVI hoặc nối phiếu có sẵn). */}
                     {canEdit && row.creditAmount > 0 && row.operationType === "WALLET_SETTLEMENT" && (
                       <button type="button" onClick={() => openPosting(row)} className="mt-2 inline-flex items-center gap-1 rounded-lg bg-amber-600 px-2.5 py-1 text-xs font-bold text-white hover:bg-amber-700">
                         <span className="material-symbols-outlined text-[14px]">task_alt</span>Vào sổ
                       </button>
+                    )}
+                    {/* Mọi dòng chờ xử CÒN LẠI: nối tay với chứng từ ngân hàng đã có. Không có
+                        nhánh này thì dòng chi lương / chi bảo hiểm nằm mãi ở "chưa vào sổ" mà
+                        màn hình không đưa ra việc gì để làm. */}
+                    {canEdit && !(row.creditAmount > 0 && row.operationType === "WALLET_SETTLEMENT") && (
+                      (row.voucherCandidates || []).length > 0 ? (
+                        <button type="button" onClick={() => openVoucherLink(row)} className="mt-2 inline-flex items-center gap-1 rounded-lg bg-amber-600 px-2.5 py-1 text-xs font-bold text-white hover:bg-amber-700">
+                          <span className="material-symbols-outlined text-[14px]">link</span>Nối chứng từ ({(row.voucherCandidates || []).length})
+                        </button>
+                      ) : (
+                        // Không có chứng từ nào khớp thì nói thẳng phải làm gì, thay vì để
+                        // người dùng đứng nhìn một dòng "chưa vào sổ" không lối ra.
+                        <p className="mt-2 text-[11px] leading-4 text-slate-500">
+                          Chưa có chứng từ ngân hàng nào cùng số tiền &amp; cửa hàng để nối.
+                          Phiếu bị xoá nhầm thì khôi phục ở <b>Thùng rác</b>; còn lại thì lập phiếu mới ở{" "}
+                          <b>Chứng từ ngân hàng</b> rồi quay lại nối.
+                        </p>
+                      )
                     )}
                   </div>
                 : <span className="text-xs text-slate-400">Dữ liệu cũ, chưa nối chứng từ</span>}</td>
@@ -603,6 +664,47 @@ export default function BankStatementLedgerPage() {
                 : splitMissingCategory ? "Còn dòng chưa chọn Loại thu/chi" : undefined}
             className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-50"
           >{splitSaving ? "Đang lưu..." : "Lưu dòng tiền về"}</button>
+        </div>
+      </div>
+    </div>}
+
+    {linkingRow && <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 p-4">
+      <div className="mt-10 w-full max-w-2xl rounded-2xl bg-white shadow-xl">
+        <div className="border-b border-slate-200 px-5 py-4">
+          <h3 className="font-bold">Nối chứng từ cho dòng {linkingRow.transactionCode}</h3>
+          <p className="mt-1 text-xs text-slate-500">
+            {dateText(linkingRow.transactionDate)} · {storeLabel(linkingRow.branchCode)} ·{" "}
+            {Math.round(linkingRow.creditAmount) > 0
+              ? <>Tiền vào <b className="text-emerald-700">{money(Math.round(linkingRow.creditAmount))} đ</b></>
+              : <>Tiền ra <b className="text-rose-600">{money(Math.round(linkingRow.debitAmount))} đ</b></>}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">{linkingRow.description}</p>
+        </div>
+        <div className="max-h-[50vh] space-y-2 overflow-y-auto px-5 py-4">
+          <p className="text-xs text-slate-600">
+            Chỉ liệt kê chứng từ ngân hàng <b>đã duyệt</b>, <b>cùng cửa hàng</b>, <b>cùng số tiền</b>, đúng chiều thu/chi
+            và <b>chưa nối dòng sao kê nào</b>.
+          </p>
+          {(linkingRow.voucherCandidates || []).map((candidate) => (
+            <label key={candidate.id} className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 ${linkVoucherId === candidate.id ? "border-blue-400 bg-blue-50/60" : "border-slate-200"}`}>
+              <input type="radio" name="voucher-candidate" className="mt-1" checked={linkVoucherId === candidate.id} onChange={() => setLinkVoucherId(candidate.id)} />
+              <span className="min-w-0 flex-1">
+                <b className="block">{candidate.code}</b>
+                <small className="block text-slate-500">
+                  {dateText(candidate.voucherDate)} · {candidate.voucherType === "PAYMENT" ? "Phiếu chi" : "Phiếu thu"} ·{" "}
+                  {money(Math.round(candidate.amount))} đ · {candidate.moneySourceCode || "—"}
+                </small>
+                <small className="block truncate text-slate-500">{candidate.description}</small>
+              </span>
+            </label>
+          ))}
+        </div>
+        {linkError && <p className="mx-5 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-sm text-rose-700">{linkError}</p>}
+        <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-5 py-4">
+          <button type="button" onClick={() => setLinkingRow(null)} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-bold hover:bg-slate-50">Huỷ</button>
+          <button type="button" onClick={() => void confirmVoucherLink()} disabled={linkSaving || !linkVoucherId} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-50">
+            {linkSaving ? "Đang nối..." : "Nối chứng từ"}
+          </button>
         </div>
       </div>
     </div>}

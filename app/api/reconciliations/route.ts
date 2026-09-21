@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { resolvableCategoryCodes, type ResolvableCategoryCodes } from "@/lib/cashflow-categories";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
-import { bankPostingStatusFilter } from "@/lib/bank-posting-status";
+import { bankPostingStatusFilter, bankPostingStatusOf } from "@/lib/bank-posting-status";
+import { bankRowAmount, bankVoucherLinkError, pickVoucherCandidates, type LinkableVoucher } from "@/lib/bank-voucher-link";
 import { assertBranchAccess, branchFilterForSession } from "@/lib/accounting";
 import { normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { dateKey, suggestRevenueDateFromDescription, vietnamBusinessDayBounds } from "@/lib/revenue-date";
@@ -105,6 +106,42 @@ async function findSettlementCandidates(
         amount: transfer.amount, feeAmount: transfer.feeAmount, fromMoneySourceCode: transfer.fromMoneySourceCode, toMoneySourceCode: transfer.toMoneySourceCode,
       })));
   }
+  return result;
+}
+
+/**
+ * Chứng từ ngân hàng nối được vào từng dòng CHƯA VÀO SỔ.
+ *
+ * Bổ sung cho `findSettlementCandidates` (chỉ lo quyết toán ví, chỉ dòng tiền VÀO): dòng chi
+ * lương, chi bảo hiểm, trả NCC... cũng mang nhãn CHƯA VÀO SỔ mà trước đây không có lối xử nào.
+ */
+async function findVoucherCandidates(
+  rows: Array<{ id: string; branchCode: string | null; debitAmount: number; creditAmount: number; reconcileStatus: string; autoProcessType: string | null }>,
+) {
+  const result = new Map<string, LinkableVoucher[]>();
+  const needing = rows.filter((row) => bankPostingStatusOf(row) === "NOT_POSTED" && row.branchCode);
+  if (needing.length === 0) return result;
+  const vouchers = await prisma.financialVoucher.findMany({
+    where: {
+      documentChannel: "BANK",
+      status: "APPROVED",
+      deletedAt: null,
+      branchCode: { in: [...new Set(needing.map((row) => row.branchCode as string))] },
+      amount: { in: [...new Set(needing.map(bankRowAmount))] },
+    },
+    select: { id: true, code: true, voucherType: true, status: true, branchCode: true, amount: true, documentChannel: true, voucherDate: true, description: true, moneySourceCode: true },
+    orderBy: { voucherDate: "desc" },
+    take: 500,
+  });
+  if (vouchers.length === 0) return result;
+  // Chứng từ đã nối dòng khác thì không được chào lại, nếu không hai dòng sao kê cùng trỏ vào
+  // một phiếu và tiền bị ghi nhận hai lần.
+  const linked = await prisma.reconciliationMatch.findMany({
+    where: { targetType: "VOUCHER", targetId: { in: vouchers.map((row) => row.id) }, deletedAt: null },
+    select: { targetId: true },
+  });
+  const taken = new Set(linked.map((row) => row.targetId));
+  for (const row of needing) result.set(row.id, pickVoucherCandidates(row, vouchers, taken));
   return result;
 }
 
@@ -559,13 +596,17 @@ export async function GET(request: Request) {
         }),
         prisma.bankStatementTransaction.count({ where: bankWhere }),
       ]);
-      const settlementCandidates = await findSettlementCandidates(ledgerRows);
+      const [settlementCandidates, voucherCandidates] = await Promise.all([
+        findSettlementCandidates(ledgerRows),
+        findVoucherCandidates(ledgerRows),
+      ]);
       return NextResponse.json({
         rows: ledgerRows.map(({ matches: rowMatches, ...row }) => ({
           ...row,
           revenueDates: [...new Set((row.allocations.length ? row.allocations.map((item) => item.revenueDate) : [row.revenueDate])
             .filter((value): value is Date => Boolean(value)).map((value) => value.toISOString()))],
           settlementCandidates: settlementCandidates.get(row.id) || [],
+          voucherCandidates: voucherCandidates.get(row.id) || [],
           currentMatch: rowMatches[0]
             ? {
                 ...rowMatches[0],
@@ -786,6 +827,76 @@ export async function POST(request: Request) {
     if (!auth.ok) return auth.response;
 
     const body = await request.json();
+    /**
+     * Nối tay dòng sao kê với chứng từ ngân hàng ĐÃ CÓ.
+     *
+     * Khách gặp 21/09/2026: dòng chi lương mang nhãn "CHƯA VÀO SỔ" kèm lời nhắn phiếu UNC đã
+     * bị xoá, nhưng không có nút nào để xử — nút "Vào sổ" cũ chỉ dành cho quyết toán ví của
+     * dòng tiền VÀO. Đây là lối xử cho mọi ca còn lại.
+     */
+    if (cleanText(body.action) === "LINK_BANK_VOUCHER") {
+      const bank = await prisma.bankStatementTransaction.findFirst({
+        where: { id: cleanText(body.bankTransactionId), deletedAt: null },
+        include: { matches: { where: { deletedAt: null }, select: { targetCode: true } } },
+      });
+      if (!bank) return NextResponse.json({ error: "Không tìm thấy dòng sao kê này." }, { status: 404 });
+      if (!bank.branchCode) return NextResponse.json({ error: "Dòng sao kê chưa gán cửa hàng nên chưa nối được." }, { status: 400 });
+      assertBranchAccess(auth.session, bank.branchCode);
+      if (bank.reconcileStatus === "MATCHED" || bank.matches.length > 0) {
+        return NextResponse.json({ error: `Dòng này đã vào sổ với ${bank.matches.map((row) => row.targetCode).join(", ") || "một chứng từ"} rồi.` }, { status: 400 });
+      }
+      const voucher = await prisma.financialVoucher.findFirst({ where: { id: cleanText(body.voucherId), deletedAt: null } });
+      if (!voucher) return NextResponse.json({ error: "Không tìm thấy chứng từ này (có thể đã bị xoá — khôi phục ở Thùng rác rồi nối lại)." }, { status: 404 });
+      const invalid = bankVoucherLinkError(bank, voucher);
+      if (invalid) return NextResponse.json({ error: invalid }, { status: 400 });
+      const taken = await prisma.reconciliationMatch.findFirst({
+        where: { targetType: "VOUCHER", targetId: voucher.id, deletedAt: null },
+        include: { bankTransaction: { select: { transactionCode: true } } },
+      });
+      if (taken) return NextResponse.json({ error: `Chứng từ ${voucher.code} đã nối với dòng sao kê ${taken.bankTransaction.transactionCode} rồi.` }, { status: 400 });
+
+      const amount = bankRowAmount(bank);
+      await prisma.$transaction(async (tx) => {
+        await tx.reconciliationMatch.create({
+          data: {
+            bankTransactionId: bank.id,
+            targetType: "VOUCHER",
+            targetId: voucher.id,
+            targetCode: voucher.code,
+            targetDate: voucher.voucherDate,
+            targetAmount: amount,
+            matchedAmount: amount,
+            status: "MATCHED",
+            note: "Nối tay với chứng từ ngân hàng đã có",
+            matchedBy: auth.session.name,
+          },
+        });
+        await tx.bankStatementTransaction.update({
+          where: { id: bank.id },
+          data: {
+            reconcileStatus: "MATCHED",
+            // Xoá lời nhắn "chờ đối soát thủ công": để lại thì dòng đã xong việc vẫn đọc như
+            // còn việc, đúng cái làm người dùng mất niềm tin vào cột trạng thái.
+            autoProcessNote: `Đã nối tay với chứng từ ${voucher.code} (${auth.session.name})`,
+          },
+        });
+        await tx.auditLog.create({
+          data: buildAuditLogData({
+            session: auth.session,
+            module: "BANK_STATEMENT",
+            action: "LINK_BANK_VOUCHER",
+            entityType: "BankStatementTransaction",
+            entityId: bank.id,
+            entityCode: bank.transactionCode,
+            branchCode: bank.branchCode,
+            message: `Nối ${bank.transactionCode} với chứng từ ${voucher.code}`,
+            metadata: { voucherId: voucher.id, voucherCode: voucher.code, amount, previousNote: bank.autoProcessNote },
+          }),
+        });
+      });
+      return NextResponse.json({ voucher: { id: voucher.id, code: voucher.code } }, { status: 201 });
+    }
+
     if (["RECORD_WALLET_NET", "LINK_WALLET_SETTLEMENT"].includes(cleanText(body.action))) {
       return await postWalletBankRow(request, body, auth.session);
     }
