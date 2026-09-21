@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/custom-client";
+import { roundVnd } from "@/lib/round-vnd";
 
 /**
  * Làm tròn TIỀN tới đồng ngay lúc ghi sổ.
@@ -16,6 +17,8 @@ import { Prisma } from "@prisma/custom-client";
  *    mất sạch giá vốn), nên `unitCost`, `inputUnitCost`, `averageCost`, `estimatedUnitCost`
  *    đều đứng ngoài. Thành tiền của dòng (`totalCost`) thì có làm tròn.
  */
+export { roundVnd };
+
 export const MONEY_FIELDS: Record<string, readonly string[]> = {
   Document: ["amount"],
   Deposit: ["amount", "remainingAmount"],
@@ -36,7 +39,7 @@ export const MONEY_FIELDS: Record<string, readonly string[]> = {
   PurchaseOrderLine: ["totalCost"],
   SupplierPayable: ["originalAmount", "outstandingAmount"],
   Recipe: ["sellingPrice"],
-  InventoryTransactionLine: ["totalCost"],
+  InventoryTransactionLine: ["totalCost", "vatAmount"],
   AssetDepreciation: ["depreciationAmount", "accumulatedDepreciation", "remainingValue"],
   AssetMaintenance: ["cost"],
   AssetDamageReport: ["repairCost"],
@@ -55,15 +58,6 @@ export const MONEY_FIELDS: Record<string, readonly string[]> = {
   ReportTarget: ["targetValue"],
 };
 
-/**
- * Tròn tới đồng, đối xứng quanh 0: -1,5 ra -2 chứ không phải -1 như `Math.round`.
- * Tiền âm (giảm trừ, hoàn tiền) phải tròn cùng độ lớn với tiền dương, nếu không hai vế của
- * một cặp bút toán lệch nhau 1 đồng.
- */
-export function roundVnd(value: number) {
-  if (!Number.isFinite(value)) return value;
-  return Math.sign(value) * Math.round(Math.abs(value));
-}
 
 /** Model -> tên quan hệ -> model đích, để đi xuống các nhánh ghi lồng (`lines: { create: [...] }`). */
 const relationTargets = new Map<string, Map<string, string>>(

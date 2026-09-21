@@ -762,6 +762,13 @@ model InventoryTransactionLine {
   inputUnitCode  String?
   conversionRate Float   @default(1)
   inputUnitCost  Float?
+  /// Thue suat GTGT dau vao cua dong nay. null = KKKNT (khong ke khai, nop thue) HOAC dong
+  /// khong khai thue; 0 = thue suat 0%. Hai truong hop nay cung ra 0 dong thue nhung la hai
+  /// dong khac nhau tren to khai nen phai phan biet duoc. Xem lib/inventory-vat.ts.
+  vatRate        Float?
+  /// Tien thue GTGT cua dong, da lam tron toi dong. KHONG cong vao gia von ton kho
+  /// (`totalCost` la so truoc thue) — chi cong vao cong no phai tra NCC.
+  vatAmount      Float   @default(0)
 
   transaction InventoryTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
   item        InventoryItem        @relation(fields: [itemId], references: [id])

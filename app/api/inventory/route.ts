@@ -7,6 +7,7 @@ import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
 import { isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType, postInventoryTransaction, repostInventoryTransaction, reverseStockEffect } from "@/lib/inventory-stock";
 import { createPurchasePayable, purchasePayableCodeOf, removePurchasePayables, syncPurchasePayable, PURCHASE_PAYABLE_SOURCE } from "@/lib/purchase-payable";
 import { postStockTransfer } from "@/lib/inventory-transfer";
+import { parseVatRate, VAT_RATE_CODES } from "@/lib/inventory-vat";
 import { computeCostingLevels, computeRecipeUnitCosts, explodeSalesDemand, pickRecipeForDate, type ExplosionRecipe } from "@/lib/production-explosion";
 import { writeAuditLog } from "@/lib/audit-log";
 import {
@@ -36,8 +37,18 @@ const derivedReferenceTypes: Record<string, string> = {
   PRODUCTION: "lệnh chế biến",
 };
 
-type InputLine = { itemId?: unknown; itemCode?: unknown; quantity?: unknown; actualQuantity?: unknown; inputQuantity?: unknown; unitCode?: unknown; inputUnitCode?: unknown; unitCost?: unknown; inputUnitCost?: unknown; wasteRate?: unknown; conversionRate?: unknown; reason?: unknown };
+type InputLine = { itemId?: unknown; itemCode?: unknown; quantity?: unknown; actualQuantity?: unknown; inputQuantity?: unknown; unitCode?: unknown; inputUnitCode?: unknown; unitCost?: unknown; inputUnitCost?: unknown; vatRate?: unknown; wasteRate?: unknown; conversionRate?: unknown; reason?: unknown };
 const validItemTypes = ["RAW_MATERIAL", "SEMI_FINISHED", "FINISHED", "PACKAGING", "TOOL", "ASSET"];
+
+/**
+ * Thue suat GTGT tu man hinh gui len ("8%", "KKKNT", o trong). Gia tri la thi chan ngay thay vi
+ * nhan bua thanh 0%: sai thue suat la sai so cong no phai tra NCC.
+ */
+function vatRateFrom(value: unknown) {
+  const parsed = parseVatRate(value);
+  if (!parsed.ok) businessError(`Thuế suất GTGT [${cleanText(value)}] không hợp lệ. Chỉ nhận: ${VAT_RATE_CODES.join(", ")}`);
+  return (parsed as { ok: true; rate: number | null }).rate;
+}
 
 function linesFrom(value: unknown) {
   if (!Array.isArray(value)) return [];
@@ -50,6 +61,7 @@ function linesFrom(value: unknown) {
     inputUnitCode: cleanText(line.inputUnitCode ?? line.unitCode),
     unitCost: toNumber(line.inputUnitCost ?? line.unitCost),
     inputUnitCost: toNumber(line.inputUnitCost ?? line.unitCost),
+    vatRate: vatRateFrom(line.vatRate),
     wasteRate: toNumber(line.wasteRate),
     conversionRate: toNumber(line.conversionRate),
   })).filter((line) => (line.itemId || line.itemCode) && line.quantity > 0);
@@ -1478,6 +1490,8 @@ export async function POST(request: Request) {
           inputUnitCode: "",
           unitCost: 0,
           inputUnitCost: 0,
+          // Huy hang la phieu XUAT: khong co hoa don dau vao nen khong co thue GTGT.
+          vatRate: null,
           wasteRate: 0,
           conversionRate: 1,
         };
@@ -1701,11 +1715,14 @@ export async function PATCH(request: Request) {
             partnerCode,
             referenceCode: body.referenceCode !== undefined ? cleanText(body.referenceCode) || null : transaction.referenceCode,
             note: body.note !== undefined ? cleanText(body.note) || null : transaction.note,
+            // Giu nguyen thue suat cua dong cu khi chi sua phan dau phieu: bo qua o day la
+            // sua ngay chung tu cung lam bay het thue va cong no NCC tut xuong so truoc thue.
             lines: editedLines.length > 0 ? editedLines : transaction.lines.map((line) => ({
               itemId: line.itemId,
               inputQuantity: line.inputQuantity ?? line.quantity,
               inputUnitCode: line.inputUnitCode ?? "",
               inputUnitCost: line.inputUnitCost ?? line.unitCost,
+              vatRate: line.vatRate,
             })),
           })
           : await tx.inventoryTransaction.update({

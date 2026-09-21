@@ -4,6 +4,8 @@ import { isMasterDataImportType, normalizeHeader, type ImportType } from "@/lib/
 import { parseImportDate, type ParsedImportResult, type ParsedImportRow } from "@/lib/import-parser";
 import type { DemoSession } from "@/lib/auth-demo";
 import { isInboundStockType, isOutboundStockType, isStockTransactionType, isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType } from "@/lib/inventory-stock";
+import { parseVatRate, VAT_RATE_CODES, vatAmountOf, vatRateLabel } from "@/lib/inventory-vat";
+import { roundVnd } from "@/lib/money-rounding";
 import { normalizeCashflowCategoryType, normalizeRevenueExpenseGroup } from "@/lib/voucher-rules";
 import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
 import { loadNonInventoryRevenueGroups, loadRevenueCategoryIndex, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
@@ -460,6 +462,51 @@ function validateInventoryTransaction(
     return;
   }
   row.values.converted_quantity = quantity * conversionRate;
+
+  /**
+   * Thuế suất GTGT đầu vào + hai cột thành tiền (khách bổ sung 21/09/2026).
+   *
+   * Hai cột thành tiền là CÔNG THỨC trong file Excel của kế toán, không phải số hệ thống cần
+   * để chạy — nên chúng chỉ là số ĐỐI CHIẾU: khai lệch thì báo ngay ở bước xem trước, để
+   * trống thì hệ thống tự điền. Kiểm chéo như vậy bắt được ca hay gặp nhất là sửa tay đơn giá
+   * mà quên kéo lại công thức thành tiền.
+   */
+  const vatRaw = text(row.values.vat_rate);
+  const parsedVat = parseVatRate(row.values.vat_rate);
+  if (!parsedVat.ok) {
+    addError(row, `Thue suat GTGT [${vatRaw}] khong hop le. Chi nhan: ${VAT_RATE_CODES.join(", ")}`);
+    return;
+  }
+  const vatRate = parsedVat.rate;
+  if (vatRaw && !isInboundStockType(transactionType)) {
+    addError(row, "Cot Thue suat GTGT chi dung cho phieu nhap (NHAP_MUA, NHAP_KHAC)");
+  }
+  // Giữ lại đúng chữ KKKNT thay vì quy về ô trống: hai thứ cùng ra 0 đồng thuế nhưng KKKNT là
+  // khai có chủ đích, còn ô trống là chưa khai — người xem preview phải phân biệt được.
+  row.values.vat_rate = vatRaw ? (vatRate === null ? "KKKNT" : vatRateLabel(vatRate)) : "";
+
+  const unitCost = numberValue(row.values.unit_cost);
+  const expectedBeforeTax = roundVnd(quantity * unitCost);
+  const expectedVat = vatAmountOf(expectedBeforeTax, vatRate);
+  const expectedAfterTax = expectedBeforeTax + expectedVat;
+  // Lệch 1 đồng là chuyện làm tròn của Excel, không phải khai sai — chỉ bắt lỗi từ 2 đồng trở lên.
+  const roundingTolerance = 1;
+  if (text(row.values.amount_before_tax)) {
+    const declared = numberValue(row.values.amount_before_tax);
+    if (Math.abs(declared - expectedBeforeTax) > roundingTolerance) {
+      addError(row, `Thanh tien truoc thue (${declared.toLocaleString("vi-VN")}) khong bang So luong x Don gia (${expectedBeforeTax.toLocaleString("vi-VN")})`);
+    }
+  }
+  if (text(row.values.amount_after_tax)) {
+    const declared = numberValue(row.values.amount_after_tax);
+    if (Math.abs(declared - expectedAfterTax) > roundingTolerance) {
+      addError(row, `Thanh tien sau thue (${declared.toLocaleString("vi-VN")}) khong bang Thanh tien truoc thue x (1 + thue suat) (${expectedAfterTax.toLocaleString("vi-VN")})`);
+    }
+  }
+  // Điền số hệ thống sẽ dùng để người xem preview thấy đúng cái sắp được ghi, kể cả khi file
+  // không có hai cột này.
+  row.values.amount_before_tax = expectedBeforeTax;
+  row.values.amount_after_tax = expectedAfterTax;
 
   // Điều chuyển không nhận nhóm FINISHED: thành phẩm chỉ nhập từ chế biến, xuất qua bán/hủy.
   if (transactionType === "DIEU_CHUYEN" && item.itemType === "FINISHED") {

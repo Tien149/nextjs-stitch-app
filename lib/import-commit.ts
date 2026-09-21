@@ -6,6 +6,7 @@ import { ensureDefaultAccounts } from "@/lib/accounting";
 import { isMasterDataImportType, normalizeHeader, type ImportType } from "@/lib/import-templates";
 import { parseImportDate, type ParsedImportRow } from "@/lib/import-parser";
 import { normalizeStockTransactionType, postInventoryTransaction } from "@/lib/inventory-stock";
+import { parseVatRate } from "@/lib/inventory-vat";
 import { createPurchasePayable, removePurchasePayables } from "@/lib/purchase-payable";
 import { postStockTransfer } from "@/lib/inventory-transfer";
 import { writeAuditLog } from "@/lib/audit-log";
@@ -1460,12 +1461,18 @@ export async function commitImport(input: CommitInput) {
          * chuỗi loại + năm, không bao giờ cấp trúng mã đang sống.
          */
         const transactionCode = await nextStockDocCode(tx, prefix, transactionDate);
-        const lines = rows.map((row) => ({
-          itemCode: asText(row.values.item_code).toUpperCase(),
-          inputQuantity: asNumber(row.values.quantity),
-          inputUnitCode: asText(row.values.unit_code),
-          inputUnitCost: asNumber(row.values.unit_cost),
-        }));
+        const lines = rows.map((row) => {
+          // Bước xem trước đã chuẩn hoá ô này về "KKKNT" / "8%" và chặn mọi giá trị lạ, nên
+          // tới đây luôn đọc được; không đọc được thì coi như không có thuế.
+          const vat = parseVatRate(row.values.vat_rate);
+          return {
+            itemCode: asText(row.values.item_code).toUpperCase(),
+            inputQuantity: asNumber(row.values.quantity),
+            inputUnitCode: asText(row.values.unit_code),
+            inputUnitCost: asNumber(row.values.unit_cost),
+            vatRate: vat.ok ? vat.rate : null,
+          };
+        });
         // Điều chuyển đi qua postStockTransfer: chặn FINISHED + tự sinh công nợ nội bộ
         // khi kho nhận thuộc nhà hàng khác (preview đã điền to_branch_code).
         const transaction = transactionType === "DIEU_CHUYEN"

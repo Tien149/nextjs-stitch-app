@@ -1,6 +1,8 @@
 import type { TxClient } from "@/lib/prisma";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { safeConversionRate } from "@/lib/unit-conversion";
+import { vatAmountOf } from "@/lib/inventory-vat";
+import { roundVnd } from "@/lib/money-rounding";
 
 export const STOCK_TRANSACTION_TYPES = [
   "NHAP_MUA",
@@ -52,6 +54,11 @@ export type StockLineInput = {
   inputUnitCode?: unknown;
   unitCost?: unknown;
   inputUnitCost?: unknown;
+  /**
+   * Thue suat GTGT dau vao cua dong: so thap phan (0.08), `null` = KKKNT, `undefined` = khong
+   * khai. Chi co y nghia voi phieu NHAP; xem lib/inventory-vat.ts.
+   */
+  vatRate?: number | null;
 };
 
 export type PostInventoryTransactionInput = {
@@ -199,6 +206,16 @@ async function resolveStockLine(tx: Tx, line: StockLineInput) {
     quantity: inputQuantity * conversionRate,
     inputUnitCost: inputUnitCost || null,
     unitCost: inputUnitCost > 0 ? inputUnitCost / conversionRate : 0,
+    vatRate: line.vatRate ?? null,
+    /**
+     * Thue tinh tren SO LUONG x DON GIA KHAI TREN PHIEU, dung cong thuc khach chot
+     * ("Thanh tien sau thue = Thanh tien truoc thue x (1 + thue suat)").
+     *
+     * KHONG tinh tren `totalCost` sau dinh gia: dong don gia 0 (hang khuyen mai, tang kem)
+     * duoc dinh gia lai theo binh quan cua kho de gia von khong tut, nhung NCC khong xuat hoa
+     * don cho hang tang nen khong co dong thue nao phai tra.
+     */
+    vatAmount: vatAmountOf(roundVnd(inputQuantity * inputUnitCost), line.vatRate ?? null),
   };
 }
 
@@ -370,6 +387,8 @@ export async function postInventoryTransaction(tx: Tx, input: PostInventoryTrans
           inputUnitCost: line.inputUnitCost,
           unitCost: line.unitCost,
           totalCost: line.totalCost,
+          vatRate: line.vatRate,
+          vatAmount: line.vatAmount,
         })),
       },
     },
@@ -464,6 +483,8 @@ export async function repostInventoryTransaction(
           inputUnitCost: line.inputUnitCost,
           unitCost: line.unitCost,
           totalCost: line.totalCost,
+          vatRate: line.vatRate,
+          vatAmount: line.vatAmount,
         })),
       },
     },

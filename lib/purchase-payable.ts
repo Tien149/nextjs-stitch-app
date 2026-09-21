@@ -30,17 +30,24 @@ export type PurchasePayableSource = {
   partnerCode: string | null;
   referenceType?: string | null;
   referenceCode: string | null;
-  lines: Array<{ totalCost: number }>;
+  lines: Array<{ totalCost: number; vatAmount?: number | null }>;
 };
 
-/** Phiếu có thuộc diện sinh công nợ không, và nếu có thì bao nhiêu tiền. */
+/**
+ * Phiếu có thuộc diện sinh công nợ không, và nếu có thì bao nhiêu tiền.
+ *
+ * Số nợ là THÀNH TIỀN SAU THUẾ — đúng số trên hoá đơn NCC gửi và đúng số kế toán phải chuyển
+ * đi. Khách chốt 21/09/2026: giá vốn tồn kho giữ số trước thuế (`totalCost`), phần thuế GTGT
+ * đầu vào (`vatAmount`) chỉ cộng vào khoản phải trả. Dòng cũ chưa có cột thuế mang vatAmount
+ * = 0 nên số nợ của dữ liệu đã có không đổi.
+ */
 function payableAmountOf(transaction: PurchasePayableSource) {
   if (transaction.transactionType !== "NHAP_MUA") return 0;
   // Hàng nhận theo Đơn mua hàng đã có SupplierPayable (cột "Nhập hàng" trên bảng công nợ),
   // ghi thêm một khoản nữa ở đây là nợ NCC gấp đôi.
   if (transaction.referenceType === "PURCHASE_ORDER") return 0;
   if (!(transaction.partnerCode || "").trim()) return 0;
-  const amount = transaction.lines.reduce((sum, line) => sum + line.totalCost, 0);
+  const amount = transaction.lines.reduce((sum, line) => sum + line.totalCost + (line.vatAmount || 0), 0);
   return amount > 0 ? amount : 0;
 }
 

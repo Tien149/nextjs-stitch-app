@@ -5,6 +5,7 @@ import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { assertBranchAccess, requestedBranch } from "@/lib/accounting";
 import { commitImport, deleteRevenueImportDay, isUniqueConstraintError, rollbackImportBatch } from "@/lib/import-commit";
 import { getImportTemplate, type ImportType } from "@/lib/import-templates";
+import { VAT_RATE_OPTIONS } from "@/lib/inventory-vat";
 import { applyImportRowEdits, parseImportFile, type ImportRowEdit } from "@/lib/import-parser";
 import { validateImportResult } from "@/lib/import-validation";
 import { prisma } from "@/lib/prisma";
@@ -198,7 +199,8 @@ function templateExampleRows(templateCode: string): Array<Record<string, string 
   }
   if (templateCode === "INVENTORY_TRANSACTION_STANDARD_V1") {
     return [
-      { transaction_date: new Date("2026-07-22T00:00:00Z"), transaction_type: "NHAP_MUA", branch_code: "HCM", warehouse_code: "KHO_HCM", item_code: "NVL_NUOCSUOI", quantity: 20, unit_code: "thung", unit_cost: 120000, reference_code: "PNK-0001", partner_code: "NCC_FOOD", note: "Nhap mua nuoc suoi" },
+      { transaction_date: new Date("2026-07-22T00:00:00Z"), transaction_type: "NHAP_MUA", branch_code: "HCM", warehouse_code: "KHO_HCM", item_code: "NVL_NUOCSUOI", quantity: 20, unit_code: "thung", unit_cost: 120000, vat_rate: "8%", amount_before_tax: 2400000, amount_after_tax: 2592000, reference_code: "PNK-0001", partner_code: "NCC_FOOD", note: "Nhap mua nuoc suoi" },
+      { transaction_date: new Date("2026-07-22T00:00:00Z"), transaction_type: "NHAP_MUA", branch_code: "HCM", warehouse_code: "KHO_HCM", item_code: "NVL_DUONG", quantity: 5, unit_code: "kg", unit_cost: 24000, vat_rate: "KKKNT", amount_before_tax: 120000, amount_after_tax: 120000, reference_code: "PNK-0001", partner_code: "NCC_FOOD", note: "Nhap mua duong" },
       { transaction_date: new Date("2026-07-22T00:00:00Z"), transaction_type: "XUAT_HUY", branch_code: "HCM", warehouse_code: "KHO_HCM", item_code: "NVL_NUOCSUOI", quantity: 12, unit_code: "chai", reference_code: "HH-0001", note: "Huy hang vo chai" },
       { transaction_date: new Date("2026-07-22T00:00:00Z"), transaction_type: "DIEU_CHUYEN", branch_code: "HCM", warehouse_code: "KHO_HCM", to_warehouse_code: "KHO_HN", item_code: "NVL_NUOCSUOI", quantity: 2, unit_code: "thung", reference_code: "DCK-0001", note: "Dieu chuyen noi bo" },
     ];
@@ -304,6 +306,19 @@ function templateResponse(importType: ImportType, templateCode?: string) {
   ]);
   guide["!cols"] = [{ wch: 28 }, { wch: 12 }, { wch: 16 }, { wch: 26 }];
   XLSX.utils.book_append_sheet(workbook, guide, "Huong dan");
+  /**
+   * Danh sach thue suat de ngay trong file: thu vien xlsx ban cong dong KHONG ghi duoc Data
+   * Validation, nen khong tu tao san o xo xuong duoc. De mot sheet gia tri hop le thi ke toan
+   * tro Data > Data Validation > List vao day mot lan la co o xo xuong cho ca cot.
+   */
+  if (template.fields.some((field) => field.field === "vat_rate")) {
+    const vatSheet = XLSX.utils.aoa_to_sheet([
+      ["Thue suat GTGT", "Y nghia"],
+      ...VAT_RATE_OPTIONS.map((option) => [option.code, option.description]),
+    ]);
+    vatSheet["!cols"] = [{ wch: 18 }, { wch: 38 }];
+    XLSX.utils.book_append_sheet(workbook, vatSheet, "Thue suat GTGT");
+  }
   const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx", compression: true });
   const safeName = template.code.toLowerCase().replace(/[^a-z0-9]+/g, "_");
   return new NextResponse(buffer, {
