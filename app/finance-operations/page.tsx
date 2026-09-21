@@ -175,8 +175,18 @@ export default function FinanceOperationsPage() {
   /** Tra tên nguồn tiền theo mã: nhãn phí quyết toán ví đọc theo cả mã lẫn tên, giống báo cáo. */
   const moneySourceNameByCode = useMemo(() => new Map(moneySources.map((row) => [row.code, row.name])), [moneySources]);
   const [feeCategories, setFeeCategories] = useState<MasterDataOption[]>([]);
+  /** Khoản mục THU, để phiếu điều chỉnh quỹ chiều Thu (Tăng) cũng khai được khoản mục. */
+  const [receiptCategories, setReceiptCategories] = useState<MasterDataOption[]>([]);
   /** Hạng mục P&L để gắn cho khoản trích trước; thiếu nó thì số phân bổ không lên bảng chi phí. */
   const [pnlItems, setPnlItems] = useState<MasterDataOption[]>([]);
+  /**
+   * Toàn bộ hạng mục P&L kèm NHÓM ĐÃ SUY RA từ nhóm cha.
+   *
+   * Hạng mục khai ở màn Danh mục thường chỉ chọn nhóm cha (`subGroup`), ô `group` của chính nó
+   * để trống — lọc thẳng theo `group` là mất gần hết danh sách. Phiếu điều chỉnh quỹ dùng bản
+   * đã suy ra này, đồng thời cần cả nhóm Thu nhập khác cho chiều Thu (Tăng).
+   */
+  const [pnlItemsWithGroup, setPnlItemsWithGroup] = useState<Array<MasterDataOption & { effectiveGroup: string }>>([]);
   const [settlement, setSettlement] = useState({
     transferDate: new Date().toISOString().slice(0, 10),
     branchCode: "",
@@ -197,6 +207,9 @@ export default function FinanceOperationsPage() {
     branchCode: "",
     moneySourceCode: "",
     amount: "1000000",
+    // Khoản mục: để trống thì phiếu chỉ chỉnh số dư quỹ, không lên P&L (cách cũ).
+    categoryCode: "",
+    pnlItemCode: "",
     description: "Điều chỉnh kiểm kê quỹ",
   });
 
@@ -282,8 +295,23 @@ export default function FinanceOperationsPage() {
    * cửa hàng khác lúc nào không hay. Chỉ khi lọc "Tất cả cửa hàng" thì form mới để tự chọn.
    */
   const adjustmentBranchCode = branchCode === "ALL" ? adjustment.branchCode : branchCode;
+  /**
+   * Nguồn tiền chỉnh được: MỌI nguồn của cửa hàng, không riêng tiền mặt.
+   * Khoản chênh vặt hay gặp nhất nằm ở ngân hàng và ví (khách chuyển thiếu vài đồng), mà sổ quỹ
+   * vốn đã hiển thị đủ mọi nguồn — chặn ở tiền mặt chỉ làm kế toán không có đường ghi khoản đó.
+   */
+  /**
+   * Hạng mục P&L khai được cho phiếu điều chỉnh: Chi (Giảm) nhận nhóm chi phí, Thu (Tăng) nhận
+   * Thu nhập khác — cùng luật với phiếu thu/chi, khai ngược là khoản chênh đứng nhầm hẳn một
+   * khối trên KQKD.
+   */
+  const adjustmentPnlItems = useMemo(() => {
+    const allowed = adjustment.entryType === "PAYMENT" ? ["OPEX", "COGS", "OTHER_EXPENSE"] : ["OTHER_INCOME"];
+    return pnlItemsWithGroup.filter((item) => allowed.includes(item.effectiveGroup));
+  }, [pnlItemsWithGroup, adjustment.entryType]);
+
   const adjustmentCashSources = useMemo(
-    () => filterMoneySources(moneySources, adjustmentBranchCode, ["CASH"]),
+    () => filterMoneySources(moneySources, adjustmentBranchCode, ["CASH", "BANK", "WALLET"]),
     [moneySources, adjustmentBranchCode],
   );
   // Quỹ đã chọn của cửa hàng cũ không còn hợp lệ sau khi đổi cửa hàng -> rơi về quỹ đầu tiên.
@@ -398,8 +426,11 @@ export default function FinanceOperationsPage() {
   const loadMoneySources = useCallback(async () => {
     void fetch("/api/master-data?type=REVENUE_EXPENSE_CATEGORY&status=ACTIVE")
       .then((res) => (res.ok ? res.json() : []))
-      .then((items: MasterDataOption[]) => setFeeCategories(items.filter((item) => normalizeCashflowCategoryType(item.group) === "PAYMENT")))
-      .catch(() => setFeeCategories([]));
+      .then((items: MasterDataOption[]) => {
+        setFeeCategories(items.filter((item) => normalizeCashflowCategoryType(item.group) === "PAYMENT"));
+        setReceiptCategories(items.filter((item) => normalizeCashflowCategoryType(item.group) === "RECEIPT"));
+      })
+      .catch(() => { setFeeCategories([]); setReceiptCategories([]); });
     void fetch("/api/master-data?type=PNL_ITEM&status=ACTIVE")
       .then((res) => (res.ok ? res.json() : []))
       // CAPEX phải nằm trong danh sách: chi phí đầu tư ban đầu khai ở Số dư đầu kỳ chính là một
@@ -408,6 +439,18 @@ export default function FinanceOperationsPage() {
       // rỗng lên hạng mục kế toán đã khai bên Số dư đầu kỳ.
       .then((items: MasterDataOption[]) => setPnlItems(items.filter((item) => ["OPEX", "COGS", "CAPEX"].includes((item.group || "").toUpperCase()))))
       .catch(() => setPnlItems([]));
+    void Promise.all([
+      fetch("/api/master-data?type=PNL_ITEM&status=ACTIVE").then((res) => (res.ok ? res.json() : [])),
+      fetch("/api/master-data?type=PNL_GROUP").then((res) => (res.ok ? res.json() : [])),
+    ])
+      .then(([items, groups]: [Array<MasterDataOption & { subGroup?: string | null }>, MasterDataOption[]]) => {
+        const groupOf = new Map(groups.map((group) => [group.code, (group.group || "").toUpperCase()]));
+        setPnlItemsWithGroup(items.map((item) => ({
+          ...item,
+          effectiveGroup: (item.group || (item.subGroup ? groupOf.get(item.subGroup) : "") || "").toUpperCase(),
+        })));
+      })
+      .catch(() => setPnlItemsWithGroup([]));
     // Danh sách cửa hàng thật phải nạp ngay tại trang này. Mã mặc định trong các form dưới là
     // dữ liệu demo (HCM/HN): nếu không nắn về cửa hàng có thật thì ô Cửa hàng hiển thị cửa hàng
     // đầu danh sách trong khi state vẫn giữ mã demo, khiến ô Nguồn tiền lọc ra rỗng.
@@ -749,6 +792,8 @@ export default function FinanceOperationsPage() {
           branchCode: adjustment.branchCode,
           moneySourceCode: "",
           amount: "1000000",
+          categoryCode: "",
+          pnlItemCode: "",
           description: "Điều chỉnh kiểm kê quỹ",
         });
         await loadData();
@@ -1465,7 +1510,7 @@ export default function FinanceOperationsPage() {
                         onChange={(e) => setAdjustment({ ...adjustment, moneySourceCode: e.target.value })}
                         className="w-full pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all cursor-pointer"
                       >
-                        <option value="">-- Chọn quỹ tiền mặt --</option>
+                        <option value="">-- Chọn nguồn tiền --</option>
                         {adjustmentCashSources.map((source) => (
                           <option key={source.id || source.code} value={source.code} title={moneySourceDebugLabel(source, storeLabel(adjustmentBranchCode))}>
                             {moneySourceDisplayName(source, storeLabel(adjustmentBranchCode))}
@@ -1485,6 +1530,43 @@ export default function FinanceOperationsPage() {
                       onChange={(e) => setAdjustment({ ...adjustment, amount: e.target.value })}
                       required
                     />
+                  </div>
+
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-xs font-bold text-slate-600">
+                      Khoản mục {adjustment.entryType === "PAYMENT" ? "chi phí" : "thu"} (không bắt buộc)
+                    </span>
+                    <select
+                      value={adjustment.categoryCode}
+                      onChange={(e) => setAdjustment({ ...adjustment, categoryCode: e.target.value })}
+                      className="w-full pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all cursor-pointer"
+                    >
+                      <option value="">-- Không đưa vào P&L --</option>
+                      {(adjustment.entryType === "PAYMENT" ? feeCategories : receiptCategories).map((category) => (
+                        <option key={category.id || category.code} value={category.code}>{category.name}</option>
+                      ))}
+                    </select>
+                    <p className="text-[11px] text-slate-500">
+                      Khoản mục quyết định phiếu này đứng ở dòng nào trên Báo cáo nguồn tiền.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-xs font-bold text-slate-600">Hạng mục P&L (không bắt buộc)</span>
+                    <select
+                      value={adjustment.pnlItemCode}
+                      onChange={(e) => setAdjustment({ ...adjustment, pnlItemCode: e.target.value })}
+                      className="w-full pl-3 pr-8 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all cursor-pointer"
+                    >
+                      <option value="">-- Không đưa vào P&L --</option>
+                      {adjustmentPnlItems.map((item) => (
+                        <option key={item.id || item.code} value={item.code}>{item.name}</option>
+                      ))}
+                    </select>
+                    <p className="text-[11px] text-slate-500">
+                      Khai hạng mục thì khoản chênh này lên P&L đúng dòng; để trống thì chỉ đổi số dư quỹ như trước.
+                      P&L chỉ tính những dòng CÓ hạng mục.
+                    </p>
                   </div>
 
                   <div className="flex flex-col gap-1.5">

@@ -152,7 +152,10 @@ type RevenueSettlementRow = {
   date: string;
   moneySourceCode: string;
   moneySourceName: string;
+  branchCode?: string;
   group: string;
+  /** Phần chênh đã được đưa vào chi phí ngay trên bảng — đã trừ khỏi `remaining`. */
+  writtenOff?: number;
   revenue: number;
   received: number;
   /** Phần trong `received` là cọc cấn trừ / chuyển doanh thu đúng ngày — không có trên sao kê. */
@@ -181,6 +184,7 @@ type RevenueSettlementData = {
   branchCode: string;
   rows: RevenueSettlementRow[];
   looseVouchers?: RevenueSettlementLooseVoucher[];
+  expensePnlItems?: Array<{ code: string; name: string }>;
   totals: { revenue: number; received: number; remaining: number; waiting: number; fee: number; over: number; looseVoucherAmount?: number };
 };
 type MasterDataOption = { id: string; type: string; code: string; name: string; group: string | null; branch: string | null };
@@ -2068,20 +2072,21 @@ const settlementGroupNames: Record<string, string> = { CASH: "Tiền mặt", BAN
  * nhóm lại thì tiền không thiếu đồng nào.
  */
 function settlementGroupSubtotals(rows: RevenueSettlementRow[]) {
-  const byGroup = new Map<string, { group: string; count: number; revenue: number; received: number }>();
+  const byGroup = new Map<string, { group: string; count: number; revenue: number; received: number; writtenOff: number }>();
   for (const row of rows) {
     const key = row.group || "OTHER";
-    const current = byGroup.get(key) || { group: key, count: 0, revenue: 0, received: 0 };
+    const current = byGroup.get(key) || { group: key, count: 0, revenue: 0, received: 0, writtenOff: 0 };
     current.count += 1;
     current.revenue += row.revenue;
     current.received += row.received;
+    current.writtenOff += row.writtenOff || 0;
     byGroup.set(key, current);
   }
   // Nhóm chỉ có một dòng thì dòng cộng lặp lại y hệt dòng chi tiết — bỏ cho đỡ nhiễu.
   return [...byGroup.values()]
     .filter((row) => row.count > 1)
     .map((row) => {
-      const remaining = Math.round(row.revenue - row.received);
+      const remaining = Math.round(row.revenue - row.received - row.writtenOff);
       const status = Math.abs(remaining) < 1000
         ? ("MATCHED" as const)
         : remaining < 0
@@ -2579,6 +2584,53 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
   const pickedDraftables = draftableVouchers.filter((voucher) => pickedVouchers.includes(voucher.id));
 
   /**
+   * Khoản chênh vặt: tiền ĐÃ về nhưng thiếu vài đồng so với doanh thu (khách chuyển thiếu, ngân
+   * hàng làm tròn). Bảng vẫn báo VỀ ĐỦ vì chênh dưới 1.000 đ, nhưng số dư trên sổ cứ lệch dần
+   * so với sao kê và chi phí thì không ai ghi. Cho tick nhiều dòng rồi đẩy một lần vào chi phí.
+   *
+   * Chỉ nhận chênh DƯƠNG và DƯỚI 1.000 đ: chênh lớn là tiền chưa về thật hoặc phí ví (đã có
+   * Quyết toán ví lo), xoá sổ ở đây là giấu mất một khoản phải đòi.
+   */
+  const writeOffRows = data.rows.filter((row) => row.remaining > 0 && row.remaining < 1000 && row.received > 0 && row.branchCode);
+  const writeOffKey = (row: RevenueSettlementRow) => `${row.date}|${row.moneySourceCode}`;
+  const [pickedWriteOffs, setPickedWriteOffs] = useState<string[]>([]);
+  const [writeOffCategory, setWriteOffCategory] = useState("");
+  const [writingOff, setWritingOff] = useState(false);
+  const pickedWriteOffRows = writeOffRows.filter((row) => pickedWriteOffs.includes(writeOffKey(row)));
+  const pickedWriteOffTotal = pickedWriteOffRows.reduce((sum, row) => sum + row.remaining, 0);
+
+  const writeOffDifferences = async () => {
+    if (pickedWriteOffRows.length === 0 || !writeOffCategory) return;
+    if (!window.confirm(`Đưa ${money(pickedWriteOffTotal)} đ của ${pickedWriteOffRows.length} dòng vào chi phí? Mỗi dòng sinh một phiếu Điều chỉnh quỹ riêng ở Sổ quỹ.`)) return;
+    setWritingOff(true);
+    setLinkError("");
+    try {
+      const response = await fetch("/api/finance-operations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "CREATE_SETTLEMENT_ADJUSTMENTS",
+          pnlItemCode: writeOffCategory,
+          entries: pickedWriteOffRows.map((row) => ({
+            entryDate: row.date,
+            branchCode: row.branchCode,
+            moneySourceCode: row.moneySourceCode,
+            amount: row.remaining,
+          })),
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error || "Không ghi được khoản chênh vào chi phí");
+      setPickedWriteOffs([]);
+      onLinked();
+    } catch (error) {
+      setLinkError(error instanceof Error ? error.message : "Không ghi được khoản chênh vào chi phí");
+    } finally {
+      setWritingOff(false);
+    }
+  };
+
+  /**
    * Dựng dòng sao kê từ chính các phiếu đã tick rồi nối luôn — lối thoát khi sao kê của tài
    * khoản đó chưa import mà kế toán không muốn đi làm file Excel cho vài dòng.
    *
@@ -2792,10 +2844,53 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
           title="Tiền về đủ chưa"
           subtitle="Mỗi ngày, mỗi phương thức thanh toán: doanh thu ghi nhận bao nhiêu, tiền thực về bao nhiêu, phần chênh là phí thu hộ hay tiền chưa về. Doanh thu lấy từ import POS, tiền về lấy từ sổ sao kê — hai luồng độc lập. Bill trả bằng tiền cọc (cấn trừ / chuyển doanh thu) được cộng vào tiền đã vô của ngày cấn trừ, vì khách đã chuyển tiền từ ngày đặt cọc. Dòng “Cộng theo Nhóm/Loại” gộp các nguồn chi tiết lại để biết cả nhóm đã thu đủ tiền chưa, kể cả khi ngân hàng trả gộp nhiều nguồn trong một lần chuyển."
         />
+        {writeOffRows.length > 0 && (
+          <div className="mx-5 mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex-1 min-w-[260px]">
+                <b className="text-sm text-amber-900">
+                  {writeOffRows.length} dòng khách chuyển thiếu vài đồng ({money(writeOffRows.reduce((sum, row) => sum + row.remaining, 0))} đ)
+                </b>
+                <p className="mt-0.5 text-xs text-amber-800">
+                  Chênh dưới 1.000 đ nên bảng vẫn báo VỀ ĐỦ, nhưng số dư trên sổ cứ lệch dần so với sao kê.
+                  Tick các dòng rồi chọn hạng mục P&L để ghi thẳng vào chi phí — mỗi dòng sinh một phiếu Điều chỉnh quỹ ở Sổ quỹ.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPickedWriteOffs(pickedWriteOffs.length === writeOffRows.length ? [] : writeOffRows.map(writeOffKey))}
+                className="rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-bold text-amber-900 hover:bg-amber-100"
+              >
+                {pickedWriteOffs.length === writeOffRows.length ? "Bỏ chọn tất cả" : "Chọn tất cả"}
+              </button>
+              <select
+                value={writeOffCategory}
+                onChange={(event) => setWriteOffCategory(event.target.value)}
+                className="rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-bold text-amber-900"
+                aria-label="Hạng mục P&L cho khoản chênh"
+              >
+                <option value="">-- Chọn hạng mục P&L --</option>
+                {(data.expensePnlItems || []).map((item) => (
+                  <option key={item.code} value={item.code}>{item.name}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => void writeOffDifferences()}
+                disabled={writingOff || pickedWriteOffRows.length === 0 || !writeOffCategory}
+                title={!writeOffCategory ? "Chọn hạng mục P&L trước" : pickedWriteOffRows.length === 0 ? "Tick ít nhất một dòng" : undefined}
+                className="rounded-lg bg-amber-600 px-3 py-2 text-xs font-bold text-white hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {writingOff ? "Đang ghi..." : `Đưa vào chi phí (${pickedWriteOffRows.length})`}
+              </button>
+            </div>
+          </div>
+        )}
         <div className="overflow-x-auto">
-          <Table headers={["Ngày", "Phương thức thanh toán", "Loại nguồn", "Doanh thu trong ngày", "Tiền đã vô", "Còn lại", "Tên chi phí", "Trạng thái"]}>
+          <Table headers={[writeOffRows.length > 0 ? "" : "·", "Ngày", "Phương thức thanh toán", "Loại nguồn", "Doanh thu trong ngày", "Tiền đã vô", "Còn lại", "Tên chi phí", "Trạng thái"]}>
             {data.rows.length === 0 && (
               <tr className="border-t border-slate-100">
+                <Cell>-</Cell>
                 <Cell>Chưa có doanh thu hoặc tiền về trong kỳ.</Cell>
                 <Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell>
               </tr>
@@ -2803,6 +2898,18 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
             {[...byDay.entries()].map(([day, rows]) => [
               ...rows.map((row, index) => (
                 <tr key={`${row.date}-${row.moneySourceCode}`} className={`border-t border-slate-100 hover:bg-slate-50 ${index === 0 ? "border-t-slate-200" : ""}`}>
+                  <Cell>
+                    {writeOffRows.some((candidate) => writeOffKey(candidate) === writeOffKey(row)) ? (
+                      <input
+                        type="checkbox"
+                        checked={pickedWriteOffs.includes(writeOffKey(row))}
+                        onChange={(event) => setPickedWriteOffs(event.target.checked
+                          ? [...pickedWriteOffs, writeOffKey(row)]
+                          : pickedWriteOffs.filter((key) => key !== writeOffKey(row)))}
+                        aria-label={`Chọn khoản chênh ${row.moneySourceName} ngày ${dayLabel(row.date)}`}
+                      />
+                    ) : <span className="text-slate-200">·</span>}
+                  </Cell>
                   <Cell>{index === 0 ? <b>{dayLabel(day)}</b> : <span className="text-slate-300">·</span>}</Cell>
                   <Cell><b>{row.moneySourceName}</b><p className="mt-0.5 text-xs text-slate-500">{row.moneySourceCode}</p></Cell>
                   <Cell><SourceGroupTag group={row.group} /></Cell>
@@ -2819,6 +2926,9 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
                     <b className={row.remaining > 0 ? "text-amber-700" : row.remaining < 0 ? "text-rose-600" : "text-slate-400"}>
                       {money(row.remaining)} đ
                     </b>
+                    {(row.writtenOff || 0) > 0 && (
+                      <p className="mt-0.5 text-xs text-slate-500">đã đưa {money(row.writtenOff || 0)} đ vào chi phí</p>
+                    )}
                   </Cell>
                   <Cell>{row.feeCategoryName || <span className="text-slate-300">—</span>}</Cell>
                   <Cell right>
@@ -2841,6 +2951,7 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
               )),
               ...settlementGroupSubtotals(rows).map((subtotal) => (
                 <tr key={`${day}-group-${subtotal.group}`} className="border-t border-slate-100 bg-slate-50/70">
+                  <Cell><span className="text-slate-200">·</span></Cell>
                   <Cell><span className="text-slate-300">·</span></Cell>
                   <Cell>
                     <b className="text-slate-700">Cộng {settlementGroupNames[subtotal.group] || subtotal.group}</b>
@@ -2876,6 +2987,7 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
             ])}
             {data.rows.length > 0 && (
               <tr className="border-t border-slate-200 bg-slate-50 font-bold">
+                <Cell><span className="text-slate-200">·</span></Cell>
                 <Cell><b>TỔNG</b></Cell>
                 <Cell><span className="text-xs font-normal text-slate-500">{data.rows.length} dòng</span></Cell>
                 <Cell>-</Cell>

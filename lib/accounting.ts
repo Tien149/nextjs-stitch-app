@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { addPeriod, businessError, isPeriodLocked, periodFromDate } from "@/lib/phase3";
 import type { DemoSession } from "@/lib/auth-demo";
-import { advanceReceivableCounterpartJournal, voucherJournalLines } from "@/lib/voucher-accounting";
+import { advanceReceivableCounterpartJournal, cashAccountFor, voucherJournalLines } from "@/lib/voucher-accounting";
 import { normalizeCategoryGroup } from "@/lib/voucher-rules";
 import { moneySourceAccountCode } from "@/lib/money-sources";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
@@ -453,6 +453,53 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
    * Số tiền lấy `originalAmount`: chi phí ghi nhận một lần theo số gốc, các lần trả tiền sau đó
    * chỉ rút dần 331 xuống.
    */
+  /**
+   * Phiếu ĐIỀU CHỈNH QUỸ có khai khoản mục: khoản chênh vặt được ghi thẳng vào chi phí / thu
+   * nhập khác thay vì chỉ nằm ở số dư quỹ.
+   *
+   * Dùng cho những khoản mà tiền đã lệch thật nhưng không có chứng từ nào đứng tên: khách
+   * chuyển thiếu vài đồng, chênh lệch làm tròn khi nộp tiền, kiểm kê quỹ lệch (khách hỏi
+   * 21/09/2026). Phiếu KHÔNG khai khoản mục thì vẫn không sinh bút toán — giữ nguyên cách hiểu
+   * của những phiếu đã ghi từ trước.
+   */
+  const classifiedAdjustments = await prisma.cashbookAdjustment.findMany({
+    where: {
+      ...branchFilter,
+      entryDate: { gte: start, lt: end },
+      OR: [{ categoryCode: { not: null } }, { pnlItemCode: { not: null } }],
+    },
+  });
+  for (const row of classifiedAdjustments) {
+    const group = row.pnlItemCode
+      ? pnlItemGroupByCode.get(row.pnlItemCode) ?? null
+      : (row.categoryCode ? categoryGroupByCode.get(row.categoryCode) ?? null : null);
+    const cashAccount = cashAccountFor(row.moneySourceCode);
+    // Chi (Giảm): tiền ra khỏi quỹ mà không có phiếu chi -> ghi chi phí. Thu (Tăng): tiền vào
+    // quỹ không có phiếu thu -> thu nhập khác. Cùng luật chọn tài khoản với phiếu thu/chi.
+    const counterAccount = row.entryType === "PAYMENT"
+      ? (group === "COGS" ? "632" : group === "OTHER_EXPENSE" ? "811" : "6428")
+      : "711";
+    const lines = row.entryType === "PAYMENT"
+      ? [
+        { accountCode: counterAccount, debit: row.amount, categoryCode: row.categoryCode, pnlItemCode: row.pnlItemCode },
+        { accountCode: cashAccount, credit: row.amount },
+      ]
+      : [
+        { accountCode: cashAccount, debit: row.amount },
+        { accountCode: counterAccount, credit: row.amount, categoryCode: row.categoryCode, pnlItemCode: row.pnlItemCode },
+      ];
+    results.push(await postJournalEntry({
+      entryDate: row.entryDate,
+      branchCode: row.branchCode,
+      sourceType: "CASHBOOK_ADJUSTMENT",
+      sourceId: row.id,
+      sourceCode: row.code,
+      description: row.description,
+      createdBy: actor,
+      lines,
+    }));
+  }
+
   const manualPayables = await prisma.debtRecord.findMany({
     where: { ...branchFilter, debtType: "PAYABLE", recognizeExpense: true, documentDate: { gte: start, lt: end } },
   });

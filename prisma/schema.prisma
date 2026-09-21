@@ -1101,6 +1101,14 @@ model CashbookAdjustment {
   branchCode      String
   moneySourceCode String
   amount          Float
+  /// Khoản mục thu/chi của khoản chênh. Trống = chỉ chỉnh số dư quỹ, không lên P&L (cách cũ).
+  categoryCode    String?
+  /// Hạng mục P&L: quyết định khoản chênh đứng ở dòng nào trên KQKD.
+  pnlItemCode     String?
+  /// Nghiệp vụ sinh ra phiếu. REVENUE_SETTLEMENT = đẩy khoản chênh tiền về từ bảng
+  /// "Tiền về đủ chưa"; trống = kế toán lập tay trên Sổ quỹ. Bảng đó trừ lại đúng những phiếu
+  /// mang mã này để một khoản chênh không bị đưa vào chi phí hai lần.
+  sourceType      String?
   description     String
   createdBy       String?
   createdAt       DateTime @default(now())

@@ -716,7 +716,7 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
   const monthIndexOf = (date: Date) => months.indexOf(periodOfDate(date));
 
-  const [vouchers, pendingVouchers, categories, partners, moneySources, posRevenues, manualEntries, adjustments, transfers, openingBySource, walletSettlements, depositHistories, bankAllocationRows, legacyBankRows, cashRemainingTargets, voucherPartnerAllocations, reconciledVoucherLinks] =
+  const [vouchers, pendingVouchers, categories, partners, moneySources, posRevenues, manualEntries, adjustments, pnlItemCatalogForAdjustments, transfers, openingBySource, walletSettlements, depositHistories, bankAllocationRows, legacyBankRows, cashRemainingTargets, voucherPartnerAllocations, reconciledVoucherLinks] =
     await Promise.all([
       prisma.financialVoucher.findMany({
         where: {
@@ -754,8 +754,11 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
       }),
       prisma.cashbookAdjustment.findMany({
         where: { ...branchFilter, entryDate: { gte: start, lt: end } },
-        select: { entryDate: true, entryType: true, amount: true, moneySourceCode: true },
+        select: { entryDate: true, entryType: true, amount: true, moneySourceCode: true, categoryCode: true, pnlItemCode: true },
       }),
+      // Tên hạng mục P&L, để phiếu điều chỉnh quỹ chỉ khai hạng mục vẫn đứng đúng tên trên
+      // Báo cáo nguồn tiền thay vì rơi vào "Chưa phân loại".
+      prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true } }),
       // Phiếu điều tiền liên nhà hàng do cửa hàng bên kia lập vẫn ảnh hưởng nguồn tiền của
       // cửa hàng đang xem, nên phải lấy theo cả hai đầu rồi mới lọc vế bên dưới.
       prisma.moneyTransfer.findMany({
@@ -1132,16 +1135,28 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     if (!category && !rowIsDepositRefund) bumpUnclassified(expectedType, "bankStatement", amount);
   }
 
+  const pnlItemNameByCode = new Map(pnlItemCatalogForAdjustments.map((item) => [item.code, item.name]));
   for (const row of adjustments) {
     const expectedType = row.entryType === "RECEIPT" ? ("RECEIPT" as const) : ("PAYMENT" as const);
+    /**
+     * Phiếu có khai khoản mục thì đứng đúng tên khoản mục đó. Khai mỗi HẠNG MỤC P&L (đường đẩy
+     * khoản chênh vặt từ bảng "Tiền về đủ chưa") thì mượn luôn tên hạng mục — vẫn hơn hẳn việc
+     * nằm im ở "Chưa phân loại". Chỉ phiếu chưa khai gì mới rơi vào rổ chưa phân loại như trước.
+     */
+    const category = resolveCategory(row.categoryCode, expectedType)
+      || (row.pnlItemCode && pnlItemNameByCode.has(row.pnlItemCode)
+        ? { code: row.pnlItemCode, name: pnlItemNameByCode.get(row.pnlItemCode) as string }
+        : null);
     recordFlow(
       expectedType,
-      { key: unclassifiedKey, name: "Chưa phân loại", group: expectedType },
+      category
+        ? { key: category.code, name: category.name, group: expectedType }
+        : { key: unclassifiedKey, name: "Chưa phân loại", group: expectedType },
       row.moneySourceCode,
       row.entryDate,
       row.amount,
     );
-    bumpUnclassified(expectedType, "adjustment", row.amount);
+    if (!category) bumpUnclassified(expectedType, "adjustment", row.amount);
   }
 
   for (const row of transfers) {
@@ -1520,6 +1535,8 @@ export type RevenueSettlementRow = {
   date: string;
   moneySourceCode: string;
   moneySourceName: string;
+  /** Cửa hàng của nguồn tiền — cần khi lập phiếu điều chỉnh cho khoản chênh ngay trên bảng. */
+  branchCode: string;
   group: string;
   /** Doanh thu bán hàng ghi nhận trong ngày theo phương thức thanh toán. */
   revenue: number;
@@ -1531,6 +1548,8 @@ export type RevenueSettlementRow = {
    * xem hiểu vì sao "tiền đã vô" nhiều hơn sao kê.
    */
   depositApplied: number;
+  /** Phần chênh đã được kế toán đưa vào chi phí ngay trên bảng này — không còn phải đòi. */
+  writtenOff: number;
   /** Chênh lệch: phí thu hộ, hoặc tiền chưa về. */
   remaining: number;
   feeCategoryCode: string | null;
@@ -1875,7 +1894,7 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
   const { start, end } = periodBounds(period);
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
 
-  const [moneySources, posRevenues, allocations, cashReceipts, reconciledVoucherLinks, depositApplications, feeCategories] = await Promise.all([
+  const [moneySources, posRevenues, allocations, cashReceipts, reconciledVoucherLinks, depositApplications, feeCategories, pnlItemCatalog, pnlGroupCatalog, settledDifferences] = await Promise.all([
     prisma.masterDataItem.findMany({
       where: { type: "MONEY_SOURCE", status: "ACTIVE" },
       select: { code: true, name: true, group: true, branch: true },
@@ -1935,6 +1954,24 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
       where: { type: "REVENUE_EXPENSE_CATEGORY", code: { in: [WALLET_CARD_FEE_CATEGORY_CODE, WALLET_GRAB_EXPENSE_CATEGORY_CODE] } },
       select: { code: true, name: true },
     }),
+    // Hạng mục P&L nhóm chi phí: bảng này cho kế toán đẩy khoản chênh vặt (khách chuyển thiếu
+    // vài đồng) vào chi phí ngay tại chỗ. Phải là HẠNG MỤC chứ không phải khoản mục thu/chi —
+    // P&L chỉ tính những dòng CÓ hạng mục (luật chốt 20/09/2026).
+    prisma.masterDataItem.findMany({
+      where: { type: "PNL_ITEM", status: "ACTIVE" },
+      select: { code: true, name: true, group: true, subGroup: true },
+      orderBy: { name: "asc" },
+    }),
+    prisma.masterDataItem.findMany({
+      where: { type: "PNL_GROUP" },
+      select: { code: true, group: true },
+    }),
+    // Khoản chênh đã được đưa vào chi phí từ chính bảng này: trừ lại để dòng đó hết chênh và
+    // không ai tick lần hai.
+    prisma.cashbookAdjustment.findMany({
+      where: { ...branchFilter, entryDate: { gte: start, lt: end }, entryType: "PAYMENT", sourceType: "REVENUE_SETTLEMENT" },
+      select: { entryDate: true, moneySourceCode: true, amount: true },
+    }),
   ]);
 
   // Doanh thu import và sao kê lưu UTC midnight, phiếu thu có thể lưu nửa đêm giờ Việt Nam.
@@ -1952,7 +1989,7 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
   };
 
   const cells = new Map<string, RevenueSettlementRow>();
-  const touch = (date: string, source: { code: string; name: string; group?: string | null }) => {
+  const touch = (date: string, source: { code: string; name: string; group?: string | null; branch?: string | null }) => {
     const key = `${date}|${source.code}`;
     const current = cells.get(key);
     if (current) return current;
@@ -1960,10 +1997,14 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
       date,
       moneySourceCode: source.code,
       moneySourceName: source.name,
+      // Cửa hàng của chính nguồn tiền: xem ở phạm vi "Tất cả cửa hàng" thì mỗi dòng vẫn phải
+      // biết nó thuộc cửa hàng nào để lập được phiếu điều chỉnh đúng chỗ.
+      branchCode: source.branch || (branchCode === "ALL" ? "" : branchCode),
       group: normalizeMoneySourceGroup(source.group),
       revenue: 0,
       received: 0,
       depositApplied: 0,
+      writtenOff: 0,
       remaining: 0,
       feeCategoryCode: null,
       feeCategoryName: null,
@@ -2107,11 +2148,19 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
     cell.depositApplied += amount;
   }
 
+  for (const row of settledDifferences) {
+    const source = sourceByCode.get(row.moneySourceCode);
+    if (!source || !moneySourceMatchesBranch(source, branchCode)) continue;
+    touch(dayKey(row.entryDate), source).writtenOff += row.amount;
+  }
+
   const feeNameByCode = new Map(feeCategories.map((row) => [row.code, row.name]));
   const rows = [...cells.values()]
     .filter((row) => Math.abs(row.revenue) > 0.5 || Math.abs(row.received) > 0.5)
     .map((row) => {
-      const remaining = Math.round(row.revenue - row.received);
+      // Khoản đã đưa vào chi phí coi như đã xử xong: trừ khỏi phần chênh, nhưng KHÔNG cộng vào
+      // "Tiền đã vô" — tiền đó không hề về, chỉ là mình thôi đòi.
+      const remaining = Math.round(row.revenue - row.received - row.writtenOff);
       const isGrab = isGrabMoneySource(row.moneySourceCode, row.moneySourceName);
       const feeCategoryCode = row.group === "WALLET" && remaining > 0
         ? (isGrab ? WALLET_GRAB_EXPENSE_CATEGORY_CODE : WALLET_CARD_FEE_CATEGORY_CODE)
@@ -2121,6 +2170,7 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
         revenue: Math.round(row.revenue),
         received: Math.round(row.received),
         depositApplied: Math.round(row.depositApplied),
+        writtenOff: Math.round(row.writtenOff),
         remaining,
         feeCategoryCode,
         feeCategoryName: feeCategoryCode ? feeNameByCode.get(feeCategoryCode) || feeCategoryCode : null,
@@ -2142,6 +2192,16 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
     branchCode,
     rows,
     looseVouchers,
+    // Hạng mục P&L nhóm chi phí, để chọn khi đẩy khoản chênh vặt vào chi phí ngay trên bảng này.
+    expensePnlItems: (() => {
+      const groupOf = new Map(pnlGroupCatalog.map((group) => [group.code, (group.group || "").toUpperCase()]));
+      return pnlItemCatalog
+        .filter((item) => {
+          const group = (item.group || (item.subGroup ? groupOf.get(item.subGroup) : "") || "").toUpperCase();
+          return ["OPEX", "COGS", "OTHER_EXPENSE"].includes(group);
+        })
+        .map((item) => ({ code: item.code, name: item.name }));
+    })(),
     totals: {
       revenue: rows.reduce((sum, row) => sum + row.revenue, 0),
       looseVoucherAmount: looseVouchers.reduce((sum, row) => sum + row.amount, 0),

@@ -10,6 +10,7 @@ import { filterCashierCashSources, isCashierRoleName, moneySourceDisplayName, mo
 import { scopePayloadByTab } from "@/lib/tab-scope";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
 import { cashDepositRoundingExpense, cashDepositUnit, roundCashDepositAmount } from "@/lib/cash-deposit";
+import { roundVnd } from "@/lib/money-rounding";
 import { completePendingReconciliation, releasePendingReconciliation } from "@/lib/reconciliation-links";
 import { cashOpeningBalance } from "@/lib/cash-opening-balance";
 import { parseImportDate } from "@/lib/import-parser";
@@ -223,6 +224,44 @@ export async function GET(request: Request) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });
   }
+}
+
+/**
+ * Khoản mục + hạng mục P&L của phiếu điều chỉnh quỹ.
+ *
+ * Để trống cả hai = chỉ chỉnh số dư quỹ, không lên P&L (đúng cách hiểu cũ, phiếu đã ghi không
+ * đổi). Khai thì phải khai mã có thật, và hạng mục phải đúng chiều: Chi (Giảm) chỉ nhận hạng
+ * mục chi phí, Thu (Tăng) chỉ nhận thu nhập khác — khai ngược là khoản chênh đứng nhầm hẳn một
+ * khối trên KQKD.
+ */
+const ADJUSTMENT_PNL_GROUPS: Record<string, { groups: string[]; label: string }> = {
+  PAYMENT: { groups: ["OPEX", "COGS", "OTHER_EXPENSE"], label: "OPEX, Giá vốn hoặc Chi phí khác" },
+  RECEIPT: { groups: ["OTHER_INCOME"], label: "Thu nhập khác" },
+};
+
+async function resolveAdjustmentCategory(entryType: string, categoryCode: string, pnlItemCode: string) {
+  if (!categoryCode && !pnlItemCode) return { categoryCode: null, pnlItemCode: null };
+  if (categoryCode) {
+    const category = await prisma.masterDataItem.findFirst({
+      where: { type: "REVENUE_EXPENSE_CATEGORY", code: categoryCode, status: "ACTIVE" },
+    });
+    if (!category) businessError(`Khoản mục thu/chi [${categoryCode}] không tồn tại hoặc đã ngưng`);
+  }
+  if (pnlItemCode) {
+    const allowed = ADJUSTMENT_PNL_GROUPS[entryType];
+    const pnlItem = await prisma.masterDataItem.findFirst({
+      where: { type: "PNL_ITEM", code: pnlItemCode, status: "ACTIVE" },
+    });
+    if (!pnlItem) businessError(`Hạng mục P&L [${pnlItemCode}] không tồn tại hoặc đã ngưng`);
+    const parentGroup = pnlItem!.subGroup
+      ? (await prisma.masterDataItem.findFirst({ where: { type: "PNL_GROUP", code: pnlItem!.subGroup }, select: { group: true } }))?.group || ""
+      : "";
+    const group = (pnlItem!.group || parentGroup || "").toUpperCase();
+    if (allowed && !allowed.groups.includes(group)) {
+      businessError(`Điều chỉnh ${entryType === "PAYMENT" ? "Chi (Giảm)" : "Thu (Tăng)"} chỉ nhận hạng mục P&L thuộc nhóm ${allowed.label}`);
+    }
+  }
+  return { categoryCode: categoryCode || null, pnlItemCode: pnlItemCode || null };
 }
 
 function entryTypeToReceipt(entryType: string, amount: number) {
@@ -1222,9 +1261,16 @@ export async function POST(request: Request) {
       if (!moneySource || !moneySourceMatchesBranch(moneySource, branchCode)) {
         businessError(`Nguồn tiền [${moneySourceCode}] không tồn tại hoặc không thuộc cửa hàng đã chọn`);
       }
-      if (normalizeMoneySourceGroup(moneySource.group) !== "CASH") {
-        businessError("Sổ quỹ chỉ được điều chỉnh các nguồn tiền mặt.");
-      }
+      // Trước đây chỉ cho chỉnh nguồn TIỀN MẶT. Nhưng khoản chênh vặt hay gặp nhất lại nằm ở
+      // ngân hàng và ví (khách chuyển thiếu vài đồng), mà sổ quỹ vốn đã hiển thị đủ mọi nguồn
+      // tiền — chặn ở đây chỉ làm kế toán không có đường ghi khoản chênh đó (khách hỏi 21/09/2026).
+      const entryType = cleanText(body.entryType).toUpperCase() || "RECEIPT";
+      if (!["RECEIPT", "PAYMENT"].includes(entryType)) businessError("Loại điều chỉnh chỉ nhận Thu (Tăng) hoặc Chi (Giảm)");
+      const classification = await resolveAdjustmentCategory(
+        entryType,
+        cleanText(body.categoryCode).toUpperCase(),
+        cleanText(body.pnlItemCode).toUpperCase(),
+      );
 
       if (await isPeriodLocked(entryDate, branchCode)) businessError("Kỳ kế toán đã khóa");
       const dcqPrefix = voucherCodePrefix({ voucherType: "DCQ1", voucherDate: entryDate, branchCode });
@@ -1233,16 +1279,87 @@ export async function POST(request: Request) {
         data: {
           code: dcqPrefix + String(nextSeqFromCodes(issuedDcq.map((row) => row.code), dcqPrefix)).padStart(5, "0"),
           entryDate,
-          entryType: cleanText(body.entryType) || "RECEIPT",
+          entryType,
           branchCode,
           moneySourceCode,
           amount: toNumber(body.amount),
+          categoryCode: classification.categoryCode,
+          pnlItemCode: classification.pnlItemCode,
           description: cleanText(body.description),
           createdBy: auth.session.name,
         },
       });
       await writeAuditLog({ session: auth.session, module: "FINANCE_OPERATIONS", action: "CREATE_ADJUSTMENT", entityType: "CashbookAdjustment", entityId: result.id, entityCode: result.code, branchCode, metadata: { amount: result.amount, entryType: result.entryType, moneySourceCode: result.moneySourceCode } });
       return NextResponse.json(result, { status: 201 });
+    }
+
+    /**
+     * Đẩy các khoản chênh vặt trên bảng "Tiền về đủ chưa" vào chi phí, nhiều dòng một lần.
+     *
+     * Khách chuyển thiếu vài đồng thì không có chứng từ nào đứng tên khoản đó: bảng báo cáo vẫn
+     * hiện VỀ ĐỦ (chênh dưới 1.000 đ được bỏ qua) nhưng số dư ngân hàng trên sổ lệch dần so với
+     * sao kê, và chi phí thì không bao giờ được ghi (khách hỏi 21/09/2026). Mỗi dòng sinh một
+     * phiếu Điều chỉnh quỹ riêng theo đúng ngày + nguồn tiền để còn truy ngược được.
+     */
+    if (action === "CREATE_SETTLEMENT_ADJUSTMENTS") {
+      const entries = (Array.isArray(body.entries) ? body.entries : []) as Array<Record<string, unknown>>;
+      if (entries.length === 0) businessError("Chưa chọn dòng chênh lệch nào.");
+      if (entries.length > 200) businessError("Mỗi lần chỉ xử tối đa 200 dòng.");
+      const categoryCode = cleanText(body.categoryCode).toUpperCase();
+      const pnlItemCode = cleanText(body.pnlItemCode).toUpperCase();
+      // Bắt buộc HẠNG MỤC P&L: P&L chỉ tính những dòng có hạng mục, khai mỗi khoản mục thu/chi
+      // thì khoản chênh vẫn không lên KQKD (luật chốt 20/09/2026).
+      if (!pnlItemCode) businessError("Chọn hạng mục P&L cho khoản chênh — thiếu nó thì khoản này không lên P&L.");
+      const classification = await resolveAdjustmentCategory("PAYMENT", categoryCode, pnlItemCode);
+
+      const prepared = [];
+      for (const entry of entries) {
+        const entryDate = toDate(entry.entryDate);
+        const branchCode = cleanText(entry.branchCode);
+        const moneySourceCode = cleanText(entry.moneySourceCode);
+        const amount = roundVnd(toNumber(entry.amount));
+        if (!branchCode || !moneySourceCode) businessError("Dòng chênh lệch thiếu cửa hàng hoặc nguồn tiền.");
+        if (amount <= 0) businessError(`Dòng ${moneySourceCode} có số chênh ${amount} — chỉ đẩy được khoản khách chuyển THIẾU vào chi phí.`);
+        assertBranchAccess(auth.session, branchCode);
+        const moneySource = await prisma.masterDataItem.findFirst({
+          where: { type: "MONEY_SOURCE", code: moneySourceCode, status: "ACTIVE" },
+        });
+        if (!moneySource || !moneySourceMatchesBranch(moneySource, branchCode)) {
+          businessError(`Nguồn tiền [${moneySourceCode}] không tồn tại hoặc không thuộc cửa hàng đã chọn`);
+        }
+        if (await isPeriodLocked(entryDate, branchCode)) businessError(`Kỳ kế toán của ${branchCode} ngày ${entryDate.toISOString().slice(0, 10)} đã khóa.`);
+        prepared.push({ entryDate, branchCode, moneySourceCode, amount, sourceName: moneySource!.name || moneySourceCode });
+      }
+
+      const created = [];
+      for (const entry of prepared) {
+        const dcqPrefix = voucherCodePrefix({ voucherType: "DCQ1", voucherDate: entry.entryDate, branchCode: entry.branchCode });
+        const issuedDcq = await prisma.cashbookAdjustment.findMany({ where: { code: { startsWith: dcqPrefix } }, select: { code: true } });
+        const result = await prisma.cashbookAdjustment.create({
+          data: {
+            code: dcqPrefix + String(nextSeqFromCodes(issuedDcq.map((row) => row.code), dcqPrefix)).padStart(5, "0"),
+            entryDate: entry.entryDate,
+            entryType: "PAYMENT",
+            branchCode: entry.branchCode,
+            moneySourceCode: entry.moneySourceCode,
+            amount: entry.amount,
+            ...classification,
+            // Đánh dấu nguồn để bảng "Tiền về đủ chưa" trừ lại đúng những khoản đã xử,
+            // không cho tick lần hai rồi ghi chi phí hai lần cho cùng một khoản chênh.
+            sourceType: "REVENUE_SETTLEMENT",
+            description: cleanText(body.description)
+              || `Chênh lệch tiền về ${entry.sourceName} ngày ${entry.entryDate.toLocaleDateString("vi-VN", { timeZone: "UTC" })}`,
+            createdBy: auth.session.name,
+          },
+        });
+        created.push(result);
+        await writeAuditLog({
+          session: auth.session, module: "FINANCE_OPERATIONS", action: "CREATE_ADJUSTMENT",
+          entityType: "CashbookAdjustment", entityId: result.id, entityCode: result.code, branchCode: result.branchCode,
+          metadata: { amount: result.amount, entryType: result.entryType, moneySourceCode: result.moneySourceCode, from: "REVENUE_SETTLEMENT" },
+        });
+      }
+      return NextResponse.json({ count: created.length, total: created.reduce((sum, row) => sum + row.amount, 0), adjustments: created }, { status: 201 });
     }
 
     /**
@@ -1284,9 +1401,6 @@ export async function POST(request: Request) {
       if (!moneySource || !moneySourceMatchesBranch(moneySource, branchCode)) {
         businessError(`Nguồn tiền [${moneySourceCode}] không tồn tại hoặc không thuộc cửa hàng đã chọn`);
       }
-      if (normalizeMoneySourceGroup(moneySource!.group) !== "CASH") {
-        businessError("Sổ quỹ chỉ được điều chỉnh các nguồn tiền mặt.");
-      }
 
       // Khóa cả kỳ CŨ lẫn kỳ MỚI, ở cả cửa hàng cũ lẫn cửa hàng mới: rút phiếu ra khỏi một kỳ
       // đã chốt hay đẩy phiếu vào một kỳ đã chốt đều làm lệch số dư kỳ đó.
@@ -1296,9 +1410,14 @@ export async function POST(request: Request) {
         }
       }
 
+      const classification = await resolveAdjustmentCategory(
+        entryType,
+        body.categoryCode !== undefined ? cleanText(body.categoryCode).toUpperCase() : (current!.categoryCode || ""),
+        body.pnlItemCode !== undefined ? cleanText(body.pnlItemCode).toUpperCase() : (current!.pnlItemCode || ""),
+      );
       const updated = await prisma.cashbookAdjustment.updateMany({
         where: { id: current!.id, deletedAt: null },
-        data: { entryDate, entryType, branchCode, moneySourceCode, amount, description },
+        data: { entryDate, entryType, branchCode, moneySourceCode, amount, description, ...classification },
       });
       if (updated.count !== 1) businessError("Phiếu đã bị xóa bởi yêu cầu khác.");
       const result = await prisma.cashbookAdjustment.findUniqueOrThrow({ where: { id: current!.id } });
