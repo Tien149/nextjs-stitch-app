@@ -228,8 +228,18 @@ export function isRevenueGroupCategory(group: string | null | undefined) {
  * Khoản mục thu được coi là DOANH THU BÁN HÀNG. Dòng "Doanh thu bán hàng" trên Thu chi ngày,
  * đối soát tiền về và SUMIFS sao kê đều lọc theo danh sách này. Các loại thu khác (hoàn tiền
  * NCC chi trùng, thu hoàn tạm ứng...) là tiền vào quỹ thật nhưng không phải doanh thu.
+ *
+ * Có HAI cách viết cùng tồn tại trong hệ thống và cả hai đều là tiền bán hàng:
+ * `THU_BAN_HANG` (dòng sao kê, phiếu tách từ sao kê) và `THU_BANHANG` (danh mục khai sẵn —
+ * "Thu bán hàng trong ngày"). Trước đây danh sách chỉ có cách viết thứ nhất, nên phiếu thu
+ * khai bằng khoản mục trong danh mục bị coi là "không phải doanh thu" và cột "Tiền đã vô"
+ * của nguồn đó về 0. Nhận cả hai, đừng bỏ bớt một cái để "cho khớp" — mỗi DB đang dùng một
+ * cách viết khác nhau.
+ *
+ * Khách đặt mã riêng (THU_BANHANG_NHAHANG...) thì thêm vào đây, giống
+ * COLLECT_ON_BEHALF_CATEGORY_CODES bên dưới.
  */
-export const SALES_RECEIPT_CATEGORY_CODES = ["THU_BAN_HANG"];
+export const SALES_RECEIPT_CATEGORY_CODES = ["THU_BAN_HANG", "THU_BANHANG"];
 
 /**
  * Phiếu thu sinh ra khi tách một dòng sao kê theo Loại thu/chi (một lần quẹt gồm cả tiền bán

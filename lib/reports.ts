@@ -1944,7 +1944,7 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
         voucherDate: { gte: start, lt: end },
         deletedAt: null,
       },
-      select: { id: true, code: true, voucherDate: true, moneySourceCode: true, amount: true, depositAction: true, categoryCode: true, partnerName: true },
+      select: { id: true, code: true, voucherDate: true, moneySourceCode: true, amount: true, depositAction: true, debtAction: true, categoryCode: true, partnerName: true },
     }),
     // Phiếu đã gắn dòng sao kê thì sao kê là bản ghi chính, không phải phiếu "lạc".
     prisma.reconciliationMatch.findMany({
@@ -2061,6 +2061,16 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
 
   for (const row of cashReceipts) {
     if (row.depositAction) continue;
+    // Cùng một luật với vế ngân hàng/ví ở trên: CHỈ khoản thu bán hàng mới là tiền về của
+    // doanh thu. Vế tiền mặt trước đây không lọc khoản mục nên mọi phiếu thu đã duyệt của
+    // quỹ tiền mặt đều được cộng — thu hoàn tạm ứng, thu công nợ, thu khác đều thành "tiền
+    // bán hàng đã về", làm ngày đó báo VỀ DƯ đúng bằng khoản không liên quan (khách gặp
+    // 21/09/2026: phiếu thu lại công nợ 1.000.000 đ đẩy ngày 30/8 lên -1.000.000 đ).
+    if (!isSalesReceiptCategory(row.categoryCode)) continue;
+    // Phiếu gạch công nợ ghi Có 131 chứ không ghi doanh thu (xem receiptCounterAccount), nên
+    // dù ai đó chọn nhầm khoản mục bán hàng thì đây vẫn là tiền của hoá đơn kỳ trước quay về,
+    // không phải tiền bán hàng của chính ngày này.
+    if (row.debtAction) continue;
     const source = sourceByCode.get(row.moneySourceCode);
     if (!source || normalizeMoneySourceGroup(source.group) !== "CASH") continue;
     if (!moneySourceMatchesBranch(source, branchCode)) continue;
@@ -2073,6 +2083,7 @@ export async function getRevenueSettlementReport(period: string, branchCode: str
   const reconciledVoucherIds = new Set(reconciledVoucherLinks.map((row) => row.targetId));
   const looseRows = cashReceipts
     .filter((row) => !row.depositAction
+      && !row.debtAction
       && isSalesReceiptCategory(row.categoryCode)
       && !reconciledVoucherIds.has(row.id))
     .map((row) => ({ row, source: sourceByCode.get(row.moneySourceCode) }))
