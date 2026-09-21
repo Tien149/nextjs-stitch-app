@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { isAdmin, requireCashDepositCreate, requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { getExpenseSummary } from "@/lib/expense-summary";
+import { CASH_MOVING_ADJUSTMENT_FILTER } from "@/lib/revenue-settlement-writeoff";
 import { prisma, prismaRaw } from "@/lib/prisma";
 import { addPeriod, apiError, buildAllocationSchedules, businessError, cleanText, isPeriodLocked, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
 import { requestedBranch, assertBranchAccess, branchFilterForSession } from "@/lib/accounting";
@@ -152,7 +153,12 @@ export async function GET(request: Request) {
       // Số dư đầu kỳ kế thừa từ số dư cuối kỳ trước; kế toán chỉ khai tay một lần ở kỳ gốc.
       cashOpeningBalance({ period, branchCode, moneySourceCodes: scopedSources, limitSources }),
       prisma.financialVoucher.findMany({ where: { ...branchFilter, voucherDate: { gte: start, lt: end }, status: "APPROVED" }, orderBy: { voucherDate: "asc" } }),
-      prisma.cashbookAdjustment.findMany({ where: { ...branchFilter, entryDate: { gte: start, lt: end } }, orderBy: { entryDate: "asc" } }),
+      // SỔ QUỸ chỉ nhận phiếu điều chỉnh THẬT SỰ chạm quỹ. Khoản chênh "khách trả thiếu" đẩy
+      // vào chi phí từ bảng "Tiền về đủ chưa" không phải tiền ra khỏi quỹ — tiền về đã ghi
+      // theo số thực nhận trên sao kê, trừ thêm một lần nữa là số dư tụt khống (khách chốt
+      // 21/09/2026). Nó vẫn lên Tổng hợp chi phí và P&L qua bút toán Nợ 6428.
+      // Xem lib/revenue-settlement-writeoff.ts.
+      prisma.cashbookAdjustment.findMany({ where: { ...branchFilter, entryDate: { gte: start, lt: end }, ...CASH_MOVING_ADJUSTMENT_FILTER }, orderBy: { entryDate: "asc" } }),
       prisma.accrual.findMany({ where: { ...(branchCode === "ALL" ? {} : { branchCode }) }, include: { schedules: { orderBy: { period: "asc" } } }, orderBy: { createdAt: "desc" } }),
       prisma.accountingPeriod.findUnique({ where: { period_branchCode: { period, branchCode } } }),
       closingChecklist(period, branchCode),

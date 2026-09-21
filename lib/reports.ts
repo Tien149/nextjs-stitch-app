@@ -6,6 +6,7 @@ import { depositDecreaseActions, depositIncreaseActions, depositRevenueActions }
 import { depositCategoryDirection } from "@/lib/bank-statement-category";
 import { isGrabMoneySource, moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { isSalesReceiptCategory, normalizeCashflowCategoryType, SALES_RECEIPT_CATEGORY_CODES } from "@/lib/voucher-rules";
+import { CASH_MOVING_ADJUSTMENT_FILTER } from "@/lib/revenue-settlement-writeoff";
 import { MANUAL_VOUCHER_MATCH_DAY_GAP } from "@/lib/bank-statement-voucher-match";
 import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/lib/money-transfer-date";
 import { transferLegsForBranch } from "@/lib/internal-transfer";
@@ -769,7 +770,10 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
         select: { reportDate: true, totalAmount: true, cardAmount: true, grabAmount: true },
       }),
       prisma.cashbookAdjustment.findMany({
-        where: { ...branchFilter, entryDate: { gte: start, lt: end } },
+        // Khoản chênh "khách trả thiếu" đẩy vào chi phí đứng ngoài bảng này: tiền vào của
+        // nguồn ngân hàng/ví ở đây đọc thẳng sổ sao kê (đã là số thực nhận), nên trừ thêm là
+        // trừ khống. Xem lib/revenue-settlement-writeoff.ts.
+        where: { ...branchFilter, entryDate: { gte: start, lt: end }, ...CASH_MOVING_ADJUSTMENT_FILTER },
         select: { entryDate: true, entryType: true, amount: true, moneySourceCode: true, categoryCode: true, pnlItemCode: true },
       }),
       // Tên hạng mục P&L, để phiếu điều chỉnh quỹ chỉ khai hạng mục vẫn đứng đúng tên trên

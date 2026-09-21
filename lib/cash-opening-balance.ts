@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { CASH_MOVING_ADJUSTMENT_FILTER } from "@/lib/revenue-settlement-writeoff";
 import { CASH_SOURCE_OPENING_TYPES, OPENING_BALANCE_EFFECTIVE_STATUSES } from "@/lib/opening-balance-rules";
 import { effectiveMoneyTransferDate } from "@/lib/money-transfer-date";
 import { transferBranches, transferLegsForBranch } from "@/lib/internal-transfer";
@@ -114,7 +115,9 @@ export async function cashOpeningBalance(query: CashOpeningQuery): Promise<CashO
         select: { voucherDate: true, voucherType: true, amount: true, moneySourceCode: true, branchCode: true },
       }),
       prisma.cashbookAdjustment.findMany({
-        where: { ...branchFilter, ...sourceFilter, entryDate: dateRange },
+        // Khoản chênh "khách trả thiếu" đẩy vào chi phí KHÔNG phải tiền ra khỏi quỹ — xem
+        // lib/revenue-settlement-writeoff.ts. Tính nó vào đây là số dư đầu kỳ tụt khống.
+        where: { ...branchFilter, ...sourceFilter, entryDate: dateRange, ...CASH_MOVING_ADJUSTMENT_FILTER },
         select: { entryDate: true, entryType: true, amount: true, moneySourceCode: true, branchCode: true },
       }),
       prisma.moneyTransfer.findMany({

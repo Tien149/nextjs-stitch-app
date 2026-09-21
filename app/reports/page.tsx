@@ -2584,14 +2584,19 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
   const pickedDraftables = draftableVouchers.filter((voucher) => pickedVouchers.includes(voucher.id));
 
   /**
-   * Khoản chênh vặt: tiền ĐÃ về nhưng thiếu vài đồng so với doanh thu (khách chuyển thiếu, ngân
-   * hàng làm tròn). Bảng vẫn báo VỀ ĐỦ vì chênh dưới 1.000 đ, nhưng số dư trên sổ cứ lệch dần
-   * so với sao kê và chi phí thì không ai ghi. Cho tick nhiều dòng rồi đẩy một lần vào chi phí.
+   * MỌI dòng còn thiếu tiền được đẩy lên khung phía trên để kế toán soát, không chỉ khoản
+   * chênh vài đồng.
    *
-   * Chỉ nhận chênh DƯƠNG và DƯỚI 1.000 đ: chênh lớn là tiền chưa về thật hoặc phí ví (đã có
-   * Quyết toán ví lo), xoá sổ ở đây là giấu mất một khoản phải đòi.
+   * Bản đầu chỉ gom chênh dưới 1.000 đ, nhưng khách chốt 21/09/2026: người xem cần thấy hết
+   * các dòng VỀ THIẾU ở một chỗ rồi tự phán — đúng là thiếu thật thì tick đưa vào chi phí,
+   * không phải thì đi dò lại phiếu tiền mặt / chứng từ ngân hàng / doanh thu của ngày đó.
+   * Chặn cứng ở 1.000 đ khiến dòng thiếu 1.603 đ (VỀ THIẾU, đúng thứ cần soát nhất) lại không
+   * lọt vào khung.
+   *
+   * Vẫn chỉ nhận chênh DƯƠNG và đã có tiền về: dòng chưa về đồng nào là tiền chưa thu chứ
+   * không phải khoản chênh, ghi thẳng vào chi phí ở đây là xoá sổ một khoản phải đòi.
    */
-  const writeOffRows = data.rows.filter((row) => row.remaining > 0 && row.remaining < 1000 && row.received > 0 && row.branchCode);
+  const writeOffRows = data.rows.filter((row) => row.remaining > 0 && row.received > 0 && row.branchCode);
   const writeOffKey = (row: RevenueSettlementRow) => `${row.date}|${row.moneySourceCode}`;
   const [pickedWriteOffs, setPickedWriteOffs] = useState<string[]>([]);
   const [writeOffCategory, setWriteOffCategory] = useState("");
@@ -2601,7 +2606,7 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
 
   const writeOffDifferences = async () => {
     if (pickedWriteOffRows.length === 0 || !writeOffCategory) return;
-    if (!window.confirm(`Đưa ${money(pickedWriteOffTotal)} đ của ${pickedWriteOffRows.length} dòng vào chi phí? Mỗi dòng sinh một phiếu Điều chỉnh quỹ riêng ở Sổ quỹ.`)) return;
+    if (!window.confirm(`Đưa ${money(pickedWriteOffTotal)} đ của ${pickedWriteOffRows.length} dòng vào chi phí? Khoản này chỉ lên Tổng hợp chi phí và P&L, không trừ vào số dư nguồn tiền.`)) return;
     setWritingOff(true);
     setLinkError("");
     try {
@@ -2849,11 +2854,16 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
             <div className="flex flex-wrap items-center gap-3">
               <div className="flex-1 min-w-[260px]">
                 <b className="text-sm text-amber-900">
-                  {writeOffRows.length} dòng khách chuyển thiếu vài đồng ({money(writeOffRows.reduce((sum, row) => sum + row.remaining, 0))} đ)
+                  {writeOffRows.length} dòng còn thiếu tiền ({money(writeOffRows.reduce((sum, row) => sum + row.remaining, 0))} đ)
                 </b>
                 <p className="mt-0.5 text-xs text-amber-800">
-                  Chênh dưới 1.000 đ nên bảng vẫn báo VỀ ĐỦ, nhưng số dư trên sổ cứ lệch dần so với sao kê.
-                  Tick các dòng rồi chọn hạng mục P&L để ghi thẳng vào chi phí — mỗi dòng sinh một phiếu Điều chỉnh quỹ ở Sổ quỹ.
+                  Soát từng dòng trước khi tick: <b>đúng là khách trả thiếu</b> thì tick rồi chọn hạng mục P&L để ghi
+                  thẳng vào chi phí; <b>chưa chắc</b> thì dò lại phiếu tiền mặt, chứng từ ngân hàng và doanh thu của
+                  ngày đó — có thể là tiền chưa về hoặc chứng từ còn thiếu.
+                </p>
+                <p className="mt-0.5 text-xs text-amber-700">
+                  Khoản đưa vào chi phí chỉ lên Tổng hợp chi phí và P&L, <b>không sinh phiếu ở Sổ quỹ</b>: tiền về đã
+                  ghi theo số thực nhận trên sao kê nên không có gì để trừ ra nữa.
                 </p>
               </div>
               <button
