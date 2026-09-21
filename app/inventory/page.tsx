@@ -25,7 +25,7 @@ type ItemGroup = { id: string; code: string; name: string; group: string | null;
  */
 type RevenueGroup = { id: string; code: string; name: string; group: string | null };
 type Balance = { id: string; warehouseCode: string; quantity: number; averageCost: number; item: Item };
-type Transaction = { id: string; code: string; transactionType: string; subType: string | null; transactionDate: string; branchCode: string; warehouseCode: string; toWarehouseCode: string | null; toBranchCode: string | null; internalReceivableDebtCode: string | null; internalPayableDebtCode: string | null; referenceCode: string | null; note?: string | null; lines: Array<{ id: string; inputQuantity: number | null; inputUnitCode: string | null; conversionRate: number; quantity: number; unitCost: number; inputUnitCost: number | null; totalCost: number; item: Item }> };
+type Transaction = { id: string; code: string; transactionType: string; subType: string | null; transactionDate: string; branchCode: string; warehouseCode: string; toWarehouseCode: string | null; toBranchCode: string | null; partnerCode: string | null; internalReceivableDebtCode: string | null; internalPayableDebtCode: string | null; referenceCode: string | null; note?: string | null; lines: Array<{ id: string; inputQuantity: number | null; inputUnitCode: string | null; conversionRate: number; quantity: number; unitCost: number; inputUnitCost: number | null; totalCost: number; item: Item }> };
 type Recipe = { id: string; code: string; productCode: string; branchCode?: string | null; productName: string; unit: string; outputConversionRate: number; sellingPrice: number; estimatedCost: number; estimatedUnitCost: number; version: number; effectiveFrom: string; status: string; lines: Array<{ quantity: number; unitCode: string | null; conversionRate: number; wasteRate: number; item: Item }> };
 type CostSummaryRow = { productCode: string; branchCode: string; productName: string; group: string; stockUnit: string; batchUnit: string; outputConversionRate: number; sellingPrice: number; unitCost: number; costRatio: number | null; version: number };
 type WasteReportRow = { itemCode: string; itemName: string; unit: string; itemType: string; totalQuantity: number; totalValue: number; documentCount: number; bySubType: Record<string, { quantity: number; value: number }> };
@@ -38,6 +38,7 @@ type PendingSales = {
 type CostingProduct = { productCode: string; productName: string; itemType: string; batchCost: number; unitCost: number; outputConversionRate: number; sellingPrice: number };
 type CostingResult = { costingDate: string; branchCode: string; materialCount: number; updatedBalances: number; levels: Array<{ level: number; products: CostingProduct[] }> };
 type Warehouse = { id: string; code: string; name: string; branch: string | null; group?: string | null };
+type Partner = { code: string; name: string; group: string | null; status: string };
 type MovementByType = Record<string, { inbound: number; outbound: number; value: number }>;
 type StockSummary = { item: Item; warehouseCode: string; openingQuantity: number; inboundQuantity: number; outboundQuantity: number; closingQuantity: number; averageCost: number; closingValue: number; movementByType?: MovementByType };
 type StockMovement = { transactionId: string; code: string; transactionType: string; transactionDate: string; warehouseCode: string; toWarehouseCode: string | null; itemCode: string; itemName: string; unit: string; quantity: number; inboundQuantity: number; outboundQuantity: number; value: number; referenceCode: string | null };
@@ -45,7 +46,7 @@ type Stocktake = { id: string; code: string; stocktakeDate: string; branchCode: 
 type ReceivablePOLine = { id: string; itemId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; item: { code: string; name: string; unit: string } };
 type ReceivablePO = { id: string; code: string; supplierName: string; branchCode: string; warehouseCode: string; status: string; lines: ReceivablePOLine[] };
 type StocktakeDraftRow = { itemId: string; itemCode: string; itemName: string; unit: string; systemQuantity: number; averageCost: number; actualQuantity: string; unitCost: string; reason: string };
-type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales };
+type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[] };
 const movementTypes = ["NHAP_MUA", "NHAP_KHAC", "NHAP_CHE_BIEN", "NHAP_KIEM_KE", "XUAT_BAN", "XUAT_HUY", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_CHE_BIEN", "XUAT_KIEM_KE", "DIEU_CHUYEN"];
 /** Loại hiển thị trên hai màn hình Nhập/Xuất. Điều chuyển hiện ở CẢ hai: vế xuất ở kho đi, vế nhập ở kho nhận. */
 const inboundTypes = ["NHAP_MUA", "NHAP_CHE_BIEN", "NHAP_DIEU_CHUYEN", "NHAP_KHAC", "NHAP_KIEM_KE"];
@@ -102,7 +103,7 @@ export default function InventoryPage() {
   const href = "/inventory";
   const { user, loading } = useModuleAuth(href);
   const [active, setActive] = useState("stock");
-  const [data, setData] = useState<Data>({ items: [], balances: [], transactions: [], flowTransactions: [], recipes: [], warehouses: [], stocktakes: [], stockSummary: [], stockMovements: [], itemGroups: [], revenueGroups: [], receiptCategories: [], costSummary: [], wasteReport: [], pendingSales: { total: 0, byDay: [], byItem: [] } });
+  const [data, setData] = useState<Data>({ items: [], balances: [], transactions: [], flowTransactions: [], recipes: [], warehouses: [], stocktakes: [], stockSummary: [], stockMovements: [], itemGroups: [], revenueGroups: [], receiptCategories: [], costSummary: [], wasteReport: [], pendingSales: { total: 0, byDay: [], byItem: [] }, partners: [] });
   const [message, setMessage] = useState("");
   const [reportWarehouse, setReportWarehouse] = useState("ALL");
   const [reportType, setReportType] = useState("ALL");
@@ -110,6 +111,8 @@ export default function InventoryPage() {
   const [reportRange, setReportRange] = useState({ from: daysAgo(90), to: today() });
   // Bộ lọc hai màn hình Nhập kho / Xuất kho: theo nhà hàng + theo loại nhập/xuất.
   const [flowBranch, setFlowBranch] = useState("ALL");
+  /** Lọc theo NCC / đối tác của phiếu. "NONE" = chỉ những phiếu chưa khai đối tác. */
+  const [flowPartner, setFlowPartner] = useState("ALL");
   const [inboundType, setInboundType] = useState("ALL");
   const [outboundType, setOutboundType] = useState("ALL");
   /** Khoảng NGÀY CHỨNG TỪ của danh sách phiếu nhập/xuất — mặc định 90 ngày gần nhất, gửi lên server. */
@@ -132,7 +135,7 @@ export default function InventoryPage() {
   const [itemStatusFilter, setItemStatusFilter] = useState("ALL");
   const [bulkStatusRunning, setBulkStatusRunning] = useState(false);
   const [conversionForm, setConversionForm] = useState({ itemId: "", purchaseUnit: "thung", conversionRate: "24", note: "" });
-  const [stockForm, setStockForm] = useState({ transactionType: "NHAP_MUA", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HN", itemId: "", inputUnitCode: "", quantity: "10", unitCost: "100000", referenceCode: "", note: "Nhap kho van hanh" });
+  const [stockForm, setStockForm] = useState({ transactionType: "NHAP_MUA", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HN", itemId: "", inputUnitCode: "", quantity: "10", unitCost: "100000", partnerCode: "", referenceCode: "", note: "Nhap kho van hanh" });
   /** Nhập mua theo PO (GRPO): PO đã duyệt còn hàng chưa nhận + số lượng nhận trên từng dòng. */
   const [receivablePOs, setReceivablePOs] = useState<ReceivablePO[]>([]);
   const [grpoOrderId, setGrpoOrderId] = useState("");
@@ -295,10 +298,45 @@ export default function InventoryPage() {
     }
     return rows;
   });
+  /** Form nhập tay chỉ cho chọn đối tác đang hoạt động; NCC xếp trước, đối tác khác xếp sau. */
+  const activePartners = data.partners.filter((partner) => partner.status === "ACTIVE");
+  const supplierPartnerOptions = activePartners.filter((partner) => partner.group === "SUPPLIER");
+  const otherPartnerOptions = activePartners.filter((partner) => partner.group !== "SUPPLIER");
+  /** Tên đối tác để bảng phiếu đọc được — phiếu chỉ lưu mã. Không tra ra thì trả lại chính mã. */
+  const partnerName = (code?: string | null) => {
+    if (!code) return "";
+    return data.partners.find((partner) => partner.code === code)?.name || code;
+  };
+  const matchesFlowPartner = (row: { transaction: Transaction }) => {
+    if (flowPartner === "ALL") return true;
+    if (flowPartner === "NONE") return !row.transaction.partnerCode;
+    return row.transaction.partnerCode === flowPartner;
+  };
   const inboundRows = flowRows("IN").filter((row) =>
-    (flowBranch === "ALL" || row.branchCode === flowBranch) && (inboundType === "ALL" || row.displayType === inboundType));
+    (flowBranch === "ALL" || row.branchCode === flowBranch) && (inboundType === "ALL" || row.displayType === inboundType) && matchesFlowPartner(row));
   const outboundRows = flowRows("OUT").filter((row) =>
-    (flowBranch === "ALL" || row.branchCode === flowBranch) && (outboundType === "ALL" || row.displayType === outboundType));
+    (flowBranch === "ALL" || row.branchCode === flowBranch) && (outboundType === "ALL" || row.displayType === outboundType) && matchesFlowPartner(row));
+  /**
+   * Ô chọn NCC chỉ liệt kê đối tác CÓ trên phiếu của màn hình đang xem (đã lọc nhà hàng/loại),
+   * để khỏi phải dò giữa hàng trăm đối tác chưa từng phát sinh nhập kho.
+   */
+  const flowPartnerOptions = (() => {
+    const scope = flowRows(active === "inbound" ? "IN" : "OUT").filter((row) =>
+      (flowBranch === "ALL" || row.branchCode === flowBranch)
+      && (active === "inbound" ? inboundType === "ALL" || row.displayType === inboundType : outboundType === "ALL" || row.displayType === outboundType));
+    const codes = new Set<string>();
+    let hasBlank = false;
+    for (const row of scope) {
+      if (row.transaction.partnerCode) codes.add(row.transaction.partnerCode);
+      else hasBlank = true;
+    }
+    // Giữ lại lựa chọn đang chọn dù kỳ/nhà hàng đang xem không có phiếu nào của đối tác đó,
+    // nếu không ô chọn tự nhảy về "Tất cả" và bảng lặng lẽ đổi kết quả.
+    if (flowPartner !== "ALL" && flowPartner !== "NONE") codes.add(flowPartner);
+    const options = [...codes].map((code) => ({ code, name: partnerName(code) }));
+    options.sort((left, right) => left.name.localeCompare(right.name, "vi"));
+    return { options, hasBlank: hasBlank || flowPartner === "NONE" };
+  })();
   const transferTransactions = data.transactions.filter((transaction) => transaction.transactionType === "DIEU_CHUYEN");
 
   // Điều chuyển không nhận nhóm FINISHED; hủy hàng thì nhận đủ (kể cả FINISHED).
@@ -1260,7 +1298,7 @@ export default function InventoryPage() {
       {(active === "inbound" || active === "outbound") && (
         <div className="grid lg:grid-cols-[380px_1fr] gap-5">
           {canCreate && (
-            <form onSubmit={(e) => { e.preventDefault(); if (grpoOrder) { void receiveFromPO(); return; } void send({ action: "STOCK_TRANSACTION", ...stockForm, lines: [{ itemId: stockForm.itemId, inputQuantity: stockForm.quantity, inputUnitCode: stockForm.inputUnitCode || selectedStockUnit?.unitCode, inputUnitCost: active === "inbound" ? stockForm.unitCost : "0" }] }, active === "inbound" ? "Đã ghi nhận phiếu nhập kho." : "Đã ghi nhận phiếu xuất kho."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
+            <form onSubmit={(e) => { e.preventDefault(); if (grpoOrder) { void receiveFromPO(); return; } void send({ action: "STOCK_TRANSACTION", ...stockForm, partnerCode: active === "inbound" ? stockForm.partnerCode : "", lines: [{ itemId: stockForm.itemId, inputQuantity: stockForm.quantity, inputUnitCode: stockForm.inputUnitCode || selectedStockUnit?.unitCode, inputUnitCost: active === "inbound" ? stockForm.unitCost : "0" }] }, active === "inbound" ? "Đã ghi nhận phiếu nhập kho." : "Đã ghi nhận phiếu xuất kho."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
               <h2 className="font-bold text-slate-800">{active === "inbound" ? "Ghi nhận nhập kho" : "Ghi nhận xuất kho"}</h2>
 
               <Input label="Loại">
@@ -1388,6 +1426,24 @@ export default function InventoryPage() {
                 </div>
               )}
 
+              {active === "inbound" && (
+                <Input label="Nhà cung cấp">
+                  <select className="control" value={stockForm.partnerCode} onChange={(e) => setStockForm({ ...stockForm, partnerCode: e.target.value })}>
+                    <option value="">Không khai nhà cung cấp</option>
+                    {supplierPartnerOptions.length > 0 && (
+                      <optgroup label="Nhà cung cấp">
+                        {supplierPartnerOptions.map((partner) => <option key={partner.code} value={partner.code}>{partner.name}</option>)}
+                      </optgroup>
+                    )}
+                    {otherPartnerOptions.length > 0 && (
+                      <optgroup label="Đối tác khác">
+                        {otherPartnerOptions.map((partner) => <option key={partner.code} value={partner.code}>{partner.name}</option>)}
+                      </optgroup>
+                    )}
+                  </select>
+                </Input>
+              )}
+
               <Input label="Tham chiếu">
                 <input data-input-kind="code" className="control" value={stockForm.referenceCode} onChange={(e) => setStockForm({ ...stockForm, referenceCode: e.target.value })} />
               </Input>
@@ -1413,7 +1469,7 @@ export default function InventoryPage() {
                 )}
               </div>
             )}
-            <div className="px-5 pb-4 grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="px-5 pb-4 grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
               <Input label="Từ ngày chứng từ">
                 <input type="date" className="control" value={flowRange.from} onChange={(e) => setFlowRange({ ...flowRange, from: e.target.value })} />
               </Input>
@@ -1439,6 +1495,15 @@ export default function InventoryPage() {
                   </select>
                 )}
               </Input>
+              <Input label={active === "inbound" ? "Nhà cung cấp" : "Đối tác"}>
+                <select className="control" value={flowPartner} onChange={(e) => setFlowPartner(e.target.value)}>
+                  <option value="ALL">{active === "inbound" ? "Tất cả nhà cung cấp" : "Tất cả đối tác"}</option>
+                  {flowPartnerOptions.options.map((partner) => (
+                    <option key={partner.code} value={partner.code}>{partner.name}</option>
+                  ))}
+                  {flowPartnerOptions.hasBlank && <option value="NONE">(Phiếu chưa khai đối tác)</option>}
+                </select>
+              </Input>
             </div>
             <Table
               headers={[
@@ -1447,6 +1512,7 @@ export default function InventoryPage() {
                 { label: "Nhà hàng" },
                 { label: "Kho" },
                 { label: "Mặt hàng" },
+                { label: active === "inbound" ? "Tên NCC" : "Tên đối tác" },
                 { label: "SL", align: "right" },
                 { label: "Giá trị", align: "right" },
               ]}
@@ -1469,6 +1535,7 @@ export default function InventoryPage() {
                     ))}
                     {lines.length > preview.length && <small>… và {lines.length - preview.length} mặt hàng khác</small>}
                   </Cell>
+                  <Cell>{row.transaction.partnerCode ? partnerName(row.transaction.partnerCode) : <span className="text-slate-400">—</span>}</Cell>
                   <Cell right>{flowQuantityText(lines)}</Cell>
                   <Cell right><b>{money(lines.reduce((sum, line) => sum + line.totalCost, 0))} đ</b></Cell>
                 </tr>

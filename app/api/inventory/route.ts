@@ -206,7 +206,7 @@ export async function GET(request: Request) {
     });
     const warehouseCodes = allowedWarehouses.map((w) => w.code);
 
-    const [items, balances, transactions, flowTransactions, reportTransactions, recipes, warehouses, stocktakes, itemGroups, receiptCategoryList, pendingRevenueRows] = await Promise.all([
+    const [items, balances, transactions, flowTransactions, reportTransactions, recipes, warehouses, stocktakes, itemGroups, receiptCategoryList, pendingRevenueRows, partners] = await Promise.all([
       prisma.inventoryItem.findMany({ include: { unitConversions: { orderBy: [{ isDefaultPurchase: "desc" }, { unitCode: "asc" }] } }, orderBy: { name: "asc" } }),
       prisma.inventoryBalance.findMany({
         where: { warehouseCode: { in: warehouseCodes } },
@@ -261,6 +261,13 @@ export async function GET(request: Request) {
         orderBy: [{ saleDate: "asc" }, { branchCode: "asc" }],
         select: { id: true, saleDate: true, branchCode: true, productCode: true, productQuantity: true, revenueSource: true },
         take: 2000,
+      }),
+      // Danh mục đối tác để gọi TÊN nhà cung cấp trên phiếu nhập/xuất (phiếu chỉ lưu mã).
+      // Lấy cả đối tác đã Ngưng: phiếu cũ vẫn phải hiện đúng tên NCC lúc mua.
+      prisma.masterDataItem.findMany({
+        where: { type: "PARTNER" },
+        select: { code: true, name: true, group: true, status: true },
+        orderBy: { name: "asc" },
       }),
     ]);
 
@@ -531,7 +538,7 @@ export async function GET(request: Request) {
     const revenueGroups = receiptCategoryList.filter((category) => isRevenueGroupCategory(category.group));
     const receiptCategories = receiptCategoryList.filter((category) => !isRevenueGroupCategory(category.group));
 
-    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, balances, transactions, flowTransactions, flowRange: { from: isoDay(flowFrom), to: isoDay(flowTo) }, recipes: recipesWithCost, warehouses, stocktakes, stockSummary, stockMovements, itemGroups, revenueGroups, receiptCategories, costSummary, wasteReport, pendingSales }));
+    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, balances, transactions, flowTransactions, partners, flowRange: { from: isoDay(flowFrom), to: isoDay(flowTo) }, recipes: recipesWithCost, warehouses, stocktakes, stockSummary, stockMovements, itemGroups, revenueGroups, receiptCategories, costSummary, wasteReport, pendingSales }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });
@@ -1482,6 +1489,14 @@ export async function POST(request: Request) {
       businessError(duplicatedInTrashMessage(requestedTransactionCode, "Phiếu nhập/xuất kho"));
     }
 
+    // NCC / đối tác của phiếu. Chỉ nhận mã có trong danh mục để cột "Tên NCC" và bộ lọc
+    // đối tác trên màn Nhập/Xuất kho không bao giờ hiện mã lạ không tra được tên.
+    const stockPartnerCode = cleanText(body.partnerCode) || null;
+    if (stockPartnerCode) {
+      const partner = await prisma.masterDataItem.findFirst({ where: { type: "PARTNER", code: stockPartnerCode } });
+      if (!partner) businessError(`Đối tác ${stockPartnerCode} không có trong danh mục`);
+    }
+
     const result = await prisma.$transaction(async (tx) => {
       const transactionCode = cleanText(body.code) || await nextStockDocCode(tx, stockPrefix(transactionType), transactionDate);
       // Điều chuyển luôn đi qua postStockTransfer để chặn FINISHED và sinh công nợ nội bộ
@@ -1509,6 +1524,7 @@ export async function POST(request: Request) {
         branchCode,
         warehouseCode,
         toWarehouseCode,
+        partnerCode: stockPartnerCode,
         referenceType: action === "RECORD_WASTE" ? "POS_WASTE" : cleanText(body.referenceType) || null,
         referenceCode: cleanText(body.referenceCode) || null,
         note: cleanText(body.note) || null,
