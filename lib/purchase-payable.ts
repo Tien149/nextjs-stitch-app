@@ -33,6 +33,17 @@ export type PurchasePayableSource = {
   lines: Array<{ totalCost: number }>;
 };
 
+/** Phiếu có thuộc diện sinh công nợ không, và nếu có thì bao nhiêu tiền. */
+function payableAmountOf(transaction: PurchasePayableSource) {
+  if (transaction.transactionType !== "NHAP_MUA") return 0;
+  // Hàng nhận theo Đơn mua hàng đã có SupplierPayable (cột "Nhập hàng" trên bảng công nợ),
+  // ghi thêm một khoản nữa ở đây là nợ NCC gấp đôi.
+  if (transaction.referenceType === "PURCHASE_ORDER") return 0;
+  if (!(transaction.partnerCode || "").trim()) return 0;
+  const amount = transaction.lines.reduce((sum, line) => sum + line.totalCost, 0);
+  return amount > 0 ? amount : 0;
+}
+
 /**
  * Sinh khoản phải trả cho một phiếu nhập mua. Trả về null khi phiếu không thuộc diện:
  * không phải nhập mua, không khai NCC, hoặc giá trị bằng 0 (hàng khuyến mãi, tặng kèm).
@@ -42,14 +53,9 @@ export async function createPurchasePayable(
   transaction: PurchasePayableSource,
   options: { importBatchId?: string | null; dueDate?: Date | null } = {},
 ) {
-  if (transaction.transactionType !== "NHAP_MUA") return null;
-  // Hàng nhận theo Đơn mua hàng đã có SupplierPayable (cột "Nhập hàng" trên bảng công nợ),
-  // ghi thêm một khoản nữa ở đây là nợ NCC gấp đôi.
-  if (transaction.referenceType === "PURCHASE_ORDER") return null;
-  const partnerCode = (transaction.partnerCode || "").trim();
-  if (!partnerCode) return null;
-  const amount = transaction.lines.reduce((sum, line) => sum + line.totalCost, 0);
+  const amount = payableAmountOf(transaction);
   if (amount <= 0) return null;
+  const partnerCode = (transaction.partnerCode || "").trim();
 
   const client = tx as RawTxClient;
   const partner = await client.masterDataItem.findFirst({
@@ -75,6 +81,51 @@ export async function createPurchasePayable(
       sourceId: transaction.id,
       recognizeExpense: false,
       status: "OPEN",
+    },
+  });
+}
+
+/**
+ * Đồng bộ khoản phải trả sau khi SỬA phiếu nhập: đổi số tiền / NCC / ngày thì sửa khoản nợ
+ * đang có, phiếu không còn thuộc diện (bỏ NCC, sửa hết về 0) thì thu khoản nợ về.
+ *
+ * Không xoá-rồi-tạo-lại: xoá mềm vẫn giữ mã `CN-<phiếu>` trong chỉ mục duy nhất, tạo lại là
+ * đâm trúng mã cũ.
+ */
+export async function syncPurchasePayable(
+  tx: PurchasePayableTx,
+  transaction: PurchasePayableSource,
+  options: { importBatchId?: string | null; dueDate?: Date | null } = {},
+) {
+  const client = tx as RawTxClient;
+  const existing = await client.debtRecord.findFirst({
+    where: { code: purchasePayableCodeOf(transaction.code), sourceType: PURCHASE_PAYABLE_SOURCE, deletedAt: null },
+  });
+  if (!existing) return createPurchasePayable(tx, transaction, options);
+
+  const amount = payableAmountOf(transaction);
+  if (amount <= 0) {
+    await client.debtRecord.delete({ where: { id: existing.id } });
+    return null;
+  }
+  const partnerCode = (transaction.partnerCode || "").trim();
+  const partner = await client.masterDataItem.findFirst({
+    where: { type: "PARTNER", code: partnerCode },
+    select: { name: true, partnerGroup: true },
+  });
+  const reference = transaction.referenceCode ? ` (chứng từ ${transaction.referenceCode})` : "";
+  return client.debtRecord.update({
+    where: { id: existing.id },
+    data: {
+      partnerGroup: partner?.partnerGroup || (isInternalPartnerCode(partnerCode) ? "INTERNAL" : "EXTERNAL"),
+      partnerCode,
+      partnerName: partner?.name || partnerCode,
+      branchCode: transaction.branchCode,
+      documentDate: transaction.transactionDate,
+      ...(options.dueDate !== undefined ? { dueDate: options.dueDate } : {}),
+      originalAmount: amount,
+      outstandingAmount: amount,
+      description: `Công nợ mua hàng theo phiếu nhập ${transaction.code}${reference}`,
     },
   });
 }

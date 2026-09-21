@@ -4,8 +4,8 @@ import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError, assertPeriodOpen, businessError, cleanText, isPeriodLocked, toDate, toNumber } from "@/lib/phase3";
 import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
-import { isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType, postInventoryTransaction } from "@/lib/inventory-stock";
-import { createPurchasePayable, removePurchasePayables } from "@/lib/purchase-payable";
+import { isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType, postInventoryTransaction, repostInventoryTransaction, reverseStockEffect } from "@/lib/inventory-stock";
+import { createPurchasePayable, purchasePayableCodeOf, removePurchasePayables, syncPurchasePayable, PURCHASE_PAYABLE_SOURCE } from "@/lib/purchase-payable";
 import { postStockTransfer } from "@/lib/inventory-transfer";
 import { computeCostingLevels, computeRecipeUnitCosts, explodeSalesDemand, pickRecipeForDate, type ExplosionRecipe } from "@/lib/production-explosion";
 import { writeAuditLog } from "@/lib/audit-log";
@@ -1630,16 +1630,13 @@ export async function PATCH(request: Request) {
     if (action === "UPDATE_TRANSACTION") {
       const transactionId = cleanText(body.transactionId) || cleanText(body.id);
       if (!transactionId) businessError("Thiếu phiếu kho cần sửa");
-      const transaction = await prisma.inventoryTransaction.findUnique({ where: { id: transactionId } });
+      const transaction = await prisma.inventoryTransaction.findUnique({
+        where: { id: transactionId },
+        include: { lines: true },
+      });
       if (!transaction) businessError("Không tìm thấy phiếu nhập/xuất kho");
       assertBranchAccess(auth.session, transaction.branchCode);
 
-      if (body.lines !== undefined || body.quantity !== undefined || body.unitCost !== undefined) {
-        businessError(`Phiếu ${transaction.code} đã ghi sổ nên không thể sửa số lượng hoặc đơn giá. Hãy xoá phiếu để hoàn kho rồi nhập lại, hoặc lập phiếu điều chỉnh.`);
-      }
-      if (transaction.importBatchId) {
-        businessError(`Phiếu ${transaction.code} thuộc lô import nên chỉ được xử lý ở màn hình Import dữ liệu.`);
-      }
       const derivedFrom = transaction.referenceType ? derivedReferenceTypes[transaction.referenceType] : undefined;
       if (derivedFrom) {
         businessError(`Phiếu ${transaction.code} được sinh tự động từ ${derivedFrom} ${transaction.referenceCode || ""}`.trim() + " nên phải sửa ở chứng từ gốc.");
@@ -1651,17 +1648,83 @@ export async function PATCH(request: Request) {
         businessError("Kỳ kế toán của ngày chứng từ mới đã khóa");
       }
 
-      const result = await prisma.inventoryTransaction.update({
-        where: { id: transactionId },
-        data: {
-          transactionDate,
-          ...(body.referenceCode !== undefined ? { referenceCode: cleanText(body.referenceCode) || null } : {}),
-          ...(body.note !== undefined ? { note: cleanText(body.note) || null } : {}),
-        },
-        include: { lines: { include: { item: true } } },
+      const editedLines = body.lines !== undefined ? linesFrom(body.lines) : [];
+      const warehouseCode = body.warehouseCode !== undefined ? cleanText(body.warehouseCode) : transaction.warehouseCode;
+      const toWarehouseCode = body.toWarehouseCode !== undefined ? cleanText(body.toWarehouseCode) : transaction.toWarehouseCode;
+      const rewritesLines = editedLines.length > 0 || warehouseCode !== transaction.warehouseCode || toWarehouseCode !== transaction.toWarehouseCode;
+
+      if (body.lines !== undefined && editedLines.length === 0) businessError("Phiếu phải còn ít nhất một dòng mặt hàng");
+
+      /**
+       * Điều chuyển liên nhà hàng kéo theo cặp công nợ nội bộ tính theo giá trị phiếu; sửa số
+       * lượng ở đây thì công nợ hai đầu lệch. Xoá rồi lập lại thì cặp công nợ được dựng lại
+       * đúng, nên chỉ chặn đúng nhánh này thay vì chặn mọi phiếu.
+       */
+      const internalDebtCodes = [transaction.internalReceivableDebtCode, transaction.internalPayableDebtCode]
+        .filter((value): value is string => !!value);
+      if (rewritesLines && internalDebtCodes.length > 0) {
+        businessError(`Phiếu ${transaction.code} là điều chuyển liên nhà hàng đã sinh công nợ nội bộ nên không sửa được số lượng/kho. Hãy xoá phiếu rồi lập lại.`);
+      }
+
+      // Nhập mua đã sinh công nợ NCC: sửa xong phải dựng lại khoản nợ theo số mới, nhưng đã
+      // gạch nợ bằng phiếu chi thì không đụng được nữa.
+      const purchaseDebt = await prisma.debtRecord.findFirst({
+        where: { code: purchasePayableCodeOf(transaction.code), sourceType: PURCHASE_PAYABLE_SOURCE, deletedAt: null },
+        include: { settlements: true },
+      });
+      if (purchaseDebt && purchaseDebt.settlements.length > 0) {
+        businessError(`Công nợ ${purchaseDebt.code} của phiếu ${transaction.code} đã được gạch nợ nên không sửa được phiếu. Hoàn tác phiếu chi gạch nợ trước.`);
+      }
+
+      if (warehouseCode !== transaction.warehouseCode) {
+        const warehouse = await prisma.masterDataItem.findFirst({
+          where: { type: "WAREHOUSE", code: warehouseCode, branch: transaction.branchCode },
+        });
+        if (!warehouse) businessError(`Kho ${warehouseCode} không thuộc chi nhánh ${transaction.branchCode}.`);
+      }
+
+      const partnerCode = body.partnerCode !== undefined ? cleanText(body.partnerCode) || null : transaction.partnerCode;
+      if (partnerCode && partnerCode !== transaction.partnerCode) {
+        const partner = await prisma.masterDataItem.findFirst({ where: { type: "PARTNER", code: partnerCode } });
+        if (!partner) businessError(`Đối tác ${partnerCode} không có trong danh mục`);
+      }
+
+      const result = await prisma.$transaction(async (tx) => {
+        const updated = rewritesLines
+          ? await repostInventoryTransaction(tx, transaction, {
+            transactionDate,
+            branchCode: transaction.branchCode,
+            warehouseCode,
+            toWarehouseCode,
+            toBranchCode: transaction.toBranchCode,
+            subType: transaction.subType,
+            partnerCode,
+            referenceCode: body.referenceCode !== undefined ? cleanText(body.referenceCode) || null : transaction.referenceCode,
+            note: body.note !== undefined ? cleanText(body.note) || null : transaction.note,
+            lines: editedLines.length > 0 ? editedLines : transaction.lines.map((line) => ({
+              itemId: line.itemId,
+              inputQuantity: line.inputQuantity ?? line.quantity,
+              inputUnitCode: line.inputUnitCode ?? "",
+              inputUnitCost: line.inputUnitCost ?? line.unitCost,
+            })),
+          })
+          : await tx.inventoryTransaction.update({
+            where: { id: transactionId },
+            data: {
+              transactionDate,
+              partnerCode,
+              ...(body.referenceCode !== undefined ? { referenceCode: cleanText(body.referenceCode) || null } : {}),
+              ...(body.note !== undefined ? { note: cleanText(body.note) || null } : {}),
+            },
+            include: { lines: { include: { item: true } } },
+          });
+
+        // Công nợ nhập mua theo số mới: sửa khoản đang có, bỏ NCC thì thu khoản nợ về.
+        await syncPurchasePayable(tx, { ...updated, partnerCode }, { importBatchId: transaction.importBatchId });
+        return updated;
       });
 
-      await writeAuditLog({ session: auth.session, module: menuHref, action: "UPDATE_TRANSACTION", entityType: "InventoryTransaction", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { previousDate: transaction.transactionDate, transactionDate } });
+      await writeAuditLog({ session: auth.session, module: menuHref, action: "UPDATE_TRANSACTION", entityType: "InventoryTransaction", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { previousDate: transaction.transactionDate, transactionDate, rewritesLines, lineCount: result.lines.length } });
       return NextResponse.json(result);
     }
 
@@ -1790,51 +1853,7 @@ async function reverseTransactionStock(transaction: {
   toWarehouseCode: string | null;
   lines: { itemId: string; quantity: number; totalCost: number }[];
 }) {
-  type Reversal = { itemId: string; warehouseCode: string; direction: "IN" | "OUT"; quantity: number; totalCost: number };
-  const reversals = new Map<string, Reversal>();
-  const addReversal = (itemId: string, warehouseCode: string, direction: "IN" | "OUT", quantity: number, totalCost: number) => {
-    const key = `${itemId}|${warehouseCode}|${direction}`;
-    const current = reversals.get(key) || { itemId, warehouseCode, direction, quantity: 0, totalCost: 0 };
-    current.quantity += quantity;
-    current.totalCost += totalCost;
-    reversals.set(key, current);
-  };
-
-  for (const line of transaction.lines) {
-    if (transaction.transactionType.startsWith("NHAP_")) {
-      addReversal(line.itemId, transaction.warehouseCode, "IN", line.quantity, line.totalCost);
-    } else if (transaction.transactionType.startsWith("XUAT_")) {
-      addReversal(line.itemId, transaction.warehouseCode, "OUT", line.quantity, line.totalCost);
-    } else {
-      addReversal(line.itemId, transaction.warehouseCode, "OUT", line.quantity, line.totalCost);
-      addReversal(line.itemId, transaction.toWarehouseCode || "", "IN", line.quantity, line.totalCost);
-    }
-  }
-
-  await prisma.$transaction(async (tx) => {
-    for (const reversal of reversals.values()) {
-      const balance = await tx.inventoryBalance.findUnique({
-        where: { itemId_warehouseCode: { itemId: reversal.itemId, warehouseCode: reversal.warehouseCode } },
-      });
-      const currentQuantity = balance?.quantity || 0;
-      const currentAverage = balance?.averageCost || 0;
-      const currentValue = currentQuantity * currentAverage;
-      // Phiếu đã làm tồn TĂNG -> hoàn kho là GIẢM lại, và ngược lại.
-      const newQuantity = reversal.direction === "IN" ? currentQuantity - reversal.quantity : currentQuantity + reversal.quantity;
-      if (newQuantity < -quantityEpsilon) {
-        businessError(`Tồn kho hiện tại của kho ${reversal.warehouseCode} không đủ để hoàn lại phiếu ${transaction.code}. Hãy kiểm tra lại các phiếu phát sinh sau.`);
-      }
-      const newValue = reversal.direction === "IN" ? currentValue - reversal.totalCost : currentValue + reversal.totalCost;
-      const averageCost = newQuantity > quantityEpsilon ? Math.max(newValue / newQuantity, 0) : currentAverage;
-      await tx.inventoryBalance.upsert({
-        where: { itemId_warehouseCode: { itemId: reversal.itemId, warehouseCode: reversal.warehouseCode } },
-        create: { itemId: reversal.itemId, warehouseCode: reversal.warehouseCode, quantity: Math.max(newQuantity, 0), averageCost },
-        update: { quantity: Math.max(newQuantity, 0), averageCost },
-      });
-    }
-  });
-
-  return [...reversals.values()];
+  return prisma.$transaction(async (tx) => reverseStockEffect(tx, transaction));
 }
 
 /**
@@ -1887,34 +1906,14 @@ export async function DELETE(request: Request) {
       if (!transaction) businessError("Không tìm thấy phiếu nhập/xuất kho");
       assertBranchAccess(auth.session, transaction.branchCode);
 
-      if (transaction.importBatchId) {
-        businessError(`Phiếu ${transaction.code} thuộc lô import nên phải huỷ ở màn hình Import dữ liệu để đảm bảo tồn kho không bị lệch.`);
-      }
+      // Phiếu thuộc lô import vẫn xoá được từng cái: khách import cả tháng vài nghìn dòng,
+      // sai một phiếu mà bắt rollback nguyên lô là mất hết phần còn lại (khách hỏi 21/09/2026).
       const derivedFrom = transaction.referenceType ? derivedReferenceTypes[transaction.referenceType] : undefined;
       if (derivedFrom) {
         businessError(`Phiếu ${transaction.code} được sinh tự động từ ${derivedFrom} ${transaction.referenceCode || ""}`.trim() + " nên phải xử lý ở chứng từ gốc, xoá riêng phiếu này sẽ làm lệch tồn kho.");
       }
       if (await isPeriodLocked(transaction.transactionDate, transaction.branchCode)) {
         businessError(`Kỳ kế toán của phiếu ${transaction.code} đã khóa nên không thể xoá.`);
-      }
-
-      // Chỉ hoàn kho chính xác được khi phiếu là chứng từ mới nhất trên các mặt hàng/kho liên quan.
-      const warehouseCodes = [transaction.warehouseCode, transaction.toWarehouseCode].filter((value): value is string => !!value);
-      const itemIds = [...new Set(transaction.lines.map((line) => line.itemId))];
-      const newer = await prisma.inventoryTransaction.findFirst({
-        where: {
-          id: { not: transaction.id },
-          createdAt: { gt: transaction.createdAt },
-          lines: { some: { itemId: { in: itemIds } } },
-          OR: [
-            { warehouseCode: { in: warehouseCodes } },
-            { toWarehouseCode: { in: warehouseCodes } },
-          ],
-        },
-        orderBy: { createdAt: "asc" },
-      });
-      if (newer) {
-        businessError(`Đã có phiếu ${newer.code} phát sinh sau phiếu ${transaction.code} trên cùng mặt hàng/kho nên không thể hoàn kho chính xác. Hãy xoá các phiếu phát sinh sau hoặc lập phiếu điều chỉnh kho.`);
       }
 
       // Phiếu điều chuyển liên nhà hàng: phải thu hồi được cặp công nợ nội bộ trước.
@@ -1942,6 +1941,8 @@ export async function DELETE(request: Request) {
       } catch (error) {
         businessError(error instanceof Error ? error.message : "Không thu hồi được công nợ mua hàng của phiếu");
       }
+      // Hoàn kho TRƯỚC khi xoá mềm: hoàn kho báo lỗi (hàng đã xuất hết) thì phiếu còn nguyên,
+      // còn xoá mềm chạy transaction riêng nên không rollback kèm được.
       const reversals = await reverseTransactionStock(transaction);
       const result = await softDeleteRecord({ model: "InventoryTransaction", id, session: auth.session, reason });
       await writeAuditLog({ session: auth.session, module: menuHref, action: "REVERSE_STOCK", entityType: "InventoryTransaction", entityId: transaction.id, entityCode: transaction.code, branchCode: transaction.branchCode, metadata: { transactionType: transaction.transactionType, reversals, internalDebtCodes } });

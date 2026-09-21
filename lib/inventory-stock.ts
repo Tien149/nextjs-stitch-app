@@ -235,6 +235,69 @@ async function applyBalanceChange(
   return { unitCost: effectiveUnitCost, totalCost: quantity * effectiveUnitCost };
 }
 
+/**
+ * Trả lại tồn kho phần mà một phiếu đã cộng/trừ — dùng khi xoá phiếu hoặc sửa phiếu.
+ *
+ * Trừ ngược đúng số lượng và đúng GIÁ TRỊ đã ghi trên dòng, nên số tồn và tổng giá trị kho
+ * luôn khớp tuyệt đối dù phiếu nằm ở giữa kỳ. Giá vốn của những phiếu xuất phát sinh SAU vẫn
+ * giữ số lịch sử của chúng — đúng tinh thần bình quân gia quyền, sửa quá khứ không đi định giá
+ * lại các lần xuất đã chốt. Nhờ vậy không cần luật "chỉ xoá được phiếu cuối cùng" như trước.
+ */
+export async function reverseStockEffect(
+  tx: Tx,
+  transaction: {
+    code: string;
+    transactionType: string;
+    warehouseCode: string;
+    toWarehouseCode: string | null;
+    lines: Array<{ itemId: string; quantity: number; totalCost: number }>;
+  },
+) {
+  type Reversal = { itemId: string; warehouseCode: string; direction: "IN" | "OUT"; quantity: number; totalCost: number };
+  const reversals = new Map<string, Reversal>();
+  const add = (itemId: string, warehouseCode: string, direction: "IN" | "OUT", quantity: number, totalCost: number) => {
+    const key = `${itemId}|${warehouseCode}|${direction}`;
+    const current = reversals.get(key) || { itemId, warehouseCode, direction, quantity: 0, totalCost: 0 };
+    current.quantity += quantity;
+    current.totalCost += totalCost;
+    reversals.set(key, current);
+  };
+  for (const line of transaction.lines) {
+    if (transaction.transactionType === "DIEU_CHUYEN") {
+      add(line.itemId, transaction.warehouseCode, "OUT", line.quantity, line.totalCost);
+      if (transaction.toWarehouseCode) add(line.itemId, transaction.toWarehouseCode, "IN", line.quantity, line.totalCost);
+    } else if (isInboundStockType(transaction.transactionType)) {
+      add(line.itemId, transaction.warehouseCode, "IN", line.quantity, line.totalCost);
+    } else {
+      add(line.itemId, transaction.warehouseCode, "OUT", line.quantity, line.totalCost);
+    }
+  }
+
+  for (const reversal of reversals.values()) {
+    await tx.$queryRaw`SELECT "id" FROM "InventoryBalance" WHERE "itemId" = ${reversal.itemId} AND "warehouseCode" = ${reversal.warehouseCode} FOR UPDATE`;
+    const balance = await tx.inventoryBalance.findUnique({
+      where: { itemId_warehouseCode: { itemId: reversal.itemId, warehouseCode: reversal.warehouseCode } },
+    });
+    const currentQuantity = balance?.quantity || 0;
+    const currentAverage = balance?.averageCost || 0;
+    const currentValue = currentQuantity * currentAverage;
+    // Phiếu đã làm tồn TĂNG -> hoàn kho là GIẢM lại, và ngược lại.
+    const newQuantity = reversal.direction === "IN" ? currentQuantity - reversal.quantity : currentQuantity + reversal.quantity;
+    if (newQuantity < -0.000001) {
+      const item = await tx.inventoryItem.findUnique({ where: { id: reversal.itemId }, select: { code: true } });
+      stockError(`Ton kho cua ${item?.code || reversal.itemId} o kho ${reversal.warehouseCode} khong du de bo phieu ${transaction.code} (hang cua phieu nay da duoc xuat ra roi). Hay xu ly cac phieu xuat lien quan truoc.`);
+    }
+    const newValue = reversal.direction === "IN" ? currentValue - reversal.totalCost : currentValue + reversal.totalCost;
+    const averageCost = newQuantity > 0.000001 ? Math.max(newValue / newQuantity, 0) : currentAverage;
+    await tx.inventoryBalance.upsert({
+      where: { itemId_warehouseCode: { itemId: reversal.itemId, warehouseCode: reversal.warehouseCode } },
+      create: { itemId: reversal.itemId, warehouseCode: reversal.warehouseCode, quantity: Math.max(newQuantity, 0), averageCost },
+      update: { quantity: Math.max(newQuantity, 0), averageCost },
+    });
+  }
+  return [...reversals.values()];
+}
+
 export async function postInventoryTransaction(tx: Tx, input: PostInventoryTransactionInput) {
   const transactionType = normalizeStockTransactionType(input.transactionType);
   if (!isStockTransactionType(transactionType)) stockError("Loai giao dich kho khong hop le");
@@ -297,6 +360,100 @@ export async function postInventoryTransaction(tx: Tx, input: PostInventoryTrans
       partnerCode: input.partnerCode || null,
       note: input.note || null,
       createdBy: input.createdBy || null,
+      lines: {
+        create: valuedLines.map((line) => ({
+          itemId: line.itemId,
+          inputQuantity: line.inputQuantity,
+          inputUnitCode: line.inputUnitCode,
+          conversionRate: line.conversionRate,
+          quantity: line.quantity,
+          inputUnitCost: line.inputUnitCost,
+          unitCost: line.unitCost,
+          totalCost: line.totalCost,
+        })),
+      },
+    },
+    include: { lines: { include: { item: true } } },
+  });
+}
+
+/**
+ * Ghi đè nội dung một phiếu kho đã lưu (sửa phiếu).
+ *
+ * Hoàn tác tác động tồn kho của bản CŨ rồi ghi bản MỚI y như lúc lập phiếu, nên sửa được phiếu
+ * nằm giữa kỳ mà tồn kho và tổng giá trị kho vẫn khớp. Dòng xuất được định giá lại theo bình
+ * quân hiện hành sau khi đã hoàn tác — tức là đúng mặt bằng giá của kho tại thời điểm sửa.
+ */
+export type RepostStockInput = {
+  transactionDate: Date;
+  branchCode: string;
+  warehouseCode: string;
+  toWarehouseCode?: string | null;
+  toBranchCode?: string | null;
+  partnerCode?: string | null;
+  subType?: string | null;
+  referenceCode?: string | null;
+  note?: string | null;
+  lines: StockLineInput[];
+};
+
+export async function repostInventoryTransaction(
+  tx: Tx,
+  current: {
+    id: string;
+    code: string;
+    transactionType: string;
+    warehouseCode: string;
+    toWarehouseCode: string | null;
+    lines: Array<{ itemId: string; quantity: number; totalCost: number }>;
+  },
+  input: RepostStockInput,
+) {
+  const transactionType = current.transactionType;
+  if (!input.lines.length) stockError("Can it nhat mot dong mat hang");
+  if (transactionType === "DIEU_CHUYEN" && !input.toWarehouseCode) stockError("Dieu chuyen kho bat buoc co kho nhan");
+  if (transactionType === "DIEU_CHUYEN" && input.toWarehouseCode === input.warehouseCode) {
+    stockError("Kho xuat va kho nhan khong duoc giong nhau");
+  }
+
+  await reverseStockEffect(tx, current);
+
+  const resolvedLines = [];
+  for (const line of input.lines) resolvedLines.push(await resolveStockLine(tx, line));
+
+  const valuedLines = [];
+  for (const line of resolvedLines) {
+    if (isInboundStockType(transactionType)) {
+      const valued = await applyBalanceChange(tx, line.itemId, input.warehouseCode, line.quantity, line.unitCost, "IN");
+      valuedLines.push({ ...line, unitCost: valued.unitCost, totalCost: valued.totalCost });
+    } else if (isOutboundStockType(transactionType)) {
+      const valued = await applyBalanceChange(tx, line.itemId, input.warehouseCode, line.quantity, line.unitCost, "OUT");
+      valuedLines.push({ ...line, unitCost: valued.unitCost, totalCost: valued.totalCost });
+    } else {
+      const outValue = await applyBalanceChange(tx, line.itemId, input.warehouseCode, line.quantity, line.unitCost, "OUT");
+      let transferUnitCost = outValue.unitCost;
+      if (transferUnitCost <= 0) transferUnitCost = await latestPurchaseUnitCost(tx, line.itemId);
+      if (transferUnitCost <= 0) {
+        stockError(`Mat hang ${line.item.code} o kho ${input.warehouseCode} chua co gia von (binh quan = 0) nen khong dieu chuyen duoc`);
+      }
+      await applyBalanceChange(tx, line.itemId, input.toWarehouseCode || "", line.quantity, transferUnitCost, "IN");
+      valuedLines.push({ ...line, unitCost: transferUnitCost, totalCost: transferUnitCost * line.quantity });
+    }
+  }
+
+  await tx.inventoryTransactionLine.deleteMany({ where: { transactionId: current.id } });
+  return tx.inventoryTransaction.update({
+    where: { id: current.id },
+    data: {
+      transactionDate: input.transactionDate,
+      branchCode: input.branchCode,
+      warehouseCode: input.warehouseCode,
+      toWarehouseCode: transactionType === "DIEU_CHUYEN" ? input.toWarehouseCode || null : null,
+      toBranchCode: transactionType === "DIEU_CHUYEN" ? input.toBranchCode || null : null,
+      subType: input.subType ?? null,
+      partnerCode: input.partnerCode || null,
+      referenceCode: input.referenceCode || null,
+      note: input.note || null,
       lines: {
         create: valuedLines.map((line) => ({
           itemId: line.itemId,

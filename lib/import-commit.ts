@@ -1413,7 +1413,17 @@ export async function commitImport(input: CommitInput) {
       const groups = new Map<string, ParsedImportRow[]>();
       for (const row of input.rows) {
         const transactionType = normalizeStockTransactionType(row.values.transaction_type);
-        const referenceCode = asText(row.values.reference_code) || `ROW-${row.rowNumber}`;
+        /**
+         * Khoá gom phiếu: SỐ CHỨNG TỪ trước, không có thì tới GHI CHÚ, cuối cùng mới tách từng dòng.
+         *
+         * Nhiều nơi không đánh số chứng từ cho từng lần giao hàng (chợ, đặt lẻ) — trước đây mỗi
+         * dòng như vậy thành một phiếu riêng, một lần giao 30 mặt hàng ra 30 phiếu. Nay khai
+         * cùng một câu ghi chú là gom được thành một phiếu, đúng như số chứng từ (khách hỏi
+         * 21/09/2026). Vẫn phải cùng ngày, cùng cửa hàng, cùng kho, cùng loại giao dịch.
+         */
+        const referenceCode = asText(row.values.reference_code)
+          || asText(row.values.note)
+          || `ROW-${row.rowNumber}`;
         const key = [
           referenceCode,
           // NGÀY phải nằm trong khoá gom: cùng một hoá đơn mà hàng về hai ngày thì phải ra hai
@@ -2663,7 +2673,9 @@ async function adjustInventoryBalanceForRollback(
 
 async function rollbackInventoryTransactions(tx: RawTxClient, batchId: string) {
   const transactions = await tx.inventoryTransaction.findMany({
-    where: { importBatchId: batchId },
+    // Bỏ qua phiếu đã bị xoá lẻ trên màn Kho: tồn của nó đã hoàn rồi, hoàn lần nữa là lệch kho.
+    // Client thô ở đây không có lớp lọc xoá mềm nên phải khai tay.
+    where: { importBatchId: batchId, deletedAt: null },
     include: { lines: true },
     orderBy: { createdAt: "desc" },
   });
@@ -3018,7 +3030,7 @@ export async function deleteRevenueImportDay(input: DeleteRevenueDayInput) {
     // Lô cũ (trước 09/2026) còn trừ kho ngay lúc import — hoàn đúng phiếu của ngày này.
     // Lô mới không sinh phiếu nào lúc import nên danh sách này rỗng.
     const stockDocs = await tx.inventoryTransaction.findMany({
-      where: { importBatchId: batch.id },
+      where: { importBatchId: batch.id, deletedAt: null },
       include: { lines: true },
       orderBy: { createdAt: "desc" },
     });

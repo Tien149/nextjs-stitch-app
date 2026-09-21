@@ -746,10 +746,10 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "quantity", label: "So luong", required: true, type: "number", aliases: ["so luong", "quantity", "qty"] },
       { field: "unit_code", label: "DVT", required: true, type: "text", aliases: ["dvt", "don vi tinh", "unit", "unit code"] },
       { field: "unit_cost", label: "Don gia", required: false, type: "number", aliases: ["don gia", "unit cost", "price"], note: "De trong hoac 0 cung duoc (hang khuyen mai, tang kem): dong do nhan theo gia binh quan dang co cua kho." },
-      { field: "reference_code", label: "So chung tu", required: false, type: "text", aliases: ["so chung tu", "ma chung tu", "reference", "external ref"] },
+      { field: "reference_code", label: "So chung tu", required: false, type: "text", aliases: ["so chung tu", "ma chung tu", "reference", "external ref"], note: "Cac dong CUNG so chung tu + cung ngay + cung cua hang/kho gom thanh MOT phieu nhieu mat hang. De trong thi he thong gom theo cot Ghi chu; trong ca hai thi moi dong mot phieu." },
       { field: "partner_code", label: "NCC / Doi tuong", required: false, type: "text", aliases: ["ncc", "ma ncc", "doi tuong", "partner"], note: "Phieu NHAP_MUA co khai NCC se sinh mot khoan cong no phai tra cho NCC do, bang tong gia tri phieu. Tra tien roi thi phieu chi cung doi tac se can tru." },
       { field: "payment_due_date", label: "Han thanh toan", required: false, type: "date", aliases: ["han thanh toan", "ngay den han", "han tt", "payment due date", "due date"], note: "Chi dung cho NHAP_MUA co NCC: han cua khoan cong no phai tra. De trong = khong theo doi han." },
-      { field: "note", label: "Ghi chu", required: false, type: "text", aliases: ["ghi chu", "note", "dien giai"] },
+      { field: "note", label: "Ghi chu", required: false, type: "text", aliases: ["ghi chu", "note", "dien giai"], note: "Khong co so chung tu thi cac dong ghi chu GIONG HET NHAU (cung ngay, cung kho) gom thanh mot phieu." },
     ],
   },
   {

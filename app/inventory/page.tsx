@@ -25,7 +25,7 @@ type ItemGroup = { id: string; code: string; name: string; group: string | null;
  */
 type RevenueGroup = { id: string; code: string; name: string; group: string | null };
 type Balance = { id: string; warehouseCode: string; quantity: number; averageCost: number; item: Item };
-type Transaction = { id: string; code: string; transactionType: string; subType: string | null; transactionDate: string; branchCode: string; warehouseCode: string; toWarehouseCode: string | null; toBranchCode: string | null; partnerCode: string | null; internalReceivableDebtCode: string | null; internalPayableDebtCode: string | null; referenceCode: string | null; note?: string | null; lines: Array<{ id: string; inputQuantity: number | null; inputUnitCode: string | null; conversionRate: number; quantity: number; unitCost: number; inputUnitCost: number | null; totalCost: number; item: Item }> };
+type Transaction = { id: string; code: string; transactionType: string; subType: string | null; transactionDate: string; branchCode: string; warehouseCode: string; toWarehouseCode: string | null; toBranchCode: string | null; partnerCode: string | null; referenceType: string | null; internalReceivableDebtCode: string | null; internalPayableDebtCode: string | null; referenceCode: string | null; note?: string | null; lines: Array<{ id: string; inputQuantity: number | null; inputUnitCode: string | null; conversionRate: number; quantity: number; unitCost: number; inputUnitCost: number | null; totalCost: number; item: Item }> };
 type Recipe = { id: string; code: string; productCode: string; branchCode?: string | null; productName: string; unit: string; outputConversionRate: number; sellingPrice: number; estimatedCost: number; estimatedUnitCost: number; version: number; effectiveFrom: string; status: string; lines: Array<{ quantity: number; unitCode: string | null; conversionRate: number; wasteRate: number; item: Item }> };
 type CostSummaryRow = { productCode: string; branchCode: string; productName: string; group: string; stockUnit: string; batchUnit: string; outputConversionRate: number; sellingPrice: number; unitCost: number; costRatio: number | null; version: number };
 type WasteReportRow = { itemCode: string; itemName: string; unit: string; itemType: string; totalQuantity: number; totalValue: number; documentCount: number; bySubType: Record<string, { quantity: number; value: number }> };
@@ -126,6 +126,15 @@ export default function InventoryPage() {
   const [itemEditError, setItemEditError] = useState<string | null>(null);
   const [itemEditSaving, setItemEditSaving] = useState(false);
   const [deletingItem, setDeletingItem] = useState<Item | null>(null);
+  /** Sửa / xoá phiếu kho ngay trên bảng phiếu của ba tab Nhập / Xuất / Điều chuyển. */
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
+  const [transactionEditForm, setTransactionEditForm] = useState({ transactionDate: "", warehouseCode: "", toWarehouseCode: "", partnerCode: "", referenceCode: "", note: "" });
+  const [transactionEditLines, setTransactionEditLines] = useState<Array<{ key: string; itemId: string; quantity: string; unitCode: string; unitCost: string }>>([]);
+  const [transactionEditError, setTransactionEditError] = useState<string | null>(null);
+  const [transactionEditSaving, setTransactionEditSaving] = useState(false);
+  const [deletingTransaction, setDeletingTransaction] = useState<Transaction | null>(null);
+  const [transactionDeleteError, setTransactionDeleteError] = useState<string | null>(null);
+  const [transactionDeleting, setTransactionDeleting] = useState(false);
   const [itemDeleteError, setItemDeleteError] = useState<string | null>(null);
   const [itemDeleting, setItemDeleting] = useState(false);
   const [itemSearch, setItemSearch] = useState("");
@@ -680,6 +689,108 @@ export default function InventoryPage() {
       status: (item.status || "ACTIVE").toUpperCase(),
       note: item.note || "",
     });
+  };
+
+  /**
+   * Phiếu do hệ thống sinh ra từ chứng từ khác thì phải sửa ở gốc — sửa riêng phiếu kho sẽ
+   * làm lệch kiểm kê / đơn mua hàng / lần rã nguyên liệu đã ghi.
+   */
+  /** Phiếu nhập thì đơn giá do người dùng khai; phiếu xuất / điều chuyển lấy giá vốn của kho. */
+  const isInboundType = (transactionType: string) => transactionType.startsWith("NHAP_");
+  const transactionLockReason = (transaction: Transaction) => {
+    const derived: Record<string, string> = {
+      STOCKTAKE: "phiếu kiểm kê",
+      PURCHASE_ORDER: "đơn mua hàng",
+      PRODUCTION: "lệnh chế biến / lần rã nguyên liệu",
+    };
+    const source = transaction.referenceType ? derived[transaction.referenceType] : undefined;
+    if (source) return `Phiếu sinh tự động từ ${source} — xử lý ở chứng từ gốc`;
+    return null;
+  };
+  /** Điều chuyển liên nhà hàng đã sinh công nợ nội bộ: sửa số lượng thì công nợ hai đầu lệch. */
+  const transactionEditLockReason = (transaction: Transaction) => transactionLockReason(transaction)
+    || (transaction.internalReceivableDebtCode || transaction.internalPayableDebtCode
+      ? "Điều chuyển liên nhà hàng đã sinh công nợ nội bộ — xoá phiếu rồi lập lại"
+      : null);
+
+  const openTransactionEdit = (transaction: Transaction) => {
+    setTransactionEditError(null);
+    setEditingTransaction(transaction);
+    setTransactionEditForm({
+      transactionDate: String(transaction.transactionDate).slice(0, 10),
+      warehouseCode: transaction.warehouseCode,
+      toWarehouseCode: transaction.toWarehouseCode || "",
+      partnerCode: transaction.partnerCode || "",
+      referenceCode: transaction.referenceCode || "",
+      note: transaction.note || "",
+    });
+    setTransactionEditLines(transaction.lines.map((line, index) => ({
+      key: `${line.id}-${index}`,
+      itemId: line.item.id,
+      // Hiện lại đúng con số người dùng đã gõ (ĐVT mua), không phải số đã quy đổi về ĐVT tồn.
+      quantity: String(line.inputQuantity ?? line.quantity),
+      unitCode: line.inputUnitCode || line.item.unit,
+      unitCost: String(line.inputUnitCost ?? line.unitCost),
+    })));
+  };
+
+  const submitTransactionEdit = async () => {
+    if (!editingTransaction) return;
+    setTransactionEditSaving(true);
+    setTransactionEditError(null);
+    try {
+      const response = await fetch("/api/inventory", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...getSessionHeaders() },
+        body: JSON.stringify({
+          action: "UPDATE_TRANSACTION",
+          transactionId: editingTransaction.id,
+          transactionDate: transactionEditForm.transactionDate,
+          warehouseCode: transactionEditForm.warehouseCode,
+          ...(editingTransaction.transactionType === "DIEU_CHUYEN" ? { toWarehouseCode: transactionEditForm.toWarehouseCode } : {}),
+          partnerCode: transactionEditForm.partnerCode,
+          referenceCode: transactionEditForm.referenceCode,
+          note: transactionEditForm.note,
+          lines: transactionEditLines.map((line) => ({
+            itemId: line.itemId,
+            inputQuantity: line.quantity,
+            inputUnitCode: line.unitCode,
+            inputUnitCost: line.unitCost,
+          })),
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setTransactionEditError(payload.error || "Không sửa được phiếu kho");
+        return;
+      }
+      setMessage(`Đã sửa phiếu ${editingTransaction.code} và cập nhật lại tồn kho.`);
+      setEditingTransaction(null);
+      await loadData();
+    } finally {
+      setTransactionEditSaving(false);
+    }
+  };
+
+  const confirmDeleteTransaction = async (reason: string) => {
+    if (!deletingTransaction) return;
+    setTransactionDeleting(true);
+    setTransactionDeleteError(null);
+    try {
+      const query = new URLSearchParams({ id: deletingTransaction.id, type: "TRANSACTION" });
+      if (reason) query.set("reason", reason);
+      const response = await fetch(`/api/inventory?${query.toString()}`, { method: "DELETE", headers: getSessionHeaders() });
+      const payload = await response.json();
+      if (!response.ok) {
+        setTransactionDeleteError(payload.error || "Không xoá được phiếu kho");
+        return;
+      }
+      setMessage(`Đã xoá phiếu ${deletingTransaction.code} và hoàn lại tồn kho.`);
+      setDeletingTransaction(null);
+      await loadData();
+    } finally {
+      setTransactionDeleting(false);
+    }
   };
 
   const submitItemEdit = async () => {
@@ -1560,6 +1671,7 @@ export default function InventoryPage() {
                 { label: active === "inbound" ? "Tên NCC" : "Tên đối tác" },
                 { label: "SL", align: "right" },
                 { label: "Giá trị", align: "right" },
+                { label: "Thao tác", align: "right" },
               ]}
             >
               {(active === "inbound" ? inboundRows : outboundRows).map((row) => {
@@ -1583,6 +1695,22 @@ export default function InventoryPage() {
                   <Cell>{row.transaction.partnerCode ? partnerName(row.transaction.partnerCode) : <span className="text-slate-400">—</span>}</Cell>
                   <Cell right>{flowQuantityText(lines)}</Cell>
                   <Cell right><b>{money(lines.reduce((sum, line) => sum + line.totalCost, 0))} đ</b></Cell>
+                  <Cell right>
+                    {/* Điều chuyển góp một dòng cho mỗi màn hình; sửa/xoá nó ở đúng tab Điều chuyển. */}
+                    {row.transaction.transactionType === "DIEU_CHUYEN" ? (
+                      <span className="text-xs text-slate-400">Ở tab Điều chuyển</span>
+                    ) : (
+                      <RowActions
+                        session={user}
+                        module={href}
+                        compact
+                        onEdit={() => openTransactionEdit(row.transaction)}
+                        onDelete={() => { setTransactionDeleteError(null); setDeletingTransaction(row.transaction); }}
+                        editDisabledReason={transactionEditLockReason(row.transaction)}
+                        deleteDisabledReason={transactionLockReason(row.transaction)}
+                      />
+                    )}
+                  </Cell>
                 </tr>
                 );
               })}
@@ -1701,6 +1829,7 @@ export default function InventoryPage() {
                 { label: "Mặt hàng" },
                 { label: "Công nợ nội bộ" },
                 { label: "Trị giá", align: "right" },
+                { label: "Thao tác", align: "right" },
               ]}
             >
               {transferTransactions.map((row) => {
@@ -1722,6 +1851,17 @@ export default function InventoryPage() {
                       : <span className="text-slate-400">-</span>}
                     </Cell>
                     <Cell right><b>{money(row.lines.reduce((sum, line) => sum + line.totalCost, 0))} đ</b></Cell>
+                    <Cell right>
+                      <RowActions
+                        session={user}
+                        module={href}
+                        compact
+                        onEdit={() => openTransactionEdit(row)}
+                        onDelete={() => { setTransactionDeleteError(null); setDeletingTransaction(row); }}
+                        editDisabledReason={transactionEditLockReason(row)}
+                        deleteDisabledReason={transactionLockReason(row)}
+                      />
+                    </Cell>
                   </tr>
                 );
               })}
@@ -1729,6 +1869,136 @@ export default function InventoryPage() {
           </section>
         </div>
       )}
+
+      {/* Sửa / xoá phiếu kho — dùng chung cho cả ba tab Nhập kho, Xuất kho, Điều chuyển. */}
+      {editingTransaction && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+          <form
+            onSubmit={(e) => { e.preventDefault(); void submitTransactionEdit(); }}
+            className="bg-white rounded-xl w-full max-w-3xl shadow-xl max-h-[92vh] overflow-y-auto"
+          >
+            <div className="p-5 border-b border-slate-200">
+              <h3 className="font-bold text-slate-900">Sửa phiếu {editingTransaction.code}</h3>
+              <p className="text-xs text-slate-500 mt-1">
+                {movementTypeLabel(editingTransaction.transactionType)} · {storeLabel(editingTransaction.branchCode)}.
+                Lưu xong hệ thống hoàn lại tồn của bản cũ rồi ghi bản mới, nên tồn kho và giá vốn bình quân được tính lại đúng.
+              </p>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                <Input label="Ngày chứng từ">
+                  <input type="date" className="control" value={transactionEditForm.transactionDate} onChange={(e) => setTransactionEditForm({ ...transactionEditForm, transactionDate: e.target.value })} required />
+                </Input>
+                <Input label={editingTransaction.transactionType === "DIEU_CHUYEN" ? "Kho xuất" : "Kho"}>
+                  <select className="control" value={transactionEditForm.warehouseCode} onChange={(e) => setTransactionEditForm({ ...transactionEditForm, warehouseCode: e.target.value })}>
+                    {warehouseOptions.filter((warehouse) => !warehouse.branch || warehouse.branch === editingTransaction.branchCode).map((warehouse) => (
+                      <option key={warehouse.code} value={warehouse.code}>{warehouse.name}</option>
+                    ))}
+                  </select>
+                </Input>
+                {editingTransaction.transactionType === "DIEU_CHUYEN" ? (
+                  <Input label="Kho nhận">
+                    <select className="control" value={transactionEditForm.toWarehouseCode} onChange={(e) => setTransactionEditForm({ ...transactionEditForm, toWarehouseCode: e.target.value })}>
+                      {warehouseOptions.map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name}</option>)}
+                    </select>
+                  </Input>
+                ) : (
+                  <Input label={isInboundType(editingTransaction.transactionType) ? "Nhà cung cấp" : "Đối tác"}>
+                    <select className="control" value={transactionEditForm.partnerCode} onChange={(e) => setTransactionEditForm({ ...transactionEditForm, partnerCode: e.target.value })}>
+                      <option value="">Không khai đối tác</option>
+                      {activePartners.map((partner) => <option key={partner.code} value={partner.code}>{partner.name}</option>)}
+                    </select>
+                  </Input>
+                )}
+                <Input label="Tham chiếu / Số chứng từ">
+                  <input data-input-kind="code" className="control" value={transactionEditForm.referenceCode} onChange={(e) => setTransactionEditForm({ ...transactionEditForm, referenceCode: e.target.value })} />
+                </Input>
+                <Input label="Ghi chú">
+                  <input className="control" value={transactionEditForm.note} onChange={(e) => setTransactionEditForm({ ...transactionEditForm, note: e.target.value })} />
+                </Input>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <b className="text-sm text-slate-700">Mặt hàng ({transactionEditLines.length} dòng)</b>
+                  <button
+                    type="button"
+                    onClick={() => setTransactionEditLines([...transactionEditLines, { key: `new-${Date.now()}`, itemId: "", quantity: "1", unitCode: "", unitCost: "0" }])}
+                    className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-bold hover:bg-slate-50"
+                  >
+                    + Thêm dòng
+                  </button>
+                </div>
+                {transactionEditLines.map((line, index) => {
+                  const item = data.items.find((candidate) => candidate.id === line.itemId);
+                  const units = item ? [{ unitCode: item.unit.toUpperCase(), unitName: item.unit }, ...(item.unitConversions || []).filter((unit) => unit.unitCode.toUpperCase() !== item.unit.toUpperCase())] : [];
+                  const patch = (changes: Partial<typeof line>) => setTransactionEditLines(transactionEditLines.map((current, position) => position === index ? { ...current, ...changes } : current));
+                  return (
+                    <div key={line.key} className="grid grid-cols-1 sm:grid-cols-[1fr_100px_120px_130px_40px] gap-2 items-end border border-slate-100 rounded-lg p-2">
+                      <Input label={index === 0 ? "Mặt hàng" : ""}>
+                        <ItemSelect items={data.items} value={line.itemId} onChange={(itemId) => {
+                          const picked = data.items.find((candidate) => candidate.id === itemId);
+                          patch({ itemId, unitCode: picked?.unitConversions?.[0]?.unitCode || picked?.unit.toUpperCase() || "" });
+                        }} />
+                      </Input>
+                      <Input label={index === 0 ? "Số lượng" : ""}>
+                        <input type="number" step="any" className="control text-right" value={line.quantity} onChange={(e) => patch({ quantity: e.target.value })} required />
+                      </Input>
+                      <Input label={index === 0 ? "ĐVT" : ""}>
+                        <select className="control" value={line.unitCode} onChange={(e) => patch({ unitCode: e.target.value })}>
+                          {units.map((unit) => <option key={unit.unitCode} value={unit.unitCode}>{unit.unitName || unit.unitCode}</option>)}
+                        </select>
+                      </Input>
+                      <Input label={index === 0 ? "Đơn giá" : ""}>
+                        <input
+                          type="number"
+                          step="any"
+                          className="control text-right disabled:bg-slate-100 disabled:text-slate-400"
+                          value={line.unitCost}
+                          disabled={!isInboundType(editingTransaction.transactionType)}
+                          title={isInboundType(editingTransaction.transactionType) ? "" : "Phiếu xuất / điều chuyển lấy giá vốn bình quân của kho"}
+                          onChange={(e) => patch({ unitCost: e.target.value })}
+                        />
+                      </Input>
+                      <button
+                        type="button"
+                        onClick={() => setTransactionEditLines(transactionEditLines.filter((_, position) => position !== index))}
+                        disabled={transactionEditLines.length <= 1}
+                        title={transactionEditLines.length <= 1 ? "Phiếu phải còn ít nhất một dòng" : "Bỏ dòng này"}
+                        className="p-2 rounded-lg text-slate-500 hover:text-rose-700 hover:bg-rose-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        <span className="material-symbols-outlined text-lg">delete</span>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {transactionEditError && (
+                <p className="rounded-lg bg-rose-50 border border-rose-100 text-rose-700 px-3 py-2 text-sm">{transactionEditError}</p>
+              )}
+            </div>
+
+            <div className="p-5 border-t border-slate-200 flex items-center justify-end gap-2">
+              <button type="button" onClick={() => setEditingTransaction(null)} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-bold hover:bg-slate-50">Huỷ</button>
+              <button type="submit" disabled={transactionEditSaving} className="primary-button">{transactionEditSaving ? "Đang lưu..." : "Lưu phiếu"}</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      <ConfirmDeleteDialog
+        open={Boolean(deletingTransaction)}
+        title={`Xoá phiếu ${deletingTransaction?.code || ""}?`}
+        description={deletingTransaction
+          ? `${movementTypeLabel(deletingTransaction.transactionType)} · ${storeLabel(deletingTransaction.branchCode)} · ${deletingTransaction.lines.length} mặt hàng. Tồn kho sẽ được hoàn lại theo đúng số lượng và giá trị của phiếu.`
+          : undefined}
+        submitting={transactionDeleting}
+        error={transactionDeleteError}
+        onCancel={() => { setDeletingTransaction(null); setTransactionDeleteError(null); }}
+        onConfirm={confirmDeleteTransaction}
+      />
 
       {active === "recipes" && canCreate && (
         <section className="bg-white border border-emerald-200 rounded-lg p-5 shadow-sm mb-5">
