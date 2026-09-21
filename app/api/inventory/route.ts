@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { apiError, assertPeriodOpen, businessError, cleanText, isPeriodLocked, toDate, toNumber } from "@/lib/phase3";
 import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
 import { isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType, postInventoryTransaction } from "@/lib/inventory-stock";
+import { createPurchasePayable, removePurchasePayables } from "@/lib/purchase-payable";
 import { postStockTransfer } from "@/lib/inventory-transfer";
 import { computeCostingLevels, computeRecipeUnitCosts, explodeSalesDemand, pickRecipeForDate, type ExplosionRecipe } from "@/lib/production-explosion";
 import { writeAuditLog } from "@/lib/audit-log";
@@ -1492,6 +1493,8 @@ export async function POST(request: Request) {
     // NCC / đối tác của phiếu. Chỉ nhận mã có trong danh mục để cột "Tên NCC" và bộ lọc
     // đối tác trên màn Nhập/Xuất kho không bao giờ hiện mã lạ không tra được tên.
     const stockPartnerCode = cleanText(body.partnerCode) || null;
+    const paymentDueDate = cleanText(body.paymentDueDate) ? new Date(cleanText(body.paymentDueDate)) : null;
+    if (paymentDueDate && Number.isNaN(paymentDueDate.getTime())) businessError("Hạn thanh toán không hợp lệ");
     if (stockPartnerCode) {
       const partner = await prisma.masterDataItem.findFirst({ where: { type: "PARTNER", code: stockPartnerCode } });
       if (!partner) businessError(`Đối tác ${stockPartnerCode} không có trong danh mục`);
@@ -1516,7 +1519,7 @@ export async function POST(request: Request) {
         });
         return transfer.transaction;
       }
-      return postInventoryTransaction(tx, {
+      const posted = await postInventoryTransaction(tx, {
         code: transactionCode,
         transactionType,
         subType: wasteSubType,
@@ -1531,6 +1534,9 @@ export async function POST(request: Request) {
         createdBy: auth.session.name,
         lines: inputLines,
       });
+      // Nhập mua có khai NCC thì sinh khoản phải trả, đúng luật của phiếu nhập từ file import.
+      await createPurchasePayable(tx, posted, { dueDate: paymentDueDate });
+      return posted;
     });
 
     return NextResponse.json(result, { status: 201 });
@@ -1928,6 +1934,14 @@ export async function DELETE(request: Request) {
         }
       }
 
+      // Khoản phải trả NCC sinh từ phiếu nhập mua phải mất theo phiếu; đã gạch nợ thì chặn.
+      // Helper dùng chung với rollback import (nơi message hiện thẳng), nên đổi sang lỗi nghiệp
+      // vụ ở đây để API trả 400 kèm lời nhắc thay vì 500 trống.
+      try {
+        await removePurchasePayables(prisma, [transaction.code]);
+      } catch (error) {
+        businessError(error instanceof Error ? error.message : "Không thu hồi được công nợ mua hàng của phiếu");
+      }
       const reversals = await reverseTransactionStock(transaction);
       const result = await softDeleteRecord({ model: "InventoryTransaction", id, session: auth.session, reason });
       await writeAuditLog({ session: auth.session, module: menuHref, action: "REVERSE_STOCK", entityType: "InventoryTransaction", entityId: transaction.id, entityCode: transaction.code, branchCode: transaction.branchCode, metadata: { transactionType: transaction.transactionType, reversals, internalDebtCodes } });

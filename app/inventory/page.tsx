@@ -135,7 +135,7 @@ export default function InventoryPage() {
   const [itemStatusFilter, setItemStatusFilter] = useState("ALL");
   const [bulkStatusRunning, setBulkStatusRunning] = useState(false);
   const [conversionForm, setConversionForm] = useState({ itemId: "", purchaseUnit: "thung", conversionRate: "24", note: "" });
-  const [stockForm, setStockForm] = useState({ transactionType: "NHAP_MUA", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HN", itemId: "", inputUnitCode: "", quantity: "10", unitCost: "100000", partnerCode: "", referenceCode: "", note: "Nhap kho van hanh" });
+  const [stockForm, setStockForm] = useState({ transactionType: "NHAP_MUA", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HN", itemId: "", inputUnitCode: "", quantity: "10", unitCost: "100000", partnerCode: "", paymentDueDate: "", referenceCode: "", note: "Nhap kho van hanh" });
   /** Nhập mua theo PO (GRPO): PO đã duyệt còn hàng chưa nhận + số lượng nhận trên từng dòng. */
   const [receivablePOs, setReceivablePOs] = useState<ReceivablePO[]>([]);
   const [grpoOrderId, setGrpoOrderId] = useState("");
@@ -304,6 +304,8 @@ export default function InventoryPage() {
    * ở mỗi màn, khỏi phải cuộn qua nhóm không liên quan.
    */
   const activePartners = data.partners.filter((partner) => partner.status === "ACTIVE");
+  /** Nhập mua có khai NCC thì phiếu sinh kèm công nợ phải trả — nói trước để khỏi bất ngờ. */
+  const createsPurchasePayable = active === "inbound" && stockForm.transactionType === "NHAP_MUA" && !!stockForm.partnerCode;
   const partnerFormGroups = (() => {
     const order = active === "inbound"
       ? ["SUPPLIER", "CUSTOMER", "OTHER_PARTNER"]
@@ -1452,6 +1454,16 @@ export default function InventoryPage() {
                   ))}
                 </select>
               </Input>
+
+              {createsPurchasePayable && (<>
+                <div className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-800 !mt-2">
+                  Phiếu này sẽ sinh <b>công nợ phải trả</b> cho nhà cung cấp bằng đúng giá trị phiếu.
+                  Trả tiền rồi thì lập phiếu chi cho chính nhà cung cấp đó để cấn trừ.
+                </div>
+                <Input label="Hạn thanh toán">
+                  <input type="date" className="control" value={stockForm.paymentDueDate} onChange={(e) => setStockForm({ ...stockForm, paymentDueDate: e.target.value })} />
+                </Input>
+              </>)}
 
               <Input label="Tham chiếu">
                 <input data-input-kind="code" className="control" value={stockForm.referenceCode} onChange={(e) => setStockForm({ ...stockForm, referenceCode: e.target.value })} />

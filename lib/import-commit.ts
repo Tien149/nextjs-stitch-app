@@ -6,6 +6,7 @@ import { ensureDefaultAccounts } from "@/lib/accounting";
 import { isMasterDataImportType, normalizeHeader, type ImportType } from "@/lib/import-templates";
 import { parseImportDate, type ParsedImportRow } from "@/lib/import-parser";
 import { normalizeStockTransactionType, postInventoryTransaction } from "@/lib/inventory-stock";
+import { createPurchasePayable, removePurchasePayables } from "@/lib/purchase-payable";
 import { postStockTransfer } from "@/lib/inventory-transfer";
 import { writeAuditLog } from "@/lib/audit-log";
 import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
@@ -1487,6 +1488,12 @@ export async function commitImport(input: CommitInput) {
               createdBy: input.uploadedBy,
               lines,
             });
+        // Nhập mua có khai NCC thì sinh luôn khoản phải trả: hàng về kho là nợ NCC, trừ khi
+        // phiếu chi trả tiền cho chính đối tác đó cấn lại (khách chốt 21/09/2026).
+        await createPurchasePayable(tx, transaction, {
+          importBatchId: batch.id,
+          dueDate: first.values.payment_due_date ? asDate(first.values.payment_due_date) : null,
+        });
         for (const row of rows) await setImportTarget(tx, staging, row, "INVENTORY_TRANSACTION", transaction.id);
       }
     }
@@ -2672,6 +2679,7 @@ async function rollbackInventoryTransactions(tx: RawTxClient, batchId: string) {
  */
 type UnwindInventoryTransaction = {
   id: string;
+  code: string;
   transactionType: string;
   warehouseCode: string;
   toWarehouseCode: string | null;
@@ -2697,6 +2705,9 @@ async function unwindInventoryTransactions(tx: RawTxClient, transactions: Unwind
     }
     await tx.debtRecord.deleteMany({ where: { code: { in: internalDebtCodes } } });
   }
+  // Khoản phải trả NCC sinh từ phiếu nhập mua đi theo phiếu: rollback lô import là khoản nợ
+  // cũng phải mất, nếu không NCC còn treo nợ của lô hàng không còn tồn tại.
+  await removePurchasePayables(tx, transactions.map((transaction) => transaction.code));
   for (const transaction of transactions) {
     for (const line of transaction.lines) {
       if (transaction.transactionType.startsWith("NHAP_")) {
