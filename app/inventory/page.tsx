@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { canPerformMenuAction, canOpenPath, SESSION_KEY, filterModuleTabs } from "@/lib/auth-demo";
@@ -105,6 +105,7 @@ export default function InventoryPage() {
   const [active, setActive] = useState("stock");
   const [data, setData] = useState<Data>({ items: [], balances: [], transactions: [], flowTransactions: [], recipes: [], warehouses: [], stocktakes: [], stockSummary: [], stockMovements: [], itemGroups: [], revenueGroups: [], receiptCategories: [], costSummary: [], wasteReport: [], pendingSales: { total: 0, byDay: [], byItem: [] }, partners: [] });
   const [message, setMessage] = useState("");
+  const messageRef = useRef<HTMLParagraphElement>(null);
   const [reportWarehouse, setReportWarehouse] = useState("ALL");
   const [reportType, setReportType] = useState("ALL");
   /** Khoảng ngày của bảng "Chi tiết phát sinh theo loại giao dịch" — trước đây luôn cắt 100 dòng cuối. */
@@ -167,6 +168,12 @@ export default function InventoryPage() {
   const [wasteRows, setWasteRows] = useState([{ itemId: "", quantity: "1", unitCode: "" }]);
   
   const visibleTabs = useMemo(() => filterModuleTabs(user, href), [user]);
+
+  // Thông báo nằm ở đầu trang nhưng các nút hành động ở tận cuối tab -> cuộn lên cho người dùng thấy kết quả.
+  useEffect(() => {
+    if (!message) return;
+    messageRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [message]);
 
   // Tab mặc định có thể nằm ngoài quyền -> chuyển về tab đầu tiên được phép.
   useEffect(() => {
@@ -562,15 +569,32 @@ export default function InventoryPage() {
 
   const send = async (body: object, success: string) => {
     setMessage("");
-    const response = await fetch("/api/inventory", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...getSessionHeaders(),
-      },
-      body: JSON.stringify(body),
-    });
-    const payload = await response.json();
+    let response: Response;
+    try {
+      response = await fetch("/api/inventory", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...getSessionHeaders(),
+        },
+        body: JSON.stringify(body),
+      });
+    } catch {
+      setMessage("Không thực hiện được thao tác: mất kết nối tới máy chủ. Vui lòng thử lại.");
+      return null;
+    }
+    let payload: any = null;
+    try {
+      payload = await response.json();
+    } catch {
+      // Server trả về nội dung không phải JSON (ví dụ trang lỗi do timeout) — vẫn phải báo cho người dùng.
+      setMessage(
+        response.ok
+          ? "Đã gửi yêu cầu nhưng không đọc được phản hồi từ máy chủ. Vui lòng tải lại trang để kiểm tra kết quả."
+          : `Không thực hiện được thao tác (máy chủ phản hồi lỗi${response.status ? ` ${response.status}` : ""}). Nếu thao tác xử lý nhiều dữ liệu, có thể đã bị quá thời gian chờ.`,
+      );
+      return null;
+    }
     setMessage(response.ok ? success : payload.error || "Không thực hiện được thao tác");
     if (response.ok) await loadData();
     return response.ok ? payload : null;
@@ -756,7 +780,7 @@ export default function InventoryPage() {
 
       <ModuleTabs active={active} onChange={switchTab} tabs={visibleTabs} />
       </StickyFilterBar>
-      {message && <p className="mb-4 px-4 py-3 rounded-lg border border-blue-100 bg-blue-50 text-sm text-blue-700">{message}</p>}
+      {message && <p ref={messageRef} className="mb-4 px-4 py-3 rounded-lg border border-blue-100 bg-blue-50 text-sm text-blue-700">{message}</p>}
 
       {canCreate && (
         <div className={`mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3 ${canOpenImports ? "border-blue-100 bg-blue-50" : "border-amber-200 bg-amber-50"}`}>
@@ -2098,6 +2122,8 @@ export default function InventoryPage() {
                   const codes = (payload?.undecidedProducts || []) as string[];
                   setMessage(`Đã rã nguyên liệu và sinh phiếu chế biến + xuất bán. ${undecided} mã hàng chưa xác định được Bếp hay Bar nên đi kho mặc định${codes.length ? `: ${codes.slice(0, 8).join(", ")}${undecided > codes.slice(0, 8).length ? "..." : ""}` : ""}. Gán Nhóm doanh thu cho các mã này ở tab Mặt hàng để lần rã sau vào đúng kho.`);
                 }
+              } catch (err) {
+                setMessage(err instanceof Error ? `Không thực hiện được thao tác: ${err.message}` : "Không thực hiện được thao tác. Vui lòng thử lại.");
               } finally {
                 setExploding(false);
               }
