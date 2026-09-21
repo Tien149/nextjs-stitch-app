@@ -83,6 +83,51 @@ async function openDebtHint(
     : `Đối tác này chưa có khoản phải trả nào đang mở tại cửa hàng ${voucher.branchCode}. Khai khoản phải trả ở tab Công nợ trước, rồi mới lập phiếu chi để gạch.`;
 }
 
+/**
+ * Đồng bộ lại khoản nợ chi hộ đã tồn tại theo phiếu vừa sửa. Chỉ chạy cho khoản đã được thu
+ * lại một phần — khoản chưa thu thì bước hoàn tác đã xoá đi và ở đây tạo mới hoàn toàn.
+ *
+ * Dư nợ tính lại từ số tiền mới trừ phần đã thu, chứ không giữ nguyên dư nợ cũ: sửa số tiền
+ * phiếu mà dư nợ đứng im là sổ công nợ lệch với sổ tiền.
+ */
+async function syncAdvanceReceivableDebt(
+  tx: RawTxClient,
+  debt: { id: string; code: string },
+  next: {
+    partnerGroup: string;
+    partnerCode: string;
+    partnerName: string;
+    documentDate: Date;
+    categoryCode: string | null;
+    amount: number;
+    description: string;
+  },
+) {
+  const settled = await tx.debtSettlement.aggregate({ where: { debtId: debt.id }, _sum: { amount: true } });
+  const settledAmount = Math.round(settled._sum.amount || 0);
+  const amount = Math.round(next.amount);
+  if (amount < settledAmount) {
+    throw new VoucherSideEffectError(
+      `Khoản ${debt.code} đã được thu lại ${vnd(settledAmount)}, không hạ số tiền phiếu xuống ${vnd(amount)} được — dư nợ sẽ âm. Bỏ duyệt phiếu thu đã gạch khoản này trước, rồi sửa lại.`,
+    );
+  }
+  const outstandingAmount = amount - settledAmount;
+  await tx.debtRecord.update({
+    where: { id: debt.id },
+    data: {
+      partnerGroup: next.partnerGroup,
+      partnerCode: next.partnerCode,
+      partnerName: next.partnerName,
+      documentDate: next.documentDate,
+      categoryCode: next.categoryCode,
+      originalAmount: amount,
+      outstandingAmount,
+      description: next.description,
+      status: outstandingAmount === 0 ? "SETTLED" : settledAmount > 0 ? "PARTIAL" : "OPEN",
+    },
+  });
+}
+
 /** Gạch một khoản công nợ cho phiếu: dùng chung cho phiếu 1 đối tác lẫn từng dòng phân bổ. */
 async function settleDebtLine(
   tx: RawTxClient,
@@ -330,7 +375,17 @@ export async function applyVoucherSideEffects(
     if (existing?.deletedAt) {
       throw new VoucherSideEffectError(`Khoản phải thu ${code} đang nằm trong Thùng rác. Hãy khôi phục hoặc xóa hẳn trước khi duyệt lại phiếu.`);
     }
-    if (!existing) {
+    if (existing) {
+      await syncAdvanceReceivableDebt(tx, existing, {
+        partnerGroup: beneficiaryBranch ? "INTERNAL" : "EXTERNAL",
+        partnerCode: voucher.receivablePartnerCode,
+        partnerName: voucher.receivablePartnerName || voucher.receivablePartnerCode,
+        documentDate: voucher.voucherDate,
+        categoryCode: voucher.categoryCode,
+        amount: voucher.amount,
+        description: `Chi hộ theo chứng từ ${voucher.code}: ${voucher.description}`,
+      });
+    } else {
       await tx.debtRecord.create({
         data: {
           code,
@@ -362,8 +417,18 @@ export async function applyVoucherSideEffects(
       if (existingCounterpart?.deletedAt) {
         throw new VoucherSideEffectError(`Khoản phải trả nội bộ ${counterpartCode} đang nằm trong Thùng rác. Hãy khôi phục hoặc xóa hẳn trước khi duyệt lại phiếu.`);
       }
-      if (!existingCounterpart) {
-        const payerPartner = await ensureInternalPartner(tx as unknown as typeof prisma, voucher.branchCode);
+      const payerPartner = await ensureInternalPartner(tx as unknown as typeof prisma, voucher.branchCode);
+      if (existingCounterpart) {
+        await syncAdvanceReceivableDebt(tx, existingCounterpart, {
+          partnerGroup: "INTERNAL",
+          partnerCode: payerPartner.code,
+          partnerName: payerPartner.name,
+          documentDate: voucher.voucherDate,
+          categoryCode: voucher.categoryCode,
+          amount: voucher.amount,
+          description: `Hoàn lại ${voucher.branchCode} khoản đã chi hộ theo chứng từ ${voucher.code}: ${voucher.description}`,
+        });
+      } else {
         await tx.debtRecord.create({
           data: {
             code: counterpartCode,

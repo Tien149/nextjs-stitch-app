@@ -25,7 +25,18 @@ type VoucherForRevert = {
   depositCode: string | null;
   debtAction: string | null;
   debtReference: string | null;
+  receivablePartnerCode?: string | null;
   allocationMonths: number | null;
+};
+
+/**
+ * Bản mới của phiếu khi hoàn tác chỉ là bước giữa của thao tác SỬA (hoàn tác - cập nhật -
+ * áp lại, trong đúng một transaction). Bỏ trống nghĩa là hoàn tác thật: bỏ duyệt hoặc xoá.
+ */
+type NextVoucherForRevert = {
+  branchCode: string;
+  debtAction: string | null;
+  receivablePartnerCode: string | null;
 };
 
 export class VoucherRevertError extends Error {}
@@ -119,12 +130,23 @@ async function revertDebtSettlement(tx: RawTxClient, voucher: VoucherForRevert) 
 }
 
 /**
- * Phiếu chi hộ: trả lại khoản phải thu đã sinh lúc duyệt, trừ khi nó đã được thu một phần.
+ * Phiếu chi hộ: trả lại khoản phải thu đã sinh lúc duyệt.
  * Chi hộ nhà hàng khác còn có vế phải trả nội bộ ở sổ bên kia — gỡ luôn, nếu không bên đó
  * còn treo một khoản nợ của phiếu không còn tồn tại.
+ *
+ * Khoản đã được thu lại một phần thì KHÔNG xoá được: DebtSettlement gắn onDelete Cascade nên
+ * xoá khoản nợ là mất luôn các lần gạch, phiếu thu bên kia treo lơ lửng. Nhưng khi SỬA phiếu
+ * mà cửa hàng, đối tác sẽ trả lại tiền và nội dung chi hộ vẫn y nguyên thì đó vẫn đúng khoản
+ * nợ ấy — giữ nguyên bản ghi, bước áp hệ quả ngay sau đó đồng bộ lại số tiền/hạng mục/diễn
+ * giải. Nhờ vậy sửa hạng mục hay diễn giải của phiếu chi hộ đã thu lại một phần vẫn lưu được.
  */
-async function revertAdvanceReceivable(tx: RawTxClient, voucher: VoucherForRevert) {
+async function revertAdvanceReceivable(tx: RawTxClient, voucher: VoucherForRevert, next?: NextVoucherForRevert | null) {
   if (voucher.voucherType !== "PAYMENT" || voucher.debtAction !== ADVANCE_RECEIVABLE_ACTION) return;
+
+  const keepSettled = Boolean(next)
+    && next!.debtAction === ADVANCE_RECEIVABLE_ACTION
+    && next!.branchCode === voucher.branchCode
+    && (next!.receivablePartnerCode || null) === (voucher.receivablePartnerCode || null);
 
   for (const [code, label] of [
     [advanceReceivableDebtCode(voucher.code), "phải thu"],
@@ -135,7 +157,10 @@ async function revertAdvanceReceivable(tx: RawTxClient, voucher: VoucherForRever
 
     const settlements = await tx.debtSettlement.count({ where: { debtId: debt.id } });
     if (settlements > 0) {
-      fail(`Khoản ${label} ${code} đã được gạch một phần. Hãy bỏ duyệt phiếu gạch nợ đó trước khi sửa/bỏ duyệt phiếu chi hộ.`);
+      if (keepSettled) continue;
+      fail(next
+        ? `Khoản ${label} ${code} đã được thu lại một phần nên không đổi được Cửa hàng, Đối tác sẽ trả lại tiền hay Nội dung chi của phiếu chi hộ. Hãy bỏ duyệt phiếu thu đã gạch khoản này trước. Sửa hạng mục, diễn giải hoặc số tiền (không thấp hơn phần đã thu) thì lưu bình thường.`
+        : `Khoản ${label} ${code} đã được gạch một phần. Hãy bỏ duyệt phiếu gạch nợ đó trước khi bỏ duyệt/xoá phiếu chi hộ.`);
     }
 
     await tx.debtRecord.delete({ where: { id: debt.id } });
@@ -159,10 +184,14 @@ async function revertAccrual(tx: RawTxClient, voucher: VoucherForRevert) {
   await tx.accrual.delete({ where: { id: accrual.id } });
 }
 
-export async function revertVoucherSideEffects(tx: RawTxClient, voucher: VoucherForRevert) {
+export async function revertVoucherSideEffects(
+  tx: RawTxClient,
+  voucher: VoucherForRevert,
+  next?: NextVoucherForRevert | null,
+) {
   if (voucher.depositAction) await revertDeposit(tx, voucher);
   // Không chỉ dựa vào debtAction: phiếu đại diện gạch nợ theo dòng phân bổ có debtAction rỗng.
   await revertDebtSettlement(tx, voucher);
-  await revertAdvanceReceivable(tx, voucher);
+  await revertAdvanceReceivable(tx, voucher, next);
   await revertAccrual(tx, voucher);
 }

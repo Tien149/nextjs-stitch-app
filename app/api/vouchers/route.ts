@@ -970,7 +970,15 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
         throw new VoucherConflictError("Phiếu đã được người khác cập nhật. Vui lòng tải lại trước khi tiếp tục.");
       }
 
-      if (latest.status === "APPROVED") await revertVoucherSideEffects(tx, latest);
+      // Truyền bản mới sang: sửa phiếu là hoàn tác rồi áp lại ngay, nên khoản phải thu chi hộ
+      // đã thu lại một phần vẫn giữ được nếu chủ nợ và cửa hàng không đổi.
+      if (latest.status === "APPROVED") {
+        await revertVoucherSideEffects(tx, latest, {
+          branchCode: data.branchCode,
+          debtAction: data.debtAction,
+          receivablePartnerCode: data.receivablePartnerCode,
+        });
+      }
 
       const updated = await tx.financialVoucher.update({
         where: { id },
