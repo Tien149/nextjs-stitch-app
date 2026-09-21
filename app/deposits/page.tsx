@@ -11,6 +11,7 @@ import { appMenuItems, canAccessMenu, canPerformAction, canPerformMenuAction, ty
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
 import { PartnerPicker } from "@/components/PartnerPicker";
+import { money as formatVndMoney } from "@/lib/format-number";
 
 type DepositHistory = {
   id: string;
@@ -158,7 +159,7 @@ export default function DepositsPage() {
     }
   }, [router]);
 
-  const formatCurrency = (amount: number) => new Intl.NumberFormat("vi-VN").format(amount);
+  const formatCurrency = (amount: number) => formatVndMoney(amount);
   const canCreateDeposits = user ? canPerformAction(user, "create") : false;
   const canProcessDeposits = user ? canPerformAction(user, "edit") : false;
   // Nút "+" tạo nhanh đối tác đi qua API danh mục nên cần đúng quyền cấu hình danh mục.

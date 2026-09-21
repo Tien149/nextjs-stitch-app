@@ -17,6 +17,7 @@ import { displayRoleName, storeLabel } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import { getImportTemplate, type ImportFieldDefinition, type ImportType } from "@/lib/import-templates";
 import { normalizeCashflowCategoryType, isRevenueGroupCategory } from "@/lib/voucher-rules";
+import { money as vndMoney } from "@/lib/format-number";
 
 type Batch = {
   id: string;
@@ -788,9 +789,9 @@ export default function ImportUploadPage({
         setMessage(
           summaryParts.join(" ")
           + (needsFix.length
-            ? `\n\n⚠ ${needsFix.length} dòng tiền đã vào ngân hàng nhưng CHƯA VÀO SỔ (${needsFixTotal.toLocaleString("vi-VN")} đ).`
+            ? `\n\n⚠ ${needsFix.length} dòng tiền đã vào ngân hàng nhưng CHƯA VÀO SỔ (${vndMoney(needsFixTotal)} đ).`
               + " Tiền vẫn được ghi nhận, chỉ chưa lập được chứng từ nên chưa lên Sổ quỹ và báo cáo.\n"
-              + needsFix.slice(0, 5).map((row) => `• ${row.transactionCode} — ${row.amount.toLocaleString("vi-VN")} đ: ${row.reason}`).join("\n")
+              + needsFix.slice(0, 5).map((row) => `• ${row.transactionCode} — ${vndMoney(row.amount)} đ: ${row.reason}`).join("\n")
               + (needsFix.length > 5 ? `\n• ... còn ${needsFix.length - 5} dòng nữa` : "")
               + `\nĐể xử lý: bấm "Xem giao dịch vừa import" bên dưới, tìm dòng có nhãn CHƯA VÀO SỔ rồi bấm "Vào sổ". Danh sách đầy đủ còn ở Báo cáo → Tiền về đủ chưa → mục "Chưa vào sổ".`
             : ""),
@@ -817,9 +818,9 @@ export default function ImportUploadPage({
             ? `\n\n⚠ ${stale.length} phiếu quyết toán ví của những ngày vừa import đang giữ số doanh thu CŨ.`
               + ` Phần chênh đang nằm trên P&L dưới dạng phí — cần chạy lại quyết toán cho các phiếu này:\n`
               + stale.slice(0, 5).map((row) => `• ${row.code} (${row.walletCode}, ngày DT ${row.reportDate}):`
-                + ` phiếu ghi ${row.settledGross.toLocaleString("vi-VN")} đ,`
-                + ` doanh thu hiện tại ${row.currentRevenue.toLocaleString("vi-VN")} đ,`
-                + ` phí đang ghi ${row.feeAmount.toLocaleString("vi-VN")} đ`).join("\n")
+                + ` phiếu ghi ${vndMoney(row.settledGross)} đ,`
+                + ` doanh thu hiện tại ${vndMoney(row.currentRevenue)} đ,`
+                + ` phí đang ghi ${vndMoney(row.feeAmount)} đ`).join("\n")
               + (stale.length > 5 ? `\n• ... còn ${stale.length - 5} phiếu nữa` : "")
             : ""),
         );

@@ -20,6 +20,7 @@ import { SearchableSelect } from "@/components/SearchableSelect";
 import { MoneyInput } from "@/components/MoneyInput";
 import { exportRowsToExcel } from "@/lib/export-table-excel";
 import { statValueTextClass } from "@/components/reports/report-ui";
+import { money as formatVndMoney } from "@/lib/format-number";
 
 const MAX_BULK_SELECTION = 100;
 
@@ -563,7 +564,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
   const canDelete = user ? canPerformMenuAction(user, moduleHref, "delete") : false;
   /** Quyền sửa/bỏ duyệt chứng từ đã qua ngày (mặc định Admin và Kế toán tổng hợp). */
   const canEditPast = canEditPastVoucher(user);
-  const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
+  const money = (value: number) => formatVndMoney(value);
   const categoryName = (code: string | null) => {
     if (!code) return "Chưa gán khoản mục";
     const source = categories.length > 0 ? categories : fallbackVoucherCategories;
@@ -1507,7 +1508,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                       + Thêm dòng đối tác
                     </button>
                     <span className="text-xs font-bold text-slate-800">
-                      Tổng phân bổ: {new Intl.NumberFormat("vi-VN").format(allocationTotal)} đ · {allocationDraft.filter((line) => line.partnerCode).length} đối tác
+                      Tổng phân bổ: {money(allocationTotal)} đ · {allocationDraft.filter((line) => line.partnerCode).length} đối tác
                     </span>
                   </div>
                   <p className="text-[11px] font-medium text-slate-500">
@@ -2072,7 +2073,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                           {(voucher.partnerAllocations?.length || 0) > 0 && (
                             <span
                               className="ml-1.5 inline-block rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700 align-middle"
-                              title={voucher.partnerAllocations?.map((line) => `${line.partnerCode} — ${new Intl.NumberFormat("vi-VN").format(line.amount)} đ${line.debtReference ? ` (${line.debtReference})` : ""}`).join("\n")}
+                              title={voucher.partnerAllocations?.map((line) => `${line.partnerCode} — ${money(line.amount)} đ${line.debtReference ? ` (${line.debtReference})` : ""}`).join("\n")}
                             >
                               {voucher.partnerAllocations?.length} đối tác
                             </span>

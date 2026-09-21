@@ -16,6 +16,7 @@ import {
 } from "@/lib/auth-demo";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
+import { money as formatVndMoney } from "@/lib/format-number";
 
 interface DocumentItem {
   id: string;
@@ -259,9 +260,9 @@ export default function Home() {
     }
   };
 
-  // Format currency in VND
+  // Tiền luôn đọc tới đồng — xem lib/format-number.ts
   function formatCurrency(val: number) {
-    return new Intl.NumberFormat("vi-VN").format(val);
+    return formatVndMoney(val);
   }
 
   // Filter documents based on search query and status filter dropdown

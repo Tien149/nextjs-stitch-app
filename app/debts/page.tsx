@@ -13,6 +13,7 @@ import { PartnerPicker } from "@/components/PartnerPicker";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { MoneyInput } from "@/components/MoneyInput";
 import { visibleStoreOptions } from "@/lib/branch-labels";
+import { money as formatVndMoney } from "@/lib/format-number";
 
 type DebtRow = {
   partnerCode: string;
@@ -297,7 +298,7 @@ export default function DebtsPage() {
     }
   }, [loading, loadRows, loadLedger]);
 
-  const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
+  const money = (value: number) => formatVndMoney(value);
 
   /** Chỉ khoản công nợ còn nguyên gốc (OPEN) mới được sửa/xoá tại đây. */
   const debtLockReason = (row: LedgerRow) => {

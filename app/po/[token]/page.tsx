@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
+import { money as formatVndMoney } from "@/lib/format-number";
 
 type PublicOrderLine = { itemCode: string; itemName: string; unit: string; quantity: number; unitCost: number; totalCost: number };
 type PublicOrder = {
@@ -25,7 +26,7 @@ type PublicOrder = {
   shareable: boolean;
 };
 
-const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
+const money = (value: number) => formatVndMoney(value);
 
 /**
  * Phiếu đặt hàng gửi NHÀ CUNG CẤP — mở bằng link công khai (không cần đăng nhập),

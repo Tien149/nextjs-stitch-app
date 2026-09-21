@@ -8,6 +8,7 @@ import { MonthInput } from "@/components/DateInput";
 import { storeLabel } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
+import { money as formatVndMoney, unitPrice } from "@/lib/format-number";
 
 type OpeningBalance = {
   id: string;
@@ -159,7 +160,7 @@ export default function OpeningBalancesPage() {
     }, 0);
   }, [router]);
 
-  const formatCurrency = (amount: number) => new Intl.NumberFormat("vi-VN").format(amount);
+  const formatCurrency = (amount: number) => formatVndMoney(amount);
 
   const loadBalances = async () => {
     setIsLoading(true);
@@ -1070,7 +1071,7 @@ export default function OpeningBalancesPage() {
                             {/* Inventory Detail */}
                             {balance.balanceType === "INVENTORY" && (
                               <span className="text-[11px] text-slate-500 font-bold block mt-0.5">
-                                Kho: {balance.warehouseCode} · SL: {balance.quantity} · ĐG: {balance.unitCost ? formatCurrency(balance.unitCost) : 0} đ
+                                Kho: {balance.warehouseCode} · SL: {balance.quantity} · ĐG: {balance.unitCost ? unitPrice(balance.unitCost) : 0} đ
                               </span>
                             )}
                             {/* Asset Detail */}

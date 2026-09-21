@@ -10,6 +10,7 @@ import { SearchableSelect } from "@/components/SearchableSelect";
 import CopyableText from "@/components/CopyableText";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
+import { money as formatVndMoney } from "@/lib/format-number";
 
 type ReallocationLine = {
   id: string;
@@ -60,7 +61,7 @@ export default function CostReallocationsPage() {
   });
   const [draftLines, setDraftLines] = useState([emptyDraftLine(1)]);
 
-  const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
+  const money = (value: number) => formatVndMoney(value);
   const draftTotal = draftLines.reduce((sum, line) => sum + (Number(line.amount) || 0), 0);
   const canCreate = user ? canPerformAction(user, "create") : false;
   const canDelete = user ? canPerformAction(user, "delete") : false;

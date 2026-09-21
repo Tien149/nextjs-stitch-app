@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { storeLabel } from "@/lib/branch-labels";
 import { moneySourceDisplayName, type MoneySourceOption } from "@/lib/money-sources";
 import { type VoucherDocumentChannel, voucherTypeLabel } from "@/lib/voucher-channel";
+import { money as formatVndMoney } from "@/lib/format-number";
 
 type Voucher = {
   id: string;
@@ -52,7 +53,7 @@ export default function VoucherPrintPage() {
     });
   }, [params.id]);
 
-  const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
+  const money = (value: number) => formatVndMoney(value);
 
   if (!voucher) return <div className="p-10">Đang tải chứng từ...</div>;
 

@@ -9,6 +9,7 @@ import { filterMoneySources, type MoneySourceOption } from "@/lib/money-sources"
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { exportRowsToExcel } from "@/lib/export-table-excel";
 import { ConfirmDeleteDialog } from "@/components/RowActions";
+import { money as formatVndMoney } from "@/lib/format-number";
 
 type Allocation = { id: string; sourceRowNumber: number; sheetName: string; revenueDate: string | null; sourceDate: string | null; debitAmount: number; creditAmount: number; grossAmount: number | null; grabExpenseAmount: number; cardFeeAmount: number; categoryCode: string | null; partnerCode: string | null };
 type MatchRow = { targetCode: string; targetType: string; targetHref?: string };
@@ -174,7 +175,7 @@ export default function BankStatementLedgerPage() {
     setFilters(emptyFilters); setApplied(emptyFilters); setBatchId(""); setPage(1);
     window.history.replaceState(null, "", "/reconciliations");
   };
-  const money = (value: number) => new Intl.NumberFormat("vi-VN").format(value);
+  const money = (value: number) => formatVndMoney(value);
   const recorded = rows.filter((row) => row.reconcileStatus === "MATCHED").length;
   const pendingOnPage = rows.filter(needsPosting).length;
   const canEdit = Boolean(user && canPerformMenuAction(user, "/reconciliations", "edit"));
