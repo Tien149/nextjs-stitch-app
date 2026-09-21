@@ -298,10 +298,26 @@ export default function InventoryPage() {
     }
     return rows;
   });
-  /** Form nhập tay chỉ cho chọn đối tác đang hoạt động; NCC xếp trước, đối tác khác xếp sau. */
+  /**
+   * Form nhập/xuất tay chỉ cho chọn đối tác đang hoạt động, gom theo nhóm của danh mục.
+   * Màn Nhập kho đẩy NCC lên đầu, màn Xuất kho đẩy khách hàng lên đầu — đó là nhóm hay chọn nhất
+   * ở mỗi màn, khỏi phải cuộn qua nhóm không liên quan.
+   */
   const activePartners = data.partners.filter((partner) => partner.status === "ACTIVE");
-  const supplierPartnerOptions = activePartners.filter((partner) => partner.group === "SUPPLIER");
-  const otherPartnerOptions = activePartners.filter((partner) => partner.group !== "SUPPLIER");
+  const partnerFormGroups = (() => {
+    const order = active === "inbound"
+      ? ["SUPPLIER", "CUSTOMER", "OTHER_PARTNER"]
+      : ["CUSTOMER", "SUPPLIER", "OTHER_PARTNER"];
+    const labels: Record<string, string> = { SUPPLIER: "Nhà cung cấp", CUSTOMER: "Khách hàng", OTHER_PARTNER: "Đối tác khác" };
+    return order
+      .map((group) => ({
+        group,
+        label: labels[group],
+        // Nhóm lạ (hoặc trống) dồn hết vào "Đối tác khác" để không có đối tác nào bị rơi khỏi ô chọn.
+        partners: activePartners.filter((partner) => (order.includes(partner.group || "") ? partner.group : "OTHER_PARTNER") === group),
+      }))
+      .filter((bucket) => bucket.partners.length > 0);
+  })();
   /** Tên đối tác để bảng phiếu đọc được — phiếu chỉ lưu mã. Không tra ra thì trả lại chính mã. */
   const partnerName = (code?: string | null) => {
     if (!code) return "";
@@ -1298,7 +1314,7 @@ export default function InventoryPage() {
       {(active === "inbound" || active === "outbound") && (
         <div className="grid lg:grid-cols-[380px_1fr] gap-5">
           {canCreate && (
-            <form onSubmit={(e) => { e.preventDefault(); if (grpoOrder) { void receiveFromPO(); return; } void send({ action: "STOCK_TRANSACTION", ...stockForm, partnerCode: active === "inbound" ? stockForm.partnerCode : "", lines: [{ itemId: stockForm.itemId, inputQuantity: stockForm.quantity, inputUnitCode: stockForm.inputUnitCode || selectedStockUnit?.unitCode, inputUnitCost: active === "inbound" ? stockForm.unitCost : "0" }] }, active === "inbound" ? "Đã ghi nhận phiếu nhập kho." : "Đã ghi nhận phiếu xuất kho."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
+            <form onSubmit={(e) => { e.preventDefault(); if (grpoOrder) { void receiveFromPO(); return; } void send({ action: "STOCK_TRANSACTION", ...stockForm, lines: [{ itemId: stockForm.itemId, inputQuantity: stockForm.quantity, inputUnitCode: stockForm.inputUnitCode || selectedStockUnit?.unitCode, inputUnitCost: active === "inbound" ? stockForm.unitCost : "0" }] }, active === "inbound" ? "Đã ghi nhận phiếu nhập kho." : "Đã ghi nhận phiếu xuất kho."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
               <h2 className="font-bold text-slate-800">{active === "inbound" ? "Ghi nhận nhập kho" : "Ghi nhận xuất kho"}</h2>
 
               <Input label="Loại">
@@ -1426,23 +1442,16 @@ export default function InventoryPage() {
                 </div>
               )}
 
-              {active === "inbound" && (
-                <Input label="Nhà cung cấp">
-                  <select className="control" value={stockForm.partnerCode} onChange={(e) => setStockForm({ ...stockForm, partnerCode: e.target.value })}>
-                    <option value="">Không khai nhà cung cấp</option>
-                    {supplierPartnerOptions.length > 0 && (
-                      <optgroup label="Nhà cung cấp">
-                        {supplierPartnerOptions.map((partner) => <option key={partner.code} value={partner.code}>{partner.name}</option>)}
-                      </optgroup>
-                    )}
-                    {otherPartnerOptions.length > 0 && (
-                      <optgroup label="Đối tác khác">
-                        {otherPartnerOptions.map((partner) => <option key={partner.code} value={partner.code}>{partner.name}</option>)}
-                      </optgroup>
-                    )}
-                  </select>
-                </Input>
-              )}
+              <Input label={active === "inbound" ? "Nhà cung cấp" : "Đối tác"}>
+                <select className="control" value={stockForm.partnerCode} onChange={(e) => setStockForm({ ...stockForm, partnerCode: e.target.value })}>
+                  <option value="">{active === "inbound" ? "Không khai nhà cung cấp" : "Không khai đối tác"}</option>
+                  {partnerFormGroups.map((bucket) => (
+                    <optgroup key={bucket.group} label={bucket.label}>
+                      {bucket.partners.map((partner) => <option key={partner.code} value={partner.code}>{partner.name}</option>)}
+                    </optgroup>
+                  ))}
+                </select>
+              </Input>
 
               <Input label="Tham chiếu">
                 <input data-input-kind="code" className="control" value={stockForm.referenceCode} onChange={(e) => setStockForm({ ...stockForm, referenceCode: e.target.value })} />
