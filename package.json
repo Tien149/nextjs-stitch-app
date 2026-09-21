@@ -43,6 +43,7 @@
     "test:money-rounding": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-money-rounding.mjs",
     "test:capex-debit-only": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-capex-debit-only.mjs",
     "test:accrual-entry-period": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-accrual-entry-period.mjs",
+    "test:table-subtotal": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-table-subtotal.mjs",
     "test:bank-voucher-link": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-bank-voucher-link.mjs",
     "test:bank-posting-status": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-bank-posting-status.mjs",
     "test:settlement-writeoff": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-settlement-writeoff.mjs",

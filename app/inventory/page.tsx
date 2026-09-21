@@ -15,6 +15,7 @@ import { safeConversionRate } from "@/lib/unit-conversion";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
 import { parseVatRate, VAT_RATE_OPTIONS, vatAmountOf, vatRateLabel } from "@/lib/inventory-vat";
 import { roundVnd } from "@/lib/round-vnd";
+import { sumRoundedByRow, sumStockDocuments } from "@/lib/table-subtotal";
 import { statValueTextClass } from "@/components/reports/report-ui";
 
 type UnitConversion = { id: string; unitCode: string; unitName: string | null; conversionRate: number; isDefaultPurchase: boolean };
@@ -353,6 +354,26 @@ export default function InventoryPage() {
     if (flowPartner === "NONE") return !row.transaction.partnerCode;
     return row.transaction.partnerCode === flowPartner;
   };
+  /**
+   * Dòng CỘNG cuối bảng (khách yêu cầu 21/09/2026: "cho chị 1 dòng CỘNG bên dưới, kiểu giống
+   * subtotal trên excel").
+   *
+   * Cộng đúng những dòng ĐANG HIỆN sau bộ lọc — giống subtotal của Excel, không phải tổng cả
+   * kỳ. Vì vậy luôn in kèm số phiếu để người xem biết mình đang cộng trên bao nhiêu dòng.
+   *
+   * Số lượng KHÔNG cộng được: mỗi phiếu một ĐVT (GR, ML, CUC, CHAI...), cộng lại thành một số
+   * vô nghĩa còn tệ hơn để trống.
+   */
+  const sumTransactions = (rows: Array<{ transaction: Transaction }>) =>
+    sumStockDocuments(rows.map((row) => row.transaction));
+
+  /** Phiếu chế biến / rã nguyên liệu đang hiện. */
+  const productionTransactions = data.transactions.filter((row) =>
+    row.transactionType.includes("CHE_BIEN") || (row.referenceCode || "").startsWith("RA-"));
+
+  /** Phiếu hủy đang hiện — dùng chung cho bảng và dòng CỘNG để hai chỗ không lệch nhau. */
+  const wasteTransactions = data.transactions.filter((row) => row.transactionType === "XUAT_HUY");
+
   const inboundRows = flowRows("IN").filter((row) =>
     (flowBranch === "ALL" || row.branchCode === flowBranch) && (inboundType === "ALL" || row.displayType === inboundType) && matchesFlowPartner(row));
   const outboundRows = flowRows("OUT").filter((row) =>
@@ -1698,6 +1719,31 @@ export default function InventoryPage() {
                 { label: "Giá trị", align: "right" },
                 { label: "Thao tác", align: "right" },
               ]}
+              footer={(() => {
+                const rows = active === "inbound" ? inboundRows : outboundRows;
+                if (rows.length === 0) return null;
+                const total = sumTransactions(rows);
+                return (
+                  <tr>
+                    <Cell>CỘNG</Cell>
+                    <Cell>{total.count} phiếu</Cell>
+                    <Cell>{""}</Cell>
+                    <Cell>{""}</Cell>
+                    <Cell>{""}</Cell>
+                    <Cell>{""}</Cell>
+                    <Cell right>{""}</Cell>
+                    <Cell right>
+                      {money(total.beforeTax)} đ
+                      {total.vat > 0 && (
+                        <small className="block font-normal text-slate-500">
+                          + thuế {money(total.vat)} đ = <b>{money(total.afterTax)} đ</b>
+                        </small>
+                      )}
+                    </Cell>
+                    <Cell right>{""}</Cell>
+                  </tr>
+                );
+              })()}
             >
               {(active === "inbound" ? inboundRows : outboundRows).map((row) => {
                 const lines = row.transaction.lines;
@@ -1866,6 +1912,17 @@ export default function InventoryPage() {
                 { label: "Trị giá", align: "right" },
                 { label: "Thao tác", align: "right" },
               ]}
+              footer={transferTransactions.length === 0 ? null : (
+                <tr>
+                  <Cell>CỘNG</Cell>
+                  <Cell>{transferTransactions.length} phiếu</Cell>
+                  <Cell>{""}</Cell>
+                  <Cell>{""}</Cell>
+                  <Cell>{""}</Cell>
+                  <Cell right>{money(sumTransactions(transferTransactions.map((row) => ({ transaction: row }))).beforeTax)} đ</Cell>
+                  <Cell right>{""}</Cell>
+                </tr>
+              )}
             >
               {transferTransactions.map((row) => {
                 const crossBranch = !!row.toBranchCode && row.toBranchCode !== row.branchCode;
@@ -2535,13 +2592,27 @@ export default function InventoryPage() {
                 </div>
               );
             })()}
-            <Table headers={[{ label: "Chứng từ" }, { label: "Loại" }, { label: "Kho" }, { label: "Mặt hàng" }]}>
-              {data.transactions.filter((row) => row.transactionType.includes("CHE_BIEN") || (row.referenceCode || "").startsWith("RA-")).map((row) => (
+            {/* Thêm cột Trị giá cùng lúc với dòng CỘNG: bảng không có cột tiền nào thì dòng
+                tổng chẳng có gì để cộng. Trị giá = giá trị hàng luân chuyển của phiếu. */}
+            <Table
+              headers={[{ label: "Chứng từ" }, { label: "Loại" }, { label: "Kho" }, { label: "Mặt hàng" }, { label: "Trị giá", align: "right" }]}
+              footer={productionTransactions.length === 0 ? null : (
+                <tr>
+                  <Cell>CỘNG</Cell>
+                  <Cell>{productionTransactions.length} phiếu</Cell>
+                  <Cell>{""}</Cell>
+                  <Cell>{""}</Cell>
+                  <Cell right>{money(sumTransactions(productionTransactions.map((row) => ({ transaction: row }))).beforeTax)} đ</Cell>
+                </tr>
+              )}
+            >
+              {productionTransactions.map((row) => (
                 <tr key={row.id} className="border-t border-slate-100">
                   <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}{row.referenceCode ? ` · ${row.referenceCode}` : ""}</small></Cell>
                   <Cell>{movementTypeLabel(row.transactionType)}</Cell>
                   <Cell>{row.warehouseCode}</Cell>
                   <Cell>{row.lines.map((line) => `${line.item.code}: ${qty(line.quantity)} ${line.item.unit}`).join(", ")}</Cell>
+                  <Cell right><b>{money(row.lines.reduce((sum, line) => sum + line.totalCost, 0))} đ</b></Cell>
                 </tr>
               ))}
             </Table>
@@ -2878,6 +2949,18 @@ export default function InventoryPage() {
                   { label: "Không đảm bảo chất lượng", align: "right" },
                   { label: "Trị giá hủy", align: "right" },
                 ]}
+                footer={data.wasteReport.length === 0 ? null : (
+                  <tr>
+                    <Cell>CỘNG</Cell>
+                    <Cell>{data.wasteReport.length} mặt hàng</Cell>
+                    {/* SL hủy mỗi mặt hàng một ĐVT nên không cộng được — để trống còn hơn ra
+                        một con số vô nghĩa. */}
+                    <Cell right>{""}</Cell>
+                    <Cell right>{""}</Cell>
+                    <Cell right>{""}</Cell>
+                    <Cell right><b className="text-rose-600">{money(sumRoundedByRow(data.wasteReport, (row) => row.totalValue))} đ</b></Cell>
+                  </tr>
+                )}
               >
                 {data.wasteReport.map((row) => (
                   <tr key={row.itemCode} className="border-t border-slate-100">
@@ -2894,8 +2977,19 @@ export default function InventoryPage() {
 
             <section className="table-panel shadow-sm">
               <Panel title="Phiếu hủy gần nhất" reload={loadData} exportFileName="phieu_huy_gan_nhat" />
-              <Table headers={[{ label: "Chứng từ" }, { label: "Loại hủy" }, { label: "Nhà hàng / Kho" }, { label: "Mặt hàng" }, { label: "Trị giá", align: "right" }]}>
-                {data.transactions.filter((row) => row.transactionType === "XUAT_HUY").map((row) => (
+              <Table
+                headers={[{ label: "Chứng từ" }, { label: "Loại hủy" }, { label: "Nhà hàng / Kho" }, { label: "Mặt hàng" }, { label: "Trị giá", align: "right" }]}
+                footer={wasteTransactions.length === 0 ? null : (
+                  <tr>
+                    <Cell>CỘNG</Cell>
+                    <Cell>{wasteTransactions.length} phiếu</Cell>
+                    <Cell>{""}</Cell>
+                    <Cell>{""}</Cell>
+                    <Cell right><b className="text-rose-600">{money(sumTransactions(wasteTransactions.map((row) => ({ transaction: row }))).beforeTax)} đ</b></Cell>
+                  </tr>
+                )}
+              >
+                {wasteTransactions.map((row) => (
                   <tr key={row.id} className="border-t border-slate-100">
                     <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}</small></Cell>
                     <Cell><span className="status bg-rose-50 text-rose-700">{wasteSubTypeLabel(row.subType)}</span></Cell>
@@ -2987,10 +3081,13 @@ function Panel({ title, reload, exportFileName }: { title: string; reload: () =>
 function Table({
   headers,
   children,
+  footer,
   tableClassName = "",
 }: {
   headers: { label: string; align?: "left" | "right" }[];
   children: React.ReactNode;
+  /** Dòng CỘNG cuối bảng (khách yêu cầu 21/09/2026) — truyền các `<Cell>` đúng số cột. */
+  footer?: React.ReactNode;
   tableClassName?: string;
 }) {
   return (
@@ -3009,6 +3106,13 @@ function Table({
           </tr>
         </thead>
         <tbody>{children}</tbody>
+        {/* Ghim đáy như dòng subtotal của Excel: bảng cuộn trong khung 580px nên để dòng tổng
+            chạy theo nội dung thì phải cuộn tới cuối mới thấy, đúng cái khách muốn tránh. */}
+        {footer && (
+          <tfoot className="sticky bottom-0 z-10 border-t-2 border-slate-300 bg-slate-50 font-bold text-slate-800 shadow-[0_-1px_2px_rgba(0,0,0,0.05)]">
+            {footer}
+          </tfoot>
+        )}
       </table>
     </div>
   );
