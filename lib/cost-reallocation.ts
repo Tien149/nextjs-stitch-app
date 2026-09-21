@@ -168,6 +168,14 @@ const vnd = (value: number) => `${new Intl.NumberFormat("vi-VN").format(Math.rou
  *
  * Trả null khi phiếu hợp lệ.
  */
+/** Nơi tiền của hạng mục đang thực sự nằm — để câu báo lỗi chỉ thẳng chỗ, xem findExpenseForPnlItem. */
+export type ReallocationWhereabouts = {
+  otherPeriods: Array<{ period: string; amount: number }>;
+  otherBranches: Array<{ branchCode: string; amount: number }>;
+  notPostedVouchers: Array<{ code: string; amount: number; status: string }>;
+  notPostedTotal: number;
+};
+
 export function reallocationOverspendMessage(input: {
   period: string;
   fromBranchCode: string;
@@ -175,10 +183,42 @@ export function reallocationOverspendMessage(input: {
   /** Chi phí của hạng mục đó ở nhà hàng đã trả, trong kỳ của phiếu, đã trừ các phiếu phân bổ trước. */
   postedAmount: number;
   total: number;
+  /** Tuỳ chọn: nơi tiền đang nằm, để chỉ thẳng thay vì bắt người dùng tự mò ba ô. */
+  whereabouts?: ReallocationWhereabouts | null;
 }) {
   if (input.total <= input.postedAmount) return null;
   const head = input.postedAmount > 0
     ? `Kỳ ${input.period} ở ${input.fromBranchCode} chỉ còn ${vnd(input.postedAmount)} chi phí ở hạng mục "${input.pnlItemName}", không đủ để phân bổ ${vnd(input.total)}.`
     : `Kỳ ${input.period} ở ${input.fromBranchCode} chưa có đồng chi phí nào ở hạng mục "${input.pnlItemName}" để phân bổ ${vnd(input.total)}.`;
-  return `${head} Kiểm tra lại Ngày chứng từ (chi phí gốc nằm ở kỳ nào thì phiếu phân bổ phải nằm ở kỳ đó), nhà hàng đã trả và hạng mục P&L.`;
+
+  /**
+   * NÓI THẲNG TIỀN ĐANG Ở ĐÂU.
+   *
+   * Câu cũ chỉ liệt kê ba ô cần kiểm lại, nên kế toán phải tự mò và hay kết luận là phần mềm
+   * chặn nhầm rồi xin bỏ chặn (khách 21/09/2026). Bỏ chặn thì kỳ đó ôm chi phí âm ở MỘT hạng
+   * mục, cộng lên nhóm vẫn dương nên không nổi lên dòng tổng — sổ lệch mà không ai thấy.
+   * Giữ chặn, nhưng chỉ thẳng chỗ tiền đang nằm để người dùng xử được ngay.
+   */
+  const hints: string[] = [];
+  const where = input.whereabouts;
+  if (where?.notPostedVouchers.length) {
+    const list = where.notPostedVouchers.slice(0, 5).map((row) => `${row.code} (${vnd(row.amount)})`).join(", ");
+    const more = where.notPostedVouchers.length > 5 ? ` và ${where.notPostedVouchers.length - 5} phiếu khác` : "";
+    hints.push(
+      `Đang có ${vnd(where.notPostedTotal)} ở phiếu chi CHƯA VÀO SỔ của đúng kỳ và đúng hạng mục này: ${list}${more}. `
+      + "Vào Sổ cái Kế toán bấm Đồng bộ ghi sổ kỳ này rồi lập lại phiếu phân bổ.",
+    );
+  }
+  if (where?.otherPeriods.length) {
+    const list = where.otherPeriods.map((row) => `${row.period} (${vnd(row.amount)})`).join(", ");
+    hints.push(`Chi phí của hạng mục này đang nằm ở kỳ khác: ${list}. Sửa Ngày chứng từ về đúng kỳ có chi phí gốc.`);
+  }
+  if (where?.otherBranches.length) {
+    const list = where.otherBranches.map((row) => `${row.branchCode} (${vnd(row.amount)})`).join(", ");
+    hints.push(`Trong kỳ này, chi phí của hạng mục đang đứng ở nhà hàng khác: ${list}. Kiểm lại ô Nhà hàng đã trả.`);
+  }
+  if (hints.length === 0) {
+    hints.push("Kiểm tra lại Ngày chứng từ (chi phí gốc nằm ở kỳ nào thì phiếu phân bổ phải nằm ở kỳ đó), nhà hàng đã trả và hạng mục P&L.");
+  }
+  return `${head} ${hints.join(" ")}`;
 }

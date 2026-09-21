@@ -90,6 +90,99 @@ test("công nợ nội bộ gắn đúng đối tác đại diện nhà hàng", 
   assert.equal(journals[1].lines.find((line) => line.accountCode === "3368").partnerCode, "NB-NME");
 });
 
+/**
+ * Câu báo lỗi phải NÓI THẲNG TIỀN ĐANG Ở ĐÂU (khách 21/09/2026).
+ *
+ * Câu cũ chỉ liệt kê ba ô cần kiểm lại nên kế toán phải tự mò, và kết luận là phần mềm chặn
+ * nhầm rồi xin bỏ chặn. Bỏ chặn thì kỳ đó ôm chi phí âm ở MỘT hạng mục, cộng lên nhóm vẫn
+ * dương nên không nổi lên dòng tổng — sổ lệch mà không ai thấy.
+ */
+test("chỉ thẳng phiếu chi chưa vào sổ, kèm mã phiếu và cách xử", () => {
+  const message = reallocationOverspendMessage({
+    period: "2026-09",
+    fromBranchCode: "NME",
+    pnlItemName: "CPNLD Lương Bảo Trì & Sửa Chữa",
+    postedAmount: 0,
+    total: 2_500_000,
+    whereabouts: {
+      otherPeriods: [],
+      otherBranches: [],
+      notPostedVouchers: [{ code: "PC-2609-NME-00012", amount: 2_500_000, status: "APPROVED" }],
+      notPostedTotal: 2_500_000,
+    },
+  });
+  assert.ok(message.includes("PC-2609-NME-00012"), "phải in mã phiếu chi để người dùng mở đúng phiếu");
+  assert.ok(message.includes("CHƯA VÀO SỔ"));
+  assert.ok(message.includes("Đồng bộ ghi sổ"), "phải nói cách xử, không chỉ nói triệu chứng");
+});
+
+test("chỉ thẳng kỳ khác đang giữ chi phí", () => {
+  const message = reallocationOverspendMessage({
+    period: "2026-09",
+    fromBranchCode: "NME",
+    pnlItemName: "CP Điện nước",
+    postedAmount: 0,
+    total: 1_000_000,
+    whereabouts: {
+      otherPeriods: [{ period: "2026-08", amount: 4_000_000 }],
+      otherBranches: [],
+      notPostedVouchers: [],
+      notPostedTotal: 0,
+    },
+  });
+  assert.ok(message.includes("2026-08"), "phải chỉ ra kỳ đang giữ chi phí");
+  assert.ok(message.includes("4.000.000 đ"));
+  assert.ok(message.includes("Ngày chứng từ"));
+});
+
+test("chỉ thẳng nhà hàng khác đang giữ chi phí", () => {
+  const message = reallocationOverspendMessage({
+    period: "2026-09",
+    fromBranchCode: "NME",
+    pnlItemName: "CP Gas",
+    postedAmount: 0,
+    total: 1_000_000,
+    whereabouts: {
+      otherPeriods: [],
+      otherBranches: [{ branchCode: "ASA", amount: 7_000_000 }],
+      notPostedVouchers: [],
+      notPostedTotal: 0,
+    },
+  });
+  assert.ok(message.includes("ASA"));
+  assert.ok(message.includes("Nhà hàng đã trả"));
+});
+
+test("không tìm được tiền ở đâu thì vẫn giữ câu hướng dẫn cũ", () => {
+  const message = reallocationOverspendMessage({
+    period: "2026-09",
+    fromBranchCode: "NME",
+    pnlItemName: "CP Khác",
+    postedAmount: 0,
+    total: 1_000_000,
+    whereabouts: { otherPeriods: [], otherBranches: [], notPostedVouchers: [], notPostedTotal: 0 },
+  });
+  assert.ok(message.includes("Ngày chứng từ"));
+  assert.ok(message.includes("hạng mục P&L"));
+});
+
+test("phiếu hợp lệ thì không báo gì dù có tiền nằm chỗ khác", () => {
+  const message = reallocationOverspendMessage({
+    period: "2026-09",
+    fromBranchCode: "NME",
+    pnlItemName: "CP Gas",
+    postedAmount: 5_000_000,
+    total: 1_000_000,
+    whereabouts: {
+      otherPeriods: [{ period: "2026-08", amount: 9_000_000 }],
+      otherBranches: [],
+      notPostedVouchers: [],
+      notPostedTotal: 0,
+    },
+  });
+  assert.equal(message, null);
+});
+
 test("phân bổ ở kỳ không có chi phí gốc bị chặn và chỉ ra ba ô hay khai sai", () => {
   const message = reallocationOverspendMessage({
     period: "2026-09",

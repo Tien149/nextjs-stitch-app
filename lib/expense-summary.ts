@@ -312,6 +312,71 @@ export async function getExpenseSummary(period: string, branchCode: string): Pro
  * Khoản giảm do phiếu phân bổ trước đó đã trừ sẵn trong số này (bút toán ghi Có), nên phân bổ
  * nhiều lần cho cùng một hạng mục vẫn bị chặn đúng ở phần còn lại.
  */
+/**
+ * TIỀN CỦA HẠNG MỤC NÀY ĐANG NẰM Ở ĐÂU.
+ *
+ * Dùng cho câu báo lỗi của phiếu phân bổ chi phí: báo "không đủ chi phí để phân bổ" mà không
+ * nói tiền ở đâu thì kế toán phải tự mò ba ô (ngày chứng từ / nhà hàng / hạng mục), và hay
+ * kết luận là phần mềm chặn nhầm rồi xin bỏ chặn (khách 21/09/2026).
+ *
+ * Ba chỗ tiền hay nằm, theo đúng thứ tự hay gặp:
+ *  - KỲ KHÁC: form mặc định ngày hôm nay trong khi kế toán đang soát kỳ trước.
+ *  - NHÀ HÀNG KHÁC: chọn nhầm nhà hàng đã trả.
+ *  - PHIẾU CHI CHƯA VÀO SỔ: phiếu đã lập/đã duyệt nhưng kỳ chưa bấm Đồng bộ ghi sổ, nên chi
+ *    phí chưa có trên sổ dù chứng từ đã có. Đây là ca nhìn "vô lý" nhất với người dùng vì họ
+ *    vừa nhập phiếu xong.
+ */
+export async function findExpenseForPnlItem(period: string, branchCode: string, pnlItemCode: string) {
+  const { start, end } = periodBounds(period);
+  const [otherPeriods, otherBranches, pendingVouchers] = await Promise.all([
+    prisma.journalEntry.findMany({
+      where: { branchCode, status: "POSTED", entryDate: { lt: start } },
+      select: { period: true, lines: { where: { pnlItemCode, debit: { gt: 0 } }, select: { debit: true } } },
+      orderBy: { entryDate: "desc" },
+      take: 400,
+    }),
+    prisma.journalEntry.findMany({
+      where: { branchCode: { not: branchCode }, status: "POSTED", entryDate: { gte: start, lt: end } },
+      select: { branchCode: true, lines: { where: { pnlItemCode, debit: { gt: 0 } }, select: { debit: true } } },
+      take: 400,
+    }),
+    // Phiếu chi mang đúng hạng mục, đúng kỳ, đúng nhà hàng nhưng CHƯA thành bút toán.
+    prisma.financialVoucher.findMany({
+      where: { branchCode, voucherType: "PAYMENT", pnlItemCode, voucherDate: { gte: start, lt: end }, deletedAt: null },
+      select: { id: true, code: true, amount: true, status: true, voucherDate: true },
+      orderBy: { voucherDate: "asc" },
+      take: 50,
+    }),
+  ]);
+
+  const byPeriod = new Map<string, number>();
+  for (const entry of otherPeriods) {
+    const amount = entry.lines.reduce((sum, line) => sum + line.debit, 0);
+    if (amount > 0) byPeriod.set(entry.period, (byPeriod.get(entry.period) || 0) + amount);
+  }
+  const byBranch = new Map<string, number>();
+  for (const entry of otherBranches) {
+    const amount = entry.lines.reduce((sum, line) => sum + line.debit, 0);
+    if (amount > 0) byBranch.set(entry.branchCode, (byBranch.get(entry.branchCode) || 0) + amount);
+  }
+  const postedVoucherIds = new Set(
+    (await prisma.journalEntry.findMany({
+      where: { sourceType: "VOUCHER", sourceId: { in: pendingVouchers.map((row) => row.id) } },
+      select: { sourceId: true },
+    })).map((row) => row.sourceId),
+  );
+  const notPosted = pendingVouchers.filter((row) => !postedVoucherIds.has(row.id));
+
+  return {
+    otherPeriods: [...byPeriod.entries()].map(([key, amount]) => ({ period: key, amount: round(amount) })).sort((a, b) => b.period.localeCompare(a.period)).slice(0, 3),
+    otherBranches: [...byBranch.entries()].map(([key, amount]) => ({ branchCode: key, amount: round(amount) })).sort((a, b) => b.amount - a.amount).slice(0, 3),
+    notPostedVouchers: notPosted.map((row) => ({ code: row.code, amount: round(row.amount), status: row.status })),
+    notPostedTotal: round(notPosted.reduce((sum, row) => sum + row.amount, 0)),
+  };
+}
+
+export type ExpenseWhereabouts = Awaited<ReturnType<typeof findExpenseForPnlItem>>;
+
 export async function postedExpenseForPnlItem(period: string, branchCode: string, pnlItemCode: string) {
   const { start, end } = periodBounds(period);
   const [entries, pnlItems] = await Promise.all([

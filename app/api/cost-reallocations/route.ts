@@ -13,7 +13,7 @@ import {
   reallocationOverspendMessage,
   validateCostReallocation,
 } from "@/lib/cost-reallocation";
-import { postedExpenseForPnlItem } from "@/lib/expense-summary";
+import { findExpenseForPnlItem, postedExpenseForPnlItem } from "@/lib/expense-summary";
 import { ensureInternalPartner } from "@/lib/internal-partner";
 
 export async function GET(request: Request) {
@@ -110,8 +110,12 @@ export async function POST(request: Request) {
     // hạng mục. Chặn tại đây vì sau khi ghi sổ thì hậu quả nằm rải ở hai nhà hàng và chỉ lộ ra
     // khi ai đó đối chiếu Tổng hợp chi phí với chứng từ gốc.
     const postedAmount = await postedExpenseForPnlItem(period, fromBranchCode, pnlItemCode);
-    const overspend = reallocationOverspendMessage({ period, fromBranchCode, pnlItemName: pnlItem.name, postedAmount, total: totalAmount });
-    if (overspend) return NextResponse.json({ error: overspend }, { status: 400 });
+    if (totalAmount > postedAmount) {
+      // Chỉ đi tìm tiền khi thật sự sắp báo lỗi — bốn truy vấn này không đáng chạy ở luồng bình thường.
+      const whereabouts = await findExpenseForPnlItem(period, fromBranchCode, pnlItemCode);
+      const overspend = reallocationOverspendMessage({ period, fromBranchCode, pnlItemName: pnlItem.name, postedAmount, total: totalAmount, whereabouts });
+      if (overspend) return NextResponse.json({ error: overspend }, { status: 400 });
+    }
 
     const created = await prismaRaw.$transaction(async (tx) => {
       const prefix = `PBCP-${period.replace("-", "")}`;
