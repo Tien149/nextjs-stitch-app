@@ -3250,7 +3250,6 @@ function PnlStatementTable({ period, branchCode, lines, value }: { period: strin
           push("        ", `${item.code} - ${item.name}`, item.amount);
         }
       }
-      if (Math.abs(line.unclassified || 0) > 0.5) push("    ", "Chưa gán hạng mục P&L (KHÔNG tính vào P&L)", line.unclassified || 0);
     }
     const sheet = XLSX.utils.aoa_to_sheet(data);
     const workbook = XLSX.utils.book_new();
@@ -3335,21 +3334,6 @@ function PnlStatementTable({ period, branchCode, lines, value }: { period: strin
                     </React.Fragment>
                   );
                 })}
-                {/* Chứng từ chưa khai Hạng mục P&L: KHÔNG nằm trong dòng TỔNG (chốt chị Bình
-                    20/09/2026 — P&L chỉ tính khoản đã có hạng mục), chỉ hiện để biết còn bao
-                    nhiêu tiền phải đi phân loại. */}
-                {!lineCollapsed && Math.abs(line.unclassified || 0) > 0.5 && (
-                  <tr className="border-t border-slate-100 bg-amber-50">
-                    <Cell>
-                      <span className="pl-6 flex flex-col">
-                        <b className="text-amber-800">Chưa gán hạng mục P&amp;L — KHÔNG tính vào P&amp;L</b>
-                        <span className="text-[11px] text-amber-700">Dòng thông tin, đứng ngoài tổng. Gán hạng mục trên chứng từ thì số về đúng nhóm; tiền vẫn đủ ở Tổng hợp chi phí.</span>
-                      </span>
-                    </Cell>
-                    <Cell right><b className="text-amber-800">{money(line.unclassified || 0)} đ</b></Cell>
-                    <Cell right>{percent(line.unclassified || 0)}</Cell>
-                  </tr>
-                )}
               </React.Fragment>
             );
           })}

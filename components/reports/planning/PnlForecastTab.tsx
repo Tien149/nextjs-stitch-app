@@ -292,13 +292,10 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
     // Đếm theo đúng những gì đang vẽ: trước đây badge đếm cả nhóm/hạng mục vừa bị "Ẩn dòng
     // bằng 0" giấu đi nên bảng ghi "4 nhóm" mà chỉ thấy 3.
     const itemCount = groups.reduce((sum, group) => sum + (hideEmpty ? group.items.filter((item) => !isEmptyNode(item)).length : group.items.length), 0);
-    // Phần chưa gán hạng mục của chính dòng này (nếu có) — hiện thành một dòng riêng ở cuối khối.
-    const unclassifiedMonths = line.unclassified || [];
-    const unclassifiedTotal = line.unclassifiedTotal || 0;
-    const unclassifiedLine = Math.abs(unclassifiedTotal) > 0.5 || unclassifiedMonths.some((value) => Math.abs(value) > 0.5)
-      ? { months: unclassifiedMonths, total: unclassifiedTotal, plan: null, planTotal: null }
-      : null;
-    const expandable = isRevenue ? revenueBreakdowns.length > 0 : groups.length > 0 || Boolean(unclassifiedLine);
+    // Phần chưa gán hạng mục KHÔNG hiện thành dòng riêng nữa (khách bỏ 21/09/2026): nó vẫn bị
+    // loại khỏi mọi con số của P&L như cũ, chỉ là không vẽ ra bảng. Muốn biết còn bao nhiêu tiền
+    // phải đi gán hạng mục thì xem Sổ quỹ > Tổng hợp chi phí.
+    const expandable = isRevenue ? revenueBreakdowns.length > 0 : groups.length > 0;
     const badge = isRevenue
       ? `${revenueBreakdowns.length} cách nhìn`
       : itemCount > 0 ? `${groups.length} nhóm · ${itemCount} hạng mục` : `${groups.length} nguồn`;
@@ -323,21 +320,6 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
         {!collapsed[line.key] && (isRevenue
           ? revenueBreakdowns.map((breakdown) => renderRevenueBreakdown(line, breakdown))
           : groups.map((group) => renderGroup(line, group)))}
-        {/* Chứng từ chưa khai Hạng mục P&L: KHÔNG nằm trong P&L (chốt chị Bình 20/09/2026), nên
-            dòng này đứng NGOÀI tổng — chỉ để biết còn bao nhiêu tiền phải đi gán hạng mục. */}
-        {!collapsed[line.key] && !isRevenue && unclassifiedLine && (
-          <tr className="border-t border-slate-100 bg-amber-50">
-            {stickyCell("bg-amber-50", (
-              <div className="pl-5">
-                <p className="text-[13px] font-bold text-amber-800 whitespace-nowrap flex items-center gap-1">
-                  <span className="material-symbols-outlined text-sm">help</span>Chưa gán hạng mục P&amp;L — KHÔNG tính vào P&amp;L
-                </p>
-                <p className="mt-0.5 text-[10px] text-amber-700">Dòng thông tin, đứng NGOÀI tổng: P&amp;L chỉ tính khoản đã có hạng mục. Gán hạng mục trên chứng từ thì số tự về đúng nhóm; tiền vẫn còn đủ ở Sổ quỹ &gt; Tổng hợp chi phí.</p>
-              </div>
-            ))}
-            {cells(unclassifiedLine, income)}
-          </tr>
-        )}
         <tr className={`border-t border-slate-200 ${style.total}`}>
           {stickyCell(style.total, <p className="text-[12px] font-extrabold tracking-wide whitespace-nowrap">TỔNG {style.title}</p>)}
           {cells(line, income)}
