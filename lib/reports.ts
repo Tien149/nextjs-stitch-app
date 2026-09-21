@@ -130,6 +130,17 @@ function expenseGroupOf(
 
 const isUnclassifiedDetailCode = (code: string) => code === "UNCLASSIFIED" || code === PNL_UNGROUPED_CODE || code === REVENUE_PNL_UNCLASSIFIED.code;
 
+/**
+ * Dòng nào của KQKD bắt buộc phải có HẠNG MỤC P&L mới được tính (chốt chị Bình 20/09/2026).
+ *
+ * Doanh thu gom theo NGUỒN THU (không theo hạng mục) và CAPEX là bút toán tài sản (mua sắm
+ * hiếm khi gắn hạng mục) nên hai dòng đó KHÔNG nằm trong luật này — tiền của chúng luôn được
+ * cộng đủ vào tổng bất kể có hạng mục hay không. Đặt ở module scope để chỗ tính tổng
+ * (createPnlDetailTree) và chỗ hiện dòng "Chưa gán hạng mục" (getPnl, getPnlMatrix) dùng
+ * chung một danh sách — lệch danh sách là dòng cảnh báo nói sai cho CAPEX/Doanh thu.
+ */
+export const PNL_ITEM_REQUIRED_LINES: PnlLineKey[] = ["cogs", "payroll", "otherOpex", "otherExpense", "otherIncome"];
+
 /** Nhóm: cố định -> marketing -> biến đổi -> nhóm khác, trong đó xếp abc; phần chưa phân loại luôn cuối. */
 function sortDetailGroups<T extends { code: string; name: string }>(rows: T[]) {
   return rows.sort((a, b) => comparePnlGroups({ name: a.name, last: isUnclassifiedDetailCode(a.code) }, { name: b.name, last: isUnclassifiedDetailCode(b.code) }));
@@ -352,7 +363,6 @@ export function createPnlDetailTree(catalog: PnlCatalog, monthCount: number) {
    * Doanh thu gom theo NGUỒN THU (không theo hạng mục) và CAPEX là bút toán tài sản (không có
    * hạng mục P&L) nên hai dòng đó không nằm trong luật này.
    */
-  const PNL_ITEM_REQUIRED_LINES: PnlLineKey[] = ["cogs", "payroll", "otherOpex", "otherExpense", "otherIncome"];
   const countsInPnl = (line: PnlJournalLineLike) => {
     const lineKey = pnlLineKeyOf(line.account, pnlItemRefOf(line.pnlItemCode));
     if (!lineKey) return false;
@@ -538,12 +548,29 @@ export async function getPnl(period: string, branchCode: string) {
    * trả riêng ở `unclassified` của từng dòng — bảng hiện thành dòng thông tin ngoài tổng, và
    * vẫn còn nguyên trong `byPnlItem` (Tổng hợp chi phí) để đi phân loại.
    */
-  const unclassifiedOf = (lineKey: PnlLineKey) => tree.groupsOf(lineKey)
-    .reduce((sum, group) => sum + group.items
-      .filter((item) => item.code === "UNCLASSIFIED")
-      .reduce((itemSum, item) => itemSum + item.total, 0), 0);
+  /**
+   * Chỉ tách/ẩn phần "chưa gán hạng mục" ở các dòng THUỘC luật bắt buộc hạng mục (PNL_ITEM_REQUIRED_LINES).
+   * Doanh thu và CAPEX không thuộc luật đó — tiền của chúng luôn nằm trong tổng, nên KHÔNG được
+   * lọc ra rồi gắn nhãn "không tính vào P&L" (sai: nó vẫn đang được tính), chỉ đứng nguyên
+   * trong nhóm "Chưa gắn nhóm hạng mục P&L" như trước giờ.
+   */
+  const unclassifiedOf = (lineKey: PnlLineKey) => {
+    if (!PNL_ITEM_REQUIRED_LINES.includes(lineKey)) return 0;
+    return tree.groupsOf(lineKey)
+      .reduce((sum, group) => sum + group.items
+        .filter((item) => item.code === "UNCLASSIFIED")
+        .reduce((itemSum, item) => itemSum + item.total, 0), 0);
+  };
   const groupsOf = (lineKey: PnlLineKey): PnlDetailGroup[] => tree.groupsOf(lineKey)
     .map((group) => {
+      if (!PNL_ITEM_REQUIRED_LINES.includes(lineKey)) {
+        return {
+          code: group.code,
+          name: group.name,
+          amount: group.total,
+          items: group.items.map((item) => ({ code: item.code, name: item.name, amount: item.total })),
+        };
+      }
       const items = group.items.filter((item) => item.code !== "UNCLASSIFIED");
       const hidden = group.items.filter((item) => item.code === "UNCLASSIFIED").reduce((sum, item) => sum + item.total, 0);
       return {
