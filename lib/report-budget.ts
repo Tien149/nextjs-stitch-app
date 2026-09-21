@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/custom-client";
 import { prisma } from "@/lib/prisma";
-import { createPnlDetailTree, finalizePnl, PNL_ITEM_REQUIRED_LINES, PNL_STATEMENT_LINES, PNL_UNGROUPED_CODE, revenueChannelItemsOf, seedRevenueChannels, type PnlBucket, type PnlCatalog, type PnlLineKey, type PnlSeriesGroup, type PnlSeriesItem } from "@/lib/reports";
+import { createPnlDetailTree, finalizePnl, pnlLineAmount, PNL_ITEM_REQUIRED_LINES, PNL_STATEMENT_LINES, PNL_UNGROUPED_CODE, revenueChannelItemsOf, seedRevenueChannels, type PnlBucket, type PnlCatalog, type PnlLineKey, type PnlSeriesGroup, type PnlSeriesItem } from "@/lib/reports";
 import { isRevenueComponentCategory, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { loadRevenuePnlGroups, type CategoryLookupClient } from "@/lib/revenue-source";
 
@@ -197,7 +197,8 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     // Chi phí / thu nhập khác chưa gắn hạng mục P&L chỉ đứng ở dòng thông tin, không cộng vào
     // các con số của P&L (chốt chị Bình 20/09/2026) — nhờ vậy TỔNG = cộng các nhóm bên dưới.
     if (!tree.countsInPnl(journalLine)) continue;
-    const signed = lineKey === "otherIncome" ? income : expense;
+    // CAPEX chỉ lấy bên Nợ (xem pnlLineAmount) — trừ vế Có 242 của phân bổ vào đây là CAPEX âm.
+    const signed = pnlLineAmount(lineKey, journalLine);
     totals[monthIndex][lineKey] += signed;
     const branchBuckets = branchTotals.get(row.branchCode) || months.map(() => emptyBucket());
     branchBuckets[monthIndex][lineKey] += signed;

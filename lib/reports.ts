@@ -95,10 +95,26 @@ export function pnlLineKeyOf(account: { accountType: string; reportGroup: string
 
 const PNL_INCOME_LINES: PnlLineKey[] = ["revenue", "otherIncome"];
 
+/**
+ * Số tiền một dòng bút toán góp vào một dòng KQKD.
+ *
+ * Dòng thu lấy Có − Nợ, dòng chi lấy Nợ − Có. Riêng **CAPEX chỉ lấy bên NỢ**: dòng này là
+ * "tiền bỏ ra mua sắm trong kỳ", mà 211/242 còn bị GHI CÓ ở những nghiệp vụ không phải hoàn
+ * lại tiền đầu tư — rõ nhất là phân bổ chi phí trả trước hàng kỳ (Nợ 6428 / Có 242). Trừ vế
+ * Có vào đây thì tháng nào chạy phân bổ là CAPEX ÂM một cục đúng bằng số phân bổ (khách báo
+ * 21/09/2026: CAPEX tháng 9 hiện −88.225.863 đ). Chi phí của kỳ đã nằm ở dòng OPEX qua chính
+ * vế Nợ 6428 đó rồi, nên vế Có 242 không được trừ lần nữa ở dòng CAPEX.
+ */
+export function pnlLineAmount(key: PnlLineKey, line: { debit: number; credit: number }) {
+  if (PNL_INCOME_LINES.includes(key)) return line.credit - line.debit;
+  if (key === "capex") return line.debit;
+  return line.debit - line.credit;
+}
+
 function addLine(bucket: PnlBucket, line: { debit: number; credit: number; account: { accountType: string; reportGroup: string } }, pnlItem?: PnlItemRef) {
   const key = pnlLineKeyOf(line.account, pnlItem);
   if (!key) return;
-  bucket[key] += PNL_INCOME_LINES.includes(key) ? line.credit - line.debit : line.debit - line.credit;
+  bucket[key] += pnlLineAmount(key, line);
 }
 
 export function finalizePnl(bucket: PnlBucket) {
@@ -348,7 +364,7 @@ export function createPnlDetailTree(catalog: PnlCatalog, monthCount: number) {
       const code = pnlItemCode || "UNCLASSIFIED";
       const item = pnlItemByCode.get(code);
       const name = item?.name || (pnlItemCode ? `Hạng mục P&L [${pnlItemCode}]` : "Chưa phân loại P&L");
-      bumpDetail(lineKey, expenseGroupOf(pnlItemCode, pnlItemByCode, pnlGroupName), { code, name }, monthIndex, line.debit - line.credit);
+      bumpDetail(lineKey, expenseGroupOf(pnlItemCode, pnlItemByCode, pnlGroupName), { code, name }, monthIndex, pnlLineAmount(lineKey, line));
     }
     return lineKey;
   };
