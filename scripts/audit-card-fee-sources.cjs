@@ -35,6 +35,12 @@ const pnlItemArg = valueOf("--pnl-item").trim().toUpperCase();
 const selfTest = args.includes("--self-test");
 
 const money = (value) => Math.round(value).toLocaleString("vi-VN");
+const EXPENSE_ACCOUNT_TYPES = new Set(["COGS", "OPEX", "OTHER_EXPENSE"]);
+/** Đầu tháng kế tiếp, để lọc [đầu kỳ, đầu kỳ sau). */
+function nextMonth(value) {
+  const [year, month] = value.split("-").map(Number);
+  return month === 12 ? new Date(`${year + 1}-01-01T00:00:00.000Z`) : new Date(`${year}-${String(month + 1).padStart(2, "0")}-01T00:00:00.000Z`);
+}
 const dayKey = (value) => new Date(value).toISOString().slice(0, 10);
 
 /** Nhãn nguồn phát sinh, đặt đúng tên màn hình mà kế toán đi sửa. */
@@ -135,8 +141,65 @@ async function main() {
       }
     }
 
+    /**
+     * ĐỐI CHIẾU BA SỐ. Khách báo 21/09/2026 lệch CẢ HAI CHIỀU — Nam Mê phí thật 16.705.348 mà
+     * báo cáo chỉ 7.599.299 (THIẾU), Asa phí thật 13.468.957 mà báo cáo 97.930.148 (THỪA).
+     * Một nguyên nhân đơn không gây được cả hai, nên phải đo từng chặng:
+     *
+     *   (1) Phiếu quyết toán ví  -> phí ghi trên chứng từ, gần nhất với con số kế toán tự cộng
+     *   (2) Bút toán ĐÃ gắn hạng mục P&L -> đúng số lên Tổng hợp chi phí và P&L
+     *   (3) Bút toán CHƯA gắn hạng mục -> ghi Nợ 6428 thật nhưng BỊ LOẠI khỏi báo cáo
+     *
+     * Chặng (3) là đường gây THIẾU: `walletFeePnlItemCode` chỉ nhận đúng hai mã khoản mục
+     * chuẩn, khách đặt mã riêng là bút toán ra `pnlItemCode = null` và rơi khỏi bảng.
+     * Phiếu chưa có bút toán nào là đường gây thiếu thứ hai: chưa bấm Đồng bộ ghi sổ.
+     */
+    const transfers = await prisma.moneyTransfer.findMany({
+      where: {
+        branchCode,
+        transferPurpose: "WALLET_SETTLEMENT",
+        status: "APPROVED",
+        deletedAt: null,
+        transferDate: { gte: new Date(`${period}-01T00:00:00.000Z`), lt: nextMonth(period) },
+      },
+      select: { id: true, code: true, feeAmount: true, grabExpenseAmount: true, feeCategoryCode: true },
+    });
+    const transferFeeTotal = transfers.reduce((sum, row) => sum + (row.feeAmount || 0), 0);
+    const postedByTransfer = await prisma.journalEntry.findMany({
+      where: { sourceType: "MONEY_TRANSFER", sourceId: { in: transfers.map((row) => row.id) }, deletedAt: null },
+      select: { sourceId: true, lines: { select: { debit: true, pnlItemCode: true, account: { select: { reportGroup: true, accountType: true } } } } },
+    });
+    const postedIds = new Set(postedByTransfer.map((row) => row.sourceId));
+    const notPosted = transfers.filter((row) => (row.feeAmount || 0) > 0 && !postedIds.has(row.id));
+    let feeWithItem = 0;
+    let feeWithoutItem = 0;
+    for (const entry of postedByTransfer) {
+      for (const line of entry.lines) {
+        if (!(line.debit > 0) || !EXPENSE_ACCOUNT_TYPES.has(line.account.accountType)) continue;
+        if (line.pnlItemCode) feeWithItem += line.debit;
+        else feeWithoutItem += line.debit;
+      }
+    }
+
     const result = summarize(lines);
     console.log(`Cửa hàng ${branchCode} · kỳ ${period} · hạng mục: ${pnlItemCodes.join(", ")}`);
+    console.log("");
+    console.log("ĐỐI CHIẾU PHÍ QUYẾT TOÁN VÍ QUA TỪNG CHẶNG");
+    console.log(`  1. Phí ghi trên phiếu quyết toán ví        ${money(transferFeeTotal).padStart(16)} đ  (${transfers.length} phiếu)`);
+    console.log(`  2. Bút toán ĐÃ gắn hạng mục P&L            ${money(feeWithItem).padStart(16)} đ  <- số lên báo cáo`);
+    console.log(`  3. Bút toán CHƯA gắn hạng mục (bị loại)    ${money(feeWithoutItem).padStart(16)} đ`);
+    if (notPosted.length > 0) {
+      const missing = notPosted.reduce((sum, row) => sum + (row.feeAmount || 0), 0);
+      console.log(`  4. Phiếu CHƯA có bút toán nào              ${money(missing).padStart(16)} đ  (${notPosted.length} phiếu — bấm Đồng bộ ghi sổ)`);
+      console.log(`     ${notPosted.slice(0, 10).map((row) => row.code).join(", ")}${notPosted.length > 10 ? ` … và ${notPosted.length - 10} phiếu khác` : ""}`);
+    }
+    if (feeWithoutItem > 0) {
+      const codes = [...new Set(transfers.filter((row) => (row.feeAmount || 0) > 0).map((row) => row.feeCategoryCode || "(trống)"))];
+      console.log("");
+      console.log(`  => ${money(feeWithoutItem)} đ ghi Nợ tài khoản chi phí THẬT nhưng KHÔNG lên báo cáo vì thiếu hạng mục P&L.`);
+      console.log(`     Khoản mục đang khai trên phiếu: ${codes.join(", ")}`);
+      console.log("     Sửa: gắn hạng mục P&L cho khoản mục đó trong Danh mục, rồi bấm Đồng bộ ghi sổ.");
+    }
     console.log(`TỔNG CHI PHÍ QUẸT THẺ ĐÃ VÀO SỔ: ${money(result.total)} đ trên ${lines.length} dòng bút toán`);
     if (lines.length === 0) return;
     console.log("");
