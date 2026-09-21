@@ -1616,7 +1616,8 @@ export default function InventoryPage() {
               {createsPurchasePayable && (<>
                 <div className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-800 !mt-2">
                   Phiếu này sẽ sinh <b>công nợ phải trả</b> cho nhà cung cấp bằng <b>thành tiền sau thuế</b> của phiếu
-                  (giá vốn tồn kho vẫn lấy số trước thuế).
+                  (giá vốn tồn kho vẫn lấy số trước thuế). Dòng <b>đơn giá 0</b> là hàng tặng — vẫn vào kho theo giá
+                  bình quân nhưng không tính một đồng nào vào công nợ.
                   Trả tiền rồi thì lập phiếu chi cho chính nhà cung cấp đó để cấn trừ.
                 </div>
                 <Input label="Hạn thanh toán">

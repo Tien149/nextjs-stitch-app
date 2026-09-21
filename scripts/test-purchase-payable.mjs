@@ -9,7 +9,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createPurchasePayable, purchasePayableCodeOf, PURCHASE_PAYABLE_SOURCE } from "../lib/purchase-payable.ts";
+import { createPurchasePayable, purchaseLineAmount, purchasePayableCodeOf, PURCHASE_PAYABLE_SOURCE } from "../lib/purchase-payable.ts";
 
 /** Prisma giả: ghi lại lời gọi create để khỏi cần database. */
 function fakeTx(partner = { name: "NCC Hải sản", partnerGroup: "EXTERNAL" }) {
@@ -76,6 +76,40 @@ test("hàng khuyến mãi giá 0 không sinh khoản nợ 0 đồng", async () =
   const tx = fakeTx();
   assert.equal(await createPurchasePayable(tx, { ...phieuNhapMua, lines: [{ totalCost: 0 }] }), null);
   assert.equal(tx.created.length, 0);
+});
+
+/**
+ * Hàng khuyến mãi / tặng kèm: NCC giao 0 đ, nhưng dòng đó được định giá lại theo bình quân
+ * của kho khi vào tồn (để giá vốn không bị kéo xuống). Số nợ phải bám ĐƠN GIÁ KHAI, không
+ * bám giá trị nhập kho — nếu không hệ thống ghi nhà hàng nợ NCC tiền của hàng được tặng.
+ */
+const dongHangTang = { totalCost: 350000, inputQuantity: 5, inputUnitCost: null, vatAmount: 0 };
+const dongMuaThat = { totalCost: 480000, inputQuantity: 4, inputUnitCost: 120000, vatAmount: 38400 };
+
+test("dòng hàng tặng không góp đồng nào vào công nợ dù có giá trị nhập kho", () => {
+  assert.equal(purchaseLineAmount(dongHangTang), 0);
+  assert.equal(purchaseLineAmount(dongMuaThat), 480000);
+});
+
+test("phiếu TOÀN hàng tặng không sinh khoản nợ nào", async () => {
+  const tx = fakeTx();
+  assert.equal(await createPurchasePayable(tx, { ...phieuNhapMua, lines: [dongHangTang, { ...dongHangTang, totalCost: 90000 }] }), null);
+  assert.equal(tx.created.length, 0);
+});
+
+test("phiếu vừa mua vừa được tặng chỉ nợ phần mua, kèm thuế của phần mua", async () => {
+  const tx = fakeTx();
+  await createPurchasePayable(tx, { ...phieuNhapMua, lines: [dongMuaThat, dongHangTang] });
+  // 480.000 tiền hàng + 38.400 thuế; 350.000 giá trị hàng tặng đứng ngoài.
+  assert.equal(tx.created[0].originalAmount, 518400);
+  assert.equal(tx.created[0].outstandingAmount, 518400);
+});
+
+test("dòng cũ không lưu đơn giá khai thì giữ nguyên số nợ như trước", () => {
+  // Trước 21/09/2026 dòng phiếu không lưu `inputQuantity`; không có cách nào biết dòng nào là
+  // hàng tặng, nên phải bám `totalCost` để công nợ của dữ liệu đã có không tự đổi số.
+  assert.equal(purchaseLineAmount({ totalCost: 600000 }), 600000);
+  assert.equal(purchaseLineAmount({ totalCost: 600000, inputQuantity: null, inputUnitCost: null }), 600000);
 });
 
 test("hàng nhận theo Đơn mua hàng đã có SupplierPayable nên bỏ qua", async () => {

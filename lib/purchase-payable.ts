@@ -1,5 +1,6 @@
 import type { RawTxClient, TxClient } from "@/lib/prisma";
 import { isInternalPartnerCode } from "@/lib/cost-reallocation";
+import { roundVnd } from "@/lib/round-vnd";
 
 /**
  * Công nợ phải trả sinh từ phiếu NHẬP MUA (import file Nhập/Xuất kho hoặc ghi tay ở màn Nhập kho).
@@ -30,8 +31,33 @@ export type PurchasePayableSource = {
   partnerCode: string | null;
   referenceType?: string | null;
   referenceCode: string | null;
-  lines: Array<{ totalCost: number; vatAmount?: number | null }>;
+  lines: PurchasePayableLine[];
 };
+
+export type PurchasePayableLine = {
+  totalCost: number;
+  vatAmount?: number | null;
+  inputQuantity?: number | null;
+  inputUnitCost?: number | null;
+};
+
+/**
+ * Tiền hàng PHẢI TRẢ của một dòng — số KHAI TRÊN PHIẾU, không phải giá trị nhập kho.
+ *
+ * Hai số này lệch nhau đúng ở hàng khuyến mãi / tặng kèm: dòng đơn giá 0 được ĐỊNH GIÁ LẠI
+ * theo bình quân của kho khi vào tồn, để giá vốn không bị hàng tặng kéo xuống (khách chốt
+ * 20/09/2026) — nên `totalCost` của nó lớn hơn 0 dù không ai phải trả đồng nào. Lấy
+ * `totalCost` làm số nợ là hệ thống ghi nhà hàng nợ NCC tiền của hàng được tặng; khách xác
+ * nhận 21/09/2026 đây là sai.
+ *
+ * `inputUnitCost` trống nghĩa là khai 0 đ (xem resolveStockLine). Dòng cũ không lưu số khai
+ * (`inputQuantity` trống) thì không có cách nào biết được, giữ nguyên `totalCost` để số nợ
+ * của dữ liệu đã có không đổi.
+ */
+export function purchaseLineAmount(line: PurchasePayableLine) {
+  if (line.inputQuantity === null || line.inputQuantity === undefined) return line.totalCost;
+  return roundVnd(line.inputQuantity * (line.inputUnitCost || 0));
+}
 
 /**
  * Phiếu có thuộc diện sinh công nợ không, và nếu có thì bao nhiêu tiền.
@@ -47,13 +73,13 @@ function payableAmountOf(transaction: PurchasePayableSource) {
   // ghi thêm một khoản nữa ở đây là nợ NCC gấp đôi.
   if (transaction.referenceType === "PURCHASE_ORDER") return 0;
   if (!(transaction.partnerCode || "").trim()) return 0;
-  const amount = transaction.lines.reduce((sum, line) => sum + line.totalCost + (line.vatAmount || 0), 0);
+  const amount = transaction.lines.reduce((sum, line) => sum + purchaseLineAmount(line) + (line.vatAmount || 0), 0);
   return amount > 0 ? amount : 0;
 }
 
 /**
  * Sinh khoản phải trả cho một phiếu nhập mua. Trả về null khi phiếu không thuộc diện:
- * không phải nhập mua, không khai NCC, hoặc giá trị bằng 0 (hàng khuyến mãi, tặng kèm).
+ * không phải nhập mua, không khai NCC, hoặc cả phiếu khai 0 đ (hàng khuyến mãi, tặng kèm).
  */
 export async function createPurchasePayable(
   tx: PurchasePayableTx,
