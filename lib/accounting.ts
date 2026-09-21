@@ -128,6 +128,17 @@ type EntryInput = {
   lines: EntryLine[];
 };
 
+/**
+ * Ngày ghi sổ của bút toán CUỐI KỲ (khấu hao, phân bổ trả trước): ngày 28 của chính kỳ đó.
+ *
+ * Những bút toán này không có chứng từ mang ngày riêng — chúng thuộc về cả kỳ. Lấy ngày bấm
+ * nút thay cho ngày kỳ là bấm trễ sang tháng sau thì chi phí nhảy hẳn sang tháng đó.
+ * Ngày 28 luôn tồn tại ở mọi tháng và không bao giờ tràn sang tháng khác khi đổi múi giờ.
+ */
+export function periodClosingEntryDate(period: string) {
+  return new Date(`${period}-28T00:00:00`);
+}
+
 export async function postJournalEntry(input: EntryInput) {
   /**
    * Tròn tới đồng NGAY TỪ ĐÂY, không để lớp ghi tự tròn từng dòng: tròn rời rạc làm hai vế
@@ -581,7 +592,7 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   }
 
   const depreciation = await prisma.assetDepreciation.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { asset: { branchCode } }) }, include: { asset: true } });
-  for (const row of depreciation) results.push(await postJournalEntry({ entryDate: new Date(`${period}-28T00:00:00`), branchCode: row.asset.branchCode, sourceType: "DEPRECIATION", sourceId: row.id, sourceCode: row.asset.code, description: `Khấu hao ${row.asset.name}`, createdBy: actor, lines: [{ accountCode: "6424", debit: row.depreciationAmount }, { accountCode: "214", credit: row.depreciationAmount }] }));
+  for (const row of depreciation) results.push(await postJournalEntry({ entryDate: periodClosingEntryDate(period), branchCode: row.asset.branchCode, sourceType: "DEPRECIATION", sourceId: row.id, sourceCode: row.asset.code, description: `Khấu hao ${row.asset.name}`, createdBy: actor, lines: [{ accountCode: "6424", debit: row.depreciationAmount }, { accountCode: "214", credit: row.depreciationAmount }] }));
 
   const accruals = await prisma.accrualSchedule.findMany({ where: { period, status: "POSTED", ...(branchCode === "ALL" ? {} : { accrual: { branchCode } }) }, include: { accrual: true } });
   // Vế Có phụ thuộc khoản này ĐÃ TRẢ TIỀN hay chưa:
@@ -596,7 +607,16 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
     const alreadyPaid = row.accrual.sourceType === "VOUCHER"
       || row.accrual.sourceType === "OPENING_BALANCE"
       || row.accrual.code.startsWith("PB-DK-");
-    results.push(await postJournalEntry({ entryDate: row.postedAt || new Date(`${period}-28T00:00:00`), branchCode: row.accrual.branchCode, sourceType: "ACCRUAL", sourceId: row.id, sourceCode: row.accrual.code, description: `Phân bổ ${row.accrual.name}`, createdBy: actor, lines: [{ accountCode: "6428", debit: row.amount, categoryCode: row.accrual.categoryCode, pnlItemCode: row.accrual.pnlItemCode }, { accountCode: alreadyPaid ? "242" : "335", credit: row.amount }] }));
+    /**
+     * Ngày bút toán = KỲ PHÂN BỔ của dòng lịch, KHÔNG phải `postedAt`.
+     *
+     * `postedAt` là lúc kế toán bấm "Ghi nhận phân bổ" — một dấu thời gian kiểm soát, không
+     * phải ngày nghiệp vụ. Bấm trễ sang tháng sau là cả khoản phân bổ nhảy sang tháng đó:
+     * kỳ phân bổ ghi 2026-08 mà chi phí lên Tổng hợp chi phí và P&L của tháng 9 (khách báo
+     * 21/09/2026 — tiền thuê mặt bằng GS25 47.021.700 đ của kỳ 08 hiện ở tháng 9).
+     * Dùng ngày 28 của chính kỳ đó, cùng quy ước với bút toán khấu hao ngay bên trên.
+     */
+    results.push(await postJournalEntry({ entryDate: periodClosingEntryDate(row.period), branchCode: row.accrual.branchCode, sourceType: "ACCRUAL", sourceId: row.id, sourceCode: row.accrual.code, description: `Phân bổ ${row.accrual.name}`, createdBy: actor, lines: [{ accountCode: "6428", debit: row.amount, categoryCode: row.accrual.categoryCode, pnlItemCode: row.accrual.pnlItemCode }, { accountCode: alreadyPaid ? "242" : "335", credit: row.amount }] }));
   }
 
   const payroll = await prisma.payrollImportRow.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { branchCode }) } });

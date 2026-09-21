@@ -41,6 +41,7 @@
     "test:purchase-payable": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-purchase-payable.mjs",
     "test:money-rounding": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-money-rounding.mjs",
     "test:capex-debit-only": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-capex-debit-only.mjs",
+    "test:accrual-entry-period": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-accrual-entry-period.mjs",
     "test:import-row-edits": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-import-row-edits.mjs",
     "test:suspect-duplicate": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-bank-statement-suspect-duplicate.mjs",
     "test:debt-expense-type": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-debt-expense-type.mjs",
