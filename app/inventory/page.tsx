@@ -2506,6 +2506,15 @@ export default function InventoryPage() {
               </div>
             </details>
           )}
+          {/* Ô kho rỗng mà không nói gì thì người dùng bấm nút rồi tưởng nút chết (khách gặp
+              21/09 và 22/09/2026). Nói thẳng cửa hàng nào thiếu kho và phải sửa ở đâu. */}
+          {explodeWarehouses.length === 0 && (
+            <p className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+              <b>Chưa rã được:</b> cửa hàng {storeLabel(explodeForm.branchCode)} không có kho nào trong danh mục
+              nên không chọn được Kho xuất NVL. Vào <b>Cấu hình Danh mục → Kho</b> khai kho cho cửa hàng này,
+              hoặc kiểm lại cột <b>Cửa hàng</b> của các kho đang có — kho khai sai mã cửa hàng cũng không hiện ra đây.
+            </p>
+          )}
           <button
             type="button"
             disabled={exploding || explodeWarehouses.length === 0}
