@@ -194,7 +194,18 @@ async function main() {
       },
       select: { id: true, code: true, feeAmount: true, grabExpenseAmount: true, feeCategoryCode: true },
     });
+    /**
+     * TÁCH PHÍ GRAB RA KHỎI PHÍ QUẸT THẺ.
+     *
+     * `feeAmount` trên phiếu quyết toán ví GỘP cả hai, còn lúc ghi sổ hệ thống tách đôi: phí
+     * Grab sang hạng mục "Chi phí bán hàng qua app", phí thẻ sang "Chi phí quẹt thẻ". Bản đầu
+     * của script in thẳng số gộp kèm nhãn "số lên báo cáo" nên nhìn như báo cáo bị THIẾU —
+     * khách so 17.428.888 (gộp) với 7.599.299 (riêng dòng quẹt thẻ) rồi tưởng mất 9,8 triệu.
+     * Không mất đồng nào: phần chênh nằm ở dòng Grab.
+     */
+    const transferGrabTotal = transfers.reduce((sum, row) => sum + (row.grabExpenseAmount || 0), 0);
     const transferFeeTotal = transfers.reduce((sum, row) => sum + (row.feeAmount || 0), 0);
+    const transferCardTotal = transferFeeTotal - transferGrabTotal;
     const postedByTransfer = await prisma.journalEntry.findMany({
       where: { sourceType: "MONEY_TRANSFER", sourceId: { in: transfers.map((row) => row.id) }, deletedAt: null },
       select: { sourceId: true, lines: { select: { debit: true, pnlItemCode: true, account: { select: { reportGroup: true, accountType: true } } } } },
@@ -203,13 +214,17 @@ async function main() {
     const notPosted = transfers.filter((row) => (row.feeAmount || 0) > 0 && !postedIds.has(row.id));
     let feeWithItem = 0;
     let feeWithoutItem = 0;
+    const postedByItem = new Map();
     for (const entry of postedByTransfer) {
       for (const line of entry.lines) {
         if (!(line.debit > 0) || !EXPENSE_ACCOUNT_TYPES.has(line.account.accountType)) continue;
-        if (line.pnlItemCode) feeWithItem += line.debit;
-        else feeWithoutItem += line.debit;
+        if (line.pnlItemCode) {
+          feeWithItem += line.debit;
+          postedByItem.set(line.pnlItemCode, (postedByItem.get(line.pnlItemCode) || 0) + line.debit);
+        } else feeWithoutItem += line.debit;
       }
     }
+    const itemName = new Map(allItems.map((item) => [item.code, item.name]));
 
     const result = summarize(lines);
     console.log(`Cửa hàng ${branchCode} · kỳ ${period}`);
@@ -217,7 +232,13 @@ async function main() {
     console.log("");
     console.log("ĐỐI CHIẾU PHÍ QUYẾT TOÁN VÍ QUA TỪNG CHẶNG");
     console.log(`  1. Phí ghi trên phiếu quyết toán ví        ${money(transferFeeTotal).padStart(16)} đ  (${transfers.length} phiếu)`);
-    console.log(`  2. Bút toán ĐÃ gắn hạng mục P&L            ${money(feeWithItem).padStart(16)} đ  <- số lên báo cáo`);
+    console.log(`       trong đó phí Grab / bán hàng qua app  ${money(transferGrabTotal).padStart(16)} đ  -> lên dòng P&L KHÁC`);
+    console.log(`       còn lại là phí quẹt thẻ / phí ví      ${money(transferCardTotal).padStart(16)} đ`);
+    console.log(`  2. Bút toán ĐÃ gắn hạng mục P&L            ${money(feeWithItem).padStart(16)} đ  (cả hai loại phí)`);
+    for (const [code, amount] of [...postedByItem.entries()].sort((a, b) => b[1] - a[1])) {
+      const mine = pnlItemCodes.includes(code) ? "  <- dòng đang soát" : "";
+      console.log(`       ${code.padEnd(24)} ${(itemName.get(code) || "").slice(0, 28).padEnd(30)}${money(amount).padStart(14)} đ${mine}`);
+    }
     console.log(`  3. Bút toán CHƯA gắn hạng mục (bị loại)    ${money(feeWithoutItem).padStart(16)} đ`);
     if (notPosted.length > 0) {
       const missing = notPosted.reduce((sum, row) => sum + (row.feeAmount || 0), 0);
@@ -239,6 +260,34 @@ async function main() {
       const label = SOURCE_LABELS[sourceType] || sourceType;
       const share = result.total > 0 ? (amount / result.total) * 100 : 0;
       console.log(`${label.padEnd(42)}${money(amount).padStart(14)}  ${share.toFixed(1).padStart(6)}%`);
+    }
+
+    /**
+     * Phí khai trên FILE DOANH THU POS: đối chiếu với chính doanh thu của kỳ để ra tỷ lệ.
+     * Phí cà thẻ thực tế 1–2% doanh thu; ra vài chục phần trăm nghĩa là cột phí trên file
+     * đang chứa thứ khác (số tiền quẹt thẻ, doanh thu theo phương thức...), không phải phí.
+     */
+    const posFee = result.bySource.find(([sourceType]) => sourceType === "REVENUE_POS")?.[1] || 0;
+    if (posFee > 0) {
+      const revenue = await prisma.revenueImportRow.aggregate({
+        where: { branchCode, saleDate: { gte: new Date(`${period}-01T00:00:00.000Z`), lt: nextMonth(period) }, deletedAt: null },
+        _sum: { netAmount: true, cardFeeAmount: true, appFeeAmount: true },
+      });
+      const netRevenue = revenue._sum.netAmount || 0;
+      const rate = netRevenue > 0 ? (posFee / netRevenue) * 100 : null;
+      console.log("");
+      console.log("PHÍ KHAI TRÊN FILE DOANH THU POS");
+      console.log(`  Doanh thu thuần của kỳ                    ${money(netRevenue).padStart(16)} đ`);
+      console.log(`  Cột phí cà thẻ trên file                  ${money(revenue._sum.cardFeeAmount || 0).padStart(16)} đ`);
+      console.log(`  Cột phí bán hàng qua app trên file        ${money(revenue._sum.appFeeAmount || 0).padStart(16)} đ`);
+      if (rate !== null) {
+        console.log(`  => Phí quẹt thẻ từ file POS bằng ${rate.toFixed(2)}% doanh thu`);
+        if (rate > 3) {
+          console.log(`     CẢNH BÁO: phí cà thẻ thực tế thường 1–2%. ${rate.toFixed(1)}% gần như chắc chắn là cột phí`);
+          console.log("     trên file đang chứa thứ khác (số tiền khách quẹt, doanh thu theo phương thức...).");
+          console.log("     Kiểm 1 dòng trên file POS gốc rồi đối chiếu với sao kê của đúng ngày đó.");
+        }
+      }
     }
 
     console.log("");
