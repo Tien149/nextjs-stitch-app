@@ -10,6 +10,7 @@ import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { exportRowsToExcel } from "@/lib/export-table-excel";
 import { ConfirmDeleteDialog } from "@/components/RowActions";
 import { money as formatVndMoney } from "@/lib/format-number";
+import { BANK_POSTING_STATUS_LABELS, bankPostingStatusOf, isBankPostingStatus } from "@/lib/bank-posting-status";
 
 type Allocation = { id: string; sourceRowNumber: number; sheetName: string; revenueDate: string | null; sourceDate: string | null; debitAmount: number; creditAmount: number; grossAmount: number | null; grabExpenseAmount: number; cardFeeAmount: number; categoryCode: string | null; partnerCode: string | null };
 type MatchRow = { targetCode: string; targetType: string; targetHref?: string };
@@ -34,13 +35,13 @@ type SettlementCandidate = {
  * Dòng import ghi được tiền nhưng không tự lập được chứng từ. Khác "dữ liệu cũ" (import từ
  * thời chưa có luồng tự lập chứng từ): dòng này có lý do cụ thể và có nút xử lý ngay tại chỗ.
  */
+/** Dòng đang nằm ở rổ "việc phải làm" — cũng là rổ duy nhất có nút "Vào sổ". */
 function needsPosting(row: BankRow) {
-  return row.reconcileStatus !== "MATCHED" && row.autoProcessType === "MANUAL_REQUIRED";
+  return bankPostingStatusOf(row) === "NOT_POSTED";
 }
 
 function statusLabel(row: BankRow) {
-  if (row.reconcileStatus === "MATCHED") return "ĐÃ VÀO SỔ";
-  return needsPosting(row) ? "CHƯA VÀO SỔ" : "DỮ LIỆU CŨ";
+  return BANK_POSTING_STATUS_LABELS[bankPostingStatusOf(row)];
 }
 
 const operationLabels: Record<string, string> = {
@@ -73,7 +74,7 @@ function newSplitKey() {
   return `new-${splitLineSeq}`;
 }
 
-const emptyFilters = { from: "", to: "", dateType: "TRANSACTION", branchCode: "ALL", moneySource: "", category: "", operationType: "", q: "", missingCategory: "" };
+const emptyFilters = { from: "", to: "", dateType: "TRANSACTION", branchCode: "ALL", moneySource: "", category: "", operationType: "", q: "", missingCategory: "", postingStatus: "" };
 
 export default function BankStatementLedgerPage() {
   const router = useRouter();
@@ -124,10 +125,14 @@ export default function BankStatementLedgerPage() {
       // những dòng sao kê đã cộng thành cột "Tiền đã vô" của ngày đó.
       moneySource: (urlParams.get("moneySource") || "").toUpperCase(),
       missingCategory: urlParams.get("missingCategory") === "1" ? "1" : "",
+      // Cho phép link từ màn khác mở thẳng rổ "chưa vào sổ" thay vì bắt người dùng tự chọn lại.
+      postingStatus: isBankPostingStatus((urlParams.get("postingStatus") || "").toUpperCase())
+        ? (urlParams.get("postingStatus") || "").toUpperCase()
+        : "",
       // Nút "Vào sổ" ở Báo cáo → Thu chi ngày mang theo mã giao dịch để mở đúng một dòng.
       q: (urlParams.get("q") || "").trim().slice(0, 100),
     };
-    const hasUrlFilters = Boolean(urlFilters.from || urlFilters.to || urlFilters.missingCategory || urlFilters.moneySource || urlFilters.q);
+    const hasUrlFilters = Boolean(urlFilters.from || urlFilters.to || urlFilters.missingCategory || urlFilters.moneySource || urlFilters.q || urlFilters.postingStatus);
     window.setTimeout(() => {
       setUser(session);
       setBatchId(urlParams.get("batchId")?.trim() || "");
@@ -443,6 +448,9 @@ export default function BankStatementLedgerPage() {
           <label className="text-xs font-bold text-slate-600">Loại thu/chi<select className="control" value={filters.category} onChange={(e) => setFilters({ ...filters, category: e.target.value })}><option value="">Tất cả loại thu/chi</option>{categories.map((item) => <option key={item.id || item.code} value={item.code}>{item.code} - {item.name}</option>)}</select></label>
           <label className="text-xs font-bold text-slate-600">Loại nghiệp vụ<select className="control" value={filters.operationType} onChange={(e) => setFilters({ ...filters, operationType: e.target.value })}><option value="">Tất cả nghiệp vụ</option>{Object.entries(operationLabels).map(([code, label]) => <option key={code} value={code}>{label}</option>)}</select></label>
           <label className="text-xs font-bold text-slate-600">Loại thu/chi đã gán<select className="control" value={filters.missingCategory} onChange={(e) => setFilters({ ...filters, missingCategory: e.target.value })}><option value="">Tất cả dòng</option><option value="1">Chưa gán loại thu/chi</option></select></label>
+          {/* Lọc ở máy chủ nên "Chưa vào sổ" ra ĐÚNG những dòng còn phải xử của cả kỳ, không
+              phải chỉ những dòng may mắn rơi vào trang đang mở. */}
+          <label className="text-xs font-bold text-slate-600">Trạng thái vào sổ<select className="control" value={filters.postingStatus} onChange={(e) => setFilters({ ...filters, postingStatus: e.target.value })}><option value="">Tất cả trạng thái</option><option value="NOT_POSTED">Chưa vào sổ</option><option value="POSTED">Đã vào sổ</option><option value="LEGACY">Dữ liệu cũ</option></select></label>
           <label className="text-xs font-bold text-slate-600">Từ khóa<input className="control" value={filters.q} onChange={(e) => setFilters({ ...filters, q: e.target.value })} onKeyDown={(e) => e.key === "Enter" && applyFilters()} placeholder="Mã GD, diễn giải, chứng từ..." /></label>
         </div>
         <div className="mt-3 flex justify-end gap-2"><button onClick={clearFilters} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-bold">Xóa lọc</button><button onClick={applyFilters} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white">Lọc dữ liệu</button></div>
@@ -455,7 +463,20 @@ export default function BankStatementLedgerPage() {
       </div>}
       <section className="grid gap-3 sm:grid-cols-3">
         <div className="rounded-xl border border-slate-200 bg-white p-4"><p className="text-xs text-slate-500">Tổng giao dịch</p><b className="text-2xl">{total}</b></div>
-        <div className="rounded-xl border border-slate-200 bg-white p-4"><p className="text-xs text-slate-500">Đã vào sổ trên trang</p><b className="text-2xl text-emerald-700">{recorded}</b>{pendingOnPage > 0 && <p className="mt-1 text-xs font-bold text-amber-700">{pendingOnPage} dòng chưa vào sổ</p>}</div>
+        {/* Đang lọc theo trạng thái thì `total` CHÍNH LÀ con số cần biết (cả kỳ, không phải
+            trang đang xem) — đó là lý do khách cần bộ lọc này. Không lọc thì giữ nguyên cách
+            đếm cũ và nói rõ "trên trang" để không ai hiểu nhầm là số của cả kỳ. */}
+        {applied.postingStatus ? (
+          <div className="rounded-xl border border-slate-200 bg-white p-4">
+            <p className="text-xs text-slate-500">
+              {applied.postingStatus === "NOT_POSTED" ? "Chưa vào sổ — cả kỳ" : applied.postingStatus === "POSTED" ? "Đã vào sổ — cả kỳ" : "Dữ liệu cũ — cả kỳ"}
+            </p>
+            <b className={`text-2xl ${applied.postingStatus === "POSTED" ? "text-emerald-700" : applied.postingStatus === "NOT_POSTED" ? "text-amber-700" : "text-slate-600"}`}>{total}</b>
+            <p className="mt-1 text-xs text-slate-500">đang lọc theo trạng thái vào sổ</p>
+          </div>
+        ) : (
+          <div className="rounded-xl border border-slate-200 bg-white p-4"><p className="text-xs text-slate-500">Đã vào sổ trên trang</p><b className="text-2xl text-emerald-700">{recorded}</b>{pendingOnPage > 0 && <p className="mt-1 text-xs font-bold text-amber-700">{pendingOnPage} dòng chưa vào sổ</p>}</div>
+        )}
         <div className="rounded-xl border border-slate-200 bg-white p-4"><p className="text-xs text-slate-500">Chế độ</p><b className="text-lg">Tra cứu tích lũy</b></div>
       </section>
 

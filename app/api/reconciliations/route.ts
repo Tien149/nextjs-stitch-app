@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { resolvableCategoryCodes, type ResolvableCategoryCodes } from "@/lib/cashflow-categories";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
+import { bankPostingStatusFilter } from "@/lib/bank-posting-status";
 import { assertBranchAccess, branchFilterForSession } from "@/lib/accounting";
 import { normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { dateKey, suggestRevenueDateFromDescription, vietnamBusinessDayBounds } from "@/lib/revenue-date";
@@ -478,6 +479,12 @@ export async function GET(request: Request) {
         { creditAmount: { lte: 0 }, NOT: { categoryCode: { in: codes.PAYMENT } } },
       ],
     });
+    // Lọc theo TRẠNG THÁI VÀO SỔ. Phải lọc ở SERVER chứ không lọc trên trang đang xem: danh
+    // sách phân trang 50 dòng, lọc phía màn hình thì trang 1 còn vài dòng mà người dùng vẫn
+    // phải lật hết các trang. Luật ba trạng thái nằm ở lib/bank-posting-status.ts, dùng chung
+    // với nhãn bên màn hình để hai bên không lệch nhau.
+    const postingStatusFilter = bankPostingStatusFilter(searchParams.get("postingStatus") || "");
+
     const missingCategoryFilter = knownCategoryCodes ? [{
       OR: [
         // Giao dịch không có dòng phân bổ: đọc thẳng mã trên giao dịch.
@@ -517,6 +524,7 @@ export async function GET(request: Request) {
           ],
         }] : []),
         ...missingCategoryFilter,
+        ...postingStatusFilter,
         ...(search ? [{
           OR: [
             { transactionCode: { contains: search, mode: "insensitive" as const } },
