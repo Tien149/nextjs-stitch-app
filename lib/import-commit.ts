@@ -1472,6 +1472,9 @@ export async function commitImport(input: CommitInput) {
             inputUnitCode: asText(row.values.unit_code),
             inputUnitCost: asNumber(row.values.unit_cost),
             vatRate: vat.ok ? vat.rate : null,
+            // Bước xem trước đã chốt tiền thuế: số tự tính, hoặc số trên hoá đơn khi file khai
+            // cột "Thành tiền sau thuế" lệch vài đồng do NCC làm tròn kiểu khác.
+            vatAmount: row.values.vat_amount === undefined ? undefined : asNumber(row.values.vat_amount),
           };
         });
         // Điều chuyển đi qua postStockTransfer: chặn FINISHED + tự sinh công nợ nội bộ

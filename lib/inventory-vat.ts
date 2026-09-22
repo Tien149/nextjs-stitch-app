@@ -92,3 +92,38 @@ export function vatAmountOf(amountBeforeTax: number, rate: number | null | undef
 export function amountAfterTax(amountBeforeTax: number, vatAmount: number) {
   return roundVnd(amountBeforeTax) + vatAmount;
 }
+
+/**
+ * Tiền thuế THEO HOÁ ĐƠN của một dòng, khi người dùng khai đè số tự tính.
+ *
+ * Vì sao cần: hoá đơn NCC tính thuế trên tổng hoá đơn (hoặc tròn theo cách khác), nên số tự
+ * tính từng dòng hay lệch vài đồng — khách gặp ca lệch đúng 1 đ ngày 22/09/2026. Công nợ phải
+ * trả NCC lấy số sau thuế, nên lệch một đồng là số phải trả không khớp hoá đơn, và tới lúc
+ * gạch nợ thì thừa/thiếu đúng đồng đó.
+ *
+ * Luật:
+ *   - không khai (trống/null) -> giữ số tự tính;
+ *   - dòng KKKNT / 0% mà khai tiền thuế > 0 -> chặn, phải chọn thuế suất trước;
+ *   - khai lệch quá xa số tự tính -> chặn, gần như chắc chắn là gõ nhầm ô (gõ thành tiền vào
+ *     ô tiền thuế). Biên độ: 1.000 đ hoặc 1% của số tự tính, lấy cái lớn hơn.
+ */
+export const VAT_OVERRIDE_TOLERANCE_VND = 1000;
+export function resolveVatAmount(input: {
+  amountBeforeTax: number;
+  rate: number | null | undefined;
+  /** Số người dùng khai; `null`/`undefined`/chuỗi rỗng = không khai. */
+  declared?: number | null;
+}): { ok: true; vatAmount: number; overridden: boolean } | { ok: false; reason: "NEGATIVE" | "NO_RATE" | "TOO_FAR"; computed: number } {
+  const computed = vatAmountOf(input.amountBeforeTax, input.rate);
+  const declared = input.declared;
+  if (declared === null || declared === undefined || !Number.isFinite(declared)) {
+    return { ok: true, vatAmount: computed, overridden: false };
+  }
+  const value = roundVnd(declared);
+  if (value < 0) return { ok: false, reason: "NEGATIVE", computed };
+  if (value === computed) return { ok: true, vatAmount: computed, overridden: false };
+  if (!input.rate) return { ok: false, reason: "NO_RATE", computed };
+  const tolerance = Math.max(VAT_OVERRIDE_TOLERANCE_VND, computed * 0.01);
+  if (Math.abs(value - computed) > tolerance) return { ok: false, reason: "TOO_FAR", computed };
+  return { ok: true, vatAmount: value, overridden: true };
+}

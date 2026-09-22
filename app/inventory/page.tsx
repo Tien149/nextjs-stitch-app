@@ -140,7 +140,7 @@ export default function InventoryPage() {
   /** Sửa / xoá phiếu kho ngay trên bảng phiếu của ba tab Nhập / Xuất / Điều chuyển. */
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [transactionEditForm, setTransactionEditForm] = useState({ transactionDate: "", warehouseCode: "", toWarehouseCode: "", partnerCode: "", referenceCode: "", note: "" });
-  const [transactionEditLines, setTransactionEditLines] = useState<Array<{ key: string; itemId: string; quantity: string; unitCode: string; unitCost: string; vatRate: string }>>([]);
+  const [transactionEditLines, setTransactionEditLines] = useState<Array<{ key: string; itemId: string; quantity: string; unitCode: string; unitCost: string; vatRate: string; vatAmount: string }>>([]);
   const [transactionEditError, setTransactionEditError] = useState<string | null>(null);
   const [transactionEditSaving, setTransactionEditSaving] = useState(false);
   const [deletingTransaction, setDeletingTransaction] = useState<Transaction | null>(null);
@@ -156,7 +156,7 @@ export default function InventoryPage() {
   const [itemStatusFilter, setItemStatusFilter] = useState("ALL");
   const [bulkStatusRunning, setBulkStatusRunning] = useState(false);
   const [conversionForm, setConversionForm] = useState({ itemId: "", purchaseUnit: "thung", conversionRate: "24", note: "" });
-  const [stockForm, setStockForm] = useState({ transactionType: "NHAP_MUA", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HN", itemId: "", inputUnitCode: "", quantity: "10", unitCost: "100000", vatRate: "KKKNT", partnerCode: "", paymentDueDate: "", referenceCode: "", note: "Nhap kho van hanh" });
+  const [stockForm, setStockForm] = useState({ transactionType: "NHAP_MUA", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HN", itemId: "", inputUnitCode: "", quantity: "10", unitCost: "100000", vatRate: "KKKNT", vatAmount: "", partnerCode: "", paymentDueDate: "", referenceCode: "", note: "Nhap kho van hanh" });
   /** Nhập mua theo PO (GRPO): PO đã duyệt còn hàng chưa nhận + số lượng nhận trên từng dòng. */
   const [receivablePOs, setReceivablePOs] = useState<ReceivablePO[]>([]);
   const [grpoOrderId, setGrpoOrderId] = useState("");
@@ -303,7 +303,9 @@ export default function InventoryPage() {
   // Đúng công thức khách chốt: thành tiền trước thuế = SL x ĐG, sau thuế = trước thuế x (1 + thuế suất).
   const stockVatRate = parseVatRate(stockForm.vatRate);
   const stockAmountBeforeTax = roundVnd(stockLineValue);
-  const stockVatAmount = vatAmountOf(stockAmountBeforeTax, stockVatRate.ok ? stockVatRate.rate : null);
+  const stockAutoVatAmount = vatAmountOf(stockAmountBeforeTax, stockVatRate.ok ? stockVatRate.rate : null);
+  // Ô "Tiền thuế" để trống = tự tính; khai số khác thì xem trước phải hiện đúng số sẽ lưu.
+  const stockVatAmount = stockForm.vatAmount.trim() === "" ? stockAutoVatAmount : Number(stockForm.vatAmount || 0);
   const stockAmountAfterTax = stockAmountBeforeTax + stockVatAmount;
   // Chuẩn hoá ngay tại chỗ dùng, không chờ effect: render đầu tiên đã phải đúng.
   const explodeStoreCodes = visibleStoreOptions(user).map((option) => option.code);
@@ -822,7 +824,24 @@ export default function InventoryPage() {
       unitCost: String(line.inputUnitCost ?? line.unitCost),
       // Mã thuế suất ("8%" / "KKKNT") để ô chọn hiện đúng cái đã lưu; ô trống = chưa khai thuế.
       vatRate: vatRateLabel(line.vatRate),
+      /**
+       * Ô "Tiền thuế" chỉ điền sẵn khi số đã lưu KHÁC số tự tính, tức là người dùng từng khai
+       * theo hoá đơn. Điền sẵn cả khi trùng thì sửa số lượng/đơn giá xong tiền thuế vẫn kẹt ở
+       * số cũ, mà người dùng không hề biết mình đang khai đè.
+       */
+      vatAmount: line.vatAmount && line.vatAmount !== vatAmountOf(roundVnd((line.inputQuantity ?? line.quantity) * (line.inputUnitCost ?? line.unitCost)), line.vatRate)
+        ? String(line.vatAmount)
+        : "",
     })));
+  };
+
+  /**
+   * Tiền thuế hệ thống TỰ TÍNH cho một dòng đang sửa — dùng làm gợi ý trong ô "Tiền thuế".
+   * Tính đúng như máy chủ: số lượng x đơn giá KHAI TRÊN PHIẾU, tròn tới đồng, rồi nhân thuế suất.
+   */
+  const editLineAutoVat = (line: { quantity: string; unitCost: string; vatRate: string }) => {
+    const rate = parseVatRate(line.vatRate);
+    return vatAmountOf(roundVnd(Number(line.quantity || 0) * Number(line.unitCost || 0)), rate.ok ? rate.rate : null);
   };
 
   const submitTransactionEdit = async () => {
@@ -848,6 +867,7 @@ export default function InventoryPage() {
             inputUnitCode: line.unitCode,
             inputUnitCost: line.unitCost,
             vatRate: line.vatRate,
+            vatAmount: line.vatAmount,
           })),
         }),
       });
@@ -1543,7 +1563,7 @@ export default function InventoryPage() {
       {(active === "inbound" || active === "outbound") && (
         <div className="grid lg:grid-cols-[380px_1fr] gap-5">
           {canCreate && (
-            <form onSubmit={(e) => { e.preventDefault(); if (grpoOrder) { void receiveFromPO(); return; } void send({ action: "STOCK_TRANSACTION", ...stockForm, lines: [{ itemId: stockForm.itemId, inputQuantity: stockForm.quantity, inputUnitCode: stockForm.inputUnitCode || selectedStockUnit?.unitCode, inputUnitCost: active === "inbound" ? stockForm.unitCost : "0", vatRate: active === "inbound" ? stockForm.vatRate : "" }] }, active === "inbound" ? "Đã ghi nhận phiếu nhập kho." : "Đã ghi nhận phiếu xuất kho."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
+            <form onSubmit={(e) => { e.preventDefault(); if (grpoOrder) { void receiveFromPO(); return; } void send({ action: "STOCK_TRANSACTION", ...stockForm, lines: [{ itemId: stockForm.itemId, inputQuantity: stockForm.quantity, inputUnitCode: stockForm.inputUnitCode || selectedStockUnit?.unitCode, inputUnitCost: active === "inbound" ? stockForm.unitCost : "0", vatRate: active === "inbound" ? stockForm.vatRate : "", vatAmount: active === "inbound" ? stockForm.vatAmount : "" }] }, active === "inbound" ? "Đã ghi nhận phiếu nhập kho." : "Đã ghi nhận phiếu xuất kho."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
               <h2 className="font-bold text-slate-800">{active === "inbound" ? "Ghi nhận nhập kho" : "Ghi nhận xuất kho"}</h2>
 
               <Input label="Loại">
@@ -1663,13 +1683,28 @@ export default function InventoryPage() {
               </div>
 
               {active === "inbound" && (
-                <Input label="Thuế suất GTGT">
-                  <select className="control" value={stockForm.vatRate} onChange={(e) => setStockForm({ ...stockForm, vatRate: e.target.value })}>
-                    {VAT_RATE_OPTIONS.map((option) => (
-                      <option key={option.code} value={option.code} title={option.description}>{option.code} — {option.description}</option>
-                    ))}
-                  </select>
-                </Input>
+                <div className="grid grid-cols-2 gap-3">
+                  <Input label="Thuế suất GTGT">
+                    <select className="control" value={stockForm.vatRate} onChange={(e) => setStockForm({ ...stockForm, vatRate: e.target.value })}>
+                      {VAT_RATE_OPTIONS.map((option) => (
+                        <option key={option.code} value={option.code} title={option.description}>{option.code} — {option.description}</option>
+                      ))}
+                    </select>
+                  </Input>
+                  {/* Hoá đơn NCC tính thuế trên tổng hoá đơn nên hay lệch vài đồng so với số tự
+                      tính từng dòng. Công nợ phải trả lấy số sau thuế, nên phải khai được đúng
+                      số trên hoá đơn thì lúc gạch nợ mới khớp. */}
+                  <Input label="Tiền thuế theo hoá đơn">
+                    <input
+                      type="number"
+                      className="control text-right"
+                      placeholder={stockAutoVatAmount > 0 ? `Tự tính ${money(stockAutoVatAmount)}` : "Tự tính"}
+                      value={stockForm.vatAmount}
+                      onChange={(e) => setStockForm({ ...stockForm, vatAmount: e.target.value })}
+                      title="Để trống = lấy số hệ thống tự tính. Chỉ khai khi hoá đơn ghi số khác vài đồng do làm tròn."
+                    />
+                  </Input>
+                </div>
               )}
 
               {selectedStockItem && (
@@ -2077,7 +2112,7 @@ export default function InventoryPage() {
                   <b className="text-sm text-slate-700">Mặt hàng ({transactionEditLines.length} dòng)</b>
                   <button
                     type="button"
-                    onClick={() => setTransactionEditLines([...transactionEditLines, { key: `new-${Date.now()}`, itemId: "", quantity: "1", unitCode: "", unitCost: "0", vatRate: "KKKNT" }])}
+                    onClick={() => setTransactionEditLines([...transactionEditLines, { key: `new-${Date.now()}`, itemId: "", quantity: "1", unitCode: "", unitCost: "0", vatRate: "KKKNT", vatAmount: "" }])}
                     className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-bold hover:bg-slate-50"
                   >
                     + Thêm dòng
@@ -2088,7 +2123,7 @@ export default function InventoryPage() {
                   const units = item ? [{ unitCode: item.unit.toUpperCase(), unitName: item.unit }, ...(item.unitConversions || []).filter((unit) => unit.unitCode.toUpperCase() !== item.unit.toUpperCase())] : [];
                   const patch = (changes: Partial<typeof line>) => setTransactionEditLines(transactionEditLines.map((current, position) => position === index ? { ...current, ...changes } : current));
                   return (
-                    <div key={line.key} className="grid grid-cols-1 sm:grid-cols-[1fr_90px_110px_120px_120px_40px] gap-2 items-end border border-slate-100 rounded-lg p-2">
+                    <div key={line.key} className="grid grid-cols-1 sm:grid-cols-[1fr_90px_110px_120px_110px_130px_40px] gap-2 items-end border border-slate-100 rounded-lg p-2">
                       <Input label={index === 0 ? "Mặt hàng" : ""}>
                         <ItemSelect items={data.items} value={line.itemId} onChange={(itemId) => {
                           const picked = data.items.find((candidate) => candidate.id === itemId);
@@ -2124,6 +2159,20 @@ export default function InventoryPage() {
                         >
                           {VAT_RATE_OPTIONS.map((option) => <option key={option.code} value={option.code} title={option.description}>{option.code}</option>)}
                         </select>
+                      </Input>
+                      {/* Sửa lại đúng số thuế trên hoá đơn NCC khi máy tự tính lệch vài đồng. */}
+                      <Input label={index === 0 ? "Tiền thuế" : ""}>
+                        <input
+                          type="number"
+                          className="control text-right disabled:bg-slate-100 disabled:text-slate-400"
+                          value={line.vatAmount}
+                          placeholder={editLineAutoVat(line) > 0 ? `Tự tính ${money(editLineAutoVat(line))}` : "Tự tính"}
+                          disabled={!isInboundType(editingTransaction.transactionType)}
+                          title={isInboundType(editingTransaction.transactionType)
+                            ? "Để trống = lấy số hệ thống tự tính. Chỉ khai khi hoá đơn ghi số khác vài đồng do làm tròn."
+                            : "Chỉ phiếu nhập mới có thuế GTGT đầu vào"}
+                          onChange={(e) => patch({ vatAmount: e.target.value })}
+                        />
                       </Input>
                       <button
                         type="button"

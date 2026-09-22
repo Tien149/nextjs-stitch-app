@@ -4,7 +4,7 @@ import { isMasterDataImportType, normalizeHeader, type ImportType } from "@/lib/
 import { parseImportDate, type ParsedImportResult, type ParsedImportRow } from "@/lib/import-parser";
 import type { DemoSession } from "@/lib/auth-demo";
 import { isInboundStockType, isOutboundStockType, isStockTransactionType, isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType } from "@/lib/inventory-stock";
-import { parseVatRate, VAT_RATE_CODES, vatAmountOf, vatRateLabel } from "@/lib/inventory-vat";
+import { parseVatRate, resolveVatAmount, VAT_RATE_CODES, vatAmountOf, vatRateLabel } from "@/lib/inventory-vat";
 import { roundVnd } from "@/lib/money-rounding";
 import { normalizeCashflowCategoryType, normalizeRevenueExpenseGroup } from "@/lib/voucher-rules";
 import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
@@ -497,16 +497,31 @@ function validateInventoryTransaction(
       addError(row, `Thanh tien truoc thue (${declared.toLocaleString("vi-VN")}) khong bang So luong x Don gia (${expectedBeforeTax.toLocaleString("vi-VN")})`);
     }
   }
+  /**
+   * Cột "Thành tiền sau thuế" là SỐ TRÊN HOÁ ĐƠN, nên nó được quyền khác số tự tính vài đồng:
+   * NCC tính thuế trên tổng hoá đơn hoặc làm tròn kiểu khác. Trước đây số khai bị ghi đè bằng
+   * số tự tính, nên công nợ phải trả lệch đúng phần chênh đó và tới lúc gạch nợ mới lòi ra.
+   *
+   * Biên độ dùng chung với ô "Tiền thuế" trên màn hình (resolveVatAmount): lệch trong biên độ
+   * thì lấy số khai làm tiền thuế, lệch quá xa thì chặn vì gần như chắc chắn là khai sai.
+   */
+  let vatAmount = expectedVat;
   if (text(row.values.amount_after_tax)) {
-    const declared = numberValue(row.values.amount_after_tax);
-    if (Math.abs(declared - expectedAfterTax) > roundingTolerance) {
-      addError(row, `Thanh tien sau thue (${declared.toLocaleString("vi-VN")}) khong bang Thanh tien truoc thue x (1 + thue suat) (${expectedAfterTax.toLocaleString("vi-VN")})`);
+    const declared = roundVnd(numberValue(row.values.amount_after_tax));
+    const resolved = resolveVatAmount({ amountBeforeTax: expectedBeforeTax, rate: vatRate, declared: declared - expectedBeforeTax });
+    if (resolved.ok) {
+      vatAmount = resolved.vatAmount;
+    } else {
+      addError(row, resolved.reason === "NO_RATE"
+        ? `Thanh tien sau thue (${declared.toLocaleString("vi-VN")}) lon hon thanh tien truoc thue nhung dong nay khai thue suat KKKNT/0%. Khai thue suat GTGT truoc`
+        : `Thanh tien sau thue (${declared.toLocaleString("vi-VN")}) lech qua xa so tu tinh (${expectedAfterTax.toLocaleString("vi-VN")}) — kiem lai So luong, Don gia va Thue suat`);
     }
   }
   // Điền số hệ thống sẽ dùng để người xem preview thấy đúng cái sắp được ghi, kể cả khi file
-  // không có hai cột này.
+  // không có hai cột này. Tiền thuế đi kèm để bước ghi sổ khỏi tính lại (và làm mất số hoá đơn).
   row.values.amount_before_tax = expectedBeforeTax;
-  row.values.amount_after_tax = expectedAfterTax;
+  row.values.amount_after_tax = expectedBeforeTax + vatAmount;
+  row.values.vat_amount = vatAmount;
 
   // Điều chuyển không nhận nhóm FINISHED: thành phẩm chỉ nhập từ chế biến, xuất qua bán/hủy.
   if (transactionType === "DIEU_CHUYEN" && item.itemType === "FINISHED") {

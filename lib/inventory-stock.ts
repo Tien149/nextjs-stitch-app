@@ -1,7 +1,7 @@
 import type { TxClient } from "@/lib/prisma";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { safeConversionRate } from "@/lib/unit-conversion";
-import { vatAmountOf } from "@/lib/inventory-vat";
+import { resolveVatAmount } from "@/lib/inventory-vat";
 import { roundVnd } from "@/lib/money-rounding";
 
 export const STOCK_TRANSACTION_TYPES = [
@@ -59,6 +59,11 @@ export type StockLineInput = {
    * khai. Chi co y nghia voi phieu NHAP; xem lib/inventory-vat.ts.
    */
   vatRate?: number | null;
+  /**
+   * Tien thue KHAI THEO HOA DON, de trong = de he thong tu tinh. Dung khi hoa don NCC tron
+   * khac may (lech vai dong) — xem resolveVatAmount trong lib/inventory-vat.ts.
+   */
+  vatAmount?: unknown;
 };
 
 export type PostInventoryTransactionInput = {
@@ -197,6 +202,28 @@ async function resolveStockLine(tx: Tx, line: StockLineInput) {
 
   const inputUnitCost = numberValue(line.inputUnitCost ?? line.unitCost);
 
+  /**
+   * Thue tinh tren SO LUONG x DON GIA KHAI TREN PHIEU, dung cong thuc khach chot
+   * ("Thanh tien sau thue = Thanh tien truoc thue x (1 + thue suat)"), va nhan so khai de
+   * neu hoa don NCC tron khac.
+   *
+   * KHONG tinh tren `totalCost` sau dinh gia: dong don gia 0 (hang khuyen mai, tang kem)
+   * duoc dinh gia lai theo binh quan cua kho de gia von khong tut, nhung NCC khong xuat hoa
+   * don cho hang tang nen khong co dong thue nao phai tra.
+   */
+  const amountBeforeTax = roundVnd(inputQuantity * inputUnitCost);
+  const declaredVat = line.vatAmount === undefined || line.vatAmount === null || text(line.vatAmount) === ""
+    ? null
+    : numberValue(line.vatAmount);
+  const vat = resolveVatAmount({ amountBeforeTax, rate: line.vatRate ?? null, declared: declaredVat });
+  if (!vat.ok) {
+    if (vat.reason === "NEGATIVE") stockError(`Tien thue cua ${item.code} khong duoc am`);
+    if (vat.reason === "NO_RATE") {
+      stockError(`Dong ${item.code} dang de thue suat KKKNT/0% nen khong co tien thue. Chon thue suat GTGT truoc roi hay khai tien thue theo hoa don`);
+    }
+    stockError(`Tien thue khai cho ${item.code} (${numberValue(declaredVat)}) lech qua xa so tu tinh (${vat.computed}). Kiem lai: o nay chi de sua vai dong chenh lech lam tron cua hoa don, khong phai o thanh tien`);
+  }
+
   return {
     item,
     itemId: item.id,
@@ -207,15 +234,7 @@ async function resolveStockLine(tx: Tx, line: StockLineInput) {
     inputUnitCost: inputUnitCost || null,
     unitCost: inputUnitCost > 0 ? inputUnitCost / conversionRate : 0,
     vatRate: line.vatRate ?? null,
-    /**
-     * Thue tinh tren SO LUONG x DON GIA KHAI TREN PHIEU, dung cong thuc khach chot
-     * ("Thanh tien sau thue = Thanh tien truoc thue x (1 + thue suat)").
-     *
-     * KHONG tinh tren `totalCost` sau dinh gia: dong don gia 0 (hang khuyen mai, tang kem)
-     * duoc dinh gia lai theo binh quan cua kho de gia von khong tut, nhung NCC khong xuat hoa
-     * don cho hang tang nen khong co dong thue nao phai tra.
-     */
-    vatAmount: vatAmountOf(roundVnd(inputQuantity * inputUnitCost), line.vatRate ?? null),
+    vatAmount: vat.vatAmount,
   };
 }
 

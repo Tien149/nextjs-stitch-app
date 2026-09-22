@@ -38,7 +38,7 @@ const derivedReferenceTypes: Record<string, string> = {
   PRODUCTION: "lệnh chế biến",
 };
 
-type InputLine = { itemId?: unknown; itemCode?: unknown; quantity?: unknown; actualQuantity?: unknown; inputQuantity?: unknown; unitCode?: unknown; inputUnitCode?: unknown; unitCost?: unknown; inputUnitCost?: unknown; vatRate?: unknown; wasteRate?: unknown; conversionRate?: unknown; reason?: unknown };
+type InputLine = { itemId?: unknown; itemCode?: unknown; quantity?: unknown; actualQuantity?: unknown; inputQuantity?: unknown; unitCode?: unknown; inputUnitCode?: unknown; unitCost?: unknown; inputUnitCost?: unknown; vatRate?: unknown; vatAmount?: unknown; wasteRate?: unknown; conversionRate?: unknown; reason?: unknown };
 const validItemTypes = ["RAW_MATERIAL", "SEMI_FINISHED", "FINISHED", "PACKAGING", "TOOL", "ASSET"];
 
 /**
@@ -63,6 +63,9 @@ function linesFrom(value: unknown) {
     unitCost: toNumber(line.inputUnitCost ?? line.unitCost),
     inputUnitCost: toNumber(line.inputUnitCost ?? line.unitCost),
     vatRate: vatRateFrom(line.vatRate),
+    // Ô "Tiền thuế" để trống thì KHÔNG gửi số 0 xuống: 0 là một lời khai (thuế đúng bằng 0),
+    // còn để trống nghĩa là cứ tính theo thuế suất như cũ.
+    vatAmount: cleanText(line.vatAmount) === "" ? undefined : toNumber(line.vatAmount),
     wasteRate: toNumber(line.wasteRate),
     conversionRate: toNumber(line.conversionRate),
   })).filter((line) => (line.itemId || line.itemCode) && line.quantity > 0);
@@ -1519,6 +1522,8 @@ export async function POST(request: Request) {
         return {
           itemId: line.itemId,
           itemCode: "",
+          // Hủy hàng không có thuế đầu vào: khai rõ để cùng kiểu với dòng người dùng gửi lên.
+          vatAmount: undefined,
           quantity,
           inputQuantity: quantity,
           unitCode: "",
@@ -1750,14 +1755,16 @@ export async function PATCH(request: Request) {
             partnerCode,
             referenceCode: body.referenceCode !== undefined ? cleanText(body.referenceCode) || null : transaction.referenceCode,
             note: body.note !== undefined ? cleanText(body.note) || null : transaction.note,
-            // Giu nguyen thue suat cua dong cu khi chi sua phan dau phieu: bo qua o day la
-            // sua ngay chung tu cung lam bay het thue va cong no NCC tut xuong so truoc thue.
+            // Giu nguyen thue suat VA tien thue da khai cua dong cu khi chi sua phan dau phieu:
+            // bo qua o day la sua ngay chung tu cung lam bay het thue (cong no NCC tut xuong so
+            // truoc thue), hoac lam mat so thue khai theo hoa don va quay ve so tu tinh.
             lines: editedLines.length > 0 ? editedLines : transaction.lines.map((line) => ({
               itemId: line.itemId,
               inputQuantity: line.inputQuantity ?? line.quantity,
               inputUnitCode: line.inputUnitCode ?? "",
               inputUnitCost: line.inputUnitCost ?? line.unitCost,
               vatRate: line.vatRate,
+              vatAmount: line.vatAmount,
             })),
           })
           : await tx.inventoryTransaction.update({
