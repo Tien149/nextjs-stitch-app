@@ -38,6 +38,7 @@ import {
   pickManualVoucherForStatement,
 } from "@/lib/bank-statement-voucher-match";
 import { pickRevenueRowsOfDay, revenueDayKey, revenueDayLabel } from "@/lib/revenue-day-summary";
+import { safeConversionRate } from "@/lib/unit-conversion";
 
 /**
  * Một dòng sao kê không đủ điều kiện lập chứng từ tự động.
@@ -1581,6 +1582,10 @@ export async function commitImport(input: CommitInput) {
                     conversionRate = conversion.conversionRate;
                   }
                 }
+                // File định lượng của khách điền sẵn cột hệ số bằng 1000 cho cả nguyên liệu vốn
+                // đã tính bằng GR — quy một đơn vị ra chính nó, đúng thứ lib/unit-conversion.ts
+                // chặn. Ép qua luật đó, nếu không mỗi lần import lại là BOM hỏng lại.
+                conversionRate = safeConversionRate(item.unit, { unitCode: ingredientUnit || item.unit, conversionRate });
                 return {
                   itemId: item.id,
                   quantity: asNumber(row.values.quantity),
