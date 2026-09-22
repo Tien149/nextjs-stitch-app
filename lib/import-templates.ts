@@ -624,7 +624,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
         required: true,
         type: "number",
         aliases: ["luong thuc nhan (vnd)", "luong thuc nhan", "thuc nhan", "net amount"],
-        note: "Tiền thực đưa người lao động, thành công nợ phải trả cho bộ phận này. Cộng với hai cột bảo hiểm không được vượt TỔNG CHI PHÍ CÔNG TY",
+        note: "Tiền thực đưa người lao động, thành công nợ phải trả cho bộ phận này. Khai theo đúng số trong bảng lương — KHÔNG bắt buộc liên hệ gì với TỔNG CHI PHÍ CÔNG TY (thực nhận có thể gồm cả truy lĩnh kỳ trước, tạm ứng hoàn lại...)",
       },
       { field: "external_ref", label: "Mã tham chiếu", required: false, type: "text", aliases: ["ma tham chieu", "reference", "external ref"] },
     ],

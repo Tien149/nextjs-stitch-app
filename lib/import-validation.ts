@@ -1610,7 +1610,6 @@ export async function validateImportResult(
         // Chỉ tính lại khi file thực sự có cột con; file chỉ khai mỗi ô tổng thì tổng là số duy nhất.
         const hasCompanyCostColumns = companyCostFields.some((field) => Boolean(result.mapping[field]));
         if (hasCompanyCostColumns) row.values.total_company_cost = companyCost;
-        const declaredCost = numberValue(row.values.total_company_cost);
         // Bảo hiểm bắt buộc trừ vào lương người lao động nên nằm ngoài công thức trên; nó chỉ
         // đi cùng bảo hiểm công ty chịu thành khoản phải trả cơ quan BHXH.
         const companyInsurance = numberValue(row.values.company_insurance);
@@ -1619,18 +1618,17 @@ export async function validateImportResult(
         if (companyInsurance < 0) addError(row, "Bảo hiểm (công ty chịu) không được âm");
         const netAmount = numberValue(row.values.net_amount);
         if (netAmount <= 0) addError(row, "LƯƠNG THỰC NHẬN phải lớn hơn 0");
-        // Một đồng trong TỔNG CHI PHÍ CÔNG TY chỉ đi được về một chỗ: hoặc vào tay người lao
-        // động (thực nhận), hoặc nộp cơ quan BHXH (hai cột bảo hiểm), hoặc là thuế/khấu trừ
-        // khác. Ba khoản đầu cộng lại mà vượt tổng chi phí nghĩa là file khai sai — cứ để
-        // import thì hai phiếu phải trả sinh ra sẽ lớn hơn chi phí đã ghi nhận, công nợ treo
-        // nhiều hơn số tiền công ty thực sự phải chi.
-        const payables = netAmount + companyInsurance + mandatoryInsurance;
-        if (payables - declaredCost > 1) {
-          addError(
-            row,
-            `LƯƠNG THỰC NHẬN + Bảo hiểm (công ty chịu) + Bảo hiểm bắt buộc = ${Math.round(payables).toLocaleString("vi-VN")} đang lớn hơn TỔNG CHI PHÍ CÔNG TY ${Math.round(declaredCost).toLocaleString("vi-VN")}${hasCompanyCostColumns ? " (tổng các cột từ Tổng lương theo giờ công đến Bảo hiểm công ty chịu)" : ""}`,
-          );
-        }
+        /**
+         * KHÔNG kiểm "LƯƠNG THỰC NHẬN + hai cột bảo hiểm <= TỔNG CHI PHÍ CÔNG TY" (khách bỏ luật
+         * này 22/09/2026: "lương thực nhận không có công thức này").
+         *
+         * Luật cũ đoán rằng mọi đồng thực nhận đều nằm trong tổng chi phí công ty của ĐÚNG kỳ
+         * đó. Bảng lương thật không chạy vậy — thực nhận còn gánh những khoản ngoài bảy cột chi
+         * phí (truy lĩnh kỳ trước, tạm ứng hoàn lại...) nên vượt tổng là chuyện bình thường, và
+         * file đúng vẫn bị chặn không import được. Số ghi sổ không phụ thuộc phép so này: chi
+         * phí lấy TỔNG CHI PHÍ CÔNG TY, công nợ lấy thực nhận và hai cột bảo hiểm, mỗi số đi
+         * một đường (lib/import-commit.ts commitDepartmentPayroll).
+         */
         if (numberValue(row.values.headcount) < 0) addError(row, "Số lượng nhân sự không được âm");
         if (!text(row.values.department_code)) addError(row, "Bảng lương theo bộ phận bắt buộc có Phòng ban");
       } else {
