@@ -219,6 +219,46 @@ async function resolveStockLine(tx: Tx, line: StockLineInput) {
   };
 }
 
+/**
+ * Phần tính thuần của một lần cộng/trừ tồn — tách ra khỏi DB để test được bằng node --test.
+ *
+ * `allowNegative` là luật XUẤT ÂM (khách chốt 22/09/2026): phiếu XUAT_* vẫn ghi được khi kho
+ * chưa có tồn, vì nghiệp vụ "rã bom" phải chạy cho cả những mã chưa kịp khai tồn đầu kỳ.
+ * Tồn xuống âm chính là số nợ kho đang thiếu, để kế toán nhìn thấy mà đi khai bù — chứ không
+ * phải cái cớ để chặn cả lần rã. Điều chuyển kho vẫn KHÔNG được âm: chuyển hàng không có
+ * sang kho khác là bịa ra giá trị cho kho nhận.
+ */
+export function computeBalanceChange(input: {
+  currentQuantity: number;
+  currentAverage: number;
+  quantity: number;
+  unitCost: number;
+  direction: "IN" | "OUT";
+}) {
+  const { currentQuantity, currentAverage, quantity, direction } = input;
+  const effectiveUnitCost = input.unitCost > 0 ? input.unitCost : currentAverage;
+  const newQuantity = direction === "IN" ? currentQuantity + quantity : currentQuantity - quantity;
+  /**
+   * Nhập vào lúc tồn đang ÂM (hoặc bằng 0) thì lấy thẳng giá lô nhập, không bình quân với
+   * phần âm: phần âm là hàng đã xuất mà chưa có giá, giá trị của nó bằng 0 chứ không âm tiền.
+   * Bình quân kiểu cũ ((-50 x 0) + 100 x 30.000) / 50 sẽ thổi giá vốn lên gấp đôi giá mua.
+   */
+  const averageCost = direction !== "IN"
+    ? currentAverage
+    : currentQuantity > 0.000001
+      ? (newQuantity > 0.000001 ? ((currentQuantity * currentAverage) + (quantity * effectiveUnitCost)) / newQuantity : currentAverage)
+      : (effectiveUnitCost > 0 ? effectiveUnitCost : currentAverage);
+
+  return {
+    newQuantity,
+    averageCost,
+    unitCost: effectiveUnitCost,
+    totalCost: quantity * effectiveUnitCost,
+    /** Phần tồn bị âm sau bút toán này (0 nếu vẫn dương) — để báo lại cho người dùng. */
+    negativeQuantity: newQuantity < -0.000001 ? -newQuantity : 0,
+  };
+}
+
 async function applyBalanceChange(
   tx: Tx,
   itemId: string,
@@ -226,6 +266,7 @@ async function applyBalanceChange(
   quantity: number,
   unitCost: number,
   direction: "IN" | "OUT",
+  allowNegative = false,
 ) {
   // Khoá dòng tồn trước khi đọc: hai phiếu chạy song song sẽ xếp hàng thay vì cùng đọc
   // một số tồn rồi cùng ghi đè (lost update — xuất 16.000 khỏi kho 10.000 mà không ai báo lỗi).
@@ -234,22 +275,25 @@ async function applyBalanceChange(
   const balance = await tx.inventoryBalance.findUnique({
     where: { itemId_warehouseCode: { itemId, warehouseCode } },
   });
-  const currentQuantity = balance?.quantity || 0;
-  const currentAverage = balance?.averageCost || 0;
-  const effectiveUnitCost = unitCost > 0 ? unitCost : currentAverage;
-  const newQuantity = direction === "IN" ? currentQuantity + quantity : currentQuantity - quantity;
-  if (newQuantity < -0.000001) stockError("Khong the xuat vuot ton kho");
-  const averageCost = direction === "IN" && newQuantity > 0
-    ? ((currentQuantity * currentAverage) + (quantity * effectiveUnitCost)) / newQuantity
-    : currentAverage;
+  const change = computeBalanceChange({
+    currentQuantity: balance?.quantity || 0,
+    currentAverage: balance?.averageCost || 0,
+    quantity,
+    unitCost,
+    direction,
+  });
+  if (change.negativeQuantity > 0 && !allowNegative) {
+    const item = await tx.inventoryItem.findUnique({ where: { id: itemId }, select: { code: true } });
+    stockError(`Ton kho cua ${item?.code || itemId} o kho ${warehouseCode} khong du de xuat (thieu ${change.negativeQuantity})`);
+  }
 
   await tx.inventoryBalance.upsert({
     where: { itemId_warehouseCode: { itemId, warehouseCode } },
-    create: { itemId, warehouseCode, quantity: newQuantity, averageCost },
-    update: { quantity: newQuantity, averageCost },
+    create: { itemId, warehouseCode, quantity: change.newQuantity, averageCost: change.averageCost },
+    update: { quantity: change.newQuantity, averageCost: change.averageCost },
   });
 
-  return { unitCost: effectiveUnitCost, totalCost: quantity * effectiveUnitCost };
+  return { unitCost: change.unitCost, totalCost: change.totalCost, negativeQuantity: change.negativeQuantity };
 }
 
 /**
@@ -300,16 +344,18 @@ export async function reverseStockEffect(
     const currentValue = currentQuantity * currentAverage;
     // Phiếu đã làm tồn TĂNG -> hoàn kho là GIẢM lại, và ngược lại.
     const newQuantity = reversal.direction === "IN" ? currentQuantity - reversal.quantity : currentQuantity + reversal.quantity;
-    if (newQuantity < -0.000001) {
-      const item = await tx.inventoryItem.findUnique({ where: { id: reversal.itemId }, select: { code: true } });
-      stockError(`Ton kho cua ${item?.code || reversal.itemId} o kho ${reversal.warehouseCode} khong du de bo phieu ${transaction.code} (hang cua phieu nay da duoc xuat ra roi). Hay xu ly cac phieu xuat lien quan truoc.`);
-    }
+    /**
+     * Hoàn kho KHÔNG chặn ở mức 0 nữa (luật xuất âm, khách chốt 22/09/2026): bỏ một phiếu nhập
+     * mà hàng của nó đã xuất ra rồi thì tồn xuống âm đúng bằng phần đang thiếu — chấp nhận
+     * được, và là cách duy nhất để hoàn tác được một lần rã chạy trên kho đang âm. Cắt về 0
+     * như trước còn tệ hơn: số lượng mất im lặng, tồn với giá trị kho lệch nhau vĩnh viễn.
+     */
     const newValue = reversal.direction === "IN" ? currentValue - reversal.totalCost : currentValue + reversal.totalCost;
     const averageCost = newQuantity > 0.000001 ? Math.max(newValue / newQuantity, 0) : currentAverage;
     await tx.inventoryBalance.upsert({
       where: { itemId_warehouseCode: { itemId: reversal.itemId, warehouseCode: reversal.warehouseCode } },
-      create: { itemId: reversal.itemId, warehouseCode: reversal.warehouseCode, quantity: Math.max(newQuantity, 0), averageCost },
-      update: { quantity: Math.max(newQuantity, 0), averageCost },
+      create: { itemId: reversal.itemId, warehouseCode: reversal.warehouseCode, quantity: newQuantity, averageCost },
+      update: { quantity: newQuantity, averageCost },
     });
   }
   return [...reversals.values()];
@@ -339,7 +385,8 @@ export async function postInventoryTransaction(tx: Tx, input: PostInventoryTrans
       const valued = await applyBalanceChange(tx, line.itemId, input.warehouseCode, line.quantity, line.unitCost, "IN");
       valuedLines.push({ ...line, unitCost: valued.unitCost, totalCost: valued.totalCost });
     } else if (isOutboundStockType(transactionType)) {
-      const valued = await applyBalanceChange(tx, line.itemId, input.warehouseCode, line.quantity, line.unitCost, "OUT");
+      // Phiếu xuất được phép đẩy tồn xuống âm (xem computeBalanceChange).
+      const valued = await applyBalanceChange(tx, line.itemId, input.warehouseCode, line.quantity, line.unitCost, "OUT", true);
       valuedLines.push({ ...line, unitCost: valued.unitCost, totalCost: valued.totalCost });
     } else {
       const outValue = await applyBalanceChange(tx, line.itemId, input.warehouseCode, line.quantity, line.unitCost, "OUT");
@@ -446,7 +493,8 @@ export async function repostInventoryTransaction(
       const valued = await applyBalanceChange(tx, line.itemId, input.warehouseCode, line.quantity, line.unitCost, "IN");
       valuedLines.push({ ...line, unitCost: valued.unitCost, totalCost: valued.totalCost });
     } else if (isOutboundStockType(transactionType)) {
-      const valued = await applyBalanceChange(tx, line.itemId, input.warehouseCode, line.quantity, line.unitCost, "OUT");
+      // Phiếu xuất được phép đẩy tồn xuống âm (xem computeBalanceChange).
+      const valued = await applyBalanceChange(tx, line.itemId, input.warehouseCode, line.quantity, line.unitCost, "OUT", true);
       valuedLines.push({ ...line, unitCost: valued.unitCost, totalCost: valued.totalCost });
     } else {
       const outValue = await applyBalanceChange(tx, line.itemId, input.warehouseCode, line.quantity, line.unitCost, "OUT");

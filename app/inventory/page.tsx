@@ -2568,12 +2568,27 @@ export default function InventoryPage() {
                   },
                   "Đã rã nguyên liệu và sinh phiếu chế biến + xuất bán.",
                 );
-                // Món không suy được bếp/bar vẫn chạy, nhưng phải nói ra để người dùng đi gán
-                // Nhóm doanh thu cho đúng, nếu không kho Bếp/Bar sẽ thiếu phần của những mã này.
+                // Lần rã luôn chạy tới cùng (luật xuất âm), nhưng ba chuyện dưới đây phải nói ra
+                // cho kế toán biết mà xử lý tiếp, nếu không họ tưởng đã xong hẳn.
+                const notes: string[] = [];
                 const undecided = Number(payload?.undecidedCount || 0);
                 if (undecided > 0) {
                   const codes = (payload?.undecidedProducts || []) as string[];
-                  setMessage(`Đã rã nguyên liệu và sinh phiếu chế biến + xuất bán. ${undecided} mã hàng chưa xác định được Bếp hay Bar nên đi kho mặc định${codes.length ? `: ${codes.slice(0, 8).join(", ")}${undecided > codes.slice(0, 8).length ? "..." : ""}` : ""}. Gán Nhóm doanh thu cho các mã này ở tab Mặt hàng để lần rã sau vào đúng kho.`);
+                  notes.push(`${undecided} mã hàng chưa xác định được Bếp hay Bar nên đi kho mặc định${codes.length ? `: ${codes.slice(0, 8).join(", ")}${undecided > codes.slice(0, 8).length ? "..." : ""}` : ""}. Gán Nhóm doanh thu cho các mã này ở tab Mặt hàng để lần rã sau vào đúng kho.`);
+                }
+                const negativeCount = Number(payload?.negativeCount || 0);
+                if (negativeCount > 0) {
+                  const items = (payload?.negativeItems || []) as Array<{ itemCode: string; warehouseCode: string; quantity: number }>;
+                  const shown = items.slice(0, 8).map((item) => `${item.itemCode} (${item.warehouseCode}: ${item.quantity})`);
+                  notes.push(`${negativeCount} mã đang ÂM KHO sau lần rã${shown.length ? `: ${shown.join(", ")}${negativeCount > shown.length ? "..." : ""}` : ""}. Khai tồn đầu kỳ hoặc nhập mua cho các mã này để tồn về đúng.`);
+                }
+                const zeroCostCount = Number(payload?.zeroCostCount || 0);
+                if (zeroCostCount > 0) {
+                  const codes = (payload?.zeroCostItems || []) as string[];
+                  notes.push(`${zeroCostCount} mã xuất với GIÁ VỐN 0 vì kho chưa có giá nhập nào${codes.length ? `: ${codes.slice(0, 8).join(", ")}${zeroCostCount > codes.slice(0, 8).length ? "..." : ""}` : ""}. Báo cáo giá vốn còn thiếu đúng phần này cho tới khi có giá và chạy lại "Tính giá vốn & giá thành".`);
+                }
+                if (notes.length > 0) {
+                  setMessage(`Đã rã nguyên liệu và sinh phiếu chế biến + xuất bán. ${notes.join(" ")}`);
                 }
               } catch (err) {
                 setMessage(err instanceof Error ? `Không thực hiện được thao tác: ${err.message}` : "Không thực hiện được thao tác. Vui lòng thử lại.");

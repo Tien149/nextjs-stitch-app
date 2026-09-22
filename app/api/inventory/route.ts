@@ -1166,6 +1166,30 @@ export async function POST(request: Request) {
       }, { timeout: 60000 });
       const undecidedCount = undecidedProducts.size;
 
+      /**
+       * Rã xong vẫn phải nói thẳng hai thứ luật xuất âm để lại, nếu không kế toán tưởng đã xong:
+       *   - mã bị xuất âm: tồn đang nợ đúng bằng số âm, chờ khai tồn đầu kỳ / nhập mua bù;
+       *   - mã xuất với giá vốn 0: kho chưa có giá nào để lấy, nên phiếu xuất ghi 0 đồng —
+       *     báo cáo giá vốn thiếu đúng phần này cho tới khi có giá rồi tính lại.
+       */
+      const issuedLines = result.documents
+        .filter((doc) => doc.transactionType.startsWith("XUAT_"))
+        .flatMap((doc) => doc.lines);
+      const zeroCostItems = [...new Set(issuedLines.filter((line) => (line.unitCost || 0) <= 0).map((line) => line.item.code))];
+      const negativeBalances = issuedLines.length === 0 ? [] : await prisma.inventoryBalance.findMany({
+        where: {
+          itemId: { in: [...new Set(issuedLines.map((line) => line.itemId))] },
+          warehouseCode: { in: [...new Set(result.documents.map((doc) => doc.warehouseCode))] },
+          quantity: { lt: -quantityEpsilon },
+        },
+        include: { item: { select: { code: true } } },
+      });
+      const negativeItems = negativeBalances.map((balance) => ({
+        itemCode: balance.item.code,
+        warehouseCode: balance.warehouseCode,
+        quantity: balance.quantity,
+      }));
+
       await writeAuditLog({
         session: auth.session, module: menuHref, action: "EXPLODE_PRODUCTION",
         entityType: "InventoryTransaction", entityCode: result.runCode, branchCode,
@@ -1174,6 +1198,8 @@ export async function POST(request: Request) {
           revenueRows: inventoryRows.length,
           skippedRows: skippedRows.length,
           undecidedProducts: [...undecidedProducts],
+          negativeItems,
+          zeroCostItems,
           productions: plan.productions.map((step) => ({ productCode: step.productCode, quantityBase: step.quantityBase })),
           documents: result.documents.map((doc) => doc.code),
         },
@@ -1187,6 +1213,11 @@ export async function POST(request: Request) {
         // gán Nhóm doanh thu cho những mã này.
         undecidedCount,
         undecidedProducts: [...undecidedProducts].slice(0, 20),
+        // Hệ quả của luật xuất âm, để màn hình nhắc người dùng đi khai tồn/giá cho các mã này.
+        negativeCount: negativeItems.length,
+        negativeItems: negativeItems.slice(0, 20),
+        zeroCostCount: zeroCostItems.length,
+        zeroCostItems: zeroCostItems.slice(0, 20),
         productions: plan.productions.map((step) => ({ productCode: step.productCode, quantityBase: step.quantityBase, batchQuantity: step.batchQuantity })),
         directSales: plan.directSales,
         documents: result.documents,
@@ -1344,16 +1375,15 @@ export async function POST(request: Request) {
             const currentQuantity = balance?.quantity || 0;
             const currentAverage = balance?.averageCost || 0;
             const currentValue = currentQuantity * currentAverage;
+            // Hoàn tác không chặn ở mức 0 (luật xuất âm): lần rã chạy trên kho đang âm thì hoàn
+            // lại cũng phải về đúng số âm cũ, cắt về 0 là tự nhiên mất hàng.
             const newQuantity = direction === "IN" ? currentQuantity - line.quantity : currentQuantity + line.quantity;
-            if (newQuantity < -quantityEpsilon) {
-              businessError(`Tồn kho ${doc.warehouseCode} không đủ để hoàn lại phiếu ${doc.code}.`);
-            }
             const newValue = direction === "IN" ? currentValue - line.totalCost : currentValue + line.totalCost;
             const averageCost = newQuantity > quantityEpsilon ? Math.max(newValue / newQuantity, 0) : currentAverage;
             await tx.inventoryBalance.upsert({
               where: { itemId_warehouseCode: { itemId: line.itemId, warehouseCode: doc.warehouseCode } },
-              create: { itemId: line.itemId, warehouseCode: doc.warehouseCode, quantity: Math.max(newQuantity, 0), averageCost },
-              update: { quantity: Math.max(newQuantity, 0), averageCost },
+              create: { itemId: line.itemId, warehouseCode: doc.warehouseCode, quantity: newQuantity, averageCost },
+              update: { quantity: newQuantity, averageCost },
             });
           }
           await tx.inventoryTransaction.update({

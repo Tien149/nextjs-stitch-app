@@ -513,18 +513,24 @@ function validateInventoryTransaction(
     addError(row, `Mat hang ${itemCode} thuoc nhom FINISHED nen khong duoc dieu chuyen`);
   }
 
+  /**
+   * Xuất vượt tồn KHÔNG còn là lỗi với phiếu XUAT_* (luật xuất âm, khách chốt 22/09/2026):
+   * tồn xuống âm đúng bằng phần đang thiếu để kế toán khai bù sau. Điều chuyển thì vẫn chặn —
+   * lib/inventory-stock.ts cũng chặn ở tầng ghi, bắt sớm tại preview để không rollback cả batch.
+   *
+   * Vẫn cộng dồn lượng xuất của CÁC DÒNG TRƯỚC trong cùng file: 3 dòng mỗi dòng 40 trên tồn 50
+   * thì từng dòng đều "đủ", preview hợp lệ nhưng commit chết giữa chừng.
+   */
   if (isOutboundStockType(transactionType) || transactionType === "DIEU_CHUYEN") {
     const currentBalance = balances.find((balance) => balance.item.code.toUpperCase() === itemCode && balance.warehouseCode === text(row.values.warehouse_code));
-    // Cộng dồn lượng xuất của CÁC DÒNG TRƯỚC trong cùng file: 3 dòng mỗi dòng 40 trên tồn 50
-    // từng dòng đều "đủ", preview hợp lệ nhưng commit chết giữa chừng và rollback cả batch.
     const usageKey = `${itemCode}|${text(row.values.warehouse_code)}`;
     const alreadyClaimed = stockUsage.get(usageKey) || 0;
     const nextClaimed = alreadyClaimed + quantity * conversionRate;
     stockUsage.set(usageKey, nextClaimed);
-    if ((currentBalance?.quantity || 0) < nextClaimed) {
+    if (transactionType === "DIEU_CHUYEN" && (currentBalance?.quantity || 0) < nextClaimed) {
       addError(row, alreadyClaimed > 0
-        ? `Khong the xuat vuot ton kho (cong don ca cac dong tren cua file: ${nextClaimed})`
-        : "Khong the xuat vuot ton kho");
+        ? `Dieu chuyen khong duoc xuat vuot ton kho (cong don ca cac dong tren cua file: ${nextClaimed})`
+        : "Dieu chuyen khong duoc xuat vuot ton kho");
     }
   }
 }
