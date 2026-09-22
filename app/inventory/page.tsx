@@ -209,6 +209,33 @@ export default function InventoryPage() {
     const fallback = visibleTabs[0].id;
     window.setTimeout(() => setActive(fallback), 0);
   }, [active, visibleTabs]);
+  /**
+   * Mọi form trên màn này khởi tạo cứng `branchCode: "HCM"` / `warehouseCode: "KHO_HCM"` —
+   * đúng với DB demo, SAI với production (khách đặt mã cửa hàng khác). Select thì hiện option
+   * đầu tiên, còn state vẫn ôm mã chết: lọc kho ra rỗng, cảnh báo in tên "cửa hàng HCM" trong
+   * khi ô đang chọn NAM MÊ (khách gặp 22/09/2026 ở nút Rã nguyên liệu). Khi biết được danh
+   * sách cửa hàng thật của người dùng thì đưa mọi form về cửa hàng đầu tiên trong đó.
+   */
+  useEffect(() => {
+    if (!user) return;
+    const codes = visibleStoreOptions(user).map((option) => option.code);
+    if (codes.length === 0) return;
+    const fix = <T extends { branchCode: string }>(form: T): T =>
+      (codes.includes(form.branchCode) ? form : { ...form, branchCode: codes[0], warehouseCode: "", toWarehouseCode: "" });
+    // Đẩy sang tick sau như effect chuyển tab ở trên: luật lint của dự án không cho setState
+    // đồng bộ trong effect.
+    const timer = window.setTimeout(() => {
+      setStockForm((form) => fix(form));
+      setProductionForm((form) => fix(form));
+      setExplodeForm((form) => fix(form));
+      setCostingForm((form) => (codes.includes(form.branchCode) ? form : { ...form, branchCode: codes[0] }));
+      setTransferForm((form) => fix(form));
+      setStocktakeForm((form) => fix(form));
+      setWasteForm((form) => fix(form));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [user]);
+
   // Form Nhập/Xuất dùng chung state: đổi tab thì đưa Loại về đúng chiều của tab đó.
   const switchTab = (tab: string) => {
     setActive(tab);
@@ -278,7 +305,12 @@ export default function InventoryPage() {
   const stockAmountBeforeTax = roundVnd(stockLineValue);
   const stockVatAmount = vatAmountOf(stockAmountBeforeTax, stockVatRate.ok ? stockVatRate.rate : null);
   const stockAmountAfterTax = stockAmountBeforeTax + stockVatAmount;
-  const explodeWarehouses = (data.warehouses || []).filter((warehouse) => warehouse.branch === explodeForm.branchCode || !warehouse.branch);
+  // Chuẩn hoá ngay tại chỗ dùng, không chờ effect: render đầu tiên đã phải đúng.
+  const explodeStoreCodes = visibleStoreOptions(user).map((option) => option.code);
+  const explodeBranchCode = explodeStoreCodes.includes(explodeForm.branchCode)
+    ? explodeForm.branchCode
+    : (explodeStoreCodes[0] || explodeForm.branchCode);
+  const explodeWarehouses = (data.warehouses || []).filter((warehouse) => warehouse.branch === explodeBranchCode || !warehouse.branch);
   /** Gợi ý sẵn kho Bếp / kho Bar theo Nhóm kho đã khai trong danh mục, người dùng vẫn đổi được. */
   const warehouseByGroup = (keyword: string) => explodeWarehouses.find((warehouse) => {
     const group = (warehouse.group || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
@@ -2413,7 +2445,7 @@ export default function InventoryPage() {
           </div>
           <div className="grid md:grid-cols-4 gap-3 mt-4">
             <Input label="Cửa hàng">
-              <select className="control" value={explodeForm.branchCode} onChange={(e) => setExplodeForm({ ...explodeForm, branchCode: e.target.value })}>
+              <select className="control" value={explodeBranchCode} onChange={(e) => setExplodeForm({ ...explodeForm, branchCode: e.target.value })}>
                 {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
               </select>
             </Input>
@@ -2510,7 +2542,7 @@ export default function InventoryPage() {
               21/09 và 22/09/2026). Nói thẳng cửa hàng nào thiếu kho và phải sửa ở đâu. */}
           {explodeWarehouses.length === 0 && (
             <p className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-              <b>Chưa rã được:</b> cửa hàng {storeLabel(explodeForm.branchCode)} không có kho nào trong danh mục
+              <b>Chưa rã được:</b> cửa hàng {storeLabel(explodeBranchCode)} không có kho nào trong danh mục
               nên không chọn được Kho xuất NVL. Vào <b>Cấu hình Danh mục → Kho</b> khai kho cho cửa hàng này,
               hoặc kiểm lại cột <b>Cửa hàng</b> của các kho đang có — kho khai sai mã cửa hàng cũng không hiện ra đây.
             </p>
@@ -2527,7 +2559,8 @@ export default function InventoryPage() {
                   {
                     action: "EXPLODE_PRODUCTION",
                     ...explodeForm,
-                    // Gửi mã kho ĐÃ CHUẨN HOÁ, không gửi giá trị chết còn sót của cửa hàng cũ.
+                    // Gửi mã cửa hàng + mã kho ĐÃ CHUẨN HOÁ, không gửi giá trị chết còn sót.
+                    branchCode: explodeBranchCode,
                     warehouseCode: explodeWarehouseCode,
                     toWarehouseCode: explodeToWarehouseCode,
                     kitchenWarehouseCode,
