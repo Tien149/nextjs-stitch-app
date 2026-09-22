@@ -1698,10 +1698,10 @@ export default function InventoryPage() {
                     <input
                       type="number"
                       className="control text-right"
-                      placeholder={stockAutoVatAmount > 0 ? `Tự tính ${money(stockAutoVatAmount)}` : "Tự tính"}
+                      placeholder={stockAutoVatAmount > 0 ? money(stockAutoVatAmount) : "Tự tính"}
                       value={stockForm.vatAmount}
                       onChange={(e) => setStockForm({ ...stockForm, vatAmount: e.target.value })}
-                      title="Để trống = lấy số hệ thống tự tính. Chỉ khai khi hoá đơn ghi số khác vài đồng do làm tròn."
+                      title={`Để trống = lấy số hệ thống tự tính (${money(stockAutoVatAmount)} đ). Chỉ khai khi hoá đơn ghi số khác vài đồng do làm tròn.`}
                     />
                   </Input>
                 </div>
@@ -2063,7 +2063,7 @@ export default function InventoryPage() {
         <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
           <form
             onSubmit={(e) => { e.preventDefault(); void submitTransactionEdit(); }}
-            className="bg-white rounded-xl w-full max-w-3xl shadow-xl max-h-[92vh] overflow-y-auto"
+            className="bg-white rounded-xl w-full max-w-4xl shadow-xl max-h-[92vh] overflow-y-auto"
           >
             <div className="p-5 border-b border-slate-200">
               <h3 className="font-bold text-slate-900">Sửa phiếu {editingTransaction.code}</h3>
@@ -2123,7 +2123,7 @@ export default function InventoryPage() {
                   const units = item ? [{ unitCode: item.unit.toUpperCase(), unitName: item.unit }, ...(item.unitConversions || []).filter((unit) => unit.unitCode.toUpperCase() !== item.unit.toUpperCase())] : [];
                   const patch = (changes: Partial<typeof line>) => setTransactionEditLines(transactionEditLines.map((current, position) => position === index ? { ...current, ...changes } : current));
                   return (
-                    <div key={line.key} className="grid grid-cols-1 sm:grid-cols-[1fr_90px_110px_120px_110px_130px_40px] gap-2 items-end border border-slate-100 rounded-lg p-2">
+                    <div key={line.key} className="grid grid-cols-1 sm:grid-cols-[minmax(110px,1.4fr)_minmax(0,0.7fr)_minmax(0,0.8fr)_minmax(0,1fr)_minmax(0,0.8fr)_minmax(0,1fr)_36px] gap-2 items-end border border-slate-100 rounded-lg p-2">
                       <Input label={index === 0 ? "Mặt hàng" : ""}>
                         <ItemSelect items={data.items} value={line.itemId} onChange={(itemId) => {
                           const picked = data.items.find((candidate) => candidate.id === itemId);
@@ -2166,10 +2166,10 @@ export default function InventoryPage() {
                           type="number"
                           className="control text-right disabled:bg-slate-100 disabled:text-slate-400"
                           value={line.vatAmount}
-                          placeholder={editLineAutoVat(line) > 0 ? `Tự tính ${money(editLineAutoVat(line))}` : "Tự tính"}
+                          placeholder={editLineAutoVat(line) > 0 ? money(editLineAutoVat(line)) : "Tự tính"}
                           disabled={!isInboundType(editingTransaction.transactionType)}
                           title={isInboundType(editingTransaction.transactionType)
-                            ? "Để trống = lấy số hệ thống tự tính. Chỉ khai khi hoá đơn ghi số khác vài đồng do làm tròn."
+                            ? `Để trống = lấy số hệ thống tự tính (${money(editLineAutoVat(line))} đ). Chỉ khai khi hoá đơn ghi số khác vài đồng do làm tròn.`
                             : "Chỉ phiếu nhập mới có thuế GTGT đầu vào"}
                           onChange={(e) => patch({ vatAmount: e.target.value })}
                         />
@@ -3176,7 +3176,11 @@ function wasteSubTypeLabel(subType: string | null): string {
   return "Chưa phân loại";
 }
 
-function Input({ label, children }: { label: string; children: React.ReactNode }) { return <label className="block text-xs font-bold text-slate-600">{label}{children}</label>; }
+/**
+ * `min-w-0` là bắt buộc: ô này hay nằm trong lưới cột cố định, mà <input> có bề rộng nội tại
+ * ~20 ký tự — không cho co lại thì ô tự phình quá cột và cả hàng tràn ra ngoài hộp thoại.
+ */
+function Input({ label, children }: { label: string; children: React.ReactNode }) { return <label className="block min-w-0 text-xs font-bold text-slate-600">{label}{children}</label>; }
 /**
  * Ô chọn mặt hàng dùng chung cho mọi form của màn Kho.
  *
