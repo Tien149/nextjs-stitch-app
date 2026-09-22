@@ -22,6 +22,7 @@ import { nextStockDocCode, nextStocktakeCode } from "@/lib/inventory-stock";
 import { isRevenueGroupCategory, normalizeRevenueExpenseGroup } from "@/lib/voucher-rules";
 import { loadNonInventoryRevenueGroups, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
 import { buildRevenueDepartmentResolver, departmentFromWarehouseGroup, REVENUE_DEPARTMENT_CODES } from "@/lib/revenue-department";
+import { safeConversionRate } from "@/lib/unit-conversion";
 
 const menuHref = "/inventory";
 
@@ -676,6 +677,10 @@ export async function POST(request: Request) {
             conversionRate = conversion?.conversionRate || 1;
           }
         }
+        // Hệ số khai THẲNG trên dòng cũng phải qua luật bất biến của lib/unit-conversion:
+        // "300 GR × 1000" cho nguyên liệu vốn tính bằng GR là quy đổi một đơn vị ra chính nó,
+        // và định lượng sai kiểu đó làm rã BOM lẫn giá thành nhân sai 1000 lần mỗi cấp.
+        conversionRate = safeConversionRate(item.unit, { unitCode: unitCode || item.unit, conversionRate });
         resolvedLines.push({ itemId: item.id, quantity: line.quantity, unitCode: unitCode || null, conversionRate, wasteRate: line.wasteRate });
       }
 
@@ -1817,6 +1822,8 @@ export async function PATCH(request: Request) {
               conversionRate = conversion?.conversionRate || 1;
             }
           }
+          // Cùng luật với đường tạo mới: hệ số tự khai không được quy một đơn vị ra chính nó.
+          conversionRate = safeConversionRate(item.unit, { unitCode: line.unitCode || item.unit, conversionRate });
           resolvedLines.push({ itemId: item.id, quantity: line.quantity, unitCode: line.unitCode || null, conversionRate, wasteRate: line.wasteRate });
         }
       }

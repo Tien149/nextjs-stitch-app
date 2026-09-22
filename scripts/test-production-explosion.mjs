@@ -225,3 +225,33 @@ test("giá thành tính riêng theo từng cửa hàng", () => {
   assert.ok(Math.abs(shared.get("BTP_SOTCACHUA") - 30 * 1.03 * 0.5 / 1000) < 1e-12);
   assert.ok(Math.abs(asa.get("BTP_SOTCACHUA") - 45 * 1.03 * 0.5 / 1000) < 1e-12);
 });
+
+/**
+ * Dữ liệu thật (ASA, 01/08/2026): 9.096 dòng định lượng khai ĐVT trùng ĐVT tồn kho mà hệ số
+ * vẫn 1000 ("300 GR × 1000" cho nguyên liệu tính bằng GR). Đọc thẳng hệ số đó thì mỗi cấp
+ * bán thành phẩm nhân sai 1000 lần và nhân chồng qua các cấp — nhu cầu cà chua lên 1,4 triệu
+ * tấn, rã BOM chết vì "Khong the xuat vuot ton kho". Luật bất biến lib/unit-conversion.ts.
+ */
+test("ĐVT khai trùng ĐVT tồn kho thì hệ số quy đổi phải là 1", () => {
+  const selfReferencing = [{
+    ...recipes[0],
+    id: "r-sotca",
+    productCode: "BTP_SOTCA",
+    outputConversionRate: 1000, // 1 mẻ KG = 1000 gr
+    lines: [{
+      itemId: "i-cachua",
+      quantity: 300,
+      unitCode: "GR",
+      conversionRate: 1000, // khai sai: 300 GR mà nhân tiếp 1000
+      wasteRate: 0,
+      item: { id: "i-cachua", code: "NVL_CACHUA", name: "Cà chua", unit: "GR", itemType: "RAW_MATERIAL" },
+    }],
+  }];
+  const plan = explodeSalesDemand({
+    demands: [{ productCode: "BTP_SOTCA", quantity: 1000 }],
+    recipes: selfReferencing,
+    date: new Date("2026-08-01"),
+  });
+  // 1000 gr sốt = 1 mẻ -> đúng 300 gr cà chua, không phải 300.000.
+  assert.equal(plan.productions[0].components[0].quantityBase, 300);
+});

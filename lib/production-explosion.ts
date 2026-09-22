@@ -12,6 +12,8 @@
  * cho cả nút rã ở màn hình lẫn import.
  */
 
+import { safeConversionRate } from "@/lib/unit-conversion";
+
 export type ExplosionItem = {
   id: string;
   code: string;
@@ -23,6 +25,8 @@ export type ExplosionItem = {
 export type ExplosionRecipeLine = {
   itemId: string;
   quantity: number;
+  /** ĐVT khai trên dòng định lượng; rỗng = ĐVT tồn kho của nguyên liệu. */
+  unitCode?: string | null;
   /** Quy đổi quantity về ĐVT tồn kho của nguyên liệu (chai830gr -> 830). */
   conversionRate: number;
   wasteRate: number;
@@ -64,6 +68,24 @@ export type ExplosionPlan = {
   /** Sản phẩm không có định lượng: xuất bán thẳng từ tồn kho. */
   directSales: Array<{ productCode: string; quantityBase: number }>;
 };
+
+/**
+ * Hệ số quy đổi ĐÁNG TIN của một dòng định lượng.
+ *
+ * Định lượng lưu sẵn hệ số trên dòng, nhưng dữ liệu thật có hàng nghìn dòng khai "300 GR ×
+ * 1000" cho nguyên liệu vốn đã tính bằng GR — tức quy đổi một đơn vị ra CHÍNH NÓ với tỷ lệ
+ * khác 1, đúng cái luật bất biến mà lib/unit-conversion.ts dựng lên để chặn. Đọc thẳng
+ * `line.conversionRate` thì mỗi cấp bán thành phẩm nhân sai 1000 lần và nhân chồng qua các
+ * cấp (một mẻ sốt ra nhu cầu cà chua nghìn tấn, rã BOM chết vì "xuất vượt tồn kho").
+ */
+function lineConversionRate(line: ExplosionRecipeLine) {
+  const unitCode = (line.unitCode || "").trim();
+  // Bỏ trống ĐVT thì KHÔNG suy ra là trùng ĐVT tồn kho: dữ liệu cũ có dòng khai đúng phép quy
+  // đổi (2 chai830gr = 1660 gr) mà chưa kịp điền ĐVT, ép về 1 là xoá mất phép nhân thật.
+  // Chỉ chặn đúng hình dạng hỏng: ĐVT khai tường minh mà trùng ĐVT tồn kho, hệ số vẫn khác 1.
+  if (!unitCode) return line.conversionRate > 0 ? line.conversionRate : 1;
+  return safeConversionRate(line.item.unit, { unitCode, conversionRate: line.conversionRate });
+}
 
 function up(value: string) {
   return value.trim().toUpperCase();
@@ -194,7 +216,7 @@ export function explodeSalesDemand(input: ExplosionInput): ExplosionPlan {
     for (const line of recipe.lines) {
       const componentCode = up(line.item.code);
       if (!recipeFor(componentCode)) continue;
-      const componentQuantity = line.quantity * (line.conversionRate || 1) * (1 + line.wasteRate / 100) * batchQuantity;
+      const componentQuantity = line.quantity * lineConversionRate(line) * (1 + line.wasteRate / 100) * batchQuantity;
       demand.set(componentCode, (demand.get(componentCode) || 0) + componentQuantity);
     }
   }
@@ -209,7 +231,7 @@ export function explodeSalesDemand(input: ExplosionInput): ExplosionPlan {
     const batchQuantity = quantityBase / outputRate;
     const components = new Map<string, { item: ExplosionItem; quantityBase: number }>();
     for (const line of recipe.lines) {
-      const componentQuantity = line.quantity * (line.conversionRate || 1) * (1 + line.wasteRate / 100) * batchQuantity;
+      const componentQuantity = line.quantity * lineConversionRate(line) * (1 + line.wasteRate / 100) * batchQuantity;
       if (componentQuantity <= 0) continue;
       const key = line.item.id;
       const current = components.get(key) || { item: line.item, quantityBase: 0 };
@@ -267,7 +289,7 @@ export function computeRecipeUnitCosts(
     let batchCost = 0;
     for (const line of recipe.lines) {
       const componentCode = up(line.item.code);
-      const quantityBase = line.quantity * (line.conversionRate || 1) * (1 + line.wasteRate / 100);
+      const quantityBase = line.quantity * lineConversionRate(line) * (1 + line.wasteRate / 100);
       const componentRecipeCost = unitCostOf(componentCode);
       const componentCost = Number.isFinite(componentRecipeCost)
         ? componentRecipeCost
