@@ -2066,6 +2066,36 @@ function SourceGroupTag({ group }: { group: string }) {
 const settlementGroupNames: Record<string, string> = { CASH: "Tiền mặt", BANK: "Ngân hàng", WALLET: "Ví / POS" };
 
 /**
+ * Trạng thái hiển thị của một dòng đối chiếu.
+ *
+ * Tách ra khỏi chỗ vẽ badge để BỘ LỌC và CỘT TRẠNG THÁI luôn nói cùng một thứ: "chênh phí" và
+ * "về thiếu" cùng là status FEE ở máy chủ, chỉ khác nhau ở chỗ đã quy được khoản chênh về một
+ * hạng mục phí hay chưa — lọc theo status thô sẽ trộn hai thứ đó vào nhau.
+ */
+type SettlementStatusKey = "MATCHED" | "OVER" | "WAITING" | "FEE_KNOWN" | "FEE_SHORT";
+const settlementStatusLabels: Record<SettlementStatusKey, string> = {
+  MATCHED: "VỀ ĐỦ",
+  OVER: "VỀ DƯ",
+  WAITING: "CHƯA VỀ",
+  FEE_KNOWN: "CHÊNH PHÍ",
+  FEE_SHORT: "VỀ THIẾU",
+};
+function settlementRowStatus(row: RevenueSettlementRow): SettlementStatusKey {
+  if (row.status === "MATCHED") return "MATCHED";
+  if (row.status === "OVER") return "OVER";
+  if (row.status === "WAITING") return "WAITING";
+  return row.feeCategoryName ? "FEE_KNOWN" : "FEE_SHORT";
+}
+/** Giữ đúng màu cũ của từng trạng thái — đổi màu ở đây là đổi thói quen nhìn của kế toán. */
+const settlementStatusBadgeClass: Record<SettlementStatusKey, string> = {
+  MATCHED: "bg-emerald-50 text-emerald-700",
+  OVER: "bg-sky-50 text-sky-700",
+  WAITING: "bg-rose-50 text-rose-700",
+  FEE_KNOWN: "bg-amber-50 text-amber-800",
+  FEE_SHORT: "bg-amber-50 text-amber-800",
+};
+
+/**
  * Gộp các dòng chi tiết của một ngày về Nhóm/Loại nguồn tiền. Import khai chi tiết từng nguồn,
  * nhưng muốn biết "thu đủ tiền chưa" thì phải so ở mức nhóm: ngân hàng hay trả gộp nhiều nguồn
  * trong một lần chuyển, so từng nguồn chi tiết sẽ thấy Chưa về / Về dư giả trong khi cộng cả
@@ -2740,8 +2770,47 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
     moneySource: row.moneySourceCode,
     branchCode: data.branchCode || "ALL",
   })}`;
+  /**
+   * Lọc bảng theo trạng thái (khách yêu cầu 22/09/2026).
+   *
+   * Kế toán soát khoản chênh chỉ muốn nhìn đúng nhóm VỀ THIẾU: trước đây nút trên khung chỉ có
+   * "chọn tất cả / bỏ chọn tất cả" nên tick một phát là ôm luôn cả dòng CHÊNH PHÍ (đã quy được
+   * về hạng mục phí, không phải thứ cần đưa vào chi phí ở đây). Lọc rồi thì nút chọn tất cả chỉ
+   * ăn đúng phần đang xem.
+   */
+  const [statusFilter, setStatusFilter] = useState<"ALL" | SettlementStatusKey>("ALL");
+  const statusCounts = data.rows.reduce((counts, row) => {
+    const key = settlementRowStatus(row);
+    counts[key] = (counts[key] || 0) + 1;
+    return counts;
+  }, {} as Record<SettlementStatusKey, number>);
+  const filtering = statusFilter !== "ALL";
+  const visibleRows = filtering ? data.rows.filter((row) => settlementRowStatus(row) === statusFilter) : data.rows;
+  const visibleTotals = visibleRows.reduce(
+    (totals, row) => ({
+      revenue: totals.revenue + row.revenue,
+      received: totals.received + row.received,
+      remaining: totals.remaining + row.remaining,
+    }),
+    { revenue: 0, received: 0, remaining: 0 },
+  );
+  /** Nút "Chọn tất cả" chỉ ăn phần ĐANG XEM, không ôm cả dòng đang bị lọc ra ngoài. */
+  const selectableWriteOffRows = filtering
+    ? writeOffRows.filter((row) => settlementRowStatus(row) === statusFilter)
+    : writeOffRows;
+  const allSelectablePicked = selectableWriteOffRows.length > 0
+    && selectableWriteOffRows.every((row) => pickedWriteOffs.includes(writeOffKey(row)));
+  // Đổi bộ lọc thì bỏ luôn các dòng đã tick nhưng không còn nhìn thấy: nút "Đưa vào chi phí"
+  // đếm cả dòng khuất là ghi chi phí cho thứ người dùng không hề xem.
+  const changeStatusFilter = (next: "ALL" | SettlementStatusKey) => {
+    setStatusFilter(next);
+    if (next === "ALL") return;
+    const visibleKeys = new Set(data.rows.filter((row) => settlementRowStatus(row) === next).map(writeOffKey));
+    setPickedWriteOffs((picked) => picked.filter((key) => visibleKeys.has(key)));
+  };
+
   const byDay = new Map<string, RevenueSettlementRow[]>();
-  for (const row of data.rows) byDay.set(row.date, [...(byDay.get(row.date) || []), row]);
+  for (const row of visibleRows) byDay.set(row.date, [...(byDay.get(row.date) || []), row]);
 
   return (
     <div className="space-y-5">
@@ -2901,10 +2970,16 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
               </div>
               <button
                 type="button"
-                onClick={() => setPickedWriteOffs(pickedWriteOffs.length === writeOffRows.length ? [] : writeOffRows.map(writeOffKey))}
-                className="rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-bold text-amber-900 hover:bg-amber-100"
+                disabled={selectableWriteOffRows.length === 0}
+                title={filtering ? `Chỉ chọn các dòng ${settlementStatusLabels[statusFilter as SettlementStatusKey]} đang xem` : undefined}
+                onClick={() => setPickedWriteOffs(allSelectablePicked ? [] : selectableWriteOffRows.map(writeOffKey))}
+                className="rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-bold text-amber-900 hover:bg-amber-100 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {pickedWriteOffs.length === writeOffRows.length ? "Bỏ chọn tất cả" : "Chọn tất cả"}
+                {allSelectablePicked
+                  ? "Bỏ chọn tất cả"
+                  : filtering
+                    ? `Chọn ${selectableWriteOffRows.length} dòng ${settlementStatusLabels[statusFilter as SettlementStatusKey]}`
+                    : `Chọn tất cả ${writeOffRows.length} dòng`}
               </button>
               <select
                 value={writeOffCategory}
@@ -2929,12 +3004,44 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
             </div>
           </div>
         )}
+        {data.rows.length > 0 && (
+          <div className="mx-5 mb-3 flex flex-wrap items-center gap-2">
+            <span className="text-xs font-bold uppercase tracking-wide text-slate-500">Lọc trạng thái</span>
+            <button
+              type="button"
+              onClick={() => changeStatusFilter("ALL")}
+              className={`rounded-full border px-3 py-1 text-xs font-bold ${statusFilter === "ALL" ? "border-slate-700 bg-slate-700 text-white" : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"}`}
+            >
+              Tất cả ({data.rows.length})
+            </button>
+            {(Object.keys(settlementStatusLabels) as SettlementStatusKey[])
+              // Trạng thái không có dòng nào trong kỳ thì không dựng nút — bấm vào chỉ ra bảng trống.
+              .filter((key) => (statusCounts[key] || 0) > 0)
+              .map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => changeStatusFilter(key)}
+                  className={`rounded-full border px-3 py-1 text-xs font-bold ${statusFilter === key ? "border-slate-700 bg-slate-700 text-white" : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"}`}
+                >
+                  {settlementStatusLabels[key]} ({statusCounts[key]})
+                </button>
+              ))}
+            {filtering && (
+              <span className="text-xs text-slate-500">
+                Đang xem {visibleRows.length}/{data.rows.length} dòng — dòng “Cộng theo Nhóm/Loại” tạm ẩn vì nó cộng cả nhóm, không chỉ phần đang lọc.
+              </span>
+            )}
+          </div>
+        )}
         <div className="overflow-x-auto">
           <Table headers={[writeOffRows.length > 0 ? "" : "·", "Ngày", "Phương thức thanh toán", "Loại nguồn", "Doanh thu trong ngày", "Tiền đã vô", "Còn lại", "Tên chi phí", "Trạng thái"]}>
-            {data.rows.length === 0 && (
+            {visibleRows.length === 0 && (
               <tr className="border-t border-slate-100">
                 <Cell>-</Cell>
-                <Cell>Chưa có doanh thu hoặc tiền về trong kỳ.</Cell>
+                <Cell>{filtering
+                  ? `Không có dòng nào ở trạng thái ${settlementStatusLabels[statusFilter as SettlementStatusKey]} trong kỳ này.`
+                  : "Chưa có doanh thu hoặc tiền về trong kỳ."}</Cell>
                 <Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell>
               </tr>
             )}
@@ -2986,24 +3093,15 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
                   </Cell>
                   <Cell>{row.feeCategoryName || <span className="text-slate-300">—</span>}</Cell>
                   <Cell right>
-                    <span className={`rounded-full px-2 py-1 text-xs font-bold ${
-                      row.status === "MATCHED" ? "bg-emerald-50 text-emerald-700"
-                        : row.status === "FEE" ? "bg-amber-50 text-amber-800"
-                          : row.status === "OVER" ? "bg-sky-50 text-sky-700"
-                            : "bg-rose-50 text-rose-700"}`}
-                    >
-                      {row.status === "MATCHED"
-                        ? "VỀ ĐỦ"
-                        : row.status === "OVER"
-                          ? "VỀ DƯ"
-                          : row.status === "FEE"
-                            ? (row.feeCategoryName ? "CHÊNH PHÍ" : "VỀ THIẾU")
-                            : "CHƯA VỀ"}
+                    <span className={`rounded-full px-2 py-1 text-xs font-bold ${settlementStatusBadgeClass[settlementRowStatus(row)]}`}>
+                      {settlementStatusLabels[settlementRowStatus(row)]}
                     </span>
                   </Cell>
                 </tr>
               )),
-              ...settlementGroupSubtotals(rows).map((subtotal) => (
+              // Dòng cộng nhóm cộng TẤT CẢ nguồn của ngày, nên đang lọc thì nó không khớp với
+              // các dòng đang hiện — ẩn còn hơn để người xem cộng tay ra số khác.
+              ...(filtering ? [] : settlementGroupSubtotals(rows)).map((subtotal) => (
                 <tr key={`${day}-group-${subtotal.group}`} className="border-t border-slate-100 bg-slate-50/70">
                   <Cell><span className="text-slate-200">·</span></Cell>
                   <Cell><span className="text-slate-300">·</span></Cell>
@@ -3039,15 +3137,16 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
                 </tr>
               )),
             ])}
-            {data.rows.length > 0 && (
+            {visibleRows.length > 0 && (
               <tr className="border-t border-slate-200 bg-slate-50 font-bold">
                 <Cell><span className="text-slate-200">·</span></Cell>
-                <Cell><b>TỔNG</b></Cell>
-                <Cell><span className="text-xs font-normal text-slate-500">{data.rows.length} dòng</span></Cell>
+                {/* Đang lọc thì TỔNG phải là tổng của phần đang xem, không phải tổng cả kỳ. */}
+                <Cell><b>{filtering ? `TỔNG ${settlementStatusLabels[statusFilter as SettlementStatusKey]}` : "TỔNG"}</b></Cell>
+                <Cell><span className="text-xs font-normal text-slate-500">{visibleRows.length} dòng</span></Cell>
                 <Cell>-</Cell>
-                <Cell right><b>{money(data.totals.revenue)} đ</b></Cell>
-                <Cell right><b className="text-emerald-700">{money(data.totals.received)} đ</b></Cell>
-                <Cell right><b className="text-amber-700">{money(data.totals.remaining)} đ</b></Cell>
+                <Cell right><b>{money(filtering ? Math.round(visibleTotals.revenue) : data.totals.revenue)} đ</b></Cell>
+                <Cell right><b className="text-emerald-700">{money(filtering ? Math.round(visibleTotals.received) : data.totals.received)} đ</b></Cell>
+                <Cell right><b className="text-amber-700">{money(filtering ? Math.round(visibleTotals.remaining) : data.totals.remaining)} đ</b></Cell>
                 <Cell>-</Cell>
                 <Cell right>-</Cell>
               </tr>
