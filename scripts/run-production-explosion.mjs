@@ -25,13 +25,6 @@ if (!branchCode || !dateFrom || !warehouseCode) {
 }
 
 const baseUrl = (process.env.APP_URL || "http://localhost:3000").replace(/\/$/, "");
-const email = process.env.APP_EMAIL;
-const password = process.env.APP_PASSWORD;
-if (!email || !password) {
-  console.error("Thiếu APP_EMAIL / APP_PASSWORD. Truyền qua biến môi trường, đừng đặt trên dòng lệnh (ps xem được).");
-  process.exit(1);
-}
-
 const dash = (value) => (!value || value === "-" ? "" : value);
 const payload = {
   action: "EXPLODE_PRODUCTION",
@@ -56,6 +49,14 @@ console.log(`  Máy chủ           : ${baseUrl}`);
 if (!confirm) {
   console.log("\nChưa có --confirm nên KHÔNG ghi gì. Soát lại cấu hình rồi chạy lại kèm --confirm.");
   process.exit(0);
+}
+
+// Chỉ nhánh ghi thật mới cần tài khoản — in cấu hình để soát thì không.
+const email = process.env.APP_EMAIL;
+const password = process.env.APP_PASSWORD;
+if (!email || !password) {
+  console.error("\nThiếu APP_EMAIL / APP_PASSWORD. Truyền qua biến môi trường, đừng đặt trên dòng lệnh (ps xem được).");
+  process.exit(1);
 }
 
 const login = await fetch(`${baseUrl}/api/auth/login`, {
