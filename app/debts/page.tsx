@@ -26,6 +26,7 @@ type DebtRow = {
   debtReceivable: number;
   debtPayable: number;
   partnerGroup: string;
+  skipDebtTracking?: boolean;
   nearestDueDate: string | null;
   overdueAmount: number;
   dueSoonAmount: number;
@@ -608,7 +609,18 @@ export default function DebtsPage() {
               <tbody className="divide-y divide-slate-100">
                 {filteredRows.map((row) => (
                   <tr key={row.partnerCode} onClick={() => loadLedger(row.partnerCode)} className="hover:bg-slate-50 cursor-pointer">
-                    <td className="px-4 py-3"><b>{row.partnerName}</b><p className="text-xs text-slate-500">{row.partnerCode}</p></td>
+                    <td className="px-4 py-3">
+                      <b>{row.partnerName}</b>
+                      <p className="text-xs text-slate-500">{row.partnerCode}</p>
+                      {/* Nói rõ tại chỗ: đối tác này cố tình không tính phiếu thu/chi vào công nợ,
+                          để không ai đi tìm phần số đã bị loại rồi tưởng bảng sai. */}
+                      {row.skipDebtTracking && (
+                        <p className="mt-0.5 flex items-center gap-1 text-[11px] font-semibold text-amber-700" title="Khai ở Cấu hình Danh mục → Đối tác. Chứng từ thu/chi và dòng sao kê của đối tác này không cộng vào công nợ; khoản nợ, công nợ NCC, tiền cọc và số dư đầu kỳ thì vẫn tính.">
+                          <span className="material-symbols-outlined text-[13px]">money_off</span>
+                          Không theo dõi công nợ
+                        </p>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-xs font-bold text-slate-500">{row.partnerGroup === "INTERNAL" ? "Nội bộ" : "Bên ngoài"}</td>
                     <td className="px-4 py-3">
                       <p className={`text-xs font-bold ${row.debtStatus === "OVERDUE" ? "text-rose-700" : row.debtStatus === "DUE_7" ? "text-amber-700" : "text-slate-500"}`}>

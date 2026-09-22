@@ -106,6 +106,8 @@ const defaultMasterData = [
     partnerType: "CUSTOMER",
     partnerGroup: "EXTERNAL",
     status: "ACTIVE",
+    // Khách lẻ thì không có công nợ: tiền bán hàng gắn tên đối tác này chỉ để dễ nhìn.
+    skipDebtTracking: true,
     note: "Đối tượng mặc định cho tiền cọc khách lẻ",
   },
   {
@@ -657,6 +659,12 @@ export async function POST(request: Request) {
     // rút gì khỏi kho nên dòng doanh thu của nhóm này không vào hàng chờ rã nguyên liệu
     // (lib/revenue-source.ts). Loại thu quỹ và danh mục Chi không bao giờ đi kèm mã hàng.
     const skipInventory = type === "REVENUE_EXPENSE_CATEGORY" && isRevenueGroupCategory(group) && body.skipInventory === true;
+    /**
+     * Cờ "không theo dõi công nợ" chỉ có nghĩa với ĐỐI TÁC. Dùng cho khách lẻ / khách vãng lai:
+     * tiền bán hàng về tài khoản được gắn tên đối tác cho dễ nhìn, nhưng đó không phải khoản nợ
+     * nào cả — bảng Công nợ lại cộng mọi chứng từ có mã đối tác nên số phải trả phình lên ảo.
+     */
+    const skipDebtTracking = type === "PARTNER" && body.skipDebtTracking === true;
 
     if (!type || !code || !name) {
       return NextResponse.json({ error: "Loại danh mục, mã và tên là bắt buộc" }, { status: 400 });
@@ -699,6 +707,7 @@ export async function POST(request: Request) {
         summarySourceName,
         matchKeywords,
         skipInventory,
+        skipDebtTracking,
         note: cleanText(body.note) || null,
         status: cleanText(body.status) || "ACTIVE",
       },
@@ -756,6 +765,10 @@ export async function PATCH(request: Request) {
     // Đổi danh mục sang loại thu quỹ / Chi thì cờ tồn kho hết nghĩa, bỏ luôn cho khỏi mồ côi.
     const skipInventory = current.type === "REVENUE_EXPENSE_CATEGORY" && isRevenueGroupCategory(group)
       ? (body.skipInventory !== undefined ? body.skipInventory === true : current.skipInventory)
+      : false;
+    // Đổi danh mục sang loại khác thì cờ công nợ hết nghĩa, bỏ luôn cho khỏi mồ côi.
+    const skipDebtTracking = current.type === "PARTNER"
+      ? (body.skipDebtTracking !== undefined ? body.skipDebtTracking === true : current.skipDebtTracking)
       : false;
 
     try {
@@ -816,6 +829,7 @@ export async function PATCH(request: Request) {
         summarySourceName,
         matchKeywords,
         skipInventory,
+        skipDebtTracking,
         ...(body.note !== undefined ? { note: cleanText(body.note) || null } : {}),
         ...(body.status !== undefined ? { status: cleanText(body.status) || "ACTIVE" } : {}),
       },

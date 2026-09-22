@@ -30,6 +30,7 @@ type MasterDataItem = {
   summarySourceName: string | null;
   matchKeywords: string | null;
   skipInventory: boolean;
+  skipDebtTracking: boolean;
   status: string;
   note: string | null;
   createdAt: string;
@@ -56,6 +57,7 @@ type MasterDataForm = {
   summarySourceName: string;
   matchKeywords: string;
   skipInventory: boolean;
+  skipDebtTracking: boolean;
   note: string;
   status: string;
 };
@@ -111,6 +113,7 @@ const emptyForm: MasterDataForm = {
   summarySourceName: "",
   matchKeywords: "",
   skipInventory: false,
+  skipDebtTracking: false,
   note: "",
   status: "ACTIVE",
 };
@@ -572,6 +575,7 @@ export default function SettingsPage() {
       summarySourceName: item.summarySourceName || "",
       matchKeywords: item.matchKeywords || "",
       skipInventory: item.skipInventory === true,
+      skipDebtTracking: item.skipDebtTracking === true,
       note: item.note || "",
       status: item.status,
     });
@@ -1223,6 +1227,14 @@ export default function SettingsPage() {
                               <p className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-amber-700">
                                 <span className="material-symbols-outlined text-[13px]">inventory_2</span>
                                 Không theo dõi tồn kho
+                              </p>
+                            )}
+                            {/* Đối tác miễn công nợ: phải thấy ngay trên bảng vì nó đổi số của cả
+                                màn Công nợ, không chỉ của riêng danh mục này. */}
+                            {item.type === "PARTNER" && item.skipDebtTracking && (
+                              <p className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-amber-700">
+                                <span className="material-symbols-outlined text-[13px]">money_off</span>
+                                Không theo dõi công nợ
                               </p>
                             )}
                             {item.subGroup && parentTypeOf[item.type] && (
@@ -1934,6 +1946,29 @@ export default function SettingsPage() {
                       Doanh thu vẫn ghi nhận đủ và lên P&amp;L như thường, nhưng dòng bán của nhóm này không
                       vào hàng chờ &quot;Rã nguyên liệu&quot; và import không tự tạo mặt hàng cho mã của nó.
                       Dùng cho phụ thu / dịch vụ / thuê không gian.
+                    </span>
+                  </span>
+                </label>
+              )}
+
+              {/* Khách lẻ / khách vãng lai: tiền bán hàng về tài khoản hay được gắn tên đối tác cho
+                  dễ nhìn, mà bảng Công nợ lại cộng mọi chứng từ có mã đối tác nên số phải trả
+                  phình lên ảo (khách báo 22/09/2026). */}
+              {activeType === "PARTNER" && (
+                <label className="flex items-start gap-2.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+                  <input
+                    type="checkbox"
+                    checked={form.skipDebtTracking}
+                    onChange={(event) => setForm((value) => ({ ...value, skipDebtTracking: event.target.checked }))}
+                    className="mt-0.5 h-4 w-4 accent-blue-600"
+                  />
+                  <span className="text-xs font-bold text-slate-700">
+                    Không theo dõi công nợ
+                    <span className="mt-1 block text-[11px] font-medium text-slate-500">
+                      Chứng từ thu/chi và dòng sao kê mang đối tác này sẽ không cộng vào bảng Công nợ —
+                      dùng cho khách lẻ / khách vãng lai, tiền bán hàng gắn tên cho dễ nhìn chứ không
+                      phải khoản nợ. Khoản nợ đã ghi nhận hẳn hoi (khoản nợ, công nợ NCC, tiền cọc,
+                      số dư đầu kỳ) thì <b>vẫn tính đủ</b>, nên đây không phải cách giấu nợ.
                     </span>
                   </span>
                 </label>

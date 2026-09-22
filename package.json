@@ -13,6 +13,7 @@
     "db:apply-recipe-branch": "prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20260920090000_recipe_branch_scope/migration.sql",
     "db:apply-bank-entry-source": "prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20260920120000_bank_statement_entry_source/migration.sql",
     "db:apply-inventory-line-vat": "prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20260921120000_inventory_line_vat/migration.sql",
+    "db:apply-partner-skip-debt": "prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20260922120000_partner_skip_debt_tracking/migration.sql",
     "db:apply-adjustment-category": "prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20260921090000_cashbook_adjustment_category/migration.sql",
     "backfill:manual-statement-allocations": "node scripts/backfill-manual-statement-allocations.cjs",
     "backfill:purchase-payables": "node scripts/backfill-purchase-payables.cjs",

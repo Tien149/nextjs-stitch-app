@@ -26,6 +26,8 @@ type DebtRow = {
   debtReceivable: number;
   debtPayable: number;
   partnerGroup: string;
+  /** Đối tác khai "Không theo dõi công nợ" — màn hình nói rõ để không ai đi tìm số đã bị loại. */
+  skipDebtTracking: boolean;
   nearestDueDate: Date | null;
   overdueAmount: number;
   dueSoonAmount: number;
@@ -108,6 +110,7 @@ function addDebt(rows: Map<string, DebtRow>, code: string, name: string, patch: 
       debtReceivable: 0,
       debtPayable: 0,
       partnerGroup: "EXTERNAL",
+      skipDebtTracking: false,
       nearestDueDate: null,
       overdueAmount: 0,
       dueSoonAmount: 0,
@@ -229,8 +232,21 @@ export async function GET(request: Request) {
     // Chi hộ đối tác BÊN NGOÀI không nằm ở đây: khoản đó là nợ của chính cửa hàng lập phiếu,
     // đã treo phải thu CNTHU rồi, gạch thêm vào NCC nữa là trừ hai lần.
     const knownBranchCodes = branchItems.map((item) => item.code);
+    /**
+     * Đối tác khai "Không theo dõi công nợ" (khách lẻ, khách vãng lai — cờ skipDebtTracking trên
+     * danh mục Đối tác).
+     *
+     * Bảng này cộng MỌI chứng từ có mã đối tác, không xét loại chứng từ hay khoản mục, nên tiền
+     * bán hàng về tài khoản mà có gắn tên đối tác là số phải trả phình lên ảo (khách báo
+     * 22/09/2026). Cờ chỉ chặn hai nguồn SUY RA từ chứng từ: phiếu thu/chi thường và dòng sao kê
+     * gợi ý đối tác. Khoản nợ đã ghi nhận hẳn hoi — khoản nợ, công nợ NCC, tiền cọc, số dư đầu
+     * kỳ, phiếu gạch nợ — vẫn tính đủ, để cờ này không bao giờ trở thành cái công tắc giấu nợ.
+     */
+    const untrackedDebtPartners = new Set(partners.filter((item) => item.skipDebtTracking).map((item) => item.code));
+    /** Dòng sao kê gợi ý đúng đối tác không theo dõi công nợ cũng là số ảo như trên. */
+    const debtBankRows = bankRows.filter((row) => !row.partnerHint || !untrackedDebtPartners.has(row.partnerHint));
     const vouchers = [
-      ...ownVouchers,
+      ...ownVouchers.filter((row) => !row.partnerCode || !untrackedDebtPartners.has(row.partnerCode)),
       ...advanceVouchers.filter((row) => advanceReceivableBeneficiaryBranch(row, knownBranchCodes) !== null),
     ];
 
@@ -254,7 +270,7 @@ export async function GET(request: Request) {
           amount: depositSigned(item.remainingAmount),
         });
       }
-      for (const item of bankRows.filter((row) => row.partnerHint === partnerCode)) {
+      for (const item of debtBankRows.filter((row) => row.partnerHint === partnerCode)) {
         ledger.push({
           date: item.transactionDate,
           source: "BANK_STATEMENT",
@@ -337,7 +353,12 @@ export async function GET(request: Request) {
     }
 
     const rows = new Map<string, DebtRow>();
-    for (const partner of partners) addDebt(rows, partner.code, partner.name, { partnerGroup: partner.partnerGroup || "EXTERNAL" });
+    for (const partner of partners) {
+      addDebt(rows, partner.code, partner.name, {
+        partnerGroup: partner.partnerGroup || "EXTERNAL",
+        skipDebtTracking: partner.skipDebtTracking,
+      });
+    }
 
     // Phát sinh trước khoảng chọn không đứng ở cột riêng mà gộp vào Đầu kỳ, với đúng dấu nó
     // cộng vào Số dư (cùng dấu với dòng ledger). Phát sinh sau khoảng chọn bỏ hẳn.
@@ -365,7 +386,7 @@ export async function GET(request: Request) {
       });
     }
 
-    for (const item of bankRows) {
+    for (const item of debtBankRows) {
       if (!item.partnerHint) continue;
       const bucket = dateBucket(item.transactionDate, range);
       if (bucket === "AFTER") continue;

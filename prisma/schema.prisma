@@ -58,6 +58,11 @@ model MasterDataItem {
   /// vẫn ghi nhận đủ nhưng dòng mang nhóm này không vào hàng chờ "Rã nguyên liệu" và import
   /// không tự tạo mặt hàng cho nó. Chỉ REVENUE_EXPENSE_CATEGORY nhóm REVENUE_SOURCE dùng.
   skipInventory Boolean @default(false)
+  /// Đối tác KHÔNG theo dõi công nợ (khách lẻ, khách vãng lai): chứng từ thu/chi và dòng sao kê
+  /// mang đối tác này không cộng vào bảng Công nợ. Khoản nợ đã ghi nhận hẳn hoi (khoản nợ, công
+  /// nợ NCC, tiền cọc, số dư đầu kỳ) thì VẪN tính — cờ này chỉ dọn số công nợ ảo do tiền bán
+  /// hàng bị gắn tên đối tác, không phải cái công tắc giấu nợ. Chỉ PARTNER dùng.
+  skipDebtTracking Boolean @default(false)
   status       String   @default("ACTIVE")
   note         String?
   createdAt    DateTime @default(now())
