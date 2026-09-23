@@ -71,7 +71,7 @@ export const EXPENSE_LINE_LABELS: Record<PnlLineKey, string> = {
   otherOpex: "Chi phí vận hành (OPEX, gồm khấu hao)",
   otherIncome: "Thu nhập khác",
   otherExpense: "Chi phí khác",
-  capex: "Chi phí đầu tư tài sản/CCDC",
+  capex: "Chi phí đầu tư ban đầu",
 };
 const EXPENSE_LINE_ORDER: PnlLineKey[] = ["cogs", "payroll", "otherOpex", "otherExpense"];
 

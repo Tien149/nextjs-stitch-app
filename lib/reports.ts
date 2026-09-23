@@ -30,10 +30,9 @@ export type PnlBucket = {
   otherIncome: number;
   otherExpense: number;
   /**
-   * Tiền đầu tư tài sản / CCDC trong kỳ (ghi Nợ 211, 242). KHÔNG phải chi phí của kỳ — chi phí
-   * của tài sản vào P&L qua hạng mục CP Khấu Hao — nên không trừ vào lợi nhuận hoạt động hay
-   * lợi nhuận ròng; đứng trên bảng như một dòng thông tin ngay dưới Chi phí nhân sự để thấy
-   * tiền bỏ ra mua sắm (yêu cầu khách 06-07/09/2026).
+   * Chi phí đầu tư ban đầu: phiếu chi / công nợ khai khoản mục hoặc hạng mục nhóm CAPEX (ghi Nợ
+   * 211). Dòng thông tin, không trừ vào lợi nhuận. Tài sản/CCDC mua trong kỳ ở màn Tài sản KHÔNG
+   * nằm ở đây — chi phí của chúng vào Chi phí cố định qua hạng mục CP Khấu Hao (chốt 23/09/2026).
    */
   capex: number;
 };
@@ -73,8 +72,18 @@ export type PnlItemRef = { name: string; groupName?: string | null } | null | un
  * Phiếu chi gắn hạng mục "Chi phí lương người lao động" hạch toán 6428 như OPEX thường,
  * nhưng bản chất là chi phí nhân sự nên phải đứng ở dòng Chi phí nhân sự (feedback 03/09/2026).
  */
-/** Tài khoản tài sản mà một bút toán ghi Nợ nghĩa là mua sắm đầu tư: TSCĐ (211) và CCDC (242). */
-export const CAPEX_REPORT_GROUPS = ["FIXED_ASSET", "PREPAID_EXPENSE"];
+/**
+ * Dòng CAPEX chỉ là chi phí ĐẦU TƯ BAN ĐẦU (chốt 23/09/2026): Nợ 211 sinh từ phiếu chi / công nợ
+ * khai nhóm CAPEX. Nợ 242 là chi trả trước hoặc CCDC — chi phí của kỳ, vào P&L dần qua phân bổ.
+ */
+export const CAPEX_REPORT_GROUPS = ["FIXED_ASSET"];
+
+/**
+ * Bút toán ghi tăng tài sản KHÔNG lên dòng CAPEX: số dư đầu kỳ chỉ dựng lại tài sản đã có, còn
+ * tài sản/CCDC mua trong kỳ ở màn Tài sản vào Chi phí cố định qua khấu hao hàng tháng (6424 ->
+ * hạng mục CP Khấu Hao). Cộng thêm tiền mua vào CAPEX là khách thấy một khoản hai nơi.
+ */
+export const NON_CAPEX_SOURCE_TYPES = ["OPENING_BALANCE", "ASSET_ACQUISITION"];
 
 export function pnlLineKeyOf(account: { accountType: string; reportGroup: string }, pnlItem?: PnlItemRef): PnlLineKey | null {
   if (account.accountType === "REVENUE") return "revenue";
@@ -87,9 +96,9 @@ export function pnlLineKeyOf(account: { accountType: string; reportGroup: string
   }
   if (account.accountType === "OTHER_INCOME") return "otherIncome";
   if (account.accountType === "OTHER_EXPENSE") return "otherExpense";
-  // Ghi tăng tài sản (211) / CCDC (242) là tiền đầu tư, không phải chi phí trong kỳ — vào dòng
-  // CAPEX đứng riêng, không trừ vào lợi nhuận. Các tài khoản tài sản khác (tiền, kho, phải thu)
-  // không lên KQKD.
+  // Ghi tăng TSCĐ (211) là tiền đầu tư ban đầu — dòng CAPEX đứng riêng, không trừ vào lợi nhuận.
+  // Nguồn bút toán nào được lên dòng này thì lọc ở chỗ đọc (NON_CAPEX_SOURCE_TYPES). Các tài
+  // khoản tài sản khác (tiền, kho, phải thu, 242) không lên KQKD.
   if (account.accountType === "ASSET") return CAPEX_REPORT_GROUPS.includes(account.reportGroup) ? "capex" : null;
   return null;
 }
@@ -180,7 +189,7 @@ export const PNL_STATEMENT_LINES: Array<{ key: PnlLineKey | "grossProfit" | "ebi
   { key: "payroll", label: "4. Chi phí nhân sự", subtotal: false },
   // Dòng thông tin, cố ý KHÔNG đánh số: tiền mua tài sản không nằm trong mạch tính lợi nhuận
   // bên dưới (vào P&L qua hạng mục CP Khấu Hao), đánh số sẽ khiến người đọc tưởng nó bị trừ.
-  { key: "capex", label: "Chi phí đầu tư tài sản/CCDC (CAPEX) — không trừ vào lợi nhuận", subtotal: false },
+  { key: "capex", label: "Chi phí đầu tư ban đầu (CAPEX) — không trừ vào lợi nhuận", subtotal: false },
   { key: "otherOpex", label: "5. Chi phí hoạt động (OPEX)", subtotal: false },
   { key: "ebitda", label: "6. Lợi nhuận hoạt động", subtotal: true },
   { key: "otherIncome", label: "7. Thu nhập khác", subtotal: false },
@@ -487,9 +496,7 @@ export async function getPnl(period: string, branchCode: string) {
   for (const entry of entries) {
     const branch = branches.get(entry.branchCode) || emptyPnl();
     for (const line of entry.lines) {
-      // Số dư đầu kỳ ghi Nợ 211 để dựng lại tài sản đã có từ trước — không phải tiền đầu tư
-      // trong kỳ, nên không được lên dòng CAPEX.
-      if (entry.sourceType === "OPENING_BALANCE" && line.account.accountType === "ASSET") continue;
+      if (line.account.accountType === "ASSET" && NON_CAPEX_SOURCE_TYPES.includes(entry.sourceType)) continue;
       // Bút toán 511 không lên dòng Doanh thu: phiếu thu công nợ / hoàn tạm ứng cũng ghi Có 511
       // (mọi khoản mục nhóm "Thu" đều quy về REVENUE_SOURCE) nên doanh thu bị thổi lên, và kỳ
       // chưa "Đồng bộ ghi sổ" thì lại bằng 0. Dòng Doanh thu dựng từ file import ở khối dưới.

@@ -10,7 +10,19 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { pnlLineAmount } from "../lib/reports.ts";
+import { NON_CAPEX_SOURCE_TYPES, pnlLineAmount, pnlLineKeyOf } from "../lib/reports.ts";
+
+test("CAPEX chỉ là đầu tư ban đầu: Nợ 211, không lấy 242", () => {
+  assert.equal(pnlLineKeyOf({ accountType: "ASSET", reportGroup: "FIXED_ASSET" }), "capex");
+  assert.equal(pnlLineKeyOf({ accountType: "ASSET", reportGroup: "PREPAID_EXPENSE" }), null);
+});
+
+test("tài sản/CCDC mua ở màn Tài sản và số dư đầu kỳ không lên dòng CAPEX", () => {
+  assert.ok(NON_CAPEX_SOURCE_TYPES.includes("ASSET_ACQUISITION"));
+  assert.ok(NON_CAPEX_SOURCE_TYPES.includes("OPENING_BALANCE"));
+  assert.ok(!NON_CAPEX_SOURCE_TYPES.includes("VOUCHER"));
+  assert.ok(!NON_CAPEX_SOURCE_TYPES.includes("DEBT_PAYABLE"));
+});
 
 test("CAPEX chỉ cộng bên Nợ", () => {
   assert.equal(pnlLineAmount("capex", { debit: 10770975, credit: 0 }), 10770975);

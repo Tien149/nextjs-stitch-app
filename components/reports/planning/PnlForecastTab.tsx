@@ -22,7 +22,7 @@ const LINE_STYLE: Record<string, LineStyle> = {
   payroll: { tone: "sky", icon: "groups", title: "CHI PHÍ NHÂN SỰ", band: "bg-sky-50 text-sky-700", total: "bg-sky-100 text-sky-900" },
   // Thứ tự dòng theo nét vẽ của chị Bình 06/09/2026: Nhân sự -> CAPEX -> OPEX (khấu hao là hạng
   // mục trong Chi phí cố định, không còn dòng Khấu hao riêng).
-  capex: { tone: "orange", icon: "domain_add", title: "CHI PHÍ ĐẦU TƯ TÀI SẢN/CCDC (CAPEX)", band: "bg-orange-50 text-orange-700", total: "bg-orange-100 text-orange-900" },
+  capex: { tone: "orange", icon: "domain_add", title: "CHI PHÍ ĐẦU TƯ BAN ĐẦU (CAPEX)", band: "bg-orange-50 text-orange-700", total: "bg-orange-100 text-orange-900" },
   otherOpex: { tone: "blue", icon: "receipt_long", title: "CHI PHÍ HOẠT ĐỘNG (OPEX)", band: "bg-blue-50 text-blue-700", total: "bg-blue-100 text-blue-900" },
   ebitda: { tone: "violet", icon: "functions", title: "LỢI NHUẬN HOẠT ĐỘNG", band: "", total: "bg-violet-200/60 text-violet-900" },
   otherIncome: { tone: "teal", icon: "savings", title: "THU NHẬP KHÁC", band: "bg-teal-50 text-teal-700", total: "bg-teal-100 text-teal-900" },
@@ -311,7 +311,7 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
           ))}
           <td colSpan={13} className="px-3 py-2 text-[11px] font-semibold opacity-80 whitespace-nowrap">
             {line.key === "capex"
-              ? "Tiền mua tài sản/CCDC trong kỳ — dòng thông tin, KHÔNG trừ vào lợi nhuận (chi phí của tài sản vào P&L qua hạng mục CP Khấu Hao trong Chi phí cố định)"
+              ? "Chi phí đầu tư ban đầu (khoản mục/hạng mục nhóm CAPEX) — dòng thông tin, KHÔNG trừ vào lợi nhuận. Tài sản/CCDC mua trong kỳ vào Chi phí cố định qua hạng mục CP Khấu Hao"
               : isRevenue
                 ? "Hai cách nhìn cùng một doanh thu: theo nguồn (kênh bán) và theo bộ phận — kế hoạch set ở cấp dòng"
                 : "Kế hoạch (đậm) · Thực đạt (chip) · % hoàn thành"}

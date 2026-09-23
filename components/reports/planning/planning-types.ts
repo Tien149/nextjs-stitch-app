@@ -73,7 +73,7 @@ export const LINE_SHORT_LABEL: Record<string, string> = {
   ebitda: "Lợi nhuận hoạt động",
   otherIncome: "Thu nhập khác",
   otherExpense: "Chi phí khác",
-  capex: "Chi phí đầu tư tài sản/CCDC (CAPEX)",
+  capex: "Chi phí đầu tư ban đầu (CAPEX)",
   netProfit: "Lợi nhuận ròng",
 };
 

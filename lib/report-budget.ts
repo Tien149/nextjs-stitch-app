@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/custom-client";
 import { prisma } from "@/lib/prisma";
-import { createPnlDetailTree, finalizePnl, pnlLineAmount, PNL_ITEM_REQUIRED_LINES, PNL_STATEMENT_LINES, PNL_UNGROUPED_CODE, revenueChannelItemsOf, seedRevenueChannels, type PnlBucket, type PnlCatalog, type PnlLineKey, type PnlSeriesGroup, type PnlSeriesItem } from "@/lib/reports";
+import { CAPEX_REPORT_GROUPS, createPnlDetailTree, finalizePnl, NON_CAPEX_SOURCE_TYPES, pnlLineAmount, PNL_ITEM_REQUIRED_LINES, PNL_STATEMENT_LINES, PNL_UNGROUPED_CODE, revenueChannelItemsOf, seedRevenueChannels, type PnlBucket, type PnlCatalog, type PnlLineKey, type PnlSeriesGroup, type PnlSeriesItem } from "@/lib/reports";
 import { isRevenueComponentCategory, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { loadRevenuePnlGroups, type CategoryLookupClient } from "@/lib/revenue-source";
 
@@ -75,11 +75,11 @@ async function loadYearJournalLines(firstPeriod: string, lastPeriod: string, bra
       AND e."deletedAt" IS NULL
       AND a."deletedAt" IS NULL
       AND e."period" >= ${firstPeriod} AND e."period" <= ${lastPeriod}
-      -- Dòng CAPEX lấy bút toán ghi tăng TSCĐ (211) / CCDC (242); số dư đầu kỳ chỉ dựng lại
-      -- tài sản đã có từ trước nên không phải tiền đầu tư trong kỳ.
+      -- Dòng CAPEX chỉ là chi phí đầu tư ban đầu — cùng luật với getPnl (CAPEX_REPORT_GROUPS,
+      -- NON_CAPEX_SOURCE_TYPES).
       AND (
         a."accountType" IN ('REVENUE', 'COGS', 'OPEX', 'OTHER_INCOME', 'OTHER_EXPENSE')
-        OR (a."accountType" = 'ASSET' AND a."reportGroup" IN ('FIXED_ASSET', 'PREPAID_EXPENSE') AND e."sourceType" <> 'OPENING_BALANCE')
+        OR (a."accountType" = 'ASSET' AND a."reportGroup" IN (${Prisma.join(CAPEX_REPORT_GROUPS)}) AND e."sourceType" NOT IN (${Prisma.join(NON_CAPEX_SOURCE_TYPES)}))
       )
       ${branchCode === "ALL" ? Prisma.empty : Prisma.sql`AND e."branchCode" = ${branchCode}`}
     GROUP BY 1, 2, 3, 4, 5, 6, 7
