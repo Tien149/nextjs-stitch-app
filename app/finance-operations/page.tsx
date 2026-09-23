@@ -338,15 +338,35 @@ export default function FinanceOperationsPage() {
 
   const visibleTabs = useMemo(() => filterModuleTabs(user, href), [user]);
   const normalizedTransferQuery = transferQuery.trim().toLowerCase();
+  const transferCodeQuery = transferQuery.replace(/[\s\u200B-\u200D\uFEFF]/g, "").toLowerCase();
   const filteredCashbook = useMemo(() => {
     if (!normalizedTransferQuery) return data.cashbook;
     return data.cashbook.filter((row) => [row.code, row.moneySourceCode, moneySourceSummaryLabel.get(row.moneySourceCode) || "", row.description]
-      .some((value) => value.toLowerCase().includes(normalizedTransferQuery)));
-  }, [data.cashbook, normalizedTransferQuery, moneySourceSummaryLabel]);
+      .some((value) => value.toLowerCase().includes(normalizedTransferQuery))
+      || (transferCodeQuery.length > 0 && row.code.toLowerCase().includes(transferCodeQuery)));
+  }, [data.cashbook, normalizedTransferQuery, transferCodeQuery, moneySourceSummaryLabel]);
+  /**
+   * Mã dán từ Excel/Zalo hay dính khoảng trắng hoặc ký tự vô hình ở giữa, và người dùng hay chỉ
+   * gõ đuôi số (00057). Trước đây phải gõ khớp tuyệt đối cả mã mới hiện khung chi tiết, nên khách
+   * báo "ô tìm không hoạt động". Giờ: khớp đúng mã trước, không có thì nhận khi chỉ đúng MỘT phiếu
+   * quyết toán ví chứa đoạn đã gõ.
+   */
   const selectedTransfer = useMemo(() => {
-    if (!normalizedTransferQuery) return null;
-    return data.moneyTransfers.find((row) => row.code.toLowerCase() === normalizedTransferQuery) || null;
-  }, [data.moneyTransfers, normalizedTransferQuery]);
+    if (!transferCodeQuery) return null;
+    const exact = data.moneyTransfers.find((row) => row.code.toLowerCase() === transferCodeQuery);
+    if (exact) return exact;
+    const partial = data.moneyTransfers.filter((row) => row.transferPurpose === "WALLET_SETTLEMENT"
+      && row.code.toLowerCase().includes(transferCodeQuery));
+    return partial.length === 1 ? partial[0] : null;
+  }, [data.moneyTransfers, transferCodeQuery]);
+  const transferSearchHint = useMemo(() => {
+    if (transferCodeQuery.length < 3 || selectedTransfer) return "";
+    const matches = data.moneyTransfers.filter((row) => row.transferPurpose === "WALLET_SETTLEMENT"
+      && row.code.toLowerCase().includes(transferCodeQuery));
+    if (matches.length > 1) return `Có ${matches.length} phiếu quyết toán ví chứa "${transferQuery.trim()}", gõ đủ mã để mở chi tiết.`;
+    if (!/^qtvi/.test(transferCodeQuery)) return "";
+    return `Không thấy phiếu ${transferQuery.trim()} trong kỳ ${period.slice(5, 7)}/${period.slice(0, 4)} của phạm vi cửa hàng đang chọn. Kiểm tra lại Kỳ kế toán và Cửa hàng trên thanh lọc.`;
+  }, [data.moneyTransfers, period, selectedTransfer, transferCodeQuery, transferQuery]);
   const pendingCashDeposits = useMemo(
     () => data.moneyTransfers.filter((row) => row.status === "PENDING_REVIEW" && row.transferPurpose === "CASH_DEPOSIT"),
     [data.moneyTransfers],
@@ -772,6 +792,87 @@ export default function FinanceOperationsPage() {
       }
       const result = applied.payload as unknown as { updated: number; nextFee: number; nextGross: number };
       setMessage(`Đã chạy lại quyết toán ${plan.walletLabel} ngày ${dayText}: ${result.updated} phiếu, gross ${money(result.nextGross)} đ, phí ${money(result.nextFee)} đ.`);
+      await loadData();
+    } catch {
+      setMessage("Lỗi kết nối máy chủ.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  /**
+   * Chạy lại quyết toán ví cho cả kỳ theo phạm vi cửa hàng đang chọn — khách không phải tìm từng
+   * mã QTVI. Cũng hai bước như nút trên phiếu: xem danh sách phiếu đổi số rồi mới xác nhận.
+   */
+  const rerunAllWalletSettlements = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    setMessage("");
+    try {
+      type BulkResult = {
+        scanned: number;
+        changes: Array<{ code: string; branchCode: string; feeBefore: number; feeAfter: number }>;
+        byBranch: Array<{ branchCode: string; count: number; feeBefore: number; feeAfter: number }>;
+        skipped: Array<{ code: string; reason: string }>;
+        highFee: Array<{ code: string; message: string }>;
+        updated: number;
+        error?: string;
+      };
+      const ask = async (previewOnly: boolean) => {
+        const response = await fetch("/api/finance-operations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "RERUN_WALLET_SETTLEMENTS_BULK", period, branchCode, preview: previewOnly }),
+        });
+        return { ok: response.ok, payload: await response.json() as BulkResult };
+      };
+      const periodText = `${period.slice(5, 7)}/${period.slice(0, 4)}`;
+      const scopeText = branchCode === "ALL" ? "tất cả cửa hàng" : `cửa hàng ${branchCode}`;
+
+      const preview = await ask(true);
+      if (!preview.ok) {
+        setMessage(String(preview.payload.error || "Không xem trước được số chạy lại."));
+        return;
+      }
+      const plan = preview.payload;
+      const skippedText = plan.skipped.length
+        ? ` ${plan.skipped.length} phiếu không tính lại được: ${plan.skipped.slice(0, 3).map((row) => `${row.code} (${row.reason})`).join("; ")}${plan.skipped.length > 3 ? "; ..." : ""}`
+        : "";
+      if (plan.changes.length === 0) {
+        setMessage(`Kỳ ${periodText}, ${scopeText}: đã kiểm tra ${plan.scanned} phiếu quyết toán ví, tất cả đang khớp doanh thu hiện tại.${skippedText}`);
+        return;
+      }
+      const totalBefore = plan.changes.reduce((sum, row) => sum + row.feeBefore, 0);
+      const totalAfter = plan.changes.reduce((sum, row) => sum + row.feeAfter, 0);
+      const listed = plan.changes.slice(0, 15);
+      const confirmed = window.confirm([
+        `Chạy lại quyết toán Ví/POS kỳ ${periodText} — ${scopeText}`,
+        "",
+        `Đã kiểm tra ${plan.scanned} phiếu, ${plan.changes.length} phiếu đổi số phí.`,
+        "Tiền thật về ngân hàng của từng phiếu giữ nguyên, chỉ tính lại phí.",
+        `Tổng phí: ${money(totalBefore)} đ  ->  ${money(totalAfter)} đ`,
+        ...(plan.byBranch.length > 1
+          ? ["", "Theo cửa hàng:", ...plan.byBranch.map((row) => `• ${row.branchCode}: ${row.count} phiếu, phí ${money(row.feeBefore)} -> ${money(row.feeAfter)} đ`)]
+          : []),
+        "",
+        ...listed.map((row) => `• ${row.code}: phí ${money(row.feeBefore)} -> ${money(row.feeAfter)} đ`),
+        ...(plan.changes.length > listed.length ? [`... và ${plan.changes.length - listed.length} phiếu khác`] : []),
+        ...(plan.highFee.length ? ["", `⚠ ${plan.highFee.length} phiếu có tỷ lệ phí vượt ngưỡng, ví dụ ${plan.highFee[0].code}: ${plan.highFee[0].message}`] : []),
+        ...(plan.skipped.length ? ["", `${plan.skipped.length} phiếu bỏ qua vì không tính lại được (xem thông báo sau khi chạy).`] : []),
+        "",
+        "Xác nhận ghi số mới cho tất cả các phiếu trên?",
+      ].join("\n"));
+      if (!confirmed) return;
+
+      const applied = await ask(false);
+      if (!applied.ok) {
+        setMessage(String(applied.payload.error || "Chạy lại quyết toán thất bại."));
+        return;
+      }
+      const appliedSkipped = applied.payload.skipped;
+      setMessage(`Đã chạy lại quyết toán Ví/POS kỳ ${periodText}, ${scopeText}: ${applied.payload.updated} phiếu cập nhật phí.${appliedSkipped.length
+        ? ` ${appliedSkipped.length} phiếu không tính lại được: ${appliedSkipped.slice(0, 3).map((row) => `${row.code} (${row.reason})`).join("; ")}${appliedSkipped.length > 3 ? "; ..." : ""}`
+        : ""}`);
       await loadData();
     } catch {
       setMessage("Lỗi kết nối máy chủ.");
@@ -1608,11 +1709,22 @@ export default function FinanceOperationsPage() {
                     <h3 className="font-bold text-slate-900">Phát sinh dòng tiền trong kỳ</h3>
                     <p className="text-xs text-slate-500 mt-1">Danh sách thu/chi và biến động số dư thực tế theo nguồn quỹ.</p>
                   </div>
-                  <div className="flex w-full max-w-md gap-2">
+                  <div className="flex w-full max-w-2xl flex-wrap justify-end gap-2">
+                    {canEditAdjustment && (
+                      <button
+                        type="button"
+                        onClick={() => void rerunAllWalletSettlements()}
+                        disabled={submitting}
+                        title="Tính lại phí của mọi phiếu quyết toán Ví/POS trong kỳ theo doanh thu hiện tại, theo phạm vi cửa hàng đang chọn"
+                        className="h-10 shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-indigo-300 bg-white px-3 text-sm font-bold text-indigo-700 shadow-sm hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <span className="material-symbols-outlined text-[18px]">refresh</span>
+                        Chạy lại tất cả Ví/POS trong kỳ
+                      </button>
+                    )}
                     <input
                       value={transferQuery}
-                      onChange={(event) => setTransferQuery(event.target.value)}
-                      placeholder="Tìm mã phiếu QTVI..."
+                      onChange={(event) => setTransferQuery(event.target.value)}                      placeholder="Tìm mã phiếu QTVI..."
                       className="h-10 min-w-0 flex-1 rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500"
                     />
                     {transferQuery && (
@@ -1621,6 +1733,10 @@ export default function FinanceOperationsPage() {
                     <ExportExcelButton fileName="dong_tien_trong_ky" sheetName="Dong tien" targetId="cashflow-movement-table" className="h-10 shrink-0 rounded-lg border border-slate-300 bg-white px-3 text-sm font-bold text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1.5" />
                   </div>
                 </div>
+
+                {transferSearchHint && (
+                  <div className="border-b border-amber-100 bg-amber-50 px-6 py-2.5 text-xs font-medium text-amber-800">{transferSearchHint}</div>
+                )}
 
                 {selectedTransfer?.transferPurpose === "WALLET_SETTLEMENT" && (
                   <div className="border-b border-indigo-100 bg-indigo-50/70 px-6 py-4">
