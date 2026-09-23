@@ -13,7 +13,7 @@ import { transferLegsForBranch } from "@/lib/internal-transfer";
 import { WALLET_CARD_FEE_CATEGORY_CODE, WALLET_GRAB_EXPENSE_CATEGORY_CODE } from "@/lib/wallet-settlement-allocation";
 import { vietnamBusinessDayKey } from "@/lib/revenue-date";
 import { remainingWalletGross, selectWalletDeclaredRevenue, walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
-import { comparePnlGroups, comparePnlItems, isDepreciationPnlName, isPayrollPnlItem, isPayrollPnlName, otherIncomePnlItemNameOf, samePnlName } from "@/lib/pnl-ordering";
+import { comparePnlGroups, comparePnlItems, isCapexPnlCatalogItem, isDepreciationPnlName, isFixedCostPnlGroupName, isPayrollPnlItem, isPayrollPnlName, otherIncomePnlItemNameOf, samePnlName } from "@/lib/pnl-ordering";
 import { isRevenueComponentCategory, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { REVENUE_PNL_UNCLASSIFIED, loadRevenuePnlGroups, type CategoryLookupClient } from "@/lib/revenue-source";
 
@@ -64,8 +64,29 @@ function emptyPnl(): PnlBucket {
   return { revenue: 0, cogs: 0, payroll: 0, otherOpex: 0, otherIncome: 0, otherExpense: 0, capex: 0 };
 }
 
-/** Hạng mục P&L gắn trên bút toán (tên + tên nhóm cha) — đủ để biết nó có phải chi phí lương không. */
-export type PnlItemRef = { name: string; groupName?: string | null } | null | undefined;
+/**
+ * Hạng mục P&L gắn trên bút toán (tên + tên nhóm cha) — đủ để biết nó có phải chi phí lương không.
+ * `capex`: hạng mục thuộc nhóm CAPEX / "Chi phí đầu tư ban đầu" (isCapexPnlCatalogItem).
+ */
+export type PnlItemRef = { name: string; groupName?: string | null; capex?: boolean } | null | undefined;
+
+/**
+ * Tra hạng mục P&L -> PnlItemRef, dùng chung cho bảng một kỳ, bảng 12 tháng, Tổng hợp chi phí
+ * và drilldown để cả bốn nơi cùng xếp một bút toán vào một dòng.
+ */
+export function createPnlItemRefLookup(
+  pnlItems: Array<{ code: string; name: string; group?: string | null; subGroup?: string | null }>,
+  pnlGroups: Array<{ code: string; name: string; group?: string | null }>,
+) {
+  const itemByCode = new Map(pnlItems.map((item) => [item.code, item]));
+  const groupByCode = new Map(pnlGroups.map((group) => [group.code, group]));
+  return (pnlItemCode: string | null | undefined): PnlItemRef => {
+    const item = pnlItemCode ? itemByCode.get(pnlItemCode) : null;
+    if (!item) return null;
+    const parent = item.subGroup ? groupByCode.get(item.subGroup) : null;
+    return { name: item.name, groupName: parent?.name ?? null, capex: isCapexPnlCatalogItem(item, parent) };
+  };
+}
 
 /**
  * Dòng nào của báo cáo KQKD nhận bút toán này — dùng chung cho cả số tổng lẫn cây hạng mục.
@@ -89,6 +110,9 @@ export function pnlLineKeyOf(account: { accountType: string; reportGroup: string
   if (account.accountType === "REVENUE") return "revenue";
   if (account.accountType === "COGS") return "cogs";
   if (account.accountType === "OPEX") {
+    // Phiếu chi gắn hạng mục nhóm CAPEX nhưng hạch toán 6428 (nhóm khai nhầm loại OPEX lúc ghi
+    // sổ) vẫn là tiền đầu tư ban đầu: đứng ở dòng CAPEX, không trừ vào lợi nhuận.
+    if (pnlItem?.capex && account.reportGroup !== "DEPRECIATION" && account.reportGroup !== "PAYROLL") return "capex";
     if (account.reportGroup === "PAYROLL") return "payroll";
     if (isPayrollPnlItem(pnlItem)) return "payroll";
     // Khấu hao (6424) cũng là OPEX: nằm ở hạng mục CP Khấu Hao trong Chi phí cố định.
@@ -217,6 +241,56 @@ export function depreciationCatalogItemCode(pnlItems: Array<{ code: string; name
   return (candidates.find((item) => item.subGroup) || candidates[0])?.code ?? null;
 }
 
+/** Mã hạng mục khấu hao dựng sẵn khi danh mục chưa khai hạng mục nào mang tên "khấu hao". */
+export const DEPRECIATION_FALLBACK_ITEM_CODE = "CPCD_KHAUHAO";
+
+/**
+ * Danh mục hạng mục P&L, chắc chắn có dòng "CPCĐ - CP Khấu Hao" trong nhóm Chi phí cố định.
+ *
+ * Khách yêu cầu 23/09/2026: bảng Hoạch định P&L phải có dòng CP khấu hao trong Chi phí cố
+ * định. Danh mục chưa khai hạng mục khấu hao thì khấu hao rơi vào "Chưa phân loại" và bị loại
+ * khỏi P&L (luật chỉ tính khoản có hạng mục), nên dựng sẵn một hạng mục đứng đúng nhóm.
+ */
+export function withDepreciationPnlItem<T extends { code: string; name: string; group: string | null; subGroup: string | null; status?: string | null }>(
+  pnlItems: T[],
+  pnlGroups: Array<{ code: string; name: string; group: string | null; status?: string | null }>,
+): T[] {
+  if (depreciationCatalogItemCode(pnlItems)) return pnlItems;
+  const fixedGroup = pnlGroups.find((group) => !isRetiredCatalogItem(group)
+    && String(group.group || "").toUpperCase() === "OPEX" && isFixedCostPnlGroupName(group.name));
+  return [
+    ...pnlItems,
+    { code: DEPRECIATION_FALLBACK_ITEM_CODE, name: "CPCĐ - CP Khấu Hao", group: "OPEX", subGroup: fixedGroup?.code ?? null, status: "ACTIVE" } as T,
+  ];
+}
+
+/** Tài khoản giả cho dòng khấu hao đọc từ màn Khấu hao — cùng loại với TK 6424. */
+export const DEPRECIATION_PNL_ACCOUNT = { accountType: "OPEX", reportGroup: "DEPRECIATION" };
+
+/**
+ * Khấu hao của P&L đọc THẲNG từ màn Khấu hao (bảng AssetDepreciation), không từ bút toán 6424.
+ *
+ * Bút toán 6424 chỉ sinh khi bấm "Đồng bộ ghi sổ", nên chạy khấu hao xong mà chưa đồng bộ là
+ * P&L không có đồng khấu hao nào — khách thấy màn Khấu hao có số mà P&L trắng (23/09/2026).
+ * Cùng cách dòng Doanh thu đọc thẳng file import. Nơi gọi phải BỎ bút toán reportGroup
+ * DEPRECIATION để không cộng hai lần.
+ */
+export async function loadDepreciationPnlRows(firstPeriod: string, lastPeriod: string, branchCode: string) {
+  const rows = await prisma.assetDepreciation.findMany({
+    where: {
+      period: { gte: firstPeriod, lte: lastPeriod },
+      ...(branchCode === "ALL" ? {} : { asset: { branchCode } }),
+    },
+    select: { period: true, depreciationAmount: true, asset: { select: { branchCode: true, departmentCode: true } } },
+  });
+  return rows.map((row) => ({
+    period: row.period,
+    branchCode: row.asset.branchCode,
+    departmentCode: row.asset.departmentCode,
+    amount: row.depreciationAmount,
+  }));
+}
+
 /** Hạng mục lương trong danh mục P&L — bút toán 6421 do máy sinh không mang mã hạng mục. */
 export function payrollCatalogItemCode(pnlItems: Array<{ code: string; name: string; subGroup?: string | null; status?: string | null }>) {
   const candidates = pnlItems.filter((item) => !isRetiredCatalogItem(item) && isPayrollPnlName(item.name));
@@ -296,11 +370,7 @@ export function createPnlDetailTree(catalog: PnlCatalog, monthCount: number) {
   };
 
   // Hạng mục lương/nhân sự khai dưới nhóm OPEX vẫn phải đứng ở dòng Chi phí nhân sự.
-  const pnlItemRefOf = (pnlItemCode: string | null): PnlItemRef => {
-    const item = pnlItemCode ? pnlItemByCode.get(pnlItemCode) : null;
-    if (!item) return null;
-    return { name: item.name, groupName: item.subGroup ? pnlGroupName.get(item.subGroup) || null : null };
-  };
+  const pnlItemRefOf = createPnlItemRefLookup(pnlItems, pnlGroups);
 
   // Nạp sẵn TOÀN BỘ danh mục P&L đang hoạt động, kể cả nhóm/hạng mục chưa phát sinh đồng nào:
   // khách khai thêm hạng mục trên màn Danh mục là bảng P&L có ngay dòng đó (số 0), không phải
@@ -320,7 +390,8 @@ export function createPnlDetailTree(catalog: PnlCatalog, monthCount: number) {
   };
   for (const group of pnlGroups) {
     if (isRetiredCatalogItem(group)) continue;
-    const lineKey = seedLineOf(group.group);
+    // Nhóm "Chi phí đầu tư ban đầu" khai loại OPEX vẫn đứng ở dòng CAPEX — cùng luật pnlLineKeyOf.
+    const lineKey = isCapexPnlCatalogItem({ group: group.group }, group) ? "capex" : seedLineOf(group.group);
     if (!lineKey) continue;
     touchGroup(lineKey === "otherOpex" && isPayrollPnlItem({ name: group.name }) ? "payroll" : lineKey, group);
   }
@@ -328,6 +399,7 @@ export function createPnlDetailTree(catalog: PnlCatalog, monthCount: number) {
     if (isRetiredCatalogItem(item)) continue;
     const parent = item.subGroup ? pnlGroupByCode.get(item.subGroup) : null;
     let lineKey = seedLineOf(parent?.group ?? item.group);
+    if (lineKey === "otherOpex" && isCapexPnlCatalogItem(item, parent)) lineKey = "capex";
     if (lineKey === "otherOpex" && isPayrollPnlItem({ name: item.name, groupName: parent?.name })) lineKey = "payroll";
     if (!lineKey) continue;
     bumpDetail(lineKey, parent ? { code: parent.code, name: parent.name } : expenseGroupOf(item.code, pnlItemByCode, pnlGroupName), item, 0, 0);
@@ -452,7 +524,7 @@ function withRevenuePnlGroups(categories: Array<{ code: string; name: string }>,
 
 export async function getPnl(period: string, branchCode: string) {
   const { start, end } = periodBounds(period);
-  const [entries, revenueRows, revenueGroups, pnlItems, pnlGroups, categories] = await Promise.all([
+  const [entries, revenueRows, revenueGroups, catalogPnlItems, pnlGroups, categories, depreciationRows] = await Promise.all([
     prisma.journalEntry.findMany({
       where: { entryDate: { gte: start, lt: end }, status: "POSTED", ...(branchCode === "ALL" ? {} : { branchCode }) },
       include: { lines: { include: { account: true } } },
@@ -481,7 +553,9 @@ export async function getPnl(period: string, branchCode: string) {
       where: { type: "REVENUE_EXPENSE_CATEGORY" },
       select: { code: true, name: true },
     }),
+    loadDepreciationPnlRows(period, period, branchCode),
   ]);
+  const pnlItems = withDepreciationPnlItem(catalogPnlItems, pnlGroups);
   const pnlItemByCode = new Map(pnlItems.map((item) => [item.code, item]));
   const pnlGroupName = new Map(pnlGroups.map((item) => [item.code, item.name]));
   const pnlItemBreakdown = new Map<string, PnlItemBreakdown>();
@@ -493,43 +567,61 @@ export async function getPnl(period: string, branchCode: string) {
   const tree = createPnlDetailTree(catalog, 1);
   seedRevenueChannels(tree, revenueGroups.seedGroups, revenueChannelItemsOf(catalog));
 
+  type ExpenseLine = PnlJournalLineLike & { departmentCode: string | null };
+  const addExpenseLine = (branchCode: string, line: ExpenseLine) => {
+    const branch = branches.get(branchCode) || emptyPnl();
+    const pnlItemRef = tree.pnlItemRefOf(line.pnlItemCode);
+    // Chi phí / thu nhập khác chưa gắn hạng mục P&L KHÔNG vào các con số của P&L (chốt chị
+    // Bình 20/09/2026). Vẫn đưa vào cây chi tiết để bảng hiện được một dòng thông tin
+    // "Chưa gán hạng mục P&L" đứng NGOÀI tổng, và vẫn nằm đủ trong Tổng hợp chi phí.
+    const counted = tree.countsInPnl(line);
+    if (counted) {
+      addLine(total, line, pnlItemRef);
+      addLine(branch, line, pnlItemRef);
+    }
+    tree.add(line, 0);
+    if (["COGS", "OPEX", "OTHER_EXPENSE"].includes(line.account.accountType)) {
+      const pnlItemCode = tree.resolveItemCode(line);
+      const code = pnlItemCode || "UNCLASSIFIED";
+      const item = pnlItemCode ? pnlItemByCode.get(pnlItemCode) : null;
+      const current = pnlItemBreakdown.get(code) || {
+        code,
+        name: item?.name || (pnlItemCode ? `Hạng mục P&L [${pnlItemCode}]` : "Chưa phân loại P&L"),
+        group: item ? (item.subGroup ? pnlGroupName.get(item.subGroup) || item.subGroup : item.group) : null,
+        amount: 0,
+      };
+      current.amount += line.debit - line.credit;
+      pnlItemBreakdown.set(code, current);
+    }
+    const departmentCode = line.departmentCode || "UNALLOCATED";
+    const department = departments.get(departmentCode) || emptyPnl();
+    if (counted) addLine(department, line, pnlItemRef);
+    departments.set(departmentCode, department);
+    branches.set(branchCode, branch);
+  };
+
   for (const entry of entries) {
-    const branch = branches.get(entry.branchCode) || emptyPnl();
     for (const line of entry.lines) {
       if (line.account.accountType === "ASSET" && NON_CAPEX_SOURCE_TYPES.includes(entry.sourceType)) continue;
       // Bút toán 511 không lên dòng Doanh thu: phiếu thu công nợ / hoàn tạm ứng cũng ghi Có 511
       // (mọi khoản mục nhóm "Thu" đều quy về REVENUE_SOURCE) nên doanh thu bị thổi lên, và kỳ
       // chưa "Đồng bộ ghi sổ" thì lại bằng 0. Dòng Doanh thu dựng từ file import ở khối dưới.
       if (line.account.accountType === "REVENUE") continue;
-      const pnlItemRef = tree.pnlItemRefOf(line.pnlItemCode);
-      // Chi phí / thu nhập khác chưa gắn hạng mục P&L KHÔNG vào các con số của P&L (chốt chị
-      // Bình 20/09/2026). Vẫn đưa vào cây chi tiết để bảng hiện được một dòng thông tin
-      // "Chưa gán hạng mục P&L" đứng NGOÀI tổng, và vẫn nằm đủ trong Tổng hợp chi phí.
-      const counted = tree.countsInPnl(line);
-      if (counted) {
-        addLine(total, line, pnlItemRef);
-        addLine(branch, line, pnlItemRef);
-      }
-      tree.add(line, 0);
-      if (["COGS", "OPEX", "OTHER_EXPENSE"].includes(line.account.accountType)) {
-        const pnlItemCode = tree.resolveItemCode(line);
-        const code = pnlItemCode || "UNCLASSIFIED";
-        const item = pnlItemCode ? pnlItemByCode.get(pnlItemCode) : null;
-        const current = pnlItemBreakdown.get(code) || {
-          code,
-          name: item?.name || (pnlItemCode ? `Hạng mục P&L [${pnlItemCode}]` : "Chưa phân loại P&L"),
-          group: item ? (item.subGroup ? pnlGroupName.get(item.subGroup) || item.subGroup : item.group) : null,
-          amount: 0,
-        };
-        current.amount += line.debit - line.credit;
-        pnlItemBreakdown.set(code, current);
-      }
-      const departmentCode = line.departmentCode || "UNALLOCATED";
-      const department = departments.get(departmentCode) || emptyPnl();
-      if (counted) addLine(department, line, pnlItemRef);
-      departments.set(departmentCode, department);
+      // Khấu hao đọc thẳng từ màn Khấu hao ngay dưới đây (loadDepreciationPnlRows).
+      if (line.account.reportGroup === "DEPRECIATION") continue;
+      addExpenseLine(entry.branchCode, line);
     }
-    branches.set(entry.branchCode, branch);
+    if (!branches.has(entry.branchCode)) branches.set(entry.branchCode, emptyPnl());
+  }
+  for (const row of depreciationRows) {
+    addExpenseLine(row.branchCode, {
+      account: DEPRECIATION_PNL_ACCOUNT,
+      pnlItemCode: null,
+      categoryCode: null,
+      departmentCode: row.departmentCode,
+      debit: row.amount,
+      credit: 0,
+    });
   }
 
   /**

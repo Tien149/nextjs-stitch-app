@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/custom-client";
 import { prisma } from "@/lib/prisma";
-import { CAPEX_REPORT_GROUPS, createPnlDetailTree, finalizePnl, NON_CAPEX_SOURCE_TYPES, pnlLineAmount, PNL_ITEM_REQUIRED_LINES, PNL_STATEMENT_LINES, PNL_UNGROUPED_CODE, revenueChannelItemsOf, seedRevenueChannels, type PnlBucket, type PnlCatalog, type PnlLineKey, type PnlSeriesGroup, type PnlSeriesItem } from "@/lib/reports";
+import { CAPEX_REPORT_GROUPS, createPnlDetailTree, DEPRECIATION_PNL_ACCOUNT, finalizePnl, loadDepreciationPnlRows, NON_CAPEX_SOURCE_TYPES, withDepreciationPnlItem, pnlLineAmount, PNL_ITEM_REQUIRED_LINES, PNL_STATEMENT_LINES, PNL_UNGROUPED_CODE, revenueChannelItemsOf, seedRevenueChannels, type PnlBucket, type PnlCatalog, type PnlLineKey, type PnlSeriesGroup, type PnlSeriesItem } from "@/lib/reports";
 import { isRevenueComponentCategory, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { loadRevenuePnlGroups, type CategoryLookupClient } from "@/lib/revenue-source";
 
@@ -91,7 +91,7 @@ export async function getPnlMatrix(year: string, branchCode: string) {
   const yearStart = new Date(`${year}-01-01T00:00:00`);
   const yearEnd = new Date(`${Number(year) + 1}-01-01T00:00:00`);
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
-  const [rows, pnlItems, pnlGroups, categories, revenueGroups, departments, revenueRows, payrollRows, payrollDeptRows, targets, payableDebts] = await Promise.all([
+  const [journalRows, catalogPnlItems, pnlGroups, categories, revenueGroups, departments, revenueRows, payrollRows, payrollDeptRows, targets, payableDebts, depreciationRows] = await Promise.all([
     loadYearJournalLines(months[0], months[11], branchCode),
     prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true, group: true, subGroup: true, status: true } }),
     prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true, group: true, status: true } }),
@@ -141,6 +141,8 @@ export async function getPnlMatrix(year: string, branchCode: string) {
       console.error("Không đọc được công nợ phải trả cho cảnh báo chưa ghi sổ (bỏ qua cảnh báo):", error);
       return [] as Array<{ id: string; code: string; documentDate: Date; originalAmount: number }>;
     }),
+    // Khấu hao đọc thẳng từ màn Khấu hao, không đợi "Đồng bộ ghi sổ" (xem loadDepreciationPnlRows).
+    loadDepreciationPnlRows(months[0], months[11], branchCode),
   ]);
   const postedDebtIds = new Set(
     payableDebts.length === 0 ? [] : (await prisma.journalEntry.findMany({
@@ -164,8 +166,24 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     // chứ không phải mã trơ khi khách chưa khai danh mục tương ứng.
     ...revenueGroups.categories.filter((group) => !categories.some((category) => category.code.toUpperCase() === group.code.toUpperCase())),
   ];
+  // Luôn có hạng mục "CPCĐ - CP Khấu Hao" trong Chi phí cố định để khấu hao có chỗ đứng.
+  const pnlItems = withDepreciationPnlItem(catalogPnlItems, pnlGroups);
   const catalog: PnlCatalog = { pnlItems, pnlGroups, categories: treeCategories };
   const tree = createPnlDetailTree(catalog, 12);
+  // Bút toán khấu hao 6424 được thay bằng số của màn Khấu hao — giữ cả hai là cộng hai lần.
+  const rows: MatrixLineRow[] = [
+    ...journalRows.filter((row) => row.reportGroup !== DEPRECIATION_PNL_ACCOUNT.reportGroup),
+    ...depreciationRows.map((row) => ({
+      period: row.period,
+      branchCode: row.branchCode,
+      ...DEPRECIATION_PNL_ACCOUNT,
+      pnlItemCode: null,
+      categoryCode: null,
+      departmentCode: row.departmentCode,
+      debit: row.amount,
+      credit: 0,
+    })),
+  ];
   // Kênh bán (Tại chỗ / Mang về / Grab) hiện đủ dưới từng nhóm doanh thu, kể cả khi chưa có tiền.
   seedRevenueChannels(tree, revenueGroups.seedGroups, revenueChannelItemsOf(catalog));
 
@@ -328,7 +346,9 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     const items = itemPlanByBranch.get(branch) || emptyPlanBucket();
     const result = emptyPlanBucket();
     for (const key of Object.keys(result) as PnlLineKey[]) {
-      result[key] = months.map((_, monthIndex) => (key === "otherOpex" && items.otherOpex.some((value) => value > 0) ? items.otherOpex[monthIndex] : lines[key][monthIndex]));
+      // CAPEX cũng có hạng mục (nhóm Chi phí đầu tư ban đầu) nên cùng luật với OPEX.
+      const useItems = (key === "otherOpex" || key === "capex") && items[key].some((value) => value > 0);
+      result[key] = months.map((_, monthIndex) => (useItems ? items[key][monthIndex] : lines[key][monthIndex]));
     }
     return result;
   };

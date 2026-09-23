@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { periodBounds } from "@/lib/accounting";
-import { depreciationCatalogItemCode, payrollCatalogItemCode, pnlLineKeyOf, resolvePnlItemCode, type PnlItemRef, type PnlLineKey } from "@/lib/reports";
+import { createPnlItemRefLookup, depreciationCatalogItemCode, payrollCatalogItemCode, pnlLineKeyOf, resolvePnlItemCode, type PnlLineKey } from "@/lib/reports";
 import { comparePnlItems } from "@/lib/pnl-ordering";
 
 /**
@@ -143,8 +143,8 @@ export async function getExpenseSummary(period: string, branchCode: string): Pro
       },
       orderBy: [{ entryDate: "asc" }, { code: "asc" }],
     }),
-    prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true, subGroup: true, status: true } }),
-    prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true } }),
+    prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true, group: true, subGroup: true, status: true } }),
+    prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true, group: true } }),
     // Phiếu chi còn nháp: chưa duyệt nên chưa có bút toán. Chỉ đếm phiếu ghi nhận nghiệp vụ
     // mới; phiếu SETTLEMENT (sao kê khớp doanh thu) không bao giờ thành chi phí.
     prisma.financialVoucher.findMany({ where: { ...branchFilter, voucherType: "PAYMENT", businessEffect: "RECOGNITION", voucherDate: { gte: start, lt: end }, status: { not: "APPROVED" } }, select: { amount: true } }),
@@ -159,14 +159,9 @@ export async function getExpenseSummary(period: string, branchCode: string): Pro
   ]);
 
   const pnlItemByCode = new Map(pnlItems.map((item) => [item.code, item]));
-  const pnlGroupName = new Map(pnlGroups.map((group) => [group.code, group.name]));
   const depreciationItemCode = depreciationCatalogItemCode(pnlItems);
   const payrollItemCode = payrollCatalogItemCode(pnlItems);
-  const pnlItemRefOf = (code: string | null): PnlItemRef => {
-    const item = code ? pnlItemByCode.get(code) : null;
-    if (!item) return null;
-    return { name: item.name, groupName: item.subGroup ? pnlGroupName.get(item.subGroup) || null : null };
-  };
+  const pnlItemRefOf = createPnlItemRefLookup(pnlItems, pnlGroups);
   // Phiếu chi tiền mặt và chứng từ ngân hàng cùng mang nhãn VOUCHER trên sổ; tách theo kênh
   // của phiếu gốc để mỗi dòng trỏ đúng màn hình sửa.
   const voucherChannelById = new Map(approvedVouchers.map((row) => [row.id, row.documentChannel]));

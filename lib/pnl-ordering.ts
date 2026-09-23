@@ -58,6 +58,25 @@ export function isDepreciationPnlName(name: string | null | undefined) {
 }
 
 /**
+ * Hạng mục thuộc dòng CAPEX: nhóm cha (hoặc chính hạng mục khi chưa gắn nhóm) khai loại CAPEX,
+ * hoặc nhóm mang tên "Chi phí đầu tư ban đầu". Khách báo 23/09/2026: nhóm này khai nhầm loại
+ * OPEX nên 88.248.717 đ tháng 8 đứng trong OPEX và bị trừ vào lợi nhuận, trong khi nó là tiền
+ * đầu tư ban đầu phải đứng ở dòng CAPEX.
+ */
+export function isCapexPnlCatalogItem(
+  item: { group?: string | null },
+  parent?: { group?: string | null; name?: string | null } | null,
+) {
+  if (String(parent?.group ?? item.group ?? "").toUpperCase() === "CAPEX") return true;
+  return /\bdau tu ban dau\b/.test(normalizeName(parent?.name));
+}
+
+/** Nhóm "Chi phí cố định" trong danh mục — chỗ đứng của hạng mục CP Khấu Hao. */
+export function isFixedCostPnlGroupName(name: string | null | undefined) {
+  return opexGroupRank(name) === 0;
+}
+
+/**
  * Thứ tự nhóm OPEX trên bảng: cố định (0) -> marketing (1) -> biến đổi (2) -> nhóm khác (3).
  * Nhóm "chưa phân loại" do nơi gọi tự đẩy xuống cuối.
  */
