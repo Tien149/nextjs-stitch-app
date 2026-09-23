@@ -62,6 +62,7 @@
     "test:internal-transfer": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-internal-transfer.mjs",
     "reconcile:wallet-fees": "NODE_ENV=production node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/reconcile-wallet-fees.mjs",
     "audit:card-fee-sources": "node scripts/audit-card-fee-sources.cjs",
+    "audit:card-fee-by-day": "NODE_ENV=production node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/doi-chieu-phi-quet-the-theo-ngay.mjs",
     "test:card-fee-sources": "node scripts/audit-card-fee-sources.cjs --self-test",
     "repair:wallet-settlement": "node scripts/repair-wallet-settlement-group.cjs",
     "repair:wallet-revenue-date": "node scripts/repair-wallet-revenue-date.cjs",
