@@ -111,6 +111,8 @@ export default function BankStatementLedgerPage() {
   const [postingError, setPostingError] = useState("");
   const [postingSaving, setPostingSaving] = useState(false);
   const [postedNotice, setPostedNotice] = useState<{ code: string; href: string; created: boolean } | null>(null);
+  /** Kết quả tính lại phí quyết toán ví sau khi lưu tách dòng tiền về. */
+  const [splitNotice, setSplitNotice] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
 
   useEffect(() => {
     const raw = localStorage.getItem(SESSION_KEY);
@@ -301,6 +303,12 @@ export default function BankStatementLedgerPage() {
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.error || "Không lưu được Ngày doanh thu");
+      const feeChange = payload?.walletFeeChange as { code: string; feeBefore: number; feeAfter: number } | null;
+      setSplitNotice(feeChange
+        ? { tone: "ok", text: `Đã tính lại phí ${feeChange.code} theo từng ngày doanh thu: ${money(feeChange.feeBefore)} đ → ${money(feeChange.feeAfter)} đ.` }
+        : payload?.walletFeeWarning
+          ? { tone: "warn", text: String(payload.walletFeeWarning) }
+          : null);
       setSplitRow(null);
       setSplitLines([]);
       await loadRows();
@@ -499,7 +507,11 @@ export default function BankStatementLedgerPage() {
       </section>
 
       {batchId && <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">Đang hiển thị {total} giao dịch của batch vừa import.</div>}
-      {postedNotice && <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
+      {splitNotice && <div className={`flex items-start justify-between gap-2 rounded-lg border px-4 py-3 text-sm font-semibold ${splitNotice.tone === "ok" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>
+        <span>{splitNotice.text}</span>
+        <button type="button" onClick={() => setSplitNotice(null)} className="text-xs font-bold opacity-70 hover:opacity-100">Đóng</button>
+      </div>}
+            {postedNotice && <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
         <span>{postedNotice.created ? `Đã vào sổ bằng phiếu ${postedNotice.code}. Tiền đã lên Sổ quỹ; phí sẽ tính khi bấm "Chạy lại theo doanh thu hiện tại" trên phiếu.` : `Đã nối với phiếu ${postedNotice.code} có sẵn.`}</span>
         <a href={postedNotice.href} className="rounded-lg border border-emerald-300 bg-white px-3 py-1 text-xs font-bold text-emerald-800 hover:bg-emerald-100">Mở phiếu →</a>
       </div>}
@@ -647,7 +659,7 @@ export default function BankStatementLedgerPage() {
           {splitOffTotal > 0 && <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
             <b>{money(splitOffTotal)} đ</b> được tách khỏi tiền bán hàng về. Lưu xong hệ thống lập {splitOffVoucherCount} phiếu thu ngân hàng cho phần này (treo công nợ của đối tác đã chọn), phiếu gốc chỉ còn <b>{money(splitTotal - splitOffTotal)} đ</b>. Sửa lại lần nữa thì phiếu vừa lập bị xoá và lập lại theo số mới.
           </div>}
-          <p className="text-xs text-slate-500">Gross ví và hai khoản phí (Grab, cà thẻ) chia theo tỷ trọng của các dòng còn giữ loại thu/chi gốc — phần tách ra không gánh phí thu hộ. Tổng giữ nguyên đến từng đồng.</p>
+          <p className="text-xs text-slate-500">Quyết toán ví: lưu xong hệ thống tính lại gross và phí theo doanh thu POS của TỪNG ngày doanh thu vừa khai, rồi cập nhật phí trên phiếu QTVI. Phần tách sang loại thu/chi khác không gánh phí. Ngày nào chưa đủ doanh thu POS thì phí giữ nguyên và báo lý do.</p>
           {splitError && <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">{splitError}</p>}
         </div>
 

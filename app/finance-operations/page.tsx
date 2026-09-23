@@ -735,10 +735,14 @@ export default function FinanceOperationsPage() {
         currentFee: number; nextFee: number;
         totalAmount: number;
         walletLabel: string; reportDate: string;
+        /** Phiếu gộp nhiều ngày doanh thu: danh sách ngày đã tính riêng. */
+        reportDateLabel?: string;
+        days?: Array<{ day: string; netAmount: number; grossAmount: number; feeAmount: number }>;
         highFeeMessage: string | null;
         changes: Array<{ code: string; feeBefore: number; feeAfter: number }>;
       };
-      const dayText = new Date(`${plan.reportDate}T00:00:00Z`).toLocaleDateString("vi-VN", { timeZone: "UTC" });
+      const dayText = plan.reportDateLabel
+        || new Date(`${plan.reportDate}T00:00:00Z`).toLocaleDateString("vi-VN", { timeZone: "UTC" });
       if (!plan.changed) {
         setMessage(`Phiếu ${transfer.code} đang khớp doanh thu hiện tại của ${plan.walletLabel} ngày ${dayText} (${money(plan.nextGross)} đ) — không cần chạy lại.`);
         return;
@@ -749,6 +753,9 @@ export default function FinanceOperationsPage() {
         `Tiền thật về ngân hàng: ${money(plan.totalAmount)} đ (giữ nguyên)`,
         `Gross: ${money(plan.currentGross)} đ  ->  ${money(plan.nextGross)} đ (doanh thu hiện tại)`,
         `Phí: ${money(plan.currentFee)} đ  ->  ${money(plan.nextFee)} đ`,
+        ...(plan.days && plan.days.length > 1
+          ? ["", "Theo từng ngày doanh thu:", ...plan.days.map((row) => `• ${new Date(`${row.day}T00:00:00Z`).toLocaleDateString("vi-VN", { timeZone: "UTC" })}: gross ${money(row.grossAmount)} − về ${money(row.netAmount)} = phí ${money(row.feeAmount)} đ`)]
+          : []),
         "",
         `${plan.changes.length} phiếu đổi số:`,
         ...plan.changes.map((row) => `• ${row.code}: phí ${money(row.feeBefore)} -> ${money(row.feeAfter)} đ`),

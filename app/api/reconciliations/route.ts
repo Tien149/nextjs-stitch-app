@@ -14,6 +14,8 @@ import {
 } from "@/lib/wallet-revenue-reconciliation";
 import {
   allocateWalletSettlementGroup,
+  checkWalletFeeRate,
+  walletFeeRateMessage,
   WALLET_CARD_FEE_CATEGORY_CODE,
   WALLET_GRAB_EXPENSE_CATEGORY_CODE,
 } from "@/lib/wallet-settlement-allocation";
@@ -22,7 +24,10 @@ import { planRevenueDateSplit, RevenueSplitError } from "@/lib/bank-statement-re
 import { BANK_STATEMENT_SPLIT_SOURCE_SCOPE, SALES_RECEIPT_CATEGORY_CODES } from "@/lib/voucher-rules";
 import { MACHINE_VOUCHER_SOURCE_SCOPES } from "@/lib/bank-statement-voucher-match";
 import { buildAuditLogData } from "@/lib/audit-log";
-import { closedPeriodMessage, findClosedPeriod } from "@/lib/phase3";
+import { closedPeriodMessage, findClosedPeriod, isPeriodLocked } from "@/lib/phase3";
+import { effectiveMoneyTransferDate } from "@/lib/money-transfer-date";
+import { computeWalletGrossByDay } from "@/lib/wallet-settlement-by-day";
+import { assertWalletCardFeeCategory, repostWalletSettlementJournal, walletFeeFields } from "@/lib/wallet-settlement-fee";
 import { softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
 import type { DemoSession } from "@/lib/auth-demo";
 
@@ -1454,6 +1459,56 @@ export async function PATCH(request: Request) {
     if ("error" in prepared) return NextResponse.json({ error: prepared.error }, { status: 400 });
     const { categoryNameByCode, partnerNameByCode, splitMoneySourceCode, documentDate } = prepared;
 
+    /**
+     * Quyết toán ví trả gộp nhiều ngày: tính lại gross/phí theo doanh thu POS của TỪNG ngày
+     * vừa khai, rồi đổi phí trên phiếu QTVI cho khớp. Trước đây màn này giữ nguyên tổng gross
+     * lúc import, nên dòng import sai ngày (hoặc gross tự điền lệch) thì phiếu QTVI sai phí mãi
+     * — ca QTVI-2608-NME-00057 chỉ ghi phí của ngày 09/08, thiếu 879.353 đ phí ngày 07-08/08.
+     * Không tính được (thiếu doanh thu POS, phí vượt trần...) thì giữ cách chia cũ và báo lý do.
+     */
+    const walletMatch = bank.matches.find((match) => match.targetType === "WALLET_SETTLEMENT");
+    const walletTransfer = walletMatch
+      ? await prisma.moneyTransfer.findFirst({ where: { id: walletMatch.targetId, transferPurpose: "WALLET_SETTLEMENT", deletedAt: null } })
+      : null;
+    let walletFeeWarning: string | null = null;
+    let walletFee: { feeAmount: number; grabExpenseAmount: number } | null = null;
+    if (walletTransfer) {
+      const keptLines = plan.lines
+        .map((line, index) => ({ line, index }))
+        .filter(({ line }) => line.keepsOriginalCategory && line.creditAmount > 0);
+      if (walletTransfer.status !== "APPROVED") {
+        walletFeeWarning = `Phiếu ${walletTransfer.code} chưa duyệt nên phí chưa được tính lại theo từng ngày.`;
+      } else if (await isPeriodLocked(effectiveMoneyTransferDate(walletTransfer), walletTransfer.branchCode)) {
+        walletFeeWarning = `Phiếu ${walletTransfer.code} thuộc kỳ đã khoá sổ nên phí giữ nguyên.`;
+      } else if (keptLines.length > 0) {
+        const computed = await computeWalletGrossByDay({
+          branchCode: walletTransfer.branchCode,
+          walletCode: walletTransfer.fromMoneySourceCode,
+          lines: keptLines.map(({ line }) => ({ revenueDate: line.revenueDate, netAmount: line.creditAmount })),
+          excludeBankTransactionId: bank.id,
+        });
+        const feeCheck = computed.ok && computed.plan.totalFee > 0
+          ? checkWalletFeeRate(computed.isGrab ? "GRAB" : "CARD_WALLET", computed.plan.totalGross, computed.plan.totalNet)
+          : null;
+        if (!computed.ok) {
+          walletFeeWarning = `Phí trên ${walletTransfer.code} giữ nguyên: ${computed.reason}`;
+        } else if (feeCheck && !feeCheck.ok) {
+          walletFeeWarning = `Phí trên ${walletTransfer.code} giữ nguyên: ${walletFeeRateMessage(feeCheck, computed.plan.totalGross, computed.plan.totalNet)}`;
+        } else if (computed.plan.totalFee > 0 && !walletTransfer.feeCategoryCode && !computed.isGrab && !(await assertWalletCardFeeCategory())) {
+          walletFeeWarning = `Phí trên ${walletTransfer.code} giữ nguyên: thiếu khoản mục ${WALLET_CARD_FEE_CATEGORY_CODE} trong danh mục Thu/Chi.`;
+        } else {
+          keptLines.forEach(({ line }, position) => {
+            const gross = computed.plan.lineGross[position];
+            const fee = gross - line.creditAmount;
+            line.grossAmount = gross;
+            line.grabExpenseAmount = computed.isGrab ? fee : 0;
+            line.cardFeeAmount = computed.isGrab ? 0 : fee;
+          });
+          walletFee = { feeAmount: computed.plan.totalFee, grabExpenseAmount: computed.isGrab ? computed.plan.totalFee : 0 };
+        }
+      }
+    }
+
     const keptAmount = plan.lines
       .filter((line) => line.keepsOriginalCategory)
       .reduce((sum, line) => sum + (line.creditAmount || line.debitAmount), 0);
@@ -1579,6 +1634,12 @@ export async function PATCH(request: Request) {
         });
       }
 
+      if (walletTransfer && walletFee && walletFee.feeAmount !== Math.round(walletTransfer.feeAmount)) {
+        await tx.moneyTransfer.update({
+          where: { id: walletTransfer.id },
+          data: walletFeeFields(walletTransfer, walletFee.feeAmount, walletFee.grabExpenseAmount),
+        });
+      }
       await tx.bankStatementTransaction.update({
         where: { id: bank.id },
         data: {
@@ -1605,10 +1666,21 @@ export async function PATCH(request: Request) {
             })),
             splitCategories: plan.splitCategories,
             removedVouchers: splitVouchers.map((row) => row.code),
+            walletFee: walletTransfer && walletFee
+              ? { code: walletTransfer.code, feeBefore: Math.round(walletTransfer.feeAmount), feeAfter: walletFee.feeAmount }
+              : null,
+            walletFeeWarning,
           },
         }),
       });
     });
+
+    let walletFeeChange: { code: string; feeBefore: number; feeAfter: number } | null = null;
+    if (walletTransfer && walletFee && walletFee.feeAmount !== Math.round(walletTransfer.feeAmount)) {
+      const refreshed = await prisma.moneyTransfer.findUniqueOrThrow({ where: { id: walletTransfer.id } });
+      await repostWalletSettlementJournal(refreshed, auth.session.name);
+      walletFeeChange = { code: walletTransfer.code, feeBefore: Math.round(walletTransfer.feeAmount), feeAfter: walletFee.feeAmount };
+    }
 
     const updated = await prisma.bankStatementTransaction.findUnique({
       where: { id: bank.id },
@@ -1617,6 +1689,8 @@ export async function PATCH(request: Request) {
     return NextResponse.json({
       transaction: updated,
       revenueDates: plan.lines.map((line) => line.revenueDate.toISOString()),
+      walletFeeChange,
+      walletFeeWarning,
     });
   } catch (error) {
     console.error("Error splitting bank statement revenue dates:", error);
