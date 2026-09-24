@@ -22,6 +22,8 @@ export type WalletDayLine = {
   revenueDate: Date;
   /** Tiền thực về của dòng. */
   netAmount: number;
+  /** Gross đang ghi trên dòng — giữ nguyên cho ngày chưa tính được (xem `pendingDays`). */
+  grossAmount?: number | null;
 };
 
 export type WalletDayResult = {
@@ -42,6 +44,12 @@ export type WalletGrossByDayPlan = {
   totalNet: number;
   totalGross: number;
   totalFee: number;
+  /**
+   * Ngày chưa có doanh thu POS (hoặc số thu ngân khai không tách được cho ví này): chưa tính
+   * được phí nên giữ gross đang ghi trên dòng, dòng chưa có gross thì phí tạm 0. Nạp doanh thu
+   * ngày đó rồi chạy lại là ra phí thật.
+   */
+  pendingDays: Array<{ day: string; reason: string }>;
 };
 
 export type WalletGrossByDayResult =
@@ -68,17 +76,29 @@ export function planWalletGrossByDay(input: {
   const lineGross = input.lines.map(() => 0);
   const results: WalletDayResult[] = [];
 
+  const pendingDays: WalletGrossByDayPlan["pendingDays"] = [];
+
   for (const day of days) {
-    if (input.contestedDays?.has(day)) {
-      return { ok: false, reason: `Doanh thu ngày ${dayText(day)} không tách được riêng cho ${wallet} (trùng tên với ví khác), không tính phí tự động được.` };
-    }
     const indexes = keys.flatMap((key, index) => (key === day ? [index] : []));
     const netAmount = indexes.reduce((sum, index) => sum + Math.round(input.lines[index].netAmount), 0);
     const revenue = Math.round(input.revenueByDay.get(day) || 0);
     const claimedElsewhere = Math.round(input.claimedByDay.get(day) || 0);
     const available = revenue - claimedElsewhere;
-    if (revenue <= 0) {
-      return { ok: false, reason: `Ngày ${dayText(day)} chưa có doanh thu POS của ${wallet}. Nạp file doanh thu ngày đó trước rồi mới tính được phí.` };
+    // Chốt 24/09/2026: một ngày thiếu doanh thu không được chặn cả phiếu. Tiền về gộp 28/08 →
+    // 01/09 mà chưa nạp POS ngày 01/09 thì phí 28–31/08 (bảng Tiền về đủ chưa đã có số) cứ nằm
+    // 0 trên sổ. Ngày thiếu dữ liệu để nguyên gross đang ghi, các ngày còn lại tính bình thường.
+    const pendingReason = input.contestedDays?.has(day)
+      ? `Doanh thu ngày ${dayText(day)} không tách được riêng cho ${wallet} (trùng tên với ví khác).`
+      : revenue <= 0 ? `Ngày ${dayText(day)} chưa có doanh thu POS của ${wallet}.` : null;
+    if (pendingReason) {
+      pendingDays.push({ day, reason: pendingReason });
+      let grossOfDay = 0;
+      for (const index of indexes) {
+        lineGross[index] = Math.max(Math.round(input.lines[index].netAmount), Math.round(input.lines[index].grossAmount || 0));
+        grossOfDay += lineGross[index];
+      }
+      results.push({ day, netAmount, revenue, claimedElsewhere, grossAmount: grossOfDay, feeAmount: grossOfDay - netAmount });
+      continue;
     }
     if (available < netAmount) {
       return {
@@ -100,9 +120,13 @@ export function planWalletGrossByDay(input: {
     results.push({ day, netAmount, revenue, claimedElsewhere, grossAmount: available, feeAmount: available - netAmount });
   }
 
+  // Không ngày nào tính được thì không có gì mới để ghi — giữ nguyên phiếu như trước.
+  if (pendingDays.length === days.length) {
+    return { ok: false, reason: `${pendingDays.map((row) => row.reason).join(" ")} Nạp file doanh thu ngày đó trước rồi mới tính được phí.` };
+  }
   const totalNet = results.reduce((sum, row) => sum + row.netAmount, 0);
   const totalGross = results.reduce((sum, row) => sum + row.grossAmount, 0);
-  return { ok: true, plan: { days: results, lineGross, totalNet, totalGross, totalFee: totalGross - totalNet } };
+  return { ok: true, plan: { days: results, lineGross, totalNet, totalGross, totalFee: totalGross - totalNet, pendingDays } };
 }
 
 /**

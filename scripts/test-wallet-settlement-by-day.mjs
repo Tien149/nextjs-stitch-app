@@ -37,15 +37,34 @@ test("phần gross ngày đó đã được sao kê khác nhận thì trừ ra",
   assert.equal(result.plan.totalFee, 178_093);
 });
 
-test("ngày chưa đủ doanh thu POS thì không tính, báo đúng ngày", () => {
+test("ngày chưa có doanh thu POS không chặn cả phiếu: các ngày khác vẫn ra phí, ngày thiếu phí tạm 0", () => {
   const result = planWalletGrossByDay({
     lines,
     revenueByDay: new Map([["2026-08-07", 22_878_093], ["2026-08-09", 18_627_861]]),
     claimedByDay: new Map(),
     walletLabel: "FDS - Quẹt Thẻ Momo",
   });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.plan.pendingDays.map((row) => row.day), ["2026-08-08"]);
+  assert.match(result.plan.pendingDays[0].reason, /0?8\/0?8\/2026/);
+  assert.deepEqual(result.plan.days.map((row) => row.feeAmount), [377_489, 0, 307_359]);
+  assert.equal(result.plan.lineGross[1], 29_914_137);
+  assert.equal(result.plan.totalFee, 377_489 + 307_359);
+});
+
+test("ngày chờ doanh thu giữ nguyên gross đang ghi trên dòng", () => {
+  const result = planWalletGrossByDay({
+    lines: [lines[0], { ...lines[1], grossAmount: 30_416_001 }],
+    revenueByDay: new Map([["2026-08-07", 22_878_093]]),
+    claimedByDay: new Map(),
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.plan.totalFee, 377_489 + 501_864);
+});
+
+test("không ngày nào có doanh thu thì không tính, giữ nguyên phiếu", () => {
+  const result = planWalletGrossByDay({ lines, revenueByDay: new Map(), claimedByDay: new Map() });
   assert.equal(result.ok, false);
-  assert.match(result.reason, /0?8\/0?8\/2026/);
 });
 
 test("doanh thu nhỏ hơn tiền về (khai sai ngày) thì dừng, không ra phí âm", () => {

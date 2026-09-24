@@ -1484,7 +1484,7 @@ export async function PATCH(request: Request) {
         const computed = await computeWalletGrossByDay({
           branchCode: walletTransfer.branchCode,
           walletCode: walletTransfer.fromMoneySourceCode,
-          lines: keptLines.map(({ line }) => ({ revenueDate: line.revenueDate, netAmount: line.creditAmount })),
+          lines: keptLines.map(({ line }) => ({ revenueDate: line.revenueDate, netAmount: line.creditAmount, grossAmount: line.grossAmount })),
           excludeBankTransactionId: bank.id,
         });
         const feeCheck = computed.ok && computed.plan.totalFee > 0

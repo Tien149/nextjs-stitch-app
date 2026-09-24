@@ -306,7 +306,7 @@ async function rerunWalletSettlementTransfer(
     const computed = await computeWalletGrossByDay({
       branchCode: transfer.branchCode,
       walletCode: transfer.fromMoneySourceCode,
-      lines: linkedLines.map((row) => ({ revenueDate: row.revenueDate as Date, netAmount: row.creditAmount })),
+      lines: linkedLines.map((row) => ({ revenueDate: row.revenueDate as Date, netAmount: row.creditAmount, grossAmount: row.grossAmount })),
       excludeBankTransactionId: bank.id,
     });
     if (!computed.ok) businessError(computed.reason);

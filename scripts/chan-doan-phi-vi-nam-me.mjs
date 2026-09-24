@@ -152,7 +152,7 @@ async function partTransfers() {
     const computed = await computeWalletGrossByDay({
       branchCode: t.branchCode,
       walletCode: t.fromMoneySourceCode,
-      lines: lines.map((row) => ({ revenueDate: row.revenueDate, netAmount: row.creditAmount })),
+      lines: lines.map((row) => ({ revenueDate: row.revenueDate, netAmount: row.creditAmount, grossAmount: row.grossAmount })),
       excludeBankTransactionId: match.bankTransaction.id,
     });
     if (!computed.ok) { failed.push({ t, reason: computed.reason, lines }); continue; }
@@ -176,6 +176,7 @@ async function partTransfers() {
     for (const d of w.plan.days) {
       console.log(`    ${d.day}  ${pad(d.revenue, 14)}  ${pad(d.claimedElsewhere, 14)}  ${pad(d.grossAmount, 14)}  ${pad(d.netAmount, 14)}  ${pad(d.feeAmount, 12)}`);
     }
+    for (const p of w.plan.pendingDays) console.log(`    (chờ doanh thu) ${p.reason} Giữ gross đang ghi trên dòng; nạp doanh thu rồi chạy lại.`);
   }
   for (const f of failed) await explainFailed(f);
   if (unlinked.length) {
