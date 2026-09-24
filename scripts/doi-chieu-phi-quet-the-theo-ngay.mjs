@@ -59,6 +59,7 @@ async function main() {
   let ledgerGrab = 0;
   /** Phí trên sổ của từng phiếu QTVI, tách thẻ / Grab — để quy về ngày doanh thu ở dưới. */
   const transferFee = new Map();
+  const feeByDay = [];
   for (const entry of entries) {
     for (const line of entry.lines) {
       if (!["COGS", "OPEX", "OTHER_EXPENSE"].includes(line.account.accountType)) continue;
@@ -69,7 +70,11 @@ async function main() {
         add(ledgerCardByDay, entry.entryDate.toISOString().slice(0, 10), amount);
         add(ledgerCardBySource, entry.sourceType, amount);
       } else ledgerGrab += amount;
-      if (entry.sourceType === "MONEY_TRANSFER") {
+      // Từ 24/09/2026 vế phí ghi riêng theo từng ngày doanh thu, mã nguồn "<id phiếu>:<ngày>".
+      if (entry.sourceType === "MONEY_TRANSFER_FEE") {
+        const [transferId, day] = entry.sourceId.split(":");
+        feeByDay.push({ transferId, day, code: entry.sourceCode, entryDay: entry.entryDate.toISOString().slice(0, 10), card: isCard ? amount : 0, grab: isCard ? 0 : amount });
+      } else if (entry.sourceType === "MONEY_TRANSFER") {
         const cur = transferFee.get(entry.sourceId) || { code: entry.sourceCode, entryDay: entry.entryDate.toISOString().slice(0, 10), card: 0, grab: 0 };
         if (isCard) cur.card += amount; else cur.grab += amount;
         transferFee.set(entry.sourceId, cur);
@@ -91,7 +96,7 @@ async function main() {
   const writtenOffCard = report.rows.filter((r) => r.group === "WALLET" && !isGrabMoneySource(r.moneySourceCode, r.moneySourceName)).reduce((s, r) => s + r.writtenOff, 0);
 
   // ---------- Quy phí trên sổ của từng QTVI về ngày doanh thu + ví ----------
-  const ids = [...transferFee.keys()];
+  const ids = [...new Set([...transferFee.keys(), ...feeByDay.map((f) => f.transferId)])];
   const [transfers, matches, sources] = await Promise.all([
     prisma.moneyTransfer.findMany({ where: { id: { in: ids } }, select: { id: true, code: true, fromMoneySourceCode: true, transferDate: true, sourceReportDate: true } }),
     prisma.reconciliationMatch.findMany({
@@ -108,8 +113,17 @@ async function main() {
   }
   const ledgerByKey = new Map(); // `${day}|${source}` -> { card, grab, codes:Set, entryDays:Set }
   const noRevenueDay = [];
+  const sourceOfTransfer = new Map(transfers.map((t) => [t.id, t.fromMoneySourceCode]));
+  // Bút toán phí đã mang sẵn ngày doanh thu: không phải đoán tỷ trọng.
+  for (const f of feeByDay) {
+    const key = `${f.day}|${sourceOfTransfer.get(f.transferId) || "?"}`;
+    const cur = ledgerByKey.get(key) || { card: 0, grab: 0, codes: new Set(), entryDays: new Set() };
+    cur.card += f.card; cur.grab += f.grab; cur.codes.add(f.code); cur.entryDays.add(f.entryDay);
+    ledgerByKey.set(key, cur);
+  }
   for (const t of transfers) {
     const fee = transferFee.get(t.id);
+    if (!fee) continue;
     const allocs = (allocsOf.get(t.id) || []).filter((a) => a.revenueDate && a.creditAmount > 0 && (!a.decreaseMoneySourceCode || a.decreaseMoneySourceCode === t.fromMoneySourceCode));
     // Trọng số từng ngày = phí của dòng sao kê ngày đó (gross − thực về); không có gross thì theo tiền về.
     let parts = allocs.map((a) => ({ day: vietnamBusinessDayKey(a.revenueDate), w: a.grossAmount != null ? Math.max(0, a.grossAmount - a.creditAmount) : 0, net: a.creditAmount }));
@@ -158,7 +172,7 @@ async function main() {
       detail.push({ day, source, name: sourceName.get(source) || source, isGrab, expectedCard, ledCard, codes: led ? [...led.codes].join(",") : "", entryDays: led ? [...led.entryDays].join(",") : "" });
     }
   }
-  const nonTransfer = [...ledgerCardBySource.entries()].filter(([k]) => k !== "MONEY_TRANSFER");
+  const nonTransfer = [...ledgerCardBySource.entries()].filter(([k]) => k !== "MONEY_TRANSFER" && k !== "MONEY_TRANSFER_FEE");
   const noDayCard = noRevenueDay.reduce((s, r) => s + r.card, 0);
 
   console.log(`Cửa hàng ${branchCode} · kỳ ${period} · CHỈ ĐỌC`);
@@ -182,8 +196,8 @@ async function main() {
   const explained = buckets.prevPeriod + buckets.grabAsCard + buckets.feeDiff + buckets.ledgerNoTable + buckets.tableNoLedger + noDayCard + nonTransfer.reduce((s, [, v]) => s + v, 0);
   console.log(`     Cộng                                                        ${pad(explained, 14)} đ`);
   console.log("");
-  console.log("Lưu ý đọc theo ngày: sổ ghi phí QTVI vào NGÀY TIỀN VỀ, bảng xếp theo NGÀY DOANH THU —");
-  console.log("so từng ngày giữa hai bảng luôn trượt 1 ngày (thứ Hai gộp cả cuối tuần). Muốn so ngày phải dùng cột dưới.");
+  console.log("Lưu ý đọc theo ngày: từ 24/09/2026 phí QTVI ghi theo NGÀY DOANH THU (bút toán MONEY_TRANSFER_FEE) —");
+  console.log("phiếu chưa Đồng bộ ghi sổ lại vẫn còn phí nằm ở NGÀY TIỀN VỀ (bút toán MONEY_TRANSFER) cho tới khi đồng bộ.");
   console.log("");
   console.log("CHI TIẾT CÁC DÒNG LỆCH (ngày DOANH THU + ví):");
   console.log("NGÀY DT     VÍ                                  BẢNG (thẻ)     SỔ (quẹt thẻ)   LỆCH           GHI SỔ NGÀY   PHIẾU");

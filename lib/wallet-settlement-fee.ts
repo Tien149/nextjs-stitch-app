@@ -1,9 +1,6 @@
 import type { MoneyTransfer } from "@prisma/custom-client";
 import { prisma } from "@/lib/prisma";
-import { ensureWalletFeePnlItems, postJournalEntry } from "@/lib/accounting";
-import { moneySourceAccountCode } from "@/lib/money-sources";
-import { effectiveMoneyTransferDate } from "@/lib/money-transfer-date";
-import { planMoneyTransferJournals } from "@/lib/internal-transfer";
+import { ensureWalletFeePnlItems, postMoneyTransferJournals } from "@/lib/accounting";
 import { WALLET_CARD_FEE_CATEGORY_CODE, WALLET_GRAB_EXPENSE_CATEGORY_CODE } from "@/lib/wallet-settlement-allocation";
 
 /**
@@ -52,27 +49,8 @@ export async function repostWalletSettlementJournal(updated: MoneyTransfer, crea
     where: { type: "MONEY_SOURCE", code: { in: [updated.fromMoneySourceCode, updated.toMoneySourceCode] } },
   });
   const sourceByCode = new Map(sources.map((source) => [source.code, source]));
-  const [journal] = planMoneyTransferJournals({
-    branchCode: updated.branchCode,
-    fromBranchCode: updated.fromBranchCode,
-    toBranchCode: updated.toBranchCode,
-    amount: updated.amount,
-    feeAmount: updated.feeAmount,
-    grabExpenseAmount: updated.grabExpenseAmount,
-    feeCategoryCode: updated.feeCategoryCode,
-    grabExpenseCategoryCode: updated.grabExpenseCategoryCode,
-    fromAccountCode: moneySourceAccountCode(sourceByCode.get(updated.fromMoneySourceCode)),
-    toAccountCode: moneySourceAccountCode(sourceByCode.get(updated.toMoneySourceCode)),
-    description: updated.description,
-  });
-  return postJournalEntry({
-    entryDate: effectiveMoneyTransferDate(updated),
-    branchCode: journal.branchCode,
-    sourceType: journal.sourceType,
-    sourceId: updated.id,
-    sourceCode: updated.code,
-    description: journal.description || updated.description,
-    createdBy,
-    lines: journal.lines as Parameters<typeof postJournalEntry>[0]["lines"],
-  });
+  // Vế tiền theo ngày tiền về, vế phí theo từng ngày doanh thu — cùng hàm Đồng bộ ghi sổ dùng.
+  const statuses = await postMoneyTransferJournals(updated, sourceByCode, createdBy);
+  if (statuses.includes("SKIPPED_LOCKED")) return "SKIPPED_LOCKED";
+  return statuses.find((status) => status !== "SKIPPED_EXISTS") || "SKIPPED_EXISTS";
 }

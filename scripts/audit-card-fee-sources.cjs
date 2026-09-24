@@ -47,6 +47,7 @@ const dayKey = (value) => new Date(value).toISOString().slice(0, 10);
 const SOURCE_LABELS = {
   REVENUE_POS: "File doanh thu POS (cột phí cà thẻ)",
   MONEY_TRANSFER: "Quyết toán ví / điều tiền",
+  MONEY_TRANSFER_FEE: "Quyết toán ví — phí theo ngày doanh thu",
   VOUCHER: "Phiếu chi / chứng từ ngân hàng",
   CASHBOOK_ADJUSTMENT: "Điều chỉnh quỹ",
 };
@@ -67,11 +68,11 @@ function summarize(lines) {
     byDay.set(line.date, day);
   }
   const overlapDays = [...byDay.entries()]
-    .filter(([, sources]) => sources.has("REVENUE_POS") && sources.has("MONEY_TRANSFER"))
+    .filter(([, sources]) => sources.has("REVENUE_POS") && (sources.has("MONEY_TRANSFER") || sources.has("MONEY_TRANSFER_FEE")))
     .map(([date, sources]) => ({
       date,
       pos: sources.get("REVENUE_POS") || 0,
-      wallet: sources.get("MONEY_TRANSFER") || 0,
+      wallet: (sources.get("MONEY_TRANSFER") || 0) + (sources.get("MONEY_TRANSFER_FEE") || 0),
     }))
     .sort((a, b) => a.date.localeCompare(b.date));
   return {
@@ -207,10 +208,17 @@ async function main() {
     const transferFeeTotal = transfers.reduce((sum, row) => sum + (row.feeAmount || 0), 0);
     const transferCardTotal = transferFeeTotal - transferGrabTotal;
     const postedByTransfer = await prisma.journalEntry.findMany({
-      where: { sourceType: "MONEY_TRANSFER", sourceId: { in: transfers.map((row) => row.id) }, deletedAt: null },
+      // Từ 24/09/2026 vế phí tách ra bút toán MONEY_TRANSFER_FEE mã nguồn "<id phiếu>:<ngày>".
+      where: {
+        deletedAt: null,
+        OR: [
+          { sourceType: "MONEY_TRANSFER", sourceId: { in: transfers.map((row) => row.id) } },
+          ...(transfers.length ? [{ sourceType: "MONEY_TRANSFER_FEE", OR: transfers.map((row) => ({ sourceId: { startsWith: `${row.id}:` } })) }] : []),
+        ],
+      },
       select: { sourceId: true, lines: { select: { debit: true, pnlItemCode: true, account: { select: { reportGroup: true, accountType: true } } } } },
     });
-    const postedIds = new Set(postedByTransfer.map((row) => row.sourceId));
+    const postedIds = new Set(postedByTransfer.map((row) => row.sourceId.split(":")[0]));
     const notPosted = transfers.filter((row) => (row.feeAmount || 0) > 0 && !postedIds.has(row.id));
     let feeWithItem = 0;
     let feeWithoutItem = 0;

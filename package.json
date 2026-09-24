@@ -77,6 +77,7 @@
     "test:revenue-day-summary": "node --experimental-strip-types --no-warnings --test scripts/test-revenue-day-summary.mjs",
     "test:revenue-day-delete": "node --experimental-strip-types --no-warnings --test scripts/test-revenue-day-delete-pick.mjs",
     "test:wallet-rerun": "node --experimental-strip-types --no-warnings --test scripts/test-wallet-settlement-rerun.mjs",
+    "test:wallet-fee-journal": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-wallet-fee-journal.mjs",
     "test:wallet-by-day": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-wallet-settlement-by-day.mjs",
     "test:money-transfer-dates": "node --experimental-strip-types scripts/test-money-transfer-effective-date.mjs",
     "backfill:bank-deposits": "node scripts/backfill-bank-deposits.cjs",

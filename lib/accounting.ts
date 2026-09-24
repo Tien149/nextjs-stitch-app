@@ -6,13 +6,16 @@ import { normalizeCategoryGroup } from "@/lib/voucher-rules";
 import { moneySourceAccountCode } from "@/lib/money-sources";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/lib/money-transfer-date";
-import { planMoneyTransferJournals } from "@/lib/internal-transfer";
+import { isCrossBranchTransfer, planMoneyTransferJournals } from "@/lib/internal-transfer";
 import { internalPartnerCode } from "@/lib/cost-reallocation";
 import { ADVANCE_RECEIVABLE_ACTION } from "@/lib/voucher-rules";
 import { REVENUE_CHANNEL_PNL_ITEMS, revenuePosFees, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { ensureRevenueCategories, type CategoryLookupClient } from "@/lib/revenue-source";
 import { WALLET_FEE_PNL_ITEMS } from "@/lib/wallet-settlement-allocation";
 import { roundJournalLines } from "@/lib/money-rounding";
+import { splitWalletFeeByDay, walletFeeDayLines, walletFeeSourceId, walletFeeSourcePrefix, WALLET_FEE_SOURCE_TYPE } from "@/lib/wallet-fee-journal";
+import { vietnamBusinessDayKey } from "@/lib/revenue-date";
+import type { MoneyTransfer } from "@prisma/custom-client";
 
 export const defaultAccounts = [
   { code: "1111", name: "Tiền mặt", accountType: "ASSET", normalBalance: "DEBIT", reportGroup: "CASH" },
@@ -216,6 +219,125 @@ export async function postJournalEntry(input: EntryInput) {
  * GTGT, Điều chỉnh). Là nhóm doanh thu để lên dòng 1 của P&L, nhưng không theo dõi tồn kho.
  * Chỉ tạo khi thiếu; người dùng đã đổi tên trên màn Danh mục thì giữ nguyên tên của họ.
  */
+/**
+ * Ghi sổ MỘT phiếu điều tiền. Dùng chung cho Đồng bộ ghi sổ và các nút sửa phí quyết toán ví.
+ *
+ * Phiếu quyết toán ví có phí (cùng cửa hàng): vế tiền ghi ngày tiền về, vế phí tách ra ghi theo
+ * TỪNG NGÀY DOANH THU (lib/wallet-fee-journal.ts). Mọi phiếu khác giữ một bút toán như cũ.
+ *
+ * Kỳ khoá: nếu BẤT KỲ ngày nào phiếu chạm tới (ngày tiền về, các ngày phí mới, các bút toán phí
+ * cũ cần dọn) nằm trong kỳ đã khoá thì không đụng gì cả — ghi một nửa sẽ làm ví lệch hoặc phí
+ * bị tính hai lần (vế phí cũ còn nằm trong bút toán tiền đã khoá).
+ */
+export async function postMoneyTransferJournals(
+  row: MoneyTransfer,
+  sourceByCode: Map<string, Parameters<typeof moneySourceAccountCode>[0]>,
+  actor: string,
+) {
+  const transferDate = effectiveMoneyTransferDate(row);
+  const input = {
+    branchCode: row.branchCode,
+    fromBranchCode: row.fromBranchCode,
+    toBranchCode: row.toBranchCode,
+    amount: row.amount,
+    feeAmount: row.feeAmount,
+    grabExpenseAmount: row.grabExpenseAmount,
+    feeCategoryCode: row.feeCategoryCode,
+    grabExpenseCategoryCode: row.grabExpenseCategoryCode,
+    fromAccountCode: moneySourceAccountCode(sourceByCode.get(row.fromMoneySourceCode)),
+    toAccountCode: moneySourceAccountCode(sourceByCode.get(row.toMoneySourceCode)),
+    description: row.description,
+  };
+  const isWallet = row.transferPurpose === "WALLET_SETTLEMENT";
+  const staleFeeEntries = isWallet
+    ? await prisma.journalEntry.findMany({
+        where: { sourceType: WALLET_FEE_SOURCE_TYPE, sourceId: { startsWith: walletFeeSourcePrefix(row.id) } },
+        select: { id: true, sourceId: true, entryDate: true, branchCode: true },
+      })
+    : [];
+  // Quyết toán ví luôn trong một cửa hàng; phiếu liên nhà hàng giữ nguyên một bút toán.
+  const splitFee = isWallet && row.feeAmount > 0 && !isCrossBranchTransfer(row);
+
+  if (!splitFee && staleFeeEntries.length === 0) {
+    const results: string[] = [];
+    for (const journal of planMoneyTransferJournals(input)) {
+      results.push(await postJournalEntry({
+        entryDate: transferDate,
+        branchCode: journal.branchCode,
+        sourceType: journal.sourceType,
+        sourceId: row.id,
+        sourceCode: row.code,
+        description: journal.description || row.description,
+        createdBy: actor,
+        lines: journal.lines as EntryLine[],
+      }));
+    }
+    return results;
+  }
+
+  let feeDays: ReturnType<typeof splitWalletFeeByDay> = [];
+  if (splitFee) {
+    const matches = await prisma.reconciliationMatch.findMany({
+      where: { targetType: "WALLET_SETTLEMENT", targetId: row.id, deletedAt: null, bankTransaction: { deletedAt: null } },
+      select: { bankTransaction: { select: { allocations: { select: { revenueDate: true, creditAmount: true, grossAmount: true, operationType: true, decreaseMoneySourceCode: true } } } } },
+    });
+    const lines = matches.flatMap((match) => match.bankTransaction.allocations)
+      .filter((line) => line.revenueDate && line.creditAmount > 0 && line.operationType !== "OTHER_RECEIPT"
+        && (!line.decreaseMoneySourceCode || line.decreaseMoneySourceCode === row.fromMoneySourceCode))
+      .map((line) => ({ day: vietnamBusinessDayKey(line.revenueDate as Date), netAmount: line.creditAmount, grossAmount: line.grossAmount }));
+    feeDays = splitWalletFeeByDay({
+      feeAmount: row.feeAmount,
+      grabExpenseAmount: row.grabExpenseAmount,
+      lines,
+      fallbackDay: vietnamBusinessDayKey(row.sourceReportDate || transferDate),
+    });
+  }
+  const dayDate = (day: string) => new Date(`${day}T00:00:00.000Z`);
+  const keepIds = new Set(feeDays.map((day) => walletFeeSourceId(row.id, day.day)));
+  const staleToRemove = staleFeeEntries.filter((entry) => !keepIds.has(entry.sourceId));
+  const touched = [
+    { date: transferDate, branchCode: row.branchCode },
+    ...feeDays.map((day) => ({ date: dayDate(day.day), branchCode: row.branchCode })),
+    ...staleToRemove.map((entry) => ({ date: entry.entryDate, branchCode: entry.branchCode })),
+  ];
+  for (const item of touched) {
+    if (await isPeriodLocked(item.date, item.branchCode)) return ["SKIPPED_LOCKED"];
+  }
+
+  const results: string[] = [];
+  // Vế tiền: cùng bút toán MONEY_TRANSFER như trước, chỉ bỏ phần phí ra.
+  for (const journal of planMoneyTransferJournals({ ...input, feeAmount: splitFee ? 0 : input.feeAmount, grabExpenseAmount: splitFee ? 0 : input.grabExpenseAmount })) {
+    results.push(await postJournalEntry({
+      entryDate: transferDate,
+      branchCode: journal.branchCode,
+      sourceType: journal.sourceType,
+      sourceId: row.id,
+      sourceCode: row.code,
+      description: journal.description || row.description,
+      createdBy: actor,
+      lines: journal.lines as EntryLine[],
+    }));
+  }
+  for (const day of feeDays) {
+    results.push(await postJournalEntry({
+      entryDate: dayDate(day.day),
+      branchCode: row.branchCode,
+      sourceType: WALLET_FEE_SOURCE_TYPE,
+      sourceId: walletFeeSourceId(row.id, day.day),
+      sourceCode: row.code,
+      description: `Phí quyết toán ví ${row.code} — doanh thu ngày ${day.day.split("-").reverse().join("/")}`,
+      createdBy: actor,
+      lines: walletFeeDayLines(day, input) as EntryLine[],
+    }));
+  }
+  if (staleToRemove.length > 0) {
+    await prisma.journalEntry.deleteMany({ where: { id: { in: staleToRemove.map((entry) => entry.id) } } });
+    // Dọn bút toán phí cũ cũng là sổ thay đổi — đếm vào "cập nhật" trên màn Đồng bộ ghi sổ.
+    results.push(...staleToRemove.map(() => "UPDATED"));
+  }
+  return results;
+}
+
 export async function ensureRevenueComponentCategories() {
   // Cùng một bộ với import doanh thu (lib/revenue-source.ts) để hai chỗ không lệch danh mục.
   await ensureRevenueCategories(prisma as unknown as CategoryLookupClient);
@@ -553,33 +675,8 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   // chỉ in được mã trơ thay vì tên khoản chi.
   if (moneyTransfers.some((row) => row.feeAmount !== 0)) await ensureWalletFeePnlItems();
   for (const row of moneyTransfers) {
-    const grossAmount = row.amount + row.feeAmount;
-    if (grossAmount <= 0) continue;
-    const journals = planMoneyTransferJournals({
-      branchCode: row.branchCode,
-      fromBranchCode: row.fromBranchCode,
-      toBranchCode: row.toBranchCode,
-      amount: row.amount,
-      feeAmount: row.feeAmount,
-      grabExpenseAmount: row.grabExpenseAmount,
-      feeCategoryCode: row.feeCategoryCode,
-      grabExpenseCategoryCode: row.grabExpenseCategoryCode,
-      fromAccountCode: moneySourceAccountCode(transferSourceByCode.get(row.fromMoneySourceCode)),
-      toAccountCode: moneySourceAccountCode(transferSourceByCode.get(row.toMoneySourceCode)),
-      description: row.description,
-    });
-    for (const journal of journals) {
-      results.push(await postJournalEntry({
-        entryDate: effectiveMoneyTransferDate(row),
-        branchCode: journal.branchCode,
-        sourceType: journal.sourceType,
-        sourceId: row.id,
-        sourceCode: row.code,
-        description: journal.description || row.description,
-        createdBy: actor,
-        lines: journal.lines as EntryLine[],
-      }));
-    }
+    if (row.amount + row.feeAmount <= 0) continue;
+    results.push(...await postMoneyTransferJournals(row, transferSourceByCode, actor));
   }
 
   const payables = await prisma.supplierPayable.findMany({ where: { recognizedDate: { gte: start, lt: end }, ...(branchCode === "ALL" ? {} : { purchaseOrder: { branchCode } }) }, include: { purchaseOrder: true } });

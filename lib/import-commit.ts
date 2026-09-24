@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { WALLET_FEE_SOURCE_TYPE, walletFeeSourcePrefix } from "@/lib/wallet-fee-journal";
 import { Prisma } from "@prisma/custom-client";
 import { prisma, prismaRaw, type RawTxClient, type TxClient } from "@/lib/prisma";
 import { assertPeriodOpen as assertAccountingPeriodOpen, buildAllocationSchedules, isPeriodLocked, periodFromDate } from "@/lib/phase3";
@@ -2609,6 +2610,12 @@ async function rollbackTransfers(tx: RawTxClient, batchId: string) {
   await tx.journalEntry.deleteMany({
     where: { sourceType: { in: ["MONEY_TRANSFER", "MONEY_TRANSFER_COUNTERPART"] }, sourceId: { in: transferIds } },
   });
+  // Vế phí quyết toán ví ghi riêng theo từng ngày doanh thu, mã nguồn "<id phiếu>:<ngày>".
+  if (transferIds.length > 0) {
+    await tx.journalEntry.deleteMany({
+      where: { sourceType: WALLET_FEE_SOURCE_TYPE, OR: transferIds.map((id) => ({ sourceId: { startsWith: walletFeeSourcePrefix(id) } })) },
+    });
+  }
   await tx.moneyTransfer.deleteMany({ where: { importBatchId: batchId } });
 }
 
