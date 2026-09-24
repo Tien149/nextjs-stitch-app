@@ -765,7 +765,7 @@ export default function DepositsPage() {
           )}
 
           <div id="deposit-table" className="min-h-0 flex-1 overflow-x-auto overflow-y-auto custom-scrollbar">
-            <table className="w-full min-w-[1030px] text-left text-sm">
+            <table className="w-full min-w-[1150px] text-left text-sm">
               <thead className="bg-slate-50 text-slate-500 text-xs uppercase border-b border-slate-200 sticky top-0 z-10 shadow-sm">
                 <tr>
                   <th className="w-[130px] px-4 py-3">Phiếu cọc</th>
@@ -773,12 +773,13 @@ export default function DepositsPage() {
                   <th className="w-[180px] px-4 py-3">Đối tượng</th>
                   <th className="w-[130px] px-4 py-3">Số tiền</th>
                   <th className="w-[150px] px-4 py-3">Trạng thái</th>
+                  <th className="w-[120px] px-4 py-3">Ngày nhận cọc</th>
                   <th className="w-[290px] px-4 py-3 text-right">Thao tác</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {deposits.length === 0 ? (
-                  <tr><td colSpan={6} className="px-4 py-10 text-center text-slate-400">Chưa có phiếu cọc.</td></tr>
+                  <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-400">Chưa có phiếu cọc.</td></tr>
                 ) : deposits.map((deposit) => {
                   const isFocused = deposit.code === focusedCode;
                   return (
@@ -811,6 +812,9 @@ export default function DepositsPage() {
                           {new Date(deposit.histories[0].actionDate || deposit.histories[0].createdAt).toLocaleDateString("vi-VN")}
                         </p>
                       )}
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap font-medium text-slate-700">
+                      {new Date(deposit.receivedDate).toLocaleDateString("vi-VN")}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
