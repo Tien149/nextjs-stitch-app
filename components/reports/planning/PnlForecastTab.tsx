@@ -36,6 +36,16 @@ const isEmptyNode = (node: { months: number[]; plan: number[] | null }) =>
   node.months.every((value) => Math.abs(value) <= 0.5) && (!node.plan || node.plan.every((value) => Math.abs(value) <= 0.5));
 
 /**
+ * Dòng KQKD luôn xoè đủ NHÓM hạng mục P&L, kể cả khi "Ẩn dòng bằng 0" đang bật (khách yêu cầu
+ * 24/09/2026). Thu nhập khác phần lớn các tháng bằng 0 nên bị ẩn sạch, khối chỉ còn "0 nguồn" —
+ * người xem tưởng chưa tách theo nhóm (Doanh thu tài chính, Hoa hồng Sapporo, Khách thanh toán
+ * thừa, Thu nhập từ xuất VAT). Hạng mục con bằng 0 vẫn ẩn như cũ.
+ */
+const ALWAYS_SHOW_GROUP_LINES = new Set(["otherIncome"]);
+const visibleGroups = <T extends { months: number[]; plan: number[] | null }>(lineKey: string, groups: T[], hideEmpty: boolean) =>
+  hideEmpty && !ALWAYS_SHOW_GROUP_LINES.has(lineKey) ? groups.filter((group) => !isEmptyNode(group)) : groups;
+
+/**
  * Khối DOANH THU không xoè theo cây "nhóm doanh thu × kênh bán" nữa.
  *
  * Cây đó nhân chéo 5 nhóm với mọi kênh bán ra 15 dòng, phần lớn bằng 0 (chốt với khách
@@ -127,8 +137,7 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
         }
         continue;
       }
-      for (const group of line.groups) {
-        if (hideEmpty && isEmptyNode(group)) continue;
+      for (const group of visibleGroups(line.key, line.groups, hideEmpty)) {
         push("    ", group.name, group);
         for (const item of group.items) {
           if (hideEmpty && isEmptyNode(item)) continue;
@@ -288,7 +297,7 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
       );
     }
     const isRevenue = line.key === "revenue";
-    const groups = hideEmpty ? line.groups.filter((group) => !isEmptyNode(group)) : line.groups;
+    const groups = visibleGroups(line.key, line.groups, hideEmpty);
     // Đếm theo đúng những gì đang vẽ: trước đây badge đếm cả nhóm/hạng mục vừa bị "Ẩn dòng
     // bằng 0" giấu đi nên bảng ghi "4 nhóm" mà chỉ thấy 3.
     const itemCount = groups.reduce((sum, group) => sum + (hideEmpty ? group.items.filter((item) => !isEmptyNode(item)).length : group.items.length), 0);
@@ -298,7 +307,7 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
     const expandable = isRevenue ? revenueBreakdowns.length > 0 : groups.length > 0;
     const badge = isRevenue
       ? `${revenueBreakdowns.length} cách nhìn`
-      : itemCount > 0 ? `${groups.length} nhóm · ${itemCount} hạng mục` : `${groups.length} nguồn`;
+      : itemCount > 0 ? `${groups.length} nhóm · ${itemCount} hạng mục` : `${groups.length} nhóm`;
     return (
       <React.Fragment key={line.key}>
         <tr className={`border-t border-slate-200 ${style.band} ${expandable ? "cursor-pointer" : ""}`} onClick={expandable ? () => toggle(line.key) : undefined}>
