@@ -90,3 +90,14 @@ test("chưa khai hạng mục khấu hao thì dựng sẵn CPCĐ - CP Khấu Hao
   // Danh mục đã có hạng mục khấu hao thì không dựng thêm.
   assert.equal(withDepreciationPnlItem(items, capexCatalog.pnlGroups).length, items.length);
 });
+
+test("CAPEX TRỪ vào lợi nhuận hoạt động và lợi nhuận ròng (chốt 24/09/2026)", async () => {
+  const { finalizePnl } = await import("../lib/reports.ts");
+  const { finalizeBucket } = await import("../components/reports/planning/planning-types.ts");
+  const base = { revenue: 1_000, cogs: 300, payroll: 200, otherOpex: 100, otherIncome: 0, otherExpense: 0, capex: 88 };
+  for (const pnl of [finalizePnl(base), finalizeBucket(base)]) {
+    assert.equal(pnl.grossProfit, 700);
+    assert.equal(pnl.ebitda, 700 - 200 - 88 - 100);
+    assert.equal(pnl.netProfit, 312);
+  }
+});

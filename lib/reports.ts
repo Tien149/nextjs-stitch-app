@@ -31,7 +31,7 @@ export type PnlBucket = {
   otherExpense: number;
   /**
    * Chi phí đầu tư ban đầu: phiếu chi / công nợ khai khoản mục hoặc hạng mục nhóm CAPEX (ghi Nợ
-   * 211). Dòng thông tin, không trừ vào lợi nhuận. Tài sản/CCDC mua trong kỳ ở màn Tài sản KHÔNG
+   * 211). Trừ vào lợi nhuận hoạt động (chốt 24/09/2026). Tài sản/CCDC mua trong kỳ ở màn Tài sản KHÔNG
    * nằm ở đây — chi phí của chúng vào Chi phí cố định qua hạng mục CP Khấu Hao (chốt 23/09/2026).
    */
   capex: number;
@@ -111,7 +111,7 @@ export function pnlLineKeyOf(account: { accountType: string; reportGroup: string
   if (account.accountType === "COGS") return "cogs";
   if (account.accountType === "OPEX") {
     // Phiếu chi gắn hạng mục nhóm CAPEX nhưng hạch toán 6428 (nhóm khai nhầm loại OPEX lúc ghi
-    // sổ) vẫn là tiền đầu tư ban đầu: đứng ở dòng CAPEX, không trừ vào lợi nhuận.
+    // sổ) vẫn là tiền đầu tư ban đầu: đứng ở dòng CAPEX (trừ vào lợi nhuận hoạt động).
     if (pnlItem?.capex && account.reportGroup !== "DEPRECIATION" && account.reportGroup !== "PAYROLL") return "capex";
     if (account.reportGroup === "PAYROLL") return "payroll";
     if (isPayrollPnlItem(pnlItem)) return "payroll";
@@ -120,7 +120,7 @@ export function pnlLineKeyOf(account: { accountType: string; reportGroup: string
   }
   if (account.accountType === "OTHER_INCOME") return "otherIncome";
   if (account.accountType === "OTHER_EXPENSE") return "otherExpense";
-  // Ghi tăng TSCĐ (211) là tiền đầu tư ban đầu — dòng CAPEX đứng riêng, không trừ vào lợi nhuận.
+  // Ghi tăng TSCĐ (211) là tiền đầu tư ban đầu — dòng CAPEX đứng riêng, trừ vào lợi nhuận hoạt động.
   // Nguồn bút toán nào được lên dòng này thì lọc ở chỗ đọc (NON_CAPEX_SOURCE_TYPES). Các tài
   // khoản tài sản khác (tiền, kho, phải thu, 242) không lên KQKD.
   if (account.accountType === "ASSET") return CAPEX_REPORT_GROUPS.includes(account.reportGroup) ? "capex" : null;
@@ -155,7 +155,10 @@ export function finalizePnl(bucket: PnlBucket) {
   const grossProfit = bucket.revenue - bucket.cogs;
   // OPEX đã gồm khấu hao nên "ebitda" chính là lợi nhuận hoạt động; giữ tên trường để không đổi
   // hợp đồng API với các màn đang đọc, nhãn hiển thị là "Lợi nhuận hoạt động".
-  const opexBeforeDepreciation = bucket.payroll + bucket.otherOpex;
+  // CAPEX (chi phí đầu tư ban đầu) TRỪ vào lợi nhuận hoạt động — khách chốt 24/09/2026, đảo
+  // luật "dòng thông tin, không trừ" trước đó. Hạng mục nhóm CAPEX phần lớn là phân bổ hàng kỳ
+  // (Nợ 6428), không trừ là lợi nhuận bị thổi đúng bằng khoản đó (Nam Mê T8: 88.248.717 đ).
+  const opexBeforeDepreciation = bucket.payroll + bucket.capex + bucket.otherOpex;
   const ebitda = grossProfit - opexBeforeDepreciation;
   const operatingProfit = ebitda;
   const netProfit = operatingProfit + bucket.otherIncome - bucket.otherExpense;
@@ -211,14 +214,13 @@ export const PNL_STATEMENT_LINES: Array<{ key: PnlLineKey | "grossProfit" | "ebi
   { key: "cogs", label: "2. Giá vốn hàng bán", subtotal: false },
   { key: "grossProfit", label: "3. Lợi nhuận gộp", subtotal: true },
   { key: "payroll", label: "4. Chi phí nhân sự", subtotal: false },
-  // Dòng thông tin, cố ý KHÔNG đánh số: tiền mua tài sản không nằm trong mạch tính lợi nhuận
-  // bên dưới (vào P&L qua hạng mục CP Khấu Hao), đánh số sẽ khiến người đọc tưởng nó bị trừ.
-  { key: "capex", label: "Chi phí đầu tư ban đầu (CAPEX) — không trừ vào lợi nhuận", subtotal: false },
-  { key: "otherOpex", label: "5. Chi phí hoạt động (OPEX)", subtotal: false },
-  { key: "ebitda", label: "6. Lợi nhuận hoạt động", subtotal: true },
-  { key: "otherIncome", label: "7. Thu nhập khác", subtotal: false },
-  { key: "otherExpense", label: "8. Chi phí khác", subtotal: false },
-  { key: "netProfit", label: "9. Lợi nhuận ròng", subtotal: true },
+  // CAPEX trừ vào lợi nhuận hoạt động như nhân sự và OPEX (chốt 24/09/2026) nên có số thứ tự.
+  { key: "capex", label: "5. Chi phí đầu tư ban đầu (CAPEX)", subtotal: false },
+  { key: "otherOpex", label: "6. Chi phí hoạt động (OPEX)", subtotal: false },
+  { key: "ebitda", label: "7. Lợi nhuận hoạt động", subtotal: true },
+  { key: "otherIncome", label: "8. Thu nhập khác", subtotal: false },
+  { key: "otherExpense", label: "9. Chi phí khác", subtotal: false },
+  { key: "netProfit", label: "10. Lợi nhuận ròng", subtotal: true },
 ];
 
 export type PnlCatalog = {
@@ -374,7 +376,7 @@ export function createPnlDetailTree(catalog: PnlCatalog, monthCount: number) {
 
   // Nạp sẵn TOÀN BỘ danh mục P&L đang hoạt động, kể cả nhóm/hạng mục chưa phát sinh đồng nào:
   // khách khai thêm hạng mục trên màn Danh mục là bảng P&L có ngay dòng đó (số 0), không phải
-  // chờ tới lúc có bút toán. CAPEX đứng ở dòng đầu tư riêng (không trừ vào lợi nhuận),
+  // chờ tới lúc có bút toán. CAPEX đứng ở dòng đầu tư riêng (trừ vào lợi nhuận hoạt động),
   // REVENUE_SOURCE tách theo nguồn thu lúc có bút toán.
   const seedLineOf = (rawGroup: string | null | undefined): PnlLineKey | null => {
     const value = (rawGroup || "").toUpperCase();
@@ -710,7 +712,7 @@ export async function getPnl(period: string, branchCode: string) {
     total: finalized,
     statement,
     byBranch: Array.from(branches, ([code, bucket]) => ({ code, ...finalizePnl(bucket) })).sort((a, b) => b.revenue - a.revenue),
-    byDepartment: Array.from(departments, ([code, bucket]) => ({ code, ...finalizePnl(bucket) })).sort((a, b) => b.payroll + b.otherOpex - (a.payroll + a.otherOpex)),
+    byDepartment: Array.from(departments, ([code, bucket]) => ({ code, ...finalizePnl(bucket) })).sort((a, b) => b.opexBeforeDepreciation - a.opexBeforeDepreciation),
     byPnlItem: Array.from(pnlItemBreakdown.values())
       .filter((row) => Math.abs(row.amount) > 0.5)
       .sort((a, b) => (a.code === "UNCLASSIFIED" ? 1 : b.code === "UNCLASSIFIED" ? -1 : b.amount - a.amount)),

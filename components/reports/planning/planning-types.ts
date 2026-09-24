@@ -78,7 +78,7 @@ export const LINE_SHORT_LABEL: Record<string, string> = {
 };
 
 /** Chi phí hoạt động = nhân sự + OPEX (OPEX đã gồm khấu hao) — mọi thứ giữa LN gộp và LN hoạt động. */
-export const operatingCostOf = (bucket: PnlBucket) => bucket.payroll + bucket.otherOpex;
+export const operatingCostOf = (bucket: PnlBucket) => bucket.payroll + bucket.capex + bucket.otherOpex;
 
 /**
  * Các tháng (0-based) đang được tick trên chip "Lũy kế tháng". Trước đây chỉ có một số `upTo`
@@ -116,7 +116,8 @@ export function finalizeBucket(base: Pick<PnlBucket, "revenue" | "cogs" | "payro
   const grossProfit = base.revenue - base.cogs;
   // Khấu hao đã nằm trong OPEX nên "ebitda" ở đây chính là lợi nhuận hoạt động; giữ tên trường
   // để không phải đổi hợp đồng API, nhãn hiển thị là "Lợi nhuận hoạt động".
-  const opexBeforeDepreciation = base.payroll + base.otherOpex;
+  // CAPEX trừ vào lợi nhuận hoạt động (chốt 24/09/2026) — giữ đúng như finalizePnl.
+  const opexBeforeDepreciation = base.payroll + base.capex + base.otherOpex;
   const ebitda = grossProfit - opexBeforeDepreciation;
   const operatingProfit = ebitda;
   const netProfit = operatingProfit + base.otherIncome - base.otherExpense;

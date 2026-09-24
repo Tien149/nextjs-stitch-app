@@ -32,6 +32,8 @@ interface DashboardPnl {
   revenue: number;
   cogs: number;
   payroll: number;
+  /** Chi phí đầu tư ban đầu — trừ vào lợi nhuận hoạt động từ 24/09/2026. */
+  capex: number;
   otherOpex: number;
   otherIncome: number;
   otherExpense: number;
@@ -184,7 +186,7 @@ export default function Home() {
     fetchDashboard(dashboardPeriod, code);
   };
 
-  const expenseOf = (value: DashboardPnl) => value.cogs + value.payroll + value.otherOpex + value.otherExpense;
+  const expenseOf = (value: DashboardPnl) => value.cogs + value.payroll + value.capex + value.otherOpex + value.otherExpense;
   const currentPnl = dashboard?.pnl.total;
   const totalRevenue = currentPnl?.revenue || 0;
   const totalExpense = currentPnl ? expenseOf(currentPnl) : 0;

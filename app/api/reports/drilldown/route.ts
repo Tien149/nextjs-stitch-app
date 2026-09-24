@@ -3,7 +3,7 @@ import { requireMenuAccess } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 import { periodBounds } from "@/lib/accounting";
 import { apiError, businessError, cleanText, normalizePeriod } from "@/lib/phase3";
-import { createPnlItemRefLookup, DEPRECIATION_PNL_ACCOUNT, depreciationCatalogItemCode, payrollCatalogItemCode, pnlLineKeyOf, resolvePnlItemCode, withDepreciationPnlItem } from "@/lib/reports";
+import { createPnlItemRefLookup, DEPRECIATION_PNL_ACCOUNT, depreciationCatalogItemCode, payrollCatalogItemCode, pnlLineAmount, pnlLineKeyOf, resolvePnlItemCode, withDepreciationPnlItem } from "@/lib/reports";
 
 /** Khoá drilldown cho một hạng mục P&L: `pnlItem:<mã>`; `pnlItem:UNCLASSIFIED` là chứng từ chưa gán hạng mục. */
 const PNL_ITEM_METRIC_PREFIX = "pnlItem:";
@@ -109,16 +109,16 @@ export async function GET(request: Request) {
       } else if (metric === "otherOpex" && accountLine === "otherOpex") {
         isMatch = true;
         lineAmount = line.debit - line.credit;
-      } else if (metric === "opexBeforeDepreciation" && (accountLine === "payroll" || accountLine === "otherOpex")) {
-        // Chi phí hoạt động = nhân sự + OPEX (khấu hao đã nằm trong OPEX). Theo DÒNG P&L chứ không
-        // theo loại tài khoản: phiếu 6428 gắn hạng mục CAPEX đứng ở dòng CAPEX, không phải OPEX.
+      } else if (metric === "opexBeforeDepreciation" && (accountLine === "payroll" || accountLine === "otherOpex" || accountLine === "capex")) {
+        // Chi phí hoạt động = nhân sự + CAPEX + OPEX (khấu hao đã nằm trong OPEX; CAPEX trừ vào
+        // lợi nhuận từ 24/09/2026). Theo DÒNG P&L chứ không theo loại tài khoản.
         isMatch = true;
-        lineAmount = line.debit - line.credit;
+        lineAmount = accountLine === "capex" ? pnlLineAmount("capex", line) : line.debit - line.credit;
       } else if (metric === "ebitda") {
-        // Lợi nhuận hoạt động = doanh thu − giá vốn − toàn bộ OPEX (gồm nhân sự và khấu hao).
-        if (accountType === "COGS" || accountLine === "payroll" || accountLine === "otherOpex") {
+        // Lợi nhuận hoạt động = doanh thu − giá vốn − nhân sự − CAPEX − OPEX (gồm khấu hao).
+        if (accountType === "COGS" || accountLine === "payroll" || accountLine === "otherOpex" || accountLine === "capex") {
           isMatch = true;
-          lineAmount = line.debit - line.credit;
+          lineAmount = accountLine === "capex" ? pnlLineAmount("capex", line) : line.debit - line.credit;
         } else if (accountType === "REVENUE") {
           isMatch = true;
           lineAmount = -(line.credit - line.debit); // Display negative expense-equivalent or positive outflow

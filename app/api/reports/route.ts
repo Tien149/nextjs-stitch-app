@@ -431,7 +431,7 @@ async function getBudgetReport(period: string, branchCode: string) {
     branchCode,
     rows,
     summary: {
-      expenseActual: pnl.total.cogs + pnl.total.payroll + pnl.total.otherOpex,
+      expenseActual: pnl.total.cogs + pnl.total.payroll + pnl.total.capex + pnl.total.otherOpex,
       expenseTarget: BUDGET_EXPENSE_LINES.reduce((sum, key) => sum + (lineTarget[key] || 0), 0),
       revenueActual: pnl.total.revenue,
       revenueTarget: revenueTargetValue,

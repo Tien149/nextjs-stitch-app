@@ -311,7 +311,7 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
           ))}
           <td colSpan={13} className="px-3 py-2 text-[11px] font-semibold opacity-80 whitespace-nowrap">
             {line.key === "capex"
-              ? "Chi phí đầu tư ban đầu (khoản mục/hạng mục nhóm CAPEX) — dòng thông tin, KHÔNG trừ vào lợi nhuận. Tài sản/CCDC mua trong kỳ vào Chi phí cố định qua hạng mục CP Khấu Hao"
+              ? "Chi phí đầu tư ban đầu (khoản mục/hạng mục nhóm CAPEX) — trừ vào lợi nhuận hoạt động. Tài sản/CCDC mua trong kỳ vào Chi phí cố định qua hạng mục CP Khấu Hao"
               : isRevenue
                 ? "Hai cách nhìn cùng một doanh thu: theo nguồn (kênh bán) và theo bộ phận — kế hoạch set ở cấp dòng"
                 : "Kế hoạch (đậm) · Thực đạt (chip) · % hoàn thành"}
