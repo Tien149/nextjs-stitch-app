@@ -186,7 +186,9 @@ export default function OpeningBalancesPage() {
       const headers: Record<string, string> = rawSession ? { "x-demo-session": encodeURIComponent(rawSession) } : {};
       const [resMaster, resInv] = await Promise.all([
         fetch("/api/master-data?status=ACTIVE", { headers }),
-        fetch("/api/inventory", { headers }),
+        // Màn này chỉ cần danh mục mặt hàng: khoá nhật ký nhập/xuất vào một ngày để API khỏi
+        // trả nguyên lịch sử phiếu kho.
+        fetch(`/api/inventory?reportFrom=${new Date().toISOString().slice(0, 10)}&reportTo=${new Date().toISOString().slice(0, 10)}`, { headers }),
       ]);
 
       if (resMaster.ok) {

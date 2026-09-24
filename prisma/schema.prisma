@@ -751,6 +751,7 @@ model InventoryTransaction {
   deletedAt DateTime?
   deletedBy String?
 
+  @@index([branchCode])
   @@index([transactionType])
   @@index([subType])
   @@index([transactionDate])

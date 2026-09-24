@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import type { Prisma } from "@prisma/custom-client";
+import { Prisma } from "@prisma/custom-client";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError, assertPeriodOpen, businessError, cleanText, isPeriodLocked, toDate, toNumber } from "@/lib/phase3";
@@ -190,6 +190,132 @@ async function createOrUpdateConversion(itemId: string, purchaseUnit: string, co
   });
 }
 
+/** Mặt hàng đính kèm trên dòng phiếu: màn hình chỉ đọc mấy cột này, không cần cả bản ghi. */
+const lineItemSelect = { id: true, code: true, name: true, unit: true, itemType: true, minStock: true, requiresImage: true } as const;
+
+type MovementLineSource = {
+  id: string;
+  code: string;
+  transactionType: string;
+  transactionDate: Date;
+  warehouseCode: string;
+  toWarehouseCode: string | null;
+  referenceCode: string | null;
+  lines: Array<{ quantity: number; totalCost: number; item: { code: string; name: string; unit: string } }>;
+};
+
+/**
+ * Nhật ký nhập/xuất từng dòng của tab Tồn kho. Điều chuyển sinh hai dòng: vế xuất ở kho đi và
+ * vế nhập ở kho nhận.
+ */
+function buildStockMovements(transactions: MovementLineSource[]) {
+  const rows: Array<{
+    transactionId: string; code: string; transactionType: string; transactionDate: Date;
+    warehouseCode: string; toWarehouseCode: string | null; itemCode: string; itemName: string; unit: string;
+    quantity: number; inboundQuantity: number; outboundQuantity: number; value: number; referenceCode: string | null;
+  }> = [];
+  for (const transaction of transactions) {
+    const inbound = transaction.transactionType.startsWith("NHAP_");
+    const outbound = transaction.transactionType.startsWith("XUAT_") || transaction.transactionType === "DIEU_CHUYEN";
+    if (!inbound && !outbound) continue;
+    for (const line of transaction.lines) {
+      const base = {
+        transactionId: transaction.id,
+        code: transaction.code,
+        transactionType: transaction.transactionType,
+        transactionDate: transaction.transactionDate,
+        itemCode: line.item.code,
+        itemName: line.item.name,
+        unit: line.item.unit,
+        quantity: line.quantity,
+        value: line.totalCost,
+        referenceCode: transaction.referenceCode,
+      };
+      rows.push({
+        ...base,
+        warehouseCode: transaction.warehouseCode,
+        toWarehouseCode: transaction.toWarehouseCode,
+        inboundQuantity: inbound ? line.quantity : 0,
+        outboundQuantity: inbound ? 0 : line.quantity,
+      });
+      if (transaction.transactionType === "DIEU_CHUYEN" && transaction.toWarehouseCode) {
+        rows.push({ ...base, warehouseCode: transaction.toWarehouseCode, toWarehouseCode: null, inboundQuantity: line.quantity, outboundQuantity: 0 });
+      }
+    }
+  }
+  return rows;
+}
+
+/**
+ * Tổng nhập/xuất từ trước tới nay theo mặt hàng × kho × loại phiếu, cộng sẵn trong SQL. Trước
+ * đây GET nạp nguyên lịch sử phiếu kho kèm từng dòng và mặt hàng chỉ để cộng mấy con số này —
+ * rã nguyên liệu mỗi ngày sinh hàng trăm dòng nên màn Kho càng dùng lâu càng chậm.
+ * `side = 'TO'` là vế nhập của điều chuyển, đứng ở kho nhận.
+ */
+async function loadMovementTotals(branchCode: string) {
+  const branchSql = branchCode === "ALL" ? Prisma.empty : Prisma.sql`AND t."branchCode" = ${branchCode}`;
+  return prisma.$queryRaw<Array<{ itemId: string; warehouseCode: string; transactionType: string; side: string; quantity: number; value: number }>>(Prisma.sql`
+    SELECT l."itemId", t."warehouseCode", t."transactionType", 'FROM' AS side,
+           SUM(l."quantity")::float8 AS quantity, SUM(l."totalCost")::float8 AS value
+    FROM "InventoryTransactionLine" l
+    JOIN "InventoryTransaction" t ON t."id" = l."transactionId"
+    WHERE t."deletedAt" IS NULL ${branchSql}
+      AND (LEFT(t."transactionType", 5) IN ('NHAP_', 'XUAT_') OR t."transactionType" = 'DIEU_CHUYEN')
+    GROUP BY 1, 2, 3
+    UNION ALL
+    SELECT l."itemId", t."toWarehouseCode", t."transactionType", 'TO' AS side,
+           SUM(l."quantity")::float8, SUM(l."totalCost")::float8
+    FROM "InventoryTransactionLine" l
+    JOIN "InventoryTransaction" t ON t."id" = l."transactionId"
+    WHERE t."deletedAt" IS NULL ${branchSql}
+      AND t."transactionType" = 'DIEU_CHUYEN' AND t."toWarehouseCode" IS NOT NULL
+    GROUP BY 1, 2, 3
+  `);
+}
+
+/** Báo cáo hủy hàng cộng trong SQL: mỗi mặt hàng × loại hủy một dòng, đếm số dòng phiếu. */
+async function loadWasteTotals(branchCode: string) {
+  return prisma.$queryRaw<Array<{ itemId: string; itemCode: string; itemName: string; unit: string; itemType: string; subType: string; quantity: number; value: number; lineCount: number }>>(Prisma.sql`
+    SELECT l."itemId", i."code" AS "itemCode", i."name" AS "itemName", i."unit", i."itemType",
+           COALESCE(t."subType", 'KHONG_PHAN_LOAI') AS "subType",
+           SUM(l."quantity")::float8 AS quantity, SUM(l."totalCost")::float8 AS value, COUNT(*)::int AS "lineCount"
+    FROM "InventoryTransactionLine" l
+    JOIN "InventoryTransaction" t ON t."id" = l."transactionId"
+    JOIN "InventoryItem" i ON i."id" = l."itemId"
+    WHERE t."deletedAt" IS NULL AND t."transactionType" = 'XUAT_HUY'
+      ${branchCode === "ALL" ? Prisma.empty : Prisma.sql`AND t."branchCode" = ${branchCode}`}
+    GROUP BY 1, 2, 3, 4, 5, 6
+  `);
+}
+
+/**
+ * Khoảng ngày của nhật ký nhập/xuất (tab Tồn kho). Màn hình lọc lại đúng theo ngày ISO, nên ở
+ * đây nới mỗi đầu một ngày cho khỏi hụt vì lệch múi giờ. Bỏ trống đầu nào là không chặn đầu đó.
+ */
+function movementDateFilter(searchParams: URLSearchParams) {
+  const parse = (value: string | null, shiftDays: number) => {
+    if (!value) return undefined;
+    const date = new Date(`${value}T00:00:00Z`);
+    if (Number.isNaN(date.getTime())) return undefined;
+    return new Date(date.getTime() + shiftDays * 86_400_000);
+  };
+  const gte = parse(searchParams.get("reportFrom"), -1);
+  const lt = parse(searchParams.get("reportTo"), 2);
+  return gte || lt ? { transactionDate: { ...(gte ? { gte } : {}), ...(lt ? { lt } : {}) } } : {};
+}
+
+async function loadStockMovements(branchFilter: { branchCode?: string }, searchParams: URLSearchParams) {
+  const transactions = await prisma.inventoryTransaction.findMany({
+    where: { ...branchFilter, ...movementDateFilter(searchParams) },
+    select: {
+      id: true, code: true, transactionType: true, transactionDate: true, warehouseCode: true, toWarehouseCode: true, referenceCode: true,
+      lines: { select: { quantity: true, totalCost: true, item: { select: { code: true, name: true, unit: true } } } },
+    },
+    orderBy: { transactionDate: "asc" },
+  });
+  return buildStockMovements(transactions);
+}
+
 export async function GET(request: Request) {
   try {
     const auth = requireMenuAccess(request, menuHref);
@@ -198,6 +324,12 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const branchCode = requestedBranch(auth.session, searchParams.get("branchCode") || "ALL");
     const branchFilter = branchCode === "ALL" ? {} : { branchCode };
+
+    // Đổi khoảng ngày của nhật ký nhập/xuất ở tab Tồn kho chỉ cần tải lại đúng phần đó.
+    if (searchParams.get("view") === "movements") {
+      const stockMovements = await loadStockMovements(branchFilter, searchParams);
+      return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { stockMovements }));
+    }
 
     /**
      * Khoảng ngày của danh sách phiếu trên hai màn Nhập kho / Xuất kho. Trước đây chỉ lấy 100
@@ -223,7 +355,7 @@ export async function GET(request: Request) {
     });
     const warehouseCodes = allowedWarehouses.map((w) => w.code);
 
-    const [items, balances, transactions, flowTransactions, reportTransactions, recipes, warehouses, stocktakes, itemGroups, receiptCategoryList, pendingRevenueRows, partners] = await Promise.all([
+    const [items, balances, transactions, flowTransactions, movementTotals, wasteTotals, stockMovements, recipes, warehouses, stocktakes, itemGroups, receiptCategoryList, pendingRevenueRows, partners, allBalances, nonInventoryGroups] = await Promise.all([
       prisma.inventoryItem.findMany({ include: { unitConversions: { orderBy: [{ isDefaultPurchase: "desc" }, { unitCode: "asc" }] } }, orderBy: { name: "asc" } }),
       prisma.inventoryBalance.findMany({
         where: { warehouseCode: { in: warehouseCodes } },
@@ -232,7 +364,7 @@ export async function GET(request: Request) {
       }),
       prisma.inventoryTransaction.findMany({
         where: { ...branchFilter },
-        include: { lines: { include: { item: true } } },
+        include: { lines: { include: { item: { select: lineItemSelect } } } },
         orderBy: { createdAt: "desc" },
         take: 100
       }),
@@ -240,16 +372,14 @@ export async function GET(request: Request) {
       // 100 dòng mới nhất, để phiếu xuất bán của cả kỳ đã rã đều hiện đủ.
       prisma.inventoryTransaction.findMany({
         where: { ...branchFilter, transactionDate: { gte: flowFrom, lte: flowTo } },
-        include: { lines: { include: { item: true } } },
+        include: { lines: { include: { item: { select: lineItemSelect } } } },
         orderBy: { transactionDate: "desc" },
         take: 2000,
       }),
-      prisma.inventoryTransaction.findMany({
-        where: { ...branchFilter },
-        include: { lines: { include: { item: true } } },
-        orderBy: { transactionDate: "asc" },
-      }),
-      prisma.recipe.findMany({ include: { lines: { include: { item: { include: { balances: true } } } } }, orderBy: { updatedAt: "desc" } }),
+      loadMovementTotals(branchCode),
+      loadWasteTotals(branchCode),
+      loadStockMovements(branchFilter, searchParams),
+      prisma.recipe.findMany({ include: { lines: { include: { item: { select: lineItemSelect } } } }, orderBy: { updatedAt: "desc" } }),
       prisma.masterDataItem.findMany({
         where: { type: "WAREHOUSE", status: "ACTIVE", ...(branchCode === "ALL" ? {} : { branch: branchCode }) },
         orderBy: [{ branch: "asc" }, { code: "asc" }],
@@ -286,11 +416,12 @@ export async function GET(request: Request) {
         select: { code: true, name: true, group: true, status: true },
         orderBy: { name: "asc" },
       }),
+      // Giá vốn bình quân toàn hệ thống của từng mặt hàng (tổng giá trị / tổng tồn mọi kho)
+      // — dùng cho cost định lượng, không phụ thuộc bộ lọc cửa hàng của màn hình.
+      prisma.inventoryBalance.findMany({ select: { itemId: true, quantity: true, averageCost: true } }),
+      loadNonInventoryRevenueGroups(prisma as unknown as CategoryLookupClient),
     ]);
 
-    // Giá vốn bình quân toàn hệ thống của từng mặt hàng (tổng giá trị / tổng tồn mọi kho)
-    // — dùng cho cost định lượng, không phụ thuộc bộ lọc cửa hàng của màn hình.
-    const allBalances = await prisma.inventoryBalance.findMany({ select: { itemId: true, quantity: true, averageCost: true } });
     const costAggregate = new Map<string, { quantity: number; value: number; lastAverage: number }>();
     for (const balance of allBalances) {
       const bucket = costAggregate.get(balance.itemId) || { quantity: 0, value: 0, lastAverage: 0 };
@@ -371,111 +502,17 @@ export async function GET(request: Request) {
       else bucket.byType[type].outbound += quantity;
       bucket.byType[type].value += value;
     };
-    const stockMovements: Array<{
-      transactionId: string;
-      code: string;
-      transactionType: string;
-      transactionDate: Date;
-      warehouseCode: string;
-      toWarehouseCode: string | null;
-      itemCode: string;
-      itemName: string;
-      unit: string;
-      quantity: number;
-      inboundQuantity: number;
-      outboundQuantity: number;
-      value: number;
-      referenceCode: string | null;
-    }> = [];
-    for (const transaction of reportTransactions) {
-      for (const line of transaction.lines) {
-        if (transaction.transactionType.startsWith("NHAP_")) {
-          const bucket = touch(line.itemId, transaction.warehouseCode);
-          bucket.inbound += line.quantity;
-          bucket.inboundValue += line.totalCost;
-          addType(bucket, transaction.transactionType, "IN", line.quantity, line.totalCost);
-          stockMovements.push({
-            transactionId: transaction.id,
-            code: transaction.code,
-            transactionType: transaction.transactionType,
-            transactionDate: transaction.transactionDate,
-            warehouseCode: transaction.warehouseCode,
-            toWarehouseCode: transaction.toWarehouseCode,
-            itemCode: line.item.code,
-            itemName: line.item.name,
-            unit: line.item.unit,
-            quantity: line.quantity,
-            inboundQuantity: line.quantity,
-            outboundQuantity: 0,
-            value: line.totalCost,
-            referenceCode: transaction.referenceCode,
-          });
-        } else if (transaction.transactionType.startsWith("XUAT_")) {
-          const bucket = touch(line.itemId, transaction.warehouseCode);
-          bucket.outbound += line.quantity;
-          bucket.outboundValue += line.totalCost;
-          addType(bucket, transaction.transactionType, "OUT", line.quantity, line.totalCost);
-          stockMovements.push({
-            transactionId: transaction.id,
-            code: transaction.code,
-            transactionType: transaction.transactionType,
-            transactionDate: transaction.transactionDate,
-            warehouseCode: transaction.warehouseCode,
-            toWarehouseCode: transaction.toWarehouseCode,
-            itemCode: line.item.code,
-            itemName: line.item.name,
-            unit: line.item.unit,
-            quantity: line.quantity,
-            inboundQuantity: 0,
-            outboundQuantity: line.quantity,
-            value: line.totalCost,
-            referenceCode: transaction.referenceCode,
-          });
-        } else if (transaction.transactionType === "DIEU_CHUYEN") {
-          const source = touch(line.itemId, transaction.warehouseCode);
-          source.outbound += line.quantity;
-          source.outboundValue += line.totalCost;
-          addType(source, transaction.transactionType, "OUT", line.quantity, line.totalCost);
-          stockMovements.push({
-            transactionId: transaction.id,
-            code: transaction.code,
-            transactionType: transaction.transactionType,
-            transactionDate: transaction.transactionDate,
-            warehouseCode: transaction.warehouseCode,
-            toWarehouseCode: transaction.toWarehouseCode,
-            itemCode: line.item.code,
-            itemName: line.item.name,
-            unit: line.item.unit,
-            quantity: line.quantity,
-            inboundQuantity: 0,
-            outboundQuantity: line.quantity,
-            value: line.totalCost,
-            referenceCode: transaction.referenceCode,
-          });
-          if (transaction.toWarehouseCode) {
-            const destination = touch(line.itemId, transaction.toWarehouseCode);
-            destination.inbound += line.quantity;
-            destination.inboundValue += line.totalCost;
-            addType(destination, transaction.transactionType, "IN", line.quantity, line.totalCost);
-            stockMovements.push({
-              transactionId: transaction.id,
-              code: transaction.code,
-              transactionType: transaction.transactionType,
-              transactionDate: transaction.transactionDate,
-              warehouseCode: transaction.toWarehouseCode,
-              toWarehouseCode: null,
-              itemCode: line.item.code,
-              itemName: line.item.name,
-              unit: line.item.unit,
-              quantity: line.quantity,
-              inboundQuantity: line.quantity,
-              outboundQuantity: 0,
-              value: line.totalCost,
-              referenceCode: transaction.referenceCode,
-            });
-          }
-        }
+    for (const row of movementTotals) {
+      const bucket = touch(row.itemId, row.warehouseCode);
+      const direction = row.side === "FROM" && !row.transactionType.startsWith("NHAP_") ? "OUT" : "IN";
+      if (direction === "IN") {
+        bucket.inbound += row.quantity;
+        bucket.inboundValue += row.value;
+      } else {
+        bucket.outbound += row.quantity;
+        bucket.outboundValue += row.value;
       }
+      addType(bucket, row.transactionType, direction, row.quantity, row.value);
     }
     const stockSummary = balances.map((balance) => {
       const movement = movements.get(`${balance.itemId}|${balance.warehouseCode}`) || { inbound: 0, outbound: 0, inboundValue: 0, outboundValue: 0, byType: {} };
@@ -497,29 +534,24 @@ export async function GET(request: Request) {
       totalQuantity: number; totalValue: number; documentCount: number;
       bySubType: Record<string, { quantity: number; value: number }>;
     }>();
-    for (const transaction of reportTransactions) {
-      if (transaction.transactionType !== "XUAT_HUY") continue;
-      const subType = transaction.subType || "KHONG_PHAN_LOAI";
-      for (const line of transaction.lines) {
-        const bucket = wasteBuckets.get(line.itemId) || {
-          itemCode: line.item.code, itemName: line.item.name, unit: line.item.unit, itemType: line.item.itemType,
-          totalQuantity: 0, totalValue: 0, documentCount: 0, bySubType: {},
-        };
-        bucket.totalQuantity += line.quantity;
-        bucket.totalValue += line.totalCost;
-        bucket.documentCount += 1;
-        bucket.bySubType[subType] ||= { quantity: 0, value: 0 };
-        bucket.bySubType[subType].quantity += line.quantity;
-        bucket.bySubType[subType].value += line.totalCost;
-        wasteBuckets.set(line.itemId, bucket);
-      }
+    for (const row of wasteTotals) {
+      const bucket = wasteBuckets.get(row.itemId) || {
+        itemCode: row.itemCode, itemName: row.itemName, unit: row.unit, itemType: row.itemType,
+        totalQuantity: 0, totalValue: 0, documentCount: 0, bySubType: {},
+      };
+      bucket.totalQuantity += row.quantity;
+      bucket.totalValue += row.value;
+      bucket.documentCount += row.lineCount;
+      bucket.bySubType[row.subType] ||= { quantity: 0, value: 0 };
+      bucket.bySubType[row.subType].quantity += row.quantity;
+      bucket.bySubType[row.subType].value += row.value;
+      wasteBuckets.set(row.itemId, bucket);
     }
     const wasteReport = [...wasteBuckets.values()].sort((a, b) => b.totalValue - a.totalValue);
 
     // Doanh thu chờ rã nguyên liệu, gom theo ngày + cửa hàng cho tab Chế biến. Dòng thuộc nhóm
     // doanh thu khai "không theo dõi tồn kho" (phụ thu, dịch vụ) bị loại ngay ở đây: dữ liệu
     // import trước khi khai cờ vẫn đang mang trạng thái PENDING, đếm vào là báo sai việc phải làm.
-    const nonInventoryGroups = await loadNonInventoryRevenueGroups(prisma as unknown as CategoryLookupClient);
     const inventoryPendingRows = pendingRevenueRows.filter((row) => tracksInventory(row.revenueSource, nonInventoryGroups));
     const pendingByDay = new Map<string, { saleDate: Date; branchCode: string; rowCount: number; totalQuantity: number }>();
     for (const row of inventoryPendingRows) {

@@ -49,6 +49,17 @@ type Stocktake = { id: string; code: string; stocktakeDate: string; branchCode: 
 type ReceivablePOLine = { id: string; itemId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; item: { code: string; name: string; unit: string } };
 type ReceivablePO = { id: string; code: string; supplierName: string; branchCode: string; warehouseCode: string; status: string; lines: ReceivablePOLine[] };
 type StocktakeDraftRow = { itemId: string; itemCode: string; itemName: string; unit: string; systemQuantity: number; averageCost: number; actualQuantity: string; unitCost: string; reason: string };
+/**
+ * Bộ đếm lượt tải (lượt cũ về muộn thì bỏ) và khoảng ngày nhật ký nhập/xuất đang nằm trong
+ * `data.stockMovements`. Để ngoài component vì loadData được gọi qua các hàm dựng trong lúc
+ * render — useRef/state ở đó bị React Compiler chặn. Mỗi lúc chỉ có một màn Kho mở.
+ */
+const loadTracker = { seq: 0, movementSeq: 0, movementRange: "" };
+
+/** Tham số khoảng ngày của nhật ký nhập/xuất gửi lên API — ô ngày bỏ trống thì không chặn đầu đó. */
+function movementRangeQuery(range: { from: string; to: string }) {
+  return new URLSearchParams({ reportFrom: range.from, reportTo: range.to }).toString();
+}
 type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[] };
 const movementTypes = ["NHAP_MUA", "NHAP_KHAC", "NHAP_CHE_BIEN", "NHAP_KIEM_KE", "XUAT_BAN", "XUAT_HUY", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_CHE_BIEN", "XUAT_KIEM_KE", "DIEU_CHUYEN"];
 /** Loại hiển thị trên hai màn hình Nhập/Xuất. Điều chuyển hiện ở CẢ hai: vế xuất ở kho đi, vế nhập ở kho nhận. */
@@ -589,12 +600,19 @@ export default function InventoryPage() {
 
   const loadData = async () => {
     void loadReceivablePOs();
-    const response = await fetch(`/api/inventory?flowFrom=${flowRange.from}&flowTo=${flowRange.to}`, {
+    const seq = ++loadTracker.seq;
+    const movementRange = movementRangeQuery(reportRange);
+    // Lượt tải chính đã mang nhật ký của khoảng ngày này — effect nhật ký khỏi gọi trùng.
+    loadTracker.movementRange = movementRange;
+    const response = await fetch(`/api/inventory?flowFrom=${flowRange.from}&flowTo=${flowRange.to}&${movementRange}`, {
       headers: getSessionHeaders(),
     });
-    if (!response.ok) return;
+    // Đổi khoảng ngày liên tục thì lượt tải cũ về muộn không được đè lên số của lượt mới.
+    if (!response.ok || seq !== loadTracker.seq) return;
     const payload = await response.json() as Data;
-    setData(payload);
+    if (seq !== loadTracker.seq) return;
+    // Trong lúc chờ mà người dùng đã đổi khoảng ngày nhật ký thì giữ phần nhật ký mới hơn.
+    setData((current) => loadTracker.movementRange === movementRange ? payload : { ...payload, stockMovements: current.stockMovements });
     const firstItem = payload.items[0]?.id || "";
     const firstRecipe = payload.recipes[0]?.id || "";
     setStockForm((form) => {
@@ -609,6 +627,28 @@ export default function InventoryPage() {
     setWasteForm((form) => ({ ...form, recipeId: form.recipeId || firstRecipe }));
     setConversionForm((form) => ({ ...form, itemId: form.itemId || firstItem }));
   };
+
+  /**
+   * Nhật ký nhập/xuất ở tab Tồn kho chỉ tải trong khoảng ngày đang lọc (trước đây GET trả nguyên
+   * lịch sử mọi dòng phiếu kho từ ngày đầu). Đổi khoảng ngày thì chỉ gọi lại phần nhật ký, chờ
+   * người dùng gõ xong ngày rồi mới gọi.
+   */
+  useEffect(() => {
+    if (loading) return;
+    const movementRange = movementRangeQuery(reportRange);
+    const timer = window.setTimeout(async () => {
+      if (movementRange === loadTracker.movementRange) return;
+      const seq = ++loadTracker.movementSeq;
+      const response = await fetch(`/api/inventory?view=movements&${movementRange}`, { headers: getSessionHeaders() });
+      if (!response.ok || seq !== loadTracker.movementSeq) return;
+      const payload = await response.json() as Pick<Data, "stockMovements">;
+      if (seq !== loadTracker.movementSeq) return;
+      loadTracker.movementRange = movementRange;
+      setData((current) => ({ ...current, stockMovements: payload.stockMovements }));
+    }, 400);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, reportRange.from, reportRange.to]);
 
   // Đổi khoảng ngày của danh sách phiếu nhập/xuất thì phải hỏi lại server: phiếu ngoài khoảng
   // không nằm sẵn trên trình duyệt.
