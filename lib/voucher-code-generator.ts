@@ -121,7 +121,7 @@ export function nextSeqFromCodes(codes: string[], prefix: string): number {
 /** Bảng nào cũng tra được danh sách mã đã cấp theo prefix — đủ để cấp số kế tiếp. */
 type CodeQueryDelegate = {
   findMany: (args: {
-    where: { code: { startsWith: string } };
+    where: { code: { startsWith: string }; deletedAt: undefined };
     select: { code: true };
   }) => Promise<Array<{ code: string }>>;
 };
@@ -140,6 +140,6 @@ export async function nextYearlyCode(
   pad = 4,
 ) {
   const codePrefix = `${prefix}-${year}-`;
-  const issued = await delegate.findMany({ where: { code: { startsWith: codePrefix } }, select: { code: true } });
+  const issued = await delegate.findMany({ where: { code: { startsWith: codePrefix }, deletedAt: undefined }, select: { code: true } });
   return codePrefix + String(nextSeqFromCodes(issued.map((row) => row.code), codePrefix)).padStart(pad, "0");
 }

@@ -81,7 +81,7 @@ async function nextDepositCode(voucherDate?: Date | string | null, branchCode?: 
   // tụt xuống và mã cấp lại trùng phiếu còn sống; ngoài ra COUNT lọc theo ngày nhận tiền
   // trong khi mã nhúng tháng của ngày phiếu — hai bên lệch nhau là cấp nhầm chuỗi.
   const prefix = voucherCodePrefix({ voucherType: "PCOC", voucherDate: validDate, branchCode });
-  const issued = await prisma.deposit.findMany({ where: { code: { startsWith: prefix } }, select: { code: true } });
+  const issued = await prisma.deposit.findMany({ where: { code: { startsWith: prefix }, deletedAt: undefined }, select: { code: true } });
   return prefix + String(nextSeqFromCodes(issued.map((row) => row.code), prefix)).padStart(5, "0");
 }
 

@@ -121,7 +121,7 @@ export async function POST(request: Request) {
       const prefix = `PBCP-${period.replace("-", "")}`;
       // Max + 1 chứ không COUNT: phiếu bị xoá làm COUNT tụt và cấp lại mã đang còn sống.
       const codePrefix = `${prefix}-`;
-      const issuedCodes = await tx.costReallocation.findMany({ where: { code: { startsWith: codePrefix } }, select: { code: true } });
+      const issuedCodes = await tx.costReallocation.findMany({ where: { code: { startsWith: codePrefix }, deletedAt: undefined }, select: { code: true } });
       const code = codePrefix + String(nextSeqFromCodes(issuedCodes.map((row) => row.code), codePrefix)).padStart(4, "0");
 
       const reallocation = await tx.costReallocation.create({

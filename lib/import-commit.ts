@@ -145,9 +145,11 @@ async function nextVoucherCode(
   // batch sau — người dùng chỉ thấy "Dữ liệu bị trùng" mà không có cách nào tự gỡ.
   // Hai commit chạy song song vẫn có thể lấy cùng một số; khi đó ràng buộc unique chặn một
   // batch với thông điệp rõ ràng, chạy lại là xong — còn hơn cấp trùng trong im lặng.
+  // `deletedAt: undefined` tắt bộ lọc xoá mềm: phiếu trong thùng rác (batch đã rollback, phiếu
+  // nháp bị thay khi khớp sao kê) vẫn giữ mã unique, bỏ qua chúng là cấp lại đúng mã đó.
   const prefix = voucherCodePrefix({ voucherType, documentChannel, voucherDate, branchCode });
   const issued = await tx.financialVoucher.findMany({
-    where: { code: { startsWith: prefix } },
+    where: { code: { startsWith: prefix }, deletedAt: undefined },
     select: { code: true },
   });
   return prefix + String(nextSeqFromCodes(issued.map((row) => row.code), prefix)).padStart(5, "0");
@@ -162,7 +164,7 @@ async function nextTransferCode(
 ) {
   const prefix = voucherCodePrefix({ voucherType, voucherDate, branchCode });
   const issued = await tx.moneyTransfer.findMany({
-    where: { code: { startsWith: prefix } },
+    where: { code: { startsWith: prefix }, deletedAt: undefined },
     select: { code: true },
   });
   return prefix + String(nextSeqFromCodes(issued.map((row) => row.code), prefix)).padStart(5, "0");
@@ -2164,7 +2166,7 @@ export async function commitImport(input: CommitInput) {
         // và tụt sau rollback. Lấy max + 1 trong đúng chuỗi CN-PT/PP + ngày chứng từ.
         const debtPrefix = `CN-${debtType === "RECEIVABLE" ? "PT" : "PP"}-${documentDate.toISOString().slice(0, 10).replace(/-/g, "")}-`;
         const issuedDebtCodes = await tx.debtRecord.findMany({
-          where: { code: { startsWith: debtPrefix } },
+          where: { code: { startsWith: debtPrefix }, deletedAt: undefined },
           select: { code: true },
         });
         const code = asText(row.values.document_code) ||

@@ -39,7 +39,7 @@ export async function POST(request: Request) {
     // chạy (mã cũ đã mang sẵn phần bù) mà không bao giờ cấp lại mã đang tồn tại.
     const documentPrefix = `${prefix}-${year}-`;
     const issuedDocumentCodes = await prisma.document.findMany({
-      where: { code: { startsWith: documentPrefix } },
+      where: { code: { startsWith: documentPrefix }, deletedAt: undefined },
       select: { code: true },
     });
     const seq = nextSeqFromCodes(issuedDocumentCodes.map((row) => row.code), documentPrefix);

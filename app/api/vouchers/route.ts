@@ -202,7 +202,7 @@ async function nextVoucherCode(
 
   // Dùng client raw để tính cả mã của phiếu đã soft-delete hoặc bản ghi lịch sử bị lệch branch.
   const existingCodes = await tx.financialVoucher.findMany({
-    where: { code: { startsWith: codePrefix } },
+    where: { code: { startsWith: codePrefix }, deletedAt: undefined },
     select: { code: true },
   });
 

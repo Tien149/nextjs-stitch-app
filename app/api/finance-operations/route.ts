@@ -1121,7 +1121,7 @@ export async function POST(request: Request) {
       // Max + 1 trong đúng chuỗi mã, không COUNT: phiếu bị xoá làm COUNT tụt và mã cấp lại
       // đâm trúng phiếu còn sống (cùng lỗi "Dữ liệu bị trùng" của import sao kê).
       const noptPrefix = voucherCodePrefix({ voucherType: "NOPT", voucherDate: transferDate, branchCode });
-      const issuedNopt = await prisma.moneyTransfer.findMany({ where: { code: { startsWith: noptPrefix } }, select: { code: true } });
+      const issuedNopt = await prisma.moneyTransfer.findMany({ where: { code: { startsWith: noptPrefix }, deletedAt: undefined }, select: { code: true } });
       const reportDateCode = sourceReportDate.toISOString().slice(0, 10);
       const result = await prisma.moneyTransfer.create({
         data: {
@@ -1232,7 +1232,7 @@ export async function POST(request: Request) {
       }
 
       const qtviPrefix = voucherCodePrefix({ voucherType: "QTVI", voucherDate: transferDate, branchCode });
-      const issuedQtvi = await prisma.moneyTransfer.findMany({ where: { code: { startsWith: qtviPrefix } }, select: { code: true } });
+      const issuedQtvi = await prisma.moneyTransfer.findMany({ where: { code: { startsWith: qtviPrefix }, deletedAt: undefined }, select: { code: true } });
       const result = await prisma.moneyTransfer.create({
         data: {
           code: qtviPrefix + String(nextSeqFromCodes(issuedQtvi.map((row) => row.code), qtviPrefix)).padStart(5, "0"),
@@ -1728,7 +1728,7 @@ export async function POST(request: Request) {
       }
 
       const pbouPrefix = voucherCodePrefix({ voucherType: "PBOU", voucherDate: `${startPeriod}-01`, branchCode });
-      const issuedPbou = await prisma.accrual.findMany({ where: { code: { startsWith: pbouPrefix } }, select: { code: true } });
+      const issuedPbou = await prisma.accrual.findMany({ where: { code: { startsWith: pbouPrefix }, deletedAt: undefined }, select: { code: true } });
       const result = await prisma.accrual.create({
         data: {
           code: pbouPrefix + String(nextSeqFromCodes(issuedPbou.map((row) => row.code), pbouPrefix)).padStart(5, "0"),

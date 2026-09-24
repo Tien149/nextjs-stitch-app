@@ -276,7 +276,7 @@ async function postWalletBankRow(request: Request, body: Record<string, unknown>
 
   const created = await prisma.$transaction(async (tx) => {
     const prefix = voucherCodePrefix({ voucherType: "QTVI", voucherDate: documentDate, branchCode: bank.branchCode as string });
-    const issued = await tx.moneyTransfer.findMany({ where: { code: { startsWith: prefix } }, select: { code: true } });
+    const issued = await tx.moneyTransfer.findMany({ where: { code: { startsWith: prefix }, deletedAt: undefined }, select: { code: true } });
     const transfer = await tx.moneyTransfer.create({
       data: {
         importBatchId: bank.importBatchId,

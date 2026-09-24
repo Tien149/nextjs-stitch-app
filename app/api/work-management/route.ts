@@ -193,7 +193,7 @@ export async function POST(request: Request) {
     // nên số thứ tự của năm mới không bắt đầu lại, và sẽ trùng nếu về sau có xoá bản ghi.
     const workPrefix = `CV-${new Date().getFullYear()}-`;
     const issuedWorkCodes = await prisma.workItem.findMany({
-      where: { code: { startsWith: workPrefix } },
+      where: { code: { startsWith: workPrefix }, deletedAt: undefined },
       select: { code: true },
     });
     const code = workPrefix + String(nextSeqFromCodes(issuedWorkCodes.map((row) => row.code), workPrefix)).padStart(4, "0");
