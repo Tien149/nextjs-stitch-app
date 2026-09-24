@@ -43,6 +43,8 @@ export type PlanningData = {
   year: string;
   branchCode: string;
   months: string[];
+  /** Hạng mục CP Khấu Hao — luôn hiện trên bảng Hoạch định, kể cả khi bằng 0. */
+  depreciationItemCode?: string | null;
   totals: PnlBucket[];
   plans: PnlBucket[];
   hasPlan: boolean;

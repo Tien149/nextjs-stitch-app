@@ -42,8 +42,6 @@ const isEmptyNode = (node: { months: number[]; plan: number[] | null }) =>
  * thừa, Thu nhập từ xuất VAT). Hạng mục con bằng 0 vẫn ẩn như cũ.
  */
 const ALWAYS_SHOW_GROUP_LINES = new Set(["otherIncome"]);
-const visibleGroups = <T extends { months: number[]; plan: number[] | null }>(lineKey: string, groups: T[], hideEmpty: boolean) =>
-  hideEmpty && !ALWAYS_SHOW_GROUP_LINES.has(lineKey) ? groups.filter((group) => !isEmptyNode(group)) : groups;
 
 /**
  * Khối DOANH THU không xoè theo cây "nhóm doanh thu × kênh bán" nữa.
@@ -83,6 +81,17 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
    * phát sinh đồng thực tế nào — đã bỏ công đặt kế hoạch thì phải theo dõi được % hoàn thành.
    */
   const [hideEmpty, setHideEmpty] = useState(true);
+  /**
+   * Dòng "CPCĐ - CP Khấu Hao" (số lấy từ màn Khấu hao) luôn hiện, kể cả bằng 0 — khách yêu cầu
+   * 24/09/2026: cửa hàng chưa chạy khấu hao thì dòng bị "Ẩn dòng bằng 0" giấu, tưởng thiếu dòng.
+   */
+  const isPinnedItem = (item: { code: string }) => Boolean(data.depreciationItemCode) && item.code === data.depreciationItemCode;
+  const visibleItems = <T extends { code: string; months: number[]; plan: number[] | null }>(items: T[]) =>
+    hideEmpty ? items.filter((item) => !isEmptyNode(item) || isPinnedItem(item)) : items;
+  const visibleGroups = <T extends { months: number[]; plan: number[] | null; items: Array<{ code: string }> }>(lineKey: string, groups: T[]) =>
+    hideEmpty && !ALWAYS_SHOW_GROUP_LINES.has(lineKey)
+      ? groups.filter((group) => !isEmptyNode(group) || group.items.some(isPinnedItem))
+      : groups;
   const monthHeaders = data.months.map((month) => `T${Number(month.slice(5))}`);
   const revenueBreakdowns = useMemo<RevenueBreakdown[]>(() => {
     const { byChannel, byDepartment, svc, vat } = data.revenueSplit;
@@ -137,10 +146,9 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
         }
         continue;
       }
-      for (const group of visibleGroups(line.key, line.groups, hideEmpty)) {
+      for (const group of visibleGroups(line.key, line.groups)) {
         push("    ", group.name, group);
-        for (const item of group.items) {
-          if (hideEmpty && isEmptyNode(item)) continue;
+        for (const item of visibleItems(group.items)) {
           push("        ", item.name, item);
         }
       }
@@ -188,7 +196,7 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
 
   const renderGroup = (line: StatementLine, group: PlannedGroup) => {
     const key = `${line.key}:${group.code}`;
-    const items = hideEmpty ? group.items.filter((item) => !isEmptyNode(item)) : group.items;
+    const items = visibleItems(group.items);
     const bg = group.code === "UNGROUPED" ? "bg-amber-50" : "bg-slate-50/60";
     return (
       <React.Fragment key={key}>
@@ -297,10 +305,10 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
       );
     }
     const isRevenue = line.key === "revenue";
-    const groups = visibleGroups(line.key, line.groups, hideEmpty);
+    const groups = visibleGroups(line.key, line.groups);
     // Đếm theo đúng những gì đang vẽ: trước đây badge đếm cả nhóm/hạng mục vừa bị "Ẩn dòng
     // bằng 0" giấu đi nên bảng ghi "4 nhóm" mà chỉ thấy 3.
-    const itemCount = groups.reduce((sum, group) => sum + (hideEmpty ? group.items.filter((item) => !isEmptyNode(item)).length : group.items.length), 0);
+    const itemCount = groups.reduce((sum, group) => sum + visibleItems(group.items).length, 0);
     // Phần chưa gán hạng mục KHÔNG hiện thành dòng riêng nữa (khách bỏ 21/09/2026): nó vẫn bị
     // loại khỏi mọi con số của P&L như cũ, chỉ là không vẽ ra bảng. Muốn biết còn bao nhiêu tiền
     // phải đi gán hạng mục thì xem Sổ quỹ > Tổng hợp chi phí.

@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/custom-client";
 import { prisma } from "@/lib/prisma";
-import { CAPEX_REPORT_GROUPS, createPnlDetailTree, DEPRECIATION_PNL_ACCOUNT, finalizePnl, loadDepreciationPnlRows, NON_CAPEX_SOURCE_TYPES, withDepreciationPnlItem, pnlLineAmount, PNL_ITEM_REQUIRED_LINES, PNL_STATEMENT_LINES, PNL_UNGROUPED_CODE, revenueChannelItemsOf, seedRevenueChannels, type PnlBucket, type PnlCatalog, type PnlLineKey, type PnlSeriesGroup, type PnlSeriesItem } from "@/lib/reports";
+import { CAPEX_REPORT_GROUPS, createPnlDetailTree, DEPRECIATION_PNL_ACCOUNT, depreciationCatalogItemCode, finalizePnl, loadDepreciationPnlRows, NON_CAPEX_SOURCE_TYPES, withDepreciationPnlItem, pnlLineAmount, PNL_ITEM_REQUIRED_LINES, PNL_STATEMENT_LINES, PNL_UNGROUPED_CODE, revenueChannelItemsOf, seedRevenueChannels, type PnlBucket, type PnlCatalog, type PnlLineKey, type PnlSeriesGroup, type PnlSeriesItem } from "@/lib/reports";
 import { isRevenueComponentCategory, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { loadRevenuePnlGroups, type CategoryLookupClient } from "@/lib/revenue-source";
 
@@ -486,6 +486,12 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     year,
     branchCode,
     months,
+    /**
+     * Hạng mục "CPCĐ - CP Khấu Hao" (số đọc thẳng màn Khấu hao). Màn Hoạch định giữ dòng này hiện
+     * cả khi "Ẩn dòng bằng 0" — khách yêu cầu 24/09/2026, cửa hàng chưa chạy khấu hao thì dòng
+     * bằng 0 và bị ẩn nên tưởng thiếu.
+     */
+    depreciationItemCode: depreciationCatalogItemCode(pnlItems),
     totals: finalizedTotals,
     /** Cấu thành doanh thu cho pie tỷ trọng và các đường DT bếp/DT bar trên chart COGS. */
     revenueSplit: {
