@@ -82,8 +82,27 @@ async function main() {
       OR: [{ sourceReportDate: { gte: start, lt: end } }, { sourceReportDate: null, transferDate: { gte: start, lt: end } }] },
     select: { id: true, code: true, amount: true, feeAmount: true, grabExpenseAmount: true, feeCategoryCode: true, grabExpenseCategoryCode: true, fromMoneySourceCode: true, transferDate: true, sourceReportDate: true },
   });
+  /**
+   * Phiếu của một lần tiền về GỘP NHIỀU NGÀY doanh thu không được ghép theo sourceReportDate:
+   * trường đó chỉ giữ MỘT ngày, nên bản đầu của script ghi đè phí cả phiếu bằng phí của riêng
+   * ngày đó. Ca thật 22/09/2026: QTVI-2608-NME-00087 (Momo trả gộp 31/07, 01/08, 02/08) bị ghi
+   * 721.226 đ = đúng phí riêng ngày 02/08, mất phí hai ngày còn lại. Phiếu gộp phải đi đường
+   * tính theo từng ngày (nút "Chạy lại theo doanh thu hiện tại" / npm run diagnose:wallet-fees).
+   */
+  const linked = await prisma.reconciliationMatch.findMany({
+    where: { targetType: "WALLET_SETTLEMENT", targetId: { in: transfers.map((t) => t.id) }, deletedAt: null, bankTransaction: { deletedAt: null } },
+    select: { targetId: true, bankTransaction: { select: { allocations: { where: { creditAmount: { gt: 0 }, revenueDate: { not: null } }, select: { revenueDate: true } } } } },
+  });
+  const daysOf = new Map();
+  for (const m of linked) {
+    const days = daysOf.get(m.targetId) || new Set();
+    for (const a of m.bankTransaction.allocations) days.add(dayOf(a.revenueDate));
+    daysOf.set(m.targetId, days);
+  }
+  const multiDay = transfers.filter((t) => (daysOf.get(t.id)?.size || 0) > 1);
   const byKey = new Map();
   for (const t of transfers) {
+    if (multiDay.includes(t)) continue;
     const key = `${dayOf(t.sourceReportDate || t.transferDate)}|${t.fromMoneySourceCode}`;
     byKey.set(key, [...(byKey.get(key) || []), t]);
   }
@@ -116,7 +135,7 @@ async function main() {
     plan.push({ row: r, docs, expected, recorded, isGrab });
   }
   // Phiếu QTVI có phí nhưng ngày đó không có dòng nào trên bảng (không có doanh thu POS ghi nhận).
-  const orphanFee = transfers.filter((t) => !touched.has(t.id) && t.feeAmount > 0);
+  const orphanFee = transfers.filter((t) => !touched.has(t.id) && !multiDay.includes(t) && t.feeAmount > 0);
 
   const expectedGrab = walletRows.filter((r) => r.received > 0 && r.remaining > 0 && r.feeCategoryCode === WALLET_GRAB_EXPENSE_CATEGORY_CODE).reduce((s, r) => s + r.remaining, 0);
   const expectedCard = walletRows.filter((r) => r.received > 0 && r.remaining > 0 && r.feeCategoryCode !== WALLET_GRAB_EXPENSE_CATEGORY_CODE).reduce((s, r) => s + r.remaining, 0);
@@ -148,6 +167,11 @@ async function main() {
     console.log(`KHÔNG CÓ PHIẾU QTVI ĐỂ GHI (xử tay — tiền đã về nhưng chưa quyết toán ví): ${noTransfer.length} dòng, ${money(noTransfer.reduce((s, r) => s + r.expected, 0))} đ`);
     for (const r of noTransfer) console.log(`  ${r.date}  ${r.moneySourceCode.padEnd(17)} tiền về ${money(r.received)} đ · phí ${money(r.expected)} đ`);
   }
+  if (multiDay.length) {
+    console.log("");
+    console.log(`PHIẾU TRẢ GỘP NHIỀU NGÀY — KHÔNG ĐỤNG (dùng nút "Chạy lại theo doanh thu hiện tại" / npm run diagnose:wallet-fees): ${multiDay.length}`);
+    for (const t of multiDay) console.log(`  ${t.code}  ${t.fromMoneySourceCode}  ngày DT ${[...daysOf.get(t.id)].sort().join(", ")}  phí ${money(t.feeAmount)} đ`);
+  }
   if (orphanFee.length) {
     console.log("");
     console.log(`PHIẾU QTVI CÓ PHÍ NHƯNG NGÀY ĐÓ KHÔNG CÓ DOANH THU POS (giữ nguyên, kiểm tay): ${orphanFee.length}`);
@@ -170,7 +194,7 @@ async function main() {
 
   // Phí trên phiếu mà script GIỮ NGUYÊN (bảng không thấy / không có doanh thu POS) vẫn nằm trên
   // P&L sau khi chạy — phải cộng vào dự báo, nếu không kế toán so với số của mình thấy lệch.
-  const kept = [...orphanFee, ...unseen.flatMap((r) => r.docs)];
+  const kept = [...orphanFee, ...multiDay, ...unseen.flatMap((r) => r.docs)];
   const keptGrab = kept.reduce((s, t) => s + t.grabExpenseAmount, 0);
   const keptCard = kept.reduce((s, t) => s + (t.feeAmount - t.grabExpenseAmount), 0);
   const afterGrab = expectedGrab + keptGrab + (clearPosFee ? 0 : posApp);
