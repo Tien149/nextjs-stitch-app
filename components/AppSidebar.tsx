@@ -107,6 +107,19 @@ export function AppSidebar({ onNavigate, inDrawer = false }: { onNavigate?: () =
             <span className="text-sm font-medium">{item.name}</span>
           </Link>
         ))}
+        {/* HRM là ứng dụng riêng ở /hr: đi qua /api/hrm-sso để đăng nhập luôn bằng tài khoản kế toán.
+            Dùng <a> (điều hướng toàn trang), không dùng Link vì đích là route API chuyển hướng. */}
+        {session && process.env.NEXT_PUBLIC_HRM_MENU === "1" && (
+          <a
+            href="/api/hrm-sso"
+            onClick={() => onNavigate?.()}
+            className="w-full flex items-center px-6 py-3 text-left transition-all text-white/70 hover:bg-[#1e293b] hover:text-white"
+          >
+            <span className="material-symbols-outlined mr-3 text-[20px]">badge</span>
+            <span className="text-sm font-medium flex-1">Nhân sự (HRM)</span>
+            <span className="material-symbols-outlined text-[16px] text-white/40">open_in_new</span>
+          </a>
+        )}
       </nav>
       <div className="shrink-0 pt-4 border-t border-slate-800 space-y-1 bg-[#0f172a]">
         <button

@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { branchAccessLabel } from "@/lib/branch-labels";
 import { prisma } from "@/lib/prisma";
-import { setSessionCookie } from "@/lib/session-cookie";
+import { SESSION_MAX_AGE_DEFAULT, SESSION_MAX_AGE_REMEMBER, setSessionCookie } from "@/lib/session-cookie";
+import { HRM_PROOF_COOKIE, HRM_PROOF_PATH, hrmSsoSecret, signProof } from "@/lib/hrm-sso";
 
 export async function POST(request: Request) {
   try {
@@ -88,6 +89,19 @@ export async function POST(request: Request) {
       // giữ hai bản phiên có tuổi thọ lệch nhau.
       const response = NextResponse.json(session);
       setSessionCookie(response, JSON.stringify(session), Boolean(rememberMe));
+
+      // Cookie chứng thực có chữ ký cho việc đăng nhập sang HRM (/api/hrm-sso). Chỉ phát khi đã cấu hình khóa.
+      const ssoSecret = hrmSsoSecret();
+      if (ssoSecret) {
+        response.cookies.set({
+          name: HRM_PROOF_COOKIE,
+          value: signProof(ssoSecret, dbUser.id),
+          httpOnly: true,
+          sameSite: "lax",
+          path: HRM_PROOF_PATH,
+          maxAge: rememberMe ? SESSION_MAX_AGE_REMEMBER : SESSION_MAX_AGE_DEFAULT,
+        });
+      }
       return response;
     }
 
