@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
-import { normalizeMoneySourceGroup } from "@/lib/money-sources";
+import { moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
+import { createMoneySourceMatcher } from "@/lib/reports";
 import { vietnamBusinessDayBounds, vietnamBusinessDayKey } from "@/lib/revenue-date";
 import { selectWalletDeclaredRevenue, walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
 
@@ -117,7 +118,7 @@ export async function computeWalletGrossByDay(input: {
 }): Promise<WalletGrossByDayResult & { walletLabel: string; isGrab: boolean; posFeeDeclared: number }> {
   const walletSources = await prisma.masterDataItem.findMany({
     where: { type: "MONEY_SOURCE", deletedAt: null },
-    select: { code: true, name: true, group: true },
+    select: { code: true, name: true, group: true, branch: true },
   });
   const wallet = walletSources.find((item) => item.code === input.walletCode);
   const walletLabel = wallet?.name || input.walletCode;
@@ -125,13 +126,19 @@ export async function computeWalletGrossByDay(input: {
     return { ok: false, reason: `Nguồn tiền [${input.walletCode}] không phải ví/cổng POS.`, walletLabel, isGrab: false, posFeeDeclared: 0 };
   }
   const bucket = walletRevenueBucket({ code: wallet.code, name: wallet.name });
-  // Mọi ví cùng nhóm là đối thủ tiềm năng: dòng POS "FDS - Quẹt Thẻ Vietinbank" khớp lỏng với
-  // ví Momo qua chữ "quẹt thẻ", phải có ví Vietinbank trong danh sách thì nó mới bị loại ra.
+  // Số thu ngân khai chỉ có tổng theo nhóm: ví cùng nhóm CỦA CÙNG CỬA HÀNG là đối thủ. Trước đây
+  // lấy ví của mọi cửa hàng, nên GrabFood Nam Mê "tranh" với GrabFood ASA và gần như phiếu nào
+  // cũng báo "trùng tên với ví khác" (chẩn đoán 24/09/2026: 30/31 phiếu NME kỳ 09 không tính được).
   const rivals = walletSources
     .filter((item) => item.code !== wallet.code
       && normalizeMoneySourceGroup(item.group) === "WALLET"
+      && moneySourceMatchesBranch(item, input.branchCode)
       && walletRevenueBucket({ code: item.code, name: item.name }) === bucket)
     .map((item) => ({ code: item.code, name: item.name }));
+  // Ngày có POS: nối từng dòng về nguồn tiền bằng ĐÚNG bộ nối của bảng Tiền về đủ chưa (theo cửa
+  // hàng, nhãn chính xác trước, mã rút gọn chỉ khi một ứng viên). Dò từ khoá kiểu cũ làm dòng
+  // "KCF - Quẹt Thẻ Momo" cũng khớp lỏng với "ASA - Quẹt Thẻ Momo" và cả phiếu bị bỏ qua.
+  const matchPosSource = createMoneySourceMatcher(walletSources, input.branchCode);
 
   const ranges = input.lines.map((line) => vietnamBusinessDayBounds(line.revenueDate));
   const rangeStart = new Date(Math.min(...ranges.map((range) => range.start.getTime())));
@@ -167,15 +174,23 @@ export async function computeWalletGrossByDay(input: {
   let posFeeDeclared = 0;
   for (const day of days) {
     const dayPos = posRows.filter((row) => vietnamBusinessDayKey(row.saleDate) === day);
-    const declared = selectWalletDeclaredRevenue({
-      posRows: dayPos.map((row) => ({ paymentMethod: row.paymentMethod, revenueSource: row.revenueSource, channel: row.channel, netAmount: row.netAmount })),
-      manualRows: manualRows.filter((row) => vietnamBusinessDayKey(row.reportDate) === day),
-      bucketSources: [{ code: wallet.code, name: wallet.name }],
-      bucket,
-      rivalSources: rivals,
-    });
-    if (declared.contested) contestedDays.add(day);
-    revenueByDay.set(day, declared.amount);
+    if (dayPos.length > 0) {
+      const amount = dayPos
+        .filter((row) => matchPosSource(row.paymentMethod, row.revenueSource, row.channel)?.code === wallet.code)
+        .reduce((sum, row) => sum + row.netAmount, 0);
+      revenueByDay.set(day, Math.round(amount));
+    } else {
+      // Không có POS thì mới dùng số thu ngân khai (cùng luật selectWalletDeclaredRevenue).
+      const declared = selectWalletDeclaredRevenue({
+        posRows: [],
+        manualRows: manualRows.filter((row) => vietnamBusinessDayKey(row.reportDate) === day),
+        bucketSources: [{ code: wallet.code, name: wallet.name }],
+        bucket,
+        rivalSources: rivals,
+      });
+      if (declared.contested) contestedDays.add(day);
+      revenueByDay.set(day, declared.amount);
+    }
     posFeeDeclared += dayPos.reduce((sum, row) => sum + (row.cardFeeAmount || 0) + (row.appFeeAmount || 0), 0);
   }
   const claimedByDay = new Map<string, number>();
