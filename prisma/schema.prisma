@@ -126,6 +126,7 @@ model DepositHistory {
   @@unique([voucherId, action])
   @@index([depositId])
   @@index([voucherId])
+  @@index([actionDate])
 }
 
 model OpeningBalance {
@@ -283,6 +284,8 @@ model BankStatementTransaction {
   @@index([entrySource])
   @@index([reconcileStatus])
   @@index([deletedAt])
+  @@index([revenueDate])
+  @@index([sourceDate])
 }
 
 /// Một dòng phân bổ nghiệp vụ trong file khách. Nhiều dòng có thể cùng thuộc một
@@ -321,6 +324,7 @@ model BankStatementAllocation {
   @@index([bankTransactionId])
   @@index([revenueDate])
   @@index([categoryCode])
+  @@index([sourceDate])
 }
 
 model RevenueImportRow {
@@ -596,6 +600,7 @@ model ReconciliationMatch {
   @@index([status])
   @@index([createdAt])
   @@index([deletedAt])
+  @@index([targetId])
 }
 
 model InventoryItem {
@@ -1414,6 +1419,8 @@ model JournalEntry {
   @@index([branchCode])
   @@index([status])
   @@index([deletedAt])
+  @@index([entryDate])
+  @@index([createdAt])
 }
 
 model JournalLine {

@@ -1246,7 +1246,8 @@ export async function GET(request: Request) {
     if (type === "revenue-trend") return NextResponse.json(await getRevenueTrendReport(period, branchCode, 3));
     if (type === "cashflow") return NextResponse.json({ period, branchCode, ...(await getCashflowForecast(period, branchCode, cleanText(params.get("scenario")) || "BASE")) });
     if (type === "balance") return NextResponse.json({ period, branchCode, ...(await getBalanceSheet(period, branchCode)) });
-    const [pnl, trend, balance, targets] = await Promise.all([getPnl(period, branchCode), getTrend(period, branchCode), getBalanceSheet(period, branchCode), prisma.reportTarget.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { branchCode }) } })]);
+    const currentPnl = getPnl(period, branchCode);
+    const [pnl, trend, balance, targets] = await Promise.all([currentPnl, getTrend(period, branchCode, 6, currentPnl), getBalanceSheet(period, branchCode), prisma.reportTarget.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { branchCode }) } })]);
     return NextResponse.json({ period, branchCode, pnl, trend, balance, targets });
   } catch (error) {
     const result = apiError(error);

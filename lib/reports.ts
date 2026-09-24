@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/custom-client";
 import { prisma } from "@/lib/prisma";
 import { CASH_SOURCE_OPENING_TYPES, OPENING_BALANCE_EFFECTIVE_STATUSES } from "@/lib/opening-balance-rules";
 import { addPeriod } from "@/lib/phase3";
@@ -524,13 +525,52 @@ function withRevenuePnlGroups(categories: Array<{ code: string; name: string }>,
   return [...categories, ...revenueGroups.filter((group) => !present.has(group.code.toUpperCase()))];
 }
 
+type PeriodJournalLineRow = {
+  branchCode: string;
+  nonCapexSource: boolean;
+  /** null khi bút toán không có dòng nào — vẫn trả về để cửa hàng đó có mặt trên bảng. */
+  accountType: string | null;
+  reportGroup: string | null;
+  pnlItemCode: string | null;
+  categoryCode: string | null;
+  departmentCode: string | null;
+  debit: number;
+  credit: number;
+};
+
+/**
+ * Bút toán đã ghi sổ trong khoảng ngày, gộp sẵn bằng SQL theo đúng những chiều P&L đọc tới
+ * (cửa hàng × loại TK × hạng mục × khoản mục × phòng ban). Mọi phép tính của getPnl trên dòng
+ * bút toán đều là cộng Nợ/Có nên gộp trước không đổi kết quả, mà số dòng kéo về giảm từ hàng
+ * chục nghìn xuống vài trăm — trước đây mỗi lần mở P&L/Điều hành phải nạp nguyên bút toán,
+ * từng dòng và tài khoản của từng dòng.
+ */
+async function loadPeriodJournalLines(start: Date, end: Date, branchCode: string) {
+  return prisma.$queryRaw<PeriodJournalLineRow[]>(Prisma.sql`
+    SELECT e."branchCode"      AS "branchCode",
+           (e."sourceType" IN (${Prisma.join(NON_CAPEX_SOURCE_TYPES)})) AS "nonCapexSource",
+           a."accountType"     AS "accountType",
+           a."reportGroup"     AS "reportGroup",
+           l."pnlItemCode"     AS "pnlItemCode",
+           l."categoryCode"    AS "categoryCode",
+           l."departmentCode"  AS "departmentCode",
+           COALESCE(SUM(l."debit"), 0)::float8  AS debit,
+           COALESCE(SUM(l."credit"), 0)::float8 AS credit
+    FROM "JournalEntry" e
+    LEFT JOIN "JournalLine" l ON l."entryId" = e."id"
+    LEFT JOIN "AccountingAccount" a ON a."id" = l."accountId"
+    WHERE e."status" = 'POSTED'
+      AND e."deletedAt" IS NULL
+      AND e."entryDate" >= ${start} AND e."entryDate" < ${end}
+      ${branchCode === "ALL" ? Prisma.empty : Prisma.sql`AND e."branchCode" = ${branchCode}`}
+    GROUP BY 1, 2, 3, 4, 5, 6, 7
+  `);
+}
+
 export async function getPnl(period: string, branchCode: string) {
   const { start, end } = periodBounds(period);
   const [entries, revenueRows, revenueGroups, catalogPnlItems, pnlGroups, categories, depreciationRows] = await Promise.all([
-    prisma.journalEntry.findMany({
-      where: { entryDate: { gte: start, lt: end }, status: "POSTED", ...(branchCode === "ALL" ? {} : { branchCode }) },
-      include: { lines: { include: { account: true } } },
-    }),
+    loadPeriodJournalLines(start, end, branchCode),
     // Dòng Doanh thu lấy thẳng từ file import doanh thu, không lấy từ sổ cái — xem chú thích
     // ở vòng lặp bên dưới. Cùng luật với bảng 12 tháng (getPnlMatrix).
     prisma.revenueImportRow.findMany({
@@ -602,18 +642,26 @@ export async function getPnl(period: string, branchCode: string) {
     branches.set(branchCode, branch);
   };
 
-  for (const entry of entries) {
-    for (const line of entry.lines) {
-      if (line.account.accountType === "ASSET" && NON_CAPEX_SOURCE_TYPES.includes(entry.sourceType)) continue;
+  for (const row of entries) {
+    if (row.accountType !== null && row.reportGroup !== null) {
+      const line = {
+        account: { accountType: row.accountType, reportGroup: row.reportGroup },
+        pnlItemCode: row.pnlItemCode,
+        categoryCode: row.categoryCode,
+        departmentCode: row.departmentCode,
+        debit: row.debit,
+        credit: row.credit,
+      };
       // Bút toán 511 không lên dòng Doanh thu: phiếu thu công nợ / hoàn tạm ứng cũng ghi Có 511
       // (mọi khoản mục nhóm "Thu" đều quy về REVENUE_SOURCE) nên doanh thu bị thổi lên, và kỳ
       // chưa "Đồng bộ ghi sổ" thì lại bằng 0. Dòng Doanh thu dựng từ file import ở khối dưới.
-      if (line.account.accountType === "REVENUE") continue;
       // Khấu hao đọc thẳng từ màn Khấu hao ngay dưới đây (loadDepreciationPnlRows).
-      if (line.account.reportGroup === "DEPRECIATION") continue;
-      addExpenseLine(entry.branchCode, line);
+      const skipped = (line.account.accountType === "ASSET" && row.nonCapexSource)
+        || line.account.accountType === "REVENUE"
+        || line.account.reportGroup === "DEPRECIATION";
+      if (!skipped) addExpenseLine(row.branchCode, line);
     }
-    if (!branches.has(entry.branchCode)) branches.set(entry.branchCode, emptyPnl());
+    if (!branches.has(row.branchCode)) branches.set(row.branchCode, emptyPnl());
   }
   for (const row of depreciationRows) {
     addExpenseLine(row.branchCode, {
@@ -721,14 +769,24 @@ export async function getPnl(period: string, branchCode: string) {
 
 export async function getBalanceSheet(period: string, branchCode: string) {
   const { end } = periodBounds(period);
-  const entries = await prisma.journalEntry.findMany({
-    where: { entryDate: { lt: end }, status: "POSTED", ...(branchCode === "ALL" ? {} : { branchCode }) },
-    include: { lines: { include: { account: true } } },
-  });
+  // Cộng dồn từ trước tới cuối kỳ nên bảng bút toán càng dài càng nặng: gộp theo tài khoản ngay
+  // trong SQL thay vì kéo mọi dòng bút toán từ ngày đầu về rồi mới cộng.
+  const lines = await prisma.$queryRaw<Array<{ code: string; name: string; accountType: string; reportGroup: string; normalBalance: string; debit: number; credit: number }>>(Prisma.sql`
+    SELECT a."code", a."name", a."accountType", a."reportGroup", a."normalBalance",
+           SUM(l."debit")::float8 AS debit, SUM(l."credit")::float8 AS credit
+    FROM "JournalLine" l
+    JOIN "JournalEntry" e ON e."id" = l."entryId"
+    JOIN "AccountingAccount" a ON a."id" = l."accountId"
+    WHERE e."status" = 'POSTED'
+      AND e."deletedAt" IS NULL
+      AND e."entryDate" < ${end}
+      ${branchCode === "ALL" ? Prisma.empty : Prisma.sql`AND e."branchCode" = ${branchCode}`}
+    GROUP BY a."id", a."code", a."name", a."accountType", a."reportGroup", a."normalBalance"
+  `);
   const groups = new Map<string, { code: string; name: string; accountType: string; reportGroup: string; amount: number }>();
   let cumulativeProfit = 0;
-  for (const entry of entries) for (const line of entry.lines) {
-    const account = line.account;
+  for (const line of lines) {
+    const account = line;
     const amount = account.normalBalance === "DEBIT" ? line.debit - line.credit : line.credit - line.debit;
     const current = groups.get(account.code) || { code: account.code, name: account.name, accountType: account.accountType, reportGroup: account.reportGroup, amount: 0 };
     current.amount += amount;
@@ -744,9 +802,13 @@ export async function getBalanceSheet(period: string, branchCode: string) {
   return { rows, assets, liabilities, contributedEquity, retainedEarnings: cumulativeProfit, equity, difference: assets - liabilities - equity, balanced: Math.abs(assets - liabilities - equity) <= 1 };
 }
 
-export async function getTrend(period: string, branchCode: string, months = 6) {
+/**
+ * `current` là P&L của chính kỳ đang xem nếu nơi gọi đã tính sẵn (màn Điều hành) — kỳ đó nằm
+ * ở cột cuối của xu hướng, tính lại là nạp trùng toàn bộ bút toán và doanh thu của tháng.
+ */
+export async function getTrend(period: string, branchCode: string, months = 6, current?: Promise<Awaited<ReturnType<typeof getPnl>>>) {
   const periods = Array.from({ length: months }, (_, index) => addPeriod(period, index - months + 1));
-  return Promise.all(periods.map(async (item) => ({ period: item, ...(await getPnl(item, branchCode)).total })));
+  return Promise.all(periods.map(async (item) => ({ period: item, ...(await (item === period && current ? current : getPnl(item, branchCode))).total })));
 }
 
 /* ------------------------------------------------------------------------- *

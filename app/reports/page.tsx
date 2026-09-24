@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { DateInput, MonthInput } from "@/components/DateInput";
 import { storeLabel, visibleBranchScopeOptions, visibleStoreOptions } from "@/lib/branch-labels";
@@ -339,13 +339,22 @@ export default function ReportsPage() {
    */
   const [ledgerArmed, setLedgerArmed] = useState(false);
 
+  /**
+   * Số liệu đã tải theo từng bộ lọc (tab + kỳ + cửa hàng + ...). Quay lại một tab đã xem thì hiện
+   * ngay số cũ rồi lặng lẽ tải lại phía sau, thay vì lần nào bấm qua lại cũng đứng chờ vòng xoay.
+   * Chỉ sống trong phiên mở trang — F5 là sạch.
+   */
+  const reportCacheRef = useRef(new Map<string, { data: ReportData; recon: DailyCashData | null }>());
+  /** Bấm tab liên tục thì chỉ lượt tải MỚI NHẤT được ghi vào màn hình; lượt cũ về muộn bị bỏ. */
+  const loadSeqRef = useRef(0);
+
   const loadData = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     if (active === "revenue-ledger" && !ledgerArmed) {
       setTabLoading(false);
       return;
     }
     try {
-      setTabLoading(true);
       const params = new URLSearchParams({ type: active, period, branchCode, scenario });
       if (active === "daily-cash") {
         params.set("reportDate", reportDate);
@@ -359,22 +368,29 @@ export default function ReportsPage() {
       }
       // Tab Tiền về đủ chưa mang thêm bảng "Đối chiếu tiền vào đã đủ chưa" (chuyển từ tab
       // Thu chi ngày sang) — bảng đó tính theo ngày/ca nên nạp kèm báo cáo thu chi ngày.
+      const cacheKey = params.toString();
+      const cached = reportCacheRef.current.get(cacheKey);
+      if (cached) {
+        setData(cached.data);
+        setReconDailyCash(cached.recon);
+      }
+      setTabLoading(!cached);
       const reconPromise = active === "revenue-settlement"
         ? fetch(`/api/reports?${new URLSearchParams({ type: "daily-cash", period, branchCode, scenario, reportDate, shift }).toString()}`)
         : null;
-      const response = await fetch(`/api/reports?${params.toString()}`);
-      if (response.ok) {
-        const result = await response.json();
+      const [response, reconResponse] = await Promise.all([fetch(`/api/reports?${cacheKey}`), reconPromise]);
+      const result = response.ok ? ((await response.json()) as ReportData) : null;
+      const recon = reconResponse?.ok ? ((await reconResponse.json()) as DailyCashData) : null;
+      if (seq !== loadSeqRef.current) return;
+      if (result) {
         setData(result);
+        reportCacheRef.current.set(cacheKey, { data: result, recon });
       }
-      if (reconPromise) {
-        const reconResponse = await reconPromise;
-        setReconDailyCash(reconResponse.ok ? ((await reconResponse.json()) as DailyCashData) : null);
-      }
+      if (reconPromise) setReconDailyCash(recon);
     } catch (e) {
       console.error("Error loading reports data:", e);
     } finally {
-      setTabLoading(false);
+      if (seq === loadSeqRef.current) setTabLoading(false);
     }
   }, [active, branchCode, cashSourceView, ledgerArmed, ledgerChannel, ledgerFrom, ledgerTo, period, reportDate, scenario, shift]);
 
@@ -388,10 +404,19 @@ export default function ReportsPage() {
     if (!loading) {
       window.setTimeout(() => {
         void loadData();
+      }, 0);
+    }
+  }, [loading, loadData]);
+
+  // Danh mục nguồn tiền không đổi theo tab/kỳ: nạp một lần khi vào trang (nút Tải lại nạp lại),
+  // không kéo lại mỗi lần bấm sang tab khác như trước.
+  useEffect(() => {
+    if (!loading) {
+      window.setTimeout(() => {
         void loadMoneySources();
       }, 0);
     }
-  }, [loading, loadData, loadMoneySources]);
+  }, [loading, loadMoneySources]);
 
   const handleTabChange = (newTab: string) => {
     if (newTab !== active) {
@@ -829,7 +854,7 @@ export default function ReportsPage() {
             )}
           </>
         )}
-        <button type="button" className="icon-button" title="Tải lại số liệu và danh mục nguồn tiền — sửa Nguồn tiền tổng bên Cấu hình xong bấm nút này là thấy ngay, không cần đăng nhập lại" onClick={() => { void loadData(); void loadMoneySources(); }}>
+        <button type="button" className="icon-button" title="Tải lại số liệu và danh mục nguồn tiền — sửa Nguồn tiền tổng bên Cấu hình xong bấm nút này là thấy ngay, không cần đăng nhập lại" onClick={() => { reportCacheRef.current.clear(); void loadData(); void loadMoneySources(); }}>
           <span className="material-symbols-outlined text-lg">refresh</span>
         </button>
       </div>
