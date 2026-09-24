@@ -4,16 +4,20 @@
  * Hai câu hỏi phải trả lời bằng số, không đoán (khách hỏi 24/09/2026, Nam Mê tháng 8):
  *
  *  PHẦN 1 — Pivot "Chi phí quẹt thẻ" 24.232.622 đ của kế toán gồm những dòng nào?
- *    Script dựng lại đúng bảng chi tiết của tab Tổng hợp chi phí (getExpenseSummary — cùng
- *    hàm màn hình gọi), gom từng ngày theo (nguồn phát sinh · hạng mục P&L), rồi dò tổ hợp
- *    cột nào cộng ra KHỚP TỪNG NGÀY với pivot của kế toán (--pivot, mặc định là pivot Nam Mê
- *    tháng 8 gửi 24/09). Khớp đủ mọi ngày thì biết chắc pivot đã lọc những gì.
+ *    Quét MỌI dòng 6428 trên sổ của MỌI cửa hàng (kể cả dòng chưa gán hạng mục), gom theo
+ *    ngày bút toán × (cửa hàng · nguồn · hạng mục), rồi dò tổ hợp cột KHỚP TỪNG NGÀY với pivot
+ *    (--pivot, mặc định là pivot Nam Mê tháng 8 gửi 24/09). Bản đầu chỉ dò trong một cửa hàng
+ *    và chỉ dòng đã gán hạng mục — không khớp, nên mở rộng. Không tổ hợp nào khớp nghĩa là
+ *    pivot không lấy từ sổ theo ngày bút toán.
  *
  *  PHẦN 2 — Phiếu QTVI nào đang ghi phí sai, và vì sao?
  *    Với từng phiếu quyết toán ví đã nối dòng sao kê, tính lại phí theo từng ngày doanh thu
  *    bằng computeWalletGrossByDay — ĐÚNG hàm nút "Chạy lại theo doanh thu hiện tại" dùng — và
  *    in: phí đang ghi, phí đúng, doanh thu / đã quyết toán nơi khác / tiền về của từng ngày.
- *    Không tính được thì in nguyên văn lý do.
+ *    Không tính được thì in nguyên văn lý do KÈM dữ kiện: từng dòng sao kê nối với phiếu, dòng
+ *    POS / số thu ngân khai từng ngày, phí của bảng Tiền về đủ chưa cho đúng ngày + ví, và lịch
+ *    sử sửa phiếu trên nhật ký thao tác. Phiếu phí đúng mà chỉ ô gross trên dòng sao kê
+ *    trống/lệch làm tròn thì liệt kê riêng (không đổi chi phí, --apply không đụng).
  *
  *  --apply --confirm <MÃ>: ghi lại phí cho các phiếu lệch, cùng các bước của nút Chạy lại
  *    (cập nhật gross dòng sao kê → walletFeeFields → ghi lại bút toán ngay → nhật ký SCRIPT).
@@ -25,7 +29,7 @@
  */
 import { prisma } from "../lib/prisma.ts";
 import { periodBounds } from "../lib/accounting.ts";
-import { getExpenseSummary } from "../lib/expense-summary.ts";
+import { getRevenueSettlementReport } from "../lib/reports.ts";
 import { computeWalletGrossByDay } from "../lib/wallet-settlement-by-day.ts";
 import { walletFeeFields, repostWalletSettlementJournal, assertWalletCardFeeCategory } from "../lib/wallet-settlement-fee.ts";
 import { checkWalletFeeRate, walletFeeRateMessage, WALLET_CARD_FEE_CATEGORY_CODE } from "../lib/wallet-settlement-allocation.ts";
@@ -61,49 +65,67 @@ function readPivot() {
   return Object.fromEntries(raw.split(",").map((pair) => { const [d, v] = pair.split("="); return [d.trim(), Number(v)]; }));
 }
 
+/**
+ * Dò nguồn của pivot. Không giả định pivot chỉ lấy cửa hàng này hay chỉ lấy dòng đã gán hạng
+ * mục: quét MỌI dòng Nợ/Có 6428 trên sổ của MỌI cửa hàng trong kỳ, gom thành cột
+ * (cửa hàng · nguồn phát sinh · hạng mục P&L | "chưa gán"), xếp theo NGÀY BÚT TOÁN đúng như
+ * bảng chi tiết Tổng hợp chi phí in ra, rồi dò tổ hợp cột khớp từng ngày với pivot.
+ */
 async function partPivot() {
   const pivot = readPivot();
-  const summary = await getExpenseSummary(period, branchCode);
-  const cols = new Map(); // "nguồn · hạng mục" -> Map(day -> amount)
-  for (const d of summary.details) {
-    const key = `${d.sourceLabel} · ${d.itemName}`;
-    const byDay = cols.get(key) || new Map();
-    byDay.set(d.date, (byDay.get(d.date) || 0) + d.amount);
-    cols.set(key, byDay);
+  const { start, end } = periodBounds(period);
+  const [entries, items] = await Promise.all([
+    prisma.journalEntry.findMany({
+      where: { entryDate: { gte: start, lt: end }, status: "POSTED" },
+      select: { branchCode: true, entryDate: true, sourceType: true, lines: { where: { account: { code: { startsWith: "6428" } } }, select: { debit: true, credit: true, pnlItemCode: true } } },
+    }),
+    prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true } }),
+  ]);
+  const itemName = new Map(items.map((i) => [i.code, i.name]));
+  const cols = new Map();
+  for (const e of entries) {
+    for (const l of e.lines) {
+      const amount = l.debit - l.credit;
+      if (!amount) continue;
+      const key = `${e.branchCode} · ${e.sourceType} · ${l.pnlItemCode ? itemName.get(l.pnlItemCode) || l.pnlItemCode : "(chưa gán hạng mục)"}`;
+      const byDay = cols.get(key) || new Map();
+      const day = e.entryDate.toISOString().slice(0, 10); // đúng cách bảng chi tiết Tổng hợp chi phí in ngày
+      byDay.set(day, (byDay.get(day) || 0) + amount);
+      cols.set(key, byDay);
+    }
   }
-  // Chỉ những cột có chạm ngày nào của pivot mới đáng dò.
-  const pivotDays = pivot ? Object.keys(pivot).sort() : [];
-  const relevant = [...cols.entries()]
-    .filter(([key]) => /quẹt thẻ|phí ví|grab|bán hàng qua app|điều tiền|quyết toán ví/i.test(key))
-    .sort((a, b) => a[0].localeCompare(b[0], "vi"));
-
-  console.log("PHẦN 1 — TỔNG HỢP CHI PHÍ: các cột liên quan phí thẻ / ví / Grab (tổng cả kỳ)");
-  for (const [key, byDay] of relevant) console.log(`  ${key.padEnd(70)}${pad([...byDay.values()].reduce((s, v) => s + v, 0), 14)} đ`);
+  const total = (byDay) => [...byDay.values()].reduce((s, v) => s + v, 0);
+  const all = [...cols.entries()].sort((a, b) => Math.abs(total(b[1])) - Math.abs(total(a[1])));
+  console.log("PHẦN 1 — MỌI DÒNG 6428 TRÊN SỔ KỲ NÀY, MỌI CỬA HÀNG (cửa hàng · nguồn · hạng mục)");
+  for (const [key, byDay] of all) console.log(`  ${key.padEnd(78)}${pad(total(byDay), 14)} đ`);
   if (!pivot) { console.log("  (không có --pivot để dò)"); return; }
 
-  const pivotTotal = Object.values(pivot).reduce((s, v) => s + v, 0);
-  console.log(`  Pivot của kế toán: ${pivotDays.length} ngày, tổng ${money(pivotTotal)} đ`);
-  // Dò mọi tổ hợp cột (tối đa 12 cột = 4096 tổ hợp), chấm theo số ngày khớp tới đồng.
-  const candidates = relevant.slice(0, 12);
+  const pivotDays = Object.keys(pivot).sort();
+  console.log(`  Pivot của kế toán: ${pivotDays.length} ngày, tổng ${money(Object.values(pivot).reduce((s, v) => s + v, 0))} đ`);
+  // Chỉ dò cột chạm ít nhất một ngày của pivot và không ngày nào vượt số pivot của ngày đó (cột
+  // lương, thuê nhà... tự loại). Tối đa 16 cột (65.536 tổ hợp).
+  const candidates = all
+    .filter(([, byDay]) => pivotDays.some((d) => byDay.has(d)) && pivotDays.every((d) => (byDay.get(d) || 0) <= pivot[d] + 1))
+    .slice(0, 16);
+  console.log(`  Cột có thể nằm trong pivot (${candidates.length}): ${candidates.map(([k]) => k).join(" | ") || "không có"}`);
   let best = null;
   for (let mask = 1; mask < 1 << candidates.length; mask += 1) {
     const picked = candidates.filter((_, i) => mask & (1 << i));
     const sumOf = (day) => picked.reduce((s, [, byDay]) => s + (byDay.get(day) || 0), 0);
-    const allDays = new Set([...pivotDays, ...picked.flatMap(([, byDay]) => [...byDay.keys()])]);
-    let hit = 0; let miss = 0;
-    for (const day of allDays) { if (Math.abs(sumOf(day) - (pivot[day] || 0)) < 1) hit += 1; else miss += 1; }
-    if (!best || miss < best.miss || (miss === best.miss && picked.length < best.picked.length)) best = { picked, miss, hit, sumOf, allDays };
+    let miss = 0;
+    for (const day of pivotDays) if (Math.abs(sumOf(day) - pivot[day]) >= 1) miss += 1;
+    if (!best || miss < best.miss || (miss === best.miss && picked.length < best.picked.length)) best = { picked, miss, sumOf };
   }
   console.log("");
   console.log(best.miss === 0
-    ? "  => KHỚP TỪNG NGÀY, TỚI ĐỒNG. Pivot đã lấy đúng các cột:"
-    : `  => Tổ hợp gần nhất (còn ${best.miss} ngày lệch):`);
+    ? `  => KHỚP CẢ ${pivotDays.length} NGÀY, TỚI ĐỒNG. Pivot = tổng các cột:`
+    : `  => KHÔNG tổ hợp nào khớp đủ. Gần nhất còn ${best.miss}/${pivotDays.length} ngày lệch — pivot KHÔNG lấy từ sổ theo ngày bút toán:`);
   for (const [key] of best.picked) console.log(`       + ${key}`);
   console.log("");
   console.log("  NGÀY        PIVOT          TỔ HỢP TRÊN     LỆCH");
-  for (const day of [...best.allDays].sort()) {
-    const mine = best.sumOf(day); const theirs = pivot[day] || 0;
-    console.log(`  ${day}  ${pad(theirs, 12)}  ${pad(mine, 14)}  ${Math.abs(mine - theirs) < 1 ? "" : pad(mine - theirs, 12)}`);
+  for (const day of pivotDays) {
+    const mine = best.sumOf(day);
+    console.log(`  ${day}  ${pad(pivot[day], 12)}  ${pad(mine, 14)}  ${Math.abs(mine - pivot[day]) < 1 ? "" : pad(mine - pivot[day], 12)}`);
   }
 }
 
@@ -133,16 +155,20 @@ async function partTransfers() {
       lines: lines.map((row) => ({ revenueDate: row.revenueDate, netAmount: row.creditAmount })),
       excludeBankTransactionId: match.bankTransaction.id,
     });
-    if (!computed.ok) { failed.push({ t, reason: computed.reason }); continue; }
+    if (!computed.ok) { failed.push({ t, reason: computed.reason, lines }); continue; }
     const plan = computed.plan;
     const allocationStale = lines.some((row, i) => Math.round(row.grossAmount || 0) !== plan.lineGross[i]);
     if (plan.totalFee === Math.round(t.feeAmount) && !allocationStale) continue;
     wrong.push({ t, computed, plan, lines, bank: match.bankTransaction });
   }
 
-  const totalDelta = wrong.reduce((s, w) => s + w.plan.totalFee - Math.round(w.t.feeAmount), 0);
-  console.log(`  Đúng: ${transfers.length - wrong.length - failed.length - unlinked.length} · LỆCH: ${wrong.length} (tổng chênh ${money(totalDelta)} đ) · không tính được: ${failed.length} · chưa nối sao kê: ${unlinked.length}`);
-  for (const w of wrong) {
+  // Phí đúng rồi, chỉ ô gross trên dòng sao kê trống / lệch làm tròn: không đổi chi phí đồng nào.
+  const feeWrong = wrong.filter((w) => w.plan.totalFee !== Math.round(w.t.feeAmount));
+  const grossOnly = wrong.filter((w) => w.plan.totalFee === Math.round(w.t.feeAmount));
+  const totalDelta = feeWrong.reduce((s, w) => s + w.plan.totalFee - Math.round(w.t.feeAmount), 0);
+  console.log(`  Phí đúng: ${transfers.length - feeWrong.length - failed.length - unlinked.length} · PHÍ SAI: ${feeWrong.length} (tổng chênh ${money(totalDelta)} đ) · không tính được: ${failed.length} · chưa nối sao kê: ${unlinked.length}`);
+  if (grossOnly.length) console.log(`  (${grossOnly.length} phiếu phí đúng nhưng ô gross trên dòng sao kê trống/lệch làm tròn — không ảnh hưởng chi phí: ${grossOnly.map((w) => w.t.code).join(", ")})`);
+  for (const w of feeWrong) {
     console.log("");
     console.log(`  ${w.t.code}  ${w.computed.walletLabel}${w.computed.isGrab ? " [GRAB]" : ""}  tiền về ${vietnamBusinessDayKey(w.t.transferDate)}  sao kê ${w.bank.transactionCode}`);
     console.log(`    Phí đang ghi ${pad(w.t.feeAmount, 12)} đ  →  phí đúng ${pad(w.plan.totalFee, 12)} đ  (chênh ${money(w.plan.totalFee - w.t.feeAmount)} đ)`);
@@ -150,19 +176,52 @@ async function partTransfers() {
     for (const d of w.plan.days) {
       console.log(`    ${d.day}  ${pad(d.revenue, 14)}  ${pad(d.claimedElsewhere, 14)}  ${pad(d.grossAmount, 14)}  ${pad(d.netAmount, 14)}  ${pad(d.feeAmount, 12)}`);
     }
-    console.log(`    Gross đang ghi trên dòng sao kê: ${w.lines.map((row) => `${vietnamBusinessDayKey(row.revenueDate)}=${money(row.grossAmount || 0)}`).join(", ")}`);
   }
-  if (failed.length) {
-    console.log("");
-    console.log("  KHÔNG TÍNH ĐƯỢC (giữ nguyên, lý do nguyên văn):");
-    for (const f of failed) console.log(`    ${f.t.code}  phí đang ghi ${money(f.t.feeAmount)} đ — ${f.reason}`);
-  }
+  for (const f of failed) await explainFailed(f);
   if (unlinked.length) {
     console.log("");
     console.log("  CÓ PHÍ NHƯNG CHƯA NỐI DÒNG SAO KÊ (không tự tính được):");
     for (const t of unlinked) console.log(`    ${t.code}  ${t.fromMoneySourceCode}  phí ${money(t.feeAmount)} đ`);
   }
-  return wrong;
+  return feeWrong;
+}
+
+const reportCache = new Map();
+async function reportOf(p) {
+  if (!reportCache.has(p)) reportCache.set(p, await getRevenueSettlementReport(p, branchCode));
+  return reportCache.get(p);
+}
+
+/**
+ * Phiếu không tính lại được: in đủ dữ kiện để biết CHẮC vì sao phí đang là con số đó, thay vì
+ * suy luận. Gồm từng dòng sao kê nối với phiếu, dữ liệu doanh thu từng ngày (POS / thu ngân
+ * khai), số của bảng Tiền về đủ chưa cho đúng ngày + ví, và lịch sử sửa phiếu.
+ */
+async function explainFailed({ t, reason, lines }) {
+  console.log("");
+  console.log(`  KHÔNG TÍNH ĐƯỢC ${t.code}  ${t.fromMoneySourceCode}  tiền về ${vietnamBusinessDayKey(t.transferDate)}  phí đang ghi ${money(t.feeAmount)} đ (Grab ${money(t.grabExpenseAmount)} đ)`);
+  console.log(`    Lý do: ${reason}`);
+  console.log(`    Ngày doanh thu ghi trên phiếu (sourceReportDate): ${t.sourceReportDate ? vietnamBusinessDayKey(t.sourceReportDate) : "(trống)"} · tạo ${t.createdAt.toISOString()} · sửa lần cuối ${t.updatedAt.toISOString()}`);
+  console.log("    NGÀY DT     TIỀN VỀ (sao kê)  GROSS TRÊN DÒNG  | DÒNG POS  DT POS CỦA VÍ (bảng)  THU NGÂN KHAI thẻ/Grab | BẢNG: PHÍ");
+  let tableSum = 0; const missing = [];
+  for (const row of lines) {
+    const day = vietnamBusinessDayKey(row.revenueDate);
+    const [dayStart, dayEnd] = [new Date(`${day}T00:00:00.000Z`), new Date(new Date(`${day}T00:00:00.000Z`).getTime() + 86_400_000)];
+    const [posCount, manual] = await Promise.all([
+      prisma.revenueImportRow.count({ where: { branchCode, saleDate: { gte: new Date(dayStart.getTime() - 7 * 3_600_000), lt: dayEnd } } }),
+      prisma.manualRevenueEntry.findMany({ where: { branchCode, reportDate: { gte: new Date(dayStart.getTime() - 7 * 3_600_000), lt: dayEnd } }, select: { cardAmount: true, grabAmount: true } }),
+    ]);
+    const report = await reportOf(day.slice(0, 7));
+    const cell = report.rows.find((r) => r.date === day && r.moneySourceCode === t.fromMoneySourceCode);
+    const fee = cell && cell.revenue > 0 ? cell.revenue - cell.received - cell.writtenOff : null;
+    if (fee === null) missing.push(day); else tableSum += fee;
+    const manualText = manual.length ? `${money(manual.reduce((s, m) => s + m.cardAmount, 0))}/${money(manual.reduce((s, m) => s + m.grabAmount, 0))}` : "—";
+    console.log(`    ${day}  ${pad(row.creditAmount, 16)}  ${pad(row.grossAmount || 0, 15)}  | ${String(posCount).padStart(8)}  ${pad(cell?.revenue || 0, 21)}  ${manualText.padStart(22)} | ${fee === null ? "không có DT" : pad(fee, 10)}`);
+  }
+  console.log(`    => Theo bảng Tiền về đủ chưa, phí các ngày có doanh thu cộng lại: ${money(tableSum)} đ${missing.length ? ` · ngày KHÔNG có doanh thu POS: ${missing.join(", ")}` : ""}`);
+  const logs = await prisma.auditLog.findMany({ where: { entityId: t.id }, orderBy: { occurredAt: "asc" }, select: { occurredAt: true, actorName: true, action: true, message: true } });
+  console.log(`    Lịch sử trên nhật ký thao tác (${logs.length}):`);
+  for (const l of logs) console.log(`      ${l.occurredAt.toISOString()}  ${l.action}  ${l.actorName || ""}  ${l.message || ""}`);
 }
 
 async function applyFixes(wrong) {
