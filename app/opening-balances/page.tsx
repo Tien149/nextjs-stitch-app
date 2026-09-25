@@ -399,7 +399,9 @@ export default function OpeningBalancesPage() {
           ? prepaidCategoryOf(form.moneySourceCode)
           : firstMoneySourceCode(moneySources, form.branchCode, sourceMoneyGroups),
         warehouseCode: warehouses.find(w => w.branch === form.branchCode)?.code || warehouses[0]?.code || "",
-        departmentCode: departments.find(d => d.branch === form.branchCode)?.code || departments[0]?.code || "",
+        departmentCode: departments.find(d => d.branch === form.branchCode)?.code
+          || departments.find(d => !d.branch || d.branch === "ALL")?.code
+          || "",
       });
       setMessage(editingId ? "Đã cập nhật số dư đầu kỳ." : "Đã thêm số dư đầu kỳ thành công.");
       await loadBalances();
@@ -771,8 +773,11 @@ export default function OpeningBalancesPage() {
                       className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500"
                     >
                       <option value="">-- Chọn bộ phận --</option>
+                      {/* Bộ phận dùng chung (không gắn cửa hàng hoặc gắn ALL) chọn được ở mọi cửa hàng —
+                          cùng luật với màn Tài sản / Mua hàng. Lọc khớp đúng mã cửa hàng như trước thì
+                          cửa hàng chưa khai bộ phận riêng (vd. NAM MÊ) có danh sách rỗng. */}
                       {departments
-                        .filter(item => !form.branchCode || item.branch === form.branchCode)
+                        .filter(item => !form.branchCode || !item.branch || item.branch === "ALL" || item.branch === form.branchCode)
                         .map(item => (
                           <option key={item.id} value={item.code}>
                             [{item.code}] {item.name}
