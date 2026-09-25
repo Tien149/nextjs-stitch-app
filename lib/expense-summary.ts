@@ -149,7 +149,7 @@ export async function getExpenseSummary(period: string, branchCode: string): Pro
     // mới; phiếu SETTLEMENT (sao kê khớp doanh thu) không bao giờ thành chi phí.
     prisma.financialVoucher.findMany({ where: { ...branchFilter, voucherType: "PAYMENT", businessEffect: "RECOGNITION", voucherDate: { gte: start, lt: end }, status: { not: "APPROVED" } }, select: { amount: true } }),
     prisma.financialVoucher.findMany({ where: { ...branchFilter, voucherType: "PAYMENT", businessEffect: "RECOGNITION", voucherDate: { gte: start, lt: end }, status: "APPROVED" }, select: { id: true, amount: true, documentChannel: true } }),
-    prisma.accrualSchedule.findMany({ where: { period, status: "PLANNED", ...(branchCode === "ALL" ? {} : { accrual: { branchCode } }) }, select: { amount: true } }),
+    prisma.accrualSchedule.findMany({ where: { period, status: "PLANNED", accrual: { deletedAt: null, ...(branchCode === "ALL" ? {} : { branchCode }) } }, select: { amount: true } }),
     prisma.assetDepreciation.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { asset: { branchCode } }) }, select: { id: true, depreciationAmount: true } }),
     prisma.payrollImportRow.findMany({ where: { period, ...branchFilter }, select: { id: true, baseSalary: true, allowanceAmount: true, bonusAmount: true } }),
     prisma.payrollDepartmentRow.findMany({ where: { period, ...branchFilter }, select: { id: true, totalCompanyCost: true } }),

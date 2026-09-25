@@ -2057,6 +2057,16 @@ export default function FinanceOperationsPage() {
                             Đã chi tiền · từ phiếu {row.code.replace(/^PB-/, "")}
                           </span>
                         )}
+                        {/* Khoản sinh từ công nợ phải trả khai tay có phân bổ: nợ NCC đã treo
+                            Nợ 242 / Có 331, mỗi kỳ ghi nhận rút dần 242 vào chi phí. */}
+                        {row.sourceType === "DEBT" && (
+                          <span
+                            className="ml-1.5 text-[10px] font-bold text-violet-700 bg-violet-50 border border-violet-200 px-2 py-0.5 rounded-full"
+                            title={`Sinh tự động từ công nợ phải trả ${row.code.replace(/^PB-/, "")}. Khoản nợ đang treo chi phí trả trước (242); mỗi kỳ ghi nhận sẽ rút dần vào chi phí. Sửa số tiền/số kỳ ở màn Công nợ Đối tác.`}
+                          >
+                            Chưa trả tiền · từ công nợ {row.code.replace(/^PB-/, "")}
+                          </span>
+                        )}
                         <h4 className="font-bold text-slate-900 mt-1">{row.name}</h4>
                         <p className="text-xs text-slate-500 font-semibold mt-0.5">
                           Cửa hàng: {storeLabel(row.branchCode)} · Khoản mục: {feeCategoryLabel(row.categoryCode)} · Thời gian: {row.numberOfPeriods} kỳ

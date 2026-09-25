@@ -634,15 +634,24 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   }
 
   const manualPayables = await prisma.debtRecord.findMany({
-    where: { ...branchFilter, debtType: "PAYABLE", recognizeExpense: true, documentDate: { gte: start, lt: end } },
+    where: {
+      ...branchFilter,
+      debtType: "PAYABLE",
+      documentDate: { gte: start, lt: end },
+      // Khoản khai tay có phân bổ theo kỳ vẫn phải ghi vế 331 (nếu không, trả tiền sau này rút
+      // 331 xuống âm), chỉ là bên Nợ treo 242 thay vì vào chi phí — xem bên dưới.
+      OR: [{ recognizeExpense: true }, { sourceType: "MANUAL", allocationMonths: { gt: 1 } }],
+    },
   });
   for (const row of manualPayables) {
     const debtGroup = row.pnlItemCode
       ? pnlItemGroupByCode.get(row.pnlItemCode) ?? null
       : (row.categoryCode ? categoryGroupByCode.get(row.categoryCode) ?? null : null);
     // Cùng luật với phiếu chi: nhóm của hạng mục quyết định khoản nợ này là giá vốn, chi phí
-    // vận hành hay tiền mua tài sản (không vào P&L).
-    const debitAccount = debtGroup === "CAPEX" ? "211" : debtGroup === "COGS" ? "632" : "6428";
+    // vận hành hay tiền mua tài sản (không vào P&L). Khoản phân bổ theo kỳ treo 242, lịch
+    // PB-<mã công nợ> rút dần vào chi phí từng kỳ.
+    const isAllocated = !row.recognizeExpense && (row.allocationMonths || 0) > 1;
+    const debitAccount = isAllocated ? "242" : debtGroup === "CAPEX" ? "211" : debtGroup === "COGS" ? "632" : "6428";
     results.push(await postJournalEntry({
       entryDate: row.documentDate,
       branchCode: row.branchCode,
@@ -652,7 +661,10 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
       description: row.description,
       createdBy: actor,
       lines: [
-        { accountCode: debitAccount, debit: row.originalAmount, partnerCode: row.partnerCode, categoryCode: row.categoryCode, pnlItemCode: row.pnlItemCode },
+        // 242 không phải chi phí: bỏ hạng mục P&L để dòng treo không bị gom nhầm lên báo cáo.
+        isAllocated
+          ? { accountCode: debitAccount, debit: row.originalAmount, partnerCode: row.partnerCode }
+          : { accountCode: debitAccount, debit: row.originalAmount, partnerCode: row.partnerCode, categoryCode: row.categoryCode, pnlItemCode: row.pnlItemCode },
         { accountCode: "331", credit: row.originalAmount, partnerCode: row.partnerCode },
       ],
     }));
@@ -699,9 +711,12 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   // - Sinh từ số dư đầu kỳ (sourceType OPENING_BALANCE, mã PB-DK-*): tiền cũng đã chi từ
   //   trước khi lên hệ thống và số dư đầu kỳ đã treo Nợ 242, nên vế Có cũng là 242. Khoản
   //   cũ tạo trước 10/09/2026 chưa có sourceType nên vẫn nhận diện thêm theo tiền tố mã.
+  // - Sinh từ công nợ phải trả khai tay có phân bổ (sourceType DEBT): lúc ghi sổ công nợ đã
+  //   treo Nợ 242 / Có 331, nên vế Có cũng là 242. Ghi 335 là nợ nhà cung cấp hai lần.
   // - Khai tay ở tab Trích trước (chưa chi tiền): vẫn là Có 335 — chi phí phải trả.
   for (const row of accruals) {
     const alreadyPaid = row.accrual.sourceType === "VOUCHER"
+      || row.accrual.sourceType === "DEBT"
       || row.accrual.sourceType === "OPENING_BALANCE"
       || row.accrual.code.startsWith("PB-DK-");
     /**

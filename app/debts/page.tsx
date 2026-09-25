@@ -4,7 +4,7 @@ import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { useRouter } from "next/navigation";
 import { BranchScopeSelect, resolveInitialBranchScope } from "@/components/BranchScopeSelect";
-import { DateInput } from "@/components/DateInput";
+import { DateInput, MonthInput } from "@/components/DateInput";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { appMenuItems, canAccessMenu, canPerformAction, canPerformMenuAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import CopyableText from "@/components/CopyableText";
@@ -54,6 +54,10 @@ type LedgerRow = {
   /** Hạng mục P&L của khoản phải trả; phải thu dùng `pnlGroupCode`. */
   pnlItemCode?: string | null;
   pnlGroupCode?: string | null;
+  /** Khoản phải trả khai tay có phân bổ theo kỳ (lịch PB-<mã>). */
+  allocationMonths?: number | null;
+  allocationStartPeriod?: string | null;
+  sourceType?: string | null;
 };
 
 type LedgerDetail = {
@@ -90,7 +94,75 @@ const emptyDebtForm = {
   /** Giữ riêng hai tầng như popup Thêm công nợ: phải trả sửa hạng mục, phải thu sửa nhóm hạng mục. */
   pnlItemCode: "",
   pnlGroupCode: "",
+  /** Rỗng = ghi chi phí ngay; từ 2 trở lên = chia đều theo lịch phân bổ. */
+  allocationMonths: "",
+  allocationStartPeriod: "",
 };
+
+/**
+ * Khối "Phân bổ theo kỳ" dùng chung cho popup Thêm và Sửa công nợ phải trả. Bật lên thì khoản
+ * nợ không vào chi phí một lần ở ngày chứng từ mà chia đều theo lịch PB-<mã công nợ> ở tab
+ * Trích trước & Phân bổ — cùng cơ chế với phiếu chi trả trước.
+ */
+function AllocationFields({ months, startPeriod, amount, defaultPeriod, onChange }: {
+  months: string;
+  startPeriod: string;
+  amount: number;
+  defaultPeriod: string;
+  onChange: (patch: { allocationMonths: string; allocationStartPeriod: string }) => void;
+}) {
+  const enabled = months !== "";
+  const periods = Number(months);
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+      <label className="flex items-center gap-2 text-xs font-bold text-slate-700">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(event) => onChange(event.target.checked
+            ? { allocationMonths: "12", allocationStartPeriod: startPeriod || defaultPeriod }
+            : { allocationMonths: "", allocationStartPeriod: "" })}
+          className="h-4 w-4 rounded border-slate-300"
+        />
+        Phân bổ chi phí theo kỳ
+        <span className="font-normal text-slate-400">(thuê mặt bằng, bảo trì, phí dịch vụ trả cho nhiều tháng...)</span>
+      </label>
+      {enabled && (
+        <div className="mt-3 grid grid-cols-2 gap-3">
+          <label className="text-xs font-bold text-slate-600 block">
+            Số kỳ phân bổ *
+            <input
+              type="number"
+              min={2}
+              max={120}
+              step={1}
+              value={months}
+              onChange={(event) => onChange({ allocationMonths: event.target.value, allocationStartPeriod: startPeriod })}
+              placeholder="VD: 12"
+              className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500"
+              required
+            />
+          </label>
+          <div className="text-xs font-bold text-slate-600 block">
+            Từ kỳ kế toán *
+            <MonthInput
+              className="mt-1"
+              value={startPeriod}
+              onChange={(allocationStartPeriod) => onChange({ allocationMonths: months, allocationStartPeriod })}
+              ariaLabel="Kỳ bắt đầu phân bổ"
+            />
+          </div>
+          <span className="col-span-2 text-[11px] font-medium text-slate-500">
+            {periods > 1 && amount > 0
+              ? <>Mỗi kỳ <span className="font-bold text-slate-700">{formatVndMoney(Math.round(amount / periods))} đ</span> × {periods} kỳ, bắt đầu từ {startPeriod || "kỳ chưa chọn"}. </>
+              : null}
+            Khoản nợ treo chi phí trả trước (242), không vào P&amp;L ngay; lịch <span className="font-bold">PB-&lt;mã công nợ&gt;</span> tự hiện ở tab Trích trước &amp; Phân bổ — ghi nhận từng kỳ ở đó.
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** Một dòng hạng mục trong popup Thêm công nợ; `key` chỉ để React theo dõi khi thêm/xoá dòng.
  * Phải trả khai tới hạng mục chi phí (`pnlItemCode`); phải thu chỉ khai tới nhóm hạng mục
@@ -151,6 +223,8 @@ export default function DebtsPage() {
     documentDate: new Date().toISOString().slice(0, 10),
     dueDate: "",
     description: "",
+    allocationMonths: "",
+    allocationStartPeriod: "",
   });
   // Bảng chi tiết của phiếu: mỗi dòng một hạng mục P&L + số tiền riêng (trích trước cuối tháng
   // cùng NCC nhưng nhiều hạng mục). Một dòng thì tạo khoản đơn như trước.
@@ -162,6 +236,7 @@ export default function DebtsPage() {
   /** Popup Sửa công nợ: cùng luật hai tầng như popup Thêm, nhưng loại lấy từ chính khoản đang sửa. */
   const editIsReceivable = editingDebt?.source === "RECEIVABLE";
   const editPnlCode = editIsReceivable ? debtForm.pnlGroupCode : debtForm.pnlItemCode;
+  const editCanAllocate = editingDebt?.source === "PAYABLE" && editingDebt?.sourceType === "MANUAL";
   const editPnlSource = editIsReceivable ? pnlGroups : pnlItems.filter((item) => ["OPEX", "COGS"].includes((item.group || "").toUpperCase()));
   const editPnlOptions = [
     { value: "", label: "-- Chưa phân loại P&L --" },
@@ -222,6 +297,16 @@ export default function DebtsPage() {
       setCreateError(createLines.length === 1 ? "Số tiền phải lớn hơn 0." : `Dòng ${badLine + 1}: số tiền phải lớn hơn 0.`);
       return;
     }
+    if (!createIsReceivable && createForm.allocationMonths !== "") {
+      if (!(Number(createForm.allocationMonths) >= 2)) {
+        setCreateError("Số kỳ phân bổ phải từ 2 trở lên (bỏ tick nếu ghi chi phí một lần).");
+        return;
+      }
+      if (!createForm.allocationStartPeriod) {
+        setCreateError("Chọn kỳ bắt đầu phân bổ.");
+        return;
+      }
+    }
     setCreateSaving(true);
     try {
       const response = await fetch("/api/debts", {
@@ -229,6 +314,7 @@ export default function DebtsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...createForm,
+          allocationMonths: createIsReceivable ? "" : createForm.allocationMonths,
           lines: createLines.map((line) => ({ pnlItemCode: line.pnlItemCode, pnlGroupCode: line.pnlGroupCode, amount: line.amount, note: line.note })),
         }),
       });
@@ -238,9 +324,10 @@ export default function DebtsPage() {
         return;
       }
       setCreateOpen(false);
-      setCreateForm((current) => ({ ...current, partnerCode: "", description: "", dueDate: "" }));
+      setCreateForm((current) => ({ ...current, partnerCode: "", description: "", dueDate: "", allocationMonths: "", allocationStartPeriod: "" }));
       setCreateLines([emptyCreateLine(1)]);
-      setMessage(payload.lineCount > 1 ? `Đã tạo phiếu công nợ ${payload.code} gồm ${payload.lineCount} dòng hạng mục.` : `Đã tạo công nợ ${payload.code}.`);
+      const allocationNote = Number(payload.allocationMonths) > 1 ? ` Chi phí phân bổ ${payload.allocationMonths} kỳ từ ${payload.allocationStartPeriod} (lịch PB-${payload.lineCount > 1 ? `${payload.code}/n` : payload.code}).` : "";
+      setMessage((payload.lineCount > 1 ? `Đã tạo phiếu công nợ ${payload.code} gồm ${payload.lineCount} dòng hạng mục.` : `Đã tạo công nợ ${payload.code}.`) + allocationNote);
       await loadRows();
       if (ledger) await loadLedger(ledger.partnerCode);
     } catch {
@@ -323,6 +410,8 @@ export default function DebtsPage() {
       originalAmount: String(Math.round(Math.abs(row.amount))),
       pnlItemCode: row.pnlItemCode || "",
       pnlGroupCode: row.pnlGroupCode || "",
+      allocationMonths: (row.allocationMonths || 0) > 1 ? String(row.allocationMonths) : "",
+      allocationStartPeriod: (row.allocationMonths || 0) > 1 ? row.allocationStartPeriod || "" : "",
     });
     loadPnlOptions();
   };
@@ -330,6 +419,10 @@ export default function DebtsPage() {
   const submitDebtEdit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!editingDebt?.id) return;
+    if (editCanAllocate && debtForm.allocationMonths !== "" && (!(Number(debtForm.allocationMonths) >= 2) || !debtForm.allocationStartPeriod)) {
+      setEditError("Phân bổ theo kỳ cần số kỳ từ 2 trở lên và kỳ bắt đầu (bỏ tick nếu ghi chi phí một lần).");
+      return;
+    }
     setSaving(true);
     setEditError(null);
     try {
@@ -345,6 +438,8 @@ export default function DebtsPage() {
           originalAmount: debtForm.originalAmount,
           pnlItemCode: debtForm.pnlItemCode,
           pnlGroupCode: debtForm.pnlGroupCode,
+          // Chỉ khoản khai tay mới sửa phân bổ ở đây; khoản import giữ lịch sinh lúc nhập file.
+          ...(editCanAllocate ? { allocationMonths: debtForm.allocationMonths, allocationStartPeriod: debtForm.allocationStartPeriod } : {}),
         }),
       });
       const payload = await response.json();
@@ -734,7 +829,17 @@ export default function DebtsPage() {
                         </p>
                         <p className="text-[11px] text-slate-400">{item.status || "-"}</p>
                       </td>
-                      <td className="px-4 py-3">{item.description}</td>
+                      <td className="px-4 py-3">
+                        {item.description}
+                        {(item.allocationMonths || 0) > 1 && (
+                          <span
+                            className="ml-2 inline-flex rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-bold text-violet-700"
+                            title={`Chi phí phân bổ ${item.allocationMonths} kỳ từ ${item.allocationStartPeriod || "?"} theo lịch PB-${item.code} ở tab Trích trước & Phân bổ — không vào P&L một lần.`}
+                          >
+                            Phân bổ {item.allocationMonths} kỳ từ {item.allocationStartPeriod}
+                          </span>
+                        )}
+                      </td>
                       <td className={`px-4 py-3 text-right font-bold ${item.amount < 0 ? "text-blue-700" : item.amount > 0 ? "text-rose-700" : "text-slate-500"}`}>{money(item.amount)} đ</td>
                       <td className={`px-4 py-3 text-right ${isReceivableBalance(item.runningBalance || 0) ? "text-blue-700" : isPayableBalance(item.runningBalance || 0) ? "text-rose-700" : "text-slate-500"}`}>
                         {money(Math.abs(item.runningBalance || 0))}
@@ -841,6 +946,16 @@ export default function DebtsPage() {
                 </p>
               </div>
 
+              {editCanAllocate && (
+                <AllocationFields
+                  months={debtForm.allocationMonths}
+                  startPeriod={debtForm.allocationStartPeriod}
+                  amount={Number(debtForm.originalAmount) || 0}
+                  defaultPeriod={debtForm.documentDate.slice(0, 7)}
+                  onChange={(patch) => setDebtForm((value) => ({ ...value, ...patch }))}
+                />
+              )}
+
               <label className="text-xs font-bold text-slate-600 block">
                 Diễn giải *
                 <textarea
@@ -884,7 +999,7 @@ export default function DebtsPage() {
                 Khai khoản phải trả đã phát sinh chi phí nhưng chưa thanh toán, hoặc công nợ nội bộ giữa hai nhà hàng.
                 Khi thanh toán, phiếu chi/sao kê gạch thẳng vào mã công nợ này.
                 <span className="mt-1 block font-medium text-amber-700">
-                  Khoản phải trả vào chi phí ngay theo ngày chứng từ (sau khi Đồng bộ ghi sổ). Lúc trả tiền nhớ chọn
+                  Khoản phải trả vào chi phí ngay theo ngày chứng từ (sau khi Đồng bộ ghi sổ), trừ khi tick Phân bổ theo kỳ. Lúc trả tiền nhớ chọn
                   &ldquo;Thanh toán công nợ&rdquo; trên phiếu chi — khai như phiếu chi thường sẽ tính chi phí hai lần.
                 </span>
               </p>
@@ -1083,6 +1198,20 @@ export default function DebtsPage() {
                   </table>
                 </div>
               </div>
+              {!createIsReceivable && (
+                <div className="col-span-2">
+                  <AllocationFields
+                    months={createForm.allocationMonths}
+                    startPeriod={createForm.allocationStartPeriod}
+                    amount={createTotal}
+                    defaultPeriod={createForm.documentDate.slice(0, 7)}
+                    onChange={(patch) => setCreateForm((value) => ({ ...value, ...patch }))}
+                  />
+                  {createForm.allocationMonths !== "" && createLines.length > 1 && (
+                    <p className="mt-1 text-[11px] text-slate-500">Mỗi dòng hạng mục một lịch phân bổ riêng, cùng số kỳ và kỳ bắt đầu.</p>
+                  )}
+                </div>
+              )}
               {createError && (
                 <p className="col-span-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">{createError}</p>
               )}

@@ -30,7 +30,9 @@ export type TrashEntity = {
 export const TRASH_ENTITIES: TrashEntity[] = [
   { model: "FinancialVoucher", label: "Phiếu thu/chi", module: "/vouchers", codeField: "code", titleField: "description", branchField: "branchCode", dateField: "voucherDate" },
   { model: "Deposit", label: "Tiền cọc", module: "/deposits", codeField: "code", titleField: "partnerName", branchField: "branchCode", dateField: "receivedDate" },
-  { model: "DebtRecord", label: "Công nợ", module: "/debts", codeField: "code", titleField: "partnerName", branchField: "branchCode", dateField: "documentDate" },
+  // Lịch phân bổ PB-<mã> của công nợ phải trả khai tay (Accrual.sourceId = id công nợ) xoá và
+  // khôi phục cùng khoản nợ, nếu không khôi phục nợ xong chi phí mất luôn khỏi P&L.
+  { model: "DebtRecord", label: "Công nợ", module: "/debts", codeField: "code", titleField: "partnerName", branchField: "branchCode", dateField: "documentDate", cascade: [{ model: "Accrual", foreignKey: "sourceId" }] },
   { model: "MoneyTransfer", label: "Chuyển tiền nội bộ", module: "/finance-operations", codeField: "code", titleField: "description", branchField: "branchCode", dateField: "transferDate" },
   { model: "CashbookAdjustment", label: "Điều chỉnh sổ quỹ", module: "/finance-operations", codeField: "code", titleField: "description", branchField: "branchCode", dateField: "entryDate" },
   { model: "Accrual", label: "Chi phí trả trước", module: "/finance-operations", codeField: "code", titleField: "name", branchField: "branchCode", periodField: "startPeriod" },

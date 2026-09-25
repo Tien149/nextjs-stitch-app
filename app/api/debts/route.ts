@@ -2,13 +2,13 @@ import { NextResponse } from "next/server";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 import { assertBranchAccess, periodBounds, requestedBranch } from "@/lib/accounting";
-import { cleanText, isPeriodLocked, toDate, toNumber } from "@/lib/phase3";
+import { buildAllocationSchedules, cleanText, isPeriodLocked, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import { softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { debtGroupCode, stripDebtLineSuffix } from "@/lib/debt-group";
 import { internalPartnerCode } from "@/lib/cost-reallocation";
-import { ADVANCE_RECEIVABLE_ACTION, PARTNER_COLLECTION_ACTION } from "@/lib/voucher-rules";
+import { ADVANCE_RECEIVABLE_ACTION, normalizeAllocationMonths, PARTNER_COLLECTION_ACTION } from "@/lib/voucher-rules";
 import { advanceReceivableBeneficiaryBranch } from "@/lib/voucher-side-effects";
 import { bankSigned, debtBalanceOf, debtRecordGrossSigned, debtRecordSigned, depositSigned, openingBalanceSigned, voucherSigned } from "@/lib/debt-balance";
 
@@ -53,6 +53,10 @@ type LedgerRow = {
   pnlItemCode?: string | null;
   /** Nhóm hạng mục P&L của khoản PHẢI THU. */
   pnlGroupCode?: string | null;
+  /** Phân bổ theo kỳ của khoản phải trả (lịch PB-<mã>). */
+  allocationMonths?: number | null;
+  allocationStartPeriod?: string | null;
+  sourceType?: string | null;
 };
 
 const money = (value: number) => new Intl.NumberFormat("vi-VN").format(Math.round(value));
@@ -320,6 +324,9 @@ export async function GET(request: Request) {
           agingBucket: agingBucket(item.dueDate),
           pnlItemCode: item.pnlItemCode,
           pnlGroupCode: item.pnlGroupCode,
+          allocationMonths: item.allocationMonths,
+          allocationStartPeriod: item.allocationStartPeriod,
+          sourceType: item.sourceType,
         });
       }
 
@@ -538,6 +545,11 @@ export async function POST(request: Request) {
     const dueDate = cleanText(body.dueDate) ? toDate(body.dueDate) : null;
     const categoryCode = cleanText(body.categoryCode).toUpperCase() || null;
     const lines = parseDebtLines(body);
+    // Phân bổ theo kỳ: khoản phải trả là chi phí dùng cho nhiều kỳ (thuê mặt bằng trả sau cả
+    // năm, bảo trì theo hợp đồng...). Chi phí không vào P&L một lần ở ngày chứng từ mà chia đều
+    // theo lịch PB-<mã công nợ>, cùng cơ chế với phiếu chi trả trước.
+    const allocationMonths = debtType === "PAYABLE" ? normalizeAllocationMonths(body.allocationMonths) : 0;
+    const allocationStartPeriod = allocationMonths > 0 ? normalizePeriod(body.allocationStartPeriod) : "";
 
     if (!debtTypes.includes(debtType)) return NextResponse.json({ error: "Loại công nợ chỉ nhận RECEIVABLE hoặc PAYABLE" }, { status: 400 });
     if (!partnerGroups.includes(partnerGroup)) return NextResponse.json({ error: "Nhóm đối tác chỉ nhận EXTERNAL hoặc INTERNAL" }, { status: 400 });
@@ -551,6 +563,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: lines.length === 1 ? "Số tiền công nợ phải lớn hơn 0" : `Dòng ${badLine + 1}: số tiền phải lớn hơn 0` }, { status: 400 });
     }
     if (dueDate && dueDate < documentDate) return NextResponse.json({ error: "Hạn thanh toán không được trước ngày chứng từ" }, { status: 400 });
+    if (allocationMonths > 0 && !allocationStartPeriod) {
+      return NextResponse.json({ error: "Công nợ phân bổ theo kỳ phải khai kỳ bắt đầu phân bổ (YYYY-MM)" }, { status: 400 });
+    }
+    if (allocationMonths > 120) return NextResponse.json({ error: "Số kỳ phân bổ tối đa 120" }, { status: 400 });
 
     try {
       assertBranchAccess(auth.session, branchCode);
@@ -584,11 +600,14 @@ export async function POST(request: Request) {
       const pnlLabel = isReceivable ? "Nhóm hạng mục P&L" : "Hạng mục P&L";
       const pnlRecords = await prisma.masterDataItem.findMany({
         where: { type: pnlType, code: { in: pnlCodes }, status: "ACTIVE", deletedAt: null },
-        select: { code: true },
+        select: { code: true, group: true },
       });
       const known = new Set(pnlRecords.map((item) => item.code));
       const missing = pnlCodes.find((code) => !known.has(code));
       if (missing) return NextResponse.json({ error: `${pnlLabel} [${missing}] không tồn tại hoặc đã ngừng hoạt động` }, { status: 400 });
+      // Tiền mua tài sản đi đường khấu hao ở màn Tài sản, không phân bổ qua 242.
+      const capex = allocationMonths > 0 && pnlRecords.find((item) => (item.group || "").toUpperCase() === "CAPEX");
+      if (capex) return NextResponse.json({ error: `Hạng mục [${capex.code}] thuộc CAPEX — tài sản khấu hao ở màn Tài sản, không phân bổ trên công nợ.` }, { status: 400 });
     }
 
     // Mã tuần tự theo loại + tháng chứng từ, lấy MAX + 1 chứ không COUNT: công nợ bị xoá cứng
@@ -610,9 +629,10 @@ export async function POST(request: Request) {
       const issued = issuedCodes.map((row) => stripDebtLineSuffix(row.code));
       groupCode = prefix + String(nextSeqFromCodes(issued, prefix) + attempt).padStart(4, "0");
       try {
-        created = await prisma.$transaction(
-          classifiedLines.map((line, index) =>
-            prisma.debtRecord.create({
+        created = await prisma.$transaction(async (tx) => {
+          const records = [];
+          for (const [index, line] of classifiedLines.entries()) {
+            const record = await tx.debtRecord.create({
               data: {
                 code: multiLine ? `${groupCode}/${index + 1}` : groupCode,
                 debtType,
@@ -631,14 +651,42 @@ export async function POST(request: Request) {
                 // và trên phiếu chi vẫn biết dòng này là khoản gì.
                 description: multiLine ? [description, [line.pnlItemCode || line.pnlGroupCode, line.note].filter(Boolean).join(" ")].filter(Boolean).join(" · ") : description,
                 sourceType: "MANUAL",
+                allocationMonths: allocationMonths || null,
+                allocationStartPeriod: allocationStartPeriod || null,
                 // Khai tay = chi phí phát sinh trong kỳ, ghi sổ ngay (số dư đầu kỳ đi đường
-                // import và mặc định không ghi chi phí — xem lib/accounting.ts).
-                recognizeExpense: debtType === "PAYABLE",
+                // import và mặc định không ghi chi phí — xem lib/accounting.ts). Khoản có lịch
+                // phân bổ thì chi phí đi theo lịch; bật cờ nữa là tính chi phí hai lần.
+                recognizeExpense: debtType === "PAYABLE" && allocationMonths === 0,
                 status: "OPEN",
               },
-            }),
-          ),
-        );
+            });
+            records.push(record);
+            if (allocationMonths > 0) {
+              // Mỗi dòng hạng mục một lịch riêng để từng kỳ phân bổ đứng đúng dòng P&L.
+              await tx.accrual.create({
+                data: {
+                  code: `PB-${record.code}`,
+                  name: record.description,
+                  branchCode,
+                  categoryCode: categoryCode || "OPEX",
+                  pnlItemCode: record.pnlItemCode,
+                  totalAmount: record.originalAmount,
+                  actualAmount: record.originalAmount,
+                  startPeriod: allocationStartPeriod,
+                  numberOfPeriods: allocationMonths,
+                  note: `Tạo từ công nợ ${record.code}`,
+                  // Vế Có của bút toán phân bổ hàng kỳ là 242: lúc ghi sổ công nợ đã treo
+                  // Nợ 242 / Có 331 (lib/accounting.ts), mỗi kỳ rút dần 242 vào chi phí.
+                  sourceType: "DEBT",
+                  sourceId: record.id,
+                  createdBy: auth.session.name,
+                  schedules: { create: buildAllocationSchedules(allocationStartPeriod, record.originalAmount, allocationMonths) },
+                },
+              });
+            }
+          }
+          return records;
+        });
       } catch (error) {
         const isUnique = typeof error === "object" && error !== null && (error as { code?: string }).code === "P2002";
         if (!isUnique) throw error;
@@ -780,24 +828,105 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: "Kỳ kế toán đã khóa, không thể sửa công nợ" }, { status: 400 });
     }
 
-    const debt = await prisma.debtRecord.update({
-      where: { id },
-      data: {
-        debtType,
-        partnerGroup,
-        partnerCode,
-        partnerName,
-        branchCode,
-        documentDate,
-        dueDate,
-        categoryCode,
-        pnlItemCode,
-        pnlGroupCode,
-        originalAmount,
-        // Chưa phát sinh thanh toán nên dư nợ luôn bằng số tiền gốc.
-        outstandingAmount: originalAmount,
-        description,
-      },
+    // Khoản có lịch phân bổ: lịch đi theo số tiền, cửa hàng và hạng mục của khoản nợ. Chưa
+    // ghi nhận kỳ nào thì dựng lại lịch; đã ghi nhận thì chỉ cho sửa những trường không đụng
+    // tới số phân bổ.
+    // Khoản import có lịch riêng sinh lúc nhập file (không mang sourceType DEBT) — không đụng.
+    const isPayable = debtType === "PAYABLE";
+    const manageAllocation = current.sourceType === "MANUAL";
+    const allocationMonths = !manageAllocation ? current.allocationMonths || 0 : !isPayable ? 0 : body.allocationMonths === undefined
+      ? (current.allocationMonths || 0) > 1 ? current.allocationMonths || 0 : 0
+      : normalizeAllocationMonths(body.allocationMonths);
+    const allocationStartPeriod = !manageAllocation ? current.allocationStartPeriod || "" : allocationMonths > 0
+      ? normalizePeriod(body.allocationStartPeriod === undefined ? current.allocationStartPeriod : body.allocationStartPeriod)
+      : "";
+    if (manageAllocation && allocationMonths > 0 && !allocationStartPeriod) {
+      return NextResponse.json({ error: "Công nợ phân bổ theo kỳ phải khai kỳ bắt đầu phân bổ (YYYY-MM)" }, { status: 400 });
+    }
+    if (manageAllocation && allocationMonths > 120) return NextResponse.json({ error: "Số kỳ phân bổ tối đa 120" }, { status: 400 });
+    if (manageAllocation && allocationMonths > 0 && pnlItemCode) {
+      const item = await prisma.masterDataItem.findFirst({ where: { type: "PNL_ITEM", code: pnlItemCode }, select: { group: true } });
+      if ((item?.group || "").toUpperCase() === "CAPEX") {
+        return NextResponse.json({ error: `Hạng mục [${pnlItemCode}] thuộc CAPEX — tài sản khấu hao ở màn Tài sản, không phân bổ trên công nợ.` }, { status: 400 });
+      }
+    }
+    const existingAccrual = manageAllocation ? await findDebtAccrual(current) : null;
+    const allocationChanged = manageAllocation && Boolean(existingAccrual) !== (allocationMonths > 0) || (existingAccrual && (
+      existingAccrual.numberOfPeriods !== allocationMonths
+      || existingAccrual.startPeriod !== allocationStartPeriod
+      || existingAccrual.totalAmount !== originalAmount
+      || existingAccrual.branchCode !== branchCode
+      || (existingAccrual.pnlItemCode || null) !== (pnlItemCode || null)
+      || (existingAccrual.categoryCode || null) !== (categoryCode || "OPEX")
+    ));
+    const postedPeriods = existingAccrual?.schedules.filter((row) => row.status !== "PLANNED").length || 0;
+    if (allocationChanged && postedPeriods > 0) {
+      return NextResponse.json(
+        { error: `Lịch phân bổ ${existingAccrual?.code} đã ghi nhận ${postedPeriods} kỳ, không đổi được số tiền, cửa hàng, hạng mục hay số kỳ. Hãy bỏ ghi nhận các kỳ đó ở tab Trích trước & Phân bổ trước.` },
+        { status: 400 },
+      );
+    }
+
+    const debt = await prisma.$transaction(async (tx) => {
+      const updated = await tx.debtRecord.update({
+        where: { id },
+        data: {
+          debtType,
+          partnerGroup,
+          partnerCode,
+          partnerName,
+          branchCode,
+          documentDate,
+          dueDate,
+          categoryCode,
+          pnlItemCode,
+          pnlGroupCode,
+          originalAmount,
+          // Chưa phát sinh thanh toán nên dư nợ luôn bằng số tiền gốc.
+          outstandingAmount: originalAmount,
+          description,
+          allocationMonths: allocationMonths || null,
+          allocationStartPeriod: allocationStartPeriod || null,
+          // Khai tay: ghi chi phí ngay, trừ khi đi theo lịch phân bổ. Khoản import giữ cờ cũ.
+          ...(manageAllocation ? { recognizeExpense: isPayable && allocationMonths === 0 } : {}),
+        },
+      });
+      if (allocationChanged) {
+        // Lịch chưa ghi nhận kỳ nào (đã chặn ở trên): bỏ các kỳ cũ rồi dựng lại. `delete` trên
+        // client này là xoá mềm và mã PB- vẫn bị giữ, nên dựng lại bằng upsert theo mã — upsert
+        // cũng tự khôi phục lịch đã xoá mềm khi bật phân bổ lại.
+        const code = `PB-${updated.code}`;
+        const stale = await tx.accrual.findFirst({ where: { code, deletedAt: undefined }, select: { id: true } });
+        if (stale) await tx.accrualSchedule.deleteMany({ where: { accrualId: stale.id } });
+        if (allocationMonths > 0) {
+          const fields = {
+            name: updated.description,
+            branchCode: updated.branchCode,
+            categoryCode: updated.categoryCode || "OPEX",
+            pnlItemCode: updated.pnlItemCode,
+            totalAmount: updated.originalAmount,
+            actualAmount: updated.originalAmount,
+            startPeriod: allocationStartPeriod,
+            numberOfPeriods: allocationMonths,
+            status: "ACTIVE",
+            sourceType: "DEBT",
+            sourceId: updated.id,
+          };
+          const accrual = await tx.accrual.upsert({
+            where: { code },
+            create: { code, ...fields, note: `Tạo từ công nợ ${updated.code}`, createdBy: auth.session.name },
+            update: fields,
+          });
+          await tx.accrualSchedule.createMany({
+            data: buildAllocationSchedules(allocationStartPeriod, updated.originalAmount, allocationMonths).map((row) => ({ ...row, accrualId: accrual.id })),
+          });
+        } else if (stale) {
+          await tx.accrual.delete({ where: { id: stale.id } });
+        }
+      } else if (existingAccrual && existingAccrual.name !== updated.description) {
+        await tx.accrual.update({ where: { id: existingAccrual.id }, data: { name: updated.description } });
+      }
+      return updated;
     });
 
     await writeAuditLog({
@@ -810,7 +939,7 @@ export async function PATCH(request: Request) {
       branchCode: debt.branchCode,
       metadata: {
         before: { debtType: current.debtType, partnerGroup: current.partnerGroup, partnerCode: current.partnerCode, partnerName: current.partnerName, branchCode: current.branchCode, documentDate: current.documentDate, dueDate: current.dueDate, categoryCode: current.categoryCode, pnlItemCode: current.pnlItemCode, pnlGroupCode: current.pnlGroupCode, originalAmount: current.originalAmount, description: current.description },
-        after: { debtType, partnerGroup, partnerCode, partnerName, branchCode, documentDate, dueDate, categoryCode, pnlItemCode, pnlGroupCode, originalAmount, description },
+        after: { debtType, partnerGroup, partnerCode, partnerName, branchCode, documentDate, dueDate, categoryCode, pnlItemCode, pnlGroupCode, originalAmount, description, allocationMonths: allocationMonths || null, allocationStartPeriod: allocationStartPeriod || null },
       },
     });
 
@@ -821,8 +950,16 @@ export async function PATCH(request: Request) {
   }
 }
 
+/** Lịch phân bổ PB-<mã công nợ> sinh kèm khoản phải trả khai tay có phân bổ theo kỳ. */
+async function findDebtAccrual(debt: { id: string; code: string }) {
+  return prisma.accrual.findFirst({
+    where: { code: `PB-${debt.code}`, sourceType: "DEBT", sourceId: debt.id },
+    include: { schedules: { select: { status: true } } },
+  });
+}
+
 /** Lý do không xoá được một khoản công nợ tại màn Công nợ, hoặc null nếu xoá được. */
-async function debtDeleteBlocker(current: { id: string; sourceType: string; status: string; originalAmount: number; outstandingAmount: number; documentDate: Date; branchCode: string }) {
+async function debtDeleteBlocker(current: { id: string; code: string; sourceType: string; status: string; originalAmount: number; outstandingAmount: number; documentDate: Date; branchCode: string }) {
   // Xoá riêng công nợ của phiếu phân bổ sẽ để lại bút toán P&L mồ côi ở hai nhà hàng.
   if (current.sourceType === "COST_REALLOCATION") {
     return "Công nợ nội bộ này do phiếu phân bổ chi phí sinh ra. Hãy xoá phiếu ở màn Phân bổ chi phí để hoàn tác đồng bộ cả bút toán.";
@@ -837,6 +974,9 @@ async function debtDeleteBlocker(current: { id: string; sourceType: string; stat
     return "Khoản công nợ đã phát sinh thanh toán hoặc đã tất toán, không thể xóa.";
   }
   if (await isPeriodLocked(current.documentDate, current.branchCode)) return "Kỳ kế toán đã khóa, không thể xóa công nợ";
+  const accrual = await findDebtAccrual(current);
+  const posted = accrual?.schedules.filter((row) => row.status !== "PLANNED").length || 0;
+  if (posted > 0) return `Lịch phân bổ ${accrual?.code} đã ghi nhận ${posted} kỳ. Hãy bỏ ghi nhận các kỳ đó ở tab Trích trước & Phân bổ trước khi xoá công nợ.`;
   return null;
 }
 
@@ -872,6 +1012,8 @@ export async function DELETE(request: Request) {
       // Khoản phải trả khai tay đã ghi nhận chi phí (Nợ hạng mục / Có 331) khi đồng bộ ghi sổ.
       // Xoá khoản nợ mà để bút toán lại thì chi phí vẫn nằm trên P&L, không cách nào gỡ.
       await prisma.journalEntry.deleteMany({ where: { sourceType: "DEBT_PAYABLE", sourceId: current.id } });
+      // Lịch phân bổ PB-<mã> (chưa ghi nhận kỳ nào — đã chặn ở trên) xoá mềm theo khoản nợ qua
+      // cascade của Thùng rác (lib/soft-delete.ts), khôi phục cũng đi cùng nhau.
     }
     return NextResponse.json({ ok: true, deleted: targets.map((row) => row.code) });
   } catch (error) {
