@@ -543,6 +543,11 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
     item.code,
     normalizeCategoryGroup(item.group || (item.subGroup ? pnlGroupGroupByCode.get(item.subGroup) ?? null : null)),
   ]));
+  // Phiếu thu có thể mang thẳng mã NHÓM Thu nhập khác (nhóm chưa có hạng mục con) — tra được
+  // nhóm lớn thì mới ghi Có 711 đúng dòng, không thì rơi về 511/131.
+  for (const group of pnlGroups) {
+    if (!pnlItemGroupByCode.has(group.code)) pnlItemGroupByCode.set(group.code, normalizeCategoryGroup(group.group));
+  }
   for (const row of vouchers) {
     // Sao kê khớp doanh thu POS chỉ xác nhận dòng tiền; doanh thu và bút toán đối ứng
     // đã được ghi từ RevenueImportRow nên không được tạo thêm bút toán voucher.

@@ -315,6 +315,21 @@ export function otherIncomeCatalogItemCode(
 }
 
 /**
+ * NHÓM hạng mục P&L mà một khoản mục thu "luôn là thu nhập khác" quy về, dùng khi danh mục không
+ * có HẠNG MỤC trùng tên. Khách khai "Doanh thu tài chính", "Hoa hồng từ bán bia Sapporo"... ở
+ * tầng nhóm và chưa tạo hạng mục con nào (25/09/2026); tra mỗi hạng mục thì cả ba dòng mãi bằng 0.
+ */
+export function otherIncomeCatalogGroupOf(
+  pnlGroups: Array<{ code: string; name: string; status?: string | null }>,
+  categoryCode: string | null,
+) {
+  const target = otherIncomePnlItemNameOf(categoryCode);
+  if (!target) return null;
+  const group = pnlGroups.find((item) => !isRetiredCatalogItem(item) && samePnlName(item.name, target));
+  return group ? { code: group.code, name: group.name } : null;
+}
+
+/**
  * Hạng mục P&L thực tế của một bút toán chi: mã đã gắn, hoặc hạng mục suy ra cho các bút toán
  * máy tự sinh không có chỗ khai mã — khấu hao (6424) và lương (6421).
  */
@@ -418,6 +433,19 @@ export function createPnlDetailTree(catalog: PnlCatalog, monthCount: number) {
    */
   const otherIncomeItemCode = (line: PnlJournalLineLike) =>
     line.pnlItemCode || otherIncomeCatalogItemCode(pnlItems, line.categoryCode);
+  /**
+   * Nhóm P&L nhận thẳng dòng thu nhập khác khi không ra được hạng mục: mã trên bút toán chính là
+   * mã NHÓM (vd. OTHER_IN_VAT — nhóm chưa có hạng mục con), hoặc khoản mục thu quy về tên một
+   * nhóm. Tiền cộng vào dòng nhóm, không xoè hạng mục.
+   */
+  const otherIncomeGroupOf = (line: PnlJournalLineLike) => {
+    if (line.pnlItemCode) {
+      if (pnlItemByCode.has(line.pnlItemCode)) return null;
+      const group = pnlGroupByCode.get(line.pnlItemCode);
+      return group ? { code: group.code, name: group.name } : null;
+    }
+    return otherIncomeCatalogItemCode(pnlItems, line.categoryCode) ? null : otherIncomeCatalogGroupOf(pnlGroups, line.categoryCode);
+  };
 
   /** Cộng một bút toán vào cột `monthIndex`; trả về dòng KQKD nó thuộc về (null nếu không vào KQKD). */
   const add = (line: PnlJournalLineLike, monthIndex: number): PnlLineKey | null => {
@@ -427,6 +455,11 @@ export function createPnlDetailTree(catalog: PnlCatalog, monthCount: number) {
     // khác dấu. Gom theo khoản mục thu như dòng doanh thu thì hai hạng mục khách vừa khai
     // ("Doanh thu tài chính", "Thu nhập khác") không bao giờ đứng thành dòng riêng được.
     if (lineKey === "otherIncome") {
+      const directGroup = otherIncomeGroupOf(line);
+      if (directGroup) {
+        bumpDetail(lineKey, directGroup, null, monthIndex, line.credit - line.debit);
+        return lineKey;
+      }
       const pnlItemCode = otherIncomeItemCode(line);
       const code = pnlItemCode || "UNCLASSIFIED";
       const item = pnlItemByCode.get(code);
@@ -468,7 +501,7 @@ export function createPnlDetailTree(catalog: PnlCatalog, monthCount: number) {
     const lineKey = pnlLineKeyOf(line.account, pnlItemRefOf(line.pnlItemCode));
     if (!lineKey) return false;
     if (!PNL_ITEM_REQUIRED_LINES.includes(lineKey)) return true;
-    return Boolean(lineKey === "otherIncome" ? otherIncomeItemCode(line) : resolveItemCode(line));
+    return Boolean(lineKey === "otherIncome" ? otherIncomeGroupOf(line) || otherIncomeItemCode(line) : resolveItemCode(line));
   };
 
   const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);

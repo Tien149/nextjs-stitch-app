@@ -114,6 +114,8 @@ type MasterDataOption = {
   partnerGroup?: string | null;
   status?: string;
   summarySourceName?: string | null;
+  /** PNL_ITEM: mã nhóm cha. */
+  subGroup?: string | null;
 };
 
 const fallbackVoucherCategories: MasterDataOption[] = [
@@ -217,6 +219,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
   const [formBranches, setFormBranches] = useState<MasterDataOption[]>([]);
   const [categories, setCategories] = useState<MasterDataOption[]>([]);
   const [pnlItems, setPnlItems] = useState<MasterDataOption[]>([]);
+  const [pnlGroups, setPnlGroups] = useState<MasterDataOption[]>([]);
   const [partners, setPartners] = useState<MasterDataOption[]>([]);
   const [isExporting, setIsExporting] = useState(false);
   const moneySourceRequestRef = useRef(0);
@@ -327,6 +330,10 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
       fetch("/api/master-data?type=PARTNER&status=ACTIVE", { headers }),
       fetch("/api/master-data?type=MONEY_SOURCE", { headers }),
     ]);
+    // Nhóm Thu nhập khác chưa có hạng mục con: phiếu thu chọn thẳng nhóm (vd. OTHER_IN_VAT).
+    void fetch("/api/master-data?type=PNL_GROUP&status=ACTIVE", { headers })
+      .then((response) => (response.ok ? response.json() : []))
+      .then((groups: MasterDataOption[]) => setPnlGroups(groups));
     if (branchResponse.ok) {
       const branchItems = (await branchResponse.json()) as MasterDataOption[];
       const allowedBranches = session.allowedBranches?.length ? session.allowedBranches : ["ALL"];
@@ -572,7 +579,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
   };
   const pnlItemName = (code: string | null) => {
     if (!code) return null;
-    return pnlItems.find((item) => item.code === code)?.name || code;
+    return pnlItems.find((item) => item.code === code)?.name || pnlGroups.find((group) => group.code === code)?.name || code;
   };
   const normalizedCategoryOptions = useMemo(() => {
     const source = categories.length > 0 ? categories : fallbackVoucherCategories;
@@ -1688,6 +1695,12 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                       ...pnlItems
                         .filter((item) => item.status === "ACTIVE" && voucherPnlGroups.includes((item.group || "").toUpperCase()))
                         .map((item) => ({ value: item.code, label: `${item.code} - ${item.name}` })),
+                      ...(form.voucherType === "RECEIPT"
+                        ? pnlGroups
+                            .filter((group) => (group.group || "").toUpperCase() === "OTHER_INCOME"
+                              && !pnlItems.some((item) => item.status === "ACTIVE" && item.subGroup === group.code))
+                            .map((group) => ({ value: group.code, label: `${group.code} - ${group.name} (nhóm)` }))
+                        : []),
                     ]}
                   />
                   <span className="mt-1 block text-[11px] font-medium text-slate-500">

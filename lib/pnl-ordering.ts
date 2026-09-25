@@ -151,6 +151,11 @@ export function sortPnlCatalogRows<T extends PnlCatalogRow>(rows: T[]): T[] {
  */
 export const OTHER_INCOME_CATEGORY_ITEMS: Record<string, string> = {
   THU_LAI_NGAN_HANG: "Doanh thu tài chính",
+  // Chốt 25/09/2026 (ảnh khách gửi): hai khoản mục thu này là dòng riêng trong khối Thu nhập
+  // khác. Tên có thể là HẠNG MỤC hoặc NHÓM hạng mục P&L — khách đang khai ở tầng nhóm, chưa có
+  // hạng mục con (xem otherIncomeCatalogGroupOf ở lib/reports.ts).
+  THU_SAPPORO: "Hoa hồng từ bán bia Sapporo",
+  THU_TIEN_THUA: "Khách thanh toán thừa",
 };
 
 /** Khoản mục thu này luôn là thu nhập khác (ghi Có 711), không phải doanh thu cũng không phải phải thu. */

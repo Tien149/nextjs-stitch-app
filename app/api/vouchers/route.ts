@@ -160,6 +160,19 @@ async function validateVoucherPnlItem(voucherType: string, pnlItemCode: string, 
       ...(requireActive ? { status: "ACTIVE" } : {}),
     },
   });
+  // Phiếu thu được chọn thẳng NHÓM Thu nhập khác khi nhóm đó chưa có hạng mục con (vd.
+  // OTHER_IN_VAT "Thu nhập từ xuất VAT", 25/09/2026) — không có đường này thì nhóm mãi bằng 0.
+  if (!pnlItem && voucherType === "RECEIPT") {
+    const group = await prisma.masterDataItem.findFirst({
+      where: { type: "PNL_GROUP", code: pnlItemCode, ...(requireActive ? { status: "ACTIVE" } : {}) },
+      select: { group: true },
+    });
+    if (group) {
+      return allowed.groups.includes((group.group || "").toUpperCase())
+        ? null
+        : `Phiếu thu chỉ được chọn nhóm hạng mục P&L thuộc nhóm ${allowed.label}`;
+    }
+  }
   if (!pnlItem) return `Hạng mục P&L [${pnlItemCode}] không tồn tại hoặc đã ngừng hoạt động`;
   // Hạng mục khai trên màn Danh mục thường chỉ chọn NHÓM CHA (subGroup), ô nhóm của chính nó để
   // trống. Đọc mỗi `pnlItem.group` thì hạng mục "Thu nhập khác" nằm trong nhóm Thu nhập khác bị
