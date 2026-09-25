@@ -69,9 +69,13 @@ export async function POST(request: Request) {
     if (!(file instanceof File)) return NextResponse.json({ error: "Thiếu file import" }, { status: 400 });
     if (!template) return NextResponse.json({ error: "Không tìm thấy template import" }, { status: 400 });
     const parsed = await parseImportFile(file, template);
+    // Kiểm "thực nhận = thu nhập − khấu trừ" chỉ áp cho mẫu khai từng nhân viên (có cột lương cơ bản).
+    // Mẫu theo bộ phận (PAYROLL_DEPARTMENT_V1, file từ HRM) không có các cột này và thực nhận không bắt buộc liên hệ với chi phí.
+    const hasPerEmployeeColumns = template.fields.some((f) => f.field === "base_salary");
     for (const row of parsed.rows) {
       const period = String(row.values.period || "");
       if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) row.errors.push("Kỳ lương phải có dạng YYYY-MM");
+      if (!hasPerEmployeeColumns) continue;
       const gross = Number(row.values.base_salary || 0) + Number(row.values.allowance_amount || 0) + Number(row.values.bonus_amount || 0);
       const deductions = Number(row.values.insurance_amount || 0) + Number(row.values.tax_amount || 0) + Number(row.values.deduction_amount || 0);
       const expectedNet = gross - deductions;
