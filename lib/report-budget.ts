@@ -263,7 +263,9 @@ export async function getPnlMatrix(year: string, branchCode: string) {
 
     const net = row.grossAmount - row.discountAmount;
     const dept = row.departmentCode || UNASSIGNED_DEPARTMENT;
-    bumpSeries(netRevenueByDepartment, dept, dept === UNASSIGNED_DEPARTMENT ? "Chưa gán bộ phận" : `DT ${departmentName.get(dept) || dept}`, monthIndex, net);
+    // Doanh thu không thuộc Bếp/Bar trên khối "Doanh thu theo bộ phận" là phụ thu — chị Bình
+    // đặt tên dòng "DT Phụ Thu" (25/09/2026). Các bảng lương/ngân sách nhân sự giữ nhãn cũ.
+    bumpSeries(netRevenueByDepartment, dept, dept === UNASSIGNED_DEPARTMENT ? "DT Phụ Thu" : `DT ${departmentName.get(dept) || dept}`, monthIndex, net);
     const channel = (row.channel || "").trim() || "Chưa rõ kênh";
     bumpSeries(netRevenueByChannel, channel.toUpperCase(), `DT ${channel}`, monthIndex, net);
     svcMonths[monthIndex] += row.feeAmount;
