@@ -675,6 +675,44 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
     }));
   }
 
+  /**
+   * Công nợ PHẢI THU khai tay có nhóm hạng mục P&L thuộc Thu nhập khác (vd. OTHER_IN_VAT "Thu
+   * nhập từ xuất VAT", khách chốt 26/09/2026): khoản thu đã phát sinh, đối tác chưa trả tiền.
+   * Mặt gương của DEBT_PAYABLE bên trên — ghi Nợ 131 / Có 711 theo ngày chứng từ, dòng 711
+   * mang mã nhóm để P&L cộng thẳng vào dòng nhóm đó (lib/reports.ts). Lúc thu tiền, phiếu thu
+   * gạch nợ chỉ rút 131 nên không thành thu nhập hai lần.
+   *
+   * Chỉ nhóm OTHER_INCOME: phải thu gắn nhóm khác (doanh thu bán hàng...) đã có nguồn ghi sổ
+   * riêng, ghi thêm ở đây là tính trùng.
+   */
+  const otherIncomeGroupCodes = pnlGroups
+    .filter((group) => normalizeCategoryGroup(group.group) === "OTHER_INCOME")
+    .map((group) => group.code);
+  const incomeReceivables = otherIncomeGroupCodes.length === 0 ? [] : await prisma.debtRecord.findMany({
+    where: {
+      ...branchFilter,
+      debtType: "RECEIVABLE",
+      sourceType: "MANUAL",
+      pnlGroupCode: { in: otherIncomeGroupCodes },
+      documentDate: { gte: start, lt: end },
+    },
+  });
+  for (const row of incomeReceivables) {
+    results.push(await postJournalEntry({
+      entryDate: row.documentDate,
+      branchCode: row.branchCode,
+      sourceType: "DEBT_RECEIVABLE",
+      sourceId: row.id,
+      sourceCode: row.code,
+      description: row.description,
+      createdBy: actor,
+      lines: [
+        { accountCode: "131", debit: row.originalAmount, partnerCode: row.partnerCode },
+        { accountCode: "711", credit: row.originalAmount, partnerCode: row.partnerCode, categoryCode: row.categoryCode, pnlItemCode: row.pnlGroupCode },
+      ],
+    }));
+  }
+
   // Điều chuyển có chênh lệch phải giảm đủ nguồn đi, tăng nguồn nhận theo số thực chuyển
   // và đưa phần chênh vào chi phí. Cùng một logic áp dụng cho phí ví và làm tròn tiền nộp.
   //

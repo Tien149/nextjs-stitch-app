@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
-import { prisma } from "@/lib/prisma";
+import { prisma, prismaRaw } from "@/lib/prisma";
 import { assertBranchAccess, periodBounds, requestedBranch } from "@/lib/accounting";
 import { buildAllocationSchedules, cleanText, isPeriodLocked, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
@@ -929,6 +929,14 @@ export async function PATCH(request: Request) {
       return updated;
     });
 
+    // Đổi loại công nợ hoặc nhóm P&L của khoản phải thu thì bút toán thu nhập khác cũ (131/711)
+    // có thể không còn đúng — gỡ đi, lần Đồng bộ ghi sổ kế tiếp ghi lại theo phân loại mới.
+    // Xoá CỨNG (prismaRaw): bút toán xoá mềm vẫn giữ khoá unique sourceType + sourceId, lần ghi
+    // sổ sau không thấy nó (bị lọc) nên tạo mới và vỡ ràng buộc.
+    if (current.debtType !== debtType || (current.pnlGroupCode || null) !== (pnlGroupCode || null)) {
+      await prismaRaw.journalEntry.deleteMany({ where: { sourceType: "DEBT_RECEIVABLE", sourceId: debt.id } });
+    }
+
     await writeAuditLog({
       session: auth.session,
       module: "DEBTS",
@@ -1011,7 +1019,9 @@ export async function DELETE(request: Request) {
       await softDeleteRecord({ model: "DebtRecord", id: current.id, session: auth.session, reason });
       // Khoản phải trả khai tay đã ghi nhận chi phí (Nợ hạng mục / Có 331) khi đồng bộ ghi sổ.
       // Xoá khoản nợ mà để bút toán lại thì chi phí vẫn nằm trên P&L, không cách nào gỡ.
-      await prisma.journalEntry.deleteMany({ where: { sourceType: "DEBT_PAYABLE", sourceId: current.id } });
+      // Phải thu nhóm Thu nhập khác cũng đã ghi Nợ 131 / Có 711 — gỡ theo, nếu không thu nhập
+      // còn nằm trên P&L sau khi khoản nợ đã xoá.
+      await prisma.journalEntry.deleteMany({ where: { sourceType: { in: ["DEBT_PAYABLE", "DEBT_RECEIVABLE"] }, sourceId: current.id } });
       // Lịch phân bổ PB-<mã> (chưa ghi nhận kỳ nào — đã chặn ở trên) xoá mềm theo khoản nợ qua
       // cascade của Thùng rác (lib/soft-delete.ts), khôi phục cũng đi cùng nhau.
     }
