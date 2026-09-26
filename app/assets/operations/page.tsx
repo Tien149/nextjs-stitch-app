@@ -85,6 +85,8 @@ type AssetStocktakeSession = {
   status: string;
   note: string | null;
   approvedBy: string | null;
+  /** Phiên kiểm của một phòng ban; null = kiểm cả cửa hàng. */
+  departmentCode?: string | null;
   lines: AssetStocktakeLine[];
 };
 
@@ -498,6 +500,7 @@ export default function AssetOperationsPage() {
                 void send({
                   action: "APPROVE_ASSET_STOCKTAKE",
                   branchCode: stocktakeBranch,
+                  departmentCode: stocktakeDepartment,
                   stocktakeDate,
                   note: stocktakeNote,
                   lines: stocktakeLinesForSubmit(),
@@ -528,10 +531,11 @@ export default function AssetOperationsPage() {
                 <Field label="Ngày kiểm kê">
                   <DateInput className="mt-1.5" value={stocktakeDate} onChange={setStocktakeDate} ariaLabel="Ngày kiểm kê tài sản" />
                 </Field>
-                <Field label="Phòng ban / Bộ phận">
+                <Field label={scopedDepartments ? "Phòng ban / Bộ phận *" : "Phòng ban / Bộ phận"}>
                   <select
                     className="control"
                     value={stocktakeDepartment}
+                    required={Boolean(scopedDepartments)}
                     onChange={(e) => {
                       const departmentCode = e.target.value;
                       setStocktakeDepartment(departmentCode);
@@ -665,17 +669,20 @@ export default function AssetOperationsPage() {
             <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3"><h2 className="font-bold">Phiên kiểm kê gần nhất</h2><ExportExcelButton fileName="phien_kiem_ke_tai_san" sheetName="Kiem ke" /></div>
             <table className="w-full text-left text-sm">
               <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
-                <tr><th className="px-3 py-2">Phiên</th><th className="px-3 py-2">Cửa hàng</th><th className="px-3 py-2 text-right">Dòng</th><th className="px-3 py-2 text-right">Chênh lệch</th><th className="px-3 py-2 text-right"></th></tr>
+                <tr><th className="px-3 py-2">Phiên</th><th className="px-3 py-2">Cửa hàng</th><th className="px-3 py-2">Bộ phận</th><th className="px-3 py-2 text-right">Dòng</th><th className="px-3 py-2 text-right">Chênh lệch</th><th className="px-3 py-2 text-right"></th></tr>
               </thead>
               <tbody>
                 {data.assetStocktakes.length === 0 && (
-                  <tr><td className="px-3 py-4 text-slate-500" colSpan={5}>Chưa có phiên kiểm kê nào.</td></tr>
+                  <tr><td className="px-3 py-4 text-slate-500" colSpan={6}>Chưa có phiên kiểm kê nào.</td></tr>
                 )}
                 {data.assetStocktakes.map((session) => (
                   <Fragment key={session.id}>
                     <tr className="border-t border-slate-100">
                       <td className="px-3 py-2"><CopyableText value={session.code}><b>{session.code}</b></CopyableText><small className="block text-slate-500">{new Date(session.stocktakeDate).toLocaleDateString("vi-VN")} · {session.approvedBy || "-"}</small></td>
                       <td className="px-3 py-2">{session.branchCode}</td>
+                      <td className="px-3 py-2">{session.departmentCode
+                        ? (departments.find((department) => department.code === session.departmentCode)?.name || session.departmentCode)
+                        : <span className="text-slate-400">Cả cửa hàng</span>}</td>
                       <td className="px-3 py-2 text-right">{session.lines.length}</td>
                       <td className="px-3 py-2 text-right">
                         <b className={session.lines.some((line) => line.varianceQuantity !== 0) ? "text-rose-700" : "text-slate-400"}>
@@ -707,7 +714,7 @@ export default function AssetOperationsPage() {
                     </tr>
                     {expandedStocktake === session.id && (
                       <tr className="border-t border-slate-100 bg-slate-50/60">
-                        <td colSpan={5} className="px-3 py-2">
+                        <td colSpan={6} className="px-3 py-2">
                           {session.note && <p className="mb-2 text-xs text-slate-600">Ghi chú: {session.note}</p>}
                           <table className="w-full text-xs">
                             <thead className="text-slate-500 uppercase">

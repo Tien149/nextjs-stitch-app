@@ -7,6 +7,7 @@ import { writeAuditLog } from "@/lib/audit-log";
 import type { DemoSession } from "@/lib/auth-demo";
 import { assertAssetCodeAvailable, AssetCodeError, nextAssetCode, nextAssetLot, normalizeAssetCode } from "@/lib/asset-code-generator";
 import { assetAcquisitionJournalCode, assetPayableCode } from "@/lib/asset-lot";
+import { allowedDepartmentsOf, assertDepartmentAccess } from "@/lib/department-scope";
 import {
   softDeleteRecord,
   SoftDeleteError,
@@ -50,12 +51,18 @@ export async function GET(request: Request) {
     const warehouseCode = searchParams.get("warehouseCode") || searchParams.get("location") || undefined;
     const branchCode = requestedBranch(auth.session, cleanText(searchParams.get("branchCode")) || "ALL");
     const branchFilter = branchCode === "ALL" ? {} : { branchCode };
+    // Phạm vi phòng ban (kiểm kê theo bộ phận): user bị giới hạn chỉ thấy tài sản của bộ phận mình
+    // ở cả sổ tài sản, không riêng màn Vận hành. Lọc phòng ban trên màn hình chỉ được thu hẹp thêm.
+    const allowedDepartments = allowedDepartmentsOf(auth.session);
+    const departmentFilter = departmentCode && departmentCode !== "ALL"
+      ? (allowedDepartments && !allowedDepartments.includes(departmentCode.toUpperCase()) ? { departmentCode: "__NONE__" } : { departmentCode })
+      : allowedDepartments ? { departmentCode: { in: allowedDepartments } } : {};
 
     const assets = await prisma.assetRecord.findMany({
       where: {
         ...branchFilter,
         ...(assetGroup && assetGroup !== "ALL" ? { assetGroup } : {}),
-        ...(departmentCode && departmentCode !== "ALL" ? { departmentCode } : {}),
+        ...departmentFilter,
         ...(warehouseCode && warehouseCode !== "ALL"
           ? {
               OR: [
@@ -262,6 +269,11 @@ export async function POST(request: Request) {
     }
     if (!["PAID", "PAYABLE"].includes(paymentStatus)) {
       return NextResponse.json({ error: "Trạng thái thanh toán chỉ nhận Đã thanh toán hoặc Công nợ phải trả" }, { status: 400 });
+    }
+    try {
+      assertDepartmentAccess(auth.session, departmentCode, "Tài sản mới");
+    } catch (e) {
+      return NextResponse.json({ error: (e instanceof Error ? e.message : "Ngoài phạm vi bộ phận").replace(/^BUSINESS:/, "") }, { status: 403 });
     }
     if (paymentStatus === "PAYABLE" && !supplierCode) {
       return NextResponse.json({ error: "Nhà cung cấp là bắt buộc khi ghi nhận công nợ phải trả" }, { status: 400 });
@@ -572,6 +584,12 @@ export async function PATCH(request: Request) {
 
     const current = await prisma.assetRecord.findUnique({ where: { id } });
     if (!current) return NextResponse.json({ error: "Không tìm thấy tài sản" }, { status: 404 });
+    try {
+      assertDepartmentAccess(auth.session, current.departmentCode, `Tài sản ${current.code}`);
+      if (body.departmentCode !== undefined) assertDepartmentAccess(auth.session, cleanText(body.departmentCode), `Phòng ban mới của ${current.code}`);
+    } catch (e) {
+      return NextResponse.json({ error: (e instanceof Error ? e.message : "Ngoài phạm vi bộ phận").replace(/^BUSINESS:/, "") }, { status: 403 });
+    }
 
     if (cleanText(body.action) === "CHANGE_PAYMENT") {
       return changeAssetPaymentStatus(current, body, auth.session);
@@ -780,8 +798,9 @@ export async function DELETE(request: Request) {
 
     try {
       assertBranchAccess(auth.session, current.branchCode);
+      assertDepartmentAccess(auth.session, current.departmentCode, `Tài sản ${current.code}`);
     } catch (e) {
-      return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi phân quyền chi nhánh" }, { status: 403 });
+      return NextResponse.json({ error: (e instanceof Error ? e.message : "Lỗi phân quyền").replace(/^BUSINESS:/, "") }, { status: 403 });
     }
 
     if (isDisposedAsset(current)) {

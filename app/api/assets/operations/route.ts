@@ -111,7 +111,7 @@ export async function GET(request: Request) {
       prisma.assetStocktakeSession.findMany({
         where: {
           ...(branchCode === "ALL" ? {} : { branchCode }),
-          ...(allowedDepartments ? { lines: { some: { asset: { departmentCode: { in: allowedDepartments } } } } } : {}),
+          ...(allowedDepartments ? { OR: [{ departmentCode: { in: allowedDepartments } }, { lines: { some: { asset: { departmentCode: { in: allowedDepartments } } } } }] } : {}),
         },
         include: { lines: { where: allowedDepartments ? { asset: { departmentCode: { in: allowedDepartments } } } : {}, include: { asset: true } } },
         orderBy: { createdAt: "desc" },
@@ -210,6 +210,19 @@ export async function POST(request: Request) {
         .filter((line) => line.assetId && Number.isFinite(line.actualQuantity) && line.actualQuantity >= 0);
       if (!branchCode || lines.length === 0) businessError("Kiểm kê tài sản cần cửa hàng và ít nhất một dòng");
       assertBranchAccess(auth.session, branchCode);
+      // Kiểm kê theo bộ phận: phiên ghi rõ phòng ban. User bị giới hạn bộ phận BẮT BUỘC chọn (và chỉ
+      // được chọn trong phạm vi); Admin/người không giới hạn để trống = kiểm cả cửa hàng như cũ.
+      const departmentCode = cleanText(body.departmentCode).toUpperCase();
+      const scoped = allowedDepartmentsOf(auth.session);
+      if (scoped && !departmentCode) businessError("Bạn kiểm kê theo bộ phận — chọn Phòng ban của phiên kiểm kê trước khi duyệt.");
+      if (departmentCode) {
+        assertDepartmentAccess(auth.session, departmentCode, "Phiên kiểm kê");
+        const department = await prisma.masterDataItem.findFirst({
+          where: { type: "DEPARTMENT", status: "ACTIVE", code: departmentCode, OR: [{ branch: branchCode }, { branch: "ALL" }, { branch: null }] },
+          select: { code: true },
+        });
+        if (!department) businessError(`Phòng ban ${departmentCode} không hợp lệ hoặc không thuộc cửa hàng ${branchCode}`);
+      }
       const oversizedImage = lines.find((line) => line.imageUrl.length > 2_000_000);
       if (oversizedImage) businessError("Ảnh kiểm kê quá lớn (trên 2 MB sau nén). Chụp lại ở độ phân giải thấp hơn.");
 
@@ -221,6 +234,7 @@ export async function POST(request: Request) {
             code: head + String(nextSeqFromCodes(issued.map((row) => row.code), head)).padStart(4, "0"),
             stocktakeDate,
             branchCode,
+            departmentCode: departmentCode || null,
             status: "APPROVED",
             note: cleanText(body.note) || null,
             createdBy: auth.session.name,
@@ -232,6 +246,11 @@ export async function POST(request: Request) {
           const asset = await tx.assetRecord.findUnique({ where: { id: line.assetId } });
           if (!asset) businessError("Không tìm thấy tài sản trong danh sách kiểm kê");
           if (asset.branchCode !== branchCode) businessError(`Tài sản ${asset.code} thuộc cửa hàng ${asset.branchCode}, không thuộc phiên kiểm kê này`);
+          // Phiên của một phòng ban thì mọi dòng phải là tài sản của phòng ban đó — dòng lạc bộ phận
+          // sẽ làm lịch sử kiểm kê theo bộ phận sai và số đếm đè lên tài sản của bộ phận khác.
+          if (departmentCode && (asset.departmentCode || "").toUpperCase() !== departmentCode) {
+            businessError(`Tài sản ${asset.code} thuộc phòng ban ${asset.departmentCode || "(chưa gán)"}, không thuộc phiên kiểm kê của ${departmentCode}`);
+          }
           // Kiểm kê theo bộ phận: user bị giới hạn phòng ban không duyệt được dòng của phòng ban khác,
           // kể cả khi tự ghép assetId vào request.
           assertDepartmentAccess(auth.session, asset.departmentCode, `Tài sản ${asset.code}`);
@@ -259,7 +278,7 @@ export async function POST(request: Request) {
         return tx.assetStocktakeSession.findUnique({ where: { id: session.id }, include: { lines: { include: { asset: true } } } });
       });
 
-      await writeAuditLog({ session: auth.session, module: "/assets", action: "APPROVE_ASSET_STOCKTAKE", entityType: "AssetStocktakeSession", entityId: result?.id || null, entityCode: result?.code || null, branchCode, metadata: { lines: lines.length } });
+      await writeAuditLog({ session: auth.session, module: "/assets", action: "APPROVE_ASSET_STOCKTAKE", entityType: "AssetStocktakeSession", entityId: result?.id || null, entityCode: result?.code || null, branchCode, metadata: { lines: lines.length, departmentCode: departmentCode || null } });
       return NextResponse.json(result, { status: 201 });
     }
 

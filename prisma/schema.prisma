@@ -1818,6 +1818,8 @@ model AssetStocktakeSession {
   code          String    @unique
   stocktakeDate DateTime
   branchCode    String
+  /// Kiểm kê theo bộ phận (26/09/2026): phiên kiểm của một phòng ban; null = kiểm cả cửa hàng.
+  departmentCode String?
   status        String    @default("APPROVED")
   note          String?
   createdBy     String?
