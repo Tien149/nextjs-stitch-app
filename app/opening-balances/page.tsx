@@ -1170,7 +1170,10 @@ export default function OpeningBalancesPage() {
                             {/* Asset Detail */}
                             {balance.balanceType === "ASSET" && (
                               <span className="text-[11px] text-slate-500 font-bold block mt-0.5">
-                                BP: {balance.departmentCode || "Văn phòng"} · Khấu hao: {balance.allocationMonths} tháng · BĐ: {balance.allocationStartPeriod}
+                                Nhóm: {balance.moneySourceCode
+                                  ? `${balance.moneySourceCode}${assetGroups.find((item) => item.code === balance.moneySourceCode)?.name ? ` - ${assetGroups.find((item) => item.code === balance.moneySourceCode)?.name}` : ""}`
+                                  : "chưa khai"}
+                                {" · "}BP: {balance.departmentCode || "Văn phòng"} · Khấu hao: {balance.allocationMonths} tháng · BĐ: {balance.allocationStartPeriod}
                                 {(balance.depreciatedPeriods || 0) > 0 && (
                                   <> · Đã PB {balance.depreciatedPeriods}/{balance.allocationMonths} kỳ ({formatCurrency(balance.depreciatedAmount || 0)} đ) · Nguyên giá {formatCurrency(balance.originalCost || 0)} đ</>
                                 )}

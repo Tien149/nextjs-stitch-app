@@ -1477,7 +1477,11 @@ export async function validateImportResult(
           : isAssetTemplate ? assetGroups.find((item) => ["CCDC", "TOOL"].includes(text(item.group).toUpperCase())) : null;
         if (groupCode && !group) addError(row, `Nhóm tài sản [${groupCode}] không tồn tại hoặc đã ngưng hoạt động`);
         if (!groupCode && isAssetTemplate && !group) addError(row, "Chưa có nhóm tài sản loại CCDC trong danh mục — khai cột Nhóm tài sản");
-        if (group) row.values.money_source_code = group.code;
+        // Ghi lại mã nhóm đã chốt (kể cả nhóm CCDC mặc định) để bảng xem trước hiện đúng nhóm.
+        if (group) {
+          row.values.money_source_code = group.code;
+          row.values.asset_group = group.code;
+        }
         const optionalNumber = (value: unknown) => (value === "" || value === undefined || value === null ? null : numberValue(value));
         const { values, errors } = resolveOpeningAsset({
           quantity: optionalNumber(row.values.quantity),

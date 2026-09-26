@@ -199,7 +199,7 @@ const importTabs: ImportTab[] = [
     apiPath: "/api/imports?importType=OPENING_BALANCE&templateCode=OPENING_ASSET_TOOL_V1",
     templatePath: "/api/imports?importType=OPENING_BALANCE&templateCode=OPENING_ASSET_TOOL_V1&template=1",
     templateCode: "OPENING_ASSET_TOOL_V1",
-    primaryFields: ["period", "object_code", "object_name", "original_cost", "allocation_months", "remaining_periods", "depreciated_amount", "amount"],
+    primaryFields: ["period", "object_code", "object_name", "asset_group", "original_cost", "allocation_months", "remaining_periods", "depreciated_amount", "amount"],
     requiresBranch: true,
   },
   {
