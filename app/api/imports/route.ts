@@ -193,14 +193,14 @@ function templateExampleRows(templateCode: string): Array<Record<string, string 
       { period: "2026-07", branch_code: "HCM", balance_type: "CASH", money_source_code: "TM_HCM", amount: 120000000, note: "Quy tien mat dau ky" },
       { period: "2026-07", branch_code: "HCM", balance_type: "DEPOSIT", object_code: "KH_ABC", object_name: "Cong ty ABC", money_source_code: "VCB_HCM", amount: 7000000, note: "Tien coc dau ky" },
       { period: "2026-07", branch_code: "HCM", balance_type: "INVENTORY", object_code: "NVL_NUOCSUOI", object_name: "Nuoc suoi chai", warehouse_code: "KHO_HCM", quantity: 50, unit_cost: 32000, amount: 1600000, note: "Ton kho dau ky" },
-      { period: "2026-07", branch_code: "HCM", balance_type: "ASSET", object_code: "TS001", object_name: "Thiet bi dau ky", department_code: "STORE", quantity: 1, unit_cost: 18000000, amount: 18000000, note: "Tai san/CCDC dau ky" },
+      { period: "2026-07", branch_code: "HCM", balance_type: "ASSET", object_code: "TS001", object_name: "Thiet bi dau ky", department_code: "STORE", quantity: 1, allocation_months: 24, original_cost: 18000000, depreciated_periods: 6, depreciated_amount: 4500000, amount: 13500000, note: "Tai san dau ky: So tien = gia tri con lai" },
       { period: "2026-07", branch_code: "HCM", balance_type: "PREPAID_EXPENSE", object_code: "PB001", object_name: "Chi phi phan bo dau ky", money_source_code: "OPEX_RENT", allocation_months: 12, allocation_start_period: "2026-07", amount: 120000000, note: "Chi phi phan bo dau ky" },
     ];
   }
   if (templateCode === "OPENING_ASSET_TOOL_V1") {
     return [
-      { period: "2026-08", branch_code: "NME", object_code: "CCDCBA00004", object_name: "BAR - Bộ Thiết Bị Làm Mát Đồ Uống (4 Kegs)", quantity: 1, unit_cost: 29350000, original_cost: 29350000, allocation_per_period: 815278, allocation_months: 36, depreciated_periods: 10, remaining_periods: 26, depreciated_amount: 8152780, amount: 21197220, department_code: "BAR", warehouse_code: "NME_KBAR", note: "Đang phân bổ dở" },
-      { period: "2026-08", branch_code: "NME", object_code: "CCDCBA00003", object_name: "BAR - Ly Thủy Tinh BW52-17", quantity: 30, unit_cost: 17300.67, original_cost: 519020, allocation_per_period: 86503, allocation_months: 6, depreciated_periods: 6, remaining_periods: 0, depreciated_amount: 519020, amount: 0, department_code: "BAR", warehouse_code: "NME_KBAR", note: "Đã phân bổ hết, còn theo dõi hiện vật" },
+      { period: "2026-08", branch_code: "NME", object_code: "CCDCBA00004", object_name: "BAR - Bộ Thiết Bị Làm Mát Đồ Uống (4 Kegs)", quantity: 1, original_cost: 29350000, allocation_per_period: 815278, allocation_months: 36, depreciated_periods: 10, remaining_periods: 26, depreciated_amount: 8152780, amount: 21197220, department_code: "BAR", warehouse_code: "NME_KBAR", note: "Đang phân bổ dở" },
+      { period: "2026-08", branch_code: "NME", object_code: "CCDCBA00003", object_name: "BAR - Ly Thủy Tinh BW52-17", quantity: 30, original_cost: 519020, allocation_per_period: 86503, allocation_months: 6, depreciated_periods: 6, remaining_periods: 0, depreciated_amount: 519020, amount: 0, department_code: "BAR", warehouse_code: "NME_KBAR", note: "Đã phân bổ hết, còn theo dõi hiện vật" },
     ];
   }
   if (templateCode === "INVENTORY_TRANSACTION_STANDARD_V1") {

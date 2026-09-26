@@ -520,12 +520,15 @@ export default function OpeningBalancesPage() {
           {canManageOpeningBalances && (
             <button
               type="button"
-              onClick={() => router.push("/imports?tab=opening-balance")}
+              // Đang nhập Tài sản/CCDC thì mở thẳng mẫu "CCDC đầu kỳ" (nguyên giá, đã phân bổ, còn lại).
+              // Mẫu số dư chuẩn dùng Đơn giá + Số tiền, khách đi từ nút này sang mẫu chuẩn và hỏi
+              // "cột Số tiền điền gì" (26/09/2026).
+              onClick={() => router.push(isAssetType ? "/imports?tab=opening-asset-tool" : "/imports?tab=opening-balance")}
               className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-blue-700"
-              title="Import so du dau ky bang Excel"
+              title={isAssetType ? "Import danh sách tài sản / CCDC đầu kỳ đang phân bổ dở" : "Import số dư đầu kỳ bằng Excel"}
             >
               <span className="material-symbols-outlined text-[18px]">upload_file</span>
-              Import Excel
+              {isAssetType ? "Import CCDC đầu kỳ" : "Import Excel"}
             </button>
           )}
           <div className="hidden sm:block text-right">
