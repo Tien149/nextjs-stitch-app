@@ -7,6 +7,7 @@ import { isInboundStockType, isOutboundStockType, isStockTransactionType, isWast
 import { parseVatRate, resolveVatAmount, VAT_RATE_CODES, vatAmountOf, vatRateLabel } from "@/lib/inventory-vat";
 import { roundVnd } from "@/lib/money-rounding";
 import { resolveOpeningAsset } from "@/lib/opening-asset";
+import { branchGoLiveDays, isBeforeGoLive } from "@/lib/wallet-go-live";
 import { normalizeCashflowCategoryType, normalizeRevenueExpenseGroup } from "@/lib/voucher-rules";
 import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
 import { loadNonInventoryRevenueGroups, loadRevenueCategoryIndex, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
@@ -1119,6 +1120,27 @@ function normalizeBankStatementRow(row: ParsedImportRow, masterItems: MasterItem
  *
  * Chưa import doanh thu POS thì để trống, dòng sao kê vẫn được ghi nhận và phí đối chiếu sau.
  */
+/**
+ * Tiền về cho doanh thu TRƯỚC ngày cửa hàng lên hệ thống (vd. đầu tháng 8 trả doanh thu 31/07):
+ * không ghi phí ví — gross = tiền thực về, phí Grab/thẻ = 0, kể cả khi file khai sẵn gross hay
+ * hoa hồng. Luật chung cho mọi ví, xem lib/wallet-go-live.ts.
+ */
+async function zeroPreGoLiveWalletFees(rows: ParsedImportRow[]) {
+  const walletRows = rows.filter((row) => row.errors.length === 0
+    && text(row.values.operation_type) === "WALLET_SETTLEMENT"
+    && row.values.revenue_date instanceof Date
+    && text(row.values.branch_code));
+  if (walletRows.length === 0) return;
+  const goLive = await branchGoLiveDays(walletRows.map((row) => text(row.values.branch_code)));
+  for (const row of walletRows) {
+    const day = vietnamBusinessDayKey(row.values.revenue_date as Date);
+    if (!isBeforeGoLive(day, goLive.get(text(row.values.branch_code)))) continue;
+    row.values.gross_amount = numberValue(row.values.credit_amount);
+    row.values.grab_expense_amount = 0;
+    row.values.card_fee_amount = 0;
+  }
+}
+
 async function fillWalletGrossFromPosRevenue(rows: ParsedImportRow[], masterItems: MasterItem[]) {
   const pending = rows.filter((row) => row.errors.length === 0
     && text(row.values.operation_type) === "WALLET_SETTLEMENT"
@@ -1943,6 +1965,7 @@ export async function validateImportResult(
       }
     }
 
+    await zeroPreGoLiveWalletFees(result.rows);
     await fillWalletGrossFromPosRevenue(result.rows, masterItems);
 
     // Commit khóa sổ theo CẢ HAI mốc ngày, và chỉ cần một dòng vướng kỳ đã khóa là rollback

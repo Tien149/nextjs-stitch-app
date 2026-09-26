@@ -23,6 +23,7 @@ import {
 } from "@/lib/wallet-settlement-allocation";
 import { planWalletSettlementRerun } from "@/lib/wallet-settlement-rerun";
 import { computeWalletGrossByDay } from "@/lib/wallet-settlement-by-day";
+import { branchGoLiveDay, isBeforeGoLive } from "@/lib/wallet-go-live";
 import { assertWalletCardFeeCategory, repostWalletSettlementJournal, walletFeeFields } from "@/lib/wallet-settlement-fee";
 import { pickRevenueRowsOfDay, revenueDayKey } from "@/lib/revenue-day-summary";
 import { walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
@@ -301,6 +302,75 @@ async function rerunWalletSettlementTransfer(
   const linkedLines = (linkedMatch?.bankTransaction.allocations || [])
     .filter((row) => row.creditAmount > 0 && row.revenueDate && row.operationType !== "OTHER_RECEIPT");
   const linkedDays = new Set(linkedLines.map((row) => revenueDayKey(row.revenueDate as Date)));
+
+  /**
+   * Luật chung của ví (lib/wallet-go-live.ts): tiền về cho doanh thu TRƯỚC ngày cửa hàng lên hệ
+   * thống không ghi phí — hệ thống không có doanh thu kỳ đó để phí đi kèm. Mọi ngày doanh thu
+   * của phiếu đều trước ngày lên hệ thống thì đưa phí (cả phần Grab) về 0, gross dòng sao kê =
+   * tiền về. Phiếu trộn ngày trước/sau thì nhánh theo từng ngày bên dưới tự xử lý.
+   */
+  const voucherDays = linkedDays.size > 0
+    ? [...linkedDays]
+    : transfer.sourceReportDate ? [revenueDayKey(transfer.sourceReportDate)] : [];
+  const goLiveDay = await branchGoLiveDay(transfer.branchCode);
+  if (voucherDays.length > 0 && voucherDays.every((day) => isBeforeGoLive(day, goLiveDay))) {
+    const feeBefore = Math.round(transfer.feeAmount);
+    const dayLabels = voucherDays.sort().map((day) => new Date(`${day}T00:00:00Z`).toLocaleDateString("vi-VN", { timeZone: "UTC" }));
+    const goLiveLabel = new Date(`${goLiveDay}T00:00:00Z`).toLocaleDateString("vi-VN", { timeZone: "UTC" });
+    const allocationStale = linkedLines.some((row) => Math.round(row.grossAmount || 0) !== Math.round(row.creditAmount)
+      || (row.grabExpenseAmount || 0) !== 0 || (row.cardFeeAmount || 0) !== 0);
+    const plan = {
+      totalAmount: Math.round(transfer.amount),
+      currentGross: Math.round(transfer.amount) + feeBefore,
+      nextGross: Math.round(transfer.amount),
+      currentFee: feeBefore,
+      nextFee: 0,
+      grabTotal: 0,
+      changes: [{ id: transfer.id, code: transfer.code, feeBefore, feeAfter: 0 }],
+      changed: feeBefore !== 0 || allocationStale,
+      reportDate: voucherDays[0],
+      reportDateLabel: dayLabels.join(", "),
+      walletCode: transfer.fromMoneySourceCode,
+      note: `Doanh thu ${dayLabels.join(", ")} trước ngày lên hệ thống ${goLiveLabel} — không ghi phí ví.`,
+    };
+    if (options.preview) return plan;
+    if (!plan.changed) businessError(`${plan.note} Phiếu đã đúng, không có gì để chạy lại.`);
+    if (await isPeriodLocked(effectiveMoneyTransferDate(transfer), transfer.branchCode)) {
+      businessError(`Phiếu ${transfer.code} thuộc kỳ đã khoá sổ, mở lại kỳ rồi mới chạy lại quyết toán được.`);
+    }
+    const updated = await prisma.$transaction(async (tx) => {
+      for (const row of linkedLines) {
+        await tx.bankStatementAllocation.update({
+          where: { id: row.id },
+          data: { grossAmount: Math.round(row.creditAmount), grabExpenseAmount: 0, cardFeeAmount: 0 },
+        });
+      }
+      return tx.moneyTransfer.update({ where: { id: transfer.id }, data: walletFeeFields(transfer, 0, 0) });
+    });
+    const journalStatuses: Record<string, string> = {};
+    const status = await repostWalletSettlementJournal(updated, options.session.name);
+    if (status) journalStatuses[updated.code] = status;
+    await writeAuditLog({
+      session: options.session,
+      module: menuHref,
+      action: "RERUN_WALLET_SETTLEMENT",
+      entityType: "MoneyTransfer",
+      entityId: transfer.id,
+      entityCode: transfer.code,
+      branchCode: transfer.branchCode,
+      message: plan.note,
+      metadata: {
+        reason: "BEFORE_GO_LIVE",
+        goLiveDay,
+        days: voucherDays,
+        feeBefore,
+        grabExpenseBefore: transfer.grabExpenseAmount,
+        allocationsBefore: linkedLines.map((row) => ({ id: row.id, grossAmount: row.grossAmount, grabExpenseAmount: row.grabExpenseAmount, cardFeeAmount: row.cardFeeAmount })),
+        journalStatuses,
+      },
+    });
+    return { ...plan, updated: 1, journalStatuses };
+  }
   if (linkedMatch && linkedLines.length > 0 && (linkedDays.size > 1 || !transfer.sourceReportDate)) {
     const bank = linkedMatch.bankTransaction;
     const computed = await computeWalletGrossByDay({

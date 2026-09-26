@@ -89,3 +89,21 @@ test("hai dòng cùng ngày chia gross theo tỷ trọng, tổng khớp tuyệt 
   assert.equal(result.plan.lineGross[0] + result.plan.lineGross[1], 22_878_093);
   assert.equal(result.plan.totalFee, 377_489);
 });
+
+// Ca QTVI-2608-NME-00090 (26/09/2026): Grab trả đầu tháng 8 gộp doanh thu 31/07 (trước ngày lên
+// hệ thống 01/08) và 01/08. Ngày 31/07 không ghi phí dù có số doanh thu, ngày 01/08 tính bình thường.
+test("ngày doanh thu trước ngày lên hệ thống: phí 0, gross = tiền về, không chặn phiếu", () => {
+  const result = planWalletGrossByDay({
+    lines: [
+      { revenueDate: d("2026-07-31"), netAmount: 5_000_000, grossAmount: 5_649_131 },
+      { revenueDate: d("2026-08-01"), netAmount: 3_000_000 },
+    ],
+    revenueByDay: new Map([["2026-07-31", 5_649_131], ["2026-08-01", 3_300_000]]),
+    claimedByDay: new Map(),
+    goLiveDay: "2026-08-01",
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.plan.lineGross, [5_000_000, 3_300_000]);
+  assert.deepEqual(result.plan.days.map((row) => row.feeAmount), [0, 300_000]);
+  assert.equal(result.plan.pendingDays.length, 0);
+});

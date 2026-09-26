@@ -3,6 +3,7 @@ import { moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money
 import { createMoneySourceMatcher } from "@/lib/reports";
 import { vietnamBusinessDayBounds, vietnamBusinessDayKey } from "@/lib/revenue-date";
 import { selectWalletDeclaredRevenue, walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
+import { branchGoLiveDay, isBeforeGoLive } from "@/lib/wallet-go-live";
 
 /**
  * Gross ví và phí của MỘT lần tiền về gộp nhiều ngày doanh thu, tính riêng cho từng ngày.
@@ -67,6 +68,8 @@ export function planWalletGrossByDay(input: {
   /** Ngày có doanh thu không quy được về đúng một ví. */
   contestedDays?: Set<string>;
   walletLabel?: string;
+  /** Ngày cửa hàng lên hệ thống (lib/wallet-go-live.ts): ngày doanh thu trước đó phí = 0. */
+  goLiveDay?: string | null;
 }): WalletGrossByDayResult {
   const wallet = input.walletLabel || "ví này";
   if (input.lines.length === 0) return { ok: false, reason: "Không có dòng tiền về nào để tính phí." };
@@ -84,6 +87,13 @@ export function planWalletGrossByDay(input: {
     const revenue = Math.round(input.revenueByDay.get(day) || 0);
     const claimedElsewhere = Math.round(input.claimedByDay.get(day) || 0);
     const available = revenue - claimedElsewhere;
+    // Doanh thu trước ngày lên hệ thống: không có doanh thu trên sổ nên không ghi phí — gross
+    // bằng đúng tiền về. Luật chung cho mọi ví (lib/wallet-go-live.ts).
+    if (isBeforeGoLive(day, input.goLiveDay)) {
+      for (const index of indexes) lineGross[index] = Math.round(input.lines[index].netAmount);
+      results.push({ day, netAmount, revenue, claimedElsewhere, grossAmount: netAmount, feeAmount: 0 });
+      continue;
+    }
     // Chốt 24/09/2026: một ngày thiếu doanh thu không được chặn cả phiếu. Tiền về gộp 28/08 →
     // 01/09 mà chưa nạp POS ngày 01/09 thì phí 28–31/08 (bảng Tiền về đủ chưa đã có số) cứ nằm
     // 0 trên sổ. Ngày thiếu dữ liệu để nguyên gross đang ghi, các ngày còn lại tính bình thường.
@@ -224,7 +234,8 @@ export async function computeWalletGrossByDay(input: {
     claimedByDay.set(day, (claimedByDay.get(day) || 0) + (row.grossAmount || 0));
   }
 
-  const result = planWalletGrossByDay({ lines: input.lines, revenueByDay, claimedByDay, contestedDays, walletLabel });
+  const goLiveDay = await branchGoLiveDay(input.branchCode);
+  const result = planWalletGrossByDay({ lines: input.lines, revenueByDay, claimedByDay, contestedDays, walletLabel, goLiveDay });
   // Phí đã khai bên file POS thì đã vào chi phí từ bút toán doanh thu — cùng chốt chặn với import.
   if (result.ok && result.plan.totalFee > 0 && posFeeDeclared > 0) {
     return {
