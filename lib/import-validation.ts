@@ -1497,9 +1497,13 @@ export async function validateImportResult(
         if (!text(row.values.object_name)) addError(row, "Tài sản đầu kỳ cần Tên");
       }
       // Tài sản hết kỳ phân bổ vẫn còn hiện vật cần theo dõi — giá trị 0 là hợp lệ.
+      // Tồn kho đầu kỳ 0 đồng cũng hợp lệ (26/09/2026): hàng còn số lượng nhưng chưa có giá vốn
+      // (hàng tặng, chưa chốt giá) — chỉ cần Số lượng > 0, đơn giá bình quân ghi 0.
       // Các loại số dư khác thì 0 đồng là dòng thừa, giữ nguyên chặn.
       if (balanceType === "ASSET") {
         if (numberValue(row.values.amount) < 0) addError(row, "Giá trị tài sản đầu kỳ không được âm");
+      } else if (balanceType === "INVENTORY") {
+        if (numberValue(row.values.amount) < 0) addError(row, "Tồn kho đầu kỳ không được âm");
       } else if (numberValue(row.values.amount) === 0) {
         addError(row, "Số dư đầu kỳ không được bằng 0");
       }
