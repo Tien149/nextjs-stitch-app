@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma, prismaRaw } from "@/lib/prisma";
-import { requestedBranch, assertBranchAccess, ensureDefaultAccounts } from "@/lib/accounting";
+import { requestedBranch, assertBranchAccess, ensureDefaultAccounts, postJournalEntry } from "@/lib/accounting";
 import { closedPeriodMessage, findClosedPeriod, isPeriodLocked, periodFromDate } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
+import type { DemoSession } from "@/lib/auth-demo";
 import { assertAssetCodeAvailable, AssetCodeError, nextAssetCode, nextAssetLot, normalizeAssetCode } from "@/lib/asset-code-generator";
 import { assetAcquisitionJournalCode, assetPayableCode } from "@/lib/asset-lot";
 import {
@@ -419,6 +420,147 @@ export async function POST(request: Request) {
   }
 }
 
+/**
+ * Đổi hình thức thanh toán của tài sản đã tạo: Đã thanh toán ↔ Công nợ phải trả NCC.
+ *
+ * Khách báo 26/09/2026: nhiều mã tạo lúc form còn mặc định "Đã thanh toán" (NCC Shopee, Nguyễn
+ * Thị Phương Thảo...) nên không có công nợ; sau khi đổi mặc định sang Công nợ thì các mã cũ không
+ * sửa được vì thông tin thanh toán bị khoá từ lúc tạo. Đổi ở đây sinh/gỡ đúng khoản phải trả
+ * CN-<mã> và ghi lại bút toán ghi tăng (Có 411 ↔ Có 331) trong cùng một thao tác, nên sổ nợ và
+ * sổ cái không lệch nhau.
+ *
+ * Không cho đổi khi: tài sản sinh từ đơn mua hàng (công nợ nằm ở phiếu nhập mua) hoặc từ số dư
+ * đầu kỳ; kỳ ngày mua đã khoá; công nợ đã được trả một phần/tất toán (phải bỏ gạch nợ trước).
+ */
+async function changeAssetPaymentStatus(
+  current: NonNullable<Awaited<ReturnType<typeof prisma.assetRecord.findUnique>>>,
+  body: Record<string, unknown>,
+  session: DemoSession,
+) {
+  const nextStatus = cleanText(body.paymentStatus).toUpperCase();
+  const currentStatus = current.paymentStatus === "PAYABLE" ? "PAYABLE" : "PAID";
+  if (!["PAID", "PAYABLE"].includes(nextStatus)) {
+    return NextResponse.json({ error: "Trạng thái thanh toán chỉ nhận Đã thanh toán hoặc Công nợ phải trả" }, { status: 400 });
+  }
+  if (nextStatus === currentStatus) return NextResponse.json(current);
+  try {
+    assertBranchAccess(session, current.branchCode);
+  } catch (e) {
+    return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi phân quyền chi nhánh" }, { status: 403 });
+  }
+  if (isDisposedAsset(current)) {
+    return NextResponse.json({ error: `Tài sản ${current.code} đã thanh lý nên không đổi được hình thức thanh toán.` }, { status: 400 });
+  }
+  if (current.sourcePurchaseOrderId || current.sourceReceiptId) {
+    return NextResponse.json({ error: `Tài sản ${current.code} nhận từ đơn mua hàng — công nợ nằm ở phiếu nhập mua, điều chỉnh ở màn Mua hàng.` }, { status: 400 });
+  }
+  if (current.openingBalanceId) {
+    return NextResponse.json({ error: `Tài sản ${current.code} tạo từ số dư đầu kỳ — công nợ đầu kỳ khai ở Số dư đầu kỳ / Công nợ đối tác.` }, { status: 400 });
+  }
+  const locked = await findClosedPeriod({ date: current.purchaseDate, branchCode: current.branchCode });
+  if (locked) {
+    return NextResponse.json({ error: closedPeriodMessage(locked, "đổi hình thức thanh toán tài sản") }, { status: 409 });
+  }
+
+  const assetGroupItem = await prisma.masterDataItem.findFirst({ where: { type: "ASSET_GROUP", code: current.assetGroup }, select: { group: true } });
+  const debitAccountCode = ["CCDC", "TOOL"].includes(cleanText(assetGroupItem?.group).toUpperCase()) ? "242" : "211";
+  const existingDebt = await prisma.debtRecord.findFirst({ where: { sourceType: "ASSET", sourceId: current.id } });
+
+  let updated;
+  if (nextStatus === "PAYABLE") {
+    const supplierCode = cleanText(body.supplierCode) || current.supplierCode || "";
+    const paymentDueDate = cleanText(body.paymentDueDate) ? new Date(String(body.paymentDueDate)) : null;
+    if (current.originalCost <= 0) {
+      return NextResponse.json({ error: "Tài sản ghi công nợ phải có nguyên giá lớn hơn 0 — nhập nguyên giá trước." }, { status: 400 });
+    }
+    if (!supplierCode) return NextResponse.json({ error: "Chọn nhà cung cấp trước khi chuyển sang công nợ phải trả." }, { status: 400 });
+    if (paymentDueDate && (Number.isNaN(paymentDueDate.getTime()) || paymentDueDate < current.purchaseDate)) {
+      return NextResponse.json({ error: "Hạn thanh toán không hợp lệ hoặc trước ngày mua" }, { status: 400 });
+    }
+    if (existingDebt) {
+      return NextResponse.json({ error: `Tài sản ${current.code} đã có công nợ ${existingDebt.code}.` }, { status: 409 });
+    }
+    const supplier = await prisma.masterDataItem.findFirst({
+      where: {
+        type: "PARTNER", status: "ACTIVE", code: supplierCode,
+        OR: [{ partnerType: { in: ["SUPPLIER", "BOTH"] } }, { partnerType: null, group: { in: ["SUPPLIER", "BOTH"] } }],
+      },
+    });
+    if (!supplier) return NextResponse.json({ error: `Đối tác ${supplierCode} không phải Nhà cung cấp/Phải trả đang hoạt động` }, { status: 400 });
+    const debtCode = assetPayableCode(current);
+    updated = await prisma.$transaction(async (tx) => {
+      const asset = await tx.assetRecord.update({
+        where: { id: current.id },
+        data: { paymentStatus: "PAYABLE", payableAmount: current.originalCost, paymentDueDate, supplierCode, supplierName: supplier.name },
+      });
+      const debtData = {
+        debtType: "PAYABLE",
+        partnerGroup: "SUPPLIER",
+        partnerCode: supplierCode,
+        partnerName: supplier.name,
+        branchCode: current.branchCode,
+        documentDate: current.purchaseDate,
+        dueDate: paymentDueDate,
+        originalAmount: current.originalCost,
+        outstandingAmount: current.originalCost,
+        description: `Công nợ mua tài sản/CCDC ${current.code}${current.lotNo > 1 ? ` (đợt ${current.lotNo})` : ""} - ${current.name}`,
+        sourceType: "ASSET",
+        sourceId: current.id,
+        status: "OPEN",
+      };
+      // Mã CN-<mã> có thể còn nằm trong Thùng rác (đổi qua đổi lại) — upsert khôi phục luôn.
+      await tx.debtRecord.upsert({ where: { code: debtCode }, create: { code: debtCode, ...debtData }, update: debtData });
+      return asset;
+    });
+  } else {
+    if (existingDebt) {
+      const settled = await prisma.debtSettlement.count({ where: { debtId: existingDebt.id } });
+      if (settled > 0 || existingDebt.status !== "OPEN" || Math.abs(existingDebt.outstandingAmount - existingDebt.originalAmount) > 0.5) {
+        return NextResponse.json({ error: `Công nợ ${existingDebt.code} đã được trả một phần hoặc tất toán — bỏ phiếu chi gạch nợ trước rồi mới đổi sang Đã thanh toán.` }, { status: 409 });
+      }
+    }
+    updated = await prisma.$transaction(async (tx) => {
+      if (existingDebt) await tx.debtRecord.delete({ where: { id: existingDebt.id } });
+      return tx.assetRecord.update({ where: { id: current.id }, data: { paymentStatus: "PAID", payableAmount: 0, paymentDueDate: null } });
+    });
+  }
+
+  // Bút toán ghi tăng: cùng luật với Đồng bộ ghi sổ (lib/accounting.ts) — Nợ 211/242, Có 331 khi
+  // còn nợ NCC, Có 411 khi đã trả. Bút toán đã xoá mềm vẫn giữ khoá sourceType+sourceId nên xoá
+  // cứng trước, nếu không lần ghi mới đâm ràng buộc unique.
+  await prismaRaw.journalEntry.deleteMany({ where: { sourceType: "ASSET_ACQUISITION", sourceId: current.id, deletedAt: { not: null } } });
+  let journalStatus = "SKIPPED_ZERO";
+  if (updated.originalCost > 0) {
+    const payable = updated.paymentStatus === "PAYABLE";
+    journalStatus = await postJournalEntry({
+      entryDate: updated.purchaseDate,
+      branchCode: updated.branchCode,
+      sourceType: "ASSET_ACQUISITION",
+      sourceId: updated.id,
+      sourceCode: updated.code,
+      description: `Ghi tăng tài sản ${updated.name}`,
+      createdBy: session.name,
+      lines: [
+        { accountCode: debitAccountCode, debit: updated.originalCost, partnerCode: updated.supplierCode },
+        { accountCode: payable ? "331" : "411", credit: updated.originalCost, partnerCode: payable ? updated.supplierCode : null },
+      ],
+    });
+  }
+
+  await writeAuditLog({
+    session,
+    module: auditModule,
+    action: "CHANGE_PAYMENT_STATUS",
+    entityType: "AssetRecord",
+    entityId: current.id,
+    entityCode: current.code,
+    branchCode: current.branchCode,
+    message: `Đổi thanh toán ${currentStatus === "PAID" ? "Đã thanh toán" : "Công nợ"} → ${nextStatus === "PAID" ? "Đã thanh toán" : "Công nợ"}`,
+    metadata: { before: currentStatus, after: nextStatus, debtCode: assetPayableCode(current), supplierCode: updated.supplierCode, amount: updated.originalCost, journalStatus },
+  });
+  return NextResponse.json(updated);
+}
+
 export async function PATCH(request: Request) {
   try {
     const auth = requireMenuAction(request, "/assets", "edit");
@@ -430,6 +572,10 @@ export async function PATCH(request: Request) {
 
     const current = await prisma.assetRecord.findUnique({ where: { id } });
     if (!current) return NextResponse.json({ error: "Không tìm thấy tài sản" }, { status: 404 });
+
+    if (cleanText(body.action) === "CHANGE_PAYMENT") {
+      return changeAssetPaymentStatus(current, body, auth.session);
+    }
 
     if (["paymentStatus", "payableAmount", "paymentDueDate"].some((field) => body[field] !== undefined)) {
       return NextResponse.json({ error: "Thông tin thanh toán/công nợ chỉ được xác lập khi tạo tài sản; hãy dùng chứng từ công nợ để điều chỉnh sau đó" }, { status: 409 });

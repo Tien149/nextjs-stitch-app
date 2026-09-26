@@ -50,6 +50,7 @@ type Asset = {
   payableDebtCode?: string | null;
   payableDebtStatus?: string | null;
   sourcePurchaseOrderId: string | null;
+  openingBalanceId?: string | null;
   sourceReceiptId: string | null;
   status: string;
   disposalStatus?: string | null;
@@ -154,6 +155,16 @@ export default function AssetsPage() {
   const showAssetForm = canCreate || Boolean(editingAsset);
   /** Số kỳ đã trích khấu hao của tài sản đang sửa; lớn hơn 0 thì các trường tài chính bị khoá. */
   const editingAllocatedPeriods = editingAsset?.allocatedPeriods || 0;
+  /** Lý do không đổi được hình thức thanh toán khi sửa (null = đổi được). Tạo mới luôn chọn được. */
+  const paymentLockReason = !editingAsset
+    ? null
+    : editingAsset.sourcePurchaseOrderId || editingAsset.sourceReceiptId
+      ? "Tài sản nhận từ đơn mua hàng — công nợ nằm ở phiếu nhập mua."
+      : editingAsset.openingBalanceId
+        ? "Tài sản tạo từ số dư đầu kỳ — công nợ khai ở Số dư đầu kỳ / Công nợ đối tác."
+        : editingAsset.status === "DISPOSED" || editingAsset.computedStatus === "DISPOSED"
+          ? "Tài sản đã thanh lý."
+          : null;
 
   const isDisposed = (asset: Asset) =>
     Boolean(asset.disposalStatus) || asset.status === "DISPOSED" || asset.computedStatus === "DISPOSED";
@@ -355,6 +366,28 @@ export default function AssetsPage() {
     setMessage("");
 
     if (editingAsset) {
+      // Đổi Đã thanh toán ↔ Công nợ là thao tác riêng: máy chủ sinh/gỡ công nợ CN-<mã> và ghi lại
+      // bút toán ghi tăng. Chạy trước phần sửa hồ sơ để lỗi (thiếu NCC, nợ đã trả...) dừng ngay.
+      const currentPayment = editingAsset.paymentStatus === "PAYABLE" ? "PAYABLE" : "PAID";
+      if (form.paymentStatus !== currentPayment) {
+        const changeResponse = await fetch("/api/assets", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", ...getSessionHeaders() },
+          body: JSON.stringify({
+            action: "CHANGE_PAYMENT",
+            id: editingAsset.id,
+            paymentStatus: form.paymentStatus,
+            supplierCode: form.supplierCode,
+            paymentDueDate: form.paymentDueDate,
+          }),
+        });
+        const changePayload = await changeResponse.json();
+        if (!changeResponse.ok) {
+          setMessageTone("error");
+          setMessage(changePayload.error || "Không đổi được hình thức thanh toán");
+          return;
+        }
+      }
       const { paymentStatus: _paymentStatus, payableAmount: _payableAmount, paymentDueDate: _paymentDueDate, ...editableForm } = form;
       void _paymentStatus;
       void _payableAmount;
@@ -807,7 +840,8 @@ export default function AssetsPage() {
                     value={form.paymentStatus}
                     onChange={(e) => setForm((v) => ({ ...v, paymentStatus: e.target.value, payableAmount: e.target.value === "PAYABLE" ? v.originalCost : "", paymentDueDate: e.target.value === "PAYABLE" ? v.paymentDueDate : "" }))}
                     className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white disabled:bg-slate-100"
-                    disabled={Boolean(editingAsset)}
+                    disabled={paymentLockReason !== null}
+                    title={paymentLockReason || undefined}
                     required
                   >
                     <option value="PAYABLE">Công nợ phải trả NCC</option>
@@ -820,7 +854,7 @@ export default function AssetsPage() {
                     value={form.paymentDueDate}
                     onChange={(paymentDueDate) => setForm((v) => ({ ...v, paymentDueDate }))}
                     className="mt-1"
-                    disabled={Boolean(editingAsset) || form.paymentStatus !== "PAYABLE"}
+                    disabled={form.paymentStatus !== "PAYABLE" || Boolean(editingAsset && editingAsset.paymentStatus === "PAYABLE")}
                     ariaLabel="Hạn thanh toán công nợ tài sản"
                   />
                 </label>
@@ -829,6 +863,16 @@ export default function AssetsPage() {
                 <p className="text-[11px] text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
                   Khi lưu, hệ thống tạo công nợ NCC bằng nguyên giá và bút toán Nợ 211/242 – Có 331 trong cùng giao dịch.
                 </p>
+              )}
+              {editingAsset && form.paymentStatus !== (editingAsset.paymentStatus === "PAYABLE" ? "PAYABLE" : "PAID") && (
+                <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                  {form.paymentStatus === "PAYABLE"
+                    ? "Khi lưu, hệ thống tạo công nợ NCC bằng nguyên giá (mã CN-<mã tài sản>) và đổi bút toán ghi tăng sang Có 331. Cần chọn Nhà cung cấp."
+                    : "Khi lưu, hệ thống gỡ công nợ NCC của tài sản này (chỉ được khi chưa trả đồng nào) và đổi bút toán ghi tăng sang Có 411."}
+                </p>
+              )}
+              {paymentLockReason && editingAsset && (
+                <p className="text-[11px] text-slate-500">{paymentLockReason}</p>
               )}
 
               <div className="grid grid-cols-3 gap-2">
