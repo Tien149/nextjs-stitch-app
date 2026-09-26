@@ -430,7 +430,9 @@ async function applyBalanceChange(
     unitCost,
     direction,
   });
-  if (change.negativeQuantity > 0 && !allowNegative) {
+  // Chỉ chặn ở chiều XUẤT. Nhập vào kho đang âm (rã BOM đã xuất âm trước) mà chưa bù hết
+  // phần âm thì tồn vẫn âm — đó là nhập bù, không phải xuất vượt tồn, không được chặn.
+  if (change.negativeQuantity > 0 && direction === "OUT" && !allowNegative) {
     const item = await tx.inventoryItem.findUnique({ where: { id: itemId }, select: { code: true } });
     stockError(`Ton kho cua ${item?.code || itemId} o kho ${warehouseCode} khong du de xuat (thieu ${change.negativeQuantity})`);
   }
