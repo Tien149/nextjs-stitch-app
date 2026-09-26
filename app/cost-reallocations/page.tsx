@@ -50,6 +50,8 @@ export default function CostReallocationsPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
+  /** Phiếu đang sửa; null nghĩa là form đang lập phiếu mới. */
+  const [editing, setEditing] = useState<Reallocation | null>(null);
   const [deleting, setDeleting] = useState<Reallocation | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteSubmitting, setDeleteSubmitting] = useState(false);
@@ -64,6 +66,7 @@ export default function CostReallocationsPage() {
   const money = (value: number) => formatVndMoney(value);
   const draftTotal = draftLines.reduce((sum, line) => sum + (Number(line.amount) || 0), 0);
   const canCreate = user ? canPerformAction(user, "create") : false;
+  const canEdit = user ? canPerformAction(user, "edit") : false;
   const canDelete = user ? canPerformAction(user, "delete") : false;
 
   useEffect(() => {
@@ -98,6 +101,22 @@ export default function CostReallocationsPage() {
       fromBranchCode: current.fromBranchCode || (branchScope !== "ALL" ? branchScope : visibleStoreOptions(user)[0]?.code || ""),
     }));
     setDraftLines([emptyDraftLine(1)]);
+    setEditing(null);
+    setFormOpen(true);
+  };
+
+  const openEditForm = (row: Reallocation) => {
+    setFormError("");
+    setForm({
+      documentDate: row.documentDate.slice(0, 10),
+      fromBranchCode: row.fromBranchCode,
+      pnlItemCode: row.pnlItemCode,
+      description: row.description,
+    });
+    setDraftLines(row.lines.length > 0
+      ? row.lines.map((line, index) => ({ key: index + 1, toBranchCode: line.toBranchCode, amount: String(line.amount), note: line.note || "" }))
+      : [emptyDraftLine(1)]);
+    setEditing(row);
     setFormOpen(true);
   };
 
@@ -117,21 +136,28 @@ export default function CostReallocationsPage() {
     setSaving(true);
     try {
       const response = await fetch("/api/cost-reallocations", {
-        method: "POST",
+        method: editing ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          ...(editing ? { id: editing.id } : {}),
           ...form,
           lines: lines.map((line) => ({ toBranchCode: line.toBranchCode, amount: Number(line.amount), note: line.note })),
         }),
       });
       const payload = await response.json();
       if (!response.ok) {
-        setFormError(payload.error || "Không tạo được phiếu phân bổ.");
+        setFormError(payload.error || (editing ? "Không sửa được phiếu phân bổ." : "Không tạo được phiếu phân bổ."));
         return;
       }
       setFormOpen(false);
       setForm((current) => ({ ...current, pnlItemCode: "", description: "" }));
-      setMessage(`Đã tạo phiếu ${payload.code}: giảm chi phí ${storeLabel(payload.fromBranchCode)}, tăng chi phí ${payload.lines.length} nhà hàng và sinh công nợ nội bộ.`);
+      if (editing) {
+        const renamed = editing.code !== payload.code ? ` (đổi kỳ nên mã mới là ${payload.code})` : "";
+        setMessage(`Đã sửa phiếu ${editing.code}${renamed}: ghi lại bút toán ở ${1 + payload.lines.length} nhà hàng và công nợ nội bộ theo nội dung mới.`);
+      } else {
+        setMessage(`Đã tạo phiếu ${payload.code}: giảm chi phí ${storeLabel(payload.fromBranchCode)}, tăng chi phí ${payload.lines.length} nhà hàng và sinh công nợ nội bộ.`);
+      }
+      setEditing(null);
       await loadRows();
     } catch {
       setFormError("Không kết nối được máy chủ. Vui lòng thử lại.");
@@ -238,6 +264,16 @@ export default function CostReallocationsPage() {
                   </td>
                   <td className="px-4 py-3 text-right font-bold">{money(row.totalAmount)} đ</td>
                   <td className="px-4 py-3 text-right">
+                    <div className="flex justify-end gap-1.5">
+                    {canEdit && row.status !== "CANCELLED" && (
+                      <button
+                        type="button"
+                        onClick={() => openEditForm(row)}
+                        className="rounded-lg border border-blue-200 px-2.5 py-1 text-xs font-bold text-blue-600 hover:bg-blue-50"
+                      >
+                        Sửa
+                      </button>
+                    )}
                     {canDelete && row.status !== "CANCELLED" && (
                       <button
                         type="button"
@@ -247,6 +283,7 @@ export default function CostReallocationsPage() {
                         Xoá
                       </button>
                     )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -260,10 +297,15 @@ export default function CostReallocationsPage() {
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
         <form onSubmit={submitForm} className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-white shadow-xl">
           <div className="border-b border-slate-200 p-5">
-            <h2 className="font-bold text-slate-900">Lập phiếu phân bổ chi phí</h2>
+            <h2 className="font-bold text-slate-900">{editing ? `Sửa phiếu phân bổ ${editing.code}` : "Lập phiếu phân bổ chi phí"}</h2>
             <p className="mt-1 text-xs text-slate-500">
               Chi phí sẽ được chuyển đúng phần sang nhà hàng thụ hưởng theo cùng hạng mục P&amp;L; tổng chi phí toàn công ty không đổi.
             </p>
+            {editing && (
+              <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-medium text-amber-800">
+                Lưu sẽ gỡ bút toán và công nợ nội bộ cũ rồi ghi lại theo nội dung mới. Không sửa được nếu công nợ nội bộ của phiếu đã có phiếu thu/chi gạch nợ.
+              </p>
+            )}
           </div>
           <div className="grid grid-cols-2 gap-3 p-5">
             <div className="flex flex-col text-xs font-bold text-slate-600">
@@ -374,11 +416,11 @@ export default function CostReallocationsPage() {
             )}
           </div>
           <div className="flex justify-end gap-2 border-t border-slate-200 p-4">
-            <button type="button" onClick={() => setFormOpen(false)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50">
+            <button type="button" onClick={() => { setFormOpen(false); setEditing(null); }} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50">
               Đóng
             </button>
             <button type="submit" disabled={saving} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-60">
-              {saving ? "Đang ghi sổ..." : "Lập phiếu và ghi sổ"}
+              {saving ? "Đang ghi sổ..." : editing ? "Lưu và ghi sổ lại" : "Lập phiếu và ghi sổ"}
             </button>
           </div>
         </form>

@@ -222,3 +222,23 @@ export function reallocationOverspendMessage(input: {
   }
   return `${head} ${hints.join(" ")}`;
 }
+
+/**
+ * Chi phí còn được phép phân bổ khi SỬA một phiếu.
+ *
+ * `postedAmount` đọc từ sổ nên đã bị chính phiếu đang sửa trừ bớt. Phiếu cũ sẽ bị gỡ ra và
+ * ghi lại, nên nếu nó cùng kỳ, cùng nhà hàng đã trả, cùng hạng mục thì phải cộng trả lại —
+ * không thì sửa diễn giải của một phiếu phân bổ hết 100% cũng bị chặn là "không đủ chi phí".
+ */
+export function availableForReallocationEdit(input: {
+  postedAmount: number;
+  next: { period: string; fromBranchCode: string; pnlItemCode: string };
+  current: { period: string; fromBranchCode: string; pnlItemCode: string; totalAmount: number } | null;
+}) {
+  const { current, next } = input;
+  if (!current) return input.postedAmount;
+  const sameBucket = current.period === next.period
+    && current.fromBranchCode.trim().toUpperCase() === next.fromBranchCode.trim().toUpperCase()
+    && current.pnlItemCode.trim().toUpperCase() === next.pnlItemCode.trim().toUpperCase();
+  return sameBucket ? input.postedAmount + current.totalAmount : input.postedAmount;
+}

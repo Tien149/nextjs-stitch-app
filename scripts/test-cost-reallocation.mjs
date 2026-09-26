@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  availableForReallocationEdit,
   costReallocationTotal,
   expenseAccountForPnlGroup,
   internalPartnerCode,
@@ -212,4 +213,14 @@ test("phân bổ đúng kỳ, trong phần chi phí đang có thì cho qua", () 
   assert.equal(reallocationOverspendMessage({ ...ok, total: 2_500_000 }), null);
   // Phân bổ trọn vẹn cả khoản chi phí vẫn hợp lệ: nhà hàng trả hộ 100% cho nhà hàng khác.
   assert.equal(reallocationOverspendMessage({ ...ok, total: 6_700_000 }), null);
+});
+
+test("sửa phiếu: cộng trả lại phần chính phiếu cũ đã trừ khi cùng kỳ, nhà hàng, hạng mục", () => {
+  const current = { period: "2026-08", fromBranchCode: "NME", pnlItemCode: "CPBD_VPP", totalAmount: 500_000 };
+  // Phiếu cũ phân bổ hết 100% nên sổ còn 0 — sửa diễn giải vẫn phải qua được.
+  assert.equal(availableForReallocationEdit({ postedAmount: 0, next: current, current }), 500_000);
+  assert.equal(availableForReallocationEdit({ postedAmount: 0, next: { ...current, period: "2026-09" }, current }), 0);
+  assert.equal(availableForReallocationEdit({ postedAmount: 0, next: { ...current, fromBranchCode: "ASA" }, current }), 0);
+  assert.equal(availableForReallocationEdit({ postedAmount: 0, next: { ...current, pnlItemCode: "CPBD_GAS" }, current }), 0);
+  assert.equal(availableForReallocationEdit({ postedAmount: 120, next: current, current: null }), 120);
 });
