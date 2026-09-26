@@ -244,8 +244,9 @@ async function resolveStockLine(tx: Tx, line: StockLineInput) {
  * `allowNegative` là luật XUẤT ÂM (khách chốt 22/09/2026): phiếu XUAT_* vẫn ghi được khi kho
  * chưa có tồn, vì nghiệp vụ "rã bom" phải chạy cho cả những mã chưa kịp khai tồn đầu kỳ.
  * Tồn xuống âm chính là số nợ kho đang thiếu, để kế toán nhìn thấy mà đi khai bù — chứ không
- * phải cái cớ để chặn cả lần rã. Điều chuyển kho vẫn KHÔNG được âm: chuyển hàng không có
- * sang kho khác là bịa ra giá trị cho kho nhận.
+ * phải cái cớ để chặn cả lần rã. Từ 26/09/2026 điều chuyển kho cũng được xuất âm (khách chốt):
+ * kho đi âm đúng bằng phần chưa khai tồn, kho nhận ghi theo giá điều chuyển như bình thường.
+ * Cờ này giữ lại cho phiếu NHẬP (nhập không bao giờ làm âm) và cho test thuần.
  */
 export function computeBalanceChange(input: {
   currentQuantity: number;
@@ -408,7 +409,8 @@ export async function postInventoryTransaction(tx: Tx, input: PostInventoryTrans
       const valued = await applyBalanceChange(tx, line.itemId, input.warehouseCode, line.quantity, line.unitCost, "OUT", true);
       valuedLines.push({ ...line, unitCost: valued.unitCost, totalCost: valued.totalCost });
     } else {
-      const outValue = await applyBalanceChange(tx, line.itemId, input.warehouseCode, line.quantity, line.unitCost, "OUT");
+      // Điều chuyển cũng được đẩy tồn kho đi xuống âm (khách chốt 26/09/2026).
+      const outValue = await applyBalanceChange(tx, line.itemId, input.warehouseCode, line.quantity, line.unitCost, "OUT", true);
       // Kho nguồn chưa có giá vốn (mới lập, nhận hàng bằng phiếu không đơn giá) thì lấy
       // GIÁ NHẬP MUA GẦN NHẤT của mặt hàng làm giá điều chuyển, thay vì chặn cứng người
       // dùng hay để kho nhận tự thay 0 bằng bình quân của chính nó (tổng giá trị kho tự tăng).
@@ -416,9 +418,8 @@ export async function postInventoryTransaction(tx: Tx, input: PostInventoryTrans
       if (transferUnitCost <= 0) {
         transferUnitCost = await latestPurchaseUnitCost(tx, line.itemId);
       }
-      if (transferUnitCost <= 0) {
-        stockError(`Mat hang ${line.item.code} o kho ${input.warehouseCode} chua co gia von (binh quan = 0) va cung chua co phieu nhap mua nao de lay gia. Nhap gia von (phieu nhap co don gia hoac so du dau ky) truoc khi dieu chuyen`);
-      }
+      // Không còn giá nào để lấy thì điều chuyển 0 đồng (khách chốt 26/09/2026): kho nhận
+      // sẽ nhận giá khi khai tồn / nhập mua bù, giống hệ quả của luật xuất âm ở phiếu xuất.
       await applyBalanceChange(tx, line.itemId, input.toWarehouseCode || "", line.quantity, transferUnitCost, "IN");
       valuedLines.push({ ...line, unitCost: transferUnitCost, totalCost: transferUnitCost * line.quantity });
     }
@@ -516,12 +517,11 @@ export async function repostInventoryTransaction(
       const valued = await applyBalanceChange(tx, line.itemId, input.warehouseCode, line.quantity, line.unitCost, "OUT", true);
       valuedLines.push({ ...line, unitCost: valued.unitCost, totalCost: valued.totalCost });
     } else {
-      const outValue = await applyBalanceChange(tx, line.itemId, input.warehouseCode, line.quantity, line.unitCost, "OUT");
+      // Điều chuyển cũng được đẩy tồn kho đi xuống âm (khách chốt 26/09/2026).
+      const outValue = await applyBalanceChange(tx, line.itemId, input.warehouseCode, line.quantity, line.unitCost, "OUT", true);
       let transferUnitCost = outValue.unitCost;
       if (transferUnitCost <= 0) transferUnitCost = await latestPurchaseUnitCost(tx, line.itemId);
-      if (transferUnitCost <= 0) {
-        stockError(`Mat hang ${line.item.code} o kho ${input.warehouseCode} chua co gia von (binh quan = 0) nen khong dieu chuyen duoc`);
-      }
+      // Không còn giá nào thì điều chuyển 0 đồng (khách chốt 26/09/2026), không chặn.
       await applyBalanceChange(tx, line.itemId, input.toWarehouseCode || "", line.quantity, transferUnitCost, "IN");
       valuedLines.push({ ...line, unitCost: transferUnitCost, totalCost: transferUnitCost * line.quantity });
     }

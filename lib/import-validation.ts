@@ -388,8 +388,6 @@ function validateInventoryTransaction(
     unit: string;
     unitConversions: Array<{ unitCode: string; conversionRate: number }>;
   }>,
-  balances: Array<{ itemId: string; warehouseCode: string; quantity: number; item: { code: string } }>,
-  stockUsage: Map<string, number>,
 ) {
   // Cột "NCC / Đối tượng" giờ được ghi thật vào phiếu — khai sai mã thì báo ngay tại preview.
   const partnerCode = text(row.values.partner_code);
@@ -531,25 +529,11 @@ function validateInventoryTransaction(
   }
 
   /**
-   * Xuất vượt tồn KHÔNG còn là lỗi với phiếu XUAT_* (luật xuất âm, khách chốt 22/09/2026):
-   * tồn xuống âm đúng bằng phần đang thiếu để kế toán khai bù sau. Điều chuyển thì vẫn chặn —
-   * lib/inventory-stock.ts cũng chặn ở tầng ghi, bắt sớm tại preview để không rollback cả batch.
-   *
-   * Vẫn cộng dồn lượng xuất của CÁC DÒNG TRƯỚC trong cùng file: 3 dòng mỗi dòng 40 trên tồn 50
-   * thì từng dòng đều "đủ", preview hợp lệ nhưng commit chết giữa chừng.
+   * Xuất vượt tồn KHÔNG còn là lỗi với mọi phiếu XUAT_* (luật xuất âm, khách chốt 22/09/2026)
+   * và từ 26/09/2026 cả ĐIỀU CHUYỂN cũng vậy: tồn kho đi xuống âm đúng bằng phần đang thiếu
+   * để kế toán khai bù sau. lib/inventory-stock.ts cũng đã bỏ chặn ở tầng ghi, nên preview
+   * không còn gì để bắt sớm về số lượng nữa.
    */
-  if (isOutboundStockType(transactionType) || transactionType === "DIEU_CHUYEN") {
-    const currentBalance = balances.find((balance) => balance.item.code.toUpperCase() === itemCode && balance.warehouseCode === text(row.values.warehouse_code));
-    const usageKey = `${itemCode}|${text(row.values.warehouse_code)}`;
-    const alreadyClaimed = stockUsage.get(usageKey) || 0;
-    const nextClaimed = alreadyClaimed + quantity * conversionRate;
-    stockUsage.set(usageKey, nextClaimed);
-    if (transactionType === "DIEU_CHUYEN" && (currentBalance?.quantity || 0) < nextClaimed) {
-      addError(row, alreadyClaimed > 0
-        ? `Dieu chuyen khong duoc xuat vuot ton kho (cong don ca cac dong tren cua file: ${nextClaimed})`
-        : "Dieu chuyen khong duoc xuat vuot ton kho");
-    }
-  }
 }
 
 function validateBom(
@@ -1285,7 +1269,7 @@ export async function validateImportResult(
   const inventoryItems = ["OPENING_BALANCE", "INVENTORY_TRANSACTION", "BOM", "STOCKTAKE", "REVENUE_POS", "INVENTORY_ITEM", "PRODUCTION", "WASTE"].includes(importType)
     ? await prisma.inventoryItem.findMany({ select: { code: true, itemType: true, status: true, unit: true, unitConversions: { select: { unitCode: true, conversionRate: true } } } })
     : [];
-  const inventoryBalances = ["INVENTORY_TRANSACTION", "STOCKTAKE"].includes(importType)
+  const inventoryBalances = importType === "STOCKTAKE"
     ? await prisma.inventoryBalance.findMany({ include: { item: { select: { code: true } } } })
     : [];
   const existingAssetCodes = importType === "ASSET"
@@ -1311,7 +1295,6 @@ export async function validateImportResult(
 
   const branchTypes: ImportType[] = ["VOUCHER", "INTERNAL_TRANSFER", "DEBT_OPENING", "OPENING_BALANCE", "REVENUE_POS", "PAYROLL", "INVENTORY_TRANSACTION", "STOCKTAKE", "ASSET", "PRODUCTION", "WASTE", "ASSET_STOCKTAKE"];
   const openingBalanceKeys = new Set<string>();
-  const transactionStockUsage = new Map<string, number>();
   // BOM: cac dong cung mon + cung ngay hieu luc phai khai product_name/selling_price giong nhau,
   // vi ca nhom se thanh MOT phien ban cong thuc.
   const bomGroupHeader = new Map<string, { name: string; price: number; rowNumber: number }>();
@@ -1326,7 +1309,7 @@ export async function validateImportResult(
     if (importType === "VOUCHER") validateVoucher(row, masterItems);
     if (importType === "INTERNAL_TRANSFER") validateTransfer(row, masterItems, session);
     if (importType === "DEBT_OPENING") validateDebt(row, masterItems);
-    if (importType === "INVENTORY_TRANSACTION") validateInventoryTransaction(row, masterItems, inventoryItems, inventoryBalances, transactionStockUsage);
+    if (importType === "INVENTORY_TRANSACTION") validateInventoryTransaction(row, masterItems, inventoryItems);
     if (importType === "BOM") {
       validateBom(row, inventoryItems, masterItems, session);
       // Khoá nhóm phải kèm cửa hàng: cùng món cùng ngày nhưng khác cửa hàng là HAI công thức
