@@ -11,6 +11,8 @@ export function ModuleFrame({
   branchCode,
   onChangeBranch,
   contentClassName = "max-w-7xl",
+  backHref,
+  backLabel = "Quay lại",
   children,
 }: {
   title: string;
@@ -19,6 +21,9 @@ export function ModuleFrame({
   branchCode?: string;
   onChangeBranch?: (code: string) => void;
   contentClassName?: string;
+  /** Màn con (ví dụ Vận hành tài sản mở từ Tài sản): có thì hiện nút quay về màn cha. */
+  backHref?: string;
+  backLabel?: string;
   children: ReactNode;
 }) {
   const [isLocked, setIsLocked] = useState(false);
@@ -61,6 +66,16 @@ export function ModuleFrame({
     <div className="min-h-screen bg-slate-100 text-slate-800">
       <header className="sticky top-0 z-20 bg-white border-b border-slate-200 px-4 sm:px-6 py-4 flex items-center justify-between shadow-sm">
         <div className="flex items-center gap-3 min-w-0">
+          {backHref && (
+            <a
+              href={backHref}
+              title={backLabel}
+              className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50 hover:text-blue-700"
+            >
+              <span className="material-symbols-outlined text-base">arrow_back</span>
+              <span className="hidden sm:inline">{backLabel}</span>
+            </a>
+          )}
           <div className="min-w-0">
             <h1 className="text-lg sm:text-xl font-bold truncate">{title}</h1>
             <p className="text-xs text-slate-500 truncate">{subtitle}</p>

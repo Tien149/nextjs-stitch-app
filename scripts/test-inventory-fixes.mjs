@@ -227,13 +227,13 @@ test("kho & định lượng: các fix của đợt 20/08", async (t) => {
     const { batch } = await runImport("ASSET_STOCKTAKE", "ASSET_STOCKTAKE_STANDARD_V1", fileFrom(headers, [
       ["30/06/2099", BRANCH, ASSET_CODE, 3, "Hong 2 cai", "Thieu so voi so sach"],
     ], "KiemKeTS", "ast.xlsx"));
-    const asset = await prisma.assetRecord.findUnique({ where: { code: ASSET_CODE } });
+    const asset = await prisma.assetRecord.findFirst({ where: { code: ASSET_CODE } });
     assert.equal(asset.quantity, 3, "duyệt kiểm kê phải lấy số đếm làm số sổ sách");
     const kkSession = await prisma.assetStocktakeSession.findFirst({ where: { importBatchId: batch.id }, include: { lines: true } });
     assert.equal(kkSession.lines[0].varianceQuantity, -2);
 
     await rollbackImportBatch({ batchId: batch.id, actor: session.name, note: "test" });
-    const restored = await prisma.assetRecord.findUnique({ where: { code: ASSET_CODE } });
+    const restored = await prisma.assetRecord.findFirst({ where: { code: ASSET_CODE } });
     assert.equal(restored.quantity, 5, "rollback phải trả số sổ sách về trước kiểm kê");
   });
 

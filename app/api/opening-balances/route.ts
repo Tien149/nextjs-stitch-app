@@ -6,7 +6,7 @@ import { buildAuditLogData } from "@/lib/audit-log";
 import { prisma, prismaRaw } from "@/lib/prisma";
 import { applyOpeningDeposit, revertOpeningDeposit } from "@/lib/opening-balance-deposit";
 import { normalizeOpeningBalanceInput, validateOpeningBalanceInput, type OpeningBalanceInput } from "@/lib/opening-balance-rules";
-import { assertAssetCodeAvailable } from "@/lib/asset-code-generator";
+import { assertAssetCodeAvailable, nextAssetLot, normalizeAssetCode } from "@/lib/asset-code-generator";
 import { openingAssetRecordData } from "@/lib/opening-asset";
 import { assertPeriodOpen as assertAccountingPeriodOpen, buildAllocationSchedules } from "@/lib/phase3";
 
@@ -53,8 +53,12 @@ async function applySideEffects(tx: Prisma.TransactionClient, current: OpeningBa
     return;
   }
   if (current.balanceType === "ASSET") {
-    const assetCode = await assertAssetCodeAvailable(tx, current.objectCode || "");
-    await tx.assetRecord.create({ data: { code: assetCode, ...openingAssetRecordData(current) } });
+    // Mã đã có = khai thêm một ĐỢT (cùng loại, khác thời gian phân bổ — lib/asset-lot.ts);
+    // mã chưa có thì kiểm tra hợp lệ rồi tạo đợt 1.
+    const code = normalizeAssetCode(current.objectCode || "");
+    const existing = code ? await tx.assetRecord.findFirst({ where: { code }, select: { id: true } }) : null;
+    const lot = existing ? await nextAssetLot(tx, code) : { code: await assertAssetCodeAvailable(tx, code), lotNo: 1 };
+    await tx.assetRecord.create({ data: { code: lot.code, lotNo: lot.lotNo, ...openingAssetRecordData(current) } });
     return;
   }
   if (current.balanceType === "PREPAID_EXPENSE") {
@@ -101,14 +105,17 @@ async function assertSideEffectsRevertible(tx: Prisma.TransactionClient, current
     return;
   }
   if (current.balanceType === "ASSET") {
-    const asset = await tx.assetRecord.findFirst({ where: { code: current.objectCode || "", branchCode: current.branchCode } });
+    // Đợt sinh từ đúng dòng số dư này (openingBalanceId); dữ liệu cũ chưa có liên kết thì rơi về mã + cửa hàng.
+    const asset = await tx.assetRecord.findFirst({ where: { openingBalanceId: current.id } })
+      || await tx.assetRecord.findFirst({ where: { code: current.objectCode || "", branchCode: current.branchCode, openingBalanceId: null } });
     if (!asset) return;
+    const lotLabel = asset.lotNo > 1 ? ` (đợt ${asset.lotNo})` : "";
     const runs = await tx.assetDepreciation.count({ where: { assetId: asset.id } });
     if (runs > 0) {
-      throw new Error(`Tài sản ${asset.code} đã trích khấu hao ${runs} kỳ. Vào Tài sản & Khấu hao mở lại các kỳ đó rồi mới mở lại số dư đầu kỳ này.`);
+      throw new Error(`Tài sản ${asset.code}${lotLabel} đã trích khấu hao ${runs} kỳ. Vào Tài sản & Khấu hao mở lại các kỳ đó rồi mới mở lại số dư đầu kỳ này.`);
     }
     if (asset.status === "DISPOSED") {
-      throw new Error(`Tài sản ${asset.code} đã thanh lý. Mở lại thanh lý ở tab Thanh lý rồi mới mở lại số dư đầu kỳ này.`);
+      throw new Error(`Tài sản ${asset.code}${lotLabel} đã thanh lý. Mở lại thanh lý ở tab Thanh lý rồi mới mở lại số dư đầu kỳ này.`);
     }
     return;
   }
@@ -131,7 +138,10 @@ async function revertSideEffects(tx: Prisma.TransactionClient, current: OpeningB
     const item = await tx.inventoryItem.findUnique({ where: { code: current.objectCode || "" } });
     if (item) await tx.inventoryBalance.updateMany({ where: { itemId: item.id, warehouseCode: current.warehouseCode || "" }, data: { quantity: 0, averageCost: 0 } });
   } else if (current.balanceType === "ASSET") {
-    await tx.assetRecord.deleteMany({ where: { code: current.objectCode || "", branchCode: current.branchCode } });
+    // Chỉ gỡ đúng đợt sinh từ dòng số dư này; đợt mua tăng / đợt của dòng khác cùng mã giữ nguyên.
+    const linked = await tx.assetRecord.count({ where: { openingBalanceId: current.id } });
+    if (linked > 0) await tx.assetRecord.deleteMany({ where: { openingBalanceId: current.id } });
+    else await tx.assetRecord.deleteMany({ where: { code: current.objectCode || "", branchCode: current.branchCode, openingBalanceId: null } });
   } else if (current.balanceType === "PREPAID_EXPENSE") {
     await tx.accrual.deleteMany({ where: { code: `PB-DK-${(current.objectCode || "").toUpperCase()}`, branchCode: current.branchCode } });
   }

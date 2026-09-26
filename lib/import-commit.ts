@@ -22,7 +22,8 @@ import { evaluateBankStatementAutoApproval } from "@/lib/bank-statement-auto-app
 import { applyVoucherSideEffects } from "@/lib/voucher-side-effects";
 import { applyOpeningDeposit } from "@/lib/opening-balance-deposit";
 import { openingAssetRecordData } from "@/lib/opening-asset";
-import { assertAssetCodeAvailable, nextAssetCode } from "@/lib/asset-code-generator";
+import { assertAssetCodeAvailable, nextAssetCode, nextAssetLot } from "@/lib/asset-code-generator";
+import { assetAcquisitionJournalCode, assetPayableCode, distributeStocktakeCount } from "@/lib/asset-lot";
 import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 import { nextStockDocCode, nextStocktakeCode } from "@/lib/inventory-stock";
 import {
@@ -1814,22 +1815,28 @@ export async function commitImport(input: CommitInput) {
         });
         for (const row of rows) {
           const assetCode = asText(row.values.asset_code).toUpperCase();
-          const asset = await tx.assetRecord.findUnique({ where: { code: assetCode } });
-          if (!asset) throw new Error(`Dong ${row.rowNumber}: Khong tim thay tai san ${assetCode}`);
+          // Một mã có thể nhiều đợt: file kiểm kê đếm THEO MÃ, hệ thống chia về từng đợt
+          // (lib/asset-lot.ts distributeStocktakeCount — thừa vào đợt mới nhất, thiếu trừ từ đợt mới).
+          const lots = await tx.assetRecord.findMany({ where: { code: assetCode, deletedAt: null, status: { not: "DISPOSED" } }, orderBy: { lotNo: "asc" } });
+          if (lots.length === 0) throw new Error(`Dong ${row.rowNumber}: Khong tim thay tai san ${assetCode}`);
           const actualQuantity = asNumber(row.values.actual_quantity);
-          await tx.assetStocktakeLine.create({
-            data: {
-              sessionId: session.id,
-              assetId: asset.id,
-              systemQuantity: asset.quantity,
-              actualQuantity,
-              varianceQuantity: actualQuantity - asset.quantity,
-              condition: asText(row.values.condition) || null,
-              note: asText(row.values.note) || null,
-            },
-          });
-          // Duyệt kiểm kê = số đếm là số chốt: cập nhật số lượng sổ sách theo thực tế.
-          await tx.assetRecord.update({ where: { id: asset.id }, data: { quantity: actualQuantity } });
+          const distributed = distributeStocktakeCount(lots.map((lot) => ({ id: lot.id, lotNo: lot.lotNo, quantity: lot.quantity })), actualQuantity);
+          for (const lot of distributed) {
+            await tx.assetStocktakeLine.create({
+              data: {
+                sessionId: session.id,
+                assetId: lot.id,
+                systemQuantity: lot.systemQuantity,
+                actualQuantity: lot.actualQuantity,
+                varianceQuantity: lot.actualQuantity - lot.systemQuantity,
+                condition: asText(row.values.condition) || null,
+                note: asText(row.values.note) || null,
+                imageUrl: asText(row.values.image_url) || null,
+              },
+            });
+            // Duyệt kiểm kê = số đếm là số chốt: cập nhật số lượng sổ sách theo thực tế.
+            await tx.assetRecord.update({ where: { id: lot.id }, data: { quantity: lot.actualQuantity } });
+          }
           await setImportTarget(tx, staging, row, "ASSET_STOCKTAKE", session.id);
         }
       }
@@ -1924,20 +1931,28 @@ export async function commitImport(input: CommitInput) {
         if (balanceType === "ASSET" && row.values.object_code) {
           const code = asText(row.values.object_code).toUpperCase();
           const data = openingAssetRecordData(opening);
-          // Tài sản đã chạy khấu hao trên hệ thống thì không được ghi đè bằng số đầu kỳ: tiến độ
-          // và giá trị còn lại sẽ lệch hẳn các kỳ đã trích.
-          const existing = await tx.assetRecord.findFirst({
+          /**
+           * Một mã nhiều đợt (lib/asset-lot.ts): cùng loại CCDC mua ở hai thời điểm khai hai dòng
+           * cùng mã, khác kỳ bắt đầu phân bổ / nguyên giá. Dòng khớp một ĐỢT đã có (cùng kỳ bắt đầu
+           * và nguyên giá) thì cập nhật đợt đó — giữ được cách import lại file sửa; không khớp đợt
+           * nào mà mã đã có thì thành đợt kế tiếp; mã chưa có thì là đợt 1.
+           * Đợt đã chạy khấu hao trên hệ thống thì không được ghi đè: tiến độ và giá trị còn lại
+           * sẽ lệch hẳn các kỳ đã trích.
+           */
+          const lots = await tx.assetRecord.findMany({
             where: { code, deletedAt: undefined },
-            select: { id: true, _count: { select: { depreciations: true } } },
+            orderBy: { lotNo: "asc" },
+            select: { id: true, lotNo: true, originalCost: true, depreciationStartDate: true, deletedAt: true, _count: { select: { depreciations: true } } },
           });
-          if (existing && existing._count.depreciations > 0) {
-            throw new Error(`Dòng ${row.rowNumber}: Tài sản ${code} đã chạy khấu hao ${existing._count.depreciations} kỳ trên hệ thống, không ghi đè bằng số dư đầu kỳ được`);
+          const sameLot = lots.find((lot) => !lot.deletedAt
+            && Math.abs((lot.originalCost || 0) - data.originalCost) < 0.5
+            && (lot.depreciationStartDate?.getTime() ?? null) === (data.depreciationStartDate?.getTime() ?? null));
+          if (sameLot && sameLot._count.depreciations > 0) {
+            throw new Error(`Dòng ${row.rowNumber}: Tài sản ${code} (đợt ${sameLot.lotNo}) đã chạy khấu hao ${sameLot._count.depreciations} kỳ trên hệ thống, không ghi đè bằng số dư đầu kỳ được`);
           }
-          const asset = await tx.assetRecord.upsert({
-            where: { code },
-            create: { code, ...data },
-            update: { ...data, note: asText(row.values.note) || "Cập nhật từ số dư đầu kỳ" },
-          });
+          const asset = sameLot
+            ? await tx.assetRecord.update({ where: { id: sameLot.id }, data: { ...data, note: asText(row.values.note) || "Cập nhật từ số dư đầu kỳ" } })
+            : await tx.assetRecord.create({ data: { code, lotNo: lots.length > 0 ? (await nextAssetLot(tx, code)).lotNo : 1, ...data } });
           await setImportTarget(tx, staging, row, "ASSET", asset.id);
         }
 
@@ -1992,10 +2007,21 @@ export async function commitImport(input: CommitInput) {
 
     if (input.importType === "ASSET") {
       for (const row of input.rows) {
-        let code = asText(row.values.asset_code).toUpperCase();
-        code = code
-          ? await assertAssetCodeAvailable(tx, code)
-          : await nextAssetCode(tx, asText(row.values.asset_group), asText(row.values.department_code));
+        const requestedCode = asText(row.values.asset_code).toUpperCase();
+        // Mã đã có trong hệ thống = mua tăng cùng loại: ghi thành đợt kế tiếp của mã đó
+        // (lib/asset-lot.ts) thay vì báo trùng như trước 26/09/2026.
+        const existingLot = requestedCode
+          ? await tx.assetRecord.findFirst({ where: { code: requestedCode }, select: { id: true } })
+          : null;
+        const lot = existingLot
+          ? await nextAssetLot(tx, requestedCode)
+          : {
+              code: requestedCode
+                ? await assertAssetCodeAvailable(tx, requestedCode)
+                : await nextAssetCode(tx, asText(row.values.asset_group), asText(row.values.department_code)),
+              lotNo: 1,
+            };
+        const code = lot.code;
         const originalCost = asNumber(row.values.original_cost);
         const paymentStatus = asText(row.values.payment_status).toUpperCase() || "PAID";
         const payableAmount = paymentStatus === "PAYABLE" ? (asNumber(row.values.payable_amount) || originalCost) : 0;
@@ -2003,6 +2029,7 @@ export async function commitImport(input: CommitInput) {
         const asset = await tx.assetRecord.create({
           data: {
             code,
+            lotNo: lot.lotNo,
             name: asText(row.values.asset_name),
             branchCode: asText(row.values.branch_code),
             departmentCode: asText(row.values.department_code) || null,
@@ -2037,7 +2064,7 @@ export async function commitImport(input: CommitInput) {
           if (!debitAccountId || !payableAccountId) throw new Error("Thiếu tài khoản kế toán 211/242 hoặc 331");
           await tx.debtRecord.create({ data: {
             importBatchId: batch.id,
-            code: `CN-${asset.code}`,
+            code: assetPayableCode(asset),
             debtType: "PAYABLE",
             partnerGroup: "SUPPLIER",
             partnerCode: asText(row.values.supplier_code),
@@ -2053,7 +2080,7 @@ export async function commitImport(input: CommitInput) {
             status: "OPEN",
           } });
           await tx.journalEntry.create({ data: {
-            code: `JE-ASSET-${asset.code}`,
+            code: assetAcquisitionJournalCode(asset),
             entryDate: purchaseDate,
             period: periodFromDate(purchaseDate),
             branchCode: asset.branchCode,
@@ -2901,14 +2928,22 @@ async function rollbackOpeningBalances(tx: RawTxClient, batchId: string) {
     }
 
     if (balanceType === "ASSET" && objectCode) {
-      const asset = await tx.assetRecord.findUnique({ where: { code: objectCode.toUpperCase() } });
-      if (asset) {
+      // Chỉ gỡ đúng các ĐỢT sinh từ những dòng số dư của lô này (openingBalanceId), không đụng
+      // đợt mua tăng hay đợt khai ở lô khác của cùng mã.
+      const openings = await tx.openingBalance.findMany({
+        where: { period, branchCode, balanceType: "ASSET", objectCode },
+        select: { id: true },
+      });
+      const assets = await tx.assetRecord.findMany({
+        where: { code: objectCode.toUpperCase(), openingBalanceId: { in: openings.map((opening) => opening.id) } },
+      });
+      for (const asset of assets) {
         const used = await Promise.all([
           tx.assetDepreciation.count({ where: { assetId: asset.id } }),
           tx.assetMaintenance.count({ where: { assetId: asset.id } }),
           tx.assetDamageReport.count({ where: { assetId: asset.id } }),
         ]);
-        if (used.some((count) => count > 0)) throw new Error(`Tài sản ${asset.code} đã phát sinh nghiệp vụ, không thể rollback`);
+        if (used.some((count) => count > 0)) throw new Error(`Tài sản ${asset.code}${asset.lotNo > 1 ? ` (đợt ${asset.lotNo})` : ""} đã phát sinh nghiệp vụ, không thể rollback`);
         await tx.journalEntry.deleteMany({ where: { sourceType: "ASSET_ACQUISITION", sourceId: asset.id } });
         await tx.assetRecord.delete({ where: { id: asset.id } });
       }

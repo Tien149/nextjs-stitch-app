@@ -534,7 +534,12 @@ model VoucherAllocation {
 
 model AssetRecord {
   id                      String              @id @default(uuid())
-  code                    String              @unique
+  /// Mã tài sản/CCDC. Một mã có thể có NHIỀU ĐỢT (mua tăng cùng loại ở thời điểm khác, hoặc
+  /// số dư đầu kỳ khai hai đợt với thời gian phân bổ khác nhau — khách chốt 26/09/2026): mỗi
+  /// đợt là một dòng riêng để khấu hao/phân bổ chạy theo đúng ngày mua và số kỳ của đợt đó.
+  code                    String
+  /// Số thứ tự đợt của mã (1 = đợt đầu). Cặp (code, lotNo) là duy nhất.
+  lotNo                   Int                 @default(1)
   name                    String
   branchCode              String
   departmentCode          String?
@@ -580,6 +585,8 @@ model AssetRecord {
   deletedAt DateTime?
   deletedBy String?
 
+  @@unique([code, lotNo])
+  @@index([code])
   @@index([branchCode])
   @@index([warehouseCode])
   @@index([departmentCode])
@@ -1769,6 +1776,8 @@ model User {
   roleId         String
   role           Role               @relation(fields: [roleId], references: [id])
   branchAccesses UserBranchAccess[]
+  /// Phạm vi phòng ban (kiểm kê CCDC/tài sản theo bộ phận). Không có dòng nào = mọi phòng ban.
+  departmentAccesses UserDepartmentAccess[]
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 
@@ -1786,6 +1795,18 @@ model UserBranchAccess {
   user       User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, branchCode])
+  @@index([userId])
+}
+
+/// Phạm vi phòng ban của người dùng — dùng cho kiểm kê CCDC/tài sản theo bộ phận
+/// (khách yêu cầu 26/09/2026): user chỉ thấy và chỉ duyệt được tài sản của phòng ban mình.
+model UserDepartmentAccess {
+  id             String @id @default(uuid())
+  userId         String
+  departmentCode String
+  user           User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, departmentCode])
   @@index([userId])
 }
 
@@ -1825,6 +1846,8 @@ model AssetStocktakeLine {
   varianceQuantity Float
   condition        String?
   note             String?
+  /// Ảnh chụp lúc kiểm (data URL, cùng cách lưu với AssetRecord.imageUrl).
+  imageUrl         String?
 
   session AssetStocktakeSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   asset   AssetRecord           @relation(fields: [assetId], references: [id], onDelete: Restrict)

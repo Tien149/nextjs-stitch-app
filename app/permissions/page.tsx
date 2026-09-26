@@ -25,7 +25,11 @@ type PermissionUser = {
   roleId: string | null;
   role: { id: string; name: string } | null;
   branchAccesses: { branchCode: string }[];
+  /** Phạm vi phòng ban (kiểm kê theo bộ phận). Rỗng = mọi phòng ban. */
+  departmentAccesses?: { departmentCode: string }[];
 };
+
+type DepartmentOption = { code: string; name: string; branch?: string | null };
 
 export default function PermissionsPage() {
   const router = useRouter();
@@ -36,6 +40,7 @@ export default function PermissionsPage() {
   const [rolesList, setRolesList] = useState<RoleItem[]>([]);
   const [usersList, setUsersList] = useState<PermissionUser[]>([]);
   const [loadingData, setLoadingData] = useState(true);
+  const [departments, setDepartments] = useState<DepartmentOption[]>([]);
 
   // Modal State for Role Creation / Editing
   const [isRoleModalOpen, setIsRoleModalOpen] = useState(false);
@@ -58,6 +63,7 @@ export default function PermissionsPage() {
     position: "",
     roleId: "",
     branchCode: "ALL",
+    departmentCodes: [] as string[],
   });
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -83,11 +89,20 @@ export default function PermissionsPage() {
   const loadData = async () => {
     try {
       setLoadingData(true);
-      const res = await fetch("/api/permissions");
+      const [res, departmentRes] = await Promise.all([
+        fetch("/api/permissions"),
+        fetch("/api/master-data?type=DEPARTMENT&status=ACTIVE"),
+      ]);
       if (res.ok) {
         const payload = await res.json();
         setUsersList(payload.users || []);
         setRolesList(payload.roles || []);
+      }
+      if (departmentRes.ok) {
+        const rows = await departmentRes.json();
+        if (Array.isArray(rows)) {
+          setDepartments(rows.map((row) => ({ code: String(row.code), name: String(row.name || row.code), branch: row.branch ?? null })));
+        }
       }
     } catch (e) {
       console.error("Error loading permissions data:", e);
@@ -232,6 +247,7 @@ export default function PermissionsPage() {
       position: "",
       roleId: rolesList[0]?.id || "",
       branchCode: "ALL",
+      departmentCodes: [],
     });
     setConfirmPassword("");
     setShowPassword(false);
@@ -251,6 +267,7 @@ export default function PermissionsPage() {
       position: dbUser.position || "",
       roleId: dbUser.roleId || dbUser.role?.id || "",
       branchCode: branches.includes("ALL") ? "ALL" : branches[0] || "ALL",
+      departmentCodes: (dbUser.departmentAccesses || []).map((access) => access.departmentCode),
     });
     setConfirmPassword("");
     setShowPassword(false);
@@ -308,6 +325,7 @@ export default function PermissionsPage() {
           position: userForm.position,
           roleId: userForm.roleId,
           branchCodes,
+          departmentCodes: userForm.departmentCodes,
         }),
       });
 
@@ -687,6 +705,11 @@ export default function PermissionsPage() {
                               </option>
                             ))}
                           </select>
+                          {(dbUser.departmentAccesses || []).length > 0 && (
+                            <p className="mt-1 text-[11px] text-slate-500" title="Phạm vi phòng ban khi kiểm kê CCDC/tài sản">
+                              Bộ phận: {(dbUser.departmentAccesses || []).map((access) => access.departmentCode).join(", ")}
+                            </p>
+                          )}
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center justify-end gap-1.5">
@@ -1193,6 +1216,39 @@ export default function PermissionsPage() {
                       </option>
                     ))}
                   </select>
+                </div>
+
+                <div className="space-y-1 sm:col-span-2">
+                  <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                    Phạm vi phòng ban (kiểm kê CCDC/tài sản)
+                  </label>
+                  <p className="text-[11px] text-slate-500">
+                    Không tick = thấy mọi phòng ban. Tick phòng ban nào thì ở màn Kiểm kê CCDC &amp; Tài sản chỉ thấy và duyệt được tài sản của phòng ban đó.
+                  </p>
+                  <div className="flex flex-wrap gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2 max-h-36 overflow-y-auto">
+                    {departments.length === 0 && <span className="text-xs text-slate-400">Chưa có phòng ban trong danh mục.</span>}
+                    {departments
+                      .filter((department) => userForm.branchCode === "ALL" || !department.branch || department.branch === "ALL" || department.branch === userForm.branchCode)
+                      .map((department) => {
+                        const checked = userForm.departmentCodes.includes(department.code);
+                        return (
+                          <label key={department.code} className={`inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-semibold ${checked ? "border-blue-300 bg-blue-50 text-blue-800" : "border-slate-200 bg-white text-slate-600"}`}>
+                            <input
+                              type="checkbox"
+                              className="accent-blue-600"
+                              checked={checked}
+                              onChange={(e) => setUserForm((current) => ({
+                                ...current,
+                                departmentCodes: e.target.checked
+                                  ? [...current.departmentCodes, department.code]
+                                  : current.departmentCodes.filter((code) => code !== department.code),
+                              }))}
+                            />
+                            {department.name} <span className="text-slate-400">({department.code}{department.branch && department.branch !== "ALL" ? ` · ${department.branch}` : ""})</span>
+                          </label>
+                        );
+                      })}
+                  </div>
                 </div>
               </div>
 

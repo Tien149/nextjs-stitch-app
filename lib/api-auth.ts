@@ -44,6 +44,7 @@ function parseSession(rawValue: string): DemoSession | null {
       branch: parsed.branch,
       email: parsed.email,
       allowedBranches: parsed.allowedBranches || [],
+      allowedDepartments: Array.isArray(parsed.allowedDepartments) ? parsed.allowedDepartments : [],
       menuAccess: parsed.menuAccess || [],
       actions: parsed.actions || [],
       loginAt: parsed.loginAt,

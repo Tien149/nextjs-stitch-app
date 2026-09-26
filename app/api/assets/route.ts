@@ -4,7 +4,8 @@ import { prisma, prismaRaw } from "@/lib/prisma";
 import { requestedBranch, assertBranchAccess, ensureDefaultAccounts } from "@/lib/accounting";
 import { closedPeriodMessage, findClosedPeriod, isPeriodLocked, periodFromDate } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
-import { assertAssetCodeAvailable, AssetCodeError, nextAssetCode, normalizeAssetCode } from "@/lib/asset-code-generator";
+import { assertAssetCodeAvailable, AssetCodeError, nextAssetCode, nextAssetLot, normalizeAssetCode } from "@/lib/asset-code-generator";
+import { assetAcquisitionJournalCode, assetPayableCode } from "@/lib/asset-lot";
 import {
   softDeleteRecord,
   SoftDeleteError,
@@ -90,7 +91,7 @@ export async function GET(request: Request) {
       orderBy: { createdAt: "desc" },
     });
     const assetPeriods = Array.from(new Set(assets.map((asset) => periodFromDate(asset.purchaseDate))));
-    const [journalEntries, openingBalances, assetDebts, lockedPeriods] = await Promise.all([
+    const [journalEntries, openingBalances, assetDebts, lockedPeriods, lotCounts] = await Promise.all([
       prismaRaw.journalEntry.findMany({
         where: { sourceType: "ASSET_ACQUISITION", sourceId: { in: assets.map((asset) => asset.id) }, deletedAt: null },
         select: { sourceId: true },
@@ -107,7 +108,14 @@ export async function GET(request: Request) {
         where: { period: { in: assetPeriods }, status: "CLOSED" },
         select: { period: true, branchCode: true },
       }),
+      // Số đợt của mỗi mã (một mã nhiều đợt — lib/asset-lot.ts), đếm cả đợt ngoài bộ lọc hiện tại.
+      prisma.assetRecord.groupBy({
+        by: ["code"],
+        where: { code: { in: Array.from(new Set(assets.map((asset) => asset.code))) } },
+        _count: { _all: true },
+      }),
     ]);
+    const lotCountByCode = new Map(lotCounts.map((row) => [row.code, row._count._all]));
     const journaledAssetIds = new Set(journalEntries.map((entry) => entry.sourceId));
     const openingBalanceAssetCodes = new Set(openingBalances.map((entry) => entry.objectCode));
     const assetDebtById = new Map(assetDebts.map((debt) => [debt.sourceId, debt]));
@@ -138,6 +146,8 @@ export async function GET(request: Request) {
       const isLockedPeriod = lockedPeriodKeys.has(`${asset.branchCode}:${assetPeriod}`) || lockedPeriodKeys.has(`ALL:${assetPeriod}`);
       const codeEditLockReason = isDisposedAsset(asset)
         ? "Tài sản đã thanh lý."
+        : (lotCountByCode.get(asset.code) || 1) > 1
+          ? "Mã có nhiều đợt mua; không đổi mã của riêng một đợt."
         : runPeriods > 0
           ? `Tài sản đã trích khấu hao ${runPeriods} kỳ.`
           : _count.maintenances > 0
@@ -168,6 +178,7 @@ export async function GET(request: Request) {
         codeEditLockReason,
         payableDebtCode: payableDebt?.code || null,
         payableDebtStatus: payableDebt?.status || null,
+        lotCount: lotCountByCode.get(asset.code) || 1,
       };
     });
 
@@ -188,12 +199,30 @@ export async function POST(request: Request) {
     if (!auth.ok) return auth.response;
 
     const body = await request.json();
-    const name = cleanText(body.name);
-    const branchCode = cleanText(body.branchCode);
-    const assetGroup = cleanText(body.assetGroup);
+    /**
+     * Mua tăng vào mã đã có (lib/asset-lot.ts): đợt mới dùng lại mã, tên, nhóm, phòng ban, cửa
+     * hàng, kho của đợt trước; chỉ số lượng, ngày mua, nguyên giá, số kỳ, NCC, thanh toán là của
+     * đợt này. Đọc từ đợt mới nhất TRONG transaction (nextAssetLot) chứ không tin dữ liệu form.
+     */
+    const reuseCode = body.reuseCode === true;
+    const reuseCodeValue = reuseCode ? normalizeAssetCode(body.code) : "";
+    if (reuseCode && !reuseCodeValue) {
+      return NextResponse.json({ error: "Mua tăng vào mã đã có thì phải chọn mã tài sản" }, { status: 400 });
+    }
+    const reuseTemplate = reuseCode
+      ? await prisma.assetRecord.findFirst({ where: { code: reuseCodeValue }, orderBy: { lotNo: "desc" } })
+      : null;
+    if (reuseCode && !reuseTemplate) {
+      return NextResponse.json({ error: `Mã tài sản ${reuseCodeValue} không tồn tại; tạo hồ sơ mới thay vì mua tăng` }, { status: 400 });
+    }
+    const name = reuseTemplate ? reuseTemplate.name : cleanText(body.name);
+    const branchCode = reuseTemplate ? reuseTemplate.branchCode : cleanText(body.branchCode);
+    const assetGroup = reuseTemplate ? reuseTemplate.assetGroup : cleanText(body.assetGroup);
     const originalCost = toAmount(body.originalCost);
-    const warehouseCode = cleanText(body.warehouseCode) || cleanText(body.location);
-    const departmentCode = cleanText(body.departmentCode);
+    const warehouseCode = reuseTemplate
+      ? (reuseTemplate.warehouseCode || reuseTemplate.location || "")
+      : (cleanText(body.warehouseCode) || cleanText(body.location));
+    const departmentCode = reuseTemplate ? (reuseTemplate.departmentCode || "") : cleanText(body.departmentCode);
     const quantity = toAmount(body.quantity) || 1;
     const usefulLifeMonths = body.usefulLifeMonths !== undefined && body.usefulLifeMonths !== "" ? Math.floor(toAmount(body.usefulLifeMonths)) : null;
     const purchaseDate = body.purchaseDate ? new Date(String(body.purchaseDate)) : new Date();
@@ -202,7 +231,7 @@ export async function POST(request: Request) {
     const paymentDueDate = body.paymentDueDate ? new Date(String(body.paymentDueDate)) : null;
     const supplierCode = cleanText(body.supplierCode);
     const supplierName = cleanText(body.supplierName);
-    const manualCode = normalizeAssetCode(body.code);
+    const manualCode = reuseCode ? "" : normalizeAssetCode(body.code);
 
     // Theo dõi quản trị không cần nguyên giá — 0 hợp lệ, chỉ cấm số âm; riêng tài sản
     // ghi công nợ vẫn phải có nguyên giá thật vì nó sinh bút toán và sổ phải trả.
@@ -227,7 +256,7 @@ export async function POST(request: Request) {
     if (Number.isNaN(purchaseDate.getTime()) || (paymentDueDate && Number.isNaN(paymentDueDate.getTime()))) {
       return NextResponse.json({ error: "Ngày mua hoặc hạn thanh toán không hợp lệ" }, { status: 400 });
     }
-    if (!manualCode && !departmentCode) {
+    if (!manualCode && !reuseCode && !departmentCode) {
       return NextResponse.json({ error: "Phòng ban là bắt buộc khi hệ thống tự sinh mã tài sản" }, { status: 400 });
     }
     if (!["PAID", "PAYABLE"].includes(paymentStatus)) {
@@ -307,11 +336,13 @@ export async function POST(request: Request) {
     const debitAccountCode = ["CCDC", "TOOL"].includes(cleanText(assetGroupItem.group).toUpperCase()) ? "242" : "211";
 
     const asset = await prismaRaw.$transaction(async (tx) => {
-      const code = manualCode
-        ? await assertAssetCodeAvailable(tx, manualCode)
-        : await nextAssetCode(tx, assetGroup, departmentCode);
+      const lot = reuseCode
+        ? await nextAssetLot(tx, reuseCodeValue)
+        : { code: manualCode ? await assertAssetCodeAvailable(tx, manualCode) : await nextAssetCode(tx, assetGroup, departmentCode), lotNo: 1 };
+      const code = lot.code;
       const created = await tx.assetRecord.create({ data: {
         code,
+        lotNo: lot.lotNo,
         name,
         branchCode,
         departmentCode: departmentCode || null,
@@ -337,7 +368,7 @@ export async function POST(request: Request) {
 
       if (paymentStatus === "PAYABLE") {
         await tx.debtRecord.create({ data: {
-          code: `CN-${created.code}`,
+          code: assetPayableCode(created),
           debtType: "PAYABLE",
           partnerGroup: "SUPPLIER",
           partnerCode: supplierCode,
@@ -347,7 +378,7 @@ export async function POST(request: Request) {
           dueDate: paymentDueDate,
           originalAmount: payableAmount,
           outstandingAmount: payableAmount,
-          description: `Công nợ mua tài sản/CCDC ${created.code} - ${created.name}`,
+          description: `Công nợ mua tài sản/CCDC ${created.code}${created.lotNo > 1 ? ` (đợt ${created.lotNo})` : ""} - ${created.name}`,
           sourceType: "ASSET",
           sourceId: created.id,
           status: "OPEN",
@@ -356,7 +387,7 @@ export async function POST(request: Request) {
         const payableAccountId = accountByCode.get("331");
         if (!debitAccountId || !payableAccountId) throw new Error("Thiếu tài khoản kế toán 211/242 hoặc 331");
         await tx.journalEntry.create({ data: {
-          code: `JE-ASSET-${created.code}`,
+          code: assetAcquisitionJournalCode(created),
           entryDate: purchaseDate,
           period: periodFromDate(purchaseDate),
           branchCode,
@@ -468,6 +499,11 @@ export async function PATCH(request: Request) {
     }
     const codeChanged = Boolean(nextCode && nextCode !== current.code);
     if (codeChanged) {
+      // Mã có nhiều đợt: đổi mã của riêng một đợt là tách nó khỏi các đợt còn lại — không cho.
+      const lotCount = await prismaRaw.assetRecord.count({ where: { code: current.code } });
+      if (lotCount > 1) {
+        return NextResponse.json({ error: `Không thể đổi mã tài sản ${current.code} vì mã này có ${lotCount} đợt mua.` }, { status: 409 });
+      }
       const [maintenanceCount, damageCount, journalCount, openingBalanceCount, debtCount, lockedPeriod] = await Promise.all([
         prismaRaw.assetMaintenance.count({ where: { assetId: id } }),
         prismaRaw.assetDamageReport.count({ where: { assetId: id } }),

@@ -5,6 +5,24 @@ import { softDeleteRecord } from "@/lib/soft-delete";
 
 const EDIT_PAST_ROLE_NAMES = new Set(["Admin", "Kế toán tổng hợp"]);
 
+/** Mã phòng ban gửi lên: bỏ trống/không phải mảng = không giới hạn phòng ban. */
+function normalizeDepartmentCodes(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value
+    .filter((code): code is string => typeof code === "string")
+    .map((code) => code.trim().toUpperCase())
+    .filter(Boolean))];
+}
+
+async function replaceDepartmentAccess(userId: string, departmentCodes: string[]) {
+  await prisma.$transaction([
+    prisma.userDepartmentAccess.deleteMany({ where: { userId } }),
+    ...(departmentCodes.length > 0
+      ? [prisma.userDepartmentAccess.createMany({ data: departmentCodes.map((departmentCode) => ({ userId, departmentCode })) })]
+      : []),
+  ]);
+}
+
 function sanitizeRoleActions(roleName: string, actions: unknown[]) {
   const normalized = [...new Set(actions.filter((action): action is string => typeof action === "string"))];
   return EDIT_PAST_ROLE_NAMES.has(roleName.trim())
@@ -22,6 +40,7 @@ export async function GET(request: Request) {
         include: {
           role: true,
           branchAccesses: true,
+          departmentAccesses: true,
         },
         orderBy: { email: "asc" },
       }),
@@ -95,6 +114,8 @@ export async function POST(request: Request) {
       }
 
       const branches = Array.isArray(branchCodes) && branchCodes.length > 0 ? branchCodes : ["ALL"];
+      // Phạm vi phòng ban (kiểm kê theo bộ phận): trống = mọi phòng ban.
+      const departments = normalizeDepartmentCodes(body.departmentCodes);
 
       const newUser = await prisma.user.create({
         data: {
@@ -107,10 +128,14 @@ export async function POST(request: Request) {
           branchAccesses: {
             create: branches.map((b: string) => ({ branchCode: b })),
           },
+          departmentAccesses: {
+            create: departments.map((departmentCode) => ({ departmentCode })),
+          },
         },
         include: {
           role: true,
           branchAccesses: true,
+          departmentAccesses: true,
         },
       });
 
@@ -283,6 +308,9 @@ export async function PATCH(request: Request) {
           }),
         ]);
       }
+      if (Array.isArray(body.departmentCodes)) {
+        await replaceDepartmentAccess(userId, normalizeDepartmentCodes(body.departmentCodes));
+      }
 
       return NextResponse.json({ ok: true });
     }
@@ -301,6 +329,9 @@ export async function PATCH(request: Request) {
           data: branchCodes.map((branchCode) => ({ userId, branchCode })),
         }),
       ]);
+    }
+    if (Array.isArray(body.departmentCodes)) {
+      await replaceDepartmentAccess(userId, normalizeDepartmentCodes(body.departmentCodes));
     }
 
     return NextResponse.json({ ok: true });

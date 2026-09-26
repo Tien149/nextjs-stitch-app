@@ -8,8 +8,18 @@ import { scopePayloadByTab } from "@/lib/tab-scope";
 import { normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { writeAuditLog } from "@/lib/audit-log";
 import { nextSeqFromCodes, nextYearlyCode, voucherCodePrefix } from "@/lib/voucher-code-generator";
+import { allowedDepartmentsOf, assertDepartmentAccess } from "@/lib/department-scope";
+import { AssetCodeError, nextAssetCode } from "@/lib/asset-code-generator";
 
+/** Module ghi audit vẫn là Tài sản. */
 const menuHref = "/assets";
+/**
+ * Kiểm quyền theo màn CON "/assets/operations": ai có menu "Tài sản & Khấu hao" (/assets) mở được
+ * (luật màn cha ở lib/auth-demo.ts canOpenPath), và ai chỉ được gán mục "Kiểm kê CCDC & Tài sản"
+ * (/assets/operations?tab=stocktake) cũng gọi được API này. Trước đây kiểm bằng "/assets" nên vai
+ * trò kiểm kê bộ phận bị từ chối ngay ở API dù đã tick menu.
+ */
+const operationsHref = "/assets/operations";
 
 /**
  * Mã phiếu chi theo ĐÚNG định dạng chuẩn của hệ thống (PCHI/UNC-YYMM-CH-#####) và cấp số
@@ -69,19 +79,51 @@ function maintenanceDates(startDate: Date, rule: string, interval: number, endDa
 
 export async function GET(request: Request) {
   try {
-    const auth = requireMenuAccess(request, menuHref);
+    const auth = requireMenuAccess(request, operationsHref);
     if (!auth.ok) return auth.response;
     const { searchParams } = new URL(request.url);
+    // Ảnh của một dòng kiểm kê (xem GET danh sách bên dưới: danh sách không kèm ảnh cho nhẹ).
+    const stocktakeLineImageId = cleanText(searchParams.get("stocktakeLineImage"));
+    if (stocktakeLineImageId) {
+      const line = await prisma.assetStocktakeLine.findUnique({
+        where: { id: stocktakeLineImageId },
+        select: { imageUrl: true, asset: { select: { branchCode: true, departmentCode: true, code: true } } },
+      });
+      if (!line) return NextResponse.json({ error: "Không tìm thấy dòng kiểm kê" }, { status: 404 });
+      assertBranchAccess(auth.session, line.asset.branchCode);
+      assertDepartmentAccess(auth.session, line.asset.departmentCode, `Tài sản ${line.asset.code}`);
+      return NextResponse.json({ imageUrl: line.imageUrl });
+    }
     const branchCode = requestedBranch(auth.session, cleanText(searchParams.get("branchCode")) || "ALL");
-    const assetWhere = branchCode === "ALL" ? {} : { branchCode };
-    const relatedWhere = branchCode === "ALL" ? {} : { asset: { branchCode } };
-    const [assets, depreciations, maintenances, damageReports, assetStocktakes] = await Promise.all([
+    // Phạm vi phòng ban (kiểm kê theo bộ phận): user bị giới hạn chỉ nhận tài sản của phòng ban mình,
+    // ở MỌI tab — không chỉ ẩn trên giao diện.
+    const allowedDepartments = allowedDepartmentsOf(auth.session);
+    const assetWhere = {
+      ...(branchCode === "ALL" ? {} : { branchCode }),
+      ...(allowedDepartments ? { departmentCode: { in: allowedDepartments } } : {}),
+    };
+    const relatedWhere = Object.keys(assetWhere).length > 0 ? { asset: assetWhere } : {};
+    const [assets, depreciations, maintenances, damageReports, stocktakeSessions] = await Promise.all([
       prisma.assetRecord.findMany({ where: assetWhere, orderBy: { createdAt: "desc" } }),
       prisma.assetDepreciation.findMany({ where: relatedWhere, include: { asset: true }, orderBy: [{ period: "desc" }, { createdAt: "desc" }], take: 200 }),
       prisma.assetMaintenance.findMany({ where: relatedWhere, include: { asset: true }, orderBy: { scheduledDate: "desc" }, take: 200 }),
       prisma.assetDamageReport.findMany({ where: relatedWhere, include: { asset: true }, orderBy: { reportedDate: "desc" }, take: 200 }),
-      prisma.assetStocktakeSession.findMany({ where: branchCode === "ALL" ? {} : { branchCode }, include: { lines: { include: { asset: true } } }, orderBy: { createdAt: "desc" }, take: 20 }),
+      prisma.assetStocktakeSession.findMany({
+        where: {
+          ...(branchCode === "ALL" ? {} : { branchCode }),
+          ...(allowedDepartments ? { lines: { some: { asset: { departmentCode: { in: allowedDepartments } } } } } : {}),
+        },
+        include: { lines: { where: allowedDepartments ? { asset: { departmentCode: { in: allowedDepartments } } } : {}, include: { asset: true } } },
+        orderBy: { createdAt: "desc" },
+        take: 20,
+      }),
     ]);
+    // Ảnh kiểm kê là data URL nặng; danh sách phiên chỉ cần biết dòng CÓ ảnh, ảnh thật tải riêng
+    // qua ?stocktakeLineImage=<id> khi người dùng bấm xem.
+    const assetStocktakes = stocktakeSessions.map((session) => ({
+      ...session,
+      lines: session.lines.map(({ imageUrl, ...line }) => ({ ...line, hasImage: Boolean(imageUrl) })),
+    }));
     return NextResponse.json(scopePayloadByTab(auth.session, "/assets/operations", { assets, depreciations, maintenances, damageReports, assetStocktakes }));
   } catch (error) {
     const result = apiError(error);
@@ -94,13 +136,65 @@ export async function POST(request: Request) {
     const body = await request.json();
     const action = cleanText(body.action);
     const requiredAction = ["RUN_DEPRECIATION", "REOPEN_DEPRECIATION", "REOPEN_ASSET_STOCKTAKE", "REOPEN_MAINTENANCE", "REOPEN_DAMAGE", "REOPEN_DISPOSAL", "COMPLETE_MAINTENANCE", "RESOLVE_DAMAGE", "CONFIGURE_DEPRECIATION"].includes(action) ? "edit" : "create";
-    const auth = requireMenuAction(request, menuHref, requiredAction);
+    const auth = requireMenuAction(request, operationsHref, requiredAction);
     if (!auth.ok) return auth.response;
+
+    /**
+     * Tạo hồ sơ cho tài sản/CCDC PHÁT HIỆN LÚC KIỂM KÊ mà chưa có mã (khách yêu cầu 26/09/2026).
+     * Chỉ cần tên, nhóm, phòng ban, cửa hàng và số đếm; nguyên giá 0 (theo dõi quản trị, kế toán
+     * bổ sung giá sau ở màn Tài sản). Không sinh công nợ hay bút toán vì không có tiền.
+     * Dòng kiểm kê của tài sản này sẽ có sổ sách 0, số đếm = số thực tế, để phiên ghi rõ "phát hiện thừa".
+     */
+    if (action === "CREATE_STOCKTAKE_ASSET") {
+      const name = cleanText(body.name);
+      const branchCode = cleanText(body.branchCode);
+      const departmentCode = cleanText(body.departmentCode);
+      const assetGroup = cleanText(body.assetGroup);
+      const warehouseCode = cleanText(body.warehouseCode);
+      const quantity = toNumber(body.quantity);
+      if (!name || !branchCode || !departmentCode || !assetGroup) businessError("Tài sản phát hiện khi kiểm kê cần Tên, Cửa hàng, Phòng ban và Nhóm tài sản");
+      if (!(quantity > 0)) businessError("Số đếm của tài sản mới phải lớn hơn 0");
+      assertBranchAccess(auth.session, branchCode);
+      assertDepartmentAccess(auth.session, departmentCode, "Tài sản mới");
+      const [group, department] = await Promise.all([
+        prisma.masterDataItem.findFirst({ where: { type: "ASSET_GROUP", status: "ACTIVE", code: assetGroup } }),
+        prisma.masterDataItem.findFirst({ where: { type: "DEPARTMENT", status: "ACTIVE", code: departmentCode, OR: [{ branch: branchCode }, { branch: "ALL" }, { branch: null }] } }),
+      ]);
+      if (!group) businessError(`Nhóm tài sản ${assetGroup} không tồn tại hoặc đã ngưng dùng`);
+      if (!department) businessError(`Phòng ban ${departmentCode} không hợp lệ hoặc không thuộc cửa hàng ${branchCode}`);
+      if (warehouseCode) {
+        const warehouse = await prisma.masterDataItem.findFirst({ where: { type: "WAREHOUSE", status: "ACTIVE", code: warehouseCode, OR: [{ branch: branchCode }, { branch: "ALL" }, { branch: null }] } });
+        if (!warehouse) businessError(`Vị trí/Kho ${warehouseCode} không hợp lệ hoặc không thuộc cửa hàng ${branchCode}`);
+      }
+      const purchaseDate = toDate(body.stocktakeDate || new Date().toISOString().slice(0, 10));
+      await assertPeriodOpen({ date: purchaseDate, branchCode }, "ghi nhận tài sản phát hiện khi kiểm kê");
+      const created = await prisma.$transaction(async (tx) => tx.assetRecord.create({
+        data: {
+          code: await nextAssetCode(tx, assetGroup, departmentCode),
+          name,
+          branchCode,
+          departmentCode,
+          assetGroup,
+          imageUrl: cleanText(body.imageUrl) || null,
+          location: warehouseCode || null,
+          warehouseCode: warehouseCode || null,
+          quantity,
+          purchaseDate,
+          originalCost: 0,
+          currentValue: 0,
+          paymentStatus: "PAID",
+          status: "IN_USE",
+          note: cleanText(body.note) || `Phát hiện khi kiểm kê ngày ${purchaseDate.toLocaleDateString("vi-VN", { timeZone: "UTC" })} — chưa có nguyên giá, kế toán bổ sung sau`,
+        },
+      }));
+      await writeAuditLog({ session: auth.session, module: menuHref, action: "CREATE_STOCKTAKE_ASSET", entityType: "AssetRecord", entityId: created.id, entityCode: created.code, branchCode, metadata: { quantity, departmentCode, assetGroup } });
+      return NextResponse.json(created, { status: 201 });
+    }
 
     if (action === "APPROVE_ASSET_STOCKTAKE") {
       const branchCode = cleanText(body.branchCode);
       const stocktakeDate = toDate(body.stocktakeDate);
-      const rawLines = Array.isArray(body.lines) ? body.lines as Array<{ assetId?: unknown; systemQuantity?: unknown; actualQuantity?: unknown; condition?: unknown; note?: unknown }> : [];
+      const rawLines = Array.isArray(body.lines) ? body.lines as Array<{ assetId?: unknown; systemQuantity?: unknown; actualQuantity?: unknown; condition?: unknown; note?: unknown; imageUrl?: unknown; discovered?: unknown }> : [];
       const lines = rawLines
         .map((line) => ({
           assetId: cleanText(line.assetId),
@@ -108,10 +202,16 @@ export async function POST(request: Request) {
           actualQuantity: toNumber(line.actualQuantity),
           condition: cleanText(line.condition),
           note: cleanText(line.note),
+          imageUrl: cleanText(line.imageUrl),
+          // Tài sản vừa tạo mã ngay trong phiên (CREATE_STOCKTAKE_ASSET): sổ sách trước kiểm là 0,
+          // hồ sơ đã mang số đếm nên không so khoá lạc quan với quantity hiện tại.
+          discovered: line.discovered === true,
         }))
         .filter((line) => line.assetId && Number.isFinite(line.actualQuantity) && line.actualQuantity >= 0);
       if (!branchCode || lines.length === 0) businessError("Kiểm kê tài sản cần cửa hàng và ít nhất một dòng");
       assertBranchAccess(auth.session, branchCode);
+      const oversizedImage = lines.find((line) => line.imageUrl.length > 2_000_000);
+      if (oversizedImage) businessError("Ảnh kiểm kê quá lớn (trên 2 MB sau nén). Chụp lại ở độ phân giải thấp hơn.");
 
       const result = await prisma.$transaction(async (tx) => {
         const head = `KKTS-${stocktakeDate.getFullYear()}-`;
@@ -132,20 +232,25 @@ export async function POST(request: Request) {
           const asset = await tx.assetRecord.findUnique({ where: { id: line.assetId } });
           if (!asset) businessError("Không tìm thấy tài sản trong danh sách kiểm kê");
           if (asset.branchCode !== branchCode) businessError(`Tài sản ${asset.code} thuộc cửa hàng ${asset.branchCode}, không thuộc phiên kiểm kê này`);
+          // Kiểm kê theo bộ phận: user bị giới hạn phòng ban không duyệt được dòng của phòng ban khác,
+          // kể cả khi tự ghép assetId vào request.
+          assertDepartmentAccess(auth.session, asset.departmentCode, `Tài sản ${asset.code}`);
           // Khoá lạc quan — cùng luật với kiểm kê kho: số sổ sách đổi từ lúc tải danh sách thì
           // bắt tải lại, không âm thầm đè số đếm cũ lên biến động mới.
-          if (line.systemQuantity !== null && Math.abs(line.systemQuantity - asset.quantity) > 0.000001) {
+          if (!line.discovered && line.systemQuantity !== null && Math.abs(line.systemQuantity - asset.quantity) > 0.000001) {
             businessError(`Số sổ sách của ${asset.code} đã thay đổi từ lúc tải danh sách (${line.systemQuantity} → ${asset.quantity}). Tải lại danh sách rồi kiểm lại dòng này.`);
           }
+          const systemQuantity = line.discovered ? 0 : asset.quantity;
           await tx.assetStocktakeLine.create({
             data: {
               sessionId: session.id,
               assetId: asset.id,
-              systemQuantity: asset.quantity,
+              systemQuantity,
               actualQuantity: line.actualQuantity,
-              varianceQuantity: line.actualQuantity - asset.quantity,
+              varianceQuantity: line.actualQuantity - systemQuantity,
               condition: line.condition || null,
               note: line.note || null,
+              imageUrl: line.imageUrl || null,
             },
           });
           // Duyệt kiểm kê = số đếm là số chốt.
@@ -755,6 +860,8 @@ export async function POST(request: Request) {
 
     businessError("Thao tác tài sản không hợp lệ");
   } catch (error) {
+    // Lỗi cấp mã (thiếu tiền tố nhóm/phòng ban, hết dải mã) là lỗi nghiệp vụ, không phải lỗi hệ thống.
+    if (error instanceof AssetCodeError) return NextResponse.json({ error: error.message }, { status: 409 });
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });
   }

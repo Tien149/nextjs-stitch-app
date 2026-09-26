@@ -21,6 +21,7 @@ export async function POST(request: Request) {
       name: string;
       role?: { name: string; menuAccess: string[]; actions: string[] } | null;
       branchAccesses?: { branchCode: string }[] | null;
+      departmentAccesses?: { departmentCode: string }[] | null;
     };
 
     let dbUser: DbUser | null = null;
@@ -51,6 +52,11 @@ export async function POST(request: Request) {
               branchCode: true,
             },
           },
+          departmentAccesses: {
+            select: {
+              departmentCode: true,
+            },
+          },
         },
       });
     } catch (dbErr) {
@@ -72,6 +78,8 @@ export async function POST(request: Request) {
       }
 
       const allowedBranches = dbUser.branchAccesses?.map((b) => b.branchCode) || [];
+      // Phạm vi phòng ban (kiểm kê theo bộ phận). Không gán = mọi phòng ban, giữ nguyên hành vi cũ.
+      const allowedDepartments = dbUser.departmentAccesses?.map((d) => d.departmentCode) || [];
 
       const session = {
         id: dbUser.id,
@@ -82,6 +90,7 @@ export async function POST(request: Request) {
         branch: branchAccessLabel(allowedBranches),
         email: dbUser.email,
         allowedBranches,
+        allowedDepartments,
         loginAt: new Date().toISOString(),
       };
 

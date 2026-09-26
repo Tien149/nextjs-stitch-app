@@ -22,6 +22,8 @@ export type DemoUser = {
 export type DemoSession = Omit<DemoUser, "password"> & {
   loginAt: string;
   allowedBranches: string[];
+  /** Phạm vi phòng ban (kiểm kê CCDC/tài sản theo bộ phận). Rỗng/thiếu = mọi phòng ban. */
+  allowedDepartments?: string[];
   menuAccess?: string[];
   /** Quyền thao tác của vai trò, lấy từ bảng Role khi đăng nhập. */
   actions?: string[];
@@ -174,6 +176,14 @@ export const appMenuItems: AppMenuItem[] = [
     name: "Tài sản & Khấu hao",
     icon: "precision_manufacturing",
     href: "/assets",
+    roles: ["Admin", "Kế toán tổng hợp", "Quản lý"],
+  },
+  // Mục riêng để gán cho nhân viên bộ phận chỉ đi kiểm kê CCDC/tài sản (khách yêu cầu
+  // 26/09/2026): tick được trong ma trận quyền mà không phải mở cả màn Tài sản.
+  {
+    name: "Kiểm kê CCDC & Tài sản",
+    icon: "fact_check",
+    href: "/assets/operations?tab=stocktake",
     roles: ["Admin", "Kế toán tổng hợp", "Quản lý"],
   },
   {
@@ -426,21 +436,41 @@ export function menuBasePath(href: string) {
 }
 
 /**
+ * Màn con nằm dưới màn cha: "/assets/operations" (Vận hành tài sản) là màn con của "/assets".
+ * Ai mở được màn cha thì mở được màn con; ai chỉ được gán màn con (ví dụ mục "Kiểm kê CCDC &
+ * Tài sản" = "/assets/operations?tab=stocktake") thì mở được màn con mà KHÔNG mở được màn cha.
+ * Trước đây màn con và API của nó kiểm quyền bằng "/assets" nên vai trò chỉ gán tab kiểm kê
+ * bị từ chối ngay ở API.
+ */
+export function menuParentPath(href: string): string | null {
+  const base = menuBasePath(href);
+  const cut = base.lastIndexOf("/");
+  return cut > 0 ? base.slice(0, cut) : null;
+}
+
+/** Các đường dẫn menu mà một mục menuAccess/appMenuItems "phủ" được: chính nó và các màn con. */
+function pathCoveredBy(entryHref: string, path: string) {
+  const base = menuBasePath(path);
+  const entryBase = menuBasePath(entryHref);
+  return entryBase === base || entryBase === menuParentPath(path);
+}
+
+/**
  * Một trang được mở nếu người dùng có BẤT KỲ mục menu nào trỏ tới nó — kể cả mục
- * chỉ trỏ tới một tab (ví dụ "/reports?tab=daily-cash" mở được trang "/reports").
+ * chỉ trỏ tới một tab (ví dụ "/reports?tab=daily-cash" mở được trang "/reports"),
+ * hoặc trỏ tới màn cha của nó (xem menuParentPath).
  * Thanh menu bên trái vẫn chỉ hiện đúng những mục được gán.
  */
 export function canOpenPath(session: DemoSession | string | null | undefined, path: string) {
-  const base = menuBasePath(path);
   if (typeof session === "object" && session) {
     if (session.role === "Admin") return true;
     const list = session.menuAccess;
     if (Array.isArray(list) && list.length > 0) {
       const namedHrefs = appMenuItems.filter((item) => list.includes(item.name)).map((item) => item.href);
-      return [...list, ...namedHrefs].some((entry) => menuBasePath(entry) === base);
+      return [...list, ...namedHrefs].some((entry) => pathCoveredBy(entry, path));
     }
   }
-  return appMenuItems.some((item) => menuBasePath(item.href) === base && canAccessMenu(session, item));
+  return appMenuItems.some((item) => pathCoveredBy(item.href, path) && canAccessMenu(session, item));
 }
 
 /**
@@ -544,7 +574,9 @@ export function canPerformMenuAction(subject: ActionSubject, href: string, actio
   if (configured) return configured.includes(action);
 
   const role = subjectRole(subject);
-  const configuredActions = isDemoRole(role) ? menuActionOverrides[href]?.[role] : undefined;
+  // Màn con chưa khai luật riêng thì dùng luật của màn cha ("/assets/operations" -> "/assets").
+  const overrideHref = menuActionOverrides[menuBasePath(href)] ? menuBasePath(href) : (menuParentPath(href) || menuBasePath(href));
+  const configuredActions = isDemoRole(role) ? menuActionOverrides[overrideHref]?.[role] : undefined;
   return configuredActions ? configuredActions.includes(action) : canPerformAction(subject, action);
 }
 

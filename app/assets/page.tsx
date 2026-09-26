@@ -61,6 +61,9 @@ type Asset = {
   computedStatus?: "IN_USE" | "FULLY_ALLOCATED" | "DISPOSED";
   canEditCode?: boolean;
   codeEditLockReason?: string | null;
+  /** Một mã nhiều đợt (lib/asset-lot.ts): đợt thứ mấy / tổng số đợt của mã. */
+  lotNo?: number;
+  lotCount?: number;
 };
 
 const ASSET_GROUPS: { code: string; label: string; isTool?: boolean }[] = [
@@ -91,6 +94,8 @@ const emptyForm = {
   paymentDueDate: "",
   imageUrl: "",
   note: "",
+  /** Mua tăng vào mã đã có: đợt mới dùng lại mã/tên/nhóm/phòng ban của đợt trước. */
+  reuseCode: false,
 };
 
 export default function AssetsPage() {
@@ -266,6 +271,17 @@ export default function AssetsPage() {
     return ASSET_GROUPS.map((group) => ({ code: group.code, label: group.label }));
   }, [assetGroups]);
 
+  /** Mã có thể mua tăng: mỗi mã một dòng (lấy đợt mới nhất làm mẫu), bỏ mã đã thanh lý hết. */
+  const reusableAssets = useMemo(() => {
+    const byCode = new Map<string, Asset>();
+    for (const asset of assets) {
+      if ((asset.computedStatus || asset.status) === "DISPOSED") continue;
+      const current = byCode.get(asset.code);
+      if (!current || (asset.lotNo || 1) > (current.lotNo || 1)) byCode.set(asset.code, asset);
+    }
+    return [...byCode.values()].sort((a, b) => a.code.localeCompare(b.code));
+  }, [assets]);
+
   const autoCodePreview = useMemo(() => {
     const group = assetGroups.find((item) => item.code === form.assetGroup);
     const department = departments.find((item) => item.code === form.departmentCode);
@@ -329,6 +345,7 @@ export default function AssetsPage() {
       paymentDueDate: asset.paymentDueDate ? asset.paymentDueDate.slice(0, 10) : "",
       imageUrl: asset.imageUrl || "",
       note: asset.note || "",
+      reuseCode: false,
     });
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -395,7 +412,9 @@ export default function AssetsPage() {
       return;
     }
     setMessageTone("success");
-    setMessage("Đã tạo thành công hồ sơ tài sản / CCDC.");
+    setMessage(form.reuseCode && payload.lotNo > 1
+      ? `Đã ghi đợt ${payload.lotNo} cho mã ${payload.code} (mua tăng). Đợt này phân bổ theo ngày mua và số kỳ riêng.`
+      : "Đã tạo thành công hồ sơ tài sản / CCDC.");
     setForm({ ...emptyForm, branchCode: form.branchCode });
     await loadAssets();
   };
@@ -602,27 +621,67 @@ export default function AssetsPage() {
                 </p>
               )}
 
-              <label className="text-xs font-bold text-slate-600 block">
-                Mã tài sản / CCDC
-                <input
-                  type="text"
+              {/* Mua tăng cùng loại: dùng lại mã cũ, ghi thành ĐỢT mới (lib/asset-lot.ts). */}
+              {!editingAsset && (
+                <label className="flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50/60 px-3 py-2 text-xs text-emerald-900">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 accent-emerald-600"
+                    checked={form.reuseCode}
+                    onChange={(e) => setForm((v) => ({ ...emptyForm, branchCode: v.branchCode, reuseCode: e.target.checked }))}
+                  />
+                  <span>
+                    <b>Mua tăng vào mã đã có</b> — chọn mã CCDC/tài sản cũ, hệ thống ghi đợt mới với ngày mua, nguyên giá và số kỳ phân bổ riêng; tên, nhóm, phòng ban, kho lấy theo mã cũ.
+                  </span>
+                </label>
+              )}
+
+              {form.reuseCode && !editingAsset ? (
+                <SearchableSelect
+                  label="Mã tài sản / CCDC đã có *"
                   value={form.code}
-                  onChange={(e) => setForm((v) => ({ ...v, code: e.target.value.toUpperCase() }))}
-                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono uppercase focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
-                  placeholder={autoCodePreview || "Để trống để hệ thống tự sinh"}
-                  disabled={Boolean(editingAsset && editingAsset.canEditCode === false)}
-                  maxLength={50}
+                  onChange={(code) => {
+                    const template = reusableAssets.find((asset) => asset.code === code);
+                    setForm((v) => ({
+                      ...v,
+                      code,
+                      name: template?.name || "",
+                      branchCode: template?.branchCode || v.branchCode,
+                      departmentCode: template?.departmentCode || "",
+                      assetGroup: template?.assetGroup || v.assetGroup,
+                      location: template?.location || "",
+                      usefulLifeMonths: template?.usefulLifeMonths ? String(template.usefulLifeMonths) : v.usefulLifeMonths,
+                      supplierCode: template?.supplierCode || "",
+                      supplierName: template?.supplierName || "",
+                    }));
+                  }}
+                  options={reusableAssets.map((asset) => ({ value: asset.code, label: `${asset.code} - ${asset.name}`, subLabel: `${asset.branchCode} · ${asset.departmentCode || "-"} · ${asset.lotCount || 1} đợt` }))}
+                  placeholder="Gõ mã hoặc tên để tìm..."
+                  required
                 />
-                <span className="mt-1 block text-[11px] font-normal text-slate-500">
-                  {editingAsset?.canEditCode === false
-                    ? editingAsset.codeEditLockReason || "Mã đã bị khóa do hồ sơ đã phát sinh nghiệp vụ."
-                    : form.code
-                      ? "Mã nhập thủ công; chỉ dùng chữ, số, dấu - và _."
-                      : autoCodePreview
-                        ? `Mã dự kiến: ${autoCodePreview} (4 ký tự nhóm + 3 ký tự phòng ban + 4 số).`
-                        : "Hãy cấu hình tiền tố nhóm 4 ký tự và phòng ban 3 ký tự để tự sinh mã."}
-                </span>
-              </label>
+              ) : (
+                <label className="text-xs font-bold text-slate-600 block">
+                  Mã tài sản / CCDC
+                  <input
+                    type="text"
+                    value={form.code}
+                    onChange={(e) => setForm((v) => ({ ...v, code: e.target.value.toUpperCase() }))}
+                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono uppercase focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
+                    placeholder={autoCodePreview || "Để trống để hệ thống tự sinh"}
+                    disabled={Boolean(editingAsset && editingAsset.canEditCode === false)}
+                    maxLength={50}
+                  />
+                  <span className="mt-1 block text-[11px] font-normal text-slate-500">
+                    {editingAsset?.canEditCode === false
+                      ? editingAsset.codeEditLockReason || "Mã đã bị khóa do hồ sơ đã phát sinh nghiệp vụ."
+                      : form.code
+                        ? "Mã nhập thủ công; chỉ dùng chữ, số, dấu - và _."
+                        : autoCodePreview
+                          ? `Mã dự kiến: ${autoCodePreview} (4 ký tự nhóm + 3 ký tự phòng ban + 4 số).`
+                          : "Hãy cấu hình tiền tố nhóm 4 ký tự và phòng ban 3 ký tự để tự sinh mã."}
+                  </span>
+                </label>
+              )}
 
               <label className="text-xs font-bold text-slate-600 block">
                 Tên tài sản / CCDC *
@@ -630,8 +689,9 @@ export default function AssetsPage() {
                   type="text"
                   value={form.name}
                   onChange={(e) => setForm((v) => ({ ...v, name: e.target.value }))}
-                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
                   placeholder="Nhập tên máy móc, thiết bị, CCDC..."
+                  disabled={form.reuseCode && !editingAsset}
                   required
                 />
               </label>
@@ -642,7 +702,8 @@ export default function AssetsPage() {
                   <select
                     value={form.branchCode}
                     onChange={(e) => setForm((v) => ({ ...v, branchCode: e.target.value }))}
-                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white"
+                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white disabled:bg-slate-100 disabled:text-slate-500"
+                    disabled={form.reuseCode && !editingAsset}
                     required
                   >
                     {visibleStoreOptions(user).map((opt) => (
@@ -659,6 +720,7 @@ export default function AssetsPage() {
                   onChange={(location) => setForm((v) => ({ ...v, location }))}
                   options={availableFormWarehouses.map((wh) => ({ value: wh.code, label: wh.name, subLabel: wh.code }))}
                   placeholder="Chọn vị trí / kho..."
+                  disabled={form.reuseCode && !editingAsset}
                   required
                 />
               </div>
@@ -670,6 +732,7 @@ export default function AssetsPage() {
                   onChange={(departmentCode) => setForm((v) => ({ ...v, departmentCode }))}
                   options={availableFormDepartments.map((dep) => ({ value: dep.code, label: dep.name, subLabel: dep.code }))}
                   placeholder="Chọn phòng ban..."
+                  disabled={form.reuseCode && !editingAsset}
                   required={!form.code}
                 />
 
@@ -677,6 +740,7 @@ export default function AssetsPage() {
                   Nhóm tài sản *
                   <select
                     value={form.assetGroup}
+                    disabled={form.reuseCode && !editingAsset}
                     onChange={(e) => setForm((v) => ({ ...v, assetGroup: e.target.value }))}
                     className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white"
                     required
@@ -1067,6 +1131,11 @@ export default function AssetsPage() {
                               <div>
                                 <div className="flex items-center gap-1.5">
                                   <CopyableText value={asset.code}><span className="font-bold text-slate-900">{asset.code}</span></CopyableText>
+                                  {(asset.lotCount || 1) > 1 && (
+                                    <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-bold text-indigo-700" title="Mã này có nhiều đợt mua; mỗi đợt phân bổ theo ngày mua và số kỳ riêng">
+                                      đợt {asset.lotNo || 1}/{asset.lotCount}
+                                    </span>
+                                  )}
                                   <span className="font-medium text-slate-800">- {asset.name}</span>
                                 </div>
                                 <p className="text-[11px] text-slate-400">

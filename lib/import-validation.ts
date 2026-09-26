@@ -670,8 +670,12 @@ function validateAsset(row: ParsedImportRow, masterItems: MasterItem[], existing
   row.values.branch_code = branchCode;
   row.values.asset_code = assetCode || null;
 
+  // Mã đã có trong hệ thống = mua tăng cùng loại: lúc ghi sẽ thành ĐỢT kế tiếp của mã đó
+  // (lib/asset-lot.ts), không ghi đè hồ sơ cũ. Ghi rõ ở cột ghi chú của preview để người import biết.
   if (assetCode && existingAssetCodes.has(assetCode)) {
-    addError(row, `Ma tai san [${assetCode}] da ton tai, khong tu ghi de khi import hang loat`);
+    const lotNote = `Mua tăng: mã ${assetCode} đã có, ghi thành đợt mới`;
+    const note = text(row.values.note);
+    row.values.note = note && !note.includes(lotNote) ? `${note} · ${lotNote}` : (note || lotNote);
   }
 
   const warehouse = resolveMaster(masterItems, "WAREHOUSE", row.values.warehouse_code, branchCode);
@@ -1527,6 +1531,11 @@ export async function validateImportResult(
         text(row.values.money_source_code).toUpperCase(),
         text(row.values.warehouse_code).toUpperCase(),
         text(row.values.department_code).toUpperCase(),
+        // Tài sản/CCDC cùng mã khai hai ĐỢT (khác kỳ bắt đầu phân bổ / nguyên giá) là hợp lệ
+        // (lib/asset-lot.ts); chỉ trùng khi cả hai cột này cũng giống nhau.
+        ...(balanceType === "ASSET"
+          ? [text(row.values.allocation_start_period), String(Math.round(numberValue(row.values.original_cost) || 0))]
+          : []),
       ].join("|");
       if (openingBalanceKeys.has(openingKey)) {
         addError(row, "File co dong so du dau ky bi trung nguon/doi tuong");

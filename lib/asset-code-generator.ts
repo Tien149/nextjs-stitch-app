@@ -120,7 +120,28 @@ export async function assertAssetCodeAvailable(tx: AssetCodeTx, value: unknown, 
   if (existing) {
     throw new AssetCodeError(existing.deletedAt
       ? `Mã tài sản ${code} đang nằm trong Thùng rác. Hãy khôi phục hồ sơ cũ hoặc dùng mã khác.`
-      : `Mã tài sản ${code} đã tồn tại.`);
+      : `Mã tài sản ${code} đã tồn tại. Mua tăng cùng loại thì chọn "Mua tăng vào mã đã có" để ghi thành đợt mới.`);
   }
   return code;
+}
+
+/**
+ * Đợt kế tiếp của một mã đã có (lib/asset-lot.ts): mua tăng cùng loại / số dư đầu kỳ khai thêm
+ * đợt. Khoá theo mã để hai request cùng lúc không cấp trùng đợt; đếm cả hồ sơ đã xoá mềm vì cặp
+ * (code, lotNo) của chúng vẫn nằm trong chỉ mục duy nhất.
+ */
+export async function nextAssetLot(tx: AssetCodeTx, value: unknown) {
+  const client = tx as RawTxClient;
+  const code = validateManualAssetCode(value);
+  await client.$queryRaw<Array<{ locked: number }>>`
+    SELECT 1::integer AS "locked"
+    FROM (SELECT pg_advisory_xact_lock(hashtext(${`asset-lot:${code}`}))) AS advisory_lock
+  `;
+  const latest = await client.assetRecord.findFirst({
+    where: { code, deletedAt: undefined },
+    orderBy: { lotNo: "desc" },
+    select: { id: true, lotNo: true, name: true, branchCode: true, departmentCode: true, assetGroup: true, warehouseCode: true, location: true, supplierCode: true, supplierName: true, deletedAt: true },
+  });
+  if (!latest) throw new AssetCodeError(`Mã tài sản ${code} chưa tồn tại nên không thể ghi đợt mua tăng; tạo hồ sơ mới thay vì mua tăng.`);
+  return { code, lotNo: latest.lotNo + 1, template: latest };
 }

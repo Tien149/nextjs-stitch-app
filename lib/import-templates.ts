@@ -875,6 +875,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "actual_quantity", label: "So dem thuc te", required: true, type: "number", aliases: ["so dem thuc te", "so thuc te", "actual quantity"] },
       { field: "condition", label: "Tinh trang", required: false, type: "text", aliases: ["tinh trang", "condition"], note: "Ví dụ: Tốt / Hỏng nhẹ / Chờ sửa" },
       { field: "note", label: "Ghi chu", required: false, type: "text", aliases: ["ghi chu", "note"] },
+      { field: "image_url", label: "Link anh", required: false, type: "text", aliases: ["link anh", "anh", "hinh anh", "image", "image url"], note: "Link ảnh chụp lúc kiểm (tuỳ chọn). Chụp trực tiếp thì dùng màn Kiểm kê trên điện thoại." },
     ],
   },
   {
