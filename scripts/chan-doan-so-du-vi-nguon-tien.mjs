@@ -19,15 +19,23 @@
  *   [C] Doanh thu còn treo ở hai mốc đầu kỳ / cuối kỳ theo Ngày doanh thu → số khách kỳ vọng.
  *   [D] Doanh thu POS và tiền về 5 ngày cuối kỳ (bảng Tiền về đủ chưa) để so bằng mắt.
  *
- *   npm run -s diagnose:wallet-balance -- --period 2026-08 --branch NME,ASA 2>&1 | grep -v '^prisma:query' > so-du-vi-2026-08.txt
+ *   npm run -s diagnose:wallet-balance -- --period 2026-08 --branch NME,ASA
  *   npm run -s diagnose:wallet-balance -- --period 2026-08 --branch ASA --wallet MOMO_EDC_ASA
- *   (thiếu --branch thì in danh sách mã cửa hàng có ví; lib/prisma.ts bật log query nên lọc bỏ)
+ *   (thiếu --branch thì in danh sách mã cửa hàng có ví; kết quả in thẳng ra màn hình để copy)
  */
 import { prisma } from "../lib/prisma.ts";
 import { periodBounds } from "../lib/accounting.ts";
 import { getCashSourceReport, getRevenueSettlementReport } from "../lib/reports.ts";
 import { normalizeMoneySourceGroup } from "../lib/money-sources.ts";
 import { vietnamBusinessDayKey } from "../lib/revenue-date.ts";
+
+// lib/prisma.ts luôn bật log câu SQL — nuốt dòng "prisma:query" để màn hình chỉ còn kết quả,
+// copy thẳng được mà không phải lọc bằng grep.
+const printLine = console.log.bind(console);
+console.log = (...parts) => {
+  if (typeof parts[0] === "string" && parts[0].startsWith("prisma:query")) return;
+  printLine(...parts);
+};
 
 const args = process.argv.slice(2);
 const valueOf = (name) => { const i = args.indexOf(name); return i >= 0 ? String(args[i + 1] || "") : ""; };
