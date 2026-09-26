@@ -24,7 +24,8 @@ export type TrashEntity = {
   branchField?: string;
   dateField?: string;
   periodField?: string;
-  cascade?: { model: string; foreignKey: string }[];
+  /** `where` lọc thêm khi khoá ngoại dùng chung nhiều nguồn (sourceId + sourceType). */
+  cascade?: { model: string; foreignKey: string; where?: Record<string, unknown> }[];
 };
 
 export const TRASH_ENTITIES: TrashEntity[] = [
@@ -59,6 +60,12 @@ export const TRASH_ENTITIES: TrashEntity[] = [
     cascade: [
       { model: "AssetMaintenance", foreignKey: "assetId" },
       { model: "AssetDamageReport", foreignKey: "assetId" },
+      // Công nợ NCC CN-<mã> và bút toán ghi tăng (Nợ 211/242 – Có 331/411) do chính tài sản sinh
+      // ra lúc lưu. Xoá tài sản mà để lại hai thứ này thì sổ còn tài sản ma và nợ NCC ma; khôi
+      // phục từ Thùng rác cũng đi cùng nhau. Chỉ tới được đây khi công nợ chưa gạch nợ đồng nào
+      // (DELETE /api/assets chặn trước).
+      { model: "DebtRecord", foreignKey: "sourceId", where: { sourceType: "ASSET" } },
+      { model: "JournalEntry", foreignKey: "sourceId", where: { sourceType: "ASSET_ACQUISITION" } },
     ],
   },
   { model: "AssetMaintenance", label: "Lịch bảo trì", module: "/assets", titleField: "maintenanceType" },
@@ -201,7 +208,7 @@ export async function softDeleteRecord({ model, id, session, reason }: ActionInp
     for (const child of entity?.cascade || []) {
       const childDelegate = (tx as unknown as Record<string, DynamicDelegate>)[clientKey(child.model)];
       await childDelegate.updateMany({
-        where: { [child.foreignKey]: id, deletedAt: null },
+        where: { ...child.where, [child.foreignKey]: id, deletedAt: null },
         data: { deletedAt, deletedBy },
       });
     }
@@ -242,7 +249,7 @@ export async function restoreRecord({ model, id, session }: ActionInput) {
       // Chỉ khôi phục con bị xoá cùng thời điểm với cha, tránh làm sống lại
       // những bản ghi con người dùng đã chủ động xoá riêng từ trước.
       await childDelegate.updateMany({
-        where: { [child.foreignKey]: id, deletedAt: current.deletedAt },
+        where: { ...child.where, [child.foreignKey]: id, deletedAt: current.deletedAt },
         data: { deletedAt: null, deletedBy: null },
       });
     }

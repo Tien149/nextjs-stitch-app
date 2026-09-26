@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { canPerformMenuAction, type DemoSession } from "@/lib/auth-demo";
 
 /**
@@ -75,6 +75,8 @@ export function ConfirmDeleteDialog({
   error,
   onCancel,
   onConfirm,
+  confirmDisabled = false,
+  children,
 }: {
   open: boolean;
   title: string;
@@ -85,6 +87,10 @@ export function ConfirmDeleteDialog({
   error?: string | null;
   onCancel: () => void;
   onConfirm: (reason: string) => void;
+  /** Khoá nút xoá khi màn gọi biết trước là chưa xoá được (vd. còn chứng từ phải gỡ trước). */
+  confirmDisabled?: boolean;
+  /** Nội dung riêng của từng màn, hiện dưới lời nhắc Thùng rác (vd. hướng dẫn các bước cần làm). */
+  children?: ReactNode;
 }) {
   const [reason, setReason] = useState("");
 
@@ -92,7 +98,7 @@ export function ConfirmDeleteDialog({
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-xl w-full max-w-md shadow-xl">
+      <div className="bg-white rounded-xl w-full max-w-md shadow-xl max-h-[90vh] flex flex-col">
         <div className="p-5 border-b border-slate-200 flex items-start gap-3">
           <span className="material-symbols-outlined text-rose-600 text-2xl shrink-0">delete_sweep</span>
           <div className="min-w-0">
@@ -101,11 +107,13 @@ export function ConfirmDeleteDialog({
           </div>
         </div>
 
-        <div className="p-5 space-y-4">
+        <div className="p-5 space-y-4 overflow-y-auto">
           <p className="text-xs bg-blue-50 border border-blue-200 text-blue-800 rounded-lg px-3 py-2.5 flex items-start gap-2">
             <span className="material-symbols-outlined text-base shrink-0">info</span>
             Dữ liệu không bị xoá vĩnh viễn. Bản ghi sẽ chuyển vào Thùng rác và có thể khôi phục lại.
           </p>
+
+          {children}
 
           <div>
             <label htmlFor="delete-reason" className="text-sm font-bold text-slate-700">
@@ -142,7 +150,7 @@ export function ConfirmDeleteDialog({
           </button>
           <button
             type="button"
-            disabled={submitting || (requireReason && !reason.trim())}
+            disabled={submitting || confirmDisabled || (requireReason && !reason.trim())}
             onClick={() => onConfirm(reason.trim())}
             className="px-4 py-2 rounded-lg text-sm font-bold bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white"
           >

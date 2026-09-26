@@ -38,12 +38,117 @@ function isDisposedAsset(asset: { disposalStatus: string | null; status: string 
   return Boolean(asset.disposalStatus) || asset.status === "DISPOSED";
 }
 
+/** Một việc người dùng phải làm trước khi xoá được tài sản, kèm link tới đúng màn hình. */
+type AssetDeleteStep = { text: string; href?: string; linkLabel?: string };
+
+function formatPeriod(period: string) {
+  const [year, month] = period.split("-");
+  return month ? `${month}/${year}` : period;
+}
+
+function formatDateVi(date: Date) {
+  return date.toLocaleDateString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" });
+}
+
+/**
+ * Liệt kê theo đúng thứ tự phải làm những việc còn chặn xoá tài sản. Mảng rỗng = xoá được.
+ * Màn Tài sản gọi trước khi mở hộp thoại xoá (GET ?deleteCheck=<id>) để người dùng thấy ngay
+ * cần bỏ duyệt phiếu chi nào, mở lại khấu hao kỳ nào — không phải đoán từ một câu báo lỗi.
+ */
+async function assetDeleteSteps(asset: NonNullable<Awaited<ReturnType<typeof prisma.assetRecord.findUnique>>>) {
+  const steps: AssetDeleteStep[] = [];
+
+  // Kỳ khoá sổ chặn mọi thao tác phía dưới (mở lại khấu hao, bỏ duyệt phiếu chi) nên nói trước.
+  const locked = await findClosedPeriod({ date: asset.purchaseDate, branchCode: asset.branchCode });
+  if (locked) {
+    const scope = locked.branchCode === "ALL" ? "toàn hệ thống" : `cửa hàng ${locked.branchCode}`;
+    steps.push({
+      text: `Kỳ ${formatPeriod(locked.period)} (tháng mua tài sản) của ${scope} đã khoá sổ. Nhờ kế toán mở lại kỳ này ở Sổ quỹ › Khóa sổ kỳ kế toán.`,
+      href: "/finance-operations?tab=closing",
+      linkLabel: "Mở tab Khóa sổ",
+    });
+  }
+
+  if (isDisposedAsset(asset)) {
+    steps.push({
+      text: "Tài sản đã thanh lý. Mở lại phiếu thanh lý ở Vận hành tài sản › Thanh lý (phiếu thu tiền thanh lý sẽ bị gỡ theo).",
+      href: "/assets/operations?tab=disposal",
+      linkLabel: "Mở tab Thanh lý",
+    });
+  }
+
+  const depreciations = await prisma.assetDepreciation.findMany({
+    where: { assetId: asset.id },
+    select: { period: true },
+    orderBy: { period: "desc" },
+  });
+  if (depreciations.length > 0) {
+    const periods = depreciations.map((row) => formatPeriod(row.period));
+    steps.push({
+      text: `Đã trích khấu hao ${depreciations.length} kỳ: ${periods.join(", ")}. Mở lại khấu hao từng kỳ ở Vận hành tài sản › Khấu hao, bắt đầu từ kỳ mới nhất (${periods[0]}) lùi dần về kỳ đầu.`,
+      href: "/assets/operations?tab=depreciation",
+      linkLabel: "Mở tab Khấu hao",
+    });
+  }
+
+  const payableDebt = await prisma.debtRecord.findFirst({ where: { sourceType: "ASSET", sourceId: asset.id } });
+  if (payableDebt) {
+    const settlements = await prisma.debtSettlement.findMany({
+      where: { debtId: payableDebt.id },
+      include: { voucher: { select: { code: true, voucherDate: true, branchCode: true, partnerCode: true, documentChannel: true } } },
+      orderBy: { settlementDate: "asc" },
+    });
+    for (const row of settlements) {
+      const day = row.voucher.voucherDate.toLocaleDateString("en-CA", { timeZone: "Asia/Ho_Chi_Minh" });
+      const query = new URLSearchParams({
+        voucherType: "PAYMENT",
+        branchCode: row.voucher.branchCode,
+        from: day,
+        to: day,
+        ...(row.voucher.partnerCode ? { partnerCode: row.voucher.partnerCode } : {}),
+      });
+      // Trả bằng chuyển khoản thì phiếu nằm ở Chứng từ ngân hàng (Ủy nhiệm chi), không phải Phiếu tiền mặt.
+      const isBank = row.voucher.documentChannel === "BANK";
+      const docLabel = isBank ? "Ủy nhiệm chi" : "Phiếu chi";
+      const screen = isBank ? "Chứng từ ngân hàng" : "Phiếu tiền mặt";
+      steps.push({
+        text: `${docLabel} ${row.voucher.code} ngày ${formatDateVi(row.voucher.voucherDate)} đã trả ${Math.round(row.amount).toLocaleString("vi-VN")} đ cho công nợ ${payableDebt.code}. Vào màn ${screen}, bấm "Bỏ duyệt" (hoặc xoá) chứng từ này để trả lại công nợ.`,
+        href: `${isBank ? "/bank-vouchers" : "/vouchers"}?${query.toString()}`,
+        linkLabel: `Mở ${row.voucher.code}`,
+      });
+    }
+    if (settlements.length === 0 && (payableDebt.status !== "OPEN" || Math.abs(payableDebt.outstandingAmount - payableDebt.originalAmount) > 0.5)) {
+      steps.push({
+        text: `Công nợ ${payableDebt.code} không còn nguyên số nợ ban đầu (còn ${Math.round(payableDebt.outstandingAmount).toLocaleString("vi-VN")} / ${Math.round(payableDebt.originalAmount).toLocaleString("vi-VN")} đ) dù không có phiếu chi nào gạch nợ. Kiểm tra khoản này ở màn Công nợ Đối tác hoặc báo bộ phận hỗ trợ.`,
+        href: "/debts",
+        linkLabel: "Mở Công nợ Đối tác",
+      });
+    }
+  }
+
+  return steps;
+}
+
 export async function GET(request: Request) {
   try {
     const auth = requireMenuAccess(request, "/assets");
     if (!auth.ok) return auth.response;
 
     const { searchParams } = new URL(request.url);
+
+    // Kiểm tra trước khi xoá: màn Tài sản hiện danh sách việc cần làm ngay trong hộp thoại xoá.
+    const deleteCheckId = cleanText(searchParams.get("deleteCheck"));
+    if (deleteCheckId) {
+      const asset = await prisma.assetRecord.findUnique({ where: { id: deleteCheckId } });
+      if (!asset) return NextResponse.json({ error: "Không tìm thấy tài sản" }, { status: 404 });
+      try {
+        assertBranchAccess(auth.session, asset.branchCode);
+      } catch (e) {
+        return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi phân quyền chi nhánh" }, { status: 403 });
+      }
+      return NextResponse.json({ steps: await assetDeleteSteps(asset) });
+    }
+
     const search = searchParams.get("search")?.trim() || searchParams.get("q")?.trim();
     const statusParam = searchParams.get("status") || undefined;
     const assetGroup = searchParams.get("assetGroup") || undefined;
@@ -803,27 +908,15 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: (e instanceof Error ? e.message : "Lỗi phân quyền").replace(/^BUSINESS:/, "") }, { status: 403 });
     }
 
-    if (isDisposedAsset(current)) {
+    // Công nợ CN-<mã> và bút toán ghi tăng do chính tài sản sinh ra được xoá mềm theo (cascade ở
+    // lib/soft-delete.ts). Còn chặn khi: kỳ đã khoá, đã thanh lý, đã trích khấu hao, hoặc công nợ
+    // đã có phiếu chi gạch nợ — xoá lúc đó là mất dấu tiền đã trả NCC.
+    const steps = await assetDeleteSteps(current);
+    if (steps.length > 0) {
       return NextResponse.json(
-        { error: `Tài sản ${current.code} đã thanh lý nên không thể xoá. Hồ sơ thanh lý cần được lưu để đối chiếu sổ sách.` },
-        { status: 400 },
+        { error: `Chưa xoá được tài sản ${current.code}. Cần làm ${steps.length} việc dưới đây trước.`, steps },
+        { status: 409 },
       );
-    }
-
-    const depreciationCount = await prisma.assetDepreciation.count({ where: { assetId: id } });
-    if (depreciationCount > 0) {
-      return NextResponse.json(
-        { error: `Tài sản ${current.code} đã trích khấu hao ${depreciationCount} kỳ nên không thể xoá. Hãy thanh lý tài sản thay vì xoá.` },
-        { status: 400 },
-      );
-    }
-
-    const [debtCount, journalCount] = await Promise.all([
-      prismaRaw.debtRecord.count({ where: { sourceType: "ASSET", sourceId: id, deletedAt: null } }),
-      prismaRaw.journalEntry.count({ where: { sourceType: "ASSET_ACQUISITION", sourceId: id, deletedAt: null } }),
-    ]);
-    if (debtCount > 0 || journalCount > 0) {
-      return NextResponse.json({ error: `Tài sản ${current.code} đã phát sinh công nợ/bút toán kế toán nên không thể xóa` }, { status: 409 });
     }
 
     const result = await softDeleteRecord({

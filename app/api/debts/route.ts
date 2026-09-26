@@ -975,6 +975,10 @@ async function debtDeleteBlocker(current: { id: string; code: string; sourceType
   if (current.sourceType === "MONEY_TRANSFER") {
     return "Công nợ nội bộ này do phiếu điều tiền liên nhà hàng sinh ra. Hãy xử lý ở màn Vận hành tài chính để bút toán và công nợ đi cùng nhau.";
   }
+  // Xoá riêng khoản nợ thì bút toán Nợ 211/242 – Có 331 của tài sản vẫn nằm trên sổ.
+  if (current.sourceType === "ASSET") {
+    return "Công nợ này do tài sản/CCDC sinh ra. Hãy xoá tài sản ở màn Tài sản, hoặc sửa tài sản sang \"Đã thanh toán\", để công nợ và bút toán đi cùng nhau.";
+  }
   // Còn phiếu thu/chi đã đối trừ vào khoản này thì phải giữ lại để không mất dấu thanh toán.
   const settlementCount = await prisma.debtSettlement.count({ where: { debtId: current.id } });
   if (settlementCount > 0) return "Khoản công nợ đã được thanh toán bằng phiếu thu/chi, không thể xóa.";

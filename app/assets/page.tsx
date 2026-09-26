@@ -99,6 +99,8 @@ const emptyForm = {
   reuseCode: false,
 };
 
+type AssetDeleteStep = { text: string; href?: string; linkLabel?: string };
+
 export default function AssetsPage() {
   const router = useRouter();
   const [user, setUser] = useState<DemoSession | null>(null);
@@ -116,6 +118,8 @@ export default function AssetsPage() {
   const [deletingAsset, setDeletingAsset] = useState<Asset | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  /** Việc cần làm trước khi xoá được tài sản đang mở hộp thoại; null = đang kiểm tra. */
+  const [deleteSteps, setDeleteSteps] = useState<AssetDeleteStep[] | null>(null);
 
   // Filters
   const [filterBranch, setFilterBranch] = useState("ALL");
@@ -175,12 +179,24 @@ export default function AssetsPage() {
     return null;
   };
 
-  const deleteLockReason = (asset: Asset) => {
-    if (isDisposed(asset)) return "Tài sản đã thanh lý, không thể xoá. Hồ sơ thanh lý cần được lưu để đối chiếu sổ sách.";
-    if ((asset.allocatedPeriods || 0) > 0) {
-      return `Tài sản đã trích khấu hao ${asset.allocatedPeriods} kỳ, không thể xoá. Hãy thanh lý tài sản thay vì xoá.`;
+  // Nút Xoá luôn mở được hộp thoại: tài sản chưa xoá được (thanh lý, khấu hao, phiếu chi đã trả
+  // nợ, kỳ khoá sổ) thì hộp thoại liệt kê từng việc cần gỡ trước, kèm link tới đúng màn hình.
+  const openDeleteAsset = async (asset: Asset) => {
+    setDeleteError(null);
+    setDeleteSteps(null);
+    setDeletingAsset(asset);
+    try {
+      const response = await fetch(`/api/assets?deleteCheck=${encodeURIComponent(asset.id)}`, { headers: getSessionHeaders() });
+      const payload = await response.json();
+      if (!response.ok) {
+        setDeleteError(payload.error || "Không kiểm tra được điều kiện xoá tài sản");
+        setDeleteSteps([]);
+        return;
+      }
+      setDeleteSteps(Array.isArray(payload.steps) ? payload.steps : []);
+    } catch {
+      setDeleteSteps([]);
     }
-    return null;
   };
 
   const getSessionHeaders = (): Record<string, string> => {
@@ -465,7 +481,8 @@ export default function AssetsPage() {
       });
       const payload = await response.json();
       if (!response.ok) {
-        setDeleteError(payload.error || "Không xoá được tài sản");
+        if (Array.isArray(payload.steps)) setDeleteSteps(payload.steps);
+        setDeleteError(payload.steps?.length ? null : payload.error || "Không xoá được tài sản");
         return;
       }
       if (editingAsset?.id === deletingAsset.id) resetAssetForm();
@@ -1254,12 +1271,8 @@ export default function AssetsPage() {
                               module="/assets"
                               compact
                               onEdit={() => startEditAsset(asset)}
-                              onDelete={() => {
-                                setDeleteError(null);
-                                setDeletingAsset(asset);
-                              }}
+                              onDelete={() => void openDeleteAsset(asset)}
                               editDisabledReason={editLockReason(asset)}
-                              deleteDisabledReason={deleteLockReason(asset)}
                             />
                           </td>
                         </tr>
@@ -1279,12 +1292,53 @@ export default function AssetsPage() {
         description={deletingAsset ? `${deletingAsset.name} · Nguyên giá ${money(deletingAsset.originalCost)} đ` : undefined}
         submitting={deleting}
         error={deleteError}
+        confirmDisabled={deleteSteps === null || deleteSteps.length > 0}
         onCancel={() => {
           setDeletingAsset(null);
           setDeleteError(null);
+          setDeleteSteps(null);
         }}
         onConfirm={confirmDeleteAsset}
-      />
+      >
+        {deleteSteps === null ? (
+          <p className="text-xs text-slate-500 flex items-center gap-2">
+            <span className="material-symbols-outlined text-base animate-spin">progress_activity</span>
+            Đang kiểm tra chứng từ liên quan...
+          </p>
+        ) : deleteSteps.length > 0 ? (
+          <div className="text-sm bg-amber-50 border border-amber-200 text-amber-900 rounded-lg px-3 py-3">
+            <p className="font-bold flex items-center gap-2">
+              <span className="material-symbols-outlined text-lg">checklist</span>
+              Chưa xoá được — cần làm lần lượt {deleteSteps.length} việc sau:
+            </p>
+            <ol className="mt-2 space-y-2 list-decimal pl-5">
+              {deleteSteps.map((step, index) => (
+                <li key={index}>
+                  <span>{step.text}</span>
+                  {step.href && (
+                    <a
+                      href={step.href}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="ml-1 inline-flex items-center gap-0.5 font-bold text-blue-700 hover:underline whitespace-nowrap"
+                    >
+                      {step.linkLabel || "Mở"}
+                      <span className="material-symbols-outlined text-sm">open_in_new</span>
+                    </a>
+                  )}
+                </li>
+              ))}
+            </ol>
+            <p className="mt-3 text-xs text-amber-800">
+              Làm xong thì bấm Xoá lại tài sản này. Công nợ nhà cung cấp và bút toán ghi tăng của tài sản sẽ tự chuyển vào Thùng rác theo — không cần xoá riêng ở màn Công nợ Đối tác.
+            </p>
+          </div>
+        ) : deletingAsset?.paymentStatus === "PAYABLE" ? (
+          <p className="text-xs bg-slate-50 border border-slate-200 text-slate-600 rounded-lg px-3 py-2.5">
+            Công nợ nhà cung cấp {deletingAsset.payableDebtCode || ""} và bút toán ghi tăng của tài sản này sẽ chuyển vào Thùng rác cùng lúc, khôi phục cũng đi cùng nhau.
+          </p>
+        ) : null}
+      </ConfirmDeleteDialog>
     </div>
   );
 }
