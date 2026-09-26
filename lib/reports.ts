@@ -1028,6 +1028,9 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
           OR: [
             { sourceDate: { gte: start, lt: end } },
             { sourceDate: null, bankTransaction: { is: { transactionDate: { gte: start, lt: end } } } },
+            // Tiền về từ ví tính theo Ngày doanh thu (xem vòng sổ sao kê bên dưới) — dòng về
+            // tháng sau cho doanh thu cuối tháng này vẫn phải lấy lên.
+            { revenueDate: { gte: start, lt: end } },
           ],
         },
         select: {
@@ -1035,13 +1038,14 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
           creditAmount: true,
           grossAmount: true,
           sourceDate: true,
+          revenueDate: true,
           categoryCode: true,
           operationType: true,
           depositCode: true,
           summaryMoneySourceCode: true,
           increaseMoneySourceCode: true,
           decreaseMoneySourceCode: true,
-          bankTransaction: { select: { transactionDate: true, categoryCode: true, operationType: true, depositCode: true, summaryMoneySourceCode: true, increaseMoneySourceCode: true, decreaseMoneySourceCode: true } },
+          bankTransaction: { select: { transactionCode: true, transactionDate: true, revenueDate: true, categoryCode: true, operationType: true, depositCode: true, summaryMoneySourceCode: true, increaseMoneySourceCode: true, decreaseMoneySourceCode: true, matches: { where: { deletedAt: null, targetType: "WALLET_SETTLEMENT" }, select: { targetId: true } } } },
         },
       }),
       // Dữ liệu lịch sử không có dòng phân bổ thì đọc thẳng giao dịch, tránh cộng trùng.
@@ -1053,13 +1057,16 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
           OR: [
             { sourceDate: { gte: start, lt: end } },
             { sourceDate: null, transactionDate: { gte: start, lt: end } },
+            { revenueDate: { gte: start, lt: end } },
           ],
         },
         select: {
+          transactionCode: true,
           debitAmount: true,
           creditAmount: true,
           grossAmount: true,
           sourceDate: true,
+          revenueDate: true,
           transactionDate: true,
           categoryCode: true,
           operationType: true,
@@ -1067,6 +1074,7 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
           summaryMoneySourceCode: true,
           increaseMoneySourceCode: true,
           decreaseMoneySourceCode: true,
+          matches: { where: { deletedAt: null, targetType: "WALLET_SETTLEMENT" }, select: { targetId: true } },
         },
       }),
       // Mục tiêu "Nguồn tiền còn lại" khai theo từng tháng ở màn Ngân sách, để báo cáo
@@ -1292,6 +1300,9 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
       creditAmount: row.creditAmount,
       grossAmount: row.grossAmount,
       effectiveDate: row.sourceDate || row.bankTransaction.transactionDate,
+      revenueDate: row.revenueDate || row.bankTransaction.revenueDate,
+      transactionCode: row.bankTransaction.transactionCode,
+      walletSettlementIds: row.bankTransaction.matches.map((match) => match.targetId),
       categoryCode: row.categoryCode || row.bankTransaction.categoryCode,
       operationType: row.operationType || row.bankTransaction.operationType,
       depositCode: row.depositCode || row.bankTransaction.depositCode,
@@ -1304,6 +1315,9 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
       creditAmount: row.creditAmount,
       grossAmount: row.grossAmount,
       effectiveDate: row.sourceDate || row.transactionDate,
+      revenueDate: row.revenueDate,
+      transactionCode: row.transactionCode,
+      walletSettlementIds: row.matches.map((match) => match.targetId),
       categoryCode: row.categoryCode,
       operationType: row.operationType,
       depositCode: row.depositCode,
@@ -1312,15 +1326,68 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
       decreaseMoneySourceCode: row.decreaseMoneySourceCode,
     })),
   ];
+  /**
+   * Phiếu quyết toán ví (QTVI) của từng dòng sao kê tiền ví về: tiền về + phí của phiếu mới là số
+   * THẬT đã rời ví. Ô Gross khách khai trên file sao kê không tin được — kỳ 08/2026 có dòng để 0
+   * (VNPay NAM MÊ âm 22 triệu) và có dòng khai phồng gấp nhiều lần (Momo ASA/KCF dư 355 triệu),
+   * vì phí sau đó được tính lại theo từng ngày doanh thu còn ô Gross thì giữ nguyên. Nối theo cặp
+   * đối soát; dữ liệu cũ chưa có cặp thì theo mã giao dịch ghi trên phiếu.
+   */
+  const walletSettlementIds = [...new Set(bankLedgerRows.flatMap((row) => row.walletSettlementIds))];
+  const unmatchedIncomeCodes = [...new Set(bankLedgerRows
+    .filter((row) => row.creditAmount > 0 && row.walletSettlementIds.length === 0 && row.transactionCode)
+    .map((row) => row.transactionCode))];
+  const linkedWalletSettlements = walletSettlementIds.length || unmatchedIncomeCodes.length
+    ? await prisma.moneyTransfer.findMany({
+        where: {
+          status: "APPROVED",
+          transferPurpose: "WALLET_SETTLEMENT",
+          OR: [
+            ...(walletSettlementIds.length ? [{ id: { in: walletSettlementIds } }] : []),
+            ...(unmatchedIncomeCodes.length ? [{ externalRef: { in: unmatchedIncomeCodes }, ...branchFilter }] : []),
+          ],
+        },
+        select: { id: true, externalRef: true, amount: true, feeAmount: true },
+      })
+    : [];
+  const walletSettlementById = new Map(linkedWalletSettlements.map((row) => [row.id, row]));
+  const walletSettlementByRef = new Map(linkedWalletSettlements.filter((row) => row.externalRef).map((row) => [row.externalRef as string, row]));
+  const isWalletSource = (code: string | null | undefined) =>
+    Boolean(code) && normalizeMoneySourceGroup(moneySourceByCode.get(code as string)?.group) === "WALLET";
+
   for (const row of bankLedgerRows) {
     // Điều tiền giữa các tài khoản không phải thu/chi; nghiệp vụ cọc đã có dòng
     // "Thu tiền cọc"/"Hoàn cọc cho khách" riêng từ lịch sử cọc, cộng nữa là đếm đôi.
     if (row.operationType === "INTERNAL_TRANSFER") continue;
     if (row.depositCode || ["DEPOSIT_RECEIPT", "DEPOSIT_REFUND"].includes(row.operationType || "")) continue;
     const isIncome = row.creditAmount > 0;
-    // Thu của ví lấy doanh thu gộp trước phí khi đã suy được; phí thu hộ đã có dòng chi riêng
-    // từ các đợt quyết toán ví nên gross + phí mới cân, lấy net là hụt đúng phần phí.
-    const amount = isIncome ? (row.grossAmount ?? row.creditAmount) : row.debitAmount;
+    // Nguồn tiền của dòng sao kê: khoản CHI làm giảm chính tài khoản ngân hàng đó. Khoản THU
+    // mà có khai "nguồn giảm" là tiền từ ví/cổng chuyển về — doanh thu thuộc về ví, còn vế
+    // tiền vào ngân hàng đã nằm ở phiếu điều tiền nên không lặp lại ở cột Thu của ngân hàng.
+    const rowSourceCode = isIncome
+      ? row.decreaseMoneySourceCode || row.increaseMoneySourceCode || row.summaryMoneySourceCode
+      : row.decreaseMoneySourceCode || row.summaryMoneySourceCode;
+    /**
+     * Tiền về từ ví: số dư ví cuối kỳ = doanh thu ĐÃ BÁN mà tiền CHƯA VỀ (khách chốt 26/09/2026).
+     * Muốn vậy tiền vào ví phải ghi theo NGÀY DOANH THU, còn tiền ra (phiếu QTVI: tiền về + phí)
+     * ghi theo ngày tiền về. Ghi theo Ngày nguồn tiền như trước thì hai vế rơi cùng một ngày
+     * (NAM MÊ điền ô này bằng ngày tiền về): doanh thu 28–31/8 về 3/9 không bao giờ hiện thành
+     * số dư, còn số dư đầu kỳ khai tay kẹt lại mãi.
+     */
+    const isWalletIncome = isIncome && isWalletSource(rowSourceCode);
+    const flowDate = isWalletIncome ? row.revenueDate || row.effectiveDate : row.effectiveDate;
+    // Lấy thêm dòng theo Ngày doanh thu nên phải lọc lại đúng kỳ theo ngày ghi thật của từng dòng.
+    if (flowDate < start || flowDate >= end) continue;
+    const settlement = isWalletIncome
+      ? row.walletSettlementIds.map((id) => walletSettlementById.get(id)).find(Boolean) || walletSettlementByRef.get(row.transactionCode)
+      : undefined;
+    // Phiếu QTVI gom cả giao dịch; từng dòng của giao dịch gánh phí theo tỉ lệ tiền về của nó.
+    const amount = !isIncome
+      ? row.debitAmount
+      : settlement && settlement.amount > 0
+        ? row.creditAmount * (settlement.amount + settlement.feeAmount) / settlement.amount
+        // Chưa có phiếu QTVI: gross trên file nếu có (thu của ví gồm cả phí), 0 hoặc trống thì số thực về.
+        : row.grossAmount || row.creditAmount;
     if (!amount) continue;
     const expectedType = isIncome ? ("RECEIPT" as const) : ("PAYMENT" as const);
     const category = resolveCategory(row.categoryCode, expectedType);
@@ -1331,12 +1398,6 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     const rowDepositKind = depositCategoryDirection({ code: row.categoryCode, name: category?.name });
     const rowIsDepositRefund = rowDepositKind === "REFUND" && !isIncome;
     if (rowDepositKind && !rowIsDepositRefund) continue;
-    // Nguồn tiền của dòng sao kê: khoản CHI làm giảm chính tài khoản ngân hàng đó. Khoản THU
-    // mà có khai "nguồn giảm" là tiền từ ví/cổng chuyển về — doanh thu thuộc về ví, còn vế
-    // tiền vào ngân hàng đã nằm ở phiếu điều tiền nên không lặp lại ở cột Thu của ngân hàng.
-    const rowSourceCode = isIncome
-      ? row.decreaseMoneySourceCode || row.increaseMoneySourceCode || row.summaryMoneySourceCode
-      : row.decreaseMoneySourceCode || row.summaryMoneySourceCode;
     recordFlow(
       expectedType,
       rowIsDepositRefund
@@ -1345,7 +1406,7 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
           ? { key: category.code, name: category.name, group: expectedType }
           : { key: unclassifiedKey, name: "Chưa phân loại", group: expectedType },
       rowSourceCode,
-      row.effectiveDate,
+      flowDate,
       amount,
     );
     if (!category && !rowIsDepositRefund) bumpUnclassified(expectedType, "bankStatement", amount);
