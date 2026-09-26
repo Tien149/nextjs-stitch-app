@@ -7,6 +7,7 @@ import { prisma, prismaRaw } from "@/lib/prisma";
 import { applyOpeningDeposit, revertOpeningDeposit } from "@/lib/opening-balance-deposit";
 import { normalizeOpeningBalanceInput, validateOpeningBalanceInput, type OpeningBalanceInput } from "@/lib/opening-balance-rules";
 import { assertAssetCodeAvailable } from "@/lib/asset-code-generator";
+import { openingAssetRecordData } from "@/lib/opening-asset";
 import { assertPeriodOpen as assertAccountingPeriodOpen, buildAllocationSchedules } from "@/lib/phase3";
 
 function cleanText(value: unknown) {
@@ -30,7 +31,8 @@ function currentAsInput(current: Record<string, unknown>, body: Record<string, u
   for (const key of [
     "period", "branchCode", "balanceType", "objectCode", "objectName", "moneySourceCode",
     "warehouseCode", "departmentCode", "quantity", "unitCost", "allocationMonths",
-    "allocationStartPeriod", "pnlItemCode", "amount", "note",
+    "allocationStartPeriod", "pnlItemCode", "amount", "originalCost", "depreciatedPeriods",
+    "depreciatedAmount", "note",
   ]) merged[key] = body[key] !== undefined ? body[key] : current[key];
   return normalizeOpeningBalanceInput(merged);
 }
@@ -52,18 +54,7 @@ async function applySideEffects(tx: Prisma.TransactionClient, current: OpeningBa
   }
   if (current.balanceType === "ASSET") {
     const assetCode = await assertAssetCodeAvailable(tx, current.objectCode || "");
-    await tx.assetRecord.create({ data: {
-      code: assetCode, name: current.objectName || "", branchCode: current.branchCode,
-      departmentCode: current.departmentCode, assetGroup: current.moneySourceCode || "ASSET",
-      location: current.warehouseCode ? `Kho ${current.warehouseCode}` : "Văn phòng",
-      quantity: current.quantity || 1,
-      purchaseDate: new Date(`${current.allocationStartPeriod || current.period}-01T00:00:00Z`),
-      originalCost: current.unitCost || current.amount, currentValue: current.amount,
-      usefulLifeMonths: current.allocationMonths || 12,
-      depreciationStartDate: current.allocationStartPeriod ? new Date(`${current.allocationStartPeriod}-01T00:00:00Z`) : null,
-      residualValue: 0, supplierName: "Nhà cung cấp số dư đầu kỳ", status: "IN_USE",
-      note: current.note || "Khởi tạo từ số dư đầu kỳ",
-    } });
+    await tx.assetRecord.create({ data: { code: assetCode, ...openingAssetRecordData(current) } });
     return;
   }
   if (current.balanceType === "PREPAID_EXPENSE") {

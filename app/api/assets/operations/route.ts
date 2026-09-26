@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { assetMonthlyDepreciation } from "@/lib/opening-asset";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma, type TxClient } from "@/lib/prisma";
 import { apiError, assertPeriodOpen, buildAllocationSchedules, businessError, cleanText, isPeriodLocked, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
@@ -236,8 +237,10 @@ export async function POST(request: Request) {
         // lấy số tròn, KỲ CUỐI lấy đúng phần còn lại — nếu không thì làm tròn dồn qua 60 tháng
         // để lại vài đồng lẻ treo mãi trên giá trị tài sản, hoặc đẻ thêm một kỳ khấu hao 1 đồng.
         const remaining = Math.max(0, Math.round(asset.currentValue - asset.residualValue));
-        const monthlyAmount = Math.round((asset.originalCost - asset.residualValue) / (asset.usefulLifeMonths || 1));
-        const isFinalPeriod = previous._count._all + 1 >= (asset.usefulLifeMonths || 1);
+        // Tài sản/CCDC khai ở số dư đầu kỳ đang phân bổ dở: số kỳ đã trích trước khi lên hệ
+        // thống tính vào tiến độ, số khấu hao mỗi kỳ = phần còn lại chia đều số kỳ còn lại.
+        const monthlyAmount = assetMonthlyDepreciation(asset);
+        const isFinalPeriod = (asset.openingDepreciatedPeriods || 0) + previous._count._all + 1 >= (asset.usefulLifeMonths || 1);
         const amount = isFinalPeriod ? remaining : Math.min(monthlyAmount, remaining);
         if (amount <= 0) continue;
         await prisma.$transaction([
@@ -246,7 +249,7 @@ export async function POST(request: Request) {
               assetId: asset.id,
               period,
               depreciationAmount: amount,
-              accumulatedDepreciation: (previous._sum.depreciationAmount || 0) + amount,
+              accumulatedDepreciation: (asset.accumulatedDepreciation || 0) + (previous._sum.depreciationAmount || 0) + amount,
               remainingValue: asset.currentValue - amount,
               runBy: auth.session.name,
             },

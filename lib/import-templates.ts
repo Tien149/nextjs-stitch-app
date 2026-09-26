@@ -681,6 +681,41 @@ export const importTemplates: ImportTemplateDefinition[] = [
       // khỏi phải mở tab Trích trước gán lại từng khoản sau khi import.
       { field: "pnl_item_code", label: "Hạng mục P&L", required: false, type: "text", aliases: ["hang muc p&l", "hang muc pnl", "ma hang muc p&l", "pnl item", "pnl item code"] },
       { field: "amount", label: "Số tiền", required: true, type: "number", aliases: ["so tien", "amount"] },
+      // Chỉ cho loại ASSET đang phân bổ dở; Số tiền khi đó là GIÁ TRỊ CÒN LẠI.
+      { field: "original_cost", label: "Nguyên giá ban đầu", required: false, type: "number", aliases: ["nguyen gia", "nguyen gia ban dau", "tong gia tri"] },
+      { field: "depreciated_periods", label: "Số kỳ đã phân bổ", required: false, type: "integer", aliases: ["so ky da phan bo", "so ky da pb"] },
+      { field: "depreciated_amount", label: "Giá trị đã phân bổ", required: false, type: "number", aliases: ["gia tri da phan bo", "gia tri da pb"] },
+      { field: "note", label: "Ghi chú", required: false, type: "text", aliases: ["ghi chu", "note"] },
+    ],
+  },
+  {
+    /**
+     * Danh sách tài sản / CCDC đầu kỳ ĐANG PHÂN BỔ DỞ, đúng bố cục file khách tự theo dõi
+     * ("Khai báo công cụ dụng cụ đầu kỳ", 26/09/2026). Không có cột Loại số dư — mọi dòng là
+     * ASSET. Hệ thống chỉ phân bổ tiếp phần còn lại, chia đều cho số kỳ còn lại.
+     */
+    code: "OPENING_ASSET_TOOL_V1",
+    importType: "OPENING_BALANCE",
+    name: "Tài sản / CCDC đầu kỳ (đang phân bổ dở)",
+    description: "Khai CCDC/tài sản đã phân bổ một phần trước khi lên hệ thống: nguyên giá ban đầu, số kỳ và giá trị đã phân bổ, giá trị và số kỳ còn lại.",
+    fields: [
+      { field: "period", label: "Kỳ", required: true, type: "text", aliases: ["ky", "period", "ky ke toan", "ky so du"], note: "Kỳ số dư đầu kỳ, dạng YYYY-MM (vd. 2026-08)." },
+      { field: "branch_code", label: "Cửa hàng", required: true, type: "text", aliases: ["chi nhanh", "branch", "branch code"] },
+      { field: "object_code", label: "Mã CCDC", required: true, type: "text", aliases: ["ma ccdc", "ma tai san", "ma doi tuong", "ma"] },
+      { field: "object_name", label: "Tên CCDC", required: true, type: "text", aliases: ["ten ccdc", "ten tai san", "ten doi tuong", "ten"] },
+      { field: "asset_group", label: "Nhóm tài sản", required: false, type: "text", aliases: ["nhom tai san", "nhom ccdc", "asset group"], note: "Mã nhóm tài sản (danh mục Nhóm tài sản). Bỏ trống = nhóm CCDC đầu tiên." },
+      { field: "quantity", label: "Số lượng", required: true, type: "number", aliases: ["so luong", "sl", "quantity"] },
+      { field: "unit_cost", label: "Đơn giá", required: false, type: "number", aliases: ["don gia", "unit cost"] },
+      { field: "original_cost", label: "Tổng giá trị", required: true, type: "number", aliases: ["tong gia tri", "nguyen gia", "nguyen gia ban dau", "thanh tien"], note: "Nguyên giá ban đầu = Số lượng × Đơn giá." },
+      { field: "allocation_per_period", label: "Giá trị phân bổ/kỳ", required: false, type: "number", aliases: ["gia tri phan bo/ky", "gia tri phan bo ky", "phan bo/ky", "phan bo moi ky"], note: "Chỉ để đối chiếu. Hệ thống phân bổ tiếp = Giá trị còn lại ÷ Số kỳ PB còn lại." },
+      { field: "allocation_months", label: "Tổng số kỳ phân bổ", required: true, type: "integer", aliases: ["tong so ky phan bo", "tong so ky pb", "so ky phan bo"] },
+      { field: "depreciated_periods", label: "Số kỳ đã PB", required: false, type: "integer", aliases: ["so ky da pb", "so ky da phan bo"], note: "Bỏ trống thì lấy Tổng số kỳ − Số kỳ PB còn lại." },
+      { field: "remaining_periods", label: "Số kỳ PB còn lại", required: true, type: "integer", aliases: ["so ky pb con lai", "so ky con lai", "so ky phan bo con lai"] },
+      { field: "depreciated_amount", label: "Giá trị đã PB", required: true, type: "number", aliases: ["gia tri da pb", "gia tri da phan bo", "da phan bo"] },
+      { field: "amount", label: "Giá trị còn lại", required: true, type: "number", aliases: ["gia tri con lai", "con lai", "gia tri con lai chua phan bo"], note: "Số dư đầu kỳ = Tổng giá trị − Giá trị đã PB." },
+      { field: "department_code", label: "Bộ phận", required: false, type: "text", aliases: ["bo phan", "phong ban", "department"] },
+      { field: "warehouse_code", label: "Kho", required: false, type: "text", aliases: ["kho", "vi tri", "warehouse"] },
+      { field: "allocation_start_period", label: "Kỳ bắt đầu PB tiếp", required: false, type: "text", aliases: ["ky bat dau pb tiep", "ky bat dau phan bo", "ky bat dau"], note: "Kỳ hệ thống trích kỳ phân bổ kế tiếp. Bỏ trống = đúng Kỳ số dư." },
       { field: "note", label: "Ghi chú", required: false, type: "text", aliases: ["ghi chu", "note"] },
     ],
   },

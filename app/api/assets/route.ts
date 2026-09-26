@@ -114,8 +114,11 @@ export async function GET(request: Request) {
     const lockedPeriodKeys = new Set(lockedPeriods.map((period) => `${period.branchCode}:${period.period}`));
 
     const enriched = assets.map((asset) => {
-      const allocatedPeriods = asset.depreciations.length;
-      const allocatedAmount = asset.depreciations.reduce((sum, d) => sum + d.depreciationAmount, 0);
+      // Tiến độ tính cả phần đã phân bổ TRƯỚC khi lên hệ thống (tài sản/CCDC đầu kỳ đang dở).
+      // Khoá sửa/xoá vẫn chỉ xét các kỳ chạy trên hệ thống (`runPeriods`).
+      const runPeriods = asset.depreciations.length;
+      const allocatedPeriods = runPeriods + (asset.openingDepreciatedPeriods || 0);
+      const allocatedAmount = asset.depreciations.reduce((sum, d) => sum + d.depreciationAmount, 0) + (asset.accumulatedDepreciation || 0);
       const remainingPeriods = asset.usefulLifeMonths ? Math.max(asset.usefulLifeMonths - allocatedPeriods, 0) : null;
       const computedCurrentValue = Math.max(asset.originalCost - allocatedAmount, asset.residualValue);
 
@@ -135,8 +138,8 @@ export async function GET(request: Request) {
       const isLockedPeriod = lockedPeriodKeys.has(`${asset.branchCode}:${assetPeriod}`) || lockedPeriodKeys.has(`ALL:${assetPeriod}`);
       const codeEditLockReason = isDisposedAsset(asset)
         ? "Tài sản đã thanh lý."
-        : allocatedPeriods > 0
-          ? `Tài sản đã trích khấu hao ${allocatedPeriods} kỳ.`
+        : runPeriods > 0
+          ? `Tài sản đã trích khấu hao ${runPeriods} kỳ.`
           : _count.maintenances > 0
             ? "Tài sản đã phát sinh bảo trì."
             : _count.damageReports > 0

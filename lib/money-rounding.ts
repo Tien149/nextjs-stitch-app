@@ -23,7 +23,7 @@ export const MONEY_FIELDS: Record<string, readonly string[]> = {
   Document: ["amount"],
   Deposit: ["amount", "remainingAmount"],
   DepositHistory: ["amount"],
-  OpeningBalance: ["amount"],
+  OpeningBalance: ["amount", "originalCost", "depreciatedAmount"],
   BankStatementTransaction: ["debitAmount", "creditAmount", "balanceAfter", "grossAmount", "grabExpenseAmount", "cardFeeAmount"],
   BankStatementAllocation: ["debitAmount", "creditAmount", "grossAmount", "grabExpenseAmount", "cardFeeAmount"],
   RevenueImportRow: ["grossAmount", "discountAmount", "vatAmount", "feeAmount", "cardFeeAmount", "appFeeAmount", "netAmount"],

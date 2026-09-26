@@ -26,6 +26,9 @@ type OpeningBalance = {
   allocationStartPeriod: string | null;
   pnlItemCode: string | null;
   amount: number;
+  originalCost?: number | null;
+  depreciatedPeriods?: number | null;
+  depreciatedAmount?: number | null;
   note: string | null;
   status: string;
   createdAt: string;
@@ -47,6 +50,9 @@ type OpeningBalanceForm = {
   allocationStartPeriod: string;
   pnlItemCode: string;
   amount: string;
+  /** Tài sản/CCDC đang phân bổ dở: số kỳ + giá trị đã phân bổ trước khi lên hệ thống. */
+  depreciatedPeriods: string;
+  depreciatedAmount: string;
   note: string;
   status: string;
 };
@@ -96,6 +102,8 @@ const emptyForm: OpeningBalanceForm = {
   allocationStartPeriod: "2026-07",
   pnlItemCode: "",
   amount: "10000000",
+  depreciatedPeriods: "",
+  depreciatedAmount: "",
   note: "",
   status: "DRAFT",
 };
@@ -135,6 +143,7 @@ export default function OpeningBalancesPage() {
   const [moneySources, setMoneySources] = useState<MasterDataOption[]>([]);
   const [warehouses, setWarehouses] = useState<MasterDataOption[]>([]);
   const [departments, setDepartments] = useState<MasterDataOption[]>([]);
+  const [assetGroups, setAssetGroups] = useState<MasterDataOption[]>([]);
   const [pnlItems, setPnlItems] = useState<MasterDataOption[]>([]);
   const [inventoryItems, setInventoryItems] = useState<{ id: string; code: string; name: string; unit: string }[]>([]);
 
@@ -206,6 +215,7 @@ export default function OpeningBalancesPage() {
         setMoneySources(activeMoneySources);
         setWarehouses(activeWarehouses);
         setDepartments(activeDepartments);
+        setAssetGroups(data.filter((item) => item.type === "ASSET_GROUP"));
         
         // Update form with default values if they are empty
         setForm(prev => {
@@ -303,13 +313,18 @@ export default function OpeningBalancesPage() {
       (left, right) => Number(right.code === "KH_LE") - Number(left.code === "KH_LE"),
     );
   }, [partners]);
+  /** Tài sản: nguyên giá ban đầu = số lượng × đơn giá (làm tròn đồng như file khách). */
+  const assetOriginalCost = isAssetType ? Math.round((Number(form.quantity) || 0) * (Number(form.unitCost) || 0)) : 0;
+  const assetRemainingPeriods = Math.max((Number(form.allocationMonths) || 0) - (Number(form.depreciatedPeriods) || 0), 0);
   const calculatedAmount = useMemo(() => {
     if (!isInventoryType && !isAssetType) return "";
     const quantity = Number(form.quantity) || 0;
     const unitCost = Number(form.unitCost) || 0;
+    // Tài sản đang phân bổ dở: số dư là GIÁ TRỊ CÒN LẠI = nguyên giá − đã phân bổ.
+    if (isAssetType) return String(Math.max(Math.round(quantity * unitCost) - (Number(form.depreciatedAmount) || 0), 0));
     const amount = quantity * unitCost;
     return amount > 0 ? String(amount) : "";
-  }, [form.quantity, form.unitCost, isInventoryType, isAssetType]);
+  }, [form.quantity, form.unitCost, form.depreciatedAmount, isInventoryType, isAssetType]);
   const effectiveAmount = calculatedAmount || form.amount;
 
   const createBalance = async (event: React.FormEvent) => {
@@ -350,6 +365,16 @@ export default function OpeningBalancesPage() {
       return;
     }
 
+    if (isAssetType && (Number(form.depreciatedAmount) || 0) > assetOriginalCost) {
+      setMessage("Giá trị đã phân bổ không được lớn hơn nguyên giá.");
+      return;
+    }
+
+    if (isAssetType && (Number(form.depreciatedPeriods) || 0) > (Number(form.allocationMonths) || 0)) {
+      setMessage("Số kỳ đã phân bổ không được lớn hơn tổng số kỳ.");
+      return;
+    }
+
     // Số kỳ phân bổ nhận từ 1: khoản còn đúng một tháng cuối vẫn phải khai được ở đầu kỳ,
     // chặn từ 2 thì kế toán không có chỗ nhập phần đuôi của chi phí trả trước cũ.
     if (isPrepaidType && (!form.objectCode || !form.allocationStartPeriod || Number(form.allocationMonths) < 1)) {
@@ -366,7 +391,8 @@ export default function OpeningBalancesPage() {
         objectName: (isObjectType || isAssetType || isPrepaidType) ? form.objectName : "",
         // Chi phí phân bổ dùng lại ô này làm Nhóm chi phí (OPEX/CAPEX). Bỏ qua ở đây thì server
         // nhận null và rơi về mặc định OPEX — chọn CAPEX xong lưu lại vẫn ra OPEX.
-        moneySourceCode: (isSourceType || isPrepaidType) ? form.moneySourceCode : "",
+        // Tài sản dùng ô này làm Nhóm tài sản (CCDC / TSCĐ) — quyết định ghi 242 hay 211.
+        moneySourceCode: (isSourceType || isPrepaidType || isAssetType) ? form.moneySourceCode : "",
         warehouseCode: isInventoryType ? form.warehouseCode : "",
         departmentCode: isAssetType ? form.departmentCode : "",
         quantity: (isInventoryType || isAssetType) ? Number(form.quantity) : undefined,
@@ -375,6 +401,9 @@ export default function OpeningBalancesPage() {
         allocationStartPeriod: (isAssetType || isPrepaidType) ? form.allocationStartPeriod : "",
         pnlItemCode: isPrepaidType ? form.pnlItemCode : "",
         amount: Number(effectiveAmount),
+        originalCost: isAssetType ? assetOriginalCost : undefined,
+        depreciatedPeriods: isAssetType ? Number(form.depreciatedPeriods) || 0 : undefined,
+        depreciatedAmount: isAssetType ? Number(form.depreciatedAmount) || 0 : undefined,
       };
 
       const response = await fetch("/api/opening-balances", {
@@ -397,7 +426,9 @@ export default function OpeningBalancesPage() {
         // với chi phí phân bổ là Nhóm chi phí, không phải một mã nguồn tiền.
         moneySourceCode: isPrepaidType
           ? prepaidCategoryOf(form.moneySourceCode)
-          : firstMoneySourceCode(moneySources, form.branchCode, sourceMoneyGroups),
+          : isAssetType
+            ? form.moneySourceCode
+            : firstMoneySourceCode(moneySources, form.branchCode, sourceMoneyGroups),
         warehouseCode: warehouses.find(w => w.branch === form.branchCode)?.code || warehouses[0]?.code || "",
         departmentCode: departments.find(d => d.branch === form.branchCode)?.code
           || departments.find(d => !d.branch || d.branch === "ALL")?.code
@@ -429,6 +460,8 @@ export default function OpeningBalancesPage() {
       allocationStartPeriod: balance.allocationStartPeriod || balance.period,
       pnlItemCode: balance.pnlItemCode || "",
       amount: String(balance.amount),
+      depreciatedPeriods: balance.depreciatedPeriods ? String(balance.depreciatedPeriods) : "",
+      depreciatedAmount: balance.depreciatedAmount ? String(balance.depreciatedAmount) : "",
       note: balance.note || "",
       status: "DRAFT",
     });
@@ -819,6 +852,7 @@ export default function OpeningBalancesPage() {
                     Nguyên giá đơn vị *
                     <input
                       type="number"
+                      step="any"
                       value={form.unitCost}
                       onChange={(event) => setForm((value) => ({ ...value, unitCost: event.target.value }))}
                       className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500"
@@ -827,9 +861,23 @@ export default function OpeningBalancesPage() {
                   </label>
                 </div>
 
+                <label className="text-xs font-bold text-slate-600 block">
+                  Nhóm tài sản
+                  <select
+                    value={form.moneySourceCode}
+                    onChange={(event) => setForm((value) => ({ ...value, moneySourceCode: event.target.value }))}
+                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500"
+                  >
+                    <option value="">-- Chọn nhóm (CCDC ghi 242, TSCĐ ghi 211) --</option>
+                    {assetGroups.map((item) => (
+                      <option key={item.id} value={item.code}>[{item.code}] {item.name}{item.group ? ` · ${item.group}` : ""}</option>
+                    ))}
+                  </select>
+                </label>
+
                 <div className="grid grid-cols-2 gap-3">
                   <label className="text-xs font-bold text-slate-600 block">
-                    Số kỳ phân bổ (Tháng) *
+                    Tổng số kỳ phân bổ *
                     <input
                       type="number"
                       value={form.allocationMonths}
@@ -840,7 +888,7 @@ export default function OpeningBalancesPage() {
                     />
                   </label>
                   <label className="text-xs font-bold text-slate-600 block">
-                    Kỳ bắt đầu khấu hao *
+                    Kỳ bắt đầu phân bổ tiếp *
                     <MonthInput
                       value={form.allocationStartPeriod}
                       onChange={(allocationStartPeriod) => setForm((value) => ({ ...value, allocationStartPeriod }))}
@@ -849,6 +897,41 @@ export default function OpeningBalancesPage() {
                       ariaLabel="Kỳ bắt đầu phân bổ"
                     />
                   </label>
+                </div>
+
+                {/* Tài sản/CCDC đang phân bổ dở khi lên hệ thống: khai phần đã phân bổ trước đó,
+                    hệ thống chỉ phân bổ tiếp phần còn lại, chia đều số kỳ còn lại. */}
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="text-xs font-bold text-slate-600 block">
+                    Số kỳ đã phân bổ
+                    <input
+                      type="number"
+                      min={0}
+                      value={form.depreciatedPeriods}
+                      onChange={(event) => setForm((value) => ({ ...value, depreciatedPeriods: event.target.value }))}
+                      className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500"
+                      placeholder="0 nếu tài sản mới"
+                    />
+                  </label>
+                  <label className="text-xs font-bold text-slate-600 block">
+                    Giá trị đã phân bổ
+                    <input
+                      type="number"
+                      min={0}
+                      value={form.depreciatedAmount}
+                      onChange={(event) => setForm((value) => ({ ...value, depreciatedAmount: event.target.value }))}
+                      className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500"
+                      placeholder="0 nếu tài sản mới"
+                    />
+                  </label>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                  Nguyên giá <span className="font-bold text-slate-800">{formatCurrency(assetOriginalCost)} đ</span>
+                  {" · "}Còn lại <span className="font-bold text-slate-800">{formatCurrency(Number(calculatedAmount) || 0)} đ</span>
+                  {" · "}<span className="font-bold text-slate-800">{assetRemainingPeriods}</span> kỳ còn lại
+                  {assetRemainingPeriods > 0 && Number(calculatedAmount) > 0 && (
+                    <> · Mỗi kỳ ≈ <span className="font-bold text-slate-800">{formatCurrency(Math.round(Number(calculatedAmount) / assetRemainingPeriods))} đ</span></>
+                  )}
                 </div>
               </>
             )}
@@ -945,7 +1028,7 @@ export default function OpeningBalancesPage() {
 
             <div className="grid grid-cols-2 gap-3">
               <label className="text-xs font-bold text-slate-600 block">
-                Số tiền / Nguyên giá *
+                {isAssetType ? "Giá trị còn lại (số dư) *" : "Số tiền / Nguyên giá *"}
                 <input
                   type="number"
                   value={effectiveAmount}
@@ -1085,6 +1168,9 @@ export default function OpeningBalancesPage() {
                             {balance.balanceType === "ASSET" && (
                               <span className="text-[11px] text-slate-500 font-bold block mt-0.5">
                                 BP: {balance.departmentCode || "Văn phòng"} · Khấu hao: {balance.allocationMonths} tháng · BĐ: {balance.allocationStartPeriod}
+                                {(balance.depreciatedPeriods || 0) > 0 && (
+                                  <> · Đã PB {balance.depreciatedPeriods}/{balance.allocationMonths} kỳ ({formatCurrency(balance.depreciatedAmount || 0)} đ) · Nguyên giá {formatCurrency(balance.originalCost || 0)} đ</>
+                                )}
                               </span>
                             )}
                             {/* Prepaid Detail */}

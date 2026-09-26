@@ -444,7 +444,40 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
     ? await prisma.masterDataItem.findMany({ where: { type: "MONEY_SOURCE", code: { in: openingSourceCodes } }, select: { code: true, group: true } })
     : [];
   const openingSourceGroups = new Map(openingSources.map((source) => [source.code, (source.group || "").toUpperCase()]));
+  const assetGroups = await prisma.masterDataItem.findMany({ where: { type: "ASSET_GROUP" }, select: { code: true, group: true } });
+  const assetGroupType = new Map(assetGroups.map((item) => [item.code, (item.group || "").toUpperCase()]));
+  const isToolGroup = (code: string | null | undefined) => ["CCDC", "TOOL"].includes(assetGroupType.get(code || "") || "");
   for (const row of openingBalances) {
+    /**
+     * Tài sản/CCDC đầu kỳ: số dư là GIÁ TRỊ CÒN LẠI (`amount`). CCDC treo Nợ 242 đúng phần còn
+     * lại chưa phân bổ — cùng tài khoản với CCDC mua mới. TSCĐ ghi Nợ 211 theo nguyên giá, Có 214
+     * phần khấu hao đã trích trước khi lên hệ thống, để bảng cân đối có đủ nguyên giá lẫn hao mòn.
+     * Nhóm tài sản khai ở cột Nguồn tiền (`moneySourceCode`) như từ trước tới nay.
+     */
+    if (row.balanceType === "ASSET") {
+      const depreciated = row.depreciatedAmount || 0;
+      const cost = row.originalCost ?? row.amount + depreciated;
+      const lines: EntryLine[] = isToolGroup(row.moneySourceCode)
+        ? [{ accountCode: "242", debit: row.amount, partnerCode: row.objectCode }, { accountCode: "411", credit: row.amount }]
+        : [
+          { accountCode: "211", debit: cost, partnerCode: row.objectCode },
+          ...(depreciated > 0 ? [{ accountCode: "214", credit: depreciated }] : []),
+          { accountCode: "411", credit: row.amount },
+        ];
+      // Tài sản đã phân bổ hết (còn 0 đ) thì CCDC không còn gì để treo — chỉ theo dõi hiện vật.
+      if (lines.reduce((sum, line) => sum + (line.debit || 0), 0) <= 0) continue;
+      results.push(await postJournalEntry({
+        entryDate: start,
+        branchCode: row.branchCode,
+        sourceType: "OPENING_BALANCE",
+        sourceId: row.id,
+        sourceCode: `${row.period}-${row.balanceType}`,
+        description: row.note || `Số dư đầu kỳ ${row.balanceType}`,
+        createdBy: actor,
+        lines,
+      }));
+      continue;
+    }
     const sourceAccount = openingSourceGroups.get(row.moneySourceCode || "") === "BANK" ? "1121" : "1111";
     // PREPAID_EXPENSE là phần chi phí trả trước còn lại chưa phân bổ: tiền đã chi từ trước
     // khi lên hệ thống, nên phải treo Nợ 242 rồi rút dần qua các kỳ phân bổ. Rơi vào nhánh
@@ -475,9 +508,19 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   }
 
   const assets = await prisma.assetRecord.findMany({ where: { ...branchFilter, purchaseDate: { gte: start, lt: end } } });
-  const assetGroups = await prisma.masterDataItem.findMany({ where: { type: "ASSET_GROUP" }, select: { code: true, group: true } });
-  const assetGroupType = new Map(assetGroups.map((item) => [item.code, (item.group || "").toUpperCase()]));
+  const openingAssetCodes = new Set((await prisma.openingBalance.findMany({
+    where: { balanceType: "ASSET", status: { in: ["POSTED", "CONFIRMED"] }, objectCode: { not: null } },
+    select: { objectCode: true },
+  })).map((row) => (row.objectCode || "").toUpperCase()));
   for (const row of assets) {
+    // Tài sản sinh từ số dư đầu kỳ đã có bút toán OPENING_BALANCE (Nợ 211/242) ngay bên trên —
+    // ghi tăng thêm lần nữa là nhân đôi tài sản. Bản cũ chưa có openingBalanceId thì nhận theo
+    // mã tài sản trùng một dòng số dư đầu kỳ loại ASSET.
+    if (row.openingBalanceId || openingAssetCodes.has(row.code.toUpperCase())) {
+      // Bút toán ghi tăng trùng do các lần đồng bộ trước sinh ra thì gỡ luôn.
+      await prisma.journalEntry.deleteMany({ where: { sourceType: "ASSET_ACQUISITION", sourceId: row.id } });
+      continue;
+    }
     const isTool = ["CCDC", "TOOL"].includes(assetGroupType.get(row.assetGroup) || "");
     const payable = row.paymentStatus === "PAYABLE" || (row.paymentStatus === "UNSPECIFIED" && Boolean(row.supplierCode));
     results.push(await postJournalEntry({ entryDate: row.purchaseDate, branchCode: row.branchCode, sourceType: "ASSET_ACQUISITION", sourceId: row.id, sourceCode: row.code, description: `Ghi tăng tài sản ${row.name}`, createdBy: actor, lines: [{ accountCode: isTool ? "242" : "211", debit: row.originalCost, partnerCode: row.supplierCode }, { accountCode: payable ? "331" : "411", credit: row.originalCost, partnerCode: payable ? row.supplierCode : null }] }));
@@ -744,7 +787,9 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   }
 
   const depreciation = await prisma.assetDepreciation.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { asset: { branchCode } }) }, include: { asset: true } });
-  for (const row of depreciation) results.push(await postJournalEntry({ entryDate: periodClosingEntryDate(period), branchCode: row.asset.branchCode, sourceType: "DEPRECIATION", sourceId: row.id, sourceCode: row.asset.code, description: `Khấu hao ${row.asset.name}`, createdBy: actor, lines: [{ accountCode: "6424", debit: row.depreciationAmount }, { accountCode: "214", credit: row.depreciationAmount }] }));
+  // CCDC nằm ở 242 (ghi tăng và số dư đầu kỳ đều treo 242) nên phân bổ phải rút 242 xuống; ghi
+  // Có 214 thì 242 treo nguyên mãi trên bảng cân đối còn 214 phình lên. TSCĐ vẫn là Có 214.
+  for (const row of depreciation) results.push(await postJournalEntry({ entryDate: periodClosingEntryDate(period), branchCode: row.asset.branchCode, sourceType: "DEPRECIATION", sourceId: row.id, sourceCode: row.asset.code, description: `Khấu hao ${row.asset.name}`, createdBy: actor, lines: [{ accountCode: "6424", debit: row.depreciationAmount }, { accountCode: isToolGroup(row.asset.assetGroup) ? "242" : "214", credit: row.depreciationAmount }] }));
 
   const accruals = await prisma.accrualSchedule.findMany({ where: { period, status: "POSTED", ...(branchCode === "ALL" ? {} : { accrual: { branchCode } }) }, include: { accrual: true } });
   // Vế Có phụ thuộc khoản này ĐÃ TRẢ TIỀN hay chưa:

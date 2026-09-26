@@ -6,6 +6,7 @@ import type { DemoSession } from "@/lib/auth-demo";
 import { isInboundStockType, isOutboundStockType, isStockTransactionType, isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType } from "@/lib/inventory-stock";
 import { parseVatRate, resolveVatAmount, VAT_RATE_CODES, vatAmountOf, vatRateLabel } from "@/lib/inventory-vat";
 import { roundVnd } from "@/lib/money-rounding";
+import { resolveOpeningAsset } from "@/lib/opening-asset";
 import { normalizeCashflowCategoryType, normalizeRevenueExpenseGroup } from "@/lib/voucher-rules";
 import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
 import { loadNonInventoryRevenueGroups, loadRevenueCategoryIndex, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
@@ -1440,8 +1441,48 @@ export async function validateImportResult(
     }
     if (importType === "OPENING_BALANCE") {
       validatePeriod(row, "period", "Kỳ");
-      const balanceType = text(row.values.balance_type).toUpperCase();
+      // Mẫu "Tài sản / CCDC đầu kỳ" không có cột Loại số dư: mọi dòng là ASSET.
+      const isAssetTemplate = !result.mapping.balance_type;
+      const balanceType = isAssetTemplate ? "ASSET" : text(row.values.balance_type).toUpperCase();
       row.values.balance_type = balanceType;
+      if (balanceType === "ASSET") {
+        // Nhóm tài sản đi ở cột Nguồn tiền như từ trước (màn Số dư đầu kỳ vẫn đọc cột đó).
+        // Mẫu CCDC khai ở cột Nhóm tài sản; bỏ trống thì lấy nhóm CCDC đầu tiên.
+        const groupCode = text(row.values.asset_group) || text(row.values.money_source_code);
+        const assetGroups = masterItems.filter((item) => item.type === "ASSET_GROUP" && item.status === "ACTIVE");
+        const group = groupCode
+          ? assetGroups.find((item) => item.code.toUpperCase() === groupCode.toUpperCase())
+          : isAssetTemplate ? assetGroups.find((item) => ["CCDC", "TOOL"].includes(text(item.group).toUpperCase())) : null;
+        if (groupCode && !group) addError(row, `Nhóm tài sản [${groupCode}] không tồn tại hoặc đã ngưng hoạt động`);
+        if (!groupCode && isAssetTemplate && !group) addError(row, "Chưa có nhóm tài sản loại CCDC trong danh mục — khai cột Nhóm tài sản");
+        if (group) row.values.money_source_code = group.code;
+        const optionalNumber = (value: unknown) => (value === "" || value === undefined || value === null ? null : numberValue(value));
+        const { values, errors } = resolveOpeningAsset({
+          quantity: optionalNumber(row.values.quantity),
+          unitCost: optionalNumber(row.values.unit_cost),
+          originalCost: optionalNumber(row.values.original_cost),
+          totalPeriods: numberValue(row.values.allocation_months) || null,
+          depreciatedPeriods: optionalNumber(row.values.depreciated_periods),
+          depreciatedAmount: optionalNumber(row.values.depreciated_amount),
+          remainingPeriods: optionalNumber(row.values.remaining_periods),
+          remainingValue: numberValue(row.values.amount),
+        });
+        errors.forEach((message) => addError(row, message));
+        row.values.original_cost = values.originalCost;
+        row.values.depreciated_amount = values.depreciatedAmount;
+        row.values.depreciated_periods = values.depreciatedPeriods;
+        row.values.remaining_periods = values.remainingPeriods;
+        if (text(row.values.allocation_start_period)) validatePeriod(row, "allocation_start_period", "Kỳ bắt đầu phân bổ");
+        for (const [field, type, label] of [["department_code", "DEPARTMENT", "Bộ phận"], ["warehouse_code", "WAREHOUSE", "Kho"]] as const) {
+          const code = text(row.values[field]);
+          if (!code) continue;
+          const found = masterItems.find((item) => item.type === type && item.code.toUpperCase() === code.toUpperCase());
+          if (!found) addError(row, `${label} [${code}] không có trong danh mục`);
+          else row.values[field] = found.code;
+        }
+        if (numberValue(row.values.quantity) <= 0) addError(row, "Tài sản đầu kỳ cần Số lượng lớn hơn 0");
+        if (!text(row.values.object_name)) addError(row, "Tài sản đầu kỳ cần Tên");
+      }
       // Tài sản hết kỳ phân bổ vẫn còn hiện vật cần theo dõi — giá trị 0 là hợp lệ.
       // Các loại số dư khác thì 0 đồng là dòng thừa, giữ nguyên chặn.
       if (balanceType === "ASSET") {

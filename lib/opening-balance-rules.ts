@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/custom-client";
 import { moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
+import { resolveOpeningAsset } from "@/lib/opening-asset";
 
 export const OPENING_BALANCE_EFFECTIVE_STATUSES = ["POSTED", "CONFIRMED"] as const;
 export const CASH_SOURCE_OPENING_TYPES = ["CASH", "BANK", "WALLET_POS"] as const;
@@ -24,6 +25,10 @@ export type OpeningBalanceInput = {
   allocationStartPeriod: string | null;
   pnlItemCode: string | null;
   amount: number;
+  /** Tài sản/CCDC đầu kỳ đang phân bổ dở — xem lib/opening-asset.ts. */
+  originalCost: number | null;
+  depreciatedPeriods: number | null;
+  depreciatedAmount: number | null;
   note: string | null;
 };
 
@@ -51,6 +56,9 @@ export function normalizeOpeningBalanceInput(body: Record<string, unknown>): Ope
     allocationStartPeriod: nullableText(body.allocationStartPeriod),
     pnlItemCode: nullableText(body.pnlItemCode)?.toUpperCase() || null,
     amount: number(body.amount),
+    originalCost: nullableNumber(body.originalCost),
+    depreciatedPeriods: nullableNumber(body.depreciatedPeriods) === null ? null : Math.floor(number(body.depreciatedPeriods)),
+    depreciatedAmount: nullableNumber(body.depreciatedAmount),
     note: nullableText(body.note),
   };
 }
@@ -110,6 +118,27 @@ export async function validateOpeningBalanceInput(tx: Prisma.TransactionClient, 
   }
   if (input.balanceType === "ASSET" && input.unitCost !== null && input.unitCost < 0) {
     throw new Error("Đơn giá tài sản đầu kỳ không được âm");
+  }
+  if (input.balanceType === "ASSET") {
+    // Nguyên giá − đã phân bổ = còn lại (số dư); tổng kỳ − đã phân bổ = còn lại. Lệch nhau thì
+    // lần chạy khấu hao đầu tiên trích sai số, chặn ngay ở đây.
+    const { values, errors } = resolveOpeningAsset({
+      quantity: input.quantity,
+      unitCost: input.unitCost,
+      originalCost: input.originalCost,
+      totalPeriods: input.allocationMonths,
+      depreciatedPeriods: input.depreciatedPeriods,
+      depreciatedAmount: input.depreciatedAmount,
+      remainingValue: input.amount,
+    });
+    if (errors.length > 0) throw new Error(errors[0]);
+    input.originalCost = values.originalCost;
+    input.depreciatedAmount = values.depreciatedAmount;
+    input.depreciatedPeriods = values.depreciatedPeriods;
+  } else {
+    input.originalCost = null;
+    input.depreciatedAmount = null;
+    input.depreciatedPeriods = null;
   }
   // Số kỳ = 1 hợp lệ: phần đuôi còn lại đúng một tháng của một khoản trả trước cũ vẫn là số dư
   // đầu kỳ phải khai. Khác với phiếu chi trả trước (bắt từ 2 kỳ) vì ở đó một kỳ nghĩa là chi phí

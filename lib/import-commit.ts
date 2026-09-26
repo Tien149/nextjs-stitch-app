@@ -21,6 +21,7 @@ import { cleanMoneySourceName, normalizeMoneySourceGroup } from "@/lib/money-sou
 import { evaluateBankStatementAutoApproval } from "@/lib/bank-statement-auto-approval";
 import { applyVoucherSideEffects } from "@/lib/voucher-side-effects";
 import { applyOpeningDeposit } from "@/lib/opening-balance-deposit";
+import { openingAssetRecordData } from "@/lib/opening-asset";
 import { assertAssetCodeAvailable, nextAssetCode } from "@/lib/asset-code-generator";
 import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 import { nextStockDocCode, nextStocktakeCode } from "@/lib/inventory-stock";
@@ -1878,6 +1879,14 @@ export async function commitImport(input: CommitInput) {
             allocationStartPeriod: row.values.allocation_start_period ? asText(row.values.allocation_start_period) : null,
             pnlItemCode: row.values.pnl_item_code ? asText(row.values.pnl_item_code).toUpperCase() : null,
             amount: asNumber(row.values.amount),
+            // Tài sản/CCDC đang phân bổ dở (đã chuẩn hoá ở bước kiểm tra — lib/opening-asset.ts).
+            ...(asText(row.values.balance_type).toUpperCase() === "ASSET"
+              ? {
+                originalCost: asNumber(row.values.original_cost),
+                depreciatedPeriods: asInteger(row.values.depreciated_periods),
+                depreciatedAmount: asNumber(row.values.depreciated_amount),
+              }
+              : {}),
             note: row.values.note ? asText(row.values.note) : null,
             status: "POSTED",
           },
@@ -1914,29 +1923,20 @@ export async function commitImport(input: CommitInput) {
 
         if (balanceType === "ASSET" && row.values.object_code) {
           const code = asText(row.values.object_code).toUpperCase();
+          const data = openingAssetRecordData(opening);
+          // Tài sản đã chạy khấu hao trên hệ thống thì không được ghi đè bằng số đầu kỳ: tiến độ
+          // và giá trị còn lại sẽ lệch hẳn các kỳ đã trích.
+          const existing = await tx.assetRecord.findFirst({
+            where: { code, deletedAt: undefined },
+            select: { id: true, _count: { select: { depreciations: true } } },
+          });
+          if (existing && existing._count.depreciations > 0) {
+            throw new Error(`Dòng ${row.rowNumber}: Tài sản ${code} đã chạy khấu hao ${existing._count.depreciations} kỳ trên hệ thống, không ghi đè bằng số dư đầu kỳ được`);
+          }
           const asset = await tx.assetRecord.upsert({
             where: { code },
-            create: {
-              code,
-              name: asText(row.values.object_name) || code,
-              branchCode: asText(row.values.branch_code),
-              departmentCode: asText(row.values.department_code) || null,
-              assetGroup: asText(row.values.money_source_code) || "ASSET",
-              purchaseDate: new Date(`${asText(row.values.period)}-01T00:00:00Z`),
-              originalCost: asNumber(row.values.amount),
-              currentValue: asNumber(row.values.amount),
-              quantity: row.values.quantity ? asNumber(row.values.quantity) : 1,
-              note: asText(row.values.note) || "Tạo từ số dư đầu kỳ",
-            },
-            update: {
-              name: asText(row.values.object_name) || code,
-              branchCode: asText(row.values.branch_code),
-              departmentCode: asText(row.values.department_code) || null,
-              originalCost: asNumber(row.values.amount),
-              currentValue: asNumber(row.values.amount),
-              quantity: row.values.quantity ? asNumber(row.values.quantity) : 1,
-              note: asText(row.values.note) || "Cập nhật từ số dư đầu kỳ",
-            },
+            create: { code, ...data },
+            update: { ...data, note: asText(row.values.note) || "Cập nhật từ số dư đầu kỳ" },
           });
           await setImportTarget(tx, staging, row, "ASSET", asset.id);
         }

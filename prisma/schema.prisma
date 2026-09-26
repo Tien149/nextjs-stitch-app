@@ -147,6 +147,12 @@ model OpeningBalance {
   /// khoản phân bổ sinh ra mang luôn mã này nên bút toán phân bổ hàng kỳ đứng đúng dòng P&L.
   pnlItemCode           String?
   amount                Float
+  /// Tài sản/CCDC đầu kỳ đang phân bổ dở: nguyên giá ban đầu, số kỳ và giá trị ĐÃ phân bổ
+  /// trước khi lên hệ thống. `amount` là giá trị CÒN LẠI (= nguyên giá − đã phân bổ), số kỳ
+  /// còn lại = allocationMonths − depreciatedPeriods. Bỏ trống = tài sản mới, chưa phân bổ kỳ nào.
+  originalCost          Float?
+  depreciatedPeriods    Int?
+  depreciatedAmount     Float?
   note                  String?
   status                String   @default("DRAFT")
   createdAt             DateTime @default(now())
@@ -540,7 +546,14 @@ model AssetRecord {
   purchaseDate            DateTime
   originalCost            Float
   currentValue            Float
+  /// Khấu hao/phân bổ ĐÃ trích TRƯỚC khi lên hệ thống (tài sản/CCDC khai ở số dư đầu kỳ). Các kỳ
+  /// chạy trên hệ thống nằm ở AssetDepreciation, không cộng vào cột này.
   accumulatedDepreciation Float               @default(0)
+  /// Số kỳ đã phân bổ trước khi lên hệ thống — đi cùng accumulatedDepreciation.
+  openingDepreciatedPeriods Int             @default(0)
+  /// Tài sản sinh từ số dư đầu kỳ: không ghi bút toán ghi tăng (ASSET_ACQUISITION) vì số dư đầu
+  /// kỳ đã ghi Nợ 211/242 rồi.
+  openingBalanceId        String?
   usefulLifeMonths        Int?
   depreciationStartDate   DateTime?
   residualValue           Float               @default(0)
