@@ -29,7 +29,7 @@ type ItemGroup = { id: string; code: string; name: string; group: string | null;
 type RevenueGroup = { id: string; code: string; name: string; group: string | null };
 type Balance = { id: string; warehouseCode: string; quantity: number; averageCost: number; item: Item };
 type Transaction = { id: string; code: string; transactionType: string; subType: string | null; transactionDate: string; branchCode: string; warehouseCode: string; toWarehouseCode: string | null; toBranchCode: string | null; partnerCode: string | null; referenceType: string | null; internalReceivableDebtCode: string | null; internalPayableDebtCode: string | null; referenceCode: string | null; note?: string | null; lines: Array<{ id: string; inputQuantity: number | null; inputUnitCode: string | null; conversionRate: number; quantity: number; unitCost: number; inputUnitCost: number | null; totalCost: number; vatRate: number | null; vatAmount: number; item: Item }> };
-type Recipe = { id: string; code: string; productCode: string; branchCode?: string | null; productName: string; unit: string; outputConversionRate: number; sellingPrice: number; estimatedCost: number; estimatedUnitCost: number; version: number; effectiveFrom: string; status: string; lines: Array<{ quantity: number; unitCode: string | null; conversionRate: number; wasteRate: number; item: Item }> };
+type Recipe = { id: string; code: string; productCode: string; branchCode?: string | null; productName: string; unit: string; outputConversionRate: number; sellingPrice: number; estimatedCost: number; estimatedUnitCost: number; version: number; effectiveFrom: string; status: string; lines: Array<{ quantity: number; unitCode: string | null; conversionRate: number; wasteRate: number; item: Item; quantityBase?: number; componentUnitCost?: number; lineCost?: number }> };
 type CostSummaryRow = { productCode: string; branchCode: string; productName: string; group: string; stockUnit: string; batchUnit: string; outputConversionRate: number; sellingPrice: number; unitCost: number; costRatio: number | null; version: number };
 type WasteReportRow = { itemCode: string; itemName: string; unit: string; itemType: string; totalQuantity: number; totalValue: number; documentCount: number; bySubType: Record<string, { quantity: number; value: number }> };
 type PendingSales = {
@@ -175,7 +175,15 @@ export default function InventoryPage() {
   const [recipeForm, setRecipeForm] = useState({ productCode: "SP_COMBO01", productName: "Combo ban POS", sellingPrice: "45000", unit: "", outputConversionRate: "1", effectiveFrom: today(), itemId: "", quantity: "0.02", wasteRate: "3" });
   /** Cửa hàng áp dụng công thức: rỗng = dùng chung, nhiều mã = các nơi pha giống hệt nhau. */
   const [recipeBranchCodes, setRecipeBranchCodes] = useState<string[]>([]);
-  const [recipeRows, setRecipeRows] = useState([{ itemId: "", quantity: "1", unitCode: "", wasteRate: "0" }, { itemId: "", quantity: "20", unitCode: "", wasteRate: "5" }]);
+  /**
+   * `conversionRate` giữ hệ số quy đổi đang lưu trên dòng khi Sửa / Sao chép một định lượng có
+   * sẵn (dòng import khai hệ số thẳng, không có trong danh mục quy đổi). Đổi nguyên liệu hay
+   * ĐVT thì xoá trống để máy chủ tra lại theo danh mục.
+   */
+  const [recipeRows, setRecipeRows] = useState([{ itemId: "", quantity: "1", unitCode: "", conversionRate: "", wasteRate: "0" }, { itemId: "", quantity: "20", unitCode: "", conversionRate: "", wasteRate: "5" }]);
+  /** Đang sửa thẳng một dòng của bảng phiên bản (gồm mọi bản ghi cửa hàng gom chung dòng đó). Null = form tạo mới. */
+  const [recipeEditing, setRecipeEditing] = useState<{ ids: string[]; label: string } | null>(null);
+  const recipeFormRef = useRef<HTMLFormElement>(null);
   const [productionForm, setProductionForm] = useState({ productCode: "BTP_SOTCACHUA", productQuantity: "2", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HCM", referenceCode: "", note: "Che bien ban thanh pham" });
   /** Nút Rã nguyên liệu: rã doanh thu chờ (PENDING) theo định lượng, tự sinh phiếu chế biến + xuất bán. */
   /**
@@ -524,7 +532,7 @@ export default function InventoryPage() {
       .map((line) => [line.item.code, line.quantity, line.unitCode || "", line.conversionRate, line.wasteRate].join("|"))
       .sort(),
   });
-  type RecipeGroup = { key: string; recipe: Recipe; branchCodes: string[]; versions: number[] };
+  type RecipeGroup = { key: string; recipe: Recipe; branchCodes: string[]; versions: number[]; ids: string[] };
   const groupedRecipes: RecipeGroup[] = (() => {
     const groups = new Map<string, RecipeGroup>();
     for (const recipe of data.recipes) {
@@ -534,8 +542,9 @@ export default function InventoryPage() {
       if (existing) {
         if (branchCode && !existing.branchCodes.includes(branchCode)) existing.branchCodes.push(branchCode);
         if (!existing.versions.includes(recipe.version)) existing.versions.push(recipe.version);
+        existing.ids.push(recipe.id);
       } else {
-        groups.set(key, { key, recipe, branchCodes: branchCode ? [branchCode] : [], versions: [recipe.version] });
+        groups.set(key, { key, recipe, branchCodes: branchCode ? [branchCode] : [], versions: [recipe.version], ids: [recipe.id] });
       }
     }
     return [...groups.values()];
@@ -738,6 +747,127 @@ export default function InventoryPage() {
     setMessage(response.ok ? success : payload.error || "Không thực hiện được thao tác");
     if (response.ok) await loadData();
     return response.ok ? payload : null;
+  };
+
+  /**
+   * Đổ một định lượng có sẵn vào form bên trái.
+   *   - "edit": sửa thẳng phiên bản đó (giữ mã món, cửa hàng, số phiên bản).
+   *   - "copy": chép làm bản nháp cho PHIÊN BẢN MỚI — ngày áp dụng đặt về hôm nay để người dùng
+   *     chọn lại; lưu ra V+1, bản cũ vẫn áp cho các ngày trước ngày áp dụng mới.
+   */
+  const loadRecipeIntoForm = (recipe: Recipe, branchCodes: string[], ids: string[], mode: "edit" | "copy") => {
+    setRecipeForm((form) => ({
+      ...form,
+      productCode: recipe.productCode,
+      productName: recipe.productName,
+      sellingPrice: String(recipe.sellingPrice || 0),
+      unit: recipe.unit,
+      outputConversionRate: String(recipe.outputConversionRate || 1),
+      effectiveFrom: mode === "edit" ? String(recipe.effectiveFrom).slice(0, 10) : today(),
+    }));
+    setRecipeBranchCodes(branchCodes);
+    setRecipeRows(recipe.lines.length === 0
+      ? [{ itemId: "", quantity: "1", unitCode: "", conversionRate: "", wasteRate: "0" }]
+      : recipe.lines.map((line) => {
+        const baseUnit = (line.item.unit || "").toUpperCase();
+        const unitCode = line.unitCode && line.unitCode.toUpperCase() !== baseUnit ? line.unitCode : "";
+        // Giữ hệ số đã lưu khi dòng dùng ĐVT quy đổi, hoặc khi dòng cũ để trống ĐVT mà vẫn có
+        // phép nhân thật (2 chai830gr = 1660 gr) — bỏ đi là lưu lại sẽ đổi số rã.
+        const keepRate = unitCode || (!line.unitCode && line.conversionRate > 0 && line.conversionRate !== 1);
+        return {
+          itemId: line.item.id,
+          quantity: String(line.quantity),
+          unitCode,
+          conversionRate: keepRate ? String(line.conversionRate) : "",
+          wasteRate: String(line.wasteRate),
+        };
+      }));
+    setRecipeEditing(mode === "edit" ? { ids, label: `${recipe.productCode} V${recipe.version}` } : null);
+    setMessage(mode === "copy"
+      ? `Đã chép ${recipe.productCode} V${recipe.version} vào form. Chỉnh nguyên liệu, chọn Ngày áp dụng mới rồi bấm Lưu phiên bản: hệ thống tạo phiên bản mới, bản cũ vẫn áp cho các ngày trước đó.`
+      : "");
+    recipeFormRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const cancelRecipeEdit = () => {
+    setRecipeEditing(null);
+    setRecipeBranchCodes([]);
+    setRecipeRows([{ itemId: "", quantity: "1", unitCode: "", conversionRate: "", wasteRate: "0" }]);
+    setRecipeForm((form) => ({ ...form, productCode: "", productName: "", sellingPrice: "", unit: "", outputConversionRate: "1", effectiveFrom: today() }));
+  };
+
+  /**
+   * Lưu form định lượng (tạo phiên bản mới hoặc sửa thẳng). Phiên bản đã được dùng để rã
+   * nguyên liệu thì máy chủ trả 409 kèm danh sách lần rã: hỏi người dùng, đồng ý thì gửi lại
+   * với confirmRerun — máy chủ gỡ phiếu của các lần rã đó và rã lại theo định lượng mới.
+   */
+  const saveRecipe = async (confirmRerun = false): Promise<void> => {
+    setMessage("");
+    const lines = recipeRows.filter((row) => row.itemId).map((row) => ({
+      itemId: row.itemId,
+      quantity: row.quantity,
+      unitCode: row.unitCode || undefined,
+      conversionRate: row.conversionRate || undefined,
+      wasteRate: row.wasteRate,
+    }));
+    const editing = recipeEditing;
+    const body = editing
+      ? {
+        action: "UPDATE_RECIPE",
+        recipeIds: editing.ids,
+        productName: recipeForm.productName,
+        sellingPrice: recipeForm.sellingPrice,
+        unit: recipeForm.unit,
+        outputConversionRate: recipeForm.outputConversionRate,
+        effectiveFrom: recipeForm.effectiveFrom,
+        lines,
+        confirmRerun,
+      }
+      : { action: "CREATE_RECIPE", ...recipeForm, branchCodes: recipeBranchCodes, lines, confirmRerun };
+    let response: Response;
+    let payload: {
+      error?: string;
+      needsRerunConfirm?: boolean;
+      affectedRuns?: Array<{ runCode: string; branchCode: string; date: string }>;
+      reruns?: Array<{ oldRunCode: string; newRunCode: string | null }>;
+    } | null = null;
+    try {
+      response = await fetch("/api/inventory", {
+        method: editing ? "PATCH" : "POST",
+        headers: { "Content-Type": "application/json", ...getSessionHeaders() },
+        body: JSON.stringify(body),
+      });
+      payload = await response.json();
+    } catch {
+      setMessage("Không lưu được định lượng: mất kết nối hoặc máy chủ phản hồi lỗi (rã lại nhiều ngày có thể quá thời gian chờ). Tải lại trang để kiểm tra.");
+      return;
+    }
+    if (response.status === 409 && payload?.needsRerunConfirm) {
+      const runs = payload.affectedRuns || [];
+      const list = runs.slice(0, 15)
+        .map((run) => `• ${run.runCode} · ${storeLabel(run.branchCode)} · ngày ${new Date(run.date).toLocaleDateString("vi-VN")}`)
+        .join("\n");
+      const more = runs.length > 15 ? `\n… và ${runs.length - 15} lần rã khác` : "";
+      const ok = window.confirm(
+        `${payload.error}\n\n${list}${more}\n\n`
+        + "OK: gỡ toàn bộ phiếu xuất/nhập chế biến và xuất bán của các lần rã trên, rồi rã lại theo định lượng mới (lần rã mới mang mã mới, phiếu cũ vào Thùng rác).\n"
+        + "Huỷ: không lưu gì cả.",
+      );
+      if (ok) await saveRecipe(true);
+      else setMessage("Chưa lưu định lượng — đã huỷ, các lần rã cũ giữ nguyên.");
+      return;
+    }
+    if (!response.ok) {
+      setMessage(payload?.error || "Không lưu được định lượng");
+      return;
+    }
+    const reruns = payload?.reruns || [];
+    const rerunText = reruns.length > 0
+      ? ` Đã rã lại ${reruns.length} lần rã: ${reruns.map((rerun) => `${rerun.oldRunCode} → ${rerun.newRunCode || "gỡ bỏ (không còn doanh thu)"}`).join(", ")}. Nếu kỳ này đã bấm Tính giá vốn & giá thành thì bấm lại.`
+      : "";
+    setMessage(`${editing ? `Đã sửa định lượng ${editing.label}.` : "Đã tạo phiên bản định lượng mới."}${rerunText}`);
+    if (editing) cancelRecipeEdit();
+    await loadData();
   };
 
   /** Sửa nhanh một trường của mặt hàng ngay trên bảng danh mục (UPDATE_ITEM nằm ở PATCH). */
@@ -2340,13 +2470,25 @@ export default function InventoryPage() {
 
       {active === "recipes" && (
         <div className="grid lg:grid-cols-[380px_1fr] gap-5">
-          {canCreate && (
-            <form onSubmit={(e) => { e.preventDefault(); void send({ action: "CREATE_RECIPE", ...recipeForm, branchCodes: recipeBranchCodes, lines: recipeRows.filter((row) => row.itemId).map((row) => ({ itemId: row.itemId, quantity: row.quantity, unitCode: row.unitCode || undefined, wasteRate: row.wasteRate })) }, "Đã tạo phiên bản định lượng mới."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
-              <h2 className="font-bold text-slate-800">Tạo định lượng</h2>
+          {(canCreate || recipeEditing) && (
+            <form ref={recipeFormRef} onSubmit={(e) => { e.preventDefault(); void saveRecipe(); }} className={`bg-white border rounded-lg p-5 space-y-4 h-fit shadow-sm scroll-mt-4 ${recipeEditing ? "border-amber-300 ring-2 ring-amber-100" : "border-slate-200"}`}>
+              <div className="flex items-start justify-between gap-2">
+                <h2 className="font-bold text-slate-800">{recipeEditing ? `Sửa định lượng ${recipeEditing.label}` : "Tạo định lượng"}</h2>
+                {recipeEditing && (
+                  <button type="button" className="text-xs font-bold text-slate-500 hover:text-slate-700 hover:underline" onClick={cancelRecipeEdit}>Huỷ sửa</button>
+                )}
+              </div>
+              {recipeEditing && (
+                <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2.5 leading-relaxed">
+                  Đang sửa thẳng phiên bản này{recipeEditing.ids.length > 1 ? ` (áp cho ${recipeEditing.ids.length} cửa hàng cùng dòng)` : ""}. Nếu phiên bản
+                  đã được dùng để <b>rã nguyên liệu</b>, bấm lưu sẽ hiện danh sách lần rã để xác nhận: đồng ý thì phiếu cũ bị gỡ và rã lại theo định lượng mới.
+                  Muốn giữ nguyên số đã rã và chỉ áp công thức mới từ một ngày thì dùng <b>Sao chép</b> thay vì Sửa.
+                </p>
+              )}
 
               <div className="grid grid-cols-2 gap-3">
                 <Input label="Mã món (SP_/BTP_)">
-                  <input data-input-kind="code" className="control" value={recipeForm.productCode} onChange={(e) => setRecipeForm({ ...recipeForm, productCode: e.target.value })} />
+                  <input data-input-kind="code" className="control disabled:bg-slate-100 disabled:text-slate-500" disabled={Boolean(recipeEditing)} value={recipeForm.productCode} onChange={(e) => setRecipeForm({ ...recipeForm, productCode: e.target.value })} />
                 </Input>
                 <Input label="Giá bán (BTP bỏ trống)">
                   <input type="number" className="control" value={recipeForm.sellingPrice} onChange={(e) => setRecipeForm({ ...recipeForm, sellingPrice: e.target.value })} />
@@ -2359,7 +2501,7 @@ export default function InventoryPage() {
 
               <div className="flex flex-col gap-1">
                 <span className="text-xs font-bold text-slate-600">Cửa hàng áp dụng</span>
-                <div className="border border-slate-200 rounded-lg p-2.5 bg-slate-50/50 space-y-1.5">
+                <fieldset disabled={Boolean(recipeEditing)} title={recipeEditing ? "Sửa không đổi được cửa hàng — dùng Sao chép để khai cho cửa hàng khác" : undefined} className="border border-slate-200 rounded-lg p-2.5 bg-slate-50/50 space-y-1.5 disabled:opacity-60">
                   <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
                     <input type="checkbox" checked={recipeBranchCodes.length === 0} onChange={() => setRecipeBranchCodes([])} />
                     Dùng chung cho mọi cửa hàng
@@ -2376,7 +2518,7 @@ export default function InventoryPage() {
                       {storeLabel(option.code)}
                     </label>
                   ))}
-                </div>
+                </fieldset>
               </div>
               <p className="text-[11px] text-slate-500 leading-relaxed !mt-1">
                 Giống khai nhiều ĐVT mua cho một mặt hàng: <b>tích nhiều cửa hàng pha giống nhau</b> thì lưu một công thức cho mỗi nơi và bảng bên
@@ -2402,7 +2544,7 @@ export default function InventoryPage() {
               <div className="space-y-4 border border-slate-100 rounded-lg p-3.5 bg-slate-50/50">
                 <div className="flex items-center justify-between border-b border-slate-200/60 pb-2">
                   <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Thành phần nguyên liệu</h3>
-                  <button type="button" className="text-xs font-bold text-blue-600 hover:underline flex items-center gap-0.5" onClick={() => setRecipeRows([...recipeRows, { itemId: "", quantity: "1", unitCode: "", wasteRate: "0" }])}>
+                  <button type="button" className="text-xs font-bold text-blue-600 hover:underline flex items-center gap-0.5" onClick={() => setRecipeRows([...recipeRows, { itemId: "", quantity: "1", unitCode: "", conversionRate: "", wasteRate: "0" }])}>
                     <span className="material-symbols-outlined text-sm font-bold">add</span>Thêm dòng
                   </button>
                 </div>
@@ -2422,7 +2564,7 @@ export default function InventoryPage() {
 
                     <div className="flex flex-col gap-1">
                       <span className="text-xs font-bold text-slate-600">Chọn nguyên liệu</span>
-                      <ItemSelect items={data.items} value={row.itemId} onChange={(itemId) => setRecipeRows(recipeRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, itemId, unitCode: "" } : candidate))} />
+                      <ItemSelect items={data.items} value={row.itemId} onChange={(itemId) => setRecipeRows(recipeRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, itemId, unitCode: "", conversionRate: "" } : candidate))} />
                     </div>
 
                     <div className="grid grid-cols-3 gap-3">
@@ -2433,12 +2575,19 @@ export default function InventoryPage() {
 
                       <div className="flex flex-col gap-1">
                         <span className="text-xs font-bold text-slate-600">ĐVT</span>
-                        <select className="control !mt-0" value={row.unitCode} onChange={(e) => setRecipeRows(recipeRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, unitCode: e.target.value } : candidate))}>
+                        <select className="control !mt-0" value={row.unitCode} onChange={(e) => setRecipeRows(recipeRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, unitCode: e.target.value, conversionRate: "" } : candidate))}>
                           <option value="">{rowItem ? `${rowItem.unit} (ĐVT tồn kho)` : "ĐVT tồn kho"}</option>
                           {rowUnits.filter((unit) => unit.conversionRate !== 1).map((unit) => (
                             <option key={unit.unitCode} value={unit.unitCode}>{unit.unitName || unit.unitCode}</option>
                           ))}
+                          {/* ĐVT khai thẳng lúc import (không có trong danh mục quy đổi) vẫn phải hiện đúng khi Sửa / Sao chép. */}
+                          {row.unitCode && !rowUnits.some((unit) => unit.unitCode.toUpperCase() === row.unitCode.toUpperCase()) && (
+                            <option value={row.unitCode}>{row.unitCode}</option>
+                          )}
                         </select>
+                        {row.conversionRate && (
+                          <small className="text-[10px] text-slate-500">× {row.conversionRate} {rowItem?.unit || ""}</small>
+                        )}
                       </div>
 
                       <div className="flex flex-col gap-1">
@@ -2451,7 +2600,12 @@ export default function InventoryPage() {
                 })}
               </div>
               
-              <button className="primary-button w-full">Lưu phiên bản</button>
+              <div className="flex gap-2">
+                <button className="primary-button flex-1">{recipeEditing ? "Lưu thay đổi" : "Lưu phiên bản"}</button>
+                {recipeEditing && (
+                  <button type="button" className="px-3 rounded-lg border border-slate-200 text-sm font-bold text-slate-600 hover:bg-slate-50" onClick={cancelRecipeEdit}>Huỷ</button>
+                )}
+              </div>
             </form>
           )}
           
@@ -2487,28 +2641,87 @@ export default function InventoryPage() {
 
             <section className="table-panel shadow-sm">
               <Panel title="Chi tiết các phiên bản định lượng" reload={loadData} exportFileName="phien_ban_dinh_luong" />
+              {/* Mỗi nguyên liệu một dòng, đúng khuôn sheet Chi tiết lúc import BOM — thông tin món gộp ô. */}
               <Table
                 headers={[
                   { label: "Sản phẩm" },
                   { label: "Cửa hàng" },
                   { label: "Phiên bản" },
-                  { label: "Nguyên liệu" },
+                  { label: "Mã nguyên liệu" },
+                  { label: "Tên nguyên liệu" },
+                  { label: "Định lượng", align: "right" },
+                  { label: "ĐVT" },
+                  { label: "Hao hụt", align: "right" },
+                  { label: "Cost NL", align: "right" },
                   { label: "Cost / mẻ", align: "right" },
                   { label: "Giá bán", align: "right" },
                   { label: "Tỷ lệ cost", align: "right" },
+                  { label: "Thao tác", align: "right" },
                 ]}
               >
-                {groupedRecipes.map(({ key, recipe, branchCodes, versions }) => (
-                  <tr key={key} className="border-t border-slate-100">
-                    <Cell><b>{recipe.productCode} - {recipe.productName}</b><small>Mẻ: {recipe.unit}{recipe.outputConversionRate !== 1 ? ` (= ${qty(recipe.outputConversionRate)} ĐVT tồn)` : ""}</small></Cell>
-                    <Cell>{branchScopeCell(branchCodes)}</Cell>
-                    <Cell>{versions.sort((a, b) => a - b).map((version) => `V${version}`).join(" / ")}<small>Áp dụng {new Date(recipe.effectiveFrom).toLocaleDateString("vi-VN")}{recipe.status === "ACTIVE" ? "" : " · cũ"}</small></Cell>
-                    <Cell>{recipe.lines.map((line) => `${line.item.name}: ${line.quantity}${line.unitCode ? ` ${line.unitCode}` : ""} (+${line.wasteRate}%)`).join(", ")}</Cell>
-                    <Cell right><b>{money(recipe.estimatedCost)} đ</b></Cell>
-                    <Cell right>{money(recipe.sellingPrice)} đ</Cell>
-                    <Cell right>{recipe.sellingPrice > 0 ? `${(recipe.estimatedCost / recipe.sellingPrice * 100).toFixed(1)}%` : "-"}</Cell>
-                  </tr>
-                ))}
+                {groupedRecipes.map(({ key, recipe, branchCodes, versions, ids }) => {
+                  const lines = recipe.lines.length > 0 ? recipe.lines : [null];
+                  const span = lines.length;
+                  const isEditingThis = Boolean(recipeEditing && ids.every((id) => recipeEditing.ids.includes(id)));
+                  const groupCell = "cell align-top bg-white";
+                  const groupNumberCell = "cell align-top bg-white text-right tabular-nums whitespace-nowrap";
+                  return lines.map((line, index) => (
+                    <tr key={`${key}-${index}`} className={`${index === 0 ? "border-t-2 border-slate-200" : "border-t border-slate-50"} ${isEditingThis ? "bg-amber-50/60" : ""}`}>
+                      {index === 0 && (
+                        <>
+                          <td rowSpan={span} className={groupCell}>
+                            <b>{recipe.productCode} - {recipe.productName}</b>
+                            <small>Mẻ: {recipe.unit}{recipe.outputConversionRate !== 1 ? ` (= ${qty(recipe.outputConversionRate)} ĐVT tồn)` : ""}</small>
+                          </td>
+                          <td rowSpan={span} className={groupCell}>{branchScopeCell(branchCodes)}</td>
+                          <td rowSpan={span} className={`${groupCell} whitespace-nowrap`}>
+                            {[...versions].sort((a, b) => a - b).map((version) => `V${version}`).join(" / ")}
+                            <small>Áp dụng {new Date(recipe.effectiveFrom).toLocaleDateString("vi-VN")}{recipe.status === "ACTIVE" ? "" : " · cũ"}</small>
+                          </td>
+                        </>
+                      )}
+                      {line ? (
+                        <>
+                          <td className="cell whitespace-nowrap"><CopyableText value={line.item.code}>{line.item.code}</CopyableText></td>
+                          <td className="cell">{line.item.name}</td>
+                          <td className="cell text-right tabular-nums whitespace-nowrap">{qty(line.quantity)}</td>
+                          <td className="cell whitespace-nowrap">
+                            {line.unitCode || line.item.unit}
+                            {line.unitCode && line.unitCode.toUpperCase() !== (line.item.unit || "").toUpperCase() && line.conversionRate !== 1
+                              ? <small>= {qty(line.conversionRate)} {line.item.unit}</small>
+                              : null}
+                          </td>
+                          <td className="cell text-right tabular-nums whitespace-nowrap">{line.wasteRate ? `${line.wasteRate}%` : "-"}</td>
+                          <td className="cell text-right tabular-nums whitespace-nowrap">{line.lineCost !== undefined ? `${money(line.lineCost)} đ` : "-"}</td>
+                        </>
+                      ) : (
+                        <td colSpan={6} className="cell text-slate-400 italic">Chưa có nguyên liệu</td>
+                      )}
+                      {index === 0 && (
+                        <>
+                          <td rowSpan={span} className={groupNumberCell}><b>{money(recipe.estimatedCost)} đ</b></td>
+                          <td rowSpan={span} className={groupNumberCell}>{money(recipe.sellingPrice)} đ</td>
+                          <td rowSpan={span} className={groupNumberCell}>{recipe.sellingPrice > 0 ? `${(recipe.estimatedCost / recipe.sellingPrice * 100).toFixed(1)}%` : "-"}</td>
+                          <td rowSpan={span} className={`${groupCell} text-right`} data-no-export>
+                            <div className="flex items-center justify-end gap-1">
+                              {canCreate && (
+                                <button
+                                  type="button"
+                                  title="Sao chép thành phiên bản mới (chọn ngày áp dụng mới, bản cũ giữ cho các ngày trước)"
+                                  onClick={() => loadRecipeIntoForm(recipe, branchCodes, ids, "copy")}
+                                  className="p-1.5 rounded-lg text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 transition-colors"
+                                >
+                                  <span className="material-symbols-outlined text-base">content_copy</span>
+                                </button>
+                              )}
+                              <RowActions session={user} module={href} compact onEdit={() => loadRecipeIntoForm(recipe, branchCodes, ids, "edit")} />
+                            </div>
+                          </td>
+                        </>
+                      )}
+                    </tr>
+                  ));
+                })}
               </Table>
             </section>
           </div>

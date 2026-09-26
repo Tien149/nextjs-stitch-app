@@ -78,7 +78,7 @@ export type ExplosionPlan = {
  * `line.conversionRate` thì mỗi cấp bán thành phẩm nhân sai 1000 lần và nhân chồng qua các
  * cấp (một mẻ sốt ra nhu cầu cà chua nghìn tấn, rã BOM chết vì "xuất vượt tồn kho").
  */
-function lineConversionRate(line: ExplosionRecipeLine) {
+export function lineConversionRate(line: ExplosionRecipeLine) {
   const unitCode = (line.unitCode || "").trim();
   // Bỏ trống ĐVT thì KHÔNG suy ra là trùng ĐVT tồn kho: dữ liệu cũ có dòng khai đúng phép quy
   // đổi (2 chai830gr = 1660 gr) mà chưa kịp điền ĐVT, ép về 1 là xoá mất phép nhân thật.
@@ -136,6 +136,21 @@ export function pickRecipeForDate(recipes: ExplosionRecipe[], date: Date, branch
   });
   const effective = sorted.filter((recipe) => new Date(recipe.effectiveFrom).getTime() <= time);
   return effective.length > 0 ? effective[effective.length - 1] : sorted[0];
+}
+
+/**
+ * Dấu vân tay NỘI DUNG của một phiên bản định lượng: đúng những gì làm thay đổi số rã
+ * (nguyên liệu, định lượng, quy đổi, hao hụt, hệ số mẻ). Tên món, giá bán, ghi chú không vào
+ * đây — sửa chúng không cần rã lại. Dùng để biết một lần rã cũ có còn khớp định lượng mới không.
+ */
+export function recipeContentSignature(recipe: ExplosionRecipe | null | undefined) {
+  if (!recipe) return "";
+  return JSON.stringify([
+    recipe.outputConversionRate > 0 ? recipe.outputConversionRate : 1,
+    recipe.lines
+      .map((line) => [line.itemId, line.quantity, lineConversionRate(line), line.wasteRate].join("|"))
+      .sort(),
+  ]);
 }
 
 export type ExplosionInput = {

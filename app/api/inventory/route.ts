@@ -1,14 +1,14 @@
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/custom-client";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
-import { prisma } from "@/lib/prisma";
+import { prisma, type TxClient } from "@/lib/prisma";
 import { apiError, assertPeriodOpen, businessError, cleanText, isPeriodLocked, toDate, toNumber } from "@/lib/phase3";
 import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
 import { isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType, postInventoryTransaction, repostInventoryTransaction, reverseStockEffect } from "@/lib/inventory-stock";
 import { createPurchasePayable, purchasePayableCodeOf, removePurchasePayables, syncPurchasePayable, PURCHASE_PAYABLE_SOURCE } from "@/lib/purchase-payable";
 import { postStockTransfer } from "@/lib/inventory-transfer";
 import { parseVatRate, VAT_RATE_CODES } from "@/lib/inventory-vat";
-import { computeCostingLevels, computeRecipeUnitCosts, explodeSalesDemand, pickRecipeForDate, type ExplosionRecipe } from "@/lib/production-explosion";
+import { computeCostingLevels, computeRecipeUnitCosts, explodeSalesDemand, lineConversionRate, pickRecipeForDate, recipeContentSignature, type ExplosionRecipe } from "@/lib/production-explosion";
 import { writeAuditLog } from "@/lib/audit-log";
 import {
   duplicatedInTrashMessage,
@@ -316,6 +316,453 @@ async function loadStockMovements(branchFilter: { branchCode?: string }, searchP
   return buildStockMovements(transactions);
 }
 
+/**
+ * Lõi của nút "Rã nguyên liệu từ doanh thu" — tách riêng để RÃ LẠI được sau khi sửa định lượng
+ * (UPDATE_RECIPE / CREATE_RECIPE lùi ngày áp dụng) bằng đúng một đường code với lần rã gốc.
+ * Chạy trong transaction của người gọi; không kiểm tra quyền, cửa hàng, kho, khoá sổ — người
+ * gọi làm việc đó.
+ */
+type ExplosionRunInput = {
+  branchCode: string;
+  warehouseCode: string;
+  toWarehouseCode: string;
+  kitchenWarehouseCode: string;
+  barWarehouseCode: string;
+  dateFrom: Date;
+  dateTo: Date;
+  note: string;
+  createdBy: string;
+  /** Rã lại một lần rã cũ: chỉ lấy đúng các dòng doanh thu này. */
+  rowIds?: string[];
+};
+
+async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
+  const { branchCode, warehouseCode, toWarehouseCode, kitchenWarehouseCode, barWarehouseCode, dateFrom, dateTo } = input;
+  const rangeEnd = new Date(dateTo);
+  rangeEnd.setHours(23, 59, 59, 999);
+  const pendingRows = await tx.revenueImportRow.findMany({
+    where: {
+      inventoryStatus: "PENDING",
+      productCode: { not: null },
+      productQuantity: { gt: 0 },
+      branchCode,
+      // Rã lại một lần rã cũ: đúng các dòng doanh thu của lần đó, không quét lại khoảng ngày
+      // (quét lại sẽ kéo cả dòng mới import sau vào lần rã cũ).
+      ...(input.rowIds ? { id: { in: input.rowIds } } : { saleDate: { gte: dateFrom, lte: rangeEnd } }),
+      deletedAt: null,
+    },
+  });
+  if (pendingRows.length === 0) return { kind: "EMPTY" as const };
+
+  // Phụ thu / dịch vụ không rút gì khỏi kho: loại khỏi lần rã này rồi thả hẳn khỏi hàng chờ,
+  // nếu không nút Rã sẽ chết vì "không tìm thấy mặt hàng" hoặc xuất bán thẳng làm tồn âm.
+  const nonInventoryGroups = await loadNonInventoryRevenueGroups(tx as unknown as CategoryLookupClient);
+  const skippedRows = pendingRows.filter((row) => !tracksInventory(row.revenueSource, nonInventoryGroups));
+  const inventoryRows = pendingRows.filter((row) => tracksInventory(row.revenueSource, nonInventoryGroups));
+  if (inventoryRows.length === 0) {
+    await tx.revenueImportRow.updateMany({
+      where: { id: { in: skippedRows.map((row) => row.id) } },
+      data: { inventoryStatus: "NOT_REQUIRED" },
+    });
+    return { kind: "ALL_SKIPPED" as const, skippedRows: skippedRows.length };
+  }
+
+  const recipeVersions = await tx.recipe.findMany({
+    where: { deletedAt: null },
+    include: { lines: { include: { item: true } } },
+  });
+  const plan = explodeSalesDemand({
+    demands: inventoryRows.map((row) => ({ productCode: row.productCode || "", quantity: row.productQuantity || 0 })),
+    recipes: recipeVersions as unknown as ExplosionRecipe[],
+    date: dateTo,
+    // Rã theo công thức của đúng cửa hàng này; nơi chưa khai riêng thì ăn bản dùng chung.
+    branchCode,
+  });
+
+  // Mã món có mặt trong lần rã: cả món bán lẫn bán thành phẩm trung gian.
+  const planProductCodes = [
+    ...plan.productions.map((step) => step.productCode),
+    ...plan.producedSales.map((sale) => sale.productCode),
+    ...plan.directSales.map((sale) => sale.productCode),
+  ];
+  // prisma ở đây đã gắn extension xoá mềm nên kiểu không khớp TransactionClient thuần,
+  // giống cách các chỗ khác gọi resolver này.
+  const resolveDepartment = await buildRevenueDepartmentResolver(
+    tx as unknown as Prisma.TransactionClient,
+    planProductCodes,
+  );
+  // Nhóm doanh thu ghi trên chính dòng POS: món chưa gán nhóm trong danh mục vẫn suy được
+  // bếp/bar nếu file POS có khai.
+  const revenueSourceByProduct = new Map<string, string | null>();
+  for (const row of inventoryRows) {
+    const code = (row.productCode || "").toUpperCase();
+    if (code && !revenueSourceByProduct.has(code)) revenueSourceByProduct.set(code, row.revenueSource);
+  }
+  // Nhóm doanh thu khai sẵn trên danh mục mặt hàng: dùng khi dòng POS không nói được gì.
+  const itemRevenueGroups = await tx.inventoryItem.findMany({
+    where: { code: { in: [...new Set(planProductCodes.map((code) => code.toUpperCase()))] } },
+    select: { code: true, revenueGroup: true },
+  });
+  const revenueGroupByItem = new Map(itemRevenueGroups.map((item) => [item.code.toUpperCase(), item.revenueGroup]));
+  const undecidedProducts = new Set<string>();
+  /**
+   * Kho của một món theo bộ phận; không suy được bộ phận thì trả null để dùng kho mặc định.
+   *
+   * Xét NHÓM DOANH THU trước (đúng câu khách nói: đồ ăn về bếp, đồ uống về bar), chỉ khi
+   * món không có nhóm doanh thu mới rơi về Phân nhóm mặt hàng. Ngược thứ tự thì món cà phê
+   * lỡ gán phân nhóm "Món Bếp" sẽ bị trừ kho Bếp dù nhóm doanh thu là Đồ uống.
+   */
+  const departmentWarehouseOf = (productCode: string) => {
+    const code = (productCode || "").toUpperCase();
+    const revenueSource = revenueSourceByProduct.get(code) || revenueGroupByItem.get(code) || null;
+    const department = resolveDepartment({ revenueSource }) || resolveDepartment({ productCode: code });
+    if (department === REVENUE_DEPARTMENT_CODES.KITCHEN && kitchenWarehouseCode) return kitchenWarehouseCode;
+    if (department === REVENUE_DEPARTMENT_CODES.BAR && barWarehouseCode) return barWarehouseCode;
+    if (!department && (kitchenWarehouseCode || barWarehouseCode)) undecidedProducts.add(code);
+    return null;
+  };
+
+  const result = await (async () => {
+    const runCode = await nextStockDocCode(tx, "RA", dateTo);
+    const documents = [];
+    let sequence = 0;
+    // 1) Chế biến từng cấp theo đúng thứ tự BTP → TP → combo.
+    for (const step of plan.productions) {
+      sequence += 1;
+      const productItem = await tx.inventoryItem.findUnique({ where: { code: step.productCode } });
+      if (!productItem) businessError(`Không tìm thấy sản phẩm ${step.productCode}`);
+      // Nguyên liệu trừ ở kho của bộ phận làm ra món, thành phẩm cũng nhập lại đúng kho đó.
+      const stepWarehouse = departmentWarehouseOf(step.productCode);
+      const issue = await postInventoryTransaction(tx, {
+        code: `${runCode}-${sequence}X`,
+        transactionType: "XUAT_CHE_BIEN",
+        transactionDate: dateTo,
+        branchCode,
+        warehouseCode: stepWarehouse || warehouseCode,
+        referenceType: "PRODUCTION",
+        referenceCode: runCode,
+        note: `Rã nguyên liệu ${step.productCode} (${input.note || "theo doanh thu"})`,
+        createdBy: input.createdBy,
+        lines: step.components.map((component) => ({
+          itemId: component.item.id,
+          inputQuantity: component.quantityBase,
+          inputUnitCode: "",
+          inputUnitCost: 0,
+        })),
+      });
+      const totalCost = issue.lines.reduce((sum, line) => sum + line.totalCost, 0);
+      const receipt = await postInventoryTransaction(tx, {
+        code: `${runCode}-${sequence}N`,
+        transactionType: "NHAP_CHE_BIEN",
+        transactionDate: dateTo,
+        branchCode,
+        warehouseCode: stepWarehouse || toWarehouseCode,
+        referenceType: "PRODUCTION",
+        referenceCode: runCode,
+        note: `Nhập chế biến ${step.productCode} từ rã nguyên liệu`,
+        createdBy: input.createdBy,
+        lines: [{
+          itemId: productItem?.id || "",
+          inputQuantity: step.quantityBase,
+          inputUnitCode: productItem?.unit || "",
+          inputUnitCost: step.quantityBase > 0 ? totalCost / step.quantityBase : 0,
+        }],
+      });
+      documents.push(issue, receipt);
+    }
+    // 2) Xuất bán: sản phẩm vừa chế biến xuất từ kho nhập chế biến, hàng bán thẳng
+    //    (không định lượng) xuất từ kho nguyên liệu.
+    // Món chế biến xuất bán từ đúng kho vừa nhập vào, hàng bán thẳng xuất từ kho nguyên
+    // liệu của bộ phận bán món đó — nên phải gom lại theo KHO THỰC TẾ, không phải hai nhóm
+    // cố định như trước.
+    const saleGroupMap = new Map<string, { warehouse: string; sales: typeof plan.producedSales; label: string }>();
+    const pushSale = (sale: typeof plan.producedSales[number], warehouse: string, label: string) => {
+      const key = `${warehouse}|${label}`;
+      const group = saleGroupMap.get(key) || { warehouse, sales: [], label };
+      group.sales.push(sale);
+      saleGroupMap.set(key, group);
+    };
+    for (const sale of plan.producedSales) pushSale(sale, departmentWarehouseOf(sale.productCode) || toWarehouseCode, "chế biến");
+    for (const sale of plan.directSales) pushSale(sale, departmentWarehouseOf(sale.productCode) || warehouseCode, "bán thẳng");
+    const saleGroups = [...saleGroupMap.values()];
+    for (const group of saleGroups) {
+      if (group.sales.length === 0) continue;
+      const lines = [];
+      for (const sale of group.sales) {
+        const item = await tx.inventoryItem.findUnique({ where: { code: sale.productCode } });
+        if (!item) businessError(`Không tìm thấy mặt hàng ${sale.productCode} để xuất bán`);
+        lines.push({ itemId: item?.id || "", inputQuantity: sale.quantityBase, inputUnitCode: item?.unit || "", inputUnitCost: 0 });
+      }
+      sequence += 1;
+      documents.push(await postInventoryTransaction(tx, {
+        code: `${runCode}-${sequence}XB`,
+        transactionType: "XUAT_BAN",
+        transactionDate: dateTo,
+        branchCode,
+        warehouseCode: group.warehouse,
+        referenceType: "PRODUCTION",
+        referenceCode: runCode,
+        note: `Xuất bán theo rã nguyên liệu ${runCode} (${group.label})`,
+        createdBy: input.createdBy,
+        lines,
+      }));
+    }
+    // 3) Đánh dấu các dòng doanh thu đã rã kèm mã lần rã, để hoàn tác được cả cụm
+    //    (REVERT_EXPLOSION) và không rã trùng lần sau.
+    await tx.revenueImportRow.updateMany({
+      where: { id: { in: inventoryRows.map((row) => row.id) } },
+      data: { inventoryStatus: `POSTED:${runCode}` },
+    });
+    // Dòng không theo dõi tồn kho thì thả hẳn, KHÔNG gắn mã lần rã: hoàn tác lần rã này
+    // cũng không được đẩy chúng trở lại hàng chờ.
+    if (skippedRows.length > 0) {
+      await tx.revenueImportRow.updateMany({
+        where: { id: { in: skippedRows.map((row) => row.id) } },
+        data: { inventoryStatus: "NOT_REQUIRED" },
+      });
+    }
+    return { runCode, documents };
+  })();
+
+  /**
+   * Rã xong vẫn phải nói thẳng hai thứ luật xuất âm để lại, nếu không kế toán tưởng đã xong:
+   *   - mã bị xuất âm: tồn đang nợ đúng bằng số âm, chờ khai tồn đầu kỳ / nhập mua bù;
+   *   - mã xuất với giá vốn 0: kho chưa có giá nào để lấy, nên phiếu xuất ghi 0 đồng —
+   *     báo cáo giá vốn thiếu đúng phần này cho tới khi có giá rồi tính lại.
+   */
+  const issuedLines = result.documents
+    .filter((doc) => doc.transactionType.startsWith("XUAT_"))
+    .flatMap((doc) => doc.lines);
+  const zeroCostItems = [...new Set(issuedLines.filter((line) => (line.unitCost || 0) <= 0).map((line) => line.item.code))];
+  const negativeBalances = issuedLines.length === 0 ? [] : await tx.inventoryBalance.findMany({
+    where: {
+      itemId: { in: [...new Set(issuedLines.map((line) => line.itemId))] },
+      warehouseCode: { in: [...new Set(result.documents.map((doc) => doc.warehouseCode))] },
+      quantity: { lt: -quantityEpsilon },
+    },
+    include: { item: { select: { code: true } } },
+  });
+  const negativeItems = negativeBalances.map((balance) => ({
+    itemCode: balance.item.code,
+    warehouseCode: balance.warehouseCode,
+    quantity: balance.quantity,
+  }));
+
+  return {
+    kind: "POSTED" as const,
+    runCode: result.runCode,
+    documents: result.documents,
+    plan,
+    revenueRows: inventoryRows.length,
+    skippedRows: skippedRows.length,
+    undecidedProducts: [...undecidedProducts],
+    negativeItems,
+    zeroCostItems,
+  };
+}
+
+/** Một lần rã (RA-...) đã dùng định lượng của món vừa sửa. */
+type AffectedExplosionRun = { runCode: string; branchCode: string; date: Date; productCodes: string[] };
+
+/**
+ * Sửa định lượng mà lần rã cũ đã dùng thì phải hỏi lại người dùng trước khi rã lại —
+ * ném lỗi này ra khỏi transaction để huỷ mọi thay đổi, route bắt lại trả danh sách lần rã.
+ */
+class RecipeRerunConfirmation extends Error {
+  constructor(public runs: AffectedExplosionRun[]) {
+    super("RECIPE_RERUN_CONFIRMATION");
+  }
+}
+
+async function loadRecipeVersions(tx: TxClient, productCode: string) {
+  const recipes = await tx.recipe.findMany({
+    where: { productCode: { equals: productCode, mode: "insensitive" }, deletedAt: null },
+    include: { lines: { include: { item: true } } },
+  });
+  return recipes as unknown as ExplosionRecipe[];
+}
+
+/**
+ * Các lần rã (còn sống) có món này mà định lượng áp cho ĐÚNG ngày + cửa hàng của lần rã đó
+ * đã khác đi sau thay đổi: sửa dòng nguyên liệu, đổi ngày áp dụng, hay thêm phiên bản lùi
+ * ngày. Chỉ so NỘI DUNG định lượng (recipeContentSignature) — sửa tên hay giá bán không cần
+ * rã lại. Lần rã dùng bản riêng của cửa hàng khác thì không bị kéo theo.
+ *
+ * Lần rã chọn phiên bản theo ngày cuối khoảng rã (dateTo = ngày chứng từ), nên ở đây cũng so
+ * theo ngày chứng từ.
+ */
+async function findRunsAffectedByRecipes(
+  tx: TxClient,
+  productCodes: string[],
+  before: ExplosionRecipe[],
+  after: ExplosionRecipe[],
+): Promise<AffectedExplosionRun[]> {
+  const codes = [...new Set(productCodes.map((code) => code.toUpperCase()))];
+  const items = await tx.inventoryItem.findMany({ where: { code: { in: codes } }, select: { id: true, code: true } });
+  if (items.length === 0) return [];
+  const codeById = new Map(items.map((item) => [item.id, item.code.toUpperCase()]));
+  const documents = await tx.inventoryTransaction.findMany({
+    where: {
+      referenceType: "PRODUCTION",
+      referenceCode: { startsWith: "RA-" },
+      deletedAt: null,
+      lines: { some: { itemId: { in: items.map((item) => item.id) } } },
+    },
+    select: { referenceCode: true, branchCode: true, transactionDate: true, lines: { select: { itemId: true } } },
+  });
+  const runs = new Map<string, AffectedExplosionRun>();
+  for (const doc of documents) {
+    const runCode = doc.referenceCode || "";
+    if (!runCode) continue;
+    const run = runs.get(runCode) || { runCode, branchCode: doc.branchCode, date: doc.transactionDate, productCodes: [] };
+    for (const line of doc.lines) {
+      const code = codeById.get(line.itemId);
+      if (code && !run.productCodes.includes(code)) run.productCodes.push(code);
+    }
+    runs.set(runCode, run);
+  }
+  const versionsOf = (list: ExplosionRecipe[], code: string) => list.filter((recipe) => recipe.productCode.toUpperCase() === code);
+  return [...runs.values()]
+    .filter((run) => run.productCodes.some((code) =>
+      recipeContentSignature(pickRecipeForDate(versionsOf(before, code), run.date, run.branchCode))
+        !== recipeContentSignature(pickRecipeForDate(versionsOf(after, code), run.date, run.branchCode))))
+    .sort((a, b) => a.date.getTime() - b.date.getTime() || a.runCode.localeCompare(b.runCode));
+}
+
+/** Kho + khoảng ngày của lần rã gốc: đọc từ nhật ký lúc rã; thiếu nhật ký thì suy từ phiếu. */
+async function explosionRunSettings(
+  tx: TxClient,
+  run: AffectedExplosionRun,
+  documents: Array<{ warehouseCode: string }>,
+) {
+  const log = await tx.auditLog.findFirst({
+    where: { action: "EXPLODE_PRODUCTION", entityCode: run.runCode, status: "SUCCESS" },
+    orderBy: { occurredAt: "desc" },
+  });
+  let meta: Record<string, unknown> = {};
+  try {
+    meta = log?.metadataJson ? JSON.parse(log.metadataJson) as Record<string, unknown> : {};
+  } catch {
+    meta = {};
+  }
+  // Không có nhật ký: kho xuất hiện nhiều nhất trên các phiếu của lần rã làm kho mặc định.
+  const counts = new Map<string, number>();
+  for (const doc of documents) counts.set(doc.warehouseCode, (counts.get(doc.warehouseCode) || 0) + 1);
+  const fallbackWarehouse = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "";
+  const warehouseCode = cleanText(meta.warehouseCode) || fallbackWarehouse;
+  return {
+    warehouseCode,
+    toWarehouseCode: cleanText(meta.toWarehouseCode) || warehouseCode,
+    kitchenWarehouseCode: cleanText(meta.kitchenWarehouseCode),
+    barWarehouseCode: cleanText(meta.barWarehouseCode),
+    dateFrom: meta.dateFrom ? new Date(String(meta.dateFrom)) : run.date,
+  };
+}
+
+/**
+ * Rã lại các lần rã bị ảnh hưởng theo định lượng mới — đúng câu chị Bình chốt: "mọi thứ sửa và
+ * làm lại được, chạy lại lịch sử thay vì tính ngược từng bước".
+ *
+ *   1. Gỡ hết các lần rã cũ trước (mới nhất trước): hoàn kho từng phiếu bằng reverseStockEffect
+ *      (trừ ngược đúng số lượng + giá trị đã ghi, nên gỡ phiếu giữa kỳ vẫn khớp), xoá mềm phiếu,
+ *      trả các dòng doanh thu về hàng chờ.
+ *   2. Rã lại theo thứ tự thời gian, đúng các dòng doanh thu + kho + ngày chứng từ của lần gốc.
+ *      Mã lần rã mới là mã mới (mã cũ còn nằm trong Thùng rác, ràng buộc unique tính cả nó).
+ *
+ * Chạy trong transaction của người gọi: lỗi ở bất kỳ lần rã nào thì cả thao tác sửa định lượng
+ * huỷ theo, không bao giờ để lại cảnh đã gỡ mà chưa rã lại.
+ */
+async function rerunExplosions(tx: TxClient, runs: AffectedExplosionRun[], createdBy: string) {
+  const reverted: Array<{ run: AffectedExplosionRun; rowIds: string[]; settings: Awaited<ReturnType<typeof explosionRunSettings>> }> = [];
+  for (const run of [...runs].reverse()) {
+    const documents = await tx.inventoryTransaction.findMany({
+      where: { referenceType: "PRODUCTION", referenceCode: run.runCode, deletedAt: null },
+      include: { lines: true },
+      orderBy: { createdAt: "desc" },
+    });
+    const settings = await explosionRunSettings(tx, run, documents);
+    for (const doc of documents) {
+      await reverseStockEffect(tx, doc);
+      await tx.inventoryTransaction.update({ where: { id: doc.id }, data: { deletedAt: new Date(), deletedBy: createdBy } });
+    }
+    const rows = await tx.revenueImportRow.findMany({ where: { inventoryStatus: `POSTED:${run.runCode}` }, select: { id: true } });
+    const rowIds = rows.map((row) => row.id);
+    if (rowIds.length > 0) {
+      await tx.revenueImportRow.updateMany({ where: { id: { in: rowIds } }, data: { inventoryStatus: "PENDING" } });
+    }
+    reverted.push({ run, rowIds, settings });
+  }
+
+  const results: Array<{
+    oldRunCode: string;
+    newRunCode: string | null;
+    branchCode: string;
+    date: Date;
+    settings: Awaited<ReturnType<typeof explosionRunSettings>>;
+    documents: string[];
+  }> = [];
+  for (const { run, rowIds, settings } of reverted.reverse()) {
+    if (rowIds.length === 0) {
+      // Lần rã không còn dòng doanh thu nào (doanh thu đã bị xoá): gỡ xong là đúng, không rã lại.
+      results.push({ oldRunCode: run.runCode, newRunCode: null, branchCode: run.branchCode, date: run.date, settings, documents: [] });
+      continue;
+    }
+    const outcome = await executeExplosion(tx, {
+      ...settings,
+      branchCode: run.branchCode,
+      dateTo: run.date,
+      rowIds,
+      note: `rã lại ${run.runCode} theo định lượng mới`,
+      createdBy,
+    });
+    results.push({
+      oldRunCode: run.runCode,
+      newRunCode: outcome.kind === "POSTED" ? outcome.runCode : null,
+      branchCode: run.branchCode,
+      date: run.date,
+      settings,
+      documents: outcome.kind === "POSTED" ? outcome.documents.map((doc) => doc.code) : [],
+    });
+  }
+  return results;
+}
+
+/** Sau khi commit: ghi nhật ký cho từng lần rã mới để lần sửa định lượng sau còn rã lại được nó. */
+async function logRecipeReruns(
+  session: Parameters<typeof writeAuditLog>[0]["session"],
+  reruns: Awaited<ReturnType<typeof rerunExplosions>>,
+  recipeCode: string,
+) {
+  for (const rerun of reruns) {
+    if (!rerun.newRunCode) continue;
+    await writeAuditLog({
+      session, module: menuHref, action: "EXPLODE_PRODUCTION",
+      entityType: "InventoryTransaction", entityCode: rerun.newRunCode, branchCode: rerun.branchCode,
+      metadata: {
+        ...rerun.settings,
+        dateTo: rerun.date,
+        rerunOf: rerun.oldRunCode,
+        reason: `Sửa định lượng ${recipeCode}`,
+        documents: rerun.documents,
+      },
+    });
+  }
+}
+
+/** Câu trả lời 409 "cần xác nhận rã lại" dùng chung cho tạo và sửa định lượng. */
+function rerunConfirmationResponse(error: RecipeRerunConfirmation) {
+  return NextResponse.json({
+    needsRerunConfirm: true,
+    affectedRuns: error.runs.map((run) => ({
+      runCode: run.runCode,
+      branchCode: run.branchCode,
+      date: run.date,
+      productCodes: run.productCodes,
+    })),
+    error: `Định lượng này đã được dùng ở ${error.runs.length} lần rã nguyên liệu. Xác nhận để gỡ và rã lại theo định lượng mới.`,
+  }, { status: 409 });
+}
+
 export async function GET(request: Request) {
   try {
     const auth = requireMenuAccess(request, menuHref);
@@ -451,11 +898,24 @@ export async function GET(request: Request) {
       const costs = unitCostsByScope.get(scope) || unitCostsByScope.get("");
       return costs?.get(productCode.toUpperCase());
     };
+    /**
+     * Cost tính theo CHÍNH các dòng của từng phiên bản (bảng chi tiết tách mỗi nguyên liệu một
+     * dòng như file import, nên phải có cost từng dòng). Trước đây mọi phiên bản của một món đều
+     * hiện cost của bản đang áp dụng hôm nay — V1 cũ nhìn như trùng V2.
+     * Thành phần là BTP có định lượng thì lấy cost theo định lượng của BTP đó, NVL lấy bình quân.
+     */
     const recipesWithCost = recipes.map((recipe) => {
       const outputRate = recipe.outputConversionRate > 0 ? recipe.outputConversionRate : 1;
-      const unitCost = unitCostOfRecipe(recipe.productCode, recipe.branchCode);
-      const batchCost = Number.isFinite(unitCost) ? (unitCost as number) * outputRate : 0;
-      return { ...recipe, estimatedCost: batchCost, estimatedUnitCost: Number.isFinite(unitCost) ? unitCost : 0 };
+      const lines = recipe.lines.map((line) => {
+        const componentRecipeCost = unitCostOfRecipe(line.item.code, recipe.branchCode);
+        const componentUnitCost = Number.isFinite(componentRecipeCost)
+          ? (componentRecipeCost as number)
+          : averageCostByItemId.get(line.itemId) || 0;
+        const quantityBase = line.quantity * lineConversionRate(line as unknown as ExplosionRecipe["lines"][number]) * (1 + line.wasteRate / 100);
+        return { ...line, quantityBase, componentUnitCost, lineCost: quantityBase * componentUnitCost };
+      });
+      const batchCost = lines.reduce((sum, line) => sum + line.lineCost, 0);
+      return { ...recipe, lines, estimatedCost: batchCost, estimatedUnitCost: batchCost / outputRate };
     });
 
     // "Sheet tổng hợp" giá vốn & giá thành: mỗi mã sản phẩm một dòng, theo phiên bản
@@ -721,36 +1181,62 @@ export async function POST(request: Request) {
 
       // Phiên bản đếm riêng trong từng phạm vi: bản chung và bản của mỗi cửa hàng có chuỗi
       // version độc lập, và tạo bản này chỉ hạ bản ACTIVE cùng phạm vi.
-      const createdRecipes = [];
+      //
+      // Bản mới có ngày áp dụng LÙI về trước (sao chép bản cũ rồi chọn ngày) thì những lần rã
+      // từ ngày đó trở đi đã rã theo bản cũ — phải hỏi người dùng rồi rã lại, như khi sửa.
       for (const scopeBranch of recipeScopes) {
-        const recipeScope = { productCode, branchCode: scopeBranch || null };
-        const latest = await prisma.recipe.findFirst({ where: recipeScope, orderBy: { version: "desc" } });
+        const latest = await prisma.recipe.findFirst({ where: { productCode, branchCode: scopeBranch || null }, orderBy: { version: "desc" } });
         const recipeCode = `${productCode}${scopeBranch ? `-${scopeBranch}` : ""}-V${(latest?.version || 0) + 1}`;
         if (await findDeletedByUnique("Recipe", { code: recipeCode })) {
           businessError(duplicatedInTrashMessage(recipeCode, "Định mức (BOM)"));
         }
-        if (latest) await prisma.recipe.updateMany({ where: { ...recipeScope, status: "ACTIVE" }, data: { status: "INACTIVE" } });
-        createdRecipes.push(await prisma.recipe.create({
-          data: {
-            code: recipeCode,
-            productCode,
-            branchCode: scopeBranch || null,
-            productName,
-            // Cùng mặc định với import (ĐVT tồn kho của sản phẩm) — hai luồng ra dữ liệu giống nhau.
-            unit: cleanText(body.unit) || productItem.unit,
-            outputConversionRate,
-            sellingPrice,
-            effectiveFrom,
-            version: (latest?.version || 0) + 1,
-            note: cleanText(body.note) || null,
-            lines: { create: resolvedLines },
-          },
-          include: { lines: { include: { item: true } } },
-        }));
       }
+      let created;
+      try {
+        created = await prisma.$transaction(async (tx) => {
+          const before = await loadRecipeVersions(tx, productCode);
+          const createdRecipes = [];
+          for (const scopeBranch of recipeScopes) {
+            const recipeScope = { productCode, branchCode: scopeBranch || null };
+            const latest = await tx.recipe.findFirst({ where: recipeScope, orderBy: { version: "desc" } });
+            const recipeCode = `${productCode}${scopeBranch ? `-${scopeBranch}` : ""}-V${(latest?.version || 0) + 1}`;
+            if (latest) await tx.recipe.updateMany({ where: { ...recipeScope, status: "ACTIVE" }, data: { status: "INACTIVE" } });
+            createdRecipes.push(await tx.recipe.create({
+              data: {
+                code: recipeCode,
+                productCode,
+                branchCode: scopeBranch || null,
+                productName,
+                // Cùng mặc định với import (ĐVT tồn kho của sản phẩm) — hai luồng ra dữ liệu giống nhau.
+                unit: cleanText(body.unit) || productItem.unit,
+                outputConversionRate,
+                sellingPrice,
+                effectiveFrom,
+                version: (latest?.version || 0) + 1,
+                note: cleanText(body.note) || null,
+                lines: { create: resolvedLines },
+              },
+              include: { lines: { include: { item: true } } },
+            }));
+          }
+          const after = await loadRecipeVersions(tx, productCode);
+          const affected = await findRunsAffectedByRecipes(tx, [productCode], before, after);
+          if (affected.length > 0) {
+            await assertPeriodOpen(affected.map((run) => ({ date: run.date, branchCode: run.branchCode })), "rã lại theo định lượng mới", tx);
+            if (!body.confirmRerun) throw new RecipeRerunConfirmation(affected);
+          }
+          const reruns = affected.length > 0 ? await rerunExplosions(tx, affected, auth.session.name) : [];
+          return { createdRecipes, reruns };
+        }, { timeout: 300000, maxWait: 20000 });
+      } catch (error) {
+        if (error instanceof RecipeRerunConfirmation) return rerunConfirmationResponse(error);
+        throw error;
+      }
+      const { createdRecipes, reruns } = created;
+      await logRecipeReruns(auth.session, reruns, createdRecipes[0]?.code || productCode);
       // Giữ nguyên hình dạng cũ của response (một định lượng) để màn hình cũ không vỡ, kèm
       // danh sách đầy đủ khi khai một lúc nhiều cửa hàng.
-      return NextResponse.json({ ...createdRecipes[0], recipes: createdRecipes }, { status: 201 });
+      return NextResponse.json({ ...createdRecipes[0], recipes: createdRecipes, reruns: reruns.map(({ oldRunCode, newRunCode }) => ({ oldRunCode, newRunCode })) }, { status: 201 });
     }
 
     if (action === "PRODUCE_SEMI_FINISHED") {
@@ -1012,242 +1498,45 @@ export async function POST(request: Request) {
         if (!warehouse) businessError(`Kho ${label} (${code}) không thuộc cửa hàng ${branchCode}.`);
       }
       if (dateTo.getTime() < dateFrom.getTime()) businessError("Khoảng ngày rã không hợp lệ (từ ngày sau đến ngày trước)");
-      const rangeEnd = new Date(dateTo);
-      rangeEnd.setHours(23, 59, 59, 999);
       if (await isPeriodLocked(dateTo, branchCode)) businessError("Kỳ kế toán đã khóa");
 
-      const pendingRows = await prisma.revenueImportRow.findMany({
-        where: {
-          inventoryStatus: "PENDING",
-          productCode: { not: null },
-          productQuantity: { gt: 0 },
-          branchCode,
-          saleDate: { gte: dateFrom, lte: rangeEnd },
-          deletedAt: null,
-        },
-      });
-      if (pendingRows.length === 0) {
+      const outcome = await prisma.$transaction((tx) => executeExplosion(tx, {
+        branchCode, warehouseCode, toWarehouseCode, kitchenWarehouseCode, barWarehouseCode,
+        dateFrom, dateTo, note: cleanText(body.note), createdBy: auth.session.name,
+      }), { timeout: 60000 });
+      if (outcome.kind === "EMPTY") {
         businessError("Không có dòng doanh thu nào đang chờ rã nguyên liệu trong khoảng ngày đã chọn.");
       }
-
-      // Phụ thu / dịch vụ không rút gì khỏi kho: loại khỏi lần rã này rồi thả hẳn khỏi hàng chờ,
-      // nếu không nút Rã sẽ chết vì "không tìm thấy mặt hàng" hoặc xuất bán thẳng làm tồn âm.
-      const nonInventoryGroups = await loadNonInventoryRevenueGroups(prisma as unknown as CategoryLookupClient);
-      const skippedRows = pendingRows.filter((row) => !tracksInventory(row.revenueSource, nonInventoryGroups));
-      const inventoryRows = pendingRows.filter((row) => tracksInventory(row.revenueSource, nonInventoryGroups));
-      if (inventoryRows.length === 0) {
-        await prisma.revenueImportRow.updateMany({
-          where: { id: { in: skippedRows.map((row) => row.id) } },
-          data: { inventoryStatus: "NOT_REQUIRED" },
-        });
-        businessError(`Cả ${skippedRows.length} dòng doanh thu trong khoảng ngày này đều thuộc nhóm doanh thu không theo dõi tồn kho — đã bỏ khỏi hàng chờ, không có gì để rã.`);
+      // Dòng không theo dõi tồn kho đã được thả khỏi hàng chờ (transaction trên đã commit) —
+      // báo lỗi sau khi commit để lần bấm sau không gặp lại chúng.
+      if (outcome.kind === "ALL_SKIPPED") {
+        businessError(`Cả ${outcome.skippedRows} dòng doanh thu trong khoảng ngày này đều thuộc nhóm doanh thu không theo dõi tồn kho — đã bỏ khỏi hàng chờ, không có gì để rã.`);
       }
-
-      const recipeVersions = await prisma.recipe.findMany({
-        where: { deletedAt: null },
-        include: { lines: { include: { item: true } } },
-      });
-      const plan = explodeSalesDemand({
-        demands: inventoryRows.map((row) => ({ productCode: row.productCode || "", quantity: row.productQuantity || 0 })),
-        recipes: recipeVersions as unknown as ExplosionRecipe[],
-        date: dateTo,
-        // Rã theo công thức của đúng cửa hàng này; nơi chưa khai riêng thì ăn bản dùng chung.
-        branchCode,
-      });
-
-      // Mã món có mặt trong lần rã: cả món bán lẫn bán thành phẩm trung gian.
-      const planProductCodes = [
-        ...plan.productions.map((step) => step.productCode),
-        ...plan.producedSales.map((sale) => sale.productCode),
-        ...plan.directSales.map((sale) => sale.productCode),
-      ];
-      // prisma ở đây đã gắn extension xoá mềm nên kiểu không khớp TransactionClient thuần,
-      // giống cách các chỗ khác gọi resolver này.
-      const resolveDepartment = await buildRevenueDepartmentResolver(
-        prisma as unknown as Prisma.TransactionClient,
-        planProductCodes,
-      );
-      // Nhóm doanh thu ghi trên chính dòng POS: món chưa gán nhóm trong danh mục vẫn suy được
-      // bếp/bar nếu file POS có khai.
-      const revenueSourceByProduct = new Map<string, string | null>();
-      for (const row of inventoryRows) {
-        const code = (row.productCode || "").toUpperCase();
-        if (code && !revenueSourceByProduct.has(code)) revenueSourceByProduct.set(code, row.revenueSource);
-      }
-      // Nhóm doanh thu khai sẵn trên danh mục mặt hàng: dùng khi dòng POS không nói được gì.
-      const itemRevenueGroups = await prisma.inventoryItem.findMany({
-        where: { code: { in: [...new Set(planProductCodes.map((code) => code.toUpperCase()))] } },
-        select: { code: true, revenueGroup: true },
-      });
-      const revenueGroupByItem = new Map(itemRevenueGroups.map((item) => [item.code.toUpperCase(), item.revenueGroup]));
-      const undecidedProducts = new Set<string>();
-      /**
-       * Kho của một món theo bộ phận; không suy được bộ phận thì trả null để dùng kho mặc định.
-       *
-       * Xét NHÓM DOANH THU trước (đúng câu khách nói: đồ ăn về bếp, đồ uống về bar), chỉ khi
-       * món không có nhóm doanh thu mới rơi về Phân nhóm mặt hàng. Ngược thứ tự thì món cà phê
-       * lỡ gán phân nhóm "Món Bếp" sẽ bị trừ kho Bếp dù nhóm doanh thu là Đồ uống.
-       */
-      const departmentWarehouseOf = (productCode: string) => {
-        const code = (productCode || "").toUpperCase();
-        const revenueSource = revenueSourceByProduct.get(code) || revenueGroupByItem.get(code) || null;
-        const department = resolveDepartment({ revenueSource }) || resolveDepartment({ productCode: code });
-        if (department === REVENUE_DEPARTMENT_CODES.KITCHEN && kitchenWarehouseCode) return kitchenWarehouseCode;
-        if (department === REVENUE_DEPARTMENT_CODES.BAR && barWarehouseCode) return barWarehouseCode;
-        if (!department && (kitchenWarehouseCode || barWarehouseCode)) undecidedProducts.add(code);
-        return null;
-      };
-
-      const result = await prisma.$transaction(async (tx) => {
-        const runCode = await nextStockDocCode(tx, "RA", dateTo);
-        const documents = [];
-        let sequence = 0;
-        // 1) Chế biến từng cấp theo đúng thứ tự BTP → TP → combo.
-        for (const step of plan.productions) {
-          sequence += 1;
-          const productItem = await tx.inventoryItem.findUnique({ where: { code: step.productCode } });
-          if (!productItem) businessError(`Không tìm thấy sản phẩm ${step.productCode}`);
-          // Nguyên liệu trừ ở kho của bộ phận làm ra món, thành phẩm cũng nhập lại đúng kho đó.
-          const stepWarehouse = departmentWarehouseOf(step.productCode);
-          const issue = await postInventoryTransaction(tx, {
-            code: `${runCode}-${sequence}X`,
-            transactionType: "XUAT_CHE_BIEN",
-            transactionDate: dateTo,
-            branchCode,
-            warehouseCode: stepWarehouse || warehouseCode,
-            referenceType: "PRODUCTION",
-            referenceCode: runCode,
-            note: `Rã nguyên liệu ${step.productCode} (${cleanText(body.note) || "theo doanh thu"})`,
-            createdBy: auth.session.name,
-            lines: step.components.map((component) => ({
-              itemId: component.item.id,
-              inputQuantity: component.quantityBase,
-              inputUnitCode: "",
-              inputUnitCost: 0,
-            })),
-          });
-          const totalCost = issue.lines.reduce((sum, line) => sum + line.totalCost, 0);
-          const receipt = await postInventoryTransaction(tx, {
-            code: `${runCode}-${sequence}N`,
-            transactionType: "NHAP_CHE_BIEN",
-            transactionDate: dateTo,
-            branchCode,
-            warehouseCode: stepWarehouse || toWarehouseCode,
-            referenceType: "PRODUCTION",
-            referenceCode: runCode,
-            note: `Nhập chế biến ${step.productCode} từ rã nguyên liệu`,
-            createdBy: auth.session.name,
-            lines: [{
-              itemId: productItem?.id || "",
-              inputQuantity: step.quantityBase,
-              inputUnitCode: productItem?.unit || "",
-              inputUnitCost: step.quantityBase > 0 ? totalCost / step.quantityBase : 0,
-            }],
-          });
-          documents.push(issue, receipt);
-        }
-        // 2) Xuất bán: sản phẩm vừa chế biến xuất từ kho nhập chế biến, hàng bán thẳng
-        //    (không định lượng) xuất từ kho nguyên liệu.
-        // Món chế biến xuất bán từ đúng kho vừa nhập vào, hàng bán thẳng xuất từ kho nguyên
-        // liệu của bộ phận bán món đó — nên phải gom lại theo KHO THỰC TẾ, không phải hai nhóm
-        // cố định như trước.
-        const saleGroupMap = new Map<string, { warehouse: string; sales: typeof plan.producedSales; label: string }>();
-        const pushSale = (sale: typeof plan.producedSales[number], warehouse: string, label: string) => {
-          const key = `${warehouse}|${label}`;
-          const group = saleGroupMap.get(key) || { warehouse, sales: [], label };
-          group.sales.push(sale);
-          saleGroupMap.set(key, group);
-        };
-        for (const sale of plan.producedSales) pushSale(sale, departmentWarehouseOf(sale.productCode) || toWarehouseCode, "chế biến");
-        for (const sale of plan.directSales) pushSale(sale, departmentWarehouseOf(sale.productCode) || warehouseCode, "bán thẳng");
-        const saleGroups = [...saleGroupMap.values()];
-        for (const group of saleGroups) {
-          if (group.sales.length === 0) continue;
-          const lines = [];
-          for (const sale of group.sales) {
-            const item = await tx.inventoryItem.findUnique({ where: { code: sale.productCode } });
-            if (!item) businessError(`Không tìm thấy mặt hàng ${sale.productCode} để xuất bán`);
-            lines.push({ itemId: item?.id || "", inputQuantity: sale.quantityBase, inputUnitCode: item?.unit || "", inputUnitCost: 0 });
-          }
-          sequence += 1;
-          documents.push(await postInventoryTransaction(tx, {
-            code: `${runCode}-${sequence}XB`,
-            transactionType: "XUAT_BAN",
-            transactionDate: dateTo,
-            branchCode,
-            warehouseCode: group.warehouse,
-            referenceType: "PRODUCTION",
-            referenceCode: runCode,
-            note: `Xuất bán theo rã nguyên liệu ${runCode} (${group.label})`,
-            createdBy: auth.session.name,
-            lines,
-          }));
-        }
-        // 3) Đánh dấu các dòng doanh thu đã rã kèm mã lần rã, để hoàn tác được cả cụm
-        //    (REVERT_EXPLOSION) và không rã trùng lần sau.
-        await tx.revenueImportRow.updateMany({
-          where: { id: { in: inventoryRows.map((row) => row.id) } },
-          data: { inventoryStatus: `POSTED:${runCode}` },
-        });
-        // Dòng không theo dõi tồn kho thì thả hẳn, KHÔNG gắn mã lần rã: hoàn tác lần rã này
-        // cũng không được đẩy chúng trở lại hàng chờ.
-        if (skippedRows.length > 0) {
-          await tx.revenueImportRow.updateMany({
-            where: { id: { in: skippedRows.map((row) => row.id) } },
-            data: { inventoryStatus: "NOT_REQUIRED" },
-          });
-        }
-        return { runCode, documents };
-      }, { timeout: 60000 });
-      const undecidedCount = undecidedProducts.size;
-
-      /**
-       * Rã xong vẫn phải nói thẳng hai thứ luật xuất âm để lại, nếu không kế toán tưởng đã xong:
-       *   - mã bị xuất âm: tồn đang nợ đúng bằng số âm, chờ khai tồn đầu kỳ / nhập mua bù;
-       *   - mã xuất với giá vốn 0: kho chưa có giá nào để lấy, nên phiếu xuất ghi 0 đồng —
-       *     báo cáo giá vốn thiếu đúng phần này cho tới khi có giá rồi tính lại.
-       */
-      const issuedLines = result.documents
-        .filter((doc) => doc.transactionType.startsWith("XUAT_"))
-        .flatMap((doc) => doc.lines);
-      const zeroCostItems = [...new Set(issuedLines.filter((line) => (line.unitCost || 0) <= 0).map((line) => line.item.code))];
-      const negativeBalances = issuedLines.length === 0 ? [] : await prisma.inventoryBalance.findMany({
-        where: {
-          itemId: { in: [...new Set(issuedLines.map((line) => line.itemId))] },
-          warehouseCode: { in: [...new Set(result.documents.map((doc) => doc.warehouseCode))] },
-          quantity: { lt: -quantityEpsilon },
-        },
-        include: { item: { select: { code: true } } },
-      });
-      const negativeItems = negativeBalances.map((balance) => ({
-        itemCode: balance.item.code,
-        warehouseCode: balance.warehouseCode,
-        quantity: balance.quantity,
-      }));
+      const { plan, negativeItems, zeroCostItems, undecidedProducts } = outcome;
 
       await writeAuditLog({
         session: auth.session, module: menuHref, action: "EXPLODE_PRODUCTION",
-        entityType: "InventoryTransaction", entityCode: result.runCode, branchCode,
+        entityType: "InventoryTransaction", entityCode: outcome.runCode, branchCode,
         metadata: {
           dateFrom, dateTo, warehouseCode, toWarehouseCode, kitchenWarehouseCode, barWarehouseCode,
-          revenueRows: inventoryRows.length,
-          skippedRows: skippedRows.length,
-          undecidedProducts: [...undecidedProducts],
+          revenueRows: outcome.revenueRows,
+          skippedRows: outcome.skippedRows,
+          undecidedProducts,
           negativeItems,
           zeroCostItems,
           productions: plan.productions.map((step) => ({ productCode: step.productCode, quantityBase: step.quantityBase })),
-          documents: result.documents.map((doc) => doc.code),
+          documents: outcome.documents.map((doc) => doc.code),
         },
       });
       return NextResponse.json({
-        runCode: result.runCode,
-        documentCount: result.documents.length,
-        revenueRows: inventoryRows.length,
-        skippedRows: skippedRows.length,
+        runCode: outcome.runCode,
+        documentCount: outcome.documents.length,
+        revenueRows: outcome.revenueRows,
+        skippedRows: outcome.skippedRows,
         // Số món phải dùng kho mặc định vì không suy được bếp/bar — để màn hình nhắc người dùng
         // gán Nhóm doanh thu cho những mã này.
-        undecidedCount,
-        undecidedProducts: [...undecidedProducts].slice(0, 20),
+        undecidedCount: undecidedProducts.length,
+        undecidedProducts: undecidedProducts.slice(0, 20),
         // Hệ quả của luật xuất âm, để màn hình nhắc người dùng đi khai tồn/giá cho các mã này.
         negativeCount: negativeItems.length,
         negativeItems: negativeItems.slice(0, 20),
@@ -1255,7 +1544,7 @@ export async function POST(request: Request) {
         zeroCostItems: zeroCostItems.slice(0, 20),
         productions: plan.productions.map((step) => ({ productCode: step.productCode, quantityBase: step.quantityBase, batchQuantity: step.batchQuantity })),
         directSales: plan.directSales,
-        documents: result.documents,
+        documents: outcome.documents,
       }, { status: 201 });
     }
 
@@ -1855,24 +2144,57 @@ export async function PATCH(request: Request) {
     }
 
     if (action === "UPDATE_RECIPE") {
-      const recipeId = cleanText(body.recipeId) || cleanText(body.id);
-      if (!recipeId) businessError("Thiếu định lượng cần sửa");
-      const recipe = await prisma.recipe.findUnique({ where: { id: recipeId } });
-      if (!recipe) businessError("Không tìm thấy định lượng");
+      /**
+       * Sửa thẳng một phiên bản định lượng. Bảng gom các cửa hàng pha giống nhau về một dòng
+       * (mỗi nơi vẫn là một bản ghi riêng), nên nhận `recipeIds` để sửa cả dòng một lượt.
+       *
+       * Phiên bản đã được dùng để rã nguyên liệu thì sửa xong phải rã lại: lần gọi đầu trả 409
+       * kèm danh sách lần rã, người dùng xác nhận thì gọi lại với `confirmRerun` — gỡ phiếu cũ
+       * và rã lại theo định lượng mới trong CÙNG transaction. Kỳ đã khoá sổ thì chặn hẳn.
+       */
+      const requestedIds = Array.isArray(body.recipeIds) ? body.recipeIds : [body.recipeId || body.id];
+      const recipeIds = [...new Set(requestedIds.map((value: unknown) => cleanText(value)).filter(Boolean))] as string[];
+      if (recipeIds.length === 0) businessError("Thiếu định lượng cần sửa");
+      const targets = await prisma.recipe.findMany({ where: { id: { in: recipeIds } } });
+      if (targets.length !== recipeIds.length) businessError("Không tìm thấy định lượng");
+      const productCode = targets[0].productCode;
+      if (targets.some((recipe) => recipe.productCode.toUpperCase() !== productCode.toUpperCase())) {
+        businessError("Chỉ sửa cùng lúc các định lượng của cùng một món");
+      }
+      for (const recipe of targets) {
+        if (recipe.branchCode) assertBranchAccess(auth.session, recipe.branchCode);
+      }
 
-      const productName = body.productName !== undefined ? cleanText(body.productName) : recipe.productName;
-      if (!productName) businessError("Tên món không được để trống");
-      const unit = body.unit !== undefined ? cleanText(body.unit) : recipe.unit;
-      if (!unit) businessError("Đơn vị tính của món không được để trống");
-      const sellingPrice = body.sellingPrice !== undefined ? toNumber(body.sellingPrice) : recipe.sellingPrice;
-      if (sellingPrice < 0) businessError("Giá bán không được âm");
-      const outputConversionRate = body.outputConversionRate !== undefined ? toNumber(body.outputConversionRate) : recipe.outputConversionRate;
-      if (!(outputConversionRate > 0)) businessError("Hệ số quy đổi về ĐVT tồn kho phải lớn hơn 0");
+      const changes: Prisma.RecipeUpdateInput = {};
+      if (body.productName !== undefined) {
+        const productName = cleanText(body.productName);
+        if (!productName) businessError("Tên món không được để trống");
+        changes.productName = productName;
+      }
+      if (body.unit !== undefined) {
+        const unit = cleanText(body.unit);
+        if (!unit) businessError("Đơn vị tính của món không được để trống");
+        changes.unit = unit;
+      }
+      if (body.sellingPrice !== undefined) {
+        const sellingPrice = toNumber(body.sellingPrice);
+        if (sellingPrice < 0) businessError("Giá bán không được âm");
+        changes.sellingPrice = sellingPrice;
+      }
+      if (body.outputConversionRate !== undefined) {
+        const outputConversionRate = cleanText(body.outputConversionRate) === "" ? 1 : toNumber(body.outputConversionRate);
+        if (!(outputConversionRate > 0)) businessError("Hệ số quy đổi về ĐVT tồn kho phải lớn hơn 0");
+        changes.outputConversionRate = outputConversionRate;
+      }
+      if (body.effectiveFrom !== undefined) changes.effectiveFrom = toDate(body.effectiveFrom);
+      if (body.note !== undefined) changes.note = cleanText(body.note) || null;
+      const nextStatus = body.status !== undefined ? cleanText(body.status).toUpperCase() || "ACTIVE" : null;
+      if (nextStatus) changes.status = nextStatus;
 
       const nextLines = body.lines !== undefined ? editableRecipeLines(body.lines) : null;
       const resolvedLines: { itemId: string; quantity: number; unitCode: string | null; conversionRate: number; wasteRate: number }[] = [];
       if (nextLines) {
-        const productItem = await prisma.inventoryItem.findUnique({ where: { code: recipe.productCode.toUpperCase() } });
+        const productItem = await prisma.inventoryItem.findUnique({ where: { code: productCode.toUpperCase() } });
         for (const line of nextLines) {
           const item = line.itemId
             ? await prisma.inventoryItem.findUnique({ where: { id: line.itemId }, include: { unitConversions: true } })
@@ -1897,33 +2219,47 @@ export async function PATCH(request: Request) {
         }
       }
 
-      const result = await prisma.$transaction(async (tx) => {
-        if (nextLines) {
-          await tx.recipeLine.deleteMany({ where: { recipeId } });
-          await tx.recipeLine.createMany({ data: resolvedLines.map((line) => ({ recipeId, ...line })) });
-        }
-        // Bật ACTIVE cho bản này thì hạ các bản ACTIVE khác của cùng món — hai bản cùng ACTIVE
-        // là POS chọn theo version cao nhất, chưa chắc bản người dùng vừa duyệt.
-        if (body.status !== undefined && cleanText(body.status).toUpperCase() === "ACTIVE") {
-          await tx.recipe.updateMany({ where: { productCode: recipe.productCode, branchCode: recipe.branchCode, status: "ACTIVE", id: { not: recipeId } }, data: { status: "INACTIVE" } });
-        }
-        return tx.recipe.update({
-          where: { id: recipeId },
-          data: {
-            productName,
-            unit,
-            sellingPrice,
-            outputConversionRate,
-            ...(body.effectiveFrom !== undefined ? { effectiveFrom: toDate(body.effectiveFrom) } : {}),
-            ...(body.note !== undefined ? { note: cleanText(body.note) || null } : {}),
-            ...(body.status !== undefined ? { status: cleanText(body.status).toUpperCase() || "ACTIVE" } : {}),
-          },
-          include: { lines: { include: { item: true } } },
-        });
-      });
+      let outcome;
+      try {
+        outcome = await prisma.$transaction(async (tx) => {
+          const before = await loadRecipeVersions(tx, productCode);
+          const updated = [];
+          for (const recipe of targets) {
+            if (nextLines) {
+              await tx.recipeLine.deleteMany({ where: { recipeId: recipe.id } });
+              await tx.recipeLine.createMany({ data: resolvedLines.map((line) => ({ recipeId: recipe.id, ...line })) });
+            }
+            // Bật ACTIVE cho bản này thì hạ các bản ACTIVE khác của cùng món — hai bản cùng ACTIVE
+            // là POS chọn theo version cao nhất, chưa chắc bản người dùng vừa duyệt.
+            if (nextStatus === "ACTIVE") {
+              await tx.recipe.updateMany({ where: { productCode: recipe.productCode, branchCode: recipe.branchCode, status: "ACTIVE", id: { not: recipe.id } }, data: { status: "INACTIVE" } });
+            }
+            updated.push(await tx.recipe.update({
+              where: { id: recipe.id },
+              data: changes,
+              include: { lines: { include: { item: true } } },
+            }));
+          }
+          const after = await loadRecipeVersions(tx, productCode);
+          const affected = await findRunsAffectedByRecipes(tx, [productCode], before, after);
+          if (affected.length > 0) {
+            await assertPeriodOpen(affected.map((run) => ({ date: run.date, branchCode: run.branchCode })), "rã lại theo định lượng mới", tx);
+            if (!body.confirmRerun) throw new RecipeRerunConfirmation(affected);
+          }
+          const reruns = affected.length > 0 ? await rerunExplosions(tx, affected, auth.session.name) : [];
+          return { updated, reruns };
+        }, { timeout: 300000, maxWait: 20000 });
+      } catch (error) {
+        if (error instanceof RecipeRerunConfirmation) return rerunConfirmationResponse(error);
+        throw error;
+      }
 
-      await writeAuditLog({ session: auth.session, module: menuHref, action: "UPDATE_RECIPE", entityType: "Recipe", entityId: result.id, entityCode: result.code, metadata: { productCode: result.productCode, lines: result.lines.length } });
-      return NextResponse.json(result);
+      const { updated, reruns } = outcome;
+      for (const result of updated) {
+        await writeAuditLog({ session: auth.session, module: menuHref, action: "UPDATE_RECIPE", entityType: "Recipe", entityId: result.id, entityCode: result.code, metadata: { productCode: result.productCode, lines: result.lines.length, reruns: reruns.map(({ oldRunCode, newRunCode }) => ({ oldRunCode, newRunCode })) } });
+      }
+      await logRecipeReruns(auth.session, reruns, updated[0]?.code || productCode);
+      return NextResponse.json({ ...updated[0], recipes: updated, reruns: reruns.map(({ oldRunCode, newRunCode }) => ({ oldRunCode, newRunCode })) });
     }
 
     return businessError("Thao tác cập nhật kho không hợp lệ");

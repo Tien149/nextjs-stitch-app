@@ -4,6 +4,7 @@ import {
   computeRecipeUnitCosts,
   explodeSalesDemand,
   pickRecipeForDate,
+  recipeContentSignature,
 } from "../lib/production-explosion.ts";
 
 /**
@@ -254,4 +255,43 @@ test("ĐVT khai trùng ĐVT tồn kho thì hệ số quy đổi phải là 1", (
   });
   // 1000 gr sốt = 1 mẻ -> đúng 300 gr cà chua, không phải 300.000.
   assert.equal(plan.productions[0].components[0].quantityBase, 300);
+});
+
+/**
+ * Sửa / sao chép định lượng: lần rã nào phải rã lại được quyết định bằng cách so NỘI DUNG
+ * phiên bản áp cho đúng ngày + cửa hàng của lần rã, trước và sau thay đổi.
+ */
+test("recipeContentSignature chỉ đổi khi nội dung rã đổi", () => {
+  const base = recipes[0];
+  const renamed = { ...base, productName: "Tên khác", sellingPrice: 99999, status: "INACTIVE" };
+  assert.equal(recipeContentSignature(base), recipeContentSignature(renamed), "đổi tên/giá bán không cần rã lại");
+  const moreSugar = { ...base, lines: [{ ...base.lines[0], quantity: 35 }] };
+  assert.notEqual(recipeContentSignature(base), recipeContentSignature(moreSugar), "đổi định lượng phải rã lại");
+  const biggerBatch = { ...base, outputConversionRate: 2000 };
+  assert.notEqual(recipeContentSignature(base), recipeContentSignature(biggerBatch), "đổi hệ số mẻ phải rã lại");
+  assert.equal(recipeContentSignature(null), "");
+});
+
+test("phiên bản sao chép với ngày áp dụng mới chỉ ảnh hưởng lần rã từ ngày đó", () => {
+  const v1 = recipes[0];
+  const v2 = { ...v1, id: "r-sot-v2", version: 2, effectiveFrom: "2026-08-15", lines: [{ ...v1.lines[0], quantity: 40 }] };
+  const changed = (date) => recipeContentSignature(pickRecipeForDate([v1], new Date(date)))
+    !== recipeContentSignature(pickRecipeForDate([v1, v2], new Date(date)));
+  assert.equal(changed("2026-08-10"), false, "lần rã trước ngày áp dụng mới giữ nguyên");
+  assert.equal(changed("2026-08-15"), true, "lần rã đúng ngày áp dụng mới phải rã lại");
+  assert.equal(changed("2026-08-31"), true);
+});
+
+test("bản riêng của cửa hàng khác không kéo lần rã của cửa hàng này", () => {
+  const shared = recipes[0];
+  const nmeOnly = { ...shared, id: "r-sot-nme", branchCode: "NME", lines: [{ ...shared.lines[0], quantity: 50 }] };
+  const date = new Date("2026-08-20");
+  assert.equal(
+    recipeContentSignature(pickRecipeForDate([shared], date, "ASA")),
+    recipeContentSignature(pickRecipeForDate([shared, nmeOnly], date, "ASA")),
+  );
+  assert.notEqual(
+    recipeContentSignature(pickRecipeForDate([shared], date, "NME")),
+    recipeContentSignature(pickRecipeForDate([shared, nmeOnly], date, "NME")),
+  );
 });
