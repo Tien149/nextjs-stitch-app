@@ -158,17 +158,145 @@ function stockError(message: string): never {
   throw new Error(`BUSINESS:${message}`);
 }
 
+export type TransferPriceLine = { transactionDate: Date; quantity: number; unitCost: number; totalCost: number };
+
+function utcMonthStart(date: Date, offsetMonths = 0) {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + offsetMonths, 1));
+}
+
+function weightedAverage(lines: TransferPriceLine[]) {
+  const quantity = lines.reduce((sum, line) => sum + line.quantity, 0);
+  const value = lines.reduce((sum, line) => sum + line.totalCost, 0);
+  return quantity > 0.000001 && value > 0 ? value / quantity : 0;
+}
+
+/** Số tháng lùi tối đa khi tháng liền kề không có phát sinh. */
+const TRANSFER_PRICE_LOOKBACK_MONTHS = 12;
+
 /**
- * Đơn giá của phiếu NHẬP MUA gần nhất cho một mặt hàng (quy về ĐVT tồn kho).
- * Dùng làm giá ưu tiên khi điều chuyển mà kho nguồn chưa có giá vốn bình quân.
+ * Luật ĐƠN GIÁ ĐIỀU CHUYỂN (khách chốt 27/09/2026) — phần thuần để test bằng node --test.
+ *
+ * - Nguyên liệu, bao bì: đơn giá NHẬP MUA gần nhất trong tháng của phiếu điều chuyển (ưu tiên
+ *   phiếu mua cùng ngày hoặc trước đó, chưa có thì lấy phiếu mua sau trong tháng); trong
+ *   tháng không mua thì lấy giá bình quân (Σ tiền / Σ lượng) nhập mua của tháng liền kề
+ *   trước, tháng đó không mua thì lùi tiếp tới tháng gần nhất có mua.
+ * - Bán thành phẩm: giá vốn trong tháng = bình quân các phiếu NHẬP CHẾ BIẾN của tháng (phụ
+ *   thuộc việc rã BOM trong tháng); tháng chưa rã thì lấy tháng gần nhất đã rã.
+ * - Nhóm khác (CCDC…): không có luật riêng, trả 0 để caller dùng giá bình quân kho.
+ *
+ * `lines` là phiếu NHAP_MUA (nguyên liệu, bao bì) hoặc NHAP_CHE_BIEN (bán thành phẩm) của
+ * mặt hàng, đã lọc đơn giá > 0. Trả 0 khi không tìm được giá.
  */
-export async function latestPurchaseUnitCost(tx: Tx, itemId: string) {
-  const line = await tx.inventoryTransactionLine.findFirst({
+export function pickTransferUnitCost(input: { itemType: string; transactionDate: Date; lines: TransferPriceLine[] }) {
+  const { itemType, transactionDate, lines } = input;
+  const monthStart = utcMonthStart(transactionDate);
+  const nextMonthStart = utcMonthStart(transactionDate, 1);
+  const inMonth = lines.filter((line) => line.transactionDate >= monthStart && line.transactionDate < nextMonthStart);
+
+  if (itemType === "RAW_MATERIAL" || itemType === "PACKAGING") {
+    if (inMonth.length > 0) {
+      const onOrBefore = inMonth.filter((line) => line.transactionDate <= transactionDate);
+      const pool = onOrBefore.length > 0 ? onOrBefore : inMonth;
+      const nearest = pool.reduce((best, line) => (
+        Math.abs(line.transactionDate.getTime() - transactionDate.getTime()) < Math.abs(best.transactionDate.getTime() - transactionDate.getTime())
+          ? line
+          : best
+      ));
+      return nearest.unitCost;
+    }
+  } else if (itemType === "SEMI_FINISHED") {
+    const average = weightedAverage(inMonth);
+    if (average > 0) return average;
+  } else {
+    return 0;
+  }
+
+  for (let back = 1; back <= TRANSFER_PRICE_LOOKBACK_MONTHS; back += 1) {
+    const from = utcMonthStart(transactionDate, -back);
+    const to = utcMonthStart(transactionDate, -back + 1);
+    const average = weightedAverage(lines.filter((line) => line.transactionDate >= from && line.transactionDate < to));
+    if (average > 0) return average;
+  }
+  return 0;
+}
+
+/** Đọc phiếu nhập cần cho luật đơn giá điều chuyển rồi giao cho pickTransferUnitCost. */
+export async function transferUnitCostByRule(tx: Tx, item: { id: string; itemType: string }, transactionDate: Date) {
+  const sourceType = item.itemType === "RAW_MATERIAL" || item.itemType === "PACKAGING"
+    ? "NHAP_MUA"
+    : item.itemType === "SEMI_FINISHED" ? "NHAP_CHE_BIEN" : null;
+  if (!sourceType) return 0;
+  const rows = await tx.inventoryTransactionLine.findMany({
+    where: {
+      itemId: item.id,
+      unitCost: { gt: 0 },
+      transaction: {
+        transactionType: sourceType,
+        deletedAt: null,
+        transactionDate: {
+          gte: utcMonthStart(transactionDate, -TRANSFER_PRICE_LOOKBACK_MONTHS),
+          lt: utcMonthStart(transactionDate, 1),
+        },
+      },
+    },
+    select: { quantity: true, unitCost: true, totalCost: true, transaction: { select: { transactionDate: true } } },
+  });
+  const lines: TransferPriceLine[] = rows.map((row) => ({
+    transactionDate: row.transaction.transactionDate,
+    quantity: row.quantity,
+    unitCost: row.unitCost,
+    totalCost: row.totalCost,
+  }));
+  return pickTransferUnitCost({ itemType: item.itemType, transactionDate, lines });
+}
+
+/**
+ * Đơn giá GẦN NHẤT đã biết của một mặt hàng (quy về ĐVT tồn kho), dùng làm giá điều chuyển khi
+ * kho nguồn chưa có giá vốn bình quân. Thứ tự ưu tiên:
+ *   1. phiếu NHẬP MUA gần nhất;
+ *   2. phiếu nhập khác có đơn giá gần nhất (nhập khác, kiểm kê, chế biến — BTP chỉ có giá ở đây)
+ *      hoặc phiếu điều chuyển trước đó đã mang giá;
+ *   3. giá bình quân đang có ở kho khác (tồn đầu kỳ khai ở kho khác đi vào đây);
+ *   4. đơn giá khai trên số dư tồn kho đầu kỳ.
+ * Không có gì thì trả 0 — điều chuyển 0 đồng (khách chốt 26/09/2026).
+ */
+export async function latestKnownUnitCost(tx: Tx, itemId: string, excludeWarehouseCode?: string) {
+  const purchase = await tx.inventoryTransactionLine.findFirst({
     where: { itemId, unitCost: { gt: 0 }, transaction: { transactionType: "NHAP_MUA", deletedAt: null } },
     orderBy: { transaction: { transactionDate: "desc" } },
     select: { unitCost: true },
   });
-  return line?.unitCost || 0;
+  if (purchase?.unitCost) return purchase.unitCost;
+
+  const inbound = await tx.inventoryTransactionLine.findFirst({
+    where: {
+      itemId,
+      unitCost: { gt: 0 },
+      transaction: {
+        deletedAt: null,
+        OR: [{ transactionType: { startsWith: "NHAP_" } }, { transactionType: "DIEU_CHUYEN" }],
+      },
+    },
+    orderBy: { transaction: { transactionDate: "desc" } },
+    select: { unitCost: true },
+  });
+  if (inbound?.unitCost) return inbound.unitCost;
+
+  const balance = await tx.inventoryBalance.findFirst({
+    where: { itemId, averageCost: { gt: 0 }, ...(excludeWarehouseCode ? { warehouseCode: { not: excludeWarehouseCode } } : {}) },
+    orderBy: { updatedAt: "desc" },
+    select: { averageCost: true },
+  });
+  if (balance?.averageCost) return balance.averageCost;
+
+  const item = await tx.inventoryItem.findUnique({ where: { id: itemId }, select: { code: true } });
+  if (!item) return 0;
+  const opening = await tx.openingBalance.findFirst({
+    where: { balanceType: "INVENTORY", objectCode: item.code, unitCost: { gt: 0 }, deletedAt: null },
+    orderBy: { period: "desc" },
+    select: { unitCost: true },
+  });
+  return opening?.unitCost || 0;
 }
 
 async function resolveStockLine(tx: Tx, line: StockLineInput) {
@@ -411,13 +539,12 @@ export async function postInventoryTransaction(tx: Tx, input: PostInventoryTrans
     } else {
       // Điều chuyển cũng được đẩy tồn kho đi xuống âm (khách chốt 26/09/2026).
       const outValue = await applyBalanceChange(tx, line.itemId, input.warehouseCode, line.quantity, line.unitCost, "OUT", true);
-      // Kho nguồn chưa có giá vốn (mới lập, nhận hàng bằng phiếu không đơn giá) thì lấy
-      // GIÁ NHẬP MUA GẦN NHẤT của mặt hàng làm giá điều chuyển, thay vì chặn cứng người
-      // dùng hay để kho nhận tự thay 0 bằng bình quân của chính nó (tổng giá trị kho tự tăng).
-      let transferUnitCost = outValue.unitCost;
-      if (transferUnitCost <= 0) {
-        transferUnitCost = await latestPurchaseUnitCost(tx, line.itemId);
-      }
+      // Giá điều chuyển theo luật riêng (pickTransferUnitCost): nguyên liệu/bao bì theo giá
+      // mua gần nhất trong tháng, BTP theo giá vốn rã BOM trong tháng. Luật không ra giá thì
+      // mới tới bình quân kho nguồn, rồi đơn giá gần nhất đã biết — không chặn cứng người dùng.
+      let transferUnitCost = await transferUnitCostByRule(tx, line.item, input.transactionDate);
+      if (transferUnitCost <= 0) transferUnitCost = outValue.unitCost;
+      if (transferUnitCost <= 0) transferUnitCost = await latestKnownUnitCost(tx, line.itemId, input.warehouseCode);
       // Không còn giá nào để lấy thì điều chuyển 0 đồng (khách chốt 26/09/2026): kho nhận
       // sẽ nhận giá khi khai tồn / nhập mua bù, giống hệ quả của luật xuất âm ở phiếu xuất.
       await applyBalanceChange(tx, line.itemId, input.toWarehouseCode || "", line.quantity, transferUnitCost, "IN");
@@ -519,8 +646,9 @@ export async function repostInventoryTransaction(
     } else {
       // Điều chuyển cũng được đẩy tồn kho đi xuống âm (khách chốt 26/09/2026).
       const outValue = await applyBalanceChange(tx, line.itemId, input.warehouseCode, line.quantity, line.unitCost, "OUT", true);
-      let transferUnitCost = outValue.unitCost;
-      if (transferUnitCost <= 0) transferUnitCost = await latestPurchaseUnitCost(tx, line.itemId);
+      let transferUnitCost = await transferUnitCostByRule(tx, line.item, input.transactionDate);
+      if (transferUnitCost <= 0) transferUnitCost = outValue.unitCost;
+      if (transferUnitCost <= 0) transferUnitCost = await latestKnownUnitCost(tx, line.itemId, input.warehouseCode);
       // Không còn giá nào thì điều chuyển 0 đồng (khách chốt 26/09/2026), không chặn.
       await applyBalanceChange(tx, line.itemId, input.toWarehouseCode || "", line.quantity, transferUnitCost, "IN");
       valuedLines.push({ ...line, unitCost: transferUnitCost, totalCost: transferUnitCost * line.quantity });

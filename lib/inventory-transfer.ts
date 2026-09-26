@@ -4,7 +4,7 @@
  * Hai kho cùng một nhà hàng: chỉ là cộng trừ trên báo cáo nhập xuất tồn, không phát sinh
  * công nợ. Kho nhận thuộc nhà hàng khác: hàng rời kho bên chuyển sang kho bên nhận, nên
  * bên chuyển có PHẢI THU nội bộ và bên nhận có PHẢI TRẢ nội bộ đúng bằng trị giá hàng
- * (giá vốn bình quân lúc xuất) — cùng cơ chế với phiếu Điều tiền liên nhà hàng, hoàn tiền
+ * (giá vốn bình quân lúc xuất, thiếu thì đơn giá gần nhất) — cùng cơ chế với phiếu Điều tiền liên nhà hàng, hoàn tiền
  * thì gạch thẳng vào cặp mã công nợ sinh ra ở đây.
  *
  * Lưu ý nghiệp vụ: KHÔNG điều chuyển nhóm FINISHED — thành phẩm chỉ sinh ra từ chế biến
@@ -79,10 +79,11 @@ export async function postStockTransfer(tx: TxClient, input: PostStockTransferIn
 
   if (!isCrossBranch) return { transaction, receivable: null, payable: null };
 
+  // Mặt hàng chưa có đơn giá nào (xem latestKnownUnitCost) thì phiếu đi 0 đồng: vẫn ghi số
+  // lượng, chỉ không sinh công nợ nội bộ 0 đồng. Khách chốt 27/09/2026 — import số lượng
+  // điều chuyển không được bị chặn vì giá; khai giá xong thì xoá phiếu lập lại để lên công nợ.
   const totalValue = transaction.lines.reduce((sum, line) => sum + line.totalCost, 0);
-  if (!(totalValue > 0)) {
-    transferError(`Phiếu điều chuyển ${input.code} không có trị giá (giá vốn bình quân = 0) nên không thể ghi công nợ nội bộ. Kiểm tra lại giá vốn của mặt hàng trước.`);
-  }
+  if (!(totalValue > 0)) return { transaction, receivable: null, payable: null };
 
   const { receivableCode, payableCode } = inventoryTransferDebtCodes(transaction.code);
   // Đối tác nội bộ dùng chung với phiếu điều tiền/phân bổ chi phí — tạo sẵn nếu chưa có.

@@ -2040,6 +2040,12 @@ export async function PATCH(request: Request) {
       if (rewritesLines && internalDebtCodes.length > 0) {
         businessError(`Phiếu ${transaction.code} là điều chuyển liên nhà hàng đã sinh công nợ nội bộ nên không sửa được số lượng/kho. Hãy xoá phiếu rồi lập lại.`);
       }
+      // Liên nhà hàng nhưng đi 0 đồng (chưa có đơn giá) thì chưa có công nợ: sửa lại ra giá trị
+      // sẽ thành hàng chuyển đi mà không ai nợ ai — bắt xoá lập lại để postStockTransfer sinh nợ.
+      if (rewritesLines && transaction.transactionType === "DIEU_CHUYEN" && transaction.toBranchCode
+        && transaction.toBranchCode !== transaction.branchCode && internalDebtCodes.length === 0) {
+        businessError(`Phiếu ${transaction.code} là điều chuyển liên nhà hàng 0 đồng (chưa có công nợ nội bộ) nên không sửa được số lượng/kho. Hãy xoá phiếu rồi lập lại để hệ thống tính giá và sinh công nợ.`);
+      }
 
       // Nhập mua đã sinh công nợ NCC: sửa xong phải dựng lại khoản nợ theo số mới, nhưng đã
       // gạch nợ bằng phiếu chi thì không đụng được nữa.
