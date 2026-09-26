@@ -1352,6 +1352,52 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     : [];
   const walletSettlementById = new Map(linkedWalletSettlements.map((row) => [row.id, row]));
   const walletSettlementByRef = new Map(linkedWalletSettlements.filter((row) => row.externalRef).map((row) => [row.externalRef as string, row]));
+  /**
+   * Phiếu QTVI gộp nhiều ngày doanh thu: phí mỗi ngày mỗi khác (ngày trước khi lên hệ thống phí
+   * = 0 — NME-00087 gồm 31/7, 1/8, 2/8), và nút Chạy lại quyết toán ghi đúng gross từng ngày vào
+   * ô Gross của dòng. Gross các dòng cộng lại khớp tiền về + phí thì tin từng dòng; không khớp
+   * (ô bỏ trống, khai phồng) mới chia phí theo tỉ lệ tiền về. Cộng trên MỌI dòng của giao dịch
+   * chứ không riêng dòng lọt vào kỳ đang xem.
+   */
+  const settlementRowSums = new Map<string, { gross: number; credit: number; complete: boolean }>();
+  if (linkedWalletSettlements.length) {
+    const settlementIds = linkedWalletSettlements.map((row) => row.id);
+    const settledTransactions = await prisma.bankStatementTransaction.findMany({
+      where: {
+        OR: [
+          { matches: { some: { deletedAt: null, targetType: "WALLET_SETTLEMENT", targetId: { in: settlementIds } } } },
+          { transactionCode: { in: linkedWalletSettlements.map((row) => row.externalRef).filter((code): code is string => Boolean(code)) }, ...branchFilter },
+        ],
+      },
+      select: {
+        transactionCode: true, creditAmount: true, grossAmount: true,
+        matches: { where: { deletedAt: null, targetType: "WALLET_SETTLEMENT" }, select: { targetId: true } },
+        allocations: { select: { creditAmount: true, grossAmount: true } },
+      },
+    });
+    for (const txn of settledTransactions) {
+      const settlement = txn.matches.map((match) => walletSettlementById.get(match.targetId)).find(Boolean) || walletSettlementByRef.get(txn.transactionCode);
+      if (!settlement) continue;
+      const parts = txn.allocations.length ? txn.allocations : [txn];
+      const sums = settlementRowSums.get(settlement.id) || { gross: 0, credit: 0, complete: true };
+      for (const part of parts) {
+        if (part.creditAmount <= 0) continue;
+        sums.credit += part.creditAmount;
+        sums.gross += part.grossAmount || 0;
+        if (!part.grossAmount || part.grossAmount < part.creditAmount) sums.complete = false;
+      }
+      settlementRowSums.set(settlement.id, sums);
+    }
+  }
+  const walletClearedAmount = (
+    settlement: { id: string; amount: number; feeAmount: number },
+    row: { creditAmount: number; grossAmount: number | null },
+  ) => {
+    const cleared = settlement.amount + settlement.feeAmount;
+    const sums = settlementRowSums.get(settlement.id);
+    if (sums?.complete && row.grossAmount && Math.abs(sums.gross - cleared) <= 1 && Math.abs(sums.credit - settlement.amount) <= 1) return row.grossAmount;
+    return row.creditAmount * cleared / settlement.amount;
+  };
   const isWalletSource = (code: string | null | undefined) =>
     Boolean(code) && normalizeMoneySourceGroup(moneySourceByCode.get(code as string)?.group) === "WALLET";
 
@@ -1381,11 +1427,10 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     const settlement = isWalletIncome
       ? row.walletSettlementIds.map((id) => walletSettlementById.get(id)).find(Boolean) || walletSettlementByRef.get(row.transactionCode)
       : undefined;
-    // Phiếu QTVI gom cả giao dịch; từng dòng của giao dịch gánh phí theo tỉ lệ tiền về của nó.
     const amount = !isIncome
       ? row.debitAmount
       : settlement && settlement.amount > 0
-        ? row.creditAmount * (settlement.amount + settlement.feeAmount) / settlement.amount
+        ? walletClearedAmount(settlement, row)
         // Chưa có phiếu QTVI: gross trên file nếu có (thu của ví gồm cả phí), 0 hoặc trống thì số thực về.
         : row.grossAmount || row.creditAmount;
     if (!amount) continue;
