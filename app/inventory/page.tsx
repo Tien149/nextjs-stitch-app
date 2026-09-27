@@ -2389,9 +2389,9 @@ export default function InventoryPage() {
                   const units = item ? [{ unitCode: item.unit.toUpperCase(), unitName: item.unit }, ...(item.unitConversions || []).filter((unit) => unit.unitCode.toUpperCase() !== item.unit.toUpperCase())] : [];
                   const patch = (changes: Partial<typeof line>) => setTransactionEditLines(transactionEditLines.map((current, position) => position === index ? { ...current, ...changes } : current));
                   return (
-                    <div key={line.key} className="grid grid-cols-1 sm:grid-cols-[minmax(110px,1.4fr)_minmax(0,0.7fr)_minmax(0,0.8fr)_minmax(0,1fr)_minmax(0,0.8fr)_minmax(0,1fr)_36px] gap-2 items-end border border-slate-100 rounded-lg p-2">
+                    <div key={line.key} className="grid grid-cols-1 sm:grid-cols-[minmax(160px,2.2fr)_minmax(0,0.7fr)_minmax(0,0.8fr)_minmax(0,1fr)_minmax(0,0.8fr)_minmax(0,1fr)_36px] gap-2 items-end border border-slate-100 rounded-lg p-2">
                       <Input label={index === 0 ? "Mặt hàng" : ""}>
-                        <ItemSelect items={data.items} value={line.itemId} onChange={(itemId) => {
+                        <ItemSelect nameOnly items={data.items} value={line.itemId} onChange={(itemId) => {
                           const picked = data.items.find((candidate) => candidate.id === itemId);
                           patch({ itemId, unitCode: picked?.unitConversions?.[0]?.unitCode || picked?.unit.toUpperCase() || "" });
                         }} />
@@ -3605,14 +3605,20 @@ function purchaseConversionLabel(item: { unit: string; unitConversions?: UnitCon
     .join(", ");
 }
 
-function ItemSelect({ items, value, onChange }: { items: Item[]; value: string; onChange: (value: string) => void }) {
+/**
+ * `nameOnly`: ô đã chọn chỉ hiện TÊN mặt hàng (ô hẹp trong hộp thoại sửa phiếu, hiện "mã - tên"
+ * thì mã chiếm hết chỗ, tên bị cắt). Danh sách xổ xuống đưa mã xuống dòng phụ, vẫn gõ mã để tìm được.
+ */
+function ItemSelect({ items, value, onChange, nameOnly = false }: { items: Item[]; value: string; onChange: (value: string) => void; nameOnly?: boolean }) {
   return (
     <SearchableSelect
       value={value}
       onChange={onChange}
       placeholder="Chọn mặt hàng"
       searchPlaceholder="Gõ mã hoặc tên mặt hàng..."
-      options={items.map((item) => ({ value: item.id, label: `${item.code} - ${item.name}`, subLabel: item.unit }))}
+      options={items.map((item) => (nameOnly
+        ? { value: item.id, label: item.name, subLabel: `${item.code} · ${item.unit}`, selectedLabel: item.name }
+        : { value: item.id, label: `${item.code} - ${item.name}`, subLabel: item.unit }))}
     />
   );
 }

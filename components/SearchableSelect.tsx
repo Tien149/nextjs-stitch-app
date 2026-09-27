@@ -7,6 +7,8 @@ export type OptionItem = {
   value: string;
   label: string;
   subLabel?: string;
+  /** Chữ hiện trên ô khi đã chọn (mặc định = label). Danh sách xổ xuống và ô tìm vẫn dùng label/subLabel. */
+  selectedLabel?: string;
 };
 
 interface SearchableSelectProps {
@@ -139,8 +141,11 @@ export function SearchableSelect({
             : "border-slate-300 hover:border-slate-400"
         } ${disabled ? "bg-slate-100 cursor-not-allowed opacity-60" : "cursor-pointer"}`}
       >
-        <span className={`block truncate font-medium ${selectedOption ? "text-slate-800" : "text-slate-400"}`}>
-          {selectedOption ? selectedOption.label : placeholder}
+        <span
+          className={`block truncate font-medium ${selectedOption ? "text-slate-800" : "text-slate-400"}`}
+          title={selectedOption ? selectedOption.selectedLabel ?? selectedOption.label : undefined}
+        >
+          {selectedOption ? selectedOption.selectedLabel ?? selectedOption.label : placeholder}
         </span>
         <svg
           className={`w-4 h-4 text-slate-400 transition-transform duration-200 shrink-0 ${
