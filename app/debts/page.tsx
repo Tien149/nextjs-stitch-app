@@ -520,6 +520,25 @@ export default function DebtsPage() {
     return starts;
   })();
 
+  /**
+   * Tách phát sinh thành tăng / giảm theo chiều công nợ của đối tác: đang phải trả thì dòng dương
+   * (ghi thêm phải trả) là tăng; đang phải thu thì dòng âm (ghi thêm phải thu) là tăng. Số dư bằng 0
+   * thì lấy chiều của bên phát sinh nhiều hơn. Đầu kỳ + tăng − giảm = cuối kỳ (theo trị tuyệt đối).
+   */
+  const ledgerMovement = (() => {
+    const rowsInLedger = ledger?.rows || [];
+    const positive = rowsInLedger.reduce((sum, row) => sum + Math.max(0, row.amount), 0);
+    const negative = rowsInLedger.reduce((sum, row) => sum + Math.max(0, -row.amount), 0);
+    const balance = ledger?.balance || 0;
+    const direction = isReceivableBalance(balance) ? -1 : isPayableBalance(balance) ? 1 : negative > positive ? -1 : 1;
+    return {
+      direction,
+      sideLabel: direction > 0 ? "phải trả" : "phải thu",
+      increase: direction > 0 ? positive : negative,
+      decrease: direction > 0 ? negative : positive,
+    };
+  })();
+
   const searchTerm = normalizeSearch(partnerQuery.trim());
   const rangeActive = Boolean(dateRange.fromDate || dateRange.toDate);
   const filteredRows = rows.filter((row) => {
@@ -760,7 +779,7 @@ export default function DebtsPage() {
                   // Ba con số để đối chiếu với bảng kê của đối tác tại một thời điểm: đầu kỳ + phát sinh = cuối kỳ.
                   <p className="mt-1 text-xs text-slate-600">
                     Đầu kỳ{ledger.fromDate ? ` (trước ${dayLabel(ledger.fromDate)})` : ""}: <b>{money(ledger.openingBalance)} đ</b>
-                    {" · "}Phát sinh trong kỳ ({ledger.rows.length} dòng): <b>{money(ledger.movementTotal)} đ</b>
+                    {" · "}Phát sinh trong kỳ ({ledger.rows.length} dòng): tăng <b>{money(ledgerMovement.increase)} đ</b>, giảm <b>{money(ledgerMovement.decrease)} đ</b>
                     {" · "}Cuối kỳ: <b>{money(ledger.balance)} đ</b>
                   </p>
                 )}
@@ -782,14 +801,15 @@ export default function DebtsPage() {
                     <th className="px-4 py-3">Mã</th>
                     <th className="px-4 py-3">Hạn/TT</th>
                     <th className="px-4 py-3">Diễn giải</th>
-                    <th className="px-4 py-3 text-right">Phát sinh</th>
+                    <th className="px-4 py-3 text-right" title={`Làm tăng ${ledgerMovement.sideLabel} của đối tác`}>Phát sinh tăng</th>
+                    <th className="px-4 py-3 text-right" title={`Làm giảm ${ledgerMovement.sideLabel} của đối tác`}>Phát sinh giảm</th>
                     <th className="px-4 py-3 text-right" title="Số dư cộng dồn sau dòng này, tính từ Đầu kỳ theo ngày tăng dần">Số dư sau</th>
                     <th className="px-4 py-3 text-right">Thao tác</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {ledger.rows.length === 0 && !ledger.fromDate ? (
-                    <tr><td colSpan={8} className="px-4 py-10 text-center text-slate-400">Chưa có phát sinh.</td></tr>
+                    <tr><td colSpan={9} className="px-4 py-10 text-center text-slate-400">Chưa có phát sinh.</td></tr>
                   ) : ledger.rows.map((item, index) => {
                     const groupRows = ledgerGroupStarts.get(index);
                     const groupTotal = groupRows ? groupRows.reduce((sum, row) => sum + Math.abs(row.amount), 0) : 0;
@@ -798,7 +818,7 @@ export default function DebtsPage() {
                     <Fragment key={`${item.source}-${item.code}-${index}`}>
                     {groupRows && (
                       <tr className="bg-blue-50/70">
-                        <td colSpan={7} className="px-4 py-2 text-xs font-bold text-blue-700">
+                        <td colSpan={8} className="px-4 py-2 text-xs font-bold text-blue-700">
                           Phiếu {item.groupCode} · {groupRows.length} dòng hạng mục · {money(groupTotal)} đ
                         </td>
                         <td className="px-4 py-2 text-right">
@@ -840,7 +860,12 @@ export default function DebtsPage() {
                           </span>
                         )}
                       </td>
-                      <td className={`px-4 py-3 text-right font-bold ${item.amount < 0 ? "text-blue-700" : item.amount > 0 ? "text-rose-700" : "text-slate-500"}`}>{money(item.amount)} đ</td>
+                      <td className={`px-4 py-3 text-right font-bold ${item.amount > 0 ? "text-rose-700" : "text-blue-700"}`}>
+                        {item.amount * ledgerMovement.direction > 0 ? `${money(Math.abs(item.amount))} đ` : ""}
+                      </td>
+                      <td className={`px-4 py-3 text-right font-bold ${item.amount > 0 ? "text-rose-700" : "text-blue-700"}`}>
+                        {item.amount * ledgerMovement.direction < 0 ? `${money(Math.abs(item.amount))} đ` : ""}
+                      </td>
                       <td className={`px-4 py-3 text-right ${isReceivableBalance(item.runningBalance || 0) ? "text-blue-700" : isPayableBalance(item.runningBalance || 0) ? "text-rose-700" : "text-slate-500"}`}>
                         {money(Math.abs(item.runningBalance || 0))}
                         <span className="ml-1 text-[10px] font-bold uppercase text-slate-400">{debtBalanceLabel(item.runningBalance || 0)}</span>
@@ -868,6 +893,7 @@ export default function DebtsPage() {
                     <tr className="bg-slate-50 font-bold text-slate-700">
                       <td className="px-4 py-3">{dayLabel(ledger.fromDate)}</td>
                       <td className="px-4 py-3" colSpan={4}>Số dư đầu kỳ (mọi phát sinh trước {dayLabel(ledger.fromDate)})</td>
+                      <td className="px-4 py-3 text-right">-</td>
                       <td className="px-4 py-3 text-right">-</td>
                       <td className={`px-4 py-3 text-right ${isReceivableBalance(ledger.openingBalance) ? "text-blue-700" : isPayableBalance(ledger.openingBalance) ? "text-rose-700" : "text-slate-500"}`}>
                         {money(Math.abs(ledger.openingBalance))}
