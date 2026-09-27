@@ -1239,7 +1239,7 @@ export default function InventoryPage() {
         <section className="table-panel shadow-sm mb-5">
           <Panel title="Nhập - Xuất - Tồn cơ bản theo kho" reload={loadData} exportFileName="nhap_xuat_ton_theo_kho" />
           <div className="px-5 pb-4 grid sm:grid-cols-3 gap-3">
-            {/* Cửa hàng áp cho cả ba bảng của tab Tồn kho; Kho chỉ còn các kho của cửa hàng đã chọn. */}
+            {/* Cửa hàng và Kho áp cho cả ba bảng của tab Tồn kho; Kho chỉ còn các kho của cửa hàng đã chọn. */}
             <Input label="Cửa hàng">
               <select
                 className="control"
@@ -1366,7 +1366,7 @@ export default function InventoryPage() {
               { label: "Cảnh báo" },
             ]}
           >
-            {data.balances.filter((row) => inReportStore(row.warehouseCode)).map((row) => (
+            {data.balances.filter((row) => inReportStore(row.warehouseCode) && (reportWarehouse === "ALL" || row.warehouseCode === reportWarehouse)).map((row) => (
               <tr key={row.id} className="border-t border-slate-100">
                 <Cell>
                   <b><CopyableText value={row.item.code} /> - {row.item.name}</b>
