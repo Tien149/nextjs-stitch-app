@@ -157,7 +157,7 @@ export default function InventoryPage() {
   /** Sửa / xoá phiếu kho ngay trên bảng phiếu của ba tab Nhập / Xuất / Điều chuyển. */
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [transactionEditForm, setTransactionEditForm] = useState({ transactionDate: "", warehouseCode: "", toWarehouseCode: "", partnerCode: "", subType: "", referenceCode: "", note: "" });
-  const [transactionEditLines, setTransactionEditLines] = useState<Array<{ key: string; itemId: string; quantity: string; unitCode: string; unitCost: string; vatRate: string; vatAmount: string }>>([]);
+  const [transactionEditLines, setTransactionEditLines] = useState<Array<{ key: string; itemId: string; quantity: string; unitCode: string; unitCost: string; baseUnitCost: number; vatRate: string; vatAmount: string }>>([]);
   const [transactionEditError, setTransactionEditError] = useState<string | null>(null);
   const [transactionEditSaving, setTransactionEditSaving] = useState(false);
   const [deletingTransaction, setDeletingTransaction] = useState<Transaction | null>(null);
@@ -1032,13 +1032,30 @@ export default function InventoryPage() {
       referenceCode: transaction.referenceCode || "",
       note: transaction.note || "",
     });
-    setTransactionEditLines(transaction.lines.map((line, index) => ({
+    setTransactionEditLines(transaction.lines.map((line, index) => {
+      /**
+       * Phiếu lưu ĐVT nhập theo TÊN quy đổi ("chai 830gr") còn ô chọn ĐVT dùng MÃ ("CHAI830GR"):
+       * không tra ngược thì ô chọn lệch giá trị và máy chủ báo "ĐVT không tồn tại" khi lưu.
+       */
+      const fullItem = data.items.find((candidate) => candidate.id === line.item.id);
+      const rawUnit = (line.inputUnitCode || line.item.unit || "").trim();
+      const matchedUnit = (fullItem?.unitConversions || []).find((unit) => (
+        unit.unitCode.toUpperCase() === rawUnit.toUpperCase() || (unit.unitName || "").toUpperCase() === rawUnit.toUpperCase()
+      ));
+      const unitCode = matchedUnit ? matchedUnit.unitCode : rawUnit.toUpperCase() === (line.item.unit || "").toUpperCase() ? line.item.unit.toUpperCase() : rawUnit;
+      return {
       key: `${line.id}-${index}`,
       itemId: line.item.id,
       // Hiện lại đúng con số người dùng đã gõ (ĐVT mua), không phải số đã quy đổi về ĐVT tồn.
       quantity: String(line.inputQuantity ?? line.quantity),
-      unitCode: line.inputUnitCode || line.item.unit,
-      unitCost: String(line.inputUnitCost ?? line.unitCost),
+      unitCode,
+      // Ô Đơn giá theo ĐVT ĐANG CHỌN: phiếu nhập thì số đã khai; thiếu số khai (và mọi phiếu
+      // xuất / điều chuyển) thì quy giá vốn theo ĐVT tồn (đ/gr) ra ĐVT nhập (đ/chai). Trước đây
+      // hiện thẳng đ/gr cạnh chữ "chai" nên nhìn như giá sai — xem repostInventoryTransaction.
+      unitCost: String(isInboundType(transaction.transactionType) && line.inputUnitCost !== null
+        ? line.inputUnitCost
+        : roundUnitCost(line.unitCost * (line.conversionRate || 1))),
+      baseUnitCost: line.unitCost,
       // Mã thuế suất ("8%" / "KKKNT") để ô chọn hiện đúng cái đã lưu; ô trống = chưa khai thuế.
       vatRate: vatRateLabel(line.vatRate),
       /**
@@ -1046,10 +1063,11 @@ export default function InventoryPage() {
        * theo hoá đơn. Điền sẵn cả khi trùng thì sửa số lượng/đơn giá xong tiền thuế vẫn kẹt ở
        * số cũ, mà người dùng không hề biết mình đang khai đè.
        */
-      vatAmount: line.vatAmount && line.vatAmount !== vatAmountOf(roundVnd((line.inputQuantity ?? line.quantity) * (line.inputUnitCost ?? line.unitCost)), line.vatRate)
+      vatAmount: line.vatAmount && line.vatAmount !== vatAmountOf(roundVnd((line.inputQuantity ?? line.quantity) * (line.inputUnitCost ?? line.unitCost * (line.conversionRate || 1))), line.vatRate)
         ? String(line.vatAmount)
         : "",
-    })));
+      };
+    }));
   };
 
   /**
@@ -1083,7 +1101,8 @@ export default function InventoryPage() {
             itemId: line.itemId,
             inputQuantity: line.quantity,
             inputUnitCode: line.unitCode,
-            inputUnitCost: line.unitCost,
+            // Phiếu xuất / điều chuyển không gửi đơn giá: máy chủ tự định giá theo kho.
+            inputUnitCost: isInboundType(editingTransaction.transactionType) ? line.unitCost : "",
             vatRate: line.vatRate,
             vatAmount: line.vatAmount,
           })),
@@ -2378,7 +2397,7 @@ export default function InventoryPage() {
                   <b className="text-sm text-slate-700">Mặt hàng ({transactionEditLines.length} dòng)</b>
                   <button
                     type="button"
-                    onClick={() => setTransactionEditLines([...transactionEditLines, { key: `new-${Date.now()}`, itemId: "", quantity: "1", unitCode: "", unitCost: "0", vatRate: "KKKNT", vatAmount: "" }])}
+                    onClick={() => setTransactionEditLines([...transactionEditLines, { key: `new-${Date.now()}`, itemId: "", quantity: "1", unitCode: "", unitCost: "0", baseUnitCost: 0, vatRate: "KKKNT", vatAmount: "" }])}
                     className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-bold hover:bg-slate-50"
                   >
                     + Thêm dòng
@@ -2409,7 +2428,9 @@ export default function InventoryPage() {
                           type="number"
                           step="any"
                           className="control text-right disabled:bg-slate-100 disabled:text-slate-400"
-                          value={line.unitCost}
+                          value={isInboundType(editingTransaction.transactionType)
+                            ? line.unitCost
+                            : String(roundUnitCost(line.baseUnitCost * (item ? safeConversionRate(item.unit, (item.unitConversions || []).find((unit) => unit.unitCode.toUpperCase() === line.unitCode.toUpperCase())) : 1)))}
                           disabled={!isInboundType(editingTransaction.transactionType)}
                           title={isInboundType(editingTransaction.transactionType)
                             ? ""
@@ -3546,6 +3567,11 @@ export default function InventoryPage() {
       )}
     </ModuleFrame>
   );
+}
+
+/** Đơn giá hiển thị: giữ 2 số lẻ (giá theo ĐVT tồn nhân hệ số quy đổi ra số lẻ dài). */
+function roundUnitCost(value: number): number {
+  return Math.round((Number(value) || 0) * 100) / 100;
 }
 
 /** Bỏ dấu + chữ thường để ô tìm gõ "tra dao" vẫn ra "Trà Đào". */

@@ -633,8 +633,18 @@ export async function repostInventoryTransaction(
 
   await reverseStockEffect(tx, current);
 
+  /**
+   * Phiếu XUẤT / ĐIỀU CHUYỂN sửa lại thì KHÔNG nhận đơn giá gửi lên: giá của nó là bình quân kho
+   * (điều chuyển theo luật giá điều chuyển). Trước đây hộp thoại Sửa gửi lại ô "Đơn giá" — vốn là
+   * giá theo ĐVT TỒN (đ/gr) — như giá của ĐVT nhập (đ/chai), resolveStockLine chia tiếp cho hệ số
+   * quy đổi: bấm Lưu không đổi gì mà phiếu hủy 2 chai tương ớt rớt từ 64.000 đ xuống 77 đ
+   * (khách báo 27/09/2026). Phiếu NHẬP vẫn nhận đơn giá khai như cũ.
+   */
+  const lines = isInboundStockType(transactionType)
+    ? input.lines
+    : input.lines.map((line) => ({ ...line, inputUnitCost: null, unitCost: null, vatRate: null, vatAmount: null }));
   const resolvedLines = [];
-  for (const line of input.lines) resolvedLines.push(await resolveStockLine(tx, line));
+  for (const line of lines) resolvedLines.push(await resolveStockLine(tx, line));
 
   const valuedLines = [];
   for (const line of resolvedLines) {
