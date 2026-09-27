@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  CASH_DEPOSIT_ROUNDING_PNL_ITEM,
   internalTransferDebtCodes,
   isCrossBranchTransfer,
   moneySourceBranchCode,
@@ -90,6 +91,28 @@ test("phí/chênh lệch của phiếu liên nhà hàng nằm ở bên chuyển"
   assert.equal(outJournal.lines.find((line) => line.accountCode === "1111").credit, 1_020_000);
   assert.equal(inJournal.lines.some((line) => line.accountCode === "6428"), false);
   assert.ok(journals.every((journal) => transferJournalIsBalanced(journal)));
+});
+
+test("chênh làm tròn của phiếu nộp tiền vào thẳng hạng mục P&L CPBD_CPKHAC", () => {
+  assert.equal(CASH_DEPOSIT_ROUNDING_PNL_ITEM, "CPBD_CPKHAC");
+  // Nộp thiếu vài đồng: nguồn thu ngân giảm đủ, ngân hàng tăng số thực nộp, phần chênh là chi phí.
+  const [short] = planMoneyTransferJournals({ ...sameBranch, amount: 18_289_000, feeAmount: 337, transferPurpose: "CASH_DEPOSIT" });
+  const shortFee = short.lines.find((line) => line.accountCode === "6428");
+  assert.equal(shortFee.debit, 337);
+  assert.equal(shortFee.pnlItemCode, "CPBD_CPKHAC");
+  assert.ok(transferJournalIsBalanced(short));
+
+  // Nộp dư: phần chênh ghi giảm chi phí, vẫn đúng hạng mục đó.
+  const [over] = planMoneyTransferJournals({ ...sameBranch, amount: 18_290_000, feeAmount: -663, transferPurpose: "CASH_DEPOSIT" });
+  const overFee = over.lines.find((line) => line.accountCode === "6428");
+  assert.equal(overFee.credit, 663);
+  assert.equal(overFee.pnlItemCode, "CPBD_CPKHAC");
+  assert.ok(transferJournalIsBalanced(over));
+});
+
+test("phiếu điều tiền thường có phí vẫn không tự gán hạng mục P&L", () => {
+  const [journal] = planMoneyTransferJournals({ ...sameBranch, amount: 1_000_000, feeAmount: 11_000, feeCategoryCode: "PHI_NH" });
+  assert.equal(journal.lines.find((line) => line.accountCode === "6428").pnlItemCode, null);
 });
 
 test("mỗi cửa hàng chỉ thấy vế tiền của chính mình, xem toàn công ty thì thấy đủ", () => {

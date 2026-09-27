@@ -140,9 +140,18 @@ export type TransferJournal = {
   lines: TransferJournalLine[];
 };
 
+/**
+ * Hạng mục P&L của phần chênh làm tròn trên phiếu NỘP TIỀN (transferPurpose CASH_DEPOSIT):
+ * khách chốt 27/09/2026 đưa thẳng vào "Chi phí khác" của khối chi phí bán hàng & hoạt động,
+ * thay vì để trống rồi rơi vào "Chưa phân loại" trên P&L. Mã do khách khai trong danh mục.
+ */
+export const CASH_DEPOSIT_ROUNDING_PNL_ITEM = "CPBD_CPKHAC";
+
 export type MoneyTransferJournalInput = TransferBranchInput & {
   amount: number;
   feeAmount: number;
+  /** Loại phiếu điều tiền (CASH_DEPOSIT, WALLET_SETTLEMENT...) — quyết định hạng mục P&L của phần chênh. */
+  transferPurpose?: string | null;
   grabExpenseAmount?: number | null;
   feeCategoryCode?: string | null;
   grabExpenseCategoryCode?: string | null;
@@ -174,7 +183,9 @@ export function planMoneyTransferJournals(input: MoneyTransferJournalInput): Tra
   // Phí quyết toán ví mang sẵn hạng mục P&L "Chi phí quẹt thẻ" / "Chi phí bán hàng qua app",
   // nếu không P&L chỉ thấy một cục "Chưa phân loại P&L" (feedback khách 05/09/2026). Phiếu điều
   // tiền thường do người dùng tự chọn danh mục thì không suy ra được — để trống như cũ.
-  const feePnlItem = (categoryCode: string | null | undefined) => walletFeePnlItemCode(categoryCode);
+  const feePnlItem = (categoryCode: string | null | undefined) => (input.transferPurpose === "CASH_DEPOSIT"
+    ? CASH_DEPOSIT_ROUNDING_PNL_ITEM
+    : walletFeePnlItemCode(categoryCode));
   const feeLines: TransferJournalLine[] = [];
   if (grabExpenseAmount > 0) feeLines.push({ accountCode: "6428", debit: grabExpenseAmount, categoryCode: input.grabExpenseCategoryCode, pnlItemCode: feePnlItem(input.grabExpenseCategoryCode) });
   if (cardFeeAmount > 0) feeLines.push({ accountCode: "6428", debit: cardFeeAmount, categoryCode: input.feeCategoryCode, pnlItemCode: feePnlItem(input.feeCategoryCode) });

@@ -244,6 +244,7 @@ export async function postMoneyTransferJournals(
     grabExpenseAmount: row.grabExpenseAmount,
     feeCategoryCode: row.feeCategoryCode,
     grabExpenseCategoryCode: row.grabExpenseCategoryCode,
+    transferPurpose: row.transferPurpose,
     fromAccountCode: moneySourceAccountCode(sourceByCode.get(row.fromMoneySourceCode)),
     toAccountCode: moneySourceAccountCode(sourceByCode.get(row.toMoneySourceCode)),
     description: row.description,
