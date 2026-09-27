@@ -71,6 +71,8 @@ type VoucherFilters = {
   missingCategory?: boolean;
   /** Chỉ hiện phiếu của một đối tác — bảng "Chi theo đối tác" trên báo cáo link về đây. */
   partnerCode?: string;
+  /** Gõ tên hoặc mã đối tác (khớp một phần, cả đối tác trên phiếu phân bổ nhiều đối tác). */
+  partnerSearch?: string;
 };
 
 type VoucherListSummary = {
@@ -242,6 +244,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
       if (filters.categoryCode) query.set("categoryCode", filters.categoryCode);
       if (filters.missingCategory) query.set("missingCategory", "1");
       if (filters.partnerCode) query.set("partnerCode", filters.partnerCode);
+      if (filters.partnerSearch?.trim()) query.set("partnerSearch", filters.partnerSearch.trim());
 
       const response = await fetch(`/api/vouchers?${query.toString()}`);
       const payload = await response.json().catch(() => null) as VoucherListResponse | { error?: string } | null;
@@ -286,6 +289,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
         if (appliedFilters.categoryCode) query.set("categoryCode", appliedFilters.categoryCode);
         if (appliedFilters.missingCategory) query.set("missingCategory", "1");
         if (appliedFilters.partnerCode) query.set("partnerCode", appliedFilters.partnerCode);
+        if (appliedFilters.partnerSearch?.trim()) query.set("partnerSearch", appliedFilters.partnerSearch.trim());
         const response = await fetch(`/api/vouchers?${query.toString()}`);
         const payload = await response.json().catch(() => null) as VoucherListResponse | { error?: string } | null;
         if (!response.ok || !payload || !("rows" in payload)) {
@@ -1920,6 +1924,19 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                     </option>
                   ))}
                 </select>
+              </label>
+              <label className="min-w-[190px] flex-1 text-xs font-bold text-slate-600 sm:max-w-[260px]">
+                Đối tác
+                <input
+                  type="search"
+                  value={filterDraft.partnerSearch || ""}
+                  onChange={(event) => {
+                    setFilterDraft((current) => ({ ...current, partnerSearch: event.target.value }));
+                    setListError("");
+                  }}
+                  placeholder="Tên hoặc mã đối tác"
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-700 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                />
               </label>
               <button
                 type="submit"

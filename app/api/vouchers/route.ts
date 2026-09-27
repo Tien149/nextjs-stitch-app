@@ -284,6 +284,8 @@ export async function GET(request: Request) {
     // Lọc theo đối tác: bảng "Chi theo đối tác" trên báo cáo nguồn tiền link về đây. Phiếu
     // đại diện nhiều đối tác ghi ở bảng phân bổ nên phải khớp cả partnerAllocations.
     const partnerText = cleanText(searchParams.get("partnerCode"));
+    // Ô "Đối tác" trên danh sách: gõ một phần tên hoặc mã.
+    const partnerSearch = cleanText(searchParams.get("partnerSearch"));
     const requestedPage = Number(searchParams.get("page") || "1");
     const requestedPageSize = Number(searchParams.get("pageSize") || "50");
 
@@ -350,6 +352,16 @@ export async function GET(request: Request) {
             OR: [
               { partnerCode: { equals: partnerText, mode: "insensitive" as const } },
               { partnerAllocations: { some: { partnerCode: { equals: partnerText, mode: "insensitive" as const } } } },
+            ],
+          });
+        }
+        if (partnerSearch) {
+          const contains = { contains: partnerSearch, mode: "insensitive" as const };
+          conditions.push({
+            OR: [
+              { partnerName: contains },
+              { partnerCode: contains },
+              { partnerAllocations: { some: { OR: [{ partnerName: contains }, { partnerCode: contains }] } } },
             ],
           });
         }
