@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   computeRecipeUnitCosts,
   explodeSalesDemand,
-  explodeSalesDemandByDepartment,
+  explodeSalesDemandWithDepartments,
   pickRecipeForDate,
   recipeContentSignature,
 } from "../lib/production-explosion.ts";
@@ -297,39 +297,76 @@ test("bản riêng của cửa hàng khác không kéo lần rã của cửa hà
   );
 });
 
+const soda = { id: "i-soda", code: "SP_SODASOT", name: "Soda sốt cà (bar)", unit: "LY", itemType: "FINISHED" };
+const sodaRecipe = {
+  id: "r-soda",
+  productCode: "SP_SODASOT",
+  productName: soda.name,
+  unit: "LY",
+  outputConversionRate: 1,
+  version: 1,
+  effectiveFrom: "2026-07-22",
+  status: "ACTIVE",
+  lines: [{ itemId: items.sot.id, quantity: 50, conversionRate: 1, wasteRate: 0, item: items.sot }],
+};
+// Món ăn -> bếp, đồ uống -> bar. Sốt cà (BTP) không khai gì: phải đi theo món dùng nó.
+const ownDepartment = { SP_CAHONG: "KIT", SP_SODASOT: "BAR", NVL_NUOCSUOI: "BAR", SP_COMBO01: "BAR" };
+const departmentRules = { departmentOf: (code) => ownDepartment[code] || null, comboDepartment: "KIT" };
+const stepOf = (plan, code, department) => plan.productions.find((step) => step.productCode === code && step.department === department);
+
 test("rã theo bộ phận: BTP dùng chung cho món bếp và món bar được chế biến tách ở từng kho", () => {
-  const soda = { id: "i-soda", code: "SP_SODASOT", name: "Soda sốt cà (bar)", unit: "LY", itemType: "FINISHED" };
-  const barRecipe = {
-    id: "r-soda",
-    productCode: "SP_SODASOT",
-    productName: soda.name,
-    unit: "LY",
-    outputConversionRate: 1,
-    version: 1,
-    effectiveFrom: "2026-07-22",
-    status: "ACTIVE",
-    lines: [{ itemId: items.sot.id, quantity: 50, conversionRate: 1, wasteRate: 0, item: items.sot }],
-  };
-  const department = { SP_CAHONG: "KIT", SP_SODASOT: "BAR" };
-  const groups = explodeSalesDemandByDepartment({
+  const plan = explodeSalesDemandWithDepartments({
     demands: [
       { productCode: "SP_CAHONG", quantity: 10 },
       { productCode: "SP_SODASOT", quantity: 4 },
       { productCode: "NVL_BIA", quantity: 3 },
     ],
-    recipes: [...recipes, barRecipe],
+    recipes: [...recipes, sodaRecipe],
     date: new Date("2026-08-01"),
-  }, (code) => department[code] || null);
-
-  const byDept = Object.fromEntries(groups.map((group) => [group.department ?? "DEFAULT", group.plan]));
-  assert.deepEqual(Object.keys(byDept), ["KIT", "BAR", "DEFAULT"]);
-  const sotOf = (plan) => plan.productions.find((step) => step.productCode === "BTP_SOTCACHUA");
+  }, departmentRules);
   // Món bếp 10 phần x 150 gr sốt, món bar 4 ly x 50 gr sốt — mỗi kho chế biến đúng phần của mình.
-  assert.equal(sotOf(byDept.KIT).quantityBase, 1500);
-  assert.equal(sotOf(byDept.BAR).quantityBase, 200);
-  assert.equal(byDept.KIT.producedSales[0].productCode, "SP_CAHONG");
-  assert.equal(byDept.BAR.producedSales[0].productCode, "SP_SODASOT");
-  // Món chưa suy được bộ phận vẫn đi kho mặc định như cũ.
-  assert.deepEqual(byDept.DEFAULT.directSales, [{ productCode: "NVL_BIA", quantityBase: 3 }]);
-  assert.equal(byDept.DEFAULT.productions.length, 0);
+  assert.equal(stepOf(plan, "BTP_SOTCACHUA", "KIT").quantityBase, 1500);
+  assert.equal(stepOf(plan, "BTP_SOTCACHUA", "BAR").quantityBase, 200);
+  // Nguyên liệu của BTP cũng trừ ở đúng kho của nhánh đó.
+  assert.deepEqual(stepOf(plan, "BTP_SOTCACHUA", "BAR").components.map((c) => c.department), ["BAR"]);
+  assert.deepEqual(plan.producedSales.map((sale) => [sale.productCode, sale.department]).sort(), [["SP_CAHONG", "KIT"], ["SP_SODASOT", "BAR"]]);
+  // Món chưa suy được bộ phận: bộ phận null, caller tự đưa về kho mặc định.
+  assert.deepEqual(plan.directSales, [{ productCode: "NVL_BIA", quantityBase: 3, department: null }]);
+});
+
+test("combo nhập / xuất bán ở kho bếp, từng thành phần trừ ở kho của chính nó", () => {
+  const comboWithDrink = {
+    ...recipes.find((recipe) => recipe.productCode === "SP_COMBO01"),
+    id: "r-combo-2",
+    lines: [
+      { itemId: items.cahong.id, quantity: 1, conversionRate: 1, wasteRate: 0, item: items.cahong },
+      { itemId: items.nuoc.id, quantity: 1, conversionRate: 1, wasteRate: 0, item: items.nuoc },
+      { itemId: soda.id, quantity: 2, conversionRate: 1, wasteRate: 0, item: soda },
+    ],
+  };
+  const plan = explodeSalesDemandWithDepartments({
+    demands: [{ productCode: "SP_COMBO01", quantity: 5 }],
+    recipes: [...recipes.filter((recipe) => recipe.productCode !== "SP_COMBO01"), comboWithDrink, sodaRecipe],
+    date: new Date("2026-08-01"),
+  }, departmentRules);
+  // Combo tự khai "BAR" nhưng luật combo: nhập kho và xuất bán ở BẾP.
+  const combo = stepOf(plan, "SP_COMBO01", "KIT");
+  assert.ok(combo);
+  assert.deepEqual(plan.producedSales, [{ productCode: "SP_COMBO01", quantityBase: 5, department: "KIT" }]);
+  const componentDept = Object.fromEntries(combo.components.map((c) => [c.item.code, c.department]));
+  assert.deepEqual(componentDept, { SP_CAHONG: "KIT", NVL_NUOCSUOI: "BAR", SP_SODASOT: "BAR" });
+  // Món trong combo chế biến ở kho của chính nó, BTP của nó đi theo nó.
+  assert.equal(stepOf(plan, "SP_CAHONG", "KIT").quantityBase, 5);
+  assert.equal(stepOf(plan, "SP_SODASOT", "BAR").quantityBase, 10);
+  assert.equal(stepOf(plan, "BTP_SOTCACHUA", "KIT").quantityBase, 750);
+  assert.equal(stepOf(plan, "BTP_SOTCACHUA", "BAR").quantityBase, 500);
+});
+
+test("không có kho bếp (comboDepartment rỗng) thì combo theo bộ phận của chính nó", () => {
+  const plan = explodeSalesDemandWithDepartments({
+    demands: [{ productCode: "SP_COMBO01", quantity: 1 }],
+    recipes,
+    date: new Date("2026-08-01"),
+  }, { departmentOf: departmentRules.departmentOf, comboDepartment: null });
+  assert.deepEqual(plan.producedSales, [{ productCode: "SP_COMBO01", quantityBase: 1, department: "BAR" }]);
 });

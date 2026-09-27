@@ -410,33 +410,150 @@ export function computeCostingLevels(
     }));
 }
 
-export type DepartmentExplosionPlan = {
-  /** Bộ phận của các MÓN BÁN trong nhóm (vd bếp / bar); null = chưa suy được, đi kho mặc định. */
+export type DepartmentProductionStep = Omit<ProductionStep, "components"> & {
+  /** Bộ phận của bước chế biến = kho NHẬP thành phẩm của bước; null = chưa suy được. */
   department: string | null;
-  plan: ExplosionPlan;
+  /** Mỗi nguyên liệu mang bộ phận của kho sẽ trừ nó (combo: kho của từng thành phần). */
+  components: Array<{ item: ExplosionItem; quantityBase: number; department: string | null }>;
 };
 
+export type DepartmentExplosionPlan = {
+  productions: DepartmentProductionStep[];
+  producedSales: Array<{ productCode: string; quantityBase: number; department: string | null }>;
+  directSales: Array<{ productCode: string; quantityBase: number; department: string | null }>;
+};
+
+export type DepartmentRules = {
+  /** Bộ phận của MỘT MÓN tự thân (nhóm doanh thu -> phân nhóm); null khi không suy được. */
+  departmentOf: (productCode: string) => string | null;
+  /** Combo luôn nhập kho / xuất bán ở bộ phận này (khách chốt 27/09/2026: kho bếp). */
+  comboDepartment?: string | null;
+};
+
+/** Combo = định lượng có ít nhất một thành phần là THÀNH PHẨM (món ghép từ món). */
+export function isComboRecipe(recipe: ExplosionRecipe) {
+  return recipe.lines.some((line) => up(line.item.itemType) === "FINISHED");
+}
+
 /**
- * Rã theo TỪNG BỘ PHẬN của món bán ra (khách chốt 27/09/2026): bán thành phẩm đi theo kho của
- * món dùng nó, không tự suy kho theo chính nó. Trước đây mọi món gộp một kế hoạch rồi mới đoán
- * kho cho từng bước; BTP không bán ra nên không có nhóm doanh thu, rơi hết về kho mặc định của
- * lần rã (Kho văn phòng) — BTP của món bar cũng nằm ở đó thay vì kho bar.
+ * Rã theo BỘ PHẬN (bếp / bar), khách chốt 27/09/2026:
+ *   - món bán ra thuộc bộ phận của chính nó (nhóm doanh thu -> phân nhóm);
+ *   - bán thành phẩm & nguyên liệu KHÔNG tự suy bộ phận, đi theo món dùng tới nó — BTP dùng
+ *     cho cả món bếp lẫn món bar thì chế biến tách phần ở từng kho;
+ *   - COMBO nhập kho / xuất bán ở `comboDepartment` (kho bếp), còn TỪNG THÀNH PHẦN của combo
+ *     trừ ở kho của chính thành phần đó (món ăn -> bếp, đồ uống -> bar), không suy được thì
+ *     theo combo.
+ * Trước đây mỗi bước tự suy kho theo chính sản phẩm của bước: BTP không có nhóm doanh thu nên
+ * rơi hết về kho mặc định (Kho văn phòng), cả combo lẫn đồ uống trong combo đi chung một kho.
  *
- * Chia số bán theo `departmentOf(mã món)` rồi rã riêng từng nhóm: một BTP dùng cho cả món bếp lẫn
- * món bar được chế biến TÁCH đúng phần ở từng kho. Thứ tự nhóm giữ theo lần xuất hiện đầu tiên.
+ * Cùng công thức số lượng với explodeSalesDemand, chỉ khác là nhu cầu được theo dõi theo cặp
+ * (sản phẩm, bộ phận). Bộ phận null = chưa suy được, caller tự chọn kho mặc định.
  */
-export function explodeSalesDemandByDepartment(
-  input: ExplosionInput,
-  departmentOf: (productCode: string) => string | null,
-): DepartmentExplosionPlan[] {
-  const groups = new Map<string, ExplosionInput["demands"]>();
-  for (const demand of input.demands) {
-    const key = departmentOf(up(demand.productCode)) || "";
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key)!.push(demand);
+export function explodeSalesDemandWithDepartments(input: ExplosionInput, rules: DepartmentRules): DepartmentExplosionPlan {
+  const recipeByProduct = new Map<string, ExplosionRecipe[]>();
+  for (const recipe of input.recipes) {
+    const code = up(recipe.productCode);
+    if (!recipeByProduct.has(code)) recipeByProduct.set(code, []);
+    recipeByProduct.get(code)!.push(recipe);
   }
-  return [...groups.entries()].map(([key, demands]) => ({
-    department: key || null,
-    plan: explodeSalesDemand({ ...input, demands }),
-  }));
+  const pickedRecipe = new Map<string, ExplosionRecipe | null>();
+  const recipeFor = (code: string) => {
+    if (!pickedRecipe.has(code)) pickedRecipe.set(code, pickRecipeForDate(recipeByProduct.get(code) || [], input.date, input.branchCode));
+    return pickedRecipe.get(code)!;
+  };
+
+  const order: string[] = [];
+  const state = new Map<string, 1 | 2>();
+  const visit = (code: string, chain: string[]) => {
+    const marker = state.get(code);
+    if (marker === 2) return;
+    if (marker === 1) explosionError(`Định lượng khai vòng: ${[...chain, code].join(" → ")}. Sửa lại định lượng trước khi rã.`);
+    state.set(code, 1);
+    for (const line of recipeFor(code)?.lines || []) {
+      const componentCode = up(line.item.code);
+      if (recipeFor(componentCode)) visit(componentCode, [...chain, code]);
+    }
+    state.set(code, 2);
+    order.push(code);
+  };
+
+  const keyOf = (department: string | null) => department || "";
+  const deptOfKey = (key: string) => key || null;
+  const addTo = (map: Map<string, Map<string, number>>, code: string, department: string | null, quantity: number) => {
+    const byDept = map.get(code) || new Map<string, number>();
+    byDept.set(keyOf(department), (byDept.get(keyOf(department)) || 0) + quantity);
+    map.set(code, byDept);
+  };
+  const soldDepartment = (code: string) => {
+    const recipe = recipeFor(code);
+    if (recipe && isComboRecipe(recipe) && rules.comboDepartment) return rules.comboDepartment;
+    return rules.departmentOf(code);
+  };
+
+  const demand = new Map<string, Map<string, number>>();
+  const producedSales = new Map<string, Map<string, number>>();
+  const directSales = new Map<string, Map<string, number>>();
+  for (const entry of input.demands) {
+    const code = up(entry.productCode);
+    if (!(entry.quantity > 0)) continue;
+    const department = soldDepartment(code);
+    if (!recipeFor(code)) {
+      addTo(directSales, code, department, entry.quantity);
+      continue;
+    }
+    visit(code, []);
+    addTo(demand, code, department, entry.quantity);
+    addTo(producedSales, code, department, entry.quantity);
+  }
+
+  /** Bộ phận của một thành phần khi sản phẩm cha ở bộ phận `parent`. */
+  const componentDepartment = (parentRecipe: ExplosionRecipe, item: ExplosionItem, parent: string | null) => {
+    if (!isComboRecipe(parentRecipe)) return parent;
+    return rules.departmentOf(up(item.code)) ?? parent;
+  };
+
+  // Cộng dồn nhu cầu từ cấp trên xuống (combo → TP → BTP), giữ nguyên bộ phận từng nhánh.
+  for (let index = order.length - 1; index >= 0; index -= 1) {
+    const code = order[index];
+    const recipe = recipeFor(code)!;
+    const outputRate = recipe.outputConversionRate > 0 ? recipe.outputConversionRate : 1;
+    for (const [key, quantityBase] of demand.get(code) || []) {
+      if (quantityBase <= 0) continue;
+      const batchQuantity = quantityBase / outputRate;
+      for (const line of recipe.lines) {
+        const componentCode = up(line.item.code);
+        if (!recipeFor(componentCode)) continue;
+        const componentQuantity = line.quantity * lineConversionRate(line) * (1 + line.wasteRate / 100) * batchQuantity;
+        addTo(demand, componentCode, componentDepartment(recipe, line.item, deptOfKey(key)), componentQuantity);
+      }
+    }
+  }
+
+  const productions: DepartmentProductionStep[] = [];
+  for (const code of order) {
+    const recipe = recipeFor(code)!;
+    const outputRate = recipe.outputConversionRate > 0 ? recipe.outputConversionRate : 1;
+    for (const [key, quantityBase] of demand.get(code) || []) {
+      if (quantityBase <= 0) continue;
+      const department = deptOfKey(key);
+      const batchQuantity = quantityBase / outputRate;
+      const components = new Map<string, { item: ExplosionItem; quantityBase: number; department: string | null }>();
+      for (const line of recipe.lines) {
+        const componentQuantity = line.quantity * lineConversionRate(line) * (1 + line.wasteRate / 100) * batchQuantity;
+        if (componentQuantity <= 0) continue;
+        const componentDept = componentDepartment(recipe, line.item, department);
+        const componentKey = `${line.item.id}|${keyOf(componentDept)}`;
+        const current = components.get(componentKey) || { item: line.item, quantityBase: 0, department: componentDept };
+        current.quantityBase += componentQuantity;
+        components.set(componentKey, current);
+      }
+      if (components.size === 0) explosionError(`Định lượng của ${code} không có nguyên liệu nào — không thể rã.`);
+      productions.push({ productCode: code, department, quantityBase, batchQuantity, recipe, components: [...components.values()] });
+    }
+  }
+
+  const flatten = (map: Map<string, Map<string, number>>) => [...map.entries()].flatMap(([productCode, byDept]) => (
+    [...byDept.entries()].map(([key, quantityBase]) => ({ productCode, quantityBase, department: deptOfKey(key) }))
+  ));
+  return { productions, producedSales: flatten(producedSales), directSales: flatten(directSales) };
 }

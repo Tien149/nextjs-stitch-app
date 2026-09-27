@@ -9,7 +9,7 @@ import { createPurchasePayable, purchasePayableCodeOf, removePurchasePayables, s
 import { postStockTransfer, syncTransferInternalDebt } from "@/lib/inventory-transfer";
 import { averageCostByItem } from "@/lib/inventory-average-cost";
 import { parseVatRate, VAT_RATE_CODES } from "@/lib/inventory-vat";
-import { computeCostingLevels, computeRecipeUnitCosts, explodeSalesDemand, explodeSalesDemandByDepartment, lineConversionRate, pickRecipeForDate, recipeContentSignature, type ExplosionRecipe } from "@/lib/production-explosion";
+import { computeCostingLevels, computeRecipeUnitCosts, explodeSalesDemand, explodeSalesDemandWithDepartments, lineConversionRate, pickRecipeForDate, recipeContentSignature, type ExplosionRecipe } from "@/lib/production-explosion";
 import { writeAuditLog } from "@/lib/audit-log";
 import {
   duplicatedInTrashMessage,
@@ -383,6 +383,8 @@ async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
   // Mã món có mặt trong lần rã: cả món bán lẫn bán thành phẩm trung gian.
   const planProductCodes = [
     ...plan.productions.map((step) => step.productCode),
+    // Thành phần của combo trừ ở kho của chính nó nên cũng phải suy được bộ phận.
+    ...plan.productions.flatMap((step) => step.components.map((component) => component.item.code)),
     ...plan.producedSales.map((sale) => sale.productCode),
     ...plan.directSales.map((sale) => sale.productCode),
   ];
@@ -440,12 +442,17 @@ async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
     if (department === REVENUE_DEPARTMENT_CODES.BAR && barWarehouseCode) return department;
     return null;
   };
-  const departmentPlans = explodeSalesDemandByDepartment({
+  // Combo nhập kho / xuất bán ở kho BẾP, từng thành phần trừ ở kho của chính nó (khách chốt
+  // 27/09/2026) — xem explodeSalesDemandWithDepartments.
+  const departmentPlan = explodeSalesDemandWithDepartments({
     demands: inventoryRows.map((row) => ({ productCode: row.productCode || "", quantity: row.productQuantity || 0 })),
     recipes: recipeVersions as unknown as ExplosionRecipe[],
     date: dateTo,
     branchCode,
-  }, soldDepartmentOf);
+  }, {
+    departmentOf: soldDepartmentOf,
+    comboDepartment: kitchenWarehouseCode ? REVENUE_DEPARTMENT_CODES.KITCHEN : null,
+  });
   const groupWarehouseOf = (department: string | null) => (department === REVENUE_DEPARTMENT_CODES.KITCHEN
     ? kitchenWarehouseCode
     : department === REVENUE_DEPARTMENT_CODES.BAR ? barWarehouseCode : null);
@@ -454,32 +461,44 @@ async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
     const runCode = await nextStockDocCode(tx, "RA", dateTo);
     const documents = [];
     let sequence = 0;
-    // 1) Chế biến từng cấp theo đúng thứ tự BTP → TP → combo, lần lượt từng bộ phận.
-    const productionSteps = departmentPlans.flatMap((group) => group.plan.productions.map((step) => ({ step, groupWarehouse: groupWarehouseOf(group.department) })));
-    for (const { step, groupWarehouse } of productionSteps) {
+    // 1) Chế biến từng cấp theo đúng thứ tự BTP → TP → combo. Mỗi bước nhập thành phẩm vào kho
+    //    theo bộ phận của bước; nguyên liệu trừ ở kho theo bộ phận của TỪNG nguyên liệu (combo có
+    //    thành phần ở nhiều kho) — mỗi kho một phiếu xuất chế biến.
+    for (const step of departmentPlan.productions) {
       sequence += 1;
       const productItem = await tx.inventoryItem.findUnique({ where: { code: step.productCode } });
       if (!productItem) businessError(`Không tìm thấy sản phẩm ${step.productCode}`);
-      // Nguyên liệu trừ ở kho của bộ phận bán món (BTP đi theo món), thành phẩm nhập lại đúng kho đó.
-      const stepWarehouse = groupWarehouse || departmentWarehouseOf(step.productCode);
-      const issue = await postInventoryTransaction(tx, {
-        code: `${runCode}-${sequence}X`,
-        transactionType: "XUAT_CHE_BIEN",
-        transactionDate: dateTo,
-        branchCode,
-        warehouseCode: stepWarehouse || warehouseCode,
-        referenceType: "PRODUCTION",
-        referenceCode: runCode,
-        note: `Rã nguyên liệu ${step.productCode} (${input.note || "theo doanh thu"})`,
-        createdBy: input.createdBy,
-        lines: step.components.map((component) => ({
-          itemId: component.item.id,
-          inputQuantity: component.quantityBase,
-          inputUnitCode: "",
-          inputUnitCost: 0,
-        })),
-      });
-      const totalCost = issue.lines.reduce((sum, line) => sum + line.totalCost, 0);
+      // Chưa suy được bộ phận thì đoán theo chính sản phẩm như cũ, rồi rơi về kho mặc định.
+      const stepWarehouse = groupWarehouseOf(step.department) || departmentWarehouseOf(step.productCode);
+      const issueGroups = new Map<string, typeof step.components>();
+      for (const component of step.components) {
+        const warehouse = groupWarehouseOf(component.department) || stepWarehouse || warehouseCode;
+        issueGroups.set(warehouse, [...(issueGroups.get(warehouse) || []), component]);
+      }
+      let totalCost = 0;
+      let issueIndex = 0;
+      for (const [warehouse, components] of issueGroups) {
+        issueIndex += 1;
+        const issue = await postInventoryTransaction(tx, {
+          code: `${runCode}-${sequence}X${issueIndex > 1 ? issueIndex : ""}`,
+          transactionType: "XUAT_CHE_BIEN",
+          transactionDate: dateTo,
+          branchCode,
+          warehouseCode: warehouse,
+          referenceType: "PRODUCTION",
+          referenceCode: runCode,
+          note: `Rã nguyên liệu ${step.productCode} (${input.note || "theo doanh thu"})`,
+          createdBy: input.createdBy,
+          lines: components.map((component) => ({
+            itemId: component.item.id,
+            inputQuantity: component.quantityBase,
+            inputUnitCode: "",
+            inputUnitCost: 0,
+          })),
+        });
+        totalCost += issue.lines.reduce((sum, line) => sum + line.totalCost, 0);
+        documents.push(issue);
+      }
       const receipt = await postInventoryTransaction(tx, {
         code: `${runCode}-${sequence}N`,
         transactionType: "NHAP_CHE_BIEN",
@@ -497,7 +516,7 @@ async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
           inputUnitCost: step.quantityBase > 0 ? totalCost / step.quantityBase : 0,
         }],
       });
-      documents.push(issue, receipt);
+      documents.push(receipt);
     }
     // 2) Xuất bán: sản phẩm vừa chế biến xuất từ kho nhập chế biến, hàng bán thẳng
     //    (không định lượng) xuất từ kho nguyên liệu.
@@ -511,11 +530,8 @@ async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
       group.sales.push(sale);
       saleGroupMap.set(key, group);
     };
-    for (const group of departmentPlans) {
-      const groupWarehouse = groupWarehouseOf(group.department);
-      for (const sale of group.plan.producedSales) pushSale(sale, groupWarehouse || departmentWarehouseOf(sale.productCode) || toWarehouseCode, "chế biến");
-      for (const sale of group.plan.directSales) pushSale(sale, groupWarehouse || departmentWarehouseOf(sale.productCode) || warehouseCode, "bán thẳng");
-    }
+    for (const sale of departmentPlan.producedSales) pushSale(sale, groupWarehouseOf(sale.department) || departmentWarehouseOf(sale.productCode) || toWarehouseCode, "chế biến");
+    for (const sale of departmentPlan.directSales) pushSale(sale, groupWarehouseOf(sale.department) || departmentWarehouseOf(sale.productCode) || warehouseCode, "bán thẳng");
     const saleGroups = [...saleGroupMap.values()];
     for (const group of saleGroups) {
       if (group.sales.length === 0) continue;

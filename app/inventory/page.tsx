@@ -2932,7 +2932,8 @@ export default function InventoryPage() {
           <p className="mt-2 text-[11px] text-slate-500 leading-relaxed">
             Khai hai ô trên thì món <b>Đồ ăn</b> trừ và nhập lại ở kho Bếp, món <b>Đồ uống</b> ở kho Bar — theo Nhóm doanh thu của món
             (hoặc Phân nhóm mặt hàng nếu đã khai). <b>Bán thành phẩm đi theo kho của món bán ra</b>: dùng cho món bếp thì chế biến ở kho
-            Bếp, cho món bar thì ở kho Bar (dùng cho cả hai thì tách đúng phần ở từng kho). Chỉ món bán chưa gán nhóm mới đi kho mặc
+            Bếp, cho món bar thì ở kho Bar (dùng cho cả hai thì tách đúng phần ở từng kho). <b>Combo</b> nhập kho và xuất bán ở kho Bếp,
+            còn từng thành phần trừ ở kho của chính nó (đồ uống trong combo trừ kho Bar). Chỉ món bán chưa gán nhóm mới đi kho mặc
             định ở trên, và được đếm lại trong thông báo sau khi rã — nên chọn kho mặc định là kho Bếp, không phải kho văn phòng.
           </p>
           {data.pendingSales.byDay.length > 0 && (
