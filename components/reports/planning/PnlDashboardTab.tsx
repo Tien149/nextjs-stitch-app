@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import { storeLabel } from "@/lib/branch-labels";
 import { DonutLegendChart, MixedChart, MoneyLineChart, PercentLineChart, ShareDonutChart } from "@/components/charts/ReportCharts";
+import PayrollBudgetCard from "@/components/reports/planning/PayrollBudgetCard";
 import { Card, MonthChips, NoPlanNotice, PlanActualCell, RateChip, Segmented, StatCard, Tag, fmtMoney, ratioOf, type Tone } from "@/components/reports/planning/planning-ui";
 import { bucketOperatingCost, bucketSum, monthPickSummary, nodeValue, type MonthPick, type PlanningData, type PnlBucket, type Series, type StatementLine } from "@/components/reports/planning/planning-types";
 
@@ -10,7 +11,7 @@ import { bucketOperatingCost, bucketSum, monthPickSummary, nodeValue, type Month
  * Màn "Dashboard P&L" học theo phần mềm mẫu: chip lũy kế tháng, 6 thẻ KPI (số THỰC ĐẠT in to +
  * kế hoạch dòng phụ + % hoàn thành), chart Doanh thu & LN ròng KH/TT, chart % biên lợi nhuận, thanh
  * "cơ cấu 1 đồng doanh thu", ba donut cơ cấu, bảng hiệu quả theo cửa hàng. Cuối màn giữ
- * nguyên bộ chart theo file của chị Bình (tỷ trọng DT theo bộ phận/kênh, COGS và Lương so DT).
+ * nguyên bộ chart theo file của chị Bình (tỷ trọng DT theo bộ phận/kênh, COGS so DT, lương so ngân sách theo bộ phận).
  */
 
 const BRANCH_TONES: Tone[] = ["blue", "rose", "amber", "emerald", "violet", "teal", "orange", "sky"];
@@ -297,19 +298,7 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
             ]}
           />
         </Card>
-        <Card title="Lương so với doanh thu" subtitle="Lương, SVC & KPI, bảo hiểm trên nền doanh thu tháng — cùng bộ đường như file của chị Bình." icon="show_chart" bodyClassName="px-2 pb-3">
-          <MoneyLineChart
-            labels={monthHeaders}
-            series={[
-              { name: "Lương", values: data.totals.map((total) => total.payroll) },
-              // SVC thu được thường chia lại cho nhân viên nên gộp chung với thưởng KPI thành một đường.
-              { name: "SVC & KPI", values: data.revenueSplit.svc.map((value, index) => value + (data.payrollSplit.bonus[index] || 0)) },
-              { name: "Bảo hiểm", values: data.payrollSplit.insurance },
-              { name: "Doanh thu", values: data.totals.map((total) => total.revenue), color: "#84cc16" },
-              ...(data.budgets.payroll.some((value) => value > 0) ? [{ name: "Ngân sách lương", values: data.budgets.payroll, color: "#94a3b8", dashed: true }] : []),
-            ]}
-          />
-        </Card>
+        <PayrollBudgetCard year={data.year} branchCode={data.branchCode} labels={monthHeaders} picked={picked} fallbackBudget={data.budgets.payroll} />
       </div>
       <p className="text-[11px] text-slate-400 px-1">Chi phí hoạt động = nhân sự + OPEX khác + khấu hao. Số lũy kế theo chip tháng ở trên; hai chart xu hướng luôn vẽ đủ 12 tháng.</p>
     </div>
