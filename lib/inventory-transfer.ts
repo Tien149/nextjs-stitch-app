@@ -77,52 +77,94 @@ export async function postStockTransfer(tx: TxClient, input: PostStockTransferIn
     lines: input.lines,
   });
 
-  if (!isCrossBranch) return { transaction, receivable: null, payable: null };
+  return syncTransferInternalDebt(tx, transaction.id);
+}
 
-  // Mặt hàng chưa có đơn giá nào (xem latestKnownUnitCost) thì phiếu đi 0 đồng: vẫn ghi số
-  // lượng, chỉ không sinh công nợ nội bộ 0 đồng. Khách chốt 27/09/2026 — import số lượng
-  // điều chuyển không được bị chặn vì giá; khai giá xong thì xoá phiếu lập lại để lên công nợ.
+/**
+ * Đồng bộ cặp công nợ nội bộ (-PT phải thu bên chuyển / -PTR phải trả bên nhận) theo ĐÚNG
+ * số hiện tại của phiếu điều chuyển. Dùng chung cho lúc lập phiếu và lúc sửa phiếu:
+ * - liên nhà hàng và có trị giá → tạo mới hoặc cập nhật cặp nợ (upsert khôi phục cả cặp mã đã
+ *   xoá mềm, nên sửa về 0 đ rồi sửa lại vẫn dùng đúng mã cũ);
+ * - cùng nhà hàng, hoặc 0 đồng (chưa có đơn giá — khách chốt 27/09/2026 không chặn) → gỡ cặp
+ *   nợ nếu đang có.
+ * Nợ đã gạch (có phiếu thu/chi thanh toán) thì chặn: đổi số là lệch với tiền đã trả.
+ */
+export async function syncTransferInternalDebt(tx: TxClient, transactionId: string) {
+  const transaction = await tx.inventoryTransaction.findUnique({
+    where: { id: transactionId },
+    include: { lines: { include: { item: true } } },
+  });
+  if (!transaction) transferError("Không tìm thấy phiếu điều chuyển");
+
+  const fromBranch = transaction.branchCode.toUpperCase();
+  const toBranch = (transaction.toBranchCode || "").toUpperCase() || fromBranch;
   const totalValue = transaction.lines.reduce((sum, line) => sum + line.totalCost, 0);
-  if (!(totalValue > 0)) return { transaction, receivable: null, payable: null };
-
   const { receivableCode, payableCode } = inventoryTransferDebtCodes(transaction.code);
+
+  const existing = await tx.debtRecord.findMany({
+    where: { code: { in: [receivableCode, payableCode] }, deletedAt: null },
+    include: { settlements: true },
+  });
+  const settled = existing.find((debt) => debt.settlements.length > 0);
+  if (settled) {
+    transferError(`Công nợ nội bộ ${settled.code} của phiếu ${transaction.code} đã được gạch nợ nên không sửa được phiếu. Hoàn tác các phiếu thu/chi gạch nợ trước.`);
+  }
+
+  if (toBranch === fromBranch || !(totalValue > 0)) {
+    if (existing.length > 0) {
+      await tx.debtRecord.updateMany({ where: { id: { in: existing.map((debt) => debt.id) } }, data: { deletedAt: new Date() } });
+    }
+    const updated = transaction.internalReceivableDebtCode || transaction.internalPayableDebtCode
+      ? await tx.inventoryTransaction.update({
+        where: { id: transaction.id },
+        data: { internalReceivableDebtCode: null, internalPayableDebtCode: null },
+        include: { lines: { include: { item: true } } },
+      })
+      : transaction;
+    return { transaction: updated, receivable: null, payable: null };
+  }
+
   // Đối tác nội bộ dùng chung với phiếu điều tiền/phân bổ chi phí — tạo sẵn nếu chưa có.
   const fromPartner = await ensureInternalPartner(tx as unknown as typeof prisma, fromBranch);
   const toPartner = await ensureInternalPartner(tx as unknown as typeof prisma, toBranch);
 
-  const receivable = await tx.debtRecord.create({
-    data: {
-      code: receivableCode,
-      debtType: "RECEIVABLE",
-      partnerGroup: "INTERNAL",
-      partnerCode: toPartner.code,
-      partnerName: toPartner.name,
-      branchCode: fromBranch,
-      documentDate: input.transactionDate,
-      originalAmount: totalValue,
-      outstandingAmount: totalValue,
-      description: `${toBranch} nhận hàng theo phiếu điều chuyển ${transaction.code}`,
-      sourceType: "INVENTORY_TRANSFER",
-      sourceId: transaction.id,
-      status: "OPEN",
-    },
+  const common = {
+    partnerGroup: "INTERNAL",
+    documentDate: transaction.transactionDate,
+    originalAmount: totalValue,
+    outstandingAmount: totalValue,
+    sourceType: "INVENTORY_TRANSFER",
+    sourceId: transaction.id,
+    status: "OPEN",
+    // Ghi rõ thay vì trông vào lớp xoá mềm: caller import dùng client thô, upsert không tự
+    // khôi phục cặp mã đã xoá mềm của lần sửa trước.
+    deletedAt: null,
+  };
+  const receivableData = {
+    ...common,
+    debtType: "RECEIVABLE",
+    partnerCode: toPartner.code,
+    partnerName: toPartner.name,
+    branchCode: fromBranch,
+    description: `${toBranch} nhận hàng theo phiếu điều chuyển ${transaction.code}`,
+  };
+  const payableData = {
+    ...common,
+    debtType: "PAYABLE",
+    partnerCode: fromPartner.code,
+    partnerName: fromPartner.name,
+    branchCode: toBranch,
+    description: `Nhận hàng từ ${fromBranch} theo phiếu điều chuyển ${transaction.code}`,
+  };
+  const receivable = await tx.debtRecord.upsert({
+    where: { code: receivableCode },
+    create: { code: receivableCode, ...receivableData },
+    update: receivableData,
   });
-  const payable = await tx.debtRecord.create({
-    data: {
-      code: payableCode,
-      debtType: "PAYABLE",
-      partnerGroup: "INTERNAL",
-      partnerCode: fromPartner.code,
-      partnerName: fromPartner.name,
-      branchCode: toBranch,
-      documentDate: input.transactionDate,
-      originalAmount: totalValue,
-      outstandingAmount: totalValue,
-      description: `Nhận hàng từ ${fromBranch} theo phiếu điều chuyển ${transaction.code}`,
-      sourceType: "INVENTORY_TRANSFER",
-      sourceId: transaction.id,
-      status: "OPEN",
-    },
+  const payable = await tx.debtRecord.upsert({
+    where: { code: payableCode },
+    create: { code: payableCode, ...payableData },
+    update: payableData,
   });
 
   const updated = await tx.inventoryTransaction.update({

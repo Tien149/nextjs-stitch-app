@@ -6,7 +6,7 @@ import { apiError, assertPeriodOpen, businessError, cleanText, isPeriodLocked, t
 import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
 import { isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType, postInventoryTransaction, repostInventoryTransaction, reverseStockEffect } from "@/lib/inventory-stock";
 import { createPurchasePayable, purchasePayableCodeOf, removePurchasePayables, syncPurchasePayable, PURCHASE_PAYABLE_SOURCE } from "@/lib/purchase-payable";
-import { postStockTransfer } from "@/lib/inventory-transfer";
+import { postStockTransfer, syncTransferInternalDebt } from "@/lib/inventory-transfer";
 import { parseVatRate, VAT_RATE_CODES } from "@/lib/inventory-vat";
 import { computeCostingLevels, computeRecipeUnitCosts, explodeSalesDemand, lineConversionRate, pickRecipeForDate, recipeContentSignature, type ExplosionRecipe } from "@/lib/production-explosion";
 import { writeAuditLog } from "@/lib/audit-log";
@@ -802,7 +802,7 @@ export async function GET(request: Request) {
     });
     const warehouseCodes = allowedWarehouses.map((w) => w.code);
 
-    const [items, balances, transactions, flowTransactions, movementTotals, wasteTotals, stockMovements, recipes, warehouses, stocktakes, itemGroups, receiptCategoryList, pendingRevenueRows, partners, allBalances, nonInventoryGroups] = await Promise.all([
+    const [items, balances, transactions, flowTransactions, transferTransactions, movementTotals, wasteTotals, stockMovements, recipes, warehouses, stocktakes, itemGroups, receiptCategoryList, pendingRevenueRows, partners, allBalances, nonInventoryGroups] = await Promise.all([
       prisma.inventoryItem.findMany({ include: { unitConversions: { orderBy: [{ isDefaultPurchase: "desc" }, { unitCode: "asc" }] } }, orderBy: { name: "asc" } }),
       prisma.inventoryBalance.findMany({
         where: { warehouseCode: { in: warehouseCodes } },
@@ -821,6 +821,14 @@ export async function GET(request: Request) {
         where: { ...branchFilter, transactionDate: { gte: flowFrom, lte: flowTo } },
         include: { lines: { include: { item: { select: lineItemSelect } } } },
         orderBy: { transactionDate: "desc" },
+        take: 2000,
+      }),
+      // Tab Điều chuyển: truy vấn riêng theo khoảng ngày chứng từ, để phiếu xuất bán sinh từ rã
+      // BOM (hàng nghìn dòng/tháng) không đẩy phiếu điều chuyển ra khỏi giới hạn của danh sách chung.
+      prisma.inventoryTransaction.findMany({
+        where: { ...branchFilter, transactionType: "DIEU_CHUYEN", transactionDate: { gte: flowFrom, lte: flowTo } },
+        include: { lines: { include: { item: { select: lineItemSelect } } } },
+        orderBy: [{ transactionDate: "desc" }, { code: "desc" }],
         take: 2000,
       }),
       loadMovementTotals(branchCode),
@@ -1047,7 +1055,7 @@ export async function GET(request: Request) {
     const revenueGroups = receiptCategoryList.filter((category) => isRevenueGroupCategory(category.group));
     const receiptCategories = receiptCategoryList.filter((category) => !isRevenueGroupCategory(category.group));
 
-    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, balances, transactions, flowTransactions, partners, flowRange: { from: isoDay(flowFrom), to: isoDay(flowTo) }, recipes: recipesWithCost, warehouses, stocktakes, stockSummary, stockMovements, itemGroups, revenueGroups, receiptCategories, costSummary, wasteReport, pendingSales }));
+    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, balances, transactions, flowTransactions, transferTransactions, partners, flowRange: { from: isoDay(flowFrom), to: isoDay(flowTo) }, recipes: recipesWithCost, warehouses, stocktakes, stockSummary, stockMovements, itemGroups, revenueGroups, receiptCategories, costSummary, wasteReport, pendingSales }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });
@@ -2026,25 +2034,31 @@ export async function PATCH(request: Request) {
       const editedLines = body.lines !== undefined ? linesFrom(body.lines) : [];
       const warehouseCode = body.warehouseCode !== undefined ? cleanText(body.warehouseCode) : transaction.warehouseCode;
       const toWarehouseCode = body.toWarehouseCode !== undefined ? cleanText(body.toWarehouseCode) : transaction.toWarehouseCode;
-      const rewritesLines = editedLines.length > 0 || warehouseCode !== transaction.warehouseCode || toWarehouseCode !== transaction.toWarehouseCode;
+      const isTransfer = transaction.transactionType === "DIEU_CHUYEN";
+      // Điều chuyển định giá theo NGÀY chứng từ (luật đơn giá trong tháng), nên đổi ngày cũng
+      // phải ghi lại dòng để giá và công nợ nội bộ đi theo tháng mới.
+      const rewritesLines = editedLines.length > 0 || warehouseCode !== transaction.warehouseCode || toWarehouseCode !== transaction.toWarehouseCode
+        || (isTransfer && transactionDate.getTime() !== transaction.transactionDate.getTime());
 
       if (body.lines !== undefined && editedLines.length === 0) businessError("Phiếu phải còn ít nhất một dòng mặt hàng");
 
       /**
-       * Điều chuyển liên nhà hàng kéo theo cặp công nợ nội bộ tính theo giá trị phiếu; sửa số
-       * lượng ở đây thì công nợ hai đầu lệch. Xoá rồi lập lại thì cặp công nợ được dựng lại
-       * đúng, nên chỉ chặn đúng nhánh này thay vì chặn mọi phiếu.
+       * Điều chuyển: cửa hàng nhận đi theo KHO NHẬN, đổi kho nhận sang nhà hàng khác thì phiếu
+       * đổi phạm vi (nội bộ ↔ liên nhà hàng). Cặp công nợ nội bộ được đồng bộ lại theo số mới
+       * sau khi ghi phiếu (syncTransferInternalDebt) — nợ đã gạch thì chặn ở đó.
        */
-      const internalDebtCodes = [transaction.internalReceivableDebtCode, transaction.internalPayableDebtCode]
-        .filter((value): value is string => !!value);
-      if (rewritesLines && internalDebtCodes.length > 0) {
-        businessError(`Phiếu ${transaction.code} là điều chuyển liên nhà hàng đã sinh công nợ nội bộ nên không sửa được số lượng/kho. Hãy xoá phiếu rồi lập lại.`);
-      }
-      // Liên nhà hàng nhưng đi 0 đồng (chưa có đơn giá) thì chưa có công nợ: sửa lại ra giá trị
-      // sẽ thành hàng chuyển đi mà không ai nợ ai — bắt xoá lập lại để postStockTransfer sinh nợ.
-      if (rewritesLines && transaction.transactionType === "DIEU_CHUYEN" && transaction.toBranchCode
-        && transaction.toBranchCode !== transaction.branchCode && internalDebtCodes.length === 0) {
-        businessError(`Phiếu ${transaction.code} là điều chuyển liên nhà hàng 0 đồng (chưa có công nợ nội bộ) nên không sửa được số lượng/kho. Hãy xoá phiếu rồi lập lại để hệ thống tính giá và sinh công nợ.`);
+      let toBranchCode = transaction.toBranchCode;
+      if (isTransfer) {
+        if (!toWarehouseCode) businessError("Điều chuyển kho bắt buộc có kho nhận");
+        const destination = await prisma.masterDataItem.findFirst({ where: { type: "WAREHOUSE", code: toWarehouseCode } });
+        if (!destination) businessError(`Kho nhận ${toWarehouseCode} không có trong danh mục`);
+        const destinationBranch = (destination.branch || transaction.branchCode).toUpperCase();
+        toBranchCode = destinationBranch !== transaction.branchCode.toUpperCase() ? destinationBranch : null;
+        for (const branch of new Set([transaction.toBranchCode, toBranchCode].filter((value): value is string => !!value))) {
+          if (await isPeriodLocked(transaction.transactionDate, branch) || await isPeriodLocked(transactionDate, branch)) {
+            businessError(`Kỳ kế toán của cửa hàng nhận ${branch} đã khóa`);
+          }
+        }
       }
 
       // Nhập mua đã sinh công nợ NCC: sửa xong phải dựng lại khoản nợ theo số mới, nhưng đã
@@ -2077,7 +2091,7 @@ export async function PATCH(request: Request) {
             branchCode: transaction.branchCode,
             warehouseCode,
             toWarehouseCode,
-            toBranchCode: transaction.toBranchCode,
+            toBranchCode,
             subType: transaction.subType,
             partnerCode,
             referenceCode: body.referenceCode !== undefined ? cleanText(body.referenceCode) || null : transaction.referenceCode,
@@ -2105,6 +2119,8 @@ export async function PATCH(request: Request) {
             include: { lines: { include: { item: true } } },
           });
 
+        // Điều chuyển: cặp công nợ nội bộ theo trị giá và phạm vi mới của phiếu.
+        if (isTransfer) return (await syncTransferInternalDebt(tx, updated.id)).transaction;
         // Công nợ nhập mua theo số mới: sửa khoản đang có, bỏ NCC thì thu khoản nợ về.
         await syncPurchasePayable(tx, { ...updated, partnerCode }, { importBatchId: transaction.importBatchId });
         return updated;

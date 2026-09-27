@@ -25,7 +25,7 @@ const tabDataKeys: Record<string, Record<string, string[]>> = {
     stock: ["balances", "stockSummary"],
     inbound: ["transactions", "flowTransactions", "stockMovements"],
     outbound: ["transactions", "flowTransactions", "stockMovements"],
-    transfer: ["transactions"],
+    transfer: ["transactions", "transferTransactions"],
     items: ["items"],
     recipes: ["recipes", "costSummary"],
     production: ["recipes", "transactions", "pendingSales"],

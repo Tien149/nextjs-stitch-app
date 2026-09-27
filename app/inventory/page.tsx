@@ -60,7 +60,7 @@ const loadTracker = { seq: 0, movementSeq: 0, movementRange: "" };
 function movementRangeQuery(range: { from: string; to: string }) {
   return new URLSearchParams({ reportFrom: range.from, reportTo: range.to }).toString();
 }
-type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[] };
+type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; transferTransactions?: Transaction[]; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[] };
 const movementTypes = ["NHAP_MUA", "NHAP_KHAC", "NHAP_CHE_BIEN", "NHAP_KIEM_KE", "XUAT_BAN", "XUAT_HUY", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_CHE_BIEN", "XUAT_KIEM_KE", "DIEU_CHUYEN"];
 /** Loại hiển thị trên hai màn hình Nhập/Xuất. Điều chuyển hiện ở CẢ hai: vế xuất ở kho đi, vế nhập ở kho nhận. */
 const inboundTypes = ["NHAP_MUA", "NHAP_CHE_BIEN", "NHAP_DIEU_CHUYEN", "NHAP_KHAC", "NHAP_KIEM_KE"];
@@ -136,6 +136,9 @@ export default function InventoryPage() {
   const [flowBranch, setFlowBranch] = useState("ALL");
   /** Lọc theo NCC / đối tác của phiếu. "NONE" = chỉ những phiếu chưa khai đối tác. */
   const [flowPartner, setFlowPartner] = useState("ALL");
+  // Bộ lọc danh sách phiếu điều chuyển — khoảng ngày dùng chung flowRange (tải lại từ máy chủ).
+  const [transferFromWarehouse, setTransferFromWarehouse] = useState("ALL");
+  const [transferToWarehouse, setTransferToWarehouse] = useState("ALL");
   const [inboundType, setInboundType] = useState("ALL");
   const [outboundType, setOutboundType] = useState("ALL");
   /** Khoảng NGÀY CHỨNG TỪ của danh sách phiếu nhập/xuất — mặc định 90 ngày gần nhất, gửi lên server. */
@@ -481,7 +484,21 @@ export default function InventoryPage() {
     options.sort((left, right) => left.name.localeCompare(right.name, "vi"));
     return { options, hasBlank: hasBlank || flowPartner === "NONE" };
   })();
-  const transferTransactions = data.transactions.filter((transaction) => transaction.transactionType === "DIEU_CHUYEN");
+  const transfersInRange = data.transferTransactions || [];
+  const transferTransactions = transfersInRange.filter((transaction) => (
+    (transferFromWarehouse === "ALL" || transaction.warehouseCode === transferFromWarehouse)
+    && (transferToWarehouse === "ALL" || transaction.toWarehouseCode === transferToWarehouse)
+  ));
+  // Ô chọn kho lấy từ chính các phiếu trong khoảng ngày (có cả kho đã ngưng / kho nhà hàng
+  // khác), gọi tên theo danh mục kho nếu có.
+  const transferWarehouseOptions = (pick: (transaction: Transaction) => string | null, selected: string) => {
+    const codes = new Set(transfersInRange.map(pick).filter((code): code is string => !!code));
+    if (selected !== "ALL") codes.add(selected);
+    return [...codes].sort().map((code) => {
+      const warehouse = warehouseOptions.find((candidate) => candidate.code === code);
+      return { code, name: warehouse ? `${code} — ${warehouse.name}` : code };
+    });
+  };
 
   // Điều chuyển không nhận nhóm FINISHED; hủy hàng thì nhận đủ (kể cả FINISHED).
   const transferableItems = data.items.filter((item) => item.itemType !== "FINISHED");
@@ -968,11 +985,11 @@ export default function InventoryPage() {
     if (source) return `Phiếu sinh tự động từ ${source} — xử lý ở chứng từ gốc`;
     return null;
   };
-  /** Điều chuyển liên nhà hàng đã sinh công nợ nội bộ: sửa số lượng thì công nợ hai đầu lệch. */
-  const transactionEditLockReason = (transaction: Transaction) => transactionLockReason(transaction)
-    || (transaction.internalReceivableDebtCode || transaction.internalPayableDebtCode
-      ? "Điều chuyển liên nhà hàng đã sinh công nợ nội bộ — xoá phiếu rồi lập lại"
-      : null);
+  /**
+   * Điều chuyển liên nhà hàng sửa được: máy chủ tính lại giá và đồng bộ cặp công nợ nội bộ
+   * theo số mới (chỉ chặn khi công nợ đã gạch nợ — báo lỗi ngay trong hộp thoại sửa).
+   */
+  const transactionEditLockReason = (transaction: Transaction) => transactionLockReason(transaction);
 
   const openTransactionEdit = (transaction: Transaction) => {
     setTransactionEditError(null);
@@ -2167,7 +2184,32 @@ export default function InventoryPage() {
           )}
 
           <section className="table-panel shadow-sm">
-            <Panel title="Phiếu điều chuyển gần nhất" reload={loadData} exportFileName="phieu_dieu_chuyen" />
+            <Panel title="Phiếu điều chuyển" reload={loadData} exportFileName="phieu_dieu_chuyen" />
+            {/* Khung danh sách đứng cạnh form nên hẹp: 2 cột, màn rộng mới trải 4 cột. */}
+            <div className="px-5 pb-4 grid grid-cols-2 2xl:grid-cols-4 gap-3">
+              <Input label="Từ ngày chứng từ">
+                <input type="date" className="control" value={flowRange.from} onChange={(e) => setFlowRange({ ...flowRange, from: e.target.value })} />
+              </Input>
+              <Input label="Đến ngày chứng từ">
+                <input type="date" className="control" value={flowRange.to} onChange={(e) => setFlowRange({ ...flowRange, to: e.target.value })} />
+              </Input>
+              <Input label="Kho xuất">
+                <select className="control" value={transferFromWarehouse} onChange={(e) => setTransferFromWarehouse(e.target.value)}>
+                  <option value="ALL">Tất cả kho xuất</option>
+                  {transferWarehouseOptions((row) => row.warehouseCode, transferFromWarehouse).map((option) => (
+                    <option key={option.code} value={option.code}>{option.name}</option>
+                  ))}
+                </select>
+              </Input>
+              <Input label="Kho nhận">
+                <select className="control" value={transferToWarehouse} onChange={(e) => setTransferToWarehouse(e.target.value)}>
+                  <option value="ALL">Tất cả kho nhận</option>
+                  {transferWarehouseOptions((row) => row.toWarehouseCode, transferToWarehouse).map((option) => (
+                    <option key={option.code} value={option.code}>{option.name}</option>
+                  ))}
+                </select>
+              </Input>
+            </div>
             <Table
               headers={[
                 { label: "Chứng từ" },
@@ -2315,7 +2357,11 @@ export default function InventoryPage() {
                           className="control text-right disabled:bg-slate-100 disabled:text-slate-400"
                           value={line.unitCost}
                           disabled={!isInboundType(editingTransaction.transactionType)}
-                          title={isInboundType(editingTransaction.transactionType) ? "" : "Phiếu xuất / điều chuyển lấy giá vốn bình quân của kho"}
+                          title={isInboundType(editingTransaction.transactionType)
+                            ? ""
+                            : editingTransaction.transactionType === "DIEU_CHUYEN"
+                              ? "Điều chuyển tự tính giá: nguyên liệu/bao bì theo giá mua gần nhất trong tháng, bán thành phẩm theo giá vốn rã BOM trong tháng"
+                              : "Phiếu xuất lấy giá vốn bình quân của kho"}
                           onChange={(e) => patch({ unitCost: e.target.value })}
                         />
                       </Input>
