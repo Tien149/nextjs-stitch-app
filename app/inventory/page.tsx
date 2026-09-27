@@ -60,7 +60,7 @@ const loadTracker = { seq: 0, movementSeq: 0, movementRange: "" };
 function movementRangeQuery(range: { from: string; to: string }) {
   return new URLSearchParams({ reportFrom: range.from, reportTo: range.to }).toString();
 }
-type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; transferTransactions?: Transaction[]; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[] };
+type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; transferTransactions?: Transaction[]; warehouseBranches?: Array<{ code: string; branch: string | null }>; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[] };
 const movementTypes = ["NHAP_MUA", "NHAP_KHAC", "NHAP_CHE_BIEN", "NHAP_KIEM_KE", "XUAT_BAN", "XUAT_HUY", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_CHE_BIEN", "XUAT_KIEM_KE", "DIEU_CHUYEN"];
 /** Loại hiển thị trên hai màn hình Nhập/Xuất. Điều chuyển hiện ở CẢ hai: vế xuất ở kho đi, vế nhập ở kho nhận. */
 const inboundTypes = ["NHAP_MUA", "NHAP_CHE_BIEN", "NHAP_DIEU_CHUYEN", "NHAP_KHAC", "NHAP_KIEM_KE"];
@@ -128,6 +128,7 @@ export default function InventoryPage() {
   const [messageSeq, setMessageSeq] = useState(0);
   const setMessage = (text: string) => { setMessageText(text); setMessageSeq((seq) => seq + 1); };
   const messageRef = useRef<HTMLParagraphElement>(null);
+  const [reportStore, setReportStore] = useState("ALL");
   const [reportWarehouse, setReportWarehouse] = useState("ALL");
   const [reportType, setReportType] = useState("ALL");
   /** Khoảng ngày của bảng "Chi tiết phát sinh theo loại giao dịch" — trước đây luôn cắt 100 dòng cuối. */
@@ -359,7 +360,19 @@ export default function InventoryPage() {
     { id: "KHO_HN", code: "KHO_HN", name: "Kho Cua hang 2", branch: "HN" },
   ];
   const sourceWarehouseOptions = warehouseOptions.filter((warehouse) => warehouse.branch === stockForm.branchCode || !warehouse.branch);
+  /**
+   * Bộ lọc Cửa hàng của tab Tồn kho: dòng tồn / phát sinh chỉ mang mã kho, nên tra cửa hàng qua
+   * danh mục kho (cả kho đã ngưng). Kho không khai cửa hàng thì chỉ hiện khi chọn "Tất cả".
+   */
+  const branchByWarehouse = new Map<string, string>();
+  for (const warehouse of [...warehouseOptions, ...(data.warehouseBranches || [])]) {
+    if (warehouse.branch) branchByWarehouse.set(warehouse.code, warehouse.branch.toUpperCase());
+  }
+  const reportStoreKey = reportStore.toUpperCase();
+  const inReportStore = (warehouseCode: string) => reportStore === "ALL" || branchByWarehouse.get(warehouseCode) === reportStoreKey;
+  const reportWarehouseOptions = warehouseOptions.filter((warehouse) => reportStore === "ALL" || (warehouse.branch || "").toUpperCase() === reportStoreKey);
   const filteredStockSummary = data.stockSummary.filter((row) => {
+    if (!inReportStore(row.warehouseCode)) return false;
     if (reportWarehouse !== "ALL" && row.warehouseCode !== reportWarehouse) return false;
     if (reportType !== "ALL") {
       const movement = row.movementByType?.[reportType];
@@ -368,6 +381,7 @@ export default function InventoryPage() {
     return true;
   });
   const filteredStockMovements = data.stockMovements.filter((row) => {
+    if (!inReportStore(row.warehouseCode)) return false;
     if (reportWarehouse !== "ALL" && row.warehouseCode !== reportWarehouse) return false;
     if (reportType !== "ALL" && row.transactionType !== reportType) return false;
     const day = String(row.transactionDate).slice(0, 10);
@@ -1224,11 +1238,27 @@ export default function InventoryPage() {
       {active === "stock" && (
         <section className="table-panel shadow-sm mb-5">
           <Panel title="Nhập - Xuất - Tồn cơ bản theo kho" reload={loadData} exportFileName="nhap_xuat_ton_theo_kho" />
-          <div className="px-5 pb-4 grid sm:grid-cols-2 gap-3">
+          <div className="px-5 pb-4 grid sm:grid-cols-3 gap-3">
+            {/* Cửa hàng áp cho cả ba bảng của tab Tồn kho; Kho chỉ còn các kho của cửa hàng đã chọn. */}
+            <Input label="Cửa hàng">
+              <select
+                className="control"
+                value={reportStore}
+                onChange={(e) => {
+                  const store = e.target.value;
+                  setReportStore(store);
+                  const picked = warehouseOptions.find((warehouse) => warehouse.code === reportWarehouse);
+                  if (store !== "ALL" && picked && (picked.branch || "").toUpperCase() !== store.toUpperCase()) setReportWarehouse("ALL");
+                }}
+              >
+                <option value="ALL">Tất cả cửa hàng</option>
+                {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
+              </select>
+            </Input>
             <Input label="Kho">
               <select className="control" value={reportWarehouse} onChange={(e) => setReportWarehouse(e.target.value)}>
                 <option value="ALL">Tất cả kho</option>
-                {warehouseOptions.map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>)}
+                {reportWarehouseOptions.map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>)}
               </select>
             </Input>
             <Input label="Loại giao dịch">
@@ -1250,7 +1280,7 @@ export default function InventoryPage() {
               { label: "Giá trị tồn", align: "right" },
             ]}
           >
-            {(filteredStockSummary.length ? filteredStockSummary : data.balances.filter((row) => reportWarehouse === "ALL" || row.warehouseCode === reportWarehouse).map((row) => ({
+            {(filteredStockSummary.length ? filteredStockSummary : data.balances.filter((row) => inReportStore(row.warehouseCode) && (reportWarehouse === "ALL" || row.warehouseCode === reportWarehouse)).map((row) => ({
               item: row.item,
               warehouseCode: row.warehouseCode,
               openingQuantity: row.quantity,
@@ -1336,7 +1366,7 @@ export default function InventoryPage() {
               { label: "Cảnh báo" },
             ]}
           >
-            {data.balances.map((row) => (
+            {data.balances.filter((row) => inReportStore(row.warehouseCode)).map((row) => (
               <tr key={row.id} className="border-t border-slate-100">
                 <Cell>
                   <b><CopyableText value={row.item.code} /> - {row.item.name}</b>

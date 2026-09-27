@@ -877,6 +877,13 @@ export async function GET(request: Request) {
       loadNonInventoryRevenueGroups(prisma as unknown as CategoryLookupClient),
     ]);
 
+    // Bảng tra kho -> cửa hàng cho bộ lọc Cửa hàng ở tab Tồn kho. Lấy cả kho đã ngưng: kho ngưng
+    // vẫn còn tồn / phát sinh cũ, danh sách `warehouses` (chỉ kho đang dùng) không gọi được cửa hàng.
+    const warehouseBranches = await prisma.masterDataItem.findMany({
+      where: { type: "WAREHOUSE" },
+      select: { code: true, branch: true },
+    });
+
     const costAggregate = new Map<string, { quantity: number; value: number; lastAverage: number }>();
     for (const balance of allBalances) {
       const bucket = costAggregate.get(balance.itemId) || { quantity: 0, value: 0, lastAverage: 0 };
@@ -1055,7 +1062,7 @@ export async function GET(request: Request) {
     const revenueGroups = receiptCategoryList.filter((category) => isRevenueGroupCategory(category.group));
     const receiptCategories = receiptCategoryList.filter((category) => !isRevenueGroupCategory(category.group));
 
-    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, balances, transactions, flowTransactions, transferTransactions, partners, flowRange: { from: isoDay(flowFrom), to: isoDay(flowTo) }, recipes: recipesWithCost, warehouses, stocktakes, stockSummary, stockMovements, itemGroups, revenueGroups, receiptCategories, costSummary, wasteReport, pendingSales }));
+    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, balances, transactions, flowTransactions, transferTransactions, partners, flowRange: { from: isoDay(flowFrom), to: isoDay(flowTo) }, recipes: recipesWithCost, warehouses, warehouseBranches, stocktakes, stockSummary, stockMovements, itemGroups, revenueGroups, receiptCategories, costSummary, wasteReport, pendingSales }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });
