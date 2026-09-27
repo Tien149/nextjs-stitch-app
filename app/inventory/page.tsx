@@ -163,6 +163,7 @@ export default function InventoryPage() {
   const [itemDeleteError, setItemDeleteError] = useState<string | null>(null);
   const [itemDeleting, setItemDeleting] = useState(false);
   const [itemSearch, setItemSearch] = useState("");
+  const [recipeSearch, setRecipeSearch] = useState("");
   const [itemTypeFilter, setItemTypeFilter] = useState("ALL");
   /** ALL / MISSING (chưa gán) / mã danh mục Thu cụ thể — lọc để gán hàng loạt cho nhanh. */
   const [revenueGroupFilter, setRevenueGroupFilter] = useState("ALL");
@@ -566,6 +567,17 @@ export default function InventoryPage() {
     }
     return [...groups.values()];
   })();
+
+  // Ô tìm của bảng "Chi tiết các phiên bản định lượng": theo mã / tên món, và cả mã / tên
+  // nguyên liệu (tra xem món nào đang dùng một nguyên liệu). Không phân biệt dấu, hoa thường.
+  const recipeKeyword = foldSearchText(recipeSearch.trim());
+  const filteredRecipeGroups = recipeKeyword
+    ? groupedRecipes.filter(({ recipe }) => [
+      recipe.productCode,
+      recipe.productName,
+      ...recipe.lines.flatMap((line) => [line.item.code, line.item.name]),
+    ].some((value) => foldSearchText(value || "").includes(recipeKeyword)))
+    : groupedRecipes;
 
   type CostSummaryGroup = { key: string; row: CostSummaryRow; branchCodes: string[]; versions: number[] };
   const groupedCostSummary: CostSummaryGroup[] = (() => {
@@ -2696,6 +2708,19 @@ export default function InventoryPage() {
 
             <section className="table-panel shadow-sm">
               <Panel title="Chi tiết các phiên bản định lượng" reload={loadData} exportFileName="phien_ban_dinh_luong" />
+              <div className="px-5 pb-4 flex flex-wrap items-end gap-3">
+                <div className="flex-1 min-w-[240px] max-w-md">
+                  <Input label="Tìm kiếm">
+                    <input className="control" placeholder="Gõ mã hoặc tên món, mã nguyên liệu..." value={recipeSearch} onChange={(e) => setRecipeSearch(e.target.value)} />
+                  </Input>
+                </div>
+                {recipeKeyword && (
+                  <p className="pb-2 text-xs text-slate-500">
+                    Tìm thấy <b>{filteredRecipeGroups.length}</b> / {groupedRecipes.length} định lượng
+                    <button type="button" className="ml-2 font-bold text-blue-600 hover:underline" onClick={() => setRecipeSearch("")}>Xoá tìm</button>
+                  </p>
+                )}
+              </div>
               {/* Mỗi nguyên liệu một dòng, đúng khuôn sheet Chi tiết lúc import BOM — thông tin món gộp ô. */}
               <Table
                 headers={[
@@ -2714,7 +2739,12 @@ export default function InventoryPage() {
                   { label: "Thao tác", align: "right" },
                 ]}
               >
-                {groupedRecipes.map(({ key, recipe, branchCodes, versions, ids }) => {
+                {recipeKeyword && filteredRecipeGroups.length === 0 && (
+                  <tr className="border-t border-slate-100">
+                    <td colSpan={13} className="px-4 py-10 text-center text-sm text-slate-400">Không có định lượng nào khớp &quot;{recipeSearch.trim()}&quot;.</td>
+                  </tr>
+                )}
+                {filteredRecipeGroups.map(({ key, recipe, branchCodes, versions, ids }) => {
                   const lines = recipe.lines.length > 0 ? recipe.lines : [null];
                   const span = lines.length;
                   const isEditingThis = Boolean(recipeEditing && ids.every((id) => recipeEditing.ids.includes(id)));
@@ -3469,6 +3499,11 @@ export default function InventoryPage() {
       )}
     </ModuleFrame>
   );
+}
+
+/** Bỏ dấu + chữ thường để ô tìm gõ "tra dao" vẫn ra "Trà Đào". */
+function foldSearchText(value: string): string {
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d").replace(/Đ/g, "D").toLowerCase();
 }
 
 function movementTypeLabel(type: string): string {
