@@ -187,7 +187,8 @@ export async function GET(request: Request) {
     const openingAmount = opening.total;
     const entries = [
       ...vouchers.map((row) => ({ id: row.id, date: row.voucherDate, createdAt: row.createdAt, code: row.code, type: row.voucherType, branchCode: row.branchCode, moneySourceCode: row.moneySourceCode, description: row.description, receipt: row.voucherType === "RECEIPT" ? row.amount : 0, payment: row.voucherType === "PAYMENT" ? row.amount : 0 })),
-      ...adjustments.map((row) => ({ id: row.id, date: row.entryDate, createdAt: row.createdAt, code: row.code, type: "ADJUSTMENT", branchCode: row.branchCode, moneySourceCode: row.moneySourceCode, description: row.description, receipt: entryTypeToReceipt(row.entryType, row.amount), payment: entryTypeToPayment(row.entryType, row.amount) })),
+      // pnlItemCode đi kèm để hộp thoại Sửa phiếu điều chỉnh hiện đúng hạng mục P&L đang khai.
+      ...adjustments.map((row) => ({ id: row.id, date: row.entryDate, createdAt: row.createdAt, code: row.code, type: "ADJUSTMENT", branchCode: row.branchCode, moneySourceCode: row.moneySourceCode, description: row.description, pnlItemCode: row.pnlItemCode, receipt: entryTypeToReceipt(row.entryType, row.amount), payment: entryTypeToPayment(row.entryType, row.amount) })),
       // Quyết toán ví: tiền rời ví = số về ngân hàng + phí, nên số dư ví mới về đúng 0.
       // Phiếu liên nhà hàng chỉ góp một vế cho mỗi cửa hàng: bên chuyển thấy tiền ra, bên
       // nhận thấy tiền vào. Lấy cả hai vế sẽ cộng nhầm nguồn tiền của cửa hàng kia vào sổ.
@@ -1756,6 +1757,12 @@ export async function POST(request: Request) {
         data: { entryDate, entryType, branchCode, moneySourceCode, amount, description, ...classification },
       });
       if (updated.count !== 1) businessError("Phiếu đã bị xóa bởi yêu cầu khác.");
+      // Bỏ hạng mục P&L / khoản mục thì phiếu thôi sinh bút toán, nhưng Ghi sổ kỳ chỉ dựng bút
+      // toán cho phiếu CÓ phân loại, không tự gỡ bút toán cũ -> gỡ ngay tại đây, kẻo khoản chênh
+      // vẫn nằm trên P&L. (Kỳ khóa đã chặn ở trên, cả ngày cũ lẫn ngày mới.)
+      if (!classification.categoryCode && !classification.pnlItemCode) {
+        await prisma.journalEntry.deleteMany({ where: { sourceType: "CASHBOOK_ADJUSTMENT", sourceId: current!.id } });
+      }
       const result = await prisma.cashbookAdjustment.findUniqueOrThrow({ where: { id: current!.id } });
       await writeAuditLog({
         session: auth.session,
@@ -1766,8 +1773,8 @@ export async function POST(request: Request) {
         entityCode: result.code,
         branchCode: result.branchCode,
         metadata: {
-          before: { entryDate: current!.entryDate, entryType: current!.entryType, branchCode: current!.branchCode, moneySourceCode: current!.moneySourceCode, amount: current!.amount, description: current!.description },
-          after: { entryDate, entryType, branchCode, moneySourceCode, amount, description },
+          before: { entryDate: current!.entryDate, entryType: current!.entryType, branchCode: current!.branchCode, moneySourceCode: current!.moneySourceCode, amount: current!.amount, description: current!.description, pnlItemCode: current!.pnlItemCode },
+          after: { entryDate, entryType, branchCode, moneySourceCode, amount, description, pnlItemCode: classification.pnlItemCode },
         },
       });
       return NextResponse.json(result);

@@ -16,7 +16,7 @@ import { checkWalletFeeRate } from "@/lib/wallet-settlement-allocation";
 import { walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
 import type { ExpenseSummary } from "@/lib/expense-summary";
 
-type CashEntry = { id: string; date: string; createdAt: string; code: string; type: string; branchCode: string; moneySourceCode: string; description: string; receipt: number; payment: number; balance: number };
+type CashEntry = { id: string; date: string; createdAt: string; code: string; type: string; branchCode: string; moneySourceCode: string; description: string; pnlItemCode?: string | null; receipt: number; payment: number; balance: number };
 type Schedule = { id: string; period: string; amount: number; status: string };
 type Accrual = { id: string; code: string; name: string; branchCode: string; categoryCode: string; pnlItemCode: string | null; totalAmount: number; startPeriod: string; numberOfPeriods: number; status: string; sourceType: string | null; schedules: Schedule[] };
 type Check = { key: string; label: string; passed: boolean; count: number };
@@ -84,6 +84,7 @@ type AdjustmentEditForm = {
   moneySourceCode: string;
   amount: string;
   description: string;
+  pnlItemCode: string;
 };
 
 const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value);
@@ -309,6 +310,13 @@ export default function FinanceOperationsPage() {
     const allowed = adjustment.entryType === "PAYMENT" ? ["OPEX", "COGS", "OTHER_EXPENSE"] : ["OTHER_INCOME"];
     return pnlItemsWithGroup.filter((item) => allowed.includes(item.effectiveGroup));
   }, [pnlItemsWithGroup, adjustment.entryType]);
+
+  // Hạng mục P&L của hộp thoại Sửa: cùng luật nhóm với form tạo, theo loại điều chỉnh đang chọn.
+  const editingAdjustmentPnlItems = useMemo(() => {
+    if (!editingAdjustment) return [];
+    const allowed = editingAdjustment.entryType === "PAYMENT" ? ["OPEX", "COGS", "OTHER_EXPENSE"] : ["OTHER_INCOME"];
+    return pnlItemsWithGroup.filter((item) => allowed.includes(item.effectiveGroup));
+  }, [pnlItemsWithGroup, editingAdjustment]);
 
   const adjustmentCashSources = useMemo(
     () => filterMoneySources(moneySources, adjustmentBranchCode, ["CASH", "BANK", "WALLET"]),
@@ -601,6 +609,7 @@ export default function FinanceOperationsPage() {
       moneySourceCode: row.moneySourceCode,
       amount: String(Math.round(row.receipt > 0 ? row.receipt : row.payment)),
       description: row.description,
+      pnlItemCode: row.pnlItemCode || "",
     });
     setMessage("");
   };
@@ -623,6 +632,7 @@ export default function FinanceOperationsPage() {
           moneySourceCode: editingAdjustment.moneySourceCode,
           amount: editingAdjustment.amount,
           description: editingAdjustment.description,
+          pnlItemCode: editingAdjustment.pnlItemCode,
         }),
       });
       const payload = await response.json();
@@ -2719,7 +2729,8 @@ export default function FinanceOperationsPage() {
               </label>
               <label className="text-xs font-bold text-slate-600">
                 Loại điều chỉnh *
-                <select className="control mt-1.5" value={editingAdjustment.entryType} onChange={(event) => setEditingAdjustment((current) => current ? { ...current, entryType: event.target.value } : current)}>
+                {/* Đổi Thu <-> Chi thì hạng mục cũ sai nhóm (Chi: OPEX/Giá vốn/Chi phí khác, Thu: Thu nhập khác) -> bỏ trống để chọn lại. */}
+                <select className="control mt-1.5" value={editingAdjustment.entryType} onChange={(event) => setEditingAdjustment((current) => current ? { ...current, entryType: event.target.value, pnlItemCode: event.target.value === current.entryType ? current.pnlItemCode : "" } : current)}>
                   <option value="RECEIPT">Thu (Tăng tiền)</option>
                   <option value="PAYMENT">Chi (Giảm tiền)</option>
                 </select>
@@ -2754,6 +2765,20 @@ export default function FinanceOperationsPage() {
               <label className="text-xs font-bold text-slate-600 sm:col-span-2">
                 Số tiền (đ) *
                 <input className="control mt-1.5 text-right font-bold" inputMode="numeric" value={editingAdjustment.amount} onChange={(event) => setEditingAdjustment((current) => current ? { ...current, amount: event.target.value.replace(/\D/g, "") } : current)} />
+              </label>
+              <label className="text-xs font-bold text-slate-600 sm:col-span-2">
+                Hạng mục P&L (không bắt buộc)
+                <select className="control mt-1.5" value={editingAdjustment.pnlItemCode} onChange={(event) => setEditingAdjustment((current) => current ? { ...current, pnlItemCode: event.target.value } : current)}>
+                  <option value="">-- Không đưa vào P&L --</option>
+                  {/* Hạng mục trên phiếu cũ đã ngừng / sai nhóm vẫn hiện để người dùng thấy mà đổi, không âm thầm mất. */}
+                  {editingAdjustment.pnlItemCode && !editingAdjustmentPnlItems.some((item) => item.code === editingAdjustment.pnlItemCode) && (
+                    <option value={editingAdjustment.pnlItemCode}>{editingAdjustment.pnlItemCode} (không còn hợp lệ — chọn lại)</option>
+                  )}
+                  {editingAdjustmentPnlItems.map((item) => (
+                    <option key={item.id || item.code} value={item.code}>{item.name}</option>
+                  ))}
+                </select>
+                <span className="mt-1 block text-[11px] font-normal text-slate-500">Khai hạng mục thì khoản chênh này lên P&L đúng dòng; để trống thì chỉ đổi số dư quỹ.</span>
               </label>
               <label className="text-xs font-bold text-slate-600 sm:col-span-2">
                 Diễn giải lý do *
