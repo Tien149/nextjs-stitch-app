@@ -7,6 +7,7 @@ import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
 import { isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType, postInventoryTransaction, repostInventoryTransaction, reverseStockEffect } from "@/lib/inventory-stock";
 import { createPurchasePayable, purchasePayableCodeOf, removePurchasePayables, syncPurchasePayable, PURCHASE_PAYABLE_SOURCE } from "@/lib/purchase-payable";
 import { postStockTransfer, syncTransferInternalDebt } from "@/lib/inventory-transfer";
+import { averageCostByItem } from "@/lib/inventory-average-cost";
 import { parseVatRate, VAT_RATE_CODES } from "@/lib/inventory-vat";
 import { computeCostingLevels, computeRecipeUnitCosts, explodeSalesDemand, lineConversionRate, pickRecipeForDate, recipeContentSignature, type ExplosionRecipe } from "@/lib/production-explosion";
 import { writeAuditLog } from "@/lib/audit-log";
@@ -891,18 +892,9 @@ export async function GET(request: Request) {
       select: { code: true, branch: true },
     });
 
-    const costAggregate = new Map<string, { quantity: number; value: number; lastAverage: number }>();
-    for (const balance of allBalances) {
-      const bucket = costAggregate.get(balance.itemId) || { quantity: 0, value: 0, lastAverage: 0 };
-      bucket.quantity += balance.quantity;
-      bucket.value += balance.quantity * balance.averageCost;
-      if (balance.averageCost > 0) bucket.lastAverage = balance.averageCost;
-      costAggregate.set(balance.itemId, bucket);
-    }
-    const averageCostByItemId = new Map<string, number>();
-    for (const [itemId, bucket] of costAggregate) {
-      averageCostByItemId.set(itemId, bucket.quantity > quantityEpsilon ? bucket.value / bucket.quantity : bucket.lastAverage);
-    }
+    // Cùng một luật với nút "Tính giá vốn & giá thành" — xem lib/inventory-average-cost.ts
+    // (trước đây chỗ này cộng cả kho tồn âm, giá bình quân vọt gấp chục lần).
+    const averageCostByItemId = averageCostByItem(allBalances);
 
     // Cost đa cấp theo định lượng: BTP trong định lượng món lấy cost từ định lượng của
     // chính BTP đó (không cần BTP có tồn kho), NVL lấy giá vốn bình quân.
@@ -1597,22 +1589,9 @@ export async function POST(request: Request) {
         prisma.recipe.findMany({ where: { deletedAt: null }, include: { lines: { include: { item: true } } } }),
       ]);
 
-      // Bước 1 — giá vốn nguyên liệu: bình quân GIA QUYỀN theo tồn của mọi kho, kho tồn 0
-      // không kéo giá xuống. Không có tồn thì giữ giá gần nhất từng ghi nhận.
-      const aggregate = new Map<string, { quantity: number; value: number; lastAverage: number }>();
-      for (const balance of balances) {
-        const bucket = aggregate.get(balance.itemId) || { quantity: 0, value: 0, lastAverage: 0 };
-        if (balance.quantity > 0) {
-          bucket.quantity += balance.quantity;
-          bucket.value += balance.quantity * balance.averageCost;
-        }
-        if (balance.averageCost > 0) bucket.lastAverage = balance.averageCost;
-        aggregate.set(balance.itemId, bucket);
-      }
-      const averageCostByItemId = new Map<string, number>();
-      for (const [itemId, bucket] of aggregate) {
-        averageCostByItemId.set(itemId, bucket.quantity > quantityEpsilon ? bucket.value / bucket.quantity : bucket.lastAverage);
-      }
+      // Bước 1 — giá vốn nguyên liệu: bình quân GIA QUYỀN theo tồn DƯƠNG của mọi kho (kho âm
+      // không cộng vào), dùng chung với Sheet tổng hợp — xem lib/inventory-average-cost.ts.
+      const averageCostByItemId = averageCostByItem(balances);
 
       // Bước 2..n — giá thành theo tầng định lượng.
       const itemTypeByCode = new Map(items.map((item) => [item.code.toUpperCase(), item.itemType]));
