@@ -422,4 +422,47 @@ body {
   #daily-cash-report .material-symbols-outlined {
     display: none !important;
   }
+
+  /* Bảng "Tổng hợp thu trong ngày" là phần thu ngân/quản lý đọc và ký: in chữ to hơn các
+     bảng chi tiết (khách yêu cầu 27/09/2026). 9 cột trên A4 dọc chỉ còn ~75px mỗi cột số,
+     nên bỏ chữ "đ" ở từng ô (ghi "Đơn vị tính: đồng" một lần) để 13px vẫn vừa số hàng trăm
+     triệu mà không tràn ô. */
+  #daily-cash-report .daily-cash-summary table {
+    font-size: 13px !important;
+  }
+
+  #daily-cash-report .daily-cash-summary th {
+    font-size: 11px !important;
+  }
+
+  #daily-cash-report .daily-cash-summary th,
+  #daily-cash-report .daily-cash-summary td {
+    padding: 6px 3px !important;
+  }
+
+  #daily-cash-report .daily-cash-summary td {
+    white-space: nowrap !important;
+    word-break: normal !important;
+    vertical-align: middle !important;
+  }
+
+  /* Cột "Loại" để xuống dòng như cũ ("Doanh thu bán hàng" dài hơn cột số). */
+  #daily-cash-report .daily-cash-summary th:first-child,
+  #daily-cash-report .daily-cash-summary td:first-child {
+    width: 20mm !important;
+    white-space: normal !important;
+  }
+
+  #daily-cash-report .daily-cash-summary .money-unit {
+    display: none !important;
+  }
+
+  #daily-cash-report .daily-cash-unit {
+    margin: 0 !important;
+    padding: 4px 6px !important;
+    text-align: right !important;
+    font-size: 11px !important;
+    font-style: italic !important;
+    color: #475569 !important;
+  }
 }

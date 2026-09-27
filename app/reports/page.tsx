@@ -1308,8 +1308,10 @@ export default function ReportsPage() {
             </div>
           )}
 
-          <section className="table-panel">
+          <section className="table-panel daily-cash-summary">
             <PanelHeader title="Tổng hợp thu trong ngày" subtitle="Doanh thu bán hàng gồm số liệu POS (hoặc nhập tay khi chưa có POS) và phiếu thu loại Thu bán hàng; các khoản thu khác (hoàn tiền NCC, thu ngoài bán hàng) và tiền cọc tách dòng riêng nhưng phần tiền mặt vẫn tính vào số nộp. Xem theo ca thì doanh thu POS đứng riêng một dòng dưới TOTAL vì file POS chỉ khai ngày, không khai ca." />
+            {/* Bản in bỏ chữ "đ" ở từng ô để cỡ chữ to vẫn vừa 9 cột khổ A4 — ghi đơn vị một lần. */}
+            <p className="print-only daily-cash-unit">Đơn vị tính: đồng</p>
             <Table headers={["Loại", "Tổng thu", "Tiền mặt", "Chuyển khoản", "Quẹt thẻ/Ví", "Grab", "Khác", "Tổng chi tiền mặt", "Nộp tiền"]}>
               {dailyCashShiftRows.map((row) => (
                 <DailyCashSummaryRow key={row.label} label={row.label} bucket={row.bucket} expense={row.expense} cashToDeposit={row.cashToDeposit} />
@@ -1949,20 +1951,25 @@ function DailyCashSummaryRow({ label, bucket, expense, cashToDeposit, strong = f
         <b>{label}</b>
         {note && <small className="block font-normal text-slate-500">{note}</small>}
       </Cell>
-      <Cell right>{money(bucket.total)} đ</Cell>
-      <Cell right>{money(bucket.cash)} đ</Cell>
-      <Cell right>{money(bucket.transfer)} đ</Cell>
-      <Cell right>{money(bucket.card)} đ</Cell>
-      <Cell right>{money(bucket.grab)} đ</Cell>
-      <Cell right>{money(bucket.other)} đ</Cell>
-      <Cell right>{expense === undefined ? "-" : `${money(expense)} đ`}</Cell>
+      <Cell right>{money(bucket.total)}<MoneyUnit /></Cell>
+      <Cell right>{money(bucket.cash)}<MoneyUnit /></Cell>
+      <Cell right>{money(bucket.transfer)}<MoneyUnit /></Cell>
+      <Cell right>{money(bucket.card)}<MoneyUnit /></Cell>
+      <Cell right>{money(bucket.grab)}<MoneyUnit /></Cell>
+      <Cell right>{money(bucket.other)}<MoneyUnit /></Cell>
+      <Cell right>{expense === undefined ? "-" : <>{money(expense)}<MoneyUnit /></>}</Cell>
       <Cell right>
         {cashToDeposit === undefined
           ? "-"
-          : <b className={cashToDeposit < 0 ? "text-rose-600" : "text-emerald-700"}>{money(cashToDeposit)} đ</b>}
+          : <b className={cashToDeposit < 0 ? "text-rose-600" : "text-emerald-700"}>{money(cashToDeposit)}<MoneyUnit /></b>}
       </Cell>
     </tr>
   );
+}
+
+/** Chữ " đ" sau số tiền của bảng tổng hợp — ẩn khi in (bản in ghi "Đơn vị tính: đồng"). */
+function MoneyUnit() {
+  return <span className="money-unit"> đ</span>;
 }
 
 function Kpi({ label, value, icon, tone = "default" }: { label: string; value: number; icon: string; tone?: "default" | "green" | "blue" | "rose" | "amber" }) {
