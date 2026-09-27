@@ -153,7 +153,7 @@ export default function InventoryPage() {
   const [deletingItem, setDeletingItem] = useState<Item | null>(null);
   /** Sửa / xoá phiếu kho ngay trên bảng phiếu của ba tab Nhập / Xuất / Điều chuyển. */
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
-  const [transactionEditForm, setTransactionEditForm] = useState({ transactionDate: "", warehouseCode: "", toWarehouseCode: "", partnerCode: "", referenceCode: "", note: "" });
+  const [transactionEditForm, setTransactionEditForm] = useState({ transactionDate: "", warehouseCode: "", toWarehouseCode: "", partnerCode: "", subType: "", referenceCode: "", note: "" });
   const [transactionEditLines, setTransactionEditLines] = useState<Array<{ key: string; itemId: string; quantity: string; unitCode: string; unitCost: string; vatRate: string; vatAmount: string }>>([]);
   const [transactionEditError, setTransactionEditError] = useState<string | null>(null);
   const [transactionEditSaving, setTransactionEditSaving] = useState(false);
@@ -999,6 +999,7 @@ export default function InventoryPage() {
       warehouseCode: transaction.warehouseCode,
       toWarehouseCode: transaction.toWarehouseCode || "",
       partnerCode: transaction.partnerCode || "",
+      subType: transaction.subType || "",
       referenceCode: transaction.referenceCode || "",
       note: transaction.note || "",
     });
@@ -1045,6 +1046,7 @@ export default function InventoryPage() {
           transactionDate: transactionEditForm.transactionDate,
           warehouseCode: transactionEditForm.warehouseCode,
           ...(editingTransaction.transactionType === "DIEU_CHUYEN" ? { toWarehouseCode: transactionEditForm.toWarehouseCode } : {}),
+          ...(editingTransaction.transactionType === "XUAT_HUY" ? { subType: transactionEditForm.subType } : {}),
           partnerCode: transactionEditForm.partnerCode,
           referenceCode: transactionEditForm.referenceCode,
           note: transactionEditForm.note,
@@ -2303,6 +2305,13 @@ export default function InventoryPage() {
                       {warehouseOptions.map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name}</option>)}
                     </select>
                   </Input>
+                ) : editingTransaction.transactionType === "XUAT_HUY" ? (
+                  <Input label="Loại hủy">
+                    <select className="control" value={transactionEditForm.subType} onChange={(e) => setTransactionEditForm({ ...transactionEditForm, subType: e.target.value })}>
+                      <option value="">Chưa phân loại</option>
+                      {wasteTypeOptions.map((option) => <option key={option.code} value={option.code}>{option.label}</option>)}
+                    </select>
+                  </Input>
                 ) : (
                   <Input label={isInboundType(editingTransaction.transactionType) ? "Nhà cung cấp" : "Đối tác"}>
                     <select className="control" value={transactionEditForm.partnerCode} onChange={(e) => setTransactionEditForm({ ...transactionEditForm, partnerCode: e.target.value })}>
@@ -3421,7 +3430,7 @@ export default function InventoryPage() {
             <section className="table-panel shadow-sm">
               <Panel title="Phiếu hủy gần nhất" reload={loadData} exportFileName="phieu_huy_gan_nhat" />
               <Table
-                headers={[{ label: "Chứng từ" }, { label: "Loại hủy" }, { label: "Nhà hàng / Kho" }, { label: "Mặt hàng" }, { label: "Trị giá", align: "right" }]}
+                headers={[{ label: "Chứng từ" }, { label: "Loại hủy" }, { label: "Nhà hàng / Kho" }, { label: "Mặt hàng" }, { label: "Trị giá", align: "right" }, { label: "Thao tác", align: "right" }]}
                 footer={wasteTransactions.length === 0 ? null : (
                   <tr>
                     <Cell>CỘNG</Cell>
@@ -3429,6 +3438,7 @@ export default function InventoryPage() {
                     <Cell>{""}</Cell>
                     <Cell>{""}</Cell>
                     <Cell right><b className="text-rose-600">{money(sumTransactions(wasteTransactions.map((row) => ({ transaction: row }))).beforeTax)} đ</b></Cell>
+                    <Cell right>{""}</Cell>
                   </tr>
                 )}
               >
@@ -3439,6 +3449,17 @@ export default function InventoryPage() {
                     <Cell>{storeLabel(row.branchCode)}<small>{row.warehouseCode}</small></Cell>
                     <Cell>{row.lines.map((line) => `${line.item.name}: ${qty(line.quantity)} ${line.item.unit}`).join(", ")}</Cell>
                     <Cell right><b>{money(row.lines.reduce((sum, line) => sum + line.totalCost, 0))} đ</b></Cell>
+                    <Cell right>
+                      <RowActions
+                        session={user}
+                        module={href}
+                        compact
+                        onEdit={() => openTransactionEdit(row)}
+                        onDelete={() => { setTransactionDeleteError(null); setDeletingTransaction(row); }}
+                        editDisabledReason={transactionEditLockReason(row)}
+                        deleteDisabledReason={transactionLockReason(row)}
+                      />
+                    </Cell>
                   </tr>
                 ))}
               </Table>

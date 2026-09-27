@@ -2078,6 +2078,15 @@ export async function PATCH(request: Request) {
         if (!warehouse) businessError(`Kho ${warehouseCode} không thuộc chi nhánh ${transaction.branchCode}.`);
       }
 
+      // Phiếu hủy sửa được loại hủy (nhiều phiếu import cũ đang "Chưa phân loại"); để trống = bỏ phân loại.
+      let subType = transaction.subType;
+      if (transaction.transactionType === "XUAT_HUY" && body.subType !== undefined) {
+        subType = normalizeWasteSubType(body.subType);
+        if (subType && !isWasteSubType(subType)) {
+          businessError("Loại hủy không hợp lệ. Chọn: Hết hạn sử dụng hoặc Không đảm bảo chất lượng.");
+        }
+      }
+
       const partnerCode = body.partnerCode !== undefined ? cleanText(body.partnerCode) || null : transaction.partnerCode;
       if (partnerCode && partnerCode !== transaction.partnerCode) {
         const partner = await prisma.masterDataItem.findFirst({ where: { type: "PARTNER", code: partnerCode } });
@@ -2092,7 +2101,7 @@ export async function PATCH(request: Request) {
             warehouseCode,
             toWarehouseCode,
             toBranchCode,
-            subType: transaction.subType,
+            subType,
             partnerCode,
             referenceCode: body.referenceCode !== undefined ? cleanText(body.referenceCode) || null : transaction.referenceCode,
             note: body.note !== undefined ? cleanText(body.note) || null : transaction.note,
@@ -2113,6 +2122,7 @@ export async function PATCH(request: Request) {
             data: {
               transactionDate,
               partnerCode,
+              subType,
               ...(body.referenceCode !== undefined ? { referenceCode: cleanText(body.referenceCode) || null } : {}),
               ...(body.note !== undefined ? { note: cleanText(body.note) || null } : {}),
             },
