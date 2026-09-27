@@ -2017,7 +2017,7 @@ function PanelHeader({ title, subtitle, exportFileName, exportable = true }: { t
     <div className="p-4 border-b border-slate-200 flex flex-wrap items-start justify-between gap-3">
       <div>
         <h2 className="font-bold">{title}</h2>
-        <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>
+        <p className="panel-subtitle text-xs text-slate-500 mt-0.5">{subtitle}</p>
       </div>
       {exportable && <ExportExcelButton fileName={exportFileName || toFileSlug(title)} sheetName={title.slice(0, 31)} />}
     </div>

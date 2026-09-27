@@ -424,11 +424,17 @@ body {
   }
 
   /* Bảng "Tổng hợp thu trong ngày" là phần thu ngân/quản lý đọc và ký: in chữ to hơn các
-     bảng chi tiết (khách yêu cầu 27/09/2026). 9 cột trên A4 dọc chỉ còn ~75px mỗi cột số,
-     nên bỏ chữ "đ" ở từng ô (ghi "Đơn vị tính: đồng" một lần) để 13px vẫn vừa số hàng trăm
-     triệu mà không tràn ô. */
+     bảng chi tiết (khách yêu cầu 27/09/2026). Cột "Khác" không dùng nên bỏ khi in, còn 8 cột
+     trên A4 dọc ~90px mỗi cột số; bỏ thêm chữ "đ" ở từng ô (ghi "Đơn vị tính: đồng" một
+     lần) để 14px vẫn vừa số hàng trăm triệu mà không tràn ô. */
   #daily-cash-report .daily-cash-summary table {
-    font-size: 13px !important;
+    font-size: 14px !important;
+  }
+
+  /* Cột thứ 7 = "Khác" (Loại, Tổng thu, Tiền mặt, Chuyển khoản, Quẹt thẻ/Ví, Grab, Khác, ...). */
+  #daily-cash-report .daily-cash-summary th:nth-child(7),
+  #daily-cash-report .daily-cash-summary td:nth-child(7) {
+    display: none !important;
   }
 
   #daily-cash-report .daily-cash-summary th {
@@ -455,6 +461,22 @@ body {
 
   #daily-cash-report .daily-cash-summary .money-unit {
     display: none !important;
+  }
+
+  /* Dòng giải thích dưới tiêu đề mỗi bảng và nút Xuất Excel chỉ để dùng trên màn hình. */
+  #daily-cash-report .panel-subtitle,
+  #daily-cash-report button[data-no-export] {
+    display: none !important;
+  }
+
+  /* Hai bảng chi tiết thu / chi: chữ to hơn mức 10px chung, cột Số tiền to thêm một nấc. */
+  #daily-cash-report .daily-cash-detail table {
+    font-size: 12px !important;
+  }
+
+  #daily-cash-report .daily-cash-detail td:last-child:not([colspan]) {
+    font-size: 13px !important;
+    white-space: nowrap !important;
   }
 
   #daily-cash-report .daily-cash-unit {
