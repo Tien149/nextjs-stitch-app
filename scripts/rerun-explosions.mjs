@@ -1,0 +1,167 @@
+/**
+ * Gỡ rồi rã lại các lần rã BOM đã chạy sai kho — làm trọn trên server, không cần giao diện.
+ *
+ * Dùng đúng logic của nút Rã / "rã lại khi sửa định lượng" (lib/inventory-explosion.ts):
+ *   1. (tuỳ chọn) gán Phân nhóm "Món bếp" cho các món chưa suy được bộ phận (--set-kitchen);
+ *   2. gỡ từng lần rã: hoàn kho từng phiếu, xoá mềm phiếu, trả dòng doanh thu về hàng chờ;
+ *   3. rã lại ĐÚNG các dòng doanh thu đó, cùng ngày chứng từ, với kho bếp / bar của cửa hàng
+ *      (kho mặc định và kho nhập BTP/TP = kho bếp) theo luật mới: BTP đi theo món bán, combo
+ *      nhập kho bếp và từng thành phần trừ ở kho của nó.
+ * Tất cả trong MỘT giao dịch: lỗi ở đâu là huỷ hết, không có cảnh đã gỡ mà chưa rã lại.
+ *
+ * Chạy thử (mặc định): làm hết trong giao dịch, in kết quả rồi HUỶ — không ghi gì.
+ *   npm run rerun:explosions -- --runs RA-2026-0001,RA-2026-0002,RA-2026-0003 --set-kitchen EV0103,EV023,EV0104
+ * Ghi thật: thêm --apply. Kỳ đã khoá sổ: thêm --allow-locked (khách đồng ý sửa kỳ đã khoá).
+ * Kho tự tìm theo nhóm kho BEP / BAR của cửa hàng; cửa hàng có nhiều kho bếp/bar thì chỉ định:
+ *   --kitchen ASA=ASA_KBEP,NME=NME_KBEP --bar ASA=ASA_KBAR,NME=NME_KBAR
+ * Mã món cho --set-kitchen: phân nhóm lấy tự động (nhóm Thành phẩm của kho BEP), đổi bằng --kitchen-group TP_BEP.
+ */
+import { prisma } from "../lib/prisma.ts";
+import { isPeriodLocked } from "../lib/phase3.ts";
+import { rerunExplosions } from "../lib/inventory-explosion.ts";
+import { departmentFromWarehouseGroup, REVENUE_DEPARTMENT_CODES } from "../lib/revenue-department.ts";
+
+const args = process.argv.slice(2);
+const flag = (name) => args.includes(name);
+const value = (name) => {
+  const index = args.indexOf(name);
+  return index >= 0 ? args[index + 1] || "" : "";
+};
+const list = (name) => value(name).split(",").map((item) => item.trim()).filter(Boolean);
+const mapArg = (name) => new Map(list(name).map((pair) => pair.split("=").map((part) => part.trim().toUpperCase())));
+
+const apply = flag("--apply");
+const allowLocked = flag("--allow-locked");
+const runCodes = list("--runs").map((code) => code.toUpperCase());
+const kitchenItemCodes = list("--set-kitchen").map((code) => code.toUpperCase());
+const kitchenOverride = mapArg("--kitchen");
+const barOverride = mapArg("--bar");
+const actor = "script rerun-explosions";
+if (runCodes.length === 0) {
+  console.log("Cách dùng: npm run rerun:explosions -- --runs RA-2026-0001,RA-2026-0002 [--set-kitchen MA1,MA2] [--apply] [--allow-locked]");
+  process.exit(0);
+}
+const day = (date) => new Date(date).toISOString().slice(0, 10);
+const ROLLBACK = new Error("DRY_RUN_ROLLBACK");
+
+try {
+  // Thông tin từng lần rã từ chính phiếu của nó (cửa hàng + ngày chứng từ).
+  const runs = [];
+  for (const runCode of runCodes) {
+    const doc = await prisma.inventoryTransaction.findFirst({
+      where: { referenceType: "PRODUCTION", referenceCode: runCode, deletedAt: null },
+      select: { branchCode: true, transactionDate: true },
+    });
+    if (!doc) { console.log(`!! ${runCode}: không còn phiếu nào (đã gỡ hoặc sai mã) — bỏ qua.`); continue; }
+    const rows = await prisma.revenueImportRow.count({ where: { inventoryStatus: `POSTED:${runCode}` } });
+    const locked = await isPeriodLocked(doc.transactionDate, doc.branchCode);
+    runs.push({ runCode, branchCode: doc.branchCode, date: doc.transactionDate, productCodes: [], rows, locked });
+  }
+  runs.sort((a, b) => a.date - b.date || a.runCode.localeCompare(b.runCode));
+  if (runs.length === 0) process.exit(0);
+
+  // Kho bếp / bar của từng cửa hàng.
+  const warehouses = await prisma.masterDataItem.findMany({ where: { type: "WAREHOUSE", status: "ACTIVE" }, select: { code: true, name: true, branch: true, group: true } });
+  const settingsByBranch = new Map();
+  let blocked = false;
+  for (const branchCode of [...new Set(runs.map((run) => run.branchCode))]) {
+    const own = warehouses.filter((row) => (row.branch || "").toUpperCase() === branchCode.toUpperCase());
+    const pick = (department, override, label) => {
+      if (override.get(branchCode.toUpperCase())) return override.get(branchCode.toUpperCase());
+      const found = own.filter((row) => departmentFromWarehouseGroup(row.group) === department);
+      if (found.length === 1) return found[0].code;
+      console.log(`!! ${branchCode}: ${found.length === 0 ? "không có" : "có nhiều"} kho ${label} (${found.map((row) => row.code).join(", ") || "—"}) — chỉ định bằng --${label === "bếp" ? "kitchen" : "bar"} ${branchCode}=MÃ_KHO`);
+      blocked = true;
+      return "";
+    };
+    const kitchen = pick(REVENUE_DEPARTMENT_CODES.KITCHEN, kitchenOverride, "bếp");
+    const bar = pick(REVENUE_DEPARTMENT_CODES.BAR, barOverride, "bar");
+    settingsByBranch.set(branchCode, { kitchen, bar });
+    console.log(`Cửa hàng ${branchCode}: kho bếp ${kitchen || "?"}, kho bar ${bar || "?"} (kho mặc định & kho nhập BTP/TP = kho bếp)`);
+  }
+
+  console.log("\nLần rã sẽ gỡ và rã lại:");
+  for (const run of runs) {
+    console.log(`  ${run.runCode} · ${run.branchCode} · ngày ${day(run.date)} · ${run.rows} dòng doanh thu${run.locked ? " · KỲ ĐÃ KHOÁ" : ""}`);
+  }
+  if (runs.some((run) => run.locked) && !allowLocked) {
+    console.log("\n!! Có lần rã nằm trong kỳ đã khoá sổ. Thêm --allow-locked nếu khách đồng ý sửa kỳ đã khoá.");
+    blocked = true;
+  }
+
+  // Phân nhóm "Món bếp" cho --set-kitchen.
+  let kitchenGroup = value("--kitchen-group").toUpperCase();
+  if (kitchenItemCodes.length > 0 && !kitchenGroup) {
+    const groups = await prisma.masterDataItem.findMany({ where: { type: "INVENTORY_ITEM_GROUP", status: "ACTIVE" }, select: { code: true, name: true, group: true, subGroup: true } });
+    const candidates = groups.filter((group) => (group.group || "").toUpperCase() === "FINISHED" && departmentFromWarehouseGroup(group.subGroup) === REVENUE_DEPARTMENT_CODES.KITCHEN);
+    if (candidates.length === 1) kitchenGroup = candidates[0].code;
+    else {
+      console.log(`!! Không chọn được phân nhóm Món bếp tự động (${candidates.map((group) => `${group.code} ${group.name}`).join(", ") || "không có"}) — chỉ định bằng --kitchen-group MÃ`);
+      blocked = true;
+    }
+  }
+  const kitchenItems = kitchenItemCodes.length ? await prisma.inventoryItem.findMany({ where: { code: { in: kitchenItemCodes } }, select: { id: true, code: true, name: true, category: true } }) : [];
+  if (kitchenItemCodes.length) {
+    console.log(`\nGán phân nhóm ${kitchenGroup || "?"} (Món bếp):`);
+    for (const code of kitchenItemCodes) {
+      const item = kitchenItems.find((row) => row.code.toUpperCase() === code);
+      console.log(item ? `  ${item.code} ${item.name}: ${item.category || "(trống)"} -> ${kitchenGroup}` : `  !! ${code}: không có mặt hàng này`);
+      if (!item) blocked = true;
+    }
+  }
+  if (blocked) {
+    console.log("\nDừng — sửa các mục !! ở trên rồi chạy lại.");
+    process.exit(1);
+  }
+
+  const results = [];
+  try {
+    await prisma.$transaction(async (tx) => {
+      for (const item of kitchenItems) {
+        await tx.inventoryItem.update({ where: { id: item.id }, data: { category: kitchenGroup } });
+      }
+      const reruns = await rerunExplosions(tx, runs, actor, {
+        overrideSettings: (run, original) => {
+          const { kitchen, bar } = settingsByBranch.get(run.branchCode);
+          return { ...original, warehouseCode: kitchen, toWarehouseCode: kitchen, kitchenWarehouseCode: kitchen, barWarehouseCode: bar };
+        },
+        note: (run) => `rã lại ${run.runCode}: BTP theo kho món bán, combo theo thành phần`,
+      });
+      for (const rerun of reruns) {
+        const docs = rerun.newRunCode
+          ? await tx.inventoryTransaction.findMany({ where: { referenceCode: rerun.newRunCode, deletedAt: null }, select: { warehouseCode: true, transactionType: true } })
+          : [];
+        const byWarehouse = new Map();
+        for (const doc of docs) byWarehouse.set(doc.warehouseCode, (byWarehouse.get(doc.warehouseCode) || 0) + 1);
+        results.push({ ...rerun, byWarehouse });
+      }
+      if (!apply) throw ROLLBACK;
+      // Nhật ký cho lần rã mới: lần sửa định lượng sau còn rã lại được nó với đúng kho.
+      for (const rerun of reruns) {
+        if (!rerun.newRunCode) continue;
+        await tx.auditLog.create({
+          data: {
+            module: "/inventory",
+            action: "EXPLODE_PRODUCTION",
+            entityType: "InventoryTransaction",
+            entityCode: rerun.newRunCode,
+            branchCode: rerun.branchCode,
+            actorName: actor,
+            metadataJson: JSON.stringify({ ...rerun.settings, dateTo: rerun.date, rerunOf: rerun.oldRunCode, reason: "Rã lại theo kho bếp/bar (script)", documents: rerun.documents }),
+          },
+        });
+      }
+    }, { timeout: 15 * 60 * 1000, maxWait: 60 * 1000 });
+  } catch (error) {
+    if (error !== ROLLBACK) throw error;
+  }
+
+  console.log(`\n${apply ? "ĐÃ GHI" : "CHẠY THỬ (đã huỷ, chưa ghi gì)"}:`);
+  for (const result of results) {
+    const perWarehouse = [...result.byWarehouse.entries()].map(([code, count]) => `${code} ${count} phiếu`).join(", ");
+    console.log(`  ${result.oldRunCode} -> ${result.newRunCode || "(không còn dòng doanh thu, chỉ gỡ)"} · ${result.documents.length} phiếu · ${perWarehouse}`);
+  }
+  if (!apply) console.log("\nKiểm tra xong thì chạy lại với --apply để ghi thật.");
+} finally {
+  await prisma.$disconnect();
+}
