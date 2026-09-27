@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   computeRecipeUnitCosts,
   explodeSalesDemand,
+  explodeSalesDemandByDepartment,
   pickRecipeForDate,
   recipeContentSignature,
 } from "../lib/production-explosion.ts";
@@ -294,4 +295,41 @@ test("bản riêng của cửa hàng khác không kéo lần rã của cửa hà
     recipeContentSignature(pickRecipeForDate([shared], date, "NME")),
     recipeContentSignature(pickRecipeForDate([shared, nmeOnly], date, "NME")),
   );
+});
+
+test("rã theo bộ phận: BTP dùng chung cho món bếp và món bar được chế biến tách ở từng kho", () => {
+  const soda = { id: "i-soda", code: "SP_SODASOT", name: "Soda sốt cà (bar)", unit: "LY", itemType: "FINISHED" };
+  const barRecipe = {
+    id: "r-soda",
+    productCode: "SP_SODASOT",
+    productName: soda.name,
+    unit: "LY",
+    outputConversionRate: 1,
+    version: 1,
+    effectiveFrom: "2026-07-22",
+    status: "ACTIVE",
+    lines: [{ itemId: items.sot.id, quantity: 50, conversionRate: 1, wasteRate: 0, item: items.sot }],
+  };
+  const department = { SP_CAHONG: "KIT", SP_SODASOT: "BAR" };
+  const groups = explodeSalesDemandByDepartment({
+    demands: [
+      { productCode: "SP_CAHONG", quantity: 10 },
+      { productCode: "SP_SODASOT", quantity: 4 },
+      { productCode: "NVL_BIA", quantity: 3 },
+    ],
+    recipes: [...recipes, barRecipe],
+    date: new Date("2026-08-01"),
+  }, (code) => department[code] || null);
+
+  const byDept = Object.fromEntries(groups.map((group) => [group.department ?? "DEFAULT", group.plan]));
+  assert.deepEqual(Object.keys(byDept), ["KIT", "BAR", "DEFAULT"]);
+  const sotOf = (plan) => plan.productions.find((step) => step.productCode === "BTP_SOTCACHUA");
+  // Món bếp 10 phần x 150 gr sốt, món bar 4 ly x 50 gr sốt — mỗi kho chế biến đúng phần của mình.
+  assert.equal(sotOf(byDept.KIT).quantityBase, 1500);
+  assert.equal(sotOf(byDept.BAR).quantityBase, 200);
+  assert.equal(byDept.KIT.producedSales[0].productCode, "SP_CAHONG");
+  assert.equal(byDept.BAR.producedSales[0].productCode, "SP_SODASOT");
+  // Món chưa suy được bộ phận vẫn đi kho mặc định như cũ.
+  assert.deepEqual(byDept.DEFAULT.directSales, [{ productCode: "NVL_BIA", quantityBase: 3 }]);
+  assert.equal(byDept.DEFAULT.productions.length, 0);
 });

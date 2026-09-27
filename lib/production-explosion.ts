@@ -409,3 +409,34 @@ export function computeCostingLevels(
       products: products.sort((a, b) => a.productCode.localeCompare(b.productCode)),
     }));
 }
+
+export type DepartmentExplosionPlan = {
+  /** Bộ phận của các MÓN BÁN trong nhóm (vd bếp / bar); null = chưa suy được, đi kho mặc định. */
+  department: string | null;
+  plan: ExplosionPlan;
+};
+
+/**
+ * Rã theo TỪNG BỘ PHẬN của món bán ra (khách chốt 27/09/2026): bán thành phẩm đi theo kho của
+ * món dùng nó, không tự suy kho theo chính nó. Trước đây mọi món gộp một kế hoạch rồi mới đoán
+ * kho cho từng bước; BTP không bán ra nên không có nhóm doanh thu, rơi hết về kho mặc định của
+ * lần rã (Kho văn phòng) — BTP của món bar cũng nằm ở đó thay vì kho bar.
+ *
+ * Chia số bán theo `departmentOf(mã món)` rồi rã riêng từng nhóm: một BTP dùng cho cả món bếp lẫn
+ * món bar được chế biến TÁCH đúng phần ở từng kho. Thứ tự nhóm giữ theo lần xuất hiện đầu tiên.
+ */
+export function explodeSalesDemandByDepartment(
+  input: ExplosionInput,
+  departmentOf: (productCode: string) => string | null,
+): DepartmentExplosionPlan[] {
+  const groups = new Map<string, ExplosionInput["demands"]>();
+  for (const demand of input.demands) {
+    const key = departmentOf(up(demand.productCode)) || "";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(demand);
+  }
+  return [...groups.entries()].map(([key, demands]) => ({
+    department: key || null,
+    plan: explodeSalesDemand({ ...input, demands }),
+  }));
+}

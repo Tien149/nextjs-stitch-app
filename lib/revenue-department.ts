@@ -51,6 +51,14 @@ type ItemLookupClient = Pick<Prisma.TransactionClient, "inventoryItem" | "master
 /**
  * Nạp sẵn map mã hàng -> bộ phận cho một danh sách mã hàng rồi trả về resolver đồng bộ,
  * dùng được cả trong transaction import lẫn script backfill.
+ *
+ * LUẬT CHUNG (khách chốt 27/09/2026): chỉ suy bộ phận cho MÓN BÁN RA (dòng doanh thu POS, món
+ * trong đơn bán). Bán thành phẩm / nguyên liệu KHÔNG tự suy bộ phận theo chính nó — chúng đi theo
+ * bộ phận của món bán dùng tới chúng (xem explodeSalesDemandByDepartment ở lib/production-
+ * explosion.ts). BTP không bán ra nên không có nhóm doanh thu, lại hay chưa gán phân nhóm: tự suy
+ * theo chính nó là rơi về kho mặc định (khách để Kho văn phòng) — lỗi đã gặp ở rã BOM. Tính năng
+ * mới nào cần "BTP / nguyên liệu này thuộc bếp hay bar" (giá vốn Bếp/Bar, báo cáo theo bộ phận...)
+ * phải lấy theo món bán hoặc theo KHO đã trừ, không gọi resolver này với mã BTP.
  */
 export async function buildRevenueDepartmentResolver(client: ItemLookupClient, productCodes: string[]): Promise<RevenueDepartmentResolver> {
   const codes = [...new Set(productCodes.map((code) => (code || "").toUpperCase()).filter(Boolean))];

@@ -20,6 +20,7 @@
     "backfill:manual-statement-allocations": "node scripts/backfill-manual-statement-allocations.cjs",
     "backfill:purchase-payables": "node scripts/backfill-purchase-payables.cjs",
     "repair:edited-stock-cost": "node scripts/repair-edited-stock-cost.cjs",
+    "diagnose:stock-out": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/diagnose-stock-out.mjs",
     "diagnose:recipe-cost": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/diagnose-recipe-cost.mjs",
     "backfill:cash-deposit-actual-date": "node scripts/backfill-cash-deposit-actual-date.cjs",
     "db:clear-data": "node scripts/clear_operational_data.js",
