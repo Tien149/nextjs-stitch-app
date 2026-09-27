@@ -60,7 +60,7 @@ const loadTracker = { seq: 0, movementSeq: 0, movementRange: "" };
 function movementRangeQuery(range: { from: string; to: string }) {
   return new URLSearchParams({ reportFrom: range.from, reportTo: range.to }).toString();
 }
-type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; transferTransactions?: Transaction[]; warehouseBranches?: Array<{ code: string; branch: string | null }>; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[] };
+type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; transferTransactions?: Transaction[]; wasteTransactions?: Transaction[]; warehouseBranches?: Array<{ code: string; branch: string | null }>; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[] };
 const movementTypes = ["NHAP_MUA", "NHAP_KHAC", "NHAP_CHE_BIEN", "NHAP_KIEM_KE", "XUAT_BAN", "XUAT_HUY", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_CHE_BIEN", "XUAT_KIEM_KE", "DIEU_CHUYEN"];
 /** Loại hiển thị trên hai màn hình Nhập/Xuất. Điều chuyển hiện ở CẢ hai: vế xuất ở kho đi, vế nhập ở kho nhận. */
 const inboundTypes = ["NHAP_MUA", "NHAP_CHE_BIEN", "NHAP_DIEU_CHUYEN", "NHAP_KHAC", "NHAP_KIEM_KE"];
@@ -140,6 +140,8 @@ export default function InventoryPage() {
   // Bộ lọc danh sách phiếu điều chuyển — khoảng ngày dùng chung flowRange (tải lại từ máy chủ).
   const [transferFromWarehouse, setTransferFromWarehouse] = useState("ALL");
   const [transferToWarehouse, setTransferToWarehouse] = useState("ALL");
+  // Bộ lọc danh sách phiếu hủy — khoảng ngày cũng dùng chung flowRange (tải lại từ máy chủ).
+  const [wasteStore, setWasteStore] = useState("ALL");
   const [inboundType, setInboundType] = useState("ALL");
   const [outboundType, setOutboundType] = useState("ALL");
   /** Khoảng NGÀY CHỨNG TỪ của danh sách phiếu nhập/xuất — mặc định 90 ngày gần nhất, gửi lên server. */
@@ -472,7 +474,8 @@ export default function InventoryPage() {
     row.transactionType.includes("CHE_BIEN") || (row.referenceCode || "").startsWith("RA-"));
 
   /** Phiếu hủy đang hiện — dùng chung cho bảng và dòng CỘNG để hai chỗ không lệch nhau. */
-  const wasteTransactions = data.transactions.filter((row) => row.transactionType === "XUAT_HUY");
+  const wasteTransactions = (data.wasteTransactions || [])
+    .filter((row) => wasteStore === "ALL" || row.branchCode.toUpperCase() === wasteStore.toUpperCase());
 
   const inboundRows = flowRows("IN").filter((row) =>
     (flowBranch === "ALL" || row.branchCode === flowBranch) && (inboundType === "ALL" || row.displayType === inboundType) && matchesFlowPartner(row));
@@ -3488,7 +3491,21 @@ export default function InventoryPage() {
             </section>
 
             <section className="table-panel shadow-sm">
-              <Panel title="Phiếu hủy gần nhất" reload={loadData} exportFileName="phieu_huy_gan_nhat" />
+              <Panel title="Phiếu hủy" reload={loadData} exportFileName="phieu_huy" />
+              <div className="px-5 pb-4 grid grid-cols-2 xl:grid-cols-3 gap-3">
+                <Input label="Từ ngày chứng từ">
+                  <input type="date" className="control" value={flowRange.from} onChange={(e) => setFlowRange({ ...flowRange, from: e.target.value })} />
+                </Input>
+                <Input label="Đến ngày chứng từ">
+                  <input type="date" className="control" value={flowRange.to} onChange={(e) => setFlowRange({ ...flowRange, to: e.target.value })} />
+                </Input>
+                <Input label="Cửa hàng">
+                  <select className="control" value={wasteStore} onChange={(e) => setWasteStore(e.target.value)}>
+                    <option value="ALL">Tất cả cửa hàng</option>
+                    {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
+                  </select>
+                </Input>
+              </div>
               <Table
                 headers={[{ label: "Chứng từ" }, { label: "Loại hủy" }, { label: "Nhà hàng / Kho" }, { label: "Mặt hàng" }, { label: "Trị giá", align: "right" }, { label: "Thao tác", align: "right" }]}
                 footer={wasteTransactions.length === 0 ? null : (

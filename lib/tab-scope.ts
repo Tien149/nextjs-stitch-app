@@ -32,7 +32,7 @@ const tabDataKeys: Record<string, Record<string, string[]>> = {
     // Form kiểm kê dựng danh sách từ balances/items — chỉ cấp "stocktakes" thì người dùng
     // chỉ có quyền tab này sẽ nhận danh sách trống và không kiểm kê được gì.
     stocktake: ["stocktakes", "balances", "items"],
-    waste: ["transactions", "wasteReport"],
+    waste: ["transactions", "wasteReport", "wasteTransactions"],
   },
   "/assets/operations": {
     depreciation: ["depreciations"],

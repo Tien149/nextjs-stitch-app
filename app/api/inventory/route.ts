@@ -802,7 +802,7 @@ export async function GET(request: Request) {
     });
     const warehouseCodes = allowedWarehouses.map((w) => w.code);
 
-    const [items, balances, transactions, flowTransactions, transferTransactions, movementTotals, wasteTotals, stockMovements, recipes, warehouses, stocktakes, itemGroups, receiptCategoryList, pendingRevenueRows, partners, allBalances, nonInventoryGroups] = await Promise.all([
+    const [items, balances, transactions, flowTransactions, transferTransactions, wasteTransactions, movementTotals, wasteTotals, stockMovements, recipes, warehouses, stocktakes, itemGroups, receiptCategoryList, pendingRevenueRows, partners, allBalances, nonInventoryGroups] = await Promise.all([
       prisma.inventoryItem.findMany({ include: { unitConversions: { orderBy: [{ isDefaultPurchase: "desc" }, { unitCode: "asc" }] } }, orderBy: { name: "asc" } }),
       prisma.inventoryBalance.findMany({
         where: { warehouseCode: { in: warehouseCodes } },
@@ -827,6 +827,13 @@ export async function GET(request: Request) {
       // BOM (hàng nghìn dòng/tháng) không đẩy phiếu điều chuyển ra khỏi giới hạn của danh sách chung.
       prisma.inventoryTransaction.findMany({
         where: { ...branchFilter, transactionType: "DIEU_CHUYEN", transactionDate: { gte: flowFrom, lte: flowTo } },
+        include: { lines: { include: { item: { select: lineItemSelect } } } },
+        orderBy: [{ transactionDate: "desc" }, { code: "desc" }],
+        take: 2000,
+      }),
+      // Tab Hủy hàng: danh sách phiếu hủy theo cùng khoảng ngày chứng từ, cùng lý do như trên.
+      prisma.inventoryTransaction.findMany({
+        where: { ...branchFilter, transactionType: "XUAT_HUY", transactionDate: { gte: flowFrom, lte: flowTo } },
         include: { lines: { include: { item: { select: lineItemSelect } } } },
         orderBy: [{ transactionDate: "desc" }, { code: "desc" }],
         take: 2000,
@@ -1062,7 +1069,7 @@ export async function GET(request: Request) {
     const revenueGroups = receiptCategoryList.filter((category) => isRevenueGroupCategory(category.group));
     const receiptCategories = receiptCategoryList.filter((category) => !isRevenueGroupCategory(category.group));
 
-    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, balances, transactions, flowTransactions, transferTransactions, partners, flowRange: { from: isoDay(flowFrom), to: isoDay(flowTo) }, recipes: recipesWithCost, warehouses, warehouseBranches, stocktakes, stockSummary, stockMovements, itemGroups, revenueGroups, receiptCategories, costSummary, wasteReport, pendingSales }));
+    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, balances, transactions, flowTransactions, transferTransactions, wasteTransactions, partners, flowRange: { from: isoDay(flowFrom), to: isoDay(flowTo) }, recipes: recipesWithCost, warehouses, warehouseBranches, stocktakes, stockSummary, stockMovements, itemGroups, revenueGroups, receiptCategories, costSummary, wasteReport, pendingSales }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });
