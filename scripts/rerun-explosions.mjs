@@ -12,6 +12,10 @@
  * Chạy thử (mặc định): làm hết trong giao dịch, in kết quả rồi HUỶ — không ghi gì.
  *   npm run rerun:explosions -- --runs RA-2026-0001,RA-2026-0002,RA-2026-0003 --set-kitchen EV0103,EV023,EV0104
  * Ghi thật: thêm --apply. Kỳ đã khoá sổ: thêm --allow-locked (khách đồng ý sửa kỳ đã khoá).
+ * Tự tìm MỌI lần rã có phiếu nằm ở kho sai (vd kho văn phòng) thay vì kê mã: --from-warehouses FDS_KKVP
+ * (gộp được với --runs). Phiếu KHÔNG do rã ở kho đó (nhập tay, import, điều chuyển) chỉ liệt kê.
+ * Rã lại xong, dòng số dư của các kho này mà tồn = 0 và không còn phiếu nào thì xoá luôn, để màn
+ * Tồn kho không còn dòng toàn số 0 của kho văn phòng.
  * Kho tự tìm theo nhóm kho BEP / BAR của cửa hàng; cửa hàng có nhiều kho bếp/bar thì chỉ định:
  *   --kitchen ASA=ASA_KBEP,NME=NME_KBEP --bar ASA=ASA_KBAR,NME=NME_KBAR
  * Mã món cho --set-kitchen: phân nhóm lấy tự động (nhóm Thành phẩm của kho BEP), đổi bằng --kitchen-group TP_BEP.
@@ -33,18 +37,54 @@ const mapArg = (name) => new Map(list(name).map((pair) => pair.split("=").map((p
 const apply = flag("--apply");
 const allowLocked = flag("--allow-locked");
 const runCodes = list("--runs").map((code) => code.toUpperCase());
+const fromWarehouses = list("--from-warehouses").map((code) => code.toUpperCase());
 const kitchenItemCodes = list("--set-kitchen").map((code) => code.toUpperCase());
 const kitchenOverride = mapArg("--kitchen");
 const barOverride = mapArg("--bar");
 const actor = "script rerun-explosions";
-if (runCodes.length === 0) {
-  console.log("Cách dùng: npm run rerun:explosions -- --runs RA-2026-0001,RA-2026-0002 [--set-kitchen MA1,MA2] [--apply] [--allow-locked]");
+if (runCodes.length === 0 && fromWarehouses.length === 0) {
+  console.log("Cách dùng: npm run rerun:explosions -- (--runs RA-2026-0001,RA-2026-0002 | --from-warehouses KHO_A) [--set-kitchen MA1,MA2] [--apply] [--allow-locked]");
   process.exit(0);
 }
 const day = (date) => new Date(date).toISOString().slice(0, 10);
 const ROLLBACK = new Error("DRY_RUN_ROLLBACK");
 
 try {
+  if (fromWarehouses.length > 0) {
+    const inWarehouse = { OR: [{ warehouseCode: { in: fromWarehouses } }, { toWarehouseCode: { in: fromWarehouses } }] };
+    const found = await prisma.inventoryTransaction.findMany({
+      where: { ...inWarehouse, deletedAt: null, referenceType: "PRODUCTION", referenceCode: { startsWith: "RA-" } },
+      distinct: ["referenceCode"],
+      select: { referenceCode: true },
+    });
+    const foundCodes = found.map((row) => (row.referenceCode || "").toUpperCase()).filter(Boolean);
+    console.log(`Lần rã có phiếu ở ${fromWarehouses.join(", ")}: ${foundCodes.join(", ") || "không có"}`);
+    for (const code of foundCodes) if (!runCodes.includes(code)) runCodes.push(code);
+    const others = await prisma.inventoryTransaction.findMany({
+      // Liệt kê tường minh cả ô trống: NOT(...) của SQL bỏ luôn dòng có referenceType / referenceCode NULL.
+      where: {
+        AND: [inWarehouse, { deletedAt: null }, {
+          OR: [
+            { referenceType: null },
+            { referenceType: { not: "PRODUCTION" } },
+            { referenceCode: null },
+            { NOT: { referenceCode: { startsWith: "RA-" } } },
+          ],
+        }],
+      },
+      select: { code: true, transactionType: true, transactionDate: true, warehouseCode: true, toWarehouseCode: true, importBatchId: true },
+      orderBy: { transactionDate: "asc" },
+    });
+    if (others.length > 0) {
+      console.log(`!! ${others.length} phiếu KHÔNG do rã ở kho này — script không đụng, xử lý tay (xoá / điều chuyển sang kho bếp, bar):`);
+      for (const doc of others.slice(0, 40)) {
+        console.log(`    ${day(doc.transactionDate)} ${doc.code} ${doc.transactionType} ${doc.warehouseCode}${doc.toWarehouseCode ? ` -> ${doc.toWarehouseCode}` : ""}${doc.importBatchId ? " [import]" : ""}`);
+      }
+      if (others.length > 40) console.log(`    ... còn ${others.length - 40} phiếu`);
+    }
+    if (runCodes.length === 0) process.exit(0);
+  }
+
   // Thông tin từng lần rã từ chính phiếu của nó (cửa hàng + ngày chứng từ).
   const runs = [];
   for (const runCode of runCodes) {
@@ -115,6 +155,8 @@ try {
   }
 
   const results = [];
+  let cleanedBalances = 0;
+  let remainingBalances = 0;
   try {
     await prisma.$transaction(async (tx) => {
       for (const item of kitchenItems) {
@@ -127,6 +169,24 @@ try {
         },
         note: (run) => `rã lại ${run.runCode}: BTP theo kho món bán, combo theo thành phần`,
       });
+      // Dọn dòng số dư rỗng ở kho sai: tồn = 0 và không còn phiếu sống nào của mặt hàng ở kho đó.
+      if (fromWarehouses.length > 0) {
+        const balances = await tx.inventoryBalance.findMany({ where: { warehouseCode: { in: fromWarehouses } }, select: { id: true, itemId: true, warehouseCode: true, quantity: true } });
+        for (const balance of balances) {
+          if (Math.abs(balance.quantity) > 0.000001) continue;
+          const alive = await tx.inventoryTransactionLine.count({
+            where: {
+              itemId: balance.itemId,
+              transaction: { deletedAt: null, OR: [{ warehouseCode: balance.warehouseCode }, { toWarehouseCode: balance.warehouseCode }] },
+            },
+          });
+          if (alive > 0) continue;
+          await tx.inventoryBalance.delete({ where: { id: balance.id } });
+          cleanedBalances += 1;
+        }
+        const remaining = await tx.inventoryBalance.count({ where: { warehouseCode: { in: fromWarehouses } } });
+        remainingBalances = remaining;
+      }
       for (const rerun of reruns) {
         const docs = rerun.newRunCode
           ? await tx.inventoryTransaction.findMany({ where: { referenceCode: rerun.newRunCode, deletedAt: null }, select: { warehouseCode: true, transactionType: true } })
@@ -160,6 +220,9 @@ try {
   for (const result of results) {
     const perWarehouse = [...result.byWarehouse.entries()].map(([code, count]) => `${code} ${count} phiếu`).join(", ");
     console.log(`  ${result.oldRunCode} -> ${result.newRunCode || "(không còn dòng doanh thu, chỉ gỡ)"} · ${result.documents.length} phiếu · ${perWarehouse}`);
+  }
+  if (fromWarehouses.length > 0) {
+    console.log(`  Dọn ${cleanedBalances} dòng số dư rỗng ở ${fromWarehouses.join(", ")}; còn lại ${remainingBalances} dòng (có tồn hoặc còn phiếu không do rã).`);
   }
   if (!apply) console.log("\nKiểm tra xong thì chạy lại với --apply để ghi thật.");
 } finally {
