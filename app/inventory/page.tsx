@@ -129,6 +129,8 @@ export default function InventoryPage() {
   const setMessage = (text: string) => { setMessageText(text); setMessageSeq((seq) => seq + 1); };
   const messageRef = useRef<HTMLParagraphElement>(null);
   const [reportStore, setReportStore] = useState("ALL");
+  // Ô tìm mã / tên hàng của tab Tồn kho — áp cho cả ba bảng của tab.
+  const [stockSearch, setStockSearch] = useState("");
   const [reportWarehouse, setReportWarehouse] = useState("ALL");
   const [reportType, setReportType] = useState("ALL");
   /** Khoảng ngày của bảng "Chi tiết phát sinh theo loại giao dịch" — trước đây luôn cắt 100 dòng cuối. */
@@ -137,9 +139,14 @@ export default function InventoryPage() {
   const [flowBranch, setFlowBranch] = useState("ALL");
   /** Lọc theo NCC / đối tác của phiếu. "NONE" = chỉ những phiếu chưa khai đối tác. */
   const [flowPartner, setFlowPartner] = useState("ALL");
+  // Ô tìm mã / tên hàng (hoặc số phiếu) của hai màn Nhập kho / Xuất kho.
+  const [flowSearch, setFlowSearch] = useState("");
   // Bộ lọc danh sách phiếu điều chuyển — khoảng ngày dùng chung flowRange (tải lại từ máy chủ).
   const [transferFromWarehouse, setTransferFromWarehouse] = useState("ALL");
   const [transferToWarehouse, setTransferToWarehouse] = useState("ALL");
+  // Cửa hàng: phiếu mà cửa hàng này là bên chuyển HOẶC bên nhận. Ô tìm: mã / tên hàng, số phiếu.
+  const [transferStore, setTransferStore] = useState("ALL");
+  const [transferSearch, setTransferSearch] = useState("");
   // Bộ lọc danh sách phiếu hủy — khoảng ngày cũng dùng chung flowRange (tải lại từ máy chủ).
   const [wasteStore, setWasteStore] = useState("ALL");
   const [inboundType, setInboundType] = useState("ALL");
@@ -167,6 +174,9 @@ export default function InventoryPage() {
   const [itemDeleting, setItemDeleting] = useState(false);
   const [itemSearch, setItemSearch] = useState("");
   const [recipeSearch, setRecipeSearch] = useState("");
+  // Bộ lọc Sheet tổng hợp giá vốn & giá thành: nhóm hàng (thành phẩm / bán thành phẩm) và cửa hàng.
+  const [costGroupFilter, setCostGroupFilter] = useState("ALL");
+  const [costStoreFilter, setCostStoreFilter] = useState("ALL");
   const [itemTypeFilter, setItemTypeFilter] = useState("ALL");
   /** ALL / MISSING (chưa gán) / mã danh mục Thu cụ thể — lọc để gán hàng loạt cho nhanh. */
   const [revenueGroupFilter, setRevenueGroupFilter] = useState("ALL");
@@ -386,8 +396,12 @@ export default function InventoryPage() {
   const reportStoreKey = reportStore.toUpperCase();
   const inReportStore = (warehouseCode: string) => reportStore === "ALL" || branchByWarehouse.get(warehouseCode) === reportStoreKey;
   const reportWarehouseOptions = warehouseOptions.filter((warehouse) => reportStore === "ALL" || (warehouse.branch || "").toUpperCase() === reportStoreKey);
+  const stockKeyword = foldSearchText(stockSearch.trim());
+  const matchesStockSearch = (code: string, name: string) => !stockKeyword
+    || foldSearchText(code).includes(stockKeyword) || foldSearchText(name).includes(stockKeyword);
   const filteredStockSummary = data.stockSummary.filter((row) => {
     if (!inReportStore(row.warehouseCode)) return false;
+    if (!matchesStockSearch(row.item.code, row.item.name)) return false;
     if (reportWarehouse !== "ALL" && row.warehouseCode !== reportWarehouse) return false;
     if (reportType !== "ALL") {
       const movement = row.movementByType?.[reportType];
@@ -397,6 +411,7 @@ export default function InventoryPage() {
   });
   const filteredStockMovements = data.stockMovements.filter((row) => {
     if (!inReportStore(row.warehouseCode)) return false;
+    if (!matchesStockSearch(row.itemCode, row.itemName)) return false;
     if (reportWarehouse !== "ALL" && row.warehouseCode !== reportWarehouse) return false;
     if (reportType !== "ALL" && row.transactionType !== reportType) return false;
     const day = String(row.transactionDate).slice(0, 10);
@@ -491,10 +506,17 @@ export default function InventoryPage() {
   const wasteTransactions = (data.wasteTransactions || [])
     .filter((row) => wasteStore === "ALL" || row.branchCode.toUpperCase() === wasteStore.toUpperCase());
 
+  /** Phiếu có ít nhất một mặt hàng khớp mã / tên (không phân biệt dấu), hoặc khớp số phiếu. */
+  const flowKeyword = foldSearchText(flowSearch.trim());
+  const transactionMatchesSearch = (transaction: Transaction, keyword: string) => !keyword
+    || foldSearchText(transaction.code).includes(keyword)
+    || transaction.lines.some((line) => foldSearchText(line.item.code).includes(keyword) || foldSearchText(line.item.name).includes(keyword));
   const inboundRows = flowRows("IN").filter((row) =>
-    (flowBranch === "ALL" || row.branchCode === flowBranch) && (inboundType === "ALL" || row.displayType === inboundType) && matchesFlowPartner(row));
+    (flowBranch === "ALL" || row.branchCode === flowBranch) && (inboundType === "ALL" || row.displayType === inboundType) && matchesFlowPartner(row)
+    && transactionMatchesSearch(row.transaction, flowKeyword));
   const outboundRows = flowRows("OUT").filter((row) =>
-    (flowBranch === "ALL" || row.branchCode === flowBranch) && (outboundType === "ALL" || row.displayType === outboundType) && matchesFlowPartner(row));
+    (flowBranch === "ALL" || row.branchCode === flowBranch) && (outboundType === "ALL" || row.displayType === outboundType) && matchesFlowPartner(row)
+    && transactionMatchesSearch(row.transaction, flowKeyword));
   /**
    * Ô chọn NCC chỉ liệt kê đối tác CÓ trên phiếu của màn hình đang xem (đã lọc nhà hàng/loại),
    * để khỏi phải dò giữa hàng trăm đối tác chưa từng phát sinh nhập kho.
@@ -517,9 +539,14 @@ export default function InventoryPage() {
     return { options, hasBlank: hasBlank || flowPartner === "NONE" };
   })();
   const transfersInRange = data.transferTransactions || [];
+  const transferKeyword = foldSearchText(transferSearch.trim());
   const transferTransactions = transfersInRange.filter((transaction) => (
     (transferFromWarehouse === "ALL" || transaction.warehouseCode === transferFromWarehouse)
     && (transferToWarehouse === "ALL" || transaction.toWarehouseCode === transferToWarehouse)
+    && (transferStore === "ALL"
+      || transaction.branchCode.toUpperCase() === transferStore.toUpperCase()
+      || (transaction.toBranchCode || transaction.branchCode).toUpperCase() === transferStore.toUpperCase())
+    && transactionMatchesSearch(transaction, transferKeyword)
   ));
   // Ô chọn kho lấy từ chính các phiếu trong khoảng ngày (có cả kho đã ngưng / kho nhà hàng
   // khác), gọi tên theo danh mục kho nếu có.
@@ -630,6 +657,21 @@ export default function InventoryPage() {
     return [...groups.values()];
   })();
 
+  /**
+   * Lọc cửa hàng đúng như lúc hệ thống chọn định lượng: cửa hàng có bản riêng thì hiện bản riêng,
+   * món chưa có bản riêng cho cửa hàng đó thì hiện bản dùng chung (cửa hàng đang dùng bản chung).
+   */
+  const costStoreKey = costStoreFilter.toUpperCase();
+  const productsWithStoreVersion = new Set(groupedCostSummary
+    .filter((group) => group.branchCodes.includes(costStoreKey))
+    .map((group) => group.row.productCode.toUpperCase()));
+  const filteredCostSummary = groupedCostSummary.filter((group) => {
+    if (costGroupFilter !== "ALL" && group.row.group !== costGroupFilter) return false;
+    if (costStoreFilter === "ALL") return true;
+    if (group.branchCodes.includes(costStoreKey)) return true;
+    return group.branchCodes.length === 0 && !productsWithStoreVersion.has(group.row.productCode.toUpperCase());
+  });
+
   /** Ô "Cửa hàng" của hai bảng định lượng: không có cửa hàng nào = bản dùng chung. */
   const branchScopeCell = (branchCodes: string[]) => (
     branchCodes.length === 0
@@ -710,10 +752,11 @@ export default function InventoryPage() {
       const seq = ++loadTracker.movementSeq;
       const response = await fetch(`/api/inventory?view=movements&${movementRange}`, { headers: getSessionHeaders() });
       if (!response.ok || seq !== loadTracker.movementSeq) return;
-      const payload = await response.json() as Pick<Data, "stockMovements">;
+      const payload = await response.json() as Pick<Data, "stockMovements"> & Partial<Pick<Data, "stockSummary">>;
       if (seq !== loadTracker.movementSeq) return;
       loadTracker.movementRange = movementRange;
-      setData((current) => ({ ...current, stockMovements: payload.stockMovements }));
+      // Bảng Nhập - Xuất - Tồn đi theo cùng khoảng ngày nên nhận luôn số theo kỳ mới.
+      setData((current) => ({ ...current, stockMovements: payload.stockMovements, ...(payload.stockSummary ? { stockSummary: payload.stockSummary } : {}) }));
     }, 400);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -804,6 +847,8 @@ export default function InventoryPage() {
       );
       return null;
     }
+    // Máy chủ cần người dùng xác nhận (vd rã lại ngày đã rã): trả nguyên phản hồi để nơi gọi hỏi.
+    if (response.status === 409 && payload?.needsRerunConfirm) return payload;
     setMessage(response.ok ? success : payload.error || "Không thực hiện được thao tác");
     if (response.ok) await loadData();
     return response.ok ? payload : null;
@@ -1303,6 +1348,16 @@ export default function InventoryPage() {
                 {movementTypes.map((type) => <option key={type} value={type}>{movementTypeLabel(type)}</option>)}
               </select>
             </Input>
+            {/* Kỳ dùng chung với bảng Chi tiết phát sinh: đầu kỳ / nhập / xuất / cuối kỳ theo khoảng ngày này. */}
+            <Input label="Từ ngày">
+              <input type="date" className="control" value={reportRange.from} onChange={(e) => setReportRange({ ...reportRange, from: e.target.value })} />
+            </Input>
+            <Input label="Đến ngày">
+              <input type="date" className="control" value={reportRange.to} onChange={(e) => setReportRange({ ...reportRange, to: e.target.value })} />
+            </Input>
+            <Input label="Tìm mã / tên hàng">
+              <input className="control" placeholder="Gõ mã hoặc tên mặt hàng..." value={stockSearch} onChange={(e) => setStockSearch(e.target.value)} />
+            </Input>
           </div>
           <Table
             headers={[
@@ -1316,7 +1371,7 @@ export default function InventoryPage() {
               { label: "Giá trị tồn", align: "right" },
             ]}
           >
-            {(filteredStockSummary.length ? filteredStockSummary : data.balances.filter((row) => inReportStore(row.warehouseCode) && (reportWarehouse === "ALL" || row.warehouseCode === reportWarehouse)).map((row) => ({
+            {(filteredStockSummary.length ? filteredStockSummary : data.balances.filter((row) => inReportStore(row.warehouseCode) && matchesStockSearch(row.item.code, row.item.name) && (reportWarehouse === "ALL" || row.warehouseCode === reportWarehouse)).map((row) => ({
               item: row.item,
               warehouseCode: row.warehouseCode,
               openingQuantity: row.quantity,
@@ -1402,7 +1457,7 @@ export default function InventoryPage() {
               { label: "Cảnh báo" },
             ]}
           >
-            {data.balances.filter((row) => inReportStore(row.warehouseCode) && (reportWarehouse === "ALL" || row.warehouseCode === reportWarehouse)).map((row) => (
+            {data.balances.filter((row) => inReportStore(row.warehouseCode) && matchesStockSearch(row.item.code, row.item.name) && (reportWarehouse === "ALL" || row.warehouseCode === reportWarehouse)).map((row) => (
               <tr key={row.id} className="border-t border-slate-100">
                 <Cell>
                   <b><CopyableText value={row.item.code} /> - {row.item.name}</b>
@@ -2034,7 +2089,10 @@ export default function InventoryPage() {
                 )}
               </div>
             )}
-            <div className="px-5 pb-4 grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
+            <div className="px-5 pb-4 grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
+              <Input label="Tìm mã / tên hàng">
+                <input className="control" placeholder="Mã, tên hàng hoặc số phiếu..." value={flowSearch} onChange={(e) => setFlowSearch(e.target.value)} />
+              </Input>
               <Input label="Từ ngày chứng từ">
                 <input type="date" className="control" value={flowRange.from} onChange={(e) => setFlowRange({ ...flowRange, from: e.target.value })} />
               </Input>
@@ -2266,7 +2324,16 @@ export default function InventoryPage() {
           <section className="table-panel shadow-sm">
             <Panel title="Phiếu điều chuyển" reload={loadData} exportFileName="phieu_dieu_chuyen" />
             {/* Khung danh sách đứng cạnh form nên hẹp: 2 cột, màn rộng mới trải 4 cột. */}
-            <div className="px-5 pb-4 grid grid-cols-2 2xl:grid-cols-4 gap-3">
+            <div className="px-5 pb-4 grid grid-cols-2 2xl:grid-cols-3 gap-3">
+              <Input label="Tìm mã / tên hàng">
+                <input className="control" placeholder="Mã, tên hàng hoặc số phiếu..." value={transferSearch} onChange={(e) => setTransferSearch(e.target.value)} />
+              </Input>
+              <Input label="Cửa hàng">
+                <select className="control" value={transferStore} onChange={(e) => setTransferStore(e.target.value)}>
+                  <option value="ALL">Tất cả cửa hàng</option>
+                  {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
+                </select>
+              </Input>
               <Input label="Từ ngày chứng từ">
                 <input type="date" className="control" value={flowRange.from} onChange={(e) => setFlowRange({ ...flowRange, from: e.target.value })} />
               </Input>
@@ -2747,6 +2814,31 @@ export default function InventoryPage() {
           <div className="space-y-5 min-w-0">
             <section className="table-panel shadow-sm">
               <Panel title="Sheet tổng hợp — Giá vốn & giá thành theo định lượng đang áp dụng" reload={loadData} exportFileName="gia_von_gia_thanh" />
+              <div className="px-5 pb-4 flex flex-wrap items-end gap-3">
+                <div className="w-52">
+                  <Input label="Nhóm hàng">
+                    <select className="control" value={costGroupFilter} onChange={(e) => setCostGroupFilter(e.target.value)}>
+                      <option value="ALL">Tất cả nhóm</option>
+                      <option value="FINISHED">Thành phẩm (FINISHED)</option>
+                      <option value="SEMI_FINISHED">Bán thành phẩm (SEMI_FINISHED)</option>
+                    </select>
+                  </Input>
+                </div>
+                <div className="w-52">
+                  <Input label="Cửa hàng">
+                    <select className="control" value={costStoreFilter} onChange={(e) => setCostStoreFilter(e.target.value)}>
+                      <option value="ALL">Tất cả cửa hàng</option>
+                      {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
+                    </select>
+                  </Input>
+                </div>
+                {(costGroupFilter !== "ALL" || costStoreFilter !== "ALL") && (
+                  <p className="pb-2 text-xs text-slate-500">
+                    Hiển thị <b>{filteredCostSummary.length}</b> / {groupedCostSummary.length} dòng
+                    {costStoreFilter !== "ALL" && " (gồm bản dùng chung của món chưa có định lượng riêng cho cửa hàng này)"}
+                  </p>
+                )}
+              </div>
               <Table
                 headers={[
                   { label: "Nhóm" },
@@ -2759,7 +2851,7 @@ export default function InventoryPage() {
                   { label: "% Cost", align: "right" },
                 ]}
               >
-                {groupedCostSummary.map(({ key, row, branchCodes, versions }) => (
+                {filteredCostSummary.map(({ key, row, branchCodes, versions }) => (
                   <tr key={key} className="border-t border-slate-100">
                     <Cell><span className={`status ${row.group === "FINISHED" ? "bg-blue-50 text-blue-700" : "bg-violet-50 text-violet-700"}`}>{row.group}</span></Cell>
                     <Cell><CopyableText value={row.productCode}><b>{row.productCode}</b></CopyableText><small>{versions.sort((a, b) => a - b).map((version) => `V${version}`).join(" / ")}</small></Cell>
@@ -3010,19 +3102,32 @@ export default function InventoryPage() {
             onClick={async () => {
               setExploding(true);
               try {
-                const payload = await send(
-                  {
-                    action: "EXPLODE_PRODUCTION",
-                    ...explodeForm,
-                    // Gửi mã cửa hàng + mã kho ĐÃ CHUẨN HOÁ, không gửi giá trị chết còn sót.
-                    branchCode: explodeBranchCode,
-                    warehouseCode: explodeWarehouseCode,
-                    toWarehouseCode: explodeToWarehouseCode,
-                    kitchenWarehouseCode,
-                    barWarehouseCode,
-                  },
-                  "Đã rã nguyên liệu và sinh phiếu chế biến + xuất bán.",
-                );
+                const explodeBody = {
+                  action: "EXPLODE_PRODUCTION",
+                  ...explodeForm,
+                  // Gửi mã cửa hàng + mã kho ĐÃ CHUẨN HOÁ, không gửi giá trị chết còn sót.
+                  branchCode: explodeBranchCode,
+                  warehouseCode: explodeWarehouseCode,
+                  toWarehouseCode: explodeToWarehouseCode,
+                  kitchenWarehouseCode,
+                  barWarehouseCode,
+                };
+                let payload = await send(explodeBody, "Đã rã nguyên liệu và sinh phiếu chế biến + xuất bán.");
+                // Khoảng ngày có ngày ĐÃ RÃ: hỏi trước rồi gỡ + rã lại các lần rã đó với kho đang chọn.
+                if (payload?.needsRerunConfirm) {
+                  const runs = (payload.runs || []) as Array<{ runCode: string; date: string; revenueRows: number }>;
+                  const ok = window.confirm(
+                    "Khoảng ngày này đã có ngày được rã rồi:\n"
+                    + runs.map((run) => `• ${run.runCode} — ngày ${new Date(run.date).toLocaleDateString("vi-VN")}, ${run.revenueRows} dòng doanh thu`).join("\n")
+                    + "\n\nOK: gỡ toàn bộ phiếu của các lần rã trên, rã lại theo định lượng và kho đang chọn (lần rã mới mang mã mới, phiếu cũ vào Thùng rác), rồi rã tiếp phần còn chờ.\n"
+                    + "Huỷ: không làm gì.",
+                  );
+                  if (!ok) {
+                    setMessage("Đã huỷ, chưa rã lại.");
+                    return;
+                  }
+                  payload = await send({ ...explodeBody, confirmRerun: true }, "Đã rã lại nguyên liệu và sinh phiếu chế biến + xuất bán.");
+                }
                 // Lần rã luôn chạy tới cùng (luật xuất âm), nhưng ba chuyện dưới đây phải nói ra
                 // cho kế toán biết mà xử lý tiếp, nếu không họ tưởng đã xong hẳn.
                 const notes: string[] = [];
@@ -3041,6 +3146,10 @@ export default function InventoryPage() {
                 if (zeroCostCount > 0) {
                   const codes = (payload?.zeroCostItems || []) as string[];
                   notes.push(`${zeroCostCount} mã xuất với GIÁ VỐN 0 vì kho chưa có giá nhập nào${codes.length ? `: ${codes.slice(0, 8).join(", ")}${zeroCostCount > codes.slice(0, 8).length ? "..." : ""}` : ""}. Báo cáo giá vốn còn thiếu đúng phần này cho tới khi có giá và chạy lại "Tính giá vốn & giá thành".`);
+                }
+                const reruns = (payload?.reruns || []) as Array<{ oldRunCode: string; newRunCode: string | null }>;
+                if (reruns.length > 0) {
+                  notes.unshift(`Đã rã lại ${reruns.length} lần rã: ${reruns.map((rerun) => `${rerun.oldRunCode} → ${rerun.newRunCode || "gỡ bỏ (không còn doanh thu)"}`).join(", ")}${payload?.runCode ? `; phần còn chờ rã thành ${payload.runCode}` : ""}. Nếu kỳ này đã bấm Tính giá vốn & giá thành thì bấm lại.`);
                 }
                 if (notes.length > 0) {
                   setMessage(`Đã rã nguyên liệu và sinh phiếu chế biến + xuất bán. ${notes.join(" ")}`);

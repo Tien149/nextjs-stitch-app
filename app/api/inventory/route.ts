@@ -253,25 +253,102 @@ function buildStockMovements(transactions: MovementLineSource[]) {
  * rã nguyên liệu mỗi ngày sinh hàng trăm dòng nên màn Kho càng dùng lâu càng chậm.
  * `side = 'TO'` là vế nhập của điều chuyển, đứng ở kho nhận.
  */
-async function loadMovementTotals(branchCode: string) {
+/**
+ * Kỳ của bảng Nhập - Xuất - Tồn ở tab Tồn kho: cùng ô Từ ngày / Đến ngày với nhật ký phát sinh
+ * (reportFrom / reportTo). Cắt theo NGÀY UTC như màn hình lọc nhật ký (ngày ISO), để hai bảng
+ * khớp nhau. Bỏ trống đầu nào là không chặn đầu đó.
+ */
+function stockPeriod(searchParams: URLSearchParams) {
+  const parse = (value: string | null) => {
+    if (!value) return null;
+    const date = new Date(`${value}T00:00:00Z`);
+    return Number.isNaN(date.getTime()) ? null : date;
+  };
+  const from = parse(searchParams.get("reportFrom"));
+  const to = parse(searchParams.get("reportTo"));
+  return { from, toEnd: to ? new Date(to.getTime() + 86_400_000) : null };
+}
+
+type MovementTotalRow = {
+  itemId: string; warehouseCode: string; transactionType: string; side: string;
+  /** Phát sinh TRONG kỳ. */
+  quantity: number; value: number;
+  /** Phát sinh từ đầu kỳ trở đi (để lùi tồn hiện tại về tồn đầu kỳ). */
+  afterFromQuantity: number;
+  /** Phát sinh sau cuối kỳ (để lùi tồn hiện tại về tồn cuối kỳ). */
+  afterToQuantity: number;
+};
+
+async function loadMovementTotals(branchCode: string, period: { from: Date | null; toEnd: Date | null } = { from: null, toEnd: null }) {
   const branchSql = branchCode === "ALL" ? Prisma.empty : Prisma.sql`AND t."branchCode" = ${branchCode}`;
-  return prisma.$queryRaw<Array<{ itemId: string; warehouseCode: string; transactionType: string; side: string; quantity: number; value: number }>>(Prisma.sql`
-    SELECT l."itemId", t."warehouseCode", t."transactionType", 'FROM' AS side,
-           SUM(l."quantity")::float8 AS quantity, SUM(l."totalCost")::float8 AS value
+  // Không chặn đầu nào thì kỳ = toàn bộ lịch sử: tồn đầu kỳ = tồn hiện tại trừ mọi phát sinh,
+  // tồn cuối kỳ = tồn hiện tại — y như trước khi có ô ngày.
+  const from = period.from || new Date("1900-01-01T00:00:00Z");
+  const toEnd = period.toEnd || new Date("3000-01-01T00:00:00Z");
+  const columns = Prisma.sql`
+    COALESCE(SUM(l."quantity") FILTER (WHERE t."transactionDate" >= ${from} AND t."transactionDate" < ${toEnd}), 0)::float8 AS quantity,
+    COALESCE(SUM(l."totalCost") FILTER (WHERE t."transactionDate" >= ${from} AND t."transactionDate" < ${toEnd}), 0)::float8 AS value,
+    COALESCE(SUM(l."quantity") FILTER (WHERE t."transactionDate" >= ${from}), 0)::float8 AS "afterFromQuantity",
+    COALESCE(SUM(l."quantity") FILTER (WHERE t."transactionDate" >= ${toEnd}), 0)::float8 AS "afterToQuantity"`;
+  return prisma.$queryRaw<MovementTotalRow[]>(Prisma.sql`
+    SELECT l."itemId", t."warehouseCode", t."transactionType", 'FROM' AS side, ${columns}
     FROM "InventoryTransactionLine" l
     JOIN "InventoryTransaction" t ON t."id" = l."transactionId"
     WHERE t."deletedAt" IS NULL ${branchSql}
       AND (LEFT(t."transactionType", 5) IN ('NHAP_', 'XUAT_') OR t."transactionType" = 'DIEU_CHUYEN')
     GROUP BY 1, 2, 3
     UNION ALL
-    SELECT l."itemId", t."toWarehouseCode", t."transactionType", 'TO' AS side,
-           SUM(l."quantity")::float8, SUM(l."totalCost")::float8
+    SELECT l."itemId", t."toWarehouseCode", t."transactionType", 'TO' AS side, ${columns}
     FROM "InventoryTransactionLine" l
     JOIN "InventoryTransaction" t ON t."id" = l."transactionId"
     WHERE t."deletedAt" IS NULL ${branchSql}
       AND t."transactionType" = 'DIEU_CHUYEN' AND t."toWarehouseCode" IS NOT NULL
     GROUP BY 1, 2, 3
   `);
+}
+
+/**
+ * Bảng Nhập - Xuất - Tồn theo kỳ: nhập / xuất = phát sinh trong kỳ; tồn đầu kỳ và cuối kỳ lùi
+ * từ tồn HIỆN TẠI của kho bằng phát sinh sau mốc tương ứng. Giá trị tồn cuối kỳ tính theo giá
+ * bình quân hiện tại của kho (không lưu lịch sử bình quân theo ngày).
+ */
+function buildStockSummary<TBalance extends { itemId: string; warehouseCode: string; quantity: number; averageCost: number }>(
+  balances: TBalance[],
+  movementTotals: MovementTotalRow[],
+) {
+  type Bucket = { inbound: number; outbound: number; netAfterFrom: number; netAfterTo: number; byType: Record<string, { inbound: number; outbound: number; value: number }> };
+  const movements = new Map<string, Bucket>();
+  for (const row of movementTotals) {
+    const key = `${row.itemId}|${row.warehouseCode}`;
+    const bucket = movements.get(key) || { inbound: 0, outbound: 0, netAfterFrom: 0, netAfterTo: 0, byType: {} };
+    const sign = row.side === "FROM" && !row.transactionType.startsWith("NHAP_") ? -1 : 1;
+    if (sign > 0) bucket.inbound += row.quantity;
+    else bucket.outbound += row.quantity;
+    bucket.netAfterFrom += sign * row.afterFromQuantity;
+    bucket.netAfterTo += sign * row.afterToQuantity;
+    if (row.quantity) {
+      bucket.byType[row.transactionType] ||= { inbound: 0, outbound: 0, value: 0 };
+      if (sign > 0) bucket.byType[row.transactionType].inbound += row.quantity;
+      else bucket.byType[row.transactionType].outbound += row.quantity;
+      bucket.byType[row.transactionType].value += row.value;
+    }
+    movements.set(key, bucket);
+  }
+  return balances.map((balance) => {
+    const movement = movements.get(`${balance.itemId}|${balance.warehouseCode}`) || { inbound: 0, outbound: 0, netAfterFrom: 0, netAfterTo: 0, byType: {} };
+    const closingQuantity = balance.quantity - movement.netAfterTo;
+    return {
+      item: (balance as unknown as { item: unknown }).item,
+      warehouseCode: balance.warehouseCode,
+      openingQuantity: balance.quantity - movement.netAfterFrom,
+      inboundQuantity: movement.inbound,
+      outboundQuantity: movement.outbound,
+      closingQuantity,
+      averageCost: balance.averageCost,
+      closingValue: closingQuantity * balance.averageCost,
+      movementByType: movement.byType,
+    };
+  });
 }
 
 /** Báo cáo hủy hàng cộng trong SQL: mỗi mặt hàng × loại hủy một dòng, đếm số dòng phiếu. */
@@ -437,8 +514,22 @@ export async function GET(request: Request) {
 
     // Đổi khoảng ngày của nhật ký nhập/xuất ở tab Tồn kho chỉ cần tải lại đúng phần đó.
     if (searchParams.get("view") === "movements") {
-      const stockMovements = await loadStockMovements(branchFilter, searchParams);
-      return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { stockMovements }));
+      // Cùng khoảng ngày với bảng Nhập - Xuất - Tồn nên trả luôn bảng đó theo kỳ mới.
+      const periodWarehouses = await prisma.masterDataItem.findMany({
+        where: { type: "WAREHOUSE", ...(branchCode === "ALL" ? {} : { branch: branchCode }) },
+        select: { code: true },
+      });
+      const [stockMovements, periodBalances, periodTotals] = await Promise.all([
+        loadStockMovements(branchFilter, searchParams),
+        prisma.inventoryBalance.findMany({
+          where: { warehouseCode: { in: periodWarehouses.map((row) => row.code) } },
+          include: { item: true },
+          orderBy: [{ warehouseCode: "asc" }, { item: { name: "asc" } }],
+        }),
+        loadMovementTotals(branchCode, stockPeriod(searchParams)),
+      ]);
+      const stockSummary = buildStockSummary(periodBalances, periodTotals);
+      return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { stockMovements, stockSummary }));
     }
 
     /**
@@ -501,7 +592,7 @@ export async function GET(request: Request) {
         orderBy: [{ transactionDate: "desc" }, { code: "desc" }],
         take: 2000,
       }),
-      loadMovementTotals(branchCode),
+      loadMovementTotals(branchCode, stockPeriod(searchParams)),
       loadWasteTotals(branchCode),
       loadStockMovements(branchFilter, searchParams),
       prisma.recipe.findMany({ include: { lines: { include: { item: { select: lineItemSelect } } } }, orderBy: { updatedAt: "desc" } }),
@@ -626,44 +717,7 @@ export async function GET(request: Request) {
         version: current && "version" in current ? (current as { version?: number }).version || 0 : 0,
       };
     }).sort((a, b) => a.productCode.localeCompare(b.productCode) || a.branchCode.localeCompare(b.branchCode));
-    const movements = new Map<string, { inbound: number; outbound: number; inboundValue: number; outboundValue: number; byType: Record<string, { inbound: number; outbound: number; value: number }> }>();
-    const touch = (itemId: string, warehouseCode: string) => {
-      const key = `${itemId}|${warehouseCode}`;
-      if (!movements.has(key)) movements.set(key, { inbound: 0, outbound: 0, inboundValue: 0, outboundValue: 0, byType: {} });
-      return movements.get(key)!;
-    };
-    const addType = (bucket: { byType: Record<string, { inbound: number; outbound: number; value: number }> }, type: string, direction: "IN" | "OUT", quantity: number, value: number) => {
-      bucket.byType[type] ||= { inbound: 0, outbound: 0, value: 0 };
-      if (direction === "IN") bucket.byType[type].inbound += quantity;
-      else bucket.byType[type].outbound += quantity;
-      bucket.byType[type].value += value;
-    };
-    for (const row of movementTotals) {
-      const bucket = touch(row.itemId, row.warehouseCode);
-      const direction = row.side === "FROM" && !row.transactionType.startsWith("NHAP_") ? "OUT" : "IN";
-      if (direction === "IN") {
-        bucket.inbound += row.quantity;
-        bucket.inboundValue += row.value;
-      } else {
-        bucket.outbound += row.quantity;
-        bucket.outboundValue += row.value;
-      }
-      addType(bucket, row.transactionType, direction, row.quantity, row.value);
-    }
-    const stockSummary = balances.map((balance) => {
-      const movement = movements.get(`${balance.itemId}|${balance.warehouseCode}`) || { inbound: 0, outbound: 0, inboundValue: 0, outboundValue: 0, byType: {} };
-      return {
-        item: balance.item,
-        warehouseCode: balance.warehouseCode,
-        openingQuantity: balance.quantity - movement.inbound + movement.outbound,
-        inboundQuantity: movement.inbound,
-        outboundQuantity: movement.outbound,
-        closingQuantity: balance.quantity,
-        averageCost: balance.averageCost,
-        closingValue: balance.quantity * balance.averageCost,
-        movementByType: movement.byType,
-      };
-    });
+    const stockSummary = buildStockSummary(balances, movementTotals);
     // Báo cáo hủy hàng: mã nào hủy nhiều nhất, tách theo loại hủy (hết hạn / chất lượng).
     const wasteBuckets = new Map<string, {
       itemCode: string; itemName: string; unit: string; itemType: string;
@@ -1176,15 +1230,86 @@ export async function POST(request: Request) {
       if (dateTo.getTime() < dateFrom.getTime()) businessError("Khoảng ngày rã không hợp lệ (từ ngày sau đến ngày trước)");
       if (await isPeriodLocked(dateTo, branchCode)) businessError("Kỳ kế toán đã khóa");
 
-      const outcome = await prisma.$transaction((tx) => executeExplosion(tx, {
-        branchCode, warehouseCode, toWarehouseCode, kitchenWarehouseCode, barWarehouseCode,
-        dateFrom, dateTo, note: cleanText(body.note), createdBy: auth.session.name,
-      }), { timeout: 60000 });
+      /**
+       * RÃ LẠI (khách chốt 27/09/2026: "user muốn chỉnh thì cứ chạy, trừ khi đã khoá kỳ"): khoảng
+       * ngày chọn có dòng doanh thu ĐÃ RÃ thì lần bấm đầu trả 409 kèm danh sách lần rã để xác
+       * nhận; bấm đồng ý (confirmRerun) thì gỡ các lần rã đó rồi rã lại ĐÚNG các dòng của chúng
+       * với kho đang chọn, sau đó rã tiếp phần còn chờ — cùng một transaction. Trước đây nút Rã
+       * chỉ nhận dòng PENDING nên ngày đã rã không làm lại được, còn nút hoàn tác chỉ hiện 6 lần
+       * rã mới nhất.
+       */
+      const rangeEnd = new Date(dateTo);
+      rangeEnd.setHours(23, 59, 59, 999);
+      const postedStatuses = await prisma.revenueImportRow.findMany({
+        where: { branchCode, deletedAt: null, saleDate: { gte: dateFrom, lte: rangeEnd }, inventoryStatus: { startsWith: "POSTED:RA-" } },
+        distinct: ["inventoryStatus"],
+        select: { inventoryStatus: true },
+      });
+      const rerunCodes = postedStatuses.map((row) => (row.inventoryStatus || "").slice("POSTED:".length)).filter(Boolean);
+      const rerunRuns: AffectedExplosionRun[] = [];
+      for (const runCode of rerunCodes) {
+        const doc = await prisma.inventoryTransaction.findFirst({
+          where: { referenceType: "PRODUCTION", referenceCode: runCode, deletedAt: null },
+          select: { branchCode: true, transactionDate: true },
+        });
+        rerunRuns.push({ runCode, branchCode: doc?.branchCode || branchCode, date: doc?.transactionDate || dateTo, productCodes: [] });
+      }
+      for (const run of rerunRuns) {
+        if (await isPeriodLocked(run.date, run.branchCode)) {
+          businessError(`Lần rã ${run.runCode} (ngày ${run.date.toISOString().slice(0, 10)}) nằm trong kỳ kế toán đã khoá nên không rã lại được. Mở khoá kỳ trước.`);
+        }
+      }
+      if (rerunRuns.length > 0 && body.confirmRerun !== true) {
+        const rowCounts = await prisma.revenueImportRow.groupBy({
+          by: ["inventoryStatus"],
+          where: { inventoryStatus: { in: rerunCodes.map((code) => `POSTED:${code}`) }, deletedAt: null },
+          _count: { _all: true },
+        });
+        return NextResponse.json({
+          needsRerunConfirm: true,
+          runs: rerunRuns.map((run) => ({
+            runCode: run.runCode,
+            date: run.date,
+            revenueRows: rowCounts.find((row) => row.inventoryStatus === `POSTED:${run.runCode}`)?._count._all || 0,
+          })),
+        }, { status: 409 });
+      }
+
+      const { outcome, reruns } = await prisma.$transaction(async (tx) => {
+        const rerunResults = rerunRuns.length > 0
+          ? await rerunExplosions(tx, rerunRuns, auth.session.name, {
+            overrideSettings: (_run, original) => ({ ...original, warehouseCode, toWarehouseCode, kitchenWarehouseCode, barWarehouseCode }),
+            note: (run) => `rã lại ${run.runCode} theo yêu cầu`,
+          })
+          : [];
+        // Rã lại xong, dòng còn chờ trong khoảng ngày (nếu có) rã thành một lần mới như thường.
+        const fresh = await executeExplosion(tx, {
+          branchCode, warehouseCode, toWarehouseCode, kitchenWarehouseCode, barWarehouseCode,
+          dateFrom, dateTo, note: cleanText(body.note), createdBy: auth.session.name,
+        });
+        return { outcome: fresh, reruns: rerunResults };
+      }, { timeout: 10 * 60 * 1000, maxWait: 30000 });
+
+      for (const rerun of reruns) {
+        if (!rerun.newRunCode) continue;
+        await writeAuditLog({
+          session: auth.session, module: menuHref, action: "EXPLODE_PRODUCTION",
+          entityType: "InventoryTransaction", entityCode: rerun.newRunCode, branchCode: rerun.branchCode,
+          metadata: { ...rerun.settings, dateTo: rerun.date, rerunOf: rerun.oldRunCode, reason: "Rã lại theo yêu cầu", documents: rerun.documents },
+        });
+      }
+      const rerunSummary = reruns.map((rerun) => ({ oldRunCode: rerun.oldRunCode, newRunCode: rerun.newRunCode }));
       if (outcome.kind === "EMPTY") {
+        if (reruns.length > 0) {
+          return NextResponse.json({ reruns: rerunSummary, runCode: null, documentCount: reruns.reduce((sum, rerun) => sum + rerun.documents.length, 0) });
+        }
         businessError("Không có dòng doanh thu nào đang chờ rã nguyên liệu trong khoảng ngày đã chọn.");
       }
       // Dòng không theo dõi tồn kho đã được thả khỏi hàng chờ (transaction trên đã commit) —
       // báo lỗi sau khi commit để lần bấm sau không gặp lại chúng.
+      if (outcome.kind === "ALL_SKIPPED" && reruns.length > 0) {
+        return NextResponse.json({ reruns: rerunSummary, runCode: null, documentCount: reruns.reduce((sum, rerun) => sum + rerun.documents.length, 0) });
+      }
       if (outcome.kind === "ALL_SKIPPED") {
         businessError(`Cả ${outcome.skippedRows} dòng doanh thu trong khoảng ngày này đều thuộc nhóm doanh thu không theo dõi tồn kho — đã bỏ khỏi hàng chờ, không có gì để rã.`);
       }
@@ -1205,6 +1330,7 @@ export async function POST(request: Request) {
         },
       });
       return NextResponse.json({
+        reruns: rerunSummary,
         runCode: outcome.runCode,
         documentCount: outcome.documents.length,
         revenueRows: outcome.revenueRows,
