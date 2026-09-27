@@ -552,7 +552,50 @@ export default function AssetOperationsPage() {
                   <input className="control" value={stocktakeNote} onChange={(e) => setStocktakeNote(e.target.value)} />
                 </Field>
               </div>
-              <div className="border border-slate-200 rounded-lg overflow-hidden">
+              {/* Điện thoại: mỗi tài sản một thẻ, đủ chỗ cho ô đếm + nút chụp ảnh, không phải trượt ngang. */}
+              <div className="space-y-2 md:hidden">
+                {stocktakeRows.length === 0 && (
+                  <p className="rounded-lg border border-slate-200 px-3 py-4 text-sm text-slate-500">{stocktakeBranch ? "Không có CCDC/tài sản nào trong phạm vi đã chọn." : "Chọn cửa hàng để nạp danh sách CCDC/tài sản."}</p>
+                )}
+                {stocktakeRows.map((row, index) => {
+                  const variance = Number(row.actualQuantity || 0) - row.systemQuantity;
+                  const updateRow = (patch: Partial<StocktakeDraftRow>) => setStocktakeRows((rows) => rows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, ...patch } : candidate));
+                  return (
+                    <div key={row.assetId} className={`rounded-lg border border-slate-200 p-3 space-y-2 ${row.isNew ? "bg-emerald-50/60" : ""}`}>
+                      <div>
+                        <p className="text-sm font-bold text-slate-900">{row.name}</p>
+                        <p className="text-[11px] text-slate-500">
+                          {row.code}{row.departmentCode ? ` · ${row.departmentCode}` : ""}
+                          {row.isNew && <span className="ml-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800">MỚI</span>}
+                          {row.lots.length > 1 && <span className="ml-1 rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-bold text-indigo-700" title="Đếm chung cho cả mã; thừa ghi vào đợt mới nhất, thiếu trừ từ đợt mới nhất">{row.lots.length} đợt</span>}
+                        </p>
+                      </div>
+                      <div className="flex items-end gap-2">
+                        <div className="w-14 shrink-0">
+                          <span className="block text-[10px] font-bold uppercase text-slate-500">Sổ sách</span>
+                          <span className="block py-2.5 text-sm">{money(row.systemQuantity)}</span>
+                        </div>
+                        <label className="w-20 shrink-0">
+                          <span className="block text-[10px] font-bold uppercase text-slate-500">Số đếm</span>
+                          <input type="number" min="0" step="1" inputMode="numeric" className="control mt-0 text-right w-full" value={row.actualQuantity}
+                            onChange={(e) => updateRow({ actualQuantity: e.target.value })} />
+                        </label>
+                        {variance !== 0 && <span className={`pb-2.5 text-sm font-bold ${variance > 0 ? "text-emerald-700" : "text-rose-700"}`}>{variance > 0 ? "+" : ""}{money(variance)}</span>}
+                        <div className="ml-auto shrink-0 pb-1.5">
+                          <StocktakeImageInput
+                            value={row.imageUrl}
+                            onChange={(imageUrl) => updateRow({ imageUrl })}
+                            onError={(text) => setMessage(text)}
+                          />
+                        </div>
+                      </div>
+                      <input className="control" placeholder="Tình trạng: Tốt / Hỏng nhẹ..." value={row.condition}
+                        onChange={(e) => updateRow({ condition: e.target.value })} />
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="hidden md:block border border-slate-200 rounded-lg overflow-hidden">
                 <table className="w-full text-left text-sm">
                   <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
                     <tr><th className="px-3 py-2">Tài sản</th><th className="px-3 py-2 text-right">Sổ sách</th><th className="px-3 py-2 text-right">Số đếm</th><th className="px-3 py-2">Tình trạng</th><th className="px-3 py-2">Ảnh</th></tr>
@@ -567,10 +610,12 @@ export default function AssetOperationsPage() {
                       return (
                         <tr key={row.assetId} className={`border-t border-slate-100 ${row.isNew ? "bg-emerald-50/60" : ""}`}>
                           <td className="px-3 py-2">
-                            <b>{row.code}</b>
-                            {row.isNew && <span className="ml-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800">MỚI</span>}
-                            {row.lots.length > 1 && <span className="ml-1 rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-bold text-indigo-700" title="Đếm chung cho cả mã; thừa ghi vào đợt mới nhất, thiếu trừ từ đợt mới nhất">{row.lots.length} đợt</span>}
-                            <small className="block text-slate-500">{row.name}{row.departmentCode ? ` · ${row.departmentCode}` : ""}</small>
+                            <b className="text-slate-900">{row.name}</b>
+                            <small className="block text-[11px] text-slate-500">
+                              {row.code}{row.departmentCode ? ` · ${row.departmentCode}` : ""}
+                              {row.isNew && <span className="ml-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800">MỚI</span>}
+                              {row.lots.length > 1 && <span className="ml-1 rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-bold text-indigo-700" title="Đếm chung cho cả mã; thừa ghi vào đợt mới nhất, thiếu trừ từ đợt mới nhất">{row.lots.length} đợt</span>}
+                            </small>
                           </td>
                           <td className="px-3 py-2 text-right">{money(row.systemQuantity)}</td>
                           <td className="px-3 py-2 text-right">
