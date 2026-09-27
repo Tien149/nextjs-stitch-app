@@ -357,6 +357,19 @@ export default function InventoryPage() {
   };
   const kitchenWarehouseCode = pickedDepartmentWarehouse(explodeForm.kitchenWarehouseCode, "BEP");
   const barWarehouseCode = pickedDepartmentWarehouse(explodeForm.barWarehouseCode, "BAR");
+  /**
+   * Chế biến chỉ diễn ra ở kho BẾP / kho BAR (khách chốt 27/09/2026): các ô kho của form Rã chỉ
+   * liệt kê kho thuộc nhóm bếp / bar của cửa hàng, không còn kho văn phòng / kho tổng. Cửa hàng
+   * chưa khai nhóm kho nào thì hiện đủ như cũ để không khoá cứng form. Máy chủ cũng tự đổi kho
+   * mặc định lạc về kho bếp — xem resolveExplosionWarehouses.
+   */
+  const warehousesOfGroup = (keyword: string) => explodeWarehouses.filter((warehouse) =>
+    (warehouse.group || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().includes(keyword));
+  const kitchenWarehouses = warehousesOfGroup("BEP");
+  const barWarehouses = warehousesOfGroup("BAR");
+  const productionWarehouses = kitchenWarehouses.length + barWarehouses.length > 0
+    ? [...kitchenWarehouses, ...barWarehouses]
+    : explodeWarehouses;
   const warehouseOptions = data.warehouses.length ? data.warehouses : [
     { id: "KHO_HCM", code: "KHO_HCM", name: "Kho Cua hang 1", branch: "HCM" },
     { id: "KHO_HN", code: "KHO_HN", name: "Kho Cua hang 2", branch: "HN" },
@@ -465,8 +478,9 @@ export default function InventoryPage() {
    * gặp 21/09/2026, và vì lỗi lặp lại y hệt nên nhìn như nút không phản ứng gì.
    */
   const pickWarehouse = (code: string, fallback: string) =>
-    (explodeWarehouses.some((warehouse) => warehouse.code === code) ? code : fallback);
-  const explodeWarehouseCode = pickWarehouse(explodeForm.warehouseCode, explodeWarehouses[0]?.code || "");
+    (productionWarehouses.some((warehouse) => warehouse.code === code) ? code : fallback);
+  // Mặc định kho BẾP của cửa hàng.
+  const explodeWarehouseCode = pickWarehouse(explodeForm.warehouseCode, kitchenWarehouseCode || productionWarehouses[0]?.code || "");
   const explodeToWarehouseCode = pickWarehouse(explodeForm.toWarehouseCode, explodeWarehouseCode);
 
   /** Phiếu chế biến / rã nguyên liệu đang hiện. */
@@ -2898,32 +2912,30 @@ export default function InventoryPage() {
             </Input>
             <Input label="Kho xuất NVL">
               <select className="control" value={explodeWarehouseCode} onChange={(e) => setExplodeForm({ ...explodeForm, warehouseCode: e.target.value })}>
-                {explodeWarehouses.map((warehouse) => (
+                {productionWarehouses.map((warehouse) => (
                   <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>
                 ))}
               </select>
             </Input>
             <Input label="Kho nhập BTP/TP">
               <select className="control" value={explodeToWarehouseCode} onChange={(e) => setExplodeForm({ ...explodeForm, toWarehouseCode: e.target.value })}>
-                {explodeWarehouses.map((warehouse) => (
+                {productionWarehouses.map((warehouse) => (
                   <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>
                 ))}
               </select>
             </Input>
-            {/* Đồ ăn trừ kho Bếp, đồ uống trừ kho Bar: hai ô này đè lên hai ô kho mặc định ở
-                trên cho đúng nhóm món. Để trống = món nhóm đó vẫn đi kho mặc định. */}
+            {/* Đồ ăn trừ kho Bếp, đồ uống trừ kho Bar. Không còn lựa chọn "không tách": bỏ tách là
+                mọi món (kể cả đồ uống) dồn về một kho. */}
             <Input label="Kho ĐỒ ĂN (bếp)">
-              <select className="control" value={explodeForm.kitchenWarehouseCode === "NONE" ? "NONE" : kitchenWarehouseCode} onChange={(e) => setExplodeForm({ ...explodeForm, kitchenWarehouseCode: e.target.value })}>
-                <option value="NONE">— Không tách, dùng kho mặc định —</option>
-                {explodeWarehouses.map((warehouse) => (
+              <select className="control" value={kitchenWarehouseCode} onChange={(e) => setExplodeForm({ ...explodeForm, kitchenWarehouseCode: e.target.value })}>
+                {(kitchenWarehouses.length ? kitchenWarehouses : explodeWarehouses).map((warehouse) => (
                   <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>
                 ))}
               </select>
             </Input>
             <Input label="Kho ĐỒ UỐNG (bar)">
-              <select className="control" value={explodeForm.barWarehouseCode === "NONE" ? "NONE" : barWarehouseCode} onChange={(e) => setExplodeForm({ ...explodeForm, barWarehouseCode: e.target.value })}>
-                <option value="NONE">— Không tách, dùng kho mặc định —</option>
-                {explodeWarehouses.map((warehouse) => (
+              <select className="control" value={barWarehouseCode} onChange={(e) => setExplodeForm({ ...explodeForm, barWarehouseCode: e.target.value })}>
+                {(barWarehouses.length ? barWarehouses : explodeWarehouses).map((warehouse) => (
                   <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>
                 ))}
               </select>
@@ -2934,7 +2946,7 @@ export default function InventoryPage() {
             (hoặc Phân nhóm mặt hàng nếu đã khai). <b>Bán thành phẩm đi theo kho của món bán ra</b>: dùng cho món bếp thì chế biến ở kho
             Bếp, cho món bar thì ở kho Bar (dùng cho cả hai thì tách đúng phần ở từng kho). <b>Combo</b> nhập kho và xuất bán ở kho Bếp,
             còn từng thành phần trừ ở kho của chính nó (đồ uống trong combo trừ kho Bar). Chỉ món bán chưa gán nhóm mới đi kho mặc
-            định ở trên, và được đếm lại trong thông báo sau khi rã — nên chọn kho mặc định là kho Bếp, không phải kho văn phòng.
+            định (Kho xuất NVL / Kho nhập BTP/TP — chỉ chọn được kho Bếp / Bar, mặc định kho Bếp), và được đếm lại trong thông báo sau khi rã.
           </p>
           {data.pendingSales.byDay.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-2">

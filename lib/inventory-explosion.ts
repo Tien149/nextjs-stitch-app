@@ -9,7 +9,7 @@ import { businessError, cleanText } from "@/lib/phase3";
 import { nextStockDocCode, postInventoryTransaction, reverseStockEffect } from "@/lib/inventory-stock";
 import { explodeSalesDemand, explodeSalesDemandWithDepartments, type ExplosionRecipe } from "@/lib/production-explosion";
 import { loadNonInventoryRevenueGroups, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
-import { buildRevenueDepartmentResolver, REVENUE_DEPARTMENT_CODES } from "@/lib/revenue-department";
+import { buildRevenueDepartmentResolver, departmentFromWarehouseGroup, REVENUE_DEPARTMENT_CODES } from "@/lib/revenue-department";
 
 const quantityEpsilon = 0.000001;
 
@@ -30,8 +30,44 @@ export type ExplosionRunInput = {
   rowIds?: string[];
 };
 
+/**
+ * Kho thực dùng cho một lần rã (khách chốt 27/09/2026: chế biến chỉ ở kho BẾP / kho BAR, không
+ * bao giờ ở kho văn phòng / kho tổng):
+ *   - kho bếp / kho bar không chỉ định (lần rã cũ chưa có hai ô này, rã lại khi sửa định lượng
+ *     đọc nhật ký cũ) thì lấy kho bếp / kho bar DUY NHẤT của cửa hàng theo nhóm kho;
+ *   - kho mặc định (xuất NVL, nhập BTP/TP) không thuộc nhóm bếp/bar thì đổi về kho bếp (không có
+ *     kho bếp thì kho bar). Cửa hàng chưa khai nhóm kho nào thì giữ nguyên như cũ.
+ * Đặt ở lõi rã nên nút Rã, rã lại khi sửa định lượng và script rerun:explosions cùng một luật.
+ */
+export async function resolveExplosionWarehouses(
+  tx: TxClient,
+  input: Pick<ExplosionRunInput, "branchCode" | "warehouseCode" | "toWarehouseCode" | "kitchenWarehouseCode" | "barWarehouseCode">,
+) {
+  const branchWarehouses = await tx.masterDataItem.findMany({
+    where: { type: "WAREHOUSE", branch: input.branchCode, status: "ACTIVE" },
+    select: { code: true, group: true },
+  });
+  const departmentOfWarehouse = (code: string) => departmentFromWarehouseGroup(branchWarehouses.find((row) => row.code === code)?.group);
+  const onlyWarehouseOf = (department: string) => {
+    const found = branchWarehouses.filter((row) => departmentFromWarehouseGroup(row.group) === department);
+    return found.length === 1 ? found[0].code : "";
+  };
+  const kitchenWarehouseCode = input.kitchenWarehouseCode || onlyWarehouseOf(REVENUE_DEPARTMENT_CODES.KITCHEN);
+  const barWarehouseCode = input.barWarehouseCode || onlyWarehouseOf(REVENUE_DEPARTMENT_CODES.BAR);
+  const isProduction = (code: string) => {
+    const department = departmentOfWarehouse(code);
+    return department === REVENUE_DEPARTMENT_CODES.KITCHEN || department === REVENUE_DEPARTMENT_CODES.BAR;
+  };
+  const productionFallback = kitchenWarehouseCode || barWarehouseCode;
+  const warehouseCode = isProduction(input.warehouseCode) || !productionFallback ? input.warehouseCode : productionFallback;
+  const toWarehouseCode = isProduction(input.toWarehouseCode) || !productionFallback ? input.toWarehouseCode : productionFallback;
+  return { warehouseCode, toWarehouseCode, kitchenWarehouseCode, barWarehouseCode };
+}
+
 export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
-  const { branchCode, warehouseCode, toWarehouseCode, kitchenWarehouseCode, barWarehouseCode, dateFrom, dateTo } = input;
+  const { branchCode, dateFrom, dateTo } = input;
+  const warehouses = await resolveExplosionWarehouses(tx, input);
+  const { warehouseCode, toWarehouseCode, kitchenWarehouseCode, barWarehouseCode } = warehouses;
   const rangeEnd = new Date(dateTo);
   rangeEnd.setHours(23, 59, 59, 999);
   const pendingRows = await tx.revenueImportRow.findMany({
@@ -292,6 +328,8 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
   return {
     kind: "POSTED" as const,
     runCode: result.runCode,
+    /** Kho thực dùng (sau resolveExplosionWarehouses) — ghi vào nhật ký lần rã. */
+    warehouses,
     documents: result.documents,
     plan,
     revenueRows: inventoryRows.length,
@@ -406,7 +444,8 @@ export async function rerunExplosions(
       newRunCode: outcome.kind === "POSTED" ? outcome.runCode : null,
       branchCode: run.branchCode,
       date: run.date,
-      settings,
+      // Kho THỰC dùng (đã qua resolveExplosionWarehouses) để nhật ký lần rã mới ghi đúng kho.
+      settings: outcome.kind === "POSTED" ? { ...settings, ...outcome.warehouses } : settings,
       documents: outcome.kind === "POSTED" ? outcome.documents.map((doc) => doc.code) : [],
     });
   }

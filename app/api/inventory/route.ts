@@ -1194,7 +1194,7 @@ export async function POST(request: Request) {
         session: auth.session, module: menuHref, action: "EXPLODE_PRODUCTION",
         entityType: "InventoryTransaction", entityCode: outcome.runCode, branchCode,
         metadata: {
-          dateFrom, dateTo, warehouseCode, toWarehouseCode, kitchenWarehouseCode, barWarehouseCode,
+          dateFrom, dateTo, ...outcome.warehouses,
           revenueRows: outcome.revenueRows,
           skippedRows: outcome.skippedRows,
           undecidedProducts,
