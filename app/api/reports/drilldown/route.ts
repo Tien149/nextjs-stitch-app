@@ -115,8 +115,11 @@ export async function GET(request: Request) {
         isMatch = true;
         lineAmount = accountLine === "capex" ? pnlLineAmount("capex", line) : line.debit - line.credit;
       } else if (metric === "ebitda") {
-        // Lợi nhuận hoạt động = doanh thu − giá vốn − nhân sự − CAPEX − OPEX (gồm khấu hao).
-        if (accountType === "COGS" || accountLine === "payroll" || accountLine === "otherOpex" || accountLine === "capex") {
+        // EBITDA = doanh thu − giá vốn − nhân sự − CAPEX − OPEX, CỘNG LẠI khấu hao (chốt
+        // 28/09/2026) — nên các dòng khấu hao không thuộc chỉ tiêu này.
+        if (line.account.reportGroup === DEPRECIATION_PNL_ACCOUNT.reportGroup) {
+          isMatch = false;
+        } else if (accountType === "COGS" || accountLine === "payroll" || accountLine === "otherOpex" || accountLine === "capex") {
           isMatch = true;
           lineAmount = accountLine === "capex" ? pnlLineAmount("capex", line) : line.debit - line.credit;
         } else if (accountType === "REVENUE") {

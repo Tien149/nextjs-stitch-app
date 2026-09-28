@@ -36,6 +36,11 @@ export type PnlBucket = {
    * nằm ở đây — chi phí của chúng vào Chi phí cố định qua hạng mục CP Khấu Hao (chốt 23/09/2026).
    */
   capex: number;
+  /**
+   * Số GHI NHỚ: phần khấu hao đang nằm TRONG otherOpex (không phải khoản chi thêm). Chỉ dùng để
+   * cộng lại ra EBITDA và hiện dòng "8. Khấu hao" trên KQKD (khách chốt 28/09/2026).
+   */
+  depreciation: number;
 };
 
 export type PnlItemBreakdown = {
@@ -45,7 +50,8 @@ export type PnlItemBreakdown = {
   amount: number;
 };
 
-export type PnlLineKey = keyof PnlBucket;
+/** Dòng KQKD nhận tiền trực tiếp từ bút toán — khấu hao chỉ là số ghi nhớ bên trong OPEX. */
+export type PnlLineKey = Exclude<keyof PnlBucket, "depreciation">;
 
 /**
  * Cây hạng mục P&L đứng dưới từng dòng của báo cáo KQKD (feedback chị Bình: bảng một kỳ
@@ -62,7 +68,7 @@ export type PnlStatementLine = {
 };
 
 function emptyPnl(): PnlBucket {
-  return { revenue: 0, cogs: 0, payroll: 0, otherOpex: 0, otherIncome: 0, otherExpense: 0, capex: 0 };
+  return { revenue: 0, cogs: 0, payroll: 0, otherOpex: 0, otherIncome: 0, otherExpense: 0, capex: 0, depreciation: 0 };
 }
 
 /**
@@ -149,19 +155,22 @@ export function pnlLineAmount(key: PnlLineKey, line: { debit: number; credit: nu
 function addLine(bucket: PnlBucket, line: { debit: number; credit: number; account: { accountType: string; reportGroup: string } }, pnlItem?: PnlItemRef) {
   const key = pnlLineKeyOf(line.account, pnlItem);
   if (!key) return;
-  bucket[key] += pnlLineAmount(key, line);
+  const amount = pnlLineAmount(key, line);
+  bucket[key] += amount;
+  if (key === "otherOpex" && line.account.reportGroup === DEPRECIATION_PNL_ACCOUNT.reportGroup) bucket.depreciation += amount;
 }
 
 export function finalizePnl(bucket: PnlBucket) {
   const grossProfit = bucket.revenue - bucket.cogs;
-  // OPEX đã gồm khấu hao nên "ebitda" chính là lợi nhuận hoạt động; giữ tên trường để không đổi
-  // hợp đồng API với các màn đang đọc, nhãn hiển thị là "EBITDA" (khách đổi tên 28/09/2026).
-  // CAPEX (chi phí đầu tư ban đầu) TRỪ vào lợi nhuận hoạt động — khách chốt 24/09/2026, đảo
-  // luật "dòng thông tin, không trừ" trước đó. Hạng mục nhóm CAPEX phần lớn là phân bổ hàng kỳ
-  // (Nợ 6428), không trừ là lợi nhuận bị thổi đúng bằng khoản đó (Nam Mê T8: 88.248.717 đ).
+  // CAPEX (chi phí đầu tư ban đầu) TRỪ vào lợi nhuận — khách chốt 24/09/2026, đảo luật "dòng
+  // thông tin, không trừ" trước đó. Hạng mục nhóm CAPEX phần lớn là phân bổ hàng kỳ (Nợ 6428),
+  // không trừ là lợi nhuận bị thổi đúng bằng khoản đó (Nam Mê T8: 88.248.717 đ).
   const opexBeforeDepreciation = bucket.payroll + bucket.capex + bucket.otherOpex;
-  const ebitda = grossProfit - opexBeforeDepreciation;
-  const operatingProfit = ebitda;
+  // Lợi nhuận hoạt động: đã trừ mọi chi phí hoạt động, kể cả khấu hao nằm trong OPEX.
+  const operatingProfit = grossProfit - opexBeforeDepreciation;
+  // EBITDA = lợi nhuận hoạt động CỘNG LẠI khấu hao, trước thu nhập/chi phí khác (khách chốt
+  // 28/09/2026) — khớp thẻ EBITDA Dashboard P&L. KQKD: 7. EBITDA − 8. Khấu hao + TN khác − CP khác.
+  const ebitda = operatingProfit + (bucket.depreciation || 0);
   const netProfit = operatingProfit + bucket.otherIncome - bucket.otherExpense;
   return { ...bucket, grossProfit, opexBeforeDepreciation, ebitda, operatingProfit, netProfit, grossMargin: bucket.revenue ? grossProfit / bucket.revenue : 0, ebitdaMargin: bucket.revenue ? ebitda / bucket.revenue : 0 };
 }
@@ -210,7 +219,7 @@ function sortDetailItems<T extends { code: string; name: string }>(rows: T[]) {
  * Thứ tự theo nét vẽ chị Bình 06/09/2026: Nhân sự -> CAPEX -> OPEX; khấu hao là hạng mục
  * trong Chi phí cố định (nhóm OPEX), không còn dòng riêng.
  */
-export const PNL_STATEMENT_LINES: Array<{ key: PnlLineKey | "grossProfit" | "ebitda" | "netProfit"; label: string; subtotal: boolean }> = [
+export const PNL_STATEMENT_LINES: Array<{ key: PnlLineKey | "grossProfit" | "ebitda" | "depreciation" | "netProfit"; label: string; subtotal: boolean }> = [
   { key: "revenue", label: "1. Doanh thu bán hàng và cung cấp dịch vụ", subtotal: false },
   { key: "cogs", label: "2. Giá vốn hàng bán", subtotal: false },
   { key: "grossProfit", label: "3. Lợi nhuận gộp", subtotal: true },
@@ -218,10 +227,12 @@ export const PNL_STATEMENT_LINES: Array<{ key: PnlLineKey | "grossProfit" | "ebi
   // CAPEX trừ vào lợi nhuận hoạt động như nhân sự và OPEX (chốt 24/09/2026) nên có số thứ tự.
   { key: "capex", label: "5. Chi phí đầu tư ban đầu (CAPEX)", subtotal: false },
   { key: "otherOpex", label: "6. Chi phí hoạt động (OPEX)", subtotal: false },
+  // EBITDA cộng lại khấu hao; dòng 8 trừ khấu hao ra lại (số đã nằm trong OPEX, không chi thêm).
   { key: "ebitda", label: "7. EBITDA", subtotal: true },
-  { key: "otherIncome", label: "8. Thu nhập khác", subtotal: false },
-  { key: "otherExpense", label: "9. Chi phí khác", subtotal: false },
-  { key: "netProfit", label: "10. Lợi nhuận vận hành", subtotal: true },
+  { key: "depreciation", label: "8. Khấu hao", subtotal: true },
+  { key: "otherIncome", label: "9. Thu nhập khác", subtotal: false },
+  { key: "otherExpense", label: "10. Chi phí khác", subtotal: false },
+  { key: "netProfit", label: "11. Lợi nhuận vận hành", subtotal: true },
 ];
 
 export type PnlCatalog = {
@@ -792,6 +803,8 @@ export async function getPnl(period: string, branchCode: string) {
   return {
     total: finalized,
     statement,
+    /** Hạng mục CP Khấu Hao — ngân sách của nó cộng lại vào target EBITDA (tab Ngân sách). */
+    depreciationItemCode: depreciationCatalogItemCode(pnlItems),
     byBranch: Array.from(branches, ([code, bucket]) => ({ code, ...finalizePnl(bucket) })).sort((a, b) => b.revenue - a.revenue),
     byDepartment: Array.from(departments, ([code, bucket]) => ({ code, ...finalizePnl(bucket) })).sort((a, b) => b.opexBeforeDepreciation - a.opexBeforeDepreciation),
     byPnlItem: Array.from(pnlItemBreakdown.values())

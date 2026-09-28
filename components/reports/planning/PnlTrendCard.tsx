@@ -14,15 +14,14 @@ type PnlNote = { period: string; note: string; updatedBy: string | null; updated
  * Báo cáo quản trị nội bộ, không theo mẫu thuế:
  *  - Tổng chi phí = COGS + CAPEX + OPEX (nhân sự + chi phí hoạt động, đã gồm khấu hao).
  *  - Lợi nhuận = Lợi nhuận vận hành (netProfit).
- *  - EBITDA = Lợi nhuận vận hành + khấu hao (cùng công thức với thẻ KPI EBITDA).
+ *  - EBITDA = LN gộp − nhân sự − CAPEX − OPEX + khấu hao, trước thu nhập/chi phí khác (dòng 7
+ *    KQKD, chốt 28/09/2026).
  * Chỉ vẽ đường, nối thẳng — khách không muốn cột lẫn đường uốn cong.
  */
-export default function PnlTrendCard({ data, picked, monthHeaders, depreciation, canEdit = true }: {
+export default function PnlTrendCard({ data, picked, monthHeaders, canEdit = true }: {
   data: PlanningData;
   picked: MonthPick;
   monthHeaders: string[];
-  /** Khấu hao từng tháng (hạng mục CP Khấu Hao) để cộng lại ra EBITDA. */
-  depreciation: number[];
   canEdit?: boolean;
 }) {
   // Tháng chưa phát sinh gì thì bỏ trống điểm (NaN) để đường dừng ở tháng cuối có số.
@@ -94,7 +93,7 @@ export default function PnlTrendCard({ data, picked, monthHeaders, depreciation,
   return (
     <Card
       title={`Biến động Doanh thu – Chi phí – Lợi nhuận – EBITDA năm ${data.year}`}
-      subtitle="Báo cáo quản trị nội bộ: Tổng chi phí = COGS + CAPEX + OPEX (gồm nhân sự); Lợi nhuận = LN vận hành; EBITDA = LN vận hành + khấu hao."
+      subtitle="Báo cáo quản trị nội bộ: Tổng chi phí = COGS + CAPEX + OPEX (gồm nhân sự); Lợi nhuận = LN vận hành; EBITDA = LN gộp − nhân sự − CAPEX − OPEX + khấu hao (chưa tính thu nhập/chi phí khác)."
       icon="show_chart"
       bodyClassName="px-2 pb-3"
     >
@@ -106,7 +105,7 @@ export default function PnlTrendCard({ data, picked, monthHeaders, depreciation,
               { name: "Doanh thu", values: series((index) => data.totals[index].revenue), color: "#16a34a" },
               { name: "Tổng chi phí", values: totalCost, color: "#b91c1c" },
               { name: "Lợi nhuận", values: series((index) => data.totals[index].netProfit), color: "#2563eb" },
-              { name: "EBITDA", values: series((index) => data.totals[index].netProfit + (depreciation[index] || 0)), color: "#a21caf" },
+              { name: "EBITDA", values: series((index) => data.totals[index].ebitda), color: "#a21caf" },
             ]}
           />
         </div>

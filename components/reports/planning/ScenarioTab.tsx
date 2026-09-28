@@ -39,6 +39,8 @@ function applyScenario(base: PnlBucket[], adjustments: Record<VariableKey, Adjus
       otherExpense: bucket.otherExpense,
       // Kịch bản chỉ vặn doanh thu / chi phí vận hành; tiền đầu tư tài sản giữ nguyên.
       capex: bucket.capex,
+      // Khấu hao là phần của OPEX nên co giãn cùng hệ số OPEX.
+      depreciation: bucket.depreciation * factor("otherOpex"),
     });
   });
 }

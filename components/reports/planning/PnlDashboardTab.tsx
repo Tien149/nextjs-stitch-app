@@ -51,14 +51,6 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
     actual: actual("otherOpex") - marketingCost.actual - variableCost.actual,
     plan: plan("otherOpex") - marketingCost.plan - variableCost.plan,
   };
-  // EBITDA = Lợi nhuận vận hành CỘNG LẠI khấu hao (khách chốt 28/09/2026). Khấu hao là hạng mục
-  // CP Khấu Hao trong Chi phí cố định (data.depreciationItemCode), đã bị trừ trong OPEX.
-  const depreciationItem = opexGroups.flatMap((group) => group.items).find((item) => Boolean(data.depreciationItemCode) && item.code === data.depreciationItemCode);
-  const depreciation = {
-    actual: depreciationItem ? nodeValue(depreciationItem, picked, "actual") : 0,
-    plan: depreciationItem ? nodeValue(depreciationItem, picked, "plan") : 0,
-  };
-
   const kpis: Array<{ label: string; tone: Tone; income: boolean; icon: string; actual: number; plan: number; note?: string }> = [
     { label: "Doanh thu", tone: "blue", income: true, icon: "payments", actual: actual("revenue"), plan: plan("revenue") },
     { label: "Giá vốn (COGS)", tone: "amber", income: false, icon: "inventory_2", actual: actual("cogs"), plan: plan("cogs") },
@@ -68,7 +60,7 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
     { label: "CP Marketing", tone: "orange", income: false, icon: "campaign", actual: marketingCost.actual, plan: marketingCost.plan },
     { label: "CP biến đổi", tone: "teal", income: false, icon: "swap_vert", actual: variableCost.actual, plan: variableCost.plan },
     { label: "Lợi nhuận vận hành", tone: "indigo", income: true, icon: "workspace_premium", actual: actual("netProfit"), plan: plan("netProfit") },
-    { label: "EBITDA", tone: "violet", income: true, icon: "monitoring", actual: actual("netProfit") + depreciation.actual, plan: plan("netProfit") + depreciation.plan, note: "Lợi nhuận vận hành + khấu hao" },
+    { label: "EBITDA", tone: "violet", income: true, icon: "monitoring", actual: actual("ebitda"), plan: plan("ebitda"), note: "LN gộp − nhân sự − CAPEX − OPEX + khấu hao (trước thu nhập/chi phí khác), cùng số dòng 7 KQKD" },
   ];
 
   // Cơ cấu 1 đồng doanh thu (lũy kế): giá vốn / nhân sự / OPEX (đã gồm khấu hao) / phần còn lại là LN.
@@ -172,7 +164,7 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
         })}
       </div>
 
-      <PnlTrendCard data={data} picked={picked} monthHeaders={monthHeaders} depreciation={depreciationItem?.months || data.months.map(() => 0)} />
+      <PnlTrendCard data={data} picked={picked} monthHeaders={monthHeaders} />
 
       <Card
         title="Cơ cấu 1 đồng doanh thu"

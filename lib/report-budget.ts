@@ -29,7 +29,7 @@ function yearMonths(year: string) {
 }
 
 function emptyBucket(): PnlBucket {
-  return { revenue: 0, cogs: 0, payroll: 0, otherOpex: 0, otherIncome: 0, otherExpense: 0, capex: 0 };
+  return { revenue: 0, cogs: 0, payroll: 0, otherOpex: 0, otherIncome: 0, otherExpense: 0, capex: 0, depreciation: 0 };
 }
 
 function bumpSeries(map: Map<string, MatrixSeries>, code: string, name: string, monthIndex: number, amount: number) {
@@ -221,6 +221,11 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     totals[monthIndex][lineKey] += signed;
     const branchBuckets = branchTotals.get(row.branchCode) || months.map(() => emptyBucket());
     branchBuckets[monthIndex][lineKey] += signed;
+    // Khấu hao: số ghi nhớ trong OPEX để EBITDA cộng lại (finalizePnl).
+    if (lineKey === "otherOpex" && row.reportGroup === DEPRECIATION_PNL_ACCOUNT.reportGroup) {
+      totals[monthIndex].depreciation += signed;
+      branchBuckets[monthIndex].depreciation += signed;
+    }
     branchTotals.set(row.branchCode, branchBuckets);
     const dept = row.departmentCode || UNASSIGNED_DEPARTMENT;
     if (lineKey === "payroll") bumpSeries(payrollByDepartment, dept, deptLabel(dept), monthIndex, expense);
@@ -336,7 +341,7 @@ export async function getPnlMatrix(year: string, branchCode: string) {
       continue;
     }
     const lineKey = target.metric as PnlLineKey;
-    if (!(lineKey in emptyBucket())) continue;
+    if (!(lineKey in emptyPlanBucket())) continue;
     touchPlan(linePlanByBranch, target.branchCode)[lineKey][monthIndex] += amount;
     hasPlan = true;
   }
@@ -355,24 +360,39 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     }
     return result;
   };
-  const finalizeRaw = (raw: PlanBucket) => months.map((_, monthIndex) => finalizePnl({
+  // Khấu hao kế hoạch = ngân sách set cho hạng mục CP Khấu Hao (nằm trong kế hoạch OPEX) —
+  // cộng lại ra EBITDA kế hoạch giống bên thực tế.
+  const depreciationPlanCode = depreciationCatalogItemCode(pnlItems);
+  // Chỉ khi OPEX của phạm vi đó lấy theo hạng mục (rawPlan) — OPEX set thẳng vào dòng (dữ liệu
+  // cũ) không tách được phần khấu hao nên coi như 0.
+  const depreciationPlanOf = (scope: string) => (
+    depreciationPlanCode && (itemPlanByBranch.get(scope)?.otherOpex || []).some((value) => value > 0)
+      ? planItemByScope.get(`${scope}|${depreciationPlanCode}`)
+      : null
+  ) || zeros12();
+  const finalizeRaw = (raw: PlanBucket, depreciation: number[]) => months.map((_, monthIndex) => finalizePnl({
     revenue: raw.revenue[monthIndex], cogs: raw.cogs[monthIndex], payroll: raw.payroll[monthIndex],
     otherOpex: raw.otherOpex[monthIndex], otherIncome: raw.otherIncome[monthIndex], otherExpense: raw.otherExpense[monthIndex],
     capex: raw.capex[monthIndex],
+    depreciation: depreciation[monthIndex] || 0,
   }));
   // Ngân sách có thể set ở cấp "ALL" (toàn hệ thống) lẫn từng cửa hàng (tab Ngân sách xem theo
   // phạm vi nào thì set ở phạm vi đó). Xem toàn hệ thống: tháng nào có số ở cấp ALL thì lấy số
   // đó, không thì cộng các cửa hàng — tránh cộng trùng hai cấp.
   const realBranches = Array.from(new Set<string>([...linePlanByBranch.keys(), ...itemPlanByBranch.keys()])).filter((code) => code !== "ALL");
   const planByBranch = new Map<string, ReturnType<typeof finalizeRaw>>();
-  for (const branch of realBranches) planByBranch.set(branch, finalizeRaw(rawPlan(branch)));
+  for (const branch of realBranches) planByBranch.set(branch, finalizeRaw(rawPlan(branch), depreciationPlanOf(branch)));
   const allLevel = rawPlan("ALL");
   const branchRaws = realBranches.map((branch) => rawPlan(branch));
   const mergedRaw = emptyPlanBucket();
   for (const key of Object.keys(mergedRaw) as PnlLineKey[]) {
     mergedRaw[key] = months.map((_, monthIndex) => (allLevel[key][monthIndex] > 0 ? allLevel[key][monthIndex] : branchRaws.reduce((sum, raw) => sum + raw[key][monthIndex], 0)));
   }
-  const plans = finalizeRaw(mergedRaw);
+  const allDepreciation = depreciationPlanOf("ALL");
+  const branchDepreciation = realBranches.map((branch) => depreciationPlanOf(branch));
+  const plans = finalizeRaw(mergedRaw, months.map((_, monthIndex) => (allLevel.otherOpex[monthIndex] > 0
+    ? allDepreciation[monthIndex]
+    : branchDepreciation.reduce((sum, series) => sum + series[monthIndex], 0))));
   const planBranches = new Set<string>(realBranches);
   const planLine = (key: string) => plans.map((bucket) => (bucket as unknown as Record<string, number>)[key] || 0);
   // Đường ngân sách trên chart COGS/LƯƠNG (giữ nguyên hợp đồng cũ).

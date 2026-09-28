@@ -25,6 +25,8 @@ const LINE_STYLE: Record<string, LineStyle> = {
   capex: { tone: "orange", icon: "domain_add", title: "CHI PHÍ ĐẦU TƯ BAN ĐẦU (CAPEX)", band: "bg-orange-50 text-orange-700", total: "bg-orange-100 text-orange-900" },
   otherOpex: { tone: "blue", icon: "receipt_long", title: "CHI PHÍ HOẠT ĐỘNG (OPEX)", band: "bg-blue-50 text-blue-700", total: "bg-blue-100 text-blue-900" },
   ebitda: { tone: "violet", icon: "functions", title: "EBITDA", band: "", total: "bg-violet-200/60 text-violet-900" },
+  // Khấu hao đã nằm trong OPEX — dòng này chỉ trừ ra lại sau EBITDA (chốt 28/09/2026).
+  depreciation: { tone: "slate", icon: "trending_down", title: "KHẤU HAO", band: "", total: "bg-slate-100 text-slate-700" },
   otherIncome: { tone: "teal", icon: "savings", title: "THU NHẬP KHÁC", band: "bg-teal-50 text-teal-700", total: "bg-teal-100 text-teal-900" },
   otherExpense: { tone: "rose", icon: "money_off", title: "CHI PHÍ KHÁC", band: "bg-rose-50 text-rose-700", total: "bg-rose-100 text-rose-900" },
   netProfit: { tone: "indigo", icon: "workspace_premium", title: "LỢI NHUẬN VẬN HÀNH", band: "", total: "bg-indigo-200/60 text-indigo-900" },
