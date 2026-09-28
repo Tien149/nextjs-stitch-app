@@ -598,7 +598,8 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "period", label: "Kỳ lương", required: true, type: "text", aliases: ["ky luong", "ky", "period", "payroll period"] },
       { field: "branch_code", label: "Cửa hàng", required: true, type: "text", aliases: ["chi nhanh", "branch", "store"] },
       { field: "department_code", label: "Phòng ban", required: true, type: "text", aliases: ["phong ban", "bo phan", "department"] },
-      { field: "headcount", label: "Số lượng nhân sự", required: false, type: "integer", aliases: ["so luong nhan su", "so nhan su", "so luong nhan vien", "headcount"] },
+      // Số lẻ được (khách 28/09/2026): một người làm chia đôi hai bộ phận ghi 0,5 mỗi bên — lấy 2 chữ số thập phân.
+      { field: "headcount", label: "Số lượng nhân sự", required: false, type: "number", aliases: ["so luong nhan su", "so nhan su", "so luong nhan vien", "headcount"], note: "Nhận số lẻ tới 2 chữ số thập phân (nhân sự làm chia đôi hai bộ phận ghi 0,5)" },
       {
         field: "monthly_salary",
         label: "TỔNG LƯƠNG/THÁNG",

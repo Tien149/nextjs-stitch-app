@@ -2457,7 +2457,8 @@ async function commitDepartmentPayroll(tx: TxClient, batchId: string, rows: Pars
     const period = asText(row.values.period);
     const branchCode = asText(row.values.branch_code).toUpperCase();
     const departmentCode = asText(row.values.department_code).toUpperCase();
-    const headcount = Math.max(0, Math.round(asNumber(row.values.headcount)));
+    // Nhân sự chia đôi hai bộ phận ghi số lẻ (0,5) — giữ 2 chữ số thập phân, không làm tròn về người.
+    const headcount = Math.max(0, Math.round(asNumber(row.values.headcount) * 100) / 100);
     const netAmount = asNumber(row.values.net_amount);
     const companyInsurance = asNumber(row.values.company_insurance);
     const mandatoryInsurance = asNumber(row.values.mandatory_insurance);

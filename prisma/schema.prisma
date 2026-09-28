@@ -1650,8 +1650,9 @@ model PayrollDepartmentRow {
   period           String
   branchCode       String
   departmentCode   String
-  /// Số lượng nhân sự của bộ phận trong kỳ — thay cho việc đếm dòng nhân viên ở mẫu cũ.
-  headcount        Int      @default(0)
+  /// Số lượng nhân sự của bộ phận trong kỳ — thay cho việc đếm dòng nhân viên ở mẫu cũ. Số lẻ tới
+  /// 2 chữ số thập phân (khách 28/09/2026): người làm chia đôi hai bộ phận ghi 0,5 mỗi bên.
+  headcount        Float    @default(0)
   /// TỔNG LƯƠNG/THÁNG: lương tháng theo hợp đồng, chỉ để tham chiếu, KHÔNG cộng vào chi phí.
   monthlySalary    Float    @default(0)
   /// TỔNG LƯƠNG THEO GIỜ CÔNG: phần lương thực tế theo công, mở đầu dải cột cộng vào chi phí.

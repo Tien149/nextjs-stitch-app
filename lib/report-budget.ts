@@ -771,8 +771,9 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
     const series = { code: dept, name: deptLabel(dept), months: monthArray(), total: 0 };
     for (let index = 0; index < 12; index += 1) {
       const count = (headcountSets.get(`${dept}|${index}`)?.size || 0) + (headcountNumbers.get(`${dept}|${index}`) || 0);
-      series.months[index] = count;
-      series.total += count;
+      // Nhân sự chia đôi ghi số lẻ (0,5): cộng số thực rồi tròn 2 chữ số để khỏi ra 20.499999.
+      series.months[index] = Math.round(count * 100) / 100;
+      series.total += series.months[index];
     }
     headcountByDepartment.push(series);
   }
@@ -814,7 +815,7 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
     },
     headcount: {
       byDepartment: headcountByDepartment,
-      total: totalHeadcountSets.map((set, index) => set.size + totalHeadcountNumbers[index]),
+      total: totalHeadcountSets.map((set, index) => Math.round((set.size + totalHeadcountNumbers[index]) * 100) / 100),
     },
   };
 }

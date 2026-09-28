@@ -37,6 +37,8 @@ export type PayrollBudgetData = {
 type RatioDraft = { ratio: string; industryMin: string; industryMax: string; note: string };
 
 const percentText = (value: number | null | undefined) => (value ? (value * 100).toLocaleString("vi-VN", { maximumFractionDigits: 2 }) : "");
+/** Số nhân sự có thể lẻ (0,5 — người làm chia đôi hai bộ phận): in tối đa 2 chữ số thập phân. */
+const headcountText = (value: number) => value.toLocaleString("vi-VN", { maximumFractionDigits: 2 });
 const monthLabel = (period: string) => `${Number(period.slice(5, 7))}/${period.slice(0, 4)}`;
 const parsePercent = (text: string) => Number(text.replace(",", ".")) || 0;
 
@@ -182,7 +184,7 @@ export default function PayrollBudgetTab({
         <KpiBox label={`Doanh thu ${data.year} (gồm SVC)`} value={`${money(revenueYearTotal)} đ`} icon="payments" tone="text-blue-600" />
         <KpiBox label="Lương theo tiêu chuẩn" value={`${money(standardYearTotal)} đ`} icon="flag" tone="text-slate-800" />
         <KpiBox label="Lương thực chi trả" value={`${money(actualYearTotal)} đ`} icon="receipt_long" tone={actualYearTotal > standardYearTotal && standardYearTotal > 0 ? "text-rose-600" : "text-emerald-600"} />
-        <KpiBox label="Nhân sự tháng gần nhất" value={`${headcountLatest} người`} icon="groups" tone="text-slate-800" />
+        <KpiBox label="Nhân sự tháng gần nhất" value={`${headcountText(headcountLatest)} người`} icon="groups" tone="text-slate-800" />
       </div>
 
       <div className="grid xl:grid-cols-[440px_1fr] gap-5">
@@ -399,14 +401,14 @@ export default function PayrollBudgetTab({
                 <tr key={`hc-${row.code}`} className="border-t border-slate-100">
                   <Cell><b>{row.name}</b></Cell>
                   {row.months.map((value, index) => (
-                    <Cell key={data.months[index]} right>{value || "-"}</Cell>
+                    <Cell key={data.months[index]} right>{value ? headcountText(value) : "-"}</Cell>
                   ))}
                 </tr>
               ))}
               <tr className="border-t border-slate-200 bg-slate-50 font-bold">
                 <Cell><b>Tổng nhân sự</b></Cell>
                 {data.headcount.total.map((value, index) => (
-                  <Cell key={data.months[index]} right><b>{value || "-"}</b></Cell>
+                  <Cell key={data.months[index]} right><b>{value ? headcountText(value) : "-"}</b></Cell>
                 ))}
               </tr>
               <tr className="border-t border-slate-100">
