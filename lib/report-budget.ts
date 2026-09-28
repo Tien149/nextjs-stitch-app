@@ -322,10 +322,17 @@ export async function getPnlMatrix(year: string, branchCode: string) {
   /** Target hạng mục theo "<phạm vi>|<mã hạng mục>" — gộp lại sau theo cùng luật ALL-trước. */
   const planItemByScope = new Map<string, number[]>();
   const itemLineByCode = new Map<string, PnlLineKey>();
+  /** Nhóm hạng mục -> dòng KQKD + các hạng mục của nó (ngân sách set ở cấp nhóm, khách yêu cầu 28/09/2026). */
+  const groupInfoByCode = new Map<string, { lineKey: PnlLineKey; itemCodes: string[] }>();
   for (const line of PNL_STATEMENT_LINES) {
     if (line.subtotal) continue;
-    for (const group of tree.groupsOf(line.key as PnlLineKey)) for (const item of group.items) itemLineByCode.set(item.code, line.key as PnlLineKey);
+    for (const group of tree.groupsOf(line.key as PnlLineKey)) {
+      for (const item of group.items) itemLineByCode.set(item.code, line.key as PnlLineKey);
+      groupInfoByCode.set(group.code, { lineKey: line.key as PnlLineKey, itemCodes: group.items.map((item) => item.code) });
+    }
   }
+  /** Target set thẳng ở nhóm theo "<phạm vi>|<mã nhóm>". */
+  const planGroupByScope = new Map<string, number[]>();
   type PlanBucket = Record<PnlLineKey, number[]>;
   const emptyPlanBucket = (): PlanBucket => ({ revenue: zeros12(), cogs: zeros12(), payroll: zeros12(), otherOpex: zeros12(), otherIncome: zeros12(), otherExpense: zeros12(), capex: zeros12() });
   /** Target set thẳng vào dòng, theo cửa hàng. */
@@ -342,6 +349,16 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     const monthIndex = months.indexOf(target.period);
     if (monthIndex < 0) continue;
     const amount = resolveTargetAmount(target);
+    if (target.metric.startsWith("pnlGroup:")) {
+      const code = target.metric.slice("pnlGroup:".length);
+      if (!groupInfoByCode.has(code)) continue;
+      const scopeKey = `${target.branchCode}|${code}`;
+      const series = planGroupByScope.get(scopeKey) || zeros12();
+      series[monthIndex] += amount;
+      planGroupByScope.set(scopeKey, series);
+      hasPlan = true;
+      continue;
+    }
     if (target.metric.startsWith("pnlItem:")) {
       const code = target.metric.slice("pnlItem:".length);
       const lineKey = itemLineByCode.get(code);
@@ -358,6 +375,21 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     if (!(lineKey in emptyPlanBucket())) continue;
     touchPlan(linePlanByBranch, target.branchCode)[lineKey][monthIndex] += amount;
     hasPlan = true;
+  }
+  /**
+   * Nhóm đã set ngân sách riêng thì THAY phần cộng từ hạng mục của nhóm đó (cùng luật tab Ngân
+   * sách): kế hoạch dòng = Σ nhóm, mỗi nhóm = số của nhóm nếu set, không thì Σ hạng mục.
+   */
+  for (const [scopeKey, series] of planGroupByScope) {
+    const [scope, code] = scopeKey.split("|");
+    const info = groupInfoByCode.get(code);
+    if (!info) continue;
+    const bucket = touchPlan(itemPlanByBranch, scope);
+    for (let monthIndex = 0; monthIndex < 12; monthIndex += 1) {
+      if (!(series[monthIndex] > 0)) continue;
+      const itemsSum = info.itemCodes.reduce((sum, itemCode) => sum + (planItemByScope.get(`${scope}|${itemCode}`)?.[monthIndex] || 0), 0);
+      bucket[info.lineKey][monthIndex] += series[monthIndex] - itemsSum;
+    }
   }
   /**
    * Kế hoạch của một phạm vi (cửa hàng hoặc "ALL"): dòng OPEX ưu tiên tổng hạng mục, dòng khác
@@ -423,6 +455,18 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     }
     planItemByCode.set(code, merged);
   }
+  // Cùng luật gộp ALL-trước cho kế hoạch set ở cấp nhóm.
+  const planGroupByCode = new Map<string, number[]>();
+  for (const [scopeKey, series] of planGroupByScope) {
+    const [scope, code] = scopeKey.split("|");
+    const merged = planGroupByCode.get(code) || zeros12();
+    const allSeries = planGroupByScope.get(`ALL|${code}`);
+    for (let monthIndex = 0; monthIndex < 12; monthIndex += 1) {
+      if (allSeries && allSeries[monthIndex] > 0) merged[monthIndex] = allSeries[monthIndex];
+      else if (scope !== "ALL") merged[monthIndex] += series[monthIndex];
+    }
+    planGroupByCode.set(code, merged);
+  }
 
   /**
    * Bảng hoạch định KHÔNG hiện hạng mục "Chưa phân loại P&L" (yêu cầu 09/09/2026): không ai
@@ -480,7 +524,13 @@ export async function getPnlMatrix(year: string, branchCode: string) {
       return { ...item, plan, planTotal: plan ? plan.reduce((sum, value) => sum + value, 0) : null };
     });
     const detailLine = lineKey === "otherOpex";
-    const plan = detailLine ? months.map((_, monthIndex) => items.reduce((sum, item) => sum + (item.plan?.[monthIndex] || 0), 0)) : null;
+    const groupPlan = planGroupByCode.get(group.code);
+    // Nhóm set riêng thì lấy số của nhóm tháng đó, không thì cộng hạng mục.
+    const plan = detailLine || groupPlan
+      ? months.map((_, monthIndex) => (groupPlan && groupPlan[monthIndex] > 0
+        ? groupPlan[monthIndex]
+        : items.reduce((sum, item) => sum + (item.plan?.[monthIndex] || 0), 0)))
+      : null;
     return { ...group, items, plan, planTotal: plan ? plan.reduce((sum, value) => sum + value, 0) : null };
   });
 

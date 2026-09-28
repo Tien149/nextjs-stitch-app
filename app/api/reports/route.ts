@@ -265,11 +265,15 @@ const budgetLines: BudgetLineConfig[] = [
   { key: "payroll", label: "Chi phí nhân sự", kind: "EXPENSE", scope: "TOTAL", hint: "Set tổng ở đây; tỷ trọng lương từng bộ phận set ở tab Ngân sách nhân sự." },
   // Khấu hao là hạng mục "CP Khấu Hao" trong Chi phí cố định (set ngân sách như hạng mục OPEX khác),
   // không còn dòng Khấu hao riêng — theo nét vẽ chị Bình 06/09/2026.
-  { key: "otherOpex", label: "Chi phí hoạt động (OPEX)", kind: "EXPENSE", scope: "DETAIL", hint: "Set ngân sách từng hạng mục P&L (kể cả CP Khấu Hao); dòng tổng và nhóm tự cộng." },
-  { key: "ebitda", label: "EBITDA", kind: "PROFIT", scope: "DERIVED", hint: "= Lợi nhuận gộp − ngân sách nhân sự − ngân sách CAPEX − ngân sách OPEX + ngân sách CP Khấu Hao (EBITDA cộng lại khấu hao)." },
+  { key: "otherOpex", label: "Chi phí hoạt động (OPEX)", kind: "EXPENSE", scope: "DETAIL", hint: "Set ngân sách theo NHÓM (Chi phí cố định, Marketing, Biến đổi...) hoặc từng hạng mục P&L (kể cả CP Khấu Hao). Nhóm đã set thì lấy số của nhóm, chưa set thì cộng từ hạng mục; dòng tổng tự cộng các nhóm." },
+  // Khách chốt 28/09/2026: ngân sách chỉ tiêu cuối là LỢI NHUẬN VẬN HÀNH (dòng 11 KQKD, trường
+  // netProfit), bỏ dòng EBITDA. Cùng công thức với số thực tế (finalizePnl).
+  { key: "netProfit", label: "Lợi nhuận vận hành", kind: "PROFIT", scope: "DERIVED", hint: "= Lợi nhuận gộp − ngân sách nhân sự − ngân sách CAPEX − ngân sách OPEX + ngân sách thu nhập khác − ngân sách chi phí khác." },
   { key: "cashRemaining", label: "Nguồn tiền còn lại", kind: "CASH", scope: "TOTAL", hint: "Target tiền còn lại cuối kỳ, đối chiếu ở tab Nguồn tiền." },
 ];
 const PNL_ITEM_METRIC_PREFIX = "pnlItem:";
+/** Ngân sách set thẳng ở cấp NHÓM hạng mục P&L (Chi phí cố định, Marketing...) — khách yêu cầu 28/09/2026. */
+const PNL_GROUP_METRIC_PREFIX = "pnlGroup:";
 const BUDGET_TOTAL_METRICS = budgetLines.filter((line) => line.scope === "TOTAL").map((line) => line.key);
 const BUDGET_EXPENSE_LINES = budgetLines.filter((line) => line.kind === "EXPENSE").map((line) => line.key);
 
@@ -310,10 +314,18 @@ async function getBudgetReport(period: string, branchCode: string) {
    * Ngân sách (set ở tab Dự báo P&L theo hạng mục nhóm Chi phí đầu tư), nhưng EBITDA thực tế có
    * trừ CAPEX nên target EBITDA cũng phải trừ.
    */
-  const capexTarget = () => (statementByKey.get("capex")?.groups || [])
-    .flatMap((group) => group.items)
-    .filter((item) => item.code !== "UNCLASSIFIED")
-    .reduce((sum, item) => sum + resolveTarget(`${PNL_ITEM_METRIC_PREFIX}${item.code}`).target, 0);
+  const isRealGroup = (code: string) => code !== PNL_UNGROUPED_CODE && code !== "UNCLASSIFIED";
+  /** Ngân sách một nhóm: set thẳng ở nhóm thì lấy số đó, chưa set thì cộng các hạng mục bên dưới. */
+  const groupTargetOf = (group: { code: string; items: Array<{ code: string }> }) => {
+    const own = isRealGroup(group.code) ? resolveTarget(`${PNL_GROUP_METRIC_PREFIX}${group.code}`) : noTarget;
+    if (own.hasTarget) return own.target;
+    return group.items
+      .filter((item) => item.code !== "UNCLASSIFIED")
+      .reduce((sum, item) => sum + resolveTarget(`${PNL_ITEM_METRIC_PREFIX}${item.code}`).target, 0);
+  };
+  /** Tổng ngân sách theo nhóm/hạng mục của một dòng KQKD không hiện trên bảng (CAPEX, thu nhập / chi phí khác). */
+  const lineDetailTarget = (key: string) => (statementByKey.get(key)?.groups || []).reduce((sum, group) => sum + groupTargetOf(group), 0);
+  const capexTarget = () => lineDetailTarget("capex");
   const totals = pnl.total as unknown as Record<string, number>;
   const rows: BudgetRow[] = [];
   const lineTarget: Record<string, number> = {};
@@ -326,15 +338,15 @@ async function getBudgetReport(period: string, branchCode: string) {
       const hasTarget = !!lineHasTarget.revenue;
       const target = line.key === "grossProfit"
         ? (lineTarget.revenue || 0) - (lineTarget.cogs || 0)
-        // Cùng công thức với số thực tế (finalizePnl): trừ cả CAPEX (từ 24/09/2026) — trước đây
-        // target bỏ sót CAPEX nên thực tế luôn thấp hơn target đúng bằng tiền đầu tư. EBITDA cộng
-        // lại khấu hao (chốt 28/09/2026) nên target cũng cộng lại ngân sách hạng mục CP Khấu Hao.
+        // Lợi nhuận vận hành — cùng công thức với số thực tế (finalizePnl.netProfit): trừ cả CAPEX
+        // (từ 24/09/2026), cộng thu nhập khác, trừ chi phí khác (ngân sách set theo hạng mục ở
+        // tab Hoạch định P&L). Khấu hao nằm sẵn trong OPEX nên không cộng lại như EBITDA.
         : (lineTarget.grossProfit || 0) - (lineTarget.payroll || 0) - capexTarget() - (lineTarget.otherOpex || 0)
-          + (pnl.depreciationItemCode ? resolveTarget(`${PNL_ITEM_METRIC_PREFIX}${pnl.depreciationItemCode}`).target : 0);
+          + lineDetailTarget("otherIncome") - lineDetailTarget("otherExpense");
       lineTarget[line.key] = target;
       lineHasTarget[line.key] = hasTarget;
       rows.push(makeRow(
-        { key: line.key, parentKey: null, level: 0, label: line.label, code: null, kind: line.kind, scope: "DERIVED", metric: null, drilldown: line.key === "ebitda" ? { metric: line.key, line: line.key } : null, hint: line.hint, warning: null },
+        { key: line.key, parentKey: null, level: 0, label: line.label, code: null, kind: line.kind, scope: "DERIVED", metric: null, drilldown: null, hint: line.hint, warning: null },
         actual,
         { target, targetMode: null, targetPercent: null, standard: null, hasTarget },
       ));
@@ -383,6 +395,14 @@ async function getBudgetReport(period: string, branchCode: string) {
           resolved,
         ));
       }
+      // Set ngân sách thẳng ở nhóm (khách yêu cầu 28/09/2026): nhóm đã set thì lấy số của nhóm,
+      // hạng mục bên dưới vẫn set được để theo dõi chi tiết nhưng không cộng chồng lên nhóm.
+      const groupMetric = line.scope === "DETAIL" && isRealGroup(group.code) ? `${PNL_GROUP_METRIC_PREFIX}${group.code}` : null;
+      const groupOwn = groupMetric ? resolveTarget(groupMetric) : noTarget;
+      if (groupOwn.hasTarget) {
+        groupTarget = groupOwn.target;
+        groupHasTarget = true;
+      }
       detailTarget += groupTarget;
       detailHasTarget = detailHasTarget || groupHasTarget;
       children.push(makeRow(
@@ -394,13 +414,15 @@ async function getBudgetReport(period: string, branchCode: string) {
           code: group.code === PNL_UNGROUPED_CODE || group.code === "UNCLASSIFIED" ? null : group.code,
           kind: line.kind,
           scope: line.scope === "DETAIL" ? "ROLLUP" : "INFO",
-          metric: null,
+          metric: groupMetric,
           drilldown: null,
           hint: null,
           warning: group.code === PNL_UNGROUPED_CODE ? "Hạng mục chưa gắn nhóm P&L — khai nhóm ở Cài đặt > Danh mục." : null,
         },
         group.amount,
-        line.scope === "DETAIL" ? { target: groupTarget, targetMode: null, targetPercent: null, standard: null, hasTarget: groupHasTarget } : noTarget,
+        line.scope === "DETAIL"
+          ? (groupOwn.hasTarget ? groupOwn : { target: groupTarget, targetMode: null, targetPercent: null, standard: null, hasTarget: groupHasTarget })
+          : noTarget,
       ), ...itemRows);
     }
 
@@ -1516,12 +1538,16 @@ export async function POST(request: Request) {
       await assertPeriodOpen({ period, branchCode }, "sửa ngân sách");
       // Chỉ nhận đúng hai kiểu khoá: dòng set tổng (revenue/cogs/payroll/cashRemaining)
       // hoặc hạng mục P&L đang khai trong danh mục. Dòng OPEX, Lợi nhuận gộp, LN hoạt động tự cộng/suy ra.
-      if (metric.startsWith(PNL_ITEM_METRIC_PREFIX)) {
+      if (metric.startsWith(PNL_GROUP_METRIC_PREFIX)) {
+        const groupCode = metric.slice(PNL_GROUP_METRIC_PREFIX.length);
+        const group = await prisma.masterDataItem.findFirst({ where: { type: "PNL_GROUP", code: groupCode, deletedAt: null } });
+        if (!group) businessError(`Nhóm hạng mục P&L "${groupCode}" không có trong danh mục.`);
+      } else if (metric.startsWith(PNL_ITEM_METRIC_PREFIX)) {
         const itemCode = metric.slice(PNL_ITEM_METRIC_PREFIX.length);
         const item = await prisma.masterDataItem.findFirst({ where: { type: "PNL_ITEM", code: itemCode, deletedAt: null } });
         if (!item) businessError(`Hạng mục P&L "${itemCode}" không có trong danh mục. Khai ở Cài đặt > Danh mục > Hạng mục P&L trước.`);
       } else if (!BUDGET_TOTAL_METRICS.includes(metric)) {
-        businessError("Chỉ tiêu này không set trực tiếp được: dòng OPEX cộng từ hạng mục, Lợi nhuận gộp và EBITDA suy từ các target đã set.");
+        businessError("Chỉ tiêu này không set trực tiếp được: dòng OPEX cộng từ nhóm / hạng mục, Lợi nhuận gộp và Lợi nhuận vận hành suy từ các target đã set.");
       }
       // Trị giá 0 nghĩa là bỏ ngân sách — xoá hẳn dòng thay vì để một target bằng 0 gây hiểu nhầm.
       if (cleanText(body.targetMode) !== "PERCENT_REVENUE" && toNumber(body.targetValue) <= 0) {

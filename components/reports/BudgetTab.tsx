@@ -56,6 +56,11 @@ type EditorState = { key: string; metric: string; mode: "AMOUNT" | "PERCENT_REVE
 const kindLabel: Record<BudgetRow["kind"], string> = { REVENUE: "Doanh thu", EXPENSE: "Chi phí", PROFIT: "Lợi nhuận", CASH: "Nguồn tiền" };
 const percentText = (ratio: number) => (ratio * 100).toLocaleString("vi-VN", { maximumFractionDigits: 2 });
 const isEmptyAmount = (amount: number | null) => amount === null || Math.abs(amount) <= 0.5;
+/**
+ * Dòng có ngân sách CỦA CHÍNH NÓ. Dòng nhóm (ROLLUP) có thể mang tổng các hạng mục bên dưới mà
+ * bản thân chưa set gì — khi đó targetMode null, nút phải là "Set ngân sách" chứ không phải "Sửa".
+ */
+const hasOwnTarget = (row: BudgetRow) => (row.scope === "ROLLUP" ? row.targetMode !== null : row.hasTarget);
 /** Doanh thu là gốc quy đổi, nguồn tiền không phải chi phí — hai dòng này chỉ set trị giá. */
 const amountOnly = (row: BudgetRow) => row.metric === "revenue" || row.metric === "cashRemaining";
 
@@ -205,7 +210,7 @@ export default function BudgetTab({
   const percentBase = data.summary.percentBase ?? revenueTarget;
   const percentBaseLabel = data.summary.percentBaseIsActual === false ? "DT kế hoạch" : "DT thực tế";
   const editableCount = data.rows.filter((row) => row.metric).length;
-  const setCount = data.rows.filter((row) => row.metric && row.hasTarget).length;
+  const setCount = data.rows.filter((row) => row.metric && hasOwnTarget(row)).length;
 
   return (
     <div className="space-y-5">
@@ -225,7 +230,7 @@ export default function BudgetTab({
       <section className="table-panel">
         <PanelHeader
           title="Ngân sách theo hạng mục P&L"
-          subtitle={`Doanh thu, giá vốn, nhân sự, khấu hao set một con số tổng; OPEX set từng hạng mục P&L rồi tự cộng lên. Đã set ${setCount}/${editableCount} chỉ tiêu cho kỳ ${period} · ${branchLabel}.`}
+          subtitle={`Doanh thu, giá vốn, nhân sự, khấu hao set một con số tổng; OPEX set theo nhóm (Chi phí cố định, Marketing...) hoặc từng hạng mục rồi tự cộng lên. Đã set ${setCount}/${editableCount} chỉ tiêu cho kỳ ${period} · ${branchLabel}.`}
           exportFileName={`ngan_sach_${period}_${branchCode}`}
         />
         <div className="px-4 py-2.5 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3 bg-slate-50/60">
@@ -300,10 +305,14 @@ export default function BudgetTab({
                               {!row.target && " — kỳ chưa có doanh thu thực tế, set target Doanh thu để quy đổi"}
                             </span>
                           )}
-                          {row.scope === "ROLLUP" && <span className="block text-[11px] font-normal text-slate-500">cộng từ hạng mục</span>}
+                          {row.scope === "ROLLUP" && (
+                            <span className="block text-[11px] font-normal text-slate-500">
+                              {row.targetMode !== null ? "set ở cấp nhóm · hạng mục bên dưới chỉ theo dõi" : "cộng từ hạng mục"}
+                            </span>
+                          )}
                           {row.scope === "DETAIL" && row.level === 0 && row.targetMode === null && (
                             <span className="block text-[11px] font-normal text-slate-500">
-                              cộng từ hạng mục{row.standard !== null && row.standard > 0 && ` · chuẩn theo DT thực tế: ${money(Math.round(row.standard))} đ`}
+                              cộng từ nhóm / hạng mục{row.standard !== null && row.standard > 0 && ` · chuẩn theo DT thực tế: ${money(Math.round(row.standard))} đ`}
                             </span>
                           )}
                           {row.scope === "DERIVED" && <span className="block text-[11px] font-normal text-slate-500">suy từ target đã set</span>}
@@ -343,8 +352,8 @@ export default function BudgetTab({
                       <div className="flex items-center justify-center gap-3" onClick={(event) => event.stopPropagation()}>
                         {editable && (
                           <button type="button" className="text-xs text-blue-600 font-bold hover:underline flex items-center gap-1" onClick={() => (isEditing ? setEditor(null) : openEditor(row))}>
-                            <span className="material-symbols-outlined text-sm">{isEditing ? "close" : row.hasTarget ? "edit" : "add_circle"}</span>
-                            {isEditing ? "Đóng" : row.hasTarget ? "Sửa" : "Set ngân sách"}
+                            <span className="material-symbols-outlined text-sm">{isEditing ? "close" : hasOwnTarget(row) ? "edit" : "add_circle"}</span>
+                            {isEditing ? "Đóng" : hasOwnTarget(row) ? "Sửa" : "Set ngân sách"}
                           </button>
                         )}
                         {row.drilldown && (
@@ -407,7 +416,7 @@ export default function BudgetTab({
                               <span className="material-symbols-outlined text-lg">save</span>Lưu
                             </button>
                             <button type="button" disabled={saving} onClick={() => setEditor(null)} className="text-xs font-bold text-slate-600 border border-slate-200 rounded px-3 py-2 hover:bg-white bg-white">Huỷ</button>
-                            {row.hasTarget && (
+                            {hasOwnTarget(row) && (
                               <button type="button" disabled={saving} onClick={() => void removeTarget(row)} className="text-xs font-bold text-rose-600 border border-rose-200 rounded px-3 py-2 hover:bg-rose-50 bg-white">Bỏ ngân sách</button>
                             )}
                           </div>
