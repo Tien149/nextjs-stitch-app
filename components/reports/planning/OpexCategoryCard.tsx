@@ -70,9 +70,10 @@ export default function OpexCategoryCard({ data, picked, monthHeaders }: { data:
   const actual = totals.actual;
   const budget = toActualBasis(totals.budget) || [];
   const hasBudget = budget.some((value) => Math.abs(value) > 0.5);
-  // Chỉ tính các tháng đang tick mà ĐÃ có số (doanh thu hoặc chi phí): tháng chưa tới không kéo
-  // bình quân xuống, không cộng ngân sách của tháng chưa chi vào so sánh, không so "−100%".
-  const active = monthIndexes.map((index) => Math.abs(revenue[index]) + Math.abs(actual[index]) > 0.5);
+  // Chỉ tính các tháng đang tick mà ĐÃ CÓ DOANH THU thực tế: khối này so chi phí với doanh thu,
+  // tháng chưa có doanh thu (tháng tới, hoặc trước ngày lên hệ thống — T7 của NAM MÊ còn sót vài
+  // trăm nghìn chi phí, khách báo 28/09/2026) không có tỷ trọng để so nên không vẽ, không cộng.
+  const active = monthIndexes.map((index) => Math.abs(revenue[index]) > 0.5);
   const shown = [...picked].sort((a, b) => a - b).filter((index) => active[index]);
 
   const monthRows = shown.map((index) => {
@@ -214,7 +215,7 @@ export default function OpexCategoryCard({ data, picked, monthHeaders }: { data:
   return (
     <Card
       title={`${label} so với doanh thu`}
-      subtitle="Ngân sách = tỷ trọng phân bổ (tab Ngân sách: chi phí ÷ doanh thu kế hoạch) × doanh thu thực tế từng tháng; tháng chưa có doanh thu giữ số dự trù. Nhóm OPEX nhận theo tên: cố định / biến đổi / marketing; nhóm khác và chứng từ chưa gán hạng mục tính vào CP cố định."
+      subtitle="Ngân sách = tỷ trọng phân bổ (tab Ngân sách: chi phí ÷ doanh thu kế hoạch) × doanh thu thực tế từng tháng; tháng chưa có doanh thu giữ số dự trù. Chỉ tính tháng đã có doanh thu thực tế. Nhóm OPEX nhận theo tên: cố định / biến đổi / marketing; nhóm khác và chứng từ chưa gán hạng mục tính vào CP cố định."
       icon="receipt_long"
       right={<Segmented value={categoryId} onChange={setCategoryId} options={CATEGORIES.map((item) => ({ id: item.id, label: item.label }))} />}
       bodyClassName="px-2 pb-4 space-y-4"
