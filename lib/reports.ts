@@ -121,8 +121,10 @@ export function pnlLineKeyOf(account: { accountType: string; reportGroup: string
     // sổ) vẫn là tiền đầu tư ban đầu: đứng ở dòng CAPEX (trừ vào lợi nhuận hoạt động).
     if (pnlItem?.capex && account.reportGroup !== "DEPRECIATION" && account.reportGroup !== "PAYROLL") return "capex";
     if (account.reportGroup === "PAYROLL") return "payroll";
+    // Khấu hao (6424) luôn là OPEX — hạng mục CP Khấu Hao trong Chi phí cố định, và là chỗ số ghi
+    // nhớ `depreciation` (dòng 8. Khấu hao / EBITDA) đọc. Không để tên hạng mục kéo sang nhân sự.
+    if (account.reportGroup === "DEPRECIATION") return "otherOpex";
     if (isPayrollPnlItem(pnlItem)) return "payroll";
-    // Khấu hao (6424) cũng là OPEX: nằm ở hạng mục CP Khấu Hao trong Chi phí cố định.
     return "otherOpex";
   }
   if (account.accountType === "OTHER_INCOME") return "otherIncome";

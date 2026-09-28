@@ -26,13 +26,20 @@ test("hạng mục thuộc nhóm nhân sự cũng là chi phí nhân sự", () =
   assert.equal(isPayrollPnlItem(null), false);
 });
 
-test("bút toán 6428 gắn hạng mục lương lên dòng Chi phí nhân sự, các dòng khác giữ nguyên", () => {
+test("bút toán 6428 lên dòng theo NHÓM của hạng mục; chưa gắn nhóm mới đoán theo tên", () => {
   const opex = { accountType: "OPEX", reportGroup: "OPEX" };
-  assert.equal(pnlLineKeyOf(opex, { name: "Chi phí lương người lao động", groupName: "Chi phí cố định" }), "payroll");
+  // Chị Bình 06/09/2026: hạng mục đứng nhóm nào lên theo nhóm đó — "lương" trong Chi phí cố
+  // định ở lại Chi phí cố định (OPEX), không bị tên kéo sang dòng nhân sự.
+  assert.equal(pnlLineKeyOf(opex, { name: "Chi phí lương người lao động", groupName: "Chi phí cố định" }), "otherOpex");
+  assert.equal(pnlLineKeyOf(opex, { name: "Thưởng KPI", groupName: "Chi phí nhân sự" }), "payroll");
+  assert.equal(pnlLineKeyOf(opex, { name: "Chi phí lương người lao động" }), "payroll");
   assert.equal(pnlLineKeyOf(opex, { name: "Chi phí thuê mặt bằng", groupName: "Chi phí cố định" }), "otherOpex");
   assert.equal(pnlLineKeyOf(opex), "otherOpex");
   assert.equal(pnlLineKeyOf({ accountType: "OPEX", reportGroup: "PAYROLL" }), "payroll");
-  assert.equal(pnlLineKeyOf({ accountType: "OPEX", reportGroup: "DEPRECIATION" }, { name: "Lương" }), "depreciation");
+  // Khấu hao luôn nằm trong OPEX (hạng mục CP Khấu Hao) — không có dòng KQKD riêng để ghi tiền,
+  // dòng "8. Khấu hao" chỉ là số ghi nhớ đọc từ đây.
+  assert.equal(pnlLineKeyOf({ accountType: "OPEX", reportGroup: "DEPRECIATION" }), "otherOpex");
+  assert.equal(pnlLineKeyOf({ accountType: "OPEX", reportGroup: "DEPRECIATION" }, { name: "Lương" }), "otherOpex");
   assert.equal(pnlLineKeyOf({ accountType: "COGS", reportGroup: "COGS" }, { name: "Lương bếp" }), "cogs");
 });
 
