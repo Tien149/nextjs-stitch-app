@@ -1,7 +1,9 @@
 import { REVENUE_DEPARTMENT_CODES, departmentFromWarehouseGroup } from "@/lib/revenue-department";
 
 /**
- * GIÁ VỐN THEO KHO (chị Bình chốt 27/09/2026, áp dụng từ kỳ 2026-09 — chốt 28/09/2026).
+ * GIÁ VỐN THEO KHO (chị Bình chốt 27/09/2026). Áp dụng từ kỳ 2026-08 = ngày hệ thống lên chạy
+ * (01/08/2026) — ban đầu chốt 2026-09, khách dời về 08 ngày 28/09/2026 để tháng 8 cũng có COGS
+ * Bếp/Bar theo kho. Kỳ 08 phải Ghi sổ lại để phiếu chi mua chuyển từ 632 sang 152.
  *
  * Từ kỳ này P&L không lấy giá vốn từ tiền mua nữa mà từ HÀNG RỜI KHỎI KHO:
  *   COGS = xuất bán + xuất hủy + xuất test món + xuất khác + chênh kiểm kê (thiếu − thừa).
@@ -19,9 +21,9 @@ import { REVENUE_DEPARTMENT_CODES, departmentFromWarehouseGroup } from "@/lib/re
  */
 
 /** Kỳ đầu tiên áp dụng giá vốn theo kho. Kỳ trước đó giữ nguyên cách cũ (phiếu chi mua -> 632). */
-export const INVENTORY_COGS_START_PERIOD = "2026-09";
-/** 00:00 ngày 01/09/2026 giờ Việt Nam. */
-export const INVENTORY_COGS_START_DATE = new Date("2026-09-01T00:00:00+07:00");
+export const INVENTORY_COGS_START_PERIOD = "2026-08";
+/** 00:00 ngày 01/08/2026 giờ Việt Nam. */
+export const INVENTORY_COGS_START_DATE = new Date("2026-08-01T00:00:00+07:00");
 
 export function inventoryCogsActive(date: Date | string) {
   const value = date instanceof Date ? date : new Date(date);

@@ -3,7 +3,7 @@
  * lib/accounting.ts — khách chốt 28/09/2026):
  *  - kỳ còn phiếu chi mua ghi Nợ 632 kiểu cũ -> NEEDS_SYNC, không ghi thêm (tránh giá vốn đôi);
  *  - Ghi sổ kỳ một lần xong -> phiếu kho thêm / bỏ tự lên / xuống P&L, không cần bấm lại;
- *  - kỳ khoá -> LOCKED; kỳ trước mốc 2026-09 -> bỏ qua.
+ *  - kỳ khoá -> LOCKED; kỳ trước mốc 2026-08 -> bỏ qua.
  *
  * DB thật, cửa hàng CGRP riêng, tự dọn. Chạy: npm run test:inventory-cogs-repost
  */
@@ -107,11 +107,11 @@ test("hoàn tác rã (phiếu xuất bị xoá): bút toán giá vốn của nó
   assert.deepEqual((await cogsEntries()).map((entry) => entry.sourceCode), ["XB_CGRP_1"]);
 });
 
-test("kỳ khoá sổ -> LOCKED; ngày trước 2026-09 và cửa hàng ALL -> bỏ qua", async () => {
+test("kỳ khoá sổ -> LOCKED; ngày trước 2026-08 và cửa hàng ALL -> bỏ qua", async () => {
   await prisma.accountingPeriod.create({ data: { period: "2026-10", branchCode: BRANCH, status: "CLOSED" } });
   const results = await repostInventoryCogs([
     { date: vn("2026-10-05T07:00:00"), branchCode: BRANCH },
-    { date: vn("2026-08-20T07:00:00"), branchCode: BRANCH },
+    { date: vn("2026-07-20T07:00:00"), branchCode: BRANCH },
     { date: vn("2026-09-05T07:00:00"), branchCode: "ALL" },
   ], "test");
   assert.deepEqual(results.map((row) => [row.period, row.status]), [["2026-10", "LOCKED"]]);

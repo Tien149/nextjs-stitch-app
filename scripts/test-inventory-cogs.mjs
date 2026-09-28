@@ -1,6 +1,6 @@
 /**
  * Giá vốn theo kho — COGS Bếp / COGS Bar, bao bì vào vật tư tiêu hao, mua hàng nhóm Giá vốn ghi
- * Nợ 152 từ kỳ 2026-09 (chị Bình chốt 27-28/09/2026). lib/inventory-cogs.ts.
+ * Nợ 152 từ kỳ 2026-08 (chị Bình chốt 27/09; mốc dời từ 09 về 08 ngày 28/09/2026). lib/inventory-cogs.ts.
  * Chạy: npm run test:inventory-cogs
  */
 import assert from "node:assert/strict";
@@ -61,10 +61,11 @@ test("xuất / nhập chế biến, nhập mua, điều chuyển không sinh gi�
   assert.deepEqual(planInventoryCogsJournal({ transactionType: "XUAT_BAN", warehouseGroup: "BEP", lines: [{ totalCost: 0, itemType: "RAW_MATERIAL" }] }), []);
 });
 
-test("mốc áp dụng: từ 00:00 01/09/2026 giờ Việt Nam", () => {
-  assert.equal(inventoryCogsActive(new Date("2026-08-31T16:59:59Z")), false);
-  assert.equal(inventoryCogsActive(new Date("2026-08-31T17:00:00Z")), true);
-  assert.equal(cogsPurchaseAccount(new Date("2026-08-15T00:00:00Z")), "632");
+test("mốc áp dụng: từ 00:00 01/08/2026 giờ Việt Nam (ngày hệ thống lên chạy)", () => {
+  assert.equal(inventoryCogsActive(new Date("2026-07-31T16:59:59Z")), false);
+  assert.equal(inventoryCogsActive(new Date("2026-07-31T17:00:00Z")), true);
+  assert.equal(cogsPurchaseAccount(new Date("2026-07-15T00:00:00Z")), "632");
+  assert.equal(cogsPurchaseAccount(new Date("2026-08-15T00:00:00Z")), "152");
   assert.equal(cogsPurchaseAccount(new Date("2026-09-15T00:00:00Z")), "152");
 });
 
@@ -73,14 +74,14 @@ const purchase = {
   pnlItemCode: "PNL_GV_NVL", depositAction: null, debtAction: null,
 };
 
-test("phiếu chi mua nguyên liệu từ kỳ 09: Nợ 152, bỏ hạng mục P&L", () => {
-  const { lines } = voucherJournalLines({ ...purchase, voucherDate: new Date("2026-09-05T03:00:00Z") }, "COGS", "COGS");
+test("phiếu chi mua nguyên liệu từ kỳ 08: Nợ 152, bỏ hạng mục P&L", () => {
+  const { lines } = voucherJournalLines({ ...purchase, voucherDate: new Date("2026-08-05T03:00:00Z") }, "COGS", "COGS");
   assert.equal(lines[0].accountCode, "152");
   assert.equal(lines[0].pnlItemCode, null);
 });
 
-test("phiếu chi mua trước kỳ 09 giữ nguyên Nợ 632 như cũ", () => {
-  const { lines } = voucherJournalLines({ ...purchase, voucherDate: new Date("2026-08-20T03:00:00Z") }, "COGS", "COGS");
+test("phiếu chi mua trước kỳ 08 giữ nguyên Nợ 632 như cũ", () => {
+  const { lines } = voucherJournalLines({ ...purchase, voucherDate: new Date("2026-07-20T03:00:00Z") }, "COGS", "COGS");
   assert.equal(lines[0].accountCode, "632");
   assert.equal(lines[0].pnlItemCode, "PNL_GV_NVL");
 });

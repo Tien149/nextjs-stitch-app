@@ -33,6 +33,20 @@ export function departmentFromWarehouseGroup(group: unknown): string | null {
 }
 
 /**
+ * Tên bộ phận theo mã, nhận cả mã nội bộ KIT / BAR / FOH (doanh thu POS, giá vốn theo kho) khi
+ * danh mục Bộ phận đặt mã khác — VD danh mục khai "BEP · Bộ phận Bếp" thì KIT cũng ra "Bộ phận
+ * Bếp", không hiện trơ "KIT" trên chart COGS / doanh thu theo bộ phận.
+ */
+export function departmentNameMap(departments: Array<{ code: string; name: string }>) {
+  const names = new Map(departments.map((item) => [item.code, item.name]));
+  for (const item of departments) {
+    const alias = departmentFromWarehouseGroup(item.code) || departmentFromWarehouseGroup(item.name);
+    if (alias && !names.has(alias)) names.set(alias, item.name);
+  }
+  return names;
+}
+
+/**
  * REV_FOOD / "Doanh thu bếp" / "ĐỒ ĂN" -> KIT; REV_DRINK / "Doanh thu bar" / "ĐỒ UỐNG" -> BAR.
  * Dùng chung bộ nhận dạng loại món với nhóm doanh thu để hai chỗ không lệch luật nhau: dòng cũ
  * còn ghi chữ thô trong file vẫn suy được bộ phận.

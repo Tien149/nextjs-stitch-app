@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/custom-client";
 import { prisma } from "@/lib/prisma";
 import { CAPEX_REPORT_GROUPS, createPnlDetailTree, DEPRECIATION_PNL_ACCOUNT, depreciationCatalogItemCode, finalizePnl, loadDepreciationPnlRows, NON_CAPEX_SOURCE_TYPES, withDepreciationPnlItem, pnlLineAmount, PNL_ITEM_REQUIRED_LINES, PNL_STATEMENT_LINES, PNL_UNGROUPED_CODE, revenueChannelItemsOf, seedRevenueChannels, type PnlBucket, type PnlCatalog, type PnlLineKey, type PnlSeriesGroup, type PnlSeriesItem } from "@/lib/reports";
 import { createDepartmentResolver } from "@/lib/department-resolve";
+import { departmentNameMap } from "@/lib/revenue-department";
 import { isRevenueComponentCategory, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { loadRevenuePnlGroups, type CategoryLookupClient } from "@/lib/revenue-source";
 
@@ -157,7 +158,7 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     amount: Math.round(unpostedDebtRows.reduce((sum, row) => sum + row.originalAmount, 0)),
     months: [...new Set(unpostedDebtRows.map((row) => row.documentDate.toISOString().slice(0, 7)))].sort(),
   };
-  const departmentName = new Map(departments.map((item) => [item.code, item.name]));
+  const departmentName = departmentNameMap(departments);
   const deptLabel = (code: string) => (code === UNASSIGNED_DEPARTMENT ? "Chưa gán bộ phận" : departmentName.get(code) || code);
   // Cây dòng KQKD -> nhóm -> hạng mục với 12 cột tháng, đi qua cùng builder với bảng một kỳ
   // nên lương lên dòng nhân sự, nhóm OPEX và hạng mục xếp cùng một thứ tự.
@@ -622,7 +623,7 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
       select: { period: true, branchCode: true, departmentCode: true, headcount: true, totalCompanyCost: true, companyInsurance: true, netAmount: true },
     }),
   ]);
-  const departmentName = new Map(departments.map((item) => [item.code, item.name]));
+  const departmentName = departmentNameMap(departments);
   const deptLabel = (code: string) => (code === UNASSIGNED_DEPARTMENT ? "Chưa gán bộ phận" : departmentName.get(code) || code);
   // Import lương từng lưu nguyên chữ ô Phòng ban ("Team Bar", "bar") thay vì mã danh mục, nên
   // lương thực tế không khớp bộ phận set tỷ trọng (đường thực tế = 0). Quy về mã (luật chung ở

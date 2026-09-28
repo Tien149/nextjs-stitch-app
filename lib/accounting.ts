@@ -21,6 +21,7 @@ import {
   COGS_STOCK_TYPES,
   INVENTORY_COGS_PNL_ITEMS,
   INVENTORY_COGS_START_DATE,
+  INVENTORY_COGS_START_PERIOD,
   PACKAGING_EXPENSE_PNL_ITEM,
   cogsPurchaseAccount,
   inventoryCogsActive,
@@ -1012,7 +1013,7 @@ export async function ensureInventoryCogsPnlItems() {
         group: item.group,
         subGroup: parents.find((parent) => parent.group === item.group)?.code || null,
         status: "ACTIVE",
-        note: "Tự tạo khi ghi sổ giá vốn theo kho (từ kỳ 2026-09)",
+        note: `Tự tạo khi ghi sổ giá vốn theo kho (từ kỳ ${INVENTORY_COGS_START_PERIOD})`,
       },
     });
   }
