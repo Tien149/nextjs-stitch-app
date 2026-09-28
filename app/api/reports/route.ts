@@ -266,7 +266,7 @@ const budgetLines: BudgetLineConfig[] = [
   // Khấu hao là hạng mục "CP Khấu Hao" trong Chi phí cố định (set ngân sách như hạng mục OPEX khác),
   // không còn dòng Khấu hao riêng — theo nét vẽ chị Bình 06/09/2026.
   { key: "otherOpex", label: "Chi phí hoạt động (OPEX)", kind: "EXPENSE", scope: "DETAIL", hint: "Set ngân sách từng hạng mục P&L (kể cả CP Khấu Hao); dòng tổng và nhóm tự cộng." },
-  { key: "ebitda", label: "EBITDA", kind: "PROFIT", scope: "DERIVED", hint: "= Lợi nhuận gộp − ngân sách nhân sự − ngân sách OPEX + ngân sách CP Khấu Hao (EBITDA cộng lại khấu hao)." },
+  { key: "ebitda", label: "EBITDA", kind: "PROFIT", scope: "DERIVED", hint: "= Lợi nhuận gộp − ngân sách nhân sự − ngân sách CAPEX − ngân sách OPEX + ngân sách CP Khấu Hao (EBITDA cộng lại khấu hao)." },
   { key: "cashRemaining", label: "Nguồn tiền còn lại", kind: "CASH", scope: "TOTAL", hint: "Target tiền còn lại cuối kỳ, đối chiếu ở tab Nguồn tiền." },
 ];
 const PNL_ITEM_METRIC_PREFIX = "pnlItem:";
@@ -303,6 +303,15 @@ async function getBudgetReport(period: string, branchCode: string) {
   ): BudgetRow => ({ ...base, actual, ...resolved, ...measure(base.kind, actual, resolved.target, resolved.hasTarget) });
 
   const statementByKey = new Map(pnl.statement.map((line) => [line.key, line]));
+  /**
+   * Ngân sách CAPEX = tổng target các hạng mục thuộc dòng CAPEX. Dòng này không có trên bảng
+   * Ngân sách (set ở tab Dự báo P&L theo hạng mục nhóm Chi phí đầu tư), nhưng EBITDA thực tế có
+   * trừ CAPEX nên target EBITDA cũng phải trừ.
+   */
+  const capexTarget = () => (statementByKey.get("capex")?.groups || [])
+    .flatMap((group) => group.items)
+    .filter((item) => item.code !== "UNCLASSIFIED")
+    .reduce((sum, item) => sum + resolveTarget(`${PNL_ITEM_METRIC_PREFIX}${item.code}`).target, 0);
   const totals = pnl.total as unknown as Record<string, number>;
   const rows: BudgetRow[] = [];
   const lineTarget: Record<string, number> = {};
@@ -315,8 +324,10 @@ async function getBudgetReport(period: string, branchCode: string) {
       const hasTarget = !!lineHasTarget.revenue;
       const target = line.key === "grossProfit"
         ? (lineTarget.revenue || 0) - (lineTarget.cogs || 0)
-        // EBITDA cộng lại khấu hao (chốt 28/09/2026) nên target cũng cộng lại ngân sách hạng mục CP Khấu Hao.
-        : (lineTarget.grossProfit || 0) - (lineTarget.payroll || 0) - (lineTarget.otherOpex || 0)
+        // Cùng công thức với số thực tế (finalizePnl): trừ cả CAPEX (từ 24/09/2026) — trước đây
+        // target bỏ sót CAPEX nên thực tế luôn thấp hơn target đúng bằng tiền đầu tư. EBITDA cộng
+        // lại khấu hao (chốt 28/09/2026) nên target cũng cộng lại ngân sách hạng mục CP Khấu Hao.
+        : (lineTarget.grossProfit || 0) - (lineTarget.payroll || 0) - capexTarget() - (lineTarget.otherOpex || 0)
           + (pnl.depreciationItemCode ? resolveTarget(`${PNL_ITEM_METRIC_PREFIX}${pnl.depreciationItemCode}`).target : 0);
       lineTarget[line.key] = target;
       lineHasTarget[line.key] = hasTarget;
