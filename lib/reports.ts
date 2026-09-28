@@ -155,7 +155,7 @@ function addLine(bucket: PnlBucket, line: { debit: number; credit: number; accou
 export function finalizePnl(bucket: PnlBucket) {
   const grossProfit = bucket.revenue - bucket.cogs;
   // OPEX đã gồm khấu hao nên "ebitda" chính là lợi nhuận hoạt động; giữ tên trường để không đổi
-  // hợp đồng API với các màn đang đọc, nhãn hiển thị là "Lợi nhuận hoạt động".
+  // hợp đồng API với các màn đang đọc, nhãn hiển thị là "EBITDA" (khách đổi tên 28/09/2026).
   // CAPEX (chi phí đầu tư ban đầu) TRỪ vào lợi nhuận hoạt động — khách chốt 24/09/2026, đảo
   // luật "dòng thông tin, không trừ" trước đó. Hạng mục nhóm CAPEX phần lớn là phân bổ hàng kỳ
   // (Nợ 6428), không trừ là lợi nhuận bị thổi đúng bằng khoản đó (Nam Mê T8: 88.248.717 đ).
@@ -218,7 +218,7 @@ export const PNL_STATEMENT_LINES: Array<{ key: PnlLineKey | "grossProfit" | "ebi
   // CAPEX trừ vào lợi nhuận hoạt động như nhân sự và OPEX (chốt 24/09/2026) nên có số thứ tự.
   { key: "capex", label: "5. Chi phí đầu tư ban đầu (CAPEX)", subtotal: false },
   { key: "otherOpex", label: "6. Chi phí hoạt động (OPEX)", subtotal: false },
-  { key: "ebitda", label: "7. Lợi nhuận hoạt động", subtotal: true },
+  { key: "ebitda", label: "7. EBITDA", subtotal: true },
   { key: "otherIncome", label: "8. Thu nhập khác", subtotal: false },
   { key: "otherExpense", label: "9. Chi phí khác", subtotal: false },
   { key: "netProfit", label: "10. Lợi nhuận vận hành", subtotal: true },

@@ -72,7 +72,7 @@ export const LINE_SHORT_LABEL: Record<string, string> = {
   grossProfit: "Lợi nhuận gộp",
   payroll: "Chi phí nhân sự",
   otherOpex: "Chi phí hoạt động (OPEX)",
-  ebitda: "Lợi nhuận hoạt động",
+  ebitda: "EBITDA",
   otherIncome: "Thu nhập khác",
   otherExpense: "Chi phí khác",
   capex: "Chi phí đầu tư ban đầu (CAPEX)",
@@ -117,7 +117,7 @@ export const bucketOperatingCost = (buckets: PnlBucket[], picked: MonthPick) => 
 export function finalizeBucket(base: Pick<PnlBucket, "revenue" | "cogs" | "payroll" | "otherOpex" | "otherIncome" | "otherExpense" | "capex">): PnlBucket {
   const grossProfit = base.revenue - base.cogs;
   // Khấu hao đã nằm trong OPEX nên "ebitda" ở đây chính là lợi nhuận hoạt động; giữ tên trường
-  // để không phải đổi hợp đồng API, nhãn hiển thị là "Lợi nhuận hoạt động".
+  // để không phải đổi hợp đồng API, nhãn hiển thị là "EBITDA" (khách đổi tên 28/09/2026).
   // CAPEX trừ vào lợi nhuận hoạt động (chốt 24/09/2026) — giữ đúng như finalizePnl.
   const opexBeforeDepreciation = base.payroll + base.capex + base.otherOpex;
   const ebitda = grossProfit - opexBeforeDepreciation;

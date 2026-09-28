@@ -24,13 +24,13 @@ const LINE_STYLE: Record<string, LineStyle> = {
   // mục trong Chi phí cố định, không còn dòng Khấu hao riêng).
   capex: { tone: "orange", icon: "domain_add", title: "CHI PHÍ ĐẦU TƯ BAN ĐẦU (CAPEX)", band: "bg-orange-50 text-orange-700", total: "bg-orange-100 text-orange-900" },
   otherOpex: { tone: "blue", icon: "receipt_long", title: "CHI PHÍ HOẠT ĐỘNG (OPEX)", band: "bg-blue-50 text-blue-700", total: "bg-blue-100 text-blue-900" },
-  ebitda: { tone: "violet", icon: "functions", title: "LỢI NHUẬN HOẠT ĐỘNG", band: "", total: "bg-violet-200/60 text-violet-900" },
+  ebitda: { tone: "violet", icon: "functions", title: "EBITDA", band: "", total: "bg-violet-200/60 text-violet-900" },
   otherIncome: { tone: "teal", icon: "savings", title: "THU NHẬP KHÁC", band: "bg-teal-50 text-teal-700", total: "bg-teal-100 text-teal-900" },
   otherExpense: { tone: "rose", icon: "money_off", title: "CHI PHÍ KHÁC", band: "bg-rose-50 text-rose-700", total: "bg-rose-100 text-rose-900" },
   netProfit: { tone: "indigo", icon: "workspace_premium", title: "LỢI NHUẬN VẬN HÀNH", band: "", total: "bg-indigo-200/60 text-indigo-900" },
 };
 const INCOME_LINES = new Set(["revenue", "otherIncome", "grossProfit", "ebitda", "netProfit"]);
-const RATIO_AFTER: Record<string, string> = { grossProfit: "Tỷ suất LN gộp", ebitda: "Tỷ suất LN hoạt động", netProfit: "Tỷ suất LN vận hành" };
+const RATIO_AFTER: Record<string, string> = { grossProfit: "Tỷ suất LN gộp", ebitda: "Tỷ suất EBITDA", netProfit: "Tỷ suất LN vận hành" };
 
 const isEmptyNode = (node: { months: number[]; plan: number[] | null }) =>
   node.months.every((value) => Math.abs(value) <= 0.5) && (!node.plan || node.plan.every((value) => Math.abs(value) <= 0.5));
@@ -328,7 +328,7 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
           ))}
           <td colSpan={13} className="px-3 py-2 text-[11px] font-semibold opacity-80 whitespace-nowrap">
             {line.key === "capex"
-              ? "Chi phí đầu tư ban đầu (khoản mục/hạng mục nhóm CAPEX) — trừ vào lợi nhuận hoạt động. Tài sản/CCDC mua trong kỳ vào Chi phí cố định qua hạng mục CP Khấu Hao"
+              ? "Chi phí đầu tư ban đầu (khoản mục/hạng mục nhóm CAPEX) — trừ vào EBITDA. Tài sản/CCDC mua trong kỳ vào Chi phí cố định qua hạng mục CP Khấu Hao"
               : isRevenue
                 ? "Hai cách nhìn cùng một doanh thu: theo nguồn (kênh bán) và theo bộ phận — kế hoạch set ở cấp dòng"
                 : "Kế hoạch (đậm) · Thực đạt (chip) · % hoàn thành"}

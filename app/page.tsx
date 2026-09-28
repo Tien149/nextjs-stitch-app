@@ -210,7 +210,7 @@ export default function Home() {
   else if (!hasAccountingData) financialWarnings.push({ title: "Chưa có dữ liệu ghi sổ", detail: `Hãy nhập dữ liệu và đồng bộ sổ cái cho kỳ ${dashboardPeriod}.`, tone: "amber", icon: "database" });
   else {
     if (dashboard?.balance.balanced === false) financialWarnings.push({ title: "Bảng cân đối đang lệch", detail: `Chênh lệch ${formatCurrency(Math.abs(dashboard.balance.difference))} đ.`, tone: "rose", icon: "balance" });
-    if (ebitda < 0) financialWarnings.push({ title: "Lợi nhuận hoạt động đang âm", detail: `Kỳ ${dashboardPeriod} đang âm ${formatCurrency(Math.abs(ebitda))} đ.`, tone: "rose", icon: "trending_down" });
+    if (ebitda < 0) financialWarnings.push({ title: "EBITDA đang âm", detail: `Kỳ ${dashboardPeriod} đang âm ${formatCurrency(Math.abs(ebitda))} đ.`, tone: "rose", icon: "trending_down" });
     if (totalCash < 0) financialWarnings.push({ title: "Số dư tiền đang âm", detail: `Số dư cuối kỳ ${formatCurrency(totalCash)} đ.`, tone: "rose", icon: "account_balance_wallet" });
   }
   const pendingDocuments = documents.filter((document) => document.status === "PENDING").length;
@@ -466,7 +466,7 @@ export default function Home() {
                   <span className="material-symbols-outlined text-[12px] mr-0.5">monitoring</span>
                   {totalRevenue ? `${(ebitda / totalRevenue * 100).toFixed(1)}%` : "0%"}
                 </span>
-                <span className="text-slate-400 text-[10px]">biên LN hoạt động</span>
+                <span className="text-slate-400 text-[10px]">biên EBITDA</span>
               </div>
             </div>
 

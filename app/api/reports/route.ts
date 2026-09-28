@@ -266,7 +266,7 @@ const budgetLines: BudgetLineConfig[] = [
   // Khấu hao là hạng mục "CP Khấu Hao" trong Chi phí cố định (set ngân sách như hạng mục OPEX khác),
   // không còn dòng Khấu hao riêng — theo nét vẽ chị Bình 06/09/2026.
   { key: "otherOpex", label: "Chi phí hoạt động (OPEX)", kind: "EXPENSE", scope: "DETAIL", hint: "Set ngân sách từng hạng mục P&L (kể cả CP Khấu Hao); dòng tổng và nhóm tự cộng." },
-  { key: "ebitda", label: "Lợi nhuận hoạt động", kind: "PROFIT", scope: "DERIVED", hint: "= Lợi nhuận gộp − ngân sách nhân sự − ngân sách OPEX." },
+  { key: "ebitda", label: "EBITDA", kind: "PROFIT", scope: "DERIVED", hint: "= Lợi nhuận gộp − ngân sách nhân sự − ngân sách OPEX." },
   { key: "cashRemaining", label: "Nguồn tiền còn lại", kind: "CASH", scope: "TOTAL", hint: "Target tiền còn lại cuối kỳ, đối chiếu ở tab Nguồn tiền." },
 ];
 const PNL_ITEM_METRIC_PREFIX = "pnlItem:";
@@ -1496,7 +1496,7 @@ export async function POST(request: Request) {
         const item = await prisma.masterDataItem.findFirst({ where: { type: "PNL_ITEM", code: itemCode, deletedAt: null } });
         if (!item) businessError(`Hạng mục P&L "${itemCode}" không có trong danh mục. Khai ở Cài đặt > Danh mục > Hạng mục P&L trước.`);
       } else if (!BUDGET_TOTAL_METRICS.includes(metric)) {
-        businessError("Chỉ tiêu này không set trực tiếp được: dòng OPEX cộng từ hạng mục, Lợi nhuận gộp và Lợi nhuận hoạt động suy từ các target đã set.");
+        businessError("Chỉ tiêu này không set trực tiếp được: dòng OPEX cộng từ hạng mục, Lợi nhuận gộp và EBITDA suy từ các target đã set.");
       }
       // Trị giá 0 nghĩa là bỏ ngân sách — xoá hẳn dòng thay vì để một target bằng 0 gây hiểu nhầm.
       if (cleanText(body.targetMode) !== "PERCENT_REVENUE" && toNumber(body.targetValue) <= 0) {
