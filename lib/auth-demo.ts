@@ -24,6 +24,8 @@ export type DemoSession = Omit<DemoUser, "password"> & {
   allowedBranches: string[];
   /** Phạm vi phòng ban (kiểm kê CCDC/tài sản theo bộ phận). Rỗng/thiếu = mọi phòng ban. */
   allowedDepartments?: string[];
+  /** Phạm vi kho (kiểm kê / nhập xuất nguyên liệu). Rỗng/thiếu = mọi kho của cửa hàng được gán. */
+  allowedWarehouses?: string[];
   menuAccess?: string[];
   /** Quyền thao tác của vai trò, lấy từ bảng Role khi đăng nhập. */
   actions?: string[];

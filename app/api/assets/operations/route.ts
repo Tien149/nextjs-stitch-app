@@ -10,6 +10,8 @@ import { writeAuditLog } from "@/lib/audit-log";
 import { nextSeqFromCodes, nextYearlyCode, voucherCodePrefix } from "@/lib/voucher-code-generator";
 import { allowedDepartmentsOf, assertDepartmentAccess } from "@/lib/department-scope";
 import { AssetCodeError, nextAssetCode } from "@/lib/asset-code-generator";
+import { softDeleteRecord } from "@/lib/soft-delete";
+import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING, STOCKTAKE_RETURNED, isStocktakeEditable, stocktakeStatusLabel } from "@/lib/stocktake-status";
 
 /** Module ghi audit vẫn là Tài sản. */
 const menuHref = "/assets";
@@ -135,7 +137,13 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const action = cleanText(body.action);
-    const requiredAction = ["RUN_DEPRECIATION", "REOPEN_DEPRECIATION", "REOPEN_ASSET_STOCKTAKE", "REOPEN_MAINTENANCE", "REOPEN_DAMAGE", "REOPEN_DISPOSAL", "COMPLETE_MAINTENANCE", "RESOLVE_DAMAGE", "CONFIGURE_DEPRECIATION"].includes(action) ? "edit" : "create";
+    // Duyệt / trả lại / mở lại phiên kiểm kê là việc của kế toán -> quyền "approve" (khách yêu cầu
+    // 28/09/2026); nhà hàng chỉ cần "create" để Gửi duyệt và sửa phiên chưa duyệt.
+    const requiredAction = ["APPROVE_ASSET_STOCKTAKE", "RETURN_ASSET_STOCKTAKE", "REOPEN_ASSET_STOCKTAKE"].includes(action)
+      ? "approve"
+      : action === "DELETE_ASSET_STOCKTAKE"
+        ? "delete"
+        : ["RUN_DEPRECIATION", "REOPEN_DEPRECIATION", "REOPEN_MAINTENANCE", "REOPEN_DAMAGE", "REOPEN_DISPOSAL", "COMPLETE_MAINTENANCE", "RESOLVE_DAMAGE", "CONFIGURE_DEPRECIATION"].includes(action) ? "edit" : "create";
     const auth = requireMenuAction(request, operationsHref, requiredAction);
     if (!auth.ok) return auth.response;
 
@@ -178,7 +186,9 @@ export async function POST(request: Request) {
           imageUrl: cleanText(body.imageUrl) || null,
           location: warehouseCode || null,
           warehouseCode: warehouseCode || null,
-          quantity,
+          // Số lượng lên sổ khi kế toán DUYỆT phiên kiểm kê (cộng phần chênh 0 -> số đếm), không phải
+          // lúc cấp mã — phiên bị trả lại / xoá thì tài sản không tự có số lượng.
+          quantity: 0,
           purchaseDate,
           originalCost: 0,
           currentValue: 0,
@@ -191,10 +201,20 @@ export async function POST(request: Request) {
       return NextResponse.json(created, { status: 201 });
     }
 
-    if (action === "APPROVE_ASSET_STOCKTAKE") {
+    /**
+     * Kiểm kê CCDC & tài sản HAI BƯỚC (khách yêu cầu 28/09/2026): nhà hàng đếm xong bấm "Gửi duyệt"
+     * — phiên nằm ở Chờ duyệt, CHƯA đổi số lượng tài sản; nhà hàng mở lại sửa / bổ sung được tới khi
+     * kế toán duyệt (bị trả lại cũng sửa rồi gửi lại). Kế toán (quyền "Duyệt") bấm Duyệt mới cập
+     * nhật số lượng — lib/stocktake-status.ts.
+     *
+     * Số sổ sách của từng dòng chốt lúc ĐẾM (lần đầu dòng đó được lưu); duyệt cộng đúng phần chênh
+     * vào số hiện tại, nên thay đổi số lượng trong lúc chờ duyệt không bị đè.
+     */
+    if (action === "SAVE_ASSET_STOCKTAKE") {
+      const sessionId = cleanText(body.sessionId);
       const branchCode = cleanText(body.branchCode);
       const stocktakeDate = toDate(body.stocktakeDate);
-      const rawLines = Array.isArray(body.lines) ? body.lines as Array<{ assetId?: unknown; systemQuantity?: unknown; actualQuantity?: unknown; condition?: unknown; note?: unknown; imageUrl?: unknown; discovered?: unknown }> : [];
+      const rawLines = Array.isArray(body.lines) ? body.lines as Array<{ assetId?: unknown; systemQuantity?: unknown; actualQuantity?: unknown; condition?: unknown; note?: unknown; imageUrl?: unknown; keepImage?: unknown; discovered?: unknown }> : [];
       const lines = rawLines
         .map((line) => ({
           assetId: cleanText(line.assetId),
@@ -203,18 +223,30 @@ export async function POST(request: Request) {
           condition: cleanText(line.condition),
           note: cleanText(line.note),
           imageUrl: cleanText(line.imageUrl),
-          // Tài sản vừa tạo mã ngay trong phiên (CREATE_STOCKTAKE_ASSET): sổ sách trước kiểm là 0,
-          // hồ sơ đã mang số đếm nên không so khoá lạc quan với quantity hiện tại.
+          // Sửa phiên đã gửi: danh sách không tải lại ảnh cũ (data URL nặng), dòng chưa chụp lại
+          // gửi keepImage để giữ ảnh đã lưu.
+          keepImage: line.keepImage === true,
+          // Tài sản vừa tạo mã ngay trong phiên (CREATE_STOCKTAKE_ASSET): sổ sách trước kiểm là 0.
           discovered: line.discovered === true,
         }))
         .filter((line) => line.assetId && Number.isFinite(line.actualQuantity) && line.actualQuantity >= 0);
       if (!branchCode || lines.length === 0) businessError("Kiểm kê tài sản cần cửa hàng và ít nhất một dòng");
       assertBranchAccess(auth.session, branchCode);
+      const existing = sessionId
+        ? await prisma.assetStocktakeSession.findUnique({ where: { id: sessionId }, include: { lines: true } })
+        : null;
+      if (sessionId) {
+        if (!existing) businessError("Không tìm thấy phiên kiểm kê cần sửa");
+        assertBranchAccess(auth.session, existing.branchCode);
+        if (!isStocktakeEditable(existing.status)) {
+          businessError(`Phiên kiểm kê ${existing.code} đã được kế toán duyệt nên không sửa được nữa. Nhờ kế toán Mở lại phiên trước.`);
+        }
+      }
       // Kiểm kê theo bộ phận: phiên ghi rõ phòng ban. User bị giới hạn bộ phận BẮT BUỘC chọn (và chỉ
       // được chọn trong phạm vi); Admin/người không giới hạn để trống = kiểm cả cửa hàng như cũ.
       const departmentCode = cleanText(body.departmentCode).toUpperCase();
       const scoped = allowedDepartmentsOf(auth.session);
-      if (scoped && !departmentCode) businessError("Bạn kiểm kê theo bộ phận — chọn Phòng ban của phiên kiểm kê trước khi duyệt.");
+      if (scoped && !departmentCode) businessError("Bạn kiểm kê theo bộ phận — chọn Phòng ban của phiên kiểm kê trước khi gửi.");
       if (departmentCode) {
         assertDepartmentAccess(auth.session, departmentCode, "Phiên kiểm kê");
         const department = await prisma.masterDataItem.findFirst({
@@ -227,21 +259,9 @@ export async function POST(request: Request) {
       if (oversizedImage) businessError("Ảnh kiểm kê quá lớn (trên 2 MB sau nén). Chụp lại ở độ phân giải thấp hơn.");
 
       const result = await prisma.$transaction(async (tx) => {
-        const head = `KKTS-${stocktakeDate.getFullYear()}-`;
-        const issued = await tx.$queryRaw<Array<{ code: string }>>`SELECT "code" FROM "AssetStocktakeSession" WHERE "code" LIKE ${head + "%"}`;
-        const session = await tx.assetStocktakeSession.create({
-          data: {
-            code: head + String(nextSeqFromCodes(issued.map((row) => row.code), head)).padStart(4, "0"),
-            stocktakeDate,
-            branchCode,
-            departmentCode: departmentCode || null,
-            status: "APPROVED",
-            note: cleanText(body.note) || null,
-            createdBy: auth.session.name,
-            approvedBy: auth.session.name,
-            approvedAt: new Date(),
-          },
-        });
+        // Dòng đã có của phiên đang sửa: giữ số sổ sách chốt lúc đếm lần đầu và ảnh đã lưu.
+        const savedLines = new Map((existing?.lines || []).map((line) => [line.assetId, line] as const));
+        const lineData = [];
         for (const line of lines) {
           const asset = await tx.assetRecord.findUnique({ where: { id: line.assetId } });
           if (!asset) businessError("Không tìm thấy tài sản trong danh sách kiểm kê");
@@ -251,46 +271,122 @@ export async function POST(request: Request) {
           if (departmentCode && (asset.departmentCode || "").toUpperCase() !== departmentCode) {
             businessError(`Tài sản ${asset.code} thuộc phòng ban ${asset.departmentCode || "(chưa gán)"}, không thuộc phiên kiểm kê của ${departmentCode}`);
           }
-          // Kiểm kê theo bộ phận: user bị giới hạn phòng ban không duyệt được dòng của phòng ban khác,
-          // kể cả khi tự ghép assetId vào request.
+          // User bị giới hạn phòng ban không gửi được dòng của phòng ban khác, kể cả khi tự ghép assetId.
           assertDepartmentAccess(auth.session, asset.departmentCode, `Tài sản ${asset.code}`);
-          // Khoá lạc quan — cùng luật với kiểm kê kho: số sổ sách đổi từ lúc tải danh sách thì
-          // bắt tải lại, không âm thầm đè số đếm cũ lên biến động mới.
-          if (!line.discovered && line.systemQuantity !== null && Math.abs(line.systemQuantity - asset.quantity) > 0.000001) {
-            businessError(`Số sổ sách của ${asset.code} đã thay đổi từ lúc tải danh sách (${line.systemQuantity} → ${asset.quantity}). Tải lại danh sách rồi kiểm lại dòng này.`);
+          const saved = savedLines.get(asset.id);
+          let systemQuantity = saved?.systemQuantity;
+          if (systemQuantity === undefined) {
+            // Khoá lạc quan — cùng luật với kiểm kê kho: số sổ sách đổi từ lúc tải danh sách thì
+            // bắt tải lại, không âm thầm đè số đếm cũ lên biến động mới.
+            if (!line.discovered && line.systemQuantity !== null && Math.abs(line.systemQuantity - asset.quantity) > 0.000001) {
+              businessError(`Số sổ sách của ${asset.code} đã thay đổi từ lúc tải danh sách (${line.systemQuantity} → ${asset.quantity}). Tải lại danh sách rồi kiểm lại dòng này.`);
+            }
+            systemQuantity = line.discovered ? 0 : asset.quantity;
           }
-          const systemQuantity = line.discovered ? 0 : asset.quantity;
-          await tx.assetStocktakeLine.create({
+          lineData.push({
+            assetId: asset.id,
+            systemQuantity,
+            actualQuantity: line.actualQuantity,
+            varianceQuantity: line.actualQuantity - systemQuantity,
+            condition: line.condition || null,
+            note: line.note || null,
+            imageUrl: line.imageUrl || (line.keepImage ? saved?.imageUrl || null : null),
+          });
+        }
+        // Gửi (lại) là về Chờ duyệt; lý do trả lại lần trước giữ nguyên để kế toán đối chiếu.
+        const header = {
+          stocktakeDate,
+          branchCode,
+          departmentCode: departmentCode || null,
+          status: STOCKTAKE_PENDING,
+          note: cleanText(body.note) || null,
+          approvedBy: null,
+          approvedAt: null,
+        };
+        let session;
+        if (existing) {
+          session = await tx.assetStocktakeSession.update({ where: { id: existing.id }, data: header });
+        } else {
+          const head = `KKTS-${stocktakeDate.getFullYear()}-`;
+          const issued = await tx.$queryRaw<Array<{ code: string }>>`SELECT "code" FROM "AssetStocktakeSession" WHERE "code" LIKE ${head + "%"}`;
+          session = await tx.assetStocktakeSession.create({
             data: {
-              sessionId: session.id,
-              assetId: asset.id,
-              systemQuantity,
-              actualQuantity: line.actualQuantity,
-              varianceQuantity: line.actualQuantity - systemQuantity,
-              condition: line.condition || null,
-              note: line.note || null,
-              imageUrl: line.imageUrl || null,
+              ...header,
+              code: head + String(nextSeqFromCodes(issued.map((row) => row.code), head)).padStart(4, "0"),
+              createdBy: auth.session.name,
             },
           });
-          // Duyệt kiểm kê = số đếm là số chốt.
-          await tx.assetRecord.update({ where: { id: asset.id }, data: { quantity: line.actualQuantity } });
         }
+        await tx.assetStocktakeLine.deleteMany({ where: { sessionId: session.id } });
+        await tx.assetStocktakeLine.createMany({ data: lineData.map((line) => ({ ...line, sessionId: session.id })) });
         return tx.assetStocktakeSession.findUnique({ where: { id: session.id }, include: { lines: { include: { asset: true } } } });
       });
 
-      await writeAuditLog({ session: auth.session, module: "/assets", action: "APPROVE_ASSET_STOCKTAKE", entityType: "AssetStocktakeSession", entityId: result?.id || null, entityCode: result?.code || null, branchCode, metadata: { lines: lines.length, departmentCode: departmentCode || null } });
-      return NextResponse.json(result, { status: 201 });
+      await writeAuditLog({ session: auth.session, module: "/assets", action: existing ? "RESUBMIT_ASSET_STOCKTAKE" : "SUBMIT_ASSET_STOCKTAKE", entityType: "AssetStocktakeSession", entityId: result?.id || null, entityCode: result?.code || null, branchCode, metadata: { lines: lines.length, departmentCode: departmentCode || null } });
+      return NextResponse.json(result, { status: existing ? 200 : 201 });
+    }
+
+    /** Kế toán trả lại phiên đang Chờ duyệt kèm lý do; không đụng số lượng tài sản. */
+    if (action === "RETURN_ASSET_STOCKTAKE") {
+      const sessionId = cleanText(body.sessionId) || cleanText(body.id);
+      const reason = cleanText(body.reason);
+      if (!sessionId) businessError("Thiếu phiên kiểm kê cần trả lại");
+      if (!reason) businessError("Nhập lý do trả lại để nhà hàng biết cần sửa gì");
+      const stocktake = await prisma.assetStocktakeSession.findUnique({ where: { id: sessionId } });
+      if (!stocktake) businessError("Không tìm thấy phiên kiểm kê tài sản");
+      assertBranchAccess(auth.session, stocktake.branchCode);
+      if (stocktake.status !== STOCKTAKE_PENDING) {
+        businessError(`Phiên kiểm kê ${stocktake.code} đang ở trạng thái ${stocktakeStatusLabel(stocktake.status)}, chỉ trả lại được phiên Chờ duyệt.`);
+      }
+      const result = await prisma.assetStocktakeSession.update({
+        where: { id: sessionId },
+        data: { status: STOCKTAKE_RETURNED, returnedReason: reason, returnedBy: auth.session.name, returnedAt: new Date() },
+      });
+      await writeAuditLog({ session: auth.session, module: "/assets", action: "RETURN_ASSET_STOCKTAKE", entityType: "AssetStocktakeSession", entityId: sessionId, entityCode: stocktake.code, branchCode: stocktake.branchCode, metadata: { reason } });
+      return NextResponse.json(result);
+    }
+
+    /** Kế toán duyệt phiên đang Chờ duyệt: cộng phần chênh (đếm − sổ sách lúc đếm) vào số lượng tài sản. */
+    if (action === "APPROVE_ASSET_STOCKTAKE") {
+      const sessionId = cleanText(body.sessionId) || cleanText(body.id);
+      if (!sessionId) businessError("Chọn phiên kiểm kê cần duyệt ở danh sách phiên (nhà hàng bấm Gửi duyệt trước).");
+      const stocktake = await prisma.assetStocktakeSession.findUnique({ where: { id: sessionId }, include: { lines: { include: { asset: true } } } });
+      if (!stocktake) businessError("Không tìm thấy phiên kiểm kê tài sản");
+      assertBranchAccess(auth.session, stocktake.branchCode);
+      if (stocktake.status !== STOCKTAKE_PENDING) {
+        businessError(`Phiên kiểm kê ${stocktake.code} đang ở trạng thái ${stocktakeStatusLabel(stocktake.status)}, chỉ duyệt được phiên Chờ duyệt.`);
+      }
+      const result = await prisma.$transaction(async (tx) => {
+        for (const line of stocktake.lines) {
+          const variance = line.actualQuantity - line.systemQuantity;
+          if (Math.abs(variance) <= 0.000001) continue;
+          // Duyệt kiểm kê = số đếm là số chốt; cộng theo phần chênh để giữ thay đổi phát sinh sau lúc đếm.
+          await tx.assetRecord.update({ where: { id: line.assetId }, data: { quantity: { increment: variance } } });
+        }
+        await tx.assetStocktakeSession.update({
+          where: { id: sessionId },
+          data: { status: STOCKTAKE_APPROVED, approvedBy: auth.session.name, approvedAt: new Date() },
+        });
+        return tx.assetStocktakeSession.findUnique({ where: { id: sessionId }, include: { lines: { include: { asset: true } } } });
+      });
+      await writeAuditLog({ session: auth.session, module: "/assets", action: "APPROVE_ASSET_STOCKTAKE", entityType: "AssetStocktakeSession", entityId: sessionId, entityCode: stocktake.code, branchCode: stocktake.branchCode, metadata: { lines: stocktake.lines.length, departmentCode: stocktake.departmentCode } });
+      return NextResponse.json(result);
+    }
+
+    /** Xoá phiên chưa duyệt (đếm nhầm cả phiên): vào Thùng rác, không đụng số lượng tài sản. */
+    if (action === "DELETE_ASSET_STOCKTAKE") {
+      const sessionId = cleanText(body.sessionId) || cleanText(body.id);
+      if (!sessionId) businessError("Thiếu phiên kiểm kê cần xoá");
+      const stocktake = await prisma.assetStocktakeSession.findUnique({ where: { id: sessionId } });
+      if (!stocktake) businessError("Không tìm thấy phiên kiểm kê tài sản");
+      assertBranchAccess(auth.session, stocktake.branchCode);
+      if (stocktake.status === STOCKTAKE_APPROVED) businessError(`Phiên kiểm kê ${stocktake.code} đã duyệt nên không xoá được. Nhờ kế toán Mở lại trước.`);
+      return NextResponse.json(await softDeleteRecord({ model: "AssetStocktakeSession", id: sessionId, session: auth.session, reason: cleanText(body.reason) || null }));
     }
 
     /**
-     * Mở lại phiên kiểm kê tài sản đã duyệt.
-     *
-     * Duyệt kiểm kê ghi thẳng số đếm vào `quantity` của tài sản và không giữ đường lùi: đếm
-     * nhầm là số sổ sách sai vĩnh viễn. Mỗi dòng kiểm kê có lưu `systemQuantity` — số sổ sách
-     * ngay trước lúc duyệt — nên mở lại chỉ việc trả từng tài sản về đúng số đó.
-     *
-     * Chặn khi số hiện tại đã khác số đã duyệt: giữa chừng có người sửa tay hoặc có phiên kiểm
-     * kê sau, trả về số cũ sẽ xoá mất thay đổi đó mà không ai hay.
+     * Mở lại phiên kiểm kê tài sản đã duyệt (quyền "Duyệt"): trừ lại đúng phần chênh đã cộng lúc
+     * duyệt và đưa phiên về Chờ duyệt để nhà hàng sửa, kế toán duyệt lại.
      */
     if (action === "REOPEN_ASSET_STOCKTAKE") {
       const sessionId = cleanText(body.sessionId) || cleanText(body.id);
@@ -298,23 +394,20 @@ export async function POST(request: Request) {
       const stocktake = await prisma.assetStocktakeSession.findUnique({ where: { id: sessionId }, include: { lines: { include: { asset: true } } } });
       if (!stocktake) businessError("Không tìm thấy phiên kiểm kê tài sản");
       assertBranchAccess(auth.session, stocktake.branchCode);
-      if (stocktake.status !== "APPROVED") businessError(`Phiên kiểm kê ${stocktake.code} đang ở trạng thái ${stocktake.status}, chưa duyệt nên không có gì để mở lại.`);
+      if (stocktake.status !== STOCKTAKE_APPROVED) businessError(`Phiên kiểm kê ${stocktake.code} đang ở trạng thái ${stocktakeStatusLabel(stocktake.status)}, chưa duyệt nên không có gì để mở lại.`);
       await assertPeriodOpen({ date: stocktake.stocktakeDate, branchCode: stocktake.branchCode }, "mở lại phiên kiểm kê tài sản");
-
-      const changed = stocktake.lines.find((line) => Math.abs(line.asset.quantity - line.actualQuantity) > 0.000001);
-      if (changed) {
-        businessError(`Số lượng của ${changed.asset.code} đã đổi từ sau lần duyệt (${changed.actualQuantity} → ${changed.asset.quantity}). Mở lại sẽ xoá mất thay đổi đó, nên hãy kiểm lại bằng một phiên kiểm kê mới thay vì mở lại phiên này.`);
-      }
 
       const result = await prisma.$transaction(async (tx) => {
         for (const line of stocktake.lines) {
-          await tx.assetRecord.update({ where: { id: line.assetId }, data: { quantity: line.systemQuantity } });
+          const variance = line.actualQuantity - line.systemQuantity;
+          if (Math.abs(variance) <= 0.000001) continue;
+          await tx.assetRecord.update({ where: { id: line.assetId }, data: { quantity: { decrement: variance } } });
         }
-        await tx.assetStocktakeSession.update({ where: { id: sessionId }, data: { status: "DRAFT", approvedBy: null, approvedAt: null } });
+        await tx.assetStocktakeSession.update({ where: { id: sessionId }, data: { status: STOCKTAKE_PENDING, approvedBy: null, approvedAt: null } });
         return tx.assetStocktakeSession.findUnique({ where: { id: sessionId }, include: { lines: { include: { asset: true } } } });
       });
 
-      await writeAuditLog({ session: auth.session, module: "/assets", action: "REOPEN_ASSET_STOCKTAKE", entityType: "AssetStocktakeSession", entityId: sessionId, entityCode: stocktake.code, branchCode: stocktake.branchCode, metadata: { restored: stocktake.lines.map((line) => ({ code: line.asset.code, from: line.actualQuantity, to: line.systemQuantity })) } });
+      await writeAuditLog({ session: auth.session, module: "/assets", action: "REOPEN_ASSET_STOCKTAKE", entityType: "AssetStocktakeSession", entityId: sessionId, entityCode: stocktake.code, branchCode: stocktake.branchCode, metadata: { reversed: stocktake.lines.map((line) => ({ code: line.asset.code, variance: line.actualQuantity - line.systemQuantity })) } });
       return NextResponse.json(result);
     }
 

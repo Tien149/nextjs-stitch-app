@@ -4,9 +4,11 @@ import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma, type TxClient } from "@/lib/prisma";
 import { apiError, assertPeriodOpen, businessError, cleanText, isPeriodLocked, toDate, toNumber } from "@/lib/phase3";
 import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
+import { allowedWarehousesOf, assertWarehouseAccess, scopeWarehouses } from "@/lib/warehouse-scope";
 import { isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType, postInventoryTransaction, repostInventoryTransaction, reverseStockEffect } from "@/lib/inventory-stock";
 import { createPurchasePayable, purchasePayableCodeOf, removePurchasePayables, syncPurchasePayable, PURCHASE_PAYABLE_SOURCE } from "@/lib/purchase-payable";
 import { postStockTransfer, syncTransferInternalDebt } from "@/lib/inventory-transfer";
+import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING, STOCKTAKE_RETURNED, isStocktakeEditable, stocktakeStatusLabel } from "@/lib/stocktake-status";
 import { EXPLOSION_PENDING, explodedRunOf, loadPendingExplosionSources, refreshTransferExplosionStatus, releaseExplosionSources, semiFinishedWithRecipeChecker } from "@/lib/explosion-sources";
 import { averageCostByItem } from "@/lib/inventory-average-cost";
 import { parseVatRate, VAT_RATE_CODES } from "@/lib/inventory-vat";
@@ -514,6 +516,14 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const branchCode = requestedBranch(auth.session, searchParams.get("branchCode") || "ALL");
     const branchFilter = branchCode === "ALL" ? {} : { branchCode };
+    // Phạm vi kho của người dùng (xếp chồng lên phạm vi cửa hàng): null = mọi kho của cửa hàng.
+    const scopedWarehouseCodes = allowedWarehousesOf(auth.session);
+    const inScopedWarehouses = scopedWarehouseCodes ? { in: scopedWarehouseCodes, mode: "insensitive" as const } : undefined;
+    const warehouseFilter = inScopedWarehouses
+      ? { OR: [{ warehouseCode: inScopedWarehouses }, { toWarehouseCode: inScopedWarehouses }] }
+      : {};
+    const inScope = (warehouseCode: string | null | undefined) =>
+      !scopedWarehouseCodes || scopedWarehouseCodes.includes((warehouseCode || "").toUpperCase());
 
     // Đổi khoảng ngày của nhật ký nhập/xuất ở tab Tồn kho chỉ cần tải lại đúng phần đó.
     if (searchParams.get("view") === "movements") {
@@ -523,9 +533,9 @@ export async function GET(request: Request) {
         select: { code: true },
       });
       const [stockMovements, periodBalances, periodTotals] = await Promise.all([
-        loadStockMovements(branchFilter, searchParams),
+        loadStockMovements(branchFilter, searchParams).then((rows) => rows.filter((row) => inScope(row.warehouseCode))),
         prisma.inventoryBalance.findMany({
-          where: { warehouseCode: { in: periodWarehouses.map((row) => row.code) } },
+          where: { warehouseCode: { in: scopeWarehouses(auth.session, periodWarehouses).map((row) => row.code) } },
           include: { item: true },
           orderBy: [{ warehouseCode: "asc" }, { item: { name: "asc" } }],
         }),
@@ -557,7 +567,7 @@ export async function GET(request: Request) {
       },
       select: { code: true }
     });
-    const warehouseCodes = allowedWarehouses.map((w) => w.code);
+    const warehouseCodes = scopeWarehouses(auth.session, allowedWarehouses).map((w) => w.code);
 
     const [items, balances, transactions, flowTransactions, transferTransactions, wasteTransactions, movementTotals, wasteTotals, stockMovements, recipes, warehouses, stocktakes, itemGroups, receiptCategoryList, pendingRevenueRows, partners, allBalances, nonInventoryGroups] = await Promise.all([
       prisma.inventoryItem.findMany({ include: { unitConversions: { orderBy: [{ isDefaultPurchase: "desc" }, { unitCode: "asc" }] } }, orderBy: { name: "asc" } }),
@@ -567,7 +577,7 @@ export async function GET(request: Request) {
         orderBy: [{ warehouseCode: "asc" }, { item: { name: "asc" } }]
       }),
       prisma.inventoryTransaction.findMany({
-        where: { ...branchFilter },
+        where: { ...branchFilter, ...warehouseFilter },
         include: { lines: { include: { item: { select: lineItemSelect } } } },
         orderBy: { createdAt: "desc" },
         take: 100
@@ -575,7 +585,7 @@ export async function GET(request: Request) {
       // Danh sách phiếu của hai màn Nhập kho / Xuất kho: lọc theo NGÀY CHỨNG TỪ chứ không cắt
       // 100 dòng mới nhất, để phiếu xuất bán của cả kỳ đã rã đều hiện đủ.
       prisma.inventoryTransaction.findMany({
-        where: { ...branchFilter, transactionDate: { gte: flowFrom, lte: flowTo } },
+        where: { ...branchFilter, ...warehouseFilter, transactionDate: { gte: flowFrom, lte: flowTo } },
         include: { lines: { include: { item: { select: lineItemSelect } } } },
         orderBy: { transactionDate: "desc" },
         take: 2000,
@@ -583,31 +593,41 @@ export async function GET(request: Request) {
       // Tab Điều chuyển: truy vấn riêng theo khoảng ngày chứng từ, để phiếu xuất bán sinh từ rã
       // BOM (hàng nghìn dòng/tháng) không đẩy phiếu điều chuyển ra khỏi giới hạn của danh sách chung.
       prisma.inventoryTransaction.findMany({
-        where: { ...branchFilter, transactionType: "DIEU_CHUYEN", transactionDate: { gte: flowFrom, lte: flowTo } },
+        where: { ...branchFilter, ...warehouseFilter, transactionType: "DIEU_CHUYEN", transactionDate: { gte: flowFrom, lte: flowTo } },
         include: { lines: { include: { item: { select: lineItemSelect } } } },
         orderBy: [{ transactionDate: "desc" }, { code: "desc" }],
         take: 2000,
       }),
       // Tab Hủy hàng: danh sách phiếu hủy theo cùng khoảng ngày chứng từ, cùng lý do như trên.
       prisma.inventoryTransaction.findMany({
-        where: { ...branchFilter, transactionType: "XUAT_HUY", transactionDate: { gte: flowFrom, lte: flowTo } },
+        where: { ...branchFilter, ...warehouseFilter, transactionType: "XUAT_HUY", transactionDate: { gte: flowFrom, lte: flowTo } },
         include: { lines: { include: { item: { select: lineItemSelect } } } },
         orderBy: [{ transactionDate: "desc" }, { code: "desc" }],
         take: 2000,
       }),
       loadMovementTotals(branchCode, stockPeriod(searchParams)),
       loadWasteTotals(branchCode),
-      loadStockMovements(branchFilter, searchParams),
+      loadStockMovements(branchFilter, searchParams).then((rows) => rows.filter((row) => inScope(row.warehouseCode))),
       prisma.recipe.findMany({ include: { lines: { include: { item: { select: lineItemSelect } } } }, orderBy: { updatedAt: "desc" } }),
       prisma.masterDataItem.findMany({
-        where: { type: "WAREHOUSE", status: "ACTIVE", ...(branchCode === "ALL" ? {} : { branch: branchCode }) },
+        where: {
+          type: "WAREHOUSE", status: "ACTIVE",
+          ...(branchCode === "ALL" ? {} : { branch: branchCode }),
+          ...(inScopedWarehouses ? { code: inScopedWarehouses } : {}),
+        },
         orderBy: [{ branch: "asc" }, { code: "asc" }],
       }),
+      // Phiếu còn chờ duyệt / bị trả lại luôn phải hiện (kế toán cần duyệt, nhà hàng cần sửa) dù đã
+      // cũ; phiếu mới cập nhật lên đầu.
       prisma.stocktakeSession.findMany({
-        where: { ...(branchCode === "ALL" ? {} : { branchCode }) },
+        where: {
+          ...(branchCode === "ALL" ? {} : { branchCode }),
+          ...(inScopedWarehouses ? { warehouseCode: inScopedWarehouses } : {}),
+          OR: [{ status: { not: "APPROVED" } }, { updatedAt: { gte: new Date(Date.now() - 120 * 24 * 60 * 60 * 1000) } }],
+        },
         include: { lines: { include: { item: true } } },
-        orderBy: { createdAt: "desc" },
-        take: 20,
+        orderBy: { updatedAt: "desc" },
+        take: 50,
       }),
       prisma.masterDataItem.findMany({
         where: { type: "INVENTORY_ITEM_GROUP", status: "ACTIVE" },
@@ -828,7 +848,13 @@ export async function POST(request: Request) {
     const body = await request.json();
     const action = cleanText(body.action);
     // Mở lại phiếu đã duyệt là sửa lại số đã chốt, không phải lập chứng từ mới -> quyền "edit".
-    const auth = requireMenuAction(request, menuHref, ["REOPEN_STOCKTAKE", "REVERT_PRODUCTION"].includes(action) ? "edit" : "create");
+    // Duyệt / trả lại / mở lại phiếu kiểm kê là việc của kế toán -> quyền "approve" (khách yêu
+    // cầu 28/09/2026); nhà hàng chỉ có "create" để Gửi duyệt và sửa phiếu chưa duyệt.
+    const auth = requireMenuAction(
+      request,
+      menuHref,
+      ["APPROVE_STOCKTAKE", "RETURN_STOCKTAKE", "REOPEN_STOCKTAKE"].includes(action) ? "approve" : action === "REVERT_PRODUCTION" ? "edit" : "create",
+    );
     if (!auth.ok) return auth.response;
 
     if (action === "CREATE_ITEM") {
@@ -1017,6 +1043,8 @@ export async function POST(request: Request) {
       const productQuantity = toNumber(body.productQuantity);
       if (!productCode || !branchCode || !warehouseCode || productQuantity <= 0) businessError("Lenh che bien can san pham, cua hang, kho va so luong > 0");
       assertBranchAccess(auth.session, branchCode);
+      assertWarehouseAccess(auth.session, warehouseCode, "Kho xuất NVL");
+      assertWarehouseAccess(auth.session, toWarehouseCode, "Kho nhập BTP");
       const [productItem, recipeVersions] = await Promise.all([
         prisma.inventoryItem.findUnique({ where: { code: productCode } }),
         // Công thức đúng là bản có hiệu lực TẠI NGÀY CHẾ BIẾN (pickRecipeForDate bên dưới),
@@ -1076,77 +1104,172 @@ export async function POST(request: Request) {
       return NextResponse.json(result, { status: 201 });
     }
 
-    if (action === "APPROVE_STOCKTAKE") {
+    /**
+     * Kiểm kê kho HAI BƯỚC (khách yêu cầu 28/09/2026): nhà hàng đếm xong bấm "Gửi duyệt" — phiếu
+     * nằm ở Chờ duyệt, CHƯA đụng tồn kho, nhà hàng mở lại sửa / bổ sung được tới khi kế toán duyệt
+     * (bị trả lại cũng sửa rồi gửi lại được). Kế toán (quyền "Duyệt") bấm Duyệt ở danh sách phiếu
+     * mới sinh phiếu điều chỉnh tồn — lib/stocktake-status.ts.
+     *
+     * Số sổ sách của từng dòng chốt lúc ĐẾM (lần đầu dòng đó được lưu); lúc duyệt ghi đúng phần
+     * chênh lên tồn hiện tại, nên hàng nhập/xuất trong lúc chờ duyệt không bị đè.
+     */
+    if (action === "SAVE_STOCKTAKE") {
+      const stocktakeId = cleanText(body.stocktakeId);
       const branchCode = cleanText(body.branchCode);
       const warehouseCode = cleanText(body.warehouseCode);
       const stocktakeDate = toDate(body.stocktakeDate);
       const rows = stocktakeLinesFrom(body.lines);
-      if (!branchCode || !warehouseCode || rows.length === 0) businessError("Kiem ke can cua hang, kho va it nhat mot mat hang");
+      if (!branchCode || !warehouseCode || rows.length === 0) businessError("Kiểm kê cần cửa hàng, kho và ít nhất một mặt hàng");
       assertBranchAccess(auth.session, branchCode);
-      if (await isPeriodLocked(stocktakeDate, branchCode)) businessError("Ky ke toan da khoa");
+      assertWarehouseAccess(auth.session, warehouseCode);
+      // Trước đây ô Kho ở form kiểm kê không lọc theo cửa hàng (khách chọn NAM MÊ vẫn ra kho của
+      // cửa hàng khác, 28/09/2026) và API cũng không kiểm — phiếu có thể ghi kho lạc cửa hàng.
+      const stocktakeWarehouse = await prisma.masterDataItem.findFirst({ where: { type: "WAREHOUSE", code: warehouseCode, branch: branchCode } });
+      if (!stocktakeWarehouse) businessError(`Kho ${warehouseCode} không thuộc cửa hàng ${branchCode}.`);
+      if (await isPeriodLocked(stocktakeDate, branchCode)) businessError("Kỳ kế toán đã khoá");
+      const existing = stocktakeId
+        ? await prisma.stocktakeSession.findUnique({ where: { id: stocktakeId }, include: { lines: true } })
+        : null;
+      if (stocktakeId) {
+        if (!existing) businessError("Không tìm thấy phiếu kiểm kê cần sửa");
+        assertBranchAccess(auth.session, existing.branchCode);
+        assertWarehouseAccess(auth.session, existing.warehouseCode);
+        if (!isStocktakeEditable(existing.status)) {
+          businessError(`Phiếu kiểm kê ${existing.code} đã được kế toán duyệt nên không sửa được nữa. Nhờ kế toán Mở lại phiếu trước.`);
+        }
+      }
       const requestedStocktakeCode = cleanText(body.code);
-      if (requestedStocktakeCode && await findDeletedByUnique("StocktakeSession", { code: requestedStocktakeCode })) {
+      if (!existing && requestedStocktakeCode && await findDeletedByUnique("StocktakeSession", { code: requestedStocktakeCode })) {
         businessError(duplicatedInTrashMessage(requestedStocktakeCode, "Phiếu kiểm kê"));
       }
       const result = await prisma.$transaction(async (tx) => {
-        const stocktake = await tx.stocktakeSession.create({
-          data: {
-            code: cleanText(body.code) || await nextStocktakeCode(tx, stocktakeDate),
-            stocktakeDate,
-            branchCode,
-            warehouseCode,
-            status: "APPROVED",
-            approvedBy: auth.session.name,
-            approvedAt: new Date(),
-            note: cleanText(body.note) || null,
-            createdBy: auth.session.name,
-          },
-        });
+        const isExplodable = await semiFinishedWithRecipeChecker(tx, branchCode);
+        // Phiếu đang sửa: dòng đã có giữ nguyên số sổ sách chốt lúc đếm lần đầu (đổi kho thì đếm lại từ đầu).
+        const savedSystem = new Map(existing && existing.warehouseCode === warehouseCode
+          ? existing.lines.map((line) => [line.itemId, line.systemQuantity] as const)
+          : []);
+        const lineData = [];
+        for (const row of rows) {
+          const item = row.itemId
+            ? await tx.inventoryItem.findUnique({ where: { id: row.itemId } })
+            : await tx.inventoryItem.findUnique({ where: { code: row.itemCode.toUpperCase() } });
+          if (!item) businessError(`Không tìm thấy mặt hàng ${row.itemCode || row.itemId}`);
+          // CCDC & Tài sản kiểm kê ở màn hình Tài sản & Khấu hao, không nằm trong kiểm kê kho.
+          if (!isWarehouseStocktakeItemType(item.itemType)) {
+            businessError(`Mặt hàng ${item.code} là CCDC/Tài sản và phải được kiểm kê tại phân hệ Tài sản & khấu hao.`);
+          }
+          const balance = await tx.inventoryBalance.findUnique({ where: { itemId_warehouseCode: { itemId: item.id, warehouseCode } } });
+          let systemQuantity = savedSystem.get(item.id);
+          if (systemQuantity === undefined) {
+            systemQuantity = balance?.quantity || 0;
+            // Khoá lạc quan: người đếm chốt số dựa trên tồn HỌ NHÌN THẤY. Tồn đã đổi từ lúc mở màn
+            // hình mà cứ lưu thì chênh lệch sẽ "hoàn lại" toàn bộ phát sinh. Bắt tải lại danh sách.
+            if (row.systemQuantity !== null && Math.abs(row.systemQuantity - systemQuantity) > quantityEpsilon) {
+              businessError(`Tồn của ${item.code} đã thay đổi từ lúc tải danh sách (${row.systemQuantity} → ${systemQuantity}). Bấm "Nạp danh sách kho" để lấy số mới rồi kiểm lại dòng này.`);
+            }
+          }
+          const varianceQuantity = row.actualQuantity - systemQuantity;
+          // Hàng đếm THỪA mà chưa có giá vốn thì bắt khai đơn giá ngay lúc gửi — để kế toán duyệt
+          // được luôn. BTP có định lượng chờ rã BOM lấy giá từ nguyên liệu nên thôi.
+          if (varianceQuantity > 0 && !isExplodable(item) && (balance?.averageCost || 0) <= 0 && row.unitCost <= 0) {
+            businessError(`${item.code} chưa có giá vốn trong kho ${warehouseCode}. Nhập "Đơn giá" cho dòng này để ghi nhận phần thừa ${varianceQuantity} ${item.unit}.`);
+          }
+          lineData.push({
+            itemId: item.id,
+            systemQuantity,
+            actualQuantity: row.actualQuantity,
+            varianceQuantity,
+            unitCost: row.unitCost > 0 ? row.unitCost : null,
+            reason: row.reason || cleanText(body.reason) || null,
+          });
+        }
+        // Gửi (lại) là về Chờ duyệt; lý do trả lại lần trước giữ nguyên để kế toán đối chiếu.
+        const header = { stocktakeDate, branchCode, warehouseCode, status: STOCKTAKE_PENDING, note: cleanText(body.note) || null };
+        const stocktake = existing
+          ? await tx.stocktakeSession.update({ where: { id: existing.id }, data: header })
+          : await tx.stocktakeSession.create({
+            data: { ...header, code: requestedStocktakeCode || await nextStocktakeCode(tx, stocktakeDate), createdBy: auth.session.name },
+          });
+        await tx.stocktakeLine.deleteMany({ where: { stocktakeId: stocktake.id } });
+        await tx.stocktakeLine.createMany({ data: lineData.map((line) => ({ ...line, stocktakeId: stocktake.id })) });
+        return tx.stocktakeSession.findUnique({ where: { id: stocktake.id }, include: { lines: { include: { item: true } } } });
+      });
+      await writeAuditLog({
+        session: auth.session, module: menuHref, action: existing ? "RESUBMIT_STOCKTAKE" : "SUBMIT_STOCKTAKE",
+        entityType: "StocktakeSession", entityId: result?.id || null, entityCode: result?.code || null, branchCode,
+        metadata: { warehouseCode, lines: rows.length },
+      });
+      return NextResponse.json(result, { status: existing ? 200 : 201 });
+    }
+
+    /**
+     * Kế toán trả lại phiếu đang Chờ duyệt kèm lý do: phiếu về "Bị trả lại", nhà hàng thấy lý do,
+     * sửa rồi gửi lại. Không đụng tồn kho (chưa duyệt thì chưa có gì để hoàn).
+     */
+    if (action === "RETURN_STOCKTAKE") {
+      const stocktakeId = cleanText(body.stocktakeId) || cleanText(body.id);
+      const reason = cleanText(body.reason);
+      if (!stocktakeId) businessError("Thiếu phiếu kiểm kê cần trả lại");
+      if (!reason) businessError("Nhập lý do trả lại để nhà hàng biết cần sửa gì");
+      const stocktake = await prisma.stocktakeSession.findUnique({ where: { id: stocktakeId } });
+      if (!stocktake) businessError("Không tìm thấy phiếu kiểm kê");
+      assertBranchAccess(auth.session, stocktake.branchCode);
+      assertWarehouseAccess(auth.session, stocktake.warehouseCode);
+      if (stocktake.status !== STOCKTAKE_PENDING) {
+        businessError(`Phiếu kiểm kê ${stocktake.code} đang ở trạng thái ${stocktakeStatusLabel(stocktake.status)}, chỉ trả lại được phiếu Chờ duyệt.`);
+      }
+      const result = await prisma.stocktakeSession.update({
+        where: { id: stocktakeId },
+        data: { status: STOCKTAKE_RETURNED, returnedReason: reason, returnedBy: auth.session.name, returnedAt: new Date() },
+        include: { lines: { include: { item: true } } },
+      });
+      await writeAuditLog({ session: auth.session, module: menuHref, action: "RETURN_STOCKTAKE", entityType: "StocktakeSession", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { reason } });
+      return NextResponse.json(result);
+    }
+
+    /** Kế toán duyệt phiếu kiểm kê đang Chờ duyệt: sinh phiếu nhập/xuất điều chỉnh theo phần chênh. */
+    if (action === "APPROVE_STOCKTAKE") {
+      const stocktakeId = cleanText(body.stocktakeId) || cleanText(body.id);
+      if (!stocktakeId) businessError("Chọn phiếu kiểm kê cần duyệt ở danh sách phiếu (nhà hàng bấm Gửi duyệt trước).");
+      const stocktake = await prisma.stocktakeSession.findUnique({ where: { id: stocktakeId }, include: { lines: { include: { item: true } } } });
+      if (!stocktake) businessError("Không tìm thấy phiếu kiểm kê");
+      assertBranchAccess(auth.session, stocktake.branchCode);
+      assertWarehouseAccess(auth.session, stocktake.warehouseCode);
+      if (stocktake.status !== STOCKTAKE_PENDING) {
+        businessError(`Phiếu kiểm kê ${stocktake.code} đang ở trạng thái ${stocktakeStatusLabel(stocktake.status)}, chỉ duyệt được phiếu Chờ duyệt.`);
+      }
+      const { branchCode, warehouseCode, stocktakeDate } = stocktake;
+      if (await isPeriodLocked(stocktakeDate, branchCode)) businessError("Kỳ kế toán đã khoá");
+      const result = await prisma.$transaction(async (tx) => {
         const inboundLines = [];
         const outboundLines = [];
         // Kiểm DƯ bán thành phẩm có định lượng không nhập kiểm kê mà chờ rã BOM (khách chốt
         // 28/09/2026): phần dư là hàng đã chế biến nên phải trừ nguyên liệu tương ứng.
         const isExplodable = await semiFinishedWithRecipeChecker(tx, branchCode);
         let deferredSurplus = false;
-        for (const row of rows) {
-          const item = row.itemId
-            ? await tx.inventoryItem.findUnique({ where: { id: row.itemId } })
-            : await tx.inventoryItem.findUnique({ where: { code: row.itemCode.toUpperCase() } });
-          if (!item) businessError(`Khong tim thay mat hang ${row.itemCode || row.itemId}`);
-          // CCDC & Tài sản kiểm kê ở màn hình Tài sản & Khấu hao, không nằm trong kiểm kê kho.
-          if (!isWarehouseStocktakeItemType(item.itemType)) {
-            businessError(`Mặt hàng ${item.code} là CCDC/Tài sản và phải được kiểm kê tại phân hệ Tài sản & khấu hao.`);
-          }
+        for (const line of stocktake.lines) {
+          const item = line.item;
+          const varianceQuantity = line.actualQuantity - line.systemQuantity;
+          if (Math.abs(varianceQuantity) <= quantityEpsilon) continue;
           const balance = await tx.inventoryBalance.findUnique({ where: { itemId_warehouseCode: { itemId: item.id, warehouseCode } } });
-          const systemQuantity = balance?.quantity || 0;
-          // Khoá lạc quan: người đếm chốt số dựa trên tồn HỌ NHÌN THẤY. Nếu tồn hệ thống đã đổi
-          // (bán hàng, nhập kho... sau lúc mở màn hình) mà cứ duyệt thì chênh lệch sẽ "hoàn lại"
-          // toàn bộ phát sinh trong ngày. Bắt tải lại danh sách thay vì âm thầm đảo số.
-          if (row.systemQuantity !== null && Math.abs(row.systemQuantity - systemQuantity) > quantityEpsilon) {
-            businessError(`Tồn của ${item.code} đã thay đổi từ lúc tải danh sách (${row.systemQuantity} → ${systemQuantity}). Bấm "Nạp danh sách kho" để lấy số mới rồi kiểm lại dòng này.`);
-          }
-          const varianceQuantity = row.actualQuantity - systemQuantity;
           const surplusToExplode = varianceQuantity > 0 && isExplodable(item);
-          // Hàng đếm THỪA mà chưa có giá vốn thì bắt khai đơn giá — nhập giá 0 là giá trị kho
-          // sai và giá vốn món ăn theo sai vĩnh viễn. BTP chờ rã lấy giá từ nguyên liệu nên thôi.
-          if (varianceQuantity > 0 && !surplusToExplode && (balance?.averageCost || 0) <= 0 && row.unitCost <= 0) {
-            businessError(`${item.code} chưa có giá vốn trong kho ${warehouseCode}. Nhập "Đơn giá" cho dòng này để ghi nhận phần thừa ${varianceQuantity} ${item.unit}.`);
+          const surplusUnitCost = (balance?.averageCost || 0) > 0 ? balance?.averageCost || 0 : line.unitCost || 0;
+          if (varianceQuantity > 0 && !surplusToExplode && surplusUnitCost <= 0) {
+            businessError(`${item.code} chưa có giá vốn trong kho ${warehouseCode}. Trả lại phiếu để nhà hàng nhập "Đơn giá" cho phần thừa ${varianceQuantity} ${item.unit}.`);
           }
-          await tx.stocktakeLine.create({
-            data: {
-              stocktakeId: stocktake.id,
-              itemId: item.id,
-              systemQuantity,
-              actualQuantity: row.actualQuantity,
-              varianceQuantity,
-              reason: row.reason || cleanText(body.reason) || null,
-            },
-          });
           if (surplusToExplode) deferredSurplus = true;
-          else if (varianceQuantity > 0) inboundLines.push({ itemId: item.id, inputQuantity: varianceQuantity, inputUnitCode: item.unit, inputUnitCost: (balance?.averageCost || 0) > 0 ? balance?.averageCost || 0 : row.unitCost });
+          else if (varianceQuantity > 0) inboundLines.push({ itemId: item.id, inputQuantity: varianceQuantity, inputUnitCode: item.unit, inputUnitCost: surplusUnitCost });
           if (varianceQuantity < 0) outboundLines.push({ itemId: item.id, inputQuantity: Math.abs(varianceQuantity), inputUnitCode: item.unit, inputUnitCost: 0 });
         }
-        if (deferredSurplus) await tx.stocktakeSession.update({ where: { id: stocktake.id }, data: { explosionStatus: EXPLOSION_PENDING } });
+        await tx.stocktakeSession.update({
+          where: { id: stocktake.id },
+          data: {
+            status: STOCKTAKE_APPROVED,
+            approvedBy: auth.session.name,
+            approvedAt: new Date(),
+            ...(deferredSurplus ? { explosionStatus: EXPLOSION_PENDING } : {}),
+          },
+        });
         const docs = [];
         if (inboundLines.length > 0) docs.push(await postInventoryTransaction(tx, {
           code: `${stocktake.code}-N`,
@@ -1174,7 +1297,8 @@ export async function POST(request: Request) {
         }));
         return { stocktake: await tx.stocktakeSession.findUnique({ where: { id: stocktake.id }, include: { lines: { include: { item: true } } } }), transactions: docs };
       });
-      return NextResponse.json(result, { status: 201 });
+      await writeAuditLog({ session: auth.session, module: menuHref, action: "APPROVE_STOCKTAKE", entityType: "StocktakeSession", entityId: stocktake.id, entityCode: stocktake.code, branchCode, metadata: { transactions: result.transactions.map((doc) => doc.code) } });
+      return NextResponse.json(result);
     }
 
     /**
@@ -1185,8 +1309,8 @@ export async function POST(request: Request) {
      * Đếm nhầm một dòng là không còn đường sửa, chỉ còn cách lập phiếu điều chỉnh tay.
      *
      * Mở lại = hoàn kho đúng bằng hai phiếu điều chỉnh đó rồi xoá chúng, đưa phiếu kiểm kê về
-     * Nháp. Số đã đếm giữ nguyên trên phiếu để đối chiếu; đếm lại thì lập phiếu mới, còn phiếu
-     * nháp cũ xoá được như thường vì không còn phiếu kho nào trỏ vào.
+     * Chờ duyệt (luồng hai bước 28/09/2026): nhà hàng sửa số đếm rồi gửi lại, kế toán duyệt lại;
+     * phiếu chưa duyệt xoá được như thường vì không còn phiếu kho nào trỏ vào.
      */
     if (action === "REOPEN_STOCKTAKE") {
       const stocktakeId = cleanText(body.stocktakeId) || cleanText(body.id);
@@ -1194,6 +1318,7 @@ export async function POST(request: Request) {
       const stocktake = await prisma.stocktakeSession.findUnique({ where: { id: stocktakeId } });
       if (!stocktake) businessError("Không tìm thấy phiếu kiểm kê");
       assertBranchAccess(auth.session, stocktake.branchCode);
+      assertWarehouseAccess(auth.session, stocktake.warehouseCode);
       if (stocktake.status !== "APPROVED") businessError(`Phiếu kiểm kê ${stocktake.code} đang ở trạng thái ${stocktake.status}, chưa duyệt nên không có gì để mở lại.`);
       await assertPeriodOpen({ date: stocktake.stocktakeDate, branchCode: stocktake.branchCode }, "mở lại phiếu kiểm kê");
       const explodedRun = explodedRunOf(stocktake.explosionStatus);
@@ -1239,8 +1364,9 @@ export async function POST(request: Request) {
 
       const result = await prisma.stocktakeSession.update({
         where: { id: stocktakeId },
-        // Phần kiểm dư đang chờ rã cũng bỏ khỏi hàng chờ: duyệt lại mới tính lại.
-        data: { status: "DRAFT", approvedBy: null, approvedAt: null, explosionStatus: null },
+        // Về Chờ duyệt (không phải Nháp): nhà hàng sửa được, kế toán duyệt lại. Phần kiểm dư đang
+        // chờ rã cũng bỏ khỏi hàng chờ: duyệt lại mới tính lại.
+        data: { status: STOCKTAKE_PENDING, approvedBy: null, approvedAt: null, explosionStatus: null },
         include: { lines: { include: { item: true } } },
       });
       await writeAuditLog({ session: auth.session, module: menuHref, action: "REOPEN_STOCKTAKE", entityType: "StocktakeSession", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { reversedDocuments: documents.map((document) => document.code), reversals } });
@@ -1615,6 +1741,8 @@ export async function POST(request: Request) {
       if (!branchCode || !warehouseCode || !toWarehouseCode) businessError("Điều chuyển cần cửa hàng, kho xuất và kho nhận");
       if (warehouseCode === toWarehouseCode) businessError("Kho xuất và kho nhận không được trùng nhau");
       assertBranchAccess(auth.session, branchCode);
+      // Chỉ chặn kho xuất: điều chuyển sang kho của bộ phận khác là việc bình thường.
+      assertWarehouseAccess(auth.session, warehouseCode, "Kho xuất");
       const [sourceWarehouse, destinationWarehouse] = await Promise.all([
         prisma.masterDataItem.findFirst({ where: { type: "WAREHOUSE", code: warehouseCode, branch: branchCode } }),
         prisma.masterDataItem.findFirst({ where: { type: "WAREHOUSE", code: toWarehouseCode, status: "ACTIVE" } }),
@@ -1664,6 +1792,7 @@ export async function POST(request: Request) {
     const toWarehouseCode = cleanText(body.toWarehouseCode);
     if (!branchCode || !warehouseCode) businessError("Cửa hàng và kho là bắt buộc");
     assertBranchAccess(auth.session, branchCode);
+    assertWarehouseAccess(auth.session, warehouseCode);
 
     // Validate that the warehouse belongs to the branch
     const warehouse = await prisma.masterDataItem.findFirst({
@@ -1884,6 +2013,7 @@ export async function PATCH(request: Request) {
       });
       if (!transaction) businessError("Không tìm thấy phiếu nhập/xuất kho");
       assertBranchAccess(auth.session, transaction.branchCode);
+      assertWarehouseAccess(auth.session, transaction.warehouseCode);
 
       const derivedFrom = transaction.referenceType ? derivedReferenceTypes[transaction.referenceType] : undefined;
       if (derivedFrom) {
@@ -1899,6 +2029,7 @@ export async function PATCH(request: Request) {
       const editedLines = body.lines !== undefined ? linesFrom(body.lines) : [];
       const warehouseCode = body.warehouseCode !== undefined ? cleanText(body.warehouseCode) : transaction.warehouseCode;
       const toWarehouseCode = body.toWarehouseCode !== undefined ? cleanText(body.toWarehouseCode) : transaction.toWarehouseCode;
+      if (warehouseCode !== transaction.warehouseCode) assertWarehouseAccess(auth.session, warehouseCode);
       const isTransfer = transaction.transactionType === "DIEU_CHUYEN";
       // Điều chuyển định giá theo NGÀY chứng từ (luật đơn giá trong tháng), nên đổi ngày cũng
       // phải ghi lại dòng để giá và công nợ nội bộ đi theo tháng mới.
@@ -2020,12 +2151,14 @@ export async function PATCH(request: Request) {
       const stocktake = await prisma.stocktakeSession.findUnique({ where: { id: stocktakeId } });
       if (!stocktake) businessError("Không tìm thấy phiếu kiểm kê");
       assertBranchAccess(auth.session, stocktake.branchCode);
+      assertWarehouseAccess(auth.session, stocktake.warehouseCode);
       if (stocktake.status === "APPROVED") {
         businessError(`Phiếu kiểm kê ${stocktake.code} đã duyệt và đã điều chỉnh tồn kho nên không thể sửa.`);
       }
 
       const warehouseCode = body.warehouseCode !== undefined ? cleanText(body.warehouseCode) : stocktake.warehouseCode;
       if (!warehouseCode) businessError("Kho kiểm kê không được để trống");
+      assertWarehouseAccess(auth.session, warehouseCode);
       const stocktakeDate = body.stocktakeDate !== undefined ? toDate(body.stocktakeDate) : stocktake.stocktakeDate;
       if (await isPeriodLocked(stocktakeDate, stocktake.branchCode)) businessError("Kỳ kế toán đã khóa");
       if (warehouseCode !== stocktake.warehouseCode) {
@@ -2240,6 +2373,7 @@ export async function DELETE(request: Request) {
       const transaction = await prisma.inventoryTransaction.findUnique({ where: { id }, include: { lines: true } });
       if (!transaction) businessError("Không tìm thấy phiếu nhập/xuất kho");
       assertBranchAccess(auth.session, transaction.branchCode);
+      assertWarehouseAccess(auth.session, transaction.warehouseCode);
 
       // Phiếu thuộc lô import vẫn xoá được từng cái: khách import cả tháng vài nghìn dòng,
       // sai một phiếu mà bắt rollback nguyên lô là mất hết phần còn lại (khách hỏi 21/09/2026).
@@ -2292,6 +2426,7 @@ export async function DELETE(request: Request) {
       const stocktake = await prisma.stocktakeSession.findUnique({ where: { id } });
       if (!stocktake) businessError("Không tìm thấy phiếu kiểm kê");
       assertBranchAccess(auth.session, stocktake.branchCode);
+      assertWarehouseAccess(auth.session, stocktake.warehouseCode);
       if (stocktake.status === "APPROVED") {
         businessError(`Phiếu kiểm kê ${stocktake.code} đã duyệt và đã sinh phiếu điều chỉnh tồn kho nên không thể xoá.`);
       }

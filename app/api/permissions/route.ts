@@ -14,6 +14,15 @@ function normalizeDepartmentCodes(value: unknown) {
     .filter(Boolean))];
 }
 
+async function replaceWarehouseAccess(userId: string, warehouseCodes: string[]) {
+  await prisma.$transaction([
+    prisma.userWarehouseAccess.deleteMany({ where: { userId } }),
+    ...(warehouseCodes.length > 0
+      ? [prisma.userWarehouseAccess.createMany({ data: warehouseCodes.map((warehouseCode) => ({ userId, warehouseCode })) })]
+      : []),
+  ]);
+}
+
 async function replaceDepartmentAccess(userId: string, departmentCodes: string[]) {
   await prisma.$transaction([
     prisma.userDepartmentAccess.deleteMany({ where: { userId } }),
@@ -41,6 +50,7 @@ export async function GET(request: Request) {
           role: true,
           branchAccesses: true,
           departmentAccesses: true,
+          warehouseAccesses: true,
         },
         orderBy: { email: "asc" },
       }),
@@ -116,6 +126,8 @@ export async function POST(request: Request) {
       const branches = Array.isArray(branchCodes) && branchCodes.length > 0 ? branchCodes : ["ALL"];
       // Phạm vi phòng ban (kiểm kê theo bộ phận): trống = mọi phòng ban.
       const departments = normalizeDepartmentCodes(body.departmentCodes);
+      // Phạm vi kho: trống = mọi kho của cửa hàng được gán. Mã kho chuẩn hoá giống mã phòng ban.
+      const warehouses = normalizeDepartmentCodes(body.warehouseCodes);
 
       const newUser = await prisma.user.create({
         data: {
@@ -131,11 +143,15 @@ export async function POST(request: Request) {
           departmentAccesses: {
             create: departments.map((departmentCode) => ({ departmentCode })),
           },
+          warehouseAccesses: {
+            create: warehouses.map((warehouseCode) => ({ warehouseCode })),
+          },
         },
         include: {
           role: true,
           branchAccesses: true,
           departmentAccesses: true,
+          warehouseAccesses: true,
         },
       });
 
@@ -311,6 +327,9 @@ export async function PATCH(request: Request) {
       if (Array.isArray(body.departmentCodes)) {
         await replaceDepartmentAccess(userId, normalizeDepartmentCodes(body.departmentCodes));
       }
+      if (Array.isArray(body.warehouseCodes)) {
+        await replaceWarehouseAccess(userId, normalizeDepartmentCodes(body.warehouseCodes));
+      }
 
       return NextResponse.json({ ok: true });
     }
@@ -332,6 +351,9 @@ export async function PATCH(request: Request) {
     }
     if (Array.isArray(body.departmentCodes)) {
       await replaceDepartmentAccess(userId, normalizeDepartmentCodes(body.departmentCodes));
+    }
+    if (Array.isArray(body.warehouseCodes)) {
+      await replaceWarehouseAccess(userId, normalizeDepartmentCodes(body.warehouseCodes));
     }
 
     return NextResponse.json({ ok: true });

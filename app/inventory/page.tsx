@@ -17,6 +17,7 @@ import { parseVatRate, VAT_RATE_OPTIONS, vatAmountOf, vatRateLabel } from "@/lib
 import { roundVnd } from "@/lib/round-vnd";
 import { sumRoundedByRow, sumStockDocuments } from "@/lib/table-subtotal";
 import { statValueTextClass } from "@/components/reports/report-ui";
+import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING, STOCKTAKE_RETURNED, isStocktakeEditable, stocktakeStatusLabel, stocktakeStatusTone } from "@/lib/stocktake-status";
 
 type UnitConversion = { id: string; unitCode: string; unitName: string | null; conversionRate: number; isDefaultPurchase: boolean };
 type Item = { id: string; code: string; name: string; unit: string; itemType: string; category?: string | null; revenueGroup?: string | null; minStock: number; requiresImage: boolean; status?: string | null; note?: string | null; unitConversions?: UnitConversion[] };
@@ -54,7 +55,11 @@ type Partner = { code: string; name: string; group: string | null; status: strin
 type MovementByType = Record<string, { inbound: number; outbound: number; value: number }>;
 type StockSummary = { item: Item; warehouseCode: string; openingQuantity: number; inboundQuantity: number; outboundQuantity: number; closingQuantity: number; averageCost: number; closingValue: number; movementByType?: MovementByType };
 type StockMovement = { transactionId: string; code: string; transactionType: string; transactionDate: string; warehouseCode: string; toWarehouseCode: string | null; itemCode: string; itemName: string; unit: string; quantity: number; inboundQuantity: number; outboundQuantity: number; value: number; referenceCode: string | null };
-type Stocktake = { id: string; code: string; stocktakeDate: string; branchCode: string; warehouseCode: string; status: string; explosionStatus?: string | null; lines: Array<{ id: string; systemQuantity: number; actualQuantity: number; varianceQuantity: number; item: Item }> };
+type Stocktake = {
+  id: string; code: string; stocktakeDate: string; branchCode: string; warehouseCode: string; status: string; explosionStatus?: string | null;
+  note?: string | null; createdBy?: string | null; approvedBy?: string | null; returnedReason?: string | null; returnedBy?: string | null;
+  lines: Array<{ id: string; systemQuantity: number; actualQuantity: number; varianceQuantity: number; unitCost?: number | null; reason?: string | null; item: Item }>;
+};
 type ReceivablePOLine = { id: string; itemId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; item: { code: string; name: string; unit: string } };
 type ReceivablePO = { id: string; code: string; supplierName: string; branchCode: string; warehouseCode: string; status: string; lines: ReceivablePOLine[] };
 type StocktakeDraftRow = { itemId: string; itemCode: string; itemName: string; unit: string; systemQuantity: number; averageCost: number; actualQuantity: string; unitCost: string; reason: string };
@@ -95,6 +100,9 @@ function flowQuantityText(lines: Array<{ quantity: number; item: { unit: string 
 }
 
 function buildStocktakeRows(warehouseCode: string, balances: Balance[], fallbackItems: Item[]): StocktakeDraftRow[] {
+  // Chưa có kho (cửa hàng chưa khai kho) thì không dựng danh sách — trước đây rơi xuống 20 mặt
+  // hàng đầu tiên của danh mục, trông như đang kiểm một kho nào đó.
+  if (!warehouseCode) return [];
   const rows = balances
     .filter((balance) => balance.warehouseCode === warehouseCode && isWarehouseStocktakeItemType(balance.item.itemType))
     .map((balance) => ({
@@ -227,6 +235,8 @@ export default function InventoryPage() {
   const [transferRows, setTransferRows] = useState([{ itemId: "", quantity: "1", unitCode: "" }]);
   const [stocktakeForm, setStocktakeForm] = useState({ branchCode: "HCM", warehouseCode: "KHO_HCM", itemId: "", actualQuantity: "0", reason: "Kiem ke thuc te", stocktakeDate: today() });
   const [stocktakeRows, setStocktakeRows] = useState<StocktakeDraftRow[]>([]);
+  /** Phiếu kiểm kê đang sửa (chưa duyệt / bị trả lại) — null = đang lập phiếu mới. */
+  const [editingStocktake, setEditingStocktake] = useState<{ id: string; code: string; returnedReason?: string | null } | null>(null);
   /** Tìm nhanh mặt hàng khi kiểm kê trên điện thoại — danh sách kho dài, cuộn tay rất lâu. */
   const [stocktakeSearch, setStocktakeSearch] = useState("");
   const [wasteForm, setWasteForm] = useState({ wasteType: "HET_HAN_SU_DUNG", mode: "ITEMS", recipeId: "", productQuantity: "1", branchCode: "HCM", warehouseCode: "KHO_HCM", referenceCode: "", note: "" });
@@ -301,6 +311,8 @@ export default function InventoryPage() {
   const canOpenImports = user ? canOpenPath(user, "/imports") : false;
   /** Gán Nhóm doanh thu ngay trên bảng danh mục là hành vi SỬA mặt hàng, không phải tạo mới. */
   const canEditItem = user ? canPerformMenuAction(user, href, "edit") : false;
+  /** Kế toán: duyệt / trả lại / mở lại phiếu kiểm kê (nhà hàng chỉ Gửi duyệt và sửa). */
+  const canApprove = user ? canPerformMenuAction(user, href, "approve") : false;
   const importTarget = active === "stock"
     ? { tab: "opening-balance", label: "Import tồn kho đầu kỳ" }
     : active === "items"
@@ -389,10 +401,35 @@ export default function InventoryPage() {
   const productionWarehouses = kitchenWarehouses.length + barWarehouses.length > 0
     ? [...kitchenWarehouses, ...barWarehouses]
     : explodeWarehouses;
-  const warehouseOptions = data.warehouses.length ? data.warehouses : [
-    { id: "KHO_HCM", code: "KHO_HCM", name: "Kho Cua hang 1", branch: "HCM" },
-    { id: "KHO_HN", code: "KHO_HN", name: "Kho Cua hang 2", branch: "HN" },
-  ];
+  /**
+   * Danh mục kho thật (API đã lọc theo cửa hàng và phạm vi kho của người dùng). Từng có hai kho
+   * giả "Kho Cua hang 1/2" làm dự phòng khi danh sách rỗng — người dùng kiểm kê NAM MÊ thấy hai
+   * kho đó và tưởng hệ thống gán sai kho (28/09/2026). Rỗng thì để rỗng và nói rõ lý do.
+   */
+  const warehouseOptions = data.warehouses;
+  const warehousesOfBranch = (branchCode: string) => warehouseOptions.filter((warehouse) =>
+    !warehouse.branch || warehouse.branch.toUpperCase() === (branchCode || "").toUpperCase());
+  // Form khởi tạo cứng mã kho demo và đổi cửa hàng không đổi kho: ô select hiện kho đầu tiên
+  // trong khi state vẫn giữ mã cũ. Lấy mã hợp lệ theo cửa hàng đang chọn, không thì kho đầu tiên.
+  const validWarehouse = (options: Warehouse[], code: string) =>
+    (options.some((warehouse) => warehouse.code === code) ? code : options[0]?.code || "");
+  const stocktakeWarehouseOptions = warehousesOfBranch(stocktakeForm.branchCode);
+  const stocktakeWarehouseCode = validWarehouse(stocktakeWarehouseOptions, stocktakeForm.warehouseCode);
+  const productionWarehouseOptions = warehousesOfBranch(productionForm.branchCode);
+  const productionWarehouseCode = validWarehouse(productionWarehouseOptions, productionForm.warehouseCode);
+  const productionToWarehouseCode = validWarehouse(productionWarehouseOptions, productionForm.toWarehouseCode || productionWarehouseCode);
+  /**
+   * Danh sách đếm đi theo kho đang chọn: đổi cửa hàng / kho, hoặc tải lại dữ liệu sau khi lưu
+   * phiếu thì dựng lại. Đang sửa một phiếu thì giữ nguyên số đã đếm của phiếu đó.
+   */
+  useEffect(() => {
+    if (editingStocktake) return;
+    const timer = window.setTimeout(() => {
+      setStocktakeForm((form) => (form.warehouseCode === stocktakeWarehouseCode ? form : { ...form, warehouseCode: stocktakeWarehouseCode }));
+      setStocktakeRows(buildStocktakeRows(stocktakeWarehouseCode, data.balances, data.items));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [stocktakeWarehouseCode, data.balances, data.items, editingStocktake]);
   const sourceWarehouseOptions = warehouseOptions.filter((warehouse) => warehouse.branch === stockForm.branchCode || !warehouse.branch);
   /**
    * Bộ lọc Cửa hàng của tab Tồn kho: dòng tồn / phát sinh chỉ mang mã kho, nên tra cửa hàng qua
@@ -743,7 +780,6 @@ export default function InventoryPage() {
     setRecipeForm((form) => ({ ...form, itemId: form.itemId || firstItem }));
     setRecipeRows((rows) => rows.map((row) => ({ ...row, itemId: row.itemId || firstItem })));
     setStocktakeForm((form) => ({ ...form, itemId: form.itemId || firstItem }));
-    setStocktakeRows(buildStocktakeRows(stocktakeForm.warehouseCode, payload.balances, payload.items));
     setWasteForm((form) => ({ ...form, recipeId: form.recipeId || firstRecipe }));
     setConversionForm((form) => ({ ...form, itemId: form.itemId || firstItem }));
   };
@@ -861,6 +897,84 @@ export default function InventoryPage() {
     setMessage(response.ok ? success : payload.error || "Không thực hiện được thao tác");
     if (response.ok) await loadData();
     return response.ok ? payload : null;
+  };
+
+  /**
+   * Nạp phiếu kiểm kê chưa duyệt / bị trả lại vào form để nhà hàng sửa, bổ sung rồi gửi lại. Dòng đã
+   * đếm giữ số sổ sách chốt lúc đếm; mặt hàng chưa có trên phiếu lấy tồn hiện tại như phiếu mới.
+   */
+  const loadStocktakeIntoForm = (stocktake: Stocktake) => {
+    const saved = new Map(stocktake.lines.map((line) => [line.item.id, line]));
+    const fromLine = (line: Stocktake["lines"][number]) => ({
+      systemQuantity: line.systemQuantity,
+      actualQuantity: String(line.actualQuantity),
+      unitCost: line.unitCost ? String(line.unitCost) : "",
+      reason: line.reason || "",
+    });
+    const base = buildStocktakeRows(stocktake.warehouseCode, data.balances, data.items);
+    const rows = base.map((row) => {
+      const line = saved.get(row.itemId);
+      return line ? { ...row, ...fromLine(line) } : row;
+    });
+    for (const line of stocktake.lines) {
+      if (rows.some((row) => row.itemId === line.item.id)) continue;
+      rows.push({ itemId: line.item.id, itemCode: line.item.code, itemName: line.item.name, unit: line.item.unit, averageCost: 0, ...fromLine(line) });
+    }
+    setStocktakeForm({ ...stocktakeForm, branchCode: stocktake.branchCode, warehouseCode: stocktake.warehouseCode, stocktakeDate: stocktake.stocktakeDate.slice(0, 10) });
+    setStocktakeRows(rows);
+    setStocktakeSearch("");
+    setEditingStocktake({ id: stocktake.id, code: stocktake.code, returnedReason: stocktake.status === STOCKTAKE_RETURNED ? stocktake.returnedReason : null });
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  /** Nút thao tác của một phiếu kiểm kê — dùng chung cho bảng (máy tính) và thẻ (điện thoại). */
+  const renderStocktakeActions = (row: Stocktake) => (
+    <>
+      {canCreate && isStocktakeEditable(row.status) && (
+        <button type="button" onClick={() => loadStocktakeIntoForm(row)} className="text-xs font-bold text-blue-700 hover:underline whitespace-nowrap">
+          Sửa
+        </button>
+      )}
+      {canApprove && row.status === STOCKTAKE_PENDING && (
+        <>
+          <button type="button" onClick={() => approveStocktake(row)} className="text-xs font-bold text-emerald-700 hover:underline whitespace-nowrap">Duyệt</button>
+          <button type="button" onClick={() => returnStocktake(row)} className="text-xs font-bold text-rose-600 hover:underline whitespace-nowrap">Trả lại</button>
+        </>
+      )}
+      {canApprove && row.status === STOCKTAKE_APPROVED && (
+        <button
+          type="button"
+          onClick={() => {
+            if (!window.confirm(`Mở lại phiếu kiểm kê ${row.code}? Phiếu nhập/xuất điều chỉnh của lần duyệt này sẽ được hoàn kho rồi xoá, phiếu quay về Chờ duyệt để nhà hàng sửa và kế toán duyệt lại.`)) return;
+            void send({ action: "REOPEN_STOCKTAKE", stocktakeId: row.id }, `Đã mở lại phiếu kiểm kê ${row.code} và hoàn kho — phiếu về Chờ duyệt.`);
+          }}
+          className="text-xs font-bold text-slate-400 hover:text-rose-600 hover:underline whitespace-nowrap"
+          title="Hoàn kho phần đã điều chỉnh và đưa phiếu về Chờ duyệt"
+        >
+          Mở lại
+        </button>
+      )}
+    </>
+  );
+
+  const cancelStocktakeEdit = () => {
+    setEditingStocktake(null);
+    setStocktakeRows(buildStocktakeRows(stocktakeForm.warehouseCode, data.balances, data.items));
+  };
+
+  const approveStocktake = (stocktake: Stocktake) => {
+    if (!window.confirm(`Duyệt phiếu kiểm kê ${stocktake.code}? Hệ thống sinh phiếu nhập/xuất điều chỉnh tồn kho theo phần chênh lệch.`)) return;
+    void send({ action: "APPROVE_STOCKTAKE", stocktakeId: stocktake.id }, `Đã duyệt phiếu kiểm kê ${stocktake.code} và điều chỉnh tồn kho.`);
+  };
+
+  const returnStocktake = (stocktake: Stocktake) => {
+    const reason = window.prompt(`Lý do trả lại phiếu ${stocktake.code} (nhà hàng sẽ thấy để sửa):`, "");
+    if (reason === null) return;
+    if (!reason.trim()) {
+      setMessage("Cần nhập lý do trả lại để nhà hàng biết phải sửa gì.");
+      return;
+    }
+    void send({ action: "RETURN_STOCKTAKE", stocktakeId: stocktake.id, reason: reason.trim() }, `Đã trả lại phiếu ${stocktake.code} cho nhà hàng.`);
   };
 
   /**
@@ -3237,7 +3351,7 @@ export default function InventoryPage() {
       {active === "production" && (
         <div className="grid lg:grid-cols-[380px_1fr] gap-5">
           {canCreate && (
-            <form onSubmit={(e) => { e.preventDefault(); void send({ action: "PRODUCE_SEMI_FINISHED", ...productionForm }, "Đã ghi nhận chế biến bán thành phẩm."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
+            <form onSubmit={(e) => { e.preventDefault(); void send({ action: "PRODUCE_SEMI_FINISHED", ...productionForm, warehouseCode: productionWarehouseCode, toWarehouseCode: productionToWarehouseCode }, "Đã ghi nhận chế biến bán thành phẩm."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
               <h2 className="font-bold text-slate-800">Chế biến bán thành phẩm (thủ công)</h2>
               <Input label="Mã bán thành phẩm">
                 <input data-input-kind="code" className="control" value={productionForm.productCode} onChange={(e) => setProductionForm({ ...productionForm, productCode: e.target.value })} />
@@ -3254,13 +3368,13 @@ export default function InventoryPage() {
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <Input label="Kho xuất NVL">
-                  <select className="control" value={productionForm.warehouseCode} onChange={(e) => setProductionForm({ ...productionForm, warehouseCode: e.target.value })}>
-                    {warehouseOptions.map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>)}
+                  <select className="control" value={productionWarehouseCode} onChange={(e) => setProductionForm({ ...productionForm, warehouseCode: e.target.value })}>
+                    {productionWarehouseOptions.map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>)}
                   </select>
                 </Input>
                 <Input label="Kho nhập BTP">
-                  <select className="control" value={productionForm.toWarehouseCode} onChange={(e) => setProductionForm({ ...productionForm, toWarehouseCode: e.target.value })}>
-                    {warehouseOptions.map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>)}
+                  <select className="control" value={productionToWarehouseCode} onChange={(e) => setProductionForm({ ...productionForm, toWarehouseCode: e.target.value })}>
+                    {productionWarehouseOptions.map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>)}
                   </select>
                 </Input>
               </div>
@@ -3349,22 +3463,48 @@ export default function InventoryPage() {
       {active === "stocktake" && (
         <div className="space-y-5">
           {canCreate && (
-            <form onSubmit={(e) => { e.preventDefault(); void send({ action: "APPROVE_STOCKTAKE", ...stocktakeForm, lines: stocktakeRows.map((row) => ({ itemId: row.itemId, actualQuantity: row.actualQuantity, systemQuantity: row.systemQuantity, unitCost: row.unitCost, reason: row.reason || stocktakeForm.reason })) }, "Đã duyệt kiểm kê và sinh điều chỉnh."); }} className="bg-white border border-slate-200 rounded-lg p-4 sm:p-5 space-y-4 h-fit shadow-sm">
-              <h2 className="font-bold text-slate-800">Kiểm kê kho</h2>
+            <form onSubmit={async (e) => {
+              e.preventDefault();
+              const payload = await send({
+                action: "SAVE_STOCKTAKE",
+                stocktakeId: editingStocktake?.id,
+                ...stocktakeForm,
+                warehouseCode: stocktakeWarehouseCode,
+                lines: stocktakeRows.map((row) => ({ itemId: row.itemId, actualQuantity: row.actualQuantity, systemQuantity: row.systemQuantity, unitCost: row.unitCost, reason: row.reason || stocktakeForm.reason })),
+              }, editingStocktake ? `Đã lưu và gửi lại phiếu ${editingStocktake.code} — chờ kế toán duyệt.` : "Đã gửi phiếu kiểm kê — chờ kế toán duyệt. Tồn kho chỉ điều chỉnh khi kế toán duyệt.");
+              if (payload) setEditingStocktake(null);
+            }} className="bg-white border border-slate-200 rounded-lg p-4 sm:p-5 space-y-4 h-fit shadow-sm">
+              <h2 className="font-bold text-slate-800">{editingStocktake ? `Sửa phiếu kiểm kê ${editingStocktake.code}` : "Kiểm kê kho"}</h2>
+              {editingStocktake && (
+                <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800 flex flex-wrap items-start justify-between gap-2">
+                  <div className="space-y-1">
+                    <p>Đang sửa phiếu <b>{editingStocktake.code}</b> — bấm <b>Lưu &amp; gửi lại</b> để kế toán duyệt.</p>
+                    {editingStocktake.returnedReason && <p className="text-rose-700"><b>Kế toán trả lại:</b> {editingStocktake.returnedReason}</p>}
+                  </div>
+                  <button type="button" className="font-bold text-slate-500 hover:underline" onClick={cancelStocktakeEdit}>Huỷ sửa</button>
+                </div>
+              )}
               <p className="rounded-md bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
-                Màn hình này kiểm kê hàng tồn kho; CCDC và Tài sản được kiểm kê tại Tài sản & khấu hao.
+                Đếm xong bấm <b>Gửi duyệt</b>: phiếu ở trạng thái Chờ duyệt, tồn kho CHƯA đổi và vẫn sửa / bổ sung được. Kế toán duyệt
+                mới điều chỉnh tồn kho. CCDC và Tài sản được kiểm kê tại Tài sản &amp; khấu hao.
               </p>
               <div className="grid grid-cols-2 gap-3">
                 <Input label="Cửa hàng">
-                  <select className="control" value={stocktakeForm.branchCode} onChange={(e) => setStocktakeForm({ ...stocktakeForm, branchCode: e.target.value })}>
+                  <select className="control" value={stocktakeForm.branchCode} onChange={(e) => setStocktakeForm({ ...stocktakeForm, branchCode: e.target.value, warehouseCode: "" })}>
                     {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
                   </select>
                 </Input>
                 <Input label="Kho">
-                  <select className="control" value={stocktakeForm.warehouseCode} onChange={(e) => { const warehouseCode = e.target.value; setStocktakeForm({ ...stocktakeForm, warehouseCode }); setStocktakeRows(buildStocktakeRows(warehouseCode, data.balances, data.items)); }}>
-                    {warehouseOptions.map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>)}
+                  <select className="control" value={stocktakeWarehouseCode} disabled={stocktakeWarehouseOptions.length === 0} onChange={(e) => { const warehouseCode = e.target.value; setStocktakeForm({ ...stocktakeForm, warehouseCode }); setStocktakeRows(buildStocktakeRows(warehouseCode, data.balances, data.items)); }}>
+                    {stocktakeWarehouseOptions.length === 0 && <option value="">Chưa có kho</option>}
+                    {stocktakeWarehouseOptions.map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>)}
                   </select>
                 </Input>
+                {stocktakeWarehouseOptions.length === 0 && (
+                  <p className="col-span-2 rounded-md bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">
+                    {storeLabel(stocktakeForm.branchCode)} chưa có kho nào bạn được phép kiểm kê. Khai kho cho cửa hàng ở Danh mục (loại Kho), hoặc nhờ quản trị gán kho cho tài khoản ở Phân quyền.
+                  </p>
+                )}
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <Input label="Ngày kiểm kê">
@@ -3509,40 +3649,69 @@ export default function InventoryPage() {
               })()}
               {/* Nút duyệt dính đáy màn hình khi danh sách dài — chừa chỗ nút menu nổi bên trái */}
               <div className="sticky bottom-0 z-20 -mx-4 sm:-mx-5 -mb-4 sm:-mb-5 border-t border-slate-200 bg-white/95 backdrop-blur px-4 py-3 rounded-b-lg pl-20 lg:pl-4">
-                <button className="primary-button w-full !min-h-12">Duyệt kiểm kê</button>
+                <button className="primary-button w-full !min-h-12">{editingStocktake ? "Lưu & gửi lại" : "Gửi duyệt"}</button>
               </div>
             </form>
           )}
           <section className="table-panel shadow-sm">
             <Panel title="Phiếu kiểm kê gần nhất" reload={loadData} exportFileName="phieu_kiem_ke" />
+            {/* Điện thoại: mỗi phiếu một thẻ, nút Sửa / Duyệt / Trả lại luôn nằm trong màn hình;
+                pb-20 chừa chỗ nút menu nổi góc trái dưới. */}
+            <div className="md:hidden divide-y divide-slate-100 pb-20">
+              {data.stocktakes.map((row) => ({
+                ...row,
+                lines: row.lines.filter((line) => isWarehouseStocktakeItemType(line.item.itemType)),
+              })).filter((row) => row.lines.length > 0).map((row) => {
+                const varianceLines = row.lines.filter((line) => Math.abs(line.varianceQuantity) > 0.000001);
+                return (
+                  <div key={row.id} className="px-4 py-3 space-y-1.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <CopyableText value={row.code}><b>{row.code}</b></CopyableText>
+                        <p className="text-xs text-slate-500">
+                          {new Date(row.stocktakeDate).toLocaleDateString("vi-VN")} · {data.warehouses.find((warehouse) => warehouse.code === row.warehouseCode)?.name || row.warehouseCode}
+                          {row.createdBy ? ` · ${row.createdBy}` : ""}
+                        </p>
+                      </div>
+                      <span className={`status shrink-0 ${stocktakeStatusTone(row.status)}`}>{stocktakeStatusLabel(row.status)}</span>
+                    </div>
+                    <p className="text-xs text-slate-600">
+                      {row.lines.length} mặt hàng · <b className={varianceLines.length > 0 ? "text-amber-700" : "text-slate-400"}>{varianceLines.length} dòng lệch</b>
+                      {varianceLines.length > 0 && `: ${varianceLines.slice(0, 4).map((line) => `${line.item.name} ${line.varianceQuantity > 0 ? "+" : ""}${qty(line.varianceQuantity)}`).join(", ")}${varianceLines.length > 4 ? "…" : ""}`}
+                    </p>
+                    {row.status === STOCKTAKE_RETURNED && row.returnedReason && <p className="text-xs text-rose-700">Lý do trả lại: {row.returnedReason}</p>}
+                    <ExplosionBadge status={row.explosionStatus} />
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 pt-0.5">{renderStocktakeActions(row)}</div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="hidden md:block">
             <Table headers={[{ label: "Phiếu" }, { label: "Kho" }, { label: "Mặt hàng" }, { label: "Chênh lệch", align: "right" }, { label: "", align: "right" }]}>
               {data.stocktakes.map((row) => ({
                 ...row,
                 lines: row.lines.filter((line) => isWarehouseStocktakeItemType(line.item.itemType)),
               })).filter((row) => row.lines.length > 0).map((row) => (
                 <tr key={row.id} className="border-t border-slate-100">
-                  <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{new Date(row.stocktakeDate).toLocaleDateString("vi-VN")} · {row.status}</small><ExplosionBadge status={row.explosionStatus} /></Cell>
+                  <Cell>
+                    <CopyableText value={row.code}><b>{row.code}</b></CopyableText>
+                    <small>{new Date(row.stocktakeDate).toLocaleDateString("vi-VN")}{row.createdBy ? ` · ${row.createdBy}` : ""}</small>
+                    <span className={`status mt-1 ${stocktakeStatusTone(row.status)}`}>{stocktakeStatusLabel(row.status)}{row.status === STOCKTAKE_APPROVED && row.approvedBy ? ` · ${row.approvedBy}` : ""}</span>
+                    {row.status === STOCKTAKE_RETURNED && row.returnedReason && <small className="text-rose-700">Lý do trả lại: {row.returnedReason}</small>}
+                    <ExplosionBadge status={row.explosionStatus} />
+                  </Cell>
                   <Cell>{row.warehouseCode}</Cell>
                   <Cell>{row.lines.map((line) => line.item.code).join(", ")}</Cell>
                   <Cell right>{qty(row.lines.reduce((sum, line) => sum + line.varianceQuantity, 0))}</Cell>
                   <Cell right>
-                    {canEditItem && row.status === "APPROVED" && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (!window.confirm(`Mở lại phiếu kiểm kê ${row.code}? Hai phiếu điều chỉnh tồn do lần duyệt này sinh ra sẽ được hoàn kho rồi xoá, phiếu kiểm kê quay về Nháp để đếm lại.`)) return;
-                          void send({ action: "REOPEN_STOCKTAKE", stocktakeId: row.id }, `Đã mở lại phiếu kiểm kê ${row.code} và hoàn kho. Đếm lại rồi duyệt phiếu mới.`);
-                        }}
-                        className="text-xs font-bold text-slate-400 hover:text-rose-600 hover:underline whitespace-nowrap"
-                        title="Hoàn kho phần đã điều chỉnh và đưa phiếu về Nháp để kiểm lại"
-                      >
-                        Mở lại
-                      </button>
-                    )}
+                    <div className="flex flex-wrap justify-end gap-x-3 gap-y-1">
+                      {renderStocktakeActions(row)}
+                    </div>
                   </Cell>
                 </tr>
               ))}
             </Table>
+            </div>
           </section>
         </div>
       )}

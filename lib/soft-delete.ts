@@ -45,6 +45,7 @@ export const TRASH_ENTITIES: TrashEntity[] = [
   },
   { model: "InventoryTransaction", label: "Phiếu nhập/xuất kho", module: "/inventory", codeField: "code", titleField: "note", branchField: "branchCode", dateField: "transactionDate" },
   { model: "StocktakeSession", label: "Phiếu kiểm kê", module: "/inventory", codeField: "code", titleField: "note", branchField: "branchCode", dateField: "stocktakeDate" },
+  { model: "AssetStocktakeSession", label: "Phiên kiểm kê tài sản", module: "/assets", codeField: "code", titleField: "note", branchField: "branchCode", dateField: "stocktakeDate" },
   { model: "Recipe", label: "Định mức (BOM)", module: "/inventory", codeField: "code", titleField: "productName" },
 
   { model: "PurchaseRequestTemplate", label: "Mẫu yêu cầu mua hàng", module: "/procurement", codeField: "code", titleField: "name", branchField: "branchCode" },

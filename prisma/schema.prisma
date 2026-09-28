@@ -695,6 +695,10 @@ model StocktakeSession {
   /// Rã BOM cho phần kiểm DƯ của bán thành phẩm có định lượng (khách chốt 28/09/2026): null =
   /// không có gì để rã; "PENDING" = chờ nút Rã ở tab Chế biến; "POSTED:RA-..." = đã rã.
   explosionStatus String?
+  /// Kế toán trả lại phiếu (status RETURNED) kèm lý do để nhà hàng sửa rồi gửi lại — lib/stocktake-status.ts.
+  returnedReason String?
+  returnedBy     String?
+  returnedAt     DateTime?
   createdBy     String?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
@@ -719,6 +723,8 @@ model StocktakeLine {
   systemQuantity   Float
   actualQuantity   Float
   varianceQuantity Float
+  /// Đơn giá nhà hàng khai cho phần đếm THỪA của hàng chưa có giá vốn — dùng lúc kế toán duyệt.
+  unitCost         Float?
   reason           String?
 
   stocktake StocktakeSession @relation(fields: [stocktakeId], references: [id], onDelete: Cascade)
@@ -1787,6 +1793,8 @@ model User {
   branchAccesses UserBranchAccess[]
   /// Phạm vi phòng ban (kiểm kê CCDC/tài sản theo bộ phận). Không có dòng nào = mọi phòng ban.
   departmentAccesses UserDepartmentAccess[]
+  /// Phạm vi KHO (kiểm kê / nhập xuất nguyên liệu). Không có dòng nào = mọi kho của cửa hàng được gán.
+  warehouseAccesses UserWarehouseAccess[]
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 
@@ -1819,6 +1827,16 @@ model UserDepartmentAccess {
   @@index([userId])
 }
 
+model UserWarehouseAccess {
+  id            String @id @default(uuid())
+  userId        String
+  warehouseCode String
+  user          User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, warehouseCode])
+  @@index([userId])
+}
+
 /// Kiểm kê CCDC & Tài sản — tách khỏi kiểm kê hàng tồn kho theo yêu cầu khách:
 /// hàng hoá kiểm ở Kho & Định lượng, CCDC/tài sản kiểm ở Tài sản & khấu hao.
 model AssetStocktakeSession {
@@ -1834,6 +1852,10 @@ model AssetStocktakeSession {
   createdBy     String?
   approvedBy    String?
   approvedAt    DateTime?
+  /// Kế toán trả lại phiên (status RETURNED) kèm lý do — lib/stocktake-status.ts.
+  returnedReason String?
+  returnedBy     String?
+  returnedAt     DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 

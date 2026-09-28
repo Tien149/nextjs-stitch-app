@@ -27,6 +27,8 @@ type PermissionUser = {
   branchAccesses: { branchCode: string }[];
   /** Phạm vi phòng ban (kiểm kê theo bộ phận). Rỗng = mọi phòng ban. */
   departmentAccesses?: { departmentCode: string }[];
+  /** Phạm vi kho (kiểm kê / nhập xuất nguyên liệu). Rỗng = mọi kho của cửa hàng được gán. */
+  warehouseAccesses?: { warehouseCode: string }[];
 };
 
 type DepartmentOption = { code: string; name: string; branch?: string | null };
@@ -41,6 +43,7 @@ export default function PermissionsPage() {
   const [usersList, setUsersList] = useState<PermissionUser[]>([]);
   const [loadingData, setLoadingData] = useState(true);
   const [departments, setDepartments] = useState<DepartmentOption[]>([]);
+  const [warehouses, setWarehouses] = useState<DepartmentOption[]>([]);
 
   // Modal State for Role Creation / Editing
   const [isRoleModalOpen, setIsRoleModalOpen] = useState(false);
@@ -64,6 +67,7 @@ export default function PermissionsPage() {
     roleId: "",
     branchCode: "ALL",
     departmentCodes: [] as string[],
+    warehouseCodes: [] as string[],
   });
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -89,9 +93,10 @@ export default function PermissionsPage() {
   const loadData = async () => {
     try {
       setLoadingData(true);
-      const [res, departmentRes] = await Promise.all([
+      const [res, departmentRes, warehouseRes] = await Promise.all([
         fetch("/api/permissions"),
         fetch("/api/master-data?type=DEPARTMENT&status=ACTIVE"),
+        fetch("/api/master-data?type=WAREHOUSE&status=ACTIVE"),
       ]);
       if (res.ok) {
         const payload = await res.json();
@@ -102,6 +107,12 @@ export default function PermissionsPage() {
         const rows = await departmentRes.json();
         if (Array.isArray(rows)) {
           setDepartments(rows.map((row) => ({ code: String(row.code), name: String(row.name || row.code), branch: row.branch ?? null })));
+        }
+      }
+      if (warehouseRes.ok) {
+        const rows = await warehouseRes.json();
+        if (Array.isArray(rows)) {
+          setWarehouses(rows.map((row) => ({ code: String(row.code), name: String(row.name || row.code), branch: row.branch ?? null })));
         }
       }
     } catch (e) {
@@ -237,6 +248,10 @@ export default function PermissionsPage() {
   };
 
   // User Modal Handlers
+  // Kho gán được cho user: kho của cửa hàng đang chọn (kho chưa khai cửa hàng thì cửa hàng nào cũng dùng).
+  const warehousesOfBranch = (branchCode: string) => warehouses.filter((warehouse) =>
+    branchCode === "ALL" || !warehouse.branch || warehouse.branch.toUpperCase() === branchCode.toUpperCase());
+
   const handleOpenCreateUserModal = () => {
     setEditingUser(null);
     setUserForm({
@@ -248,6 +263,7 @@ export default function PermissionsPage() {
       roleId: rolesList[0]?.id || "",
       branchCode: "ALL",
       departmentCodes: [],
+      warehouseCodes: [],
     });
     setConfirmPassword("");
     setShowPassword(false);
@@ -268,6 +284,7 @@ export default function PermissionsPage() {
       roleId: dbUser.roleId || dbUser.role?.id || "",
       branchCode: branches.includes("ALL") ? "ALL" : branches[0] || "ALL",
       departmentCodes: (dbUser.departmentAccesses || []).map((access) => access.departmentCode),
+      warehouseCodes: (dbUser.warehouseAccesses || []).map((access) => access.warehouseCode),
     });
     setConfirmPassword("");
     setShowPassword(false);
@@ -326,6 +343,8 @@ export default function PermissionsPage() {
           roleId: userForm.roleId,
           branchCodes,
           departmentCodes: userForm.departmentCodes,
+          // Đổi cửa hàng sau khi đã tick kho thì bỏ những kho không còn thuộc cửa hàng mới.
+          warehouseCodes: userForm.warehouseCodes.filter((code) => warehousesOfBranch(userForm.branchCode).some((warehouse) => warehouse.code === code)),
         }),
       });
 
@@ -705,6 +724,11 @@ export default function PermissionsPage() {
                               </option>
                             ))}
                           </select>
+                          {(dbUser.warehouseAccesses || []).length > 0 && (
+                            <p className="mt-1 text-[11px] text-slate-500" title="Phạm vi kho khi kiểm kê / nhập xuất nguyên liệu">
+                              Kho: {(dbUser.warehouseAccesses || []).map((access) => access.warehouseCode).join(", ")}
+                            </p>
+                          )}
                           {(dbUser.departmentAccesses || []).length > 0 && (
                             <p className="mt-1 text-[11px] text-slate-500" title="Phạm vi phòng ban khi kiểm kê CCDC/tài sản">
                               Bộ phận: {(dbUser.departmentAccesses || []).map((access) => access.departmentCode).join(", ")}
@@ -1216,6 +1240,37 @@ export default function PermissionsPage() {
                       </option>
                     ))}
                   </select>
+                </div>
+
+                <div className="space-y-1 sm:col-span-2">
+                  <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                    Phạm vi kho (kiểm kê / nhập xuất nguyên liệu)
+                  </label>
+                  <p className="text-[11px] text-slate-500">
+                    Không tick = thấy mọi kho của cửa hàng được gán. Tick kho nào thì ở màn Kho &amp; Định lượng chỉ chọn, kiểm kê và nhập / xuất được kho đó.
+                  </p>
+                  <div className="flex flex-wrap gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2 max-h-36 overflow-y-auto">
+                    {warehousesOfBranch(userForm.branchCode).length === 0 && <span className="text-xs text-slate-400">Cửa hàng này chưa khai kho nào trong danh mục.</span>}
+                    {warehousesOfBranch(userForm.branchCode).map((warehouse) => {
+                      const checked = userForm.warehouseCodes.includes(warehouse.code);
+                      return (
+                        <label key={warehouse.code} className={`inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-semibold ${checked ? "border-blue-300 bg-blue-50 text-blue-800" : "border-slate-200 bg-white text-slate-600"}`}>
+                          <input
+                            type="checkbox"
+                            className="accent-blue-600"
+                            checked={checked}
+                            onChange={(e) => setUserForm((current) => ({
+                              ...current,
+                              warehouseCodes: e.target.checked
+                                ? [...current.warehouseCodes, warehouse.code]
+                                : current.warehouseCodes.filter((code) => code !== warehouse.code),
+                            }))}
+                          />
+                          {warehouse.name} <span className="text-slate-400">({warehouse.code}{warehouse.branch ? ` · ${warehouse.branch}` : ""})</span>
+                        </label>
+                      );
+                    })}
+                  </div>
                 </div>
 
                 <div className="space-y-1 sm:col-span-2">

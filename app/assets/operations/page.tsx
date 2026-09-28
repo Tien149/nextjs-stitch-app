@@ -9,6 +9,7 @@ import { allowedDepartmentsOf } from "@/lib/department-scope";
 import { assetLotLabel, distributeStocktakeCount, type StocktakeLotInput } from "@/lib/asset-lot";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import CopyableText from "@/components/CopyableText";
+import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING, STOCKTAKE_RETURNED, isStocktakeEditable, stocktakeStatusLabel, stocktakeStatusTone } from "@/lib/stocktake-status";
 
 type Asset = {
   id: string;
@@ -85,6 +86,8 @@ type AssetStocktakeSession = {
   status: string;
   note: string | null;
   approvedBy: string | null;
+  createdBy?: string | null;
+  returnedReason?: string | null;
   /** Phiên kiểm của một phòng ban; null = kiểm cả cửa hàng. */
   departmentCode?: string | null;
   lines: AssetStocktakeLine[];
@@ -107,6 +110,8 @@ type StocktakeDraftRow = {
   lots: StocktakeLotInput[];
   /** Tài sản vừa tạo mã ngay trong phiên (phát hiện khi kiểm kê). */
   isNew?: boolean;
+  /** Sửa phiên đã gửi: dòng đã có ảnh lưu trên máy chủ (không tải về) — chưa chụp lại thì giữ ảnh cũ. */
+  savedImage?: boolean;
 };
 
 const emptyNewAsset = { name: "", assetGroup: "", departmentCode: "", warehouseCode: "", quantity: "1", condition: "", imageUrl: "" };
@@ -142,6 +147,8 @@ export default function AssetOperationsPage() {
   const [newAsset, setNewAsset] = useState(emptyNewAsset);
   const [creatingAsset, setCreatingAsset] = useState(false);
   const [expandedStocktake, setExpandedStocktake] = useState("");
+  /** Phiên kiểm kê đang sửa (chưa duyệt / bị trả lại) — null = đang lập phiên mới. */
+  const [editingSession, setEditingSession] = useState<{ id: string; code: string; returnedReason?: string | null } | null>(null);
   const [imageViewer, setImageViewer] = useState("");
   const [message, setMessage] = useState("");
 
@@ -209,6 +216,9 @@ export default function AssetOperationsPage() {
   }, [active, visibleTabs]);
   const canCreate = user ? canPerformMenuAction(user, href, "create") : false;
   const canEdit = user ? canPerformMenuAction(user, href, "edit") : false;
+  /** Kế toán: duyệt / trả lại / mở lại phiên kiểm kê (nhà hàng chỉ Gửi duyệt và sửa). */
+  const canApprove = user ? canPerformMenuAction(user, href, "approve") : false;
+  const canDelete = user ? canPerformMenuAction(user, href, "delete") : false;
 
   const getSessionHeaders = (): Record<string, string> => {
     if (typeof window === "undefined") return {};
@@ -289,8 +299,10 @@ export default function AssetOperationsPage() {
   /** Dòng gửi lên API: mỗi ĐỢT một dòng, số đếm theo mã chia về từng đợt. */
   const stocktakeLinesForSubmit = () => stocktakeRows.flatMap((row) => {
     const actual = Number(row.actualQuantity || 0);
+    // Chưa chụp lại ảnh thì giữ ảnh đã lưu của lần gửi trước.
+    const keepImage = !row.imageUrl && Boolean(row.savedImage);
     if (row.isNew || row.lots.length <= 1) {
-      return [{ assetId: row.assetId, systemQuantity: row.systemQuantity, actualQuantity: actual, condition: row.condition, note: row.note, imageUrl: row.imageUrl, discovered: Boolean(row.isNew) }];
+      return [{ assetId: row.assetId, systemQuantity: row.systemQuantity, actualQuantity: actual, condition: row.condition, note: row.note, imageUrl: row.imageUrl, keepImage, discovered: Boolean(row.isNew) }];
     }
     return distributeStocktakeCount(row.lots, actual).map((lot) => ({
       assetId: lot.id,
@@ -299,6 +311,7 @@ export default function AssetOperationsPage() {
       condition: row.condition,
       note: row.note,
       imageUrl: row.imageUrl,
+      keepImage,
       discovered: false,
     }));
   });
@@ -347,7 +360,7 @@ export default function AssetOperationsPage() {
           isNew: true,
         },
       ]);
-      setMessage(`Đã cấp mã ${payload.code} cho "${payload.name}" và thêm vào phiên kiểm kê. Nhớ bấm Duyệt kiểm kê để chốt.`);
+      setMessage(`Đã cấp mã ${payload.code} cho "${payload.name}" và thêm vào phiên kiểm kê. Nhớ bấm Gửi duyệt để kế toán chốt.`);
       setNewAsset({ ...emptyNewAsset, departmentCode: newAsset.departmentCode });
       setShowNewAsset(false);
       // Nạp lại danh sách để các tab khác thấy tài sản mới; dòng kiểm kê đang soạn giữ nguyên.
@@ -357,6 +370,69 @@ export default function AssetOperationsPage() {
     } finally {
       setCreatingAsset(false);
     }
+  };
+
+  /**
+   * Nạp phiên chưa duyệt / bị trả lại vào form để nhà hàng sửa, bổ sung rồi gửi lại. Mỗi đợt giữ số
+   * sổ sách chốt lúc đếm (để chia số đếm theo đợt đúng như lần gửi đầu); ảnh cũ không tải về mà
+   * đánh dấu savedImage — chưa chụp lại thì máy chủ giữ ảnh đã lưu.
+   */
+  const loadSessionIntoForm = (session: AssetStocktakeSession) => {
+    const savedByAsset = new Map(session.lines.map((line) => [line.asset.id, line]));
+    const departmentCode = session.departmentCode || "";
+    const rows = buildStocktakeRows(session.branchCode, departmentCode).map((row) => {
+      const saved = row.lots.map((lot) => savedByAsset.get(lot.id)).filter((line): line is AssetStocktakeLine => Boolean(line));
+      if (saved.length === 0) return row;
+      const lots = row.lots.map((lot) => ({ ...lot, quantity: savedByAsset.get(lot.id)?.systemQuantity ?? lot.quantity }));
+      return {
+        ...row,
+        lots,
+        systemQuantity: lots.reduce((sum, lot) => sum + lot.quantity, 0),
+        actualQuantity: String(saved.reduce((sum, line) => sum + line.actualQuantity, 0)),
+        condition: saved[0].condition || "",
+        note: saved[0].note || "",
+        savedImage: saved.some((line) => line.hasImage),
+      };
+    });
+    // Dòng của phiên mà danh sách hiện tại không còn (tài sản đổi bộ phận / vừa phát hiện...): giữ nguyên.
+    for (const line of session.lines) {
+      if (rows.some((row) => row.lots.some((lot) => lot.id === line.asset.id))) continue;
+      rows.push({
+        assetId: line.asset.id,
+        code: line.asset.code,
+        name: line.asset.name,
+        departmentCode: line.asset.departmentCode || "",
+        systemQuantity: line.systemQuantity,
+        actualQuantity: String(line.actualQuantity),
+        condition: line.condition || "",
+        note: line.note || "",
+        imageUrl: "",
+        lots: [{ id: line.asset.id, lotNo: line.asset.lotNo || 1, quantity: line.systemQuantity }],
+        savedImage: Boolean(line.hasImage),
+      });
+    }
+    setStocktakeBranch(session.branchCode);
+    setStocktakeDepartment(departmentCode);
+    setStocktakeDate(session.stocktakeDate.slice(0, 10));
+    setStocktakeNote(session.note || "");
+    setStocktakeRows(rows);
+    setEditingSession({ id: session.id, code: session.code, returnedReason: session.status === STOCKTAKE_RETURNED ? session.returnedReason : null });
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const cancelSessionEdit = () => {
+    setEditingSession(null);
+    setStocktakeRows(buildStocktakeRows(stocktakeBranch, stocktakeDepartment));
+  };
+
+  const returnSession = (session: AssetStocktakeSession) => {
+    const reason = window.prompt(`Lý do trả lại phiên ${session.code} (nhà hàng sẽ thấy để sửa):`, "");
+    if (reason === null) return;
+    if (!reason.trim()) {
+      setMessage("Cần nhập lý do trả lại để nhà hàng biết phải sửa gì.");
+      return;
+    }
+    void send({ action: "RETURN_ASSET_STOCKTAKE", sessionId: session.id, reason: reason.trim() }, `Đã trả lại phiên ${session.code} cho nhà hàng.`);
   };
 
   const openStocktakeImage = async (lineId: string) => {
@@ -393,6 +469,7 @@ export default function AssetOperationsPage() {
     const payload = await response.json();
     setMessage(response.ok ? (typeof success === "function" ? success(payload) : success) : payload.error || "Không thực hiện được thao tác");
     if (response.ok) await loadData();
+    return response.ok;
   };
 
   // Mở lại kỳ đã chạy để chạy lại sau khi sửa cấu hình khấu hao. Xoá số đã ghi nên luôn hỏi lại,
@@ -467,6 +544,62 @@ export default function AssetOperationsPage() {
     }
   };
 
+  /** Nút thao tác của một phiên kiểm kê — dùng chung cho bảng (máy tính) và thẻ (điện thoại). */
+  const renderSessionActions = (session: AssetStocktakeSession) => (
+    <>
+      <button
+        type="button"
+        onClick={() => setExpandedStocktake((current) => current === session.id ? "" : session.id)}
+        className="text-xs font-bold text-blue-700 hover:underline mr-3"
+      >
+        {expandedStocktake === session.id ? "Thu gọn" : "Chi tiết"}
+      </button>
+      {canCreate && isStocktakeEditable(session.status) && (
+        <button type="button" onClick={() => loadSessionIntoForm(session)} className="text-xs font-bold text-blue-700 hover:underline mr-3">Sửa</button>
+      )}
+      {canApprove && session.status === STOCKTAKE_PENDING && (
+        <>
+          <button
+            type="button"
+            onClick={() => {
+              if (!window.confirm(`Duyệt phiên kiểm kê ${session.code}? Số lượng của ${session.lines.length} dòng tài sản sẽ lấy theo số đếm.`)) return;
+              void send({ action: "APPROVE_ASSET_STOCKTAKE", sessionId: session.id }, `Đã duyệt phiên ${session.code} và cập nhật số lượng sổ sách theo số đếm.`);
+            }}
+            className="text-xs font-bold text-emerald-700 hover:underline mr-3"
+          >
+            Duyệt
+          </button>
+          <button type="button" onClick={() => returnSession(session)} className="text-xs font-bold text-rose-600 hover:underline mr-3">Trả lại</button>
+        </>
+      )}
+      {canDelete && session.status !== STOCKTAKE_APPROVED && (
+        <button
+          type="button"
+          onClick={() => {
+            if (!window.confirm(`Xoá phiên kiểm kê ${session.code}? Phiên chưa duyệt nên số lượng tài sản không đổi; khôi phục được ở Thùng rác.`)) return;
+            void send({ action: "DELETE_ASSET_STOCKTAKE", sessionId: session.id }, `Đã xoá phiên ${session.code}.`);
+          }}
+          className="text-xs font-bold text-slate-400 hover:text-rose-600 hover:underline mr-3"
+        >
+          Xoá
+        </button>
+      )}
+      {canApprove && session.status === STOCKTAKE_APPROVED && (
+        <button
+          type="button"
+          onClick={() => {
+            if (!window.confirm(`Mở lại phiên kiểm kê ${session.code}? Phần chênh đã cộng vào số lượng lúc duyệt sẽ được trừ lại, phiên về Chờ duyệt để nhà hàng sửa và kế toán duyệt lại.`)) return;
+            void send({ action: "REOPEN_ASSET_STOCKTAKE", sessionId: session.id }, `Đã mở lại phiên ${session.code} — số lượng tài sản trả về như trước khi duyệt, phiên về Chờ duyệt.`);
+          }}
+          className="text-xs font-bold text-slate-400 hover:text-rose-600 hover:underline whitespace-nowrap"
+          title="Trừ lại phần chênh đã duyệt và đưa phiên về Chờ duyệt"
+        >
+          Mở lại
+        </button>
+      )}
+    </>
+  );
+
   if (loading) return <div className="h-screen grid place-items-center bg-slate-100">Đang tải...</div>;
 
   return (
@@ -495,22 +628,36 @@ export default function AssetOperationsPage() {
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
           {canCreate && (
             <form
-              onSubmit={(e) => {
+              onSubmit={async (e) => {
                 e.preventDefault();
-                void send({
-                  action: "APPROVE_ASSET_STOCKTAKE",
+                const ok = await send({
+                  action: "SAVE_ASSET_STOCKTAKE",
+                  sessionId: editingSession?.id,
                   branchCode: stocktakeBranch,
                   departmentCode: stocktakeDepartment,
                   stocktakeDate,
                   note: stocktakeNote,
                   lines: stocktakeLinesForSubmit(),
-                }, "Đã duyệt kiểm kê và cập nhật số lượng sổ sách theo số đếm.");
+                }, editingSession
+                  ? `Đã lưu và gửi lại phiên ${editingSession.code} — chờ kế toán duyệt.`
+                  : "Đã gửi phiên kiểm kê — chờ kế toán duyệt. Số lượng sổ sách chỉ đổi khi kế toán duyệt.");
+                if (ok) setEditingSession(null);
               }}
               className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm"
             >
-              <h2 className="font-bold text-slate-800">Kiểm kê CCDC & Tài sản</h2>
+              <h2 className="font-bold text-slate-800">{editingSession ? `Sửa phiên kiểm kê ${editingSession.code}` : "Kiểm kê CCDC & Tài sản"}</h2>
+              {editingSession && (
+                <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800 flex flex-wrap items-start justify-between gap-2">
+                  <div className="space-y-1">
+                    <p>Đang sửa phiên <b>{editingSession.code}</b> — bấm <b>Lưu &amp; gửi lại</b> để kế toán duyệt.</p>
+                    {editingSession.returnedReason && <p className="text-rose-700"><b>Kế toán trả lại:</b> {editingSession.returnedReason}</p>}
+                  </div>
+                  <button type="button" className="font-bold text-slate-500 hover:underline" onClick={cancelSessionEdit}>Huỷ sửa</button>
+                </div>
+              )}
               <p className="rounded-md bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
-                Duyệt xong hệ thống lấy SỐ ĐẾM làm số sổ sách. Hàng tồn kho kiểm ở Kho & Định lượng.
+                Đếm xong bấm <b>Gửi duyệt</b>: phiên ở trạng thái Chờ duyệt, số lượng CHƯA đổi và vẫn sửa / bổ sung được. Kế toán duyệt
+                xong hệ thống mới lấy SỐ ĐẾM làm số sổ sách. Hàng tồn kho kiểm ở Kho &amp; Định lượng.
                 {scopedDepartments && <> Bạn đang kiểm trong phạm vi bộ phận: <b>{scopedDepartments.join(", ")}</b>.</>}
               </p>
               <div className="grid grid-cols-2 gap-3">
@@ -584,6 +731,7 @@ export default function AssetOperationsPage() {
                         <div className="ml-auto shrink-0 pb-1.5">
                           <StocktakeImageInput
                             value={row.imageUrl}
+                              savedImage={row.savedImage}
                             onChange={(imageUrl) => updateRow({ imageUrl })}
                             onError={(text) => setMessage(text)}
                           />
@@ -630,6 +778,7 @@ export default function AssetOperationsPage() {
                           <td className="px-3 py-2">
                             <StocktakeImageInput
                               value={row.imageUrl}
+                              savedImage={row.savedImage}
                               onChange={(imageUrl) => updateRow({ imageUrl })}
                               onError={(text) => setMessage(text)}
                             />
@@ -706,13 +855,60 @@ export default function AssetOperationsPage() {
 
               <div className="flex items-center justify-between gap-3">
                 <a className="text-sm font-bold text-blue-700" href="/imports?tab=asset-stocktake">Hoặc import file kiểm kê Excel</a>
-                <button className="primary-button" disabled={!stocktakeBranch || stocktakeRows.length === 0}>Duyệt kiểm kê</button>
+                <button className="primary-button" disabled={!stocktakeBranch || stocktakeRows.length === 0}>{editingSession ? "Lưu & gửi lại" : "Gửi duyệt"}</button>
               </div>
             </form>
           )}
           <section className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden h-fit">
             <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3"><h2 className="font-bold">Phiên kiểm kê gần nhất</h2><ExportExcelButton fileName="phien_kiem_ke_tai_san" sheetName="Kiem ke" /></div>
-            <table className="w-full text-left text-sm">
+            {/* Điện thoại: mỗi phiên một thẻ, nút Sửa / Duyệt / Trả lại luôn nằm trong màn hình. */}
+            {/* pb-20: chừa chỗ nút menu nổi góc trái dưới, không che nút của phiên cuối. */}
+            <div className="md:hidden divide-y divide-slate-100 pb-20">
+              {data.assetStocktakes.length === 0 && <p className="px-4 py-4 text-sm text-slate-500">Chưa có phiên kiểm kê nào.</p>}
+              {data.assetStocktakes.map((session) => {
+                const totalVariance = session.lines.reduce((sum, line) => sum + Math.abs(line.varianceQuantity), 0);
+                return (
+                  <div key={session.id} className="px-4 py-3 space-y-1.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <CopyableText value={session.code}><b>{session.code}</b></CopyableText>
+                        <p className="text-xs text-slate-500">
+                          {new Date(session.stocktakeDate).toLocaleDateString("vi-VN")} · {session.branchCode} · {session.departmentCode
+                            ? (departments.find((department) => department.code === session.departmentCode)?.name || session.departmentCode)
+                            : "Cả cửa hàng"}
+                          {session.createdBy ? ` · ${session.createdBy}` : ""}
+                        </p>
+                      </div>
+                      <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] font-bold ${stocktakeStatusTone(session.status)}`}>{stocktakeStatusLabel(session.status)}</span>
+                    </div>
+                    <p className="text-xs text-slate-600">
+                      {session.lines.length} dòng · chênh lệch <b className={totalVariance > 0 ? "text-rose-700" : "text-slate-400"}>{money(totalVariance)}</b>
+                      {session.status === STOCKTAKE_APPROVED && session.approvedBy ? ` · duyệt: ${session.approvedBy}` : ""}
+                    </p>
+                    {session.status === STOCKTAKE_RETURNED && session.returnedReason && <p className="text-xs text-rose-700">Lý do trả lại: {session.returnedReason}</p>}
+                    <div className="flex flex-wrap gap-y-1 pt-0.5">{renderSessionActions(session)}</div>
+                    {expandedStocktake === session.id && (
+                      <div className="mt-1 space-y-1.5 rounded-lg bg-slate-50 p-2">
+                        {session.note && <p className="text-xs text-slate-600">Ghi chú: {session.note}</p>}
+                        {session.lines.map((line) => (
+                          <div key={line.id} className="border-t border-slate-200/70 pt-1.5 first:border-0 first:pt-0">
+                            <p className="text-sm font-bold text-slate-900">{line.asset.name}</p>
+                            <p className="text-[11px] text-slate-500">{assetLotLabel(line.asset)}</p>
+                            <p className="text-xs">
+                              Sổ sách {money(line.systemQuantity)} · Đếm {money(line.actualQuantity)} ·{" "}
+                              <b className={line.varianceQuantity > 0 ? "text-emerald-700" : line.varianceQuantity < 0 ? "text-rose-700" : "text-slate-400"}>{line.varianceQuantity > 0 ? "+" : ""}{money(line.varianceQuantity)}</b>
+                            </p>
+                            {(line.condition || line.note) && <p className="text-xs text-slate-600">{line.condition || ""}{line.note ? ` · ${line.note}` : ""}</p>}
+                            {line.hasImage && <button type="button" className="text-xs text-blue-700 font-bold hover:underline" onClick={() => void openStocktakeImage(line.id)}>Xem ảnh</button>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <table className="hidden md:table w-full text-left text-sm">
               <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
                 <tr><th className="px-3 py-2">Phiên</th><th className="px-3 py-2">Cửa hàng</th><th className="px-3 py-2">Bộ phận</th><th className="px-3 py-2 text-right">Dòng</th><th className="px-3 py-2 text-right">Chênh lệch</th><th className="px-3 py-2 text-right"></th></tr>
               </thead>
@@ -723,7 +919,14 @@ export default function AssetOperationsPage() {
                 {data.assetStocktakes.map((session) => (
                   <Fragment key={session.id}>
                     <tr className="border-t border-slate-100">
-                      <td className="px-3 py-2"><CopyableText value={session.code}><b>{session.code}</b></CopyableText><small className="block text-slate-500">{new Date(session.stocktakeDate).toLocaleDateString("vi-VN")} · {session.approvedBy || "-"}</small></td>
+                      <td className="px-3 py-2">
+                        <CopyableText value={session.code}><b>{session.code}</b></CopyableText>
+                        <small className="block text-slate-500">{new Date(session.stocktakeDate).toLocaleDateString("vi-VN")}{session.createdBy ? ` · ${session.createdBy}` : ""}</small>
+                        <span className={`mt-1 inline-block rounded px-1.5 py-0.5 text-[11px] font-bold ${stocktakeStatusTone(session.status)}`}>
+                          {stocktakeStatusLabel(session.status)}{session.status === STOCKTAKE_APPROVED && session.approvedBy ? ` · ${session.approvedBy}` : ""}
+                        </span>
+                        {session.status === STOCKTAKE_RETURNED && session.returnedReason && <small className="block text-rose-700">Lý do trả lại: {session.returnedReason}</small>}
+                      </td>
                       <td className="px-3 py-2">{session.branchCode}</td>
                       <td className="px-3 py-2">{session.departmentCode
                         ? (departments.find((department) => department.code === session.departmentCode)?.name || session.departmentCode)
@@ -735,26 +938,7 @@ export default function AssetOperationsPage() {
                         </b>
                       </td>
                       <td className="px-3 py-2 text-right whitespace-nowrap">
-                        <button
-                          type="button"
-                          onClick={() => setExpandedStocktake((current) => current === session.id ? "" : session.id)}
-                          className="text-xs font-bold text-blue-700 hover:underline mr-3"
-                        >
-                          {expandedStocktake === session.id ? "Thu gọn" : "Chi tiết"}
-                        </button>
-                        {canEdit && session.status === "APPROVED" && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (!window.confirm(`Mở lại phiên kiểm kê ${session.code}? Số lượng của ${session.lines.length} tài sản trong phiên sẽ quay về đúng số sổ sách trước lúc duyệt.`)) return;
-                              void send({ action: "REOPEN_ASSET_STOCKTAKE", sessionId: session.id }, `Đã mở lại phiên ${session.code} và trả số lượng tài sản về như trước khi duyệt. Kiểm lại rồi duyệt phiên mới.`);
-                            }}
-                            className="text-xs font-bold text-slate-400 hover:text-rose-600 hover:underline whitespace-nowrap"
-                            title="Trả số lượng tài sản về số sổ sách trước lúc duyệt và đưa phiên về Nháp"
-                          >
-                            Mở lại
-                          </button>
-                        )}
+                        {renderSessionActions(session)}
                       </td>
                     </tr>
                     {expandedStocktake === session.id && (
@@ -1250,7 +1434,7 @@ async function compressImageFile(file: File): Promise<string> {
 }
 
 /** Ô chọn/chụp ảnh của một dòng kiểm kê: thumbnail + nút xoá; trên điện thoại mở thẳng camera. */
-function StocktakeImageInput({ value, onChange, onError }: { value: string; onChange: (dataUrl: string) => void; onError: (message: string) => void }) {
+function StocktakeImageInput({ value, onChange, onError, savedImage = false }: { value: string; onChange: (dataUrl: string) => void; onError: (message: string) => void; savedImage?: boolean }) {
   const [busy, setBusy] = useState(false);
   const inputId = useId();
   const pick = async (file: File | null) => {
@@ -1283,8 +1467,9 @@ function StocktakeImageInput({ value, onChange, onError }: { value: string; onCh
         </>
       ) : (
         <label htmlFor={inputId} className={`inline-flex cursor-pointer items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-[11px] font-bold text-slate-600 hover:bg-slate-50 ${busy ? "opacity-50" : ""}`}>
-          <span className="material-symbols-outlined text-base">photo_camera</span>
-          {busy ? "Đang nén..." : "Chụp / chọn"}
+          <span className="material-symbols-outlined text-base">{savedImage ? "check_circle" : "photo_camera"}</span>
+          {/* Sửa phiên đã gửi: ảnh cũ vẫn giữ trên máy chủ, chụp lại mới thay. */}
+          {busy ? "Đang nén..." : savedImage ? "Đã có ảnh · chụp lại" : "Chụp / chọn"}
         </label>
       )}
       <input id={inputId} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => { void pick(e.target.files?.[0] || null); e.target.value = ""; }} />
