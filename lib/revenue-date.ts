@@ -59,3 +59,21 @@ export function vietnamBusinessDayBounds(value: Date) {
   end.setUTCDate(end.getUTCDate() + 1);
   return { start, end };
 }
+
+/**
+ * Ngày giờ ghi phiếu của một lần rã nguyên liệu (khách chốt 28/09/2026 — kiểm kê chốt theo giờ):
+ *   - rã "tới giờ H" của ngày cuối: phiếu mang đúng H:00 giờ Việt Nam, chỉ gồm doanh thu có giờ
+ *     bán < H, nên sổ sách tại giờ chốt H trừ đúng phần đã bán trước giờ đó;
+ *   - rã cả ngày: phiếu mang 23:59:59 của ngày cuối (hết ngày bán), không phải 07:00 như trước —
+ *     để kiểm kê chốt giữa ngày không tính nhầm phần bán buổi chiều vào trước giờ chốt.
+ */
+export function explosionPostingDate(dateTo: Date, timeTo?: number | null) {
+  const key = vietnamBusinessDayKey(dateTo);
+  if (timeTo === null || timeTo === undefined) return new Date(`${key}T23:59:59+07:00`);
+  return new Date(`${key}T${String(timeTo).padStart(2, "0")}:00:00+07:00`);
+}
+
+/** Nửa đêm (UTC) của ngày nghiệp vụ — mốc saleDate mà import doanh thu lưu. */
+export function saleDayStart(value: Date) {
+  return new Date(`${vietnamBusinessDayKey(value)}T00:00:00.000Z`);
+}

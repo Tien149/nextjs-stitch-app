@@ -33,6 +33,9 @@ async function balanceOf(code) {
 async function cleanup() {
   const itemIds = (await prisma.inventoryItem.findMany({ where: { code: { in: [GA, BO, HOP, SOT] } }, select: { id: true } })).map((row) => row.id);
   await prisma.inventoryTransaction.deleteMany({ where: { branchCode: BRANCH } });
+  const revenueBatches = await prisma.revenueImportRow.findMany({ where: { branchCode: BRANCH }, select: { importBatchId: true } });
+  await prisma.revenueImportRow.deleteMany({ where: { branchCode: BRANCH } });
+  await prisma.importBatch.deleteMany({ where: { id: { in: [...new Set(revenueBatches.map((row) => row.importBatchId))] } } });
   await prisma.stocktakeSession.deleteMany({ where: { branchCode: BRANCH } });
   await prisma.stocktakeBatch.deleteMany({ where: { branchCode: BRANCH } });
   await prisma.stocktakeLocation.deleteMany({ where: { branchCode: BRANCH } });
@@ -154,4 +157,24 @@ test("không duyệt được đợt có giờ chốt sớm hơn đợt đã duy
     prisma.$transaction((tx) => approveStocktakeBatch(tx, { stocktakeIds: [extra.id], cutoffAt: vn("2031-01-02T12:00"), approvedBy: "test" })),
     /Mở lại đợt đó trước/,
   );
+});
+
+test("cảnh báo theo giờ bán: chỉ nhắc doanh thu TRƯỚC giờ chốt chưa rã và dòng không có giờ", async () => {
+  const batch = await prisma.importBatch.create({ data: { importType: "REVENUE_POS", templateCode: "REVENUE_POS_RAW_V1", fileName: "kktb.xlsx", status: "COMMITTED" } });
+  const day = new Date("2031-01-03T00:00:00.000Z");
+  const row = (hour, ref) => ({
+    importBatchId: batch.id, saleDate: day, saleHour: hour, branchCode: BRANCH, revenueSource: "ĐỒ ĂN", paymentMethod: "CASH",
+    grossAmount: 1000, netAmount: 1000, externalRef: ref, productCode: GA, productQuantity: 1, inventoryStatus: "PENDING",
+  });
+  await prisma.revenueImportRow.createMany({ data: [row(10, "KKTB-10"), row(15, "KKTB-15")] });
+  const sheet = await prisma.stocktakeSession.create({
+    data: { code: "KK_KKTB_4", branchCode: BRANCH, warehouseCode: WH, locationCode: "TU_MAT", status: "PENDING", lines: { create: [{ itemId: ids[GA], systemQuantity: 0, actualQuantity: 1, varianceQuantity: 0 }] } },
+  });
+  const warningsAt = async () => (await prisma.$transaction((tx) => buildBatchPreview(tx, { stocktakeIds: [sheet.id], cutoffAt: vn("2031-01-03T11:00") }))).warnings;
+  let warnings = await warningsAt();
+  assert.ok(warnings.some((warning) => warning.startsWith("Còn 1 dòng doanh thu trước giờ chốt")), "dòng 10h chưa rã, dòng 15h sau giờ chốt thì không nhắc");
+  assert.ok(!warnings.some((warning) => warning.includes("không có giờ bán")));
+  await prisma.revenueImportRow.create({ data: row(null, "KKTB-ALL") });
+  warnings = await warningsAt();
+  assert.ok(warnings.some((warning) => warning.includes("1 dòng doanh thu POS ngày chốt chỉ có NGÀY")));
 });

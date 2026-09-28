@@ -30,9 +30,13 @@ function saleDateCode(value: unknown) {
 }
 
 export function generatedRevenuePosReference(values: Record<string, unknown>) {
-  const fingerprint = referenceFields
-    .map((field) => `${field}=${canonicalValue(values[field])}`)
-    .join("|");
+  // Giờ bán chỉ vào dấu vân tay khi file CÓ giờ: file chỉ có ngày phải ra đúng mã cũ, không thì
+  // nạp lại file cũ không còn bị nhận ra là trùng.
+  const hour = values.sale_hour;
+  const fingerprint = [
+    ...referenceFields.map((field) => `${field}=${canonicalValue(values[field])}`),
+    ...(hour === null || hour === undefined || hour === "" ? [] : [`sale_hour=${canonicalValue(hour)}`]),
+  ].join("|");
   const digest = createHash("sha256").update(fingerprint).digest("hex").slice(0, 16).toUpperCase();
   return `AUTO-POS-${compactCode(values.branch_code, "UNKNOWN")}-${saleDateCode(values.sale_date)}-${digest}`;
 }

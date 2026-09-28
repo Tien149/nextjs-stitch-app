@@ -339,6 +339,10 @@ model RevenueImportRow {
   id              String   @id @default(uuid())
   importBatchId   String
   saleDate        DateTime
+  /// Giờ bán 0–23 (giờ Việt Nam) khi file POS có giờ; null = doanh thu cả ngày. saleDate vẫn là
+  /// NGÀY (UTC midnight) như mọi báo cáo đang dùng. Dùng để rã nguyên liệu tới đúng giờ chốt
+  /// kiểm kê (khách chốt 28/09/2026) — lib/inventory-explosion.ts.
+  saleHour        Int?
   branchCode      String
   channel         String?
   revenueSource   String
@@ -375,6 +379,7 @@ model RevenueImportRow {
 
   @@unique([branchCode, saleDate, externalRef])
   @@index([saleDate])
+  @@index([saleDate, saleHour])
   @@index([branchCode])
   @@index([paymentMethod])
   @@index([productCode])

@@ -4,7 +4,7 @@ import {
   type ImportFieldDefinition,
   type ImportTemplateDefinition,
 } from "@/lib/import-templates";
-import { parseImportDate } from "@/lib/import-date";
+import { parseImportDate, parseImportHour } from "@/lib/import-date";
 
 export { parseImportDate } from "@/lib/import-date";
 
@@ -91,6 +91,12 @@ function coerceValue(field: ImportFieldDefinition, value: unknown) {
     return Number.isFinite(parsed)
       ? { value: parsed }
       : { value: null, error: `${field.label} phải là số nguyên` };
+  }
+
+  if (field.type === "hour") {
+    if (value === null || value === undefined || String(value).trim() === "") return { value: null };
+    const hour = parseImportHour(value);
+    return hour === null ? { value: null, error: `${field.label} không đọc được giờ (ví dụ 10:23)` } : { value: hour };
   }
 
   const parsed = parseImportDate(value);
@@ -288,6 +294,11 @@ export async function parseImportFile(
         const result = coerceValue(field, rawValue);
         values[field.field] = result.value ?? null;
         if (result.error) errors.push(result.error);
+      }
+      // Không có cột Giờ riêng: đọc giờ ngay trong ô ngày bán ("31/08/2026 10:23" hay serial Excel
+      // có phần lẻ). Ô chỉ có ngày thì để trống — doanh thu cả ngày như trước.
+      if (values.sale_hour === null && template.fields.some((field) => field.field === "sale_hour") && mapping.sale_date) {
+        values.sale_hour = parseImportHour(source[mapping.sale_date]);
       }
 
       return {

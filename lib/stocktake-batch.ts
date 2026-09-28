@@ -231,40 +231,63 @@ async function batchWarnings(tx: Tx, input: { branchCode: string; warehouseCode:
   const { start: dayStart, end: dayEnd } = vnDayWindow(input.cutoffAt);
   const nonInventoryGroups = await loadNonInventoryRevenueGroups(tx as unknown as CategoryLookupClient);
 
+  /**
+   * Doanh thu có giờ bán (file POS có giờ) chia được đúng tại giờ chốt: dòng ngày chốt có giờ
+   * < giờ chốt là "trước", >= là "sau". Dòng không có giờ thì không chia được. Giờ chốt lẻ phút
+   * (11:30) thì cả giờ 11 nằm ở giữa — coi như trước để không bỏ sót.
+   */
+  const cutoffLocal = new Date(input.cutoffAt.getTime() + VN_OFFSET_MS);
+  const cutoffHour = cutoffLocal.getUTCHours() + (cutoffLocal.getUTCMinutes() > 0 || cutoffLocal.getUTCSeconds() > 0 ? 1 : 0);
+  const sameDay = (date: Date) => date.getTime() >= dayStart.getTime() && date.getTime() < dayEnd.getTime();
+  const beforeCutoff = (row: { saleDate: Date; saleHour: number | null }) =>
+    !sameDay(row.saleDate) || (row.saleHour !== null && row.saleHour < cutoffHour);
+
   const pending = await tx.revenueImportRow.findMany({
     where: { branchCode: input.branchCode, deletedAt: null, inventoryStatus: "PENDING", productCode: { not: null }, saleDate: { lt: dayEnd } },
-    select: { saleDate: true, revenueSource: true },
+    select: { saleDate: true, saleHour: true, revenueSource: true },
   });
-  const pendingRows = pending.filter((row) => tracksInventory(row.revenueSource, nonInventoryGroups));
+  const pendingRows = pending
+    .filter((row) => tracksInventory(row.revenueSource, nonInventoryGroups))
+    .filter((row) => beforeCutoff(row) || row.saleHour === null);
   if (pendingRows.length > 0) {
     const days = [...new Set(pendingRows.map((row) => formatVnDateTime(row.saleDate).slice(6)))].slice(0, 5);
-    warnings.push(`Còn ${pendingRows.length} dòng doanh thu tới ngày chốt CHƯA rã nguyên liệu (${days.join(", ")}${days.length >= 5 ? "…" : ""}) — sổ sách đang cao hơn thực tế. Rã ở tab Chế biến trước khi duyệt.`);
+    warnings.push(`Còn ${pendingRows.length} dòng doanh thu trước giờ chốt CHƯA rã nguyên liệu (${days.join(", ")}${days.length >= 5 ? "…" : ""}) — sổ sách đang cao hơn thực tế. Rã ở tab Chế biến (ngày chốt chọn "Rã tới giờ") trước khi duyệt.`);
   }
 
-  // Lần rã gộp nhiều ngày ghi phiếu vào NGÀY CUỐI khoảng rã: rã 01–31 thì doanh thu ngày 15 nằm
-  // trên phiếu ngày 31, sau giờ chốt 15 — sổ sách tại giờ chốt không trừ phần đó.
-  const runRows = await tx.revenueImportRow.findMany({
-    where: { branchCode: input.branchCode, deletedAt: null, saleDate: { lt: dayStart }, inventoryStatus: { startsWith: "POSTED:RA-" } },
-    distinct: ["inventoryStatus"],
-    select: { inventoryStatus: true },
+  const postedRows = await tx.revenueImportRow.findMany({
+    // Lần rã vắt qua giờ chốt chỉ có thể chứa doanh thu gần giờ chốt; soi 62 ngày là đủ và
+    // không phải nạp cả lịch sử doanh thu (hàng chục nghìn dòng mỗi tháng).
+    where: { branchCode: input.branchCode, deletedAt: null, saleDate: { gte: new Date(dayStart.getTime() - 62 * 86_400_000), lt: dayEnd }, inventoryStatus: { startsWith: "POSTED:RA-" } },
+    select: { saleDate: true, saleHour: true, inventoryStatus: true },
   });
-  const runCodes = runRows.map((row) => (row.inventoryStatus || "").slice("POSTED:".length)).filter(Boolean);
-  if (runCodes.length > 0) {
-    const late = await tx.inventoryTransaction.findMany({
-      where: { referenceType: "PRODUCTION", referenceCode: { in: runCodes }, deletedAt: null, warehouseCode: input.warehouseCode, transactionDate: { gt: input.cutoffAt } },
-      distinct: ["referenceCode"],
-      select: { referenceCode: true },
-    });
-    if (late.length > 0) {
-      warnings.push(`Lần rã ${late.map((doc) => doc.referenceCode).join(", ")} gộp cả doanh thu TRƯỚC giờ chốt nhưng ghi phiếu sau giờ chốt — phần bán đó chưa trừ vào sổ sách. Hoàn tác và rã lại với khoảng ngày kết thúc trước giờ chốt.`);
-    }
+  const runOf = (row: { inventoryStatus: string | null }) => (row.inventoryStatus || "").slice("POSTED:".length);
+  const earlyRuns = [...new Set(postedRows.filter(beforeCutoff).map(runOf).filter(Boolean))];
+  const lateSaleRuns = [...new Set(postedRows.filter((row) => !beforeCutoff(row)).map(runOf).filter(Boolean))];
+  const runDocs = earlyRuns.length + lateSaleRuns.length === 0 ? [] : await tx.inventoryTransaction.findMany({
+    where: { referenceType: "PRODUCTION", referenceCode: { in: [...earlyRuns, ...lateSaleRuns] }, deletedAt: null, warehouseCode: input.warehouseCode },
+    select: { referenceCode: true, transactionDate: true },
+  });
+  // Lần rã có doanh thu TRƯỚC giờ chốt nhưng phiếu ghi SAU giờ chốt (rã gộp tới cuối tháng):
+  // sổ sách tại giờ chốt chưa trừ phần bán đó.
+  const late = [...new Set(runDocs.filter((doc) => earlyRuns.includes(doc.referenceCode || "") && doc.transactionDate > input.cutoffAt).map((doc) => doc.referenceCode))];
+  if (late.length > 0) {
+    warnings.push(`Lần rã ${late.join(", ")} gộp cả doanh thu TRƯỚC giờ chốt nhưng ghi phiếu sau giờ chốt — phần bán đó chưa trừ vào sổ sách. Hoàn tác rồi rã lại, ngày chốt chọn "Rã tới giờ" ${formatVnDateTime(input.cutoffAt).slice(0, 5)}.`);
+  }
+  // Ngược lại: phiếu ghi TRƯỚC giờ chốt mà gồm cả doanh thu sau giờ chốt / cả ngày không có giờ
+  // (phiếu rã cũ mang 07:00 sáng) — sổ sách bị trừ lố phần bán sau giờ chốt.
+  const early = [...new Set(runDocs.filter((doc) => lateSaleRuns.includes(doc.referenceCode || "") && doc.transactionDate <= input.cutoffAt).map((doc) => doc.referenceCode))];
+  if (early.length > 0) {
+    warnings.push(`Lần rã ${early.join(", ")} ghi phiếu trước giờ chốt nhưng gồm cả doanh thu SAU giờ chốt (hoặc doanh thu cả ngày không có giờ) — sổ sách đang bị trừ lố. Hoàn tác và rã lại tới đúng giờ chốt.`);
   }
 
-  const sameDaySales = await tx.revenueImportRow.count({
-    where: { branchCode: input.branchCode, deletedAt: null, saleDate: { gte: dayStart, lt: dayEnd } },
+  const unsplit = await tx.revenueImportRow.count({
+    where: { branchCode: input.branchCode, deletedAt: null, productCode: { not: null }, saleDate: { gte: dayStart, lt: dayEnd }, saleHour: null },
   });
-  if (sameDaySales > 0) {
-    warnings.push(`Doanh thu POS ngày chốt đang import theo NGÀY, chưa tách theo giờ: phần đã rã của ngày này được tính trọn vào trước hoặc sau giờ chốt, không chia theo ${formatVnDateTime(input.cutoffAt).slice(0, 5)}.`);
+  if (unsplit > 0) {
+    warnings.push(`${unsplit} dòng doanh thu POS ngày chốt chỉ có NGÀY, không có giờ bán — không chia được trước/sau ${formatVnDateTime(input.cutoffAt).slice(0, 5)}. Import lại file POS có cột Thời gian kèm giờ (dd/mm/yyyy hh:mm).`);
+  }
+  if (cutoffLocal.getUTCMinutes() > 0) {
+    warnings.push(`Giờ chốt lẻ phút: doanh thu có giờ bán ${cutoffLocal.getUTCHours()}h được tính TRƯỚC giờ chốt (dữ liệu chia theo giờ tròn). Nên chốt giờ tròn.`);
   }
 
   const others = await tx.stocktakeSession.findMany({

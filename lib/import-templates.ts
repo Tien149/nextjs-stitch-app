@@ -37,7 +37,8 @@ export function isMasterDataImportType(value: string) {
   return (masterDataImportTypes as readonly string[]).includes(value);
 }
 
-export type ImportFieldType = "text" | "date" | "number" | "integer";
+/** "hour": giờ trong ngày 0–23 (lib/import-date.ts parseImportHour). */
+export type ImportFieldType = "text" | "date" | "number" | "integer" | "hour";
 
 export type ImportFieldDefinition = {
   field: string;
@@ -272,6 +273,14 @@ export const importTemplates: ImportTemplateDefinition[] = [
         aliases: ["ngay ban", "ngay", "sale date", "business date"],
       },
       {
+        field: "sale_hour",
+        label: "Giờ bán",
+        required: false,
+        type: "hour",
+        aliases: ["gio ban", "gio", "gio hoa don", "gio thanh toan", "sale hour", "sale time"],
+        note: "Không bắt buộc. Cột Thời gian có kèm giờ (31/08/2026 10:23) thì hệ thống tự đọc giờ, hoặc khai cột Giờ riêng. Có giờ thì rã nguyên liệu được tới đúng giờ chốt kiểm kê.",
+      },
+      {
         field: "branch_code",
         label: "Cửa hàng",
         required: true,
@@ -392,7 +401,9 @@ export const importTemplates: ImportTemplateDefinition[] = [
     // sẽ trùng mã tham chiếu và bị báo lỗi hàng loạt. Có mã hàng thì gộp thêm theo mã hàng
     // để giữ số lượng bán từng món cho bước rã định lượng.
     aggregate: {
-      by: ["sale_date", "branch_code", "channel", "revenue_source", "payment_method", "product_code"],
+      // sale_hour: file có giờ trong cột Thời gian thì gộp theo từng GIỜ để rã nguyên liệu đúng
+      // tới giờ chốt kiểm kê; file chỉ có ngày thì sale_hour trống và gộp y như trước.
+      by: ["sale_date", "sale_hour", "branch_code", "channel", "revenue_source", "payment_method", "product_code"],
       sum: ["gross_amount", "discount_amount", "fee_amount", "card_fee_amount", "app_fee_amount", "vat_amount", "net_amount", "product_quantity"],
     },
     // Bố cục cột theo file "Theo dõi nguồn tiền" chị Bình chốt (meeting 22/08/2026), sheet
@@ -411,7 +422,15 @@ export const importTemplates: ImportTemplateDefinition[] = [
         required: true,
         type: "date",
         aliases: ["thoi gian", "ngay", "ngay ban", "sale date", "business date"],
-        note: "Ngày bán hàng trên máy POS (dd/mm/yyyy)",
+        note: "Ngày bán hàng trên máy POS (dd/mm/yyyy, có thể kèm giờ: dd/mm/yyyy hh:mm)",
+      },
+      {
+        field: "sale_hour",
+        label: "Giờ bán",
+        required: false,
+        type: "hour",
+        aliases: ["gio ban", "gio", "gio hoa don", "gio thanh toan", "sale hour", "sale time"],
+        note: "Không bắt buộc. Cột Thời gian có kèm giờ (31/08/2026 10:23) thì hệ thống tự đọc giờ, hoặc khai cột Giờ riêng. Có giờ thì rã nguyên liệu được tới đúng giờ chốt kiểm kê.",
       },
       {
         field: "branch_code",

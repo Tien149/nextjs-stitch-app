@@ -228,7 +228,8 @@ export default function InventoryPage() {
    * `kitchenWarehouseCode` / `barWarehouseCode`: đồ ăn trừ kho Bếp, đồ uống trừ kho Bar.
    * Để trống ô nào thì món của bộ phận đó đi theo kho mặc định như trước.
    */
-  const [explodeForm, setExplodeForm] = useState({ branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HCM", kitchenWarehouseCode: "", barWarehouseCode: "", dateFrom: today(), dateTo: today(), note: "" });
+  /** timeTo: "" = rã cả ngày cuối; "11" = chỉ doanh thu ngày cuối bán trước 11:00 (kiểm kê chốt theo giờ). */
+  const [explodeForm, setExplodeForm] = useState({ branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HCM", kitchenWarehouseCode: "", barWarehouseCode: "", dateFrom: today(), dateTo: today(), timeTo: "", note: "" });
   const [exploding, setExploding] = useState(false);
   /** Nút Tính giá vốn & giá thành cuối kỳ: chạy tuần tự NVL → BTP các cấp → TP → combo. */
   const [costingForm, setCostingForm] = useState({ branchCode: "HCM", costingDate: today() });
@@ -3144,6 +3145,16 @@ export default function InventoryPage() {
             <Input label="Đến ngày bán">
               <input type="date" className="control" value={explodeForm.dateTo} onChange={(e) => setExplodeForm({ ...explodeForm, dateTo: e.target.value })} />
             </Input>
+            {/* Kiểm kê chốt giữa ngày (11h 31/8): rã tới đúng giờ chốt, phần bán sau đó rã lần sau.
+                Chỉ chia được khi file POS có giờ bán. */}
+            <Input label="Rã tới giờ (ngày cuối)">
+              <select className="control" value={explodeForm.timeTo} onChange={(e) => setExplodeForm({ ...explodeForm, timeTo: e.target.value })}>
+                <option value="">Cả ngày</option>
+                {Array.from({ length: 23 }, (_, index) => index + 1).map((hour) => (
+                  <option key={hour} value={String(hour)}>Trước {String(hour).padStart(2, "0")}:00</option>
+                ))}
+              </select>
+            </Input>
             <Input label="Kho xuất NVL">
               <select className="control" value={explodeWarehouseCode} onChange={(e) => setExplodeForm({ ...explodeForm, warehouseCode: e.target.value })}>
                 {productionWarehouses.map((warehouse) => (
@@ -3314,6 +3325,10 @@ export default function InventoryPage() {
                 // Lần rã luôn chạy tới cùng (luật xuất âm), nhưng ba chuyện dưới đây phải nói ra
                 // cho kế toán biết mà xử lý tiếp, nếu không họ tưởng đã xong hẳn.
                 const notes: string[] = [];
+                const unsplitRows = Number(payload?.unsplitRows || 0);
+                if (unsplitRows > 0) {
+                  notes.push(`${unsplitRows} dòng doanh thu ngày cuối không có giờ bán nên chưa rã (file POS chỉ ghi ngày) — còn ở hàng chờ, rã cả ngày ở lần sau.`);
+                }
                 const undecided = Number(payload?.undecidedCount || 0);
                 if (undecided > 0) {
                   const codes = (payload?.undecidedProducts || []) as string[];

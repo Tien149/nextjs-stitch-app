@@ -27,6 +27,7 @@ import { nextStockDocCode, nextStocktakeCode } from "@/lib/inventory-stock";
 import { isRevenueGroupCategory, normalizeRevenueExpenseGroup } from "@/lib/voucher-rules";
 import { loadNonInventoryRevenueGroups, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
 import { safeConversionRate } from "@/lib/unit-conversion";
+import { explosionPostingDate } from "@/lib/revenue-date";
 
 const menuHref = "/inventory";
 
@@ -1431,7 +1432,12 @@ export async function POST(request: Request) {
         if (!warehouse) businessError(`Kho ${label} (${code}) không thuộc cửa hàng ${branchCode}.`);
       }
       if (dateTo.getTime() < dateFrom.getTime()) businessError("Khoảng ngày rã không hợp lệ (từ ngày sau đến ngày trước)");
-      if (await isPeriodLocked(dateTo, branchCode)) businessError("Kỳ kế toán đã khóa");
+      // Rã TỚI GIỜ của ngày cuối (kiểm kê chốt theo giờ, khách chốt 28/09/2026): 1–23 giờ Việt Nam,
+      // chỉ lấy doanh thu có giờ bán nhỏ hơn. Trống = cả ngày.
+      const timeToText = cleanText(body.timeTo);
+      const timeTo = timeToText === "" ? null : Number(timeToText.split(":")[0]);
+      if (timeTo !== null && !(Number.isInteger(timeTo) && timeTo >= 1 && timeTo <= 23)) businessError("Giờ rã tới phải là giờ tròn từ 01:00 đến 23:00");
+      if (await isPeriodLocked(explosionPostingDate(dateTo, timeTo), branchCode)) businessError("Kỳ kế toán đã khóa");
 
       /**
        * RÃ LẠI (khách chốt 27/09/2026: "user muốn chỉnh thì cứ chạy, trừ khi đã khoá kỳ"): khoảng
@@ -1514,7 +1520,7 @@ export async function POST(request: Request) {
         // Rã lại xong, dòng còn chờ trong khoảng ngày (nếu có) rã thành một lần mới như thường.
         const fresh = await executeExplosion(tx, {
           branchCode, warehouseCode, toWarehouseCode, kitchenWarehouseCode, barWarehouseCode,
-          dateFrom, dateTo, note: cleanText(body.note), createdBy: auth.session.name,
+          dateFrom, dateTo, timeTo, note: cleanText(body.note), createdBy: auth.session.name,
         });
         return { outcome: fresh, reruns: rerunResults };
       }, { timeout: 10 * 60 * 1000, maxWait: 30000 });
@@ -1537,7 +1543,9 @@ export async function POST(request: Request) {
         if (reruns.length > 0) {
           return NextResponse.json({ reruns: rerunSummary, runCode: null, documentCount: reruns.reduce((sum, rerun) => sum + rerun.documents.length, 0), cogsRepost });
         }
-        businessError("Không có dòng doanh thu, phiếu điều chuyển hay kiểm kê bán thành phẩm nào đang chờ rã trong khoảng ngày đã chọn.");
+        businessError(timeTo === null
+          ? "Không có dòng doanh thu, phiếu điều chuyển hay kiểm kê bán thành phẩm nào đang chờ rã trong khoảng ngày đã chọn."
+          : `Không có dòng doanh thu nào bán trước ${String(timeTo).padStart(2, "0")}:00 đang chờ rã. Rã tới giờ chỉ lấy được dòng có giờ bán — file POS chỉ ghi ngày thì phải rã cả ngày.`);
       }
       // Dòng không theo dõi tồn kho đã được thả khỏi hàng chờ (transaction trên đã commit) —
       // báo lỗi sau khi commit để lần bấm sau không gặp lại chúng.
@@ -1553,7 +1561,7 @@ export async function POST(request: Request) {
         session: auth.session, module: menuHref, action: "EXPLODE_PRODUCTION",
         entityType: "InventoryTransaction", entityCode: outcome.runCode, branchCode,
         metadata: {
-          dateFrom, dateTo, ...outcome.warehouses,
+          dateFrom, dateTo, timeTo, postedAt: outcome.postedAt, ...outcome.warehouses,
           revenueRows: outcome.revenueRows,
           skippedRows: outcome.skippedRows,
           sources: sources.map((source) => source.code),
@@ -1568,6 +1576,9 @@ export async function POST(request: Request) {
       return NextResponse.json({
         reruns: rerunSummary,
         runCode: outcome.runCode,
+        postedAt: outcome.postedAt,
+        // Rã tới giờ: dòng doanh thu ngày cuối không có giờ bán nên còn nằm ở hàng chờ.
+        unsplitRows: outcome.unsplitRows,
         documentCount: outcome.documents.length,
         revenueRows: outcome.revenueRows,
         skippedRows: outcome.skippedRows,

@@ -74,3 +74,34 @@ export function parseImportDate(value: unknown) {
 
   return null;
 }
+
+/**
+ * GIỜ bán (0–23, giờ Việt Nam như máy POS ghi) của một ô "Thời gian" — để tách doanh thu trong
+ * ngày theo giờ chốt kiểm kê (khách chốt 28/09/2026, lib/stocktake-batch.ts). Nhận:
+ *   - serial Excel có phần thập phân (45900.4375 -> 10);
+ *   - chữ "31/08/2026 10:23", "2026-08-31T10:23", hoặc chỉ giờ "10:23" (cột Giờ riêng);
+ *   - Date (đọc giờ theo máy đang chạy — file POS ghi giờ địa phương).
+ * Ô chỉ có ngày (không có phần giờ) trả null: dòng đó là doanh thu CẢ NGÀY, không tách được.
+ */
+export function parseImportHour(value: unknown): number | null {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.getHours() === 0 && value.getMinutes() === 0 && value.getSeconds() === 0 ? null : value.getHours();
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return null;
+    const fraction = value - Math.floor(value);
+    if (fraction <= 0) return null;
+    // Làm tròn tới giây trước khi lấy giờ: 10:00:00 lưu thành 0.41666666 dễ rơi về 9 giờ.
+    const seconds = Math.round(fraction * 86400);
+    return Math.min(23, Math.floor(seconds / 3600));
+  }
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const match = /(?:^|[\sT])(\d{1,2}):(\d{2})(?::\d{2})?(?:\s*(AM|PM|SA|CH))?\s*$/i.exec(text);
+  if (!match) return null;
+  let hour = Number(match[1]);
+  const marker = (match[3] || "").toUpperCase();
+  if ((marker === "PM" || marker === "CH") && hour < 12) hour += 12;
+  if ((marker === "AM" || marker === "SA") && hour === 12) hour = 0;
+  return hour >= 0 && hour <= 23 && Number(match[2]) < 60 ? hour : null;
+}

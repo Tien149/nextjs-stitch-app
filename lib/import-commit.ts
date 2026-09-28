@@ -81,6 +81,12 @@ function asNumber(value: unknown) {
   return Number.isFinite(numberValue) ? numberValue : 0;
 }
 
+function saleHourOf(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  const hour = Number(value);
+  return Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : null;
+}
+
 function asInteger(value: unknown) {
   return Math.trunc(asNumber(value));
 }
@@ -1170,6 +1176,8 @@ export async function commitImport(input: CommitInput) {
           data: {
             importBatchId: batch.id,
             saleDate: asDate(row.values.sale_date),
+            // Giờ bán (0–23) khi file POS có giờ — rã nguyên liệu tới đúng giờ chốt kiểm kê.
+            saleHour: saleHourOf(row.values.sale_hour),
             branchCode: asText(row.values.branch_code),
             channel: row.values.channel === null ? null : asText(row.values.channel),
             revenueSource,

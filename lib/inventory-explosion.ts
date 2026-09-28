@@ -12,6 +12,7 @@ import { explosionPostedStatus, loadPendingExplosionSources, releaseExplosionSou
 import { explodeSalesDemand, explodeSalesDemandWithDepartments, type ExplosionRecipe } from "@/lib/production-explosion";
 import { loadNonInventoryRevenueGroups, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
 import { buildRevenueDepartmentResolver, departmentFromWarehouseGroup, REVENUE_DEPARTMENT_CODES } from "@/lib/revenue-department";
+import { explosionPostingDate, saleDayStart } from "@/lib/revenue-date";
 
 const quantityEpsilon = 0.000001;
 
@@ -28,6 +29,13 @@ export type ExplosionRunInput = {
   dateTo: Date;
   note: string;
   createdBy: string;
+  /**
+   * Rã TỚI GIỜ (1–23, giờ Việt Nam) của ngày cuối: chỉ lấy doanh thu ngày đó có giờ bán nhỏ hơn,
+   * phiếu mang đúng giờ đó (kiểm kê chốt theo giờ — lib/stocktake-batch.ts). Trống = cả ngày.
+   */
+  timeTo?: number | null;
+  /** Rã lại một lần rã cũ: giữ nguyên ngày giờ phiếu của lần gốc. */
+  postingDate?: Date;
   /** Rã lại một lần rã cũ: chỉ lấy đúng các dòng doanh thu này. */
   rowIds?: string[];
   /** Rã lại một lần rã cũ: đúng các phiếu điều chuyển / kiểm kê của lần đó (đi cùng rowIds). */
@@ -113,6 +121,19 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
   const { warehouseCode, toWarehouseCode, kitchenWarehouseCode, barWarehouseCode } = warehouses;
   const rangeEnd = new Date(dateTo);
   rangeEnd.setHours(23, 59, 59, 999);
+  const timeTo = input.rowIds ? null : input.timeTo ?? null;
+  const postedAt = input.postingDate || explosionPostingDate(dateTo, timeTo);
+  const lastDay = saleDayStart(dateTo);
+  /**
+   * Rã tới giờ: các ngày trước lấy trọn, ngày cuối chỉ lấy dòng có giờ bán < giờ chọn. Dòng ngày
+   * cuối không có giờ (file POS chỉ ghi ngày) không chia được nên để lại hàng chờ.
+   */
+  const dateScope = timeTo === null
+    ? { saleDate: { gte: dateFrom, lte: rangeEnd } }
+    : { OR: [
+      { saleDate: { gte: dateFrom, lt: lastDay } },
+      { saleDate: { gte: lastDay, lte: rangeEnd }, saleHour: { lt: timeTo } },
+    ] };
   const pendingRows = await tx.revenueImportRow.findMany({
     where: {
       inventoryStatus: "PENDING",
@@ -121,9 +142,13 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
       branchCode,
       // Rã lại một lần rã cũ: đúng các dòng doanh thu của lần đó, không quét lại khoảng ngày
       // (quét lại sẽ kéo cả dòng mới import sau vào lần rã cũ).
-      ...(input.rowIds ? { id: { in: input.rowIds } } : { saleDate: { gte: dateFrom, lte: rangeEnd } }),
+      ...(input.rowIds ? { id: { in: input.rowIds } } : dateScope),
       deletedAt: null,
     },
+  });
+  // Dòng ngày cuối không có giờ bán nên không vào lần rã tới giờ — báo lại cho người dùng.
+  const unsplitRows = timeTo === null ? 0 : await tx.revenueImportRow.count({
+    where: { inventoryStatus: "PENDING", productCode: { not: null }, branchCode, deletedAt: null, saleDate: { gte: lastDay, lte: rangeEnd }, saleHour: null },
   });
   // Điều chuyển bán thành phẩm + kiểm dư bán thành phẩm đang chờ rã (khách chốt 28/09/2026).
   const sources = await loadPendingExplosionSources(tx, {
@@ -262,7 +287,7 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
         const issue = await postInventoryTransaction(tx, {
           code: `${runCode}-${sequence}X${issueIndex > 1 ? issueIndex : ""}`,
           transactionType: "XUAT_CHE_BIEN",
-          transactionDate: dateTo,
+          transactionDate: postedAt,
           branchCode,
           warehouseCode: warehouse,
           referenceType: "PRODUCTION",
@@ -282,7 +307,7 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
       const receipt = await postInventoryTransaction(tx, {
         code: `${runCode}-${sequence}N`,
         transactionType: "NHAP_CHE_BIEN",
-        transactionDate: dateTo,
+        transactionDate: postedAt,
         branchCode,
         warehouseCode: stepWarehouse || toWarehouseCode,
         referenceType: "PRODUCTION",
@@ -325,7 +350,7 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
       documents.push(await postInventoryTransaction(tx, {
         code: `${runCode}-${sequence}XB`,
         transactionType: "XUAT_BAN",
-        transactionDate: dateTo,
+        transactionDate: postedAt,
         branchCode,
         warehouseCode: group.warehouse,
         referenceType: "PRODUCTION",
@@ -461,6 +486,9 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
   return {
     kind: "POSTED" as const,
     runCode: result.runCode,
+    /** Ngày giờ phiếu của lần rã (tới giờ chọn, hoặc 23:59:59 ngày cuối). */
+    postedAt,
+    unsplitRows,
     /** Kho thực dùng (sau resolveExplosionWarehouses) — ghi vào nhật ký lần rã. */
     warehouses,
     documents: result.documents,
@@ -578,6 +606,8 @@ export async function rerunExplosions(
       ...settings,
       branchCode: run.branchCode,
       dateTo: run.date,
+      // Giữ nguyên ngày giờ phiếu của lần gốc (rã tới giờ / cả ngày / phiếu cũ 07:00).
+      postingDate: run.date,
       rowIds,
       transferIds: sources.transferIds,
       stocktakeIds: sources.stocktakeIds,
