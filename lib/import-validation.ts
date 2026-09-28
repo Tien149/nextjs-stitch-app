@@ -1657,6 +1657,14 @@ export async function validateImportResult(
     }
     if (importType === "PAYROLL") {
       validatePeriod(row, "period", "Kỳ lương");
+      // Phòng ban phải quy về MÃ danh mục: file hay ghi tên ("Team Bar") thay vì mã, lưu nguyên
+      // chữ đó thì lương không khớp bộ phận nào ở Ngân sách nhân sự / chart lương vs ngân sách.
+      const departmentInput = text(row.values.department_code);
+      if (departmentInput) {
+        const department = resolveMaster(masterItems, "DEPARTMENT", departmentInput);
+        if (!department) addError(row, `Phòng ban [${departmentInput}] không có trong danh mục Phòng ban (ghi mã hoặc đúng tên)`);
+        else row.values.department_code = department.code;
+      }
       // Hai mẫu lương sống song song. Mẫu theo bộ phận nhận diện bằng chính cột riêng của nó
       // (Tổng chi phí công ty), không cần biết template nào đã được chọn ở màn import.
       const isDepartmentPayroll = row.values.total_company_cost !== undefined;
