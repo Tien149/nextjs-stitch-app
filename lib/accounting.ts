@@ -16,12 +16,15 @@ import { roundJournalLines } from "@/lib/money-rounding";
 import { splitWalletFeeByDay, walletFeeDayLines, walletFeeSourceId, walletFeeSourcePrefix, WALLET_FEE_SOURCE_TYPE } from "@/lib/wallet-fee-journal";
 import { vietnamBusinessDayKey } from "@/lib/revenue-date";
 import {
+  COGS_PURCHASE_SOURCE_TYPES,
   COGS_STOCK_TYPES,
   INVENTORY_COGS_PNL_ITEMS,
   INVENTORY_COGS_START_DATE,
   PACKAGING_EXPENSE_PNL_ITEM,
   cogsPurchaseAccount,
+  inventoryCogsActive,
   planInventoryCogsJournal,
+  type CogsRepostResult,
 } from "@/lib/inventory-cogs";
 import type { MoneyTransfer } from "@prisma/custom-client";
 
@@ -927,6 +930,52 @@ async function postInventoryCogs(start: Date, end: Date, branchCode: string, act
     await prisma.$executeRaw`DELETE FROM "JournalLine" WHERE "entryId" = ANY(${removable})`;
     await prisma.$executeRaw`DELETE FROM "JournalEntry" WHERE "id" = ANY(${removable})`;
     results.push(...removable.map(() => "DELETED_STALE"));
+  }
+  return results;
+}
+
+/**
+ * Tự ghi sổ lại RIÊNG phần giá vốn theo kho của các kỳ x cửa hàng vừa có phiếu kho đổi — gọi
+ * sau khi rã / rã lại / hoàn tác rã (khách chốt 28/09/2026: rã lại xong không phải bấm Ghi sổ
+ * kỳ nữa). Chỉ chạy postInventoryCogs, không dựng lại cả kỳ, nên nhanh và không đụng chứng từ khác.
+ *
+ * Không tự ghi khi kỳ còn bút toán mua hàng nhóm Giá vốn ghi Nợ 632 (kỳ chưa Ghi sổ lại từ khi
+ * đổi luật): lúc đó ghi thêm giá vốn theo kho là tính giá vốn hai lần — trả NEEDS_SYNC để màn
+ * hình nhắc bấm Ghi sổ kỳ một lần. Lỗi ghi sổ không làm hỏng lần rã: trả ERROR cho màn hình báo.
+ */
+export async function repostInventoryCogs(targets: Array<{ date: Date | string; branchCode: string | null | undefined }>, actor: string): Promise<CogsRepostResult[]> {
+  const keys = new Map<string, { period: string; branchCode: string }>();
+  for (const target of targets) {
+    const date = new Date(target.date);
+    if (!target.branchCode || target.branchCode === "ALL" || Number.isNaN(date.getTime()) || !inventoryCogsActive(date)) continue;
+    const period = periodFromDate(date);
+    keys.set(`${period}|${target.branchCode}`, { period, branchCode: target.branchCode });
+  }
+  const results: CogsRepostResult[] = [];
+  const ordered = [...keys.values()].sort((a, b) => a.period.localeCompare(b.period) || a.branchCode.localeCompare(b.branchCode));
+  for (const { period, branchCode } of ordered) {
+    try {
+      const { start, end } = periodBounds(period);
+      if (await isPeriodLocked(start, branchCode)) {
+        results.push({ period, branchCode, status: "LOCKED", changed: 0 });
+        continue;
+      }
+      const from = start.getTime() < INVENTORY_COGS_START_DATE.getTime() ? INVENTORY_COGS_START_DATE : start;
+      const oldBasis = await prisma.journalLine.count({
+        where: {
+          account: { code: "632" },
+          entry: { branchCode, entryDate: { gte: from, lt: end }, deletedAt: null, sourceType: { in: [...COGS_PURCHASE_SOURCE_TYPES] } },
+        },
+      });
+      if (oldBasis > 0) {
+        results.push({ period, branchCode, status: "NEEDS_SYNC", changed: 0 });
+        continue;
+      }
+      const posted = await postInventoryCogs(start, end, branchCode, actor);
+      results.push({ period, branchCode, status: "POSTED", changed: posted.filter((value) => value !== "SKIPPED_EXISTS").length });
+    } catch (error) {
+      results.push({ period, branchCode, status: "ERROR", changed: 0, error: error instanceof Error ? error.message : String(error) });
+    }
   }
   return results;
 }

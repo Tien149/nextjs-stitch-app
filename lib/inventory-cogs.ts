@@ -94,3 +94,34 @@ export function planInventoryCogsJournal(input: {
     { accountCode: "152", [stockSide]: total },
   ];
 }
+
+/**
+ * Nguồn bút toán mua hàng nhóm Giá vốn: từ kỳ giá vốn theo kho chúng ghi Nợ 152. Kỳ nào còn
+ * dòng Nợ 632 từ các nguồn này nghĩa là kỳ đó chưa bấm Ghi sổ lại từ khi đổi luật — tự ghi giá
+ * vốn theo kho lúc này sẽ cộng trùng với tiền mua (xem repostInventoryCogs, lib/accounting.ts).
+ */
+export const COGS_PURCHASE_SOURCE_TYPES = ["VOUCHER", "DEBT_PAYABLE", "CASHBOOK_ADJUSTMENT"] as const;
+
+/**
+ * Kết quả tự ghi sổ lại giá vốn sau khi rã / rã lại / hoàn tác rã (khách chốt 28/09/2026):
+ *  - POSTED: đã ghi lại, P&L kỳ đó đã theo phiếu kho mới.
+ *  - NEEDS_SYNC: kỳ chưa Ghi sổ lại lần nào từ khi đổi sang giá vốn theo kho — phải bấm tay một lần.
+ *  - LOCKED: kỳ đã khoá sổ, không đụng.
+ *  - ERROR: phiếu kho đã lưu nhưng ghi sổ lỗi — bấm Ghi sổ kỳ để thử lại.
+ */
+export type CogsRepostStatus = "POSTED" | "NEEDS_SYNC" | "LOCKED" | "ERROR";
+export type CogsRepostResult = { period: string; branchCode: string; status: CogsRepostStatus; changed: number; error?: string };
+
+/** Một câu cho màn hình Kho, gom theo trạng thái. Rỗng khi không có kỳ nào từ mốc giá vốn theo kho. */
+export function cogsRepostMessage(results: CogsRepostResult[] | null | undefined) {
+  if (!results || results.length === 0) return "";
+  const label = (row: CogsRepostResult) => `T${Number(row.period.slice(5))}/${row.period.slice(0, 4)} (${row.branchCode})`;
+  const list = (status: CogsRepostStatus) => results.filter((row) => row.status === status).map(label).join(", ");
+  const parts: string[] = [];
+  if (list("POSTED")) parts.push(`Đã tự ghi sổ lại giá vốn kỳ ${list("POSTED")} — P&L đã cập nhật.`);
+  if (list("NEEDS_SYNC")) parts.push(`Kỳ ${list("NEEDS_SYNC")} chưa Ghi sổ lại từ khi đổi sang giá vốn theo kho: bấm Ghi sổ kỳ ở màn Kế toán một lần, các lần rã sau sẽ tự cập nhật.`);
+  if (list("LOCKED")) parts.push(`Kỳ ${list("LOCKED")} đã khoá sổ nên giá vốn trên P&L giữ nguyên.`);
+  const failed = results.filter((row) => row.status === "ERROR");
+  if (failed.length > 0) parts.push(`Chưa tự ghi sổ được giá vốn kỳ ${failed.map(label).join(", ")} (${failed[0].error || "lỗi máy chủ"}) — bấm Ghi sổ kỳ ở màn Kế toán.`);
+  return parts.join(" ");
+}

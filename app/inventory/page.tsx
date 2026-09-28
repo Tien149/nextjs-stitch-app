@@ -15,6 +15,7 @@ import StocktakeByLocation from "@/components/inventory/StocktakeByLocation";
 import { safeConversionRate } from "@/lib/unit-conversion";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
 import { parseVatRate, VAT_RATE_OPTIONS, vatAmountOf, vatRateLabel } from "@/lib/inventory-vat";
+import { cogsRepostMessage, type CogsRepostResult } from "@/lib/inventory-cogs";
 import { roundVnd } from "@/lib/round-vnd";
 import { sumRoundedByRow, sumStockDocuments } from "@/lib/table-subtotal";
 import { statValueTextClass } from "@/components/reports/report-ui";
@@ -1066,6 +1067,7 @@ export default function InventoryPage() {
       needsRerunConfirm?: boolean;
       affectedRuns?: Array<{ runCode: string; branchCode: string; date: string }>;
       reruns?: Array<{ oldRunCode: string; newRunCode: string | null }>;
+      cogsRepost?: CogsRepostResult[];
     } | null = null;
     try {
       response = await fetch("/api/inventory", {
@@ -1101,7 +1103,8 @@ export default function InventoryPage() {
     const rerunText = reruns.length > 0
       ? ` Đã rã lại ${reruns.length} lần rã: ${reruns.map((rerun) => `${rerun.oldRunCode} → ${rerun.newRunCode || "gỡ bỏ (không còn doanh thu)"}`).join(", ")}. Nếu kỳ này đã bấm Tính giá vốn & giá thành thì bấm lại.`
       : "";
-    setMessage(`${editing ? `Đã sửa định lượng ${editing.label}.` : "Đã tạo phiên bản định lượng mới."}${rerunText}`);
+    const cogsText = cogsRepostMessage(payload?.cogsRepost);
+    setMessage(`${editing ? `Đã sửa định lượng ${editing.label}.` : "Đã tạo phiên bản định lượng mới."}${rerunText}${cogsText ? ` ${cogsText}` : ""}`);
     if (editing) cancelRecipeEdit();
     await loadData();
   };
@@ -3340,6 +3343,8 @@ export default function InventoryPage() {
                 if (reruns.length > 0) {
                   notes.unshift(`Đã rã lại ${reruns.length} lần rã: ${reruns.map((rerun) => `${rerun.oldRunCode} → ${rerun.newRunCode || "gỡ bỏ (không còn doanh thu)"}`).join(", ")}${payload?.runCode ? `; phần còn chờ rã thành ${payload.runCode}` : ""}. Nếu kỳ này đã bấm Tính giá vốn & giá thành thì bấm lại.`);
                 }
+                const cogsText = cogsRepostMessage(payload?.cogsRepost);
+                if (cogsText) notes.push(cogsText);
                 if (notes.length > 0) {
                   setMessage(`Đã rã nguyên liệu và sinh phiếu chế biến + xuất bán. ${notes.join(" ")}`);
                 }
@@ -3408,7 +3413,10 @@ export default function InventoryPage() {
                       type="button"
                       className="status bg-rose-50 text-rose-700 hover:bg-rose-100 cursor-pointer"
                       title={`Hoàn kho + xoá mọi phiếu của ${runCode}, trả doanh thu, điều chuyển và kiểm kê bán thành phẩm về trạng thái chờ rã`}
-                      onClick={() => { if (window.confirm(`Hoàn tác toàn bộ lần rã ${runCode}?`)) void send({ action: "REVERT_EXPLOSION", runCode }, `Đã hoàn tác lần rã ${runCode}.`); }}
+                      onClick={() => { if (window.confirm(`Hoàn tác toàn bộ lần rã ${runCode}?`)) void send({ action: "REVERT_EXPLOSION", runCode }, `Đã hoàn tác lần rã ${runCode}.`).then((payload) => {
+                          const cogsText = cogsRepostMessage(payload?.cogsRepost);
+                          if (cogsText) setMessage(`Đã hoàn tác lần rã ${runCode}. ${cogsText}`);
+                        }); }}
                     >
                       ↩ {runCode}
                     </button>

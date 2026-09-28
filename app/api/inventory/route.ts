@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/custom-client";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma, type TxClient } from "@/lib/prisma";
 import { apiError, assertPeriodOpen, businessError, cleanText, isPeriodLocked, toDate, toNumber } from "@/lib/phase3";
-import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
+import { requestedBranch, assertBranchAccess, repostInventoryCogs } from "@/lib/accounting";
 import { allowedWarehousesOf, assertWarehouseAccess, scopeWarehouses } from "@/lib/warehouse-scope";
 import { isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType, postInventoryTransaction, repostInventoryTransaction, reverseStockEffect } from "@/lib/inventory-stock";
 import { createPurchasePayable, purchasePayableCodeOf, removePurchasePayables, syncPurchasePayable, PURCHASE_PAYABLE_SOURCE } from "@/lib/purchase-payable";
@@ -492,6 +492,27 @@ async function logRecipeReruns(
       },
     });
   }
+}
+
+/**
+ * Sau khi rã / rã lại commit: tự ghi sổ lại giá vốn theo kho của đúng các kỳ x cửa hàng có phiếu
+ * đổi (khách chốt 28/09/2026), để P&L không phải chờ bấm Ghi sổ kỳ. Phiếu cũ của lần rã lại có
+ * cùng ngày với phiếu mới (cùng nguồn, cùng ngày chốt) nên chỉ cần ngày của phiếu mới + ngày lần rã.
+ */
+async function repostCogsForReruns(
+  reruns: Awaited<ReturnType<typeof rerunExplosions>>,
+  extra: Array<{ date: Date | string; branchCode: string | null | undefined }>,
+  actor: string,
+) {
+  const codes = reruns.flatMap((rerun) => rerun.documents);
+  const documents = codes.length > 0
+    ? await prisma.inventoryTransaction.findMany({ where: { code: { in: codes } }, select: { transactionDate: true, branchCode: true } })
+    : [];
+  return repostInventoryCogs([
+    ...reruns.map((rerun) => ({ date: rerun.date, branchCode: rerun.branchCode })),
+    ...documents.map((doc) => ({ date: doc.transactionDate, branchCode: doc.branchCode })),
+    ...extra,
+  ], actor);
 }
 
 /** Câu trả lời 409 "cần xác nhận rã lại" dùng chung cho tạo và sửa định lượng. */
@@ -1029,9 +1050,10 @@ export async function POST(request: Request) {
       }
       const { createdRecipes, reruns } = created;
       await logRecipeReruns(auth.session, reruns, createdRecipes[0]?.code || productCode);
+      const cogsRepost = reruns.length > 0 ? await repostCogsForReruns(reruns, [], auth.session.name) : [];
       // Giữ nguyên hình dạng cũ của response (một định lượng) để màn hình cũ không vỡ, kèm
       // danh sách đầy đủ khi khai một lúc nhiều cửa hàng.
-      return NextResponse.json({ ...createdRecipes[0], recipes: createdRecipes, reruns: reruns.map(({ oldRunCode, newRunCode }) => ({ oldRunCode, newRunCode })) }, { status: 201 });
+      return NextResponse.json({ ...createdRecipes[0], recipes: createdRecipes, reruns: reruns.map(({ oldRunCode, newRunCode }) => ({ oldRunCode, newRunCode })), cogsRepost }, { status: 201 });
     }
 
     if (action === "PRODUCE_SEMI_FINISHED") {
@@ -1506,16 +1528,21 @@ export async function POST(request: Request) {
         });
       }
       const rerunSummary = reruns.map((rerun) => ({ oldRunCode: rerun.oldRunCode, newRunCode: rerun.newRunCode }));
+      const cogsRepost = await repostCogsForReruns(
+        reruns,
+        outcome.kind === "POSTED" ? outcome.documents.map((doc) => ({ date: doc.transactionDate, branchCode: doc.branchCode })) : [],
+        auth.session.name,
+      );
       if (outcome.kind === "EMPTY") {
         if (reruns.length > 0) {
-          return NextResponse.json({ reruns: rerunSummary, runCode: null, documentCount: reruns.reduce((sum, rerun) => sum + rerun.documents.length, 0) });
+          return NextResponse.json({ reruns: rerunSummary, runCode: null, documentCount: reruns.reduce((sum, rerun) => sum + rerun.documents.length, 0), cogsRepost });
         }
         businessError("Không có dòng doanh thu, phiếu điều chuyển hay kiểm kê bán thành phẩm nào đang chờ rã trong khoảng ngày đã chọn.");
       }
       // Dòng không theo dõi tồn kho đã được thả khỏi hàng chờ (transaction trên đã commit) —
       // báo lỗi sau khi commit để lần bấm sau không gặp lại chúng.
       if (outcome.kind === "ALL_SKIPPED" && reruns.length > 0) {
-        return NextResponse.json({ reruns: rerunSummary, runCode: null, documentCount: reruns.reduce((sum, rerun) => sum + rerun.documents.length, 0) });
+        return NextResponse.json({ reruns: rerunSummary, runCode: null, documentCount: reruns.reduce((sum, rerun) => sum + rerun.documents.length, 0), cogsRepost });
       }
       if (outcome.kind === "ALL_SKIPPED") {
         businessError(`Cả ${outcome.skippedRows} dòng doanh thu trong khoảng ngày này đều thuộc nhóm doanh thu không theo dõi tồn kho — đã bỏ khỏi hàng chờ, không có gì để rã.`);
@@ -1559,6 +1586,7 @@ export async function POST(request: Request) {
         productions: plan.productions.map((step) => ({ productCode: step.productCode, quantityBase: step.quantityBase, batchQuantity: step.batchQuantity })),
         directSales: plan.directSales,
         documents: outcome.documents,
+        cogsRepost,
       }, { status: 201 });
     }
 
@@ -1729,7 +1757,12 @@ export async function POST(request: Request) {
         entityType: "InventoryTransaction", entityCode: runCode, branchCode,
         metadata: { documents: documents.map((doc) => doc.code) },
       });
-      return NextResponse.json({ runCode, revertedDocuments: documents.length });
+      // Phiếu của lần rã / chế biến vừa hoàn tác thành mồ côi trên sổ: ghi lại giá vốn kỳ đó để dọn.
+      // Chế biến (CB-) chỉ có phiếu sản xuất, không phải phiếu giá vốn — không cần ghi lại.
+      const cogsRepost = action === "REVERT_EXPLOSION"
+        ? await repostInventoryCogs(documents.map((doc) => ({ date: doc.transactionDate, branchCode: doc.branchCode })), auth.session.name)
+        : [];
+      return NextResponse.json({ runCode, revertedDocuments: documents.length, cogsRepost });
     }
 
     /**
@@ -2303,7 +2336,8 @@ export async function PATCH(request: Request) {
         await writeAuditLog({ session: auth.session, module: menuHref, action: "UPDATE_RECIPE", entityType: "Recipe", entityId: result.id, entityCode: result.code, metadata: { productCode: result.productCode, lines: result.lines.length, reruns: reruns.map(({ oldRunCode, newRunCode }) => ({ oldRunCode, newRunCode })) } });
       }
       await logRecipeReruns(auth.session, reruns, updated[0]?.code || productCode);
-      return NextResponse.json({ ...updated[0], recipes: updated, reruns: reruns.map(({ oldRunCode, newRunCode }) => ({ oldRunCode, newRunCode })) });
+      const cogsRepost = reruns.length > 0 ? await repostCogsForReruns(reruns, [], auth.session.name) : [];
+      return NextResponse.json({ ...updated[0], recipes: updated, reruns: reruns.map(({ oldRunCode, newRunCode }) => ({ oldRunCode, newRunCode })), cogsRepost });
     }
 
     return businessError("Thao tác cập nhật kho không hợp lệ");
