@@ -11,6 +11,7 @@ import ExportExcelButton from "@/components/ExportExcelButton";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
+import StocktakeByLocation from "@/components/inventory/StocktakeByLocation";
 import { safeConversionRate } from "@/lib/unit-conversion";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
 import { parseVatRate, VAT_RATE_OPTIONS, vatAmountOf, vatRateLabel } from "@/lib/inventory-vat";
@@ -57,6 +58,8 @@ type StockSummary = { item: Item; warehouseCode: string; openingQuantity: number
 type StockMovement = { transactionId: string; code: string; transactionType: string; transactionDate: string; warehouseCode: string; toWarehouseCode: string | null; itemCode: string; itemName: string; unit: string; quantity: number; inboundQuantity: number; outboundQuantity: number; value: number; referenceCode: string | null };
 type Stocktake = {
   id: string; code: string; stocktakeDate: string; branchCode: string; warehouseCode: string; status: string; explosionStatus?: string | null;
+  /** Phiếu đếm theo vị trí — quản lý ở components/inventory/StocktakeByLocation, không ở danh sách kiểu cũ. */
+  locationCode?: string | null;
   note?: string | null; createdBy?: string | null; approvedBy?: string | null; returnedReason?: string | null; returnedBy?: string | null;
   lines: Array<{ id: string; systemQuantity: number; actualQuantity: number; varianceQuantity: number; unitCost?: number | null; reason?: string | null; item: Item }>;
 };
@@ -239,6 +242,11 @@ export default function InventoryPage() {
   const [editingStocktake, setEditingStocktake] = useState<{ id: string; code: string; returnedReason?: string | null } | null>(null);
   /** Tìm nhanh mặt hàng khi kiểm kê trên điện thoại — danh sách kho dài, cuộn tay rất lâu. */
   const [stocktakeSearch, setStocktakeSearch] = useState("");
+  /**
+   * Nguyên liệu & bao bì đếm THEO VỊ TRÍ rồi kế toán duyệt gộp theo giờ chốt (khách chốt
+   * 28/09/2026); "Cả kho" là form cũ — so từng phiếu với tồn kho, vẫn dùng cho bán thành phẩm.
+   */
+  const [stocktakeMode, setStocktakeMode] = useState<"location" | "warehouse">("location");
   const [wasteForm, setWasteForm] = useState({ wasteType: "HET_HAN_SU_DUNG", mode: "ITEMS", recipeId: "", productQuantity: "1", branchCode: "HCM", warehouseCode: "KHO_HCM", referenceCode: "", note: "" });
   const [wasteRows, setWasteRows] = useState([{ itemId: "", quantity: "1", unitCode: "" }]);
   
@@ -3461,6 +3469,33 @@ export default function InventoryPage() {
       )}
 
       {active === "stocktake" && (
+        <div className="flex flex-wrap items-center gap-2 mb-4">
+          {([["location", "Theo vị trí · nguyên liệu, bao bì"], ["warehouse", "Cả kho (cách cũ, bán thành phẩm)"]] as const).map(([mode, label]) => (
+            <button key={mode} type="button" onClick={() => setStocktakeMode(mode)}
+              className={`px-3 py-1.5 rounded-md text-sm font-bold border ${stocktakeMode === mode ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-600 border-slate-200"}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {active === "stocktake" && stocktakeMode === "location" && (
+        <StocktakeByLocation
+          sessionKey={SESSION_KEY}
+          items={data.items}
+          warehouses={data.warehouses}
+          balances={data.balances}
+          branchOptions={visibleStoreOptions(user).map((option) => ({ code: option.code, label: storeLabel(option.code) }))}
+          defaultBranch={stocktakeForm.branchCode}
+          canCreate={canCreate}
+          canEdit={canEditItem}
+          canApprove={canApprove}
+          canDelete={user ? canPerformMenuAction(user, href, "delete") : false}
+          onStockChanged={() => void loadData()}
+        />
+      )}
+
+      {active === "stocktake" && stocktakeMode === "warehouse" && (
         <div className="space-y-5">
           {canCreate && (
             <form onSubmit={async (e) => {
@@ -3658,7 +3693,7 @@ export default function InventoryPage() {
             {/* Điện thoại: mỗi phiếu một thẻ, nút Sửa / Duyệt / Trả lại luôn nằm trong màn hình;
                 pb-20 chừa chỗ nút menu nổi góc trái dưới. */}
             <div className="md:hidden divide-y divide-slate-100 pb-20">
-              {data.stocktakes.map((row) => ({
+              {data.stocktakes.filter((row) => !row.locationCode).map((row) => ({
                 ...row,
                 lines: row.lines.filter((line) => isWarehouseStocktakeItemType(line.item.itemType)),
               })).filter((row) => row.lines.length > 0).map((row) => {
@@ -3688,7 +3723,7 @@ export default function InventoryPage() {
             </div>
             <div className="hidden md:block">
             <Table headers={[{ label: "Phiếu" }, { label: "Kho" }, { label: "Mặt hàng" }, { label: "Chênh lệch", align: "right" }, { label: "", align: "right" }]}>
-              {data.stocktakes.map((row) => ({
+              {data.stocktakes.filter((row) => !row.locationCode).map((row) => ({
                 ...row,
                 lines: row.lines.filter((line) => isWarehouseStocktakeItemType(line.item.itemType)),
               })).filter((row) => row.lines.length > 0).map((row) => (

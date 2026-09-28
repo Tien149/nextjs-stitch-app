@@ -646,6 +646,8 @@ model InventoryItem {
   transactionLines InventoryTransactionLine[]
   recipeLines      RecipeLine[]
   stocktakeLines   StocktakeLine[]
+  stocktakeLocationItems StocktakeLocationItem[]
+  stocktakeBatchLines    StocktakeBatchLine[]
   requestLines     PurchaseRequestLine[]
   orderLines       PurchaseOrderLine[]
   quoteLines       SupplierQuoteLine[]
@@ -699,11 +701,18 @@ model StocktakeSession {
   returnedReason String?
   returnedBy     String?
   returnedAt     DateTime?
+  /// Phiếu đếm THEO VỊ TRÍ (khách chốt 28/09/2026): mã StocktakeLocation trong kho. Phiếu có vị trí
+  /// chỉ ghi số đếm, không tự so sổ sách — kế toán duyệt GỘP nhiều phiếu thành một đợt
+  /// (StocktakeBatch) và so tổng số đếm với sổ sách tại giờ chốt. null = phiếu kiểm cả kho kiểu cũ.
+  locationCode  String?
+  /// Đợt duyệt gộp đã chốt phiếu này (lib/stocktake-batch.ts). Mở lại đợt thì về null.
+  batchId       String?
   createdBy     String?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
   lines StocktakeLine[]
+  batch StocktakeBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
 
   deletedAt DateTime?
   deletedBy String?
@@ -713,7 +722,93 @@ model StocktakeSession {
   @@index([status])
   @@index([stocktakeDate])
   @@index([explosionStatus])
+  @@index([locationCode])
+  @@index([batchId])
   @@index([deletedAt])
+}
+
+/// Vị trí kiểm kê trong một kho (tủ đông 1, tủ mát, kệ khô...) kèm FORM MẪU: danh sách mặt hàng
+/// thường nằm ở vị trí đó, theo thứ tự đếm. Chỉ nguyên liệu + bao bì (khách chốt 28/09/2026).
+model StocktakeLocation {
+  id            String   @id @default(uuid())
+  branchCode    String
+  warehouseCode String
+  code          String
+  name          String
+  sortOrder     Int      @default(0)
+  status        String   @default("ACTIVE")
+  note          String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  items StocktakeLocationItem[]
+
+  @@unique([warehouseCode, code])
+  @@index([branchCode])
+  @@index([status])
+}
+
+model StocktakeLocationItem {
+  id         String @id @default(uuid())
+  locationId String
+  itemId     String
+  sortOrder  Int    @default(0)
+
+  location StocktakeLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  item     InventoryItem     @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([locationId, itemId])
+  @@index([itemId])
+}
+
+/// Một lần kế toán duyệt GỘP các phiếu đếm theo vị trí của một kho. Sổ sách lấy TẠI GIỜ CHỐT
+/// (cutoffAt): mọi phiếu kho có ngày chứng từ <= giờ chốt; phiếu điều chỉnh -N / -X mang đúng
+/// giờ chốt. Mở lại = đảo phiếu điều chỉnh, status REOPENED; duyệt lại sinh đợt mới.
+model StocktakeBatch {
+  id                  String    @id @default(uuid())
+  code                String    @unique
+  branchCode          String
+  warehouseCode       String
+  cutoffAt            DateTime
+  status              String    @default("APPROVED")
+  approvedBy          String?
+  approvedAt          DateTime?
+  reopenedBy          String?
+  reopenedAt          DateTime?
+  note                String?
+  shortageValue       Float     @default(0)
+  surplusValue        Float     @default(0)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  sessions StocktakeSession[]
+  lines    StocktakeBatchLine[]
+
+  @@index([branchCode])
+  @@index([warehouseCode, cutoffAt])
+  @@index([status])
+}
+
+/// Kết quả tổng kiểm kê của một mặt hàng trong đợt, chốt tại giờ chốt.
+model StocktakeBatchLine {
+  id               String  @id @default(uuid())
+  batchId          String
+  itemId           String
+  bookQuantity     Float
+  countedQuantity  Float
+  varianceQuantity Float
+  unitCost         Float   @default(0)
+  varianceValue    Float   @default(0)
+  /// JSON { "<mã vị trí>": số đếm theo ĐVT tồn } — cột từng vị trí trên bảng tổng hợp.
+  breakdownJson    String?
+  /// Có sổ sách nhưng không nằm trên phiếu đếm nào -> tính đếm = 0.
+  notCounted       Boolean @default(false)
+
+  batch StocktakeBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  item  InventoryItem  @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@index([batchId])
+  @@index([itemId])
 }
 
 model StocktakeLine {
@@ -725,6 +820,9 @@ model StocktakeLine {
   varianceQuantity Float
   /// Đơn giá nhà hàng khai cho phần đếm THỪA của hàng chưa có giá vốn — dùng lúc kế toán duyệt.
   unitCost         Float?
+  /// Số đếm theo NHIỀU ĐVT cùng lúc (2 thùng + 3 chai + 250 gr): JSON [{ unitCode, quantity,
+  /// conversionRate }]. actualQuantity = tổng quy về ĐVT tồn. null = nhập thẳng ĐVT tồn.
+  unitInputs       String?
   reason           String?
 
   stocktake StocktakeSession @relation(fields: [stocktakeId], references: [id], onDelete: Cascade)

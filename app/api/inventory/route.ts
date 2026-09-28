@@ -1137,6 +1137,7 @@ export async function POST(request: Request) {
         if (!isStocktakeEditable(existing.status)) {
           businessError(`Phiếu kiểm kê ${existing.code} đã được kế toán duyệt nên không sửa được nữa. Nhờ kế toán Mở lại phiếu trước.`);
         }
+        if (existing.locationCode) businessError(`Phiếu ${existing.code} là phiếu đếm theo vị trí — sửa ở mục Kiểm kê theo vị trí.`);
       }
       const requestedStocktakeCode = cleanText(body.code);
       if (!existing && requestedStocktakeCode && await findDeletedByUnique("StocktakeSession", { code: requestedStocktakeCode })) {
@@ -1238,6 +1239,8 @@ export async function POST(request: Request) {
       if (stocktake.status !== STOCKTAKE_PENDING) {
         businessError(`Phiếu kiểm kê ${stocktake.code} đang ở trạng thái ${stocktakeStatusLabel(stocktake.status)}, chỉ duyệt được phiếu Chờ duyệt.`);
       }
+      // Phiếu đếm theo vị trí chỉ là một phần của kho — duyệt gộp theo giờ chốt (lib/stocktake-batch.ts).
+      if (stocktake.locationCode) businessError(`Phiếu ${stocktake.code} là phiếu đếm theo vị trí — chọn cùng các phiếu khác của kho và bấm Duyệt gộp.`);
       const { branchCode, warehouseCode, stocktakeDate } = stocktake;
       if (await isPeriodLocked(stocktakeDate, branchCode)) businessError("Kỳ kế toán đã khoá");
       const result = await prisma.$transaction(async (tx) => {
@@ -1320,6 +1323,7 @@ export async function POST(request: Request) {
       assertBranchAccess(auth.session, stocktake.branchCode);
       assertWarehouseAccess(auth.session, stocktake.warehouseCode);
       if (stocktake.status !== "APPROVED") businessError(`Phiếu kiểm kê ${stocktake.code} đang ở trạng thái ${stocktake.status}, chưa duyệt nên không có gì để mở lại.`);
+      if (stocktake.batchId || stocktake.locationCode) businessError(`Phiếu ${stocktake.code} được duyệt gộp theo vị trí — mở lại cả đợt kiểm kê ở mục Kiểm kê theo vị trí.`);
       await assertPeriodOpen({ date: stocktake.stocktakeDate, branchCode: stocktake.branchCode }, "mở lại phiếu kiểm kê");
       const explodedRun = explodedRunOf(stocktake.explosionStatus);
       if (explodedRun) {
@@ -2155,6 +2159,7 @@ export async function PATCH(request: Request) {
       if (stocktake.status === "APPROVED") {
         businessError(`Phiếu kiểm kê ${stocktake.code} đã duyệt và đã điều chỉnh tồn kho nên không thể sửa.`);
       }
+      if (stocktake.locationCode) businessError(`Phiếu ${stocktake.code} là phiếu đếm theo vị trí — sửa ở mục Kiểm kê theo vị trí.`);
 
       const warehouseCode = body.warehouseCode !== undefined ? cleanText(body.warehouseCode) : stocktake.warehouseCode;
       if (!warehouseCode) businessError("Kho kiểm kê không được để trống");
