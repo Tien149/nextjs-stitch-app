@@ -5,8 +5,10 @@
  */
 import { Prisma } from "@prisma/custom-client";
 import type { TxClient } from "@/lib/prisma";
-import { businessError, cleanText } from "@/lib/phase3";
-import { nextStockDocCode, postInventoryTransaction, reverseStockEffect } from "@/lib/inventory-stock";
+import { businessError, cleanText, isPeriodLocked } from "@/lib/phase3";
+import { nextStockDocCode, postInventoryTransaction, repostInventoryTransaction, reverseStockEffect } from "@/lib/inventory-stock";
+import { syncTransferInternalDebt } from "@/lib/inventory-transfer";
+import { explosionPostedStatus, loadPendingExplosionSources, releaseExplosionSources } from "@/lib/explosion-sources";
 import { explodeSalesDemand, explodeSalesDemandWithDepartments, type ExplosionRecipe } from "@/lib/production-explosion";
 import { loadNonInventoryRevenueGroups, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
 import { buildRevenueDepartmentResolver, departmentFromWarehouseGroup, REVENUE_DEPARTMENT_CODES } from "@/lib/revenue-department";
@@ -28,6 +30,9 @@ export type ExplosionRunInput = {
   createdBy: string;
   /** Rã lại một lần rã cũ: chỉ lấy đúng các dòng doanh thu này. */
   rowIds?: string[];
+  /** Rã lại một lần rã cũ: đúng các phiếu điều chuyển / kiểm kê của lần đó (đi cùng rowIds). */
+  transferIds?: string[];
+  stocktakeIds?: string[];
 };
 
 /**
@@ -64,6 +69,44 @@ export async function resolveExplosionWarehouses(
   return { warehouseCode, toWarehouseCode, kitchenWarehouseCode, barWarehouseCode };
 }
 
+/**
+ * Điều chuyển bán thành phẩm vừa được rã: định giá lại theo luật đơn giá điều chuyển (BTP = bình
+ * quân nhập chế biến trong tháng — giờ đã có phiếu chế biến của chính số chuyển đi), rồi đồng bộ
+ * công nợ nội bộ theo trị giá mới. Công nợ nội bộ đã gạch thì giữ giá cũ, không chặn cả lần rã.
+ */
+async function repriceTransfer(tx: TxClient, transactionId: string) {
+  const transfer = await tx.inventoryTransaction.findUnique({ where: { id: transactionId }, include: { lines: true } });
+  if (!transfer) return { code: transactionId, repriced: false };
+  // Định giá lại đổi cả giá trị kho bên nhận: kỳ của cửa hàng nhận đã khoá thì giữ giá cũ.
+  if (transfer.toBranchCode && await isPeriodLocked(transfer.transactionDate, transfer.toBranchCode)) {
+    return { code: transfer.code, repriced: false };
+  }
+  const debtCodes = [transfer.internalReceivableDebtCode, transfer.internalPayableDebtCode].filter((code): code is string => !!code);
+  if (debtCodes.length > 0) {
+    const settled = await tx.debtRecord.count({ where: { code: { in: debtCodes }, deletedAt: null, settlements: { some: {} } } });
+    if (settled > 0) return { code: transfer.code, repriced: false };
+  }
+  await repostInventoryTransaction(tx, transfer, {
+    transactionDate: transfer.transactionDate,
+    branchCode: transfer.branchCode,
+    warehouseCode: transfer.warehouseCode,
+    toWarehouseCode: transfer.toWarehouseCode,
+    toBranchCode: transfer.toBranchCode,
+    subType: transfer.subType,
+    partnerCode: transfer.partnerCode,
+    referenceCode: transfer.referenceCode,
+    note: transfer.note,
+    lines: transfer.lines.map((line) => ({
+      itemId: line.itemId,
+      inputQuantity: line.inputQuantity ?? line.quantity,
+      inputUnitCode: line.inputUnitCode ?? "",
+      inputUnitCost: line.inputUnitCost ?? line.unitCost,
+    })),
+  });
+  await syncTransferInternalDebt(tx, transfer.id);
+  return { code: transfer.code, repriced: true };
+}
+
 export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
   const { branchCode, dateFrom, dateTo } = input;
   const warehouses = await resolveExplosionWarehouses(tx, input);
@@ -82,14 +125,21 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
       deletedAt: null,
     },
   });
-  if (pendingRows.length === 0) return { kind: "EMPTY" as const };
+  // Điều chuyển bán thành phẩm + kiểm dư bán thành phẩm đang chờ rã (khách chốt 28/09/2026).
+  const sources = await loadPendingExplosionSources(tx, {
+    branchCode,
+    dateFrom,
+    rangeEnd,
+    ids: input.rowIds ? { transferIds: input.transferIds || [], stocktakeIds: input.stocktakeIds || [] } : undefined,
+  });
+  if (pendingRows.length === 0 && sources.length === 0) return { kind: "EMPTY" as const };
 
   // Phụ thu / dịch vụ không rút gì khỏi kho: loại khỏi lần rã này rồi thả hẳn khỏi hàng chờ,
   // nếu không nút Rã sẽ chết vì "không tìm thấy mặt hàng" hoặc xuất bán thẳng làm tồn âm.
   const nonInventoryGroups = await loadNonInventoryRevenueGroups(tx as unknown as CategoryLookupClient);
   const skippedRows = pendingRows.filter((row) => !tracksInventory(row.revenueSource, nonInventoryGroups));
   const inventoryRows = pendingRows.filter((row) => tracksInventory(row.revenueSource, nonInventoryGroups));
-  if (inventoryRows.length === 0) {
+  if (inventoryRows.length === 0 && sources.length === 0) {
     await tx.revenueImportRow.updateMany({
       where: { id: { in: skippedRows.map((row) => row.id) } },
       data: { inventoryStatus: "NOT_REQUIRED" },
@@ -189,6 +239,7 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
   const result = await (async () => {
     const runCode = await nextStockDocCode(tx, "RA", dateTo);
     const documents = [];
+    const repricedTransfers: Array<{ code: string; repriced: boolean }> = [];
     let sequence = 0;
     // 1) Chế biến từng cấp theo đúng thứ tự BTP → TP → combo. Mỗi bước nhập thành phẩm vào kho
     //    theo bộ phận của bước; nguyên liệu trừ ở kho theo bộ phận của TỪNG nguyên liệu (combo có
@@ -284,7 +335,89 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
         lines,
       }));
     }
-    // 3) Đánh dấu các dòng doanh thu đã rã kèm mã lần rã, để hoàn tác được cả cụm
+    // 3) Điều chuyển / kiểm dư bán thành phẩm: chế biến ngay tại KHO của phiếu (kho xuất của
+    //    điều chuyển, kho được kiểm) vào đúng NGÀY phiếu — hàng nằm ở đâu thì nguyên liệu trừ ở
+    //    đó. Không xuất bán: điều chuyển đã đưa hàng đi, còn kiểm kê là hàng đang nằm trong kho.
+    for (const source of sources) {
+      const label = source.kind === "TRANSFER" ? `điều chuyển ${source.code}` : `kiểm dư ${source.code}`;
+      const sourcePlan = explodeSalesDemand({
+        demands: source.demands,
+        recipes: recipeVersions as unknown as ExplosionRecipe[],
+        date: source.date,
+        branchCode,
+      });
+      for (const step of sourcePlan.productions) {
+        sequence += 1;
+        const productItem = await tx.inventoryItem.findUnique({ where: { code: step.productCode } });
+        if (!productItem) businessError(`Không tìm thấy sản phẩm ${step.productCode}`);
+        const issue = await postInventoryTransaction(tx, {
+          code: `${runCode}-${sequence}X`,
+          transactionType: "XUAT_CHE_BIEN",
+          transactionDate: source.date,
+          branchCode,
+          warehouseCode: source.warehouseCode,
+          referenceType: "PRODUCTION",
+          referenceCode: runCode,
+          note: `Rã nguyên liệu ${step.productCode} cho ${label}`,
+          createdBy: input.createdBy,
+          lines: step.components.map((component) => ({
+            itemId: component.item.id,
+            inputQuantity: component.quantityBase,
+            inputUnitCode: "",
+            inputUnitCost: 0,
+          })),
+        });
+        documents.push(issue);
+        const totalCost = issue.lines.reduce((sum, line) => sum + line.totalCost, 0);
+        documents.push(await postInventoryTransaction(tx, {
+          code: `${runCode}-${sequence}N`,
+          transactionType: "NHAP_CHE_BIEN",
+          transactionDate: source.date,
+          branchCode,
+          warehouseCode: source.warehouseCode,
+          referenceType: "PRODUCTION",
+          referenceCode: runCode,
+          note: `Nhập chế biến ${step.productCode} cho ${label}`,
+          createdBy: input.createdBy,
+          lines: [{
+            itemId: productItem?.id || "",
+            inputQuantity: step.quantityBase,
+            inputUnitCode: productItem?.unit || "",
+            inputUnitCost: step.quantityBase > 0 ? totalCost / step.quantityBase : 0,
+          }],
+        }));
+      }
+      // Kiểm dư mà định lượng đã bị gỡ sau lúc duyệt: không rã được thì vẫn phải lên kho, nhập
+      // kiểm kê theo giá bình quân đang có (thuộc lần rã nên hoàn tác đi theo cả cụm).
+      if (source.kind === "STOCKTAKE" && sourcePlan.directSales.length > 0) {
+        const lines = [];
+        for (const sale of sourcePlan.directSales) {
+          const item = await tx.inventoryItem.findUnique({ where: { code: sale.productCode } });
+          if (!item) businessError(`Không tìm thấy mặt hàng ${sale.productCode}`);
+          lines.push({ itemId: item?.id || "", inputQuantity: sale.quantityBase, inputUnitCode: item?.unit || "", inputUnitCost: 0 });
+        }
+        sequence += 1;
+        documents.push(await postInventoryTransaction(tx, {
+          code: `${runCode}-${sequence}NK`,
+          transactionType: "NHAP_KIEM_KE",
+          transactionDate: source.date,
+          branchCode,
+          warehouseCode: source.warehouseCode,
+          referenceType: "PRODUCTION",
+          referenceCode: runCode,
+          note: `Kiểm dư ${source.code} không còn định lượng để rã`,
+          createdBy: input.createdBy,
+          lines,
+        }));
+      }
+      if (source.kind === "TRANSFER") {
+        await tx.inventoryTransaction.update({ where: { id: source.id }, data: { explosionStatus: explosionPostedStatus(runCode) } });
+        if (sourcePlan.productions.length > 0) repricedTransfers.push(await repriceTransfer(tx, source.id));
+      } else {
+        await tx.stocktakeSession.update({ where: { id: source.id }, data: { explosionStatus: explosionPostedStatus(runCode) } });
+      }
+    }
+    // 4) Đánh dấu các dòng doanh thu đã rã kèm mã lần rã, để hoàn tác được cả cụm
     //    (REVERT_EXPLOSION) và không rã trùng lần sau.
     await tx.revenueImportRow.updateMany({
       where: { id: { in: inventoryRows.map((row) => row.id) } },
@@ -298,7 +431,7 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
         data: { inventoryStatus: "NOT_REQUIRED" },
       });
     }
-    return { runCode, documents };
+    return { runCode, documents, repricedTransfers };
   })();
 
   /**
@@ -334,6 +467,9 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
     plan,
     revenueRows: inventoryRows.length,
     skippedRows: skippedRows.length,
+    sources: sources.map((source) => ({ kind: source.kind, code: source.code, date: source.date, warehouseCode: source.warehouseCode })),
+    /** Điều chuyển không định giá lại được vì công nợ nội bộ đã gạch — giữ giá cũ. */
+    keptPriceTransfers: result.repricedTransfers.filter((row) => !row.repriced).map((row) => row.code),
     undecidedProducts: [...undecidedProducts],
     negativeItems,
     zeroCostItems,
@@ -396,7 +532,12 @@ export async function rerunExplosions(
     note?: (run: AffectedExplosionRun) => string;
   } = {},
 ) {
-  const reverted: Array<{ run: AffectedExplosionRun; rowIds: string[]; settings: Awaited<ReturnType<typeof explosionRunSettings>> }> = [];
+  const reverted: Array<{
+    run: AffectedExplosionRun;
+    rowIds: string[];
+    sources: { transferIds: string[]; stocktakeIds: string[] };
+    settings: Awaited<ReturnType<typeof explosionRunSettings>>;
+  }> = [];
   for (const run of [...runs].reverse()) {
     const documents = await tx.inventoryTransaction.findMany({
       where: { referenceType: "PRODUCTION", referenceCode: run.runCode, deletedAt: null },
@@ -414,7 +555,9 @@ export async function rerunExplosions(
     if (rowIds.length > 0) {
       await tx.revenueImportRow.updateMany({ where: { id: { in: rowIds } }, data: { inventoryStatus: "PENDING" } });
     }
-    reverted.push({ run, rowIds, settings });
+    // Điều chuyển / kiểm kê của lần rã cũng về hàng chờ để rã lại đúng chúng.
+    const sources = await releaseExplosionSources(tx, run.runCode);
+    reverted.push({ run, rowIds, sources, settings });
   }
 
   const results: Array<{
@@ -425,9 +568,9 @@ export async function rerunExplosions(
     settings: Awaited<ReturnType<typeof explosionRunSettings>>;
     documents: string[];
   }> = [];
-  for (const { run, rowIds, settings } of reverted.reverse()) {
-    if (rowIds.length === 0) {
-      // Lần rã không còn dòng doanh thu nào (doanh thu đã bị xoá): gỡ xong là đúng, không rã lại.
+  for (const { run, rowIds, sources, settings } of reverted.reverse()) {
+    if (rowIds.length === 0 && sources.transferIds.length === 0 && sources.stocktakeIds.length === 0) {
+      // Lần rã không còn dòng doanh thu / phiếu nào (đã bị xoá): gỡ xong là đúng, không rã lại.
       results.push({ oldRunCode: run.runCode, newRunCode: null, branchCode: run.branchCode, date: run.date, settings, documents: [] });
       continue;
     }
@@ -436,6 +579,8 @@ export async function rerunExplosions(
       branchCode: run.branchCode,
       dateTo: run.date,
       rowIds,
+      transferIds: sources.transferIds,
+      stocktakeIds: sources.stocktakeIds,
       note: options.note ? options.note(run) : `rã lại ${run.runCode} theo định lượng mới`,
       createdBy,
     });

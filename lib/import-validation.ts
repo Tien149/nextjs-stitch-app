@@ -26,6 +26,7 @@ import {
 import { selectWalletDeclaredRevenue, walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
 import { vietnamBusinessDayBounds, vietnamBusinessDayKey } from "@/lib/revenue-date";
 import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
+import { semiFinishedWithRecipeChecker } from "@/lib/explosion-sources";
 
 type MasterItem = {
   type: string;
@@ -1299,6 +1300,8 @@ export async function validateImportResult(
   // vi ca nhom se thanh MOT phien ban cong thuc.
   const bomGroupHeader = new Map<string, { name: string; price: number; rowNumber: number }>();
   const stocktakeCodesInFile = new Map<string, number>();
+  // Kiểm dư bán thành phẩm có định lượng chờ rã BOM, không cần khai đơn giá (khách chốt 28/09/2026).
+  const explodableCheckers = new Map<string, Awaited<ReturnType<typeof semiFinishedWithRecipeChecker>>>();
   const assetStocktakeRows = new Map<string, number>();
   const inventoryItemRows = new Map<string, { name: string; itemType: string; unit: string; rowNumber: number }>();
   const revenueReferenceRows = new Map<string, ParsedImportRow>();
@@ -1345,7 +1348,12 @@ export async function validateImportResult(
         const stActual = numberValue(row.values.actual_quantity);
         const stSystem = stBalance?.quantity || 0;
         const stAvg = (stBalance as { averageCost?: number } | undefined)?.averageCost || 0;
-        if (stActual > stSystem && stAvg <= 0 && numberValue(row.values.unit_cost) <= 0) {
+        const stBranch = text(row.values.branch_code).toUpperCase();
+        if (!explodableCheckers.has(stBranch)) {
+          explodableCheckers.set(stBranch, await semiFinishedWithRecipeChecker(prisma as unknown as Parameters<typeof semiFinishedWithRecipeChecker>[0], stBranch));
+        }
+        const stExplodable = explodableCheckers.get(stBranch)?.(stItem) ?? false;
+        if (stActual > stSystem && !stExplodable && stAvg <= 0 && numberValue(row.values.unit_cost) <= 0) {
           addError(row, `${stItem.code} chua co gia von trong kho — khai cot "Don gia" de ghi nhan phan thua`);
         }
       }

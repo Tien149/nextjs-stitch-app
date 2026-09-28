@@ -28,7 +28,7 @@ type ItemGroup = { id: string; code: string; name: string; group: string | null;
  */
 type RevenueGroup = { id: string; code: string; name: string; group: string | null };
 type Balance = { id: string; warehouseCode: string; quantity: number; averageCost: number; item: Item };
-type Transaction = { id: string; code: string; transactionType: string; subType: string | null; transactionDate: string; branchCode: string; warehouseCode: string; toWarehouseCode: string | null; toBranchCode: string | null; partnerCode: string | null; referenceType: string | null; internalReceivableDebtCode: string | null; internalPayableDebtCode: string | null; referenceCode: string | null; note?: string | null; lines: Array<{ id: string; inputQuantity: number | null; inputUnitCode: string | null; conversionRate: number; quantity: number; unitCost: number; inputUnitCost: number | null; totalCost: number; vatRate: number | null; vatAmount: number; item: Item }> };
+type Transaction = { id: string; code: string; transactionType: string; subType: string | null; transactionDate: string; branchCode: string; warehouseCode: string; toWarehouseCode: string | null; toBranchCode: string | null; partnerCode: string | null; referenceType: string | null; internalReceivableDebtCode: string | null; internalPayableDebtCode: string | null; referenceCode: string | null; note?: string | null; explosionStatus?: string | null; lines: Array<{ id: string; inputQuantity: number | null; inputUnitCode: string | null; conversionRate: number; quantity: number; unitCost: number; inputUnitCost: number | null; totalCost: number; vatRate: number | null; vatAmount: number; item: Item }> };
 type Recipe = { id: string; code: string; productCode: string; branchCode?: string | null; productName: string; unit: string; outputConversionRate: number; sellingPrice: number; estimatedCost: number; estimatedUnitCost: number; version: number; effectiveFrom: string; status: string; lines: Array<{ quantity: number; unitCode: string | null; conversionRate: number; wasteRate: number; item: Item; quantityBase?: number; componentUnitCost?: number; lineCost?: number }> };
 type CostSummaryRow = { productCode: string; branchCode: string; productName: string; group: string; stockUnit: string; batchUnit: string; outputConversionRate: number; sellingPrice: number; unitCost: number; costRatio: number | null; version: number };
 type WasteReportRow = { itemCode: string; itemName: string; unit: string; itemType: string; totalQuantity: number; totalValue: number; documentCount: number; bySubType: Record<string, { quantity: number; value: number }> };
@@ -37,6 +37,15 @@ type PendingSales = {
   byDay: Array<{ saleDate: string; branchCode: string; rowCount: number; totalQuantity: number }>;
   /** Danh sách xuất bán chờ rã gom theo mã hàng — số lượng sẽ chạy định lượng (chỉ Đồ ăn / Đồ uống). */
   byItem: Array<{ productCode: string; productName: string; revenueSource: string; rowCount: number; totalQuantity: number }>;
+  /** Điều chuyển bán thành phẩm + kiểm dư bán thành phẩm chờ rã (khách chốt 28/09/2026). */
+  sources?: Array<{
+    kind: "TRANSFER" | "STOCKTAKE";
+    code: string;
+    date: string;
+    branchCode: string;
+    warehouseCode: string;
+    items: Array<{ itemCode: string; itemName: string; unit: string; quantity: number }>;
+  }>;
 };
 type CostingProduct = { productCode: string; productName: string; itemType: string; batchCost: number; unitCost: number; outputConversionRate: number; sellingPrice: number };
 type CostingResult = { costingDate: string; branchCode: string; materialCount: number; updatedBalances: number; levels: Array<{ level: number; products: CostingProduct[] }> };
@@ -45,7 +54,7 @@ type Partner = { code: string; name: string; group: string | null; status: strin
 type MovementByType = Record<string, { inbound: number; outbound: number; value: number }>;
 type StockSummary = { item: Item; warehouseCode: string; openingQuantity: number; inboundQuantity: number; outboundQuantity: number; closingQuantity: number; averageCost: number; closingValue: number; movementByType?: MovementByType };
 type StockMovement = { transactionId: string; code: string; transactionType: string; transactionDate: string; warehouseCode: string; toWarehouseCode: string | null; itemCode: string; itemName: string; unit: string; quantity: number; inboundQuantity: number; outboundQuantity: number; value: number; referenceCode: string | null };
-type Stocktake = { id: string; code: string; stocktakeDate: string; branchCode: string; warehouseCode: string; status: string; lines: Array<{ id: string; systemQuantity: number; actualQuantity: number; varianceQuantity: number; item: Item }> };
+type Stocktake = { id: string; code: string; stocktakeDate: string; branchCode: string; warehouseCode: string; status: string; explosionStatus?: string | null; lines: Array<{ id: string; systemQuantity: number; actualQuantity: number; varianceQuantity: number; item: Item }> };
 type ReceivablePOLine = { id: string; itemId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; item: { code: string; name: string; unit: string } };
 type ReceivablePO = { id: string; code: string; supplierName: string; branchCode: string; warehouseCode: string; status: string; lines: ReceivablePOLine[] };
 type StocktakeDraftRow = { itemId: string; itemCode: string; itemName: string; unit: string; systemQuantity: number; averageCost: number; actualQuantity: string; unitCost: string; reason: string };
@@ -2383,7 +2392,7 @@ export default function InventoryPage() {
                 const crossBranch = !!row.toBranchCode && row.toBranchCode !== row.branchCode;
                 return (
                   <tr key={row.id} className="border-t border-slate-100">
-                    <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}</small></Cell>
+                    <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}</small><ExplosionBadge status={row.explosionStatus} /></Cell>
                     <Cell>
                       <b>{row.warehouseCode} → {row.toWarehouseCode}</b>
                       <small>{storeLabel(row.branchCode)} → {storeLabel(row.toBranchCode || row.branchCode)}</small>
@@ -2979,15 +2988,23 @@ export default function InventoryPage() {
             <div>
               <h2 className="font-bold text-slate-800 flex items-center gap-2">
                 <span className="material-symbols-outlined text-indigo-600">account_tree</span>
-                Rã nguyên liệu từ doanh thu
+                Rã nguyên liệu
               </h2>
               <p className="text-xs text-slate-500 mt-1 max-w-2xl leading-relaxed">
                 Lấy số món đã bán từ import doanh thu (chưa cần import thêm file nào), rã theo định lượng đang áp dụng
                 theo thứ tự <b>bán thành phẩm → thành phẩm → combo</b>, rồi tự sinh phiếu xuất chế biến, nhập chế biến và xuất bán.
+                Cùng lần rã còn rã <b>bán thành phẩm điều chuyển đi</b> (toàn bộ số chuyển, trừ nguyên liệu ở kho xuất) và
+                <b> phần kiểm dư bán thành phẩm</b> (thực tế − sổ sách, trừ nguyên liệu ở kho được kiểm) trong khoảng ngày đã chọn.
               </p>
             </div>
             <div className="rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs text-indigo-800">
               Đang chờ rã: <b>{data.pendingSales.total}</b> dòng doanh thu
+              {(data.pendingSales.sources?.length || 0) > 0 && (
+                <>
+                  {" · "}<b>{data.pendingSales.sources?.filter((source) => source.kind === "TRANSFER").length}</b> phiếu điều chuyển
+                  {" · "}<b>{data.pendingSales.sources?.filter((source) => source.kind === "STOCKTAKE").length}</b> phiếu kiểm kê
+                </>
+              )}
             </div>
           </div>
           <div className="grid md:grid-cols-4 gap-3 mt-4">
@@ -3085,6 +3102,45 @@ export default function InventoryPage() {
               </div>
             </details>
           )}
+          {/* Điều chuyển / kiểm dư bán thành phẩm chờ rã: rã ở chính kho của phiếu, theo ngày phiếu. */}
+          {(data.pendingSales.sources?.length || 0) > 0 && (
+            <details className="mt-3 rounded-lg border border-slate-200 bg-slate-50">
+              <summary className="cursor-pointer px-3 py-2 text-xs font-bold text-slate-700">
+                Điều chuyển / kiểm kê bán thành phẩm chờ rã ({data.pendingSales.sources?.length} phiếu)
+              </summary>
+              <div className="overflow-x-auto px-3 pb-3">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-left text-slate-500">
+                      <th className="py-1 pr-3">Ngày</th>
+                      <th className="py-1 pr-3">Phiếu</th>
+                      <th className="py-1 pr-3">Kho chế biến</th>
+                      <th className="py-1 pr-3">Bán thành phẩm</th>
+                      <th className="py-1 text-right">Số lượng rã</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.pendingSales.sources?.flatMap((source) => source.items.map((item, index) => (
+                      <tr key={`${source.kind}-${source.code}-${item.itemCode}`} className={index === 0 ? "border-t border-slate-200" : ""}>
+                        <td className="py-1 pr-3 whitespace-nowrap">{index === 0 ? new Date(source.date).toLocaleDateString("vi-VN") : ""}</td>
+                        <td className="py-1 pr-3 whitespace-nowrap">
+                          {index === 0 && (
+                            <>
+                              <span className={`status mr-1 ${source.kind === "TRANSFER" ? "bg-sky-100 text-sky-700" : "bg-amber-100 text-amber-800"}`}>{source.kind === "TRANSFER" ? "Điều chuyển" : "Kiểm dư"}</span>
+                              <span className="font-mono">{source.code}</span>
+                            </>
+                          )}
+                        </td>
+                        <td className="py-1 pr-3">{index === 0 ? `${storeLabel(source.branchCode)} · ${data.warehouses.find((warehouse) => warehouse.code === source.warehouseCode)?.name || source.warehouseCode}` : ""}</td>
+                        <td className="py-1 pr-3">{item.itemName} <span className="text-slate-400 font-mono">{item.itemCode}</span></td>
+                        <td className="py-1 text-right tabular-nums whitespace-nowrap">{qty(item.quantity)} {item.unit}</td>
+                      </tr>
+                    )))}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          )}
           {/* Ô kho rỗng mà không nói gì thì người dùng bấm nút rồi tưởng nút chết (khách gặp
               21/09 và 22/09/2026). Nói thẳng cửa hàng nào thiếu kho và phải sửa ở đâu. */}
           {explodeWarehouses.length === 0 && (
@@ -3115,10 +3171,12 @@ export default function InventoryPage() {
                 let payload = await send(explodeBody, "Đã rã nguyên liệu và sinh phiếu chế biến + xuất bán.");
                 // Khoảng ngày có ngày ĐÃ RÃ: hỏi trước rồi gỡ + rã lại các lần rã đó với kho đang chọn.
                 if (payload?.needsRerunConfirm) {
-                  const runs = (payload.runs || []) as Array<{ runCode: string; date: string; revenueRows: number }>;
+                  const runs = (payload.runs || []) as Array<{ runCode: string; date: string; revenueRows: number; transfers?: number; stocktakes?: number }>;
                   const ok = window.confirm(
                     "Khoảng ngày này đã có ngày được rã rồi:\n"
-                    + runs.map((run) => `• ${run.runCode} — ngày ${new Date(run.date).toLocaleDateString("vi-VN")}, ${run.revenueRows} dòng doanh thu`).join("\n")
+                    + runs.map((run) => `• ${run.runCode} — ngày ${new Date(run.date).toLocaleDateString("vi-VN")}, ${run.revenueRows} dòng doanh thu`
+                      + (run.transfers ? `, ${run.transfers} phiếu điều chuyển` : "")
+                      + (run.stocktakes ? `, ${run.stocktakes} phiếu kiểm kê` : "")).join("\n")
                     + "\n\nOK: gỡ toàn bộ phiếu của các lần rã trên, rã lại theo định lượng và kho đang chọn (lần rã mới mang mã mới, phiếu cũ vào Thùng rác), rồi rã tiếp phần còn chờ.\n"
                     + "Huỷ: không làm gì.",
                   );
@@ -3146,6 +3204,15 @@ export default function InventoryPage() {
                 if (zeroCostCount > 0) {
                   const codes = (payload?.zeroCostItems || []) as string[];
                   notes.push(`${zeroCostCount} mã xuất với GIÁ VỐN 0 vì kho chưa có giá nhập nào${codes.length ? `: ${codes.slice(0, 8).join(", ")}${zeroCostCount > codes.slice(0, 8).length ? "..." : ""}` : ""}. Báo cáo giá vốn còn thiếu đúng phần này cho tới khi có giá và chạy lại "Tính giá vốn & giá thành".`);
+                }
+                const transferCount = Number(payload?.transferCount || 0);
+                const stocktakeCount = Number(payload?.stocktakeCount || 0);
+                if (transferCount > 0 || stocktakeCount > 0) {
+                  notes.push(`Đã rã kèm ${transferCount} phiếu điều chuyển và ${stocktakeCount} phiếu kiểm kê bán thành phẩm.`);
+                }
+                const keptPrice = (payload?.keptPriceTransfers || []) as string[];
+                if (keptPrice.length > 0) {
+                  notes.push(`Phiếu điều chuyển ${keptPrice.join(", ")} giữ giá cũ vì công nợ nội bộ đã gạch hoặc kỳ bên nhận đã khoá.`);
                 }
                 const reruns = (payload?.reruns || []) as Array<{ oldRunCode: string; newRunCode: string | null }>;
                 if (reruns.length > 0) {
@@ -3218,7 +3285,7 @@ export default function InventoryPage() {
                       key={runCode}
                       type="button"
                       className="status bg-rose-50 text-rose-700 hover:bg-rose-100 cursor-pointer"
-                      title={`Hoàn kho + xoá mọi phiếu của ${runCode}, trả doanh thu về trạng thái chờ rã`}
+                      title={`Hoàn kho + xoá mọi phiếu của ${runCode}, trả doanh thu, điều chuyển và kiểm kê bán thành phẩm về trạng thái chờ rã`}
                       onClick={() => { if (window.confirm(`Hoàn tác toàn bộ lần rã ${runCode}?`)) void send({ action: "REVERT_EXPLOSION", runCode }, `Đã hoàn tác lần rã ${runCode}.`); }}
                     >
                       ↩ {runCode}
@@ -3454,7 +3521,7 @@ export default function InventoryPage() {
                 lines: row.lines.filter((line) => isWarehouseStocktakeItemType(line.item.itemType)),
               })).filter((row) => row.lines.length > 0).map((row) => (
                 <tr key={row.id} className="border-t border-slate-100">
-                  <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{new Date(row.stocktakeDate).toLocaleDateString("vi-VN")} · {row.status}</small></Cell>
+                  <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{new Date(row.stocktakeDate).toLocaleDateString("vi-VN")} · {row.status}</small><ExplosionBadge status={row.explosionStatus} /></Cell>
                   <Cell>{row.warehouseCode}</Cell>
                   <Cell>{row.lines.map((line) => line.item.code).join(", ")}</Cell>
                   <Cell right>{qty(row.lines.reduce((sum, line) => sum + line.varianceQuantity, 0))}</Cell>
@@ -3731,6 +3798,16 @@ function wasteSubTypeLabel(subType: string | null): string {
  * `min-w-0` là bắt buộc: ô này hay nằm trong lưới cột cố định, mà <input> có bề rộng nội tại
  * ~20 ký tự — không cho co lại thì ô tự phình quá cột và cả hàng tràn ra ngoài hộp thoại.
  */
+/** Trạng thái rã BOM của phiếu điều chuyển / kiểm kê có bán thành phẩm (khách chốt 28/09/2026). */
+function ExplosionBadge({ status }: { status?: string | null }) {
+  if (!status) return null;
+  if (status === "PENDING") {
+    return <span className="status mt-1 bg-amber-100 text-amber-800" title="Bán thành phẩm của phiếu này chờ bấm Rã ở tab Chế biến">Chờ rã BTP</span>;
+  }
+  const runCode = status.startsWith("POSTED:") ? status.slice("POSTED:".length) : status;
+  return <span className="status mt-1 bg-emerald-100 text-emerald-800" title="Đã rã nguyên liệu cho bán thành phẩm của phiếu này">Đã rã {runCode}</span>;
+}
+
 function Input({ label, children }: { label: string; children: React.ReactNode }) { return <label className="block min-w-0 text-xs font-bold text-slate-600">{label}{children}</label>; }
 /**
  * Ô chọn mặt hàng dùng chung cho mọi form của màn Kho.

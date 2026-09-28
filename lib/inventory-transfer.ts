@@ -15,6 +15,7 @@ import type { TxClient } from "@/lib/prisma";
 import type { prisma } from "@/lib/prisma";
 import { postInventoryTransaction, type StockLineInput } from "@/lib/inventory-stock";
 import { ensureInternalPartner } from "@/lib/internal-partner";
+import { refreshTransferExplosionStatus } from "@/lib/explosion-sources";
 
 function transferError(message: string): never {
   throw new Error(`BUSINESS:${message}`);
@@ -76,6 +77,9 @@ export async function postStockTransfer(tx: TxClient, input: PostStockTransferIn
     createdBy: input.createdBy || null,
     lines: input.lines,
   });
+  // Có bán thành phẩm có định lượng thì vào hàng chờ rã: kho nguồn phải chế biến đúng số
+  // chuyển đi (khách chốt 28/09/2026) — lập tay hay import đều qua đây.
+  await refreshTransferExplosionStatus(tx, transaction.id);
 
   return syncTransferInternalDebt(tx, transaction.id);
 }

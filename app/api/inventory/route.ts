@@ -7,6 +7,7 @@ import { requestedBranch, assertBranchAccess } from "@/lib/accounting";
 import { isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType, postInventoryTransaction, repostInventoryTransaction, reverseStockEffect } from "@/lib/inventory-stock";
 import { createPurchasePayable, purchasePayableCodeOf, removePurchasePayables, syncPurchasePayable, PURCHASE_PAYABLE_SOURCE } from "@/lib/purchase-payable";
 import { postStockTransfer, syncTransferInternalDebt } from "@/lib/inventory-transfer";
+import { EXPLOSION_PENDING, explodedRunOf, loadPendingExplosionSources, refreshTransferExplosionStatus, releaseExplosionSources, semiFinishedWithRecipeChecker } from "@/lib/explosion-sources";
 import { averageCostByItem } from "@/lib/inventory-average-cost";
 import { parseVatRate, VAT_RATE_CODES } from "@/lib/inventory-vat";
 import { computeCostingLevels, computeRecipeUnitCosts, lineConversionRate, pickRecipeForDate, recipeContentSignature, type ExplosionRecipe } from "@/lib/production-explosion";
@@ -453,6 +454,8 @@ async function findRunsAffectedByRecipes(
     const runCode = doc.referenceCode || "";
     if (!runCode) continue;
     const run = runs.get(runCode) || { runCode, branchCode: doc.branchCode, date: doc.transactionDate, productCodes: [] };
+    // Ngày của lần rã = ngày muộn nhất trên phiếu (phiếu cho điều chuyển / kiểm kê mang ngày riêng).
+    if (doc.transactionDate > run.date) run.date = doc.transactionDate;
     for (const line of doc.lines) {
       const code = codeById.get(line.itemId);
       if (code && !run.productCodes.includes(code)) run.productCodes.push(code);
@@ -767,10 +770,46 @@ export async function GET(request: Request) {
       bucket.totalQuantity += row.productQuantity || 0;
       pendingByItem.set(code, bucket);
     }
+    // Điều chuyển bán thành phẩm + kiểm dư bán thành phẩm đang chờ rã (khách chốt 28/09/2026):
+    // cùng nguồn với nút Rã (loadPendingExplosionSources) nên số hiện ra đúng bằng số sẽ rã.
+    const [pendingTransferDocs, pendingStocktakeDocs] = await Promise.all([
+      prisma.inventoryTransaction.findMany({ where: { ...branchFilter, transactionType: "DIEU_CHUYEN", explosionStatus: EXPLOSION_PENDING, deletedAt: null }, select: { id: true, branchCode: true } }),
+      prisma.stocktakeSession.findMany({ where: { ...branchFilter, status: "APPROVED", explosionStatus: EXPLOSION_PENDING, deletedAt: null }, select: { id: true, branchCode: true } }),
+    ]);
+    const pendingSourceBranches = [...new Set([...pendingTransferDocs, ...pendingStocktakeDocs].map((doc) => doc.branchCode))];
+    const pendingSources = [];
+    for (const sourceBranch of pendingSourceBranches) {
+      const sources = await loadPendingExplosionSources(prisma as unknown as TxClient, {
+        branchCode: sourceBranch,
+        dateFrom: new Date(0),
+        rangeEnd: new Date(),
+        ids: {
+          transferIds: pendingTransferDocs.filter((doc) => doc.branchCode === sourceBranch).map((doc) => doc.id),
+          stocktakeIds: pendingStocktakeDocs.filter((doc) => doc.branchCode === sourceBranch).map((doc) => doc.id),
+        },
+      });
+      for (const source of sources) {
+        pendingSources.push({
+          kind: source.kind,
+          code: source.code,
+          date: source.date,
+          branchCode: sourceBranch,
+          warehouseCode: source.warehouseCode,
+          items: source.demands.map((demand) => ({
+            itemCode: demand.productCode,
+            itemName: itemByCode.get(demand.productCode.toUpperCase())?.name || demand.productCode,
+            unit: itemByCode.get(demand.productCode.toUpperCase())?.unit || "",
+            quantity: demand.quantity,
+          })),
+        });
+      }
+    }
+    pendingSources.sort((a, b) => a.date.getTime() - b.date.getTime() || a.code.localeCompare(b.code));
     const pendingSales = {
       total: inventoryPendingRows.length,
       byDay: [...pendingByDay.values()],
       byItem: [...pendingByItem.values()].sort((a, b) => b.totalQuantity - a.totalQuantity),
+      sources: pendingSources,
     };
     // Ô chọn của mặt hàng chỉ nhận nhóm doanh thu; loại thu quỹ trả riêng để màn hình gọi đúng
     // tên mã đang bị gán sai thay vì hiện trơ mã "(ngoài danh mục)".
@@ -1065,6 +1104,10 @@ export async function POST(request: Request) {
         });
         const inboundLines = [];
         const outboundLines = [];
+        // Kiểm DƯ bán thành phẩm có định lượng không nhập kiểm kê mà chờ rã BOM (khách chốt
+        // 28/09/2026): phần dư là hàng đã chế biến nên phải trừ nguyên liệu tương ứng.
+        const isExplodable = await semiFinishedWithRecipeChecker(tx, branchCode);
+        let deferredSurplus = false;
         for (const row of rows) {
           const item = row.itemId
             ? await tx.inventoryItem.findUnique({ where: { id: row.itemId } })
@@ -1083,9 +1126,10 @@ export async function POST(request: Request) {
             businessError(`Tồn của ${item.code} đã thay đổi từ lúc tải danh sách (${row.systemQuantity} → ${systemQuantity}). Bấm "Nạp danh sách kho" để lấy số mới rồi kiểm lại dòng này.`);
           }
           const varianceQuantity = row.actualQuantity - systemQuantity;
+          const surplusToExplode = varianceQuantity > 0 && isExplodable(item);
           // Hàng đếm THỪA mà chưa có giá vốn thì bắt khai đơn giá — nhập giá 0 là giá trị kho
-          // sai và giá vốn món ăn theo sai vĩnh viễn.
-          if (varianceQuantity > 0 && (balance?.averageCost || 0) <= 0 && row.unitCost <= 0) {
+          // sai và giá vốn món ăn theo sai vĩnh viễn. BTP chờ rã lấy giá từ nguyên liệu nên thôi.
+          if (varianceQuantity > 0 && !surplusToExplode && (balance?.averageCost || 0) <= 0 && row.unitCost <= 0) {
             businessError(`${item.code} chưa có giá vốn trong kho ${warehouseCode}. Nhập "Đơn giá" cho dòng này để ghi nhận phần thừa ${varianceQuantity} ${item.unit}.`);
           }
           await tx.stocktakeLine.create({
@@ -1098,9 +1142,11 @@ export async function POST(request: Request) {
               reason: row.reason || cleanText(body.reason) || null,
             },
           });
-          if (varianceQuantity > 0) inboundLines.push({ itemId: item.id, inputQuantity: varianceQuantity, inputUnitCode: item.unit, inputUnitCost: (balance?.averageCost || 0) > 0 ? balance?.averageCost || 0 : row.unitCost });
+          if (surplusToExplode) deferredSurplus = true;
+          else if (varianceQuantity > 0) inboundLines.push({ itemId: item.id, inputQuantity: varianceQuantity, inputUnitCode: item.unit, inputUnitCost: (balance?.averageCost || 0) > 0 ? balance?.averageCost || 0 : row.unitCost });
           if (varianceQuantity < 0) outboundLines.push({ itemId: item.id, inputQuantity: Math.abs(varianceQuantity), inputUnitCode: item.unit, inputUnitCost: 0 });
         }
+        if (deferredSurplus) await tx.stocktakeSession.update({ where: { id: stocktake.id }, data: { explosionStatus: EXPLOSION_PENDING } });
         const docs = [];
         if (inboundLines.length > 0) docs.push(await postInventoryTransaction(tx, {
           code: `${stocktake.code}-N`,
@@ -1150,6 +1196,10 @@ export async function POST(request: Request) {
       assertBranchAccess(auth.session, stocktake.branchCode);
       if (stocktake.status !== "APPROVED") businessError(`Phiếu kiểm kê ${stocktake.code} đang ở trạng thái ${stocktake.status}, chưa duyệt nên không có gì để mở lại.`);
       await assertPeriodOpen({ date: stocktake.stocktakeDate, branchCode: stocktake.branchCode }, "mở lại phiếu kiểm kê");
+      const explodedRun = explodedRunOf(stocktake.explosionStatus);
+      if (explodedRun) {
+        businessError(`Phần kiểm dư bán thành phẩm của phiếu ${stocktake.code} đã rã BOM trong lần rã ${explodedRun}. Hoàn tác lần rã đó ở tab Chế biến trước khi mở lại phiếu.`);
+      }
 
       const documents = await prisma.inventoryTransaction.findMany({
         where: { referenceType: "STOCKTAKE", referenceId: stocktake.id },
@@ -1189,7 +1239,8 @@ export async function POST(request: Request) {
 
       const result = await prisma.stocktakeSession.update({
         where: { id: stocktakeId },
-        data: { status: "DRAFT", approvedBy: null, approvedAt: null },
+        // Phần kiểm dư đang chờ rã cũng bỏ khỏi hàng chờ: duyệt lại mới tính lại.
+        data: { status: "DRAFT", approvedBy: null, approvedAt: null, explosionStatus: null },
         include: { lines: { include: { item: true } } },
       });
       await writeAuditLog({ session: auth.session, module: menuHref, action: "REOPEN_STOCKTAKE", entityType: "StocktakeSession", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { reversedDocuments: documents.map((document) => document.code), reversals } });
@@ -1245,12 +1296,31 @@ export async function POST(request: Request) {
         distinct: ["inventoryStatus"],
         select: { inventoryStatus: true },
       });
-      const rerunCodes = postedStatuses.map((row) => (row.inventoryStatus || "").slice("POSTED:".length)).filter(Boolean);
+      // Điều chuyển / kiểm kê trong khoảng ngày đã rã cũng kéo lần rã của chúng vào rã lại.
+      const [postedTransfers, postedStocktakes] = await Promise.all([
+        prisma.inventoryTransaction.findMany({
+          where: { branchCode, deletedAt: null, transactionType: "DIEU_CHUYEN", transactionDate: { gte: dateFrom, lte: rangeEnd }, explosionStatus: { startsWith: "POSTED:RA-" } },
+          distinct: ["explosionStatus"],
+          select: { explosionStatus: true },
+        }),
+        prisma.stocktakeSession.findMany({
+          where: { branchCode, deletedAt: null, stocktakeDate: { gte: dateFrom, lte: rangeEnd }, explosionStatus: { startsWith: "POSTED:RA-" } },
+          distinct: ["explosionStatus"],
+          select: { explosionStatus: true },
+        }),
+      ]);
+      const rerunCodes = [...new Set([
+        ...postedStatuses.map((row) => (row.inventoryStatus || "").slice("POSTED:".length)),
+        ...[...postedTransfers, ...postedStocktakes].map((row) => explodedRunOf(row.explosionStatus) || ""),
+      ].filter(Boolean))];
       const rerunRuns: AffectedExplosionRun[] = [];
       for (const runCode of rerunCodes) {
+        // Ngày chứng từ của lần rã = ngày MUỘN nhất trên phiếu (phiếu điều chuyển / kiểm kê của
+        // lần rã mang ngày riêng của chúng, sớm hơn ngày cuối khoảng rã).
         const doc = await prisma.inventoryTransaction.findFirst({
           where: { referenceType: "PRODUCTION", referenceCode: runCode, deletedAt: null },
           select: { branchCode: true, transactionDate: true },
+          orderBy: { transactionDate: "desc" },
         });
         rerunRuns.push({ runCode, branchCode: doc?.branchCode || branchCode, date: doc?.transactionDate || dateTo, productCodes: [] });
       }
@@ -1265,12 +1335,19 @@ export async function POST(request: Request) {
           where: { inventoryStatus: { in: rerunCodes.map((code) => `POSTED:${code}`) }, deletedAt: null },
           _count: { _all: true },
         });
+        const statuses = rerunCodes.map((code) => `POSTED:${code}`);
+        const [transferCounts, stocktakeCounts] = await Promise.all([
+          prisma.inventoryTransaction.groupBy({ by: ["explosionStatus"], where: { explosionStatus: { in: statuses }, deletedAt: null }, _count: { _all: true } }),
+          prisma.stocktakeSession.groupBy({ by: ["explosionStatus"], where: { explosionStatus: { in: statuses }, deletedAt: null }, _count: { _all: true } }),
+        ]);
         return NextResponse.json({
           needsRerunConfirm: true,
           runs: rerunRuns.map((run) => ({
             runCode: run.runCode,
             date: run.date,
             revenueRows: rowCounts.find((row) => row.inventoryStatus === `POSTED:${run.runCode}`)?._count._all || 0,
+            transfers: transferCounts.find((row) => row.explosionStatus === `POSTED:${run.runCode}`)?._count._all || 0,
+            stocktakes: stocktakeCounts.find((row) => row.explosionStatus === `POSTED:${run.runCode}`)?._count._all || 0,
           })),
         }, { status: 409 });
       }
@@ -1303,7 +1380,7 @@ export async function POST(request: Request) {
         if (reruns.length > 0) {
           return NextResponse.json({ reruns: rerunSummary, runCode: null, documentCount: reruns.reduce((sum, rerun) => sum + rerun.documents.length, 0) });
         }
-        businessError("Không có dòng doanh thu nào đang chờ rã nguyên liệu trong khoảng ngày đã chọn.");
+        businessError("Không có dòng doanh thu, phiếu điều chuyển hay kiểm kê bán thành phẩm nào đang chờ rã trong khoảng ngày đã chọn.");
       }
       // Dòng không theo dõi tồn kho đã được thả khỏi hàng chờ (transaction trên đã commit) —
       // báo lỗi sau khi commit để lần bấm sau không gặp lại chúng.
@@ -1313,7 +1390,7 @@ export async function POST(request: Request) {
       if (outcome.kind === "ALL_SKIPPED") {
         businessError(`Cả ${outcome.skippedRows} dòng doanh thu trong khoảng ngày này đều thuộc nhóm doanh thu không theo dõi tồn kho — đã bỏ khỏi hàng chờ, không có gì để rã.`);
       }
-      const { plan, negativeItems, zeroCostItems, undecidedProducts } = outcome;
+      const { plan, negativeItems, zeroCostItems, undecidedProducts, sources, keptPriceTransfers } = outcome;
 
       await writeAuditLog({
         session: auth.session, module: menuHref, action: "EXPLODE_PRODUCTION",
@@ -1322,6 +1399,8 @@ export async function POST(request: Request) {
           dateFrom, dateTo, ...outcome.warehouses,
           revenueRows: outcome.revenueRows,
           skippedRows: outcome.skippedRows,
+          sources: sources.map((source) => source.code),
+          keptPriceTransfers,
           undecidedProducts,
           negativeItems,
           zeroCostItems,
@@ -1335,6 +1414,9 @@ export async function POST(request: Request) {
         documentCount: outcome.documents.length,
         revenueRows: outcome.revenueRows,
         skippedRows: outcome.skippedRows,
+        transferCount: sources.filter((source) => source.kind === "TRANSFER").length,
+        stocktakeCount: sources.filter((source) => source.kind === "STOCKTAKE").length,
+        keptPriceTransfers,
         // Số món phải dùng kho mặc định vì không suy được bếp/bar — để màn hình nhắc người dùng
         // gán Nhóm doanh thu cho những mã này.
         undecidedCount: undecidedProducts.length,
@@ -1508,6 +1590,8 @@ export async function POST(request: Request) {
           where: { inventoryStatus: `POSTED:${runCode}` },
           data: { inventoryStatus: "PENDING" },
         });
+        // Điều chuyển / kiểm dư bán thành phẩm của lần rã về lại hàng chờ.
+        await releaseExplosionSources(tx, runCode);
       }, { timeout: 60000 });
 
       await writeAuditLog({
@@ -1822,6 +1906,11 @@ export async function PATCH(request: Request) {
         || (isTransfer && transactionDate.getTime() !== transaction.transactionDate.getTime());
 
       if (body.lines !== undefined && editedLines.length === 0) businessError("Phiếu phải còn ít nhất một dòng mặt hàng");
+      // Điều chuyển đã rã BOM: phiếu chế biến của lần rã tính theo đúng số / kho / ngày này.
+      const transferRun = explodedRunOf(transaction.explosionStatus);
+      if (rewritesLines && transferRun) {
+        businessError(`Phiếu ${transaction.code} đã rã BOM trong lần rã ${transferRun}. Hoàn tác lần rã đó ở tab Chế biến rồi mới sửa số lượng, kho hay ngày.`);
+      }
 
       /**
        * Điều chuyển: cửa hàng nhận đi theo KHO NHẬN, đổi kho nhận sang nhà hàng khác thì phiếu
@@ -1910,8 +1999,12 @@ export async function PATCH(request: Request) {
             include: { lines: { include: { item: true } } },
           });
 
-        // Điều chuyển: cặp công nợ nội bộ theo trị giá và phạm vi mới của phiếu.
-        if (isTransfer) return (await syncTransferInternalDebt(tx, updated.id)).transaction;
+        // Điều chuyển: cặp công nợ nội bộ theo trị giá và phạm vi mới của phiếu; dòng đổi thì
+        // hàng chờ rã tính lại (thêm / bỏ bán thành phẩm).
+        if (isTransfer) {
+          await refreshTransferExplosionStatus(tx, updated.id);
+          return (await syncTransferInternalDebt(tx, updated.id)).transaction;
+        }
         // Công nợ nhập mua theo số mới: sửa khoản đang có, bỏ NCC thì thu khoản nợ về.
         await syncPurchasePayable(tx, { ...updated, partnerCode }, { importBatchId: transaction.importBatchId });
         return updated;
@@ -2156,6 +2249,10 @@ export async function DELETE(request: Request) {
       }
       if (await isPeriodLocked(transaction.transactionDate, transaction.branchCode)) {
         businessError(`Kỳ kế toán của phiếu ${transaction.code} đã khóa nên không thể xoá.`);
+      }
+      const transferRun = explodedRunOf(transaction.explosionStatus);
+      if (transferRun) {
+        businessError(`Phiếu ${transaction.code} đã rã BOM trong lần rã ${transferRun}. Hoàn tác lần rã đó ở tab Chế biến trước khi xoá phiếu.`);
       }
 
       // Phiếu điều chuyển liên nhà hàng: phải thu hồi được cặp công nợ nội bộ trước.

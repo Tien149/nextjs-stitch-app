@@ -25,6 +25,7 @@ import { openingAssetRecordData } from "@/lib/opening-asset";
 import { assertAssetCodeAvailable, nextAssetCode, nextAssetLot } from "@/lib/asset-code-generator";
 import { assetAcquisitionJournalCode, assetPayableCode, distributeStocktakeCount } from "@/lib/asset-lot";
 import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
+import { EXPLOSION_PENDING, explodedRunOf, semiFinishedWithRecipeChecker } from "@/lib/explosion-sources";
 import { nextStockDocCode, nextStocktakeCode } from "@/lib/inventory-stock";
 import {
   WALLET_CARD_FEE_CATEGORY_CODE,
@@ -1641,6 +1642,10 @@ export async function commitImport(input: CommitInput) {
         });
         const inboundLines = [];
         const outboundLines = [];
+        // Kiểm DƯ bán thành phẩm có định lượng chờ rã BOM thay vì nhập kiểm kê — cùng luật với
+        // duyệt kiểm kê trên màn hình (khách chốt 28/09/2026).
+        const isExplodable = await semiFinishedWithRecipeChecker(tx as unknown as TxClient, asText(first.values.branch_code));
+        let deferredSurplus = false;
         for (const row of rows) {
           const item = await tx.inventoryItem.findUnique({ where: { code: asText(row.values.item_code).toUpperCase() } });
           if (!item) throw new Error(`Dong ${row.rowNumber}: Khong tim thay mat hang ${asText(row.values.item_code)}`);
@@ -1659,12 +1664,15 @@ export async function commitImport(input: CommitInput) {
           // nhập giá 0 là giá trị kho sai và giá vốn món ăn theo sai vĩnh viễn.
           const declaredUnitCost = asNumber(row.values.unit_cost);
           const surplusUnitCost = (balance?.averageCost || 0) > 0 ? balance?.averageCost || 0 : declaredUnitCost;
-          if (varianceQuantity > 0 && surplusUnitCost <= 0) {
+          const surplusToExplode = varianceQuantity > 0 && isExplodable(item);
+          if (varianceQuantity > 0 && !surplusToExplode && surplusUnitCost <= 0) {
             throw new Error(`Dong ${row.rowNumber}: ${item.code} chua co gia von trong kho — khai cot "Don gia" de ghi nhan phan thua`);
           }
-          if (varianceQuantity > 0) inboundLines.push({ itemId: item.id, inputQuantity: varianceQuantity, inputUnitCode: item.unit, inputUnitCost: surplusUnitCost });
+          if (surplusToExplode) deferredSurplus = true;
+          else if (varianceQuantity > 0) inboundLines.push({ itemId: item.id, inputQuantity: varianceQuantity, inputUnitCode: item.unit, inputUnitCost: surplusUnitCost });
           if (varianceQuantity < 0) outboundLines.push({ itemId: item.id, inputQuantity: Math.abs(varianceQuantity), inputUnitCode: item.unit, inputUnitCost: 0 });
         }
+        if (deferredSurplus) await tx.stocktakeSession.update({ where: { id: stocktake.id }, data: { explosionStatus: EXPLOSION_PENDING } });
         if (inboundLines.length > 0) await postInventoryTransaction(tx, {
           importBatchId: batch.id,
           code: `${stocktake.code}-N`,
@@ -2753,6 +2761,15 @@ type UnwindInventoryTransaction = {
 
 async function unwindInventoryTransactions(tx: RawTxClient, transactions: UnwindInventoryTransaction[]) {
   if (transactions.length === 0) return;
+  // Điều chuyển bán thành phẩm đã rã BOM: phiếu chế biến của lần rã dựa trên số chuyển này,
+  // gỡ phiếu mà để phiếu chế biến lại là nguyên liệu bị trừ oan.
+  const exploded = await tx.inventoryTransaction.findFirst({
+    where: { id: { in: transactions.map((transaction) => transaction.id) }, explosionStatus: { startsWith: "POSTED:" } },
+    select: { code: true, explosionStatus: true },
+  });
+  if (exploded) {
+    throw new Error(`Phiếu điều chuyển ${exploded.code} đã rã BOM trong lần rã ${explodedRunOf(exploded.explosionStatus)}, không thể rollback lô import. Hoàn tác lần rã ở tab Chế biến trước.`);
+  }
   // Phiếu điều chuyển liên nhà hàng kéo theo cặp công nợ nội bộ: đã gạch nợ thì phải
   // hoàn tác phiếu gạch trước, chưa gạch thì xoá cứng cùng lô.
   const internalDebtCodes = transactions.flatMap((transaction) =>
@@ -2842,6 +2859,13 @@ async function rollbackStocktake(tx: RawTxClient, batchId: string) {
   });
   const stocktakeIds = Array.from(new Set(targets.map((target) => target.targetId).filter(Boolean))) as string[];
   if (stocktakeIds.length > 0) {
+    const exploded = await tx.stocktakeSession.findFirst({
+      where: { id: { in: stocktakeIds }, explosionStatus: { startsWith: "POSTED:" } },
+      select: { code: true, explosionStatus: true },
+    });
+    if (exploded) {
+      throw new Error(`Phiếu kiểm kê ${exploded.code} đã rã BOM phần kiểm dư trong lần rã ${explodedRunOf(exploded.explosionStatus)}, không thể rollback lô import. Hoàn tác lần rã ở tab Chế biến trước.`);
+    }
     await tx.stocktakeSession.deleteMany({ where: { id: { in: stocktakeIds } } });
   }
 }

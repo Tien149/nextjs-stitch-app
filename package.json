@@ -39,6 +39,7 @@
     "test:transfer-unit-cost": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-transfer-unit-cost.mjs",
     "test:negative-stock": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-negative-stock-issue.mjs",
     "test:production-explosion": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-production-explosion.mjs",
+    "test:explosion-sources": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-explosion-sources.mjs",
     "test:wallet-settlement": "node --experimental-strip-types scripts/test-wallet-settlement-allocation.mjs",
     "test:wallet-fee-guard": "node --experimental-strip-types --no-warnings --test scripts/test-wallet-fee-rate-guard.mjs",
     "test:other-income-expense": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-voucher-other-income-expense.mjs",

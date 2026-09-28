@@ -692,6 +692,9 @@ model StocktakeSession {
   approvedBy    String?
   approvedAt    DateTime?
   note          String?
+  /// Rã BOM cho phần kiểm DƯ của bán thành phẩm có định lượng (khách chốt 28/09/2026): null =
+  /// không có gì để rã; "PENDING" = chờ nút Rã ở tab Chế biến; "POSTED:RA-..." = đã rã.
+  explosionStatus String?
   createdBy     String?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
@@ -705,6 +708,7 @@ model StocktakeSession {
   @@index([warehouseCode])
   @@index([status])
   @@index([stocktakeDate])
+  @@index([explosionStatus])
   @@index([deletedAt])
 }
 
@@ -760,6 +764,10 @@ model InventoryTransaction {
   referenceId     String?
   referenceCode   String?
   status          String   @default("POSTED")
+  /// Điều chuyển có bán thành phẩm có định lượng: kho nguồn phải chế biến đúng số chuyển đi
+  /// (khách chốt 28/09/2026). null = không có gì để rã; "PENDING" = chờ nút Rã ở tab Chế biến;
+  /// "POSTED:RA-..." = đã rã trong lần rã đó.
+  explosionStatus String?
   partnerCode     String?
   note            String?
   createdBy       String?
@@ -779,6 +787,7 @@ model InventoryTransaction {
   @@index([toWarehouseCode])
   @@index([toBranchCode])
   @@index([importBatchId])
+  @@index([explosionStatus])
   @@index([deletedAt])
 }
 
