@@ -221,7 +221,7 @@ export const PNL_STATEMENT_LINES: Array<{ key: PnlLineKey | "grossProfit" | "ebi
   { key: "ebitda", label: "7. Lợi nhuận hoạt động", subtotal: true },
   { key: "otherIncome", label: "8. Thu nhập khác", subtotal: false },
   { key: "otherExpense", label: "9. Chi phí khác", subtotal: false },
-  { key: "netProfit", label: "10. Lợi nhuận ròng", subtotal: true },
+  { key: "netProfit", label: "10. Lợi nhuận vận hành", subtotal: true },
 ];
 
 export type PnlCatalog = {

@@ -11,7 +11,7 @@ import { bucketOperatingCost, bucketSum, cumulative, finalizeBucket, lastPicked,
  * Màn "Giả định tài chính" (what-if) học theo phần mềm mẫu: bảng kịch bản bên trái với các biến
  * số kéo thanh trượt (% tăng/giảm doanh thu, giá vốn, nhân sự, OPEX, khấu hao, áp dụng từ tháng
  * nào), bên phải là 5 thẻ Kế hoạch / Thực đạt / Giả định, phân tích hòa vốn theo kịch bản,
- * chart LN ròng KH vs kịch bản vs thực đạt, độ lệch LN ròng theo cửa hàng và bảng biến động
+ * chart LN vận hành KH vs kịch bản vs thực đạt, độ lệch LN vận hành theo cửa hàng và bảng biến động
  * P&L các tháng bị tác động. Tính ngay trên trình duyệt, không ghi vào kế hoạch.
  */
 
@@ -58,7 +58,7 @@ export default function ScenarioTab({ data, picked, onChangePicked }: { data: Pl
     { label: "Tổng doanh thu", tone: "blue", income: true, plan: bucketSum(data.plans, "revenue", picked), actual: bucketSum(data.totals, "revenue", picked), what: bucketSum(scenario, "revenue", picked) },
     { label: "Tổng lợi nhuận gộp", tone: "emerald", income: true, plan: bucketSum(data.plans, "grossProfit", picked), actual: bucketSum(data.totals, "grossProfit", picked), what: bucketSum(scenario, "grossProfit", picked) },
     { label: "Chi phí hoạt động (OPEX)", tone: "rose", income: false, plan: bucketOperatingCost(data.plans, picked), actual: bucketOperatingCost(data.totals, picked), what: bucketOperatingCost(scenario, picked) },
-    { label: "Tổng lợi nhuận ròng", tone: "indigo", income: true, plan: bucketSum(data.plans, "netProfit", picked), actual: bucketSum(data.totals, "netProfit", picked), what: bucketSum(scenario, "netProfit", picked) },
+    { label: "Tổng lợi nhuận vận hành", tone: "indigo", income: true, plan: bucketSum(data.plans, "netProfit", picked), actual: bucketSum(data.totals, "netProfit", picked), what: bucketSum(scenario, "netProfit", picked) },
   ];
   const netDelta = bucketSum(scenario, "netProfit", picked) - bucketSum(base, "netProfit", picked);
 
@@ -163,7 +163,7 @@ export default function ScenarioTab({ data, picked, onChangePicked }: { data: Pl
               );
             })}
             <div className={`rounded-xl border p-3.5 grid place-items-center text-center ${netDelta >= 0 ? "bg-emerald-50 border-emerald-200" : "bg-rose-50 border-rose-200"}`}>
-              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Độ lệch của tổng lợi nhuận ròng</p>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Độ lệch của tổng lợi nhuận vận hành</p>
               <p className={`mt-1 font-extrabold leading-tight tabular-nums ${statValueTextClass(signedMoney(netDelta))} ${netDelta >= 0 ? "text-emerald-600" : "text-rose-600"}`}>{signedMoney(netDelta)}</p>
               <p className="text-[10px] text-slate-500">so với {baseLabel.toLowerCase()}, cộng {monthPickSummary(picked)}</p>
             </div>
@@ -188,25 +188,25 @@ export default function ScenarioTab({ data, picked, onChangePicked }: { data: Pl
           </div>
 
           <div className="grid xl:grid-cols-2 gap-4">
-            <Card title="Lợi nhuận ròng: So sánh giả định và kế hoạch gốc" subtitle="Cột nhạt = gốc, cột đậm = kịch bản, đường = thực đạt" icon="bar_chart" bodyClassName="px-2 pb-3">
+            <Card title="Lợi nhuận vận hành: So sánh giả định và kế hoạch gốc" subtitle="Cột nhạt = gốc, cột đậm = kịch bản, đường = thực đạt" icon="bar_chart" bodyClassName="px-2 pb-3">
               <MixedChart
                 labels={monthHeaders}
                 bars={[
-                  { name: `LN ròng ${baseLabel}`, values: base.map((bucket) => bucket.netProfit), color: "#c7d2fe" },
-                  { name: "LN ròng kịch bản", values: scenario.map((bucket) => bucket.netProfit), color: "#4f46e5" },
+                  { name: `LN vận hành ${baseLabel}`, values: base.map((bucket) => bucket.netProfit), color: "#c7d2fe" },
+                  { name: "LN vận hành kịch bản", values: scenario.map((bucket) => bucket.netProfit), color: "#4f46e5" },
                 ]}
-                lines={[{ name: "LN ròng thực đạt", values: data.totals.map((bucket, index) => (index <= lastPicked(picked) ? bucket.netProfit : Number.NaN)), color: "#059669" }]}
+                lines={[{ name: "LN vận hành thực đạt", values: data.totals.map((bucket, index) => (index <= lastPicked(picked) ? bucket.netProfit : Number.NaN)), color: "#059669" }]}
                 height={280}
               />
             </Card>
-            <Card title="Độ lệch của tổng lợi nhuận ròng theo cửa hàng" subtitle={`Kịch bản trừ ${baseLabel.toLowerCase()}, cộng ${monthPickSummary(picked)}`} icon="storefront" bodyClassName="px-2 pb-3">
+            <Card title="Độ lệch của tổng lợi nhuận vận hành theo cửa hàng" subtitle={`Kịch bản trừ ${baseLabel.toLowerCase()}, cộng ${monthPickSummary(picked)}`} icon="storefront" bodyClassName="px-2 pb-3">
               {branchDeviation.length > 0 ? <HorizontalBarChart rows={branchDeviation} height={Math.max(200, 40 * branchDeviation.length + 60)} /> : <p className="py-10 text-center text-sm text-slate-400">Chưa có dữ liệu theo cửa hàng.</p>}
             </Card>
           </div>
 
-          <Card title="Biến động P&L các tháng tác động" subtitle={`Từ tháng ${fromMonth + 1} tới hết năm — doanh thu và lợi nhuận ròng gốc so với kịch bản`} icon="table_rows" bodyClassName="overflow-x-auto">
+          <Card title="Biến động P&L các tháng tác động" subtitle={`Từ tháng ${fromMonth + 1} tới hết năm — doanh thu và lợi nhuận vận hành gốc so với kịch bản`} icon="table_rows" bodyClassName="overflow-x-auto">
             <table className="w-full text-left text-xs">
-              <thead><tr className="text-[10px] uppercase tracking-wide text-slate-500 border-b border-slate-200"><th className="px-4 py-2.5 font-bold">Tháng</th><th className="px-3 py-2.5 font-bold text-right">Doanh thu gốc</th><th className="px-3 py-2.5 font-bold text-right">Doanh thu kịch bản</th><th className="px-3 py-2.5 font-bold text-right">LN gộp kịch bản</th><th className="px-3 py-2.5 font-bold text-right">LN ròng gốc</th><th className="px-3 py-2.5 font-bold text-right">LN ròng kịch bản</th><th className="px-3 py-2.5 font-bold text-right">Δ LN ròng</th><th className="px-3 py-2.5 font-bold text-right">Biên LN ròng</th></tr></thead>
+              <thead><tr className="text-[10px] uppercase tracking-wide text-slate-500 border-b border-slate-200"><th className="px-4 py-2.5 font-bold">Tháng</th><th className="px-3 py-2.5 font-bold text-right">Doanh thu gốc</th><th className="px-3 py-2.5 font-bold text-right">Doanh thu kịch bản</th><th className="px-3 py-2.5 font-bold text-right">LN gộp kịch bản</th><th className="px-3 py-2.5 font-bold text-right">LN vận hành gốc</th><th className="px-3 py-2.5 font-bold text-right">LN vận hành kịch bản</th><th className="px-3 py-2.5 font-bold text-right">Δ LN vận hành</th><th className="px-3 py-2.5 font-bold text-right">Biên LN vận hành</th></tr></thead>
               <tbody>
                 {impactedMonths.map((index) => {
                   const delta = scenario[index].netProfit - base[index].netProfit;

@@ -27,10 +27,10 @@ const LINE_STYLE: Record<string, LineStyle> = {
   ebitda: { tone: "violet", icon: "functions", title: "LỢI NHUẬN HOẠT ĐỘNG", band: "", total: "bg-violet-200/60 text-violet-900" },
   otherIncome: { tone: "teal", icon: "savings", title: "THU NHẬP KHÁC", band: "bg-teal-50 text-teal-700", total: "bg-teal-100 text-teal-900" },
   otherExpense: { tone: "rose", icon: "money_off", title: "CHI PHÍ KHÁC", band: "bg-rose-50 text-rose-700", total: "bg-rose-100 text-rose-900" },
-  netProfit: { tone: "indigo", icon: "workspace_premium", title: "LỢI NHUẬN RÒNG", band: "", total: "bg-indigo-200/60 text-indigo-900" },
+  netProfit: { tone: "indigo", icon: "workspace_premium", title: "LỢI NHUẬN VẬN HÀNH", band: "", total: "bg-indigo-200/60 text-indigo-900" },
 };
 const INCOME_LINES = new Set(["revenue", "otherIncome", "grossProfit", "ebitda", "netProfit"]);
-const RATIO_AFTER: Record<string, string> = { grossProfit: "Tỷ suất LN gộp", ebitda: "Tỷ suất LN hoạt động", netProfit: "Tỷ suất LN ròng" };
+const RATIO_AFTER: Record<string, string> = { grossProfit: "Tỷ suất LN gộp", ebitda: "Tỷ suất LN hoạt động", netProfit: "Tỷ suất LN vận hành" };
 
 const isEmptyNode = (node: { months: number[]; plan: number[] | null }) =>
   node.months.every((value) => Math.abs(value) <= 0.5) && (!node.plan || node.plan.every((value) => Math.abs(value) <= 0.5));
@@ -393,7 +393,7 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
           <span className="flex items-center gap-1"><span className="rounded bg-emerald-50 text-emerald-700 px-1.5 py-0.5 font-semibold">900.000 đ</span> thực đạt tốt hơn kế hoạch</span>
           <span className="flex items-center gap-1"><span className="rounded bg-rose-50 text-rose-700 px-1.5 py-0.5 font-semibold">1.200.000 đ</span> thực đạt xấu hơn kế hoạch</span>
           <span className="flex items-center gap-1"><Tag tone="slate">CĐ</Tag> cố định · <Tag tone="violet">MKT</Tag> marketing · <Tag tone="amber">BĐ</Tag> biến đổi</span>
-          <span className="ml-auto">{money(Math.round(data.statement.find((line) => line.key === "netProfit")?.total || 0))} đ lợi nhuận ròng thực tế cả năm</span>
+          <span className="ml-auto">{money(Math.round(data.statement.find((line) => line.key === "netProfit")?.total || 0))} đ lợi nhuận vận hành thực tế cả năm</span>
         </div>
       </Card>
     </div>

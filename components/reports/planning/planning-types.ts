@@ -12,7 +12,7 @@ export type PnlBucket = {
   otherOpex: number;
   otherIncome: number;
   otherExpense: number;
-  /** Tiền mua tài sản/CCDC trong tháng — dòng thông tin, KHÔNG trừ vào EBITDA hay lợi nhuận ròng. */
+  /** Tiền mua tài sản/CCDC trong tháng — dòng thông tin, KHÔNG trừ vào EBITDA hay lợi nhuận vận hành. */
   capex: number;
   grossProfit: number;
   opexBeforeDepreciation: number;
@@ -76,7 +76,7 @@ export const LINE_SHORT_LABEL: Record<string, string> = {
   otherIncome: "Thu nhập khác",
   otherExpense: "Chi phí khác",
   capex: "Chi phí đầu tư ban đầu (CAPEX)",
-  netProfit: "Lợi nhuận ròng",
+  netProfit: "Lợi nhuận vận hành",
 };
 
 /** Chi phí hoạt động = nhân sự + OPEX (OPEX đã gồm khấu hao) — mọi thứ giữa LN gộp và LN hoạt động. */

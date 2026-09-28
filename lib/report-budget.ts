@@ -513,7 +513,7 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     unpostedMonths,
     /** Công nợ phải trả khai "phát sinh trong kỳ" mà chưa ghi sổ: chi phí chưa lên P&L. */
     unpostedDebts,
-    /** Kế hoạch 12 tháng đã cộng mọi cửa hàng, đủ các dòng suy ra (LN gộp, EBITDA, LN ròng). */
+    /** Kế hoạch 12 tháng đã cộng mọi cửa hàng, đủ các dòng suy ra (LN gộp, EBITDA, LN vận hành). */
     plans,
     /** Thực tế + kế hoạch từng cửa hàng — bảng hiệu quả theo cửa hàng và hòa vốn theo cửa hàng. */
     byBranch,

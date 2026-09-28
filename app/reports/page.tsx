@@ -250,7 +250,7 @@ const metricLabels: Record<string, string> = {
   otherOpex: "Chi phí hoạt động (OPEX)",
   opexBeforeDepreciation: "Chi phí hoạt động (nhân sự + OPEX)",
   ebitda: "Lợi nhuận hoạt động",
-  netProfit: "Lợi nhuận ròng",
+  netProfit: "Lợi nhuận vận hành",
 };
 const reportTabs = moduleTabs["/reports"];
 const cashDepositTargetLabels: Record<"PKT" | "CO", string> = { PKT: "Nộp Tiền PKT", CO: "Nộp Tiền Cô" };
