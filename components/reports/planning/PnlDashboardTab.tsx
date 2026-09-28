@@ -3,14 +3,15 @@
 import React, { useState } from "react";
 import { storeLabel } from "@/lib/branch-labels";
 import { opexGroupRank } from "@/lib/pnl-ordering";
-import { DonutLegendChart, MixedChart, MoneyLineChart, PercentLineChart, ShareDonutChart } from "@/components/charts/ReportCharts";
+import { DonutLegendChart, MoneyLineChart, ShareDonutChart } from "@/components/charts/ReportCharts";
 import PayrollBudgetCard from "@/components/reports/planning/PayrollBudgetCard";
+import PnlTrendCard from "@/components/reports/planning/PnlTrendCard";
 import { Card, MonthChips, NoPlanNotice, PlanActualCell, RateChip, Segmented, StatCard, Tag, fmtMoney, ratioOf, type Tone } from "@/components/reports/planning/planning-ui";
 import { bucketOperatingCost, bucketSum, monthPickSummary, nodeValue, type MonthPick, type PlanningData, type PnlBucket, type Series, type StatementLine } from "@/components/reports/planning/planning-types";
 
 /**
  * Màn "Dashboard P&L" học theo phần mềm mẫu: chip lũy kế tháng, 9 thẻ KPI (số THỰC ĐẠT in to +
- * kế hoạch dòng phụ + % hoàn thành), chart Doanh thu & LN vận hành KH/TT, chart % biên lợi nhuận, thanh
+ * kế hoạch dòng phụ + % hoàn thành), chart biến động Doanh thu – Chi phí – LN – EBITDA kèm ghi chú tháng, thanh
  * "cơ cấu 1 đồng doanh thu", ba donut cơ cấu, bảng hiệu quả theo cửa hàng. Cuối màn giữ
  * nguyên bộ chart theo file của chị Bình (tỷ trọng DT theo bộ phận/kênh, COGS so DT, lương so ngân sách theo bộ phận).
  */
@@ -69,8 +70,6 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
     { label: "Lợi nhuận vận hành", tone: "indigo", income: true, icon: "workspace_premium", actual: actual("netProfit"), plan: plan("netProfit") },
     { label: "EBITDA", tone: "violet", income: true, icon: "monitoring", actual: actual("netProfit") + depreciation.actual, plan: plan("netProfit") + depreciation.plan, note: "Lợi nhuận vận hành + khấu hao" },
   ];
-
-  const marginSeries = (key: "grossProfit" | "netProfit", buckets: PnlBucket[]) => buckets.map((bucket) => (bucket.revenue ? bucket[key] / bucket.revenue : 0));
 
   // Cơ cấu 1 đồng doanh thu (lũy kế): giá vốn / nhân sự / OPEX (đã gồm khấu hao) / phần còn lại là LN.
   const mixBuckets = mixMode === "plan" ? data.plans : data.totals;
@@ -173,32 +172,7 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
         })}
       </div>
 
-      <div className="grid xl:grid-cols-2 gap-4">
-        <Card title="So sánh Doanh thu & Lợi nhuận vận hành" subtitle="Xu hướng kế hoạch và thực tế từng tháng (cả năm)" icon="bar_chart" bodyClassName="px-2 pb-3">
-          <MixedChart
-            labels={monthHeaders}
-            bars={[
-              { name: "Doanh thu KH", values: data.plans.map((bucket) => bucket.revenue), color: "#c7d2fe" },
-              { name: "Doanh thu TT", values: data.totals.map((bucket) => bucket.revenue), color: "#4f46e5" },
-            ]}
-            lines={[
-              { name: "LN vận hành KH", values: data.plans.map((bucket) => bucket.netProfit), color: "#6ee7b7", dashed: true },
-              { name: "LN vận hành TT", values: data.totals.map((bucket) => bucket.netProfit), color: "#059669" },
-            ]}
-          />
-        </Card>
-        <Card title="Chỉ số hiệu quả lợi nhuận (% biên LN)" subtitle="Biên lợi nhuận gộp và vận hành — kế hoạch nét đứt, thực tế nét liền" icon="percent" bodyClassName="px-2 pb-3">
-          <PercentLineChart
-            labels={monthHeaders}
-            series={[
-              { name: "% biên LN gộp KH", values: marginSeries("grossProfit", data.plans), color: "#6ee7b7", dashed: true },
-              { name: "% biên LN gộp TT", values: marginSeries("grossProfit", data.totals), color: "#059669" },
-              { name: "% biên LN vận hành KH", values: marginSeries("netProfit", data.plans), color: "#93c5fd", dashed: true },
-              { name: "% biên LN vận hành TT", values: marginSeries("netProfit", data.totals), color: "#2563eb" },
-            ]}
-          />
-        </Card>
-      </div>
+      <PnlTrendCard data={data} picked={picked} monthHeaders={monthHeaders} depreciation={depreciationItem?.months || data.months.map(() => 0)} />
 
       <Card
         title="Cơ cấu 1 đồng doanh thu"

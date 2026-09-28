@@ -7,6 +7,7 @@ import {
   CartesianGrid,
   Cell,
   ComposedChart,
+  LabelList,
   Legend,
   Line,
   LineChart,
@@ -79,6 +80,43 @@ export function MoneyLineChart({ labels, series, height = 280, countMode = false
         {series.map((item, index) => (
           <Line key={item.name} type="monotone" dataKey={item.name} stroke={item.color || CHART_COLORS[index % CHART_COLORS.length]} strokeWidth={2} strokeDasharray={item.dashed ? "6 4" : undefined} dot={{ r: 3 }} />
         ))}
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+
+/**
+ * Chart đường "dứt khoát" cho báo cáo xu hướng nội bộ (khách chốt 28/09/2026: cột là cột,
+ * đường là đường) — nối thẳng giữa các điểm thay vì uốn cong, mỗi điểm in số gọn ngay trên
+ * đầu như slide mẫu. Tháng chưa có số truyền NaN để đường dừng lại chứ không rơi về 0.
+ */
+export function TrendLineChart({ labels, series, height = 340, showValues = true }: { labels: string[]; series: ChartSeries[]; height?: number; showValues?: boolean }) {
+  const rows = toRows(labels, series);
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <LineChart data={rows} margin={{ top: 20, right: 24, bottom: 0, left: 4 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+        <XAxis dataKey="label" {...axisProps} padding={{ left: 16, right: 16 }} />
+        <YAxis {...axisProps} width={60} tickFormatter={(value: number) => compactVnd(value)} />
+        <Tooltip {...tooltipProps} />
+        {/* Giữ thứ tự series như nơi gọi khai báo (mặc định recharts xếp legend theo ABC). */}
+        <Legend wrapperStyle={{ fontSize: 12 }} itemSorter={null} />
+        {series.map((item, index) => {
+          const color = item.color || CHART_COLORS[index % CHART_COLORS.length];
+          return (
+            <Line key={item.name} type="linear" dataKey={item.name} stroke={color} strokeWidth={2.5} strokeDasharray={item.dashed ? "6 4" : undefined} dot={{ r: 3.5, fill: color }} activeDot={{ r: 5 }} connectNulls={false} isAnimationActive={false}>
+              {showValues && (
+                <LabelList
+                  dataKey={item.name}
+                  position="top"
+                  offset={8}
+                  style={{ fontSize: 10, fontWeight: 700, fill: color }}
+                  formatter={(value: unknown) => (value === null || value === undefined ? "" : compactVnd(Number(value)))}
+                />
+              )}
+            </Line>
+          );
+        })}
       </LineChart>
     </ResponsiveContainer>
   );

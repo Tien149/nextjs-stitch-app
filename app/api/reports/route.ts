@@ -5,6 +5,7 @@ import { assertBranchAccess, ensureRevenueComponentCategories, postJournalEntry,
 import { prisma } from "@/lib/prisma";
 import { createMoneySourceMatcher, getBalanceSheet, getCashSourceReport, getCashflowForecast, getPnl, getRevenueLedger, getRevenueLedgerDetail, getRevenueSettlementReport, getTrend, PNL_UNGROUPED_CODE } from "@/lib/reports";
 import { getPayrollBudgetReport, getPnlMatrix, getRevenueTrendReport } from "@/lib/report-budget";
+import { getPnlNotes, savePnlNote } from "@/lib/pnl-note";
 import { apiError, assertPeriodOpen, businessError, cleanText, isPeriodLocked, normalizePeriod, toNumber } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import { createCashierCashMatcher, moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
@@ -1199,7 +1200,7 @@ export async function GET(request: Request) {
     // (Thu chi ngày) vừa là nguồn số của bảng "Đối chiếu tiền vào đã đủ chưa" nằm ở đầu tab
     // Tiền về đủ chưa (chuyển sang 05/09/2026), nên ai có MỘT TRONG HAI tab đều gọi được.
     // "revenue-ledger-detail" là phần xoè chi tiết của chính tab Sổ doanh thu, không phải tab riêng.
-    const subViewTab: Record<string, string> = { "pnl-matrix": "pnl", "revenue-trend": "yoy", "daily-cash": "revenue-settlement", "revenue-ledger-detail": "revenue-ledger" };
+    const subViewTab: Record<string, string> = { "pnl-matrix": "pnl", "pnl-note": "pnl", "revenue-trend": "yoy", "daily-cash": "revenue-settlement", "revenue-ledger-detail": "revenue-ledger" };
     const containerTab = subViewTab[type] || type;
     if (permittedTabs && !permittedTabs.includes(type) && !permittedTabs.includes(containerTab)) {
       return NextResponse.json({ error: "Bạn không có quyền xem báo cáo này" }, { status: 403 });
@@ -1243,6 +1244,7 @@ export async function GET(request: Request) {
     // Ngân sách nhân sự nhận nguyên kỳ: bảng vẫn trải 12 tháng, nhưng form tỷ trọng là bộ có hiệu lực ở tháng đó.
     if (type === "payroll-budget") return NextResponse.json(await getPayrollBudgetReport(period, branchCode));
     if (type === "pnl-matrix") return NextResponse.json(await getPnlMatrix(period.slice(0, 4), branchCode));
+    if (type === "pnl-note") return NextResponse.json({ notes: await getPnlNotes(period.slice(0, 4), branchCode) });
     if (type === "revenue-trend") return NextResponse.json(await getRevenueTrendReport(period, branchCode, 3));
     if (type === "cashflow") return NextResponse.json({ period, branchCode, ...(await getCashflowForecast(period, branchCode, cleanText(params.get("scenario")) || "BASE")) });
     if (type === "balance") return NextResponse.json({ period, branchCode, ...(await getBalanceSheet(period, branchCode)) });
@@ -1468,6 +1470,21 @@ export async function POST(request: Request) {
         metadata: { period, scenario: result.scenario, assumptionType: result.assumptionType, amount: result.amount },
       });
       return NextResponse.json(result);
+    }
+    if (action === "UPSERT_PNL_NOTE") {
+      const note = String(body.note ?? "").trim().slice(0, 5000);
+      const result = await savePnlNote(period, branchCode, note, auth.session.name);
+      await writeAuditLog({
+        session: auth.session,
+        module: "REPORTS",
+        action: note ? "UPSERT_PNL_NOTE" : "DELETE_PNL_NOTE",
+        entityType: "ForecastAssumption",
+        entityId: result?.id || `${period}-${branchCode}-PNL_NOTE`,
+        entityCode: `${period}-PNL_NOTE`,
+        branchCode,
+        metadata: { period, length: note.length },
+      });
+      return NextResponse.json({ ok: true });
     }
     if (action === "UPSERT_TARGET") {
       const metric = cleanText(body.metric);
