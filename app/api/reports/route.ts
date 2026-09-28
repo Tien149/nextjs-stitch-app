@@ -6,7 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { createMoneySourceMatcher, getBalanceSheet, getCashSourceReport, getCashflowForecast, getPnl, getRevenueLedger, getRevenueLedgerDetail, getRevenueSettlementReport, getTrend, PNL_UNGROUPED_CODE } from "@/lib/reports";
 import { getPayrollBudgetReport, getPnlMatrix, getRevenueTrendReport } from "@/lib/report-budget";
 import { getPnlNotes, savePnlNote, toPnlNoteKind } from "@/lib/pnl-note";
-import { apiError, assertPeriodOpen, businessError, cleanText, isPeriodLocked, normalizePeriod, toNumber } from "@/lib/phase3";
+import { apiError, assertPeriodOpen, businessError, cleanText, findClosedPeriod, isPeriodLocked, normalizePeriod, toNumber } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import { createCashierCashMatcher, moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { voucherMatchesShift } from "@/lib/shifts";
@@ -277,17 +277,19 @@ async function getBudgetReport(period: string, branchCode: string) {
   const pnl = await getPnl(period, branchCode);
   const targets = await prisma.reportTarget.findMany({ where: { period, branchCode, deletedAt: null } });
   const targetByMetric = new Map(targets.map((target) => [target.metric, target]));
-  // Ngân sách % doanh thu quy ra tiền theo TARGET doanh thu; song song đó "mức chuẩn"
-  // quy theo doanh thu THỰC TẾ — đúng khái niệm "Lương theo tiêu chuẩn" trong feedback
-  // chị Bình 26/08/2026: doanh thu chạy tới đâu thì ngân sách chi phí co giãn tới đó.
+  // Ngân sách % doanh thu quy ra tiền theo DOANH THU THỰC TẾ của kỳ (khách chốt 28/09/2026;
+  // trước đây theo target doanh thu nên chưa set target thì "Chưa quy đổi được"): doanh thu chạy
+  // tới đâu thì ngân sách chi phí co giãn tới đó — đúng khái niệm "Lương theo tiêu chuẩn" (chị
+  // Bình 26/08/2026). Kỳ chưa có doanh thu thực tế thì mới dùng target doanh thu.
   const revenueTargetValue = targetByMetric.get("revenue")?.targetValue || 0;
+  const percentBase = Math.abs(pnl.total.revenue) > 0.5 ? pnl.total.revenue : revenueTargetValue;
   type Resolved = { target: number; targetMode: string | null; targetPercent: number | null; standard: number | null; hasTarget: boolean };
   const noTarget: Resolved = { target: 0, targetMode: null, targetPercent: null, standard: null, hasTarget: false };
   const resolveTarget = (metric: string): Resolved => {
     const target = targetByMetric.get(metric);
     if (!target) return noTarget;
     if (target.targetMode === "PERCENT_REVENUE" && target.targetPercent) {
-      return { target: revenueTargetValue * target.targetPercent, targetMode: "PERCENT_REVENUE", targetPercent: target.targetPercent, standard: pnl.total.revenue * target.targetPercent, hasTarget: true };
+      return { target: percentBase * target.targetPercent, targetMode: "PERCENT_REVENUE", targetPercent: target.targetPercent, standard: null, hasTarget: true };
     }
     return { target: target.targetValue, targetMode: "AMOUNT", targetPercent: null, standard: null, hasTarget: target.targetValue > 0 };
   };
@@ -443,12 +445,17 @@ async function getBudgetReport(period: string, branchCode: string) {
   return {
     period,
     branchCode,
+    // Kỳ đã khoá sổ: ngân sách chỉ xem, không sửa được (khoá sổ là cửa duy nhất — lib/phase3.ts).
+    locked: Boolean(await findClosedPeriod({ period, branchCode })),
     rows,
     summary: {
       expenseActual: pnl.total.cogs + pnl.total.payroll + pnl.total.capex + pnl.total.otherOpex,
       expenseTarget: BUDGET_EXPENSE_LINES.reduce((sum, key) => sum + (lineTarget[key] || 0), 0),
       revenueActual: pnl.total.revenue,
       revenueTarget: revenueTargetValue,
+      /** Gốc quy đổi các ngân sách % doanh thu: DT thực tế, kỳ chưa có doanh thu thì target DT. */
+      percentBase,
+      percentBaseIsActual: Math.abs(pnl.total.revenue) > 0.5,
     },
   };
 }
@@ -1504,6 +1511,9 @@ export async function POST(request: Request) {
     if (action === "UPSERT_TARGET") {
       const metric = cleanText(body.metric);
       if (!metric) businessError("Thiếu chỉ tiêu KPI");
+      // Sửa lại ngân sách bao nhiêu lần cũng được (dòng % doanh thu, Lợi nhuận gộp, EBITDA tự tính
+      // lại theo số mới lúc xem) — trừ khi kỳ đã khoá sổ.
+      await assertPeriodOpen({ period, branchCode }, "sửa ngân sách");
       // Chỉ nhận đúng hai kiểu khoá: dòng set tổng (revenue/cogs/payroll/cashRemaining)
       // hoặc hạng mục P&L đang khai trong danh mục. Dòng OPEX, Lợi nhuận gộp, LN hoạt động tự cộng/suy ra.
       if (metric.startsWith(PNL_ITEM_METRIC_PREFIX)) {

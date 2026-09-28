@@ -292,18 +292,31 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     payrollInsuranceMonths[monthIndex] += row.companyInsurance;
   }
 
-  // Kế hoạch (ngân sách) từng tháng, quy về tiền: target % doanh thu nhân với target doanh
-  // thu của cùng kỳ + cùng cửa hàng (chưa set target doanh thu thì phần % chưa quy được — để 0).
+  // Kế hoạch (ngân sách) từng tháng, quy về tiền: target % doanh thu nhân với doanh thu THỰC TẾ
+  // của cùng kỳ + cùng cửa hàng; tháng chưa có doanh thu thì nhân với target doanh thu.
   // Hạng mục P&L set riêng (metric "pnlItem:<code>") cộng lên dòng chứa nó; dòng OPEX ưu tiên
   // tổng các hạng mục, chỉ dùng target set thẳng vào dòng khi chưa có hạng mục nào (dữ liệu cũ).
   const revenueTargetByPeriodBranch = new Map<string, number>();
   for (const target of targets) {
     if (target.metric === "revenue") revenueTargetByPeriodBranch.set(`${target.period}|${target.branchCode}`, target.targetValue);
   }
-  const resolveTargetAmount = (target: { period: string; branchCode: string; targetMode: string; targetPercent: number | null; targetValue: number }) =>
-    target.targetMode === "PERCENT_REVENUE" && target.targetPercent
-      ? (revenueTargetByPeriodBranch.get(`${target.period}|${target.branchCode}`) || 0) * target.targetPercent
-      : target.targetValue;
+  /**
+   * Target % doanh thu quy ra tiền theo DOANH THU THỰC TẾ của kỳ (khách chốt 28/09/2026 — cùng
+   * luật với tab Ngân sách): doanh thu chạy tới đâu, ngân sách chi phí co giãn tới đó. Tháng chưa
+   * có doanh thu thực tế (tháng tương lai) thì mới lấy target doanh thu để còn lập kế hoạch.
+   */
+  const actualRevenueOf = (period: string, branch: string) => {
+    const monthIndex = months.indexOf(period);
+    if (monthIndex < 0) return 0;
+    if (branch === "ALL") return totals[monthIndex].revenue;
+    return branchTotals.get(branch)?.[monthIndex]?.revenue || 0;
+  };
+  const resolveTargetAmount = (target: { period: string; branchCode: string; targetMode: string; targetPercent: number | null; targetValue: number }) => {
+    if (target.targetMode !== "PERCENT_REVENUE" || !target.targetPercent) return target.targetValue;
+    const actual = actualRevenueOf(target.period, target.branchCode);
+    const base = Math.abs(actual) > 0.5 ? actual : revenueTargetByPeriodBranch.get(`${target.period}|${target.branchCode}`) || 0;
+    return base * target.targetPercent;
+  };
   const zeros12 = () => Array.from({ length: 12 }, () => 0);
   /** Target hạng mục theo "<phạm vi>|<mã hạng mục>" — gộp lại sau theo cùng luật ALL-trước. */
   const planItemByScope = new Map<string, number[]>();

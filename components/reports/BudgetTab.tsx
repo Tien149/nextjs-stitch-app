@@ -3,6 +3,7 @@
 import React, { useMemo, useState } from "react";
 import CopyableText from "@/components/CopyableText";
 import { Cell, Kpi, PanelHeader, Table, money } from "@/components/reports/report-ui";
+import { MoneyInput } from "@/components/MoneyInput";
 
 /**
  * Tab "Ngân sách" (feedback 03/09/2026): bảng ngân sách bám theo cây hạng mục P&L khai ở
@@ -39,8 +40,14 @@ export type BudgetRow = {
 export type BudgetData = {
   period: string;
   branchCode: string;
+  /** Kỳ đã khoá sổ: chỉ xem, không sửa ngân sách được. */
+  locked?: boolean;
   rows: BudgetRow[];
-  summary: { expenseActual: number; expenseTarget: number; revenueActual: number; revenueTarget: number };
+  summary: {
+    expenseActual: number; expenseTarget: number; revenueActual: number; revenueTarget: number;
+    /** Gốc quy đổi ngân sách % doanh thu: doanh thu thực tế, kỳ chưa có doanh thu thì target DT. */
+    percentBase?: number; percentBaseIsActual?: boolean;
+  };
 };
 
 type DrilldownRow = { id: string; date: string; code: string; accountCode: string; accountName: string; description: string; amount: number };
@@ -193,6 +200,10 @@ export default function BudgetTab({
   };
 
   const revenueTarget = data.summary.revenueTarget;
+  // Ngân sách % doanh thu quy theo DOANH THU THỰC TẾ (khách chốt 28/09/2026); kỳ chưa có doanh thu
+  // thì theo target doanh thu. Dữ liệu cũ chưa có percentBase thì giữ cách cũ.
+  const percentBase = data.summary.percentBase ?? revenueTarget;
+  const percentBaseLabel = data.summary.percentBaseIsActual === false ? "DT kế hoạch" : "DT thực tế";
   const editableCount = data.rows.filter((row) => row.metric).length;
   const setCount = data.rows.filter((row) => row.metric && row.hasTarget).length;
 
@@ -205,6 +216,12 @@ export default function BudgetTab({
         <Kpi label="Ngân sách chi phí" value={data.summary.expenseTarget} icon="price_check" tone="green" />
       </div>
 
+      {data.locked && (
+        <p className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm text-slate-600">
+          <span className="material-symbols-outlined text-base align-middle mr-1">lock</span>
+          Kỳ {period} đã khoá sổ — ngân sách chỉ xem, không sửa được. Mở lại kỳ ở màn Sổ cái Kế toán nếu cần sửa.
+        </p>
+      )}
       <section className="table-panel">
         <PanelHeader
           title="Ngân sách theo hạng mục P&L"
@@ -229,7 +246,7 @@ export default function BudgetTab({
         <div className="max-h-[640px] overflow-auto">
           <Table headers={["Chỉ tiêu / hạng mục P&L", "Thực tế", "Ngân sách / Target", "Chênh lệch", "Tỷ lệ dùng & tiến trình", "Thao tác"]}>
             {visibleRows.map((row) => {
-              const editable = canConfigure && !!row.metric;
+              const editable = canConfigure && !data.locked && !!row.metric;
               const isEditing = editor?.key === row.key;
               const isDrilling = drilldownKey === row.key;
               const rateVal = row.usageRate !== null ? Math.round(row.usageRate * 100) : 0;
@@ -279,9 +296,8 @@ export default function BudgetTab({
                           {row.target || row.targetPercent === null ? `${money(Math.round(row.target))} đ` : <span className="text-amber-600 font-bold">Chưa quy đổi được</span>}
                           {row.targetPercent !== null && (
                             <span className="block text-[11px] font-normal text-slate-500">
-                              = {percentText(row.targetPercent)}% DT kế hoạch
-                              {!row.target && " — set target Doanh thu trước"}
-                              {row.standard !== null && row.standard > 0 && ` · chuẩn theo DT thực tế: ${money(Math.round(row.standard))} đ`}
+                              = {percentText(row.targetPercent)}% {percentBaseLabel}
+                              {!row.target && " — kỳ chưa có doanh thu thực tế, set target Doanh thu để quy đổi"}
                             </span>
                           )}
                           {row.scope === "ROLLUP" && <span className="block text-[11px] font-normal text-slate-500">cộng từ hạng mục</span>}
@@ -367,19 +383,22 @@ export default function BudgetTab({
                           {editor.mode === "PERCENT_REVENUE" ? (
                             <label className="block text-xs font-bold text-slate-600">
                               Tỷ lệ % trên doanh thu
-                              <input autoFocus type="number" min="0" max="100" step="0.1" className="control w-40" value={editor.percent} onChange={(event) => setEditor({ ...editor, percent: event.target.value })} />
+                              {/* step="any": 12,83% vẫn nhập được — step 0.1 làm trình duyệt chặn số lẻ hai chữ số. */}
+                              <input autoFocus type="number" min="0" max="100" step="any" className="control w-40" value={editor.percent} onChange={(event) => setEditor({ ...editor, percent: event.target.value })} />
                               <span className="block text-[11px] font-normal text-slate-500 mt-1">
-                                {revenueTarget
-                                  ? `≈ ${money(Math.round((revenueTarget * (Number(editor.percent) || 0)) / 100))} đ theo target doanh thu kỳ này`
-                                  : "Set target Doanh thu trước để hệ thống quy đổi ra tiền."}
+                                {percentBase
+                                  ? `≈ ${money(Math.round((percentBase * (Number(editor.percent) || 0)) / 100))} đ theo ${percentBaseLabel} kỳ này (${money(Math.round(percentBase))} đ)`
+                                  : "Kỳ chưa có doanh thu thực tế — set target Doanh thu để hệ thống quy đổi ra tiền."}
                               </span>
                             </label>
                           ) : (
                             <label className="block text-xs font-bold text-slate-600">
                               Trị giá (đ)
-                              <input autoFocus type="number" min="0" step="1000" className="control w-52" value={editor.value} onChange={(event) => setEditor({ ...editor, value: event.target.value })} />
-                              {revenueTarget > 0 && Number(editor.value) > 0 && !amountOnly(row) && (
-                                <span className="block text-[11px] font-normal text-slate-500 mt-1">≈ {percentText(Number(editor.value) / revenueTarget)}% target doanh thu</span>
+                              {/* Nhập tới từng đồng (1.690.585.006): ô number cũ đặt step 1000 nên trình duyệt chặn
+                                  mọi số không tròn nghìn và người dùng không lưu lại được (khách báo 28/09/2026). */}
+                              <MoneyInput className="control w-52" value={editor.value} onChange={(value) => setEditor({ ...editor, value })} ariaLabel={`Ngân sách ${row.label}`} />
+                              {percentBase > 0 && Number(editor.value) > 0 && !amountOnly(row) && (
+                                <span className="block text-[11px] font-normal text-slate-500 mt-1">≈ {percentText(Number(editor.value) / percentBase)}% {percentBaseLabel}</span>
                               )}
                             </label>
                           )}
