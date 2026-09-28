@@ -21,6 +21,22 @@ const BRANCH_TONES: Tone[] = ["blue", "rose", "amber", "emerald", "violet", "tea
 type Mode = "plan" | "actual";
 /** Hai cách xem cơ cấu doanh thu (spec khách 07/09/2026): theo nhóm doanh thu, hoặc theo kênh bán. */
 type RevenueView = "group" | "channel";
+/** Chart COGS so với doanh thu (khách yêu cầu 28/09/2026): xem tổng, riêng bếp hoặc riêng bar. */
+type CogsView = "total" | "kitchen" | "bar";
+
+/** Bộ phận Bếp / Bar của một dòng theo mã (KIT/BAR) hoặc tên ("Team Bếp", "DT Team Bar"). */
+function departmentKind(row: { code: string; name: string }): "kitchen" | "bar" | null {
+  const text = `${row.code} ${row.name}`.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/gi, "d").toUpperCase();
+  if (/\bKIT\b|BEP|KITCHEN/.test(text)) return "kitchen";
+  if (/\bBAR\b/.test(text)) return "bar";
+  return null;
+}
+/** Cộng các dòng thuộc cùng một bộ phận thành một đường 12 tháng. */
+function departmentMonths(rows: Array<{ code: string; name: string; months: number[] }>, kind: "kitchen" | "bar", length: number) {
+  return Array.from({ length }, (_, index) => rows
+    .filter((row) => departmentKind(row) === kind)
+    .reduce((sum, row) => sum + (row.months[index] || 0), 0));
+}
 
 function shareOf(line: StatementLine | undefined, picked: MonthPick, mode: Mode) {
   if (!line) return [];
@@ -34,6 +50,7 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
   const [mixMode, setMixMode] = useState<Mode>(data.hasPlan ? "plan" : "actual");
   const [opexMode, setOpexMode] = useState<Mode>("actual");
   const [revenueView, setRevenueView] = useState<RevenueView>("group");
+  const [cogsView, setCogsView] = useState<CogsView>("total");
   const [pieMonth, setPieMonth] = useState<number>(-1);
   const monthHeaders = data.months.map((month) => `T${Number(month.slice(5))}`);
   const actual = (key: keyof PnlBucket) => bucketSum(data.totals, key, picked);
@@ -277,16 +294,27 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
         </Card>
       </div>
       <div className="grid xl:grid-cols-2 gap-4">
-        <Card title="COGS so với doanh thu" subtitle="Giá vốn từng bộ phận và tổng, đặt cạnh doanh thu từng bộ phận và tổng doanh thu." icon="show_chart" bodyClassName="px-2 pb-3">
+        <Card
+          title="COGS so với doanh thu"
+          subtitle={cogsView === "total"
+            ? "Tổng doanh thu, tổng giá vốn và ngân sách giá vốn."
+            : `Doanh thu và giá vốn riêng của ${cogsView === "kitchen" ? "bếp" : "bar"} (giá vốn theo kho ${cogsView === "kitchen" ? "bếp" : "bar"} bị trừ).`}
+          icon="show_chart"
+          right={<Segmented value={cogsView} onChange={setCogsView} options={[{ id: "total", label: "Tổng" }, { id: "kitchen", label: "Bếp" }, { id: "bar", label: "Bar" }]} />}
+          bodyClassName="px-2 pb-3"
+        >
           <MoneyLineChart
             labels={monthHeaders}
-            series={[
-              ...data.cogsByDepartment.slice(0, 3).map((row) => ({ name: `COGS ${row.name}`, values: row.months })),
-              { name: "Tổng COGS", values: data.totals.map((total) => total.cogs) },
-              ...data.revenueSplit.byDepartment.slice(0, 3).map((row) => ({ name: row.name, values: row.months })),
-              { name: "Doanh thu", values: data.totals.map((total) => total.revenue), color: "#84cc16" },
-              ...(data.budgets.cogs.some((value) => value > 0) ? [{ name: "Ngân sách COGS", values: data.budgets.cogs, color: "#94a3b8", dashed: true }] : []),
-            ]}
+            series={cogsView === "total"
+              ? [
+                { name: "Doanh thu", values: data.totals.map((total) => total.revenue), color: "#84cc16" },
+                { name: "Tổng COGS", values: data.totals.map((total) => total.cogs), color: "#f97316" },
+                ...(data.budgets.cogs.some((value) => value > 0) ? [{ name: "Ngân sách COGS", values: data.budgets.cogs, color: "#94a3b8", dashed: true }] : []),
+              ]
+              : [
+                { name: `Doanh thu ${cogsView === "kitchen" ? "bếp" : "bar"}`, values: departmentMonths(data.revenueSplit.byDepartment, cogsView, monthHeaders.length), color: "#84cc16" },
+                { name: `COGS ${cogsView === "kitchen" ? "bếp" : "bar"}`, values: departmentMonths(data.cogsByDepartment, cogsView, monthHeaders.length), color: "#f97316" },
+              ]}
           />
         </Card>
         <PayrollBudgetCard year={data.year} branchCode={data.branchCode} labels={monthHeaders} picked={picked} fallbackBudget={data.budgets.payroll} />
