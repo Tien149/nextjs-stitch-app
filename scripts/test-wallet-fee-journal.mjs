@@ -67,3 +67,40 @@ test("bút toán phí một ngày cân Nợ/Có và mang hạng mục P&L chuẩ
   assert.equal(credit, 500);
   assert.deepEqual(lines.filter((l) => l.debit).map((l) => l.pnlItemCode).sort(), ["PNL_CP_BANHANG_GRAB", "PNL_CP_QUETTHE"]);
 });
+
+test("ngày doanh thu trước ngày lên hệ thống không nhận phí, kể cả khi phí chia theo tiền về", () => {
+  // Ca QTVI-2608-NME-00090: Grab trả đầu tháng 8 cho doanh thu 31/07 + 01/08; NAM MÊ lên hệ
+  // thống 01/08. Một dòng thiếu gross nên phí chia theo tiền về — trước đây 31/07 vẫn nhận phí.
+  const days = splitWalletFeeByDay({
+    feeAmount: 1_000_000,
+    grabExpenseAmount: 1_000_000,
+    lines: [
+      { day: "2026-07-31", netAmount: 5_000_000, grossAmount: null },
+      { day: "2026-08-01", netAmount: 5_000_000, grossAmount: 5_600_000 },
+    ],
+    fallbackDay: "2026-08-02",
+    goLiveDay: "2026-08-01",
+  });
+  assert.deepEqual(days, [{ day: "2026-08-01", cardFee: 0, grabFee: 1_000_000 }]);
+});
+
+test("phiếu chỉ có doanh thu trước ngày lên hệ thống: phí về đúng ngày lên hệ thống, không về tháng trước", () => {
+  const days = splitWalletFeeByDay({
+    feeAmount: 649_131,
+    grabExpenseAmount: 649_131,
+    lines: [{ day: "2026-07-31", netAmount: 3_000_000, grossAmount: 3_649_131 }],
+    fallbackDay: "2026-07-31",
+    goLiveDay: "2026-08-01",
+  });
+  assert.deepEqual(days, [{ day: "2026-08-01", cardFee: 0, grabFee: 649_131 }]);
+});
+
+test("cửa hàng chưa khai số dư đầu kỳ (không có ngày lên hệ thống) thì chia như cũ", () => {
+  const days = splitWalletFeeByDay({
+    feeAmount: 100, grabExpenseAmount: 0,
+    lines: [{ day: "2026-07-31", netAmount: 1000, grossAmount: 1100 }],
+    fallbackDay: "2026-07-31",
+    goLiveDay: null,
+  });
+  assert.deepEqual(days, [{ day: "2026-07-31", cardFee: 100, grabFee: 0 }]);
+});

@@ -15,6 +15,7 @@ import { WALLET_FEE_PNL_ITEMS } from "@/lib/wallet-settlement-allocation";
 import { roundJournalLines } from "@/lib/money-rounding";
 import { splitWalletFeeByDay, walletFeeDayLines, walletFeeSourceId, walletFeeSourcePrefix, WALLET_FEE_SOURCE_TYPE } from "@/lib/wallet-fee-journal";
 import { vietnamBusinessDayKey } from "@/lib/revenue-date";
+import { branchGoLiveDay } from "@/lib/wallet-go-live";
 import {
   COGS_PURCHASE_SOURCE_TYPES,
   COGS_STOCK_TYPES,
@@ -302,6 +303,7 @@ export async function postMoneyTransferJournals(
       grabExpenseAmount: row.grabExpenseAmount,
       lines,
       fallbackDay: vietnamBusinessDayKey(row.sourceReportDate || transferDate),
+      goLiveDay: await branchGoLiveDay(row.branchCode),
     });
   }
   const dayDate = (day: string) => new Date(`${day}T00:00:00.000Z`);

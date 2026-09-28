@@ -61,7 +61,25 @@ export function splitWalletFeeByDay(input: {
   grabExpenseAmount: number;
   lines: WalletFeeDayLine[];
   fallbackDay: string;
+  /**
+   * Ngày cửa hàng lên hệ thống ("YYYY-MM-DD", lib/wallet-go-live.ts). Ngày doanh thu TRƯỚC mốc này
+   * không bao giờ nhận phí (luật chốt 26/09/2026: phí ví trước ngày lên hệ thống = 0) — kể cả khi
+   * phiếu chưa bấm Chạy lại quyết toán hay có ngày thiếu gross làm phí chia theo tiền về. Phí còn
+   * lại dồn về các ngày từ mốc trở đi; không còn ngày nào thì về chính ngày lên hệ thống.
+   * Trước đây phí Grab QTVI-2608-NME-00090 ghi 31/07 làm tháng 7 của NAM MÊ có chi phí mà không
+   * có doanh thu (khách báo 28/09/2026).
+   */
+  goLiveDay?: string | null;
 }): WalletFeeDay[] {
+  if (input.goLiveDay) {
+    const goLive = input.goLiveDay;
+    return splitWalletFeeByDay({
+      ...input,
+      goLiveDay: null,
+      lines: input.lines.filter((line) => line.day >= goLive),
+      fallbackDay: input.fallbackDay < goLive ? goLive : input.fallbackDay,
+    });
+  }
   const fee = Math.max(0, Math.round(input.feeAmount));
   const grab = Math.min(Math.max(0, Math.round(input.grabExpenseAmount || 0)), fee);
   const card = fee - grab;
