@@ -10,13 +10,22 @@ import { prisma } from "@/lib/prisma";
  * (BASE/…), nên dòng PNL_NOTE không lọt vào dự báo. amount luôn 0.
  */
 export const PNL_NOTE_SCENARIO = "PNL_NOTE";
-const PNL_NOTE_TYPE = "DASHBOARD";
+
+/**
+ * Loại ghi chú = assumptionType. DASHBOARD là ô nhận định chung trên chart biến động; ba loại
+ * COST_* là ô "nguyên nhân tăng/giảm, dự trù chi phí" của từng khối CP cố định / biến đổi /
+ * Marketing (khách 28/09/2026, học theo slide "Chi phí vận hành cố định").
+ */
+export const PNL_NOTE_KINDS = ["DASHBOARD", "COST_FIXED", "COST_VARIABLE", "COST_MARKETING"] as const;
+export type PnlNoteKind = (typeof PNL_NOTE_KINDS)[number];
+export const toPnlNoteKind = (value: unknown): PnlNoteKind =>
+  (PNL_NOTE_KINDS as readonly string[]).includes(String(value)) ? (value as PnlNoteKind) : "DASHBOARD";
 
 export type PnlNote = { period: string; note: string; updatedBy: string | null; updatedAt: string };
 
-export async function getPnlNotes(year: string, branchCode: string): Promise<PnlNote[]> {
+export async function getPnlNotes(year: string, branchCode: string, kind: PnlNoteKind = "DASHBOARD"): Promise<PnlNote[]> {
   const rows = await prisma.forecastAssumption.findMany({
-    where: { scenario: PNL_NOTE_SCENARIO, assumptionType: PNL_NOTE_TYPE, branchCode, period: { startsWith: `${year}-` } },
+    where: { scenario: PNL_NOTE_SCENARIO, assumptionType: kind, branchCode, period: { startsWith: `${year}-` } },
     select: { period: true, note: true, createdBy: true, updatedAt: true },
     orderBy: { period: "asc" },
   });
@@ -26,8 +35,8 @@ export async function getPnlNotes(year: string, branchCode: string): Promise<Pnl
 }
 
 /** Ghi đè ghi chú của một tháng; để trống là xoá hẳn. */
-export async function savePnlNote(period: string, branchCode: string, note: string, userName: string) {
-  const key = { period, branchCode, scenario: PNL_NOTE_SCENARIO, assumptionType: PNL_NOTE_TYPE };
+export async function savePnlNote(period: string, branchCode: string, note: string, userName: string, kind: PnlNoteKind = "DASHBOARD") {
+  const key = { period, branchCode, scenario: PNL_NOTE_SCENARIO, assumptionType: kind };
   if (!note) {
     await prisma.forecastAssumption.deleteMany({ where: key });
     return null;

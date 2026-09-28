@@ -5,7 +5,7 @@ import { assertBranchAccess, ensureRevenueComponentCategories, postJournalEntry,
 import { prisma } from "@/lib/prisma";
 import { createMoneySourceMatcher, getBalanceSheet, getCashSourceReport, getCashflowForecast, getPnl, getRevenueLedger, getRevenueLedgerDetail, getRevenueSettlementReport, getTrend, PNL_UNGROUPED_CODE } from "@/lib/reports";
 import { getPayrollBudgetReport, getPnlMatrix, getRevenueTrendReport } from "@/lib/report-budget";
-import { getPnlNotes, savePnlNote } from "@/lib/pnl-note";
+import { getPnlNotes, savePnlNote, toPnlNoteKind } from "@/lib/pnl-note";
 import { apiError, assertPeriodOpen, businessError, cleanText, isPeriodLocked, normalizePeriod, toNumber } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import { createCashierCashMatcher, moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
@@ -1246,7 +1246,7 @@ export async function GET(request: Request) {
     // Ngân sách nhân sự nhận nguyên kỳ: bảng vẫn trải 12 tháng, nhưng form tỷ trọng là bộ có hiệu lực ở tháng đó.
     if (type === "payroll-budget") return NextResponse.json(await getPayrollBudgetReport(period, branchCode));
     if (type === "pnl-matrix") return NextResponse.json(await getPnlMatrix(period.slice(0, 4), branchCode));
-    if (type === "pnl-note") return NextResponse.json({ notes: await getPnlNotes(period.slice(0, 4), branchCode) });
+    if (type === "pnl-note") return NextResponse.json({ notes: await getPnlNotes(period.slice(0, 4), branchCode, toPnlNoteKind(params.get("kind"))) });
     if (type === "revenue-trend") return NextResponse.json(await getRevenueTrendReport(period, branchCode, 3));
     if (type === "cashflow") return NextResponse.json({ period, branchCode, ...(await getCashflowForecast(period, branchCode, cleanText(params.get("scenario")) || "BASE")) });
     if (type === "balance") return NextResponse.json({ period, branchCode, ...(await getBalanceSheet(period, branchCode)) });
@@ -1475,16 +1475,18 @@ export async function POST(request: Request) {
     }
     if (action === "UPSERT_PNL_NOTE") {
       const note = String(body.note ?? "").trim().slice(0, 5000);
-      const result = await savePnlNote(period, branchCode, note, auth.session.name);
+      const kind = toPnlNoteKind(body.kind);
+      const noteCode = kind === "DASHBOARD" ? "PNL_NOTE" : `PNL_NOTE-${kind}`;
+      const result = await savePnlNote(period, branchCode, note, auth.session.name, kind);
       await writeAuditLog({
         session: auth.session,
         module: "REPORTS",
         action: note ? "UPSERT_PNL_NOTE" : "DELETE_PNL_NOTE",
         entityType: "ForecastAssumption",
-        entityId: result?.id || `${period}-${branchCode}-PNL_NOTE`,
-        entityCode: `${period}-PNL_NOTE`,
+        entityId: result?.id || `${period}-${branchCode}-${noteCode}`,
+        entityCode: `${period}-${noteCode}`,
         branchCode,
-        metadata: { period, length: note.length },
+        metadata: { period, kind, length: note.length },
       });
       return NextResponse.json({ ok: true });
     }

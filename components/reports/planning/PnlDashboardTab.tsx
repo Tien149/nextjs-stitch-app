@@ -4,6 +4,7 @@ import React, { useState } from "react";
 import { storeLabel } from "@/lib/branch-labels";
 import { opexGroupRank } from "@/lib/pnl-ordering";
 import { DonutLegendChart, MoneyLineChart, ShareDonutChart } from "@/components/charts/ReportCharts";
+import OpexCategoryCard from "@/components/reports/planning/OpexCategoryCard";
 import PayrollBudgetCard from "@/components/reports/planning/PayrollBudgetCard";
 import PnlTrendCard from "@/components/reports/planning/PnlTrendCard";
 import { Card, MonthChips, NoPlanNotice, PlanActualCell, RateChip, Segmented, StatCard, Tag, fmtMoney, ratioOf, type Tone } from "@/components/reports/planning/planning-ui";
@@ -290,6 +291,7 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
         </Card>
         <PayrollBudgetCard year={data.year} branchCode={data.branchCode} labels={monthHeaders} picked={picked} fallbackBudget={data.budgets.payroll} />
       </div>
+      <OpexCategoryCard data={data} picked={picked} monthHeaders={monthHeaders} />
       <p className="text-[11px] text-slate-400 px-1">Chi phí hoạt động = nhân sự + OPEX khác + khấu hao. Số lũy kế theo chip tháng ở trên; hai chart xu hướng luôn vẽ đủ 12 tháng.</p>
     </div>
   );
