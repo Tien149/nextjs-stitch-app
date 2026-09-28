@@ -15,10 +15,11 @@ import StickyFilterBar from "@/components/StickyFilterBar";
 import { assetGroupCandidates, assetGroupTypeLabel } from "@/lib/asset-group-rules";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
 import { TemplatesTab, type PurchaseTemplate, type TemplateUnitConversion } from "./templates-tab";
+import { SendPurchaseOrderDialog } from "./send-po-dialog";
 
 type Item = { id: string; code: string; name: string; unit: string; itemType: string; category: string | null; requiresImage: boolean; unitConversions?: TemplateUnitConversion[] };
 type MasterItem = { id: string; type: string; code: string; name: string; group: string | null; subGroup: string | null; branch: string | null; status: string };
-type Supplier = { id: string; code: string; name: string; phone?: string | null };
+type Supplier = { id: string; code: string; name: string; phone?: string | null; email?: string | null };
 type PriceSuggestion = { price: number; source: string; supplierName?: string };
 type RequestLine = { id: string; itemId: string; quantity: number; estimatedUnitCost: number; imageUrl: string | null; note?: string | null; item: Item };
 type Quote = { id: string; supplierCode: string; supplierName: string; totalAmount: number; deliveryDays: number | null; paymentTerms: string | null; isSelected: boolean; note: string | null; lines: Array<{ itemId: string; quantity: number; unitCost: number; item?: Item }> };
@@ -119,7 +120,8 @@ export default function ProcurementPage() {
   const [receiveAssetGroups, setReceiveAssetGroups] = useState<Record<string, string>>({});
   const [receiveNote, setReceiveNote] = useState("");
   const [receiving, setReceiving] = useState(false);
-  const [sharingOrderId, setSharingOrderId] = useState("");
+  /** Đơn đang mở hộp thoại Gửi NCC. */
+  const [sendingOrder, setSendingOrder] = useState<PurchaseOrder | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -323,15 +325,20 @@ export default function ProcurementPage() {
     return response.ok;
   };
 
+  /** Đơn mua hàng còn hiệu lực (chưa huỷ) lập từ một PR. */
+  const liveOrdersOf = (request: PurchaseRequest) => data.orders.filter((order) => order.requestId === request.id && order.status !== "CANCELLED");
   /** PR đã sinh đơn mua hàng thì mọi thay đổi phải đi qua đơn mua, không sửa ngược lại PR. */
-  const requestHasOrder = (request: PurchaseRequest) => data.orders.some((order) => order.requestId === request.id);
+  const requestHasOrder = (request: PurchaseRequest) => liveOrdersOf(request).length > 0;
+  /** Huỷ được khi hàng chưa về và chưa sinh công nợ — khớp CANCEL_ORDER ở /api/procurement. */
+  const canCancelOrder = (order: PurchaseOrder) =>
+    ["DRAFT", "APPROVED"].includes(order.status) && order.lines.every((line) => line.receivedQuantity === 0) && !order.payable;
 
   const requestLockReason = (request: PurchaseRequest) => {
+    if (requestHasOrder(request)) {
+      return `Yêu cầu mua ${request.code} đã lên đơn ${liveOrdersOf(request).map((order) => order.code).join(", ")} nên không thể sửa hoặc xoá. Hãy huỷ đơn mua hàng trước.`;
+    }
     if (lockedRequestStatuses.includes(request.status)) {
       return `Yêu cầu mua ${request.code} đang ở trạng thái "${requestStatusLabel(request.status)}" nên không thể sửa hoặc xoá.`;
-    }
-    if (requestHasOrder(request)) {
-      return `Yêu cầu mua ${request.code} đã sinh đơn mua hàng nên không thể sửa hoặc xoá. Hãy xoá đơn mua hàng trước.`;
     }
     // Đổi dòng hàng sau khi có báo giá sẽ làm báo giá lệch so với thứ đang cần mua.
     if (request.quotes.length > 0) {
@@ -341,8 +348,9 @@ export default function ProcurementPage() {
   };
 
   const orderLockReason = (order: PurchaseOrder) => {
+    if (order.status === "CANCELLED") return `Đơn mua hàng ${order.code} đã huỷ.`;
     if (order.approvedAt || lockedOrderStatuses.includes(order.status)) {
-      return `Đơn mua hàng ${order.code} đã được duyệt nên không thể sửa hoặc xoá. Hãy tạo đơn điều chỉnh mới.`;
+      return `Đơn mua hàng ${order.code} đã được duyệt nên không thể sửa hoặc xoá. Bấm "Bỏ duyệt" để sửa, hoặc "Huỷ đơn" nếu không đặt nữa.`;
     }
     if (order.lines.some((line) => line.receivedQuantity > 0)) {
       return `Đơn mua hàng ${order.code} đã nhận hàng vào kho nên không thể sửa hoặc xoá.`;
@@ -354,11 +362,14 @@ export default function ProcurementPage() {
   };
 
   const quoteLockReason = (request: PurchaseRequest, quote: Quote) => {
-    if (quote.isSelected) {
-      return `Báo giá của ${quote.supplierName} đang được chọn nên không thể sửa hoặc xoá. Hãy chọn báo giá khác trước.`;
+    if (requestHasOrder(request)) {
+      return `Đề nghị mua hàng ${request.code} đã lên đơn ${liveOrdersOf(request).map((order) => order.code).join(", ")}. Huỷ đơn đó trước rồi mới sửa/xoá được báo giá.`;
     }
-    if (requestHasOrder(request) || lockedRequestStatuses.includes(request.status)) {
-      return `Đề nghị mua hàng ${request.code} đã chốt nên không thể sửa hoặc xoá báo giá kèm theo.`;
+    if (lockedRequestStatuses.includes(request.status)) {
+      return `Đề nghị mua hàng ${request.code} đang ở trạng thái "${requestStatusLabel(request.status)}" nên không thể sửa hoặc xoá báo giá kèm theo.`;
+    }
+    if (quote.isSelected) {
+      return `Báo giá của ${quote.supplierName} đang được chốt nên không thể sửa hoặc xoá. Bấm "Bỏ chốt" trước.`;
     }
     return null;
   };
@@ -595,30 +606,29 @@ export default function ProcurementPage() {
     }
   };
 
-  /** Gửi phiếu cho NCC: tạo (hoặc lấy lại) link công khai rồi mở phiếu ở tab mới. */
-  const sharePO = async (order: PurchaseOrder) => {
-    if (order.shareToken) {
-      window.open(`/po/${order.shareToken}`, "_blank");
-      return;
-    }
-    setSharingOrderId(order.id);
+  /** Gửi phiếu cho NCC: mở hộp thoại xem trước + gửi Zalo/email/SMS/ảnh (send-po-dialog.tsx). */
+  const sharePO = (order: PurchaseOrder) => {
     setMessage("");
-    try {
-      const response = await fetch("/api/procurement", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "CREATE_SHARE_LINK", orderId: order.id }),
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        setMessage(payload.error || "Không tạo được link phiếu");
-        return;
-      }
-      await loadData();
-      window.open(`/po/${payload.shareToken}`, "_blank");
-    } finally {
-      setSharingOrderId("");
-    }
+    setSendingOrder(order);
+  };
+
+  const cancelOrder = async (order: PurchaseOrder) => {
+    const sent = Boolean(order.shareToken);
+    const reason = window.prompt(
+      `Huỷ đơn ${order.code} (${order.supplierName})?\n` +
+        (sent ? "Link/QR đã gửi NCC vẫn mở được nhưng hiện rõ ĐƠN ĐÃ HUỶ — nên báo NCC ngay sau khi huỷ.\n" : "") +
+        "Yêu cầu mua sẽ trở về Chờ mua hàng để sửa báo giá hoặc lập đơn khác.\n\nLý do huỷ (không bắt buộc, chỉ lưu nội bộ):",
+      "",
+    );
+    if (reason === null) return;
+    const ok = await send("PATCH", { action: "CANCEL_ORDER", orderId: order.id, reason }, `Đã huỷ đơn ${order.code}.${sent ? " Bấm \"Báo huỷ NCC\" để gửi thông báo huỷ cho nhà cung cấp." : ""}`);
+    if (ok && sent) setSendingOrder({ ...order, status: "CANCELLED" });
+  };
+
+  const sendLabel = (order: PurchaseOrder) => {
+    if (order.status === "CANCELLED") return "Báo huỷ NCC";
+    if (order.status === "DRAFT") return canApprove ? "Duyệt & gửi NCC" : "Gửi NCC";
+    return order.shareToken ? "Gửi lại NCC" : "Gửi NCC";
   };
 
   const revokeShare = async (order: PurchaseOrder) => {
@@ -1100,6 +1110,26 @@ export default function ProcurementPage() {
                   <span className={`status ${requestStatusStyle(request.status)} shrink-0`}>{requestStatusLabel(request.status)}</span>
                 </div>
 
+                {/* PR đã lên đơn: báo giá bị khoá — đưa luôn thao tác gửi NCC / huỷ đơn ra đây để khỏi phải đi tìm. */}
+                {liveOrdersOf(request).map((order) => (
+                  <div key={order.id} className="mb-3 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-sky-900">
+                    <span className="material-symbols-outlined text-base">local_shipping</span>
+                    <span className="flex-1 min-w-[200px]">
+                      Đã lên đơn <b>{order.code}</b> với <b>{order.supplierName}</b> · <span className={`status ${orderStatusStyle(order.status)}`}>{orderStatusLabel(order.status)}</span>
+                      {order.shareToken && <span className="ml-1 text-sky-700">· đã gửi NCC</span>}
+                      <span className="block text-sky-700/80">Muốn sửa/xoá báo giá: huỷ đơn trước.</span>
+                    </span>
+                    {canCreate && (
+                      <button onClick={() => sharePO(order)} className="action-link text-sky-700 hover:underline font-bold">
+                        {order.status === "DRAFT" ? "Duyệt & gửi NCC" : order.shareToken ? "Gửi lại NCC" : "Gửi NCC"}
+                      </button>
+                    )}
+                    {canApprove && canCancelOrder(order) && (
+                      <button onClick={() => void cancelOrder(order)} className="action-link text-rose-700 hover:underline font-bold">Huỷ đơn</button>
+                    )}
+                  </div>
+                ))}
+
                 <div className="overflow-x-auto max-h-[300px] overflow-y-auto">
                   <table className="w-full text-sm">
                     <thead className="bg-slate-50 text-xs text-slate-500 uppercase border-b border-slate-200 sticky top-0 z-10">
@@ -1129,7 +1159,12 @@ export default function ProcurementPage() {
                                   Chốt giá
                                 </button>
                               )}
-                              {canCreate && (
+                              {canApprove && quote.isSelected && (
+                                <button onClick={() => void send("PATCH", { action: "UNSELECT_QUOTE", quoteId: quote.id }, `Đã bỏ chốt giá với ${quote.supplierName}.`)} className="action-link text-slate-500 hover:underline">
+                                  Bỏ chốt
+                                </button>
+                              )}
+                              {canCreate && !requestHasOrder(request) && (
                                 <button onClick={() => void createOrder(request, quote)} className="action-link text-blue-700 hover:underline">
                                   Chọn &amp; Tạo PO
                                 </button>
@@ -1214,7 +1249,7 @@ export default function ProcurementPage() {
           <div className="p-4 sm:p-5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="font-bold">Đơn mua hàng (PO)</h2>
-              <p className="text-xs text-slate-500 mt-1">Duyệt PO → &quot;Gửi NCC&quot; để mở phiếu chia sẻ (kèm QR) → nhận hàng tại đây hoặc ở Kho &amp; Định lượng.</p>
+              <p className="text-xs text-slate-500 mt-1">Duyệt PO → &quot;Gửi NCC&quot; gửi phiếu thẳng qua Zalo / email / SMS → nhận hàng tại đây hoặc ở Kho &amp; Định lượng. Không đặt nữa thì &quot;Huỷ đơn&quot;.</p>
             </div>
             <ExportExcelButton fileName="don_mua_hang" sheetName="PO" />
             <div className="flex items-center gap-3">
@@ -1273,11 +1308,14 @@ export default function ProcurementPage() {
                           Bỏ duyệt
                         </button>
                       )}
-                      {canCreate && order.status !== "DRAFT" && (
-                        <button disabled={sharingOrderId === order.id} onClick={() => void sharePO(order)} className="rounded-lg bg-sky-50 text-sky-700 text-xs font-bold px-3 py-2 inline-flex items-center gap-1">
-                          <span className="material-symbols-outlined text-sm">qr_code_2</span>
-                          {order.shareToken ? "Phiếu NCC" : "Gửi NCC"}
+                      {canCreate && (order.status !== "CANCELLED" || order.shareToken) && (
+                        <button onClick={() => sharePO(order)} className="rounded-lg bg-sky-50 text-sky-700 text-xs font-bold px-3 py-2 inline-flex items-center gap-1">
+                          <span className="material-symbols-outlined text-sm">send</span>
+                          {sendLabel(order)}
                         </button>
+                      )}
+                      {canApprove && canCancelOrder(order) && (
+                        <button onClick={() => void cancelOrder(order)} className="rounded-lg border border-rose-200 text-rose-700 text-xs font-bold px-3 py-2">Huỷ đơn</button>
                       )}
                       {canEdit && ["APPROVED", "PARTIALLY_RECEIVED"].includes(order.status) && (
                         <button onClick={() => startReceiving(order)} className="rounded-lg bg-emerald-600 text-white text-xs font-bold px-3 py-2">Nhận hàng</button>
@@ -1350,9 +1388,14 @@ export default function ProcurementPage() {
                           Bỏ duyệt
                         </button>
                       )}
-                      {canCreate && order.status !== "DRAFT" && (
-                        <button disabled={sharingOrderId === order.id} onClick={() => void sharePO(order)} className="action-link text-sky-700 hover:underline" title="Mở phiếu đặt hàng chia sẻ cho NCC (kèm QR)">
-                          {order.shareToken ? "Phiếu NCC" : "Gửi NCC"}
+                      {canCreate && (order.status !== "CANCELLED" || order.shareToken) && (
+                        <button onClick={() => sharePO(order)} className="action-link text-sky-700 hover:underline" title="Gửi phiếu đặt hàng cho NCC qua Zalo / email / SMS / ảnh">
+                          {sendLabel(order)}
+                        </button>
+                      )}
+                      {canApprove && canCancelOrder(order) && (
+                        <button onClick={() => void cancelOrder(order)} className="action-link text-rose-700 hover:underline" title="Huỷ đơn — trả yêu cầu mua về Chờ mua hàng">
+                          Huỷ đơn
                         </button>
                       )}
                       {canCreate && order.shareToken && (
@@ -1641,6 +1684,17 @@ export default function ProcurementPage() {
             </div>
           </form>
         </div>
+      )}
+
+      {sendingOrder && (
+        <SendPurchaseOrderDialog
+          key={sendingOrder.id + sendingOrder.status}
+          order={sendingOrder}
+          contact={data.suppliers.find((supplier) => supplier.code === sendingOrder.supplierCode) || {}}
+          canApprove={canApprove}
+          onClose={() => setSendingOrder(null)}
+          onChanged={loadData}
+        />
       )}
 
       <ConfirmDeleteDialog

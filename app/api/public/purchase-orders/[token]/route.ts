@@ -26,9 +26,10 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
       return NextResponse.json({ error: "Phiếu không tồn tại hoặc link đã bị thu hồi" }, { status: 404 });
     }
 
-    const [branch, warehouse, supplier, creators] = await Promise.all([
+    const [branch, warehouse, department, supplier, creators] = await Promise.all([
       prisma.masterDataItem.findFirst({ where: { type: "BRANCH", code: order.branchCode } }),
       prisma.masterDataItem.findFirst({ where: { type: "WAREHOUSE", code: order.warehouseCode } }),
+      order.departmentCode ? prisma.masterDataItem.findFirst({ where: { type: "DEPARTMENT", code: order.departmentCode } }) : null,
       prisma.masterDataItem.findFirst({ where: { type: "PARTNER", code: order.supplierCode } }),
       // PO chỉ lưu TÊN người tạo, mà tên nhân viên không duy nhất. Hai người trùng tên thì tra
       // theo tên sẽ in email/điện thoại của NGƯỜI KHÁC lên phiếu gửi ra ngoài — chỉ đưa liên hệ
@@ -52,7 +53,11 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
       supplierCode: order.supplierCode,
       supplierPhone: supplier?.phone || null,
       branchName: branch?.name || order.branchCode,
+      /** Địa chỉ cửa hàng — phiếu mẫu ghi "Nơi nhận: <tên> - <địa chỉ>". */
+      branchAddress: branch?.address || null,
       warehouseName: warehouse?.name || order.warehouseCode,
+      /** Bộ phận nhận hàng (bếp, bar...) — phiếu mẫu ghi ở dòng Lưu ý khi đơn không có ghi chú. */
+      departmentName: department?.name || order.departmentCode || null,
       note: order.note,
       createdBy: order.createdBy,
       createdByEmail: creator?.email || null,

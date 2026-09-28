@@ -18,6 +18,7 @@
     "db:apply-report-indexes": "prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20260924090000_report_query_indexes/migration.sql",
     "db:apply-inventory-indexes": "prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20260924120000_inventory_query_indexes/migration.sql",
     "db:apply-stocktake-location-batch": "prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20260928180000_stocktake_location_batch/migration.sql",
+    "db:apply-master-data-address": "prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20260928200000_master_data_address/migration.sql",
     "backfill:manual-statement-allocations": "node scripts/backfill-manual-statement-allocations.cjs",
     "backfill:purchase-payables": "node scripts/backfill-purchase-payables.cjs",
     "repair:edited-stock-cost": "node scripts/repair-edited-stock-cost.cjs",
@@ -144,6 +145,7 @@
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
+    "html-to-image": "^1.11.13",
     "next": "16.2.10",
     "prisma": "^5.22.0",
     "qrcode": "^1.5.4",

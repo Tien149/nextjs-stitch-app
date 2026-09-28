@@ -40,6 +40,12 @@ const lockedRequestStatuses = ["ORDERED", "COMPLETED", "CANCELLED", "REJECTED"];
 const quotableRequestStatuses = ["APPROVED", "PENDING_APPROVAL", "ORDERED"];
 /** PO chỉ còn sửa/xoá được khi đang ở trạng thái nháp. */
 const lockedOrderStatuses = ["APPROVED", "PARTIALLY_RECEIVED", "COMPLETED", "CANCELLED"];
+/**
+ * Đơn mua hàng CÒN HIỆU LỰC của một yêu cầu mua. `include` quan hệ không tự lọc xoá mềm
+ * (xem lib/prisma.ts), nên trước đây PO đã xoá vào Thùng rác vẫn bị đếm và khoá cứng báo giá
+ * lẫn yêu cầu mua. PO đã huỷ cũng không còn giữ PR.
+ */
+const liveOrdersWhere = { deletedAt: null, status: { not: "CANCELLED" } };
 
 type InputLine = {
   itemId?: unknown;
@@ -201,7 +207,7 @@ export async function GET(request: Request) {
         where: { ...branchFilter },
         include: {
           lines: { include: { item: true } },
-          quotes: { include: { lines: { include: { item: true } } }, orderBy: { totalAmount: "asc" } },
+          quotes: { where: { deletedAt: null }, include: { lines: { include: { item: true } } }, orderBy: { totalAmount: "asc" } },
         },
         orderBy: { createdAt: "desc" },
         take: 100,
@@ -582,7 +588,7 @@ export async function PATCH(request: Request) {
     const body = await request.json();
     const action = cleanText(body.action);
 
-    if (["APPROVE_REQUEST", "REJECT_REQUEST", "SELECT_QUOTE", "APPROVE_ORDER", "UNAPPROVE_ORDER"].includes(action)) {
+    if (["APPROVE_REQUEST", "REJECT_REQUEST", "SELECT_QUOTE", "UNSELECT_QUOTE", "APPROVE_ORDER", "UNAPPROVE_ORDER", "CANCEL_ORDER"].includes(action)) {
       const auth = requireMenuAction(request, menuHref, "approve");
       if (!auth.ok) return auth.response;
       /**
@@ -616,6 +622,43 @@ export async function PATCH(request: Request) {
         await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "UNAPPROVE_ORDER", entityType: "PurchaseOrder", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { previousStatus: order.status, approvedBy: order.approvedBy, approvedAt: order.approvedAt, shareLinkRevoked: Boolean(order.shareToken) } });
         return NextResponse.json(result);
       }
+      /**
+       * Huỷ đơn mua hàng (kể cả đơn đã duyệt, đã gửi NCC) khi hàng chưa về và chưa có công nợ.
+       *
+       * Khác xoá: đơn đã gửi nhà cung cấp thì phải còn dấu vết "đã huỷ" — link/QR đã gửi vẫn mở
+       * được và hiện rõ ĐƠN ĐÃ HUỶ, để NCC không giao hàng theo phiếu cũ. Yêu cầu mua nguồn trả
+       * về "chờ mua hàng" để báo giá sửa/xoá được và lập PO khác.
+       */
+      if (action === "CANCEL_ORDER") {
+        const orderId = cleanText(body.orderId) || cleanText(body.id);
+        if (!orderId) businessError("Thiếu PO cần huỷ");
+        const order = await prisma.purchaseOrder.findUnique({ where: { id: orderId }, include: { lines: true, payable: true } });
+        if (!order) businessError("Không tìm thấy PO");
+        assertBranchAccess(auth.session, order.branchCode);
+        if (!["DRAFT", "APPROVED"].includes(order.status)) {
+          businessError(`Đơn mua hàng ${order.code} đang ở trạng thái ${order.status} nên không huỷ được.`);
+        }
+        if (order.lines.some((line) => line.receivedQuantity > 0)) {
+          businessError(`Đơn mua hàng ${order.code} đã nhận hàng vào kho nên không huỷ được. Hãy xoá phiếu nhập kho của đơn này trước, hoặc lập phiếu xuất trả hàng.`);
+        }
+        if (order.payable) {
+          businessError(`Đơn mua hàng ${order.code} đã sinh công nợ phải trả nhà cung cấp nên không huỷ được. Hãy tất toán hoặc xoá công nợ trước.`);
+        }
+        const reason = cleanText(body.reason);
+        const result = await prisma.$transaction(async (tx) => {
+          // Lý do huỷ chỉ vào nhật ký, không ghi vào ghi chú đơn: ghi chú in lên phiếu gửi NCC.
+          const cancelled = await tx.purchaseOrder.update({ where: { id: orderId }, data: { status: "CANCELLED" } });
+          if (order.requestId) {
+            const siblings = await tx.purchaseOrder.count({ where: { requestId: order.requestId, ...liveOrdersWhere } });
+            if (siblings === 0) {
+              await tx.purchaseRequest.updateMany({ where: { id: order.requestId, status: "ORDERED" }, data: { status: "APPROVED" } });
+            }
+          }
+          return cancelled;
+        });
+        await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "CANCEL_ORDER", entityType: "PurchaseOrder", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { previousStatus: order.status, reason, sharedWithSupplier: Boolean(order.shareToken) } });
+        return NextResponse.json(result);
+      }
       if (action === "APPROVE_ORDER") {
         const orderId = cleanText(body.orderId);
         const order = await prisma.purchaseOrder.findUnique({ where: { id: orderId } });
@@ -639,6 +682,16 @@ export async function PATCH(request: Request) {
           prisma.supplierQuote.update({ where: { id: quoteId }, data: { isSelected: true } }),
         ]);
         await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "SELECT_QUOTE", entityType: "SupplierQuote", entityId: quote.id, entityCode: quote.supplierCode, branchCode: quote.request.branchCode, metadata: { requestId: quote.requestId, supplierName: quote.supplierName, totalAmount: quote.totalAmount } });
+        return NextResponse.json({ ok: true });
+      }
+      /** Bỏ chốt giá — trước đây chỉ đổi được sang báo giá khác, PR một báo giá thì kẹt luôn. */
+      if (action === "UNSELECT_QUOTE") {
+        const quoteId = cleanText(body.quoteId);
+        const quote = await prisma.supplierQuote.findUnique({ where: { id: quoteId }, include: { request: true } });
+        if (!quote) businessError("Không tìm thấy báo giá");
+        assertBranchAccess(auth.session, quote.request.branchCode);
+        await prisma.supplierQuote.update({ where: { id: quoteId }, data: { isSelected: false } });
+        await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "UNSELECT_QUOTE", entityType: "SupplierQuote", entityId: quote.id, entityCode: quote.supplierCode, branchCode: quote.request.branchCode, metadata: { requestId: quote.requestId, supplierName: quote.supplierName } });
         return NextResponse.json({ ok: true });
       }
       const requestId = cleanText(body.requestId);
@@ -677,6 +730,7 @@ export async function PATCH(request: Request) {
       }
 
       if (order.status === "DRAFT") businessError("PO còn nháp — duyệt PO trước khi gửi nhà cung cấp");
+      if (order.status === "CANCELLED" && !order.shareToken) businessError(`Đơn mua hàng ${order.code} đã huỷ nên không gửi nhà cung cấp được nữa.`);
       // Đã có link thì trả lại link cũ để mã QR/link đã gửi NCC không bị vô hiệu.
       const shareToken = order.shareToken || randomBytes(24).toString("base64url");
       if (!order.shareToken) {
@@ -742,7 +796,7 @@ export async function PATCH(request: Request) {
       if (!requestId) businessError("Thiếu PR cần sửa");
       const pr = await prisma.purchaseRequest.findUnique({
         where: { id: requestId },
-        include: { orders: true, quotes: true },
+        include: { orders: { where: liveOrdersWhere }, quotes: { where: { deletedAt: null } } },
       });
       if (!pr) businessError("Không tìm thấy yêu cầu mua hàng");
       assertBranchAccess(auth.session, pr.branchCode);
@@ -888,7 +942,7 @@ export async function PATCH(request: Request) {
       if (!quoteId) businessError("Thiếu báo giá cần sửa");
       const quote = await prisma.supplierQuote.findUnique({
         where: { id: quoteId },
-        include: { request: { include: { orders: true } } },
+        include: { request: { include: { orders: { where: liveOrdersWhere } } } },
       });
       if (!quote) businessError("Không tìm thấy báo giá");
       assertBranchAccess(auth.session, quote.request.branchCode);
@@ -1134,7 +1188,7 @@ export async function DELETE(request: Request) {
     if (["REQUEST", "PR", "PURCHASE_REQUEST", "PURCHASEREQUEST"].includes(type)) {
       const pr = await prisma.purchaseRequest.findUnique({
         where: { id },
-        include: { orders: true },
+        include: { orders: { where: liveOrdersWhere } },
       });
       if (!pr) businessError("Không tìm thấy đề nghị mua hàng");
       assertBranchAccess(auth.session, pr.branchCode);
@@ -1168,7 +1222,7 @@ export async function DELETE(request: Request) {
       // Trả yêu cầu mua nguồn về trạng thái chờ mua hàng: lập PO đã đẩy nó sang ORDERED (khoá
       // sửa/xoá), xoá PO mà không trả lại thì phiếu kẹt vĩnh viễn dù không còn đơn nào.
       if (order.requestId) {
-        const siblings = await prisma.purchaseOrder.count({ where: { requestId: order.requestId } });
+        const siblings = await prisma.purchaseOrder.count({ where: { requestId: order.requestId, ...liveOrdersWhere } });
         if (siblings === 0) {
           await prisma.purchaseRequest.updateMany({ where: { id: order.requestId, status: "ORDERED" }, data: { status: "APPROVED" } });
         }
@@ -1186,7 +1240,7 @@ export async function DELETE(request: Request) {
     if (["QUOTE", "SUPPLIER_QUOTE", "SUPPLIERQUOTE"].includes(type)) {
       const quote = await prisma.supplierQuote.findUnique({
         where: { id },
-        include: { request: { include: { orders: true } } },
+        include: { request: { include: { orders: { where: liveOrdersWhere } } } },
       });
       if (!quote) businessError("Không tìm thấy báo giá nhà cung cấp");
       assertBranchAccess(auth.session, quote.request.branchCode);

@@ -759,6 +759,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "category", label: "Nhóm mặt hàng", required: false, type: "text", aliases: ["nhom hang", "nhom mat hang", "category", "item group"] },
       { field: "revenue_group", label: "Nhóm doanh thu", required: false, type: "text", aliases: ["nhom doanh thu", "nhom dt", "loai mon", "revenue group", "revenue source"], note: "Ma danh muc Thu (vd REV_FOOD, REV_DRINK) hoac chu \"Do an\"/\"Do uong\". Import doanh thu POS lay cot nay khi file POS khong khai duoc Nhom doanh thu." },
       { field: "unit", label: "Đơn vị tính", required: true, type: "text", aliases: ["dvt", "don vi tinh", "unit"] },
+      { field: "address", label: "Địa chỉ", required: false, type: "text", aliases: ["dia chi", "address", "dia chi giao hang", "dia chi nhan hang"] },
       { field: "min_stock", label: "Tồn tối thiểu", required: false, type: "number", aliases: ["ton toi thieu", "min stock", "min_stock"] },
       { field: "requires_image", label: "Yêu cầu hình ảnh (1/0)", required: false, type: "integer", aliases: ["yeu cau hinh anh", "bat buoc hinh anh", "requires image"] },
       { field: "is_default_purchase", label: "ĐVT mua mặc định (1/0)", required: false, type: "integer", aliases: ["dvt mua mac dinh", "mac dinh mua", "default purchase"], note: "Khai nhiều ĐVT bằng cách lặp mã hàng trên nhiều dòng; đánh 1 cho ĐVT mua chính" },

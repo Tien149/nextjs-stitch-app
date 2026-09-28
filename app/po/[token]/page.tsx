@@ -2,31 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { money as formatVndMoney } from "@/lib/format-number";
-
-type PublicOrderLine = { itemCode: string; itemName: string; unit: string; quantity: number; unitCost: number; totalCost: number };
-type PublicOrder = {
-  code: string;
-  status: string;
-  orderDate: string;
-  expectedDate: string | null;
-  supplierName: string;
-  supplierCode: string;
-  supplierPhone: string | null;
-  branchName: string;
-  warehouseName: string;
-  note: string | null;
-  createdBy: string | null;
-  createdByEmail: string | null;
-  createdByPhone: string | null;
-  totalAmount: number;
-  lines: PublicOrderLine[];
-  publicUrl: string;
-  qrDataUrl: string;
-  shareable: boolean;
-};
-
-const money = (value: number) => formatVndMoney(value);
+import { PurchaseOrderSheet } from "@/components/PurchaseOrderSheet";
+import type { SharedPurchaseOrder as PublicOrder } from "@/lib/purchase-order-share";
 
 /**
  * Phiếu đặt hàng gửi NHÀ CUNG CẤP — mở bằng link công khai (không cần đăng nhập),
@@ -107,63 +84,11 @@ export default function PublicPurchaseOrderPage() {
           </button>
         </div>
 
-        <div className="bg-white rounded-xl print:rounded-none border border-slate-200 print:border-0 shadow-sm print:shadow-none p-5 sm:p-7">
-          {/* Tiêu đề + QR như phiếu mẫu */}
-          <div className="flex items-start justify-between gap-4">
-            <h1 className="text-lg sm:text-xl font-bold text-slate-900 leading-snug">
-              Đơn đặt hàng tới <span className="uppercase">{order.supplierName}</span>
-            </h1>
-            {/* QR mở lại chính phiếu này */}
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={order.qrDataUrl} alt={`QR phiếu ${order.code}`} className="w-24 h-24 shrink-0 -mt-1 -mr-1" />
-          </div>
-
-          <div className="my-4 border-t-2 border-dashed border-slate-200" />
-
-          <h2 className="text-base font-bold text-sky-700 mb-3">Thông tin đặt hàng</h2>
-          <div className="text-sm divide-y divide-slate-100">
-            <InfoRow label="Mã đơn:" value={order.code} />
-            <InfoRow label="Nhà cung cấp:" value={`${order.supplierName}${order.supplierPhone ? ` - ${order.supplierPhone}` : ""}`} upper />
-            <InfoRow label="Nơi nhận:" value={`${order.branchName} · ${order.warehouseName}`} />
-            <InfoRow label="Muốn nhận lúc:" value={order.expectedDate ? new Date(order.expectedDate).toLocaleDateString("vi-VN") : "Sớm nhất có thể"} />
-            <InfoRow
-              label="Người đặt:"
-              value={[order.createdByEmail || order.createdBy, order.createdByPhone].filter(Boolean).join(" - ") || "-"}
-            />
-            {order.note && <InfoRow label="Lưu ý:" value={order.note} />}
-          </div>
-
-          <div className="my-4 border-t-2 border-dashed border-slate-200" />
-
-          <h2 className="text-base font-bold text-sky-700 mb-3">Danh sách hàng hóa</h2>
-          <ol className="space-y-3 text-sm">
-            {order.lines.map((line, index) => (
-              <li key={`${line.itemCode}-${index}`} className="pb-3 border-b border-slate-100 last:border-b-0">
-                <p className="font-bold text-slate-900">
-                  {index + 1}. {line.itemName} <span className="font-normal text-slate-400">-{line.itemCode}</span>
-                </p>
-                <p className="text-slate-700 mt-0.5">
-                  Số lượng: <b>{money(line.quantity)} {line.unit}</b>
-                  {showPrices && line.unitCost > 0 && (
-                    <span className="text-slate-500"> · {money(line.unitCost)} đ/{line.unit} = <b className="text-slate-700">{money(line.totalCost)} đ</b></span>
-                  )}
-                </p>
-              </li>
-            ))}
-          </ol>
-
-          {showPrices && order.totalAmount > 0 && (
-            <p className="mt-4 pt-3 border-t-2 border-dashed border-slate-200 text-right text-sm">
-              Tổng giá trị: <b className="text-base text-slate-900">{money(order.totalAmount)} đ</b>
-            </p>
-          )}
-
-          <p className="mt-6 text-[11px] text-slate-400 text-center">
-            Ngày đặt {new Date(order.orderDate).toLocaleDateString("vi-VN")} · Quét QR hoặc mở link để xem phiếu mới nhất.
-          </p>
-
+        <div className="bg-white rounded-xl print:rounded-none border border-slate-200 print:border-0 shadow-sm print:shadow-none overflow-hidden">
+          <PurchaseOrderSheet order={order} showPrices={showPrices} />
+          <div className="px-5 sm:px-7 pb-5">
           {/* Link để gõ tay/kiểm tra nhanh khi QR không quét được — ẩn khi in ra giấy */}
-          <p className="print:hidden mt-2 text-[11px] text-center break-all text-slate-400">{order.publicUrl}</p>
+          <p className="print:hidden text-[11px] text-center break-all text-slate-400">{order.publicUrl}</p>
 
           {!order.shareable && (
             <p className="print:hidden mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
@@ -171,17 +96,9 @@ export default function PublicPurchaseOrderPage() {
               Khi chạy thật trên máy chủ có tên miền thì link tự đúng; muốn cố định, khai <b>APP_PUBLIC_URL</b> trong tệp <b>.env</b>.
             </p>
           )}
+          </div>
         </div>
       </div>
     </main>
-  );
-}
-
-function InfoRow({ label, value, upper = false }: { label: string; value: string; upper?: boolean }) {
-  return (
-    <div className="grid grid-cols-[120px_1fr] gap-2 py-2">
-      <span className="text-slate-500">{label}</span>
-      <span className={`font-semibold text-slate-800 ${upper ? "uppercase" : ""}`}>{value}</span>
-    </div>
   );
 }

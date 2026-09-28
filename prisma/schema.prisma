@@ -42,6 +42,8 @@ model MasterDataItem {
   contactName  String?
   phone        String?
   email        String?
+  /// Địa chỉ — cửa hàng (in ở "Nơi nhận" trên phiếu đặt hàng gửi NCC) và đối tác.
+  address      String?
   accountNo    String?
   /// Tiền tố sinh mã tự động cho danh mục hỗ trợ cấp mã, hiện dùng cho Nhóm tài sản/CCDC.
   codePrefix   String?

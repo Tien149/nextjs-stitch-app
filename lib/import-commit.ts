@@ -1294,6 +1294,7 @@ export async function commitImport(input: CommitInput) {
             name, group, partnerType: type === "PARTNER" ? group : null, partnerGroup: type === "PARTNER" ? partnerGroup : null, branch,
             ...(subGroup !== null ? { subGroup } : {}),
             taxCode: row.values.tax_code ? asText(row.values.tax_code) : null,
+            address: asText(row.values.address) || null,
             accountNo: row.values.account_no ? asText(row.values.account_no) : null,
             ...(hasMasterColumn("contact_name") ? { contactName: asText(row.values.contact_name) || null } : {}),
             ...(hasMasterColumn("phone") ? { phone: asText(row.values.phone) || null } : {}),
@@ -1306,6 +1307,7 @@ export async function commitImport(input: CommitInput) {
         await setImportTarget(tx, staging, row, "MASTER_DATA", item.id);
       }
     }
+            ...(hasMasterColumn("address") ? { address: asText(row.values.address) || null } : {}),
 
     if (input.importType === "INVENTORY_ITEM") {
       // Cột không được map thì KHÔNG ghi đè giá trị đang có: file thiếu cột "Yêu cầu hình ảnh"

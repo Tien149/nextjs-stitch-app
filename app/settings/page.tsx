@@ -24,6 +24,7 @@ type MasterDataItem = {
   contactName: string | null;
   phone: string | null;
   email: string | null;
+  address: string | null;
   accountNo: string | null;
   codePrefix: string | null;
   settlementBankCode: string | null;
@@ -51,6 +52,7 @@ type MasterDataForm = {
   contactName: string;
   phone: string;
   email: string;
+  address: string;
   accountNo: string;
   codePrefix: string;
   settlementBankCode: string;
@@ -107,6 +109,7 @@ const emptyForm: MasterDataForm = {
   contactName: "",
   phone: "",
   email: "",
+  address: "",
   accountNo: "",
   codePrefix: "",
   settlementBankCode: "",
@@ -310,7 +313,7 @@ function hasDetailContent(item: MasterDataItem) {
   if (item.type === "ASSET_GROUP" && item.codePrefix) return true;
   if (item.type === "MONEY_SOURCE" && (item.summarySourceName || item.settlementBankCode)) return true;
   if (item.type === "REVENUE_EXPENSE_CATEGORY" && item.matchKeywords) return true;
-  return Boolean(item.contactName || item.accountNo || item.phone || item.email || item.taxCode || item.note);
+  return Boolean(item.contactName || item.accountNo || item.phone || item.email || item.address || item.taxCode || item.note);
 }
 
 function formatGroupLabel(type: string, group?: string | null) {
@@ -569,6 +572,7 @@ export default function SettingsPage() {
       contactName: item.contactName || "",
       phone: item.phone || "",
       email: item.email || "",
+      address: item.address || "",
       accountNo: item.accountNo || "",
       codePrefix: item.codePrefix || "",
       settlementBankCode: item.settlementBankCode || "",
@@ -596,6 +600,7 @@ export default function SettingsPage() {
           contactName: store.contactName || "",
           phone: store.phone || "",
           email: store.email || "",
+          address: store.address || "",
           note: store.note || "",
         };
       }
@@ -838,6 +843,7 @@ export default function SettingsPage() {
           : formatGroupLabel(item.type, item.group),
         "Cửa hàng": storeLabel(item.branch),
         "MST/STK/Ghi chú": item.contactName || item.accountNo || item.note || "-",
+        "Địa chỉ": item.address || "",
         "Trạng thái": item.status === "ACTIVE" ? "Hoạt động" : "Ngừng hoạt động",
       })),
       { fileName: `danh_muc_${activeType.toLowerCase()}`, sheetName: "Danh muc" },
@@ -1269,7 +1275,9 @@ export default function SettingsPage() {
                                     </>
                                   : item.type === "REVENUE_EXPENSE_CATEGORY" && item.matchKeywords
                                     ? <>Từ khoá import: {item.matchKeywords}</>
-                                    : item.contactName || (item.accountNo ? <CopyableText value={item.accountNo} /> : "-")}
+                                    : item.type === "BRANCH" && item.address
+                                      ? item.address
+                                      : item.contactName || (item.accountNo ? <CopyableText value={item.accountNo} /> : "-")}
                             </p>
                             <p className="mt-0.5 truncate text-[11px] italic text-slate-500">
                               {item.phone ? <CopyableText value={item.phone} />
@@ -1683,6 +1691,22 @@ export default function SettingsPage() {
                       placeholder="VD: contact@company.com"
                     />
                   </label>
+
+                  {["BRANCH", "PARTNER"].includes(activeType) && (
+                    <label className="text-xs font-bold text-slate-700 block">
+                      Địa chỉ
+                      <textarea
+                        rows={2}
+                        value={form.address}
+                        onChange={(event) => setForm((value) => ({ ...value, address: event.target.value }))}
+                        className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
+                        placeholder={activeType === "BRANCH" ? "VD: P1-SH11, Vinhomes Central Park" : "VD: 12 Nguyễn Trãi, Q.1, TP.HCM"}
+                      />
+                      {activeType === "BRANCH" && (
+                        <span className="mt-1 block text-[11px] font-normal text-slate-500">In ở dòng &quot;Nơi nhận&quot; trên phiếu đặt hàng gửi nhà cung cấp.</span>
+                      )}
+                    </label>
+                  )}
                 </>
               )}
 
