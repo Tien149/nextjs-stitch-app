@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/custom-client";
 import { prisma } from "@/lib/prisma";
 import { CAPEX_REPORT_GROUPS, createPnlDetailTree, DEPRECIATION_PNL_ACCOUNT, depreciationCatalogItemCode, finalizePnl, loadDepreciationPnlRows, NON_CAPEX_SOURCE_TYPES, withDepreciationPnlItem, pnlLineAmount, PNL_ITEM_REQUIRED_LINES, PNL_STATEMENT_LINES, PNL_UNGROUPED_CODE, revenueChannelItemsOf, seedRevenueChannels, type PnlBucket, type PnlCatalog, type PnlLineKey, type PnlSeriesGroup, type PnlSeriesItem } from "@/lib/reports";
-import { normalizeHeader } from "@/lib/import-templates";
+import { createDepartmentResolver } from "@/lib/department-resolve";
 import { isRevenueComponentCategory, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { loadRevenuePnlGroups, type CategoryLookupClient } from "@/lib/revenue-source";
 
@@ -612,15 +612,13 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
   const departmentName = new Map(departments.map((item) => [item.code, item.name]));
   const deptLabel = (code: string) => (code === UNASSIGNED_DEPARTMENT ? "Chưa gán bộ phận" : departmentName.get(code) || code);
   // Import lương từng lưu nguyên chữ ô Phòng ban ("Team Bar", "bar") thay vì mã danh mục, nên
-  // lương thực tế không khớp bộ phận set tỷ trọng (đường thực tế = 0). Quy về mã theo mã không
-  // phân biệt hoa thường hoặc đúng tên; không khớp gì thì giữ nguyên để vẫn hiện riêng một dòng.
-  const departmentByKey = new Map<string, string>();
-  for (const item of departments) departmentByKey.set(normalizeHeader(item.name), item.code);
-  for (const item of departments) departmentByKey.set(item.code.toUpperCase(), item.code);
+  // lương thực tế không khớp bộ phận set tỷ trọng (đường thực tế = 0). Quy về mã (luật chung ở
+  // lib/department-resolve); không khớp gì thì giữ nguyên để vẫn hiện riêng một dòng.
+  const resolveDepartment = createDepartmentResolver(departments);
   const payrollDept = (raw: string | null) => {
     const value = (raw || "").trim();
     if (!value) return UNASSIGNED_DEPARTMENT;
-    return departmentByKey.get(value.toUpperCase()) || departmentByKey.get(normalizeHeader(value)) || value;
+    return resolveDepartment(value) || value;
   };
 
   // Doanh thu theo tháng: tổng từng cửa hàng (nền tính lương chuẩn) + cắt theo bộ phận (dòng tham chiếu).
