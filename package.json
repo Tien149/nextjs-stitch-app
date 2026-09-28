@@ -40,6 +40,8 @@
     "test:transfer-unit-cost": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-transfer-unit-cost.mjs",
     "test:negative-stock": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-negative-stock-issue.mjs",
     "test:production-explosion": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-production-explosion.mjs",
+    "test:inventory-cogs": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-inventory-cogs.mjs",
+    "test:inventory-cogs-sync": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-inventory-cogs-sync.mjs",
     "test:stocktake-consolidate": "node --experimental-strip-types --no-warnings --test scripts/test-stocktake-consolidate.mjs",
     "test:stocktake-batch": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-stocktake-batch.mjs",
     "test:explosion-sources": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-explosion-sources.mjs",

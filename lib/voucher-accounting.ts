@@ -1,3 +1,4 @@
+import { inventoryCogsActive } from "@/lib/inventory-cogs";
 import {
   branchCodeFromInternalPartner,
   INTERNAL_PAYABLE_ACCOUNT,
@@ -35,6 +36,8 @@ export type VoucherForPosting = {
   debtAction: string | null;
   /** Nguồn gốc chứng từ; phiếu tách từ dòng sao kê có luật định khoản riêng. */
   sourceScope?: string | null;
+  /** Ngày chứng từ — từ kỳ giá vốn theo kho (lib/inventory-cogs.ts) chi nhóm Giá vốn ghi Nợ 152. */
+  voucherDate?: Date | string | null;
 };
 
 /**
@@ -173,6 +176,11 @@ export function paymentCounterAccount(
     return { account: "211", reason: "Chi đầu tư tài sản — ghi tăng tài sản, không vào P&L" };
   }
   if (categoryGroup === "COGS") {
+    // Từ kỳ giá vốn theo kho: tiền mua nguyên liệu / bao bì là hàng NHẬP KHO, giá vốn lên P&L
+    // lúc hàng rời kho (lib/inventory-cogs.ts). Vẫn ghi 632 thì giá vốn bị tính hai lần.
+    if (voucher.voucherDate && inventoryCogsActive(voucher.voucherDate)) {
+      return { account: "152", reason: "Mua nguyên liệu / bao bì — ghi tăng tồn kho, giá vốn tính khi xuất kho" };
+    }
     return { account: "632", reason: "Giá vốn hàng bán" };
   }
   // Chi phí khác (811) không phải chi phí vận hành: phạt, bồi thường, lỗ thanh lý tài sản...
@@ -218,7 +226,8 @@ export function voucherJournalLines(
         debit: voucher.amount,
         partnerCode: isAdvanceReceivable ? (voucher.receivablePartnerCode || voucher.partnerCode) : voucher.partnerCode,
         categoryCode: voucher.categoryCode,
-        pnlItemCode: isAdvanceReceivable || isPrepaidAllocation ? null : voucher.pnlItemCode,
+        // 152 là tồn kho, không phải dòng P&L: bỏ hạng mục để không bị gom nhầm lên báo cáo.
+        pnlItemCode: isAdvanceReceivable || isPrepaidAllocation || account === "152" ? null : voucher.pnlItemCode,
       },
       { accountCode: cashAccount, credit: voucher.amount },
     ] as JournalLineInput[],

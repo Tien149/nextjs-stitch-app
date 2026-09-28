@@ -1360,8 +1360,8 @@ export async function POST(request: Request) {
         reversals.push({ code: document.code, lines: await reverseTransactionStock(document) });
         await softDeleteRecord({ model: "InventoryTransaction", id: document.id, session: auth.session, reason: `Mở lại phiếu kiểm kê ${stocktake.code}` });
       }
-      // Phiếu kiểm kê hiện chưa lên sổ cái (nhánh giá vốn từ kho đang tắt), nhưng vẫn dọn theo
-      // để ngày nào bật lên thì mở lại không để sót bút toán mồ côi.
+      // Từ kỳ 2026-09 phiếu kiểm kê lên sổ giá vốn (INVENTORY_ISSUE, lib/inventory-cogs.ts): dọn
+      // theo để P&L không giữ chênh kiểm kê của lần duyệt đã hoàn.
       if (documentIds.length > 0) {
         await prisma.journalEntry.deleteMany({ where: { sourceType: "INVENTORY_ISSUE", sourceId: { in: documentIds } } });
       }

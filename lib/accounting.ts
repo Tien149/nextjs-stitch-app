@@ -15,6 +15,14 @@ import { WALLET_FEE_PNL_ITEMS } from "@/lib/wallet-settlement-allocation";
 import { roundJournalLines } from "@/lib/money-rounding";
 import { splitWalletFeeByDay, walletFeeDayLines, walletFeeSourceId, walletFeeSourcePrefix, WALLET_FEE_SOURCE_TYPE } from "@/lib/wallet-fee-journal";
 import { vietnamBusinessDayKey } from "@/lib/revenue-date";
+import {
+  COGS_STOCK_TYPES,
+  INVENTORY_COGS_PNL_ITEMS,
+  INVENTORY_COGS_START_DATE,
+  PACKAGING_EXPENSE_PNL_ITEM,
+  cogsPurchaseAccount,
+  planInventoryCogsJournal,
+} from "@/lib/inventory-cogs";
 import type { MoneyTransfer } from "@prisma/custom-client";
 
 export const defaultAccounts = [
@@ -659,11 +667,13 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
     // Chi (Giảm): tiền ra khỏi quỹ mà không có phiếu chi -> ghi chi phí. Thu (Tăng): tiền vào
     // quỹ không có phiếu thu -> thu nhập khác. Cùng luật chọn tài khoản với phiếu thu/chi.
     const counterAccount = row.entryType === "PAYMENT"
-      ? (group === "COGS" ? "632" : group === "OTHER_EXPENSE" ? "811" : "6428")
+      ? (group === "COGS" ? cogsPurchaseAccount(row.entryDate) : group === "OTHER_EXPENSE" ? "811" : "6428")
       : "711";
+    // 152 là tồn kho (kỳ giá vốn theo kho), không mang hạng mục P&L.
+    const adjustmentPnlItem = counterAccount === "152" ? null : row.pnlItemCode;
     const lines = row.entryType === "PAYMENT"
       ? [
-        { accountCode: counterAccount, debit: row.amount, categoryCode: row.categoryCode, pnlItemCode: row.pnlItemCode },
+        { accountCode: counterAccount, debit: row.amount, categoryCode: row.categoryCode, pnlItemCode: adjustmentPnlItem },
         { accountCode: cashAccount, credit: row.amount },
       ]
       : [
@@ -700,7 +710,7 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
     // vận hành hay tiền mua tài sản (không vào P&L). Khoản phân bổ theo kỳ treo 242, lịch
     // PB-<mã công nợ> rút dần vào chi phí từng kỳ.
     const isAllocated = !row.recognizeExpense && (row.allocationMonths || 0) > 1;
-    const debitAccount = isAllocated ? "242" : debtGroup === "CAPEX" ? "211" : debtGroup === "COGS" ? "632" : "6428";
+    const debitAccount = isAllocated ? "242" : debtGroup === "CAPEX" ? "211" : debtGroup === "COGS" ? cogsPurchaseAccount(row.documentDate) : "6428";
     results.push(await postJournalEntry({
       entryDate: row.documentDate,
       branchCode: row.branchCode,
@@ -711,7 +721,7 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
       createdBy: actor,
       lines: [
         // 242 không phải chi phí: bỏ hạng mục P&L để dòng treo không bị gom nhầm lên báo cáo.
-        isAllocated
+        isAllocated || debitAccount === "152"
           ? { accountCode: debitAccount, debit: row.originalAmount, partnerCode: row.partnerCode }
           : { accountCode: debitAccount, debit: row.originalAmount, partnerCode: row.partnerCode, categoryCode: row.categoryCode, pnlItemCode: row.pnlItemCode },
         { accountCode: "331", credit: row.originalAmount, partnerCode: row.partnerCode },
@@ -781,11 +791,7 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   const payables = await prisma.supplierPayable.findMany({ where: { recognizedDate: { gte: start, lt: end }, ...(branchCode === "ALL" ? {} : { purchaseOrder: { branchCode } }) }, include: { purchaseOrder: true } });
   for (const row of payables) results.push(await postJournalEntry({ entryDate: row.recognizedDate, branchCode: row.purchaseOrder.branchCode, sourceType: "SUPPLIER_PAYABLE", sourceId: row.id, sourceCode: row.purchaseOrder.code, description: `Nhập hàng ${row.purchaseOrder.code}`, createdBy: actor, lines: [{ accountCode: "152", debit: row.originalAmount, partnerCode: row.supplierCode }, { accountCode: "331", credit: row.originalAmount, partnerCode: row.supplierCode }] }));
 
-  const stockIssues = await prisma.inventoryTransaction.findMany({ where: { ...branchFilter, transactionDate: { gte: start, lt: end }, transactionType: { in: ["ISSUE", "WASTE"] } }, include: { lines: true } });
-  for (const row of stockIssues) {
-    const amount = row.lines.reduce((sum, line) => sum + line.totalCost, 0);
-    if (amount > 0) results.push(await postJournalEntry({ entryDate: row.transactionDate, branchCode: row.branchCode, sourceType: "INVENTORY_ISSUE", sourceId: row.id, sourceCode: row.code, description: row.note || `Xuất kho ${row.code}`, createdBy: actor, lines: [{ accountCode: row.transactionType === "WASTE" ? "6428" : "632", debit: amount }, { accountCode: "152", credit: amount }] }));
-  }
+  results.push(...await postInventoryCogs(start, end, branchCode, actor));
 
   const depreciation = await prisma.assetDepreciation.findMany({ where: { period, ...(branchCode === "ALL" ? {} : { asset: { branchCode } }) }, include: { asset: true } });
   // CCDC nằm ở 242 (ghi tăng và số dư đầu kỳ đều treo 242) nên phân bổ phải rút 242 xuống; ghi
@@ -861,4 +867,102 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
     updated: results.filter((value) => value === "UPDATED").length,
     skipped: results.filter((value) => value.startsWith("SKIPPED")).length,
   };
+}
+
+/**
+ * Giá vốn theo kho (lib/inventory-cogs.ts): mỗi phiếu xuất bán / hủy / test món / xuất khác /
+ * kiểm kê của kỳ một bút toán INVENTORY_ISSUE — Nợ 632 COGS Bếp/Bar (bao bì: 6428 CPBD_VTTH) /
+ * Có 152, kiểm kê thừa thì ngược lại. Chỉ từ kỳ INVENTORY_COGS_START_PERIOD.
+ *
+ * Phiếu kho xoá / hoàn tác rã / mở lại kiểm kê sau lần ghi sổ trước thì bút toán của nó thành
+ * mồ côi: dọn ở cuối (xoá CỨNG — xoá mềm giữ nguyên khoá unique (sourceType, sourceId), phiếu
+ * quay lại kỳ sau đó sẽ không ghi sổ được nữa).
+ */
+async function postInventoryCogs(start: Date, end: Date, branchCode: string, actor: string) {
+  const results: string[] = [];
+  const from = start.getTime() < INVENTORY_COGS_START_DATE.getTime() ? INVENTORY_COGS_START_DATE : start;
+  if (from.getTime() >= end.getTime()) return results;
+  await ensureInventoryCogsPnlItems();
+  const branchFilter = branchCode === "ALL" ? {} : { branchCode };
+  const [documents, warehouses] = await Promise.all([
+    prisma.inventoryTransaction.findMany({
+      where: { ...branchFilter, transactionDate: { gte: from, lt: end }, transactionType: { in: [...COGS_STOCK_TYPES] } },
+      select: {
+        id: true, code: true, transactionType: true, transactionDate: true, branchCode: true, warehouseCode: true, note: true,
+        lines: { select: { totalCost: true, item: { select: { itemType: true } } } },
+      },
+    }),
+    prisma.masterDataItem.findMany({ where: { type: "WAREHOUSE" }, select: { code: true, group: true } }),
+  ]);
+  const groupOf = new Map(warehouses.map((warehouse) => [warehouse.code, warehouse.group]));
+  const posted: string[] = [];
+  for (const doc of documents) {
+    const lines = planInventoryCogsJournal({
+      transactionType: doc.transactionType,
+      warehouseGroup: groupOf.get(doc.warehouseCode),
+      lines: doc.lines.map((line) => ({ totalCost: line.totalCost, itemType: line.item.itemType })),
+    });
+    if (lines.length === 0) continue;
+    posted.push(doc.id);
+    results.push(await postJournalEntry({
+      entryDate: doc.transactionDate,
+      branchCode: doc.branchCode,
+      sourceType: "INVENTORY_ISSUE",
+      sourceId: doc.id,
+      sourceCode: doc.code,
+      description: doc.note || `Giá vốn ${doc.code}`,
+      createdBy: actor,
+      lines,
+    }));
+  }
+  const stale = await prisma.journalEntry.findMany({
+    where: { sourceType: "INVENTORY_ISSUE", entryDate: { gte: from, lt: end }, ...branchFilter, sourceId: { notIn: posted } },
+    select: { id: true, entryDate: true, branchCode: true },
+  });
+  const removable = [];
+  for (const entry of stale) {
+    if (!(await isPeriodLocked(entry.entryDate, entry.branchCode))) removable.push(entry.id);
+  }
+  if (removable.length > 0) {
+    await prisma.$executeRaw`DELETE FROM "JournalLine" WHERE "entryId" = ANY(${removable})`;
+    await prisma.$executeRaw`DELETE FROM "JournalEntry" WHERE "id" = ANY(${removable})`;
+    results.push(...removable.map(() => "DELETED_STALE"));
+  }
+  return results;
+}
+
+/**
+ * Hạng mục P&L của giá vốn theo kho: COGS Bếp / COGS Bar / COGS kho chung nằm dưới nhóm Giá vốn
+ * đang có; vật tư tiêu hao CPBD_VTTH (danh mục của khách) chỉ tạo khi chưa có, dưới nhóm OPEX.
+ */
+export async function ensureInventoryCogsPnlItems() {
+  const wanted = [
+    ...Object.values(INVENTORY_COGS_PNL_ITEMS).map((item) => ({ ...item, group: "COGS" })),
+    { ...PACKAGING_EXPENSE_PNL_ITEM, group: "OPEX" },
+  ];
+  const existing = await prisma.masterDataItem.findMany({
+    where: { type: "PNL_ITEM", code: { in: wanted.map((item) => item.code) } },
+    select: { code: true },
+  });
+  const present = new Set(existing.map((item) => item.code.toUpperCase()));
+  const missing = wanted.filter((item) => !present.has(item.code));
+  if (missing.length === 0) return;
+  const parents = await prisma.masterDataItem.findMany({
+    where: { type: "PNL_GROUP", group: { in: ["COGS", "OPEX"] }, status: "ACTIVE" },
+    orderBy: { code: "asc" },
+    select: { code: true, group: true },
+  });
+  for (const item of missing) {
+    await prisma.masterDataItem.create({
+      data: {
+        type: "PNL_ITEM",
+        code: item.code,
+        name: item.name,
+        group: item.group,
+        subGroup: parents.find((parent) => parent.group === item.group)?.code || null,
+        status: "ACTIVE",
+        note: "Tự tạo khi ghi sổ giá vốn theo kho (từ kỳ 2026-09)",
+      },
+    });
+  }
 }
