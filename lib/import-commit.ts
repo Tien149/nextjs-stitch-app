@@ -1286,6 +1286,7 @@ export async function commitImport(input: CommitInput) {
             contactName: asText(row.values.contact_name) || null,
             phone: asText(row.values.phone) || null,
             email: asText(row.values.email) || null,
+            address: asText(row.values.address) || null,
             note: asText(row.values.note) || null,
             summarySourceName: type === "MONEY_SOURCE" ? (cleanMoneySourceName(asText(row.values.summary_source_name)) || null) : null,
             status: masterStatus || "ACTIVE",
@@ -1294,11 +1295,11 @@ export async function commitImport(input: CommitInput) {
             name, group, partnerType: type === "PARTNER" ? group : null, partnerGroup: type === "PARTNER" ? partnerGroup : null, branch,
             ...(subGroup !== null ? { subGroup } : {}),
             taxCode: row.values.tax_code ? asText(row.values.tax_code) : null,
-            address: asText(row.values.address) || null,
             accountNo: row.values.account_no ? asText(row.values.account_no) : null,
             ...(hasMasterColumn("contact_name") ? { contactName: asText(row.values.contact_name) || null } : {}),
             ...(hasMasterColumn("phone") ? { phone: asText(row.values.phone) || null } : {}),
             ...(hasMasterColumn("email") ? { email: asText(row.values.email) || null } : {}),
+            ...(hasMasterColumn("address") ? { address: asText(row.values.address) || null } : {}),
             ...(hasMasterColumn("note") ? { note: asText(row.values.note) || null } : {}),
             ...(hasMasterColumn("summary_source_name") && type === "MONEY_SOURCE" ? { summarySourceName: cleanMoneySourceName(asText(row.values.summary_source_name)) || null } : {}),
             ...(hasMasterColumn("status") && masterStatus ? { status: masterStatus } : {}),
@@ -1307,7 +1308,6 @@ export async function commitImport(input: CommitInput) {
         await setImportTarget(tx, staging, row, "MASTER_DATA", item.id);
       }
     }
-            ...(hasMasterColumn("address") ? { address: asText(row.values.address) || null } : {}),
 
     if (input.importType === "INVENTORY_ITEM") {
       // Cột không được map thì KHÔNG ghi đè giá trị đang có: file thiếu cột "Yêu cầu hình ảnh"
