@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { cogsPurchaseAccount, inventoryCogsActive, planInventoryCogsJournal } from "../lib/inventory-cogs.ts";
+import { cogsPurchaseAccount, inventoryCogsActive, inventoryCogsParentGroup, inventoryCogsRegroupTarget, planInventoryCogsJournal } from "../lib/inventory-cogs.ts";
 import { paymentCounterAccount, voucherJournalLines } from "../lib/voucher-accounting.ts";
 
 const sum = (lines, side) => lines.reduce((total, line) => total + (line[side] || 0), 0);
@@ -90,4 +90,28 @@ test("trả nợ NCC / chi phí vận hành không bị kéo sang 152", () => {
   const september = new Date("2026-09-05T03:00:00Z");
   assert.equal(paymentCounterAccount({ ...purchase, voucherDate: september, debtAction: "SETTLE" }, "COGS").account, "331");
   assert.equal(paymentCounterAccount({ ...purchase, voucherDate: september }, "OPEX").account, "6428");
+});
+
+// Danh mục VPS 29/09/2026: nhóm COGS_BAR đứng đầu theo mã nên cả COGS Bếp bị gắn vào nhóm Bar.
+const vpsGroups = [
+  { code: "COGS_BAR", name: "COGS Bar" },
+  { code: "COGS_BEP", name: "COGS Bếp" },
+  { code: "COGS_KHAC", name: "Giá vốn khác" },
+];
+
+test("hạng mục giá vốn theo kho vào nhóm cùng bộ phận, không vào nhóm đầu tiên theo mã", () => {
+  assert.equal(inventoryCogsParentGroup("COGS_BEP", vpsGroups), "COGS_BEP");
+  assert.equal(inventoryCogsParentGroup("COGS_BAR", vpsGroups), "COGS_BAR");
+  assert.equal(inventoryCogsParentGroup("COGS_KHAC", vpsGroups), "COGS_KHAC");
+  // Danh mục chỉ có một nhóm Giá vốn chung (local): cả ba vào nhóm đó như cũ.
+  assert.equal(inventoryCogsParentGroup("COGS_BEP", [{ code: "PNL_GIAVON", name: "Giá vốn" }]), "PNL_GIAVON");
+});
+
+test("chuyển COGS Bếp ra khỏi nhóm Bar; hạng mục ở nhóm chung hoặc đã đúng thì để yên", () => {
+  assert.equal(inventoryCogsRegroupTarget("COGS_BEP", "COGS_BAR", vpsGroups), "COGS_BEP");
+  assert.equal(inventoryCogsRegroupTarget("COGS_BAR", "COGS_BAR", vpsGroups), null);
+  assert.equal(inventoryCogsRegroupTarget("COGS_KHAC", "COGS_BAR", vpsGroups), "COGS_KHAC");
+  assert.equal(inventoryCogsRegroupTarget("COGS_BEP", "COGS_KHAC", vpsGroups), null, "người dùng tự để ở nhóm chung");
+  // Không có nhóm Bếp để chuyển sang: giữ nguyên, không đẩy vào nhóm khác.
+  assert.equal(inventoryCogsRegroupTarget("COGS_BEP", "COGS_BAR", [{ code: "COGS_BAR", name: "COGS Bar" }]), null);
 });

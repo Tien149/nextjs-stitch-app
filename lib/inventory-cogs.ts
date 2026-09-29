@@ -42,6 +42,50 @@ export const INVENTORY_COGS_PNL_ITEMS = {
 } as const;
 export const PACKAGING_EXPENSE_PNL_ITEM = { code: "CPBD_VTTH", name: "Chi phí vật tư tiêu hao" } as const;
 
+/** Bộ phận của một hạng mục giá vốn theo kho: KIT / BAR, COGS kho chung thì null. */
+function inventoryCogsItemDepartment(itemCode: string) {
+  if (itemCode === INVENTORY_COGS_PNL_ITEMS.KITCHEN.code) return REVENUE_DEPARTMENT_CODES.KITCHEN;
+  if (itemCode === INVENTORY_COGS_PNL_ITEMS.BAR.code) return REVENUE_DEPARTMENT_CODES.BAR;
+  return null;
+}
+
+/** Nhóm P&L thuộc bộ phận nào, đọc theo mã rồi tới tên ("COGS_BEP", "Giá vốn Bar"). Nhóm chung -> null. */
+function pnlGroupDepartment(group: { code: string; name?: string | null }) {
+  const department = departmentFromWarehouseGroup(group.code) || departmentFromWarehouseGroup(group.name);
+  return department === REVENUE_DEPARTMENT_CODES.KITCHEN || department === REVENUE_DEPARTMENT_CODES.BAR ? department : null;
+}
+
+/**
+ * Nhóm Giá vốn đặt hạng mục COGS Bếp / Bar / kho chung. Trước 29/09/2026 cả ba vào nhóm COGS đầu
+ * tiên theo mã; danh mục khách (VPS) có nhóm COGS_BAR đứng đầu nên COGS Bếp nằm trong nhóm Bar và
+ * donut Cơ cấu giá vốn ra 100% "COGS Bar". Giờ chọn nhóm cùng bộ phận; kho chung vào nhóm không
+ * thuộc bếp/bar. Không có nhóm hợp thì giữ luật cũ (nhóm đầu tiên). `groups` đã xếp theo mã.
+ */
+export function inventoryCogsParentGroup(itemCode: string, groups: Array<{ code: string; name?: string | null }>) {
+  if (groups.length === 0) return null;
+  const department = inventoryCogsItemDepartment(itemCode);
+  const match = groups.find((group) => pnlGroupDepartment(group) === department);
+  return (match || groups[0]).code;
+}
+
+/**
+ * Hạng mục đang nằm SAI nhóm cần chuyển: COGS Bếp trong nhóm Bar (hoặc ngược lại), COGS kho chung
+ * trong nhóm bếp/bar khi có nhóm chung. Hạng mục đang ở nhóm chung / nhóm người dùng tự chọn không
+ * mâu thuẫn bộ phận thì để yên — chỉ sửa lỗi xếp nhóm của hệ thống, không ghi đè lựa chọn tay.
+ * Trả mã nhóm mới, hoặc null khi không cần chuyển.
+ */
+export function inventoryCogsRegroupTarget(itemCode: string, currentGroupCode: string | null | undefined, groups: Array<{ code: string; name?: string | null }>) {
+  const current = groups.find((group) => group.code === currentGroupCode);
+  if (!current) return null;
+  const currentDepartment = pnlGroupDepartment(current);
+  if (currentDepartment === null) return null;
+  const wanted = inventoryCogsParentGroup(itemCode, groups);
+  if (!wanted || wanted === current.code) return null;
+  const wantedGroup = groups.find((group) => group.code === wanted);
+  const wantedDepartment = wantedGroup ? pnlGroupDepartment(wantedGroup) : null;
+  return wantedDepartment === inventoryCogsItemDepartment(itemCode) ? wanted : null;
+}
+
 /** Phiếu kho làm hàng RỜI hệ thống kho (hoặc quay lại, với kiểm kê thừa). */
 export const COGS_OUTBOUND_TYPES = ["XUAT_BAN", "XUAT_HUY", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_KIEM_KE"] as const;
 export const COGS_INBOUND_TYPES = ["NHAP_KIEM_KE"] as const;

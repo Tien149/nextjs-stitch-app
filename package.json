@@ -26,6 +26,7 @@
     "diagnose:stock-out": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/diagnose-stock-out.mjs",
     "diagnose:recipe-cost": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/diagnose-recipe-cost.mjs",
     "diagnose:inventory-cogs": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/diagnose-inventory-cogs.mjs",
+    "repair:inventory-cogs-groups": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/repair-inventory-cogs-groups.mjs",
     "backfill:cash-deposit-actual-date": "node scripts/backfill-cash-deposit-actual-date.cjs",
     "db:clear-data": "node scripts/clear_operational_data.js",
     "audit:other-income": "node scripts/report-other-income-misposted.cjs",

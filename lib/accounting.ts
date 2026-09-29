@@ -25,6 +25,8 @@ import {
   PACKAGING_EXPENSE_PNL_ITEM,
   cogsPurchaseAccount,
   inventoryCogsActive,
+  inventoryCogsParentGroup,
+  inventoryCogsRegroupTarget,
   planInventoryCogsJournal,
   type CogsRepostResult,
 } from "@/lib/inventory-cogs";
@@ -992,18 +994,29 @@ export async function ensureInventoryCogsPnlItems() {
     ...Object.values(INVENTORY_COGS_PNL_ITEMS).map((item) => ({ ...item, group: "COGS" })),
     { ...PACKAGING_EXPENSE_PNL_ITEM, group: "OPEX" },
   ];
-  const existing = await prisma.masterDataItem.findMany({
-    where: { type: "PNL_ITEM", code: { in: wanted.map((item) => item.code) } },
-    select: { code: true },
-  });
+  const [existing, parents] = await Promise.all([
+    prisma.masterDataItem.findMany({
+      where: { type: "PNL_ITEM", code: { in: wanted.map((item) => item.code) } },
+      select: { id: true, code: true, subGroup: true },
+    }),
+    prisma.masterDataItem.findMany({
+      where: { type: "PNL_GROUP", group: { in: ["COGS", "OPEX"] }, status: "ACTIVE" },
+      orderBy: { code: "asc" },
+      select: { code: true, name: true, group: true },
+    }),
+  ]);
+  const cogsGroups = parents.filter((parent) => parent.group === "COGS");
+  const moved: Array<{ code: string; from: string | null; to: string }> = [];
+  // Hạng mục tạo trước 29/09/2026 có thể nằm sai nhóm (COGS Bếp trong nhóm Bar): chuyển về đúng.
+  for (const item of existing) {
+    if (!Object.values(INVENTORY_COGS_PNL_ITEMS).some((cogs) => cogs.code === item.code)) continue;
+    const target = inventoryCogsRegroupTarget(item.code, item.subGroup, cogsGroups);
+    if (!target) continue;
+    await prisma.masterDataItem.update({ where: { id: item.id }, data: { subGroup: target } });
+    moved.push({ code: item.code, from: item.subGroup, to: target });
+  }
   const present = new Set(existing.map((item) => item.code.toUpperCase()));
   const missing = wanted.filter((item) => !present.has(item.code));
-  if (missing.length === 0) return;
-  const parents = await prisma.masterDataItem.findMany({
-    where: { type: "PNL_GROUP", group: { in: ["COGS", "OPEX"] }, status: "ACTIVE" },
-    orderBy: { code: "asc" },
-    select: { code: true, group: true },
-  });
   for (const item of missing) {
     await prisma.masterDataItem.create({
       data: {
@@ -1011,10 +1024,13 @@ export async function ensureInventoryCogsPnlItems() {
         code: item.code,
         name: item.name,
         group: item.group,
-        subGroup: parents.find((parent) => parent.group === item.group)?.code || null,
+        subGroup: item.group === "COGS"
+          ? inventoryCogsParentGroup(item.code, cogsGroups)
+          : parents.find((parent) => parent.group === item.group)?.code || null,
         status: "ACTIVE",
         note: `Tự tạo khi ghi sổ giá vốn theo kho (từ kỳ ${INVENTORY_COGS_START_PERIOD})`,
       },
     });
   }
+  return { created: missing.map((item) => item.code), moved };
 }
