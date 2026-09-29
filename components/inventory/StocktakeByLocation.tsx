@@ -383,6 +383,12 @@ export default function StocktakeByLocation(props: {
           </label>
         </div>
         {message && <p className="rounded-md bg-blue-50 px-3 py-2 text-sm text-blue-800 whitespace-pre-line">{message}</p>}
+        {/* Tick menu Kiểm kê chỉ mở màn; lập phiếu đếm cần quyền thao tác "create" của vai trò. */}
+        {!canCreate && (
+          <p className="rounded-md bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
+            Vai trò của bạn chưa có quyền <b>create</b> nên không lập được phiếu đếm. Nhờ Admin tick <b>create</b>{" "}cho vai trò ở Phân quyền &amp; Người dùng.
+          </p>
+        )}
       </div>
 
       {section === "count" && canCreate && (

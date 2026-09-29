@@ -626,6 +626,12 @@ export default function AssetOperationsPage() {
 
       {active === "stocktake" && (
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+          {/* Tick menu "Kiểm kê CCDC & Tài sản" chỉ mở màn; lập phiên kiểm kê cần quyền "create" của vai trò. */}
+          {!canCreate && (
+            <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-4 text-sm h-fit">
+              Vai trò của bạn chưa có quyền <b>create</b> nên không lập được phiên kiểm kê. Nhờ Admin tick <b>create</b>{" "}cho vai trò ở Phân quyền &amp; Người dùng.
+            </div>
+          )}
           {canCreate && (
             <form
               onSubmit={async (e) => {
