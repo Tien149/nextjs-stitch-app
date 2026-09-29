@@ -56,16 +56,14 @@ export default function OpexCategoryCard({ data, picked, monthHeaders }: { data:
     };
   };
   const revenue = data.totals.map((bucket) => bucket.revenue);
-  const planRevenue = data.plans.map((bucket) => bucket.revenue);
   /**
-   * Ngân sách chạy theo doanh thu THỰC TẾ, giống slide của khách (28/09/2026: "CP vận hành cố
-   * định (30%)" = 30% × doanh thu thực tế từng tháng). Tỷ trọng phân bổ lấy từ tab Ngân sách:
-   * ngân sách chi phí ÷ doanh thu kế hoạch cùng tháng, rồi nhân lại cho doanh thu thực tế.
-   * Tháng chưa có doanh thu thực tế (tháng tới) hoặc chưa set doanh thu kế hoạch thì giữ nguyên
-   * số tiền ngân sách — không suy được tỷ trọng, và tháng tới cần số dự trù để nhìn trước.
+   * Ngân sách = ĐÚNG số tab Ngân sách (khách báo 29/09/2026: tab Ngân sách 420.159.478 đ, khối
+   * này 404.102.280 đ). Ngân sách đặt theo % doanh thu ĐÃ nhân doanh thu thực tế ngay ở tab
+   * Ngân sách / Hoạch định (lib/report-budget.ts resolveTargetAmount), nên trước đây quy đổi
+   * thêm "÷ DT kế hoạch × DT thực tế" ở đây là quy đổi hai lần. Ngân sách đặt bằng trị giá giữ
+   * nguyên số đã set. Giữ hàm để các bảng bên dưới đọc cùng một nguồn.
    */
-  const toActualBasis = (plan: number[] | null) =>
-    plan ? monthIndexes.map((index) => (planRevenue[index] > 0 && revenue[index] > 0 ? ((plan[index] || 0) / planRevenue[index]) * revenue[index] : plan[index] || 0)) : null;
+  const toActualBasis = (plan: number[] | null) => (plan ? monthIndexes.map((index) => plan[index] || 0) : null);
   const totals = totalsOf(category.id);
   const actual = totals.actual;
   const budget = toActualBasis(totals.budget) || [];
@@ -215,7 +213,7 @@ export default function OpexCategoryCard({ data, picked, monthHeaders }: { data:
   return (
     <Card
       title={`${label} so với doanh thu`}
-      subtitle="Ngân sách = tỷ trọng phân bổ (tab Ngân sách: chi phí ÷ doanh thu kế hoạch) × doanh thu thực tế từng tháng; tháng chưa có doanh thu giữ số dự trù. Chỉ tính tháng đã có doanh thu thực tế. Nhóm OPEX nhận theo tên: cố định / biến đổi / marketing; nhóm khác và chứng từ chưa gán hạng mục tính vào CP cố định."
+      subtitle="Ngân sách = đúng số tab Ngân sách (đặt theo % doanh thu thì đã nhân doanh thu thực tế từng tháng; tháng chưa có doanh thu giữ số dự trù). Chỉ tính tháng đã có doanh thu thực tế. Nhóm OPEX nhận theo tên: cố định / biến đổi / marketing; nhóm khác và chứng từ chưa gán hạng mục tính vào CP cố định."
       icon="receipt_long"
       right={<Segmented value={categoryId} onChange={setCategoryId} options={CATEGORIES.map((item) => ({ id: item.id, label: item.label }))} />}
       bodyClassName="px-2 pb-4 space-y-4"
