@@ -9,6 +9,7 @@ import { normalizeOpeningBalanceInput, validateOpeningBalanceInput, type Opening
 import { assertAssetCodeAvailable, nextAssetLot, normalizeAssetCode } from "@/lib/asset-code-generator";
 import { openingAssetRecordData } from "@/lib/opening-asset";
 import { assertPeriodOpen as assertAccountingPeriodOpen, buildAllocationSchedules } from "@/lib/phase3";
+import { applyOpeningInventoryChange } from "@/lib/opening-inventory";
 
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -45,10 +46,12 @@ async function applySideEffects(tx: Prisma.TransactionClient, current: OpeningBa
   if (current.balanceType === "INVENTORY") {
     const item = await tx.inventoryItem.findUnique({ where: { code: current.objectCode || "" } });
     if (!item) throw new Error(`Mặt hàng ${current.objectCode} không tồn tại`);
-    await tx.inventoryBalance.upsert({
-      where: { itemId_warehouseCode: { itemId: item.id, warehouseCode: current.warehouseCode || "" } },
-      update: { quantity: current.quantity || 0, averageCost: current.unitCost || 0 },
-      create: { itemId: item.id, warehouseCode: current.warehouseCode || "", quantity: current.quantity || 0, averageCost: current.unitCost || 0 },
+    // Cộng đầu kỳ vào tồn, KHÔNG ghi đè: kho đã có phiếu thì ghi đè là xoá mất phát sinh.
+    await applyOpeningInventoryChange(tx, {
+      itemId: item.id,
+      warehouseCode: current.warehouseCode || "",
+      before: { quantity: 0, unitCost: 0 },
+      after: { quantity: current.quantity || 0, unitCost: current.unitCost || 0 },
     });
     return;
   }
@@ -136,7 +139,15 @@ async function revertSideEffects(tx: Prisma.TransactionClient, current: OpeningB
   if (current.balanceType === "DEPOSIT") return revertOpeningDeposit(tx, current.id);
   if (current.balanceType === "INVENTORY") {
     const item = await tx.inventoryItem.findUnique({ where: { code: current.objectCode || "" } });
-    if (item) await tx.inventoryBalance.updateMany({ where: { itemId: item.id, warehouseCode: current.warehouseCode || "" }, data: { quantity: 0, averageCost: 0 } });
+    // Trừ đúng phần đầu kỳ đã cộng, không ép tồn về 0.
+    if (item) {
+      await applyOpeningInventoryChange(tx, {
+        itemId: item.id,
+        warehouseCode: current.warehouseCode || "",
+        before: { quantity: current.quantity || 0, unitCost: current.unitCost || 0 },
+        after: { quantity: 0, unitCost: 0 },
+      });
+    }
   } else if (current.balanceType === "ASSET") {
     // Chỉ gỡ đúng đợt sinh từ dòng số dư này; đợt mua tăng / đợt của dòng khác cùng mã giữ nguyên.
     const linked = await tx.assetRecord.count({ where: { openingBalanceId: current.id } });

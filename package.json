@@ -23,6 +23,7 @@
     "backfill:purchase-payables": "node scripts/backfill-purchase-payables.cjs",
     "repair:edited-stock-cost": "node scripts/repair-edited-stock-cost.cjs",
     "rerun:explosions": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/rerun-explosions.mjs",
+    "rebuild:inventory-balances": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/rebuild-inventory-balances.mjs",
     "diagnose:stock-out": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/diagnose-stock-out.mjs",
     "diagnose:recipe-cost": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/diagnose-recipe-cost.mjs",
     "diagnose:inventory-cogs": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/diagnose-inventory-cogs.mjs",

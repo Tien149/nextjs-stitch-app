@@ -43,6 +43,7 @@ import {
 } from "@/lib/bank-statement-voucher-match";
 import { pickRevenueRowsOfDay, revenueDayKey, revenueDayLabel } from "@/lib/revenue-day-summary";
 import { conversionRateForUnit, safeConversionRate } from "@/lib/unit-conversion";
+import { applyOpeningInventoryChange } from "@/lib/opening-inventory";
 
 /**
  * Một dòng sao kê không đủ điều kiện lập chứng từ tự động.
@@ -1888,6 +1889,31 @@ export async function commitImport(input: CommitInput) {
         ].join("|");
         return [key, values];
       })).values());
+      // Đầu kỳ tồn kho ĐANG có hiệu lực của các khoá sắp thay: import lại chỉ cộng / trừ phần
+      // chênh vào tồn (applyOpeningInventoryChange), không ghi đè mất phát sinh đã có.
+      const replacedInventoryOpenings = await tx.openingBalance.findMany({
+        where: {
+          balanceType: "INVENTORY",
+          status: { in: ["CONFIRMED", "POSTED"] },
+          deletedAt: null,
+          OR: openingKeys.map((values) => ({
+            period: asText(values.period),
+            branchCode: asText(values.branch_code),
+            balanceType: asText(values.balance_type).toUpperCase(),
+            objectCode: asText(values.object_code) || null,
+            moneySourceCode: asText(values.money_source_code) || null,
+            warehouseCode: asText(values.warehouse_code) || null,
+            departmentCode: asText(values.department_code) || null,
+          })),
+        },
+        select: { objectCode: true, warehouseCode: true, quantity: true, unitCost: true },
+      });
+      const replacedOpeningOf = (objectCode: string, warehouseCode: string) => {
+        const rows = replacedInventoryOpenings.filter((row) => (row.objectCode || "").toUpperCase() === objectCode.toUpperCase() && (row.warehouseCode || "") === warehouseCode);
+        const quantity = rows.reduce((sum, row) => sum + (row.quantity || 0), 0);
+        const value = rows.reduce((sum, row) => sum + (row.quantity || 0) * (row.unitCost || 0), 0);
+        return { quantity, unitCost: Math.abs(quantity) > 0.000001 ? value / quantity : 0 };
+      };
       await tx.openingBalance.deleteMany({
         where: {
           OR: openingKeys.map((values) => ({
@@ -1952,10 +1978,12 @@ export async function commitImport(input: CommitInput) {
           if (!item) throw new Error(`Dòng ${row.rowNumber}: Không tìm thấy mặt hàng ${asText(row.values.object_code)}`);
           const quantity = asNumber(row.values.quantity);
           const unitCost = row.values.unit_cost ? asNumber(row.values.unit_cost) : Math.abs(asNumber(row.values.amount) / quantity);
-          await tx.inventoryBalance.upsert({
-            where: { itemId_warehouseCode: { itemId: item.id, warehouseCode: asText(row.values.warehouse_code) } },
-            create: { itemId: item.id, warehouseCode: asText(row.values.warehouse_code), quantity, averageCost: unitCost },
-            update: { quantity, averageCost: unitCost },
+          const warehouseCode = asText(row.values.warehouse_code);
+          await applyOpeningInventoryChange(tx as Prisma.TransactionClient, {
+            itemId: item.id,
+            warehouseCode,
+            before: replacedOpeningOf(item.code, warehouseCode),
+            after: { quantity, unitCost },
           });
           await setImportTarget(tx, staging, row, "INVENTORY_BALANCE", item.id);
         }
@@ -3013,13 +3041,13 @@ async function rollbackOpeningBalances(tx: RawTxClient, batchId: string) {
       if (item) {
         const quantity = asNumber(values.quantity);
         const unitCost = values.unit_cost ? asNumber(values.unit_cost) : Math.abs(asNumber(values.amount) / quantity);
-        const balance = await tx.inventoryBalance.findUnique({
-          where: { itemId_warehouseCode: { itemId: item.id, warehouseCode: asText(values.warehouse_code) } },
+        // Trừ đúng phần đầu kỳ đã cộng; tồn đã có phiếu sau đó vẫn giữ nguyên phát sinh.
+        await applyOpeningInventoryChange(tx as Prisma.TransactionClient, {
+          itemId: item.id,
+          warehouseCode: asText(values.warehouse_code),
+          before: { quantity, unitCost },
+          after: { quantity: 0, unitCost: 0 },
         });
-        if (balance && (Math.abs(balance.quantity - quantity) > 0.0001 || Math.abs(balance.averageCost - unitCost) > 0.0001)) {
-          throw new Error(`Tồn kho ${objectCode} đã thay đổi sau import, không thể rollback tự động`);
-        }
-        if (balance) await tx.inventoryBalance.delete({ where: { id: balance.id } });
       }
     }
   }
