@@ -8,6 +8,7 @@ import type { DemoSession } from "@/lib/auth-demo";
 import { assertAssetCodeAvailable, AssetCodeError, nextAssetCode, nextAssetLot, normalizeAssetCode } from "@/lib/asset-code-generator";
 import { assetAcquisitionJournalCode, assetPayableCode } from "@/lib/asset-lot";
 import { allowedDepartmentsOf, assertDepartmentAccess } from "@/lib/department-scope";
+import { matchesSearch } from "@/lib/search-text";
 import {
   softDeleteRecord,
   SoftDeleteError,
@@ -163,7 +164,7 @@ export async function GET(request: Request) {
       ? (allowedDepartments && !allowedDepartments.includes(departmentCode.toUpperCase()) ? { departmentCode: "__NONE__" } : { departmentCode })
       : allowedDepartments ? { departmentCode: { in: allowedDepartments } } : {};
 
-    const assets = await prisma.assetRecord.findMany({
+    const matchedAssets = await prisma.assetRecord.findMany({
       where: {
         ...branchFilter,
         ...(assetGroup && assetGroup !== "ALL" ? { assetGroup } : {}),
@@ -173,22 +174,6 @@ export async function GET(request: Request) {
               OR: [
                 { warehouseCode: warehouseCode },
                 { location: warehouseCode },
-              ],
-            }
-          : {}),
-        ...(search
-          ? {
-              OR: [
-                { code: { contains: search } },
-                { name: { contains: search } },
-                { branchCode: { contains: search } },
-                { departmentCode: { contains: search } },
-                { assetGroup: { contains: search } },
-                { supplierName: { contains: search } },
-                { supplierCode: { contains: search } },
-                { location: { contains: search } },
-                { warehouseCode: { contains: search } },
-                { note: { contains: search } },
               ],
             }
           : {}),
@@ -203,6 +188,14 @@ export async function GET(request: Request) {
       },
       orderBy: { createdAt: "desc" },
     });
+    // Lọc tìm kiếm ở tầng ứng dụng thay vì `contains` của Postgres: `contains` phân biệt hoa
+    // thường và dấu, gõ "cay lau nha" không ra "Cây Lau Nhà" (lib/search-text.ts).
+    const assets = search
+      ? matchedAssets.filter((asset) => matchesSearch(search, [
+          asset.code, asset.name, asset.branchCode, asset.departmentCode, asset.assetGroup,
+          asset.supplierName, asset.supplierCode, asset.location, asset.warehouseCode, asset.note,
+        ]))
+      : matchedAssets;
     const assetPeriods = Array.from(new Set(assets.map((asset) => periodFromDate(asset.purchaseDate))));
     const [journalEntries, openingBalances, assetDebts, lockedPeriods, lotCounts] = await Promise.all([
       prismaRaw.journalEntry.findMany({

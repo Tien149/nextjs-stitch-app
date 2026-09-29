@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { matchesSearch } from "@/lib/search-text";
 
 export type OptionItem = {
   value: string;
@@ -79,15 +80,7 @@ export function SearchableSelect({
 
   const selectedOption = options.find((opt) => opt.value === value);
 
-  const filteredOptions = options.filter((option) => {
-    if (!search.trim()) return true;
-    const term = search.toLowerCase();
-    return (
-      option.label.toLowerCase().includes(term) ||
-      option.value.toLowerCase().includes(term) ||
-      (option.subLabel && option.subLabel.toLowerCase().includes(term))
-    );
-  });
+  const filteredOptions = options.filter((option) => matchesSearch(search, [option.label, option.value, option.subLabel]));
 
   // Close dropdown on click outside
   useEffect(() => {

@@ -9,6 +9,7 @@ import { allowedDepartmentsOf } from "@/lib/department-scope";
 import { assetLotLabel, distributeStocktakeCount, type StocktakeLotInput } from "@/lib/asset-lot";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import CopyableText from "@/components/CopyableText";
+import { matchesSearch } from "@/lib/search-text";
 import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING, STOCKTAKE_RETURNED, isStocktakeEditable, stocktakeStatusLabel, stocktakeStatusTone } from "@/lib/stocktake-status";
 
 type Asset = {
@@ -1490,9 +1491,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function AssetSelect({ assets, value, onChange }: { assets: Asset[]; value: string; onChange: (value: string) => void }) {
   const [search, setSearch] = useState("");
   const filtered = useMemo(() => {
-    const keyword = search.trim().toLowerCase();
-    if (!keyword) return assets;
-    return assets.filter((asset) => `${asset.code} ${asset.name}`.toLowerCase().includes(keyword));
+    return assets.filter((asset) => matchesSearch(search, [asset.code, asset.name]));
   }, [assets, search]);
 
   return (

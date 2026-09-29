@@ -18,6 +18,17 @@ function prospectiveValue(input: HTMLInputElement, inserted: string) {
   return input.value.slice(0, start) + inserted + input.value.slice(end);
 }
 
+/**
+ * Gán giá trị qua setter gốc của HTMLInputElement. Gán `input.value = ...` trực tiếp thì React
+ * ghi nhận luôn giá trị mới vào bộ theo dõi của nó, nên sự kiện "input" phát sau đó bị coi là
+ * không đổi và onChange không chạy: dán mã vào ô tìm kiếm không lọc gì, phải gõ thêm chữ mới ăn.
+ */
+function setNativeValue(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  if (setter) setter.call(input, value);
+  else input.value = value;
+}
+
 function acceptsNumber(input: HTMLInputElement, value: string) {
   if (!value) return true;
   const decimalAllowed = input.step === "any" || input.step.includes(".");
@@ -56,9 +67,16 @@ export default function InputValidationGuard() {
       if (!(event.target instanceof HTMLInputElement)) return;
       const input = event.target;
       prepare(input);
-      let pasted = event.clipboardData?.getData("text") || "";
-      
+      const raw = event.clipboardData?.getData("text") || "";
+      let pasted = raw;
+
       const kind = input.dataset.inputKind as InputKind | undefined;
+      // Ô thường (không khai data-input-kind): để trình duyệt tự dán, chỉ chặn khi sai định dạng
+      // (ô số). Chèn tay giá trị như nhánh dưới làm React bỏ qua lần dán — xem setNativeValue.
+      if (!kind || !rules[kind]) {
+        if (!isAccepted(input, prospectiveValue(input, raw))) event.preventDefault();
+        return;
+      }
       if (kind === "code") {
         pasted = pasted.trim().replace(/[^A-Za-z0-9._-]/g, "");
       } else if (kind === "phone") {
@@ -81,11 +99,13 @@ export default function InputValidationGuard() {
         const newValue = input.value.slice(0, start) + pasted + input.value.slice(end);
         
         // Cập nhật giá trị input và kích hoạt event change cho React nhận diện
-        input.value = newValue;
-        input.selectionStart = input.selectionEnd = start + pasted.length;
-        
-        const changeEvent = new Event("input", { bubbles: true });
-        input.dispatchEvent(changeEvent);
+        setNativeValue(input, newValue);
+        try {
+          input.setSelectionRange(start + pasted.length, start + pasted.length);
+        } catch {
+          // Ô email/number không hỗ trợ đặt con trỏ; bỏ qua.
+        }
+        input.dispatchEvent(new Event("input", { bubbles: true }));
       }
     };
     const onInput = (event: Event) => {

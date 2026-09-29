@@ -12,6 +12,7 @@ import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { resolveInitialBranchScope } from "@/components/BranchScopeSelect";
 import { defaultAssetCodePrefix } from "@/lib/asset-code-generator";
+import { matchesSearch } from "@/lib/search-text";
 
 type MasterItem = {
   id: string;
@@ -105,6 +106,9 @@ export default function AssetsPage() {
   const router = useRouter();
   const [user, setUser] = useState<DemoSession | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
+  /** Danh sách theo bộ lọc nhưng CHƯA áp ô tìm kiếm: nguồn gợi ý tìm và danh sách mã mua tăng. */
+  const [unsearchedAssets, setUnsearchedAssets] = useState<Asset[]>([]);
+  const [searchFocused, setSearchFocused] = useState(false);
   const [warehouses, setWarehouses] = useState<MasterItem[]>([]);
   const [departments, setDepartments] = useState<MasterItem[]>([]);
   const [suppliers, setSuppliers] = useState<MasterItem[]>([]);
@@ -238,7 +242,9 @@ export default function AssetsPage() {
       headers: getSessionHeaders(),
     });
     if (response.ok) {
-      setAssets((await response.json()) as Asset[]);
+      const rows = (await response.json()) as Asset[];
+      setAssets(rows);
+      if (!searchQuery.trim()) setUnsearchedAssets(rows);
     }
   };
 
@@ -301,13 +307,27 @@ export default function AssetsPage() {
   /** Mã có thể mua tăng: mỗi mã một dòng (lấy đợt mới nhất làm mẫu), bỏ mã đã thanh lý hết. */
   const reusableAssets = useMemo(() => {
     const byCode = new Map<string, Asset>();
-    for (const asset of assets) {
+    for (const asset of unsearchedAssets) {
       if ((asset.computedStatus || asset.status) === "DISPOSED") continue;
       const current = byCode.get(asset.code);
       if (!current || (asset.lotNo || 1) > (current.lotNo || 1)) byCode.set(asset.code, asset);
     }
     return [...byCode.values()].sort((a, b) => a.code.localeCompare(b.code));
-  }, [assets]);
+  }, [unsearchedAssets]);
+
+  /** Gợi ý dưới ô tìm kiếm: mỗi mã một dòng, khớp không cần dấu / hoa thường / đúng thứ tự từ. */
+  const searchSuggestions = useMemo(() => {
+    if (!searchQuery.trim()) return [];
+    const seen = new Set<string>();
+    const rows: Asset[] = [];
+    for (const asset of unsearchedAssets) {
+      if (seen.has(asset.code) || !matchesSearch(searchQuery, [asset.code, asset.name])) continue;
+      seen.add(asset.code);
+      rows.push(asset);
+      if (rows.length >= 8) break;
+    }
+    return rows;
+  }, [unsearchedAssets, searchQuery]);
 
   const autoCodePreview = useMemo(() => {
     const group = assetGroups.find((item) => item.code === form.assetGroup);
@@ -1132,15 +1152,36 @@ export default function AssetsPage() {
                   </select>
                 </div>
 
-                <div>
+                <div className="relative">
                   <label className="text-[11px] font-semibold text-slate-500 block mb-1">Tìm kiếm</label>
                   <input
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Mã, tên, ghi chú..."
+                    onFocus={() => setSearchFocused(true)}
+                    // Trễ một nhịp để bấm được vào gợi ý trước khi danh sách đóng.
+                    onBlur={() => window.setTimeout(() => setSearchFocused(false), 150)}
+                    onKeyDown={(e) => { if (e.key === "Escape") setSearchFocused(false); }}
+                    placeholder="Mã, tên, ghi chú... (không cần dấu)"
                     className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs focus:border-blue-500"
                   />
+                  {searchFocused && searchSuggestions.length > 0 && (
+                    <ul className="absolute left-0 right-0 z-20 mt-1 max-h-64 overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 text-xs shadow-lg">
+                      {searchSuggestions.map((asset) => (
+                        <li key={asset.code}>
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => { setSearchQuery(asset.code); setSearchFocused(false); }}
+                            className="w-full px-2.5 py-1.5 text-left hover:bg-blue-50"
+                          >
+                            <span className="font-medium text-slate-800">{asset.name}</span>
+                            <span className="ml-1.5 font-mono text-[11px] text-slate-400">{asset.code}</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
               </div>
             </div>
