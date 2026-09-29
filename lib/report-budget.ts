@@ -679,7 +679,7 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
     }),
     prisma.revenueImportRow.findMany({
       where: { saleDate: { gte: start, lt: end }, ...branchFilter },
-      select: { saleDate: true, branchCode: true, departmentCode: true, grossAmount: true, feeAmount: true },
+      select: { saleDate: true, branchCode: true, departmentCode: true, grossAmount: true, discountAmount: true, feeAmount: true },
     }),
     prisma.payrollImportRow.findMany({
       where: { period: { startsWith: `${year}-` }, ...branchFilter },
@@ -703,6 +703,9 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
   };
 
   // Doanh thu theo tháng: tổng từng cửa hàng (nền tính lương chuẩn) + cắt theo bộ phận (dòng tham chiếu).
+  // Doanh thu bộ phận = Doanh thu − Giảm giá, đúng luật khối "Doanh thu theo bộ phận" của P&L
+  // (getPnlMatrix). Từng cộng grossAmount (trước giảm giá) nên DT Team Bếp/Bar ở đây cao hơn P&L
+  // đúng bằng phần giảm giá (khách báo 29/09/2026).
   const revenueTotalByBranch = new Map<string, number[]>();
   const svcTotalByBranch = new Map<string, number[]>();
   const revenueByDepartment = new Map<string, MatrixSeries>();
@@ -712,14 +715,15 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
     const date = new Date(row.saleDate);
     if (date.getFullYear() !== Number(year)) continue;
     const monthIndex = date.getMonth();
-    const gross = revenueTotalByBranch.get(row.branchCode) || monthArray();
-    gross[monthIndex] += row.grossAmount;
-    revenueTotalByBranch.set(row.branchCode, gross);
+    const net = row.grossAmount - row.discountAmount;
+    const branchTotal = revenueTotalByBranch.get(row.branchCode) || monthArray();
+    branchTotal[monthIndex] += net;
+    revenueTotalByBranch.set(row.branchCode, branchTotal);
     const svc = svcTotalByBranch.get(row.branchCode) || monthArray();
     svc[monthIndex] += row.feeAmount;
     svcTotalByBranch.set(row.branchCode, svc);
     const dept = row.departmentCode || UNASSIGNED_DEPARTMENT;
-    bumpSeries(revenueByDepartment, dept, deptLabel(dept), monthIndex, row.grossAmount);
+    bumpSeries(revenueByDepartment, dept, deptLabel(dept), monthIndex, net);
     bumpSeries(svcByDepartment, dept, deptLabel(dept), monthIndex, row.feeAmount);
   }
   const revenueTotal = monthArray();
@@ -816,6 +820,7 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
       note: row.note,
     })),
     revenue: {
+      // Tên trường giữ nguyên cho client; giá trị là Doanh thu − Giảm giá (không còn là gross).
       totalGross: revenueTotal,
       totalSvc: svcTotal,
       byDepartment: sortedSeries(revenueByDepartment),
