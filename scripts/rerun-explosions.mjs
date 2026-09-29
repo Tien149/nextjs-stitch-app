@@ -23,12 +23,16 @@
  *   npm run rerun:explosions -- --month 2026-09 [--branches HCM,HN]
  * Chạy thử in bảng số chế biến cũ → mới theo mã; --apply ghi thật rồi tự ghi sổ lại giá vốn theo
  * kho của các kỳ bị ảnh hưởng (như nút Rã trên màn hình).
+ * --include-pending-transfers: đưa phiếu điều chuyển bán thành phẩm CHƯA vào hàng chờ rã (lập trước
+ * luật rã điều chuyển 28/09/2026) vào hàng chờ, rồi gộp mọi điều chuyển đang chờ rã của cửa hàng
+ * trong khoảng ngày của từng lần rã vào chính lần rã đó (kho nguồn chế biến phần chuyển đi).
  * --keep-warehouses: giữ đúng kho mà lần rã gốc đã chọn (đọc nhật ký lần rã) thay vì ép về kho
  * bếp / bar duy nhất của cửa hàng — dùng khi rã lại vì đổi LUẬT rã, không phải vì sai kho.
  */
 import { prisma } from "../lib/prisma.ts";
 import { isPeriodLocked } from "../lib/phase3.ts";
 import { explosionRunSettings, rerunExplosions } from "../lib/inventory-explosion.ts";
+import { EXPLOSION_PENDING, refreshTransferExplosionStatus } from "../lib/explosion-sources.ts";
 import { repostInventoryCogs } from "../lib/accounting.ts";
 import { departmentFromWarehouseGroup, REVENUE_DEPARTMENT_CODES } from "../lib/revenue-department.ts";
 
@@ -47,6 +51,7 @@ const runCodes = list("--runs").map((code) => code.toUpperCase());
 const fromWarehouses = list("--from-warehouses").map((code) => code.toUpperCase());
 const month = value("--month");
 const keepWarehouses = flag("--keep-warehouses");
+const includePendingTransfers = flag("--include-pending-transfers");
 const onlyBranches = list("--branches").map((code) => code.toUpperCase());
 const kitchenItemCodes = list("--set-kitchen").map((code) => code.toUpperCase());
 const kitchenOverride = mapArg("--kitchen");
@@ -222,7 +227,35 @@ try {
         await tx.inventoryItem.update({ where: { id: item.id }, data: { category: kitchenGroup } });
       }
       await sumProduced(tx, runs.map((run) => run.runCode), producedBefore);
+      const claimedTransfers = new Set();
+      if (includePendingTransfers) {
+        // Điều chuyển lập trước luật rã điều chuyển còn explosionStatus trống: xét lại từng phiếu.
+        const unset = await tx.inventoryTransaction.findMany({
+          where: { transactionType: "DIEU_CHUYEN", explosionStatus: null, deletedAt: null, branchCode: { in: [...new Set(runs.map((run) => run.branchCode))] } },
+          select: { id: true },
+        });
+        let queued = 0;
+        for (const transfer of unset) if ((await refreshTransferExplosionStatus(tx, transfer.id)) === EXPLOSION_PENDING) queued += 1;
+        console.log(`\nĐiều chuyển chưa xét rã: ${unset.length} phiếu, ${queued} phiếu có bán thành phẩm có định lượng → vào hàng chờ rã.`);
+      }
       const reruns = await rerunExplosions(tx, runs, actor, {
+        extraSources: includePendingTransfers ? async (run, settings) => {
+          const from = new Date(settings.dateFrom);
+          from.setHours(0, 0, 0, 0);
+          const to = new Date(run.date);
+          to.setHours(23, 59, 59, 999);
+          const pending = await tx.inventoryTransaction.findMany({
+            where: { transactionType: "DIEU_CHUYEN", branchCode: run.branchCode, explosionStatus: EXPLOSION_PENDING, deletedAt: null, transactionDate: { gte: from, lte: to } },
+            select: { id: true, code: true, transactionDate: true, warehouseCode: true, toWarehouseCode: true },
+            orderBy: { transactionDate: "asc" },
+          });
+          const mine = pending.filter((row) => !claimedTransfers.has(row.id));
+          for (const row of mine) claimedTransfers.add(row.id);
+          if (mine.length > 0) {
+            console.log(`  ${run.runCode} gộp ${mine.length} điều chuyển: ${mine.slice(0, 12).map((row) => `${row.code} ${day(row.transactionDate)} ${row.warehouseCode}→${row.toWarehouseCode}`).join(", ")}${mine.length > 12 ? "..." : ""}`);
+          }
+          return { transferIds: mine.map((row) => row.id), stocktakeIds: [] };
+        } : undefined,
         overrideSettings: keepWarehouses ? undefined : (run, original) => {
           const { kitchen, bar } = settingsByBranch.get(run.branchCode);
           return { ...original, warehouseCode: kitchen, toWarehouseCode: kitchen, kitchenWarehouseCode: kitchen, barWarehouseCode: bar };
@@ -250,6 +283,16 @@ try {
         remainingBalances = remaining;
       }
       await sumProduced(tx, reruns.map((rerun) => rerun.newRunCode).filter(Boolean), producedAfter);
+      if (includePendingTransfers) {
+        const left = await tx.inventoryTransaction.findMany({
+          where: { transactionType: "DIEU_CHUYEN", explosionStatus: EXPLOSION_PENDING, deletedAt: null, branchCode: { in: [...new Set(runs.map((run) => run.branchCode))] } },
+          select: { code: true, transactionDate: true },
+          orderBy: { transactionDate: "asc" },
+        });
+        if (left.length > 0) {
+          console.log(`  Còn ${left.length} điều chuyển chờ rã NGOÀI khoảng ngày các lần rã này (rã ở tháng của chúng): ${left.slice(0, 10).map((row) => `${row.code} ${day(row.transactionDate)}`).join(", ")}${left.length > 10 ? "..." : ""}`);
+        }
+      }
       for (const rerun of reruns) {
         const docs = rerun.newRunCode
           ? await tx.inventoryTransaction.findMany({ where: { referenceCode: rerun.newRunCode, deletedAt: null }, select: { warehouseCode: true, transactionType: true } })

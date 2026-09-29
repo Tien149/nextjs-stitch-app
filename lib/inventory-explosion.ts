@@ -644,6 +644,12 @@ export async function rerunExplosions(
     /** Đổi kho khi rã lại (lần rã cũ chọn sai kho / chưa có kho bếp-bar). Mặc định giữ kho gốc. */
     overrideSettings?: (run: AffectedExplosionRun, settings: ExplosionRunSettings) => ExplosionRunSettings;
     note?: (run: AffectedExplosionRun) => string;
+    /**
+     * Phiếu điều chuyển / kiểm kê đang CHỜ RÃ mà chưa thuộc lần rã nào, gộp thêm vào lần rã lại
+     * (vd điều chuyển BTP lập trước khi có luật rã điều chuyển 28/09/2026) — rã cùng lần với
+     * doanh thu để kho nguồn chế biến + định giá lại điều chuyển TRƯỚC khi kho nhận xuất bán.
+     */
+    extraSources?: (run: AffectedExplosionRun, settings: ExplosionRunSettings) => Promise<{ transferIds: string[]; stocktakeIds: string[] }>;
   } = {},
 ) {
   const reverted: Array<{
@@ -682,7 +688,12 @@ export async function rerunExplosions(
     settings: Awaited<ReturnType<typeof explosionRunSettings>>;
     documents: string[];
   }> = [];
-  for (const { run, rowIds, sources, settings } of reverted.reverse()) {
+  for (const { run, rowIds, sources: ownSources, settings } of reverted.reverse()) {
+    const extra = options.extraSources ? await options.extraSources(run, settings) : { transferIds: [], stocktakeIds: [] };
+    const sources = {
+      transferIds: [...new Set([...ownSources.transferIds, ...extra.transferIds])],
+      stocktakeIds: [...new Set([...ownSources.stocktakeIds, ...extra.stocktakeIds])],
+    };
     if (rowIds.length === 0 && sources.transferIds.length === 0 && sources.stocktakeIds.length === 0) {
       // Lần rã không còn dòng doanh thu / phiếu nào (đã bị xoá): gỡ xong là đúng, không rã lại.
       results.push({ oldRunCode: run.runCode, newRunCode: null, branchCode: run.branchCode, date: run.date, settings, documents: [] });
