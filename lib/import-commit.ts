@@ -2397,6 +2397,14 @@ async function rollbackRevenue(tx: RawTxClient, batchId: string) {
 /** Đối tác nhận tiền bảo hiểm — mã do khách chốt trong danh mục nhà cung cấp. */
 const SOCIAL_INSURANCE_PARTNER_CODE = "VE00117";
 const SOCIAL_INSURANCE_PARTNER_NAME = "Bảo Hiểm Xã Hội";
+/**
+ * Nợ lương thực nhận đứng tên MỘT đối tác Nhân viên chung (khách chốt 28/09/2026: "Nhân viên
+ * (EMPLOYEE): cột lương thực nhận"). Trước đây mỗi bộ phận một đối tác tự tạo NV-<cửa hàng>-<bộ
+ * phận> nên khách mở đối tác Nhân viên không thấy khoản nợ nào. Mã khoản nợ vẫn mang cửa hàng +
+ * bộ phận (CNPT-LUONG-<kỳ>-<cửa hàng>-<bộ phận>) nên vẫn tách được nợ lương bếp với bar.
+ */
+const EMPLOYEE_PARTNER_CODE = "EMPLOYEE";
+const EMPLOYEE_PARTNER_NAME = "Nhân viên";
 
 /** Tìm đối tác theo mã, chưa có thì tạo; đang ngừng hoạt động thì báo lỗi thay vì tự bật lại. */
 async function ensurePayrollPartner(
@@ -2488,15 +2496,13 @@ async function commitDepartmentPayroll(tx: TxClient, batchId: string, rows: Pars
     });
 
     if (netAmount > 0) {
-      // Nợ lương theo dõi trên một đối tác riêng của từng bộ phận: file lương không còn mã nhân
-      // viên nên không thể ghi nợ cho từng người, mà gộp hết một đối tác thì không tách được
-      // nợ lương của bếp với của bar.
-      const partnerCode = `NV-${branchCode}-${departmentCode}`;
+      // Nợ lương thực nhận đứng tên đối tác Nhân viên chung (EMPLOYEE_PARTNER_CODE); bộ phận
+      // nằm ở mã khoản nợ và diễn giải.
+      const partnerCode = EMPLOYEE_PARTNER_CODE;
       const partnerName = await ensurePayrollPartner(tx, {
         code: partnerCode,
-        name: `Nhân sự ${nameOf("DEPARTMENT", departmentCode)} - ${nameOf("BRANCH", branchCode)}`,
+        name: EMPLOYEE_PARTNER_NAME,
         partnerType: "EMPLOYEE",
-        branchCode,
       });
 
       await tx.debtRecord.create({
@@ -2511,7 +2517,7 @@ async function commitDepartmentPayroll(tx: TxClient, batchId: string, rows: Pars
           documentDate,
           originalAmount: netAmount,
           outstandingAmount: netAmount,
-          description: `Lương thực nhận ${period} - ${nameOf("DEPARTMENT", departmentCode)}${headcount > 0 ? ` (${headcount} nhân sự)` : ""}`,
+          description: `Lương thực nhận ${period} - ${nameOf("DEPARTMENT", departmentCode)} - ${nameOf("BRANCH", branchCode)}${headcount > 0 ? ` (${headcount.toLocaleString("vi-VN")} nhân sự)` : ""}`,
           sourceType: "PAYROLL",
           sourceId: created.id,
           status: "OPEN",

@@ -636,7 +636,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
         required: true,
         type: "number",
         aliases: ["tong chi phi cong ty", "tong chi phi cty", "tong chi phi"],
-        note: "Hệ thống tự tính lại bằng tổng bảy cột từ TỔNG LƯƠNG THEO GIỜ CÔNG đến Bảo hiểm (công ty chịu) — KHÔNG cộng Bảo hiểm bắt buộc; ô tổng trong file chỉ dùng khi file không có các cột con. Đây là số lên chi phí nhân sự trên P&L",
+        note: "Đây là số lên chi phí nhân sự trên P&L — lấy đúng số trong file (gồm Bảo hiểm công ty chịu, KHÔNG gồm Bảo hiểm bắt buộc)",
       },
       {
         field: "net_amount",

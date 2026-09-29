@@ -1669,26 +1669,10 @@ export async function validateImportResult(
       // (Tổng chi phí công ty), không cần biết template nào đã được chọn ở màn import.
       const isDepartmentPayroll = row.values.total_company_cost !== undefined;
       if (isDepartmentPayroll) {
-        // Đúng công thức khách khai trong file: tổng bảy cột từ lương theo giờ công đến
-        // bảo hiểm công ty chịu. Lương tháng theo hợp đồng và bảo hiểm bắt buộc (người lao
-        // động tự đóng) nằm ngoài, không phải tiền công ty bỏ ra.
-        const companyCostFields = [
-          "hourly_salary",
-          "meal_allowance",
-          "parking_allowance",
-          "svc_amount",
-          "kpi_amount",
-          "other_allowance",
-          "company_insurance",
-        ];
-        const companyCost = companyCostFields.reduce((sum, field) => sum + numberValue(row.values[field]), 0);
-        // TỔNG CHI PHÍ CÔNG TY là số dẫn xuất, không phải số khai độc lập: file khách gửi hay
-        // có ô tổng còn giữ công thức cũ (thiếu một cột phụ cấp, hoặc sửa tay cột con mà quên
-        // kéo lại tổng). Chặn lỗi ở preview chỉ bắt kế toán về sửa Excel rồi import lại, trong
-        // khi số đúng đã nằm sẵn ở bảy cột con — nên lấy luôn tổng bảy cột đó làm số ghi sổ.
-        // Chỉ tính lại khi file thực sự có cột con; file chỉ khai mỗi ô tổng thì tổng là số duy nhất.
-        const hasCompanyCostColumns = companyCostFields.some((field) => Boolean(result.mapping[field]));
-        if (hasCompanyCostColumns) row.values.total_company_cost = companyCost;
+        // Chi phí nhân sự trên P&L lấy ĐÚNG cột TỔNG CHI PHÍ CÔNG TY trong file (khách chốt
+        // 28/09/2026, cột bắt buộc) — gồm bảo hiểm công ty chịu, không gồm bảo hiểm bắt buộc.
+        // Trước đây hệ thống tự tính lại bằng tổng bảy cột con (lương giờ công ... bảo hiểm công
+        // ty chịu) và bỏ qua ô tổng của file.
         // Bảo hiểm bắt buộc trừ vào lương người lao động nên nằm ngoài công thức trên; nó chỉ
         // đi cùng bảo hiểm công ty chịu thành khoản phải trả cơ quan BHXH.
         const companyInsurance = numberValue(row.values.company_insurance);

@@ -51,3 +51,42 @@ test("số lượng nhân sự nhận số lẻ (0,5 — người làm chia đô
   assert.deepEqual(parsed.rows.map((row) => row.values.headcount), [0.5, 1.25, 21]);
   assert.ok(parsed.rows.every((row) => !row.errors.some((error) => error.includes("số nguyên"))));
 });
+
+// ─────────────── Import thật vào DB: công nợ + chi phí (khách chốt 28/09/2026) ───────────────
+test("import lương theo bộ phận: nợ lương về đối tác EMPLOYEE, nợ BHXH VE00117 = hai cột bảo hiểm, chi phí lấy cột Tổng chi phí công ty", async () => {
+  const { validateImportResult } = await import("../lib/import-validation.ts");
+  const { commitImport, rollbackImportBatch } = await import("../lib/import-commit.ts");
+  const { prisma } = await import("../lib/prisma.ts");
+  const session = { name: "test-payroll-department", role: "Admin", allowedBranches: ["ALL"] };
+  const template = getImportTemplate("PAYROLL", "PAYROLL_DEPARTMENT_V1");
+  const header = ["Kỳ lương", "Cửa hàng", "Phòng ban", "Số lượng nhân sự", "Bảo hiểm (công ty chịu)", "Bảo hiểm bắt buộc", "TỔNG CHI PHÍ CÔNG TY", "LƯƠNG THỰC NHẬN (VNĐ)"];
+  const rows = [
+    ["2031-03", "HCM", "BEP", 2.5, 3000000, 1000000, 30000000, 25000000],
+    // Tổng trong file lệch hẳn tổng các cột con: vẫn lấy đúng số trong file.
+    ["2031-03", "HCM", "BAR", 1, 500000, 200000, 9000000, 8000000],
+  ];
+  const sheet = XLSX.utils.aoa_to_sheet([header, ...rows]);
+  const book = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(book, sheet, "Luong");
+  const file = new File([XLSX.write(book, { type: "buffer", bookType: "xlsx" })], "test-luong-bo-phan-cong-no.xlsx");
+  const parsed = await parseImportFile(file, template);
+  await validateImportResult(parsed, "PAYROLL", session, {});
+  assert.deepEqual(parsed.rows.flatMap((row) => row.errors), []);
+  const batch = await commitImport({ importType: "PAYROLL", templateCode: template.code, fileName: file.name, uploadedBy: session.name, mapping: parsed.mapping, rows: parsed.rows });
+  try {
+    const payroll = await prisma.payrollDepartmentRow.findMany({ where: { importBatchId: batch.id }, orderBy: { departmentCode: "asc" } });
+    assert.deepEqual(payroll.map((row) => [row.departmentCode, row.totalCompanyCost]), [["BAR", 9000000], ["BEP", 30000000]]);
+    const debts = await prisma.debtRecord.findMany({ where: { importBatchId: batch.id }, orderBy: { code: "asc" } });
+    const byCode = new Map(debts.map((debt) => [debt.code, debt]));
+    assert.equal(byCode.get("CNPT-LUONG-203103-HCM-BEP").partnerCode, "EMPLOYEE");
+    assert.equal(byCode.get("CNPT-LUONG-203103-HCM-BEP").originalAmount, 25000000);
+    assert.equal(byCode.get("CNPT-BHXH-203103-HCM-BEP").partnerCode, "VE00117");
+    assert.equal(byCode.get("CNPT-BHXH-203103-HCM-BEP").originalAmount, 4000000);
+    assert.equal(byCode.get("CNPT-LUONG-203103-HCM-BAR").partnerCode, "EMPLOYEE");
+    assert.equal(byCode.get("CNPT-BHXH-203103-HCM-BAR").originalAmount, 700000);
+    assert.ok(debts.every((debt) => debt.debtType === "PAYABLE" && debt.status === "OPEN" && !debt.recognizeExpense), "nợ lương chỉ là vế phải trả, chi phí đã lên từ Tổng chi phí công ty");
+  } finally {
+    await rollbackImportBatch({ batchId: batch.id, actor: session.name, note: "dọn test" });
+    await prisma.$disconnect();
+  }
+});
