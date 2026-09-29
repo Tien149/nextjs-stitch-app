@@ -3,7 +3,7 @@ import { requireMenuAccess } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 import { periodBounds } from "@/lib/accounting";
 import { apiError, businessError, cleanText, normalizePeriod } from "@/lib/phase3";
-import { createPnlItemRefLookup, DEPRECIATION_PNL_ACCOUNT, depreciationCatalogItemCode, payrollCatalogItemCode, pnlLineAmount, pnlLineKeyOf, resolvePnlItemCode, withDepreciationPnlItem } from "@/lib/reports";
+import { createPnlItemRefLookup, DEPRECIATION_PNL_ACCOUNT, createPayrollItemResolver, depreciationCatalogItemCode, loadPayrollDepartmentLinks, pnlLineAmount, pnlLineKeyOf, resolvePnlItemCode, withDepreciationPnlItem } from "@/lib/reports";
 
 /** Khoá drilldown cho một hạng mục P&L: `pnlItem:<mã>`; `pnlItem:UNCLASSIFIED` là chứng từ chưa gán hạng mục. */
 const PNL_ITEM_METRIC_PREFIX = "pnlItem:";
@@ -29,9 +29,10 @@ export async function GET(request: Request) {
     const { start, end } = periodBounds(period);
     // Hạng mục lương/nhân sự hạch toán 6428 vẫn thuộc dòng Chi phí nhân sự — phải bắt đúng
     // dòng như lib/reports.ts, không thì bấm dòng nhân sự thiếu tiền, bấm OPEX lại thừa.
-    const [catalogPnlItems, pnlGroups] = await Promise.all([
+    const [catalogPnlItems, pnlGroups, payrollDepartments] = await Promise.all([
       prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true, group: true, subGroup: true, status: true } }),
       prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true, group: true } }),
+      loadPayrollDepartmentLinks(),
     ]);
     // Cùng danh mục với bảng P&L: có sẵn hạng mục "CPCĐ - CP Khấu Hao" dù danh mục chưa khai.
     const pnlItems = withDepreciationPnlItem(catalogPnlItems, pnlGroups);
@@ -39,7 +40,8 @@ export async function GET(request: Request) {
     // Khấu hao không gắn hạng mục nhưng trên P&L đứng ở hạng mục CP Khấu Hao — bấm vào hạng mục
     // đó phải thấy đúng các dòng khấu hao (cùng luật với lib/reports.ts).
     const depreciationItemCode = depreciationCatalogItemCode(pnlItems);
-    const payrollItemCode = payrollCatalogItemCode(pnlItems);
+    // Lương lên hạng mục theo phòng ban của dòng — cùng luật với bảng P&L.
+    const payrollItemCodeOf = createPayrollItemResolver(pnlItems, pnlGroups, payrollDepartments);
     const entries = await prisma.journalEntry.findMany({
       where: {
         entryDate: { gte: start, lt: end },
@@ -80,6 +82,7 @@ export async function GET(request: Request) {
     const matchedAmount = (line: {
       account: { accountType: string; reportGroup: string };
       pnlItemCode: string | null;
+      departmentCode?: string | null;
       debit: number;
       credit: number;
     }) => {
@@ -91,7 +94,7 @@ export async function GET(request: Request) {
 
       if (pnlItemCode !== null) {
         const isExpenseLine = accountLine !== null && accountLine !== "revenue" && accountLine !== "otherIncome";
-        const effectiveItemCode = resolvePnlItemCode(line, depreciationItemCode, payrollItemCode);
+        const effectiveItemCode = resolvePnlItemCode(line, depreciationItemCode, payrollItemCodeOf);
         const sameItem = pnlItemCode === "UNCLASSIFIED" ? !effectiveItemCode : effectiveItemCode === pnlItemCode;
         if (isExpenseLine && sameItem && (!lineKey || lineKey === accountLine)) {
           isMatch = true;

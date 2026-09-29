@@ -465,6 +465,24 @@ export default function SettingsPage() {
     [allItems, form.group, form.type],
   );
 
+  /** Hạng mục P&L chọn làm hạng mục lương của phòng ban, gom theo nhóm P&L cha (nhóm lương lên đầu). */
+  const departmentPayrollItemOptions = useMemo(() => {
+    const groups = new Map(allItems.filter((item) => item.type === "PNL_GROUP").map((item) => [item.code, item]));
+    const byGroup = new Map<string, MasterDataItem[]>();
+    for (const item of allItems) {
+      if (item.type !== "PNL_ITEM" || (item.status !== "ACTIVE" && item.code !== form.subGroup)) continue;
+      const parent = item.subGroup ? groups.get(item.subGroup) : undefined;
+      // Lương là chi phí vận hành: chỉ liệt kê hạng mục OPEX, không lẫn doanh thu / giá vốn / CAPEX.
+      if ((parent?.group ?? item.group ?? "").toUpperCase() !== "OPEX" && item.code !== form.subGroup) continue;
+      const label = parent?.name || "Chưa gắn nhóm";
+      byGroup.set(label, [...(byGroup.get(label) || []), item]);
+    }
+    const isPayrollGroup = (name: string) => /lương|luong|nhân sự|nhan su/i.test(name);
+    return [...byGroup.entries()]
+      .map(([label, items]) => ({ label, items: items.sort((a, b) => a.name.localeCompare(b.name, "vi")) }))
+      .sort((a, b) => Number(isPayrollGroup(b.label)) - Number(isPayrollGroup(a.label)) || a.label.localeCompare(b.label, "vi"));
+  }, [allItems, form.subGroup]);
+
   /** Nhóm kho gợi ý cho phân nhóm mặt hàng: gom từ cột group của các kho và các phân nhóm đã gán. */
   const warehouseGroupOptions = useMemo(() => {
     const values = new Set<string>();
@@ -564,7 +582,7 @@ export default function SettingsPage() {
       code: item.code,
       name: item.name,
       group: normalizeGroupValue(item.type, item.group),
-      subGroup: parentTypeOf[item.type] || item.type === "INVENTORY_ITEM_GROUP" ? item.subGroup || "" : "",
+      subGroup: parentTypeOf[item.type] || item.type === "INVENTORY_ITEM_GROUP" || item.type === "DEPARTMENT" ? item.subGroup || "" : "",
       partnerType: normalizeGroupValue("PARTNER", item.partnerType || item.group),
       partnerGroup: item.partnerGroup || "EXTERNAL",
       branch: item.branch || "",
@@ -1249,6 +1267,12 @@ export default function SettingsPage() {
                                 {allItems.find((row) => row.type === parentTypeOf[item.type] && row.code === item.subGroup)?.name || item.subGroup}
                               </p>
                             )}
+                            {item.subGroup && item.type === "DEPARTMENT" && (
+                              <p className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-slate-600">
+                                <span className="material-symbols-outlined text-[13px] text-slate-300">payments</span>
+                                Lương lên P&L: {allItems.find((row) => row.type === "PNL_ITEM" && row.code === item.subGroup)?.name || item.subGroup}
+                              </p>
+                            )}
                             {item.subGroup && item.type === "INVENTORY_ITEM_GROUP" && (
                               <p className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-slate-600">
                                 <span className="material-symbols-outlined text-[13px] text-slate-300">warehouse</span>
@@ -1566,6 +1590,29 @@ export default function SettingsPage() {
                     </datalist>
                     <span className="mt-1 block text-[11px] font-medium text-slate-500">
                       Khớp với ô “Nhóm / Loại” của kho ở từng cửa hàng để hệ thống tự gợi ý kho nhận khi mua hàng.
+                    </span>
+                  </label>
+                )}
+
+                {activeType === "DEPARTMENT" && (
+                  <label className="text-xs font-bold text-slate-700 block">
+                    Hạng mục P&L lương
+                    <select
+                      value={form.subGroup}
+                      onChange={(event) => setForm((value) => ({ ...value, subGroup: event.target.value }))}
+                      className="mt-1.5 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition cursor-pointer"
+                    >
+                      <option value="">-- Tự khớp theo mã / tên bộ phận --</option>
+                      {departmentPayrollItemOptions.map((group) => (
+                        <optgroup key={group.label} label={group.label}>
+                          {group.items.map((option) => (
+                            <option key={option.code} value={option.code}>{option.code} - {option.name}</option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </select>
+                    <span className="mt-1 block text-[11px] font-medium text-slate-500">
+                      Lương của bộ phận này (bảng lương import) lên đúng hạng mục này trên P&L. Để trống thì hệ thống tìm hạng mục lương có mã/tên bộ phận (VD: CPNLD_FOH cho bộ phận FOH).
                     </span>
                   </label>
                 )}

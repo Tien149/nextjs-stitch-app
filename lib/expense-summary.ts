@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { periodBounds } from "@/lib/accounting";
-import { createPnlItemRefLookup, depreciationCatalogItemCode, payrollCatalogItemCode, pnlLineKeyOf, resolvePnlItemCode, type PnlLineKey } from "@/lib/reports";
+import { createPayrollItemResolver, createPnlItemRefLookup, depreciationCatalogItemCode, loadPayrollDepartmentLinks, pnlLineKeyOf, resolvePnlItemCode, type PnlLineKey } from "@/lib/reports";
 import { comparePnlItems } from "@/lib/pnl-ordering";
 
 /**
@@ -117,7 +117,7 @@ const round = (value: number) => Math.round(value);
 export async function getExpenseSummary(period: string, branchCode: string): Promise<ExpenseSummary> {
   const { start, end } = periodBounds(period);
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
-  const [entries, pnlItems, pnlGroups, draftVouchers, approvedVouchers, plannedSchedules, depreciations, payrollRows, payrollDeptRows, manualPayables] = await Promise.all([
+  const [entries, pnlItems, pnlGroups, draftVouchers, approvedVouchers, plannedSchedules, depreciations, payrollRows, payrollDeptRows, manualPayables, payrollDepartments] = await Promise.all([
     prisma.journalEntry.findMany({
       where: { entryDate: { gte: start, lt: end }, status: "POSTED", ...branchFilter },
       select: {
@@ -156,11 +156,13 @@ export async function getExpenseSummary(period: string, branchCode: string): Pro
     // Công nợ phải trả khai tay là chi phí đã phát sinh; chỉ thành bút toán sau khi Đồng bộ ghi
     // sổ, nên khoản chưa ghi sổ phải hiện ở khối chờ hạch toán chứ không im lặng biến mất.
     prisma.debtRecord.findMany({ where: { ...branchFilter, debtType: "PAYABLE", sourceType: "MANUAL", documentDate: { gte: start, lt: end } }, select: { id: true, originalAmount: true } }),
+    loadPayrollDepartmentLinks(),
   ]);
 
   const pnlItemByCode = new Map(pnlItems.map((item) => [item.code, item]));
   const depreciationItemCode = depreciationCatalogItemCode(pnlItems);
-  const payrollItemCode = payrollCatalogItemCode(pnlItems);
+  // Lương lên hạng mục theo phòng ban của dòng bút toán — cùng luật với bảng P&L.
+  const payrollItemCodeOf = createPayrollItemResolver(pnlItems, pnlGroups, payrollDepartments);
   const pnlItemRefOf = createPnlItemRefLookup(pnlItems, pnlGroups);
   // Phiếu chi tiền mặt và chứng từ ngân hàng cùng mang nhãn VOUCHER trên sổ; tách theo kênh
   // của phiếu gốc để mỗi dòng trỏ đúng màn hình sửa.
@@ -182,7 +184,7 @@ export async function getExpenseSummary(period: string, branchCode: string): Pro
       if (amount === 0) continue;
       // Bút toán máy tự sinh (khấu hao 6424, lương 6421) không có chỗ khai hạng mục nên suy
       // theo tài khoản, đúng như cách chúng lên dòng chi phí trên P&L.
-      const pnlItemCode = resolvePnlItemCode(line, depreciationItemCode, payrollItemCode);
+      const pnlItemCode = resolvePnlItemCode(line, depreciationItemCode, payrollItemCodeOf);
       // Chưa gán hạng mục P&L thì mới là khoản chi tiền, chưa phân bổ được vào dòng chi phí
       // nào — đếm riêng và để màn hình nhắc đi phân loại, không cộng vào bảng.
       if (!pnlItemCode) {
@@ -374,20 +376,22 @@ export type ExpenseWhereabouts = Awaited<ReturnType<typeof findExpenseForPnlItem
 
 export async function postedExpenseForPnlItem(period: string, branchCode: string, pnlItemCode: string) {
   const { start, end } = periodBounds(period);
-  const [entries, pnlItems] = await Promise.all([
+  const [entries, pnlItems, pnlGroups, payrollDepartments] = await Promise.all([
     prisma.journalEntry.findMany({
       where: { entryDate: { gte: start, lt: end }, status: "POSTED", branchCode },
-      select: { lines: { select: { debit: true, credit: true, pnlItemCode: true, account: { select: { accountType: true, reportGroup: true } } } } },
+      select: { lines: { select: { debit: true, credit: true, pnlItemCode: true, departmentCode: true, account: { select: { accountType: true, reportGroup: true } } } } },
     }),
     prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true, subGroup: true, status: true } }),
+    prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true } }),
+    loadPayrollDepartmentLinks(),
   ]);
   const depreciationItemCode = depreciationCatalogItemCode(pnlItems);
-  const payrollItemCode = payrollCatalogItemCode(pnlItems);
+  const payrollItemCodeOf = createPayrollItemResolver(pnlItems, pnlGroups, payrollDepartments);
   let total = 0;
   for (const entry of entries) {
     for (const line of entry.lines) {
       if (!EXPENSE_ACCOUNT_TYPES.has(line.account.accountType)) continue;
-      if (resolvePnlItemCode(line, depreciationItemCode, payrollItemCode) !== pnlItemCode) continue;
+      if (resolvePnlItemCode(line, depreciationItemCode, payrollItemCodeOf) !== pnlItemCode) continue;
       total += line.debit - line.credit;
     }
   }

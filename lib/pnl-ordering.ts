@@ -47,6 +47,36 @@ export function isPayrollPnlItem(item: { name: string | null | undefined; groupN
   return isPayrollPnlName(item.name);
 }
 
+/** Chuỗi so khớp theo TỪ: bỏ dấu, dấu câu/gạch dưới thành khoảng trắng ("CPNLD_FOH" -> "cpnld foh"). */
+function nameWords(value: string | null | undefined) {
+  return normalizeName(value).replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/**
+ * Đoán hạng mục lương của một bộ phận khi danh mục Phòng ban chưa gắn hạng mục (khách 29/09/2026:
+ * lương phải đi theo từng bộ phận, không gom cả vào một hạng mục). Khớp khi mã bộ phận là một từ
+ * trong mã hạng mục ("FOH" ↔ "CPNLD_FOH"), hoặc tên bộ phận bỏ tiền tố "Bộ phận/Phòng" nằm trọn
+ * trong tên hạng mục ("Bộ phận Bảo trì" ↔ "CPNLD Lương Bảo Trì & Sửa Chữa"). Chỉ nhận khi ra đúng
+ * MỘT hạng mục — khớp nhiều là mơ hồ, để kế toán gắn tay.
+ */
+export function matchDepartmentPayrollItem<T extends { code: string; name: string }>(
+  payrollItems: T[],
+  department: { code: string; name?: string | null },
+) {
+  const code = nameWords(department.code);
+  const name = nameWords(department.name).replace(/^(bo phan|phong ban|phong|bp|khoi|to)\s+/, "");
+  if (!code) return null;
+  const hasWords = (text: string, phrase: string) => phrase.length >= 3 && ` ${text} `.includes(` ${phrase} `);
+  const byCode = payrollItems.filter((item) => nameWords(item.code).split(" ").includes(code));
+  if (byCode.length === 1) return byCode[0].code;
+  const pool = byCode.length > 1 ? byCode : payrollItems;
+  const byName = pool.filter((item) => {
+    const text = nameWords(item.name);
+    return hasWords(text, name) || hasWords(text, code);
+  });
+  return byName.length === 1 ? byName[0].code : null;
+}
+
 /**
  * Hạng mục "khấu hao" trong danh mục (VD "CPCĐ - CP Khấu Hao"): bút toán khấu hao tự động
  * (TK 6424, không gắn hạng mục) sẽ đứng vào hạng mục này trong Chi phí cố định — P&L không còn

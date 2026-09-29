@@ -493,9 +493,18 @@ export async function GET(request: Request) {
 
 /** Các loại danh mục có tầng cha, lưu mã cha ở cột subGroup.
  * Riêng INVENTORY_ITEM_GROUP: subGroup lưu NHÓM KHO tương ứng của phân nhóm
- * (khớp với cột group của kho ở từng cửa hàng, ví dụ BEP / BAR / FOH). */
+ * (khớp với cột group của kho ở từng cửa hàng, ví dụ BEP / BAR / FOH).
+ * Riêng DEPARTMENT: subGroup lưu mã HẠNG MỤC P&L lương của bộ phận — lương của bộ phận lên
+ * đúng hạng mục đó trên P&L (createPayrollItemResolver ở lib/reports.ts). */
 function typeSupportsSubGroup(type: string) {
-  return type === "PNL_ITEM" || type === "INVENTORY_ITEM_GROUP";
+  return type === "PNL_ITEM" || type === "INVENTORY_ITEM_GROUP" || type === "DEPARTMENT";
+}
+
+/** Hạng mục lương gắn cho phòng ban phải là một Hạng mục P&L có thật. */
+async function validateDepartmentPayrollItem(type: string, subGroup: string | null) {
+  if (type !== "DEPARTMENT" || !subGroup) return;
+  const item = await prisma.masterDataItem.findFirst({ where: { type: "PNL_ITEM", code: subGroup } });
+  if (!item) throw new Error(`Hạng mục P&L lương "${subGroup}" không tồn tại trong danh mục Hạng mục P&L.`);
 }
 
 async function validateMasterData(type: string, group: string | null, branch: string | null, partnerGroup?: string | null) {
@@ -674,6 +683,7 @@ export async function POST(request: Request) {
       codePrefix = normalizeAssetCodePrefix(type, body.codePrefix);
       settlementBankCode = await normalizeSettlementBankCode(type, group, body.settlementBankCode);
       await validateMasterData(type, partnerType || group, branch, partnerGroup);
+      await validateDepartmentPayrollItem(type, subGroup);
       if (branch && ["WAREHOUSE", "MONEY_SOURCE", "DEPARTMENT"].includes(type)) {
         assertBranchAccess(auth.session, branch);
       }
@@ -783,6 +793,7 @@ export async function PATCH(request: Request) {
         );
       }
       await validateMasterData(current.type, partnerType || group, branch, partnerGroup);
+      await validateDepartmentPayrollItem(current.type, body.subGroup !== undefined ? subGroup : null);
       if (branch && ["WAREHOUSE", "MONEY_SOURCE", "DEPARTMENT"].includes(current.type)) {
         assertBranchAccess(auth.session, branch);
       }

@@ -21,19 +21,20 @@ test("hạng mục lương lấy từ danh mục theo tên, bỏ qua hạng mụ
 
 test("bút toán lương 6421 tự nhận hạng mục lương, không rơi vào Chưa phân loại", () => {
   const payrollLine = { pnlItemCode: null, account: { reportGroup: "PAYROLL" } };
-  assert.equal(resolvePnlItemCode(payrollLine, "PNL_CP_KHAUHAO", "PNL_CP_LUONG"), "PNL_CP_LUONG");
+  // Tham số thứ 3 là hàm bộ phận -> hạng mục lương (createPayrollItemResolver).
+  assert.equal(resolvePnlItemCode(payrollLine, "PNL_CP_KHAUHAO", () => "PNL_CP_LUONG"), "PNL_CP_LUONG");
   // Không truyền mã lương (nơi gọi cũ) thì giữ nguyên hành vi trước đây.
   assert.equal(resolvePnlItemCode(payrollLine, "PNL_CP_KHAUHAO"), null);
 });
 
 test("hạng mục khai tay trên chứng từ luôn thắng mã suy ra theo tài khoản", () => {
   const line = { pnlItemCode: "PNL_CP_MATBANG", account: { reportGroup: "PAYROLL" } };
-  assert.equal(resolvePnlItemCode(line, "PNL_CP_KHAUHAO", "PNL_CP_LUONG"), "PNL_CP_MATBANG");
+  assert.equal(resolvePnlItemCode(line, "PNL_CP_KHAUHAO", () => "PNL_CP_LUONG"), "PNL_CP_MATBANG");
 });
 
 test("bút toán chi phí thường vẫn không có hạng mục nếu chưa khai", () => {
   const line = { pnlItemCode: null, account: { reportGroup: "OPEX" } };
-  assert.equal(resolvePnlItemCode(line, "PNL_CP_KHAUHAO", "PNL_CP_LUONG"), null);
+  assert.equal(resolvePnlItemCode(line, "PNL_CP_KHAUHAO", () => "PNL_CP_LUONG"), null);
 });
 
 test("số lượng nhân sự nhận số lẻ (0,5 — người làm chia đôi hai bộ phận), không báo lỗi số nguyên", async () => {

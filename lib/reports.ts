@@ -14,9 +14,10 @@ import { transferLegsForBranch } from "@/lib/internal-transfer";
 import { WALLET_CARD_FEE_CATEGORY_CODE, WALLET_GRAB_EXPENSE_CATEGORY_CODE } from "@/lib/wallet-settlement-allocation";
 import { vietnamBusinessDayKey } from "@/lib/revenue-date";
 import { remainingWalletGross, selectWalletDeclaredRevenue, walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
-import { comparePnlGroups, comparePnlItems, isCapexPnlCatalogItem, isDepreciationPnlName, isFixedCostPnlGroupName, isPayrollPnlItem, isPayrollPnlName, otherIncomePnlItemNameOf, samePnlName } from "@/lib/pnl-ordering";
+import { comparePnlGroups, comparePnlItems, isCapexPnlCatalogItem, isDepreciationPnlName, isFixedCostPnlGroupName, isPayrollPnlItem, isPayrollPnlName, matchDepartmentPayrollItem, otherIncomePnlItemNameOf, samePnlName } from "@/lib/pnl-ordering";
 import { isRevenueComponentCategory, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { REVENUE_PNL_UNCLASSIFIED, loadRevenuePnlGroups, type CategoryLookupClient } from "@/lib/revenue-source";
+import { createDepartmentResolver } from "@/lib/department-resolve";
 
 export type PnlBucket = {
   revenue: number;
@@ -241,6 +242,8 @@ export type PnlCatalog = {
   pnlItems: Array<{ code: string; name: string; group: string | null; subGroup: string | null; status?: string | null }>;
   pnlGroups: Array<{ code: string; name: string; group: string | null; status?: string | null }>;
   categories: Array<{ code: string; name: string }>;
+  /** Phòng ban kèm hạng mục lương đã gắn — lương 6421 lên hạng mục theo bộ phận. */
+  departments?: PayrollDepartmentLink[];
 };
 
 /** Danh mục đã bấm "Ngừng" không được nạp sẵn vào bảng; có phát sinh trong kỳ thì vẫn hiện. */
@@ -307,10 +310,131 @@ export async function loadDepreciationPnlRows(firstPeriod: string, lastPeriod: s
   }));
 }
 
-/** Hạng mục lương trong danh mục P&L — bút toán 6421 do máy sinh không mang mã hạng mục. */
-export function payrollCatalogItemCode(pnlItems: Array<{ code: string; name: string; subGroup?: string | null; status?: string | null }>) {
-  const candidates = pnlItems.filter((item) => !isRetiredCatalogItem(item) && isPayrollPnlName(item.name));
-  return (candidates.find((item) => item.subGroup) || candidates[0])?.code ?? null;
+type PayrollCatalogItem = { code: string; name: string; subGroup?: string | null; status?: string | null };
+type PayrollCatalogGroup = { code: string; name: string };
+
+/**
+ * Hạng mục lương CHUNG — chỗ đứng của bút toán 6421 (máy sinh, không mang mã hạng mục) khi bộ
+ * phận chưa có hạng mục riêng. Ưu tiên hạng mục nằm TRONG nhóm lương/nhân sự: trước đây lấy hạng
+ * mục mang chữ "lương" đầu tiên nên cả bảng lương tháng 8 của NAM MÊ (460 triệu) đổ vào "CPCĐ -
+ * CP Lương Tháng 13" thuộc nhóm Chi phí cố định (khách báo 29/09/2026).
+ */
+export function payrollCatalogItemCode(pnlItems: PayrollCatalogItem[], pnlGroups: PayrollCatalogGroup[] = []) {
+  const groupName = new Map(pnlGroups.map((group) => [group.code, group.name]));
+  const active = pnlItems.filter((item) => !isRetiredCatalogItem(item));
+  const inPayrollGroup = active.filter((item) => item.subGroup && isPayrollPnlName(groupName.get(item.subGroup)));
+  const candidates = active.filter((item) => isPayrollPnlName(item.name));
+  return (inPayrollGroup[0] || candidates.find((item) => item.subGroup) || candidates[0])?.code ?? null;
+}
+
+/** Phòng ban trong danh mục: `subGroup` là mã hạng mục P&L lương kế toán gắn cho bộ phận đó. */
+export type PayrollDepartmentLink = { code: string; name: string; subGroup?: string | null };
+
+/**
+ * Hạng mục P&L của bút toán lương 6421 theo PHÒNG BAN của dòng (khách 29/09/2026: "hạng mục P&L
+ * phải đi theo từng bộ phận"). Thứ tự: hạng mục gắn ở danh mục Phòng ban -> đoán theo mã/tên bộ
+ * phận trong các hạng mục thuộc nhóm lương (matchDepartmentPayrollItem) -> hạng mục lương chung.
+ * Tra lúc đọc báo cáo, không đóng vào bút toán: gắn lại ở danh mục là P&L đổi ngay, không phải
+ * Ghi sổ lại từng kỳ.
+ */
+export function createPayrollItemResolver(
+  pnlItems: PayrollCatalogItem[],
+  pnlGroups: PayrollCatalogGroup[] = [],
+  departments: PayrollDepartmentLink[] = [],
+) {
+  const fallback = payrollCatalogItemCode(pnlItems, pnlGroups);
+  const itemCodes = new Set(pnlItems.map((item) => item.code.toUpperCase()));
+  const groupName = new Map(pnlGroups.map((group) => [group.code, group.name]));
+  const payrollItems = pnlItems.filter((item) => !isRetiredCatalogItem(item)
+    && isPayrollPnlItem({ name: item.name, groupName: item.subGroup ? groupName.get(item.subGroup) : null }));
+  const departmentByCode = new Map(departments.map((department) => [department.code.toUpperCase(), department]));
+  // Import lương cũ lưu nguyên chữ ô Phòng ban ("Team Bar") — quy về mã trước khi tra.
+  const resolveDepartment = createDepartmentResolver(departments);
+  const cache = new Map<string, string | null>();
+  return (departmentCode: string | null | undefined) => {
+    const raw = (departmentCode || "").trim();
+    if (!raw) return fallback;
+    const code = (resolveDepartment(raw) || raw).toUpperCase();
+    if (!cache.has(code)) {
+      const department = departmentByCode.get(code);
+      const linked = department?.subGroup?.toUpperCase();
+      cache.set(code, (linked && itemCodes.has(linked) ? linked : null)
+        ?? matchDepartmentPayrollItem(payrollItems, department || { code }));
+    }
+    return cache.get(code) ?? fallback;
+  };
+}
+
+/** Phòng ban kèm hạng mục lương đã gắn (cột subGroup) — đầu vào của createPayrollItemResolver. */
+export function loadPayrollDepartmentLinks(): Promise<PayrollDepartmentLink[]> {
+  return prisma.masterDataItem.findMany({ where: { type: "DEPARTMENT" }, select: { code: true, name: true, subGroup: true } });
+}
+
+/** Mã hạng mục lương dựng sẵn khi danh mục chưa khai hạng mục nào mang tên lương/nhân sự. */
+export const PAYROLL_FALLBACK_ITEM_CODE = "CPNS_LUONG";
+
+/**
+ * Danh mục hạng mục P&L, chắc chắn có một hạng mục lương để lương import đứng vào — cùng lý do
+ * với withDepreciationPnlItem: thiếu hạng mục thì lương rơi vào "Chưa phân loại" và bị loại
+ * khỏi P&L (luật chỉ tính khoản có hạng mục).
+ */
+export function withPayrollPnlItem<T extends { code: string; name: string; group: string | null; subGroup: string | null; status?: string | null }>(
+  pnlItems: T[],
+  pnlGroups: Array<{ code: string; name: string; group: string | null; status?: string | null }>,
+): T[] {
+  if (payrollCatalogItemCode(pnlItems, pnlGroups)) return pnlItems;
+  const payrollGroup = pnlGroups.find((group) => !isRetiredCatalogItem(group) && isPayrollPnlName(group.name));
+  return [
+    ...pnlItems,
+    { code: PAYROLL_FALLBACK_ITEM_CODE, name: "Chi phí lương nhân sự", group: "OPEX", subGroup: payrollGroup?.code ?? null, status: "ACTIVE" } as T,
+  ];
+}
+
+/** Tài khoản giả cho dòng lương đọc từ import bảng lương — cùng loại với TK 6421. */
+export const PAYROLL_PNL_ACCOUNT = { accountType: "OPEX", reportGroup: "PAYROLL" };
+
+/**
+ * Nguồn bút toán 6421 do "Đồng bộ ghi sổ" sinh từ import bảng lương (mẫu theo nhân viên và mẫu
+ * theo bộ phận). P&L đã đọc thẳng import nên phải BỎ các bút toán này, không là lương hai lần.
+ */
+export const PAYROLL_IMPORT_SOURCE_TYPES = ["PAYROLL", "PAYROLL_DEPARTMENT"];
+
+/**
+ * Lương của P&L đọc THẲNG từ import bảng lương, không đợi bút toán 6421 (khách báo 29/09/2026:
+ * tab Ngân sách nhân sự đủ 455.818.429 đ mà dòng Chi phí nhân sự của P&L lệch). Cùng cách dòng
+ * Doanh thu đọc file import và Khấu hao đọc màn Khấu hao. Số tiền khớp đúng tab Ngân sách nhân
+ * sự: mẫu theo nhân viên lấy lương + phụ cấp + thưởng, mẫu theo bộ phận lấy tổng chi phí công ty.
+ *
+ * Các khoản lương lẻ ghi qua công nợ đối tác / phiếu thu chi / chứng từ ngân hàng gắn hạng mục
+ * lương vẫn đi đường bút toán như cũ và cộng thêm vào dòng này.
+ */
+export async function loadPayrollPnlRows(firstPeriod: string, lastPeriod: string, branchCode: string) {
+  const where = { period: { gte: firstPeriod, lte: lastPeriod }, ...(branchCode === "ALL" ? {} : { branchCode }) };
+  const [employeeRows, departmentRows, departments] = await Promise.all([
+    prisma.payrollImportRow.findMany({ where, select: { period: true, branchCode: true, departmentCode: true, baseSalary: true, allowanceAmount: true, bonusAmount: true } }),
+    prisma.payrollDepartmentRow.findMany({ where, select: { period: true, branchCode: true, departmentCode: true, totalCompanyCost: true } }),
+    prisma.masterDataItem.findMany({ where: { type: "DEPARTMENT" }, select: { code: true, name: true } }),
+  ]);
+  // Import cũ lưu nguyên chữ ô Phòng ban ("Team Bar") — quy về mã như tab Ngân sách nhân sự.
+  const resolveDepartment = createDepartmentResolver(departments);
+  const departmentOf = (raw: string | null) => {
+    const value = (raw || "").trim();
+    return value ? resolveDepartment(value) || value : null;
+  };
+  return [
+    ...employeeRows.map((row) => ({
+      period: row.period,
+      branchCode: row.branchCode,
+      departmentCode: departmentOf(row.departmentCode),
+      amount: row.baseSalary + row.allowanceAmount + row.bonusAmount,
+    })),
+    ...departmentRows.map((row) => ({
+      period: row.period,
+      branchCode: row.branchCode,
+      departmentCode: departmentOf(row.departmentCode),
+      amount: row.totalCompanyCost,
+    })),
+  ];
 }
 
 /**
@@ -347,13 +471,13 @@ export function otherIncomeCatalogGroupOf(
  * máy tự sinh không có chỗ khai mã — khấu hao (6424) và lương (6421).
  */
 export function resolvePnlItemCode(
-  line: { pnlItemCode: string | null; account: { reportGroup: string } },
+  line: { pnlItemCode: string | null; departmentCode?: string | null; account: { reportGroup: string } },
   depreciationItemCode: string | null,
-  payrollItemCode: string | null = null,
+  payrollItemCodeOf: ((departmentCode: string | null | undefined) => string | null) | null = null,
 ) {
   if (line.pnlItemCode) return line.pnlItemCode;
   if (line.account.reportGroup === "DEPRECIATION") return depreciationItemCode;
-  if (line.account.reportGroup === "PAYROLL") return payrollItemCode;
+  if (line.account.reportGroup === "PAYROLL") return payrollItemCodeOf?.(line.departmentCode) ?? null;
   return null;
 }
 /** Một dòng chi tiết với N cột số (N = 1 cho bảng một kỳ, 12 cho bảng cả năm). */
@@ -363,6 +487,7 @@ export type PnlJournalLineLike = {
   account: { accountType: string; reportGroup: string };
   pnlItemCode: string | null;
   categoryCode: string | null;
+  departmentCode?: string | null;
   debit: number;
   credit: number;
 };
@@ -437,8 +562,8 @@ export function createPnlDetailTree(catalog: PnlCatalog, monthCount: number) {
   }
 
   const depreciationItemCode = depreciationCatalogItemCode(pnlItems);
-  const payrollItemCode = payrollCatalogItemCode(pnlItems);
-  const resolveItemCode = (line: PnlJournalLineLike) => resolvePnlItemCode(line, depreciationItemCode, payrollItemCode);
+  const payrollItemCodeOf = createPayrollItemResolver(pnlItems, pnlGroups, catalog.departments);
+  const resolveItemCode = (line: PnlJournalLineLike) => resolvePnlItemCode(line, depreciationItemCode, payrollItemCodeOf);
   /**
    * Hạng mục P&L của một dòng thu nhập khác: mã kế toán đã chọn trên phiếu, hoặc suy từ khoản
    * mục thu "luôn là thu nhập khác" (lãi ngân hàng -> Doanh thu tài chính) cho phiếu bỏ trống ô
@@ -608,6 +733,8 @@ async function loadPeriodJournalLines(start: Date, end: Date, branchCode: string
     WHERE e."status" = 'POSTED'
       AND e."deletedAt" IS NULL
       AND e."entryDate" >= ${start} AND e."entryDate" < ${end}
+      -- Lương import đọc thẳng từ bảng lương (loadPayrollPnlRows), bỏ bút toán 6421 máy sinh.
+      AND e."sourceType" NOT IN (${Prisma.join(PAYROLL_IMPORT_SOURCE_TYPES)})
       ${branchCode === "ALL" ? Prisma.empty : Prisma.sql`AND e."branchCode" = ${branchCode}`}
     GROUP BY 1, 2, 3, 4, 5, 6, 7
   `);
@@ -615,7 +742,7 @@ async function loadPeriodJournalLines(start: Date, end: Date, branchCode: string
 
 export async function getPnl(period: string, branchCode: string) {
   const { start, end } = periodBounds(period);
-  const [entries, revenueRows, revenueGroups, catalogPnlItems, pnlGroups, categories, depreciationRows] = await Promise.all([
+  const [entries, revenueRows, revenueGroups, catalogPnlItems, pnlGroups, categories, depreciationRows, payrollRows, payrollDepartments] = await Promise.all([
     loadPeriodJournalLines(start, end, branchCode),
     // Dòng Doanh thu lấy thẳng từ file import doanh thu, không lấy từ sổ cái — xem chú thích
     // ở vòng lặp bên dưới. Cùng luật với bảng 12 tháng (getPnlMatrix).
@@ -642,8 +769,10 @@ export async function getPnl(period: string, branchCode: string) {
       select: { code: true, name: true },
     }),
     loadDepreciationPnlRows(period, period, branchCode),
+    loadPayrollPnlRows(period, period, branchCode),
+    loadPayrollDepartmentLinks(),
   ]);
-  const pnlItems = withDepreciationPnlItem(catalogPnlItems, pnlGroups);
+  const pnlItems = withPayrollPnlItem(withDepreciationPnlItem(catalogPnlItems, pnlGroups), pnlGroups);
   const pnlItemByCode = new Map(pnlItems.map((item) => [item.code, item]));
   const pnlGroupName = new Map(pnlGroups.map((item) => [item.code, item.name]));
   const pnlItemBreakdown = new Map<string, PnlItemBreakdown>();
@@ -651,7 +780,7 @@ export async function getPnl(period: string, branchCode: string) {
   const branches = new Map<string, PnlBucket>();
   const departments = new Map<string, PnlBucket>();
   // Cây chi tiết dòng -> nhóm -> hạng mục, một cột số cho kỳ này (cùng luật với bảng 12 tháng).
-  const catalog: PnlCatalog = { pnlItems, pnlGroups, categories: withRevenuePnlGroups(categories, revenueGroups.categories) };
+  const catalog: PnlCatalog = { pnlItems, pnlGroups, categories: withRevenuePnlGroups(categories, revenueGroups.categories), departments: payrollDepartments };
   const tree = createPnlDetailTree(catalog, 1);
   seedRevenueChannels(tree, revenueGroups.seedGroups, revenueChannelItemsOf(catalog));
 
@@ -712,6 +841,16 @@ export async function getPnl(period: string, branchCode: string) {
   for (const row of depreciationRows) {
     addExpenseLine(row.branchCode, {
       account: DEPRECIATION_PNL_ACCOUNT,
+      pnlItemCode: null,
+      categoryCode: null,
+      departmentCode: row.departmentCode,
+      debit: row.amount,
+      credit: 0,
+    });
+  }
+  for (const row of payrollRows) {
+    addExpenseLine(row.branchCode, {
+      account: PAYROLL_PNL_ACCOUNT,
       pnlItemCode: null,
       categoryCode: null,
       departmentCode: row.departmentCode,
