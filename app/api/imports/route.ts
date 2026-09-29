@@ -222,8 +222,8 @@ function templateExampleRows(templateCode: string): Array<Record<string, string 
   }
   if (templateCode === "STOCKTAKE_STANDARD_V1") {
     return [
-      { stocktake_date: new Date("2026-07-22T00:00:00Z"), branch_code: "HCM", warehouse_code: "KHO_HCM", item_code: "NVL_NUOCSUOI", actual_quantity: 505, reason: "Kiem ke thuc te" },
-      { stocktake_date: new Date("2026-07-22T00:00:00Z"), branch_code: "HCM", warehouse_code: "KHO_HCM", item_code: "NVL_DUONG", actual_quantity: 9800, reason: "Kiem ke thuc te" },
+      { stocktake_date: new Date("2026-07-22T00:00:00Z"), branch_code: "HCM", warehouse_code: "KHO_HCM", item_code: "NVL_NUOCSUOI", item_name: "Nuoc suoi chai", unit_code: "chai", actual_quantity: 505, reason: "Kiem ke thuc te" },
+      { stocktake_date: new Date("2026-07-22T00:00:00Z"), branch_code: "HCM", warehouse_code: "KHO_HCM", item_code: "NVL_DUONG", item_name: "Duong cat", unit_code: "g", actual_quantity: 9800, reason: "Kiem ke thuc te" },
     ];
   }
   if (templateCode === "ASSET_STANDARD_V1") {

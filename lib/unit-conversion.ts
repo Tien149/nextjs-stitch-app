@@ -32,6 +32,16 @@ export function safeConversionRate(baseUnit: string, conversion?: UnitConversion
   return Number.isFinite(rate) && rate > 0 ? rate : 1;
 }
 
+/**
+ * Tỷ lệ quy đổi của một ĐVT bất kỳ ghi trên file/form về ĐVT tồn kho.
+ * Trống hoặc trùng ĐVT tồn -> 1; ĐVT chưa khai ở danh mục mặt hàng -> null.
+ */
+export function conversionRateForUnit(baseUnit: string, conversions: UnitConversionLike[], unitCode: string) {
+  if (!unitCode.trim() || sameUnit(unitCode, baseUnit)) return 1;
+  const conversion = conversions.find((candidate) => sameUnit(candidate.unitCode, unitCode));
+  return conversion ? safeConversionRate(baseUnit, conversion) : null;
+}
+
 /** Dòng quy đổi khai sai kiểu "1 X = n X" (n ≠ 1) — dùng để cảnh báo trên màn danh mục. */
 export function isSelfReferencingConversion(baseUnit: string, conversion: UnitConversionLike) {
   return sameUnit(conversion.unitCode, baseUnit) && Number(conversion.conversionRate) !== 1;

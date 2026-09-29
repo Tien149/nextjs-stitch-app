@@ -42,7 +42,7 @@ import {
   pickManualVoucherForStatement,
 } from "@/lib/bank-statement-voucher-match";
 import { pickRevenueRowsOfDay, revenueDayKey, revenueDayLabel } from "@/lib/revenue-day-summary";
-import { safeConversionRate } from "@/lib/unit-conversion";
+import { conversionRateForUnit, safeConversionRate } from "@/lib/unit-conversion";
 
 /**
  * Một dòng sao kê không đủ điều kiện lập chứng từ tự động.
@@ -1657,22 +1657,35 @@ export async function commitImport(input: CommitInput) {
         const isExplodable = await semiFinishedWithRecipeChecker(tx as unknown as TxClient, asText(first.values.branch_code));
         let deferredSurplus = false;
         for (const row of rows) {
-          const item = await tx.inventoryItem.findUnique({ where: { code: asText(row.values.item_code).toUpperCase() } });
+          const item = await tx.inventoryItem.findUnique({
+            where: { code: asText(row.values.item_code).toUpperCase() },
+            include: { unitConversions: { select: { unitCode: true, conversionRate: true } } },
+          });
           if (!item) throw new Error(`Dong ${row.rowNumber}: Khong tim thay mat hang ${asText(row.values.item_code)}`);
           if (!isWarehouseStocktakeItemType(item.itemType)) {
             throw new Error(`Dong ${row.rowNumber}: ${item.code} la CCDC/Tai san; hay kiem ke tai phan he Tai san & khau hao`);
           }
           const balance = await tx.inventoryBalance.findUnique({ where: { itemId_warehouseCode: { itemId: item.id, warehouseCode: asText(first.values.warehouse_code) } } });
           const systemQuantity = balance?.quantity || 0;
-          const actualQuantity = asNumber(row.values.actual_quantity);
+          // Số đếm khai theo cột DVT (thùng/chai...) — quy về ĐVT tồn kho; đơn giá cùng ĐVT đó.
+          const unitCode = asText(row.values.unit_code) || item.unit;
+          const rate = conversionRateForUnit(item.unit, item.unitConversions, unitCode);
+          if (rate === null) throw new Error(`Dong ${row.rowNumber}: DVT [${unitCode}] chua co trong quy doi cua ${item.code}`);
+          const countedQuantity = asNumber(row.values.actual_quantity);
+          const actualQuantity = Math.round(countedQuantity * rate * 1e6) / 1e6;
           const varianceQuantity = actualQuantity - systemQuantity;
+          const declaredUnitCost = asNumber(row.values.unit_cost) / rate;
           await tx.stocktakeLine.create({
-            data: { stocktakeId: stocktake.id, itemId: item.id, systemQuantity, actualQuantity, varianceQuantity, reason: asText(row.values.reason) || null },
+            data: {
+              stocktakeId: stocktake.id, itemId: item.id, systemQuantity, actualQuantity, varianceQuantity,
+              unitCost: declaredUnitCost > 0 ? declaredUnitCost : null,
+              unitInputs: rate === 1 ? null : JSON.stringify([{ unitCode, quantity: countedQuantity, conversionRate: rate }]),
+              reason: asText(row.values.reason) || null,
+            },
           });
           await setImportTarget(tx, staging, row, "STOCKTAKE", stocktake.id);
           // Hàng đếm THỪA mà kho chưa có giá vốn thì phải khai "Đơn giá" trên file —
           // nhập giá 0 là giá trị kho sai và giá vốn món ăn theo sai vĩnh viễn.
-          const declaredUnitCost = asNumber(row.values.unit_cost);
           const surplusUnitCost = (balance?.averageCost || 0) > 0 ? balance?.averageCost || 0 : declaredUnitCost;
           const surplusToExplode = varianceQuantity > 0 && isExplodable(item);
           if (varianceQuantity > 0 && !surplusToExplode && surplusUnitCost <= 0) {

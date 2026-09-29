@@ -27,6 +27,7 @@ import { selectWalletDeclaredRevenue, walletRevenueBucket } from "@/lib/wallet-r
 import { vietnamBusinessDayBounds, vietnamBusinessDayKey } from "@/lib/revenue-date";
 import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 import { semiFinishedWithRecipeChecker } from "@/lib/explosion-sources";
+import { conversionRateForUnit } from "@/lib/unit-conversion";
 
 type MasterItem = {
   type: string;
@@ -627,6 +628,7 @@ function validateStocktake(
   masterItems: MasterItem[],
   inventoryItems: Array<{
     code: string;
+    name?: string;
     itemType?: string;
     status: string;
     unit: string;
@@ -647,6 +649,23 @@ function validateStocktake(
     addError(row, `Mat hang ${itemCode} la CCDC/Tai san; hay kiem ke tai phan he Tai san & khau hao`);
   }
   if (numberValue(row.values.actual_quantity) < 0) addError(row, "Ton thuc te khong duoc am");
+  if (!item) return;
+  // Tên hàng chỉ để người đếm dò; hệ thống nhận theo mã nên trống thì điền tên danh mục.
+  if (!text(row.values.item_name) && item.name) row.values.item_name = item.name;
+  // Số đếm theo cột DVT (thùng/chai...) quy về ĐVT tồn kho trước khi so với sổ; đơn giá khai
+  // theo cùng ĐVT đó nên chia lại theo tỷ lệ.
+  const declaredUnit = text(row.values.unit_code) || item.unit;
+  const unitCode = declaredUnit.toUpperCase() === item.unit.toUpperCase()
+    ? item.unit
+    : item.unitConversions.find((unit) => unit.unitCode.toUpperCase() === declaredUnit.toUpperCase())?.unitCode || declaredUnit;
+  row.values.unit_code = unitCode;
+  const rate = conversionRateForUnit(item.unit, item.unitConversions, unitCode);
+  if (rate === null) {
+    addError(row, `DVT [${unitCode}] chua co trong quy doi cua ${itemCode} — khai quy doi o danh muc mat hang hoac de trong DVT (= ${item.unit})`);
+    return;
+  }
+  row.values.converted_quantity = Math.round(numberValue(row.values.actual_quantity) * rate * 1e6) / 1e6;
+  if (text(row.values.unit_cost)) row.values.converted_unit_cost = numberValue(row.values.unit_cost) / rate;
 }
 
 function validateAsset(row: ParsedImportRow, masterItems: MasterItem[], existingAssetCodes: Set<string>) {
@@ -1268,7 +1287,7 @@ export async function validateImportResult(
     select: { type: true, code: true, name: true, group: true, partnerType: true, branch: true, status: true, accountNo: true, settlementBankCode: true },
   });
   const inventoryItems = ["OPENING_BALANCE", "INVENTORY_TRANSACTION", "BOM", "STOCKTAKE", "REVENUE_POS", "INVENTORY_ITEM", "PRODUCTION", "WASTE"].includes(importType)
-    ? await prisma.inventoryItem.findMany({ select: { code: true, itemType: true, status: true, unit: true, unitConversions: { select: { unitCode: true, conversionRate: true } } } })
+    ? await prisma.inventoryItem.findMany({ select: { code: true, name: true, itemType: true, status: true, unit: true, unitConversions: { select: { unitCode: true, conversionRate: true } } } })
     : [];
   const inventoryBalances = importType === "STOCKTAKE"
     ? await prisma.inventoryBalance.findMany({ include: { item: { select: { code: true } } } })
@@ -1345,7 +1364,7 @@ export async function validateImportResult(
       const stItem = inventoryItems.find((candidate) => candidate.code.toUpperCase() === text(row.values.item_code).toUpperCase());
       if (stItem) {
         const stBalance = inventoryBalances.find((balance) => balance.item.code.toUpperCase() === stItem.code.toUpperCase() && balance.warehouseCode === text(row.values.warehouse_code));
-        const stActual = numberValue(row.values.actual_quantity);
+        const stActual = numberValue(row.values.converted_quantity ?? row.values.actual_quantity);
         const stSystem = stBalance?.quantity || 0;
         const stAvg = (stBalance as { averageCost?: number } | undefined)?.averageCost || 0;
         const stBranch = text(row.values.branch_code).toUpperCase();
