@@ -23,10 +23,12 @@
  *   npm run rerun:explosions -- --month 2026-09 [--branches HCM,HN]
  * Chạy thử in bảng số chế biến cũ → mới theo mã; --apply ghi thật rồi tự ghi sổ lại giá vốn theo
  * kho của các kỳ bị ảnh hưởng (như nút Rã trên màn hình).
+ * --keep-warehouses: giữ đúng kho mà lần rã gốc đã chọn (đọc nhật ký lần rã) thay vì ép về kho
+ * bếp / bar duy nhất của cửa hàng — dùng khi rã lại vì đổi LUẬT rã, không phải vì sai kho.
  */
 import { prisma } from "../lib/prisma.ts";
 import { isPeriodLocked } from "../lib/phase3.ts";
-import { rerunExplosions } from "../lib/inventory-explosion.ts";
+import { explosionRunSettings, rerunExplosions } from "../lib/inventory-explosion.ts";
 import { repostInventoryCogs } from "../lib/accounting.ts";
 import { departmentFromWarehouseGroup, REVENUE_DEPARTMENT_CODES } from "../lib/revenue-department.ts";
 
@@ -44,6 +46,7 @@ const allowLocked = flag("--allow-locked");
 const runCodes = list("--runs").map((code) => code.toUpperCase());
 const fromWarehouses = list("--from-warehouses").map((code) => code.toUpperCase());
 const month = value("--month");
+const keepWarehouses = flag("--keep-warehouses");
 const onlyBranches = list("--branches").map((code) => code.toUpperCase());
 const kitchenItemCodes = list("--set-kitchen").map((code) => code.toUpperCase());
 const kitchenOverride = mapArg("--kitchen");
@@ -141,7 +144,15 @@ try {
   const warehouses = await prisma.masterDataItem.findMany({ where: { type: "WAREHOUSE", status: "ACTIVE" }, select: { code: true, name: true, branch: true, group: true } });
   const settingsByBranch = new Map();
   let blocked = false;
-  for (const branchCode of [...new Set(runs.map((run) => run.branchCode))]) {
+  if (keepWarehouses) {
+    console.log("Giữ nguyên kho của từng lần rã gốc (theo nhật ký lần rã):");
+    for (const run of runs) {
+      const docs = await prisma.inventoryTransaction.findMany({ where: { referenceType: "PRODUCTION", referenceCode: run.runCode, deletedAt: null }, select: { warehouseCode: true } });
+      const original = await explosionRunSettings(prisma, run, docs);
+      console.log(`  ${run.runCode}: kho mặc định ${original.warehouseCode || "?"}, kho nhập ${original.toWarehouseCode || "?"}, kho bếp ${original.kitchenWarehouseCode || "(trống)"}, kho bar ${original.barWarehouseCode || "(trống)"}`);
+    }
+  }
+  for (const branchCode of keepWarehouses ? [] : [...new Set(runs.map((run) => run.branchCode))]) {
     const own = warehouses.filter((row) => (row.branch || "").toUpperCase() === branchCode.toUpperCase());
     const pick = (department, override, label) => {
       if (override.get(branchCode.toUpperCase())) return override.get(branchCode.toUpperCase());
@@ -212,11 +223,13 @@ try {
       }
       await sumProduced(tx, runs.map((run) => run.runCode), producedBefore);
       const reruns = await rerunExplosions(tx, runs, actor, {
-        overrideSettings: (run, original) => {
+        overrideSettings: keepWarehouses ? undefined : (run, original) => {
           const { kitchen, bar } = settingsByBranch.get(run.branchCode);
           return { ...original, warehouseCode: kitchen, toWarehouseCode: kitchen, kitchenWarehouseCode: kitchen, barWarehouseCode: bar };
         },
-        note: (run) => `rã lại ${run.runCode}: BTP theo kho món bán, combo theo thành phần`,
+        note: (run) => (keepWarehouses
+          ? `rã lại ${run.runCode}: lấy tồn trước, chế biến phần thiếu`
+          : `rã lại ${run.runCode}: BTP theo kho món bán, combo theo thành phần`),
       });
       // Dọn dòng số dư rỗng ở kho sai: tồn = 0 và không còn phiếu sống nào của mặt hàng ở kho đó.
       if (fromWarehouses.length > 0) {
@@ -257,7 +270,7 @@ try {
             entityCode: rerun.newRunCode,
             branchCode: rerun.branchCode,
             actorName: actor,
-            metadataJson: JSON.stringify({ ...rerun.settings, dateTo: rerun.date, rerunOf: rerun.oldRunCode, reason: "Rã lại theo kho bếp/bar (script)", documents: rerun.documents }),
+            metadataJson: JSON.stringify({ ...rerun.settings, dateTo: rerun.date, rerunOf: rerun.oldRunCode, reason: keepWarehouses ? "Rã lại theo luật lấy tồn trước (script)" : "Rã lại theo kho bếp/bar (script)", documents: rerun.documents }),
           },
         });
       }
