@@ -22,7 +22,8 @@ export type PayrollBudgetData = {
   period: string;
   branchCode: string;
   months: string[];
-  departments: Array<{ code: string; name: string }>;
+  /** `group` là ô Nhóm của danh mục Phòng ban (Vận hành / Văn phòng). */
+  departments: Array<{ code: string; name: string; group?: string | null }>;
   /** Các tháng trong năm đã set bộ tỷ trọng riêng. */
   ratioPeriods: string[];
   /** Tổng tỷ trọng có hiệu lực từng tháng (0.25 = 25%). */
@@ -382,7 +383,7 @@ export default function PayrollBudgetTab({
           </div>
         </section>
       ) : (
-      <div className="grid xl:grid-cols-2 gap-5">
+      <>
         <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
           <PanelHeader title="Biến động số lượng nhân sự" subtitle="Số lượng nhân sự trong bảng lương từng tháng, tách theo bộ phận (nhân sự chia đôi hai bộ phận tính 0,5)." exportable={false} />
           <div className="p-4">
@@ -393,34 +394,8 @@ export default function PayrollBudgetTab({
             />
           </div>
         </section>
-        <section className="table-panel">
-          <PanelHeader title="Số lượng nhân sự theo tháng" subtitle="Kèm tổng quỹ lương thực chi và lương bình quân đầu người." />
-          <div className="overflow-x-auto">
-            <Table headers={["Chỉ số", ...monthHeaders]}>
-              {data.headcount.byDepartment.map((row) => (
-                <tr key={`hc-${row.code}`} className="border-t border-slate-100">
-                  <Cell><b>{row.name}</b></Cell>
-                  {row.months.map((value, index) => (
-                    <Cell key={data.months[index]} right>{value ? headcountText(value) : "-"}</Cell>
-                  ))}
-                </tr>
-              ))}
-              <tr className="border-t border-slate-200 bg-slate-50 font-bold">
-                <Cell><b>Tổng nhân sự</b></Cell>
-                {data.headcount.total.map((value, index) => (
-                  <Cell key={data.months[index]} right><b>{value ? headcountText(value) : "-"}</b></Cell>
-                ))}
-              </tr>
-              <tr className="border-t border-slate-100">
-                <Cell><b>Lương bình quân/người</b></Cell>
-                {data.headcount.total.map((value, index) => (
-                  <Cell key={data.months[index]} right>{value ? money(Math.round(data.actual.total[index] / value)) : "-"}</Cell>
-                ))}
-              </tr>
-            </Table>
-          </div>
-        </section>
-      </div>
+        <HeadcountCostTable data={data} monthHeaders={monthHeaders} />
+      </>
       )}
     </div>
   );
@@ -466,5 +441,144 @@ function MonthRow({ label, values, bold, muted, variance }: { label: string; val
       ))}
       <Cell right><b className={cellClass(total)}>{total ? money(Math.round(total)) : "-"}</b></Cell>
     </tr>
+  );
+}
+
+/* ------------------------------------------------------------------------- *
+ * Bảng nhân sự theo tháng — theo mẫu Excel của khách (29/09/2026)
+ * ------------------------------------------------------------------------- */
+
+type DepartmentBlock = "OPERATION" | "OFFICE";
+
+const plainText = (value: string | null | undefined) =>
+  (value || "").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/gi, "d").toLowerCase();
+
+/**
+ * Khối của một bộ phận: ô Nhóm ở danh mục Phòng ban thắng ("Vận hành" / "Văn phòng", hoặc
+ * "Operation" / "Back office"). Để trống thì bộ phận có doanh thu riêng (Bếp, Bar) và bộ phận
+ * đứng quầy/bếp theo tên (FOH, phục vụ, bảo trì...) là Vận hành, còn lại là Khối văn phòng.
+ */
+function departmentBlockOf(department: { name: string; group?: string | null }, hasRevenue: boolean): DepartmentBlock {
+  const group = plainText(department.group);
+  if (/van phong|back ?office|office/.test(group)) return "OFFICE";
+  if (/van hanh|operation/.test(group)) return "OPERATION";
+  if (hasRevenue) return "OPERATION";
+  return /\b(bep|bar|foh|phuc vu|bao tri|sua chua|kitchen|van hanh|operation|thu ngan|tap vu|bao ve)\b/.test(plainText(department.name)) ? "OPERATION" : "OFFICE";
+}
+
+const BLOCK_LABELS: Record<DepartmentBlock, { group: string; subtotal: string }> = {
+  OPERATION: { group: "Vận hành", subtotal: "Cộng Vận hành" },
+  OFFICE: { group: "Văn phòng", subtotal: "Cộng Khối văn phòng" },
+};
+
+const ratioOf = (numerator: number, denominator: number) => (denominator > 0 ? numerator / denominator : 0);
+
+/** Một dòng của bảng nhân sự: cột Nhóm, cột Bộ phận, rồi 12 tháng in theo `format`. */
+function HeadcountRow({ group, label, values, format, tone = "", strong }: { group?: string; label: string; values: number[]; format: (value: number) => string; tone?: string; strong?: boolean }) {
+  // Dòng bộ phận dưới một dòng tổng (CP lương, %, bình quân) thụt vào như file mẫu; dòng số
+  // người đã có cột Nhóm đứng trước nên không thụt.
+  const indent = !strong && !group;
+  return (
+    <tr className={`border-t border-slate-100 ${tone} ${strong ? "font-bold" : ""}`}>
+      <Cell><span className="text-slate-500">{group || ""}</span></Cell>
+      <Cell><span className={strong ? "font-bold" : indent ? "pl-4 text-slate-600" : ""}>{label}</span></Cell>
+      {values.map((value, index) => <Cell key={index} right>{format(value)}</Cell>)}
+    </tr>
+  );
+}
+
+/**
+ * Bảng "Số lượng nhân sự theo tháng" theo mẫu file của khách: số người theo khối Vận hành /
+ * Văn phòng, CP lương cho NLĐ, doanh thu, % CP lương / DT, CP lương/người và DT/người.
+ *
+ * Luật mẫu số (khách chốt 29/09/2026): bộ phận có doanh thu riêng (Bếp, Bar) tính trên doanh
+ * thu của chính nó; các bộ phận còn lại tính trên TỔNG doanh thu. Tổng doanh thu cùng nền với
+ * dòng "% lương thực chi / doanh thu" ở bảng trên (doanh thu + SVC).
+ */
+function HeadcountCostTable({ data, monthHeaders }: { data: PayrollBudgetData; monthHeaders: string[] }) {
+  const zeros = () => data.months.map(() => 0);
+  const departmentMeta = new Map(data.departments.map((row) => [row.code, row]));
+  const headcountByCode = new Map(data.headcount.byDepartment.map((row) => [row.code, row]));
+  const salaryByCode = new Map(data.actual.byDepartment.map((row) => [row.code, row]));
+  const revenueDepartments = data.revenue.byDepartment.filter((row) => row.code !== "UNASSIGNED" && row.total > 0);
+  const revenueByCode = new Map(revenueDepartments.map((row) => [row.code, row]));
+  const totalRevenue = data.months.map((_, index) => data.revenue.totalGross[index] + data.revenue.totalSvc[index]);
+
+  const departments = [...new Set([...headcountByCode.keys(), ...salaryByCode.keys()])].map((code) => {
+    const headcount = headcountByCode.get(code)?.months || zeros();
+    const salary = salaryByCode.get(code)?.months || zeros();
+    const ownRevenue = revenueByCode.get(code)?.months || null;
+    const name = headcountByCode.get(code)?.name || salaryByCode.get(code)?.name || code;
+    return {
+      code,
+      name,
+      block: departmentBlockOf({ name, group: departmentMeta.get(code)?.group }, Boolean(ownRevenue)),
+      headcount,
+      salary,
+      /** Mẫu số doanh thu: doanh thu riêng của bộ phận nếu có, không thì tổng doanh thu. */
+      revenueBase: ownRevenue || totalRevenue,
+      hasOwnRevenue: Boolean(ownRevenue),
+      salaryTotal: salary.reduce((total, value) => total + value, 0),
+    };
+  });
+  // Bếp/Bar (có doanh thu riêng) đứng đầu khối như file mẫu, sau đó theo quỹ lương giảm dần.
+  departments.sort((a, b) => (a.block === b.block ? 0 : a.block === "OPERATION" ? -1 : 1)
+    || Number(b.hasOwnRevenue) - Number(a.hasOwnRevenue)
+    || b.salaryTotal - a.salaryTotal);
+  const blocks = (["OPERATION", "OFFICE"] as DepartmentBlock[])
+    .map((block) => ({ block, rows: departments.filter((row) => row.block === block) }))
+    .filter((item) => item.rows.length > 0);
+
+  const headcountTotal = data.headcount.total;
+  const salaryTotal = data.actual.total;
+  const columnSum = (rows: number[][]) => data.months.map((_, index) => rows.reduce((total, row) => total + row[index], 0));
+
+  const headcountCell = (value: number) => (value ? headcountText(value) : "-");
+  const moneyCell = (value: number) => (value ? money(Math.round(value)) : "-");
+  const percentCell = (value: number) => (value ? `${(value * 100).toLocaleString("vi-VN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%` : "-");
+
+  return (
+    <section className="table-panel">
+      <PanelHeader
+        title="Số lượng nhân sự theo tháng"
+        subtitle="Số người theo khối, CP lương cho NLĐ, doanh thu và các chỉ số trên đầu người. Bếp/Bar tính trên doanh thu bếp/bar tương ứng, bộ phận khác tính trên tổng doanh thu."
+      />
+      <Table headers={["Nhóm", "Bộ phận", ...monthHeaders]}>
+        {blocks.map(({ block, rows }) => (
+          <React.Fragment key={block}>
+            {rows.map((row) => (
+              <HeadcountRow key={`hc-${row.code}`} group={BLOCK_LABELS[block].group} label={row.name} values={row.headcount} format={headcountCell} />
+            ))}
+            <HeadcountRow label={BLOCK_LABELS[block].subtotal} values={columnSum(rows.map((row) => row.headcount)).map((value) => Math.round(value * 100) / 100)} format={headcountCell} tone="bg-amber-50" strong />
+          </React.Fragment>
+        ))}
+        <HeadcountRow label="Tổng cộng" values={headcountTotal} format={headcountCell} tone="bg-amber-100" strong />
+
+        <HeadcountRow label="CP lương cho NLĐ" values={salaryTotal} format={moneyCell} tone="bg-amber-50" strong />
+        {departments.map((row) => (
+          <HeadcountRow key={`sal-${row.code}`} label={row.name} values={row.salary} format={moneyCell} />
+        ))}
+
+        <HeadcountRow label="Doanh thu sau thuế" values={totalRevenue} format={moneyCell} tone="bg-orange-50" strong />
+        {revenueDepartments.map((row) => (
+          <HeadcountRow key={`rev-${row.code}`} label={`Doanh thu ${row.name}`} values={row.months} format={moneyCell} tone="bg-orange-50/60" />
+        ))}
+
+        <HeadcountRow label="% CP lương / DT sau thuế" values={data.months.map((_, index) => ratioOf(salaryTotal[index], totalRevenue[index]))} format={percentCell} tone="bg-emerald-50" strong />
+        {departments.map((row) => (
+          <HeadcountRow key={`pct-${row.code}`} label={row.name} values={data.months.map((_, index) => ratioOf(row.salary[index], row.revenueBase[index]))} format={percentCell} tone="bg-emerald-50/50" />
+        ))}
+
+        <HeadcountRow label="CP lương / người" values={data.months.map((_, index) => ratioOf(salaryTotal[index], headcountTotal[index]))} format={moneyCell} strong />
+        {departments.map((row) => (
+          <HeadcountRow key={`spp-${row.code}`} label={row.name} values={data.months.map((_, index) => ratioOf(row.salary[index], row.headcount[index]))} format={moneyCell} />
+        ))}
+
+        <HeadcountRow label="DT / người" values={data.months.map((_, index) => ratioOf(totalRevenue[index], headcountTotal[index]))} format={moneyCell} tone="bg-orange-50" strong />
+        {departments.map((row) => (
+          <HeadcountRow key={`rpp-${row.code}`} label={row.name} values={data.months.map((_, index) => ratioOf(row.revenueBase[index], row.headcount[index]))} format={moneyCell} tone="bg-orange-50/60" />
+        ))}
+      </Table>
+    </section>
   );
 }

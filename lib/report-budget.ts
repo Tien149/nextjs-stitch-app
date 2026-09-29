@@ -671,7 +671,9 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
   const end = new Date(`${Number(year) + 1}-01-01T00:00:00`);
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
   const [departments, ratioRows, revenueRows, payrollRows, payrollDeptRows] = await Promise.all([
-    prisma.masterDataItem.findMany({ where: { type: "DEPARTMENT", status: "ACTIVE" }, select: { code: true, name: true }, orderBy: { code: "asc" } }),
+    // `group` là ô Nhóm của danh mục Phòng ban (Vận hành / Văn phòng) — bảng nhân sự theo tháng
+    // tách khối theo ô này.
+    prisma.masterDataItem.findMany({ where: { type: "DEPARTMENT", status: "ACTIVE" }, select: { code: true, name: true, group: true }, orderBy: { code: "asc" } }),
     // Lấy cả bộ set từ các năm trước: tháng 1 chưa set riêng thì kế thừa bộ cuối của năm trước.
     prisma.departmentCostRatio.findMany({
       where: { period: { lte: months[11] }, metric: "payroll", deletedAt: null, ...branchFilter },

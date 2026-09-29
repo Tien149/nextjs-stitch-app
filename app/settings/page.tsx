@@ -128,7 +128,7 @@ const groupPlaceholders: Record<string, string> = {
   PNL_GROUP: "VD: OPEX / CAPEX / Gia von / Nguon doanh thu",
   PNL_ITEM: "VD: OPEX / CAPEX / Gia von / Nguon doanh thu",
   BRANCH: "VD: Branch / Head Office",
-  DEPARTMENT: "VD: Back office / Operation",
+  DEPARTMENT: "VD: Vận hành / Văn phòng (tách khối trên bảng nhân sự)",
   WAREHOUSE: "VD: BEP / BAR / FOH (khớp Nhóm kho của phân nhóm mặt hàng)",
   PARTNER: "VD: Khach hang / Nha cung cap / Doi tac",
   MONEY_SOURCE: "VD: Tien mat / Ngan hang / Vi/POS",
