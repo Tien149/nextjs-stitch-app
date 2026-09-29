@@ -281,12 +281,14 @@ export function PlanActualCell({ plan, actual, income, align = "right", compact 
   const rate = hasPlan ? actual / (plan as number) : null;
   const good = rate === null ? null : income ? rate >= 1 : rate <= 1;
   const chipTone = !hasActual ? "bg-slate-50 text-slate-400" : good === null ? "bg-slate-100 text-slate-600" : good ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700";
+  // Thực đạt in to trên, kế hoạch dòng nhỏ không đậm bên dưới (khách sửa 29/09/2026 — cùng luật
+  // thẻ KPI: số chính là thực đạt, kế hoạch chỉ để so).
   return (
     <div className={`flex flex-col gap-0.5 ${align === "right" ? "items-end" : "items-start"}`}>
-      <span className={`text-[13px] font-bold whitespace-nowrap ${hasPlan ? "text-slate-800" : "text-slate-300"}`}>{hasPlan ? `${fmt(plan as number)}${compact ? "" : " đ"}` : "—"}</span>
-      <span className="flex items-center gap-1">
-        <span className={`rounded px-1.5 py-0.5 text-[11px] font-semibold whitespace-nowrap ${chipTone}`}>{hasActual ? `${fmt(actual)}${compact ? "" : " đ"}` : "0"}</span>
-        {rate !== null && <span className={`text-[10px] font-bold ${good ? "text-emerald-600" : "text-rose-600"}`}>{pctText(rate, 0)}</span>}
+      <span className={`rounded px-1.5 py-0.5 text-[14px] font-bold whitespace-nowrap ${chipTone}`}>{hasActual ? `${fmt(actual)}${compact ? "" : " đ"}` : "0"}</span>
+      <span className="flex items-center gap-1 text-[11px] font-normal whitespace-nowrap">
+        <span className={hasPlan ? "text-slate-500" : "text-slate-300"}>KH {hasPlan ? `${fmt(plan as number)}${compact ? "" : " đ"}` : "—"}</span>
+        {rate !== null && <span className={`font-semibold ${good ? "text-emerald-600" : "text-rose-600"}`}>{pctText(rate, 0)}</span>}
       </span>
     </div>
   );

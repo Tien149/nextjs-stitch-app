@@ -208,6 +208,8 @@ export async function getPnlMatrix(year: string, branchCode: string) {
   const totals = months.map(() => emptyBucket());
   /** Thực tế từng cửa hàng × 12 tháng — cho bảng "hiệu quả theo cửa hàng" và so hòa vốn theo cửa hàng. */
   const branchTotals = new Map<string, PnlBucket[]>();
+  /** OPEX thực tế theo "<cửa hàng>|<mã nhóm P&L>" — bảng hiệu quả theo cửa hàng tách Chi phí hoạt động theo nhóm như bảng P&L. */
+  const branchOpexByGroup = new Map<string, number[]>();
   const revenueByDepartment = new Map<string, MatrixSeries>();
   const payrollByDepartment = new Map<string, MatrixSeries>();
   const cogsByDepartment = new Map<string, MatrixSeries>();
@@ -245,6 +247,12 @@ export async function getPnlMatrix(year: string, branchCode: string) {
       branchBuckets[monthIndex].depreciation += signed;
     }
     branchTotals.set(row.branchCode, branchBuckets);
+    if (lineKey === "otherOpex") {
+      const groupKey = `${row.branchCode}|${tree.expenseGroupCodeOf(journalLine)}`;
+      const series = branchOpexByGroup.get(groupKey) || months.map(() => 0);
+      series[monthIndex] += signed;
+      branchOpexByGroup.set(groupKey, series);
+    }
     const dept = row.departmentCode || UNASSIGNED_DEPARTMENT;
     if (lineKey === "payroll") bumpSeries(payrollByDepartment, dept, deptLabel(dept), monthIndex, expense);
     if (lineKey === "cogs") bumpSeries(cogsByDepartment, dept, deptLabel(dept), monthIndex, expense);
@@ -553,10 +561,24 @@ export async function getPnlMatrix(year: string, branchCode: string) {
 
   // Thực tế + kế hoạch theo cửa hàng (xếp theo doanh thu thực tế giảm dần, cửa hàng chỉ có kế hoạch đứng sau).
   const branchCodes = new Set<string>([...branchTotals.keys(), ...planBranches]);
+  const opexGroupCodes = tree.groupsOf("otherOpex").map((group) => group.code);
   const byBranch = Array.from(branchCodes, (code) => {
     const actual = (branchTotals.get(code) || months.map(() => emptyBucket())).map((bucket) => finalizePnl(bucket));
     const plan = planByBranch.get(code) || months.map(() => finalizePnl(emptyBucket()));
-    return { code, actual, plan };
+    // Kế hoạch nhóm của cửa hàng: số set ở nhóm nếu có, không thì cộng hạng mục (cùng luật rawPlan).
+    // OPEX set thẳng vào dòng (dữ liệu cũ) không tách được nhóm — màn hình tự hiện phần dư.
+    const opexGroups = opexGroupCodes.map((groupCode) => {
+      const groupPlan = planGroupByScope.get(`${code}|${groupCode}`);
+      const itemCodes = groupInfoByCode.get(groupCode)?.itemCodes || [];
+      return {
+        code: groupCode,
+        actual: branchOpexByGroup.get(`${code}|${groupCode}`) || months.map(() => 0),
+        plan: months.map((_, monthIndex) => (groupPlan && groupPlan[monthIndex] > 0
+          ? groupPlan[monthIndex]
+          : itemCodes.reduce((sum, itemCode) => sum + (planItemByScope.get(`${code}|${itemCode}`)?.[monthIndex] || 0), 0))),
+      };
+    });
+    return { code, actual, plan, opexGroups };
   }).sort((a, b) => b.actual.reduce((sum, bucket) => sum + bucket.revenue, 0) - a.actual.reduce((sum, bucket) => sum + bucket.revenue, 0));
 
   const finalizedTotals = totals.map((bucket) => finalizePnl(bucket));

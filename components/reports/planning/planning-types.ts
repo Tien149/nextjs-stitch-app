@@ -39,7 +39,11 @@ export type StatementLine = {
   unclassified?: number[];
   unclassifiedTotal?: number;
 };
-export type BranchPlanning = { code: string; actual: PnlBucket[]; plan: PnlBucket[] };
+export type BranchPlanning = {
+  code: string; actual: PnlBucket[]; plan: PnlBucket[];
+  /** OPEX của cửa hàng theo từng nhóm P&L (mã nhóm như statement otherOpex.groups), thực tế + kế hoạch 12 tháng. */
+  opexGroups?: Array<{ code: string; actual: number[]; plan: number[] }>;
+};
 
 export type PlanningData = {
   year: string;

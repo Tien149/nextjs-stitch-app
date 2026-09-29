@@ -652,7 +652,10 @@ export function createPnlDetailTree(catalog: PnlCatalog, monthCount: number) {
       items: sortDetailItems(Array.from(node.items.values(), (item) => ({ ...item, total: sum(item.months) }))),
     })));
 
-  return { pnlItemRefOf, add, groupsOf, resolveItemCode, countsInPnl };
+  /** Mã nhóm P&L mà một bút toán chi phí rơi vào — cùng chỗ `add` cộng nó (bảng hiệu quả theo cửa hàng tách OPEX theo nhóm). */
+  const expenseGroupCodeOf = (line: PnlJournalLineLike) => expenseGroupOf(resolveItemCode(line), pnlItemByCode, pnlGroupName).code;
+
+  return { pnlItemRefOf, add, groupsOf, resolveItemCode, countsInPnl, expenseGroupCodeOf };
 }
 
 /**

@@ -8,7 +8,7 @@ import OpexCategoryCard from "@/components/reports/planning/OpexCategoryCard";
 import PayrollBudgetCard from "@/components/reports/planning/PayrollBudgetCard";
 import PnlTrendCard from "@/components/reports/planning/PnlTrendCard";
 import { Card, MonthChips, NoPlanNotice, PlanActualCell, RateChip, Segmented, StatCard, Tag, fmtMoney, ratioOf, type Tone } from "@/components/reports/planning/planning-ui";
-import { bucketOperatingCost, bucketSum, monthPickSummary, nodeValue, type MonthPick, type PlanningData, type PnlBucket, type Series, type StatementLine } from "@/components/reports/planning/planning-types";
+import { bucketSum, monthPickSummary, nodeValue, sumMonths, type MonthPick, type PlanningData, type PnlBucket, type Series, type StatementLine } from "@/components/reports/planning/planning-types";
 
 /**
  * Màn "Dashboard P&L" học theo phần mềm mẫu: chip lũy kế tháng, 9 thẻ KPI (số THỰC ĐẠT in to +
@@ -111,22 +111,56 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
     { name: "Thuế GTGT", value: pickAt(data.revenueSplit.vat) },
   ];
 
-  const branchRows = data.byBranch.map((branch, index) => ({
-    code: branch.code,
-    tone: BRANCH_TONES[index % BRANCH_TONES.length],
-    revenue: { plan: bucketSum(branch.plan, "revenue", picked), actual: bucketSum(branch.actual, "revenue", picked) },
-    cogs: { plan: bucketSum(branch.plan, "cogs", picked), actual: bucketSum(branch.actual, "cogs", picked) },
-    grossProfit: { plan: bucketSum(branch.plan, "grossProfit", picked), actual: bucketSum(branch.actual, "grossProfit", picked) },
-    operating: { plan: bucketOperatingCost(branch.plan, picked), actual: bucketOperatingCost(branch.actual, picked) },
-    netProfit: { plan: bucketSum(branch.plan, "netProfit", picked), actual: bucketSum(branch.actual, "netProfit", picked) },
-  }));
+  /**
+   * Bảng hiệu quả theo cửa hàng (khách sửa 29/09/2026): bỏ cột Lợi nhuận gộp, CAPEX thành cột
+   * riêng, Chi phí hoạt động tách thành nhân sự + từng NHÓM dưới dòng Chi phí hoạt động (OPEX)
+   * của bảng P&L, cùng thứ tự. OPEX không rơi vào nhóm nào (kế hoạch set thẳng vào dòng) đứng
+   * thành cột riêng khi có số, để các cột vẫn cộng đủ ra lợi nhuận vận hành.
+   */
+  type PlanActual = { plan: number; actual: number };
+  const sumByPick = (values: number[] | undefined) => (values ? sumMonths(values, picked) : 0);
+  const opexRestOf = (total: PlanActual, groups: PlanActual[]): PlanActual => ({
+    plan: total.plan - groups.reduce((sum, group) => sum + group.plan, 0),
+    actual: total.actual - groups.reduce((sum, group) => sum + group.actual, 0),
+  });
+  const branchRows = data.byBranch.map((branch, index) => {
+    const otherOpex = { plan: bucketSum(branch.plan, "otherOpex", picked), actual: bucketSum(branch.actual, "otherOpex", picked) };
+    const opex = opexGroups.map((group) => {
+      const split = branch.opexGroups?.find((row) => row.code === group.code);
+      return { plan: sumByPick(split?.plan), actual: sumByPick(split?.actual) };
+    });
+    return {
+      code: branch.code,
+      tone: BRANCH_TONES[index % BRANCH_TONES.length],
+      revenue: { plan: bucketSum(branch.plan, "revenue", picked), actual: bucketSum(branch.actual, "revenue", picked) },
+      cogs: { plan: bucketSum(branch.plan, "cogs", picked), actual: bucketSum(branch.actual, "cogs", picked) },
+      capex: { plan: bucketSum(branch.plan, "capex", picked), actual: bucketSum(branch.actual, "capex", picked) },
+      payroll: { plan: bucketSum(branch.plan, "payroll", picked), actual: bucketSum(branch.actual, "payroll", picked) },
+      opex,
+      opexRest: opexRestOf(otherOpex, opex),
+      netProfit: { plan: bucketSum(branch.plan, "netProfit", picked), actual: bucketSum(branch.actual, "netProfit", picked) },
+    };
+  });
+  const totalOpex = opexGroups.map((group) => ({ plan: nodeValue(group, picked, "plan"), actual: nodeValue(group, picked, "actual") }));
   const totalRow = {
     revenue: { plan: plan("revenue"), actual: actual("revenue") },
     cogs: { plan: plan("cogs"), actual: actual("cogs") },
-    grossProfit: { plan: plan("grossProfit"), actual: actual("grossProfit") },
-    operating: { plan: bucketOperatingCost(data.plans, picked), actual: bucketOperatingCost(data.totals, picked) },
+    capex: { plan: plan("capex"), actual: actual("capex") },
+    payroll: { plan: plan("payroll"), actual: actual("payroll") },
+    opex: totalOpex,
+    opexRest: opexRestOf({ plan: plan("otherOpex"), actual: actual("otherOpex") }, totalOpex),
     netProfit: { plan: plan("netProfit"), actual: actual("netProfit") },
   };
+  const showOpexRest = [...branchRows, totalRow].some((row) => Math.abs(row.opexRest.plan) > 0.5 || Math.abs(row.opexRest.actual) > 0.5);
+  const operatingHeaders = ["Nhân sự", ...opexGroups.map((group) => group.name), ...(showOpexRest ? ["OPEX chưa gắn nhóm"] : [])];
+  const operatingCells = (row: typeof totalRow) => [row.payroll, ...row.opex, ...(showOpexRest ? [row.opexRest] : [])];
+  const branchCells = (row: typeof totalRow) => [
+    { key: "revenue", value: row.revenue, income: true },
+    { key: "cogs", value: row.cogs, income: false },
+    { key: "capex", value: row.capex, income: false },
+    ...operatingCells(row).map((value, index) => ({ key: `operating-${index}`, value, income: false })),
+    { key: "netProfit", value: row.netProfit, income: true },
+  ];
 
   /**
    * Cơ cấu doanh thu xem được theo hai cách (spec khách 07/09/2026):
@@ -243,27 +277,28 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
         {donutCard("Cơ cấu chi phí hoạt động (OPEX)", "Theo nhóm OPEX — chọn kế hoạch hoặc thực tế", statementOf("otherOpex"), opexMode, setOpexMode)}
       </div>
 
-      <Card title="Phân tích hiệu quả theo cửa hàng" subtitle={`Doanh thu, chi phí, lợi nhuận từng cửa hàng — kế hoạch đậm, thực đạt chip màu (cộng ${monthPickSummary(picked)})`} icon="storefront" bodyClassName="overflow-x-auto">
+      <Card title="Phân tích hiệu quả theo cửa hàng" subtitle={`Doanh thu, chi phí, lợi nhuận từng cửa hàng — số to là thực đạt, dòng nhỏ là kế hoạch (cộng ${monthPickSummary(picked)})`} icon="storefront" bodyClassName="overflow-x-auto">
         <table className="w-full text-left text-sm">
           <thead>
-            <tr className="text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
-              <th className="px-4 py-3 font-bold">Cửa hàng</th>
-              {["Doanh thu", "Giá vốn (COGS)", "Lợi nhuận gộp", "Chi phí hoạt động", "Lợi nhuận vận hành"].map((header) => <th key={header} className="px-3 py-3 font-bold text-right whitespace-nowrap">{header}</th>)}
-              <th className="px-3 py-3 font-bold text-right whitespace-nowrap">% Hoàn thành KH<br /><span className="normal-case font-normal text-[10px]">Doanh thu TT / KH</span></th>
+            <tr className="text-[11px] uppercase tracking-wide text-slate-500">
+              <th rowSpan={2} className="px-4 py-3 font-bold align-bottom border-b border-slate-200">Cửa hàng</th>
+              {["Doanh thu", "Giá vốn (COGS)", "CAPEX"].map((header) => <th key={header} rowSpan={2} className="px-3 py-3 font-bold text-right whitespace-nowrap align-bottom border-b border-slate-200">{header}</th>)}
+              <th colSpan={operatingHeaders.length} className="px-3 pt-3 pb-1 font-bold text-center whitespace-nowrap border-b border-slate-100 bg-slate-50/70">Chi phí hoạt động</th>
+              <th rowSpan={2} className="px-3 py-3 font-bold text-right whitespace-nowrap align-bottom border-b border-slate-200">Lợi nhuận vận hành</th>
+              <th rowSpan={2} className="px-3 py-3 font-bold text-right whitespace-nowrap align-bottom border-b border-slate-200">% Hoàn thành KH<br /><span className="normal-case font-normal text-[10px]">Doanh thu TT / KH</span></th>
+            </tr>
+            <tr className="text-[10px] uppercase tracking-wide text-slate-500 border-b border-slate-200">
+              {operatingHeaders.map((header, index) => <th key={`${index}-${header}`} className="px-3 pt-1 pb-3 font-bold text-right align-bottom bg-slate-50/70 min-w-[8rem]">{header}</th>)}
             </tr>
           </thead>
           <tbody>
-            {branchRows.length === 0 && <tr><td colSpan={7} className="px-4 py-8 text-center text-sm text-slate-400">Chưa có dữ liệu ghi sổ.</td></tr>}
+            {branchRows.length === 0 && <tr><td colSpan={6 + operatingHeaders.length} className="px-4 py-8 text-center text-sm text-slate-400">Chưa có dữ liệu ghi sổ.</td></tr>}
             {branchRows.map((row) => {
               const rate = ratioOf(row.revenue.actual, row.revenue.plan);
               return (
                 <tr key={row.code} className="border-t border-slate-100">
                   <td className="px-4 py-2.5"><Tag tone={row.tone} className="text-[11px]">{storeLabel(row.code)}</Tag></td>
-                  <td className="px-3 py-2.5"><PlanActualCell plan={row.revenue.plan} actual={row.revenue.actual} income /></td>
-                  <td className="px-3 py-2.5"><PlanActualCell plan={row.cogs.plan} actual={row.cogs.actual} income={false} /></td>
-                  <td className="px-3 py-2.5"><PlanActualCell plan={row.grossProfit.plan} actual={row.grossProfit.actual} income /></td>
-                  <td className="px-3 py-2.5"><PlanActualCell plan={row.operating.plan} actual={row.operating.actual} income={false} /></td>
-                  <td className="px-3 py-2.5"><PlanActualCell plan={row.netProfit.plan} actual={row.netProfit.actual} income /></td>
+                  {branchCells(row).map((cell) => <td key={cell.key} className="px-3 py-2.5"><PlanActualCell plan={cell.value.plan} actual={cell.value.actual} income={cell.income} /></td>)}
                   <td className="px-3 py-2.5 text-right">
                     <RateChip rate={rate} good={rate === null ? null : rate >= 1} />
                     <div className="mt-1 h-1.5 w-28 ml-auto rounded-full bg-slate-100 overflow-hidden"><div className={`h-full ${rate !== null && rate >= 1 ? "bg-emerald-500" : "bg-amber-400"}`} style={{ width: `${Math.min(100, (rate || 0) * 100)}%` }} /></div>
@@ -274,11 +309,7 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
             {branchRows.length > 0 && (
               <tr className="border-t-2 border-slate-200 bg-slate-50 font-bold">
                 <td className="px-4 py-2.5 text-[12px] uppercase tracking-wide text-slate-600">Tổng cộng</td>
-                <td className="px-3 py-2.5"><PlanActualCell plan={totalRow.revenue.plan} actual={totalRow.revenue.actual} income /></td>
-                <td className="px-3 py-2.5"><PlanActualCell plan={totalRow.cogs.plan} actual={totalRow.cogs.actual} income={false} /></td>
-                <td className="px-3 py-2.5"><PlanActualCell plan={totalRow.grossProfit.plan} actual={totalRow.grossProfit.actual} income /></td>
-                <td className="px-3 py-2.5"><PlanActualCell plan={totalRow.operating.plan} actual={totalRow.operating.actual} income={false} /></td>
-                <td className="px-3 py-2.5"><PlanActualCell plan={totalRow.netProfit.plan} actual={totalRow.netProfit.actual} income /></td>
+                {branchCells(totalRow).map((cell) => <td key={cell.key} className="px-3 py-2.5"><PlanActualCell plan={cell.value.plan} actual={cell.value.actual} income={cell.income} /></td>)}
                 <td className="px-3 py-2.5 text-right"><RateChip rate={ratioOf(totalRow.revenue.actual, totalRow.revenue.plan)} good={null} /></td>
               </tr>
             )}
