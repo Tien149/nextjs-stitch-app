@@ -38,6 +38,8 @@ export type PayrollBudgetData = {
     totalVat?: number[];
     /** Tổng doanh thu đúng như P&L / Dashboard P&L (gồm SVC và thuế GTGT). */
     pnlTotal?: number[];
+    /** Chênh lệch Tổng tiền POS so với Doanh thu − Giảm giá + SVC + Thuế (hoa hồng, phí ship...). */
+    totalAdjust?: number[];
   };
   standard: { byDepartment: PayrollBudgetSeries[]; total: number[] };
   actual: { byDepartment: PayrollBudgetSeries[]; total: number[]; insurance: number[] };
@@ -316,12 +318,17 @@ export default function PayrollBudgetTab({
         <div className="overflow-x-auto">
           <Table headers={["Nội dung", ...monthHeaders, "Cả năm"]}>
             <SectionRow label="DOANH THU THAM CHIẾU" span={14} />
-            <MonthRow label="Tổng doanh thu" values={data.revenue.totalGross} bold />
+            {/* Tổng = dòng Doanh thu của P&L; các dòng dưới cộng lại đúng bằng tổng. */}
+            <MonthRow label="Tổng doanh thu" values={data.revenue.pnlTotal || data.revenue.totalGross} bold />
             <MonthRow label="SVC" values={data.revenue.totalSvc} />
+            {data.revenue.totalVat && <MonthRow label="Thuế GTGT" values={data.revenue.totalVat} />}
+            {data.revenue.totalAdjust?.some((value) => Math.abs(value) > 0.5) && (
+              <MonthRow label="Chênh lệch Tổng tiền POS" values={data.revenue.totalAdjust} />
+            )}
             {data.revenue.byDepartment.map((row) => (
               <MonthRow key={`rev-${row.code}`} label={`Doanh thu ${row.name}`} values={row.months} muted />
             ))}
-            <SectionRow label="LƯƠNG THEO TIÊU CHUẨN (tỷ trọng × doanh thu)" span={14} />
+            <SectionRow label="LƯƠNG THEO TIÊU CHUẨN (tỷ trọng × doanh thu trước thuế GTGT)" span={14} />
             {data.standard.byDepartment.length === 0 ? (
               <EmptySectionRow span={14} message={`Chưa có bộ tỷ trọng bộ phận nào có hiệu lực trong năm ${data.year}${branchCode === "ALL" ? " cho cửa hàng nào" : ""} — điền bảng "Tỷ trọng lương theo bộ phận" phía trên rồi bấm Lưu.`} />
             ) : (

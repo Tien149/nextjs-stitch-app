@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { CAPEX_REPORT_GROUPS, createPnlDetailTree, DEPRECIATION_PNL_ACCOUNT, depreciationCatalogItemCode, DIRECT_PAYROLL_SOURCE_TYPES, finalizePnl, loadDepreciationPnlRows, loadDirectPayrollExpenseRows, loadPayrollPnlRows, NON_CAPEX_SOURCE_TYPES, pnlLineKeyOf, PAYROLL_IMPORT_SOURCE_TYPES, PAYROLL_PNL_ACCOUNT, withDepreciationPnlItem, withPayrollPnlItem, pnlLineAmount, PNL_ITEM_REQUIRED_LINES, PNL_STATEMENT_LINES, PNL_UNGROUPED_CODE, revenueChannelItemsOf, seedRevenueChannels, type PnlBucket, type PnlCatalog, type PnlLineKey, type PnlSeriesGroup, type PnlSeriesItem } from "@/lib/reports";
 import { createDepartmentResolver } from "@/lib/department-resolve";
 import { departmentNameMap } from "@/lib/revenue-department";
-import { isRevenueComponentCategory, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
+import { isRevenueComponentCategory, REVENUE_ADJUST_CATEGORY_CODE, REVENUE_SVC_CATEGORY_CODE, REVENUE_VAT_CATEGORY_CODE, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { loadRevenuePnlGroups, type CategoryLookupClient } from "@/lib/revenue-source";
 
 /* ------------------------------------------------------------------------- *
@@ -721,7 +721,10 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
     }),
     prisma.revenueImportRow.findMany({
       where: { saleDate: { gte: start, lt: end }, ...branchFilter },
-      select: { saleDate: true, branchCode: true, departmentCode: true, grossAmount: true, discountAmount: true, feeAmount: true },
+      select: {
+        saleDate: true, branchCode: true, departmentCode: true, channel: true, paymentMethod: true, revenueSource: true,
+        grossAmount: true, discountAmount: true, feeAmount: true, vatAmount: true, cardFeeAmount: true, appFeeAmount: true, netAmount: true,
+      },
     }),
     prisma.payrollImportRow.findMany({
       where: { period: { startsWith: `${year}-` }, ...branchFilter },
@@ -748,28 +751,40 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
   };
 
   // Doanh thu theo tháng: tổng từng cửa hàng (nền tính lương chuẩn) + cắt theo bộ phận (dòng tham chiếu).
-  // Doanh thu bộ phận = Doanh thu − Giảm giá, đúng luật khối "Doanh thu theo bộ phận" của P&L
-  // (getPnlMatrix). Từng cộng grossAmount (trước giảm giá) nên DT Team Bếp/Bar ở đây cao hơn P&L
-  // đúng bằng phần giảm giá (khách báo 29/09/2026).
+  // Tách bằng ĐÚNG bộ luật dòng Doanh thu của P&L (revenuePosJournalLines, vế Có 511): nhóm món
+  // = Doanh thu − Giảm giá theo bộ phận, cộng SVC, Thuế GTGT và chênh lệch Tổng tiền. Từng chỉ
+  // lấy Doanh thu − Giảm giá nên "Tổng doanh thu" thấp hơn P&L đúng bằng SVC + thuế, và dòng
+  // file không tách cột (chỉ có Tổng tiền) thì mất hẳn (khách báo 29/09/2026).
+  // Nền lương chuẩn vẫn là doanh thu món + SVC (trước thuế GTGT), không đổi số lương đã chốt.
   const revenueTotalByBranch = new Map<string, number[]>();
   const svcTotalByBranch = new Map<string, number[]>();
   const revenueByDepartment = new Map<string, MatrixSeries>();
   const svcByDepartment = new Map<string, MatrixSeries>();
   const monthArray = () => Array.from({ length: 12 }, () => 0);
+  const adjustTotal = monthArray();
   for (const row of revenueRows) {
     const date = new Date(row.saleDate);
     if (date.getFullYear() !== Number(year)) continue;
     const monthIndex = date.getMonth();
-    const net = row.grossAmount - row.discountAmount;
     const branchTotal = revenueTotalByBranch.get(row.branchCode) || monthArray();
-    branchTotal[monthIndex] += net;
-    revenueTotalByBranch.set(row.branchCode, branchTotal);
     const svc = svcTotalByBranch.get(row.branchCode) || monthArray();
-    svc[monthIndex] += row.feeAmount;
+    for (const line of revenuePosJournalLines(row)) {
+      if (line.accountCode !== "511") continue;
+      const amount = (line.credit || 0) - (line.debit || 0);
+      const dept = line.departmentCode || UNASSIGNED_DEPARTMENT;
+      // Thuế GTGT và tổng doanh thu lấy thẳng từ getPnlMatrix (revenue.totalVat / pnlTotal).
+      if (line.categoryCode === REVENUE_VAT_CATEGORY_CODE) continue;
+      if (line.categoryCode === REVENUE_SVC_CATEGORY_CODE) {
+        svc[monthIndex] += amount;
+        bumpSeries(svcByDepartment, dept, deptLabel(dept), monthIndex, amount);
+      } else if (line.categoryCode === REVENUE_ADJUST_CATEGORY_CODE) adjustTotal[monthIndex] += amount;
+      else {
+        branchTotal[monthIndex] += amount;
+        bumpSeries(revenueByDepartment, dept, deptLabel(dept), monthIndex, amount);
+      }
+    }
+    revenueTotalByBranch.set(row.branchCode, branchTotal);
     svcTotalByBranch.set(row.branchCode, svc);
-    const dept = row.departmentCode || UNASSIGNED_DEPARTMENT;
-    bumpSeries(revenueByDepartment, dept, deptLabel(dept), monthIndex, net);
-    bumpSeries(svcByDepartment, dept, deptLabel(dept), monthIndex, row.feeAmount);
   }
   const revenueTotal = monthArray();
   const svcTotal = monthArray();
@@ -865,6 +880,8 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
       // Tên trường giữ nguyên cho client; giá trị là Doanh thu − Giảm giá (không còn là gross).
       totalGross: revenueTotal,
       totalSvc: svcTotal,
+      /** Chênh lệch Tổng tiền so với Doanh thu − Giảm giá + SVC + Thuế (hoa hồng, phí ship...). */
+      totalAdjust: adjustTotal,
       byDepartment: sortedSeries(revenueByDepartment),
       svcByDepartment: sortedSeries(svcByDepartment),
       /** Thuế GTGT (cột Thuế file POS) — một dòng doanh thu của P&L. */
