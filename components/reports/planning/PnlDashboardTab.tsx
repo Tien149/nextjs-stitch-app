@@ -18,6 +18,8 @@ import { bucketOperatingCost, bucketSum, monthPickSummary, nodeValue, type Month
  */
 
 const BRANCH_TONES: Tone[] = ["blue", "rose", "amber", "emerald", "violet", "teal", "orange", "sky"];
+/** Màu từng nhóm OPEX trên thanh "Cơ cấu 1 đồng doanh thu" — theo thứ tự nhóm của bảng P&L. */
+const OPEX_GROUP_COLORS = ["#2563eb", "#7c3aed", "#db2777", "#0d9488", "#4f46e5", "#c026d3"];
 type Mode = "plan" | "actual";
 /** Hai cách xem cơ cấu doanh thu (spec khách 07/09/2026): theo nhóm doanh thu, hoặc theo kênh bán. */
 type RevenueView = "group" | "channel";
@@ -81,13 +83,24 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
     { label: "EBITDA", tone: "violet", income: true, icon: "monitoring", actual: actual("ebitda"), plan: plan("ebitda"), note: "LN gộp − nhân sự − CAPEX − OPEX + khấu hao (trước thu nhập/chi phí khác), cùng số dòng 7 KQKD" },
   ];
 
-  // Cơ cấu 1 đồng doanh thu (lũy kế): giá vốn / nhân sự / OPEX (đã gồm khấu hao) / phần còn lại là LN.
+  // Cơ cấu 1 đồng doanh thu (lũy kế): giá vốn / nhân sự / CAPEX / OPEX / phần còn lại là LN.
+  // OPEX tách đúng theo các NHÓM dưới dòng Chi phí hoạt động của bảng P&L, cùng thứ tự (khách
+  // yêu cầu 29/09/2026) — khấu hao nằm trong nhóm Chi phí cố định như trên P&L. Phần OPEX không
+  // rơi vào nhóm nào (kế hoạch set thẳng vào dòng, dữ liệu cũ) đứng riêng để thanh vẫn cộng đủ.
   const mixBuckets = mixMode === "plan" ? data.plans : data.totals;
   const mixRevenue = bucketSum(mixBuckets, "revenue", picked);
+  const mixOpexTotal = bucketSum(mixBuckets, "otherOpex", picked);
+  const mixOpexGroups = opexGroups
+    .map((group, index) => ({ label: group.name, value: nodeValue(group, picked, mixMode), color: OPEX_GROUP_COLORS[index % OPEX_GROUP_COLORS.length] }))
+    .filter((part) => Math.abs(part.value) > 0.5);
+  const mixOpexRest = mixOpexTotal - mixOpexGroups.reduce((sum, part) => sum + part.value, 0);
+  const mixCapex = bucketSum(mixBuckets, "capex", picked);
   const mixParts: Array<{ label: string; value: number; color: string }> = [
     { label: "Giá vốn hàng bán", value: bucketSum(mixBuckets, "cogs", picked), color: "#f59e0b" },
     { label: "Chi phí nhân sự", value: bucketSum(mixBuckets, "payroll", picked), color: "#0ea5e9" },
-    { label: "Chi phí hoạt động (OPEX)", value: bucketSum(mixBuckets, "otherOpex", picked), color: "#2563eb" },
+    ...(Math.abs(mixCapex) > 0.5 ? [{ label: "CAPEX", value: mixCapex, color: "#64748b" }] : []),
+    ...mixOpexGroups,
+    ...(Math.abs(mixOpexRest) > 0.5 ? [{ label: "OPEX chưa gắn nhóm", value: mixOpexRest, color: "#94a3b8" }] : []),
     { label: "Lợi nhuận vận hành", value: bucketSum(mixBuckets, "netProfit", picked), color: "#10b981" },
   ];
 
@@ -186,7 +199,7 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
 
       <Card
         title="Cơ cấu 1 đồng doanh thu"
-        subtitle={`Cộng ${monthPickSummary(picked)} — mỗi 100 đồng doanh thu chia cho giá vốn, nhân sự, OPEX, khấu hao và phần còn lại là lợi nhuận`}
+        subtitle={`Cộng ${monthPickSummary(picked)} — mỗi 100 đồng doanh thu chia cho giá vốn, nhân sự, CAPEX, từng nhóm chi phí hoạt động như bảng P&L và phần còn lại là lợi nhuận`}
         icon="stacked_bar_chart"
         right={<Segmented value={mixMode} onChange={setMixMode} options={[{ id: "plan", label: "Theo kế hoạch" }, { id: "actual", label: "Theo thực tế" }]} />}
         bodyClassName="px-4 pb-4"
