@@ -699,7 +699,7 @@ function effectiveRatiosAt(rows: RatioRecord[], month: string) {
 }
 
 /**
- * Lương chuẩn của một bộ phận = tỷ trọng bộ phận × TỔNG doanh thu (gồm SVC) của cửa hàng
+ * Lương chuẩn của một bộ phận = tỷ trọng bộ phận × TỔNG doanh thu P&L (gồm SVC, thuế GTGT) của cửa hàng
  * trong tháng — đúng bảng "Tỷ trọng ngành F&B đối với các bộ phận" trong feedback: Bếp
  * 12.8% nghĩa là 12.8% doanh thu toàn nhà hàng, không phải 12.8% doanh thu món bếp.
  * Báo cáo trải 12 tháng của năm chứa `period`; form tỷ trọng hiện bộ có hiệu lực ở `period`.
@@ -755,7 +755,9 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
   // = Doanh thu − Giảm giá theo bộ phận, cộng SVC, Thuế GTGT và chênh lệch Tổng tiền. Từng chỉ
   // lấy Doanh thu − Giảm giá nên "Tổng doanh thu" thấp hơn P&L đúng bằng SVC + thuế, và dòng
   // file không tách cột (chỉ có Tổng tiền) thì mất hẳn (khách báo 29/09/2026).
-  // Nền lương chuẩn vẫn là doanh thu món + SVC (trước thuế GTGT), không đổi số lương đã chốt.
+  // Nền lương chuẩn = đúng Doanh thu P&L của cửa hàng (gồm SVC, thuế GTGT, chênh lệch Tổng tiền)
+  // — khách chốt 29/09/2026, trước đó là doanh thu món + SVC (trước thuế).
+  const pnlRevenueByBranch = new Map<string, number[]>();
   const revenueTotalByBranch = new Map<string, number[]>();
   const svcTotalByBranch = new Map<string, number[]>();
   const revenueByDepartment = new Map<string, MatrixSeries>();
@@ -768,10 +770,12 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
     const monthIndex = date.getMonth();
     const branchTotal = revenueTotalByBranch.get(row.branchCode) || monthArray();
     const svc = svcTotalByBranch.get(row.branchCode) || monthArray();
+    const pnlBranch = pnlRevenueByBranch.get(row.branchCode) || monthArray();
     for (const line of revenuePosJournalLines(row)) {
       if (line.accountCode !== "511") continue;
       const amount = (line.credit || 0) - (line.debit || 0);
       const dept = line.departmentCode || UNASSIGNED_DEPARTMENT;
+      pnlBranch[monthIndex] += amount;
       // Thuế GTGT và tổng doanh thu lấy thẳng từ getPnlMatrix (revenue.totalVat / pnlTotal).
       if (line.categoryCode === REVENUE_VAT_CATEGORY_CODE) continue;
       if (line.categoryCode === REVENUE_SVC_CATEGORY_CODE) {
@@ -785,6 +789,7 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
     }
     revenueTotalByBranch.set(row.branchCode, branchTotal);
     svcTotalByBranch.set(row.branchCode, svc);
+    pnlRevenueByBranch.set(row.branchCode, pnlBranch);
   }
   const revenueTotal = monthArray();
   const svcTotal = monthArray();
@@ -798,10 +803,16 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
   months.forEach((month, index) => {
     let baseTotal = 0;
     let standardTotal = 0;
+    // Mẫu số cộng doanh thu MỖI cửa hàng một lần — từng cộng lại theo từng bộ phận nên 5 bộ phận
+    // thì mẫu số gấp 5, tổng tỷ trọng 28% hiện thành 5,6% và ô % lương bị tô đỏ oan.
+    const countedBranches = new Set<string>();
     for (const ratio of effectiveRatiosAt(ratioRows, month)) {
-      const base = (revenueTotalByBranch.get(ratio.branchCode)?.[index] || 0) + (svcTotalByBranch.get(ratio.branchCode)?.[index] || 0);
+      const base = pnlRevenueByBranch.get(ratio.branchCode)?.[index] || 0;
       if (!base) continue;
-      baseTotal += base;
+      if (!countedBranches.has(ratio.branchCode)) {
+        countedBranches.add(ratio.branchCode);
+        baseTotal += base;
+      }
       if (!ratio.ratio) continue;
       standardTotal += base * ratio.ratio;
       bumpSeries(standardByDepartment, ratio.departmentCode, deptLabel(ratio.departmentCode), index, base * ratio.ratio);

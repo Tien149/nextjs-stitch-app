@@ -178,7 +178,9 @@ export default function PayrollBudgetTab({
   const standardRollup = rollup(standardSeries, chartView, data.year);
   const actualRollup = rollup(actualSeries, chartView, data.year);
 
-  const revenueYearTotal = sum(data.revenue.totalGross) + sum(data.revenue.totalSvc);
+  // Nền lương chuẩn và % lương / doanh thu = Tổng doanh thu P&L (gồm SVC và thuế GTGT).
+  const revenueBase = data.revenue.pnlTotal || data.months.map((_, index) => data.revenue.totalGross[index] + data.revenue.totalSvc[index]);
+  const revenueYearTotal = sum(revenueBase);
   const standardYearTotal = sum(data.standard.total);
   const actualYearTotal = sum(data.actual.total);
   const headcountLatest = [...data.headcount.total].reverse().find((value) => value > 0) || 0;
@@ -193,7 +195,7 @@ export default function PayrollBudgetTab({
   return (
     <div className="space-y-5">
       <div className="grid md:grid-cols-4 gap-4">
-        <KpiBox label={`Doanh thu ${data.year} (gồm SVC)`} value={`${money(revenueYearTotal)} đ`} icon="payments" tone="text-blue-600" />
+        <KpiBox label={`Doanh thu ${data.year} (gồm SVC, thuế)`} value={`${money(revenueYearTotal)} đ`} icon="payments" tone="text-blue-600" />
         <KpiBox label="Lương theo tiêu chuẩn" value={`${money(standardYearTotal)} đ`} icon="flag" tone="text-slate-800" />
         <KpiBox label="Lương thực chi trả" value={`${money(actualYearTotal)} đ`} icon="receipt_long" tone={actualYearTotal > standardYearTotal && standardYearTotal > 0 ? "text-rose-600" : "text-emerald-600"} />
         <KpiBox label="Nhân sự tháng gần nhất" value={`${headcountText(headcountLatest)} người`} icon="groups" tone="text-slate-800" />
@@ -319,7 +321,7 @@ export default function PayrollBudgetTab({
           <Table headers={["Nội dung", ...monthHeaders, "Cả năm"]}>
             <SectionRow label="DOANH THU THAM CHIẾU" span={14} />
             {/* Tổng = dòng Doanh thu của P&L; các dòng dưới cộng lại đúng bằng tổng. */}
-            <MonthRow label="Tổng doanh thu" values={data.revenue.pnlTotal || data.revenue.totalGross} bold />
+            <MonthRow label="Tổng doanh thu" values={revenueBase} bold />
             <MonthRow label="SVC" values={data.revenue.totalSvc} />
             {data.revenue.totalVat && <MonthRow label="Thuế GTGT" values={data.revenue.totalVat} />}
             {data.revenue.totalAdjust?.some((value) => Math.abs(value) > 0.5) && (
@@ -328,7 +330,7 @@ export default function PayrollBudgetTab({
             {data.revenue.byDepartment.map((row) => (
               <MonthRow key={`rev-${row.code}`} label={`Doanh thu ${row.name}`} values={row.months} muted />
             ))}
-            <SectionRow label="LƯƠNG THEO TIÊU CHUẨN (tỷ trọng × doanh thu trước thuế GTGT)" span={14} />
+            <SectionRow label="LƯƠNG THEO TIÊU CHUẨN (tỷ trọng × tổng doanh thu)" span={14} />
             {data.standard.byDepartment.length === 0 ? (
               <EmptySectionRow span={14} message={`Chưa có bộ tỷ trọng bộ phận nào có hiệu lực trong năm ${data.year}${branchCode === "ALL" ? " cho cửa hàng nào" : ""} — điền bảng "Tỷ trọng lương theo bộ phận" phía trên rồi bấm Lưu.`} />
             ) : (
@@ -359,7 +361,7 @@ export default function PayrollBudgetTab({
             <tr className="border-t border-slate-200 bg-slate-50">
               <Cell><b>% lương thực chi / doanh thu</b></Cell>
               {data.months.map((month, index) => {
-                const base = data.revenue.totalGross[index] + data.revenue.totalSvc[index];
+                const base = revenueBase[index];
                 const rate = base > 0 ? (data.actual.total[index] / base) * 100 : null;
                 const limit = data.ratioTotalByMonth[index] * 100;
                 return (
@@ -370,7 +372,7 @@ export default function PayrollBudgetTab({
               })}
               <Cell right>
                 {(() => {
-                  const baseYear = sum(data.revenue.totalGross) + sum(data.revenue.totalSvc);
+                  const baseYear = revenueYearTotal;
                   const rate = baseYear > 0 ? (sum(data.actual.total) / baseYear) * 100 : null;
                   const limit = baseYear > 0 ? (standardYearTotal / baseYear) * 100 : 0;
                   return rate === null ? "-" : <b className={rate > limit && limit > 0 ? "text-rose-600" : "text-emerald-700"}>{rate.toFixed(1)}%</b>;
