@@ -1835,8 +1835,9 @@ export async function commitImport(input: CommitInput) {
           const assetCode = asText(row.values.asset_code).toUpperCase();
           // Một mã có thể nhiều đợt: file kiểm kê đếm THEO MÃ, hệ thống chia về từng đợt
           // (lib/asset-lot.ts distributeStocktakeCount — thừa vào đợt mới nhất, thiếu trừ từ đợt mới).
-          const lots = await tx.assetRecord.findMany({ where: { code: assetCode, deletedAt: null, status: { not: "DISPOSED" } }, orderBy: { lotNo: "asc" } });
-          if (lots.length === 0) throw new Error(`Dong ${row.rowNumber}: Khong tim thay tai san ${assetCode}`);
+          // Chỉ các đợt của cửa hàng đang kiểm: cùng mã có thể nằm ở nhiều nhà hàng.
+          const lots = await tx.assetRecord.findMany({ where: { code: assetCode, branchCode: session.branchCode, deletedAt: null, status: { not: "DISPOSED" } }, orderBy: { lotNo: "asc" } });
+          if (lots.length === 0) throw new Error(`Dong ${row.rowNumber}: Khong tim thay tai san ${assetCode} o cua hang ${session.branchCode}`);
           const actualQuantity = asNumber(row.values.actual_quantity);
           const distributed = distributeStocktakeCount(lots.map((lot) => ({ id: lot.id, lotNo: lot.lotNo, quantity: lot.quantity })), actualQuantity);
           for (const lot of distributed) {
@@ -1956,13 +1957,17 @@ export async function commitImport(input: CommitInput) {
            * nào mà mã đã có thì thành đợt kế tiếp; mã chưa có thì là đợt 1.
            * Đợt đã chạy khấu hao trên hệ thống thì không được ghi đè: tiến độ và giá trị còn lại
            * sẽ lệch hẳn các kỳ đã trích.
+           * Đợt khớp phải CÙNG CỬA HÀNG: hai nhà hàng dùng chung mã (cùng model tủ đông, cùng giá,
+           * cùng kỳ) là hai tài sản — trước 29/09/2026 file ASA ghi đè luôn đợt của NME
+           * (TSCDKIT0014), nhà hàng import sau "cướp" mất tài sản của nhà hàng import trước.
            */
           const lots = await tx.assetRecord.findMany({
             where: { code, deletedAt: undefined },
             orderBy: { lotNo: "asc" },
-            select: { id: true, lotNo: true, originalCost: true, depreciationStartDate: true, deletedAt: true, _count: { select: { depreciations: true } } },
+            select: { id: true, lotNo: true, branchCode: true, originalCost: true, depreciationStartDate: true, deletedAt: true, _count: { select: { depreciations: true } } },
           });
           const sameLot = lots.find((lot) => !lot.deletedAt
+            && lot.branchCode === data.branchCode
             && Math.abs((lot.originalCost || 0) - data.originalCost) < 0.5
             && (lot.depreciationStartDate?.getTime() ?? null) === (data.depreciationStartDate?.getTime() ?? null));
           if (sameLot && sameLot._count.depreciations > 0) {

@@ -313,29 +313,36 @@ export async function POST(request: Request) {
 
     const body = await request.json();
     /**
-     * Mua tăng vào mã đã có (lib/asset-lot.ts): đợt mới dùng lại mã, tên, nhóm, phòng ban, cửa
-     * hàng, kho của đợt trước; chỉ số lượng, ngày mua, nguyên giá, số kỳ, NCC, thanh toán là của
-     * đợt này. Đọc từ đợt mới nhất TRONG transaction (nextAssetLot) chứ không tin dữ liệu form.
+     * Mua tăng vào mã đã có (lib/asset-lot.ts): đợt mới dùng lại mã, tên, nhóm của đợt trước; số
+     * lượng, ngày mua, nguyên giá, số kỳ, NCC, thanh toán là của đợt này. Cửa hàng/kho/phòng ban
+     * lấy theo form (trống thì theo đợt trước): cùng mã có thể nằm ở nhiều nhà hàng — ASA mua
+     * cùng model tủ đông TSCDKIT0014 với NME (29/09/2026).
      */
     const reuseCode = body.reuseCode === true;
     const reuseCodeValue = reuseCode ? normalizeAssetCode(body.code) : "";
     if (reuseCode && !reuseCodeValue) {
       return NextResponse.json({ error: "Mua tăng vào mã đã có thì phải chọn mã tài sản" }, { status: 400 });
     }
+    // Mẫu: đợt mới nhất cùng cửa hàng với đợt đang ghi, chưa có thì đợt mới nhất của mã.
+    const reuseBranch = reuseCode ? cleanText(body.branchCode) : "";
     const reuseTemplate = reuseCode
-      ? await prisma.assetRecord.findFirst({ where: { code: reuseCodeValue }, orderBy: { lotNo: "desc" } })
+      ? (reuseBranch ? await prisma.assetRecord.findFirst({ where: { code: reuseCodeValue, branchCode: reuseBranch }, orderBy: { lotNo: "desc" } }) : null)
+        || await prisma.assetRecord.findFirst({ where: { code: reuseCodeValue }, orderBy: { lotNo: "desc" } })
       : null;
     if (reuseCode && !reuseTemplate) {
       return NextResponse.json({ error: `Mã tài sản ${reuseCodeValue} không tồn tại; tạo hồ sơ mới thay vì mua tăng` }, { status: 400 });
     }
     const name = reuseTemplate ? reuseTemplate.name : cleanText(body.name);
-    const branchCode = reuseTemplate ? reuseTemplate.branchCode : cleanText(body.branchCode);
+    const branchCode = reuseTemplate ? (cleanText(body.branchCode) || reuseTemplate.branchCode) : cleanText(body.branchCode);
     const assetGroup = reuseTemplate ? reuseTemplate.assetGroup : cleanText(body.assetGroup);
     const originalCost = toAmount(body.originalCost);
+    const formWarehouseCode = cleanText(body.warehouseCode) || cleanText(body.location);
     const warehouseCode = reuseTemplate
-      ? (reuseTemplate.warehouseCode || reuseTemplate.location || "")
-      : (cleanText(body.warehouseCode) || cleanText(body.location));
-    const departmentCode = reuseTemplate ? (reuseTemplate.departmentCode || "") : cleanText(body.departmentCode);
+      ? (formWarehouseCode || (branchCode === reuseTemplate.branchCode ? (reuseTemplate.warehouseCode || reuseTemplate.location || "") : ""))
+      : formWarehouseCode;
+    const departmentCode = reuseTemplate
+      ? (cleanText(body.departmentCode) || (branchCode === reuseTemplate.branchCode ? (reuseTemplate.departmentCode || "") : ""))
+      : cleanText(body.departmentCode);
     const quantity = toAmount(body.quantity) || 1;
     const usefulLifeMonths = body.usefulLifeMonths !== undefined && body.usefulLifeMonths !== "" ? Math.floor(toAmount(body.usefulLifeMonths)) : null;
     const purchaseDate = body.purchaseDate ? new Date(String(body.purchaseDate)) : new Date();

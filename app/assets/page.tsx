@@ -681,7 +681,7 @@ export default function AssetsPage() {
                     onChange={(e) => setForm((v) => ({ ...emptyForm, branchCode: v.branchCode, reuseCode: e.target.checked }))}
                   />
                   <span>
-                    <b>Mua tăng vào mã đã có</b> — chọn mã CCDC/tài sản cũ, hệ thống ghi đợt mới với ngày mua, nguyên giá và số kỳ phân bổ riêng; tên, nhóm, phòng ban, kho lấy theo mã cũ.
+                    <b>Mua tăng vào mã đã có</b> — chọn mã CCDC/tài sản cũ, hệ thống ghi đợt mới với ngày mua, nguyên giá và số kỳ phân bổ riêng; tên, nhóm lấy theo mã cũ; cửa hàng, kho, phòng ban chọn lại được (cùng mã có thể ở nhiều nhà hàng).
                   </span>
                 </label>
               )}
@@ -751,9 +751,18 @@ export default function AssetsPage() {
                   Cửa hàng *
                   <select
                     value={form.branchCode}
-                    onChange={(e) => setForm((v) => ({ ...v, branchCode: e.target.value }))}
+                    onChange={(e) => {
+                      const branchCode = e.target.value;
+                      // Mua tăng mã của nhà hàng khác: kho/phòng ban lấy từ đợt cũ có thể không thuộc cửa hàng mới.
+                      const inBranch = (item?: MasterItem) => Boolean(item) && (!item?.branch || item.branch === branchCode || item.branch === "ALL");
+                      setForm((v) => ({
+                        ...v,
+                        branchCode,
+                        location: inBranch(warehouses.find((w) => w.code === v.location)) ? v.location : "",
+                        departmentCode: inBranch(departments.find((d) => d.code === v.departmentCode)) ? v.departmentCode : "",
+                      }));
+                    }}
                     className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white disabled:bg-slate-100 disabled:text-slate-500"
-                    disabled={form.reuseCode && !editingAsset}
                     required
                   >
                     {visibleStoreOptions(user).map((opt) => (
@@ -770,7 +779,6 @@ export default function AssetsPage() {
                   onChange={(location) => setForm((v) => ({ ...v, location }))}
                   options={availableFormWarehouses.map((wh) => ({ value: wh.code, label: wh.name, subLabel: wh.code }))}
                   placeholder="Chọn vị trí / kho..."
-                  disabled={form.reuseCode && !editingAsset}
                   required
                 />
               </div>
@@ -782,7 +790,6 @@ export default function AssetsPage() {
                   onChange={(departmentCode) => setForm((v) => ({ ...v, departmentCode }))}
                   options={availableFormDepartments.map((dep) => ({ value: dep.code, label: dep.name, subLabel: dep.code }))}
                   placeholder="Chọn phòng ban..."
-                  disabled={form.reuseCode && !editingAsset}
                   required={!form.code}
                 />
 
