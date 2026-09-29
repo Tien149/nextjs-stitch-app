@@ -63,6 +63,9 @@ const axisProps = {
   tickLine: false as const,
 };
 
+/** Số người trên chart: nhân sự chia đôi hai bộ phận ghi số lẻ (0,5) nên in tối đa 2 chữ số thập phân. */
+const headcountLabel = (value: number) => value.toLocaleString("vi-VN", { maximumFractionDigits: 2 });
+
 /** Line nhiều series — dùng cho xu hướng lương/COGS/doanh thu qua các tháng. */
 export function MoneyLineChart({ labels, series, height = 280, countMode = false }: { labels: string[]; series: ChartSeries[]; height?: number; countMode?: boolean }) {
   const rows = toRows(labels, series);
@@ -71,9 +74,9 @@ export function MoneyLineChart({ labels, series, height = 280, countMode = false
       <LineChart data={rows} margin={{ top: 8, right: 16, bottom: 0, left: 4 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
         <XAxis dataKey="label" {...axisProps} />
-        <YAxis {...axisProps} width={56} tickFormatter={(value: number) => (countMode ? String(value) : compactVnd(value))} />
+        <YAxis {...axisProps} width={56} tickFormatter={(value: number) => (countMode ? headcountLabel(value) : compactVnd(value))} />
         <Tooltip
-          formatter={(value: unknown) => (countMode ? `${Number(value ?? 0)} người` : fullVnd(Number(value ?? 0)))}
+          formatter={(value: unknown) => (countMode ? `${headcountLabel(Number(value ?? 0))} người` : fullVnd(Number(value ?? 0)))}
           contentStyle={tooltipProps.contentStyle}
         />
         <Legend wrapperStyle={{ fontSize: 12 }} />

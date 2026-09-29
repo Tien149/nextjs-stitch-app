@@ -384,7 +384,7 @@ export default function PayrollBudgetTab({
       ) : (
       <div className="grid xl:grid-cols-2 gap-5">
         <section className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-          <PanelHeader title="Biến động số lượng nhân sự" subtitle="Đếm số nhân viên có tên trong bảng lương từng tháng, tách theo bộ phận." exportable={false} />
+          <PanelHeader title="Biến động số lượng nhân sự" subtitle="Số lượng nhân sự trong bảng lương từng tháng, tách theo bộ phận (nhân sự chia đôi hai bộ phận tính 0,5)." exportable={false} />
           <div className="p-4">
             <MoneyLineChart
               labels={monthHeaders}
