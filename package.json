@@ -108,6 +108,7 @@
     "repair:deposit-correction": "node scripts/repair-deposit-correction.cjs",
     "repair:opening-accrual": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/repair-opening-accrual-category.mjs",
     "repair:payroll-department": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/repair-payroll-department.mjs",
+    "repair:payroll-employee-partner": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/repair-payroll-employee-partner.mjs",
     "test:department-resolve": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-department-resolve.mjs",
     "test:ebitda-depreciation": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-ebitda-depreciation.mjs",
     "audit:deposit-amounts": "node scripts/audit-deposit-amount-sync.cjs",
