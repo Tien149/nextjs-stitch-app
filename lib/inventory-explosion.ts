@@ -13,6 +13,7 @@ import { explodeSalesDemand, explodeSalesDemandWithDepartments, type ExplosionRe
 import { loadNonInventoryRevenueGroups, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
 import { buildRevenueDepartmentResolver, departmentFromWarehouseGroup, REVENUE_DEPARTMENT_CODES } from "@/lib/revenue-department";
 import { explosionPostingDate, saleDayStart } from "@/lib/revenue-date";
+import { netMovementsAfter } from "@/lib/stocktake-batch";
 
 const quantityEpsilon = 0.000001;
 
@@ -115,6 +116,44 @@ async function repriceTransfer(tx: TxClient, transactionId: string) {
   return { code: transfer.code, repriced: true };
 }
 
+/**
+ * Tồn SỔ SÁCH của sản phẩm có định lượng theo từng kho tại một thời điểm — nguồn cho luật "lấy
+ * tồn trước, chế biến phần thiếu" (khách chốt 29/09/2026). Sổ tại giờ t = tồn hiện tại − Σ(nhập −
+ * xuất) có ngày chứng từ SAU t, cùng cách với sổ kiểm kê tại giờ chốt (lib/stocktake-batch.ts):
+ * rã lại một lần rã cũ vẫn thấy tồn của đúng ngày đó chứ không phải tồn hôm nay. Mỗi lần lấy thì
+ * trừ dần trong bộ nhớ để hai nhu cầu cùng kho không dùng trùng một phần tồn; chỉ lấy tồn DƯƠNG.
+ */
+async function createStockTaker(tx: TxClient, itemIdByCode: Map<string, string>, at: Date, warehouseCodes: string[]) {
+  const itemIds = [...new Set(itemIdByCode.values())];
+  const books = new Map<string, Map<string, number>>();
+  for (const warehouse of new Set(warehouseCodes.filter(Boolean))) {
+    const [balances, later] = await Promise.all([
+      tx.inventoryBalance.findMany({ where: { warehouseCode: warehouse, itemId: { in: itemIds } }, select: { itemId: true, quantity: true } }),
+      netMovementsAfter(tx, warehouse, at),
+    ]);
+    const book = new Map<string, number>();
+    for (const balance of balances) book.set(balance.itemId, balance.quantity - Number(later.get(balance.itemId) || 0));
+    books.set(warehouse, book);
+  }
+  const itemOf = (code: string) => itemIdByCode.get((code || "").toUpperCase());
+  return {
+    /** Cộng thêm vào sổ (điều chuyển đã trừ kho nguồn trước lúc rã: trả lại số chuyển đi để biết tồn trước khi chuyển). */
+    add(code: string, warehouse: string, quantity: number) {
+      const itemId = itemOf(code);
+      const book = books.get(warehouse);
+      if (itemId && book) book.set(itemId, (book.get(itemId) || 0) + quantity);
+    },
+    take(code: string, warehouse: string, quantity: number) {
+      const itemId = itemOf(code);
+      const book = books.get(warehouse);
+      if (!itemId || !book) return 0;
+      const taken = Math.min(Math.max(0, book.get(itemId) || 0), quantity);
+      if (taken > 0) book.set(itemId, (book.get(itemId) || 0) - taken);
+      return taken;
+    },
+  };
+}
+
 export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
   const { branchCode, dateFrom, dateTo } = input;
   const warehouses = await resolveExplosionWarehouses(tx, input);
@@ -176,7 +215,8 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
     where: { deletedAt: null },
     include: { lines: { include: { item: true } } },
   });
-  const plan = explodeSalesDemand({
+  // Kế hoạch GỘP (chưa trừ tồn, chưa tách bộ phận): chỉ để biết những mã nào có mặt trong lần rã.
+  const grossPlan = explodeSalesDemand({
     demands: inventoryRows.map((row) => ({ productCode: row.productCode || "", quantity: row.productQuantity || 0 })),
     recipes: recipeVersions as unknown as ExplosionRecipe[],
     date: dateTo,
@@ -186,11 +226,11 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
 
   // Mã món có mặt trong lần rã: cả món bán lẫn bán thành phẩm trung gian.
   const planProductCodes = [
-    ...plan.productions.map((step) => step.productCode),
+    ...grossPlan.productions.map((step) => step.productCode),
     // Thành phần của combo trừ ở kho của chính nó nên cũng phải suy được bộ phận.
-    ...plan.productions.flatMap((step) => step.components.map((component) => component.item.code)),
-    ...plan.producedSales.map((sale) => sale.productCode),
-    ...plan.directSales.map((sale) => sale.productCode),
+    ...grossPlan.productions.flatMap((step) => step.components.map((component) => component.item.code)),
+    ...grossPlan.producedSales.map((sale) => sale.productCode),
+    ...grossPlan.directSales.map((sale) => sale.productCode),
   ];
   // prisma ở đây đã gắn extension xoá mềm nên kiểu không khớp TransactionClient thuần,
   // giống cách các chỗ khác gọi resolver này.
@@ -246,131 +286,49 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
     if (department === REVENUE_DEPARTMENT_CODES.BAR && barWarehouseCode) return department;
     return null;
   };
-  // Combo nhập kho / xuất bán ở kho BẾP, từng thành phần trừ ở kho của chính nó (khách chốt
-  // 27/09/2026) — xem explodeSalesDemandWithDepartments.
-  const departmentPlan = explodeSalesDemandWithDepartments({
-    demands: inventoryRows.map((row) => ({ productCode: row.productCode || "", quantity: row.productQuantity || 0 })),
-    recipes: recipeVersions as unknown as ExplosionRecipe[],
-    date: dateTo,
-    branchCode,
-  }, {
-    departmentOf: soldDepartmentOf,
-    comboDepartment: kitchenWarehouseCode ? REVENUE_DEPARTMENT_CODES.KITCHEN : null,
-  });
   const groupWarehouseOf = (department: string | null) => (department === REVENUE_DEPARTMENT_CODES.KITCHEN
     ? kitchenWarehouseCode
     : department === REVENUE_DEPARTMENT_CODES.BAR ? barWarehouseCode : null);
+  // Mã → id của mọi sản phẩm có định lượng: sổ tồn cho luật "lấy tồn trước" chỉ cần các mã này.
+  const recipeItems = await tx.inventoryItem.findMany({
+    where: { code: { in: [...new Set(recipeVersions.map((recipe) => recipe.productCode.toUpperCase()))] } },
+    select: { id: true, code: true },
+  });
+  const recipeItemIdByCode = new Map(recipeItems.map((item) => [item.code.toUpperCase(), item.id]));
 
   const result = await (async () => {
     const runCode = await nextStockDocCode(tx, "RA", dateTo);
     const documents = [];
     const repricedTransfers: Array<{ code: string; repriced: boolean }> = [];
+    /** Phần nhu cầu lấy từ tồn thay vì chế biến mới — báo lại cho kế toán thấy vì sao nhập < xuất. */
+    const stockUsed: Array<{ productCode: string; quantityBase: number; warehouseCode: string; source: string | null }> = [];
     let sequence = 0;
-    // 1) Chế biến từng cấp theo đúng thứ tự BTP → TP → combo. Mỗi bước nhập thành phẩm vào kho
-    //    theo bộ phận của bước; nguyên liệu trừ ở kho theo bộ phận của TỪNG nguyên liệu (combo có
-    //    thành phần ở nhiều kho) — mỗi kho một phiếu xuất chế biến.
-    for (const step of departmentPlan.productions) {
-      sequence += 1;
-      const productItem = await tx.inventoryItem.findUnique({ where: { code: step.productCode } });
-      if (!productItem) businessError(`Không tìm thấy sản phẩm ${step.productCode}`);
-      // Chưa suy được bộ phận thì đoán theo chính sản phẩm như cũ, rồi rơi về kho mặc định.
-      const stepWarehouse = groupWarehouseOf(step.department) || departmentWarehouseOf(step.productCode);
-      const issueGroups = new Map<string, typeof step.components>();
-      for (const component of step.components) {
-        const warehouse = groupWarehouseOf(component.department) || stepWarehouse || warehouseCode;
-        issueGroups.set(warehouse, [...(issueGroups.get(warehouse) || []), component]);
-      }
-      let totalCost = 0;
-      let issueIndex = 0;
-      for (const [warehouse, components] of issueGroups) {
-        issueIndex += 1;
-        const issue = await postInventoryTransaction(tx, {
-          code: `${runCode}-${sequence}X${issueIndex > 1 ? issueIndex : ""}`,
-          transactionType: "XUAT_CHE_BIEN",
-          transactionDate: postedAt,
-          branchCode,
-          warehouseCode: warehouse,
-          referenceType: "PRODUCTION",
-          referenceCode: runCode,
-          note: `Rã nguyên liệu ${step.productCode} (${input.note || "theo doanh thu"})`,
-          createdBy: input.createdBy,
-          lines: components.map((component) => ({
-            itemId: component.item.id,
-            inputQuantity: component.quantityBase,
-            inputUnitCode: "",
-            inputUnitCost: 0,
-          })),
-        });
-        totalCost += issue.lines.reduce((sum, line) => sum + line.totalCost, 0);
-        documents.push(issue);
-      }
-      const receipt = await postInventoryTransaction(tx, {
-        code: `${runCode}-${sequence}N`,
-        transactionType: "NHAP_CHE_BIEN",
-        transactionDate: postedAt,
-        branchCode,
-        warehouseCode: stepWarehouse || toWarehouseCode,
-        referenceType: "PRODUCTION",
-        referenceCode: runCode,
-        note: `Nhập chế biến ${step.productCode} từ rã nguyên liệu`,
-        createdBy: input.createdBy,
-        lines: [{
-          itemId: productItem?.id || "",
-          inputQuantity: step.quantityBase,
-          inputUnitCode: productItem?.unit || "",
-          inputUnitCost: step.quantityBase > 0 ? totalCost / step.quantityBase : 0,
-        }],
-      });
-      documents.push(receipt);
-    }
-    // 2) Xuất bán: sản phẩm vừa chế biến xuất từ kho nhập chế biến, hàng bán thẳng
-    //    (không định lượng) xuất từ kho nguyên liệu.
-    // Món chế biến xuất bán từ đúng kho vừa nhập vào, hàng bán thẳng xuất từ kho nguyên
-    // liệu của bộ phận bán món đó — nên phải gom lại theo KHO THỰC TẾ, không phải hai nhóm
-    // cố định như trước.
-    const saleGroupMap = new Map<string, { warehouse: string; sales: typeof plan.producedSales; label: string }>();
-    const pushSale = (sale: typeof plan.producedSales[number], warehouse: string, label: string) => {
-      const key = `${warehouse}|${label}`;
-      const group = saleGroupMap.get(key) || { warehouse, sales: [], label };
-      group.sales.push(sale);
-      saleGroupMap.set(key, group);
-    };
-    for (const sale of departmentPlan.producedSales) pushSale(sale, groupWarehouseOf(sale.department) || departmentWarehouseOf(sale.productCode) || toWarehouseCode, "chế biến");
-    for (const sale of departmentPlan.directSales) pushSale(sale, groupWarehouseOf(sale.department) || departmentWarehouseOf(sale.productCode) || warehouseCode, "bán thẳng");
-    const saleGroups = [...saleGroupMap.values()];
-    for (const group of saleGroups) {
-      if (group.sales.length === 0) continue;
-      const lines = [];
-      for (const sale of group.sales) {
-        const item = await tx.inventoryItem.findUnique({ where: { code: sale.productCode } });
-        if (!item) businessError(`Không tìm thấy mặt hàng ${sale.productCode} để xuất bán`);
-        lines.push({ itemId: item?.id || "", inputQuantity: sale.quantityBase, inputUnitCode: item?.unit || "", inputUnitCost: 0 });
-      }
-      sequence += 1;
-      documents.push(await postInventoryTransaction(tx, {
-        code: `${runCode}-${sequence}XB`,
-        transactionType: "XUAT_BAN",
-        transactionDate: postedAt,
-        branchCode,
-        warehouseCode: group.warehouse,
-        referenceType: "PRODUCTION",
-        referenceCode: runCode,
-        note: `Xuất bán theo rã nguyên liệu ${runCode} (${group.label})`,
-        createdBy: input.createdBy,
-        lines,
-      }));
-    }
-    // 3) Điều chuyển / kiểm dư bán thành phẩm: chế biến ngay tại KHO của phiếu (kho xuất của
-    //    điều chuyển, kho được kiểm) vào đúng NGÀY phiếu — hàng nằm ở đâu thì nguyên liệu trừ ở
-    //    đó. Không xuất bán: điều chuyển đã đưa hàng đi, còn kiểm kê là hàng đang nằm trong kho.
+    // 1) Điều chuyển / kiểm dư bán thành phẩm TRƯỚC, theo ngày phiếu: chế biến ngay tại KHO của
+    //    phiếu (kho xuất của điều chuyển, kho được kiểm) vào đúng NGÀY phiếu — hàng nằm ở đâu thì
+    //    nguyên liệu trừ ở đó. Không xuất bán: điều chuyển đã đưa hàng đi, còn kiểm kê là hàng
+    //    đang nằm trong kho. Chạy trước xuất bán để BTP dư kiểm kê vào sổ trước khi món bán lấy tồn.
     for (const source of sources) {
       const label = source.kind === "TRANSFER" ? `điều chuyển ${source.code}` : `kiểm dư ${source.code}`;
+      /**
+       * Điều chuyển: lấy tồn trước, chỉ chế biến phần thiếu (khách chốt 29/09/2026) — kho còn 2 kg
+       * BTP mà chuyển đi 5 kg thì chỉ chế biến 3 kg; BTP cấp dưới cũng trừ tồn trước. Phiếu điều
+       * chuyển đã trừ kho nguồn nên cộng trả số chuyển đi để ra tồn TRƯỚC lúc chuyển.
+       * Kiểm dư: KHÔNG lấy tồn — số đếm là sự thật, phần dư là hàng đã chế biến mà chưa rã.
+       */
+      let takeFromStock: ((code: string) => number) | undefined;
+      if (source.kind === "TRANSFER") {
+        const stock = await createStockTaker(tx, recipeItemIdByCode, source.date, [source.warehouseCode]);
+        for (const demand of source.demands) stock.add(demand.productCode, source.warehouseCode, demand.quantity);
+        takeFromStock = (code) => stock.take(code, source.warehouseCode, Number.POSITIVE_INFINITY);
+      }
       const sourcePlan = explodeSalesDemand({
         demands: source.demands,
         recipes: recipeVersions as unknown as ExplosionRecipe[],
         date: source.date,
         branchCode,
+        takeFromStock: takeFromStock ? (code, _department, quantity) => Math.min(quantity, takeFromStock(code)) : undefined,
       });
+      for (const used of sourcePlan.stockUsed) stockUsed.push({ ...used, warehouseCode: source.warehouseCode, source: source.code });
       for (const step of sourcePlan.productions) {
         sequence += 1;
         const productItem = await tx.inventoryItem.findUnique({ where: { code: step.productCode } });
@@ -442,7 +400,133 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
         await tx.stocktakeSession.update({ where: { id: source.id }, data: { explosionStatus: explosionPostedStatus(runCode) } });
       }
     }
-    // 4) Đánh dấu các dòng doanh thu đã rã kèm mã lần rã, để hoàn tác được cả cụm
+
+    // 2) Doanh thu: lấy tồn trước, chế biến phần thiếu (khách chốt 29/09/2026). Tồn đọc theo sổ
+    //    tại giờ phiếu của lần rã, theo ĐÚNG kho sẽ nhập chế biến / xuất bán món đó (bếp / bar) —
+    //    BTP nằm ở kho bếp không đem bù cho món bar. Trước đây luôn chế biến đủ 100% số bán nên số
+    //    nhập chế biến luôn bằng số xuất, tồn BTP (dư kiểm kê, chế biến dư) không bao giờ được dùng.
+    const productionWarehouseOf = (productCode: string, department: string | null) => (
+      groupWarehouseOf(department) || departmentWarehouseOf(productCode) || toWarehouseCode
+    );
+    const salesStock = inventoryRows.length === 0 ? null : await createStockTaker(
+      tx,
+      recipeItemIdByCode,
+      postedAt,
+      [kitchenWarehouseCode, barWarehouseCode, toWarehouseCode, warehouseCode],
+    );
+    // Combo nhập kho / xuất bán ở kho BẾP, từng thành phần trừ ở kho của chính nó (khách chốt
+    // 27/09/2026) — xem explodeSalesDemandWithDepartments.
+    const departmentPlan = explodeSalesDemandWithDepartments({
+      demands: inventoryRows.map((row) => ({ productCode: row.productCode || "", quantity: row.productQuantity || 0 })),
+      recipes: recipeVersions as unknown as ExplosionRecipe[],
+      date: dateTo,
+      branchCode,
+      takeFromStock: salesStock
+        ? (code, department, quantity) => salesStock.take(code, productionWarehouseOf(code, department), quantity)
+        : undefined,
+    }, {
+      departmentOf: soldDepartmentOf,
+      comboDepartment: kitchenWarehouseCode ? REVENUE_DEPARTMENT_CODES.KITCHEN : null,
+    });
+    for (const used of departmentPlan.stockUsed) {
+      stockUsed.push({ productCode: used.productCode, quantityBase: used.quantityBase, warehouseCode: productionWarehouseOf(used.productCode, used.department), source: null });
+    }
+
+    // Chế biến từng cấp theo đúng thứ tự BTP → TP → combo, chỉ phần THIẾU sau khi lấy tồn. Mỗi
+    // bước nhập thành phẩm vào kho theo bộ phận của bước; nguyên liệu trừ ở kho theo bộ phận của
+    // TỪNG nguyên liệu (combo có thành phần ở nhiều kho) — mỗi kho một phiếu xuất chế biến.
+    for (const step of departmentPlan.productions) {
+      sequence += 1;
+      const productItem = await tx.inventoryItem.findUnique({ where: { code: step.productCode } });
+      if (!productItem) businessError(`Không tìm thấy sản phẩm ${step.productCode}`);
+      // Chưa suy được bộ phận thì đoán theo chính sản phẩm như cũ, rồi rơi về kho mặc định.
+      const stepWarehouse = groupWarehouseOf(step.department) || departmentWarehouseOf(step.productCode);
+      const issueGroups = new Map<string, typeof step.components>();
+      for (const component of step.components) {
+        const warehouse = groupWarehouseOf(component.department) || stepWarehouse || warehouseCode;
+        issueGroups.set(warehouse, [...(issueGroups.get(warehouse) || []), component]);
+      }
+      let totalCost = 0;
+      let issueIndex = 0;
+      for (const [warehouse, components] of issueGroups) {
+        issueIndex += 1;
+        const issue = await postInventoryTransaction(tx, {
+          code: `${runCode}-${sequence}X${issueIndex > 1 ? issueIndex : ""}`,
+          transactionType: "XUAT_CHE_BIEN",
+          transactionDate: postedAt,
+          branchCode,
+          warehouseCode: warehouse,
+          referenceType: "PRODUCTION",
+          referenceCode: runCode,
+          note: `Rã nguyên liệu ${step.productCode} (${input.note || "theo doanh thu"})`,
+          createdBy: input.createdBy,
+          lines: components.map((component) => ({
+            itemId: component.item.id,
+            inputQuantity: component.quantityBase,
+            inputUnitCode: "",
+            inputUnitCost: 0,
+          })),
+        });
+        totalCost += issue.lines.reduce((sum, line) => sum + line.totalCost, 0);
+        documents.push(issue);
+      }
+      const receipt = await postInventoryTransaction(tx, {
+        code: `${runCode}-${sequence}N`,
+        transactionType: "NHAP_CHE_BIEN",
+        transactionDate: postedAt,
+        branchCode,
+        warehouseCode: stepWarehouse || toWarehouseCode,
+        referenceType: "PRODUCTION",
+        referenceCode: runCode,
+        note: `Nhập chế biến ${step.productCode} từ rã nguyên liệu`,
+        createdBy: input.createdBy,
+        lines: [{
+          itemId: productItem?.id || "",
+          inputQuantity: step.quantityBase,
+          inputUnitCode: productItem?.unit || "",
+          inputUnitCost: step.quantityBase > 0 ? totalCost / step.quantityBase : 0,
+        }],
+      });
+      documents.push(receipt);
+    }
+    // Xuất bán ĐỦ số bán: sản phẩm có định lượng xuất từ kho nhập chế biến (gồm cả phần lấy từ
+    //    tồn), hàng bán thẳng (không định lượng) xuất từ kho nguyên liệu.
+    // Món chế biến xuất bán từ đúng kho vừa nhập vào, hàng bán thẳng xuất từ kho nguyên
+    // liệu của bộ phận bán món đó — nên phải gom lại theo KHO THỰC TẾ, không phải hai nhóm
+    // cố định như trước.
+    const saleGroupMap = new Map<string, { warehouse: string; sales: typeof departmentPlan.producedSales; label: string }>();
+    const pushSale = (sale: typeof departmentPlan.producedSales[number], warehouse: string, label: string) => {
+      const key = `${warehouse}|${label}`;
+      const group = saleGroupMap.get(key) || { warehouse, sales: [], label };
+      group.sales.push(sale);
+      saleGroupMap.set(key, group);
+    };
+    for (const sale of departmentPlan.producedSales) pushSale(sale, groupWarehouseOf(sale.department) || departmentWarehouseOf(sale.productCode) || toWarehouseCode, "chế biến");
+    for (const sale of departmentPlan.directSales) pushSale(sale, groupWarehouseOf(sale.department) || departmentWarehouseOf(sale.productCode) || warehouseCode, "bán thẳng");
+    const saleGroups = [...saleGroupMap.values()];
+    for (const group of saleGroups) {
+      if (group.sales.length === 0) continue;
+      const lines = [];
+      for (const sale of group.sales) {
+        const item = await tx.inventoryItem.findUnique({ where: { code: sale.productCode } });
+        if (!item) businessError(`Không tìm thấy mặt hàng ${sale.productCode} để xuất bán`);
+        lines.push({ itemId: item?.id || "", inputQuantity: sale.quantityBase, inputUnitCode: item?.unit || "", inputUnitCost: 0 });
+      }
+      sequence += 1;
+      documents.push(await postInventoryTransaction(tx, {
+        code: `${runCode}-${sequence}XB`,
+        transactionType: "XUAT_BAN",
+        transactionDate: postedAt,
+        branchCode,
+        warehouseCode: group.warehouse,
+        referenceType: "PRODUCTION",
+        referenceCode: runCode,
+        note: `Xuất bán theo rã nguyên liệu ${runCode} (${group.label})`,
+        createdBy: input.createdBy,
+        lines,
+      }));
+    }
+    // 3) Đánh dấu các dòng doanh thu đã rã kèm mã lần rã, để hoàn tác được cả cụm
     //    (REVERT_EXPLOSION) và không rã trùng lần sau.
     await tx.revenueImportRow.updateMany({
       where: { id: { in: inventoryRows.map((row) => row.id) } },
@@ -456,7 +540,7 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
         data: { inventoryStatus: "NOT_REQUIRED" },
       });
     }
-    return { runCode, documents, repricedTransfers };
+    return { runCode, documents, repricedTransfers, departmentPlan, stockUsed };
   })();
 
   /**
@@ -492,7 +576,9 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
     /** Kho thực dùng (sau resolveExplosionWarehouses) — ghi vào nhật ký lần rã. */
     warehouses,
     documents: result.documents,
-    plan,
+    /** Kế hoạch ĐÃ trừ tồn: productions là số chế biến thật, stockUsed là phần lấy từ tồn. */
+    plan: result.departmentPlan,
+    stockUsed: result.stockUsed,
     revenueRows: inventoryRows.length,
     skippedRows: skippedRows.length,
     sources: sources.map((source) => ({ kind: source.kind, code: source.code, date: source.date, warehouseCode: source.warehouseCode })),

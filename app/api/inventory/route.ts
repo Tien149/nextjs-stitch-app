@@ -1555,7 +1555,7 @@ export async function POST(request: Request) {
       if (outcome.kind === "ALL_SKIPPED") {
         businessError(`Cả ${outcome.skippedRows} dòng doanh thu trong khoảng ngày này đều thuộc nhóm doanh thu không theo dõi tồn kho — đã bỏ khỏi hàng chờ, không có gì để rã.`);
       }
-      const { plan, negativeItems, zeroCostItems, undecidedProducts, sources, keptPriceTransfers } = outcome;
+      const { plan, stockUsed, negativeItems, zeroCostItems, undecidedProducts, sources, keptPriceTransfers } = outcome;
 
       await writeAuditLog({
         session: auth.session, module: menuHref, action: "EXPLODE_PRODUCTION",
@@ -1570,6 +1570,7 @@ export async function POST(request: Request) {
           negativeItems,
           zeroCostItems,
           productions: plan.productions.map((step) => ({ productCode: step.productCode, quantityBase: step.quantityBase })),
+          stockUsed,
           documents: outcome.documents.map((doc) => doc.code),
         },
       });
@@ -1596,6 +1597,8 @@ export async function POST(request: Request) {
         zeroCostItems: zeroCostItems.slice(0, 20),
         productions: plan.productions.map((step) => ({ productCode: step.productCode, quantityBase: step.quantityBase, batchQuantity: step.batchQuantity })),
         directSales: plan.directSales,
+        // Phần lấy từ tồn thay vì chế biến mới (lấy tồn trước, chế biến phần thiếu).
+        stockUsed,
         documents: outcome.documents,
         cogsRepost,
       }, { status: 201 });

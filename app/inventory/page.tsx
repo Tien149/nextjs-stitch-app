@@ -3345,6 +3345,13 @@ export default function InventoryPage() {
                   const codes = (payload?.zeroCostItems || []) as string[];
                   notes.push(`${zeroCostCount} mã xuất với GIÁ VỐN 0 vì kho chưa có giá nhập nào${codes.length ? `: ${codes.slice(0, 8).join(", ")}${zeroCostCount > codes.slice(0, 8).length ? "..." : ""}` : ""}. Báo cáo giá vốn còn thiếu đúng phần này cho tới khi có giá và chạy lại "Tính giá vốn & giá thành".`);
                 }
+                // Lấy tồn trước, chế biến phần thiếu: nói rõ để kế toán hiểu vì sao số nhập chế
+                // biến nhỏ hơn số xuất.
+                const stockUsed = (payload?.stockUsed || []) as Array<{ productCode: string; quantityBase: number; warehouseCode: string }>;
+                if (stockUsed.length > 0) {
+                  const shown = stockUsed.slice(0, 8).map((row) => `${row.productCode} ${row.quantityBase.toLocaleString("vi-VN", { maximumFractionDigits: 3 })} (${row.warehouseCode})`);
+                  notes.push(`Dùng tồn có sẵn trước, chỉ chế biến phần thiếu: ${shown.join(", ")}${stockUsed.length > shown.length ? "..." : ""}.`);
+                }
                 const transferCount = Number(payload?.transferCount || 0);
                 const stocktakeCount = Number(payload?.stocktakeCount || 0);
                 if (transferCount > 0 || stocktakeCount > 0) {

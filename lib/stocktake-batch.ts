@@ -54,7 +54,7 @@ export async function nextStocktakeBatchCode(tx: Tx, cutoffAt: Date) {
 }
 
 /** Σ(nhập − xuất) của kho theo mã, chỉ phiếu có ngày chứng từ SAU giờ chốt. */
-async function netMovementsAfter(tx: Tx, warehouseCode: string, cutoffAt: Date) {
+export async function netMovementsAfter(tx: Tx, warehouseCode: string, cutoffAt: Date) {
   const rows = await tx.$queryRaw<Array<{ itemId: string; net: number }>>(Prisma.sql`
     SELECT "itemId", SUM(delta)::float8 AS net FROM (
       SELECT l."itemId", CASE WHEN LEFT(t."transactionType", 5) = 'NHAP_' THEN l."quantity" ELSE -l."quantity" END AS delta

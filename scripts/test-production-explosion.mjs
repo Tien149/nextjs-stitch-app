@@ -370,3 +370,81 @@ test("không có kho bếp (comboDepartment rỗng) thì combo theo bộ phận 
   }, { departmentOf: departmentRules.departmentOf, comboDepartment: null });
   assert.deepEqual(plan.producedSales, [{ productCode: "SP_COMBO01", quantityBase: 1, department: "BAR" }]);
 });
+
+/** Tồn theo (mã, bộ phận), trừ dần mỗi lần lấy — giống createStockTaker của lõi rã. */
+function stockTaker(initial) {
+  const book = new Map(Object.entries(initial));
+  return (code, department, quantity) => {
+    const key = `${code}|${department || ""}`;
+    const taken = Math.min(Math.max(0, book.get(key) || 0), quantity);
+    book.set(key, (book.get(key) || 0) - taken);
+    return taken;
+  };
+}
+
+test("lấy tồn trước, chỉ chế biến phần thiếu: cần 2250 gr sốt, tồn 1000 gr thì chế biến 1250 gr", () => {
+  const plan = explodeSalesDemand({
+    demands: [{ productCode: "SP_CAHONG", quantity: 15 }],
+    recipes,
+    date: new Date("2026-08-01"),
+    takeFromStock: stockTaker({ "BTP_SOTCACHUA|": 1000 }),
+  });
+  const sot = plan.productions.find((step) => step.productCode === "BTP_SOTCACHUA");
+  assert.equal(sot.quantityBase, 1250);
+  // Nguyên liệu của BTP chỉ tính cho phần chế biến thêm.
+  assert.ok(Math.abs(sot.components[0].quantityBase - 30 * 1.03 * 1.25) < 1e-9);
+  // Món bán vẫn chế biến + xuất bán đủ 15 phần, và vẫn tiêu hao đủ 2250 gr sốt (1000 tồn + 1250 mới).
+  const cahong = plan.productions.find((step) => step.productCode === "SP_CAHONG");
+  assert.equal(cahong.quantityBase, 15);
+  assert.equal(cahong.components.find((c) => c.item.code === "BTP_SOTCACHUA").quantityBase, 2250);
+  assert.deepEqual(plan.producedSales, [{ productCode: "SP_CAHONG", quantityBase: 15 }]);
+  assert.deepEqual(plan.stockUsed, [{ productCode: "BTP_SOTCACHUA", quantityBase: 1000 }]);
+});
+
+test("tồn đủ thì không chế biến BTP; tồn thành phẩm cũng dùng trước và kéo giảm nhu cầu BTP", () => {
+  const enough = explodeSalesDemand({
+    demands: [{ productCode: "SP_CAHONG", quantity: 10 }],
+    recipes,
+    date: new Date("2026-08-01"),
+    takeFromStock: stockTaker({ "BTP_SOTCACHUA|": 5000 }),
+  });
+  assert.deepEqual(enough.productions.map((step) => step.productCode), ["SP_CAHONG"]);
+
+  // Còn 4 phần cá hồng làm sẵn: chỉ chế biến 6 phần, sốt cần 6 x 150 = 900 gr.
+  const finished = explodeSalesDemand({
+    demands: [{ productCode: "SP_CAHONG", quantity: 10 }],
+    recipes,
+    date: new Date("2026-08-01"),
+    takeFromStock: stockTaker({ "SP_CAHONG|": 4 }),
+  });
+  assert.equal(finished.productions.find((step) => step.productCode === "SP_CAHONG").quantityBase, 6);
+  assert.equal(finished.productions.find((step) => step.productCode === "BTP_SOTCACHUA").quantityBase, 900);
+  assert.deepEqual(finished.producedSales, [{ productCode: "SP_CAHONG", quantityBase: 10 }]);
+});
+
+test("tồn âm không được coi là có hàng", () => {
+  const plan = explodeSalesDemand({
+    demands: [{ productCode: "SP_CAHONG", quantity: 2 }],
+    recipes,
+    date: new Date("2026-08-01"),
+    takeFromStock: stockTaker({ "BTP_SOTCACHUA|": -500 }),
+  });
+  assert.equal(plan.productions.find((step) => step.productCode === "BTP_SOTCACHUA").quantityBase, 300);
+  assert.deepEqual(plan.stockUsed, []);
+});
+
+test("lấy tồn theo TỪNG kho: tồn sốt ở kho bếp không bù cho món bar", () => {
+  const plan = explodeSalesDemandWithDepartments({
+    demands: [
+      { productCode: "SP_CAHONG", quantity: 10 },
+      { productCode: "SP_SODASOT", quantity: 4 },
+    ],
+    recipes: [...recipes, sodaRecipe],
+    date: new Date("2026-08-01"),
+    takeFromStock: stockTaker({ "BTP_SOTCACHUA|KIT": 2000 }),
+  }, departmentRules);
+  // Bếp cần 1500 gr, tồn 2000 gr: không chế biến. Bar cần 200 gr, kho bar không có tồn: chế biến đủ.
+  assert.equal(stepOf(plan, "BTP_SOTCACHUA", "KIT"), undefined);
+  assert.equal(stepOf(plan, "BTP_SOTCACHUA", "BAR").quantityBase, 200);
+  assert.deepEqual(plan.stockUsed, [{ productCode: "BTP_SOTCACHUA", quantityBase: 1500, department: "KIT" }]);
+});

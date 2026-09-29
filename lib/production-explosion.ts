@@ -67,6 +67,8 @@ export type ExplosionPlan = {
   producedSales: Array<{ productCode: string; quantityBase: number }>;
   /** Sản phẩm không có định lượng: xuất bán thẳng từ tồn kho. */
   directSales: Array<{ productCode: string; quantityBase: number }>;
+  /** Phần nhu cầu sản phẩm có định lượng lấy từ TỒN KHO thay vì chế biến mới (xem takeFromStock). */
+  stockUsed: Array<{ productCode: string; quantityBase: number }>;
 };
 
 /**
@@ -162,7 +164,22 @@ export type ExplosionInput = {
   date: Date;
   /** Cửa hàng đang rã: quyết định dùng công thức riêng của cửa hàng hay bản dùng chung. */
   branchCode?: string | null;
+  /**
+   * Lấy tồn trước, chế biến phần thiếu (khách chốt 29/09/2026): cần 5 kg BTP A mà kho còn 2 kg
+   * thì dùng 2 kg tồn, chỉ chế biến 3 kg. Trả về số lấy được từ tồn (caller tự trừ dần tồn của
+   * kho tương ứng `department`, không lấy quá tồn dương). Không truyền = chế biến đủ 100% như cũ.
+   */
+  takeFromStock?: (productCode: string, department: string | null, quantity: number) => number;
 };
+
+const stockEpsilon = 1e-9;
+
+/** Số lấy được từ tồn cho một nhu cầu, kẹp trong [0, nhu cầu]. */
+function takeStock(input: ExplosionInput, code: string, department: string | null, needed: number) {
+  if (!input.takeFromStock || !(needed > 0)) return 0;
+  const taken = Number(input.takeFromStock(code, department, needed));
+  return Number.isFinite(taken) ? Math.min(needed, Math.max(0, taken)) : 0;
+}
 
 /**
  * Rã nhu cầu bán hàng thành kế hoạch chế biến đa cấp.
@@ -220,11 +237,20 @@ export function explodeSalesDemand(input: ExplosionInput): ExplosionPlan {
     producedSales.set(code, (producedSales.get(code) || 0) + entry.quantity);
   }
 
-  // Cộng dồn nhu cầu từ cấp trên xuống: duyệt ngược hậu thứ tự (combo → TP → BTP).
+  // Cộng dồn nhu cầu từ cấp trên xuống: duyệt ngược hậu thứ tự (combo → TP → BTP). Tới lượt
+  // một mã thì nhu cầu của mọi cấp trên đã chốt: lấy tồn trước, chỉ phần thiếu mới chế biến và
+  // mới kéo nhu cầu xuống cấp dưới.
+  const production = new Map<string, number>();
+  const stockUsed = new Map<string, number>();
   for (let index = order.length - 1; index >= 0; index -= 1) {
     const code = order[index];
-    const quantityBase = demand.get(code) || 0;
-    if (quantityBase <= 0) continue;
+    const needed = demand.get(code) || 0;
+    if (needed <= 0) continue;
+    const fromStock = takeStock(input, code, null, needed);
+    if (fromStock > 0) stockUsed.set(code, (stockUsed.get(code) || 0) + fromStock);
+    const quantityBase = needed - fromStock;
+    if (quantityBase <= stockEpsilon) continue;
+    production.set(code, quantityBase);
     const recipe = recipeFor(code)!;
     const outputRate = recipe.outputConversionRate > 0 ? recipe.outputConversionRate : 1;
     const batchQuantity = quantityBase / outputRate;
@@ -239,7 +265,7 @@ export function explodeSalesDemand(input: ExplosionInput): ExplosionPlan {
   // Sinh bước chế biến theo đúng hậu thứ tự: BTP đứng trước TP, TP trước combo.
   const productions: ProductionStep[] = [];
   for (const code of order) {
-    const quantityBase = demand.get(code) || 0;
+    const quantityBase = production.get(code) || 0;
     if (quantityBase <= 0) continue;
     const recipe = recipeFor(code)!;
     const outputRate = recipe.outputConversionRate > 0 ? recipe.outputConversionRate : 1;
@@ -269,6 +295,7 @@ export function explodeSalesDemand(input: ExplosionInput): ExplosionPlan {
     productions,
     producedSales: [...producedSales.entries()].map(([productCode, quantityBase]) => ({ productCode, quantityBase })),
     directSales: [...directSales.entries()].map(([productCode, quantityBase]) => ({ productCode, quantityBase })),
+    stockUsed: [...stockUsed.entries()].map(([productCode, quantityBase]) => ({ productCode, quantityBase })),
   };
 }
 
@@ -421,6 +448,7 @@ export type DepartmentExplosionPlan = {
   productions: DepartmentProductionStep[];
   producedSales: Array<{ productCode: string; quantityBase: number; department: string | null }>;
   directSales: Array<{ productCode: string; quantityBase: number; department: string | null }>;
+  stockUsed: Array<{ productCode: string; quantityBase: number; department: string | null }>;
 };
 
 export type DepartmentRules = {
@@ -512,13 +540,21 @@ export function explodeSalesDemandWithDepartments(input: ExplosionInput, rules: 
     return rules.departmentOf(up(item.code)) ?? parent;
   };
 
-  // Cộng dồn nhu cầu từ cấp trên xuống (combo → TP → BTP), giữ nguyên bộ phận từng nhánh.
+  // Cộng dồn nhu cầu từ cấp trên xuống (combo → TP → BTP), giữ nguyên bộ phận từng nhánh. Tồn
+  // trừ theo TỪNG bộ phận (kho bếp / kho bar): BTP nằm ở kho bếp không đem bù cho món bar.
+  const production = new Map<string, Map<string, number>>();
+  const stockUsed = new Map<string, Map<string, number>>();
   for (let index = order.length - 1; index >= 0; index -= 1) {
     const code = order[index];
     const recipe = recipeFor(code)!;
     const outputRate = recipe.outputConversionRate > 0 ? recipe.outputConversionRate : 1;
-    for (const [key, quantityBase] of demand.get(code) || []) {
-      if (quantityBase <= 0) continue;
+    for (const [key, needed] of demand.get(code) || []) {
+      if (needed <= 0) continue;
+      const fromStock = takeStock(input, code, deptOfKey(key), needed);
+      if (fromStock > 0) addTo(stockUsed, code, deptOfKey(key), fromStock);
+      const quantityBase = needed - fromStock;
+      if (quantityBase <= stockEpsilon) continue;
+      addTo(production, code, deptOfKey(key), quantityBase);
       const batchQuantity = quantityBase / outputRate;
       for (const line of recipe.lines) {
         const componentCode = up(line.item.code);
@@ -533,7 +569,7 @@ export function explodeSalesDemandWithDepartments(input: ExplosionInput, rules: 
   for (const code of order) {
     const recipe = recipeFor(code)!;
     const outputRate = recipe.outputConversionRate > 0 ? recipe.outputConversionRate : 1;
-    for (const [key, quantityBase] of demand.get(code) || []) {
+    for (const [key, quantityBase] of production.get(code) || []) {
       if (quantityBase <= 0) continue;
       const department = deptOfKey(key);
       const batchQuantity = quantityBase / outputRate;
@@ -555,5 +591,5 @@ export function explodeSalesDemandWithDepartments(input: ExplosionInput, rules: 
   const flatten = (map: Map<string, Map<string, number>>) => [...map.entries()].flatMap(([productCode, byDept]) => (
     [...byDept.entries()].map(([key, quantityBase]) => ({ productCode, quantityBase, department: deptOfKey(key) }))
   ));
-  return { productions, producedSales: flatten(producedSales), directSales: flatten(directSales) };
+  return { productions, producedSales: flatten(producedSales), directSales: flatten(directSales), stockUsed: flatten(stockUsed) };
 }
