@@ -692,7 +692,7 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
   const start = new Date(`${year}-01-01T00:00:00`);
   const end = new Date(`${Number(year) + 1}-01-01T00:00:00`);
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
-  const [departments, ratioRows, revenueRows, payrollRows, payrollDeptRows] = await Promise.all([
+  const [departments, ratioRows, revenueRows, payrollRows, payrollDeptRows, pnl] = await Promise.all([
     // `group` là ô Nhóm của danh mục Phòng ban (Vận hành / Văn phòng) — bảng nhân sự theo tháng
     // tách khối theo ô này.
     prisma.masterDataItem.findMany({ where: { type: "DEPARTMENT", status: "ACTIVE" }, select: { code: true, name: true, group: true }, orderBy: { code: "asc" } }),
@@ -713,6 +713,9 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
       where: { period: { startsWith: `${year}-` }, ...branchFilter },
       select: { period: true, branchCode: true, departmentCode: true, headcount: true, totalCompanyCost: true, companyInsurance: true, netAmount: true },
     }),
+    // Tổng doanh thu và chi phí nhân sự lấy đúng số của P&L / Dashboard P&L (khách báo 29/09/2026:
+    // bảng nhân sự lệch Dashboard — thiếu thuế GTGT ở doanh thu, thiếu khoản lương lẻ ở CP lương).
+    getPnlMatrix(year, branchCode),
   ]);
   const departmentName = departmentNameMap(departments);
   const deptLabel = (code: string) => (code === UNASSIGNED_DEPARTMENT ? "Chưa gán bộ phận" : departmentName.get(code) || code);
@@ -777,8 +780,9 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
   const ratios = effectiveRatiosAt(ratioRows, period);
   const ratioPeriods = [...new Set(ratioRows.filter((row) => row.period.startsWith(`${year}-`)).map((row) => row.period))].sort();
 
-  // Lương thực chi + đầu người từ import bảng lương (gross khớp bút toán 6421: lương + phụ cấp + thưởng).
-  const actualByDepartment = new Map<string, MatrixSeries>();
+  // Đầu người + bảo hiểm từ import bảng lương. Lương thực chi KHÔNG cộng ở đây mà lấy dòng Chi phí
+  // nhân sự của P&L (pnl.payrollByDepartment): gồm import bảng lương (loadPayrollPnlRows, cùng luật
+  // lương + phụ cấp + thưởng / tổng chi phí công ty) và các khoản lương lẻ ghi qua chứng từ.
   const insuranceTotal = monthArray();
   const headcountSets = new Map<string, Set<string>>();
   const totalHeadcountSets = months.map(() => new Set<string>());
@@ -786,8 +790,6 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
     const monthIndex = months.indexOf(row.period);
     if (monthIndex < 0) continue;
     const dept = payrollDept(row.departmentCode);
-    const gross = row.baseSalary + row.allowanceAmount + row.bonusAmount;
-    bumpSeries(actualByDepartment, dept, deptLabel(dept), monthIndex, gross);
     insuranceTotal[monthIndex] += row.insuranceAmount;
     const key = `${dept}|${monthIndex}`;
     const set = headcountSets.get(key) || new Set<string>();
@@ -795,15 +797,13 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
     headcountSets.set(key, set);
     totalHeadcountSets[monthIndex].add(row.employeeCode);
   }
-  // Mẫu theo bộ phận không còn mã nhân viên để đếm, mà khai thẳng số lượng nhân sự; lương
-  // thực chi của nó là TỔNG CHI PHÍ CÔNG TY để khớp đúng bút toán 6421.
+  // Mẫu theo bộ phận không còn mã nhân viên để đếm, mà khai thẳng số lượng nhân sự.
   const headcountNumbers = new Map<string, number>();
   const totalHeadcountNumbers = monthArray();
   for (const row of payrollDeptRows) {
     const monthIndex = months.indexOf(row.period);
     if (monthIndex < 0) continue;
     const dept = payrollDept(row.departmentCode);
-    bumpSeries(actualByDepartment, dept, deptLabel(dept), monthIndex, row.totalCompanyCost);
     insuranceTotal[monthIndex] += row.companyInsurance;
     const key = `${dept}|${monthIndex}`;
     headcountNumbers.set(key, (headcountNumbers.get(key) || 0) + row.headcount);
@@ -849,14 +849,18 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
       totalSvc: svcTotal,
       byDepartment: sortedSeries(revenueByDepartment),
       svcByDepartment: sortedSeries(svcByDepartment),
+      /** Thuế GTGT (cột Thuế file POS) — một dòng doanh thu của P&L. */
+      totalVat: pnl.revenueSplit.vat,
+      /** TỔNG DOANH THU đúng như P&L / Dashboard P&L: Doanh thu − Giảm giá + SVC + Thuế GTGT (+ chênh lệch Tổng tiền). */
+      pnlTotal: pnl.totals.map((bucket) => bucket.revenue),
     },
     standard: {
       byDepartment: sortedSeries(standardByDepartment),
       total: months.map((_, index) => [...standardByDepartment.values()].reduce((sum, row) => sum + row.months[index], 0)),
     },
     actual: {
-      byDepartment: sortedSeries(actualByDepartment),
-      total: months.map((_, index) => [...actualByDepartment.values()].reduce((sum, row) => sum + row.months[index], 0)),
+      byDepartment: pnl.payrollByDepartment,
+      total: pnl.totals.map((bucket) => bucket.payroll),
       insurance: insuranceTotal,
     },
     headcount: {

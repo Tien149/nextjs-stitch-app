@@ -29,7 +29,16 @@ export type PayrollBudgetData = {
   /** Tổng tỷ trọng có hiệu lực từng tháng (0.25 = 25%). */
   ratioTotalByMonth: number[];
   ratios: Array<{ branchCode: string; departmentCode: string; period: string; ratio: number; industryMin: number | null; industryMax: number | null; note: string | null }>;
-  revenue: { totalGross: number[]; totalSvc: number[]; byDepartment: PayrollBudgetSeries[]; svcByDepartment: PayrollBudgetSeries[] };
+  revenue: {
+    totalGross: number[];
+    totalSvc: number[];
+    byDepartment: PayrollBudgetSeries[];
+    svcByDepartment: PayrollBudgetSeries[];
+    /** Thuế GTGT từng tháng. */
+    totalVat?: number[];
+    /** Tổng doanh thu đúng như P&L / Dashboard P&L (gồm SVC và thuế GTGT). */
+    pnlTotal?: number[];
+  };
   standard: { byDepartment: PayrollBudgetSeries[]; total: number[] };
   actual: { byDepartment: PayrollBudgetSeries[]; total: number[]; insurance: number[] };
   headcount: { byDepartment: PayrollBudgetSeries[]; total: number[] };
@@ -492,8 +501,11 @@ function HeadcountRow({ group, label, values, format, tone = "", strong }: { gro
  * Văn phòng, CP lương cho NLĐ, doanh thu, % CP lương / DT, CP lương/người và DT/người.
  *
  * Luật mẫu số (khách chốt 29/09/2026): bộ phận có doanh thu riêng (Bếp, Bar) tính trên doanh
- * thu của chính nó; các bộ phận còn lại tính trên TỔNG doanh thu. Tổng doanh thu cùng nền với
- * dòng "% lương thực chi / doanh thu" ở bảng trên (doanh thu + SVC).
+ * thu của chính nó; các bộ phận còn lại tính trên TỔNG doanh thu.
+ *
+ * "Doanh thu sau thuế" = TỔNG DOANH THU của P&L / Dashboard P&L (gồm SVC và thuế GTGT), và các
+ * dòng chi tiết bên dưới cộng lại đúng bằng nó; "CP lương cho NLĐ" = dòng Chi phí nhân sự của
+ * P&L (khách chốt 29/09/2026 — trước đây thiếu thuế GTGT, phụ thu và khoản lương lẻ).
  */
 function HeadcountCostTable({ data, monthHeaders }: { data: PayrollBudgetData; monthHeaders: string[] }) {
   const zeros = () => data.months.map(() => 0);
@@ -502,7 +514,25 @@ function HeadcountCostTable({ data, monthHeaders }: { data: PayrollBudgetData; m
   const salaryByCode = new Map(data.actual.byDepartment.map((row) => [row.code, row]));
   const revenueDepartments = data.revenue.byDepartment.filter((row) => row.code !== "UNASSIGNED" && row.total > 0);
   const revenueByCode = new Map(revenueDepartments.map((row) => [row.code, row]));
-  const totalRevenue = data.months.map((_, index) => data.revenue.totalGross[index] + data.revenue.totalSvc[index]);
+  const vatMonths = data.revenue.totalVat || zeros();
+  const totalRevenue = data.revenue.pnlTotal
+    || data.months.map((_, index) => data.revenue.totalGross[index] + data.revenue.totalSvc[index] + vatMonths[index]);
+  // Chi tiết doanh thu như khối "Doanh thu theo bộ phận" của P&L: DT từng bộ phận, DT Phụ thu
+  // (doanh thu không thuộc bộ phận nào), Phụ thu SVC, Thuế GTGT. Phần còn lại (chênh lệch Tổng
+  // tiền file POS so với các cột) đứng một dòng riêng để các dòng chi tiết luôn cộng đúng bằng tổng.
+  const revenueDetailRows: Array<{ key: string; label: string; values: number[] }> = [
+    ...data.revenue.byDepartment.map((row) => ({
+      key: row.code,
+      label: row.code === "UNASSIGNED" ? "DT Phụ thu" : `Doanh thu ${row.name}`,
+      values: row.months,
+    })),
+    { key: "SVC", label: "Phụ thu SVC", values: data.revenue.totalSvc },
+    { key: "VAT", label: "Thuế GTGT", values: vatMonths },
+  ];
+  const revenueRemainder = totalRevenue.map((value, index) => value - revenueDetailRows.reduce((sum, row) => sum + (row.values[index] || 0), 0));
+  if (revenueRemainder.some((value) => Math.abs(value) >= 1)) {
+    revenueDetailRows.push({ key: "ADJUST", label: "Chênh lệch tổng tiền POS", values: revenueRemainder.map((value) => (Math.abs(value) >= 1 ? value : 0)) });
+  }
 
   const departments = [...new Set([...headcountByCode.keys(), ...salaryByCode.keys()])].map((code) => {
     const headcount = headcountByCode.get(code)?.months || zeros();
@@ -560,8 +590,8 @@ function HeadcountCostTable({ data, monthHeaders }: { data: PayrollBudgetData; m
         ))}
 
         <HeadcountRow label="Doanh thu sau thuế" values={totalRevenue} format={moneyCell} tone="bg-orange-50" strong />
-        {revenueDepartments.map((row) => (
-          <HeadcountRow key={`rev-${row.code}`} label={`Doanh thu ${row.name}`} values={row.months} format={moneyCell} tone="bg-orange-50/60" />
+        {revenueDetailRows.map((row) => (
+          <HeadcountRow key={`rev-${row.key}`} label={row.label} values={row.values} format={moneyCell} tone="bg-orange-50/60" />
         ))}
 
         <HeadcountRow label="% CP lương / DT sau thuế" values={data.months.map((_, index) => ratioOf(salaryTotal[index], totalRevenue[index]))} format={percentCell} tone="bg-emerald-50" strong />
