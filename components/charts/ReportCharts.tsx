@@ -74,7 +74,7 @@ export function MoneyLineChart({ labels, series, height = 280, countMode = false
   const rows = toRows(labels, series, countMode ? 2 : 0);
   return (
     <ResponsiveContainer width="100%" height={height}>
-      <LineChart data={rows} margin={{ top: countMode ? 20 : 8, right: 16, bottom: 0, left: 4 }}>
+      <LineChart data={rows} margin={{ top: 8, right: 16, bottom: 0, left: 4 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
         <XAxis dataKey="label" {...axisProps} />
         <YAxis {...axisProps} width={56} tickFormatter={(value: number) => (countMode ? headcountLabel(value) : compactVnd(value))} />
@@ -83,24 +83,9 @@ export function MoneyLineChart({ labels, series, height = 280, countMode = false
           contentStyle={tooltipProps.contentStyle}
         />
         <Legend wrapperStyle={{ fontSize: 12 }} />
-        {series.map((item, index) => {
-          const color = item.color || CHART_COLORS[index % CHART_COLORS.length];
-          return (
-            <Line key={item.name} type="monotone" dataKey={item.name} stroke={color} strokeWidth={2} strokeDasharray={item.dashed ? "6 4" : undefined} dot={{ r: 3 }}>
-              {/* Chart số người: in số của từng bộ phận ngay trên điểm, cùng màu đường, khỏi phải rê chuột.
-                  Tháng 0 người bỏ trống để trục dưới không kín chữ "0". */}
-              {countMode && (
-                <LabelList
-                  dataKey={item.name}
-                  position="top"
-                  offset={8}
-                  style={{ fontSize: 10, fontWeight: 700, fill: color }}
-                  formatter={(value: unknown) => (value === null || value === undefined || Number(value) === 0 ? "" : headcountLabel(Number(value)))}
-                />
-              )}
-            </Line>
-          );
-        })}
+        {series.map((item, index) => (
+          <Line key={item.name} type="monotone" dataKey={item.name} stroke={item.color || CHART_COLORS[index % CHART_COLORS.length]} strokeWidth={2} strokeDasharray={item.dashed ? "6 4" : undefined} dot={{ r: 3 }} />
+        ))}
       </LineChart>
     </ResponsiveContainer>
   );
