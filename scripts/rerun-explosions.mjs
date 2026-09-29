@@ -19,10 +19,15 @@
  * Kho tự tìm theo nhóm kho BEP / BAR của cửa hàng; cửa hàng có nhiều kho bếp/bar thì chỉ định:
  *   --kitchen ASA=ASA_KBEP,NME=NME_KBEP --bar ASA=ASA_KBAR,NME=NME_KBAR
  * Mã món cho --set-kitchen: phân nhóm lấy tự động (nhóm Thành phẩm của kho BEP), đổi bằng --kitchen-group TP_BEP.
+ * Rã lại cả THÁNG (vd sau khi đổi luật rã — lấy tồn trước, chế biến phần thiếu, 29/09/2026):
+ *   npm run rerun:explosions -- --month 2026-09 [--branches HCM,HN]
+ * Chạy thử in bảng số chế biến cũ → mới theo mã; --apply ghi thật rồi tự ghi sổ lại giá vốn theo
+ * kho của các kỳ bị ảnh hưởng (như nút Rã trên màn hình).
  */
 import { prisma } from "../lib/prisma.ts";
 import { isPeriodLocked } from "../lib/phase3.ts";
 import { rerunExplosions } from "../lib/inventory-explosion.ts";
+import { repostInventoryCogs } from "../lib/accounting.ts";
 import { departmentFromWarehouseGroup, REVENUE_DEPARTMENT_CODES } from "../lib/revenue-department.ts";
 
 const args = process.argv.slice(2);
@@ -38,13 +43,19 @@ const apply = flag("--apply");
 const allowLocked = flag("--allow-locked");
 const runCodes = list("--runs").map((code) => code.toUpperCase());
 const fromWarehouses = list("--from-warehouses").map((code) => code.toUpperCase());
+const month = value("--month");
+const onlyBranches = list("--branches").map((code) => code.toUpperCase());
 const kitchenItemCodes = list("--set-kitchen").map((code) => code.toUpperCase());
 const kitchenOverride = mapArg("--kitchen");
 const barOverride = mapArg("--bar");
 const actor = "script rerun-explosions";
-if (runCodes.length === 0 && fromWarehouses.length === 0) {
-  console.log("Cách dùng: npm run rerun:explosions -- (--runs RA-2026-0001,RA-2026-0002 | --from-warehouses KHO_A) [--set-kitchen MA1,MA2] [--apply] [--allow-locked]");
+if (runCodes.length === 0 && fromWarehouses.length === 0 && !month) {
+  console.log("Cách dùng: npm run rerun:explosions -- (--runs RA-2026-0001,RA-2026-0002 | --from-warehouses KHO_A | --month 2026-09 [--branches HCM,HN]) [--set-kitchen MA1,MA2] [--apply] [--allow-locked]");
   process.exit(0);
+}
+if (month && !/^\d{4}-\d{2}$/.test(month)) {
+  console.log(`--month phải dạng YYYY-MM (vd 2026-09), nhận được "${month}"`);
+  process.exit(1);
 }
 const day = (date) => new Date(date).toISOString().slice(0, 10);
 const ROLLBACK = new Error("DRY_RUN_ROLLBACK");
@@ -81,6 +92,32 @@ try {
         console.log(`    ${day(doc.transactionDate)} ${doc.code} ${doc.transactionType} ${doc.warehouseCode}${doc.toWarehouseCode ? ` -> ${doc.toWarehouseCode}` : ""}${doc.importBatchId ? " [import]" : ""}`);
       }
       if (others.length > 40) console.log(`    ... còn ${others.length - 40} phiếu`);
+    }
+    if (runCodes.length === 0) process.exit(0);
+  }
+
+  if (month) {
+    // Ranh giới tháng theo giờ Việt Nam: phiếu rã mang giờ VN (23:59:59 ngày cuối / giờ chốt).
+    const start = new Date(`${month}-01T00:00:00+07:00`);
+    const end = new Date(start);
+    end.setUTCMonth(end.getUTCMonth() + 1);
+    const branchFilter = onlyBranches.length ? { branchCode: { in: onlyBranches } } : {};
+    const found = await prisma.inventoryTransaction.findMany({
+      where: { deletedAt: null, referenceType: "PRODUCTION", referenceCode: { startsWith: "RA-" }, transactionDate: { gte: start, lt: end }, ...branchFilter },
+      distinct: ["referenceCode"],
+      select: { referenceCode: true },
+    });
+    const foundCodes = found.map((row) => (row.referenceCode || "").toUpperCase()).filter(Boolean);
+    console.log(`Lần rã có phiếu trong tháng ${month}${onlyBranches.length ? ` (${onlyBranches.join(", ")})` : ""}: ${foundCodes.length} lần`);
+    for (const code of foundCodes) if (!runCodes.includes(code)) runCodes.push(code);
+    // Lần rã SAU tháng này đã dùng tồn theo số cũ: rã lại tháng này đổi tồn đầu của chúng.
+    const later = await prisma.inventoryTransaction.findMany({
+      where: { deletedAt: null, referenceType: "PRODUCTION", referenceCode: { startsWith: "RA-" }, transactionDate: { gte: end }, ...branchFilter },
+      distinct: ["referenceCode"],
+      select: { referenceCode: true },
+    });
+    if (later.length > 0) {
+      console.log(`!! Còn ${later.length} lần rã SAU tháng ${month} (${later.map((row) => row.referenceCode).slice(0, 10).join(", ")}) — nên rã lại luôn các tháng sau cho tồn nối tiếp đúng.`);
     }
     if (runCodes.length === 0) process.exit(0);
   }
@@ -155,6 +192,17 @@ try {
   }
 
   const results = [];
+  /** Số chế biến (NHAP_CHE_BIEN) theo mã: trước và sau khi rã lại — để thấy luật mới đổi gì. */
+  const producedBefore = new Map();
+  const producedAfter = new Map();
+  const sumProduced = async (tx, refCodes, target) => {
+    if (refCodes.length === 0) return;
+    const lines = await tx.inventoryTransactionLine.findMany({
+      where: { transaction: { referenceType: "PRODUCTION", referenceCode: { in: refCodes }, transactionType: "NHAP_CHE_BIEN", deletedAt: null } },
+      select: { quantity: true, item: { select: { code: true } } },
+    });
+    for (const line of lines) target.set(line.item.code, (target.get(line.item.code) || 0) + line.quantity);
+  };
   let cleanedBalances = 0;
   let remainingBalances = 0;
   try {
@@ -162,6 +210,7 @@ try {
       for (const item of kitchenItems) {
         await tx.inventoryItem.update({ where: { id: item.id }, data: { category: kitchenGroup } });
       }
+      await sumProduced(tx, runs.map((run) => run.runCode), producedBefore);
       const reruns = await rerunExplosions(tx, runs, actor, {
         overrideSettings: (run, original) => {
           const { kitchen, bar } = settingsByBranch.get(run.branchCode);
@@ -187,6 +236,7 @@ try {
         const remaining = await tx.inventoryBalance.count({ where: { warehouseCode: { in: fromWarehouses } } });
         remainingBalances = remaining;
       }
+      await sumProduced(tx, reruns.map((rerun) => rerun.newRunCode).filter(Boolean), producedAfter);
       for (const rerun of reruns) {
         const docs = rerun.newRunCode
           ? await tx.inventoryTransaction.findMany({ where: { referenceCode: rerun.newRunCode, deletedAt: null }, select: { warehouseCode: true, transactionType: true } })
@@ -220,6 +270,28 @@ try {
   for (const result of results) {
     const perWarehouse = [...result.byWarehouse.entries()].map(([code, count]) => `${code} ${count} phiếu`).join(", ");
     console.log(`  ${result.oldRunCode} -> ${result.newRunCode || "(không còn dòng doanh thu, chỉ gỡ)"} · ${result.documents.length} phiếu · ${perWarehouse}`);
+  }
+  const changed = [...new Set([...producedBefore.keys(), ...producedAfter.keys()])]
+    .map((code) => ({ code, before: producedBefore.get(code) || 0, after: producedAfter.get(code) || 0 }))
+    .filter((row) => Math.abs(row.before - row.after) > 0.0005)
+    .sort((a, b) => Math.abs(b.before - b.after) - Math.abs(a.before - a.after));
+  const qty = (n) => n.toLocaleString("vi-VN", { maximumFractionDigits: 3 });
+  console.log(`\nSố chế biến đổi (cũ → mới), ${changed.length} mã:`);
+  for (const row of changed.slice(0, 40)) console.log(`  ${row.code}: ${qty(row.before)} → ${qty(row.after)}`);
+  if (changed.length > 40) console.log(`  ... còn ${changed.length - 40} mã`);
+  if (apply) {
+    // Như nút Rã: rã lại xong tự ghi sổ lại giá vốn theo kho của các kỳ bị ảnh hưởng.
+    const newCodes = results.map((result) => result.newRunCode).filter(Boolean);
+    const docs = newCodes.length
+      ? await prisma.inventoryTransaction.findMany({ where: { referenceCode: { in: newCodes }, deletedAt: null }, select: { transactionDate: true, branchCode: true } })
+      : [];
+    const cogs = await repostInventoryCogs([
+      ...runs.map((run) => ({ date: run.date, branchCode: run.branchCode })),
+      ...docs.map((doc) => ({ date: doc.transactionDate, branchCode: doc.branchCode })),
+    ], actor);
+    console.log("\nGhi sổ lại giá vốn theo kho:");
+    for (const row of cogs) console.log(`  ${row.period} · ${row.branchCode}: ${row.status}${row.error ? ` — ${row.error}` : ""}`);
+    if (cogs.some((row) => row.status === "NEEDS_SYNC")) console.log("  NEEDS_SYNC: kỳ còn bút toán mua Nợ 632 kiểu cũ — bấm Ghi sổ kỳ một lần trên màn hình.");
   }
   if (fromWarehouses.length > 0) {
     console.log(`  Dọn ${cleanedBalances} dòng số dư rỗng ở ${fromWarehouses.join(", ")}; còn lại ${remainingBalances} dòng (có tồn hoặc còn phiếu không do rã).`);
