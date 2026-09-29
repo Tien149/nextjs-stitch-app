@@ -1,4 +1,4 @@
-import { inventoryCogsActive } from "@/lib/inventory-cogs";
+import { cogsPurchaseAccount, inventoryCogsActive } from "@/lib/inventory-cogs";
 import {
   branchCodeFromInternalPartner,
   INTERNAL_PAYABLE_ACCOUNT,
@@ -10,6 +10,7 @@ import {
   ADVANCE_RECEIVABLE_ACTION,
   BANK_STATEMENT_SPLIT_SOURCE_SCOPE,
   isCollectOnBehalfCategory,
+  normalizeCategoryGroup,
   PARTNER_COLLECTION_ACTION,
   PREPAID_ALLOCATION_ACTION,
 } from "@/lib/voucher-rules";
@@ -232,6 +233,45 @@ export function voucherJournalLines(
       { accountCode: cashAccount, credit: voucher.amount },
     ] as JournalLineInput[],
   };
+}
+
+/**
+ * Nhóm lớn (OPEX / COGS / CAPEX / OTHER_INCOME...) của từng hạng mục P&L, tra theo mã.
+ *
+ * Hạng mục khai trên màn Danh mục thường CHỈ chọn nhóm cha (`subGroup` trỏ tới PNL_GROUP),
+ * còn ô `group` của chính nó để trống — nên đọc nhóm của hạng mục, không có thì nhóm cha.
+ * Phiếu có thể mang thẳng mã NHÓM (nhóm chưa có hạng mục con) nên mã nhóm cũng tra được.
+ * Dùng chung cho Đồng bộ ghi sổ và cho P&L đọc thẳng chứng từ (lib/reports.ts).
+ */
+export function pnlItemGroupLookup(
+  pnlItems: Array<{ code: string; group: string | null; subGroup: string | null }>,
+  pnlGroups: Array<{ code: string; group: string | null }>,
+) {
+  const pnlGroupGroupByCode = new Map(pnlGroups.map((group) => [group.code, group.group]));
+  const byCode = new Map(pnlItems.map((item) => [
+    item.code,
+    normalizeCategoryGroup(item.group || (item.subGroup ? pnlGroupGroupByCode.get(item.subGroup) ?? null : null)),
+  ]));
+  for (const group of pnlGroups) {
+    if (!byCode.has(group.code)) byCode.set(group.code, normalizeCategoryGroup(group.group));
+  }
+  return byCode;
+}
+
+/**
+ * Vế NỢ của công nợ phải trả khai tay (Công nợ Đối tác): nhóm của hạng mục quyết định khoản nợ
+ * là giá vốn, chi phí vận hành hay tiền mua tài sản. Khoản phân bổ theo kỳ treo 242 (lịch
+ * PB-<mã công nợ> rút dần vào chi phí), 242 / 152 không phải dòng P&L nên bỏ hạng mục.
+ */
+export function payableDebtDebitLine(
+  row: { recognizeExpense: boolean; allocationMonths: number | null; documentDate: Date; originalAmount: number; partnerCode: string | null; categoryCode: string | null; pnlItemCode: string | null },
+  debtGroup: string | null,
+): JournalLineInput {
+  const isAllocated = !row.recognizeExpense && (row.allocationMonths || 0) > 1;
+  const debitAccount = isAllocated ? "242" : debtGroup === "CAPEX" ? "211" : debtGroup === "COGS" ? cogsPurchaseAccount(row.documentDate) : "6428";
+  return isAllocated || debitAccount === "152"
+    ? { accountCode: debitAccount, debit: row.originalAmount, partnerCode: row.partnerCode }
+    : { accountCode: debitAccount, debit: row.originalAmount, partnerCode: row.partnerCode, categoryCode: row.categoryCode, pnlItemCode: row.pnlItemCode };
 }
 
 /**

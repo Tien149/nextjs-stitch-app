@@ -332,7 +332,7 @@ export default function PayrollBudgetTab({
                 <MonthRow label="Tổng lương tiêu chuẩn" values={data.standard.total} bold />
               </>
             )}
-            <SectionRow label="LƯƠNG THỰC CHI TRẢ (import bảng lương)" span={14} />
+            <SectionRow label="LƯƠNG THỰC CHI TRẢ (import bảng lương + khoản lương lẻ trên phiếu chi / công nợ)" span={14} />
             {data.actual.byDepartment.length === 0 ? (
               <EmptySectionRow span={14} message={`Chưa import bảng lương tháng nào của năm ${data.year} — nạp file ở menu Import → Bảng lương.`} />
             ) : (

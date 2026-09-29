@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/custom-client";
 import { prisma } from "@/lib/prisma";
-import { CAPEX_REPORT_GROUPS, createPnlDetailTree, DEPRECIATION_PNL_ACCOUNT, depreciationCatalogItemCode, finalizePnl, loadDepreciationPnlRows, loadPayrollPnlRows, NON_CAPEX_SOURCE_TYPES, PAYROLL_IMPORT_SOURCE_TYPES, PAYROLL_PNL_ACCOUNT, withDepreciationPnlItem, withPayrollPnlItem, pnlLineAmount, PNL_ITEM_REQUIRED_LINES, PNL_STATEMENT_LINES, PNL_UNGROUPED_CODE, revenueChannelItemsOf, seedRevenueChannels, type PnlBucket, type PnlCatalog, type PnlLineKey, type PnlSeriesGroup, type PnlSeriesItem } from "@/lib/reports";
+import { CAPEX_REPORT_GROUPS, createPnlDetailTree, DEPRECIATION_PNL_ACCOUNT, depreciationCatalogItemCode, DIRECT_PAYROLL_SOURCE_TYPES, finalizePnl, loadDepreciationPnlRows, loadDirectPayrollExpenseRows, loadPayrollPnlRows, NON_CAPEX_SOURCE_TYPES, pnlLineKeyOf, PAYROLL_IMPORT_SOURCE_TYPES, PAYROLL_PNL_ACCOUNT, withDepreciationPnlItem, withPayrollPnlItem, pnlLineAmount, PNL_ITEM_REQUIRED_LINES, PNL_STATEMENT_LINES, PNL_UNGROUPED_CODE, revenueChannelItemsOf, seedRevenueChannels, type PnlBucket, type PnlCatalog, type PnlLineKey, type PnlSeriesGroup, type PnlSeriesItem } from "@/lib/reports";
 import { createDepartmentResolver } from "@/lib/department-resolve";
 import { departmentNameMap } from "@/lib/revenue-department";
 import { isRevenueComponentCategory, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
@@ -54,6 +54,8 @@ type MatrixLineRow = {
   pnlItemCode: string | null;
   categoryCode: string | null;
   departmentCode: string | null;
+  /** Bút toán phiếu chi / công nợ phải trả — phần lương của nó P&L đọc thẳng chứng từ (DIRECT_PAYROLL_SOURCE_TYPES). */
+  directPayrollSource?: boolean;
   debit: number;
   credit: number;
 };
@@ -68,6 +70,7 @@ async function loadYearJournalLines(firstPeriod: string, lastPeriod: string, bra
            l."pnlItemCode"    AS "pnlItemCode",
            l."categoryCode"   AS "categoryCode",
            l."departmentCode" AS "departmentCode",
+           (e."sourceType" IN (${Prisma.join(DIRECT_PAYROLL_SOURCE_TYPES)})) AS "directPayrollSource",
            SUM(l."debit")::float8  AS debit,
            SUM(l."credit")::float8 AS credit
     FROM "JournalLine" l
@@ -86,7 +89,7 @@ async function loadYearJournalLines(firstPeriod: string, lastPeriod: string, bra
       -- Lương import đọc thẳng từ bảng lương (loadPayrollPnlRows), bỏ bút toán 6421 máy sinh.
       AND e."sourceType" NOT IN (${Prisma.join(PAYROLL_IMPORT_SOURCE_TYPES)})
       ${branchCode === "ALL" ? Prisma.empty : Prisma.sql`AND e."branchCode" = ${branchCode}`}
-    GROUP BY 1, 2, 3, 4, 5, 6, 7
+    GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
   `);
 }
 
@@ -95,7 +98,7 @@ export async function getPnlMatrix(year: string, branchCode: string) {
   const yearStart = new Date(`${year}-01-01T00:00:00`);
   const yearEnd = new Date(`${Number(year) + 1}-01-01T00:00:00`);
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
-  const [journalRows, catalogPnlItems, pnlGroups, categories, revenueGroups, departments, revenueRows, payrollRows, payrollDeptRows, targets, payableDebts, depreciationRows, payrollPnlRows] = await Promise.all([
+  const [journalRows, catalogPnlItems, pnlGroups, categories, revenueGroups, departments, revenueRows, payrollRows, payrollDeptRows, targets, payableDebts, depreciationRows, payrollPnlRows, directPayrollRows] = await Promise.all([
     loadYearJournalLines(months[0], months[11], branchCode),
     prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true, group: true, subGroup: true, status: true } }),
     prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true, group: true, status: true } }),
@@ -150,6 +153,8 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     loadDepreciationPnlRows(months[0], months[11], branchCode),
     // Lương đọc thẳng import bảng lương, không đợi bút toán 6421 (xem loadPayrollPnlRows).
     loadPayrollPnlRows(months[0], months[11], branchCode),
+    // Khoản lương lẻ trên phiếu chi / chứng từ ngân hàng / công nợ đọc thẳng, không đợi ghi sổ.
+    loadDirectPayrollExpenseRows(months[0], months[11], branchCode),
   ]);
   const postedDebtIds = new Set(
     payableDebts.length === 0 ? [] : (await prisma.journalEntry.findMany({
@@ -179,8 +184,10 @@ export async function getPnlMatrix(year: string, branchCode: string) {
   const catalog: PnlCatalog = { pnlItems, pnlGroups, categories: treeCategories, departments };
   const tree = createPnlDetailTree(catalog, 12);
   // Bút toán khấu hao 6424 được thay bằng số của màn Khấu hao — giữ cả hai là cộng hai lần.
+  // Phần lương của bút toán phiếu chi / công nợ cũng vậy: đã đọc thẳng chứng từ (directPayrollRows).
   const rows: MatrixLineRow[] = [
-    ...journalRows.filter((row) => row.reportGroup !== DEPRECIATION_PNL_ACCOUNT.reportGroup),
+    ...journalRows.filter((row) => row.reportGroup !== DEPRECIATION_PNL_ACCOUNT.reportGroup
+      && !(row.directPayrollSource && pnlLineKeyOf(row, tree.pnlItemRefOf(row.pnlItemCode)) === "payroll")),
     ...depreciationRows.map((row) => ({
       period: row.period,
       branchCode: row.branchCode,
@@ -200,6 +207,17 @@ export async function getPnlMatrix(year: string, branchCode: string) {
       departmentCode: row.departmentCode,
       debit: row.amount,
       credit: 0,
+    })),
+    ...directPayrollRows.map((row) => ({
+      period: row.period,
+      branchCode: row.branchCode,
+      accountType: row.accountType,
+      reportGroup: row.reportGroup,
+      pnlItemCode: row.pnlItemCode,
+      categoryCode: row.categoryCode,
+      departmentCode: row.departmentCode,
+      debit: row.debit,
+      credit: row.credit,
     })),
   ];
   // Kênh bán (Tại chỗ / Mang về / Grab) hiện đủ dưới từng nhóm doanh thu, kể cả khi chưa có tiền.

@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { addPeriod, businessError, isPeriodLocked, periodFromDate } from "@/lib/phase3";
 import type { DemoSession } from "@/lib/auth-demo";
-import { advanceReceivableCounterpartJournal, cashAccountFor, voucherJournalLines } from "@/lib/voucher-accounting";
+import { advanceReceivableCounterpartJournal, cashAccountFor, payableDebtDebitLine, pnlItemGroupLookup, voucherJournalLines } from "@/lib/voucher-accounting";
 import { normalizeCategoryGroup } from "@/lib/voucher-rules";
 import { moneySourceAccountCode } from "@/lib/money-sources";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
@@ -591,23 +591,11 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
     voucherCategories.filter((item) => (item.group || "").toUpperCase() === "REVENUE_SOURCE").map((item) => item.code),
   );
   /**
-   * Nhóm lớn (OPEX / COGS / OTHER_INCOME...) của một hạng mục P&L.
-   *
-   * Hạng mục khai trên màn Danh mục thường CHỈ chọn nhóm cha (`subGroup` trỏ tới PNL_GROUP),
-   * còn ô `group` của chính nó để trống. Đọc mỗi `item.group` như trước thì hạng mục "Thu nhập
-   * khác" nằm trong nhóm Thu nhập khác vẫn ra null, phiếu rơi về 511/131 và khối "7. Thu nhập
-   * khác" của P&L mãi bằng 0 dù kế toán đã chọn đúng hạng mục (khách báo 20/09/2026).
+   * Nhóm lớn (OPEX / COGS / OTHER_INCOME...) của một hạng mục P&L — đọc cả nhóm cha, vì hạng mục
+   * thường chỉ chọn nhóm cha: đọc mỗi `item.group` thì hạng mục "Thu nhập khác" ra null, phiếu
+   * rơi về 511/131 (khách báo 20/09/2026). Phiếu thu mang thẳng mã NHÓM cũng tra được.
    */
-  const pnlGroupGroupByCode = new Map(pnlGroups.map((group) => [group.code, group.group]));
-  const pnlItemGroupByCode = new Map(pnlItems.map((item) => [
-    item.code,
-    normalizeCategoryGroup(item.group || (item.subGroup ? pnlGroupGroupByCode.get(item.subGroup) ?? null : null)),
-  ]));
-  // Phiếu thu có thể mang thẳng mã NHÓM Thu nhập khác (nhóm chưa có hạng mục con) — tra được
-  // nhóm lớn thì mới ghi Có 711 đúng dòng, không thì rơi về 511/131.
-  for (const group of pnlGroups) {
-    if (!pnlItemGroupByCode.has(group.code)) pnlItemGroupByCode.set(group.code, normalizeCategoryGroup(group.group));
-  }
+  const pnlItemGroupByCode = pnlItemGroupLookup(pnlItems, pnlGroups);
   for (const row of vouchers) {
     // Sao kê khớp doanh thu POS chỉ xác nhận dòng tiền; doanh thu và bút toán đối ứng
     // đã được ghi từ RevenueImportRow nên không được tạo thêm bút toán voucher.
@@ -717,8 +705,6 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
     // Cùng luật với phiếu chi: nhóm của hạng mục quyết định khoản nợ này là giá vốn, chi phí
     // vận hành hay tiền mua tài sản (không vào P&L). Khoản phân bổ theo kỳ treo 242, lịch
     // PB-<mã công nợ> rút dần vào chi phí từng kỳ.
-    const isAllocated = !row.recognizeExpense && (row.allocationMonths || 0) > 1;
-    const debitAccount = isAllocated ? "242" : debtGroup === "CAPEX" ? "211" : debtGroup === "COGS" ? cogsPurchaseAccount(row.documentDate) : "6428";
     results.push(await postJournalEntry({
       entryDate: row.documentDate,
       branchCode: row.branchCode,
@@ -728,10 +714,7 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
       description: row.description,
       createdBy: actor,
       lines: [
-        // 242 không phải chi phí: bỏ hạng mục P&L để dòng treo không bị gom nhầm lên báo cáo.
-        isAllocated || debitAccount === "152"
-          ? { accountCode: debitAccount, debit: row.originalAmount, partnerCode: row.partnerCode }
-          : { accountCode: debitAccount, debit: row.originalAmount, partnerCode: row.partnerCode, categoryCode: row.categoryCode, pnlItemCode: row.pnlItemCode },
+        payableDebtDebitLine(row, debtGroup),
         { accountCode: "331", credit: row.originalAmount, partnerCode: row.partnerCode },
       ],
     }));

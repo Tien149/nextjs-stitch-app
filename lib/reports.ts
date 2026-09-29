@@ -1,12 +1,13 @@
 import { Prisma } from "@prisma/custom-client";
 import { prisma } from "@/lib/prisma";
 import { CASH_SOURCE_OPENING_TYPES, OPENING_BALANCE_EFFECTIVE_STATUSES } from "@/lib/opening-balance-rules";
-import { addPeriod } from "@/lib/phase3";
+import { addPeriod, periodFromDate } from "@/lib/phase3";
 import { periodBounds } from "@/lib/accounting";
+import { payableDebtDebitLine, pnlItemGroupLookup, voucherJournalLines, type JournalLineInput } from "@/lib/voucher-accounting";
 import { depositDecreaseActions, depositIncreaseActions, depositRevenueActions } from "@/lib/deposit-accounting";
 import { depositCategoryDirection } from "@/lib/bank-statement-category";
 import { isGrabMoneySource, moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
-import { isSalesReceiptCategory, normalizeCashflowCategoryType, SALES_RECEIPT_CATEGORY_CODES } from "@/lib/voucher-rules";
+import { isSalesReceiptCategory, normalizeCashflowCategoryType, normalizeCategoryGroup, SALES_RECEIPT_CATEGORY_CODES } from "@/lib/voucher-rules";
 import { CASH_MOVING_ADJUSTMENT_FILTER } from "@/lib/revenue-settlement-writeoff";
 import { MANUAL_VOUCHER_MATCH_DAY_GAP } from "@/lib/bank-statement-voucher-match";
 import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/lib/money-transfer-date";
@@ -438,6 +439,84 @@ export async function loadPayrollPnlRows(firstPeriod: string, lastPeriod: string
 }
 
 /**
+ * Nguồn bút toán của các khoản lương LẺ mà P&L đọc thẳng từ chứng từ gốc
+ * (loadDirectPayrollExpenseRows): phiếu chi tiền mặt / chứng từ ngân hàng và công nợ phải trả.
+ * P&L bỏ phần lương của các bút toán này khi đọc sổ, không là cộng hai lần.
+ */
+export const DIRECT_PAYROLL_SOURCE_TYPES = ["VOUCHER", "DEBT_PAYABLE"];
+
+/**
+ * Khoản lương lẻ ĐỌC THẲNG từ chứng từ, không đợi "Đồng bộ ghi sổ" (khách chốt 29/09/2026 — cùng
+ * cách lương import bảng lương, doanh thu và khấu hao): phiếu chi đã duyệt (tiền mặt + chứng từ
+ * ngân hàng) và công nợ phải trả khai "phát sinh trong kỳ" có Hạng mục P&L thuộc nhóm lương /
+ * nhân sự. Nhập xong là lên dòng Chi phí nhân sự ngay, trước đây phải bấm ghi sổ lại mới thấy.
+ *
+ * Định khoản đi qua ĐÚNG hàm lúc ghi sổ (voucherJournalLines / payableDebtDebitLine) nên chỉ
+ * những dòng mà ghi sổ sẽ ghi Nợ chi phí lương mới được lấy: trả nợ (331), chi hộ (131/1368),
+ * chi trả trước (242) không phải chi phí kỳ này và tự rơi ra.
+ */
+export async function loadDirectPayrollExpenseRows(firstPeriod: string, lastPeriod: string, branchCode: string) {
+  const start = periodBounds(firstPeriod).start;
+  const end = periodBounds(lastPeriod).end;
+  const branchFilter = branchCode === "ALL" ? {} : { branchCode };
+  const [vouchers, payables, categories, pnlItems, pnlGroups, accounts, branches] = await Promise.all([
+    prisma.financialVoucher.findMany({ where: { ...branchFilter, voucherType: "PAYMENT", status: "APPROVED", voucherDate: { gte: start, lt: end } } }),
+    // Cùng điều kiện với ghi sổ công nợ phải trả; khoản phân bổ theo kỳ treo 242 và tự rơi ra.
+    prisma.debtRecord.findMany({ where: { ...branchFilter, debtType: "PAYABLE", recognizeExpense: true, documentDate: { gte: start, lt: end } } }),
+    prisma.masterDataItem.findMany({ where: { type: "REVENUE_EXPENSE_CATEGORY" }, select: { code: true, group: true } }),
+    prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true, group: true, subGroup: true } }),
+    prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true, group: true } }),
+    prisma.accountingAccount.findMany({ select: { code: true, accountType: true, reportGroup: true } }),
+    prisma.masterDataItem.findMany({ where: { type: "BRANCH" }, select: { code: true } }),
+  ]);
+  const categoryGroupByCode = new Map(categories.map((item) => [item.code, normalizeCategoryGroup(item.group)]));
+  const pnlItemGroupByCode = pnlItemGroupLookup(pnlItems, pnlGroups);
+  const pnlItemRefOf = createPnlItemRefLookup(pnlItems, pnlGroups);
+  const accountByCode = new Map(accounts.map((account) => [account.code, account]));
+  const knownBranchCodes = branches.map((row) => row.code);
+
+  const rows: Array<{ period: string; branchCode: string; accountType: string; reportGroup: string; pnlItemCode: string | null; categoryCode: string | null; departmentCode: string | null; debit: number; credit: number; sourceType: string; sourceCode: string }> = [];
+  const pushPayrollLine = (source: { sourceType: string; sourceCode: string; date: Date; branchCode: string }, line: JournalLineInput) => {
+    const account = accountByCode.get(line.accountCode);
+    const debit = line.debit || 0;
+    if (!account || debit <= 0) return;
+    const pnlItemCode = line.pnlItemCode || null;
+    if (pnlLineKeyOf(account, pnlItemRefOf(pnlItemCode)) !== "payroll") return;
+    rows.push({
+      period: periodFromDate(source.date),
+      branchCode: source.branchCode,
+      accountType: account.accountType,
+      reportGroup: account.reportGroup,
+      pnlItemCode,
+      categoryCode: line.categoryCode || null,
+      departmentCode: null,
+      debit,
+      credit: 0,
+      sourceType: source.sourceType,
+      sourceCode: source.sourceCode,
+    });
+  };
+  for (const voucher of vouchers) {
+    // Sao kê khớp doanh thu POS chỉ xác nhận dòng tiền — ghi sổ cũng bỏ qua loại này.
+    if (voucher.businessEffect === "SETTLEMENT") continue;
+    const { lines } = voucherJournalLines(
+      voucher,
+      voucher.categoryCode ? categoryGroupByCode.get(voucher.categoryCode) ?? null : null,
+      voucher.pnlItemCode ? pnlItemGroupByCode.get(voucher.pnlItemCode) ?? null : null,
+      knownBranchCodes,
+    );
+    for (const line of lines) pushPayrollLine({ sourceType: "VOUCHER", sourceCode: voucher.code, date: voucher.voucherDate, branchCode: voucher.branchCode }, line);
+  }
+  for (const debt of payables) {
+    const debtGroup = debt.pnlItemCode
+      ? pnlItemGroupByCode.get(debt.pnlItemCode) ?? null
+      : (debt.categoryCode ? categoryGroupByCode.get(debt.categoryCode) ?? null : null);
+    pushPayrollLine({ sourceType: "DEBT_PAYABLE", sourceCode: debt.code, date: debt.documentDate, branchCode: debt.branchCode }, payableDebtDebitLine(debt, debtGroup));
+  }
+  return rows;
+}
+
+/**
  * Hạng mục P&L mà một khoản mục thu "luôn là thu nhập khác" quy về (lãi ngân hàng -> "Doanh thu
  * tài chính"). Tra theo tên trong danh mục, cùng cách đã dùng cho khấu hao/lương: bút toán 711
  * sinh từ phiếu không gắn hạng mục nên phải suy ngược ra.
@@ -702,6 +781,8 @@ function withRevenuePnlGroups(categories: Array<{ code: string; name: string }>,
 type PeriodJournalLineRow = {
   branchCode: string;
   nonCapexSource: boolean;
+  /** Bút toán phiếu chi / công nợ phải trả — phần lương của nó P&L đọc thẳng chứng từ (DIRECT_PAYROLL_SOURCE_TYPES). */
+  directPayrollSource: boolean;
   /** null khi bút toán không có dòng nào — vẫn trả về để cửa hàng đó có mặt trên bảng. */
   accountType: string | null;
   reportGroup: string | null;
@@ -728,6 +809,7 @@ async function loadPeriodJournalLines(start: Date, end: Date, branchCode: string
            l."pnlItemCode"     AS "pnlItemCode",
            l."categoryCode"    AS "categoryCode",
            l."departmentCode"  AS "departmentCode",
+           (e."sourceType" IN (${Prisma.join(DIRECT_PAYROLL_SOURCE_TYPES)})) AS "directPayrollSource",
            COALESCE(SUM(l."debit"), 0)::float8  AS debit,
            COALESCE(SUM(l."credit"), 0)::float8 AS credit
     FROM "JournalEntry" e
@@ -739,13 +821,13 @@ async function loadPeriodJournalLines(start: Date, end: Date, branchCode: string
       -- Lương import đọc thẳng từ bảng lương (loadPayrollPnlRows), bỏ bút toán 6421 máy sinh.
       AND e."sourceType" NOT IN (${Prisma.join(PAYROLL_IMPORT_SOURCE_TYPES)})
       ${branchCode === "ALL" ? Prisma.empty : Prisma.sql`AND e."branchCode" = ${branchCode}`}
-    GROUP BY 1, 2, 3, 4, 5, 6, 7
+    GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
   `);
 }
 
 export async function getPnl(period: string, branchCode: string) {
   const { start, end } = periodBounds(period);
-  const [entries, revenueRows, revenueGroups, catalogPnlItems, pnlGroups, categories, depreciationRows, payrollRows, payrollDepartments] = await Promise.all([
+  const [entries, revenueRows, revenueGroups, catalogPnlItems, pnlGroups, categories, depreciationRows, payrollRows, payrollDepartments, directPayrollRows] = await Promise.all([
     loadPeriodJournalLines(start, end, branchCode),
     // Dòng Doanh thu lấy thẳng từ file import doanh thu, không lấy từ sổ cái — xem chú thích
     // ở vòng lặp bên dưới. Cùng luật với bảng 12 tháng (getPnlMatrix).
@@ -774,6 +856,8 @@ export async function getPnl(period: string, branchCode: string) {
     loadDepreciationPnlRows(period, period, branchCode),
     loadPayrollPnlRows(period, period, branchCode),
     loadPayrollDepartmentLinks(),
+    // Khoản lương lẻ trên phiếu chi / chứng từ ngân hàng / công nợ đọc thẳng, không đợi ghi sổ.
+    loadDirectPayrollExpenseRows(period, period, branchCode),
   ]);
   const pnlItems = withPayrollPnlItem(withDepreciationPnlItem(catalogPnlItems, pnlGroups), pnlGroups);
   const pnlItemByCode = new Map(pnlItems.map((item) => [item.code, item]));
@@ -834,9 +918,12 @@ export async function getPnl(period: string, branchCode: string) {
       // (mọi khoản mục nhóm "Thu" đều quy về REVENUE_SOURCE) nên doanh thu bị thổi lên, và kỳ
       // chưa "Đồng bộ ghi sổ" thì lại bằng 0. Dòng Doanh thu dựng từ file import ở khối dưới.
       // Khấu hao đọc thẳng từ màn Khấu hao ngay dưới đây (loadDepreciationPnlRows).
+      // Phần lương của bút toán phiếu chi / công nợ đọc thẳng chứng từ ngay dưới đây
+      // (loadDirectPayrollExpenseRows) — giữ cả hai là cộng hai lần khi kỳ đã ghi sổ.
       const skipped = (line.account.accountType === "ASSET" && row.nonCapexSource)
         || line.account.accountType === "REVENUE"
-        || line.account.reportGroup === "DEPRECIATION";
+        || line.account.reportGroup === "DEPRECIATION"
+        || (row.directPayrollSource && pnlLineKeyOf(line.account, tree.pnlItemRefOf(line.pnlItemCode)) === "payroll");
       if (!skipped) addExpenseLine(row.branchCode, line);
     }
     if (!branches.has(row.branchCode)) branches.set(row.branchCode, emptyPnl());
@@ -859,6 +946,16 @@ export async function getPnl(period: string, branchCode: string) {
       departmentCode: row.departmentCode,
       debit: row.amount,
       credit: 0,
+    });
+  }
+  for (const row of directPayrollRows) {
+    addExpenseLine(row.branchCode, {
+      account: { accountType: row.accountType, reportGroup: row.reportGroup },
+      pnlItemCode: row.pnlItemCode,
+      categoryCode: row.categoryCode,
+      departmentCode: row.departmentCode,
+      debit: row.debit,
+      credit: row.credit,
     });
   }
 
