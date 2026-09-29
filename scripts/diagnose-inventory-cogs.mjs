@@ -134,6 +134,9 @@ for (const branchCode of branches) {
   const zeroDocs = [];
   const zeroItems = new Set();
   const unknownWarehouses = new Set();
+  // Tách theo bộ phận của kho bị trừ — đúng luật postInventoryCogs — để thấy ngay vì sao một
+  // dòng COGS Bếp / COGS Bar không lên (không có phiếu, phiếu giá 0, hay kiểm kê thừa làm âm).
+  const byDepartment = new Map();
   let stockTotal = 0;
   for (const doc of documents) {
     const total = doc.lines.reduce((sum, row) => sum + (row.totalCost || 0), 0);
@@ -148,6 +151,16 @@ for (const branchCode of branches) {
     const warehouse = warehouseByCode.get(doc.warehouseCode);
     const dept = departmentFromWarehouseGroup(warehouse?.group);
     if (dept !== "KIT" && dept !== "BAR") unknownWarehouses.add(`${doc.warehouseCode} (nhóm kho: ${warehouse?.group || "trống"})`);
+    const deptKey = dept === "KIT" ? "Bếp" : dept === "BAR" ? "Bar" : "Kho chung";
+    const deptBucket = byDepartment.get(deptKey) || { net: 0, zero: 0, types: new Map(), warehouses: new Set() };
+    deptBucket.net += signed;
+    if (!(total > 0)) deptBucket.zero += 1;
+    deptBucket.warehouses.add(doc.warehouseCode);
+    const typeBucket = deptBucket.types.get(doc.transactionType) || { count: 0, amount: 0 };
+    typeBucket.count += 1;
+    typeBucket.amount += total;
+    deptBucket.types.set(doc.transactionType, typeBucket);
+    byDepartment.set(deptKey, deptBucket);
   }
   if (documents.length === 0) {
     warn("KHÔNG có phiếu kho nào tính giá vốn trong kỳ.");
@@ -155,6 +168,19 @@ for (const branchCode of branches) {
   }
   for (const [type, value] of byType) line(`  ${type}: ${value.count} phiếu · ${money(value.amount)} đ`);
   if (documents.length) line(`  → Giá vốn theo kho dự kiến (kiểm kê thừa đã trừ): ${money(stockTotal)} đ`);
+  if (documents.length) {
+    line("  Theo bộ phận của kho bị trừ:");
+    for (const deptKey of ["Bếp", "Bar", "Kho chung"]) {
+      const bucket = byDepartment.get(deptKey);
+      if (!bucket) {
+        if (deptKey !== "Kho chung") warn(`${deptKey}: KHÔNG có phiếu nào tính giá vốn → dòng COGS ${deptKey} sẽ trống.`);
+        continue;
+      }
+      const types = [...bucket.types].map(([type, value]) => `${type} ${value.count} phiếu ${money(value.amount)} đ`).join(" · ");
+      line(`    ${deptKey} (kho ${[...bucket.warehouses].join(", ")}): ${money(bucket.net)} đ — ${types}${bucket.zero ? ` · ${bucket.zero} phiếu giá 0` : ""}`);
+      if (!(bucket.net > 0.5)) warn(`${deptKey}: giá vốn ròng ${money(bucket.net)} đ (kiểm kê thừa ≥ xuất, hoặc phiếu xuất giá 0) → donut Cơ cấu giá vốn không vẽ được lát này.`);
+    }
+  }
   if (zeroDocs.length) {
     warn(`${zeroDocs.length} phiếu tổng giá trị 0 đ (không sinh bút toán): ${zeroDocs.slice(0, 10).join(", ")}${zeroDocs.length > 10 ? "..." : ""}`);
     verdicts.push("Phiếu xuất giá 0: khai tồn đầu kỳ / nhập mua có giá cho nguyên liệu, rồi rã lại ngày đó.");

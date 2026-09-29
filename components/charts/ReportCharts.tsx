@@ -261,14 +261,23 @@ export function HorizontalBarChart({ rows, height = 260 }: { rows: Array<{ name:
 /** Donut gọn kèm chú giải bên phải (top N + "Khác") — cụm 3 donut cơ cấu của Dashboard P&L. */
 export function DonutLegendChart({ data, height = 200, top = 5, colors = CHART_COLORS }: { data: Array<{ name: string; value: number }>; height?: number; top?: number; colors?: string[] }) {
   const alive = data.filter((item) => item.value > 0.5).sort((a, b) => b.value - a.value);
+  // Lát âm (VD COGS Bếp âm vì kiểm kê thừa lớn hơn xuất) không vẽ được trên donut: nói ra thay vì
+  // lặng lẽ bỏ đi, không thì lát còn lại hiện 100% và người xem tưởng thiếu hạng mục.
+  const negative = data.filter((item) => item.value < -0.5);
+  const negativeNote = negative.length > 0 && (
+    <p className="mt-2 text-[11px] text-amber-600">
+      Không vẽ phần âm: {negative.map((item) => `${item.name} ${Math.round(item.value).toLocaleString("vi-VN")} đ`).join(" · ")}
+    </p>
+  );
   const shown = alive.slice(0, top);
   const rest = alive.slice(top).reduce((sum, item) => sum + item.value, 0);
   if (rest > 0.5) shown.push({ name: "Khác", value: rest });
   const total = shown.reduce((sum, item) => sum + item.value, 0);
   if (shown.length === 0 || total <= 0) {
-    return <p className="py-8 text-center text-sm text-slate-400">Chưa có dữ liệu để vẽ tỷ trọng.</p>;
+    return <><p className="py-8 text-center text-sm text-slate-400">Chưa có dữ liệu để vẽ tỷ trọng.</p>{negativeNote}</>;
   }
   return (
+    <>
     <div className="flex items-center gap-3">
       <div className="w-1/2 min-w-0" style={{ height }}>
         <ResponsiveContainer width="100%" height="100%">
@@ -292,5 +301,7 @@ export function DonutLegendChart({ data, height = 200, top = 5, colors = CHART_C
         ))}
       </ul>
     </div>
+    {negativeNote}
+    </>
   );
 }
