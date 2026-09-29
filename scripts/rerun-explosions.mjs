@@ -66,6 +66,8 @@ if (month && !/^\d{4}-\d{2}$/.test(month)) {
   process.exit(1);
 }
 const day = (date) => new Date(date).toISOString().slice(0, 10);
+/** Đầu tháng --month theo giờ Việt Nam; null khi không chạy theo tháng. */
+const monthStart = month ? new Date(`${month}-01T00:00:00+07:00`) : null;
 const ROLLBACK = new Error("DRY_RUN_ROLLBACK");
 
 try {
@@ -239,9 +241,12 @@ try {
         console.log(`\nĐiều chuyển chưa xét rã: ${unset.length} phiếu, ${queued} phiếu có bán thành phẩm có định lượng → vào hàng chờ rã.`);
       }
       const reruns = await rerunExplosions(tx, runs, actor, {
+        // Mỗi điều chuyển về lần rã SỚM NHẤT của cùng cửa hàng có ngày >= ngày phiếu (rã lại chạy
+        // theo thứ tự thời gian nên lần sớm nhận trước). Chạy theo tháng thì lấy từ đầu tháng: nhật
+        // ký lần rã cũ nhiều khi chỉ ghi ngày cuối nên khoảng ngày của nó không phủ cả tháng.
         extraSources: includePendingTransfers ? async (run, settings) => {
-          const from = new Date(settings.dateFrom);
-          from.setHours(0, 0, 0, 0);
+          const from = monthStart ? new Date(monthStart) : new Date(settings.dateFrom);
+          if (!monthStart) from.setHours(0, 0, 0, 0);
           const to = new Date(run.date);
           to.setHours(23, 59, 59, 999);
           const pending = await tx.inventoryTransaction.findMany({
