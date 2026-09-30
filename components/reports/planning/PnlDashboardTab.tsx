@@ -123,7 +123,7 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
     plan: total.plan - groups.reduce((sum, group) => sum + group.plan, 0),
     actual: total.actual - groups.reduce((sum, group) => sum + group.actual, 0),
   });
-  const branchRows = data.byBranch.map((branch, index) => {
+  const allBranchRows = data.byBranch.map((branch, index) => {
     const otherOpex = { plan: bucketSum(branch.plan, "otherOpex", picked), actual: bucketSum(branch.actual, "otherOpex", picked) };
     const opex = opexGroups.map((group) => {
       const split = branch.opexGroups?.find((row) => row.code === group.code);
@@ -141,6 +141,14 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
       netProfit: { plan: bucketSum(branch.plan, "netProfit", picked), actual: bucketSum(branch.actual, "netProfit", picked) },
     };
   });
+  /**
+   * Mã cửa hàng không có doanh thu cả thực tế lẫn kế hoạch (vd. cửa hàng mẫu HCM/HN bị chọn nhầm
+   * trên phiếu) không lên thành dòng — khách bỏ 30/09/2026. Tổng cộng vẫn là số toàn công ty
+   * nên chi phí của các mã này ghi chú dưới bảng, không mất khỏi tổng.
+   */
+  const hasRevenue = (row: (typeof allBranchRows)[number]) => Math.abs(row.revenue.actual) > 0.5 || Math.abs(row.revenue.plan) > 0.5;
+  const branchRows = allBranchRows.filter(hasRevenue);
+  const hiddenBranches = allBranchRows.filter((row) => !hasRevenue(row) && Math.abs(row.netProfit.actual) > 0.5);
   const totalOpex = opexGroups.map((group) => ({ plan: nodeValue(group, picked, "plan"), actual: nodeValue(group, picked, "actual") }));
   const totalRow = {
     revenue: { plan: plan("revenue"), actual: actual("revenue") },
@@ -315,6 +323,11 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
             )}
           </tbody>
         </table>
+        {hiddenBranches.length > 0 && (
+          <p className="px-4 py-2 text-[11px] text-slate-500 border-t border-slate-100">
+            Tổng cộng gồm cả {hiddenBranches.map((row) => `${storeLabel(row.code)} (lợi nhuận ${fmtMoney(row.netProfit.actual)})`).join(", ")} — mã cửa hàng không có doanh thu nên không hiện dòng.
+          </p>
+        )}
       </Card>
 
       {/* Bộ chart theo file của chị Bình (feedback 26/08/2026) — giữ nguyên, chuyển từ bảng 12 tháng sang đây. */}
