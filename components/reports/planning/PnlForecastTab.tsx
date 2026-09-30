@@ -25,12 +25,16 @@ const LINE_STYLE: Record<string, LineStyle> = {
   capex: { tone: "orange", icon: "domain_add", title: "CHI PHÍ ĐẦU TƯ BAN ĐẦU (CAPEX)", band: "bg-orange-50 text-orange-700", total: "bg-orange-100 text-orange-900" },
   otherOpex: { tone: "blue", icon: "receipt_long", title: "CHI PHÍ HOẠT ĐỘNG (OPEX)", band: "bg-blue-50 text-blue-700", total: "bg-blue-100 text-blue-900" },
   ebitda: { tone: "violet", icon: "functions", title: "EBITDA", band: "", total: "bg-violet-200/60 text-violet-900" },
-  // Khấu hao đã nằm trong OPEX — dòng này chỉ trừ ra lại sau EBITDA (chốt 28/09/2026).
-  depreciation: { tone: "slate", icon: "trending_down", title: "KHẤU HAO", band: "", total: "bg-slate-100 text-slate-700" },
   otherIncome: { tone: "teal", icon: "savings", title: "THU NHẬP KHÁC", band: "bg-teal-50 text-teal-700", total: "bg-teal-100 text-teal-900" },
   otherExpense: { tone: "rose", icon: "money_off", title: "CHI PHÍ KHÁC", band: "bg-rose-50 text-rose-700", total: "bg-rose-100 text-rose-900" },
   netProfit: { tone: "indigo", icon: "workspace_premium", title: "LỢI NHUẬN VẬN HÀNH", band: "", total: "bg-indigo-200/60 text-indigo-900" },
 };
+/**
+ * Dòng KHẤU HAO sau EBITDA bỏ khỏi bảng hoạch định (khách yêu cầu 30/09/2026). Khấu hao vẫn là
+ * hạng mục trong Chi phí cố định và LN vận hành không trừ lại dòng này, nên bỏ không lệch số.
+ * KQKD và Dashboard vẫn giữ dòng 8. Khấu hao.
+ */
+const HIDDEN_LINES = new Set(["depreciation"]);
 const INCOME_LINES = new Set(["revenue", "otherIncome", "grossProfit", "ebitda", "netProfit"]);
 const RATIO_AFTER: Record<string, string> = { grossProfit: "Tỷ suất LN gộp", ebitda: "Tỷ suất EBITDA", netProfit: "Tỷ suất LN vận hành" };
 
@@ -83,6 +87,7 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
    * phát sinh đồng thực tế nào — đã bỏ công đặt kế hoạch thì phải theo dõi được % hoàn thành.
    */
   const [hideEmpty, setHideEmpty] = useState(true);
+  const statementLines = useMemo(() => data.statement.filter((line) => !HIDDEN_LINES.has(line.key)), [data.statement]);
   /**
    * Dòng "CPCĐ - CP Khấu Hao" (số lấy từ màn Khấu hao) luôn hiện, kể cả bằng 0 — khách yêu cầu
    * 24/09/2026: cửa hàng chưa chạy khấu hao thì dòng bị "Ẩn dòng bằng 0" giấu, tưởng thiếu dòng.
@@ -135,7 +140,7 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
         rate === null ? "" : Number((rate * 100).toFixed(1)),
       ]);
     };
-    for (const line of data.statement) {
+    for (const line of statementLines) {
       push("", line.label, line);
       // Khối doanh thu xuất đúng cái đang thấy trên màn: hai cách nhìn phẳng, không phải cây cũ.
       if (line.key === "revenue") {
@@ -387,7 +392,7 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
                 <th className="px-3 py-3 font-bold text-right min-w-[140px] border-b border-l border-slate-200 whitespace-nowrap">Cả năm</th>
               </tr>
             </thead>
-            <tbody>{data.statement.map(renderLine)}</tbody>
+            <tbody>{statementLines.map(renderLine)}</tbody>
           </table>
         </div>
         <div className="px-4 py-2.5 border-t border-slate-200 flex flex-wrap items-center gap-4 text-[11px] text-slate-500">
