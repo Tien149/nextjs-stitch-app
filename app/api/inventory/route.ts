@@ -15,6 +15,7 @@ import { parseVatRate, VAT_RATE_CODES } from "@/lib/inventory-vat";
 import { computeCostingLevels, computeRecipeUnitCosts, lineConversionRate, pickRecipeForDate, recipeContentSignature, type ExplosionRecipe } from "@/lib/production-explosion";
 import { writeAuditLog } from "@/lib/audit-log";
 import { executeExplosion, rerunExplosions, type AffectedExplosionRun } from "@/lib/inventory-explosion";
+import { loadMissingRecipeReport } from "@/lib/missing-recipes";
 import {
   duplicatedInTrashMessage,
   findDeletedByUnique,
@@ -565,6 +566,13 @@ export async function GET(request: Request) {
       ]);
       const stockSummary = buildStockSummary(periodBalances, periodTotals);
       return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { stockMovements, stockSummary }));
+    }
+
+    // Bảng "Mã thiếu định lượng" ở tab Định lượng: tải riêng theo tháng + cửa hàng.
+    if (searchParams.get("view") === "missing-recipes") {
+      const month = cleanText(searchParams.get("month"));
+      if (!/^\d{4}-\d{2}$/.test(month)) businessError("Tháng phải có dạng YYYY-MM");
+      return NextResponse.json(await loadMissingRecipeReport(prisma as unknown as TxClient, { month, branchCode }));
     }
 
     /**

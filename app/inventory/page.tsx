@@ -12,6 +12,7 @@ import StickyFilterBar from "@/components/StickyFilterBar";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 import StocktakeByLocation from "@/components/inventory/StocktakeByLocation";
+import MissingRecipesPanel from "@/components/inventory/MissingRecipesPanel";
 import { safeConversionRate } from "@/lib/unit-conversion";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
 import { parseVatRate, VAT_RATE_OPTIONS, vatAmountOf, vatRateLabel } from "@/lib/inventory-vat";
@@ -2947,6 +2948,14 @@ export default function InventoryPage() {
           )}
           
           <div className="space-y-5 min-w-0">
+            <MissingRecipesPanel
+              sessionKey={SESSION_KEY}
+              branchOptions={[
+                ...(visibleStoreOptions(user).length > 1 ? [{ code: "ALL", label: "Tất cả cửa hàng" }] : []),
+                ...visibleStoreOptions(user).map((option) => ({ code: option.code, label: storeLabel(option.code) })),
+              ]}
+              defaultBranch={visibleStoreOptions(user).length > 1 ? "ALL" : visibleStoreOptions(user)[0]?.code || "ALL"}
+            />
             <section className="table-panel shadow-sm">
               <Panel title="Sheet tổng hợp — Giá vốn & giá thành theo định lượng đang áp dụng" reload={loadData} exportFileName="gia_von_gia_thanh" />
               <div className="px-5 pb-4 flex flex-wrap items-end gap-3">
