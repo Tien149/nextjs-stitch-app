@@ -72,6 +72,17 @@ const statusLabels: Record<string, string> = {
   REVENUE: "Chuyển doanh thu",
 };
 
+/** Thứ tự các thẻ tổng theo trạng thái phía trên bảng — phiếu đang giữ tiền lên đầu. */
+const statusOrder = ["HOLDING", "OFFSET", "REVENUE", "REFUNDED", "CANCELLED"];
+
+/** Tổng số phiếu / số tiền cọc / số tiền còn giữ của một nhóm phiếu. */
+function summarizeDeposits(rows: Deposit[]) {
+  return rows.reduce(
+    (total, deposit) => ({ count: total.count + 1, amount: total.amount + deposit.amount, remaining: total.remaining + deposit.remainingAmount }),
+    { count: 0, amount: 0, remaining: 0 },
+  );
+}
+
 /** Các bút toán lịch sử chỉ mang tính ghi nhận ban đầu, không tính là đã xử lý cọc. */
 const initialDepositActions = ["CREATE", "COLLECT", "UPDATE"];
 
@@ -105,6 +116,8 @@ export default function DepositsPage() {
   const [deposits, setDeposits] = useState<Deposit[]>([]);
   const [form, setForm] = useState(emptyForm);
   const [search, setSearch] = useState("");
+  /** Lọc theo trạng thái trên trình duyệt (bấm thẻ tổng phía trên bảng); "ALL" = mọi trạng thái. */
+  const [statusFilter, setStatusFilter] = useState("ALL");
   const [focusedCode, setFocusedCode] = useState("");
   const [focusedHistoryId, setFocusedHistoryId] = useState("");
   const [hasLoadedDeposits, setHasLoadedDeposits] = useState(false);
@@ -455,6 +468,16 @@ export default function DepositsPage() {
     await loadDeposits();
   };
 
+  // Thẻ tổng theo trạng thái tính trên danh sách đang tải (đã theo cửa hàng + ô tìm kiếm), còn
+  // dòng Tổng cuối bảng tính trên đúng các phiếu đang hiện sau khi lọc trạng thái.
+  const statusSummaries = [
+    ...statusOrder,
+    ...Array.from(new Set(deposits.map((deposit) => deposit.status))).filter((status) => !statusOrder.includes(status)),
+  ].map((status) => ({ status, ...summarizeDeposits(deposits.filter((deposit) => deposit.status === status)) }));
+  const allSummary = summarizeDeposits(deposits);
+  const visibleDeposits = statusFilter === "ALL" ? deposits : deposits.filter((deposit) => deposit.status === statusFilter);
+  const visibleSummary = summarizeDeposits(visibleDeposits);
+
   if (isCheckingAuth) {
     return (
       <div className="flex h-screen w-full items-center justify-center bg-slate-100">
@@ -671,6 +694,28 @@ export default function DepositsPage() {
             </div>
           </div>
 
+          <div className="flex gap-2 overflow-x-auto border-b border-slate-200 px-5 py-3 custom-scrollbar">
+            {[{ status: "ALL", ...allSummary }, ...statusSummaries].map((summary) => {
+              const active = statusFilter === summary.status;
+              return (
+                <button
+                  key={summary.status}
+                  type="button"
+                  onClick={() => setStatusFilter(summary.status)}
+                  className={`min-w-[150px] shrink-0 rounded-lg border px-3 py-2 text-left transition ${active ? "border-blue-500 bg-blue-50 ring-1 ring-blue-500" : "border-slate-200 bg-white hover:bg-slate-50"}`}
+                  title="Bấm để lọc bảng theo trạng thái này"
+                >
+                  <p className={`text-xs font-bold ${active ? "text-blue-700" : "text-slate-500"}`}>
+                    {summary.status === "ALL" ? "Tất cả" : statusLabels[summary.status] || summary.status}
+                    <span className="ml-1 font-medium text-slate-400">({summary.count})</span>
+                  </p>
+                  <p className="mt-0.5 font-bold tabular-nums text-slate-800">{formatCurrency(summary.amount)} đ</p>
+                  <p className="text-[11px] tabular-nums text-emerald-600">Còn giữ: {formatCurrency(summary.remaining)} đ</p>
+                </button>
+              );
+            })}
+          </div>
+
           {focusedCode && hasLoadedDeposits && (
             <div className={`mx-5 mt-4 rounded-lg border px-3 py-2 text-sm ${deposits.some((deposit) => deposit.code === focusedCode) ? "border-amber-200 bg-amber-50 text-amber-800" : "border-red-200 bg-red-50 text-red-700"}`}>
               {deposits.some((deposit) => deposit.code === focusedCode)
@@ -778,9 +823,9 @@ export default function DepositsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {deposits.length === 0 ? (
-                  <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-400">Chưa có phiếu cọc.</td></tr>
-                ) : deposits.map((deposit) => {
+                {visibleDeposits.length === 0 ? (
+                  <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-400">{deposits.length === 0 ? "Chưa có phiếu cọc." : "Không có phiếu cọc ở trạng thái này."}</td></tr>
+                ) : visibleDeposits.map((deposit) => {
                   const isFocused = deposit.code === focusedCode;
                   return (
                   <tr
@@ -853,6 +898,20 @@ export default function DepositsPage() {
                   );
                 })}
               </tbody>
+              {visibleDeposits.length > 0 && (
+                <tfoot className="sticky bottom-0 z-10 border-t-2 border-slate-200 bg-slate-100 text-sm shadow-[0_-1px_2px_rgba(0,0,0,0.04)]">
+                  <tr>
+                    <td colSpan={3} className="px-4 py-3 font-bold text-slate-700">
+                      Tổng {statusFilter === "ALL" ? "" : `"${statusLabels[statusFilter] || statusFilter}" `}({visibleSummary.count} phiếu)
+                    </td>
+                    <td className="px-4 py-3">
+                      <p className="font-bold tabular-nums">{formatCurrency(visibleSummary.amount)} đ</p>
+                      <p className="text-xs tabular-nums text-emerald-600">Còn: {formatCurrency(visibleSummary.remaining)} đ</p>
+                    </td>
+                    <td colSpan={3} />
+                  </tr>
+                </tfoot>
+              )}
             </table>
           </div>
         </section>
