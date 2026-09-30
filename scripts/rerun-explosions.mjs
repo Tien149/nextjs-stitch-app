@@ -135,9 +135,13 @@ try {
   // Thông tin từng lần rã từ chính phiếu của nó (cửa hàng + ngày chứng từ).
   const runs = [];
   for (const runCode of runCodes) {
+    // Ngày của lần rã = ngày MUỘN nhất trên phiếu: phiếu rã cho điều chuyển / huỷ / kiểm kê mang
+    // ngày riêng của chúng, sớm hơn ngày phiếu doanh thu. Không sắp thì findFirst nhặt bừa một
+    // phiếu điều chuyển đầu tháng và rã lại cả tháng doanh thu vào ngày đó.
     const doc = await prisma.inventoryTransaction.findFirst({
       where: { referenceType: "PRODUCTION", referenceCode: runCode, deletedAt: null },
       select: { branchCode: true, transactionDate: true },
+      orderBy: { transactionDate: "desc" },
     });
     if (!doc) { console.log(`!! ${runCode}: không còn phiếu nào (đã gỡ hoặc sai mã) — bỏ qua.`); continue; }
     const rows = await prisma.revenueImportRow.count({ where: { inventoryStatus: `POSTED:${runCode}` } });
