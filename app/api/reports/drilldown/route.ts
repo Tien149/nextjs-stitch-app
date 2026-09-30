@@ -3,7 +3,7 @@ import { requireMenuAccess } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 import { periodBounds } from "@/lib/accounting";
 import { apiError, businessError, cleanText, normalizePeriod } from "@/lib/phase3";
-import { createPnlItemRefLookup, DEPRECIATION_PNL_ACCOUNT, createPayrollItemResolver, depreciationCatalogItemCode, loadPayrollDepartmentLinks, pnlLineAmount, pnlLineKeyOf, resolvePnlItemCode, withDepreciationPnlItem } from "@/lib/reports";
+import { createPnlItemRefLookup, DEPRECIATION_PNL_ACCOUNT, createPayrollItemResolver, depreciationCatalogItemCode, isInterestPnlLine, loadPayrollDepartmentLinks, pnlLineAmount, pnlLineKeyOf, resolvePnlItemCode, withDepreciationPnlItem } from "@/lib/reports";
 
 /** Khoá drilldown cho một hạng mục P&L: `pnlItem:<mã>`; `pnlItem:UNCLASSIFIED` là chứng từ chưa gán hạng mục. */
 const PNL_ITEM_METRIC_PREFIX = "pnlItem:";
@@ -118,14 +118,14 @@ export async function GET(request: Request) {
         isMatch = true;
         lineAmount = accountLine === "capex" ? pnlLineAmount("capex", line) : line.debit - line.credit;
       } else if (metric === "ebitda") {
-        // EBITDA = doanh thu − giá vốn − nhân sự − CAPEX − OPEX, CỘNG LẠI khấu hao (chốt
-        // 28/09/2026) — nên các dòng khấu hao không thuộc chỉ tiêu này.
-        if (line.account.reportGroup === DEPRECIATION_PNL_ACCOUNT.reportGroup) {
+        // EBITDA = LN vận hành + CP lãi vay + CAPEX (chốt 30/09/2026) = doanh thu − giá vốn −
+        // nhân sự − OPEX + thu nhập khác − chi phí khác, KHÔNG gồm CAPEX và hạng mục lãi vay.
+        if (accountLine === "capex" || isInterestPnlLine(accountLine, pnlItemRefOf(line.pnlItemCode))) {
           isMatch = false;
-        } else if (accountType === "COGS" || accountLine === "payroll" || accountLine === "otherOpex" || accountLine === "capex") {
+        } else if (accountType === "COGS" || accountLine === "payroll" || accountLine === "otherOpex" || accountLine === "otherExpense") {
           isMatch = true;
-          lineAmount = accountLine === "capex" ? pnlLineAmount("capex", line) : line.debit - line.credit;
-        } else if (accountType === "REVENUE") {
+          lineAmount = line.debit - line.credit;
+        } else if (accountType === "REVENUE" || accountLine === "otherIncome") {
           isMatch = true;
           lineAmount = -(line.credit - line.debit); // Display negative expense-equivalent or positive outflow
         }

@@ -29,12 +29,6 @@ const LINE_STYLE: Record<string, LineStyle> = {
   otherExpense: { tone: "rose", icon: "money_off", title: "CHI PHÍ KHÁC", band: "bg-rose-50 text-rose-700", total: "bg-rose-100 text-rose-900" },
   netProfit: { tone: "indigo", icon: "workspace_premium", title: "LỢI NHUẬN VẬN HÀNH", band: "", total: "bg-indigo-200/60 text-indigo-900" },
 };
-/**
- * Dòng KHẤU HAO sau EBITDA bỏ khỏi bảng hoạch định (khách yêu cầu 30/09/2026). Khấu hao vẫn là
- * hạng mục trong Chi phí cố định và LN vận hành không trừ lại dòng này, nên bỏ không lệch số.
- * KQKD và Dashboard vẫn giữ dòng 8. Khấu hao.
- */
-const HIDDEN_LINES = new Set(["depreciation"]);
 const INCOME_LINES = new Set(["revenue", "otherIncome", "grossProfit", "ebitda", "netProfit"]);
 const RATIO_AFTER: Record<string, string> = { grossProfit: "Tỷ suất LN gộp", ebitda: "Tỷ suất EBITDA", netProfit: "Tỷ suất LN vận hành" };
 
@@ -87,7 +81,7 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
    * phát sinh đồng thực tế nào — đã bỏ công đặt kế hoạch thì phải theo dõi được % hoàn thành.
    */
   const [hideEmpty, setHideEmpty] = useState(true);
-  const statementLines = useMemo(() => data.statement.filter((line) => !HIDDEN_LINES.has(line.key)), [data.statement]);
+  const statementLines = data.statement;
   /**
    * Dòng "CPCĐ - CP Khấu Hao" (số lấy từ màn Khấu hao) luôn hiện, kể cả bằng 0 — khách yêu cầu
    * 24/09/2026: cửa hàng chưa chạy khấu hao thì dòng bị "Ẩn dòng bằng 0" giấu, tưởng thiếu dòng.
@@ -335,7 +329,7 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
           ))}
           <td colSpan={13} className="px-3 py-2 text-[11px] font-semibold opacity-80 whitespace-nowrap">
             {line.key === "capex"
-              ? "Chi phí đầu tư ban đầu (khoản mục/hạng mục nhóm CAPEX) — trừ vào EBITDA. Tài sản/CCDC mua trong kỳ vào Chi phí cố định qua hạng mục CP Khấu Hao"
+              ? "Chi phí đầu tư ban đầu (khoản mục/hạng mục nhóm CAPEX) — trừ vào LN vận hành, EBITDA cộng lại. Tài sản/CCDC mua trong kỳ vào Chi phí cố định qua hạng mục CP Khấu Hao"
               : isRevenue
                 ? "Hai cách nhìn cùng một doanh thu: theo nguồn (kênh bán) và theo bộ phận — kế hoạch set ở cấp dòng"
                 : "Kế hoạch (đậm) · Thực đạt (chip) · % hoàn thành"}

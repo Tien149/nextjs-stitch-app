@@ -80,7 +80,7 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
     { label: "CP Marketing", tone: "orange", income: false, icon: "campaign", actual: marketingCost.actual, plan: marketingCost.plan },
     { label: "CP biến đổi", tone: "teal", income: false, icon: "swap_vert", actual: variableCost.actual, plan: variableCost.plan },
     { label: "Lợi nhuận vận hành", tone: "indigo", income: true, icon: "workspace_premium", actual: actual("netProfit"), plan: plan("netProfit") },
-    { label: "EBITDA", tone: "violet", income: true, icon: "monitoring", actual: actual("ebitda"), plan: plan("ebitda"), note: "LN gộp − nhân sự − CAPEX − OPEX + khấu hao (trước thu nhập/chi phí khác), cùng số dòng 7 KQKD" },
+    { label: "EBITDA", tone: "violet", income: true, icon: "monitoring", actual: actual("ebitda"), plan: plan("ebitda"), note: "LN vận hành + CP lãi vay + CAPEX, cùng số dòng 10 KQKD" },
   ];
 
   // Cơ cấu 1 đồng doanh thu (lũy kế): giá vốn / nhân sự / CAPEX / OPEX / phần còn lại là LN.

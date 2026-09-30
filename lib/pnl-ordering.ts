@@ -88,6 +88,15 @@ export function isDepreciationPnlName(name: string | null | undefined) {
 }
 
 /**
+ * Hạng mục chi phí lãi vay (VD "CPCĐ - CP Lãi Vay" trong Chi phí cố định) — EBITDA cộng lại khoản
+ * này (khách chốt 30/09/2026: EBITDA = LN vận hành + CP lãi vay + CAPEX).
+ */
+export function isInterestPnlName(name: string | null | undefined) {
+  const text = normalizeName(name);
+  return /\blai vay\b|\binterest\b/.test(text);
+}
+
+/**
  * Hạng mục thuộc dòng CAPEX: nhóm cha (hoặc chính hạng mục khi chưa gắn nhóm) khai loại CAPEX,
  * hoặc nhóm mang tên "Chi phí đầu tư ban đầu". Khách báo 23/09/2026: nhóm này khai nhầm loại
  * OPEX nên 88.248.717 đ tháng 8 đứng trong OPEX và bị trừ vào lợi nhuận, trong khi nó là tiền

@@ -7,8 +7,8 @@ import { bucketOperatingCost, bucketSum, lastPicked, monthPickLabel, monthPickSu
  * của cụm Hoạch định phải chạy theo DANH SÁCH tháng, không còn là "cộng từ T1 tới tháng N".
  */
 
-// depreciation là số ghi nhớ nằm TRONG otherOpex (28/09/2026) — không được cộng thêm lần nữa.
-const bucketOf = (revenue, payroll = 0, otherOpex = 0, capex = 0) => ({ revenue, payroll, otherOpex, capex, depreciation: 5 });
+// interest là số ghi nhớ nằm TRONG otherOpex (30/09/2026) — không được cộng thêm lần nữa.
+const bucketOf = (revenue, payroll = 0, otherOpex = 0, capex = 0) => ({ revenue, payroll, otherOpex, capex, interest: 5 });
 const buckets = Array.from({ length: 12 }, (_, index) => bucketOf((index + 1) * 100, index + 1, 10, 1));
 
 test("cộng đúng các tháng được tick, kể cả khi rời rạc", () => {

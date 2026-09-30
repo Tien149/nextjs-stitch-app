@@ -13,8 +13,7 @@ import { lastPicked, type MonthPick, type PlanningData } from "@/components/repo
  * Báo cáo quản trị nội bộ, không theo mẫu thuế:
  *  - Tổng chi phí = COGS + CAPEX + OPEX (nhân sự + chi phí hoạt động, đã gồm khấu hao).
  *  - Lợi nhuận = Lợi nhuận vận hành (netProfit).
- *  - EBITDA = LN gộp − nhân sự − CAPEX − OPEX + khấu hao, trước thu nhập/chi phí khác (dòng 7
- *    KQKD, chốt 28/09/2026).
+ *  - EBITDA = LN vận hành + CP lãi vay + CAPEX (dòng 10 KQKD, chốt 30/09/2026).
  * Chỉ vẽ đường, nối thẳng — khách không muốn cột lẫn đường uốn cong.
  */
 export default function PnlTrendCard({ data, picked, monthHeaders, canEdit = true }: {
@@ -40,7 +39,7 @@ export default function PnlTrendCard({ data, picked, monthHeaders, canEdit = tru
   return (
     <Card
       title={`Biến động Doanh thu – Chi phí – Lợi nhuận – EBITDA năm ${data.year}`}
-      subtitle="Báo cáo quản trị nội bộ: Tổng chi phí = COGS + CAPEX + OPEX (gồm nhân sự); Lợi nhuận = LN vận hành; EBITDA = LN gộp − nhân sự − CAPEX − OPEX + khấu hao (chưa tính thu nhập/chi phí khác)."
+      subtitle="Báo cáo quản trị nội bộ: Tổng chi phí = COGS + CAPEX + OPEX (gồm nhân sự); Lợi nhuận = LN vận hành; EBITDA = LN vận hành + CP lãi vay + CAPEX."
       icon="show_chart"
       bodyClassName="px-2 pb-3"
     >

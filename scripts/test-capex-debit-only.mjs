@@ -97,7 +97,8 @@ test("CAPEX TRỪ vào lợi nhuận hoạt động và lợi nhuận ròng (ch�
   const base = { revenue: 1_000, cogs: 300, payroll: 200, otherOpex: 100, otherIncome: 0, otherExpense: 0, capex: 88 };
   for (const pnl of [finalizePnl(base), finalizeBucket(base)]) {
     assert.equal(pnl.grossProfit, 700);
-    assert.equal(pnl.ebitda, 700 - 200 - 88 - 100);
-    assert.equal(pnl.netProfit, 312);
+    assert.equal(pnl.netProfit, 700 - 200 - 88 - 100);
+    // EBITDA = LN vận hành + CP lãi vay + CAPEX (chốt 30/09/2026) — cộng CAPEX lại.
+    assert.equal(pnl.ebitda, 312 + 88);
   }
 });

@@ -36,8 +36,7 @@ test("bút toán 6428 lên dòng theo NHÓM của hạng mục; chưa gắn nhó
   assert.equal(pnlLineKeyOf(opex, { name: "Chi phí thuê mặt bằng", groupName: "Chi phí cố định" }), "otherOpex");
   assert.equal(pnlLineKeyOf(opex), "otherOpex");
   assert.equal(pnlLineKeyOf({ accountType: "OPEX", reportGroup: "PAYROLL" }), "payroll");
-  // Khấu hao luôn nằm trong OPEX (hạng mục CP Khấu Hao) — không có dòng KQKD riêng để ghi tiền,
-  // dòng "8. Khấu hao" chỉ là số ghi nhớ đọc từ đây.
+  // Khấu hao luôn nằm trong OPEX (hạng mục CP Khấu Hao) — không có dòng KQKD riêng.
   assert.equal(pnlLineKeyOf({ accountType: "OPEX", reportGroup: "DEPRECIATION" }), "otherOpex");
   assert.equal(pnlLineKeyOf({ accountType: "OPEX", reportGroup: "DEPRECIATION" }, { name: "Lương" }), "otherOpex");
   assert.equal(pnlLineKeyOf({ accountType: "COGS", reportGroup: "COGS" }, { name: "Lương bếp" }), "cogs");

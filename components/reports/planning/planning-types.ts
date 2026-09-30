@@ -12,10 +12,10 @@ export type PnlBucket = {
   otherOpex: number;
   otherIncome: number;
   otherExpense: number;
-  /** Tiền mua tài sản/CCDC trong tháng — dòng thông tin, KHÔNG trừ vào EBITDA hay lợi nhuận vận hành. */
+  /** Chi phí đầu tư ban đầu — trừ vào lợi nhuận vận hành (24/09/2026), EBITDA cộng lại. */
   capex: number;
-  /** Số ghi nhớ: phần khấu hao nằm TRONG otherOpex — EBITDA cộng lại khoản này. */
-  depreciation: number;
+  /** Số ghi nhớ: CP lãi vay nằm TRONG otherOpex / otherExpense — EBITDA cộng lại khoản này. */
+  interest: number;
   grossProfit: number;
   opexBeforeDepreciation: number;
   ebitda: number;
@@ -79,7 +79,6 @@ export const LINE_SHORT_LABEL: Record<string, string> = {
   payroll: "Chi phí nhân sự",
   otherOpex: "Chi phí hoạt động (OPEX)",
   ebitda: "EBITDA",
-  depreciation: "Khấu hao",
   otherIncome: "Thu nhập khác",
   otherExpense: "Chi phí khác",
   capex: "Chi phí đầu tư ban đầu (CAPEX)",
@@ -121,15 +120,15 @@ export const bucketSum = (buckets: PnlBucket[], key: keyof PnlBucket, picked: Mo
 export const bucketOperatingCost = (buckets: PnlBucket[], picked: MonthPick) => sumMonths(buckets.map(operatingCostOf), picked);
 
 /** Bản client của finalizePnl (lib/reports.ts) — dùng cho kịch bản giả định tính ngay trên trình duyệt. */
-export function finalizeBucket(input: Pick<PnlBucket, "revenue" | "cogs" | "payroll" | "otherOpex" | "otherIncome" | "otherExpense" | "capex"> & { depreciation?: number }): PnlBucket {
-  const base = { ...input, depreciation: input.depreciation || 0 };
+export function finalizeBucket(input: Pick<PnlBucket, "revenue" | "cogs" | "payroll" | "otherOpex" | "otherIncome" | "otherExpense" | "capex"> & { interest?: number }): PnlBucket {
+  const base = { ...input, interest: input.interest || 0 };
   const grossProfit = base.revenue - base.cogs;
-  // CAPEX trừ vào lợi nhuận (chốt 24/09/2026); EBITDA cộng lại khấu hao nằm trong OPEX, trước
-  // thu nhập/chi phí khác (chốt 28/09/2026) — giữ đúng như finalizePnl.
+  // CAPEX trừ vào lợi nhuận (chốt 24/09/2026); EBITDA = LN vận hành + CP lãi vay + CAPEX (chốt
+  // 30/09/2026) — giữ đúng như finalizePnl.
   const opexBeforeDepreciation = base.payroll + base.capex + base.otherOpex;
   const operatingProfit = grossProfit - opexBeforeDepreciation;
-  const ebitda = operatingProfit + base.depreciation;
   const netProfit = operatingProfit + base.otherIncome - base.otherExpense;
+  const ebitda = netProfit + base.interest + base.capex;
   return { ...base, grossProfit, opexBeforeDepreciation, ebitda, operatingProfit, netProfit, grossMargin: base.revenue ? grossProfit / base.revenue : 0, ebitdaMargin: base.revenue ? ebitda / base.revenue : 0 };
 }
 
