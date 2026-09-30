@@ -9,7 +9,7 @@ import { isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType, p
 import { createPurchasePayable, purchasePayableCodeOf, removePurchasePayables, syncPurchasePayable, PURCHASE_PAYABLE_SOURCE } from "@/lib/purchase-payable";
 import { postStockTransfer, syncTransferInternalDebt } from "@/lib/inventory-transfer";
 import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING, STOCKTAKE_RETURNED, isStocktakeEditable, stocktakeStatusLabel } from "@/lib/stocktake-status";
-import { EXPLOSION_PENDING, explodedRunOf, loadPendingExplosionSources, refreshTransferExplosionStatus, releaseExplosionSources, semiFinishedWithRecipeChecker } from "@/lib/explosion-sources";
+import { EXPLOSION_ISSUE_TYPES, EXPLOSION_PENDING, explodedRunOf, isExplosionIssueType, loadPendingExplosionSources, refreshTransferExplosionStatus, releaseExplosionSources, semiFinishedWithRecipeChecker } from "@/lib/explosion-sources";
 import { averageCostByItem } from "@/lib/inventory-average-cost";
 import { parseVatRate, VAT_RATE_CODES } from "@/lib/inventory-vat";
 import { computeCostingLevels, computeRecipeUnitCosts, lineConversionRate, pickRecipeForDate, recipeContentSignature, type ExplosionRecipe } from "@/lib/production-explosion";
@@ -815,7 +815,7 @@ export async function GET(request: Request) {
     // Điều chuyển bán thành phẩm + kiểm dư bán thành phẩm đang chờ rã (khách chốt 28/09/2026):
     // cùng nguồn với nút Rã (loadPendingExplosionSources) nên số hiện ra đúng bằng số sẽ rã.
     const [pendingTransferDocs, pendingStocktakeDocs] = await Promise.all([
-      prisma.inventoryTransaction.findMany({ where: { ...branchFilter, transactionType: "DIEU_CHUYEN", explosionStatus: EXPLOSION_PENDING, deletedAt: null }, select: { id: true, branchCode: true } }),
+      prisma.inventoryTransaction.findMany({ where: { ...branchFilter, transactionType: { in: EXPLOSION_ISSUE_TYPES }, explosionStatus: EXPLOSION_PENDING, deletedAt: null }, select: { id: true, branchCode: true } }),
       prisma.stocktakeSession.findMany({ where: { ...branchFilter, status: "APPROVED", explosionStatus: EXPLOSION_PENDING, deletedAt: null }, select: { id: true, branchCode: true } }),
     ]);
     const pendingSourceBranches = [...new Set([...pendingTransferDocs, ...pendingStocktakeDocs].map((doc) => doc.branchCode))];
@@ -1457,7 +1457,7 @@ export async function POST(request: Request) {
       // Điều chuyển / kiểm kê trong khoảng ngày đã rã cũng kéo lần rã của chúng vào rã lại.
       const [postedTransfers, postedStocktakes] = await Promise.all([
         prisma.inventoryTransaction.findMany({
-          where: { branchCode, deletedAt: null, transactionType: "DIEU_CHUYEN", transactionDate: { gte: dateFrom, lte: rangeEnd }, explosionStatus: { startsWith: "POSTED:RA-" } },
+          where: { branchCode, deletedAt: null, transactionType: { in: EXPLOSION_ISSUE_TYPES }, transactionDate: { gte: dateFrom, lte: rangeEnd }, explosionStatus: { startsWith: "POSTED:RA-" } },
           distinct: ["explosionStatus"],
           select: { explosionStatus: true },
         }),
@@ -1584,6 +1584,7 @@ export async function POST(request: Request) {
         revenueRows: outcome.revenueRows,
         skippedRows: outcome.skippedRows,
         transferCount: sources.filter((source) => source.kind === "TRANSFER").length,
+        issueCount: sources.filter((source) => source.kind === "ISSUE").length,
         stocktakeCount: sources.filter((source) => source.kind === "STOCKTAKE").length,
         keptPriceTransfers,
         // Số món phải dùng kho mặc định vì không suy được bếp/bar — để màn hình nhắc người dùng
@@ -2187,6 +2188,8 @@ export async function PATCH(request: Request) {
           await refreshTransferExplosionStatus(tx, updated.id);
           return (await syncTransferInternalDebt(tx, updated.id)).transaction;
         }
+        // Huỷ / xuất khác: dòng đổi thì hàng chờ rã tính lại như điều chuyển.
+        if (isExplosionIssueType(updated.transactionType)) await refreshTransferExplosionStatus(tx, updated.id);
         // Công nợ nhập mua theo số mới: sửa khoản đang có, bỏ NCC thì thu khoản nợ về.
         await syncPurchasePayable(tx, { ...updated, partnerCode }, { importBatchId: transaction.importBatchId });
         return updated;

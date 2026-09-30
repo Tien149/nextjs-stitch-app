@@ -1,4 +1,5 @@
 import type { TxClient } from "@/lib/prisma";
+import { isExplosionIssueType, refreshTransferExplosionStatus } from "@/lib/explosion-sources";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { safeConversionRate } from "@/lib/unit-conversion";
 import { resolveVatAmount } from "@/lib/inventory-vat";
@@ -554,7 +555,7 @@ export async function postInventoryTransaction(tx: Tx, input: PostInventoryTrans
     }
   }
 
-  return tx.inventoryTransaction.create({
+  const created = await tx.inventoryTransaction.create({
     data: {
       importBatchId: input.importBatchId || null,
       code: input.code,
@@ -590,6 +591,13 @@ export async function postInventoryTransaction(tx: Tx, input: PostInventoryTrans
     },
     include: { lines: { include: { item: true } } },
   });
+  // Điều chuyển / huỷ / xuất khác có bán thành phẩm có định lượng: vào hàng chờ rã để kho xuất
+  // chế biến phần xuất đi (lib/explosion-sources.ts). Đặt ở đây nên lập tay, import, huỷ theo
+  // định lượng... mọi đường tạo phiếu đều vào hàng chờ như nhau.
+  if (isExplosionIssueType(transactionType)) {
+    created.explosionStatus = await refreshTransferExplosionStatus(tx, created.id);
+  }
+  return created;
 }
 
 /**

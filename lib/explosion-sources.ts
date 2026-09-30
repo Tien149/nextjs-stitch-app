@@ -1,7 +1,9 @@
 /**
  * Nguồn rã BOM ngoài doanh thu (khách chốt 28/09/2026). Bán thành phẩm (BTP) CÓ ĐỊNH LƯỢNG chỉ
  * sinh ra từ chế biến, nên ngoài phần dùng cho món bán còn hai chỗ phải rã ra nguyên liệu:
- *   - ĐIỀU CHUYỂN BTP đi kho khác: kho nguồn chế biến đúng TOÀN BỘ số chuyển đi;
+ *   - ĐIỀU CHUYỂN BTP đi kho khác: kho nguồn chế biến phần chuyển đi (lấy tồn trước);
+ *   - HUỶ / XUẤT TEST MÓN / XUẤT KHÁC BTP (khách báo 30/09/2026: kho bar âm vì huỷ BTP mà BTP
+ *     chưa từng được chế biến): kho xuất chế biến phần thiếu, cùng luật với điều chuyển;
  *   - KIỂM KÊ đếm DƯ BTP (thực tế > sổ sách): phần dư là hàng đã chế biến mà chưa rã, nên rã ra
  *     nguyên liệu (trừ NVL, nhập BTP có giá vốn) thay vì phiếu nhập kiểm kê không có nguồn gốc.
  *     Kiểm THIẾU vẫn xuất kiểm kê như cũ.
@@ -12,6 +14,17 @@ import type { TxClient } from "@/lib/prisma";
 
 export const EXPLOSION_PENDING = "PENDING";
 const POSTED_PREFIX = "POSTED:";
+
+/**
+ * Loại phiếu XUẤT mà bán thành phẩm có định lượng trên phiếu phải được rã (kho xuất chế biến
+ * phần chuyển / huỷ đi). Xuất chế biến / xuất bán / xuất kiểm kê do chính lần rã & kiểm kê sinh
+ * ra nên không nằm đây.
+ */
+export const EXPLOSION_ISSUE_TYPES = ["DIEU_CHUYEN", "XUAT_HUY", "XUAT_TEST_MON", "XUAT_KHAC"];
+
+export function isExplosionIssueType(transactionType: string | null | undefined) {
+  return EXPLOSION_ISSUE_TYPES.includes(transactionType || "");
+}
 
 export function explosionPostedStatus(runCode: string) {
   return `${POSTED_PREFIX}${runCode}`;
@@ -42,16 +55,16 @@ export async function semiFinishedWithRecipeChecker(tx: RecipeScopeClient, branc
 }
 
 /**
- * Đặt lại trạng thái chờ rã của một phiếu điều chuyển theo dòng hàng hiện tại: có BTP có định
- * lượng thì PENDING, không thì null. Phiếu đã rã thì giữ nguyên (sửa/xoá phiếu đã rã bị chặn ở
- * route — phải hoàn tác lần rã trước).
+ * Đặt lại trạng thái chờ rã của một phiếu điều chuyển / huỷ / xuất khác theo dòng hàng hiện tại:
+ * có BTP có định lượng thì PENDING, không thì null. Phiếu đã rã thì giữ nguyên (sửa/xoá phiếu đã
+ * rã bị chặn ở route — phải hoàn tác lần rã trước).
  */
 export async function refreshTransferExplosionStatus(tx: TxClient, transactionId: string) {
   const transaction = await tx.inventoryTransaction.findUnique({
     where: { id: transactionId },
     select: { transactionType: true, branchCode: true, explosionStatus: true, lines: { select: { item: { select: { code: true, itemType: true } } } } },
   });
-  if (!transaction || transaction.transactionType !== "DIEU_CHUYEN") return null;
+  if (!transaction || !isExplosionIssueType(transaction.transactionType)) return null;
   if (explodedRunOf(transaction.explosionStatus)) return transaction.explosionStatus;
   const isExplodable = await semiFinishedWithRecipeChecker(tx, transaction.branchCode);
   const next = transaction.lines.some((line) => isExplodable(line.item)) ? EXPLOSION_PENDING : null;
@@ -82,13 +95,14 @@ export async function releaseExplosionSources(tx: TxClient, runCode: string) {
   return { transferIds, stocktakeIds };
 }
 
-/** Một phiếu điều chuyển / kiểm kê đang chờ rã, quy về nhu cầu chế biến ở một kho. */
+/** Một phiếu điều chuyển / huỷ / kiểm kê đang chờ rã, quy về nhu cầu chế biến ở một kho. */
 export type ExplosionSource = {
-  kind: "TRANSFER" | "STOCKTAKE";
+  /** TRANSFER = điều chuyển; ISSUE = huỷ / xuất test món / xuất khác; STOCKTAKE = kiểm dư. */
+  kind: "TRANSFER" | "ISSUE" | "STOCKTAKE";
   id: string;
   code: string;
   date: Date;
-  /** Kho chế biến: kho XUẤT của điều chuyển, kho được kiểm của kiểm kê. */
+  /** Kho chế biến: kho XUẤT của điều chuyển / huỷ, kho được kiểm của kiểm kê. */
   warehouseCode: string;
   demands: Array<{ productCode: string; quantity: number }>;
 };
@@ -104,7 +118,7 @@ export async function loadPendingExplosionSources(
   const isExplodable = await semiFinishedWithRecipeChecker(tx, input.branchCode);
   const transfers = await tx.inventoryTransaction.findMany({
     where: {
-      transactionType: "DIEU_CHUYEN",
+      transactionType: { in: EXPLOSION_ISSUE_TYPES },
       branchCode: input.branchCode,
       explosionStatus: EXPLOSION_PENDING,
       deletedAt: null,
@@ -128,7 +142,7 @@ export async function loadPendingExplosionSources(
   const sources: ExplosionSource[] = [];
   for (const transfer of transfers) {
     sources.push({
-      kind: "TRANSFER",
+      kind: transfer.transactionType === "DIEU_CHUYEN" ? "TRANSFER" : "ISSUE",
       id: transfer.id,
       code: transfer.code,
       date: transfer.transactionDate,

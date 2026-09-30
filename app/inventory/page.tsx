@@ -3354,8 +3354,9 @@ export default function InventoryPage() {
                 }
                 const transferCount = Number(payload?.transferCount || 0);
                 const stocktakeCount = Number(payload?.stocktakeCount || 0);
-                if (transferCount > 0 || stocktakeCount > 0) {
-                  notes.push(`Đã rã kèm ${transferCount} phiếu điều chuyển và ${stocktakeCount} phiếu kiểm kê bán thành phẩm.`);
+                const issueCount = Number(payload?.issueCount || 0);
+                if (transferCount > 0 || stocktakeCount > 0 || issueCount > 0) {
+                  notes.push(`Đã rã kèm ${transferCount} phiếu điều chuyển, ${issueCount} phiếu huỷ / xuất khác và ${stocktakeCount} phiếu kiểm kê bán thành phẩm.`);
                 }
                 const keptPrice = (payload?.keptPriceTransfers || []) as string[];
                 if (keptPrice.length > 0) {

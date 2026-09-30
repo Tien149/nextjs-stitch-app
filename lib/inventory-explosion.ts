@@ -154,6 +154,34 @@ async function createStockTaker(tx: TxClient, itemIdByCode: Map<string, string>,
   };
 }
 
+/**
+ * Phiếu huỷ / xuất test món / xuất khác bán thành phẩm vừa được rã: ghi lại để phiếu xuất ăn giá
+ * bình quân MỚI (đã có phiếu chế biến của chính phần huỷ) thay vì giá 0 / giá cũ lúc lập phiếu.
+ * Kỳ đã khoá thì giữ nguyên.
+ */
+async function repriceIssue(tx: TxClient, transactionId: string) {
+  const issue = await tx.inventoryTransaction.findUnique({ where: { id: transactionId }, include: { lines: true } });
+  if (!issue) return;
+  if (await isPeriodLocked(issue.transactionDate, issue.branchCode)) return;
+  await repostInventoryTransaction(tx, issue, {
+    transactionDate: issue.transactionDate,
+    branchCode: issue.branchCode,
+    warehouseCode: issue.warehouseCode,
+    toWarehouseCode: issue.toWarehouseCode,
+    toBranchCode: issue.toBranchCode,
+    subType: issue.subType,
+    partnerCode: issue.partnerCode,
+    referenceCode: issue.referenceCode,
+    note: issue.note,
+    lines: issue.lines.map((line) => ({
+      itemId: line.itemId,
+      inputQuantity: line.inputQuantity ?? line.quantity,
+      inputUnitCode: line.inputUnitCode ?? "",
+      inputUnitCost: null,
+    })),
+  });
+}
+
 export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
   const { branchCode, dateFrom, dateTo } = input;
   const warehouses = await resolveExplosionWarehouses(tx, input);
@@ -308,7 +336,7 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
     //    nguyên liệu trừ ở đó. Không xuất bán: điều chuyển đã đưa hàng đi, còn kiểm kê là hàng
     //    đang nằm trong kho. Chạy trước xuất bán để BTP dư kiểm kê vào sổ trước khi món bán lấy tồn.
     for (const source of sources) {
-      const label = source.kind === "TRANSFER" ? `điều chuyển ${source.code}` : `kiểm dư ${source.code}`;
+      const label = source.kind === "TRANSFER" ? `điều chuyển ${source.code}` : source.kind === "ISSUE" ? `huỷ / xuất ${source.code}` : `kiểm dư ${source.code}`;
       /**
        * Điều chuyển: lấy tồn trước, chỉ chế biến phần thiếu (khách chốt 29/09/2026) — kho còn 2 kg
        * BTP mà chuyển đi 5 kg thì chỉ chế biến 3 kg; BTP cấp dưới cũng trừ tồn trước. Phiếu điều
@@ -316,7 +344,8 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
        * Kiểm dư: KHÔNG lấy tồn — số đếm là sự thật, phần dư là hàng đã chế biến mà chưa rã.
        */
       let takeFromStock: ((code: string) => number) | undefined;
-      if (source.kind === "TRANSFER") {
+      // Huỷ / xuất khác cùng luật với điều chuyển: phiếu đã trừ kho nên cộng trả để ra tồn trước lúc xuất.
+      if (source.kind !== "STOCKTAKE") {
         const stock = await createStockTaker(tx, recipeItemIdByCode, source.date, [source.warehouseCode]);
         for (const demand of source.demands) stock.add(demand.productCode, source.warehouseCode, demand.quantity);
         takeFromStock = (code) => stock.take(code, source.warehouseCode, Number.POSITIVE_INFINITY);
@@ -396,6 +425,9 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
       if (source.kind === "TRANSFER") {
         await tx.inventoryTransaction.update({ where: { id: source.id }, data: { explosionStatus: explosionPostedStatus(runCode) } });
         if (sourcePlan.productions.length > 0) repricedTransfers.push(await repriceTransfer(tx, source.id));
+      } else if (source.kind === "ISSUE") {
+        await tx.inventoryTransaction.update({ where: { id: source.id }, data: { explosionStatus: explosionPostedStatus(runCode) } });
+        if (sourcePlan.productions.length > 0) await repriceIssue(tx, source.id);
       } else {
         await tx.stocktakeSession.update({ where: { id: source.id }, data: { explosionStatus: explosionPostedStatus(runCode) } });
       }

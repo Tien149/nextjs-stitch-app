@@ -23,16 +23,16 @@
  *   npm run rerun:explosions -- --month 2026-09 [--branches HCM,HN]
  * Chạy thử in bảng số chế biến cũ → mới theo mã; --apply ghi thật rồi tự ghi sổ lại giá vốn theo
  * kho của các kỳ bị ảnh hưởng (như nút Rã trên màn hình).
- * --include-pending-transfers: đưa phiếu điều chuyển bán thành phẩm CHƯA vào hàng chờ rã (lập trước
- * luật rã điều chuyển 28/09/2026) vào hàng chờ, rồi gộp mọi điều chuyển đang chờ rã của cửa hàng
- * trong khoảng ngày của từng lần rã vào chính lần rã đó (kho nguồn chế biến phần chuyển đi).
+ * --include-pending-transfers: đưa phiếu điều chuyển / huỷ / xuất khác có bán thành phẩm CHƯA vào
+ * hàng chờ rã (lập trước luật rã điều chuyển 28/09/2026, huỷ 30/09/2026) vào hàng chờ, rồi gộp
+ * mọi phiếu đang chờ rã của cửa hàng trong tháng vào lần rã đó (kho xuất chế biến phần xuất đi).
  * --keep-warehouses: giữ đúng kho mà lần rã gốc đã chọn (đọc nhật ký lần rã) thay vì ép về kho
  * bếp / bar duy nhất của cửa hàng — dùng khi rã lại vì đổi LUẬT rã, không phải vì sai kho.
  */
 import { prisma } from "../lib/prisma.ts";
 import { isPeriodLocked } from "../lib/phase3.ts";
 import { explosionRunSettings, rerunExplosions } from "../lib/inventory-explosion.ts";
-import { EXPLOSION_PENDING, refreshTransferExplosionStatus } from "../lib/explosion-sources.ts";
+import { EXPLOSION_ISSUE_TYPES, EXPLOSION_PENDING, refreshTransferExplosionStatus } from "../lib/explosion-sources.ts";
 import { repostInventoryCogs } from "../lib/accounting.ts";
 import { departmentFromWarehouseGroup, REVENUE_DEPARTMENT_CODES } from "../lib/revenue-department.ts";
 
@@ -233,12 +233,12 @@ try {
       if (includePendingTransfers) {
         // Điều chuyển lập trước luật rã điều chuyển còn explosionStatus trống: xét lại từng phiếu.
         const unset = await tx.inventoryTransaction.findMany({
-          where: { transactionType: "DIEU_CHUYEN", explosionStatus: null, deletedAt: null, branchCode: { in: [...new Set(runs.map((run) => run.branchCode))] } },
+          where: { transactionType: { in: EXPLOSION_ISSUE_TYPES }, explosionStatus: null, deletedAt: null, branchCode: { in: [...new Set(runs.map((run) => run.branchCode))] } },
           select: { id: true },
         });
         let queued = 0;
         for (const transfer of unset) if ((await refreshTransferExplosionStatus(tx, transfer.id)) === EXPLOSION_PENDING) queued += 1;
-        console.log(`\nĐiều chuyển chưa xét rã: ${unset.length} phiếu, ${queued} phiếu có bán thành phẩm có định lượng → vào hàng chờ rã.`);
+        console.log(`\nĐiều chuyển / huỷ / xuất khác chưa xét rã: ${unset.length} phiếu, ${queued} phiếu có bán thành phẩm có định lượng → vào hàng chờ rã.`);
       }
       const reruns = await rerunExplosions(tx, runs, actor, {
         // Mỗi điều chuyển về lần rã SỚM NHẤT của cùng cửa hàng có ngày >= ngày phiếu (rã lại chạy
@@ -250,14 +250,15 @@ try {
           const to = new Date(run.date);
           to.setHours(23, 59, 59, 999);
           const pending = await tx.inventoryTransaction.findMany({
-            where: { transactionType: "DIEU_CHUYEN", branchCode: run.branchCode, explosionStatus: EXPLOSION_PENDING, deletedAt: null, transactionDate: { gte: from, lte: to } },
-            select: { id: true, code: true, transactionDate: true, warehouseCode: true, toWarehouseCode: true },
+            where: { transactionType: { in: EXPLOSION_ISSUE_TYPES }, branchCode: run.branchCode, explosionStatus: EXPLOSION_PENDING, deletedAt: null, transactionDate: { gte: from, lte: to } },
+            select: { id: true, code: true, transactionType: true, transactionDate: true, warehouseCode: true, toWarehouseCode: true },
             orderBy: { transactionDate: "asc" },
           });
           const mine = pending.filter((row) => !claimedTransfers.has(row.id));
           for (const row of mine) claimedTransfers.add(row.id);
           if (mine.length > 0) {
-            console.log(`  ${run.runCode} gộp ${mine.length} điều chuyển: ${mine.slice(0, 12).map((row) => `${row.code} ${day(row.transactionDate)} ${row.warehouseCode}→${row.toWarehouseCode}`).join(", ")}${mine.length > 12 ? "..." : ""}`);
+            const transfers = mine.filter((row) => row.transactionType === "DIEU_CHUYEN").length;
+            console.log(`  ${run.runCode} gộp ${transfers} điều chuyển + ${mine.length - transfers} huỷ / xuất khác: ${mine.slice(0, 12).map((row) => `${row.code} ${day(row.transactionDate)} ${row.warehouseCode}${row.toWarehouseCode ? `→${row.toWarehouseCode}` : ` ${row.transactionType}`}`).join(", ")}${mine.length > 12 ? "..." : ""}`);
           }
           return { transferIds: mine.map((row) => row.id), stocktakeIds: [] };
         } : undefined,
@@ -290,7 +291,7 @@ try {
       await sumProduced(tx, reruns.map((rerun) => rerun.newRunCode).filter(Boolean), producedAfter);
       if (includePendingTransfers) {
         const left = await tx.inventoryTransaction.findMany({
-          where: { transactionType: "DIEU_CHUYEN", explosionStatus: EXPLOSION_PENDING, deletedAt: null, branchCode: { in: [...new Set(runs.map((run) => run.branchCode))] } },
+          where: { transactionType: { in: EXPLOSION_ISSUE_TYPES }, explosionStatus: EXPLOSION_PENDING, deletedAt: null, branchCode: { in: [...new Set(runs.map((run) => run.branchCode))] } },
           select: { code: true, transactionDate: true },
           orderBy: { transactionDate: "asc" },
         });
