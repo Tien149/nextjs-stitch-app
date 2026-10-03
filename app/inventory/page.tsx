@@ -15,6 +15,7 @@ import StickyFilterBar from "@/components/StickyFilterBar";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 import StocktakeByLocation from "@/components/inventory/StocktakeByLocation";
+import StockReportsPanel from "@/components/inventory/StockReportsPanel";
 import MissingRecipesPanel from "@/components/inventory/MissingRecipesPanel";
 import TransferRequestsPanel, { type TransferRequest } from "@/components/inventory/TransferRequestsPanel";
 import StocktakeDocumentsPanel from "@/components/inventory/StocktakeDocumentsPanel";
@@ -67,9 +68,9 @@ type CostingProduct = { productCode: string; productName: string; itemType: stri
 type CostingResult = { costingDate: string; branchCode: string; materialCount: number; updatedBalances: number; levels: Array<{ level: number; products: CostingProduct[] }> };
 type Warehouse = { id: string; code: string; name: string; branch: string | null; group?: string | null };
 type Partner = { code: string; name: string; group: string | null; status: string };
-type MovementByType = Record<string, { inbound: number; outbound: number; value: number }>;
-type StockSummary = { item: Item; warehouseCode: string; openingQuantity: number; inboundQuantity: number; outboundQuantity: number; closingQuantity: number; averageCost: number; closingValue: number; movementByType?: MovementByType };
-type StockMovement = { transactionId: string; code: string; transactionType: string; transactionDate: string; warehouseCode: string; toWarehouseCode: string | null; itemCode: string; itemName: string; unit: string; quantity: number; inboundQuantity: number; outboundQuantity: number; value: number; referenceCode: string | null };
+type MovementByType = Record<string, { inbound: number; outbound: number; inboundValue?: number; outboundValue?: number }>;
+type StockSummary = { item: Item; warehouseCode: string; openingQuantity: number; openingValue?: number; inboundQuantity: number; inboundValue?: number; outboundQuantity: number; outboundValue?: number; closingQuantity: number; averageCost: number; closingValue: number; movementByType?: MovementByType };
+type StockMovement = { transactionId: string; code: string; transactionType: string; subType?: string | null; transactionDate: string; branchCode?: string; warehouseCode: string; toWarehouseCode: string | null; counterpartWarehouseCode?: string | null; itemCode: string; itemName: string; unit: string; itemType?: string; goodsGroup?: string | null; quantity: number; inboundQuantity: number; outboundQuantity: number; unitCost?: number; value: number; referenceCode: string | null; partnerCode?: string | null; partnerName?: string | null; note?: string | null };
 type Stocktake = {
   id: string; code: string; stocktakeDate: string; branchCode: string; warehouseCode: string; status: string; explosionStatus?: string | null;
   /** Phiếu đếm theo vị trí — quản lý ở components/inventory/StocktakeByLocation, không ở danh sách kiểu cũ. */
@@ -98,7 +99,6 @@ const RECIPE_VIEWS: Array<{ id: RecipeView; label: string; icon: string }> = [
   { id: "monthly", label: "Thông tin định lượng trong tháng", icon: "fact_check" },
 ];
 type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; flowTruncated?: boolean; transferRequests?: TransferRequest[]; transferDestinations?: Array<{ code: string; name: string; branch: string | null }>; transferTransactions?: Transaction[]; wasteTransactions?: Transaction[]; warehouseBranches?: Array<{ code: string; branch: string | null }>; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; itemRevenueGroups?: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[] };
-const movementTypes = ["NHAP_MUA", "NHAP_KHAC", "NHAP_CHE_BIEN", "NHAP_KIEM_KE", "XUAT_BAN", "XUAT_HUY", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_CHE_BIEN", "XUAT_KIEM_KE", "DIEU_CHUYEN"];
 /** Loại hiển thị trên hai màn hình Nhập/Xuất. Điều chuyển hiện ở CẢ hai: vế xuất ở kho đi, vế nhập ở kho nhận. */
 const inboundTypes = ["NHAP_MUA", "NHAP_CHE_BIEN", "NHAP_DIEU_CHUYEN", "NHAP_KHAC", "NHAP_KIEM_KE"];
 const outboundTypes = ["XUAT_BAN", "XUAT_CHE_BIEN", "XUAT_HUY", "XUAT_DIEU_CHUYEN", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_KIEM_KE"];
@@ -188,7 +188,8 @@ export default function InventoryPage() {
   // Ô tìm mã / tên hàng của tab Tồn kho — áp cho cả ba bảng của tab.
   const [stockSearch, setStockSearch] = useState("");
   const [reportWarehouse, setReportWarehouse] = useState("ALL");
-  const [reportType, setReportType] = useState("ALL");
+  /** Nhóm hàng hóa của bộ lọc tab Tồn kho: "ALL", tên nhóm, hoặc "__NONE__" = chưa gán nhóm. */
+  const [reportGoodsGroup, setReportGoodsGroup] = useState("ALL");
   /** Khoảng ngày của bảng "Chi tiết phát sinh theo loại giao dịch" — trước đây luôn cắt 100 dòng cuối. */
   const [reportRange, setReportRange] = useState({ from: daysAgo(90), to: today() });
   // Bộ lọc hai màn hình Nhập kho / Xuất kho: theo nhà hàng + theo loại nhập/xuất.
@@ -517,33 +518,10 @@ export default function InventoryPage() {
   }
   const reportStoreKey = reportStore.toUpperCase();
   const inReportStore = (warehouseCode: string) => reportStore === "ALL" || branchByWarehouse.get(warehouseCode) === reportStoreKey;
-  const reportWarehouseOptions = warehouseOptions.filter((warehouse) => reportStore === "ALL" || (warehouse.branch || "").toUpperCase() === reportStoreKey);
   const stockKeyword = foldSearchText(stockSearch.trim());
+  const matchesStockGroup = (group: string | null | undefined) => reportGoodsGroup === "ALL" || (reportGoodsGroup === "__NONE__" ? !group : group === reportGoodsGroup);
   const matchesStockSearch = (code: string, name: string) => !stockKeyword
     || foldSearchText(code).includes(stockKeyword) || foldSearchText(name).includes(stockKeyword);
-  const filteredStockSummary = data.stockSummary.filter((row) => {
-    if (!inReportStore(row.warehouseCode)) return false;
-    if (!matchesStockSearch(row.item.code, row.item.name)) return false;
-    if (reportWarehouse !== "ALL" && row.warehouseCode !== reportWarehouse) return false;
-    if (reportType !== "ALL") {
-      const movement = row.movementByType?.[reportType];
-      return !!movement && (movement.inbound > 0 || movement.outbound > 0);
-    }
-    return true;
-  });
-  const filteredStockMovements = data.stockMovements.filter((row) => {
-    if (!inReportStore(row.warehouseCode)) return false;
-    if (!matchesStockSearch(row.itemCode, row.itemName)) return false;
-    if (reportWarehouse !== "ALL" && row.warehouseCode !== reportWarehouse) return false;
-    if (reportType !== "ALL" && row.transactionType !== reportType) return false;
-    const day = String(row.transactionDate).slice(0, 10);
-    if (reportRange.from && day < reportRange.from) return false;
-    if (reportRange.to && day > reportRange.to) return false;
-    return true;
-  }).reverse();
-  /** Bảng chỉ vẽ 500 dòng mới nhất trong khoảng ngày — hẹp khoảng ngày lại để xem phần còn lại. */
-  const stockMovementRows = filteredStockMovements.slice(0, 500);
-
   /**
    * Phiếu kho quy về hai chiều Nhập/Xuất. Điều chuyển góp một dòng cho MỖI màn hình:
    * "Xuất điều chuyển" đứng ở cửa hàng/kho đi, "Nhập điều chuyển" ở cửa hàng/kho nhận.
@@ -1769,136 +1747,30 @@ export default function InventoryPage() {
       )}
 
       {active === "stock" && (
-        <section className="table-panel shadow-sm mb-5">
-          <Panel title="Nhập - Xuất - Tồn cơ bản theo kho" reload={loadData} exportFileName="nhap_xuat_ton_theo_kho" />
-          <div className="px-5 pb-4 grid sm:grid-cols-3 gap-3">
-            {/* Cửa hàng và Kho áp cho cả ba bảng của tab Tồn kho; Kho chỉ còn các kho của cửa hàng đã chọn. */}
-            <Input label="Cửa hàng">
-              <select
-                className="control"
-                value={reportStore}
-                onChange={(e) => {
-                  const store = e.target.value;
-                  setReportStore(store);
-                  const picked = warehouseOptions.find((warehouse) => warehouse.code === reportWarehouse);
-                  if (store !== "ALL" && picked && (picked.branch || "").toUpperCase() !== store.toUpperCase()) setReportWarehouse("ALL");
-                }}
-              >
-                <option value="ALL">Tất cả cửa hàng</option>
-                {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
-              </select>
-            </Input>
-            <Input label="Kho">
-              <select className="control" value={reportWarehouse} onChange={(e) => setReportWarehouse(e.target.value)}>
-                <option value="ALL">Tất cả kho</option>
-                {reportWarehouseOptions.map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>)}
-              </select>
-            </Input>
-            <Input label="Loại giao dịch">
-              <select className="control" value={reportType} onChange={(e) => setReportType(e.target.value)}>
-                <option value="ALL">Tất cả loại</option>
-                {movementTypes.map((type) => <option key={type} value={type}>{movementTypeLabel(type)}</option>)}
-              </select>
-            </Input>
-            {/* Kỳ dùng chung với bảng Chi tiết phát sinh: đầu kỳ / nhập / xuất / cuối kỳ theo khoảng ngày này. */}
-            <Input label="Từ ngày">
-              <input type="date" className="control" value={reportRange.from} onChange={(e) => setReportRange({ ...reportRange, from: e.target.value })} />
-            </Input>
-            <Input label="Đến ngày">
-              <input type="date" className="control" value={reportRange.to} onChange={(e) => setReportRange({ ...reportRange, to: e.target.value })} />
-            </Input>
-            <Input label="Tìm mã / tên hàng">
-              <input className="control" placeholder="Gõ mã hoặc tên mặt hàng..." value={stockSearch} onChange={(e) => setStockSearch(e.target.value)} />
-            </Input>
-          </div>
-          <Table
-            headers={[
-              { label: "Mặt hàng" },
-              { label: "Kho" },
-              { label: "Đầu kỳ", align: "right" },
-              { label: "Nhập", align: "right" },
-              { label: "Xuất", align: "right" },
-              { label: "Cuối kỳ", align: "right" },
-              { label: "Giá bình quân", align: "right" },
-              { label: "Giá trị tồn", align: "right" },
-            ]}
-          >
-            {(filteredStockSummary.length ? filteredStockSummary : data.balances.filter((row) => inReportStore(row.warehouseCode) && matchesStockSearch(row.item.code, row.item.name) && (reportWarehouse === "ALL" || row.warehouseCode === reportWarehouse)).map((row) => ({
-              item: row.item,
-              warehouseCode: row.warehouseCode,
-              openingQuantity: row.quantity,
-              inboundQuantity: 0,
-              outboundQuantity: 0,
-              closingQuantity: row.quantity,
-              averageCost: row.averageCost,
-              closingValue: row.quantity * row.averageCost,
-              movementByType: {},
-            }))).map((row) => (
-              <tr key={`nxt-${row.item.id}-${row.warehouseCode}`} className="border-t border-slate-100">
-                <Cell>
-                  <b><CopyableText value={row.item.code} /> - {row.item.name}</b>
-                  <small>{row.item.unit}</small>
-                </Cell>
-                <Cell>{row.warehouseCode}</Cell>
-                <Cell right>{qty(row.openingQuantity)}</Cell>
-                <Cell right>{qty(row.inboundQuantity)}</Cell>
-                <Cell right>{qty(row.outboundQuantity)}</Cell>
-                <Cell right><b>{qty(row.closingQuantity)}</b></Cell>
-                <Cell right>{unitPrice(row.averageCost)} đ</Cell>
-                <Cell right><b>{money(row.closingValue)} đ</b></Cell>
-              </tr>
-            ))}
-          </Table>
-        </section>
-      )}
-
-      {active === "stock" && (
-        <section className="table-panel shadow-sm mb-5">
-          <Panel title="Chi tiết phát sinh theo loại giao dịch" reload={loadData} exportFileName="chi_tiet_phat_sinh_kho" />
-          <div className="px-5 pb-4 grid sm:grid-cols-2 gap-3">
-            <Input label="Từ ngày">
-              <input type="date" className="control" value={reportRange.from} onChange={(e) => setReportRange({ ...reportRange, from: e.target.value })} />
-            </Input>
-            <Input label="Đến ngày">
-              <input type="date" className="control" value={reportRange.to} onChange={(e) => setReportRange({ ...reportRange, to: e.target.value })} />
-            </Input>
-          </div>
-          {filteredStockMovements.length > stockMovementRows.length && (
-            <p className="px-5 pb-3 text-xs text-amber-700">
-              Khoảng ngày này có {qty(filteredStockMovements.length)} dòng, bảng đang hiện 500 dòng mới nhất — thu hẹp khoảng ngày để xem phần còn lại.
-            </p>
-          )}
-          <Table
-            headers={[
-              { label: "Ngày" },
-              { label: "Chứng từ" },
-              { label: "Loại" },
-              { label: "Kho" },
-              { label: "Mặt hàng" },
-              { label: "Nhập", align: "right" },
-              { label: "Xuất", align: "right" },
-              { label: "Giá trị", align: "right" },
-            ]}
-          >
-            {stockMovementRows.map((row) => (
-              <tr key={`${row.transactionId}-${row.itemCode}-${row.warehouseCode}-${row.inboundQuantity}-${row.outboundQuantity}`} className="border-t border-slate-100">
-                <Cell>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}</Cell>
-                <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{row.referenceCode || "-"}</small></Cell>
-                <Cell><span className="status bg-slate-100">{movementTypeLabel(row.transactionType)}</span></Cell>
-                <Cell>{row.warehouseCode}</Cell>
-                <Cell><b>{row.itemCode}</b><small>{row.itemName}</small></Cell>
-                <Cell right>{row.inboundQuantity ? `${qty(row.inboundQuantity)} ${row.unit}` : "-"}</Cell>
-                <Cell right>{row.outboundQuantity ? `${qty(row.outboundQuantity)} ${row.unit}` : "-"}</Cell>
-                <Cell right>{money(row.value)} đ</Cell>
-              </tr>
-            ))}
-          </Table>
-        </section>
+        <StockReportsPanel
+          summary={data.stockSummary}
+          movements={data.stockMovements}
+          warehouses={warehouseOptions}
+          branchOf={(code) => branchByWarehouse.get(code) || ""}
+          storeOptions={visibleStoreOptions(user)}
+          storeLabel={storeLabel}
+          store={reportStore}
+          setStore={setReportStore}
+          warehouse={reportWarehouse}
+          setWarehouse={setReportWarehouse}
+          goodsGroup={reportGoodsGroup}
+          setGoodsGroup={setReportGoodsGroup}
+          search={stockSearch}
+          setSearch={setStockSearch}
+          range={reportRange}
+          setRange={setReportRange}
+          reload={() => void loadData()}
+        />
       )}
 
       {active === "stock" && (
         <section className="table-panel shadow-sm">
-          <Panel title="Tồn kho theo kho" reload={loadData} exportFileName="ton_kho_theo_kho" />
+          <Panel title="Tồn kho hiện tại theo kho (real time)" reload={loadData} exportFileName="ton_kho_hien_tai_theo_kho" />
           <Table
             headers={[
               { label: "Mặt hàng" },
@@ -1909,7 +1781,7 @@ export default function InventoryPage() {
               { label: "Cảnh báo" },
             ]}
           >
-            {data.balances.filter((row) => inReportStore(row.warehouseCode) && matchesStockSearch(row.item.code, row.item.name) && (reportWarehouse === "ALL" || row.warehouseCode === reportWarehouse)).map((row) => (
+            {data.balances.filter((row) => inReportStore(row.warehouseCode) && matchesStockGroup(row.item.goodsGroup) && matchesStockSearch(row.item.code, row.item.name) && (reportWarehouse === "ALL" || row.warehouseCode === reportWarehouse)).map((row) => (
               <tr key={row.id} className="border-t border-slate-100">
                 <Cell>
                   <b><CopyableText value={row.item.code} /> - {row.item.name}</b>

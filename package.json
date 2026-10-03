@@ -154,7 +154,8 @@
     "chan-doan:phan-bo": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/chan-doan-phan-bo-chi-phi.mjs",
     "test:department-scope": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-department-scope-auth.mjs",
     "test:direct-payroll": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-direct-payroll-lines.mjs",
-    "test:asset-lot": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-asset-lot.mjs"
+    "test:asset-lot": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-asset-lot.mjs",
+    "test:stock-report": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-stock-report.mjs"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",

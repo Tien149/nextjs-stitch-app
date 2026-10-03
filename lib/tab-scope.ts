@@ -22,7 +22,7 @@ const tabDataKeys: Record<string, Record<string, string[]>> = {
     templates: ["templates"],
   },
   "/inventory": {
-    stock: ["balances", "stockSummary"],
+    stock: ["balances", "stockSummary", "stockMovements"],
     inbound: ["transactions", "flowTransactions", "stockMovements"],
     outbound: ["transactions", "flowTransactions", "stockMovements"],
     transfer: ["transactions", "transferTransactions", "transferRequests", "transferDestinations"],

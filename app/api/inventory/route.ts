@@ -210,49 +210,66 @@ type MovementLineSource = {
   id: string;
   code: string;
   transactionType: string;
+  subType: string | null;
   transactionDate: Date;
+  branchCode: string;
   warehouseCode: string;
   toWarehouseCode: string | null;
   referenceCode: string | null;
-  lines: Array<{ quantity: number; totalCost: number; item: { code: string; name: string; unit: string } }>;
+  partnerCode: string | null;
+  note: string | null;
+  lines: Array<{ quantity: number; unitCost: number; totalCost: number; item: { code: string; name: string; unit: string; itemType: string; goodsGroup: string | null } }>;
 };
 
 /**
  * Nhật ký nhập/xuất từng dòng của tab Tồn kho. Điều chuyển sinh hai dòng: vế xuất ở kho đi và
- * vế nhập ở kho nhận.
+ * vế nhập ở kho nhận (`counterpartWarehouseCode` là kho bên kia). Đủ cột cho các báo cáo tổng hợp /
+ * chi tiết nhập, xuất (nhóm hàng hóa, NCC, đơn giá, diễn giải).
  */
-function buildStockMovements(transactions: MovementLineSource[]) {
+function buildStockMovements(transactions: MovementLineSource[], partnerNames: Map<string, string> = new Map()) {
   const rows: Array<{
-    transactionId: string; code: string; transactionType: string; transactionDate: Date;
-    warehouseCode: string; toWarehouseCode: string | null; itemCode: string; itemName: string; unit: string;
-    quantity: number; inboundQuantity: number; outboundQuantity: number; value: number; referenceCode: string | null;
+    transactionId: string; code: string; transactionType: string; subType: string | null; transactionDate: Date; branchCode: string;
+    warehouseCode: string; toWarehouseCode: string | null; counterpartWarehouseCode: string | null;
+    itemCode: string; itemName: string; unit: string; itemType: string; goodsGroup: string | null;
+    quantity: number; inboundQuantity: number; outboundQuantity: number; unitCost: number; value: number;
+    referenceCode: string | null; partnerCode: string | null; partnerName: string | null; note: string | null;
   }> = [];
   for (const transaction of transactions) {
     const inbound = transaction.transactionType.startsWith("NHAP_");
     const outbound = transaction.transactionType.startsWith("XUAT_") || transaction.transactionType === "DIEU_CHUYEN";
     if (!inbound && !outbound) continue;
+    const partnerCode = transaction.partnerCode || null;
     for (const line of transaction.lines) {
       const base = {
         transactionId: transaction.id,
         code: transaction.code,
         transactionType: transaction.transactionType,
+        subType: transaction.subType,
         transactionDate: transaction.transactionDate,
+        branchCode: transaction.branchCode,
         itemCode: line.item.code,
         itemName: line.item.name,
         unit: line.item.unit,
+        itemType: line.item.itemType,
+        goodsGroup: line.item.goodsGroup,
         quantity: line.quantity,
+        unitCost: line.unitCost,
         value: line.totalCost,
         referenceCode: transaction.referenceCode,
+        partnerCode,
+        partnerName: partnerCode ? partnerNames.get(partnerCode.toUpperCase()) || null : null,
+        note: transaction.note,
       };
       rows.push({
         ...base,
         warehouseCode: transaction.warehouseCode,
         toWarehouseCode: transaction.toWarehouseCode,
+        counterpartWarehouseCode: transaction.toWarehouseCode,
         inboundQuantity: inbound ? line.quantity : 0,
         outboundQuantity: inbound ? 0 : line.quantity,
       });
       if (transaction.transactionType === "DIEU_CHUYEN" && transaction.toWarehouseCode) {
-        rows.push({ ...base, warehouseCode: transaction.toWarehouseCode, toWarehouseCode: null, inboundQuantity: line.quantity, outboundQuantity: 0 });
+        rows.push({ ...base, warehouseCode: transaction.toWarehouseCode, toWarehouseCode: null, counterpartWarehouseCode: transaction.warehouseCode, inboundQuantity: line.quantity, outboundQuantity: 0 });
       }
     }
   }
@@ -286,9 +303,9 @@ type MovementTotalRow = {
   /** Phát sinh TRONG kỳ. */
   quantity: number; value: number;
   /** Phát sinh từ đầu kỳ trở đi (để lùi tồn hiện tại về tồn đầu kỳ). */
-  afterFromQuantity: number;
+  afterFromQuantity: number; afterFromValue: number;
   /** Phát sinh sau cuối kỳ (để lùi tồn hiện tại về tồn cuối kỳ). */
-  afterToQuantity: number;
+  afterToQuantity: number; afterToValue: number;
 };
 
 async function loadMovementTotals(branchCode: string, period: { from: Date | null; toEnd: Date | null } = { from: null, toEnd: null }) {
@@ -301,7 +318,9 @@ async function loadMovementTotals(branchCode: string, period: { from: Date | nul
     COALESCE(SUM(l."quantity") FILTER (WHERE t."transactionDate" >= ${from} AND t."transactionDate" < ${toEnd}), 0)::float8 AS quantity,
     COALESCE(SUM(l."totalCost") FILTER (WHERE t."transactionDate" >= ${from} AND t."transactionDate" < ${toEnd}), 0)::float8 AS value,
     COALESCE(SUM(l."quantity") FILTER (WHERE t."transactionDate" >= ${from}), 0)::float8 AS "afterFromQuantity",
-    COALESCE(SUM(l."quantity") FILTER (WHERE t."transactionDate" >= ${toEnd}), 0)::float8 AS "afterToQuantity"`;
+    COALESCE(SUM(l."totalCost") FILTER (WHERE t."transactionDate" >= ${from}), 0)::float8 AS "afterFromValue",
+    COALESCE(SUM(l."quantity") FILTER (WHERE t."transactionDate" >= ${toEnd}), 0)::float8 AS "afterToQuantity",
+    COALESCE(SUM(l."totalCost") FILTER (WHERE t."transactionDate" >= ${toEnd}), 0)::float8 AS "afterToValue"`;
   return prisma.$queryRaw<MovementTotalRow[]>(Prisma.sql`
     SELECT l."itemId", t."warehouseCode", t."transactionType", 'FROM' AS side, ${columns}
     FROM "InventoryTransactionLine" l
@@ -321,43 +340,60 @@ async function loadMovementTotals(branchCode: string, period: { from: Date | nul
 
 /**
  * Bảng Nhập - Xuất - Tồn theo kỳ: nhập / xuất = phát sinh trong kỳ; tồn đầu kỳ và cuối kỳ lùi
- * từ tồn HIỆN TẠI của kho bằng phát sinh sau mốc tương ứng. Giá trị tồn cuối kỳ tính theo giá
- * bình quân hiện tại của kho (không lưu lịch sử bình quân theo ngày).
+ * từ tồn HIỆN TẠI của kho bằng phát sinh sau mốc tương ứng. Trị giá cũng lùi như vậy (giá trị tồn
+ * hiện tại = SL × giá bình quân, trừ trị giá phát sinh sau mốc) nên khớp
+ * đầu kỳ + nhập − xuất = cuối kỳ — không lưu lịch sử giá bình quân theo ngày.
+ *
+ * `movementByType` tách theo loại phiếu; điều chuyển tách hai vế NHAP_DIEU_CHUYEN (kho nhận) /
+ * XUAT_DIEU_CHUYEN (kho đi) cho các cột "Nhập/Xuất điều chuyển" của bảng theo từng kho.
  */
 function buildStockSummary<TBalance extends { itemId: string; warehouseCode: string; quantity: number; averageCost: number }>(
   balances: TBalance[],
   movementTotals: MovementTotalRow[],
 ) {
-  type Bucket = { inbound: number; outbound: number; netAfterFrom: number; netAfterTo: number; byType: Record<string, { inbound: number; outbound: number; value: number }> };
+  type TypeBucket = { inbound: number; outbound: number; inboundValue: number; outboundValue: number };
+  type Bucket = { inbound: number; outbound: number; inboundValue: number; outboundValue: number; netAfterFrom: number; netAfterTo: number; valueAfterFrom: number; valueAfterTo: number; byType: Record<string, TypeBucket> };
+  const empty = (): Bucket => ({ inbound: 0, outbound: 0, inboundValue: 0, outboundValue: 0, netAfterFrom: 0, netAfterTo: 0, valueAfterFrom: 0, valueAfterTo: 0, byType: {} });
   const movements = new Map<string, Bucket>();
   for (const row of movementTotals) {
     const key = `${row.itemId}|${row.warehouseCode}`;
-    const bucket = movements.get(key) || { inbound: 0, outbound: 0, netAfterFrom: 0, netAfterTo: 0, byType: {} };
+    const bucket = movements.get(key) || empty();
     const sign = row.side === "FROM" && !row.transactionType.startsWith("NHAP_") ? -1 : 1;
-    if (sign > 0) bucket.inbound += row.quantity;
-    else bucket.outbound += row.quantity;
+    if (sign > 0) { bucket.inbound += row.quantity; bucket.inboundValue += row.value; }
+    else { bucket.outbound += row.quantity; bucket.outboundValue += row.value; }
     bucket.netAfterFrom += sign * row.afterFromQuantity;
     bucket.netAfterTo += sign * row.afterToQuantity;
-    if (row.quantity) {
-      bucket.byType[row.transactionType] ||= { inbound: 0, outbound: 0, value: 0 };
-      if (sign > 0) bucket.byType[row.transactionType].inbound += row.quantity;
-      else bucket.byType[row.transactionType].outbound += row.quantity;
-      bucket.byType[row.transactionType].value += row.value;
+    bucket.valueAfterFrom += sign * row.afterFromValue;
+    bucket.valueAfterTo += sign * row.afterToValue;
+    if (row.quantity || row.value) {
+      const type = row.transactionType === "DIEU_CHUYEN" ? (sign > 0 ? "NHAP_DIEU_CHUYEN" : "XUAT_DIEU_CHUYEN") : row.transactionType;
+      const typeBucket = bucket.byType[type] ||= { inbound: 0, outbound: 0, inboundValue: 0, outboundValue: 0 };
+      if (sign > 0) { typeBucket.inbound += row.quantity; typeBucket.inboundValue += row.value; }
+      else { typeBucket.outbound += row.quantity; typeBucket.outboundValue += row.value; }
     }
     movements.set(key, bucket);
   }
   return balances.map((balance) => {
-    const movement = movements.get(`${balance.itemId}|${balance.warehouseCode}`) || { inbound: 0, outbound: 0, netAfterFrom: 0, netAfterTo: 0, byType: {} };
+    const movement = movements.get(`${balance.itemId}|${balance.warehouseCode}`) || empty();
+    const currentValue = balance.quantity * balance.averageCost;
+    const openingQuantity = balance.quantity - movement.netAfterFrom;
     const closingQuantity = balance.quantity - movement.netAfterTo;
+    // Hết hàng mà còn lẻ dưới 10 đ (làm tròn trị giá từng phiếu) thì coi là 0. Lệch lớn hơn là phiếu
+    // xuất định giá khác giá bình quân (điều chuyển theo giá mua gần nhất...) — giữ nguyên để hàng
+    // vẫn khớp Đầu kỳ + Nhập − Xuất = Cuối kỳ và cuối kỳ khớp giá trị tồn hiện tại.
+    const valueAt = (quantity: number, value: number) => (Math.abs(quantity) < 0.0005 && Math.abs(value) < 10 ? 0 : value);
     return {
       item: (balance as unknown as { item: unknown }).item,
       warehouseCode: balance.warehouseCode,
-      openingQuantity: balance.quantity - movement.netAfterFrom,
+      openingQuantity,
+      openingValue: valueAt(openingQuantity, currentValue - movement.valueAfterFrom),
       inboundQuantity: movement.inbound,
+      inboundValue: movement.inboundValue,
       outboundQuantity: movement.outbound,
+      outboundValue: movement.outboundValue,
       closingQuantity,
+      closingValue: valueAt(closingQuantity, currentValue - movement.valueAfterTo),
       averageCost: balance.averageCost,
-      closingValue: closingQuantity * balance.averageCost,
       movementByType: movement.byType,
     };
   });
@@ -398,12 +434,17 @@ async function loadStockMovements(branchFilter: { branchCode?: string }, searchP
   const transactions = await prisma.inventoryTransaction.findMany({
     where: { ...branchFilter, ...movementDateFilter(searchParams) },
     select: {
-      id: true, code: true, transactionType: true, transactionDate: true, warehouseCode: true, toWarehouseCode: true, referenceCode: true,
-      lines: { select: { quantity: true, totalCost: true, item: { select: { code: true, name: true, unit: true } } } },
+      id: true, code: true, transactionType: true, subType: true, transactionDate: true, branchCode: true, warehouseCode: true, toWarehouseCode: true,
+      referenceCode: true, partnerCode: true, note: true,
+      lines: { select: { quantity: true, unitCost: true, totalCost: true, item: { select: { code: true, name: true, unit: true, itemType: true, goodsGroup: true } } } },
     },
     orderBy: { transactionDate: "asc" },
   });
-  return buildStockMovements(transactions);
+  const partnerCodes = [...new Set(transactions.map((row) => row.partnerCode).filter((code): code is string => !!code))];
+  const partners = partnerCodes.length
+    ? await prisma.masterDataItem.findMany({ where: { type: "PARTNER", code: { in: partnerCodes, mode: "insensitive" } }, select: { code: true, name: true } })
+    : [];
+  return buildStockMovements(transactions, new Map(partners.map((partner) => [partner.code.toUpperCase(), partner.name])));
 }
 
 /**
