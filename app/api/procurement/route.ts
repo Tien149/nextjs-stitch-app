@@ -250,6 +250,30 @@ export async function GET(request: Request) {
     const view = searchParams.get("view");
     // Danh sách yêu cầu mua có lọc (khách yêu cầu 03/10/2026): cửa hàng, phòng ban, trạng thái,
     // khoảng ngày yêu cầu. Lọc ở máy chủ vì payload chung chỉ mang 100 PR mới nhất.
+    // Danh sách đơn mua hàng có lọc (khách yêu cầu 03/10/2026): cửa hàng, phòng ban, trạng thái,
+    // khoảng ngày đặt, đã gửi NCC hay chưa (có link chia sẻ = đã gửi).
+    if (view === "orders") {
+      const dayStart = (value: string | null) => (value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T00:00:00+07:00`) : null);
+      const from = dayStart(searchParams.get("from"));
+      const toStart = dayStart(searchParams.get("to"));
+      const toExclusive = toStart ? new Date(toStart.getTime() + 86_400_000) : null;
+      const status = cleanText(searchParams.get("status")).toUpperCase();
+      const sent = cleanText(searchParams.get("sent")).toUpperCase();
+      const departmentCode = cleanText(searchParams.get("departmentCode"));
+      const orders = await prisma.purchaseOrder.findMany({
+        where: {
+          ...branchFilter,
+          ...(departmentCode && departmentCode !== "ALL" ? (departmentCode === "NONE" ? { departmentCode: null } : { departmentCode }) : {}),
+          ...(status && status !== "ALL" ? { status } : {}),
+          ...(sent === "YES" ? { shareToken: { not: null } } : sent === "NO" ? { shareToken: null } : {}),
+          ...(from || toExclusive ? { orderDate: { ...(from ? { gte: from } : {}), ...(toExclusive ? { lt: toExclusive } : {}) } } : {}),
+        },
+        include: { lines: { include: { item: true } }, payable: true, request: true },
+        orderBy: { orderDate: "desc" },
+        take: 2000,
+      });
+      return NextResponse.json({ orders, truncated: orders.length >= 2000 });
+    }
     if (view === "requests") {
       const parseDay = (value: string | null, endOfDay: boolean) => {
         if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;

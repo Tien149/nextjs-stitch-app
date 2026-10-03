@@ -120,7 +120,9 @@ export default function ProcurementPage() {
   /** Dòng nào lấy giá từ Bảng giá NCC: itemId → "BG-202610-0001 · 120.000 đ/THÙNG". */
   const [quotePriceSource, setQuotePriceSource] = useState<Record<string, string>>({});
 
-  const [warehouseCode, setWarehouseCode] = useState("KHO_HCM");
+  /** Tab Đơn mua hàng: lọc cửa hàng / phòng ban / trạng thái / ngày đặt / đã gửi NCC (03/10/2026). */
+  const [orderFilter, setOrderFilter] = useState({ branchCode: "ALL", departmentCode: "ALL", status: "ALL", sent: "ALL", from: "", to: "", search: "" });
+  const [orderList, setOrderList] = useState<{ rows: PurchaseOrder[]; truncated: boolean } | null>(null);
 
   /** Đề nghị mua hàng / báo giá / đơn mua hàng đang được sửa. */
   const [editingRequest, setEditingRequest] = useState<PurchaseRequest | null>(null);
@@ -376,6 +378,20 @@ export default function ProcurementPage() {
     });
     return () => { cancelled = true; };
   }, [quoteForm.supplierCode, quoteForm.requestId, editingQuote, data.requests, data.priceSuggestions]);
+
+  // Danh sách PO có lọc — tải lại khi đổi bộ lọc hoặc sau mỗi thao tác (loadData đổi data.orders).
+  useEffect(() => {
+    if (active !== "orders") return;
+    let cancelled = false;
+    const query = new URLSearchParams({ view: "orders", branchCode: orderFilter.branchCode, departmentCode: orderFilter.departmentCode, status: orderFilter.status, sent: orderFilter.sent });
+    if (orderFilter.from) query.set("from", orderFilter.from);
+    if (orderFilter.to) query.set("to", orderFilter.to);
+    void fetch(`/api/procurement?${query.toString()}`).then(async (response) => {
+      const payload = response.ok ? await response.json() as { orders: PurchaseOrder[]; truncated: boolean } : { orders: [], truncated: false };
+      if (!cancelled) setOrderList({ rows: payload.orders, truncated: payload.truncated });
+    });
+    return () => { cancelled = true; };
+  }, [active, orderFilter.branchCode, orderFilter.departmentCode, orderFilter.status, orderFilter.sent, orderFilter.from, orderFilter.to, data.orders]);
 
   // Danh sách PR có lọc — tải lại khi đổi bộ lọc hoặc sau mỗi thao tác (loadData đổi data.requests).
   useEffect(() => {
@@ -754,9 +770,9 @@ export default function ProcurementPage() {
   };
 
   const createOrder = async (request: PurchaseRequest, quote: Quote) => {
-    // Kho đang chọn phải thuộc cửa hàng của PR; nếu không thì lấy kho gợi ý theo phân nhóm mặt hàng.
-    const validForBranch = warehousesForBranch(request.branchCode).some((warehouse) => warehouse.code === warehouseCode);
-    await send("POST", { action: "CREATE_ORDER", requestId: request.id, supplierCode: quote.supplierCode, supplierName: quote.supplierName, branchCode: request.branchCode, departmentCode: request.departmentCode, warehouseCode: validForBranch ? warehouseCode : suggestedWarehouseForRequest(request), lines: quote.lines.map((line) => ({ itemId: line.itemId, quantity: line.quantity, unitCost: line.unitCost })) }, "Đã tạo PO nháp từ báo giá. Vui lòng duyệt PO trước khi nhận hàng.");
+    // Kho nhận lấy theo gợi ý phân nhóm mặt hàng của PR (ô "Kho nhận" ở tab Đơn mua hàng đã bỏ
+    // 03/10/2026 — khách tưởng là bộ lọc). Đổi kho thì sửa trên PO nháp.
+    await send("POST", { action: "CREATE_ORDER", requestId: request.id, supplierCode: quote.supplierCode, supplierName: quote.supplierName, branchCode: request.branchCode, departmentCode: request.departmentCode, warehouseCode: suggestedWarehouseForRequest(request), lines: quote.lines.map((line) => ({ itemId: line.itemId, quantity: line.quantity, unitCost: line.unitCost })) }, "Đã tạo PO nháp từ báo giá. Vui lòng duyệt PO trước khi nhận hàng.");
     setActive("orders");
   };
 
@@ -768,6 +784,10 @@ export default function ProcurementPage() {
   if (loading) return <div className="h-screen grid place-items-center bg-slate-100">Đang tải...</div>;
 
   const requestTotal = (request: PurchaseRequest) => request.lines.reduce((sum, line) => sum + line.quantity * line.estimatedUnitCost, 0);
+  const orderKeyword = orderFilter.search.trim().toLowerCase();
+  const filteredOrders = (orderList?.rows || []).filter((order) => !orderKeyword
+    || `${order.code} ${order.supplierName} ${order.supplierCode} ${order.note || ""}`.toLowerCase().includes(orderKeyword)
+    || order.lines.some((line) => line.item.code.toLowerCase().includes(orderKeyword) || line.item.name.toLowerCase().includes(orderKeyword)));
   const requestKeyword = requestFilter.search.trim().toLowerCase();
   const filteredRequests = (requestList?.rows || []).filter((request) => !requestKeyword
     || `${request.code} ${request.reason} ${request.requestedBy}`.toLowerCase().includes(requestKeyword)
@@ -1457,29 +1477,59 @@ export default function ProcurementPage() {
               <h2 className="font-bold">Đơn mua hàng (PO)</h2>
               <p className="text-xs text-slate-500 mt-1">Duyệt PO → &quot;Gửi NCC&quot; gửi phiếu thẳng qua Zalo / email / SMS → nhận hàng tại đây hoặc ở Kho &amp; Định lượng. Không đặt nữa thì &quot;Huỷ đơn&quot;.</p>
             </div>
-            <ExportExcelButton fileName="don_mua_hang" sheetName="PO" />
-            <div className="flex items-center gap-3">
-              <label className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
-                Kho nhận:
-                <select value={warehouseCode} onChange={(e) => setWarehouseCode(e.target.value)} className="control py-1 px-2 text-xs">
-                  {data.warehouses.length === 0 && (
-                    <>
-                      <option value="KHO_HCM">Kho Cửa hàng 1 (KHO_HCM)</option>
-                      <option value="KHO_HN">Kho Cửa hàng 2 (KHO_HN)</option>
-                    </>
-                  )}
-                  {data.warehouses.map((warehouse) => (
-                    <option key={warehouse.id} value={warehouse.code}>{warehouse.name} ({warehouse.code})</option>
-                  ))}
-                </select>
-              </label>
+            <div className="flex items-center gap-2">
+              <ExportExcelButton fileName="don_mua_hang" sheetName="PO" />
               <button type="button" title="Tải lại" onClick={loadData} className="icon-button"><span className="material-symbols-outlined text-lg">refresh</span></button>
             </div>
           </div>
 
+          {/* Lọc theo cửa hàng, phòng ban, trạng thái, ngày đặt, đã gửi NCC chưa (khách yêu cầu 03/10/2026). */}
+          <div className="px-4 sm:px-5 pt-4 grid grid-cols-2 lg:grid-cols-7 gap-3">
+            <Field label="Cửa hàng">
+              <select className="control" value={orderFilter.branchCode} onChange={(e) => setOrderFilter({ ...orderFilter, branchCode: e.target.value, departmentCode: "ALL" })}>
+                <option value="ALL">Tất cả cửa hàng</option>
+                {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
+              </select>
+            </Field>
+            <Field label="Phòng ban">
+              <select className="control" value={orderFilter.departmentCode} onChange={(e) => setOrderFilter({ ...orderFilter, departmentCode: e.target.value })}>
+                <option value="ALL">Tất cả phòng ban</option>
+                {data.departments
+                  .filter((item) => orderFilter.branchCode === "ALL" || !item.branch || item.branch === "ALL" || item.branch === orderFilter.branchCode)
+                  .map((item) => <option key={item.id} value={item.code}>{item.name}{item.branch && item.branch !== "ALL" && orderFilter.branchCode === "ALL" ? ` (${storeLabel(item.branch)})` : ""}</option>)}
+                <option value="NONE">Chưa gán phòng ban</option>
+              </select>
+            </Field>
+            <Field label="Trạng thái">
+              <select className="control" value={orderFilter.status} onChange={(e) => setOrderFilter({ ...orderFilter, status: e.target.value })}>
+                <option value="ALL">Tất cả trạng thái</option>
+                {["DRAFT", "APPROVED", "PARTIALLY_RECEIVED", "COMPLETED", "CANCELLED"].map((status) => <option key={status} value={status}>{orderStatusLabel(status)}</option>)}
+              </select>
+            </Field>
+            <Field label="Gửi NCC">
+              <select className="control" value={orderFilter.sent} onChange={(e) => setOrderFilter({ ...orderFilter, sent: e.target.value })}>
+                <option value="ALL">Tất cả</option>
+                <option value="YES">Đã gửi NCC</option>
+                <option value="NO">Chưa gửi NCC</option>
+              </select>
+            </Field>
+            <Field label="Từ ngày">
+              <input type="date" className="control" value={orderFilter.from} onChange={(e) => setOrderFilter({ ...orderFilter, from: e.target.value })} />
+            </Field>
+            <Field label="Đến ngày">
+              <input type="date" className="control" value={orderFilter.to} onChange={(e) => setOrderFilter({ ...orderFilter, to: e.target.value })} />
+            </Field>
+            <Field label="Tìm mã / NCC / mặt hàng">
+              <input className="control" value={orderFilter.search} placeholder="Gõ để tìm..." onChange={(e) => setOrderFilter({ ...orderFilter, search: e.target.value })} />
+            </Field>
+          </div>
+          <p className="px-4 sm:px-5 py-3 text-xs text-slate-500 border-b border-slate-100">
+            {orderList === null ? "Đang tải..." : <>Đang hiện <b>{filteredOrders.length}</b> đơn · tổng tiền <b>{money(filteredOrders.reduce((sum, order) => sum + order.totalAmount, 0))} đ</b> · đã gửi NCC <b>{filteredOrders.filter((order) => order.shareToken).length}</b>{orderList.truncated ? " — khoảng ngày quá rộng, chỉ hiện 2.000 đơn mới nhất." : ""}</>}
+          </p>
+
           {/* Mobile: thẻ PO — Desktop: bảng */}
           <div className="md:hidden px-3 py-3 space-y-2.5">
-            {data.orders.map((order) => {
+            {filteredOrders.map((order) => {
               const totalOrdered = order.lines.reduce((sum, line) => sum + line.orderedQuantity, 0);
               const totalReceived = order.lines.reduce((sum, line) => sum + line.receivedQuantity, 0);
               return (
@@ -1539,6 +1589,7 @@ export default function ProcurementPage() {
               { label: "Mã PO" },
               { label: "Nhà cung cấp" },
               { label: "Cửa hàng/Kho" },
+              { label: "Phòng ban" },
               { label: "Tổng tiền", align: "right" },
               { label: "Trạng thái" },
               { label: "Tài sản/CCDC" },
@@ -1546,7 +1597,7 @@ export default function ProcurementPage() {
               { label: "Thao tác", align: "right" },
             ]}
           >
-            {data.orders.map((order) => {
+            {filteredOrders.map((order) => {
               const totalOrdered = order.lines.reduce((sum, line) => sum + line.orderedQuantity, 0);
               const totalReceived = order.lines.reduce((sum, line) => sum + line.receivedQuantity, 0);
               return (
@@ -1563,10 +1614,15 @@ export default function ProcurementPage() {
                     <b>{storeLabel(order.branchCode)}</b>
                     <small>Kho: {order.warehouseCode}</small>
                   </td>
+                  <td className="cell">
+                    <b>{order.departmentCode ? departmentName(order.departmentCode) : <span className="text-slate-400 font-normal">Chưa gán</span>}</b>
+                    {order.departmentCode && <small>{order.departmentCode}</small>}
+                  </td>
                   <td className="cell text-right font-bold">{money(order.totalAmount)} đ</td>
                   <td className="cell">
                     <span className={`status ${orderStatusStyle(order.status)}`}>{orderStatusLabel(order.status)}</span>
                     <small className="block mt-0.5 text-[10px] text-slate-500">Đã nhận: {totalReceived}/{totalOrdered}</small>
+                    <small className={`block text-[10px] font-semibold ${order.shareToken ? "text-sky-700" : "text-slate-400"}`}>{order.shareToken ? "Đã gửi NCC" : "Chưa gửi NCC"}</small>
                   </td>
                   <td className="cell">
                     <b>{order.lines.filter((line) => ["TOOL", "ASSET"].includes(line.item.itemType)).length} dòng</b>
