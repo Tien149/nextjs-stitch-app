@@ -55,6 +55,7 @@ export const TRASH_ENTITIES: TrashEntity[] = [
   },
   { model: "PurchaseOrder", label: "Đơn mua hàng", module: "/procurement", codeField: "code", titleField: "supplierName", branchField: "branchCode" },
   { model: "SupplierQuote", label: "Báo giá nhà cung cấp", module: "/procurement", codeField: "supplierCode", titleField: "supplierName" },
+  { model: "SupplierPriceList", label: "Bảng giá NCC", module: "/procurement", codeField: "code", titleField: "supplierName", branchField: "branchCode" },
 
   {
     model: "AssetRecord", label: "Tài sản", module: "/assets", codeField: "code", titleField: "name", branchField: "branchCode", dateField: "purchaseDate",

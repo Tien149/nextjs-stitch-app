@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { priceDeviation } from "@/lib/supplier-price-list";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { movementTypeLabel } from "@/lib/inventory-movement-labels";
@@ -265,6 +266,7 @@ export default function InventoryPage() {
   const [itemStatusFilter, setItemStatusFilter] = useState("ALL");
   const [bulkStatusRunning, setBulkStatusRunning] = useState(false);
   const [conversionForm, setConversionForm] = useState({ itemId: "", purchaseUnit: "thung", conversionRate: "24", note: "" });
+  const [supplierPrices, setSupplierPrices] = useState<{ key: string; prices: Array<{ itemId: string; unitCode: string; unitPrice: number; vatRate: number | null; stockUnitPrice: number; priceListCode: string; effectiveFrom: string; effectiveTo: string | null }> }>({ key: "", prices: [] });
   const [stockForm, setStockForm] = useState({ transactionType: "NHAP_MUA", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HN", itemId: "", inputUnitCode: "", quantity: "10", unitCost: "100000", vatRate: "KKKNT", vatAmount: "", partnerCode: "", paymentDueDate: "", referenceCode: "", note: "Nhap kho van hanh" });
   /** Nhập mua theo PO (GRPO): PO đã duyệt còn hàng chưa nhận + số lượng nhận trên từng dòng. */
   const [receivablePOs, setReceivablePOs] = useState<ReceivablePO[]>([]);
@@ -546,6 +548,10 @@ export default function InventoryPage() {
   const activePartners = data.partners.filter((partner) => partner.status === "ACTIVE");
   /** Nhập mua có khai NCC thì phiếu sinh kèm công nợ phải trả — nói trước để khỏi bất ngờ. */
   const createsPurchasePayable = active === "inbound" && stockForm.transactionType === "NHAP_MUA" && !!stockForm.partnerCode;
+  /** Giá Bảng giá NCC của mặt hàng đang nhập (khách yêu cầu 03/10/2026): tham chiếu + cảnh báo lệch. */
+  const supplierPriceKey = active === "inbound" && stockForm.transactionType === "NHAP_MUA" && stockForm.partnerCode ? `${stockForm.partnerCode}|${stockForm.branchCode}` : "";
+  const listPrice = supplierPrices.key === supplierPriceKey ? supplierPrices.prices.find((price) => price.itemId === stockForm.itemId) : undefined;
+  const listPriceDeviation = listPrice && stockBaseUnitCost > 0 ? priceDeviation(stockBaseUnitCost, listPrice.stockUnitPrice) : null;
   const partnerFormGroups = (() => {
     const order = active === "inbound"
       ? ["SUPPLIER", "CUSTOMER", "OTHER_PARTNER"]
@@ -1045,6 +1051,17 @@ export default function InventoryPage() {
   // không nằm sẵn trên trình duyệt.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { if (!loading) window.setTimeout(() => void loadData(), 0); }, [loading, flowRange.from, flowRange.to]);
+  // Bảng giá NCC đang hiệu lực của NCC + cửa hàng trên form Nhập mua.
+  const supplierPriceQuery = active === "inbound" && stockForm.transactionType === "NHAP_MUA" && stockForm.partnerCode ? `${stockForm.partnerCode}|${stockForm.branchCode}` : "";
+  useEffect(() => {
+    if (!supplierPriceQuery) return;
+    const [supplierCode, branchCode] = supplierPriceQuery.split("|");
+    let cancelled = false;
+    void fetch(`/api/inventory?view=supplier-prices&supplierCode=${encodeURIComponent(supplierCode)}&branchCode=${encodeURIComponent(branchCode)}`, { headers: getSessionHeaders() })
+      .then(async (response) => (response.ok ? response.json() : { prices: [] }))
+      .then((payload) => { if (!cancelled) setSupplierPrices({ key: supplierPriceQuery, prices: payload.prices || [] }); });
+    return () => { cancelled = true; };
+  }, [supplierPriceQuery]);
   useEffect(() => {
     if (!/^\d{4}-\d{2}$/.test(costMonth)) return;
     let cancelled = false;
@@ -2404,6 +2421,35 @@ export default function InventoryPage() {
                   ))}
                 </select>
               </Input>
+
+              {listPrice && (
+                <div className={`rounded-lg border px-3 py-2 text-xs !mt-2 ${listPriceDeviation && !listPriceDeviation.matched ? "border-rose-200 bg-rose-50 text-rose-800" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span>
+                      Bảng giá <b>{listPrice.priceListCode}</b>: <b>{money(listPrice.unitPrice)} đ/{listPrice.unitCode}</b> trước thuế · {vatRateLabel(listPrice.vatRate)}
+                      {" "}(= {unitPrice(listPrice.stockUnitPrice)} đ/{selectedStockItem?.unit})
+                    </span>
+                    <button
+                      type="button"
+                      className="font-bold underline"
+                      onClick={() => setStockForm({
+                        ...stockForm,
+                        inputUnitCode: stockUnits.some((unit) => unit.unitCode === listPrice.unitCode) ? listPrice.unitCode : stockForm.inputUnitCode,
+                        unitCost: String(stockUnits.some((unit) => unit.unitCode === listPrice.unitCode) ? listPrice.unitPrice : Math.round(listPrice.stockUnitPrice * stockConversionRate * 100) / 100),
+                        vatRate: vatRateLabel(listPrice.vatRate),
+                      })}
+                    >
+                      Dùng giá bảng giá
+                    </button>
+                  </div>
+                  {listPriceDeviation && !listPriceDeviation.matched && (
+                    <p className="mt-1 font-bold">
+                      Đơn giá nhập {unitPrice(stockBaseUnitCost)} đ/{selectedStockItem?.unit} lệch bảng giá {listPriceDeviation.diff > 0 ? "+" : ""}{unitPrice(listPriceDeviation.diff)} đ
+                      {listPriceDeviation.ratio !== null ? ` (${listPriceDeviation.diff > 0 ? "+" : ""}${(listPriceDeviation.ratio * 100).toLocaleString("vi-VN", { maximumFractionDigits: 1 })}%)` : ""} — kiểm tra lại hoá đơn NCC.
+                    </p>
+                  )}
+                </div>
+              )}
 
               {createsPurchasePayable && (<>
                 <div className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-800 !mt-2">

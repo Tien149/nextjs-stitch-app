@@ -395,6 +395,8 @@ export const moduleTabs: Record<string, Array<{ id: string; label: string }>> = 
   ],
   "/procurement": [
     { id: "quotes", label: "So sánh giá" },
+    // Bảng giá theo NCC × khoảng hiệu lực, không cần yêu cầu mua (khách yêu cầu 03/10/2026).
+    { id: "price-lists", label: "Bảng giá NCC" },
     // "Đặt theo mẫu" là màn nhân viên nhà hàng dùng trên điện thoại: mở mẫu set sẵn,
     // điền số lượng là ra PR — gán riêng tab này cho vai trò cửa hàng là đủ.
     { id: "templates", label: "Đặt theo mẫu" },
@@ -431,7 +433,7 @@ export const moduleTabIcons: Record<string, string> = {
   dashboard: "dashboard", operations: "fact_check", budget: "price_check", "payroll-budget": "groups", "daily-cash": "receipt", "cash-source": "savings", "revenue-ledger": "point_of_sale", "revenue-settlement": "rule",
   activity: "history", pnl: "finance", yoy: "query_stats", cashflow: "timeline", balance: "account_balance",
   cashbook: "account_balance_wallet", accruals: "calendar_month", expenses: "payments", closing: "lock",
-  requests: "assignment", quotes: "compare_arrows", orders: "local_shipping", templates: "playlist_add_check",
+  requests: "assignment", quotes: "compare_arrows", "price-lists": "sell", orders: "local_shipping", templates: "playlist_add_check",
   stock: "inventory", transactions: "swap_horiz", inbound: "download", outbound: "upload", transfer: "sync_alt", items: "category", recipes: "menu_book",
   production: "blender", stocktake: "fact_check", waste: "delete_sweep",
   "stocktake-explanation": "rate_review", "stocktake-result": "assignment_turned_in",
@@ -487,6 +489,8 @@ export function canOpenPath(session: DemoSession | string | null | undefined, pa
 /** Tab con đi theo quyền của tab gốc: ai được tab gốc thì được luôn các tab này. */
 const MODULE_TAB_FAMILIES: Record<string, Record<string, string[]>> = {
   "/inventory": { stocktake: ["stocktake-explanation", "stocktake-result"] },
+  // Ai được tick "So sánh giá" thì cũng làm Bảng giá NCC (tab mới 03/10/2026).
+  "/procurement": { quotes: ["price-lists"] },
 };
 
 export function allowedMenuTabs(session: DemoSession | null | undefined, path: string) {

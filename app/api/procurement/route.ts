@@ -18,6 +18,9 @@ import { nextAssetCode } from "@/lib/asset-code-generator";
 import { postInventoryTransaction, nextStockDocCode } from "@/lib/inventory-stock";
 import { defaultPurchaseUnit } from "@/lib/unit-conversion";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
+import { parseVatRate } from "@/lib/inventory-vat";
+import { buildPriceImport, type PriceImportItem } from "@/lib/supplier-price-list";
+import { findPriceDeviations, loadActivePrices, loadPriceLists, savePriceList } from "@/lib/supplier-price-list-db";
 
 const menuHref = "/procurement";
 
@@ -60,6 +63,20 @@ type InputLine = {
  * Mã chứng từ mua hàng: max + 1 trong chuỗi `PREFIX-YYYY-`, KHÔNG đếm COUNT — xoá mềm làm
  * COUNT tụt và mã cấp lại đâm chứng từ đang sống. Tra bằng SQL thô để thấy cả bản ghi đã xoá.
  */
+/**
+ * Bảng giá riêng một cửa hàng: người lập phải có quyền cửa hàng đó. Bảng giá chung (để trống
+ * cửa hàng) áp cho mọi nơi nên chỉ người có quyền tất cả cửa hàng mới lập được.
+ */
+function assertPriceListBranch(session: DemoSession, branchCode: string | null) {
+  if (branchCode) {
+    assertBranchAccess(session, branchCode);
+    return;
+  }
+  if (!session.allowedBranches?.includes("ALL")) {
+    businessError("Bảng giá chung (mọi cửa hàng) cần quyền tất cả cửa hàng — hãy chọn cửa hàng cụ thể.");
+  }
+}
+
 async function generatedCode(prefix: "PR" | "PO", table: "PurchaseRequest" | "PurchaseOrder") {
   const head = `${prefix}-${new Date().getFullYear()}-`;
   const rows = table === "PurchaseRequest"
@@ -79,6 +96,23 @@ function validLines(value: unknown) {
       note: cleanText(line.note),
     }))
     .filter((line) => line.itemId && line.quantity > 0);
+}
+
+/**
+ * Thuế suất từng dòng báo giá (khách yêu cầu 03/10/2026), khoá itemId. Ô trống = KKKNT (null);
+ * gõ sai thì báo lỗi thay vì lặng lẽ coi là không thuế.
+ */
+function quoteVatRates(value: unknown) {
+  const rates = new Map<string, number | null>();
+  if (!Array.isArray(value)) return rates;
+  for (const line of value as Array<Record<string, unknown>>) {
+    const itemId = cleanText(line.itemId);
+    if (!itemId) continue;
+    const vat = parseVatRate(line.vatRate);
+    if (!vat.ok) businessError(`Thuế suất "${String(line.vatRate)}" không hợp lệ (KKKNT, 0%, 5%, 8%, 10%)`);
+    rates.set(itemId, vat.rate);
+  }
+  return rates;
 }
 
 /**
@@ -199,6 +233,26 @@ export async function GET(request: Request) {
 
     const { searchParams } = new URL(request.url);
     const branchFilter = branchFilterForSession(auth.session, searchParams.get("branchCode") || "ALL");
+
+    // ---- Bảng giá NCC (khách yêu cầu 03/10/2026) ----
+    const view = searchParams.get("view");
+    if (view === "price-lists") {
+      return NextResponse.json({ priceLists: await loadPriceLists() });
+    }
+    // Giá đang hiệu lực của một NCC tại một ngày — form báo giá tự điền đơn giá + thuế suất.
+    if (view === "active-prices") {
+      const day = cleanText(searchParams.get("day")) || new Date().toISOString().slice(0, 10);
+      const prices = await loadActivePrices({ day, branchCode: cleanText(searchParams.get("branchCode")) || null, supplierCode: cleanText(searchParams.get("supplierCode")) || null });
+      return NextResponse.json({ prices: [...prices.values()] });
+    }
+    // Phiếu nhập mua trong tháng lệch bảng giá.
+    if (view === "price-deviations") {
+      const month = cleanText(searchParams.get("month"));
+      if (!/^\d{4}-\d{2}$/.test(month)) businessError("Chọn tháng cần đối chiếu");
+      const scoped = branchFilterForSession(auth.session, cleanText(searchParams.get("branchCode")) || "ALL") as { branchCode?: string | { in: string[] } };
+      const branchCodes = !scoped.branchCode ? null : typeof scoped.branchCode === "string" ? [scoped.branchCode] : scoped.branchCode.in;
+      return NextResponse.json(await findPriceDeviations({ month, supplierCode: cleanText(searchParams.get("supplierCode")) || null, branchCodes }));
+    }
 
     const [items, requests, orders, departments, itemGroups, warehouses, assetGroups, templates, suppliers, priceSuggestions] = await Promise.all([
       // Thành phẩm (FINISHED) bán tại POS, không mua vào nên không đưa vào danh sách chọn của PR/PO.
@@ -354,6 +408,7 @@ export async function POST(request: Request) {
         businessError(duplicatedInTrashMessage(supplierCode, `Báo giá của ${supplierName} trên ${pr.code}`));
       }
       const totalAmount = lines.reduce((sum, line) => sum + line.quantity * line.unitCost, 0);
+      const vatRates = quoteVatRates(body.lines);
       const result = await prisma.supplierQuote.create({
         data: {
           requestId,
@@ -369,6 +424,7 @@ export async function POST(request: Request) {
               quantity: line.quantity,
               unitCost: line.unitCost,
               totalCost: line.quantity * line.unitCost,
+              vatRate: vatRates.get(line.itemId) ?? null,
             })),
           },
         },
@@ -471,6 +527,84 @@ export async function POST(request: Request) {
       });
       await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "CREATE_ORDER", entityType: "PurchaseOrder", entityId: result.id, entityCode: result.code, branchCode, metadata: { requestId, supplierCode, supplierName, departmentCode, warehouseCode, totalAmount } });
       return NextResponse.json(result, { status: 201 });
+    }
+
+    // ---- Bảng giá NCC ----
+    if (action === "SAVE_PRICE_LIST") {
+      const supplierCode = cleanText(body.supplierCode).toUpperCase();
+      const branchCode = cleanText(body.branchCode).toUpperCase() || null;
+      const from = cleanText(body.from);
+      const to = cleanText(body.to) || null;
+      if (!supplierCode || !/^\d{4}-\d{2}-\d{2}$/.test(from)) businessError("Bảng giá cần nhà cung cấp và ngày bắt đầu áp dụng");
+      assertPriceListBranch(auth.session, branchCode);
+      const supplier = await prisma.masterDataItem.findFirst({ where: { type: "PARTNER", code: { equals: supplierCode, mode: "insensitive" } }, select: { code: true, name: true } });
+      if (!supplier) businessError(`Không tìm thấy nhà cung cấp ${supplierCode}`);
+      const rawLines = Array.isArray(body.lines) ? (body.lines as Array<Record<string, unknown>>) : [];
+      const items = await prisma.inventoryItem.findMany({
+        where: { id: { in: rawLines.map((line) => cleanText(line.itemId)).filter(Boolean) } },
+        include: { unitConversions: { where: { deletedAt: null } } },
+      });
+      const itemById = new Map(items.map((item) => [item.id, item]));
+      const lines = rawLines.filter((line) => cleanText(line.itemId)).map((line, index) => {
+        const item = itemById.get(cleanText(line.itemId));
+        if (!item) businessError(`Dòng ${index + 1}: mặt hàng không tồn tại`);
+        const unitCode = (cleanText(line.unitCode) || item.unit).toUpperCase();
+        const conversion = unitCode === item.unit.toUpperCase() ? null : item.unitConversions.find((candidate) => candidate.unitCode.toUpperCase() === unitCode);
+        if (unitCode !== item.unit.toUpperCase() && !conversion) businessError(`Dòng ${index + 1}: ${item.code} chưa khai ĐVT ${unitCode}`);
+        const unitPrice = toNumber(line.unitPrice);
+        if (!(unitPrice >= 0)) businessError(`Dòng ${index + 1}: đơn giá không hợp lệ`);
+        const vat = parseVatRate(line.vatRate);
+        if (!vat.ok) businessError(`Dòng ${index + 1}: thuế suất không hợp lệ`);
+        return { itemId: item.id, unitCode, conversionRate: conversion?.conversionRate || 1, unitPrice, vatRate: vat.rate, note: cleanText(line.note) || null };
+      });
+      const duplicate = lines.find((line, index) => lines.findIndex((other) => other.itemId === line.itemId && other.unitCode === line.unitCode) !== index);
+      if (duplicate) businessError(`Mặt hàng ${itemById.get(duplicate.itemId)?.code} (${duplicate.unitCode}) bị lặp trong bảng giá`);
+      const saved = await savePriceList({
+        id: cleanText(body.id) || null,
+        supplierCode: supplier.code,
+        supplierName: supplier.name,
+        branchCode,
+        from,
+        to,
+        note: cleanText(body.note) || null,
+        lines,
+      }, auth.session.name);
+      await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "SAVE_PRICE_LIST", entityType: "SupplierPriceList", entityId: saved.id, entityCode: saved.code, branchCode: branchCode || "ALL", metadata: { supplierCode, from, to, lines: lines.length } });
+      return NextResponse.json(saved, { status: 201 });
+    }
+
+    // Import Excel: commit=false chỉ kiểm tra (xem trước), commit=true ghi khi không còn lỗi.
+    if (action === "IMPORT_PRICE_LISTS") {
+      const rows = Array.isArray(body.rows) ? (body.rows as Array<Record<string, unknown>>) : [];
+      if (rows.length === 0) businessError("File không có dòng dữ liệu");
+      if (rows.length > 20000) businessError("File quá lớn (tối đa 20.000 dòng)");
+      const [suppliers, items, branches] = await Promise.all([
+        prisma.masterDataItem.findMany({ where: { type: "PARTNER" }, select: { code: true, name: true } }),
+        prisma.inventoryItem.findMany({ select: { id: true, code: true, name: true, unit: true, unitConversions: { where: { deletedAt: null }, select: { unitCode: true, conversionRate: true } } } }),
+        prisma.masterDataItem.findMany({ where: { type: "BRANCH" }, select: { code: true } }),
+      ]);
+      const result = buildPriceImport(rows, {
+        suppliers: new Map(suppliers.map((row) => [row.code.toUpperCase(), row.name])),
+        items: new Map(items.map((item) => [item.code.toUpperCase(), item as PriceImportItem])),
+        branches: new Set(branches.map((row) => row.code.toUpperCase())),
+      });
+      for (const group of result.groups) {
+        try {
+          assertPriceListBranch(auth.session, group.branchCode);
+        } catch (error) {
+          result.errors.push({ row: group.lines[0]?.row || 0, message: error instanceof Error ? error.message.replace(/^BUSINESS:/, "") : String(error) });
+        }
+      }
+      const summary = result.groups.map((group) => ({ supplierCode: group.supplierCode, supplierName: group.supplierName, branchCode: group.branchCode, from: group.from, to: group.to, lineCount: group.lines.length }));
+      if (!body.commit || result.errors.length > 0) {
+        return NextResponse.json({ committed: false, groups: summary, errors: result.errors.sort((a, b) => a.row - b.row).slice(0, 500), errorCount: result.errors.length });
+      }
+      const saved = [];
+      for (const group of result.groups) {
+        saved.push(await savePriceList({ ...group, source: "IMPORT", lines: group.lines }, auth.session.name));
+      }
+      await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "IMPORT_PRICE_LISTS", entityType: "SupplierPriceList", entityId: saved[0]?.id || "", entityCode: saved.map((row) => row.code).join(", ").slice(0, 180), branchCode: "ALL", metadata: { groups: saved.length, rows: rows.length } });
+      return NextResponse.json({ committed: true, groups: summary, codes: saved.map((row) => row.code), errors: [], errorCount: 0 });
     }
 
     if (action === "CREATE_TEMPLATE") {
@@ -961,6 +1095,7 @@ export async function PATCH(request: Request) {
       }
 
       const nextLines = body.lines !== undefined ? editableLines(body.lines) : null;
+      const vatRates = quoteVatRates(body.lines);
       const totalAmount = nextLines
         ? nextLines.reduce((sum, line) => sum + line.quantity * line.unitCost, 0)
         : quote.totalAmount;
@@ -975,6 +1110,7 @@ export async function PATCH(request: Request) {
               quantity: line.quantity,
               unitCost: line.unitCost,
               totalCost: line.quantity * line.unitCost,
+              vatRate: vatRates.get(line.itemId) ?? null,
             })),
           });
         }
@@ -1253,7 +1389,14 @@ export async function DELETE(request: Request) {
       return NextResponse.json(await softDeleteRecord({ model: "SupplierQuote", id, session: auth.session, reason }));
     }
 
-    return businessError(`Loại chứng từ "${type || "(trống)"}" không được hỗ trợ. Dùng type=REQUEST, ORDER, QUOTE hoặc TEMPLATE.`);
+    if (["PRICE_LIST", "SUPPLIER_PRICE_LIST", "SUPPLIERPRICELIST"].includes(type)) {
+      const list = await prisma.supplierPriceList.findUnique({ where: { id } });
+      if (!list) businessError("Không tìm thấy bảng giá");
+      assertPriceListBranch(auth.session, list.branchCode);
+      return NextResponse.json(await softDeleteRecord({ model: "SupplierPriceList", id, session: auth.session, reason }));
+    }
+
+    return businessError(`Loại chứng từ "${type || "(trống)"}" không được hỗ trợ. Dùng type=REQUEST, ORDER, QUOTE, TEMPLATE hoặc PRICE_LIST.`);
   } catch (error) {
     if (error instanceof SoftDeleteError) {
       return NextResponse.json({ error: error.message }, { status: error.status });

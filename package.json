@@ -155,7 +155,8 @@
     "test:department-scope": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-department-scope-auth.mjs",
     "test:direct-payroll": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-direct-payroll-lines.mjs",
     "test:asset-lot": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-asset-lot.mjs",
-    "test:stock-report": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-stock-report.mjs"
+    "test:stock-report": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-stock-report.mjs",
+    "test:supplier-price-list": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-supplier-price-list.mjs"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",

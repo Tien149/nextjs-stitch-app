@@ -25,50 +25,50 @@ model Document {
 }
 
 model MasterDataItem {
-  id           String   @id @default(uuid())
-  type         String
-  code         String
-  name         String
-  group        String?
+  id                 String   @id @default(uuid())
+  type               String
+  code               String
+  name               String
+  group              String?
   /// Mã của danh mục cha trong ba tầng phân loại thu/chi:
   /// Phân cấp P&L: PNL_ITEM lưu mã PNL_GROUP. Danh mục Thu/Chi không liên kết P&L.
   /// Riêng INVENTORY_ITEM_GROUP: lưu NHÓM KHO tương ứng của phân nhóm mặt hàng
   /// (khớp cột group của kho WAREHOUSE ở từng cửa hàng, ví dụ BEP / BAR / FOH).
-  subGroup     String?
-  partnerType  String?
-  partnerGroup String?
-  branch       String?
-  taxCode      String?
-  contactName  String?
-  phone        String?
-  email        String?
+  subGroup           String?
+  partnerType        String?
+  partnerGroup       String?
+  branch             String?
+  taxCode            String?
+  contactName        String?
+  phone              String?
+  email              String?
   /// Địa chỉ — cửa hàng (in ở "Nơi nhận" trên phiếu đặt hàng gửi NCC) và đối tác.
-  address      String?
-  accountNo    String?
+  address            String?
+  accountNo          String?
   /// Tiền tố sinh mã tự động cho danh mục hỗ trợ cấp mã, hiện dùng cho Nhóm tài sản/CCDC.
-  codePrefix   String?
+  codePrefix         String?
   /// Nguồn tiền ngân hàng mà ví/POS này sẽ quyết toán về. Chỉ dùng cho MONEY_SOURCE nhóm WALLET,
   /// để báo cáo nguồn tiền quy được doanh thu ví chưa về bank vào cột Dự thu trong kỳ.
   settlementBankCode String?
   /// Tên "Nguồn tiền tổng" — các MONEY_SOURCE cùng tên tổng được Báo cáo nguồn tiền gộp thành một dòng.
-  summarySourceName String?
+  summarySourceName  String?
   /// Từ khoá người dùng tự khai để import nhận ra danh mục này khi file ghi bằng chữ thay vì mã.
   /// Hiện dùng cho REVENUE_EXPENSE_CATEGORY nhóm Thu: "ĐỒ ĂN, MÓN ĂN" -> nhóm doanh thu bếp.
   /// Nhiều từ khoá ngăn bằng dấu phẩy hoặc xuống dòng (lib/revenue-source.ts).
-  matchKeywords String?
+  matchKeywords      String?
   /// Nhóm doanh thu KHÔNG theo dõi tồn kho (phụ thu, dịch vụ, thuê không gian...): doanh thu
   /// vẫn ghi nhận đủ nhưng dòng mang nhóm này không vào hàng chờ "Rã nguyên liệu" và import
   /// không tự tạo mặt hàng cho nó. Chỉ REVENUE_EXPENSE_CATEGORY nhóm REVENUE_SOURCE dùng.
-  skipInventory Boolean @default(false)
+  skipInventory      Boolean  @default(false)
   /// Đối tác KHÔNG theo dõi công nợ (khách lẻ, khách vãng lai): chứng từ thu/chi và dòng sao kê
   /// mang đối tác này không cộng vào bảng Công nợ. Khoản nợ đã ghi nhận hẳn hoi (khoản nợ, công
   /// nợ NCC, tiền cọc, số dư đầu kỳ) thì VẪN tính — cờ này chỉ dọn số công nợ ảo do tiền bán
   /// hàng bị gắn tên đối tác, không phải cái công tắc giấu nợ. Chỉ PARTNER dùng.
-  skipDebtTracking Boolean @default(false)
-  status       String   @default("ACTIVE")
-  note         String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  skipDebtTracking   Boolean  @default(false)
+  status             String   @default("ACTIVE")
+  note               String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   deletedAt DateTime?
   deletedBy String?
@@ -436,9 +436,9 @@ model FinancialVoucher {
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
 
-  importBatch      ImportBatch?     @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
-  depositHistories DepositHistory[]
-  debtSettlements  DebtSettlement[]
+  importBatch        ImportBatch?        @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  depositHistories   DepositHistory[]
+  debtSettlements    DebtSettlement[]
   /// Phiếu chi một người nhận cho nhiều đối tác: mỗi dòng một đối tác + số tiền (+ mã công nợ).
   partnerAllocations VoucherAllocation[]
 
@@ -540,54 +540,54 @@ model VoucherAllocation {
 }
 
 model AssetRecord {
-  id                      String              @id @default(uuid())
+  id                        String               @id @default(uuid())
   /// Mã tài sản/CCDC. Một mã có thể có NHIỀU ĐỢT (mua tăng cùng loại ở thời điểm khác, hoặc
   /// số dư đầu kỳ khai hai đợt với thời gian phân bổ khác nhau — khách chốt 26/09/2026): mỗi
   /// đợt là một dòng riêng để khấu hao/phân bổ chạy theo đúng ngày mua và số kỳ của đợt đó.
-  code                    String
+  code                      String
   /// Số thứ tự đợt của mã (1 = đợt đầu). Cặp (code, lotNo) là duy nhất.
-  lotNo                   Int                 @default(1)
-  name                    String
-  branchCode              String
-  departmentCode          String?
-  assetGroup              String
-  imageUrl                String?
-  location                String?
-  warehouseCode           String?
-  quantity                Float               @default(1)
-  purchaseDate            DateTime
-  originalCost            Float
-  currentValue            Float
+  lotNo                     Int                  @default(1)
+  name                      String
+  branchCode                String
+  departmentCode            String?
+  assetGroup                String
+  imageUrl                  String?
+  location                  String?
+  warehouseCode             String?
+  quantity                  Float                @default(1)
+  purchaseDate              DateTime
+  originalCost              Float
+  currentValue              Float
   /// Khấu hao/phân bổ ĐÃ trích TRƯỚC khi lên hệ thống (tài sản/CCDC khai ở số dư đầu kỳ). Các kỳ
   /// chạy trên hệ thống nằm ở AssetDepreciation, không cộng vào cột này.
-  accumulatedDepreciation Float               @default(0)
+  accumulatedDepreciation   Float                @default(0)
   /// Số kỳ đã phân bổ trước khi lên hệ thống — đi cùng accumulatedDepreciation.
-  openingDepreciatedPeriods Int             @default(0)
+  openingDepreciatedPeriods Int                  @default(0)
   /// Tài sản sinh từ số dư đầu kỳ: không ghi bút toán ghi tăng (ASSET_ACQUISITION) vì số dư đầu
   /// kỳ đã ghi Nợ 211/242 rồi.
-  openingBalanceId        String?
-  usefulLifeMonths        Int?
-  depreciationStartDate   DateTime?
-  residualValue           Float               @default(0)
-  supplierCode            String?
-  supplierName            String?
-  paymentStatus           String              @default("UNSPECIFIED")
-  payableAmount           Float               @default(0)
-  paymentDueDate          DateTime?
-  sourcePurchaseOrderId   String?
-  sourceReceiptId         String?
-  disposalDate            DateTime?
-  disposalStatus          String?
-  disposalAmount          Float?              @default(0)
-  disposalNote            String?
-  status                  String              @default("IN_USE")
-  note                    String?
-  createdAt               DateTime            @default(now())
-  updatedAt               DateTime            @updatedAt
-  depreciations           AssetDepreciation[]
-  stocktakeLines          AssetStocktakeLine[]
-  maintenances            AssetMaintenance[]
-  damageReports           AssetDamageReport[]
+  openingBalanceId          String?
+  usefulLifeMonths          Int?
+  depreciationStartDate     DateTime?
+  residualValue             Float                @default(0)
+  supplierCode              String?
+  supplierName              String?
+  paymentStatus             String               @default("UNSPECIFIED")
+  payableAmount             Float                @default(0)
+  paymentDueDate            DateTime?
+  sourcePurchaseOrderId     String?
+  sourceReceiptId           String?
+  disposalDate              DateTime?
+  disposalStatus            String?
+  disposalAmount            Float?               @default(0)
+  disposalNote              String?
+  status                    String               @default("IN_USE")
+  note                      String?
+  createdAt                 DateTime             @default(now())
+  updatedAt                 DateTime             @updatedAt
+  depreciations             AssetDepreciation[]
+  stocktakeLines            AssetStocktakeLine[]
+  maintenances              AssetMaintenance[]
+  damageReports             AssetDamageReport[]
 
   deletedAt DateTime?
   deletedBy String?
@@ -651,17 +651,18 @@ model InventoryItem {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  balances         InventoryBalance[]
-  unitConversions  ItemUnitConversion[]
-  transactionLines InventoryTransactionLine[]
-  recipeLines      RecipeLine[]
-  stocktakeLines   StocktakeLine[]
+  balances               InventoryBalance[]
+  unitConversions        ItemUnitConversion[]
+  transactionLines       InventoryTransactionLine[]
+  recipeLines            RecipeLine[]
+  stocktakeLines         StocktakeLine[]
   stocktakeLocationItems StocktakeLocationItem[]
   stocktakeBatchLines    StocktakeBatchLine[]
-  requestLines     PurchaseRequestLine[]
-  orderLines       PurchaseOrderLine[]
-  quoteLines       SupplierQuoteLine[]
-  templateLines    PurchaseRequestTemplateLine[]
+  requestLines           PurchaseRequestLine[]
+  orderLines             PurchaseOrderLine[]
+  quoteLines             SupplierQuoteLine[]
+  priceListLines         SupplierPriceListLine[]
+  templateLines          PurchaseRequestTemplateLine[]
 
   deletedAt DateTime?
   deletedBy String?
@@ -732,31 +733,31 @@ model InventoryTransferRequest {
 }
 
 model StocktakeSession {
-  id            String    @id @default(uuid())
-  code          String    @unique
-  stocktakeDate DateTime  @default(now())
-  branchCode    String
-  warehouseCode String
-  status        String    @default("DRAFT")
-  approvedBy    String?
-  approvedAt    DateTime?
-  note          String?
+  id              String    @id @default(uuid())
+  code            String    @unique
+  stocktakeDate   DateTime  @default(now())
+  branchCode      String
+  warehouseCode   String
+  status          String    @default("DRAFT")
+  approvedBy      String?
+  approvedAt      DateTime?
+  note            String?
   /// Rã BOM cho phần kiểm DƯ của bán thành phẩm có định lượng (khách chốt 28/09/2026): null =
   /// không có gì để rã; "PENDING" = chờ nút Rã ở tab Chế biến; "POSTED:RA-..." = đã rã.
   explosionStatus String?
   /// Kế toán trả lại phiếu (status RETURNED) kèm lý do để nhà hàng sửa rồi gửi lại — lib/stocktake-status.ts.
-  returnedReason String?
-  returnedBy     String?
-  returnedAt     DateTime?
+  returnedReason  String?
+  returnedBy      String?
+  returnedAt      DateTime?
   /// Phiếu đếm THEO VỊ TRÍ (khách chốt 28/09/2026): mã StocktakeLocation trong kho. Phiếu có vị trí
   /// chỉ ghi số đếm, không tự so sổ sách — kế toán duyệt GỘP nhiều phiếu thành một đợt
   /// (StocktakeBatch) và so tổng số đếm với sổ sách tại giờ chốt. null = phiếu kiểm cả kho kiểu cũ.
-  locationCode  String?
+  locationCode    String?
   /// Đợt duyệt gộp đã chốt phiếu này (lib/stocktake-batch.ts). Mở lại đợt thì về null.
-  batchId       String?
-  createdBy     String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  batchId         String?
+  createdBy       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   lines StocktakeLine[]
   batch StocktakeBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
@@ -851,21 +852,21 @@ model StocktakeLocationItem {
 /// (cutoffAt): mọi phiếu kho có ngày chứng từ <= giờ chốt; phiếu điều chỉnh -N / -X mang đúng
 /// giờ chốt. Mở lại = đảo phiếu điều chỉnh, status REOPENED; duyệt lại sinh đợt mới.
 model StocktakeBatch {
-  id                  String    @id @default(uuid())
-  code                String    @unique
-  branchCode          String
-  warehouseCode       String
-  cutoffAt            DateTime
-  status              String    @default("APPROVED")
-  approvedBy          String?
-  approvedAt          DateTime?
-  reopenedBy          String?
-  reopenedAt          DateTime?
-  note                String?
-  shortageValue       Float     @default(0)
-  surplusValue        Float     @default(0)
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  id            String    @id @default(uuid())
+  code          String    @unique
+  branchCode    String
+  warehouseCode String
+  cutoffAt      DateTime
+  status        String    @default("APPROVED")
+  approvedBy    String?
+  approvedAt    DateTime?
+  reopenedBy    String?
+  reopenedAt    DateTime?
+  note          String?
+  shortageValue Float     @default(0)
+  surplusValue  Float     @default(0)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   sessions StocktakeSession[]
   lines    StocktakeBatchLine[]
@@ -933,35 +934,35 @@ model InventoryBalance {
 }
 
 model InventoryTransaction {
-  id              String   @id @default(uuid())
-  importBatchId   String?
-  code            String   @unique
-  transactionType String
+  id                         String   @id @default(uuid())
+  importBatchId              String?
+  code                       String   @unique
+  transactionType            String
   /// Phân loại chi tiết trong cùng một loại giao dịch. Hiện dùng cho xuất hủy:
   /// HET_HAN_SU_DUNG | KHONG_DAM_BAO_CHAT_LUONG.
-  subType         String?
-  transactionDate DateTime @default(now())
-  branchCode      String
-  warehouseCode   String
-  toWarehouseCode String?
+  subType                    String?
+  transactionDate            DateTime @default(now())
+  branchCode                 String
+  warehouseCode              String
+  toWarehouseCode            String?
   /// Cửa hàng sở hữu kho nhận khi điều chuyển. Trống = cùng `branchCode`.
   /// Khác nhau = điều chuyển liên nhà hàng: phát sinh công nợ nội bộ phải thu & phải trả.
-  toBranchCode    String?
+  toBranchCode               String?
   /// Công nợ nội bộ sinh khi điều chuyển hàng liên nhà hàng, cùng cơ chế với Điều tiền.
   internalReceivableDebtCode String?
   internalPayableDebtCode    String?
-  referenceType   String?
-  referenceId     String?
-  referenceCode   String?
-  status          String   @default("POSTED")
+  referenceType              String?
+  referenceId                String?
+  referenceCode              String?
+  status                     String   @default("POSTED")
   /// Điều chuyển có bán thành phẩm có định lượng: kho nguồn phải chế biến đúng số chuyển đi
   /// (khách chốt 28/09/2026). null = không có gì để rã; "PENDING" = chờ nút Rã ở tab Chế biến;
   /// "POSTED:RA-..." = đã rã trong lần rã đó.
-  explosionStatus String?
-  partnerCode     String?
-  note            String?
-  createdBy       String?
-  createdAt       DateTime @default(now())
+  explosionStatus            String?
+  partnerCode                String?
+  note                       String?
+  createdBy                  String?
+  createdAt                  DateTime @default(now())
 
   importBatch ImportBatch?               @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
   lines       InventoryTransactionLine[]
@@ -1123,13 +1124,66 @@ model SupplierQuoteLine {
   quoteId   String
   itemId    String
   quantity  Float
+  /// Đơn giá TRƯỚC thuế theo ĐVT tồn kho; totalCost = quantity × unitCost (trước thuế).
   unitCost  Float
   totalCost Float
+  /// Thuế suất GTGT báo giá (null = KKKNT / không khai) — xem lib/inventory-vat.ts.
+  vatRate   Float?
 
   quote SupplierQuote @relation(fields: [quoteId], references: [id], onDelete: Cascade)
   item  InventoryItem @relation(fields: [itemId], references: [id])
 
   @@index([quoteId])
+}
+
+/// Bảng giá NCC (khách yêu cầu 03/10/2026): giá mua theo từng NCC, áp dụng trong một khoảng
+/// ngày (thường theo tháng), không phụ thuộc yêu cầu mua. Dùng tự điền giá báo giá, so sánh
+/// giá giữa các NCC và cảnh báo phiếu nhập mua lệch giá — lib/supplier-price-list.ts.
+model SupplierPriceList {
+  id            String    @id @default(uuid())
+  code          String    @unique
+  supplierCode  String
+  supplierName  String
+  /// null = áp cho mọi cửa hàng; có mã = chỉ cửa hàng đó (ưu tiên hơn bảng giá chung).
+  branchCode    String?
+  effectiveFrom DateTime
+  /// null = còn hiệu lực tới khi có bảng giá mới.
+  effectiveTo   DateTime?
+  note          String?
+  source        String    @default("MANUAL")
+  createdBy     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  lines SupplierPriceListLine[]
+
+  deletedAt DateTime?
+  deletedBy String?
+
+  @@index([supplierCode])
+  @@index([effectiveFrom])
+  @@index([branchCode])
+  @@index([deletedAt])
+}
+
+model SupplierPriceListLine {
+  id             String  @id @default(uuid())
+  priceListId    String
+  itemId         String
+  /// ĐVT báo giá (ĐVT tồn kho hoặc một ĐVT quy đổi của mặt hàng).
+  unitCode       String
+  /// Số ĐVT tồn kho trong một ĐVT báo giá — đơn giá theo ĐVT tồn = unitPrice / conversionRate.
+  conversionRate Float   @default(1)
+  /// Đơn giá TRƯỚC thuế theo ĐVT báo giá.
+  unitPrice      Float
+  vatRate        Float?
+  note           String?
+
+  priceList SupplierPriceList @relation(fields: [priceListId], references: [id], onDelete: Cascade)
+  item      InventoryItem     @relation(fields: [itemId], references: [id])
+
+  @@index([priceListId])
+  @@index([itemId])
 }
 
 model PurchaseOrder {
@@ -1203,27 +1257,27 @@ model SupplierPayable {
 }
 
 model Recipe {
-  id            String   @id @default(uuid())
-  code          String   @unique
-  productCode   String
-  productName   String
+  id                   String   @id @default(uuid())
+  code                 String   @unique
+  productCode          String
+  productName          String
   /// Cửa hàng áp dụng công thức. NULL = công thức DÙNG CHUNG cho mọi cửa hàng.
   /// Cùng một món (nhất là bán thành phẩm) mỗi cửa hàng có thể pha khác nhau; nơi nào khai
   /// riêng thì dùng bản riêng, nơi chưa khai thì ăn bản chung (lib/production-explosion.ts).
-  branchCode    String?
+  branchCode           String?
   /// ĐVT của mẻ chuẩn bị (nhất là bán thành phẩm: 1kg, 400gr, 1 lít sốt...).
   /// Để trống = trùng ĐVT tồn kho của sản phẩm.
-  unit          String
+  unit                 String
   /// Hệ số quy đổi mẻ chuẩn bị về ĐVT tồn kho: 1 `unit` = bao nhiêu ĐVT tồn kho.
   /// Định lượng nguyên liệu khai cho MỘT mẻ `unit`, chia hệ số này ra cost/ĐVT tồn kho.
-  outputConversionRate Float @default(1)
-  sellingPrice  Float    @default(0)
-  version       Int      @default(1)
-  effectiveFrom DateTime @default(now())
-  status        String   @default("ACTIVE")
-  note          String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  outputConversionRate Float    @default(1)
+  sellingPrice         Float    @default(0)
+  version              Int      @default(1)
+  effectiveFrom        DateTime @default(now())
+  status               String   @default("ACTIVE")
+  note                 String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 
   lines RecipeLine[]
 
@@ -1238,16 +1292,16 @@ model Recipe {
 }
 
 model RecipeLine {
-  id        String @id @default(uuid())
-  recipeId  String
-  itemId    String
-  quantity  Float
+  id             String  @id @default(uuid())
+  recipeId       String
+  itemId         String
+  quantity       Float
   /// ĐVT nguyên liệu khai trên định lượng (có thể là ĐVT quy đổi, vd chai830gr).
   /// Để trống = ĐVT tồn kho của nguyên liệu.
   unitCode       String?
   /// Quy đổi `quantity * conversionRate` ra ĐVT tồn kho của nguyên liệu.
-  conversionRate Float  @default(1)
-  wasteRate Float  @default(0)
+  conversionRate Float   @default(1)
+  wasteRate      Float   @default(0)
 
   recipe Recipe        @relation(fields: [recipeId], references: [id], onDelete: Cascade)
   item   InventoryItem @relation(fields: [itemId], references: [id])
@@ -1359,43 +1413,43 @@ model CashbookAdjustment {
 }
 
 model MoneyTransfer {
-  id                  String    @id @default(uuid())
-  importBatchId       String?
-  code                String    @unique
-  transferDate        DateTime
+  id                         String    @id @default(uuid())
+  importBatchId              String?
+  code                       String    @unique
+  transferDate               DateTime
   /// Ngày tiền mặt thực tế rời quỹ và vào nguồn nhận. Chỉ bắt buộc khi duyệt CASH_DEPOSIT mới.
-  actualTransferDate  DateTime?
-  branchCode          String
+  actualTransferDate         DateTime?
+  branchCode                 String
   /// Cửa hàng sở hữu nguồn tiền đi / nguồn tiền nhận. Trống nghĩa là cùng `branchCode`.
   /// Khác nhau = điều tiền liên nhà hàng: mỗi đầu ghi sổ riêng và sinh công nợ nội bộ.
-  fromBranchCode      String?
-  toBranchCode        String?
+  fromBranchCode             String?
+  toBranchCode               String?
   /// Công nợ nội bộ sinh khi duyệt phiếu liên nhà hàng: bên chuyển có phải thu, bên nhận
   /// có phải trả. Hoàn tiền thì phiếu thu/chi gạch thẳng vào hai mã này.
   internalReceivableDebtCode String?
   internalPayableDebtCode    String?
-  fromMoneySourceCode String
-  toMoneySourceCode   String
-  amount              Float
-  externalRef         String?
-  description         String
-  transferPurpose     String?
+  fromMoneySourceCode        String
+  toMoneySourceCode          String
+  amount                     Float
+  externalRef                String?
+  description                String
+  transferPurpose            String?
   /// Chênh lệch giữa nguồn cần clear và số thực nhận/nộp: gross = amount + feeAmount.
   /// Phí ví và làm tròn xuống là số dương; làm tròn tiền nộp lên là chi phí âm.
-  feeAmount           Float     @default(0)
-  feeCategoryCode     String?
+  feeAmount                  Float     @default(0)
+  feeCategoryCode            String?
   /// Phần chi phí bán hàng Grab nằm trong feeAmount; phần còn lại là phí cà thẻ.
-  grabExpenseAmount       Float  @default(0)
-  grabExpenseCategoryCode String?
-  depositTargetType   String?
-  sourceReportDate    DateTime?
-  sourceShift         String?
-  status              String    @default("PENDING_REVIEW")
-  createdBy           String?
-  approvedBy          String?
-  approvedAt          DateTime?
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  grabExpenseAmount          Float     @default(0)
+  grabExpenseCategoryCode    String?
+  depositTargetType          String?
+  sourceReportDate           DateTime?
+  sourceShift                String?
+  status                     String    @default("PENDING_REVIEW")
+  createdBy                  String?
+  approvedBy                 String?
+  approvedAt                 DateTime?
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
 
   importBatch   ImportBatch?                @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
   denominations MoneyTransferDenomination[]
@@ -1598,15 +1652,15 @@ model CostReallocation {
 }
 
 model CostReallocationLine {
-  id             String  @id @default(uuid())
-  reallocationId String
+  id                 String  @id @default(uuid())
+  reallocationId     String
   /// Nhà hàng nhận chi phí — sẽ TĂNG chi phí và ghi phải trả nội bộ.
-  toBranchCode   String
-  amount         Float
+  toBranchCode       String
+  amount             Float
   /// Mã công nợ nội bộ sinh ra cho cặp nhà hàng này.
   receivableDebtCode String?
   payableDebtCode    String?
-  note           String?
+  note               String?
 
   reallocation CostReallocation @relation(fields: [reallocationId], references: [id], onDelete: Cascade)
 
@@ -1724,32 +1778,32 @@ model PayrollImportRow {
 /// từ Tổng lương theo giờ công đến Bảo hiểm công ty chịu) — đây mới là chi phí nhân sự trên
 /// P&L. `netAmount` là tiền thực đưa người lao động, và là số của khoản công nợ phải trả.
 model PayrollDepartmentRow {
-  id               String   @id @default(uuid())
-  importBatchId    String
-  period           String
-  branchCode       String
-  departmentCode   String
+  id                 String   @id @default(uuid())
+  importBatchId      String
+  period             String
+  branchCode         String
+  departmentCode     String
   /// Số lượng nhân sự của bộ phận trong kỳ — thay cho việc đếm dòng nhân viên ở mẫu cũ. Số lẻ tới
   /// 2 chữ số thập phân (khách 28/09/2026): người làm chia đôi hai bộ phận ghi 0,5 mỗi bên.
-  headcount        Float    @default(0)
+  headcount          Float    @default(0)
   /// TỔNG LƯƠNG/THÁNG: lương tháng theo hợp đồng, chỉ để tham chiếu, KHÔNG cộng vào chi phí.
-  monthlySalary    Float    @default(0)
+  monthlySalary      Float    @default(0)
   /// TỔNG LƯƠNG THEO GIỜ CÔNG: phần lương thực tế theo công, mở đầu dải cột cộng vào chi phí.
-  hourlySalary     Float    @default(0)
-  mealAllowance    Float    @default(0)
-  parkingAllowance Float    @default(0)
-  svcAmount        Float    @default(0)
-  kpiAmount        Float    @default(0)
-  otherAllowance   Float    @default(0)
+  hourlySalary       Float    @default(0)
+  mealAllowance      Float    @default(0)
+  parkingAllowance   Float    @default(0)
+  svcAmount          Float    @default(0)
+  kpiAmount          Float    @default(0)
+  otherAllowance     Float    @default(0)
   /// Bảo hiểm phần công ty chịu: là chi phí của công ty nhưng không trả cho người lao động.
-  companyInsurance Float    @default(0)
+  companyInsurance   Float    @default(0)
   /// Bảo hiểm bắt buộc phần người lao động đóng: trừ vào lương nên KHÔNG cộng vào chi phí công
   /// ty, nhưng vẫn phải nộp cho cơ quan BHXH nên gộp với companyInsurance thành khoản phải trả.
-  mandatoryInsurance Float  @default(0)
-  totalCompanyCost Float
-  netAmount        Float
-  externalRef      String?
-  createdAt        DateTime @default(now())
+  mandatoryInsurance Float    @default(0)
+  totalCompanyCost   Float
+  netAmount          Float
+  externalRef        String?
+  createdAt          DateTime @default(now())
 
   importBatch ImportBatch @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
 
@@ -1900,18 +1954,18 @@ model ForecastAssumption {
 }
 
 model ReportTarget {
-  id          String   @id @default(uuid())
-  period      String
-  branchCode  String
-  metric      String
-  targetValue Float
+  id            String   @id @default(uuid())
+  period        String
+  branchCode    String
+  metric        String
+  targetValue   Float
   /// AMOUNT: ngân sách là số tiền tuyệt đối (targetValue).
   /// PERCENT_REVENUE: ngân sách set theo % doanh thu (targetPercent) — số tiền ngân sách
   /// quy đổi theo target doanh thu của kỳ, còn "mức chuẩn" quy đổi theo doanh thu thực tế.
-  targetMode    String  @default("AMOUNT")
+  targetMode    String   @default("AMOUNT")
   targetPercent Float?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   deletedAt DateTime?
   deletedBy String?
@@ -1967,21 +2021,21 @@ model Role {
 }
 
 model User {
-  id             String             @id @default(uuid())
-  email          String             @unique
-  password       String
-  name           String
-  phone          String?
-  position       String?
-  roleId         String
-  role           Role               @relation(fields: [roleId], references: [id])
-  branchAccesses UserBranchAccess[]
+  id                 String                 @id @default(uuid())
+  email              String                 @unique
+  password           String
+  name               String
+  phone              String?
+  position           String?
+  roleId             String
+  role               Role                   @relation(fields: [roleId], references: [id])
+  branchAccesses     UserBranchAccess[]
   /// Phạm vi phòng ban (kiểm kê CCDC/tài sản theo bộ phận). Không có dòng nào = mọi phòng ban.
   departmentAccesses UserDepartmentAccess[]
   /// Phạm vi KHO (kiểm kê / nhập xuất nguyên liệu). Không có dòng nào = mọi kho của cửa hàng được gán.
-  warehouseAccesses UserWarehouseAccess[]
-  createdAt      DateTime           @default(now())
-  updatedAt      DateTime           @updatedAt
+  warehouseAccesses  UserWarehouseAccess[]
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
 
   deletedAt DateTime?
   deletedBy String?
@@ -2025,24 +2079,24 @@ model UserWarehouseAccess {
 /// Kiểm kê CCDC & Tài sản — tách khỏi kiểm kê hàng tồn kho theo yêu cầu khách:
 /// hàng hoá kiểm ở Kho & Định lượng, CCDC/tài sản kiểm ở Tài sản & khấu hao.
 model AssetStocktakeSession {
-  id            String    @id @default(uuid())
-  importBatchId String?
-  code          String    @unique
-  stocktakeDate DateTime
-  branchCode    String
+  id             String    @id @default(uuid())
+  importBatchId  String?
+  code           String    @unique
+  stocktakeDate  DateTime
+  branchCode     String
   /// Kiểm kê theo bộ phận (26/09/2026): phiên kiểm của một phòng ban; null = kiểm cả cửa hàng.
   departmentCode String?
-  status        String    @default("APPROVED")
-  note          String?
-  createdBy     String?
-  approvedBy    String?
-  approvedAt    DateTime?
+  status         String    @default("APPROVED")
+  note           String?
+  createdBy      String?
+  approvedBy     String?
+  approvedAt     DateTime?
   /// Kế toán trả lại phiên (status RETURNED) kèm lý do — lib/stocktake-status.ts.
   returnedReason String?
   returnedBy     String?
   returnedAt     DateTime?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   importBatch ImportBatch?         @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
   lines       AssetStocktakeLine[]

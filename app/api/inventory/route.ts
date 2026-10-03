@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { loadActivePrices } from "@/lib/supplier-price-list-db";
 import { Prisma } from "@prisma/custom-client";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma, type TxClient } from "@/lib/prisma";
@@ -614,6 +615,16 @@ export async function GET(request: Request) {
       ]);
       const stockSummary = buildStockSummary(periodBalances, periodTotals);
       return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { stockMovements, stockSummary }));
+    }
+
+    // Giá bảng giá NCC đang hiệu lực — form Nhập mua hiện giá tham chiếu + cảnh báo lệch giá
+    // (khách yêu cầu 03/10/2026). Ở API Kho để người chỉ có quyền Kho cũng tra được.
+    if (searchParams.get("view") === "supplier-prices") {
+      const supplierCode = cleanText(searchParams.get("supplierCode"));
+      if (!supplierCode) return NextResponse.json({ prices: [] });
+      const day = cleanText(searchParams.get("day")) || new Date().toISOString().slice(0, 10);
+      const prices = await loadActivePrices({ day, branchCode: cleanText(searchParams.get("branchCode")) || null, supplierCode });
+      return NextResponse.json({ prices: [...prices.values()] });
     }
 
     // Bảng "Mã thiếu định lượng" ở tab Định lượng: tải riêng theo tháng + cửa hàng.

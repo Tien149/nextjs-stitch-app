@@ -14,7 +14,9 @@ import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { assetGroupCandidates, assetGroupTypeLabel } from "@/lib/asset-group-rules";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
+import { VAT_RATE_OPTIONS, vatAmountOf, vatRateLabel } from "@/lib/inventory-vat";
 import { TemplatesTab, type PurchaseTemplate, type TemplateUnitConversion } from "./templates-tab";
+import { PriceListsTab } from "./price-lists-tab";
 import { SendPurchaseOrderDialog } from "./send-po-dialog";
 
 type Item = { id: string; code: string; name: string; unit: string; itemType: string; category: string | null; requiresImage: boolean; unitConversions?: TemplateUnitConversion[] };
@@ -22,7 +24,7 @@ type MasterItem = { id: string; type: string; code: string; name: string; group:
 type Supplier = { id: string; code: string; name: string; phone?: string | null; email?: string | null };
 type PriceSuggestion = { price: number; source: string; supplierName?: string };
 type RequestLine = { id: string; itemId: string; quantity: number; estimatedUnitCost: number; imageUrl: string | null; note?: string | null; item: Item };
-type Quote = { id: string; supplierCode: string; supplierName: string; totalAmount: number; deliveryDays: number | null; paymentTerms: string | null; isSelected: boolean; note: string | null; lines: Array<{ itemId: string; quantity: number; unitCost: number; item?: Item }> };
+type Quote = { id: string; supplierCode: string; supplierName: string; totalAmount: number; deliveryDays: number | null; paymentTerms: string | null; isSelected: boolean; note: string | null; lines: Array<{ itemId: string; quantity: number; unitCost: number; vatRate?: number | null; item?: Item }> };
 type PurchaseRequest = { id: string; code: string; requestDate: string; branchCode: string; departmentCode: string | null; requestedBy: string; neededDate: string | null; reason: string; status: string; approvedAt: string | null; note: string | null; lines: RequestLine[]; quotes: Quote[] };
 type OrderLine = { id: string; itemId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; imageUrl: string | null; item: Item };
 type PurchaseOrder = { id: string; code: string; requestId: string | null; orderDate: string; supplierCode: string; supplierName: string; branchCode: string; departmentCode: string | null; warehouseCode: string; expectedDate: string | null; status: string; approvedAt: string | null; note: string | null; totalAmount: number; shareToken: string | null; lines: OrderLine[]; payable: { outstandingAmount: number } | null };
@@ -101,6 +103,10 @@ export default function ProcurementPage() {
   });
   /** Đơn giá báo của NCC theo TỪNG mặt hàng của PR đang chọn (thay cho 1 giá áp cả phiếu). */
   const [quoteLineCosts, setQuoteLineCosts] = useState<Record<string, string>>({});
+  /** Thuế suất từng dòng báo giá (mã KKKNT / 0% / 5% / 8% / 10%), khoá itemId. */
+  const [quoteLineVat, setQuoteLineVat] = useState<Record<string, string>>({});
+  /** Dòng nào lấy giá từ Bảng giá NCC: itemId → "BG-202610-0001 · 120.000 đ/THÙNG". */
+  const [quotePriceSource, setQuotePriceSource] = useState<Record<string, string>>({});
 
   const [warehouseCode, setWarehouseCode] = useState("KHO_HCM");
 
@@ -138,6 +144,7 @@ export default function ProcurementPage() {
   const canCreate = user ? canPerformMenuAction(user, href, "create") : false;
   const canEdit = user ? canPerformMenuAction(user, href, "edit") : false;
   const canApprove = user ? canPerformMenuAction(user, href, "approve") : false;
+  const canDelete = user ? canPerformMenuAction(user, href, "delete") : false;
   const canCreatePartner = user ? canPerformMenuAction(user, "/settings", "config") : false;
   const departmentName = (code?: string | null) => data.departments.find((item) => item.code === code)?.name || code || "Chưa gán phòng ban";
   const departmentsForBranch = useMemo(
@@ -311,10 +318,52 @@ export default function ProcurementPage() {
     for (const line of request.lines) {
       costs[line.itemId] = String(data.priceSuggestions[line.itemId]?.price ?? line.estimatedUnitCost ?? "");
     }
-    const timer = window.setTimeout(() => setQuoteLineCosts(costs), 0);
+    const timer = window.setTimeout(() => {
+      setQuoteLineCosts(costs);
+      setQuoteLineVat({});
+      setQuotePriceSource({});
+    }, 0);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [quoteForm.requestId, editingQuote, data.requests]);
+
+  /**
+   * Chọn NCC cho báo giá mới → lấy đơn giá + thuế suất từ Bảng giá NCC đang hiệu lực hôm nay
+   * của cửa hàng lập PR (khách yêu cầu 03/10/2026). Mặt hàng không có trong bảng giá giữ giá đề
+   * xuất cũ; người nhập vẫn sửa tay được.
+   */
+  useEffect(() => {
+    if (editingQuote || !quoteForm.supplierCode) return;
+    const request = data.requests.find((item) => item.id === quoteForm.requestId);
+    if (!request) return;
+    let cancelled = false;
+    const query = new URLSearchParams({ view: "active-prices", supplierCode: quoteForm.supplierCode, branchCode: request.branchCode });
+    void fetch(`/api/procurement?${query.toString()}`).then(async (response) => {
+      const payload = response.ok ? await response.json() as { prices: Array<{ itemId: string; stockUnitPrice: number; unitPrice: number; unitCode: string; vatRate: number | null; priceListCode: string }> } : { prices: [] };
+      if (cancelled) return;
+      const byItem = new Map(payload.prices.map((price) => [price.itemId, price]));
+      const sources: Record<string, string> = {};
+      const costs: Record<string, string> = {};
+      const vats: Record<string, string> = {};
+      // Đổi NCC thì dựng lại cả lưới: mặt hàng NCC mới không có trong bảng giá quay về giá đề
+      // xuất, không giữ giá của NCC trước.
+      for (const line of request.lines) {
+        const price = byItem.get(line.itemId);
+        if (!price) {
+          costs[line.itemId] = String(data.priceSuggestions[line.itemId]?.price ?? line.estimatedUnitCost ?? "");
+          vats[line.itemId] = "KKKNT";
+          continue;
+        }
+        costs[line.itemId] = String(Math.round(price.stockUnitPrice * 100) / 100);
+        vats[line.itemId] = vatRateLabel(price.vatRate);
+        sources[line.itemId] = `${price.priceListCode} · ${money(price.unitPrice)} đ/${price.unitCode}`;
+      }
+      setQuoteLineCosts(costs);
+      setQuoteLineVat(vats);
+      setQuotePriceSource(sources);
+    });
+    return () => { cancelled = true; };
+  }, [quoteForm.supplierCode, quoteForm.requestId, editingQuote, data.requests, data.priceSuggestions]);
 
   const send = async (method: "POST" | "PATCH", body: object, success: string) => {
     setMessage("");
@@ -324,6 +373,9 @@ export default function ProcurementPage() {
     if (response.ok) await loadData();
     return response.ok;
   };
+
+  /** Tiền thuế GTGT của một báo giá — tròn từng dòng như phiếu nhập mua. */
+  const quoteVatTotal = (quote: Quote) => quote.lines.reduce((sum, line) => sum + vatAmountOf(Math.round(line.quantity * line.unitCost), line.vatRate ?? null), 0);
 
   /** Đơn mua hàng còn hiệu lực (chưa huỷ) lập từ một PR. */
   const liveOrdersOf = (request: PurchaseRequest) => data.orders.filter((order) => order.requestId === request.id && order.status !== "CANCELLED");
@@ -458,8 +510,14 @@ export default function ProcurementPage() {
       paymentTerms: quote.paymentTerms || "",
     });
     const costs: Record<string, string> = {};
-    for (const line of quote.lines) costs[line.itemId] = String(line.unitCost);
+    const vats: Record<string, string> = {};
+    for (const line of quote.lines) {
+      costs[line.itemId] = String(line.unitCost);
+      vats[line.itemId] = vatRateLabel(line.vatRate ?? null);
+    }
     setQuoteLineCosts(costs);
+    setQuoteLineVat(vats);
+    setQuotePriceSource({});
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -485,7 +543,7 @@ export default function ProcurementPage() {
           supplierName: quoteForm.supplierName,
           deliveryDays: quoteForm.deliveryDays,
           paymentTerms: quoteForm.paymentTerms,
-          lines: editingQuote.lines.map((line) => ({ itemId: line.itemId, quantity: line.quantity, unitCost: quoteLineCosts[line.itemId] ?? line.unitCost })),
+          lines: editingQuote.lines.map((line) => ({ itemId: line.itemId, quantity: line.quantity, unitCost: quoteLineCosts[line.itemId] ?? line.unitCost, vatRate: quoteLineVat[line.itemId] ?? vatRateLabel(line.vatRate ?? null) })),
         },
         `Đã lưu thay đổi báo giá của ${quoteForm.supplierName}.`,
       );
@@ -515,7 +573,7 @@ export default function ProcurementPage() {
       supplierName: quoteForm.supplierName,
       deliveryDays: quoteForm.deliveryDays,
       paymentTerms: quoteForm.paymentTerms,
-      lines: selectedRequest.lines.map((line) => ({ itemId: line.itemId, quantity: line.quantity, unitCost: quoteLineCosts[line.itemId] })),
+      lines: selectedRequest.lines.map((line) => ({ itemId: line.itemId, quantity: line.quantity, unitCost: quoteLineCosts[line.itemId], vatRate: quoteLineVat[line.itemId] || "KKKNT" })),
     }, "Đã thêm báo giá nhà cung cấp.");
   };
 
@@ -678,7 +736,8 @@ export default function ProcurementPage() {
   const requestTotal = (request: PurchaseRequest) => request.lines.reduce((sum, line) => sum + line.quantity * line.estimatedUnitCost, 0);
 
   return (
-    <ModuleFrame title="Mua hàng & Nhà cung cấp" subtitle="PR theo mẫu, so sánh giá, PO gửi NCC và nhận hàng" role={user?.role}>
+    // Khung rộng như Kho & Định lượng (khách yêu cầu 03/10/2026): bảng báo giá / bảng giá nhiều cột.
+    <ModuleFrame title="Mua hàng & Nhà cung cấp" subtitle="PR theo mẫu, so sánh giá, bảng giá NCC, PO gửi NCC và nhận hàng" role={user?.role} contentClassName="max-w-[1680px]">
       {/* Operational Summary Cards */}
       <StickyFilterBar>
       <div className="hidden sm:grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
@@ -726,6 +785,17 @@ export default function ProcurementPage() {
           departments={data.departments}
           notify={setMessage}
           reload={loadData}
+        />
+      )}
+
+      {active === "price-lists" && (
+        <PriceListsTab
+          user={user}
+          canCreate={canCreate}
+          canDelete={canDelete}
+          items={data.items}
+          suppliers={data.suppliers}
+          notify={setMessage}
         />
       )}
 
@@ -990,13 +1060,26 @@ export default function ProcurementPage() {
       )}
 
       {active === "quotes" && (
-        <div className="grid xl:grid-cols-[400px_1fr] gap-5">
-          {(canCreate || editingQuote) && (
-            <form onSubmit={submitQuote} className="bg-white border border-slate-200 rounded-lg p-4 sm:p-5 space-y-4 h-fit shadow-sm">
+        <div className="space-y-5">
+          {(canCreate || editingQuote) && (() => {
+            const quoteLines = (editingQuote ? editingQuote.lines : selectedRequest?.lines || []) as Array<{ itemId: string; quantity: number; item?: Item }>;
+            const rows = quoteLines.map((line) => {
+              const item = line.item || data.items.find((candidate) => candidate.id === line.itemId);
+              const price = Number(quoteLineCosts[line.itemId] || 0);
+              const vatCode = quoteLineVat[line.itemId] || "KKKNT";
+              const before = Math.round(line.quantity * price);
+              const vat = vatAmountOf(before, VAT_RATE_OPTIONS.find((option) => option.code === vatCode)?.rate ?? null);
+              return { line, item, price, vatCode, before, vat };
+            });
+            const totalBefore = rows.reduce((sum, row) => sum + row.before, 0);
+            const totalVat = rows.reduce((sum, row) => sum + row.vat, 0);
+            return (
+            <form onSubmit={submitQuote} className="bg-white border border-slate-200 rounded-lg p-4 sm:p-5 space-y-4 shadow-sm">
               <h2 className="font-bold text-slate-800">
                 {editingQuote ? `Sửa báo giá của ${editingQuote.supplierName}` : "Nhập báo giá"}
               </h2>
 
+              <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-3">
               <Field label="Yêu cầu mua">
                 <select
                   value={editingQuote ? quoteForm.requestId : (selectedRequest?.id || "")}
@@ -1010,15 +1093,6 @@ export default function ProcurementPage() {
                   ))}
                 </select>
               </Field>
-
-              {/* Chưa có yêu cầu nào thì nói rõ phải làm gì, thay vì để dropdown trống trơn. */}
-              {!editingQuote && quotableRequests.length === 0 && (
-                <p className="text-xs rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-amber-800">
-                  Chưa có yêu cầu mua nào để nhập báo giá. Hãy tạo yêu cầu ở tab{" "}
-                  <button type="button" onClick={() => setActive("templates")} className="font-bold underline">Đặt theo mẫu</button> hoặc{" "}
-                  <button type="button" onClick={() => setActive("requests")} className="font-bold underline">Yêu cầu mua</button> — gửi xong là báo giá được ngay, không cần duyệt.
-                </p>
-              )}
 
               <Field label="Nhà cung cấp">
                 <div className="mt-1.5">
@@ -1035,39 +1109,6 @@ export default function ProcurementPage() {
                 </div>
               </Field>
 
-              {/* Lưới giá theo TỪNG mặt hàng của PR — mỗi NCC báo giá từng dòng */}
-              {(editingQuote || selectedRequest) && (
-                <div className="space-y-2 border border-slate-100 rounded-lg p-3 bg-slate-50/50">
-                  <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider border-b border-slate-200/60 pb-2">Đơn giá từng mặt hàng</h3>
-                  {(editingQuote ? editingQuote.lines : selectedRequest?.lines || []).map((line) => {
-                    const item = ("item" in line && line.item) || data.items.find((candidate) => candidate.id === line.itemId);
-                    return (
-                      <div key={line.itemId} className="flex items-center gap-2">
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-semibold text-slate-800 truncate">{item?.name || line.itemId}</p>
-                          <p className="text-[11px] text-slate-500">{qty(line.quantity)} {item?.unit || ""}</p>
-                        </div>
-                        <input
-                          type="number"
-                          min="0"
-                          step="any"
-                          inputMode="numeric"
-                          className="control !mt-0 w-28 text-right"
-                          placeholder="đ/ĐVT"
-                          value={quoteLineCosts[line.itemId] ?? ""}
-                          onChange={(e) => setQuoteLineCosts({ ...quoteLineCosts, [line.itemId]: e.target.value })}
-                          aria-label={`Đơn giá ${item?.name || line.itemId}`}
-                        />
-                      </div>
-                    );
-                  })}
-                  <p className="text-right text-xs font-bold text-slate-700 pt-1 border-t border-slate-200/60">
-                    Tổng: {money((editingQuote ? editingQuote.lines : selectedRequest?.lines || []).reduce((sum, line) => sum + line.quantity * Number(quoteLineCosts[line.itemId] || 0), 0))} đ
-                  </p>
-                </div>
-              )}
-
-              <div className="grid grid-cols-2 gap-3">
                 <Field label="Giao trong (ngày)">
                   <input type="number" inputMode="numeric" value={quoteForm.deliveryDays} onChange={(e) => setQuoteForm({ ...quoteForm, deliveryDays: e.target.value })} className="control" />
                 </Field>
@@ -1076,19 +1117,88 @@ export default function ProcurementPage() {
                 </Field>
               </div>
 
-              <div className="flex gap-2">
+              {/* Chưa có yêu cầu nào thì nói rõ phải làm gì, thay vì để dropdown trống trơn. */}
+              {!editingQuote && quotableRequests.length === 0 && (
+                <p className="text-xs rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-amber-800">
+                  Chưa có yêu cầu mua nào để nhập báo giá. Hãy tạo yêu cầu ở tab{" "}
+                  <button type="button" onClick={() => setActive("templates")} className="font-bold underline">Đặt theo mẫu</button> hoặc{" "}
+                  <button type="button" onClick={() => setActive("requests")} className="font-bold underline">Yêu cầu mua</button> — gửi xong là báo giá được ngay, không cần duyệt.
+                </p>
+              )}
+
+              {/* Lưới giá theo TỪNG mặt hàng của PR: đơn giá trước thuế, thành tiền trước thuế, thuế
+                  suất, tiền thuế, sau thuế (khách yêu cầu 03/10/2026). Có Bảng giá NCC đang hiệu lực
+                  thì đơn giá + thuế suất tự điền, vẫn sửa tay được. */}
+              {rows.length > 0 && (
+                <div className="border border-slate-200 rounded-lg overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50 text-xs text-slate-500 uppercase border-b border-slate-200">
+                      <tr>
+                        {["Mặt hàng", "Số lượng", "Đơn giá trước thuế", "Thành tiền trước thuế", "Thuế suất", "Tiền thuế", "Thành tiền sau thuế"].map((label, index) => (
+                          <th key={label} className={`px-3 py-2 font-bold whitespace-nowrap ${index === 0 ? "text-left" : index === 4 ? "text-center" : "text-right"}`}>{label}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map(({ line, item, before, vat, vatCode }) => (
+                        <tr key={line.itemId} className="border-t border-slate-100 align-top">
+                          <td className="px-3 py-2 min-w-[220px]">
+                            <b className="text-slate-800">{item?.name || line.itemId}</b>
+                            <small className="block text-slate-500">{item?.code}</small>
+                            {quotePriceSource[line.itemId] && <small className="block text-emerald-700 font-semibold">Theo bảng giá {quotePriceSource[line.itemId]}</small>}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">{qty(line.quantity)} {item?.unit || ""}</td>
+                          <td className="px-3 py-2 text-right">
+                            <input
+                              type="number"
+                              min="0"
+                              step="any"
+                              inputMode="decimal"
+                              className="control !mt-0 w-32 text-right"
+                              placeholder={`đ/${item?.unit || "ĐVT"}`}
+                              value={quoteLineCosts[line.itemId] ?? ""}
+                              onChange={(e) => setQuoteLineCosts({ ...quoteLineCosts, [line.itemId]: e.target.value })}
+                              aria-label={`Đơn giá ${item?.name || line.itemId}`}
+                            />
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">{money(before)}</td>
+                          <td className="px-3 py-2 text-center">
+                            <select className="control !mt-0 w-24" value={vatCode} onChange={(e) => setQuoteLineVat({ ...quoteLineVat, [line.itemId]: e.target.value })} aria-label={`Thuế suất ${item?.name || line.itemId}`}>
+                              {VAT_RATE_OPTIONS.map((option) => <option key={option.code} value={option.code}>{option.code}</option>)}
+                            </select>
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">{money(vat)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap font-bold">{money(before + vat)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot className="bg-slate-50 font-bold">
+                      <tr className="border-t-2 border-slate-200">
+                        <td className="px-3 py-2" colSpan={3}>Cộng</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{money(totalBefore)}</td>
+                        <td />
+                        <td className="px-3 py-2 text-right tabular-nums">{money(totalVat)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{money(totalBefore + totalVat)} đ</td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              )}
+
+              <div className="flex gap-2 justify-end">
                 {editingQuote && (
                   <button type="button" onClick={resetQuoteForm} className="px-4 rounded-lg border border-slate-300 bg-white py-2 text-sm font-bold text-slate-600 hover:bg-slate-50">
                     Huỷ
                   </button>
                 )}
-                <button className="primary-button flex-1 disabled:bg-slate-300 disabled:cursor-not-allowed" disabled={!editingQuote && !selectedRequest}>
+                <button className="primary-button min-w-[200px] disabled:bg-slate-300 disabled:cursor-not-allowed" disabled={!editingQuote && !selectedRequest}>
                   <span className="material-symbols-outlined text-lg">{editingQuote ? "save" : "add"}</span>
                   {editingQuote ? "Lưu thay đổi" : "Thêm báo giá"}
                 </button>
               </div>
             </form>
-          )}
+            );
+          })()}
 
           <section className="space-y-4 min-w-0">
             {data.requests.filter((request) => request.quotes.length > 0).map((request) => {
@@ -1135,7 +1245,9 @@ export default function ProcurementPage() {
                     <thead className="bg-slate-50 text-xs text-slate-500 uppercase border-b border-slate-200 sticky top-0 z-10">
                       <tr>
                         <th className="px-3 py-2 text-left">Nhà cung cấp</th>
-                        <th className="px-3 py-2 text-right">Tổng giá</th>
+                        <th className="px-3 py-2 text-right">Trước thuế</th>
+                        <th className="px-3 py-2 text-right">Thuế GTGT</th>
+                        <th className="px-3 py-2 text-right">Sau thuế</th>
                         <th className="px-3 py-2 text-center">Giao hàng</th>
                         <th className="px-3 py-2 text-left">Điều khoản</th>
                         <th className="px-3 py-2 text-right">Thao tác</th>
@@ -1150,6 +1262,8 @@ export default function ProcurementPage() {
                             <small>{quote.supplierCode}</small>
                           </td>
                           <td className="cell text-right font-bold">{money(quote.totalAmount)} đ</td>
+                          <td className="cell text-right">{money(quoteVatTotal(quote))} đ</td>
+                          <td className="cell text-right font-bold">{money(quote.totalAmount + quoteVatTotal(quote))} đ</td>
                           <td className="cell text-center">{quote.deliveryDays ? `${quote.deliveryDays} ngày` : "N/A"}</td>
                           <td className="cell">{quote.paymentTerms || "N/A"}</td>
                           <td className="cell">
