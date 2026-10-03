@@ -105,6 +105,22 @@ export function revenueKindFromText(value: unknown): RevenueKind | null {
   return null;
 }
 
+/**
+ * Nhóm doanh thu GÁN ĐƯỢC CHO MẶT HÀNG (khách báo 03/10/2026 ô chọn "không đúng"): chỉ nhóm món
+ * nhận ra loại Bếp / Bar / Phụ thu. Bỏ phần tách của POS (SVC, thuế GTGT, điều chỉnh) và nhóm
+ * chung không suy được loại món ("Doanh thu nhà hàng").
+ */
+export function isItemRevenueGroup(category: { code: string; name: string; group?: string | null }) {
+  if (!isRevenueGroupCategory(category.group)) return false;
+  if (REVENUE_COMPONENT_CATEGORIES.some((component) => component.code === category.code.toUpperCase())) return false;
+  return revenueKindFromText(`${category.code} ${category.name}`) !== null;
+}
+
+/** Chữ phụ thu hay gặp trên file của khách mà bộ nhận dạng loại món không bắt ("Khăn lạnh"). */
+export function isSurchargeItemText(value: unknown) {
+  return /\bKHAN LANH\b|\bKHAN UOT\b/.test(normalizeKindText(value));
+}
+
 /** Quy chữ trong file về mã danh mục Thu. Trả "" khi không nhận ra. */
 export type RevenueCategoryIndex = { toCode: (value: unknown) => string };
 
@@ -157,6 +173,33 @@ export async function loadRevenueCategoryIndex(client: CategoryLookupClient): Pr
       const kind = revenueKindFromText(text);
       return (kind && byKind.get(kind)) || "";
     },
+  };
+}
+
+/**
+ * Quy cột "Nhóm doanh thu" của file danh mục mặt hàng về mã danh mục — dùng chung bước xem trước
+ * và bước ghi. Nhận mã (REV_FOOD), tên danh mục, từ khoá khai tay, chữ "Đồ ăn / Đồ uống / Phụ thu"
+ * và "Khăn lạnh"; chỉ chấp nhận nhóm món (isItemRevenueGroup) — 03/10/2026.
+ */
+export async function loadItemRevenueGroupResolver(client: CategoryLookupClient) {
+  const [index, categories] = await Promise.all([
+    loadRevenueCategoryIndex(client),
+    client.masterDataItem.findMany({
+      where: { type: "REVENUE_EXPENSE_CATEGORY", status: "ACTIVE", deletedAt: null },
+      select: { code: true, name: true, group: true },
+    }),
+  ]);
+  const byCode = new Map(categories.map((category) => [category.code.toUpperCase(), category]));
+  return (value: unknown): { code: string | null; error?: string } => {
+    const text = cleanRevenueSourceInput(value);
+    if (!text) return { code: null };
+    const code = index.toCode(text) || (isSurchargeItemText(text) ? index.toCode("Phụ thu") : "");
+    if (!code) return { code: null, error: `Nhóm doanh thu [${text}] không nhận ra — ghi mã (REV_FOOD, REV_DRINK...) hoặc chữ Đồ ăn / Đồ uống / Phụ thu` };
+    const category = byCode.get(code.toUpperCase());
+    if (!category || !isItemRevenueGroup(category)) {
+      return { code: null, error: `Nhóm doanh thu [${text}] (${category?.name || code}) không phải nhóm món — chọn Bếp (đồ ăn), Bar (đồ uống) hoặc Phụ thu` };
+    }
+    return { code: category.code };
   };
 }
 

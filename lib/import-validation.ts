@@ -1,6 +1,6 @@
 import { prisma, prismaRaw } from "@/lib/prisma";
 import { assertBranchAccess } from "@/lib/accounting";
-import { isMasterDataImportType, normalizeHeader, type ImportType } from "@/lib/import-templates";
+import { INVENTORY_ITEM_UPDATE_TEMPLATE, isMasterDataImportType, normalizeHeader, type ImportType } from "@/lib/import-templates";
 import { parseImportDate, type ParsedImportResult, type ParsedImportRow } from "@/lib/import-parser";
 import type { DemoSession } from "@/lib/auth-demo";
 import { isInboundStockType, isOutboundStockType, isStockTransactionType, isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType } from "@/lib/inventory-stock";
@@ -10,7 +10,7 @@ import { resolveOpeningAsset } from "@/lib/opening-asset";
 import { branchGoLiveDays, isBeforeGoLive } from "@/lib/wallet-go-live";
 import { normalizeCashflowCategoryType, normalizeRevenueExpenseGroup } from "@/lib/voucher-rules";
 import { ensureRevenuePosReference, revenuePosReferenceKey } from "@/lib/revenue-pos-reference";
-import { loadNonInventoryRevenueGroups, loadRevenueCategoryIndex, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
+import { loadItemRevenueGroupResolver, loadNonInventoryRevenueGroups, loadRevenueCategoryIndex, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
 import { bankStatementSuspectKey, groupBankStatementRows, type BankStatementImportGroup } from "@/lib/bank-statement-import";
 import { isPeriodLocked } from "@/lib/phase3";
 import { normalizeMoneySourceGroup } from "@/lib/money-sources";
@@ -1276,7 +1276,7 @@ export async function validateImportResult(
   result: ParsedImportResult,
   importType: ImportType,
   session: DemoSession,
-  options: { expectedMasterType?: string; skipSuspectedDuplicates?: boolean } = {},
+  options: { expectedMasterType?: string; skipSuspectedDuplicates?: boolean; templateCode?: string } = {},
 ) {
   const expectedMasterType = text(options.expectedMasterType).toUpperCase();
   if (importType === "MASTER_DATA" && expectedMasterType && !isMasterDataImportType(expectedMasterType)) {
@@ -1323,6 +1323,12 @@ export async function validateImportResult(
   const explodableCheckers = new Map<string, Awaited<ReturnType<typeof semiFinishedWithRecipeChecker>>>();
   const assetStocktakeRows = new Map<string, number>();
   const inventoryItemRows = new Map<string, { name: string; itemType: string; unit: string; rowNumber: number }>();
+  // Mẫu "Cập nhật bổ sung mặt hàng": chỉ sửa mã đã có, ô trống giữ nguyên (03/10/2026).
+  const isItemUpdate = importType === "INVENTORY_ITEM" && options.templateCode === INVENTORY_ITEM_UPDATE_TEMPLATE;
+  const existingItemByCode = new Map(inventoryItems.map((item) => [item.code.toUpperCase(), item]));
+  const resolveItemRevenueGroup = importType === "INVENTORY_ITEM"
+    ? await loadItemRevenueGroupResolver(prisma as unknown as CategoryLookupClient)
+    : null;
   const revenueReferenceRows = new Map<string, ParsedImportRow>();
   const importAssetCodes = new Set<string>();
   for (const row of result.rows) {
@@ -1429,19 +1435,31 @@ export async function validateImportResult(
       else assetStocktakeRows.set(dupKey, row.rowNumber);
     }
     if (importType === "INVENTORY_ITEM") {
-      const itemType = normalizeItemType(row.values.item_type);
-      row.values.item_type = itemType;
-      if (!["RAW_MATERIAL", "SEMI_FINISHED", "FINISHED", "PACKAGING", "TOOL", "ASSET"].includes(itemType)) {
+      const updateTarget = isItemUpdate ? existingItemByCode.get(text(row.values.code).toUpperCase()) : null;
+      if (isItemUpdate && !updateTarget) {
+        addError(row, `Mã [${text(row.values.code)}] chưa có trong danh mục — mẫu Cập nhật bổ sung không tạo mã mới (thêm mã mới dùng mẫu Danh mục mặt hàng)`);
+      }
+      const itemType = isItemUpdate ? updateTarget?.itemType || "" : normalizeItemType(row.values.item_type);
+      if (!isItemUpdate) row.values.item_type = itemType;
+      if (!isItemUpdate && !["RAW_MATERIAL", "SEMI_FINISHED", "FINISHED", "PACKAGING", "TOOL", "ASSET"].includes(itemType)) {
         addError(row, "Loại mặt hàng không hợp lệ");
       }
+      const revenueGroupResult = resolveItemRevenueGroup?.(row.values.revenue_group);
+      if (revenueGroupResult?.error) addError(row, revenueGroupResult.error);
+      else if (revenueGroupResult?.code) row.values.revenue_group = revenueGroupResult.code;
       const itemStatusValue = text(row.values.status).toUpperCase();
       if (itemStatusValue && !["ACTIVE", "INACTIVE"].includes(itemStatusValue)) {
         addError(row, "Trạng thái chỉ nhận ACTIVE hoặc INACTIVE");
       }
       const importItemCode = text(row.values.code).toUpperCase();
+      if (isItemUpdate && importItemCode) {
+        const firstRow = inventoryItemRows.get(importItemCode);
+        if (firstRow) addError(row, `Mã [${importItemCode}] lặp lại (đã có ở dòng ${firstRow.rowNumber}) — mỗi mã một dòng`);
+        else inventoryItemRows.set(importItemCode, { name: "", itemType, unit: "", rowNumber: row.rowNumber });
+      }
       // Nhiều dòng cùng mã = khai thêm ĐVT quy đổi; nhưng các cột master phải giống hệt nhau,
       // vì dòng sau sẽ ghi đè dòng trước trong cùng lượt import.
-      if (importItemCode) {
+      if (importItemCode && !isItemUpdate) {
         const firstRow = inventoryItemRows.get(importItemCode);
         const thisRow = { name: text(row.values.name), itemType, unit: text(row.values.unit), rowNumber: row.rowNumber };
         if (!firstRow) inventoryItemRows.set(importItemCode, thisRow);

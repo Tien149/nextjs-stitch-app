@@ -28,7 +28,8 @@ import { scopePayloadByTab } from "@/lib/tab-scope";
 import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 import { nextStockDocCode, nextStocktakeCode } from "@/lib/inventory-stock";
 import { isRevenueGroupCategory, normalizeRevenueExpenseGroup } from "@/lib/voucher-rules";
-import { loadNonInventoryRevenueGroups, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
+import { isItemRevenueGroup, loadNonInventoryRevenueGroups, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
+import { normalizeGoodsGroup } from "@/lib/goods-group";
 import { safeConversionRate } from "@/lib/unit-conversion";
 import { explosionPostingDate } from "@/lib/revenue-date";
 
@@ -154,6 +155,10 @@ async function resolveItemRevenueGroup(value: unknown, currentCode?: string | nu
   if (!category) businessError(`Nhóm doanh thu [${code}] không tồn tại hoặc đã ngưng hoạt động.`);
   if (!isRevenueGroupCategory(category?.group)) {
     businessError(`Danh mục ${category?.name} là ${normalizeRevenueExpenseGroup(category?.group) === "PAYMENT" ? "danh mục Chi" : "loại thu khác, không phải nhóm doanh thu"}. Khai lại ở Cài đặt > Thu/Chi với nhóm "Thu: Nhóm doanh thu (bán hàng)" rồi gán.`);
+  }
+  // SVC / thuế / điều chỉnh POS / "Doanh thu nhà hàng" không phải nhóm của món (03/10/2026).
+  if (category && !isItemRevenueGroup(category)) {
+    businessError(`${category.name} không phải nhóm doanh thu của món — chọn Doanh thu Bếp (đồ ăn), Doanh thu Bar (đồ uống) hoặc Phụ thu.`);
   }
   return category?.code || null;
 }
@@ -926,9 +931,11 @@ export async function GET(request: Request) {
     // Ô chọn của mặt hàng chỉ nhận nhóm doanh thu; loại thu quỹ trả riêng để màn hình gọi đúng
     // tên mã đang bị gán sai thay vì hiện trơ mã "(ngoài danh mục)".
     const revenueGroups = receiptCategoryList.filter((category) => isRevenueGroupCategory(category.group));
+    /** Nhóm doanh thu chọn được cho mặt hàng — chỉ nhóm món Bếp / Bar / Phụ thu (isItemRevenueGroup). */
+    const itemRevenueGroups = revenueGroups.filter((category) => isItemRevenueGroup(category));
     const receiptCategories = receiptCategoryList.filter((category) => !isRevenueGroupCategory(category.group));
 
-    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, balances, transactions, flowTransactions, flowTruncated, transferTransactions, transferRequests, transferDestinations, wasteTransactions, partners, flowRange: { from: isoDay(flowFrom), to: isoDay(flowTo) }, recipes: recipesWithCost, warehouses, warehouseBranches, stocktakes, stockSummary, stockMovements, itemGroups, revenueGroups, receiptCategories, costSummary, wasteReport, pendingSales }));
+    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, balances, transactions, flowTransactions, flowTruncated, transferTransactions, transferRequests, transferDestinations, wasteTransactions, partners, flowRange: { from: isoDay(flowFrom), to: isoDay(flowTo) }, recipes: recipesWithCost, warehouses, warehouseBranches, stocktakes, stockSummary, stockMovements, itemGroups, revenueGroups, itemRevenueGroups, receiptCategories, costSummary, wasteReport, pendingSales }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });
@@ -973,6 +980,7 @@ export async function POST(request: Request) {
           itemType,
           category: await resolveItemCategory(itemType, body.category),
           revenueGroup: await resolveItemRevenueGroup(body.revenueGroup),
+          goodsGroup: normalizeGoodsGroup(body.goodsGroup),
           minStock: toNumber(body.minStock),
           requiresImage: !!body.requiresImage,
           note: cleanText(body.note) || null,
@@ -2188,6 +2196,7 @@ export async function PATCH(request: Request) {
           minStock,
           ...(body.category !== undefined ? { category: await resolveItemCategory(itemType, body.category) } : {}),
           ...(body.revenueGroup !== undefined ? { revenueGroup: await resolveItemRevenueGroup(body.revenueGroup, item.revenueGroup) } : {}),
+          ...(body.goodsGroup !== undefined ? { goodsGroup: normalizeGoodsGroup(body.goodsGroup) } : {}),
           ...(body.requiresImage !== undefined ? { requiresImage: !!body.requiresImage } : {}),
           ...(body.status !== undefined ? { status: cleanText(body.status).toUpperCase() || "ACTIVE" } : {}),
           ...(body.note !== undefined ? { note: cleanText(body.note) || null } : {}),

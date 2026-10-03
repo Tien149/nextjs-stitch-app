@@ -106,6 +106,18 @@ const importTabs: ImportTab[] = [
     primaryFields: ["code", "name", "item_type", "unit", "purchase_unit", "conversion_rate", "conversion_note", "min_stock", "requires_image"],
   },
   {
+    id: "inventory-item-update",
+    label: "Cập nhật bổ sung mặt hàng",
+    icon: "edit_note",
+    roles: ["Admin", "Kế toán tổng hợp"],
+    title: "Cập nhật bổ sung danh mục mặt hàng",
+    subtitle: "Chỉ sửa mã ĐÃ CÓ: file chỉ cần cột Mã hàng + các cột muốn bổ sung (Nhóm hàng hóa, Nhóm doanh thu...). Ô trống giữ nguyên giá trị cũ; mã chưa có trong danh mục báo lỗi, không tạo mới.",
+    apiPath: "/api/imports?importType=INVENTORY_ITEM&templateCode=INVENTORY_ITEM_UPDATE_V1",
+    templatePath: "/api/imports?importType=INVENTORY_ITEM&templateCode=INVENTORY_ITEM_UPDATE_V1&template=1",
+    templateCode: "INVENTORY_ITEM_UPDATE_V1",
+    primaryFields: ["code", "name", "goods_group", "revenue_group", "category", "min_stock", "note", "status"],
+  },
+  {
     id: "inventory-transaction",
     label: "Nhap/Xuat kho",
     icon: "warehouse",

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import CopyableText from "@/components/CopyableText";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
+import { goodsGroupKey, normalizeGoodsGroup } from "@/lib/goods-group";
 import { isLocationStocktakeItemType, resolveUnitInputs } from "@/lib/stocktake-consolidate";
 import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING, STOCKTAKE_RETURNED, isStocktakeEditable, stocktakeStatusLabel, stocktakeStatusTone } from "@/lib/stocktake-status";
 
@@ -20,7 +21,7 @@ import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING, STOCKTAKE_RETURNED, isStocktakeE
  */
 
 type UnitConversion = { unitCode: string; unitName?: string | null; conversionRate: number; isDefaultPurchase?: boolean };
-type Item = { id: string; code: string; name: string; unit: string; itemType: string; status?: string | null; unitConversions?: UnitConversion[] };
+type Item = { id: string; code: string; name: string; unit: string; itemType: string; status?: string | null; goodsGroup?: string | null; unitConversions?: UnitConversion[] };
 type Warehouse = { code: string; name: string; branch: string | null };
 type Balance = { warehouseCode: string; quantity: number; item: { id: string } };
 type LocationItem = { itemId: string; sortOrder: number; item: Item };
@@ -527,6 +528,7 @@ export default function StocktakeByLocation(props: {
                 </div>
               </div>
               <ConsolidatedTable
+                goodsGroupOf={(itemId) => normalizeGoodsGroup(itemById.get(itemId)?.goodsGroup)}
                 locations={preview.locations}
                 rows={preview.rows.filter((row) => !onlyVariance || Math.abs(row.varianceQuantity) > EPSILON)}
                 unitCostCell={(row) => row.varianceQuantity > 0 ? (
@@ -582,6 +584,7 @@ export default function StocktakeByLocation(props: {
                     <div data-export-root className="space-y-2">
                       <ExportExcelButton fileName={`ket_qua_kiem_ke_${batch.code}`} sheetName="Ket qua kiem ke" />
                       <ConsolidatedTable
+                        goodsGroupOf={(itemId) => normalizeGoodsGroup(itemById.get(itemId)?.goodsGroup)}
                         locations={locationsInBatch.map((code) => ({ code, name: locationsOf(batch.warehouseCode).find((location) => location.code === code)?.name || code }))}
                         rows={batch.lines.map((line) => ({
                           itemId: line.itemId, itemCode: line.item.code, itemName: line.item.name, unit: line.item.unit,
@@ -709,22 +712,47 @@ export default function StocktakeByLocation(props: {
   );
 }
 
-/** Bảng tổng hợp: mỗi mã một dòng, cột số đếm từng vị trí, tổng đếm, sổ sách, chênh lệch. */
-function ConsolidatedTable({ locations, rows, unitCostCell }: {
+/**
+ * Bảng tổng hợp: mỗi mã một dòng, cột số đếm từng vị trí, tổng đếm, sổ sách, chênh lệch. Có cột +
+ * ô lọc Nhóm hàng hóa — khách giải trình kiểm kê theo nhóm (03/10/2026); dòng Cộng tính theo lọc.
+ */
+function ConsolidatedTable({ locations, rows: allRows, unitCostCell, goodsGroupOf }: {
   locations: Array<{ code: string; name: string }>;
   rows: PreviewRow[];
   unitCostCell: (row: PreviewRow) => React.ReactNode;
+  goodsGroupOf: (itemId: string) => string | null;
 }) {
+  const [groupFilter, setGroupFilter] = useState("ALL");
+  const groupOptions = [...new Map(allRows
+    .map((row) => goodsGroupOf(row.itemId))
+    .filter((name): name is string => Boolean(name))
+    .map((name) => [goodsGroupKey(name), name] as const)).entries()]
+    .sort((a, b) => a[1].localeCompare(b[1], "vi"));
+  const rows = groupFilter === "ALL" ? allRows
+    : groupFilter === "MISSING" ? allRows.filter((row) => !goodsGroupOf(row.itemId))
+    : allRows.filter((row) => goodsGroupKey(goodsGroupOf(row.itemId)) === groupFilter);
   const head = "px-3 py-2 font-bold whitespace-nowrap";
   const shortage = rows.filter((row) => row.varianceQuantity < 0).reduce((sum, row) => sum + row.varianceValue, 0);
   const surplus = rows.filter((row) => row.varianceQuantity > 0).reduce((sum, row) => sum + row.varianceValue, 0);
   return (
+    <div className="space-y-2">
+    {groupOptions.length > 0 && (
+      <label className="flex items-center gap-2 text-xs font-bold text-slate-500">
+        Nhóm hàng hóa
+        <select className="control !mt-0 !w-auto" value={groupFilter} onChange={(e) => setGroupFilter(e.target.value)}>
+          <option value="ALL">Tất cả nhóm</option>
+          <option value="MISSING">Chưa có nhóm</option>
+          {groupOptions.map(([key, name]) => <option key={key} value={key}>{name}</option>)}
+        </select>
+      </label>
+    )}
     <div className="overflow-x-auto max-h-[620px] overflow-y-auto custom-scrollbar border border-slate-200 rounded-lg">
       <table className="w-full text-sm">
         <thead className="bg-slate-50 text-xs text-slate-500 uppercase border-b border-slate-200 sticky top-0 z-10">
           <tr>
             <th className={`${head} text-left`}>Mã</th>
             <th className={`${head} text-left`}>Tên hàng</th>
+            <th className={`${head} text-left`}>Nhóm hàng hóa</th>
             <th className={`${head} text-left`}>ĐVT</th>
             {locations.map((location) => <th key={location.code} className={`${head} text-right`}>{location.name}</th>)}
             <th className={`${head} text-right`}>Tổng kiểm kê</th>
@@ -741,6 +769,7 @@ function ConsolidatedTable({ locations, rows, unitCostCell }: {
               <tr key={row.itemId} className={`border-t border-slate-100 ${row.notCounted ? "bg-rose-50/50" : ""}`}>
                 <td className="cell whitespace-nowrap"><b>{row.itemCode}</b></td>
                 <td className="cell">{row.itemName}{row.notCounted && <small className="block text-rose-700">Không vị trí nào đếm — tính 0</small>}</td>
+                <td className="cell">{goodsGroupOf(row.itemId) || ""}</td>
                 <td className="cell">{row.unit}</td>
                 {locations.map((location) => <td key={location.code} className="cell text-right tabular-nums">{row.breakdown[location.code] !== undefined ? qty(row.breakdown[location.code]) : ""}</td>)}
                 <td className="cell text-right tabular-nums font-bold">{qty(row.countedQuantity)}</td>
@@ -754,12 +783,13 @@ function ConsolidatedTable({ locations, rows, unitCostCell }: {
         </tbody>
         <tfoot className="sticky bottom-0 bg-slate-50 font-bold border-t-2 border-slate-300">
           <tr>
-            <td className="cell" colSpan={3 + locations.length + 3}>Cộng {rows.length} mã · Thiếu {money(shortage)} · Thừa {money(surplus)}</td>
+            <td className="cell" colSpan={4 + locations.length + 3}>Cộng {rows.length} mã · Thiếu {money(shortage)} · Thừa {money(surplus)}</td>
             <td className="cell" />
             <td className="cell text-right tabular-nums">{money(shortage + surplus)}</td>
           </tr>
         </tfoot>
       </table>
+    </div>
     </div>
   );
 }

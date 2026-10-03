@@ -641,6 +641,9 @@ model InventoryItem {
   /// File POS của khách để trống cột "Nhóm doanh thu" nên import lấy giá trị này theo mã hàng
   /// (lib/revenue-source.ts) để lên đúng danh mục 511 và bộ phận Bếp/Bar.
   revenueGroup  String?
+  /// Nhóm hàng hóa (Thịt, Hải sản, Rau củ, Bia...) — ghi tự do, dùng để lọc khi giải trình kiểm
+  /// kê (khách yêu cầu 03/10/2026). Khác `category` (Phân nhóm gắn kho / bộ phận).
+  goodsGroup    String?
   requiresImage Boolean  @default(false)
   minStock      Float    @default(0)
   status        String   @default("ACTIVE")

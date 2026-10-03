@@ -69,6 +69,9 @@ export type ImportTemplateDefinition = {
   aggregate?: { by: string[]; sum: string[] };
 };
 
+/** Mẫu "Cập nhật bổ sung mặt hàng" — cùng importType INVENTORY_ITEM, chỉ sửa mã đã có. */
+export const INVENTORY_ITEM_UPDATE_TEMPLATE = "INVENTORY_ITEM_UPDATE_V1";
+
 export const importTemplates: ImportTemplateDefinition[] = [
   {
     code: "BANK_STATEMENT_STANDARD_V1",
@@ -777,14 +780,36 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "code", label: "Mã mặt hàng", required: true, type: "text", aliases: ["ma hang", "ma mat hang", "code", "item code"] },
       { field: "name", label: "Tên mặt hàng", required: true, type: "text", aliases: ["ten hang", "ten mat hang", "name", "item name"] },
       { field: "item_type", label: "Loại hàng", required: true, type: "text", aliases: ["loai hang", "loai mat hang", "item type"] },
-      { field: "category", label: "Nhóm mặt hàng", required: false, type: "text", aliases: ["nhom hang", "nhom mat hang", "category", "item group"] },
-      { field: "revenue_group", label: "Nhóm doanh thu", required: false, type: "text", aliases: ["nhom doanh thu", "nhom dt", "loai mon", "revenue group", "revenue source"], note: "Ma danh muc Thu (vd REV_FOOD, REV_DRINK) hoac chu \"Do an\"/\"Do uong\". Import doanh thu POS lay cot nay khi file POS khong khai duoc Nhom doanh thu." },
+      // Nhóm hàng hóa đứng TRƯỚC Phân nhóm: tiêu đề "Nhóm hàng hóa" khớp phần đầu với alias của
+      // cột khác, ô nào duyệt trước thì giành cột (autoMapHeaders).
+      { field: "goods_group", label: "Nhóm hàng hóa", required: false, type: "text", aliases: ["nhom hang hoa", "nhom hh", "nhom hang", "goods group"], note: "Ghi tự do (Thịt, Hải sản, Rau củ, Bia...) — lọc khi giải trình kiểm kê." },
+      { field: "category", label: "Phân nhóm (kho)", required: false, type: "text", aliases: ["phan nhom", "nhom mat hang", "category", "item group"], note: "Mã Phân nhóm mặt hàng (đi theo kho / bộ phận) — khác Nhóm hàng hóa." },
+      { field: "revenue_group", label: "Nhóm doanh thu", required: false, type: "text", aliases: ["nhom doanh thu", "nhom dt", "loai mon", "revenue group", "revenue source"], note: "Mã nhóm món (REV_FOOD, REV_DRINK, REV_SERVICE) hoặc chữ Đồ ăn / Đồ uống / Phụ thu / Khăn lạnh. Import doanh thu POS lấy cột này khi file POS không khai được Nhóm doanh thu." },
       { field: "unit", label: "Đơn vị tính", required: true, type: "text", aliases: ["dvt", "don vi tinh", "unit"] },
       { field: "min_stock", label: "Tồn tối thiểu", required: false, type: "number", aliases: ["ton toi thieu", "min stock", "min_stock"] },
       { field: "requires_image", label: "Yêu cầu hình ảnh (1/0)", required: false, type: "integer", aliases: ["yeu cau hinh anh", "bat buoc hinh anh", "requires image"] },
       { field: "is_default_purchase", label: "ĐVT mua mặc định (1/0)", required: false, type: "integer", aliases: ["dvt mua mac dinh", "mac dinh mua", "default purchase"], note: "Khai nhiều ĐVT bằng cách lặp mã hàng trên nhiều dòng; đánh 1 cho ĐVT mua chính" },
       { field: "note", label: "Ghi chú", required: false, type: "text", aliases: ["ghi chu", "note", "mo ta"] },
       { field: "status", label: "Trạng thái", required: false, type: "text", aliases: ["trang thai", "status"], note: "ACTIVE hoặc INACTIVE; ô trống = giữ nguyên. Không có cột này thì mọi mã trong file được bật ACTIVE (mã đang Ngưng sẽ bật lại)." },
+    ],
+  },
+  {
+    // Khách yêu cầu 03/10/2026: danh mục đã có, chỉ thiếu vài cột (Nhóm hàng hóa, Nhóm doanh thu)
+    // thì import BỔ SUNG — không bắt khai lại Tên/Loại/ĐVT, ô trống giữ nguyên, không tạo mã mới.
+    code: INVENTORY_ITEM_UPDATE_TEMPLATE,
+    importType: "INVENTORY_ITEM",
+    name: "Cập nhật bổ sung mặt hàng",
+    description: "Chỉ cập nhật mã ĐÃ CÓ trong danh mục: cột nào có trong file và ô có giá trị thì ghi đè, ô trống giữ nguyên. Mã chưa có trong danh mục báo lỗi, không tạo mới (thêm mã mới dùng mẫu Danh mục mặt hàng).",
+    fields: [
+      { field: "code", label: "Mã mặt hàng", required: true, type: "text", aliases: ["ma hang", "ma mat hang", "code", "item code"] },
+      { field: "name", label: "Tên mặt hàng", required: false, type: "text", aliases: ["ten hang", "ten mat hang", "name", "item name"], note: "Bỏ trống = giữ tên cũ" },
+      { field: "goods_group", label: "Nhóm hàng hóa", required: false, type: "text", aliases: ["nhom hang hoa", "nhom hh", "nhom hang", "goods group"], note: "Ghi tự do (Thịt, Hải sản, Rau củ, Bia...)" },
+      { field: "revenue_group", label: "Nhóm doanh thu", required: false, type: "text", aliases: ["nhom doanh thu", "nhom dt", "loai mon", "revenue group", "revenue source"], note: "Mã nhóm món (REV_FOOD, REV_DRINK, REV_SERVICE) hoặc chữ Đồ ăn / Đồ uống / Phụ thu / Khăn lạnh" },
+      { field: "category", label: "Phân nhóm (kho)", required: false, type: "text", aliases: ["phan nhom", "nhom mat hang", "category", "item group"] },
+      { field: "min_stock", label: "Tồn tối thiểu", required: false, type: "number", aliases: ["ton toi thieu", "min stock", "min_stock"] },
+      { field: "requires_image", label: "Yêu cầu hình ảnh (1/0)", required: false, type: "integer", aliases: ["yeu cau hinh anh", "bat buoc hinh anh", "requires image"] },
+      { field: "note", label: "Ghi chú", required: false, type: "text", aliases: ["ghi chu", "note", "mo ta"] },
+      { field: "status", label: "Trạng thái", required: false, type: "text", aliases: ["trang thai", "status"], note: "ACTIVE hoặc INACTIVE; bỏ trống = giữ nguyên" },
     ],
   },
   {

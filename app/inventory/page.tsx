@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { movementTypeLabel } from "@/lib/inventory-movement-labels";
+import { goodsGroupKey, normalizeGoodsGroup } from "@/lib/goods-group";
 import { canPerformMenuAction, canOpenPath, SESSION_KEY, filterModuleTabs } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import CopyableText from "@/components/CopyableText";
@@ -25,7 +26,7 @@ import { statValueTextClass } from "@/components/reports/report-ui";
 import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING, STOCKTAKE_RETURNED, isStocktakeEditable, stocktakeStatusLabel, stocktakeStatusTone } from "@/lib/stocktake-status";
 
 type UnitConversion = { id: string; unitCode: string; unitName: string | null; conversionRate: number; isDefaultPurchase: boolean };
-type Item = { id: string; code: string; name: string; unit: string; itemType: string; category?: string | null; revenueGroup?: string | null; minStock: number; requiresImage: boolean; status?: string | null; note?: string | null; unitConversions?: UnitConversion[] };
+type Item = { id: string; code: string; name: string; unit: string; itemType: string; category?: string | null; revenueGroup?: string | null; goodsGroup?: string | null; minStock: number; requiresImage: boolean; status?: string | null; note?: string | null; unitConversions?: UnitConversion[] };
 type ItemGroup = { id: string; code: string; name: string; group: string | null; subGroup: string | null };
 /**
  * Nhóm doanh thu của mặt hàng: danh mục Thu/Chi khai ở nhóm NHÓM DOANH THU (REVENUE_SOURCE).
@@ -84,7 +85,7 @@ const loadTracker = { seq: 0, movementSeq: 0, movementRange: "" };
 function movementRangeQuery(range: { from: string; to: string }) {
   return new URLSearchParams({ reportFrom: range.from, reportTo: range.to }).toString();
 }
-type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; flowTruncated?: boolean; transferRequests?: TransferRequest[]; transferDestinations?: Array<{ code: string; name: string; branch: string | null }>; transferTransactions?: Transaction[]; wasteTransactions?: Transaction[]; warehouseBranches?: Array<{ code: string; branch: string | null }>; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[] };
+type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; flowTruncated?: boolean; transferRequests?: TransferRequest[]; transferDestinations?: Array<{ code: string; name: string; branch: string | null }>; transferTransactions?: Transaction[]; wasteTransactions?: Transaction[]; warehouseBranches?: Array<{ code: string; branch: string | null }>; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; itemRevenueGroups?: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[] };
 const movementTypes = ["NHAP_MUA", "NHAP_KHAC", "NHAP_CHE_BIEN", "NHAP_KIEM_KE", "XUAT_BAN", "XUAT_HUY", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_CHE_BIEN", "XUAT_KIEM_KE", "DIEU_CHUYEN"];
 /** Loại hiển thị trên hai màn hình Nhập/Xuất. Điều chuyển hiện ở CẢ hai: vế xuất ở kho đi, vế nhập ở kho nhận. */
 const inboundTypes = ["NHAP_MUA", "NHAP_CHE_BIEN", "NHAP_DIEU_CHUYEN", "NHAP_KHAC", "NHAP_KIEM_KE"];
@@ -199,10 +200,10 @@ export default function InventoryPage() {
   /** Khoảng NGÀY CHỨNG TỪ của danh sách phiếu nhập/xuất — mặc định 90 ngày gần nhất, gửi lên server. */
   const [flowRange, setFlowRange] = useState({ from: daysAgo(90), to: today() });
 
-  const [itemForm, setItemForm] = useState({ code: "NVL_001", name: "Nguyên liệu mẫu", unit: "g", itemType: "RAW_MATERIAL", category: "", revenueGroup: "", purchaseUnit: "kg", conversionRate: "1000", minStock: "500", requiresImage: false });
+  const [itemForm, setItemForm] = useState({ code: "NVL_001", name: "Nguyên liệu mẫu", unit: "g", itemType: "RAW_MATERIAL", category: "", revenueGroup: "", goodsGroup: "", purchaseUnit: "kg", conversionRate: "1000", minStock: "500", requiresImage: false });
   /** Sửa mặt hàng trên bảng danh mục: mã hàng KHÔNG nằm trong form vì API không cho đổi mã. */
   const [editingItem, setEditingItem] = useState<Item | null>(null);
-  const [itemEditForm, setItemEditForm] = useState({ name: "", unit: "", itemType: "RAW_MATERIAL", category: "", revenueGroup: "", minStock: "0", requiresImage: false, status: "ACTIVE", note: "" });
+  const [itemEditForm, setItemEditForm] = useState({ name: "", unit: "", itemType: "RAW_MATERIAL", category: "", revenueGroup: "", goodsGroup: "", minStock: "0", requiresImage: false, status: "ACTIVE", note: "" });
   const [itemEditError, setItemEditError] = useState<string | null>(null);
   const [itemEditSaving, setItemEditSaving] = useState(false);
   const [deletingItem, setDeletingItem] = useState<Item | null>(null);
@@ -225,6 +226,8 @@ export default function InventoryPage() {
   const [itemTypeFilter, setItemTypeFilter] = useState("ALL");
   /** ALL / MISSING (chưa gán) / mã danh mục Thu cụ thể — lọc để gán hàng loạt cho nhanh. */
   const [revenueGroupFilter, setRevenueGroupFilter] = useState("ALL");
+  /** ALL / MISSING (chưa có nhóm) / khoá nhóm hàng hóa (goodsGroupKey) — khách lọc khi giải trình kiểm kê. */
+  const [goodsGroupFilter, setGoodsGroupFilter] = useState("ALL");
   /** ALL / ACTIVE / INACTIVE — mã bị ngưng vẫn phải nhìn thấy được để bật lại hàng loạt. */
   const [itemStatusFilter, setItemStatusFilter] = useState("ALL");
   const [bulkStatusRunning, setBulkStatusRunning] = useState(false);
@@ -672,17 +675,36 @@ export default function InventoryPage() {
    * Mã đang gán ở ô Nhóm doanh thu nhưng KHÔNG nằm trong danh mục nhóm doanh thu: hoặc là loại
    * thu quỹ gán nhầm từ trước, hoặc là mã đã bị bỏ khỏi danh mục.
    */
+  /** Nhóm doanh thu chọn được cho mặt hàng: chỉ nhóm món Bếp / Bar / Phụ thu (máy chủ lọc — 03/10/2026). */
+  const itemRevenueOptions = data.itemRevenueGroups ?? data.revenueGroups;
   const isMisassignedRevenueGroup = (code?: string | null) =>
-    Boolean(code) && !data.revenueGroups.some((group) => group.code === code);
+    Boolean(code) && !itemRevenueOptions.some((group) => group.code === code);
   /** Nhãn cho mã gán sai: gọi đúng tên loại thu nếu tra được, không thì nói thẳng là ngoài danh mục. */
   const revenueGroupIssueLabel = (code: string) => {
+    const revenueGroup = data.revenueGroups.find((category) => category.code === code);
+    if (revenueGroup) return `${code} - ${revenueGroup.name} (không phải nhóm món — chọn lại)`;
     const receipt = data.receiptCategories.find((category) => category.code === code);
     return receipt ? `${code} - ${receipt.name} (loại thu, không phải nhóm doanh thu)` : `${code} (ngoài danh mục nhóm doanh thu)`;
   };
 
+  /** Các nhóm hàng hóa đang có trên danh mục (gom không phân biệt hoa thường), kèm số mã. */
+  const goodsGroupOptions = (() => {
+    const groups = new Map<string, { key: string; name: string; count: number }>();
+    for (const item of data.items) {
+      const name = normalizeGoodsGroup(item.goodsGroup);
+      if (!name) continue;
+      const key = goodsGroupKey(name);
+      const current = groups.get(key) || { key, name, count: 0 };
+      current.count += 1;
+      groups.set(key, current);
+    }
+    return [...groups.values()].sort((a, b) => a.name.localeCompare(b.name, "vi"));
+  })();
   const itemStatusOf = (item: Item) => (item.status || "ACTIVE").toUpperCase();
   const filteredItems = data.items.filter((item) => {
     if (itemTypeFilter !== "ALL" && item.itemType !== itemTypeFilter) return false;
+    if (goodsGroupFilter === "MISSING" && normalizeGoodsGroup(item.goodsGroup)) return false;
+    if (!["ALL", "MISSING"].includes(goodsGroupFilter) && goodsGroupKey(item.goodsGroup) !== goodsGroupFilter) return false;
     if (itemStatusFilter !== "ALL" && itemStatusOf(item) !== itemStatusFilter) return false;
     if (revenueGroupFilter === "MISSING" && item.revenueGroup) return false;
     if (revenueGroupFilter === "INVALID" && !isMisassignedRevenueGroup(item.revenueGroup)) return false;
@@ -789,6 +811,27 @@ export default function InventoryPage() {
   // theo đúng bộ lọc đang xem thay vì bắt sửa tay từng mã.
   const inactiveItemCount = data.items.filter((item) => itemStatusOf(item) !== "ACTIVE").length;
   const inactiveFilteredItems = filteredItems.filter((item) => itemStatusOf(item) !== "ACTIVE");
+  /**
+   * File "Đơn vị quy đổi" theo bảng khách gửi 03/10/2026: mỗi ĐVT quy đổi một dòng — Mã hàng | Tên
+   * hàng | Mã ĐVT quy đổi | ĐVT tồn kho | Hệ số quy đổi. Bỏ dòng ĐVT cơ bản (hệ số 1 với chính nó).
+   * Theo đúng bộ lọc đang xem của danh mục.
+   */
+  const exportUnitConversions = async () => {
+    const XLSX = await import("xlsx");
+    const rows: Array<Array<string | number>> = [["Mã hàng", "Tên hàng", "Mã ĐVT quy đổi", "ĐVT tồn kho", "Hệ số quy đổi"]];
+    const sorted = [...filteredItems].sort((a, b) => a.name.localeCompare(b.name, "vi") || a.code.localeCompare(b.code));
+    for (const item of sorted) {
+      const conversions = (item.unitConversions || [])
+        .filter((unit) => unit.unitCode.trim().toUpperCase() !== item.unit.trim().toUpperCase())
+        .sort((a, b) => a.unitCode.localeCompare(b.unitCode));
+      for (const unit of conversions) rows.push([item.code, item.name, unit.unitCode, item.unit.toUpperCase(), unit.conversionRate]);
+    }
+    const sheet = XLSX.utils.aoa_to_sheet(rows);
+    sheet["!cols"] = [{ wch: 16 }, { wch: 40 }, { wch: 22 }, { wch: 12 }, { wch: 14 }];
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "Don vi quy doi");
+    XLSX.writeFile(workbook, `don_vi_quy_doi_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
 
   const getSessionHeaders = (): Record<string, string> => {
     if (typeof window === "undefined") return {};
@@ -1251,6 +1294,7 @@ export default function InventoryPage() {
       itemType: item.itemType,
       category: item.category || "",
       revenueGroup: item.revenueGroup || "",
+      goodsGroup: item.goodsGroup || "",
       minStock: String(item.minStock ?? 0),
       requiresImage: !!item.requiresImage,
       status: (item.status || "ACTIVE").toUpperCase(),
@@ -1510,9 +1554,17 @@ export default function InventoryPage() {
             {!canOpenImports && " Tài khoản của bạn chưa được cấp menu Import dữ liệu nên chưa mở được màn hình đẩy file — liên hệ Admin để cấp quyền hoặc nhờ import giúp."}
           </p>
           {canOpenImports && (
-            <a className="secondary-button bg-white" href={`/imports?tab=${importTarget.tab}`}>
-              <span className="material-symbols-outlined text-lg">upload_file</span>{importTarget.label}
-            </a>
+            <div className="flex flex-wrap gap-2">
+              {/* Danh mục đã có, chỉ thiếu vài cột (Nhóm hàng hóa, Nhóm doanh thu) thì import bổ sung (03/10/2026). */}
+              {active === "items" && (
+                <a className="secondary-button bg-white" href="/imports?tab=inventory-item-update">
+                  <span className="material-symbols-outlined text-lg">edit_note</span>Cập nhật bổ sung mặt hàng
+                </a>
+              )}
+              <a className="secondary-button bg-white" href={`/imports?tab=${importTarget.tab}`}>
+                <span className="material-symbols-outlined text-lg">upload_file</span>{importTarget.label}
+              </a>
+            </div>
           )}
         </div>
       )}
@@ -1710,6 +1762,10 @@ export default function InventoryPage() {
                 </select>
               </Input>
 
+              <Input label="Nhóm hàng hóa (lọc khi giải trình kiểm kê)">
+                <input className="control" list="goods-group-options" value={itemForm.goodsGroup} onChange={(e) => setItemForm({ ...itemForm, goodsGroup: e.target.value })} placeholder="vd: Thịt, Hải sản, Rau củ, Bia..." />
+              </Input>
+
               <Input label="Phân nhóm (đi theo kho tương ứng)">
                 <select className="control" value={itemForm.category} onChange={(e) => setItemForm({ ...itemForm, category: e.target.value })}>
                   <option value="">-- Chưa gán phân nhóm --</option>
@@ -1726,11 +1782,11 @@ export default function InventoryPage() {
               <Input label="Nhóm doanh thu (dùng khi file POS không khai được)">
                 <select className="control" value={itemForm.revenueGroup} onChange={(e) => setItemForm({ ...itemForm, revenueGroup: e.target.value })}>
                   <option value="">-- Chưa gán nhóm doanh thu --</option>
-                  {data.revenueGroups.map((group) => (
+                  {itemRevenueOptions.map((group) => (
                     <option key={group.code} value={group.code}>{group.code} - {group.name}</option>
                   ))}
                 </select>
-                {data.revenueGroups.length === 0 && (
+                {itemRevenueOptions.length === 0 && (
                   <p className="mt-1 text-[11px] font-bold text-amber-700">
                     Chưa khai nhóm doanh thu nào. Vào Cài đặt &gt; Thu / Chi, thêm danh mục với nhóm “Thu: Nhóm doanh thu (bán hàng)” — loại thu quỹ (thu tiền thừa, thu đặt cọc...) không gán cho mặt hàng được.
                   </p>
@@ -1814,7 +1870,11 @@ export default function InventoryPage() {
           
           <section className="table-panel shadow-sm">
             <Panel title="Danh mục mặt hàng" reload={loadData} exportFileName="danh_muc_mat_hang" />
-            <div className="px-5 pb-4 grid sm:grid-cols-[minmax(0,1fr)_200px_200px_180px] gap-3">
+            {/* Gợi ý nhóm hàng hóa đã dùng cho ô nhập ở form thêm / sửa mặt hàng. */}
+            <datalist id="goods-group-options">
+              {goodsGroupOptions.map((group) => <option key={group.key} value={group.name} />)}
+            </datalist>
+            <div className="px-5 pb-4 grid sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_180px_200px_200px_170px] gap-3">
               <Input label="Tìm kiếm">
                 <input className="control" placeholder="Gõ mã hoặc tên mặt hàng..." value={itemSearch} onChange={(e) => setItemSearch(e.target.value)} />
               </Input>
@@ -1829,12 +1889,21 @@ export default function InventoryPage() {
                   <option value="ASSET">Tài sản</option>
                 </select>
               </Input>
+              <Input label="Nhóm hàng hóa">
+                <select className="control" value={goodsGroupFilter} onChange={(e) => setGoodsGroupFilter(e.target.value)}>
+                  <option value="ALL">Tất cả nhóm hàng hóa</option>
+                  <option value="MISSING">Chưa có nhóm hàng hóa</option>
+                  {goodsGroupOptions.map((group) => (
+                    <option key={group.key} value={group.key}>{group.name} ({group.count})</option>
+                  ))}
+                </select>
+              </Input>
               <Input label="Nhóm doanh thu">
                 <select className="control" value={revenueGroupFilter} onChange={(e) => setRevenueGroupFilter(e.target.value)}>
                   <option value="ALL">Tất cả nhóm doanh thu</option>
                   <option value="MISSING">Chưa gán nhóm doanh thu</option>
-                  <option value="INVALID">Đang gán sai (loại thu / mã ngoài danh mục)</option>
-                  {data.revenueGroups.map((group) => (
+                  <option value="INVALID">Đang gán sai (không phải nhóm món / ngoài danh mục)</option>
+                  {itemRevenueOptions.map((group) => (
                     <option key={group.code} value={group.code}>{group.code} - {group.name}</option>
                   ))}
                 </select>
@@ -1859,6 +1928,12 @@ export default function InventoryPage() {
                 <> · <span className="text-rose-700 font-bold">{inactiveItemCount} mã đang Ngưng</span> — mã Ngưng bị chặn ở mọi file import BOM / nhập xuất kho.</>
               )}
             </p>
+            <div className="px-5 pb-3">
+              <button type="button" className="secondary-button" onClick={() => void exportUnitConversions()} title="Mỗi ĐVT quy đổi một dòng, theo bộ lọc đang xem">
+                <span className="material-symbols-outlined text-lg">swap_horiz</span>
+                Xuất ĐVT quy đổi ({filteredItems.length} mã)
+              </button>
+            </div>
             {canEditItem && inactiveFilteredItems.length > 0 && (
               <div className="px-5 pb-3">
                 <button
@@ -1873,11 +1948,12 @@ export default function InventoryPage() {
               </div>
             )}
             <Table
-              tableClassName="min-w-[1360px]"
+              tableClassName="min-w-[1480px]"
               headers={[
                 { label: "Mã" },
                 { label: "Tên" },
                 { label: "Loại" },
+                { label: "Nhóm hàng hóa" },
                 { label: "Phân nhóm" },
                 { label: "Nhóm doanh thu" },
                 { label: "Đơn vị" },
@@ -1897,6 +1973,7 @@ export default function InventoryPage() {
                   </Cell>
                   <Cell>{item.name}</Cell>
                   <Cell>{item.itemType}</Cell>
+                  <Cell>{normalizeGoodsGroup(item.goodsGroup) || <span className="text-slate-400">-</span>}</Cell>
                   <Cell>{data.itemGroups.find((group) => group.code === item.category)?.name || item.category || "-"}</Cell>
                   <Cell>
                     {canEditItem ? (
@@ -1906,7 +1983,7 @@ export default function InventoryPage() {
                         onChange={(e) => void patchItem(item.id, { revenueGroup: e.target.value }, `Đã gán nhóm doanh thu cho ${item.code}.`)}
                       >
                         <option value="">-- Chưa gán --</option>
-                        {data.revenueGroups.map((group) => (
+                        {itemRevenueOptions.map((group) => (
                           <option key={group.code} value={group.code}>{group.code} - {group.name}</option>
                         ))}
                         {/* Mã đang gán sai (loại thu quỹ, mã đã bỏ) vẫn phải hiện, nếu không đổi ô là
@@ -1999,6 +2076,10 @@ export default function InventoryPage() {
                     Đơn vị tính và Loại chỉ đổi được khi mặt hàng chưa phát sinh giao dịch kho và không còn tồn. Đã phát sinh rồi thì khai ĐVT quy đổi thay vì sửa ĐVT gốc.
                   </p>
 
+                  <Input label="Nhóm hàng hóa (lọc khi giải trình kiểm kê)">
+                    <input className="control" list="goods-group-options" value={itemEditForm.goodsGroup} onChange={(e) => setItemEditForm({ ...itemEditForm, goodsGroup: e.target.value })} placeholder="vd: Thịt, Hải sản, Rau củ, Bia..." />
+                  </Input>
+
                   <Input label="Phân nhóm (đi theo kho tương ứng)">
                     <select className="control" value={itemEditForm.category} onChange={(e) => setItemEditForm({ ...itemEditForm, category: e.target.value })}>
                       <option value="">-- Chưa gán phân nhóm --</option>
@@ -2015,7 +2096,7 @@ export default function InventoryPage() {
                   <Input label="Nhóm doanh thu (dùng khi file POS không khai được)">
                     <select className="control" value={itemEditForm.revenueGroup} onChange={(e) => setItemEditForm({ ...itemEditForm, revenueGroup: e.target.value })}>
                       <option value="">-- Chưa gán nhóm doanh thu --</option>
-                      {data.revenueGroups.map((group) => (
+                      {itemRevenueOptions.map((group) => (
                         <option key={group.code} value={group.code}>{group.code} - {group.name}</option>
                       ))}
                       {/* Mã đang gán sai vẫn phải nằm trong danh sách, nếu không mở hộp thoại sửa

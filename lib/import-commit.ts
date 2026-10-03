@@ -4,7 +4,8 @@ import { Prisma } from "@prisma/custom-client";
 import { prisma, prismaRaw, type RawTxClient, type TxClient } from "@/lib/prisma";
 import { assertPeriodOpen as assertAccountingPeriodOpen, buildAllocationSchedules, isPeriodLocked, periodFromDate } from "@/lib/phase3";
 import { ensureDefaultAccounts } from "@/lib/accounting";
-import { isMasterDataImportType, normalizeHeader, type ImportType } from "@/lib/import-templates";
+import { INVENTORY_ITEM_UPDATE_TEMPLATE, isMasterDataImportType, normalizeHeader, type ImportType } from "@/lib/import-templates";
+import { normalizeGoodsGroup } from "@/lib/goods-group";
 import { parseImportDate, type ParsedImportRow } from "@/lib/import-parser";
 import { normalizeStockTransactionType, postInventoryTransaction } from "@/lib/inventory-stock";
 import { parseVatRate } from "@/lib/inventory-vat";
@@ -1318,7 +1319,33 @@ export async function commitImport(input: CommitInput) {
       }
     }
 
-    if (input.importType === "INVENTORY_ITEM") {
+    /**
+     * Mẫu "Cập nhật bổ sung mặt hàng" (khách yêu cầu 03/10/2026): chỉ sửa mã ĐÃ CÓ; cột có trong
+     * file VÀ ô có giá trị mới ghi đè, ô trống giữ nguyên. Không đụng Loại / ĐVT / quy đổi. Bước
+     * xem trước đã chặn mã chưa có và quy Nhóm doanh thu về mã nhóm món.
+     */
+    if (input.importType === "INVENTORY_ITEM" && input.templateCode === INVENTORY_ITEM_UPDATE_TEMPLATE) {
+      const hasValue = (row: ParsedImportRow, field: string) => Boolean(input.mapping[field]) && asText(row.values[field]) !== "";
+      for (const row of input.rows) {
+        const code = asText(row.values.code).toUpperCase();
+        const existing = await tx.inventoryItem.findUnique({ where: { code }, select: { id: true } });
+        if (!existing) throw new Error(`Dòng ${row.rowNumber}: Mã [${code}] chưa có trong danh mục — mẫu Cập nhật bổ sung không tạo mã mới`);
+        const statusValue = asText(row.values.status).toUpperCase();
+        if (statusValue && !["ACTIVE", "INACTIVE"].includes(statusValue)) throw new Error(`Dòng ${row.rowNumber}: Trạng thái chỉ nhận ACTIVE hoặc INACTIVE`);
+        const data: Prisma.InventoryItemUpdateInput = {
+          ...(hasValue(row, "name") ? { name: asText(row.values.name) } : {}),
+          ...(hasValue(row, "goods_group") ? { goodsGroup: normalizeGoodsGroup(row.values.goods_group) } : {}),
+          ...(hasValue(row, "revenue_group") ? { revenueGroup: asText(row.values.revenue_group).toUpperCase() } : {}),
+          ...(hasValue(row, "category") ? { category: asText(row.values.category).toUpperCase() } : {}),
+          ...(hasValue(row, "min_stock") ? { minStock: asNumber(row.values.min_stock) } : {}),
+          ...(hasValue(row, "requires_image") ? { requiresImage: asFlag(row.values.requires_image) } : {}),
+          ...(hasValue(row, "note") ? { note: asText(row.values.note) } : {}),
+          ...(statusValue ? { status: statusValue } : {}),
+        };
+        if (Object.keys(data).length > 0) await tx.inventoryItem.update({ where: { id: existing.id }, data });
+        await setImportTarget(tx, staging, row, "INVENTORY_ITEM", existing.id);
+      }
+    } else if (input.importType === "INVENTORY_ITEM") {
       // Cột không được map thì KHÔNG ghi đè giá trị đang có: file thiếu cột "Yêu cầu hình ảnh"
       // mà cứ ghi asFlag(undefined) = false là mọi lần re-import đều reset cờ của item cũ.
       const hasColumn = (field: string) => Boolean(input.mapping[field]);
@@ -1377,6 +1404,7 @@ export async function commitImport(input: CommitInput) {
           where: { code },
           create: {
             code, name, itemType, category, revenueGroup, unit,
+            goodsGroup: normalizeGoodsGroup(row.values.goods_group),
             minStock: asNumber(row.values.min_stock),
             requiresImage: asFlag(row.values.requires_image),
             note: asText(row.values.note) || null,
@@ -1389,6 +1417,7 @@ export async function commitImport(input: CommitInput) {
             // import bổ sung là xoá sạch phân nhóm của toàn bộ mã trong file.
             ...(hasColumn("category") ? { category } : {}),
             ...(hasColumn("revenue_group") ? { revenueGroup } : {}),
+            ...(hasColumn("goods_group") ? { goodsGroup: normalizeGoodsGroup(row.values.goods_group) } : {}),
             ...(hasColumn("min_stock") ? { minStock: asNumber(row.values.min_stock) } : {}),
             ...(hasColumn("requires_image") ? { requiresImage: asFlag(row.values.requires_image) } : {}),
             ...(hasColumn("note") ? { note: asText(row.values.note) || null } : {}),
