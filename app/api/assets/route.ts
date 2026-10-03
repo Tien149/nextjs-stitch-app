@@ -150,6 +150,41 @@ export async function GET(request: Request) {
       return NextResponse.json({ steps: await assetDeleteSteps(asset) });
     }
 
+    // Bản in PHIẾU NHẬP TÀI SẢN / CCDC (khách yêu cầu 03/10/2026): một đợt của mã kèm tên kho,
+    // phòng ban, nhóm, NCC và công nợ để trang in khỏi phải tải cả sổ tài sản.
+    const printId = searchParams.get("view") === "print" ? cleanText(searchParams.get("id")) : "";
+    if (printId) {
+      const asset = await prisma.assetRecord.findUnique({ where: { id: printId } });
+      if (!asset) return NextResponse.json({ error: "Không tìm thấy tài sản" }, { status: 404 });
+      try {
+        assertBranchAccess(auth.session, asset.branchCode);
+        assertDepartmentAccess(auth.session, asset.departmentCode, `Tài sản ${asset.code}`);
+      } catch (e) {
+        return NextResponse.json({ error: e instanceof Error ? e.message.replace(/^BUSINESS:/, "") : "Lỗi phân quyền" }, { status: 403 });
+      }
+      const lookup = (type: string, code: string | null) => code
+        ? prisma.masterDataItem.findFirst({ where: { type, code: { equals: code, mode: "insensitive" } }, select: { name: true, group: true } })
+        : Promise.resolve(null);
+      const [warehouse, department, group, supplier, debt, lotCount] = await Promise.all([
+        lookup("WAREHOUSE", asset.warehouseCode || asset.location),
+        lookup("DEPARTMENT", asset.departmentCode),
+        lookup("ASSET_GROUP", asset.assetGroup),
+        asset.supplierName ? Promise.resolve(null) : lookup("PARTNER", asset.supplierCode),
+        prismaRaw.debtRecord.findFirst({ where: { sourceType: "ASSET", sourceId: asset.id, deletedAt: null }, select: { code: true, status: true, dueDate: true } }),
+        prisma.assetRecord.count({ where: { code: asset.code } }),
+      ]);
+      return NextResponse.json({
+        asset,
+        warehouseName: warehouse?.name || null,
+        departmentName: department?.name || null,
+        groupName: group?.name || null,
+        isTool: ["CCDC", "TOOL"].includes(cleanText(group?.group).toUpperCase()),
+        supplierName: asset.supplierName || supplier?.name || null,
+        debt,
+        lotCount,
+      });
+    }
+
     const search = searchParams.get("search")?.trim() || searchParams.get("q")?.trim();
     const statusParam = searchParams.get("status") || undefined;
     const assetGroup = searchParams.get("assetGroup") || undefined;

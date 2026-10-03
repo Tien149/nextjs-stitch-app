@@ -1314,6 +1314,16 @@ export default function AssetsPage() {
                           </td>
 
                           <td className="px-4 py-3 text-right">
+                            <div className="flex items-center justify-end gap-1.5">
+                            {/* In Phiếu nhập tài sản / CCDC (khách yêu cầu 03/10/2026). */}
+                            <button
+                              type="button"
+                              onClick={() => window.open(`/assets/${asset.id}/print`, "_blank")}
+                              className="px-2.5 py-1 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 rounded-lg text-xs font-bold transition-colors"
+                              title="In phiếu nhập tài sản / CCDC"
+                            >
+                              In
+                            </button>
                             <RowActions
                               session={user}
                               module="/assets"
@@ -1322,6 +1332,7 @@ export default function AssetsPage() {
                               onDelete={() => void openDeleteAsset(asset)}
                               editDisabledReason={editLockReason(asset)}
                             />
+                            </div>
                           </td>
                         </tr>
                       );
