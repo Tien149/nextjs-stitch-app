@@ -137,7 +137,12 @@ export function isOutboundStockType(value: string) {
  */
 export async function nextStockDocCode(tx: Tx, prefix: string, docDate: Date) {
   const head = `${prefix}-${docDate.getUTCFullYear()}-`;
-  const rows = await tx.$queryRaw<Array<{ code: string }>>`SELECT "code" FROM "InventoryTransaction" WHERE "code" LIKE ${head + "%"}`;
+  // Phiếu điều chuyển chờ duyệt giữ chỗ mã DCK trước khi có phiếu kho (lib/inventory-transfer-request.ts)
+  // nên phải đếm cả bảng đó, không thì phiếu lập sau đâm trùng mã lúc được duyệt.
+  const rows = await tx.$queryRaw<Array<{ code: string }>>`
+    SELECT "code" FROM "InventoryTransaction" WHERE "code" LIKE ${head + "%"}
+    UNION ALL
+    SELECT "code" FROM "InventoryTransferRequest" WHERE "code" LIKE ${head + "%"}`;
   // Mã lần rã nguyên liệu đẻ phiếu con mang hậu tố (RA-2026-0001-1X, -1N, -2XB...): phần sau
   // head không còn là số thuần, Number() trả NaN nên max kẹt ở 0 và lần rã thứ hai trong năm
   // lại được cấp -0001 -> đâm unique. Chỉ lấy cụm số đứng đầu để đếm đúng cả mã có hậu tố.

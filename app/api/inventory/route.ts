@@ -17,6 +17,7 @@ import { writeAuditLog } from "@/lib/audit-log";
 import { executeExplosion, rerunExplosions, type AffectedExplosionRun } from "@/lib/inventory-explosion";
 import { loadMissingRecipeReport } from "@/lib/missing-recipes";
 import { compactFlowDocument, FLOW_DOCUMENT_LIMIT } from "@/lib/inventory-flow-list";
+import { approveTransferRequest, buildTransferRequestLines, canReceiveTransfer, canSendTransfer, TRANSFER_APPROVED, TRANSFER_PENDING, TRANSFER_RETURNED } from "@/lib/inventory-transfer-request";
 import {
   duplicatedInTrashMessage,
   findDeletedByUnique,
@@ -728,6 +729,30 @@ export async function GET(request: Request) {
     const flowTransactions = recentFlowTransactions.map(compactFlowDocument);
     const flowTruncated = recentFlowTransactions.length >= FLOW_DOCUMENT_LIMIT;
 
+    /**
+     * Phiếu điều chuyển chờ duyệt / bị trả lại (mọi ngày — còn treo thì phải hiện) mà người xem là
+     * bên chuyển HOẶC bên nhận, kèm cờ được làm gì. Danh sách kho nhận cho form lấy MỌI kho đang
+     * hoạt động: `warehouses` chỉ có kho của người xem nên nhà hàng không chọn được kho nhà hàng khác.
+     */
+    const allowedBranchList = (auth.session.allowedBranches || []).map((code) => code.toUpperCase());
+    const branchScope = allowedBranchList.includes("ALL")
+      ? {}
+      : { OR: [{ branchCode: { in: allowedBranchList } }, { toBranchCode: { in: allowedBranchList } }] };
+    const [openTransferRequests, transferDestinations] = await Promise.all([
+      prisma.inventoryTransferRequest.findMany({
+        where: { status: { in: [TRANSFER_PENDING, TRANSFER_RETURNED] }, ...branchScope },
+        orderBy: [{ requestDate: "desc" }, { code: "desc" }],
+      }),
+      prisma.masterDataItem.findMany({
+        where: { type: "WAREHOUSE", status: "ACTIVE" },
+        select: { code: true, name: true, branch: true },
+        orderBy: [{ branch: "asc" }, { code: "asc" }],
+      }),
+    ]);
+    const transferRequests = openTransferRequests
+      .map((request) => ({ ...request, canApprove: canReceiveTransfer(auth.session, request), canEdit: canSendTransfer(auth.session, request) }))
+      .filter((request) => request.canApprove || request.canEdit);
+
     // Bảng tra kho -> cửa hàng cho bộ lọc Cửa hàng ở tab Tồn kho. Lấy cả kho đã ngưng: kho ngưng
     // vẫn còn tồn / phát sinh cũ, danh sách `warehouses` (chỉ kho đang dùng) không gọi được cửa hàng.
     const warehouseBranches = await prisma.masterDataItem.findMany({
@@ -903,7 +928,7 @@ export async function GET(request: Request) {
     const revenueGroups = receiptCategoryList.filter((category) => isRevenueGroupCategory(category.group));
     const receiptCategories = receiptCategoryList.filter((category) => !isRevenueGroupCategory(category.group));
 
-    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, balances, transactions, flowTransactions, flowTruncated, transferTransactions, wasteTransactions, partners, flowRange: { from: isoDay(flowFrom), to: isoDay(flowTo) }, recipes: recipesWithCost, warehouses, warehouseBranches, stocktakes, stockSummary, stockMovements, itemGroups, revenueGroups, receiptCategories, costSummary, wasteReport, pendingSales }));
+    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, balances, transactions, flowTransactions, flowTruncated, transferTransactions, transferRequests, transferDestinations, wasteTransactions, partners, flowRange: { from: isoDay(flowFrom), to: isoDay(flowTo) }, recipes: recipesWithCost, warehouses, warehouseBranches, stocktakes, stockSummary, stockMovements, itemGroups, revenueGroups, receiptCategories, costSummary, wasteReport, pendingSales }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });
@@ -1830,15 +1855,19 @@ export async function POST(request: Request) {
      * Khác nhà hàng: sinh cặp công nợ nội bộ phải thu/phải trả theo trị giá xuất kho.
      * Không cho điều chuyển nhóm FINISHED (postStockTransfer chặn tầng cuối).
      */
+    /**
+     * Lập phiếu điều chuyển = GỬI CHỜ DUYỆT (khách chốt 03/10/2026): chưa đụng tồn kho / công nợ;
+     * nhà hàng nhận Duyệt mới ghi phiếu kho (APPROVE_TRANSFER_REQUEST). Bên chuyển chỉ cần quyền
+     * kho xuất — không cần quyền cửa hàng nhận như trước.
+     */
     if (action === "TRANSFER_STOCK") {
       const branchCode = cleanText(body.branchCode);
       const warehouseCode = cleanText(body.warehouseCode);
       const toWarehouseCode = cleanText(body.toWarehouseCode);
-      const transactionDate = toDate(body.transactionDate);
+      const requestDate = toDate(body.transactionDate);
       if (!branchCode || !warehouseCode || !toWarehouseCode) businessError("Điều chuyển cần cửa hàng, kho xuất và kho nhận");
       if (warehouseCode === toWarehouseCode) businessError("Kho xuất và kho nhận không được trùng nhau");
       assertBranchAccess(auth.session, branchCode);
-      // Chỉ chặn kho xuất: điều chuyển sang kho của bộ phận khác là việc bình thường.
       assertWarehouseAccess(auth.session, warehouseCode, "Kho xuất");
       const [sourceWarehouse, destinationWarehouse] = await Promise.all([
         prisma.masterDataItem.findFirst({ where: { type: "WAREHOUSE", code: warehouseCode, branch: branchCode } }),
@@ -1847,11 +1876,6 @@ export async function POST(request: Request) {
       if (!sourceWarehouse) businessError(`Kho ${warehouseCode} không thuộc cửa hàng ${branchCode}.`);
       if (!destinationWarehouse) businessError(`Kho nhận ${toWarehouseCode} không tồn tại hoặc ngưng hoạt động`);
       const toBranchCode = (destinationWarehouse?.branch || branchCode).toUpperCase();
-      if (destinationWarehouse?.branch) assertBranchAccess(auth.session, destinationWarehouse.branch);
-      if (await isPeriodLocked(transactionDate, branchCode)) businessError("Kỳ kế toán đã khóa");
-      if (toBranchCode !== branchCode.toUpperCase() && await isPeriodLocked(transactionDate, toBranchCode)) {
-        businessError(`Kỳ kế toán của cửa hàng nhận ${toBranchCode} đã khóa`);
-      }
       const inputLines = linesFrom(body.lines);
       if (inputLines.length === 0) businessError("Cần ít nhất một dòng hàng điều chuyển");
 
@@ -1859,27 +1883,107 @@ export async function POST(request: Request) {
       if (requestedCode && await findDeletedByUnique("InventoryTransaction", { code: requestedCode })) {
         businessError(duplicatedInTrashMessage(requestedCode, "Phiếu điều chuyển kho"));
       }
-      const result = await prisma.$transaction(async (tx) => {
-        const transferCode = requestedCode || await nextStockDocCode(tx, "DCK", transactionDate);
-        return postStockTransfer(tx, {
-          code: transferCode,
-          transactionDate,
-          branchCode,
-          warehouseCode,
-          toWarehouseCode,
-          toBranchCode,
-          referenceCode: cleanText(body.referenceCode) || null,
-          note: cleanText(body.note) || null,
-          createdBy: auth.session.name,
-          lines: inputLines,
+      const created = await prisma.$transaction(async (tx) => {
+        const lines = await buildTransferRequestLines(tx, inputLines);
+        const code = requestedCode || await nextStockDocCode(tx, "DCK", requestDate);
+        return tx.inventoryTransferRequest.create({
+          data: {
+            code,
+            status: TRANSFER_PENDING,
+            requestDate,
+            branchCode: branchCode.toUpperCase(),
+            warehouseCode,
+            toBranchCode,
+            toWarehouseCode,
+            referenceCode: cleanText(body.referenceCode) || null,
+            note: cleanText(body.note) || null,
+            lines,
+            createdBy: auth.session.name,
+          },
         });
       });
       await writeAuditLog({
-        session: auth.session, module: menuHref, action: "TRANSFER_STOCK",
-        entityType: "InventoryTransaction", entityId: result.transaction.id, entityCode: result.transaction.code, branchCode,
-        metadata: { toBranchCode, warehouseCode, toWarehouseCode, crossBranch: toBranchCode !== branchCode.toUpperCase(), receivable: result.receivable?.code, payable: result.payable?.code },
+        session: auth.session, module: menuHref, action: "REQUEST_TRANSFER",
+        entityType: "InventoryTransferRequest", entityId: created.id, entityCode: created.code, branchCode,
+        metadata: { toBranchCode, warehouseCode, toWarehouseCode, lineCount: inputLines.length },
       });
-      return NextResponse.json(result, { status: 201 });
+      return NextResponse.json({ request: created }, { status: 201 });
+    }
+
+    // Bên chuyển sửa phiếu chưa duyệt / bị trả lại rồi gửi lại (về Chờ duyệt).
+    if (action === "UPDATE_TRANSFER_REQUEST") {
+      const current = await prisma.inventoryTransferRequest.findUnique({ where: { id: cleanText(body.id) } });
+      if (!current) businessError("Không tìm thấy phiếu điều chuyển chờ duyệt");
+      if (!canSendTransfer(auth.session, current)) businessError("Chỉ nhà hàng / kho chuyển hàng được sửa phiếu này");
+      if (current.status === TRANSFER_APPROVED) businessError(`Phiếu ${current.code} đã được duyệt nhận — sửa ở danh sách phiếu điều chuyển`);
+      const inputLines = linesFrom(body.lines);
+      if (body.lines !== undefined && inputLines.length === 0) businessError("Phiếu phải còn ít nhất một dòng hàng — muốn bỏ hết thì Huỷ phiếu");
+      const updated = await prisma.$transaction(async (tx) => tx.inventoryTransferRequest.update({
+        where: { id: current.id },
+        data: {
+          status: TRANSFER_PENDING,
+          requestDate: body.transactionDate ? toDate(body.transactionDate) : current.requestDate,
+          referenceCode: body.referenceCode !== undefined ? cleanText(body.referenceCode) || null : current.referenceCode,
+          note: body.note !== undefined ? cleanText(body.note) || null : current.note,
+          ...(inputLines.length > 0 ? { lines: await buildTransferRequestLines(tx, inputLines) } : {}),
+          returnedBy: null,
+          returnedAt: null,
+          returnedReason: null,
+        },
+      }));
+      await writeAuditLog({ session: auth.session, module: menuHref, action: "UPDATE_TRANSFER_REQUEST", entityType: "InventoryTransferRequest", entityId: updated.id, entityCode: updated.code, branchCode: updated.branchCode });
+      return NextResponse.json({ request: updated });
+    }
+
+    // Bên chuyển huỷ phiếu chưa duyệt (xoá mềm, không đụng kho).
+    if (action === "CANCEL_TRANSFER_REQUEST") {
+      const current = await prisma.inventoryTransferRequest.findUnique({ where: { id: cleanText(body.id) } });
+      if (!current) businessError("Không tìm thấy phiếu điều chuyển chờ duyệt");
+      if (!canSendTransfer(auth.session, current)) businessError("Chỉ nhà hàng / kho chuyển hàng được huỷ phiếu này");
+      if (current.status === TRANSFER_APPROVED) businessError(`Phiếu ${current.code} đã được duyệt nhận — xoá ở danh sách phiếu điều chuyển`);
+      await prisma.inventoryTransferRequest.update({ where: { id: current.id }, data: { deletedAt: new Date(), deletedBy: auth.session.name } });
+      await writeAuditLog({ session: auth.session, module: menuHref, action: "CANCEL_TRANSFER_REQUEST", entityType: "InventoryTransferRequest", entityId: current.id, entityCode: current.code, branchCode: current.branchCode });
+      return NextResponse.json({ ok: true });
+    }
+
+    // Bên nhận trả lại phiếu kèm lý do (hàng chưa tới, sai hàng...) — bên chuyển sửa rồi gửi lại.
+    if (action === "RETURN_TRANSFER_REQUEST") {
+      const current = await prisma.inventoryTransferRequest.findUnique({ where: { id: cleanText(body.id) } });
+      if (!current) businessError("Không tìm thấy phiếu điều chuyển chờ duyệt");
+      if (!canReceiveTransfer(auth.session, current)) businessError("Chỉ nhà hàng / kho nhận hàng được trả lại phiếu này");
+      if (current.status !== TRANSFER_PENDING) businessError(`Phiếu ${current.code} không ở trạng thái chờ duyệt`);
+      const reason = cleanText(body.reason);
+      if (!reason) businessError("Nhập lý do trả lại để bên chuyển biết cần sửa gì");
+      const updated = await prisma.inventoryTransferRequest.update({
+        where: { id: current.id },
+        data: { status: TRANSFER_RETURNED, returnedBy: auth.session.name, returnedAt: new Date(), returnedReason: reason },
+      });
+      await writeAuditLog({ session: auth.session, module: menuHref, action: "RETURN_TRANSFER_REQUEST", entityType: "InventoryTransferRequest", entityId: updated.id, entityCode: updated.code, branchCode: updated.toBranchCode, metadata: { reason } });
+      return NextResponse.json({ request: updated });
+    }
+
+    // Bên nhận duyệt: ghi phiếu kho theo số thực nhận + ngày nhận.
+    if (action === "APPROVE_TRANSFER_REQUEST") {
+      const current = await prisma.inventoryTransferRequest.findUnique({ where: { id: cleanText(body.id) } });
+      if (!current) businessError("Không tìm thấy phiếu điều chuyển chờ duyệt");
+      if (!canReceiveTransfer(auth.session, current)) businessError("Chỉ nhà hàng / kho nhận hàng được duyệt phiếu này");
+      const receivedDate = toDate(body.receivedDate);
+      for (const branch of new Set([current.branchCode, current.toBranchCode])) {
+        if (await isPeriodLocked(receivedDate, branch)) businessError(`Kỳ kế toán của cửa hàng ${branch} đã khóa`);
+      }
+      const receivedQuantities = Array.isArray(body.receivedQuantities)
+        ? (body.receivedQuantities as unknown[]).map((value) => (value === null || value === undefined || String(value).trim() === "" ? null : toNumber(value)))
+        : [];
+      const result = await prisma.$transaction(
+        (tx) => approveTransferRequest(tx, { id: current.id, receivedDate, receivedQuantities, approvedBy: auth.session.name }),
+        { timeout: 60000 },
+      );
+      await writeAuditLog({
+        session: auth.session, module: menuHref, action: "APPROVE_TRANSFER_REQUEST",
+        entityType: "InventoryTransaction", entityId: result.transaction.id, entityCode: result.transaction.code, branchCode: current.toBranchCode,
+        metadata: { fromBranchCode: current.branchCode, warehouseCode: current.warehouseCode, toWarehouseCode: current.toWarehouseCode, receivable: result.receivable?.code, payable: result.payable?.code },
+      });
+      return NextResponse.json(result);
     }
 
     const transactionType = normalizeStockTransactionType(action === "RECORD_WASTE" ? "XUAT_HUY" : body.transactionType);
@@ -2519,6 +2623,11 @@ export async function DELETE(request: Request) {
       // còn xoá mềm chạy transaction riêng nên không rollback kèm được.
       const reversals = await reverseTransactionStock(transaction);
       const result = await softDeleteRecord({ model: "InventoryTransaction", id, session: auth.session, reason });
+      // Phiếu điều chuyển đã duyệt nhận: xoá phiếu kho thì phiếu chờ duyệt gốc cũng đi theo (mã DCK
+      // đã dùng, không đưa về chờ duyệt được) — cần chuyển lại thì lập phiếu mới.
+      if (transaction.transactionType === "DIEU_CHUYEN") {
+        await prisma.inventoryTransferRequest.updateMany({ where: { transactionId: transaction.id }, data: { deletedAt: new Date(), deletedBy: auth.session.name } });
+      }
       await writeAuditLog({ session: auth.session, module: menuHref, action: "REVERSE_STOCK", entityType: "InventoryTransaction", entityId: transaction.id, entityCode: transaction.code, branchCode: transaction.branchCode, metadata: { transactionType: transaction.transactionType, reversals, internalDebtCodes } });
       return NextResponse.json(result);
     }

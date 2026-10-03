@@ -14,6 +14,7 @@ import { SearchableSelect } from "@/components/SearchableSelect";
 import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 import StocktakeByLocation from "@/components/inventory/StocktakeByLocation";
 import MissingRecipesPanel from "@/components/inventory/MissingRecipesPanel";
+import TransferRequestsPanel, { type TransferRequest } from "@/components/inventory/TransferRequestsPanel";
 import { safeConversionRate } from "@/lib/unit-conversion";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
 import { parseVatRate, VAT_RATE_OPTIONS, vatAmountOf, vatRateLabel } from "@/lib/inventory-vat";
@@ -83,7 +84,7 @@ const loadTracker = { seq: 0, movementSeq: 0, movementRange: "" };
 function movementRangeQuery(range: { from: string; to: string }) {
   return new URLSearchParams({ reportFrom: range.from, reportTo: range.to }).toString();
 }
-type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; flowTruncated?: boolean; transferTransactions?: Transaction[]; wasteTransactions?: Transaction[]; warehouseBranches?: Array<{ code: string; branch: string | null }>; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[] };
+type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; flowTruncated?: boolean; transferRequests?: TransferRequest[]; transferDestinations?: Array<{ code: string; name: string; branch: string | null }>; transferTransactions?: Transaction[]; wasteTransactions?: Transaction[]; warehouseBranches?: Array<{ code: string; branch: string | null }>; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[] };
 const movementTypes = ["NHAP_MUA", "NHAP_KHAC", "NHAP_CHE_BIEN", "NHAP_KIEM_KE", "XUAT_BAN", "XUAT_HUY", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_CHE_BIEN", "XUAT_KIEM_KE", "DIEU_CHUYEN"];
 /** Loại hiển thị trên hai màn hình Nhập/Xuất. Điều chuyển hiện ở CẢ hai: vế xuất ở kho đi, vế nhập ở kho nhận. */
 const inboundTypes = ["NHAP_MUA", "NHAP_CHE_BIEN", "NHAP_DIEU_CHUYEN", "NHAP_KHAC", "NHAP_KIEM_KE"];
@@ -662,7 +663,9 @@ export default function InventoryPage() {
 
   // Điều chuyển không nhận nhóm FINISHED; hủy hàng thì nhận đủ (kể cả FINISHED).
   const transferableItems = data.items.filter((item) => item.itemType !== "FINISHED");
-  const transferDestination = warehouseOptions.find((warehouse) => warehouse.code === transferForm.toWarehouseCode);
+  /** Kho nhận chọn được ở MỌI nhà hàng (máy chủ gửi riêng — `warehouses` chỉ có kho của người xem). */
+  const transferDestinationOptions = data.transferDestinations?.length ? data.transferDestinations : warehouseOptions;
+  const transferDestination = transferDestinationOptions.find((warehouse) => warehouse.code === transferForm.toWarehouseCode);
   const transferCrossBranch = !!transferDestination && !!transferDestination.branch && transferDestination.branch !== transferForm.branchCode;
 
   /**
@@ -952,6 +955,24 @@ export default function InventoryPage() {
     setMessage(response.ok ? success : payload.error || "Không thực hiện được thao tác");
     if (response.ok) await loadData();
     return response.ok ? payload : null;
+  };
+
+  /** Thao tác trên phiếu điều chuyển chờ duyệt: lỗi trả về cho hộp thoại tự hiện (lớp phủ che thông báo đầu trang). */
+  const postTransferRequest = async (body: object, success: string): Promise<{ ok: boolean; error?: string }> => {
+    try {
+      const response = await fetch("/api/inventory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getSessionHeaders() },
+        body: JSON.stringify(body),
+      });
+      const payload = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) return { ok: false, error: payload.error || `Máy chủ phản hồi lỗi ${response.status}` };
+      setMessage(success);
+      await loadData();
+      return { ok: true };
+    } catch {
+      return { ok: false, error: "Mất kết nối tới máy chủ. Vui lòng thử lại." };
+    }
   };
 
   /**
@@ -2473,6 +2494,13 @@ export default function InventoryPage() {
       )}
 
       {active === "transfer" && (
+        <div className="space-y-5">
+        {/* Phiếu chờ duyệt đứng trên cùng, trải hết bề ngang — việc cần làm ngay của kho nhận. */}
+        <TransferRequestsPanel
+          requests={data.transferRequests || []}
+          warehouseName={(code) => transferDestinationOptions.find((warehouse) => warehouse.code === code)?.name || code}
+          onAction={postTransferRequest}
+        />
         <div className="grid lg:grid-cols-[420px_1fr] gap-5">
           {canCreate && (
             <form onSubmit={(e) => {
@@ -2481,7 +2509,7 @@ export default function InventoryPage() {
                 action: "TRANSFER_STOCK",
                 ...transferForm,
                 lines: transferRows.filter((row) => row.itemId).map((row) => ({ itemId: row.itemId, inputQuantity: row.quantity, inputUnitCode: row.unitCode || undefined })),
-              }, transferCrossBranch ? "Đã điều chuyển liên nhà hàng và ghi công nợ nội bộ." : "Đã điều chuyển giữa hai kho.");
+              }, "Đã gửi phiếu điều chuyển — chờ kho nhận duyệt. Tồn kho chỉ thay đổi khi bên nhận duyệt.");
             }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
               <h2 className="font-bold text-slate-800">Điều chuyển hàng hóa</h2>
 
@@ -2508,7 +2536,7 @@ export default function InventoryPage() {
                 <Input label="Kho nhận (mọi nhà hàng)">
                   <select className="control" value={transferForm.toWarehouseCode} onChange={(e) => setTransferForm({ ...transferForm, toWarehouseCode: e.target.value })}>
                     <option value="">Chọn kho nhận</option>
-                    {warehouseOptions.filter((warehouse) => warehouse.code !== transferForm.warehouseCode).map((warehouse) => (
+                    {transferDestinationOptions.filter((warehouse) => warehouse.code !== transferForm.warehouseCode).map((warehouse) => (
                       <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}{warehouse.branch ? ` · ${storeLabel(warehouse.branch)}` : ""}</option>
                     ))}
                   </select>
@@ -2520,9 +2548,9 @@ export default function InventoryPage() {
 
               <div className={`rounded-lg border px-3 py-2 text-xs ${transferCrossBranch ? "border-amber-200 bg-amber-50 text-amber-800" : "border-blue-100 bg-blue-50 text-blue-800"}`}>
                 {transferCrossBranch
-                  ? <>Kho nhận thuộc <b>{storeLabel(transferDestination?.branch || "")}</b> — điều chuyển LIÊN nhà hàng: hệ thống sẽ ghi <b>phải thu nội bộ</b> cho bên chuyển và <b>phải trả nội bộ</b> cho bên nhận theo trị giá xuất kho.</>
+                  ? <>Kho nhận thuộc <b>{storeLabel(transferDestination?.branch || "")}</b> — điều chuyển LIÊN nhà hàng: khi bên nhận duyệt, hệ thống ghi <b>phải thu nội bộ</b> cho bên chuyển và <b>phải trả nội bộ</b> cho bên nhận theo trị giá xuất kho.</>
                   : <>Hai kho cùng một nhà hàng: chỉ cộng trừ trên báo cáo nhập xuất tồn, không phát sinh công nợ nội bộ.</>}
-                {" "}Nhóm FINISHED không được điều chuyển.
+                {" "}Phiếu gửi đi ở trạng thái <b>chờ duyệt</b>: tồn kho chỉ đổi khi kho nhận bấm Duyệt nhận. Nhóm FINISHED không được điều chuyển.
               </div>
 
               <div className="space-y-3 border border-slate-100 rounded-lg p-3.5 bg-slate-50/50">
@@ -2567,7 +2595,7 @@ export default function InventoryPage() {
               </Input>
               <button className="primary-button w-full">
                 <span className="material-symbols-outlined text-lg">sync_alt</span>
-                {transferCrossBranch ? "Điều chuyển + ghi công nợ nội bộ" : "Điều chuyển kho"}
+                Gửi phiếu điều chuyển (chờ duyệt)
               </button>
             </form>
           )}
@@ -2665,6 +2693,7 @@ export default function InventoryPage() {
               })}
             </Table>
           </section>
+        </div>
         </div>
       )}
 

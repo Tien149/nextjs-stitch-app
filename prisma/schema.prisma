@@ -691,6 +691,43 @@ model ItemUnitConversion {
   @@index([deletedAt])
 }
 
+/// Phiếu điều chuyển CHỜ DUYỆT (khách chốt 03/10/2026): nhà hàng chuyển lập phiếu, nhà hàng nhận
+/// đếm hàng rồi Duyệt (sửa được số thực nhận) hoặc Trả lại. Chờ duyệt thì KHÔNG đụng tồn kho, giá
+/// vốn hay công nợ nội bộ; Duyệt mới ghi phiếu DIEU_CHUYEN (cùng mã) theo ngày nhận.
+model InventoryTransferRequest {
+  id              String    @id @default(uuid())
+  /// Mã DCK-YYYY-#### giữ chỗ ngay lúc lập — phiếu DIEU_CHUYEN sinh khi duyệt dùng đúng mã này.
+  code            String    @unique
+  /// PENDING (chờ duyệt) | RETURNED (bị trả lại) | APPROVED (đã nhận)
+  status          String    @default("PENDING")
+  requestDate     DateTime
+  branchCode      String
+  warehouseCode   String
+  toBranchCode    String
+  toWarehouseCode String
+  referenceCode   String?
+  note            String?
+  /// [{ itemId, itemCode, itemName, unit, inputQuantity, inputUnitCode, receivedQuantity? }]
+  lines           Json
+  createdBy       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  approvedBy      String?
+  approvedAt      DateTime?
+  receivedDate    DateTime?
+  returnedBy      String?
+  returnedAt      DateTime?
+  returnedReason  String?
+  /// Phiếu DIEU_CHUYEN đã ghi khi duyệt.
+  transactionId   String?
+  deletedAt       DateTime?
+  deletedBy       String?
+
+  @@index([status])
+  @@index([branchCode])
+  @@index([toBranchCode])
+}
+
 model StocktakeSession {
   id            String    @id @default(uuid())
   code          String    @unique
