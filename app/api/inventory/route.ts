@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { prismaDateRange } from "@/lib/date-range";
 import { loadActivePrices } from "@/lib/supplier-price-list-db";
 import { Prisma } from "@prisma/custom-client";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
@@ -697,6 +698,11 @@ export async function GET(request: Request) {
         to: new Date(Date.UTC(year, monthNo, 1) - 7 * 3_600_000),
       };
     };
+    /** Từ ngày / Đến ngày (khách yêu cầu 03/10/2026) thay cho ô Tháng khi có. */
+    const stocktakeRange = () => {
+      const range = prismaDateRange({ from: searchParams.get("from"), to: searchParams.get("to") });
+      return range ? { from: range.gte || null, to: range.lt || null } : monthRange(searchParams.get("month"));
+    };
     const pickBranches = (requested: string) => {
       const wanted = cleanText(requested).toUpperCase();
       if (!wanted || wanted === "ALL") return stocktakeBranchScope;
@@ -706,7 +712,7 @@ export async function GET(request: Request) {
 
     // Danh sách đợt kiểm kê đã duyệt (cả hai kiểu) kèm tình trạng giải trình — màn Giải trình & Kết quả.
     if (searchParams.get("view") === "stocktake-sources") {
-      const { from, to } = monthRange(searchParams.get("month"));
+      const { from, to } = stocktakeRange();
       const sources = await listStocktakeSources(prisma as unknown as TxClient, {
         branchCodes: pickBranches(searchParams.get("branchCode") || "ALL"),
         warehouseCodes: scopedWarehouseCodes,
@@ -780,7 +786,7 @@ export async function GET(request: Request) {
 
     // Danh sách MỌI phiếu kiểm kê (theo vị trí + cả kho) lọc nhà hàng / kho / trạng thái / tháng.
     if (searchParams.get("view") === "stocktake-documents") {
-      const { from, to } = monthRange(searchParams.get("month"));
+      const { from, to } = stocktakeRange();
       const branches = pickBranches(searchParams.get("branchCode") || "ALL");
       const status = cleanText(searchParams.get("status")).toUpperCase();
       const warehouseCode = cleanText(searchParams.get("warehouseCode"));

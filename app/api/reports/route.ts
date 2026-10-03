@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { prismaDateRange } from "@/lib/date-range";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { allowedMenuTabs, canViewFinancialDashboard } from "@/lib/auth-demo";
 import { assertBranchAccess, ensureRevenueComponentCategories, postJournalEntry, requestedBranch } from "@/lib/accounting";
@@ -19,6 +20,20 @@ const menuHref = "/reports";
 const restaurantSalesCategoryCodes = SALES_RECEIPT_CATEGORY_CODES;
 
 type DailyCashBucket = { total: number; cash: number; transfer: number; card: number; grab: number; other: number };
+
+/**
+ * Khoảng [start, end] của báo cáo: có Từ ngày / Đến ngày (khách yêu cầu 03/10/2026) thì theo
+ * khoảng đó (giờ VN), không thì cả tháng của kỳ.
+ */
+function reportRange(period: string, dayRange?: { from?: string | null; to?: string | null }) {
+  const range = dayRange ? prismaDateRange(dayRange) : null;
+  if (!range) return monthRange(period);
+  const month = monthRange(period);
+  return {
+    start: range.gte || new Date("1900-01-01T00:00:00Z"),
+    end: range.lt ? new Date(range.lt.getTime() - 1) : month.end,
+  };
+}
 
 function monthRange(period: string) {
   const start = new Date(`${period}-01T00:00:00`);
@@ -118,8 +133,8 @@ function addGroup(
   groups.set(code, current);
 }
 
-async function getOperationsReport(period: string, branchCode: string) {
-  const { start, end } = monthRange(period);
+async function getOperationsReport(period: string, branchCode: string, dayRange?: { from?: string | null; to?: string | null }) {
+  const { start, end } = reportRange(period, dayRange);
   const branchWhere = branchCode === "ALL" ? {} : { branchCode };
   const departments = await prisma.masterDataItem.findMany({ where: { type: "DEPARTMENT", status: "ACTIVE" } });
   const departmentMap = new Map(departments.map((item) => [item.code, item.name]));
@@ -138,7 +153,8 @@ async function getOperationsReport(period: string, branchCode: string) {
       take: 200,
     }),
     prisma.inventoryTransaction.findMany({
-      where: { ...branchWhere, transactionType: "RECEIPT", transactionDate: { gte: start, lte: end } },
+      // Nhận hàng = phiếu Nhập mua. Mã cũ "RECEIPT" không tồn tại nên mục này luôn trống (03/10/2026).
+      where: { ...branchWhere, transactionType: "NHAP_MUA", transactionDate: { gte: start, lte: end } },
       include: { lines: true },
       orderBy: { transactionDate: "desc" },
       take: 200,
@@ -1113,8 +1129,8 @@ function normalizeMoneySourceLabel(value: string | null | undefined) {
   return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 }
 
-async function getActivityReport(period: string, branchCode: string) {
-  const { start, end } = monthRange(period);
+async function getActivityReport(period: string, branchCode: string, dayRange?: { from?: string | null; to?: string | null }) {
+  const { start, end } = reportRange(period, dayRange);
   const branchWhere = branchCode === "ALL" ? {} : { branchCode };
 
   const [accountingPeriod, periods, auditLogs, importBatches, journalEntries, workHistories] = await Promise.all([
@@ -1247,10 +1263,11 @@ export async function GET(request: Request) {
     if (permittedTabs && !permittedTabs.includes(type) && !permittedTabs.includes(containerTab)) {
       return NextResponse.json({ error: "Bạn không có quyền xem báo cáo này" }, { status: 403 });
     }
-    if (type === "operations") return NextResponse.json(await getOperationsReport(period, branchCode));
+    const dayRange = { from: params.get("from"), to: params.get("to") };
+    if (type === "operations") return NextResponse.json(await getOperationsReport(period, branchCode, dayRange));
     if (type === "budget") return NextResponse.json(await getBudgetReport(period, branchCode));
     if (type === "daily-cash") return NextResponse.json(await getDailyCashReport(period, branchCode, cleanText(params.get("reportDate")) || `${period}-01`, cleanText(params.get("shift")) || "FULL"));
-    if (type === "activity") return NextResponse.json(await getActivityReport(period, branchCode));
+    if (type === "activity") return NextResponse.json(await getActivityReport(period, branchCode, dayRange));
     if (type === "pnl") return NextResponse.json({ period, branchCode, ...(await getPnl(period, branchCode)) });
     if (type === "yoy") {
       const previousPeriod = `${Number(period.slice(0, 4)) - 1}${period.slice(4)}`;

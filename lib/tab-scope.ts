@@ -28,7 +28,7 @@ const tabDataKeys: Record<string, Record<string, string[]>> = {
     transfer: ["transactions", "transferTransactions", "transferRequests", "transferDestinations"],
     items: ["items"],
     recipes: ["recipes", "costSummary"],
-    production: ["recipes", "transactions", "pendingSales"],
+    production: ["recipes", "transactions", "flowTransactions", "pendingSales"],
     // Form kiểm kê dựng danh sách từ balances/items — chỉ cấp "stocktakes" thì người dùng
     // chỉ có quyền tab này sẽ nhận danh sách trống và không kiểm kê được gì.
     stocktake: ["stocktakes", "balances", "items"],

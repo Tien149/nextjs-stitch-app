@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { DateRangeFilter } from "@/components/DateRangeFilter";
 import CopyableText from "@/components/CopyableText";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
@@ -44,7 +45,7 @@ const dateTime = (value: string | null | undefined) =>
   (value ? new Date(value).toLocaleString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
 
 export default function StocktakeResultsPanel({ sessionKey, branchOptions, warehouses, storeLabel }: Props) {
-  const [filters, setFilters] = useState({ branchCode: branchOptions[0]?.code || "ALL", warehouseCode: "", month: "" });
+  const [filters, setFilters] = useState({ branchCode: branchOptions[0]?.code || "ALL", warehouseCode: "", from: "", to: "" });
   const [sources, setSources] = useState<Source[] | null>(null);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<Source | null>(null);
@@ -55,7 +56,8 @@ export default function StocktakeResultsPanel({ sessionKey, branchOptions, wareh
     setError("");
     const query = new URLSearchParams({ view: "stocktake-sources", branchCode: filters.branchCode });
     if (filters.warehouseCode) query.set("warehouseCode", filters.warehouseCode);
-    if (filters.month) query.set("month", filters.month);
+    if (filters.from) query.set("from", filters.from);
+    if (filters.to) query.set("to", filters.to);
     try {
       const response = await fetch(`/api/inventory?${query.toString()}`, { headers: sessionHeaders(sessionKey) });
       const payload = await response.json() as { sources?: Source[]; error?: string };
@@ -107,7 +109,7 @@ export default function StocktakeResultsPanel({ sessionKey, branchOptions, wareh
             <button type="button" title="Tải lại" onClick={() => void load()} className="icon-button"><span className="material-symbols-outlined text-lg">refresh</span></button>
           </div>
         </div>
-        <div className="px-5 pb-4 grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="px-5 pb-4 grid grid-cols-2 lg:grid-cols-5 gap-3">
           <label className="text-xs font-bold text-slate-500">Nhà hàng
             <select className="control mt-1" value={filters.branchCode} onChange={(e) => setFilters({ ...filters, branchCode: e.target.value, warehouseCode: "" })}>
               {branchOptions.map((option) => <option key={option.code} value={option.code}>{option.label}</option>)}
@@ -119,9 +121,7 @@ export default function StocktakeResultsPanel({ sessionKey, branchOptions, wareh
               {warehouseOptions.map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>)}
             </select>
           </label>
-          <label className="text-xs font-bold text-slate-500">Tháng chốt
-            <input type="month" className="control mt-1" value={filters.month} onChange={(e) => setFilters({ ...filters, month: e.target.value })} />
-          </label>
+          <DateRangeFilter label="Ngày chốt" value={{ from: filters.from, to: filters.to }} onChange={(range) => setFilters({ ...filters, ...range })} className="col-span-2 !text-xs !text-slate-500" />
         </div>
         {error && <p className="mx-5 mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>}
         <div className="overflow-x-auto max-h-[360px] overflow-y-auto custom-scrollbar">

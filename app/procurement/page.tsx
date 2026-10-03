@@ -17,6 +17,8 @@ import { money, quantity as qty, unitPrice } from "@/lib/format-number";
 import { VAT_RATE_OPTIONS, vatAmountOf, vatRateLabel } from "@/lib/inventory-vat";
 import { TemplatesTab, type PurchaseTemplate, type TemplateUnitConversion } from "./templates-tab";
 import { PriceListsTab } from "./price-lists-tab";
+import { DateRangeFilter } from "@/components/DateRangeFilter";
+import type { DateRange } from "@/lib/date-range";
 import { SendPurchaseOrderDialog } from "./send-po-dialog";
 
 type Item = { id: string; code: string; name: string; unit: string; itemType: string; category: string | null; requiresImage: boolean; unitConversions?: TemplateUnitConversion[] };
@@ -105,6 +107,9 @@ export default function ProcurementPage() {
     search: "",
   }));
   const [requestList, setRequestList] = useState<{ rows: PurchaseRequest[]; truncated: boolean } | null>(null);
+  /** Tab So sánh giá: lọc PR có báo giá theo ngày yêu cầu (03/10/2026). Trống = 100 PR mới nhất. */
+  const [quoteRange, setQuoteRange] = useState<DateRange>({ from: "", to: "" });
+  const [quoteRangeRequests, setQuoteRangeRequests] = useState<PurchaseRequest[] | null>(null);
 
   const [quoteForm, setQuoteForm] = useState({
     requestId: "",
@@ -392,6 +397,20 @@ export default function ProcurementPage() {
     });
     return () => { cancelled = true; };
   }, [active, orderFilter.branchCode, orderFilter.departmentCode, orderFilter.status, orderFilter.sent, orderFilter.from, orderFilter.to, data.orders]);
+
+  // So sánh giá có khoảng ngày: hỏi máy chủ để thấy cả PR cũ ngoài 100 phiếu mới nhất.
+  useEffect(() => {
+    if (active !== "quotes" || (!quoteRange.from && !quoteRange.to)) return;
+    let cancelled = false;
+    const query = new URLSearchParams({ view: "requests" });
+    if (quoteRange.from) query.set("from", quoteRange.from);
+    if (quoteRange.to) query.set("to", quoteRange.to);
+    void fetch(`/api/procurement?${query.toString()}`).then(async (response) => {
+      const payload = response.ok ? await response.json() as { requests: PurchaseRequest[] } : { requests: [] };
+      if (!cancelled) setQuoteRangeRequests(payload.requests);
+    });
+    return () => { cancelled = true; };
+  }, [active, quoteRange.from, quoteRange.to, data.requests]);
 
   // Danh sách PR có lọc — tải lại khi đổi bộ lọc hoặc sau mỗi thao tác (loadData đổi data.requests).
   useEffect(() => {
@@ -783,6 +802,7 @@ export default function ProcurementPage() {
 
   if (loading) return <div className="h-screen grid place-items-center bg-slate-100">Đang tải...</div>;
 
+  const quotedRequests = ((quoteRange.from || quoteRange.to) && quoteRangeRequests ? quoteRangeRequests : data.requests).filter((request) => request.quotes.length > 0);
   const requestTotal = (request: PurchaseRequest) => request.lines.reduce((sum, line) => sum + line.quantity * line.estimatedUnitCost, 0);
   const orderKeyword = orderFilter.search.trim().toLowerCase();
   const filteredOrders = (orderList?.rows || []).filter((order) => !orderKeyword
@@ -1313,7 +1333,11 @@ export default function ProcurementPage() {
           })()}
 
           <section className="space-y-4 min-w-0">
-            {data.requests.filter((request) => request.quotes.length > 0).map((request) => {
+            <div className="table-panel shadow-sm p-4 flex flex-wrap items-end justify-between gap-3">
+              <DateRangeFilter label="Ngày yêu cầu mua" value={quoteRange} onChange={setQuoteRange} />
+              <p className="text-xs text-slate-500">{quotedRequests.length} yêu cầu có báo giá{!quoteRange.from && !quoteRange.to ? " (trong 100 yêu cầu mới nhất)" : ""}</p>
+            </div>
+            {quotedRequests.map((request) => {
               /** Giá rẻ nhất từng mặt hàng để tô nổi trong ma trận so sánh. */
               const bestCost = new Map<string, number>();
               for (const line of request.lines) {

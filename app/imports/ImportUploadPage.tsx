@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ExportExcelButton from "@/components/ExportExcelButton";
+import { DateRangeFilter } from "@/components/DateRangeFilter";
+import type { DateRange } from "@/lib/date-range";
 import RevenueDaySummary from "@/app/imports/RevenueDaySummary";
 import RevenuePreviewEditor, {
   previewRowKey,
@@ -344,6 +346,8 @@ export default function ImportUploadPage({
   const [editsDirty, setEditsDirty] = useState(false);
   const [batches, setBatches] = useState<Batch[]>([]);
   const [batchTotal, setBatchTotal] = useState(0);
+  /** Lọc lịch sử import theo ngày tạo batch (khách yêu cầu 03/10/2026). */
+  const [historyRange, setHistoryRange] = useState<DateRange>({ from: "", to: "" });
   const [batchListLoading, setBatchListLoading] = useState(false);
   const [selectedBatch, setSelectedBatch] = useState<BatchDetail | null>(null);
   const [selectedBatchId, setSelectedBatchId] = useState("");
@@ -469,6 +473,7 @@ export default function ImportUploadPage({
    * lại, để nút "Tải lại" không thu danh sách người dùng vừa mở rộng về 20 dòng đầu.
    */
   const loadBatches = useCallback(async (signal?: AbortSignal, keep = 0) => {
+    const listPath = withQuery(apiPath, { createdFrom: historyRange.from, createdTo: historyRange.to });
     setBatchListLoading(true);
     try {
       const rows: Batch[] = [];
@@ -476,7 +481,7 @@ export default function ImportUploadPage({
       // Server chặn trần 500 dòng mỗi request nên phải xin nhiều lượt khi giữ danh sách dài.
       do {
         const response = await fetch(
-          withQuery(apiPath, { limit: String(BATCH_PAGE_SIZE), offset: String(rows.length) }),
+          withQuery(listPath, { limit: String(BATCH_PAGE_SIZE), offset: String(rows.length) }),
           { signal },
         );
         if (!response.ok || signal?.aborted) return;
@@ -492,18 +497,19 @@ export default function ImportUploadPage({
     } finally {
       if (!signal?.aborted) setBatchListLoading(false);
     }
-  }, [apiPath]);
+  }, [apiPath, historyRange.from, historyRange.to]);
 
   /** "Xem thêm"/"Xem tất cả": nối thêm trang kế tiếp vào danh sách đang hiển thị. */
   const loadMoreBatches = useCallback(async (all = false) => {
     setBatchListLoading(true);
     try {
       let offset = batches.length;
+      const listPath = withQuery(apiPath, { createdFrom: historyRange.from, createdTo: historyRange.to });
       const added: Batch[] = [];
       let total = batchTotal;
       do {
         const response = await fetch(
-          withQuery(apiPath, { limit: String(BATCH_PAGE_SIZE), offset: String(offset) }),
+          withQuery(listPath, { limit: String(BATCH_PAGE_SIZE), offset: String(offset) }),
         );
         if (!response.ok) {
           setMessage("Không tải thêm được lịch sử import.");
@@ -521,7 +527,7 @@ export default function ImportUploadPage({
     } finally {
       setBatchListLoading(false);
     }
-  }, [apiPath, batches.length, batchTotal]);
+  }, [apiPath, batches.length, batchTotal, historyRange.from, historyRange.to]);
 
   const loadBatchDetail = async (batchId: string, force = false) => {
     if (!force && selectedBatchId === batchId && selectedBatch && !batchDetailError) return;
@@ -1560,6 +1566,7 @@ export default function ImportUploadPage({
           <div className="p-5 border-b border-slate-200 flex items-center justify-between">
             <div>
               <h2 className="font-bold">Lịch sử import</h2>
+              <DateRangeFilter label="Ngày import" value={historyRange} onChange={setHistoryRange} className="mt-2" />
               <p className="text-xs text-slate-500 mt-1">
                 {batchTotal === 0
                   ? "Bấm một dòng để xem chi tiết."

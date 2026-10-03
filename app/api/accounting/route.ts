@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { prismaDateRange } from "@/lib/date-range";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { ensureDefaultAccounts, periodBounds, postJournalEntry, requestedBranch, syncAccountingPeriod } from "@/lib/accounting";
 import { prisma } from "@/lib/prisma";
@@ -93,21 +94,29 @@ export async function GET(request: Request) {
     const period = normalizePeriod(params.get("period")) || new Date().toISOString().slice(0, 7);
     const branchCode = requestedBranch(auth.session, cleanText(params.get("branchCode")) || "ALL");
     const { start, end } = periodBounds(period);
-    const [accounts, entries, categories] = await Promise.all([
+    // Khoảng ngày (khách yêu cầu 03/10/2026) thay cho kỳ khi có. Trước đây cắt 300 bút toán — tháng
+    // đông bút toán là sổ và tổng Nợ/Có thiếu mà không báo.
+    const range = prismaDateRange({ from: params.get("from"), to: params.get("to") });
+    const entryWhere = { entryDate: range || { gte: start, lt: end }, status: "POSTED", ...(branchCode === "ALL" ? {} : { branchCode }) };
+    const [accounts, entries, categories, entryCount, lineTotals] = await Promise.all([
       ensureDefaultAccounts(),
+      // Một tháng có 11–17 nghìn bút toán (rã BOM, doanh thu...) — bảng chỉ vẽ 1.000 bút toán mới
+      // nhất; tổng Nợ / Có cộng trên TOÀN BỘ khoảng ở truy vấn riêng bên dưới.
       prisma.journalEntry.findMany({
-        where: { entryDate: { gte: start, lt: end }, status: "POSTED", ...(branchCode === "ALL" ? {} : { branchCode }) },
+        where: entryWhere,
         include: { lines: { include: { account: true }, orderBy: { debit: "desc" } } },
         orderBy: [{ entryDate: "desc" }, { code: "desc" }],
-        take: 300,
+        take: 1000,
       }),
       prisma.masterDataItem.findMany({
         where: { type: { in: ["REVENUE_EXPENSE_CATEGORY", "MONEY_SOURCE"] }, status: "ACTIVE" }
-      })
+      }),
+      prisma.journalEntry.count({ where: entryWhere }),
+      prisma.journalLine.aggregate({ where: { entry: entryWhere }, _sum: { debit: true, credit: true } }),
     ]);
-    const debit = entries.flatMap((entry) => entry.lines).reduce((sum, line) => sum + line.debit, 0);
-    const credit = entries.flatMap((entry) => entry.lines).reduce((sum, line) => sum + line.credit, 0);
-    return NextResponse.json({ period, branchCode, accounts, entries, categories, totals: { debit, credit, difference: debit - credit } });
+    const debit = lineTotals._sum.debit || 0;
+    const credit = lineTotals._sum.credit || 0;
+    return NextResponse.json({ period, branchCode, accounts, entries, entryCount, categories, totals: { debit, credit, difference: debit - credit } });
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });

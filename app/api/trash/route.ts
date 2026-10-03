@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { prismaDateRange } from "@/lib/date-range";
 import { getRequestSession } from "@/lib/api-auth";
 import { appMenuItems, canAccessMenu, canPerformMenuAction } from "@/lib/auth-demo";
 import {
@@ -40,6 +41,7 @@ export async function GET(request: Request) {
       branchCodes: auth.session.allowedBranches,
       keyword: searchParams.get("keyword") || undefined,
       limitPerModel: Number(searchParams.get("limit")) || 100,
+      deletedAt: prismaDateRange({ from: searchParams.get("deletedFrom"), to: searchParams.get("deletedTo") }),
     });
 
     return NextResponse.json({ rows, summary: await countTrash(models) });

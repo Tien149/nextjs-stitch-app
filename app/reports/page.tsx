@@ -1,6 +1,8 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DateRangeFilter } from "@/components/DateRangeFilter";
+import type { DateRange } from "@/lib/date-range";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { DateInput, MonthInput } from "@/components/DateInput";
 import { storeLabel, visibleBranchScopeOptions, visibleStoreOptions } from "@/lib/branch-labels";
@@ -281,6 +283,8 @@ export default function ReportsPage() {
   const [cashSourceView, setCashSourceView] = useState<"month" | "year">("month");
   // Sổ doanh thu: để trống khoảng ngày = lấy trọn tháng đang chọn, giống mọi tab khác.
   const [ledgerFrom, setLedgerFrom] = useState("");
+  /** Khoảng ngày cho tab Vận hành / Nhật ký thao tác (khách yêu cầu 03/10/2026); trống = cả kỳ. */
+  const [opsRange, setOpsRange] = useState<DateRange>({ from: "", to: "" });
   const [ledgerTo, setLedgerTo] = useState("");
   const [ledgerChannel, setLedgerChannel] = useState("");
   const [data, setData] = useState<ReportData | null>(null);
@@ -361,6 +365,10 @@ export default function ReportsPage() {
         params.set("shift", shift);
       }
       if (active === "cash-source") params.set("view", cashSourceView);
+      if (active === "operations" || active === "activity") {
+        if (opsRange.from) params.set("from", opsRange.from);
+        if (opsRange.to) params.set("to", opsRange.to);
+      }
       if (active === "revenue-ledger") {
         if (ledgerFrom) params.set("dateFrom", ledgerFrom);
         if (ledgerTo) params.set("dateTo", ledgerTo);
@@ -392,7 +400,7 @@ export default function ReportsPage() {
     } finally {
       if (seq === loadSeqRef.current) setTabLoading(false);
     }
-  }, [active, branchCode, cashSourceView, ledgerArmed, ledgerChannel, ledgerFrom, ledgerTo, period, reportDate, scenario, shift]);
+  }, [active, branchCode, cashSourceView, ledgerArmed, ledgerChannel, ledgerFrom, ledgerTo, period, reportDate, scenario, shift, opsRange.from, opsRange.to]);
 
   const loadMoneySources = useCallback(async () => {
     const response = await fetch("/api/master-data?type=MONEY_SOURCE&status=ACTIVE");
@@ -873,6 +881,12 @@ export default function ReportsPage() {
           <span className="material-symbols-outlined animate-spin text-3xl text-blue-600 block mb-2">progress_activity</span>
           Đang tải dữ liệu báo cáo...
         </div>
+      )}
+
+      {(active === "operations" || active === "activity") && (
+        <section className="mb-4 rounded-lg border border-slate-200 bg-white px-4 py-3">
+          <DateRangeFilter label="Khoảng ngày (để trống = cả kỳ đang chọn)" value={opsRange} onChange={setOpsRange} />
+        </section>
       )}
 
       {!tabLoading && operations && (

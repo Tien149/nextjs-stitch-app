@@ -157,7 +157,9 @@ export const appMenuItems: AppMenuItem[] = [
     roles: ["Admin", "Kế toán tổng hợp", "Kế toán công nợ", "Quản lý"],
   },
   {
-    name: "Phân bổ chi phí",
+    // Đổi tên 03/10/2026 theo khách (trước: "Phân bổ chi phí"). Quyền menu lưu theo href nên
+    // vai trò cũ không mất quyền.
+    name: "Chia sẻ chi phí nội bộ",
     icon: "call_split",
     href: "/cost-reallocations",
     roles: ["Admin", "Kế toán tổng hợp", "Kế toán công nợ", "Quản lý"],

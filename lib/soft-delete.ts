@@ -292,6 +292,8 @@ export async function listTrash(options: {
   branchCodes?: string[];
   keyword?: string;
   limitPerModel?: number;
+  /** Khoảng thời điểm xoá (khách yêu cầu 03/10/2026). */
+  deletedAt?: { gte?: Date; lt?: Date } | null;
 }): Promise<TrashRow[]> {
   const limit = options.limitPerModel ?? 100;
   const targets = (
@@ -303,7 +305,7 @@ export async function listTrash(options: {
   const chunks = await Promise.all(
     targets.map(async (entity) => {
       const rows = await rawDelegate(entity.model).findMany({
-        where: { deletedAt: { not: null } },
+        where: { deletedAt: { not: null, ...(options.deletedAt || {}) } },
         orderBy: { deletedAt: "desc" },
         take: limit,
       });

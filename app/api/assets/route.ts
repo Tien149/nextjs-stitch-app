@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { prismaDateRange } from "@/lib/date-range";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma, prismaRaw } from "@/lib/prisma";
 import { requestedBranch, assertBranchAccess, ensureDefaultAccounts, postJournalEntry } from "@/lib/accounting";
@@ -199,9 +200,12 @@ export async function GET(request: Request) {
       ? (allowedDepartments && !allowedDepartments.includes(departmentCode.toUpperCase()) ? { departmentCode: "__NONE__" } : { departmentCode })
       : allowedDepartments ? { departmentCode: { in: allowedDepartments } } : {};
 
+    // Lọc theo ngày mua (khách yêu cầu 03/10/2026), so theo ngày giờ VN.
+    const purchaseDate = prismaDateRange({ from: searchParams.get("purchaseFrom"), to: searchParams.get("purchaseTo") });
     const matchedAssets = await prisma.assetRecord.findMany({
       where: {
         ...branchFilter,
+        ...(purchaseDate ? { purchaseDate } : {}),
         ...(assetGroup && assetGroup !== "ALL" ? { assetGroup } : {}),
         ...departmentFilter,
         ...(warehouseCode && warehouseCode !== "ALL"

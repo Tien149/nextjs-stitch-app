@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { DateRangeFilter } from "@/components/DateRangeFilter";
 import CopyableText from "@/components/CopyableText";
 import { quantity as qty } from "@/lib/format-number";
 import { goodsGroupKey } from "@/lib/goods-group";
@@ -91,7 +92,7 @@ function statusBadge(source: Source) {
 }
 
 export default function StocktakeExplanationPanel({ sessionKey, branchOptions, warehouses, storeLabel, canCreate, canApprove }: Props) {
-  const [filters, setFilters] = useState({ branchCode: branchOptions[0]?.code || "ALL", warehouseCode: "", month: "" });
+  const [filters, setFilters] = useState({ branchCode: branchOptions[0]?.code || "ALL", warehouseCode: "", from: "", to: "" });
   const [sources, setSources] = useState<Source[] | null>(null);
   const [orphans, setOrphans] = useState<Orphan[]>([]);
   const [detail, setDetail] = useState<Detail | null>(null);
@@ -105,7 +106,8 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
   const loadSources = useCallback(async () => {
     const query = new URLSearchParams({ view: "stocktake-sources", branchCode: filters.branchCode });
     if (filters.warehouseCode) query.set("warehouseCode", filters.warehouseCode);
-    if (filters.month) query.set("month", filters.month);
+    if (filters.from) query.set("from", filters.from);
+    if (filters.to) query.set("to", filters.to);
     try {
       const response = await fetch(`/api/inventory?${query.toString()}`, { headers: headers() });
       const payload = await response.json() as { sources?: Source[]; orphans?: Orphan[]; error?: string };
@@ -244,7 +246,7 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
             mới <b>Cập nhật số liệu</b> (giải trình đã gõ giữ theo mã hàng).
           </p>
         </div>
-        <div className="px-5 pb-4 grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="px-5 pb-4 grid grid-cols-2 lg:grid-cols-5 gap-3">
           <label className="text-xs font-bold text-slate-500">Nhà hàng
             <select className="control mt-1" value={filters.branchCode} onChange={(e) => setFilters({ ...filters, branchCode: e.target.value, warehouseCode: "" })}>
               {branchOptions.map((option) => <option key={option.code} value={option.code}>{option.label}</option>)}
@@ -256,9 +258,7 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
               {warehouseOptions.map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>)}
             </select>
           </label>
-          <label className="text-xs font-bold text-slate-500">Tháng chốt
-            <input type="month" className="control mt-1" value={filters.month} onChange={(e) => setFilters({ ...filters, month: e.target.value })} />
-          </label>
+          <DateRangeFilter label="Ngày chốt" value={{ from: filters.from, to: filters.to }} onChange={(range) => setFilters({ ...filters, ...range })} className="col-span-2 !text-xs !text-slate-500" />
         </div>
         {message && !detail && (
           <p className={`mx-5 mb-3 rounded-lg border px-3 py-2 text-sm ${message.tone === "ok" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-rose-200 bg-rose-50 text-rose-700"}`}>{message.text}</p>

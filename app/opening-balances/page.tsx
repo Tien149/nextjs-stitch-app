@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import ExportExcelButton from "@/components/ExportExcelButton";
+import { DateRangeFilter } from "@/components/DateRangeFilter";
+import { periodInRange, type DateRange } from "@/lib/date-range";
 import { useRouter } from "next/navigation";
 import { BranchScopeSelect, resolveInitialBranchScope } from "@/components/BranchScopeSelect";
 import { MonthInput } from "@/components/DateInput";
@@ -133,6 +135,8 @@ export default function OpeningBalancesPage() {
   const [branchScope, setBranchScope] = useState("ALL");
   const [balanceTypeFilter, setBalanceTypeFilter] = useState("ALL");
   const [statusFilter, setStatusFilter] = useState("ALL");
+  /** Lọc theo kỳ số dư (khách yêu cầu 03/10/2026): kỳ giao với khoảng ngày là hiện. */
+  const [periodRange, setPeriodRange] = useState<DateRange>({ from: "", to: "" });
   const [message, setMessage] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -286,8 +290,9 @@ export default function OpeningBalancesPage() {
     }));
   };
 
+  const visibleBalances = balances.filter((balance) => periodInRange(balance.period, periodRange));
   const totals = useMemo(() => {
-    return balances.reduce(
+    return visibleBalances.reduce(
       (result, item) => {
         result.count += 1;
         result.amount += item.amount;
@@ -296,7 +301,7 @@ export default function OpeningBalancesPage() {
       },
       { count: 0, amount: 0, confirmed: 0 },
     );
-  }, [balances]);
+  }, [visibleBalances]);
 
   const canManageOpeningBalances = user ? canPerformAction(user, "config") : false;
   const canReopenOpeningBalances = user?.role === "Admin";
@@ -1083,7 +1088,8 @@ export default function OpeningBalancesPage() {
                 <h2 className="font-bold text-slate-900">Danh sách số dư</h2>
                 <p className="text-xs text-slate-500 mt-1">Chốt số dư sau khi kế toán kiểm tra đúng kỳ, chi nhánh và nguồn tiền.</p>
               </div>
-              <div className="flex flex-col sm:flex-row gap-2">
+              <div className="flex flex-col sm:flex-row sm:items-end flex-wrap gap-2">
+                <DateRangeFilter label="Kỳ số dư" value={periodRange} onChange={setPeriodRange} showPresets={false} />
                 <select
                   value={balanceTypeFilter}
                   onChange={(event) => setBalanceTypeFilter(event.target.value)}
@@ -1137,14 +1143,14 @@ export default function OpeningBalancesPage() {
                         Đang tải số dư...
                       </td>
                     </tr>
-                  ) : balances.length === 0 ? (
+                  ) : visibleBalances.length === 0 ? (
                     <tr>
                       <td colSpan={canManageOpeningBalances ? 6 : 5} className="px-4 py-10 text-center text-slate-400">
                         Chưa có số dư đầu kỳ.
                       </td>
                     </tr>
                   ) : (
-                    balances.map((balance) => {
+                    visibleBalances.map((balance) => {
                       const type = balanceTypes.find((item) => item.value === balance.balanceType);
                       return (
                         <tr key={balance.id} className="hover:bg-slate-50 transition">

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { prismaDateRange } from "@/lib/date-range";
 import { assetMonthlyDepreciation } from "@/lib/opening-asset";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma, type TxClient } from "@/lib/prisma";
@@ -105,19 +106,25 @@ export async function GET(request: Request) {
       ...(allowedDepartments ? { departmentCode: { in: allowedDepartments } } : {}),
     };
     const relatedWhere = Object.keys(assetWhere).length > 0 ? { asset: assetWhere } : {};
+    // Khoảng thời gian của các tab danh sách (khách yêu cầu 03/10/2026). Có khoảng thì lấy đủ trong
+    // khoảng, không thì giữ giới hạn bản ghi mới nhất như cũ.
+    const range = prismaDateRange({ from: searchParams.get("from"), to: searchParams.get("to") });
+    const listTake = range ? 5000 : 200;
     const [assets, depreciations, maintenances, damageReports, stocktakeSessions] = await Promise.all([
       prisma.assetRecord.findMany({ where: assetWhere, orderBy: { createdAt: "desc" } }),
-      prisma.assetDepreciation.findMany({ where: relatedWhere, include: { asset: true }, orderBy: [{ period: "desc" }, { createdAt: "desc" }], take: 200 }),
-      prisma.assetMaintenance.findMany({ where: relatedWhere, include: { asset: true }, orderBy: { scheduledDate: "desc" }, take: 200 }),
-      prisma.assetDamageReport.findMany({ where: relatedWhere, include: { asset: true }, orderBy: { reportedDate: "desc" }, take: 200 }),
+      // Ma trận khấu hao 12 tháng × mọi tài sản: 200 dòng cũ cắt mất số (20 tài sản × 12 kỳ = 240).
+      prisma.assetDepreciation.findMany({ where: relatedWhere, include: { asset: true }, orderBy: [{ period: "desc" }, { createdAt: "desc" }], take: 20000 }),
+      prisma.assetMaintenance.findMany({ where: { ...relatedWhere, ...(range ? { scheduledDate: range } : {}) }, include: { asset: true }, orderBy: { scheduledDate: "desc" }, take: listTake }),
+      prisma.assetDamageReport.findMany({ where: { ...relatedWhere, ...(range ? { reportedDate: range } : {}) }, include: { asset: true }, orderBy: { reportedDate: "desc" }, take: listTake }),
       prisma.assetStocktakeSession.findMany({
         where: {
           ...(branchCode === "ALL" ? {} : { branchCode }),
+          ...(range ? { stocktakeDate: range } : {}),
           ...(allowedDepartments ? { OR: [{ departmentCode: { in: allowedDepartments } }, { lines: { some: { asset: { departmentCode: { in: allowedDepartments } } } } }] } : {}),
         },
         include: { lines: { where: allowedDepartments ? { asset: { departmentCode: { in: allowedDepartments } } } : {}, include: { asset: true } } },
         orderBy: { createdAt: "desc" },
-        take: 20,
+        take: range ? 500 : 20,
       }),
     ]);
     // Ảnh kiểm kê là data URL nặng; danh sách phiên chỉ cần biết dòng CÓ ảnh, ảnh thật tải riêng

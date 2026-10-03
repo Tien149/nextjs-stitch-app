@@ -24,6 +24,8 @@ import {
 } from "@/lib/work-management-types";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
+import { DateRangeFilter } from "@/components/DateRangeFilter";
+import { inDateRange, type DateRange } from "@/lib/date-range";
 
 const emptyData: WorkListData = {
   items: [],
@@ -58,6 +60,8 @@ export default function WorkManagementPage() {
   const [departmentCode, setDepartmentCode] = useState("ALL");
   const [assignee, setAssignee] = useState("ALL");
   const [priority, setPriority] = useState("ALL");
+  /** Lọc theo hạn hoàn thành (khách yêu cầu 03/10/2026) — Danh sách + Kanban; Lịch đã theo tháng. */
+  const [dueRange, setDueRange] = useState<DateRange>({ from: "", to: "" });
   const [searchDraft, setSearchDraft] = useState("");
   const [search, setSearch] = useState("");
   const [message, setMessage] = useState("");
@@ -148,6 +152,8 @@ export default function WorkManagementPage() {
     setShowCreate(true);
   }
 
+  const rangedItems = data.items.filter((item) => inDateRange(item.dueDate, dueRange));
+
   if (loading) return <div className="grid h-screen place-items-center bg-slate-100">Đang tải...</div>;
 
   return (
@@ -229,6 +235,7 @@ export default function WorkManagementPage() {
               {Object.entries(workPriorityLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </Filter>
           </div>
+          <DateRangeFilter label="Hạn hoàn thành" value={dueRange} onChange={setDueRange} className="mt-2" />
         </div>
       </StickyFilterBar>
 
@@ -236,15 +243,15 @@ export default function WorkManagementPage() {
         {view === "LIST" && (
           <>
             <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
-              <p className="text-sm font-bold text-slate-700">{data.items.length} công việc</p>
+              <p className="text-sm font-bold text-slate-700">{rangedItems.length} công việc</p>
               <ExportExcelButton fileName="danh_sach_cong_viec" sheetName="Cong viec" targetId="work-item-table" />
             </div>
-            <ListView items={data.items} onOpen={(id) => router.push(`/work-management/${id}`)} />
+            <ListView items={rangedItems} onOpen={(id) => router.push(`/work-management/${id}`)} />
           </>
         )}
         {view === "KANBAN" && (
           <KanbanView
-            items={data.items}
+            items={rangedItems}
             canEdit={canEdit}
             canApprove={canApprove}
             busy={busy}

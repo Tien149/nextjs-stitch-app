@@ -753,7 +753,7 @@ export async function PATCH(request: Request) {
     // khoản này sẽ làm công nợ lệch bút toán — phải sửa/xoá chính phiếu phân bổ.
     if (current.sourceType === "COST_REALLOCATION") {
       return NextResponse.json(
-        { error: "Công nợ nội bộ này do phiếu phân bổ chi phí sinh ra. Hãy xoá phiếu ở màn Phân bổ chi phí để hoàn tác đồng bộ cả bút toán." },
+        { error: "Công nợ nội bộ này do phiếu phân bổ chi phí sinh ra. Hãy xoá phiếu ở màn Chia sẻ chi phí nội bộ để hoàn tác đồng bộ cả bút toán." },
         { status: 400 },
       );
     }
@@ -975,7 +975,7 @@ async function findDebtAccrual(debt: { id: string; code: string }) {
 async function debtDeleteBlocker(current: { id: string; code: string; sourceType: string; status: string; originalAmount: number; outstandingAmount: number; documentDate: Date; branchCode: string }) {
   // Xoá riêng công nợ của phiếu phân bổ sẽ để lại bút toán P&L mồ côi ở hai nhà hàng.
   if (current.sourceType === "COST_REALLOCATION") {
-    return "Công nợ nội bộ này do phiếu phân bổ chi phí sinh ra. Hãy xoá phiếu ở màn Phân bổ chi phí để hoàn tác đồng bộ cả bút toán.";
+    return "Công nợ nội bộ này do phiếu phân bổ chi phí sinh ra. Hãy xoá phiếu ở màn Chia sẻ chi phí nội bộ để hoàn tác đồng bộ cả bút toán.";
   }
   if (current.sourceType === "MONEY_TRANSFER") {
     return "Công nợ nội bộ này do phiếu điều tiền liên nhà hàng sinh ra. Hãy xử lý ở màn Vận hành tài chính để bút toán và công nợ đi cùng nhau.";

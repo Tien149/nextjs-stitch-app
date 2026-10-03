@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { prismaDateRange } from "@/lib/date-range";
 import { NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
@@ -419,7 +420,9 @@ export async function GET(request: Request) {
 
     // Danh sách chỉ cần đủ cột để vẽ bảng. Không kéo mappingJson/errorJson (có batch nặng
     // vài trăm KB) để người dùng bấm "Xem tất cả" không kéo theo cả đống JSON không dùng tới.
-    const listWhere = { importType, ...(templateCode ? { templateCode } : {}), ...branchWhere };
+    // Lọc theo ngày import (khách yêu cầu 03/10/2026).
+    const createdAt = prismaDateRange({ from: searchParams.get("createdFrom"), to: searchParams.get("createdTo") });
+    const listWhere = { importType, ...(templateCode ? { templateCode } : {}), ...branchWhere, ...(createdAt ? { createdAt } : {}) };
     const limit = batchListLimit(searchParams.get("limit"));
     const offset = batchListOffset(searchParams.get("offset"));
     const [items, total] = await Promise.all([

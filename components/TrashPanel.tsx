@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { DateRangeFilter } from "@/components/DateRangeFilter";
+import type { DateRange } from "@/lib/date-range";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { canPerformMenuAction, SESSION_KEY, type DemoSession } from "@/lib/auth-demo";
 
@@ -54,6 +56,8 @@ export function TrashPanel({
   const [summary, setSummary] = useState<TrashSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [keyword, setKeyword] = useState("");
+  /** Lọc theo thời điểm xoá — lọc ở máy chủ vì mỗi loại chỉ trả 100 bản ghi mới nhất. */
+  const [deletedRange, setDeletedRange] = useState<DateRange>({ from: "", to: "" });
   const [activeModel, setActiveModel] = useState<string>("ALL");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [message, setMessage] = useState<{ type: "ok" | "error"; text: string } | null>(null);
@@ -65,6 +69,8 @@ export function TrashPanel({
     try {
       const params = new URLSearchParams();
       if (modelsKey) params.set("models", modelsKey);
+      if (deletedRange.from) params.set("deletedFrom", deletedRange.from);
+      if (deletedRange.to) params.set("deletedTo", deletedRange.to);
       const response = await fetch(`/api/trash?${params.toString()}`, { headers: sessionHeaders() });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
@@ -78,7 +84,7 @@ export function TrashPanel({
     } finally {
       setLoading(false);
     }
-  }, [modelsKey]);
+  }, [modelsKey, deletedRange.from, deletedRange.to]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
@@ -126,6 +132,7 @@ export function TrashPanel({
 
   return (
     <div className="space-y-4">
+      <DateRangeFilter label="Thời điểm xoá" value={deletedRange} onChange={setDeletedRange} />
       <div className="flex flex-col sm:flex-row sm:items-center gap-3">
         <div className="relative flex-1">
           <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xl pointer-events-none">

@@ -1,6 +1,8 @@
 "use client";
 
 import { Fragment, useEffect, useId, useMemo, useState } from "react";
+import { DateRangeFilter } from "@/components/DateRangeFilter";
+import { inDateRange, type DateRange } from "@/lib/date-range";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { DateInput, MonthInput } from "@/components/DateInput";
@@ -29,6 +31,7 @@ type Asset = {
   supplierCode?: string | null;
   status?: string;
   disposalAmount?: number | null;
+  disposalDate?: string | null;
 };
 
 type Depreciation = {
@@ -166,6 +169,11 @@ export default function AssetOperationsPage() {
   });
   const [period, setPeriod] = useState(new Date().toISOString().slice(0, 7));
   const [depreciationYear, setDepreciationYear] = useState(new Date().toISOString().slice(0, 4));
+  /**
+   * Khoảng thời gian cho các tab danh sách (khách yêu cầu 03/10/2026): bảo trì theo ngày dự kiến,
+   * sửa chữa theo ngày báo hỏng, kiểm kê theo ngày kiểm, thanh lý theo ngày thanh lý.
+   */
+  const [opsRange, setOpsRange] = useState<DateRange>({ from: "", to: "" });
   const [maintenance, setMaintenance] = useState({
     maintenanceType: "Bảo trì định kỳ",
     scheduledDate: new Date().toISOString().slice(0, 10),
@@ -228,7 +236,10 @@ export default function AssetOperationsPage() {
   };
 
   const loadData = async () => {
-    const response = await fetch("/api/assets/operations", {
+    const query = new URLSearchParams();
+    if (opsRange.from) query.set("from", opsRange.from);
+    if (opsRange.to) query.set("to", opsRange.to);
+    const response = await fetch(`/api/assets/operations?${query.toString()}`, {
       headers: getSessionHeaders(),
     });
     if (!response.ok) return;
@@ -450,6 +461,11 @@ export default function AssetOperationsPage() {
     if (!loading) window.setTimeout(() => { void loadData(); void loadMasterData(); }, 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading]);
+  // Đổi khoảng thời gian chỉ cần tải lại dữ liệu nghiệp vụ.
+  useEffect(() => {
+    if (!loading) window.setTimeout(() => void loadData(), 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opsRange.from, opsRange.to]);
 
   // User bị giới hạn bộ phận: mặc định chọn sẵn phòng ban đầu tiên trong phạm vi (không có lựa chọn "Tất cả").
   useEffect(() => {
@@ -617,6 +633,16 @@ export default function AssetOperationsPage() {
         onChange={setActive}
         tabs={visibleTabs}
       />
+
+      {["maintenance", "damage", "disposal", "stocktake"].includes(active) && (
+        <div className="mb-4 rounded-lg border border-slate-200 bg-white px-4 py-3 shadow-sm">
+          <DateRangeFilter
+            label={{ maintenance: "Ngày bảo trì dự kiến", damage: "Ngày báo hỏng", disposal: "Ngày thanh lý", stocktake: "Ngày kiểm kê" }[active as "maintenance"]}
+            value={opsRange}
+            onChange={setOpsRange}
+          />
+        </div>
+      )}
 
       {message && <p className="mb-4 px-4 py-3 rounded-lg border border-blue-100 bg-blue-50 text-sm text-blue-700">{message}</p>}
       {data.assets.length === 0 && (
@@ -1373,10 +1399,10 @@ export default function AssetOperationsPage() {
           <section className="table-panel">
             <Panel title="Danh sách tài sản đã thanh lý" reload={loadData} exportFileName="tai_san_da_thanh_ly" />
             <Table headers={[{ label: "Mã & tên tài sản" }, { label: "Nguyên giá", align: "right" }, { label: "Tiền thu thanh lý", align: "right" }, { label: "Trạng thái" }, { label: "Thao tác", align: "right" }]}>
-              {data.assets.filter((a) => a.status === "DISPOSED").length === 0 ? (
+              {data.assets.filter((a) => a.status === "DISPOSED" && inDateRange(a.disposalDate, opsRange)).length === 0 ? (
                 <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">Chưa có tài sản nào được thanh lý.</td></tr>
               ) : (
-                data.assets.filter((a) => a.status === "DISPOSED").map((row) => (
+                data.assets.filter((a) => a.status === "DISPOSED" && inDateRange(a.disposalDate, opsRange)).map((row) => (
                   <tr key={row.id} className="border-t border-slate-100">
                     <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small className="block text-slate-600">{row.name}</small></Cell>
                     <Cell right>{money(row.originalCost)} đ</Cell>

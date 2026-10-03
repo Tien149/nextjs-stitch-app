@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { DateRangeFilter } from "@/components/DateRangeFilter";
+import { inDateRange, type DateRange } from "@/lib/date-range";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { useRouter } from "next/navigation";
 import { MonthInput } from "@/components/DateInput";
@@ -63,6 +65,8 @@ export default function Home() {
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [filterStatus, setFilterStatus] = useState("ALL");
+  /** Lọc "Chứng từ vận hành" theo ngày tạo (khách yêu cầu 03/10/2026). */
+  const [documentRange, setDocumentRange] = useState<DateRange>({ from: "", to: "" });
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [dashboardPeriod, setDashboardPeriod] = useState(DEFAULT_DASHBOARD_PERIOD);
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
@@ -274,6 +278,7 @@ export default function Home() {
       doc.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
       doc.code.toLowerCase().includes(searchQuery.toLowerCase());
     
+    if (!inDateRange(doc.date, documentRange)) return false;
     if (filterStatus === "ALL") return matchesSearch;
     return matchesSearch && doc.status === filterStatus;
   });
@@ -589,8 +594,9 @@ export default function Home() {
 
           {/* Transactions List */}
           <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
-            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+            <div className="px-6 py-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
               <h4 className="text-base font-bold text-slate-900">Chứng từ vận hành</h4>
+              <DateRangeFilter label="" value={documentRange} onChange={setDocumentRange} className="ml-auto mr-4" />
               {canCreateDocuments && (
                 <button 
                   onClick={() => setIsCreateOpen(true)}

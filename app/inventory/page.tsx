@@ -17,6 +17,7 @@ import { SearchableSelect } from "@/components/SearchableSelect";
 import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 import StocktakeByLocation from "@/components/inventory/StocktakeByLocation";
 import StockReportsPanel from "@/components/inventory/StockReportsPanel";
+import { DateRangeFilter } from "@/components/DateRangeFilter";
 import MissingRecipesPanel from "@/components/inventory/MissingRecipesPanel";
 import TransferRequestsPanel, { type TransferRequest } from "@/components/inventory/TransferRequestsPanel";
 import StocktakeDocumentsPanel from "@/components/inventory/StocktakeDocumentsPanel";
@@ -214,7 +215,7 @@ export default function InventoryPage() {
   const [selectedWasteIds, setSelectedWasteIds] = useState<string[]>([]);
   const [bulkWasteSubType, setBulkWasteSubType] = useState("HET_HAN_SU_DUNG");
   /** Bộ lọc "Mã hàng hủy nhiều nhất": tháng ("" = mọi thời gian), loại hủy, nhà hàng, loại hàng, nhóm hàng hóa. */
-  const [wasteReportFilter, setWasteReportFilter] = useState({ month: "", subType: "ALL", branch: "ALL", itemType: "ALL", goodsGroup: "ALL", search: "" });
+  const [wasteReportFilter, setWasteReportFilter] = useState({ from: "", to: "", subType: "ALL", branch: "ALL", itemType: "ALL", goodsGroup: "ALL", search: "" });
   const [wasteReportRows, setWasteReportRows] = useState<WasteReportLine[] | null>(null);
   const [inboundType, setInboundType] = useState("ALL");
   const [outboundType, setOutboundType] = useState("ALL");
@@ -605,7 +606,10 @@ export default function InventoryPage() {
   const explodeToWarehouseCode = pickWarehouse(explodeForm.toWarehouseCode, explodeWarehouseCode);
 
   /** Phiếu chế biến / rã nguyên liệu đang hiện. */
-  const productionTransactions = data.transactions.filter((row) =>
+  // Giao dịch chế biến theo khoảng ngày chứng từ (khách yêu cầu 03/10/2026): lấy từ danh sách phiếu
+  // theo flowRange. Trước đây lọc từ 100 phiếu mới nhất MỌI loại nên gần như rỗng. Bảng chỉ vẽ
+  // PRODUCTION_RENDER_LIMIT phiếu; dòng CỘNG vẫn cộng đủ.
+  const productionTransactions = (data.flowTransactions || []).filter((row) =>
     row.transactionType.includes("CHE_BIEN") || (row.referenceCode || "").startsWith("RA-"));
 
   /** Phiếu hủy đang hiện — dùng chung cho bảng và dòng CỘNG để hai chỗ không lệch nhau. */
@@ -1080,10 +1084,8 @@ export default function InventoryPage() {
   useEffect(() => {
     if (active !== "waste") return;
     let cancelled = false;
-    const month = wasteReportFilter.month;
-    const range = /^\d{4}-\d{2}$/.test(month)
-      ? `&from=${month}-01&to=${new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0)).toISOString().slice(0, 10)}`
-      : "";
+    // Khoảng ngày (khách yêu cầu 03/10/2026) thay cho ô Tháng; nút "Tháng này / Tháng trước" vẫn có.
+    const range = `${wasteReportFilter.from ? `&from=${wasteReportFilter.from}` : ""}${wasteReportFilter.to ? `&to=${wasteReportFilter.to}` : ""}`;
     const timer = window.setTimeout(async () => {
       try {
         const response = await fetch(`/api/inventory?view=waste-report${range}`, { headers: getSessionHeaders() });
@@ -1094,7 +1096,7 @@ export default function InventoryPage() {
       }
     }, 0);
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [active, wasteReportFilter.month, data.wasteTransactions]);
+  }, [active, wasteReportFilter.from, wasteReportFilter.to, data.wasteTransactions]);
 
 
   const grpoOrder = stockForm.transactionType === "NHAP_MUA"
@@ -3845,7 +3847,7 @@ export default function InventoryPage() {
             </form>
           )}
           <section className="table-panel shadow-sm">
-            <Panel title="Giao dịch chế biến gần nhất" reload={loadData} exportFileName="giao_dich_che_bien" />
+            <Panel title="Giao dịch chế biến" reload={loadData} exportFileName="giao_dich_che_bien" />
             {canCreate && (() => {
               const runCodes = [...new Set(data.transactions
                 .filter((row) => (row.referenceCode || "").startsWith("RA-"))
@@ -3897,6 +3899,10 @@ export default function InventoryPage() {
             })()}
             {/* Thêm cột Trị giá cùng lúc với dòng CỘNG: bảng không có cột tiền nào thì dòng
                 tổng chẳng có gì để cộng. Trị giá = giá trị hàng luân chuyển của phiếu. */}
+            <div className="px-5 pb-3 flex flex-wrap items-end gap-3">
+              <DateRangeFilter label="Ngày chứng từ" value={flowRange} onChange={setFlowRange} />
+              <p className="text-xs text-slate-500">{productionTransactions.length > 300 ? `Có ${productionTransactions.length} phiếu, bảng hiện 300 phiếu mới nhất — dòng CỘNG tính đủ.` : ""}</p>
+            </div>
             <Table
               headers={[{ label: "Chứng từ" }, { label: "Loại" }, { label: "Kho" }, { label: "Mặt hàng" }, { label: "Trị giá", align: "right" }]}
               footer={productionTransactions.length === 0 ? null : (
@@ -3909,13 +3915,13 @@ export default function InventoryPage() {
                 </tr>
               )}
             >
-              {productionTransactions.map((row) => (
+              {productionTransactions.slice(0, 300).map((row) => (
                 <tr key={row.id} className="border-t border-slate-100">
                   <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}{row.referenceCode ? ` · ${row.referenceCode}` : ""}</small></Cell>
                   <Cell>{movementTypeLabel(row.transactionType)}</Cell>
                   <Cell>{row.warehouseCode}</Cell>
-                  <Cell>{row.lines.map((line) => `${line.item.code}: ${qty(line.quantity)} ${line.item.unit}`).join(", ")}</Cell>
-                  <Cell right><b>{money(row.lines.reduce((sum, line) => sum + line.totalCost, 0))} đ</b></Cell>
+                  <Cell>{row.lines.map((line) => `${line.item.code}: ${qty(line.quantity)} ${line.item.unit}`).join(", ")}{row.lineSummary && row.lineSummary.count > row.lines.length ? ` … (+${row.lineSummary.count - row.lines.length} dòng)` : ""}</Cell>
+                  <Cell right><b>{money(documentTotalCost(row))} đ</b></Cell>
                 </tr>
               ))}
             </Table>
@@ -4381,14 +4387,12 @@ export default function InventoryPage() {
           <div className="space-y-5 min-w-0">
             <section className="table-panel shadow-sm">
               <Panel
-                title={`Mã hàng hủy nhiều nhất (theo trị giá)${wasteReportFilter.month ? ` — tháng ${wasteReportFilter.month.slice(5)}/${wasteReportFilter.month.slice(0, 4)}` : ""}`}
+                title={`Mã hàng hủy nhiều nhất (theo trị giá)${wasteReportFilter.from || wasteReportFilter.to ? ` — ${wasteReportFilter.from ? wasteReportFilter.from.split("-").reverse().join("/") : "…"} → ${wasteReportFilter.to ? wasteReportFilter.to.split("-").reverse().join("/") : "…"}` : ""}`}
                 reload={loadData}
-                exportFileName={`hang_huy_nhieu_nhat${wasteReportFilter.month ? `_${wasteReportFilter.month}` : ""}`}
+                exportFileName={`hang_huy_nhieu_nhat${wasteReportFilter.from ? `_${wasteReportFilter.from}` : ""}`}
               />
               <div className="px-5 pb-4 grid grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6 gap-3">
-                <Input label="Tháng">
-                  <input type="month" className="control" value={wasteReportFilter.month} onChange={(e) => setWasteReportFilter({ ...wasteReportFilter, month: e.target.value })} />
-                </Input>
+                <DateRangeFilter label="Ngày hủy" value={{ from: wasteReportFilter.from, to: wasteReportFilter.to }} onChange={(range) => setWasteReportFilter({ ...wasteReportFilter, ...range })} className="col-span-2 2xl:col-span-6" />
                 <Input label="Loại hủy">
                   <select className="control" value={wasteReportFilter.subType} onChange={(e) => setWasteReportFilter({ ...wasteReportFilter, subType: e.target.value })}>
                     <option value="ALL">Tất cả loại hủy</option>

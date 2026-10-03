@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { inDateRange, periodInRange } from "@/lib/date-range";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { DateInput, MonthInput } from "@/components/DateInput";
 import { storeLabel, updateDynamicBranches, visibleBranchScopeOptions, visibleStoreOptions } from "@/lib/branch-labels";
@@ -149,15 +150,25 @@ export default function FinanceOperationsPage() {
   const [data, setData] = useState<Data>({ openingAmount: 0, openingBasis: { anchorPeriod: null, declaredThisPeriod: false }, closingBalance: 0, cashbook: [], accruals: [], moneyTransfers: [], accountingPeriod: { status: "OPEN" }, checklist: [], expenseSummary: emptyExpenseSummary });
   const [message, setMessage] = useState("");
   const [expenseFilter, setExpenseFilter] = useState<ExpenseDetailFilter>(emptyExpenseDetailFilter);
+  /**
+   * Ô "Khoảng thời gian" trên thanh lọc áp cho MỌI bảng chi tiết của màn (khách yêu cầu
+   * 03/10/2026): sổ quỹ, điều tiền chờ duyệt, nộp tiền đã duyệt, chi tiết chi phí.
+   */
+  const selectedRange = { from: cashbookRange.startDate, to: cashbookRange.endDate };
+  const inSelectedRange = (date: string | null | undefined) => inDateRange(date, selectedRange);
+  /** Khoản trích trước có ít nhất một kỳ phân bổ nằm trong khoảng; bảng lịch chỉ hiện các kỳ đó. */
+  const visibleAccruals = data.accruals.filter((row) => row.schedules.some((schedule) => periodInRange(schedule.period, selectedRange)) || (!selectedRange.from && !selectedRange.to));
   const expenseDetailRows = useMemo(() => {
     const query = expenseFilter.query.trim().toLowerCase();
+    const range = { from: cashbookRange.startDate, to: cashbookRange.endDate };
     return (data.expenseSummary.details || []).filter((row) =>
-      (!expenseFilter.source || row.sourceKey === expenseFilter.source)
+      inDateRange(row.date, range)
+      && (!expenseFilter.source || row.sourceKey === expenseFilter.source)
       && (!expenseFilter.line || row.lineKey === expenseFilter.line)
       && (!expenseFilter.item || row.itemCode === expenseFilter.item)
       && (!query || [row.entryCode, row.sourceCode, row.description, row.partnerCode, row.accountCode, row.itemName]
         .some((value) => (value || "").toLowerCase().includes(query))));
-  }, [data.expenseSummary.details, expenseFilter]);
+  }, [data.expenseSummary.details, expenseFilter, cashbookRange.startDate, cashbookRange.endDate]);
   const expenseDetailTotal = useMemo(() => expenseDetailRows.reduce((sum, row) => sum + row.amount, 0), [expenseDetailRows]);
   const expenseFilterActive = Boolean(expenseFilter.source || expenseFilter.line || expenseFilter.item || expenseFilter.query.trim());
   /** Từ hai bảng gom bấm xuống bảng chi tiết với bộ lọc tương ứng. */
@@ -376,13 +387,15 @@ export default function FinanceOperationsPage() {
     return `Không thấy phiếu ${transferQuery.trim()} trong kỳ ${period.slice(5, 7)}/${period.slice(0, 4)} của phạm vi cửa hàng đang chọn. Kiểm tra lại Kỳ kế toán và Cửa hàng trên thanh lọc.`;
   }, [data.moneyTransfers, period, selectedTransfer, transferCodeQuery, transferQuery]);
   const pendingCashDeposits = useMemo(
-    () => data.moneyTransfers.filter((row) => row.status === "PENDING_REVIEW" && row.transferPurpose === "CASH_DEPOSIT"),
-    [data.moneyTransfers],
+    () => data.moneyTransfers.filter((row) => row.status === "PENDING_REVIEW" && row.transferPurpose === "CASH_DEPOSIT"
+      && inDateRange(row.transferDate, { from: cashbookRange.startDate, to: cashbookRange.endDate })),
+    [data.moneyTransfers, cashbookRange.startDate, cashbookRange.endDate],
   );
   /** Phiếu nộp tiền đã duyệt trong kỳ — nơi duy nhất mở lại được khi duyệt xong mới thấy sai. */
   const approvedCashDeposits = useMemo(
-    () => data.moneyTransfers.filter((row) => row.status === "APPROVED" && row.transferPurpose === "CASH_DEPOSIT"),
-    [data.moneyTransfers],
+    () => data.moneyTransfers.filter((row) => row.status === "APPROVED" && row.transferPurpose === "CASH_DEPOSIT"
+      && inDateRange(row.transferDate, { from: cashbookRange.startDate, to: cashbookRange.endDate })),
+    [data.moneyTransfers, cashbookRange.startDate, cashbookRange.endDate],
   );
   const activeSelectedCashDepositIds = useMemo(() => {
     const eligibleIds = new Set(pendingCashDeposits.map((row) => row.id));
@@ -1315,7 +1328,7 @@ export default function FinanceOperationsPage() {
               </section>
             )}
 
-            {data.moneyTransfers.some((transfer) => transfer.status === "PENDING_REVIEW") && (
+            {data.moneyTransfers.some((transfer) => transfer.status === "PENDING_REVIEW" && inSelectedRange(transfer.transferDate)) && (
               <section className="overflow-hidden rounded-xl border border-amber-200 bg-white shadow-sm">
                 <div className="flex items-center justify-between border-b border-amber-100 bg-amber-50 px-5 py-3">
                   <div>
@@ -1329,7 +1342,7 @@ export default function FinanceOperationsPage() {
                       </button>
                     )}
                     <span className="rounded-full bg-white px-2.5 py-1 text-xs font-bold text-amber-800">
-                      {data.moneyTransfers.filter((transfer) => transfer.status === "PENDING_REVIEW").length}
+                      {data.moneyTransfers.filter((transfer) => transfer.status === "PENDING_REVIEW" && inSelectedRange(transfer.transferDate)).length}
                     </span>
                     <ExportExcelButton fileName="dieu_tien_cho_duyet" sheetName="Cho duyet" targetId="pending-transfer-table" />
                   </div>
@@ -1357,7 +1370,7 @@ export default function FinanceOperationsPage() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {data.moneyTransfers.filter((transfer) => transfer.status === "PENDING_REVIEW").map((transfer) => (
+                      {data.moneyTransfers.filter((transfer) => transfer.status === "PENDING_REVIEW" && inSelectedRange(transfer.transferDate)).map((transfer) => (
                         <tr key={transfer.id}>
                           <td className="px-3 py-3 text-center">
                             {canApproveTransfer && transfer.transferPurpose === "CASH_DEPOSIT" && (
@@ -2045,12 +2058,12 @@ export default function FinanceOperationsPage() {
                   </p>
                 </div>
               )}
-              {data.accruals.length === 0 ? (
+              {visibleAccruals.length === 0 ? (
                 <div className="bg-white border border-slate-200 rounded-2xl p-10 text-center text-slate-400 font-medium shadow-sm">
-                  Chưa có khoản phân bổ chi phí trích trước nào được tạo.
+                  {data.accruals.length === 0 ? "Chưa có khoản phân bổ chi phí trích trước nào được tạo." : "Không có khoản phân bổ nào có kỳ trong khoảng thời gian đang lọc."}
                 </div>
               ) : (
-                data.accruals.map((row) => (
+                visibleAccruals.map((row) => (
                   <div key={row.id} className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-lg shadow-slate-100/50">
                     <div className="px-6 py-4 border-b border-slate-200 bg-slate-50/50 flex justify-between items-center gap-3">
                       <div>
@@ -2125,7 +2138,7 @@ export default function FinanceOperationsPage() {
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
-                          {row.schedules.map((schedule) => (
+                          {row.schedules.filter((schedule) => periodInRange(schedule.period, selectedRange)).map((schedule) => (
                             <tr key={schedule.id} className="hover:bg-slate-50/30 transition-colors">
                               <td className="px-5 py-3 text-xs font-semibold text-slate-700">
                                 {schedule.period}

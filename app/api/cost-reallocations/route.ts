@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { prismaDateRange } from "@/lib/date-range";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import type { Prisma } from "@prisma/custom-client";
 import { prisma, prismaRaw, type RawTxClient } from "@/lib/prisma";
@@ -25,17 +26,20 @@ export async function GET(request: Request) {
     if (!auth.ok) return auth.response;
     const { searchParams } = new URL(request.url);
     const period = cleanText(searchParams.get("period"));
+    // Lọc theo ngày chứng từ, so theo ngày giờ VN (lưu 00:00 UTC vẫn đúng ngày).
+    const documentDate = prismaDateRange({ from: searchParams.get("from"), to: searchParams.get("to") });
     const branchFilter = branchFilterForSession(auth.session, searchParams.get("branchCode") || "ALL");
 
     const rows = await prisma.costReallocation.findMany({
       where: {
         deletedAt: null,
         ...(period ? { period } : {}),
+        ...(documentDate ? { documentDate } : {}),
         ...(branchFilter.branchCode ? { fromBranchCode: branchFilter.branchCode } : {}),
       },
       include: { lines: true },
       orderBy: [{ documentDate: "desc" }, { createdAt: "desc" }],
-      take: 200,
+      take: 2000,
     });
     return NextResponse.json(rows);
   } catch (error) {

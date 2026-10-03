@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { DateRangeFilter } from "@/components/DateRangeFilter";
+import type { DateRange } from "@/lib/date-range";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { useRouter } from "next/navigation";
 import { MonthInput, DateInput } from "@/components/DateInput";
@@ -16,7 +18,7 @@ type Account = { id: string; code: string; name: string; accountType: string; re
 type Line = { id: string; debit: number; credit: number; departmentCode: string | null; account: Account; categoryCode: string | null; partnerCode: string | null };
 type Entry = { id: string; code: string; entryDate: string; branchCode: string; sourceType: string; sourceId: string; sourceCode: string | null; description: string; lines: Line[] };
 type MasterDataOption = { id: string; type: string; code: string; name: string; group: string | null; branch: string | null; status?: string };
-type Data = { accounts: Account[]; entries: Entry[]; categories?: MasterDataOption[]; totals: { debit: number; credit: number; difference: number } };
+type Data = { accounts: Account[]; entries: Entry[]; entryCount?: number; categories?: MasterDataOption[]; totals: { debit: number; credit: number; difference: number } };
 
 const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value);
 
@@ -27,6 +29,8 @@ export default function AccountingPage() {
   
   const [active, setActive] = useState("ledger");
   const [period, setPeriod] = useState(new Date().toISOString().slice(0, 7));
+  /** Khoảng ngày bút toán (khách yêu cầu 03/10/2026) — có khoảng thì thay cho Kỳ kế toán khi xem sổ. */
+  const [entryRange, setEntryRange] = useState<DateRange>({ from: "", to: "" });
   const [branchCode, setBranchCode] = useState("ALL");
   const [data, setData] = useState<Data>({ accounts: [], entries: [], totals: { debit: 0, credit: 0, difference: 0 } });
   const [categories, setCategories] = useState<MasterDataOption[]>([]);
@@ -54,7 +58,8 @@ export default function AccountingPage() {
   const [editingEntry, setEditingEntry] = useState<Entry | null>(null);
 
   const loadData = useCallback(async () => {
-    const response = await fetch(`/api/accounting?period=${period}&branchCode=${branchCode}`);
+    const rangeQuery = `${entryRange.from ? `&from=${entryRange.from}` : ""}${entryRange.to ? `&to=${entryRange.to}` : ""}`;
+    const response = await fetch(`/api/accounting?period=${period}&branchCode=${branchCode}${rangeQuery}`);
     if (response.ok) {
       const payload = (await response.json()) as Data;
       setData(payload);
@@ -77,7 +82,7 @@ export default function AccountingPage() {
         }));
       }
     }
-  }, [branchCode, period]);
+  }, [branchCode, period, entryRange.from, entryRange.to]);
 
   useEffect(() => {
     if (!loading) {
@@ -410,6 +415,9 @@ export default function AccountingPage() {
               <span className="text-xs font-bold text-slate-600">Kỳ kế toán</span>
               <MonthInput className="w-44" value={period} onChange={setPeriod} ariaLabel="Kỳ kế toán" />
             </div>
+
+            {/* Có khoảng ngày thì sổ nhật ký lấy theo khoảng (có thể vắt nhiều kỳ), bỏ qua Kỳ kế toán. */}
+            <DateRangeFilter label="Hoặc khoảng ngày bút toán" value={entryRange} onChange={setEntryRange} className="!text-xs" />
             
             <div className="flex flex-col gap-1.5">
               <span className="text-xs font-bold text-slate-600">Phạm vi cửa hàng</span>
@@ -540,7 +548,12 @@ export default function AccountingPage() {
               <div className="px-6 py-5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-4">
                 <div>
                   <h3 className="font-bold text-slate-900">Sổ Nhật ký chung</h3>
-                  <p className="text-xs text-slate-500 mt-1">Liệt kê tất cả bút toán kép được đồng bộ hoặc tạo thủ công trong kỳ.</p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Liệt kê bút toán kép được đồng bộ hoặc tạo thủ công {entryRange.from || entryRange.to ? "trong khoảng ngày đang lọc" : "trong kỳ"}.
+                    {(data.entryCount || 0) > data.entries.length && (
+                      <b className="text-amber-700"> Đang hiện {data.entries.length.toLocaleString("vi-VN")}/{(data.entryCount || 0).toLocaleString("vi-VN")} bút toán mới nhất — thu hẹp khoảng ngày để xem phần còn lại; tổng Nợ / Có vẫn tính đủ cả khoảng.</b>
+                    )}
+                  </p>
                 </div>
                 
                 <div className="flex items-center gap-4">

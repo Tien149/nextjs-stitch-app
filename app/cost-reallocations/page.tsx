@@ -5,6 +5,8 @@ import ExportExcelButton from "@/components/ExportExcelButton";
 import { useRouter } from "next/navigation";
 import { BranchScopeSelect, resolveInitialBranchScope } from "@/components/BranchScopeSelect";
 import { DateInput } from "@/components/DateInput";
+import { DateRangeFilter } from "@/components/DateRangeFilter";
+import type { DateRange } from "@/lib/date-range";
 import { ConfirmDeleteDialog } from "@/components/RowActions";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import CopyableText from "@/components/CopyableText";
@@ -46,6 +48,8 @@ export default function CostReallocationsPage() {
   const [rows, setRows] = useState<Reallocation[]>([]);
   const [pnlItems, setPnlItems] = useState<PnlItemOption[]>([]);
   const [branchScope, setBranchScope] = useState("ALL");
+  /** Lọc theo ngày chứng từ (khách yêu cầu 03/10/2026). */
+  const [dateRange, setDateRange] = useState<DateRange>({ from: "", to: "" });
   const [message, setMessage] = useState("");
   const [formOpen, setFormOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -86,9 +90,12 @@ export default function CostReallocationsPage() {
   }, [router]);
 
   const loadRows = useCallback(async () => {
-    const response = await fetch(`/api/cost-reallocations?branchCode=${encodeURIComponent(branchScope)}`);
+    const query = new URLSearchParams({ branchCode: branchScope });
+    if (dateRange.from) query.set("from", dateRange.from);
+    if (dateRange.to) query.set("to", dateRange.to);
+    const response = await fetch(`/api/cost-reallocations?${query.toString()}`);
     if (response.ok) setRows((await response.json()) as Reallocation[]);
-  }, [branchScope]);
+  }, [branchScope, dateRange.from, dateRange.to]);
 
   useEffect(() => {
     if (!loading) window.setTimeout(() => void loadRows(), 0);
@@ -195,9 +202,9 @@ export default function CostReallocationsPage() {
 
   return <div className="min-h-screen bg-slate-100 text-slate-800">
     <header className="border-b border-slate-200 bg-white px-6 py-4 shadow-sm">
-      <div className="mx-auto flex max-w-7xl items-center justify-between gap-4">
+      <div className="mx-auto flex max-w-[1680px] items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-bold">Phân bổ chi phí liên nhà hàng</h1>
+          <h1 className="text-xl font-bold">Chia sẻ chi phí nội bộ</h1>
           <p className="text-xs text-slate-500">
             Nhà hàng trả hộ chuyển bớt chi phí sang nhà hàng thụ hưởng: giảm chi phí bên trả, tăng bên nhận, kèm công nợ nội bộ để đòi lại tiền.
           </p>
@@ -205,7 +212,7 @@ export default function CostReallocationsPage() {
         <div className="flex items-center gap-3">
           {canCreate && (
             <button type="button" onClick={openForm} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700">
-              + Lập phiếu phân bổ
+              + Lập phiếu chia sẻ chi phí
             </button>
           )}
           <BranchScopeSelect session={user} value={branchScope} onChange={setBranchScope} />
@@ -213,18 +220,22 @@ export default function CostReallocationsPage() {
       </div>
     </header>
 
-    <main className="mx-auto max-w-7xl space-y-4 p-6">
+    <main className="mx-auto max-w-[1680px] space-y-4 p-6">
       {message && <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">{message}</p>}
 
       <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 p-4">
           <div>
-            <h2 className="font-bold">Danh sách phiếu phân bổ</h2>
+            <h2 className="font-bold">Danh sách phiếu chia sẻ chi phí</h2>
             <p className="mt-1 text-xs text-slate-500">
               Phiếu ghi sổ ngay khi lập: không có dòng tiền nào chạy, tiền chỉ chạy khi nhà hàng kia hoàn lại bằng phiếu thu/chi gạch vào mã công nợ bên dưới.
             </p>
           </div>
-          <ExportExcelButton fileName="phieu_phan_bo_chi_phi" sheetName="Phan bo" targetId="cost-reallocation-table" />
+          <ExportExcelButton fileName="phieu_chia_se_chi_phi_noi_bo" sheetName="Chia se chi phi" targetId="cost-reallocation-table" />
+        </div>
+        <div className="flex flex-wrap items-end gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
+          <DateRangeFilter label="Ngày chứng từ" value={dateRange} onChange={setDateRange} />
+          <p className="ml-auto text-xs text-slate-500">{rows.length} phiếu · tổng {money(rows.reduce((sum, row) => sum + row.totalAmount, 0))} đ</p>
         </div>
         <div id="cost-reallocation-table" className="overflow-x-auto">
           <table className="w-full min-w-[900px] text-left text-sm">
@@ -237,7 +248,7 @@ export default function CostReallocationsPage() {
             </thead>
             <tbody>
               {rows.length === 0 && (
-                <tr className="border-t border-slate-100"><td colSpan={6} className="p-10 text-center text-slate-400">Chưa có phiếu phân bổ nào.</td></tr>
+                <tr className="border-t border-slate-100"><td colSpan={6} className="p-10 text-center text-slate-400">Chưa có phiếu chia sẻ chi phí nào trong khoảng này.</td></tr>
               )}
               {rows.map((row) => (
                 <tr key={row.id} className="border-t border-slate-100 align-top hover:bg-slate-50">

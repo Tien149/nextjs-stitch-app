@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { DateRangeFilter } from "@/components/DateRangeFilter";
+import { inDateRange, type DateRange } from "@/lib/date-range";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { useRouter } from "next/navigation";
 import { BranchScopeSelect, resolveInitialBranchScope } from "@/components/BranchScopeSelect";
@@ -118,6 +120,8 @@ export default function DepositsPage() {
   const [search, setSearch] = useState("");
   /** Lọc theo trạng thái trên trình duyệt (bấm thẻ tổng phía trên bảng); "ALL" = mọi trạng thái. */
   const [statusFilter, setStatusFilter] = useState("ALL");
+  /** Lọc theo ngày nhận cọc (khách yêu cầu 03/10/2026); thẻ tổng theo trạng thái cũng theo khoảng này. */
+  const [receivedRange, setReceivedRange] = useState<DateRange>({ from: "", to: "" });
   const [focusedCode, setFocusedCode] = useState("");
   const [focusedHistoryId, setFocusedHistoryId] = useState("");
   const [hasLoadedDeposits, setHasLoadedDeposits] = useState(false);
@@ -470,12 +474,13 @@ export default function DepositsPage() {
 
   // Thẻ tổng theo trạng thái tính trên danh sách đang tải (đã theo cửa hàng + ô tìm kiếm), còn
   // dòng Tổng cuối bảng tính trên đúng các phiếu đang hiện sau khi lọc trạng thái.
+  const rangedDeposits = deposits.filter((deposit) => inDateRange(deposit.receivedDate, receivedRange));
   const statusSummaries = [
     ...statusOrder,
     ...Array.from(new Set(deposits.map((deposit) => deposit.status))).filter((status) => !statusOrder.includes(status)),
-  ].map((status) => ({ status, ...summarizeDeposits(deposits.filter((deposit) => deposit.status === status)) }));
-  const allSummary = summarizeDeposits(deposits);
-  const visibleDeposits = statusFilter === "ALL" ? deposits : deposits.filter((deposit) => deposit.status === statusFilter);
+  ].map((status) => ({ status, ...summarizeDeposits(rangedDeposits.filter((deposit) => deposit.status === status)) }));
+  const allSummary = summarizeDeposits(rangedDeposits);
+  const visibleDeposits = statusFilter === "ALL" ? rangedDeposits : rangedDeposits.filter((deposit) => deposit.status === statusFilter);
   const visibleSummary = summarizeDeposits(visibleDeposits);
 
   if (isCheckingAuth) {
@@ -694,6 +699,9 @@ export default function DepositsPage() {
             </div>
           </div>
 
+          <div className="border-b border-slate-200 px-5 py-3">
+            <DateRangeFilter label="Ngày nhận cọc" value={receivedRange} onChange={setReceivedRange} />
+          </div>
           <div className="flex gap-2 overflow-x-auto border-b border-slate-200 px-5 py-3 custom-scrollbar">
             {[{ status: "ALL", ...allSummary }, ...statusSummaries].map((summary) => {
               const active = statusFilter === summary.status;

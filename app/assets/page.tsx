@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { DateRangeFilter } from "@/components/DateRangeFilter";
+import type { DateRange } from "@/lib/date-range";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { useRouter } from "next/navigation";
 import { DateInput } from "@/components/DateInput";
@@ -131,6 +133,8 @@ export default function AssetsPage() {
   const [filterDepartment, setFilterDepartment] = useState("ALL");
   const [filterGroup, setFilterGroup] = useState("ALL");
   const [filterStatus, setFilterStatus] = useState("ALL");
+  /** Lọc theo ngày mua (khách yêu cầu 03/10/2026). */
+  const [purchaseRange, setPurchaseRange] = useState<DateRange>({ from: "", to: "" });
   const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
@@ -236,6 +240,8 @@ export default function AssetsPage() {
     if (filterDepartment !== "ALL") params.set("departmentCode", filterDepartment);
     if (filterGroup !== "ALL") params.set("assetGroup", filterGroup);
     if (filterStatus !== "ALL") params.set("status", filterStatus);
+    if (purchaseRange.from) params.set("purchaseFrom", purchaseRange.from);
+    if (purchaseRange.to) params.set("purchaseTo", purchaseRange.to);
     if (searchQuery.trim()) params.set("q", searchQuery.trim());
 
     const response = await fetch(`/api/assets?${params.toString()}`, {
@@ -255,7 +261,7 @@ export default function AssetsPage() {
         void loadAssets();
       }, 0);
     }
-  }, [loading, filterBranch, filterWarehouse, filterDepartment, filterGroup, filterStatus, searchQuery]);
+  }, [loading, filterBranch, filterWarehouse, filterDepartment, filterGroup, filterStatus, searchQuery, purchaseRange.from, purchaseRange.to]);
 
   // Update default warehouse in form when branchCode changes
   useEffect(() => {
@@ -1187,7 +1193,8 @@ export default function AssetsPage() {
             </div>
 
             {/* Table */}
-            <div className="flex justify-end border-b border-slate-200 px-4 py-2">
+            <div className="flex flex-wrap items-end justify-between gap-3 border-b border-slate-200 px-4 py-2">
+              <DateRangeFilter label="Ngày mua" value={purchaseRange} onChange={setPurchaseRange} />
               <ExportExcelButton fileName="danh_sach_tai_san" sheetName="Tai san" targetId="asset-table" />
             </div>
             <div id="asset-table" className="overflow-x-auto overflow-y-auto flex-1 custom-scrollbar max-h-[560px]">
