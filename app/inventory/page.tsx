@@ -43,6 +43,8 @@ type Transaction = { id: string; code: string; transactionType: string; subType:
 type Recipe = { id: string; code: string; productCode: string; branchCode?: string | null; productName: string; unit: string; outputConversionRate: number; sellingPrice: number; estimatedCost: number; estimatedUnitCost: number; version: number; effectiveFrom: string; status: string; lines: Array<{ quantity: number; unitCode: string | null; conversionRate: number; wasteRate: number; item: Item; quantityBase?: number; componentUnitCost?: number; lineCost?: number }> };
 type CostSummaryRow = { productCode: string; branchCode: string; productName: string; group: string; stockUnit: string; batchUnit: string; outputConversionRate: number; sellingPrice: number; unitCost: number; costRatio: number | null; version: number; appliedFrom?: string; appliedTo?: string };
 type WasteReportRow = { itemCode: string; itemName: string; unit: string; itemType: string; totalQuantity: number; totalValue: number; documentCount: number; bySubType: Record<string, { quantity: number; value: number }> };
+/** Một dòng gom của GET view=waste-report: mặt hàng × loại hủy × nhà hàng trong khoảng thời gian. */
+type WasteReportLine = { itemCode: string; itemName: string; unit: string; itemType: string; goodsGroup: string | null; subType: string; branchCode: string; quantity: number; value: number; documentCount: number };
 type PendingSales = {
   total: number;
   byDay: Array<{ saleDate: string; branchCode: string; rowCount: number; totalQuantity: number }>;
@@ -202,6 +204,13 @@ export default function InventoryPage() {
   const [transferSearch, setTransferSearch] = useState("");
   // Bộ lọc danh sách phiếu hủy — khoảng ngày cũng dùng chung flowRange (tải lại từ máy chủ).
   const [wasteStore, setWasteStore] = useState("ALL");
+  /** Lọc danh sách phiếu hủy theo loại hủy (NONE = chưa phân loại) + chọn nhiều phiếu để gán loại hủy (03/10/2026). */
+  const [wasteSubTypeFilter, setWasteSubTypeFilter] = useState("ALL");
+  const [selectedWasteIds, setSelectedWasteIds] = useState<string[]>([]);
+  const [bulkWasteSubType, setBulkWasteSubType] = useState("HET_HAN_SU_DUNG");
+  /** Bộ lọc "Mã hàng hủy nhiều nhất": tháng ("" = mọi thời gian), loại hủy, nhà hàng, loại hàng, nhóm hàng hóa. */
+  const [wasteReportFilter, setWasteReportFilter] = useState({ month: "", subType: "ALL", branch: "ALL", itemType: "ALL", goodsGroup: "ALL", search: "" });
+  const [wasteReportRows, setWasteReportRows] = useState<WasteReportLine[] | null>(null);
   const [inboundType, setInboundType] = useState("ALL");
   const [outboundType, setOutboundType] = useState("ALL");
   /** Khoảng NGÀY CHỨNG TỪ của danh sách phiếu nhập/xuất — mặc định 90 ngày gần nhất, gửi lên server. */
@@ -369,6 +378,8 @@ export default function InventoryPage() {
   const canEditItem = user ? canPerformMenuAction(user, href, "edit") : false;
   /** Kế toán: duyệt / trả lại / mở lại phiếu kiểm kê (nhà hàng chỉ Gửi duyệt và sửa). */
   const canApprove = user ? canPerformMenuAction(user, href, "approve") : false;
+  /** Gán loại hủy hàng loạt cần quyền sửa (máy chủ chặn BULK_SET_WASTE_SUBTYPE bằng "edit"). */
+  const canEditWaste = canEditItem;
   const importTarget = active === "stock"
     ? { tab: "opening-balance", label: "Import tồn kho đầu kỳ" }
     : active === "items"
@@ -606,7 +617,55 @@ export default function InventoryPage() {
 
   /** Phiếu hủy đang hiện — dùng chung cho bảng và dòng CỘNG để hai chỗ không lệch nhau. */
   const wasteTransactions = (data.wasteTransactions || [])
-    .filter((row) => wasteStore === "ALL" || row.branchCode.toUpperCase() === wasteStore.toUpperCase());
+    .filter((row) => wasteStore === "ALL" || row.branchCode.toUpperCase() === wasteStore.toUpperCase())
+    .filter((row) => wasteSubTypeFilter === "ALL" || (wasteSubTypeFilter === "NONE" ? !row.subType : row.subType === wasteSubTypeFilter));
+  const visibleWasteIds = new Set(wasteTransactions.map((row) => row.id));
+  const selectedVisibleWasteIds = selectedWasteIds.filter((id) => visibleWasteIds.has(id));
+  const allWasteSelected = wasteTransactions.length > 0 && selectedVisibleWasteIds.length === wasteTransactions.length;
+  const toggleWasteSelection = (id: string) =>
+    setSelectedWasteIds((current) => (current.includes(id) ? current.filter((value) => value !== id) : [...current, id]));
+  const bulkSetWasteSubType = async () => {
+    const ids = selectedVisibleWasteIds;
+    if (ids.length === 0) return;
+    const payload = await send({ action: "BULK_SET_WASTE_SUBTYPE", ids, subType: bulkWasteSubType }, `Đã cập nhật loại hủy “${wasteSubTypeLabel(bulkWasteSubType)}” cho ${ids.length} phiếu.`) as { updated?: number; locked?: string[] } | null;
+    if (!payload) return;
+    setSelectedWasteIds([]);
+    if (payload.locked?.length) {
+      setMessage(`Đã cập nhật ${payload.updated} phiếu. Bỏ qua ${payload.locked.length} phiếu thuộc kỳ đã khoá: ${payload.locked.slice(0, 8).join(", ")}${payload.locked.length > 8 ? "..." : ""}`);
+    }
+  };
+
+  /**
+   * "Mã hàng hủy nhiều nhất": tải theo tháng từ máy chủ (gom mặt hàng × loại hủy × nhà hàng), lọc
+   * tiếp loại hủy / nhà hàng / loại hàng / nhóm hàng hóa / mã ngay trên màn hình rồi gom theo mặt hàng.
+   */
+  const wasteReportLines = wasteReportRows || [];
+  const wasteGoodsGroups = [...new Map(wasteReportLines
+    .map((line) => normalizeGoodsGroup(line.goodsGroup))
+    .filter((name): name is string => Boolean(name))
+    .map((name) => [goodsGroupKey(name), name] as const)).entries()].sort((a, b) => a[1].localeCompare(b[1], "vi"));
+  const wasteReportKeyword = foldSearchText(wasteReportFilter.search.trim());
+  const filteredWasteReport: WasteReportRow[] = (() => {
+    const byItem = new Map<string, WasteReportRow>();
+    for (const line of wasteReportLines) {
+      if (wasteReportFilter.subType !== "ALL" && line.subType !== wasteReportFilter.subType) continue;
+      if (wasteReportFilter.branch !== "ALL" && line.branchCode !== wasteReportFilter.branch.toUpperCase()) continue;
+      if (wasteReportFilter.itemType !== "ALL" && line.itemType !== wasteReportFilter.itemType) continue;
+      if (wasteReportFilter.goodsGroup === "MISSING" && normalizeGoodsGroup(line.goodsGroup)) continue;
+      if (!["ALL", "MISSING"].includes(wasteReportFilter.goodsGroup) && goodsGroupKey(line.goodsGroup) !== wasteReportFilter.goodsGroup) continue;
+      if (wasteReportKeyword && !foldSearchText(`${line.itemCode} ${line.itemName}`).includes(wasteReportKeyword)) continue;
+      const row = byItem.get(line.itemCode) || { itemCode: line.itemCode, itemName: line.itemName, unit: line.unit, itemType: line.itemType, totalQuantity: 0, totalValue: 0, documentCount: 0, bySubType: {} };
+      row.totalQuantity += line.quantity;
+      row.totalValue += line.value;
+      row.documentCount += line.documentCount;
+      row.bySubType[line.subType] ||= { quantity: 0, value: 0 };
+      row.bySubType[line.subType].quantity += line.quantity;
+      row.bySubType[line.subType].value += line.value;
+      byItem.set(line.itemCode, row);
+    }
+    return [...byItem.values()].sort((a, b) => b.totalValue - a.totalValue);
+  })();
+  const goodsGroupByItemCode = new Map(wasteReportLines.map((line) => [line.itemCode, normalizeGoodsGroup(line.goodsGroup)]));
 
   /** Phiếu có ít nhất một mặt hàng khớp mã / tên (không phân biệt dấu), hoặc khớp số phiếu. */
   const flowKeyword = foldSearchText(flowSearch.trim());
@@ -1013,6 +1072,25 @@ export default function InventoryPage() {
     }, 0);
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [costMonth]);
+  // Tải lại bảng "Mã hàng hủy nhiều nhất" khi đổi tháng hoặc sau mỗi lần tải dữ liệu (ghi / sửa / xoá phiếu hủy).
+  useEffect(() => {
+    if (active !== "waste") return;
+    let cancelled = false;
+    const month = wasteReportFilter.month;
+    const range = /^\d{4}-\d{2}$/.test(month)
+      ? `&from=${month}-01&to=${new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0)).toISOString().slice(0, 10)}`
+      : "";
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await fetch(`/api/inventory?view=waste-report${range}`, { headers: getSessionHeaders() });
+        const payload = await response.json() as { rows?: WasteReportLine[] };
+        if (!cancelled) setWasteReportRows(response.ok ? payload.rows || [] : []);
+      } catch {
+        if (!cancelled) setWasteReportRows([]);
+      }
+    }, 0);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [active, wasteReportFilter.month, data.wasteTransactions]);
 
 
   const grpoOrder = stockForm.transactionType === "NHAP_MUA"
@@ -4308,39 +4386,97 @@ export default function InventoryPage() {
 
           <div className="space-y-5 min-w-0">
             <section className="table-panel shadow-sm">
-              <Panel title="Mã hàng hủy nhiều nhất (theo trị giá)" reload={loadData} exportFileName="hang_huy_nhieu_nhat" />
+              <Panel
+                title={`Mã hàng hủy nhiều nhất (theo trị giá)${wasteReportFilter.month ? ` — tháng ${wasteReportFilter.month.slice(5)}/${wasteReportFilter.month.slice(0, 4)}` : ""}`}
+                reload={loadData}
+                exportFileName={`hang_huy_nhieu_nhat${wasteReportFilter.month ? `_${wasteReportFilter.month}` : ""}`}
+              />
+              <div className="px-5 pb-4 grid grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6 gap-3">
+                <Input label="Tháng">
+                  <input type="month" className="control" value={wasteReportFilter.month} onChange={(e) => setWasteReportFilter({ ...wasteReportFilter, month: e.target.value })} />
+                </Input>
+                <Input label="Loại hủy">
+                  <select className="control" value={wasteReportFilter.subType} onChange={(e) => setWasteReportFilter({ ...wasteReportFilter, subType: e.target.value })}>
+                    <option value="ALL">Tất cả loại hủy</option>
+                    <option value="HET_HAN_SU_DUNG">Hết hạn sử dụng</option>
+                    <option value="KHONG_DAM_BAO_CHAT_LUONG">Không đảm bảo chất lượng</option>
+                    <option value="KHONG_PHAN_LOAI">Chưa phân loại</option>
+                  </select>
+                </Input>
+                <Input label="Nhà hàng">
+                  <select className="control" value={wasteReportFilter.branch} onChange={(e) => setWasteReportFilter({ ...wasteReportFilter, branch: e.target.value })}>
+                    <option value="ALL">Tất cả nhà hàng</option>
+                    {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
+                  </select>
+                </Input>
+                <Input label="Loại hàng">
+                  <select className="control" value={wasteReportFilter.itemType} onChange={(e) => setWasteReportFilter({ ...wasteReportFilter, itemType: e.target.value })}>
+                    <option value="ALL">Tất cả loại</option>
+                    <option value="RAW_MATERIAL">Nguyên liệu thô</option>
+                    <option value="SEMI_FINISHED">Bán thành phẩm</option>
+                    <option value="FINISHED">Thành phẩm</option>
+                    <option value="PACKAGING">Bao bì</option>
+                  </select>
+                </Input>
+                <Input label="Nhóm hàng hóa">
+                  <select className="control" value={wasteReportFilter.goodsGroup} onChange={(e) => setWasteReportFilter({ ...wasteReportFilter, goodsGroup: e.target.value })}>
+                    <option value="ALL">Tất cả nhóm</option>
+                    <option value="MISSING">Chưa có nhóm</option>
+                    {wasteGoodsGroups.map(([key, name]) => <option key={key} value={key}>{name}</option>)}
+                  </select>
+                </Input>
+                <Input label="Tìm mã / tên">
+                  <input className="control" placeholder="Mã hoặc tên hàng..." value={wasteReportFilter.search} onChange={(e) => setWasteReportFilter({ ...wasteReportFilter, search: e.target.value })} />
+                </Input>
+              </div>
+              {wasteReportRows === null && <p className="px-5 pb-3 text-xs text-slate-500">Đang tải...</p>}
               <Table
                 headers={[
                   { label: "Mặt hàng" },
                   { label: "Loại" },
+                  { label: "Nhóm hàng hóa" },
                   { label: "SL hủy", align: "right" },
                   { label: "Hết hạn sử dụng", align: "right" },
                   { label: "Không đảm bảo chất lượng", align: "right" },
+                  { label: "Chưa phân loại", align: "right" },
+                  { label: "Số phiếu", align: "right" },
                   { label: "Trị giá hủy", align: "right" },
                 ]}
-                footer={data.wasteReport.length === 0 ? null : (
+                footer={filteredWasteReport.length === 0 ? null : (
                   <tr>
                     <Cell>CỘNG</Cell>
-                    <Cell>{data.wasteReport.length} mặt hàng</Cell>
+                    <Cell>{filteredWasteReport.length} mặt hàng</Cell>
                     {/* SL hủy mỗi mặt hàng một ĐVT nên không cộng được — để trống còn hơn ra
                         một con số vô nghĩa. */}
+                    <Cell>{""}</Cell>
                     <Cell right>{""}</Cell>
                     <Cell right>{""}</Cell>
                     <Cell right>{""}</Cell>
-                    <Cell right><b className="text-rose-600">{money(sumRoundedByRow(data.wasteReport, (row) => row.totalValue))} đ</b></Cell>
+                    <Cell right>{""}</Cell>
+                    <Cell right>{""}</Cell>
+                    <Cell right><b className="text-rose-600">{money(sumRoundedByRow(filteredWasteReport, (row) => row.totalValue))} đ</b></Cell>
                   </tr>
                 )}
               >
-                {data.wasteReport.map((row) => (
-                  <tr key={row.itemCode} className="border-t border-slate-100">
-                    <Cell><b><CopyableText value={row.itemCode} /></b><small>{row.itemName}</small></Cell>
-                    <Cell>{row.itemType}</Cell>
-                    <Cell right><b>{qty(row.totalQuantity)}</b> {row.unit}</Cell>
-                    <Cell right>{row.bySubType.HET_HAN_SU_DUNG ? `${qty(row.bySubType.HET_HAN_SU_DUNG.quantity)} ${row.unit}` : "-"}</Cell>
-                    <Cell right>{row.bySubType.KHONG_DAM_BAO_CHAT_LUONG ? `${qty(row.bySubType.KHONG_DAM_BAO_CHAT_LUONG.quantity)} ${row.unit}` : "-"}</Cell>
-                    <Cell right><b className="text-rose-600">{money(row.totalValue)} đ</b></Cell>
-                  </tr>
-                ))}
+                {wasteReportRows !== null && filteredWasteReport.length === 0 && (
+                  <tr><td colSpan={9} className="cell text-center text-slate-400">Không có hàng hủy khớp bộ lọc.</td></tr>
+                )}
+                {filteredWasteReport.map((row) => {
+                  const bySubType = (code: string) => (row.bySubType[code] ? `${qty(row.bySubType[code].quantity)} ${row.unit}` : "-");
+                  return (
+                    <tr key={row.itemCode} className="border-t border-slate-100">
+                      <Cell><b><CopyableText value={row.itemCode} /></b><small>{row.itemName}</small></Cell>
+                      <Cell>{row.itemType}</Cell>
+                      <Cell>{goodsGroupByItemCode.get(row.itemCode) || <span className="text-slate-400">-</span>}</Cell>
+                      <Cell right><b>{qty(row.totalQuantity)}</b> {row.unit}</Cell>
+                      <Cell right>{bySubType("HET_HAN_SU_DUNG")}</Cell>
+                      <Cell right>{bySubType("KHONG_DAM_BAO_CHAT_LUONG")}</Cell>
+                      <Cell right>{bySubType("KHONG_PHAN_LOAI")}</Cell>
+                      <Cell right>{row.documentCount}</Cell>
+                      <Cell right><b className="text-rose-600">{money(row.totalValue)} đ</b></Cell>
+                    </tr>
+                  );
+                })}
               </Table>
             </section>
 
@@ -4359,11 +4495,44 @@ export default function InventoryPage() {
                     {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
                   </select>
                 </Input>
+                <Input label="Loại hủy">
+                  <select className="control" value={wasteSubTypeFilter} onChange={(e) => setWasteSubTypeFilter(e.target.value)}>
+                    <option value="ALL">Tất cả loại hủy</option>
+                    <option value="HET_HAN_SU_DUNG">Hết hạn sử dụng</option>
+                    <option value="KHONG_DAM_BAO_CHAT_LUONG">Không đảm bảo chất lượng</option>
+                    <option value="NONE">Chưa phân loại</option>
+                  </select>
+                </Input>
               </div>
+              {canEditWaste && selectedVisibleWasteIds.length > 0 && (
+                <div className="mx-5 mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm">
+                  <b className="text-blue-800">Đã chọn {selectedVisibleWasteIds.length} phiếu</b>
+                  <span className="text-blue-800">— cập nhật loại hủy thành</span>
+                  <select className="control !w-auto !mt-0" value={bulkWasteSubType} onChange={(e) => setBulkWasteSubType(e.target.value)}>
+                    <option value="HET_HAN_SU_DUNG">Hết hạn sử dụng</option>
+                    <option value="KHONG_DAM_BAO_CHAT_LUONG">Không đảm bảo chất lượng</option>
+                    <option value="">Chưa phân loại</option>
+                  </select>
+                  <button type="button" className="primary-button !min-h-9" onClick={() => void bulkSetWasteSubType()}>Cập nhật</button>
+                  <button type="button" className="text-xs font-bold text-slate-600 hover:underline" onClick={() => setSelectedWasteIds([])}>Bỏ chọn</button>
+                </div>
+              )}
               <Table
-                headers={[{ label: "Chứng từ" }, { label: "Loại hủy" }, { label: "Nhà hàng / Kho" }, { label: "Mặt hàng" }, { label: "Trị giá", align: "right" }, { label: "Thao tác", align: "right" }]}
+                headers={[
+                  ...(canEditWaste ? [{
+                    label: (
+                      <input
+                        type="checkbox"
+                        aria-label="Chọn tất cả phiếu đang hiện"
+                        checked={allWasteSelected}
+                        onChange={() => setSelectedWasteIds(allWasteSelected ? [] : wasteTransactions.map((row) => row.id))}
+                      />
+                    ),
+                  }] : []),
+                  { label: "Chứng từ" }, { label: "Loại hủy" }, { label: "Nhà hàng / Kho" }, { label: "Mặt hàng" }, { label: "Trị giá", align: "right" }, { label: "Thao tác", align: "right" }]}
                 footer={wasteTransactions.length === 0 ? null : (
                   <tr>
+                    {canEditWaste && <Cell>{""}</Cell>}
                     <Cell>CỘNG</Cell>
                     <Cell>{wasteTransactions.length} phiếu</Cell>
                     <Cell>{""}</Cell>
@@ -4374,9 +4543,14 @@ export default function InventoryPage() {
                 )}
               >
                 {wasteTransactions.map((row) => (
-                  <tr key={row.id} className="border-t border-slate-100">
+                  <tr key={row.id} className={`border-t border-slate-100 ${selectedWasteIds.includes(row.id) ? "bg-blue-50/60" : ""}`}>
+                    {canEditWaste && (
+                      <Cell>
+                        <input type="checkbox" aria-label={`Chọn ${row.code}`} checked={selectedWasteIds.includes(row.id)} onChange={() => toggleWasteSelection(row.id)} />
+                      </Cell>
+                    )}
                     <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}</small></Cell>
-                    <Cell><span className="status bg-rose-50 text-rose-700">{wasteSubTypeLabel(row.subType)}</span></Cell>
+                    <Cell><span className={`status ${row.subType ? "bg-rose-50 text-rose-700" : "bg-slate-100 text-slate-600"}`}>{wasteSubTypeLabel(row.subType)}</span></Cell>
                     <Cell>{storeLabel(row.branchCode)}<small>{row.warehouseCode}</small></Cell>
                     <Cell>{row.lines.map((line) => `${line.item.name}: ${qty(line.quantity)} ${line.item.unit}`).join(", ")}</Cell>
                     <Cell right><b>{money(row.lines.reduce((sum, line) => sum + line.totalCost, 0))} đ</b></Cell>
@@ -4490,7 +4664,7 @@ function Table({
   footer,
   tableClassName = "",
 }: {
-  headers: { label: string; align?: "left" | "right" }[];
+  headers: { label: React.ReactNode; align?: "left" | "right" }[];
   children: React.ReactNode;
   /** Dòng CỘNG cuối bảng (khách yêu cầu 21/09/2026) — truyền các `<Cell>` đúng số cột. */
   footer?: React.ReactNode;

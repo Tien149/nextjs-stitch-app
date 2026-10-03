@@ -580,6 +580,35 @@ export async function GET(request: Request) {
       return NextResponse.json(await loadMissingRecipeReport(prisma as unknown as TxClient, { month, branchCode }));
     }
 
+    /**
+     * "Mã hàng hủy nhiều nhất" theo khoảng thời gian (khách yêu cầu 03/10/2026): gom theo mặt hàng ×
+     * loại hủy × nhà hàng; màn hình lọc tiếp loại hủy / nhà hàng / loại hàng / nhóm hàng hóa.
+     * Ngày theo giờ Việt Nam (from/to là YYYY-MM-DD, bỏ trống = không chặn đầu đó).
+     */
+    if (searchParams.get("view") === "waste-report") {
+      const vnStart = (day: string | null, shiftDays = 0) => {
+        if (!day || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+        return new Date(Date.parse(`${day}T00:00:00Z`) + shiftDays * 86_400_000 - 7 * 3_600_000);
+      };
+      const from = vnStart(searchParams.get("from"));
+      const toExclusive = vnStart(searchParams.get("to"), 1);
+      const rows = await prisma.$queryRaw<Array<{ itemCode: string; itemName: string; unit: string; itemType: string; goodsGroup: string | null; subType: string; branchCode: string; quantity: number; value: number; documentCount: number }>>(Prisma.sql`
+        SELECT i."code" AS "itemCode", i."name" AS "itemName", i."unit", i."itemType", i."goodsGroup",
+               COALESCE(t."subType", 'KHONG_PHAN_LOAI') AS "subType", UPPER(t."branchCode") AS "branchCode",
+               SUM(l."quantity")::float8 AS quantity, SUM(l."totalCost")::float8 AS value, COUNT(DISTINCT t."id")::int AS "documentCount"
+        FROM "InventoryTransactionLine" l
+        JOIN "InventoryTransaction" t ON t."id" = l."transactionId"
+        JOIN "InventoryItem" i ON i."id" = l."itemId"
+        WHERE t."deletedAt" IS NULL AND t."transactionType" = 'XUAT_HUY'
+          ${branchCode === "ALL" ? Prisma.empty : Prisma.sql`AND t."branchCode" = ${branchCode}`}
+          ${scopedWarehouseCodes ? Prisma.sql`AND UPPER(t."warehouseCode") IN (${Prisma.join(scopedWarehouseCodes)})` : Prisma.empty}
+          ${from ? Prisma.sql`AND t."transactionDate" >= ${from}` : Prisma.empty}
+          ${toExclusive ? Prisma.sql`AND t."transactionDate" < ${toExclusive}` : Prisma.empty}
+        GROUP BY 1, 2, 3, 4, 5, 6, 7
+      `);
+      return NextResponse.json({ rows });
+    }
+
     // Sheet giá vốn & giá thành THEO THÁNG (03/10/2026): mỗi phiên bản áp dụng trong tháng một dòng.
     if (searchParams.get("view") === "cost-summary") {
       const month = cleanText(searchParams.get("month"));
@@ -970,7 +999,7 @@ export async function POST(request: Request) {
     const auth = requireMenuAction(
       request,
       menuHref,
-      ["APPROVE_STOCKTAKE", "RETURN_STOCKTAKE", "REOPEN_STOCKTAKE"].includes(action) ? "approve" : action === "REVERT_PRODUCTION" ? "edit" : "create",
+      ["APPROVE_STOCKTAKE", "RETURN_STOCKTAKE", "REOPEN_STOCKTAKE"].includes(action) ? "approve" : ["REVERT_PRODUCTION", "BULK_SET_WASTE_SUBTYPE"].includes(action) ? "edit" : "create",
     );
     if (!auth.ok) return auth.response;
 
@@ -1934,6 +1963,38 @@ export async function POST(request: Request) {
         metadata: { toBranchCode, warehouseCode, toWarehouseCode, lineCount: inputLines.length },
       });
       return NextResponse.json({ request: created }, { status: 201 });
+    }
+
+    /**
+     * Cập nhật LOẠI HỦY cho nhiều phiếu hủy một lúc (khách yêu cầu 03/10/2026). Loại hủy chỉ là
+     * nhãn báo cáo (subType), không đụng tồn kho / giá vốn; phiếu thuộc kỳ đã khoá thì bỏ qua.
+     */
+    if (action === "BULK_SET_WASTE_SUBTYPE") {
+      const ids = Array.isArray(body.ids) ? (body.ids as unknown[]).map((id) => cleanText(id)).filter(Boolean) : [];
+      if (ids.length === 0) businessError("Chưa chọn phiếu hủy nào");
+      const subType = normalizeWasteSubType(body.subType);
+      if (subType && !isWasteSubType(subType)) businessError(`Loại hủy [${subType}] không hợp lệ`);
+      const documents = await prisma.inventoryTransaction.findMany({
+        where: { id: { in: ids }, transactionType: "XUAT_HUY", deletedAt: null },
+        select: { id: true, code: true, branchCode: true, warehouseCode: true, transactionDate: true },
+      });
+      const locked: string[] = [];
+      const updatable: string[] = [];
+      for (const document of documents) {
+        assertBranchAccess(auth.session, document.branchCode);
+        assertWarehouseAccess(auth.session, document.warehouseCode);
+        if (await isPeriodLocked(document.transactionDate, document.branchCode)) locked.push(document.code);
+        else updatable.push(document.id);
+      }
+      const result = updatable.length > 0
+        ? await prisma.inventoryTransaction.updateMany({ where: { id: { in: updatable } }, data: { subType } })
+        : { count: 0 };
+      await writeAuditLog({
+        session: auth.session, module: menuHref, action: "BULK_SET_WASTE_SUBTYPE",
+        entityType: "InventoryTransaction", entityId: updatable.join(",").slice(0, 190), entityCode: `${result.count} phiếu hủy`,
+        metadata: { subType, updated: result.count, locked, missing: ids.length - documents.length },
+      });
+      return NextResponse.json({ updated: result.count, locked, missing: ids.length - documents.length });
     }
 
     // Bên chuyển sửa phiếu chưa duyệt / bị trả lại rồi gửi lại (về Chờ duyệt).
