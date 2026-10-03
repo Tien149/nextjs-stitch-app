@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
+import { movementTypeLabel } from "@/lib/inventory-movement-labels";
 import { canPerformMenuAction, canOpenPath, SESSION_KEY, filterModuleTabs } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import CopyableText from "@/components/CopyableText";
@@ -161,6 +162,8 @@ export default function InventoryPage() {
   const [flowBranch, setFlowBranch] = useState("ALL");
   /** Lọc theo NCC / đối tác của phiếu. "NONE" = chỉ những phiếu chưa khai đối tác. */
   const [flowPartner, setFlowPartner] = useState("ALL");
+  /** Lọc theo kho của dòng (điều chuyển: kho đi ở màn Xuất, kho nhận ở màn Nhập) — khách yêu cầu 03/10/2026. */
+  const [flowWarehouse, setFlowWarehouse] = useState("ALL");
   // Ô tìm mã / tên hàng (hoặc số phiếu) của hai màn Nhập kho / Xuất kho.
   const [flowSearch, setFlowSearch] = useState("");
   // Bộ lọc danh sách phiếu điều chuyển — khoảng ngày dùng chung flowRange (tải lại từ máy chủ).
@@ -568,11 +571,15 @@ export default function InventoryPage() {
   const transactionMatchesSearch = (transaction: Transaction, keyword: string) => !keyword
     || foldSearchText(transaction.code).includes(keyword)
     || transaction.lines.some((line) => foldSearchText(line.item.code).includes(keyword) || foldSearchText(line.item.name).includes(keyword));
+  /** Kho chọn được ở ô lọc: kho của nhà hàng đang lọc (hoặc mọi kho khi xem tất cả nhà hàng). */
+  const flowWarehouseOptions = warehouseOptions.filter((warehouse) => flowBranch === "ALL" || warehouse.branch === flowBranch || !warehouse.branch);
+  const matchesFlowWarehouse = (row: { warehouseCode: string }) =>
+    flowWarehouse === "ALL" || (row.warehouseCode || "").toUpperCase() === flowWarehouse.toUpperCase();
   const inboundRows = flowRows("IN").filter((row) =>
-    (flowBranch === "ALL" || row.branchCode === flowBranch) && (inboundType === "ALL" || row.displayType === inboundType) && matchesFlowPartner(row)
+    (flowBranch === "ALL" || row.branchCode === flowBranch) && matchesFlowWarehouse(row) && (inboundType === "ALL" || row.displayType === inboundType) && matchesFlowPartner(row)
     && transactionMatchesSearch(row.transaction, flowKeyword));
   const outboundRows = flowRows("OUT").filter((row) =>
-    (flowBranch === "ALL" || row.branchCode === flowBranch) && (outboundType === "ALL" || row.displayType === outboundType) && matchesFlowPartner(row)
+    (flowBranch === "ALL" || row.branchCode === flowBranch) && matchesFlowWarehouse(row) && (outboundType === "ALL" || row.displayType === outboundType) && matchesFlowPartner(row)
     && transactionMatchesSearch(row.transaction, flowKeyword));
   /**
    * Ô chọn NCC chỉ liệt kê đối tác CÓ trên phiếu của màn hình đang xem (đã lọc nhà hàng/loại),
@@ -580,7 +587,7 @@ export default function InventoryPage() {
    */
   const flowPartnerOptions = (() => {
     const scope = flowRows(active === "inbound" ? "IN" : "OUT").filter((row) =>
-      (flowBranch === "ALL" || row.branchCode === flowBranch)
+      (flowBranch === "ALL" || row.branchCode === flowBranch) && matchesFlowWarehouse(row)
       && (active === "inbound" ? inboundType === "ALL" || row.displayType === inboundType : outboundType === "ALL" || row.displayType === outboundType));
     const codes = new Set<string>();
     let hasBlank = false;
@@ -2225,7 +2232,7 @@ export default function InventoryPage() {
                 )}
               </div>
             )}
-            <div className="px-5 pb-4 grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
+            <div className="px-5 pb-4 grid sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7 gap-3">
               <Input label="Tìm mã / tên hàng">
                 <input className="control" placeholder="Mã, tên hàng hoặc số phiếu..." value={flowSearch} onChange={(e) => setFlowSearch(e.target.value)} />
               </Input>
@@ -2236,9 +2243,17 @@ export default function InventoryPage() {
                 <input type="date" className="control" value={flowRange.to} onChange={(e) => setFlowRange({ ...flowRange, to: e.target.value })} />
               </Input>
               <Input label="Nhà hàng">
-                <select className="control" value={flowBranch} onChange={(e) => setFlowBranch(e.target.value)}>
+                <select className="control" value={flowBranch} onChange={(e) => { setFlowBranch(e.target.value); setFlowWarehouse("ALL"); }}>
                   <option value="ALL">Tất cả nhà hàng</option>
                   {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
+                </select>
+              </Input>
+              <Input label="Kho">
+                <select className="control" value={flowWarehouse} onChange={(e) => setFlowWarehouse(e.target.value)}>
+                  <option value="ALL">Tất cả kho</option>
+                  {flowWarehouseOptions.map((warehouse) => (
+                    <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}{flowBranch === "ALL" && warehouse.branch ? ` · ${storeLabel(warehouse.branch)}` : ""}</option>
+                  ))}
                 </select>
               </Input>
               <Input label={active === "inbound" ? "Loại nhập" : "Loại xuất"}>
@@ -2334,6 +2349,18 @@ export default function InventoryPage() {
                     )}
                   </Cell>
                   <Cell right>
+                    <div className="flex items-center justify-end gap-1.5">
+                    {/* In Phiếu nhập kho (khách yêu cầu 03/10/2026) — điều chuyển in ở kho nhận. */}
+                    {active === "inbound" && (
+                      <button
+                        type="button"
+                        onClick={() => window.open(`/inventory/${row.transaction.id}/print`, "_blank")}
+                        className="px-2.5 py-1 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 rounded-lg text-xs font-bold transition-colors"
+                        title="In phiếu nhập kho"
+                      >
+                        In
+                      </button>
+                    )}
                     {/* Điều chuyển góp một dòng cho mỗi màn hình; sửa/xoá nó ở đúng tab Điều chuyển. */}
                     {row.transaction.transactionType === "DIEU_CHUYEN" ? (
                       <span className="text-xs text-slate-400">Ở tab Điều chuyển</span>
@@ -2348,6 +2375,7 @@ export default function InventoryPage() {
                         deleteDisabledReason={transactionLockReason(row.transaction)}
                       />
                     )}
+                    </div>
                   </Cell>
                 </tr>
                 );
@@ -4011,25 +4039,6 @@ function roundUnitCost(value: number): number {
 /** Bỏ dấu + chữ thường để ô tìm gõ "tra dao" vẫn ra "Trà Đào". */
 function foldSearchText(value: string): string {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d").replace(/Đ/g, "D").toLowerCase();
-}
-
-function movementTypeLabel(type: string): string {
-  const map: Record<string, string> = {
-    NHAP_MUA: "Nhập mua",
-    NHAP_KHAC: "Nhập khác",
-    NHAP_CHE_BIEN: "Nhập chế biến",
-    NHAP_KIEM_KE: "Nhập điều chỉnh kiểm kê",
-    NHAP_DIEU_CHUYEN: "Nhập điều chuyển",
-    XUAT_BAN: "Xuất bán",
-    XUAT_HUY: "Xuất hủy",
-    XUAT_TEST_MON: "Xuất test món",
-    XUAT_KHAC: "Xuất khác",
-    XUAT_CHE_BIEN: "Xuất chế biến",
-    XUAT_KIEM_KE: "Xuất điều chỉnh kiểm kê",
-    XUAT_DIEU_CHUYEN: "Xuất điều chuyển",
-    DIEU_CHUYEN: "Điều chuyển kho",
-  };
-  return map[type] || type;
 }
 
 function wasteSubTypeLabel(subType: string | null): string {

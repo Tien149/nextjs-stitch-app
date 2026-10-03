@@ -575,6 +575,37 @@ export async function GET(request: Request) {
       return NextResponse.json(await loadMissingRecipeReport(prisma as unknown as TxClient, { month, branchCode }));
     }
 
+    // Một phiếu kho đủ dòng hàng + tên NCC / tên kho — cho trang in Phiếu nhập kho (/inventory/[id]/print).
+    if (searchParams.get("view") === "document") {
+      const id = cleanText(searchParams.get("id"));
+      const transaction = id
+        ? await prisma.inventoryTransaction.findFirst({
+          where: { id, deletedAt: null },
+          include: { lines: { include: { item: { select: { code: true, name: true, unit: true } } } } },
+        })
+        : null;
+      if (!transaction) businessError("Không tìm thấy phiếu kho");
+      const document = transaction!;
+      const branches = [document.branchCode, document.toBranchCode].filter(Boolean).map((code) => String(code).toUpperCase());
+      const allowedBranches = auth.session.allowedBranches || [];
+      const branchAllowed = allowedBranches.includes("ALL") || branches.some((code) => allowedBranches.includes(code));
+      if (!branchAllowed || !(inScope(document.warehouseCode) || inScope(document.toWarehouseCode))) {
+        return NextResponse.json({ error: "Không có quyền xem phiếu kho này" }, { status: 403 });
+      }
+      const warehouseCodes = [document.warehouseCode, document.toWarehouseCode].filter((code): code is string => Boolean(code));
+      const [warehouses, partner] = await Promise.all([
+        prisma.masterDataItem.findMany({ where: { type: "WAREHOUSE", code: { in: warehouseCodes } }, select: { code: true, name: true } }),
+        document.partnerCode
+          ? prisma.masterDataItem.findFirst({ where: { type: "PARTNER", code: document.partnerCode }, select: { code: true, name: true } })
+          : null,
+      ]);
+      return NextResponse.json({
+        transaction: document,
+        partnerName: partner?.name || document.partnerCode || null,
+        warehouseNames: Object.fromEntries(warehouses.map((warehouse) => [warehouse.code, warehouse.name])),
+      });
+    }
+
     /**
      * Khoảng ngày của danh sách phiếu trên hai màn Nhập kho / Xuất kho. Trước đây chỉ lấy 100
      * chứng từ mới nhất theo createdAt, nên rã nguyên liệu cả tháng xong là phiếu xuất bán của
