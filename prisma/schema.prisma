@@ -1018,6 +1018,10 @@ model PurchaseRequestTemplate {
   branchCode     String?
   /// Bộ phận mặc định điền sẵn khi đặt theo mẫu (bếp, bar...); người đặt vẫn đổi được.
   departmentCode String?
+  /// Ngày áp dụng / ngày kết thúc của mẫu (khách yêu cầu 03/10/2026) — để trống là không chặn
+  /// đầu đó; ngoài khoảng này mẫu không dùng để đặt hàng được. Mốc 00:00 giờ VN.
+  effectiveFrom  DateTime?
+  effectiveTo    DateTime?
   status         String   @default("ACTIVE")
   note           String?
   createdBy      String?

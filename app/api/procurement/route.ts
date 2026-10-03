@@ -21,6 +21,8 @@ import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { parseVatRate } from "@/lib/inventory-vat";
 import { buildPriceImport, type PriceImportItem } from "@/lib/supplier-price-list";
 import { findPriceDeviations, loadActivePrices, loadPriceLists, savePriceList } from "@/lib/supplier-price-list-db";
+import { buildTemplateImport, templateDayToDate, templateWindow, templateWindowStatus, type TemplateImportItem } from "@/lib/purchase-template";
+import { vnDay } from "@/lib/recipe-validity";
 
 const menuHref = "/procurement";
 
@@ -168,6 +170,16 @@ async function assertTemplateItems(itemIds: string[]) {
     if (item.status !== "ACTIVE") businessError(`Mặt hàng ${item.code} đang ngưng hoạt động, không đưa vào mẫu mua hàng.`);
     if (item.itemType === "FINISHED") businessError(`Mặt hàng ${item.name} là Thành phẩm (FINISHED), không đưa vào mẫu mua hàng.`);
   }
+}
+
+/** Ngày áp dụng / kết thúc của mẫu từ body ("" = để trống); kiểm kết thúc không trước áp dụng. */
+function templateEffectiveDates(body: Record<string, unknown>) {
+  const effectiveFrom = templateDayToDate(cleanText(body.effectiveFrom));
+  const effectiveTo = templateDayToDate(cleanText(body.effectiveTo));
+  if (cleanText(body.effectiveFrom) && !effectiveFrom) businessError("Ngày áp dụng không hợp lệ");
+  if (cleanText(body.effectiveTo) && !effectiveTo) businessError("Ngày kết thúc không hợp lệ");
+  if (effectiveFrom && effectiveTo && effectiveTo < effectiveFrom) businessError("Ngày kết thúc phải sau Ngày áp dụng");
+  return { effectiveFrom, effectiveTo };
 }
 
 /** Mã mẫu yêu cầu mua hàng: MAU-0001, max + 1 (đếm cả bản ghi trong thùng rác). */
@@ -607,6 +619,70 @@ export async function POST(request: Request) {
       return NextResponse.json({ committed: true, groups: summary, codes: saved.map((row) => row.code), errors: [], errorCount: 0 });
     }
 
+    // Import mẫu đặt hàng từ Excel (khách yêu cầu 03/10/2026): commit=false chỉ xem trước.
+    if (action === "IMPORT_TEMPLATES") {
+      const rows = Array.isArray(body.rows) ? (body.rows as Array<Record<string, unknown>>) : [];
+      if (rows.length === 0) businessError("File không có dòng dữ liệu");
+      if (rows.length > 20000) businessError("File quá lớn (tối đa 20.000 dòng)");
+      const [items, branches, departments, templates] = await Promise.all([
+        prisma.inventoryItem.findMany({ select: { id: true, code: true, name: true, unit: true, status: true, itemType: true, unitConversions: { where: { deletedAt: null }, select: { unitCode: true } } } }),
+        prisma.masterDataItem.findMany({ where: { type: "BRANCH" }, select: { code: true } }),
+        prisma.masterDataItem.findMany({ where: { type: "DEPARTMENT" }, select: { code: true } }),
+        prisma.purchaseRequestTemplate.findMany({ select: { id: true, code: true, name: true, branchCode: true } }),
+      ]);
+      const result = buildTemplateImport(rows, {
+        items: new Map(items.map((item) => [item.code.toUpperCase(), item as TemplateImportItem])),
+        branches: new Set(branches.map((row) => row.code.toUpperCase())),
+        departments: new Set(departments.map((row) => row.code.toUpperCase())),
+        templates: new Map(templates.map((row) => [row.code.toUpperCase(), row.name])),
+      });
+      const fold = (value: string) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+      // Mẫu mới trùng tên + cửa hàng với mẫu đang có thì ghi đè mẫu đó, không đẻ mẫu trùng.
+      const resolved = result.groups.map((group) => {
+        const existing = group.code
+          ? templates.find((row) => row.code.toUpperCase() === group.code)
+          : templates.find((row) => fold(row.name) === fold(group.name) && (row.branchCode || null) === group.branchCode);
+        return { group, existing: existing || null };
+      });
+      for (const { group, existing } of resolved) {
+        try {
+          if (existing) assertTemplateBranchAccess(auth.session, existing.branchCode);
+          assertTemplateBranchAccess(auth.session, group.branchCode);
+        } catch (error) {
+          result.errors.push({ row: group.lines[0]?.row || 0, message: error instanceof Error ? error.message.replace(/^BUSINESS:/, "") : String(error) });
+        }
+      }
+      const summary = resolved.map(({ group, existing }) => ({ code: existing?.code || null, name: group.name, branchCode: group.branchCode, departmentCode: group.departmentCode, from: group.from, to: group.to, lineCount: group.lines.length }));
+      if (!body.commit || result.errors.length > 0) {
+        return NextResponse.json({ committed: false, groups: summary, errors: result.errors.sort((a, b) => a.row - b.row).slice(0, 500), errorCount: result.errors.length });
+      }
+      const codes: string[] = [];
+      for (const { group, existing } of resolved) {
+        const data = {
+          name: group.name,
+          branchCode: group.branchCode,
+          departmentCode: group.departmentCode,
+          effectiveFrom: templateDayToDate(group.from),
+          effectiveTo: templateDayToDate(group.to),
+        };
+        const lineData = group.lines.map((line, index) => ({ itemId: line.itemId, unitCode: line.unitCode, sortOrder: index, note: line.note }));
+        if (existing) {
+          await prisma.$transaction(async (tx) => {
+            await tx.purchaseRequestTemplateLine.deleteMany({ where: { templateId: existing.id } });
+            await tx.purchaseRequestTemplate.update({ where: { id: existing.id }, data: { ...data, lines: { create: lineData } } });
+          });
+          codes.push(existing.code);
+        } else {
+          const created = await prisma.purchaseRequestTemplate.create({
+            data: { ...data, code: await generatedTemplateCode(), createdBy: auth.session.name, lines: { create: lineData } },
+          });
+          codes.push(created.code);
+        }
+      }
+      await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "IMPORT_TEMPLATES", entityType: "PurchaseRequestTemplate", entityId: "", entityCode: codes.join(", ").slice(0, 180), branchCode: "ALL", metadata: { templates: codes.length, rows: rows.length } });
+      return NextResponse.json({ committed: true, groups: summary, codes, errors: [], errorCount: 0 });
+    }
+
     if (action === "CREATE_TEMPLATE") {
       const name = cleanText(body.name);
       const rawLines = Array.isArray(body.lines) ? (body.lines as Array<{ itemId?: unknown; unitCode?: unknown; note?: unknown }>) : [];
@@ -623,6 +699,7 @@ export async function POST(request: Request) {
           name,
           branchCode,
           departmentCode: cleanText(body.departmentCode) || null,
+          ...templateEffectiveDates(body),
           note: cleanText(body.note) || null,
           createdBy: auth.session.name,
           lines: { create: lines.map((line, index) => ({ itemId: line.itemId, unitCode: line.unitCode, sortOrder: index, note: line.note })) },
@@ -645,6 +722,14 @@ export async function POST(request: Request) {
       });
       if (!template) businessError("Không tìm thấy mẫu yêu cầu mua hàng");
       if (template.status !== "ACTIVE") businessError(`Mẫu ${template.name} đang ngưng sử dụng`);
+      // Ngày áp dụng / kết thúc của mẫu tính theo ngày đặt (hôm nay, giờ VN).
+      const windowStatus = templateWindowStatus(template, vnDay(new Date()));
+      if (windowStatus !== "ACTIVE") {
+        const window = templateWindow(template);
+        businessError(windowStatus === "UPCOMING"
+          ? `Mẫu ${template.name} áp dụng từ ${window.from?.split("-").reverse().join("/")} — chưa dùng để đặt hàng được.`
+          : `Mẫu ${template.name} đã kết thúc ngày ${window.to?.split("-").reverse().join("/")} — chọn mẫu khác hoặc nhờ quản lý gia hạn.`);
+      }
       if (template.branchCode && template.branchCode !== branchCode) {
         businessError(`Mẫu ${template.name} chỉ dùng cho cửa hàng ${template.branchCode}`);
       }
@@ -915,6 +1000,7 @@ export async function PATCH(request: Request) {
             name,
             branchCode,
             ...(body.departmentCode !== undefined ? { departmentCode: cleanText(body.departmentCode) || null } : {}),
+            ...(body.effectiveFrom !== undefined || body.effectiveTo !== undefined ? templateEffectiveDates(body) : {}),
             ...(body.status !== undefined ? { status: cleanText(body.status) || "ACTIVE" } : {}),
             ...(body.note !== undefined ? { note: cleanText(body.note) || null } : {}),
           },
