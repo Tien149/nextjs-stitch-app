@@ -1995,7 +1995,7 @@ export default function InventoryPage() {
                     ) : isMisassignedRevenueGroup(item.revenueGroup) && item.revenueGroup ? (
                       <span className="text-rose-700 font-bold">{revenueGroupIssueLabel(item.revenueGroup)}</span>
                     ) : (
-                      data.revenueGroups.find((group) => group.code === item.revenueGroup)?.name || "-"
+                      (itemRevenueOptions.find((group) => group.code === item.revenueGroup) || data.revenueGroups.find((group) => group.code === item.revenueGroup))?.name || "-"
                     )}
                   </Cell>
                   <Cell>{item.unit}</Cell>

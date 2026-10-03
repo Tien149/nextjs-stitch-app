@@ -176,30 +176,49 @@ export async function loadRevenueCategoryIndex(client: CategoryLookupClient): Pr
   };
 }
 
+export type ItemRevenueOption = { code: string; name: string; kind: RevenueKind };
+
 /**
- * Quy cột "Nhóm doanh thu" của file danh mục mặt hàng về mã danh mục — dùng chung bước xem trước
- * và bước ghi. Nhận mã (REV_FOOD), tên danh mục, từ khoá khai tay, chữ "Đồ ăn / Đồ uống / Phụ thu"
- * và "Khăn lạnh"; chỉ chấp nhận nhóm món (isItemRevenueGroup) — 03/10/2026.
+ * Các nhóm doanh thu chọn được cho MẶT HÀNG: danh mục nhóm món đang hoạt động, loại món nào chưa
+ * có danh mục thì lấy nhóm dự phòng y như P&L (REVENUE_PNL_GROUP_FALLBACKS). VPS của khách đã xoá
+ * REV_FOOD / REV_DRINK (06/08/2026) nên trước đây ô chọn chỉ còn SVC / thuế / phụ thu — 03/10/2026.
+ */
+export async function loadItemRevenueOptions(client: CategoryLookupClient): Promise<ItemRevenueOption[]> {
+  const categories = await client.masterDataItem.findMany({
+    where: { type: "REVENUE_EXPENSE_CATEGORY", status: "ACTIVE", deletedAt: null },
+    select: { code: true, name: true, group: true },
+    orderBy: { code: "asc" },
+  });
+  const options: ItemRevenueOption[] = categories
+    .filter((category) => isItemRevenueGroup(category))
+    .map((category) => ({ code: category.code, name: category.name, kind: revenueKindFromText(`${category.code} ${category.name}`) as RevenueKind }));
+  const order: RevenueKind[] = ["FOOD", "DRINK", "SERVICE"];
+  for (const kind of order) {
+    const fallback = REVENUE_PNL_GROUP_FALLBACKS[kind];
+    if (!options.some((option) => option.kind === kind) && !options.some((option) => option.code === fallback.code)) {
+      options.push({ ...fallback, kind });
+    }
+  }
+  return options.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind) || a.code.localeCompare(b.code));
+}
+
+/**
+ * Quy cột "Nhóm doanh thu" của file danh mục mặt hàng về mã nhóm — dùng chung bước xem trước và
+ * bước ghi. Nhận mã, tên, từ khoá khai tay, chữ "Đồ ăn / Đồ uống / Phụ thu" và "Khăn lạnh"; chỉ
+ * ra nhóm trong loadItemRevenueOptions (03/10/2026).
  */
 export async function loadItemRevenueGroupResolver(client: CategoryLookupClient) {
-  const [index, categories] = await Promise.all([
-    loadRevenueCategoryIndex(client),
-    client.masterDataItem.findMany({
-      where: { type: "REVENUE_EXPENSE_CATEGORY", status: "ACTIVE", deletedAt: null },
-      select: { code: true, name: true, group: true },
-    }),
-  ]);
-  const byCode = new Map(categories.map((category) => [category.code.toUpperCase(), category]));
+  const [index, options] = await Promise.all([loadRevenueCategoryIndex(client), loadItemRevenueOptions(client)]);
+  const byCode = new Map(options.map((option) => [option.code.toUpperCase(), option]));
   return (value: unknown): { code: string | null; error?: string } => {
     const text = cleanRevenueSourceInput(value);
     if (!text) return { code: null };
-    const code = index.toCode(text) || (isSurchargeItemText(text) ? index.toCode("Phụ thu") : "");
-    if (!code) return { code: null, error: `Nhóm doanh thu [${text}] không nhận ra — ghi mã (REV_FOOD, REV_DRINK...) hoặc chữ Đồ ăn / Đồ uống / Phụ thu` };
-    const category = byCode.get(code.toUpperCase());
-    if (!category || !isItemRevenueGroup(category)) {
-      return { code: null, error: `Nhóm doanh thu [${text}] (${category?.name || code}) không phải nhóm món — chọn Bếp (đồ ăn), Bar (đồ uống) hoặc Phụ thu` };
-    }
-    return { code: category.code };
+    const direct = byCode.get(text.toUpperCase()) || byCode.get(index.toCode(text).toUpperCase());
+    if (direct) return { code: direct.code };
+    const kind = revenueKindFromText(text) || (isSurchargeItemText(text) ? "SERVICE" : null);
+    const byKind = kind ? options.find((option) => option.kind === kind) : null;
+    if (byKind) return { code: byKind.code };
+    return { code: null, error: `Nhóm doanh thu [${text}] không phải nhóm món — ghi Đồ ăn / Đồ uống / Phụ thu hoặc mã ${options.map((option) => option.code).join(", ")}` };
   };
 }
 

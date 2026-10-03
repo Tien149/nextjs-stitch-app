@@ -27,8 +27,8 @@ import {
 import { scopePayloadByTab } from "@/lib/tab-scope";
 import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 import { nextStockDocCode, nextStocktakeCode } from "@/lib/inventory-stock";
-import { isRevenueGroupCategory, normalizeRevenueExpenseGroup } from "@/lib/voucher-rules";
-import { isItemRevenueGroup, loadNonInventoryRevenueGroups, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
+import { isRevenueGroupCategory } from "@/lib/voucher-rules";
+import { loadItemRevenueOptions, loadNonInventoryRevenueGroups, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
 import { normalizeGoodsGroup } from "@/lib/goods-group";
 import { safeConversionRate } from "@/lib/unit-conversion";
 import { explosionPostingDate } from "@/lib/revenue-date";
@@ -149,18 +149,14 @@ async function resolveItemRevenueGroup(value: unknown, currentCode?: string | nu
   const code = cleanText(value).toUpperCase();
   if (!code) return null;
   if (code === (currentCode || "").toUpperCase()) return currentCode || null;
-  const category = await prisma.masterDataItem.findFirst({
-    where: { type: "REVENUE_EXPENSE_CATEGORY", code, status: "ACTIVE" },
-  });
-  if (!category) businessError(`Nhóm doanh thu [${code}] không tồn tại hoặc đã ngưng hoạt động.`);
-  if (!isRevenueGroupCategory(category?.group)) {
-    businessError(`Danh mục ${category?.name} là ${normalizeRevenueExpenseGroup(category?.group) === "PAYMENT" ? "danh mục Chi" : "loại thu khác, không phải nhóm doanh thu"}. Khai lại ở Cài đặt > Thu/Chi với nhóm "Thu: Nhóm doanh thu (bán hàng)" rồi gán.`);
+  // Chỉ nhận nhóm món Bếp / Bar / Phụ thu — danh mục đang hoạt động hoặc nhóm dự phòng của P&L
+  // khi khách chưa / không còn danh mục cho loại món đó (03/10/2026).
+  const options = await loadItemRevenueOptions(prisma as unknown as CategoryLookupClient);
+  const option = options.find((candidate) => candidate.code.toUpperCase() === code);
+  if (!option) {
+    businessError(`[${code}] không phải nhóm doanh thu của món — chọn ${options.map((candidate) => candidate.name).join(" / ")}.`);
   }
-  // SVC / thuế / điều chỉnh POS / "Doanh thu nhà hàng" không phải nhóm của món (03/10/2026).
-  if (category && !isItemRevenueGroup(category)) {
-    businessError(`${category.name} không phải nhóm doanh thu của món — chọn Doanh thu Bếp (đồ ăn), Doanh thu Bar (đồ uống) hoặc Phụ thu.`);
-  }
-  return category?.code || null;
+  return option?.code || null;
 }
 
 /** Dòng định mức khi sửa BOM: báo lỗi rõ ràng thay vì lặng lẽ loại bỏ. */
@@ -931,8 +927,9 @@ export async function GET(request: Request) {
     // Ô chọn của mặt hàng chỉ nhận nhóm doanh thu; loại thu quỹ trả riêng để màn hình gọi đúng
     // tên mã đang bị gán sai thay vì hiện trơ mã "(ngoài danh mục)".
     const revenueGroups = receiptCategoryList.filter((category) => isRevenueGroupCategory(category.group));
-    /** Nhóm doanh thu chọn được cho mặt hàng — chỉ nhóm món Bếp / Bar / Phụ thu (isItemRevenueGroup). */
-    const itemRevenueGroups = revenueGroups.filter((category) => isItemRevenueGroup(category));
+    /** Nhóm doanh thu chọn được cho mặt hàng — chỉ nhóm món Bếp / Bar / Phụ thu (loadItemRevenueOptions). */
+    const itemRevenueGroups = (await loadItemRevenueOptions(prisma as unknown as CategoryLookupClient))
+      .map((option) => ({ id: option.code, code: option.code, name: option.name, group: "REVENUE_SOURCE" }));
     const receiptCategories = receiptCategoryList.filter((category) => !isRevenueGroupCategory(category.group));
 
     return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, balances, transactions, flowTransactions, flowTruncated, transferTransactions, transferRequests, transferDestinations, wasteTransactions, partners, flowRange: { from: isoDay(flowFrom), to: isoDay(flowTo) }, recipes: recipesWithCost, warehouses, warehouseBranches, stocktakes, stockSummary, stockMovements, itemGroups, revenueGroups, itemRevenueGroups, receiptCategories, costSummary, wasteReport, pendingSales }));
