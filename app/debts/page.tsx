@@ -63,6 +63,10 @@ type LedgerRow = {
 type LedgerDetail = {
   partnerCode: string;
   partnerName: string;
+  /** CUSTOMER / SUPPLIER / BOTH... — quyết định tiêu đề Phải thu / Phải trả của file đối chiếu. */
+  partnerType?: string | null;
+  partnerTaxCode?: string | null;
+  partnerAddress?: string | null;
   balance: number;
   /** Số dư dồn của mọi phát sinh trước ngày bắt đầu khoảng chọn (0 khi không chọn). */
   openingBalance: number;
@@ -85,6 +89,18 @@ const externalSourceLabels: Record<string, string> = {
   VOUCHER: "Phát sinh từ phiếu thu/chi, hãy chỉnh tại màn hình Chứng từ",
   PURCHASE_ORDER: "Phát sinh từ đơn mua hàng, hãy chỉnh tại màn hình Mua hàng",
 };
+
+/** Tên nguồn phát sinh trên sổ chi tiết và file đối chiếu gửi đối tác. */
+const ledgerSourceLabels: Record<string, string> = {
+  OPENING_BALANCE: "Số dư đầu kỳ",
+  DEPOSIT: "Tiền cọc",
+  BANK_STATEMENT: "Sao kê ngân hàng",
+  VOUCHER: "Phiếu thu/chi",
+  PURCHASE_ORDER: "Mua hàng",
+  RECEIVABLE: "Công nợ phải thu",
+  PAYABLE: "Công nợ phải trả",
+};
+const ledgerSourceLabel = (source: string) => ledgerSourceLabels[source] || source;
 
 const emptyDebtForm = {
   documentDate: new Date().toISOString().slice(0, 10),
@@ -173,6 +189,18 @@ const emptyCreateLine = (key: number): CreateLine => ({ key, pnlItemCode: "", pn
 const isReceivableBalance = (balance: number) => balance < 0;
 const isPayableBalance = (balance: number) => balance > 0;
 
+/**
+ * Chiều của sổ đối chiếu gửi đối tác (khách chốt 03/10/2026): khách hàng → CÔNG NỢ PHẢI THU,
+ * nhà cung cấp → PHẢI TRẢ; đối tác vừa mua vừa bán (BOTH) ưu tiên PHẢI TRẢ. Loại khác (nhân viên,
+ * đối tác khác) theo số dư: đang phải thu thì Phải thu, còn lại Phải trả.
+ */
+function statementSide(partnerType: string | null | undefined, balance: number): "RECEIVABLE" | "PAYABLE" {
+  const type = (partnerType || "").toUpperCase();
+  if (type === "CUSTOMER") return "RECEIVABLE";
+  if (type === "SUPPLIER" || type === "BOTH") return "PAYABLE";
+  return isReceivableBalance(balance) ? "RECEIVABLE" : "PAYABLE";
+}
+
 function debtBalanceLabel(balance: number) {
   if (isReceivableBalance(balance)) return "Phải thu";
   if (isPayableBalance(balance)) return "Phải trả";
@@ -183,6 +211,10 @@ export default function DebtsPage() {
   const router = useRouter();
   const [rows, setRows] = useState<DebtRow[]>([]);
   const [ledger, setLedger] = useState<LedgerDetail | null>(null);
+  /** Tab "Chi tiết công nợ đối tác" tách khỏi bảng tổng hợp để xuất file đối chiếu từng đối tác. */
+  const [view, setView] = useState<"summary" | "detail">("summary");
+  const [branchInfo, setBranchInfo] = useState<Array<{ code: string; name: string; address?: string | null }>>([]);
+  const [brandName, setBrandName] = useState("");
   const [user, setUser] = useState<DemoSession | null>(null);
   const [loading, setLoading] = useState(true);
   const [debtType, setDebtType] = useState<"ALL" | "RECEIVABLE" | "PAYABLE">("ALL");
@@ -354,6 +386,13 @@ export default function DebtsPage() {
       setBranchScope(resolveInitialBranchScope(session));
       setLoading(false);
     }, 0);
+    // Tên + địa chỉ nhà hàng cho đầu file đối chiếu công nợ.
+    void fetch("/api/master-data?type=BRANCH")
+      .then((response) => (response.ok ? response.json() : []))
+      .then((data) => setBranchInfo(Array.isArray(data) ? data : []));
+    void fetch("/api/branding")
+      .then((response) => (response.ok ? response.json() : {}))
+      .then((data: { name?: string }) => setBrandName(data.name || ""));
   }, [router]);
 
   const rangeQuery = `${dateRange.fromDate ? `&fromDate=${dateRange.fromDate}` : ""}${dateRange.toDate ? `&toDate=${dateRange.toDate}` : ""}`;
@@ -510,34 +549,92 @@ export default function DebtsPage() {
    * Dòng công nợ đầu tiên của mỗi phiếu nhiều hạng mục trong sổ, kèm các dòng còn lại — để chèn
    * một dải tiêu đề phiếu ngay phía trên dòng đầu (sổ đã xếp các dòng cùng phiếu liền nhau).
    */
+  /** Sổ chi tiết đọc theo ngày TĂNG dần như bảng đối chiếu (API trả mới nhất trước). */
+  const ledgerRowsAsc = ledger ? [...ledger.rows].reverse() : [];
   const ledgerGroupStarts = (() => {
     const starts = new Map<number, LedgerRow[]>();
-    if (!ledger) return starts;
-    ledger.rows.forEach((row, index) => {
-      if (!row.groupCode || ledger.rows[index - 1]?.groupCode === row.groupCode) return;
-      starts.set(index, ledger.rows.filter((item) => item.groupCode === row.groupCode));
+    ledgerRowsAsc.forEach((row, index) => {
+      if (!row.groupCode || ledgerRowsAsc[index - 1]?.groupCode === row.groupCode) return;
+      starts.set(index, ledgerRowsAsc.filter((item) => item.groupCode === row.groupCode));
     });
     return starts;
   })();
 
   /**
-   * Tách phát sinh thành tăng / giảm theo chiều công nợ của đối tác: đang phải trả thì dòng dương
-   * (ghi thêm phải trả) là tăng; đang phải thu thì dòng âm (ghi thêm phải thu) là tăng. Số dư bằng 0
-   * thì lấy chiều của bên phát sinh nhiều hơn. Đầu kỳ + tăng − giảm = cuối kỳ (theo trị tuyệt đối).
+   * Tách phát sinh thành tăng / giảm theo chiều của sổ đối chiếu (statementSide): sổ phải trả thì
+   * dòng dương (ghi thêm phải trả) là tăng; sổ phải thu thì dòng âm (ghi thêm phải thu) là tăng.
+   * Số dư hiện theo đúng chiều đó (âm = đang nghiêng về bên kia). Đầu kỳ + tăng − giảm = cuối kỳ.
    */
   const ledgerMovement = (() => {
     const rowsInLedger = ledger?.rows || [];
     const positive = rowsInLedger.reduce((sum, row) => sum + Math.max(0, row.amount), 0);
     const negative = rowsInLedger.reduce((sum, row) => sum + Math.max(0, -row.amount), 0);
-    const balance = ledger?.balance || 0;
-    const direction = isReceivableBalance(balance) ? -1 : isPayableBalance(balance) ? 1 : negative > positive ? -1 : 1;
+    // Theo chiều của sổ đối chiếu (loại đối tác), để màn hình và file gửi đối tác cùng một chiều.
+    const side = statementSide(ledger?.partnerType, ledger?.balance || 0);
+    const direction = side === "PAYABLE" ? 1 : -1;
     return {
+      side,
       direction,
       sideLabel: direction > 0 ? "phải trả" : "phải thu",
       increase: direction > 0 ? positive : negative,
       decrease: direction > 0 ? negative : positive,
     };
   })();
+
+  /**
+   * File đối chiếu công nợ gửi từng đối tác (khách yêu cầu 03/10/2026), đúng mẫu: tên + địa chỉ
+   * nhà hàng, tiêu đề CÔNG NỢ PHẢI THU / PHẢI TRẢ, kỳ, bảng STT · Ngày · Nguồn · Mã · Diễn giải ·
+   * Phát sinh tăng · Phát sinh giảm · Số dư sau; thêm dòng đầu kỳ / cộng / cuối kỳ và ô ký xác nhận.
+   */
+  const exportStatement = async () => {
+    if (!ledger) return;
+    const XLSX = await import("xlsx");
+    const branch = branchScope !== "ALL" ? branchInfo.find((item) => item.code === branchScope) : null;
+    const restaurantName = branch?.name || brandName || "";
+    const sideAmount = (value: number) => Math.round(value * ledgerMovement.direction) || 0;
+    const firstDate = ledgerRowsAsc[0]?.date ? new Date(ledgerRowsAsc[0].date).toLocaleDateString("vi-VN") : "";
+    const fromLabel = ledger.fromDate ? dayLabel(ledger.fromDate) : firstDate;
+    const toLabel = ledger.toDate ? dayLabel(ledger.toDate) : new Date().toLocaleDateString("vi-VN");
+    const width = 8;
+    const aoa: Array<Array<string | number>> = [
+      [restaurantName.toUpperCase()],
+      [`Địa chỉ: ${branch?.address || ""}`],
+      [ledgerMovement.side === "PAYABLE" ? "CÔNG NỢ PHẢI TRẢ" : "CÔNG NỢ PHẢI THU"],
+      [`Đối tác: ${ledger.partnerName} (${ledger.partnerCode})${ledger.partnerTaxCode ? ` · MST: ${ledger.partnerTaxCode}` : ""}${ledger.partnerAddress ? ` · ${ledger.partnerAddress}` : ""}`],
+      [`Từ ngày ${fromLabel || "......."} đến ngày ${toLabel}`],
+      ["STT", "Ngày", "Nguồn", "Mã", "Diễn giải", "Phát sinh tăng", "Phát sinh giảm", "Số dư sau"],
+      ["", fromLabel, "", "", "Số dư đầu kỳ", "", "", sideAmount(ledger.openingBalance)],
+      ...ledgerRowsAsc.map((row, index) => {
+        const signed = row.amount * ledgerMovement.direction;
+        return [
+          index + 1,
+          new Date(row.date).toLocaleDateString("vi-VN"),
+          ledgerSourceLabel(row.source),
+          row.code,
+          row.description,
+          signed > 0 ? Math.round(Math.abs(row.amount)) : "",
+          signed < 0 ? Math.round(Math.abs(row.amount)) : "",
+          sideAmount(row.runningBalance || 0),
+        ];
+      }),
+      ["", "", "", "", "Cộng phát sinh", Math.round(ledgerMovement.increase), Math.round(ledgerMovement.decrease), ""],
+      ["", toLabel, "", "", "Số dư cuối kỳ", "", "", sideAmount(ledger.balance)],
+      [],
+      ["", "Xác nhận của đối tác", "", "", "", "Người lập", "", "Kế toán"],
+    ];
+    const sheet = XLSX.utils.aoa_to_sheet(aoa);
+    sheet["!merges"] = [0, 1, 2, 3, 4].map((row) => ({ s: { r: row, c: 0 }, e: { r: row, c: width - 1 } }));
+    sheet["!cols"] = [{ wch: 6 }, { wch: 12 }, { wch: 18 }, { wch: 20 }, { wch: 60 }, { wch: 16 }, { wch: 16 }, { wch: 18 }];
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "Doi chieu cong no");
+    const slug = (ledger.partnerCode || ledger.partnerName).replace(/[^\w-]+/g, "_");
+    XLSX.writeFile(workbook, `doi_chieu_cong_no_${slug}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
+  const openPartnerDetail = (partnerCode: string) => {
+    setView("detail");
+    void loadLedger(partnerCode);
+  };
 
   const searchTerm = normalizeSearch(partnerQuery.trim());
   const rangeActive = Boolean(dateRange.fromDate || dateRange.toDate);
@@ -611,12 +708,32 @@ export default function DebtsPage() {
           </div>
         </StickyFilterBar>
 
+        {/* Chi tiết công nợ từng đối tác đứng ở tab riêng để xuất file đối chiếu gửi đối tác
+            (khách yêu cầu 03/10/2026); bấm một đối tác ở bảng tổng hợp là sang tab này. */}
+        <div className="flex gap-1 border-b border-slate-200" role="tablist" aria-label="Màn công nợ">
+          {([["summary", "Tổng hợp công nợ", "table_view"], ["detail", "Chi tiết công nợ đối tác", "receipt_long"]] as const).map(([id, label, icon]) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={view === id}
+              onClick={() => setView(id)}
+              className={`-mb-px inline-flex items-center gap-1.5 border-b-2 px-4 py-2.5 text-sm font-bold ${view === id ? "border-blue-600 text-blue-700" : "border-transparent text-slate-500 hover:text-slate-700"}`}
+            >
+              <span className="material-symbols-outlined text-[18px]">{icon}</span>
+              {label}
+              {id === "detail" && ledger && <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] text-blue-700">{ledger.partnerName}</span>}
+            </button>
+          ))}
+        </div>
+
+        {view === "summary" && (
         <section className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
           <div className="p-5 border-b border-slate-200 flex items-center justify-between">
             <div>
               <h2 className="font-bold">Bảng công nợ đối tác</h2>
               <p className="text-xs text-slate-500 mt-1">
-                Số dư âm được phân loại là Phải thu, số dư dương là Phải trả. Bấm đối tác để xem ledger.
+                Số dư âm được phân loại là Phải thu, số dư dương là Phải trả. Bấm đối tác để mở tab Chi tiết công nợ đối tác.
                 Sổ ghi gộp: cột CN phải thu / phải trả là số <b>phát sinh</b> (kể cả phần đã gạch), phiếu gạch nợ và thu lại chi hộ đứng ở cột Phiếu thu/chi — chỉ cột Số dư mới là còn nợ.
               </p>
               {rangeActive && (
@@ -722,7 +839,7 @@ export default function DebtsPage() {
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {filteredRows.map((row) => (
-                  <tr key={row.partnerCode} onClick={() => loadLedger(row.partnerCode)} className="hover:bg-slate-50 cursor-pointer">
+                  <tr key={row.partnerCode} onClick={() => openPartnerDetail(row.partnerCode)} className="hover:bg-slate-50 cursor-pointer">
                     <td className="px-4 py-3">
                       <b>{row.partnerName}</b>
                       <p className="text-xs text-slate-500">{row.partnerCode}</p>
@@ -763,12 +880,56 @@ export default function DebtsPage() {
             </table>
           </div>
         </section>
+        )}
 
-        {ledger && (
+        {view === "detail" && (
+          <section className="bg-white border border-slate-200 rounded-xl shadow-sm p-4">
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="w-[340px] text-[11px] font-bold text-slate-600">
+                Đối tác
+                <SearchableSelect
+                  className="mt-1"
+                  value={ledger?.partnerCode || ""}
+                  onChange={(code) => { if (code) void loadLedger(code); }}
+                  placeholder="-- Chọn đối tác để xem chi tiết --"
+                  options={rows.map((row) => ({ value: row.partnerCode, label: `${row.partnerName} (${row.partnerCode})` }))}
+                />
+              </div>
+              <label className="text-[11px] font-bold text-slate-600">
+                Từ ngày
+                <div className="mt-1 w-[150px]">
+                  <DateInput value={dateRange.fromDate} onChange={(value) => setDateRange((current) => ({ ...current, fromDate: value }))} ariaLabel="Chi tiết công nợ từ ngày" className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm font-normal" />
+                </div>
+              </label>
+              <label className="text-[11px] font-bold text-slate-600">
+                Đến ngày
+                <div className="mt-1 w-[150px]">
+                  <DateInput value={dateRange.toDate} onChange={(value) => setDateRange((current) => ({ ...current, toDate: value }))} ariaLabel="Chi tiết công nợ đến ngày" className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm font-normal" />
+                </div>
+              </label>
+              <button
+                type="button"
+                disabled={!ledger}
+                onClick={() => void exportStatement()}
+                className="ml-auto inline-flex h-10 items-center gap-1.5 rounded-lg bg-blue-600 px-4 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-50"
+                title="File Excel theo mẫu đối chiếu: tên nhà hàng, tiêu đề Công nợ phải thu / phải trả, kỳ, phát sinh tăng / giảm, số dư sau"
+              >
+                <span className="material-symbols-outlined text-[18px]">download</span>
+                Xuất file đối chiếu công nợ
+              </button>
+            </div>
+            {!ledger && <p className="mt-4 text-sm text-slate-500">Chọn một đối tác (hoặc bấm đối tác ở tab Tổng hợp công nợ) để xem sổ chi tiết.</p>}
+          </section>
+        )}
+
+        {view === "detail" && ledger && (
           <section className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
             <div className="p-5 border-b border-slate-200 flex items-center justify-between">
               <div>
-                <h2 className="font-bold">Ledger: {ledger.partnerName}</h2>
+                <h2 className="font-bold">
+                  {ledgerMovement.side === "PAYABLE" ? "Công nợ phải trả" : "Công nợ phải thu"}: {ledger.partnerName}
+                  <span className="ml-2 text-xs font-normal text-slate-500">{ledger.partnerCode}</span>
+                </h2>
                 <p className="text-xs text-slate-500 mt-1">
                   {ledger.fromDate || ledger.toDate ? `Số dư đến ${ledger.toDate ? dayLabel(ledger.toDate) : "nay"}: ` : "Số dư hiện tại: "}
                   <b className={isReceivableBalance(ledger.balance) ? "text-blue-700" : isPayableBalance(ledger.balance) ? "text-rose-700" : "text-slate-600"}>
@@ -778,9 +939,9 @@ export default function DebtsPage() {
                 {(ledger.fromDate || ledger.toDate) && (
                   // Ba con số để đối chiếu với bảng kê của đối tác tại một thời điểm: đầu kỳ + phát sinh = cuối kỳ.
                   <p className="mt-1 text-xs text-slate-600">
-                    Đầu kỳ{ledger.fromDate ? ` (trước ${dayLabel(ledger.fromDate)})` : ""}: <b>{money(ledger.openingBalance)} đ</b>
+                    Đầu kỳ{ledger.fromDate ? ` (trước ${dayLabel(ledger.fromDate)})` : ""}: <b>{money(ledger.openingBalance * ledgerMovement.direction)} đ</b>
                     {" · "}Phát sinh trong kỳ ({ledger.rows.length} dòng): tăng <b>{money(ledgerMovement.increase)} đ</b>, giảm <b>{money(ledgerMovement.decrease)} đ</b>
-                    {" · "}Cuối kỳ: <b>{money(ledger.balance)} đ</b>
+                    {" · "}Cuối kỳ: <b>{money(ledger.balance * ledgerMovement.direction)} đ</b>
                   </p>
                 )}
                 {message && (
@@ -789,7 +950,7 @@ export default function DebtsPage() {
               </div>
               <div className="flex items-center gap-2">
                 <ExportExcelButton fileName={`ledger_cong_no_${ledger.partnerCode || ledger.partnerName}`} sheetName="Ledger" targetId="debt-ledger-table" className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50 inline-flex items-center gap-1.5" />
-                <button onClick={closeLedger} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50">Đóng</button>
+                <button onClick={closeLedger} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold hover:bg-slate-50">Bỏ chọn</button>
               </div>
             </div>
             <div id="debt-ledger-table" className="overflow-x-auto max-h-[420px]">
@@ -808,9 +969,20 @@ export default function DebtsPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
+                  {ledger.fromDate && (
+                    // Sổ đọc theo ngày tăng dần: dòng Đầu kỳ đứng trên cùng, cộng dồn xuống dưới.
+                    <tr className="bg-slate-50 font-bold text-slate-700">
+                      <td className="px-4 py-3">{dayLabel(ledger.fromDate)}</td>
+                      <td className="px-4 py-3" colSpan={4}>Số dư đầu kỳ (mọi phát sinh trước {dayLabel(ledger.fromDate)})</td>
+                      <td className="px-4 py-3 text-right">-</td>
+                      <td className="px-4 py-3 text-right">-</td>
+                      <td className="px-4 py-3 text-right tabular-nums">{money(ledger.openingBalance * ledgerMovement.direction)}</td>
+                      <td className="px-4 py-3" />
+                    </tr>
+                  )}
                   {ledger.rows.length === 0 && !ledger.fromDate ? (
                     <tr><td colSpan={9} className="px-4 py-10 text-center text-slate-400">Chưa có phát sinh.</td></tr>
-                  ) : ledger.rows.map((item, index) => {
+                  ) : ledgerRowsAsc.map((item, index) => {
                     const groupRows = ledgerGroupStarts.get(index);
                     const groupTotal = groupRows ? groupRows.reduce((sum, row) => sum + Math.abs(row.amount), 0) : 0;
                     const groupLocked = groupRows ? groupRows.map(debtLockReason).find(Boolean) || null : null;
@@ -841,7 +1013,7 @@ export default function DebtsPage() {
                     )}
                     <tr className="hover:bg-slate-50">
                       <td className="px-4 py-3">{new Date(item.date).toLocaleDateString("vi-VN")}</td>
-                      <td className="px-4 py-3">{item.source}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">{ledgerSourceLabel(item.source)}</td>
                       <td className="px-4 py-3 font-bold"><CopyableText value={item.code} /></td>
                       <td className="px-4 py-3">
                         <p className={`text-xs font-bold ${item.agingBucket === "OVERDUE" ? "text-rose-700" : item.agingBucket === "DUE_7" ? "text-amber-700" : "text-slate-500"}`}>
@@ -866,9 +1038,9 @@ export default function DebtsPage() {
                       <td className={`px-4 py-3 text-right font-bold ${item.amount > 0 ? "text-rose-700" : "text-blue-700"}`}>
                         {item.amount * ledgerMovement.direction < 0 ? `${money(Math.abs(item.amount))} đ` : ""}
                       </td>
-                      <td className={`px-4 py-3 text-right ${isReceivableBalance(item.runningBalance || 0) ? "text-blue-700" : isPayableBalance(item.runningBalance || 0) ? "text-rose-700" : "text-slate-500"}`}>
-                        {money(Math.abs(item.runningBalance || 0))}
-                        <span className="ml-1 text-[10px] font-bold uppercase text-slate-400">{debtBalanceLabel(item.runningBalance || 0)}</span>
+                      {/* Số dư theo chiều của sổ (phải trả / phải thu) như file đối chiếu; âm = đang nghiêng về bên kia. */}
+                      <td className={`px-4 py-3 text-right tabular-nums whitespace-nowrap ${(item.runningBalance || 0) * ledgerMovement.direction < 0 ? "text-amber-700" : "text-slate-700"}`}>
+                        {money((item.runningBalance || 0) * ledgerMovement.direction)}
                       </td>
                       <td className="px-4 py-3 text-right">
                         <RowActions
@@ -888,20 +1060,6 @@ export default function DebtsPage() {
                     </Fragment>
                     );
                   })}
-                  {ledger.fromDate && (
-                    // Ledger xếp mới nhất lên đầu nên dòng Đầu kỳ đứng cuối, đúng chiều cộng dồn đọc từ dưới lên.
-                    <tr className="bg-slate-50 font-bold text-slate-700">
-                      <td className="px-4 py-3">{dayLabel(ledger.fromDate)}</td>
-                      <td className="px-4 py-3" colSpan={4}>Số dư đầu kỳ (mọi phát sinh trước {dayLabel(ledger.fromDate)})</td>
-                      <td className="px-4 py-3 text-right">-</td>
-                      <td className="px-4 py-3 text-right">-</td>
-                      <td className={`px-4 py-3 text-right ${isReceivableBalance(ledger.openingBalance) ? "text-blue-700" : isPayableBalance(ledger.openingBalance) ? "text-rose-700" : "text-slate-500"}`}>
-                        {money(Math.abs(ledger.openingBalance))}
-                        <span className="ml-1 text-[10px] uppercase text-slate-400">{debtBalanceLabel(ledger.openingBalance)}</span>
-                      </td>
-                      <td className="px-4 py-3" />
-                    </tr>
-                  )}
                 </tbody>
               </table>
             </div>

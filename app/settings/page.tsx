@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { isRetailCustomerCode, skipsDebtTracking } from "@/lib/retail-customer";
 import { useRouter } from "next/navigation";
 import { displayRoleName, storeLabel } from "@/lib/branch-labels";
 import { exportRowsToExcel } from "@/lib/export-table-excel";
@@ -1255,7 +1256,7 @@ export default function SettingsPage() {
                             )}
                             {/* Đối tác miễn công nợ: phải thấy ngay trên bảng vì nó đổi số của cả
                                 màn Công nợ, không chỉ của riêng danh mục này. */}
-                            {item.type === "PARTNER" && item.skipDebtTracking && (
+                            {item.type === "PARTNER" && skipsDebtTracking(item) && (
                               <p className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-amber-700">
                                 <span className="material-symbols-outlined text-[13px]">money_off</span>
                                 Không theo dõi công nợ
@@ -2029,12 +2030,18 @@ export default function SettingsPage() {
                 <label className="flex items-start gap-2.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
                   <input
                     type="checkbox"
-                    checked={form.skipDebtTracking}
+                    checked={form.skipDebtTracking || isRetailCustomerCode(form.code)}
+                    disabled={isRetailCustomerCode(form.code)}
                     onChange={(event) => setForm((value) => ({ ...value, skipDebtTracking: event.target.checked }))}
                     className="mt-0.5 h-4 w-4 accent-blue-600"
                   />
                   <span className="text-xs font-bold text-slate-700">
                     Không theo dõi công nợ
+                    {isRetailCustomerCode(form.code) && (
+                      <span className="mt-1 block text-[11px] font-semibold text-amber-700">
+                        Khách hàng mua lẻ luôn không theo dõi công nợ — tiền bán hàng lấy từ doanh thu, doanh thu không sinh công nợ.
+                      </span>
+                    )}
                     <span className="mt-1 block text-[11px] font-medium text-slate-500">
                       Chứng từ thu/chi và dòng sao kê mang đối tác này sẽ không cộng vào bảng Công nợ —
                       dùng cho khách lẻ / khách vãng lai, tiền bán hàng gắn tên cho dễ nhìn chứ không

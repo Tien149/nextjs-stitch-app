@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { skipsDebtTracking } from "@/lib/retail-customer";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma, prismaRaw } from "@/lib/prisma";
 import { assertBranchAccess, periodBounds, requestedBranch } from "@/lib/accounting";
@@ -246,7 +247,7 @@ export async function GET(request: Request) {
      * gợi ý đối tác. Khoản nợ đã ghi nhận hẳn hoi — khoản nợ, công nợ NCC, tiền cọc, số dư đầu
      * kỳ, phiếu gạch nợ — vẫn tính đủ, để cờ này không bao giờ trở thành cái công tắc giấu nợ.
      */
-    const untrackedDebtPartners = new Set(partners.filter((item) => item.skipDebtTracking).map((item) => item.code));
+    const untrackedDebtPartners = new Set(partners.filter(skipsDebtTracking).map((item) => item.code));
     /** Dòng sao kê gợi ý đúng đối tác không theo dõi công nợ cũng là số ảo như trên. */
     const debtBankRows = bankRows.filter((row) => !row.partnerHint || !untrackedDebtPartners.has(row.partnerHint));
     const vouchers = [
@@ -350,6 +351,10 @@ export async function GET(request: Request) {
       return NextResponse.json({
         partnerCode,
         partnerName: partner?.name || partnerCode,
+        // Cho file đối chiếu công nợ gửi đối tác: loại đối tác quyết định tiêu đề Phải thu / Phải trả.
+        partnerType: partner?.partnerType || partner?.group || null,
+        partnerTaxCode: partner?.taxCode || null,
+        partnerAddress: partner?.address || null,
         balance: openingBalance + movementTotal,
         openingBalance,
         movementTotal,
@@ -363,7 +368,7 @@ export async function GET(request: Request) {
     for (const partner of partners) {
       addDebt(rows, partner.code, partner.name, {
         partnerGroup: partner.partnerGroup || "EXTERNAL",
-        skipDebtTracking: partner.skipDebtTracking,
+        skipDebtTracking: skipsDebtTracking(partner),
       });
     }
 
