@@ -16,6 +16,7 @@ import { computeCostingLevels, computeRecipeUnitCosts, lineConversionRate, pickR
 import { writeAuditLog } from "@/lib/audit-log";
 import { executeExplosion, rerunExplosions, type AffectedExplosionRun } from "@/lib/inventory-explosion";
 import { loadMissingRecipeReport } from "@/lib/missing-recipes";
+import { buildMonthlyCostSummary } from "@/lib/recipe-cost-summary";
 import { compactFlowDocument, FLOW_DOCUMENT_LIMIT } from "@/lib/inventory-flow-list";
 import { approveTransferRequest, buildTransferRequestLines, canReceiveTransfer, canSendTransfer, TRANSFER_APPROVED, TRANSFER_PENDING, TRANSFER_RETURNED } from "@/lib/inventory-transfer-request";
 import {
@@ -577,6 +578,26 @@ export async function GET(request: Request) {
       const month = cleanText(searchParams.get("month"));
       if (!/^\d{4}-\d{2}$/.test(month)) businessError("Tháng phải có dạng YYYY-MM");
       return NextResponse.json(await loadMissingRecipeReport(prisma as unknown as TxClient, { month, branchCode }));
+    }
+
+    // Sheet giá vốn & giá thành THEO THÁNG (03/10/2026): mỗi phiên bản áp dụng trong tháng một dòng.
+    if (searchParams.get("view") === "cost-summary") {
+      const month = cleanText(searchParams.get("month"));
+      if (!/^\d{4}-\d{2}$/.test(month)) businessError("Tháng phải có dạng YYYY-MM");
+      const [recipeRows, itemRows, balanceRows] = await Promise.all([
+        prisma.recipe.findMany({ include: { lines: { include: { item: { select: lineItemSelect } } } } }),
+        prisma.inventoryItem.findMany({ select: { code: true, name: true, unit: true, itemType: true } }),
+        prisma.inventoryBalance.findMany({ select: { itemId: true, quantity: true, averageCost: true } }),
+      ]);
+      return NextResponse.json({
+        month,
+        rows: buildMonthlyCostSummary({
+          recipes: recipeRows as unknown as ExplosionRecipe[],
+          items: itemRows,
+          averageCostByItemId: averageCostByItem(balanceRows),
+          month,
+        }),
+      });
     }
 
     // Một phiếu kho đủ dòng hàng + tên NCC / tên kho — cho trang in Phiếu nhập kho (/inventory/[id]/print).

@@ -5,6 +5,7 @@ import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { movementTypeLabel } from "@/lib/inventory-movement-labels";
 import { goodsGroupKey, normalizeGoodsGroup } from "@/lib/goods-group";
+import { recipeValidity, validityInMonth, type RecipeValidity } from "@/lib/recipe-validity";
 import { canPerformMenuAction, canOpenPath, SESSION_KEY, filterModuleTabs } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import CopyableText from "@/components/CopyableText";
@@ -40,7 +41,7 @@ type Transaction = { id: string; code: string; transactionType: string; subType:
   lineSummary?: { count: number; totalCost: number; vatAmount: number; quantity: number; units: string[]; searchText: string };
   lines: Array<{ id: string; inputQuantity: number | null; inputUnitCode: string | null; conversionRate: number; quantity: number; unitCost: number; inputUnitCost: number | null; totalCost: number; vatRate: number | null; vatAmount: number; item: Item }> };
 type Recipe = { id: string; code: string; productCode: string; branchCode?: string | null; productName: string; unit: string; outputConversionRate: number; sellingPrice: number; estimatedCost: number; estimatedUnitCost: number; version: number; effectiveFrom: string; status: string; lines: Array<{ quantity: number; unitCode: string | null; conversionRate: number; wasteRate: number; item: Item; quantityBase?: number; componentUnitCost?: number; lineCost?: number }> };
-type CostSummaryRow = { productCode: string; branchCode: string; productName: string; group: string; stockUnit: string; batchUnit: string; outputConversionRate: number; sellingPrice: number; unitCost: number; costRatio: number | null; version: number };
+type CostSummaryRow = { productCode: string; branchCode: string; productName: string; group: string; stockUnit: string; batchUnit: string; outputConversionRate: number; sellingPrice: number; unitCost: number; costRatio: number | null; version: number; appliedFrom?: string; appliedTo?: string };
 type WasteReportRow = { itemCode: string; itemName: string; unit: string; itemType: string; totalQuantity: number; totalValue: number; documentCount: number; bySubType: Record<string, { quantity: number; value: number }> };
 type PendingSales = {
   total: number;
@@ -85,6 +86,12 @@ const loadTracker = { seq: 0, movementSeq: 0, movementRange: "" };
 function movementRangeQuery(range: { from: string; to: string }) {
   return new URLSearchParams({ reportFrom: range.from, reportTo: range.to }).toString();
 }
+type RecipeView = "cost" | "recipes" | "monthly";
+const RECIPE_VIEWS: Array<{ id: RecipeView; label: string; icon: string }> = [
+  { id: "cost", label: "Giá thành sản phẩm", icon: "price_check" },
+  { id: "recipes", label: "Định lượng", icon: "menu_book" },
+  { id: "monthly", label: "Thông tin định lượng trong tháng", icon: "fact_check" },
+];
 type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; flowTruncated?: boolean; transferRequests?: TransferRequest[]; transferDestinations?: Array<{ code: string; name: string; branch: string | null }>; transferTransactions?: Transaction[]; wasteTransactions?: Transaction[]; warehouseBranches?: Array<{ code: string; branch: string | null }>; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; itemRevenueGroups?: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[] };
 const movementTypes = ["NHAP_MUA", "NHAP_KHAC", "NHAP_CHE_BIEN", "NHAP_KIEM_KE", "XUAT_BAN", "XUAT_HUY", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_CHE_BIEN", "XUAT_KIEM_KE", "DIEU_CHUYEN"];
 /** Loại hiển thị trên hai màn hình Nhập/Xuất. Điều chuyển hiện ở CẢ hai: vế xuất ở kho đi, vế nhập ở kho nhận. */
@@ -220,9 +227,21 @@ export default function InventoryPage() {
   const [itemDeleting, setItemDeleting] = useState(false);
   const [itemSearch, setItemSearch] = useState("");
   const [recipeSearch, setRecipeSearch] = useState("");
+  /** Lọc kiểu Excel theo nguyên liệu: chỉ hiện ĐÚNG dòng nguyên liệu khớp (kèm món của nó) — 03/10/2026. */
+  const [recipeIngredientSearch, setRecipeIngredientSearch] = useState("");
+  /** Tháng áp dụng ("" = mọi phiên bản): phiên bản có hiệu lực ngày nào trong tháng thì hiện. */
+  const [recipeMonth, setRecipeMonth] = useState("");
+  /** Tab nhỏ của tab Định lượng: Giá thành sản phẩm / Định lượng / Thông tin định lượng trong tháng. */
+  const [recipeView, setRecipeView] = useState<RecipeView>("cost");
   // Bộ lọc Sheet tổng hợp giá vốn & giá thành: nhóm hàng (thành phẩm / bán thành phẩm) và cửa hàng.
   const [costGroupFilter, setCostGroupFilter] = useState("ALL");
   const [costStoreFilter, setCostStoreFilter] = useState("ALL");
+  /**
+   * Tháng của sheet giá vốn & giá thành ("" = định lượng đang áp dụng hôm nay). Chọn tháng thì mỗi
+   * phiên bản áp dụng trong tháng một dòng kèm khoảng ngày — đổi giá giữa tháng ra nhiều dòng (03/10/2026).
+   */
+  const [costMonth, setCostMonth] = useState("");
+  const [monthlyCost, setMonthlyCost] = useState<{ month: string; rows: CostSummaryRow[]; error?: string } | null>(null);
   const [itemTypeFilter, setItemTypeFilter] = useState("ALL");
   /** ALL / MISSING (chưa gán) / mã danh mục Thu cụ thể — lọc để gán hàng loạt cho nhanh. */
   const [revenueGroupFilter, setRevenueGroupFilter] = useState("ALL");
@@ -755,23 +774,91 @@ export default function InventoryPage() {
   // Ô tìm của bảng "Chi tiết các phiên bản định lượng": theo mã / tên món, và cả mã / tên
   // nguyên liệu (tra xem món nào đang dùng một nguyên liệu). Không phân biệt dấu, hoa thường.
   const recipeKeyword = foldSearchText(recipeSearch.trim());
-  const filteredRecipeGroups = recipeKeyword
-    ? groupedRecipes.filter(({ recipe }) => [
+  const ingredientKeyword = foldSearchText(recipeIngredientSearch.trim());
+  /** Khoảng hiệu lực từng phiên bản — cùng luật chọn phiên bản lúc rã (lib/recipe-validity.ts). */
+  const recipeValidityById = recipeValidity(data.recipes);
+  const groupValidity = (ids: string[]): RecipeValidity | null => {
+    const ranges = ids.map((id) => recipeValidityById.get(id)).filter((range): range is RecipeValidity => Boolean(range));
+    if (ranges.length === 0) return null;
+    // Các cửa hàng gom chung một dòng có thể có bản kế tiếp khác ngày: lấy ngày kết thúc muộn nhất.
+    return ranges.reduce((acc, range) => ({ from: acc.from < range.from ? acc.from : range.from, to: !acc.to || !range.to ? null : acc.to > range.to ? acc.to : range.to }));
+  };
+  const lineMatchesIngredient = (line: Recipe["lines"][number]) =>
+    !ingredientKeyword || foldSearchText(line.item.code).includes(ingredientKeyword) || foldSearchText(line.item.name).includes(ingredientKeyword);
+  const filteredRecipeGroups = groupedRecipes.filter(({ recipe, ids }) => {
+    if (recipeMonth && !ids.some((id) => validityInMonth(recipeValidityById.get(id), recipeMonth))) return false;
+    if (ingredientKeyword && !recipe.lines.some(lineMatchesIngredient)) return false;
+    if (!recipeKeyword) return true;
+    return [
       recipe.productCode,
       recipe.productName,
       ...recipe.lines.flatMap((line) => [line.item.code, line.item.name]),
-    ].some((value) => foldSearchText(value || "").includes(recipeKeyword)))
-    : groupedRecipes;
+    ].some((value) => foldSearchText(value || "").includes(recipeKeyword));
+  });
+  const recipeFilterActive = Boolean(recipeKeyword || ingredientKeyword || recipeMonth);
+  const dayLabel = (day: string | null | undefined) => (day ? `${day.slice(8, 10)}/${day.slice(5, 7)}/${day.slice(0, 4)}` : "");
+  /**
+   * Xuất Excel bảng phiên bản định lượng PHẲNG: mỗi nguyên liệu một dòng và thông tin món (mã, tên,
+   * cửa hàng, phiên bản, ngày áp dụng, cost / giá bán) LẶP LẠI ở từng dòng để lọc / pivot trong Excel
+   * (khách yêu cầu 03/10/2026 — xuất theo bảng gộp ô thì các dòng sau trống thông tin món).
+   * Theo đúng bộ lọc đang xem, kể cả lọc nguyên liệu.
+   */
+  const exportRecipeVersionsFlat = async () => {
+    const XLSX = await import("xlsx");
+    const rows: Array<Array<string | number>> = [[
+      "Mã món", "Tên món", "Cửa hàng", "Phiên bản", "Áp dụng từ", "Áp dụng đến", "Mẻ (ĐVT)", "1 mẻ = ĐVT tồn",
+      "Mã nguyên liệu", "Tên nguyên liệu", "Định lượng", "ĐVT", "Hao hụt %", "Cost NL", "Cost / mẻ", "Giá bán", "Tỷ lệ cost %",
+    ]];
+    for (const { recipe, branchCodes, versions, ids } of filteredRecipeGroups) {
+      const validity = groupValidity(ids);
+      const head = [
+        recipe.productCode,
+        recipe.productName,
+        branchCodes.length ? branchCodes.map((code) => storeLabel(code)).join(", ") : "Dùng chung",
+        [...versions].sort((a, b) => a - b).map((version) => `V${version}`).join(" / "),
+        dayLabel(validity?.from),
+        validity?.to ? dayLabel(validity.to) : "",
+        recipe.unit,
+        recipe.outputConversionRate,
+      ];
+      const tail = [
+        Math.round(recipe.estimatedCost),
+        recipe.sellingPrice || 0,
+        recipe.sellingPrice > 0 ? Math.round(recipe.estimatedCost / recipe.sellingPrice * 1000) / 10 : "",
+      ];
+      const lines = recipe.lines.filter(lineMatchesIngredient);
+      if (lines.length === 0) rows.push([...head, "", "", "", "", "", "", ...tail]);
+      for (const line of lines) {
+        rows.push([
+          ...head,
+          line.item.code,
+          line.item.name,
+          line.quantity,
+          line.unitCode || line.item.unit,
+          line.wasteRate || 0,
+          line.lineCost !== undefined ? Math.round(line.lineCost) : "",
+          ...tail,
+        ]);
+      }
+    }
+    const sheet = XLSX.utils.aoa_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "Phien ban dinh luong");
+    XLSX.writeFile(workbook, `phien_ban_dinh_luong${recipeMonth ? `_${recipeMonth}` : ""}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
 
   type CostSummaryGroup = { key: string; row: CostSummaryRow; branchCodes: string[]; versions: number[] };
+  const costMonthLoaded = Boolean(costMonth) && monthlyCost?.month === costMonth;
+  const costRows: CostSummaryRow[] = costMonth ? (costMonthLoaded ? monthlyCost!.rows : []) : data.costSummary;
   const groupedCostSummary: CostSummaryGroup[] = (() => {
     const groups = new Map<string, CostSummaryGroup>();
-    for (const row of data.costSummary) {
+    for (const row of costRows) {
       const branchCode = (row.branchCode || "").toUpperCase();
+      const period = row.appliedFrom ? `|${row.appliedFrom}|${row.appliedTo}` : "";
       // Giá thành bằng nhau ở nhiều cửa hàng = một dòng; lệch một đồng là tách ra để thấy ngay.
       const key = branchCode
-        ? `BRANCH|${row.productCode}|${row.unitCost}|${row.sellingPrice}|${row.outputConversionRate}`
-        : `SHARED|${row.productCode}`;
+        ? `BRANCH|${row.productCode}|${row.unitCost}|${row.sellingPrice}|${row.outputConversionRate}${period}`
+        : `SHARED|${row.productCode}${period}`;
       const existing = groups.get(key);
       if (existing) {
         if (branchCode && !existing.branchCodes.includes(branchCode)) existing.branchCodes.push(branchCode);
@@ -912,6 +999,20 @@ export default function InventoryPage() {
   // không nằm sẵn trên trình duyệt.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { if (!loading) window.setTimeout(() => void loadData(), 0); }, [loading, flowRange.from, flowRange.to]);
+  useEffect(() => {
+    if (!/^\d{4}-\d{2}$/.test(costMonth)) return;
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await fetch(`/api/inventory?view=cost-summary&month=${costMonth}`, { headers: getSessionHeaders() });
+        const payload = await response.json() as { rows?: CostSummaryRow[]; error?: string };
+        if (!cancelled) setMonthlyCost({ month: costMonth, rows: payload.rows || [], error: response.ok ? undefined : payload.error || "Không tải được giá thành theo tháng" });
+      } catch {
+        if (!cancelled) setMonthlyCost({ month: costMonth, rows: [], error: "Mất kết nối tới máy chủ khi tải giá thành theo tháng." });
+      }
+    }, 0);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [costMonth]);
 
 
   const grpoOrder = stockForm.transactionType === "NHAP_MUA"
@@ -2946,7 +3047,24 @@ export default function InventoryPage() {
         onConfirm={confirmDeleteTransaction}
       />
 
-      {active === "recipes" && canCreate && (
+      {/* Tab Định lượng chia 3 tab nhỏ (khách yêu cầu 03/10/2026). */}
+      {active === "recipes" && (
+        <div className="mb-5 flex flex-wrap gap-2 border-b border-slate-200">
+          {RECIPE_VIEWS.map((view) => (
+            <button
+              key={view.id}
+              type="button"
+              onClick={() => setRecipeView(view.id)}
+              className={`-mb-px flex items-center gap-1.5 border-b-2 px-4 py-2.5 text-sm font-bold transition-colors ${recipeView === view.id ? "border-blue-600 text-blue-700" : "border-transparent text-slate-500 hover:text-slate-800"}`}
+            >
+              <span className="material-symbols-outlined text-lg">{view.icon}</span>
+              {view.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {active === "recipes" && recipeView === "cost" && canCreate && (
         <section className="bg-white border border-emerald-200 rounded-lg p-5 shadow-sm mb-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
@@ -3031,7 +3149,7 @@ export default function InventoryPage() {
         </section>
       )}
 
-      {active === "recipes" && (
+      {active === "recipes" && recipeView === "recipes" && (
         <div className="grid lg:grid-cols-[380px_1fr] gap-5">
           {(canCreate || recipeEditing) && (
             <form ref={recipeFormRef} onSubmit={(e) => { e.preventDefault(); void saveRecipe(); }} className={`bg-white border rounded-lg p-5 space-y-4 h-fit shadow-sm scroll-mt-4 ${recipeEditing ? "border-amber-300 ring-2 ring-amber-100" : "border-slate-200"}`}>
@@ -3173,80 +3291,33 @@ export default function InventoryPage() {
           )}
           
           <div className="space-y-5 min-w-0">
-            <MissingRecipesPanel
-              sessionKey={SESSION_KEY}
-              branchOptions={[
-                ...(visibleStoreOptions(user).length > 1 ? [{ code: "ALL", label: "Tất cả cửa hàng" }] : []),
-                ...visibleStoreOptions(user).map((option) => ({ code: option.code, label: storeLabel(option.code) })),
-              ]}
-              defaultBranch={visibleStoreOptions(user).length > 1 ? "ALL" : visibleStoreOptions(user)[0]?.code || "ALL"}
-            />
             <section className="table-panel shadow-sm">
-              <Panel title="Sheet tổng hợp — Giá vốn & giá thành theo định lượng đang áp dụng" reload={loadData} exportFileName="gia_von_gia_thanh" />
+              <Panel title="Chi tiết các phiên bản định lượng" reload={loadData} />
               <div className="px-5 pb-4 flex flex-wrap items-end gap-3">
-                <div className="w-52">
-                  <Input label="Nhóm hàng">
-                    <select className="control" value={costGroupFilter} onChange={(e) => setCostGroupFilter(e.target.value)}>
-                      <option value="ALL">Tất cả nhóm</option>
-                      <option value="FINISHED">Thành phẩm (FINISHED)</option>
-                      <option value="SEMI_FINISHED">Bán thành phẩm (SEMI_FINISHED)</option>
-                    </select>
-                  </Input>
-                </div>
-                <div className="w-52">
-                  <Input label="Cửa hàng">
-                    <select className="control" value={costStoreFilter} onChange={(e) => setCostStoreFilter(e.target.value)}>
-                      <option value="ALL">Tất cả cửa hàng</option>
-                      {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
-                    </select>
-                  </Input>
-                </div>
-                {(costGroupFilter !== "ALL" || costStoreFilter !== "ALL") && (
-                  <p className="pb-2 text-xs text-slate-500">
-                    Hiển thị <b>{filteredCostSummary.length}</b> / {groupedCostSummary.length} dòng
-                    {costStoreFilter !== "ALL" && " (gồm bản dùng chung của món chưa có định lượng riêng cho cửa hàng này)"}
-                  </p>
-                )}
-              </div>
-              <Table
-                headers={[
-                  { label: "Nhóm" },
-                  { label: "Mã sản phẩm" },
-                  { label: "Cửa hàng" },
-                  { label: "Tên sản phẩm" },
-                  { label: "ĐVT tồn kho" },
-                  { label: "Giá bán", align: "right" },
-                  { label: "Giá cost", align: "right" },
-                  { label: "% Cost", align: "right" },
-                ]}
-              >
-                {filteredCostSummary.map(({ key, row, branchCodes, versions }) => (
-                  <tr key={key} className="border-t border-slate-100">
-                    <Cell><span className={`status ${row.group === "FINISHED" ? "bg-blue-50 text-blue-700" : "bg-violet-50 text-violet-700"}`}>{row.group}</span></Cell>
-                    <Cell><CopyableText value={row.productCode}><b>{row.productCode}</b></CopyableText><small>{versions.sort((a, b) => a - b).map((version) => `V${version}`).join(" / ")}</small></Cell>
-                    <Cell>{branchScopeCell(branchCodes)}</Cell>
-                    <Cell>{row.productName}</Cell>
-                    <Cell>{row.stockUnit}{row.outputConversionRate !== 1 ? <small>1 {row.batchUnit} = {qty(row.outputConversionRate)} {row.stockUnit}</small> : null}</Cell>
-                    <Cell right>{row.group === "FINISHED" ? `${money(row.sellingPrice)} đ` : "-"}</Cell>
-                    <Cell right><b>{unitPrice(row.unitCost)} đ</b></Cell>
-                    <Cell right>{row.costRatio !== null ? <b className={row.costRatio > 0.4 ? "text-rose-600" : "text-emerald-700"}>{(row.costRatio * 100).toFixed(1)}%</b> : "-"}</Cell>
-                  </tr>
-                ))}
-              </Table>
-            </section>
-
-            <section className="table-panel shadow-sm">
-              <Panel title="Chi tiết các phiên bản định lượng" reload={loadData} exportFileName="phien_ban_dinh_luong" />
-              <div className="px-5 pb-4 flex flex-wrap items-end gap-3">
-                <div className="flex-1 min-w-[240px] max-w-md">
-                  <Input label="Tìm kiếm">
+                <div className="flex-1 min-w-[220px] max-w-sm">
+                  <Input label="Tìm món">
                     <input className="control" placeholder="Gõ mã hoặc tên món, mã nguyên liệu..." value={recipeSearch} onChange={(e) => setRecipeSearch(e.target.value)} />
                   </Input>
                 </div>
-                {recipeKeyword && (
-                  <p className="pb-2 text-xs text-slate-500">
-                    Tìm thấy <b>{filteredRecipeGroups.length}</b> / {groupedRecipes.length} định lượng
-                    <button type="button" className="ml-2 font-bold text-blue-600 hover:underline" onClick={() => setRecipeSearch("")}>Xoá tìm</button>
+                <div className="flex-1 min-w-[220px] max-w-sm">
+                  <Input label="Lọc nguyên liệu (chỉ hiện dòng khớp)">
+                    <input className="control" placeholder="Mã / tên nguyên liệu, BTP..." value={recipeIngredientSearch} onChange={(e) => setRecipeIngredientSearch(e.target.value)} />
+                  </Input>
+                </div>
+                <div className="w-44">
+                  <Input label="Áp dụng trong tháng">
+                    <input type="month" className="control" value={recipeMonth} onChange={(e) => setRecipeMonth(e.target.value)} />
+                  </Input>
+                </div>
+                <button type="button" className="secondary-button !min-h-10" onClick={() => void exportRecipeVersionsFlat()} title="Mỗi nguyên liệu một dòng, thông tin món lặp lại ở từng dòng — theo bộ lọc đang xem">
+                  <span className="material-symbols-outlined text-lg">download</span>Xuất Excel
+                </button>
+                {recipeFilterActive && (
+                  <p className="pb-2 text-xs text-slate-500 w-full">
+                    Hiển thị <b>{filteredRecipeGroups.length}</b> / {groupedRecipes.length} định lượng
+                    {recipeMonth && <> · phiên bản có áp dụng trong tháng {recipeMonth.slice(5)}/{recipeMonth.slice(0, 4)}</>}
+                    {ingredientKeyword && <> · chỉ hiện dòng nguyên liệu khớp “{recipeIngredientSearch.trim()}”</>}
+                    <button type="button" className="ml-2 font-bold text-blue-600 hover:underline" onClick={() => { setRecipeSearch(""); setRecipeIngredientSearch(""); setRecipeMonth(""); }}>Xoá lọc</button>
                   </p>
                 )}
               </div>
@@ -3268,13 +3339,15 @@ export default function InventoryPage() {
                   { label: "Thao tác", align: "right" },
                 ]}
               >
-                {recipeKeyword && filteredRecipeGroups.length === 0 && (
+                {recipeFilterActive && filteredRecipeGroups.length === 0 && (
                   <tr className="border-t border-slate-100">
-                    <td colSpan={13} className="px-4 py-10 text-center text-sm text-slate-400">Không có định lượng nào khớp &quot;{recipeSearch.trim()}&quot;.</td>
+                    <td colSpan={13} className="px-4 py-10 text-center text-sm text-slate-400">Không có định lượng nào khớp bộ lọc.</td>
                   </tr>
                 )}
                 {filteredRecipeGroups.map(({ key, recipe, branchCodes, versions, ids }) => {
-                  const lines = recipe.lines.length > 0 ? recipe.lines : [null];
+                  const visibleLines = recipe.lines.filter(lineMatchesIngredient);
+                  const lines = visibleLines.length > 0 ? visibleLines : [null];
+                  const validity = groupValidity(ids);
                   const span = lines.length;
                   const isEditingThis = Boolean(recipeEditing && ids.every((id) => recipeEditing.ids.includes(id)));
                   const groupCell = "cell align-top bg-white";
@@ -3290,7 +3363,14 @@ export default function InventoryPage() {
                           <td rowSpan={span} className={groupCell}>{branchScopeCell(branchCodes)}</td>
                           <td rowSpan={span} className={`${groupCell} whitespace-nowrap`}>
                             {[...versions].sort((a, b) => a - b).map((version) => `V${version}`).join(" / ")}
-                            <small>Áp dụng {new Date(recipe.effectiveFrom).toLocaleDateString("vi-VN")}{recipe.status === "ACTIVE" ? "" : " · cũ"}</small>
+                            <small>
+                              Áp dụng {new Date(recipe.effectiveFrom).toLocaleDateString("vi-VN")}
+                              {validity?.to ? ` → ${dayLabel(validity.to)}` : validity ? " → nay" : " · bị phiên bản cùng ngày thay"}
+                              {recipe.status === "ACTIVE" ? "" : " · cũ"}
+                            </small>
+                            {ingredientKeyword && visibleLines.length < recipe.lines.length && (
+                              <small className="text-blue-600">{visibleLines.length}/{recipe.lines.length} nguyên liệu khớp</small>
+                            )}
                           </td>
                         </>
                       )}
@@ -3339,6 +3419,100 @@ export default function InventoryPage() {
               </Table>
             </section>
           </div>
+        </div>
+      )}
+
+      {/* Tab nhỏ "Giá thành sản phẩm": sheet giá vốn & giá thành (nút Tính giá ở trên). */}
+      {active === "recipes" && recipeView === "cost" && (
+        <div className="space-y-5">
+            <section className="table-panel shadow-sm">
+              <Panel
+                title={costMonth ? `Sheet tổng hợp — Giá vốn & giá thành tháng ${costMonth.slice(5)}/${costMonth.slice(0, 4)}` : "Sheet tổng hợp — Giá vốn & giá thành theo định lượng đang áp dụng"}
+                reload={loadData}
+                exportFileName={costMonth ? `gia_von_gia_thanh_${costMonth}` : "gia_von_gia_thanh"}
+              />
+              <div className="px-5 pb-4 flex flex-wrap items-end gap-3">
+                <div className="w-48">
+                  <Input label="Tháng">
+                    <input type="month" className="control" value={costMonth} onChange={(e) => setCostMonth(e.target.value)} />
+                  </Input>
+                </div>
+                {costMonth && (
+                  <button type="button" className="pb-2 text-xs font-bold text-blue-600 hover:underline" onClick={() => setCostMonth("")}>Xem đang áp dụng hôm nay</button>
+                )}
+                <div className="w-52">
+                  <Input label="Nhóm hàng">
+                    <select className="control" value={costGroupFilter} onChange={(e) => setCostGroupFilter(e.target.value)}>
+                      <option value="ALL">Tất cả nhóm</option>
+                      <option value="FINISHED">Thành phẩm (FINISHED)</option>
+                      <option value="SEMI_FINISHED">Bán thành phẩm (SEMI_FINISHED)</option>
+                    </select>
+                  </Input>
+                </div>
+                <div className="w-52">
+                  <Input label="Cửa hàng">
+                    <select className="control" value={costStoreFilter} onChange={(e) => setCostStoreFilter(e.target.value)}>
+                      <option value="ALL">Tất cả cửa hàng</option>
+                      {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
+                    </select>
+                  </Input>
+                </div>
+                <p className="w-full text-[11px] text-slate-500 leading-relaxed">
+                  <b>Đổi giá bán / định lượng:</b> sang tab nhỏ <b>Định lượng</b>, bấm nút <b>Sao chép</b> ở phiên bản đang dùng → nhập giá bán mới và
+                  <b> ngày áp dụng mới</b> rồi lưu. Phiên bản cũ vẫn giữ cho các ngày trước; trong tháng đổi mấy lần thì tạo mấy phiên bản. Chọn
+                  <b> Tháng</b> để xem mỗi phiên bản áp dụng trong tháng một dòng, kèm khoảng ngày.
+                </p>
+                {costMonth && !costMonthLoaded && <p className="pb-2 text-xs text-slate-500">Đang tải giá thành tháng {costMonth}...</p>}
+                {costMonthLoaded && monthlyCost?.error && <p className="pb-2 text-xs text-rose-700">{monthlyCost.error}</p>}
+                {(costGroupFilter !== "ALL" || costStoreFilter !== "ALL") && (
+                  <p className="pb-2 text-xs text-slate-500">
+                    Hiển thị <b>{filteredCostSummary.length}</b> / {groupedCostSummary.length} dòng
+                    {costStoreFilter !== "ALL" && " (gồm bản dùng chung của món chưa có định lượng riêng cho cửa hàng này)"}
+                  </p>
+                )}
+              </div>
+              <Table
+                headers={[
+                  { label: "Nhóm" },
+                  { label: "Mã sản phẩm" },
+                  { label: "Cửa hàng" },
+                  ...(costMonth ? [{ label: "Áp dụng" }] : []),
+                  { label: "Tên sản phẩm" },
+                  { label: "ĐVT tồn kho" },
+                  { label: "Giá bán", align: "right" },
+                  { label: "Giá cost", align: "right" },
+                  { label: "% Cost", align: "right" },
+                ]}
+              >
+                {filteredCostSummary.map(({ key, row, branchCodes, versions }) => (
+                  <tr key={key} className="border-t border-slate-100">
+                    <Cell><span className={`status ${row.group === "FINISHED" ? "bg-blue-50 text-blue-700" : "bg-violet-50 text-violet-700"}`}>{row.group}</span></Cell>
+                    <Cell><CopyableText value={row.productCode}><b>{row.productCode}</b></CopyableText><small>{versions.sort((a, b) => a - b).map((version) => `V${version}`).join(" / ")}</small></Cell>
+                    <Cell>{branchScopeCell(branchCodes)}</Cell>
+                    {costMonth && <Cell>{row.appliedFrom ? `${row.appliedFrom.slice(8, 10)}/${row.appliedFrom.slice(5, 7)} – ${(row.appliedTo || "").slice(8, 10)}/${(row.appliedTo || "").slice(5, 7)}` : "-"}</Cell>}
+                    <Cell>{row.productName}</Cell>
+                    <Cell>{row.stockUnit}{row.outputConversionRate !== 1 ? <small>1 {row.batchUnit} = {qty(row.outputConversionRate)} {row.stockUnit}</small> : null}</Cell>
+                    <Cell right>{row.group === "FINISHED" ? `${money(row.sellingPrice)} đ` : "-"}</Cell>
+                    <Cell right><b>{unitPrice(row.unitCost)} đ</b></Cell>
+                    <Cell right>{row.costRatio !== null ? <b className={row.costRatio > 0.4 ? "text-rose-600" : "text-emerald-700"}>{(row.costRatio * 100).toFixed(1)}%</b> : "-"}</Cell>
+                  </tr>
+                ))}
+              </Table>
+            </section>
+        </div>
+      )}
+
+      {/* Tab nhỏ "Thông tin định lượng trong tháng": món / thành phần trong tháng đã đủ định lượng chưa. */}
+      {active === "recipes" && recipeView === "monthly" && (
+        <div className="space-y-5">
+            <MissingRecipesPanel
+              sessionKey={SESSION_KEY}
+              branchOptions={[
+                ...(visibleStoreOptions(user).length > 1 ? [{ code: "ALL", label: "Tất cả cửa hàng" }] : []),
+                ...visibleStoreOptions(user).map((option) => ({ code: option.code, label: storeLabel(option.code) })),
+              ]}
+              defaultBranch={visibleStoreOptions(user).length > 1 ? "ALL" : visibleStoreOptions(user)[0]?.code || "ALL"}
+            />
         </div>
       )}
 
