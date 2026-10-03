@@ -48,6 +48,7 @@
     "test:inventory-flow-list": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-inventory-flow-list.mjs",
     "test:item-revenue-options": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-item-revenue-options.mjs",
     "test:recipe-validity": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-recipe-validity.mjs",
+    "test:stocktake-explanation": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-stocktake-explanation.mjs",
     "test:revenue-sale-hour": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-revenue-sale-hour.mjs",
     "test:inventory-cogs": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-inventory-cogs.mjs",
     "test:inventory-cogs-sync": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-inventory-cogs-sync.mjs",

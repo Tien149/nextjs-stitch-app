@@ -17,6 +17,9 @@ import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 import StocktakeByLocation from "@/components/inventory/StocktakeByLocation";
 import MissingRecipesPanel from "@/components/inventory/MissingRecipesPanel";
 import TransferRequestsPanel, { type TransferRequest } from "@/components/inventory/TransferRequestsPanel";
+import StocktakeDocumentsPanel from "@/components/inventory/StocktakeDocumentsPanel";
+import StocktakeExplanationPanel from "@/components/inventory/StocktakeExplanationPanel";
+import StocktakeResultsPanel from "@/components/inventory/StocktakeResultsPanel";
 import { safeConversionRate } from "@/lib/unit-conversion";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
 import { parseVatRate, VAT_RATE_OPTIONS, vatAmountOf, vatRateLabel } from "@/lib/inventory-vat";
@@ -236,6 +239,7 @@ export default function InventoryPage() {
   const [itemDeleting, setItemDeleting] = useState(false);
   const [itemSearch, setItemSearch] = useState("");
   const [recipeSearch, setRecipeSearch] = useState("");
+  const [approvingStocktake, setApprovingStocktake] = useState<{ stocktake: Stocktake; cutoff: string; original: string; max: string } | null>(null);
   /** Lọc kiểu Excel theo nguyên liệu: chỉ hiện ĐÚNG dòng nguyên liệu khớp (kèm món của nó) — 03/10/2026. */
   const [recipeIngredientSearch, setRecipeIngredientSearch] = useState("");
   /** Tháng áp dụng ("" = mọi phiên bản): phiên bản có hiệu lực ngày nào trong tháng thì hiện. */
@@ -378,6 +382,11 @@ export default function InventoryPage() {
   const canEditItem = user ? canPerformMenuAction(user, href, "edit") : false;
   /** Kế toán: duyệt / trả lại / mở lại phiếu kiểm kê (nhà hàng chỉ Gửi duyệt và sửa). */
   const canApprove = user ? canPerformMenuAction(user, href, "approve") : false;
+  /** Ô Nhà hàng của 3 màn kiểm kê: "Tất cả" chỉ khi người xem có hơn một cửa hàng. */
+  const stocktakeBranchOptions = [
+    ...(visibleStoreOptions(user).length > 1 ? [{ code: "ALL", label: "Tất cả nhà hàng" }] : []),
+    ...visibleStoreOptions(user).map((option) => ({ code: option.code, label: storeLabel(option.code) })),
+  ];
   /** Gán loại hủy hàng loạt cần quyền sửa (máy chủ chặn BULK_SET_WASTE_SUBTYPE bằng "edit"). */
   const canEditWaste = canEditItem;
   const importTarget = active === "stock"
@@ -1260,9 +1269,20 @@ export default function InventoryPage() {
     setStocktakeRows(buildStocktakeRows(stocktakeForm.warehouseCode, data.balances, data.items));
   };
 
+  /** Kế toán chọn giờ chốt lúc duyệt / duyệt lại phiếu kiểm cả kho (khách yêu cầu 03/10/2026). */
   const approveStocktake = (stocktake: Stocktake) => {
-    if (!window.confirm(`Duyệt phiếu kiểm kê ${stocktake.code}? Hệ thống sinh phiếu nhập/xuất điều chỉnh tồn kho theo phần chênh lệch.`)) return;
-    void send({ action: "APPROVE_STOCKTAKE", stocktakeId: stocktake.id }, `Đã duyệt phiếu kiểm kê ${stocktake.code} và điều chỉnh tồn kho.`);
+    const local = new Date(new Date(stocktake.stocktakeDate).getTime() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+    const max = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+    setApprovingStocktake({ stocktake, cutoff: local, original: local, max });
+  };
+  const confirmApproveStocktake = async () => {
+    if (!approvingStocktake) return;
+    const { stocktake, cutoff, original } = approvingStocktake;
+    setApprovingStocktake(null);
+    await send(
+      { action: "APPROVE_STOCKTAKE", stocktakeId: stocktake.id, ...(cutoff !== original ? { cutoffAt: new Date(cutoff).toISOString() } : {}) },
+      `Đã duyệt phiếu kiểm kê ${stocktake.code} (chốt ${new Date(cutoff).toLocaleString("vi-VN")}) và điều chỉnh tồn kho.`,
+    );
   };
 
   const returnStocktake = (stocktake: Stocktake) => {
@@ -1725,7 +1745,7 @@ export default function InventoryPage() {
       </StickyFilterBar>
       {message && <p ref={messageRef} className="mb-4 px-4 py-3 rounded-lg border border-blue-100 bg-blue-50 text-sm text-blue-700">{message}</p>}
 
-      {canCreate && (
+      {canCreate && !["stocktake-explanation", "stocktake-result"].includes(active) && (
         <div className={`mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3 ${canOpenImports ? "border-blue-100 bg-blue-50" : "border-amber-200 bg-amber-50"}`}>
           <p className={`text-sm ${canOpenImports ? "text-blue-800" : "text-amber-800"}`}>
             Có thể nhập đầy đủ dữ liệu của màn hình này bằng file Excel theo mẫu chuẩn.
@@ -3982,6 +4002,62 @@ export default function InventoryPage() {
               ))}
             </Table>
           </section>
+        </div>
+      )}
+
+      {/* Tab Kiểm kê: danh sách MỌI phiếu (lọc nhà hàng / kho / trạng thái / tháng) đứng đầu. */}
+      {active === "stocktake" && (
+        <StocktakeDocumentsPanel
+          sessionKey={SESSION_KEY}
+          branchOptions={stocktakeBranchOptions}
+          warehouses={data.warehouses}
+          storeLabel={storeLabel}
+        />
+      )}
+
+      {/* Hai màn tách khỏi Kiểm kê (khách yêu cầu 03/10/2026). */}
+      {active === "stocktake-explanation" && (
+        <StocktakeExplanationPanel
+          sessionKey={SESSION_KEY}
+          branchOptions={stocktakeBranchOptions}
+          warehouses={data.warehouses}
+          storeLabel={storeLabel}
+          canCreate={canCreate}
+          canApprove={canApprove}
+        />
+      )}
+      {active === "stocktake-result" && (
+        <StocktakeResultsPanel
+          sessionKey={SESSION_KEY}
+          branchOptions={stocktakeBranchOptions}
+          warehouses={data.warehouses}
+          storeLabel={storeLabel}
+        />
+      )}
+
+      {approvingStocktake && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl w-full max-w-md shadow-xl p-5 space-y-4">
+            <h3 className="font-bold text-slate-900">Duyệt phiếu kiểm kê {approvingStocktake.stocktake.code}</h3>
+            <label className="block text-xs font-bold text-slate-500">
+              Giờ chốt kiểm kê
+              <input
+                type="datetime-local"
+                className="control mt-1"
+                value={approvingStocktake.cutoff}
+                max={approvingStocktake.max}
+                onChange={(e) => setApprovingStocktake({ ...approvingStocktake, cutoff: e.target.value })}
+              />
+            </label>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Mặc định là giờ trên phiếu. Đổi giờ chốt thì hệ thống tính lại <b>sổ sách tại giờ đó</b> cho từng dòng (tồn hiện tại − phát sinh sau giờ chốt)
+              rồi sinh phiếu nhập/xuất điều chỉnh theo phần chênh, ghi đúng ngày giờ chốt.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setApprovingStocktake(null)} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50">Huỷ</button>
+              <button type="button" onClick={() => void confirmApproveStocktake()} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700">Duyệt</button>
+            </div>
+          </div>
         </div>
       )}
 

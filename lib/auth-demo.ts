@@ -411,6 +411,10 @@ export const moduleTabs: Record<string, Array<{ id: string; label: string }>> = 
     { id: "production", label: "Chế biến" },
     { id: "waste", label: "Hủy hàng" },
     { id: "stocktake", label: "Kiểm kê" },
+    // Hai màn tách riêng khỏi Kiểm kê (khách yêu cầu 03/10/2026) — quyền đi theo tab Kiểm kê
+    // (MODULE_TAB_FAMILIES), vai trò cũ chỉ tick "Kiểm kê" vẫn thấy đủ.
+    { id: "stocktake-explanation", label: "Giải trình kiểm kê" },
+    { id: "stocktake-result", label: "Kết quả kiểm kê" },
   ],
   "/assets/operations": [
     { id: "depreciation", label: "Khấu hao" },
@@ -430,6 +434,7 @@ export const moduleTabIcons: Record<string, string> = {
   requests: "assignment", quotes: "compare_arrows", orders: "local_shipping", templates: "playlist_add_check",
   stock: "inventory", transactions: "swap_horiz", inbound: "download", outbound: "upload", transfer: "sync_alt", items: "category", recipes: "menu_book",
   production: "blender", stocktake: "fact_check", waste: "delete_sweep",
+  "stocktake-explanation": "rate_review", "stocktake-result": "assignment_turned_in",
   depreciation: "trending_down", maintenance: "build", damage: "report_problem", disposal: "delete_sweep",
 };
 
@@ -479,6 +484,11 @@ export function canOpenPath(session: DemoSession | string | null | undefined, pa
  * Các tab của một trang mà người dùng được xem. Trả về null nghĩa là không giới hạn.
  * Chỉ giới hạn khi vai trò được gán menu riêng lẻ theo tab.
  */
+/** Tab con đi theo quyền của tab gốc: ai được tab gốc thì được luôn các tab này. */
+const MODULE_TAB_FAMILIES: Record<string, Record<string, string[]>> = {
+  "/inventory": { stocktake: ["stocktake-explanation", "stocktake-result"] },
+};
+
 export function allowedMenuTabs(session: DemoSession | null | undefined, path: string) {
   if (!session || session.role === "Admin") return null;
   const list = session.menuAccess;
@@ -491,7 +501,9 @@ export function allowedMenuTabs(session: DemoSession | null | undefined, path: s
     .filter((entry) => menuBasePath(entry) === base)
     .map((entry) => new URLSearchParams(entry.split("?")[1] || "").get("tab"))
     .filter((tab): tab is string => Boolean(tab));
-  return tabs.length > 0 ? [...new Set(tabs)] : null;
+  const families = MODULE_TAB_FAMILIES[base] || {};
+  const withFamilies = tabs.flatMap((tab) => [tab, ...(families[tab] || [])]);
+  return withFamilies.length > 0 ? [...new Set(withFamilies)] : null;
 }
 
 export function canAccessMenu(roleOrSession: DemoRole | DemoSession | string | null | undefined, item: AppMenuItem, menuAccessList?: string[] | null) {

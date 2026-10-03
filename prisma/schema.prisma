@@ -776,6 +776,45 @@ model StocktakeSession {
 
 /// Vị trí kiểm kê trong một kho (tủ đông 1, tủ mát, kệ khô...) kèm FORM MẪU: danh sách mặt hàng
 /// thường nằm ở vị trí đó, theo thứ tự đếm. Chỉ nguyên liệu + bao bì (khách chốt 28/09/2026).
+/// Báo cáo GIẢI TRÌNH KIỂM KÊ của một đợt kiểm kê đã duyệt (khách yêu cầu 03/10/2026): số liệu
+/// CHỤP lúc lập (đầu kỳ, nhập/xuất trong kỳ theo loại, cuối kỳ, kiểm kê, chênh lệch) + cột giải
+/// trình từng dòng. Không tự đổi theo số mới; chỉ "Cập nhật số liệu" khi đợt được mở lại & duyệt
+/// lại. Kế toán "Chốt" thì khoá hẳn (LOCKED). Xem lib/stocktake-explanation.ts.
+model StocktakeExplanation {
+  id               String    @id @default(uuid())
+  /// BATCH (đợt duyệt gộp theo vị trí) | SESSION (phiếu kiểm cả kho kiểu cũ)
+  sourceType       String
+  sourceId         String
+  sourceCode       String
+  branchCode       String
+  warehouseCode    String
+  /// Giờ chốt đợt kiểm kê trước của cùng kho (null = từ lúc lên hệ thống) và giờ chốt đợt này.
+  periodFrom       DateTime?
+  periodTo         DateTime
+  /// approvedAt của nguồn lúc chụp số — khác đi nghĩa là đợt đã duyệt lại, cần cập nhật số liệu.
+  sourceApprovedAt DateTime?
+  /// DRAFT (đang giải trình) | LOCKED (đã chốt)
+  status           String    @default("DRAFT")
+  /// Dòng đã chụp: [{ itemId, itemCode, itemName, goodsGroup, unit, opening, inPurchase, ...,
+  /// closing, counted, variance, explanation }]
+  lines            Json
+  createdBy        String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  snapshotBy       String?
+  snapshotAt       DateTime?
+  lockedBy         String?
+  lockedAt         DateTime?
+  unlockedBy       String?
+  unlockedAt       DateTime?
+  deletedAt        DateTime?
+  deletedBy        String?
+
+  @@unique([sourceType, sourceId])
+  @@index([warehouseCode])
+  @@index([branchCode])
+}
+
 model StocktakeLocation {
   id            String   @id @default(uuid())
   branchCode    String

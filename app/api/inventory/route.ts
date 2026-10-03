@@ -17,6 +17,8 @@ import { writeAuditLog } from "@/lib/audit-log";
 import { executeExplosion, rerunExplosions, type AffectedExplosionRun } from "@/lib/inventory-explosion";
 import { loadMissingRecipeReport } from "@/lib/missing-recipes";
 import { buildMonthlyCostSummary } from "@/lib/recipe-cost-summary";
+import { netMovementsAfter } from "@/lib/stocktake-batch";
+import { EXPLANATION_DRAFT, EXPLANATION_LOCKED, listStocktakeSources, loadStocktakeSource, snapshotExplanation, type ExplanationLine, type StocktakeSourceType } from "@/lib/stocktake-explanation";
 import { compactFlowDocument, FLOW_DOCUMENT_LIMIT } from "@/lib/inventory-flow-list";
 import { approveTransferRequest, buildTransferRequestLines, canReceiveTransfer, canSendTransfer, TRANSFER_APPROVED, TRANSFER_PENDING, TRANSFER_RETURNED } from "@/lib/inventory-transfer-request";
 import {
@@ -629,6 +631,132 @@ export async function GET(request: Request) {
       });
     }
 
+    /**
+     * Kiểm kê — 3 màn hình (khách yêu cầu 03/10/2026): danh sách phiếu, Giải trình kiểm kê, Kết quả
+     * kiểm kê. Phạm vi theo cửa hàng + kho của người xem (không theo ô chọn cửa hàng chung).
+     */
+    const sessionBranches = (auth.session.allowedBranches || []).map((code) => code.toUpperCase());
+    const stocktakeBranchScope = sessionBranches.includes("ALL") ? null : sessionBranches;
+    const monthRange = (month: string | null) => {
+      if (!month || !/^\d{4}-\d{2}$/.test(month)) return { from: null, to: null };
+      const [year, monthNo] = month.split("-").map(Number);
+      return {
+        from: new Date(Date.UTC(year, monthNo - 1, 1) - 7 * 3_600_000),
+        to: new Date(Date.UTC(year, monthNo, 1) - 7 * 3_600_000),
+      };
+    };
+    const pickBranches = (requested: string) => {
+      const wanted = cleanText(requested).toUpperCase();
+      if (!wanted || wanted === "ALL") return stocktakeBranchScope;
+      if (stocktakeBranchScope && !stocktakeBranchScope.includes(wanted)) businessError(`Bạn không có quyền cửa hàng ${wanted}`);
+      return [wanted];
+    };
+
+    // Danh sách đợt kiểm kê đã duyệt (cả hai kiểu) kèm tình trạng giải trình — màn Giải trình & Kết quả.
+    if (searchParams.get("view") === "stocktake-sources") {
+      const { from, to } = monthRange(searchParams.get("month"));
+      const sources = await listStocktakeSources(prisma as unknown as TxClient, {
+        branchCodes: pickBranches(searchParams.get("branchCode") || "ALL"),
+        warehouseCodes: scopedWarehouseCodes,
+        warehouseCode: cleanText(searchParams.get("warehouseCode")) || undefined,
+        from,
+        to,
+      });
+      const explanations = await prisma.stocktakeExplanation.findMany({
+        where: { OR: [{ sourceId: { in: sources.map((source) => source.sourceId) } }, { warehouseCode: { in: [...new Set(sources.map((source) => source.warehouseCode))] } }] },
+        select: { id: true, sourceType: true, sourceId: true, sourceCode: true, warehouseCode: true, status: true, sourceApprovedAt: true, periodTo: true, updatedAt: true },
+      });
+      const bySource = new Map(explanations.map((row) => [`${row.sourceType}|${row.sourceId}`, row]));
+      const sourceKeys = new Set(sources.map((source) => `${source.sourceType}|${source.sourceId}`));
+      return NextResponse.json({
+        sources: sources.map((source) => {
+          const explanation = bySource.get(`${source.sourceType}|${source.sourceId}`);
+          return {
+            ...source,
+            explanation: explanation ? {
+              id: explanation.id,
+              status: explanation.status,
+              needsRefresh: (explanation.sourceApprovedAt?.getTime() || 0) !== (source.approvedAt?.getTime() || 0),
+            } : null,
+          };
+        }),
+        // Giải trình của đợt đã mở lại (nguồn không còn duyệt): chờ gắn sang đợt duyệt lại.
+        orphans: explanations.filter((row) => !sourceKeys.has(`${row.sourceType}|${row.sourceId}`)),
+      });
+    }
+
+    // Một bản giải trình + tình trạng đợt nguồn (đã duyệt lại? đã mở lại?) + đợt có thể gắn sang.
+    if (searchParams.get("view") === "stocktake-explanation") {
+      const explanation = await prisma.stocktakeExplanation.findFirst({ where: { id: cleanText(searchParams.get("id")) } });
+      if (!explanation) businessError("Không tìm thấy bản giải trình kiểm kê");
+      const record = explanation!;
+      if (stocktakeBranchScope && !stocktakeBranchScope.includes(record.branchCode.toUpperCase())) businessError("Bạn không có quyền xem giải trình của cửa hàng này");
+      if (!inScope(record.warehouseCode)) businessError("Bạn không có quyền xem giải trình của kho này");
+      const source = await loadStocktakeSource(prisma as unknown as TxClient, record.sourceType as StocktakeSourceType, record.sourceId);
+      const sourceApproved = source?.status === STOCKTAKE_APPROVED;
+      const relinkCandidates = sourceApproved ? [] : (await listStocktakeSources(prisma as unknown as TxClient, {
+        branchCodes: null, warehouseCodes: null, warehouseCode: record.warehouseCode,
+      })).filter((candidate) => !(candidate.sourceType === record.sourceType && candidate.sourceId === record.sourceId));
+      const taken = new Set((await prisma.stocktakeExplanation.findMany({
+        where: { sourceId: { in: relinkCandidates.map((candidate) => candidate.sourceId) } },
+        select: { sourceType: true, sourceId: true },
+      })).map((row) => `${row.sourceType}|${row.sourceId}`));
+      return NextResponse.json({
+        explanation: record,
+        source: source ? { status: source.status, code: source.code, cutoffAt: source.cutoffAt, approvedAt: source.approvedAt } : null,
+        needsRefresh: sourceApproved && (record.sourceApprovedAt?.getTime() || 0) !== (source?.approvedAt?.getTime() || 0),
+        relinkCandidates: relinkCandidates.filter((candidate) => !taken.has(`${candidate.sourceType}|${candidate.sourceId}`)),
+      });
+    }
+
+    // Kết quả kiểm kê của một đợt: sổ sách tại giờ chốt, số kiểm, chênh lệch từng mặt hàng.
+    if (searchParams.get("view") === "stocktake-source-lines") {
+      const sourceType = cleanText(searchParams.get("sourceType")).toUpperCase() as StocktakeSourceType;
+      const source = await loadStocktakeSource(prisma as unknown as TxClient, sourceType, cleanText(searchParams.get("sourceId")));
+      if (!source) businessError("Không tìm thấy đợt kiểm kê");
+      if (stocktakeBranchScope && !stocktakeBranchScope.includes(source!.branchCode.toUpperCase())) businessError("Bạn không có quyền xem đợt kiểm kê của cửa hàng này");
+      if (!inScope(source!.warehouseCode)) businessError("Bạn không có quyền xem đợt kiểm kê của kho này");
+      return NextResponse.json({
+        code: source!.code,
+        lines: source!.countLines.map((line) => ({
+          ...line,
+          variance: line.counted - line.closing,
+          varianceValue: Math.round((line.counted - line.closing) * line.unitCost),
+        })),
+      });
+    }
+
+    // Danh sách MỌI phiếu kiểm kê (theo vị trí + cả kho) lọc nhà hàng / kho / trạng thái / tháng.
+    if (searchParams.get("view") === "stocktake-documents") {
+      const { from, to } = monthRange(searchParams.get("month"));
+      const branches = pickBranches(searchParams.get("branchCode") || "ALL");
+      const status = cleanText(searchParams.get("status")).toUpperCase();
+      const warehouseCode = cleanText(searchParams.get("warehouseCode"));
+      const documents = await prisma.stocktakeSession.findMany({
+        where: {
+          deletedAt: null,
+          ...(branches ? { branchCode: { in: branches, mode: "insensitive" as const } } : {}),
+          ...(warehouseCode ? { warehouseCode } : scopedWarehouseCodes ? { warehouseCode: { in: scopedWarehouseCodes, mode: "insensitive" as const } } : {}),
+          ...(status && status !== "ALL" ? { status } : {}),
+          ...(from || to ? { stocktakeDate: { ...(from ? { gte: from } : {}), ...(to ? { lt: to } : {}) } } : {}),
+        },
+        include: {
+          batch: { select: { code: true, cutoffAt: true } },
+          lines: { select: { actualQuantity: true, systemQuantity: true } },
+        },
+        orderBy: [{ stocktakeDate: "desc" }, { code: "desc" }],
+        take: 1000,
+      });
+      return NextResponse.json({
+        documents: documents.map(({ lines, ...document }) => ({
+          ...document,
+          lineCount: lines.length,
+          // Phiếu theo vị trí không tự so sổ — chênh lệch chỉ có ở đợt duyệt gộp.
+          varianceRows: document.locationCode ? null : lines.filter((line) => Math.abs(line.actualQuantity - line.systemQuantity) > 1e-6).length,
+        })),
+      });
+    }
+
     // Một phiếu kho đủ dòng hàng + tên NCC / tên kho — cho trang in Phiếu nhập kho (/inventory/[id]/print).
     if (searchParams.get("view") === "document") {
       const id = cleanText(searchParams.get("id"));
@@ -999,7 +1127,7 @@ export async function POST(request: Request) {
     const auth = requireMenuAction(
       request,
       menuHref,
-      ["APPROVE_STOCKTAKE", "RETURN_STOCKTAKE", "REOPEN_STOCKTAKE"].includes(action) ? "approve" : ["REVERT_PRODUCTION", "BULK_SET_WASTE_SUBTYPE"].includes(action) ? "edit" : "create",
+      ["APPROVE_STOCKTAKE", "RETURN_STOCKTAKE", "REOPEN_STOCKTAKE", "LOCK_STOCKTAKE_EXPLANATION", "UNLOCK_STOCKTAKE_EXPLANATION", "REFRESH_STOCKTAKE_EXPLANATION"].includes(action) ? "approve" : ["REVERT_PRODUCTION", "BULK_SET_WASTE_SUBTYPE"].includes(action) ? "edit" : "create",
     );
     if (!auth.ok) return auth.response;
 
@@ -1376,6 +1504,98 @@ export async function POST(request: Request) {
       return NextResponse.json(result);
     }
 
+    /**
+     * Giải trình kiểm kê (khách yêu cầu 03/10/2026) — lib/stocktake-explanation.ts. Lập = chụp số
+     * của đợt; ghi giải trình khi còn nháp; kế toán Chốt thì khoá; Cập nhật số liệu chỉ khi đợt đã
+     * duyệt lại (hoặc gắn sang đợt duyệt lại sau khi mở lại), giữ giải trình theo mã hàng.
+     */
+    if (["CREATE_STOCKTAKE_EXPLANATION", "SAVE_STOCKTAKE_EXPLANATION", "LOCK_STOCKTAKE_EXPLANATION", "UNLOCK_STOCKTAKE_EXPLANATION", "REFRESH_STOCKTAKE_EXPLANATION"].includes(action)) {
+      const assertScope = (record: { branchCode: string; warehouseCode: string }) => {
+        assertBranchAccess(auth.session, record.branchCode);
+        assertWarehouseAccess(auth.session, record.warehouseCode);
+      };
+      if (action === "CREATE_STOCKTAKE_EXPLANATION") {
+        const sourceType = cleanText(body.sourceType).toUpperCase() as StocktakeSourceType;
+        const sourceId = cleanText(body.sourceId);
+        if (!["BATCH", "SESSION"].includes(sourceType) || !sourceId) businessError("Thiếu đợt kiểm kê cần giải trình");
+        const existing = await prisma.stocktakeExplanation.findFirst({ where: { sourceType, sourceId } });
+        if (existing) return NextResponse.json({ explanation: existing });
+        const snapshot = await snapshotExplanation(prisma as unknown as TxClient, sourceType, sourceId);
+        assertScope(snapshot.source);
+        const created = await prisma.stocktakeExplanation.create({
+          data: {
+            sourceType, sourceId, sourceCode: snapshot.source.code,
+            branchCode: snapshot.source.branchCode, warehouseCode: snapshot.source.warehouseCode,
+            periodFrom: snapshot.periodFrom, periodTo: snapshot.source.cutoffAt,
+            sourceApprovedAt: snapshot.source.approvedAt,
+            status: EXPLANATION_DRAFT,
+            lines: snapshot.lines,
+            createdBy: auth.session.name, snapshotBy: auth.session.name, snapshotAt: new Date(),
+          },
+        });
+        await writeAuditLog({ session: auth.session, module: menuHref, action, entityType: "StocktakeExplanation", entityId: created.id, entityCode: created.sourceCode, branchCode: created.branchCode, metadata: { lineCount: snapshot.lines.length } });
+        return NextResponse.json({ explanation: created }, { status: 201 });
+      }
+
+      const current = await prisma.stocktakeExplanation.findFirst({ where: { id: cleanText(body.id) } });
+      if (!current) businessError("Không tìm thấy bản giải trình kiểm kê");
+      const record = current!;
+      assertScope(record);
+      const lines = (Array.isArray(record.lines) ? record.lines : []) as unknown as ExplanationLine[];
+
+      if (action === "SAVE_STOCKTAKE_EXPLANATION") {
+        if (record.status === EXPLANATION_LOCKED) businessError(`Giải trình ${record.sourceCode} đã chốt — kế toán Mở chốt mới sửa được.`);
+        const notes = (body.notes && typeof body.notes === "object" ? body.notes : {}) as Record<string, unknown>;
+        const updated = await prisma.stocktakeExplanation.update({
+          where: { id: record.id },
+          data: { lines: lines.map((line) => (line.itemId in notes ? { ...line, explanation: String(notes[line.itemId] ?? "").slice(0, 2000) } : line)) },
+        });
+        return NextResponse.json({ explanation: updated });
+      }
+
+      if (action === "LOCK_STOCKTAKE_EXPLANATION" || action === "UNLOCK_STOCKTAKE_EXPLANATION") {
+        const lock = action === "LOCK_STOCKTAKE_EXPLANATION";
+        if (lock && record.status === EXPLANATION_LOCKED) businessError("Giải trình đã chốt rồi");
+        if (!lock && record.status !== EXPLANATION_LOCKED) businessError("Giải trình chưa chốt");
+        const updated = await prisma.stocktakeExplanation.update({
+          where: { id: record.id },
+          data: lock
+            ? { status: EXPLANATION_LOCKED, lockedBy: auth.session.name, lockedAt: new Date() }
+            : { status: EXPLANATION_DRAFT, unlockedBy: auth.session.name, unlockedAt: new Date() },
+        });
+        await writeAuditLog({ session: auth.session, module: menuHref, action, entityType: "StocktakeExplanation", entityId: record.id, entityCode: record.sourceCode, branchCode: record.branchCode });
+        return NextResponse.json({ explanation: updated });
+      }
+
+      // REFRESH_STOCKTAKE_EXPLANATION
+      if (record.status === EXPLANATION_LOCKED) businessError(`Giải trình ${record.sourceCode} đã chốt — Mở chốt trước rồi mới cập nhật số liệu.`);
+      const targetType = (cleanText(body.sourceType).toUpperCase() || record.sourceType) as StocktakeSourceType;
+      const targetId = cleanText(body.sourceId) || record.sourceId;
+      const sameSource = targetType === record.sourceType && targetId === record.sourceId;
+      const source = await loadStocktakeSource(prisma as unknown as TxClient, targetType, targetId);
+      if (!source || source.status !== STOCKTAKE_APPROVED) businessError("Đợt kiểm kê chưa được duyệt lại — duyệt xong mới cập nhật số liệu được.");
+      if (sameSource && (record.sourceApprovedAt?.getTime() || 0) === (source!.approvedAt?.getTime() || 0)) {
+        businessError("Đợt kiểm kê chưa được duyệt lại nên số liệu không đổi — giải trình giữ nguyên số đã chụp.");
+      }
+      if (!sameSource) {
+        if (source!.warehouseCode !== record.warehouseCode) businessError("Chỉ gắn sang đợt kiểm kê của cùng kho");
+        if (await prisma.stocktakeExplanation.findFirst({ where: { sourceType: targetType, sourceId: targetId } })) businessError(`Đợt ${source!.code} đã có bản giải trình riêng`);
+      }
+      const snapshot = await snapshotExplanation(prisma as unknown as TxClient, targetType, targetId, new Map(lines.map((line) => [line.itemId, line.explanation || ""])));
+      const updated = await prisma.stocktakeExplanation.update({
+        where: { id: record.id },
+        data: {
+          sourceType: targetType, sourceId: targetId, sourceCode: snapshot.source.code,
+          periodFrom: snapshot.periodFrom, periodTo: snapshot.source.cutoffAt,
+          sourceApprovedAt: snapshot.source.approvedAt,
+          lines: snapshot.lines,
+          snapshotBy: auth.session.name, snapshotAt: new Date(),
+        },
+      });
+      await writeAuditLog({ session: auth.session, module: menuHref, action, entityType: "StocktakeExplanation", entityId: record.id, entityCode: snapshot.source.code, branchCode: record.branchCode, metadata: { from: record.sourceCode, to: snapshot.source.code } });
+      return NextResponse.json({ explanation: updated });
+    }
+
     /** Kế toán duyệt phiếu kiểm kê đang Chờ duyệt: sinh phiếu nhập/xuất điều chỉnh theo phần chênh. */
     if (action === "APPROVE_STOCKTAKE") {
       const stocktakeId = cleanText(body.stocktakeId) || cleanText(body.id);
@@ -1389,9 +1609,32 @@ export async function POST(request: Request) {
       }
       // Phiếu đếm theo vị trí chỉ là một phần của kho — duyệt gộp theo giờ chốt (lib/stocktake-batch.ts).
       if (stocktake.locationCode) businessError(`Phiếu ${stocktake.code} là phiếu đếm theo vị trí — chọn cùng các phiếu khác của kho và bấm Duyệt gộp.`);
-      const { branchCode, warehouseCode, stocktakeDate } = stocktake;
+      const { branchCode, warehouseCode } = stocktake;
+      /**
+       * Kế toán chọn GIỜ CHỐT lúc duyệt / duyệt lại (khách yêu cầu 03/10/2026): cửa hàng kiểm kê vào
+       * một giờ bất kỳ trong ngày. Đổi giờ thì tính lại sổ sách tại giờ đó cho từng dòng (tồn hiện
+       * tại − phát sinh sau giờ chốt) để chênh lệch đúng thời điểm; không đổi thì giữ số lúc đếm.
+       */
+      const requestedCutoff = cleanText(body.cutoffAt) ? toDate(body.cutoffAt) : null;
+      if (requestedCutoff && requestedCutoff.getTime() > Date.now() + 60_000) businessError("Giờ chốt kiểm kê không được ở tương lai");
+      const stocktakeDate = requestedCutoff || stocktake.stocktakeDate;
+      const recomputeBook = Boolean(requestedCutoff) && stocktakeDate.getTime() !== stocktake.stocktakeDate.getTime();
       if (await isPeriodLocked(stocktakeDate, branchCode)) businessError("Kỳ kế toán đã khoá");
       const result = await prisma.$transaction(async (tx) => {
+        if (recomputeBook) {
+          const [balances, laterNet] = await Promise.all([
+            tx.inventoryBalance.findMany({ where: { warehouseCode, itemId: { in: stocktake.lines.map((line) => line.itemId) } }, select: { itemId: true, quantity: true } }),
+            netMovementsAfter(tx as unknown as TxClient, warehouseCode, stocktakeDate),
+          ]);
+          const balanceByItem = new Map(balances.map((balance) => [balance.itemId, balance.quantity]));
+          for (const line of stocktake.lines) {
+            const book = (balanceByItem.get(line.itemId) || 0) - (laterNet.get(line.itemId) || 0);
+            line.systemQuantity = book;
+            line.varianceQuantity = line.actualQuantity - book;
+            await tx.stocktakeLine.update({ where: { id: line.id }, data: { systemQuantity: book, varianceQuantity: line.actualQuantity - book } });
+          }
+          await tx.stocktakeSession.update({ where: { id: stocktake.id }, data: { stocktakeDate } });
+        }
         const inboundLines = [];
         const outboundLines = [];
         // Kiểm DƯ bán thành phẩm có định lượng không nhập kiểm kê mà chờ rã BOM (khách chốt
@@ -1421,9 +1664,21 @@ export async function POST(request: Request) {
             ...(deferredSurplus ? { explosionStatus: EXPLOSION_PENDING } : {}),
           },
         });
+        /**
+         * Mở lại phiếu chỉ XOÁ MỀM phiếu điều chỉnh cũ (mã vẫn chiếm chỗ) — duyệt lại mà dùng lại
+         * `KK-...-N/-X` là đâm unique (lỗi 500 từ trước, lộ ra khi khách mở phiếu sửa rồi duyệt lại
+         * 03/10/2026). Lần duyệt sau mang hậu tố -2, -3...
+         */
+        const freeCode = async (base: string) => {
+          const taken = new Set((await tx.$queryRaw<Array<{ code: string }>>`SELECT "code" FROM "InventoryTransaction" WHERE "code" = ${base} OR "code" LIKE ${`${base}-%`}`).map((row) => row.code));
+          if (!taken.has(base)) return base;
+          let suffix = 2;
+          while (taken.has(`${base}-${suffix}`)) suffix += 1;
+          return `${base}-${suffix}`;
+        };
         const docs = [];
         if (inboundLines.length > 0) docs.push(await postInventoryTransaction(tx, {
-          code: `${stocktake.code}-N`,
+          code: await freeCode(`${stocktake.code}-N`),
           transactionType: "NHAP_KIEM_KE",
           transactionDate: stocktakeDate,
           branchCode,
@@ -1435,7 +1690,7 @@ export async function POST(request: Request) {
           lines: inboundLines,
         }));
         if (outboundLines.length > 0) docs.push(await postInventoryTransaction(tx, {
-          code: `${stocktake.code}-X`,
+          code: await freeCode(`${stocktake.code}-X`),
           transactionType: "XUAT_KIEM_KE",
           transactionDate: stocktakeDate,
           branchCode,
@@ -1448,7 +1703,7 @@ export async function POST(request: Request) {
         }));
         return { stocktake: await tx.stocktakeSession.findUnique({ where: { id: stocktake.id }, include: { lines: { include: { item: true } } } }), transactions: docs };
       });
-      await writeAuditLog({ session: auth.session, module: menuHref, action: "APPROVE_STOCKTAKE", entityType: "StocktakeSession", entityId: stocktake.id, entityCode: stocktake.code, branchCode, metadata: { transactions: result.transactions.map((doc) => doc.code) } });
+      await writeAuditLog({ session: auth.session, module: menuHref, action: "APPROVE_STOCKTAKE", entityType: "StocktakeSession", entityId: stocktake.id, entityCode: stocktake.code, branchCode, metadata: { transactions: result.transactions.map((doc) => doc.code), cutoffAt: stocktakeDate.toISOString(), recomputeBook } });
       return NextResponse.json(result);
     }
 
