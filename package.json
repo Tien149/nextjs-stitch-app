@@ -45,6 +45,7 @@
     "test:negative-stock": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-negative-stock-issue.mjs",
     "test:production-explosion": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-production-explosion.mjs",
     "test:missing-recipes": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-missing-recipes.mjs",
+    "test:inventory-flow-list": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-inventory-flow-list.mjs",
     "test:revenue-sale-hour": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-revenue-sale-hour.mjs",
     "test:inventory-cogs": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-inventory-cogs.mjs",
     "test:inventory-cogs-sync": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-inventory-cogs-sync.mjs",

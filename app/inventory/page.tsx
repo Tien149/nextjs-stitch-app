@@ -33,7 +33,10 @@ type ItemGroup = { id: string; code: string; name: string; group: string | null;
  */
 type RevenueGroup = { id: string; code: string; name: string; group: string | null };
 type Balance = { id: string; warehouseCode: string; quantity: number; averageCost: number; item: Item };
-type Transaction = { id: string; code: string; transactionType: string; subType: string | null; transactionDate: string; branchCode: string; warehouseCode: string; toWarehouseCode: string | null; toBranchCode: string | null; partnerCode: string | null; referenceType: string | null; internalReceivableDebtCode: string | null; internalPayableDebtCode: string | null; referenceCode: string | null; note?: string | null; explosionStatus?: string | null; lines: Array<{ id: string; inputQuantity: number | null; inputUnitCode: string | null; conversionRate: number; quantity: number; unitCost: number; inputUnitCost: number | null; totalCost: number; vatRate: number | null; vatAmount: number; item: Item }> };
+type Transaction = { id: string; code: string; transactionType: string; subType: string | null; transactionDate: string; branchCode: string; warehouseCode: string; toWarehouseCode: string | null; toBranchCode: string | null; partnerCode: string | null; referenceType: string | null; internalReceivableDebtCode: string | null; internalPayableDebtCode: string | null; referenceCode: string | null; note?: string | null; explosionStatus?: string | null;
+  /** Phiếu chế biến của rã BOM trên danh sách Nhập/Xuất kho chỉ mang 3 dòng đầu — số tổng nằm ở đây (xem compactFlowDocument). */
+  lineSummary?: { count: number; totalCost: number; vatAmount: number; quantity: number; units: string[]; searchText: string };
+  lines: Array<{ id: string; inputQuantity: number | null; inputUnitCode: string | null; conversionRate: number; quantity: number; unitCost: number; inputUnitCost: number | null; totalCost: number; vatRate: number | null; vatAmount: number; item: Item }> };
 type Recipe = { id: string; code: string; productCode: string; branchCode?: string | null; productName: string; unit: string; outputConversionRate: number; sellingPrice: number; estimatedCost: number; estimatedUnitCost: number; version: number; effectiveFrom: string; status: string; lines: Array<{ quantity: number; unitCode: string | null; conversionRate: number; wasteRate: number; item: Item; quantityBase?: number; componentUnitCost?: number; lineCost?: number }> };
 type CostSummaryRow = { productCode: string; branchCode: string; productName: string; group: string; stockUnit: string; batchUnit: string; outputConversionRate: number; sellingPrice: number; unitCost: number; costRatio: number | null; version: number };
 type WasteReportRow = { itemCode: string; itemName: string; unit: string; itemType: string; totalQuantity: number; totalValue: number; documentCount: number; bySubType: Record<string, { quantity: number; value: number }> };
@@ -80,7 +83,7 @@ const loadTracker = { seq: 0, movementSeq: 0, movementRange: "" };
 function movementRangeQuery(range: { from: string; to: string }) {
   return new URLSearchParams({ reportFrom: range.from, reportTo: range.to }).toString();
 }
-type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; transferTransactions?: Transaction[]; wasteTransactions?: Transaction[]; warehouseBranches?: Array<{ code: string; branch: string | null }>; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[] };
+type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; flowTruncated?: boolean; transferTransactions?: Transaction[]; wasteTransactions?: Transaction[]; warehouseBranches?: Array<{ code: string; branch: string | null }>; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[] };
 const movementTypes = ["NHAP_MUA", "NHAP_KHAC", "NHAP_CHE_BIEN", "NHAP_KIEM_KE", "XUAT_BAN", "XUAT_HUY", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_CHE_BIEN", "XUAT_KIEM_KE", "DIEU_CHUYEN"];
 /** Loại hiển thị trên hai màn hình Nhập/Xuất. Điều chuyển hiện ở CẢ hai: vế xuất ở kho đi, vế nhập ở kho nhận. */
 const inboundTypes = ["NHAP_MUA", "NHAP_CHE_BIEN", "NHAP_DIEU_CHUYEN", "NHAP_KHAC", "NHAP_KIEM_KE"];
@@ -103,6 +106,22 @@ function flowQuantityText(lines: Array<{ quantity: number; item: { unit: string 
   const total = lines.reduce((sum, line) => sum + line.quantity, 0);
   if (units.size === 1) return `${qty(total)} ${lines[0].item.unit}`;
   return `${qty(lines.length)} mặt hàng`;
+}
+
+/** Số dòng / tổng tiền / thuế / SL của phiếu — đọc `lineSummary` khi phiếu đã bị rút gọn dòng. */
+function documentLineCount(transaction: Transaction) {
+  return transaction.lineSummary?.count ?? transaction.lines.length;
+}
+function documentTotalCost(transaction: Transaction) {
+  return transaction.lineSummary?.totalCost ?? transaction.lines.reduce((sum, line) => sum + line.totalCost, 0);
+}
+function documentVat(transaction: Transaction) {
+  return transaction.lineSummary?.vatAmount ?? transaction.lines.reduce((sum, line) => sum + (line.vatAmount || 0), 0);
+}
+function documentQuantityText(transaction: Transaction) {
+  const summary = transaction.lineSummary;
+  if (!summary) return flowQuantityText(transaction.lines);
+  return summary.units.length === 1 ? `${qty(summary.quantity)} ${summary.units[0]}` : `${qty(summary.count)} mặt hàng`;
 }
 
 function buildStocktakeRows(warehouseCode: string, balances: Balance[], fallbackItems: Item[]): StocktakeDraftRow[] {
@@ -541,7 +560,7 @@ export default function InventoryPage() {
    * vô nghĩa còn tệ hơn để trống.
    */
   const sumTransactions = (rows: Array<{ transaction: Transaction }>) =>
-    sumStockDocuments(rows.map((row) => row.transaction));
+    sumStockDocuments(rows.map((row) => ({ lines: [{ totalCost: documentTotalCost(row.transaction), vatAmount: documentVat(row.transaction) }] })));
 
   /**
    * Kho của màn "Rã nguyên liệu từ doanh thu", CHUẨN HOÁ theo cửa hàng đang chọn.
@@ -570,6 +589,7 @@ export default function InventoryPage() {
   const flowKeyword = foldSearchText(flowSearch.trim());
   const transactionMatchesSearch = (transaction: Transaction, keyword: string) => !keyword
     || foldSearchText(transaction.code).includes(keyword)
+    || foldSearchText(transaction.lineSummary?.searchText || "").includes(keyword)
     || transaction.lines.some((line) => foldSearchText(line.item.code).includes(keyword) || foldSearchText(line.item.name).includes(keyword));
   /** Kho chọn được ở ô lọc: kho của nhà hàng đang lọc (hoặc mọi kho khi xem tất cả nhà hàng). */
   const flowWarehouseOptions = warehouseOptions.filter((warehouse) => flowBranch === "ALL" || warehouse.branch === flowBranch || !warehouse.branch);
@@ -581,6 +601,23 @@ export default function InventoryPage() {
   const outboundRows = flowRows("OUT").filter((row) =>
     (flowBranch === "ALL" || row.branchCode === flowBranch) && matchesFlowWarehouse(row) && (outboundType === "ALL" || row.displayType === outboundType) && matchesFlowPartner(row)
     && transactionMatchesSearch(row.transaction, flowKeyword));
+  /**
+   * Chọn loại "Xuất bán" ở màn Xuất kho thì bảng TRẢI TỪNG MẶT HÀNG (khách chốt 03/10/2026):
+   * mỗi lần rã gộp cả kỳ thành một phiếu / kho với vài trăm mặt hàng, bảng phiếu chỉ hiện 3 dòng
+   * đầu. Ô tìm mã / tên lọc tới từng dòng (gõ số phiếu thì ra cả phiếu).
+   */
+  const showSaleLines = active === "outbound" && outboundType === "XUAT_BAN";
+  const saleLineRows = showSaleLines
+    ? outboundRows.flatMap((row) => {
+      const wholeDocument = !flowKeyword || foldSearchText(row.transaction.code).includes(flowKeyword);
+      return row.transaction.lines
+        .filter((line) => wholeDocument || foldSearchText(line.item.code).includes(flowKeyword) || foldSearchText(line.item.name).includes(flowKeyword))
+        .map((line) => ({ row, line }));
+    }).sort((a, b) =>
+      b.row.transaction.transactionDate.localeCompare(a.row.transaction.transactionDate)
+      || a.row.warehouseCode.localeCompare(b.row.warehouseCode)
+      || a.line.item.name.localeCompare(b.line.item.name, "vi"))
+    : [];
   /**
    * Ô chọn NCC chỉ liệt kê đối tác CÓ trên phiếu của màn hình đang xem (đã lọc nhà hàng/loại),
    * để khỏi phải dò giữa hàng trăm đối tác chưa từng phát sinh nhập kho.
@@ -2232,6 +2269,11 @@ export default function InventoryPage() {
                 )}
               </div>
             )}
+            {data.flowTruncated && (
+              <p className="mx-5 mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+                Khoảng ngày này có quá nhiều phiếu — danh sách chỉ tải các phiếu mới nhất. Chọn khoảng ngày ngắn hơn để xem đủ.
+              </p>
+            )}
             <div className="px-5 pb-4 grid sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7 gap-3">
               <Input label="Tìm mã / tên hàng">
                 <input className="control" placeholder="Mã, tên hàng hoặc số phiếu..." value={flowSearch} onChange={(e) => setFlowSearch(e.target.value)} />
@@ -2279,6 +2321,51 @@ export default function InventoryPage() {
                 </select>
               </Input>
             </div>
+            {showSaleLines ? (
+            <Table
+              headers={[
+                { label: "Chứng từ" },
+                { label: "Nhà hàng" },
+                { label: "Kho" },
+                { label: "Mã hàng" },
+                { label: "Tên hàng" },
+                { label: "ĐVT" },
+                { label: "SL xuất", align: "right" },
+                { label: "Giá vốn", align: "right" },
+                { label: "Thành tiền", align: "right" },
+              ]}
+              footer={saleLineRows.length === 0 ? null : (
+                <tr>
+                  <Cell>CỘNG</Cell>
+                  <Cell>{saleLineRows.length} dòng</Cell>
+                  <Cell>{new Set(saleLineRows.map(({ row }) => row.transaction.id)).size} phiếu</Cell>
+                  <Cell>{""}</Cell>
+                  <Cell>{""}</Cell>
+                  <Cell>{""}</Cell>
+                  <Cell right>{""}</Cell>
+                  <Cell right>{""}</Cell>
+                  <Cell right>{money(saleLineRows.reduce((sum, { line }) => sum + line.totalCost, 0))} đ</Cell>
+                </tr>
+              )}
+            >
+              {saleLineRows.length === 0 && (
+                <tr><td colSpan={9} className="cell text-center text-slate-400">Chưa có phiếu xuất bán trong khoảng ngày / bộ lọc này. Phiếu xuất bán sinh khi bấm Rã nguyên liệu ở tab Chế biến.</td></tr>
+              )}
+              {saleLineRows.map(({ row, line }) => (
+                <tr key={line.id} className="border-t border-slate-100">
+                  <Cell><CopyableText value={row.transaction.code}><b>{row.transaction.code}</b></CopyableText><small>{new Date(row.transaction.transactionDate).toLocaleDateString("vi-VN")}</small></Cell>
+                  <Cell>{storeLabel(row.branchCode)}</Cell>
+                  <Cell>{row.warehouseCode}</Cell>
+                  <Cell><CopyableText value={line.item.code}>{line.item.code}</CopyableText></Cell>
+                  <Cell>{line.item.name}</Cell>
+                  <Cell>{line.item.unit}</Cell>
+                  <Cell right>{qty(line.quantity)}</Cell>
+                  <Cell right>{unitPrice(line.unitCost)}</Cell>
+                  <Cell right><b>{money(line.totalCost)} đ</b></Cell>
+                </tr>
+              ))}
+            </Table>
+            ) : (
             <Table
               headers={[
                 { label: "Chứng từ" },
@@ -2333,18 +2420,18 @@ export default function InventoryPage() {
                     {preview.map((line) => (
                       <span key={line.id} className="block">{line.item.name}: <b>{qty(line.quantity)}</b> {line.item.unit}</span>
                     ))}
-                    {lines.length > preview.length && <small>… và {lines.length - preview.length} mặt hàng khác</small>}
+                    {documentLineCount(row.transaction) > preview.length && <small>… và {documentLineCount(row.transaction) - preview.length} mặt hàng khác</small>}
                   </Cell>
                   <Cell>{row.transaction.partnerCode ? partnerName(row.transaction.partnerCode) : <span className="text-slate-400">—</span>}</Cell>
-                  <Cell right>{flowQuantityText(lines)}</Cell>
+                  <Cell right>{documentQuantityText(row.transaction)}</Cell>
                   <Cell right>
-                    <b>{money(lines.reduce((sum, line) => sum + line.totalCost, 0))} đ</b>
+                    <b>{money(documentTotalCost(row.transaction))} đ</b>
                     {/* Có thuế mới in thêm dòng thứ hai: phiếu không thuế thì cột giữ nguyên như cũ. */}
-                    {lines.some((line) => line.vatAmount > 0) && (
+                    {documentVat(row.transaction) > 0 && (
                       <small className="block text-slate-500">
-                        + thuế {money(lines.reduce((sum, line) => sum + line.vatAmount, 0))} đ
+                        + thuế {money(documentVat(row.transaction))} đ
                         {" = "}
-                        <b>{money(lines.reduce((sum, line) => sum + line.totalCost + line.vatAmount, 0))} đ</b>
+                        <b>{money(documentTotalCost(row.transaction) + documentVat(row.transaction))} đ</b>
                       </small>
                     )}
                   </Cell>
@@ -2381,6 +2468,7 @@ export default function InventoryPage() {
                 );
               })}
             </Table>
+            )}
           </section>
         </div>
       )}

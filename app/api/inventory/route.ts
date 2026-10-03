@@ -16,6 +16,7 @@ import { computeCostingLevels, computeRecipeUnitCosts, lineConversionRate, pickR
 import { writeAuditLog } from "@/lib/audit-log";
 import { executeExplosion, rerunExplosions, type AffectedExplosionRun } from "@/lib/inventory-explosion";
 import { loadMissingRecipeReport } from "@/lib/missing-recipes";
+import { compactFlowDocument, FLOW_DOCUMENT_LIMIT } from "@/lib/inventory-flow-list";
 import {
   duplicatedInTrashMessage,
   findDeletedByUnique,
@@ -198,6 +199,7 @@ async function createOrUpdateConversion(itemId: string, purchaseUnit: string, co
 
 /** Mặt hàng đính kèm trên dòng phiếu: màn hình chỉ đọc mấy cột này, không cần cả bản ghi. */
 const lineItemSelect = { id: true, code: true, name: true, unit: true, itemType: true, minStock: true, requiresImage: true } as const;
+
 
 type MovementLineSource = {
   id: string;
@@ -630,7 +632,7 @@ export async function GET(request: Request) {
     });
     const warehouseCodes = scopeWarehouses(auth.session, allowedWarehouses).map((w) => w.code);
 
-    const [items, balances, transactions, flowTransactions, transferTransactions, wasteTransactions, movementTotals, wasteTotals, stockMovements, recipes, warehouses, stocktakes, itemGroups, receiptCategoryList, pendingRevenueRows, partners, allBalances, nonInventoryGroups] = await Promise.all([
+    const [items, balances, transactions, recentFlowTransactions, transferTransactions, wasteTransactions, movementTotals, wasteTotals, stockMovements, recipes, warehouses, stocktakes, itemGroups, receiptCategoryList, pendingRevenueRows, partners, allBalances, nonInventoryGroups] = await Promise.all([
       prisma.inventoryItem.findMany({ include: { unitConversions: { orderBy: [{ isDefaultPurchase: "desc" }, { unitCode: "asc" }] } }, orderBy: { name: "asc" } }),
       prisma.inventoryBalance.findMany({
         where: { warehouseCode: { in: warehouseCodes } },
@@ -644,12 +646,14 @@ export async function GET(request: Request) {
         take: 100
       }),
       // Danh sách phiếu của hai màn Nhập kho / Xuất kho: lọc theo NGÀY CHỨNG TỪ chứ không cắt
-      // 100 dòng mới nhất, để phiếu xuất bán của cả kỳ đã rã đều hiện đủ.
+      // 100 dòng mới nhất, để phiếu xuất bán của cả kỳ đã rã đều hiện đủ. Không còn giới hạn 2000
+      // phiếu (03/10/2026): rã BOM sinh ~3000 phiếu chế biến / tháng nên giới hạn cũ cắt mất mọi
+      // phiếu trước ~1 tháng, kể cả nhập mua. Phiếu chế biến được rút gọn dòng ở compactFlowDocument.
       prisma.inventoryTransaction.findMany({
         where: { ...branchFilter, ...warehouseFilter, transactionDate: { gte: flowFrom, lte: flowTo } },
         include: { lines: { include: { item: { select: lineItemSelect } } } },
         orderBy: { transactionDate: "desc" },
-        take: 2000,
+        take: FLOW_DOCUMENT_LIMIT,
       }),
       // Tab Điều chuyển: truy vấn riêng theo khoảng ngày chứng từ, để phiếu xuất bán sinh từ rã
       // BOM (hàng nghìn dòng/tháng) không đẩy phiếu điều chuyển ra khỏi giới hạn của danh sách chung.
@@ -721,6 +725,8 @@ export async function GET(request: Request) {
       prisma.inventoryBalance.findMany({ select: { itemId: true, quantity: true, averageCost: true } }),
       loadNonInventoryRevenueGroups(prisma as unknown as CategoryLookupClient),
     ]);
+    const flowTransactions = recentFlowTransactions.map(compactFlowDocument);
+    const flowTruncated = recentFlowTransactions.length >= FLOW_DOCUMENT_LIMIT;
 
     // Bảng tra kho -> cửa hàng cho bộ lọc Cửa hàng ở tab Tồn kho. Lấy cả kho đã ngưng: kho ngưng
     // vẫn còn tồn / phát sinh cũ, danh sách `warehouses` (chỉ kho đang dùng) không gọi được cửa hàng.
@@ -897,7 +903,7 @@ export async function GET(request: Request) {
     const revenueGroups = receiptCategoryList.filter((category) => isRevenueGroupCategory(category.group));
     const receiptCategories = receiptCategoryList.filter((category) => !isRevenueGroupCategory(category.group));
 
-    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, balances, transactions, flowTransactions, transferTransactions, wasteTransactions, partners, flowRange: { from: isoDay(flowFrom), to: isoDay(flowTo) }, recipes: recipesWithCost, warehouses, warehouseBranches, stocktakes, stockSummary, stockMovements, itemGroups, revenueGroups, receiptCategories, costSummary, wasteReport, pendingSales }));
+    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, balances, transactions, flowTransactions, flowTruncated, transferTransactions, wasteTransactions, partners, flowRange: { from: isoDay(flowFrom), to: isoDay(flowTo) }, recipes: recipesWithCost, warehouses, warehouseBranches, stocktakes, stockSummary, stockMovements, itemGroups, revenueGroups, receiptCategories, costSummary, wasteReport, pendingSales }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });
