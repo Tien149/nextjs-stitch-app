@@ -25,7 +25,7 @@ type Supplier = { id: string; code: string; name: string; phone?: string | null;
 type PriceSuggestion = { price: number; source: string; supplierName?: string };
 type RequestLine = { id: string; itemId: string; quantity: number; estimatedUnitCost: number; imageUrl: string | null; note?: string | null; item: Item };
 type Quote = { id: string; supplierCode: string; supplierName: string; totalAmount: number; deliveryDays: number | null; paymentTerms: string | null; isSelected: boolean; note: string | null; lines: Array<{ itemId: string; quantity: number; unitCost: number; vatRate?: number | null; item?: Item }> };
-type PurchaseRequest = { id: string; code: string; requestDate: string; branchCode: string; departmentCode: string | null; requestedBy: string; neededDate: string | null; reason: string; status: string; approvedAt: string | null; note: string | null; lines: RequestLine[]; quotes: Quote[] };
+type PurchaseRequest = { id: string; code: string; requestDate: string; branchCode: string; departmentCode: string | null; requestedBy: string; neededDate: string | null; reason: string; status: string; approvedAt: string | null; note: string | null; lines: RequestLine[]; quotes: Quote[]; orders?: Array<{ id: string; code: string; status: string }> };
 type OrderLine = { id: string; itemId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; imageUrl: string | null; item: Item };
 type PurchaseOrder = { id: string; code: string; requestId: string | null; orderDate: string; supplierCode: string; supplierName: string; branchCode: string; departmentCode: string | null; warehouseCode: string; expectedDate: string | null; status: string; approvedAt: string | null; note: string | null; totalAmount: number; shareToken: string | null; lines: OrderLine[]; payable: { outstandingAmount: number } | null };
 type Data = { items: Item[]; requests: PurchaseRequest[]; orders: PurchaseOrder[]; departments: MasterItem[]; itemGroups: MasterItem[]; warehouses: MasterItem[]; assetGroups: MasterItem[]; templates: PurchaseTemplate[]; suppliers: Supplier[]; priceSuggestions: Record<string, PriceSuggestion> };
@@ -93,6 +93,18 @@ export default function ProcurementPage() {
     reason: "Bổ sung nguyên liệu vận hành",
   });
   const [requestRows, setRequestRows] = useState<RequestRow[]>([emptyRequestRow()]);
+  /** Tab Yêu cầu mua: form tạo/sửa mở khi cần, danh sách lọc theo cửa hàng / phòng ban / trạng thái / ngày. */
+  const [showRequestForm, setShowRequestForm] = useState(false);
+  const [requestFilter, setRequestFilter] = useState(() => ({
+    branchCode: "ALL",
+    departmentCode: "ALL",
+    status: "ALL",
+    // Mặc định không chặn ngày: PR cũ còn chờ mua không được lặn khỏi danh sách.
+    from: "",
+    to: "",
+    search: "",
+  }));
+  const [requestList, setRequestList] = useState<{ rows: PurchaseRequest[]; truncated: boolean } | null>(null);
 
   const [quoteForm, setQuoteForm] = useState({
     requestId: "",
@@ -365,6 +377,20 @@ export default function ProcurementPage() {
     return () => { cancelled = true; };
   }, [quoteForm.supplierCode, quoteForm.requestId, editingQuote, data.requests, data.priceSuggestions]);
 
+  // Danh sách PR có lọc — tải lại khi đổi bộ lọc hoặc sau mỗi thao tác (loadData đổi data.requests).
+  useEffect(() => {
+    if (active !== "requests") return;
+    let cancelled = false;
+    const query = new URLSearchParams({ view: "requests", branchCode: requestFilter.branchCode, departmentCode: requestFilter.departmentCode, status: requestFilter.status });
+    if (requestFilter.from) query.set("from", requestFilter.from);
+    if (requestFilter.to) query.set("to", requestFilter.to);
+    void fetch(`/api/procurement?${query.toString()}`).then(async (response) => {
+      const payload = response.ok ? await response.json() as { requests: PurchaseRequest[]; truncated: boolean } : { requests: [], truncated: false };
+      if (!cancelled) setRequestList({ rows: payload.requests, truncated: payload.truncated });
+    });
+    return () => { cancelled = true; };
+  }, [active, requestFilter.branchCode, requestFilter.departmentCode, requestFilter.status, requestFilter.from, requestFilter.to, data.requests]);
+
   const send = async (method: "POST" | "PATCH", body: object, success: string) => {
     setMessage("");
     const response = await fetch("/api/procurement", { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -378,7 +404,13 @@ export default function ProcurementPage() {
   const quoteVatTotal = (quote: Quote) => quote.lines.reduce((sum, line) => sum + vatAmountOf(Math.round(line.quantity * line.unitCost), line.vatRate ?? null), 0);
 
   /** Đơn mua hàng còn hiệu lực (chưa huỷ) lập từ một PR. */
-  const liveOrdersOf = (request: PurchaseRequest) => data.orders.filter((order) => order.requestId === request.id && order.status !== "CANCELLED");
+  const liveOrdersOf = (request: PurchaseRequest) => {
+    const loaded = data.orders.filter((order) => order.requestId === request.id && order.status !== "CANCELLED");
+    // PR cũ ở danh sách có lọc: đơn của nó có thể nằm ngoài 100 PO mới nhất của payload chung —
+    // dùng danh sách đơn đi kèm PR (view=requests) để khoá sửa/xoá cho đúng.
+    if (loaded.length > 0 || !request.orders) return loaded;
+    return request.orders.filter((order) => order.status !== "CANCELLED") as unknown as PurchaseOrder[];
+  };
   /** PR đã sinh đơn mua hàng thì mọi thay đổi phải đi qua đơn mua, không sửa ngược lại PR. */
   const requestHasOrder = (request: PurchaseRequest) => liveOrdersOf(request).length > 0;
   /** Huỷ được khi hàng chưa về và chưa sinh công nợ — khớp CANCEL_ORDER ở /api/procurement. */
@@ -428,6 +460,7 @@ export default function ProcurementPage() {
 
   const resetRequestForm = () => {
     setEditingRequest(null);
+    setShowRequestForm(false);
     setRequestForm((form) => ({
       ...form,
       branchCode: "HCM",
@@ -440,6 +473,7 @@ export default function ProcurementPage() {
 
   const startEditRequest = (request: PurchaseRequest) => {
     setEditingRequest(request);
+    setShowRequestForm(true);
     setActive("requests");
     setRequestForm({
       branchCode: request.branchCode,
@@ -734,6 +768,10 @@ export default function ProcurementPage() {
   if (loading) return <div className="h-screen grid place-items-center bg-slate-100">Đang tải...</div>;
 
   const requestTotal = (request: PurchaseRequest) => request.lines.reduce((sum, line) => sum + line.quantity * line.estimatedUnitCost, 0);
+  const requestKeyword = requestFilter.search.trim().toLowerCase();
+  const filteredRequests = (requestList?.rows || []).filter((request) => !requestKeyword
+    || `${request.code} ${request.reason} ${request.requestedBy}`.toLowerCase().includes(requestKeyword)
+    || request.lines.some((line) => line.item.code.toLowerCase().includes(requestKeyword) || line.item.name.toLowerCase().includes(requestKeyword)));
 
   return (
     // Khung rộng như Kho & Định lượng (khách yêu cầu 03/10/2026): bảng báo giá / bảng giá nhiều cột.
@@ -800,14 +838,19 @@ export default function ProcurementPage() {
       )}
 
       {active === "requests" && (
-        <div className="grid xl:grid-cols-[420px_1fr] gap-5">
-          {(canCreate || editingRequest) && (
-            <form onSubmit={submitRequest} className="bg-white border border-slate-200 rounded-lg p-4 sm:p-5 space-y-4 h-fit shadow-sm">
-              <h2 className="font-bold text-slate-800">
-                {editingRequest ? `Sửa đề nghị ${editingRequest.code}` : "Tạo yêu cầu mua"}
-              </h2>
+        <div className="space-y-5">
+          {/* Form mở khi bấm "Tạo yêu cầu mua" / Sửa, chiếm cả bề ngang; danh sách bên dưới rộng
+              hết khung như Kho & Định lượng (khách yêu cầu 03/10/2026). */}
+          {((canCreate && showRequestForm) || editingRequest) && (
+            <form onSubmit={submitRequest} className="bg-white border border-slate-200 rounded-lg p-4 sm:p-5 space-y-4 shadow-sm">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="font-bold text-slate-800">
+                  {editingRequest ? `Sửa đề nghị ${editingRequest.code}` : "Tạo yêu cầu mua"}
+                </h2>
+                <button type="button" onClick={resetRequestForm} className="icon-button" title="Đóng form"><span className="material-symbols-outlined">close</span></button>
+              </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
                 <Field label="Cửa hàng">
                   <select
                     value={requestForm.branchCode}
@@ -841,6 +884,25 @@ export default function ProcurementPage() {
                     ))}
                   </select>
                 </Field>
+
+                <Field label="Ngày cần hàng">
+                  <DateInput
+                    value={requestForm.neededDate}
+                    onChange={(neededDate) => setRequestForm({ ...requestForm, neededDate })}
+                    className="control"
+                    required
+                    ariaLabel="Ngày cần hàng"
+                  />
+                </Field>
+
+                <Field label="Lý do / Diễn giải">
+                  <input
+                    value={requestForm.reason}
+                    onChange={(e) => setRequestForm({ ...requestForm, reason: e.target.value })}
+                    className="control"
+                    required
+                  />
+                </Field>
               </div>
 
               {/* Danh sách dòng hàng: PR nhiều mặt hàng trong một phiếu */}
@@ -851,6 +913,7 @@ export default function ProcurementPage() {
                     <span className="material-symbols-outlined text-sm font-bold">add</span>Thêm dòng
                   </button>
                 </div>
+                <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
                 {requestRows.map((row, index) => {
                   const rowItem = data.items.find((item) => item.id === row.itemId);
                   const suggestion = row.itemId ? data.priceSuggestions[row.itemId] : undefined;
@@ -892,29 +955,11 @@ export default function ProcurementPage() {
                     </div>
                   );
                 })}
+                </div>
                 <p className="text-right text-xs font-bold text-slate-700">
                   Tạm tính: {money(requestRows.reduce((sum, row) => sum + Number(row.quantity || 0) * Number(row.estimatedUnitCost || 0), 0))} đ
                 </p>
               </div>
-
-              <Field label="Ngày cần hàng">
-                <DateInput
-                  value={requestForm.neededDate}
-                  onChange={(neededDate) => setRequestForm({ ...requestForm, neededDate })}
-                  className="control"
-                  required
-                  ariaLabel="Ngày cần hàng"
-                />
-              </Field>
-
-              <Field label="Lý do / Diễn giải">
-                <textarea
-                  value={requestForm.reason}
-                  onChange={(e) => setRequestForm({ ...requestForm, reason: e.target.value })}
-                  className="control h-20 resize-none"
-                  required
-                />
-              </Field>
 
               <div className="flex gap-2">
                 {editingRequest && (
@@ -922,7 +967,7 @@ export default function ProcurementPage() {
                     Huỷ
                   </button>
                 )}
-                <button className="primary-button flex-1">
+                <button className="primary-button flex-1 xl:flex-none xl:min-w-[240px] xl:ml-auto">
                   <span className="material-symbols-outlined text-lg">{editingRequest ? "save" : "add"}</span>
                   {editingRequest ? "Lưu thay đổi" : "Tạo PR"}
                 </button>
@@ -938,14 +983,19 @@ export default function ProcurementPage() {
                   Yêu cầu gửi lên là mua hàng báo giá được ngay, không cần duyệt. &quot;Giá dự kiến&quot; do hệ thống tự đề xuất (báo giá đã chốt → báo giá gần nhất → đơn mua gần nhất → giá vốn tồn kho), chỉ để tham khảo — giá chính thức lấy từ báo giá NCC ở tab So sánh giá.
                 </p>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
+                {canCreate && !showRequestForm && !editingRequest && (
+                  <button type="button" onClick={() => setShowRequestForm(true)} className="secondary-button bg-white whitespace-nowrap">
+                    <span className="material-symbols-outlined text-lg">add</span>Tạo yêu cầu mua
+                  </button>
+                )}
                 {canCreate && (
                   <button
                     type="button"
                     onClick={openPoModal}
                     disabled={supplierGroups.length === 0}
                     title={supplierGroups.length === 0 ? "Chưa có yêu cầu mua nào kèm báo giá để đặt hàng" : "Gom mặt hàng theo nhà cung cấp để tạo đơn đặt hàng"}
-                    className="flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white text-sm font-bold px-3 py-2"
+                    className="whitespace-nowrap flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white text-sm font-bold px-3 py-2"
                   >
                     <span className="material-symbols-outlined text-lg">local_shipping</span>
                     Tạo đơn đặt hàng
@@ -956,9 +1006,51 @@ export default function ProcurementPage() {
               </div>
             </div>
 
+            {/* Lọc theo cửa hàng, phòng ban, trạng thái, khoảng ngày yêu cầu (khách yêu cầu 03/10/2026). */}
+            <div className="px-4 sm:px-5 pb-4 grid grid-cols-2 lg:grid-cols-6 gap-3">
+              <Field label="Cửa hàng">
+                <select className="control" value={requestFilter.branchCode} onChange={(e) => setRequestFilter({ ...requestFilter, branchCode: e.target.value, departmentCode: "ALL" })}>
+                  <option value="ALL">Tất cả cửa hàng</option>
+                  {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
+                </select>
+              </Field>
+              <Field label="Phòng ban">
+                <select className="control" value={requestFilter.departmentCode} onChange={(e) => setRequestFilter({ ...requestFilter, departmentCode: e.target.value })}>
+                  <option value="ALL">Tất cả phòng ban</option>
+                  {data.departments
+                    .filter((item) => requestFilter.branchCode === "ALL" || !item.branch || item.branch === "ALL" || item.branch === requestFilter.branchCode)
+                    .map((item) => <option key={item.id} value={item.code}>{item.name}{item.branch && item.branch !== "ALL" && requestFilter.branchCode === "ALL" ? ` (${storeLabel(item.branch)})` : ""}</option>)}
+                  <option value="NONE">Chưa gán phòng ban</option>
+                </select>
+              </Field>
+              <Field label="Trạng thái">
+                <select className="control" value={requestFilter.status} onChange={(e) => setRequestFilter({ ...requestFilter, status: e.target.value })}>
+                  <option value="ALL">Tất cả trạng thái</option>
+                  <option value="WAITING">Chờ mua hàng</option>
+                  <option value="ORDERED">Đã đặt hàng</option>
+                  <option value="COMPLETED">Hoàn tất</option>
+                  <option value="REJECTED">Đã từ chối</option>
+                  <option value="CANCELLED">Đã huỷ</option>
+                  <option value="DRAFT">Nháp</option>
+                </select>
+              </Field>
+              <Field label="Từ ngày">
+                <input type="date" className="control" value={requestFilter.from} onChange={(e) => setRequestFilter({ ...requestFilter, from: e.target.value })} />
+              </Field>
+              <Field label="Đến ngày">
+                <input type="date" className="control" value={requestFilter.to} onChange={(e) => setRequestFilter({ ...requestFilter, to: e.target.value })} />
+              </Field>
+              <Field label="Tìm mã / lý do / mặt hàng">
+                <input className="control" value={requestFilter.search} placeholder="Gõ để tìm..." onChange={(e) => setRequestFilter({ ...requestFilter, search: e.target.value })} />
+              </Field>
+            </div>
+            <p className="px-4 sm:px-5 pb-3 text-xs text-slate-500">
+              {requestList === null ? "Đang tải..." : <>Đang hiện <b>{filteredRequests.length}</b> yêu cầu · giá dự kiến <b>{money(filteredRequests.reduce((sum, request) => sum + requestTotal(request), 0))} đ</b>{requestList.truncated ? " — khoảng ngày quá rộng, chỉ hiện 2.000 phiếu mới nhất." : ""}</>}
+            </p>
+
             {/* Mobile: thẻ PR — Desktop: bảng */}
             <div className="md:hidden px-3 pb-3 space-y-2.5">
-              {data.requests.map((request) => (
+              {filteredRequests.map((request) => (
                 <div key={request.id} className="border border-slate-200 rounded-xl p-3.5 space-y-2">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
@@ -1005,7 +1097,7 @@ export default function ProcurementPage() {
                 { label: "Thao tác", align: "right" },
               ]}
             >
-              {data.requests.map((request) => (
+              {filteredRequests.map((request) => (
                 <tr key={request.id} className="border-t border-slate-100">
                   <td className="cell">
                     <CopyableText value={request.code}><b>{request.code}</b></CopyableText>

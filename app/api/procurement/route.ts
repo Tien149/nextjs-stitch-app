@@ -248,6 +248,43 @@ export async function GET(request: Request) {
 
     // ---- Bảng giá NCC (khách yêu cầu 03/10/2026) ----
     const view = searchParams.get("view");
+    // Danh sách yêu cầu mua có lọc (khách yêu cầu 03/10/2026): cửa hàng, phòng ban, trạng thái,
+    // khoảng ngày yêu cầu. Lọc ở máy chủ vì payload chung chỉ mang 100 PR mới nhất.
+    if (view === "requests") {
+      const parseDay = (value: string | null, endOfDay: boolean) => {
+        if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+        const start = new Date(`${value}T00:00:00+07:00`);
+        return endOfDay ? new Date(start.getTime() + 86_400_000) : start;
+      };
+      const from = parseDay(searchParams.get("from"), false);
+      const toExclusive = parseDay(searchParams.get("to"), true);
+      const statusGroups: Record<string, string[]> = {
+        WAITING: ["APPROVED", "PENDING_APPROVAL"],
+        ORDERED: ["ORDERED"],
+        COMPLETED: ["COMPLETED"],
+        REJECTED: ["REJECTED"],
+        CANCELLED: ["CANCELLED"],
+        DRAFT: ["DRAFT"],
+      };
+      const statuses = statusGroups[cleanText(searchParams.get("status")).toUpperCase()];
+      const departmentCode = cleanText(searchParams.get("departmentCode"));
+      const requests = await prisma.purchaseRequest.findMany({
+        where: {
+          ...branchFilter,
+          ...(departmentCode && departmentCode !== "ALL" ? (departmentCode === "NONE" ? { departmentCode: null } : { departmentCode }) : {}),
+          ...(statuses ? { status: { in: statuses } } : {}),
+          ...(from || toExclusive ? { requestDate: { ...(from ? { gte: from } : {}), ...(toExclusive ? { lt: toExclusive } : {}) } } : {}),
+        },
+        include: {
+          lines: { include: { item: true } },
+          quotes: { where: { deletedAt: null }, include: { lines: { include: { item: true } } }, orderBy: { totalAmount: "asc" } },
+          orders: { where: liveOrdersWhere, select: { id: true, code: true, status: true } },
+        },
+        orderBy: { requestDate: "desc" },
+        take: 2000,
+      });
+      return NextResponse.json({ requests, truncated: requests.length >= 2000 });
+    }
     if (view === "price-lists") {
       return NextResponse.json({ priceLists: await loadPriceLists() });
     }
