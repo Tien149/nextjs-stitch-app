@@ -2437,17 +2437,16 @@ export default function InventoryPage() {
                   </Cell>
                   <Cell right>
                     <div className="flex items-center justify-end gap-1.5">
-                    {/* In Phiếu nhập kho (khách yêu cầu 03/10/2026) — điều chuyển in ở kho nhận. */}
-                    {active === "inbound" && (
-                      <button
-                        type="button"
-                        onClick={() => window.open(`/inventory/${row.transaction.id}/print`, "_blank")}
-                        className="px-2.5 py-1 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 rounded-lg text-xs font-bold transition-colors"
-                        title="In phiếu nhập kho"
-                      >
-                        In
-                      </button>
-                    )}
+                    {/* In Phiếu nhập / xuất kho (khách yêu cầu 03/10/2026) — điều chuyển in ở kho nhận
+                        (màn Nhập) hoặc kho đi (màn Xuất). */}
+                    <button
+                      type="button"
+                      onClick={() => window.open(`/inventory/${row.transaction.id}/print${active === "outbound" ? "?dir=OUT" : ""}`, "_blank")}
+                      className="px-2.5 py-1 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 rounded-lg text-xs font-bold transition-colors"
+                      title={active === "outbound" ? "In phiếu xuất kho" : "In phiếu nhập kho"}
+                    >
+                      In
+                    </button>
                     {/* Điều chuyển góp một dòng cho mỗi màn hình; sửa/xoá nó ở đúng tab Điều chuyển. */}
                     {row.transaction.transactionType === "DIEU_CHUYEN" ? (
                       <span className="text-xs text-slate-400">Ở tab Điều chuyển</span>

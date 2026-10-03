@@ -8,9 +8,11 @@ import { movementTypeLabel } from "@/lib/inventory-movement-labels";
 import { vatRateLabel } from "@/lib/inventory-vat";
 
 /**
- * Bản in PHIẾU NHẬP KHO (khách yêu cầu 03/10/2026) — mở từ nút "In" trên danh sách phiếu nhập
- * ở màn Kho. Phiếu điều chuyển in thành phiếu nhập ở kho nhận. Cùng kiểu trang in phiếu thu/chi
- * (app/vouchers/[id]/print): tên nhà hàng, tiêu đề lớn, bảng hàng, ô ký tay để trống.
+ * Bản in PHIẾU NHẬP KHO / PHIẾU XUẤT KHO (khách yêu cầu 03/10/2026) — mở từ nút "In" trên danh
+ * sách phiếu ở màn Nhập kho / Xuất kho. Chiều in theo loại phiếu (NHAP_* / XUAT_*); phiếu điều
+ * chuyển theo `?dir=OUT` (màn Xuất kho: in ở kho đi) hoặc mặc định nhập ở kho nhận. Cùng kiểu
+ * trang in phiếu thu/chi (app/vouchers/[id]/print): tên nhà hàng, tiêu đề lớn, bảng hàng, ô ký
+ * tay để trống.
  */
 type Line = {
   id: string;
@@ -29,6 +31,7 @@ type StockDocument = {
   id: string;
   code: string;
   transactionType: string;
+  subType: string | null;
   transactionDate: string;
   branchCode: string;
   warehouseCode: string;
@@ -40,10 +43,16 @@ type StockDocument = {
   createdBy: string | null;
   lines: Line[];
 };
-type Payload = { transaction: StockDocument; partnerName: string | null; warehouseNames: Record<string, string> };
+type Payload = { transaction: StockDocument; partnerName: string | null; warehouseNames: Record<string, string>; transferDirection: "IN" | "OUT" };
 type BranchOption = { code: string; name: string };
 
-export default function StockReceiptPrintPage() {
+function wasteReasonLabel(subType: string | null) {
+  if (subType === "HET_HAN_SU_DUNG") return "Hết hạn sử dụng";
+  if (subType === "KHONG_DAM_BAO_CHAT_LUONG") return "Không đảm bảo chất lượng";
+  return null;
+}
+
+export default function StockDocumentPrintPage() {
   const params = useParams<{ id: string }>();
   const [payload, setPayload] = useState<Payload | null>(null);
   const [error, setError] = useState("");
@@ -52,7 +61,9 @@ export default function StockReceiptPrintPage() {
   useEffect(() => {
     fetch(`/api/inventory?view=document&id=${encodeURIComponent(params.id)}`).then(async (response) => {
       const data = await response.json().catch(() => ({}));
-      if (response.ok) setPayload(data as Payload);
+      // Đọc ?dir= ở đây thay vì useSearchParams để trang không cần bọc Suspense.
+      const transferDirection = new URLSearchParams(window.location.search).get("dir") === "OUT" ? "OUT" : "IN";
+      if (response.ok) setPayload({ ...(data as Payload), transferDirection });
       else setError((data as { error?: string }).error || "Không tải được phiếu kho");
     });
     fetch("/api/branding").then(async (response) => {
@@ -61,16 +72,20 @@ export default function StockReceiptPrintPage() {
   }, [params.id]);
 
   if (error) return <div className="p-10 text-rose-700">{error}</div>;
-  if (!payload) return <div className="p-10">Đang tải phiếu nhập kho...</div>;
+  if (!payload) return <div className="p-10">Đang tải phiếu kho...</div>;
 
-  const { transaction: doc, partnerName, warehouseNames } = payload;
-  // Điều chuyển: phiếu nhập đứng ở cửa hàng / kho nhận.
+  const { transaction: doc, partnerName, warehouseNames, transferDirection } = payload;
   const isTransfer = doc.transactionType === "DIEU_CHUYEN";
-  const branchCode = isTransfer ? doc.toBranchCode || doc.branchCode : doc.branchCode;
-  const warehouseCode = isTransfer ? doc.toWarehouseCode || doc.warehouseCode : doc.warehouseCode;
-  const branchName = branches.find((branch) => branch.code === branchCode)?.name || storeLabel(branchCode);
+  const isOutbound = isTransfer ? transferDirection === "OUT" : doc.transactionType.startsWith("XUAT_");
+  // Điều chuyển: phiếu nhập đứng ở cửa hàng / kho nhận, phiếu xuất ở cửa hàng / kho đi.
+  const atReceiver = isTransfer && !isOutbound;
+  const branchCode = atReceiver ? doc.toBranchCode || doc.branchCode : doc.branchCode;
+  const warehouseCode = atReceiver ? doc.toWarehouseCode || doc.warehouseCode : doc.warehouseCode;
+  const branchNameOf = (code: string) => branches.find((branch) => branch.code === code)?.name || storeLabel(code);
+  const branchName = branchNameOf(branchCode);
   const warehouseLabel = (code: string) => (warehouseNames[code] ? `${warehouseNames[code]} (${code})` : code);
-  const typeLabel = movementTypeLabel(isTransfer ? "NHAP_DIEU_CHUYEN" : doc.transactionType);
+  const typeLabel = movementTypeLabel(isTransfer ? (isOutbound ? "XUAT_DIEU_CHUYEN" : "NHAP_DIEU_CHUYEN") : doc.transactionType);
+  const wasteReason = doc.transactionType === "XUAT_HUY" ? wasteReasonLabel(doc.subType) : null;
 
   // In theo đúng ĐVT người dùng đã nhập trên phiếu (CHAI, THÙNG...), không quy về ĐVT tồn.
   const rows = doc.lines.map((line) => {
@@ -98,25 +113,29 @@ export default function StockReceiptPrintPage() {
         </div>
 
         <section className="text-center py-8">
-          <h2 className="text-3xl font-bold uppercase tracking-wide">Phiếu nhập kho</h2>
+          <h2 className="text-3xl font-bold uppercase tracking-wide">{isOutbound ? "Phiếu xuất kho" : "Phiếu nhập kho"}</h2>
           <p className="mt-2 text-sm uppercase tracking-widest text-slate-500">{doc.code}</p>
           <p className="text-sm text-slate-500 mt-2">Ngày {new Date(doc.transactionDate).toLocaleDateString("vi-VN")}</p>
         </section>
 
         <div className="space-y-3 text-sm">
-          <div className="grid grid-cols-[180px_1fr] gap-3"><b>Loại nhập</b><span>{typeLabel}</span></div>
+          <div className="grid grid-cols-[180px_1fr] gap-3"><b>{isOutbound ? "Loại xuất" : "Loại nhập"}</b><span>{typeLabel}{wasteReason ? ` · ${wasteReason}` : ""}</span></div>
           {isTransfer ? (
             <div className="grid grid-cols-[180px_1fr] gap-3">
-              <b>Chuyển từ</b>
-              <span>{storeLabel(doc.branchCode)} · {warehouseLabel(doc.warehouseCode)}</span>
+              <b>{isOutbound ? "Chuyển đến" : "Chuyển từ"}</b>
+              <span>
+                {isOutbound
+                  ? `${branchNameOf(doc.toBranchCode || doc.branchCode)} · ${warehouseLabel(doc.toWarehouseCode || "")}`
+                  : `${branchNameOf(doc.branchCode)} · ${warehouseLabel(doc.warehouseCode)}`}
+              </span>
             </div>
           ) : (
             <div className="grid grid-cols-[180px_1fr] gap-3">
-              <b>Nhà cung cấp</b>
+              <b>{isOutbound ? "Đối tác / người nhận" : "Nhà cung cấp"}</b>
               <span className={partnerName ? "" : "border-b border-dotted border-slate-400"}>{partnerName || ""}</span>
             </div>
           )}
-          <div className="grid grid-cols-[180px_1fr] gap-3"><b>Nhập tại kho</b><span>{warehouseLabel(warehouseCode)}</span></div>
+          <div className="grid grid-cols-[180px_1fr] gap-3"><b>{isOutbound ? "Xuất tại kho" : "Nhập tại kho"}</b><span>{warehouseLabel(warehouseCode)}</span></div>
           {doc.referenceCode && doc.referenceCode !== doc.code && <div className="grid grid-cols-[180px_1fr] gap-3"><b>Chứng từ tham chiếu</b><span>{doc.referenceCode}</span></div>}
           {doc.note && <div className="grid grid-cols-[180px_1fr] gap-3"><b>Ghi chú</b><span>{doc.note}</span></div>}
         </div>
@@ -171,7 +190,7 @@ export default function StockReceiptPrintPage() {
         {/* Ô ký để trống cho ký tay trên bản in. */}
         <div className="grid grid-cols-4 gap-6 text-center mt-16 text-sm">
           <div><b>Người lập phiếu</b><div className="h-20" /><p>{doc.createdBy || ""}</p></div>
-          <div><b>{isTransfer ? "Người giao hàng" : "Người giao hàng (NCC)"}</b><div className="h-20" /></div>
+          <div><b>{isOutbound ? "Người nhận hàng" : isTransfer ? "Người giao hàng" : "Người giao hàng (NCC)"}</b><div className="h-20" /></div>
           <div><b>Thủ kho</b><div className="h-20" /></div>
           <div><b>Kế toán</b><div className="h-20" /></div>
         </div>
