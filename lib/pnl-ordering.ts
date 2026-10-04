@@ -56,7 +56,7 @@ function nameWords(value: string | null | undefined) {
  * Đoán hạng mục lương của một bộ phận khi danh mục Phòng ban chưa gắn hạng mục (khách 29/09/2026:
  * lương phải đi theo từng bộ phận, không gom cả vào một hạng mục). Khớp khi mã bộ phận là một từ
  * trong mã hạng mục ("FOH" ↔ "CPNLD_FOH"), hoặc tên bộ phận bỏ tiền tố "Bộ phận/Phòng" nằm trọn
- * trong tên hạng mục ("Bộ phận Bảo trì" ↔ "CPNLD Lương Bảo Trì & Sửa Chữa"). Chỉ nhận khi ra đúng
+ * trong tên hạng mục ("Bộ phận Bảo trì" / "Team Bảo Trì - Sửa Chữa" ↔ "CPNLD Lương Bảo Trì & Sửa Chữa"). Chỉ nhận khi ra đúng
  * MỘT hạng mục — khớp nhiều là mơ hồ, để kế toán gắn tay.
  */
 export function matchDepartmentPayrollItem<T extends { code: string; name: string }>(
@@ -64,7 +64,9 @@ export function matchDepartmentPayrollItem<T extends { code: string; name: strin
   department: { code: string; name?: string | null },
 ) {
   const code = nameWords(department.code);
-  const name = nameWords(department.name).replace(/^(bo phan|phong ban|phong|bp|khoi|to)\s+/, "");
+  // Tiền tố chung của tên bộ phận không phải tên nghiệp vụ. "Team" thêm 04/10/2026: VPS đặt "Team Bếp",
+  // "Team Bảo Trì - Sửa Chữa" nên không khớp hạng mục nào và lương rơi về hạng mục lương mặc định.
+  const name = nameWords(department.name).replace(/^(bo phan|phong ban|phong|bp|khoi|to|team|nhom)\s+/, "");
   if (!code) return null;
   const hasWords = (text: string, phrase: string) => phrase.length >= 3 && ` ${text} `.includes(` ${phrase} `);
   const byCode = payrollItems.filter((item) => nameWords(item.code).split(" ").includes(code));
