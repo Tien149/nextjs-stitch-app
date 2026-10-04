@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/custom-client";
+import { roundPeriodCount } from "@/lib/period-count";
 import { moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { resolveOpeningAsset } from "@/lib/opening-asset";
 
@@ -52,12 +53,12 @@ export function normalizeOpeningBalanceInput(body: Record<string, unknown>): Ope
     departmentCode: nullableText(body.departmentCode)?.toUpperCase() || null,
     quantity: nullableNumber(body.quantity),
     unitCost: nullableNumber(body.unitCost),
-    allocationMonths: nullableNumber(body.allocationMonths) === null ? null : Math.floor(number(body.allocationMonths)),
+    allocationMonths: nullableNumber(body.allocationMonths) === null ? null : roundPeriodCount(number(body.allocationMonths)),
     allocationStartPeriod: nullableText(body.allocationStartPeriod),
     pnlItemCode: nullableText(body.pnlItemCode)?.toUpperCase() || null,
     amount: number(body.amount),
     originalCost: nullableNumber(body.originalCost),
-    depreciatedPeriods: nullableNumber(body.depreciatedPeriods) === null ? null : Math.floor(number(body.depreciatedPeriods)),
+    depreciatedPeriods: nullableNumber(body.depreciatedPeriods) === null ? null : roundPeriodCount(number(body.depreciatedPeriods)),
     depreciatedAmount: nullableNumber(body.depreciatedAmount),
     note: nullableText(body.note),
   };

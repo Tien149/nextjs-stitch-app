@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { formatPeriodCount } from "@/lib/period-count";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
 import { periodInRange, type DateRange } from "@/lib/date-range";
@@ -888,6 +889,8 @@ export default function OpeningBalancesPage() {
                     Tổng số kỳ phân bổ *
                     <input
                       type="number"
+                      min="0"
+                      step="0.01"
                       value={form.allocationMonths}
                       onChange={(event) => setForm((value) => ({ ...value, allocationMonths: event.target.value }))}
                       className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500"
@@ -915,6 +918,7 @@ export default function OpeningBalancesPage() {
                     <input
                       type="number"
                       min={0}
+                      step="0.01"
                       value={form.depreciatedPeriods}
                       onChange={(event) => setForm((value) => ({ ...value, depreciatedPeriods: event.target.value }))}
                       className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500"
@@ -991,8 +995,8 @@ export default function OpeningBalancesPage() {
                     Số kỳ phân bổ (Tháng) *
                     <input
                       type="number"
-                      min="1"
-                      step="1"
+                      min="0.01"
+                      step="0.01"
                       value={form.allocationMonths}
                       onChange={(event) => setForm((value) => ({ ...value, allocationMonths: event.target.value }))}
                       className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500"
@@ -1179,16 +1183,16 @@ export default function OpeningBalancesPage() {
                                 Nhóm: {balance.moneySourceCode
                                   ? `${balance.moneySourceCode}${assetGroups.find((item) => item.code === balance.moneySourceCode)?.name ? ` - ${assetGroups.find((item) => item.code === balance.moneySourceCode)?.name}` : ""}`
                                   : "chưa khai"}
-                                {" · "}BP: {balance.departmentCode || "Văn phòng"} · Khấu hao: {balance.allocationMonths} tháng · BĐ: {balance.allocationStartPeriod}
+                                {" · "}BP: {balance.departmentCode || "Văn phòng"} · Khấu hao: {formatPeriodCount(balance.allocationMonths)} tháng · BĐ: {balance.allocationStartPeriod}
                                 {(balance.depreciatedPeriods || 0) > 0 && (
-                                  <> · Đã PB {balance.depreciatedPeriods}/{balance.allocationMonths} kỳ ({formatCurrency(balance.depreciatedAmount || 0)} đ) · Nguyên giá {formatCurrency(balance.originalCost || 0)} đ</>
+                                  <> · Đã PB {formatPeriodCount(balance.depreciatedPeriods || 0)}/{formatPeriodCount(balance.allocationMonths)} kỳ ({formatCurrency(balance.depreciatedAmount || 0)} đ) · Nguyên giá {formatCurrency(balance.originalCost || 0)} đ</>
                                 )}
                               </span>
                             )}
                             {/* Prepaid Detail */}
                             {balance.balanceType === "PREPAID_EXPENSE" && (
                               <span className="text-[11px] text-slate-500 font-bold block mt-0.5">
-                                Phân bổ: {balance.allocationMonths} tháng · BĐ: {balance.allocationStartPeriod} · Loại: {balance.moneySourceCode || "OPEX"} · P&L: {balance.pnlItemCode || "chưa xếp"}
+                                Phân bổ: {formatPeriodCount(balance.allocationMonths)} tháng · BĐ: {balance.allocationStartPeriod} · Loại: {balance.moneySourceCode || "OPEX"} · P&L: {balance.pnlItemCode || "chưa xếp"}
                               </span>
                             )}
 

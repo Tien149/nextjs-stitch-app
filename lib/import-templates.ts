@@ -698,7 +698,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "department_code", label: "Phòng ban", required: false, type: "text", aliases: ["phong ban", "department", "department code"] },
       { field: "quantity", label: "Số lượng", required: false, type: "number", aliases: ["so luong", "quantity", "qty"] },
       { field: "unit_cost", label: "Đơn giá", required: false, type: "number", aliases: ["don gia", "unit cost", "unit_cost"], note: "Chỉ cho Tồn kho (INVENTORY). Tài sản/CCDC đang phân bổ dở dùng mẫu \"CCDC đầu kỳ\" — không cần đơn giá." },
-      { field: "allocation_months", label: "Số kỳ phân bổ", required: false, type: "integer", aliases: ["so ky phan bo", "so thang phan bo"] },
+      { field: "allocation_months", label: "Số kỳ phân bổ", required: false, type: "number", aliases: ["so ky phan bo", "so thang phan bo"] },
       { field: "allocation_start_period", label: "Kỳ bắt đầu phân bổ", required: false, type: "text", aliases: ["ky bat dau phan bo", "bat dau phan bo"] },
       // Khai hạng mục P&L ngay trên file: khoản phân bổ sinh ra khi commit mang luôn mã này,
       // khỏi phải mở tab Trích trước gán lại từng khoản sau khi import.
@@ -706,7 +706,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "amount", label: "Số tiền", required: true, type: "number", aliases: ["so tien", "amount"], note: "Số dư tại kỳ: tiền quỹ/ngân hàng/ví, số còn nợ, tiền cọc, giá trị tồn kho, chi phí trả trước CÒN LẠI; Tài sản/CCDC = giá trị CÒN LẠI chưa phân bổ." },
       // Chỉ cho loại ASSET đang phân bổ dở; Số tiền khi đó là GIÁ TRỊ CÒN LẠI.
       { field: "original_cost", label: "Nguyên giá ban đầu", required: false, type: "number", aliases: ["nguyen gia", "nguyen gia ban dau", "tong gia tri"] },
-      { field: "depreciated_periods", label: "Số kỳ đã phân bổ", required: false, type: "integer", aliases: ["so ky da phan bo", "so ky da pb"] },
+      { field: "depreciated_periods", label: "Số kỳ đã phân bổ", required: false, type: "number", aliases: ["so ky da phan bo", "so ky da pb"] },
       { field: "depreciated_amount", label: "Giá trị đã phân bổ", required: false, type: "number", aliases: ["gia tri da phan bo", "gia tri da pb"] },
       { field: "note", label: "Ghi chú", required: false, type: "text", aliases: ["ghi chu", "note"] },
     ],
@@ -732,9 +732,9 @@ export const importTemplates: ImportTemplateDefinition[] = [
       // trị và Giá trị còn lại; đơn giá lẻ nhân ngược chỉ đẻ thêm lệch làm tròn.
       { field: "original_cost", label: "Tổng giá trị", required: true, type: "number", aliases: ["tong gia tri", "nguyen gia", "nguyen gia ban dau", "thanh tien"], note: "Nguyên giá ban đầu của cả dòng (tất cả số lượng)." },
       { field: "allocation_per_period", label: "Giá trị phân bổ/kỳ", required: false, type: "number", aliases: ["gia tri phan bo/ky", "gia tri phan bo ky", "phan bo/ky", "phan bo moi ky"], note: "Chỉ để đối chiếu. Hệ thống phân bổ tiếp = Giá trị còn lại ÷ Số kỳ PB còn lại." },
-      { field: "allocation_months", label: "Tổng số kỳ phân bổ", required: true, type: "integer", aliases: ["tong so ky phan bo", "tong so ky pb", "so ky phan bo"] },
-      { field: "depreciated_periods", label: "Số kỳ đã PB", required: false, type: "integer", aliases: ["so ky da pb", "so ky da phan bo"], note: "Bỏ trống thì lấy Tổng số kỳ − Số kỳ PB còn lại." },
-      { field: "remaining_periods", label: "Số kỳ PB còn lại", required: true, type: "integer", aliases: ["so ky pb con lai", "so ky con lai", "so ky phan bo con lai"] },
+      { field: "allocation_months", label: "Tổng số kỳ phân bổ", required: true, type: "number", aliases: ["tong so ky phan bo", "tong so ky pb", "so ky phan bo"] },
+      { field: "depreciated_periods", label: "Số kỳ đã PB", required: false, type: "number", aliases: ["so ky da pb", "so ky da phan bo"], note: "Bỏ trống thì lấy Tổng số kỳ − Số kỳ PB còn lại." },
+      { field: "remaining_periods", label: "Số kỳ PB còn lại", required: true, type: "number", aliases: ["so ky pb con lai", "so ky con lai", "so ky phan bo con lai"] },
       { field: "depreciated_amount", label: "Giá trị đã PB", required: true, type: "number", aliases: ["gia tri da pb", "gia tri da phan bo", "da phan bo"] },
       { field: "amount", label: "Giá trị phân bổ còn lại", required: true, type: "number", aliases: ["gia tri phan bo con lai", "gia tri con lai", "con lai", "gia tri con lai chua phan bo"], note: "Giá trị CHƯA phân bổ tại kỳ số dư = Tổng giá trị − Giá trị đã PB. Đây là số dư đầu kỳ, hệ thống phân bổ tiếp đúng số này chia đều cho Số kỳ PB còn lại." },
       { field: "department_code", label: "Bộ phận", required: false, type: "text", aliases: ["bo phan", "phong ban", "department"] },
@@ -944,7 +944,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
       // Khách theo dõi tài sản kiểu quản trị (đếm cái, gắn phòng ban) chứ không làm kế toán,
       // nên nguyên giá không bắt buộc; chỉ tài sản ghi công nợ mới cần nguyên giá thật.
       { field: "original_cost", label: "Nguyen gia", required: false, type: "number", aliases: ["nguyen gia", "gia tri", "original cost", "cost"] },
-      { field: "useful_life_months", label: "So ky phan bo/khau hao", required: false, type: "integer", aliases: ["so ky phan bo", "so thang phan bo", "so ky khau hao", "useful life months"] },
+      { field: "useful_life_months", label: "So ky phan bo/khau hao", required: false, type: "number", aliases: ["so ky phan bo", "so thang phan bo", "so ky khau hao", "useful life months"] },
       { field: "depreciation_start_date", label: "Ngay bat dau phan bo", required: false, type: "date", aliases: ["ngay bat dau phan bo", "ngay bat dau khau hao", "depreciation start date"] },
       { field: "residual_value", label: "Gia tri thu hoi", required: false, type: "number", aliases: ["gia tri thu hoi", "gia tri con lai toi thieu", "residual value"] },
       { field: "supplier_code", label: "Ma nha cung cap", required: false, type: "text", aliases: ["ma nha cung cap", "ma ncc", "supplier code"] },
@@ -1014,7 +1014,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "deposit_code", label: "Mã tiền cọc", required: false, type: "text", aliases: ["ma tien coc", "ma coc", "deposit code"] },
       { field: "debt_action", label: "Xử lý công nợ", required: false, type: "text", aliases: ["xu ly cong no", "giam tru cong no", "thanh toan cong no", "debt action"] },
       { field: "debt_reference", label: "Mã công nợ", required: false, type: "text", aliases: ["ma cong no", "so chung tu cong no", "debt reference"] },
-      { field: "allocation_months", label: "Số kỳ phân bổ", required: false, type: "integer", aliases: ["so ky phan bo", "so thang phan bo"] },
+      { field: "allocation_months", label: "Số kỳ phân bổ", required: false, type: "number", aliases: ["so ky phan bo", "so thang phan bo"] },
       { field: "allocation_start_period", label: "Kỳ bắt đầu phân bổ", required: false, type: "text", aliases: ["ky bat dau phan bo", "bat dau phan bo"] },
     ],
   },
@@ -1069,7 +1069,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "description", label: "Diễn giải", required: true, type: "text", aliases: ["dien giai", "mo ta giao dich", "noi dung"] },
       { field: "amount", label: "Số tiền", required: true, type: "number", aliases: ["so tien", "amount"] },
       { field: "due_date", label: "Hạn thanh toán", required: false, type: "date", aliases: ["han thanh toan", "ngay den han"] },
-      { field: "allocation_months", label: "Số kỳ phân bổ", required: false, type: "integer", aliases: ["so ky phan bo", "so thang phan bo"] },
+      { field: "allocation_months", label: "Số kỳ phân bổ", required: false, type: "number", aliases: ["so ky phan bo", "so thang phan bo"] },
       { field: "allocation_start_period", label: "Kỳ bắt đầu phân bổ", required: false, type: "text", aliases: ["ky bat dau phan bo", "bat dau phan bo"] },
       // Chi phí phát sinh trong kỳ hay số dư mang sang: quyết định khoản này có lên P&L không.
       // Bỏ trống = số dư đầu kỳ, giữ đúng cách hiểu của các file đã import trước đây.
@@ -1121,7 +1121,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "description", label: "Diễn giải", required: true, type: "text", aliases: ["dien giai", "mo ta giao dich", "noi dung"] },
       { field: "amount", label: "Số tiền", required: true, type: "number", aliases: ["so tien", "amount"] },
       { field: "due_date", label: "Hạn thanh toán", required: false, type: "date", aliases: ["han thanh toan", "ngay den han"] },
-      { field: "allocation_months", label: "Số kỳ phân bổ", required: false, type: "integer", aliases: ["so ky phan bo", "so thang phan bo"] },
+      { field: "allocation_months", label: "Số kỳ phân bổ", required: false, type: "number", aliases: ["so ky phan bo", "so thang phan bo"] },
       { field: "allocation_start_period", label: "Kỳ bắt đầu phân bổ", required: false, type: "text", aliases: ["ky bat dau phan bo", "bat dau phan bo"] },
       // Chi phí phát sinh trong kỳ hay số dư mang sang: quyết định khoản này có lên P&L không.
       // Bỏ trống = số dư đầu kỳ, giữ đúng cách hiểu của các file đã import trước đây.

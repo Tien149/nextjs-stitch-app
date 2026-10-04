@@ -3,7 +3,7 @@ import { prismaDateRange } from "@/lib/date-range";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma, prismaRaw } from "@/lib/prisma";
 import { requestedBranch, assertBranchAccess, ensureDefaultAccounts, postJournalEntry } from "@/lib/accounting";
-import { closedPeriodMessage, findClosedPeriod, isPeriodLocked, periodFromDate } from "@/lib/phase3";
+import { closedPeriodMessage, findClosedPeriod, isPeriodLocked, periodFromDate, roundPeriodCount } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
 import type { DemoSession } from "@/lib/auth-demo";
 import { assertAssetCodeAvailable, AssetCodeError, nextAssetCode, nextAssetLot, normalizeAssetCode } from "@/lib/asset-code-generator";
@@ -376,7 +376,7 @@ export async function POST(request: Request) {
       ? (cleanText(body.departmentCode) || (branchCode === reuseTemplate.branchCode ? (reuseTemplate.departmentCode || "") : ""))
       : cleanText(body.departmentCode);
     const quantity = toAmount(body.quantity) || 1;
-    const usefulLifeMonths = body.usefulLifeMonths !== undefined && body.usefulLifeMonths !== "" ? Math.floor(toAmount(body.usefulLifeMonths)) : null;
+    const usefulLifeMonths = body.usefulLifeMonths !== undefined && body.usefulLifeMonths !== "" ? roundPeriodCount(toAmount(body.usefulLifeMonths)) : null;
     const purchaseDate = body.purchaseDate ? new Date(String(body.purchaseDate)) : new Date();
     const paymentStatus = cleanText(body.paymentStatus).toUpperCase() || "PAID";
     const payableAmount = paymentStatus === "PAYABLE" ? (toAmount(body.payableAmount) || originalCost) : 0;
@@ -795,7 +795,7 @@ export async function PATCH(request: Request) {
       body.usefulLifeMonths !== undefined
       && body.usefulLifeMonths !== null
       && body.usefulLifeMonths !== ""
-      && Math.floor(toAmount(body.usefulLifeMonths)) <= 0
+      && roundPeriodCount(toAmount(body.usefulLifeMonths)) <= 0
     ) {
       return NextResponse.json({ error: "Số kỳ khấu hao phải lớn hơn 0" }, { status: 400 });
     }
@@ -880,7 +880,7 @@ export async function PATCH(request: Request) {
         ...(body.purchaseDate !== undefined ? { purchaseDate: new Date(String(body.purchaseDate)) } : {}),
         ...(body.originalCost !== undefined ? { originalCost: toAmount(body.originalCost) } : {}),
         ...(body.currentValue !== undefined ? { currentValue: toAmount(body.currentValue) } : {}),
-        ...(body.usefulLifeMonths !== undefined ? { usefulLifeMonths: Math.floor(toAmount(body.usefulLifeMonths)) || null } : {}),
+        ...(body.usefulLifeMonths !== undefined ? { usefulLifeMonths: roundPeriodCount(toAmount(body.usefulLifeMonths)) || null } : {}),
         ...(body.depreciationStartDate !== undefined ? { depreciationStartDate: body.depreciationStartDate ? new Date(String(body.depreciationStartDate)) : null } : {}),
         ...(body.residualValue !== undefined ? { residualValue: toAmount(body.residualValue) } : {}),
         ...(body.supplierCode !== undefined ? { supplierCode: cleanText(body.supplierCode) || null } : {}),

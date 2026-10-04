@@ -3,7 +3,7 @@ import { isAdmin, requireCashDepositCreate, requireMenuAccess, requireMenuAction
 import { getExpenseSummary } from "@/lib/expense-summary";
 import { CASH_MOVING_ADJUSTMENT_FILTER, REVENUE_SETTLEMENT_WRITEOFF_SOURCE } from "@/lib/revenue-settlement-writeoff";
 import { prisma, prismaRaw } from "@/lib/prisma";
-import { addPeriod, apiError, buildAllocationSchedules, businessError, cleanText, isPeriodLocked, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
+import { addPeriod, apiError, buildAllocationSchedules, businessError, cleanText, isPeriodLocked, normalizePeriod, roundPeriodCount, toDate, toNumber } from "@/lib/phase3";
 import { requestedBranch, assertBranchAccess, branchFilterForSession } from "@/lib/accounting";
 import { writeAuditLog } from "@/lib/audit-log";
 import { nextSeqFromCodes, voucherCodePrefix } from "@/lib/voucher-code-generator";
@@ -1782,7 +1782,7 @@ export async function POST(request: Request) {
 
     if (action === "CREATE_ACCRUAL") {
       const startPeriod = normalizePeriod(body.startPeriod);
-      const numberOfPeriods = Math.floor(toNumber(body.numberOfPeriods));
+      const numberOfPeriods = roundPeriodCount(body.numberOfPeriods);
       const totalAmount = toNumber(body.totalAmount);
       const branchCode = cleanText(body.branchCode);
       if (!startPeriod || numberOfPeriods <= 0 || totalAmount <= 0 || !cleanText(body.name) || !branchCode) businessError("Khoản trích trước thiếu thông tin bắt buộc");

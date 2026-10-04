@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { formatPeriodCount } from "@/lib/period-count";
 import { useParams } from "next/navigation";
 import { storeLabel } from "@/lib/branch-labels";
 import { money, quantity as qty } from "@/lib/format-number";
@@ -138,7 +139,7 @@ export default function AssetReceiptPrintPage() {
               <td className="py-2 pr-2 text-right tabular-nums">{money(unitCost)}</td>
               <td className="py-2 pr-2 text-right tabular-nums font-bold">{money(asset.originalCost)}</td>
               <td className="py-2 text-right tabular-nums">
-                {asset.usefulLifeMonths ? `${asset.usefulLifeMonths} kỳ` : "-"}
+                {asset.usefulLifeMonths ? `${formatPeriodCount(asset.usefulLifeMonths)} kỳ` : "-"}
                 {asset.depreciationStartDate && <small className="block text-slate-500">từ {day(asset.depreciationStartDate)}</small>}
               </td>
             </tr>

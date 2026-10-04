@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { formatPeriodCount } from "@/lib/period-count";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
 import type { DateRange } from "@/lib/date-range";
 import ExportExcelButton from "@/components/ExportExcelButton";
@@ -930,7 +931,8 @@ export default function AssetsPage() {
                   Số kỳ (tháng)
                   <input
                     type="number"
-                    min="1"
+                    min="0.01"
+                    step="0.01"
                     value={form.usefulLifeMonths}
                     onChange={(e) => setForm((v) => ({ ...v, usefulLifeMonths: e.target.value }))}
                     className="mt-1 w-full border border-slate-300 rounded-lg px-2.5 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
@@ -1289,7 +1291,7 @@ export default function AssetsPage() {
                             {asset.usefulLifeMonths ? (
                               <div className="space-y-0.5">
                                 <span className="font-semibold text-slate-700">
-                                  {asset.allocatedPeriods || 0} / {asset.usefulLifeMonths} kỳ
+                                  {formatPeriodCount(asset.allocatedPeriods || 0)} / {formatPeriodCount(asset.usefulLifeMonths)} kỳ
                                 </span>
                                 <div className="w-16 bg-slate-200 rounded-full h-1.5 mx-auto overflow-hidden">
                                   <div

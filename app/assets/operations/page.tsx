@@ -1031,7 +1031,7 @@ export default function AssetOperationsPage() {
                 <AssetSelect assets={data.assets} value={assetId} onChange={setAssetId} />
                 <div className="grid grid-cols-3 gap-3">
                   <Field label="Số tháng">
-                    <input type="number" className="control" value={config.usefulLifeMonths} onChange={(e) => setConfig({ ...config, usefulLifeMonths: e.target.value })} />
+                    <input type="number" min="0.01" step="0.01" className="control" value={config.usefulLifeMonths} onChange={(e) => setConfig({ ...config, usefulLifeMonths: e.target.value })} />
                   </Field>
                   <Field label="Bắt đầu">
                     <DateInput className="mt-1.5" value={config.depreciationStartDate} onChange={(depreciationStartDate) => setConfig({ ...config, depreciationStartDate })} ariaLabel="Ngày bắt đầu khấu hao" />
@@ -1293,7 +1293,7 @@ export default function AssetOperationsPage() {
                 </Field>
                 {resolveDamage.repairTreatment === "ALLOCATE" && (
                   <Field label="Số kỳ phân bổ">
-                    <input type="number" min="2" className="control" value={resolveDamage.numberOfPeriods} onChange={(e) => setResolveDamage({ ...resolveDamage, numberOfPeriods: e.target.value })} />
+                    <input type="number" min="1" step="0.01" className="control" value={resolveDamage.numberOfPeriods} onChange={(e) => setResolveDamage({ ...resolveDamage, numberOfPeriods: e.target.value })} />
                   </Field>
                 )}
                 {resolveDamage.repairTreatment === "EXPENSE" && (

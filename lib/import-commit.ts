@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { WALLET_FEE_SOURCE_TYPE, walletFeeSourcePrefix } from "@/lib/wallet-fee-journal";
 import { Prisma } from "@prisma/custom-client";
 import { prisma, prismaRaw, type RawTxClient, type TxClient } from "@/lib/prisma";
-import { assertPeriodOpen as assertAccountingPeriodOpen, buildAllocationSchedules, isPeriodLocked, periodFromDate } from "@/lib/phase3";
+import { assertPeriodOpen as assertAccountingPeriodOpen, buildAllocationSchedules, isPeriodLocked, periodFromDate, roundPeriodCount } from "@/lib/phase3";
 import { ensureDefaultAccounts } from "@/lib/accounting";
 import { INVENTORY_ITEM_UPDATE_TEMPLATE, isMasterDataImportType, normalizeHeader, type ImportType } from "@/lib/import-templates";
 import { normalizeGoodsGroup } from "@/lib/goods-group";
@@ -87,6 +87,11 @@ function saleHourOf(value: unknown) {
   if (value === null || value === undefined || value === "") return null;
   const hour = Number(value);
   return Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : null;
+}
+
+/** Số kỳ phân bổ / khấu hao: số lẻ 2 chữ số thập phân (03/10/2026). */
+function asPeriods(value: unknown) {
+  return roundPeriodCount(asNumber(value));
 }
 
 function asInteger(value: unknown) {
@@ -1969,7 +1974,7 @@ export async function commitImport(input: CommitInput) {
             departmentCode: row.values.department_code ? asText(row.values.department_code) : null,
             quantity: row.values.quantity ? asNumber(row.values.quantity) : null,
             unitCost: row.values.unit_cost ? asNumber(row.values.unit_cost) : null,
-            allocationMonths: row.values.allocation_months ? asInteger(row.values.allocation_months) : null,
+            allocationMonths: row.values.allocation_months ? asPeriods(row.values.allocation_months) : null,
             allocationStartPeriod: row.values.allocation_start_period ? asText(row.values.allocation_start_period) : null,
             pnlItemCode: row.values.pnl_item_code ? asText(row.values.pnl_item_code).toUpperCase() : null,
             amount: asNumber(row.values.amount),
@@ -1977,7 +1982,7 @@ export async function commitImport(input: CommitInput) {
             ...(asText(row.values.balance_type).toUpperCase() === "ASSET"
               ? {
                 originalCost: asNumber(row.values.original_cost),
-                depreciatedPeriods: asInteger(row.values.depreciated_periods),
+                depreciatedPeriods: asPeriods(row.values.depreciated_periods),
                 depreciatedAmount: asNumber(row.values.depreciated_amount),
               }
               : {}),
@@ -2050,7 +2055,7 @@ export async function commitImport(input: CommitInput) {
         }
 
         if (balanceType === "PREPAID_EXPENSE" && row.values.object_code) {
-          const months = asInteger(row.values.allocation_months);
+          const months = asPeriods(row.values.allocation_months);
           const startPeriod = asText(row.values.allocation_start_period);
           const code = `PB-DK-${asText(row.values.object_code).toUpperCase()}`;
           const amount = asNumber(row.values.amount);
@@ -2134,7 +2139,7 @@ export async function commitImport(input: CommitInput) {
             purchaseDate,
             originalCost,
             currentValue: originalCost,
-            usefulLifeMonths: row.values.useful_life_months ? asInteger(row.values.useful_life_months) : null,
+            usefulLifeMonths: row.values.useful_life_months ? asPeriods(row.values.useful_life_months) : null,
             depreciationStartDate: row.values.depreciation_start_date ? asDate(row.values.depreciation_start_date) : null,
             residualValue: row.values.residual_value ? asNumber(row.values.residual_value) : 0,
             supplierCode: asText(row.values.supplier_code) || null,
@@ -2226,7 +2231,7 @@ export async function commitImport(input: CommitInput) {
             depositCode: asText(row.values.deposit_code) || null,
             debtAction: asText(row.values.debt_action) || null,
             debtReference: asText(row.values.debt_reference) || null,
-            allocationMonths: row.values.allocation_months ? asInteger(row.values.allocation_months) : null,
+            allocationMonths: row.values.allocation_months ? asPeriods(row.values.allocation_months) : null,
             allocationStartPeriod: asText(row.values.allocation_start_period) || null,
             amount: asNumber(row.values.amount),
             description: asText(row.values.description),
@@ -2306,7 +2311,7 @@ export async function commitImport(input: CommitInput) {
             pnlItemCode: debtType === "PAYABLE" ? asText(row.values.pnl_item_code) || null : null,
             originalAmount: asNumber(row.values.amount),
             outstandingAmount: asNumber(row.values.amount),
-            allocationMonths: row.values.allocation_months ? asInteger(row.values.allocation_months) : null,
+            allocationMonths: row.values.allocation_months ? asPeriods(row.values.allocation_months) : null,
             allocationStartPeriod: asText(row.values.allocation_start_period) || null,
             description: asText(row.values.description),
             sourceType: "IMPORT",
@@ -2315,13 +2320,13 @@ export async function commitImport(input: CommitInput) {
             // nữa là tính hai lần.
             recognizeExpense: debtType === "PAYABLE"
               && parseDebtExpenseType(row.values.expense_type) === "INCURRED"
-              && asInteger(row.values.allocation_months) <= 1,
+              && asPeriods(row.values.allocation_months) <= 1,
             status: "OPEN",
           },
         });
         await setImportTarget(tx, staging, row, "DEBT_OPENING", debt.id);
 
-        const allocationMonths = asInteger(row.values.allocation_months);
+        const allocationMonths = asPeriods(row.values.allocation_months);
         if (debtType === "PAYABLE" && allocationMonths > 1) {
           const startPeriod = asText(row.values.allocation_start_period);
           await tx.accrual.create({

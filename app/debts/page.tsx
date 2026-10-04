@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { formatPeriodCount } from "@/lib/period-count";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { useRouter } from "next/navigation";
 import { BranchScopeSelect, resolveInitialBranchScope } from "@/components/BranchScopeSelect";
@@ -149,9 +150,9 @@ function AllocationFields({ months, startPeriod, amount, defaultPeriod, onChange
             Số kỳ phân bổ *
             <input
               type="number"
-              min={2}
+              min={1.01}
               max={120}
-              step={1}
+              step={0.01}
               value={months}
               onChange={(event) => onChange({ allocationMonths: event.target.value, allocationStartPeriod: startPeriod })}
               placeholder="VD: 12"
@@ -330,8 +331,8 @@ export default function DebtsPage() {
       return;
     }
     if (!createIsReceivable && createForm.allocationMonths !== "") {
-      if (!(Number(createForm.allocationMonths) >= 2)) {
-        setCreateError("Số kỳ phân bổ phải từ 2 trở lên (bỏ tick nếu ghi chi phí một lần).");
+      if (!(Number(createForm.allocationMonths) > 1)) {
+        setCreateError("Số kỳ phân bổ phải lớn hơn 1, được ghi số lẻ 2 chữ số (vd 10,37) — bỏ tick nếu ghi chi phí một lần.");
         return;
       }
       if (!createForm.allocationStartPeriod) {
@@ -358,7 +359,7 @@ export default function DebtsPage() {
       setCreateOpen(false);
       setCreateForm((current) => ({ ...current, partnerCode: "", description: "", dueDate: "", allocationMonths: "", allocationStartPeriod: "" }));
       setCreateLines([emptyCreateLine(1)]);
-      const allocationNote = Number(payload.allocationMonths) > 1 ? ` Chi phí phân bổ ${payload.allocationMonths} kỳ từ ${payload.allocationStartPeriod} (lịch PB-${payload.lineCount > 1 ? `${payload.code}/n` : payload.code}).` : "";
+      const allocationNote = Number(payload.allocationMonths) > 1 ? ` Chi phí phân bổ ${formatPeriodCount(Number(payload.allocationMonths))} kỳ từ ${payload.allocationStartPeriod} (lịch PB-${payload.lineCount > 1 ? `${payload.code}/n` : payload.code}).` : "";
       setMessage((payload.lineCount > 1 ? `Đã tạo phiếu công nợ ${payload.code} gồm ${payload.lineCount} dòng hạng mục.` : `Đã tạo công nợ ${payload.code}.`) + allocationNote);
       await loadRows();
       if (ledger) await loadLedger(ledger.partnerCode);
@@ -458,8 +459,8 @@ export default function DebtsPage() {
   const submitDebtEdit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!editingDebt?.id) return;
-    if (editCanAllocate && debtForm.allocationMonths !== "" && (!(Number(debtForm.allocationMonths) >= 2) || !debtForm.allocationStartPeriod)) {
-      setEditError("Phân bổ theo kỳ cần số kỳ từ 2 trở lên và kỳ bắt đầu (bỏ tick nếu ghi chi phí một lần).");
+    if (editCanAllocate && debtForm.allocationMonths !== "" && (!(Number(debtForm.allocationMonths) > 1) || !debtForm.allocationStartPeriod)) {
+      setEditError("Phân bổ theo kỳ cần số kỳ lớn hơn 1 (được ghi số lẻ 2 chữ số) và kỳ bắt đầu (bỏ tick nếu ghi chi phí một lần).");
       return;
     }
     setSaving(true);
@@ -1026,9 +1027,9 @@ export default function DebtsPage() {
                         {(item.allocationMonths || 0) > 1 && (
                           <span
                             className="ml-2 inline-flex rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-bold text-violet-700"
-                            title={`Chi phí phân bổ ${item.allocationMonths} kỳ từ ${item.allocationStartPeriod || "?"} theo lịch PB-${item.code} ở tab Trích trước & Phân bổ — không vào P&L một lần.`}
+                            title={`Chi phí phân bổ ${formatPeriodCount(item.allocationMonths)} kỳ từ ${item.allocationStartPeriod || "?"} theo lịch PB-${item.code} ở tab Trích trước & Phân bổ — không vào P&L một lần.`}
                           >
-                            Phân bổ {item.allocationMonths} kỳ từ {item.allocationStartPeriod}
+                            Phân bổ {formatPeriodCount(item.allocationMonths)} kỳ từ {item.allocationStartPeriod}
                           </span>
                         )}
                       </td>

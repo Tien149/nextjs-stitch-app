@@ -269,7 +269,7 @@ function validateVoucher(row: ParsedImportRow, masterItems: MasterItem[]) {
   if (row.values.debt_action === "SETTLE" && !text(row.values.debt_reference)) addError(row, "Thanh toán công nợ bắt buộc có Mã công nợ");
 
   const allocationMonths = numberValue(row.values.allocation_months);
-  if (allocationMonths < 0 || !Number.isInteger(allocationMonths)) addError(row, "Số kỳ phân bổ phải là số nguyên dương");
+  if (allocationMonths < 0) addError(row, "Số kỳ phân bổ không được âm");
   if (allocationMonths > 1) {
     validatePeriod(row, "allocation_start_period", "Kỳ bắt đầu phân bổ");
     if (!text(row.values.allocation_start_period)) addError(row, "Chi phí phân bổ bắt buộc có kỳ bắt đầu");
@@ -738,7 +738,7 @@ function validateAsset(row: ParsedImportRow, masterItems: MasterItem[], existing
   }
 
   const usefulLifeMonths = numberValue(row.values.useful_life_months);
-  if (usefulLifeMonths < 0 || !Number.isInteger(usefulLifeMonths)) addError(row, "So ky phan bo/khau hao phai la so nguyen duong");
+  if (usefulLifeMonths < 0) addError(row, "So ky phan bo/khau hao khong duoc am");
   if (usefulLifeMonths > 0 && !row.values.depreciation_start_date) {
     addError(row, "Tai san co so ky phan bo/khau hao phai co ngay bat dau phan bo");
   }

@@ -1,3 +1,4 @@
+import { roundPeriodCount } from "@/lib/period-count";
 /**
  * Tài sản / CCDC khai ở số dư đầu kỳ khi đang PHÂN BỔ DỞ (khách gửi danh sách CCDC 26/09/2026):
  * mỗi dòng có nguyên giá ban đầu, tổng số kỳ, số kỳ + giá trị đã phân bổ trước khi lên hệ thống,
@@ -52,12 +53,13 @@ export function resolveOpeningAsset(input: OpeningAssetInput): { values: Opening
   const depreciatedAmount = depreciatedAmountRaw ?? (remainingValueRaw !== null ? originalCost - remainingValueRaw : 0);
   const remainingValue = remainingValueRaw ?? originalCost - depreciatedAmount;
 
-  const totalPeriods = Math.floor(num(input.totalPeriods) ?? 0);
+  // Số kỳ lẻ 2 chữ số thập phân (03/10/2026).
+  const totalPeriods = roundPeriodCount(num(input.totalPeriods) ?? 0);
   const remainingDeclared = num(input.remainingPeriods);
-  const depreciatedPeriods = Math.floor(
+  const depreciatedPeriods = roundPeriodCount(
     num(input.depreciatedPeriods) ?? (remainingDeclared !== null && totalPeriods > 0 ? totalPeriods - remainingDeclared : 0),
   );
-  const remainingPeriods = Math.max(totalPeriods - depreciatedPeriods, 0);
+  const remainingPeriods = Math.max(Math.round((totalPeriods - depreciatedPeriods) * 100) / 100, 0);
 
   if (originalCost < 0 || depreciatedAmount < 0 || remainingValue < 0) errors.push("Nguyên giá, giá trị đã phân bổ và giá trị còn lại không được âm");
   if (Math.abs(originalCost - depreciatedAmount - remainingValue) > TOLERANCE) {
@@ -68,7 +70,7 @@ export function resolveOpeningAsset(input: OpeningAssetInput): { values: Opening
   }
   if (depreciatedPeriods < 0) errors.push("Số kỳ đã phân bổ không được âm");
   if (totalPeriods > 0 && depreciatedPeriods > totalPeriods) errors.push(`Số kỳ đã phân bổ (${depreciatedPeriods}) lớn hơn tổng số kỳ (${totalPeriods})`);
-  if (remainingDeclared !== null && totalPeriods > 0 && Math.abs(remainingDeclared - remainingPeriods) > 0) {
+  if (remainingDeclared !== null && totalPeriods > 0 && Math.abs(remainingDeclared - remainingPeriods) > 0.005) {
     errors.push(`Số kỳ còn lại (${remainingDeclared}) phải bằng Tổng số kỳ (${totalPeriods}) − Số kỳ đã phân bổ (${depreciatedPeriods})`);
   }
   if (totalPeriods > 0 && remainingPeriods === 0 && remainingValue > TOLERANCE) {

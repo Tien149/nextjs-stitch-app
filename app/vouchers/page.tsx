@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { formatPeriodCount } from "@/lib/period-count";
 import { useRouter } from "next/navigation";
 import { DateInput, MonthInput } from "@/components/DateInput";
 import { ModuleFrame } from "@/components/ModuleFrame";
@@ -842,7 +843,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
 
     if (isPrepaidAllocation) {
       if (!(Number(form.allocationMonths) > 1)) {
-        setMessage("Chi trả trước phải khai số kỳ phân bổ từ 2 trở lên — một kỳ thì đó là chi phí thường của tháng này.");
+        setMessage("Chi trả trước phải khai số kỳ phân bổ lớn hơn 1 (được ghi số lẻ 2 chữ số, vd 10,37) — một kỳ thì đó là chi phí thường của tháng này.");
         setMessageType("error");
         return;
       }
@@ -1411,8 +1412,8 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                         Số kỳ phân bổ *
                         <input
                           type="number"
-                          min={2}
-                          step={1}
+                          min={1.01}
+                          step={0.01}
                           value={form.allocationMonths}
                           onChange={(event) => setForm((value) => ({ ...value, allocationMonths: event.target.value }))}
                           placeholder="VD: 12"
@@ -2075,9 +2076,9 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                           {voucher.debtAction === PREPAID_ALLOCATION_ACTION && (
                             <span
                               className="rounded border border-indigo-200 bg-indigo-50 px-1.5 py-0.5 text-[10px] font-bold text-indigo-700"
-                              title={`Chi trả trước — treo chi phí trả trước, phân bổ ${voucher.allocationMonths || "?"} kỳ từ ${voucher.allocationStartPeriod || "?"} theo lịch PB-${voucher.code}. Không vào chi phí ngay trong kỳ chi.`}
+                              title={`Chi trả trước — treo chi phí trả trước, phân bổ ${formatPeriodCount(voucher.allocationMonths)} kỳ từ ${voucher.allocationStartPeriod || "?"} theo lịch PB-${voucher.code}. Không vào chi phí ngay trong kỳ chi.`}
                             >
-                              Trả trước {voucher.allocationMonths || "?"} kỳ
+                              Trả trước {formatPeriodCount(voucher.allocationMonths)} kỳ
                             </span>
                           )}
                           <CopyableText value={voucher.code}><b className="text-slate-800 font-semibold">{voucher.code}</b></CopyableText>
@@ -2112,7 +2113,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                         <p className="mt-0.5 text-xs leading-4 text-slate-500 whitespace-normal break-words">{voucher.description}</p>
                         {voucher.debtAction === PREPAID_ALLOCATION_ACTION && voucher.allocationStartPeriod && (
                           <p className="mt-1 text-[11px] font-medium text-indigo-600">
-                            Phân bổ: PB-{voucher.code} · {voucher.allocationMonths} kỳ từ {voucher.allocationStartPeriod}
+                            Phân bổ: PB-{voucher.code} · {formatPeriodCount(voucher.allocationMonths)} kỳ từ {voucher.allocationStartPeriod}
                           </p>
                         )}
                         {voucher.debtAction === ADVANCE_RECEIVABLE_ACTION && voucher.receivablePartnerCode && (

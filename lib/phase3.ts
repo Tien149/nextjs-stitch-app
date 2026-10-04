@@ -1,4 +1,7 @@
 import { prisma } from "@/lib/prisma";
+import { roundPeriodCount } from "@/lib/period-count";
+
+export { roundPeriodCount };
 
 export function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -31,22 +34,29 @@ export function addPeriod(startPeriod: string, offset: number) {
 }
 
 /**
- * Chia một khoản tiền đều cho N kỳ, làm tròn tới đồng, kỳ CUỐI nhận phần còn lại.
+ * Chia một khoản tiền cho N kỳ, làm tròn tới đồng, kỳ CUỐI nhận phần còn lại.
  *
  * Chia thẳng 1.000.000 / 3 rồi lưu là 333.333,33 nằm trong sổ, cộng ba kỳ lên P&L thành
  * 999.999,99 — lệch một đồng so với phiếu gốc và không ai truy được vì sao. Luật ở đây: các kỳ
  * đầu lấy số tròn, kỳ cuối = tổng − những kỳ trước, nên cộng lại LUÔN bằng đúng tổng.
+ *
+ * Số kỳ LẺ (vd 2,5): mỗi kỳ đủ = tổng ÷ 2,5 (tròn xuống tới đồng), có 2 kỳ đủ và một kỳ cuối
+ * mang phần lẻ — 1.000.000 / 2,5 kỳ = 400.000 + 400.000 + 200.000. Số kỳ nguyên thì y như cũ.
  *
  * Dùng chung cho chi phí phân bổ (trích trước, số dư đầu kỳ, phiếu chi trả trước, sửa chữa
  * tài sản) và là luật tham chiếu cho khấu hao — khấu hao chạy từng tháng nên tự tính phần
  * còn lại tại `RUN_DEPRECIATION`, nhưng theo đúng tinh thần này.
  */
 export function splitAmountByPeriods(total: number, periods: number) {
-  const count = Math.max(1, Math.floor(periods));
+  const exact = roundPeriodCount(periods);
+  const full = Math.floor(exact + 1e-9);
+  const hasFraction = exact - full > 0.0001;
+  const count = Math.max(1, full + (hasFraction ? 1 : 0));
   const rounded = Math.round(total);
+  if (count === 1) return [rounded];
   // Làm tròn XUỐNG ở các kỳ đầu để phần dồn về kỳ cuối không bao giờ âm: 5 đồng chia 10 kỳ
   // mà làm tròn thường thì 9 kỳ đầu mỗi kỳ 1 đồng, kỳ cuối phải gánh −4.
-  const base = Math.floor(rounded / count);
+  const base = Math.floor(rounded / (hasFraction ? exact : count));
   return Array.from({ length: count }, (_, index) => (index === count - 1 ? rounded - base * (count - 1) : base));
 }
 

@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { formatPeriodCount } from "@/lib/period-count";
 import { inDateRange, periodInRange } from "@/lib/date-range";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { DateInput, MonthInput } from "@/components/DateInput";
@@ -1989,7 +1990,8 @@ export default function FinanceOperationsPage() {
                     <span className="text-xs font-bold text-slate-600">Số kỳ phân bổ</span>
                     <input
                       type="number"
-                      min="1"
+                      min="0.01"
+                      step="0.01"
                       className="w-full pl-3 pr-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none shadow-sm transition-all"
                       value={accrual.numberOfPeriods}
                       onChange={(e) => setAccrual({ ...accrual, numberOfPeriods: e.target.value })}
@@ -2092,7 +2094,7 @@ export default function FinanceOperationsPage() {
                         )}
                         <h4 className="font-bold text-slate-900 mt-1">{row.name}</h4>
                         <p className="text-xs text-slate-500 font-semibold mt-0.5">
-                          Cửa hàng: {storeLabel(row.branchCode)} · Khoản mục: {feeCategoryLabel(row.categoryCode)} · Thời gian: {row.numberOfPeriods} kỳ
+                          Cửa hàng: {storeLabel(row.branchCode)} · Khoản mục: {feeCategoryLabel(row.categoryCode)} · Thời gian: {formatPeriodCount(row.numberOfPeriods)} kỳ
                         </p>
                         {/* Khoản tạo trước khi có ô hạng mục vẫn phải khai bù được, nếu không các
                             kỳ còn lại của nó sẽ mãi nằm ngoài bảng Tổng hợp chi phí. */}

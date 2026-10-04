@@ -1,4 +1,5 @@
 import { bankStatementSpecialCategory, type BankStatementCategoryReference } from "@/lib/bank-statement-category";
+import { roundPeriodCount } from "@/lib/period-count";
 
 /**
  * Ràng buộc cho "nội dung thu" của phiếu thu: thu thường (ghi nhận trọn vẹn ngay, bản chất
@@ -78,8 +79,9 @@ export function normalizePaymentPurpose(voucherType: string, value: unknown) {
 
 /** Số kỳ phân bổ hợp lệ của phiếu chi trả trước; 0 nghĩa là phiếu không phân bổ. */
 export function normalizeAllocationMonths(value: unknown) {
-  const months = Math.floor(Number(value));
-  return Number.isFinite(months) && months > 1 ? months : 0;
+  // Số kỳ lẻ 2 chữ số thập phân (03/10/2026); trên 1 kỳ mới là phân bổ.
+  const months = roundPeriodCount(value);
+  return months > 1 ? months : 0;
 }
 
 /**
@@ -97,7 +99,7 @@ export function validatePaymentPurpose(
   const purpose = normalizePaymentPurpose(voucherType, value);
   if (!purpose) return null;
   if (purpose === PREPAID_ALLOCATION_ACTION) {
-    if (normalizeAllocationMonths(allocation?.months) <= 0) return "Chi trả trước phải khai số kỳ phân bổ từ 2 trở lên.";
+    if (normalizeAllocationMonths(allocation?.months) <= 0) return "Chi trả trước phải khai số kỳ phân bổ lớn hơn 1 (được ghi số lẻ 2 chữ số).";
     if (!(allocation?.startPeriod || "").trim()) return "Chi trả trước phải khai kỳ bắt đầu phân bổ.";
     // Không có hạng mục P&L thì số phân bổ hàng kỳ chỉ là bút toán 6428 trơ, rơi khỏi bảng
     // Tổng hợp chi phí — đúng thứ khoản chi này sinh ra để tránh.

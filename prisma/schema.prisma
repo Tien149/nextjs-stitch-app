@@ -143,7 +143,7 @@ model OpeningBalance {
   departmentCode        String?
   quantity              Float?
   unitCost              Float?
-  allocationMonths      Int?
+  allocationMonths      Float?
   allocationStartPeriod String?
   /// Hạng mục P&L của chi phí phân bổ đầu kỳ, khai ngay lúc nhập số dư. Khi chốt số dư,
   /// khoản phân bổ sinh ra mang luôn mã này nên bút toán phân bổ hàng kỳ đứng đúng dòng P&L.
@@ -153,7 +153,7 @@ model OpeningBalance {
   /// trước khi lên hệ thống. `amount` là giá trị CÒN LẠI (= nguyên giá − đã phân bổ), số kỳ
   /// còn lại = allocationMonths − depreciatedPeriods. Bỏ trống = tài sản mới, chưa phân bổ kỳ nào.
   originalCost          Float?
-  depreciatedPeriods    Int?
+  depreciatedPeriods    Float?
   depreciatedAmount     Float?
   note                  String?
   status                String   @default("DRAFT")
@@ -426,7 +426,7 @@ model FinancialVoucher {
   /// thường khác đối tác thực nhận tiền. Phiếu treo Nợ 131 của đối tác này thay vì vào chi phí.
   receivablePartnerCode   String?
   receivablePartnerName   String?
-  allocationMonths        Int?
+  allocationMonths        Float?
   allocationStartPeriod   String?
   amount                  Float
   description             String
@@ -477,7 +477,7 @@ model DebtRecord {
   pnlGroupCode          String?
   originalAmount        Float
   outstandingAmount     Float
-  allocationMonths      Int?
+  allocationMonths      Float?
   allocationStartPeriod String?
   description           String
   sourceType            String    @default("IMPORT")
@@ -562,11 +562,11 @@ model AssetRecord {
   /// chạy trên hệ thống nằm ở AssetDepreciation, không cộng vào cột này.
   accumulatedDepreciation   Float                @default(0)
   /// Số kỳ đã phân bổ trước khi lên hệ thống — đi cùng accumulatedDepreciation.
-  openingDepreciatedPeriods Int                  @default(0)
+  openingDepreciatedPeriods Float                @default(0)
   /// Tài sản sinh từ số dư đầu kỳ: không ghi bút toán ghi tăng (ASSET_ACQUISITION) vì số dư đầu
   /// kỳ đã ghi Nợ 211/242 rồi.
   openingBalanceId          String?
-  usefulLifeMonths          Int?
+  usefulLifeMonths          Float?
   depreciationStartDate     DateTime?
   residualValue             Float                @default(0)
   supplierCode              String?
@@ -1011,8 +1011,8 @@ model InventoryTransactionLine {
 /// Mẫu yêu cầu mua hàng do quản lý set sẵn (tên hàng + ĐVT). Bộ phận cần đặt chỉ mở mẫu,
 /// điền số lượng vào các dòng cần mua rồi gửi — hệ thống tạo PR nhiều dòng từ mẫu.
 model PurchaseRequestTemplate {
-  id             String   @id @default(uuid())
-  code           String   @unique
+  id             String    @id @default(uuid())
+  code           String    @unique
   name           String
   /// Trống = mẫu dùng chung cho mọi cửa hàng.
   branchCode     String?
@@ -1022,11 +1022,11 @@ model PurchaseRequestTemplate {
   /// đầu đó; ngoài khoảng này mẫu không dùng để đặt hàng được. Mốc 00:00 giờ VN.
   effectiveFrom  DateTime?
   effectiveTo    DateTime?
-  status         String   @default("ACTIVE")
+  status         String    @default("ACTIVE")
   note           String?
   createdBy      String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   lines PurchaseRequestTemplateLine[]
 
@@ -1528,7 +1528,7 @@ model Accrual {
   pnlItemCode     String?
   totalAmount     Float
   startPeriod     String
-  numberOfPeriods Int
+  numberOfPeriods Float
   actualAmount    Float?
   sourceType      String?
   sourceId        String?

@@ -3,7 +3,7 @@ import { prismaDateRange } from "@/lib/date-range";
 import { assetMonthlyDepreciation } from "@/lib/opening-asset";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma, type TxClient } from "@/lib/prisma";
-import { apiError, assertPeriodOpen, buildAllocationSchedules, businessError, cleanText, isPeriodLocked, normalizePeriod, toDate, toNumber } from "@/lib/phase3";
+import { apiError, assertPeriodOpen, buildAllocationSchedules, businessError, cleanText, isPeriodLocked, normalizePeriod, roundPeriodCount, toDate, toNumber } from "@/lib/phase3";
 import { assertBranchAccess, requestedBranch } from "@/lib/accounting";
 import { scopePayloadByTab } from "@/lib/tab-scope";
 import { normalizeMoneySourceGroup } from "@/lib/money-sources";
@@ -420,7 +420,7 @@ export async function POST(request: Request) {
 
     if (action === "CONFIGURE_DEPRECIATION") {
       const assetId = cleanText(body.assetId);
-      const usefulLifeMonths = Math.floor(toNumber(body.usefulLifeMonths));
+      const usefulLifeMonths = roundPeriodCount(body.usefulLifeMonths);
       if (!assetId || usefulLifeMonths <= 0) businessError("Tài sản và số tháng sử dụng là bắt buộc");
       const asset = await prisma.assetRecord.findUnique({ where: { id: assetId } });
       if (!asset) businessError("Không tìm thấy tài sản");
@@ -836,7 +836,7 @@ export async function POST(request: Request) {
           await tx.assetRecord.update({ where: { id: report.assetId }, data: { originalCost: { increment: repairCost }, currentValue: { increment: repairCost } } });
         }
         if (treatment === "ALLOCATE" && repairCost > 0) {
-          const periods = Math.max(2, Math.floor(toNumber(body.numberOfPeriods || body.allocationMonths) || 6));
+          const periods = Math.max(1, roundPeriodCount(body.numberOfPeriods || body.allocationMonths) || 6);
           const startPeriod = `${resolvedAt.getFullYear()}-${String(resolvedAt.getMonth() + 1).padStart(2, "0")}`;
           const categoryCode = cleanText(body.categoryCode) || "REPAIR";
           await tx.accrual.create({

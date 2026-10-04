@@ -49,9 +49,11 @@ test("nội dung chi mới chỉ áp cho phiếu Chi", () => {
   assert.equal(normalizePaymentPurpose("RECEIPT", PREPAID_ALLOCATION_ACTION), "");
 });
 
-test("một kỳ không phải phân bổ, số kỳ phải từ 2 trở lên", () => {
+test("một kỳ không phải phân bổ; số kỳ lẻ giữ 2 chữ số thập phân (03/10/2026)", () => {
   assert.equal(normalizeAllocationMonths("12"), 12);
-  assert.equal(normalizeAllocationMonths(12.7), 12);
+  assert.equal(normalizeAllocationMonths(12.7), 12.7);
+  assert.equal(normalizeAllocationMonths("10,375"), 10.38);
+  assert.equal(normalizeAllocationMonths(1.5), 1.5);
   assert.equal(normalizeAllocationMonths(1), 0);
   assert.equal(normalizeAllocationMonths(0), 0);
   assert.equal(normalizeAllocationMonths(""), 0);
@@ -63,7 +65,7 @@ test("thiếu số kỳ, kỳ bắt đầu hoặc hạng mục P&L đều bị c
   assert.equal(validatePaymentPurpose("PAYMENT", PREPAID_ALLOCATION_ACTION, "", ok), null);
   assert.equal(
     validatePaymentPurpose("PAYMENT", PREPAID_ALLOCATION_ACTION, "", { ...ok, months: 1 }),
-    "Chi trả trước phải khai số kỳ phân bổ từ 2 trở lên.",
+    "Chi trả trước phải khai số kỳ phân bổ lớn hơn 1 (được ghi số lẻ 2 chữ số).",
   );
   assert.equal(
     validatePaymentPurpose("PAYMENT", PREPAID_ALLOCATION_ACTION, "", { ...ok, startPeriod: "" }),
@@ -92,4 +94,16 @@ test("tổng chi phí lên P&L đúng bằng số tiền phiếu, không nhân �
   const months = 12;
   const perPeriod = traTruoc.amount / months;
   assert.equal(expenseFromVoucher + perPeriod * months, traTruoc.amount);
+});
+
+test("lịch phân bổ số kỳ lẻ: kỳ đủ = tổng ÷ số kỳ, kỳ cuối mang phần lẻ, cộng đúng tổng", async () => {
+  const { splitAmountByPeriods, buildAllocationSchedules } = await import("../lib/phase3.ts");
+  assert.deepEqual(splitAmountByPeriods(1_000_000, 2.5), [400_000, 400_000, 200_000]);
+  assert.deepEqual(splitAmountByPeriods(1_000_000, 3), [333_333, 333_333, 333_334]);
+  const parts = splitAmountByPeriods(1_234_567, 10.37);
+  assert.equal(parts.length, 11);
+  assert.equal(parts[0], 119_051);
+  assert.equal(parts.reduce((sum, value) => sum + value, 0), 1_234_567);
+  assert.deepEqual(splitAmountByPeriods(100, 0.5), [100]);
+  assert.deepEqual(buildAllocationSchedules("2026-11", 300, 1.5).map((row) => row.period), ["2026-11", "2026-12"]);
 });
