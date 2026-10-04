@@ -125,6 +125,8 @@ type CashCategoryRow = {
 type UnclassifiedOrigin = "voucher" | "bankStatement" | "adjustment" | "transferFee";
 
 type CashPartnerRow = { code: string; name: string; partnerType: string | null; total: number; count: number };
+/** Dòng dự thu/dự chi theo Công nợ đối tác (lib/reports.ts DEBT_PROJECTION_SOURCE_GROUP). */
+const DEBT_PROJECTION_GROUP = "DEBT_PROJECTION";
 type CashSourceFlow = { code: string; name: string; group: string | null; branchCode: string; opening: number; in: number; out: number; transferIn: number; transferOut: number; closing: number; closingByMonth: number[]; expectedIn: number; expectedOut: number; expectedClosing: number };
 type CashSourceData = {
   period: string;
@@ -1154,7 +1156,7 @@ export default function ReportsPage() {
                 />
                 <div className="overflow-x-auto">
                   <Table headers={["Nguồn tiền", "Đầu kỳ", ...cashSource.months.map((item) => `T${Number(item.slice(5))}`)]}>
-                    {cashSource.sources.map((row) => (
+                    {cashSource.sources.filter((row) => row.group !== DEBT_PROJECTION_GROUP).map((row) => (
                       <tr key={row.code} className="border-t border-slate-100 hover:bg-slate-50">
                         <Cell><b>{cashSourceLabel(row.name)}</b><p className="mt-0.5 text-xs text-slate-500">{row.code}</p></Cell>
                         <Cell right>{row.opening ? `${money(row.opening)}` : "-"}</Cell>
@@ -3260,28 +3262,34 @@ function CashSourceFlowTable({ cashSource }: { cashSource: CashSourceData }) {
       opening: sum.opening + row.opening,
       in: sum.in + row.in,
       out: sum.out + row.out,
+      transferIn: sum.transferIn + row.transferIn,
+      transferOut: sum.transferOut + row.transferOut,
       closing: sum.closing + row.closing,
       expectedIn: sum.expectedIn + row.expectedIn,
       expectedOut: sum.expectedOut + row.expectedOut,
       expectedClosing: sum.expectedClosing + row.expectedClosing,
     }),
-    { opening: 0, in: 0, out: 0, closing: 0, expectedIn: 0, expectedOut: 0, expectedClosing: 0 },
+    { opening: 0, in: 0, out: 0, transferIn: 0, transferOut: 0, closing: 0, expectedIn: 0, expectedOut: 0, expectedClosing: 0 },
   );
   // Khách dùng dòng TỔNG để soi ngược lên hai bảng Tổng quan thu/chi. Hai con số nay bằng nhau
   // theo cấu trúc (mọi khoản đi qua cùng một cửa ghi nhận), nên còn lệch là dấu hiệu dữ liệu
   // hỏng chứ không phải chuyện bình thường — phải nói rõ thay vì giấu đi.
   const incomeGap = Math.round(cashSource.totals.in - totals.in);
   const expenseGap = Math.round(cashSource.totals.out - totals.out);
+  // Bố cục theo mẫu khách (04/10/2026): Điều tiền vào/ra là cột riêng để Đầu kỳ + Thu − Chi +
+  // Điều tiền vào − Điều tiền ra = Cuối kỳ đọc thẳng trên dòng; Dự thu/Dự chi đứng sau Cuối kỳ.
   const headers = [
     ...(showBranch ? ["Nhà hàng"] : []),
-    "Nguồn tiền", "Đầu kỳ", "Thu", "Chi", "Cuối kỳ", "Dự thu trong kỳ", "Dự chi trong kỳ", "Dự kiến cuối kỳ",
+    "Nguồn tiền", "Đầu kỳ", "Thu", "Chi", "Điều tiền vào", "Điều tiền ra", "Cuối kỳ", "Dự thu trong kỳ", "Dự chi trong kỳ", "Số dư còn lại sau dự chi",
   ];
+  const dash = <span className="text-slate-300">—</span>;
+  const amount = (value: number, className = "") => (value ? <span className={className}>{money(value)} đ</span> : dash);
 
   return (
     <section className="table-panel">
       <PanelHeader
         title="Biến động nguồn tiền (sổ quỹ)"
-        subtitle="Cột Thu/Chi là chính hai bảng Tổng quan thu/chi ở trên tách theo từng nguồn tiền, nên dòng TỔNG luôn bằng Tổng thu/Tổng chi. Điều tiền nội bộ KHÔNG nằm trong Thu/Chi mà ở dòng ghi chú riêng của từng nguồn. Ví/cổng thanh toán chỉ hiện khi có phát sinh trong kỳ. Dự thu là doanh thu ví chưa quyết toán về ngân hàng, dự chi là phiếu chi còn nháp/chờ duyệt — cả hai chưa vào số dư Cuối kỳ."
+        subtitle="Cuối kỳ = Đầu kỳ + Thu − Chi + Điều tiền vào − Điều tiền ra. Cột Thu/Chi là chính hai bảng Tổng quan thu/chi ở trên tách theo nguồn tiền, nên dòng TỔNG luôn bằng Tổng thu/Tổng chi; điều tiền nội bộ (nộp tiền, chuyển tài khoản, ví quyết toán về ngân hàng) đứng ở cột riêng và cộng cả công ty thì vào = ra. Dự thu = doanh thu ví chưa quyết toán về ngân hàng (theo ô Ngân hàng quyết toán về của ví) + công nợ phải thu; Dự chi = phiếu chi nháp/chờ duyệt + công nợ phải trả. Công nợ không gắn nguồn tiền nên đứng dòng riêng mỗi nhà hàng, không gồm tiền cọc khách, công nợ nội bộ giữa nhà hàng và tạm ứng nhân viên. Dự thu/Dự chi chưa vào số dư Cuối kỳ."
       />
       <div className="overflow-x-auto">
         <Table headers={headers}>
@@ -3289,37 +3297,41 @@ function CashSourceFlowTable({ cashSource }: { cashSource: CashSourceData }) {
             <tr className="border-t border-slate-100">
               {showBranch && <Cell>-</Cell>}
               <Cell>Chưa khai báo nguồn tiền mặt hoặc ngân hàng.</Cell>
-              <Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell>
+              <Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell>
             </tr>
           )}
-          {rows.map((row) => (
-            <tr key={`${row.branchCode}-${row.code}`} className="border-t border-slate-100 hover:bg-slate-50">
-              {showBranch && <Cell>{storeLabel(row.branchCode)}</Cell>}
-              <Cell>
-                <b>{cashSourceLabel(row.name)}</b>
-                <p className="text-xs text-slate-500 mt-0.5">{row.code}</p>
-                {(row.transferIn !== 0 || row.transferOut !== 0) && (
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    gồm điều tiền vào {money(row.transferIn)} đ / ra {money(row.transferOut)} đ
+          {rows.map((row) => {
+            const isDebtProjection = row.group === DEBT_PROJECTION_GROUP;
+            return (
+              <tr key={`${row.branchCode}-${row.code}`} className={`border-t border-slate-100 hover:bg-slate-50 ${isDebtProjection ? "bg-amber-50/40" : ""}`}>
+                {showBranch && <Cell>{storeLabel(row.branchCode)}</Cell>}
+                <Cell>
+                  <b>{cashSourceLabel(row.name)}</b>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    {isDebtProjection ? "chưa phân nguồn tiền · số dư tới hết kỳ" : row.code}
                   </p>
-                )}
-              </Cell>
-              <Cell right>{money(row.opening)} đ</Cell>
-              <Cell right><span className="text-emerald-700">{money(row.in)} đ</span></Cell>
-              <Cell right>{money(row.out)} đ</Cell>
-              <Cell right><b className={row.closing < 0 ? "text-rose-600" : "text-slate-900"}>{money(row.closing)} đ</b></Cell>
-              <Cell right>{row.expectedIn ? <span className="text-sky-700">{money(row.expectedIn)} đ</span> : <span className="text-slate-300">—</span>}</Cell>
-              <Cell right>{row.expectedOut ? <span className="text-amber-700">{money(row.expectedOut)} đ</span> : <span className="text-slate-300">—</span>}</Cell>
-              <Cell right><b className={row.expectedClosing < 0 ? "text-rose-600" : "text-slate-900"}>{money(row.expectedClosing)} đ</b></Cell>
-            </tr>
-          ))}
+                </Cell>
+                <Cell right>{isDebtProjection ? dash : `${money(row.opening)} đ`}</Cell>
+                <Cell right>{isDebtProjection ? dash : <span className="text-emerald-700">{money(row.in)} đ</span>}</Cell>
+                <Cell right>{isDebtProjection ? dash : `${money(row.out)} đ`}</Cell>
+                <Cell right>{amount(row.transferIn, "text-indigo-700")}</Cell>
+                <Cell right>{amount(row.transferOut, "text-indigo-700")}</Cell>
+                <Cell right>{isDebtProjection ? dash : <b className={row.closing < 0 ? "text-rose-600" : "text-slate-900"}>{money(row.closing)} đ</b>}</Cell>
+                <Cell right>{amount(row.expectedIn, "text-sky-700")}</Cell>
+                <Cell right>{amount(row.expectedOut, "text-amber-700")}</Cell>
+                <Cell right><b className={row.expectedClosing < 0 ? "text-rose-600" : "text-slate-900"}>{money(row.expectedClosing)} đ</b></Cell>
+              </tr>
+            );
+          })}
           {rows.length > 0 && (
             <tr className="border-t border-slate-200 bg-slate-50 font-bold">
               {showBranch && <Cell><b>TỔNG</b></Cell>}
-              <Cell>{showBranch ? <span className="text-xs font-normal text-slate-500">{rows.length} nguồn tiền</span> : <b>TỔNG</b>}</Cell>
+              <Cell>{showBranch ? <span className="text-xs font-normal text-slate-500">{rows.length} dòng</span> : <b>TỔNG</b>}</Cell>
               <Cell right><b>{money(totals.opening)} đ</b></Cell>
               <Cell right><b className="text-emerald-700">{money(totals.in)} đ</b></Cell>
               <Cell right><b>{money(totals.out)} đ</b></Cell>
+              <Cell right><b className="text-indigo-700">{money(totals.transferIn)} đ</b></Cell>
+              <Cell right><b className="text-indigo-700">{money(totals.transferOut)} đ</b></Cell>
               <Cell right><b className={totals.closing < 0 ? "text-rose-600" : "text-slate-900"}>{money(totals.closing)} đ</b></Cell>
               <Cell right><b className="text-sky-700">{money(totals.expectedIn)} đ</b></Cell>
               <Cell right><b className="text-amber-700">{money(totals.expectedOut)} đ</b></Cell>

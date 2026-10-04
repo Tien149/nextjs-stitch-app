@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/custom-client";
+import { debtCashProjection } from "@/lib/debt-overview";
 import { buildBalanceSheet, type BalanceAccountTotal } from "@/lib/balance-sheet";
 import { prisma } from "@/lib/prisma";
 import { CASH_SOURCE_OPENING_TYPES, OPENING_BALANCE_EFFECTIVE_STATUSES } from "@/lib/opening-balance-rules";
@@ -1129,6 +1130,9 @@ const unclassifiedKey = "UNCLASSIFIED";
  */
 /** Khoản thu/chi không tra được nguồn tiền vẫn phải có chỗ đứng, không thì hai tổng lệch nhau. */
 const UNASSIGNED_FLOW_SOURCE = "CHUA_GAN_NGUON_TIEN";
+/** Dòng dự thu / dự chi theo Công nợ đối tác của từng nhà hàng trên bảng nguồn tiền. */
+export const DEBT_PROJECTION_SOURCE_PREFIX = "CONG_NO_DOI_TAC_";
+export const DEBT_PROJECTION_SOURCE_GROUP = "DEBT_PROJECTION";
 const depositInRow = { key: "DEPOSIT_IN", name: "Thu tiền cọc", group: "RECEIPT" as const };
 const depositRefundRow = { key: "DEPOSIT_REFUND", name: "Hoàn cọc cho khách", group: "PAYMENT" as const };
 
@@ -1937,6 +1941,17 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
     }
   }
 
+  // Dự thu / dự chi theo Công nợ đối tác (04/10/2026): số dư phải trả / phải thu của từng đối tác
+  // tới hết kỳ, mỗi nhà hàng một dòng riêng vì công nợ không gắn nguồn tiền (lib/debt-overview.ts).
+  for (const projection of await debtCashProjection(branchCode, end)) {
+    const row = touchSource(`${DEBT_PROJECTION_SOURCE_PREFIX}${projection.branchCode}`);
+    row.name = "Công nợ đối tác";
+    row.group = DEBT_PROJECTION_SOURCE_GROUP;
+    row.branchCode = projection.branchCode;
+    row.expectedIn += projection.receivable;
+    row.expectedOut += projection.payable;
+  }
+
   const incomeRows = finalizeCategories(income);
   const expenseRows = finalizeCategories(expense);
   const totalIn = incomeRows.reduce((sum, row) => sum + row.total, 0);
@@ -2015,7 +2030,8 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
           || row.in !== 0 || row.out !== 0
           // Ví im lặng cả kỳ nhưng vẫn còn số dư mang sang thì PHẢI hiện, không thì tiền của nó
           // rơi ra khỏi dòng TỔNG và "đầu kỳ tháng này = cuối kỳ tháng trước" đứt ngay ở tổng.
-          || Math.abs(row.opening) > 0.5 || row.transferIn !== 0 || row.transferOut !== 0)
+          || Math.abs(row.opening) > 0.5 || row.transferIn !== 0 || row.transferOut !== 0
+          || row.expectedIn !== 0 || row.expectedOut !== 0)
         .filter((row) => moneySourceMatchesBranch({ ...row, branch: row.branchCode }, branchCode));
       // Gộp các nguồn cùng "Nguồn tiền tổng" (khai trên danh mục) thành một dòng; gộp trước khi
       // tính số dư vì mọi cột đều cộng tuyến tính. Nguồn không khai tên tổng giữ nguyên từng dòng.
@@ -2049,7 +2065,10 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
           return { ...row, code: row.memberCodes.join(", "), closing, closingByMonth, expectedClosing: closing + row.expectedIn - row.expectedOut };
         })
         // Khách yêu cầu xếp theo tên nguồn tiền để dò bằng mắt cho nhanh.
-        .sort((a, b) => a.branchCode.localeCompare(b.branchCode) || a.name.localeCompare(b.name, "vi"));
+        // Dòng dự thu/dự chi công nợ đứng cuối mỗi nhà hàng, sau các nguồn tiền thật.
+        .sort((a, b) => a.branchCode.localeCompare(b.branchCode)
+          || Number(a.group === DEBT_PROJECTION_SOURCE_GROUP) - Number(b.group === DEBT_PROJECTION_SOURCE_GROUP)
+          || a.name.localeCompare(b.name, "vi"));
     })(),
   };
 }
