@@ -6,7 +6,7 @@ import type { DateRange } from "@/lib/date-range";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { DateInput, MonthInput } from "@/components/DateInput";
 import { storeLabel, visibleBranchScopeOptions, visibleStoreOptions } from "@/lib/branch-labels";
-import { canCreateCashDeposit as canCreateCashDepositSlip, canPerformMenuAction, filterModuleTabs, moduleTabs } from "@/lib/auth-demo";
+import { allowedSubTabs, canCreateCashDeposit as canCreateCashDepositSlip, canPerformMenuAction, filterModuleTabs, moduleTabs } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import { filterCashierCashSources, filterMoneySources, moneySourceDebugLabel, moneySourceDisplayName, stripMoneySourceLabel, type MoneySourceOption } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
@@ -1829,6 +1829,7 @@ export default function ReportsPage() {
           period={period}
           branchCode={branchCode}
           onOpenBudget={visibleTabs.some((tab) => tab.id === "budget") ? () => handleTabChange("budget") : undefined}
+          allowedTabs={allowedSubTabs(user, href, "pnl")}
           periodView={(
             <div className="space-y-5">
               <PnlStatementTable period={period} branchCode={branchCode} lines={pnl.statement} value={pnl.total} />

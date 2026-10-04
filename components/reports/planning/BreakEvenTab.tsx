@@ -2,7 +2,7 @@
 
 import React, { useMemo } from "react";
 import { storeLabel } from "@/lib/branch-labels";
-import { opexGroupRank } from "@/lib/pnl-ordering";
+import { breakEvenOf, costTotalsOf, splitOpex } from "@/components/reports/planning/cost-structure";
 import { DonutLegendChart, MoneyBarChart, MoneyLineChart } from "@/components/charts/ReportCharts";
 import { Card, MonthChips, StatCard, Tag, fmtCompact, fmtMoney, pctText, ratioOf, signedMoney } from "@/components/reports/planning/planning-ui";
 import { bucketSum, cumulative, lastPicked, monthPickLabel, sumAll, type MonthPick, type PlanningData, type PnlBucket } from "@/components/reports/planning/planning-types";
@@ -12,9 +12,11 @@ import { bucketSum, cumulative, lastPicked, monthPickLabel, sumAll, type MonthPi
  * banner đã/chưa vượt hòa vốn + biên an toàn, bảng & chart doanh thu lũy kế so mốc hòa vốn,
  * cơ cấu định phí / biến phí, phân tích độ nhạy định phí, và so sánh hòa vốn theo cửa hàng.
  *
- * Phân loại: biến phí = giá vốn + nhóm OPEX "biến đổi"; định phí = nhân sự + khấu hao + nhóm
- * OPEX cố định/marketing/khác (đọc theo tên nhóm, cùng luật sắp xếp trên bảng P&L). Số "dự
- * kiến" lấy kế hoạch cả năm; chưa set kế hoạch thì tạm lấy thực tế cả năm làm gốc.
+ * Phân loại (khách chốt 04/10/2026 — xem cost-structure.ts):
+ *   FC = CAPEX + Chi phí cố định (nhóm OPEX cố định, gồm khấu hao) + Chi phí nhân sự
+ *   VC = Giá vốn + Chi phí biến đổi + Chi phí Marketing
+ *   Doanh thu hòa vốn = FC ÷ (1 − VC ÷ Doanh thu)
+ * Số "dự kiến" lấy kế hoạch cả năm; chưa set kế hoạch thì tạm lấy thực tế cả năm làm gốc.
  */
 
 export type BreakEvenModel = {
@@ -25,6 +27,7 @@ export type BreakEvenModel = {
   variableRatio: number;
   cmRatio: number;
   bep: number | null;
+  /** Tỷ trọng OPEX cố định trên tổng OPEX — chia OPEX của từng cửa hàng (bảng V). */
   fixedShareOfOpex: number;
   fixedParts: Array<{ name: string; value: number }>;
   variableParts: Array<{ name: string; value: number }>;
@@ -32,41 +35,28 @@ export type BreakEvenModel = {
 
 /** Mô hình hòa vốn cả năm từ dữ liệu P&L — dùng chung với màn Giả định. */
 export function buildBreakEvenModel(data: PlanningData, buckets: PnlBucket[], baseLabel: string): BreakEvenModel {
-  const opexLine = data.statement.find((line) => line.key === "otherOpex");
-  const usePlan = buckets === data.plans;
-  const groupTotal = (group: { months: number[]; plan: number[] | null }) => (usePlan ? sumAll(group.plan || []) : sumAll(group.months));
+  const split = splitOpex(data, buckets, buckets === data.plans);
+  const totals = costTotalsOf(buckets, split);
+  const result = breakEvenOf(totals);
   const fixedParts: Array<{ name: string; value: number }> = [];
   const variableParts: Array<{ name: string; value: number }> = [];
-  const payroll = sumAll(buckets.map((bucket) => bucket.payroll));
-  const cogs = sumAll(buckets.map((bucket) => bucket.cogs));
-  if (payroll > 0) fixedParts.push({ name: "Chi phí nhân sự", value: payroll });
-  // Khấu hao là hạng mục trong nhóm Chi phí cố định của OPEX nên tự vào định phí ở vòng lặp nhóm bên dưới.
-  if (cogs > 0) variableParts.push({ name: "Giá vốn hàng bán", value: cogs });
-  let fixedOpex = 0;
-  let variableOpex = 0;
-  for (const group of opexLine?.groups || []) {
-    const value = groupTotal(group);
+  if (totals.payroll > 0) fixedParts.push({ name: "Chi phí nhân sự", value: totals.payroll });
+  if (totals.capex > 0) fixedParts.push({ name: "CAPEX (chi phí đầu tư)", value: totals.capex });
+  if (totals.cogs > 0) variableParts.push({ name: "Giá vốn hàng bán", value: totals.cogs });
+  let namedFixed = 0;
+  for (const group of split.groups) {
+    const value = sumAll(group.months);
     if (value <= 0) continue;
-    if (opexGroupRank(group.name) === 2) { variableOpex += value; variableParts.push({ name: group.name, value }); } else { fixedOpex += value; fixedParts.push({ name: group.name, value }); }
+    if (group.kind === "fixed") { namedFixed += value; fixedParts.push({ name: group.name, value }); } else variableParts.push({ name: group.name, value });
   }
-  // Nhóm OPEX chưa gắn nhóm nào (tổng dòng lớn hơn tổng nhóm) coi là định phí.
-  const opexTotal = sumAll(buckets.map((bucket) => bucket.otherOpex));
-  const unassignedOpex = opexTotal - fixedOpex - variableOpex;
-  if (unassignedOpex > 0.5) { fixedOpex += unassignedOpex; fixedParts.push({ name: "OPEX khác (chưa gắn nhóm)", value: unassignedOpex }); }
-  const revenue = sumAll(buckets.map((bucket) => bucket.revenue));
-  const fixed = payroll + fixedOpex;
-  const variable = cogs + variableOpex;
-  const variableRatio = revenue > 0 ? variable / revenue : 0;
-  const cmRatio = 1 - variableRatio;
+  // OPEX chưa gắn nhóm nào (tổng dòng lớn hơn tổng nhóm) coi là chi phí cố định.
+  const unassignedOpex = totals.opexFixed - namedFixed;
+  if (unassignedOpex > 0.5) fixedParts.push({ name: "OPEX khác (chưa gắn nhóm)", value: unassignedOpex });
+  const opexTotal = totals.opexFixed + totals.opexMarketing + totals.opexVariable;
   return {
     baseLabel,
-    revenue,
-    fixed,
-    variable,
-    variableRatio,
-    cmRatio,
-    bep: cmRatio > 0 ? fixed / cmRatio : null,
-    fixedShareOfOpex: opexTotal > 0 ? fixedOpex / opexTotal : 1,
+    ...result,
+    fixedShareOfOpex: opexTotal > 0 ? totals.opexFixed / opexTotal : 1,
     fixedParts: fixedParts.sort((a, b) => b.value - a.value),
     variableParts: variableParts.sort((a, b) => b.value - a.value),
   };
@@ -105,7 +95,8 @@ export default function BreakEvenTab({ data, picked, onChangePicked }: { data: P
     const revenuePlan = sumAll(base.map((bucket) => bucket.revenue));
     const revenueActual = bucketSum(branch.actual, "revenue", picked);
     const opex = sumAll(base.map((bucket) => bucket.otherOpex));
-    const fixed = sumAll(base.map((bucket) => bucket.payroll)) + opex * model.fixedShareOfOpex;
+    // Cùng luật FC/VC; OPEX cửa hàng chia cố định / (marketing + biến đổi) theo tỷ trọng chung.
+    const fixed = sumAll(base.map((bucket) => bucket.payroll)) + sumAll(base.map((bucket) => bucket.capex)) + opex * model.fixedShareOfOpex;
     const variable = sumAll(base.map((bucket) => bucket.cogs)) + opex * (1 - model.fixedShareOfOpex);
     const cm = revenuePlan > 0 ? 1 - variable / revenuePlan : 0;
     const bep = cm > 0 ? fixed / cm : null;
@@ -142,6 +133,11 @@ export default function BreakEvenTab({ data, picked, onChangePicked }: { data: P
           <div className="min-w-0"><p className="text-[10px] font-bold uppercase tracking-wider text-amber-600">Chi phí biến đổi dự kiến</p><p className="text-lg font-extrabold text-slate-800 truncate">{fmtMoney(model.variable)}</p><p className="text-[11px] text-slate-500">{pctText(model.variableRatio)} doanh thu</p></div>
         </div>
       </div>
+
+      <p className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-600">
+        <b>Cách tính:</b> Doanh thu hòa vốn = FC ÷ (1 − VC ÷ Doanh thu) = {fmtMoney(model.fixed)} ÷ (1 − {pctText(model.variableRatio)}).
+        FC = CAPEX + chi phí cố định (gồm khấu hao) + chi phí nhân sự; VC = giá vốn + chi phí biến đổi + chi phí Marketing — theo {model.baseLabel}.
+      </p>
 
       <div className="grid xl:grid-cols-[2fr_1fr] gap-4">
         <div className={`rounded-xl border p-4 flex items-center gap-4 ${reached ? "bg-emerald-50 border-emerald-200" : "bg-amber-50 border-amber-200"}`}>
@@ -197,13 +193,13 @@ export default function BreakEvenTab({ data, picked, onChangePicked }: { data: P
       </div>
 
       <div className="grid xl:grid-cols-2 gap-4">
-        <Card title="II. Chi phí cố định (FC)" subtitle={`Tổng cấu thành định phí theo ${model.baseLabel}`} icon="lock" bodyClassName="px-4 pb-4">
+        <Card title="II. Chi phí cố định (FC)" subtitle={`CAPEX + chi phí cố định + chi phí nhân sự, theo ${model.baseLabel}`} icon="lock" bodyClassName="px-4 pb-4">
           <DonutLegendChart data={model.fixedParts} height={200} top={6} colors={["#2563eb", "#3b82f6", "#60a5fa", "#93c5fd", "#bfdbfe", "#1d4ed8", "#1e40af"]} />
           <p className="mt-2 text-center text-[10px] font-bold uppercase tracking-wider text-slate-500">Tổng cấu thành FC</p>
           <p className="text-center text-lg font-extrabold text-blue-700">{fmtMoney(model.fixed)}</p>
           {partsTable(model.fixedParts, model.fixed, "blue")}
         </Card>
-        <Card title="III. Chi phí biến đổi (VC) tại mức điểm hòa vốn" subtitle="Tỷ lệ biến phí trên doanh thu và cấu thành" icon="swap_vert" bodyClassName="px-4 pb-4">
+        <Card title="III. Chi phí biến đổi (VC) tại mức điểm hòa vốn" subtitle="Giá vốn + chi phí biến đổi + chi phí Marketing — tỷ lệ trên doanh thu và cấu thành" icon="swap_vert" bodyClassName="px-4 pb-4">
           <DonutLegendChart data={model.variableParts} height={200} top={6} colors={["#f59e0b", "#fbbf24", "#fcd34d", "#fde68a", "#d97706", "#b45309"]} />
           <p className="mt-2 text-center text-[10px] font-bold uppercase tracking-wider text-slate-500">Tỷ lệ biến phí (VC ratio)</p>
           <p className="text-center text-lg font-extrabold text-amber-600">{pctText(model.variableRatio)}</p>
@@ -247,7 +243,7 @@ export default function BreakEvenTab({ data, picked, onChangePicked }: { data: P
         </div>
       </Card>
 
-      <Card title="V. So sánh & phân tích điểm hòa vốn theo cửa hàng" subtitle="Định phí OPEX của từng cửa hàng phân bổ theo tỷ lệ cố định/biến đổi chung của cả hệ thống" icon="storefront" bodyClassName="overflow-x-auto">
+      <Card title="V. So sánh & phân tích điểm hòa vốn theo cửa hàng" subtitle="OPEX của từng cửa hàng chia cố định / (biến đổi + Marketing) theo tỷ lệ chung của cả hệ thống; CAPEX và nhân sự lấy đúng số cửa hàng" icon="storefront" bodyClassName="overflow-x-auto">
         <table className="w-full text-left text-xs">
           <thead><tr className="text-[10px] uppercase tracking-wide text-slate-500 border-b border-slate-200"><th className="px-4 py-2.5 font-bold">Cửa hàng</th><th className="px-3 py-2.5 font-bold text-right">Doanh thu KH</th><th className="px-3 py-2.5 font-bold text-right">Doanh thu TT</th><th className="px-3 py-2.5 font-bold text-right">Định phí (FC)</th><th className="px-3 py-2.5 font-bold text-right">Biến phí (VC)</th><th className="px-3 py-2.5 font-bold text-right">Tỷ suất CM</th><th className="px-3 py-2.5 font-bold text-right">Mốc hòa vốn</th><th className="px-3 py-2.5 font-bold text-right">Biên an toàn</th><th className="px-3 py-2.5 font-bold text-center">Trạng thái</th></tr></thead>
           <tbody>

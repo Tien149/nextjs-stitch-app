@@ -5,6 +5,7 @@ import { storeLabel } from "@/lib/branch-labels";
 import { HorizontalBarChart, MixedChart } from "@/components/charts/ReportCharts";
 import { buildBreakEvenModel } from "@/components/reports/planning/BreakEvenTab";
 import { Card, MonthChips, NoPlanNotice, Tag, fmtMoney, pctText, ratioOf, signedMoney, statValueTextClass, type Tone } from "@/components/reports/planning/planning-ui";
+import { breakEvenOf, splitOpex, type OpexSplit } from "@/components/reports/planning/cost-structure";
 import { bucketOperatingCost, bucketSum, cumulative, finalizeBucket, lastPicked, monthPickSummary, sumAll, type MonthPick, type PlanningData, type PnlBucket } from "@/components/reports/planning/planning-types";
 
 /**
@@ -15,32 +16,63 @@ import { bucketOperatingCost, bucketSum, cumulative, finalizeBucket, lastPicked,
  * P&L các tháng bị tác động. Tính ngay trên trình duyệt, không ghi vào kế hoạch.
  */
 
-type VariableKey = "revenue" | "cogs" | "payroll" | "otherOpex";
+/**
+ * Biến số của kịch bản (khách yêu cầu 04/10/2026): OPEX tách 3 hạng mục Chi phí cố định /
+ * Marketing / Chi phí biến đổi (theo tên nhóm hạng mục P&L — cost-structure.ts) và thêm CAPEX.
+ */
+type VariableKey = "revenue" | "cogs" | "payroll" | "opexFixed" | "opexMarketing" | "opexVariable" | "capex";
 const VARIABLES: Array<{ key: VariableKey; label: string; hint: string; tone: Tone }> = [
   { key: "revenue", label: "Doanh thu", hint: "Tăng/giảm doanh thu mọi cửa hàng", tone: "blue" },
   { key: "cogs", label: "Giá vốn hàng bán", hint: "Giá nguyên liệu, định lượng", tone: "amber" },
   { key: "payroll", label: "Chi phí nhân sự", hint: "Lương, thưởng, bảo hiểm", tone: "sky" },
-  { key: "otherOpex", label: "Chi phí hoạt động (OPEX)", hint: "Thuê mặt bằng, marketing, điện nước, khấu hao...", tone: "indigo" },
+  { key: "opexFixed", label: "Chi phí cố định", hint: "Nhóm OPEX cố định: thuê mặt bằng, điện nước, khấu hao...", tone: "indigo" },
+  { key: "opexMarketing", label: "Chi phí Marketing", hint: "Nhóm OPEX marketing: quảng cáo, khuyến mãi, KOL...", tone: "rose" },
+  { key: "opexVariable", label: "Chi phí biến đổi", hint: "Nhóm OPEX biến đổi: phí app, phí quẹt thẻ, vật tư tiêu hao...", tone: "orange" },
+  { key: "capex", label: "Chi phí CAPEX", hint: "Đầu tư tài sản, cải tạo, sửa chữa lớn", tone: "slate" },
 ];
 type Adjustment = { enabled: boolean; pct: number };
 const defaultAdjustments = (): Record<VariableKey, Adjustment> => ({
-  revenue: { enabled: true, pct: 0 }, cogs: { enabled: false, pct: 0 }, payroll: { enabled: false, pct: 0 }, otherOpex: { enabled: false, pct: 0 },
+  revenue: { enabled: true, pct: 0 }, cogs: { enabled: false, pct: 0 }, payroll: { enabled: false, pct: 0 },
+  opexFixed: { enabled: false, pct: 0 }, opexMarketing: { enabled: false, pct: 0 }, opexVariable: { enabled: false, pct: 0 }, capex: { enabled: false, pct: 0 },
 });
 
-function applyScenario(base: PnlBucket[], adjustments: Record<VariableKey, Adjustment>, fromMonth: number) {
+/** Tỷ trọng ba phần OPEX trong từng tháng — để vặn riêng từng phần và áp lên OPEX của cửa hàng. */
+type OpexShares = Array<{ fixed: number; marketing: number; variable: number }>;
+function opexSharesOf(buckets: PnlBucket[], split: OpexSplit): OpexShares {
+  return buckets.map((bucket, index) => (bucket.otherOpex > 0
+    ? { fixed: split.fixed[index] / bucket.otherOpex, marketing: split.marketing[index] / bucket.otherOpex, variable: split.variable[index] / bucket.otherOpex }
+    : { fixed: 1, marketing: 0, variable: 0 }));
+}
+
+const factorOf = (adjustments: Record<VariableKey, Adjustment>, fromMonth: number, key: VariableKey, index: number) =>
+  (index >= fromMonth && adjustments[key].enabled ? 1 + adjustments[key].pct / 100 : 1);
+
+/** Giá trị theo tháng của một biến số trên `buckets` (OPEX ba phần tính theo tỷ trọng). */
+function seriesOf(buckets: PnlBucket[], shares: OpexShares, key: VariableKey) {
+  return buckets.map((bucket, index) => {
+    const share = shares[index] || { fixed: 1, marketing: 0, variable: 0 };
+    if (key === "opexFixed") return bucket.otherOpex * share.fixed;
+    if (key === "opexMarketing") return bucket.otherOpex * share.marketing;
+    if (key === "opexVariable") return bucket.otherOpex * share.variable;
+    return bucket[key];
+  });
+}
+
+function applyScenario(base: PnlBucket[], shares: OpexShares, adjustments: Record<VariableKey, Adjustment>, fromMonth: number) {
   return base.map((bucket, index) => {
-    const factor = (key: VariableKey) => (index >= fromMonth && adjustments[key].enabled ? 1 + adjustments[key].pct / 100 : 1);
+    const factor = (key: VariableKey) => factorOf(adjustments, fromMonth, key, index);
+    const share = shares[index] || { fixed: 1, marketing: 0, variable: 0 };
+    const opexFactor = share.fixed * factor("opexFixed") + share.marketing * factor("opexMarketing") + share.variable * factor("opexVariable");
     return finalizeBucket({
       revenue: bucket.revenue * factor("revenue"),
       cogs: bucket.cogs * factor("cogs"),
       payroll: bucket.payroll * factor("payroll"),
-      otherOpex: bucket.otherOpex * factor("otherOpex"),
+      otherOpex: bucket.otherOpex * opexFactor,
       otherIncome: bucket.otherIncome,
       otherExpense: bucket.otherExpense,
-      // Kịch bản chỉ vặn doanh thu / chi phí vận hành; tiền đầu tư tài sản giữ nguyên.
-      capex: bucket.capex,
-      // Lãi vay là phần của OPEX nên co giãn cùng hệ số OPEX.
-      interest: bucket.interest * factor("otherOpex"),
+      capex: bucket.capex * factor("capex"),
+      // Lãi vay nằm trong nhóm chi phí cố định nên co giãn cùng hệ số đó.
+      interest: bucket.interest * factor("opexFixed"),
     });
   });
 }
@@ -51,7 +83,10 @@ export default function ScenarioTab({ data, picked, onChangePicked }: { data: Pl
   const monthHeaders = data.months.map((month) => `T${Number(month.slice(5))}`);
   const base = data.hasPlan ? data.plans : data.totals;
   const baseLabel = data.hasPlan ? "Kế hoạch" : "Thực tế (gốc)";
-  const scenario = useMemo(() => applyScenario(base, adjustments, fromMonth), [base, adjustments, fromMonth]);
+  const shares = useMemo(() => opexSharesOf(base, splitOpex(data, base, data.hasPlan)), [data, base]);
+  const scenario = useMemo(() => applyScenario(base, shares, adjustments, fromMonth), [base, shares, adjustments, fromMonth]);
+  /** Biến số sau kịch bản theo tháng = giá trị gốc × hệ số của đúng biến số đó. */
+  const scenarioSeries = (key: VariableKey) => seriesOf(base, shares, key).map((value, index) => value * factorOf(adjustments, fromMonth, key, index));
   const activeCount = VARIABLES.filter((variable) => adjustments[variable.key].enabled && adjustments[variable.key].pct !== 0).length;
 
   const update = (key: VariableKey, patch: Partial<Adjustment>) => setAdjustments((current) => ({ ...current, [key]: { ...current[key], ...patch } }));
@@ -66,19 +101,15 @@ export default function ScenarioTab({ data, picked, onChangePicked }: { data: Pl
 
   // Hòa vốn theo kịch bản (cả năm) so với gốc.
   const bepBase = useMemo(() => buildBreakEvenModel(data, base, baseLabel), [data, base, baseLabel]);
-  const scenarioModel = useMemo(() => {
-    const model = buildBreakEvenModel(data, scenario, "kịch bản");
-    // buildBreakEvenModel đọc nhóm OPEX từ statement (số gốc); scale phần OPEX theo hệ số kịch bản để giữ cùng tỷ lệ.
-    const opexFactor = adjustments.otherOpex.enabled ? 1 + adjustments.otherOpex.pct / 100 : 1;
-    const fixedOpex = (bepBase.fixed - sumAll(base.map((bucket) => bucket.payroll))) * opexFactor;
-    const variableOpex = (bepBase.variable - sumAll(base.map((bucket) => bucket.cogs))) * opexFactor;
-    const fixed = sumAll(scenario.map((bucket) => bucket.payroll)) + fixedOpex;
-    const variable = sumAll(scenario.map((bucket) => bucket.cogs)) + variableOpex;
-    const revenue = model.revenue;
-    const variableRatio = revenue > 0 ? variable / revenue : 0;
-    const cmRatio = 1 - variableRatio;
-    return { revenue, fixed, variable, cmRatio, bep: cmRatio > 0 ? fixed / cmRatio : null };
-  }, [data, scenario, adjustments.otherOpex, bepBase, base]);
+  const scenarioModel = breakEvenOf({
+    revenue: sumAll(scenarioSeries("revenue")),
+    cogs: sumAll(scenarioSeries("cogs")),
+    payroll: sumAll(scenarioSeries("payroll")),
+    capex: sumAll(scenarioSeries("capex")),
+    opexFixed: sumAll(scenarioSeries("opexFixed")),
+    opexMarketing: sumAll(scenarioSeries("opexMarketing")),
+    opexVariable: sumAll(scenarioSeries("opexVariable")),
+  });
   const scenarioCumulative = cumulative(scenario.map((bucket) => bucket.revenue));
   const bepMonth = scenarioModel.bep === null ? -1 : scenarioCumulative.findIndex((value) => value >= (scenarioModel.bep as number));
   const bepMonthBase = bepBase.bep === null ? -1 : cumulative(base.map((bucket) => bucket.revenue)).findIndex((value) => value >= (bepBase.bep as number));
@@ -91,7 +122,7 @@ export default function ScenarioTab({ data, picked, onChangePicked }: { data: Pl
 
   const branchDeviation = data.byBranch.map((branch) => {
     const branchBase = data.hasPlan && branch.plan.some((bucket) => bucket.revenue > 0) ? branch.plan : branch.actual;
-    const branchScenario = applyScenario(branchBase, adjustments, fromMonth);
+    const branchScenario = applyScenario(branchBase, shares, adjustments, fromMonth);
     return { name: storeLabel(branch.code), value: bucketSum(branchScenario, "netProfit", picked) - bucketSum(branchBase, "netProfit", picked) };
   });
 
@@ -119,8 +150,8 @@ export default function ScenarioTab({ data, picked, onChangePicked }: { data: Pl
           </label>
           {VARIABLES.map((variable) => {
             const adjustment = adjustments[variable.key];
-            const original = sumAll(base.map((bucket) => bucket[variable.key]));
-            const changed = sumAll(scenario.map((bucket) => bucket[variable.key]));
+            const original = sumAll(seriesOf(base, shares, variable.key));
+            const changed = sumAll(scenarioSeries(variable.key));
             return (
               <div key={variable.key} className={`rounded-xl border p-3 ${adjustment.enabled ? "border-indigo-200 bg-indigo-50/40" : "border-slate-200 bg-white"}`}>
                 <label className="flex items-center gap-2 text-sm font-bold text-slate-800 cursor-pointer">

@@ -430,6 +430,48 @@ export const moduleTabs: Record<string, Array<{ id: string; label: string }>> = 
   ],
 };
 
+/**
+ * Màn con BÊN TRONG một tab, phân quyền riêng từng màn (khách yêu cầu 04/10/2026: "phân quyền
+ * theo từng tab" của Hoạch định P&L). Lưu trong menuAccess dạng "/reports?tab=pnl&sub=forecast".
+ * Không có mục "&sub=" nào của tab = xem được mọi màn con (vai trò cũ không đổi gì); quyền vào
+ * chính tab vẫn do mục "?tab=pnl" / mục trần quyết định — mục "&sub=" chỉ thu hẹp bên trong.
+ */
+export const moduleSubTabs: Record<string, Record<string, Array<{ id: string; label: string }>>> = {
+  "/reports": {
+    pnl: [
+      { id: "period", label: "Kỳ tháng" },
+      { id: "forecast", label: "Dự báo P&L" },
+      { id: "dashboard", label: "Dashboard P&L" },
+      { id: "control", label: "Định mức" },
+      { id: "breakeven", label: "Điểm hòa vốn" },
+      { id: "scenario", label: "Giả định tài chính" },
+    ],
+  },
+};
+
+/** Mục menuAccess là mục thu hẹp màn con ("...&sub=...") chứ không phải mục tab. */
+export function isSubTabEntry(entry: string) {
+  return Boolean(new URLSearchParams(entry.split("?")[1] || "").get("sub"));
+}
+
+export function subTabEntry(path: string, tab: string, sub: string) {
+  return `${menuBasePath(path)}?tab=${tab}&sub=${sub}`;
+}
+
+/** Các màn con của `tab` mà người dùng được xem; null = không giới hạn. */
+export function allowedSubTabs(session: DemoSession | null | undefined, path: string, tab: string) {
+  if (!session || session.role === "Admin") return null;
+  const list = session.menuAccess;
+  if (!Array.isArray(list) || list.length === 0) return null;
+  const base = menuBasePath(path);
+  const subs = list
+    .filter((entry) => menuBasePath(entry) === base)
+    .map((entry) => new URLSearchParams(entry.split("?")[1] || ""))
+    .filter((params) => params.get("tab") === tab && params.get("sub"))
+    .map((params) => params.get("sub") as string);
+  return subs.length > 0 ? [...new Set(subs)] : null;
+}
+
 /** Biểu tượng hiển thị của từng tab, tách khỏi khai báo quyền để giữ moduleTabs gọn. */
 export const moduleTabIcons: Record<string, string> = {
   dashboard: "dashboard", operations: "fact_check", budget: "price_check", "payroll-budget": "groups", "daily-cash": "receipt", "cash-source": "savings", "revenue-ledger": "point_of_sale", "revenue-settlement": "rule",
@@ -504,7 +546,8 @@ export function allowedMenuTabs(session: DemoSession | null | undefined, path: s
   // Mục "trần" (không kèm ?tab=) chỉ để hiện menu ngoài sidebar; phạm vi tab do các mục
   // "?tab=..." quyết định. Không có mục nào như vậy nghĩa là xem được mọi tab.
   const tabs = [...list, ...named]
-    .filter((entry) => menuBasePath(entry) === base)
+    // Mục "&sub=" chỉ thu hẹp màn con trong tab, không phải mục cấp tab (xem moduleSubTabs).
+    .filter((entry) => menuBasePath(entry) === base && !isSubTabEntry(entry))
     .map((entry) => new URLSearchParams(entry.split("?")[1] || "").get("tab"))
     .filter((tab): tab is string => Boolean(tab));
   const families = MODULE_TAB_FAMILIES[base] || {};

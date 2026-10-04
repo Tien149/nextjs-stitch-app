@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { useRouter } from "next/navigation";
 import { branchScopeOptions, displayRoleName } from "@/lib/branch-labels";
-import { ALL_APP_ACTIONS, appMenuItems, type AppAction, type DemoSession, SESSION_KEY, moduleTabs } from "@/lib/auth-demo";
+import { ALL_APP_ACTIONS, appMenuItems, type AppAction, type DemoSession, SESSION_KEY, moduleTabs, moduleSubTabs, isSubTabEntry, subTabEntry } from "@/lib/auth-demo";
 import { logout } from "@/lib/session-client";
 import CopyableText from "@/components/CopyableText";
 
@@ -474,7 +474,7 @@ export default function PermissionsPage() {
     const access = currentMenuAccessOf(role);
     const all = moduleTabs[menuHref] || [];
     const picked = access
-      .filter((entry) => menuBasePathOf(entry) === menuHref && entry.includes("?"))
+      .filter((entry) => menuBasePathOf(entry) === menuHref && entry.includes("?") && !isSubTabEntry(entry))
       .map((entry) => new URLSearchParams(entry.split("?")[1] || "").get("tab"))
       .filter((tab): tab is string => Boolean(tab));
     if (picked.length > 0) return new Set(picked);
@@ -489,19 +489,60 @@ export default function PermissionsPage() {
    */
   const handleToggleTabAccess = async (role: RoleItem, menuHref: string, tabId: string) => {
     if (role.name === "Admin") return;
-    const all = moduleTabs[menuHref] || [];
     const current = currentMenuAccessOf(role);
     const picked = effectiveTabIdsOf(role, menuHref);
     if (picked.has(tabId)) picked.delete(tabId);
     else picked.add(tabId);
 
+    await saveMenuAccess(role, buildPageAccess(current, menuHref, picked));
+  };
+
+  /**
+   * Dựng lại mọi mục menuAccess của một trang từ tập tab được mở. Mục thu hẹp màn con ("&sub=")
+   * của tab còn mở được giữ nguyên; tab bị gỡ thì gỡ luôn mục màn con của nó.
+   */
+  const buildPageAccess = (current: string[], menuHref: string, picked: Set<string>) => {
+    const all = moduleTabs[menuHref] || [];
     const rest = current.filter((entry) => menuBasePathOf(entry) !== menuHref);
+    const keptSubs = current.filter((entry) => menuBasePathOf(entry) === menuHref && isSubTabEntry(entry)
+      && picked.has(new URLSearchParams(entry.split("?")[1] || "").get("tab") || ""));
     let next: string[];
     if (picked.size === 0) next = rest; // bỏ tick tab cuối cùng thì gỡ luôn trang khỏi vai trò
-    else if (picked.size >= all.length) next = [...rest, menuHref];
-    else next = [...rest, ...all.filter((tab) => picked.has(tab.id)).map((tab) => `${menuHref}?tab=${tab.id}`)];
+    else if (picked.size >= all.length) next = [...rest, menuHref, ...keptSubs];
+    else next = [...rest, ...all.filter((tab) => picked.has(tab.id)).map((tab) => `${menuHref}?tab=${tab.id}`), ...keptSubs];
+    return [...new Set(next)];
+  };
 
-    await saveMenuAccess(role, [...new Set(next)]);
+  /** Màn con đang mở của một tab: tab không mở thì rỗng; không có mục "&sub=" nào thì mở đủ. */
+  const effectiveSubIdsOf = (role: RoleItem, menuHref: string, tabId: string) => {
+    if (!effectiveTabIdsOf(role, menuHref).has(tabId)) return new Set<string>();
+    const subs = currentMenuAccessOf(role)
+      .filter((entry) => menuBasePathOf(entry) === menuHref && isSubTabEntry(entry))
+      .map((entry) => new URLSearchParams(entry.split("?")[1] || ""))
+      .filter((params) => params.get("tab") === tabId)
+      .map((params) => params.get("sub") as string);
+    return new Set(subs.length > 0 ? subs : (moduleSubTabs[menuHref]?.[tabId] || []).map((sub) => sub.id));
+  };
+
+  /**
+   * Bật/tắt một màn con (vd. "Điểm hòa vốn" trong Hoạch định P&L). Tab chưa mở thì tick màn con
+   * sẽ mở tab với đúng màn con đó; bỏ tick màn con cuối cùng thì gỡ luôn tab.
+   */
+  const handleToggleSubTabAccess = async (role: RoleItem, menuHref: string, tabId: string, subId: string) => {
+    if (role.name === "Admin") return;
+    const allSubs = moduleSubTabs[menuHref]?.[tabId] || [];
+    const tabs = effectiveTabIdsOf(role, menuHref);
+    const subs = effectiveSubIdsOf(role, menuHref, tabId);
+    if (subs.has(subId)) subs.delete(subId);
+    else subs.add(subId);
+    if (subs.size === 0) tabs.delete(tabId);
+    else tabs.add(tabId);
+    const withoutSubs = currentMenuAccessOf(role).filter((entry) => !(menuBasePathOf(entry) === menuHref && isSubTabEntry(entry)
+      && new URLSearchParams(entry.split("?")[1] || "").get("tab") === tabId));
+    const subEntries = subs.size > 0 && subs.size < allSubs.length
+      ? allSubs.filter((sub) => subs.has(sub.id)).map((sub) => subTabEntry(menuHref, tabId, sub.id))
+      : [];
+    await saveMenuAccess(role, [...buildPageAccess(withoutSubs, menuHref, tabs), ...subEntries]);
   };
 
   const updateUserRole = async (userId: string, roleId: string) => {
@@ -823,7 +864,7 @@ export default function PermissionsPage() {
                       );
                     })}
                   </tr>,
-                  ...(moduleTabs[item.href] || []).map((tab) => (
+                  ...(moduleTabs[item.href] || []).flatMap((tab) => [
                     <tr key={`${item.name}-${tab.id}`} className="bg-slate-50/60 hover:bg-slate-100/60">
                       <td className="px-4 py-2 pl-12 text-xs font-medium text-slate-600">
                         <span className="material-symbols-outlined text-sm mr-2 align-middle text-slate-300">subdirectory_arrow_right</span>
@@ -852,8 +893,39 @@ export default function PermissionsPage() {
                           </td>
                         );
                       })}
-                    </tr>
-                  )),
+                    </tr>,
+                    ...(moduleSubTabs[item.href]?.[tab.id] || []).map((sub) => (
+                      <tr key={`${item.name}-${tab.id}-${sub.id}`} className="bg-slate-50/30 hover:bg-slate-100/60">
+                        <td className="px-4 py-1.5 pl-20 text-[11px] text-slate-500">
+                          <span className="material-symbols-outlined text-xs mr-1.5 align-middle text-slate-300">subdirectory_arrow_right</span>
+                          {sub.label}
+                        </td>
+                        {rolesList.map((r) => {
+                          const isAdmin = r.name === "Admin";
+                          const isSubChecked = isAdmin || effectiveSubIdsOf(r, item.href, tab.id).has(sub.id);
+                          return (
+                            <td key={r.id} className="px-4 py-1.5">
+                              <label
+                                title={isAdmin ? "Tài khoản Admin có toàn quyền" : `Tích để bật/tắt riêng màn "${sub.label}" trong tab "${tab.label}"`}
+                                className={`inline-flex items-center gap-2 select-none ${isAdmin ? "cursor-not-allowed opacity-80" : "cursor-pointer group"}`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  disabled={isAdmin}
+                                  checked={isSubChecked}
+                                  onChange={() => handleToggleSubTabAccess(r, item.href, tab.id, sub.id)}
+                                  className="w-3 h-3 rounded text-blue-600 focus:ring-blue-500 cursor-pointer disabled:cursor-not-allowed transition"
+                                />
+                                <span className={`text-[10px] font-bold transition ${isSubChecked ? "text-emerald-600" : "text-slate-400 group-hover:text-slate-600"}`}>
+                                  {isSubChecked ? "Có" : "-"}
+                                </span>
+                              </label>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    )),
+                  ]),
                 ])}
               </tbody>
             </table>

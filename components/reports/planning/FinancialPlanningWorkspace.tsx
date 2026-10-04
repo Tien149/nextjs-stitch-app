@@ -30,10 +30,15 @@ const TABS: Array<{ id: PlanningTabId; label: string; icon: string }> = [
 /** Tick sẵn T1 tới tháng của kỳ đang xem — trạng thái mặc định của chip khi mở/đổi kỳ. */
 const monthsUpToPeriod = (period: string) => Array.from({ length: Math.max(1, Math.min(12, Number(period.slice(5)) || 1)) }, (_, index) => index);
 
-export default function FinancialPlanningWorkspace({ period, branchCode, periodView, onOpenBudget, initialTab = "dashboard" }: {
+export default function FinancialPlanningWorkspace({ period, branchCode, periodView, onOpenBudget, initialTab = "dashboard", allowedTabs = null }: {
   period: string; branchCode: string; periodView: React.ReactNode; onOpenBudget?: () => void; initialTab?: PlanningTabId;
+  /** Màn con được phân quyền (moduleSubTabs trong lib/auth-demo); null = mọi màn. */
+  allowedTabs?: string[] | null;
 }) {
-  const [tab, setTab] = useState<PlanningTabId>(initialTab);
+  const tabs = allowedTabs ? TABS.filter((item) => allowedTabs.includes(item.id)) : TABS;
+  const [chosenTab, setTab] = useState<PlanningTabId>(initialTab);
+  // Quyền có thể nạp sau lần render đầu: màn đang chọn không còn được phép thì rơi về màn đầu tiên được phép.
+  const tab: PlanningTabId = tabs.some((item) => item.id === chosenTab) ? chosenTab : (tabs[0]?.id || chosenTab);
   const year = period.slice(0, 4);
   // Mặc định tick T1 tới tháng của kỳ đang chọn — đổi kỳ thì chip đi theo. Sau đó người dùng
   // tự bật/tắt từng tháng nên state là danh sách tháng, không còn là một mốc "tới tháng N".
@@ -131,7 +136,7 @@ export default function FinancialPlanningWorkspace({ period, branchCode, periodV
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
-        <PillTabs tabs={TABS} active={tab} onChange={(id) => setTab(id as PlanningTabId)} />
+        <PillTabs tabs={tabs} active={tab} onChange={(id) => setTab(id as PlanningTabId)} />
         <div className="ml-auto flex items-center gap-2">
           <Tag tone="indigo" className="text-[11px] px-2.5 py-1"><span className="material-symbols-outlined text-sm align-middle mr-1">calendar_today</span>{tab === "period" ? `Kỳ ${period}` : `Năm ${year}`}</Tag>
           <Tag tone="slate" className="text-[11px] px-2.5 py-1"><span className="material-symbols-outlined text-sm align-middle mr-1">storefront</span>{storeLabel(branchCode)}</Tag>
