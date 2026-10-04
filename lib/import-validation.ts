@@ -1,4 +1,5 @@
 import { prisma, prismaRaw } from "@/lib/prisma";
+import { EQUITY_OPENING_TYPES, isEquityOpeningType, openingAmountAllowsNegative } from "@/lib/balance-sheet";
 import { assertBranchAccess } from "@/lib/accounting";
 import { INVENTORY_ITEM_UPDATE_TEMPLATE, isMasterDataImportType, normalizeHeader, type ImportType } from "@/lib/import-templates";
 import { parseImportDate, type ParsedImportResult, type ParsedImportRow } from "@/lib/import-parser";
@@ -1551,8 +1552,12 @@ export async function validateImportResult(
         if (numberValue(row.values.amount) < 0) addError(row, "Tồn kho đầu kỳ không được âm");
       } else if (numberValue(row.values.amount) === 0) {
         addError(row, "Số dư đầu kỳ không được bằng 0");
+      } else if (numberValue(row.values.amount) < 0 && isEquityOpeningType(balanceType) && !openingAmountAllowsNegative(balanceType)) {
+        addError(row, "Vốn góp / Vay đầu kỳ không được âm (chỉ Lợi nhuận chưa phân phối ghi âm khi lỗ lũy kế)");
       }
-      if (!["CASH", "BANK", "WALLET_POS", "AR", "AP", "DEPOSIT", "INVENTORY", "ASSET", "PREPAID_EXPENSE"].includes(balanceType)) {
+      // Nguồn vốn đầu kỳ (EQUITY_CAPITAL / RETAINED_EARNINGS / LOAN — lib/balance-sheet.ts): không sinh
+      // nghiệp vụ phụ; lợi nhuận chưa phân phối được âm (lỗ lũy kế).
+      if (!["CASH", "BANK", "WALLET_POS", "AR", "AP", "DEPOSIT", "INVENTORY", "ASSET", "PREPAID_EXPENSE", ...EQUITY_OPENING_TYPES].includes(balanceType)) {
         addError(row, "Loại số dư không hợp lệ");
       }
       const openingKey = [

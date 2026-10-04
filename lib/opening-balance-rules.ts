@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/custom-client";
 import { roundPeriodCount } from "@/lib/period-count";
 import { moneySourceMatchesBranch, normalizeMoneySourceGroup } from "@/lib/money-sources";
 import { resolveOpeningAsset } from "@/lib/opening-asset";
+import { EQUITY_OPENING_TYPES, openingAmountAllowsNegative } from "@/lib/balance-sheet";
 
 export const OPENING_BALANCE_EFFECTIVE_STATUSES = ["POSTED", "CONFIRMED"] as const;
 export const CASH_SOURCE_OPENING_TYPES = ["CASH", "BANK", "WALLET_POS"] as const;
@@ -9,6 +10,8 @@ export const CASH_SOURCE_OPENING_TYPES = ["CASH", "BANK", "WALLET_POS"] as const
 export const OPENING_BALANCE_TYPES = [
   "CASH", "BANK", "WALLET_POS", "AR", "AP", "DEPOSIT",
   "INVENTORY", "ASSET", "PREPAID_EXPENSE",
+  // Nguồn vốn đầu kỳ (04/10/2026) — Nợ 4199 / Có 411 · 421 · 341, xem lib/balance-sheet.ts.
+  ...EQUITY_OPENING_TYPES,
 ] as const;
 
 export type OpeningBalanceInput = {
@@ -70,6 +73,9 @@ export async function validateOpeningBalanceInput(tx: Prisma.TransactionClient, 
   // Tài sản hết kỳ phân bổ vẫn còn hiện vật cần theo dõi — giá trị 0 hợp lệ, chỉ cấm âm.
   if (input.balanceType === "ASSET") {
     if (input.amount < 0) throw new Error("Giá trị tài sản đầu kỳ không được âm");
+  } else if (openingAmountAllowsNegative(input.balanceType)) {
+    // Lỗ lũy kế ghi số âm; chỉ cấm số 0.
+    if (!input.amount) throw new Error("Lợi nhuận chưa phân phối phải khác 0 (lỗ lũy kế ghi số âm)");
   } else if (!(input.amount > 0)) {
     throw new Error("Số tiền phải lớn hơn 0");
   }
@@ -97,6 +103,13 @@ export async function validateOpeningBalanceInput(tx: Prisma.TransactionClient, 
     // Dữ liệu PROD trước đây cho phép chọn mọi đối tác ACTIVE cho AR/AP/DEPOSIT.
     // Không siết partnerType tại đây để tránh làm mất tương thích với các mã lịch sử.
     input.objectName = partner.name;
+  }
+
+  // Vay: đối tượng (bên cho vay) không bắt buộc, có khai thì phải là đối tác còn hoạt động.
+  if (input.balanceType === "LOAN" && input.objectCode) {
+    const lender = await tx.masterDataItem.findUnique({ where: { type_code: { type: "PARTNER", code: input.objectCode } } });
+    if (!lender || lender.status !== "ACTIVE") throw new Error(`Đối tác cho vay [${input.objectCode}] không còn hợp lệ`);
+    input.objectName = lender.name;
   }
 
   if (input.balanceType === "INVENTORY" && (!input.objectCode || !input.warehouseCode || !(input.quantity && input.quantity > 0) || !(input.unitCost && input.unitCost > 0))) {

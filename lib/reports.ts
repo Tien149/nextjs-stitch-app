@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/custom-client";
+import { buildBalanceSheet, type BalanceAccountTotal } from "@/lib/balance-sheet";
 import { prisma } from "@/lib/prisma";
 import { CASH_SOURCE_OPENING_TYPES, OPENING_BALANCE_EFFECTIVE_STATUSES } from "@/lib/opening-balance-rules";
 import { addPeriod, periodFromDate } from "@/lib/phase3";
@@ -1068,11 +1069,15 @@ export async function getPnl(period: string, branchCode: string) {
 
 export async function getBalanceSheet(period: string, branchCode: string) {
   const { end } = periodBounds(period);
+  // Đầu năm của kỳ đang xem: tách lợi nhuận năm nay khỏi lợi nhuận các năm trước trên dòng 421.
+  const yearStart = periodBounds(`${period.slice(0, 4)}-01`).start;
   // Cộng dồn từ trước tới cuối kỳ nên bảng bút toán càng dài càng nặng: gộp theo tài khoản ngay
   // trong SQL thay vì kéo mọi dòng bút toán từ ngày đầu về rồi mới cộng.
-  const lines = await prisma.$queryRaw<Array<{ code: string; name: string; accountType: string; reportGroup: string; normalBalance: string; debit: number; credit: number }>>(Prisma.sql`
+  const lines = await prisma.$queryRaw<BalanceAccountTotal[]>(Prisma.sql`
     SELECT a."code", a."name", a."accountType", a."reportGroup", a."normalBalance",
-           SUM(l."debit")::float8 AS debit, SUM(l."credit")::float8 AS credit
+           SUM(l."debit")::float8 AS debit, SUM(l."credit")::float8 AS credit,
+           COALESCE(SUM(l."debit") FILTER (WHERE e."entryDate" < ${yearStart}), 0)::float8 AS "debitBeforeYear",
+           COALESCE(SUM(l."credit") FILTER (WHERE e."entryDate" < ${yearStart}), 0)::float8 AS "creditBeforeYear"
     FROM "JournalLine" l
     JOIN "JournalEntry" e ON e."id" = l."entryId"
     JOIN "AccountingAccount" a ON a."id" = l."accountId"
@@ -1082,23 +1087,7 @@ export async function getBalanceSheet(period: string, branchCode: string) {
       ${branchCode === "ALL" ? Prisma.empty : Prisma.sql`AND e."branchCode" = ${branchCode}`}
     GROUP BY a."id", a."code", a."name", a."accountType", a."reportGroup", a."normalBalance"
   `);
-  const groups = new Map<string, { code: string; name: string; accountType: string; reportGroup: string; amount: number }>();
-  let cumulativeProfit = 0;
-  for (const line of lines) {
-    const account = line;
-    const amount = account.normalBalance === "DEBIT" ? line.debit - line.credit : line.credit - line.debit;
-    const current = groups.get(account.code) || { code: account.code, name: account.name, accountType: account.accountType, reportGroup: account.reportGroup, amount: 0 };
-    current.amount += amount;
-    groups.set(account.code, current);
-    if (["REVENUE", "OTHER_INCOME"].includes(account.accountType)) cumulativeProfit += line.credit - line.debit;
-    if (["COGS", "OPEX", "OTHER_EXPENSE"].includes(account.accountType)) cumulativeProfit -= line.debit - line.credit;
-  }
-  const rows = Array.from(groups.values()).filter((row) => Math.abs(row.amount) > 0.5).sort((a, b) => a.code.localeCompare(b.code));
-  const assets = rows.filter((row) => row.accountType === "ASSET").reduce((sum, row) => sum + (row.reportGroup === "ACCUMULATED_DEPRECIATION" ? -row.amount : row.amount), 0);
-  const liabilities = rows.filter((row) => row.accountType === "LIABILITY").reduce((sum, row) => sum + row.amount, 0);
-  const contributedEquity = rows.filter((row) => row.accountType === "EQUITY").reduce((sum, row) => sum + row.amount, 0);
-  const equity = contributedEquity + cumulativeProfit;
-  return { rows, assets, liabilities, contributedEquity, retainedEarnings: cumulativeProfit, equity, difference: assets - liabilities - equity, balanced: Math.abs(assets - liabilities - equity) <= 1 };
+  return buildBalanceSheet(lines, period.slice(0, 4));
 }
 
 /**

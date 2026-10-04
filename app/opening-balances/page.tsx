@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { isEquityOpeningType, openingDifferenceOf } from "@/lib/balance-sheet";
 import { formatPeriodCount } from "@/lib/period-count";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
@@ -79,6 +80,10 @@ const balanceTypes = [
   { value: "INVENTORY", label: "Tồn kho đầu kỳ", icon: "inventory_2" },
   { value: "ASSET", label: "Tài sản/CCDC đầu kỳ", icon: "precision_manufacturing" },
   { value: "PREPAID_EXPENSE", label: "Chi phí phân bổ đầu kỳ", icon: "event_repeat" },
+  // Nguồn vốn (04/10/2026): đối ứng của mọi số dư đầu kỳ là 4199 — khai đủ ba loại này thì 4199 về 0.
+  { value: "EQUITY_CAPITAL", label: "Vốn góp chủ sở hữu", icon: "account_balance_wallet" },
+  { value: "RETAINED_EARNINGS", label: "Lợi nhuận chưa phân phối", icon: "trending_up" },
+  { value: "LOAN", label: "Vay & nợ khác", icon: "request_quote" },
 ];
 
 /**
@@ -303,6 +308,11 @@ export default function OpeningBalancesPage() {
       { count: 0, amount: 0, confirmed: 0 },
     );
   }, [visibleBalances]);
+  /** Phần đầu kỳ chưa khai nguồn vốn (tài khoản 4199) của các dòng đã chốt đang xem. */
+  const openingDifference = useMemo(
+    () => openingDifferenceOf(visibleBalances.filter((item) => ["CONFIRMED", "POSTED"].includes(item.status))),
+    [visibleBalances],
+  );
 
   const canManageOpeningBalances = user ? canPerformAction(user, "config") : false;
   const canReopenOpeningBalances = user?.role === "Admin";
@@ -311,6 +321,8 @@ export default function OpeningBalancesPage() {
   const isInventoryType = form.balanceType === "INVENTORY";
   const isAssetType = form.balanceType === "ASSET";
   const isPrepaidType = form.balanceType === "PREPAID_EXPENSE";
+  const isLoanType = form.balanceType === "LOAN";
+  const isEquityType = isEquityOpeningType(form.balanceType);
   const sourceMoneyGroups = isSourceType ? [form.balanceType === "WALLET_POS" ? "WALLET" : form.balanceType] : undefined;
   const selectablePartners = useMemo(() => {
     // Tương thích PROD: mọi đối tác ACTIVE vẫn phải chọn được cho công nợ/cọc.
@@ -347,6 +359,11 @@ export default function OpeningBalancesPage() {
 
     if (isObjectType && !form.objectCode) {
       setMessage("Đối với số dư công nợ/tiền cọc, bắt buộc phải chọn Đối tượng.");
+      return;
+    }
+
+    if (isEquityType && (form.balanceType === "RETAINED_EARNINGS" ? !Number(effectiveAmount) : !(Number(effectiveAmount) > 0))) {
+      setMessage(form.balanceType === "RETAINED_EARNINGS" ? "Lợi nhuận chưa phân phối phải khác 0 (lỗ lũy kế ghi số âm)." : "Số tiền phải lớn hơn 0.");
       return;
     }
 
@@ -393,8 +410,8 @@ export default function OpeningBalancesPage() {
     try {
       const payload = {
         ...form,
-        objectCode: (isObjectType || isInventoryType || isAssetType || isPrepaidType) ? form.objectCode : "",
-        objectName: (isObjectType || isAssetType || isPrepaidType) ? form.objectName : "",
+        objectCode: (isObjectType || isInventoryType || isAssetType || isPrepaidType || isLoanType) ? form.objectCode : "",
+        objectName: (isObjectType || isAssetType || isPrepaidType || isLoanType) ? form.objectName : "",
         // Chi phí phân bổ dùng lại ô này làm Nhóm chi phí (OPEX/CAPEX). Bỏ qua ở đây thì server
         // nhận null và rơi về mặc định OPEX — chọn CAPEX xong lưu lại vẫn ra OPEX.
         // Tài sản dùng ô này làm Nhóm tài sản (CCDC / TSCĐ) — quyết định ghi 242 hay 211.
@@ -545,7 +562,7 @@ export default function OpeningBalancesPage() {
       </header>
 
       <main className="max-w-7xl mx-auto p-6 space-y-6">
-        <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <section className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-4">
             <p className="text-xs font-bold text-slate-500 uppercase">Dòng số dư</p>
             <p className="text-2xl font-bold mt-2 text-slate-900">{totals.count}</p>
@@ -557,6 +574,11 @@ export default function OpeningBalancesPage() {
           <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-4">
             <p className="text-xs font-bold text-slate-500 uppercase">Đã chốt</p>
             <p className="text-2xl font-bold mt-2 text-emerald-700">{formatCurrency(totals.confirmed)} đ</p>
+          </div>
+          <div className={`border rounded-xl shadow-sm p-4 ${Math.abs(openingDifference) > 0.5 ? "bg-amber-50 border-amber-200" : "bg-white border-slate-200"}`}>
+            <p className="text-xs font-bold text-slate-500 uppercase">Nguồn vốn chưa khai</p>
+            <p className={`text-2xl font-bold mt-2 ${Math.abs(openingDifference) > 0.5 ? "text-amber-700" : "text-slate-900"}`}>{formatCurrency(openingDifference)} đ</p>
+            <p className="text-[11px] text-slate-500 mt-1">Tài sản − nợ − nguồn vốn đã chốt. Khai Vốn góp / Lợi nhuận chưa phân phối / Vay cho tới khi về 0.</p>
           </div>
         </section>
 
@@ -675,6 +697,33 @@ export default function OpeningBalancesPage() {
                   {filterMoneySources(moneySources, form.branchCode, sourceMoneyGroups).map(item => (
                     <option key={item.id} value={item.code} title={moneySourceDebugLabel(item, storeLabel(form.branchCode))}>
                       {moneySourceDisplayName(item, storeLabel(form.branchCode))}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+
+            {/* Nguồn vốn đầu kỳ */}
+            {isEquityType && (
+              <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-[11px] leading-relaxed text-blue-900">
+                {form.balanceType === "EQUITY_CAPITAL" && <>Số vốn chủ sở hữu đã góp tới ngày lên hệ thống — lên dòng <b>411 Vốn góp</b> của bảng cân đối.</>}
+                {form.balanceType === "RETAINED_EARNINGS" && <>Lợi nhuận sau thuế chưa phân phối lũy kế tới ngày lên hệ thống (<b>lỗ lũy kế ghi số âm</b>). Lợi nhuận phát sinh trên hệ thống tự cộng tiếp vào dòng <b>421</b>.</>}
+                {form.balanceType === "LOAN" && <>Dư nợ vay (ngân hàng, cá nhân, chủ sở hữu cho mượn...) còn phải trả — lên dòng <b>341 Vay và nợ khác</b>. Bên cho vay không bắt buộc.</>}
+                <span className="mt-1 block text-blue-700">Mọi số dư đầu kỳ đối ứng vào &ldquo;Chênh lệch số dư đầu kỳ chưa phân loại&rdquo;; khai đủ nguồn vốn thì khoản chênh này về 0.</span>
+              </div>
+            )}
+            {isLoanType && (
+              <label className="text-xs font-bold text-slate-600 block">
+                Bên cho vay
+                <select
+                  value={form.objectCode}
+                  onChange={(event) => handlePartnerChange(event.target.value)}
+                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="">-- Không khai --</option>
+                  {selectablePartners.map(item => (
+                    <option key={item.id} value={item.code}>
+                      [{item.code}] {item.name}
                     </option>
                   ))}
                 </select>
@@ -1040,7 +1089,7 @@ export default function OpeningBalancesPage() {
 
             <div className="grid grid-cols-2 gap-3">
               <label className="text-xs font-bold text-slate-600 block">
-                {isAssetType ? "Giá trị còn lại (số dư) *" : "Số tiền / Nguyên giá *"}
+                {isAssetType ? "Giá trị còn lại (số dư) *" : form.balanceType === "RETAINED_EARNINGS" ? "Số tiền (lỗ ghi số âm) *" : "Số tiền / Nguyên giá *"}
                 <input
                   type="number"
                   value={effectiveAmount}

@@ -41,8 +41,8 @@ type Pnl = {
 
 type PnlCut = Pnl & { code: string };
 type PnlItemBreakdown = { code: string; name: string; group: string | null; amount: number };
-type BalanceRow = { code: string; name: string; accountType: string; reportGroup: string; amount: number };
-type BalanceData = { rows: BalanceRow[]; assets: number; liabilities: number; contributedEquity: number; retainedEarnings: number; equity: number; difference: number; balanced: boolean };
+type BalanceRow = { code: string; name: string; accountType: string; reportGroup: string; section?: "ASSET" | "LIABILITY" | "EQUITY"; amount: number; detail?: Array<{ label: string; amount: number }>; warning?: string };
+type BalanceData = { rows: BalanceRow[]; assets: number; liabilities: number; contributedEquity: number; retainedEarnings: number; equity: number; openingDifference?: number; difference: number; balanced: boolean };
 type DashboardData = { pnl: { total: Pnl; byBranch: PnlCut[] }; trend: Array<Pnl & { period: string }>; balance: BalanceData; targets: Array<{ metric: string; targetValue: number }> };
 type PnlDetailItem = { code: string; name: string; amount: number };
 type PnlDetailGroup = PnlDetailItem & { items: PnlDetailItem[] };
@@ -1924,17 +1924,53 @@ export default function ReportsPage() {
             <Kpi label="Vốn chủ sở hữu" value={balance.equity} icon="account_balance_wallet" tone="green" />
             <Kpi label="Cân đối (Khớp)" value={balance.difference} icon={balance.balanced ? "check_circle" : "warning"} tone={balance.balanced ? "green" : "rose"} />
           </div>
+          {Math.abs(balance.openingDifference || 0) > 0.5 && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <b>Còn {money(balance.openingDifference || 0)} đ số dư đầu kỳ chưa phân loại nguồn vốn</b> (dòng 4199). Đây là phần tài sản − nợ đầu kỳ
+              chưa khai là vốn góp, lợi nhuận chưa phân phối hay khoản vay. Khai ở màn <b>Số dư đầu kỳ</b> (loại Vốn góp chủ sở hữu / Lợi nhuận chưa phân phối / Vay &amp; nợ khác),
+              chốt rồi Đồng bộ ghi sổ kỳ đầu tiên để dòng này về 0.
+            </div>
+          )}
           <section className="table-panel">
-            <PanelHeader title="Bảng Cân đối Kế toán" subtitle="Cơ cấu tài sản và nguồn vốn từ dữ liệu ghi sổ." />
-            <Table headers={["Mã chỉ tiêu", "Tên chỉ tiêu", "Nhóm báo cáo", "Số tiền"]}>
-              {(balance.rows || []).map((row) => (
-                <tr key={row.code} className="border-t border-slate-100">
-                  <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText></Cell>
-                  <Cell>{row.name}</Cell>
-                  <Cell><span className="status bg-slate-100 text-slate-700">{row.reportGroup}</span></Cell>
-                  <Cell right><b>{money(row.amount)} đ</b></Cell>
-                </tr>
+            <PanelHeader title="Bảng Cân đối Kế toán" subtitle="Tài sản = Nợ phải trả + Vốn chủ sở hữu, cộng dồn bút toán đã ghi sổ tới cuối kỳ. Doanh thu – chi phí không kết chuyển bằng bút toán: lợi nhuận tự cộng vào dòng 421." />
+            <Table headers={["Mã", "Chỉ tiêu", "Số tiền"]}>
+              {([
+                { key: "ASSET", label: "A. TÀI SẢN", total: balance.assets },
+                { key: "LIABILITY", label: "B. NỢ PHẢI TRẢ", total: balance.liabilities },
+                { key: "EQUITY", label: "C. VỐN CHỦ SỞ HỮU", total: balance.equity },
+              ] as const).map((section) => (
+                <React.Fragment key={section.key}>
+                  <tr className="border-t border-slate-200 bg-slate-50">
+                    <Cell><b>{section.key === "ASSET" ? "100" : section.key === "LIABILITY" ? "300" : "400"}</b></Cell>
+                    <Cell><b>{section.label}</b></Cell>
+                    <Cell right><b>{money(section.total)} đ</b></Cell>
+                  </tr>
+                  {(balance.rows || []).filter((row) => (row.section || (row.accountType === "ASSET" ? "ASSET" : row.accountType === "LIABILITY" ? "LIABILITY" : "EQUITY")) === section.key).map((row) => (
+                    <React.Fragment key={row.code}>
+                      <tr className={`border-t border-slate-100 ${row.warning ? "bg-amber-50/60" : ""}`}>
+                        <Cell><CopyableText value={row.code}><span className="pl-3">{row.code}</span></CopyableText></Cell>
+                        <Cell>
+                          <span className="pl-3">{row.name}</span>
+                          {row.warning && <span className="mt-0.5 block pl-3 text-[11px] font-semibold text-amber-700">{row.warning}</span>}
+                        </Cell>
+                        <Cell right>{money(row.amount)} đ</Cell>
+                      </tr>
+                      {(row.detail || []).map((part) => (
+                        <tr key={`${row.code}-${part.label}`} className="text-xs text-slate-500">
+                          <Cell>{null}</Cell>
+                          <Cell><span className="pl-8">– {part.label}</span></Cell>
+                          <Cell right>{money(part.amount)} đ</Cell>
+                        </tr>
+                      ))}
+                    </React.Fragment>
+                  ))}
+                </React.Fragment>
               ))}
+              <tr className="border-t-2 border-slate-300 bg-slate-50">
+                <Cell><b>440</b></Cell>
+                <Cell><b>TỔNG NGUỒN VỐN (B + C)</b></Cell>
+                <Cell right><b>{money(balance.liabilities + balance.equity)} đ</b></Cell>
+              </tr>
             </Table>
           </section>
         </div>

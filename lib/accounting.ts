@@ -10,6 +10,7 @@ import { isCrossBranchTransfer, planMoneyTransferJournals } from "@/lib/internal
 import { internalPartnerCode } from "@/lib/cost-reallocation";
 import { ADVANCE_RECEIVABLE_ACTION } from "@/lib/voucher-rules";
 import { EMPLOYEE_ADVANCE_ACCOUNT, isAdvanceSettlementDebt } from "@/lib/employee-advance";
+import { equityOpeningJournalLines, isEquityOpeningType, OPENING_DIFFERENCE_ACCOUNT } from "@/lib/balance-sheet";
 import { REVENUE_CHANNEL_PNL_ITEMS, revenuePosFees, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { ensureRevenueCategories, type CategoryLookupClient } from "@/lib/revenue-source";
 import { WALLET_FEE_PNL_ITEMS } from "@/lib/wallet-settlement-allocation";
@@ -55,7 +56,13 @@ export const defaultAccounts = [
   { code: "3387", name: "Khách hàng ứng trước (tiền cọc)", accountType: "LIABILITY", normalBalance: "CREDIT", reportGroup: "CUSTOMER_ADVANCE" },
   { code: "3388", name: "Khấu trừ khác phải trả", accountType: "LIABILITY", normalBalance: "CREDIT", reportGroup: "OTHER_PAYABLE" },
   { code: "3335", name: "Thuế TNCN phải nộp", accountType: "LIABILITY", normalBalance: "CREDIT", reportGroup: "TAX_PAYABLE" },
-  { code: "411", name: "Vốn chủ sở hữu", accountType: "EQUITY", normalBalance: "CREDIT", reportGroup: "EQUITY" },
+  { code: "341", name: "Vay và nợ khác", accountType: "LIABILITY", normalBalance: "CREDIT", reportGroup: "LOAN" },
+  { code: "411", name: "Vốn góp của chủ sở hữu", accountType: "EQUITY", normalBalance: "CREDIT", reportGroup: "EQUITY" },
+  // Lợi nhuận chưa phân phối: chỉ mang số dư đầu kỳ khai tay; lợi nhuận phát sinh trên hệ thống
+  // được bảng cân đối tự cộng vào dòng 421 (lib/balance-sheet.ts), không kết chuyển bằng bút toán.
+  { code: "421", name: "Lợi nhuận sau thuế chưa phân phối", accountType: "EQUITY", normalBalance: "CREDIT", reportGroup: "RETAINED_EARNINGS" },
+  // Đối ứng của mọi số dư đầu kỳ: khai đủ nguồn vốn thì về 0 (lib/balance-sheet.ts).
+  { code: "4199", name: "Chênh lệch số dư đầu kỳ chưa phân loại", accountType: "EQUITY", normalBalance: "CREDIT", reportGroup: "OPENING_DIFFERENCE" },
   { code: "511", name: "Doanh thu bán hàng", accountType: "REVENUE", normalBalance: "CREDIT", reportGroup: "REVENUE" },
   { code: "632", name: "Giá vốn hàng bán", accountType: "COGS", normalBalance: "DEBIT", reportGroup: "COGS" },
   { code: "6421", name: "Chi phí nhân sự", accountType: "OPEX", normalBalance: "DEBIT", reportGroup: "PAYROLL" },
@@ -469,6 +476,22 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   const assetGroupType = new Map(assetGroups.map((item) => [item.code, (item.group || "").toUpperCase()]));
   const isToolGroup = (code: string | null | undefined) => ["CCDC", "TOOL"].includes(assetGroupType.get(code || "") || "");
   for (const row of openingBalances) {
+    // Nguồn vốn đầu kỳ (vốn góp, lợi nhuận chưa phân phối, vay): Nợ 4199 / Có tài khoản nguồn vốn.
+    if (isEquityOpeningType(row.balanceType)) {
+      const lines = equityOpeningJournalLines(row);
+      if (lines.length === 0) continue;
+      results.push(await postJournalEntry({
+        entryDate: start,
+        branchCode: row.branchCode,
+        sourceType: "OPENING_BALANCE",
+        sourceId: row.id,
+        sourceCode: `${row.period}-${row.balanceType}`,
+        description: row.note || `Số dư đầu kỳ ${row.balanceType}`,
+        createdBy: actor,
+        lines,
+      }));
+      continue;
+    }
     /**
      * Tài sản/CCDC đầu kỳ: số dư là GIÁ TRỊ CÒN LẠI (`amount`). CCDC treo Nợ 242 đúng phần còn
      * lại chưa phân bổ — cùng tài khoản với CCDC mua mới. TSCĐ ghi Nợ 211 theo nguyên giá, Có 214
@@ -479,11 +502,11 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
       const depreciated = row.depreciatedAmount || 0;
       const cost = row.originalCost ?? row.amount + depreciated;
       const lines: EntryLine[] = isToolGroup(row.moneySourceCode)
-        ? [{ accountCode: "242", debit: row.amount, partnerCode: row.objectCode }, { accountCode: "411", credit: row.amount }]
+        ? [{ accountCode: "242", debit: row.amount, partnerCode: row.objectCode }, { accountCode: OPENING_DIFFERENCE_ACCOUNT, credit: row.amount }]
         : [
           { accountCode: "211", debit: cost, partnerCode: row.objectCode },
           ...(depreciated > 0 ? [{ accountCode: "214", credit: depreciated }] : []),
-          { accountCode: "411", credit: row.amount },
+          { accountCode: OPENING_DIFFERENCE_ACCOUNT, credit: row.amount },
         ];
       // Tài sản đã phân bổ hết (còn 0 đ) thì CCDC không còn gì để treo — chỉ theo dõi hiện vật.
       if (lines.reduce((sum, line) => sum + (line.debit || 0), 0) <= 0) continue;
@@ -519,12 +542,12 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
       description: row.note || `Số dư đầu kỳ ${row.balanceType}`,
       createdBy: actor,
       lines: isLiability
-        ? [{ accountCode: "411", debit: row.amount }, { accountCode: "331", credit: row.amount, partnerCode: row.objectCode }]
+        ? [{ accountCode: OPENING_DIFFERENCE_ACCOUNT, debit: row.amount }, { accountCode: "331", credit: row.amount, partnerCode: row.objectCode }]
         : isCustomerDeposit
           // Cọc đầu kỳ là số nợ khách còn treo từ trước; tiền thực tế đã nằm trong số dư quỹ/ngân hàng nhập riêng.
           // Chỉ tái phân loại nguồn vốn, không ghi tăng tiền lần thứ hai.
-          ? [{ accountCode: "411", debit: row.amount }, { accountCode: "3387", credit: row.amount, partnerCode: row.objectCode }]
-        : [{ accountCode: assetAccount, debit: row.amount, partnerCode: row.objectCode }, { accountCode: "411", credit: row.amount }],
+          ? [{ accountCode: OPENING_DIFFERENCE_ACCOUNT, debit: row.amount }, { accountCode: "3387", credit: row.amount, partnerCode: row.objectCode }]
+        : [{ accountCode: assetAccount, debit: row.amount, partnerCode: row.objectCode }, { accountCode: OPENING_DIFFERENCE_ACCOUNT, credit: row.amount }],
     }));
   }
 

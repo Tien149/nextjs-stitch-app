@@ -196,6 +196,9 @@ function templateExampleRows(templateCode: string): Array<Record<string, string 
       { period: "2026-07", branch_code: "HCM", balance_type: "INVENTORY", object_code: "NVL_NUOCSUOI", object_name: "Nuoc suoi chai", warehouse_code: "KHO_HCM", quantity: 50, unit_cost: 32000, amount: 1600000, note: "Ton kho dau ky" },
       { period: "2026-07", branch_code: "HCM", balance_type: "ASSET", object_code: "TS001", object_name: "Thiet bi dau ky", department_code: "STORE", quantity: 1, allocation_months: 24, original_cost: 18000000, depreciated_periods: 6, depreciated_amount: 4500000, amount: 13500000, note: "Tai san dau ky: So tien = gia tri con lai" },
       { period: "2026-07", branch_code: "HCM", balance_type: "PREPAID_EXPENSE", object_code: "PB001", object_name: "Chi phi phan bo dau ky", money_source_code: "OPEX_RENT", allocation_months: 12, allocation_start_period: "2026-07", amount: 120000000, note: "Chi phi phan bo dau ky" },
+      { period: "2026-07", branch_code: "HCM", balance_type: "EQUITY_CAPITAL", amount: 2000000000, note: "Von gop chu so huu" },
+      { period: "2026-07", branch_code: "HCM", balance_type: "RETAINED_EARNINGS", amount: -150000000, note: "Loi nhuan chua phan phoi luy ke (lo ghi so am)" },
+      { period: "2026-07", branch_code: "HCM", balance_type: "LOAN", object_code: "NH_VCB", amount: 500000000, note: "Du no vay ngan hang" },
     ];
   }
   if (templateCode === "OPENING_ASSET_TOOL_V1") {
