@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
+import { DonutLegendChart, MoneyBarChart } from "@/components/charts/ReportCharts";
 import type { DateRange } from "@/lib/date-range";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { DateInput, MonthInput } from "@/components/DateInput";
@@ -986,6 +987,128 @@ export default function ReportsPage() {
             </div>
           )}
 
+          {cashSource.view === "year" && (
+            <>
+              {/* Báo cáo nguồn tiền năm theo mẫu khách (04/10/2026): biểu đồ thu/chi và còn lại vs mục
+                  tiêu theo tháng, donut tỷ trọng thu/chi theo danh mục, rồi các bảng theo tháng. */}
+              <div className="grid xl:grid-cols-2 gap-5">
+                <section className="table-panel">
+                  <PanelHeader title="Tổng thu so với tổng chi" subtitle="Tiền thực thu và thực chi từng tháng." exportable={false} />
+                  <div className="px-2 pb-3">
+                    <MoneyBarChart
+                      labels={cashSource.months.map((item) => `Tháng ${Number(item.slice(5))}`)}
+                      series={[
+                        { name: "Thu", values: cashSource.totals.byMonth.map((month) => month.in), color: "#3b82f6" },
+                        { name: "Chi", values: cashSource.totals.byMonth.map((month) => month.out), color: "#f59e0b" },
+                      ]}
+                      height={280}
+                    />
+                  </div>
+                </section>
+                <section className="table-panel">
+                  <PanelHeader title="Nguồn tiền còn lại so với mục tiêu" subtitle={cashSource.cashRemainingTarget.total > 0 ? "Thu − Chi từng tháng so với mục tiêu Nguồn tiền còn lại khai ở màn Ngân sách." : "Thu − Chi từng tháng. Chưa khai mục tiêu Nguồn tiền còn lại ở màn Ngân sách."} exportable={false} />
+                  <div className="px-2 pb-3">
+                    <MoneyBarChart
+                      labels={cashSource.months.map((item) => `Tháng ${Number(item.slice(5))}`)}
+                      series={[
+                        { name: "Nguồn tiền còn lại", values: cashSource.totals.byMonth.map((month) => month.net), color: "#10b981" },
+                        ...(cashSource.cashRemainingTarget.total > 0
+                          ? [{ name: "Mục tiêu còn lại", values: cashSource.months.map((_, index) => cashSource.cashRemainingTarget.byMonth[index] || 0), color: "#94a3b8" }]
+                          : []),
+                      ]}
+                      height={280}
+                    />
+                  </div>
+                </section>
+              </div>
+              <div className="grid xl:grid-cols-2 gap-5">
+                <section className="table-panel">
+                  <PanelHeader title="% Tỷ trọng thu theo danh mục" subtitle={`Tổng thu ${money(cashSource.totals.in)} đ`} exportable={false} />
+                  <div className="px-4 pb-4">
+                    <DonutLegendChart data={cashSource.income.map((row) => ({ name: row.name, value: row.total }))} height={260} top={8} />
+                  </div>
+                </section>
+                <section className="table-panel">
+                  <PanelHeader title="% Tỷ trọng chi theo danh mục" subtitle={`Tổng chi ${money(cashSource.totals.out)} đ`} exportable={false} />
+                  <div className="px-4 pb-4">
+                    <DonutLegendChart data={cashSource.expense.map((row) => ({ name: row.name, value: row.total }))} height={260} top={10} />
+                  </div>
+                </section>
+              </div>
+              <section className="table-panel">
+                <PanelHeader title="Tổng quan nguồn tiền theo tháng" subtitle="Tổng thu, tổng chi và nguồn tiền còn lại từng tháng; kèm mục tiêu Nguồn tiền còn lại khai ở màn Ngân sách." />
+                <div className="overflow-x-auto">
+                  <Table headers={["Chỉ tiêu", ...cashSource.months.map((item) => `T${Number(item.slice(5))}`), "Tổng"]}>
+                    {([
+                      { label: "Tổng thu", pick: (row: { in: number; out: number; net: number }, index: number) => row.in, total: cashSource.totals.in },
+                      { label: "Tổng chi", pick: (row: { in: number; out: number; net: number }, index: number) => row.out, total: cashSource.totals.out },
+                      { label: "Nguồn tiền còn lại", pick: (row: { in: number; out: number; net: number }, index: number) => row.net, total: cashSource.totals.net },
+                      ...(cashSource.cashRemainingTarget.total > 0 ? [
+                        { label: "Nguồn tiền còn lại mục tiêu", pick: (row: { in: number; out: number; net: number }, index: number) => cashSource.cashRemainingTarget.byMonth[index] || 0, total: cashSource.cashRemainingTarget.total },
+                        { label: "So sánh với mục tiêu", pick: (row: { in: number; out: number; net: number }, index: number) => row.net - (cashSource.cashRemainingTarget.byMonth[index] || 0), total: cashSource.totals.net - cashSource.cashRemainingTarget.total },
+                      ] : []),
+                    ]).map((line) => (
+                      <tr key={line.label} className="border-t border-slate-100">
+                        <Cell><b>{line.label}</b></Cell>
+                        {cashSource.totals.byMonth.map((month, index) => (
+                          <Cell key={month.period} right>
+                            <span className={["Nguồn tiền còn lại", "So sánh với mục tiêu"].includes(line.label) && line.pick(month, index) < 0 ? "text-rose-600 font-bold" : ""}>
+                              {line.pick(month, index) ? `${money(line.pick(month, index))}` : "-"}
+                            </span>
+                          </Cell>
+                        ))}
+                        <Cell right><b>{money(line.total)} đ</b></Cell>
+                      </tr>
+                    ))}
+                    <tr className="border-t border-slate-200 bg-slate-50">
+                      <Cell><b>% Nguồn tiền còn lại / Tổng thu</b></Cell>
+                      {cashSource.totals.byMonth.map((month) => (
+                        <Cell key={month.period} right>
+                          <b className={month.net < 0 ? "text-rose-600" : "text-slate-700"}>
+                            {month.in ? `${((month.net / month.in) * 100).toFixed(2)}%` : "-"}
+                          </b>
+                        </Cell>
+                      ))}
+                      <Cell right><b>{(cashSource.totals.netRatio * 100).toFixed(2)}%</b></Cell>
+                    </tr>
+                  </Table>
+                </div>
+              </section>
+              <CashMonthMatrix title="Tổng quan nguồn thu tháng theo danh mục" months={cashSource.months} rows={cashSource.income} />
+              <CashMonthMatrix title="Tổng quan nguồn chi tháng theo danh mục" months={cashSource.months} rows={cashSource.expense} />
+              <section className="table-panel">
+                <PanelHeader
+                  title="Tổng quan nguồn tiền cuối mỗi tháng"
+                  subtitle="Số dư từng nguồn tiền mặt/ngân hàng tại thời điểm cuối mỗi tháng: đầu kỳ cộng dồn biến động của các tháng trước đó."
+                />
+                <div className="overflow-x-auto">
+                  <Table headers={["Nguồn tiền", "Đầu kỳ", ...cashSource.months.map((item) => `T${Number(item.slice(5))}`)]}>
+                    {cashSource.sources.filter((row) => row.group !== DEBT_PROJECTION_GROUP).map((row) => (
+                      <tr key={row.code} className="border-t border-slate-100 hover:bg-slate-50">
+                        <Cell><b>{cashSourceLabel(row.name)}</b><p className="mt-0.5 text-xs text-slate-500">{row.code}</p></Cell>
+                        <Cell right>{row.opening ? `${money(row.opening)}` : "-"}</Cell>
+                        {row.closingByMonth.map((closing, index) => (
+                          <Cell key={cashSource.months[index]} right>
+                            <span className={closing < 0 ? "text-rose-600 font-bold" : ""}>{closing ? money(closing) : "-"}</span>
+                          </Cell>
+                        ))}
+                      </tr>
+                    ))}
+                    <tr className="border-t border-slate-200 bg-slate-50 font-bold">
+                      <Cell><b>CỘNG</b></Cell>
+                      <Cell right><b>{money(cashSource.sources.reduce((sum, row) => sum + row.opening, 0))}</b></Cell>
+                      {cashSource.months.map((month, index) => (
+                        <Cell key={month} right>
+                          <b>{money(cashSource.sources.reduce((sum, row) => sum + (row.closingByMonth[index] || 0), 0))}</b>
+                        </Cell>
+                      ))}
+                    </tr>
+                  </Table>
+                </div>
+              </section>
+            </>
+          )}
+
           <div className="grid xl:grid-cols-2 gap-5">
             {(() => {
               // Khoảng ngày của kỳ đang xem, để link "Chưa phân loại" mở đúng các phiếu cần sửa.
@@ -1106,81 +1229,6 @@ export default function ReportsPage() {
             </div>
           </section>
 
-          {cashSource.view === "year" && (
-            <>
-              <CashMonthMatrix title="Tổng quan nguồn thu theo tháng" months={cashSource.months} rows={cashSource.income} />
-              <CashMonthMatrix title="Tổng quan nguồn chi theo tháng" months={cashSource.months} rows={cashSource.expense} />
-              <section className="table-panel">
-                <PanelHeader title="Thu - chi từng tháng" subtitle="Tổng hợp lại theo tháng để nhìn nhanh tháng nào âm dòng tiền; kèm mục tiêu Nguồn tiền còn lại khai ở màn Ngân sách." />
-                <div className="overflow-x-auto">
-                  <Table headers={["Chỉ tiêu", ...cashSource.months.map((item) => `T${Number(item.slice(5))}`), "Tổng"]}>
-                    {([
-                      { label: "Tổng thu", pick: (row: { in: number; out: number; net: number }, index: number) => row.in, total: cashSource.totals.in },
-                      { label: "Tổng chi", pick: (row: { in: number; out: number; net: number }, index: number) => row.out, total: cashSource.totals.out },
-                      { label: "Nguồn tiền còn lại", pick: (row: { in: number; out: number; net: number }, index: number) => row.net, total: cashSource.totals.net },
-                      ...(cashSource.cashRemainingTarget.total > 0 ? [
-                        { label: "Nguồn tiền còn lại mục tiêu", pick: (row: { in: number; out: number; net: number }, index: number) => cashSource.cashRemainingTarget.byMonth[index] || 0, total: cashSource.cashRemainingTarget.total },
-                        { label: "So sánh với mục tiêu", pick: (row: { in: number; out: number; net: number }, index: number) => row.net - (cashSource.cashRemainingTarget.byMonth[index] || 0), total: cashSource.totals.net - cashSource.cashRemainingTarget.total },
-                      ] : []),
-                    ]).map((line) => (
-                      <tr key={line.label} className="border-t border-slate-100">
-                        <Cell><b>{line.label}</b></Cell>
-                        {cashSource.totals.byMonth.map((month, index) => (
-                          <Cell key={month.period} right>
-                            <span className={["Nguồn tiền còn lại", "So sánh với mục tiêu"].includes(line.label) && line.pick(month, index) < 0 ? "text-rose-600 font-bold" : ""}>
-                              {line.pick(month, index) ? `${money(line.pick(month, index))}` : "-"}
-                            </span>
-                          </Cell>
-                        ))}
-                        <Cell right><b>{money(line.total)} đ</b></Cell>
-                      </tr>
-                    ))}
-                    <tr className="border-t border-slate-200 bg-slate-50">
-                      <Cell><b>% Nguồn tiền còn lại / Tổng thu</b></Cell>
-                      {cashSource.totals.byMonth.map((month) => (
-                        <Cell key={month.period} right>
-                          <b className={month.net < 0 ? "text-rose-600" : "text-slate-700"}>
-                            {month.in ? `${((month.net / month.in) * 100).toFixed(2)}%` : "-"}
-                          </b>
-                        </Cell>
-                      ))}
-                      <Cell right><b>{(cashSource.totals.netRatio * 100).toFixed(2)}%</b></Cell>
-                    </tr>
-                  </Table>
-                </div>
-              </section>
-              <section className="table-panel">
-                <PanelHeader
-                  title="Tổng quan nguồn tiền cuối mỗi tháng"
-                  subtitle="Số dư từng nguồn tiền mặt/ngân hàng tại thời điểm cuối mỗi tháng: đầu kỳ cộng dồn biến động của các tháng trước đó."
-                />
-                <div className="overflow-x-auto">
-                  <Table headers={["Nguồn tiền", "Đầu kỳ", ...cashSource.months.map((item) => `T${Number(item.slice(5))}`)]}>
-                    {cashSource.sources.filter((row) => row.group !== DEBT_PROJECTION_GROUP).map((row) => (
-                      <tr key={row.code} className="border-t border-slate-100 hover:bg-slate-50">
-                        <Cell><b>{cashSourceLabel(row.name)}</b><p className="mt-0.5 text-xs text-slate-500">{row.code}</p></Cell>
-                        <Cell right>{row.opening ? `${money(row.opening)}` : "-"}</Cell>
-                        {row.closingByMonth.map((closing, index) => (
-                          <Cell key={cashSource.months[index]} right>
-                            <span className={closing < 0 ? "text-rose-600 font-bold" : ""}>{closing ? money(closing) : "-"}</span>
-                          </Cell>
-                        ))}
-                      </tr>
-                    ))}
-                    <tr className="border-t border-slate-200 bg-slate-50 font-bold">
-                      <Cell><b>CỘNG</b></Cell>
-                      <Cell right><b>{money(cashSource.sources.reduce((sum, row) => sum + row.opening, 0))}</b></Cell>
-                      {cashSource.months.map((month, index) => (
-                        <Cell key={month} right>
-                          <b>{money(cashSource.sources.reduce((sum, row) => sum + (row.closingByMonth[index] || 0), 0))}</b>
-                        </Cell>
-                      ))}
-                    </tr>
-                  </Table>
-                </div>
-              </section>
-            </>
-          )}
 
           <section className="table-panel">
             <PanelHeader
