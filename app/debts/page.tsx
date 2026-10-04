@@ -2,6 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { formatPeriodCount } from "@/lib/period-count";
+import { ADVANCE_SETTLEMENT_DEBT_TYPE, isAdvanceSettlementDebt } from "@/lib/employee-advance";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { useRouter } from "next/navigation";
 import { BranchScopeSelect, resolveInitialBranchScope } from "@/components/BranchScopeSelect";
@@ -101,7 +102,8 @@ const ledgerSourceLabels: Record<string, string> = {
   RECEIVABLE: "Công nợ phải thu",
   PAYABLE: "Công nợ phải trả",
 };
-const ledgerSourceLabel = (source: string) => ledgerSourceLabels[source] || source;
+const ledgerSourceLabel = (source: string, sourceType?: string | null) =>
+  isAdvanceSettlementDebt(sourceType) ? "Hoàn ứng" : ledgerSourceLabels[source] || source;
 
 const emptyDebtForm = {
   documentDate: new Date().toISOString().slice(0, 10),
@@ -265,6 +267,12 @@ export default function DebtsPage() {
   const createTotal = createLines.reduce((sum, line) => sum + (Number(line.amount) > 0 ? Number(line.amount) : 0), 0);
   /** Phải thu phân loại theo NHÓM hạng mục P&L; phải trả theo từng hạng mục chi phí. */
   const createIsReceivable = createForm.debtType === "RECEIVABLE";
+  /** Hoàn ứng nhân viên: phải trả cấn thẳng vào tạm ứng — không hạn trả, không phân bổ, không qua quỹ. */
+  const createIsAdvance = createForm.debtType === ADVANCE_SETTLEMENT_DEBT_TYPE;
+  /** Số nhân viên đang giữ tạm ứng (số dư phải thu trên bảng tổng hợp) — để đối chiếu trước khi lập. */
+  const createAdvanceBalance = createIsAdvance && createForm.partnerCode
+    ? -(rows.find((row) => row.partnerCode === createForm.partnerCode)?.balance || 0)
+    : null;
   const createPnlLabel = createIsReceivable ? "Nhóm hạng mục P&L" : "Hạng mục P&L";
   /** Popup Sửa công nợ: cùng luật hai tầng như popup Thêm, nhưng loại lấy từ chính khoản đang sửa. */
   const editIsReceivable = editingDebt?.source === "RECEIVABLE";
@@ -330,7 +338,7 @@ export default function DebtsPage() {
       setCreateError(createLines.length === 1 ? "Số tiền phải lớn hơn 0." : `Dòng ${badLine + 1}: số tiền phải lớn hơn 0.`);
       return;
     }
-    if (!createIsReceivable && createForm.allocationMonths !== "") {
+    if (!createIsReceivable && !createIsAdvance && createForm.allocationMonths !== "") {
       if (!(Number(createForm.allocationMonths) > 1)) {
         setCreateError("Số kỳ phân bổ phải lớn hơn 1, được ghi số lẻ 2 chữ số (vd 10,37) — bỏ tick nếu ghi chi phí một lần.");
         return;
@@ -347,7 +355,8 @@ export default function DebtsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...createForm,
-          allocationMonths: createIsReceivable ? "" : createForm.allocationMonths,
+          allocationMonths: createIsReceivable || createIsAdvance ? "" : createForm.allocationMonths,
+          dueDate: createIsAdvance ? "" : createForm.dueDate,
           lines: createLines.map((line) => ({ pnlItemCode: line.pnlItemCode, pnlGroupCode: line.pnlGroupCode, amount: line.amount, note: line.note })),
         }),
       });
@@ -360,7 +369,9 @@ export default function DebtsPage() {
       setCreateForm((current) => ({ ...current, partnerCode: "", description: "", dueDate: "", allocationMonths: "", allocationStartPeriod: "" }));
       setCreateLines([emptyCreateLine(1)]);
       const allocationNote = Number(payload.allocationMonths) > 1 ? ` Chi phí phân bổ ${formatPeriodCount(Number(payload.allocationMonths))} kỳ từ ${payload.allocationStartPeriod} (lịch PB-${payload.lineCount > 1 ? `${payload.code}/n` : payload.code}).` : "";
-      setMessage((payload.lineCount > 1 ? `Đã tạo phiếu công nợ ${payload.code} gồm ${payload.lineCount} dòng hạng mục.` : `Đã tạo công nợ ${payload.code}.`) + allocationNote);
+      setMessage(createIsAdvance
+        ? `Đã lập phiếu hoàn ứng ${payload.code} (${money(payload.totalAmount)} đ) — đã trừ vào tạm ứng của nhân viên; chi phí lên P&L sau khi Đồng bộ ghi sổ.`
+        : (payload.lineCount > 1 ? `Đã tạo phiếu công nợ ${payload.code} gồm ${payload.lineCount} dòng hạng mục.` : `Đã tạo công nợ ${payload.code}.`) + allocationNote);
       await loadRows();
       if (ledger) await loadLedger(ledger.partnerCode);
     } catch {
@@ -610,7 +621,7 @@ export default function DebtsPage() {
         return [
           index + 1,
           new Date(row.date).toLocaleDateString("vi-VN"),
-          ledgerSourceLabel(row.source),
+          ledgerSourceLabel(row.source, row.sourceType),
           row.code,
           row.description,
           signed > 0 ? Math.round(Math.abs(row.amount)) : "",
@@ -1014,7 +1025,7 @@ export default function DebtsPage() {
                     )}
                     <tr className="hover:bg-slate-50">
                       <td className="px-4 py-3">{new Date(item.date).toLocaleDateString("vi-VN")}</td>
-                      <td className="px-4 py-3 whitespace-nowrap">{ledgerSourceLabel(item.source)}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">{ledgerSourceLabel(item.source, item.sourceType)}</td>
                       <td className="px-4 py-3 font-bold"><CopyableText value={item.code} /></td>
                       <td className="px-4 py-3">
                         <p className={`text-xs font-bold ${item.agingBucket === "OVERDUE" ? "text-rose-700" : item.agingBucket === "DUE_7" ? "text-amber-700" : "text-slate-500"}`}>
@@ -1179,7 +1190,17 @@ export default function DebtsPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
           <form onSubmit={submitCreateDebt} className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-xl bg-white shadow-xl">
             <div className="border-b border-slate-200 p-5">
-              <h2 className="font-bold text-slate-900">Thêm công nợ</h2>
+              <h2 className="font-bold text-slate-900">{createIsAdvance ? "Hoàn ứng nhân viên" : "Thêm công nợ"}</h2>
+              {createIsAdvance ? (
+                <p className="mt-1 text-xs text-slate-500">
+                  Nhân viên đã nhận tiền tạm ứng (phiếu chi khoản mục tạm ứng) và mua hàng về nộp chứng từ. Phiếu hoàn ứng
+                  KHÔNG qua quỹ nào: chỉ trừ vào số tiền nhân viên đang tạm ứng và đưa từng khoản vào đúng hạng mục chi phí.
+                  <span className="mt-1 block font-medium text-amber-700">
+                    Còn thừa tiền thì nhân viên nộp lại bằng phiếu thu khoản mục &ldquo;Thu Hoàn Tạm Ứng Nhân Viên&rdquo;; chi vượt
+                    tạm ứng thì lập thêm phiếu chi khoản mục tạm ứng cho phần thiếu. Đừng lập phiếu chi thường cho các khoản này — chi phí sẽ bị tính hai lần.
+                  </span>
+                </p>
+              ) : (
               <p className="mt-1 text-xs text-slate-500">
                 Khai khoản phải trả đã phát sinh chi phí nhưng chưa thanh toán, hoặc công nợ nội bộ giữa hai nhà hàng.
                 Khi thanh toán, phiếu chi/sao kê gạch thẳng vào mã công nợ này.
@@ -1188,6 +1209,7 @@ export default function DebtsPage() {
                   &ldquo;Thanh toán công nợ&rdquo; trên phiếu chi — khai như phiếu chi thường sẽ tính chi phí hai lần.
                 </span>
               </p>
+              )}
             </div>
             <div className="grid grid-cols-2 gap-3 p-5">
               <label className="text-xs font-bold text-slate-600 block">
@@ -1204,8 +1226,21 @@ export default function DebtsPage() {
                 >
                   <option value="PAYABLE">Phải trả</option>
                   <option value="RECEIVABLE">Phải thu</option>
+                  <option value={ADVANCE_SETTLEMENT_DEBT_TYPE}>Hoàn ứng nhân viên (không qua quỹ)</option>
                 </select>
               </label>
+              {createIsAdvance ? (
+                <div className="text-xs font-bold text-slate-600">
+                  Nhân viên đang tạm ứng
+                  <div className={`mt-1 rounded-lg border px-3 py-2 text-sm ${createAdvanceBalance !== null && createAdvanceBalance > 0 ? "border-blue-200 bg-blue-50 text-blue-800" : "border-slate-200 bg-slate-50 text-slate-500"}`}>
+                    {createAdvanceBalance === null
+                      ? "Chọn nhân viên để xem số đang tạm ứng"
+                      : createAdvanceBalance > 0
+                        ? <>{money(createAdvanceBalance)} đ{createTotal > 0 && <span className="font-normal"> · sau hoàn ứng còn {money(createAdvanceBalance - createTotal)} đ</span>}</>
+                        : "Không có số dư tạm ứng trong khoảng đang xem"}
+                  </div>
+                </div>
+              ) : (
               <label className="text-xs font-bold text-slate-600 block">
                 Nhóm đối tác *
                 <select
@@ -1217,8 +1252,9 @@ export default function DebtsPage() {
                   <option value="INTERNAL">Nội bộ (giữa nhà hàng)</option>
                 </select>
               </label>
+              )}
               <div className="col-span-2 text-xs font-bold text-slate-600 block">
-                Đối tác *
+                {createIsAdvance ? "Nhân viên hoàn ứng *" : "Đối tác *"}
                 <PartnerPicker
                   className="mt-1"
                   value={createForm.partnerCode}
@@ -1226,7 +1262,7 @@ export default function DebtsPage() {
                   options={partners.map((item) => ({ value: item.code, label: `${item.code} - ${item.name}` }))}
                   required
                   canCreate={canCreatePartner}
-                  defaultPartnerType={createForm.debtType === "PAYABLE" ? "SUPPLIER" : "CUSTOMER"}
+                  defaultPartnerType={createIsAdvance ? "EMPLOYEE" : createForm.debtType === "PAYABLE" ? "SUPPLIER" : "CUSTOMER"}
                   onCreated={(partner) => {
                     setPartners((current) => [...current, partner]);
                     setCreateForm((value) => ({ ...value, partnerCode: partner.code }));
@@ -1257,6 +1293,7 @@ export default function DebtsPage() {
                   ariaLabel="Ngày chứng từ công nợ"
                 />
               </div>
+              {!createIsAdvance && (
               <div className="flex flex-col text-xs font-bold text-slate-600">
                 <span>Hạn thanh toán</span>
                 <DateInput
@@ -1266,12 +1303,13 @@ export default function DebtsPage() {
                   ariaLabel="Hạn thanh toán công nợ"
                 />
               </div>
+              )}
               <label className="col-span-2 text-xs font-bold text-slate-600 block">
                 Diễn giải chung *
                 <input
                   value={createForm.description}
                   onChange={(event) => setCreateForm((value) => ({ ...value, description: event.target.value }))}
-                  placeholder="VD: Trích trước chi phí tháng 9 / Tiền hàng tháng 8 chưa thanh toán / B trả A khoản chi hộ..."
+                  placeholder={createIsAdvance ? "VD: Hoàn ứng tiền mua đồ trang trí team MKT theo PCHI-2610-NME-00002" : "VD: Trích trước chi phí tháng 9 / Tiền hàng tháng 8 chưa thanh toán / B trả A khoản chi hộ..."}
                   className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
                   required
                 />
@@ -1383,7 +1421,7 @@ export default function DebtsPage() {
                   </table>
                 </div>
               </div>
-              {!createIsReceivable && (
+              {!createIsReceivable && !createIsAdvance && (
                 <div className="col-span-2">
                   <AllocationFields
                     months={createForm.allocationMonths}
@@ -1406,7 +1444,7 @@ export default function DebtsPage() {
                 Đóng
               </button>
               <button type="submit" disabled={createSaving} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-60">
-                {createSaving ? "Đang tạo..." : "Tạo công nợ"}
+                {createSaving ? "Đang tạo..." : createIsAdvance ? "Lập phiếu hoàn ứng" : "Tạo công nợ"}
               </button>
             </div>
           </form>

@@ -1,4 +1,5 @@
 import { bankStatementSpecialCategory, type BankStatementCategoryReference } from "@/lib/bank-statement-category";
+import { isEmployeeAdvanceCategory } from "@/lib/employee-advance";
 import { roundPeriodCount } from "@/lib/period-count";
 
 /**
@@ -151,6 +152,9 @@ export function voucherPartnerRequirement(input: {
   }
   if (debtAction === ADVANCE_RECEIVABLE_ACTION) {
     return "Phiếu chi hộ bắt buộc chọn đối tác nhận tiền — vế công nợ bên nhà hàng được chi hộ ghi theo đối tác này.";
+  }
+  if (isEmployeeAdvanceCategory(input.category?.code)) {
+    return "Tạm ứng / hoàn tạm ứng bắt buộc chọn nhân viên — không có đối tác thì không biết ai đang giữ tiền tạm ứng.";
   }
   const special = bankStatementSpecialCategory(input.category);
   if (special === "DEBT") {

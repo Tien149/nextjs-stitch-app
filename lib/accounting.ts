@@ -9,6 +9,7 @@ import { effectiveMoneyTransferDate, effectiveMoneyTransferDateFilter } from "@/
 import { isCrossBranchTransfer, planMoneyTransferJournals } from "@/lib/internal-transfer";
 import { internalPartnerCode } from "@/lib/cost-reallocation";
 import { ADVANCE_RECEIVABLE_ACTION } from "@/lib/voucher-rules";
+import { EMPLOYEE_ADVANCE_ACCOUNT, isAdvanceSettlementDebt } from "@/lib/employee-advance";
 import { REVENUE_CHANNEL_PNL_ITEMS, revenuePosFees, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { ensureRevenueCategories, type CategoryLookupClient } from "@/lib/revenue-source";
 import { WALLET_FEE_PNL_ITEMS } from "@/lib/wallet-settlement-allocation";
@@ -36,6 +37,9 @@ export const defaultAccounts = [
   { code: "1111", name: "Tiền mặt", accountType: "ASSET", normalBalance: "DEBIT", reportGroup: "CASH" },
   { code: "1121", name: "Tiền gửi ngân hàng", accountType: "ASSET", normalBalance: "DEBIT", reportGroup: "CASH" },
   { code: "131", name: "Phải thu đối tác", accountType: "ASSET", normalBalance: "DEBIT", reportGroup: "RECEIVABLE" },
+  // Tạm ứng nhân viên (khách hỏi 04/10/2026): phiếu chi tạm ứng treo Nợ 141, nhân viên mua hàng
+  // về hoàn ứng thì Nợ chi phí / Có 141 — không qua quỹ. Xem lib/employee-advance.ts.
+  { code: "141", name: "Tạm ứng nhân viên", accountType: "ASSET", normalBalance: "DEBIT", reportGroup: "RECEIVABLE" },
   { code: "152", name: "Nguyên liệu và hàng tồn kho", accountType: "ASSET", normalBalance: "DEBIT", reportGroup: "INVENTORY" },
   { code: "211", name: "Tài sản cố định", accountType: "ASSET", normalBalance: "DEBIT", reportGroup: "FIXED_ASSET" },
   { code: "214", name: "Khấu hao lũy kế", accountType: "ASSET", normalBalance: "CREDIT", reportGroup: "ACCUMULATED_DEPRECIATION" },
@@ -715,7 +719,8 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
       createdBy: actor,
       lines: [
         payableDebtDebitLine(row, debtGroup),
-        { accountCode: "331", credit: row.originalAmount, partnerCode: row.partnerCode },
+        // Hoàn ứng: chi phí cấn thẳng vào khoản tạm ứng nhân viên đang treo 141, không phải nợ NCC.
+        { accountCode: isAdvanceSettlementDebt(row.sourceType) ? EMPLOYEE_ADVANCE_ACCOUNT : "331", credit: row.originalAmount, partnerCode: row.partnerCode },
       ],
     }));
   }

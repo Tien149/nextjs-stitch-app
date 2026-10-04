@@ -1,4 +1,5 @@
 import type { prisma, RawTxClient } from "@/lib/prisma";
+import { isAdvanceSettlementDebt } from "@/lib/employee-advance";
 import { branchCodeFromInternalPartner } from "@/lib/cost-reallocation";
 import { ensureInternalPartner } from "@/lib/internal-partner";
 import { buildAllocationSchedules } from "@/lib/phase3";
@@ -165,6 +166,12 @@ async function settleDebtLine(
   if (debt.branchCode !== voucher.branchCode) {
     throw new VoucherSideEffectError(
       `Khoản nợ ${debt.code} nằm ở sổ cửa hàng ${debt.branchCode}, còn phiếu này lập ở ${voucher.branchCode} — tiền của hai cửa hàng không gạch chéo nhau được. Đổi ô Cửa hàng của phiếu sang ${debt.branchCode}, hoặc chọn khoản nợ của ${voucher.branchCode}.`,
+    );
+  }
+  // Hoàn ứng đã cấn vào tạm ứng ngay lúc lập; trả tiền cho nó là chi phí hai lần.
+  if (isAdvanceSettlementDebt(debt.sourceType)) {
+    throw new VoucherSideEffectError(
+      `${debt.code} là phiếu HOÀN ỨNG — đã trừ thẳng vào tiền tạm ứng của ${debt.partnerName}, không gạch bằng phiếu thu/chi. Nhân viên nộp lại tiền thừa thì lập phiếu thu khoản mục Thu hoàn tạm ứng; chi thêm cho nhân viên thì lập phiếu chi khoản mục tạm ứng.`,
     );
   }
   const expectedDebtType = voucher.voucherType === "RECEIPT" ? "RECEIVABLE" : "PAYABLE";

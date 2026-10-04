@@ -8,6 +8,7 @@ import { writeAuditLog } from "@/lib/audit-log";
 import { softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { debtGroupCode, stripDebtLineSuffix } from "@/lib/debt-group";
+import { ADVANCE_SETTLEMENT_CODE_PREFIX, ADVANCE_SETTLEMENT_DEBT_TYPE, ADVANCE_SETTLEMENT_SOURCE, isAdvanceSettlementDebt } from "@/lib/employee-advance";
 import { internalPartnerCode } from "@/lib/cost-reallocation";
 import { ADVANCE_RECEIVABLE_ACTION, normalizeAllocationMonths, PARTNER_COLLECTION_ACTION } from "@/lib/voucher-rules";
 import { advanceReceivableBeneficiaryBranch } from "@/lib/voucher-side-effects";
@@ -460,7 +461,8 @@ export async function GET(request: Request) {
       const bucket = agingBucket(item.dueDate);
       const currentDue = current?.nearestDueDate || null;
       const nextDue = item.outstandingAmount > 0 && item.dueDate && (!currentDue || item.dueDate < currentDue) ? item.dueDate : currentDue;
-      const hasOpenDebt = item.outstandingAmount > 0 && item.status !== "SETTLED";
+      // Hoàn ứng đã cấn vào tạm ứng ngay khi lập — không phải khoản còn chờ trả.
+      const hasOpenDebt = item.outstandingAmount > 0 && item.status !== "SETTLED" && !isAdvanceSettlementDebt(item.sourceType);
       // Khoản mở trước khoảng chọn vẫn tính hạn/quá hạn (vẫn đang nợ), chỉ số tiền dồn về Đầu kỳ.
       const inRange = dateSlot === "IN";
       // Cột CN phải thu / phải trả là số PHÁT SINH (còn nợ + đã gạch); phiếu gạch nợ đứng ở cột
@@ -541,19 +543,22 @@ export async function POST(request: Request) {
     if (!auth.ok) return auth.response;
     const body = await request.json();
 
-    const debtType = cleanText(body.debtType).toUpperCase() || "PAYABLE";
-    const partnerGroup = cleanText(body.partnerGroup).toUpperCase() || "EXTERNAL";
+    // Hoàn ứng nhân viên: khoản PHẢI TRẢ đặc biệt — chi phí cấn thẳng vào tạm ứng (Có 141), không
+    // hạn trả, không phân bổ, không ai trả tiền cho nó (lib/employee-advance.ts).
+    const isAdvanceSettlement = cleanText(body.debtType).toUpperCase() === ADVANCE_SETTLEMENT_DEBT_TYPE;
+    const debtType = isAdvanceSettlement ? "PAYABLE" : cleanText(body.debtType).toUpperCase() || "PAYABLE";
+    const partnerGroup = isAdvanceSettlement ? "EXTERNAL" : cleanText(body.partnerGroup).toUpperCase() || "EXTERNAL";
     const partnerCode = cleanText(body.partnerCode).toUpperCase();
     const branchCode = cleanText(body.branchCode).toUpperCase();
     const description = cleanText(body.description);
     const documentDate = toDate(body.documentDate, new Date());
-    const dueDate = cleanText(body.dueDate) ? toDate(body.dueDate) : null;
+    const dueDate = !isAdvanceSettlement && cleanText(body.dueDate) ? toDate(body.dueDate) : null;
     const categoryCode = cleanText(body.categoryCode).toUpperCase() || null;
     const lines = parseDebtLines(body);
     // Phân bổ theo kỳ: khoản phải trả là chi phí dùng cho nhiều kỳ (thuê mặt bằng trả sau cả
     // năm, bảo trì theo hợp đồng...). Chi phí không vào P&L một lần ở ngày chứng từ mà chia đều
     // theo lịch PB-<mã công nợ>, cùng cơ chế với phiếu chi trả trước.
-    const allocationMonths = debtType === "PAYABLE" ? normalizeAllocationMonths(body.allocationMonths) : 0;
+    const allocationMonths = debtType === "PAYABLE" && !isAdvanceSettlement ? normalizeAllocationMonths(body.allocationMonths) : 0;
     const allocationStartPeriod = allocationMonths > 0 ? normalizePeriod(body.allocationStartPeriod) : "";
 
     if (!debtTypes.includes(debtType)) return NextResponse.json({ error: "Loại công nợ chỉ nhận RECEIVABLE hoặc PAYABLE" }, { status: 400 });
@@ -619,7 +624,7 @@ export async function POST(request: Request) {
     // ở vài luồng (xoá phiếu phân bổ, rollback import) nên COUNT tụt và cấp trúng mã đang sống.
     // Vẫn giữ retry cho trường hợp hai người tạo cùng lúc lấy trúng một số. Phiếu nhiều dòng
     // cấp MỘT số phiếu rồi gắn "/1", "/2"... và ghi cả cụm trong một transaction.
-    const prefix = `${debtType === "PAYABLE" ? "CNPT" : "CNTHU"}-${documentDate.toISOString().slice(0, 7).replace("-", "")}-`;
+    const prefix = `${isAdvanceSettlement ? ADVANCE_SETTLEMENT_CODE_PREFIX : debtType === "PAYABLE" ? "CNPT" : "CNTHU"}-${documentDate.toISOString().slice(0, 7).replace("-", "")}-`;
     const multiLine = lines.length > 1;
     let created: Awaited<ReturnType<typeof prisma.debtRecord.create>>[] | null = null;
     let groupCode = "";
@@ -655,7 +660,7 @@ export async function POST(request: Request) {
                 // Diễn giải dòng = diễn giải chung + hạng mục/ghi chú riêng để nhìn trên sổ nợ
                 // và trên phiếu chi vẫn biết dòng này là khoản gì.
                 description: multiLine ? [description, [line.pnlItemCode || line.pnlGroupCode, line.note].filter(Boolean).join(" ")].filter(Boolean).join(" · ") : description,
-                sourceType: "MANUAL",
+                sourceType: isAdvanceSettlement ? ADVANCE_SETTLEMENT_SOURCE : "MANUAL",
                 allocationMonths: allocationMonths || null,
                 allocationStartPeriod: allocationStartPeriod || null,
                 // Khai tay = chi phí phát sinh trong kỳ, ghi sổ ngay (số dư đầu kỳ đi đường
@@ -711,6 +716,7 @@ export async function POST(request: Request) {
         branchCode,
         metadata: {
           debtType,
+          ...(isAdvanceSettlement ? { advanceSettlement: true } : {}),
           partnerCode: partner.code,
           originalAmount: record.originalAmount,
           pnlItemCode: record.pnlItemCode,
@@ -777,7 +783,8 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: "Khoản công nợ đã tất toán/đóng, không thể sửa" }, { status: 400 });
     }
 
-    const debtType = body.debtType === undefined ? current.debtType : cleanText(body.debtType);
+    // Hoàn ứng luôn là vế phải trả cấn vào tạm ứng; đổi sang phải thu là đổi hẳn nghiệp vụ.
+    const debtType = body.debtType === undefined || isAdvanceSettlementDebt(current.sourceType) ? current.debtType : cleanText(body.debtType);
     const partnerGroup = body.partnerGroup === undefined ? current.partnerGroup : cleanText(body.partnerGroup);
     const partnerCode = body.partnerCode === undefined ? current.partnerCode : cleanText(body.partnerCode);
     const partnerName = body.partnerName === undefined ? current.partnerName : cleanText(body.partnerName);

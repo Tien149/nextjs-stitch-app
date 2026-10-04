@@ -5,6 +5,7 @@ import {
   INTERNAL_RECEIVABLE_ACCOUNT,
   internalPartnerCode,
 } from "@/lib/cost-reallocation";
+import { EMPLOYEE_ADVANCE_ACCOUNT, isEmployeeAdvanceCategory } from "@/lib/employee-advance";
 import { isOtherIncomeCategory } from "@/lib/pnl-ordering";
 import {
   ADVANCE_RECEIVABLE_ACTION,
@@ -85,6 +86,10 @@ export function receiptCounterAccount(
   }
   if (voucher.debtAction === "SETTLE") {
     return { account: "131", reason: "Thu hồi công nợ phải thu — không phát sinh doanh thu mới" };
+  }
+  // Nhân viên nộp lại tiền tạm ứng thừa: rút khoản tạm ứng đang treo, không phải doanh thu.
+  if (isEmployeeAdvanceCategory(voucher.categoryCode)) {
+    return { account: EMPLOYEE_ADVANCE_ACCOUNT, reason: "Thu hoàn tạm ứng nhân viên — giảm tạm ứng, không phải doanh thu" };
   }
   // Thu lại tiền chi hộ theo đối tác: cùng bản chất với gạch nợ, chỉ khác là hệ thống tự tìm
   // khoản nợ. Đối tác là nhà hàng trong nhà thì khoản chi hộ trước đó đã treo 1368, nên thu về
@@ -173,6 +178,10 @@ export function paymentCounterAccount(
   if (voucher.debtAction === PREPAID_ALLOCATION_ACTION) {
     return { account: "242", reason: "Chi trả trước — treo chi phí trả trước, vào P&L dần theo lịch phân bổ" };
   }
+  // Tạm ứng nhân viên: tiền ra quỹ nhưng chưa phải chi phí — chi phí vào lúc hoàn ứng (Có 141).
+  if (isEmployeeAdvanceCategory(voucher.categoryCode)) {
+    return { account: EMPLOYEE_ADVANCE_ACCOUNT, reason: "Chi tạm ứng nhân viên — treo tạm ứng, vào chi phí khi hoàn ứng" };
+  }
   if (categoryGroup === "CAPEX") {
     return { account: "211", reason: "Chi đầu tư tài sản — ghi tăng tài sản, không vào P&L" };
   }
@@ -219,6 +228,8 @@ export function voucherJournalLines(
   // Chi trả trước cũng chưa có mặt trên P&L ở kỳ này: hạng mục P&L của phiếu là hạng mục mà
   // LỊCH PHÂN BỔ sẽ mang, không phải của dòng 242, nên không đi kèm bút toán này.
   const isPrepaidAllocation = voucher.debtAction === PREPAID_ALLOCATION_ACTION;
+  // Tạm ứng cũng chưa lên P&L — hạng mục (nếu lỡ khai) không đi kèm dòng 141.
+  const isEmployeeAdvance = account === EMPLOYEE_ADVANCE_ACCOUNT;
   return {
     reason,
     lines: [
@@ -228,7 +239,7 @@ export function voucherJournalLines(
         partnerCode: isAdvanceReceivable ? (voucher.receivablePartnerCode || voucher.partnerCode) : voucher.partnerCode,
         categoryCode: voucher.categoryCode,
         // 152 là tồn kho, không phải dòng P&L: bỏ hạng mục để không bị gom nhầm lên báo cáo.
-        pnlItemCode: isAdvanceReceivable || isPrepaidAllocation || account === "152" ? null : voucher.pnlItemCode,
+        pnlItemCode: isAdvanceReceivable || isPrepaidAllocation || isEmployeeAdvance || account === "152" ? null : voucher.pnlItemCode,
       },
       { accountCode: cashAccount, credit: voucher.amount },
     ] as JournalLineInput[],

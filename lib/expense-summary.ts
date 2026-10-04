@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { ADVANCE_SETTLEMENT_SOURCE } from "@/lib/employee-advance";
 import { periodBounds } from "@/lib/accounting";
 import { createPayrollItemResolver, createPnlItemRefLookup, depreciationCatalogItemCode, loadPayrollDepartmentLinks, pnlLineKeyOf, resolvePnlItemCode, type PnlLineKey } from "@/lib/reports";
 import { comparePnlItems } from "@/lib/pnl-ordering";
@@ -155,7 +156,7 @@ export async function getExpenseSummary(period: string, branchCode: string): Pro
     prisma.payrollDepartmentRow.findMany({ where: { period, ...branchFilter }, select: { id: true, totalCompanyCost: true } }),
     // Công nợ phải trả khai tay là chi phí đã phát sinh; chỉ thành bút toán sau khi Đồng bộ ghi
     // sổ, nên khoản chưa ghi sổ phải hiện ở khối chờ hạch toán chứ không im lặng biến mất.
-    prisma.debtRecord.findMany({ where: { ...branchFilter, debtType: "PAYABLE", sourceType: "MANUAL", documentDate: { gte: start, lt: end } }, select: { id: true, originalAmount: true } }),
+    prisma.debtRecord.findMany({ where: { ...branchFilter, debtType: "PAYABLE", sourceType: { in: ["MANUAL", ADVANCE_SETTLEMENT_SOURCE] }, documentDate: { gte: start, lt: end } }, select: { id: true, originalAmount: true } }),
     loadPayrollDepartmentLinks(),
   ]);
 
