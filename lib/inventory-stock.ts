@@ -179,10 +179,14 @@ function weightedAverage(lines: TransferPriceLine[]) {
 /** Số tháng lùi tối đa khi tháng liền kề không có phát sinh. */
 const TRANSFER_PRICE_LOOKBACK_MONTHS = 12;
 
+/** Loại mặt hàng mua về dùng nguyên (không chế biến): giá điều chuyển theo phiếu nhập mua. */
+const PURCHASED_ITEM_TYPES = new Set(["RAW_MATERIAL", "PACKAGING", "GOODS", "UNIFORM"]);
+const isPurchasedItemType = (itemType: string) => PURCHASED_ITEM_TYPES.has(String(itemType || "").toUpperCase());
+
 /**
  * Luật ĐƠN GIÁ ĐIỀU CHUYỂN (khách chốt 27/09/2026) — phần thuần để test bằng node --test.
  *
- * - Nguyên liệu, bao bì: đơn giá NHẬP MUA gần nhất trong tháng của phiếu điều chuyển (ưu tiên
+ * - Nguyên liệu, bao bì, hàng hóa, đồng phục (hàng mua về): đơn giá NHẬP MUA gần nhất trong tháng của phiếu điều chuyển (ưu tiên
  *   phiếu mua cùng ngày hoặc trước đó, chưa có thì lấy phiếu mua sau trong tháng); trong
  *   tháng không mua thì lấy giá bình quân (Σ tiền / Σ lượng) nhập mua của tháng liền kề
  *   trước, tháng đó không mua thì lùi tiếp tới tháng gần nhất có mua.
@@ -199,7 +203,7 @@ export function pickTransferUnitCost(input: { itemType: string; transactionDate:
   const nextMonthStart = utcMonthStart(transactionDate, 1);
   const inMonth = lines.filter((line) => line.transactionDate >= monthStart && line.transactionDate < nextMonthStart);
 
-  if (itemType === "RAW_MATERIAL" || itemType === "PACKAGING") {
+  if (isPurchasedItemType(itemType)) {
     if (inMonth.length > 0) {
       const onOrBefore = inMonth.filter((line) => line.transactionDate <= transactionDate);
       const pool = onOrBefore.length > 0 ? onOrBefore : inMonth;
@@ -228,7 +232,7 @@ export function pickTransferUnitCost(input: { itemType: string; transactionDate:
 
 /** Đọc phiếu nhập cần cho luật đơn giá điều chuyển rồi giao cho pickTransferUnitCost. */
 export async function transferUnitCostByRule(tx: Tx, item: { id: string; itemType: string }, transactionDate: Date) {
-  const sourceType = item.itemType === "RAW_MATERIAL" || item.itemType === "PACKAGING"
+  const sourceType = isPurchasedItemType(item.itemType)
     ? "NHAP_MUA"
     : item.itemType === "SEMI_FINISHED" ? "NHAP_CHE_BIEN" : null;
   if (!sourceType) return 0;

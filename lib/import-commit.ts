@@ -25,7 +25,7 @@ import { applyOpeningDeposit } from "@/lib/opening-balance-deposit";
 import { openingAssetRecordData } from "@/lib/opening-asset";
 import { assertAssetCodeAvailable, nextAssetCode, nextAssetLot } from "@/lib/asset-code-generator";
 import { assetAcquisitionJournalCode, assetPayableCode, distributeStocktakeCount } from "@/lib/asset-lot";
-import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
+import { INVENTORY_ITEM_TYPES, isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 import { EXPLOSION_PENDING, explodedRunOf, semiFinishedWithRecipeChecker } from "@/lib/explosion-sources";
 import { nextStockDocCode, nextStocktakeCode } from "@/lib/inventory-stock";
 import {
@@ -131,6 +131,13 @@ function normalizeInventoryItemType(value: unknown) {
     packaging: "PACKAGING",
     baobi: "PACKAGING",
     "bao bi": "PACKAGING",
+    goods: "GOODS",
+    "hang hoa": "GOODS",
+    hanghoa: "GOODS",
+    uniform: "UNIFORM",
+    "dong phuc": "UNIFORM",
+    // normalizeHeader bỏ chữ "đ" (không tách dấu được) nên "Đồng phục" thành "ong phuc".
+    "ong phuc": "UNIFORM",
     tool: "TOOL",
     ccdc: "TOOL",
     asset: "ASSET",
@@ -1371,7 +1378,7 @@ export async function commitImport(input: CommitInput) {
         const revenueGroupInput = cleanRevenueSourceInput(row.values.revenue_group);
         const revenueGroup = revenueCategoryIndex.toCode(revenueGroupInput) || revenueGroupInput.toUpperCase() || null;
         const unit = asText(row.values.unit);
-        if (!['RAW_MATERIAL', 'SEMI_FINISHED', 'FINISHED', 'PACKAGING', 'TOOL', 'ASSET'].includes(itemType)) {
+        if (!(INVENTORY_ITEM_TYPES as readonly string[]).includes(itemType)) {
           throw new Error(`Dòng ${row.rowNumber}: Loại hàng không hợp lệ`);
         }
         const statusValue = asText(row.values.status).toUpperCase();

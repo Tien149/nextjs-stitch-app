@@ -14,7 +14,7 @@ import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { SearchableSelect } from "@/components/SearchableSelect";
-import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
+import { WAREHOUSE_ITEM_TYPES, inventoryItemTypeLabel, isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 import StocktakeByLocation from "@/components/inventory/StocktakeByLocation";
 import StockReportsPanel from "@/components/inventory/StockReportsPanel";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
@@ -788,9 +788,9 @@ export default function InventoryPage() {
     if (!keyword) return true;
     return item.code.toLowerCase().includes(keyword) || item.name.toLowerCase().includes(keyword);
   });
-  // Chỉ món bán (FINISHED) mới lên doanh thu POS — nguyên liệu thô không cần nhóm doanh thu,
-  // đếm cả kho vào đây thì con số cảnh báo vô nghĩa.
-  const missingRevenueGroupCount = data.items.filter((item) => item.itemType === "FINISHED" && !item.revenueGroup).length;
+  // Chỉ món bán (thành phẩm, hàng hóa) mới lên doanh thu POS — nguyên liệu thô không cần nhóm
+  // doanh thu, đếm cả kho vào đây thì con số cảnh báo vô nghĩa.
+  const missingRevenueGroupCount = data.items.filter((item) => (item.itemType === "FINISHED" || item.itemType === "GOODS") && !item.revenueGroup).length;
   // Dữ liệu cũ gán nhầm LOẠI THU (thu tiền thừa, thu đặt cọc...) vào ô nhóm doanh thu: giữ
   // nguyên để không mất dữ liệu, nhưng phải đập vào mắt để người dùng gán lại cho đúng.
   const misassignedRevenueGroupCount = data.items.filter((item) => isMisassignedRevenueGroup(item.revenueGroup)).length;
@@ -1012,6 +1012,8 @@ export default function InventoryPage() {
     if (!response.ok || seq !== loadTracker.seq) return;
     const payload = await response.json() as Data;
     if (seq !== loadTracker.seq) return;
+    // CCDC / tài sản quản lý ở phân hệ Tài sản & khấu hao, không hiện ở Kho & định lượng (08/10/2026).
+    payload.items = payload.items.filter((item) => isWarehouseStocktakeItemType(item.itemType));
     // Trong lúc chờ mà người dùng đã đổi khoảng ngày nhật ký thì giữ phần nhật ký mới hơn.
     setData((current) => loadTracker.movementRange === movementRange ? payload : { ...payload, stockMovements: current.stockMovements });
     const firstItem = payload.items[0]?.id || "";
@@ -1843,12 +1845,7 @@ export default function InventoryPage() {
               
               <Input label="Loại">
                 <select className="control" value={itemForm.itemType} onChange={(e) => setItemForm({ ...itemForm, itemType: e.target.value, category: "" })}>
-                  <option value="RAW_MATERIAL">Nguyên liệu thô</option>
-                  <option value="SEMI_FINISHED">Bán thành phẩm</option>
-                  <option value="FINISHED">Thành phẩm</option>
-                  <option value="PACKAGING">Bao bì</option>
-                  <option value="TOOL">CCDC</option>
-                  <option value="ASSET">Tài sản</option>
+                  {WAREHOUSE_ITEM_TYPES.map((type) => <option key={type} value={type}>{inventoryItemTypeLabel(type)}</option>)}
                 </select>
               </Input>
 
@@ -1971,12 +1968,7 @@ export default function InventoryPage() {
               <Input label="Loại">
                 <select className="control" value={itemTypeFilter} onChange={(e) => setItemTypeFilter(e.target.value)}>
                   <option value="ALL">Tất cả loại</option>
-                  <option value="RAW_MATERIAL">Nguyên liệu thô</option>
-                  <option value="SEMI_FINISHED">Bán thành phẩm</option>
-                  <option value="FINISHED">Thành phẩm</option>
-                  <option value="PACKAGING">Bao bì</option>
-                  <option value="TOOL">CCDC</option>
-                  <option value="ASSET">Tài sản</option>
+                  {WAREHOUSE_ITEM_TYPES.map((type) => <option key={type} value={type}>{inventoryItemTypeLabel(type)}</option>)}
                 </select>
               </Input>
               <Input label="Nhóm hàng hóa">
@@ -2062,7 +2054,7 @@ export default function InventoryPage() {
                     )}
                   </Cell>
                   <Cell>{item.name}</Cell>
-                  <Cell>{item.itemType}</Cell>
+                  <Cell>{inventoryItemTypeLabel(item.itemType)}</Cell>
                   <Cell>{normalizeGoodsGroup(item.goodsGroup) || <span className="text-slate-400">-</span>}</Cell>
                   <Cell>{data.itemGroups.find((group) => group.code === item.category)?.name || item.category || "-"}</Cell>
                   <Cell>
@@ -2152,12 +2144,7 @@ export default function InventoryPage() {
 
                   <Input label="Loại">
                     <select className="control" value={itemEditForm.itemType} onChange={(e) => setItemEditForm({ ...itemEditForm, itemType: e.target.value, category: "" })}>
-                      <option value="RAW_MATERIAL">Nguyên liệu thô</option>
-                      <option value="SEMI_FINISHED">Bán thành phẩm</option>
-                      <option value="FINISHED">Thành phẩm</option>
-                      <option value="PACKAGING">Bao bì</option>
-                      <option value="TOOL">CCDC</option>
-                      <option value="ASSET">Tài sản</option>
+                      {WAREHOUSE_ITEM_TYPES.map((type) => <option key={type} value={type}>{inventoryItemTypeLabel(type)}</option>)}
                     </select>
                   </Input>
 
@@ -4410,10 +4397,7 @@ export default function InventoryPage() {
                 <Input label="Loại hàng">
                   <select className="control" value={wasteReportFilter.itemType} onChange={(e) => setWasteReportFilter({ ...wasteReportFilter, itemType: e.target.value })}>
                     <option value="ALL">Tất cả loại</option>
-                    <option value="RAW_MATERIAL">Nguyên liệu thô</option>
-                    <option value="SEMI_FINISHED">Bán thành phẩm</option>
-                    <option value="FINISHED">Thành phẩm</option>
-                    <option value="PACKAGING">Bao bì</option>
+                    {WAREHOUSE_ITEM_TYPES.map((type) => <option key={type} value={type}>{inventoryItemTypeLabel(type)}</option>)}
                   </select>
                 </Input>
                 <Input label="Nhóm hàng hóa">

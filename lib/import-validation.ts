@@ -26,7 +26,7 @@ import {
 } from "@/lib/bank-statement-wallet-hints";
 import { selectWalletDeclaredRevenue, walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
 import { vietnamBusinessDayBounds, vietnamBusinessDayKey } from "@/lib/revenue-date";
-import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
+import { INVENTORY_ITEM_TYPES, isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 import { semiFinishedWithRecipeChecker } from "@/lib/explosion-sources";
 import { conversionRateForUnit } from "@/lib/unit-conversion";
 
@@ -75,6 +75,13 @@ function normalizeItemType(value: unknown) {
     packaging: "PACKAGING",
     baobi: "PACKAGING",
     "bao bi": "PACKAGING",
+    goods: "GOODS",
+    "hang hoa": "GOODS",
+    hanghoa: "GOODS",
+    uniform: "UNIFORM",
+    "dong phuc": "UNIFORM",
+    // normalizeHeader bỏ chữ "đ" (không tách dấu được) nên "Đồng phục" thành "ong phuc".
+    "ong phuc": "UNIFORM",
     tool: "TOOL",
     ccdc: "TOOL",
     asset: "ASSET",
@@ -1442,7 +1449,7 @@ export async function validateImportResult(
       }
       const itemType = isItemUpdate ? updateTarget?.itemType || "" : normalizeItemType(row.values.item_type);
       if (!isItemUpdate) row.values.item_type = itemType;
-      if (!isItemUpdate && !["RAW_MATERIAL", "SEMI_FINISHED", "FINISHED", "PACKAGING", "TOOL", "ASSET"].includes(itemType)) {
+      if (!isItemUpdate && !(INVENTORY_ITEM_TYPES as readonly string[]).includes(itemType)) {
         addError(row, "Loại mặt hàng không hợp lệ");
       }
       const revenueGroupResult = resolveItemRevenueGroup?.(row.values.revenue_group);
@@ -1648,7 +1655,7 @@ export async function validateImportResult(
           // (đúng ghi chú của template file POS thô) — chỉ chặn khi file không có tên để tạo.
           if (!product && !result.mapping.product_name) addError(row, `Khong tim thay ma mon POS ${productCode} (file khong co cot Ten hang de he thong tu tao mat hang)`);
           if (product && product.status !== "ACTIVE") addError(row, `Ma mon POS ${productCode} dang ngung hoat dong`);
-          if (product?.itemType && !["FINISHED", "SEMI_FINISHED"].includes(product.itemType)) addError(row, `Ma mon POS ${productCode} phai la thanh pham hoac ban thanh pham`);
+          if (product?.itemType && !["FINISHED", "SEMI_FINISHED", "GOODS"].includes(product.itemType)) addError(row, `Ma mon POS ${productCode} phai la thanh pham, ban thanh pham hoac hang hoa`);
         }
         // Không đòi định lượng ở bước import nữa: món không có định lượng (bia, nước đóng
         // chai) sẽ xuất bán thẳng từ tồn kho khi rã; món thiếu định lượng thật sự sẽ bị

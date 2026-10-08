@@ -53,3 +53,9 @@ test("CCDC không có luật riêng: trả 0", () => {
   const lines = [line("2026-09-02", 10, 50000)];
   assert.equal(pickTransferUnitCost({ itemType: "TOOL", transactionDate: transferDate, lines }), 0);
 });
+
+test("hàng hóa, đồng phục là hàng mua về: cùng luật phiếu nhập mua gần nhất như nguyên liệu", () => {
+  const lines = [line("2026-09-03", 10, 100), line("2026-09-12", 5, 120)];
+  assert.equal(pickTransferUnitCost({ itemType: "GOODS", transactionDate: transferDate, lines }), 120);
+  assert.equal(pickTransferUnitCost({ itemType: "UNIFORM", transactionDate: transferDate, lines }), 120);
+});

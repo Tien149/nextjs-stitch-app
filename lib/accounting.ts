@@ -25,6 +25,7 @@ import {
   INVENTORY_COGS_START_DATE,
   INVENTORY_COGS_START_PERIOD,
   PACKAGING_EXPENSE_PNL_ITEM,
+  UNIFORM_EXPENSE_PNL_ITEM,
   cogsPurchaseAccount,
   inventoryCogsActive,
   inventoryCogsParentGroup,
@@ -33,6 +34,7 @@ import {
   type CogsRepostResult,
 } from "@/lib/inventory-cogs";
 import type { MoneyTransfer } from "@prisma/custom-client";
+import { isFixedCostPnlGroupName } from "@/lib/pnl-ordering";
 
 export const defaultAccounts = [
   { code: "1111", name: "Tiền mặt", accountType: "ASSET", normalBalance: "DEBIT", reportGroup: "CASH" },
@@ -998,12 +1000,14 @@ export async function repostInventoryCogs(targets: Array<{ date: Date | string; 
 
 /**
  * Hạng mục P&L của giá vốn theo kho: COGS Bếp / COGS Bar / COGS kho chung nằm dưới nhóm Giá vốn
- * đang có; vật tư tiêu hao CPBD_VTTH (danh mục của khách) chỉ tạo khi chưa có, dưới nhóm OPEX.
+ * đang có; vật tư tiêu hao CPBD_VTTH (danh mục của khách) chỉ tạo khi chưa có, dưới nhóm OPEX;
+ * đồng phục xuất kho CPCD_DONGPHUC tạo dưới nhóm "Chi phí cố định" (khách chốt 08/10/2026).
  */
 export async function ensureInventoryCogsPnlItems() {
   const wanted = [
     ...Object.values(INVENTORY_COGS_PNL_ITEMS).map((item) => ({ ...item, group: "COGS" })),
     { ...PACKAGING_EXPENSE_PNL_ITEM, group: "OPEX" },
+    { ...UNIFORM_EXPENSE_PNL_ITEM, group: "OPEX", fixedCost: true },
   ];
   const [existing, parents] = await Promise.all([
     prisma.masterDataItem.findMany({
@@ -1037,7 +1041,8 @@ export async function ensureInventoryCogsPnlItems() {
         group: item.group,
         subGroup: item.group === "COGS"
           ? inventoryCogsParentGroup(item.code, cogsGroups)
-          : parents.find((parent) => parent.group === item.group)?.code || null,
+          : ("fixedCost" in item && item.fixedCost ? parents.find((parent) => parent.group === "OPEX" && isFixedCostPnlGroupName(parent.name)) : undefined)?.code
+            || parents.find((parent) => parent.group === item.group)?.code || null,
         status: "ACTIVE",
         note: `Tự tạo khi ghi sổ giá vốn theo kho (từ kỳ ${INVENTORY_COGS_START_PERIOD})`,
       },

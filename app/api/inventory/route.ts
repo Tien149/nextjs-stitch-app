@@ -30,7 +30,7 @@ import {
   SoftDeleteError,
 } from "@/lib/soft-delete";
 import { scopePayloadByTab } from "@/lib/tab-scope";
-import { isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
+import { INVENTORY_ITEM_TYPES, isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 import { nextStockDocCode, nextStocktakeCode } from "@/lib/inventory-stock";
 import { isRevenueGroupCategory } from "@/lib/voucher-rules";
 import { loadItemRevenueOptions, loadNonInventoryRevenueGroups, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
@@ -53,7 +53,7 @@ const derivedReferenceTypes: Record<string, string> = {
 };
 
 type InputLine = { itemId?: unknown; itemCode?: unknown; quantity?: unknown; actualQuantity?: unknown; inputQuantity?: unknown; unitCode?: unknown; inputUnitCode?: unknown; unitCost?: unknown; inputUnitCost?: unknown; vatRate?: unknown; vatAmount?: unknown; wasteRate?: unknown; conversionRate?: unknown; reason?: unknown };
-const validItemTypes = ["RAW_MATERIAL", "SEMI_FINISHED", "FINISHED", "PACKAGING", "TOOL", "ASSET"];
+const validItemTypes: readonly string[] = INVENTORY_ITEM_TYPES;
 
 /**
  * Thue suat GTGT tu man hinh gui len ("8%", "KKKNT", o trong). Gia tri la thi chan ngay thay vi
@@ -123,6 +123,8 @@ function normalizeItemType(value: unknown) {
   if (!raw || raw === "MATERIAL" || raw === "RAW" || raw === "NVL") return "RAW_MATERIAL";
   if (raw === "BTP" || raw === "SEMI" || raw === "SEMI_FINISHED_GOOD") return "SEMI_FINISHED";
   if (raw === "TP" || raw === "PRODUCT" || raw === "FINISHED_GOOD") return "FINISHED";
+  if (raw === "HH" || raw === "HANG_HOA" || raw === "MERCHANDISE") return "GOODS";
+  if (raw === "DP" || raw === "DONG_PHUC") return "UNIFORM";
   return raw;
 }
 

@@ -561,7 +561,7 @@ async function validateMasterData(type: string, group: string | null, branch: st
     }
   }
   if (type === "INVENTORY_ITEM_GROUP") {
-    if (!group || !["RAW_MATERIAL", "SEMI_FINISHED", "FINISHED", "PACKAGING", "TOOL", "ASSET", "OTHER"].includes(group.toUpperCase())) {
+    if (!group || !["RAW_MATERIAL", "SEMI_FINISHED", "FINISHED", "GOODS", "PACKAGING", "UNIFORM", "TOOL", "ASSET", "OTHER"].includes(group.toUpperCase())) {
       throw new Error("Nhóm mặt hàng bắt buộc là RAW_MATERIAL, SEMI_FINISHED, FINISHED, PACKAGING, TOOL, ASSET hoặc OTHER.");
     }
   }

@@ -14,6 +14,8 @@ import { REVENUE_DEPARTMENT_CODES, departmentFromWarehouseGroup } from "@/lib/re
  *   suy theo mã hàng). Kho không thuộc bếp/bar vào dòng COGS kho chung.
  * - Bao bì xuất hủy / chênh kiểm kê / xuất lẻ -> chi phí vật tư tiêu hao CPBD_VTTH (6428), không
  *   vào COGS. Bao bì nằm trong định lượng món thì đã chảy vào giá trị món lúc rã nên theo món.
+ * - Đồng phục xuất cho nhân viên / hủy / chênh kiểm kê -> chi phí đồng phục CPCD_DONGPHUC (6428)
+ *   thuộc nhóm Chi phí cố định (khách chốt 08/10/2026), không vào COGS.
  *
  * Đi kèm: từ kỳ này phiếu chi / công nợ / điều chỉnh quỹ thuộc nhóm Giá vốn ghi Nợ 152 (mua
  * hàng nhập kho) thay vì Nợ 632 — không thì giá vốn bị tính hai lần (lúc mua + lúc xuất).
@@ -41,6 +43,13 @@ export const INVENTORY_COGS_PNL_ITEMS = {
   OTHER: { code: "COGS_KHAC", name: "COGS kho chung (không thuộc bếp/bar)" },
 } as const;
 export const PACKAGING_EXPENSE_PNL_ITEM = { code: "CPBD_VTTH", name: "Chi phí vật tư tiêu hao" } as const;
+export const UNIFORM_EXPENSE_PNL_ITEM = { code: "CPCD_DONGPHUC", name: "CP Đồng phục nhân viên (xuất kho)" } as const;
+
+/** Loại mặt hàng xuất kho ghi CHI PHÍ (6428 + hạng mục OPEX) thay vì giá vốn 632. */
+const EXPENSE_ITEM_TYPES: Record<string, string> = {
+  PACKAGING: PACKAGING_EXPENSE_PNL_ITEM.code,
+  UNIFORM: UNIFORM_EXPENSE_PNL_ITEM.code,
+};
 
 /** Bộ phận của một hạng mục giá vốn theo kho: KIT / BAR, COGS kho chung thì null. */
 function inventoryCogsItemDepartment(itemCode: string) {
@@ -122,9 +131,9 @@ export function planInventoryCogsJournal(input: {
   for (const line of input.lines) {
     const amount = Number(line.totalCost) || 0;
     if (amount === 0) continue;
-    const packaging = String(line.itemType || "").toUpperCase() === "PACKAGING";
-    const accountCode = packaging ? "6428" : "632";
-    const pnlItemCode = packaging ? PACKAGING_EXPENSE_PNL_ITEM.code : cogsItem.code;
+    const expenseItem = EXPENSE_ITEM_TYPES[String(line.itemType || "").toUpperCase()];
+    const accountCode = expenseItem ? "6428" : "632";
+    const pnlItemCode = expenseItem || cogsItem.code;
     const key = `${accountCode}|${pnlItemCode}`;
     const bucket = buckets.get(key) || { accountCode, pnlItemCode, amount: 0 };
     bucket.amount += amount;

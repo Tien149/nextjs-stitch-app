@@ -46,6 +46,17 @@ test("bao bì thiếu kiểm kê -> 6428 CPBD_VTTH, nguyên liệu cùng phiếu
   assert.equal(sum(lines, "debit"), sum(lines, "credit"));
 });
 
+test("đồng phục xuất kho -> chi phí cố định CPCD_DONGPHUC (6428); hàng hóa xuất bán -> giá vốn 632 theo kho", () => {
+  const lines = planInventoryCogsJournal({
+    transactionType: "XUAT_KHAC",
+    warehouseGroup: "BEP",
+    lines: [{ totalCost: 300, itemType: "UNIFORM" }, { totalCost: 200, itemType: "GOODS" }],
+  });
+  assert.deepEqual(lines.find((line) => line.accountCode === "6428"), { accountCode: "6428", debit: 300, pnlItemCode: "CPCD_DONGPHUC", departmentCode: "KIT" });
+  assert.deepEqual(lines.find((line) => line.accountCode === "632"), { accountCode: "632", debit: 200, pnlItemCode: "COGS_BEP", departmentCode: "KIT" });
+  assert.equal(sum(lines, "debit"), sum(lines, "credit"));
+});
+
 test("kiểm kê THỪA ghi giảm giá vốn: Nợ 152 / Có 632", () => {
   const lines = planInventoryCogsJournal({ transactionType: "NHAP_KIEM_KE", warehouseGroup: "BEP", lines: [{ totalCost: 250, itemType: "RAW_MATERIAL" }] });
   assert.deepEqual(lines, [

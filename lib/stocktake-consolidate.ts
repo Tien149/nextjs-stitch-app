@@ -6,13 +6,13 @@
  *   Mỗi phiếu đếm chỉ ghi SỐ ĐẾM của một vị trí, không tự so sổ sách.
  * - Kế toán chọn nhiều phiếu của cùng kho rồi duyệt một lần: số đếm của mỗi mã = TỔNG các vị
  *   trí; so với sổ sách TẠI GIỜ CHỐT. Mã có sổ sách mà không nằm trên phiếu nào = đếm 0.
- * - Chỉ nguyên liệu + bao bì (CCDC / tài sản kiểm ở phân hệ Tài sản).
+ * - Nguyên liệu, bao bì, hàng hóa, đồng phục (CCDC / tài sản kiểm ở phân hệ Tài sản).
  */
 
 const EPSILON = 0.000001;
 
 /** Nhóm mặt hàng đếm theo vị trí và được duyệt gộp. */
-export const LOCATION_STOCKTAKE_ITEM_TYPES = ["RAW_MATERIAL", "PACKAGING"] as const;
+export const LOCATION_STOCKTAKE_ITEM_TYPES = ["RAW_MATERIAL", "PACKAGING", "GOODS", "UNIFORM"] as const;
 
 export function isLocationStocktakeItemType(itemType: unknown) {
   const normalized = String(itemType || "").trim().toUpperCase();
