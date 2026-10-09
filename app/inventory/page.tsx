@@ -108,7 +108,8 @@ const wasteTypeOptions = [
   { code: "HET_HAN_SU_DUNG", label: "Xuất hủy do hết hạn sử dụng" },
   { code: "KHONG_DAM_BAO_CHAT_LUONG", label: "Xuất hủy do không đảm bảo chất lượng" },
 ];
-const today = () => new Date().toISOString().slice(0, 10);
+// Ngày hôm nay theo giờ Việt Nam: toISOString() là giờ UTC nên trước 7h sáng ra ngày hôm qua.
+const today = () => new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10);
 const daysAgo = (days: number) => new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
 /**
@@ -268,7 +269,7 @@ export default function InventoryPage() {
   const [bulkStatusRunning, setBulkStatusRunning] = useState(false);
   const [conversionForm, setConversionForm] = useState({ itemId: "", purchaseUnit: "thung", conversionRate: "24", note: "" });
   const [supplierPrices, setSupplierPrices] = useState<{ key: string; prices: Array<{ itemId: string; unitCode: string; unitPrice: number; vatRate: number | null; stockUnitPrice: number; priceListCode: string; effectiveFrom: string; effectiveTo: string | null }> }>({ key: "", prices: [] });
-  const [stockForm, setStockForm] = useState({ transactionType: "NHAP_MUA", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HN", itemId: "", inputUnitCode: "", quantity: "10", unitCost: "100000", vatRate: "KKKNT", vatAmount: "", partnerCode: "", paymentDueDate: "", referenceCode: "", note: "Nhap kho van hanh", allocationMonths: "" });
+  const [stockForm, setStockForm] = useState({ transactionType: "NHAP_MUA", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HN", itemId: "", inputUnitCode: "", quantity: "10", unitCost: "100000", vatRate: "KKKNT", vatAmount: "", partnerCode: "", paymentDueDate: "", referenceCode: "", note: "Nhap kho van hanh", allocationMonths: "", transactionDate: today() });
   /** Nhập mua theo PO (GRPO): PO đã duyệt còn hàng chưa nhận + số lượng nhận trên từng dòng. */
   const [receivablePOs, setReceivablePOs] = useState<ReceivablePO[]>([]);
   const [grpoOrderId, setGrpoOrderId] = useState("");
@@ -312,7 +313,7 @@ export default function InventoryPage() {
    * 28/09/2026); "Cả kho" là form cũ — so từng phiếu với tồn kho, vẫn dùng cho bán thành phẩm.
    */
   const [stocktakeMode, setStocktakeMode] = useState<"location" | "warehouse">("location");
-  const [wasteForm, setWasteForm] = useState({ wasteType: "HET_HAN_SU_DUNG", mode: "ITEMS", recipeId: "", productQuantity: "1", branchCode: "HCM", warehouseCode: "KHO_HCM", referenceCode: "", note: "" });
+  const [wasteForm, setWasteForm] = useState({ wasteType: "HET_HAN_SU_DUNG", mode: "ITEMS", recipeId: "", productQuantity: "1", branchCode: "HCM", warehouseCode: "KHO_HCM", transactionDate: today(), referenceCode: "", note: "" });
   const [wasteRows, setWasteRows] = useState([{ itemId: "", quantity: "1", unitCode: "" }]);
   
   const visibleTabs = useMemo(() => filterModuleTabs(user, href), [user]);
@@ -511,6 +512,23 @@ export default function InventoryPage() {
     return () => window.clearTimeout(timer);
   }, [stocktakeWarehouseCode, data.balances, data.items, editingStocktake]);
   const sourceWarehouseOptions = warehouseOptions.filter((warehouse) => warehouse.branch === stockForm.branchCode || !warehouse.branch);
+  /**
+   * Kho thật của form Nhập/Xuất, Hủy hàng, Điều chuyển — cùng luật với kiểm kê ở trên. Đổi cửa
+   * hàng (kể cả lúc tự đưa form về cửa hàng đầu tiên của người dùng) làm mã kho rỗng, ô select
+   * vẫn HIỆN kho đầu tiên nên người dùng tưởng đã chọn; bấm Ghi nhận thì máy chủ báo "Cửa hàng và
+   * kho là bắt buộc" và phiếu không được tạo (khách gặp 09/10/2026 khi nhập đồng phục).
+   */
+  const stockWarehouseCode = validWarehouse(sourceWarehouseOptions, stockForm.warehouseCode);
+  const wasteWarehouseCode = validWarehouse(warehouseOptions.filter((warehouse) => warehouse.branch === wasteForm.branchCode || !warehouse.branch), wasteForm.warehouseCode);
+  const transferWarehouseCode = validWarehouse(warehouseOptions.filter((warehouse) => warehouse.branch === transferForm.branchCode || !warehouse.branch), transferForm.warehouseCode);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setStockForm((form) => (form.warehouseCode === stockWarehouseCode ? form : { ...form, warehouseCode: stockWarehouseCode }));
+      setWasteForm((form) => (form.warehouseCode === wasteWarehouseCode ? form : { ...form, warehouseCode: wasteWarehouseCode }));
+      setTransferForm((form) => (form.warehouseCode === transferWarehouseCode ? form : { ...form, warehouseCode: transferWarehouseCode }));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [stockWarehouseCode, wasteWarehouseCode, transferWarehouseCode]);
   /**
    * Bộ lọc Cửa hàng của tab Tồn kho: dòng tồn / phát sinh chỉ mang mã kho, nên tra cửa hàng qua
    * danh mục kho (cả kho đã ngưng). Kho không khai cửa hàng thì chỉ hiện khi chọn "Tất cả".
@@ -2344,6 +2362,10 @@ export default function InventoryPage() {
                   </select>
                 </Input>
               </div>
+
+              <Input label="Ngày chứng từ">
+                <input type="date" className="control" value={stockForm.transactionDate} onChange={(e) => setStockForm({ ...stockForm, transactionDate: e.target.value })} required />
+              </Input>
 
               <div className={`grid gap-3 ${active === "inbound" ? "grid-cols-3" : "grid-cols-2"}`}>
                 <Input label="Số lượng">
@@ -4376,6 +4398,10 @@ export default function InventoryPage() {
                   </select>
                 </Input>
               </div>
+
+              <Input label="Ngày chứng từ">
+                <input type="date" className="control" value={wasteForm.transactionDate} onChange={(e) => setWasteForm({ ...wasteForm, transactionDate: e.target.value })} required />
+              </Input>
 
               <Input label="Mã giao dịch POS / tham chiếu">
                 <input data-input-kind="code" className="control" value={wasteForm.referenceCode} onChange={(e) => setWasteForm({ ...wasteForm, referenceCode: e.target.value })} />
