@@ -268,7 +268,7 @@ export default function InventoryPage() {
   const [bulkStatusRunning, setBulkStatusRunning] = useState(false);
   const [conversionForm, setConversionForm] = useState({ itemId: "", purchaseUnit: "thung", conversionRate: "24", note: "" });
   const [supplierPrices, setSupplierPrices] = useState<{ key: string; prices: Array<{ itemId: string; unitCode: string; unitPrice: number; vatRate: number | null; stockUnitPrice: number; priceListCode: string; effectiveFrom: string; effectiveTo: string | null }> }>({ key: "", prices: [] });
-  const [stockForm, setStockForm] = useState({ transactionType: "NHAP_MUA", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HN", itemId: "", inputUnitCode: "", quantity: "10", unitCost: "100000", vatRate: "KKKNT", vatAmount: "", partnerCode: "", paymentDueDate: "", referenceCode: "", note: "Nhap kho van hanh" });
+  const [stockForm, setStockForm] = useState({ transactionType: "NHAP_MUA", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HN", itemId: "", inputUnitCode: "", quantity: "10", unitCost: "100000", vatRate: "KKKNT", vatAmount: "", partnerCode: "", paymentDueDate: "", referenceCode: "", note: "Nhap kho van hanh", allocationMonths: "" });
   /** Nhập mua theo PO (GRPO): PO đã duyệt còn hàng chưa nhận + số lượng nhận trên từng dòng. */
   const [receivablePOs, setReceivablePOs] = useState<ReceivablePO[]>([]);
   const [grpoOrderId, setGrpoOrderId] = useState("");
@@ -2362,6 +2362,26 @@ export default function InventoryPage() {
                   </Input>
                 )}
               </div>
+
+              {/* Đồng phục xuất dùng: phân bổ chi phí N tháng (treo 242, lịch PB-<mã phiếu> ở Vận hành
+                  tài chính → Phân bổ). Để trống = ghi chi phí ngay trong tháng xuất. */}
+              {active === "outbound" && stockForm.transactionType === "XUAT_KHAC" && selectedStockItem?.itemType === "UNIFORM" && (
+                <Input label="Phân bổ chi phí (số tháng)">
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    inputMode="decimal"
+                    className="control"
+                    placeholder="Để trống = ghi chi phí ngay"
+                    value={stockForm.allocationMonths}
+                    onChange={(e) => setStockForm({ ...stockForm, allocationMonths: e.target.value })}
+                  />
+                  <small className="text-[11px] text-slate-500 block mt-1">
+                    Tiền đồng phục chia đều từ tháng xuất vào hạng mục đồng phục; ghi nhận từng kỳ ở Vận hành tài chính → Phân bổ.
+                  </small>
+                </Input>
+              )}
 
               {active === "inbound" && (
                 <div className="grid grid-cols-2 gap-3">

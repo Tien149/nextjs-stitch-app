@@ -43,7 +43,8 @@ export const TRASH_ENTITIES: TrashEntity[] = [
     model: "InventoryItem", label: "Hàng hoá / Nguyên vật liệu", module: "/inventory", codeField: "code", titleField: "name",
     cascade: [{ model: "ItemUnitConversion", foreignKey: "itemId" }],
   },
-  { model: "InventoryTransaction", label: "Phiếu nhập/xuất kho", module: "/inventory", codeField: "code", titleField: "note", branchField: "branchCode", dateField: "transactionDate" },
+  // Lịch phân bổ đồng phục PB-<mã phiếu> (Accrual.sourceId = id phiếu) đi theo phiếu xuất.
+  { model: "InventoryTransaction", label: "Phiếu nhập/xuất kho", module: "/inventory", codeField: "code", titleField: "note", branchField: "branchCode", dateField: "transactionDate", cascade: [{ model: "Accrual", foreignKey: "sourceId", where: { sourceType: "INVENTORY_ISSUE" } }] },
   { model: "StocktakeSession", label: "Phiếu kiểm kê", module: "/inventory", codeField: "code", titleField: "note", branchField: "branchCode", dateField: "stocktakeDate" },
   { model: "AssetStocktakeSession", label: "Phiên kiểm kê tài sản", module: "/assets", codeField: "code", titleField: "note", branchField: "branchCode", dateField: "stocktakeDate" },
   { model: "Recipe", label: "Định mức (BOM)", module: "/inventory", codeField: "code", titleField: "productName" },

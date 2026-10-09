@@ -35,6 +35,7 @@ import {
 } from "@/lib/inventory-cogs";
 import type { MoneyTransfer } from "@prisma/custom-client";
 import { isFixedCostPnlGroupName } from "@/lib/pnl-ordering";
+import { ALLOCATABLE_ITEM_TYPES, ISSUE_ALLOCATION_SOURCE, syncIssueAllocation } from "@/lib/uniform-allocation";
 
 export const defaultAccounts = [
   { code: "1111", name: "Tiền mặt", accountType: "ASSET", normalBalance: "DEBIT", reportGroup: "CASH" },
@@ -831,8 +832,10 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
   //   treo Nợ 242 / Có 331, nên vế Có cũng là 242. Ghi 335 là nợ nhà cung cấp hai lần.
   // - Khai tay ở tab Trích trước (chưa chi tiền): vẫn là Có 335 — chi phí phải trả.
   for (const row of accruals) {
+    // Phiếu xuất đồng phục có phân bổ (INVENTORY_ISSUE): ghi sổ giá vốn đã treo Nợ 242 / Có 152.
     const alreadyPaid = row.accrual.sourceType === "VOUCHER"
       || row.accrual.sourceType === "DEBT"
+      || row.accrual.sourceType === ISSUE_ALLOCATION_SOURCE
       || row.accrual.sourceType === "OPENING_BALANCE"
       || row.accrual.code.startsWith("PB-DK-");
     /**
@@ -916,12 +919,30 @@ async function postInventoryCogs(start: Date, end: Date, branchCode: string, act
     prisma.masterDataItem.findMany({ where: { type: "WAREHOUSE" }, select: { code: true, group: true } }),
   ]);
   const groupOf = new Map(warehouses.map((warehouse) => [warehouse.code, warehouse.group]));
+  // Phiếu xuất đồng phục có lịch phân bổ: đồng phục treo 242, lịch PB- dựng lại theo trị giá
+  // hiện tại của phiếu (sửa phiếu / xuất âm rồi mới có giá) — xem lib/uniform-allocation.
+  const allocations = documents.length === 0 ? [] : await prisma.accrual.findMany({
+    where: { sourceType: ISSUE_ALLOCATION_SOURCE, sourceId: { in: documents.map((doc) => doc.id) } },
+    select: { sourceId: true },
+  });
+  const allocatedDocs = new Set(allocations.map((row) => row.sourceId));
   const posted: string[] = [];
   for (const doc of documents) {
+    const allocated = allocatedDocs.has(doc.id);
+    if (allocated && !(await isPeriodLocked(doc.transactionDate, doc.branchCode))) {
+      // Lịch đã ghi nhận nhiều hơn trị giá mới thì không dựng lại được — không chặn cả lần ghi
+      // sổ kỳ vì một phiếu; màn Phân bổ vẫn hiện số cũ cho kế toán bỏ ghi nhận rồi ghi sổ lại.
+      try {
+        await prisma.$transaction((tx) => syncIssueAllocation(tx, doc, undefined, actor));
+      } catch (error) {
+        console.warn(`Không dựng lại được lịch phân bổ đồng phục của ${doc.code}:`, error instanceof Error ? error.message : error);
+      }
+    }
     const lines = planInventoryCogsJournal({
       transactionType: doc.transactionType,
       warehouseGroup: groupOf.get(doc.warehouseCode),
       lines: doc.lines.map((line) => ({ totalCost: line.totalCost, itemType: line.item.itemType })),
+      prepaidItemTypes: allocated ? ALLOCATABLE_ITEM_TYPES : undefined,
     });
     if (lines.length === 0) continue;
     posted.push(doc.id);
@@ -1001,7 +1022,8 @@ export async function repostInventoryCogs(targets: Array<{ date: Date | string; 
 /**
  * Hạng mục P&L của giá vốn theo kho: COGS Bếp / COGS Bar / COGS kho chung nằm dưới nhóm Giá vốn
  * đang có; vật tư tiêu hao CPBD_VTTH (danh mục của khách) chỉ tạo khi chưa có, dưới nhóm OPEX;
- * đồng phục xuất kho CPCD_DONGPHUC tạo dưới nhóm "Chi phí cố định" (khách chốt 08/10/2026).
+ * đồng phục CPBD_DONGPHUC là hạng mục khách có sẵn — chỉ khi thiếu mới tạo, dưới nhóm "Chi phí cố
+ * định"; đang có thì để nguyên nhóm khách xếp (khách chốt 09/10/2026).
  */
 export async function ensureInventoryCogsPnlItems() {
   const wanted = [

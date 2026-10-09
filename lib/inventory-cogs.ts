@@ -14,8 +14,9 @@ import { REVENUE_DEPARTMENT_CODES, departmentFromWarehouseGroup } from "@/lib/re
  *   suy theo mã hàng). Kho không thuộc bếp/bar vào dòng COGS kho chung.
  * - Bao bì xuất hủy / chênh kiểm kê / xuất lẻ -> chi phí vật tư tiêu hao CPBD_VTTH (6428), không
  *   vào COGS. Bao bì nằm trong định lượng món thì đã chảy vào giá trị món lúc rã nên theo món.
- * - Đồng phục xuất cho nhân viên / hủy / chênh kiểm kê -> chi phí đồng phục CPCD_DONGPHUC (6428)
- *   thuộc nhóm Chi phí cố định (khách chốt 08/10/2026), không vào COGS.
+ * - Đồng phục xuất cho nhân viên / hủy / chênh kiểm kê -> hạng mục đồng phục của khách
+ *   CPBD_DONGPHUC (6428), không vào COGS; dòng P&L theo nhóm khách xếp hạng mục đó (09/10/2026).
+ *   Phiếu xuất có lịch phân bổ thì treo 242 rồi rút dần — xem lib/uniform-allocation.
  *
  * Đi kèm: từ kỳ này phiếu chi / công nợ / điều chỉnh quỹ thuộc nhóm Giá vốn ghi Nợ 152 (mua
  * hàng nhập kho) thay vì Nợ 632 — không thì giá vốn bị tính hai lần (lúc mua + lúc xuất).
@@ -43,7 +44,8 @@ export const INVENTORY_COGS_PNL_ITEMS = {
   OTHER: { code: "COGS_KHAC", name: "COGS kho chung (không thuộc bếp/bar)" },
 } as const;
 export const PACKAGING_EXPENSE_PNL_ITEM = { code: "CPBD_VTTH", name: "Chi phí vật tư tiêu hao" } as const;
-export const UNIFORM_EXPENSE_PNL_ITEM = { code: "CPCD_DONGPHUC", name: "CP Đồng phục nhân viên (xuất kho)" } as const;
+/** Hạng mục có sẵn trong danh mục khách ("D02. CP Đồng Phục Nhân Viên"); thiếu mới tự tạo. */
+export const UNIFORM_EXPENSE_PNL_ITEM = { code: "CPBD_DONGPHUC", name: "CP Đồng Phục Nhân Viên" } as const;
 
 /** Loại mặt hàng xuất kho ghi CHI PHÍ (6428 + hạng mục OPEX) thay vì giá vốn 632. */
 const EXPENSE_ITEM_TYPES: Record<string, string> = {
@@ -116,6 +118,8 @@ export function planInventoryCogsJournal(input: {
   transactionType: string;
   warehouseGroup: string | null | undefined;
   lines: Array<{ totalCost: number; itemType: string | null | undefined }>;
+  /** Loại mặt hàng treo chi phí trả trước 242 (phiếu có lịch phân bổ) thay vì ghi chi phí ngay. */
+  prepaidItemTypes?: readonly string[];
 }): CogsJournalLine[] {
   const type = input.transactionType.toUpperCase();
   const inbound = (COGS_INBOUND_TYPES as readonly string[]).includes(type);
@@ -127,13 +131,15 @@ export function planInventoryCogsJournal(input: {
     : department === REVENUE_DEPARTMENT_CODES.BAR ? INVENTORY_COGS_PNL_ITEMS.BAR : INVENTORY_COGS_PNL_ITEMS.OTHER;
   const departmentCode = department === REVENUE_DEPARTMENT_CODES.KITCHEN || department === REVENUE_DEPARTMENT_CODES.BAR ? department : null;
 
-  const buckets = new Map<string, { accountCode: string; pnlItemCode: string; amount: number }>();
+  const buckets = new Map<string, { accountCode: string; pnlItemCode: string | null; amount: number }>();
   for (const line of input.lines) {
     const amount = Number(line.totalCost) || 0;
     if (amount === 0) continue;
-    const expenseItem = EXPENSE_ITEM_TYPES[String(line.itemType || "").toUpperCase()];
-    const accountCode = expenseItem ? "6428" : "632";
-    const pnlItemCode = expenseItem || cogsItem.code;
+    const itemType = String(line.itemType || "").toUpperCase();
+    const prepaid = !inbound && (input.prepaidItemTypes || []).includes(itemType);
+    const expenseItem = EXPENSE_ITEM_TYPES[itemType];
+    const accountCode = prepaid ? "242" : expenseItem ? "6428" : "632";
+    const pnlItemCode = prepaid ? null : expenseItem || cogsItem.code;
     const key = `${accountCode}|${pnlItemCode}`;
     const bucket = buckets.get(key) || { accountCode, pnlItemCode, amount: 0 };
     bucket.amount += amount;
@@ -145,7 +151,9 @@ export function planInventoryCogsJournal(input: {
   const expenseSide = inbound ? "credit" : "debit";
   const stockSide = inbound ? "debit" : "credit";
   return [
-    ...rows.map((bucket) => ({ accountCode: bucket.accountCode, [expenseSide]: bucket.amount, pnlItemCode: bucket.pnlItemCode, departmentCode })),
+    ...rows.map((bucket) => (bucket.pnlItemCode
+      ? { accountCode: bucket.accountCode, [expenseSide]: bucket.amount, pnlItemCode: bucket.pnlItemCode, departmentCode }
+      : { accountCode: bucket.accountCode, [expenseSide]: bucket.amount })),
     { accountCode: "152", [stockSide]: total },
   ];
 }

@@ -31,6 +31,8 @@ import {
 } from "@/lib/soft-delete";
 import { scopePayloadByTab } from "@/lib/tab-scope";
 import { INVENTORY_ITEM_TYPES, isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
+import { ISSUE_ALLOCATION_SOURCE, issueAllocationCode, syncIssueAllocation } from "@/lib/uniform-allocation";
+import { roundPeriodCount } from "@/lib/period-count";
 import { nextStockDocCode, nextStocktakeCode } from "@/lib/inventory-stock";
 import { isRevenueGroupCategory } from "@/lib/voucher-rules";
 import { loadItemRevenueOptions, loadNonInventoryRevenueGroups, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
@@ -116,6 +118,14 @@ function stockPrefix(transactionType: string) {
   if (transactionType === "XUAT_KIEM_KE") return "XKK";
   if (transactionType === "DIEU_CHUYEN") return "DCK";
   return "XK";
+}
+
+/** Số tháng phân bổ đồng phục gửi lên: trống / 0 = không phân bổ; số lẻ giữ 2 chữ số. */
+function allocationMonthsFrom(value: unknown) {
+  if (value === undefined || value === null || cleanText(value) === "") return 0;
+  const months = roundPeriodCount(toNumber(value));
+  if (!Number.isFinite(months) || months < 0 || months > 120) businessError("Số tháng phân bổ phải từ 0 đến 120");
+  return months;
 }
 
 function normalizeItemType(value: unknown) {
@@ -2465,6 +2475,7 @@ export async function POST(request: Request) {
     }
     if (inputLines.length === 0) businessError("Cần ít nhất một dòng nguyên liệu");
 
+    const allocationMonths = allocationMonthsFrom(body.allocationMonths);
     const requestedTransactionCode = cleanText(body.code);
     if (requestedTransactionCode && await findDeletedByUnique("InventoryTransaction", { code: requestedTransactionCode })) {
       businessError(duplicatedInTrashMessage(requestedTransactionCode, "Phiếu nhập/xuất kho"));
@@ -2516,6 +2527,8 @@ export async function POST(request: Request) {
       });
       // Nhập mua có khai NCC thì sinh khoản phải trả, đúng luật của phiếu nhập từ file import.
       await createPurchasePayable(tx, posted, { dueDate: paymentDueDate });
+      // Xuất đồng phục khai phân bổ N tháng: lịch PB-<mã phiếu> (lib/uniform-allocation).
+      if (allocationMonths) await syncIssueAllocation(tx, posted, allocationMonths, auth.session.name);
       return posted;
     });
 
@@ -2744,6 +2757,8 @@ export async function PATCH(request: Request) {
         if (isExplosionIssueType(updated.transactionType)) await refreshTransferExplosionStatus(tx, updated.id);
         // Công nợ nhập mua theo số mới: sửa khoản đang có, bỏ NCC thì thu khoản nợ về.
         await syncPurchasePayable(tx, { ...updated, partnerCode }, { importBatchId: transaction.importBatchId });
+        // Lịch phân bổ đồng phục theo trị giá / ngày mới; có gửi số tháng thì đổi luôn số tháng.
+        await syncIssueAllocation(tx, updated, body.allocationMonths !== undefined ? allocationMonthsFrom(body.allocationMonths) : undefined, auth.session.name);
         return updated;
       });
 
@@ -2995,6 +3010,16 @@ export async function DELETE(request: Request) {
       const transferRun = explodedRunOf(transaction.explosionStatus);
       if (transferRun) {
         businessError(`Phiếu ${transaction.code} đã rã BOM trong lần rã ${transferRun}. Hoàn tác lần rã đó ở tab Chế biến trước khi xoá phiếu.`);
+      }
+
+      // Lịch phân bổ đồng phục đã ghi nhận kỳ nào thì chi phí đã lên sổ — bỏ ghi nhận trước.
+      // Chưa ghi nhận thì lịch xoá mềm / khôi phục theo phiếu (cascade ở lib/soft-delete).
+      const allocation = await prisma.accrual.findFirst({
+        where: { code: issueAllocationCode(transaction.code), sourceType: ISSUE_ALLOCATION_SOURCE, sourceId: transaction.id },
+        include: { schedules: { where: { status: "POSTED" }, select: { period: true } } },
+      });
+      if (allocation && allocation.schedules.length > 0) {
+        businessError(`Lịch phân bổ ${allocation.code} của phiếu ${transaction.code} đã ghi nhận ${allocation.schedules.length} kỳ. Bỏ ghi nhận ở Vận hành tài chính → Phân bổ trước khi xoá phiếu.`);
       }
 
       // Phiếu điều chuyển liên nhà hàng: phải thu hồi được cặp công nợ nội bộ trước.

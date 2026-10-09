@@ -46,15 +46,28 @@ test("bao bì thiếu kiểm kê -> 6428 CPBD_VTTH, nguyên liệu cùng phiếu
   assert.equal(sum(lines, "debit"), sum(lines, "credit"));
 });
 
-test("đồng phục xuất kho -> chi phí cố định CPCD_DONGPHUC (6428); hàng hóa xuất bán -> giá vốn 632 theo kho", () => {
+test("đồng phục xuất kho -> hạng mục đồng phục CPBD_DONGPHUC (6428); hàng hóa xuất bán -> giá vốn 632 theo kho", () => {
   const lines = planInventoryCogsJournal({
     transactionType: "XUAT_KHAC",
     warehouseGroup: "BEP",
     lines: [{ totalCost: 300, itemType: "UNIFORM" }, { totalCost: 200, itemType: "GOODS" }],
   });
-  assert.deepEqual(lines.find((line) => line.accountCode === "6428"), { accountCode: "6428", debit: 300, pnlItemCode: "CPCD_DONGPHUC", departmentCode: "KIT" });
+  assert.deepEqual(lines.find((line) => line.accountCode === "6428"), { accountCode: "6428", debit: 300, pnlItemCode: "CPBD_DONGPHUC", departmentCode: "KIT" });
   assert.deepEqual(lines.find((line) => line.accountCode === "632"), { accountCode: "632", debit: 200, pnlItemCode: "COGS_BEP", departmentCode: "KIT" });
   assert.equal(sum(lines, "debit"), sum(lines, "credit"));
+});
+
+test("phiếu xuất đồng phục có lịch phân bổ: đồng phục treo Nợ 242 không hạng mục, hàng khác vẫn ghi như thường", () => {
+  const lines = planInventoryCogsJournal({
+    transactionType: "XUAT_KHAC",
+    warehouseGroup: "BEP",
+    lines: [{ totalCost: 300, itemType: "UNIFORM" }, { totalCost: 200, itemType: "GOODS" }],
+    prepaidItemTypes: ["UNIFORM"],
+  });
+  assert.deepEqual(lines.find((line) => line.accountCode === "242"), { accountCode: "242", debit: 300 });
+  assert.equal(lines.some((line) => line.accountCode === "6428"), false);
+  assert.equal(lines.find((line) => line.accountCode === "632").debit, 200);
+  assert.deepEqual(lines.find((line) => line.accountCode === "152"), { accountCode: "152", credit: 500 });
 });
 
 test("kiểm kê THỪA ghi giảm giá vốn: Nợ 152 / Có 632", () => {
