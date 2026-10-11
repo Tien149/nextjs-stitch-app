@@ -1203,9 +1203,10 @@ export default function AssetsPage() {
               <table className="w-full text-left text-xs min-w-[1040px]">
                 <thead className="bg-slate-100 text-slate-600 uppercase font-bold border-b border-slate-200 sticky top-0 z-10 shadow-sm">
                   <tr>
-                    <th className="px-4 py-3">Tài sản / CCDC</th>
+                    {/* File Excel tách ô gộp ra từng cột (data-export-cells) để khách lọc / pivot được. */}
+                    <th className="px-4 py-3" data-export-cells={JSON.stringify(["Mã", "Đợt", "Tên tài sản / CCDC", "Nhà cung cấp", "Ghi chú", "Công nợ"])}>Tài sản / CCDC</th>
                     <th className="px-3 py-3">Cửa hàng / Kho</th>
-                    <th className="px-3 py-3">Nhóm / SL</th>
+                    <th className="px-3 py-3" data-export-cells={JSON.stringify(["Nhóm", "Số lượng", "Phòng ban"])}>Nhóm / SL</th>
                     <th className="px-3 py-3">Ngày mua</th>
                     <th className="px-3 py-3 text-right">Nguyên giá</th>
                     <th className="px-3 py-3 text-center">Tiến độ PB</th>
@@ -1234,7 +1235,17 @@ export default function AssetsPage() {
 
                       return (
                         <tr key={asset.id} className="hover:bg-slate-50/80 transition-colors">
-                          <td className="px-4 py-3">
+                          <td
+                            className="px-4 py-3"
+                            data-export-cells={JSON.stringify([
+                              asset.code,
+                              (asset.lotCount || 1) > 1 ? `${asset.lotNo || 1}/${asset.lotCount}` : "",
+                              asset.name,
+                              asset.supplierName || "",
+                              asset.note || "",
+                              asset.payableDebtCode ? `${asset.payableDebtCode} · ${asset.payableDebtStatus || "OPEN"}` : "",
+                            ])}
+                          >
                             <div className="flex items-center gap-2.5">
                               <div className="grid h-9 w-9 shrink-0 place-items-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
                                 {asset.imageUrl ? (
@@ -1274,7 +1285,7 @@ export default function AssetsPage() {
                             <p className="text-[11px] text-slate-500">{warehouseName}</p>
                           </td>
 
-                          <td className="px-3 py-3">
+                          <td className="px-3 py-3" data-export-cells={JSON.stringify([getGroupLabel(asset.assetGroup), String(asset.quantity ?? ""), departmentName])}>
                             <span className="font-medium text-slate-700">{getGroupLabel(asset.assetGroup)}</span>
                             <p className="text-[11px] text-slate-500">SL: {asset.quantity} · {departmentName}</p>
                           </td>

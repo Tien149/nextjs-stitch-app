@@ -71,6 +71,22 @@ function readCellText(cell: HTMLTableCellElement): string {
     .trim();
 }
 
+/**
+ * Ô gộp nhiều thông tin trên màn hình (mã · tên · NCC) có thể khai `data-export-cells` = mảng
+ * JSON các giá trị để file Excel tách ra nhiều cột; ô tiêu đề tương ứng khai mảng tên cột cùng
+ * độ dài. Không khai thì xuất nguyên chữ hiển thị như cũ.
+ */
+function exportCellsOf(cell: HTMLTableCellElement): string[] | null {
+  const raw = cell.dataset.exportCells;
+  if (!raw) return null;
+  try {
+    const values = JSON.parse(raw);
+    return Array.isArray(values) ? values.map((value) => (value === null || value === undefined ? "" : String(value))) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Trải bảng thành lưới chữ nhật, gỡ rowspan/colspan để Excel không lệch cột. */
 function tableToGrid(table: HTMLTableElement): string[][] {
   const grid: string[][] = [];
@@ -80,6 +96,12 @@ function tableToGrid(table: HTMLTableElement): string[][] {
     let column = 0;
     for (const cell of Array.from(row.cells)) {
       while (grid[rowIndex][column] !== undefined) column += 1;
+      const split = exportCellsOf(cell);
+      if (split) {
+        split.forEach((value, index) => { grid[rowIndex][column + index] = value; });
+        column += split.length;
+        continue;
+      }
       const text = readCellText(cell);
       for (let spanRow = 0; spanRow < (cell.rowSpan || 1); spanRow += 1) {
         for (let spanColumn = 0; spanColumn < (cell.colSpan || 1); spanColumn += 1) {
