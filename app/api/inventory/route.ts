@@ -33,6 +33,7 @@ import { scopePayloadByTab } from "@/lib/tab-scope";
 import { INVENTORY_ITEM_TYPES, isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 import { ISSUE_ALLOCATION_SOURCE, issueAllocationCode, syncIssueAllocation } from "@/lib/uniform-allocation";
 import { roundPeriodCount } from "@/lib/period-count";
+import { packStockMovements } from "@/lib/stock-movement-pack";
 import { nextStockDocCode, nextStocktakeCode } from "@/lib/inventory-stock";
 import { isRevenueGroupCategory } from "@/lib/voucher-rules";
 import { loadItemRevenueOptions, loadNonInventoryRevenueGroups, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
@@ -217,6 +218,8 @@ async function createOrUpdateConversion(itemId: string, purchaseUnit: string, co
 }
 
 /** Mặt hàng đính kèm trên dòng phiếu: màn hình chỉ đọc mấy cột này, không cần cả bản ghi. */
+/** Mặt hàng đi kèm từng dòng tồn: chỉ cột màn Tồn kho / Kiểm kê / Nhập Xuất Tồn đọc (không cả bản ghi). */
+const balanceItemSelect = { id: true, code: true, name: true, unit: true, itemType: true, goodsGroup: true, minStock: true } as const;
 const lineItemSelect = { id: true, code: true, name: true, unit: true, itemType: true, minStock: true, requiresImage: true } as const;
 
 
@@ -593,6 +596,54 @@ function rerunConfirmationResponse(error: RecipeRerunConfirmation) {
   }, { status: 409 });
 }
 
+/** Nhật ký nhập/xuất: `pack=1` gửi dạng gọn (lib/stock-movement-pack), không thì từng dòng như cũ. */
+function movementPayload(rows: ReturnType<typeof buildStockMovements>, searchParams: URLSearchParams) {
+  return searchParams.get("pack") === "1" ? { stockMovementsPacked: packStockMovements(rows) } : { stockMovements: rows };
+}
+
+/** Khoá phản hồi của từng phần tải riêng (`sections`) — phần dùng chung không nằm ở đây. */
+const INVENTORY_SECTION_KEYS: Record<string, string[]> = {
+  stock: ["stockSummary", "stockMovements", "stockMovementsPacked"],
+  flow: ["flowTransactions", "flowTruncated"],
+  transfer: ["transferTransactions"],
+  waste: ["wasteTransactions", "wasteReport"],
+  recipes: ["recipes", "costSummary"],
+  stocktake: ["stocktakes"],
+};
+
+/** Phiếu Nhập / Xuất / Chế biến theo khoảng ngày chứng từ (rút gọn dòng ở compactFlowDocument). */
+function loadFlowDocuments(where: Prisma.InventoryTransactionWhereInput) {
+  return prisma.inventoryTransaction.findMany({
+    where,
+    include: { lines: { include: { item: { select: lineItemSelect } } } },
+    orderBy: { transactionDate: "desc" },
+    take: FLOW_DOCUMENT_LIMIT,
+  });
+}
+
+/** Phiếu một loại (điều chuyển / hủy) theo khoảng ngày chứng từ. */
+function loadTypedDocuments(where: Prisma.InventoryTransactionWhereInput) {
+  return prisma.inventoryTransaction.findMany({
+    where,
+    include: { lines: { include: { item: { select: lineItemSelect } } } },
+    orderBy: [{ transactionDate: "desc" }, { code: "desc" }],
+    take: 2000,
+  });
+}
+
+function loadRecipes() {
+  return prisma.recipe.findMany({ include: { lines: { include: { item: { select: lineItemSelect } } } }, orderBy: { updatedAt: "desc" } });
+}
+
+function loadStocktakes(where: Prisma.StocktakeSessionWhereInput) {
+  return prisma.stocktakeSession.findMany({
+    where,
+    include: { lines: { include: { item: true } } },
+    orderBy: { updatedAt: "desc" },
+    take: 50,
+  });
+}
+
 export async function GET(request: Request) {
   try {
     const auth = requireMenuAccess(request, menuHref);
@@ -621,13 +672,13 @@ export async function GET(request: Request) {
         loadStockMovements(branchFilter, searchParams).then((rows) => rows.filter((row) => inScope(row.warehouseCode))),
         prisma.inventoryBalance.findMany({
           where: { warehouseCode: { in: scopeWarehouses(auth.session, periodWarehouses).map((row) => row.code) } },
-          include: { item: true },
+          include: { item: { select: balanceItemSelect } },
           orderBy: [{ warehouseCode: "asc" }, { item: { name: "asc" } }],
         }),
         loadMovementTotals(branchCode, stockPeriod(searchParams)),
       ]);
       const stockSummary = buildStockSummary(periodBalances, periodTotals);
-      return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { stockMovements, stockSummary }));
+      return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { ...movementPayload(stockMovements, searchParams), stockSummary }));
     }
 
     // Giá bảng giá NCC đang hiệu lực — form Nhập mua hiện giá tham chiếu + cảnh báo lệch giá
@@ -872,6 +923,23 @@ export async function GET(request: Request) {
     if (Number.isNaN(flowFrom.getTime())) flowFrom.setTime(flowTo.getTime() - 90 * 24 * 60 * 60 * 1000);
     flowFrom.setHours(0, 0, 0, 0);
 
+    /**
+     * Tải theo phần (khách báo màn Kho chậm 11/10/2026): một lượt tải mọi tab là ~6 giây và
+     * 49 MB JSON (nhật ký nhập xuất 32k dòng, 7k phiếu 90 ngày, định lượng). Màn hình xin
+     * `sections` của đúng tab đang mở; phần dùng chung (mặt hàng, kho, tồn, danh mục) luôn trả.
+     * Không gửi `sections` thì trả đủ như cũ.
+     *   stock     — Nhập Xuất Tồn + nhật ký nhập xuất
+     *   flow      — phiếu Nhập / Xuất / Chế biến theo khoảng ngày chứng từ
+     *   transfer  — phiếu điều chuyển
+     *   waste     — phiếu hủy + báo cáo hủy
+     *   recipes   — định lượng kèm cost + sheet giá thành
+     *   stocktake — phiếu kiểm kê cả kho
+     */
+    const sectionParam = searchParams.get("sections");
+    const sections = sectionParam === null ? null : new Set(sectionParam.split(",").map((part) => part.trim()).filter(Boolean));
+    const want = (section: string) => !sections || sections.has(section);
+    const none = <T,>(): Promise<T[]> => Promise.resolve([]);
+
     // Get warehouses belonging to this branch
     const allowedWarehouses = await prisma.masterDataItem.findMany({
       where: {
@@ -886,7 +954,7 @@ export async function GET(request: Request) {
       prisma.inventoryItem.findMany({ include: { unitConversions: { orderBy: [{ isDefaultPurchase: "desc" }, { unitCode: "asc" }] } }, orderBy: { name: "asc" } }),
       prisma.inventoryBalance.findMany({
         where: { warehouseCode: { in: warehouseCodes } },
-        include: { item: true },
+        include: { item: { select: balanceItemSelect } },
         orderBy: [{ warehouseCode: "asc" }, { item: { name: "asc" } }]
       }),
       prisma.inventoryTransaction.findMany({
@@ -899,31 +967,16 @@ export async function GET(request: Request) {
       // 100 dòng mới nhất, để phiếu xuất bán của cả kỳ đã rã đều hiện đủ. Không còn giới hạn 2000
       // phiếu (03/10/2026): rã BOM sinh ~3000 phiếu chế biến / tháng nên giới hạn cũ cắt mất mọi
       // phiếu trước ~1 tháng, kể cả nhập mua. Phiếu chế biến được rút gọn dòng ở compactFlowDocument.
-      prisma.inventoryTransaction.findMany({
-        where: { ...branchFilter, ...warehouseFilter, transactionDate: { gte: flowFrom, lte: flowTo } },
-        include: { lines: { include: { item: { select: lineItemSelect } } } },
-        orderBy: { transactionDate: "desc" },
-        take: FLOW_DOCUMENT_LIMIT,
-      }),
+      !want("flow") ? none<Awaited<ReturnType<typeof loadFlowDocuments>>[number]>() : loadFlowDocuments({ ...branchFilter, ...warehouseFilter, transactionDate: { gte: flowFrom, lte: flowTo } }),
       // Tab Điều chuyển: truy vấn riêng theo khoảng ngày chứng từ, để phiếu xuất bán sinh từ rã
       // BOM (hàng nghìn dòng/tháng) không đẩy phiếu điều chuyển ra khỏi giới hạn của danh sách chung.
-      prisma.inventoryTransaction.findMany({
-        where: { ...branchFilter, ...warehouseFilter, transactionType: "DIEU_CHUYEN", transactionDate: { gte: flowFrom, lte: flowTo } },
-        include: { lines: { include: { item: { select: lineItemSelect } } } },
-        orderBy: [{ transactionDate: "desc" }, { code: "desc" }],
-        take: 2000,
-      }),
+      !want("transfer") ? none<Awaited<ReturnType<typeof loadTypedDocuments>>[number]>() : loadTypedDocuments({ ...branchFilter, ...warehouseFilter, transactionType: "DIEU_CHUYEN", transactionDate: { gte: flowFrom, lte: flowTo } }),
       // Tab Hủy hàng: danh sách phiếu hủy theo cùng khoảng ngày chứng từ, cùng lý do như trên.
-      prisma.inventoryTransaction.findMany({
-        where: { ...branchFilter, ...warehouseFilter, transactionType: "XUAT_HUY", transactionDate: { gte: flowFrom, lte: flowTo } },
-        include: { lines: { include: { item: { select: lineItemSelect } } } },
-        orderBy: [{ transactionDate: "desc" }, { code: "desc" }],
-        take: 2000,
-      }),
-      loadMovementTotals(branchCode, stockPeriod(searchParams)),
-      loadWasteTotals(branchCode),
-      loadStockMovements(branchFilter, searchParams).then((rows) => rows.filter((row) => inScope(row.warehouseCode))),
-      prisma.recipe.findMany({ include: { lines: { include: { item: { select: lineItemSelect } } } }, orderBy: { updatedAt: "desc" } }),
+      !want("waste") ? none<Awaited<ReturnType<typeof loadTypedDocuments>>[number]>() : loadTypedDocuments({ ...branchFilter, ...warehouseFilter, transactionType: "XUAT_HUY", transactionDate: { gte: flowFrom, lte: flowTo } }),
+      !want("stock") ? none<Awaited<ReturnType<typeof loadMovementTotals>>[number]>() : loadMovementTotals(branchCode, stockPeriod(searchParams)),
+      !want("waste") ? none<Awaited<ReturnType<typeof loadWasteTotals>>[number]>() : loadWasteTotals(branchCode),
+      !want("stock") ? none<Awaited<ReturnType<typeof loadStockMovements>>[number]>() : loadStockMovements(branchFilter, searchParams).then((rows) => rows.filter((row) => inScope(row.warehouseCode))),
+      !want("recipes") ? none<Awaited<ReturnType<typeof loadRecipes>>[number]>() : loadRecipes(),
       prisma.masterDataItem.findMany({
         where: {
           type: "WAREHOUSE", status: "ACTIVE",
@@ -934,15 +987,10 @@ export async function GET(request: Request) {
       }),
       // Phiếu còn chờ duyệt / bị trả lại luôn phải hiện (kế toán cần duyệt, nhà hàng cần sửa) dù đã
       // cũ; phiếu mới cập nhật lên đầu.
-      prisma.stocktakeSession.findMany({
-        where: {
-          ...(branchCode === "ALL" ? {} : { branchCode }),
-          ...(inScopedWarehouses ? { warehouseCode: inScopedWarehouses } : {}),
-          OR: [{ status: { not: "APPROVED" } }, { updatedAt: { gte: new Date(Date.now() - 120 * 24 * 60 * 60 * 1000) } }],
-        },
-        include: { lines: { include: { item: true } } },
-        orderBy: { updatedAt: "desc" },
-        take: 50,
+      !want("stocktake") ? none<Awaited<ReturnType<typeof loadStocktakes>>[number]>() : loadStocktakes({
+        ...(branchCode === "ALL" ? {} : { branchCode }),
+        ...(inScopedWarehouses ? { warehouseCode: inScopedWarehouses } : {}),
+        OR: [{ status: { not: "APPROVED" } }, { updatedAt: { gte: new Date(Date.now() - 120 * 24 * 60 * 60 * 1000) } }],
       }),
       prisma.masterDataItem.findMany({
         where: { type: "INVENTORY_ITEM_GROUP", status: "ACTIVE" },
@@ -972,7 +1020,7 @@ export async function GET(request: Request) {
       }),
       // Giá vốn bình quân toàn hệ thống của từng mặt hàng (tổng giá trị / tổng tồn mọi kho)
       // — dùng cho cost định lượng, không phụ thuộc bộ lọc cửa hàng của màn hình.
-      prisma.inventoryBalance.findMany({ select: { itemId: true, quantity: true, averageCost: true } }),
+      !want("recipes") ? none<{ itemId: string; quantity: number; averageCost: number }>() : prisma.inventoryBalance.findMany({ select: { itemId: true, quantity: true, averageCost: true } }),
       loadNonInventoryRevenueGroups(prisma as unknown as CategoryLookupClient),
     ]);
     const flowTransactions = recentFlowTransactions.map(compactFlowDocument);
@@ -1081,7 +1129,7 @@ export async function GET(request: Request) {
         version: current && "version" in current ? (current as { version?: number }).version || 0 : 0,
       };
     }).sort((a, b) => a.productCode.localeCompare(b.productCode) || a.branchCode.localeCompare(b.branchCode));
-    const stockSummary = buildStockSummary(balances, movementTotals);
+    const stockSummary = want("stock") ? buildStockSummary(balances, movementTotals) : [];
     // Báo cáo hủy hàng: mã nào hủy nhiều nhất, tách theo loại hủy (hết hạn / chất lượng).
     const wasteBuckets = new Map<string, {
       itemCode: string; itemName: string; unit: string; itemType: string;
@@ -1180,7 +1228,19 @@ export async function GET(request: Request) {
       .map((option) => ({ id: option.code, code: option.code, name: option.name, group: "REVENUE_SOURCE" }));
     const receiptCategories = receiptCategoryList.filter((category) => !isRevenueGroupCategory(category.group));
 
-    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, balances, transactions, flowTransactions, flowTruncated, transferTransactions, transferRequests, transferDestinations, wasteTransactions, partners, flowRange: { from: isoDay(flowFrom), to: isoDay(flowTo) }, recipes: recipesWithCost, warehouses, warehouseBranches, stocktakes, stockSummary, stockMovements, itemGroups, revenueGroups, itemRevenueGroups, receiptCategories, costSummary, wasteReport, pendingSales }));
+    const payload: Record<string, unknown> = { items, balances, transactions, flowTransactions, flowTruncated, transferTransactions, transferRequests, transferDestinations, wasteTransactions, partners, flowRange: { from: isoDay(flowFrom), to: isoDay(flowTo) }, recipes: recipesWithCost, warehouses, warehouseBranches, stocktakes, stockSummary, ...movementPayload(stockMovements, searchParams), itemGroups, revenueGroups, itemRevenueGroups, receiptCategories, costSummary, wasteReport, pendingSales };
+    // Phần không xin thì bỏ hẳn khỏi phản hồi (không trả mảng rỗng) để màn hình giữ số đã tải trước đó.
+    if (sections) {
+      for (const [section, keys] of Object.entries(INVENTORY_SECTION_KEYS)) {
+        if (!sections.has(section)) for (const key of keys) delete payload[key];
+      }
+      // core=0: chuyển tab chỉ cần phần của tab đó — bỏ phần dùng chung đã có trên màn hình.
+      if (searchParams.get("core") === "0") {
+        const sectionKeys = new Set(Object.values(INVENTORY_SECTION_KEYS).flat());
+        for (const key of Object.keys(payload)) if (!sectionKeys.has(key)) delete payload[key];
+      }
+    }
+    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, payload));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });

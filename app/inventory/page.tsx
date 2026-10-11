@@ -15,6 +15,7 @@ import ExportExcelButton from "@/components/ExportExcelButton";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { WAREHOUSE_ITEM_TYPES, inventoryItemTypeLabel, isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
+import { unpackStockMovements, type PackedStockMovements } from "@/lib/stock-movement-pack";
 import StocktakeByLocation from "@/components/inventory/StocktakeByLocation";
 import StockReportsPanel from "@/components/inventory/StockReportsPanel";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
@@ -88,11 +89,33 @@ type StocktakeDraftRow = { itemId: string; itemCode: string; itemName: string; u
  * `data.stockMovements`. Để ngoài component vì loadData được gọi qua các hàm dựng trong lúc
  * render — useRef/state ở đó bị React Compiler chặn. Mỗi lúc chỉ có một màn Kho mở.
  */
-const loadTracker = { seq: 0, movementSeq: 0, movementRange: "" };
+const loadTracker = { seq: 0, movementSeq: 0, movementRange: "", sectionSeq: 0, sections: new Set<string>(), mainInFlight: false };
+/**
+ * Phần dữ liệu tải riêng theo tab — khớp INVENTORY_SECTION_KEYS ở API (khách báo màn Kho chậm
+ * 11/10/2026: một lượt tải mọi tab ~6 giây, 49 MB). Tab không có trong bảng chỉ cần phần dùng chung.
+ */
+const TAB_SECTIONS: Record<string, string[]> = {
+  stock: ["stock"],
+  // Đếm định lượng đang dùng mặt hàng để khoá nút xoá.
+  items: ["recipes"],
+  inbound: ["flow"],
+  outbound: ["flow"],
+  transfer: ["transfer"],
+  recipes: ["recipes"],
+  production: ["flow", "recipes"],
+  waste: ["waste", "recipes"],
+  stocktake: ["stocktake"],
+};
 
 /** Tham số khoảng ngày của nhật ký nhập/xuất gửi lên API — ô ngày bỏ trống thì không chặn đầu đó. */
 function movementRangeQuery(range: { from: string; to: string }) {
-  return new URLSearchParams({ reportFrom: range.from, reportTo: range.to }).toString();
+  // pack=1: nhật ký nhập/xuất về dạng gọn, bung lại ở withUnpackedMovements.
+  return new URLSearchParams({ reportFrom: range.from, reportTo: range.to, pack: "1" }).toString();
+}
+/** Bung nhật ký nhập/xuất dạng gọn (lib/stock-movement-pack) về từng dòng như cũ. */
+function withUnpackedMovements<T extends { stockMovements?: StockMovement[]; stockMovementsPacked?: PackedStockMovements }>(payload: T): Omit<T, "stockMovementsPacked"> {
+  const { stockMovementsPacked, ...rest } = payload;
+  return stockMovementsPacked ? { ...rest, stockMovements: unpackStockMovements(stockMovementsPacked) as StockMovement[] } : rest;
 }
 type RecipeView = "cost" | "recipes" | "monthly";
 const RECIPE_VIEWS: Array<{ id: RecipeView; label: string; icon: string }> = [
@@ -176,6 +199,10 @@ export default function InventoryPage() {
   const href = "/inventory";
   const { user, loading } = useModuleAuth(href);
   const [active, setActive] = useState("stock");
+  /** Đang tải phần dữ liệu riêng của tab vừa chuyển sang. */
+  const [sectionLoading, setSectionLoading] = useState(false);
+  /** Tăng sau mỗi lượt tải chính để effect tải theo tab kiểm tra lại phần còn thiếu. */
+  const [mainLoadTick, setMainLoadTick] = useState(0);
   const [data, setData] = useState<Data>({ items: [], balances: [], transactions: [], flowTransactions: [], recipes: [], warehouses: [], stocktakes: [], stockSummary: [], stockMovements: [], itemGroups: [], revenueGroups: [], receiptCategories: [], costSummary: [], wasteReport: [], pendingSales: { total: 0, byDay: [], byItem: [] }, partners: [] });
   const [message, setMessageText] = useState("");
   /**
@@ -1020,22 +1047,43 @@ export default function InventoryPage() {
   const loadData = async () => {
     void loadReceivablePOs();
     const seq = ++loadTracker.seq;
+    loadTracker.mainInFlight = true;
+    try {
+      await loadMain(seq);
+    } finally {
+      if (seq === loadTracker.seq) {
+        loadTracker.mainInFlight = false;
+        // Người dùng đổi tab trong lúc chờ: effect theo tab chạy lại để tải phần còn thiếu.
+        setMainLoadTick((tick) => tick + 1);
+      }
+    }
+  };
+
+  const loadMain = async (seq: number) => {
     const movementRange = movementRangeQuery(reportRange);
+    // Chỉ tải phần của tab đang mở; tab khác tải khi người dùng chuyển sang (effect bên dưới).
+    const sections = TAB_SECTIONS[active] || [];
     // Lượt tải chính đã mang nhật ký của khoảng ngày này — effect nhật ký khỏi gọi trùng.
-    loadTracker.movementRange = movementRange;
-    const response = await fetch(`/api/inventory?flowFrom=${flowRange.from}&flowTo=${flowRange.to}&${movementRange}`, {
+    if (sections.includes("stock")) loadTracker.movementRange = movementRange;
+    const response = await fetch(`/api/inventory?sections=${sections.join(",")}&flowFrom=${flowRange.from}&flowTo=${flowRange.to}&${movementRange}`, {
       headers: getSessionHeaders(),
     });
     // Đổi khoảng ngày liên tục thì lượt tải cũ về muộn không được đè lên số của lượt mới.
     if (!response.ok || seq !== loadTracker.seq) return;
-    const payload = await response.json() as Data;
+    const payload = withUnpackedMovements(await response.json() as Partial<Data> & Pick<Data, "items"> & { stockMovementsPacked?: PackedStockMovements });
     if (seq !== loadTracker.seq) return;
+    // Phần của tab khác coi như cũ (số tồn / phiếu vừa đổi): chuyển sang tab đó thì tải lại.
+    loadTracker.sections = new Set(sections);
     // CCDC / tài sản quản lý ở phân hệ Tài sản & khấu hao, không hiện ở Kho & định lượng (08/10/2026).
     payload.items = payload.items.filter((item) => isWarehouseStocktakeItemType(item.itemType));
     // Trong lúc chờ mà người dùng đã đổi khoảng ngày nhật ký thì giữ phần nhật ký mới hơn.
-    setData((current) => loadTracker.movementRange === movementRange ? payload : { ...payload, stockMovements: current.stockMovements });
+    setData((current) => {
+      const next = { ...current, ...payload };
+      if (payload.stockMovements && loadTracker.movementRange !== movementRange) next.stockMovements = current.stockMovements;
+      return next;
+    });
     const firstItem = payload.items[0]?.id || "";
-    const firstRecipe = payload.recipes[0]?.id || "";
+    const firstRecipe = payload.recipes?.[0]?.id || "";
     setStockForm((form) => {
       const item = payload.items.find((candidate) => candidate.id === (form.itemId || firstItem));
       const defaultUnit = item?.unitConversions?.[0]?.unitCode || item?.unit.toUpperCase() || "";
@@ -1057,19 +1105,53 @@ export default function InventoryPage() {
     if (loading) return;
     const movementRange = movementRangeQuery(reportRange);
     const timer = window.setTimeout(async () => {
-      if (movementRange === loadTracker.movementRange) return;
+      // Nhật ký chưa tải (đang ở tab khác) thì để lượt tải theo tab lấy đúng khoảng ngày này.
+      if (movementRange === loadTracker.movementRange || !loadTracker.sections.has("stock")) return;
       const seq = ++loadTracker.movementSeq;
       const response = await fetch(`/api/inventory?view=movements&${movementRange}`, { headers: getSessionHeaders() });
       if (!response.ok || seq !== loadTracker.movementSeq) return;
-      const payload = await response.json() as Pick<Data, "stockMovements"> & Partial<Pick<Data, "stockSummary">>;
+      const payload = withUnpackedMovements(await response.json() as Partial<Pick<Data, "stockMovements" | "stockSummary">> & { stockMovementsPacked?: PackedStockMovements });
       if (seq !== loadTracker.movementSeq) return;
       loadTracker.movementRange = movementRange;
       // Bảng Nhập - Xuất - Tồn đi theo cùng khoảng ngày nên nhận luôn số theo kỳ mới.
-      setData((current) => ({ ...current, stockMovements: payload.stockMovements, ...(payload.stockSummary ? { stockSummary: payload.stockSummary } : {}) }));
+      setData((current) => ({ ...current, stockMovements: payload.stockMovements || [], ...(payload.stockSummary ? { stockSummary: payload.stockSummary } : {}) }));
     }, 400);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, reportRange.from, reportRange.to]);
+
+  /**
+   * Chuyển sang tab mà phần dữ liệu chưa tải (hoặc đã cũ sau lần lưu) thì tải riêng phần đó,
+   * không kèm phần dùng chung (core=0). Lượt tải chính chạy sau thì bỏ kết quả của lượt này.
+   */
+  useEffect(() => {
+    // Lượt tải chính đang chạy đã mang phần của tab lúc bấm; xong nó sẽ gọi lại effect này.
+    // Chưa có lượt tải chính nào (mới mở trang) thì cũng chờ: lượt đó lấy luôn phần của tab đang mở.
+    if (loading || loadTracker.mainInFlight || mainLoadTick === 0) return;
+    const missing = (TAB_SECTIONS[active] || []).filter((section) => !loadTracker.sections.has(section));
+    if (missing.length === 0) return;
+    const timer = window.setTimeout(async () => {
+      const seq = ++loadTracker.sectionSeq;
+      const mainSeq = loadTracker.seq;
+      const movementRange = movementRangeQuery(reportRange);
+      setSectionLoading(true);
+      try {
+        const response = await fetch(`/api/inventory?core=0&sections=${missing.join(",")}&flowFrom=${flowRange.from}&flowTo=${flowRange.to}&${movementRange}`, { headers: getSessionHeaders() });
+        if (!response.ok || seq !== loadTracker.sectionSeq || mainSeq !== loadTracker.seq) return;
+        const payload = withUnpackedMovements(await response.json() as Partial<Data> & { stockMovementsPacked?: PackedStockMovements });
+        if (seq !== loadTracker.sectionSeq || mainSeq !== loadTracker.seq) return;
+        for (const section of missing) loadTracker.sections.add(section);
+        if (missing.includes("stock")) loadTracker.movementRange = movementRange;
+        setData((current) => ({ ...current, ...payload }));
+        const firstRecipe = payload.recipes?.[0]?.id;
+        if (firstRecipe) setWasteForm((form) => ({ ...form, recipeId: form.recipeId || firstRecipe }));
+      } finally {
+        if (seq === loadTracker.sectionSeq) setSectionLoading(false);
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, active, mainLoadTick]);
 
   // Đổi khoảng ngày của danh sách phiếu nhập/xuất thì phải hỏi lại server: phiếu ngoài khoảng
   // không nằm sẵn trên trình duyệt.
@@ -1761,6 +1843,7 @@ export default function InventoryPage() {
       <ModuleTabs active={active} onChange={switchTab} tabs={visibleTabs} />
       </StickyFilterBar>
       {message && <p ref={messageRef} className="mb-4 px-4 py-3 rounded-lg border border-blue-100 bg-blue-50 text-sm text-blue-700">{message}</p>}
+      {sectionLoading && <p className="mb-4 px-4 py-2 rounded-lg border border-slate-200 bg-slate-50 text-xs text-slate-500">Đang tải dữ liệu của tab này...</p>}
 
       {canCreate && !["stocktake-explanation", "stocktake-result"].includes(active) && (
         <div className={`mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3 ${canOpenImports ? "border-blue-100 bg-blue-50" : "border-amber-200 bg-amber-50"}`}>
