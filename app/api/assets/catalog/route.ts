@@ -30,7 +30,7 @@ export async function GET(request: Request) {
       loadCatalogUsage(prismaRaw),
     ]);
     return NextResponse.json({
-      items: items.map((item) => ({ ...item, usage: usage.get(item.code) || { lotCount: 0, branchCodes: [], quantity: 0, originalCost: 0, inUse: 0 } })),
+      items: items.map((item) => ({ ...item, usage: usage.get(item.code) || { lotCount: 0, branchCodes: [], departmentCodes: [], quantity: 0, originalCost: 0, inUse: 0 } })),
     });
   } catch (error) {
     console.error("Error loading asset catalog:", error);

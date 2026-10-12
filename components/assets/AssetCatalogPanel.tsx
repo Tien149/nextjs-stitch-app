@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { ConfirmDeleteDialog } from "@/components/RowActions";
 import CopyableText from "@/components/CopyableText";
+import { SearchableSelect } from "@/components/SearchableSelect";
 import { storeLabel } from "@/lib/branch-labels";
 import { matchesSearch } from "@/lib/search-text";
 
@@ -13,6 +14,7 @@ const nameCollator = new Intl.Collator("vi", { sensitivity: "base", numeric: tru
 /**
  * Danh mục mã Tài sản / CCDC (master list, khách xin 12/10/2026) — giống tab Mặt hàng bên Kho.
  * Tạo mã mới, sửa tên (áp cho mọi đợt / mọi nhà hàng đang dùng mã), ngưng hoặc xoá mã chưa dùng.
+ * Một mã dùng được cho nhiều team (mỗi team một đợt); mã tạo trùng thì Gộp vào mã giữ lại.
  * Nghiệp vụ ở lib/asset-catalog.ts + /api/assets/catalog.
  */
 export type CatalogItem = {
@@ -24,7 +26,7 @@ export type CatalogItem = {
   unit: string | null;
   note: string | null;
   status: string;
-  usage: { lotCount: number; branchCodes: string[]; quantity: number; originalCost: number; inUse: number };
+  usage: { lotCount: number; branchCodes: string[]; departmentCodes: string[]; quantity: number; originalCost: number; inUse: number };
 };
 
 type Option = { code: string; label: string };
@@ -61,6 +63,10 @@ export default function AssetCatalogPanel({ headers, assetGroups, departments, c
   const [deleting, setDeleting] = useState<CatalogItem | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [merging, setMerging] = useState<CatalogItem | null>(null);
+  const [mergeTarget, setMergeTarget] = useState("");
+  const [mergeError, setMergeError] = useState<string | null>(null);
+  const [mergeBusy, setMergeBusy] = useState(false);
 
   const load = async () => {
     const response = await fetch("/api/assets/catalog", { headers: headers() });
@@ -78,6 +84,8 @@ export default function AssetCatalogPanel({ headers, assetGroups, departments, c
 
   const groupLabel = (code: string) => assetGroups.find((group) => group.code === code)?.label || code;
   const departmentLabel = (code: string | null) => (code ? departments.find((department) => department.code === code)?.label || code : "");
+  /** Các team (phòng ban) đang có hồ sơ của mã — một mã theo dõi ở nhiều team, mỗi team một đợt. */
+  const usedDepartments = (item: CatalogItem) => (item.usage.departmentCodes || []).map(departmentLabel).sort((a, b) => nameCollator.compare(a, b)).join(", ");
 
   const rows = useMemo(() => items.filter((item) => {
     if (groupFilter !== "ALL" && item.assetGroup !== groupFilter) return false;
@@ -146,6 +154,50 @@ export default function AssetCatalogPanel({ headers, assetGroups, departments, c
       await load();
     } finally {
       setDeleteBusy(false);
+    }
+  };
+
+  const startMerge = (item: CatalogItem) => {
+    setMerging(item);
+    // Gợi ý sẵn mã cùng tên cùng nhóm (trường hợp hay gặp: cùng một món tạo hai mã cho hai team).
+    const twin = items.find((other) => other.id !== item.id && other.status === "ACTIVE" && other.assetGroup === item.assetGroup && nameCollator.compare(other.name, item.name) === 0);
+    setMergeTarget(twin?.code || "");
+    setMergeError(null);
+  };
+  const mergeOptions = merging
+    ? items
+      .filter((other) => other.id !== merging.id && other.status === "ACTIVE" && other.assetGroup === merging.assetGroup)
+      .sort((a, b) => nameCollator.compare(a.name, b.name))
+      .map((other) => ({ value: other.code, label: `${other.code} - ${other.name}`, subLabel: `${usedDepartments(other) || "Chưa có hồ sơ"} · ${other.usage.lotCount} đợt` }))
+    : [];
+  const mergeTargetItem = items.find((item) => item.code === mergeTarget);
+  const confirmMerge = async () => {
+    if (!merging || !mergeTarget) return;
+    setMergeBusy(true);
+    setMergeError(null);
+    try {
+      const response = await fetch("/api/assets/catalog/merge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...headers() },
+        body: JSON.stringify({ sourceCode: merging.code, targetCode: mergeTarget }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setMergeError(payload.error || "Không gộp được mã");
+        return;
+      }
+      const moved = (payload.movedRecords || []) as Array<{ toLot: number }>;
+      setMessage({
+        tone: "ok",
+        text: moved.length
+          ? `Đã gộp ${merging.code} vào ${mergeTarget}: ${moved.length} hồ sơ thành đợt ${moved.map((row) => row.toLot).join(", ")} của ${mergeTarget}. Mã ${merging.code} đã vào Thùng rác.`
+          : `Đã gộp ${merging.code} vào ${mergeTarget}. Mã ${merging.code} chưa có hồ sơ nên chỉ chuyển vào Thùng rác.`,
+      });
+      setMerging(null);
+      await load();
+      if (moved.length) onChanged();
+    } finally {
+      setMergeBusy(false);
     }
   };
 
@@ -268,7 +320,7 @@ export default function AssetCatalogPanel({ headers, assetGroups, departments, c
                 <th className="px-4 py-3">Mã</th>
                 <th className="px-3 py-3">Tên tài sản / CCDC</th>
                 <th className="px-3 py-3">Nhóm</th>
-                <th className="px-3 py-3">Phòng ban mặc định</th>
+                <th className="px-3 py-3">Phòng ban / Team</th>
                 <th className="px-3 py-3">ĐVT</th>
                 <th className="px-3 py-3 text-right">Số đợt</th>
                 <th className="px-3 py-3">Nhà hàng</th>
@@ -289,7 +341,9 @@ export default function AssetCatalogPanel({ headers, assetGroups, departments, c
                     {item.note && <p className="text-[11px] text-slate-400">{item.note}</p>}
                   </td>
                   <td className="px-3 py-2.5">{groupLabel(item.assetGroup)}</td>
-                  <td className="px-3 py-2.5">{departmentLabel(item.departmentCode)}</td>
+                  <td className="px-3 py-2.5">
+                    {usedDepartments(item) || (item.departmentCode ? <span className="text-slate-400" title="Phòng ban mặc định — mã chưa có hồ sơ">{departmentLabel(item.departmentCode)} (mặc định)</span> : "")}
+                  </td>
                   <td className="px-3 py-2.5">{item.unit || ""}</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{item.usage.lotCount || ""}</td>
                   <td className="px-3 py-2.5">{item.usage.branchCodes.map((code) => storeLabel(code)).join(", ")}</td>
@@ -305,6 +359,9 @@ export default function AssetCatalogPanel({ headers, assetGroups, departments, c
                       <button type="button" onClick={() => onCreateRecord(item)} className="text-[11px] font-bold text-emerald-700 hover:underline mr-3" title="Ghi hồ sơ / đợt mua mới cho mã này">Tạo hồ sơ</button>
                     )}
                     {canEdit && <button type="button" onClick={() => startEdit(item)} className="text-[11px] font-bold text-blue-700 hover:underline mr-3">Sửa</button>}
+                    {canEdit && canDelete && (
+                      <button type="button" onClick={() => startMerge(item)} className="text-[11px] font-bold text-amber-700 hover:underline mr-3" title="Gộp mã này vào một mã khác (mã tạo trùng)">Gộp</button>
+                    )}
                     {canDelete && item.usage.lotCount === 0 && (
                       <button type="button" onClick={() => { setDeleteError(null); setDeleting(item); }} className="text-[11px] font-bold text-rose-700 hover:underline">Xoá</button>
                     )}
@@ -315,6 +372,41 @@ export default function AssetCatalogPanel({ headers, assetGroups, departments, c
           </table>
         </div>
       </section>
+
+      {merging && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl w-full max-w-lg shadow-xl max-h-[90vh] flex flex-col">
+            <div className="p-5 border-b border-slate-200 flex items-start gap-3">
+              <span className="material-symbols-outlined text-amber-600 text-2xl shrink-0">merge</span>
+              <div className="min-w-0">
+                <h3 className="font-bold text-slate-900">Gộp mã {merging.code}</h3>
+                <p className="text-sm text-slate-500 mt-1">{merging.name} · {usedDepartments(merging) || "chưa có hồ sơ"} · {merging.usage.lotCount} đợt</p>
+              </div>
+            </div>
+            <div className="p-5 space-y-4 overflow-y-auto">
+              <div>
+                <p className="text-sm font-bold text-slate-700 mb-2">Gộp vào mã (mã giữ lại)</p>
+                <SearchableSelect value={mergeTarget} onChange={setMergeTarget} options={mergeOptions} placeholder="Gõ mã hoặc tên để tìm..." />
+                {mergeOptions.length === 0 && <p className="text-xs text-slate-500 mt-2">Không có mã nào khác cùng nhóm đang dùng để gộp vào.</p>}
+              </div>
+              {mergeTargetItem && (
+                <ul className="text-xs bg-amber-50 border border-amber-200 text-amber-900 rounded-lg px-3 py-2.5 space-y-1 list-disc pl-6">
+                  <li>{merging.usage.lotCount ? `${merging.usage.lotCount} hồ sơ của ${merging.code} thành đợt mới của ${mergeTargetItem.code}, tên đổi thành "${mergeTargetItem.name}".` : `${merging.code} chưa có hồ sơ nào.`}</li>
+                  <li>Mỗi đợt giữ nguyên nhà hàng, team, kho, ngày mua, nguyên giá, lịch phân bổ — số liệu không đổi, chỉ đổi mã.</li>
+                  <li>Mã công nợ / bút toán ghi tăng đổi theo mã + đợt mới; mã {merging.code} chuyển vào Thùng rác.</li>
+                </ul>
+              )}
+              {mergeError && <p className="text-sm bg-rose-50 border border-rose-200 text-rose-700 rounded-lg px-3 py-2.5">{mergeError}</p>}
+            </div>
+            <div className="p-5 border-t border-slate-200 flex justify-end gap-2">
+              <button type="button" onClick={() => setMerging(null)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">Huỷ</button>
+              <button type="button" onClick={confirmMerge} disabled={!mergeTarget || mergeBusy} className="rounded-lg bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white px-4 py-2 text-sm font-bold">
+                {mergeBusy ? "Đang gộp..." : `Gộp vào ${mergeTarget || "..."}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <ConfirmDeleteDialog
         open={Boolean(deleting)}
