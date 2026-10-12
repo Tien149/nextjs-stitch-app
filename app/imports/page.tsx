@@ -43,7 +43,7 @@ const importTabs: ImportTab[] = [
     apiPath: "/api/imports?importType=REVENUE_POS&templateCode=REVENUE_POS_STANDARD_V1",
     templatePath: "/templates/mau_doanh_thu_pos.xlsx",
     templateCode: "REVENUE_POS_STANDARD_V1",
-    primaryFields: ["sale_date", "branch_code", "channel", "payment_method", "gross_amount", "net_amount", "external_ref", "product_code", "product_quantity", "warehouse_code"],
+    primaryFields: ["sale_date", "branch_code", "channel", "payment_method", "gross_amount", "net_amount", "external_ref", "product_code", "product_quantity", "combo_code", "warehouse_code"],
   },
   {
     id: "revenue-raw",
@@ -55,7 +55,7 @@ const importTabs: ImportTab[] = [
     apiPath: "/api/imports?importType=REVENUE_POS&templateCode=REVENUE_POS_RAW_V1",
     templatePath: "/api/imports?importType=REVENUE_POS&templateCode=REVENUE_POS_RAW_V1&template=1",
     templateCode: "REVENUE_POS_RAW_V1",
-    primaryFields: ["sale_date", "branch_code", "product_code", "product_quantity", "payment_method", "gross_amount", "fee_amount", "vat_amount", "net_amount"],
+    primaryFields: ["sale_date", "branch_code", "product_code", "product_quantity", "combo_code", "payment_method", "gross_amount", "fee_amount", "vat_amount", "net_amount"],
   },
   {
     id: "payroll-department",
