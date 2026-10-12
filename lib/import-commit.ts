@@ -1186,6 +1186,14 @@ export async function commitImport(input: CommitInput) {
         const productQuantity = asNumber(row.values.product_quantity);
         const revenueSource = pickRevenueSource(row.values.revenue_source, resolveRevenueSource(productCode), revenueCategoryIndex);
         const needsInventory = tracksInventory(revenueSource, nonInventoryGroups);
+        /**
+         * Món con của combo (khách chốt 12/10/2026): file POS có dòng mã combo (mang doanh thu,
+         * rã theo định lượng combo) và các dòng món con 0 đ ghi mã combo ở cột "Mã combo". Rã cả
+         * món con là trừ kho hai lần nên món con không vào hàng chờ rã.
+         */
+        const comboCode = asText(row.values.combo_code).toUpperCase();
+        const comboChild = Boolean(comboCode) && comboCode !== productCode;
+        const rowNote = [asText(row.values.note), comboChild ? `Món con combo ${comboCode} — không rã (rã theo dòng combo)` : ""].filter(Boolean).join(" · ");
         const revenueRow = await tx.revenueImportRow.create({
           data: {
             importBatchId: batch.id,
@@ -1206,10 +1214,10 @@ export async function commitImport(input: CommitInput) {
             appFeeAmount: Math.max(0, asNumber(row.values.app_fee_amount)),
             netAmount: asNumber(row.values.net_amount),
             externalRef: asText(row.values.external_ref),
-            note: asText(row.values.note) || null,
+            note: rowNote || null,
             productCode: productCode || null,
             productQuantity: productQuantity > 0 ? productQuantity : null,
-            inventoryStatus: productCode && productQuantity > 0 && needsInventory ? "PENDING" : "NOT_REQUIRED",
+            inventoryStatus: productCode && productQuantity > 0 && needsInventory && !comboChild ? "PENDING" : "NOT_REQUIRED",
             departmentCode: resolveRevenueDepartment({ productCode, revenueSource }),
           },
         });

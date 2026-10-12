@@ -36,6 +36,8 @@ export function generatedRevenuePosReference(values: Record<string, unknown>) {
   const fingerprint = [
     ...referenceFields.map((field) => `${field}=${canonicalValue(values[field])}`),
     ...(hour === null || hour === undefined || hour === "" ? [] : [`sale_hour=${canonicalValue(hour)}`]),
+    // Món con của combo tách khỏi cùng món bán lẻ; file không có cột combo ra đúng mã cũ.
+    ...(canonicalValue(values.combo_code) ? [`combo_code=${canonicalValue(values.combo_code)}`] : []),
   ].join("|");
   const digest = createHash("sha256").update(fingerprint).digest("hex").slice(0, 16).toUpperCase();
   return `AUTO-POS-${compactCode(values.branch_code, "UNKNOWN")}-${saleDateCode(values.sale_date)}-${digest}`;

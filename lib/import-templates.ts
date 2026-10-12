@@ -391,6 +391,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
       },
       { field: "product_code", label: "Ma mon POS", required: false, type: "text", aliases: ["ma mon pos", "ma mon", "product code", "item code"] },
       { field: "product_quantity", label: "So luong ban", required: false, type: "number", aliases: ["so luong ban", "quantity sold", "qty", "product quantity"] },
+      { field: "combo_code", label: "Ma combo", required: false, type: "text", aliases: ["ma combo", "combo", "thuoc combo", "ma combo cha", "combo code", "parent code"], note: "Món con của combo: ghi mã combo thì dòng này không rã nguyên liệu" },
       { field: "warehouse_code", label: "Kho xuat", required: false, type: "text", aliases: ["kho xuat", "kho", "warehouse", "warehouse code"] },
     ],
   },
@@ -406,7 +407,8 @@ export const importTemplates: ImportTemplateDefinition[] = [
     aggregate: {
       // sale_hour: file có giờ trong cột Thời gian thì gộp theo từng GIỜ để rã nguyên liệu đúng
       // tới giờ chốt kiểm kê; file chỉ có ngày thì sale_hour trống và gộp y như trước.
-      by: ["sale_date", "sale_hour", "branch_code", "channel", "revenue_source", "payment_method", "product_code"],
+      // combo_code: món con của combo (không rã) không được gộp chung với cùng món bán lẻ (có rã).
+      by: ["sale_date", "sale_hour", "branch_code", "channel", "revenue_source", "payment_method", "product_code", "combo_code"],
       sum: ["gross_amount", "discount_amount", "fee_amount", "card_fee_amount", "app_fee_amount", "vat_amount", "net_amount", "product_quantity"],
     },
     // Bố cục cột theo file "Theo dõi nguồn tiền" chị Bình chốt (meeting 22/08/2026), sheet
@@ -458,6 +460,14 @@ export const importTemplates: ImportTemplateDefinition[] = [
         type: "text",
         aliases: ["ten hang", "ten mon", "ten mat hang", "product name", "item name"],
         note: "Tên món — dùng khi hệ thống tự tạo mặt hàng thành phẩm mới",
+      },
+      {
+        field: "combo_code",
+        label: "Mã combo",
+        required: false,
+        type: "text",
+        aliases: ["ma combo", "combo", "thuoc combo", "ma combo cha", "combo code", "parent code"],
+        note: "Dòng món con của combo: ghi mã combo vào đây thì dòng này KHÔNG rã nguyên liệu (dòng mã combo đã rã theo định lượng combo). Dòng combo hoặc món bán lẻ để trống.",
       },
       {
         field: "product_quantity",
