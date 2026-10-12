@@ -539,6 +539,29 @@ model VoucherAllocation {
   @@index([partnerCode])
 }
 
+/// Danh mục mã Tài sản / CCDC (master list, khách xin 12/10/2026) — giống tab Mặt hàng bên Kho.
+/// Một mã dùng cho mọi đợt / mọi nhà hàng (AssetRecord.code); tên sửa ở đây áp cho mọi đợt.
+/// Mã có hồ sơ mà chưa có dòng ở đây thì tự thêm khi mở danh mục (lib/asset-catalog).
+model AssetCatalogItem {
+  id             String    @id @default(uuid())
+  code           String    @unique
+  name           String
+  assetGroup     String
+  /// Phòng ban mặc định khi tạo hồ sơ từ mã này (tạo hồ sơ vẫn chọn lại được).
+  departmentCode String?
+  unit           String?
+  note           String?
+  status         String    @default("ACTIVE")
+  createdBy      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime?
+  deletedBy      String?
+
+  @@index([assetGroup])
+  @@index([status])
+}
+
 model AssetRecord {
   id                        String               @id @default(uuid())
   /// Mã tài sản/CCDC. Một mã có thể có NHIỀU ĐỢT (mua tăng cùng loại ở thời điểm khác, hoặc

@@ -92,10 +92,13 @@ export async function nextAssetCode(tx: AssetCodeTx, assetGroupCode: string, dep
     FROM (SELECT pg_advisory_xact_lock(hashtext(${lockKey}))) AS advisory_lock
   `;
 
-  const existingCodes = await client.assetRecord.findMany({
-    where: { code: { startsWith: prefix }, deletedAt: undefined },
-    select: { code: true },
-  });
+  // Gồm cả mã đã tạo ở Danh mục mã (chưa có hồ sơ nào) — không thì hồ sơ mới tự sinh trùng mã
+  // danh mục mà mang tên khác.
+  const [recordCodes, catalogCodes] = await Promise.all([
+    client.assetRecord.findMany({ where: { code: { startsWith: prefix }, deletedAt: undefined }, select: { code: true } }),
+    client.assetCatalogItem.findMany({ where: { code: { startsWith: prefix }, deletedAt: undefined }, select: { code: true } }),
+  ]);
+  const existingCodes = [...recordCodes, ...catalogCodes];
   const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = new RegExp(`^${escapedPrefix}(\\d{4})$`);
   const currentMax = existingCodes.reduce((max, row) => {

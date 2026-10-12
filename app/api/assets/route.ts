@@ -8,6 +8,7 @@ import { writeAuditLog } from "@/lib/audit-log";
 import type { DemoSession } from "@/lib/auth-demo";
 import { assertAssetCodeAvailable, AssetCodeError, nextAssetCode, nextAssetLot, normalizeAssetCode } from "@/lib/asset-code-generator";
 import { assetAcquisitionJournalCode, assetPayableCode } from "@/lib/asset-lot";
+import { ensureCatalogItem, renameAssetCode } from "@/lib/asset-catalog";
 import { allowedDepartmentsOf, assertDepartmentAccess } from "@/lib/department-scope";
 import { matchesSearch } from "@/lib/search-text";
 import {
@@ -364,9 +365,15 @@ export async function POST(request: Request) {
     if (reuseCode && !reuseTemplate) {
       return NextResponse.json({ error: `Mã tài sản ${reuseCodeValue} không tồn tại; tạo hồ sơ mới thay vì mua tăng` }, { status: 400 });
     }
-    const name = reuseTemplate ? reuseTemplate.name : cleanText(body.name);
+    // Mã đã tạo ở Danh mục mã (chưa có hồ sơ): tên + nhóm theo danh mục, không theo ô gõ tay.
+    const catalogCode = !reuseCode ? normalizeAssetCode(body.code) : "";
+    const catalogItem = catalogCode ? await prisma.assetCatalogItem.findUnique({ where: { code: catalogCode } }) : null;
+    if (catalogItem && catalogItem.status !== "ACTIVE") {
+      return NextResponse.json({ error: `Mã ${catalogItem.code} đang Ngưng trong danh mục; bật lại ở Danh mục mã trước khi tạo hồ sơ` }, { status: 400 });
+    }
+    const name = reuseTemplate ? reuseTemplate.name : catalogItem ? catalogItem.name : cleanText(body.name);
     const branchCode = reuseTemplate ? (cleanText(body.branchCode) || reuseTemplate.branchCode) : cleanText(body.branchCode);
-    const assetGroup = reuseTemplate ? reuseTemplate.assetGroup : cleanText(body.assetGroup);
+    const assetGroup = reuseTemplate ? reuseTemplate.assetGroup : catalogItem ? catalogItem.assetGroup : cleanText(body.assetGroup);
     const originalCost = toAmount(body.originalCost);
     const formWarehouseCode = cleanText(body.warehouseCode) || cleanText(body.location);
     const warehouseCode = reuseTemplate
@@ -497,6 +504,8 @@ export async function POST(request: Request) {
         ? await nextAssetLot(tx, reuseCodeValue)
         : { code: manualCode ? await assertAssetCodeAvailable(tx, manualCode) : await nextAssetCode(tx, assetGroup, departmentCode), lotNo: 1 };
       const code = lot.code;
+      // Mã mới (tự sinh / gõ tay) vào luôn danh mục mã; mã đã có trong danh mục thì giữ nguyên.
+      await ensureCatalogItem(tx, { code, name, assetGroup, departmentCode, actor: auth.session.name });
       const created = await tx.assetRecord.create({ data: {
         code,
         lotNo: lot.lotNo,
@@ -868,6 +877,10 @@ export async function PATCH(request: Request) {
 
     const asset = await prismaRaw.$transaction(async (tx) => {
       const validatedCode = codeChanged ? await assertAssetCodeAvailable(tx, nextCode, id) : current.code;
+      // Tên là của MÃ (Danh mục mã): đổi tên ở một hồ sơ thì danh mục và các đợt khác cùng mã đổi theo.
+      const renamed = body.name !== undefined ? cleanText(body.name) : "";
+      if (renamed && renamed !== current.name) await renameAssetCode(tx, current.code, renamed);
+      if (codeChanged) await ensureCatalogItem(tx, { code: validatedCode, name: renamed || current.name, assetGroup: cleanText(body.assetGroup) || current.assetGroup, departmentCode: current.departmentCode, actor: auth.session.name });
       return tx.assetRecord.update({ where: { id }, data: {
         ...(codeChanged ? { code: validatedCode } : {}),
         ...(body.name !== undefined ? { name: cleanText(body.name) } : {}),

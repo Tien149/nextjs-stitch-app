@@ -16,6 +16,7 @@ import StickyFilterBar from "@/components/StickyFilterBar";
 import { resolveInitialBranchScope } from "@/components/BranchScopeSelect";
 import { defaultAssetCodePrefix } from "@/lib/asset-code-generator";
 import { matchesSearch } from "@/lib/search-text";
+import AssetCatalogPanel, { type CatalogItem } from "@/components/assets/AssetCatalogPanel";
 
 type MasterItem = {
   id: string;
@@ -101,6 +102,8 @@ const emptyForm = {
   note: "",
   /** Mua tăng vào mã đã có: đợt mới dùng lại mã/tên/nhóm/phòng ban của đợt trước. */
   reuseCode: false,
+  /** Hồ sơ tạo từ Danh mục mã: tên + nhóm theo danh mục, không gõ tay. */
+  catalogLocked: false,
 };
 
 type AssetDeleteStep = { text: string; href?: string; linkLabel?: string };
@@ -162,6 +165,10 @@ export default function AssetsPage() {
   }, [router]);
 
   const canCreate = user ? canPerformAction(user, "create") : false;
+  const canEditCatalog = user ? canPerformAction(user, "edit") : false;
+  const canDeleteCatalog = user ? canPerformAction(user, "delete") : false;
+  /** "records" = hồ sơ từng đợt mua; "catalog" = Danh mục mã (master list, 12/10/2026). */
+  const [view, setView] = useState<"records" | "catalog">("records");
   // Khấu hao/phân bổ chia theo số kỳ nên hay ra số lẻ; bảng tài sản chỉ đọc tới đồng.
   const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value || 0);
   /** Biểu mẫu bên trái hiện ra khi được tạo mới hoặc khi đang sửa một tài sản. */
@@ -400,6 +407,7 @@ export default function AssetsPage() {
       imageUrl: asset.imageUrl || "",
       note: asset.note || "",
       reuseCode: false,
+      catalogLocked: false,
     });
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -493,6 +501,27 @@ export default function AssetsPage() {
       : "Đã tạo thành công hồ sơ tài sản / CCDC.");
     setForm({ ...emptyForm, branchCode: form.branchCode });
     await loadAssets();
+  };
+
+  /**
+   * "Tạo hồ sơ" từ Danh mục mã: mã đã có hồ sơ thì là mua tăng (đợt mới), chưa có thì hồ sơ đầu
+   * tiên mang đúng mã / tên / nhóm của danh mục.
+   */
+  const startRecordFromCatalog = (item: CatalogItem) => {
+    setEditingAsset(null);
+    setMessage("");
+    setView("records");
+    setForm((current) => ({
+      ...emptyForm,
+      branchCode: current.branchCode,
+      code: item.code,
+      name: item.name,
+      assetGroup: item.assetGroup,
+      departmentCode: item.departmentCode || "",
+      reuseCode: item.usage.lotCount > 0,
+      catalogLocked: item.usage.lotCount === 0,
+    }));
+    window.setTimeout(() => window.scrollTo({ top: 0, behavior: "smooth" }), 0);
   };
 
   const confirmDeleteAsset = async (reason: string) => {
@@ -677,6 +706,32 @@ export default function AssetsPage() {
           </section>
         )}
 
+        {/* Hồ sơ từng đợt mua | Danh mục mã (giống tab Mặt hàng bên Kho). */}
+        <div className="flex flex-wrap gap-2">
+          {([["records", "Hồ sơ tài sản & CCDC", "inventory_2"], ["catalog", "Danh mục mã", "list_alt"]] as const).map(([key, label, icon]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setView(key)}
+              className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-bold border transition-colors ${view === key ? "bg-blue-600 border-blue-600 text-white" : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"}`}
+            >
+              <span className="material-symbols-outlined text-lg">{icon}</span>{label}
+            </button>
+          ))}
+        </div>
+
+        {view === "catalog" ? (
+          <AssetCatalogPanel
+            headers={getSessionHeaders}
+            assetGroups={assetGroupOptions}
+            departments={departments.map((department) => ({ code: department.code, label: department.name }))}
+            canCreate={canCreate}
+            canEdit={canEditCatalog}
+            canDelete={canDeleteCatalog}
+            onChanged={() => void loadAssets()}
+            onCreateRecord={startRecordFromCatalog}
+          />
+        ) : (
         <div className="grid xl:grid-cols-[340px_minmax(0,1fr)] 2xl:grid-cols-[360px_minmax(0,1fr)] gap-5">
           {/* Form Create Asset */}
           {showAssetForm && (
@@ -745,7 +800,7 @@ export default function AssetsPage() {
                     onChange={(e) => setForm((v) => ({ ...v, code: e.target.value.toUpperCase() }))}
                     className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono uppercase focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
                     placeholder={autoCodePreview || "Để trống để hệ thống tự sinh"}
-                    disabled={Boolean(editingAsset && editingAsset.canEditCode === false)}
+                    disabled={Boolean(editingAsset && editingAsset.canEditCode === false) || (form.catalogLocked && !editingAsset)}
                     maxLength={50}
                   />
                   <span className="mt-1 block text-[11px] font-normal text-slate-500">
@@ -768,9 +823,12 @@ export default function AssetsPage() {
                   onChange={(e) => setForm((v) => ({ ...v, name: e.target.value }))}
                   className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
                   placeholder="Nhập tên máy móc, thiết bị, CCDC..."
-                  disabled={form.reuseCode && !editingAsset}
+                  disabled={(form.reuseCode || form.catalogLocked) && !editingAsset}
                   required
                 />
+                {form.catalogLocked && !editingAsset && (
+                  <span className="mt-1 block text-[11px] font-normal text-slate-500">Tên và nhóm theo Danh mục mã — sai thì sửa ở tab Danh mục mã.</span>
+                )}
               </label>
 
               <div className="grid grid-cols-2 gap-3">
@@ -824,7 +882,7 @@ export default function AssetsPage() {
                   Nhóm tài sản *
                   <select
                     value={form.assetGroup}
-                    disabled={form.reuseCode && !editingAsset}
+                    disabled={(form.reuseCode || form.catalogLocked) && !editingAsset}
                     onChange={(e) => setForm((v) => ({ ...v, assetGroup: e.target.value }))}
                     className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white"
                     required
@@ -1363,6 +1421,7 @@ export default function AssetsPage() {
             </div>
           </section>
         </div>
+        )}
       </main>
 
       <ConfirmDeleteDialog
