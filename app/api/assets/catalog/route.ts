@@ -26,7 +26,7 @@ export async function GET(request: Request) {
   try {
     await syncAssetCatalog(prismaRaw, auth.session.name);
     const [items, usage] = await Promise.all([
-      prisma.assetCatalogItem.findMany({ orderBy: { code: "asc" } }),
+      prisma.assetCatalogItem.findMany({ orderBy: [{ name: "asc" }, { code: "asc" }] }),
       loadCatalogUsage(prismaRaw),
     ]);
     return NextResponse.json({

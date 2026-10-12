@@ -7,6 +7,9 @@ import CopyableText from "@/components/CopyableText";
 import { storeLabel } from "@/lib/branch-labels";
 import { matchesSearch } from "@/lib/search-text";
 
+// Xếp theo tên kiểu tiếng Việt (Đ sau D, dấu đúng chỗ); trùng tên thì theo mã.
+const nameCollator = new Intl.Collator("vi", { sensitivity: "base", numeric: true });
+
 /**
  * Danh mục mã Tài sản / CCDC (master list, khách xin 12/10/2026) — giống tab Mặt hàng bên Kho.
  * Tạo mã mới, sửa tên (áp cho mọi đợt / mọi nhà hàng đang dùng mã), ngưng hoặc xoá mã chưa dùng.
@@ -82,7 +85,7 @@ export default function AssetCatalogPanel({ headers, assetGroups, departments, c
     if (usageFilter === "USED" && item.usage.lotCount === 0) return false;
     if (usageFilter === "UNUSED" && item.usage.lotCount > 0) return false;
     return matchesSearch(search, [item.code, item.name, item.note]);
-  }), [items, groupFilter, statusFilter, usageFilter, search]);
+  }).sort((a, b) => nameCollator.compare(a.name, b.name) || nameCollator.compare(a.code, b.code)), [items, groupFilter, statusFilter, usageFilter, search]);
 
   const startCreate = () => {
     setEditing(null);
