@@ -87,7 +87,7 @@ try {
   const cogs = new Map();
   const addCogs = (period, branchCode, label, before, after) => {
     const key = `${period}|${branchCode}|${label}`;
-    const row = cogs.get(key) || { period, branchCode, label, before: 0, after: 0 };
+    const row = cogs.get(key) || { period, branchCode, label, before: 0, after: 0, fromZero: 0 };
     row.before += before;
     row.after += after;
     cogs.set(key, row);
@@ -122,7 +122,10 @@ try {
     if (!COGS_STOCK_TYPES.includes(doc.transactionType)) continue;
     const before = cogsOf(doc, (line) => line.totalCost);
     const after = cogsOf(doc, (line) => newLine.get(line.id)?.totalCost || 0);
+    // Phần tăng do dòng trước đây 0 đ (xuất âm chưa có giá) nay có giá.
+    const zeroPart = cogsOf(doc, (line) => (line.totalCost > 0 ? 0 : newLine.get(line.id)?.totalCost || 0));
     for (const label of new Set([...before.keys(), ...after.keys()])) addCogs(period, doc.branchCode, label, before.get(label) || 0, after.get(label) || 0);
+    for (const [label, value] of zeroPart) cogs.get(`${period}|${doc.branchCode}|${label}`).fromZero += value;
   }
   const cogsRows = [...cogs.values()].sort((a, b) => a.period.localeCompare(b.period) || a.branchCode.localeCompare(b.branchCode) || a.label.localeCompare(b.label));
 
@@ -182,8 +185,23 @@ try {
     ["Giá vốn P&L tính theo cùng luật ghi sổ (COGS Bếp/Bar/kho chung, bao bì → vật tư tiêu hao, đồng phục → CP đồng phục), chưa tính lịch phân bổ đồng phục."],
     [`Định giá lại tồn đầu âm: ${money(reval)} đ · Trị giá lẻ khi tồn về 0 (chênh giá điều chuyển): ${money(residual)} đ`],
   ], [160]);
-  sheet("Tong hop gia von", ["Tháng", "Nhà hàng", "Hạng mục", "Hiện tại", "Sau tính lại", "Chênh lệch"],
-    cogsRows.map((row) => [row.period, row.branchCode, row.label, vnd(row.before), vnd(row.after), vnd(row.after - row.before)]), [9, 10, 26, 16, 16, 16]);
+  const totalsByPeriod = new Map();
+  for (const row of cogsRows) {
+    const total = totalsByPeriod.get(row.period) || { before: 0, after: 0, fromZero: 0 };
+    total.before += row.before;
+    total.after += row.after;
+    total.fromZero += row.fromZero;
+    totalsByPeriod.set(row.period, total);
+  }
+  const summaryRows = [];
+  for (const [period, total] of [...totalsByPeriod].sort()) {
+    for (const row of cogsRows.filter((item) => item.period === period)) {
+      summaryRows.push([row.period, row.branchCode, row.label, vnd(row.before), vnd(row.after), vnd(row.after - row.before), vnd(row.fromZero), vnd(row.after - row.before - row.fromZero)]);
+    }
+    summaryRows.push([period, "TỔNG", "", vnd(total.before), vnd(total.after), vnd(total.after - total.before), vnd(total.fromZero), vnd(total.after - total.before - total.fromZero)]);
+  }
+  sheet("Tong hop gia von", ["Tháng", "Nhà hàng", "Hạng mục", "Hiện tại", "Sau tính lại", "Chênh lệch", "Trong đó: dòng 0 đ nay có giá", "Trong đó: tính lại giá"],
+    summaryRows, [9, 10, 26, 16, 16, 16, 22, 20]);
   sheet("Dong xuat 0d", ["Tháng", "Tổng dòng xuất", "Dòng 0 đ hiện tại", "Dòng 0 đ sau tính lại"],
     [...zeroLines].sort().map(([period, stat]) => [period, stat.total, stat.before, stat.after]), [9, 16, 18, 20]);
   sheet("Ton kho cuoi thang", ["Tháng", "Nhà hàng", "Kho", "Trị giá hiện tại", "Sau tính lại", "Chênh lệch"],
@@ -210,6 +228,25 @@ try {
       })
       .sort((a, b) => String(a[0]).localeCompare(String(b[0])) || String(a[1]).localeCompare(String(b[1])) || Math.abs(b[16]) - Math.abs(a[16])),
     [9, 11, 14, 32, 14, 7, 10, 14, 12, 14, 12, 12, 26, 10, 16, 16, 14, 10, 14]);
+  const unpriced = new Map();
+  for (const key of result.keys) {
+    if (key.priceSource !== "NONE" || key.outQty <= 0) continue;
+    const id = `${key.itemId}|${key.warehouseCode}`;
+    const row = unpriced.get(id) || { itemId: key.itemId, warehouseCode: key.warehouseCode, periods: [], outQty: 0 };
+    row.periods.push(key.period);
+    row.outQty += key.outQty;
+    unpriced.set(id, row);
+  }
+  sheet("Ma chua co gia", ["Mã", "Tên", "Loại", "ĐVT", "Kho", "Tháng", "SL đã xuất", "Cần làm"],
+    [...unpriced.values()]
+      .map((row) => {
+        const item = itemById.get(row.itemId);
+        return [item?.code || row.itemId, item?.name || "", item?.itemType || "", item?.unit || "", row.warehouseCode, row.periods.join(", "), row.outQty,
+          ["SEMI_FINISHED", "FINISHED"].includes(item?.itemType || "") ? "Kiểm tra định lượng (nguyên liệu chưa có giá)" : "Chưa có tồn đầu kỳ / phiếu nhập mua nào có giá"];
+      })
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])) || String(a[4]).localeCompare(String(b[4]))),
+    [14, 32, 14, 7, 11, 18, 12, 44]);
+  console.log(`Mã × kho đã xuất mà chưa có giá nào: ${unpriced.size}`);
   const transferRows = [];
   for (const doc of documents) {
     if (doc.transactionType !== "DIEU_CHUYEN") continue;

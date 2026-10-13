@@ -93,6 +93,8 @@ const EPS = 0.000001;
 const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
 const PURCHASED_TYPES = new Set(["RAW_MATERIAL", "PACKAGING", "GOODS", "UNIFORM"]);
 const MAX_ITERATIONS = 100;
+/** Giá đứng yên khi mọi mã × kho đổi dưới 0,01 đ giữa hai vòng. */
+const CONVERGED_VND = 0.01;
 
 /** "YYYY-MM" theo giờ Việt Nam. */
 export function vnPeriodOf(date: Date) {
@@ -330,11 +332,11 @@ export function computeMonthlyCosts(input: {
         average.set(key, next);
         source.set(key, from);
       }
-      if (maxChange < 0.0001 && iteration > 1) break;
+      if (maxChange < CONVERGED_VND && iteration > 1) break;
     }
     iterations[period] = Math.min(iteration, MAX_ITERATIONS);
     if (iteration > MAX_ITERATIONS) {
-      for (const [key, change] of [...lastChange].filter(([, change]) => change >= 0.0001).sort((a, b) => b[1] - a[1]).slice(0, 20)) {
+      for (const [key, change] of [...lastChange].filter(([, change]) => change >= CONVERGED_VND).sort((a, b) => b[1] - a[1]).slice(0, 20)) {
         unconverged.push({ period, itemId: key.slice(0, key.indexOf("|")), warehouseCode: key.slice(key.indexOf("|") + 1), change, averageCost: average.get(key) || 0 });
       }
     }
