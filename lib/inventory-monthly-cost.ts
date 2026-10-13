@@ -85,6 +85,8 @@ export type MonthlyCostResult = {
   keys: MonthlyCostKey[];
   lines: MonthlyCostLineResult[];
   iterations: Record<string, number>;
+  /** Mã × kho còn đổi giá ở vòng cuối khi chạm trần số vòng (để soi vòng lặp không hội tụ). */
+  unconverged: Array<{ period: string; itemId: string; warehouseCode: string; change: number; averageCost: number }>;
 };
 
 const EPS = 0.000001;
@@ -179,6 +181,7 @@ export function computeMonthlyCosts(input: {
   const keysOut: MonthlyCostKey[] = [];
   const linesOut: MonthlyCostLineResult[] = [];
   const iterations: Record<string, number> = {};
+  const unconverged: MonthlyCostResult["unconverged"] = [];
 
   for (const period of periods) {
     if (period === input.openingPeriod) {
@@ -255,6 +258,7 @@ export function computeMonthlyCosts(input: {
 
     let iteration = 0;
     let lineValues = new Map<string, number>();
+    const lastChange = new Map<string, number>();
     for (iteration = 1; iteration <= MAX_ITERATIONS; iteration += 1) {
       // Giá chế biến trong tháng (vòng này) + các tháng trước, cho luật điều chuyển bán thành phẩm.
       const semiLines = new Map(productionLinesByItem);
@@ -320,13 +324,20 @@ export function computeMonthlyCosts(input: {
           next = latestPurchaseBefore(itemId, period);
           from = next > 0 ? "LATEST_PURCHASE" : "NONE";
         }
-        maxChange = Math.max(maxChange, Math.abs(next - (average.get(key) || 0)));
+        const change = Math.abs(next - (average.get(key) || 0));
+        lastChange.set(key, change);
+        maxChange = Math.max(maxChange, change);
         average.set(key, next);
         source.set(key, from);
       }
       if (maxChange < 0.0001 && iteration > 1) break;
     }
     iterations[period] = Math.min(iteration, MAX_ITERATIONS);
+    if (iteration > MAX_ITERATIONS) {
+      for (const [key, change] of [...lastChange].filter(([, change]) => change >= 0.0001).sort((a, b) => b[1] - a[1]).slice(0, 20)) {
+        unconverged.push({ period, itemId: key.slice(0, key.indexOf("|")), warehouseCode: key.slice(key.indexOf("|") + 1), change, averageCost: average.get(key) || 0 });
+      }
+    }
 
     // Ghi giá từng dòng + cộng dồn nhập/xuất từng mã × kho.
     const stats = new Map<string, { inQty: number; inValue: number; followQty: number; followValue: number; outQty: number; outValue: number }>();
@@ -413,5 +424,5 @@ export function computeMonthlyCosts(input: {
     }
   }
 
-  return { periods, keys: keysOut, lines: linesOut, iterations };
+  return { periods, keys: keysOut, lines: linesOut, iterations, unconverged };
 }

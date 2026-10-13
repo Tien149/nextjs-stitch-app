@@ -156,6 +156,7 @@ try {
   // ---- In ra màn hình.
   console.log(`Tính giá bình quân tháng: ${documents.length} phiếu, ${result.lines.length} dòng, ${opening.length} dòng tồn đầu kỳ ${openingPeriod}${openingMissing ? ` (${openingMissing} dòng đầu kỳ không khớp mã hàng)` : ""} — ${elapsed} ms.`);
   console.log(`Số vòng lặp theo tháng: ${Object.entries(result.iterations).map(([period, count]) => `${period}: ${count}`).join(", ")}`);
+  for (const row of result.unconverged) console.log(`  CHƯA HỘI TỤ ${row.period} ${itemById.get(row.itemId)?.code} @ ${row.warehouseCode}: giá ${money(row.averageCost)}, vòng cuối đổi ${row.change.toFixed(4)}`);
   console.log("\nGiá vốn / chi phí theo kho (hiện tại → sau tính lại):");
   for (const row of cogsRows) console.log(`  ${row.period} ${row.branchCode} ${row.label}: ${money(row.before)} → ${money(row.after)} (${row.after - row.before >= 0 ? "+" : ""}${money(row.after - row.before)})`);
   console.log("\nDòng xuất 0 đ (hiện tại → sau tính lại):");
