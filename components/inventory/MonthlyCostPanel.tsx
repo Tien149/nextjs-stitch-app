@@ -163,7 +163,7 @@ export default function MonthlyCostPanel({ headers, canApply, onApplied }: Props
           {report.locked && <p className="text-xs bg-rose-50 border border-rose-200 text-rose-800 rounded-lg px-3 py-2">{report.locked}</p>}
           {settled.length > 0 && (
             <p className="text-xs bg-rose-50 border border-rose-200 text-rose-800 rounded-lg px-3 py-2">
-              Phiếu điều chuyển liên nhà hàng đổi trị giá nhưng công nợ nội bộ đã gạch nợ: {settled.map((row) => `${row.code} (${row.settledDebt})`).join(", ")}. Hoàn tác phiếu thu/chi gạch nợ trước rồi tính lại.
+              Công nợ nội bộ đã gạch nhiều hơn trị giá điều chuyển mới: {settled.map((row) => `${row.code} (${row.settledDebt})`).join(", ")}. Hoàn tác bớt phiếu thu/chi gạch nợ rồi tính lại.
             </p>
           )}
           <p className="text-xs text-slate-600">

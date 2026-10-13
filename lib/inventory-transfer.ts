@@ -16,6 +16,7 @@ import type { prisma } from "@/lib/prisma";
 import { postInventoryTransaction, type StockLineInput } from "@/lib/inventory-stock";
 import { ensureInternalPartner } from "@/lib/internal-partner";
 import { refreshTransferExplosionStatus } from "@/lib/explosion-sources";
+import { roundVnd } from "@/lib/round-vnd";
 
 function transferError(message: string): never {
   throw new Error(`BUSINESS:${message}`);
@@ -91,7 +92,9 @@ export async function postStockTransfer(tx: TxClient, input: PostStockTransferIn
  *   xoá mềm, nên sửa về 0 đ rồi sửa lại vẫn dùng đúng mã cũ);
  * - cùng nhà hàng, hoặc 0 đồng (chưa có đơn giá — khách chốt 27/09/2026 không chặn) → gỡ cặp
  *   nợ nếu đang có.
- * Nợ đã gạch (có phiếu thu/chi thanh toán) thì chặn: đổi số là lệch với tiền đã trả.
+ * Nợ đã gạch một phần (khách chốt 13/10/2026, để Tính giá vốn tháng định giá lại được phiếu điều
+ * chuyển): vẫn cập nhật trị giá mới, số còn nợ = trị giá mới − số đã gạch. Chỉ chặn khi trị giá
+ * mới THẤP hơn số đã gạch, hoặc phiếu thôi sinh nợ (cùng nhà hàng / 0 đ) mà nợ đã gạch.
  */
 export async function syncTransferInternalDebt(tx: TxClient, transactionId: string) {
   const transaction = await tx.inventoryTransaction.findUnique({
@@ -109,12 +112,13 @@ export async function syncTransferInternalDebt(tx: TxClient, transactionId: stri
     where: { code: { in: [receivableCode, payableCode] }, deletedAt: null },
     include: { settlements: true },
   });
+  const settledOf = (code: string) => (existing.find((debt) => debt.code === code)?.settlements || []).reduce((sum, row) => sum + row.amount, 0);
   const settled = existing.find((debt) => debt.settlements.length > 0);
-  if (settled) {
-    transferError(`Công nợ nội bộ ${settled.code} của phiếu ${transaction.code} đã được gạch nợ nên không sửa được phiếu. Hoàn tác các phiếu thu/chi gạch nợ trước.`);
-  }
 
   if (toBranch === fromBranch || !(totalValue > 0)) {
+    if (settled) {
+      transferError(`Công nợ nội bộ ${settled.code} của phiếu ${transaction.code} đã được gạch nợ nên không gỡ được. Hoàn tác các phiếu thu/chi gạch nợ trước.`);
+    }
     if (existing.length > 0) {
       await tx.debtRecord.updateMany({ where: { id: { in: existing.map((debt) => debt.id) } }, data: { deletedAt: new Date() } });
     }
@@ -128,6 +132,19 @@ export async function syncTransferInternalDebt(tx: TxClient, transactionId: stri
     return { transaction: updated, receivable: null, payable: null };
   }
 
+  for (const code of [receivableCode, payableCode]) {
+    const paid = settledOf(code);
+    if (paid > totalValue + 0.5) {
+      transferError(`Công nợ nội bộ ${code} của phiếu ${transaction.code} đã gạch ${Math.round(paid).toLocaleString("vi-VN")} đ, nhiều hơn trị giá mới ${Math.round(totalValue).toLocaleString("vi-VN")} đ. Hoàn tác bớt phiếu thu/chi gạch nợ trước.`);
+    }
+  }
+  /** Còn nợ = trị giá mới − số đã gạch; trạng thái theo cùng luật gạch nợ (voucher-side-effects). */
+  const balanceOf = (code: string) => {
+    const paid = settledOf(code);
+    const outstandingAmount = Math.max(0, roundVnd(totalValue - paid));
+    return { outstandingAmount, status: outstandingAmount === 0 ? "SETTLED" : paid > 0 ? "PARTIAL" : "OPEN" };
+  };
+
   // Đối tác nội bộ dùng chung với phiếu điều tiền/phân bổ chi phí — tạo sẵn nếu chưa có.
   const fromPartner = await ensureInternalPartner(tx as unknown as typeof prisma, fromBranch);
   const toPartner = await ensureInternalPartner(tx as unknown as typeof prisma, toBranch);
@@ -136,16 +153,15 @@ export async function syncTransferInternalDebt(tx: TxClient, transactionId: stri
     partnerGroup: "INTERNAL",
     documentDate: transaction.transactionDate,
     originalAmount: totalValue,
-    outstandingAmount: totalValue,
     sourceType: "INVENTORY_TRANSFER",
     sourceId: transaction.id,
-    status: "OPEN",
     // Ghi rõ thay vì trông vào lớp xoá mềm: caller import dùng client thô, upsert không tự
     // khôi phục cặp mã đã xoá mềm của lần sửa trước.
     deletedAt: null,
   };
   const receivableData = {
     ...common,
+    ...balanceOf(receivableCode),
     debtType: "RECEIVABLE",
     partnerCode: toPartner.code,
     partnerName: toPartner.name,
@@ -154,6 +170,7 @@ export async function syncTransferInternalDebt(tx: TxClient, transactionId: stri
   };
   const payableData = {
     ...common,
+    ...balanceOf(payableCode),
     debtType: "PAYABLE",
     partnerCode: fromPartner.code,
     partnerName: fromPartner.name,

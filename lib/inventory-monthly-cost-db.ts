@@ -260,7 +260,10 @@ function analyse(source: MonthlyCostSource, result: MonthlyCostResult, fromPerio
   };
 }
 
-/** Kỳ khoá sổ + công nợ nội bộ đã gạch của phiếu điều chuyển sẽ đổi trị giá — hai thứ chặn ghi. */
+/**
+ * Kỳ khoá sổ + công nợ nội bộ đã gạch NHIỀU HƠN trị giá mới của phiếu điều chuyển — hai thứ chặn ghi.
+ * Nợ gạch một phần mà trị giá mới vẫn đủ thì syncTransferInternalDebt tự tính lại số còn nợ.
+ */
 async function blockers(client: Client, source: MonthlyCostSource, fromPeriod: string, toPeriod: string, analysis: ReturnType<typeof analyse>) {
   const targets: Array<{ period: string; branchCode: string }> = [];
   for (const doc of source.documents) {
@@ -274,12 +277,12 @@ async function blockers(client: Client, source: MonthlyCostSource, fromPeriod: s
   if (codes.length) {
     const settled = await client.debtRecord.findMany({
       where: { code: { in: codes }, deletedAt: null, settlements: { some: {} } },
-      select: { code: true },
+      select: { code: true, settlements: { select: { amount: true } } },
     });
-    const settledCodes = new Set(settled.map((row) => row.code));
+    const paidByCode = new Map(settled.map((row) => [row.code, row.settlements.reduce((sum, item) => sum + item.amount, 0)]));
     for (const row of analysis.report.changedTransfers) {
       const { receivableCode, payableCode } = inventoryTransferDebtCodes(row.code);
-      row.settledDebt = settledCodes.has(receivableCode) ? receivableCode : settledCodes.has(payableCode) ? payableCode : null;
+      row.settledDebt = [receivableCode, payableCode].find((code) => (paidByCode.get(code) || 0) > row.after + 0.5) || null;
     }
   }
 }
@@ -321,7 +324,7 @@ export async function applyMonthlyCost(requestedFrom: string | null | undefined,
     if (analysis.report.locked) throw new MonthlyCostError(analysis.report.locked);
     const settled = analysis.report.changedTransfers.filter((row) => row.settledDebt);
     if (settled.length) {
-      throw new MonthlyCostError(`Công nợ nội bộ đã gạch nợ nên không đổi được trị giá điều chuyển: ${settled.map((row) => `${row.code} (${row.settledDebt})`).join(", ")}. Hoàn tác phiếu thu/chi gạch nợ trước rồi tính lại.`);
+      throw new MonthlyCostError(`Công nợ nội bộ đã gạch nhiều hơn trị giá điều chuyển mới: ${settled.map((row) => `${row.code} (${row.settledDebt})`).join(", ")}. Hoàn tác bớt phiếu thu/chi gạch nợ rồi tính lại.`);
     }
 
     for (const rows of chunk(analysis.changed, 500)) {
