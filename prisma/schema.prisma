@@ -942,6 +942,50 @@ model StocktakeLine {
   @@index([itemId])
 }
 
+/// Một lần bấm "Tính giá vốn tháng" (bình quân cả tháng theo từng kho, lib/inventory-monthly-cost.ts).
+/// `fingerprintsJson` = dấu vân tay chứng từ kho từng tháng lúc tính — lệch với hiện tại là tháng đó
+/// có phiếu thêm / sửa / xoá sau lần tính → "cần tính lại".
+model InventoryCostingRun {
+  id               String   @id @default(uuid())
+  fromPeriod       String
+  toPeriod         String
+  fingerprintsJson String
+  summaryJson      String?
+  changedLines     Int      @default(0)
+  createdBy        String?
+  createdAt        DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+/// Giá tháng chính thức của từng mặt hàng × kho (lần tính gần nhất phủ tháng đó).
+model InventoryMonthlyCost {
+  id            String   @id @default(uuid())
+  runId         String
+  period        String
+  itemId        String
+  warehouseCode String
+  openingQty    Float    @default(0)
+  openingValue  Float    @default(0)
+  inQty         Float    @default(0)
+  inValue       Float    @default(0)
+  followQty     Float    @default(0)
+  followValue   Float    @default(0)
+  outQty        Float    @default(0)
+  outValue      Float    @default(0)
+  closingQty    Float    @default(0)
+  closingValue  Float    @default(0)
+  averageCost   Float    @default(0)
+  priceSource   String
+  revaluation   Float    @default(0)
+  residual      Float    @default(0)
+  createdAt     DateTime @default(now())
+
+  @@unique([period, itemId, warehouseCode])
+  @@index([period])
+  @@index([warehouseCode])
+}
+
 model InventoryBalance {
   id            String   @id @default(uuid())
   itemId        String

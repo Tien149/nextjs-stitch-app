@@ -14,7 +14,7 @@ import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING, STOCKTAKE_RETURNED, isStocktakeE
 import { EXPLOSION_ISSUE_TYPES, EXPLOSION_PENDING, explodedRunOf, isExplosionIssueType, loadPendingExplosionSources, refreshTransferExplosionStatus, releaseExplosionSources, semiFinishedWithRecipeChecker } from "@/lib/explosion-sources";
 import { averageCostByItem } from "@/lib/inventory-average-cost";
 import { parseVatRate, VAT_RATE_CODES } from "@/lib/inventory-vat";
-import { computeCostingLevels, computeRecipeUnitCosts, lineConversionRate, pickRecipeForDate, recipeContentSignature, type ExplosionRecipe } from "@/lib/production-explosion";
+import { computeRecipeUnitCosts, lineConversionRate, pickRecipeForDate, recipeContentSignature, type ExplosionRecipe } from "@/lib/production-explosion";
 import { writeAuditLog } from "@/lib/audit-log";
 import { executeExplosion, rerunExplosions, type AffectedExplosionRun } from "@/lib/inventory-explosion";
 import { loadMissingRecipeReport } from "@/lib/missing-recipes";
@@ -2115,86 +2115,9 @@ export async function POST(request: Request) {
       }, { status: 201 });
     }
 
-    /**
-     * Nút "Tính giá vốn & giá thành" cuối kỳ.
-     *
-     * Chạy tuần tự đúng thứ tự kế toán: giá vốn nguyên liệu (bình quân gia quyền theo tồn)
-     * → giá thành bán thành phẩm cấp 1 → cấp 2 → ... → thành phẩm → combo. Kết quả ghi
-     * đè giá vốn bình quân của chính các mặt hàng có định lượng trong kho của cửa hàng,
-     * nhờ vậy mọi phiếu xuất/nhập chế biến/điều chỉnh sau đó đều lấy đúng giá mới.
-     */
-    if (action === "RUN_COSTING") {
-      const branchCode = cleanText(body.branchCode) || "ALL";
-      const costingDate = toDate(body.costingDate);
-      if (branchCode !== "ALL") assertBranchAccess(auth.session, branchCode);
-      if (branchCode !== "ALL" && await isPeriodLocked(costingDate, branchCode)) businessError("Kỳ kế toán đã khóa");
-
-      const warehouses = await prisma.masterDataItem.findMany({
-        where: { type: "WAREHOUSE", status: "ACTIVE", ...(branchCode === "ALL" ? {} : { branch: branchCode }) },
-        select: { code: true },
-      });
-      const warehouseCodes = warehouses.map((warehouse) => warehouse.code);
-      if (warehouseCodes.length === 0) businessError(`Cửa hàng ${branchCode} chưa khai kho nào để tính giá.`);
-
-      const [items, balances, recipeRows] = await Promise.all([
-        prisma.inventoryItem.findMany({ select: { id: true, code: true, itemType: true } }),
-        prisma.inventoryBalance.findMany({ select: { itemId: true, warehouseCode: true, quantity: true, averageCost: true } }),
-        prisma.recipe.findMany({ where: { deletedAt: null }, include: { lines: { include: { item: true } } } }),
-      ]);
-
-      // Bước 1 — giá vốn nguyên liệu: bình quân GIA QUYỀN theo tồn DƯƠNG của mọi kho (kho âm
-      // không cộng vào), dùng chung với Sheet tổng hợp — xem lib/inventory-average-cost.ts.
-      const averageCostByItemId = averageCostByItem(balances);
-
-      // Bước 2..n — giá thành theo tầng định lượng.
-      const itemTypeByCode = new Map(items.map((item) => [item.code.toUpperCase(), item.itemType]));
-      // Tính giá cho cửa hàng nào thì ăn công thức của chính cửa hàng đó; chạy "Tất cả cửa
-      // hàng" thì lấy bản dùng chung (món chỉ có bản riêng vẫn lên bảng, xem scopeRecipesToBranch).
-      const levels = computeCostingLevels(
-        recipeRows as unknown as ExplosionRecipe[],
-        averageCostByItemId,
-        costingDate,
-        itemTypeByCode,
-        branchCode === "ALL" ? undefined : branchCode,
-      );
-      const itemByCode = new Map(items.map((item) => [item.code.toUpperCase(), item]));
-
-      // Bước cuối — giá vốn cuối kỳ: ghi đè bình quân của mặt hàng có định lượng trong kho
-      // của cửa hàng đang tính. Chỉ đụng mặt hàng thực sự tính được giá (> 0).
-      let updatedBalances = 0;
-      await prisma.$transaction(async (tx) => {
-        for (const level of levels) {
-          for (const product of level.products) {
-            if (!(product.unitCost > 0)) continue;
-            const item = itemByCode.get(product.productCode);
-            if (!item) continue;
-            const result = await tx.inventoryBalance.updateMany({
-              where: { itemId: item.id, warehouseCode: { in: warehouseCodes } },
-              data: { averageCost: product.unitCost },
-            });
-            updatedBalances += result.count;
-          }
-        }
-      }, { timeout: 60000 });
-
-      await writeAuditLog({
-        session: auth.session, module: menuHref, action: "RUN_COSTING",
-        entityType: "InventoryBalance", entityCode: `COSTING-${costingDate.toISOString().slice(0, 10)}`,
-        branchCode: branchCode === "ALL" ? undefined : branchCode,
-        metadata: {
-          costingDate, warehouseCodes, updatedBalances,
-          levels: levels.map((level) => ({ level: level.level, products: level.products.length })),
-        },
-      });
-
-      return NextResponse.json({
-        costingDate,
-        branchCode,
-        materialCount: averageCostByItemId.size,
-        updatedBalances,
-        levels,
-      }, { status: 201 });
-    }
+    // Nút "Tính giá vốn & giá thành" (RUN_COSTING) đã thay bằng Tính giá vốn bình quân cả tháng
+    // (/api/inventory/monthly-cost, 13/10/2026): nút cũ ghi đè giá bình quân bán thành phẩm của kho
+    // bằng giá định lượng, làm hàng điều chuyển vào kho bị xuất lệch giá với giá nhận.
 
     /**
      * Hoàn tác nguyên một lần rã nguyên liệu: hoàn kho + xoá mềm mọi phiếu của lần rã

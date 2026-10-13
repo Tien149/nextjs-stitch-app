@@ -11,7 +11,8 @@ import { pickTransferUnitCost } from "@/lib/inventory-stock";
  *
  * - Nhập TÍNH vào bình quân: nhập mua / nhập khác có đơn giá (giá phiếu), nhập chế biến (= Σ
  *   nguyên liệu của phiếu xuất chế biến cùng cặp, theo giá tháng), nhập điều chuyển (giá luật).
- * - Nhập ĐI THEO bình quân (không kéo giá): hàng tặng 0 đ, nhập kiểm kê thừa, nhập khác trống giá.
+ * - Nhập ĐI THEO bình quân (không kéo giá): hàng tặng 0 đ, nhập kiểm kê thừa, nhập khác trống giá;
+ *   kiểm kê thừa ở kho cả tháng không có giá thì lấy Đơn giá khai trên phiếu.
  * - Mọi phiếu xuất lấy giá tháng của kho; điều chuyển hai đầu cùng giá luật 27/09
  *   (pickTransferUnitCost) — phần chênh với giá tháng kho chuyển nằm lại trong tồn kho chuyển.
  * - Giá chế biến phụ thuộc giá nguyên liệu, điều chuyển kéo giá giữa các kho → giải lặp tới khi
@@ -373,7 +374,9 @@ export function computeMonthlyCosts(input: {
             stat(key).inQty += line.quantity;
             stat(key).inValue += total;
           } else {
-            total = price(line.itemId, doc.warehouseCode) * line.quantity;
+            // Kiểm kê thừa ở kho cả tháng không có giá: dùng Đơn giá nhà hàng khai trên phiếu.
+            const unit = price(line.itemId, doc.warehouseCode) || (line.inputUnitCost && line.inputUnitCost > 0 ? line.inputUnitCost : 0);
+            total = unit * line.quantity;
             stat(key).followQty += line.quantity;
             stat(key).followValue += total;
           }

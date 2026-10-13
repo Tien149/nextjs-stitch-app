@@ -196,3 +196,13 @@ test("ngày đầu tháng theo giờ VN (00:00 01/09 VN = 31/08 UTC) thuộc th�
   assert.equal(lineOf(result, "VN").period, "2026-09");
   near(lineOf(result, "VN").unitCost, 200);
 });
+
+test("kiểm kê thừa ở kho cả tháng không có giá thì lấy Đơn giá trên phiếu", () => {
+  const surplus = line("BTP", 3, 50, 50);
+  const result = computeMonthlyCosts({
+    items, openingPeriod: "2026-08", opening: [],
+    documents: [doc("KK-1-N", "NHAP_KIEM_KE", "2026-08-10", "KBAR", [surplus])],
+  });
+  near(lineOf(result, surplus.id).totalCost, 150);
+  near(keyOf(result, "2026-08", "BTP", "KBAR").closingValue, 150);
+});
