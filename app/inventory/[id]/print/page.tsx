@@ -25,6 +25,8 @@ type Line = {
   conversionRate: number;
   vatRate: number | null;
   vatAmount: number;
+  /** Chi phí mua hàng phân bổ vào dòng (đã nằm trong totalCost). */
+  purchaseCostShare?: number;
   item: { code: string; name: string; unit: string };
 };
 type StockDocument = {
@@ -41,6 +43,7 @@ type StockDocument = {
   referenceCode: string | null;
   note: string | null;
   createdBy: string | null;
+  purchaseCost?: number;
   lines: Line[];
 };
 type Payload = { transaction: StockDocument; partnerName: string | null; warehouseNames: Record<string, string>; transferDirection: "IN" | "OUT" };
@@ -95,10 +98,12 @@ export default function StockDocumentPrintPage() {
     const unitPrice = hasInput
       ? line.inputUnitCost ?? line.unitCost * (line.conversionRate || 1)
       : line.unitCost;
-    return { ...line, printQuantity: quantity, printUnit: unit, printUnitPrice: unitPrice };
+    // Thành tiền in theo hoá đơn NCC (SL × đơn giá); chi phí mua hàng in riêng một dòng ở cuối.
+    return { ...line, printQuantity: quantity, printUnit: unit, printUnitPrice: unitPrice, printAmount: line.totalCost - (line.purchaseCostShare || 0) };
   });
-  const totalBeforeTax = rows.reduce((sum, row) => sum + row.totalCost, 0);
+  const totalBeforeTax = rows.reduce((sum, row) => sum + row.printAmount, 0);
   const totalVat = rows.reduce((sum, row) => sum + (row.vatAmount || 0), 0);
+  const purchaseCost = doc.purchaseCost || 0;
   const hasVat = totalVat > 0;
 
   return (
@@ -162,7 +167,7 @@ export default function StockDocumentPrintPage() {
                 <td className="py-2 pr-2">{row.printUnit}</td>
                 <td className="py-2 pr-2 text-right tabular-nums">{qty(row.printQuantity)}</td>
                 <td className="py-2 pr-2 text-right tabular-nums">{money(row.printUnitPrice)}</td>
-                <td className="py-2 pr-2 text-right tabular-nums font-bold">{money(row.totalCost)}</td>
+                <td className="py-2 pr-2 text-right tabular-nums font-bold">{money(row.printAmount)}</td>
                 {hasVat && (
                   <td className="py-2 text-right tabular-nums">
                     {row.vatAmount > 0 ? money(row.vatAmount) : "-"}
@@ -178,10 +183,17 @@ export default function StockDocumentPrintPage() {
               <td className="py-2 pr-2 text-right tabular-nums text-base font-bold">{money(totalBeforeTax)}</td>
               {hasVat && <td className="py-2 text-right tabular-nums font-bold">{money(totalVat)}</td>}
             </tr>
-            {hasVat && (
+            {purchaseCost > 0 && (
               <tr>
-                <td colSpan={6} className="py-2 font-bold">Tổng cộng thanh toán (gồm thuế)</td>
-                <td colSpan={2} className="py-2 text-right tabular-nums text-base font-bold">{money(totalBeforeTax + totalVat)} đ</td>
+                <td colSpan={6} className="py-2 font-bold">Chi phí mua hàng <span className="font-normal text-slate-500">(phân bổ vào giá nhập theo trị giá dòng)</span></td>
+                <td className="py-2 pr-2 text-right tabular-nums font-bold">{money(purchaseCost)}</td>
+                {hasVat && <td />}
+              </tr>
+            )}
+            {(hasVat || purchaseCost > 0) && (
+              <tr>
+                <td colSpan={6} className="py-2 font-bold">Tổng cộng thanh toán{hasVat ? " (gồm thuế)" : ""}</td>
+                <td colSpan={2} className="py-2 text-right tabular-nums text-base font-bold">{money(totalBeforeTax + totalVat + purchaseCost)} đ</td>
               </tr>
             )}
           </tfoot>

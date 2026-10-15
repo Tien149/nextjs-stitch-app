@@ -7,7 +7,7 @@ import { ensureDefaultAccounts } from "@/lib/accounting";
 import { INVENTORY_ITEM_UPDATE_TEMPLATE, isMasterDataImportType, normalizeHeader, type ImportType } from "@/lib/import-templates";
 import { normalizeGoodsGroup } from "@/lib/goods-group";
 import { parseImportDate, type ParsedImportRow } from "@/lib/import-parser";
-import { normalizeStockTransactionType, postInventoryTransaction } from "@/lib/inventory-stock";
+import { latestKnownUnitCost, normalizeStockTransactionType, postInventoryTransaction } from "@/lib/inventory-stock";
 import { parseVatRate } from "@/lib/inventory-vat";
 import { createPurchasePayable, removePurchasePayables } from "@/lib/purchase-payable";
 import { postStockTransfer } from "@/lib/inventory-transfer";
@@ -1573,6 +1573,8 @@ export async function commitImport(input: CommitInput) {
               partnerCode: asText(first.values.partner_code) || null,
               note: asText(first.values.note) || null,
               createdBy: input.uploadedBy,
+              // Chi phí mua hàng ghi một lần cho cả phiếu, ở dòng nào cũng được — cộng các dòng lại.
+              purchaseCost: rows.reduce((sum, row) => sum + (asNumber(row.values.purchase_cost) || 0), 0),
               lines,
             });
         // Nhập mua có khai NCC thì sinh luôn khoản phải trả: hàng về kho là nợ NCC, trừ khi
@@ -1736,10 +1738,14 @@ export async function commitImport(input: CommitInput) {
           await setImportTarget(tx, staging, row, "STOCKTAKE", stocktake.id);
           // Hàng đếm THỪA mà kho chưa có giá vốn thì phải khai "Đơn giá" trên file —
           // nhập giá 0 là giá trị kho sai và giá vốn món ăn theo sai vĩnh viễn.
-          const surplusUnitCost = (balance?.averageCost || 0) > 0 ? balance?.averageCost || 0 : declaredUnitCost;
+          // Kho kiểm chưa có giá và file không khai: lấy giá mua gần nhất / giá kho khác (khách chốt 15/10/2026).
           const surplusToExplode = varianceQuantity > 0 && isExplodable(item);
+          let surplusUnitCost = (balance?.averageCost || 0) > 0 ? balance?.averageCost || 0 : declaredUnitCost;
           if (varianceQuantity > 0 && !surplusToExplode && surplusUnitCost <= 0) {
-            throw new Error(`Dong ${row.rowNumber}: ${item.code} chua co gia von trong kho — khai cot "Don gia" de ghi nhan phan thua`);
+            surplusUnitCost = await latestKnownUnitCost(tx, item.id, asText(first.values.warehouse_code));
+          }
+          if (varianceQuantity > 0 && !surplusToExplode && surplusUnitCost <= 0) {
+            throw new Error(`Dong ${row.rowNumber}: ${item.code} chua co gia von o kho nao — khai cot "Don gia" de ghi nhan phan thua`);
           }
           if (surplusToExplode) deferredSurplus = true;
           else if (varianceQuantity > 0) inboundLines.push({ itemId: item.id, inputQuantity: varianceQuantity, inputUnitCode: item.unit, inputUnitCost: surplusUnitCost });

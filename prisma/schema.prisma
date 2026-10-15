@@ -1027,6 +1027,9 @@ model InventoryTransaction {
   /// "POSTED:RA-..." = đã rã trong lần rã đó.
   explosionStatus            String?
   partnerCode                String?
+  /// Chi phí mua hàng của phiếu nhập mua (vận chuyển, bốc xếp...): phân bổ vào giá nhập từng dòng
+  /// theo trị giá (`InventoryTransactionLine.purchaseCostShare`), cộng vào công nợ NCC. Xem lib/purchase-cost.ts.
+  purchaseCost               Float    @default(0)
   note                       String?
   createdBy                  String?
   createdAt                  DateTime @default(now())
@@ -1067,6 +1070,9 @@ model InventoryTransactionLine {
   /// Tien thue GTGT cua dong, da lam tron toi dong. KHONG cong vao gia von ton kho
   /// (`totalCost` la so truoc thue) — chi cong vao cong no phai tra NCC.
   vatAmount      Float   @default(0)
+  /// Phần chi phí mua hàng của phiếu phân bổ vào dòng này — đã nằm trong `totalCost` / `unitCost`
+  /// (giá nhập kho); `inputUnitCost` vẫn là đơn giá NCC trên hoá đơn.
+  purchaseCostShare Float @default(0)
 
   transaction InventoryTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
   item        InventoryItem        @relation(fields: [itemId], references: [id])

@@ -33,6 +33,7 @@ import { scopePayloadByTab } from "@/lib/tab-scope";
 import { INVENTORY_ITEM_TYPES, isWarehouseStocktakeItemType } from "@/lib/inventory-scope";
 import { ISSUE_ALLOCATION_SOURCE, issueAllocationCode, syncIssueAllocation } from "@/lib/uniform-allocation";
 import { roundPeriodCount } from "@/lib/period-count";
+import { PURCHASE_COST_TYPES } from "@/lib/purchase-cost";
 import { packStockMovements } from "@/lib/stock-movement-pack";
 import { nextStockDocCode, nextStocktakeCode } from "@/lib/inventory-stock";
 import { isRevenueGroupCategory } from "@/lib/voucher-rules";
@@ -66,6 +67,14 @@ function vatRateFrom(value: unknown) {
   const parsed = parseVatRate(value);
   if (!parsed.ok) businessError(`Thuế suất GTGT [${cleanText(value)}] không hợp lệ. Chỉ nhận: ${VAT_RATE_CODES.join(", ")}`);
   return (parsed as { ok: true; rate: number | null }).rate;
+}
+
+/** Chi phí mua hàng của phiếu (lib/purchase-cost.ts): chỉ phiếu nhập mua, không âm. */
+function purchaseCostFrom(value: unknown, transactionType: string) {
+  if (!PURCHASE_COST_TYPES.has(transactionType)) return 0;
+  const amount = value === undefined || value === null || value === "" ? 0 : Number(value);
+  if (!Number.isFinite(amount) || amount < 0) businessError("Chi phí mua hàng phải là số không âm");
+  return amount;
 }
 
 function linesFrom(value: unknown) {
@@ -2506,6 +2515,7 @@ export async function POST(request: Request) {
         referenceCode: cleanText(body.referenceCode) || null,
         note: cleanText(body.note) || null,
         createdBy: auth.session.name,
+        purchaseCost: purchaseCostFrom(body.purchaseCost, transactionType),
         lines: inputLines,
       });
       // Nhập mua có khai NCC thì sinh khoản phải trả, đúng luật của phiếu nhập từ file import.
@@ -2633,8 +2643,11 @@ export async function PATCH(request: Request) {
       const isTransfer = transaction.transactionType === "DIEU_CHUYEN";
       // Điều chuyển định giá theo NGÀY chứng từ (luật đơn giá trong tháng), nên đổi ngày cũng
       // phải ghi lại dòng để giá và công nợ nội bộ đi theo tháng mới.
+      // Đổi chi phí mua hàng thì phân bổ lại vào giá nhập từng dòng.
+      const purchaseCost = body.purchaseCost !== undefined ? purchaseCostFrom(body.purchaseCost, transaction.transactionType) : transaction.purchaseCost;
       const rewritesLines = editedLines.length > 0 || warehouseCode !== transaction.warehouseCode || toWarehouseCode !== transaction.toWarehouseCode
-        || (isTransfer && transactionDate.getTime() !== transaction.transactionDate.getTime());
+        || (isTransfer && transactionDate.getTime() !== transaction.transactionDate.getTime())
+        || Math.abs(purchaseCost - transaction.purchaseCost) > 0.5;
 
       if (body.lines !== undefined && editedLines.length === 0) businessError("Phiếu phải còn ít nhất một dòng mặt hàng");
       // Điều chuyển đã rã BOM: phiếu chế biến của lần rã tính theo đúng số / kho / ngày này.
@@ -2706,6 +2719,7 @@ export async function PATCH(request: Request) {
             partnerCode,
             referenceCode: body.referenceCode !== undefined ? cleanText(body.referenceCode) || null : transaction.referenceCode,
             note: body.note !== undefined ? cleanText(body.note) || null : transaction.note,
+            purchaseCost,
             // Giu nguyen thue suat VA tien thue da khai cua dong cu khi chi sua phan dau phieu:
             // bo qua o day la sua ngay chung tu cung lam bay het thue (cong no NCC tut xuong so
             // truoc thue), hoac lam mat so thue khai theo hoa don va quay ve so tu tinh.
@@ -2713,7 +2727,9 @@ export async function PATCH(request: Request) {
               itemId: line.itemId,
               inputQuantity: line.inputQuantity ?? line.quantity,
               inputUnitCode: line.inputUnitCode ?? "",
-              inputUnitCost: line.inputUnitCost ?? line.unitCost,
+              // Đơn giá KHAI (giá NCC). Khai 0 đ (hàng tặng) lưu trống — lấy lại unitCost là biến hàng
+              // tặng thành hàng có giá; unitCost còn gồm phần chi phí mua hàng đã phân bổ.
+              inputUnitCost: line.inputQuantity !== null ? line.inputUnitCost ?? 0 : line.unitCost,
               vatRate: line.vatRate,
               vatAmount: line.vatAmount,
             })),

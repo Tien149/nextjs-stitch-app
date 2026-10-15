@@ -31,6 +31,10 @@ export type MonthlyCostLine = {
   unitCost: number;
   totalCost: number;
   inputUnitCost: number | null;
+  /** Số lượng khai (theo ĐVT nhập); trống = dòng cũ chưa lưu số khai. */
+  inputQuantity?: number | null;
+  /** Phần chi phí mua hàng phân bổ vào dòng (đã nằm trong unitCost) — lib/purchase-cost.ts. */
+  purchaseCostShare?: number | null;
 };
 
 export type MonthlyCostDoc = {
@@ -115,11 +119,16 @@ const typeOf = (doc: MonthlyCostDoc) => doc.transactionType.toUpperCase();
 const isTransfer = (doc: MonthlyCostDoc) => typeOf(doc) === "DIEU_CHUYEN" && Boolean(doc.toWarehouseCode);
 const isInbound = (doc: MonthlyCostDoc) => typeOf(doc).startsWith("NHAP_");
 
-/** Nhập mua / nhập khác: có giá thì là giá phiếu (tính vào bình quân), 0 đ / trống thì đi theo bình quân. */
+/**
+ * Nhập mua / nhập khác: có giá thì là giá phiếu (gồm chi phí mua hàng phân bổ — tính vào bình quân),
+ * khai 0 đ / trống (hàng tặng: lưu đơn giá khai trống, unitCost là bình quân lúc nhập) thì đi theo
+ * bình quân. Dòng cũ không lưu số khai thì tin unitCost.
+ */
 function fixedInboundUnitCost(doc: MonthlyCostDoc, line: MonthlyCostLine) {
   const type = typeOf(doc);
   if (type === "NHAP_KIEM_KE" || type === "NHAP_CHE_BIEN") return null;
-  if (line.inputUnitCost !== null && line.inputUnitCost !== undefined) return line.inputUnitCost > 0 ? line.unitCost : null;
+  if ((line.purchaseCostShare || 0) > 0 || (line.inputUnitCost || 0) > 0) return line.unitCost > 0 ? line.unitCost : null;
+  if (line.inputQuantity !== null && line.inputQuantity !== undefined) return null;
   return line.unitCost > 0 ? line.unitCost : null;
 }
 

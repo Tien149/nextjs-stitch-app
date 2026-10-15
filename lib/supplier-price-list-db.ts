@@ -145,7 +145,7 @@ export async function findPriceDeviations(options: { month: string; supplierCode
       },
       select: {
         id: true, code: true, transactionDate: true, branchCode: true, warehouseCode: true, partnerCode: true,
-        lines: { select: { itemId: true, quantity: true, unitCost: true, vatRate: true, item: { select: { code: true, name: true, unit: true } } } },
+        lines: { select: { itemId: true, quantity: true, unitCost: true, purchaseCostShare: true, vatRate: true, item: { select: { code: true, name: true, unit: true } } } },
       },
       orderBy: { transactionDate: "asc" },
     }),
@@ -165,7 +165,9 @@ export async function findPriceDeviations(options: { month: string; supplierCode
       const price = prices.get(`${(doc.partnerCode || "").toUpperCase()}|${line.itemId}`);
       if (!price) { uncovered += 1; continue; }
       checked += 1;
-      const deviation = priceDeviation(line.unitCost, price.stockUnitPrice);
+      // So đơn giá NCC: unitCost gồm cả chi phí mua hàng phân bổ (lib/purchase-cost.ts) — trừ ra.
+      const supplierUnitPrice = line.quantity > 0 ? line.unitCost - (line.purchaseCostShare || 0) / line.quantity : line.unitCost;
+      const deviation = priceDeviation(supplierUnitPrice, price.stockUnitPrice);
       if (deviation.matched) continue;
       rows.push({
         transactionId: doc.id,
@@ -179,7 +181,7 @@ export async function findPriceDeviations(options: { month: string; supplierCode
         itemName: line.item.name,
         unit: line.item.unit,
         quantity: line.quantity,
-        actualPrice: line.unitCost,
+        actualPrice: supplierUnitPrice,
         listPrice: price.stockUnitPrice,
         diff: deviation.diff,
         ratio: deviation.ratio,

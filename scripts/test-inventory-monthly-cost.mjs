@@ -206,3 +206,28 @@ test("kiểm kê thừa ở kho cả tháng không có giá thì lấy Đơn gi�
   near(lineOf(result, surplus.id).totalCost, 150);
   near(keyOf(result, "2026-08", "BTP", "KBAR").closingValue, 150);
 });
+
+test("hàng tặng lưu đơn giá khai trống (unitCost = bình quân lúc nhập) vẫn đi theo giá tháng", () => {
+  const gift = { ...line("NL", 10, 999, null), inputQuantity: 10 };
+  const out = line("NL", 5);
+  const result = computeMonthlyCosts({
+    items, openingPeriod: "2026-08", opening: [],
+    documents: [
+      doc("M1", "NHAP_MUA", "2026-08-02", "KBEP", [line("NL", 10, 100), gift]),
+      doc("X1", "XUAT_BAN", "2026-08-12", "KBEP", [out]),
+    ],
+  });
+  near(lineOf(result, out.id).unitCost, 100);
+  near(lineOf(result, gift.id).unitCost, 100);
+});
+
+test("chi phí mua hàng phân bổ nằm trong giá nhập, tính vào bình quân tháng", () => {
+  // tiền hàng 10 × 100 = 1.000 + chi phí 200 → giá nhập 120
+  const purchase = { ...line("NL", 10, 120, 100), inputQuantity: 10, purchaseCostShare: 200 };
+  const out = line("NL", 5);
+  const result = computeMonthlyCosts({
+    items, openingPeriod: "2026-08", opening: [],
+    documents: [doc("M1", "NHAP_MUA", "2026-08-02", "KBEP", [purchase]), doc("X1", "XUAT_BAN", "2026-08-12", "KBEP", [out])],
+  });
+  near(lineOf(result, out.id).unitCost, 120);
+});

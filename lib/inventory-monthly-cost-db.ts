@@ -30,7 +30,8 @@ import type { CogsRepostResult } from "@/lib/inventory-cogs";
  * nhà hàng, giá tháng (InventoryMonthlyCost), giá bình quân tồn hiện tại, ghi sổ lại giá vốn.
  *
  * "Tháng cần tính lại": dấu vân tay mọi dòng phiếu kho của tháng (chỉ phần ĐẦU VÀO của bộ tính —
- * mã, kho, ngày, số lượng, giá nhập mua — không gồm giá ra do chính bộ tính ghi) so với lần tính
+ * mã, kho, ngày, số lượng, đơn giá khai, quy đổi, chi phí mua hàng phân bổ — không gồm unitCost /
+ * totalCost do chính bộ tính ghi) so với lần tính
  * gần nhất. Bắt được mọi đường thêm / sửa / xoá / khôi phục / import phiếu mà không phải cài cờ
  * ở từng chỗ. Tháng trước đổi thì các tháng sau cũng phải tính lại (tồn đầu đổi theo).
  */
@@ -62,7 +63,7 @@ export async function loadMonthlyCostSource(client: Client = prisma): Promise<Mo
       where: { deletedAt: null },
       select: {
         id: true, code: true, transactionType: true, transactionDate: true, branchCode: true, warehouseCode: true, toWarehouseCode: true, toBranchCode: true,
-        lines: { select: { id: true, itemId: true, quantity: true, unitCost: true, totalCost: true, inputUnitCost: true } },
+        lines: { select: { id: true, itemId: true, quantity: true, unitCost: true, totalCost: true, inputUnitCost: true, inputQuantity: true, purchaseCostShare: true } },
       },
     }),
     client.inventoryItem.findMany({ select: { id: true, code: true, name: true, itemType: true, unit: true } }),
@@ -92,8 +93,8 @@ export async function periodFingerprints(client: Client = prisma) {
   const rows = await client.$queryRaw<Array<{ period: string; hash: string }>>(Prisma.sql`
     SELECT to_char(t."transactionDate" + interval '7 hours', 'YYYY-MM') AS period,
       md5(string_agg(concat_ws('|', l.id, t.code, t."transactionType", t."warehouseCode", COALESCE(t."toWarehouseCode", ''),
-        (extract(epoch from t."transactionDate") * 1000)::bigint, l."itemId", l.quantity, COALESCE(l."inputUnitCost"::text, '-'),
-        CASE WHEN t."transactionType" IN ('NHAP_MUA', 'NHAP_KHAC') THEN l."unitCost"::text ELSE '' END), ',' ORDER BY l.id)) AS hash
+        (extract(epoch from t."transactionDate") * 1000)::bigint, l."itemId", l.quantity, COALESCE(l."inputQuantity"::text, '-'),
+        COALESCE(l."inputUnitCost"::text, '-'), l."conversionRate", l."purchaseCostShare"), ',' ORDER BY l.id)) AS hash
     FROM "InventoryTransactionLine" l JOIN "InventoryTransaction" t ON t.id = l."transactionId"
     WHERE t."deletedAt" IS NULL
     GROUP BY 1

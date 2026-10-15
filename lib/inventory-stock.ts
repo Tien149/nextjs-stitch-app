@@ -4,6 +4,7 @@ import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { safeConversionRate } from "@/lib/unit-conversion";
 import { resolveVatAmount } from "@/lib/inventory-vat";
 import { roundVnd } from "@/lib/money-rounding";
+import { allocatePurchaseCost, PURCHASE_COST_TYPES } from "@/lib/purchase-cost";
 
 export const STOCK_TRANSACTION_TYPES = [
   "NHAP_MUA",
@@ -87,6 +88,8 @@ export type PostInventoryTransactionInput = {
   referenceCode?: string | null;
   note?: string | null;
   createdBy?: string | null;
+  /** Chi phí mua hàng của phiếu nhập mua — phân bổ vào giá nhập theo trị giá dòng (lib/purchase-cost.ts). */
+  purchaseCost?: number | null;
   lines: StockLineInput[];
 };
 
@@ -521,6 +524,28 @@ export async function reverseStockEffect(
   return [...reversals.values()];
 }
 
+/**
+ * Chi phí mua hàng (khách chốt 13/10/2026): phân bổ theo tiền hàng trước thuế từng dòng rồi cộng vào
+ * giá nhập kho — `unitCost` = (tiền hàng + phần phân bổ) ÷ SL tồn. `inputUnitCost` giữ đơn giá NCC.
+ */
+function withPurchaseCost<T extends { inputQuantity: number; inputUnitCost: number | null; quantity: number; unitCost: number }>(
+  transactionType: string,
+  cost: number | null | undefined,
+  lines: T[],
+) {
+  const purchaseCost = PURCHASE_COST_TYPES.has(transactionType) ? roundVnd(Math.max(0, Number(cost) || 0)) : 0;
+  const amountOf = (line: T) => roundVnd(line.inputQuantity * (line.inputUnitCost || 0));
+  const shares = allocatePurchaseCost(purchaseCost, lines.map((line) => ({ amount: amountOf(line), quantity: line.quantity })));
+  return {
+    purchaseCost,
+    lines: lines.map((line, index) => {
+      const share = shares[index] || 0;
+      if (!(share > 0) || !(line.quantity > 0)) return { ...line, purchaseCostShare: 0 };
+      return { ...line, unitCost: (amountOf(line) + share) / line.quantity, purchaseCostShare: share };
+    }),
+  };
+}
+
 export async function postInventoryTransaction(tx: Tx, input: PostInventoryTransactionInput) {
   const transactionType = normalizeStockTransactionType(input.transactionType);
   if (!isStockTransactionType(transactionType)) stockError("Loai giao dich kho khong hop le");
@@ -538,9 +563,10 @@ export async function postInventoryTransaction(tx: Tx, input: PostInventoryTrans
   for (const line of input.lines) {
     resolvedLines.push(await resolveStockLine(tx, line));
   }
+  const priced = withPurchaseCost(transactionType, input.purchaseCost, resolvedLines);
 
   const valuedLines = [];
-  for (const line of resolvedLines) {
+  for (const line of priced.lines) {
     if (isInboundStockType(transactionType)) {
       const valued = await applyBalanceChange(tx, line.itemId, input.warehouseCode, line.quantity, line.unitCost, "IN");
       valuedLines.push({ ...line, unitCost: valued.unitCost, totalCost: valued.totalCost });
@@ -581,6 +607,7 @@ export async function postInventoryTransaction(tx: Tx, input: PostInventoryTrans
       referenceId: input.referenceId || null,
       referenceCode: input.referenceCode || null,
       partnerCode: input.partnerCode || null,
+      purchaseCost: priced.purchaseCost,
       note: input.note || null,
       createdBy: input.createdBy || null,
       lines: {
@@ -595,6 +622,7 @@ export async function postInventoryTransaction(tx: Tx, input: PostInventoryTrans
           totalCost: line.totalCost,
           vatRate: line.vatRate,
           vatAmount: line.vatAmount,
+          purchaseCostShare: line.purchaseCostShare,
         })),
       },
     },
@@ -626,6 +654,8 @@ export type RepostStockInput = {
   subType?: string | null;
   referenceCode?: string | null;
   note?: string | null;
+  /** Chi phí mua hàng (phiếu nhập mua); `undefined` = giữ số đang có của phiếu. */
+  purchaseCost?: number | null;
   lines: StockLineInput[];
 };
 
@@ -637,6 +667,7 @@ export async function repostInventoryTransaction(
     transactionType: string;
     warehouseCode: string;
     toWarehouseCode: string | null;
+    purchaseCost?: number | null;
     lines: Array<{ itemId: string; quantity: number; totalCost: number }>;
   },
   input: RepostStockInput,
@@ -662,9 +693,10 @@ export async function repostInventoryTransaction(
     : input.lines.map((line) => ({ ...line, inputUnitCost: null, unitCost: null, vatRate: null, vatAmount: null }));
   const resolvedLines = [];
   for (const line of lines) resolvedLines.push(await resolveStockLine(tx, line));
+  const priced = withPurchaseCost(transactionType, input.purchaseCost ?? current.purchaseCost ?? 0, resolvedLines);
 
   const valuedLines = [];
-  for (const line of resolvedLines) {
+  for (const line of priced.lines) {
     if (isInboundStockType(transactionType)) {
       const valued = await applyBalanceChange(tx, line.itemId, input.warehouseCode, line.quantity, line.unitCost, "IN");
       valuedLines.push({ ...line, unitCost: valued.unitCost, totalCost: valued.totalCost });
@@ -695,6 +727,7 @@ export async function repostInventoryTransaction(
       toBranchCode: transactionType === "DIEU_CHUYEN" ? input.toBranchCode || null : null,
       subType: input.subType ?? null,
       partnerCode: input.partnerCode || null,
+      purchaseCost: priced.purchaseCost,
       referenceCode: input.referenceCode || null,
       note: input.note || null,
       lines: {
@@ -709,6 +742,7 @@ export async function repostInventoryTransaction(
           totalCost: line.totalCost,
           vatRate: line.vatRate,
           vatAmount: line.vatAmount,
+          purchaseCostShare: line.purchaseCostShare,
         })),
       },
     },

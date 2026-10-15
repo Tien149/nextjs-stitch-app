@@ -4,7 +4,7 @@ import { assertBranchAccess } from "@/lib/accounting";
 import { INVENTORY_ITEM_UPDATE_TEMPLATE, isMasterDataImportType, normalizeHeader, type ImportType } from "@/lib/import-templates";
 import { parseImportDate, type ParsedImportResult, type ParsedImportRow } from "@/lib/import-parser";
 import type { DemoSession } from "@/lib/auth-demo";
-import { isInboundStockType, isOutboundStockType, isStockTransactionType, isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType } from "@/lib/inventory-stock";
+import { isInboundStockType, isOutboundStockType, isStockTransactionType, isWasteSubType, latestKnownUnitCost, normalizeStockTransactionType, normalizeWasteSubType } from "@/lib/inventory-stock";
 import { parseVatRate, resolveVatAmount, VAT_RATE_CODES, vatAmountOf, vatRateLabel } from "@/lib/inventory-vat";
 import { roundVnd } from "@/lib/money-rounding";
 import { resolveOpeningAsset } from "@/lib/opening-asset";
@@ -532,6 +532,13 @@ function validateInventoryTransaction(
   row.values.amount_before_tax = expectedBeforeTax;
   row.values.amount_after_tax = expectedBeforeTax + vatAmount;
   row.values.vat_amount = vatAmount;
+
+  // Chi phí mua hàng của cả phiếu (lib/purchase-cost.ts): chỉ nhập mua, không âm.
+  if (text(row.values.purchase_cost)) {
+    const purchaseCost = numberValue(row.values.purchase_cost);
+    if (transactionType !== "NHAP_MUA") addError(row, "Cot Chi phi mua hang chi dung cho phieu NHAP_MUA");
+    else if (!Number.isFinite(purchaseCost) || purchaseCost < 0) addError(row, "Chi phi mua hang phai la so khong am");
+  }
 
   // Điều chuyển không nhận nhóm FINISHED: thành phẩm chỉ nhập từ chế biến, xuất qua bán/hủy.
   if (transactionType === "DIEU_CHUYEN" && item.itemType === "FINISHED") {
@@ -1295,7 +1302,7 @@ export async function validateImportResult(
     select: { type: true, code: true, name: true, group: true, partnerType: true, branch: true, status: true, accountNo: true, settlementBankCode: true },
   });
   const inventoryItems = ["OPENING_BALANCE", "INVENTORY_TRANSACTION", "BOM", "STOCKTAKE", "REVENUE_POS", "INVENTORY_ITEM", "PRODUCTION", "WASTE"].includes(importType)
-    ? await prisma.inventoryItem.findMany({ select: { code: true, name: true, itemType: true, status: true, unit: true, unitConversions: { select: { unitCode: true, conversionRate: true } } } })
+    ? await prisma.inventoryItem.findMany({ select: { id: true, code: true, name: true, itemType: true, status: true, unit: true, unitConversions: { select: { unitCode: true, conversionRate: true } } } })
     : [];
   const inventoryBalances = importType === "STOCKTAKE"
     ? await prisma.inventoryBalance.findMany({ include: { item: { select: { code: true } } } })
@@ -1329,6 +1336,7 @@ export async function validateImportResult(
   const stocktakeCodesInFile = new Map<string, number>();
   // Kiểm dư bán thành phẩm có định lượng chờ rã BOM, không cần khai đơn giá (khách chốt 28/09/2026).
   const explodableCheckers = new Map<string, Awaited<ReturnType<typeof semiFinishedWithRecipeChecker>>>();
+  const fallbackUnitCosts = new Map<string, number>();
   const assetStocktakeRows = new Map<string, number>();
   const inventoryItemRows = new Map<string, { name: string; itemType: string; unit: string; rowNumber: number }>();
   // Mẫu "Cập nhật bổ sung mặt hàng": chỉ sửa mã đã có, ô trống giữ nguyên (03/10/2026).
@@ -1387,7 +1395,14 @@ export async function validateImportResult(
         }
         const stExplodable = explodableCheckers.get(stBranch)?.(stItem) ?? false;
         if (stActual > stSystem && !stExplodable && stAvg <= 0 && numberValue(row.values.unit_cost) <= 0) {
-          addError(row, `${stItem.code} chua co gia von trong kho — khai cot "Don gia" de ghi nhan phan thua`);
+          // Kho kiểm chưa có giá thì lấy giá mua gần nhất / giá kho khác như lúc ghi (khách chốt 15/10/2026);
+          // chỉ mã chưa có giá ở đâu cả mới bắt khai "Don gia".
+          if (!fallbackUnitCosts.has(stItem.id)) {
+            fallbackUnitCosts.set(stItem.id, await latestKnownUnitCost(prisma as unknown as Parameters<typeof latestKnownUnitCost>[0], stItem.id));
+          }
+          if (!((fallbackUnitCosts.get(stItem.id) || 0) > 0)) {
+            addError(row, `${stItem.code} chua co gia von o kho nao — khai cot "Don gia" de ghi nhan phan thua`);
+          }
         }
       }
     }

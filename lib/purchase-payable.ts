@@ -31,6 +31,8 @@ export type PurchasePayableSource = {
   partnerCode: string | null;
   referenceType?: string | null;
   referenceCode: string | null;
+  /** Chi phí mua hàng của phiếu (lib/purchase-cost.ts) — NCC thu chung hoá đơn nên cộng vào nợ. */
+  purchaseCost?: number | null;
   lines: PurchasePayableLine[];
 };
 
@@ -65,7 +67,7 @@ export function purchaseLineAmount(line: PurchasePayableLine) {
  * Số nợ là THÀNH TIỀN SAU THUẾ — đúng số trên hoá đơn NCC gửi và đúng số kế toán phải chuyển
  * đi. Khách chốt 21/09/2026: giá vốn tồn kho giữ số trước thuế (`totalCost`), phần thuế GTGT
  * đầu vào (`vatAmount`) chỉ cộng vào khoản phải trả. Dòng cũ chưa có cột thuế mang vatAmount
- * = 0 nên số nợ của dữ liệu đã có không đổi.
+ * = 0 nên số nợ của dữ liệu đã có không đổi. Chi phí mua hàng của phiếu cộng thêm vào nợ.
  */
 function payableAmountOf(transaction: PurchasePayableSource) {
   if (transaction.transactionType !== "NHAP_MUA") return 0;
@@ -73,7 +75,8 @@ function payableAmountOf(transaction: PurchasePayableSource) {
   // ghi thêm một khoản nữa ở đây là nợ NCC gấp đôi.
   if (transaction.referenceType === "PURCHASE_ORDER") return 0;
   if (!(transaction.partnerCode || "").trim()) return 0;
-  const amount = transaction.lines.reduce((sum, line) => sum + purchaseLineAmount(line) + (line.vatAmount || 0), 0);
+  // Chi phí mua hàng (vận chuyển...) NCC thu chung hoá đơn — khách chốt 13/10/2026 cộng vào nợ NCC.
+  const amount = transaction.lines.reduce((sum, line) => sum + purchaseLineAmount(line) + (line.vatAmount || 0), 0) + (transaction.purchaseCost || 0);
   return amount > 0 ? amount : 0;
 }
 

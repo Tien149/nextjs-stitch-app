@@ -20,6 +20,7 @@ import StocktakeByLocation from "@/components/inventory/StocktakeByLocation";
 import StockReportsPanel from "@/components/inventory/StockReportsPanel";
 import MonthlyCostPanel from "@/components/inventory/MonthlyCostPanel";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
+import { MoneyInput } from "@/components/MoneyInput";
 import MissingRecipesPanel from "@/components/inventory/MissingRecipesPanel";
 import TransferRequestsPanel, { type TransferRequest } from "@/components/inventory/TransferRequestsPanel";
 import StocktakeDocumentsPanel from "@/components/inventory/StocktakeDocumentsPanel";
@@ -30,6 +31,7 @@ import { money, quantity as qty, unitPrice } from "@/lib/format-number";
 import { parseVatRate, VAT_RATE_OPTIONS, vatAmountOf, vatRateLabel } from "@/lib/inventory-vat";
 import { cogsRepostMessage, type CogsRepostResult } from "@/lib/inventory-cogs";
 import { roundVnd } from "@/lib/round-vnd";
+import { allocatePurchaseCost } from "@/lib/purchase-cost";
 import { sumRoundedByRow, sumStockDocuments } from "@/lib/table-subtotal";
 import { statValueTextClass } from "@/components/reports/report-ui";
 import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING, STOCKTAKE_RETURNED, isStocktakeEditable, stocktakeStatusLabel, stocktakeStatusTone } from "@/lib/stocktake-status";
@@ -45,9 +47,11 @@ type ItemGroup = { id: string; code: string; name: string; group: string | null;
 type RevenueGroup = { id: string; code: string; name: string; group: string | null };
 type Balance = { id: string; warehouseCode: string; quantity: number; averageCost: number; item: Item };
 type Transaction = { id: string; code: string; transactionType: string; subType: string | null; transactionDate: string; branchCode: string; warehouseCode: string; toWarehouseCode: string | null; toBranchCode: string | null; partnerCode: string | null; referenceType: string | null; internalReceivableDebtCode: string | null; internalPayableDebtCode: string | null; referenceCode: string | null; note?: string | null; explosionStatus?: string | null;
+  /** Chi phí mua hàng của phiếu nhập mua — đã phân bổ vào giá nhập từng dòng (lib/purchase-cost.ts). */
+  purchaseCost?: number;
   /** Phiếu chế biến của rã BOM trên danh sách Nhập/Xuất kho chỉ mang 3 dòng đầu — số tổng nằm ở đây (xem compactFlowDocument). */
   lineSummary?: { count: number; totalCost: number; vatAmount: number; quantity: number; units: string[]; searchText: string };
-  lines: Array<{ id: string; inputQuantity: number | null; inputUnitCode: string | null; conversionRate: number; quantity: number; unitCost: number; inputUnitCost: number | null; totalCost: number; vatRate: number | null; vatAmount: number; item: Item }> };
+  lines: Array<{ id: string; inputQuantity: number | null; inputUnitCode: string | null; conversionRate: number; quantity: number; unitCost: number; inputUnitCost: number | null; totalCost: number; vatRate: number | null; vatAmount: number; purchaseCostShare?: number; item: Item }> };
 type Recipe = { id: string; code: string; productCode: string; branchCode?: string | null; productName: string; unit: string; outputConversionRate: number; sellingPrice: number; estimatedCost: number; estimatedUnitCost: number; version: number; effectiveFrom: string; status: string; lines: Array<{ quantity: number; unitCode: string | null; conversionRate: number; wasteRate: number; item: Item; quantityBase?: number; componentUnitCost?: number; lineCost?: number }> };
 type CostSummaryRow = { productCode: string; branchCode: string; productName: string; group: string; stockUnit: string; batchUnit: string; outputConversionRate: number; sellingPrice: number; unitCost: number; costRatio: number | null; version: number; appliedFrom?: string; appliedTo?: string };
 type WasteReportRow = { itemCode: string; itemName: string; unit: string; itemType: string; totalQuantity: number; totalValue: number; documentCount: number; bySubType: Record<string, { quantity: number; value: number }> };
@@ -258,7 +262,7 @@ export default function InventoryPage() {
   const [deletingItem, setDeletingItem] = useState<Item | null>(null);
   /** Sửa / xoá phiếu kho ngay trên bảng phiếu của ba tab Nhập / Xuất / Điều chuyển. */
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
-  const [transactionEditForm, setTransactionEditForm] = useState({ transactionDate: "", warehouseCode: "", toWarehouseCode: "", partnerCode: "", subType: "", referenceCode: "", note: "" });
+  const [transactionEditForm, setTransactionEditForm] = useState({ transactionDate: "", warehouseCode: "", toWarehouseCode: "", partnerCode: "", subType: "", referenceCode: "", note: "", purchaseCost: "" });
   const [transactionEditLines, setTransactionEditLines] = useState<Array<{ key: string; itemId: string; quantity: string; unitCode: string; unitCost: string; baseUnitCost: number; vatRate: string; vatAmount: string }>>([]);
   const [transactionEditError, setTransactionEditError] = useState<string | null>(null);
   const [transactionEditSaving, setTransactionEditSaving] = useState(false);
@@ -295,7 +299,7 @@ export default function InventoryPage() {
   const [bulkStatusRunning, setBulkStatusRunning] = useState(false);
   const [conversionForm, setConversionForm] = useState({ itemId: "", purchaseUnit: "thung", conversionRate: "24", note: "" });
   const [supplierPrices, setSupplierPrices] = useState<{ key: string; prices: Array<{ itemId: string; unitCode: string; unitPrice: number; vatRate: number | null; stockUnitPrice: number; priceListCode: string; effectiveFrom: string; effectiveTo: string | null }> }>({ key: "", prices: [] });
-  const [stockForm, setStockForm] = useState({ transactionType: "NHAP_MUA", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HN", itemId: "", inputUnitCode: "", quantity: "10", unitCost: "100000", vatRate: "KKKNT", vatAmount: "", partnerCode: "", paymentDueDate: "", referenceCode: "", note: "Nhap kho van hanh", allocationMonths: "", transactionDate: today() });
+  const [stockForm, setStockForm] = useState({ transactionType: "NHAP_MUA", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HN", itemId: "", inputUnitCode: "", quantity: "10", unitCost: "100000", vatRate: "KKKNT", vatAmount: "", purchaseCost: "", partnerCode: "", paymentDueDate: "", referenceCode: "", note: "Nhap kho van hanh", allocationMonths: "", transactionDate: today() });
   /** Nhập mua theo PO (GRPO): PO đã duyệt còn hàng chưa nhận + số lượng nhận trên từng dòng. */
   const [receivablePOs, setReceivablePOs] = useState<ReceivablePO[]>([]);
   const [grpoOrderId, setGrpoOrderId] = useState("");
@@ -467,6 +471,8 @@ export default function InventoryPage() {
   // Ô "Tiền thuế" để trống = tự tính; khai số khác thì xem trước phải hiện đúng số sẽ lưu.
   const stockVatAmount = stockForm.vatAmount.trim() === "" ? stockAutoVatAmount : Number(stockForm.vatAmount || 0);
   const stockAmountAfterTax = stockAmountBeforeTax + stockVatAmount;
+  // Chi phí mua hàng (vận chuyển...) của phiếu nhập mua: cộng vào giá nhập kho và công nợ NCC (lib/purchase-cost.ts).
+  const stockPurchaseCost = active === "inbound" && stockForm.transactionType === "NHAP_MUA" ? Math.max(0, roundVnd(Number(stockForm.purchaseCost || 0))) : 0;
   // Chuẩn hoá ngay tại chỗ dùng, không chờ effect: render đầu tiên đã phải đúng.
   const explodeStoreCodes = visibleStoreOptions(user).map((option) => option.code);
   const explodeBranchCode = explodeStoreCodes.includes(explodeForm.branchCode)
@@ -1628,6 +1634,7 @@ export default function InventoryPage() {
       subType: transaction.subType || "",
       referenceCode: transaction.referenceCode || "",
       note: transaction.note || "",
+      purchaseCost: transaction.purchaseCost ? String(Math.round(transaction.purchaseCost)) : "",
     });
     setTransactionEditLines(transaction.lines.map((line, index) => {
       /**
@@ -1649,8 +1656,10 @@ export default function InventoryPage() {
       // Ô Đơn giá theo ĐVT ĐANG CHỌN: phiếu nhập thì số đã khai; thiếu số khai (và mọi phiếu
       // xuất / điều chuyển) thì quy giá vốn theo ĐVT tồn (đ/gr) ra ĐVT nhập (đ/chai). Trước đây
       // hiện thẳng đ/gr cạnh chữ "chai" nên nhìn như giá sai — xem repostInventoryTransaction.
-      unitCost: String(isInboundType(transaction.transactionType) && line.inputUnitCost !== null
-        ? line.inputUnitCost
+      // Khai 0 đ (hàng tặng) lưu đơn giá khai trống: hiện 0 chứ không lấy giá vốn (gồm cả chi phí
+      // mua hàng phân bổ) — lưu lại là biến hàng tặng thành hàng có giá.
+      unitCost: String(isInboundType(transaction.transactionType) && (line.inputUnitCost !== null || line.inputQuantity !== null)
+        ? line.inputUnitCost ?? 0
         : roundUnitCost(line.unitCost * (line.conversionRate || 1))),
       baseUnitCost: line.unitCost,
       // Mã thuế suất ("8%" / "KKKNT") để ô chọn hiện đúng cái đã lưu; ô trống = chưa khai thuế.
@@ -1694,6 +1703,7 @@ export default function InventoryPage() {
           partnerCode: transactionEditForm.partnerCode,
           referenceCode: transactionEditForm.referenceCode,
           note: transactionEditForm.note,
+          ...(editingTransaction.transactionType === "NHAP_MUA" ? { purchaseCost: transactionEditForm.purchaseCost || "0" } : {}),
           lines: transactionEditLines.map((line) => ({
             itemId: line.itemId,
             inputQuantity: line.quantity,
@@ -2508,6 +2518,15 @@ export default function InventoryPage() {
                 </div>
               )}
 
+              {active === "inbound" && stockForm.transactionType === "NHAP_MUA" && (
+                <Input label="Chi phí mua hàng">
+                  <MoneyInput className="control text-right" value={stockForm.purchaseCost} onChange={(value) => setStockForm({ ...stockForm, purchaseCost: value })} placeholder="0" />
+                  <small className="text-[11px] text-slate-500 block mt-1">
+                    Vận chuyển, bốc xếp... của cả phiếu: cộng vào giá nhập kho (nhiều dòng thì chia theo trị giá từng dòng) và cộng vào công nợ NCC.
+                  </small>
+                </Input>
+              )}
+
               {selectedStockItem && (
                 <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-800">
                   <b>Preview:</b> {qty(stockInputQuantity)} {selectedStockUnit?.unitName || selectedStockUnit?.unitCode || selectedStockItem.unit}
@@ -2516,6 +2535,9 @@ export default function InventoryPage() {
                   {active === "inbound" && stockBaseUnitCost > 0 ? ` · Don gia quy doi ${unitPrice(stockBaseUnitCost)} d/${selectedStockItem.unit} · Thanh tien truoc thue ${money(stockAmountBeforeTax)} d` : ""}
                   {active === "inbound" && stockBaseUnitCost > 0 && stockVatAmount > 0
                     ? ` · Thue GTGT ${money(stockVatAmount)} d · Thanh tien sau thue ${money(stockAmountAfterTax)} d`
+                    : ""}
+                  {stockPurchaseCost > 0 && stockBaseQuantity > 0
+                    ? ` · Chi phi mua hang ${money(stockPurchaseCost)} d → Gia nhap kho ${unitPrice((stockAmountBeforeTax + stockPurchaseCost) / stockBaseQuantity)} d/${selectedStockItem.unit} (${money(stockAmountBeforeTax + stockPurchaseCost)} d)`
                     : ""}
                 </div>
               )}
@@ -2563,7 +2585,8 @@ export default function InventoryPage() {
               {createsPurchasePayable && (<>
                 <div className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-800 !mt-2">
                   Phiếu này sẽ sinh <b>công nợ phải trả</b> cho nhà cung cấp bằng <b>thành tiền sau thuế</b> của phiếu
-                  (giá vốn tồn kho vẫn lấy số trước thuế). Dòng <b>đơn giá 0</b> là hàng tặng — vẫn vào kho theo giá
+                  {stockPurchaseCost > 0 ? <> cộng <b>chi phí mua hàng {money(stockPurchaseCost)} đ</b> (= {money(stockAmountAfterTax + stockPurchaseCost)} đ)</> : null}
+                  {" "}(giá vốn tồn kho vẫn lấy số trước thuế). Dòng <b>đơn giá 0</b> là hàng tặng — vẫn vào kho theo giá
                   bình quân nhưng không tính một đồng nào vào công nợ.
                   Trả tiền rồi thì lập phiếu chi cho chính nhà cung cấp đó để cấn trừ.
                 </div>
@@ -2754,6 +2777,9 @@ export default function InventoryPage() {
                   <Cell right>{documentQuantityText(row.transaction)}</Cell>
                   <Cell right>
                     <b>{money(documentTotalCost(row.transaction))} đ</b>
+                    {(row.transaction.purchaseCost || 0) > 0 && (
+                      <small className="block text-slate-500">gồm CP mua hàng {money(row.transaction.purchaseCost || 0)} đ</small>
+                    )}
                     {/* Có thuế mới in thêm dòng thứ hai: phiếu không thuế thì cột giữ nguyên như cũ. */}
                     {documentVat(row.transaction) > 0 && (
                       <small className="block text-slate-500">
@@ -3055,6 +3081,11 @@ export default function InventoryPage() {
                 <Input label="Tham chiếu / Số chứng từ">
                   <input data-input-kind="code" className="control" value={transactionEditForm.referenceCode} onChange={(e) => setTransactionEditForm({ ...transactionEditForm, referenceCode: e.target.value })} />
                 </Input>
+                {editingTransaction.transactionType === "NHAP_MUA" && (
+                  <Input label="Chi phí mua hàng">
+                    <MoneyInput className="control text-right" value={transactionEditForm.purchaseCost} onChange={(value) => setTransactionEditForm({ ...transactionEditForm, purchaseCost: value })} placeholder="0" />
+                  </Input>
+                )}
                 <Input label="Ghi chú">
                   <input className="control" value={transactionEditForm.note} onChange={(e) => setTransactionEditForm({ ...transactionEditForm, note: e.target.value })} />
                 </Input>
@@ -3146,6 +3177,17 @@ export default function InventoryPage() {
                   );
                 })}
               </div>
+
+              {editingTransaction.transactionType === "NHAP_MUA" && Number(transactionEditForm.purchaseCost || 0) > 0 && (() => {
+                const amounts = transactionEditLines.map((line) => ({ amount: roundVnd(Number(line.quantity || 0) * Number(line.unitCost || 0)), quantity: Number(line.quantity || 0) }));
+                const shares = allocatePurchaseCost(Number(transactionEditForm.purchaseCost || 0), amounts);
+                return (
+                  <p className="rounded-lg bg-blue-50 border border-blue-100 text-blue-800 px-3 py-2 text-xs leading-relaxed">
+                    Chi phí mua hàng <b>{money(Number(transactionEditForm.purchaseCost || 0))} đ</b> chia theo trị giá dòng, cộng vào giá nhập kho và công nợ NCC:{" "}
+                    {transactionEditLines.map((line, index) => `${data.items.find((candidate) => candidate.id === line.itemId)?.code || `Dòng ${index + 1}`} ${money(shares[index] || 0)} đ`).join(" · ")}
+                  </p>
+                );
+              })()}
 
               {transactionEditError && (
                 <p className="rounded-lg bg-rose-50 border border-rose-100 text-rose-700 px-3 py-2 text-sm">{transactionEditError}</p>
