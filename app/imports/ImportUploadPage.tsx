@@ -420,6 +420,7 @@ export default function ImportUploadPage({
   }, [isCheckingAuth, requiresBranch]);
 
   const errorRows = useMemo(() => preview?.rows.filter((row) => row.errors.length > 0) || [], [preview]);
+  const warningRows = useMemo(() => preview?.rows.filter((row) => row.errors.length === 0 && (row.warnings?.length || 0) > 0) || [], [preview]);
   const skippedExistingRows = useMemo(() => preview?.rows.filter((row) => row.values.import_action === "SKIP_EXISTING") || [], [preview]);
   /**
    * Dòng nghi trùng: cùng tài khoản + ngày + số tiền với một giao dịch đã có trong sổ, chỉ khác
@@ -1413,6 +1414,13 @@ export default function ImportUploadPage({
                   </div>
                 )}
 
+                {warningRows.length > 0 && (
+                  <div className="px-4 py-3 border-b border-slate-100 bg-amber-50 text-sm text-amber-900">
+                    <p className="font-bold">{warningRows.length} dòng có cảnh báo (vẫn ghi được):</p>
+                    <p className="mt-1">Dòng {warningRows[0].rowNumber}: {warningRows[0].warnings?.join("; ")}</p>
+                  </div>
+                )}
+
                 {errorRows.length > 0 && (
                   <div className="px-4 py-3 border-b border-slate-100 bg-rose-50 text-sm text-rose-800">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1545,8 +1553,8 @@ export default function ImportUploadPage({
                               </td>
                             );
                           })}
-                          <td className={`px-4 py-3 ${row.errors.length > 0 ? "font-semibold text-rose-700" : "text-slate-400"}`}>
-                            {row.errors.join("; ") || "-"}
+                          <td className={`px-4 py-3 ${row.errors.length > 0 ? "font-semibold text-rose-700" : row.warnings?.length ? "text-amber-700" : "text-slate-400"}`}>
+                            {row.errors.join("; ") || row.warnings?.join("; ") || "-"}
                           </td>
                         </tr>
                         );

@@ -1,7 +1,7 @@
 /**
  * Import kiểm kê đếm THỪA ở kho chưa có giá vốn (khách chốt 15/10/2026): không bắt khai "Đơn giá"
- * nữa mà lấy giá mua gần nhất / giá kho khác (latestKnownUnitCost). Chỉ mã chưa có giá ở kho nào
- * mới còn báo lỗi ngay ở bước xem trước.
+ * nữa mà lấy giá mua gần nhất / giá kho khác (latestKnownUnitCost). Mã chưa có giá ở kho nào: vẫn
+ * ghi được, phần thừa 0 đ đi theo giá bình quân tháng — xem trước chỉ cảnh báo (khách chốt 15/10/2026).
  *
  * Chạy trên DB thật với mã *_SPC, cửa hàng SPC riêng, ngày năm 2031 và tự dọn sạch.
  *
@@ -76,20 +76,21 @@ test("kiểm thừa ở kho chưa có giá lấy giá mua gần nhất", async (
     lines: [{ itemId: priced.id, inputQuantity: 1000, inputUnitCode: "G", inputUnitCost: 60 }],
   }));
 
-  // Mã chưa có giá ở kho nào vẫn bắt khai Đơn giá; mã có giá ở kho khác thì không.
-  const blocked = await preview([
-    ["2031-01-31", BRANCH, KITCHEN, PRICED, 50, ""],
-    ["2031-01-31", BRANCH, KITCHEN, UNPRICED, 20, ""],
-  ]);
-  assert.deepEqual(blocked.parsed.rows[0].errors, [], "Đào có giá ở bar → không lỗi");
-  assert.match(blocked.parsed.rows[1].errors.join(" "), /chua co gia von o kho nao/);
-
-  // Khai giá cho bột ngò thì cả file qua và ghi được.
-  const { template, parsed } = await preview([
+  // Khai giá cho bột ngò: không lỗi, không cảnh báo.
+  const declared = await preview([
     ["2031-01-31", BRANCH, KITCHEN, PRICED, 50, ""],
     ["2031-01-31", BRANCH, KITCHEN, UNPRICED, 20, 15],
   ]);
-  assert.deepEqual(parsed.rows.flatMap((row) => row.errors), []);
+  assert.deepEqual(declared.parsed.rows.flatMap((row) => [...row.errors, ...(row.warnings || [])]), []);
+
+  // Mã chưa có giá ở kho nào, không khai: không chặn nữa — chỉ cảnh báo ghi 0 đ theo bình quân tháng.
+  const { template, parsed } = await preview([
+    ["2031-01-31", BRANCH, KITCHEN, PRICED, 50, ""],
+    ["2031-01-31", BRANCH, KITCHEN, UNPRICED, 20, ""],
+  ]);
+  assert.deepEqual(parsed.rows.flatMap((row) => row.errors), [], "không dòng nào lỗi");
+  assert.deepEqual(parsed.rows[0].warnings || [], [], "Đào có giá ở bar → không cảnh báo");
+  assert.match((parsed.rows[1].warnings || []).join(" "), /chưa có giá ở kho nào — phần thừa ghi 0 đ/);
   const batch = await commitImport({
     importType: "STOCKTAKE", templateCode: template.code, fileName: "kk-spc.xlsx",
     uploadedBy: session.name, mapping: parsed.mapping, rows: parsed.rows,
@@ -103,5 +104,6 @@ test("kiểm thừa ở kho chưa có giá lấy giá mua gần nhất", async (
   const lines = new Map(docs.flatMap((doc) => doc.lines).map((line) => [line.item.code, line]));
   assert.equal(lines.get(PRICED).quantity, 50);
   assert.ok(Math.abs(lines.get(PRICED).unitCost - 60) < 0.0001, "phần thừa lấy giá mua gần nhất 60 đ/g");
-  assert.ok(Math.abs(lines.get(UNPRICED).unitCost - 15) < 0.0001, "mã chưa có giá dùng đơn giá khai");
+  assert.equal(lines.get(UNPRICED).quantity, 20);
+  assert.equal(lines.get(UNPRICED).unitCost, 0, "mã chưa có giá ở đâu: phần thừa ghi 0 đ");
 });

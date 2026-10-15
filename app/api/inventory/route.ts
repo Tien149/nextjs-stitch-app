@@ -7,7 +7,7 @@ import { prisma, type TxClient } from "@/lib/prisma";
 import { apiError, assertPeriodOpen, businessError, cleanText, isPeriodLocked, toDate, toNumber } from "@/lib/phase3";
 import { requestedBranch, assertBranchAccess, repostInventoryCogs } from "@/lib/accounting";
 import { allowedWarehousesOf, assertWarehouseAccess, scopeWarehouses } from "@/lib/warehouse-scope";
-import { isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType, postInventoryTransaction, repostInventoryTransaction, reverseStockEffect } from "@/lib/inventory-stock";
+import { isWasteSubType, latestKnownUnitCost, normalizeStockTransactionType, normalizeWasteSubType, postInventoryTransaction, repostInventoryTransaction, reverseStockEffect } from "@/lib/inventory-stock";
 import { createPurchasePayable, purchasePayableCodeOf, removePurchasePayables, syncPurchasePayable, PURCHASE_PAYABLE_SOURCE } from "@/lib/purchase-payable";
 import { postStockTransfer, syncTransferInternalDebt } from "@/lib/inventory-transfer";
 import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING, STOCKTAKE_RETURNED, isStocktakeEditable, stocktakeStatusLabel } from "@/lib/stocktake-status";
@@ -1559,7 +1559,6 @@ export async function POST(request: Request) {
         businessError(duplicatedInTrashMessage(requestedStocktakeCode, "Phiếu kiểm kê"));
       }
       const result = await prisma.$transaction(async (tx) => {
-        const isExplodable = await semiFinishedWithRecipeChecker(tx, branchCode);
         // Phiếu đang sửa: dòng đã có giữ nguyên số sổ sách chốt lúc đếm lần đầu (đổi kho thì đếm lại từ đầu).
         const savedSystem = new Map(existing && existing.warehouseCode === warehouseCode
           ? existing.lines.map((line) => [line.itemId, line.systemQuantity] as const)
@@ -1585,11 +1584,8 @@ export async function POST(request: Request) {
             }
           }
           const varianceQuantity = row.actualQuantity - systemQuantity;
-          // Hàng đếm THỪA mà chưa có giá vốn thì bắt khai đơn giá ngay lúc gửi — để kế toán duyệt
-          // được luôn. BTP có định lượng chờ rã BOM lấy giá từ nguyên liệu nên thôi.
-          if (varianceQuantity > 0 && !isExplodable(item) && (balance?.averageCost || 0) <= 0 && row.unitCost <= 0) {
-            businessError(`${item.code} chưa có giá vốn trong kho ${warehouseCode}. Nhập "Đơn giá" cho dòng này để ghi nhận phần thừa ${varianceQuantity} ${item.unit}.`);
-          }
+          // Hàng đếm THỪA chưa có giá vốn: không bắt khai đơn giá nữa — lúc duyệt lấy giá mua gần nhất / giá kho
+          // khác, không có thì ghi 0 đ theo giá bình quân tháng (khách chốt 15/10/2026).
           lineData.push({
             itemId: item.id,
             systemQuantity,
@@ -1786,10 +1782,10 @@ export async function POST(request: Request) {
           if (Math.abs(varianceQuantity) <= quantityEpsilon) continue;
           const balance = await tx.inventoryBalance.findUnique({ where: { itemId_warehouseCode: { itemId: item.id, warehouseCode } } });
           const surplusToExplode = varianceQuantity > 0 && isExplodable(item);
-          const surplusUnitCost = (balance?.averageCost || 0) > 0 ? balance?.averageCost || 0 : line.unitCost || 0;
-          if (varianceQuantity > 0 && !surplusToExplode && surplusUnitCost <= 0) {
-            businessError(`${item.code} chưa có giá vốn trong kho ${warehouseCode}. Trả lại phiếu để nhà hàng nhập "Đơn giá" cho phần thừa ${varianceQuantity} ${item.unit}.`);
-          }
+          let surplusUnitCost = (balance?.averageCost || 0) > 0 ? balance?.averageCost || 0 : line.unitCost || 0;
+          // Kho chưa có giá, phiếu không khai: giá mua gần nhất / giá kho khác; không có ở đâu thì 0 đ — phần thừa
+          // đi theo giá bình quân tháng (khách chốt 15/10/2026).
+          if (varianceQuantity > 0 && !surplusToExplode && surplusUnitCost <= 0) surplusUnitCost = await latestKnownUnitCost(tx, item.id, warehouseCode);
           if (surplusToExplode) deferredSurplus = true;
           else if (varianceQuantity > 0) inboundLines.push({ itemId: item.id, inputQuantity: varianceQuantity, inputUnitCode: item.unit, inputUnitCost: surplusUnitCost });
           if (varianceQuantity < 0) outboundLines.push({ itemId: item.id, inputQuantity: Math.abs(varianceQuantity), inputUnitCode: item.unit, inputUnitCost: 0 });

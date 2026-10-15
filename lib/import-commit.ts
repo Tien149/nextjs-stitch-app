@@ -1736,16 +1736,12 @@ export async function commitImport(input: CommitInput) {
             },
           });
           await setImportTarget(tx, staging, row, "STOCKTAKE", stocktake.id);
-          // Hàng đếm THỪA mà kho chưa có giá vốn thì phải khai "Đơn giá" trên file —
-          // nhập giá 0 là giá trị kho sai và giá vốn món ăn theo sai vĩnh viễn.
-          // Kho kiểm chưa có giá và file không khai: lấy giá mua gần nhất / giá kho khác (khách chốt 15/10/2026).
+          // Hàng đếm THỪA mà kho chưa có giá vốn và file không khai "Đơn giá": lấy giá mua gần nhất / giá kho
+          // khác; không có ở đâu cả thì ghi 0 đ, phần thừa đi theo giá bình quân tháng (khách chốt 15/10/2026).
           const surplusToExplode = varianceQuantity > 0 && isExplodable(item);
           let surplusUnitCost = (balance?.averageCost || 0) > 0 ? balance?.averageCost || 0 : declaredUnitCost;
           if (varianceQuantity > 0 && !surplusToExplode && surplusUnitCost <= 0) {
             surplusUnitCost = await latestKnownUnitCost(tx, item.id, asText(first.values.warehouse_code));
-          }
-          if (varianceQuantity > 0 && !surplusToExplode && surplusUnitCost <= 0) {
-            throw new Error(`Dong ${row.rowNumber}: ${item.code} chua co gia von o kho nao — khai cot "Don gia" de ghi nhan phan thua`);
           }
           if (surplusToExplode) deferredSurplus = true;
           else if (varianceQuantity > 0) inboundLines.push({ itemId: item.id, inputQuantity: varianceQuantity, inputUnitCode: item.unit, inputUnitCost: surplusUnitCost });

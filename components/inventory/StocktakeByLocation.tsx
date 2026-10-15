@@ -533,13 +533,14 @@ export default function StocktakeByLocation(props: {
                 rows={preview.rows.filter((row) => !onlyVariance || Math.abs(row.varianceQuantity) > EPSILON)}
                 unitCostCell={(row) => row.varianceQuantity > 0 ? (
                   <input type="number" min="0" className={`control text-right w-24 inline-block ${row.needsUnitCost ? "border-rose-400" : ""}`}
-                    placeholder={row.needsUnitCost ? "Nhập giá" : unitPrice(row.unitCost)}
+                    placeholder={row.needsUnitCost ? "0 đ" : unitPrice(row.unitCost)}
+                    title={row.needsUnitCost ? "Chưa có giá ở kho nào — để trống thì ghi 0 đ, theo giá bình quân khi Tính giá vốn tháng" : undefined}
                     value={unitCosts[row.itemId] ?? ""}
                     onChange={(e) => { setUnitCosts({ ...unitCosts, [row.itemId]: e.target.value }); }} />
                 ) : <span className="text-slate-500">{unitPrice(row.unitCost)}</span>}
               />
               {Object.keys(unitCosts).length > 0 && <p className="text-xs text-slate-500">Đã sửa đơn giá — bấm <b>Xem tổng hợp</b> lại để tính giá trị theo giá mới trước khi duyệt.</p>}
-              <button type="button" className="primary-button w-full !min-h-12" disabled={busy || preview.rows.some((row) => row.needsUnitCost && !(Number(unitCosts[row.itemId]) > 0))} onClick={() => void approve()}>
+              <button type="button" className="primary-button w-full !min-h-12" disabled={busy} onClick={() => void approve()}>
                 Duyệt {preview.sheets.length} phiếu · chốt tồn lúc {dateTimeText(cutoffInput)}
               </button>
             </div>

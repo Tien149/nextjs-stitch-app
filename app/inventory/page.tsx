@@ -4197,7 +4197,7 @@ export default function InventoryPage() {
                                   inputMode="numeric"
                                   className="control !mt-0 w-24 text-right"
                                   placeholder="Giá vốn"
-                                  title="Hàng chưa có giá vốn — bắt buộc khai khi đếm THỪA"
+                                  title="Hàng chưa có giá vốn — khai nếu biết giá; để trống thì phần THỪA lấy giá mua gần nhất, không có thì 0 đ theo giá bình quân tháng"
                                   value={row.unitCost}
                                   onChange={(e) => patchRow(row.itemId, { unitCost: e.target.value })}
                                 />
@@ -4246,7 +4246,7 @@ export default function InventoryPage() {
                                     inputMode="numeric"
                                     className="control text-right w-24 inline-block"
                                     placeholder="Giá vốn"
-                                    title="Hàng chưa có giá vốn — bắt buộc khai khi đếm THỪA"
+                                    title="Hàng chưa có giá vốn — khai nếu biết giá; để trống thì phần THỪA lấy giá mua gần nhất, không có thì 0 đ theo giá bình quân tháng"
                                     value={row.unitCost}
                                     onChange={(e) => patchRow(row.itemId, { unitCost: e.target.value })}
                                   />

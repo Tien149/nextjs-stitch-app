@@ -22,6 +22,8 @@ export type PreviewRow = {
   rowNumber: number;
   values: Record<string, string | number | null>;
   errors: string[];
+  /** Cảnh báo không chặn ghi. */
+  warnings?: string[];
 };
 
 export type PreviewPayload = {

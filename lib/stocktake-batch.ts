@@ -305,10 +305,7 @@ export async function approveStocktakeBatch(
   input: { stocktakeIds: string[]; cutoffAt: Date; unitCosts?: Record<string, number>; approvedBy: string; note?: string | null },
 ) {
   const preview = await buildBatchPreview(tx, input);
-  const missing = preview.rows.filter((row) => row.needsUnitCost);
-  if (missing.length > 0) {
-    batchError(`Chưa có đơn giá cho phần thừa của ${missing.map((row) => row.itemCode).slice(0, 8).join(", ")}${missing.length > 8 ? "…" : ""}. Nhập đơn giá ở bảng tổng hợp rồi duyệt lại.`);
-  }
+  // Phần thừa chưa có giá ở đâu (needsUnitCost) vẫn duyệt được: ghi 0 đ, đi theo giá bình quân tháng (khách chốt 15/10/2026).
   const later = await tx.stocktakeBatch.findFirst({
     where: { warehouseCode: preview.warehouseCode, status: STOCKTAKE_BATCH_APPROVED, cutoffAt: { gte: preview.cutoffAt } },
     orderBy: { cutoffAt: "desc" },

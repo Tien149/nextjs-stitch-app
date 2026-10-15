@@ -16,6 +16,8 @@ export type ParsedImportRow = {
   rawValues: Record<string, ImportCellValue>;
   values: Record<string, ImportCellValue>;
   errors: string[];
+  /** Cảnh báo không chặn ghi (vd kiểm thừa ghi 0 đ chờ giá bình quân tháng). */
+  warnings?: string[];
 };
 
 export type ParsedImportResult = {

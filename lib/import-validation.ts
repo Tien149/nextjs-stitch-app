@@ -114,6 +114,11 @@ function addError(row: ParsedImportRow, message: string) {
   if (!row.errors.includes(message)) row.errors.push(message);
 }
 
+function addWarning(row: ParsedImportRow, message: string) {
+  row.warnings = row.warnings || [];
+  if (!row.warnings.includes(message)) row.warnings.push(message);
+}
+
 /**
  * Kỳ kế toán trên file: chuẩn hoá về YYYY-MM trước khi chấm lỗi.
  *
@@ -1396,12 +1401,12 @@ export async function validateImportResult(
         const stExplodable = explodableCheckers.get(stBranch)?.(stItem) ?? false;
         if (stActual > stSystem && !stExplodable && stAvg <= 0 && numberValue(row.values.unit_cost) <= 0) {
           // Kho kiểm chưa có giá thì lấy giá mua gần nhất / giá kho khác như lúc ghi (khách chốt 15/10/2026);
-          // chỉ mã chưa có giá ở đâu cả mới bắt khai "Don gia".
+          // mã chưa có giá ở đâu cả: vẫn cho ghi phần thừa 0 đ, đi theo giá bình quân tháng (khách chốt 15/10/2026) — chỉ cảnh báo.
           if (!fallbackUnitCosts.has(stItem.id)) {
             fallbackUnitCosts.set(stItem.id, await latestKnownUnitCost(prisma as unknown as Parameters<typeof latestKnownUnitCost>[0], stItem.id));
           }
           if (!((fallbackUnitCosts.get(stItem.id) || 0) > 0)) {
-            addError(row, `${stItem.code} chua co gia von o kho nao — khai cot "Don gia" de ghi nhan phan thua`);
+            addWarning(row, `${stItem.code} chưa có giá ở kho nào — phần thừa ghi 0 đ, theo giá bình quân khi Tính giá vốn tháng (khai cột "Đơn giá" nếu biết giá)`);
           }
         }
       }
