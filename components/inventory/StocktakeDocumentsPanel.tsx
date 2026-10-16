@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
 import CopyableText from "@/components/CopyableText";
 import ExportExcelButton from "@/components/ExportExcelButton";
+import type { StocktakeFilter } from "@/components/inventory/stocktake-filter";
 import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING, STOCKTAKE_RETURNED, stocktakeStatusLabel, stocktakeStatusTone } from "@/lib/stocktake-status";
 
 /**
@@ -33,6 +34,9 @@ type Props = {
   branchOptions: Array<{ code: string; label: string }>;
   warehouses: Array<{ code: string; name: string; branch: string | null }>;
   storeLabel: (code: string) => string;
+  /** Bộ lọc dùng chung giữa các tab kiểm kê (giữ ở trang Kho). */
+  filters: StocktakeFilter;
+  setFilters: (filters: StocktakeFilter) => void;
 };
 
 function sessionHeaders(sessionKey: string): Record<string, string> {
@@ -43,15 +47,15 @@ function sessionHeaders(sessionKey: string): Record<string, string> {
 
 const dateTime = (value: string | null) => (value ? new Date(value).toLocaleString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
 
-export default function StocktakeDocumentsPanel({ sessionKey, branchOptions, warehouses, storeLabel }: Props) {
-  const [filters, setFilters] = useState({ branchCode: "ALL", warehouseCode: "", status: "ALL", from: "", to: "" });
+export default function StocktakeDocumentsPanel({ sessionKey, branchOptions, warehouses, storeLabel, filters, setFilters }: Props) {
+  const [status, setStatus] = useState("ALL");
   const [documents, setDocuments] = useState<StocktakeDocument[] | null>(null);
   const [error, setError] = useState("");
   const [open, setOpen] = useState(true);
 
   const load = useCallback(async () => {
     setError("");
-    const query = new URLSearchParams({ view: "stocktake-documents", branchCode: filters.branchCode, status: filters.status });
+    const query = new URLSearchParams({ view: "stocktake-documents", branchCode: filters.branchCode, status });
     if (filters.warehouseCode) query.set("warehouseCode", filters.warehouseCode);
     if (filters.from) query.set("from", filters.from);
     if (filters.to) query.set("to", filters.to);
@@ -64,7 +68,7 @@ export default function StocktakeDocumentsPanel({ sessionKey, branchOptions, war
       setError("Mất kết nối tới máy chủ khi tải danh sách phiếu kiểm kê.");
       setDocuments([]);
     }
-  }, [filters, sessionKey]);
+  }, [filters, status, sessionKey]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
@@ -109,7 +113,7 @@ export default function StocktakeDocumentsPanel({ sessionKey, branchOptions, war
               </select>
             </label>
             <label className="text-xs font-bold text-slate-500">Trạng thái
-              <select className="control mt-1" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
+              <select className="control mt-1" value={status} onChange={(e) => setStatus(e.target.value)}>
                 <option value="ALL">Tất cả trạng thái</option>
                 <option value={STOCKTAKE_PENDING}>{stocktakeStatusLabel(STOCKTAKE_PENDING)}</option>
                 <option value={STOCKTAKE_RETURNED}>{stocktakeStatusLabel(STOCKTAKE_RETURNED)}</option>

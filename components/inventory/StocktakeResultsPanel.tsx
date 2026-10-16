@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
+import type { StocktakeFilter } from "@/components/inventory/stocktake-filter";
 import CopyableText from "@/components/CopyableText";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
@@ -33,6 +34,9 @@ type Props = {
   branchOptions: Array<{ code: string; label: string }>;
   warehouses: Array<{ code: string; name: string; branch: string | null }>;
   storeLabel: (code: string) => string;
+  /** Bộ lọc dùng chung giữa các tab kiểm kê (giữ ở trang Kho). */
+  filters: StocktakeFilter;
+  setFilters: (filters: StocktakeFilter) => void;
 };
 
 function sessionHeaders(sessionKey: string): Record<string, string> {
@@ -44,8 +48,7 @@ function sessionHeaders(sessionKey: string): Record<string, string> {
 const dateTime = (value: string | null | undefined) =>
   (value ? new Date(value).toLocaleString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
 
-export default function StocktakeResultsPanel({ sessionKey, branchOptions, warehouses, storeLabel }: Props) {
-  const [filters, setFilters] = useState({ branchCode: branchOptions[0]?.code || "ALL", warehouseCode: "", from: "", to: "" });
+export default function StocktakeResultsPanel({ sessionKey, branchOptions, warehouses, storeLabel, filters, setFilters }: Props) {
   const [sources, setSources] = useState<Source[] | null>(null);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<Source | null>(null);

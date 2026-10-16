@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
+import type { StocktakeFilter } from "@/components/inventory/stocktake-filter";
 import CopyableText from "@/components/CopyableText";
 import { quantity as qty } from "@/lib/format-number";
 import { goodsGroupKey } from "@/lib/goods-group";
@@ -52,6 +53,9 @@ type Props = {
   branchOptions: Array<{ code: string; label: string }>;
   warehouses: Array<{ code: string; name: string; branch: string | null }>;
   storeLabel: (code: string) => string;
+  /** Bộ lọc dùng chung giữa các tab kiểm kê (giữ ở trang Kho). */
+  filters: StocktakeFilter;
+  setFilters: (filters: StocktakeFilter) => void;
   canCreate: boolean;
   canApprove: boolean;
 };
@@ -91,8 +95,7 @@ function statusBadge(source: Source) {
   return <span className="status bg-blue-50 text-blue-700">Đang giải trình</span>;
 }
 
-export default function StocktakeExplanationPanel({ sessionKey, branchOptions, warehouses, storeLabel, canCreate, canApprove }: Props) {
-  const [filters, setFilters] = useState({ branchCode: branchOptions[0]?.code || "ALL", warehouseCode: "", from: "", to: "" });
+export default function StocktakeExplanationPanel({ sessionKey, branchOptions, warehouses, storeLabel, filters, setFilters, canCreate, canApprove }: Props) {
   const [sources, setSources] = useState<Source[] | null>(null);
   const [orphans, setOrphans] = useState<Orphan[]>([]);
   const [detail, setDetail] = useState<Detail | null>(null);

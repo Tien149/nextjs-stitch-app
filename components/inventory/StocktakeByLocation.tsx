@@ -6,6 +6,7 @@ import ExportExcelButton from "@/components/ExportExcelButton";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
 import { goodsGroupKey, normalizeGoodsGroup } from "@/lib/goods-group";
 import { isLocationStocktakeItemType, resolveUnitInputs } from "@/lib/stocktake-consolidate";
+import { inStocktakeRange, type StocktakeFilter } from "@/components/inventory/stocktake-filter";
 import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING, STOCKTAKE_RETURNED, isStocktakeEditable, stocktakeStatusLabel, stocktakeStatusTone } from "@/lib/stocktake-status";
 
 /**
@@ -82,6 +83,8 @@ export default function StocktakeByLocation(props: {
   balances: Balance[];
   branchOptions: Array<{ code: string; label: string }>;
   defaultBranch: string;
+  /** Bộ lọc nhà hàng / kho / ngày ở đầu tab Kiểm kê: đổi ở trên thì khung này đổi theo. */
+  filter: StocktakeFilter;
   canCreate: boolean;
   canEdit: boolean;
   canApprove: boolean;
@@ -259,6 +262,8 @@ export default function StocktakeByLocation(props: {
   const [preview, setPreview] = useState<Preview | null>(null);
   const [unitCosts, setUnitCosts] = useState<Record<string, string>>({});
   const [onlyVariance, setOnlyVariance] = useState(false);
+  const visibleSheets = data.sheets.filter((sheet) => sheet.warehouseCode === activeWarehouse && inStocktakeRange(sheet.stocktakeDate, props.filter));
+  const visibleBatches = data.batches.filter((batch) => (!props.filter.warehouseCode || batch.warehouseCode === props.filter.warehouseCode) && inStocktakeRange(batch.cutoffAt, props.filter));
   const pendingSheets = data.sheets.filter((sheet) => sheet.warehouseCode === activeWarehouse && sheet.status === STOCKTAKE_PENDING);
   const selected = selectedIds === null ? pendingSheets.map((sheet) => sheet.id) : selectedIds.filter((id) => pendingSheets.some((sheet) => sheet.id === id));
   const toggleSheet = (id: string) => {
@@ -309,6 +314,28 @@ export default function StocktakeByLocation(props: {
   // ───────────────────────── Vị trí & form mẫu ─────────────────────────
   const emptyLocation = { id: "", code: "", name: "", sortOrder: "0", status: "ACTIVE", note: "", itemIds: [] as string[] };
   const [locationForm, setLocationForm] = useState(emptyLocation);
+
+  // Lọc ở đầu tab đổi nhà hàng / kho thì khung này chọn theo; đang sửa phiếu đếm thì giữ nguyên.
+  const { branchCode: filterBranch, warehouseCode: filterWarehouse } = props.filter;
+  useEffect(() => {
+    if (editingSheet) return;
+    const timer = window.setTimeout(() => {
+      // Chọn kho mà chưa chọn nhà hàng thì lấy nhà hàng của kho đó.
+      const wantedBranch = filterBranch !== "ALL" ? filterBranch : warehouses.find((warehouse) => warehouse.code === filterWarehouse)?.branch || "";
+      const branchOption = branchOptions.find((option) => option.code.toUpperCase() === wantedBranch.toUpperCase());
+      if (branchOption) setBranchCode(branchOption.code);
+      if (filterWarehouse) {
+        setWarehouseCode(filterWarehouse);
+        setCountForm((form) => ({ ...form, locationCode: "" }));
+        setCountRows([]);
+        setLocationForm(emptyLocation);
+      }
+      setPreview(null);
+      setSelectedIds(null);
+    }, 0);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- chỉ chạy khi bộ lọc ở trên đổi
+  }, [filterBranch, filterWarehouse]);
   const [templateAdd, setTemplateAdd] = useState("");
   const editLocation = (location: Location) => setLocationForm({ id: location.id, code: location.code, name: location.name, sortOrder: String(location.sortOrder), status: location.status, note: location.note || "", itemIds: location.items.map((entry) => entry.itemId) });
   const moveTemplateItem = (index: number, delta: number) => setLocationForm((form) => {
@@ -554,9 +581,9 @@ export default function StocktakeByLocation(props: {
             <h2 className="font-bold text-slate-800">Đợt kiểm kê đã chốt</h2>
             <button type="button" title="Tải lại" onClick={() => void load()} className="icon-button"><span className="material-symbols-outlined text-lg">refresh</span></button>
           </div>
-          {data.batches.length === 0 && <p className="px-5 pb-5 text-sm text-slate-500">Chưa có đợt nào.</p>}
+          {visibleBatches.length === 0 && <p className="px-5 pb-5 text-sm text-slate-500">Chưa có đợt nào theo bộ lọc.</p>}
           <div className="divide-y divide-slate-100">
-            {data.batches.map((batch) => {
+            {visibleBatches.map((batch) => {
               const locationsInBatch = [...new Set(batch.lines.flatMap((line) => Object.keys(JSON.parse(line.breakdownJson || "{}") as Record<string, number>)))];
               const isOpen = openBatchId === batch.id;
               return (
@@ -673,8 +700,8 @@ export default function StocktakeByLocation(props: {
             <button type="button" title="Tải lại" onClick={() => void load()} className="icon-button"><span className="material-symbols-outlined text-lg">refresh</span></button>
           </div>
           <div className="divide-y divide-slate-100 pb-20 md:pb-0">
-            {data.sheets.filter((sheet) => sheet.warehouseCode === activeWarehouse).length === 0 && <p className="px-5 pb-5 text-sm text-slate-500">Chưa có phiếu đếm nào của kho này.</p>}
-            {data.sheets.filter((sheet) => sheet.warehouseCode === activeWarehouse).map((sheet) => (
+            {visibleSheets.length === 0 && <p className="px-5 pb-5 text-sm text-slate-500">Chưa có phiếu đếm nào của kho này theo bộ lọc.</p>}
+            {visibleSheets.map((sheet) => (
               <div key={sheet.id} className="px-5 py-3 space-y-1">
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="min-w-0">

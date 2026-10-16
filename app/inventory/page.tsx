@@ -27,6 +27,7 @@ import TransferRequestsPanel, { type TransferRequest } from "@/components/invent
 import StocktakeDocumentsPanel from "@/components/inventory/StocktakeDocumentsPanel";
 import StocktakeExplanationPanel from "@/components/inventory/StocktakeExplanationPanel";
 import StocktakeResultsPanel from "@/components/inventory/StocktakeResultsPanel";
+import { EMPTY_STOCKTAKE_FILTER, inStocktakeRange, type StocktakeFilter } from "@/components/inventory/stocktake-filter";
 import { safeConversionRate } from "@/lib/unit-conversion";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
 import { parseVatRate, VAT_RATE_OPTIONS, vatAmountOf, vatRateLabel } from "@/lib/inventory-vat";
@@ -343,6 +344,8 @@ export default function InventoryPage() {
    * 28/09/2026); "Cả kho" là form cũ — so từng phiếu với tồn kho, vẫn dùng cho bán thành phẩm.
    */
   const [stocktakeMode, setStocktakeMode] = useState<"location" | "warehouse">("location");
+  /** Lọc nhà hàng / kho / ngày dùng chung cho các tab kiểm kê và các khung bên dưới (khách 16/10/2026). */
+  const [stocktakeFilter, setStocktakeFilter] = useState<StocktakeFilter>(EMPTY_STOCKTAKE_FILTER);
   const [wasteForm, setWasteForm] = useState({ wasteType: "HET_HAN_SU_DUNG", mode: "ITEMS", recipeId: "", productQuantity: "1", branchCode: "HCM", warehouseCode: "KHO_HCM", transactionDate: today(), referenceCode: "", note: "" });
   const [wasteRows, setWasteRows] = useState([{ itemId: "", quantity: "1", unitCode: "" }]);
   
@@ -417,6 +420,11 @@ export default function InventoryPage() {
   /** Kế toán: duyệt / trả lại / mở lại phiếu kiểm kê (nhà hàng chỉ Gửi duyệt và sửa). */
   const canApprove = user ? canPerformMenuAction(user, href, "approve") : false;
   /** Ô Nhà hàng của 3 màn kiểm kê: "Tất cả" chỉ khi người xem có hơn một cửa hàng. */
+  /** Khung "Phiếu kiểm kê gần nhất" (kiểm cả kho) theo bộ lọc nhà hàng / kho / ngày ở đầu tab. */
+  const recentWarehouseStocktakes = data.stocktakes.filter((row) => !row.locationCode
+    && (stocktakeFilter.branchCode === "ALL" || row.branchCode === stocktakeFilter.branchCode)
+    && (!stocktakeFilter.warehouseCode || row.warehouseCode === stocktakeFilter.warehouseCode)
+    && inStocktakeRange(row.stocktakeDate, stocktakeFilter));
   const stocktakeBranchOptions = [
     ...(visibleStoreOptions(user).length > 1 ? [{ code: "ALL", label: "Tất cả nhà hàng" }] : []),
     ...visibleStoreOptions(user).map((option) => ({ code: option.code, label: storeLabel(option.code) })),
@@ -4014,6 +4022,8 @@ export default function InventoryPage() {
       {active === "stocktake" && (
         <StocktakeDocumentsPanel
           sessionKey={SESSION_KEY}
+          filters={stocktakeFilter}
+          setFilters={setStocktakeFilter}
           branchOptions={stocktakeBranchOptions}
           warehouses={data.warehouses}
           storeLabel={storeLabel}
@@ -4024,6 +4034,8 @@ export default function InventoryPage() {
       {active === "stocktake-explanation" && (
         <StocktakeExplanationPanel
           sessionKey={SESSION_KEY}
+          filters={stocktakeFilter}
+          setFilters={setStocktakeFilter}
           branchOptions={stocktakeBranchOptions}
           warehouses={data.warehouses}
           storeLabel={storeLabel}
@@ -4034,6 +4046,8 @@ export default function InventoryPage() {
       {active === "stocktake-result" && (
         <StocktakeResultsPanel
           sessionKey={SESSION_KEY}
+          filters={stocktakeFilter}
+          setFilters={setStocktakeFilter}
           branchOptions={stocktakeBranchOptions}
           warehouses={data.warehouses}
           storeLabel={storeLabel}
@@ -4097,6 +4111,7 @@ export default function InventoryPage() {
           balances={data.balances}
           branchOptions={visibleStoreOptions(user).map((option) => ({ code: option.code, label: storeLabel(option.code) }))}
           defaultBranch={stocktakeForm.branchCode}
+          filter={stocktakeFilter}
           canCreate={canCreate}
           canEdit={canEditItem}
           canApprove={canApprove}
@@ -4303,7 +4318,7 @@ export default function InventoryPage() {
             {/* Điện thoại: mỗi phiếu một thẻ, nút Sửa / Duyệt / Trả lại luôn nằm trong màn hình;
                 pb-20 chừa chỗ nút menu nổi góc trái dưới. */}
             <div className="md:hidden divide-y divide-slate-100 pb-20">
-              {data.stocktakes.filter((row) => !row.locationCode).map((row) => ({
+              {recentWarehouseStocktakes.map((row) => ({
                 ...row,
                 lines: row.lines.filter((line) => isWarehouseStocktakeItemType(line.item.itemType)),
               })).filter((row) => row.lines.length > 0).map((row) => {
@@ -4333,7 +4348,7 @@ export default function InventoryPage() {
             </div>
             <div className="hidden md:block">
             <Table headers={[{ label: "Phiếu" }, { label: "Kho" }, { label: "Mặt hàng" }, { label: "Chênh lệch", align: "right" }, { label: "", align: "right" }]}>
-              {data.stocktakes.filter((row) => !row.locationCode).map((row) => ({
+              {recentWarehouseStocktakes.map((row) => ({
                 ...row,
                 lines: row.lines.filter((line) => isWarehouseStocktakeItemType(line.item.itemType)),
               })).filter((row) => row.lines.length > 0).map((row) => (
