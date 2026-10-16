@@ -19,6 +19,7 @@ import { unpackStockMovements, type PackedStockMovements } from "@/lib/stock-mov
 import StocktakeByLocation from "@/components/inventory/StocktakeByLocation";
 import StockReportsPanel from "@/components/inventory/StockReportsPanel";
 import MonthlyCostPanel from "@/components/inventory/MonthlyCostPanel";
+import RevertExplosionRange from "@/components/inventory/RevertExplosionRange";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
 import { MoneyInput } from "@/components/MoneyInput";
 import MissingRecipesPanel from "@/components/inventory/MissingRecipesPanel";
@@ -3914,6 +3915,14 @@ export default function InventoryPage() {
               </Input>
               <button className="primary-button w-full">Ghi nhận chế biến</button>
             </form>
+          )}
+          {canCreate && (
+            <RevertExplosionRange
+              stores={visibleStoreOptions(user).map((option) => ({ code: option.code, label: storeLabel(option.code) }))}
+              defaultBranch={explodeBranchCode}
+              headers={getSessionHeaders}
+              onDone={(text) => { setMessage(text); void loadData(); }}
+            />
           )}
           <section className="table-panel shadow-sm">
             <Panel title="Giao dịch chế biến" reload={loadData} exportFileName="giao_dich_che_bien" />

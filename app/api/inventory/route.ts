@@ -16,6 +16,7 @@ import { averageCostByItem } from "@/lib/inventory-average-cost";
 import { parseVatRate, VAT_RATE_CODES } from "@/lib/inventory-vat";
 import { computeRecipeUnitCosts, lineConversionRate, pickRecipeForDate, recipeContentSignature, type ExplosionRecipe } from "@/lib/production-explosion";
 import { writeAuditLog } from "@/lib/audit-log";
+import type { DemoSession } from "@/lib/auth-demo";
 import { executeExplosion, rerunExplosions, type AffectedExplosionRun } from "@/lib/inventory-explosion";
 import { loadMissingRecipeReport } from "@/lib/missing-recipes";
 import { buildMonthlyCostSummary } from "@/lib/recipe-cost-summary";
@@ -1256,6 +1257,87 @@ export async function GET(request: Request) {
   }
 }
 
+/**
+ * Hoàn tác MỘT lần rã (RA-) / lệnh chế biến (CB-): hoàn kho đúng từng dòng, xoá mềm phiếu, trả doanh thu /
+ * điều chuyển / kiểm kê bán thành phẩm về chờ rã. Chặn khi đã có phiếu khác phát sinh sau trên cùng mặt
+ * hàng/kho hoặc kỳ đã khoá. Dùng chung cho nút hoàn tác từng lần và hoàn tác theo khoảng ngày.
+ */
+async function revertExplosionRun(session: DemoSession, runCode: string, action: "REVERT_EXPLOSION" | "REVERT_PRODUCTION") {
+  const runLabel = action === "REVERT_PRODUCTION" ? "lệnh chế biến" : "lần rã";
+  const auth = { session };
+  const documents = await prisma.inventoryTransaction.findMany({
+    where: { referenceType: "PRODUCTION", referenceCode: runCode, deletedAt: null },
+    include: { lines: true },
+    orderBy: { createdAt: "desc" },
+  });
+  if (documents.length === 0) businessError(`Không tìm thấy phiếu nào của ${runLabel} ${runCode}`);
+  const branchCode = documents[0]?.branchCode || "";
+  assertBranchAccess(auth.session, branchCode);
+  await assertPeriodOpen(documents.map((doc) => ({ date: doc.transactionDate, branchCode: doc.branchCode })), `hoàn tác ${runLabel}`);
+
+  // Chỉ hoàn kho chính xác khi chưa có phiếu nào khác phát sinh sau trên cùng mặt hàng/kho.
+  const documentIds = documents.map((doc) => doc.id);
+  const itemIds = [...new Set(documents.flatMap((doc) => doc.lines.map((line) => line.itemId)))];
+  const warehouseCodes = [...new Set(documents.flatMap((doc) => [doc.warehouseCode, doc.toWarehouseCode]).filter((value): value is string => !!value))];
+  const earliest = documents[documents.length - 1];
+  const newer = await prisma.inventoryTransaction.findFirst({
+    where: {
+      id: { notIn: documentIds },
+      deletedAt: null,
+      createdAt: { gt: earliest?.createdAt || new Date(0) },
+      lines: { some: { itemId: { in: itemIds } } },
+      OR: [
+        { warehouseCode: { in: warehouseCodes } },
+        { toWarehouseCode: { in: warehouseCodes } },
+      ],
+    },
+  });
+  if (newer) {
+    businessError(`Đã có phiếu ${newer.code} phát sinh sau ${runLabel} ${runCode} trên cùng mặt hàng/kho nên không thể hoàn tác chính xác. Xoá phiếu đó trước.`);
+  }
+
+  await prisma.$transaction(async (tx) => {
+    for (const doc of documents) {
+      for (const line of doc.lines) {
+        const direction = doc.transactionType.startsWith("NHAP_") ? "IN" : "OUT";
+        const balance = await tx.inventoryBalance.findUnique({
+          where: { itemId_warehouseCode: { itemId: line.itemId, warehouseCode: doc.warehouseCode } },
+        });
+        const currentQuantity = balance?.quantity || 0;
+        const currentAverage = balance?.averageCost || 0;
+        const currentValue = currentQuantity * currentAverage;
+        // Hoàn tác không chặn ở mức 0 (luật xuất âm): lần rã chạy trên kho đang âm thì hoàn
+        // lại cũng phải về đúng số âm cũ, cắt về 0 là tự nhiên mất hàng.
+        const newQuantity = direction === "IN" ? currentQuantity - line.quantity : currentQuantity + line.quantity;
+        const newValue = direction === "IN" ? currentValue - line.totalCost : currentValue + line.totalCost;
+        const averageCost = newQuantity > quantityEpsilon ? Math.max(newValue / newQuantity, 0) : currentAverage;
+        await tx.inventoryBalance.upsert({
+          where: { itemId_warehouseCode: { itemId: line.itemId, warehouseCode: doc.warehouseCode } },
+          create: { itemId: line.itemId, warehouseCode: doc.warehouseCode, quantity: newQuantity, averageCost },
+          update: { quantity: newQuantity, averageCost },
+        });
+      }
+      await tx.inventoryTransaction.update({
+        where: { id: doc.id },
+        data: { deletedAt: new Date(), deletedBy: auth.session.name },
+      });
+    }
+    await tx.revenueImportRow.updateMany({
+      where: { inventoryStatus: `POSTED:${runCode}` },
+      data: { inventoryStatus: "PENDING" },
+    });
+    // Điều chuyển / kiểm dư bán thành phẩm của lần rã về lại hàng chờ.
+    await releaseExplosionSources(tx, runCode);
+  }, { timeout: 60000 });
+
+  await writeAuditLog({
+    session, module: menuHref, action,
+    entityType: "InventoryTransaction", entityCode: runCode, branchCode,
+    metadata: { documents: documents.map((doc) => doc.code) },
+  });
+  return { documents, branchCode };
+}
+
 export async function POST(request: Request) {
   try {
     const body = await request.json();
@@ -2138,84 +2220,92 @@ export async function POST(request: Request) {
      */
     if (action === "REVERT_EXPLOSION" || action === "REVERT_PRODUCTION") {
       const runCode = (cleanText(body.runCode) || cleanText(body.referenceCode)).toUpperCase();
-      const runLabel = action === "REVERT_PRODUCTION" ? "lệnh chế biến" : "lần rã";
       if (!runCode) businessError(action === "REVERT_PRODUCTION" ? "Thiếu mã lệnh chế biến (CB-...)" : "Thiếu mã lần rã (RA-...)");
-      const documents = await prisma.inventoryTransaction.findMany({
-        where: { referenceType: "PRODUCTION", referenceCode: runCode, deletedAt: null },
-        include: { lines: true },
-        orderBy: { createdAt: "desc" },
-      });
-      if (documents.length === 0) businessError(`Không tìm thấy phiếu nào của ${runLabel} ${runCode}`);
-      const branchCode = documents[0]?.branchCode || "";
-      assertBranchAccess(auth.session, branchCode);
-      await assertPeriodOpen(documents.map((doc) => ({ date: doc.transactionDate, branchCode: doc.branchCode })), `hoàn tác ${runLabel}`);
-
-      // Chỉ hoàn kho chính xác khi chưa có phiếu nào khác phát sinh sau trên cùng mặt hàng/kho.
-      const documentIds = documents.map((doc) => doc.id);
-      const itemIds = [...new Set(documents.flatMap((doc) => doc.lines.map((line) => line.itemId)))];
-      const warehouseCodes = [...new Set(documents.flatMap((doc) => [doc.warehouseCode, doc.toWarehouseCode]).filter((value): value is string => !!value))];
-      const earliest = documents[documents.length - 1];
-      const newer = await prisma.inventoryTransaction.findFirst({
-        where: {
-          id: { notIn: documentIds },
-          deletedAt: null,
-          createdAt: { gt: earliest?.createdAt || new Date(0) },
-          lines: { some: { itemId: { in: itemIds } } },
-          OR: [
-            { warehouseCode: { in: warehouseCodes } },
-            { toWarehouseCode: { in: warehouseCodes } },
-          ],
-        },
-      });
-      if (newer) {
-        businessError(`Đã có phiếu ${newer.code} phát sinh sau ${runLabel} ${runCode} trên cùng mặt hàng/kho nên không thể hoàn tác chính xác. Xoá phiếu đó trước.`);
-      }
-
-      await prisma.$transaction(async (tx) => {
-        for (const doc of documents) {
-          for (const line of doc.lines) {
-            const direction = doc.transactionType.startsWith("NHAP_") ? "IN" : "OUT";
-            const balance = await tx.inventoryBalance.findUnique({
-              where: { itemId_warehouseCode: { itemId: line.itemId, warehouseCode: doc.warehouseCode } },
-            });
-            const currentQuantity = balance?.quantity || 0;
-            const currentAverage = balance?.averageCost || 0;
-            const currentValue = currentQuantity * currentAverage;
-            // Hoàn tác không chặn ở mức 0 (luật xuất âm): lần rã chạy trên kho đang âm thì hoàn
-            // lại cũng phải về đúng số âm cũ, cắt về 0 là tự nhiên mất hàng.
-            const newQuantity = direction === "IN" ? currentQuantity - line.quantity : currentQuantity + line.quantity;
-            const newValue = direction === "IN" ? currentValue - line.totalCost : currentValue + line.totalCost;
-            const averageCost = newQuantity > quantityEpsilon ? Math.max(newValue / newQuantity, 0) : currentAverage;
-            await tx.inventoryBalance.upsert({
-              where: { itemId_warehouseCode: { itemId: line.itemId, warehouseCode: doc.warehouseCode } },
-              create: { itemId: line.itemId, warehouseCode: doc.warehouseCode, quantity: newQuantity, averageCost },
-              update: { quantity: newQuantity, averageCost },
-            });
-          }
-          await tx.inventoryTransaction.update({
-            where: { id: doc.id },
-            data: { deletedAt: new Date(), deletedBy: auth.session.name },
-          });
-        }
-        await tx.revenueImportRow.updateMany({
-          where: { inventoryStatus: `POSTED:${runCode}` },
-          data: { inventoryStatus: "PENDING" },
-        });
-        // Điều chuyển / kiểm dư bán thành phẩm của lần rã về lại hàng chờ.
-        await releaseExplosionSources(tx, runCode);
-      }, { timeout: 60000 });
-
-      await writeAuditLog({
-        session: auth.session, module: menuHref, action,
-        entityType: "InventoryTransaction", entityCode: runCode, branchCode,
-        metadata: { documents: documents.map((doc) => doc.code) },
-      });
+      const { documents } = await revertExplosionRun(auth.session, runCode, action);
       // Phiếu của lần rã / chế biến vừa hoàn tác thành mồ côi trên sổ: ghi lại giá vốn kỳ đó để dọn.
       // Chế biến (CB-) chỉ có phiếu sản xuất, không phải phiếu giá vốn — không cần ghi lại.
       const cogsRepost = action === "REVERT_EXPLOSION"
         ? await repostInventoryCogs(documents.map((doc) => ({ date: doc.transactionDate, branchCode: doc.branchCode })), auth.session.name)
         : [];
       return NextResponse.json({ runCode, revertedDocuments: documents.length, cogsRepost });
+    }
+
+    /**
+     * Hoàn tác rã BOM theo khoảng ngày (khách 16/10/2026: import doanh thu sai đã rã, muốn huỷ để đẩy lại):
+     * mọi lần rã có doanh thu / điều chuyển / kiểm kê / phiếu rã trong khoảng ngày của cửa hàng. Lần bấm
+     * đầu (không confirm) chỉ trả danh sách để xác nhận — một lần rã trải ra ngoài khoảng ngày vẫn bị hoàn
+     * tác cả lần. Xác nhận thì hoàn tác từ lần mới nhất về lần cũ; lần nào bị chặn thì dừng và báo.
+     */
+    if (action === "REVERT_EXPLOSION_RANGE") {
+      const branchCode = cleanText(body.branchCode);
+      if (!branchCode || branchCode === "ALL") businessError("Chọn cửa hàng cần hoàn tác rã");
+      assertBranchAccess(auth.session, branchCode);
+      const dateFrom = toDate(body.dateFrom);
+      const dateTo = toDate(body.dateTo || body.dateFrom);
+      if (dateTo.getTime() < dateFrom.getTime()) businessError("Khoảng ngày không hợp lệ (từ ngày sau đến ngày trước)");
+      const rangeEnd = new Date(dateTo);
+      rangeEnd.setHours(23, 59, 59, 999);
+      const [revenueStatuses, transfers, stocktakes, docs] = await Promise.all([
+        prisma.revenueImportRow.findMany({
+          where: { branchCode, deletedAt: null, saleDate: { gte: dateFrom, lte: rangeEnd }, inventoryStatus: { startsWith: "POSTED:RA-" } },
+          distinct: ["inventoryStatus"], select: { inventoryStatus: true },
+        }),
+        prisma.inventoryTransaction.findMany({
+          where: { branchCode, deletedAt: null, transactionType: { in: EXPLOSION_ISSUE_TYPES }, transactionDate: { gte: dateFrom, lte: rangeEnd }, explosionStatus: { startsWith: "POSTED:RA-" } },
+          distinct: ["explosionStatus"], select: { explosionStatus: true },
+        }),
+        prisma.stocktakeSession.findMany({
+          where: { branchCode, deletedAt: null, stocktakeDate: { gte: dateFrom, lte: rangeEnd }, explosionStatus: { startsWith: "POSTED:RA-" } },
+          distinct: ["explosionStatus"], select: { explosionStatus: true },
+        }),
+        prisma.inventoryTransaction.findMany({
+          where: { branchCode, deletedAt: null, referenceType: "PRODUCTION", referenceCode: { startsWith: "RA-" }, transactionDate: { gte: dateFrom, lte: rangeEnd } },
+          distinct: ["referenceCode"], select: { referenceCode: true },
+        }),
+      ]);
+      const runCodes = [...new Set([
+        ...revenueStatuses.map((row) => (row.inventoryStatus || "").slice("POSTED:".length)),
+        ...[...transfers, ...stocktakes].map((row) => explodedRunOf(row.explosionStatus) || ""),
+        ...docs.map((row) => row.referenceCode || ""),
+      ].filter(Boolean))];
+      const runs = [];
+      for (const runCode of runCodes) {
+        const [docAgg, rowAgg, lastDoc] = await Promise.all([
+          prisma.inventoryTransaction.aggregate({
+            where: { referenceType: "PRODUCTION", referenceCode: runCode, deletedAt: null },
+            _count: { _all: true }, _min: { transactionDate: true }, _max: { transactionDate: true, createdAt: true },
+          }),
+          prisma.revenueImportRow.aggregate({
+            where: { inventoryStatus: `POSTED:${runCode}`, deletedAt: null },
+            _count: { _all: true }, _min: { saleDate: true }, _max: { saleDate: true },
+          }),
+          prisma.inventoryTransaction.findFirst({ where: { referenceType: "PRODUCTION", referenceCode: runCode, deletedAt: null }, select: { createdBy: true }, orderBy: { createdAt: "desc" } }),
+        ]);
+        const from = rowAgg._min.saleDate || docAgg._min.transactionDate;
+        const to = rowAgg._max.saleDate || docAgg._max.transactionDate;
+        runs.push({
+          runCode, documents: docAgg._count._all, revenueRows: rowAgg._count._all, from, to,
+          createdAt: docAgg._max.createdAt, createdBy: lastDoc?.createdBy || null,
+          outsideRange: !!(from && to && (from.getTime() < dateFrom.getTime() || to.getTime() > rangeEnd.getTime())),
+        });
+      }
+      runs.sort((a, b) => (b.createdAt?.getTime() || 0) - (a.createdAt?.getTime() || 0));
+      if (body.confirm !== true) return NextResponse.json({ runs });
+      const reverted: string[] = [];
+      const touched: { date: Date; branchCode: string }[] = [];
+      let stoppedAt: { runCode: string; error: string } | null = null;
+      for (const run of runs) {
+        try {
+          const { documents } = await revertExplosionRun(auth.session, run.runCode, "REVERT_EXPLOSION");
+          reverted.push(run.runCode);
+          touched.push(...documents.map((doc) => ({ date: doc.transactionDate, branchCode: doc.branchCode })));
+        } catch (error) {
+          stoppedAt = { runCode: run.runCode, error: (error instanceof Error ? error.message : String(error)).replace(/^BUSINESS:/, "") };
+          break;
+        }
+      }
+      const cogsRepost = touched.length > 0 ? await repostInventoryCogs(touched, auth.session.name) : [];
+      return NextResponse.json({ reverted, remaining: runs.length - reverted.length, stoppedAt, cogsRepost });
     }
 
     /**
