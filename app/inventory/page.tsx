@@ -130,7 +130,7 @@ const RECIPE_VIEWS: Array<{ id: RecipeView; label: string; icon: string }> = [
   { id: "recipes", label: "Định lượng", icon: "menu_book" },
   { id: "monthly", label: "Thông tin định lượng trong tháng", icon: "fact_check" },
 ];
-type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; flowTruncated?: boolean; transferRequests?: TransferRequest[]; transferDestinations?: Array<{ code: string; name: string; branch: string | null }>; transferTransactions?: Transaction[]; wasteTransactions?: Transaction[]; warehouseBranches?: Array<{ code: string; branch: string | null }>; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; itemRevenueGroups?: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[] };
+type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; flowTruncated?: boolean; transferRequests?: TransferRequest[]; transferDestinations?: Array<{ code: string; name: string; branch: string | null }>; transferTransactions?: Transaction[]; wasteTransactions?: Transaction[]; warehouseBranches?: Array<{ code: string; branch: string | null }>; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; itemRevenueGroups?: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; /** Mã món → FOOD (Bếp) / DRINK (Bar): nhóm doanh thu của mặt hàng, chưa gán thì theo file POS. */ productKitchenKinds?: Record<string, string>; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[] };
 /** Loại hiển thị trên hai màn hình Nhập/Xuất. Điều chuyển hiện ở CẢ hai: vế xuất ở kho đi, vế nhập ở kho nhận. */
 const inboundTypes = ["NHAP_MUA", "NHAP_CHE_BIEN", "NHAP_DIEU_CHUYEN", "NHAP_KHAC", "NHAP_KIEM_KE"];
 const outboundTypes = ["XUAT_BAN", "XUAT_CHE_BIEN", "XUAT_HUY", "XUAT_DIEU_CHUYEN", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_KIEM_KE"];
@@ -287,6 +287,9 @@ export default function InventoryPage() {
   // Bộ lọc Sheet tổng hợp giá vốn & giá thành: nhóm hàng (thành phẩm / bán thành phẩm) và cửa hàng.
   const [costGroupFilter, setCostGroupFilter] = useState("ALL");
   const [costStoreFilter, setCostStoreFilter] = useState("ALL");
+  /** Tìm mã / tên sản phẩm và lọc Bếp / Bar theo nhóm doanh thu gán ở mặt hàng (khách 16/10/2026). */
+  const [costSearch, setCostSearch] = useState("");
+  const [costKitchenFilter, setCostKitchenFilter] = useState("ALL");
   /**
    * Tháng của sheet giá vốn & giá thành ("" = định lượng đang áp dụng hôm nay). Chọn tháng thì mỗi
    * phiên bản áp dụng trong tháng một dòng kèm khoảng ngày — đổi giá giữa tháng ra nhiều dòng (03/10/2026).
@@ -991,8 +994,14 @@ export default function InventoryPage() {
   const productsWithStoreVersion = new Set(groupedCostSummary
     .filter((group) => group.branchCodes.includes(costStoreKey))
     .map((group) => group.row.productCode.toUpperCase()));
+  const costKeyword = foldSearchText(costSearch.trim());
   const filteredCostSummary = groupedCostSummary.filter((group) => {
     if (costGroupFilter !== "ALL" && group.row.group !== costGroupFilter) return false;
+    if (costKeyword && !foldSearchText(group.row.productCode).includes(costKeyword) && !foldSearchText(group.row.productName).includes(costKeyword)) return false;
+    if (costKitchenFilter !== "ALL") {
+      const kind = data.productKitchenKinds?.[group.row.productCode.toUpperCase()] || "";
+      if (costKitchenFilter === "MISSING" ? kind === "FOOD" || kind === "DRINK" : kind !== costKitchenFilter) return false;
+    }
     if (costStoreFilter === "ALL") return true;
     if (group.branchCodes.includes(costStoreKey)) return true;
     return group.branchCodes.length === 0 && !productsWithStoreVersion.has(group.row.productCode.toUpperCase());
@@ -3555,6 +3564,21 @@ export default function InventoryPage() {
                     </select>
                   </Input>
                 </div>
+                <div className="w-52">
+                  <Input label="Bếp / Bar">
+                    <select className="control" value={costKitchenFilter} onChange={(e) => setCostKitchenFilter(e.target.value)} title="Theo nhóm doanh thu gán ở tab Mặt hàng; mặt hàng chưa gán thì theo cột nguồn doanh thu (Đồ ăn / Đồ uống) trong file doanh thu POS">
+                      <option value="ALL">Tất cả bếp / bar</option>
+                      <option value="FOOD">Bếp (nhóm doanh thu đồ ăn)</option>
+                      <option value="DRINK">Bar (nhóm doanh thu đồ uống)</option>
+                      <option value="MISSING">Chưa gán bếp / bar</option>
+                    </select>
+                  </Input>
+                </div>
+                <div className="w-64">
+                  <Input label="Tìm sản phẩm">
+                    <input className="control" placeholder="Mã / tên sản phẩm..." value={costSearch} onChange={(e) => setCostSearch(e.target.value)} />
+                  </Input>
+                </div>
                 <p className="w-full text-[11px] text-slate-500 leading-relaxed">
                   <b>Đổi giá bán / định lượng:</b> sang tab nhỏ <b>Định lượng</b>, bấm nút <b>Sao chép</b> ở phiên bản đang dùng → nhập giá bán mới và
                   <b> ngày áp dụng mới</b> rồi lưu. Phiên bản cũ vẫn giữ cho các ngày trước; trong tháng đổi mấy lần thì tạo mấy phiên bản. Chọn
@@ -3562,7 +3586,7 @@ export default function InventoryPage() {
                 </p>
                 {costMonth && !costMonthLoaded && <p className="pb-2 text-xs text-slate-500">Đang tải giá thành tháng {costMonth}...</p>}
                 {costMonthLoaded && monthlyCost?.error && <p className="pb-2 text-xs text-rose-700">{monthlyCost.error}</p>}
-                {(costGroupFilter !== "ALL" || costStoreFilter !== "ALL") && (
+                {(costGroupFilter !== "ALL" || costStoreFilter !== "ALL" || costKitchenFilter !== "ALL" || costKeyword) && (
                   <p className="pb-2 text-xs text-slate-500">
                     Hiển thị <b>{filteredCostSummary.length}</b> / {groupedCostSummary.length} dòng
                     {costStoreFilter !== "ALL" && " (gồm bản dùng chung của món chưa có định lượng riêng cho cửa hàng này)"}
@@ -3584,7 +3608,10 @@ export default function InventoryPage() {
               >
                 {filteredCostSummary.map(({ key, row, branchCodes, versions }) => (
                   <tr key={key} className="border-t border-slate-100">
-                    <Cell><span className={`status ${row.group === "FINISHED" ? "bg-blue-50 text-blue-700" : "bg-violet-50 text-violet-700"}`}>{row.group}</span></Cell>
+                    <Cell>
+                      <span className={`status ${row.group === "FINISHED" ? "bg-blue-50 text-blue-700" : "bg-violet-50 text-violet-700"}`}>{row.group}</span>
+                      {data.productKitchenKinds?.[row.productCode.toUpperCase()] && <small>{data.productKitchenKinds[row.productCode.toUpperCase()] === "FOOD" ? "Bếp" : "Bar"}</small>}
+                    </Cell>
                     <Cell><CopyableText value={row.productCode}><b>{row.productCode}</b></CopyableText><small>{versions.sort((a, b) => a - b).map((version) => `V${version}`).join(" / ")}</small></Cell>
                     <Cell>{branchScopeCell(branchCodes)}</Cell>
                     {costMonth && <Cell>{row.appliedFrom ? `${row.appliedFrom.slice(8, 10)}/${row.appliedFrom.slice(5, 7)} – ${(row.appliedTo || "").slice(8, 10)}/${(row.appliedTo || "").slice(5, 7)}` : "-"}</Cell>}

@@ -38,7 +38,7 @@ import { PURCHASE_COST_TYPES } from "@/lib/purchase-cost";
 import { packStockMovements } from "@/lib/stock-movement-pack";
 import { nextStockDocCode, nextStocktakeCode } from "@/lib/inventory-stock";
 import { isRevenueGroupCategory } from "@/lib/voucher-rules";
-import { loadItemRevenueOptions, loadNonInventoryRevenueGroups, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
+import { loadItemRevenueOptions, loadNonInventoryRevenueGroups, revenueKindFromText, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
 import { normalizeGoodsGroup } from "@/lib/goods-group";
 import { safeConversionRate } from "@/lib/unit-conversion";
 import { explosionPostingDate } from "@/lib/revenue-date";
@@ -617,7 +617,7 @@ const INVENTORY_SECTION_KEYS: Record<string, string[]> = {
   flow: ["flowTransactions", "flowTruncated"],
   transfer: ["transferTransactions"],
   waste: ["wasteTransactions", "wasteReport"],
-  recipes: ["recipes", "costSummary"],
+  recipes: ["recipes", "costSummary", "productKitchenKinds"],
   stocktake: ["stocktakes"],
 };
 
@@ -1243,10 +1243,36 @@ export async function GET(request: Request) {
     const revenueGroups = receiptCategoryList.filter((category) => isRevenueGroupCategory(category.group));
     /** Nhóm doanh thu chọn được cho mặt hàng — chỉ nhóm món Bếp / Bar / Phụ thu (loadItemRevenueOptions). */
     const itemRevenueGroups = (await loadItemRevenueOptions(prisma as unknown as CategoryLookupClient))
-      .map((option) => ({ id: option.code, code: option.code, name: option.name, group: "REVENUE_SOURCE" }));
+      .map((option) => ({ id: option.code, code: option.code, name: option.name, group: "REVENUE_SOURCE", kind: option.kind }));
     const receiptCategories = receiptCategoryList.filter((category) => !isRevenueGroupCategory(category.group));
+    // Bếp / Bar của từng món trên sheet giá thành (khách 16/10/2026): theo nhóm doanh thu gán ở mặt
+    // hàng; món chưa gán thì theo cột nguồn doanh thu (Đồ ăn / Đồ uống) hay gặp nhất trong file POS.
+    let productKitchenKinds: Record<string, string> | undefined;
+    if (!sections || sections.has("recipes")) {
+      productKitchenKinds = {};
+      const kindByGroup = new Map(itemRevenueGroups.map((group) => [group.code, group.kind]));
+      const sourceRows = await prisma.revenueImportRow.groupBy({
+        by: ["productCode", "revenueSource"],
+        where: { productCode: { not: null }, deletedAt: null },
+        _count: { _all: true },
+      });
+      const votes = new Map<string, { FOOD: number; DRINK: number }>();
+      for (const row of sourceRows) {
+        const kind = revenueKindFromText(row.revenueSource);
+        if (kind !== "FOOD" && kind !== "DRINK") continue;
+        const code = String(row.productCode).toUpperCase();
+        const vote = votes.get(code) || { FOOD: 0, DRINK: 0 };
+        vote[kind] += row._count._all;
+        votes.set(code, vote);
+      }
+      for (const [code, vote] of votes) productKitchenKinds[code] = vote.FOOD >= vote.DRINK ? "FOOD" : "DRINK";
+      for (const item of items) {
+        const kind = item.revenueGroup ? kindByGroup.get(item.revenueGroup) : undefined;
+        if (kind === "FOOD" || kind === "DRINK") productKitchenKinds[item.code.toUpperCase()] = kind;
+      }
+    }
 
-    const payload: Record<string, unknown> = { items, balances, transactions, flowTransactions, flowTruncated, transferTransactions, transferRequests, transferDestinations, wasteTransactions, partners, flowRange: { from: isoDay(flowFrom), to: isoDay(flowTo) }, recipes: recipesWithCost, warehouses, warehouseBranches, stocktakes, stockSummary, ...movementPayload(stockMovements, searchParams), itemGroups, revenueGroups, itemRevenueGroups, receiptCategories, costSummary, wasteReport, pendingSales };
+    const payload: Record<string, unknown> = { items, balances, transactions, flowTransactions, flowTruncated, transferTransactions, transferRequests, transferDestinations, wasteTransactions, partners, flowRange: { from: isoDay(flowFrom), to: isoDay(flowTo) }, recipes: recipesWithCost, warehouses, warehouseBranches, stocktakes, stockSummary, ...movementPayload(stockMovements, searchParams), itemGroups, revenueGroups, itemRevenueGroups, receiptCategories, costSummary, productKitchenKinds, wasteReport, pendingSales };
     // Phần không xin thì bỏ hẳn khỏi phản hồi (không trả mảng rỗng) để màn hình giữ số đã tải trước đó.
     if (sections) {
       for (const [section, keys] of Object.entries(INVENTORY_SECTION_KEYS)) {
