@@ -3782,11 +3782,12 @@ export default function InventoryPage() {
               hoặc kiểm lại cột <b>Cửa hàng</b> của các kho đang có — kho khai sai mã cửa hàng cũng không hiện ra đây.
             </p>
           )}
+          <div className="mt-4 flex flex-wrap items-center gap-3">
           <button
             type="button"
             disabled={exploding || explodeWarehouses.length === 0}
             title={explodeWarehouses.length === 0 ? "Cửa hàng này chưa khai kho nào trong Danh mục" : undefined}
-            className="primary-button mt-4"
+            className="primary-button"
             onClick={async () => {
               setExploding(true);
               try {
@@ -3877,6 +3878,14 @@ export default function InventoryPage() {
             <span className="material-symbols-outlined text-lg">bolt</span>
             {exploding ? "Đang rã nguyên liệu..." : "Rã nguyên liệu & sinh phiếu"}
           </button>
+          <RevertExplosionRange
+            branchCode={explodeBranchCode}
+            dateFrom={explodeForm.dateFrom}
+            dateTo={explodeForm.dateTo}
+            headers={getSessionHeaders}
+            onDone={(text) => { setMessage(text); void loadData(); }}
+          />
+          </div>
         </section>
       )}
 
@@ -3915,14 +3924,6 @@ export default function InventoryPage() {
               </Input>
               <button className="primary-button w-full">Ghi nhận chế biến</button>
             </form>
-          )}
-          {canCreate && (
-            <RevertExplosionRange
-              stores={visibleStoreOptions(user).map((option) => ({ code: option.code, label: storeLabel(option.code) }))}
-              defaultBranch={explodeBranchCode}
-              headers={getSessionHeaders}
-              onDone={(text) => { setMessage(text); void loadData(); }}
-            />
           )}
           <section className="table-panel shadow-sm">
             <Panel title="Giao dịch chế biến" reload={loadData} exportFileName="giao_dich_che_bien" />
