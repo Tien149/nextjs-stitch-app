@@ -645,13 +645,21 @@ function loadRecipes() {
   return prisma.recipe.findMany({ include: { lines: { include: { item: { select: lineItemSelect } } } }, orderBy: { updatedAt: "desc" } });
 }
 
-function loadStocktakes(where: Prisma.StocktakeSessionWhereInput) {
-  return prisma.stocktakeSession.findMany({
+async function loadStocktakes(where: Prisma.StocktakeSessionWhereInput) {
+  const rows = await prisma.stocktakeSession.findMany({
     where,
     include: { lines: { include: { item: true } } },
     orderBy: { updatedAt: "desc" },
     take: 50,
   });
+  // Phiếu đã từng mở lại (khách 16/10/2026): duyệt lại mặc định tính lại sổ sách theo dữ liệu hiện tại.
+  const reopened = rows.length === 0 ? [] : await prisma.auditLog.findMany({
+    where: { action: "REOPEN_STOCKTAKE", entityId: { in: rows.map((row) => row.id) } },
+    select: { entityId: true },
+    distinct: ["entityId"],
+  });
+  const reopenedIds = new Set(reopened.map((row) => row.entityId));
+  return rows.map((row) => ({ ...row, reopened: reopenedIds.has(row.id) }));
 }
 
 export async function GET(request: Request) {
@@ -1835,7 +1843,12 @@ export async function POST(request: Request) {
       const requestedCutoff = cleanText(body.cutoffAt) ? toDate(body.cutoffAt) : null;
       if (requestedCutoff && requestedCutoff.getTime() > Date.now() + 60_000) businessError("Giờ chốt kiểm kê không được ở tương lai");
       const stocktakeDate = requestedCutoff || stocktake.stocktakeDate;
-      const recomputeBook = Boolean(requestedCutoff) && stocktakeDate.getTime() !== stocktake.stocktakeDate.getTime();
+      /**
+       * Duyệt lại sau khi mở lại (khách 16/10/2026: hoàn tác rã → up lại doanh thu → rã lại → duyệt lại kiểm kê): số sổ sách lưu lúc
+       * đếm đã cũ vì phiếu xuất bán/chế biến của khoảng ngày đó vừa thay đổi. recomputeBook = true thì tính lại sổ sách tại giờ chốt
+       * theo dữ liệu hiện tại kể cả khi không đổi giờ chốt.
+       */
+      const recomputeBook = (Boolean(requestedCutoff) && stocktakeDate.getTime() !== stocktake.stocktakeDate.getTime()) || body.recomputeBook === true;
       if (await isPeriodLocked(stocktakeDate, branchCode)) businessError("Kỳ kế toán đã khoá");
       const result = await prisma.$transaction(async (tx) => {
         if (recomputeBook) {

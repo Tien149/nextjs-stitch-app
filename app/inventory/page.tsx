@@ -79,6 +79,8 @@ type MovementByType = Record<string, { inbound: number; outbound: number; inboun
 type StockSummary = { item: Item; warehouseCode: string; openingQuantity: number; openingValue?: number; inboundQuantity: number; inboundValue?: number; outboundQuantity: number; outboundValue?: number; closingQuantity: number; averageCost: number; closingValue: number; movementByType?: MovementByType };
 type StockMovement = { transactionId: string; code: string; transactionType: string; subType?: string | null; transactionDate: string; branchCode?: string; warehouseCode: string; toWarehouseCode: string | null; counterpartWarehouseCode?: string | null; itemCode: string; itemName: string; unit: string; itemType?: string; goodsGroup?: string | null; quantity: number; inboundQuantity: number; outboundQuantity: number; unitCost?: number; value: number; referenceCode: string | null; partnerCode?: string | null; partnerName?: string | null; note?: string | null };
 type Stocktake = {
+  /** Đã từng mở lại sau khi duyệt → duyệt lại mặc định tính lại sổ sách. */
+  reopened?: boolean;
   id: string; code: string; stocktakeDate: string; branchCode: string; warehouseCode: string; status: string; explosionStatus?: string | null;
   /** Phiếu đếm theo vị trí — quản lý ở components/inventory/StocktakeByLocation, không ở danh sách kiểu cũ. */
   locationCode?: string | null;
@@ -274,7 +276,7 @@ export default function InventoryPage() {
   const [itemDeleting, setItemDeleting] = useState(false);
   const [itemSearch, setItemSearch] = useState("");
   const [recipeSearch, setRecipeSearch] = useState("");
-  const [approvingStocktake, setApprovingStocktake] = useState<{ stocktake: Stocktake; cutoff: string; original: string; max: string } | null>(null);
+  const [approvingStocktake, setApprovingStocktake] = useState<{ stocktake: Stocktake; cutoff: string; original: string; max: string; recompute: boolean } | null>(null);
   /** Lọc kiểu Excel theo nguyên liệu: chỉ hiện ĐÚNG dòng nguyên liệu khớp (kèm món của nó) — 03/10/2026. */
   const [recipeIngredientSearch, setRecipeIngredientSearch] = useState("");
   /** Tháng áp dụng ("" = mọi phiên bản): phiên bản có hiệu lực ngày nào trong tháng thì hiện. */
@@ -1374,14 +1376,14 @@ export default function InventoryPage() {
   const approveStocktake = (stocktake: Stocktake) => {
     const local = new Date(new Date(stocktake.stocktakeDate).getTime() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
     const max = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
-    setApprovingStocktake({ stocktake, cutoff: local, original: local, max });
+    setApprovingStocktake({ stocktake, cutoff: local, original: local, max, recompute: !!stocktake.reopened });
   };
   const confirmApproveStocktake = async () => {
     if (!approvingStocktake) return;
-    const { stocktake, cutoff, original } = approvingStocktake;
+    const { stocktake, cutoff, original, recompute } = approvingStocktake;
     setApprovingStocktake(null);
     await send(
-      { action: "APPROVE_STOCKTAKE", stocktakeId: stocktake.id, ...(cutoff !== original ? { cutoffAt: new Date(cutoff).toISOString() } : {}) },
+      { action: "APPROVE_STOCKTAKE", stocktakeId: stocktake.id, ...(cutoff !== original ? { cutoffAt: new Date(cutoff).toISOString() } : {}), ...(recompute ? { recomputeBook: true } : {}) },
       `Đã duyệt phiếu kiểm kê ${stocktake.code} (chốt ${new Date(cutoff).toLocaleString("vi-VN")}) và điều chỉnh tồn kho.`,
     );
   };
@@ -4056,6 +4058,18 @@ export default function InventoryPage() {
               Mặc định là giờ trên phiếu. Đổi giờ chốt thì hệ thống tính lại <b>sổ sách tại giờ đó</b> cho từng dòng (tồn hiện tại − phát sinh sau giờ chốt)
               rồi sinh phiếu nhập/xuất điều chỉnh theo phần chênh, ghi đúng ngày giờ chốt.
             </p>
+            <label className="flex items-start gap-2 text-sm text-slate-700">
+              <input type="checkbox" className="mt-1" checked={approvingStocktake.recompute}
+                onChange={(e) => setApprovingStocktake({ ...approvingStocktake, recompute: e.target.checked })} />
+              <span>
+                <b>Tính lại số sổ sách theo dữ liệu hiện tại</b> (giữ giờ chốt)
+                <small className="block text-xs text-slate-500">
+                  {approvingStocktake.stocktake.reopened
+                    ? "Phiếu này đã từng mở lại — nên bật: doanh thu / lần rã / phiếu kho trước giờ chốt có thể đã thay đổi, số sổ sách lưu trên phiếu đã cũ."
+                    : "Bật khi phiếu xuất bán, chế biến hoặc phiếu kho trước giờ chốt vừa được nhập / sửa sau lúc đếm."}
+                </small>
+              </span>
+            </label>
             <div className="flex justify-end gap-2">
               <button type="button" onClick={() => setApprovingStocktake(null)} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50">Huỷ</button>
               <button type="button" onClick={() => void confirmApproveStocktake()} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700">Duyệt</button>
