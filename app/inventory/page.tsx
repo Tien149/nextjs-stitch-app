@@ -3276,7 +3276,17 @@ export default function InventoryPage() {
 
               <div className="grid grid-cols-2 gap-3">
                 <Input label="Mã món (SP_/BTP_)">
-                  <input data-input-kind="code" className="control disabled:bg-slate-100 disabled:text-slate-500" disabled={Boolean(recipeEditing)} value={recipeForm.productCode} onChange={(e) => setRecipeForm({ ...recipeForm, productCode: e.target.value })} />
+                  <input data-input-kind="code" list="recipe-product-codes" className="control disabled:bg-slate-100 disabled:text-slate-500" disabled={Boolean(recipeEditing)} value={recipeForm.productCode} onChange={(e) => {
+                    // Gõ mã có trong danh mục mặt hàng thì tự điền Tên món + ĐVT tồn kho (khách 19/10/2026).
+                    const productCode = e.target.value;
+                    const item = data.items.find((candidate) => candidate.code.toUpperCase() === productCode.trim().toUpperCase());
+                    setRecipeForm(item
+                      ? { ...recipeForm, productCode, productName: item.name, unit: item.unit, outputConversionRate: "1" }
+                      : { ...recipeForm, productCode });
+                  }} />
+                  <datalist id="recipe-product-codes">
+                    {data.items.filter((item) => item.itemType === "FINISHED" || item.itemType === "SEMI_FINISHED").map((item) => <option key={item.id} value={item.code}>{item.name}</option>)}
+                  </datalist>
                 </Input>
                 <Input label="Giá bán (BTP bỏ trống)">
                   <input type="number" className="control" value={recipeForm.sellingPrice} onChange={(e) => setRecipeForm({ ...recipeForm, sellingPrice: e.target.value })} />
