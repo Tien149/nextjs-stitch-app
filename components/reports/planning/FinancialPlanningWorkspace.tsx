@@ -9,6 +9,7 @@ import PnlDashboardTab from "@/components/reports/planning/PnlDashboardTab";
 import BudgetControlTab from "@/components/reports/planning/BudgetControlTab";
 import BreakEvenTab from "@/components/reports/planning/BreakEvenTab";
 import ScenarioTab from "@/components/reports/planning/ScenarioTab";
+import PnlHistoryTab from "@/components/reports/planning/PnlHistoryTab";
 
 /**
  * Cụm "Hoạch định tài chính" trong tab P&L — học theo phần mềm Omni Plan mà khách hàng đã xem:
@@ -17,7 +18,7 @@ import ScenarioTab from "@/components/reports/planning/ScenarioTab";
  * type=pnl-matrix nạp một lần rồi dùng chung cho 5 màn.
  */
 
-export type PlanningTabId = "period" | "forecast" | "dashboard" | "control" | "breakeven" | "scenario";
+export type PlanningTabId = "period" | "forecast" | "dashboard" | "control" | "breakeven" | "scenario" | "history";
 const TABS: Array<{ id: PlanningTabId; label: string; icon: string }> = [
   { id: "period", label: "Kỳ tháng", icon: "calendar_month" },
   { id: "forecast", label: "Dự báo P&L", icon: "table_chart" },
@@ -25,6 +26,8 @@ const TABS: Array<{ id: PlanningTabId; label: string; icon: string }> = [
   { id: "control", label: "Định mức", icon: "price_check" },
   { id: "breakeven", label: "Điểm hòa vốn", icon: "balance" },
   { id: "scenario", label: "Giả định tài chính", icon: "tune" },
+  // Nhập số P&L thực tế các tháng trước khi lên phần mềm (khách 19/10/2026, lib/pnl-history.ts).
+  { id: "history", label: "Số liệu trước 08/2026", icon: "history" },
 ];
 
 /** Tick sẵn T1 tới tháng của kỳ đang xem — trạng thái mặc định của chip khi mở/đổi kỳ. */
@@ -138,12 +141,12 @@ export default function FinancialPlanningWorkspace({ period, branchCode, periodV
       <div className="flex flex-wrap items-center gap-3">
         <PillTabs tabs={tabs} active={tab} onChange={(id) => setTab(id as PlanningTabId)} />
         <div className="ml-auto flex items-center gap-2">
-          <Tag tone="indigo" className="text-[11px] px-2.5 py-1"><span className="material-symbols-outlined text-sm align-middle mr-1">calendar_today</span>{tab === "period" ? `Kỳ ${period}` : `Năm ${year}`}</Tag>
+          <Tag tone="indigo" className="text-[11px] px-2.5 py-1"><span className="material-symbols-outlined text-sm align-middle mr-1">calendar_today</span>{tab === "period" ? `Kỳ ${period}` : tab === "history" ? "Trước 08/2026" : `Năm ${year}`}</Tag>
           <Tag tone="slate" className="text-[11px] px-2.5 py-1"><span className="material-symbols-outlined text-sm align-middle mr-1">storefront</span>{storeLabel(branchCode)}</Tag>
           {loading && data && <span className="material-symbols-outlined animate-spin text-indigo-500 text-lg">progress_activity</span>}
         </div>
       </div>
-      {tab === "period" ? periodView : yearContent()}
+      {tab === "period" ? periodView : tab === "history" ? <PnlHistoryTab year={year} branchCode={branchCode} onSaved={() => void load()} /> : yearContent()}
     </div>
   );
 }

@@ -5,6 +5,7 @@ import { createDepartmentResolver } from "@/lib/department-resolve";
 import { departmentNameMap } from "@/lib/revenue-department";
 import { isRevenueComponentCategory, REVENUE_ADJUST_CATEGORY_CODE, REVENUE_SVC_CATEGORY_CODE, REVENUE_VAT_CATEGORY_CODE, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { loadRevenuePnlGroups, type CategoryLookupClient } from "@/lib/revenue-source";
+import { loadPnlHistory, PNL_HISTORY_CUTOFF, PNL_HISTORY_ITEM_PREFIX, PNL_HISTORY_REVENUE_KINDS, PNL_HISTORY_REVENUE_PREFIX, pnlHistoryLines, pnlHistoryRevenueDepartment } from "@/lib/pnl-history";
 
 /* ------------------------------------------------------------------------- *
  * Báo cáo theo feedback chị Bình 26/08/2026 (report_Feedback.pdf):
@@ -98,7 +99,7 @@ export async function getPnlMatrix(year: string, branchCode: string) {
   const yearStart = new Date(`${year}-01-01T00:00:00`);
   const yearEnd = new Date(`${Number(year) + 1}-01-01T00:00:00`);
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
-  const [journalRows, catalogPnlItems, pnlGroups, categories, revenueGroups, departments, revenueRows, payrollRows, payrollDeptRows, targets, payableDebts, depreciationRows, payrollPnlRows, directPayrollRows] = await Promise.all([
+  const [allJournalRows, catalogPnlItems, pnlGroups, categories, revenueGroups, departments, allRevenueRows, allPayrollRows, allPayrollDeptRows, targets, payableDebts, allDepreciationRows, allPayrollPnlRows, allDirectPayrollRows, history] = await Promise.all([
     loadYearJournalLines(months[0], months[11], branchCode),
     prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true, group: true, subGroup: true, status: true } }),
     prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true, group: true, status: true } }),
@@ -119,12 +120,12 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     }),
     prisma.payrollImportRow.findMany({
       where: { period: { startsWith: `${year}-` }, ...branchFilter },
-      select: { period: true, insuranceAmount: true, bonusAmount: true },
+      select: { period: true, branchCode: true, insuranceAmount: true, bonusAmount: true },
     }),
     // Bảng lương mẫu theo bộ phận: KPI đứng chỗ khoản thưởng, bảo hiểm là phần công ty chịu.
     prisma.payrollDepartmentRow.findMany({
       where: { period: { startsWith: `${year}-` }, ...branchFilter },
-      select: { period: true, companyInsurance: true, kpiAmount: true },
+      select: { period: true, branchCode: true, companyInsurance: true, kpiAmount: true },
     }),
     // Ngân sách từng tháng để chart COGS/LƯƠNG vẽ đường so sánh ("so sánh dựa vào ngân
     // sách đã được setup" — feedback mục 4). Target % doanh thu quy ra tiền theo target
@@ -155,7 +156,21 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     loadPayrollPnlRows(months[0], months[11], branchCode),
     // Khoản lương lẻ trên phiếu chi / chứng từ ngân hàng / công nợ đọc thẳng, không đợi ghi sổ.
     loadDirectPayrollExpenseRows(months[0], months[11], branchCode),
+    // Số P&L nhập tay của các tháng trước khi lên phần mềm (lib/pnl-history.ts).
+    loadPnlHistory(months[0], months[11], branchCode),
   ]);
+  // Tháng × nhà hàng đã nhập tay thì bỏ số hệ thống của đúng ô đó — không cộng trùng.
+  const systemRow = (row: { period: string; branchCode: string }) => !history.covers(row.period, row.branchCode);
+  const journalRows = allJournalRows.filter(systemRow);
+  const depreciationRows = allDepreciationRows.filter(systemRow);
+  const payrollPnlRows = allPayrollPnlRows.filter(systemRow);
+  const directPayrollRows = allDirectPayrollRows.filter(systemRow);
+  const payrollRows = allPayrollRows.filter(systemRow);
+  const payrollDeptRows = allPayrollDeptRows.filter(systemRow);
+  const revenueRows = allRevenueRows.filter((row) => {
+    const date = new Date(row.saleDate);
+    return systemRow({ period: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`, branchCode: row.branchCode });
+  });
   const postedDebtIds = new Set(
     payableDebts.length === 0 ? [] : (await prisma.journalEntry.findMany({
       where: { sourceType: "DEBT_PAYABLE", sourceId: { in: payableDebts.map((row) => row.id) } },
@@ -185,7 +200,19 @@ export async function getPnlMatrix(year: string, branchCode: string) {
   const tree = createPnlDetailTree(catalog, 12);
   // Bút toán khấu hao 6424 được thay bằng số của màn Khấu hao — giữ cả hai là cộng hai lần.
   // Phần lương của bút toán phiếu chi / công nợ cũng vậy: đã đọc thẳng chứng từ (directPayrollRows).
+  const historyLines = pnlHistoryLines(history.entries, pnlItems, pnlGroups);
   const rows: MatrixLineRow[] = [
+    ...historyLines.filter((line) => !line.revenueSample).map((line) => ({
+      period: line.period,
+      branchCode: line.branchCode,
+      accountType: line.account.accountType,
+      reportGroup: line.account.reportGroup,
+      pnlItemCode: line.pnlItemCode,
+      categoryCode: null,
+      departmentCode: null,
+      debit: line.debit,
+      credit: line.credit,
+    })),
     ...journalRows.filter((row) => row.reportGroup !== DEPRECIATION_PNL_ACCOUNT.reportGroup
       && !(row.directPayrollSource && pnlLineKeyOf(row, tree.pnlItemRefOf(row.pnlItemCode)) === "payroll")),
     ...depreciationRows.map((row) => ({
@@ -320,6 +347,22 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     bumpSeries(netRevenueByChannel, channel.toUpperCase(), `DT ${channel}`, monthIndex, net);
     svcMonths[monthIndex] += row.feeAmount;
     vatMonths[monthIndex] += row.vatAmount;
+  }
+  // Doanh thu nhập tay (Bếp / Bar / Phụ thu, đã gồm SVC) của tháng trước khi lên phần mềm.
+  for (const line of historyLines) {
+    if (!line.revenueSample) continue;
+    const monthIndex = months.indexOf(line.period);
+    if (monthIndex < 0) continue;
+    const amount = line.credit - line.debit;
+    tree.add({ account: { accountType: "REVENUE", reportGroup: "" }, pnlItemCode: null, categoryCode: revenueGroups.groupOf(line.revenueSample).code, debit: line.debit, credit: line.credit }, monthIndex);
+    totals[monthIndex].revenue += amount;
+    const branchBuckets = branchTotals.get(line.branchCode) || months.map(() => emptyBucket());
+    branchBuckets[monthIndex].revenue += amount;
+    branchTotals.set(line.branchCode, branchBuckets);
+    const dept = pnlHistoryRevenueDepartment(line.revenueKind) || UNASSIGNED_DEPARTMENT;
+    bumpSeries(revenueByDepartment, dept, deptLabel(dept), monthIndex, amount);
+    bumpSeries(netRevenueByDepartment, dept, dept === UNASSIGNED_DEPARTMENT ? "DT Phụ Thu" : `DT ${departmentName.get(dept) || dept}`, monthIndex, amount);
+    bumpSeries(netRevenueByChannel, "SO_LIEU_NHAP_TAY", "DT nhập tay (trước khi lên phần mềm)", monthIndex, amount);
   }
   const payrollBonusMonths = Array.from({ length: 12 }, () => 0);
   const payrollInsuranceMonths = Array.from({ length: 12 }, () => 0);
@@ -927,14 +970,23 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
 export async function getRevenueTrendReport(period: string, branchCode: string, years = 3) {
   const currentYear = Number(period.slice(0, 4));
   const firstYear = currentYear - Math.max(1, years) + 1;
-  const [rows, targets] = await Promise.all([
+  const [rows, targets, history] = await Promise.all([
     loadYearJournalLines(`${firstYear}-01`, `${currentYear}-12`, branchCode),
     prisma.reportTarget.findMany({ where: { metric: "revenue", period: { startsWith: `${currentYear}-` }, ...(branchCode === "ALL" ? {} : { branchCode }) } }),
+    loadPnlHistory(`${firstYear}-01`, `${currentYear}-12`, branchCode),
   ]);
   const series = new Map<number, number[]>();
   for (let yearValue = firstYear; yearValue <= currentYear; yearValue += 1) series.set(yearValue, Array.from({ length: 12 }, () => 0));
+  // Doanh thu nhập tay của tháng trước khi lên phần mềm; ô đó bỏ số hệ thống (lib/pnl-history.ts).
+  for (const entry of history.entries) {
+    if (!entry.metric.startsWith(PNL_HISTORY_REVENUE_PREFIX)) continue;
+    const values = series.get(Number(entry.period.slice(0, 4)));
+    const monthIndex = Number(entry.period.slice(5, 7)) - 1;
+    if (values && monthIndex >= 0) values[monthIndex] += entry.amount;
+  }
   for (const row of rows) {
     if (row.accountType !== "REVENUE") continue;
+    if (history.covers(row.period, row.branchCode)) continue;
     const yearValue = Number(row.period.slice(0, 4));
     const monthIndex = Number(row.period.slice(5, 7)) - 1;
     const values = series.get(yearValue);
@@ -953,5 +1005,70 @@ export async function getRevenueTrendReport(period: string, branchCode: string, 
     series: [...series.entries()]
       .map(([yearValue, values]) => ({ year: String(yearValue), months: values, total: values.reduce((sum, value) => sum + value, 0) }))
       .sort((a, b) => Number(a.year) - Number(b.year)),
+  };
+}
+
+/** Một ô nhập được trên màn "Số liệu trước khi lên phần mềm": metric + tên hiển thị. */
+export type PnlHistoryEditorItem = { metric: string; name: string };
+export type PnlHistoryEditorLine = { key: string; label: string; groups: Array<{ code: string; name: string; items: PnlHistoryEditorItem[] }> };
+
+/**
+ * Khung nhập số P&L thực tế của các tháng trước khi lên phần mềm (khách 19/10/2026) — cùng cây
+ * dòng → nhóm → hạng mục như Dự báo P&L. Doanh thu nhập theo Bếp / Bar / Phụ thu (đã gồm SVC).
+ */
+export async function getPnlHistoryEditor(year: string, branchCode: string) {
+  const months = yearMonths(year);
+  const [catalogPnlItems, pnlGroups, categories, departments, revenueGroups, entries] = await Promise.all([
+    prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true, group: true, subGroup: true, status: true } }),
+    prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true, group: true, status: true } }),
+    prisma.masterDataItem.findMany({ where: { type: "REVENUE_EXPENSE_CATEGORY" }, select: { code: true, name: true } }),
+    prisma.masterDataItem.findMany({ where: { type: "DEPARTMENT" }, select: { code: true, name: true, subGroup: true } }),
+    loadRevenuePnlGroups(prisma as unknown as CategoryLookupClient),
+    prisma.pnlHistoryEntry.findMany({
+      where: { period: { gte: months[0], lte: months[11] }, ...(branchCode === "ALL" ? {} : { branchCode }) },
+      select: { period: true, branchCode: true, metric: true, amount: true, updatedBy: true, updatedAt: true },
+    }),
+  ]);
+  const pnlItems = withPayrollPnlItem(withDepreciationPnlItem(catalogPnlItems, pnlGroups), pnlGroups);
+  const tree = createPnlDetailTree({ pnlItems, pnlGroups, categories, departments }, 1);
+  const lines: PnlHistoryEditorLine[] = [{
+    key: "revenue",
+    label: `${PNL_STATEMENT_LINES[0].label} (gồm SVC)`,
+    groups: [{
+      code: "REVENUE",
+      name: "Doanh thu theo bộ phận",
+      items: PNL_HISTORY_REVENUE_KINDS.map((kind) => ({ metric: `${PNL_HISTORY_REVENUE_PREFIX}${kind.kind}`, name: revenueGroups.groupOf(kind.sample).name || kind.label })),
+    }],
+  }];
+  for (const statement of PNL_STATEMENT_LINES) {
+    if (statement.subtotal || statement.key === "revenue") continue;
+    const groups = tree.groupsOf(statement.key as PnlLineKey)
+      .map((group) => {
+        const items = group.items.filter((item) => item.code !== "UNCLASSIFIED").map((item) => ({ metric: `${PNL_HISTORY_ITEM_PREFIX}${item.code}`, name: item.name }));
+        // Nhóm Thu nhập khác chưa có hạng mục con: nhập thẳng vào nhóm (cây P&L cộng vào nhóm đó).
+        if (items.length === 0 && statement.key === "otherIncome" && group.code !== PNL_UNGROUPED_CODE) {
+          return { code: group.code, name: group.name, items: [{ metric: `${PNL_HISTORY_ITEM_PREFIX}${group.code}`, name: group.name }] };
+        }
+        return { code: group.code, name: group.name, items };
+      })
+      .filter((group) => group.items.length > 0);
+    lines.push({ key: statement.key, label: statement.label, groups });
+  }
+  // Ô ALL là tổng các nhà hàng (chỉ xem), nhập phải chọn từng nhà hàng.
+  const values: Record<string, number> = {};
+  for (const entry of entries) {
+    const key = `${entry.metric}|${entry.period}`;
+    values[key] = (values[key] || 0) + entry.amount;
+  }
+  const lastUpdate = entries.reduce<{ by: string | null; at: Date } | null>((latest, entry) =>
+    (!latest || entry.updatedAt > latest.at ? { by: entry.updatedBy, at: entry.updatedAt } : latest), null);
+  return {
+    year,
+    branchCode,
+    cutoff: PNL_HISTORY_CUTOFF,
+    months: months.filter((month) => month < PNL_HISTORY_CUTOFF),
+    lines,
+    values,
+    lastUpdate: lastUpdate ? { by: lastUpdate.by, at: lastUpdate.at.toISOString() } : null,
   };
 }

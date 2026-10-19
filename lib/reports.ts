@@ -18,6 +18,7 @@ import { WALLET_CARD_FEE_CATEGORY_CODE, WALLET_GRAB_EXPENSE_CATEGORY_CODE } from
 import { vietnamBusinessDayKey } from "@/lib/revenue-date";
 import { remainingWalletGross, selectWalletDeclaredRevenue, walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
 import { comparePnlGroups, comparePnlItems, isCapexPnlCatalogItem, isDepreciationPnlName, isFixedCostPnlGroupName, isInterestPnlName, isPayrollPnlItem, isPayrollPnlName, matchDepartmentPayrollItem, otherIncomePnlItemNameOf, samePnlName } from "@/lib/pnl-ordering";
+import { loadPnlHistory, pnlHistoryLines, pnlHistoryRevenueDepartment } from "@/lib/pnl-history";
 import { isRevenueComponentCategory, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { REVENUE_PNL_UNCLASSIFIED, loadRevenuePnlGroups, type CategoryLookupClient } from "@/lib/revenue-source";
 import { createDepartmentResolver } from "@/lib/department-resolve";
@@ -841,7 +842,7 @@ async function loadPeriodJournalLines(start: Date, end: Date, branchCode: string
 
 export async function getPnl(period: string, branchCode: string) {
   const { start, end } = periodBounds(period);
-  const [entries, revenueRows, revenueGroups, catalogPnlItems, pnlGroups, categories, depreciationRows, payrollRows, payrollDepartments, directPayrollRows] = await Promise.all([
+  const [allEntries, allRevenueRows, revenueGroups, catalogPnlItems, pnlGroups, categories, allDepreciationRows, allPayrollRows, payrollDepartments, allDirectPayrollRows, history] = await Promise.all([
     loadPeriodJournalLines(start, end, branchCode),
     // Dòng Doanh thu lấy thẳng từ file import doanh thu, không lấy từ sổ cái — xem chú thích
     // ở vòng lặp bên dưới. Cùng luật với bảng 12 tháng (getPnlMatrix).
@@ -872,7 +873,16 @@ export async function getPnl(period: string, branchCode: string) {
     loadPayrollDepartmentLinks(),
     // Khoản lương lẻ trên phiếu chi / chứng từ ngân hàng / công nợ đọc thẳng, không đợi ghi sổ.
     loadDirectPayrollExpenseRows(period, period, branchCode),
+    // Số P&L nhập tay của tháng trước khi lên phần mềm (lib/pnl-history.ts).
+    loadPnlHistory(period, period, branchCode),
   ]);
+  // Nhà hàng nào đã nhập tay số của kỳ này thì bỏ số hệ thống của nó — không cộng trùng.
+  const systemRow = (row: { branchCode: string }) => !history.covers(period, row.branchCode);
+  const entries = allEntries.filter(systemRow);
+  const revenueRows = allRevenueRows.filter(systemRow);
+  const depreciationRows = allDepreciationRows.filter(systemRow);
+  const payrollRows = allPayrollRows.filter(systemRow);
+  const directPayrollRows = allDirectPayrollRows.filter(systemRow);
   const pnlItems = withPayrollPnlItem(withDepreciationPnlItem(catalogPnlItems, pnlGroups), pnlGroups);
   const pnlItemByCode = new Map(pnlItems.map((item) => [item.code, item]));
   const pnlGroupName = new Map(pnlGroups.map((item) => [item.code, item.name]));
@@ -980,30 +990,41 @@ export async function getPnl(period: string, branchCode: string) {
    * revenuePosJournalLines đang dùng lúc ghi sổ nên P&L và sổ cái tách y hệt nhau.
    */
   const revenueAccount = { accountType: "REVENUE", reportGroup: "REVENUE" };
+  const addRevenueLine = (branchCode: string, line: ExpenseLine) => {
+    const branch = branches.get(branchCode) || emptyPnl();
+    addLine(total, line);
+    addLine(branch, line);
+    tree.add(line, 0);
+    const departmentCode = line.departmentCode || "UNALLOCATED";
+    const department = departments.get(departmentCode) || emptyPnl();
+    addLine(department, line);
+    departments.set(departmentCode, department);
+    branches.set(branchCode, branch);
+  };
   for (const row of revenueRows) {
-    const branch = branches.get(row.branchCode) || emptyPnl();
     for (const posLine of revenuePosJournalLines(row)) {
       if (posLine.accountCode !== "511") continue;
       // Nhóm của dòng món quy về Đồ ăn / Đồ uống / Dịch vụ; dòng SVC / thuế GTGT / điều chỉnh
       // đã mang sẵn danh mục riêng nên giữ nguyên.
       const componentLine = isRevenueComponentCategory(posLine.categoryCode);
-      const line = {
+      addRevenueLine(row.branchCode, {
         account: revenueAccount,
         pnlItemCode: posLine.pnlItemCode ?? null,
         categoryCode: componentLine ? posLine.categoryCode ?? null : revenueGroups.groupOf(row.revenueSource).code,
         departmentCode: posLine.departmentCode ?? null,
         debit: posLine.debit || 0,
         credit: posLine.credit || 0,
-      };
-      addLine(total, line);
-      addLine(branch, line);
-      tree.add(line, 0);
-      const departmentCode = line.departmentCode || "UNALLOCATED";
-      const department = departments.get(departmentCode) || emptyPnl();
-      addLine(department, line);
-      departments.set(departmentCode, department);
+      });
     }
-    branches.set(row.branchCode, branch);
+  }
+
+  // Số nhập tay của tháng trước khi lên phần mềm đi đúng đường của số hệ thống.
+  for (const line of pnlHistoryLines(history.entries, pnlItems, pnlGroups)) {
+    if (line.revenueSample) {
+      addRevenueLine(line.branchCode, { account: revenueAccount, pnlItemCode: null, categoryCode: revenueGroups.groupOf(line.revenueSample).code, departmentCode: pnlHistoryRevenueDepartment(line.revenueKind), debit: 0, credit: line.credit });
+    } else {
+      addExpenseLine(line.branchCode, { account: line.account, pnlItemCode: line.pnlItemCode, categoryCode: null, departmentCode: null, debit: line.debit, credit: line.credit });
+    }
   }
 
   const finalized = finalizePnl(total);

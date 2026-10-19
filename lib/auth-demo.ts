@@ -445,6 +445,7 @@ export const moduleSubTabs: Record<string, Record<string, Array<{ id: string; la
       { id: "control", label: "Định mức" },
       { id: "breakeven", label: "Điểm hòa vốn" },
       { id: "scenario", label: "Giả định tài chính" },
+      { id: "history", label: "Số liệu trước 08/2026" },
     ],
   },
 };

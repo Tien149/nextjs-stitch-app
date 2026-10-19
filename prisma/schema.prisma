@@ -2030,6 +2030,24 @@ model ForecastAssumption {
   @@index([deletedAt])
 }
 
+/// Số liệu P&L THỰC TẾ của các tháng trước khi lên phần mềm (khách nhập tay, 19/10/2026) — chỉ để
+/// lên báo cáo / dashboard so sánh qua các tháng các năm. Không sinh bút toán, không đụng quỹ /
+/// công nợ / tồn kho. Tháng × nhà hàng nào có dòng ở đây thì báo cáo bỏ số hệ thống của tháng đó
+/// (lib/pnl-history.ts). metric: "revenue:FOOD|DRINK|SERVICE" hoặc "pnlItem:<mã hạng mục P&L>".
+model PnlHistoryEntry {
+  id         String   @id @default(uuid())
+  period     String
+  branchCode String
+  metric     String
+  amount     Float
+  updatedBy  String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([period, branchCode, metric])
+  @@index([period])
+}
+
 model ReportTarget {
   id            String   @id @default(uuid())
   period        String

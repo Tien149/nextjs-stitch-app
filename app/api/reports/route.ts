@@ -5,7 +5,8 @@ import { allowedMenuTabs, canViewFinancialDashboard } from "@/lib/auth-demo";
 import { assertBranchAccess, ensureRevenueComponentCategories, postJournalEntry, requestedBranch } from "@/lib/accounting";
 import { prisma } from "@/lib/prisma";
 import { createMoneySourceMatcher, getBalanceSheet, getCashSourceReport, getCashflowForecast, getPnl, getRevenueLedger, getRevenueLedgerDetail, getRevenueSettlementReport, getTrend, PNL_UNGROUPED_CODE } from "@/lib/reports";
-import { getPayrollBudgetReport, getPnlMatrix, getRevenueTrendReport } from "@/lib/report-budget";
+import { getPayrollBudgetReport, getPnlHistoryEditor, getPnlMatrix, getRevenueTrendReport } from "@/lib/report-budget";
+import { isPnlHistoryPeriod, PNL_HISTORY_CUTOFF, PNL_HISTORY_ITEM_PREFIX, PNL_HISTORY_REVENUE_KINDS, PNL_HISTORY_REVENUE_PREFIX } from "@/lib/pnl-history";
 import { getPnlNotes, savePnlNote, toPnlNoteKind } from "@/lib/pnl-note";
 import { apiError, assertPeriodOpen, businessError, cleanText, findClosedPeriod, isPeriodLocked, normalizePeriod, toNumber } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
@@ -1258,7 +1259,7 @@ export async function GET(request: Request) {
     // (Thu chi ngày) vừa là nguồn số của bảng "Đối chiếu tiền vào đã đủ chưa" nằm ở đầu tab
     // Tiền về đủ chưa (chuyển sang 05/09/2026), nên ai có MỘT TRONG HAI tab đều gọi được.
     // "revenue-ledger-detail" là phần xoè chi tiết của chính tab Sổ doanh thu, không phải tab riêng.
-    const subViewTab: Record<string, string> = { "pnl-matrix": "pnl", "pnl-note": "pnl", "revenue-trend": "yoy", "daily-cash": "revenue-settlement", "revenue-ledger-detail": "revenue-ledger" };
+    const subViewTab: Record<string, string> = { "pnl-matrix": "pnl", "pnl-note": "pnl", "pnl-history": "pnl", "revenue-trend": "yoy", "daily-cash": "revenue-settlement", "revenue-ledger-detail": "revenue-ledger" };
     const containerTab = subViewTab[type] || type;
     if (permittedTabs && !permittedTabs.includes(type) && !permittedTabs.includes(containerTab)) {
       return NextResponse.json({ error: "Bạn không có quyền xem báo cáo này" }, { status: 403 });
@@ -1303,6 +1304,7 @@ export async function GET(request: Request) {
     // Ngân sách nhân sự nhận nguyên kỳ: bảng vẫn trải 12 tháng, nhưng form tỷ trọng là bộ có hiệu lực ở tháng đó.
     if (type === "payroll-budget") return NextResponse.json(await getPayrollBudgetReport(period, branchCode));
     if (type === "pnl-matrix") return NextResponse.json(await getPnlMatrix(period.slice(0, 4), branchCode));
+    if (type === "pnl-history") return NextResponse.json(await getPnlHistoryEditor(cleanText(params.get("year")) || period.slice(0, 4), branchCode));
     if (type === "pnl-note") return NextResponse.json({ notes: await getPnlNotes(period.slice(0, 4), branchCode, toPnlNoteKind(params.get("kind"))) });
     if (type === "revenue-trend") return NextResponse.json(await getRevenueTrendReport(period, branchCode, 3));
     if (type === "cashflow") return NextResponse.json({ period, branchCode, ...(await getCashflowForecast(period, branchCode, cleanText(params.get("scenario")) || "BASE")) });
@@ -1424,6 +1426,61 @@ export async function POST(request: Request) {
       return NextResponse.json({ ...updated, journalStatus });
     }
 
+    /**
+     * Số P&L thực tế các tháng trước khi lên phần mềm (lib/pnl-history.ts): lưu nhiều ô một lần,
+     * ô bỏ trống / 0 là xoá. Chỉ tháng trước PNL_HISTORY_CUTOFF, từng nhà hàng một.
+     */
+    if (action === "SAVE_PNL_HISTORY") {
+      const branchCode = cleanText(body.branchCode).toUpperCase();
+      if (!branchCode || branchCode === "ALL") businessError("Chọn một nhà hàng để nhập số liệu.");
+      assertBranchAccess(auth.session, branchCode);
+      const branch = await prisma.masterDataItem.findFirst({ where: { type: "BRANCH", code: branchCode, deletedAt: null }, select: { code: true } });
+      if (!branch) businessError(`Nhà hàng "${branchCode}" không có trong danh mục.`);
+      const rawEntries = Array.isArray(body.entries) ? body.entries as Array<Record<string, unknown>> : [];
+      if (rawEntries.length === 0) businessError("Không có ô nào thay đổi.");
+      if (rawEntries.length > 5000) businessError("Lưu tối đa 5.000 ô mỗi lần.");
+      const [pnlItemCodes, pnlGroupCodes] = await Promise.all([
+        prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM", deletedAt: null }, select: { code: true } }),
+        prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP", group: "OTHER_INCOME", deletedAt: null }, select: { code: true } }),
+      ]);
+      const allowedCodes = new Set([...pnlItemCodes, ...pnlGroupCodes].map((row) => row.code));
+      const revenueMetrics = new Set(PNL_HISTORY_REVENUE_KINDS.map((kind) => `${PNL_HISTORY_REVENUE_PREFIX}${kind.kind}`));
+      const entries = rawEntries.map((entry) => {
+        const period = normalizePeriod(cleanText(entry.period));
+        const metric = cleanText(entry.metric);
+        if (!period || !isPnlHistoryPeriod(period)) businessError(`Chỉ nhập được tháng trước ${PNL_HISTORY_CUTOFF.slice(5)}/${PNL_HISTORY_CUTOFF.slice(0, 4)} (tháng "${cleanText(entry.period)}").`);
+        const validMetric = revenueMetrics.has(metric)
+          || (metric.startsWith(PNL_HISTORY_ITEM_PREFIX) && allowedCodes.has(metric.slice(PNL_HISTORY_ITEM_PREFIX.length)));
+        if (!validMetric) businessError(`Hạng mục "${metric}" không có trong danh mục P&L.`);
+        const amount = entry.amount === "" || entry.amount === null || entry.amount === undefined ? 0 : toNumber(entry.amount);
+        if (!Number.isFinite(amount)) businessError(`Số tiền không hợp lệ ở ${metric} tháng ${period}.`);
+        return { period: period as string, metric, amount };
+      });
+      let saved = 0;
+      let removed = 0;
+      await prisma.$transaction(async (tx) => {
+        for (const entry of entries) {
+          const where = { period_branchCode_metric: { period: entry.period, branchCode, metric: entry.metric } };
+          if (Math.abs(entry.amount) < 0.5) {
+            removed += (await tx.pnlHistoryEntry.deleteMany({ where: { period: entry.period, branchCode, metric: entry.metric } })).count;
+          } else {
+            await tx.pnlHistoryEntry.upsert({ where, create: { period: entry.period, branchCode, metric: entry.metric, amount: entry.amount, updatedBy: auth.session.name }, update: { amount: entry.amount, updatedBy: auth.session.name } });
+            saved += 1;
+          }
+        }
+      }, { timeout: 60000 });
+      await writeAuditLog({
+        session: auth.session,
+        module: "REPORTS",
+        action: "SAVE_PNL_HISTORY",
+        entityType: "PnlHistoryEntry",
+        entityId: `${branchCode}-${entries[0].period}`,
+        entityCode: `PNL_HISTORY-${branchCode}`,
+        branchCode,
+        metadata: { saved, removed, periods: [...new Set(entries.map((entry) => entry.period))].sort() },
+      });
+      return NextResponse.json({ saved, removed });
+    }
     const period = normalizePeriod(body.period);
     const branchCode = requestedBranch(auth.session, cleanText(body.branchCode));
     if (!period || !branchCode) businessError("Thiếu kỳ hoặc chi nhánh");

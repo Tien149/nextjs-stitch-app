@@ -57,6 +57,7 @@ export const MONEY_FIELDS: Record<string, readonly string[]> = {
   PayrollDepartmentRow: ["monthlySalary", "hourlySalary", "mealAllowance", "parkingAllowance", "svcAmount", "kpiAmount", "otherAllowance", "companyInsurance", "mandatoryInsurance", "totalCompanyCost", "netAmount"],
   ForecastAssumption: ["amount"],
   ReportTarget: ["targetValue"],
+  PnlHistoryEntry: ["amount"],
 };
 
 
