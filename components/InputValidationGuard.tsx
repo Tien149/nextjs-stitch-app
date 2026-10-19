@@ -5,7 +5,9 @@ import { useEffect } from "react";
 type InputKind = "code" | "phone" | "tax-code" | "account-number" | "email";
 
 const rules: Record<InputKind, { allowed: RegExp; pattern: string; message: string; maxLength: number }> = {
-  code: { allowed: /^[A-Za-z0-9._-]*$/, pattern: "[A-Za-z0-9._-]+", message: "Mã chỉ được gồm chữ không dấu, số, dấu chấm, gạch ngang hoặc gạch dưới.", maxLength: 50 },
+  // Dấu * có trong mã món POS sinh ra (CUSTOMESALE*1787750014027) — chặn thì dán mã vào ô Mã món
+  // định lượng bị mất dấu, không khớp mặt hàng (khách báo 19/10/2026).
+  code: { allowed: /^[A-Za-z0-9._*-]*$/, pattern: "[A-Za-z0-9._*\\-]+", message: "Mã chỉ được gồm chữ không dấu, số, dấu chấm, dấu *, gạch ngang hoặc gạch dưới.", maxLength: 50 },
   phone: { allowed: /^\+?[0-9 ]*$/, pattern: "\\+?[0-9 ]{8,16}", message: "Số điện thoại chỉ được gồm dấu + và 8-16 chữ số.", maxLength: 17 },
   "tax-code": { allowed: /^[0-9-]*$/, pattern: "[0-9-]{10,15}", message: "Mã số thuế chỉ được gồm 10-14 chữ số và dấu gạch ngang.", maxLength: 15 },
   "account-number": { allowed: /^[0-9]*$/, pattern: "[0-9]{4,30}", message: "Số tài khoản chỉ được gồm 4-30 chữ số.", maxLength: 30 },
@@ -78,7 +80,7 @@ export default function InputValidationGuard() {
         return;
       }
       if (kind === "code") {
-        pasted = pasted.trim().replace(/[^A-Za-z0-9._-]/g, "");
+        pasted = pasted.trim().replace(/[^A-Za-z0-9._*-]/g, "");
       } else if (kind === "phone") {
         pasted = pasted.trim().replace(/[^+0-9 ]/g, "");
       } else if (kind === "tax-code") {
