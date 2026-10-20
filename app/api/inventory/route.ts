@@ -1350,27 +1350,12 @@ async function revertExplosionRun(session: DemoSession, runCode: string, action:
   assertBranchAccess(auth.session, branchCode);
   await assertPeriodOpen(documents.map((doc) => ({ date: doc.transactionDate, branchCode: doc.branchCode })), `hoàn tác ${runLabel}`);
 
-  // Chỉ hoàn kho chính xác khi chưa có phiếu nào khác phát sinh sau trên cùng mặt hàng/kho.
+  /**
+   * Không còn chặn "đã có phiếu phát sinh sau" (khách 20/10/2026: XTM-2026-0001 ngày 25/08 import sau
+   * khi rã tháng 9 làm nút Hoàn tác bị chặn): reverseStockEffect trả đúng số lượng + trị giá từng
+   * phiếu nên hoàn tác ở giữa kỳ vẫn khớp — cùng cách rã lại đang làm. Chỉ kỳ khoá mới chặn.
+   */
   const documentIds = documents.map((doc) => doc.id);
-  const itemIds = [...new Set(documents.flatMap((doc) => doc.lines.map((line) => line.itemId)))];
-  const warehouseCodes = [...new Set(documents.flatMap((doc) => [doc.warehouseCode, doc.toWarehouseCode]).filter((value): value is string => !!value))];
-  const earliest = documents[documents.length - 1];
-  const newer = await prisma.inventoryTransaction.findFirst({
-    where: {
-      id: { notIn: documentIds },
-      deletedAt: null,
-      createdAt: { gt: earliest?.createdAt || new Date(0) },
-      lines: { some: { itemId: { in: itemIds } } },
-      OR: [
-        { warehouseCode: { in: warehouseCodes } },
-        { toWarehouseCode: { in: warehouseCodes } },
-      ],
-    },
-  });
-  if (newer) {
-    businessError(`Đã có phiếu ${newer.code} phát sinh sau ${runLabel} ${runCode} trên cùng mặt hàng/kho nên không thể hoàn tác chính xác. Xoá phiếu đó trước.`);
-  }
-
   await prisma.$transaction(async (tx) => {
     /**
      * Giành phiếu TRƯỚC khi hoàn kho: bấm Hoàn tác nhiều lần liền (19/10/2026 RA-2026-0040 bấm 3
@@ -1386,34 +1371,14 @@ async function revertExplosionRun(session: DemoSession, runCode: string, action:
     if (claimed.count !== documentIds.length) {
       businessError(`${runLabel[0].toUpperCase()}${runLabel.slice(1)} ${runCode} vừa được hoàn tác ở một thao tác khác — tải lại trang để xem kết quả.`);
     }
-    for (const doc of documents) {
-      for (const line of doc.lines) {
-        const direction = doc.transactionType.startsWith("NHAP_") ? "IN" : "OUT";
-        const balance = await tx.inventoryBalance.findUnique({
-          where: { itemId_warehouseCode: { itemId: line.itemId, warehouseCode: doc.warehouseCode } },
-        });
-        const currentQuantity = balance?.quantity || 0;
-        const currentAverage = balance?.averageCost || 0;
-        const currentValue = currentQuantity * currentAverage;
-        // Hoàn tác không chặn ở mức 0 (luật xuất âm): lần rã chạy trên kho đang âm thì hoàn
-        // lại cũng phải về đúng số âm cũ, cắt về 0 là tự nhiên mất hàng.
-        const newQuantity = direction === "IN" ? currentQuantity - line.quantity : currentQuantity + line.quantity;
-        const newValue = direction === "IN" ? currentValue - line.totalCost : currentValue + line.totalCost;
-        const averageCost = newQuantity > quantityEpsilon ? Math.max(newValue / newQuantity, 0) : currentAverage;
-        await tx.inventoryBalance.upsert({
-          where: { itemId_warehouseCode: { itemId: line.itemId, warehouseCode: doc.warehouseCode } },
-          create: { itemId: line.itemId, warehouseCode: doc.warehouseCode, quantity: newQuantity, averageCost },
-          update: { quantity: newQuantity, averageCost },
-        });
-      }
-    }
+    for (const doc of documents) await reverseStockEffect(tx, doc);
     await tx.revenueImportRow.updateMany({
       where: { inventoryStatus: `POSTED:${runCode}` },
       data: { inventoryStatus: "PENDING" },
     });
     // Điều chuyển / kiểm dư bán thành phẩm của lần rã về lại hàng chờ.
     await releaseExplosionSources(tx, runCode);
-  }, { timeout: 60000 });
+  }, { timeout: 10 * 60 * 1000, maxWait: 30000 });
 
   await writeAuditLog({
     session, module: menuHref, action,
