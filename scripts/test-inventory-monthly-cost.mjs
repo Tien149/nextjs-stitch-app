@@ -231,3 +231,30 @@ test("chi phí mua hàng phân bổ nằm trong giá nhập, tính vào bình qu
   });
   near(lineOf(result, out.id).unitCost, 120);
 });
+
+test("tồn về 0 còn trị giá lẻ (chênh giá điều chuyển): dồn vào phiếu xuất cuối tháng, trị giá về 0", () => {
+  // Khách 20/10/2026: chạy giá vốn cuối kỳ thì dòng SL 0 trị giá cũng phải về 0.
+  const transfer = line("NL", 5);
+  const early = line("NL", 5);
+  const last = line("NL", 10);
+  const result = computeMonthlyCosts({
+    items, openingPeriod: "2026-08",
+    opening: [{ itemId: "NL", warehouseCode: "KBEP", quantity: 10, value: 500 }],
+    documents: [
+      doc("M1", "NHAP_MUA", "2026-08-02", "KBEP", [line("NL", 10, 150)]),
+      doc("DC1", "DIEU_CHUYEN", "2026-08-10", "KBEP", [transfer], "KBAR"),
+      doc("X1", "XUAT_HUY", "2026-08-12", "KBEP", [early]),
+      doc("X2", "XUAT_BAN", "2026-08-28", "KBEP", [last]),
+    ],
+  });
+  // Bình quân kho 100; điều chuyển theo giá mua gần nhất 150 -> 750; còn 2.000 − 750 = 1.250 cho 15 đơn vị
+  // xuất theo 100 = 1.500 -> lẻ −250, dồn vào X2 (phiếu xuất cuối): 1.000 − 250 = 750.
+  near(lineOf(result, transfer.id).totalCost, 750);
+  near(lineOf(result, early.id).totalCost, 500);
+  near(lineOf(result, last.id).totalCost, 750);
+  near(lineOf(result, last.id).unitCost, 75);
+  const key = keyOf(result, "2026-08", "NL", "KBEP");
+  near(key.closingQty, 0);
+  near(key.closingValue, 0);
+  near(key.outValue, 750 + 500 + 750);
+});

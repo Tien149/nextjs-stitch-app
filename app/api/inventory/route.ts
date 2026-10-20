@@ -21,7 +21,7 @@ import { executeExplosion, rerunExplosions, type AffectedExplosionRun } from "@/
 import { loadMissingRecipeReport } from "@/lib/missing-recipes";
 import { buildMonthlyCostSummary } from "@/lib/recipe-cost-summary";
 import { netMovementsAfter } from "@/lib/stocktake-batch";
-import { EXPLANATION_DRAFT, EXPLANATION_LOCKED, explanationNumbersChanged, listStocktakeSources, loadStocktakeSource, snapshotExplanation, type ExplanationLine, type StocktakeSourceType } from "@/lib/stocktake-explanation";
+import { EXPLANATION_DRAFT, EXPLANATION_LOCKED, explanationNumbersChanged, listStocktakeSources, loadStocktakeSource, snapshotExplanation, stocktakeUnitCosts, type ExplanationLine, type StocktakeSourceType } from "@/lib/stocktake-explanation";
 import { compactFlowDocument, FLOW_DOCUMENT_LIMIT } from "@/lib/inventory-flow-list";
 import { approveTransferRequest, buildTransferRequestLines, canReceiveTransfer, canSendTransfer, TRANSFER_APPROVED, TRANSFER_PENDING, TRANSFER_RETURNED } from "@/lib/inventory-transfer-request";
 import {
@@ -859,19 +859,11 @@ export async function GET(request: Request) {
        * duyệt gộp, giá khai lúc đếm) -> giá bình quân hiện tại của kho -> giá mua gần nhất / kho khác.
        */
       const explanationLines = (Array.isArray(record.lines) ? record.lines : []) as unknown as ExplanationLine[];
-      const pricedIds = explanationLines.filter((line) => Math.abs(line.variance) > 1e-6).map((line) => line.itemId);
-      const balances = pricedIds.length === 0 ? [] : await prisma.inventoryBalance.findMany({
-        where: { warehouseCode: record.warehouseCode, itemId: { in: pricedIds } },
-        select: { itemId: true, averageCost: true },
-      });
-      const averageByItem = new Map(balances.map((balance) => [balance.itemId, balance.averageCost]));
-      const unitCosts: Record<string, number> = {};
-      for (const line of explanationLines) {
-        if (Math.abs(line.variance) <= 1e-6) continue;
-        let cost = line.unitCost > 0 ? line.unitCost : averageByItem.get(line.itemId) || 0;
-        if (!(cost > 0)) cost = await latestKnownUnitCost(prisma as unknown as TxClient, line.itemId);
-        unitCosts[line.itemId] = cost;
-      }
+      const unitCosts = Object.fromEntries(await stocktakeUnitCosts(prisma as unknown as TxClient, {
+        sourceId: record.sourceId,
+        warehouseCode: record.warehouseCode,
+        lines: explanationLines.filter((line) => Math.abs(line.variance) > 1e-6),
+      }));
       return NextResponse.json({
         explanation: record,
         unitCosts,
@@ -888,13 +880,19 @@ export async function GET(request: Request) {
       if (!source) businessError("Không tìm thấy đợt kiểm kê");
       if (stocktakeBranchScope && !stocktakeBranchScope.includes(source!.branchCode.toUpperCase())) businessError("Bạn không có quyền xem đợt kiểm kê của cửa hàng này");
       if (!inScope(source!.warehouseCode)) businessError("Bạn không có quyền xem đợt kiểm kê của kho này");
+      const unitCosts = await stocktakeUnitCosts(prisma as unknown as TxClient, { sourceId: cleanText(searchParams.get("sourceId")), warehouseCode: source!.warehouseCode, lines: source!.countLines });
       return NextResponse.json({
         code: source!.code,
-        lines: source!.countLines.map((line) => ({
-          ...line,
-          variance: line.counted - line.closing,
-          varianceValue: Math.round((line.counted - line.closing) * line.unitCost),
-        })),
+        lines: source!.countLines.map((line) => {
+          const unitCost = unitCosts.get(line.itemId) ?? line.unitCost;
+          return {
+            ...line,
+            unitCost,
+            variance: line.counted - line.closing,
+            varianceValue: Math.round((line.counted - line.closing) * unitCost),
+            countedValue: Math.round(line.counted * unitCost),
+          };
+        }),
       });
     }
 

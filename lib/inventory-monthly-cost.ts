@@ -355,6 +355,13 @@ export function computeMonthlyCosts(input: {
 
     // Ghi giá từng dòng + cộng dồn nhập/xuất từng mã × kho.
     const stats = new Map<string, { inQty: number; inValue: number; followQty: number; followValue: number; outQty: number; outValue: number }>();
+    /**
+     * Phiếu xuất ra khỏi kho (bán / hủy / test món / xuất khác / kiểm thiếu) cuối cùng của tháng theo
+     * mã × kho: tồn về 0 mà còn trị giá lẻ thì dồn phần lẻ vào dòng này (khách 20/10/2026: chạy giá
+     * vốn cuối kỳ thì SL 0 trị giá cũng về 0). Không dồn vào điều chuyển / xuất chế biến vì giá của
+     * chúng đã chảy sang kho nhận / bán thành phẩm.
+     */
+    const lastOutLine = new Map<string, { index: number; at: number; quantity: number }>();
     const stat = (key: string) => {
       let row = stats.get(key);
       if (!row) {
@@ -404,6 +411,11 @@ export function computeMonthlyCosts(input: {
           unitCost: line.quantity > EPS ? total / line.quantity : 0,
           totalCost: total,
         });
+        if (!isTransfer(doc) && !isInbound(doc) && typeOf(doc) !== "XUAT_CHE_BIEN" && line.quantity > EPS) {
+          const at = doc.transactionDate.getTime();
+          const previous = lastOutLine.get(key);
+          if (!previous || at >= previous.at) lastOutLine.set(key, { index: linesOut.length - 1, at, quantity: line.quantity });
+        }
         if (typeOf(doc) === "NHAP_CHE_BIEN" && line.quantity > EPS && total > 0) {
           productionLinesByItem.set(line.itemId, [...(productionLinesByItem.get(line.itemId) || []), { transactionDate: vnClock(doc.transactionDate), quantity: line.quantity, unitCost: total / line.quantity, totalCost: total }]);
         }
@@ -422,6 +434,16 @@ export function computeMonthlyCosts(input: {
       const rawClosingValue = openingValue + row.inValue + row.followValue - row.outValue;
       const residual = Math.abs(closingQty) < EPS ? rawClosingValue : 0;
       const closingValue = rawClosingValue - residual;
+      // Dồn phần lẻ vào phiếu xuất cuối tháng để chính các phiếu cộng ra tồn 0 đ (báo cáo NXT lấy trị
+      // giá từ phiếu). Không có phiếu xuất nào để dồn thì giữ luật cũ: bỏ khỏi số mang sang.
+      const absorb = Math.abs(residual) >= 0.5 ? lastOutLine.get(key) : undefined;
+      if (absorb) {
+        const target = linesOut[absorb.index];
+        target.totalCost += residual;
+        target.unitCost = target.totalCost / absorb.quantity;
+        finalLineCost.set(target.lineId, target.totalCost);
+        row.outValue += residual;
+      }
       if (Math.abs(open.qty) < EPS && Math.abs(open.value) < EPS && row.inQty + row.followQty + row.outQty < EPS) continue;
       keysOut.push({
         period, itemId, warehouseCode,

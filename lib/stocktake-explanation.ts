@@ -18,6 +18,7 @@
 import { Prisma } from "@prisma/custom-client";
 import type { TxClient } from "@/lib/prisma";
 import { STOCKTAKE_APPROVED } from "@/lib/stocktake-status";
+import { latestKnownUnitCost } from "@/lib/inventory-stock";
 
 export const EXPLANATION_DRAFT = "DRAFT";
 export const EXPLANATION_LOCKED = "LOCKED";
@@ -135,6 +136,36 @@ export function buildExplanationLines(
     || a.itemCode.localeCompare(b.itemCode));
 }
 
+/**
+ * Đơn giá cho cột trị giá của Kết quả / Giải trình kiểm kê (khách 20/10/2026: phiếu kiểm cả kho hiện
+ * Đơn giá 0 vì chỉ lấy giá KHAI lúc đếm). Thứ tự: giá trên phiếu điều chỉnh đã ghi sổ (-N/-X của đợt)
+ * -> giá khai / giá đã chụp trên dòng -> bình quân hiện tại của kho -> giá mua gần nhất / kho khác.
+ */
+export async function stocktakeUnitCosts(
+  db: TxClient,
+  input: { sourceId: string; warehouseCode: string; lines: Array<{ itemId: string; unitCost?: number | null }> },
+) {
+  const itemIds = [...new Set(input.lines.map((line) => line.itemId))];
+  if (itemIds.length === 0) return new Map<string, number>();
+  const [posted, balances] = await Promise.all([
+    db.inventoryTransactionLine.findMany({
+      where: { itemId: { in: itemIds }, unitCost: { gt: 0 }, transaction: { referenceType: "STOCKTAKE", referenceId: input.sourceId, deletedAt: null } },
+      select: { itemId: true, unitCost: true },
+    }),
+    db.inventoryBalance.findMany({ where: { warehouseCode: input.warehouseCode, itemId: { in: itemIds } }, select: { itemId: true, averageCost: true } }),
+  ]);
+  const postedCost = new Map(posted.map((line) => [line.itemId, line.unitCost]));
+  const averageCost = new Map(balances.map((balance) => [balance.itemId, balance.averageCost]));
+  const result = new Map<string, number>();
+  for (const line of input.lines) {
+    if (result.has(line.itemId)) continue;
+    let cost = postedCost.get(line.itemId) || (line.unitCost && line.unitCost > 0 ? line.unitCost : 0) || averageCost.get(line.itemId) || 0;
+    if (!(cost > 0)) cost = await latestKnownUnitCost(db, line.itemId);
+    result.set(line.itemId, cost);
+  }
+  return result;
+}
+
 /** Số liệu chụp có khác bản mới không (bỏ qua cột giải trình) — cho nút Cập nhật số liệu. */
 export function explanationNumbersChanged(before: ExplanationLine[], after: ExplanationLine[]) {
   if (before.length !== after.length) return true;
@@ -171,6 +202,14 @@ export async function listStocktakeSources(
       include: { lines: { select: { varianceQuantity: true, actualQuantity: true, systemQuantity: true } } },
     }),
   ]);
+  // Thiếu / thừa của phiếu kiểm cả kho = trị giá phiếu -X / -N đã ghi (đợt duyệt gộp lưu sẵn trên đợt).
+  const sessionDocs = sessions.length === 0 ? [] : await db.inventoryTransaction.findMany({
+    where: { referenceType: "STOCKTAKE", referenceId: { in: sessions.map((session) => session.id) }, deletedAt: null, transactionType: { in: ["NHAP_KIEM_KE", "XUAT_KIEM_KE"] } },
+    select: { referenceId: true, transactionType: true, lines: { select: { totalCost: true } } },
+  });
+  const sessionValue = (id: string, type: string) => sessionDocs
+    .filter((doc) => doc.referenceId === id && doc.transactionType === type)
+    .reduce((sum, doc) => sum + doc.lines.reduce((lineSum, line) => lineSum + line.totalCost, 0), 0);
   const sources: StocktakeSource[] = [
     ...batches.map((batch) => ({
       sourceType: "BATCH" as const,
@@ -197,8 +236,8 @@ export async function listStocktakeSources(
       approvedBy: session.approvedBy,
       lineCount: session.lines.length,
       varianceRows: session.lines.filter((line) => Math.abs(line.actualQuantity - line.systemQuantity) > 1e-6).length,
-      shortageValue: 0,
-      surplusValue: 0,
+      shortageValue: -Math.round(sessionValue(session.id, "XUAT_KIEM_KE")),
+      surplusValue: Math.round(sessionValue(session.id, "NHAP_KIEM_KE")),
     })),
   ];
   return sources.sort((a, b) => b.cutoffAt.getTime() - a.cutoffAt.getTime());

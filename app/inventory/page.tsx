@@ -245,6 +245,8 @@ export default function InventoryPage() {
   const [transferSearch, setTransferSearch] = useState("");
   // Bộ lọc danh sách phiếu hủy — khoảng ngày cũng dùng chung flowRange (tải lại từ máy chủ).
   const [wasteStore, setWasteStore] = useState("ALL");
+  /** Bộ lọc bảng Giao dịch chế biến (khách 20/10/2026): nhà hàng, kho, tìm mã/tên mặt hàng hoặc số phiếu. */
+  const [productionFilter, setProductionFilter] = useState({ branchCode: "ALL", warehouseCode: "", search: "" });
   /** Lọc danh sách phiếu hủy theo loại hủy (NONE = chưa phân loại) + chọn nhiều phiếu để gán loại hủy (03/10/2026). */
   const [wasteSubTypeFilter, setWasteSubTypeFilter] = useState("ALL");
   const [selectedWasteIds, setSelectedWasteIds] = useState<string[]>([]);
@@ -672,8 +674,16 @@ export default function InventoryPage() {
   // Giao dịch chế biến theo khoảng ngày chứng từ (khách yêu cầu 03/10/2026): lấy từ danh sách phiếu
   // theo flowRange. Trước đây lọc từ 100 phiếu mới nhất MỌI loại nên gần như rỗng. Bảng chỉ vẽ
   // PRODUCTION_RENDER_LIMIT phiếu; dòng CỘNG vẫn cộng đủ.
+  const productionKeyword = productionFilter.search.trim().toLowerCase();
   const productionTransactions = (data.flowTransactions || []).filter((row) =>
-    row.transactionType.includes("CHE_BIEN") || (row.referenceCode || "").startsWith("RA-"));
+    row.transactionType.includes("CHE_BIEN") || (row.referenceCode || "").startsWith("RA-"))
+    .filter((row) => productionFilter.branchCode === "ALL" || row.branchCode.toUpperCase() === productionFilter.branchCode.toUpperCase())
+    .filter((row) => !productionFilter.warehouseCode || row.warehouseCode === productionFilter.warehouseCode)
+    // Phiếu rút gọn chỉ gửi 3 dòng đầu, nên tìm mặt hàng trên lineSummary.searchText (đủ mọi dòng).
+    .filter((row) => !productionKeyword
+      || row.code.toLowerCase().includes(productionKeyword)
+      || (row.referenceCode || "").toLowerCase().includes(productionKeyword)
+      || (row.lineSummary?.searchText || row.lines.map((line) => `${line.item.code} ${line.item.name}`).join(" | ")).toLowerCase().includes(productionKeyword));
 
   /** Phiếu hủy đang hiện — dùng chung cho bảng và dòng CỘNG để hai chỗ không lệch nhau. */
   const wasteTransactions = (data.wasteTransactions || [])
@@ -4093,14 +4103,37 @@ export default function InventoryPage() {
                 tổng chẳng có gì để cộng. Trị giá = giá trị hàng luân chuyển của phiếu. */}
             <div className="px-5 pb-3 flex flex-wrap items-end gap-3">
               <DateRangeFilter label="Ngày chứng từ" value={flowRange} onChange={setFlowRange} />
+              <label className="text-xs font-bold text-slate-600">
+                Nhà hàng
+                <select className="control mt-1 w-44" value={productionFilter.branchCode}
+                  onChange={(e) => setProductionFilter({ ...productionFilter, branchCode: e.target.value, warehouseCode: "" })}>
+                  {visibleStoreOptions(user).length > 1 && <option value="ALL">Tất cả nhà hàng</option>}
+                  {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
+                </select>
+              </label>
+              <label className="text-xs font-bold text-slate-600">
+                Kho
+                <select className="control mt-1 w-48" value={productionFilter.warehouseCode} onChange={(e) => setProductionFilter({ ...productionFilter, warehouseCode: e.target.value })}>
+                  <option value="">Tất cả kho</option>
+                  {data.warehouses
+                    .filter((warehouse) => productionFilter.branchCode === "ALL" || !warehouse.branch || warehouse.branch.toUpperCase() === productionFilter.branchCode.toUpperCase())
+                    .map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name || warehouse.code}</option>)}
+                </select>
+              </label>
+              <label className="text-xs font-bold text-slate-600">
+                Tìm mặt hàng / số phiếu
+                <input className="control mt-1 w-64" value={productionFilter.search} placeholder="Mã hoặc tên hàng, RA-2026-…"
+                  onChange={(e) => setProductionFilter({ ...productionFilter, search: e.target.value })} />
+              </label>
               <p className="text-xs text-slate-500">{productionTransactions.length > 300 ? `Có ${productionTransactions.length} phiếu, bảng hiện 300 phiếu mới nhất — dòng CỘNG tính đủ.` : ""}</p>
             </div>
             <Table
-              headers={[{ label: "Chứng từ" }, { label: "Loại" }, { label: "Kho" }, { label: "Mặt hàng" }, { label: "Trị giá", align: "right" }]}
+              headers={[{ label: "Chứng từ" }, { label: "Loại" }, { label: "Nhà hàng" }, { label: "Kho" }, { label: "Số dòng hàng", align: "right" }, { label: "Trị giá", align: "right" }]}
               footer={productionTransactions.length === 0 ? null : (
                 <tr>
                   <Cell>CỘNG</Cell>
                   <Cell>{productionTransactions.length} phiếu</Cell>
+                  <Cell>{""}</Cell>
                   <Cell>{""}</Cell>
                   <Cell>{""}</Cell>
                   <Cell right>{money(sumTransactions(productionTransactions.map((row) => ({ transaction: row }))).beforeTax)} đ</Cell>
@@ -4109,10 +4142,16 @@ export default function InventoryPage() {
             >
               {productionTransactions.slice(0, 300).map((row) => (
                 <tr key={row.id} className="border-t border-slate-100">
-                  <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}{row.referenceCode ? ` · ${row.referenceCode}` : ""}</small></Cell>
+                  <Cell>
+                    <div className="min-w-[13rem] whitespace-nowrap">
+                      <CopyableText value={row.code}><b>{row.code}</b></CopyableText>
+                      <small className="block">{new Date(row.transactionDate).toLocaleDateString("vi-VN")}{row.referenceCode ? ` · ${row.referenceCode}` : ""}</small>
+                    </div>
+                  </Cell>
                   <Cell>{movementTypeLabel(row.transactionType)}</Cell>
+                  <Cell>{storeLabel(row.branchCode)}</Cell>
                   <Cell>{row.warehouseCode}</Cell>
-                  <Cell>{row.lines.map((line) => `${line.item.code}: ${qty(line.quantity)} ${line.item.unit}`).join(", ")}{row.lineSummary && row.lineSummary.count > row.lines.length ? ` … (+${row.lineSummary.count - row.lines.length} dòng)` : ""}</Cell>
+                  <Cell right>{row.lineSummary?.count ?? row.lines.length}</Cell>
                   <Cell right><b>{money(documentTotalCost(row))} đ</b></Cell>
                 </tr>
               ))}

@@ -27,7 +27,7 @@ type Source = {
   shortageValue: number;
   surplusValue: number;
 };
-type ResultLine = { itemId: string; itemCode: string; itemName: string; goodsGroup: string | null; unit: string; closing: number; counted: number; unitCost: number; variance: number; varianceValue: number };
+type ResultLine = { itemId: string; itemCode: string; itemName: string; goodsGroup: string | null; unit: string; closing: number; counted: number; unitCost: number; variance: number; varianceValue: number; countedValue?: number };
 
 type Props = {
   sessionKey: string;
@@ -98,6 +98,8 @@ export default function StocktakeResultsPanel({ sessionKey, branchOptions, wareh
   });
   const shortage = visibleLines.filter((line) => line.varianceValue < 0).reduce((sum, line) => sum + line.varianceValue, 0);
   const surplus = visibleLines.filter((line) => line.varianceValue > 0).reduce((sum, line) => sum + line.varianceValue, 0);
+  const countedValueOf = (line: ResultLine) => line.countedValue ?? Math.round(line.counted * line.unitCost);
+  const countedTotal = visibleLines.reduce((sum, line) => sum + countedValueOf(line), 0);
 
   return (
     <div className="space-y-5">
@@ -148,8 +150,8 @@ export default function StocktakeResultsPanel({ sessionKey, branchOptions, wareh
                   <td className="cell whitespace-nowrap">{source.approvedBy || ""}<small className="block text-slate-500">{dateTime(source.approvedAt)}</small></td>
                   <td className="cell text-right tabular-nums">{source.lineCount}</td>
                   <td className="cell text-right tabular-nums">{source.varianceRows}</td>
-                  <td className="cell text-right tabular-nums text-rose-700">{source.sourceType === "BATCH" ? money(source.shortageValue) : "-"}</td>
-                  <td className="cell text-right tabular-nums text-emerald-700">{source.sourceType === "BATCH" ? money(source.surplusValue) : "-"}</td>
+                  <td className="cell text-right tabular-nums text-rose-700">{money(source.shortageValue)}</td>
+                  <td className="cell text-right tabular-nums text-emerald-700">{money(source.surplusValue)}</td>
                   <td className="cell text-right" data-no-export><button type="button" className="secondary-button !min-h-8 !py-1" onClick={() => void openSource(source)}>Xem</button></td>
                 </tr>
               ))}
@@ -189,14 +191,14 @@ export default function StocktakeResultsPanel({ sessionKey, branchOptions, wareh
             <table className="w-full text-sm">
               <thead className="bg-slate-50 text-xs text-slate-500 uppercase border-b border-slate-200 sticky top-0 z-10">
                 <tr>
-                  {["Mã", "Tên hàng", "Nhóm hàng hóa", "ĐVT", "Sổ sách tại giờ chốt", "Kiểm kê", "Chênh lệch", "Đơn giá", "Giá trị lệch"].map((label, index) => (
+                  {["Mã", "Tên hàng", "Nhóm hàng hóa", "ĐVT", "Sổ sách tại giờ chốt", "Kiểm kê", "Chênh lệch", "Đơn giá", "TG kiểm kê", "TG lệch"].map((label, index) => (
                     <th key={label} className={`px-4 py-3 font-bold whitespace-nowrap ${index >= 4 ? "text-right" : "text-left"}`}>{label}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {lines === null && <tr><td colSpan={9} className="cell text-center text-slate-400">Đang tải...</td></tr>}
-                {lines !== null && visibleLines.length === 0 && <tr><td colSpan={9} className="cell text-center text-slate-400">Không có dòng nào khớp bộ lọc.</td></tr>}
+                {lines === null && <tr><td colSpan={10} className="cell text-center text-slate-400">Đang tải...</td></tr>}
+                {lines !== null && visibleLines.length === 0 && <tr><td colSpan={10} className="cell text-center text-slate-400">Không có dòng nào khớp bộ lọc.</td></tr>}
                 {visibleLines.map((line) => {
                   const tone = Math.abs(line.variance) <= 1e-6 ? "text-slate-500" : line.variance > 0 ? "text-emerald-700 font-bold" : "text-rose-700 font-bold";
                   return (
@@ -209,6 +211,7 @@ export default function StocktakeResultsPanel({ sessionKey, branchOptions, wareh
                       <td className="cell text-right tabular-nums font-bold">{qty(line.counted)}</td>
                       <td className={`cell text-right tabular-nums ${tone}`}>{qty(line.variance)}</td>
                       <td className="cell text-right tabular-nums">{unitPrice(line.unitCost)}</td>
+                      <td className="cell text-right tabular-nums">{money(countedValueOf(line))}</td>
                       <td className={`cell text-right tabular-nums ${tone}`}>{money(line.varianceValue)}</td>
                     </tr>
                   );
@@ -218,6 +221,7 @@ export default function StocktakeResultsPanel({ sessionKey, branchOptions, wareh
                 <tfoot className="sticky bottom-0 bg-slate-100 font-bold border-t-2 border-slate-300">
                   <tr>
                     <td className="cell" colSpan={8}>Cộng {visibleLines.length} mã · Thiếu {money(shortage)} · Thừa {money(surplus)}</td>
+                    <td className="cell text-right tabular-nums">{money(countedTotal)}</td>
                     <td className="cell text-right tabular-nums">{money(shortage + surplus)}</td>
                   </tr>
                 </tfoot>
