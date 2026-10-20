@@ -2852,16 +2852,20 @@ async function adjustInventoryBalanceForRollback(
   const currentQuantity = balance?.quantity || 0;
   const currentAverage = balance?.averageCost || 0;
   const nextQuantity = currentQuantity + quantityDelta;
-  if (nextQuantity < -0.000001) throw new Error("Rollback import kho se lam am ton kho, can kiem tra thu cong");
+  /**
+   * Không chặn âm nữa (khách 20/10/2026 rollback lô Nhập mua T08 bị chặn): luật xuất âm (22/09) đã cho
+   * tồn âm ở mọi đường hoàn kho — gỡ phiếu nhập mà hàng đã xuất/rã thì tồn âm đúng bằng phần đang thiếu,
+   * import lại là bù về. Cũng không cắt về 0: cắt là mất số lượng im lặng, tồn lệch sổ vĩnh viễn.
+   */
   // Hoàn cả GIÁ TRỊ theo totalCost của từng dòng phiếu, không chỉ số lượng: chỉ trả số lượng
   // thì giá vốn bình quân kẹt ở mức phiếu import đã kéo lên/xuống, và mọi phiếu xuất sau
   // ăn giá vốn sai vĩnh viễn (nhập 100 chai @40k vào kho @20k rồi rollback -> kẹt @30k).
   const nextValue = currentQuantity * currentAverage + valueDelta;
   const averageCost = nextQuantity > 0.000001 ? Math.max(nextValue / nextQuantity, 0) : currentAverage;
   if (!balance) {
-    await tx.inventoryBalance.create({ data: { itemId, warehouseCode, quantity: Math.max(nextQuantity, 0), averageCost: nextQuantity > 0.000001 ? Math.max(valueDelta / nextQuantity, 0) : 0 } });
+    await tx.inventoryBalance.create({ data: { itemId, warehouseCode, quantity: nextQuantity, averageCost: nextQuantity > 0.000001 ? Math.max(valueDelta / nextQuantity, 0) : 0 } });
   } else {
-    await tx.inventoryBalance.update({ where: { id: balance.id }, data: { quantity: Math.max(nextQuantity, 0), averageCost } });
+    await tx.inventoryBalance.update({ where: { id: balance.id }, data: { quantity: nextQuantity, averageCost } });
   }
 }
 
