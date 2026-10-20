@@ -66,7 +66,9 @@ export function matchDepartmentPayrollItem<T extends { code: string; name: strin
   const code = nameWords(department.code);
   // Tiền tố chung của tên bộ phận không phải tên nghiệp vụ. "Team" thêm 04/10/2026: VPS đặt "Team Bếp",
   // "Team Bảo Trì - Sửa Chữa" nên không khớp hạng mục nào và lương rơi về hạng mục lương mặc định.
-  const name = nameWords(department.name).replace(/^(bo phan|phong ban|phong|bp|khoi|to|team|nhom)\s+/, "");
+  // Số thứ tự đầu tên ("01. Team Bếp", khách đánh số phòng ban 20/10/2026) bỏ trước, nếu không
+  // tiền tố "Team" không rơi và Bếp / Tổng hợp / BD dồn hết vào hạng mục lương mặc định.
+  const name = nameWords(department.name).replace(/^\d+\s+/, "").replace(/^(bo phan|phong ban|phong|bp|khoi|to|team|nhom)\s+/, "");
   if (!code) return null;
   const hasWords = (text: string, phrase: string) => phrase.length >= 3 && ` ${text} `.includes(` ${phrase} `);
   const byCode = payrollItems.filter((item) => nameWords(item.code).split(" ").includes(code));

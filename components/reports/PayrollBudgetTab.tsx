@@ -327,7 +327,7 @@ export default function PayrollBudgetTab({
             {data.revenue.totalAdjust?.some((value) => Math.abs(value) > 0.5) && (
               <MonthRow label="Chênh lệch Tổng tiền POS" values={data.revenue.totalAdjust} />
             )}
-            {data.revenue.byDepartment.map((row) => (
+            {byDepartmentName(data.revenue.byDepartment).map((row) => (
               <MonthRow key={`rev-${row.code}`} label={`Doanh thu ${row.name}`} values={row.months} muted />
             ))}
             <SectionRow label="LƯƠNG THEO TIÊU CHUẨN (tỷ trọng × tổng doanh thu)" span={14} />
@@ -335,7 +335,7 @@ export default function PayrollBudgetTab({
               <EmptySectionRow span={14} message={`Chưa có bộ tỷ trọng bộ phận nào có hiệu lực trong năm ${data.year}${branchCode === "ALL" ? " cho cửa hàng nào" : ""} — điền bảng "Tỷ trọng lương theo bộ phận" phía trên rồi bấm Lưu.`} />
             ) : (
               <>
-                {data.standard.byDepartment.map((row) => (
+                {byDepartmentName(data.standard.byDepartment).map((row) => (
                   <MonthRow key={`std-${row.code}`} label={row.name} values={row.months} />
                 ))}
                 <MonthRow label="Tổng lương tiêu chuẩn" values={data.standard.total} bold />
@@ -346,7 +346,7 @@ export default function PayrollBudgetTab({
               <EmptySectionRow span={14} message={`Chưa import bảng lương tháng nào của năm ${data.year} — nạp file ở menu Import → Bảng lương.`} />
             ) : (
               <>
-                {data.actual.byDepartment.map((row) => (
+                {byDepartmentName(data.actual.byDepartment).map((row) => (
                   <MonthRow key={`act-${row.code}`} label={row.name} values={row.months} />
                 ))}
                 <MonthRow label="Tổng lương thực chi" values={data.actual.total} bold />
@@ -620,4 +620,14 @@ function HeadcountCostTable({ data, monthHeaders }: { data: PayrollBudgetData; m
       </Table>
     </section>
   );
+}
+
+/**
+ * Bộ phận xếp theo TÊN (khách 20/10/2026 đánh số "01. Team Bếp", "02. Team Bar"... và muốn bảng đi
+ * đúng thứ tự đó); so số trong tên theo giá trị. Dòng chưa gắn bộ phận luôn cuối.
+ */
+function byDepartmentName<T extends { name: string }>(rows: T[]) {
+  const unassigned = (row: T) => /^chưa gắn/i.test(row.name.trim());
+  return [...rows].sort((a, b) => Number(unassigned(a)) - Number(unassigned(b))
+    || a.name.localeCompare(b.name, "vi", { numeric: true, sensitivity: "base" }));
 }
