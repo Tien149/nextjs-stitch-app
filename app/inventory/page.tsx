@@ -1339,9 +1339,14 @@ export default function InventoryPage() {
       reason: line.reason || "",
     });
     const base = buildStocktakeRows(stocktake.warehouseCode, data.balances, data.items);
+    /**
+     * Mã CHƯA có trên phiếu để trống "Tồn thực tế" (= chưa đếm, không lưu). Trước đây điền sẵn tồn
+     * HIỆN TẠI: phiếu import 339 mã bấm Sửa rồi Lưu là cả kho vào phiếu với tồn hôm nay (cả số âm),
+     * duyệt lại tính sổ sách tại giờ chốt cũ ra chênh lệch giả bằng toàn bộ phát sinh sau đó (20/10/2026).
+     */
     const rows = base.map((row) => {
       const line = saved.get(row.itemId);
-      return line ? { ...row, ...fromLine(line) } : row;
+      return line ? { ...row, ...fromLine(line) } : { ...row, actualQuantity: "" };
     });
     for (const line of stocktake.lines) {
       if (rows.some((row) => row.itemId === line.item.id)) continue;
@@ -4167,7 +4172,8 @@ export default function InventoryPage() {
                 stocktakeId: editingStocktake?.id,
                 ...stocktakeForm,
                 warehouseCode: stocktakeWarehouseCode,
-                lines: stocktakeRows.map((row) => ({ itemId: row.itemId, actualQuantity: row.actualQuantity, systemQuantity: row.systemQuantity, unitCost: row.unitCost, reason: row.reason || stocktakeForm.reason })),
+                // Ô trống = mã chưa đếm: không đưa vào phiếu.
+                lines: stocktakeRows.filter((row) => String(row.actualQuantity).trim() !== "").map((row) => ({ itemId: row.itemId, actualQuantity: row.actualQuantity, systemQuantity: row.systemQuantity, unitCost: row.unitCost, reason: row.reason || stocktakeForm.reason })),
               }, editingStocktake ? `Đã lưu và gửi lại phiếu ${editingStocktake.code} — chờ kế toán duyệt.` : "Đã gửi phiếu kiểm kê — chờ kế toán duyệt. Tồn kho chỉ điều chỉnh khi kế toán duyệt.");
               if (payload) setEditingStocktake(null);
             }} className="bg-white border border-slate-200 rounded-lg p-4 sm:p-5 space-y-4 h-fit shadow-sm">
@@ -4227,20 +4233,23 @@ export default function InventoryPage() {
                 const keyword = stocktakeSearch.trim().toLowerCase();
                 const visibleRows = stocktakeRows.filter((row) =>
                   !keyword || row.itemCode.toLowerCase().includes(keyword) || row.itemName.toLowerCase().includes(keyword));
-                const varianceCount = stocktakeRows.filter((row) => Number(row.actualQuantity || 0) !== row.systemQuantity).length;
+                const uncounted = (row: StocktakeDraftRow) => String(row.actualQuantity).trim() === "";
+                const varianceCount = stocktakeRows.filter((row) => !uncounted(row) && Number(row.actualQuantity || 0) !== row.systemQuantity).length;
+                const uncountedCount = stocktakeRows.filter(uncounted).length;
                 const patchRow = (itemId: string, patch: Partial<StocktakeDraftRow>) =>
                   setStocktakeRows((rows) => rows.map((candidate) => candidate.itemId === itemId ? { ...candidate, ...patch } : candidate));
                 return (
                   <>
                     <p className="text-xs text-slate-500">
                       {visibleRows.length}/{stocktakeRows.length} mặt hàng · <b className={varianceCount > 0 ? "text-amber-700" : "text-emerald-700"}>{varianceCount} dòng lệch tồn</b>
+                      {uncountedCount > 0 && <> · <span className="text-slate-500">{uncountedCount} mã chưa đếm (ô trống — không lưu vào phiếu)</span></>}
                     </p>
 
                     {/* Mobile: thẻ từng mặt hàng — nhập tồn thực tế bằng bàn phím số */}
                     <div className="md:hidden space-y-2">
                       {visibleRows.map((row) => {
                         const actualQuantity = Number(row.actualQuantity || 0);
-                        const variance = actualQuantity - row.systemQuantity;
+                        const variance = uncounted(row) ? 0 : actualQuantity - row.systemQuantity;
                         return (
                           <div key={row.itemId} className={`rounded-xl border p-3 space-y-2 ${variance !== 0 ? "border-amber-300 bg-amber-50/50" : "border-slate-200 bg-white"}`}>
                             <div className="flex items-center justify-between gap-2">
@@ -4264,7 +4273,7 @@ export default function InventoryPage() {
                             </div>
                             <div className="flex items-center gap-2 text-xs">
                               <span className={variance === 0 ? "text-slate-500" : variance > 0 ? "text-emerald-700 font-bold" : "text-rose-700 font-bold"}>
-                                Lệch: {qty(variance)}
+                                {uncounted(row) ? "Chưa đếm" : `Lệch: ${qty(variance)}`}
                               </span>
                               {row.averageCost <= 0 && (
                                 <input
@@ -4295,7 +4304,7 @@ export default function InventoryPage() {
                       <Table headers={[{ label: "Mặt hàng" }, { label: "Tồn hệ thống", align: "right" }, { label: "Tồn thực tế", align: "right" }, { label: "Chênh lệch", align: "right" }, { label: "Đơn giá", align: "right" }, { label: "Lý do" }]}>
                         {visibleRows.map((row) => {
                           const actualQuantity = Number(row.actualQuantity || 0);
-                          const variance = actualQuantity - row.systemQuantity;
+                          const variance = uncounted(row) ? 0 : actualQuantity - row.systemQuantity;
                           return (
                             <tr key={row.itemId} className="border-t border-slate-100">
                               <Cell><b>{row.itemCode}</b><small>{row.itemName} · {row.unit}</small></Cell>
@@ -4307,11 +4316,12 @@ export default function InventoryPage() {
                                   step="0.001"
                                   inputMode="decimal"
                                   className="control text-right w-28 inline-block"
+                                  placeholder="Chưa đếm"
                                   value={row.actualQuantity}
                                   onChange={(e) => patchRow(row.itemId, { actualQuantity: e.target.value })}
                                 />
                               </Cell>
-                              <Cell right><span className={variance === 0 ? "text-slate-500" : variance > 0 ? "text-emerald-700 font-bold" : "text-rose-700 font-bold"}>{qty(variance)}</span></Cell>
+                              <Cell right>{uncounted(row) ? <span className="text-xs text-slate-400">chưa đếm</span> : <span className={variance === 0 ? "text-slate-500" : variance > 0 ? "text-emerald-700 font-bold" : "text-rose-700 font-bold"}>{qty(variance)}</span>}</Cell>
                               <Cell right>
                                 {row.averageCost > 0 ? (
                                   <span className="text-slate-500">{unitPrice(row.averageCost)}</span>
