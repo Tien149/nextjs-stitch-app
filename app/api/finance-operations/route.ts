@@ -508,8 +508,35 @@ async function rerunWalletSettlementTransfer(
     }),
   ]);
   const group = groupRows.filter((row) => row.sourceReportDate && revenueDayKey(row.sourceReportDate) === reportDay);
-  const currentRevenue = pickRevenueRowsOfDay(revenueRows, reportDay, transfer.branchCode)
+  const dayRevenue = pickRevenueRowsOfDay(revenueRows, reportDay, transfer.branchCode)
     .reduce((sum, row) => sum + row.netAmount, 0);
+  /**
+   * Doanh thu ngày này đã được dòng sao kê KHÁC nhận (phiếu tiền về gộp nhiều ngày, sourceReportDate
+   * mang ngày khác): trừ ra trước khi chia cho nhóm phiếu. Thiếu bước này thì QTVI-2609-NME-00052
+   * (tiền về lẻ 364.791 đ ngày 19/09) ôm lại cả 63,26 triệu doanh thu đã nằm trong phiếu gộp
+   * QTVI-2609-NME-00048 -> phí 62,9 triệu, P&L quẹt thẻ tháng 9 Nam Mê vọt (khách báo 20/10/2026).
+   */
+  const groupMatches = await prisma.reconciliationMatch.findMany({
+    where: { targetType: "WALLET_SETTLEMENT", targetId: { in: group.map((row) => row.id) }, deletedAt: null },
+    select: { bankTransactionId: true },
+  });
+  const claimedRows = await prisma.bankStatementAllocation.findMany({
+    where: {
+      revenueDate: { gte: new Date(dayRange.gte.getTime() - 86_400_000), lt: dayRange.lt },
+      decreaseMoneySourceCode: transfer.fromMoneySourceCode,
+      grossAmount: { gt: 0 },
+      OR: [{ operationType: null }, { operationType: { not: "OTHER_RECEIPT" } }],
+      bankTransactionId: { notIn: groupMatches.map((match) => match.bankTransactionId) },
+      bankTransaction: { deletedAt: null, branchCode: transfer.branchCode },
+    },
+    select: { revenueDate: true, grossAmount: true },
+  });
+  const claimedElsewhere = Math.round(claimedRows
+    .filter((row) => row.revenueDate && revenueDayKey(row.revenueDate) === reportDay)
+    .reduce((sum, row) => sum + (row.grossAmount || 0), 0));
+  const groupAmount = group.reduce((sum, row) => sum + Math.round(row.amount), 0);
+  // Phần còn lại không đủ cho số tiền về của nhóm = tiền về thêm ngoài doanh thu đã nhận: phí 0.
+  const currentRevenue = claimedElsewhere > 0 ? Math.max(dayRevenue - claimedElsewhere, groupAmount) : dayRevenue;
 
   const walletSource = await prisma.masterDataItem.findFirst({
     where: { type: "MONEY_SOURCE", code: transfer.fromMoneySourceCode },
