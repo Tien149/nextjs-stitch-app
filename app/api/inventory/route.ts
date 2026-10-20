@@ -840,8 +840,27 @@ export async function GET(request: Request) {
         where: { sourceId: { in: relinkCandidates.map((candidate) => candidate.sourceId) } },
         select: { sourceType: true, sourceId: true },
       })).map((row) => `${row.sourceType}|${row.sourceId}`));
+      /**
+       * Đơn giá TẠM TÍNH cho cột trị giá chênh lệch (khách 20/10/2026): giá đã chụp trên dòng (đợt
+       * duyệt gộp, giá khai lúc đếm) -> giá bình quân hiện tại của kho -> giá mua gần nhất / kho khác.
+       */
+      const explanationLines = (Array.isArray(record.lines) ? record.lines : []) as unknown as ExplanationLine[];
+      const pricedIds = explanationLines.filter((line) => Math.abs(line.variance) > 1e-6).map((line) => line.itemId);
+      const balances = pricedIds.length === 0 ? [] : await prisma.inventoryBalance.findMany({
+        where: { warehouseCode: record.warehouseCode, itemId: { in: pricedIds } },
+        select: { itemId: true, averageCost: true },
+      });
+      const averageByItem = new Map(balances.map((balance) => [balance.itemId, balance.averageCost]));
+      const unitCosts: Record<string, number> = {};
+      for (const line of explanationLines) {
+        if (Math.abs(line.variance) <= 1e-6) continue;
+        let cost = line.unitCost > 0 ? line.unitCost : averageByItem.get(line.itemId) || 0;
+        if (!(cost > 0)) cost = await latestKnownUnitCost(prisma as unknown as TxClient, line.itemId);
+        unitCosts[line.itemId] = cost;
+      }
       return NextResponse.json({
         explanation: record,
+        unitCosts,
         source: source ? { status: source.status, code: source.code, cutoffAt: source.cutoffAt, approvedAt: source.approvedAt } : null,
         needsRefresh: sourceApproved && (record.sourceApprovedAt?.getTime() || 0) !== (source?.approvedAt?.getTime() || 0),
         relinkCandidates: relinkCandidates.filter((candidate) => !taken.has(`${candidate.sourceType}|${candidate.sourceId}`)),

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
 import type { StocktakeFilter } from "@/components/inventory/stocktake-filter";
 import CopyableText from "@/components/CopyableText";
-import { quantity as qty } from "@/lib/format-number";
+import { money, quantity as qty } from "@/lib/format-number";
 import { goodsGroupKey } from "@/lib/goods-group";
 
 /**
@@ -46,6 +46,8 @@ type Detail = {
   source: { status: string; code: string; cutoffAt: string; approvedAt: string | null } | null;
   needsRefresh: boolean;
   relinkCandidates: Source[];
+  /** Đơn giá tạm tính theo mặt hàng (dòng có chênh lệch) — cột Trị giá chênh lệch. */
+  unitCosts?: Record<string, number>;
 };
 
 type Props = {
@@ -205,12 +207,16 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
     return !keyword || line.itemCode.toLowerCase().includes(keyword) || line.itemName.toLowerCase().includes(keyword);
   });
 
+  const unitCostOf = (line: Line) => detail?.unitCosts?.[line.itemId] ?? line.unitCost ?? 0;
+  const varianceValueOf = (line: Line) => Math.round(line.variance * unitCostOf(line));
+  const visibleVarianceValue = visibleLines.reduce((sum, line) => sum + varianceValueOf(line), 0);
+
   /** Xuất Excel đúng form khách: 2 hàng tiêu đề, nhóm "SL nhập / xuất trong kỳ" gộp ô. */
   const exportExcel = async () => {
     if (!explanation) return;
     const XLSX = await import("xlsx");
-    const top = ["STT", "Kho", "Nhóm", "Mã hàng", "Tên hàng", "ĐVT tồn kho", "SL đầu kỳ", "SL nhập trong kỳ", "", "", "", "", "SL xuất trong kỳ", "", "", "", "", "", "SL cuối kỳ", "SL kiểm kê", "Chênh lệch kiểm kê (SL kiểm kê − SL cuối kỳ)", "Giải trình"];
-    const second = ["", "", "", "", "", "", "", "SL nhập mua", "SL nhập điều chuyển", "SL nhập khác", "SL nhập chế biến", "Cộng SL nhập", "SL xuất bán", "SL xuất điều chuyển", "SL xuất hủy", "SL xuất khác", "SL xuất chế biến", "Cộng SL xuất", "", "", "", ""];
+    const top = ["STT", "Kho", "Nhóm", "Mã hàng", "Tên hàng", "ĐVT tồn kho", "SL đầu kỳ", "SL nhập trong kỳ", "", "", "", "", "SL xuất trong kỳ", "", "", "", "", "", "SL cuối kỳ", "SL kiểm kê", "Chênh lệch kiểm kê (SL kiểm kê − SL cuối kỳ)", "Đơn giá tạm tính", "Trị giá chênh lệch (tạm tính)", "Giải trình"];
+    const second = ["", "", "", "", "", "", "", "SL nhập mua", "SL nhập điều chuyển", "SL nhập khác", "SL nhập chế biến", "Cộng SL nhập", "SL xuất bán", "SL xuất điều chuyển", "SL xuất hủy", "SL xuất khác", "SL xuất chế biến", "Cộng SL xuất", "", "", "", "", "", ""];
     const rows: Array<Array<string | number>> = [
       [`GIẢI TRÌNH KIỂM KÊ — kho ${explanation.warehouseCode} — đợt ${explanation.sourceCode} — kỳ ${explanation.periodFrom ? dateTime(explanation.periodFrom) : "từ đầu"} → ${dateTime(explanation.periodTo)}${locked ? " — ĐÃ CHỐT" : ""}`],
       top,
@@ -218,18 +224,20 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
       ...visibleLines.map((line, index) => [
         index + 1, explanation.warehouseCode, line.goodsGroup || "", line.itemCode, line.itemName, line.unit,
         ...NUMBER_COLUMNS.map(([key]) => line[key] as number),
+        Math.abs(line.variance) > 1e-6 ? Math.round(unitCostOf(line)) : "",
+        Math.abs(line.variance) > 1e-6 ? varianceValueOf(line) : "",
         notes[line.itemId] ?? line.explanation ?? "",
       ]),
     ];
     const sheet = XLSX.utils.aoa_to_sheet(rows);
     const merge = (r1: number, c1: number, r2: number, c2: number) => ({ s: { r: r1, c: c1 }, e: { r: r2, c: c2 } });
     sheet["!merges"] = [
-      merge(0, 0, 0, 21),
-      ...[0, 1, 2, 3, 4, 5, 6, 18, 19, 20, 21].map((col) => merge(1, col, 2, col)),
+      merge(0, 0, 0, 23),
+      ...[0, 1, 2, 3, 4, 5, 6, 18, 19, 20, 21, 22, 23].map((col) => merge(1, col, 2, col)),
       merge(1, 7, 1, 11),
       merge(1, 12, 1, 17),
     ];
-    sheet["!cols"] = [{ wch: 5 }, { wch: 12 }, { wch: 14 }, { wch: 16 }, { wch: 32 }, { wch: 8 }, ...Array.from({ length: 15 }, () => ({ wch: 12 })), { wch: 40 }];
+    sheet["!cols"] = [{ wch: 5 }, { wch: 12 }, { wch: 14 }, { wch: 16 }, { wch: 32 }, { wch: 8 }, ...Array.from({ length: 17 }, () => ({ wch: 12 })), { wch: 40 }];
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, sheet, "Giai trinh kiem ke");
     XLSX.writeFile(workbook, `giai_trinh_kiem_ke_${explanation.warehouseCode}_${explanation.sourceCode}.xlsx`);
@@ -428,7 +436,7 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
                   ))}
                   <th colSpan={5} className="px-3 py-2 font-bold text-center border-r border-amber-200">SL nhập trong kỳ</th>
                   <th colSpan={6} className="px-3 py-2 font-bold text-center border-r border-amber-200">SL xuất trong kỳ</th>
-                  {["SL cuối kỳ", "SL kiểm kê", "Chênh lệch (kiểm kê − cuối kỳ)", "Giải trình"].map((label) => (
+                  {["SL cuối kỳ", "SL kiểm kê", "Chênh lệch (kiểm kê − cuối kỳ)", "Trị giá chênh lệch (tạm tính)", "Giải trình"].map((label) => (
                     <th key={label} rowSpan={2} className="px-3 py-2 font-bold text-center border-r border-amber-200 align-middle">{label}</th>
                   ))}
                 </tr>
@@ -439,7 +447,7 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
                 </tr>
               </thead>
               <tbody>
-                {visibleLines.length === 0 && <tr><td colSpan={22} className="cell text-center text-slate-400">Không có dòng nào khớp bộ lọc.</td></tr>}
+                {visibleLines.length === 0 && <tr><td colSpan={23} className="cell text-center text-slate-400">Không có dòng nào khớp bộ lọc.</td></tr>}
                 {visibleLines.map((line, index) => {
                   const tone = Math.abs(line.variance) <= 1e-6 ? "" : line.variance > 0 ? "text-emerald-700 font-bold" : "text-rose-700 font-bold";
                   return (
@@ -459,6 +467,12 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
                           </td>
                         );
                       })}
+                      <td
+                        className={`cell text-right tabular-nums whitespace-nowrap ${tone}`}
+                        title={Math.abs(line.variance) > 1e-6 ? `Đơn giá tạm tính ${money(unitCostOf(line))} đ / ${line.unit}` : undefined}
+                      >
+                        {Math.abs(line.variance) <= 1e-6 ? <span className="text-slate-300">-</span> : money(varianceValueOf(line))}
+                      </td>
                       <td className="cell min-w-[280px]">
                         {editable ? (
                           <textarea
@@ -476,6 +490,15 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
                   );
                 })}
               </tbody>
+              {visibleLines.length > 0 && (
+                <tfoot className="sticky bottom-0 bg-amber-50 font-bold">
+                  <tr className="border-t border-amber-200">
+                    <td colSpan={21} className="cell text-right">Tổng trị giá chênh lệch (tạm tính, {visibleLines.length} dòng đang hiện)</td>
+                    <td className={`cell text-right tabular-nums whitespace-nowrap ${visibleVarianceValue < 0 ? "text-rose-700" : visibleVarianceValue > 0 ? "text-emerald-700" : ""}`}>{money(visibleVarianceValue)}</td>
+                    <td className="cell" />
+                  </tr>
+                </tfoot>
+              )}
             </table>
           </div>
         </section>
