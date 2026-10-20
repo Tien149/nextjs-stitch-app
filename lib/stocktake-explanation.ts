@@ -135,6 +135,17 @@ export function buildExplanationLines(
     || a.itemCode.localeCompare(b.itemCode));
 }
 
+/** Số liệu chụp có khác bản mới không (bỏ qua cột giải trình) — cho nút Cập nhật số liệu. */
+export function explanationNumbersChanged(before: ExplanationLine[], after: ExplanationLine[]) {
+  if (before.length !== after.length) return true;
+  const keys = ["opening", "inTotal", "outTotal", "closing", "counted", "variance"] as const;
+  const byItem = new Map(before.map((line) => [line.itemId, line]));
+  return after.some((line) => {
+    const old = byItem.get(line.itemId);
+    return !old || keys.some((key) => Math.abs((Number(old[key]) || 0) - line[key]) > 1e-6);
+  });
+}
+
 /**
  * Các đợt kiểm kê ĐÃ DUYỆT (cả hai kiểu), mới nhất trước. `branchCodes` null = mọi cửa hàng;
  * `warehouseCodes` null = mọi kho trong phạm vi.
@@ -207,6 +218,24 @@ export async function previousCutoffOf(db: TxClient, warehouseCode: string, cuto
   return candidates.length ? new Date(Math.max(...candidates.map((value) => value.getTime()))) : null;
 }
 
+/**
+ * Nhập − xuất CHẾ BIẾN của lần rã phần kiểm dư BTP (phiếu RA mang referenceId = phiếu kiểm kê): rã
+ * sau khi duyệt nên số sổ sách lưu lúc duyệt chưa có chúng. Cộng vào sổ sách để Giải trình / Kết
+ * quả theo tồn sau rã: BTP dư hết chênh (đã chế biến), nguyên liệu chỉ còn hao hụt thật. Phiếu
+ * điều chỉnh (-N/-X, phiếu bù BN/BX) là kết quả kiểm kê nên không tính.
+ */
+async function explodedSurplusNet(db: TxClient, stocktakeId: string) {
+  const rows = await db.$queryRaw<Array<{ itemId: string; net: number }>>(Prisma.sql`
+    SELECT l."itemId", SUM(CASE WHEN t."transactionType" = 'NHAP_CHE_BIEN' THEN l."quantity" ELSE -l."quantity" END)::float8 AS net
+    FROM "InventoryTransactionLine" l
+    JOIN "InventoryTransaction" t ON t."id" = l."transactionId"
+    WHERE t."deletedAt" IS NULL AND t."referenceType" = 'PRODUCTION' AND t."referenceId" = ${stocktakeId}
+      AND t."transactionType" IN ('NHAP_CHE_BIEN', 'XUAT_CHE_BIEN')
+    GROUP BY 1
+  `);
+  return new Map(rows.map((row) => [row.itemId, row.net]));
+}
+
 /** Nguồn đợt kiểm kê đang có hiệu lực (đã duyệt) — null nếu đã mở lại / không còn. */
 export async function loadStocktakeSource(db: TxClient, sourceType: StocktakeSourceType, sourceId: string) {
   if (sourceType === "BATCH") {
@@ -230,13 +259,14 @@ export async function loadStocktakeSource(db: TxClient, sourceType: StocktakeSou
     include: { lines: { include: { item: { select: { id: true, code: true, name: true, unit: true, goodsGroup: true } } } } },
   });
   if (!session || session.deletedAt) return null;
+  const produced = await explodedSurplusNet(db, session.id);
   return {
     status: session.status,
     code: session.code, branchCode: session.branchCode, warehouseCode: session.warehouseCode,
     cutoffAt: session.stocktakeDate, approvedAt: session.approvedAt,
     countLines: session.lines.map((line) => ({
       itemId: line.itemId, itemCode: line.item.code, itemName: line.item.name, goodsGroup: line.item.goodsGroup, unit: line.item.unit,
-      closing: line.systemQuantity, counted: line.actualQuantity, unitCost: line.unitCost || 0,
+      closing: line.systemQuantity + (produced.get(line.itemId) || 0), counted: line.actualQuantity, unitCost: line.unitCost || 0,
     })),
   };
 }

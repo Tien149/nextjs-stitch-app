@@ -21,7 +21,7 @@ import { executeExplosion, rerunExplosions, type AffectedExplosionRun } from "@/
 import { loadMissingRecipeReport } from "@/lib/missing-recipes";
 import { buildMonthlyCostSummary } from "@/lib/recipe-cost-summary";
 import { netMovementsAfter } from "@/lib/stocktake-batch";
-import { EXPLANATION_DRAFT, EXPLANATION_LOCKED, listStocktakeSources, loadStocktakeSource, snapshotExplanation, type ExplanationLine, type StocktakeSourceType } from "@/lib/stocktake-explanation";
+import { EXPLANATION_DRAFT, EXPLANATION_LOCKED, explanationNumbersChanged, listStocktakeSources, loadStocktakeSource, snapshotExplanation, type ExplanationLine, type StocktakeSourceType } from "@/lib/stocktake-explanation";
 import { compactFlowDocument, FLOW_DOCUMENT_LIMIT } from "@/lib/inventory-flow-list";
 import { approveTransferRequest, buildTransferRequestLines, canReceiveTransfer, canSendTransfer, TRANSFER_APPROVED, TRANSFER_PENDING, TRANSFER_RETURNED } from "@/lib/inventory-transfer-request";
 import {
@@ -1825,14 +1825,16 @@ export async function POST(request: Request) {
       const sameSource = targetType === record.sourceType && targetId === record.sourceId;
       const source = await loadStocktakeSource(prisma as unknown as TxClient, targetType, targetId);
       if (!source || source.status !== STOCKTAKE_APPROVED) businessError("Đợt kiểm kê chưa được duyệt lại — duyệt xong mới cập nhật số liệu được.");
-      if (sameSource && (record.sourceApprovedAt?.getTime() || 0) === (source!.approvedAt?.getTime() || 0)) {
-        businessError("Đợt kiểm kê chưa được duyệt lại nên số liệu không đổi — giải trình giữ nguyên số đã chụp.");
-      }
+      const reapproved = !sameSource || (record.sourceApprovedAt?.getTime() || 0) !== (source!.approvedAt?.getTime() || 0);
       if (!sameSource) {
         if (source!.warehouseCode !== record.warehouseCode) businessError("Chỉ gắn sang đợt kiểm kê của cùng kho");
         if (await prisma.stocktakeExplanation.findFirst({ where: { sourceType: targetType, sourceId: targetId } })) businessError(`Đợt ${source!.code} đã có bản giải trình riêng`);
       }
       const snapshot = await snapshotExplanation(prisma as unknown as TxClient, targetType, targetId, new Map(lines.map((line) => [line.itemId, line.explanation || ""])));
+      // Chưa duyệt lại nhưng vừa rã phần kiểm dư BTP (sổ sách sau rã đổi) thì vẫn cập nhật được.
+      if (!reapproved && !explanationNumbersChanged(lines, snapshot.lines)) {
+        businessError("Đợt kiểm kê chưa được duyệt lại và chưa rã thêm gì nên số liệu không đổi — giải trình giữ nguyên số đã chụp.");
+      }
       const updated = await prisma.stocktakeExplanation.update({
         where: { id: record.id },
         data: {

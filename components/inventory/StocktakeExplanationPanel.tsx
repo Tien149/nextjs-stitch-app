@@ -245,8 +245,8 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
           <h2 className="font-bold text-slate-800">Giải trình kiểm kê</h2>
           <p className="text-xs text-slate-500 mt-1 max-w-4xl leading-relaxed">
             Mỗi đợt kiểm kê đã duyệt của một kho có một bản giải trình. Kỳ tính <b>từ giờ chốt lần kiểm kê trước của cùng kho tới giờ chốt đợt này</b>.
-            Số liệu được <b>chụp lúc lập</b> và không tự đổi theo dữ liệu mới. Kế toán bấm <b>Chốt số liệu giải trình</b> thì khoá hẳn; chỉ khi đợt bị mở lại & duyệt lại
-            mới <b>Cập nhật số liệu</b> (giải trình đã gõ giữ theo mã hàng).
+            Số liệu được <b>chụp lúc lập</b> và không tự đổi theo dữ liệu mới. Kế toán bấm <b>Chốt số liệu giải trình</b> thì khoá hẳn; khi đợt bị mở lại & duyệt lại, hoặc vừa
+            <b>rã phần kiểm dư bán thành phẩm</b>, thì bấm <b>Cập nhật số liệu</b> (giải trình đã gõ giữ theo mã hàng).
           </p>
         </div>
         <div className="px-5 pb-4 grid grid-cols-2 lg:grid-cols-5 gap-3">
