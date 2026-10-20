@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import CopyableText from "@/components/CopyableText";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
 import { movementTypeLabel } from "@/lib/inventory-movement-labels";
@@ -34,7 +34,7 @@ type Props = {
   goodsGroup: string; setGoodsGroup: (value: string) => void;
   search: string; setSearch: (value: string) => void;
   range: Range; setRange: (value: Range) => void;
-  reload: () => void;
+  reload: () => void | Promise<unknown>;
 };
 
 const RENDER_LIMIT = 1000;
@@ -213,6 +213,14 @@ export default function StockReportsPanel(props: Props) {
   const [view, setView] = useState<NxtView>("store");
   const [hideEmpty, setHideEmpty] = useState(true);
   const [report, setReport] = useState<ReportKind>("in-summary");
+  /** Nút tải lại có trạng thái + giờ cập nhật (khách 20/10/2026: bấm không thấy gì, không biết đã tải lại chưa). */
+  const [reloading, setReloading] = useState(false);
+  const [loadedAt, setLoadedAt] = useState<Date | null>(null);
+  useEffect(() => { const timer = window.setTimeout(() => setLoadedAt(new Date()), 0); return () => window.clearTimeout(timer); }, [summary, movements]);
+  const runReload = async () => {
+    setReloading(true);
+    try { await reload(); } finally { setReloading(false); setLoadedAt(new Date()); }
+  };
   const [summaryBy, setSummaryBy] = useState<MovementSummaryBy>("item");
   const [reportType, setReportType] = useState("ALL");
 
@@ -379,7 +387,14 @@ export default function StockReportsPanel(props: Props) {
             <h2 className="font-bold text-slate-800">Bộ lọc báo cáo kho</h2>
             <p className="text-xs text-slate-500 mt-0.5">Áp cho bảng Nhập - Xuất - Tồn, các báo cáo nhập / xuất và bảng tồn hiện tại bên dưới.</p>
           </div>
-          <button type="button" title="Tải lại" onClick={reload} className="icon-button"><span className="material-symbols-outlined text-lg">refresh</span></button>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] text-slate-500">
+              {reloading ? "Đang tải lại số liệu…" : loadedAt ? `Số liệu cập nhật lúc ${loadedAt.toLocaleTimeString("vi-VN")}` : ""}
+            </span>
+            <button type="button" title="Tải lại" disabled={reloading} onClick={() => void runReload()} className="icon-button disabled:opacity-60">
+              <span className={`material-symbols-outlined text-lg ${reloading ? "animate-spin" : ""}`}>refresh</span>
+            </button>
+          </div>
         </div>
         <div className="grid sm:grid-cols-3 lg:grid-cols-6 gap-3">
           <label className="text-xs font-bold text-slate-500">Cửa hàng

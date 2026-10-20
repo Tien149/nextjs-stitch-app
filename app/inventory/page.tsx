@@ -1962,7 +1962,7 @@ export default function InventoryPage() {
           setSearch={setStockSearch}
           range={reportRange}
           setRange={setReportRange}
-          reload={() => void loadData()}
+          reload={() => loadData()}
         />
       )}
 
