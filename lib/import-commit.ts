@@ -156,6 +156,20 @@ function rowFingerprint(importType: ImportType, row: ParsedImportRow) {
     .digest("hex");
 }
 
+/**
+ * Ngày nhập + đối tác bán của CCDC đầu kỳ (khách 20/10/2026, chỉ để tra nguồn gốc). Có mã mà
+ * không ghi tên thì lấy tên trong danh mục Đối tác.
+ */
+async function openingAssetOrigin(tx: TxClient, values: Record<string, unknown>) {
+  const partnerCode = asText(values.partner_code).toUpperCase() || null;
+  let partnerName = asText(values.partner_name) || null;
+  if (partnerCode && !partnerName) {
+    const partner = await tx.masterDataItem.findFirst({ where: { type: "PARTNER", code: partnerCode }, select: { name: true } });
+    partnerName = partner?.name || null;
+  }
+  return { purchaseDate: values.purchase_date ? asDate(values.purchase_date) : null, partnerCode, partnerName };
+}
+
 async function nextVoucherCode(
   tx: TxClient,
   voucherType: string,
@@ -2003,6 +2017,7 @@ export async function commitImport(input: CommitInput) {
                 depreciatedAmount: asNumber(row.values.depreciated_amount),
               }
               : {}),
+            ...(asText(row.values.balance_type).toUpperCase() === "ASSET" ? await openingAssetOrigin(tx, row.values) : {}),
             note: row.values.note ? asText(row.values.note) : null,
             status: "POSTED",
           },

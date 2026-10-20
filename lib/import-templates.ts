@@ -750,6 +750,10 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "department_code", label: "Bộ phận", required: false, type: "text", aliases: ["bo phan", "phong ban", "department"] },
       { field: "warehouse_code", label: "Kho", required: false, type: "text", aliases: ["kho", "vi tri", "warehouse"] },
       { field: "allocation_start_period", label: "Kỳ bắt đầu PB tiếp", required: false, type: "text", aliases: ["ky bat dau pb tiep", "ky bat dau phan bo", "ky bat dau"], note: "Kỳ hệ thống trích kỳ phân bổ kế tiếp. Bỏ trống = đúng Kỳ số dư." },
+      // Ba cột tra nguồn gốc (khách 20/10/2026): chỉ để lưu vết, không đổi cách phân bổ.
+      { field: "purchase_date", label: "Ngày nhập", required: false, type: "date", aliases: ["ngay nhap", "ngay mua", "purchase date"], note: "Ngày mua/nhập CCDC. Bỏ trống = ngày đầu Kỳ số dư." },
+      { field: "partner_code", label: "Mã đối tác", required: false, type: "text", aliases: ["ma doi tac", "ma ncc", "ma nha cung cap", "partner code", "supplier code"] },
+      { field: "partner_name", label: "Tên đối tác", required: false, type: "text", aliases: ["ten doi tac", "ten ncc", "ten nha cung cap", "partner name", "supplier name"], note: "Bỏ trống mà có Mã đối tác thì lấy tên trong danh mục Đối tác." },
       { field: "note", label: "Ghi chú", required: false, type: "text", aliases: ["ghi chu", "note"] },
     ],
   },

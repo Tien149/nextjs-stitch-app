@@ -1568,6 +1568,10 @@ export async function validateImportResult(
         }
         if (numberValue(row.values.quantity) <= 0) addError(row, "Tài sản đầu kỳ cần Số lượng lớn hơn 0");
         if (!text(row.values.object_name)) addError(row, "Tài sản đầu kỳ cần Tên");
+        const purchaseDate = row.values.purchase_date;
+        if (purchaseDate !== undefined && purchaseDate !== null && purchaseDate !== "" && !(purchaseDate instanceof Date) && !parseImportDate(purchaseDate)) {
+          addError(row, `Ngày nhập [${String(purchaseDate)}] không đúng định dạng ngày (dd/mm/yyyy)`);
+        }
       }
       // Tài sản hết kỳ phân bổ vẫn còn hiện vật cần theo dõi — giá trị 0 là hợp lệ.
       // Tồn kho đầu kỳ 0 đồng cũng hợp lệ (26/09/2026): hàng còn số lượng nhưng chưa có giá vốn

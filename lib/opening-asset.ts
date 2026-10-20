@@ -131,6 +131,10 @@ export type OpeningAssetBalance = {
   depreciatedAmount: number | null;
   amount: number;
   note: string | null;
+  /** Ngày nhập + đối tác bán khai ở file CCDC đầu kỳ (có thể trống). */
+  purchaseDate?: Date | null;
+  partnerCode?: string | null;
+  partnerName?: string | null;
 };
 
 /**
@@ -160,7 +164,7 @@ export function openingAssetRecordData(balance: OpeningAssetBalance) {
     location: balance.warehouseCode || "Văn phòng",
     warehouseCode: balance.warehouseCode || null,
     quantity: balance.quantity || 1,
-    purchaseDate: new Date(`${balance.period}-01T00:00:00Z`),
+    purchaseDate: balance.purchaseDate || new Date(`${balance.period}-01T00:00:00Z`),
     originalCost: values.originalCost,
     currentValue: values.remainingValue,
     accumulatedDepreciation: values.depreciatedAmount,
@@ -168,7 +172,8 @@ export function openingAssetRecordData(balance: OpeningAssetBalance) {
     usefulLifeMonths: values.totalPeriods > 0 ? values.totalPeriods : null,
     depreciationStartDate: values.totalPeriods > 0 ? new Date(`${startPeriod}-01T00:00:00Z`) : null,
     residualValue: 0,
-    supplierName: "Nhà cung cấp số dư đầu kỳ",
+    supplierCode: balance.partnerCode || null,
+    supplierName: balance.partnerName || balance.partnerCode || "Nhà cung cấp số dư đầu kỳ",
     status: "IN_USE",
     openingBalanceId: balance.id,
     note: balance.note || "Khởi tạo từ số dư đầu kỳ",

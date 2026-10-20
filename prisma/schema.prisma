@@ -155,6 +155,11 @@ model OpeningBalance {
   originalCost          Float?
   depreciatedPeriods    Float?
   depreciatedAmount     Float?
+  /// CCDC/tài sản đầu kỳ: ngày nhập + đối tác bán (khách 20/10/2026, để tra lại nguồn gốc) — đẩy sang
+  /// AssetRecord.purchaseDate / supplierCode / supplierName.
+  purchaseDate          DateTime?
+  partnerCode           String?
+  partnerName           String?
   note                  String?
   status                String   @default("DRAFT")
   createdAt             DateTime @default(now())
