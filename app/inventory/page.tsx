@@ -39,7 +39,7 @@ import { statValueTextClass } from "@/components/reports/report-ui";
 import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING, STOCKTAKE_RETURNED, isStocktakeEditable, stocktakeStatusLabel, stocktakeStatusTone } from "@/lib/stocktake-status";
 
 type UnitConversion = { id: string; unitCode: string; unitName: string | null; conversionRate: number; isDefaultPurchase: boolean };
-type Item = { id: string; code: string; name: string; unit: string; itemType: string; category?: string | null; revenueGroup?: string | null; goodsGroup?: string | null; minStock: number; requiresImage: boolean; status?: string | null; note?: string | null; unitConversions?: UnitConversion[] };
+type Item = { id: string; code: string; name: string; unit: string; itemType: string; category?: string | null; revenueGroup?: string | null; goodsGroup?: string | null; expensePnlItemCode?: string | null; minStock: number; requiresImage: boolean; status?: string | null; note?: string | null; unitConversions?: UnitConversion[] };
 type ItemGroup = { id: string; code: string; name: string; group: string | null; subGroup: string | null };
 /**
  * Nhóm doanh thu của mặt hàng: danh mục Thu/Chi khai ở nhóm NHÓM DOANH THU (REVENUE_SOURCE).
@@ -85,7 +85,7 @@ type Stocktake = {
   id: string; code: string; stocktakeDate: string; branchCode: string; warehouseCode: string; status: string; explosionStatus?: string | null;
   /** Phiếu đếm theo vị trí — quản lý ở components/inventory/StocktakeByLocation, không ở danh sách kiểu cũ. */
   locationCode?: string | null;
-  note?: string | null; createdBy?: string | null; approvedBy?: string | null; returnedReason?: string | null; returnedBy?: string | null;
+  note?: string | null; createdBy?: string | null; approvedBy?: string | null; approvedAt?: string | null; returnedReason?: string | null; returnedBy?: string | null;
   lines: Array<{ id: string; systemQuantity: number; actualQuantity: number; varianceQuantity: number; unitCost?: number | null; reason?: string | null; item: Item }>;
 };
 type ReceivablePOLine = { id: string; itemId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; item: { code: string; name: string; unit: string } };
@@ -130,7 +130,7 @@ const RECIPE_VIEWS: Array<{ id: RecipeView; label: string; icon: string }> = [
   { id: "recipes", label: "Định lượng", icon: "menu_book" },
   { id: "monthly", label: "Thông tin định lượng trong tháng", icon: "fact_check" },
 ];
-type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; flowTruncated?: boolean; transferRequests?: TransferRequest[]; transferDestinations?: Array<{ code: string; name: string; branch: string | null }>; transferTransactions?: Transaction[]; wasteTransactions?: Transaction[]; warehouseBranches?: Array<{ code: string; branch: string | null }>; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; itemRevenueGroups?: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; /** Mã món → FOOD (Bếp) / DRINK (Bar): nhóm doanh thu của mặt hàng, chưa gán thì theo file POS. */ productKitchenKinds?: Record<string, string>; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[] };
+type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; flowTruncated?: boolean; transferRequests?: TransferRequest[]; transferDestinations?: Array<{ code: string; name: string; branch: string | null }>; transferTransactions?: Transaction[]; wasteTransactions?: Transaction[]; warehouseBranches?: Array<{ code: string; branch: string | null }>; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; itemRevenueGroups?: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; /** Mã món → FOOD (Bếp) / DRINK (Bar): nhóm doanh thu của mặt hàng, chưa gán thì theo file POS. */ productKitchenKinds?: Record<string, string>; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[]; /** Hạng mục P&L chọn cho phiếu Xuất khác. */ issuePnlItems?: Array<{ code: string; name: string; groupName: string }> };
 /** Loại hiển thị trên hai màn hình Nhập/Xuất. Điều chuyển hiện ở CẢ hai: vế xuất ở kho đi, vế nhập ở kho nhận. */
 const inboundTypes = ["NHAP_MUA", "NHAP_CHE_BIEN", "NHAP_DIEU_CHUYEN", "NHAP_KHAC", "NHAP_KIEM_KE"];
 const outboundTypes = ["XUAT_BAN", "XUAT_CHE_BIEN", "XUAT_HUY", "XUAT_DIEU_CHUYEN", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_KIEM_KE"];
@@ -260,7 +260,7 @@ export default function InventoryPage() {
   const [itemForm, setItemForm] = useState({ code: "NVL_001", name: "Nguyên liệu mẫu", unit: "g", itemType: "RAW_MATERIAL", category: "", revenueGroup: "", goodsGroup: "", purchaseUnit: "kg", conversionRate: "1000", minStock: "500", requiresImage: false });
   /** Sửa mặt hàng trên bảng danh mục: mã hàng KHÔNG nằm trong form vì API không cho đổi mã. */
   const [editingItem, setEditingItem] = useState<Item | null>(null);
-  const [itemEditForm, setItemEditForm] = useState({ name: "", unit: "", itemType: "RAW_MATERIAL", category: "", revenueGroup: "", goodsGroup: "", minStock: "0", requiresImage: false, status: "ACTIVE", note: "" });
+  const [itemEditForm, setItemEditForm] = useState({ name: "", unit: "", itemType: "RAW_MATERIAL", category: "", revenueGroup: "", goodsGroup: "", expensePnlItemCode: "", minStock: "0", requiresImage: false, status: "ACTIVE", note: "" });
   const [itemEditError, setItemEditError] = useState<string | null>(null);
   const [itemEditSaving, setItemEditSaving] = useState(false);
   const [deletingItem, setDeletingItem] = useState<Item | null>(null);
@@ -278,6 +278,9 @@ export default function InventoryPage() {
   const [itemSearch, setItemSearch] = useState("");
   const [recipeSearch, setRecipeSearch] = useState("");
   const [approvingStocktake, setApprovingStocktake] = useState<{ stocktake: Stocktake; cutoff: string; original: string; max: string; recompute: boolean } | null>(null);
+  /** Duyệt nhiều phiếu kiểm kê một lần (khách 20/10/2026: mỗi đợt kiểm kê mấy chục phiếu). */
+  const [pickedStocktakeIds, setPickedStocktakeIds] = useState<string[]>([]);
+  const [bulkApprove, setBulkApprove] = useState<{ recompute: boolean; running: boolean; done: number; errors: string[] } | null>(null);
   /** Lọc kiểu Excel theo nguyên liệu: chỉ hiện ĐÚNG dòng nguyên liệu khớp (kèm món của nó) — 03/10/2026. */
   const [recipeIngredientSearch, setRecipeIngredientSearch] = useState("");
   /** Tháng áp dụng ("" = mọi phiên bản): phiên bản có hiệu lực ngày nào trong tháng thì hiện. */
@@ -306,7 +309,7 @@ export default function InventoryPage() {
   const [bulkStatusRunning, setBulkStatusRunning] = useState(false);
   const [conversionForm, setConversionForm] = useState({ itemId: "", purchaseUnit: "thung", conversionRate: "24", note: "" });
   const [supplierPrices, setSupplierPrices] = useState<{ key: string; prices: Array<{ itemId: string; unitCode: string; unitPrice: number; vatRate: number | null; stockUnitPrice: number; priceListCode: string; effectiveFrom: string; effectiveTo: string | null }> }>({ key: "", prices: [] });
-  const [stockForm, setStockForm] = useState({ transactionType: "NHAP_MUA", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HN", itemId: "", inputUnitCode: "", quantity: "10", unitCost: "100000", vatRate: "KKKNT", vatAmount: "", purchaseCost: "", partnerCode: "", paymentDueDate: "", referenceCode: "", note: "Nhap kho van hanh", allocationMonths: "", transactionDate: today() });
+  const [stockForm, setStockForm] = useState({ transactionType: "NHAP_MUA", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HN", itemId: "", inputUnitCode: "", quantity: "10", unitCost: "100000", vatRate: "KKKNT", vatAmount: "", purchaseCost: "", partnerCode: "", paymentDueDate: "", referenceCode: "", note: "Nhap kho van hanh", allocationMonths: "", pnlItemCode: "", transactionDate: today() });
   /** Nhập mua theo PO (GRPO): PO đã duyệt còn hàng chưa nhận + số lượng nhận trên từng dòng. */
   const [receivablePOs, setReceivablePOs] = useState<ReceivablePO[]>([]);
   const [grpoOrderId, setGrpoOrderId] = useState("");
@@ -1410,6 +1413,37 @@ export default function InventoryPage() {
     );
   };
 
+  /**
+   * Duyệt lần lượt từng phiếu đã chọn, mỗi phiếu giữ giờ chốt của chính nó. Gửi TUẦN TỰ (không song
+   * song) để các phiếu cùng kho không giành nhau số tồn; phiếu lỗi thì ghi lại và duyệt tiếp phiếu sau.
+   */
+  const runBulkApprove = async (ids: string[], recompute: boolean) => {
+    setBulkApprove({ recompute, running: true, done: 0, errors: [] });
+    const errors: string[] = [];
+    let done = 0;
+    for (const id of ids) {
+      const stocktake = data.stocktakes.find((row) => row.id === id);
+      if (!stocktake || stocktake.status !== STOCKTAKE_PENDING) continue;
+      try {
+        const response = await fetch("/api/inventory", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...getSessionHeaders() },
+          body: JSON.stringify({ action: "APPROVE_STOCKTAKE", stocktakeId: id, ...(recompute ? { recomputeBook: true } : {}) }),
+        });
+        const payload = await response.json().catch(() => ({})) as { error?: string };
+        if (response.ok) done += 1;
+        else errors.push(`${stocktake.code}: ${payload.error || `lỗi ${response.status}`}`);
+      } catch {
+        errors.push(`${stocktake.code}: mất kết nối máy chủ`);
+      }
+      setBulkApprove({ recompute, running: true, done, errors: [...errors] });
+    }
+    setBulkApprove({ recompute, running: false, done, errors });
+    setPickedStocktakeIds([]);
+    setMessage(`Đã duyệt ${done}/${ids.length} phiếu kiểm kê.${errors.length ? ` ${errors.length} phiếu lỗi — xem chi tiết trong hộp duyệt.` : ""}`);
+    await loadData();
+  };
+
   const returnStocktake = (stocktake: Stocktake) => {
     const reason = window.prompt(`Lý do trả lại phiếu ${stocktake.code} (nhà hàng sẽ thấy để sửa):`, "");
     if (reason === null) return;
@@ -1619,6 +1653,7 @@ export default function InventoryPage() {
       category: item.category || "",
       revenueGroup: item.revenueGroup || "",
       goodsGroup: item.goodsGroup || "",
+      expensePnlItemCode: item.expensePnlItemCode || "",
       minStock: String(item.minStock ?? 0),
       requiresImage: !!item.requiresImage,
       status: (item.status || "ACTIVE").toUpperCase(),
@@ -2315,6 +2350,20 @@ export default function InventoryPage() {
                     </select>
                   </Input>
 
+                  {["PACKAGING", "UNIFORM"].includes(itemEditForm.itemType) && (
+                    <Input label="Hạng mục P&L khi xuất dùng">
+                      <select className="control" value={itemEditForm.expensePnlItemCode} onChange={(e) => setItemEditForm({ ...itemEditForm, expensePnlItemCode: e.target.value })}>
+                        <option value="">Mặc định ({itemEditForm.itemType === "UNIFORM" ? "CP đồng phục" : "Chi phí vật tư tiêu hao"})</option>
+                        {(data.issuePnlItems || []).map((item) => (
+                          <option key={item.code} value={item.code}>{item.name}{item.groupName ? ` · ${item.groupName}` : ""}</option>
+                        ))}
+                        {itemEditForm.expensePnlItemCode && !(data.issuePnlItems || []).some((item) => item.code === itemEditForm.expensePnlItemCode) && (
+                          <option value={itemEditForm.expensePnlItemCode}>{itemEditForm.expensePnlItemCode} (đã ngừng dùng)</option>
+                        )}
+                      </select>
+                    </Input>
+                  )}
+
                   <Input label="Trạng thái">
                     <select className="control" value={itemEditForm.status} onChange={(e) => setItemEditForm({ ...itemEditForm, status: e.target.value })}>
                       <option value="ACTIVE">Đang hoạt động</option>
@@ -2389,6 +2438,18 @@ export default function InventoryPage() {
                   </>)}
                 </select>
               </Input>
+
+              {active === "outbound" && stockForm.transactionType === "XUAT_KHAC" && !stockForm.allocationMonths && (
+                <Input label="Hạng mục P&L *">
+                  <select className="control" required value={stockForm.pnlItemCode} onChange={(e) => setStockForm({ ...stockForm, pnlItemCode: e.target.value })}>
+                    <option value="">— Chọn hạng mục —</option>
+                    {(data.issuePnlItems || []).map((item) => (
+                      <option key={item.code} value={item.code}>{item.name}{item.groupName ? ` · ${item.groupName}` : ""}</option>
+                    ))}
+                  </select>
+                  <small className="block text-[11px] text-slate-500 mt-1">Xuất khác không vào giá vốn: trị giá xuất lên thẳng hạng mục này trên P&L.</small>
+                </Input>
+              )}
 
               <p className="text-[11px] text-slate-500 leading-relaxed !mt-2">
                 {active === "inbound"
@@ -4134,6 +4195,61 @@ export default function InventoryPage() {
         </div>
       )}
 
+      {bulkApprove && (() => {
+        const picked = data.stocktakes.filter((row) => pickedStocktakeIds.includes(row.id));
+        const warehouseCounts = picked.reduce((map, row) => map.set(row.warehouseCode, (map.get(row.warehouseCode) || 0) + 1), new Map<string, number>());
+        const sharedWarehouses = [...warehouseCounts.entries()].filter(([, count]) => count > 1).map(([code]) => code);
+        return (
+          <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-xl w-full max-w-lg shadow-xl p-5 space-y-4">
+              <h3 className="font-bold text-slate-900">Duyệt {bulkApprove.running || bulkApprove.done || bulkApprove.errors.length ? "" : `${picked.length} `}phiếu kiểm kê</h3>
+              {!bulkApprove.running && bulkApprove.done === 0 && bulkApprove.errors.length === 0 ? (
+                <>
+                  <p className="text-xs text-slate-500 leading-relaxed">
+                    Mỗi phiếu duyệt theo <b>giờ chốt ghi trên phiếu</b> (muốn đổi giờ chốt thì duyệt riêng từng phiếu).
+                    Hệ thống duyệt lần lượt từng phiếu; phiếu nào lỗi thì bỏ qua và báo lại, các phiếu khác vẫn duyệt.
+                  </p>
+                  <p className="text-xs text-slate-600">{picked.map((row) => row.code).join(", ")}</p>
+                  {sharedWarehouses.length > 0 && (
+                    <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                      Kho <b>{sharedWarehouses.join(", ")}</b> có nhiều phiếu kiểm cả kho: mỗi phiếu so với sổ sách riêng — cùng một mã đếm ở hai phiếu sẽ bị điều chỉnh hai lần.
+                      Đếm nhiều chỗ trong một kho thì dùng <b>Kiểm kê theo vị trí → Duyệt gộp</b>.
+                    </p>
+                  )}
+                  <label className="flex items-start gap-2 text-sm text-slate-700">
+                    <input type="checkbox" className="mt-1" checked={bulkApprove.recompute}
+                      onChange={(e) => setBulkApprove({ ...bulkApprove, recompute: e.target.checked })} />
+                    <span>
+                      <b>Tính lại số sổ sách theo dữ liệu hiện tại</b> (giữ giờ chốt)
+                      <small className="block text-xs text-slate-500">Nên bật khi đã rã doanh thu / nhập phiếu kho trước giờ chốt sau lúc đếm, hoặc phiếu từng được mở lại.</small>
+                    </span>
+                  </label>
+                  <div className="flex justify-end gap-2">
+                    <button type="button" onClick={() => setBulkApprove(null)} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50">Huỷ</button>
+                    <button type="button" onClick={() => void runBulkApprove(picked.map((row) => row.id), bulkApprove.recompute)} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700">Duyệt {picked.length} phiếu</button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm text-slate-700">
+                    {bulkApprove.running ? "Đang duyệt…" : "Xong."} Đã duyệt <b className="text-emerald-700">{bulkApprove.done}</b> phiếu
+                    {bulkApprove.errors.length > 0 && <>, <b className="text-rose-700">{bulkApprove.errors.length}</b> phiếu lỗi</>}.
+                  </p>
+                  {bulkApprove.errors.length > 0 && (
+                    <ul className="max-h-48 overflow-y-auto rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-xs text-rose-800 space-y-1">
+                      {bulkApprove.errors.map((error) => <li key={error}>{error}</li>)}
+                    </ul>
+                  )}
+                  <div className="flex justify-end">
+                    <button type="button" disabled={bulkApprove.running} onClick={() => setBulkApprove(null)} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-50">Đóng</button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
       {active === "stocktake" && (
         <div className="flex flex-wrap items-center gap-2 mb-4">
           {([["location", "Theo vị trí · nguyên liệu, bao bì"], ["warehouse", "Cả kho (cách cũ, bán thành phẩm)"]] as const).map(([mode, label]) => (
@@ -4394,12 +4510,40 @@ export default function InventoryPage() {
               })}
             </div>
             <div className="hidden md:block">
-            <Table headers={[{ label: "Phiếu" }, { label: "Kho" }, { label: "Mặt hàng" }, { label: "Chênh lệch", align: "right" }, { label: "", align: "right" }]}>
+            {canApprove && pickedStocktakeIds.length > 0 && (
+              <div className="flex flex-wrap items-center gap-3 border-b border-emerald-100 bg-emerald-50 px-4 py-2 text-sm">
+                <b className="text-emerald-800">Đã chọn {pickedStocktakeIds.length} phiếu chờ duyệt</b>
+                <button type="button" className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-700"
+                  onClick={() => setBulkApprove({ recompute: true, running: false, done: 0, errors: [] })}>
+                  Duyệt {pickedStocktakeIds.length} phiếu đã chọn
+                </button>
+                <button type="button" className="text-xs font-bold text-slate-500 hover:underline" onClick={() => setPickedStocktakeIds([])}>Bỏ chọn</button>
+              </div>
+            )}
+            {(() => {
+              const pendingIds = recentWarehouseStocktakes.filter((row) => row.status === STOCKTAKE_PENDING).map((row) => row.id);
+              const allPicked = pendingIds.length > 0 && pendingIds.every((id) => pickedStocktakeIds.includes(id));
+              return (
+            <Table headers={[
+              ...(canApprove ? [{ label: (
+                <input type="checkbox" aria-label="Chọn tất cả phiếu chờ duyệt" disabled={pendingIds.length === 0} checked={allPicked}
+                  onChange={(e) => setPickedStocktakeIds(e.target.checked ? pendingIds : [])} />
+              ) }] : []),
+              { label: "Phiếu" }, { label: "Kho" }, { label: "Ngày giờ duyệt" }, { label: "Mặt hàng · dòng lệch", align: "right" }, { label: "", align: "right" },
+            ]}>
               {recentWarehouseStocktakes.map((row) => ({
                 ...row,
                 lines: row.lines.filter((line) => isWarehouseStocktakeItemType(line.item.itemType)),
               })).filter((row) => row.lines.length > 0).map((row) => (
-                <tr key={row.id} className="border-t border-slate-100">
+                <tr key={row.id} className={`border-t border-slate-100 ${pickedStocktakeIds.includes(row.id) ? "bg-emerald-50/60" : ""}`}>
+                  {canApprove && (
+                    <Cell>
+                      {row.status === STOCKTAKE_PENDING ? (
+                        <input type="checkbox" aria-label={`Chọn ${row.code}`} checked={pickedStocktakeIds.includes(row.id)}
+                          onChange={(e) => setPickedStocktakeIds(e.target.checked ? [...pickedStocktakeIds, row.id] : pickedStocktakeIds.filter((id) => id !== row.id))} />
+                      ) : <span className="text-slate-200">·</span>}
+                    </Cell>
+                  )}
                   <Cell>
                     <CopyableText value={row.code}><b>{row.code}</b></CopyableText>
                     <small>{new Date(row.stocktakeDate).toLocaleDateString("vi-VN")}{row.createdBy ? ` · ${row.createdBy}` : ""}</small>
@@ -4408,8 +4552,18 @@ export default function InventoryPage() {
                     <ExplosionBadge status={row.explosionStatus} />
                   </Cell>
                   <Cell>{row.warehouseCode}</Cell>
-                  <Cell>{row.lines.map((line) => line.item.code).join(", ")}</Cell>
-                  <Cell right>{qty(row.lines.reduce((sum, line) => sum + line.varianceQuantity, 0))}</Cell>
+                  <Cell>
+                    {row.status === STOCKTAKE_APPROVED && row.approvedAt
+                      ? <>{new Date(row.approvedAt).toLocaleString("vi-VN", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit", year: "numeric" })}{row.approvedBy && <small>{row.approvedBy}</small>}</>
+                      : <span className="text-slate-300">—</span>}
+                  </Cell>
+                  <Cell right>
+                    {row.lines.length} mặt hàng
+                    {(() => {
+                      const varianceRows = row.lines.filter((line) => Math.abs(line.varianceQuantity) > 0.000001).length;
+                      return <small className={varianceRows > 0 ? "text-amber-700 font-bold" : "text-slate-400"}>{varianceRows} dòng lệch</small>;
+                    })()}
+                  </Cell>
                   <Cell right>
                     <div className="flex flex-wrap justify-end gap-x-3 gap-y-1">
                       {renderStocktakeActions(row)}
@@ -4418,6 +4572,8 @@ export default function InventoryPage() {
                 </tr>
               ))}
             </Table>
+              );
+            })()}
             </div>
           </section>
         </div>

@@ -169,6 +169,23 @@ test("kho & định lượng: các fix của đợt 20/08", async (t) => {
     assert.equal(emptied.quantity, 0, "rollback nhập mua phải trả hết số lượng");
   });
 
+  await t.test("phiếu kho có giờ (cột Giờ hoặc giờ trong ô Ngày) mang đúng giờ Việt Nam", async () => {
+    // Khách 20/10/2026: ASA chốt kiểm kê 15h rồi vẫn nhập / bán tiếp — phiếu phải tách trước/sau giờ chốt.
+    const headers = ["Ngay", "Gio", "Loai giao dich", "Cua hang", "Kho xuat / nhap", "Ma mat hang", "So luong", "DVT", "Don gia", "So chung tu"];
+    const { batch } = await runImport("INVENTORY_TRANSACTION", "INVENTORY_TRANSACTION_STANDARD_V1", fileFrom(headers, [
+      ["06/01/2099", "15:30", "NHAP_KHAC", BRANCH, WH, NVL, 10, "g", 100, "GIO-1"],
+      ["06/01/2099 09:15", "", "NHAP_KHAC", BRANCH, WH, NVL, 10, "g", 100, "GIO-2"],
+      ["06/01/2099", "", "NHAP_KHAC", BRANCH, WH, NVL, 10, "g", 100, "GIO-3"],
+    ], "NhapXuat", "gio.xlsx"));
+    const docs = await prisma.inventoryTransaction.findMany({ where: { importBatchId: batch.id }, orderBy: { transactionDate: "asc" } });
+    assert.deepEqual(docs.map((doc) => doc.transactionDate.toISOString()), [
+      "2099-01-06T00:00:00.000Z", // không giờ = 07:00 sáng VN như cũ
+      "2099-01-06T02:15:00.000Z", // 09:15 VN đọc trong ô Ngày
+      "2099-01-06T08:30:00.000Z", // 15:30 VN từ cột Giờ
+    ]);
+    await rollbackImportBatch({ batchId: batch.id, actor: session.name, note: "test" });
+  });
+
   await t.test("khoá kỳ chặn import phiếu kho ngay ở preview", async () => {
     const txHeaders = ["Ngay", "Loai giao dich", "Cua hang", "Kho xuat / nhap", "Ma mat hang", "So luong", "DVT", "Don gia"];
     const { errors } = await runImport("INVENTORY_TRANSACTION", "INVENTORY_TRANSACTION_STANDARD_V1", fileFrom(txHeaders, [

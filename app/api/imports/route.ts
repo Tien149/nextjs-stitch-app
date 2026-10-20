@@ -211,7 +211,7 @@ function templateExampleRows(templateCode: string): Array<Record<string, string 
     return [
       { transaction_date: new Date("2026-07-22T00:00:00Z"), transaction_type: "NHAP_MUA", branch_code: "HCM", warehouse_code: "KHO_HCM", item_code: "NVL_NUOCSUOI", quantity: 20, unit_code: "thung", unit_cost: 120000, vat_rate: "8%", amount_before_tax: 2400000, amount_after_tax: 2592000, reference_code: "PNK-0001", partner_code: "NCC_FOOD", note: "Nhap mua nuoc suoi" },
       { transaction_date: new Date("2026-07-22T00:00:00Z"), transaction_type: "NHAP_MUA", branch_code: "HCM", warehouse_code: "KHO_HCM", item_code: "NVL_DUONG", quantity: 5, unit_code: "kg", unit_cost: 24000, vat_rate: "KKKNT", amount_before_tax: 120000, amount_after_tax: 120000, reference_code: "PNK-0001", partner_code: "NCC_FOOD", note: "Nhap mua duong" },
-      { transaction_date: new Date("2026-07-22T00:00:00Z"), transaction_type: "XUAT_HUY", branch_code: "HCM", warehouse_code: "KHO_HCM", item_code: "NVL_NUOCSUOI", quantity: 12, unit_code: "chai", reference_code: "HH-0001", note: "Huy hang vo chai" },
+      { transaction_date: new Date("2026-07-22T00:00:00Z"), transaction_time: "15:30", transaction_type: "XUAT_HUY", branch_code: "HCM", warehouse_code: "KHO_HCM", item_code: "NVL_NUOCSUOI", quantity: 12, unit_code: "chai", reference_code: "HH-0001", note: "Huy hang vo chai" },
       { transaction_date: new Date("2026-07-22T00:00:00Z"), transaction_type: "DIEU_CHUYEN", branch_code: "HCM", warehouse_code: "KHO_HCM", to_warehouse_code: "KHO_HN", item_code: "NVL_NUOCSUOI", quantity: 2, unit_code: "thung", reference_code: "DCK-0001", note: "Dieu chuyen noi bo" },
     ];
   }

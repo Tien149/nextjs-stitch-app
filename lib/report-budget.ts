@@ -1,8 +1,8 @@
 import { Prisma } from "@prisma/custom-client";
 import { prisma } from "@/lib/prisma";
-import { CAPEX_REPORT_GROUPS, createPnlDetailTree, DEPRECIATION_PNL_ACCOUNT, depreciationCatalogItemCode, DIRECT_PAYROLL_SOURCE_TYPES, finalizePnl, interestCatalogItemCodes, isInterestPnlLine, loadDepreciationPnlRows, loadDirectPayrollExpenseRows, loadPayrollPnlRows, NON_CAPEX_SOURCE_TYPES, pnlLineKeyOf, PAYROLL_IMPORT_SOURCE_TYPES, PAYROLL_PNL_ACCOUNT, withDepreciationPnlItem, withPayrollPnlItem, pnlLineAmount, PNL_ITEM_REQUIRED_LINES, PNL_STATEMENT_LINES, PNL_UNGROUPED_CODE, revenueChannelItemsOf, seedRevenueChannels, type PnlBucket, type PnlCatalog, type PnlLineKey, type PnlSeriesGroup, type PnlSeriesItem } from "@/lib/reports";
+import { CAPEX_REPORT_GROUPS, createPayrollItemResolver, createPnlDetailTree, DEPRECIATION_PNL_ACCOUNT, depreciationCatalogItemCode, DIRECT_PAYROLL_SOURCE_TYPES, finalizePnl, interestCatalogItemCodes, isInterestPnlLine, loadDepreciationPnlRows, loadDirectPayrollExpenseRows, loadPayrollPnlRows, NON_CAPEX_SOURCE_TYPES, pnlLineKeyOf, PAYROLL_IMPORT_SOURCE_TYPES, PAYROLL_PNL_ACCOUNT, withDepreciationPnlItem, withPayrollPnlItem, pnlLineAmount, PNL_ITEM_REQUIRED_LINES, PNL_STATEMENT_LINES, PNL_UNGROUPED_CODE, revenueChannelItemsOf, seedRevenueChannels, type PnlBucket, type PnlCatalog, type PnlLineKey, type PnlSeriesGroup, type PnlSeriesItem } from "@/lib/reports";
 import { createDepartmentResolver } from "@/lib/department-resolve";
-import { departmentNameMap } from "@/lib/revenue-department";
+import { departmentNameMap, shortDepartmentName } from "@/lib/revenue-department";
 import { isRevenueComponentCategory, REVENUE_ADJUST_CATEGORY_CODE, REVENUE_SVC_CATEGORY_CODE, REVENUE_VAT_CATEGORY_CODE, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { loadRevenuePnlGroups, type CategoryLookupClient } from "@/lib/revenue-source";
 import { loadPnlHistory, PNL_HISTORY_CUTOFF, PNL_HISTORY_ITEM_PREFIX, PNL_HISTORY_REVENUE_KINDS, PNL_HISTORY_REVENUE_PREFIX, pnlHistoryLines, pnlHistoryRevenueDepartment } from "@/lib/pnl-history";
@@ -185,6 +185,8 @@ export async function getPnlMatrix(year: string, branchCode: string) {
   };
   const departmentName = departmentNameMap(departments);
   const deptLabel = (code: string) => (code === UNASSIGNED_DEPARTMENT ? "Chưa gán bộ phận" : departmentName.get(code) || code);
+  // Dòng DOANH THU theo bộ phận: tên gọn ("Bếp"), doanh thu không gắn bộ phận là Phụ thu (khách 20/10/2026).
+  const revenueDeptLabel = (code: string) => (code === UNASSIGNED_DEPARTMENT ? "Phụ thu" : shortDepartmentName(departmentName.get(code) || code));
   // Cây dòng KQKD -> nhóm -> hạng mục với 12 cột tháng, đi qua cùng builder với bảng một kỳ
   // nên lương lên dòng nhân sự, nhóm OPEX và hạng mục xếp cùng một thứ tự.
   const treeCategories = [
@@ -258,6 +260,18 @@ export async function getPnlMatrix(year: string, branchCode: string) {
   const revenueByDepartment = new Map<string, MatrixSeries>();
   const payrollByDepartment = new Map<string, MatrixSeries>();
   const cogsByDepartment = new Map<string, MatrixSeries>();
+  /**
+   * Lương thực chi theo bộ phận đi theo CHI PHÍ (khách 20/10/2026): khoản lương lẻ trên phiếu chi /
+   * công nợ chỉ gắn hạng mục (vd 2.100.000 đ "Lương Bảo Trì & Sửa Chữa") không mang mã bộ phận nên
+   * rơi vào "Chưa gắn bộ phận", trong khi Tổng hợp chi phí đã lên đúng hạng mục. Dòng thiếu bộ phận
+   * suy bộ phận từ hạng mục: bộ phận hay đi với hạng mục đó nhất trong dữ liệu, không có thì bộ phận
+   * mà danh mục gắn / tự khớp ra hạng mục đó.
+   */
+  const payrollItemOf = createPayrollItemResolver(catalogPnlItems, pnlGroups, departments);
+  const payrollItemOfLine = (line: { pnlItemCode: string | null; departmentCode: string | null }) =>
+    (line.pnlItemCode || payrollItemOf(line.departmentCode) || "").toUpperCase();
+  const payrollDeptVotes = new Map<string, Map<string, number>>();
+  const payrollWithoutDept: Array<{ item: string; monthIndex: number; amount: number }> = [];
 
   /** Doanh thu ĐÃ ghi sổ từng tháng — chỉ để cảnh báo kỳ chưa "Đồng bộ ghi sổ", không lên P&L. */
   const postedRevenueMonths = Array.from({ length: 12 }, () => 0);
@@ -299,8 +313,32 @@ export async function getPnlMatrix(year: string, branchCode: string) {
       branchOpexByGroup.set(groupKey, series);
     }
     const dept = row.departmentCode || UNASSIGNED_DEPARTMENT;
-    if (lineKey === "payroll") bumpSeries(payrollByDepartment, dept, deptLabel(dept), monthIndex, expense);
+    if (lineKey === "payroll") {
+      const item = payrollItemOfLine(row);
+      if (!row.departmentCode && item) payrollWithoutDept.push({ item, monthIndex, amount: expense });
+      else {
+        if (row.departmentCode && item) {
+          const votes = payrollDeptVotes.get(item) || new Map<string, number>();
+          votes.set(row.departmentCode, (votes.get(row.departmentCode) || 0) + Math.abs(expense));
+          payrollDeptVotes.set(item, votes);
+        }
+        bumpSeries(payrollByDepartment, dept, deptLabel(dept), monthIndex, expense);
+      }
+    }
     if (lineKey === "cogs") bumpSeries(cogsByDepartment, dept, deptLabel(dept), monthIndex, expense);
+  }
+
+  if (payrollWithoutDept.length > 0) {
+    const deptOfItem = new Map<string, string>();
+    for (const [item, votes] of payrollDeptVotes) deptOfItem.set(item, [...votes.entries()].sort((a, b) => b[1] - a[1])[0][0]);
+    for (const department of departments) {
+      const item = (payrollItemOf(department.code) || "").toUpperCase();
+      if (item && !deptOfItem.has(item)) deptOfItem.set(item, department.code);
+    }
+    for (const line of payrollWithoutDept) {
+      const dept = deptOfItem.get(line.item) || UNASSIGNED_DEPARTMENT;
+      bumpSeries(payrollByDepartment, dept, deptLabel(dept), line.monthIndex, line.amount);
+    }
   }
 
   // Tách doanh thu thu được thành: phần thuần theo bộ phận / theo kênh bán, cộng SVC và thuế
@@ -334,7 +372,7 @@ export async function getPnlMatrix(year: string, branchCode: string) {
       totals[monthIndex].revenue += amount;
       branchBuckets[monthIndex].revenue += amount;
       const lineDept = line.departmentCode || UNASSIGNED_DEPARTMENT;
-      bumpSeries(revenueByDepartment, lineDept, deptLabel(lineDept), monthIndex, amount);
+      bumpSeries(revenueByDepartment, lineDept, revenueDeptLabel(lineDept), monthIndex, amount);
     }
     branchTotals.set(row.branchCode, branchBuckets);
 
@@ -342,7 +380,7 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     const dept = row.departmentCode || UNASSIGNED_DEPARTMENT;
     // Doanh thu không thuộc Bếp/Bar trên khối "Doanh thu theo bộ phận" là phụ thu — chị Bình
     // đặt tên dòng "DT Phụ Thu" (25/09/2026). Các bảng lương/ngân sách nhân sự giữ nhãn cũ.
-    bumpSeries(netRevenueByDepartment, dept, dept === UNASSIGNED_DEPARTMENT ? "DT Phụ Thu" : `DT ${departmentName.get(dept) || dept}`, monthIndex, net);
+    bumpSeries(netRevenueByDepartment, dept, dept === UNASSIGNED_DEPARTMENT ? "DT Phụ Thu" : `DT ${revenueDeptLabel(dept)}`, monthIndex, net);
     const channel = (row.channel || "").trim() || "Chưa rõ kênh";
     bumpSeries(netRevenueByChannel, channel.toUpperCase(), `DT ${channel}`, monthIndex, net);
     svcMonths[monthIndex] += row.feeAmount;
@@ -360,8 +398,8 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     branchBuckets[monthIndex].revenue += amount;
     branchTotals.set(line.branchCode, branchBuckets);
     const dept = pnlHistoryRevenueDepartment(line.revenueKind) || UNASSIGNED_DEPARTMENT;
-    bumpSeries(revenueByDepartment, dept, deptLabel(dept), monthIndex, amount);
-    bumpSeries(netRevenueByDepartment, dept, dept === UNASSIGNED_DEPARTMENT ? "DT Phụ Thu" : `DT ${departmentName.get(dept) || dept}`, monthIndex, amount);
+    bumpSeries(revenueByDepartment, dept, revenueDeptLabel(dept), monthIndex, amount);
+    bumpSeries(netRevenueByDepartment, dept, dept === UNASSIGNED_DEPARTMENT ? "DT Phụ Thu" : `DT ${revenueDeptLabel(dept)}`, monthIndex, amount);
     bumpSeries(netRevenueByChannel, "SO_LIEU_NHAP_TAY", "DT nhập tay (trước khi lên phần mềm)", monthIndex, amount);
   }
   const payrollBonusMonths = Array.from({ length: 12 }, () => 0);
@@ -787,6 +825,8 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
   ]);
   const departmentName = departmentNameMap(departments);
   const deptLabel = (code: string) => (code === UNASSIGNED_DEPARTMENT ? "Chưa gán bộ phận" : departmentName.get(code) || code);
+  // Dòng DOANH THU theo bộ phận: tên gọn ("Bếp"), doanh thu không gắn bộ phận là Phụ thu (khách 20/10/2026).
+  const revenueDeptLabel = (code: string) => (code === UNASSIGNED_DEPARTMENT ? "Phụ thu" : shortDepartmentName(departmentName.get(code) || code));
   // Import lương từng lưu nguyên chữ ô Phòng ban ("Team Bar", "bar") thay vì mã danh mục, nên
   // lương thực tế không khớp bộ phận set tỷ trọng (đường thực tế = 0). Quy về mã (luật chung ở
   // lib/department-resolve); không khớp gì thì giữ nguyên để vẫn hiện riêng một dòng.
@@ -827,11 +867,11 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
       if (line.categoryCode === REVENUE_VAT_CATEGORY_CODE) continue;
       if (line.categoryCode === REVENUE_SVC_CATEGORY_CODE) {
         svc[monthIndex] += amount;
-        bumpSeries(svcByDepartment, dept, deptLabel(dept), monthIndex, amount);
+        bumpSeries(svcByDepartment, dept, revenueDeptLabel(dept), monthIndex, amount);
       } else if (line.categoryCode === REVENUE_ADJUST_CATEGORY_CODE) adjustTotal[monthIndex] += amount;
       else {
         branchTotal[monthIndex] += amount;
-        bumpSeries(revenueByDepartment, dept, deptLabel(dept), monthIndex, amount);
+        bumpSeries(revenueByDepartment, dept, revenueDeptLabel(dept), monthIndex, amount);
       }
     }
     revenueTotalByBranch.set(row.branchCode, branchTotal);

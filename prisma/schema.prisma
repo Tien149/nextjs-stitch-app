@@ -672,6 +672,9 @@ model InventoryItem {
   /// Nhóm hàng hóa (Thịt, Hải sản, Rau củ, Bia...) — ghi tự do, dùng để lọc khi giải trình kiểm
   /// kê (khách yêu cầu 03/10/2026). Khác `category` (Phân nhóm gắn kho / bộ phận).
   goodsGroup    String?
+  /// Hạng mục P&L khi bao bì / đồng phục xuất dùng (khách 20/10/2026: Than xà cừ, Than sạch -> CPBD_THAN).
+  /// Trống = hạng mục mặc định của loại (CPBD_VTTH / CPBD_DONGPHUC). Nguyên liệu, BTP... vẫn vào giá vốn.
+  expensePnlItemCode String?
   requiresImage Boolean  @default(false)
   minStock      Float    @default(0)
   status        String   @default("ACTIVE")
@@ -1035,6 +1038,9 @@ model InventoryTransaction {
   /// Chi phí mua hàng của phiếu nhập mua (vận chuyển, bốc xếp...): phân bổ vào giá nhập từng dòng
   /// theo trị giá (`InventoryTransactionLine.purchaseCostShare`), cộng vào công nợ NCC. Xem lib/purchase-cost.ts.
   purchaseCost               Float    @default(0)
+  /// Xuất khác KHÔNG vào giá vốn (khách chốt 20/10/2026): người lập chọn hạng mục P&L, trị giá xuất
+  /// lên thẳng hạng mục đó (nhóm Giá vốn -> 632, còn lại -> 6428). Loại phiếu khác để trống.
+  pnlItemCode                String?
   note                       String?
   createdBy                  String?
   createdAt                  DateTime @default(now())

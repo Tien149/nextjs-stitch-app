@@ -90,6 +90,8 @@ export type PostInventoryTransactionInput = {
   createdBy?: string | null;
   /** Chi phí mua hàng của phiếu nhập mua — phân bổ vào giá nhập theo trị giá dòng (lib/purchase-cost.ts). */
   purchaseCost?: number | null;
+  /** Hạng mục P&L của phiếu Xuất khác (không vào giá vốn) — lib/inventory-cogs.ts. */
+  pnlItemCode?: string | null;
   lines: StockLineInput[];
 };
 
@@ -608,6 +610,7 @@ export async function postInventoryTransaction(tx: Tx, input: PostInventoryTrans
       referenceCode: input.referenceCode || null,
       partnerCode: input.partnerCode || null,
       purchaseCost: priced.purchaseCost,
+      pnlItemCode: transactionType === "XUAT_KHAC" ? input.pnlItemCode || null : null,
       note: input.note || null,
       createdBy: input.createdBy || null,
       lines: {

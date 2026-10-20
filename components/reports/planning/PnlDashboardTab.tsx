@@ -8,7 +8,7 @@ import OpexCategoryCard from "@/components/reports/planning/OpexCategoryCard";
 import PayrollBudgetCard from "@/components/reports/planning/PayrollBudgetCard";
 import PnlTrendCard from "@/components/reports/planning/PnlTrendCard";
 import { Card, MonthChips, NoPlanNotice, PlanActualCell, RateChip, Segmented, StatCard, Tag, fmtMoney, ratioOf, type Tone } from "@/components/reports/planning/planning-ui";
-import { bucketSum, monthPickSummary, nodeValue, sumMonths, type MonthPick, type PlanningData, type PnlBucket, type Series, type StatementLine } from "@/components/reports/planning/planning-types";
+import { bucketSum, monthPickLabel, monthPickSummary, nodeValue, sumMonths, type MonthPick, type PlanningData, type PnlBucket, type Series, type StatementLine } from "@/components/reports/planning/planning-types";
 
 /**
  * Màn "Dashboard P&L" học theo phần mềm mẫu: chip lũy kế tháng, 9 thẻ KPI (số THỰC ĐẠT in to +
@@ -118,13 +118,14 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
    * thành cột riêng khi có số, để các cột vẫn cộng đủ ra lợi nhuận vận hành.
    */
   type PlanActual = { plan: number; actual: number };
-  const sumByPick = (values: number[] | undefined) => (values ? sumMonths(values, picked) : 0);
   const opexRestOf = (total: PlanActual, groups: PlanActual[]): PlanActual => ({
     plan: total.plan - groups.reduce((sum, group) => sum + group.plan, 0),
     actual: total.actual - groups.reduce((sum, group) => sum + group.actual, 0),
   });
-  const allBranchRows = data.byBranch.map((branch, index) => {
-    const otherOpex = { plan: bucketSum(branch.plan, "otherOpex", picked), actual: bucketSum(branch.actual, "otherOpex", picked) };
+  /** Dòng từng cửa hàng cộng trên một nhóm tháng (`pick`). */
+  const branchRowsFor = (pick: MonthPick) => data.byBranch.map((branch, index) => {
+    const sumByPick = (values: number[] | undefined) => (values ? sumMonths(values, pick) : 0);
+    const otherOpex = { plan: bucketSum(branch.plan, "otherOpex", pick), actual: bucketSum(branch.actual, "otherOpex", pick) };
     const opex = opexGroups.map((group) => {
       const split = branch.opexGroups?.find((row) => row.code === group.code);
       return { plan: sumByPick(split?.plan), actual: sumByPick(split?.actual) };
@@ -132,15 +133,27 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
     return {
       code: branch.code,
       tone: BRANCH_TONES[index % BRANCH_TONES.length],
-      revenue: { plan: bucketSum(branch.plan, "revenue", picked), actual: bucketSum(branch.actual, "revenue", picked) },
-      cogs: { plan: bucketSum(branch.plan, "cogs", picked), actual: bucketSum(branch.actual, "cogs", picked) },
-      capex: { plan: bucketSum(branch.plan, "capex", picked), actual: bucketSum(branch.actual, "capex", picked) },
-      payroll: { plan: bucketSum(branch.plan, "payroll", picked), actual: bucketSum(branch.actual, "payroll", picked) },
+      revenue: { plan: bucketSum(branch.plan, "revenue", pick), actual: bucketSum(branch.actual, "revenue", pick) },
+      cogs: { plan: bucketSum(branch.plan, "cogs", pick), actual: bucketSum(branch.actual, "cogs", pick) },
+      capex: { plan: bucketSum(branch.plan, "capex", pick), actual: bucketSum(branch.actual, "capex", pick) },
+      payroll: { plan: bucketSum(branch.plan, "payroll", pick), actual: bucketSum(branch.actual, "payroll", pick) },
       opex,
       opexRest: opexRestOf(otherOpex, opex),
-      netProfit: { plan: bucketSum(branch.plan, "netProfit", picked), actual: bucketSum(branch.actual, "netProfit", picked) },
+      netProfit: { plan: bucketSum(branch.plan, "netProfit", pick), actual: bucketSum(branch.actual, "netProfit", pick) },
     };
   });
+  /** Dòng toàn công ty của một nhóm tháng. */
+  const totalRowFor = (pick: MonthPick) => {
+    const sum = (key: keyof PnlBucket) => ({ plan: bucketSum(data.plans, key, pick), actual: bucketSum(data.totals, key, pick) });
+    const opex = opexGroups.map((group) => ({ plan: nodeValue(group, pick, "plan"), actual: nodeValue(group, pick, "actual") }));
+    return {
+      revenue: sum("revenue"), cogs: sum("cogs"), capex: sum("capex"), payroll: sum("payroll"),
+      opex,
+      opexRest: opexRestOf(sum("otherOpex"), opex),
+      netProfit: sum("netProfit"),
+    };
+  };
+  const allBranchRows = branchRowsFor(picked);
   /**
    * Mã cửa hàng không có doanh thu cả thực tế lẫn kế hoạch (vd. cửa hàng mẫu HCM/HN bị chọn nhầm
    * trên phiếu) không lên thành dòng — khách bỏ 30/09/2026. Tổng cộng vẫn là số toàn công ty
@@ -148,18 +161,22 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
    */
   const hasRevenue = (row: (typeof allBranchRows)[number]) => Math.abs(row.revenue.actual) > 0.5 || Math.abs(row.revenue.plan) > 0.5;
   const branchRows = allBranchRows.filter(hasRevenue);
+  const shownBranches = new Set(branchRows.map((row) => row.code));
   const hiddenBranches = allBranchRows.filter((row) => !hasRevenue(row) && Math.abs(row.netProfit.actual) > 0.5);
-  const totalOpex = opexGroups.map((group) => ({ plan: nodeValue(group, picked, "plan"), actual: nodeValue(group, picked, "actual") }));
-  const totalRow = {
-    revenue: { plan: plan("revenue"), actual: actual("revenue") },
-    cogs: { plan: plan("cogs"), actual: actual("cogs") },
-    capex: { plan: plan("capex"), actual: actual("capex") },
-    payroll: { plan: plan("payroll"), actual: actual("payroll") },
-    opex: totalOpex,
-    opexRest: opexRestOf({ plan: plan("otherOpex"), actual: actual("otherOpex") }, totalOpex),
-    netProfit: { plan: plan("netProfit"), actual: actual("netProfit") },
-  };
-  const showOpexRest = [...branchRows, totalRow].some((row) => Math.abs(row.opexRest.plan) > 0.5 || Math.abs(row.opexRest.actual) > 0.5);
+  const totalRow = totalRowFor(picked);
+  /**
+   * Chọn nhiều tháng thì mỗi tháng một khối dòng (khách 20/10/2026: "chọn nhiều tháng thì mỗi tháng
+   * 1 dòng"); dòng Tổng cộng cuối bảng vẫn cộng mọi tháng đang chọn.
+   */
+  const monthSections = picked.length > 1
+    ? [...picked].sort((a, b) => a - b).map((month) => ({
+      month,
+      rows: branchRowsFor([month]).filter((row) => shownBranches.has(row.code)),
+      total: totalRowFor([month]),
+    }))
+    : [];
+  const showOpexRest = [...branchRows, ...monthSections.flatMap((section) => [...section.rows, section.total]), totalRow]
+    .some((row) => Math.abs(row.opexRest.plan) > 0.5 || Math.abs(row.opexRest.actual) > 0.5);
   const operatingHeaders = ["Nhân sự", ...opexGroups.map((group) => group.name), ...(showOpexRest ? ["OPEX chưa gắn nhóm"] : [])];
   const operatingCells = (row: typeof totalRow) => [row.payroll, ...row.opex, ...(showOpexRest ? [row.opexRest] : [])];
   const branchCells = (row: typeof totalRow) => [
@@ -301,22 +318,42 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
           </thead>
           <tbody>
             {branchRows.length === 0 && <tr><td colSpan={6 + operatingHeaders.length} className="px-4 py-8 text-center text-sm text-slate-400">Chưa có dữ liệu ghi sổ.</td></tr>}
-            {branchRows.map((row) => {
-              const rate = ratioOf(row.revenue.actual, row.revenue.plan);
-              return (
-                <tr key={row.code} className="border-t border-slate-100">
-                  <td className="px-4 py-2.5"><Tag tone={row.tone} className="text-[11px]">{storeLabel(row.code)}</Tag></td>
-                  {branchCells(row).map((cell) => <td key={cell.key} className="px-3 py-2.5"><PlanActualCell plan={cell.value.plan} actual={cell.value.actual} income={cell.income} /></td>)}
-                  <td className="px-3 py-2.5 text-right">
-                    <RateChip rate={rate} good={rate === null ? null : rate >= 1} />
-                    <div className="mt-1 h-1.5 w-28 ml-auto rounded-full bg-slate-100 overflow-hidden"><div className={`h-full ${rate !== null && rate >= 1 ? "bg-emerald-500" : "bg-amber-400"}`} style={{ width: `${Math.min(100, (rate || 0) * 100)}%` }} /></div>
-                  </td>
-                </tr>
-              );
+            {(monthSections.length > 0 ? monthSections : [{ month: -1, rows: branchRows, total: null }]).map((section) => {
+              const branchRow = (row: (typeof branchRows)[number]) => {
+                const rate = ratioOf(row.revenue.actual, row.revenue.plan);
+                return (
+                  <tr key={`${section.month}-${row.code}`} className="border-t border-slate-100">
+                    <td className="px-4 py-2.5 whitespace-nowrap">
+                      {section.month >= 0 && section.rows.length === 1 && <b className="mr-2 text-[12px] text-slate-700">Tháng {section.month + 1}</b>}
+                      <Tag tone={row.tone} className="text-[11px]">{storeLabel(row.code)}</Tag>
+                    </td>
+                    {branchCells(row).map((cell) => <td key={cell.key} className="px-3 py-2.5"><PlanActualCell plan={cell.value.plan} actual={cell.value.actual} income={cell.income} /></td>)}
+                    <td className="px-3 py-2.5 text-right">
+                      <RateChip rate={rate} good={rate === null ? null : rate >= 1} />
+                      <div className="mt-1 h-1.5 w-28 ml-auto rounded-full bg-slate-100 overflow-hidden"><div className={`h-full ${rate !== null && rate >= 1 ? "bg-emerald-500" : "bg-amber-400"}`} style={{ width: `${Math.min(100, (rate || 0) * 100)}%` }} /></div>
+                    </td>
+                  </tr>
+                );
+              };
+              // Nhiều cửa hàng: nhãn tháng thành dòng tiêu đề + dòng cộng tháng; một cửa hàng thì nhãn tháng nằm ngay trên dòng.
+              if (section.month < 0 || section.rows.length <= 1) return section.rows.map(branchRow);
+              return [
+                <tr key={`${section.month}-head`} className="border-t border-slate-200 bg-slate-50/60">
+                  <td colSpan={6 + operatingHeaders.length} className="px-4 py-1.5 text-[12px] font-bold text-slate-700">Tháng {section.month + 1}</td>
+                </tr>,
+                ...section.rows.map(branchRow),
+                section.total && (
+                  <tr key={`${section.month}-total`} className="border-t border-slate-100 font-semibold">
+                    <td className="px-4 py-2 text-[11px] uppercase tracking-wide text-slate-500">Cộng tháng {section.month + 1}</td>
+                    {branchCells(section.total).map((cell) => <td key={cell.key} className="px-3 py-2"><PlanActualCell plan={cell.value.plan} actual={cell.value.actual} income={cell.income} /></td>)}
+                    <td className="px-3 py-2 text-right"><RateChip rate={ratioOf(section.total.revenue.actual, section.total.revenue.plan)} good={null} /></td>
+                  </tr>
+                ),
+              ];
             })}
             {branchRows.length > 0 && (
               <tr className="border-t-2 border-slate-200 bg-slate-50 font-bold">
-                <td className="px-4 py-2.5 text-[12px] uppercase tracking-wide text-slate-600">Tổng cộng</td>
+                <td className="px-4 py-2.5 text-[12px] uppercase tracking-wide text-slate-600">Tổng cộng{monthSections.length > 0 && <span className="block normal-case font-normal text-[10px] text-slate-500">{monthPickLabel(picked)}</span>}</td>
                 {branchCells(totalRow).map((cell) => <td key={cell.key} className="px-3 py-2.5"><PlanActualCell plan={cell.value.plan} actual={cell.value.actual} income={cell.income} /></td>)}
                 <td className="px-3 py-2.5 text-right"><RateChip rate={ratioOf(totalRow.revenue.actual, totalRow.revenue.plan)} good={null} /></td>
               </tr>

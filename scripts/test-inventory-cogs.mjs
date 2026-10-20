@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { cogsPurchaseAccount, inventoryCogsActive, inventoryCogsParentGroup, inventoryCogsRegroupTarget, planInventoryCogsJournal } from "../lib/inventory-cogs.ts";
+import { cogsPurchaseAccount, inventoryCogsActive, inventoryCogsParentGroup, inventoryCogsRegroupTarget, issuePnlItemAccount, planInventoryCogsJournal } from "../lib/inventory-cogs.ts";
 import { paymentCounterAccount, voucherJournalLines } from "../lib/voucher-accounting.ts";
 
 const sum = (lines, side) => lines.reduce((total, line) => total + (line[side] || 0), 0);
@@ -138,4 +138,38 @@ test("chuyển COGS Bếp ra khỏi nhóm Bar; hạng mục ở nhóm chung ho�
   assert.equal(inventoryCogsRegroupTarget("COGS_BEP", "COGS_KHAC", vpsGroups), null, "người dùng tự để ở nhóm chung");
   // Không có nhóm Bếp để chuyển sang: giữ nguyên, không đẩy vào nhóm khác.
   assert.equal(inventoryCogsRegroupTarget("COGS_BEP", "COGS_BAR", [{ code: "COGS_BAR", name: "COGS Bar" }]), null);
+});
+
+test("xuất khác lên thẳng hạng mục P&L đã chọn, không vào COGS (khách chốt 20/10/2026)", () => {
+  assert.equal(issuePnlItemAccount("OPEX"), "6428");
+  assert.equal(issuePnlItemAccount("COGS"), "632");
+  const lines = planInventoryCogsJournal({
+    transactionType: "XUAT_KHAC",
+    warehouseGroup: "BEP",
+    lines: [{ totalCost: 300_000, itemType: "RAW_MATERIAL" }, { totalCost: 50_000, itemType: "PACKAGING" }],
+    issuePnlItem: { pnlItemCode: "CPBD_MARKETING", accountCode: "6428" },
+  });
+  assert.deepEqual(lines.find((line) => line.accountCode === "6428"), { accountCode: "6428", debit: 350_000, pnlItemCode: "CPBD_MARKETING", departmentCode: "KIT" });
+  assert.ok(!lines.some((line) => line.accountCode === "632"), "không còn dòng giá vốn");
+  assert.deepEqual(lines.find((line) => line.accountCode === "152"), { accountCode: "152", credit: 350_000 });
+  // Xuất hủy cùng kho vẫn vào COGS như cũ.
+  const waste = planInventoryCogsJournal({ transactionType: "XUAT_HUY", warehouseGroup: "BEP", lines: [{ totalCost: 100, itemType: "RAW_MATERIAL" }], issuePnlItem: { pnlItemCode: "CPBD_MARKETING", accountCode: "6428" } });
+  assert.equal(waste[0].accountCode, "632");
+});
+
+
+test("bao bì khai hạng mục riêng (Than -> CPBD_THAN) đi hạng mục đó; bao bì khác vẫn CPBD_VTTH", () => {
+  const lines = planInventoryCogsJournal({
+    transactionType: "XUAT_KIEM_KE",
+    warehouseGroup: "BEP",
+    lines: [
+      { totalCost: 200_000, itemType: "PACKAGING", expensePnlItemCode: "CPBD_THAN" },
+      { totalCost: 50_000, itemType: "PACKAGING" },
+      { totalCost: 70_000, itemType: "RAW_MATERIAL", expensePnlItemCode: "CPBD_THAN" },
+    ],
+  });
+  const byItem = Object.fromEntries(lines.filter((line) => line.pnlItemCode).map((line) => [line.pnlItemCode, [line.accountCode, line.debit]]));
+  assert.deepEqual(byItem.CPBD_THAN, ["6428", 200_000]);
+  assert.deepEqual(byItem.CPBD_VTTH, ["6428", 50_000]);
+  assert.equal(lines.find((line) => line.accountCode === "632").debit, 70_000, "nguyên liệu bỏ qua hạng mục riêng, vẫn vào giá vốn");
 });

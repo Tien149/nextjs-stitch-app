@@ -7,6 +7,7 @@ import { ensureDefaultAccounts } from "@/lib/accounting";
 import { INVENTORY_ITEM_UPDATE_TEMPLATE, isMasterDataImportType, normalizeHeader, type ImportType } from "@/lib/import-templates";
 import { normalizeGoodsGroup } from "@/lib/goods-group";
 import { parseImportDate, type ParsedImportRow } from "@/lib/import-parser";
+import { withVietnamTime } from "@/lib/import-date";
 import { latestKnownUnitCost, normalizeStockTransactionType, postInventoryTransaction } from "@/lib/inventory-stock";
 import { parseVatRate } from "@/lib/inventory-vat";
 import { createPurchasePayable, removePurchasePayables } from "@/lib/purchase-payable";
@@ -1515,6 +1516,8 @@ export async function commitImport(input: CommitInput) {
           transactionType,
           // Hai loại hủy khác nhau không được gộp chung một phiếu dù cùng số chứng từ.
           asText(row.values.waste_type).toUpperCase(),
+          // Xuất khác hai hạng mục P&L khác nhau là hai phiếu.
+          asText(row.values.pnl_item_code).toUpperCase(),
           asText(row.values.branch_code).toUpperCase(),
           asText(row.values.warehouse_code).toUpperCase(),
           asText(row.values.to_warehouse_code).toUpperCase(),
@@ -1523,7 +1526,8 @@ export async function commitImport(input: CommitInput) {
       }
       for (const rows of groups.values()) {
         const first = rows[0];
-        const transactionDate = asDate(first.values.transaction_date);
+        // Có giờ thì phiếu mang đúng giờ Việt Nam để tách trước / sau giờ chốt kiểm kê; không có = 07:00 như cũ.
+        const transactionDate = withVietnamTime(asDate(first.values.transaction_date), asText(first.values.transaction_time) || null);
         const transactionType = normalizeStockTransactionType(first.values.transaction_type);
         const prefix = transactionType === "NHAP_MUA" ? "NM"
           : transactionType === "NHAP_KHAC" ? "NK"
@@ -1578,6 +1582,7 @@ export async function commitImport(input: CommitInput) {
               code: transactionCode,
               transactionType,
               subType: transactionType === "XUAT_HUY" ? asText(first.values.waste_type) || null : null,
+              pnlItemCode: transactionType === "XUAT_KHAC" ? asText(first.values.pnl_item_code).toUpperCase() || null : null,
               transactionDate,
               branchCode: asText(first.values.branch_code),
               warehouseCode: asText(first.values.warehouse_code),
@@ -2403,7 +2408,8 @@ export async function commitImport(input: CommitInput) {
     });
   }, {
     maxWait: 10_000,
-    timeout: 120_000,
+    // Sao kê cả tháng mấy nghìn dòng (khách 20/10/2026) chạy quá 2 phút — nginx cũng nâng lên 10 phút.
+    timeout: 600_000,
   });
   const bankAutoApproved = input.importType === "BANK_STATEMENT"
     ? (batchResult?.bankTransactions || []).filter((row) => row.reconcileStatus === "MATCHED" && row.autoProcessType !== "NET_ZERO").length
@@ -3169,7 +3175,7 @@ export async function rollbackImportBatch(input: RollbackInput) {
     });
   }, {
     maxWait: 10_000,
-    timeout: 120_000,
+    timeout: 600_000,
   });
   await writeAuditLog({
     actorName: input.actor,

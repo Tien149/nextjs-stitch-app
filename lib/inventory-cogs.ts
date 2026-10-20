@@ -97,6 +97,11 @@ export function inventoryCogsRegroupTarget(itemCode: string, currentGroupCode: s
   return wantedDepartment === inventoryCogsItemDepartment(itemCode) ? wanted : null;
 }
 
+/** Tài khoản chi phí của hạng mục P&L phiếu Xuất khác: nhóm Giá vốn -> 632, mọi nhóm khác -> 6428. */
+export function issuePnlItemAccount(group: string | null | undefined) {
+  return String(group || "").toUpperCase() === "COGS" ? "632" : "6428";
+}
+
 /** Phiếu kho làm hàng RỜI hệ thống kho (hoặc quay lại, với kiểm kê thừa). */
 export const COGS_OUTBOUND_TYPES = ["XUAT_BAN", "XUAT_HUY", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_KIEM_KE"] as const;
 export const COGS_INBOUND_TYPES = ["NHAP_KIEM_KE"] as const;
@@ -117,9 +122,14 @@ export type CogsJournalLine = {
 export function planInventoryCogsJournal(input: {
   transactionType: string;
   warehouseGroup: string | null | undefined;
-  lines: Array<{ totalCost: number; itemType: string | null | undefined }>;
+  lines: Array<{ totalCost: number; itemType: string | null | undefined; /** Hạng mục riêng của mặt hàng bao bì / đồng phục. */ expensePnlItemCode?: string | null }>;
   /** Loại mặt hàng treo chi phí trả trước 242 (phiếu có lịch phân bổ) thay vì ghi chi phí ngay. */
   prepaidItemTypes?: readonly string[];
+  /**
+   * Phiếu Xuất khác: hạng mục P&L người lập chọn + tài khoản theo nhóm của hạng mục (Giá vốn -> 632,
+   * còn lại -> 6428). Khách chốt 20/10/2026: xuất khác KHÔNG vào COGS mà lên thẳng hạng mục đã chọn.
+   */
+  issuePnlItem?: { pnlItemCode: string; accountCode: string } | null;
 }): CogsJournalLine[] {
   const type = input.transactionType.toUpperCase();
   const inbound = (COGS_INBOUND_TYPES as readonly string[]).includes(type);
@@ -138,8 +148,11 @@ export function planInventoryCogsJournal(input: {
     const itemType = String(line.itemType || "").toUpperCase();
     const prepaid = !inbound && (input.prepaidItemTypes || []).includes(itemType);
     const expenseItem = EXPENSE_ITEM_TYPES[itemType];
-    const accountCode = prepaid ? "242" : expenseItem ? "6428" : "632";
-    const pnlItemCode = prepaid ? null : expenseItem || cogsItem.code;
+    const chosen = !prepaid && type === "XUAT_KHAC" ? input.issuePnlItem || null : null;
+    const accountCode = prepaid ? "242" : chosen ? chosen.accountCode : expenseItem ? "6428" : "632";
+    // Bao bì / đồng phục: mặt hàng khai hạng mục riêng (Than -> CPBD_THAN) thì đi hạng mục đó.
+    const itemExpense = expenseItem ? line.expensePnlItemCode || expenseItem : null;
+    const pnlItemCode = prepaid ? null : chosen ? chosen.pnlItemCode : itemExpense || cogsItem.code;
     const key = `${accountCode}|${pnlItemCode}`;
     const bucket = buckets.get(key) || { accountCode, pnlItemCode, amount: 0 };
     bucket.amount += amount;

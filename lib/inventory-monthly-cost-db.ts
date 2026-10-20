@@ -51,7 +51,7 @@ type Client = TxClient | typeof prisma;
 
 export type MonthlyCostSource = {
   documents: Array<MonthlyCostDoc & { toBranchCode: string | null }>;
-  items: Array<MonthlyCostItem & { name: string; unit: string }>;
+  items: Array<MonthlyCostItem & { name: string; unit: string; expensePnlItemCode?: string | null }>;
   opening: OpeningStock[];
   openingPeriod: string;
   warehouses: Array<{ code: string; group: string | null; branch: string | null }>;
@@ -62,11 +62,11 @@ export async function loadMonthlyCostSource(client: Client = prisma): Promise<Mo
     client.inventoryTransaction.findMany({
       where: { deletedAt: null },
       select: {
-        id: true, code: true, transactionType: true, transactionDate: true, branchCode: true, warehouseCode: true, toWarehouseCode: true, toBranchCode: true,
+        id: true, code: true, transactionType: true, transactionDate: true, branchCode: true, warehouseCode: true, toWarehouseCode: true, toBranchCode: true, pnlItemCode: true,
         lines: { select: { id: true, itemId: true, quantity: true, unitCost: true, totalCost: true, inputUnitCost: true, inputQuantity: true, purchaseCostShare: true } },
       },
     }),
-    client.inventoryItem.findMany({ select: { id: true, code: true, name: true, itemType: true, unit: true } }),
+    client.inventoryItem.findMany({ select: { id: true, code: true, name: true, itemType: true, unit: true, expensePnlItemCode: true } }),
     client.openingBalance.findMany({
       where: { balanceType: "INVENTORY", deletedAt: null, status: { in: ["CONFIRMED", "POSTED"] }, warehouseCode: { not: null } },
       select: { period: true, objectCode: true, warehouseCode: true, quantity: true, amount: true },
@@ -179,7 +179,9 @@ function analyse(source: MonthlyCostSource, result: MonthlyCostResult, fromPerio
     for (const line of planInventoryCogsJournal({
       transactionType: doc.transactionType,
       warehouseGroup: groupOf.get(doc.warehouseCode),
-      lines: doc.lines.map((row) => ({ totalCost: totals(row), itemType: itemById.get(row.itemId)?.itemType })),
+      lines: doc.lines.map((row) => ({ totalCost: totals(row), itemType: itemById.get(row.itemId)?.itemType, expensePnlItemCode: itemById.get(row.itemId)?.expensePnlItemCode })),
+      // Bảng so giá vốn chỉ cần nhãn: xuất khác đứng ở hạng mục đã chọn, tài khoản không quan trọng ở đây.
+      issuePnlItem: doc.pnlItemCode ? { pnlItemCode: doc.pnlItemCode, accountCode: "6428" } : null,
     })) {
       if (line.accountCode === "152") continue;
       const label = PNL_LABELS.get(line.pnlItemCode || "") || line.pnlItemCode || line.accountCode;

@@ -117,6 +117,19 @@ function isoDay(value: Date) {
   return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
 }
 
+/** Hạng mục P&L của phiếu Xuất khác: bắt buộc (trừ xuất đồng phục có phân bổ), phải có trong danh mục và đang dùng. */
+async function checkedIssuePnlItem(value: unknown, optional = false) {
+  const code = cleanText(value).toUpperCase();
+  if (!code) {
+    if (optional) return null;
+    businessError("Phiếu Xuất khác phải chọn Hạng mục P&L — giá trị xuất lên thẳng hạng mục đó, không vào giá vốn.");
+  }
+  const item = await prisma.masterDataItem.findFirst({ where: { type: "PNL_ITEM", code }, select: { status: true } });
+  if (!item) businessError(`Hạng mục P&L ${code} không có trong danh mục`);
+  if (item?.status && item.status !== "ACTIVE") businessError(`Hạng mục P&L ${code} đã ngừng dùng`);
+  return code;
+}
+
 function stockPrefix(transactionType: string) {
   if (transactionType === "NHAP_MUA") return "NM";
   if (transactionType === "NHAP_KHAC") return "NK";
@@ -650,7 +663,8 @@ async function loadStocktakes(where: Prisma.StocktakeSessionWhereInput) {
     where,
     include: { lines: { include: { item: true } } },
     orderBy: { updatedAt: "desc" },
-    take: 50,
+    // Một đợt kiểm kê mấy chục phiếu (khách 20/10/2026, duyệt hàng loạt) — 50 phiếu gần nhất không đủ một đợt.
+    take: 120,
   });
   // Phiếu đã từng mở lại (khách 16/10/2026): duyệt lại mặc định tính lại sổ sách theo dữ liệu hiện tại.
   const reopened = rows.length === 0 ? [] : await prisma.auditLog.findMany({
@@ -1291,7 +1305,15 @@ export async function GET(request: Request) {
       }
     }
 
-    const payload: Record<string, unknown> = { items, balances, transactions, flowTransactions, flowTruncated, transferTransactions, transferRequests, transferDestinations, wasteTransactions, partners, flowRange: { from: isoDay(flowFrom), to: isoDay(flowTo) }, recipes: recipesWithCost, warehouses, warehouseBranches, stocktakes, stockSummary, ...movementPayload(stockMovements, searchParams), itemGroups, revenueGroups, itemRevenueGroups, receiptCategories, costSummary, productKitchenKinds, wasteReport, pendingSales };
+    // Hạng mục P&L cho phiếu Xuất khác (khách 20/10/2026) — danh sách nhẹ, dùng chung các tab.
+    const [pnlItemRows, pnlGroupRows] = await Promise.all([
+      prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM", status: "ACTIVE" }, select: { code: true, name: true, subGroup: true }, orderBy: { name: "asc" } }),
+      prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true } }),
+    ]);
+    const pnlGroupName = new Map(pnlGroupRows.map((group) => [group.code, group.name]));
+    const issuePnlItems = pnlItemRows.map((item) => ({ code: item.code, name: item.name, groupName: item.subGroup ? pnlGroupName.get(item.subGroup) || item.subGroup : "" }));
+
+    const payload: Record<string, unknown> = { issuePnlItems, items, balances, transactions, flowTransactions, flowTruncated, transferTransactions, transferRequests, transferDestinations, wasteTransactions, partners, flowRange: { from: isoDay(flowFrom), to: isoDay(flowTo) }, recipes: recipesWithCost, warehouses, warehouseBranches, stocktakes, stockSummary, ...movementPayload(stockMovements, searchParams), itemGroups, revenueGroups, itemRevenueGroups, receiptCategories, costSummary, productKitchenKinds, wasteReport, pendingSales };
     // Phần không xin thì bỏ hẳn khỏi phản hồi (không trả mảng rỗng) để màn hình giữ số đã tải trước đó.
     if (sections) {
       for (const [section, keys] of Object.entries(INVENTORY_SECTION_KEYS)) {
@@ -2638,6 +2660,9 @@ export async function POST(request: Request) {
       const partner = await prisma.masterDataItem.findFirst({ where: { type: "PARTNER", code: stockPartnerCode } });
       if (!partner) businessError(`Đối tác ${stockPartnerCode} không có trong danh mục`);
     }
+    // Xuất khác lên thẳng hạng mục P&L người lập chọn, không vào giá vốn (khách chốt 20/10/2026).
+    // Xuất đồng phục có phân bổ đi lịch PB- riêng nên không bắt chọn.
+    const issuePnlItemCode = transactionType === "XUAT_KHAC" ? await checkedIssuePnlItem(body.pnlItemCode, Boolean(allocationMonths)) : null;
 
     const result = await prisma.$transaction(async (tx) => {
       const transactionCode = cleanText(body.code) || await nextStockDocCode(tx, stockPrefix(transactionType), transactionDate);
@@ -2672,6 +2697,7 @@ export async function POST(request: Request) {
         note: cleanText(body.note) || null,
         createdBy: auth.session.name,
         purchaseCost: purchaseCostFrom(body.purchaseCost, transactionType),
+        pnlItemCode: issuePnlItemCode,
         lines: inputLines,
       });
       // Nhập mua có khai NCC thì sinh khoản phải trả, đúng luật của phiếu nhập từ file import.
@@ -2753,6 +2779,8 @@ export async function PATCH(request: Request) {
           ...(body.category !== undefined ? { category: await resolveItemCategory(itemType, body.category) } : {}),
           ...(body.revenueGroup !== undefined ? { revenueGroup: await resolveItemRevenueGroup(body.revenueGroup, item.revenueGroup) } : {}),
           ...(body.goodsGroup !== undefined ? { goodsGroup: normalizeGoodsGroup(body.goodsGroup) } : {}),
+          // Hạng mục P&L riêng khi bao bì / đồng phục xuất dùng (trống = mặc định của loại).
+          ...(body.expensePnlItemCode !== undefined ? { expensePnlItemCode: await checkedIssuePnlItem(body.expensePnlItemCode, true) } : {}),
           ...(body.requiresImage !== undefined ? { requiresImage: !!body.requiresImage } : {}),
           ...(body.status !== undefined ? { status: cleanText(body.status).toUpperCase() || "ACTIVE" } : {}),
           ...(body.note !== undefined ? { note: cleanText(body.note) || null } : {}),
@@ -2863,7 +2891,13 @@ export async function PATCH(request: Request) {
         if (!partner) businessError(`Đối tác ${partnerCode} không có trong danh mục`);
       }
 
+      // Xuất khác: đổi hạng mục P&L ngay trên phiếu (ghi sổ kỳ lại thì bút toán đi theo hạng mục mới).
+      const nextIssuePnlItem = transaction.transactionType === "XUAT_KHAC" && body.pnlItemCode !== undefined
+        ? await checkedIssuePnlItem(body.pnlItemCode, Boolean(await prisma.accrual.findFirst({ where: { sourceId: transaction.id }, select: { id: true } })))
+        : undefined;
+
       const result = await prisma.$transaction(async (tx) => {
+        if (nextIssuePnlItem !== undefined) await tx.inventoryTransaction.update({ where: { id: transactionId }, data: { pnlItemCode: nextIssuePnlItem } });
         const updated = rewritesLines
           ? await repostInventoryTransaction(tx, transaction, {
             transactionDate,

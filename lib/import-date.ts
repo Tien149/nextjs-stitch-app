@@ -83,6 +83,40 @@ export function parseImportDate(value: unknown) {
  *   - Date (đọc giờ theo máy đang chạy — file POS ghi giờ địa phương).
  * Ô chỉ có ngày (không có phần giờ) trả null: dòng đó là doanh thu CẢ NGÀY, không tách được.
  */
+/**
+ * Giờ:phút "HH:MM" (giờ Việt Nam) của một ô — cột Giờ riêng hoặc phần giờ trong ô ngày. Cùng các
+ * dạng parseImportHour nhận; ô chỉ có ngày / 00:00 tròn trả null (không khai giờ).
+ */
+export function parseImportTime(value: unknown): string | null {
+  const pad = (hour: number, minute: number) => `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.getHours() === 0 && value.getMinutes() === 0 && value.getSeconds() === 0 ? null : pad(value.getHours(), value.getMinutes());
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return null;
+    const fraction = value - Math.floor(value);
+    if (fraction <= 0) return null;
+    const minutes = Math.min(Math.round(fraction * 1440), 1439);
+    return pad(Math.floor(minutes / 60), minutes % 60);
+  }
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const match = /(?:^|[\sT])(\d{1,2})(?::|h)(\d{2})?(?::\d{2})?(?:\s*(AM|PM|SA|CH))?\s*$/i.exec(text);
+  if (!match) return null;
+  let hour = Number(match[1]);
+  const minute = Number(match[2] || 0);
+  const marker = (match[3] || "").toUpperCase();
+  if ((marker === "PM" || marker === "CH") && hour < 12) hour += 12;
+  if ((marker === "AM" || marker === "SA") && hour === 12) hour = 0;
+  return hour >= 0 && hour <= 23 && minute < 60 ? pad(hour, minute) : null;
+}
+
+/** Ngày nhập (mốc nửa đêm UTC của parseImportDate) + giờ:phút Việt Nam -> thời điểm đúng. */
+export function withVietnamTime(day: Date, time: string | null | undefined) {
+  if (!time || !/^\d{2}:\d{2}$/.test(time)) return day;
+  return new Date(`${day.toISOString().slice(0, 10)}T${time}:00+07:00`);
+}
+
 export function parseImportHour(value: unknown): number | null {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
     return value.getHours() === 0 && value.getMinutes() === 0 && value.getSeconds() === 0 ? null : value.getHours();

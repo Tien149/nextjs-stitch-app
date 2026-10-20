@@ -30,6 +30,7 @@ import {
   inventoryCogsActive,
   inventoryCogsParentGroup,
   inventoryCogsRegroupTarget,
+  issuePnlItemAccount,
   planInventoryCogsJournal,
   type CogsRepostResult,
 } from "@/lib/inventory-cogs";
@@ -931,13 +932,20 @@ async function postInventoryCogs(start: Date, end: Date, branchCode: string, act
     prisma.inventoryTransaction.findMany({
       where: { ...branchFilter, transactionDate: { gte: from, lt: end }, transactionType: { in: [...COGS_STOCK_TYPES] } },
       select: {
-        id: true, code: true, transactionType: true, transactionDate: true, branchCode: true, warehouseCode: true, note: true,
-        lines: { select: { totalCost: true, item: { select: { itemType: true } } } },
+        id: true, code: true, transactionType: true, transactionDate: true, branchCode: true, warehouseCode: true, note: true, pnlItemCode: true,
+        lines: { select: { totalCost: true, item: { select: { itemType: true, expensePnlItemCode: true } } } },
       },
     }),
     prisma.masterDataItem.findMany({ where: { type: "WAREHOUSE" }, select: { code: true, group: true } }),
   ]);
   const groupOf = new Map(warehouses.map((warehouse) => [warehouse.code, warehouse.group]));
+  // Xuất khác lên hạng mục P&L đã chọn: nhóm của hạng mục quyết định 632 hay 6428.
+  const issueItemGroupOf = documents.some((doc) => doc.pnlItemCode)
+    ? pnlItemGroupLookup(
+      await prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, group: true, subGroup: true } }),
+      await prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, group: true } }),
+    )
+    : new Map<string, string | null>();
   // Phiếu xuất đồng phục có lịch phân bổ: đồng phục treo 242, lịch PB- dựng lại theo trị giá
   // hiện tại của phiếu (sửa phiếu / xuất âm rồi mới có giá) — xem lib/uniform-allocation.
   const allocations = documents.length === 0 ? [] : await prisma.accrual.findMany({
@@ -960,8 +968,9 @@ async function postInventoryCogs(start: Date, end: Date, branchCode: string, act
     const lines = planInventoryCogsJournal({
       transactionType: doc.transactionType,
       warehouseGroup: groupOf.get(doc.warehouseCode),
-      lines: doc.lines.map((line) => ({ totalCost: line.totalCost, itemType: line.item.itemType })),
+      lines: doc.lines.map((line) => ({ totalCost: line.totalCost, itemType: line.item.itemType, expensePnlItemCode: line.item.expensePnlItemCode })),
       prepaidItemTypes: allocated ? ALLOCATABLE_ITEM_TYPES : undefined,
+      issuePnlItem: doc.pnlItemCode ? { pnlItemCode: doc.pnlItemCode, accountCode: issuePnlItemAccount(issueItemGroupOf.get(doc.pnlItemCode)) } : null,
     });
     if (lines.length === 0) continue;
     posted.push(doc.id);

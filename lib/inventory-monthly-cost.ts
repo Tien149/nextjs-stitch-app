@@ -45,6 +45,8 @@ export type MonthlyCostDoc = {
   branchCode: string;
   warehouseCode: string;
   toWarehouseCode: string | null;
+  /** Hạng mục P&L của phiếu Xuất khác (không vào giá vốn). */
+  pnlItemCode?: string | null;
   lines: MonthlyCostLine[];
 };
 

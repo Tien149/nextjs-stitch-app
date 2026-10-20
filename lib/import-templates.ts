@@ -37,8 +37,8 @@ export function isMasterDataImportType(value: string) {
   return (masterDataImportTypes as readonly string[]).includes(value);
 }
 
-/** "hour": giờ trong ngày 0–23 (lib/import-date.ts parseImportHour). */
-export type ImportFieldType = "text" | "date" | "number" | "integer" | "hour";
+/** "hour": giờ trong ngày 0–23 (lib/import-date.ts parseImportHour). "time": giờ:phút "HH:MM" (parseImportTime). */
+export type ImportFieldType = "text" | "date" | "number" | "integer" | "hour" | "time";
 
 export type ImportFieldDefinition = {
   field: string;
@@ -833,8 +833,11 @@ export const importTemplates: ImportTemplateDefinition[] = [
     description: "Import giao dich nhap kho (NHAP_MUA, NHAP_KHAC), xuat kho (XUAT_HUY, XUAT_TEST_MON, XUAT_KHAC) va dieu chuyen kho (DIEU_CHUYEN) theo DVT quy doi.",
     fields: [
       { field: "transaction_date", label: "Ngay", required: true, type: "date", aliases: ["ngay", "ngay giao dich", "transaction date", "date"] },
+      // Giờ phiếu (khách 20/10/2026: ASA chốt kiểm kê giữa ngày, vd 15h, rồi vẫn bán + nhập tiếp).
+      { field: "transaction_time", label: "Gio", required: false, type: "time", aliases: ["gio", "gio giao dich", "gio nhap", "gio xuat", "time"], note: "Gio phieu (vd 15:30) de he thong tach truoc / sau gio chot kiem ke. De trong thi doc gio trong o Ngay (31/08/2026 15:30); khong co gio = 07:00 sang (tinh TRUOC gio chot)." },
       { field: "transaction_type", label: "Loai giao dich", required: true, type: "text", aliases: ["loai giao dich", "loai nhap xuat", "transaction type"], note: "NHAP_MUA, NHAP_KHAC, XUAT_HUY, XUAT_TEST_MON, XUAT_KHAC, DIEU_CHUYEN. Nhap che bien/kiem ke/xuat ban do he thong tu sinh." },
       { field: "waste_type", label: "Loai huy", required: false, type: "text", aliases: ["loai huy", "ly do huy", "waste type"], note: "Chi dung cho XUAT_HUY: HET_HAN_SU_DUNG hoac KHONG_DAM_BAO_CHAT_LUONG." },
+      { field: "pnl_item_code", label: "Hang muc P&L", required: false, type: "text", aliases: ["hang muc p&l", "hang muc pl", "hang muc pnl", "ma hang muc", "pnl item"], note: "BAT BUOC voi XUAT_KHAC: ma hang muc P&L (danh muc Hang muc P&L). Xuat khac khong vao gia von ma len thang hang muc nay. Loai khac de trong." },
       { field: "branch_code", label: "Cua hang", required: true, type: "text", aliases: ["cua hang", "chi nhanh", "branch", "store"] },
       { field: "warehouse_code", label: "Kho xuat / nhap", required: true, type: "text", aliases: ["kho", "kho xuat", "kho nhap", "warehouse", "warehouse code"] },
       { field: "to_warehouse_code", label: "Kho nhan", required: false, type: "text", aliases: ["kho nhan", "kho den", "to warehouse", "destination warehouse"] },

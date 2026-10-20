@@ -4,7 +4,7 @@ import {
   type ImportFieldDefinition,
   type ImportTemplateDefinition,
 } from "@/lib/import-templates";
-import { parseImportDate, parseImportHour } from "@/lib/import-date";
+import { parseImportDate, parseImportHour, parseImportTime } from "@/lib/import-date";
 
 export { parseImportDate } from "@/lib/import-date";
 
@@ -93,6 +93,12 @@ function coerceValue(field: ImportFieldDefinition, value: unknown) {
     return Number.isFinite(parsed)
       ? { value: parsed }
       : { value: null, error: `${field.label} phải là số nguyên` };
+  }
+
+  if (field.type === "time") {
+    if (value === null || value === undefined || String(value).trim() === "") return { value: null };
+    const time = parseImportTime(value);
+    return time === null ? { value: null, error: `${field.label} không đọc được giờ (ví dụ 15:30)` } : { value: time };
   }
 
   if (field.type === "hour") {
@@ -301,6 +307,10 @@ export async function parseImportFile(
       // có phần lẻ). Ô chỉ có ngày thì để trống — doanh thu cả ngày như trước.
       if (values.sale_hour === null && template.fields.some((field) => field.field === "sale_hour") && mapping.sale_date) {
         values.sale_hour = parseImportHour(source[mapping.sale_date]);
+      }
+      // Phiếu kho: không có cột Giờ thì đọc giờ trong ô Ngày ("31/08/2026 15:30").
+      if (values.transaction_time === null && template.fields.some((field) => field.field === "transaction_time") && mapping.transaction_date) {
+        values.transaction_time = parseImportTime(source[mapping.transaction_date]);
       }
 
       return {

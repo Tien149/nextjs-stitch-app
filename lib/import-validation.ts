@@ -436,6 +436,18 @@ function validateInventoryTransaction(
     if (warehouse && toWarehouse && warehouse.code === toWarehouse.code) addError(row, "Kho xuat va kho nhan khong duoc giong nhau");
   }
 
+  // Xuất khác lên thẳng hạng mục P&L đã chọn, không vào giá vốn (khách chốt 20/10/2026).
+  if (transactionType === "XUAT_KHAC") {
+    if (!text(row.values.pnl_item_code)) addError(row, "Phieu XUAT_KHAC phai khai cot Hang muc P&L (xuat khac khong vao gia von)");
+    else {
+      const pnlItem = resolveMaster(masterItems, "PNL_ITEM", row.values.pnl_item_code);
+      if (!pnlItem) addError(row, `Hang muc P&L [${text(row.values.pnl_item_code)}] khong ton tai hoac da ngung dung`);
+      else row.values.pnl_item_code = pnlItem.code;
+    }
+  } else if (text(row.values.pnl_item_code)) {
+    addError(row, "Cot Hang muc P&L chi dung cho giao dich XUAT_KHAC");
+  }
+
   // Loại hủy chỉ dành cho phiếu xuất hủy và phải thuộc danh mục chuẩn.
   if (text(row.values.waste_type)) {
     if (transactionType !== "XUAT_HUY") {

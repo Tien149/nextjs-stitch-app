@@ -37,6 +37,18 @@ export function departmentFromWarehouseGroup(group: unknown): string | null {
  * danh mục Bộ phận đặt mã khác — VD danh mục khai "BEP · Bộ phận Bếp" thì KIT cũng ra "Bộ phận
  * Bếp", không hiện trơ "KIT" trên chart COGS / doanh thu theo bộ phận.
  */
+/**
+ * Tên bộ phận gọn cho DÒNG DOANH THU (khách 20/10/2026): phòng ban đánh số "01. Team Bếp" thì
+ * dòng doanh thu chỉ ghi "Bếp" — bỏ số thứ tự và tiền tố Team / Phòng / Bộ phận / Nhóm.
+ */
+export function shortDepartmentName(name: string) {
+  const short = name.trim()
+    .replace(/^\d+\s*[.)\-:]?\s*/, "")
+    .replace(/^(team|bộ phận|bo phan|phòng ban|phong ban|phòng|phong|nhóm|nhom|tổ|to|khối|khoi)\s+/i, "")
+    .trim();
+  return short || name.trim();
+}
+
 export function departmentNameMap(departments: Array<{ code: string; name: string }>) {
   const names = new Map(departments.map((item) => [item.code, item.name]));
   for (const item of departments) {

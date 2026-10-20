@@ -327,7 +327,8 @@ export default function PayrollBudgetTab({
             {data.revenue.totalAdjust?.some((value) => Math.abs(value) > 0.5) && (
               <MonthRow label="Chênh lệch Tổng tiền POS" values={data.revenue.totalAdjust} />
             )}
-            {byDepartmentName(data.revenue.byDepartment).map((row) => (
+            {/* Doanh thu giữ thứ tự doanh số (Bếp, Bar, Phụ thu cuối) — tên đã gọn nên xếp chữ ra Bar trước Bếp. */}
+            {data.revenue.byDepartment.map((row) => (
               <MonthRow key={`rev-${row.code}`} label={`Doanh thu ${row.name}`} values={row.months} muted />
             ))}
             <SectionRow label="LƯƠNG THEO TIÊU CHUẨN (tỷ trọng × tổng doanh thu)" span={14} />

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatPeriodCount } from "@/lib/period-count";
 import { inDateRange, periodInRange } from "@/lib/date-range";
 import ExportExcelButton from "@/components/ExportExcelButton";
@@ -451,16 +451,24 @@ export default function FinanceOperationsPage() {
     [moneySources, editingAdjustment],
   );
 
+  /**
+   * Chỉ nhận kết quả của lần tải MỚI NHẤT (khách 20/10/2026): đổi "Tất cả cửa hàng" sang NAM MÊ
+   * thì yêu cầu "Tất cả" (nặng, về sau) ghi đè số NAM MÊ — ô lọc ghi NAM MÊ mà bảng COGS lẫn phiếu ASA.
+   */
+  const loadSeq = useRef(0);
   const loadData = useCallback(async () => {
     // Từ ngày lớn hơn đến ngày thì không gọi API, tránh hiển thị sổ quỹ rỗng gây hiểu nhầm mất dữ liệu.
     if (cashbookRange.startDate && cashbookRange.endDate && cashbookRange.startDate > cashbookRange.endDate) return;
+    const seq = ++loadSeq.current;
     const query = new URLSearchParams({ period, branchCode });
     if (cashbookRange.startDate) query.set("startDate", cashbookRange.startDate);
     if (cashbookRange.endDate) query.set("endDate", cashbookRange.endDate);
     if (cashbookSource) query.set("moneySourceCode", cashbookSource);
     const response = await fetch(`/api/finance-operations?${query.toString()}`);
+    if (seq !== loadSeq.current) return;
     if (response.ok) {
       const payload = (await response.json()) as Data;
+      if (seq !== loadSeq.current) return;
       setData({ ...payload, expenseSummary: payload.expenseSummary?.bySource ? payload.expenseSummary : emptyExpenseSummary });
     }
   }, [branchCode, period, cashbookRange.startDate, cashbookRange.endDate, cashbookSource]);
