@@ -185,7 +185,16 @@ export async function postJournalEntry(input: EntryInput) {
   const accounts = await ensureDefaultAccounts();
   const accountMap = new Map(accounts.map((account) => [account.code, account.id]));
   const period = periodFromDate(input.entryDate);
-  const existing = await prisma.journalEntry.findUnique({ where: { sourceType_sourceId: { sourceType: input.sourceType, sourceId: input.sourceId } }, include: { lines: true } });
+  /**
+   * Tìm CẢ bút toán đã xoá mềm (`deletedAt: undefined` bỏ lớp lọc): (sourceType, sourceId) là
+   * unique tính cả bản đã xoá, bỏ sót là create đâm P2002 và cả lần Đồng bộ ghi sổ dừng giữa
+   * chừng. Ca 20/10/2026: phí ví 31/07 NAM MÊ bị dọn mềm 24/09 rồi ghi lại -> đồng bộ kỳ 08 chết
+   * trước khấu hao + phân bổ, P&L 08 mất toàn bộ phân bổ (CAPEX = 0). Bản đã xoá thì khôi phục.
+   */
+  const existing = await prisma.journalEntry.findFirst({
+    where: { sourceType: input.sourceType, sourceId: input.sourceId, deletedAt: undefined },
+    include: { lines: true },
+  });
   const lineData = input.lines.map((line) => {
     const accountId = accountMap.get(line.accountCode);
     if (!accountId) businessError(`Thiếu tài khoản ${line.accountCode}`);
@@ -207,15 +216,18 @@ export async function postJournalEntry(input: EntryInput) {
         });
         return !!matchingInput;
       });
-    if (Math.abs(existingDebit - debit) <= 0.5 && existing.period === period && isSameLines) return "SKIPPED_EXISTS";
+    if (!existing.deletedAt && Math.abs(existingDebit - debit) <= 0.5 && existing.period === period && isSameLines) return "SKIPPED_EXISTS";
     await prisma.$transaction(async (tx) => {
       await tx.journalLine.deleteMany({ where: { entryId: existing.id } });
       await tx.journalEntry.update({
         where: { id: existing.id },
-        data: { entryDate: input.entryDate, period, branchCode: input.branchCode, sourceCode: input.sourceCode, description: input.description, lines: { create: lineData } },
+        data: {
+          entryDate: input.entryDate, period, branchCode: input.branchCode, sourceCode: input.sourceCode, description: input.description,
+          deletedAt: null, deletedBy: null, lines: { create: lineData },
+        },
       });
     });
-    return "UPDATED";
+    return existing.deletedAt ? "CREATED" : "UPDATED";
   }
   // Bút toán bị xoá cứng ở nhiều luồng (bỏ duyệt phiếu, xoá phiếu phân bổ, rollback import)
   // nên COUNT tụt xuống sau mỗi lần xoá và cấp lại mã đang còn sống. Lấy max + 1 trong đúng
@@ -651,6 +663,13 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
         createdBy: actor,
         lines: counterpart.lines as EntryLine[],
       }));
+    } else {
+      // Phiếu đổi đối tác thu lại khỏi nhà hàng (NB-NME -> NB-THOA, UNC-2608-ASA-00119): vế đối ứng
+      // cũ ở sổ nhà hàng kia phải gỡ, nếu không Nợ 331 / Có 3368 210 triệu treo mãi (20/10/2026).
+      const stale = await prisma.journalEntry.findMany({ where: { sourceType: "VOUCHER_COUNTERPART", sourceId: row.id }, select: { id: true, entryDate: true, branchCode: true } });
+      const removable = [];
+      for (const entry of stale) if (!(await isPeriodLocked(entry.entryDate, entry.branchCode))) removable.push(entry.id);
+      if (removable.length > 0) await prisma.journalEntry.deleteMany({ where: { id: { in: removable } } });
     }
   }
 
