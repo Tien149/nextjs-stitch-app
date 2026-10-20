@@ -1331,6 +1331,20 @@ async function revertExplosionRun(session: DemoSession, runCode: string, action:
   }
 
   await prisma.$transaction(async (tx) => {
+    /**
+     * Giành phiếu TRƯỚC khi hoàn kho: bấm Hoàn tác nhiều lần liền (19/10/2026 RA-2026-0040 bấm 3
+     * lần trong 40 giây, cả 3 đều chạy) thì mỗi yêu cầu đều đọc phiếu còn sống rồi đều cộng/trừ
+     * kho -> tồn Nam Mê lệch sổ ~600 mã, báo cáo NXT ra đầu kỳ âm. updateMany có điều kiện
+     * deletedAt null: yêu cầu sau chờ khoá dòng, thấy phiếu đã xoá thì count thiếu -> dừng.
+     */
+    const deletedAt = new Date();
+    const claimed = await tx.inventoryTransaction.updateMany({
+      where: { id: { in: documentIds }, deletedAt: null },
+      data: { deletedAt, deletedBy: auth.session.name },
+    });
+    if (claimed.count !== documentIds.length) {
+      businessError(`${runLabel[0].toUpperCase()}${runLabel.slice(1)} ${runCode} vừa được hoàn tác ở một thao tác khác — tải lại trang để xem kết quả.`);
+    }
     for (const doc of documents) {
       for (const line of doc.lines) {
         const direction = doc.transactionType.startsWith("NHAP_") ? "IN" : "OUT";
@@ -1351,10 +1365,6 @@ async function revertExplosionRun(session: DemoSession, runCode: string, action:
           update: { quantity: newQuantity, averageCost },
         });
       }
-      await tx.inventoryTransaction.update({
-        where: { id: doc.id },
-        data: { deletedAt: new Date(), deletedBy: auth.session.name },
-      });
     }
     await tx.revenueImportRow.updateMany({
       where: { inventoryStatus: `POSTED:${runCode}` },

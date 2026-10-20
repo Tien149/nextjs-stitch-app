@@ -8,7 +8,7 @@ import type { TxClient } from "@/lib/prisma";
 import { businessError, cleanText, isPeriodLocked } from "@/lib/phase3";
 import { nextStockDocCode, postInventoryTransaction, repostInventoryTransaction, reverseStockEffect } from "@/lib/inventory-stock";
 import { syncTransferInternalDebt } from "@/lib/inventory-transfer";
-import { explosionPostedStatus, loadPendingExplosionSources, releaseExplosionSources } from "@/lib/explosion-sources";
+import { EXPLOSION_PENDING, explosionPostedStatus, loadPendingExplosionSources, releaseExplosionSources } from "@/lib/explosion-sources";
 import { explodeSalesDemand, explodeSalesDemandWithDepartments, type ExplosionRecipe } from "@/lib/production-explosion";
 import { loadNonInventoryRevenueGroups, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
 import { buildRevenueDepartmentResolver, departmentFromWarehouseGroup, REVENUE_DEPARTMENT_CODES } from "@/lib/revenue-department";
@@ -16,6 +16,16 @@ import { explosionPostingDate, saleDayStart } from "@/lib/revenue-date";
 import { netMovementsAfter } from "@/lib/stocktake-batch";
 
 const quantityEpsilon = 0.000001;
+
+/** Gắn phiếu chờ rã vào lần rã, chỉ khi còn PENDING (chặn hai lần rã song song cùng ôm một phiếu). */
+async function claimExplosionSource(
+  model: { updateMany: (args: { where: { id: string; explosionStatus: string }; data: { explosionStatus: string } }) => Promise<{ count: number }> },
+  id: string,
+  runCode: string,
+) {
+  const claimed = await model.updateMany({ where: { id, explosionStatus: EXPLOSION_PENDING }, data: { explosionStatus: explosionPostedStatus(runCode) } });
+  if (claimed.count !== 1) businessError("Phiếu chờ rã vừa được rã ở một thao tác khác — tải lại trang để xem kết quả.");
+}
 
 /** Một lần rã (RA-...) cần gỡ / rã lại. */
 export type AffectedExplosionRun = { runCode: string; branchCode: string; date: Date; productCodes: string[] };
@@ -483,13 +493,13 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
         }
       }
       if (source.kind === "TRANSFER") {
-        await tx.inventoryTransaction.update({ where: { id: source.id }, data: { explosionStatus: explosionPostedStatus(runCode) } });
+        await claimExplosionSource(tx.inventoryTransaction, source.id, runCode);
         if (sourcePlan.productions.length > 0) repricedTransfers.push(await repriceTransfer(tx, source.id));
       } else if (source.kind === "ISSUE") {
-        await tx.inventoryTransaction.update({ where: { id: source.id }, data: { explosionStatus: explosionPostedStatus(runCode) } });
+        await claimExplosionSource(tx.inventoryTransaction, source.id, runCode);
         if (sourcePlan.productions.length > 0) await repriceIssue(tx, source.id);
       } else {
-        await tx.stocktakeSession.update({ where: { id: source.id }, data: { explosionStatus: explosionPostedStatus(runCode) } });
+        await claimExplosionSource(tx.stocktakeSession, source.id, runCode);
       }
     }
 
@@ -620,10 +630,12 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
     }
     // 3) Đánh dấu các dòng doanh thu đã rã kèm mã lần rã, để hoàn tác được cả cụm
     //    (REVERT_EXPLOSION) và không rã trùng lần sau.
-    await tx.revenueImportRow.updateMany({
-      where: { id: { in: inventoryRows.map((row) => row.id) } },
+    // Chỉ nhận dòng còn PENDING: bấm Rã hai lần liền thì lần sau chờ khoá dòng, thấy đã rã -> huỷ cả lần.
+    const postedRows = await tx.revenueImportRow.updateMany({
+      where: { id: { in: inventoryRows.map((row) => row.id) }, inventoryStatus: "PENDING" },
       data: { inventoryStatus: `POSTED:${runCode}` },
     });
+    if (postedRows.count !== inventoryRows.length) businessError("Doanh thu khoảng ngày này vừa được rã ở một thao tác khác — tải lại trang để xem kết quả.");
     // Dòng không theo dõi tồn kho thì thả hẳn, KHÔNG gắn mã lần rã: hoàn tác lần rã này
     // cũng không được đẩy chúng trở lại hàng chờ.
     if (skippedRows.length > 0) {
@@ -758,10 +770,16 @@ export async function rerunExplosions(
     });
     const original = await explosionRunSettings(tx, run, documents);
     const settings = options.overrideSettings ? options.overrideSettings(run, original) : original;
-    for (const doc of documents) {
-      await reverseStockEffect(tx, doc);
-      await tx.inventoryTransaction.update({ where: { id: doc.id }, data: { deletedAt: new Date(), deletedBy: createdBy } });
+    // Giành phiếu trước khi hoàn kho: hai yêu cầu rã lại chạy song song không được cùng hoàn kho
+    // một lần rã (cùng lỗi bấm Hoàn tác nhiều lần, RA-2026-0040 19/10/2026).
+    const claimed = await tx.inventoryTransaction.updateMany({
+      where: { id: { in: documents.map((doc) => doc.id) }, deletedAt: null },
+      data: { deletedAt: new Date(), deletedBy: createdBy },
+    });
+    if (claimed.count !== documents.length) {
+      businessError(`Lần rã ${run.runCode} vừa được hoàn tác / rã lại ở một thao tác khác — tải lại trang rồi thử lại.`);
     }
+    for (const doc of documents) await reverseStockEffect(tx, doc);
     const rows = await tx.revenueImportRow.findMany({ where: { inventoryStatus: `POSTED:${run.runCode}` }, select: { id: true } });
     const rowIds = rows.map((row) => row.id);
     if (rowIds.length > 0) {
