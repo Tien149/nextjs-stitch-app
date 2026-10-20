@@ -3938,19 +3938,30 @@ export default function InventoryPage() {
                 // Khoảng ngày có ngày ĐÃ RÃ: hỏi trước rồi gỡ + rã lại các lần rã đó với kho đang chọn.
                 if (payload?.needsRerunConfirm) {
                   const runs = (payload.runs || []) as Array<{ runCode: string; date: string; revenueRows: number; transfers?: number; stocktakes?: number }>;
-                  const ok = window.confirm(
-                    "Khoảng ngày này đã có ngày được rã rồi:\n"
-                    + runs.map((run) => `• ${run.runCode} — ngày ${new Date(run.date).toLocaleDateString("vi-VN")}, ${run.revenueRows} dòng doanh thu`
-                      + (run.transfers ? `, ${run.transfers} phiếu điều chuyển` : "")
-                      + (run.stocktakes ? `, ${run.stocktakes} phiếu kiểm kê` : "")).join("\n")
-                    + "\n\nOK: gỡ toàn bộ phiếu của các lần rã trên, rã lại theo định lượng và kho đang chọn (lần rã mới mang mã mới, phiếu cũ vào Thùng rác), rồi rã tiếp phần còn chờ.\n"
-                    + "Huỷ: không làm gì.",
+                  const runList = runs.map((run) => `• ${run.runCode} — ngày ${new Date(run.date).toLocaleString("vi-VN")}, ${run.revenueRows} dòng doanh thu`
+                    + (run.transfers ? `, ${run.transfers} phiếu điều chuyển` : "")
+                    + (run.stocktakes ? `, ${run.stocktakes} phiếu kiểm kê` : "")).join("\n");
+                  // Bước 1 (khách 20/10/2026): mặc định CHỈ rã phần còn chờ, giữ nguyên lần rã cũ — vd đã
+                  // rã 26/08 tới 15h, giờ rã nốt phần sau 15h. Huỷ mới hỏi tiếp có rã lại toàn bộ không.
+                  const onlyPending = window.confirm(
+                    "Khoảng ngày này đã có phần được rã rồi:\n" + runList
+                    + "\n\nOK: CHỈ RÃ PHẦN CÒN CHỜ (doanh thu / phiếu chưa rã) — giữ nguyên các lần rã trên.\n"
+                    + "Huỷ: xem lựa chọn rã lại toàn bộ.",
                   );
-                  if (!ok) {
-                    setMessage("Đã huỷ, chưa rã lại.");
-                    return;
+                  if (onlyPending) {
+                    payload = await send({ ...explodeBody, onlyPending: true }, "Đã rã phần còn chờ và sinh phiếu chế biến + xuất bán.");
+                  } else {
+                    const ok = window.confirm(
+                      "RÃ LẠI TOÀN BỘ các lần rã:\n" + runList
+                      + "\n\nOK: gỡ toàn bộ phiếu của các lần rã trên, rã lại theo định lượng và kho đang chọn (lần rã mới mang mã mới, phiếu cũ vào Thùng rác), rồi rã tiếp phần còn chờ.\n"
+                      + "Huỷ: không làm gì.",
+                    );
+                    if (!ok) {
+                      setMessage("Đã huỷ, chưa rã.");
+                      return;
+                    }
+                    payload = await send({ ...explodeBody, confirmRerun: true }, "Đã rã lại nguyên liệu và sinh phiếu chế biến + xuất bán.");
                   }
-                  payload = await send({ ...explodeBody, confirmRerun: true }, "Đã rã lại nguyên liệu và sinh phiếu chế biến + xuất bán.");
                 }
                 // Lần rã luôn chạy tới cùng (luật xuất âm), nhưng ba chuyện dưới đây phải nói ra
                 // cho kế toán biết mà xử lý tiếp, nếu không họ tưởng đã xong hẳn.

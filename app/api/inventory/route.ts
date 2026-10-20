@@ -2119,7 +2119,12 @@ export async function POST(request: Request) {
           select: { explosionStatus: true },
         }),
       ]);
-      const rerunCodes = [...new Set([
+      /**
+       * "Chỉ rã phần còn chờ" (khách 20/10/2026: rã 26/08 tới 15h, lần sau chọn lại 26/08 để rã nốt phần
+       * sau 15h thì bị hỏi rã lại cả lần trước): giữ nguyên các lần rã cũ, chỉ rã dòng / phiếu còn PENDING.
+       */
+      const onlyPending = body.onlyPending === true;
+      const rerunCodes = onlyPending ? [] : [...new Set([
         ...postedStatuses.map((row) => (row.inventoryStatus || "").slice("POSTED:".length)),
         ...[...postedTransfers, ...postedStocktakes].map((row) => explodedRunOf(row.explosionStatus) || ""),
       ].filter(Boolean))];
