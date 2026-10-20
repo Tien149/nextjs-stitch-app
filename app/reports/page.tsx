@@ -2173,6 +2173,15 @@ function partnerTypeLabel(partnerType: string | null) {
  * Nhóm nguồn tiền của dòng đối soát. Hiện đúng mã CASH/BANK/WALLET như màn Thu chi ngày,
  * vì hai bảng cùng lọc theo loại thu THU_BAN_HANG — đọc song song mới đối chiếu được.
  */
+/** Tỷ lệ chênh = Còn lại ÷ Doanh thu trong ngày × 100% (khách yêu cầu 20/10/2026) — soát phí ví lệch thường. */
+function RemainingRate({ remaining, revenue, bold = false }: { remaining: number; revenue: number; bold?: boolean }) {
+  if (!(Math.abs(revenue) > 0)) return <span className="text-slate-300">—</span>;
+  const rate = (remaining / revenue) * 100;
+  const text = `${rate.toLocaleString("vi-VN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
+  const tone = Math.abs(rate) < 0.005 ? "text-slate-400" : rate > 0 ? "text-amber-700" : "text-rose-600";
+  return bold ? <b className={tone}>{text}</b> : <span className={`font-semibold ${tone}`}>{text}</span>;
+}
+
 function SourceGroupTag({ group }: { group: string }) {
   const style = {
     CASH: { label: "Tiền mặt", className: "bg-emerald-50 text-emerald-700" },
@@ -3168,14 +3177,14 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
           </div>
         )}
         <div className="overflow-x-auto">
-          <Table headers={[writeOffRows.length > 0 ? "" : "·", "Ngày", "Phương thức thanh toán", "Loại nguồn", "Doanh thu trong ngày", "Tiền đã vô", "Còn lại", "Tên chi phí", "Trạng thái"]}>
+          <Table headers={[writeOffRows.length > 0 ? "" : "·", "Ngày", "Phương thức thanh toán", "Loại nguồn", "Doanh thu trong ngày", "Tiền đã vô", "Còn lại", "Tỷ lệ", "Tên chi phí", "Trạng thái"]}>
             {visibleRows.length === 0 && (
               <tr className="border-t border-slate-100">
                 <Cell>-</Cell>
                 <Cell>{filtering
                   ? `Không có dòng nào ở trạng thái ${settlementStatusLabels[statusFilter as SettlementStatusKey]} trong kỳ này.`
                   : "Chưa có doanh thu hoặc tiền về trong kỳ."}</Cell>
-                <Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell>
+                <Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell>
               </tr>
             )}
             {[...byDay.entries()].map(([day, rows]) => [
@@ -3224,6 +3233,7 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
                       </p>
                     )}
                   </Cell>
+                  <Cell right><RemainingRate remaining={row.remaining} revenue={row.revenue} /></Cell>
                   <Cell>{row.feeCategoryName || <span className="text-slate-300">—</span>}</Cell>
                   <Cell right>
                     <span className={`rounded-full px-2 py-1 text-xs font-bold ${settlementStatusBadgeClass[settlementRowStatus(row)]}`}>
@@ -3250,6 +3260,7 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
                       {money(subtotal.remaining)} đ
                     </b>
                   </Cell>
+                  <Cell right><RemainingRate remaining={subtotal.remaining} revenue={subtotal.revenue} bold /></Cell>
                   <Cell><span className="text-slate-300">—</span></Cell>
                   <Cell right>
                     <span className={`rounded-full px-2 py-1 text-xs font-bold ${
@@ -3280,6 +3291,13 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
                 <Cell right><b>{money(filtering ? Math.round(visibleTotals.revenue) : data.totals.revenue)} đ</b></Cell>
                 <Cell right><b className="text-emerald-700">{money(filtering ? Math.round(visibleTotals.received) : data.totals.received)} đ</b></Cell>
                 <Cell right><b className="text-amber-700">{money(filtering ? Math.round(visibleTotals.remaining) : data.totals.remaining)} đ</b></Cell>
+                <Cell right>
+                  <RemainingRate
+                    remaining={filtering ? visibleTotals.remaining : data.totals.remaining}
+                    revenue={filtering ? visibleTotals.revenue : data.totals.revenue}
+                    bold
+                  />
+                </Cell>
                 <Cell>-</Cell>
                 <Cell right>-</Cell>
               </tr>
