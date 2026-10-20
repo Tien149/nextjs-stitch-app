@@ -4,6 +4,7 @@ import { useState } from "react";
 import CopyableText from "@/components/CopyableText";
 import { storeLabel } from "@/lib/branch-labels";
 import { quantity as qty } from "@/lib/format-number";
+import { vnDateTimeParts, vnDateTimeValue } from "@/lib/date-range";
 
 /**
  * Khung "Phiếu điều chuyển chờ duyệt" ở tab Điều chuyển (khách chốt 03/10/2026) — xem
@@ -50,9 +51,9 @@ const today = () => new Date().toISOString().slice(0, 10);
 const lineUnit = (line: TransferRequestLine) => line.inputUnitCode || line.unit;
 
 type Dialog =
-  | { kind: "approve"; request: TransferRequest; date: string; received: string[] }
+  | { kind: "approve"; request: TransferRequest; date: string; time: string; received: string[] }
   | { kind: "return"; request: TransferRequest; reason: string }
-  | { kind: "edit"; request: TransferRequest; date: string; note: string; referenceCode: string; quantities: string[] };
+  | { kind: "edit"; request: TransferRequest; date: string; time: string; note: string; referenceCode: string; quantities: string[] };
 
 export default function TransferRequestsPanel({ requests, warehouseName, onAction }: Props) {
   const [dialog, setDialog] = useState<Dialog | null>(null);
@@ -84,7 +85,7 @@ export default function TransferRequestsPanel({ requests, warehouseName, onActio
   const submitDialog = async () => {
     if (!dialog) return;
     if (dialog.kind === "approve") {
-      await run({ action: "APPROVE_TRANSFER_REQUEST", id: dialog.request.id, receivedDate: dialog.date, receivedQuantities: dialog.received }, `Đã duyệt nhận phiếu ${dialog.request.code} — tồn kho hai bên đã cập nhật.`);
+      await run({ action: "APPROVE_TRANSFER_REQUEST", id: dialog.request.id, receivedDate: vnDateTimeValue(dialog.date, dialog.time), receivedQuantities: dialog.received }, `Đã duyệt nhận phiếu ${dialog.request.code} — tồn kho hai bên đã cập nhật.`);
     } else if (dialog.kind === "return") {
       await run({ action: "RETURN_TRANSFER_REQUEST", id: dialog.request.id, reason: dialog.reason }, `Đã trả lại phiếu ${dialog.request.code} cho bên chuyển.`);
     } else {
@@ -94,7 +95,7 @@ export default function TransferRequestsPanel({ requests, warehouseName, onActio
       await run({
         action: "UPDATE_TRANSFER_REQUEST",
         id: dialog.request.id,
-        transactionDate: dialog.date,
+        transactionDate: vnDateTimeValue(dialog.date, dialog.time),
         note: dialog.note,
         referenceCode: dialog.referenceCode,
         lines,
@@ -162,7 +163,7 @@ export default function TransferRequestsPanel({ requests, warehouseName, onActio
                       <>
                         <button
                           type="button"
-                          onClick={() => openDialog({ kind: "approve", request, date: today(), received: request.lines.map((line) => String(line.inputQuantity)) })}
+                          onClick={() => openDialog({ kind: "approve", request, date: today(), time: "", received: request.lines.map((line) => String(line.inputQuantity)) })}
                           className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700 hover:bg-emerald-100"
                         >
                           Duyệt nhận
@@ -183,7 +184,8 @@ export default function TransferRequestsPanel({ requests, warehouseName, onActio
                           onClick={() => openDialog({
                             kind: "edit",
                             request,
-                            date: String(request.requestDate).slice(0, 10),
+                            date: vnDateTimeParts(request.requestDate).day,
+                            time: vnDateTimeParts(request.requestDate).time,
                             note: request.note || "",
                             referenceCode: request.referenceCode || "",
                             quantities: request.lines.map((line) => String(line.inputQuantity)),
@@ -241,7 +243,10 @@ export default function TransferRequestsPanel({ requests, warehouseName, onActio
                   <div className="grid sm:grid-cols-2 gap-3">
                     <label className="block text-xs font-bold text-slate-500">
                       {dialog.kind === "approve" ? "Ngày nhận hàng" : "Ngày điều chuyển"}
-                      <input type="date" className="control mt-1" value={dialog.date} onChange={(event) => setDialog({ ...dialog, date: event.target.value })} required />
+                      <div className="mt-1 flex gap-2">
+                        <input type="date" className="control min-w-0" value={dialog.date} onChange={(event) => setDialog({ ...dialog, date: event.target.value })} required />
+                        <input type="time" className="control w-28" value={dialog.time} aria-label="Giờ" title="Giờ (để trống = 07:00)" onChange={(event) => setDialog({ ...dialog, time: event.target.value })} />
+                      </div>
                     </label>
                     {dialog.kind === "edit" && (
                       <label className="block text-xs font-bold text-slate-500">

@@ -69,3 +69,18 @@ export function periodInRange(period: string | null | undefined, range: DateRang
   if (range.to && `${month}-01` > range.to) return false;
   return true;
 }
+
+/**
+ * Ngày chứng từ + giờ (giờ Việt Nam) của form phiếu kho (khách 20/10/2026: chốt kiểm kê giữa ngày nên
+ * phiếu nhập / xuất / điều chuyển cần giờ). Không khai giờ thì gửi nguyên ngày như cũ (07:00 sáng).
+ */
+export function vnDateTimeValue(day: string, time: string | null | undefined) {
+  return time && /^\d{2}:\d{2}$/.test(time) ? `${day}T${time}:00+07:00` : day;
+}
+
+/** Ngày "YYYY-MM-DD" và giờ "HH:MM" Việt Nam của một mốc đã lưu; mốc 07:00 (phiếu không khai giờ) trả giờ rỗng. */
+export function vnDateTimeParts(value: Date | string) {
+  const local = new Date(new Date(value).getTime() + 7 * 60 * 60 * 1000).toISOString();
+  const time = local.slice(11, 16);
+  return { day: local.slice(0, 10), time: time === "07:00" || time === "00:00" ? "" : time };
+}

@@ -37,6 +37,7 @@ import { allocatePurchaseCost } from "@/lib/purchase-cost";
 import { sumRoundedByRow, sumStockDocuments } from "@/lib/table-subtotal";
 import { statValueTextClass } from "@/components/reports/report-ui";
 import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING, STOCKTAKE_RETURNED, isStocktakeEditable, stocktakeStatusLabel, stocktakeStatusTone } from "@/lib/stocktake-status";
+import { vnDateTimeValue } from "@/lib/date-range";
 
 type UnitConversion = { id: string; unitCode: string; unitName: string | null; conversionRate: number; isDefaultPurchase: boolean };
 type Item = { id: string; code: string; name: string; unit: string; itemType: string; category?: string | null; revenueGroup?: string | null; goodsGroup?: string | null; expensePnlItemCode?: string | null; minStock: number; requiresImage: boolean; status?: string | null; note?: string | null; unitConversions?: UnitConversion[] };
@@ -311,7 +312,7 @@ export default function InventoryPage() {
   const [bulkStatusRunning, setBulkStatusRunning] = useState(false);
   const [conversionForm, setConversionForm] = useState({ itemId: "", purchaseUnit: "thung", conversionRate: "24", note: "" });
   const [supplierPrices, setSupplierPrices] = useState<{ key: string; prices: Array<{ itemId: string; unitCode: string; unitPrice: number; vatRate: number | null; stockUnitPrice: number; priceListCode: string; effectiveFrom: string; effectiveTo: string | null }> }>({ key: "", prices: [] });
-  const [stockForm, setStockForm] = useState({ transactionType: "NHAP_MUA", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HN", itemId: "", inputUnitCode: "", quantity: "10", unitCost: "100000", vatRate: "KKKNT", vatAmount: "", purchaseCost: "", partnerCode: "", paymentDueDate: "", referenceCode: "", note: "Nhap kho van hanh", allocationMonths: "", pnlItemCode: "", transactionDate: today() });
+  const [stockForm, setStockForm] = useState({ transactionType: "NHAP_MUA", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HN", itemId: "", inputUnitCode: "", quantity: "10", unitCost: "100000", vatRate: "KKKNT", vatAmount: "", purchaseCost: "", partnerCode: "", paymentDueDate: "", referenceCode: "", note: "Nhap kho van hanh", allocationMonths: "", pnlItemCode: "", transactionDate: today(), transactionTime: "" });
   /** Nhập mua theo PO (GRPO): PO đã duyệt còn hàng chưa nhận + số lượng nhận trên từng dòng. */
   const [receivablePOs, setReceivablePOs] = useState<ReceivablePO[]>([]);
   const [grpoOrderId, setGrpoOrderId] = useState("");
@@ -339,7 +340,7 @@ export default function InventoryPage() {
   const [exploding, setExploding] = useState(false);
   /** Nút Tính giá vốn & giá thành cuối kỳ: chạy tuần tự NVL → BTP các cấp → TP → combo. */
   /** Điều chuyển kho: nhiều dòng hàng, kho nhận có thể thuộc nhà hàng khác. */
-  const [transferForm, setTransferForm] = useState({ branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "", transactionDate: today(), referenceCode: "", note: "" });
+  const [transferForm, setTransferForm] = useState({ branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "", transactionDate: today(), transactionTime: "", referenceCode: "", note: "" });
   const [transferRows, setTransferRows] = useState([{ itemId: "", quantity: "1", unitCode: "" }]);
   const [stocktakeForm, setStocktakeForm] = useState({ branchCode: "HCM", warehouseCode: "KHO_HCM", itemId: "", actualQuantity: "0", reason: "Kiem ke thuc te", stocktakeDate: today() });
   const [stocktakeRows, setStocktakeRows] = useState<StocktakeDraftRow[]>([]);
@@ -2434,7 +2435,7 @@ export default function InventoryPage() {
       {(active === "inbound" || active === "outbound") && (
         <div className="grid lg:grid-cols-[380px_1fr] gap-5">
           {canCreate && (
-            <form onSubmit={(e) => { e.preventDefault(); if (grpoOrder) { void receiveFromPO(); return; } void send({ action: "STOCK_TRANSACTION", ...stockForm, lines: [{ itemId: stockForm.itemId, inputQuantity: stockForm.quantity, inputUnitCode: stockForm.inputUnitCode || selectedStockUnit?.unitCode, inputUnitCost: active === "inbound" ? stockForm.unitCost : "0", vatRate: active === "inbound" ? stockForm.vatRate : "", vatAmount: active === "inbound" ? stockForm.vatAmount : "" }] }, active === "inbound" ? "Đã ghi nhận phiếu nhập kho." : "Đã ghi nhận phiếu xuất kho."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
+            <form onSubmit={(e) => { e.preventDefault(); if (grpoOrder) { void receiveFromPO(); return; } void send({ action: "STOCK_TRANSACTION", ...stockForm, transactionDate: vnDateTimeValue(stockForm.transactionDate, stockForm.transactionTime), lines: [{ itemId: stockForm.itemId, inputQuantity: stockForm.quantity, inputUnitCode: stockForm.inputUnitCode || selectedStockUnit?.unitCode, inputUnitCost: active === "inbound" ? stockForm.unitCost : "0", vatRate: active === "inbound" ? stockForm.vatRate : "", vatAmount: active === "inbound" ? stockForm.vatAmount : "" }] }, active === "inbound" ? "Đã ghi nhận phiếu nhập kho." : "Đã ghi nhận phiếu xuất kho."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
               <h2 className="font-bold text-slate-800">{active === "inbound" ? "Ghi nhận nhập kho" : "Ghi nhận xuất kho"}</h2>
 
               <Input label="Loại">
@@ -2547,9 +2548,14 @@ export default function InventoryPage() {
                 </Input>
               </div>
 
-              <Input label="Ngày chứng từ">
-                <input type="date" className="control" value={stockForm.transactionDate} onChange={(e) => setStockForm({ ...stockForm, transactionDate: e.target.value })} required />
-              </Input>
+              <div className="grid grid-cols-[1fr_8rem] gap-3">
+                <Input label="Ngày chứng từ">
+                  <input type="date" className="control" value={stockForm.transactionDate} onChange={(e) => setStockForm({ ...stockForm, transactionDate: e.target.value })} required />
+                </Input>
+                <Input label="Giờ">
+                  <input type="time" className="control" value={stockForm.transactionTime} onChange={(e) => setStockForm({ ...stockForm, transactionTime: e.target.value })} title="Để trống = tính TRƯỚC giờ chốt kiểm kê trong ngày (07:00)" />
+                </Input>
+              </div>
 
               <div className={`grid gap-3 ${active === "inbound" ? "grid-cols-3" : "grid-cols-2"}`}>
                 <Input label="Số lượng">
@@ -2937,6 +2943,7 @@ export default function InventoryPage() {
               void send({
                 action: "TRANSFER_STOCK",
                 ...transferForm,
+                transactionDate: vnDateTimeValue(transferForm.transactionDate, transferForm.transactionTime),
                 lines: transferRows.filter((row) => row.itemId).map((row) => ({ itemId: row.itemId, inputQuantity: row.quantity, inputUnitCode: row.unitCode || undefined })),
               }, "Đã gửi phiếu điều chuyển — chờ kho nhận duyệt. Tồn kho chỉ thay đổi khi bên nhận duyệt.");
             }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
@@ -2971,7 +2978,10 @@ export default function InventoryPage() {
                   </select>
                 </Input>
                 <Input label="Ngày điều chuyển">
-                  <input type="date" className="control" value={transferForm.transactionDate} onChange={(e) => setTransferForm({ ...transferForm, transactionDate: e.target.value })} />
+                  <div className="flex gap-2">
+                    <input type="date" className="control min-w-0" value={transferForm.transactionDate} onChange={(e) => setTransferForm({ ...transferForm, transactionDate: e.target.value })} />
+                    <input type="time" className="control w-28" value={transferForm.transactionTime} aria-label="Giờ điều chuyển" title="Giờ (để trống = 07:00)" onChange={(e) => setTransferForm({ ...transferForm, transactionTime: e.target.value })} />
+                  </div>
                 </Input>
               </div>
 
