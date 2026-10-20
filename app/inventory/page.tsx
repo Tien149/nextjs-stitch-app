@@ -3771,18 +3771,21 @@ export default function InventoryPage() {
             <Input label="Từ ngày bán">
               <input type="date" className="control" value={explodeForm.dateFrom} onChange={(e) => setExplodeForm({ ...explodeForm, dateFrom: e.target.value })} />
             </Input>
-            <Input label="Đến ngày bán">
-              <input type="date" className="control" value={explodeForm.dateTo} onChange={(e) => setExplodeForm({ ...explodeForm, dateTo: e.target.value })} />
-            </Input>
             {/* Kiểm kê chốt giữa ngày (11h 31/8): rã tới đúng giờ chốt, phần bán sau đó rã lần sau.
-                Chỉ chia được khi file POS có giờ bán. */}
-            <Input label="Rã tới giờ (ngày cuối)">
-              <select className="control" value={explodeForm.timeTo} onChange={(e) => setExplodeForm({ ...explodeForm, timeTo: e.target.value })}>
-                <option value="">Cả ngày</option>
-                {Array.from({ length: 23 }, (_, index) => index + 1).map((hour) => (
-                  <option key={hour} value={String(hour)}>Trước {String(hour).padStart(2, "0")}:00</option>
-                ))}
-              </select>
+                Chỉ chia được khi file POS có giờ bán. Ô giờ nằm ngay trong ô "Đến ngày bán" — đứng riêng
+                ở cột 4 thì màn hình hẹp bị khuất, khách không thấy (20/10/2026). */}
+            <Input label="Đến ngày bán · rã tới giờ">
+              <div className="flex gap-2">
+                <input type="date" className="control min-w-0" value={explodeForm.dateTo} onChange={(e) => setExplodeForm({ ...explodeForm, dateTo: e.target.value })} />
+                <select className={`control w-32 shrink-0 ${explodeForm.timeTo ? "!border-indigo-400 !bg-indigo-50 font-bold" : ""}`} value={explodeForm.timeTo}
+                  aria-label="Rã tới giờ của ngày cuối" title="Ngày cuối chỉ rã doanh thu bán TRƯỚC giờ này (kiểm kê chốt giữa ngày). Cả ngày = rã hết."
+                  onChange={(e) => setExplodeForm({ ...explodeForm, timeTo: e.target.value })}>
+                  <option value="">Cả ngày</option>
+                  {Array.from({ length: 23 }, (_, index) => index + 1).map((hour) => (
+                    <option key={hour} value={String(hour)}>Trước {String(hour).padStart(2, "0")}:00</option>
+                  ))}
+                </select>
+              </div>
             </Input>
             <Input label="Kho xuất NVL">
               <select className="control" value={explodeWarehouseCode} onChange={(e) => setExplodeForm({ ...explodeForm, warehouseCode: e.target.value })}>
