@@ -600,6 +600,21 @@ async function rerunWalletSettlementTransfer(
       data: walletFeeFields(row, change.feeAfter, row.grabExpenseAmount || 0),
     });
     updatedRows.push(updated);
+    // Dòng phân bổ của sao kê nối với phiếu (một dòng ngày doanh thu) mang gross/phí mới: phiếu gộp
+    // nhiều ngày khác chạy lại sau mới trừ đúng phần ngày này đã nhận (ca 00052 / 00048, 20/10/2026).
+    const match = await prisma.reconciliationMatch.findFirst({
+      where: { targetType: "WALLET_SETTLEMENT", targetId: row.id, deletedAt: null, bankTransaction: { deletedAt: null } },
+      include: { bankTransaction: { include: { allocations: true } } },
+    });
+    const ownLines = (match?.bankTransaction.allocations || [])
+      .filter((line) => line.creditAmount > 0 && line.revenueDate && line.operationType !== "OTHER_RECEIPT");
+    if (ownLines.length === 1) {
+      const grab = Math.round(row.grabExpenseAmount || 0);
+      await prisma.bankStatementAllocation.update({
+        where: { id: ownLines[0].id },
+        data: { grossAmount: Math.round(ownLines[0].creditAmount) + change.feeAfter, grabExpenseAmount: grab, cardFeeAmount: change.feeAfter - grab },
+      });
+    }
     const status = await repostWalletSettlementJournal(updated, options.session.name);
     if (status) journalStatuses[updated.code] = status;
   }
