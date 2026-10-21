@@ -24,6 +24,7 @@ import { EXPLANATION_DRAFT, EXPLANATION_LOCKED, snapshotExplanation, type Explan
 export type ResyncResult = { code: string; changed: boolean; skipped?: string; documents?: string[]; date: Date; branchCode: string };
 
 const EPS = 0.000001;
+const STOCKTAKE_TYPES = ["NHAP_KIEM_KE", "XUAT_KIEM_KE"];
 type Tx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
 type SessionWithLines = NonNullable<Awaited<ReturnType<typeof loadSession>>>;
 
@@ -38,8 +39,16 @@ async function liveBook(tx: Tx, session: SessionWithLines) {
   const [balances, laterNet, ownDocs, explosionDocs] = await Promise.all([
     tx.inventoryBalance.findMany({ where: { warehouseCode: session.warehouseCode, itemId: { in: itemIds } } }),
     netMovementsAfter(db, session.warehouseCode, session.stocktakeDate),
-    tx.inventoryTransaction.findMany({ where: { referenceType: "STOCKTAKE", referenceId: session.id, deletedAt: null }, include: { lines: true } }),
-    tx.inventoryTransaction.findMany({ where: { referenceType: "PRODUCTION", referenceId: session.id, deletedAt: null }, include: { lines: true } }),
+    // Phiếu kiểm kê của lần rã kiểm dư (BN/BX "bù nguyên liệu đã đếm", NK "không còn định lượng" — luật
+    // cũ) cũng là điều chỉnh kiểm kê: gỡ cùng -N/-X, chưa chốt giải trình thì tồn kho không có nhập/xuất kiểm kê.
+    tx.inventoryTransaction.findMany({
+      where: {
+        referenceId: session.id, deletedAt: null,
+        OR: [{ referenceType: "STOCKTAKE" }, { referenceType: "PRODUCTION", transactionType: { in: STOCKTAKE_TYPES } }],
+      },
+      include: { lines: true },
+    }),
+    tx.inventoryTransaction.findMany({ where: { referenceType: "PRODUCTION", referenceId: session.id, deletedAt: null, transactionType: { notIn: STOCKTAKE_TYPES } }, include: { lines: true } }),
   ]);
   const net = (docs: typeof ownDocs) => {
     const map = new Map<string, number>();

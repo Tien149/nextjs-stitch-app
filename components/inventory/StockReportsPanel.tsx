@@ -251,7 +251,7 @@ export default function StockReportsPanel(props: Props) {
   const showStoreColumn = view === "store" && store === "ALL";
 
   const pair = (group: string[], pick: (row: NxtRow) => { quantity: number; value: number }): Column<NxtRow>[] => [
-    { path: [...group, "SL"], format: "qty", value: (row) => pick(row).quantity },
+    { path: [...group, "SL"], format: "qty", value: (row) => pick(row).quantity, total: true },
     { path: [...group, "Trị giá"], format: "money", value: (row) => pick(row).value, total: true },
   ];
   const itemColumns: Column<NxtRow>[] = [

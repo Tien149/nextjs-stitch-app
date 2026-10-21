@@ -90,6 +90,14 @@ const NUMBER_COLUMNS: Array<[keyof Line, string, "" | "in" | "out"]> = [
   ["variance", "Chênh lệch (kiểm kê − cuối kỳ)", ""],
 ];
 
+/** Cột cố định bên trái bảng giải trình (STT → ĐVT): độ rộng cố định để tính vị trí dính. */
+const FROZEN_WIDTHS = [52, 96, 110, 130, 220, 84];
+const frozenStyle = (index: number) => {
+  const width = FROZEN_WIDTHS[index];
+  return { left: FROZEN_WIDTHS.slice(0, index).reduce((sum, value) => sum + value, 0), width, minWidth: width, maxWidth: width };
+};
+const frozenEdge = (index: number) => (index === FROZEN_WIDTHS.length - 1 ? "shadow-[2px_0_0_0_rgb(226_232_240)]" : "");
+
 function statusBadge(source: Source) {
   if (!source.explanation) return <span className="status bg-slate-100 text-slate-600">Chưa lập</span>;
   if (source.explanation.status === "LOCKED") return <span className="status bg-emerald-100 text-emerald-800">Đã chốt</span>;
@@ -105,6 +113,7 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
   const [lineFilter, setLineFilter] = useState({ group: "ALL", onlyVariance: false, search: "" });
   const [relinkTarget, setRelinkTarget] = useState("");
   const [busy, setBusy] = useState(false);
+  const [running, setRunning] = useState<string | null>(null);
   const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
   const headers = useCallback(() => sessionHeaders(sessionKey), [sessionKey]);
 
@@ -186,13 +195,21 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
 
   const runAction = async (action: string, success: string, extra: object = {}) => {
     if (!explanation) return;
-    if (dirtyIds.length > 0 && action !== "UNLOCK_STOCKTAKE_EXPLANATION" && !(await saveNotes())) return;
-    const payload = await post({ action, id: explanation.id, ...extra }, success);
-    if (payload) {
-      await openExplanation(explanation.id);
-      await loadSources();
+    setRunning(action);
+    try {
+      if (dirtyIds.length > 0 && action !== "UNLOCK_STOCKTAKE_EXPLANATION" && !(await saveNotes())) return;
+      const payload = await post({ action, id: explanation.id, ...extra }, success);
+      if (payload) {
+        await openExplanation(explanation.id);
+        await loadSources();
+      }
+    } finally {
+      setRunning(null);
     }
   };
+  const spinIcon = (action: string, icon: string) => (
+    <span className={`material-symbols-outlined text-lg ${running === action ? "animate-spin" : ""}`}>{running === action ? "progress_activity" : icon}</span>
+  );
 
   const groupOptions = useMemo(() => {
     const groups = new Map<string, string>();
@@ -210,6 +227,7 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
   const unitCostOf = (line: Line) => detail?.unitCosts?.[line.itemId] ?? line.unitCost ?? 0;
   const varianceValueOf = (line: Line) => Math.round(line.variance * unitCostOf(line));
   const visibleVarianceValue = visibleLines.reduce((sum, line) => sum + varianceValueOf(line), 0);
+  const visibleTotals = Object.fromEntries(NUMBER_COLUMNS.map(([key]) => [key, visibleLines.reduce((sum, line) => sum + Number(line[key] || 0), 0)])) as Record<string, number>;
 
   /** Xuất Excel đúng form khách: 2 hàng tiêu đề, nhóm "SL nhập / xuất trong kỳ" gộp ô. */
   const exportExcel = async () => {
@@ -347,31 +365,31 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
                 <button
                   type="button"
                   className="secondary-button !min-h-9"
-                  disabled={busy}
+                  disabled={busy || running !== null}
                   title="Tính lại sổ sách tại giờ chốt theo dữ liệu mới nhất (phiếu vừa bổ sung, rã lại...)"
                   onClick={() => void runAction("REFRESH_STOCKTAKE_EXPLANATION", "Đã cập nhật tồn hệ thống tại giờ chốt theo dữ liệu mới nhất; giải trình giữ nguyên theo mã hàng.")}
                 >
-                  <span className="material-symbols-outlined text-lg">sync</span>Cập nhật tồn hệ thống
+                  {spinIcon("REFRESH_STOCKTAKE_EXPLANATION", "sync")}{running === "REFRESH_STOCKTAKE_EXPLANATION" ? "Đang cập nhật…" : "Cập nhật tồn hệ thống"}
                 </button>
               )}
               {canApprove && !locked && !sourceReopened && (
                 <button
                   type="button"
                   className="secondary-button !min-h-9 !border-emerald-300 !text-emerald-800"
-                  disabled={busy}
+                  disabled={busy || running !== null}
                   onClick={() => { if (window.confirm(`Chốt giải trình đợt ${explanation.sourceCode}?\n\nChốt = GHI NHẬN chênh lệch kiểm kê vào tồn kho và giá vốn (theo tồn hệ thống mới nhất tại giờ chốt). Sau khi chốt số liệu đứng yên — muốn sửa thì Mở chốt.`)) void runAction("LOCK_STOCKTAKE_EXPLANATION", `Đã chốt giải trình và ghi nhận chênh lệch kiểm kê đợt ${explanation.sourceCode}.`); }}
                 >
-                  <span className="material-symbols-outlined text-lg">lock</span>Chốt &amp; ghi nhận chênh lệch
+                  {spinIcon("LOCK_STOCKTAKE_EXPLANATION", "lock")}{running === "LOCK_STOCKTAKE_EXPLANATION" ? "Đang chốt & ghi nhận…" : <>Chốt &amp; ghi nhận chênh lệch</>}
                 </button>
               )}
               {canApprove && locked && (
                 <button
                   type="button"
                   className="secondary-button !min-h-9"
-                  disabled={busy}
+                  disabled={busy || running !== null}
                   onClick={() => { if (window.confirm("Mở chốt giải trình?\n\nPhiếu chênh lệch kiểm kê đã ghi nhận sẽ được gỡ khỏi tồn kho và giá vốn; số liệu quay về tự cập nhật cho tới khi chốt lại.")) void runAction("UNLOCK_STOCKTAKE_EXPLANATION", "Đã mở chốt giải trình và gỡ chênh lệch đã ghi nhận."); }}
                 >
-                  <span className="material-symbols-outlined text-lg">lock_open</span>Mở chốt
+                  {spinIcon("UNLOCK_STOCKTAKE_EXPLANATION", "lock_open")}{running === "UNLOCK_STOCKTAKE_EXPLANATION" ? "Đang mở chốt…" : "Mở chốt"}
                 </button>
               )}
               <button type="button" className="secondary-button !min-h-9" onClick={() => void exportExcel()}>
@@ -381,7 +399,13 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
             </div>
           </div>
 
-          {message && (
+          {running && (
+            <p className="mx-5 mb-3 flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+              <span className="material-symbols-outlined animate-spin text-lg">progress_activity</span>
+              Hệ thống đang chạy (tính lại tồn tại giờ chốt{running === "REFRESH_STOCKTAKE_EXPLANATION" ? "" : ", ghi phiếu chênh lệch, tính lại giá vốn"}) — có thể mất vài chục giây, vui lòng không đóng trang…
+            </p>
+          )}
+          {message && !running && (
             <p className={`mx-5 mb-3 rounded-lg border px-3 py-2 text-sm ${message.tone === "ok" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-rose-200 bg-rose-50 text-rose-700"}`}>{message.text}</p>
           )}
           {detail.needsRefresh && !locked && (
@@ -442,9 +466,10 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
             <table className="w-full min-w-[2200px] text-sm">
               <thead className="bg-amber-50 text-[11px] text-slate-700 uppercase sticky top-0 z-10">
                 <tr className="border-b border-amber-200">
-                  {["STT", "Kho", "Nhóm", "Mã hàng", "Tên hàng", "ĐVT tồn kho", "SL đầu kỳ"].map((label) => (
-                    <th key={label} rowSpan={2} className="px-3 py-2 font-bold text-center border-r border-amber-200 align-middle">{label}</th>
+                  {["STT", "Kho", "Nhóm", "Mã hàng", "Tên hàng", "ĐVT tồn kho"].map((label, index) => (
+                    <th key={label} rowSpan={2} style={frozenStyle(index)} className={`sticky z-20 bg-amber-50 px-3 py-2 font-bold text-center border-r border-amber-200 align-middle ${frozenEdge(index)}`}>{label}</th>
                   ))}
+                  <th rowSpan={2} className="px-3 py-2 font-bold text-center border-r border-amber-200 align-middle">SL đầu kỳ</th>
                   <th colSpan={5} className="px-3 py-2 font-bold text-center border-r border-amber-200">SL nhập trong kỳ</th>
                   <th colSpan={6} className="px-3 py-2 font-bold text-center border-r border-amber-200">SL xuất trong kỳ</th>
                   {["SL cuối kỳ", "SL kiểm kê", "Chênh lệch (kiểm kê − cuối kỳ)", "Trị giá chênh lệch (tạm tính)", "Giải trình"].map((label) => (
@@ -463,12 +488,12 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
                   const tone = Math.abs(line.variance) <= 1e-6 ? "" : line.variance > 0 ? "text-emerald-700 font-bold" : "text-rose-700 font-bold";
                   return (
                     <tr key={line.itemId} className="border-t border-slate-100 align-top">
-                      <td className="cell text-center tabular-nums">{index + 1}</td>
-                      <td className="cell whitespace-nowrap">{explanation.warehouseCode}</td>
-                      <td className="cell whitespace-nowrap">{line.goodsGroup || ""}</td>
-                      <td className="cell whitespace-nowrap"><b>{line.itemCode}</b></td>
-                      <td className="cell min-w-[200px]">{line.itemName}</td>
-                      <td className="cell whitespace-nowrap">{line.unit}</td>
+                      <td style={frozenStyle(0)} className="cell sticky z-[5] bg-white text-center tabular-nums">{index + 1}</td>
+                      <td style={frozenStyle(1)} className="cell sticky z-[5] bg-white break-words">{explanation.warehouseCode}</td>
+                      <td style={frozenStyle(2)} className="cell sticky z-[5] bg-white break-words">{line.goodsGroup || ""}</td>
+                      <td style={frozenStyle(3)} className="cell sticky z-[5] bg-white break-words"><b>{line.itemCode}</b></td>
+                      <td style={frozenStyle(4)} className="cell sticky z-[5] bg-white">{line.itemName}</td>
+                      <td style={frozenStyle(5)} className={`cell sticky z-[5] bg-white break-words ${frozenEdge(5)}`}>{line.unit}</td>
                       {NUMBER_COLUMNS.map(([key, , group]) => {
                         const value = line[key] as number;
                         const strong = key === "inTotal" || key === "outTotal" || key === "closing" || key === "counted";
@@ -502,9 +527,14 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
                 })}
               </tbody>
               {visibleLines.length > 0 && (
-                <tfoot className="sticky bottom-0 bg-amber-50 font-bold">
+                <tfoot className="sticky bottom-0 z-10 bg-amber-50 font-bold">
                   <tr className="border-t border-amber-200">
-                    <td colSpan={21} className="cell text-right">Tổng trị giá chênh lệch (tạm tính, {visibleLines.length} dòng đang hiện)</td>
+                    <td colSpan={6} style={{ left: 0 }} className={`cell sticky z-[5] bg-amber-50 text-right ${frozenEdge(5)}`}>Tổng cộng ({visibleLines.length} dòng đang hiện)</td>
+                    {NUMBER_COLUMNS.map(([key]) => {
+                      const total = visibleTotals[key];
+                      const tone = key === "variance" ? (total < -1e-6 ? "text-rose-700" : total > 1e-6 ? "text-emerald-700" : "") : "";
+                      return <td key={key} className={`cell text-right tabular-nums whitespace-nowrap ${tone}`}>{qty(total)}</td>;
+                    })}
                     <td className={`cell text-right tabular-nums whitespace-nowrap ${visibleVarianceValue < 0 ? "text-rose-700" : visibleVarianceValue > 0 ? "text-emerald-700" : ""}`}>{money(visibleVarianceValue)}</td>
                     <td className="cell" />
                   </tr>

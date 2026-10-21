@@ -413,30 +413,9 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
           }],
         }));
       }
-      // Kiểm dư mà định lượng đã bị gỡ sau lúc duyệt: không rã được thì vẫn phải lên kho, nhập
-      // kiểm kê theo giá bình quân đang có (thuộc lần rã nên hoàn tác đi theo cả cụm).
-      if (source.kind === "STOCKTAKE" && sourcePlan.directSales.length > 0) {
-        const lines = [];
-        for (const sale of sourcePlan.directSales) {
-          const item = await tx.inventoryItem.findUnique({ where: { code: sale.productCode } });
-          if (!item) businessError(`Không tìm thấy mặt hàng ${sale.productCode}`);
-          lines.push({ itemId: item?.id || "", inputQuantity: sale.quantityBase, inputUnitCode: item?.unit || "", inputUnitCost: 0 });
-        }
-        sequence += 1;
-        documents.push(await postInventoryTransaction(tx, {
-          code: `${runCode}-${sequence}NK`,
-          transactionType: "NHAP_KIEM_KE",
-          transactionDate: source.date,
-          branchCode,
-          warehouseCode: source.warehouseCode,
-          referenceType: "PRODUCTION",
-          referenceId: sourceReferenceId,
-          referenceCode: runCode,
-          note: `Kiểm dư ${source.code} không còn định lượng để rã`,
-          createdBy: input.createdBy,
-          lines,
-        }));
-      }
+      // Kiểm dư mà định lượng đã bị gỡ sau lúc duyệt (không rã được): KHÔNG nhập kiểm kê ở đây nữa
+      // (21/10/2026 — chưa chốt giải trình thì tồn kho chưa có nhập / xuất kiểm kê); phần dư đó vẫn là
+      // chênh lệch của phiếu, ghi khi Chốt giải trình (lib/stocktake-resync).
       // Không còn phiếu "bù nguyên liệu đã đếm" (BN/BX, 20/10/2026): từ 21/10/2026 chênh lệch kiểm kê chỉ
       // ghi khi Chốt giải trình, tính trên tồn hệ thống tại giờ chốt SAU lần rã này (lib/stocktake-resync).
       if (source.kind === "TRANSFER") {

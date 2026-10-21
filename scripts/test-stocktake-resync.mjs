@@ -56,6 +56,12 @@ test("chênh lệch kiểm kê: số sống trước khi chốt, chốt mới gh
   assert.equal(await balanceQty(item.id), 100, "chưa chốt: chưa ghi nhận chênh lệch");
   assert.equal(await prisma.inventoryTransaction.count({ where: { referenceType: "STOCKTAKE", referenceId: session.id } }), 0);
 
+  // Phiếu kiểm kê của lần rã kiểm dư (NK/BN luật cũ) cũng gỡ khi chưa chốt — NXT không có nhập kiểm kê.
+  await post("RA-TEST-RS-1NK", "NHAP_KIEM_KE", "05", 20, { itemId: item.id, header: { referenceType: "PRODUCTION", referenceId: session.id, referenceCode: "RA-TEST-RS" } });
+  await resyncStocktake(session.id, "test");
+  assert.equal(await balanceQty(item.id), 100, "NK của lần rã bị gỡ");
+  assert.equal(await prisma.inventoryTransaction.count({ where: { referenceId: session.id, deletedAt: null, transactionType: { in: ["NHAP_KIEM_KE", "XUAT_KIEM_KE"] } } }), 0);
+
   // Bổ sung phiếu hủy 30 NGÀY 03 (trước giờ chốt): sổ sống = 70, chênh lệch −10.
   await post("TEST-RS-H1", "XUAT_HUY", "03", 30, { itemId: item.id });
   await resyncStocktake(session.id, "test");
