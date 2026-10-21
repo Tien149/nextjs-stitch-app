@@ -10,6 +10,8 @@ import { VAT_RATE_OPTIONS } from "@/lib/inventory-vat";
 import { applyImportRowEdits, parseImportFile, type ImportRowEdit } from "@/lib/import-parser";
 import { validateImportResult } from "@/lib/import-validation";
 import { prisma } from "@/lib/prisma";
+import { resyncOpenStocktakes } from "@/lib/stocktake-resync";
+import { repostInventoryCogs } from "@/lib/accounting";
 
 const menuHref = "/imports";
 const maxFileSize = 10 * 1024 * 1024;
@@ -388,6 +390,20 @@ function batchListOffset(raw: string | null) {
   return Number.isFinite(value) && value > 0 ? value : 0;
 }
 
+/**
+ * Import / rollback phiếu kho: chênh lệch các phiếu kiểm kê đã duyệt, chưa chốt đi theo sổ mới nhất
+ * (khách 21/10/2026, lib/stocktake-resync.ts). Lỗi đồng bộ không làm hỏng import.
+ */
+async function resyncStocktakesForImport(importType: string | null | undefined, actor: string) {
+  if (!["INVENTORY_TRANSACTION", "PRODUCTION", "WASTE", "OPENING_BALANCE"].includes(String(importType || ""))) return;
+  try {
+    const changed = (await resyncOpenStocktakes({}, actor)).filter((row) => row.changed);
+    if (changed.length > 0) await repostInventoryCogs(changed.map((row) => ({ date: row.date, branchCode: row.branchCode })), actor);
+  } catch (error) {
+    console.error("Đồng bộ chênh lệch kiểm kê sau import lỗi:", error);
+  }
+}
+
 export async function GET(request: Request) {
   try {
     const auth = requireMenuAccess(request, menuHref);
@@ -514,6 +530,7 @@ export async function POST(request: Request) {
 
       try {
         const rolledBack = await rollbackImportBatch({ batchId, actor: auth.session.name, note });
+        await resyncStocktakesForImport(rolledBack?.importType, auth.session.name);
         return NextResponse.json(rolledBack);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Rollback batch import thất bại";
@@ -574,6 +591,7 @@ export async function POST(request: Request) {
         rows: parsed.rows,
         expectedMasterType: expectedMasterType || undefined,
       });
+      await resyncStocktakesForImport(importType, auth.session.name);
       return NextResponse.json({ batch, preview: parsed, template }, { status: 201 });
     }
 

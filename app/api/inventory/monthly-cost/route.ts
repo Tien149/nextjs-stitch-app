@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { writeAuditLog } from "@/lib/audit-log";
 import { MonthlyCostError, applyMonthlyCost, monthlyCostStatus, previewMonthlyCost } from "@/lib/inventory-monthly-cost-db";
+import { resyncOpenStocktakes } from "@/lib/stocktake-resync";
 
 /**
  * Tính giá vốn bình quân cả tháng theo từng kho — xem lib/inventory-monthly-cost-db.ts.
@@ -30,6 +31,8 @@ export async function POST(request: Request) {
   const fromPeriod = typeof body.fromPeriod === "string" && body.fromPeriod ? body.fromPeriod : null;
   try {
     if (action === "APPLY") {
+      // Chênh lệch kiểm kê chưa chốt đi theo sổ mới nhất trước khi tính giá tháng (khách 21/10/2026).
+      await resyncOpenStocktakes({}, auth.session.name).catch((error) => console.error("Đồng bộ chênh lệch kiểm kê lỗi:", error));
       const outcome = await applyMonthlyCost(fromPeriod, auth.session.name);
       await writeAuditLog({
         session: auth.session, module: menuHref, action: "RUN_MONTHLY_COST", entityType: "InventoryCostingRun", entityId: outcome.runId,

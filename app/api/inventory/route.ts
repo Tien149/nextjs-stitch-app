@@ -23,6 +23,7 @@ import { buildMonthlyCostSummary } from "@/lib/recipe-cost-summary";
 import { netMovementsAfter } from "@/lib/stocktake-batch";
 import { EXPLANATION_DRAFT, EXPLANATION_LOCKED, explanationNumbersChanged, listStocktakeSources, loadStocktakeSource, snapshotExplanation, stocktakeUnitCosts, type ExplanationLine, type StocktakeSourceType } from "@/lib/stocktake-explanation";
 import { compactFlowDocument, FLOW_DOCUMENT_LIMIT } from "@/lib/inventory-flow-list";
+import { resyncOpenStocktakes, resyncStocktake } from "@/lib/stocktake-resync";
 import { approveTransferRequest, buildTransferRequestLines, canReceiveTransfer, canSendTransfer, TRANSFER_APPROVED, TRANSFER_PENDING, TRANSFER_RETURNED } from "@/lib/inventory-transfer-request";
 import {
   duplicatedInTrashMessage,
@@ -1331,6 +1332,23 @@ export async function GET(request: Request) {
 }
 
 /**
+ * Chênh lệch kiểm kê chưa chốt đi theo sổ mới nhất (khách 21/10/2026, lib/stocktake-resync.ts): sau mỗi
+ * thao tác đổi phiếu kho trước giờ chốt thì ghi lại phiếu -N/-X của các phiếu kiểm kê đã duyệt, chưa
+ * chốt, rồi ghi lại giá vốn kỳ đó. Lỗi đồng bộ không làm hỏng thao tác chính.
+ */
+async function resyncStocktakesAfterChange(input: { branchCode?: string | null; from?: Date | null }, actor: string) {
+  try {
+    const results = await resyncOpenStocktakes(input, actor);
+    const changed = results.filter((row) => row.changed);
+    if (changed.length > 0) await repostInventoryCogs(changed.map((row) => ({ date: row.date, branchCode: row.branchCode })), actor);
+    return changed.map((row) => row.code);
+  } catch (error) {
+    console.error("Đồng bộ chênh lệch kiểm kê lỗi:", error);
+    return [];
+  }
+}
+
+/**
  * Hoàn tác MỘT lần rã (RA-) / lệnh chế biến (CB-): hoàn kho đúng từng dòng, xoá mềm phiếu, trả doanh thu /
  * điều chuyển / kiểm kê bán thành phẩm về chờ rã. Chặn khi đã có phiếu khác phát sinh sau trên cùng mặt
  * hàng/kho hoặc kỳ đã khoá. Dùng chung cho nút hoàn tác từng lần và hoàn tác theo khoảng ngày.
@@ -1783,6 +1801,8 @@ export async function POST(request: Request) {
         const sourceType = cleanText(body.sourceType).toUpperCase() as StocktakeSourceType;
         const sourceId = cleanText(body.sourceId);
         if (!["BATCH", "SESSION"].includes(sourceType) || !sourceId) businessError("Thiếu đợt kiểm kê cần giải trình");
+        // Số giải trình theo sổ mới nhất (chênh lệch chưa chốt luôn cập nhật — lib/stocktake-resync.ts).
+        if (sourceType === "SESSION") await resyncStocktake(sourceId, auth.session.name).catch((error) => console.error(error));
         const existing = await prisma.stocktakeExplanation.findFirst({ where: { sourceType, sourceId } });
         if (existing) return NextResponse.json({ explanation: existing });
         const snapshot = await snapshotExplanation(prisma as unknown as TxClient, sourceType, sourceId);
@@ -1802,10 +1822,23 @@ export async function POST(request: Request) {
         return NextResponse.json({ explanation: created }, { status: 201 });
       }
 
-      const current = await prisma.stocktakeExplanation.findFirst({ where: { id: cleanText(body.id) } });
+      let current = await prisma.stocktakeExplanation.findFirst({ where: { id: cleanText(body.id) } });
       if (!current) businessError("Không tìm thấy bản giải trình kiểm kê");
+      assertScope(current!);
+      /**
+       * Chốt / Cập nhật số liệu giải trình: trước đó đồng bộ chênh lệch theo sổ mới nhất (phiếu -N/-X +
+       * số chụp nháp) — Chốt là lúc số kiểm kê đứng yên (khách 21/10/2026).
+       */
+      const sameSourceRefresh = action === "REFRESH_STOCKTAKE_EXPLANATION" && !cleanText(body.sourceId);
+      if ((action === "LOCK_STOCKTAKE_EXPLANATION" || sameSourceRefresh) && current!.sourceType === "SESSION" && current!.status !== EXPLANATION_LOCKED) {
+        const synced = await resyncStocktake(current!.sourceId, auth.session.name);
+        if (synced.changed) {
+          await repostInventoryCogs([{ date: synced.date, branchCode: synced.branchCode }], auth.session.name);
+        }
+        current = await prisma.stocktakeExplanation.findFirst({ where: { id: current!.id } });
+        if (sameSourceRefresh) return NextResponse.json({ explanation: current });
+      }
       const record = current!;
-      assertScope(record);
       const lines = (Array.isArray(record.lines) ? record.lines : []) as unknown as ExplanationLine[];
 
       if (action === "SAVE_STOCKTAKE_EXPLANATION") {
@@ -1861,6 +1894,21 @@ export async function POST(request: Request) {
       });
       await writeAuditLog({ session: auth.session, module: menuHref, action, entityType: "StocktakeExplanation", entityId: record.id, entityCode: snapshot.source.code, branchCode: record.branchCode, metadata: { from: record.sourceCode, to: snapshot.source.code } });
       return NextResponse.json({ explanation: updated });
+    }
+
+    /**
+     * "Cập nhật chênh lệch" (khách 21/10/2026): tính lại sổ sách tại giờ chốt + ghi lại phiếu -N/-X cho
+     * phiếu kiểm kê đã duyệt mà giải trình chưa chốt. body: { ids?: string[], branchCode? }.
+     */
+    if (action === "RESYNC_STOCKTAKES") {
+      const ids = Array.isArray(body.ids) ? (body.ids as unknown[]).map((id) => cleanText(id)).filter(Boolean) : undefined;
+      const branchCode = cleanText(body.branchCode) || "ALL";
+      if (branchCode !== "ALL") assertBranchAccess(auth.session, branchCode);
+      const results = await resyncOpenStocktakes({ ids, branchCode }, auth.session.name);
+      const changed = results.filter((row) => row.changed);
+      if (changed.length > 0) await repostInventoryCogs(changed.map((row) => ({ date: row.date, branchCode: row.branchCode })), auth.session.name);
+      await writeAuditLog({ session: auth.session, module: menuHref, action, entityType: "StocktakeSession", branchCode, metadata: { results: results.map(({ code, changed: didChange, skipped, documents }) => ({ code, changed: didChange, skipped, documents })) } });
+      return NextResponse.json({ results });
     }
 
     /** Kế toán duyệt phiếu kiểm kê đang Chờ duyệt: sinh phiếu nhập/xuất điều chỉnh theo phần chênh. */
@@ -2191,6 +2239,8 @@ export async function POST(request: Request) {
         });
       }
       const rerunSummary = reruns.map((rerun) => ({ oldRunCode: rerun.oldRunCode, newRunCode: rerun.newRunCode }));
+      // Rã xong (kể cả rã lại): chênh lệch các phiếu kiểm kê chưa chốt của cửa hàng đi theo sổ mới.
+      await resyncStocktakesAfterChange({ branchCode }, auth.session.name);
       const cogsRepost = await repostCogsForReruns(
         reruns,
         outcome.kind === "POSTED" ? outcome.documents.map((doc) => ({ date: doc.transactionDate, branchCode: doc.branchCode })) : [],
@@ -2281,13 +2331,14 @@ export async function POST(request: Request) {
     if (action === "REVERT_EXPLOSION" || action === "REVERT_PRODUCTION") {
       const runCode = (cleanText(body.runCode) || cleanText(body.referenceCode)).toUpperCase();
       if (!runCode) businessError(action === "REVERT_PRODUCTION" ? "Thiếu mã lệnh chế biến (CB-...)" : "Thiếu mã lần rã (RA-...)");
-      const { documents } = await revertExplosionRun(auth.session, runCode, action);
+      const { documents, branchCode: revertedBranch } = await revertExplosionRun(auth.session, runCode, action);
+      const resyncedStocktakes = await resyncStocktakesAfterChange({ branchCode: revertedBranch }, auth.session.name);
       // Phiếu của lần rã / chế biến vừa hoàn tác thành mồ côi trên sổ: ghi lại giá vốn kỳ đó để dọn.
       // Chế biến (CB-) chỉ có phiếu sản xuất, không phải phiếu giá vốn — không cần ghi lại.
       const cogsRepost = action === "REVERT_EXPLOSION"
         ? await repostInventoryCogs(documents.map((doc) => ({ date: doc.transactionDate, branchCode: doc.branchCode })), auth.session.name)
         : [];
-      return NextResponse.json({ runCode, revertedDocuments: documents.length, cogsRepost });
+      return NextResponse.json({ runCode, revertedDocuments: documents.length, cogsRepost, resyncedStocktakes });
     }
 
     /**
@@ -2364,6 +2415,7 @@ export async function POST(request: Request) {
           break;
         }
       }
+      if (reverted.length > 0) await resyncStocktakesAfterChange({ branchCode }, auth.session.name);
       const cogsRepost = touched.length > 0 ? await repostInventoryCogs(touched, auth.session.name) : [];
       return NextResponse.json({ reverted, remaining: runs.length - reverted.length, stoppedAt, cogsRepost });
     }
@@ -2674,6 +2726,11 @@ export async function POST(request: Request) {
       if (allocationMonths) await syncIssueAllocation(tx, posted, allocationMonths, auth.session.name);
       return posted;
     });
+    // Phiếu ghi lùi trước giờ chốt kiểm kê: chênh lệch kiểm kê chưa chốt đi theo.
+    await resyncStocktakesAfterChange({ branchCode, from: transactionDate }, auth.session.name);
+    if (toWarehouseCode && destinationBranchCode && destinationBranchCode !== branchCode.toUpperCase()) {
+      await resyncStocktakesAfterChange({ branchCode: destinationBranchCode, from: transactionDate }, auth.session.name);
+    }
 
     return NextResponse.json(result, { status: 201 });
   } catch (error) {
@@ -2920,6 +2977,7 @@ export async function PATCH(request: Request) {
       });
 
       await writeAuditLog({ session: auth.session, module: menuHref, action: "UPDATE_TRANSACTION", entityType: "InventoryTransaction", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { previousDate: transaction.transactionDate, transactionDate, rewritesLines, lineCount: result.lines.length } });
+      await resyncStocktakesAfterChange({ branchCode: result.branchCode, from: transactionDate < transaction.transactionDate ? transactionDate : transaction.transactionDate }, auth.session.name);
       return NextResponse.json(result);
     }
 
@@ -3208,6 +3266,7 @@ export async function DELETE(request: Request) {
       // còn xoá mềm chạy transaction riêng nên không rollback kèm được.
       const reversals = await reverseTransactionStock(transaction);
       const result = await softDeleteRecord({ model: "InventoryTransaction", id, session: auth.session, reason });
+      await resyncStocktakesAfterChange({ branchCode: transaction.branchCode, from: transaction.transactionDate }, auth.session.name);
       // Phiếu điều chuyển đã duyệt nhận: xoá phiếu kho thì phiếu chờ duyệt gốc cũng đi theo (mã DCK
       // đã dùng, không đưa về chờ duyệt được) — cần chuyển lại thì lập phiếu mới.
       if (transaction.transactionType === "DIEU_CHUYEN") {

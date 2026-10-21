@@ -54,6 +54,8 @@ export default function StocktakeResultsPanel({ sessionKey, branchOptions, wareh
   const [selected, setSelected] = useState<Source | null>(null);
   const [lines, setLines] = useState<ResultLine[] | null>(null);
   const [lineFilter, setLineFilter] = useState({ group: "ALL", onlyVariance: true, search: "" });
+  const [resyncing, setResyncing] = useState(false);
+  const [resyncMessage, setResyncMessage] = useState("");
 
   const load = useCallback(async () => {
     setError("");
@@ -76,6 +78,38 @@ export default function StocktakeResultsPanel({ sessionKey, branchOptions, wareh
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);
   }, [load]);
+
+  /**
+   * "Cập nhật chênh lệch" (khách 21/10/2026): phiếu đã duyệt mà giải trình chưa chốt tính lại sổ sách tại
+   * giờ chốt theo dữ liệu mới nhất. Hệ thống cũng tự làm sau mỗi lần rã / sửa phiếu kho / import / tính giá
+   * vốn — nút này để bấm chủ động khi cần chắc chắn.
+   */
+  const resync = async () => {
+    setResyncing(true);
+    setResyncMessage("");
+    try {
+      const response = await fetch("/api/inventory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...sessionHeaders(sessionKey) },
+        body: JSON.stringify({ action: "RESYNC_STOCKTAKES", branchCode: filters.branchCode }),
+      });
+      const payload = await response.json() as { results?: Array<{ code: string; changed: boolean; skipped?: string }>; error?: string };
+      if (!response.ok) {
+        setResyncMessage(payload.error || "Không cập nhật được chênh lệch");
+      } else {
+        const results = payload.results || [];
+        const changed = results.filter((row) => row.changed).map((row) => row.code);
+        const locked = results.filter((row) => row.skipped === "giải trình đã chốt").map((row) => row.code);
+        setResyncMessage(`Đã kiểm ${results.length} phiếu: ${changed.length ? `cập nhật ${changed.join(", ")}` : "không phiếu nào đổi số"}${locked.length ? ` · đã chốt nên giữ nguyên: ${locked.join(", ")}` : ""}.`);
+        await load();
+        if (selected) await openSource(selected);
+      }
+    } catch {
+      setResyncMessage("Mất kết nối tới máy chủ.");
+    } finally {
+      setResyncing(false);
+    }
+  };
 
   const openSource = async (source: Source) => {
     setSelected(source);
@@ -107,9 +141,17 @@ export default function StocktakeResultsPanel({ sessionKey, branchOptions, wareh
         <div className="p-5 pb-3 flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 className="font-bold text-slate-800">Kết quả kiểm kê</h2>
-            <p className="text-xs text-slate-500 mt-1">Các đợt kiểm kê đã duyệt — bấm <b>Xem</b> để mở chênh lệch từng mặt hàng.</p>
+            <p className="text-xs text-slate-500 mt-1">
+              Các đợt kiểm kê đã duyệt — bấm <b>Xem</b> để mở chênh lệch từng mặt hàng. Chênh lệch của phiếu <b>chưa chốt giải trình</b> luôn
+              tính theo sổ sách mới nhất tại giờ chốt (tự cập nhật sau mỗi lần rã, sửa / import phiếu kho, tính giá vốn); <b>Chốt</b> giải trình thì số đứng yên.
+            </p>
+            {resyncMessage && <p className="text-xs text-indigo-700 mt-1">{resyncMessage}</p>}
           </div>
           <div className="flex items-center gap-2">
+            <button type="button" disabled={resyncing} onClick={() => void resync()} className="secondary-button !min-h-9 !py-1.5 text-xs disabled:opacity-60" title="Tính lại sổ sách tại giờ chốt + phiếu điều chỉnh cho mọi phiếu đã duyệt, chưa chốt">
+              <span className={`material-symbols-outlined text-base ${resyncing ? "animate-spin" : ""}`}>sync</span>
+              {resyncing ? "Đang cập nhật…" : "Cập nhật chênh lệch"}
+            </button>
             <ExportExcelButton fileName="ket_qua_kiem_ke_cac_dot" sheetName="Ket qua kiem ke" />
             <button type="button" title="Tải lại" onClick={() => void load()} className="icon-button"><span className="material-symbols-outlined text-lg">refresh</span></button>
           </div>
