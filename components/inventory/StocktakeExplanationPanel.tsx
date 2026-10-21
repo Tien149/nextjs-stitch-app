@@ -35,6 +35,8 @@ type Line = {
   opening: number; inPurchase: number; inTransfer: number; inOther: number; inProduction: number; inTotal: number;
   outSale: number; outTransfer: number; outWaste: number; outOther: number; outProduction: number; outTotal: number;
   closing: number; counted: number; variance: number; unitCost: number; varianceValue: number; explanation: string;
+  /** Mã kho có mà phiếu không đếm — lên để tổng khớp tồn cả kho, không chênh lệch. */
+  notCounted?: boolean;
 };
 type Explanation = {
   id: string; sourceType: string; sourceId: string; sourceCode: string; branchCode: string; warehouseCode: string;
@@ -110,7 +112,7 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
   const [orphans, setOrphans] = useState<Orphan[]>([]);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [notes, setNotes] = useState<Record<string, string>>({});
-  const [lineFilter, setLineFilter] = useState({ group: "ALL", onlyVariance: false, search: "" });
+  const [lineFilter, setLineFilter] = useState({ group: "ALL", onlyVariance: false, onlyCounted: false, search: "" });
   const [relinkTarget, setRelinkTarget] = useState("");
   const [busy, setBusy] = useState(false);
   const [running, setRunning] = useState<string | null>(null);
@@ -150,7 +152,7 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
     setDetail(payload);
     setNotes(Object.fromEntries(payload.explanation.lines.map((line) => [line.itemId, line.explanation || ""])));
     setRelinkTarget(payload.relinkCandidates[0] ? `${payload.relinkCandidates[0].sourceType}|${payload.relinkCandidates[0].sourceId}` : "");
-    setLineFilter({ group: "ALL", onlyVariance: false, search: "" });
+    setLineFilter({ group: "ALL", onlyVariance: false, onlyCounted: false, search: "" });
   };
 
   const post = async (body: object, success: string) => {
@@ -219,6 +221,7 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
   const keyword = lineFilter.search.trim().toLowerCase();
   const visibleLines = (explanation?.lines || []).filter((line) => {
     if (lineFilter.onlyVariance && Math.abs(line.variance) <= 1e-6) return false;
+    if (lineFilter.onlyCounted && line.notCounted) return false;
     if (lineFilter.group === "MISSING" && line.goodsGroup) return false;
     if (!["ALL", "MISSING"].includes(lineFilter.group) && goodsGroupKey(line.goodsGroup) !== lineFilter.group) return false;
     return !keyword || line.itemCode.toLowerCase().includes(keyword) || line.itemName.toLowerCase().includes(keyword);
@@ -241,7 +244,7 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
       second,
       ...visibleLines.map((line, index) => [
         index + 1, explanation.warehouseCode, line.goodsGroup || "", line.itemCode, line.itemName, line.unit,
-        ...NUMBER_COLUMNS.map(([key]) => line[key] as number),
+        ...NUMBER_COLUMNS.map(([key]) => (line.notCounted && (key === "counted" || key === "variance") ? (key === "counted" ? "Không kiểm" : "") : line[key] as number)),
         Math.abs(line.variance) > 1e-6 ? Math.round(unitCostOf(line)) : "",
         Math.abs(line.variance) > 1e-6 ? varianceValueOf(line) : "",
         notes[line.itemId] ?? line.explanation ?? "",
@@ -459,6 +462,9 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
             <label className="flex items-center gap-2 pb-2 text-xs font-bold text-slate-600">
               <input type="checkbox" checked={lineFilter.onlyVariance} onChange={(e) => setLineFilter({ ...lineFilter, onlyVariance: e.target.checked })} />Chỉ dòng có chênh lệch
             </label>
+            <label className="flex items-center gap-2 pb-2 text-xs font-bold text-slate-600" title="Giải trình gồm mọi mã của kho; mã phiếu không đếm ghi 'Không kiểm', không có chênh lệch">
+              <input type="checkbox" checked={lineFilter.onlyCounted} onChange={(e) => setLineFilter({ ...lineFilter, onlyCounted: e.target.checked })} />Chỉ mã trong phiếu kiểm
+            </label>
             <p className="pb-2 text-xs text-slate-500">Đang hiện <b>{visibleLines.length}</b> / {explanation.lines.length} mã</p>
           </div>
 
@@ -499,7 +505,9 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
                         const strong = key === "inTotal" || key === "outTotal" || key === "closing" || key === "counted";
                         return (
                           <td key={key} className={`cell text-right tabular-nums whitespace-nowrap ${strong ? "font-bold" : ""} ${key === "variance" ? tone : ""} ${group ? "" : "bg-slate-50/50"}`}>
-                            {Math.abs(value) <= 1e-9 && group ? <span className="text-slate-300">-</span> : qty(value)}
+                            {line.notCounted && (key === "counted" || key === "variance")
+                              ? (key === "counted" ? <span className="text-xs font-normal text-slate-400">Không kiểm</span> : <span className="text-slate-300">-</span>)
+                              : Math.abs(value) <= 1e-9 && group ? <span className="text-slate-300">-</span> : qty(value)}
                           </td>
                         );
                       })}

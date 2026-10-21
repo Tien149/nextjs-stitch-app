@@ -48,3 +48,15 @@ test("giữ giải trình cũ theo mã hàng, xếp theo nhóm hàng hóa rồi 
   assert.equal(lines[0].explanation, "Hư do bảo quản");
   assert.equal(lines[1].explanation, "");
 });
+
+test("mã kho có mà phiếu không đếm: vẫn lên giải trình, không chênh lệch", () => {
+  const [line] = buildExplanationLines([{ ...count("z", 120, 0), notCounted: true }], [
+    { itemId: "z", transactionType: "NHAP_MUA", incoming: false, quantity: 20 },
+  ]);
+  assert.equal(line.notCounted, true);
+  assert.equal(line.closing, 120);
+  assert.equal(line.opening, 100);
+  assert.equal(line.counted, 0);
+  assert.equal(line.variance, 0);
+  assert.equal(line.varianceValue, 0);
+});

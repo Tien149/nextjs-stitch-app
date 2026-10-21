@@ -362,6 +362,9 @@ async function loadMovementTotals(branchCode: string, period: { from: Date | nul
     COALESCE(SUM(l."totalCost") FILTER (WHERE t."transactionDate" >= ${from}), 0)::float8 AS "afterFromValue",
     COALESCE(SUM(l."quantity") FILTER (WHERE t."transactionDate" >= ${toEnd}), 0)::float8 AS "afterToQuantity",
     COALESCE(SUM(l."totalCost") FILTER (WHERE t."transactionDate" >= ${toEnd}), 0)::float8 AS "afterToValue"`;
+  // Vế NHẬN (TO) không lọc theo cửa hàng của phiếu: điều chuyển liên nhà hàng (ASA → Nam Mê) mang
+  // branchCode bên chuyển, lọc thì kho nhận mất phần nhập và tồn lùi sai (khách 21/10/2026). Kho ngoài
+  // phạm vi tự rơi vì bảng chỉ dựng theo số dư của các kho đang xem.
   return prisma.$queryRaw<MovementTotalRow[]>(Prisma.sql`
     SELECT l."itemId", t."warehouseCode", t."transactionType", 'FROM' AS side, ${columns}
     FROM "InventoryTransactionLine" l
@@ -373,7 +376,7 @@ async function loadMovementTotals(branchCode: string, period: { from: Date | nul
     SELECT l."itemId", t."toWarehouseCode", t."transactionType", 'TO' AS side, ${columns}
     FROM "InventoryTransactionLine" l
     JOIN "InventoryTransaction" t ON t."id" = l."transactionId"
-    WHERE t."deletedAt" IS NULL ${branchSql}
+    WHERE t."deletedAt" IS NULL
       AND t."transactionType" = 'DIEU_CHUYEN' AND t."toWarehouseCode" IS NOT NULL
     GROUP BY 1, 2, 3
   `);
