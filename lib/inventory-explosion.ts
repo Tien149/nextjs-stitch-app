@@ -370,7 +370,6 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
       for (const used of sourcePlan.stockUsed) stockUsed.push({ ...used, warehouseCode: source.warehouseCode, source: source.code });
       // Phiếu chế biến của kiểm dư mang referenceId = phiếu kiểm kê để Giải trình / Kết quả tính sổ sách sau rã.
       const sourceReferenceId = source.kind === "STOCKTAKE" ? source.id : null;
-      const sourceDocsStart = documents.length;
       for (const step of sourcePlan.productions) {
         sequence += 1;
         const productItem = await tx.inventoryItem.findUnique({ where: { code: step.productCode } });
@@ -438,60 +437,8 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
           lines,
         }));
       }
-      /**
-       * Kiểm dư BTP rã SAU khi duyệt (khách hỏi 20/10/2026): lúc duyệt, nguyên liệu đếm cùng phiếu đã
-       * ghi chênh lệch theo sổ sách CHƯA trừ phần chế biến BTP dư, giờ rã lại trừ tiếp số đó -> nguyên
-       * liệu bị trừ hai lần (sổ thấp hơn số đếm). Bù lại để mọi mã đã đếm trên phiếu về đúng số đếm:
-       * mã BTP dư được nhập đúng phần dư, mã khác (nguyên liệu, BTP cấp dưới) net = 0. Phiếu bù thuộc
-       * lần rã nên hoàn tác / rã lại đi theo cả cụm; đơn giá = giá xuất chế biến nên trị giá triệt tiêu.
-       */
-      if (source.kind === "STOCKTAKE") {
-        const counted = await tx.stocktakeLine.findMany({
-          where: { stocktakeId: source.id },
-          select: { itemId: true, varianceQuantity: true, item: { select: { code: true, unit: true } } },
-        });
-        const deferredCodes = new Set(source.demands.map((demand) => demand.productCode.toUpperCase()));
-        const net = new Map<string, number>();
-        const issueCost = new Map<string, { quantity: number; total: number }>();
-        for (const doc of documents.slice(sourceDocsStart)) {
-          const inbound = doc.transactionType.startsWith("NHAP_");
-          for (const line of doc.lines) {
-            net.set(line.itemId, (net.get(line.itemId) || 0) + (inbound ? line.quantity : -line.quantity));
-            if (!inbound) {
-              const cost = issueCost.get(line.itemId) || { quantity: 0, total: 0 };
-              issueCost.set(line.itemId, { quantity: cost.quantity + line.quantity, total: cost.total + line.totalCost });
-            }
-          }
-        }
-        const refill = [];
-        const removal = [];
-        for (const line of counted) {
-          const expected = deferredCodes.has(line.item.code.toUpperCase()) && line.varianceQuantity > 0 ? line.varianceQuantity : 0;
-          const diff = expected - (net.get(line.itemId) || 0);
-          if (Math.abs(diff) <= quantityEpsilon) continue;
-          const cost = issueCost.get(line.itemId);
-          const unitCost = cost && cost.quantity > 0 ? cost.total / cost.quantity : 0;
-          if (diff > 0) refill.push({ itemId: line.itemId, inputQuantity: diff, inputUnitCode: line.item.unit, inputUnitCost: unitCost });
-          else removal.push({ itemId: line.itemId, inputQuantity: -diff, inputUnitCode: line.item.unit, inputUnitCost: 0 });
-        }
-        for (const [suffix, transactionType, lines] of [["BN", "NHAP_KIEM_KE", refill], ["BX", "XUAT_KIEM_KE", removal]] as const) {
-          if (lines.length === 0) continue;
-          sequence += 1;
-          documents.push(await postInventoryTransaction(tx, {
-            code: `${runCode}-${sequence}${suffix}`,
-            transactionType,
-            transactionDate: source.date,
-            branchCode,
-            warehouseCode: source.warehouseCode,
-            referenceType: "PRODUCTION",
-            referenceId: source.id,
-            referenceCode: runCode,
-            note: `Bù nguyên liệu đã đếm ở ${source.code}: phần chế biến BTP dư đã nằm trong số đếm`,
-            createdBy: input.createdBy,
-            lines: [...lines],
-          }));
-        }
-      }
+      // Không còn phiếu "bù nguyên liệu đã đếm" (BN/BX, 20/10/2026): từ 21/10/2026 chênh lệch kiểm kê chỉ
+      // ghi khi Chốt giải trình, tính trên tồn hệ thống tại giờ chốt SAU lần rã này (lib/stocktake-resync).
       if (source.kind === "TRANSFER") {
         await claimExplosionSource(tx.inventoryTransaction, source.id, runCode);
         if (sourcePlan.productions.length > 0) repricedTransfers.push(await repriceTransfer(tx, source.id));

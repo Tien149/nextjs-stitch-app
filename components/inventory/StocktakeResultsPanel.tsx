@@ -142,8 +142,8 @@ export default function StocktakeResultsPanel({ sessionKey, branchOptions, wareh
           <div>
             <h2 className="font-bold text-slate-800">Kết quả kiểm kê</h2>
             <p className="text-xs text-slate-500 mt-1">
-              Các đợt kiểm kê đã duyệt — bấm <b>Xem</b> để mở chênh lệch từng mặt hàng. Chênh lệch của phiếu <b>chưa chốt giải trình</b> luôn
-              tính theo sổ sách mới nhất tại giờ chốt (tự cập nhật sau mỗi lần rã, sửa / import phiếu kho, tính giá vốn); <b>Chốt</b> giải trình thì số đứng yên.
+              Các đợt kiểm kê đã duyệt — bấm <b>Xem</b> để mở chênh lệch từng mặt hàng. Phiếu <b>chưa chốt giải trình</b>: chênh lệch là số
+              sống theo tồn hệ thống mới nhất tại giờ chốt, <b>chưa ghi nhận</b> vào tồn kho &amp; giá vốn. <b>Chốt</b> giải trình mới ghi nhận và số đứng yên.
             </p>
             {resyncMessage && <p className="text-xs text-indigo-700 mt-1">{resyncMessage}</p>}
           </div>

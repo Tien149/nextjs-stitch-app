@@ -7,7 +7,7 @@ import { prisma, type TxClient } from "@/lib/prisma";
 import { apiError, assertPeriodOpen, businessError, cleanText, isPeriodLocked, toDate, toNumber } from "@/lib/phase3";
 import { requestedBranch, assertBranchAccess, repostInventoryCogs } from "@/lib/accounting";
 import { allowedWarehousesOf, assertWarehouseAccess, scopeWarehouses } from "@/lib/warehouse-scope";
-import { isWasteSubType, latestKnownUnitCost, normalizeStockTransactionType, normalizeWasteSubType, postInventoryTransaction, repostInventoryTransaction, reverseStockEffect } from "@/lib/inventory-stock";
+import { isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType, postInventoryTransaction, repostInventoryTransaction, reverseStockEffect } from "@/lib/inventory-stock";
 import { createPurchasePayable, purchasePayableCodeOf, removePurchasePayables, syncPurchasePayable, PURCHASE_PAYABLE_SOURCE } from "@/lib/purchase-payable";
 import { postStockTransfer, syncTransferInternalDebt } from "@/lib/inventory-transfer";
 import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING, STOCKTAKE_RETURNED, isStocktakeEditable, stocktakeStatusLabel } from "@/lib/stocktake-status";
@@ -23,7 +23,7 @@ import { buildMonthlyCostSummary } from "@/lib/recipe-cost-summary";
 import { netMovementsAfter } from "@/lib/stocktake-batch";
 import { EXPLANATION_DRAFT, EXPLANATION_LOCKED, explanationNumbersChanged, listStocktakeSources, loadStocktakeSource, snapshotExplanation, stocktakeUnitCosts, type ExplanationLine, type StocktakeSourceType } from "@/lib/stocktake-explanation";
 import { compactFlowDocument, FLOW_DOCUMENT_LIMIT } from "@/lib/inventory-flow-list";
-import { resyncOpenStocktakes, resyncStocktake } from "@/lib/stocktake-resync";
+import { postStocktakeAdjustments, resyncOpenStocktakes, resyncStocktake, unpostStocktakeAdjustments } from "@/lib/stocktake-resync";
 import { approveTransferRequest, buildTransferRequestLines, canReceiveTransfer, canSendTransfer, TRANSFER_APPROVED, TRANSFER_PENDING, TRANSFER_RETURNED } from "@/lib/inventory-transfer-request";
 import {
   duplicatedInTrashMessage,
@@ -1837,6 +1837,9 @@ export async function POST(request: Request) {
         }
         current = await prisma.stocktakeExplanation.findFirst({ where: { id: current!.id } });
         if (sameSourceRefresh) return NextResponse.json({ explanation: current });
+        // Chốt = lúc chênh lệch được GHI NHẬN: phiếu -N/-X theo tồn hệ thống tại giờ chốt (vào giá vốn).
+        const posted = await postStocktakeAdjustments(current!.sourceId, auth.session.name);
+        await repostInventoryCogs([{ date: posted.date, branchCode: posted.branchCode }], auth.session.name);
       }
       const record = current!;
       const lines = (Array.isArray(record.lines) ? record.lines : []) as unknown as ExplanationLine[];
@@ -1855,12 +1858,19 @@ export async function POST(request: Request) {
         const lock = action === "LOCK_STOCKTAKE_EXPLANATION";
         if (lock && record.status === EXPLANATION_LOCKED) businessError("Giải trình đã chốt rồi");
         if (!lock && record.status !== EXPLANATION_LOCKED) businessError("Giải trình chưa chốt");
-        const updated = await prisma.stocktakeExplanation.update({
+        let updated = await prisma.stocktakeExplanation.update({
           where: { id: record.id },
           data: lock
             ? { status: EXPLANATION_LOCKED, lockedBy: auth.session.name, lockedAt: new Date() }
             : { status: EXPLANATION_DRAFT, unlockedBy: auth.session.name, unlockedAt: new Date() },
         });
+        // Mở chốt: gỡ phiếu chênh lệch đã ghi, số về lại số sống (khách 21/10/2026).
+        if (!lock && record.sourceType === "SESSION") {
+          const unposted = await unpostStocktakeAdjustments(record.sourceId, auth.session.name);
+          await resyncStocktake(record.sourceId, auth.session.name);
+          if (unposted.changed) await repostInventoryCogs([{ date: unposted.date, branchCode: unposted.branchCode }], auth.session.name);
+          updated = (await prisma.stocktakeExplanation.findFirst({ where: { id: record.id } }))!;
+        }
         await writeAuditLog({ session: auth.session, module: menuHref, action, entityType: "StocktakeExplanation", entityId: record.id, entityCode: record.sourceCode, branchCode: record.branchCode });
         return NextResponse.json({ explanation: updated });
       }
@@ -1938,7 +1948,8 @@ export async function POST(request: Request) {
        * đếm đã cũ vì phiếu xuất bán/chế biến của khoảng ngày đó vừa thay đổi. recomputeBook = true thì tính lại sổ sách tại giờ chốt
        * theo dữ liệu hiện tại kể cả khi không đổi giờ chốt.
        */
-      const recomputeBook = (Boolean(requestedCutoff) && stocktakeDate.getTime() !== stocktake.stocktakeDate.getTime()) || body.recomputeBook === true;
+      // Từ 21/10/2026 LUÔN tính lại: sổ sách là số sống tại giờ chốt (lib/stocktake-resync.ts), ô "Tính lại" bỏ.
+      const recomputeBook = true;
       if (await isPeriodLocked(stocktakeDate, branchCode)) businessError("Kỳ kế toán đã khoá");
       const result = await prisma.$transaction(async (tx) => {
         if (recomputeBook) {
@@ -1955,26 +1966,13 @@ export async function POST(request: Request) {
           }
           await tx.stocktakeSession.update({ where: { id: stocktake.id }, data: { stocktakeDate } });
         }
-        const inboundLines = [];
-        const outboundLines = [];
-        // Kiểm DƯ bán thành phẩm có định lượng không nhập kiểm kê mà chờ rã BOM (khách chốt
-        // 28/09/2026): phần dư là hàng đã chế biến nên phải trừ nguyên liệu tương ứng.
+        /**
+         * Duyệt = chốt SỐ ĐẾM, KHÔNG ghi phiếu điều chỉnh (khách 21/10/2026): chênh lệch chỉ ghi nhận khi
+         * Chốt giải trình (lib/stocktake-resync postStocktakeAdjustments). Ở đây chỉ còn đánh dấu kiểm DƯ
+         * bán thành phẩm có định lượng vào hàng chờ rã BOM (khách chốt 28/09/2026).
+         */
         const isExplodable = await semiFinishedWithRecipeChecker(tx, branchCode);
-        let deferredSurplus = false;
-        for (const line of stocktake.lines) {
-          const item = line.item;
-          const varianceQuantity = line.actualQuantity - line.systemQuantity;
-          if (Math.abs(varianceQuantity) <= quantityEpsilon) continue;
-          const balance = await tx.inventoryBalance.findUnique({ where: { itemId_warehouseCode: { itemId: item.id, warehouseCode } } });
-          const surplusToExplode = varianceQuantity > 0 && isExplodable(item);
-          let surplusUnitCost = (balance?.averageCost || 0) > 0 ? balance?.averageCost || 0 : line.unitCost || 0;
-          // Kho chưa có giá, phiếu không khai: giá mua gần nhất / giá kho khác; không có ở đâu thì 0 đ — phần thừa
-          // đi theo giá bình quân tháng (khách chốt 15/10/2026).
-          if (varianceQuantity > 0 && !surplusToExplode && surplusUnitCost <= 0) surplusUnitCost = await latestKnownUnitCost(tx, item.id, warehouseCode);
-          if (surplusToExplode) deferredSurplus = true;
-          else if (varianceQuantity > 0) inboundLines.push({ itemId: item.id, inputQuantity: varianceQuantity, inputUnitCode: item.unit, inputUnitCost: surplusUnitCost });
-          if (varianceQuantity < 0) outboundLines.push({ itemId: item.id, inputQuantity: Math.abs(varianceQuantity), inputUnitCode: item.unit, inputUnitCost: 0 });
-        }
+        const deferredSurplus = stocktake.lines.some((line) => line.actualQuantity - line.systemQuantity > quantityEpsilon && isExplodable(line.item));
         await tx.stocktakeSession.update({
           where: { id: stocktake.id },
           data: {
@@ -1984,43 +1982,7 @@ export async function POST(request: Request) {
             ...(deferredSurplus ? { explosionStatus: EXPLOSION_PENDING } : {}),
           },
         });
-        /**
-         * Mở lại phiếu chỉ XOÁ MỀM phiếu điều chỉnh cũ (mã vẫn chiếm chỗ) — duyệt lại mà dùng lại
-         * `KK-...-N/-X` là đâm unique (lỗi 500 từ trước, lộ ra khi khách mở phiếu sửa rồi duyệt lại
-         * 03/10/2026). Lần duyệt sau mang hậu tố -2, -3...
-         */
-        const freeCode = async (base: string) => {
-          const taken = new Set((await tx.$queryRaw<Array<{ code: string }>>`SELECT "code" FROM "InventoryTransaction" WHERE "code" = ${base} OR "code" LIKE ${`${base}-%`}`).map((row) => row.code));
-          if (!taken.has(base)) return base;
-          let suffix = 2;
-          while (taken.has(`${base}-${suffix}`)) suffix += 1;
-          return `${base}-${suffix}`;
-        };
-        const docs = [];
-        if (inboundLines.length > 0) docs.push(await postInventoryTransaction(tx, {
-          code: await freeCode(`${stocktake.code}-N`),
-          transactionType: "NHAP_KIEM_KE",
-          transactionDate: stocktakeDate,
-          branchCode,
-          warehouseCode,
-          referenceType: "STOCKTAKE",
-          referenceId: stocktake.id,
-          referenceCode: stocktake.code,
-          createdBy: auth.session.name,
-          lines: inboundLines,
-        }));
-        if (outboundLines.length > 0) docs.push(await postInventoryTransaction(tx, {
-          code: await freeCode(`${stocktake.code}-X`),
-          transactionType: "XUAT_KIEM_KE",
-          transactionDate: stocktakeDate,
-          branchCode,
-          warehouseCode,
-          referenceType: "STOCKTAKE",
-          referenceId: stocktake.id,
-          referenceCode: stocktake.code,
-          createdBy: auth.session.name,
-          lines: outboundLines,
-        }));
+        const docs: Array<{ code: string }> = [];
         return { stocktake: await tx.stocktakeSession.findUnique({ where: { id: stocktake.id }, include: { lines: { include: { item: true } } } }), transactions: docs };
       });
       await writeAuditLog({ session: auth.session, module: menuHref, action: "APPROVE_STOCKTAKE", entityType: "StocktakeSession", entityId: stocktake.id, entityCode: stocktake.code, branchCode, metadata: { transactions: result.transactions.map((doc) => doc.code), cutoffAt: stocktakeDate.toISOString(), recomputeBook } });

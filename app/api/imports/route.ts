@@ -395,7 +395,7 @@ function batchListOffset(raw: string | null) {
  * (khách 21/10/2026, lib/stocktake-resync.ts). Lỗi đồng bộ không làm hỏng import.
  */
 async function resyncStocktakesForImport(importType: string | null | undefined, actor: string) {
-  if (!["INVENTORY_TRANSACTION", "PRODUCTION", "WASTE", "OPENING_BALANCE"].includes(String(importType || ""))) return;
+  if (!["INVENTORY_TRANSACTION", "PRODUCTION", "WASTE", "OPENING_BALANCE", "STOCKTAKE"].includes(String(importType || ""))) return;
   try {
     const changed = (await resyncOpenStocktakes({}, actor)).filter((row) => row.changed);
     if (changed.length > 0) await repostInventoryCogs(changed.map((row) => ({ date: row.date, branchCode: row.branchCode })), actor);

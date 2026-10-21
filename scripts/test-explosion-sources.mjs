@@ -201,17 +201,12 @@ test("rã BOM cho điều chuyển và kiểm dư bán thành phẩm", async (t)
   assert.deepEqual(await balanceOf(BTP, KITCHEN).then((row) => row.quantity), 3, "rã xong tồn sốt đúng số đếm");
   assert.ok(Math.abs((await balanceOf(BTP, KITCHEN)).averageCost - 55000) < 0.01, "sốt kiểm dư có giá vốn từ nguyên liệu");
   assert.equal((await prisma.stocktakeSession.findUnique({ where: { id: stocktake.id } })).explosionStatus, `POSTED:${second.runCode}`);
-  // Thịt đã đếm 16 kg (đã gồm phần làm ra 3 kg sốt dư): duyệt ghi thiếu 1 kg theo sổ chưa rã, rã
-  // trừ thêm 1,5 kg -> phiếu bù trả 1,5 kg, tồn thịt đúng số đếm (khách hỏi 20/10/2026).
-  const refill = secondDocs.find((doc) => doc.transactionType === "NHAP_KIEM_KE" && doc.referenceId === stocktake.id);
-  assert.ok(refill, "có phiếu bù nguyên liệu đã đếm");
-  assert.equal(refill.lines.find((line) => line.item.code === NVL).quantity, 1.5);
-  assert.equal((await balanceOf(NVL, KITCHEN)).quantity, 16, "thịt không bị trừ hai lần");
+  // Không còn phiếu bù nguyên liệu (21/10/2026): chênh lệch kiểm kê ghi khi Chốt giải trình theo tồn sau rã.
+  assert.ok(!secondDocs.some((doc) => doc.referenceId === stocktake.id && doc.transactionType.endsWith("KIEM_KE")), "lần rã không sinh phiếu kiểm kê");
+  assert.equal((await balanceOf(NVL, KITCHEN)).quantity, 20 - 1 - 2 - 1 - 1.5);
   const source = await loadStocktakeSource(prisma, "SESSION", stocktake.id);
-  const nvlLine = source.countLines.find((line) => line.itemCode === NVL);
-  const btpLine2 = source.countLines.find((line) => line.itemCode === BTP);
-  assert.equal(nvlLine.closing, 15.5, "sổ sách thịt sau rã = 17 − 1,5");
-  assert.equal(btpLine2.closing, 3, "sốt dư đã chế biến nên hết chênh");
+  assert.equal(source.countLines.find((line) => line.itemCode === NVL).closing, 15.5, "sổ sách thịt sau rã = 17 − 1,5");
+  assert.equal(source.countLines.find((line) => line.itemCode === BTP).closing, 3, "sốt dư đã chế biến nên hết chênh");
 
   // Không còn gì chờ: bấm lại thì rỗng.
   const again = await prisma.$transaction((tx) => executeExplosion(tx, explodeInput("2031-01-01", "2031-01-31")), { timeout: 60000 });
@@ -223,5 +218,5 @@ test("rã BOM cho điều chuyển và kiểm dư bán thành phẩm", async (t)
   assert.equal((await runDocs(second.runCode)).length, 0, "phiếu của lần rã cũ đã gỡ");
   assert.equal((await prisma.stocktakeSession.findUnique({ where: { id: stocktake.id } })).explosionStatus, `POSTED:${rerun.newRunCode}`);
   assert.equal((await balanceOf(BTP, KITCHEN)).quantity, 3, "rã lại không nhân đôi tồn");
-  assert.equal((await balanceOf(NVL, KITCHEN)).quantity, 16, "rã lại vẫn giữ thịt đúng số đếm");
+  assert.equal((await balanceOf(NVL, KITCHEN)).quantity, 20 - 1 - 2 - 1 - 1.5);
 });

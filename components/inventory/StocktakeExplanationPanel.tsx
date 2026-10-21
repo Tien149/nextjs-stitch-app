@@ -253,8 +253,8 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
           <h2 className="font-bold text-slate-800">Giải trình kiểm kê</h2>
           <p className="text-xs text-slate-500 mt-1 max-w-4xl leading-relaxed">
             Mỗi đợt kiểm kê đã duyệt của một kho có một bản giải trình. Kỳ tính <b>từ giờ chốt lần kiểm kê trước của cùng kho tới giờ chốt đợt này</b>.
-            Số liệu được <b>chụp lúc lập</b> và không tự đổi theo dữ liệu mới. Kế toán bấm <b>Chốt số liệu giải trình</b> thì khoá hẳn; khi đợt bị mở lại & duyệt lại, hoặc vừa
-            <b>rã phần kiểm dư bán thành phẩm</b>, thì bấm <b>Cập nhật số liệu</b> (giải trình đã gõ giữ theo mã hàng).
+            Chưa chốt thì số liệu <b>tự cập nhật</b> theo tồn hệ thống mới nhất tại giờ chốt (bổ sung phiếu, rã lại… — hoặc bấm <b>Cập nhật tồn hệ thống</b>);
+            chênh lệch kiểm kê <b>chỉ ghi nhận vào tồn kho &amp; giá vốn khi bấm Chốt</b>. Mở chốt thì gỡ ra (giải trình đã gõ giữ theo mã hàng).
           </p>
         </div>
         <div className="px-5 pb-4 grid grid-cols-2 lg:grid-cols-5 gap-3">
@@ -343,14 +343,25 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
                   Lưu giải trình{dirtyIds.length > 0 ? ` (${dirtyIds.length})` : ""}
                 </button>
               )}
+              {canApprove && !locked && !sourceReopened && explanation.sourceType === "SESSION" && (
+                <button
+                  type="button"
+                  className="secondary-button !min-h-9"
+                  disabled={busy}
+                  title="Tính lại sổ sách tại giờ chốt theo dữ liệu mới nhất (phiếu vừa bổ sung, rã lại...)"
+                  onClick={() => void runAction("REFRESH_STOCKTAKE_EXPLANATION", "Đã cập nhật tồn hệ thống tại giờ chốt theo dữ liệu mới nhất; giải trình giữ nguyên theo mã hàng.")}
+                >
+                  <span className="material-symbols-outlined text-lg">sync</span>Cập nhật tồn hệ thống
+                </button>
+              )}
               {canApprove && !locked && !sourceReopened && (
                 <button
                   type="button"
                   className="secondary-button !min-h-9 !border-emerald-300 !text-emerald-800"
                   disabled={busy}
-                  onClick={() => { if (window.confirm(`Chốt số liệu giải trình đợt ${explanation.sourceCode}? Sau khi chốt không sửa được giải trình hay số liệu (trừ khi Mở chốt).`)) void runAction("LOCK_STOCKTAKE_EXPLANATION", `Đã chốt số liệu giải trình đợt ${explanation.sourceCode}.`); }}
+                  onClick={() => { if (window.confirm(`Chốt giải trình đợt ${explanation.sourceCode}?\n\nChốt = GHI NHẬN chênh lệch kiểm kê vào tồn kho và giá vốn (theo tồn hệ thống mới nhất tại giờ chốt). Sau khi chốt số liệu đứng yên — muốn sửa thì Mở chốt.`)) void runAction("LOCK_STOCKTAKE_EXPLANATION", `Đã chốt giải trình và ghi nhận chênh lệch kiểm kê đợt ${explanation.sourceCode}.`); }}
                 >
-                  <span className="material-symbols-outlined text-lg">lock</span>Chốt số liệu giải trình
+                  <span className="material-symbols-outlined text-lg">lock</span>Chốt &amp; ghi nhận chênh lệch
                 </button>
               )}
               {canApprove && locked && (
@@ -358,7 +369,7 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
                   type="button"
                   className="secondary-button !min-h-9"
                   disabled={busy}
-                  onClick={() => { if (window.confirm("Mở chốt để sửa giải trình / cập nhật số liệu?")) void runAction("UNLOCK_STOCKTAKE_EXPLANATION", "Đã mở chốt giải trình."); }}
+                  onClick={() => { if (window.confirm("Mở chốt giải trình?\n\nPhiếu chênh lệch kiểm kê đã ghi nhận sẽ được gỡ khỏi tồn kho và giá vốn; số liệu quay về tự cập nhật cho tới khi chốt lại.")) void runAction("UNLOCK_STOCKTAKE_EXPLANATION", "Đã mở chốt giải trình và gỡ chênh lệch đã ghi nhận."); }}
                 >
                   <span className="material-symbols-outlined text-lg">lock_open</span>Mở chốt
                 </button>

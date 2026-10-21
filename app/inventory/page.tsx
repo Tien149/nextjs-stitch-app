@@ -4240,21 +4240,12 @@ export default function InventoryPage() {
               />
             </label>
             <p className="text-xs text-slate-500 leading-relaxed">
-              Mặc định là giờ trên phiếu. Đổi giờ chốt thì hệ thống tính lại <b>sổ sách tại giờ đó</b> cho từng dòng (tồn hiện tại − phát sinh sau giờ chốt)
-              rồi sinh phiếu nhập/xuất điều chỉnh theo phần chênh, ghi đúng ngày giờ chốt.
+              Mặc định là giờ trên phiếu. Sổ sách tính tại giờ chốt: mọi phiếu có ngày giờ ≤ giờ chốt (tồn hiện tại − phát sinh sau giờ chốt).
             </p>
-            <label className="flex items-start gap-2 text-sm text-slate-700">
-              <input type="checkbox" className="mt-1" checked={approvingStocktake.recompute}
-                onChange={(e) => setApprovingStocktake({ ...approvingStocktake, recompute: e.target.checked })} />
-              <span>
-                <b>Tính lại số sổ sách theo dữ liệu hiện tại</b> (giữ giờ chốt)
-                <small className="block text-xs text-slate-500">
-                  {approvingStocktake.stocktake.reopened
-                    ? "Phiếu này đã từng mở lại — nên bật: doanh thu / lần rã / phiếu kho trước giờ chốt có thể đã thay đổi, số sổ sách lưu trên phiếu đã cũ."
-                    : "Bật khi phiếu xuất bán, chế biến hoặc phiếu kho trước giờ chốt vừa được nhập / sửa sau lúc đếm."}
-                </small>
-              </span>
-            </label>
+            <p className="rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs text-indigo-900 leading-relaxed">
+              <b>Duyệt = chốt số đếm.</b> Sổ sách luôn tính lại theo dữ liệu mới nhất tại giờ chốt; chênh lệch kiểm kê chỉ được
+              <b> ghi nhận vào tồn kho &amp; giá vốn khi Chốt giải trình</b>. Phần kiểm dư bán thành phẩm vào hàng chờ rã BOM.
+            </p>
             <div className="flex justify-end gap-2">
               <button type="button" onClick={() => setApprovingStocktake(null)} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50">Huỷ</button>
               <button type="button" onClick={() => void confirmApproveStocktake()} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700">Duyệt</button>
@@ -4284,14 +4275,7 @@ export default function InventoryPage() {
                       Đếm nhiều chỗ trong một kho thì dùng <b>Kiểm kê theo vị trí → Duyệt gộp</b>.
                     </p>
                   )}
-                  <label className="flex items-start gap-2 text-sm text-slate-700">
-                    <input type="checkbox" className="mt-1" checked={bulkApprove.recompute}
-                      onChange={(e) => setBulkApprove({ ...bulkApprove, recompute: e.target.checked })} />
-                    <span>
-                      <b>Tính lại số sổ sách theo dữ liệu hiện tại</b> (giữ giờ chốt)
-                      <small className="block text-xs text-slate-500">Nên bật khi đã rã doanh thu / nhập phiếu kho trước giờ chốt sau lúc đếm, hoặc phiếu từng được mở lại.</small>
-                    </span>
-                  </label>
+                  <p className="text-xs text-slate-600">Duyệt = chốt số đếm; chênh lệch kiểm kê ghi nhận khi <b>Chốt giải trình</b>.</p>
                   <div className="flex justify-end gap-2">
                     <button type="button" onClick={() => setBulkApprove(null)} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50">Huỷ</button>
                     <button type="button" onClick={() => void runBulkApprove(picked.map((row) => row.id), bulkApprove.recompute)} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700">Duyệt {picked.length} phiếu</button>
