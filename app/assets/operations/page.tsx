@@ -1203,7 +1203,7 @@ export default function AssetOperationsPage() {
             <Table headers={[{ label: "Tài sản" }, { label: "Nội dung" }, { label: "Ngày dự kiến" }, { label: "Lặp" }, { label: "Task" }, { label: "Chi phí", align: "right" }, { label: "Trạng thái" }, { label: "Thao tác", align: "right" }]}>
               {data.maintenances.map((row) => (
                 <tr key={row.id} className="border-t border-slate-100">
-                  <Cell><CopyableText value={row.asset.code}><b>{row.asset.code}</b></CopyableText><small>{row.asset.name}</small></Cell>
+                  <Cell><b>{row.asset.name}</b><small><CopyableText value={row.asset.code}>{row.asset.code}</CopyableText></small></Cell>
                   <Cell>{row.maintenanceType}</Cell>
                   <Cell>{new Date(row.scheduledDate).toLocaleDateString("vi-VN")}</Cell>
                   <Cell>{row.recurrenceRule || "-"}</Cell>

@@ -4545,7 +4545,7 @@ export default function InventoryPage() {
                           const variance = uncounted(row) ? 0 : actualQuantity - row.systemQuantity;
                           return (
                             <tr key={row.itemId} className="border-t border-slate-100">
-                              <Cell><b>{row.itemCode}</b><small>{row.itemName} · {row.unit}</small></Cell>
+                              <Cell><b>{row.itemName}</b><small>{row.itemCode} · {row.unit}</small></Cell>
                               <Cell right>{qty(row.systemQuantity)}</Cell>
                               <Cell right>
                                 <input

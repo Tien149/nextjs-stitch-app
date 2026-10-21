@@ -491,7 +491,7 @@ export function PriceListsTab({ user, canCreate, canDelete, items, suppliers, no
                     <td className="cell whitespace-nowrap"><CopyableText value={row.code}><b>{row.code}</b></CopyableText></td>
                     <td className="cell whitespace-nowrap">{storeLabel(row.branchCode)}<small>{row.warehouseCode}</small></td>
                     <td className="cell whitespace-nowrap">{row.supplierCode}</td>
-                    <td className="cell"><b>{row.itemCode}</b><small>{row.itemName}</small></td>
+                    <td className="cell"><b>{row.itemName}</b><small>{row.itemCode}</small></td>
                     <td className="cell text-right tabular-nums whitespace-nowrap">{qty(row.quantity)} {row.unit}</td>
                     <td className="cell text-right tabular-nums whitespace-nowrap">{formatUnitPrice(row.actualPrice)} đ</td>
                     <td className="cell text-right tabular-nums whitespace-nowrap">{formatUnitPrice(row.listPrice)} đ<small className="block text-slate-500">{money(row.listUnitPrice)} đ/{row.listUnitCode}</small></td>
