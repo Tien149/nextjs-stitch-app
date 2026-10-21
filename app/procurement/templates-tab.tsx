@@ -13,9 +13,10 @@ import { TEMPLATE_IMPORT_HEADERS, templateWindow, templateWindowStatus, type Tem
 export type TemplateUnitConversion = { id: string; unitCode: string; unitName: string | null; conversionRate: number; isDefaultPurchase: boolean };
 export type TemplateItem = { id: string; code: string; name: string; unit: string; itemType: string; unitConversions?: TemplateUnitConversion[] };
 export type TemplateLine = { id: string; itemId: string; unitCode: string | null; sortOrder: number; note: string | null; item: TemplateItem };
-export type PurchaseTemplate = { id: string; code: string; name: string; branchCode: string | null; departmentCode: string | null; warehouseCode?: string | null; effectiveFrom?: string | null; effectiveTo?: string | null; status: string; note: string | null; createdBy?: string | null; updatedAt?: string; lines: TemplateLine[] };
+export type PurchaseTemplate = { id: string; code: string; name: string; branchCode: string | null; departmentCode: string | null; warehouseCode?: string | null; supplierCode?: string | null; supplierName?: string | null; effectiveFrom?: string | null; effectiveTo?: string | null; status: string; note: string | null; createdBy?: string | null; updatedAt?: string; lines: TemplateLine[] };
 export type DepartmentOption = { id: string; code: string; name: string; branch: string | null };
 export type WarehouseOption = { code: string; name: string; branch: string | null };
+export type SupplierOption = { value: string; label: string; subLabel?: string };
 
 const today = () => new Date().toISOString().slice(0, 10);
 /** Đọc file Excel (hoặc CSV UTF-8 — đọc dạng chữ, không thì tiếng Việt vỡ dấu). */
@@ -72,7 +73,7 @@ function clearDraft(key: string) {
 }
 
 type ManageDraft = {
-  form: { name: string; branchCode: string; departmentCode: string; warehouseCode?: string; note: string; effectiveFrom?: string; effectiveTo?: string };
+  form: { name: string; branchCode: string; departmentCode: string; warehouseCode?: string; supplierCode?: string; note: string; effectiveFrom?: string; effectiveTo?: string };
   rows: Array<{ itemId: string; unitCode: string; note?: string }>;
   editingId: string | null;
 };
@@ -115,6 +116,7 @@ export function TemplatesTab({
   templates,
   departments,
   warehouses,
+  suppliers,
   notify,
   reload,
 }: {
@@ -126,6 +128,7 @@ export function TemplatesTab({
   departments: DepartmentOption[];
   /** Kho trong phạm vi user (máy chủ đã lọc theo phân quyền kho). */
   warehouses: WarehouseOption[];
+  suppliers: SupplierOption[];
   notify: (message: string) => void;
   reload: () => Promise<void>;
 }) {
@@ -135,6 +138,8 @@ export function TemplatesTab({
   const [fillDepartment, setFillDepartment] = useState("");
   const [fillNeededDate, setFillNeededDate] = useState(today());
   const [fillNote, setFillNote] = useState("");
+  /** NCC của PR: mặc định NCC của mẫu, mẫu chưa có thì người đặt chọn (thu mua vẫn đổi lúc duyệt). */
+  const [fillSupplier, setFillSupplier] = useState("");
   const [fillQuantities, setFillQuantities] = useState<Record<string, string>>({});
   const [fillSearch, setFillSearch] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -142,7 +147,7 @@ export function TemplatesTab({
   /** Khu quản lý mẫu. */
   const [showManage, setShowManage] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<PurchaseTemplate | null>(null);
-  const [templateForm, setTemplateForm] = useState({ name: "", branchCode: "", departmentCode: "", warehouseCode: "", note: "", effectiveFrom: "", effectiveTo: "" });
+  const [templateForm, setTemplateForm] = useState({ name: "", branchCode: "", departmentCode: "", warehouseCode: "", supplierCode: "", note: "", effectiveFrom: "", effectiveTo: "" });
   const [templateRows, setTemplateRows] = useState<Array<{ itemId: string; unitCode: string; note?: string }>>([{ itemId: "", unitCode: "" }]);
   /** Danh sách mẫu: lọc + mẫu đang xem chi tiết (khách yêu cầu 03/10/2026 — rất nhiều mẫu). */
   const [listFilter, setListFilter] = useState({ search: "", branch: "ALL", status: "ACTIVE" });
@@ -161,7 +166,7 @@ export function TemplatesTab({
     const timer = window.setTimeout(() => {
       const manage = readDraft<ManageDraft>(MANAGE_DRAFT_KEY);
       if (manage) {
-        setTemplateForm({ effectiveFrom: "", effectiveTo: "", ...manage.form, warehouseCode: manage.form.warehouseCode || "" });
+        setTemplateForm({ effectiveFrom: "", effectiveTo: "", ...manage.form, warehouseCode: manage.form.warehouseCode || "", supplierCode: manage.form.supplierCode || "" });
         setTemplateRows(manage.rows.length > 0 ? manage.rows : [{ itemId: "", unitCode: "" }]);
         setShowManage(true);
       }
@@ -190,7 +195,10 @@ export function TemplatesTab({
       const fill = readDraft<FillDraft>(FILL_DRAFT_KEY);
       if (fill) {
         const template = templates.find((candidate) => candidate.id === fill.templateId);
-        if (template) setFilling((current) => current || template);
+        if (template) {
+          setFilling((current) => current || template);
+          setFillSupplier((current) => current || template.supplierCode || "");
+        }
       }
     }, 0);
     return () => window.clearTimeout(timer);
@@ -239,6 +247,7 @@ export function TemplatesTab({
     setFillDepartment(template.departmentCode || departmentsForBranch(branchCode)[0]?.code || "");
     setFillNeededDate(today());
     setFillNote("");
+    setFillSupplier(template.supplierCode || "");
     setFillQuantities({});
     setFillSearch("");
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -277,6 +286,7 @@ export function TemplatesTab({
           departmentCode: fillDepartment,
           neededDate: fillNeededDate,
           note: fillNote,
+          supplierCode: fillSupplier,
           lines,
         }),
       });
@@ -296,7 +306,7 @@ export function TemplatesTab({
 
   const resetTemplateForm = () => {
     setEditingTemplate(null);
-    setTemplateForm({ name: "", branchCode: "", departmentCode: "", warehouseCode: "", note: "", effectiveFrom: "", effectiveTo: "" });
+    setTemplateForm({ name: "", branchCode: "", departmentCode: "", warehouseCode: "", supplierCode: "", note: "", effectiveFrom: "", effectiveTo: "" });
     setTemplateRows([{ itemId: "", unitCode: "" }]);
     clearDraft(MANAGE_DRAFT_KEY);
   };
@@ -309,6 +319,7 @@ export function TemplatesTab({
       branchCode: template.branchCode || "",
       departmentCode: template.departmentCode || "",
       warehouseCode: template.warehouseCode || "",
+      supplierCode: template.supplierCode || "",
       note: template.note || "",
       effectiveFrom: templateWindow(template).from || "",
       effectiveTo: templateWindow(template).to || "",
@@ -340,6 +351,7 @@ export function TemplatesTab({
           branchCode: templateForm.branchCode,
           departmentCode: templateForm.departmentCode,
           warehouseCode: templateForm.warehouseCode,
+          supplierCode: templateForm.supplierCode,
           effectiveFrom: templateForm.effectiveFrom,
           effectiveTo: templateForm.effectiveTo,
           note: templateForm.note,
@@ -546,6 +558,16 @@ export function TemplatesTab({
             <label className="block text-xs font-bold text-slate-600">Ngày cần hàng
               <DateInput value={fillNeededDate} onChange={setFillNeededDate} className="control" ariaLabel="Ngày cần hàng" />
             </label>
+            <label className="block text-xs font-bold text-slate-600">Nhà cung cấp
+              <div className="mt-1.5">
+                <SearchableSelect
+                  value={fillSupplier}
+                  onChange={setFillSupplier}
+                  options={[{ value: "", label: "Để thu mua chọn" }, ...suppliers]}
+                  placeholder="Để thu mua chọn"
+                />
+              </div>
+            </label>
             <label className="block text-xs font-bold text-slate-600">Ghi chú
               <input className="control" value={fillNote} onChange={(e) => setFillNote(e.target.value)} placeholder="Không bắt buộc" />
             </label>
@@ -697,7 +719,7 @@ export function TemplatesTab({
                   return (
                     <tr key={template.id} onClick={() => setSelectedId(template.id)} className={`border-t border-slate-100 cursor-pointer ${isSelected ? "bg-blue-50" : "hover:bg-slate-50"}`}>
                       <td className="cell min-w-[200px]"><b className="text-slate-800">{template.name}</b><small>{template.code}</small></td>
-                      <td className="cell">{template.branchCode ? storeLabel(template.branchCode) : <span className="text-slate-500">Mọi cửa hàng</span>}<small>{departmentName(template.departmentCode)}{template.warehouseCode ? ` · Kho ${template.warehouseCode}` : ""}</small></td>
+                      <td className="cell">{template.branchCode ? storeLabel(template.branchCode) : <span className="text-slate-500">Mọi cửa hàng</span>}<small>{departmentName(template.departmentCode)}{template.warehouseCode ? ` · Kho ${template.warehouseCode}` : ""}{template.supplierName ? ` · ${template.supplierName}` : ""}</small></td>
                       <td className="cell whitespace-nowrap">
                         <span className={`status ${WINDOW_TONE[status]}`}>{WINDOW_LABEL[status]}</span>
                         <small className="block text-slate-500">{window.from ? dayText(window.from) : "…"} → {window.to ? dayText(window.to) : "…"}</small>
@@ -737,6 +759,7 @@ export function TemplatesTab({
               <dl className="px-4 sm:px-5 py-3 grid grid-cols-2 lg:grid-cols-4 gap-3 text-sm border-b border-slate-100">
                 <div><dt className="text-xs font-bold text-slate-500">Cửa hàng</dt><dd>{selected.branchCode ? storeLabel(selected.branchCode) : "Dùng chung mọi cửa hàng"}</dd></div>
                 <div><dt className="text-xs font-bold text-slate-500">Bộ phận mặc định</dt><dd>{departmentName(selected.departmentCode) || "Người đặt tự chọn"}</dd></div>
+                <div><dt className="text-xs font-bold text-slate-500">Nhà cung cấp mặc định</dt><dd>{selected.supplierName || <span className="text-slate-400">Chưa chọn</span>}</dd></div>
                 <div><dt className="text-xs font-bold text-slate-500">Kho nhận hàng</dt><dd>{selected.warehouseCode || <span className="text-slate-400">Mọi kho</span>}</dd></div>
                 <div><dt className="text-xs font-bold text-slate-500">Ngày áp dụng</dt><dd>{selectedWindow?.from ? dayText(selectedWindow.from) : <span className="text-slate-400">Không giới hạn</span>}</dd></div>
                 <div><dt className="text-xs font-bold text-slate-500">Ngày kết thúc</dt><dd>{selectedWindow?.to ? dayText(selectedWindow.to) : <span className="text-slate-400">Không giới hạn</span>}</dd></div>
@@ -798,6 +821,16 @@ export function TemplatesTab({
                     .filter((warehouse) => !templateForm.branchCode || !warehouse.branch || warehouse.branch === "ALL" || warehouse.branch === templateForm.branchCode)
                     .map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name} ({warehouse.code})</option>)}
                 </select>
+              </label>
+              <label className="block text-xs font-bold text-slate-600">Nhà cung cấp mặc định
+                <div className="mt-1.5">
+                  <SearchableSelect
+                    value={templateForm.supplierCode}
+                    onChange={(value) => setTemplateForm((current) => ({ ...current, supplierCode: value }))}
+                    options={[{ value: "", label: "Chưa chọn — người đặt / thu mua chọn" }, ...suppliers]}
+                    placeholder="Chưa chọn — người đặt / thu mua chọn"
+                  />
+                </div>
               </label>
               <label className="block text-xs font-bold text-slate-600">Bộ phận mặc định
                 <select className="control" value={templateForm.departmentCode} onChange={(e) => { const value = e.target.value; setTemplateForm((current) => ({ ...current, departmentCode: value })); }}>

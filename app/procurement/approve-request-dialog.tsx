@@ -7,7 +7,10 @@ import { purchaseLineUnit, toPurchasePrice, toPurchaseQuantity, type PurchaseUni
 
 type ApproveLine = PurchaseUnitLine & { id: string; itemId: string; quantity: number; item: { code: string; name: string; unit: string } };
 type ApproveQuote = { supplierCode: string; supplierName: string; isSelected: boolean; lines: Array<PurchaseUnitLine & { itemId: string; unitCost: number }> };
-export type ApprovableRequest = { id: string; code: string; branchCode: string; reason: string; warehouseCode?: string | null; lines: ApproveLine[]; quotes: ApproveQuote[] };
+export type ApprovableRequest = { id: string; code: string; branchCode: string; reason: string; warehouseCode?: string | null; supplierCode?: string | null; supplierName?: string | null; lines: ApproveLine[]; quotes: ApproveQuote[] };
+type ActivePriceRow = { itemId: string; supplierCode: string; supplierName: string; stockUnitPrice: number; unitPrice: number; unitCode: string; priceListCode: string };
+/** Tổng tiền PR theo từng NCC (bảng giá đang hiệu lực + báo giá trên PR) để thu mua so sánh lúc duyệt. */
+type SupplierCompare = { supplierCode: string; supplierName: string; total: number; covered: number; source: string };
 type Option = { value: string; label: string; subLabel?: string };
 
 /**
@@ -34,9 +37,11 @@ export function ApproveRequestDialog({
   onClose: () => void;
   onApproved: (message: string) => Promise<void> | void;
 }) {
+  // NCC mặc định: NCC đề xuất trên PR (từ mẫu / người đặt) → báo giá đã chốt; thu mua đổi được.
   const initialQuote = request.quotes.find((quote) => quote.isSelected) || null;
-  const [supplierCode, setSupplierCode] = useState(initialQuote?.supplierCode || "");
-  const [supplierName, setSupplierName] = useState(initialQuote?.supplierName || "");
+  const [supplierCode, setSupplierCode] = useState(request.supplierCode || initialQuote?.supplierCode || "");
+  const [supplierName, setSupplierName] = useState(request.supplierName || initialQuote?.supplierName || "");
+  const [compare, setCompare] = useState<SupplierCompare[] | null>(null);
   const [warehouseCode, setWarehouseCode] = useState(request.warehouseCode || defaultWarehouse);
   const [prices, setPrices] = useState<Record<string, string>>({});
   const [priceSource, setPriceSource] = useState<Record<string, string>>({});
@@ -75,6 +80,39 @@ export function ApproveRequestDialog({
       });
     return () => { cancelled = true; };
   }, [supplierCode, request]);
+
+  // So sánh giá mọi NCC cho đúng các dòng của PR: bảng giá đang hiệu lực của cửa hàng + báo giá trên PR.
+  useEffect(() => {
+    let cancelled = false;
+    const query = new URLSearchParams({ view: "active-prices", branchCode: request.branchCode });
+    void fetch(`/api/procurement?${query.toString()}`)
+      .then(async (response) => (response.ok ? await response.json() as { prices: ActivePriceRow[] } : { prices: [] }))
+      .catch(() => ({ prices: [] as ActivePriceRow[] }))
+      .then(({ prices }) => {
+        if (cancelled) return;
+        const rows = new Map<string, SupplierCompare>();
+        const add = (code: string, name: string, source: string, amount: number) => {
+          const row = rows.get(code) || { supplierCode: code, supplierName: name, total: 0, covered: 0, source };
+          row.total += amount;
+          row.covered += 1;
+          rows.set(code, row);
+        };
+        for (const quote of request.quotes) {
+          for (const line of request.lines) {
+            const quoteLine = quote.lines.find((candidate) => candidate.itemId === line.itemId);
+            if (quoteLine && quoteLine.unitCost > 0) add(quote.supplierCode, quote.supplierName, "báo giá", line.quantity * quoteLine.unitCost);
+          }
+        }
+        const quoted = new Set(request.quotes.map((quote) => quote.supplierCode));
+        for (const price of prices) {
+          if (quoted.has(price.supplierCode)) continue;
+          const line = request.lines.find((candidate) => candidate.itemId === price.itemId);
+          if (line && price.stockUnitPrice > 0) add(price.supplierCode, price.supplierName, "bảng giá", line.quantity * price.stockUnitPrice);
+        }
+        setCompare([...rows.values()].sort((a, b) => b.covered - a.covered || a.total - b.total));
+      });
+    return () => { cancelled = true; };
+  }, [request]);
 
   const total = request.lines.reduce((sum, line) => sum + toPurchaseQuantity(line.quantity, line) * Number(prices[line.id] || 0), 0);
   const unpriced = request.lines.filter((line) => !(Number(prices[line.id]) > 0)).length;
@@ -148,6 +186,31 @@ export function ApproveRequestDialog({
               </select>
             </label>
           </div>
+          {compare && compare.length > 0 && (
+            <div className="rounded-lg border border-slate-200 p-3 text-sm space-y-1.5">
+              <p className="text-xs font-bold text-slate-600 uppercase">So sánh giá NCC cho phiếu này</p>
+              {compare.slice(0, 6).map((row, index) => {
+                const cheapest = index === 0 && row.covered === compare[0].covered;
+                const current = row.supplierCode === supplierCode;
+                return (
+                  <button
+                    key={row.supplierCode}
+                    type="button"
+                    onClick={() => { setSupplierCode(row.supplierCode); setSupplierName(row.supplierName); }}
+                    className={`w-full flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left ${current ? "bg-blue-50 ring-1 ring-blue-300" : "hover:bg-slate-50"}`}
+                    title="Chọn NCC này"
+                  >
+                    <span className="min-w-0 truncate">
+                      <b>{row.supplierName}</b>
+                      <small className="text-slate-500"> · {row.covered}/{request.lines.length} mặt hàng · theo {row.source}</small>
+                    </span>
+                    <span className={`tabular-nums whitespace-nowrap ${cheapest ? "text-emerald-700 font-bold" : ""}`}>{money(Math.round(row.total))} đ{cheapest ? " · rẻ nhất" : ""}</span>
+                  </button>
+                );
+              })}
+              <p className="text-[11px] text-slate-500">Bấm một NCC để đổi; tổng chỉ tính các mặt hàng NCC đó có giá.</p>
+            </div>
+          )}
           <div className="overflow-x-auto border border-slate-200 rounded-lg">
             <table className="w-full text-sm">
               <thead className="bg-slate-50 text-[11px] uppercase text-slate-500">

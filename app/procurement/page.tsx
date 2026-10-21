@@ -32,7 +32,7 @@ type UnitFields = { unitCode?: string | null; conversionRate?: number | null };
 type RequestLine = UnitFields & { id: string; itemId: string; quantity: number; estimatedUnitCost: number; imageUrl: string | null; note?: string | null; item: Item };
 type QuoteLine = UnitFields & { itemId: string; quantity: number; unitCost: number; vatRate?: number | null; item?: Item };
 type Quote = { id: string; supplierCode: string; supplierName: string; totalAmount: number; deliveryDays: number | null; paymentTerms: string | null; isSelected: boolean; note: string | null; lines: QuoteLine[] };
-type PurchaseRequest = { id: string; code: string; requestDate: string; branchCode: string; departmentCode: string | null; warehouseCode?: string | null; rejectReason?: string | null; requestedBy: string; neededDate: string | null; reason: string; status: string; approvedAt: string | null; note: string | null; lines: RequestLine[]; quotes: Quote[]; orders?: Array<{ id: string; code: string; status: string }> };
+type PurchaseRequest = { id: string; code: string; requestDate: string; branchCode: string; departmentCode: string | null; warehouseCode?: string | null; supplierCode?: string | null; supplierName?: string | null; rejectReason?: string | null; requestedBy: string; neededDate: string | null; reason: string; status: string; approvedAt: string | null; note: string | null; lines: RequestLine[]; quotes: Quote[]; orders?: Array<{ id: string; code: string; status: string }> };
 type OrderLine = UnitFields & { id: string; itemId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; imageUrl: string | null; item: Item };
 type PurchaseOrder = { id: string; code: string; requestId: string | null; orderDate: string; supplierCode: string; supplierName: string; branchCode: string; departmentCode: string | null; warehouseCode: string; expectedDate: string | null; status: string; approvedAt: string | null; note: string | null; totalAmount: number; shareToken: string | null; lines: OrderLine[]; payable: { outstandingAmount: number } | null };
 type Data = { items: Item[]; requests: PurchaseRequest[]; orders: PurchaseOrder[]; departments: MasterItem[]; itemGroups: MasterItem[]; warehouses: MasterItem[]; assetGroups: MasterItem[]; templates: PurchaseTemplate[]; suppliers: Supplier[]; priceSuggestions: Record<string, PriceSuggestion> };
@@ -107,6 +107,7 @@ export default function ProcurementPage() {
     branchCode: "HCM",
     departmentCode: "",
     warehouseCode: "",
+    supplierCode: "",
     neededDate: new Date().toISOString().slice(0, 10),
     reason: "Bổ sung nguyên liệu vận hành",
   });
@@ -556,6 +557,7 @@ export default function ProcurementPage() {
       branchCode: "HCM",
       departmentCode: data.departments.find((item) => !item.branch || item.branch === "ALL" || item.branch === "HCM")?.code || "",
       warehouseCode: "",
+      supplierCode: "",
       neededDate: new Date().toISOString().slice(0, 10),
       reason: "Bổ sung nguyên liệu vận hành",
     }));
@@ -570,6 +572,7 @@ export default function ProcurementPage() {
       branchCode: request.branchCode,
       departmentCode: request.departmentCode || "",
       warehouseCode: request.warehouseCode || "",
+      supplierCode: request.supplierCode || "",
       neededDate: (request.neededDate || request.requestDate).slice(0, 10),
       reason: request.reason,
     });
@@ -602,6 +605,7 @@ export default function ProcurementPage() {
           branchCode: requestForm.branchCode,
           departmentCode: requestForm.departmentCode,
           warehouseCode: requestForm.warehouseCode,
+          supplierCode: requestForm.supplierCode,
           neededDate: requestForm.neededDate,
           reason: requestForm.reason,
           lines,
@@ -614,7 +618,7 @@ export default function ProcurementPage() {
       return;
     }
 
-    const ok = await send("POST", { action: "CREATE_REQUEST", branchCode: requestForm.branchCode, departmentCode: requestForm.departmentCode, warehouseCode: requestForm.warehouseCode, neededDate: requestForm.neededDate, reason: requestForm.reason, lines }, `Đã tạo yêu cầu mua hàng (${lines.length} mặt hàng).`);
+    const ok = await send("POST", { action: "CREATE_REQUEST", branchCode: requestForm.branchCode, departmentCode: requestForm.departmentCode, warehouseCode: requestForm.warehouseCode, supplierCode: requestForm.supplierCode, neededDate: requestForm.neededDate, reason: requestForm.reason, lines }, `Đã tạo yêu cầu mua hàng (${lines.length} mặt hàng).`);
     if (ok) setRequestRows([emptyRequestRow()]);
   };
 
@@ -936,6 +940,7 @@ export default function ProcurementPage() {
           templates={data.templates}
           departments={data.departments}
           warehouses={data.warehouses}
+          suppliers={supplierOptions}
           notify={setMessage}
           reload={loadData}
         />
@@ -1007,6 +1012,17 @@ export default function ProcurementPage() {
                       <option key={warehouse.code} value={warehouse.code}>{warehouse.name} ({warehouse.code})</option>
                     ))}
                   </select>
+                </Field>
+
+                <Field label="Nhà cung cấp đề xuất">
+                  <div className="mt-1.5">
+                    <SearchableSelect
+                      value={requestForm.supplierCode}
+                      onChange={(supplierCode) => setRequestForm({ ...requestForm, supplierCode })}
+                      options={[{ value: "", label: "Để thu mua chọn" }, ...supplierOptions]}
+                      placeholder="Để thu mua chọn"
+                    />
+                  </div>
                 </Field>
 
                 <Field label="Ngày cần hàng">
@@ -1105,14 +1121,15 @@ export default function ProcurementPage() {
           )}
 
           <section className="table-panel shadow-sm">
-            <div className="p-4 sm:p-5 flex items-center justify-between gap-3">
+            {/* Điện thoại: tiêu đề và nút xếp dọc, ẩn đoạn giải thích (từng bị ép thành cột chữ hẹp). */}
+            <div className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
               <div className="min-w-0">
                 <h2 className="font-bold">Danh sách PR</h2>
-                <p className="text-xs text-slate-500 mt-1">
-                  Yêu cầu gửi lên là mua hàng báo giá được ngay, không cần duyệt. &quot;Giá dự kiến&quot; do hệ thống tự đề xuất (báo giá đã chốt → báo giá gần nhất → đơn mua gần nhất → giá vốn tồn kho), chỉ để tham khảo — giá chính thức lấy từ báo giá NCC ở tab So sánh giá.
+                <p className="hidden sm:block text-xs text-slate-500 mt-1">
+                  Yêu cầu gửi lên chờ thu mua duyệt → lên PO. &quot;Giá dự kiến&quot; do hệ thống tự đề xuất, chỉ để tham khảo — giá chính thức theo bảng giá / báo giá NCC.
                 </p>
               </div>
-              <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
+              <div className="flex flex-wrap items-center sm:justify-end gap-2 sm:shrink-0">
                 {canCreate && !showRequestForm && !editingRequest && (
                   <button type="button" onClick={() => setShowRequestForm(true)} className="secondary-button bg-white whitespace-nowrap">
                     <span className="material-symbols-outlined text-lg">add</span>Tạo yêu cầu mua
@@ -1188,7 +1205,7 @@ export default function ProcurementPage() {
                     </div>
                     <span className={`status ${requestStatusStyle(request.status)} shrink-0`}>{requestStatusLabel(request.status)}</span>
                   </div>
-                  <p className="text-sm text-slate-700">{request.reason}{request.warehouseCode ? <span className="text-xs text-slate-500"> · Kho {request.warehouseCode}</span> : null}</p>
+                  <p className="text-sm text-slate-700">{request.reason}{request.warehouseCode ? <span className="text-xs text-slate-500"> · Kho {request.warehouseCode}</span> : null}{request.supplierName ? <span className="text-xs text-slate-500"> · NCC {request.supplierName}</span> : null}</p>
                   <p className="text-xs text-slate-500">{request.lines.map((line) => `${line.item.name}: ${qtyText(line.quantity, line)}`).join(", ")}</p>
                   {request.status === "REJECTED" && <p className="text-xs text-rose-700">Thu mua từ chối{request.rejectReason ? `: ${request.rejectReason}` : ""} — bấm Sửa để chỉnh và gửi lại, hoặc Huỷ phiếu.</p>}
                   <div className="flex items-center justify-between pt-1 border-t border-slate-100">
@@ -1253,6 +1270,7 @@ export default function ProcurementPage() {
                     <span className={`status ${requestStatusStyle(request.status)}`}>{requestStatusLabel(request.status)}</span>
                     {request.status === "REJECTED" && request.rejectReason && <small className="text-rose-700">{request.rejectReason}</small>}
                     {request.warehouseCode && <small>Kho {request.warehouseCode}</small>}
+                    {request.supplierName && <small>NCC {request.supplierName}</small>}
                   </td>
                   <td className="cell">
                     <div className="flex items-center justify-end gap-2">

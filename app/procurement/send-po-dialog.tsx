@@ -142,7 +142,9 @@ export function SendPurchaseOrderDialog({
       const isTouch = typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
       if (isTouch && file && navigator.canShare?.({ files: [file] })) {
         try {
-          await navigator.share({ files: [file], text: message, title: `Đơn đặt hàng ${sheet.code}` });
+          // Chỉ gửi ẢNH phiếu (khách 21/10/2026): kèm text/title thì Zalo dán thêm cả khối tin nhắn chữ
+          // bên dưới ảnh — trùng nội dung, NCC đã có QR trên ảnh để mở link.
+          await navigator.share({ files: [file] });
           flash("Đã mở bảng chia sẻ — chọn Zalo rồi chọn nhà cung cấp.");
           return;
         } catch {

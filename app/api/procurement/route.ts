@@ -204,6 +204,19 @@ function orderWarehouseScope(session: DemoSession): Array<{ warehouseCode: { in:
   return allowed ? [{ warehouseCode: { in: allowed } }] : [];
 }
 
+/**
+ * NCC mặc định của mẫu / NCC đề xuất của PR (khách 21/10/2026). Trống = chưa chọn; tên lấy theo danh
+ * mục đối tác để không tin tên client gửi. Trả undefined khi body không có trường này (giữ nguyên).
+ */
+async function resolveSupplier(value: unknown) {
+  if (value === undefined) return undefined;
+  const supplierCode = cleanText(value);
+  if (!supplierCode) return { supplierCode: null, supplierName: null };
+  const partner = await prisma.masterDataItem.findFirst({ where: { type: "PARTNER", code: supplierCode }, select: { code: true, name: true } });
+  if (!partner) businessError(`Không tìm thấy nhà cung cấp ${supplierCode}.`);
+  return { supplierCode: partner.code, supplierName: partner.name };
+}
+
 /** Kho của mẫu (trống = mọi kho): thuộc cửa hàng của mẫu và trong phạm vi kho của người lập. */
 async function resolveTemplateWarehouse(session: DemoSession, branchCode: string | null, value: unknown) {
   const warehouseCode = cleanText(value);
@@ -532,6 +545,7 @@ export async function POST(request: Request) {
       // Mã và trạng thái do MÁY CHỦ quyết định. Nhận từ client thì người chỉ có quyền tạo có thể
       // gửi kèm status/code tuỳ ý để nhảy cóc trạng thái hoặc phá dãy mã chứng từ.
       const warehouseCode = await resolveRequestWarehouse(auth.session, branchCode, body.warehouseCode);
+      const supplier = await resolveSupplier(body.supplierCode);
       const code = await generatedCode("PR", "PurchaseRequest");
       if (await findDeletedByUnique("PurchaseRequest", { code })) {
         businessError(duplicatedInTrashMessage(code, "Đề nghị mua hàng"));
@@ -542,6 +556,7 @@ export async function POST(request: Request) {
           branchCode,
           departmentCode,
           warehouseCode,
+          ...supplier,
           requestedBy: auth.session.name,
           requestDate: toDate(body.requestDate),
           neededDate: body.neededDate ? toDate(body.neededDate) : null,
@@ -867,12 +882,14 @@ export async function POST(request: Request) {
       const branchCode = cleanText(body.branchCode) || null;
       assertTemplateBranchAccess(auth.session, branchCode);
       const warehouseCode = await resolveTemplateWarehouse(auth.session, branchCode, body.warehouseCode);
+      const supplier = await resolveSupplier(body.supplierCode);
       const result = await prisma.purchaseRequestTemplate.create({
         data: {
           code: await generatedTemplateCode(),
           name,
           branchCode,
           warehouseCode,
+          ...supplier,
           departmentCode: cleanText(body.departmentCode) || null,
           ...templateEffectiveDates(body),
           note: cleanText(body.note) || null,
@@ -951,6 +968,10 @@ export async function POST(request: Request) {
 
       const departmentCode = cleanText(body.departmentCode) || template.departmentCode || null;
       const warehouseCode = await resolveRequestWarehouse(auth.session, branchCode, template.warehouseCode, body.warehouseCode);
+      // NCC: người đặt chọn (mẫu chưa có NCC) → NCC mặc định của mẫu.
+      const supplier = cleanText(body.supplierCode)
+        ? await resolveSupplier(body.supplierCode)
+        : { supplierCode: template.supplierCode, supplierName: template.supplierName };
       const code = await generatedCode("PR", "PurchaseRequest");
       const result = await prisma.purchaseRequest.create({
         data: {
@@ -958,6 +979,7 @@ export async function POST(request: Request) {
           branchCode,
           departmentCode,
           warehouseCode,
+          ...supplier,
           requestedBy: auth.session.name,
           requestDate: new Date(),
           neededDate: body.neededDate ? toDate(body.neededDate) : null,
@@ -1211,6 +1233,7 @@ export async function PATCH(request: Request) {
       if (branchCode !== template.branchCode) assertTemplateBranchAccess(auth.session, branchCode);
       assertWarehouseAccess(auth.session, template.warehouseCode);
       const warehouseCode = body.warehouseCode !== undefined ? await resolveTemplateWarehouse(auth.session, branchCode, body.warehouseCode) : template.warehouseCode;
+      const supplier = await resolveSupplier(body.supplierCode);
 
       const rawLines = body.lines !== undefined
         ? (Array.isArray(body.lines) ? (body.lines as Array<{ itemId?: unknown; unitCode?: unknown; note?: unknown }>) : [])
@@ -1236,6 +1259,7 @@ export async function PATCH(request: Request) {
             name,
             branchCode,
             warehouseCode,
+            ...supplier,
             ...(body.departmentCode !== undefined ? { departmentCode: cleanText(body.departmentCode) || null } : {}),
             ...(body.effectiveFrom !== undefined || body.effectiveTo !== undefined ? templateEffectiveDates(body) : {}),
             ...(body.status !== undefined ? { status: cleanText(body.status) || "ACTIVE" } : {}),
@@ -1330,6 +1354,7 @@ export async function PATCH(request: Request) {
                 ? { status: cleanText(body.status) }
                 : {}),
             ...(body.warehouseCode !== undefined ? { warehouseCode: await resolveRequestWarehouse(auth.session, branchCode, body.warehouseCode) } : {}),
+            ...(await resolveSupplier(body.supplierCode)),
             ...(body.note !== undefined ? { note: cleanText(body.note) || null } : {}),
           },
           include: { lines: { include: { item: true } } },

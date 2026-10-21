@@ -1104,6 +1104,9 @@ model PurchaseRequestTemplate {
   departmentCode String?
   /// Kho nhận hàng của mẫu (khách 21/10/2026): user phân kho chỉ thấy mẫu của kho mình. Trống = mọi kho.
   warehouseCode  String?
+  /// NCC mặc định của mẫu — PR theo mẫu mang sẵn NCC này, thu mua vẫn đổi lúc duyệt.
+  supplierCode   String?
+  supplierName   String?
   /// Ngày áp dụng / ngày kết thúc của mẫu (khách yêu cầu 03/10/2026) — để trống là không chặn
   /// đầu đó; ngoài khoảng này mẫu không dùng để đặt hàng được. Mốc 00:00 giờ VN.
   effectiveFrom  DateTime?
@@ -1148,6 +1151,9 @@ model PurchaseRequest {
   departmentCode String?
   /// Kho nhận hàng (từ mẫu hoặc chọn tay) — PO lập từ PR nhận về kho này; phạm vi xem theo kho của user.
   warehouseCode  String?
+  /// NCC đề xuất (từ mẫu hoặc người đặt chọn); thu mua đổi được lúc Duyệt → PO.
+  supplierCode   String?
+  supplierName   String?
   requestedBy    String
   neededDate     DateTime?
   reason         String
