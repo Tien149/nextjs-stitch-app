@@ -19,7 +19,7 @@ import { Prisma } from "@prisma/custom-client";
 import type { TxClient } from "@/lib/prisma";
 import { STOCKTAKE_APPROVED } from "@/lib/stocktake-status";
 import { latestKnownUnitCost } from "@/lib/inventory-stock";
-import { netMovementsAfter } from "@/lib/stocktake-batch";
+import { cutoffMinuteEnd, netMovementsAfter } from "@/lib/stocktake-batch";
 
 export const EXPLANATION_DRAFT = "DRAFT";
 export const EXPLANATION_LOCKED = "LOCKED";
@@ -333,8 +333,8 @@ export async function loadPeriodMovements(db: TxClient, warehouseCode: string, f
     JOIN "InventoryTransaction" t ON t."id" = l."transactionId"
     WHERE t."deletedAt" IS NULL
       AND (t."warehouseCode" = ${warehouseCode} OR (t."transactionType" = 'DIEU_CHUYEN' AND t."toWarehouseCode" = ${warehouseCode}))
-      AND t."transactionDate" <= ${to}
-      ${from ? Prisma.sql`AND t."transactionDate" > ${from}` : Prisma.empty}
+      AND t."transactionDate" <= ${cutoffMinuteEnd(to)}
+      ${from ? Prisma.sql`AND t."transactionDate" > ${cutoffMinuteEnd(from)}` : Prisma.empty}
       AND l."itemId" IN (${Prisma.join(itemIds)})
     GROUP BY 1, 2, 3
   `);
@@ -382,8 +382,8 @@ async function loadUncountedLines(
       JOIN "InventoryTransaction" t ON t."id" = l."transactionId"
       WHERE t."deletedAt" IS NULL
         AND (t."warehouseCode" = ${warehouseCode} OR (t."transactionType" = 'DIEU_CHUYEN' AND t."toWarehouseCode" = ${warehouseCode}))
-        AND t."transactionDate" <= ${to}
-        ${from ? Prisma.sql`AND t."transactionDate" > ${from}` : Prisma.empty}
+        AND t."transactionDate" <= ${cutoffMinuteEnd(to)}
+        ${from ? Prisma.sql`AND t."transactionDate" > ${cutoffMinuteEnd(from)}` : Prisma.empty}
     `),
   ]);
   const closing = new Map([...stock].map(([itemId, row]) => [itemId, row.quantity]));

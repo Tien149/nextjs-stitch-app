@@ -53,8 +53,18 @@ export async function nextStocktakeBatchCode(tx: Tx, cutoffAt: Date) {
   return head + String(nextSeqFromCodes(rows.map((row) => row.code), head)).padStart(4, "0");
 }
 
-/** Σ(nhập − xuất) của kho theo mã, chỉ phiếu có ngày chứng từ SAU giờ chốt. */
+/**
+ * Giờ chốt chọn theo PHÚT (23:59) nhưng phiếu rã doanh thu cả ngày mang 23:59:59 — giờ chốt tính
+ * hết phút đó, không thì cả ngày bán cuối bị coi là "sau giờ chốt" (lộ ra 21/10/2026 khi múi giờ
+ * database về UTC: Giải trình lệch Nhập - Xuất - Tồn đúng phần rã ngày 26/08).
+ */
+export function cutoffMinuteEnd(cutoffAt: Date) {
+  return new Date(Math.floor(cutoffAt.getTime() / 60_000) * 60_000 + 59_999);
+}
+
+/** Σ(nhập − xuất) của kho theo mã, chỉ phiếu có ngày chứng từ SAU giờ chốt (hết phút chốt). */
 export async function netMovementsAfter(tx: Tx, warehouseCode: string, cutoffAt: Date) {
+  cutoffAt = cutoffMinuteEnd(cutoffAt);
   const rows = await tx.$queryRaw<Array<{ itemId: string; net: number }>>(Prisma.sql`
     SELECT "itemId", SUM(delta)::float8 AS net FROM (
       SELECT l."itemId", CASE WHEN LEFT(t."transactionType", 5) = 'NHAP_' THEN l."quantity" ELSE -l."quantity" END AS delta

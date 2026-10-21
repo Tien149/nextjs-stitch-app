@@ -329,9 +329,11 @@ function buildStockMovements(transactions: MovementLineSource[], partnerNames: M
  * khớp nhau. Bỏ trống đầu nào là không chặn đầu đó.
  */
 function stockPeriod(searchParams: URLSearchParams) {
+  // Ngày theo giờ VIỆT NAM (đầu ngày 00:00 +07): "đến 26/08" là hết 23:59:59 ngày 26/08 giờ VN,
+  // khớp giờ chốt kiểm kê / Giải trình (trước đây mốc 00:00 UTC = 07:00 sáng hôm sau).
   const parse = (value: string | null) => {
     if (!value) return null;
-    const date = new Date(`${value}T00:00:00Z`);
+    const date = new Date(`${value}T00:00:00+07:00`);
     return Number.isNaN(date.getTime()) ? null : date;
   };
   const from = parse(searchParams.get("reportFrom"));
