@@ -2048,35 +2048,27 @@ export async function POST(request: Request) {
       if (stocktake.status !== "APPROVED") businessError(`Phiếu kiểm kê ${stocktake.code} đang ở trạng thái ${stocktake.status}, chưa duyệt nên không có gì để mở lại.`);
       if (stocktake.batchId || stocktake.locationCode) businessError(`Phiếu ${stocktake.code} được duyệt gộp theo vị trí — mở lại cả đợt kiểm kê ở mục Kiểm kê theo vị trí.`);
       await assertPeriodOpen({ date: stocktake.stocktakeDate, branchCode: stocktake.branchCode }, "mở lại phiếu kiểm kê");
+      /**
+       * Phiếu điều chỉnh của chính phiếu kiểm kê + phần rã kiểm dư BTP của nó (phiếu chế biến / bù nguyên
+       * liệu trong lần rã, referenceId = phiếu kiểm kê). Khách 21/10/2026: mở lại 5 phiếu T8 bị chặn vì
+       * phần kiểm dư đã rã — nay gỡ riêng phần đó, không phải hoàn tác cả lần rã (chứa doanh thu cả tháng).
+       * Bỏ luật "có phiếu phát sinh sau": hoàn kho trả đúng số lượng + trị giá từng phiếu (như hoàn tác rã).
+       */
       const explodedRun = explodedRunOf(stocktake.explosionStatus);
-      if (explodedRun) {
-        businessError(`Phần kiểm dư bán thành phẩm của phiếu ${stocktake.code} đã rã BOM trong lần rã ${explodedRun}. Hoàn tác lần rã đó ở tab Chế biến trước khi mở lại phiếu.`);
-      }
-
       const documents = await prisma.inventoryTransaction.findMany({
-        where: { referenceType: "STOCKTAKE", referenceId: stocktake.id },
+        where: {
+          OR: [
+            { referenceType: "STOCKTAKE", referenceId: stocktake.id },
+            ...(explodedRun ? [{ referenceType: "PRODUCTION", referenceId: stocktake.id, referenceCode: explodedRun }] : []),
+          ],
+        },
         include: { lines: true },
       });
-
-      // Cùng luật với xoá phiếu kho: chỉ hoàn kho chính xác được khi chưa có phiếu nào phát
-      // sinh sau trên cùng mặt hàng/kho. Có phiếu sau mà cứ hoàn thì số tồn sẽ nhảy sai.
-      const documentIds = documents.map((document) => document.id);
-      const itemIds = [...new Set(documents.flatMap((document) => document.lines.map((line) => line.itemId)))];
-      const warehouseCodes = [...new Set(documents.flatMap((document) => [document.warehouseCode, document.toWarehouseCode].filter((value): value is string => !!value)))];
-      if (documentIds.length > 0) {
-        const newer = await prisma.inventoryTransaction.findFirst({
-          where: {
-            id: { notIn: documentIds },
-            createdAt: { gt: documents[0].createdAt },
-            lines: { some: { itemId: { in: itemIds } } },
-            OR: [{ warehouseCode: { in: warehouseCodes } }, { toWarehouseCode: { in: warehouseCodes } }],
-          },
-          orderBy: { createdAt: "asc" },
-        });
-        if (newer) {
-          businessError(`Đã có phiếu ${newer.code} phát sinh sau phiếu kiểm kê ${stocktake.code} trên cùng mặt hàng/kho nên không hoàn kho chính xác được. Hãy xoá các phiếu phát sinh sau, hoặc lập phiếu điều chỉnh kho thay vì mở lại.`);
-        }
+      // Lần rã cũ (trước 20/10/2026) chưa gắn referenceId cho phần kiểm dư: không tách được, giữ luật cũ.
+      if (explodedRun && !documents.some((document) => document.referenceType === "PRODUCTION")) {
+        businessError(`Phần kiểm dư bán thành phẩm của phiếu ${stocktake.code} đã rã trong lần rã ${explodedRun} (bản cũ, không tách riêng được). Hoàn tác lần rã đó ở tab Chế biến trước khi mở lại phiếu.`);
       }
+      const documentIds = documents.map((document) => document.id);
 
       const reversals = [];
       for (const document of documents) {
@@ -2087,6 +2079,7 @@ export async function POST(request: Request) {
       // theo để P&L không giữ chênh kiểm kê của lần duyệt đã hoàn.
       if (documentIds.length > 0) {
         await prisma.journalEntry.deleteMany({ where: { sourceType: "INVENTORY_ISSUE", sourceId: { in: documentIds } } });
+        await repostInventoryCogs([{ date: stocktake.stocktakeDate, branchCode: stocktake.branchCode }], auth.session.name).catch((error) => console.error(error));
       }
 
       const result = await prisma.stocktakeSession.update({
