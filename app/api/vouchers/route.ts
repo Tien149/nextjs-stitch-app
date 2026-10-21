@@ -286,6 +286,9 @@ export async function GET(request: Request) {
     const partnerText = cleanText(searchParams.get("partnerCode"));
     // Ô "Đối tác" trên danh sách: gõ một phần tên hoặc mã.
     const partnerSearch = cleanText(searchParams.get("partnerSearch"));
+    // Ô "Nội dung" (khách 21/10/2026: phát sinh nhiều, tìm cực): một phần nội dung, số chứng từ,
+    // chứng từ gốc, mã tham chiếu hoặc tên người nhận.
+    const contentSearch = cleanText(searchParams.get("contentSearch"));
     const requestedPage = Number(searchParams.get("page") || "1");
     const requestedPageSize = Number(searchParams.get("pageSize") || "50");
 
@@ -362,6 +365,18 @@ export async function GET(request: Request) {
               { partnerName: contains },
               { partnerCode: contains },
               { partnerAllocations: { some: { OR: [{ partnerName: contains }, { partnerCode: contains }] } } },
+            ],
+          });
+        }
+        if (contentSearch) {
+          const contains = { contains: contentSearch, mode: "insensitive" as const };
+          conditions.push({
+            OR: [
+              { description: contains },
+              { code: contains },
+              { sourceDocumentCode: contains },
+              { externalRef: contains },
+              { recipientName: contains },
             ],
           });
         }
