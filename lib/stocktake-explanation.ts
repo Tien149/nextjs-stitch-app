@@ -315,10 +315,23 @@ export async function loadStocktakeSource(db: TxClient, sourceType: StocktakeSou
     status: session.status,
     code: session.code, branchCode: session.branchCode, warehouseCode: session.warehouseCode,
     cutoffAt: session.stocktakeDate, approvedAt: session.approvedAt,
-    countLines: session.lines.map((line) => ({
-      itemId: line.itemId, itemCode: line.item.code, itemName: line.item.name, goodsGroup: line.item.goodsGroup, unit: line.item.unit,
-      closing: line.systemQuantity + (produced.get(line.itemId) || 0), counted: line.actualQuantity, unitCost: line.unitCost || 0,
-    })),
+    // Một mã đếm ở NHIỀU dòng của phiếu (vd đếm 2 chỗ: Gà Tre 0 + 7) là MỘT mã: cộng số đếm, sổ sách
+    // lấy một lần — trước đây lên hai dòng giải trình, tồn cuối bị cộng đôi (khách 21/10/2026, lệch 7).
+    countLines: [...session.lines.reduce((map, line) => {
+      const current = map.get(line.itemId);
+      if (current) {
+        current.counted += line.actualQuantity;
+        // Dòng trùng mã giữ sổ sách 0 (lib/stocktake-resync), cộng vào vẫn đúng một lần tồn.
+        current.closing += line.systemQuantity;
+        if (!(current.unitCost > 0) && (line.unitCost || 0) > 0) current.unitCost = line.unitCost || 0;
+        return map;
+      }
+      map.set(line.itemId, {
+        itemId: line.itemId, itemCode: line.item.code, itemName: line.item.name, goodsGroup: line.item.goodsGroup, unit: line.item.unit,
+        closing: line.systemQuantity + (produced.get(line.itemId) || 0), counted: line.actualQuantity, unitCost: line.unitCost || 0,
+      });
+      return map;
+    }, new Map<string, StockCountLine>()).values()],
   };
 }
 

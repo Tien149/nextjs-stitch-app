@@ -62,11 +62,15 @@ async function liveBook(tx: Tx, session: SessionWithLines) {
   const balanceOf = new Map(balances.map((balance) => [balance.itemId, balance]));
   const rows = [];
   let linesChanged = false;
+  // Mã đếm ở nhiều dòng: sổ sách đặt hết vào dòng ĐẦU (theo id cho ổn định), các dòng sau sổ sách 0 —
+  // cộng các dòng vẫn ra đúng một lần tồn hệ thống, chênh lệch = tổng đếm − tồn.
+  const firstLineOf = new Map<string, string>();
+  for (const line of [...session.lines].sort((a, b) => a.id.localeCompare(b.id))) if (!firstLineOf.has(line.itemId)) firstLineOf.set(line.itemId, line.id);
   for (const line of session.lines) {
     const atCutoff = (balanceOf.get(line.itemId)?.quantity || 0) - (laterNet.get(line.itemId) || 0);
     /** Tồn hệ thống tại giờ chốt KHÔNG kể điều chỉnh kiểm kê của chính phiếu (đã gồm phần rã kiểm dư). */
     const systemStock = atCutoff - (ownAdj.get(line.itemId) || 0);
-    const book = systemStock - (explosionNet.get(line.itemId) || 0);
+    const book = firstLineOf.get(line.itemId) === line.id ? systemStock - (explosionNet.get(line.itemId) || 0) : 0;
     const variance = line.actualQuantity - book;
     if (Math.abs(line.systemQuantity - book) > EPS || Math.abs(line.varianceQuantity - variance) > EPS) {
       linesChanged = true;
@@ -135,8 +139,14 @@ export async function postStocktakeAdjustments(sessionId: string, actor: string)
     await removeOwnAdjustments(tx, ownDocs, actor);
     const inbound = [];
     const outbound = [];
+    // Mã đếm ở nhiều dòng = một mã: cộng số đếm, so với tồn hệ thống MỘT lần.
+    const countedByItem = new Map<string, number>();
+    for (const { line } of rows) countedByItem.set(line.itemId, (countedByItem.get(line.itemId) || 0) + line.actualQuantity);
+    const seen = new Set<string>();
     for (const { line, systemStock, averageCost } of rows) {
-      const adjustment = line.actualQuantity - systemStock;
+      if (seen.has(line.itemId)) continue;
+      seen.add(line.itemId);
+      const adjustment = (countedByItem.get(line.itemId) || 0) - systemStock;
       if (adjustment > EPS) {
         let unitCost = averageCost > 0 ? averageCost : line.unitCost || 0;
         if (!(unitCost > 0)) unitCost = await latestKnownUnitCost(db, line.itemId, session!.warehouseCode);
