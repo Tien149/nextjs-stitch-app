@@ -29,6 +29,7 @@ import StocktakeExplanationPanel from "@/components/inventory/StocktakeExplanati
 import StocktakeResultsPanel from "@/components/inventory/StocktakeResultsPanel";
 import { EMPTY_STOCKTAKE_FILTER, inStocktakeRange, type StocktakeFilter } from "@/components/inventory/stocktake-filter";
 import { purchaseLineUnit, safeConversionRate, toPurchasePrice, toPurchaseQuantity } from "@/lib/unit-conversion";
+import { QuantityInput } from "@/components/QuantityInput";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
 import { parseVatRate, VAT_RATE_OPTIONS, vatAmountOf, vatRateLabel } from "@/lib/inventory-vat";
 import { cogsRepostMessage, type CogsRepostResult } from "@/lib/inventory-cogs";
@@ -2518,16 +2519,11 @@ export default function InventoryPage() {
                             <b className="block truncate">{line.item.name}</b>
                             <small className="text-slate-500">Còn phải nhận: {qty(remaining)} {lineUnit} · {line.unitCost > 0 ? `giá PO ${unitPrice(toPurchasePrice(line.unitCost, line))} đ/${lineUnit}` : grpoPriceSource[line.id] ? `PO chưa có giá · gợi ý theo ${grpoPriceSource[line.id]}` : "PO chưa có giá — nhập giá thực"}</small>
                           </div>
-                          <input
-                            type="number"
-                            min="0"
-                            max={remaining}
-                            step="any"
-                            inputMode="decimal"
+                          <QuantityInput
                             className="control w-24 text-right"
                             value={grpoQuantities[line.id] ?? String(remaining)}
-                            onChange={(e) => setGrpoQuantities({ ...grpoQuantities, [line.id]: e.target.value })}
-                            aria-label={`Số lượng nhận ${line.item.name}`}
+                            onChange={(value) => setGrpoQuantities({ ...grpoQuantities, [line.id]: value })}
+                            ariaLabel={`Số lượng nhận ${line.item.name}`}
                             title={`Số lượng (${lineUnit})`}
                           />
                           <input

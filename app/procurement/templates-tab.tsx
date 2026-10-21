@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { DateInput } from "@/components/DateInput";
+import { QuantityInput } from "@/components/QuantityInput";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
@@ -606,16 +607,12 @@ export function TemplatesTab({
                     </p>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
-                    <input
-                      type="number"
-                      min="0"
-                      step="any"
-                      inputMode="decimal"
+                    <QuantityInput
                       className="control !mt-0 w-20 text-right text-base"
                       placeholder="0"
                       value={quantity}
-                      onChange={(e) => { const value = e.target.value; setFillQuantities((current) => ({ ...current, [line.id]: value })); }}
-                      aria-label={`Số lượng ${line.item.name}`}
+                      onChange={(value) => setFillQuantities((current) => ({ ...current, [line.id]: value }))}
+                      ariaLabel={`Số lượng ${line.item.name}`}
                     />
                     <span className="text-xs font-semibold text-slate-500 w-12 truncate">{lineUnit(line)}</span>
                   </div>

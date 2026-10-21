@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { DateInput } from "@/components/DateInput";
+import { QuantityInput } from "@/components/QuantityInput";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { PartnerPicker, type CreatedPartner } from "@/components/PartnerPicker";
 import { SearchableSelect } from "@/components/SearchableSelect";
@@ -1078,8 +1079,8 @@ export default function ProcurementPage() {
                       )}
                       <div className="grid grid-cols-2 gap-3">
                         <label className="block text-[11px] font-bold text-slate-600">Số lượng{rowItem ? ` (${row.unitCode || rowItem.unit})` : ""}
-                          <input type="number" min="0.001" step="any" inputMode="decimal" className="control" value={row.quantity} required
-                            onChange={(e) => setRequestRows(requestRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, quantity: e.target.value } : candidate))} />
+                          <QuantityInput className="control" value={row.quantity} required ariaLabel="Số lượng"
+                            onChange={(quantity) => setRequestRows(requestRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, quantity } : candidate))} />
                         </label>
                         <label className="block text-[11px] font-bold text-slate-600">Đơn giá dự kiến{rowItem ? ` (đ/${row.unitCode || rowItem.unit})` : ""}
                           <input type="number" min="0" step="any" inputMode="numeric" className="control" value={row.estimatedUnitCost} required
@@ -1982,16 +1983,11 @@ export default function ProcurementPage() {
                         <p className="text-xs text-slate-500">Còn phải nhận: {qty(remaining)} {lineUnit} · {line.unitCost > 0 ? `giá PO ${unitPrice(toPurchasePrice(line.unitCost, line))} đ/${lineUnit}` : receivePriceSource[line.id] ? `PO chưa có giá · gợi ý theo ${receivePriceSource[line.id]}` : "PO chưa có giá, chưa có bảng giá — nhập giá thực"}</p>
                       </div>
                       <label className="text-[10px] font-bold text-slate-500 text-right">SL ({lineUnit})
-                        <input
-                          type="number"
-                          min="0"
-                          max={remaining}
-                          step="any"
-                          inputMode="decimal"
+                        <QuantityInput
                           className="control !mt-0 w-24 text-right"
                           value={receiveQuantities[line.id] ?? ""}
-                          onChange={(e) => setReceiveQuantities({ ...receiveQuantities, [line.id]: e.target.value })}
-                          aria-label={`Số lượng nhận ${line.item.name}`}
+                          onChange={(value) => setReceiveQuantities({ ...receiveQuantities, [line.id]: value })}
+                          ariaLabel={`Số lượng nhận ${line.item.name}`}
                         />
                       </label>
                       {/* Giá thực mua (khách 21/10/2026: PO duyệt khi chưa có giá) — ghi vào phiếu nhập + công nợ. */}
