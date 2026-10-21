@@ -18,6 +18,7 @@ import { checkWalletFeeRate } from "@/lib/wallet-settlement-allocation";
 import { walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
 import type { ExpenseSummary } from "@/lib/expense-summary";
 
+import { ActionIcon } from "@/components/ActionIcon";
 type CashEntry = { id: string; date: string; createdAt: string; code: string; type: string; branchCode: string; moneySourceCode: string; description: string; pnlItemCode?: string | null; receipt: number; payment: number; balance: number };
 type Schedule = { id: string; period: string; amount: number; status: string };
 type Accrual = { id: string; code: string; name: string; branchCode: string; categoryCode: string; pnlItemCode: string | null; totalAmount: number; startPeriod: string; numberOfPeriods: number; status: string; sourceType: string | null; schedules: Schedule[] };
@@ -1443,28 +1444,16 @@ export default function FinanceOperationsPage() {
                           <td className="px-4 py-3 text-right">
                             <div className="flex justify-end gap-2">
                               {canEdit && transfer.transferPurpose === "CASH_DEPOSIT" && (
-                                <button
-                                  type="button"
-                                  onClick={() => openCashDepositEdit(transfer)}
-                                  className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 font-bold text-blue-700 hover:bg-blue-100"
-                                >
-                                  Sửa
-                                </button>
+                                <ActionIcon kind="edit" title="Sửa phiếu nộp tiền" onClick={() => openCashDepositEdit(transfer)} />
                               )}
                               {canEdit && transfer.code.startsWith("CTNB") && (
-                                <button
-                                  type="button"
-                                  onClick={() => openInternalTransferEdit(transfer)}
-                                  className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 font-bold text-blue-700 hover:bg-blue-100"
-                                >
-                                  Sửa
-                                </button>
+                                <ActionIcon kind="edit" title="Sửa phiếu điều tiền" onClick={() => openInternalTransferEdit(transfer)} />
                               )}
                               {canApproveTransfer ? (
-                                <button type="button" onClick={() => transfer.transferPurpose === "CASH_DEPOSIT" ? openCashApproval([transfer.id]) : void send({ action: "APPROVE_TRANSFER", id: transfer.id }, "Đã duyệt giao dịch điều tiền.")} className="rounded-lg bg-emerald-600 px-3 py-2 font-bold text-white hover:bg-emerald-700">Duyệt</button>
+                                <ActionIcon kind="approve" title="Duyệt" onClick={() => transfer.transferPurpose === "CASH_DEPOSIT" ? openCashApproval([transfer.id]) : void send({ action: "APPROVE_TRANSFER", id: transfer.id }, "Đã duyệt giao dịch điều tiền.")} />
                               ) : <span className="self-center text-slate-400">Chờ Admin</span>}
                               {canEdit && (
-                                <button type="button" onClick={() => void send({ action: "CANCEL_PENDING_TRANSFER", id: transfer.id }, "Đã hủy giao dịch chờ duyệt.")} className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 font-bold text-rose-700 hover:bg-rose-100">Hủy</button>
+                                <ActionIcon kind="cancel" title="Hủy phiếu chờ duyệt" onClick={() => void send({ action: "CANCEL_PENDING_TRANSFER", id: transfer.id }, "Đã hủy giao dịch chờ duyệt.")} />
                               )}
                             </div>
                           </td>
@@ -1562,16 +1551,10 @@ export default function FinanceOperationsPage() {
                           </td>
                           <td className="px-4 py-3 text-right">
                             {canApproveTransfer ? (
-                              <button
-                                type="button"
-                                onClick={() => {
+                              <ActionIcon kind="reopen" title="Mở lại phiếu (về chờ duyệt để sửa)" onClick={() => {
                                   const reason = window.prompt(`Lý do mở lại phiếu ${transfer.code}?`);
                                   if (reason) void send({ action: "REOPEN_CASH_DEPOSIT_TRANSFER", id: transfer.id, reason }, `Đã mở lại phiếu ${transfer.code}, phiếu đang chờ duyệt để sửa.`);
-                                }}
-                                className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 font-bold text-amber-800 hover:bg-amber-100"
-                              >
-                                Mở lại
-                              </button>
+                                }} />
                             ) : (
                               <span className="text-slate-400">Chờ Admin</span>
                             )}
@@ -1879,13 +1862,7 @@ export default function FinanceOperationsPage() {
                             {canEditAdjustment && (
                               <td className="sticky right-0 border-l border-slate-100 bg-white px-5 py-4 whitespace-nowrap text-right">
                                 {row.type === "ADJUSTMENT" ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => openAdjustmentEdit(row)}
-                                    className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-bold text-indigo-700 hover:bg-indigo-100"
-                                  >
-                                    Sửa
-                                  </button>
+                                  <ActionIcon kind="edit" title="Sửa phiếu điều chỉnh" onClick={() => openAdjustmentEdit(row)} />
                                 ) : (
                                   <span className="text-slate-300">-</span>
                                 )}

@@ -20,6 +20,7 @@ import {
 } from "@/lib/supplier-price-list";
 import type { DemoSession } from "@/lib/auth-demo";
 
+import { ActionIcon } from "@/components/ActionIcon";
 /**
  * Tab "Bảng giá NCC" (khách yêu cầu 03/10/2026): giá mua theo từng NCC × khoảng hiệu lực (thường
  * theo tháng), không phụ thuộc yêu cầu mua. Bốn phần: danh sách bảng giá (xem chi tiết hiệu lực
@@ -400,7 +401,7 @@ export function PriceListsTab({ user, canCreate, canDelete, items, suppliers, no
                       <td className="cell">
                         <div className="flex items-center justify-end gap-2 whitespace-nowrap">
                           <button type="button" onClick={() => setDetail(list)} className="action-link text-blue-700 hover:underline">Xem</button>
-                          {canCreate && <button type="button" onClick={() => { setFormError(""); setForm(toForm(list)); }} className="action-link text-slate-700 hover:underline">Sửa</button>}
+                          {canCreate && <ActionIcon kind="edit" title="Sửa bảng giá" onClick={() => { setFormError(""); setForm(toForm(list)); }} />}
                           {canCreate && <button type="button" onClick={() => { setFormError(""); setForm(toForm(list, true)); }} className="action-link text-emerald-700 hover:underline" title="Tạo bảng giá tháng sau từ bảng này (sửa giá rồi lưu)">Sao chép tháng sau</button>}
                           {canDelete && <button type="button" onClick={() => { setDeleteError(null); setDeleting(list); }} className="action-link text-rose-700 hover:underline">Xoá</button>}
                         </div>

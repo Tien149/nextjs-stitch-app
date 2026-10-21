@@ -24,6 +24,7 @@ import { SendPurchaseOrderDialog } from "./send-po-dialog";
 import { ApproveRequestDialog } from "./approve-request-dialog";
 import { defaultPurchaseUnit, purchaseLineUnit, purchaseUnitOptions, toPurchasePrice, toPurchaseQuantity } from "@/lib/unit-conversion";
 
+import { ActionIcon } from "@/components/ActionIcon";
 type Item = { id: string; code: string; name: string; unit: string; itemType: string; category: string | null; requiresImage: boolean; unitConversions?: TemplateUnitConversion[] };
 type MasterItem = { id: string; type: string; code: string; name: string; group: string | null; subGroup: string | null; branch: string | null; status: string };
 type Supplier = { id: string; code: string; name: string; phone?: string | null; email?: string | null };
@@ -1231,12 +1232,12 @@ export default function ProcurementPage() {
                     <div className="flex items-center gap-1">
                       {canApprove && canApproveRequest(request) && (
                         <>
-                          <button onClick={() => setApprovingRequest(request)} className="rounded-lg bg-blue-600 text-white text-xs font-bold px-3 py-2">Duyệt → PO</button>
-                          <button onClick={() => void rejectRequest(request)} className="rounded-lg bg-rose-50 text-rose-700 text-xs font-bold px-3 py-2">Từ chối</button>
+                          <ActionIcon kind="approve" title="Duyệt → lên PO" onClick={() => setApprovingRequest(request)} />
+                          <ActionIcon kind="cancel" title="Từ chối (trả người đặt sửa)" onClick={() => void rejectRequest(request)} />
                         </>
                       )}
                       {canCreate && canCancelRequest(request) && (
-                        <button onClick={() => void cancelRequest(request)} className="rounded-lg bg-slate-100 text-slate-600 text-xs font-bold px-3 py-2">Huỷ phiếu</button>
+                        <ActionIcon kind="cancel" title="Huỷ phiếu" onClick={() => void cancelRequest(request)} />
                       )}
                       <RowActions
                         session={user}
@@ -1294,12 +1295,12 @@ export default function ProcurementPage() {
                     <div className="flex items-center justify-end gap-2">
                       {canApprove && canApproveRequest(request) && (
                         <>
-                          <button onClick={() => setApprovingRequest(request)} className="action-link text-blue-700 hover:underline">Duyệt → PO</button>
-                          <button onClick={() => void rejectRequest(request)} className="action-link text-rose-700 hover:underline">Từ chối</button>
+                          <ActionIcon kind="approve" title="Duyệt → lên PO" onClick={() => setApprovingRequest(request)} />
+                          <ActionIcon kind="cancel" title="Từ chối (trả người đặt sửa)" onClick={() => void rejectRequest(request)} />
                         </>
                       )}
                       {canCreate && canCancelRequest(request) && (
-                        <button onClick={() => void cancelRequest(request)} className="action-link text-slate-500 hover:underline">Huỷ phiếu</button>
+                        <ActionIcon kind="cancel" title="Huỷ phiếu" onClick={() => void cancelRequest(request)} />
                       )}
                       <RowActions
                         session={user}
@@ -1513,7 +1514,7 @@ export default function ProcurementPage() {
                       </button>
                     )}
                     {canApprove && canCancelOrder(order) && (
-                      <button onClick={() => void cancelOrder(order)} className="action-link text-rose-700 hover:underline font-bold">Huỷ đơn</button>
+                      <ActionIcon kind="cancel" title="Huỷ đơn" onClick={() => void cancelOrder(order)} />
                     )}
                   </div>
                 ))}
@@ -1717,19 +1718,13 @@ export default function ProcurementPage() {
                     </div>
                     <div className="flex items-center gap-1.5 flex-wrap justify-end">
                       {canApprove && order.status === "DRAFT" && (
-                        <button onClick={() => void send("PATCH", { action: "APPROVE_ORDER", orderId: order.id }, "Đã duyệt PO.")} className="rounded-lg bg-blue-600 text-white text-xs font-bold px-3 py-2">Duyệt PO</button>
+                        <ActionIcon kind="approve" title="Duyệt PO" onClick={() => void send("PATCH", { action: "APPROVE_ORDER", orderId: order.id }, "Đã duyệt PO.")} />
                       )}
                       {canApprove && order.status === "APPROVED" && totalReceived === 0 && !order.payable && (
-                        <button
-                          onClick={() => {
+                        <ActionIcon kind="reopen" title="Bỏ duyệt (mở lại để sửa)" onClick={() => {
                             if (!window.confirm(`Bỏ duyệt đơn ${order.code}? Đơn quay về Nháp để sửa, và link đã gửi nhà cung cấp sẽ bị thu hồi.`)) return;
                             void send("PATCH", { action: "UNAPPROVE_ORDER", orderId: order.id }, `Đã bỏ duyệt ${order.code}. Sửa lại rồi duyệt PO lần nữa.`);
-                          }}
-                          className="rounded-lg border border-slate-300 text-slate-600 text-xs font-bold px-3 py-2"
-                          title="Đưa đơn về Nháp để sửa lại số lượng/đơn giá"
-                        >
-                          Bỏ duyệt
-                        </button>
+                          }} />
                       )}
                       {canCreate && (order.status !== "CANCELLED" || order.shareToken) && (
                         <button onClick={() => sharePO(order)} className="rounded-lg bg-sky-50 text-sky-700 text-xs font-bold px-3 py-2 inline-flex items-center gap-1">
@@ -1738,7 +1733,7 @@ export default function ProcurementPage() {
                         </button>
                       )}
                       {canApprove && canCancelOrder(order) && (
-                        <button onClick={() => void cancelOrder(order)} className="rounded-lg border border-rose-200 text-rose-700 text-xs font-bold px-3 py-2">Huỷ đơn</button>
+                        <ActionIcon kind="cancel" title="Huỷ đơn" onClick={() => void cancelOrder(order)} />
                       )}
                       {canEdit && ["APPROVED", "PARTIALLY_RECEIVED"].includes(order.status) && (
                         <button onClick={() => startReceiving(order)} className="rounded-lg bg-emerald-600 text-white text-xs font-bold px-3 py-2">Nhận hàng</button>
@@ -1801,21 +1796,13 @@ export default function ProcurementPage() {
                   <td className="cell">
                     <div className="flex items-center justify-end gap-2">
                       {canApprove && order.status === "DRAFT" && (
-                        <button onClick={() => void send("PATCH", { action: "APPROVE_ORDER", orderId: order.id }, "Đã duyệt PO.")} className="action-link text-blue-700 hover:underline">
-                          Duyệt PO
-                        </button>
+                        <ActionIcon kind="approve" title="Duyệt PO" onClick={() => void send("PATCH", { action: "APPROVE_ORDER", orderId: order.id }, "Đã duyệt PO.")} />
                       )}
                       {canApprove && order.status === "APPROVED" && order.lines.every((line) => line.receivedQuantity === 0) && !order.payable && (
-                        <button
-                          onClick={() => {
+                        <ActionIcon kind="reopen" title="Bỏ duyệt (mở lại để sửa)" onClick={() => {
                             if (!window.confirm(`Bỏ duyệt đơn ${order.code}? Đơn quay về Nháp để sửa, và link đã gửi nhà cung cấp sẽ bị thu hồi.`)) return;
                             void send("PATCH", { action: "UNAPPROVE_ORDER", orderId: order.id }, `Đã bỏ duyệt ${order.code}. Sửa lại rồi duyệt PO lần nữa.`);
-                          }}
-                          className="action-link text-slate-500 hover:underline"
-                          title="Đưa đơn về Nháp để sửa lại số lượng/đơn giá"
-                        >
-                          Bỏ duyệt
-                        </button>
+                          }} />
                       )}
                       {canCreate && (order.status !== "CANCELLED" || order.shareToken) && (
                         <button onClick={() => sharePO(order)} className="action-link text-sky-700 hover:underline" title="Gửi phiếu đặt hàng cho NCC qua Zalo / email / SMS / ảnh">
@@ -1823,9 +1810,7 @@ export default function ProcurementPage() {
                         </button>
                       )}
                       {canApprove && canCancelOrder(order) && (
-                        <button onClick={() => void cancelOrder(order)} className="action-link text-rose-700 hover:underline" title="Huỷ đơn — trả yêu cầu mua về Chờ mua hàng">
-                          Huỷ đơn
-                        </button>
+                        <ActionIcon kind="cancel" title="Huỷ đơn" onClick={() => void cancelOrder(order)} />
                       )}
                       {canCreate && order.shareToken && (
                         <button onClick={() => void revokeShare(order)} className="action-link text-slate-500 hover:underline" title="Thu hồi link đã gửi NCC">

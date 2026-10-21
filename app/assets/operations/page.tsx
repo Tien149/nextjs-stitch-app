@@ -14,6 +14,7 @@ import CopyableText from "@/components/CopyableText";
 import { matchesSearch } from "@/lib/search-text";
 import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING, STOCKTAKE_RETURNED, isStocktakeEditable, stocktakeStatusLabel, stocktakeStatusTone } from "@/lib/stocktake-status";
 
+import { ActionIcon } from "@/components/ActionIcon";
 type Asset = {
   id: string;
   code: string;
@@ -572,47 +573,28 @@ export default function AssetOperationsPage() {
         {expandedStocktake === session.id ? "Thu gọn" : "Chi tiết"}
       </button>
       {canCreate && isStocktakeEditable(session.status) && (
-        <button type="button" onClick={() => loadSessionIntoForm(session)} className="text-xs font-bold text-blue-700 hover:underline mr-3">Sửa</button>
+        <ActionIcon kind="edit" title="Sửa phiên kiểm kê" onClick={() => loadSessionIntoForm(session)} />
       )}
       {canApprove && session.status === STOCKTAKE_PENDING && (
         <>
-          <button
-            type="button"
-            onClick={() => {
+          <ActionIcon kind="approve" title="Duyệt" onClick={() => {
               if (!window.confirm(`Duyệt phiên kiểm kê ${session.code}? Số lượng của ${session.lines.length} dòng tài sản sẽ lấy theo số đếm.`)) return;
               void send({ action: "APPROVE_ASSET_STOCKTAKE", sessionId: session.id }, `Đã duyệt phiên ${session.code} và cập nhật số lượng sổ sách theo số đếm.`);
-            }}
-            className="text-xs font-bold text-emerald-700 hover:underline mr-3"
-          >
-            Duyệt
-          </button>
-          <button type="button" onClick={() => returnSession(session)} className="text-xs font-bold text-rose-600 hover:underline mr-3">Trả lại</button>
+            }} />
+          <ActionIcon kind="cancel" title="Trả lại cho nhà hàng sửa" onClick={() => returnSession(session)} />
         </>
       )}
       {canDelete && session.status !== STOCKTAKE_APPROVED && (
-        <button
-          type="button"
-          onClick={() => {
+        <ActionIcon kind="delete" title="Xoá phiên" onClick={() => {
             if (!window.confirm(`Xoá phiên kiểm kê ${session.code}? Phiên chưa duyệt nên số lượng tài sản không đổi; khôi phục được ở Thùng rác.`)) return;
             void send({ action: "DELETE_ASSET_STOCKTAKE", sessionId: session.id }, `Đã xoá phiên ${session.code}.`);
-          }}
-          className="text-xs font-bold text-slate-400 hover:text-rose-600 hover:underline mr-3"
-        >
-          Xoá
-        </button>
+          }} />
       )}
       {canApprove && session.status === STOCKTAKE_APPROVED && (
-        <button
-          type="button"
-          onClick={() => {
+        <ActionIcon kind="reopen" title="Mở lại phiên (về Chờ duyệt)" onClick={() => {
             if (!window.confirm(`Mở lại phiên kiểm kê ${session.code}? Phần chênh đã cộng vào số lượng lúc duyệt sẽ được trừ lại, phiên về Chờ duyệt để nhà hàng sửa và kế toán duyệt lại.`)) return;
             void send({ action: "REOPEN_ASSET_STOCKTAKE", sessionId: session.id }, `Đã mở lại phiên ${session.code} — số lượng tài sản trả về như trước khi duyệt, phiên về Chờ duyệt.`);
-          }}
-          className="text-xs font-bold text-slate-400 hover:text-rose-600 hover:underline whitespace-nowrap"
-          title="Trừ lại phần chênh đã duyệt và đưa phiên về Chờ duyệt"
-        >
-          Mở lại
-        </button>
+          }} />
       )}
     </>
   );

@@ -8,6 +8,7 @@ import { SearchableSelect } from "@/components/SearchableSelect";
 import { storeLabel } from "@/lib/branch-labels";
 import { matchesSearch } from "@/lib/search-text";
 
+import { ActionIcon } from "@/components/ActionIcon";
 // Xếp theo tên kiểu tiếng Việt (Đ sau D, dấu đúng chỗ); trùng tên thì theo mã.
 const nameCollator = new Intl.Collator("vi", { sensitivity: "base", numeric: true });
 
@@ -358,7 +359,7 @@ export default function AssetCatalogPanel({ headers, assetGroups, departments, c
                     {canCreate && item.status === "ACTIVE" && (
                       <button type="button" onClick={() => onCreateRecord(item)} className="text-[11px] font-bold text-emerald-700 hover:underline mr-3" title="Ghi hồ sơ / đợt mua mới cho mã này">Tạo hồ sơ</button>
                     )}
-                    {canEdit && <button type="button" onClick={() => startEdit(item)} className="text-[11px] font-bold text-blue-700 hover:underline mr-3">Sửa</button>}
+                    {canEdit && <ActionIcon kind="edit" title="Sửa" onClick={() => startEdit(item)} />}
                     {canEdit && canDelete && (
                       <button type="button" onClick={() => startMerge(item)} className="text-[11px] font-bold text-amber-700 hover:underline mr-3" title="Gộp mã này vào một mã khác (mã tạo trùng)">Gộp</button>
                     )}

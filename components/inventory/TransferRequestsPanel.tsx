@@ -6,6 +6,7 @@ import { storeLabel } from "@/lib/branch-labels";
 import { quantity as qty } from "@/lib/format-number";
 import { vnDateTimeParts, vnDateTimeValue } from "@/lib/date-range";
 
+import { ActionIcon } from "@/components/ActionIcon";
 /**
  * Khung "Phiếu điều chuyển chờ duyệt" ở tab Điều chuyển (khách chốt 03/10/2026) — xem
  * lib/inventory-transfer-request.ts. Nhà hàng chuyển lập phiếu; nhà hàng nhận đếm hàng rồi Duyệt
@@ -161,27 +162,13 @@ export default function TransferRequestsPanel({ requests, warehouseName, onActio
                   <div className="flex flex-wrap justify-end gap-1.5">
                     {request.canApprove && request.status === "PENDING" && (
                       <>
-                        <button
-                          type="button"
-                          onClick={() => openDialog({ kind: "approve", request, date: today(), time: "", received: request.lines.map((line) => String(line.inputQuantity)) })}
-                          className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700 hover:bg-emerald-100"
-                        >
-                          Duyệt nhận
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => openDialog({ kind: "return", request, reason: "" })}
-                          className="rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-bold text-rose-700 hover:bg-rose-100"
-                        >
-                          Trả lại
-                        </button>
+                        <ActionIcon kind="approve" title="Duyệt nhận" onClick={() => openDialog({ kind: "approve", request, date: today(), time: "", received: request.lines.map((line) => String(line.inputQuantity)) })} />
+                        <ActionIcon kind="cancel" title="Trả lại" onClick={() => openDialog({ kind: "return", request, reason: "" })} />
                       </>
                     )}
                     {request.canEdit && (
                       <>
-                        <button
-                          type="button"
-                          onClick={() => openDialog({
+                        <ActionIcon kind="edit" title={request.status === "RETURNED" ? "Sửa & gửi lại" : "Sửa"} onClick={() => openDialog({
                             kind: "edit",
                             request,
                             date: vnDateTimeParts(request.requestDate).day,
@@ -189,18 +176,8 @@ export default function TransferRequestsPanel({ requests, warehouseName, onActio
                             note: request.note || "",
                             referenceCode: request.referenceCode || "",
                             quantities: request.lines.map((line) => String(line.inputQuantity)),
-                          })}
-                          className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-100"
-                        >
-                          {request.status === "RETURNED" ? "Sửa & gửi lại" : "Sửa"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => { setError(""); setConfirmCancel(request); }}
-                          className="rounded-full border border-slate-200 px-2.5 py-1 text-[11px] font-bold text-slate-400 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600"
-                        >
-                          Huỷ phiếu
-                        </button>
+                          })} />
+                        <ActionIcon kind="cancel" title="Huỷ phiếu" onClick={() => { setError(""); setConfirmCancel(request); }} />
                       </>
                     )}
                   </div>

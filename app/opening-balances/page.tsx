@@ -14,6 +14,7 @@ import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSIO
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName } from "@/lib/money-sources";
 import { money as formatVndMoney, unitPrice } from "@/lib/format-number";
 
+import { ActionIcon } from "@/components/ActionIcon";
 type OpeningBalance = {
   id: string;
   period: string;
@@ -1279,7 +1280,7 @@ export default function OpeningBalancesPage() {
                                 )
                               ) : (
                                 <div className="flex justify-end gap-3">
-                                  <button onClick={() => startEditing(balance)} className="text-xs font-bold text-blue-600 hover:text-blue-800">Sửa</button>
+                                  <ActionIcon kind="edit" title="Sửa" onClick={() => startEditing(balance)} />
                                   <button onClick={() => void deleteBalance(balance)} className="text-xs font-bold text-red-600 hover:text-red-800">Xóa</button>
                                   <button onClick={() => updateStatus(balance, "CONFIRMED")} className="text-xs font-bold text-emerald-700 hover:text-emerald-900 transition">Chốt số dư</button>
                                 </div>

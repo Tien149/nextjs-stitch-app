@@ -9,6 +9,7 @@ import { isLocationStocktakeItemType, resolveUnitInputs } from "@/lib/stocktake-
 import { inStocktakeRange, type StocktakeFilter } from "@/components/inventory/stocktake-filter";
 import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING, STOCKTAKE_RETURNED, isStocktakeEditable, stocktakeStatusLabel, stocktakeStatusTone } from "@/lib/stocktake-status";
 
+import { ActionIcon } from "@/components/ActionIcon";
 /**
  * Kiểm kê THEO VỊ TRÍ + duyệt GỘP (khách chốt 28/09/2026) — nguyên liệu & bao bì.
  *
@@ -604,7 +605,7 @@ export default function StocktakeByLocation(props: {
                     <div className="flex gap-3">
                       <button type="button" className="text-xs font-bold text-blue-700 hover:underline" onClick={() => setOpenBatchId(isOpen ? "" : batch.id)}>{isOpen ? "Thu gọn" : "Xem kết quả"}</button>
                       {canApprove && batch.status === "APPROVED" && (
-                        <button type="button" className="text-xs font-bold text-slate-400 hover:text-rose-600 hover:underline" disabled={busy} onClick={() => void reopen(batch)}>Mở lại</button>
+                        <ActionIcon kind="reopen" title="Mở lại đợt duyệt" disabled={busy} onClick={() => void reopen(batch)} />
                       )}
                     </div>
                   </div>
@@ -685,7 +686,7 @@ export default function StocktakeByLocation(props: {
                     <p className="font-bold text-sm">{location.name} <span className="text-xs text-slate-400">{location.code}</span> {location.status !== "ACTIVE" && <span className="status bg-slate-100 text-slate-500">Ngưng</span>}</p>
                     <p className="text-xs text-slate-500 truncate">{location.items.length} mã: {location.items.slice(0, 8).map((entry) => entry.item.name).join(", ")}{location.items.length > 8 ? "…" : ""}</p>
                   </div>
-                  <button type="button" className="text-xs font-bold text-blue-700 hover:underline" onClick={() => editLocation(location)}>Sửa</button>
+                  <ActionIcon kind="edit" title="Sửa vị trí" onClick={() => editLocation(location)} />
                 </div>
               ))}
             </div>
@@ -715,19 +716,19 @@ export default function StocktakeByLocation(props: {
                     {sheet.status === STOCKTAKE_RETURNED && sheet.returnedReason && <p className="text-xs text-rose-700">Lý do trả lại: {sheet.returnedReason}</p>}
                   </div>
                   <div className="flex flex-wrap gap-3">
-                    {canCreate && isStocktakeEditable(sheet.status) && <button type="button" className="text-xs font-bold text-blue-700 hover:underline" onClick={() => editSheet(sheet)}>Sửa</button>}
+                    {canCreate && isStocktakeEditable(sheet.status) && <ActionIcon kind="edit" title="Sửa phiếu đếm" onClick={() => editSheet(sheet)} />}
                     {canApprove && sheet.status === STOCKTAKE_PENDING && (
-                      <button type="button" className="text-xs font-bold text-rose-600 hover:underline" onClick={() => {
+                      <ActionIcon kind="cancel" title="Trả lại cho nhà hàng sửa" onClick={() => {
                         const reason = window.prompt(`Lý do trả lại phiếu ${sheet.code}:`, "");
                         if (!reason?.trim()) return;
                         void legacy({ method: "POST", body: JSON.stringify({ action: "RETURN_STOCKTAKE", stocktakeId: sheet.id, reason: reason.trim() }) }, `Đã trả lại phiếu ${sheet.code}.`);
-                      }}>Trả lại</button>
+                      }} />
                     )}
                     {canDelete && sheet.status !== STOCKTAKE_APPROVED && (
-                      <button type="button" className="text-xs font-bold text-slate-400 hover:text-rose-600 hover:underline" onClick={() => {
+                      <ActionIcon kind="delete" title="Xoá phiếu đếm" onClick={() => {
                         if (!window.confirm(`Xoá phiếu đếm ${sheet.code}?`)) return;
                         void legacy({ method: "DELETE", url: `/api/inventory?type=STOCKTAKE&id=${encodeURIComponent(sheet.id)}` }, `Đã xoá phiếu ${sheet.code}.`);
-                      }}>Xoá</button>
+                      }} />
                     )}
                   </div>
                 </div>

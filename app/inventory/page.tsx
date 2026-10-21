@@ -40,6 +40,7 @@ import { statValueTextClass } from "@/components/reports/report-ui";
 import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING, STOCKTAKE_RETURNED, isStocktakeEditable, stocktakeStatusLabel, stocktakeStatusTone } from "@/lib/stocktake-status";
 import { vnDateTimeValue } from "@/lib/date-range";
 
+import { ActionIcon } from "@/components/ActionIcon";
 type UnitConversion = { id: string; unitCode: string; unitName: string | null; conversionRate: number; isDefaultPurchase: boolean };
 type Item = { id: string; code: string; name: string; unit: string; itemType: string; category?: string | null; revenueGroup?: string | null; goodsGroup?: string | null; expensePnlItemCode?: string | null; minStock: number; requiresImage: boolean; status?: string | null; note?: string | null; unitConversions?: UnitConversion[] };
 type ItemGroup = { id: string; code: string; name: string; group: string | null; subGroup: string | null };
@@ -1402,28 +1403,19 @@ export default function InventoryPage() {
   const renderStocktakeActions = (row: Stocktake) => (
     <>
       {canCreate && isStocktakeEditable(row.status) && (
-        <button type="button" onClick={() => loadStocktakeIntoForm(row)} className="text-xs font-bold text-blue-700 hover:underline whitespace-nowrap">
-          Sửa
-        </button>
+        <ActionIcon kind="edit" title="Sửa phiếu kiểm kê" onClick={() => loadStocktakeIntoForm(row)} />
       )}
       {canApprove && row.status === STOCKTAKE_PENDING && (
         <>
-          <button type="button" onClick={() => approveStocktake(row)} className="text-xs font-bold text-emerald-700 hover:underline whitespace-nowrap">Duyệt</button>
-          <button type="button" onClick={() => returnStocktake(row)} className="text-xs font-bold text-rose-600 hover:underline whitespace-nowrap">Trả lại</button>
+          <ActionIcon kind="approve" title="Duyệt" onClick={() => approveStocktake(row)} />
+          <ActionIcon kind="cancel" title="Trả lại cho nhà hàng sửa" onClick={() => returnStocktake(row)} />
         </>
       )}
       {canApprove && row.status === STOCKTAKE_APPROVED && (
-        <button
-          type="button"
-          onClick={() => {
+        <ActionIcon kind="reopen" title="Mở lại phiếu (hoàn kho, về Chờ duyệt)" onClick={() => {
             if (!window.confirm(`Mở lại phiếu kiểm kê ${row.code}? Phiếu nhập/xuất điều chỉnh của lần duyệt này sẽ được hoàn kho rồi xoá, phiếu quay về Chờ duyệt để nhà hàng sửa và kế toán duyệt lại.`)) return;
             void send({ action: "REOPEN_STOCKTAKE", stocktakeId: row.id }, `Đã mở lại phiếu kiểm kê ${row.code} và hoàn kho — phiếu về Chờ duyệt.`);
-          }}
-          className="text-xs font-bold text-slate-400 hover:text-rose-600 hover:underline whitespace-nowrap"
-          title="Hoàn kho phần đã điều chỉnh và đưa phiếu về Chờ duyệt"
-        >
-          Mở lại
-        </button>
+          }} />
       )}
     </>
   );
@@ -4626,7 +4618,7 @@ export default function InventoryPage() {
                     </p>
                     {row.status === STOCKTAKE_RETURNED && row.returnedReason && <p className="text-xs text-rose-700">Lý do trả lại: {row.returnedReason}</p>}
                     <ExplosionBadge status={row.explosionStatus} />
-                    <div className="flex flex-wrap gap-x-4 gap-y-1 pt-0.5">{renderStocktakeActions(row)}</div>
+                    <div className="flex flex-wrap gap-1 pt-0.5">{renderStocktakeActions(row)}</div>
                   </div>
                 );
               })}
@@ -4687,7 +4679,7 @@ export default function InventoryPage() {
                     })()}
                   </Cell>
                   <Cell right>
-                    <div className="flex flex-wrap justify-end gap-x-3 gap-y-1">
+                    <div className="flex flex-wrap justify-end gap-1">
                       {renderStocktakeActions(row)}
                     </div>
                   </Cell>
