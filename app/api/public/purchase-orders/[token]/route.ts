@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import QRCode from "qrcode";
 import { prisma } from "@/lib/prisma";
+import { purchaseLineUnit, toPurchasePrice, toPurchaseQuantity } from "@/lib/unit-conversion";
 import { isReachableFromOtherDevices, publicBaseUrl } from "@/lib/public-url";
 
 /**
@@ -66,9 +67,10 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
       lines: order.lines.map((line) => ({
         itemCode: line.item.code,
         itemName: line.item.name,
-        unit: line.item.unit,
-        quantity: line.orderedQuantity,
-        unitCost: line.unitCost,
+        // Phiếu gửi NCC theo ĐVT đặt hàng (1 KG, không phải 1.000 GR).
+        unit: purchaseLineUnit(line),
+        quantity: toPurchaseQuantity(line.orderedQuantity, line),
+        unitCost: toPurchasePrice(line.unitCost, line),
         totalCost: line.totalCost,
       })),
       publicUrl,

@@ -20,21 +20,33 @@ import { PriceListsTab } from "./price-lists-tab";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
 import type { DateRange } from "@/lib/date-range";
 import { SendPurchaseOrderDialog } from "./send-po-dialog";
+import { ApproveRequestDialog } from "./approve-request-dialog";
+import { defaultPurchaseUnit, purchaseLineUnit, purchaseUnitOptions, toPurchasePrice, toPurchaseQuantity } from "@/lib/unit-conversion";
 
 type Item = { id: string; code: string; name: string; unit: string; itemType: string; category: string | null; requiresImage: boolean; unitConversions?: TemplateUnitConversion[] };
 type MasterItem = { id: string; type: string; code: string; name: string; group: string | null; subGroup: string | null; branch: string | null; status: string };
 type Supplier = { id: string; code: string; name: string; phone?: string | null; email?: string | null };
 type PriceSuggestion = { price: number; source: string; supplierName?: string };
-type RequestLine = { id: string; itemId: string; quantity: number; estimatedUnitCost: number; imageUrl: string | null; note?: string | null; item: Item };
-type Quote = { id: string; supplierCode: string; supplierName: string; totalAmount: number; deliveryDays: number | null; paymentTerms: string | null; isSelected: boolean; note: string | null; lines: Array<{ itemId: string; quantity: number; unitCost: number; vatRate?: number | null; item?: Item }> };
-type PurchaseRequest = { id: string; code: string; requestDate: string; branchCode: string; departmentCode: string | null; requestedBy: string; neededDate: string | null; reason: string; status: string; approvedAt: string | null; note: string | null; lines: RequestLine[]; quotes: Quote[]; orders?: Array<{ id: string; code: string; status: string }> };
-type OrderLine = { id: string; itemId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; imageUrl: string | null; item: Item };
+/** unitCode / conversionRate: ĐVT đặt hàng (số lượng, đơn giá trong DB theo ĐVT tồn) — lib/unit-conversion. */
+type UnitFields = { unitCode?: string | null; conversionRate?: number | null };
+type RequestLine = UnitFields & { id: string; itemId: string; quantity: number; estimatedUnitCost: number; imageUrl: string | null; note?: string | null; item: Item };
+type QuoteLine = UnitFields & { itemId: string; quantity: number; unitCost: number; vatRate?: number | null; item?: Item };
+type Quote = { id: string; supplierCode: string; supplierName: string; totalAmount: number; deliveryDays: number | null; paymentTerms: string | null; isSelected: boolean; note: string | null; lines: QuoteLine[] };
+type PurchaseRequest = { id: string; code: string; requestDate: string; branchCode: string; departmentCode: string | null; warehouseCode?: string | null; rejectReason?: string | null; requestedBy: string; neededDate: string | null; reason: string; status: string; approvedAt: string | null; note: string | null; lines: RequestLine[]; quotes: Quote[]; orders?: Array<{ id: string; code: string; status: string }> };
+type OrderLine = UnitFields & { id: string; itemId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; imageUrl: string | null; item: Item };
 type PurchaseOrder = { id: string; code: string; requestId: string | null; orderDate: string; supplierCode: string; supplierName: string; branchCode: string; departmentCode: string | null; warehouseCode: string; expectedDate: string | null; status: string; approvedAt: string | null; note: string | null; totalAmount: number; shareToken: string | null; lines: OrderLine[]; payable: { outstandingAmount: number } | null };
 type Data = { items: Item[]; requests: PurchaseRequest[]; orders: PurchaseOrder[]; departments: MasterItem[]; itemGroups: MasterItem[]; warehouses: MasterItem[]; assetGroups: MasterItem[]; templates: PurchaseTemplate[]; suppliers: Supplier[]; priceSuggestions: Record<string, PriceSuggestion> };
 /** Chứng từ mua hàng đang chờ xác nhận xoá. */
 type DeleteTarget = { type: "REQUEST" | "ORDER" | "QUOTE"; id: string; title: string; description: string; label: string };
 /** Một dòng hàng trên form PR nhiều dòng. */
-type RequestRow = { itemId: string; quantity: string; estimatedUnitCost: string; imageUrl: string };
+type RequestRow = { itemId: string; unitCode: string; quantity: string; estimatedUnitCost: string; imageUrl: string };
+
+/** Số lượng + ĐVT đặt hàng của một dòng PR / báo giá / PO để hiển thị ("1 KG", không phải "1.000 GR"). */
+const qtyText = (quantity: number, line: UnitFields & { item?: { unit: string } | null }) => `${qty(toPurchaseQuantity(quantity, line))} ${purchaseLineUnit(line)}`;
+/** Dòng gửi API theo ĐVT đặt: máy chủ quy về ĐVT tồn (withPurchaseUnits). Dòng cũ không có ĐVT đặt giữ nguyên. */
+const unitPayload = (line: UnitFields & { itemId: string; quantity: number }, baseUnitCost: number) => line.unitCode
+  ? { itemId: line.itemId, unitCode: line.unitCode, quantity: toPurchaseQuantity(line.quantity, line), unitCost: toPurchasePrice(baseUnitCost, line) }
+  : { itemId: line.itemId, quantity: line.quantity, unitCost: baseUnitCost };
 
 
 /**
@@ -44,10 +56,11 @@ type RequestRow = { itemId: string; quantity: string; estimatedUnitCost: string;
  */
 const requestStatusLabel = (status: string) => ({
   DRAFT: "Nháp",
-  PENDING_APPROVAL: "Chờ mua hàng",
-  APPROVED: "Chờ mua hàng",
-  REJECTED: "Đã từ chối",
-  ORDERED: "Đã đặt hàng",
+  // Thu mua duyệt PR mới lên PO (khách 21/10/2026). APPROVED = phiếu thời không duyệt, vẫn chờ xử lý.
+  PENDING_APPROVAL: "Chờ thu mua duyệt",
+  APPROVED: "Chờ thu mua duyệt",
+  REJECTED: "Bị từ chối — chờ sửa",
+  ORDERED: "Đã lên PO",
   COMPLETED: "Hoàn tất",
   CANCELLED: "Đã huỷ",
 }[status] || status);
@@ -74,10 +87,12 @@ const orderStatusStyle = (status: string) => {
 const lockedRequestStatuses = ["ORDERED", "COMPLETED", "CANCELLED", "REJECTED"];
 /** PO chỉ còn sửa/xoá được khi đang ở trạng thái nháp. */
 const lockedOrderStatuses = ["APPROVED", "PARTIALLY_RECEIVED", "COMPLETED", "CANCELLED"];
-/** PR nhập được báo giá: gửi lên là báo giá được ngay (PENDING_APPROVAL là phiếu cũ còn treo). */
+/** PR thu mua duyệt được / người đặt huỷ được (chưa lên PO). */
+const pendingRequestStatuses = ["PENDING_APPROVAL", "APPROVED"];
+/** PR nhập được báo giá (để so sánh) khi đang chờ duyệt. */
 const quotableStatuses = ["APPROVED", "PENDING_APPROVAL", "ORDERED"];
 
-const emptyRequestRow = (): RequestRow => ({ itemId: "", quantity: "1", estimatedUnitCost: "0", imageUrl: "" });
+const emptyRequestRow = (): RequestRow => ({ itemId: "", unitCode: "", quantity: "1", estimatedUnitCost: "0", imageUrl: "" });
 
 export default function ProcurementPage() {
   const href = "/procurement";
@@ -91,6 +106,7 @@ export default function ProcurementPage() {
   const [requestForm, setRequestForm] = useState({
     branchCode: "HCM",
     departmentCode: "",
+    warehouseCode: "",
     neededDate: new Date().toISOString().slice(0, 10),
     reason: "Bổ sung nguyên liệu vận hành",
   });
@@ -140,6 +156,11 @@ export default function ProcurementPage() {
   const [creatingOrders, setCreatingOrders] = useState(false);
   /** Modal nhận hàng theo PO: nhập số lượng nhận từng dòng thay vì nhận trọn gói. */
   const [receivingOrder, setReceivingOrder] = useState<PurchaseOrder | null>(null);
+  /** Đơn giá thực lúc nhận (theo ĐVT đặt) — PO duyệt khi chưa có giá thì nhập ở đây. */
+  const [receivePrices, setReceivePrices] = useState<Record<string, string>>({});
+  const [receivePriceSource, setReceivePriceSource] = useState<Record<string, string>>({});
+  /** PR đang mở hộp Duyệt → PO. */
+  const [approvingRequest, setApprovingRequest] = useState<PurchaseRequest | null>(null);
   const [receiveQuantities, setReceiveQuantities] = useState<Record<string, string>>({});
   /** Nhóm tài sản chọn cho từng dòng Tài sản/CCDC khi nhận hàng, khoá theo lineId. */
   const [receiveAssetGroups, setReceiveAssetGroups] = useState<Record<string, string>>({});
@@ -189,11 +210,26 @@ export default function ProcurementPage() {
   };
 
   /** Chọn mặt hàng cho một dòng PR -> hệ thống tự đề xuất đơn giá theo dữ liệu mua gần nhất. */
+  /** Chọn mặt hàng → ĐVT mua mặc định của mặt hàng, giá đề xuất (theo ĐVT tồn) nhân hệ số ĐVT đó. */
   const pickRequestRowItem = (index: number, itemId: string) => {
     const suggestion = data.priceSuggestions[itemId];
+    const item = data.items.find((candidate) => candidate.id === itemId);
+    const unit = item ? defaultPurchaseUnit(item.unit, item.unitConversions, null) : { unitCode: "", conversionRate: 1 };
     setRequestRows((rows) => rows.map((row, rowIndex) => rowIndex === index
-      ? { ...row, itemId, estimatedUnitCost: suggestion ? String(suggestion.price) : row.estimatedUnitCost }
+      ? { ...row, itemId, unitCode: unit.unitCode, estimatedUnitCost: suggestion ? String(toPurchasePrice(suggestion.price, { unitCode: unit.unitCode, conversionRate: unit.conversionRate })) : row.estimatedUnitCost }
       : row));
+  };
+  /** Đổi ĐVT trên dòng PR → giữ nguyên số lượng gõ, đơn giá dự kiến quy theo hệ số mới. */
+  const pickRequestRowUnit = (index: number, unitCode: string) => {
+    setRequestRows((rows) => rows.map((row, rowIndex) => {
+      if (rowIndex !== index) return row;
+      const item = data.items.find((candidate) => candidate.id === row.itemId);
+      const options = item ? purchaseUnitOptions(item.unit, item.unitConversions) : [];
+      const from = options.find((option) => option.unitCode === row.unitCode)?.conversionRate || 1;
+      const to = options.find((option) => option.unitCode === unitCode)?.conversionRate || 1;
+      const cost = Number(row.estimatedUnitCost || 0);
+      return { ...row, unitCode, estimatedUnitCost: cost > 0 ? String(Math.round((cost / from) * to * 100) / 100) : row.estimatedUnitCost };
+    }));
   };
 
   /** PR chưa sinh PO và đã có báo giá -> gom dòng báo giá theo NCC để đặt hàng. */
@@ -231,6 +267,7 @@ export default function ProcurementPage() {
 
   /** Kho nhận gợi ý cho PR: lấy theo phân nhóm của dòng hàng đầu tiên có gán nhóm kho. */
   const suggestedWarehouseForRequest = (request: PurchaseRequest) => {
+    if (request.warehouseCode) return request.warehouseCode;
     for (const line of request.lines) {
       const matched = warehouseByItemGroup(request.branchCode, line.item?.category);
       if (matched) return matched.code;
@@ -269,7 +306,7 @@ export default function ProcurementPage() {
             branchCode: request.branchCode,
             departmentCode: request.departmentCode,
             warehouseCode: poWarehouseByRequest[request.id] || suggestedWarehouseForRequest(request),
-            lines: quote.lines.map((line) => ({ itemId: line.itemId, quantity: line.quantity, unitCost: line.unitCost })),
+            lines: quote.lines.map((line) => unitPayload(line, line.unitCost)),
           }),
         });
         const payload = await response.json();
@@ -333,9 +370,10 @@ export default function ProcurementPage() {
     if (editingQuote) return;
     const request = data.requests.find((item) => item.id === quoteForm.requestId);
     if (!request) return;
+    // Giá trên form báo giá theo ĐVT ĐẶT của dòng PR (giá đề xuất lưu theo ĐVT tồn → nhân hệ số).
     const costs: Record<string, string> = {};
     for (const line of request.lines) {
-      costs[line.itemId] = String(data.priceSuggestions[line.itemId]?.price ?? line.estimatedUnitCost ?? "");
+      costs[line.itemId] = String(toPurchasePrice(data.priceSuggestions[line.itemId]?.price ?? line.estimatedUnitCost ?? 0, line) || "");
     }
     const timer = window.setTimeout(() => {
       setQuoteLineCosts(costs);
@@ -369,11 +407,14 @@ export default function ProcurementPage() {
       for (const line of request.lines) {
         const price = byItem.get(line.itemId);
         if (!price) {
-          costs[line.itemId] = String(data.priceSuggestions[line.itemId]?.price ?? line.estimatedUnitCost ?? "");
+          costs[line.itemId] = String(toPurchasePrice(data.priceSuggestions[line.itemId]?.price ?? line.estimatedUnitCost ?? 0, line) || "");
           vats[line.itemId] = "KKKNT";
           continue;
         }
-        costs[line.itemId] = String(Math.round(price.stockUnitPrice * 100) / 100);
+        // Bảng giá cùng ĐVT với dòng PR thì lấy thẳng giá bảng, khác ĐVT thì quy qua giá theo ĐVT tồn.
+        costs[line.itemId] = String(price.unitCode === purchaseLineUnit(line)
+          ? price.unitPrice
+          : Math.round(toPurchasePrice(price.stockUnitPrice, line) * 100) / 100);
         vats[line.itemId] = vatRateLabel(price.vatRate);
         sources[line.itemId] = `${price.priceListCode} · ${money(price.unitPrice)} đ/${price.unitCode}`;
       }
@@ -452,11 +493,25 @@ export default function ProcurementPage() {
   const canCancelOrder = (order: PurchaseOrder) =>
     ["DRAFT", "APPROVED"].includes(order.status) && order.lines.every((line) => line.receivedQuantity === 0) && !order.payable;
 
+  const canApproveRequest = (request: PurchaseRequest) => pendingRequestStatuses.includes(request.status) && !requestHasOrder(request);
+  const canCancelRequest = (request: PurchaseRequest) => [...pendingRequestStatuses, "REJECTED"].includes(request.status) && !requestHasOrder(request);
+  /** Từ chối = trả về người đặt sửa lại / huỷ, kèm lý do. */
+  const rejectRequest = async (request: PurchaseRequest) => {
+    const reason = window.prompt(`Từ chối ${request.code} — trả về người đặt sửa lại.\n\nLý do (người đặt sẽ thấy):`, "");
+    if (reason === null) return;
+    await send("PATCH", { action: "REJECT_REQUEST", requestId: request.id, reason }, `Đã từ chối ${request.code} — người đặt sửa lại rồi gửi lại, hoặc huỷ.`);
+  };
+  const cancelRequest = async (request: PurchaseRequest) => {
+    if (!window.confirm(`Huỷ yêu cầu mua ${request.code}? Phiếu huỷ không xử lý tiếp được nữa.`)) return;
+    await send("PATCH", { action: "CANCEL_REQUEST", requestId: request.id }, `Đã huỷ ${request.code}.`);
+  };
+
   const requestLockReason = (request: PurchaseRequest) => {
     if (requestHasOrder(request)) {
       return `Yêu cầu mua ${request.code} đã lên đơn ${liveOrdersOf(request).map((order) => order.code).join(", ")} nên không thể sửa hoặc xoá. Hãy huỷ đơn mua hàng trước.`;
     }
-    if (lockedRequestStatuses.includes(request.status)) {
+    // Bị từ chối: người đặt sửa rồi gửi lại (hoặc bấm Huỷ phiếu).
+    if (lockedRequestStatuses.includes(request.status) && request.status !== "REJECTED") {
       return `Yêu cầu mua ${request.code} đang ở trạng thái "${requestStatusLabel(request.status)}" nên không thể sửa hoặc xoá.`;
     }
     // Đổi dòng hàng sau khi có báo giá sẽ làm báo giá lệch so với thứ đang cần mua.
@@ -500,6 +555,7 @@ export default function ProcurementPage() {
       ...form,
       branchCode: "HCM",
       departmentCode: data.departments.find((item) => !item.branch || item.branch === "ALL" || item.branch === "HCM")?.code || "",
+      warehouseCode: "",
       neededDate: new Date().toISOString().slice(0, 10),
       reason: "Bổ sung nguyên liệu vận hành",
     }));
@@ -513,13 +569,15 @@ export default function ProcurementPage() {
     setRequestForm({
       branchCode: request.branchCode,
       departmentCode: request.departmentCode || "",
+      warehouseCode: request.warehouseCode || "",
       neededDate: (request.neededDate || request.requestDate).slice(0, 10),
       reason: request.reason,
     });
     setRequestRows(request.lines.map((line) => ({
       itemId: line.itemId,
-      quantity: String(line.quantity),
-      estimatedUnitCost: String(line.estimatedUnitCost),
+      unitCode: line.unitCode || "",
+      quantity: String(toPurchaseQuantity(line.quantity, line)),
+      estimatedUnitCost: String(toPurchasePrice(line.estimatedUnitCost, line)),
       imageUrl: line.imageUrl || "",
     })));
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -529,7 +587,7 @@ export default function ProcurementPage() {
     event.preventDefault();
     const lines = requestRows
       .filter((row) => row.itemId && Number(row.quantity) > 0)
-      .map((row) => ({ itemId: row.itemId, quantity: row.quantity, estimatedUnitCost: row.estimatedUnitCost, imageUrl: row.imageUrl }));
+      .map((row) => ({ itemId: row.itemId, unitCode: row.unitCode || undefined, quantity: row.quantity, estimatedUnitCost: row.estimatedUnitCost, imageUrl: row.imageUrl }));
     if (lines.length === 0) {
       setMessage("Chọn ít nhất một mặt hàng và số lượng lớn hơn 0.");
       return;
@@ -543,17 +601,20 @@ export default function ProcurementPage() {
           requestId: editingRequest.id,
           branchCode: requestForm.branchCode,
           departmentCode: requestForm.departmentCode,
+          warehouseCode: requestForm.warehouseCode,
           neededDate: requestForm.neededDate,
           reason: requestForm.reason,
           lines,
         },
-        `Đã lưu thay đổi đề nghị mua hàng ${editingRequest.code}.`,
+        editingRequest.status === "REJECTED"
+          ? `Đã sửa và gửi lại ${editingRequest.code} cho thu mua duyệt.`
+          : `Đã lưu thay đổi đề nghị mua hàng ${editingRequest.code}.`,
       );
       if (ok) resetRequestForm();
       return;
     }
 
-    const ok = await send("POST", { action: "CREATE_REQUEST", branchCode: requestForm.branchCode, departmentCode: requestForm.departmentCode, neededDate: requestForm.neededDate, reason: requestForm.reason, lines }, `Đã tạo yêu cầu mua hàng (${lines.length} mặt hàng).`);
+    const ok = await send("POST", { action: "CREATE_REQUEST", branchCode: requestForm.branchCode, departmentCode: requestForm.departmentCode, warehouseCode: requestForm.warehouseCode, neededDate: requestForm.neededDate, reason: requestForm.reason, lines }, `Đã tạo yêu cầu mua hàng (${lines.length} mặt hàng).`);
     if (ok) setRequestRows([emptyRequestRow()]);
   };
 
@@ -581,7 +642,7 @@ export default function ProcurementPage() {
     const costs: Record<string, string> = {};
     const vats: Record<string, string> = {};
     for (const line of quote.lines) {
-      costs[line.itemId] = String(line.unitCost);
+      costs[line.itemId] = String(toPurchasePrice(line.unitCost, line));
       vats[line.itemId] = vatRateLabel(line.vatRate ?? null);
     }
     setQuoteLineCosts(costs);
@@ -612,7 +673,8 @@ export default function ProcurementPage() {
           supplierName: quoteForm.supplierName,
           deliveryDays: quoteForm.deliveryDays,
           paymentTerms: quoteForm.paymentTerms,
-          lines: editingQuote.lines.map((line) => ({ itemId: line.itemId, quantity: line.quantity, unitCost: quoteLineCosts[line.itemId] ?? line.unitCost, vatRate: quoteLineVat[line.itemId] ?? vatRateLabel(line.vatRate ?? null) })),
+          // Đơn giá trên form theo ĐVT đặt; dòng cũ (không ĐVT đặt) hệ số 1 nên vẫn là ĐVT tồn.
+          lines: editingQuote.lines.map((line) => ({ ...unitPayload(line, line.unitCost), unitCost: quoteLineCosts[line.itemId] ?? toPurchasePrice(line.unitCost, line), vatRate: quoteLineVat[line.itemId] ?? vatRateLabel(line.vatRate ?? null) })),
         },
         `Đã lưu thay đổi báo giá của ${quoteForm.supplierName}.`,
       );
@@ -642,7 +704,7 @@ export default function ProcurementPage() {
       supplierName: quoteForm.supplierName,
       deliveryDays: quoteForm.deliveryDays,
       paymentTerms: quoteForm.paymentTerms,
-      lines: selectedRequest.lines.map((line) => ({ itemId: line.itemId, quantity: line.quantity, unitCost: quoteLineCosts[line.itemId], vatRate: quoteLineVat[line.itemId] || "KKKNT" })),
+      lines: selectedRequest.lines.map((line) => ({ ...unitPayload(line, 0), unitCost: quoteLineCosts[line.itemId], vatRate: quoteLineVat[line.itemId] || "KKKNT" })),
     }, "Đã thêm báo giá nhà cung cấp.");
   };
 
@@ -682,7 +744,8 @@ export default function ProcurementPage() {
     const quantities: Record<string, string> = {};
     const assetGroups: Record<string, string> = {};
     for (const line of order.lines) {
-      const remaining = line.orderedQuantity - line.receivedQuantity;
+      // Số nhận gõ theo ĐVT đặt của dòng PO — máy chủ quy về ĐVT tồn khi ghi phiếu nhập.
+      const remaining = toPurchaseQuantity(line.orderedQuantity - line.receivedQuantity, line);
       if (remaining > 0) quantities[line.id] = String(remaining);
       // Chỉ có đúng một nhóm hợp lệ thì chọn sẵn, khỏi bắt bấm thừa; nhiều nhóm thì để trống
       // để người nhận hàng tự chọn — hồ sơ tài sản mang nhóm nào là quyết định của họ.
@@ -690,6 +753,16 @@ export default function ProcurementPage() {
       if (options.length === 1) assetGroups[line.id] = options[0].code;
     }
     setReceiveQuantities(quantities);
+    setReceivePrices(Object.fromEntries(order.lines.map((line) => [line.id, line.unitCost > 0 ? String(toPurchasePrice(line.unitCost, line)) : ""])));
+    setReceivePriceSource({});
+    // Giá gợi ý: giá PO, dòng chưa có giá lấy Bảng giá của NCC trên PO — chỉ điền ô còn trống.
+    void fetch(`/api/procurement?view=receive-prices&orderId=${encodeURIComponent(order.id)}`)
+      .then(async (response) => (response.ok ? await response.json() as { prices: Record<string, { price: number; source: string }> } : { prices: {} }))
+      .catch(() => ({ prices: {} as Record<string, { price: number; source: string }> }))
+      .then(({ prices }) => {
+        setReceivePrices((current) => Object.fromEntries(Object.entries(current).map(([lineId, value]) => [lineId, value || (prices[lineId] ? String(prices[lineId].price) : "")])));
+        setReceivePriceSource(Object.fromEntries(Object.entries(prices).map(([lineId, row]) => [lineId, row.source])));
+      });
     setReceiveAssetGroups(assetGroups);
     setReceiveNote("");
     setReceivingOrder(order);
@@ -703,6 +776,7 @@ export default function ProcurementPage() {
       lineId: line.id,
       itemId: line.itemId,
       quantity: Number(receiveQuantities[line.id] ?? 0) || 0,
+      unitCost: Number(receivePrices[line.id] || 0) || undefined,
       assetGroup: receiveAssetGroups[line.id] || "",
     }));
     if (lines.every((line) => line.quantity <= 0)) {
@@ -791,7 +865,7 @@ export default function ProcurementPage() {
   const createOrder = async (request: PurchaseRequest, quote: Quote) => {
     // Kho nhận lấy theo gợi ý phân nhóm mặt hàng của PR (ô "Kho nhận" ở tab Đơn mua hàng đã bỏ
     // 03/10/2026 — khách tưởng là bộ lọc). Đổi kho thì sửa trên PO nháp.
-    await send("POST", { action: "CREATE_ORDER", requestId: request.id, supplierCode: quote.supplierCode, supplierName: quote.supplierName, branchCode: request.branchCode, departmentCode: request.departmentCode, warehouseCode: suggestedWarehouseForRequest(request), lines: quote.lines.map((line) => ({ itemId: line.itemId, quantity: line.quantity, unitCost: line.unitCost })) }, "Đã tạo PO nháp từ báo giá. Vui lòng duyệt PO trước khi nhận hàng.");
+    await send("POST", { action: "CREATE_ORDER", requestId: request.id, supplierCode: quote.supplierCode, supplierName: quote.supplierName, branchCode: request.branchCode, departmentCode: request.departmentCode, warehouseCode: suggestedWarehouseForRequest(request), lines: quote.lines.map((line) => unitPayload(line, line.unitCost)) }, "Đã tạo PO nháp từ báo giá. Vui lòng duyệt PO trước khi nhận hàng.");
     setActive("orders");
   };
 
@@ -861,6 +935,7 @@ export default function ProcurementPage() {
           items={data.items}
           templates={data.templates}
           departments={data.departments}
+          warehouses={data.warehouses}
           notify={setMessage}
           reload={loadData}
         />
@@ -925,6 +1000,15 @@ export default function ProcurementPage() {
                   </select>
                 </Field>
 
+                <Field label="Kho nhận hàng">
+                  <select value={requestForm.warehouseCode} onChange={(e) => setRequestForm({ ...requestForm, warehouseCode: e.target.value })} className="control">
+                    <option value="">-- Thu mua chọn lúc duyệt --</option>
+                    {warehousesForBranch(requestForm.branchCode).map((warehouse) => (
+                      <option key={warehouse.code} value={warehouse.code}>{warehouse.name} ({warehouse.code})</option>
+                    ))}
+                  </select>
+                </Field>
+
                 <Field label="Ngày cần hàng">
                   <DateInput
                     value={requestForm.neededDate}
@@ -971,19 +1055,24 @@ export default function ProcurementPage() {
                         options={itemOptions}
                         placeholder="Chọn mặt hàng..."
                       />
+                      {rowItem && purchaseUnitOptions(rowItem.unit, rowItem.unitConversions).length > 1 && (
+                        <select className="control !mt-0" value={row.unitCode || rowItem.unit} onChange={(e) => pickRequestRowUnit(index, e.target.value)} aria-label="ĐVT đặt hàng">
+                          {purchaseUnitOptions(rowItem.unit, rowItem.unitConversions).map((option) => <option key={option.unitCode} value={option.unitCode}>{option.label}</option>)}
+                        </select>
+                      )}
                       <div className="grid grid-cols-2 gap-3">
-                        <label className="block text-[11px] font-bold text-slate-600">Số lượng{rowItem ? ` (${rowItem.unit})` : ""}
+                        <label className="block text-[11px] font-bold text-slate-600">Số lượng{rowItem ? ` (${row.unitCode || rowItem.unit})` : ""}
                           <input type="number" min="0.001" step="any" inputMode="decimal" className="control" value={row.quantity} required
                             onChange={(e) => setRequestRows(requestRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, quantity: e.target.value } : candidate))} />
                         </label>
-                        <label className="block text-[11px] font-bold text-slate-600">Đơn giá dự kiến
+                        <label className="block text-[11px] font-bold text-slate-600">Đơn giá dự kiến{rowItem ? ` (đ/${row.unitCode || rowItem.unit})` : ""}
                           <input type="number" min="0" step="any" inputMode="numeric" className="control" value={row.estimatedUnitCost} required
                             onChange={(e) => setRequestRows(requestRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, estimatedUnitCost: e.target.value } : candidate))} />
                         </label>
                       </div>
                       {suggestion && (
                         <p className="text-[11px] text-slate-500">
-                          Đề xuất <b className="text-slate-700">{unitPrice(suggestion.price)} đ</b> {priceSourceLabel(suggestion)}.
+                          Đề xuất <b className="text-slate-700">{unitPrice(suggestion.price)} đ/{rowItem?.unit}</b> {priceSourceLabel(suggestion)}.
                         </p>
                       )}
                       {rowItem?.requiresImage && (
@@ -1029,7 +1118,7 @@ export default function ProcurementPage() {
                     <span className="material-symbols-outlined text-lg">add</span>Tạo yêu cầu mua
                   </button>
                 )}
-                {canCreate && (
+                {canApprove && (
                   <button
                     type="button"
                     onClick={openPoModal}
@@ -1066,19 +1155,19 @@ export default function ProcurementPage() {
               <Field label="Trạng thái">
                 <select className="control" value={requestFilter.status} onChange={(e) => setRequestFilter({ ...requestFilter, status: e.target.value })}>
                   <option value="ALL">Tất cả trạng thái</option>
-                  <option value="WAITING">Chờ mua hàng</option>
-                  <option value="ORDERED">Đã đặt hàng</option>
+                  <option value="WAITING">Chờ thu mua duyệt</option>
+                  <option value="ORDERED">Đã lên PO</option>
                   <option value="COMPLETED">Hoàn tất</option>
-                  <option value="REJECTED">Đã từ chối</option>
+                  <option value="REJECTED">Bị từ chối</option>
                   <option value="CANCELLED">Đã huỷ</option>
                   <option value="DRAFT">Nháp</option>
                 </select>
               </Field>
               <Field label="Từ ngày">
-                <input type="date" className="control" value={requestFilter.from} onChange={(e) => setRequestFilter({ ...requestFilter, from: e.target.value })} />
+                <DateInput className="control" value={requestFilter.from} onChange={(value) => setRequestFilter({ ...requestFilter, from: value })} ariaLabel="Từ ngày" />
               </Field>
               <Field label="Đến ngày">
-                <input type="date" className="control" value={requestFilter.to} onChange={(e) => setRequestFilter({ ...requestFilter, to: e.target.value })} />
+                <DateInput className="control" value={requestFilter.to} onChange={(value) => setRequestFilter({ ...requestFilter, to: value })} ariaLabel="Đến ngày" />
               </Field>
               <Field label="Tìm mã / lý do / mặt hàng">
                 <input className="control" value={requestFilter.search} placeholder="Gõ để tìm..." onChange={(e) => setRequestFilter({ ...requestFilter, search: e.target.value })} />
@@ -1099,14 +1188,20 @@ export default function ProcurementPage() {
                     </div>
                     <span className={`status ${requestStatusStyle(request.status)} shrink-0`}>{requestStatusLabel(request.status)}</span>
                   </div>
-                  <p className="text-sm text-slate-700">{request.reason}</p>
-                  <p className="text-xs text-slate-500">{request.lines.map((line) => `${line.item.name}: ${qty(line.quantity)} ${line.item.unit}`).join(", ")}</p>
+                  <p className="text-sm text-slate-700">{request.reason}{request.warehouseCode ? <span className="text-xs text-slate-500"> · Kho {request.warehouseCode}</span> : null}</p>
+                  <p className="text-xs text-slate-500">{request.lines.map((line) => `${line.item.name}: ${qtyText(line.quantity, line)}`).join(", ")}</p>
+                  {request.status === "REJECTED" && <p className="text-xs text-rose-700">Thu mua từ chối{request.rejectReason ? `: ${request.rejectReason}` : ""} — bấm Sửa để chỉnh và gửi lại, hoặc Huỷ phiếu.</p>}
                   <div className="flex items-center justify-between pt-1 border-t border-slate-100">
                     <b className="text-sm">{money(requestTotal(request))} đ</b>
                     <div className="flex items-center gap-1">
-                      {/* Không còn bước duyệt PR — chỉ giữ nút từ chối để loại phiếu đặt nhầm. */}
-                      {canApprove && quotableStatuses.includes(request.status) && request.status !== "ORDERED" && (
-                        <button onClick={() => void send("PATCH", { action: "REJECT_REQUEST", requestId: request.id }, "Đã từ chối yêu cầu mua.")} className="rounded-lg bg-rose-50 text-rose-700 text-xs font-bold px-3 py-2">Từ chối</button>
+                      {canApprove && canApproveRequest(request) && (
+                        <>
+                          <button onClick={() => setApprovingRequest(request)} className="rounded-lg bg-blue-600 text-white text-xs font-bold px-3 py-2">Duyệt → PO</button>
+                          <button onClick={() => void rejectRequest(request)} className="rounded-lg bg-rose-50 text-rose-700 text-xs font-bold px-3 py-2">Từ chối</button>
+                        </>
+                      )}
+                      {canCreate && canCancelRequest(request) && (
+                        <button onClick={() => void cancelRequest(request)} className="rounded-lg bg-slate-100 text-slate-600 text-xs font-bold px-3 py-2">Huỷ phiếu</button>
                       )}
                       <RowActions
                         session={user}
@@ -1149,19 +1244,26 @@ export default function ProcurementPage() {
                   </td>
                   <td className="cell">
                     <b>{request.reason}</b>
-                    <small>{request.lines.map((line) => `${line.item.name}: ${line.quantity} ${line.item.unit}${line.imageUrl ? " · có hình" : ""}`).join(", ")}</small>
+                    <small>{request.lines.map((line) => `${line.item.name}: ${qtyText(line.quantity, line)}${line.imageUrl ? " · có hình" : ""}`).join(", ")}</small>
                   </td>
                   <td className="cell text-right font-semibold">
                     {money(requestTotal(request))} đ
                   </td>
                   <td className="cell">
                     <span className={`status ${requestStatusStyle(request.status)}`}>{requestStatusLabel(request.status)}</span>
+                    {request.status === "REJECTED" && request.rejectReason && <small className="text-rose-700">{request.rejectReason}</small>}
+                    {request.warehouseCode && <small>Kho {request.warehouseCode}</small>}
                   </td>
                   <td className="cell">
                     <div className="flex items-center justify-end gap-2">
-                      {/* Không còn bước duyệt PR — chỉ giữ nút từ chối để loại phiếu đặt nhầm. */}
-                      {canApprove && quotableStatuses.includes(request.status) && request.status !== "ORDERED" && (
-                        <button onClick={() => void send("PATCH", { action: "REJECT_REQUEST", requestId: request.id }, "Đã từ chối yêu cầu mua.")} className="action-link text-rose-700 hover:underline">Từ chối</button>
+                      {canApprove && canApproveRequest(request) && (
+                        <>
+                          <button onClick={() => setApprovingRequest(request)} className="action-link text-blue-700 hover:underline">Duyệt → PO</button>
+                          <button onClick={() => void rejectRequest(request)} className="action-link text-rose-700 hover:underline">Từ chối</button>
+                        </>
+                      )}
+                      {canCreate && canCancelRequest(request) && (
+                        <button onClick={() => void cancelRequest(request)} className="action-link text-slate-500 hover:underline">Huỷ phiếu</button>
                       )}
                       <RowActions
                         session={user}
@@ -1194,12 +1296,13 @@ export default function ProcurementPage() {
       {active === "quotes" && (
         <div className="space-y-5">
           {(canCreate || editingQuote) && (() => {
-            const quoteLines = (editingQuote ? editingQuote.lines : selectedRequest?.lines || []) as Array<{ itemId: string; quantity: number; item?: Item }>;
+            const quoteLines = (editingQuote ? editingQuote.lines : selectedRequest?.lines || []) as Array<UnitFields & { itemId: string; quantity: number; item?: Item }>;
             const rows = quoteLines.map((line) => {
               const item = line.item || data.items.find((candidate) => candidate.id === line.itemId);
+              // Giá gõ theo ĐVT đặt → nhân số lượng theo ĐVT đặt.
               const price = Number(quoteLineCosts[line.itemId] || 0);
               const vatCode = quoteLineVat[line.itemId] || "KKKNT";
-              const before = Math.round(line.quantity * price);
+              const before = Math.round(toPurchaseQuantity(line.quantity, line) * price);
               const vat = vatAmountOf(before, VAT_RATE_OPTIONS.find((option) => option.code === vatCode)?.rate ?? null);
               return { line, item, price, vatCode, before, vat };
             });
@@ -1279,7 +1382,7 @@ export default function ProcurementPage() {
                             <small className="block text-slate-500">{item?.code}</small>
                             {quotePriceSource[line.itemId] && <small className="block text-emerald-700 font-semibold">Theo bảng giá {quotePriceSource[line.itemId]}</small>}
                           </td>
-                          <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">{qty(line.quantity)} {item?.unit || ""}</td>
+                          <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">{qtyText(line.quantity, { ...line, item })}</td>
                           <td className="px-3 py-2 text-right">
                             <input
                               type="number"
@@ -1287,7 +1390,7 @@ export default function ProcurementPage() {
                               step="any"
                               inputMode="decimal"
                               className="control !mt-0 w-32 text-right"
-                              placeholder={`đ/${item?.unit || "ĐVT"}`}
+                              placeholder={`đ/${purchaseLineUnit({ ...line, item }) || "ĐVT"}`}
                               value={quoteLineCosts[line.itemId] ?? ""}
                               onChange={(e) => setQuoteLineCosts({ ...quoteLineCosts, [line.itemId]: e.target.value })}
                               aria-label={`Đơn giá ${item?.name || line.itemId}`}
@@ -1316,6 +1419,9 @@ export default function ProcurementPage() {
                   </table>
                 </div>
               )}
+
+              {/* Trên điện thoại thông báo đầu trang nằm khuất — báo lại ngay cạnh nút (chưa chọn NCC, dòng giá 0...). */}
+              {message && <p className="px-3 py-2 rounded-lg border border-amber-200 bg-amber-50 text-sm text-amber-800">{message}</p>}
 
               <div className="flex gap-2 justify-end">
                 {editingQuote && (
@@ -1351,7 +1457,7 @@ export default function ProcurementPage() {
                 <div className="flex items-center justify-between gap-2 pb-3 mb-3 border-b border-slate-100">
                   <div className="min-w-0">
                     <b><CopyableText value={request.code} /> — {request.reason}</b>
-                    <p className="text-xs text-slate-500">Mặt hàng: {request.lines.map((line) => `${line.item.name} (${line.quantity} ${line.item.unit})`).join(", ")}</p>
+                    <p className="text-xs text-slate-500">Mặt hàng: {request.lines.map((line) => `${line.item.name} (${qtyText(line.quantity, line)})`).join(", ")}</p>
                   </div>
                   <span className={`status ${requestStatusStyle(request.status)} shrink-0`}>{requestStatusLabel(request.status)}</span>
                 </div>
@@ -1414,7 +1520,7 @@ export default function ProcurementPage() {
                                   Bỏ chốt
                                 </button>
                               )}
-                              {canCreate && !requestHasOrder(request) && (
+                              {canApprove && !requestHasOrder(request) && (
                                 <button onClick={() => void createOrder(request, quote)} className="action-link text-blue-700 hover:underline">
                                   Chọn &amp; Tạo PO
                                 </button>
@@ -1464,13 +1570,14 @@ export default function ProcurementPage() {
                         <tbody>
                           {request.lines.map((line) => (
                             <tr key={line.itemId} className="border-t border-slate-100">
-                              <td className="px-3 py-1.5">{line.item.name} <small className="text-slate-400">× {qty(line.quantity)} {line.item.unit}</small></td>
+                              <td className="px-3 py-1.5">{line.item.name} <small className="text-slate-400">× {qtyText(line.quantity, line)}</small></td>
                               {request.quotes.map((quote) => {
-                                const cost = quote.lines.find((quoteLine) => quoteLine.itemId === line.itemId)?.unitCost || 0;
+                                const quoteLine = quote.lines.find((candidate) => candidate.itemId === line.itemId);
+                                const cost = quoteLine?.unitCost || 0;
                                 const best = cost > 0 && bestCost.get(line.itemId) === cost;
                                 return (
                                   <td key={quote.id} className={`px-3 py-1.5 text-right ${best ? "bg-emerald-50 text-emerald-800 font-bold" : ""}`}>
-                                    {cost > 0 ? `${unitPrice(cost)} đ` : "-"}
+                                    {cost > 0 && quoteLine ? `${unitPrice(toPurchasePrice(cost, quoteLine))} đ/${purchaseLineUnit({ ...quoteLine, item: line.item })}` : "-"}
                                   </td>
                                 );
                               })}
@@ -1538,10 +1645,10 @@ export default function ProcurementPage() {
               </select>
             </Field>
             <Field label="Từ ngày">
-              <input type="date" className="control" value={orderFilter.from} onChange={(e) => setOrderFilter({ ...orderFilter, from: e.target.value })} />
+              <DateInput className="control" value={orderFilter.from} onChange={(value) => setOrderFilter({ ...orderFilter, from: value })} ariaLabel="Từ ngày" />
             </Field>
             <Field label="Đến ngày">
-              <input type="date" className="control" value={orderFilter.to} onChange={(e) => setOrderFilter({ ...orderFilter, to: e.target.value })} />
+              <DateInput className="control" value={orderFilter.to} onChange={(value) => setOrderFilter({ ...orderFilter, to: value })} ariaLabel="Đến ngày" />
             </Field>
             <Field label="Tìm mã / NCC / mặt hàng">
               <input className="control" value={orderFilter.search} placeholder="Gõ để tìm..." onChange={(e) => setOrderFilter({ ...orderFilter, search: e.target.value })} />
@@ -1566,7 +1673,7 @@ export default function ProcurementPage() {
                     <span className={`status ${orderStatusStyle(order.status)} shrink-0`}>{orderStatusLabel(order.status)}</span>
                   </div>
                   <p className="text-sm font-semibold text-slate-800">{order.supplierName}</p>
-                  <p className="text-xs text-slate-500">{order.lines.map((line) => `${line.item.name} (${qty(line.receivedQuantity)}/${qty(line.orderedQuantity)})`).join(", ")}</p>
+                  <p className="text-xs text-slate-500">{order.lines.map((line) => `${line.item.name} (${qty(toPurchaseQuantity(line.receivedQuantity, line))}/${qtyText(line.orderedQuantity, line)})`).join(", ")}</p>
                   <div className="flex items-center justify-between pt-1 border-t border-slate-100">
                     <div>
                       <b className="text-sm">{money(order.totalAmount)} đ</b>
@@ -1632,7 +1739,7 @@ export default function ProcurementPage() {
                   </td>
                   <td className="cell">
                     <b>{order.supplierName}</b>
-                    <small>{order.lines.map((line) => `${line.item.name} (${line.receivedQuantity}/${line.orderedQuantity})`).join(", ")}</small>
+                    <small>{order.lines.map((line) => `${line.item.name} (${qty(toPurchaseQuantity(line.receivedQuantity, line))}/${qtyText(line.orderedQuantity, line)})`).join(", ")}</small>
                   </td>
                   <td className="cell">
                     <b>{storeLabel(order.branchCode)}</b>
@@ -1783,7 +1890,7 @@ export default function ProcurementPage() {
                             <td className="px-4 py-2 text-slate-600">
                               {quote.lines.map((line) => {
                                 const item = line.item || data.items.find((candidate) => candidate.id === line.itemId);
-                                return `${item?.name || line.itemId}: ${qty(line.quantity)} ${item?.unit || ""} × ${unitPrice(line.unitCost)} đ`;
+                                return `${item?.name || line.itemId}: ${qtyText(line.quantity, { ...line, item })} × ${unitPrice(toPurchasePrice(line.unitCost, line))} đ`;
                               }).join(", ")}
                             </td>
                             <td className="px-4 py-2 text-right font-semibold">{money(quote.totalAmount)} đ</td>
@@ -1810,6 +1917,23 @@ export default function ProcurementPage() {
         </div>
       )}
 
+      {approvingRequest && (
+        <ApproveRequestDialog
+          request={approvingRequest}
+          supplierOptions={supplierOptions}
+          warehouses={warehousesForBranch(approvingRequest.branchCode)}
+          defaultWarehouse={suggestedWarehouseForRequest(approvingRequest)}
+          canCreatePartner={canCreatePartner}
+          onSupplierCreated={(partner) => setData((current) => ({ ...current, suppliers: [...current.suppliers, { id: partner.id, code: partner.code, name: partner.name }] }))}
+          onClose={() => setApprovingRequest(null)}
+          onApproved={async (text) => {
+            setApprovingRequest(null);
+            setMessage(text);
+            await loadData();
+          }}
+        />
+      )}
+
       {receivingOrder && (
         <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-end sm:items-center justify-center sm:p-4">
           <div className="bg-white rounded-t-2xl sm:rounded-xl w-full max-w-lg shadow-xl max-h-[92vh] flex flex-col">
@@ -1827,7 +1951,8 @@ export default function ProcurementPage() {
 
             <div className="p-5 space-y-3 overflow-y-auto">
               {receivingOrder.lines.map((line) => {
-                const remaining = line.orderedQuantity - line.receivedQuantity;
+                const remaining = toPurchaseQuantity(line.orderedQuantity - line.receivedQuantity, line);
+                const lineUnit = purchaseLineUnit(line);
                 if (remaining <= 0) return null;
                 const isAsset = ["TOOL", "ASSET"].includes(line.item.itemType);
                 const groupOptions = isAsset ? assetGroupOptionsFor(line.item.itemType) : [];
@@ -1836,19 +1961,35 @@ export default function ProcurementPage() {
                     <div className="flex items-center gap-3">
                       <div className="flex-1 min-w-0">
                         <p className="font-bold text-sm truncate">{line.item.name} {isAsset && <span className="status bg-indigo-50 text-indigo-700 ml-1">Tài sản/CCDC</span>}</p>
-                        <p className="text-xs text-slate-500">Còn phải nhận: {qty(remaining)} {line.item.unit} · {unitPrice(line.unitCost)} đ/{line.item.unit}</p>
+                        <p className="text-xs text-slate-500">Còn phải nhận: {qty(remaining)} {lineUnit} · {line.unitCost > 0 ? `giá PO ${unitPrice(toPurchasePrice(line.unitCost, line))} đ/${lineUnit}` : receivePriceSource[line.id] ? `PO chưa có giá · gợi ý theo ${receivePriceSource[line.id]}` : "PO chưa có giá, chưa có bảng giá — nhập giá thực"}</p>
                       </div>
-                      <input
-                        type="number"
-                        min="0"
-                        max={remaining}
-                        step="any"
-                        inputMode="decimal"
-                        className="control !mt-0 w-24 text-right"
-                        value={receiveQuantities[line.id] ?? ""}
-                        onChange={(e) => setReceiveQuantities({ ...receiveQuantities, [line.id]: e.target.value })}
-                        aria-label={`Số lượng nhận ${line.item.name}`}
-                      />
+                      <label className="text-[10px] font-bold text-slate-500 text-right">SL ({lineUnit})
+                        <input
+                          type="number"
+                          min="0"
+                          max={remaining}
+                          step="any"
+                          inputMode="decimal"
+                          className="control !mt-0 w-24 text-right"
+                          value={receiveQuantities[line.id] ?? ""}
+                          onChange={(e) => setReceiveQuantities({ ...receiveQuantities, [line.id]: e.target.value })}
+                          aria-label={`Số lượng nhận ${line.item.name}`}
+                        />
+                      </label>
+                      {/* Giá thực mua (khách 21/10/2026: PO duyệt khi chưa có giá) — ghi vào phiếu nhập + công nợ. */}
+                      <label className="text-[10px] font-bold text-slate-500 text-right">Đơn giá (đ/{lineUnit})
+                        <input
+                          type="number"
+                          min="0"
+                          step="any"
+                          inputMode="decimal"
+                          className={`control !mt-0 w-28 text-right ${!(Number(receivePrices[line.id]) > 0) ? "border-amber-400 bg-amber-50" : ""}`}
+                          placeholder="Giá thực"
+                          value={receivePrices[line.id] ?? ""}
+                          onChange={(e) => setReceivePrices({ ...receivePrices, [line.id]: e.target.value })}
+                          aria-label={`Đơn giá nhận ${line.item.name}`}
+                        />
+                      </label>
                     </div>
                     {/* Nhóm tài sản quyết định tiền tố mã hồ sơ (CCDCBAR0001...) và mã đã cấp là
                         không sửa được, nên phải chọn ngay tại đây thay vì để hệ thống đoán. */}

@@ -13,8 +13,9 @@ import { TEMPLATE_IMPORT_HEADERS, templateWindow, templateWindowStatus, type Tem
 export type TemplateUnitConversion = { id: string; unitCode: string; unitName: string | null; conversionRate: number; isDefaultPurchase: boolean };
 export type TemplateItem = { id: string; code: string; name: string; unit: string; itemType: string; unitConversions?: TemplateUnitConversion[] };
 export type TemplateLine = { id: string; itemId: string; unitCode: string | null; sortOrder: number; note: string | null; item: TemplateItem };
-export type PurchaseTemplate = { id: string; code: string; name: string; branchCode: string | null; departmentCode: string | null; effectiveFrom?: string | null; effectiveTo?: string | null; status: string; note: string | null; createdBy?: string | null; updatedAt?: string; lines: TemplateLine[] };
+export type PurchaseTemplate = { id: string; code: string; name: string; branchCode: string | null; departmentCode: string | null; warehouseCode?: string | null; effectiveFrom?: string | null; effectiveTo?: string | null; status: string; note: string | null; createdBy?: string | null; updatedAt?: string; lines: TemplateLine[] };
 export type DepartmentOption = { id: string; code: string; name: string; branch: string | null };
+export type WarehouseOption = { code: string; name: string; branch: string | null };
 
 const today = () => new Date().toISOString().slice(0, 10);
 /** Đọc file Excel (hoặc CSV UTF-8 — đọc dạng chữ, không thì tiếng Việt vỡ dấu). */
@@ -71,7 +72,7 @@ function clearDraft(key: string) {
 }
 
 type ManageDraft = {
-  form: { name: string; branchCode: string; departmentCode: string; note: string; effectiveFrom?: string; effectiveTo?: string };
+  form: { name: string; branchCode: string; departmentCode: string; warehouseCode?: string; note: string; effectiveFrom?: string; effectiveTo?: string };
   rows: Array<{ itemId: string; unitCode: string; note?: string }>;
   editingId: string | null;
 };
@@ -113,6 +114,7 @@ export function TemplatesTab({
   items,
   templates,
   departments,
+  warehouses,
   notify,
   reload,
 }: {
@@ -122,6 +124,8 @@ export function TemplatesTab({
   items: TemplateItem[];
   templates: PurchaseTemplate[];
   departments: DepartmentOption[];
+  /** Kho trong phạm vi user (máy chủ đã lọc theo phân quyền kho). */
+  warehouses: WarehouseOption[];
   notify: (message: string) => void;
   reload: () => Promise<void>;
 }) {
@@ -138,7 +142,7 @@ export function TemplatesTab({
   /** Khu quản lý mẫu. */
   const [showManage, setShowManage] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<PurchaseTemplate | null>(null);
-  const [templateForm, setTemplateForm] = useState({ name: "", branchCode: "", departmentCode: "", note: "", effectiveFrom: "", effectiveTo: "" });
+  const [templateForm, setTemplateForm] = useState({ name: "", branchCode: "", departmentCode: "", warehouseCode: "", note: "", effectiveFrom: "", effectiveTo: "" });
   const [templateRows, setTemplateRows] = useState<Array<{ itemId: string; unitCode: string; note?: string }>>([{ itemId: "", unitCode: "" }]);
   /** Danh sách mẫu: lọc + mẫu đang xem chi tiết (khách yêu cầu 03/10/2026 — rất nhiều mẫu). */
   const [listFilter, setListFilter] = useState({ search: "", branch: "ALL", status: "ACTIVE" });
@@ -157,7 +161,7 @@ export function TemplatesTab({
     const timer = window.setTimeout(() => {
       const manage = readDraft<ManageDraft>(MANAGE_DRAFT_KEY);
       if (manage) {
-        setTemplateForm({ effectiveFrom: "", effectiveTo: "", ...manage.form });
+        setTemplateForm({ effectiveFrom: "", effectiveTo: "", ...manage.form, warehouseCode: manage.form.warehouseCode || "" });
         setTemplateRows(manage.rows.length > 0 ? manage.rows : [{ itemId: "", unitCode: "" }]);
         setShowManage(true);
       }
@@ -281,7 +285,7 @@ export function TemplatesTab({
         notify(payload.error || "Không gửi được yêu cầu mua hàng");
         return;
       }
-      notify(`Đã gửi yêu cầu ${payload.code} (${lines.length} mặt hàng) — mua hàng có thể so sánh giá và đặt hàng ngay.`);
+      notify(`Đã gửi yêu cầu ${payload.code} (${lines.length} mặt hàng) — chờ thu mua duyệt lên PO.`);
       setFilling(null);
       clearDraft(FILL_DRAFT_KEY);
       await reload();
@@ -292,7 +296,7 @@ export function TemplatesTab({
 
   const resetTemplateForm = () => {
     setEditingTemplate(null);
-    setTemplateForm({ name: "", branchCode: "", departmentCode: "", note: "", effectiveFrom: "", effectiveTo: "" });
+    setTemplateForm({ name: "", branchCode: "", departmentCode: "", warehouseCode: "", note: "", effectiveFrom: "", effectiveTo: "" });
     setTemplateRows([{ itemId: "", unitCode: "" }]);
     clearDraft(MANAGE_DRAFT_KEY);
   };
@@ -304,6 +308,7 @@ export function TemplatesTab({
       name: template.name,
       branchCode: template.branchCode || "",
       departmentCode: template.departmentCode || "",
+      warehouseCode: template.warehouseCode || "",
       note: template.note || "",
       effectiveFrom: templateWindow(template).from || "",
       effectiveTo: templateWindow(template).to || "",
@@ -334,6 +339,7 @@ export function TemplatesTab({
           name: templateForm.name,
           branchCode: templateForm.branchCode,
           departmentCode: templateForm.departmentCode,
+          warehouseCode: templateForm.warehouseCode,
           effectiveFrom: templateForm.effectiveFrom,
           effectiveTo: templateForm.effectiveTo,
           note: templateForm.note,
@@ -691,7 +697,7 @@ export function TemplatesTab({
                   return (
                     <tr key={template.id} onClick={() => setSelectedId(template.id)} className={`border-t border-slate-100 cursor-pointer ${isSelected ? "bg-blue-50" : "hover:bg-slate-50"}`}>
                       <td className="cell min-w-[200px]"><b className="text-slate-800">{template.name}</b><small>{template.code}</small></td>
-                      <td className="cell">{template.branchCode ? storeLabel(template.branchCode) : <span className="text-slate-500">Mọi cửa hàng</span>}<small>{departmentName(template.departmentCode)}</small></td>
+                      <td className="cell">{template.branchCode ? storeLabel(template.branchCode) : <span className="text-slate-500">Mọi cửa hàng</span>}<small>{departmentName(template.departmentCode)}{template.warehouseCode ? ` · Kho ${template.warehouseCode}` : ""}</small></td>
                       <td className="cell whitespace-nowrap">
                         <span className={`status ${WINDOW_TONE[status]}`}>{WINDOW_LABEL[status]}</span>
                         <small className="block text-slate-500">{window.from ? dayText(window.from) : "…"} → {window.to ? dayText(window.to) : "…"}</small>
@@ -731,6 +737,7 @@ export function TemplatesTab({
               <dl className="px-4 sm:px-5 py-3 grid grid-cols-2 lg:grid-cols-4 gap-3 text-sm border-b border-slate-100">
                 <div><dt className="text-xs font-bold text-slate-500">Cửa hàng</dt><dd>{selected.branchCode ? storeLabel(selected.branchCode) : "Dùng chung mọi cửa hàng"}</dd></div>
                 <div><dt className="text-xs font-bold text-slate-500">Bộ phận mặc định</dt><dd>{departmentName(selected.departmentCode) || "Người đặt tự chọn"}</dd></div>
+                <div><dt className="text-xs font-bold text-slate-500">Kho nhận hàng</dt><dd>{selected.warehouseCode || <span className="text-slate-400">Mọi kho</span>}</dd></div>
                 <div><dt className="text-xs font-bold text-slate-500">Ngày áp dụng</dt><dd>{selectedWindow?.from ? dayText(selectedWindow.from) : <span className="text-slate-400">Không giới hạn</span>}</dd></div>
                 <div><dt className="text-xs font-bold text-slate-500">Ngày kết thúc</dt><dd>{selectedWindow?.to ? dayText(selectedWindow.to) : <span className="text-slate-400">Không giới hạn</span>}</dd></div>
                 {selected.note && <div className="col-span-2 lg:col-span-4"><dt className="text-xs font-bold text-slate-500">Ghi chú</dt><dd>{selected.note}</dd></div>}
@@ -783,6 +790,15 @@ export function TemplatesTab({
                   {branchOptions.map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
                 </select>
               </label>
+              {/* Kho của mẫu (khách 21/10/2026): user được phân kho chỉ thấy mẫu kho mình; PR theo mẫu nhận về kho này. */}
+              <label className="block text-xs font-bold text-slate-600">Kho nhận hàng
+                <select className="control" value={templateForm.warehouseCode} onChange={(e) => { const value = e.target.value; setTemplateForm((current) => ({ ...current, warehouseCode: value })); }}>
+                  <option value="">Mọi kho (ai cũng thấy mẫu)</option>
+                  {warehouses
+                    .filter((warehouse) => !templateForm.branchCode || !warehouse.branch || warehouse.branch === "ALL" || warehouse.branch === templateForm.branchCode)
+                    .map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name} ({warehouse.code})</option>)}
+                </select>
+              </label>
               <label className="block text-xs font-bold text-slate-600">Bộ phận mặc định
                 <select className="control" value={templateForm.departmentCode} onChange={(e) => { const value = e.target.value; setTemplateForm((current) => ({ ...current, departmentCode: value })); }}>
                   <option value="">Người đặt tự chọn</option>
@@ -792,10 +808,10 @@ export function TemplatesTab({
               {/* Ngày áp dụng / kết thúc để trống mặc định — người lập tự điền (khách yêu cầu 03/10/2026).
                   Trống = không giới hạn đầu đó; ngoài khoảng này mẫu không dùng để đặt hàng được. */}
               <label className="block text-xs font-bold text-slate-600">Ngày áp dụng
-                <input type="date" className="control" value={templateForm.effectiveFrom} onChange={(e) => { const value = e.target.value; setTemplateForm((current) => ({ ...current, effectiveFrom: value })); }} />
+                <DateInput className="control" value={templateForm.effectiveFrom} onChange={(value) => setTemplateForm((current) => ({ ...current, effectiveFrom: value }))} ariaLabel="Ngày áp dụng" />
               </label>
               <label className="block text-xs font-bold text-slate-600">Ngày kết thúc
-                <input type="date" className="control" value={templateForm.effectiveTo} onChange={(e) => { const value = e.target.value; setTemplateForm((current) => ({ ...current, effectiveTo: value })); }} />
+                <DateInput className="control" value={templateForm.effectiveTo} onChange={(value) => setTemplateForm((current) => ({ ...current, effectiveTo: value }))} ariaLabel="Ngày kết thúc" />
               </label>
               <label className="block text-xs font-bold text-slate-600 sm:col-span-2 xl:col-span-3">Ghi chú
                 <input className="control" value={templateForm.note} onChange={(e) => { const value = e.target.value; setTemplateForm((current) => ({ ...current, note: value })); }} />

@@ -73,3 +73,40 @@ export function defaultPurchaseUnit(
     conversionRate: rate,
   };
 }
+
+/**
+ * Dòng PR / báo giá / PO giữ ĐVT đặt hàng (khách 21/10/2026: "đừng quy đổi, tới bước nhập mới quy
+ * đổi"). DB vẫn lưu số lượng + đơn giá theo ĐVT tồn kho kèm `unitCode` + `conversionRate`; mọi chỗ
+ * HIỂN THỊ / NHẬP dùng các hàm dưới để đổi sang ĐVT đặt. Dòng cũ (không có unitCode) = ĐVT tồn kho.
+ */
+export type PurchaseUnitLine = { unitCode?: string | null; conversionRate?: number | null; item?: { unit: string } | null };
+
+export function purchaseLineRate(line: PurchaseUnitLine) {
+  const rate = Number(line.conversionRate);
+  return line.unitCode && Number.isFinite(rate) && rate > 0 ? rate : 1;
+}
+
+export function purchaseLineUnit(line: PurchaseUnitLine, fallbackUnit = "") {
+  return line.unitCode || line.item?.unit || fallbackUnit;
+}
+
+/** Số lượng theo ĐVT tồn kho → theo ĐVT đặt hàng (làm tròn 6 số lẻ để 1000 ÷ 1000 ra đúng 1). */
+export function toPurchaseQuantity(baseQuantity: number, line: PurchaseUnitLine) {
+  return Math.round((baseQuantity / purchaseLineRate(line)) * 1e6) / 1e6;
+}
+
+/** Đơn giá theo ĐVT tồn kho → theo ĐVT đặt hàng. */
+export function toPurchasePrice(baseUnitCost: number, line: PurchaseUnitLine) {
+  return Math.round(baseUnitCost * purchaseLineRate(line) * 1e4) / 1e4;
+}
+
+/** Danh sách ĐVT chọn được của mặt hàng: ĐVT tồn kho + các ĐVT quy đổi (bỏ dòng khai trùng ĐVT tồn). */
+export function purchaseUnitOptions(baseUnit: string, conversions: UnitConversionLike[] | null | undefined) {
+  const options = [{ unitCode: baseUnit, label: baseUnit, conversionRate: 1 }];
+  for (const conversion of conversions || []) {
+    if (sameUnit(conversion.unitCode, baseUnit) || options.some((option) => sameUnit(option.unitCode, conversion.unitCode))) continue;
+    const rate = safeConversionRate(baseUnit, conversion);
+    options.push({ unitCode: conversion.unitCode, label: `${conversion.unitName || conversion.unitCode} (= ${rate} ${baseUnit})`, conversionRate: rate });
+  }
+  return options;
+}

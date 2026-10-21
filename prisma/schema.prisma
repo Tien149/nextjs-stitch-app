@@ -1102,6 +1102,8 @@ model PurchaseRequestTemplate {
   branchCode     String?
   /// Bộ phận mặc định điền sẵn khi đặt theo mẫu (bếp, bar...); người đặt vẫn đổi được.
   departmentCode String?
+  /// Kho nhận hàng của mẫu (khách 21/10/2026): user phân kho chỉ thấy mẫu của kho mình. Trống = mọi kho.
+  warehouseCode  String?
   /// Ngày áp dụng / ngày kết thúc của mẫu (khách yêu cầu 03/10/2026) — để trống là không chặn
   /// đầu đó; ngoài khoảng này mẫu không dùng để đặt hàng được. Mốc 00:00 giờ VN.
   effectiveFrom  DateTime?
@@ -1144,12 +1146,16 @@ model PurchaseRequest {
   requestDate    DateTime  @default(now())
   branchCode     String
   departmentCode String?
+  /// Kho nhận hàng (từ mẫu hoặc chọn tay) — PO lập từ PR nhận về kho này; phạm vi xem theo kho của user.
+  warehouseCode  String?
   requestedBy    String
   neededDate     DateTime?
   reason         String
   status         String    @default("DRAFT")
   approvedBy     String?
   approvedAt     DateTime?
+  /// Lý do thu mua từ chối — người đặt sửa lại rồi gửi lại (về Chờ duyệt) hoặc huỷ.
+  rejectReason   String?
   note           String?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
@@ -1173,6 +1179,10 @@ model PurchaseRequestLine {
   itemId            String
   quantity          Float
   estimatedUnitCost Float   @default(0)
+  /// ĐVT đặt hàng (khách 21/10/2026: PR/báo giá/PO giữ nguyên ĐVT đặt, tới phiếu nhập mới quy đổi).
+  /// Số lượng / đơn giá trong DB vẫn theo ĐVT tồn kho; hiển thị = số lượng ÷ hệ số, đơn giá × hệ số.
+  unitCode          String?
+  conversionRate    Float   @default(1)
   imageUrl          String?
   note              String?
 
@@ -1217,6 +1227,10 @@ model SupplierQuoteLine {
   totalCost Float
   /// Thuế suất GTGT báo giá (null = KKKNT / không khai) — xem lib/inventory-vat.ts.
   vatRate   Float?
+  /// ĐVT đặt hàng (khách 21/10/2026: PR/báo giá/PO giữ nguyên ĐVT đặt, tới phiếu nhập mới quy đổi).
+  /// Số lượng / đơn giá trong DB vẫn theo ĐVT tồn kho; hiển thị = số lượng ÷ hệ số, đơn giá × hệ số.
+  unitCode       String?
+  conversionRate Float   @default(1)
 
   quote SupplierQuote @relation(fields: [quoteId], references: [id], onDelete: Cascade)
   item  InventoryItem @relation(fields: [itemId], references: [id])
@@ -1319,6 +1333,10 @@ model PurchaseOrderLine {
   unitCost         Float
   totalCost        Float
   imageUrl         String?
+  /// ĐVT đặt hàng (khách 21/10/2026: PR/báo giá/PO giữ nguyên ĐVT đặt, tới phiếu nhập mới quy đổi).
+  /// Số lượng / đơn giá trong DB vẫn theo ĐVT tồn kho; hiển thị = số lượng ÷ hệ số, đơn giá × hệ số.
+  unitCode         String?
+  conversionRate   Float   @default(1)
 
   order PurchaseOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
   item  InventoryItem @relation(fields: [itemId], references: [id])

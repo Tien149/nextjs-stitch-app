@@ -4,7 +4,7 @@ import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError, businessError, cleanText, isPeriodLocked, toDate, toNumber } from "@/lib/phase3";
 import { assertBranchAccess, branchFilterForSession } from "@/lib/accounting";
-import type { DemoSession } from "@/lib/auth-demo";
+import { canPerformMenuAction, type DemoSession } from "@/lib/auth-demo";
 import { writeAuditLog } from "@/lib/audit-log";
 import { resolveAssetGroupForReceive } from "@/lib/asset-group-rules";
 import {
@@ -16,13 +16,14 @@ import {
 import { scopePayloadByTab } from "@/lib/tab-scope";
 import { nextAssetCode } from "@/lib/asset-code-generator";
 import { postInventoryTransaction, nextStockDocCode } from "@/lib/inventory-stock";
-import { defaultPurchaseUnit } from "@/lib/unit-conversion";
+import { conversionRateForUnit, defaultPurchaseUnit, purchaseLineRate, purchaseLineUnit, toPurchasePrice } from "@/lib/unit-conversion";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { parseVatRate } from "@/lib/inventory-vat";
 import { buildPriceImport, type PriceImportItem } from "@/lib/supplier-price-list";
 import { findPriceDeviations, loadActivePrices, loadPriceLists, savePriceList } from "@/lib/supplier-price-list-db";
 import { buildTemplateImport, templateDayToDate, templateWindow, templateWindowStatus, type TemplateImportItem } from "@/lib/purchase-template";
 import { vnDay } from "@/lib/recipe-validity";
+import { allowedWarehousesOf, assertWarehouseAccess, scopeWarehouses } from "@/lib/warehouse-scope";
 
 const menuHref = "/procurement";
 
@@ -59,6 +60,8 @@ type InputLine = {
   estimatedUnitCost?: unknown;
   imageUrl?: unknown;
   note?: unknown;
+  /** ĐVT đặt hàng: có thì quantity / unitCost gửi lên tính THEO ĐVT NÀY (xem withPurchaseUnits). */
+  unitCode?: unknown;
 };
 
 /**
@@ -96,8 +99,31 @@ function validLines(value: unknown) {
       unitCost: toNumber(line.unitCost ?? line.estimatedUnitCost),
       imageUrl: cleanText(line.imageUrl),
       note: cleanText(line.note),
+      unitCode: cleanText(line.unitCode),
     }))
     .filter((line) => line.itemId && line.quantity > 0);
+}
+
+/**
+ * PR / báo giá / PO giữ ĐVT đặt hàng (khách 21/10/2026: "đừng quy đổi, tới bước nhập mới quy đổi").
+ * Dòng gửi lên kèm `unitCode` thì số lượng + đơn giá là theo ĐVT đó; DB vẫn lưu theo ĐVT tồn kho
+ * (mọi phép cộng tiền, so sánh giá, nhận hàng giữ nguyên) kèm unitCode + hệ số để hiển thị lại.
+ * Không có unitCode (client cũ) = đã là ĐVT tồn kho. ĐVT không khai ở danh mục → báo lỗi.
+ */
+async function withPurchaseUnits<T extends { itemId: string; quantity: number; unitCost: number; unitCode: string }>(lines: T[]) {
+  const ids = [...new Set(lines.filter((line) => line.unitCode).map((line) => line.itemId))];
+  const items = ids.length === 0 ? [] : await prisma.inventoryItem.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, name: true, unit: true, unitConversions: { where: { deletedAt: null }, select: { unitCode: true, unitName: true, conversionRate: true } } },
+  });
+  const byId = new Map(items.map((item) => [item.id, item]));
+  return lines.map((line) => {
+    const item = byId.get(line.itemId);
+    if (!line.unitCode || !item) return { ...line, unitCode: null as string | null, conversionRate: 1 };
+    const rate = conversionRateForUnit(item.unit, item.unitConversions, line.unitCode);
+    if (rate === null) businessError(`Mặt hàng ${item.name} chưa khai ĐVT ${line.unitCode} ở danh mục mặt hàng.`);
+    return { ...line, quantity: line.quantity * rate, unitCost: line.unitCost / rate, unitCode: line.unitCode, conversionRate: rate };
+  });
 }
 
 /**
@@ -128,6 +154,7 @@ function editableLines(value: unknown) {
     unitCost: toNumber(line.unitCost ?? line.estimatedUnitCost),
     imageUrl: cleanText(line.imageUrl),
     note: cleanText(line.note),
+    unitCode: cleanText(line.unitCode),
   }));
   if (lines.length === 0) businessError("Cần ít nhất một mặt hàng");
   for (const line of lines) {
@@ -160,6 +187,44 @@ function assertTemplateBranchAccess(session: DemoSession, branchCode: string | n
   if (!session.allowedBranches?.includes("ALL")) {
     businessError("Mẫu dùng chung cho mọi cửa hàng chỉ người quản trị toàn hệ thống mới được tạo/sửa/xoá.");
   }
+}
+
+/**
+ * Phạm vi KHO trên màn mua hàng (khách 21/10/2026): user được phân kho chỉ thấy mẫu, yêu cầu mua và
+ * PO của kho mình; không phân kho (quyền all) thấy hết. Mẫu / PR cũ chưa gắn kho vẫn hiện cho mọi người.
+ */
+/** Dùng làm `AND: warehouseScope(...)` — không đè OR của bộ lọc cửa hàng. Mảng rỗng = không giới hạn. */
+function warehouseScope(session: DemoSession): Array<{ OR: Array<{ warehouseCode: { in: string[] } } | { warehouseCode: null }> }> {
+  const allowed = allowedWarehousesOf(session);
+  return allowed ? [{ OR: [{ warehouseCode: { in: allowed } }, { warehouseCode: null }] }] : [];
+}
+/** PO luôn có kho nhận. */
+function orderWarehouseScope(session: DemoSession): Array<{ warehouseCode: { in: string[] } }> {
+  const allowed = allowedWarehousesOf(session);
+  return allowed ? [{ warehouseCode: { in: allowed } }] : [];
+}
+
+/** Kho của mẫu (trống = mọi kho): thuộc cửa hàng của mẫu và trong phạm vi kho của người lập. */
+async function resolveTemplateWarehouse(session: DemoSession, branchCode: string | null, value: unknown) {
+  const warehouseCode = cleanText(value);
+  if (!warehouseCode) return null;
+  const warehouse = await prisma.masterDataItem.findFirst({ where: { type: "WAREHOUSE", code: warehouseCode } });
+  if (!warehouse) businessError(`Không tìm thấy kho ${warehouseCode}.`);
+  if (branchCode && warehouse.branch && warehouse.branch !== "ALL" && warehouse.branch !== branchCode) businessError(`Kho ${warehouseCode} không thuộc cửa hàng ${branchCode}.`);
+  assertWarehouseAccess(session, warehouseCode);
+  return warehouseCode;
+}
+
+/** Kho của PR: gửi lên → mẫu → kho duy nhất user được phân. Phải thuộc cửa hàng và trong phạm vi của user. */
+async function resolveRequestWarehouse(session: DemoSession, branchCode: string, ...candidates: Array<string | null | undefined>) {
+  const allowed = allowedWarehousesOf(session);
+  const warehouseCode = candidates.map((value) => cleanText(value)).find(Boolean) || (allowed?.length === 1 ? allowed[0] : "");
+  if (!warehouseCode) return null;
+  const warehouse = await prisma.masterDataItem.findFirst({ where: { type: "WAREHOUSE", code: warehouseCode } });
+  if (!warehouse) businessError(`Không tìm thấy kho ${warehouseCode}.`);
+  if (warehouse.branch && warehouse.branch !== "ALL" && warehouse.branch !== branchCode) businessError(`Kho ${warehouseCode} không thuộc cửa hàng ${branchCode}.`);
+  assertWarehouseAccess(session, warehouseCode);
+  return warehouseCode;
 }
 
 /** Mặt hàng đưa vào mẫu phải mua được: đang hoạt động và không phải thành phẩm bán tại POS. */
@@ -263,6 +328,7 @@ export async function GET(request: Request) {
       const orders = await prisma.purchaseOrder.findMany({
         where: {
           ...branchFilter,
+          AND: orderWarehouseScope(auth.session),
           ...(departmentCode && departmentCode !== "ALL" ? (departmentCode === "NONE" ? { departmentCode: null } : { departmentCode }) : {}),
           ...(status && status !== "ALL" ? { status } : {}),
           ...(sent === "YES" ? { shareToken: { not: null } } : sent === "NO" ? { shareToken: null } : {}),
@@ -284,6 +350,7 @@ export async function GET(request: Request) {
       const toExclusive = parseDay(searchParams.get("to"), true);
       const statusGroups: Record<string, string[]> = {
         WAITING: ["APPROVED", "PENDING_APPROVAL"],
+        PENDING: ["PENDING_APPROVAL", "APPROVED"],
         ORDERED: ["ORDERED"],
         COMPLETED: ["COMPLETED"],
         REJECTED: ["REJECTED"],
@@ -295,6 +362,7 @@ export async function GET(request: Request) {
       const requests = await prisma.purchaseRequest.findMany({
         where: {
           ...branchFilter,
+          AND: warehouseScope(auth.session),
           ...(departmentCode && departmentCode !== "ALL" ? (departmentCode === "NONE" ? { departmentCode: null } : { departmentCode }) : {}),
           ...(statuses ? { status: { in: statuses } } : {}),
           ...(from || toExclusive ? { requestDate: { ...(from ? { gte: from } : {}), ...(toExclusive ? { lt: toExclusive } : {}) } } : {}),
@@ -318,6 +386,36 @@ export async function GET(request: Request) {
       const prices = await loadActivePrices({ day, branchCode: cleanText(searchParams.get("branchCode")) || null, supplierCode: cleanText(searchParams.get("supplierCode")) || null });
       return NextResponse.json({ prices: [...prices.values()] });
     }
+    /**
+     * Giá gợi ý khi nhận hàng từ PO (khách 21/10/2026): dòng PO có giá → giá PO; chưa có → Bảng giá
+     * đang hiệu lực của chính NCC trên PO (theo ngày nhận, cửa hàng). Trả theo ĐVT đặt; người nhập
+     * kho vẫn sửa được.
+     */
+    if (view === "receive-prices") {
+      const order = await prisma.purchaseOrder.findUnique({ where: { id: cleanText(searchParams.get("orderId")) }, include: { lines: { include: { item: true } } } });
+      if (!order) businessError("Không tìm thấy PO");
+      assertBranchAccess(auth.session, order.branchCode);
+      assertWarehouseAccess(auth.session, order.warehouseCode);
+      const day = cleanText(searchParams.get("day")) || vnDay(new Date());
+      // Khoá của loadActivePrices là "NCC|itemId" — đổi sang itemId (đã lọc đúng NCC của PO).
+      const listed = new Map(order.lines.some((line) => !(line.unitCost > 0))
+        ? [...(await loadActivePrices({ day, branchCode: order.branchCode, supplierCode: order.supplierCode })).values()].map((price) => [price.itemId, price] as const)
+        : []);
+      const prices: Record<string, { price: number; source: string }> = {};
+      for (const line of order.lines) {
+        if (line.unitCost > 0) {
+          prices[line.id] = { price: toPurchasePrice(line.unitCost, line), source: "PO" };
+          continue;
+        }
+        const price = listed.get(line.itemId);
+        if (!price) continue;
+        prices[line.id] = {
+          price: price.unitCode === purchaseLineUnit(line) ? price.unitPrice : Math.round(toPurchasePrice(price.stockUnitPrice, line) * 100) / 100,
+          source: `Bảng giá ${price.priceListCode}`,
+        };
+      }
+      return NextResponse.json({ prices });
+    }
     // Phiếu nhập mua trong tháng lệch bảng giá.
     if (view === "price-deviations") {
       const month = cleanText(searchParams.get("month"));
@@ -331,7 +429,7 @@ export async function GET(request: Request) {
       // Thành phẩm (FINISHED) bán tại POS, không mua vào nên không đưa vào danh sách chọn của PR/PO.
       prisma.inventoryItem.findMany({ where: { status: "ACTIVE", itemType: { not: "FINISHED" } }, include: { unitConversions: { where: { deletedAt: null } } }, orderBy: { name: "asc" } }),
       prisma.purchaseRequest.findMany({
-        where: { ...branchFilter },
+        where: { ...branchFilter, AND: warehouseScope(auth.session) },
         include: {
           lines: { include: { item: true } },
           quotes: { where: { deletedAt: null }, include: { lines: { include: { item: true } } }, orderBy: { totalAmount: "asc" } },
@@ -340,7 +438,7 @@ export async function GET(request: Request) {
         take: 100,
       }),
       prisma.purchaseOrder.findMany({
-        where: { ...branchFilter },
+        where: { ...branchFilter, AND: orderWarehouseScope(auth.session) },
         include: { lines: { include: { item: true } }, payable: true, request: true },
         orderBy: { createdAt: "desc" },
         take: 100,
@@ -368,7 +466,11 @@ export async function GET(request: Request) {
       prisma.purchaseRequestTemplate.findMany({
         where: {
           status: "ACTIVE",
-          ...("branchCode" in branchFilter ? { OR: [{ branchCode: null }, branchFilter] } : {}),
+          AND: [
+            "branchCode" in branchFilter ? { OR: [{ branchCode: null }, branchFilter] } : {},
+            // User phân kho chỉ thấy mẫu của kho mình (mẫu chưa gắn kho vẫn hiện).
+            ...warehouseScope(auth.session),
+          ],
         },
         include: {
           lines: {
@@ -394,7 +496,7 @@ export async function GET(request: Request) {
       buildPriceSuggestions(),
     ]);
 
-    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, requests, orders, departments, itemGroups, warehouses, assetGroups, templates, suppliers, priceSuggestions }));
+    return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { items, requests, orders, departments, itemGroups, warehouses: scopeWarehouses(auth.session, warehouses), assetGroups, templates, suppliers, priceSuggestions }));
   } catch (error) {
     const result = apiError(error);
     return NextResponse.json({ error: result.message }, { status: result.status });
@@ -409,7 +511,7 @@ export async function POST(request: Request) {
     const action = cleanText(body.action) || "CREATE_REQUEST";
 
     if (action === "CREATE_REQUEST") {
-      const lines = validLines(body.lines);
+      const lines = await withPurchaseUnits(validLines(body.lines));
       const branchCode = cleanText(body.branchCode);
       const departmentCode = cleanText(body.departmentCode) || cleanText(body.department) || null;
       const reason = cleanText(body.reason);
@@ -429,6 +531,7 @@ export async function POST(request: Request) {
 
       // Mã và trạng thái do MÁY CHỦ quyết định. Nhận từ client thì người chỉ có quyền tạo có thể
       // gửi kèm status/code tuỳ ý để nhảy cóc trạng thái hoặc phá dãy mã chứng từ.
+      const warehouseCode = await resolveRequestWarehouse(auth.session, branchCode, body.warehouseCode);
       const code = await generatedCode("PR", "PurchaseRequest");
       if (await findDeletedByUnique("PurchaseRequest", { code })) {
         businessError(duplicatedInTrashMessage(code, "Đề nghị mua hàng"));
@@ -438,18 +541,21 @@ export async function POST(request: Request) {
           code,
           branchCode,
           departmentCode,
+          warehouseCode,
           requestedBy: auth.session.name,
           requestDate: toDate(body.requestDate),
           neededDate: body.neededDate ? toDate(body.neededDate) : null,
           reason,
-          // Không còn bước duyệt: phiếu gửi lên là mua hàng báo giá được ngay.
-          status: "APPROVED",
+          // Thu mua duyệt PR mới lên PO (khách 21/10/2026, đảo luật bỏ duyệt 26/08).
+          status: "PENDING_APPROVAL",
           note: cleanText(body.note) || null,
           lines: {
             create: lines.map((line) => ({
               itemId: line.itemId,
               quantity: line.quantity,
               estimatedUnitCost: line.unitCost,
+              unitCode: line.unitCode,
+              conversionRate: line.conversionRate,
               imageUrl: line.imageUrl || null,
               note: line.note || null,
             })),
@@ -465,7 +571,7 @@ export async function POST(request: Request) {
       const requestId = cleanText(body.requestId);
       const supplierCode = cleanText(body.supplierCode);
       const supplierName = cleanText(body.supplierName);
-      const lines = validLines(body.lines);
+      const lines = await withPurchaseUnits(validLines(body.lines));
       if (!requestId || !supplierCode || !supplierName || lines.length === 0) businessError("Báo giá thiếu PR, nhà cung cấp hoặc dòng hàng");
 
       const pr = await prisma.purchaseRequest.findUnique({ where: { id: requestId } });
@@ -498,6 +604,8 @@ export async function POST(request: Request) {
               unitCost: line.unitCost,
               totalCost: line.quantity * line.unitCost,
               vatRate: vatRates.get(line.itemId) ?? null,
+              unitCode: line.unitCode,
+              conversionRate: line.conversionRate,
             })),
           },
         },
@@ -509,7 +617,7 @@ export async function POST(request: Request) {
 
     if (action === "CREATE_ORDER") {
       const requestId = cleanText(body.requestId) || null;
-      const lines = validLines(body.lines);
+      const lines = await withPurchaseUnits(validLines(body.lines));
       const supplierCode = cleanText(body.supplierCode);
       const supplierName = cleanText(body.supplierName);
       const branchCode = cleanText(body.branchCode);
@@ -546,6 +654,8 @@ export async function POST(request: Request) {
       }));
 
       if (requestId) {
+        // Lên PO từ PR = duyệt PR (khách 21/10/2026) — chỉ người có quyền duyệt (thu mua).
+        if (!canPerformMenuAction(auth.session, menuHref, "approve")) businessError("Lên PO từ yêu cầu mua cần quyền duyệt của thu mua.");
         const source = await prisma.purchaseRequest.findUnique({ where: { id: requestId } });
         if (!source) businessError("Không tìm thấy yêu cầu mua hàng nguồn");
         // Phải có quyền trên chính chi nhánh của PR nguồn, và PO không được đặt hộ chi nhánh khác:
@@ -589,6 +699,8 @@ export async function POST(request: Request) {
                 orderedQuantity: line.quantity,
                 unitCost: line.unitCost,
                 totalCost: line.quantity * line.unitCost,
+                unitCode: line.unitCode,
+                conversionRate: line.conversionRate,
                 imageUrl: line.imageUrl || null,
               })),
             },
@@ -754,11 +866,13 @@ export async function POST(request: Request) {
       await assertTemplateItems(lines.map((line) => line.itemId));
       const branchCode = cleanText(body.branchCode) || null;
       assertTemplateBranchAccess(auth.session, branchCode);
+      const warehouseCode = await resolveTemplateWarehouse(auth.session, branchCode, body.warehouseCode);
       const result = await prisma.purchaseRequestTemplate.create({
         data: {
           code: await generatedTemplateCode(),
           name,
           branchCode,
+          warehouseCode,
           departmentCode: cleanText(body.departmentCode) || null,
           ...templateEffectiveDates(body),
           note: cleanText(body.note) || null,
@@ -823,30 +937,33 @@ export async function POST(request: Request) {
         // ĐVT trên mẫu (hoặc ĐVT mua mặc định) quy về ĐVT tồn kho của mặt hàng.
         // Tỷ lệ lấy qua defaultPurchaseUnit: danh mục còn nhiều dòng khai sai "1 LIT = 1000 LIT",
         // tin thẳng conversionRate là người đặt gõ 1 lít mà PR ghi 1.000 lít.
-        const { unitLabel, conversionRate: rate } = defaultPurchaseUnit(line.item.unit, line.item.unitConversions, line.unitCode);
-        const baseQuantity = orderedQuantity * rate;
+        // PR giữ nguyên ĐVT đặt (khách 21/10/2026), DB lưu số theo ĐVT tồn kèm hệ số để hiển thị lại.
+        const { unitCode, conversionRate: rate } = defaultPurchaseUnit(line.item.unit, line.item.unitConversions, line.unitCode);
         const suggestion = priceSuggestions[line.itemId];
         return {
           itemId: line.itemId,
-          quantity: baseQuantity,
+          quantity: orderedQuantity * rate,
           estimatedUnitCost: suggestion?.price || 0,
-          note: rate !== 1 ? `Đặt ${orderedQuantity} ${unitLabel}` : null,
+          unitCode,
+          conversionRate: rate,
         };
       });
 
       const departmentCode = cleanText(body.departmentCode) || template.departmentCode || null;
+      const warehouseCode = await resolveRequestWarehouse(auth.session, branchCode, template.warehouseCode, body.warehouseCode);
       const code = await generatedCode("PR", "PurchaseRequest");
       const result = await prisma.purchaseRequest.create({
         data: {
           code,
           branchCode,
           departmentCode,
+          warehouseCode,
           requestedBy: auth.session.name,
           requestDate: new Date(),
           neededDate: body.neededDate ? toDate(body.neededDate) : null,
           reason: cleanText(body.reason) || `Đặt hàng theo mẫu ${template.name}`,
-          // Không còn bước duyệt: nhà hàng gửi mẫu là mua hàng so sánh giá được ngay.
-          status: "APPROVED",
+          // Thu mua duyệt PR mới lên PO (khách 21/10/2026).
+          status: "PENDING_APPROVAL",
           note: cleanText(body.note) || `Theo mẫu ${template.code}`,
           lines: { create: prLines },
         },
@@ -888,6 +1005,7 @@ export async function PATCH(request: Request) {
         const order = await prisma.purchaseOrder.findUnique({ where: { id: orderId }, include: { lines: true, payable: true } });
         if (!order) businessError("Không tìm thấy PO");
         assertBranchAccess(auth.session, order.branchCode);
+        assertWarehouseAccess(auth.session, order.warehouseCode);
         if (order.status !== "APPROVED") businessError(`Đơn mua hàng ${order.code} đang ở trạng thái ${order.status}, không phải đơn vừa duyệt nên không bỏ duyệt được.`);
         if (order.lines.some((line) => line.receivedQuantity > 0)) {
           businessError(`Đơn mua hàng ${order.code} đã nhận hàng vào kho nên không bỏ duyệt được. Hãy xoá phiếu nhập kho của đơn này trước, hoặc lập phiếu xuất trả hàng.`);
@@ -915,6 +1033,7 @@ export async function PATCH(request: Request) {
         const order = await prisma.purchaseOrder.findUnique({ where: { id: orderId }, include: { lines: true, payable: true } });
         if (!order) businessError("Không tìm thấy PO");
         assertBranchAccess(auth.session, order.branchCode);
+        assertWarehouseAccess(auth.session, order.warehouseCode);
         if (!["DRAFT", "APPROVED"].includes(order.status)) {
           businessError(`Đơn mua hàng ${order.code} đang ở trạng thái ${order.status} nên không huỷ được.`);
         }
@@ -944,6 +1063,7 @@ export async function PATCH(request: Request) {
         const order = await prisma.purchaseOrder.findUnique({ where: { id: orderId } });
         if (!order) businessError("Không tìm thấy PO");
         assertBranchAccess(auth.session, order.branchCode);
+        assertWarehouseAccess(auth.session, order.warehouseCode);
         if (order.status !== "DRAFT") businessError("Chỉ PO nháp mới được duyệt");
         const result = await prisma.purchaseOrder.update({
           where: { id: orderId },
@@ -984,13 +1104,65 @@ export async function PATCH(request: Request) {
       if (lockedRequestStatuses.includes(pr.status)) {
         businessError(`Yêu cầu mua ${pr.code} đang ở trạng thái ${pr.status} nên không đổi được nữa.`);
       }
-      const status = action === "APPROVE_REQUEST" ? "APPROVED" : "REJECTED";
-      const result = await prisma.purchaseRequest.update({
-        where: { id: requestId },
-        data: { status, approvedBy: auth.session.name, approvedAt: new Date(), note: cleanText(body.note) || undefined },
+      assertWarehouseAccess(auth.session, pr.warehouseCode);
+      if (action === "REJECT_REQUEST") {
+        // Từ chối = trả về người đặt sửa lại / huỷ (khách 21/10/2026), kèm lý do để họ biết sửa gì.
+        const result = await prisma.purchaseRequest.update({
+          where: { id: requestId },
+          data: { status: "REJECTED", approvedBy: auth.session.name, approvedAt: new Date(), rejectReason: cleanText(body.reason) || null },
+        });
+        await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action, entityType: "PurchaseRequest", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { previousStatus: pr.status, reason: result.rejectReason } });
+        return NextResponse.json(result);
+      }
+      /**
+       * Thu mua DUYỆT PR = lên PO luôn (khách 21/10/2026): chọn NCC + kho nhận, đơn giá theo ĐVT đặt
+       * lấy từ bảng giá / báo giá, CHƯA CÓ GIÁ VẪN DUYỆT ĐƯỢC (đặt hàng 22h, mua chợ) — giá thực nhập
+       * lúc nhận hàng. PO ra ở trạng thái Đã duyệt để gửi NCC ngay.
+       */
+      if (pr.status === "REJECTED") businessError(`Yêu cầu mua ${pr.code} đã bị từ chối — chờ người đặt sửa và gửi lại.`);
+      const liveOrder = await prisma.purchaseOrder.findFirst({ where: { requestId, ...liveOrdersWhere }, select: { code: true } });
+      if (liveOrder) businessError(`Yêu cầu mua ${pr.code} đã có đơn mua hàng ${liveOrder.code}.`);
+      const supplierCode = cleanText(body.supplierCode);
+      const supplierName = cleanText(body.supplierName);
+      if (!supplierCode || !supplierName) businessError("Chọn nhà cung cấp để lên PO.");
+      const warehouseCode = cleanText(body.warehouseCode) || pr.warehouseCode || "";
+      if (!warehouseCode) businessError("Chọn kho nhận hàng để lên PO.");
+      const warehouse = await prisma.masterDataItem.findFirst({ where: { type: "WAREHOUSE", code: warehouseCode, branch: pr.branchCode } });
+      if (!warehouse) businessError(`Kho ${warehouseCode} không thuộc chi nhánh ${pr.branchCode}.`);
+      assertWarehouseAccess(auth.session, warehouseCode);
+      const prLines = await prisma.purchaseRequestLine.findMany({ where: { requestId }, include: { item: true } });
+      if (prLines.length === 0) businessError(`Yêu cầu mua ${pr.code} không có dòng hàng.`);
+      // Giá gửi lên theo ĐVT đặt của dòng PR (đ/KG...) → quy về ĐVT tồn như mọi chỗ khác.
+      const priceByLine = new Map<string, number>();
+      for (const row of (Array.isArray(body.lines) ? body.lines : []) as Array<{ lineId?: unknown; unitCost?: unknown }>) {
+        const price = toNumber(row.unitCost);
+        if (price < 0) businessError("Đơn giá không được âm");
+        if (cleanText(row.lineId)) priceByLine.set(cleanText(row.lineId), price);
+      }
+      const orderLines = prLines.map((line) => {
+        const rate = purchaseLineRate(line);
+        const unitCost = (priceByLine.get(line.id) || 0) / rate;
+        return { itemId: line.itemId, orderedQuantity: line.quantity, unitCost, totalCost: line.quantity * unitCost, unitCode: line.unitCode, conversionRate: line.conversionRate, imageUrl: line.imageUrl || null };
       });
-      await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action, entityType: "PurchaseRequest", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { previousStatus: pr.status, status } });
-      return NextResponse.json(result);
+      const code = await generatedCode("PO", "PurchaseOrder");
+      if (await findDeletedByUnique("PurchaseOrder", { code })) businessError(duplicatedInTrashMessage(code, "Đơn mua hàng"));
+      const totalAmount = orderLines.reduce((sum, line) => sum + line.totalCost, 0);
+      const now = new Date();
+      const order = await prisma.$transaction(async (tx) => {
+        const created = await tx.purchaseOrder.create({
+          data: {
+            code, requestId, supplierCode, supplierName, branchCode: pr.branchCode, departmentCode: pr.departmentCode, warehouseCode,
+            expectedDate: body.expectedDate ? toDate(body.expectedDate) : pr.neededDate, totalAmount,
+            status: "APPROVED", approvedBy: auth.session.name, approvedAt: now, createdBy: auth.session.name,
+            note: cleanText(body.note) || null,
+            lines: { create: orderLines },
+          },
+        });
+        await tx.purchaseRequest.update({ where: { id: requestId }, data: { status: "ORDERED", approvedBy: auth.session.name, approvedAt: now, rejectReason: null } });
+        return created;
+      });
+      await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action, entityType: "PurchaseRequest", entityId: pr.id, entityCode: pr.code, branchCode: pr.branchCode, metadata: { previousStatus: pr.status, orderCode: order.code, supplierCode, warehouseCode, totalAmount, unpricedLines: orderLines.filter((line) => !(line.unitCost > 0)).length } });
+      return NextResponse.json({ ...order, requestCode: pr.code });
     }
 
     if (["CREATE_SHARE_LINK", "REVOKE_SHARE_LINK"].includes(action)) {
@@ -1002,6 +1174,7 @@ export async function PATCH(request: Request) {
       const order = await prisma.purchaseOrder.findUnique({ where: { id: orderId } });
       if (!order) businessError("Không tìm thấy PO");
       assertBranchAccess(auth.session, order.branchCode);
+      assertWarehouseAccess(auth.session, order.warehouseCode);
 
       if (action === "REVOKE_SHARE_LINK") {
         const result = await prisma.purchaseOrder.update({ where: { id: orderId }, data: { shareToken: null } });
@@ -1036,6 +1209,8 @@ export async function PATCH(request: Request) {
       if (!name) businessError("Tên mẫu không được để trống");
       const branchCode = body.branchCode !== undefined ? (cleanText(body.branchCode) || null) : template.branchCode;
       if (branchCode !== template.branchCode) assertTemplateBranchAccess(auth.session, branchCode);
+      assertWarehouseAccess(auth.session, template.warehouseCode);
+      const warehouseCode = body.warehouseCode !== undefined ? await resolveTemplateWarehouse(auth.session, branchCode, body.warehouseCode) : template.warehouseCode;
 
       const rawLines = body.lines !== undefined
         ? (Array.isArray(body.lines) ? (body.lines as Array<{ itemId?: unknown; unitCode?: unknown; note?: unknown }>) : [])
@@ -1060,6 +1235,7 @@ export async function PATCH(request: Request) {
           data: {
             name,
             branchCode,
+            warehouseCode,
             ...(body.departmentCode !== undefined ? { departmentCode: cleanText(body.departmentCode) || null } : {}),
             ...(body.effectiveFrom !== undefined || body.effectiveTo !== undefined ? templateEffectiveDates(body) : {}),
             ...(body.status !== undefined ? { status: cleanText(body.status) || "ACTIVE" } : {}),
@@ -1072,6 +1248,21 @@ export async function PATCH(request: Request) {
       return NextResponse.json(result);
     }
 
+    // Người đặt huỷ PR (đang chờ duyệt hoặc bị từ chối) — không xử lý nữa.
+    if (action === "CANCEL_REQUEST") {
+      const requestId = cleanText(body.requestId);
+      const pr = await prisma.purchaseRequest.findUnique({ where: { id: requestId }, include: { orders: { where: liveOrdersWhere } } });
+      if (!pr) businessError("Không tìm thấy yêu cầu mua hàng");
+      assertBranchAccess(auth.session, pr.branchCode);
+      assertWarehouseAccess(auth.session, pr.warehouseCode);
+      if (!["PENDING_APPROVAL", "APPROVED", "REJECTED"].includes(pr.status) || pr.orders.length > 0) {
+        businessError(`Yêu cầu mua ${pr.code} đã lên PO hoặc đã đóng nên không huỷ được.`);
+      }
+      const result = await prisma.purchaseRequest.update({ where: { id: requestId }, data: { status: "CANCELLED" } });
+      await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action, entityType: "PurchaseRequest", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { previousStatus: pr.status } });
+      return NextResponse.json(result);
+    }
+
     if (action === "UPDATE_REQUEST") {
       const requestId = cleanText(body.requestId) || cleanText(body.id);
       if (!requestId) businessError("Thiếu PR cần sửa");
@@ -1081,7 +1272,10 @@ export async function PATCH(request: Request) {
       });
       if (!pr) businessError("Không tìm thấy yêu cầu mua hàng");
       assertBranchAccess(auth.session, pr.branchCode);
-      if (lockedRequestStatuses.includes(pr.status)) {
+      assertWarehouseAccess(auth.session, pr.warehouseCode);
+      // Bị thu mua từ chối thì người đặt sửa lại được, lưu là GỬI LẠI (về Chờ duyệt).
+      const resubmit = pr.status === "REJECTED";
+      if (lockedRequestStatuses.includes(pr.status) && !resubmit) {
         businessError(`Đề nghị mua hàng ${pr.code} đang ở trạng thái ${pr.status} nên không thể sửa.`);
       }
       if (pr.orders.length > 0) {
@@ -1099,7 +1293,7 @@ export async function PATCH(request: Request) {
       const reason = body.reason !== undefined ? cleanText(body.reason) : pr.reason;
       if (!reason) businessError("Lý do đề nghị không được để trống");
 
-      const nextLines = body.lines !== undefined ? editableLines(body.lines) : null;
+      const nextLines = body.lines !== undefined ? await withPurchaseUnits(editableLines(body.lines)) : null;
       if (nextLines) await assertImageRequirement(nextLines);
 
       const result = await prisma.$transaction(async (tx) => {
@@ -1111,6 +1305,8 @@ export async function PATCH(request: Request) {
               itemId: line.itemId,
               quantity: line.quantity,
               estimatedUnitCost: line.unitCost,
+              unitCode: line.unitCode,
+              conversionRate: line.conversionRate,
               imageUrl: line.imageUrl || null,
               note: line.note || null,
             })),
@@ -1128,9 +1324,12 @@ export async function PATCH(request: Request) {
             ...(body.neededDate !== undefined ? { neededDate: body.neededDate ? toDate(body.neededDate) : null } : {}),
             // Chỉ nhận đúng những trạng thái hợp lệ của luồng, không nhận chuỗi tuỳ ý từ client
             // (gán "XYZ" là phiếu rơi ra ngoài mọi bộ lọc, hiện trên màn hình mà không xử lý được).
-            ...(body.status !== undefined && quotableRequestStatuses.includes(cleanText(body.status))
-              ? { status: cleanText(body.status) }
-              : {}),
+            ...(resubmit
+              ? { status: "PENDING_APPROVAL" }
+              : body.status !== undefined && quotableRequestStatuses.includes(cleanText(body.status))
+                ? { status: cleanText(body.status) }
+                : {}),
+            ...(body.warehouseCode !== undefined ? { warehouseCode: await resolveRequestWarehouse(auth.session, branchCode, body.warehouseCode) } : {}),
             ...(body.note !== undefined ? { note: cleanText(body.note) || null } : {}),
           },
           include: { lines: { include: { item: true } } },
@@ -1150,6 +1349,7 @@ export async function PATCH(request: Request) {
       });
       if (!order) businessError("Không tìm thấy PO");
       assertBranchAccess(auth.session, order.branchCode);
+      assertWarehouseAccess(auth.session, order.warehouseCode);
       if (order.approvedAt || lockedOrderStatuses.includes(order.status)) {
         businessError(`Đơn mua hàng ${order.code} đã được duyệt nên không thể sửa. Hãy tạo đơn điều chỉnh mới.`);
       }
@@ -1175,7 +1375,7 @@ export async function PATCH(request: Request) {
         if (!warehouse) businessError(`Kho ${warehouseCode} không thuộc chi nhánh ${branchCode}.`);
       }
 
-      const nextLines = body.lines !== undefined ? editableLines(body.lines) : null;
+      const nextLines = body.lines !== undefined ? await withPurchaseUnits(editableLines(body.lines)) : null;
       if (nextLines) await assertImageRequirement(nextLines);
       const totalAmount = nextLines
         ? nextLines.reduce((sum, line) => sum + line.quantity * line.unitCost, 0)
@@ -1191,6 +1391,8 @@ export async function PATCH(request: Request) {
               orderedQuantity: line.quantity,
               unitCost: line.unitCost,
               totalCost: line.quantity * line.unitCost,
+              unitCode: line.unitCode,
+              conversionRate: line.conversionRate,
               imageUrl: line.imageUrl || null,
             })),
           });
@@ -1241,7 +1443,7 @@ export async function PATCH(request: Request) {
         businessError("Số ngày giao hàng không được âm");
       }
 
-      const nextLines = body.lines !== undefined ? editableLines(body.lines) : null;
+      const nextLines = body.lines !== undefined ? await withPurchaseUnits(editableLines(body.lines)) : null;
       const vatRates = quoteVatRates(body.lines);
       const totalAmount = nextLines
         ? nextLines.reduce((sum, line) => sum + line.quantity * line.unitCost, 0)
@@ -1258,6 +1460,8 @@ export async function PATCH(request: Request) {
               unitCost: line.unitCost,
               totalCost: line.quantity * line.unitCost,
               vatRate: vatRates.get(line.itemId) ?? null,
+              unitCode: line.unitCode,
+              conversionRate: line.conversionRate,
             })),
           });
         }
@@ -1282,9 +1486,13 @@ export async function PATCH(request: Request) {
     if (action !== "RECEIVE_ORDER") businessError("Thao tác cập nhật không hợp lệ");
 
     const orderId = cleanText(body.orderId);
-    const order = await prisma.purchaseOrder.findUnique({ where: { id: orderId }, include: { lines: { include: { item: true } } } });
+    const order = await prisma.purchaseOrder.findUnique({
+      where: { id: orderId },
+      include: { lines: { include: { item: { include: { unitConversions: { where: { deletedAt: null } } } } } } },
+    });
     if (!order) businessError("Không tìm thấy PO");
     assertBranchAccess(auth.session, order.branchCode);
+    assertWarehouseAccess(auth.session, order.warehouseCode);
     if (!["APPROVED", "PARTIALLY_RECEIVED"].includes(order.status)) businessError("PO không ở trạng thái có thể nhận hàng");
     const receivedDate = toDate(body.receivedDate);
     if (await isPeriodLocked(receivedDate, order.branchCode)) businessError("Kỳ kế toán đã khóa");
@@ -1300,11 +1508,14 @@ export async function PATCH(request: Request) {
     const requestedByItemId = new Map<string, number>();
     // Nhóm tài sản người nhận hàng chọn cho từng dòng Tài sản/CCDC (chỉ khớp được theo lineId).
     const requestedAssetGroupByLineId = new Map<string, string>();
+    const requestedPriceByLineId = new Map<string, number>();
     if (hasLinePayload) {
-      for (const row of body.lines as Array<{ lineId?: unknown; id?: unknown; itemId?: unknown; quantity?: unknown; assetGroup?: unknown }>) {
+      for (const row of body.lines as Array<{ lineId?: unknown; id?: unknown; itemId?: unknown; quantity?: unknown; assetGroup?: unknown; unitCost?: unknown }>) {
         const quantity = toNumber(row.quantity);
         if (!(quantity >= 0)) continue;
         const lineId = cleanText(row.lineId) || cleanText(row.id);
+        // Đơn giá thực lúc nhận (theo ĐVT đặt) — PO duyệt khi chưa có giá thì nhập ở đây.
+        if (lineId && toNumber(row.unitCost) > 0) requestedPriceByLineId.set(lineId, toNumber(row.unitCost));
         if (lineId && cleanText(row.assetGroup)) requestedAssetGroupByLineId.set(lineId, cleanText(row.assetGroup).toUpperCase());
         if (lineId) requestedByLineId.set(lineId, quantity);
         else {
@@ -1323,7 +1534,8 @@ export async function PATCH(request: Request) {
     const receiveLines = order.lines.map((line) => {
       const remaining = line.orderedQuantity - line.receivedQuantity;
       if (!hasLinePayload) return { ...line, receiveQuantity: remaining };
-      if (requestedByLineId.has(line.id)) return { ...line, receiveQuantity: requestedByLineId.get(line.id) as number };
+      // Số nhận theo dòng gửi lên là theo ĐVT ĐẶT của dòng PO (khách 21/10/2026) → quy về ĐVT tồn.
+      if (requestedByLineId.has(line.id)) return { ...line, receiveQuantity: (requestedByLineId.get(line.id) as number) * purchaseLineRate(line) };
       if (requestedByItemId.has(line.itemId)) {
         const left = requestedByItemId.get(line.itemId) as number;
         const take = lastLineIdOfItem.get(line.itemId) === line.id ? left : Math.min(remaining, left);
@@ -1332,10 +1544,12 @@ export async function PATCH(request: Request) {
       }
       // Có gửi danh sách dòng mà dòng này không nằm trong đó = không nhận dòng này.
       return { ...line, receiveQuantity: 0 };
-    }).filter((line) => line.receiveQuantity > 0);
+    })
+      .map((line) => (requestedPriceByLineId.has(line.id) ? { ...line, unitCost: (requestedPriceByLineId.get(line.id) as number) / purchaseLineRate(line), priceChanged: true } : { ...line, priceChanged: false }))
+      .filter((line) => line.receiveQuantity > 0);
     if (receiveLines.length === 0) businessError("Không có số lượng cần nhận");
     for (const line of receiveLines) {
-      if (line.receiveQuantity > line.orderedQuantity - line.receivedQuantity) businessError("Số lượng nhận vượt số lượng còn lại của PO");
+      if (line.receiveQuantity > line.orderedQuantity - line.receivedQuantity + 1e-6) businessError("Số lượng nhận vượt số lượng còn lại của PO");
     }
     if (receiveLines.some((line) => ["TOOL", "ASSET"].includes(line.item.itemType)) && !order.departmentCode) {
       businessError("PO có Tài sản/CCDC phải chọn Phòng ban để hệ thống tự sinh mã");
@@ -1371,7 +1585,7 @@ export async function PATCH(request: Request) {
     if (freeStockLine) {
       // Nhập mua giá 0 kéo giá vốn bình quân về sai — hàng tặng kèm thì sửa đơn giá PO
       // thành giá trị hợp lý hoặc nhận bằng phiếu "Nhập khác" có ghi chú.
-      businessError(`Dòng ${freeStockLine.item.code} có đơn giá 0. Nhập mua bắt buộc có đơn giá; hàng tặng kèm hãy nhận bằng phiếu Nhập khác.`);
+      businessError(`Dòng ${freeStockLine.item.code} chưa có đơn giá — nhập đơn giá thực mua ở ô Đơn giá khi nhận hàng. Hàng tặng kèm hãy nhận bằng phiếu Nhập khác.`);
     }
 
     const result = await prisma.$transaction(async (tx) => {
@@ -1391,13 +1605,28 @@ export async function PATCH(request: Request) {
             partnerCode: order.supplierCode || null,
             note: cleanText(body.note) || `Nhận hàng từ ${order.code}`,
             createdBy: auth.session.name,
-            lines: stockLines.map((line) => ({ itemId: line.itemId, inputQuantity: line.receiveQuantity, inputUnitCost: line.unitCost })),
+            // Phiếu nhập ghi theo ĐVT đặt của PO, engine kho quy đổi ra ĐVT tồn (cùng luật hệ số an toàn).
+            // ĐVT đó đã bị gỡ / đổi hệ số khỏi danh mục sau lúc đặt thì nhập thẳng theo ĐVT tồn.
+            lines: stockLines.map((line) => {
+              const rate = purchaseLineRate(line);
+              const stillValid = rate !== 1 && conversionRateForUnit(line.item.unit, line.item.unitConversions, line.unitCode || "") === rate;
+              return stillValid
+                ? { itemId: line.itemId, inputQuantity: line.receiveQuantity / rate, inputUnitCode: line.unitCode, inputUnitCost: line.unitCost * rate }
+                : { itemId: line.itemId, inputQuantity: line.receiveQuantity, inputUnitCost: line.unitCost };
+            }),
           })
         : null;
 
       let receivedValue = 0;
       for (const line of receiveLines) {
-        await tx.purchaseOrderLine.update({ where: { id: line.id }, data: { receivedQuantity: { increment: line.receiveQuantity } } });
+        await tx.purchaseOrderLine.update({
+          where: { id: line.id },
+          data: {
+            receivedQuantity: { increment: line.receiveQuantity },
+            // Giá thực lúc nhận thay giá tạm trên PO (lần nhận sau cùng quyết định giá dòng).
+            ...(line.priceChanged ? { unitCost: line.unitCost, totalCost: line.orderedQuantity * line.unitCost } : {}),
+          },
+        });
         // Công nợ phải trả tính trên MỌI dòng đã nhận — tài sản vẫn là tiền phải trả NCC.
         receivedValue += line.receiveQuantity * line.unitCost;
       }
@@ -1428,8 +1657,14 @@ export async function PATCH(request: Request) {
       }
 
       const remainingLines = await tx.purchaseOrderLine.findMany({ where: { orderId: order.id } });
-      const completed = remainingLines.every((line) => line.receivedQuantity >= line.orderedQuantity);
-      await tx.purchaseOrder.update({ where: { id: order.id }, data: { status: completed ? "COMPLETED" : "PARTIALLY_RECEIVED" } });
+      const completed = remainingLines.every((line) => line.receivedQuantity >= line.orderedQuantity - 1e-6);
+      await tx.purchaseOrder.update({
+        where: { id: order.id },
+        data: {
+          status: completed ? "COMPLETED" : "PARTIALLY_RECEIVED",
+          ...(receiveLines.some((line) => line.priceChanged) ? { totalAmount: remainingLines.reduce((sum, line) => sum + line.totalCost, 0) } : {}),
+        },
+      });
       // Cộng dồn bằng `increment` chứ không đọc-rồi-ghi: hai lần nhận hàng chạy song song mà
       // đọc cùng số cũ thì một khoản công nợ bị nuốt mất (lost update).
       await tx.supplierPayable.upsert({
@@ -1491,6 +1726,7 @@ export async function DELETE(request: Request) {
       });
       if (!order) businessError("Không tìm thấy đơn mua hàng");
       assertBranchAccess(auth.session, order.branchCode);
+      assertWarehouseAccess(auth.session, order.warehouseCode);
       if (order.approvedAt || lockedOrderStatuses.includes(order.status)) {
         businessError(`Đơn mua hàng ${order.code} đã được duyệt nên không thể xoá.`);
       }

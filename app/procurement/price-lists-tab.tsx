@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DateInput, MonthInput } from "@/components/DateInput";
 import { ConfirmDeleteDialog } from "@/components/RowActions";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import CopyableText from "@/components/CopyableText";
@@ -329,8 +330,8 @@ export function PriceListsTab({ user, canCreate, canDelete, items, suppliers, no
         <div className="mt-4 grid grid-cols-2 lg:grid-cols-5 gap-3">
           <label className="text-xs font-bold text-slate-500">{view === "compare" ? "Ngày so sánh" : "Tháng"}
             {view === "compare"
-              ? <input type="date" className="control mt-1" value={compareDay} onChange={(e) => setCompareDay(e.target.value || todayDay())} />
-              : <input type="month" className="control mt-1" value={filters.month} onChange={(e) => setFilters({ ...filters, month: e.target.value })} />}
+              ? <DateInput className="control mt-1" value={compareDay} onChange={(value) => setCompareDay(value || todayDay())} ariaLabel="Ngày so sánh" />
+              : <MonthInput className="control mt-1" value={filters.month} onChange={(value) => setFilters({ ...filters, month: value })} ariaLabel="Tháng" />}
           </label>
           <label className="text-xs font-bold text-slate-500">Nhà cung cấp
             <select className="control mt-1" value={filters.supplierCode} onChange={(e) => setFilters({ ...filters, supplierCode: e.target.value })}>
@@ -584,13 +585,13 @@ export function PriceListsTab({ user, canCreate, canDelete, items, suppliers, no
                   </select>
                 </label>
                 <label className="text-xs font-bold text-slate-500">Áp dụng cả tháng
-                  <input type="month" className="control mt-1" value={form.from.slice(0, 7)} onChange={(e) => e.target.value && setForm({ ...form, from: `${e.target.value}-01`, to: lastDayOfMonth(e.target.value) })} />
+                  <MonthInput className="control mt-1" value={form.from.slice(0, 7)} onChange={(value) => { if (value) setForm({ ...form, from: `${value}-01`, to: lastDayOfMonth(value) }); }} ariaLabel="Áp dụng cả tháng" />
                 </label>
                 <label className="text-xs font-bold text-slate-500">Từ ngày
-                  <input type="date" className="control mt-1" value={form.from} onChange={(e) => setForm({ ...form, from: e.target.value })} required />
+                  <DateInput className="control mt-1" value={form.from} onChange={(value) => setForm({ ...form, from: value })} required ariaLabel="Từ ngày" />
                 </label>
                 <label className="text-xs font-bold text-slate-500">Đến ngày
-                  <input type="date" className="control mt-1" value={form.to} onChange={(e) => setForm({ ...form, to: e.target.value })} title="Bỏ trống = áp dụng tới khi có bảng giá mới" />
+                  <DateInput className="control mt-1" value={form.to} onChange={(value) => setForm({ ...form, to: value })} ariaLabel="Đến ngày (bỏ trống = áp dụng tới khi có bảng giá mới)" />
                 </label>
               </div>
               <label className="block text-xs font-bold text-slate-500">Ghi chú

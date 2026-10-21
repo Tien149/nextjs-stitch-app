@@ -28,7 +28,7 @@ import StocktakeDocumentsPanel from "@/components/inventory/StocktakeDocumentsPa
 import StocktakeExplanationPanel from "@/components/inventory/StocktakeExplanationPanel";
 import StocktakeResultsPanel from "@/components/inventory/StocktakeResultsPanel";
 import { EMPTY_STOCKTAKE_FILTER, inStocktakeRange, type StocktakeFilter } from "@/components/inventory/stocktake-filter";
-import { safeConversionRate } from "@/lib/unit-conversion";
+import { purchaseLineUnit, safeConversionRate, toPurchasePrice, toPurchaseQuantity } from "@/lib/unit-conversion";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
 import { parseVatRate, VAT_RATE_OPTIONS, vatAmountOf, vatRateLabel } from "@/lib/inventory-vat";
 import { cogsRepostMessage, type CogsRepostResult } from "@/lib/inventory-cogs";
@@ -89,7 +89,8 @@ type Stocktake = {
   note?: string | null; createdBy?: string | null; approvedBy?: string | null; approvedAt?: string | null; returnedReason?: string | null; returnedBy?: string | null;
   lines: Array<{ id: string; systemQuantity: number; actualQuantity: number; varianceQuantity: number; unitCost?: number | null; reason?: string | null; item: Item }>;
 };
-type ReceivablePOLine = { id: string; itemId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; item: { code: string; name: string; unit: string } };
+/** unitCode / conversionRate = ĐVT đặt của PO; số nhận gõ theo ĐVT này (máy chủ quy về ĐVT tồn). */
+type ReceivablePOLine = { id: string; itemId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; unitCode?: string | null; conversionRate?: number | null; item: { code: string; name: string; unit: string } };
 type ReceivablePO = { id: string; code: string; supplierName: string; branchCode: string; warehouseCode: string; status: string; lines: ReceivablePOLine[] };
 type StocktakeDraftRow = { itemId: string; itemCode: string; itemName: string; unit: string; systemQuantity: number; averageCost: number; actualQuantity: string; unitCost: string; reason: string };
 /**
@@ -322,6 +323,9 @@ export default function InventoryPage() {
   const [receivablePOs, setReceivablePOs] = useState<ReceivablePO[]>([]);
   const [grpoOrderId, setGrpoOrderId] = useState("");
   const [grpoQuantities, setGrpoQuantities] = useState<Record<string, string>>({});
+  /** Đơn giá thực lúc nhận theo ĐVT đặt — PO duyệt khi chưa có giá (khách 21/10/2026). */
+  const [grpoPrices, setGrpoPrices] = useState<Record<string, string>>({});
+  const [grpoPriceSource, setGrpoPriceSource] = useState<Record<string, string>>({});
   const [recipeForm, setRecipeForm] = useState({ productCode: "SP_COMBO01", productName: "Combo ban POS", sellingPrice: "45000", unit: "", outputConversionRate: "1", effectiveFrom: today(), itemId: "", quantity: "0.02", wasteRate: "3" });
   /** Cửa hàng áp dụng công thức: rỗng = dùng chung, nhiều mã = các nơi pha giống hệt nhau. */
   const [recipeBranchCodes, setRecipeBranchCodes] = useState<string[]>([]);
@@ -1251,9 +1255,21 @@ export default function InventoryPage() {
     const order = receivablePOs.find((candidate) => candidate.id === orderId);
     const quantities: Record<string, string> = {};
     for (const line of order?.lines || []) {
-      quantities[line.id] = String(line.orderedQuantity - line.receivedQuantity);
+      quantities[line.id] = String(toPurchaseQuantity(line.orderedQuantity - line.receivedQuantity, line));
     }
     setGrpoQuantities(quantities);
+    setGrpoPrices(Object.fromEntries((order?.lines || []).map((line) => [line.id, line.unitCost > 0 ? String(toPurchasePrice(line.unitCost, line)) : ""])));
+    setGrpoPriceSource({});
+    // Dòng PO chưa có giá → gợi ý theo Bảng giá của NCC trên PO; người nhập kho vẫn sửa được.
+    if (order) {
+      void fetch(`/api/procurement?view=receive-prices&orderId=${encodeURIComponent(order.id)}`, { headers: getSessionHeaders() })
+        .then(async (response) => (response.ok ? await response.json() as { prices: Record<string, { price: number; source: string }> } : { prices: {} }))
+        .catch(() => ({ prices: {} as Record<string, { price: number; source: string }> }))
+        .then(({ prices }) => {
+          setGrpoPrices((current) => Object.fromEntries(Object.entries(current).map(([lineId, value]) => [lineId, value || (prices[lineId] ? String(prices[lineId].price) : "")])));
+          setGrpoPriceSource(Object.fromEntries(Object.entries(prices).map(([lineId, row]) => [lineId, row.source])));
+        });
+    }
   };
 
   /** GRPO: nhận hàng từ PO — tồn kho, công nợ NCC và tài sản/CCDC do /api/procurement xử lý. */
@@ -1265,6 +1281,7 @@ export default function InventoryPage() {
       lineId: line.id,
       itemId: line.itemId,
       quantity: Number(grpoQuantities[line.id] ?? 0) || 0,
+      unitCost: Number(grpoPrices[line.id] || 0) || undefined,
     }));
     if (lines.every((line) => line.quantity <= 0)) {
       setMessage("Chưa nhập số lượng cần nhận từ PO.");
@@ -2492,13 +2509,14 @@ export default function InventoryPage() {
                   </div>
                   <div className="space-y-2">
                     {grpoOrder.lines.map((line) => {
-                      const remaining = line.orderedQuantity - line.receivedQuantity;
+                      const remaining = toPurchaseQuantity(line.orderedQuantity - line.receivedQuantity, line);
+                      const lineUnit = purchaseLineUnit(line);
                       if (remaining <= 0) return null;
                       return (
                         <div key={line.id} className="flex items-center gap-2 text-sm">
                           <div className="flex-1 min-w-0">
                             <b className="block truncate">{line.item.name}</b>
-                            <small className="text-slate-500">Còn phải nhận: {qty(remaining)} {line.item.unit} · {unitPrice(line.unitCost)} đ/{line.item.unit}</small>
+                            <small className="text-slate-500">Còn phải nhận: {qty(remaining)} {lineUnit} · {line.unitCost > 0 ? `giá PO ${unitPrice(toPurchasePrice(line.unitCost, line))} đ/${lineUnit}` : grpoPriceSource[line.id] ? `PO chưa có giá · gợi ý theo ${grpoPriceSource[line.id]}` : "PO chưa có giá — nhập giá thực"}</small>
                           </div>
                           <input
                             type="number"
@@ -2510,6 +2528,19 @@ export default function InventoryPage() {
                             value={grpoQuantities[line.id] ?? String(remaining)}
                             onChange={(e) => setGrpoQuantities({ ...grpoQuantities, [line.id]: e.target.value })}
                             aria-label={`Số lượng nhận ${line.item.name}`}
+                            title={`Số lượng (${lineUnit})`}
+                          />
+                          <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            inputMode="decimal"
+                            className={`control w-28 text-right ${!(Number(grpoPrices[line.id]) > 0) ? "border-amber-400 bg-amber-50" : ""}`}
+                            placeholder={`Giá thực đ/${lineUnit}`}
+                            value={grpoPrices[line.id] ?? ""}
+                            onChange={(e) => setGrpoPrices({ ...grpoPrices, [line.id]: e.target.value })}
+                            aria-label={`Đơn giá nhận ${line.item.name}`}
+                            title={`Đơn giá thực (đ/${lineUnit})`}
                           />
                         </div>
                       );
