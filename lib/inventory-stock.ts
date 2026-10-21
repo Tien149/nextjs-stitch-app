@@ -548,6 +548,21 @@ function withPurchaseCost<T extends { inputQuantity: number; inputUnitCost: numb
   };
 }
 
+/**
+ * Thuế GTGT đầu vào CỘNG vào giá nhập kho (khách chốt 21/10/2026, đảo luật 21/09): doanh thu đã gồm
+ * thuế GTGT đầu ra nên giá vốn lấy SAU thuế. Đơn giá tồn kho = (tiền hàng + chi phí mua phân bổ +
+ * thuế) ÷ SL; công nợ NCC không đổi (lib/purchase-payable tính từ đơn giá khai + thuế, không từ
+ * totalCost). Hàng tặng 0 đ không có thuế nên không đổi.
+ */
+export function withInputVat<T extends { quantity: number; unitCost: number; vatAmount?: number | null }>(transactionType: string, lines: T[]) {
+  if (!isInboundStockType(transactionType)) return lines;
+  return lines.map((line) => {
+    const vat = Number(line.vatAmount) || 0;
+    if (!(vat > 0) || !(line.quantity > 0) || !(line.unitCost > 0)) return line;
+    return { ...line, unitCost: (line.unitCost * line.quantity + vat) / line.quantity };
+  });
+}
+
 export async function postInventoryTransaction(tx: Tx, input: PostInventoryTransactionInput) {
   const transactionType = normalizeStockTransactionType(input.transactionType);
   if (!isStockTransactionType(transactionType)) stockError("Loai giao dich kho khong hop le");
@@ -568,7 +583,7 @@ export async function postInventoryTransaction(tx: Tx, input: PostInventoryTrans
   const priced = withPurchaseCost(transactionType, input.purchaseCost, resolvedLines);
 
   const valuedLines = [];
-  for (const line of priced.lines) {
+  for (const line of withInputVat(transactionType, priced.lines)) {
     if (isInboundStockType(transactionType)) {
       const valued = await applyBalanceChange(tx, line.itemId, input.warehouseCode, line.quantity, line.unitCost, "IN");
       valuedLines.push({ ...line, unitCost: valued.unitCost, totalCost: valued.totalCost });
@@ -699,7 +714,7 @@ export async function repostInventoryTransaction(
   const priced = withPurchaseCost(transactionType, input.purchaseCost ?? current.purchaseCost ?? 0, resolvedLines);
 
   const valuedLines = [];
-  for (const line of priced.lines) {
+  for (const line of withInputVat(transactionType, priced.lines)) {
     if (isInboundStockType(transactionType)) {
       const valued = await applyBalanceChange(tx, line.itemId, input.warehouseCode, line.quantity, line.unitCost, "IN");
       valuedLines.push({ ...line, unitCost: valued.unitCost, totalCost: valued.totalCost });

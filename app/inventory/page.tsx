@@ -160,8 +160,13 @@ function flowQuantityText(lines: Array<{ quantity: number; item: { unit: string 
 function documentLineCount(transaction: Transaction) {
   return transaction.lineSummary?.count ?? transaction.lines.length;
 }
+/**
+ * Trị giá TRƯỚC thuế của phiếu. Từ 21/10/2026 thuế GTGT đầu vào nằm trong giá nhập kho (totalCost là
+ * số SAU thuế) nên phiếu nhập trừ phần thuế ra để màn Nhập kho vẫn hiện "trước thuế + thuế = sau thuế".
+ */
 function documentTotalCost(transaction: Transaction) {
-  return transaction.lineSummary?.totalCost ?? transaction.lines.reduce((sum, line) => sum + line.totalCost, 0);
+  const total = transaction.lineSummary?.totalCost ?? transaction.lines.reduce((sum, line) => sum + line.totalCost, 0);
+  return transaction.transactionType.startsWith("NHAP_") ? total - documentVat(transaction) : total;
 }
 function documentVat(transaction: Transaction) {
   return transaction.lineSummary?.vatAmount ?? transaction.lines.reduce((sum, line) => sum + (line.vatAmount || 0), 0);

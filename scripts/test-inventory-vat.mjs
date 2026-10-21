@@ -145,3 +145,15 @@ test("biên độ nới theo số thuế: hoá đơn lớn lệch vài trăm đ�
   // Nhưng lệch 200.000 đ thì không còn là làm tròn nữa.
   assert.equal(resolveVatAmount({ amountBeforeTax: 100000000, rate: 0.1, declared: 10200000 }).ok, false);
 });
+
+test("thuế GTGT đầu vào cộng vào giá nhập kho, hàng tặng và phiếu xuất không đổi (khách chốt 21/10/2026)", async () => {
+  const { withInputVat } = await import("../lib/inventory-stock.ts");
+  const [taxed, gift] = withInputVat("NHAP_MUA", [
+    { quantity: 10, unitCost: 100_000, vatAmount: 80_000 },
+    { quantity: 2, unitCost: 0, vatAmount: 0 },
+  ]);
+  assert.equal(taxed.unitCost, 108_000, "1.000.000 + 80.000 thuế ÷ 10");
+  assert.equal(gift.unitCost, 0);
+  const [issue] = withInputVat("XUAT_HUY", [{ quantity: 10, unitCost: 100_000, vatAmount: 80_000 }]);
+  assert.equal(issue.unitCost, 100_000);
+});

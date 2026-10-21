@@ -99,7 +99,7 @@ export default function StockDocumentPrintPage() {
       ? line.inputUnitCost ?? line.unitCost * (line.conversionRate || 1)
       : line.unitCost;
     // Thành tiền in theo hoá đơn NCC (SL × đơn giá); chi phí mua hàng in riêng một dòng ở cuối.
-    return { ...line, printQuantity: quantity, printUnit: unit, printUnitPrice: unitPrice, printAmount: line.totalCost - (line.purchaseCostShare || 0) };
+    return { ...line, printQuantity: quantity, printUnit: unit, printUnitPrice: unitPrice, printAmount: line.totalCost - (line.purchaseCostShare || 0) - (doc.transactionType.startsWith("NHAP_") ? line.vatAmount || 0 : 0) };
   });
   const totalBeforeTax = rows.reduce((sum, row) => sum + row.printAmount, 0);
   const totalVat = rows.reduce((sum, row) => sum + (row.vatAmount || 0), 0);
