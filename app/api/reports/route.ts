@@ -4,7 +4,8 @@ import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { allowedMenuTabs, canViewFinancialDashboard } from "@/lib/auth-demo";
 import { assertBranchAccess, ensureRevenueComponentCategories, postJournalEntry, requestedBranch } from "@/lib/accounting";
 import { prisma } from "@/lib/prisma";
-import { createMoneySourceMatcher, getBalanceSheet, getCashSourceReport, getCashflowForecast, getPnl, getRevenueLedger, getRevenueLedgerDetail, getRevenueSettlementReport, getTrend, PNL_UNGROUPED_CODE } from "@/lib/reports";
+import { createMoneySourceMatcher, getBalanceSheet, getCashSourceReport, getCashflowForecast, getPnl, getRevenueDayImportRows, getRevenueLedger, getRevenueLedgerDetail, getRevenueSettlementReport, getTrend, PNL_UNGROUPED_CODE } from "@/lib/reports";
+import { deleteRevenueImportRows } from "@/lib/import-commit";
 import { getPayrollBudgetReport, getPnlHistoryEditor, getPnlMatrix, getRevenueTrendReport } from "@/lib/report-budget";
 import { isPnlHistoryPeriod, PNL_HISTORY_CUTOFF, PNL_HISTORY_ITEM_PREFIX, PNL_HISTORY_REVENUE_KINDS, PNL_HISTORY_REVENUE_PREFIX } from "@/lib/pnl-history";
 import { getPnlNotes, savePnlNote, toPnlNoteKind } from "@/lib/pnl-note";
@@ -1259,7 +1260,7 @@ export async function GET(request: Request) {
     // (Thu chi ngày) vừa là nguồn số của bảng "Đối chiếu tiền vào đã đủ chưa" nằm ở đầu tab
     // Tiền về đủ chưa (chuyển sang 05/09/2026), nên ai có MỘT TRONG HAI tab đều gọi được.
     // "revenue-ledger-detail" là phần xoè chi tiết của chính tab Sổ doanh thu, không phải tab riêng.
-    const subViewTab: Record<string, string> = { "pnl-matrix": "pnl", "pnl-note": "pnl", "pnl-history": "pnl", "revenue-trend": "yoy", "daily-cash": "revenue-settlement", "revenue-ledger-detail": "revenue-ledger" };
+    const subViewTab: Record<string, string> = { "pnl-matrix": "pnl", "pnl-note": "pnl", "pnl-history": "pnl", "revenue-trend": "yoy", "daily-cash": "revenue-settlement", "revenue-ledger-detail": "revenue-ledger", "revenue-day-rows": "revenue-ledger" };
     const containerTab = subViewTab[type] || type;
     if (permittedTabs && !permittedTabs.includes(type) && !permittedTabs.includes(containerTab)) {
       return NextResponse.json({ error: "Bạn không có quyền xem báo cáo này" }, { status: 403 });
@@ -1295,6 +1296,11 @@ export async function GET(request: Request) {
         cleanText(params.get("channel")),
       ));
     }
+    if (type === "revenue-day-rows") {
+      const date = cleanText(params.get("date"));
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return NextResponse.json({ error: "Thiếu ngày cần xem" }, { status: 400 });
+      return NextResponse.json(await getRevenueDayImportRows(date, branchCode));
+    }
     if (type === "revenue-ledger-detail") {
       const date = cleanText(params.get("date"));
       if (!date) return NextResponse.json({ error: "Thiếu ngày cần xem chi tiết" }, { status: 400 });
@@ -1323,8 +1329,22 @@ export async function POST(request: Request) {
     const body = await request.json();
     const action = cleanText(body.action);
     // Sửa phân loại một dòng doanh thu đã import là sửa số cũ, không phải lập số mới -> "edit".
-    const auth = requireMenuAction(request, menuHref, action === "UPDATE_REVENUE_ROW" ? "edit" : "create");
+    const auth = requireMenuAction(request, menuHref, action === "UPDATE_REVENUE_ROW" ? "edit" : action === "DELETE_REVENUE_ROWS" ? "delete" : "create");
     if (!auth.ok) return auth.response;
+
+    // Xoá dòng doanh thu ngay trên Sổ doanh thu (khách 21/10/2026) — luật ở deleteRevenueImportRows.
+    if (action === "DELETE_REVENUE_ROWS") {
+      const ids = Array.isArray(body.ids) ? (body.ids as unknown[]).map((id) => cleanText(id)).filter(Boolean) : [];
+      const note = cleanText(body.note);
+      if (!note) businessError("Ghi lý do xoá doanh thu");
+      const rows = await prisma.revenueImportRow.findMany({ where: { id: { in: ids } }, select: { branchCode: true } });
+      for (const branch of new Set(rows.map((row) => row.branchCode))) assertBranchAccess(auth.session, branch);
+      try {
+        return NextResponse.json(await deleteRevenueImportRows({ ids, actor: auth.session.name, note }));
+      } catch (error) {
+        return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
+      }
+    }
 
     /**
      * Sửa Nguồn doanh thu / Nguồn tiền chi tiết của một dòng doanh thu đã import.

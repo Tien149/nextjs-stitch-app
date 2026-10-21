@@ -3332,6 +3332,79 @@ export async function deleteRevenueImportDay(input: DeleteRevenueDayInput) {
   };
 }
 
+/**
+ * Xoá TỪNG DÒNG doanh thu ngay trên màn "Doanh thu theo dòng import" (khách 21/10/2026: xoá
+ * thẳng tại phiếu, không phải vào Import). Cùng luật với xoá theo ngày: xoá CỨNG để nạp lại đúng
+ * dòng đó không báo trùng; chặn dòng đã rã nguyên liệu (RA-...), kỳ đã khoá, và lô cũ còn phiếu
+ * kho tạo lúc import (dòng lẻ không gỡ được phiếu kho — dùng Xoá theo ngày ở Import).
+ */
+export async function deleteRevenueImportRows(input: { ids: string[]; actor: string; note: string }) {
+  const ids = [...new Set(input.ids.filter(Boolean))];
+  if (ids.length === 0) throw new Error("Chưa chọn dòng doanh thu nào để xoá");
+  if (ids.length > 3000) throw new Error("Mỗi lần xoá tối đa 3.000 dòng");
+
+  const result = await prismaRaw.$transaction(async (tx) => {
+    const rows = await tx.revenueImportRow.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, importBatchId: true, saleDate: true, branchCode: true, inventoryStatus: true, externalRef: true, netAmount: true },
+    });
+    if (rows.length !== ids.length) throw new Error("Có dòng doanh thu không còn tồn tại — tải lại danh sách rồi thử lại.");
+    const exploded = rows.filter((row) => (row.inventoryStatus || "").startsWith("POSTED"));
+    if (exploded.length > 0) {
+      const runs = [...new Set(exploded.map((row) => (row.inventoryStatus || "").replace(/^POSTED:?/, "")).filter(Boolean))];
+      throw new Error(`${exploded.length} dòng đã rã nguyên liệu${runs.length ? ` (${runs.join(", ")})` : ""} — hoàn tác lần rã ở tab Chế biến trước rồi mới xoá doanh thu, không thì kho vẫn bị trừ.`);
+    }
+    for (const key of new Set(rows.map((row) => `${periodFromDate(row.saleDate)}|${row.branchCode}`))) {
+      const [period, branchCode] = key.split("|");
+      await assertPeriodOpen(tx, period, branchCode);
+    }
+    const batchIds = [...new Set(rows.map((row) => row.importBatchId))];
+    const legacyStock = await tx.inventoryTransaction.count({ where: { importBatchId: { in: batchIds }, deletedAt: null } });
+    if (legacyStock > 0) {
+      throw new Error("Lô import cũ này còn phiếu kho tạo lúc import — xoá theo ngày ở màn Import để hoàn kho đúng ngày.");
+    }
+
+    await tx.journalEntry.deleteMany({ where: { sourceType: "REVENUE_POS", sourceId: { in: ids } } });
+    await tx.importRow.deleteMany({ where: { targetType: "REVENUE_POS", targetId: { in: ids } } });
+    await tx.revenueImportRow.deleteMany({ where: { id: { in: ids } } });
+
+    const stamp = `${new Date().toISOString().slice(0, 10)} · ${input.actor}`;
+    for (const batchId of batchIds) {
+      const batch = await tx.importBatch.findUnique({ where: { id: batchId } });
+      if (!batch) continue;
+      const removed = rows.filter((row) => row.importBatchId === batchId).length;
+      const remaining = await tx.revenueImportRow.count({ where: { importBatchId: batchId } });
+      await tx.importBatch.update({
+        where: { id: batchId },
+        data: {
+          totalRows: Math.max(batch.totalRows - removed, 0),
+          validRows: Math.max(batch.validRows - removed, 0),
+          ...(remaining === 0 ? { status: "ROLLED_BACK", rolledBackAt: new Date(), rolledBackBy: input.actor } : {}),
+          rollbackNote: [batch.rollbackNote, `${stamp} xoá ${removed} dòng doanh thu: ${input.note}`].filter(Boolean).join("\n"),
+        },
+      });
+    }
+    return rows;
+  }, { maxWait: 10_000, timeout: 120_000 });
+
+  const walletSettlements = await findWalletSettlementsOnDays(result.map((row) => ({ branchCode: row.branchCode, saleDate: row.saleDate })));
+  await writeAuditLog({
+    actorName: input.actor,
+    module: "IMPORT",
+    action: "DELETE_REVENUE_ROWS",
+    entityType: "RevenueImportRow",
+    entityId: result[0]?.id || null,
+    entityCode: result.length === 1 ? result[0].externalRef : `${result.length} dòng`,
+    branchCode: result[0]?.branchCode || null,
+    message: `Xoá ${result.length} dòng doanh thu — ${input.note}`,
+    metadata: {
+      rows: result.map((row) => ({ id: row.id, externalRef: row.externalRef, branchCode: row.branchCode, saleDate: row.saleDate, netAmount: row.netAmount })),
+      walletSettlements: walletSettlements.map((row) => row.code),
+    },
+  });
+  return { deletedRows: result.length, walletSettlements };
+}
+
 export function isUniqueConstraintError(error: unknown) {
   return typeof error === "object" && error !== null && "code" in error && error.code === "P2002";
 }

@@ -2499,6 +2499,55 @@ export async function getRevenueLedgerDetail(date: string, branchCode: string, c
   return { date, branchCode, channel, rows: detail };
 }
 
+/** Dòng doanh thu đúng như file import (khách 21/10/2026) — kèm giờ, file nguồn, trạng thái rã. */
+export type RevenueDayImportRow = RevenueLedgerDetailRow & {
+  saleHour: number | null;
+  fileName: string | null;
+  importedAt: string;
+  inventoryStatus: string | null;
+};
+
+/**
+ * Doanh thu của MỘT ngày theo đúng thứ tự import, không gộp kênh — màn "Theo dòng import" của Sổ
+ * doanh thu (xem từng dòng, chọn xoá thẳng tại đây). Một ngày cỡ vài trăm dòng nên nạp đủ.
+ */
+export async function getRevenueDayImportRows(date: string, branchCode: string) {
+  const start = new Date(`${date}T00:00:00+07:00`);
+  const end = new Date(`${date}T24:00:00+07:00`);
+  const rows = await prisma.revenueImportRow.findMany({
+    where: { saleDate: { gte: start, lt: end }, ...(branchCode === "ALL" ? {} : { branchCode }) },
+    include: { importBatch: { select: { fileName: true } } },
+    orderBy: [{ createdAt: "asc" }, { externalRef: "asc" }],
+    take: 3000,
+  });
+  const result: RevenueDayImportRow[] = rows.map((row) => ({
+    id: row.id,
+    saleDate: vietnamBusinessDayKey(row.saleDate),
+    saleHour: row.saleHour,
+    branchCode: row.branchCode,
+    channel: (row.channel || "").trim() || UNSPECIFIED_CHANNEL,
+    revenueSource: row.revenueSource,
+    paymentMethod: row.paymentMethod,
+    externalRef: row.externalRef,
+    productCode: row.productCode,
+    productQuantity: row.productQuantity,
+    departmentCode: row.departmentCode,
+    note: row.note,
+    orderCount: row.orderCount,
+    grossAmount: row.grossAmount,
+    discountAmount: row.discountAmount,
+    vatAmount: row.vatAmount,
+    serviceAmount: row.feeAmount,
+    cardFeeAmount: row.cardFeeAmount,
+    appFeeAmount: row.appFeeAmount,
+    netAmount: row.netAmount,
+    fileName: row.importBatch?.fileName || null,
+    importedAt: row.createdAt.toISOString(),
+    inventoryStatus: row.inventoryStatus,
+  }));
+  return { date, branchCode, rows: result, truncated: rows.length >= 3000 };
+}
+
 /**
  * Đối chiếu doanh thu bán hàng với tiền thực về, theo từng Ngày và từng Nguồn tiền.
  *

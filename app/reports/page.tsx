@@ -229,6 +229,7 @@ type RevenueLedgerDetailRow = {
   appFeeAmount: number;
   netAmount: number;
 };
+type RevenueDayImportRow = RevenueLedgerDetailRow & { saleHour: number | null; fileName: string | null; importedAt: string; inventoryStatus: string | null };
 type RevenueLedgerData = {
   period: string;
   branchCode: string;
@@ -315,6 +316,8 @@ export default function ReportsPage() {
   const canEnterManualRevenue = user ? canPerformMenuAction(user, href, "create") : false;
   // Sửa phân loại dòng doanh thu đã import (Sổ doanh thu) — sửa số cũ nên đi theo quyền edit.
   const canEditRevenueRow = user ? canPerformMenuAction(user, href, "edit") : false;
+  // Xoá dòng doanh thu ngay trên Sổ doanh thu (khách 21/10/2026) — quyền xoá của menu Báo cáo.
+  const canDeleteRevenueRow = user ? canPerformMenuAction(user, href, "delete") : false;
   /** Nối phiếu tay vào dòng sao kê là thao tác của màn Sổ sao kê, nên xin quyền của màn đó. */
   const canEditReconciliation = user ? canPerformMenuAction(user, "/reconciliations", "edit") : false;
   const canAdminPeriod = user?.role === "Admin";
@@ -1289,7 +1292,7 @@ export default function ReportsPage() {
         </section>
       )}
 
-      {!tabLoading && ledger && ledgerArmed && <RevenueLedgerPanel data={ledger} branchCode={branchCode} moneySources={moneySources} canEdit={canEditRevenueRow} onSaved={() => void loadData()} />}
+      {!tabLoading && ledger && ledgerArmed && <RevenueLedgerPanel data={ledger} branchCode={branchCode} moneySources={moneySources} canEdit={canEditRevenueRow} canDelete={canDeleteRevenueRow} onSaved={() => void loadData()} />}
 
       {!tabLoading && dailyCash && (
         <div className="space-y-5 report-print-area" id="daily-cash-report">
@@ -2474,13 +2477,16 @@ function RevenueComparison({ current, previous }: { current: number; previous: n
  * Chi tiết nạp riêng lúc bấm chứ không gửi kèm bảng tổng — doanh thu POS có thể tới hàng chục
  * nghìn dòng mỗi năm. Đã nạp rồi thì giữ lại, bấm đóng mở lại không gọi mạng lần nữa.
  */
-function RevenueLedgerPanel({ data, branchCode, moneySources, canEdit, onSaved }: {
+function RevenueLedgerPanel({ data, branchCode, moneySources, canEdit, canDelete, onSaved }: {
   data: RevenueLedgerData;
   branchCode: string;
   moneySources: MoneySourceOption[];
   canEdit: boolean;
+  canDelete: boolean;
   onSaved: () => void;
 }) {
+  /** "channel" = gộp theo kênh như cũ; "rows" = tổng từng ngày + từng dòng đúng như file import. */
+  const [mode, setMode] = useState<"channel" | "rows">("rows");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [details, setDetails] = useState<Record<string, RevenueLedgerDetailRow[]>>({});
   const [loadingKey, setLoadingKey] = useState<string | null>(null);
@@ -2570,7 +2576,23 @@ function RevenueLedgerPanel({ data, branchCode, moneySources, canEdit, onSaved }
         <Kpi label="Cùng kỳ tháng trước" value={data.totals.previousNetAmount} icon="calendar_month" />
       </section>
 
-      <section className="table-panel">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs font-bold text-slate-500">Xem:</span>
+        {([["rows", "Tổng từng ngày · dòng import"], ["channel", "Gộp theo kênh bán"]] as const).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => setMode(value)}
+            className={`rounded-full border px-3 py-1 text-xs font-bold ${mode === value ? "border-blue-600 bg-blue-600 text-white" : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"}`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {mode === "rows" && <RevenueImportRowsSection data={data} branchCode={branchCode} canDelete={canDelete} onDeleted={onSaved} />}
+
+      {mode === "channel" && <section className="table-panel">
         <PanelHeader
           title="Sổ doanh thu"
           subtitle={`Từ ${dayLabel(data.dateFrom)} đến ${dayLabel(data.dateTo)}. Mỗi ngày bán tách sẵn theo từng kênh bán, lấy thẳng từ file import POS — cùng nguồn với dòng Doanh thu của P&L. Bấm vào một dòng để xem từng hoá đơn của ngày đó${canEdit ? ", sửa lại Nguồn doanh thu / Nguồn tiền nếu file khai nhầm, và ghi chú lại dòng nào đã soát" : ""}. Cột Ghi chú đếm số dòng đã có ghi chú trong ô đó.`}
@@ -2728,8 +2750,221 @@ function RevenueLedgerPanel({ data, branchCode, moneySources, canEdit, onSaved }
             </tr>
           )}
         </Table>
-      </section>
+      </section>}
     </div>
+  );
+}
+
+/**
+ * Doanh thu TỪNG NGÀY + từng dòng đúng như file import, không gộp kênh (khách 21/10/2026: các bạn
+ * cần tổng mỗi ngày và xoá thẳng dòng sai tại đây, không phải vào Import). Bấm một ngày để xoè đủ
+ * dòng theo thứ tự import; tick dòng (hoặc cả ngày) rồi Xoá. Dòng đã rã nguyên liệu thì máy chủ chặn.
+ */
+function RevenueImportRowsSection({ data, branchCode, canDelete, onDeleted }: {
+  data: RevenueLedgerData;
+  branchCode: string;
+  canDelete: boolean;
+  onDeleted: () => void;
+}) {
+  const [openDay, setOpenDay] = useState<string | null>(null);
+  const [rowsByDay, setRowsByDay] = useState<Record<string, RevenueDayImportRow[]>>({});
+  const [loadingDay, setLoadingDay] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
+
+  const dayLabel = (value: string) => new Date(`${value}T00:00:00Z`).toLocaleDateString("vi-VN", { timeZone: "UTC" });
+  const days = useMemo(() => {
+    const map = new Map<string, { date: string; lineCount: number; orderCount: number; grossAmount: number; discountAmount: number; vatAmount: number; serviceAmount: number; netAmount: number }>();
+    for (const row of data.rows) {
+      const day = map.get(row.date) || { date: row.date, lineCount: 0, orderCount: 0, grossAmount: 0, discountAmount: 0, vatAmount: 0, serviceAmount: 0, netAmount: 0 };
+      day.lineCount += row.lineCount;
+      day.orderCount += row.orderCount;
+      day.grossAmount += row.grossAmount;
+      day.discountAmount += row.discountAmount;
+      day.vatAmount += row.vatAmount;
+      day.serviceAmount += row.serviceAmount;
+      day.netAmount += row.netAmount;
+      map.set(row.date, day);
+    }
+    return [...map.values()].sort((a, b) => b.date.localeCompare(a.date));
+  }, [data.rows]);
+
+  const loadDay = async (date: string, force = false) => {
+    if (!force && rowsByDay[date]) return;
+    setLoadingDay(date);
+    try {
+      const params = new URLSearchParams({ type: "revenue-day-rows", date, branchCode });
+      const response = await fetch(`/api/reports?${params.toString()}`);
+      const payload = await response.json().catch(() => ({})) as { rows?: RevenueDayImportRow[]; error?: string };
+      if (!response.ok) {
+        setNotice({ tone: "error", text: payload.error || "Không tải được dòng doanh thu" });
+        return;
+      }
+      setRowsByDay((current) => ({ ...current, [date]: payload.rows || [] }));
+    } finally {
+      setLoadingDay(null);
+    }
+  };
+
+  const toggleDay = (date: string) => {
+    setSelected([]);
+    if (openDay === date) {
+      setOpenDay(null);
+      return;
+    }
+    setOpenDay(date);
+    void loadDay(date);
+  };
+
+  const deleteSelected = async (date: string, ids: string[], label: string) => {
+    if (ids.length === 0) return;
+    const note = window.prompt(`Xoá ${label} của ngày ${dayLabel(date)}?\n\nDoanh thu, bút toán của các dòng này bị xoá hẳn (nạp lại file được). Dòng đã rã nguyên liệu sẽ bị chặn.\n\nLý do xoá:`, "");
+    if (note === null) return;
+    if (!note.trim()) {
+      setNotice({ tone: "error", text: "Cần ghi lý do xoá doanh thu." });
+      return;
+    }
+    setBusy(true);
+    setNotice(null);
+    try {
+      const response = await fetch("/api/reports", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "DELETE_REVENUE_ROWS", ids, note }),
+      });
+      const payload = await response.json().catch(() => ({})) as { deletedRows?: number; walletSettlements?: Array<{ code: string }>; error?: string };
+      if (!response.ok) {
+        setNotice({ tone: "error", text: payload.error || "Không xoá được doanh thu" });
+        return;
+      }
+      const wallets = (payload.walletSettlements || []).map((row) => row.code);
+      setNotice({ tone: "ok", text: `Đã xoá ${payload.deletedRows} dòng doanh thu ngày ${dayLabel(date)}.${wallets.length ? ` Lưu ý phiếu quyết toán ví ${wallets.join(", ")} của ngày này cần chạy lại.` : ""}` });
+      setSelected([]);
+      await loadDay(date, true);
+      onDeleted();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const hourLabel = (hour: number | null) => (hour === null || hour === undefined ? "Cả ngày" : `${String(hour).padStart(2, "0")}h`);
+
+  return (
+    <section className="table-panel">
+      <PanelHeader
+        title="Doanh thu từng ngày"
+        subtitle={`Từ ${dayLabel(data.dateFrom)} đến ${dayLabel(data.dateTo)}. Mỗi ngày một dòng tổng; bấm vào ngày để xem từng dòng đúng như file import (không gộp)${canDelete ? ", tick dòng sai rồi Xoá — không cần vào Import" : ""}.`}
+        exportFileName="doanh_thu_tung_ngay"
+      />
+      {notice && (
+        <p className={`mx-5 mb-3 rounded-lg border px-3 py-2 text-sm ${notice.tone === "ok" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-rose-200 bg-rose-50 text-rose-700"}`}>{notice.text}</p>
+      )}
+      <Table headers={["Ngày", "Số dòng", "Hoá đơn", "Doanh thu gộp", "Giảm giá", "VAT", "Phụ thu SVC", "Doanh thu thuần"]}>
+        {days.length === 0 && (
+          <tr className="border-t border-slate-100"><Cell>Chưa có doanh thu nào trong khoảng ngày này.</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell>-</Cell><Cell right>-</Cell></tr>
+        )}
+        {days.flatMap((day) => {
+          const isOpen = openDay === day.date;
+          const rows = rowsByDay[day.date] || [];
+          const allChecked = rows.length > 0 && rows.every((row) => selected.includes(row.id));
+          return [
+            <tr key={day.date} onClick={() => toggleDay(day.date)} className={`cursor-pointer border-t border-slate-200 hover:bg-slate-50 ${isOpen ? "bg-blue-50/60" : ""}`}>
+              <Cell>
+                <span className="inline-flex items-center gap-1">
+                  <span className={`material-symbols-outlined text-sm text-slate-400 transition-transform ${isOpen ? "rotate-90" : ""}`}>chevron_right</span>
+                  <b>{dayLabel(day.date)}</b>
+                </span>
+              </Cell>
+              <Cell right>{money(day.lineCount)}</Cell>
+              <Cell right>{day.orderCount > 0 ? money(day.orderCount) : <span className="text-slate-300">—</span>}</Cell>
+              <Cell right>{money(day.grossAmount)}</Cell>
+              <Cell right>{day.discountAmount ? <span className="text-amber-700">{money(day.discountAmount)}</span> : <span className="text-slate-300">—</span>}</Cell>
+              <Cell right>{day.vatAmount ? money(day.vatAmount) : <span className="text-slate-300">—</span>}</Cell>
+              <Cell right>{day.serviceAmount ? money(day.serviceAmount) : <span className="text-slate-300">—</span>}</Cell>
+              <Cell right><b className="text-emerald-700">{money(day.netAmount)}</b></Cell>
+            </tr>,
+            ...(isOpen ? [
+              <tr key={`${day.date}-rows`} className="border-t border-slate-100 bg-slate-50/50">
+                <td colSpan={8} className="px-4 py-3">
+                  {loadingDay === day.date && <p className="text-xs text-slate-500">Đang tải dòng doanh thu...</p>}
+                  {loadingDay !== day.date && (
+                    <div className="space-y-2">
+                      {canDelete && rows.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button type="button" disabled={busy || selected.length === 0} onClick={() => void deleteSelected(day.date, selected, `${selected.length} dòng đã chọn`)} className="rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-bold text-white disabled:bg-slate-300">
+                            Xoá {selected.length > 0 ? `${selected.length} dòng đã chọn` : "dòng đã chọn"}
+                          </button>
+                          <button type="button" disabled={busy} onClick={() => void deleteSelected(day.date, rows.map((row) => row.id), `TOÀN BỘ ${rows.length} dòng`)} className="rounded-lg border border-rose-300 bg-white px-3 py-1.5 text-xs font-bold text-rose-700 disabled:opacity-50">
+                            Xoá cả ngày
+                          </button>
+                          {selected.length > 0 && <span className="text-xs text-slate-500">Tổng thuần đã chọn: <b>{money(rows.filter((row) => selected.includes(row.id)).reduce((sum, row) => sum + row.netAmount, 0))}</b></span>}
+                        </div>
+                      )}
+                      <div className="max-h-[520px] overflow-auto rounded-lg border border-slate-200 bg-white">
+                        <table className="w-full min-w-[1200px] text-xs">
+                          <thead className="sticky top-0 bg-slate-100 text-[10px] uppercase text-slate-500">
+                            <tr>
+                              {canDelete && (
+                                <th className="px-2 py-2 text-center">
+                                  <input type="checkbox" checked={allChecked} onChange={(e) => setSelected(e.target.checked ? rows.map((row) => row.id) : [])} aria-label="Chọn cả ngày" />
+                                </th>
+                              )}
+                              {["#", "Giờ", "Mã hoá đơn", "Kênh", "Nguồn DT", "Nguồn tiền", "Mã món", "SL", "Gộp", "Giảm giá", "VAT", "SVC", "Thuần", "Rã BOM", "File import"].map((label) => (
+                                <th key={label} className={`px-2 py-2 ${["SL", "Gộp", "Giảm giá", "VAT", "SVC", "Thuần"].includes(label) ? "text-right" : "text-left"}`}>{label}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rows.map((row, index) => (
+                              <tr key={row.id} className={`border-t border-slate-100 ${selected.includes(row.id) ? "bg-rose-50" : ""}`}>
+                                {canDelete && (
+                                  <td className="px-2 py-1.5 text-center">
+                                    <input type="checkbox" checked={selected.includes(row.id)} onChange={(e) => setSelected((current) => e.target.checked ? [...current, row.id] : current.filter((id) => id !== row.id))} aria-label={`Chọn ${row.externalRef}`} />
+                                  </td>
+                                )}
+                                <td className="px-2 py-1.5 text-slate-400 tabular-nums">{index + 1}</td>
+                                <td className="px-2 py-1.5 whitespace-nowrap">{hourLabel(row.saleHour)}</td>
+                                <td className="px-2 py-1.5 whitespace-nowrap font-semibold">{row.externalRef}</td>
+                                <td className="px-2 py-1.5 whitespace-nowrap">{row.channel}</td>
+                                <td className="px-2 py-1.5 whitespace-nowrap">{row.revenueSource}</td>
+                                <td className="px-2 py-1.5 whitespace-nowrap">{row.paymentMethod}</td>
+                                <td className="px-2 py-1.5 whitespace-nowrap">{row.productCode || ""}</td>
+                                <td className="px-2 py-1.5 text-right tabular-nums">{row.productQuantity ?? ""}</td>
+                                <td className="px-2 py-1.5 text-right tabular-nums">{money(row.grossAmount)}</td>
+                                <td className="px-2 py-1.5 text-right tabular-nums">{row.discountAmount ? money(row.discountAmount) : ""}</td>
+                                <td className="px-2 py-1.5 text-right tabular-nums">{row.vatAmount ? money(row.vatAmount) : ""}</td>
+                                <td className="px-2 py-1.5 text-right tabular-nums">{row.serviceAmount ? money(row.serviceAmount) : ""}</td>
+                                <td className="px-2 py-1.5 text-right tabular-nums font-semibold text-emerald-700">{money(row.netAmount)}</td>
+                                <td className="px-2 py-1.5 whitespace-nowrap">{(row.inventoryStatus || "").startsWith("POSTED") ? <span className="text-amber-700 font-semibold">{(row.inventoryStatus || "").replace(/^POSTED:?/, "") || "Đã rã"}</span> : <span className="text-slate-300">—</span>}</td>
+                                <td className="px-2 py-1.5 max-w-[220px] truncate text-slate-500" title={row.fileName || ""}>{row.fileName || ""}</td>
+                              </tr>
+                            ))}
+                            {rows.length === 0 && <tr><td colSpan={16} className="px-2 py-3 text-center text-slate-400">Không còn dòng doanh thu nào.</td></tr>}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </td>
+              </tr>,
+            ] : []),
+          ];
+        })}
+        {days.length > 0 && (
+          <tr className="border-t-2 border-slate-300 bg-slate-50 font-bold">
+            <Cell>Tổng cộng</Cell>
+            <Cell right>{money(days.reduce((sum, day) => sum + day.lineCount, 0))}</Cell>
+            <Cell right>{money(days.reduce((sum, day) => sum + day.orderCount, 0))}</Cell>
+            <Cell right>{money(data.totals.grossAmount)}</Cell>
+            <Cell right>{money(data.totals.discountAmount)}</Cell>
+            <Cell right>{money(data.totals.vatAmount)}</Cell>
+            <Cell right>{money(data.totals.serviceAmount)}</Cell>
+            <Cell right><b className="text-emerald-700">{money(data.totals.netAmount)}</b></Cell>
+          </tr>
+        )}
+      </Table>
+    </section>
   );
 }
 
