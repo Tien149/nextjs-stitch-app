@@ -852,13 +852,11 @@ export async function POST(request: Request) {
       if (ids.length === 0) businessError("Vui lòng chọn ít nhất một phiếu nộp tiền.");
       if (ids.length > 100) businessError("Mỗi lần chỉ được duyệt tối đa 100 phiếu.");
       /**
-       * Ngày thực tế nộp tiền giờ chỉ để ĐỐI CHIẾU, không còn quyết định ngày ghi sổ (sổ quỹ
-       * trừ theo ngày chứng từ — xem lib/money-transfer-date.ts). Bỏ trống thì mỗi phiếu lấy
-       * đúng ngày chứng từ CỦA NÓ, thay vì bắt kế toán gõ một ngày rồi áp cho cả lô phiếu
-       * nhiều ngày khác nhau — chính chỗ đó đẻ ra ngày thực tế sai.
+       * Ngày kế toán điền lúc duyệt = NGÀY GHI SỔ của cả lô phiếu (khách chốt lại 21/10/2026 — xem
+       * lib/money-transfer-date.ts): sổ quỹ nguồn nộp trừ và nguồn nhận cộng đúng ngày này.
        */
-      const requestedActualDate = cleanText(body.actualTransferDate) ? parseImportDate(cleanText(body.actualTransferDate)) : null;
-      if (cleanText(body.actualTransferDate) && !requestedActualDate) businessError("Ngày thực tế nộp tiền không hợp lệ.");
+      const requestedActualDate = parseImportDate(cleanText(body.actualTransferDate));
+      if (!requestedActualDate) businessError("Ngày nộp tiền là bắt buộc — sổ quỹ trừ / cộng theo ngày này.");
 
       const transfers = await prisma.moneyTransfer.findMany({ where: { id: { in: ids }, deletedAt: null } });
       if (transfers.length !== ids.length) businessError("Có phiếu không tồn tại hoặc đã bị xóa.");
@@ -870,8 +868,8 @@ export async function POST(request: Request) {
         if (transfer.transferPurpose !== "CASH_DEPOSIT") businessError(`Phiếu ${transfer.code} không phải phiếu nộp tiền mặt.`);
         if (transfer.status !== "PENDING_REVIEW") businessError(`Phiếu ${transfer.code} không còn chờ duyệt.`);
         if (transfer.fromMoneySourceCode === transfer.toMoneySourceCode) businessError(`Phiếu ${transfer.code} có nguồn đi và nguồn nhận trùng nhau.`);
-        // Khoá sổ xét theo ngày GHI SỔ, tức ngày chứng từ của phiếu.
-        if (await isPeriodLocked(transfer.transferDate, transfer.branchCode)) businessError(`Kỳ kế toán của phiếu ${transfer.code} đã khóa.`);
+        // Khoá sổ xét theo ngày GHI SỔ, tức ngày kế toán điền.
+        if (await isPeriodLocked(requestedActualDate, transfer.branchCode)) businessError(`Kỳ kế toán của ngày nộp tiền (phiếu ${transfer.code}) đã khóa.`);
         const fromMoneySource = sourceByCode.get(transfer.fromMoneySourceCode);
         const toMoneySource = sourceByCode.get(transfer.toMoneySourceCode);
         if (!fromMoneySource || !moneySourceMatchesBranch(fromMoneySource, transfer.branchCode) || normalizeMoneySourceGroup(fromMoneySource.group) !== "CASH") {
@@ -888,7 +886,7 @@ export async function POST(request: Request) {
             where: { id: transfer.id, status: "PENDING_REVIEW", transferPurpose: "CASH_DEPOSIT", deletedAt: null },
             data: {
               status: "APPROVED",
-              actualTransferDate: requestedActualDate ?? transfer.transferDate,
+              actualTransferDate: requestedActualDate,
               approvedAt,
               approvedBy: auth.session.name,
             },

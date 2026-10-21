@@ -679,13 +679,14 @@ export default function FinanceOperationsPage() {
    */
   const openCashApproval = (ids: string[]) => {
     if (ids.length === 0) return;
-    setCashApproval({ ids, actualTransferDate: "" });
+    // Mặc định ngày bấm duyệt (giờ VN); kế toán sửa thành đúng ngày nộp tiền — cả lô ghi sổ ngày này.
+    setCashApproval({ ids, actualTransferDate: new Date(Date.now() + 7 * 3_600_000).toISOString().slice(0, 10) });
     setMessage("");
   };
 
   const approveCashDeposits = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!cashApproval || submitting) return;
+    if (!cashApproval || !cashApproval.actualTransferDate || submitting) return;
     setSubmitting(true);
     setMessage("");
     try {
@@ -701,9 +702,7 @@ export default function FinanceOperationsPage() {
       }
       setCashApproval(null);
       setSelectedCashDepositIds([]);
-      setMessage(payload.actualTransferDate
-        ? `Đã duyệt ${payload.count} phiếu, ghi nhận tiền thực nộp ngày ${new Date(`${String(payload.actualTransferDate).slice(0, 10)}T00:00:00`).toLocaleDateString("vi-VN")}.`
-        : `Đã duyệt ${payload.count} phiếu theo đúng ngày chứng từ của từng phiếu.`);
+      setMessage(`Đã duyệt ${payload.count} phiếu — sổ quỹ ghi ngày nộp ${new Date(`${String(payload.actualTransferDate).slice(0, 10)}T00:00:00`).toLocaleDateString("vi-VN")}.`);
       await loadData();
     } catch {
       setMessage("Lỗi kết nối máy chủ khi duyệt phiếu nộp tiền.");
@@ -2688,24 +2687,23 @@ export default function FinanceOperationsPage() {
             </div>
             <div className="space-y-4 p-5">
               <label className="block text-xs font-bold text-slate-600">
-                Ngày thực tế nộp tiền (không bắt buộc)
-                <DateInput className="mt-1.5 w-full" value={cashApproval.actualTransferDate} onChange={(value) => setCashApproval((current) => current ? { ...current, actualTransferDate: value } : current)} ariaLabel="Ngày thực tế nộp tiền" />
+                Ngày nộp tiền *
+                <DateInput className="mt-1.5 w-full" value={cashApproval.actualTransferDate} onChange={(value) => setCashApproval((current) => current ? { ...current, actualTransferDate: value } : current)} required ariaLabel="Ngày nộp tiền" />
                 <p className="mt-1.5 text-[11px] font-medium text-slate-500">
-                  Bỏ trống thì mỗi phiếu lấy đúng ngày chứng từ của nó. Chỉ điền khi cả lô này thật sự được giao tiền vào cùng một ngày khác.
+                  Mặc định ngày bấm duyệt — sửa thành đúng ngày tiền thực nộp. Cả {cashApproval.ids.length} phiếu đang chọn ghi sổ ngày này.
                 </p>
               </label>
               <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-4 text-xs text-emerald-900">
                 <p className="font-bold">Tổng tiền: {money(data.moneyTransfers.filter((row) => cashApproval.ids.includes(row.id)).reduce((sum, row) => sum + row.amount, 0))} đ</p>
                 <p className="mt-1">
-                  Sổ quỹ, Báo cáo nguồn tiền và Sổ cái ghi giảm nguồn tiền mặt theo <b>ngày chứng từ</b> của phiếu.
-                  Ngày thực tế nộp chỉ để đối chiếu xem tiền tới tay người nhận ngày nào.
+                  Sổ quỹ, Báo cáo nguồn tiền và Sổ cái <b>trừ nguồn nộp và cộng nguồn nhận đúng ngày nộp tiền</b> ở trên.
                 </p>
               </div>
             </div>
             {message && <p className="mx-5 mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700">{message}</p>}
             <div className="flex justify-end gap-2 border-t border-slate-200 bg-slate-50 p-4">
               <button type="button" onClick={() => setCashApproval(null)} className="secondary-button">Hủy</button>
-              <button disabled={submitting} className="primary-button disabled:opacity-50">{submitting ? "Đang duyệt..." : `Xác nhận duyệt (${cashApproval.ids.length})`}</button>
+              <button disabled={submitting || !cashApproval.actualTransferDate} className="primary-button disabled:opacity-50">{submitting ? "Đang duyệt..." : `Xác nhận duyệt (${cashApproval.ids.length})`}</button>
             </div>
           </form>
         </div>
