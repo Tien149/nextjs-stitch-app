@@ -14,7 +14,7 @@ const phoneDigits = (value: string) => value.replace(/[^\d+]/g, "");
  * Gửi đơn mua hàng cho nhà cung cấp ngay trên màn Mua hàng, không phải mở phiếu rồi tự chép.
  *
  * Nội dung gửi đi LUÔN là phiếu theo mẫu của khách (components/PurchaseOrderSheet): ảnh phiếu
- * dán thẳng vào Zalo, hoặc tin nhắn chữ cùng bố cục kèm link xem phiếu có QR. Không có tích hợp
+ * dán thẳng vào Zalo, hoặc tin nhắn chữ cùng bố cục (không kèm link — NCC quét QR trên ảnh). Không có tích hợp
  * Zalo OA / máy chủ mail nên "gửi thẳng" nghĩa là mở sẵn đúng cuộc trò chuyện (zalo.me/<sđt>),
  * soạn sẵn email/SMS, hoặc bảng chia sẻ của điện thoại — người đặt chỉ việc bấm Gửi.
  */
@@ -102,7 +102,24 @@ export function SendPurchaseOrderDialog({
   const renderImage = async () => {
     if (!sheetRef.current) throw new Error("Phiếu chưa sẵn sàng");
     const { toBlob } = await import("html-to-image");
-    const blob = await toBlob(sheetRef.current, { pixelRatio: 2, backgroundColor: "#ffffff", cacheBust: true });
+    /**
+     * Ảnh sắc nét cả trên iPhone (khách 21/10/2026: iPhone mờ, Android rõ). Safari vẽ SVG
+     * foreignObject theo kích thước GỐC rồi mới phóng theo pixelRatio → nhoè. Phóng to chính phiếu
+     * bằng transform trước khi chụp (pixelRatio 1) thì Safari vẽ chữ ở độ phân giải thật. Hệ số tối
+     * đa 3, tự hạ cho phiếu dài để không vượt trần canvas của iOS (~16,7 triệu điểm ảnh).
+     */
+    const node = sheetRef.current;
+    const width = node.offsetWidth;
+    const height = node.offsetHeight;
+    const scale = Math.max(1, Math.min(3, Math.sqrt(16_000_000 / Math.max(1, width * height)), 16_000 / Math.max(1, height)));
+    const blob = await toBlob(node, {
+      pixelRatio: 1,
+      width: Math.floor(width * scale),
+      height: Math.floor(height * scale),
+      style: { transform: `scale(${scale})`, transformOrigin: "top left", width: `${width}px`, height: `${height}px` },
+      backgroundColor: "#ffffff",
+      cacheBust: true,
+    });
     if (!blob) throw new Error("Không tạo được ảnh phiếu");
     return blob;
   };
@@ -161,6 +178,29 @@ export function SendPurchaseOrderDialog({
     } finally {
       setBusy(false);
     }
+  };
+
+  /**
+   * Gửi TIN NHẮN chữ thay cho chép (khách 21/10/2026): điện thoại mở bảng chia sẻ của máy với sẵn
+   * nội dung → chọn Zalo / Messenger / SMS rồi chọn NCC. Máy tính không có bảng chia sẻ thì chép
+   * sẵn tin nhắn và mở khung chat Zalo của NCC (nếu có SĐT) để dán.
+   */
+  const sendMessage = async () => {
+    if (!sheet) return;
+    const isTouch = typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
+    if (isTouch && typeof navigator.share === "function") {
+      try {
+        await navigator.share({ text: message });
+        flash("Đã mở bảng chia sẻ — chọn Zalo (hoặc ứng dụng nhắn tin) rồi chọn nhà cung cấp.");
+        return;
+      } catch {
+        // Huỷ bảng chia sẻ — rơi xuống chép tin nhắn.
+      }
+    }
+    const copied = await copyText(message);
+    const digits = phoneDigits(phone);
+    if (digits) window.open(`https://zalo.me/${digits}`, "_blank", "noopener");
+    if (copied) flash(digits ? "Đã chép tin nhắn — Zalo của nhà cung cấp vừa mở, dán (Ctrl+V / ⌘V) rồi gửi." : "Đã chép tin nhắn — dán vào Zalo / Messenger của nhà cung cấp rồi gửi.");
   };
 
   const sendEmail = () => {
@@ -280,8 +320,8 @@ export function SendPurchaseOrderDialog({
                   <button type="button" disabled={!sheet || busy} onClick={() => void downloadImage()} className="secondary-button w-full">
                     <span className="material-symbols-outlined text-lg">download</span>Tải ảnh
                   </button>
-                  <button type="button" disabled={!sheet} onClick={() => void copyText(message).then((ok) => ok && flash("Đã chép tin nhắn đặt hàng."))} className="secondary-button w-full">
-                    <span className="material-symbols-outlined text-lg">content_copy</span>Chép tin nhắn
+                  <button type="button" disabled={!sheet || busy} onClick={() => void sendMessage()} className="secondary-button w-full">
+                    <span className="material-symbols-outlined text-lg">send</span>Gửi tin nhắn
                   </button>
                   <button type="button" disabled={!token} onClick={() => token && window.open(`/po/${token}`, "_blank")} className="secondary-button w-full">
                     <span className="material-symbols-outlined text-lg">open_in_new</span>Mở phiếu

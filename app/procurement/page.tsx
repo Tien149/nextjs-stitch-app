@@ -95,6 +95,23 @@ const quotableStatuses = ["APPROVED", "PENDING_APPROVAL", "ORDERED"];
 
 const emptyRequestRow = (): RequestRow => ({ itemId: "", unitCode: "", quantity: "1", estimatedUnitCost: "0", imageUrl: "" });
 
+/**
+ * Danh sách mặt hàng trên thẻ PR / PO thu gọn thành "N mặt hàng" (khách 21/10/2026: đơn 40+ dòng
+ * kéo dài cả màn hình) — bấm Xem để mở đủ.
+ */
+function LinesPreview({ items, className = "text-xs text-slate-500" }: { items: string[]; className?: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className={`block ${className}`}>
+      <b className="text-slate-600">{items.length} mặt hàng</b>
+      {items.length > 0 && (
+        <button type="button" onClick={() => setOpen(!open)} className="ml-2 font-semibold text-blue-700 hover:underline">{open ? "Thu gọn" : "Xem"}</button>
+      )}
+      {open && <span className="block mt-1">{items.join(", ")}</span>}
+    </span>
+  );
+}
+
 export default function ProcurementPage() {
   const href = "/procurement";
   const { user, loading } = useModuleAuth(href);
@@ -1207,7 +1224,7 @@ export default function ProcurementPage() {
                     <span className={`status ${requestStatusStyle(request.status)} shrink-0`}>{requestStatusLabel(request.status)}</span>
                   </div>
                   <p className="text-sm text-slate-700">{request.reason}{request.warehouseCode ? <span className="text-xs text-slate-500"> · Kho {request.warehouseCode}</span> : null}{request.supplierName ? <span className="text-xs text-slate-500"> · NCC {request.supplierName}</span> : null}</p>
-                  <p className="text-xs text-slate-500">{request.lines.map((line) => `${line.item.name}: ${qtyText(line.quantity, line)}`).join(", ")}</p>
+                  <LinesPreview items={request.lines.map((line) => `${line.item.name}: ${qtyText(line.quantity, line)}`)} />
                   {request.status === "REJECTED" && <p className="text-xs text-rose-700">Thu mua từ chối{request.rejectReason ? `: ${request.rejectReason}` : ""} — bấm Sửa để chỉnh và gửi lại, hoặc Huỷ phiếu.</p>}
                   <div className="flex items-center justify-between pt-1 border-t border-slate-100">
                     <b className="text-sm">{money(requestTotal(request))} đ</b>
@@ -1262,7 +1279,7 @@ export default function ProcurementPage() {
                   </td>
                   <td className="cell">
                     <b>{request.reason}</b>
-                    <small>{request.lines.map((line) => `${line.item.name}: ${qtyText(line.quantity, line)}${line.imageUrl ? " · có hình" : ""}`).join(", ")}</small>
+                    <LinesPreview items={request.lines.map((line) => `${line.item.name}: ${qtyText(line.quantity, line)}${line.imageUrl ? " · có hình" : ""}`)} />
                   </td>
                   <td className="cell text-right font-semibold">
                     {money(requestTotal(request))} đ
@@ -1476,7 +1493,7 @@ export default function ProcurementPage() {
                 <div className="flex items-center justify-between gap-2 pb-3 mb-3 border-b border-slate-100">
                   <div className="min-w-0">
                     <b><CopyableText value={request.code} /> — {request.reason}</b>
-                    <p className="text-xs text-slate-500">Mặt hàng: {request.lines.map((line) => `${line.item.name} (${qtyText(line.quantity, line)})`).join(", ")}</p>
+                    <LinesPreview items={request.lines.map((line) => `${line.item.name} (${qtyText(line.quantity, line)})`)} />
                   </div>
                   <span className={`status ${requestStatusStyle(request.status)} shrink-0`}>{requestStatusLabel(request.status)}</span>
                 </div>
@@ -1692,7 +1709,7 @@ export default function ProcurementPage() {
                     <span className={`status ${orderStatusStyle(order.status)} shrink-0`}>{orderStatusLabel(order.status)}</span>
                   </div>
                   <p className="text-sm font-semibold text-slate-800">{order.supplierName}</p>
-                  <p className="text-xs text-slate-500">{order.lines.map((line) => `${line.item.name} (${qty(toPurchaseQuantity(line.receivedQuantity, line))}/${qtyText(line.orderedQuantity, line)})`).join(", ")}</p>
+                  <LinesPreview items={order.lines.map((line) => `${line.item.name} (${qty(toPurchaseQuantity(line.receivedQuantity, line))}/${qtyText(line.orderedQuantity, line)})`)} />
                   <div className="flex items-center justify-between pt-1 border-t border-slate-100">
                     <div>
                       <b className="text-sm">{money(order.totalAmount)} đ</b>
@@ -1758,7 +1775,7 @@ export default function ProcurementPage() {
                   </td>
                   <td className="cell">
                     <b>{order.supplierName}</b>
-                    <small>{order.lines.map((line) => `${line.item.name} (${qty(toPurchaseQuantity(line.receivedQuantity, line))}/${qtyText(line.orderedQuantity, line)})`).join(", ")}</small>
+                    <LinesPreview items={order.lines.map((line) => `${line.item.name} (${qty(toPurchaseQuantity(line.receivedQuantity, line))}/${qtyText(line.orderedQuantity, line)})`)} />
                   </td>
                   <td className="cell">
                     <b>{storeLabel(order.branchCode)}</b>

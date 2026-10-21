@@ -74,6 +74,6 @@ export function purchaseOrderMessage(order: SharedPurchaseOrder, options: { show
     lines.push(qtyLine);
   });
   if (options.showPrices && order.totalAmount > 0) lines.push("", `Tổng giá trị: ${money(order.totalAmount)} đ`);
-  lines.push("", `Xem phiếu: ${order.publicUrl}`);
+  // Không kèm dòng "Xem phiếu: <link>" (khách 21/10/2026) — tin nhắn dừng ở danh sách hàng.
   return lines.join("\n");
 }
