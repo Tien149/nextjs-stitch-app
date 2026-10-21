@@ -393,10 +393,23 @@ export default function FinanceOperationsPage() {
     [data.moneyTransfers, cashbookRange.startDate, cashbookRange.endDate],
   );
   /** Phiếu nộp tiền đã duyệt trong kỳ — nơi duy nhất mở lại được khi duyệt xong mới thấy sai. */
+  // Xếp TĂNG DẦN theo ngày nộp (ngày kế toán điền = ngày ghi sổ, khách 21/10/2026), cùng ngày theo
+  // ngày chứng từ rồi mã; lọc khoảng ngày cũng theo ngày nộp cho khớp sổ quỹ.
   const approvedCashDeposits = useMemo(
-    () => data.moneyTransfers.filter((row) => row.status === "APPROVED" && row.transferPurpose === "CASH_DEPOSIT"
-      && inDateRange(row.transferDate, { from: cashbookRange.startDate, to: cashbookRange.endDate })),
+    () => data.moneyTransfers
+      .filter((row) => row.status === "APPROVED" && row.transferPurpose === "CASH_DEPOSIT"
+        && inDateRange(row.actualTransferDate || row.transferDate, { from: cashbookRange.startDate, to: cashbookRange.endDate }))
+      .sort((a, b) => String(a.actualTransferDate || a.transferDate).localeCompare(String(b.actualTransferDate || b.transferDate))
+        || String(a.transferDate).localeCompare(String(b.transferDate))
+        || a.code.localeCompare(b.code)),
     [data.moneyTransfers, cashbookRange.startDate, cashbookRange.endDate],
+  );
+  /** Tên nguồn tiền thay cho mã (khách 21/10/2026); mã hiện nhỏ bên dưới để còn đối chiếu. */
+  const sourceCell = (code: string) => (
+    <>
+      <p>{moneySourceNameByCode.get(code) || code}</p>
+      {moneySourceNameByCode.has(code) && <p className="text-[10px] text-slate-400">{code}</p>}
+    </>
   );
   const activeSelectedCashDepositIds = useMemo(() => {
     const eligibleIds = new Set(pendingCashDeposits.map((row) => row.id));
@@ -1401,13 +1414,13 @@ export default function FinanceOperationsPage() {
                           </td>
                           <td className="px-4 py-3 text-slate-500">{transfer.actualTransferDate ? new Date(transfer.actualTransferDate).toLocaleDateString("vi-VN", { timeZone: "UTC" }) : "—"}</td>
                           <td className="px-4 py-3">
-                            <p>{transfer.fromMoneySourceCode}</p>
+                            {sourceCell(transfer.fromMoneySourceCode)}
                             {transferBranches(transfer).isCrossBranch && (
                               <p className="mt-1 text-[11px] font-bold text-indigo-700">{storeLabel(transferBranches(transfer).fromBranchCode)}</p>
                             )}
                           </td>
                           <td className="px-4 py-3">
-                            <p>{transfer.toMoneySourceCode}</p>
+                            {sourceCell(transfer.toMoneySourceCode)}
                             {transferBranches(transfer).isCrossBranch && (
                               <p className="mt-1 text-[11px] font-bold text-indigo-700">
                                 {storeLabel(transferBranches(transfer).toBranchCode)} · ghi công nợ nội bộ hai đầu
@@ -1530,9 +1543,9 @@ export default function FinanceOperationsPage() {
                             {transfer.actualTransferDate ? new Date(transfer.actualTransferDate).toLocaleDateString("vi-VN", { timeZone: "UTC" }) : "—"}
                             {transfer.approvedBy && <p className="mt-1 text-[11px] text-slate-400">Duyệt bởi {transfer.approvedBy}</p>}
                           </td>
-                          <td className="px-4 py-3">{transfer.fromMoneySourceCode}</td>
+                          <td className="px-4 py-3">{sourceCell(transfer.fromMoneySourceCode)}</td>
                           <td className="px-4 py-3">
-                            <p>{transfer.toMoneySourceCode}</p>
+                            {sourceCell(transfer.toMoneySourceCode)}
                             {transfer.denominations && transfer.denominations.length > 0 && (
                               <p className="mt-1 text-[11px] font-medium text-slate-500">
                                 {transfer.denominations.map((row) => `${money(row.denomination)} x ${row.quantity}`).join(", ")}
