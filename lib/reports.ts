@@ -1021,7 +1021,7 @@ export async function getPnl(period: string, branchCode: string) {
   // Số nhập tay của tháng trước khi lên phần mềm đi đúng đường của số hệ thống.
   for (const line of pnlHistoryLines(history.entries, pnlItems, pnlGroups)) {
     if (line.revenueSample) {
-      addRevenueLine(line.branchCode, { account: revenueAccount, pnlItemCode: null, categoryCode: revenueGroups.groupOf(line.revenueSample).code, departmentCode: pnlHistoryRevenueDepartment(line.revenueKind), debit: 0, credit: line.credit });
+      addRevenueLine(line.branchCode, { account: revenueAccount, pnlItemCode: null, categoryCode: line.revenueCategory || revenueGroups.groupOf(line.revenueSample).code, departmentCode: pnlHistoryRevenueDepartment(line.revenueKind), debit: 0, credit: line.credit });
     } else {
       addExpenseLine(line.branchCode, { account: line.account, pnlItemCode: line.pnlItemCode, categoryCode: null, departmentCode: null, debit: line.debit, credit: line.credit });
     }

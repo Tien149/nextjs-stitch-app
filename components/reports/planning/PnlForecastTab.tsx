@@ -95,12 +95,17 @@ export default function PnlForecastTab({ data, onRefresh, onOpenBudget }: { data
       : groups;
   const monthHeaders = data.months.map((month) => `T${Number(month.slice(5))}`);
   const revenueBreakdowns = useMemo<RevenueBreakdown[]>(() => {
-    const { byChannel, byDepartment, svc, vat } = data.revenueSplit;
+    const { byChannel, byDepartment, svc, vat, adjust } = data.revenueSplit;
     // SVC và thuế GTGT là hai cột riêng trên file POS, không thuộc kênh bán hay bộ phận nào,
     // nên đứng thành dòng riêng ở CẢ HAI cách nhìn — giống hệt file Excel khách đang dùng.
+    // Dòng file có Tổng tiền ≠ DT − GG + SVC + Thuế (thường lệch làm tròn vài đồng) hiện thành
+    // dòng riêng thay vì thành "Chênh với sổ cái" (khách 21/10/2026).
     const tail: BreakdownRow[] = [
       { code: "__SVC", name: "Phụ thu SVC", months: svc, total: sumMonths(svc) },
       { code: "__VAT", name: "Thuế GTGT", months: vat, total: sumMonths(vat) },
+      ...(adjust && adjust.some((value) => Math.abs(value) >= 0.5)
+        ? [{ code: "__ADJUST", name: "Điều chỉnh / làm tròn file POS", months: adjust, total: sumMonths(adjust) }]
+        : []),
     ];
     const build = (key: string, title: string, hint: string, series: Series[]): RevenueBreakdown => {
       const rows = [...series, ...tail];

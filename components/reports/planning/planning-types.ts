@@ -59,7 +59,7 @@ export type PlanningData = {
   /** Công nợ phải trả khai "phát sinh trong kỳ" mà chưa ghi sổ — chi phí chưa có trên P&L. */
   unpostedDebts?: { count: number; amount: number; months: string[] };
   byBranch: BranchPlanning[];
-  revenueSplit: { byDepartment: Series[]; byChannel: Series[]; svc: number[]; vat: number[] };
+  revenueSplit: { byDepartment: Series[]; byChannel: Series[]; svc: number[]; vat: number[]; adjust?: number[] };
   payrollSplit: { bonus: number[]; insurance: number[] };
   budgets: { revenue: number[]; cogs: number[]; payroll: number[] };
   statement: StatementLine[];

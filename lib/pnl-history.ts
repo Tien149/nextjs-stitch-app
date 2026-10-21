@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { REVENUE_SVC_CATEGORY_CODE, REVENUE_VAT_CATEGORY_CODE } from "@/lib/revenue-pos-journal";
 
 /**
  * Số liệu P&L THỰC TẾ của các tháng trước khi lên phần mềm (khách chốt 19/10/2026: "có 1 trường
@@ -20,11 +21,17 @@ import { prisma } from "@/lib/prisma";
 export const PNL_HISTORY_CUTOFF = "2026-08";
 export const PNL_HISTORY_REVENUE_PREFIX = "revenue:";
 export const PNL_HISTORY_ITEM_PREFIX = "pnlItem:";
-export const PNL_HISTORY_REVENUE_KINDS = [
+/**
+ * `category`: dòng doanh thu có danh mục riêng như lúc ghi sổ file POS (SVC, thuế GTGT — khách
+ * 21/10/2026 thêm hai dòng này) thay vì quy nhóm theo chữ mẫu.
+ */
+export const PNL_HISTORY_REVENUE_KINDS: ReadonlyArray<{ kind: string; sample: string; label: string; category?: string }> = [
   { kind: "FOOD", sample: "Đồ ăn", label: "Doanh thu Bếp" },
   { kind: "DRINK", sample: "Đồ uống", label: "Doanh thu Bar" },
   { kind: "SERVICE", sample: "Dịch vụ", label: "Doanh thu Phụ thu" },
-] as const;
+  { kind: "SVC", sample: "Dịch vụ", label: "Phụ thu SVC", category: REVENUE_SVC_CATEGORY_CODE },
+  { kind: "VAT", sample: "Dịch vụ", label: "Thuế GTGT", category: REVENUE_VAT_CATEGORY_CODE },
+];
 
 /** Bộ phận của doanh thu nhập tay: Bếp → KIT, Bar → BAR (cùng mã với REVENUE_DEPARTMENT_CODES). */
 export function pnlHistoryRevenueDepartment(kind: string | null) {
@@ -48,6 +55,8 @@ export type PnlHistoryLine = {
   /** Doanh thu: chữ mẫu Đồ ăn / Đồ uống / Dịch vụ — báo cáo quy ra nhóm doanh thu bằng groupOf. */
   revenueSample: string | null;
   revenueKind: string | null;
+  /** Danh mục doanh thu cố định (REV_SVC / REV_VAT) — có thì báo cáo dùng thay cho groupOf(mẫu). */
+  revenueCategory?: string | null;
   debit: number;
   credit: number;
 };
@@ -93,7 +102,7 @@ export function pnlHistoryLines(entries: HistoryEntry[], pnlItems: CatalogItem[]
     if (entry.metric.startsWith(PNL_HISTORY_REVENUE_PREFIX)) {
       const kind = PNL_HISTORY_REVENUE_KINDS.find((option) => option.kind === entry.metric.slice(PNL_HISTORY_REVENUE_PREFIX.length));
       if (!kind) continue;
-      lines.push({ ...base, account: { accountType: "REVENUE", reportGroup: "REVENUE" }, pnlItemCode: null, revenueSample: kind.sample, revenueKind: kind.kind, debit: 0, credit: amount });
+      lines.push({ ...base, account: { accountType: "REVENUE", reportGroup: "REVENUE" }, pnlItemCode: null, revenueSample: kind.sample, revenueKind: kind.kind, revenueCategory: kind.category || null, debit: 0, credit: amount });
       continue;
     }
     if (!entry.metric.startsWith(PNL_HISTORY_ITEM_PREFIX)) continue;

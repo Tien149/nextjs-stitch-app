@@ -120,7 +120,7 @@ export default function PnlHistoryTab({ year: pageYear, branchCode, onSaved }: {
           <div>
             <h3 className="text-base font-bold text-slate-900">Số liệu P&amp;L trước khi lên phần mềm</h3>
             <p className="text-xs text-slate-500 mt-1 max-w-3xl">
-              Nhập số <b>thực tế</b> từng tháng <b>trước {cutoffLabel}</b> theo từng nhà hàng (doanh thu đã gồm SVC). Lưu xong, Dashboard,
+              Nhập số <b>thực tế</b> từng tháng <b>trước {cutoffLabel}</b> theo từng nhà hàng (doanh thu Bếp / Bar / Phụ thu, SVC và thuế GTGT nhập dòng riêng). Lưu xong, Dashboard,
               Dự báo P&amp;L, Kỳ tháng và Biến động YoY dùng số này cho các tháng đó. Tháng nào của nhà hàng đã nhập thì bỏ số hệ thống
               của tháng đó, không cộng trùng. Số này không sinh bút toán, không đụng quỹ, công nợ hay tồn kho. Ô để trống = 0.
             </p>

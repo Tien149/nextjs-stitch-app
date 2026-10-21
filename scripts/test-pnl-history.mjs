@@ -88,6 +88,6 @@ test("số P&L nhập tay trước khi lên phần mềm", async (t) => {
 
   const editor = await getPnlHistoryEditor("2026", BRANCH);
   assert.deepEqual(editor.months, ["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07"]);
-  assert.ok(editor.lines.find((line) => line.key === "revenue").groups[0].items.length === 3);
+  assert.ok(editor.lines.find((line) => line.key === "revenue").groups[0].items.length === 5, "Bếp, Bar, Phụ thu, SVC, Thuế GTGT");
   assert.ok(editor.lines.find((line) => line.key === "otherOpex").groups.some((group) => group.items.some((item) => item.metric === `pnlItem:${OPEX_ITEM}`)));
 });

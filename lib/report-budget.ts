@@ -347,6 +347,8 @@ export async function getPnlMatrix(year: string, branchCode: string) {
   const netRevenueByChannel = new Map<string, MatrixSeries>();
   const svcMonths = Array.from({ length: 12 }, () => 0);
   const vatMonths = Array.from({ length: 12 }, () => 0);
+  /** Dòng "Điều chỉnh doanh thu POS" (Tổng tiền ≠ DT − GG + SVC + Thuế, thường vài đồng làm tròn). */
+  const adjustMonths = Array.from({ length: 12 }, () => 0);
   /** Tiền doanh thu ĐÃ IMPORT từng tháng — so với doanh thu đã ghi sổ để biết tháng nào còn treo. */
   const importedNetMonths = Array.from({ length: 12 }, () => 0);
   for (const row of revenueRows) {
@@ -373,18 +375,20 @@ export async function getPnlMatrix(year: string, branchCode: string) {
       branchBuckets[monthIndex].revenue += amount;
       const lineDept = line.departmentCode || UNASSIGNED_DEPARTMENT;
       bumpSeries(revenueByDepartment, lineDept, revenueDeptLabel(lineDept), monthIndex, amount);
+      // Cấu thành doanh thu tách từ CHÍNH các dòng Có 511 ở trên (đã làm tròn như sổ cái) — cộng lại
+      // đúng bằng dòng Doanh thu, không còn "Chênh với sổ cái" vài đồng (khách 21/10/2026).
+      if (line.categoryCode === REVENUE_SVC_CATEGORY_CODE) svcMonths[monthIndex] += amount;
+      else if (line.categoryCode === REVENUE_VAT_CATEGORY_CODE) vatMonths[monthIndex] += amount;
+      else if (line.categoryCode === REVENUE_ADJUST_CATEGORY_CODE) adjustMonths[monthIndex] += amount;
+      else {
+        // Doanh thu không thuộc Bếp/Bar trên khối "Doanh thu theo bộ phận" là phụ thu — chị Bình
+        // đặt tên dòng "DT Phụ Thu" (25/09/2026). Các bảng lương/ngân sách nhân sự giữ nhãn cũ.
+        bumpSeries(netRevenueByDepartment, lineDept, lineDept === UNASSIGNED_DEPARTMENT ? "DT Phụ Thu" : `DT ${revenueDeptLabel(lineDept)}`, monthIndex, amount);
+        const channel = (row.channel || "").trim() || "Chưa rõ kênh";
+        bumpSeries(netRevenueByChannel, channel.toUpperCase(), `DT ${channel}`, monthIndex, amount);
+      }
     }
     branchTotals.set(row.branchCode, branchBuckets);
-
-    const net = row.grossAmount - row.discountAmount;
-    const dept = row.departmentCode || UNASSIGNED_DEPARTMENT;
-    // Doanh thu không thuộc Bếp/Bar trên khối "Doanh thu theo bộ phận" là phụ thu — chị Bình
-    // đặt tên dòng "DT Phụ Thu" (25/09/2026). Các bảng lương/ngân sách nhân sự giữ nhãn cũ.
-    bumpSeries(netRevenueByDepartment, dept, dept === UNASSIGNED_DEPARTMENT ? "DT Phụ Thu" : `DT ${revenueDeptLabel(dept)}`, monthIndex, net);
-    const channel = (row.channel || "").trim() || "Chưa rõ kênh";
-    bumpSeries(netRevenueByChannel, channel.toUpperCase(), `DT ${channel}`, monthIndex, net);
-    svcMonths[monthIndex] += row.feeAmount;
-    vatMonths[monthIndex] += row.vatAmount;
   }
   // Doanh thu nhập tay (Bếp / Bar / Phụ thu, đã gồm SVC) của tháng trước khi lên phần mềm.
   for (const line of historyLines) {
@@ -392,15 +396,20 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     const monthIndex = months.indexOf(line.period);
     if (monthIndex < 0) continue;
     const amount = line.credit - line.debit;
-    tree.add({ account: { accountType: "REVENUE", reportGroup: "" }, pnlItemCode: null, categoryCode: revenueGroups.groupOf(line.revenueSample).code, debit: line.debit, credit: line.credit }, monthIndex);
+    tree.add({ account: { accountType: "REVENUE", reportGroup: "" }, pnlItemCode: null, categoryCode: line.revenueCategory || revenueGroups.groupOf(line.revenueSample).code, debit: line.debit, credit: line.credit }, monthIndex);
     totals[monthIndex].revenue += amount;
     const branchBuckets = branchTotals.get(line.branchCode) || months.map(() => emptyBucket());
     branchBuckets[monthIndex].revenue += amount;
     branchTotals.set(line.branchCode, branchBuckets);
     const dept = pnlHistoryRevenueDepartment(line.revenueKind) || UNASSIGNED_DEPARTMENT;
     bumpSeries(revenueByDepartment, dept, revenueDeptLabel(dept), monthIndex, amount);
-    bumpSeries(netRevenueByDepartment, dept, dept === UNASSIGNED_DEPARTMENT ? "DT Phụ Thu" : `DT ${revenueDeptLabel(dept)}`, monthIndex, amount);
-    bumpSeries(netRevenueByChannel, "SO_LIEU_NHAP_TAY", "DT nhập tay (trước khi lên phần mềm)", monthIndex, amount);
+    // SVC / thuế GTGT nhập tay đứng đúng dòng riêng như số từ file POS.
+    if (line.revenueCategory === REVENUE_SVC_CATEGORY_CODE) svcMonths[monthIndex] += amount;
+    else if (line.revenueCategory === REVENUE_VAT_CATEGORY_CODE) vatMonths[monthIndex] += amount;
+    else {
+      bumpSeries(netRevenueByDepartment, dept, dept === UNASSIGNED_DEPARTMENT ? "DT Phụ Thu" : `DT ${revenueDeptLabel(dept)}`, monthIndex, amount);
+      bumpSeries(netRevenueByChannel, "SO_LIEU_NHAP_TAY", "DT nhập tay (trước khi lên phần mềm)", monthIndex, amount);
+    }
   }
   const payrollBonusMonths = Array.from({ length: 12 }, () => 0);
   const payrollInsuranceMonths = Array.from({ length: 12 }, () => 0);
@@ -728,6 +737,7 @@ export async function getPnlMatrix(year: string, branchCode: string) {
       byChannel: sortedSeries(netRevenueByChannel),
       svc: svcMonths,
       vat: vatMonths,
+      adjust: adjustMonths,
     },
     /** Cấu phần chi phí nhân sự cho chart LƯƠNG (SVC & KPI, bảo hiểm). */
     payrollSplit: { bonus: payrollBonusMonths, insurance: payrollInsuranceMonths },
@@ -1077,7 +1087,7 @@ export async function getPnlHistoryEditor(year: string, branchCode: string) {
     groups: [{
       code: "REVENUE",
       name: "Doanh thu theo bộ phận",
-      items: PNL_HISTORY_REVENUE_KINDS.map((kind) => ({ metric: `${PNL_HISTORY_REVENUE_PREFIX}${kind.kind}`, name: revenueGroups.groupOf(kind.sample).name || kind.label })),
+      items: PNL_HISTORY_REVENUE_KINDS.map((kind) => ({ metric: `${PNL_HISTORY_REVENUE_PREFIX}${kind.kind}`, name: kind.category ? kind.label : revenueGroups.groupOf(kind.sample).name || kind.label })),
     }],
   }];
   for (const statement of PNL_STATEMENT_LINES) {
