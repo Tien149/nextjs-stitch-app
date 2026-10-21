@@ -339,6 +339,8 @@ export default function InventoryPage() {
   /** Đang sửa thẳng một dòng của bảng phiên bản (gồm mọi bản ghi cửa hàng gom chung dòng đó). Null = form tạo mới. */
   const [recipeEditing, setRecipeEditing] = useState<{ ids: string[]; label: string } | null>(null);
   const recipeFormRef = useRef<HTMLFormElement>(null);
+  /** Form định lượng chiếm cả chiều ngang (bảng nguyên liệu dạng Excel một dòng một mã). */
+  const [recipeWide, setRecipeWide] = useState(false);
   const [productionForm, setProductionForm] = useState({ productCode: "BTP_SOTCACHUA", productQuantity: "2", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HCM", referenceCode: "", note: "Che bien ban thanh pham" });
   /** Nút Rã nguyên liệu: rã doanh thu chờ (PENDING) theo định lượng, tự sinh phiếu chế biến + xuất bán. */
   /**
@@ -2797,13 +2799,17 @@ export default function InventoryPage() {
                 )}
               </Input>
               <Input label={active === "inbound" ? "Nhà cung cấp" : "Đối tác"}>
-                <select className="control" value={flowPartner} onChange={(e) => setFlowPartner(e.target.value)}>
-                  <option value="ALL">{active === "inbound" ? "Tất cả nhà cung cấp" : "Tất cả đối tác"}</option>
-                  {flowPartnerOptions.options.map((partner) => (
-                    <option key={partner.code} value={partner.code}>{partner.name}</option>
-                  ))}
-                  {flowPartnerOptions.hasBlank && <option value="NONE">(Phiếu chưa khai đối tác)</option>}
-                </select>
+                {/* Gõ tên / mã để tìm NCC (khách 21/10/2026: danh sách NCC dài, cuộn tìm cực). */}
+                <SearchableSelect
+                  value={flowPartner}
+                  onChange={(value) => setFlowPartner(value || "ALL")}
+                  searchPlaceholder={active === "inbound" ? "Gõ tên hoặc mã nhà cung cấp..." : "Gõ tên hoặc mã đối tác..."}
+                  options={[
+                    { value: "ALL", label: active === "inbound" ? "Tất cả nhà cung cấp" : "Tất cả đối tác" },
+                    ...flowPartnerOptions.options.map((partner) => ({ value: partner.code, label: partner.name, subLabel: partner.code })),
+                    ...(flowPartnerOptions.hasBlank ? [{ value: "NONE", label: "(Phiếu chưa khai đối tác)" }] : []),
+                  ]}
+                />
               </Input>
             </div>
             {showSaleLines ? (
@@ -3375,7 +3381,7 @@ export default function InventoryPage() {
       )}
 
       {active === "recipes" && recipeView === "recipes" && (
-        <div className="grid lg:grid-cols-[380px_1fr] gap-5">
+        <div className={`grid gap-5 ${recipeWide ? "" : "lg:grid-cols-[380px_1fr]"}`}>
           {(canCreate || recipeEditing) && (
             <form ref={recipeFormRef} onSubmit={(e) => { e.preventDefault(); void saveRecipe(); }} className={`bg-white border rounded-lg p-5 space-y-4 h-fit shadow-sm scroll-mt-4 ${recipeEditing ? "border-amber-300 ring-2 ring-amber-100" : "border-slate-200"}`}>
               <div className="flex items-start justify-between gap-2">
@@ -3457,65 +3463,102 @@ export default function InventoryPage() {
                 Định lượng khai cho <b>một mẻ</b> ĐVT chuẩn bị. Ví dụ BTP nấu mẻ 1kg (tồn kho gr) thì quy đổi = 1000. Món bán theo phần để trống (=1).
               </p>
               
-              <div className="space-y-4 border border-slate-100 rounded-lg p-3.5 bg-slate-50/50">
-                <div className="flex items-center justify-between border-b border-slate-200/60 pb-2">
-                  <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Thành phần nguyên liệu</h3>
-                  <button type="button" className="text-xs font-bold text-blue-600 hover:underline flex items-center gap-0.5" onClick={() => setRecipeRows([...recipeRows, { itemId: "", quantity: "1", unitCode: "", conversionRate: "", wasteRate: "0" }])}>
-                    <span className="material-symbols-outlined text-sm font-bold">add</span>Thêm dòng
+              {/* Bảng nguyên liệu kiểu Excel (khách 21/10/2026: công thức nhiều mã phải bấm Thêm ở trên rồi
+                  lăn xuống). Mỗi mã một dòng gọn; ô "Thêm nguyên liệu" ở CUỐI bảng gõ mã / tên rồi chọn là
+                  thêm dòng và nhảy vào ô định lượng. "Mở rộng" cho bảng chiếm cả chiều ngang. */}
+              <div className="border border-slate-200 rounded-lg bg-white">
+                <div className="flex items-center justify-between gap-2 border-b border-slate-200 px-3 py-2">
+                  <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Thành phần nguyên liệu ({recipeRows.filter((row) => row.itemId).length})</h3>
+                  <button type="button" className="hidden lg:flex text-xs font-bold text-blue-600 hover:underline items-center gap-0.5" onClick={() => setRecipeWide(!recipeWide)}>
+                    <span className="material-symbols-outlined text-sm">{recipeWide ? "close_fullscreen" : "open_in_full"}</span>{recipeWide ? "Thu gọn" : "Mở rộng"}
                   </button>
                 </div>
+                <div className={`hidden ${recipeWide ? "sm:grid" : ""} grid-cols-[1.75rem_minmax(0,1fr)_6rem_7rem_5rem_1.75rem] gap-2 px-3 py-1.5 bg-slate-50 text-[10px] font-bold uppercase text-slate-500`}>
+                  <span>#</span><span>Nguyên liệu</span><span className="text-right">Định lượng</span><span>ĐVT</span><span className="text-right">Hao hụt %</span><span />
+                </div>
+                <div className="divide-y divide-slate-100">
                 {recipeRows.map((row, index) => {
                   const rowItem = data.items.find((item) => item.id === row.itemId);
                   const rowUnits = rowItem?.unitConversions?.length ? rowItem.unitConversions : rowItem ? [{ id: "base", unitCode: rowItem.unit.toUpperCase(), unitName: rowItem.unit, conversionRate: 1, isDefaultPurchase: true }] : [];
+                  const update = (patch: Partial<typeof row>) => setRecipeRows(recipeRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, ...patch } : candidate));
                   return (
-                  <div key={index} className="bg-white border border-slate-200 rounded-xl p-3.5 space-y-3 relative shadow-sm">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Nguyên liệu #{index + 1}</span>
-                      {recipeRows.length > 1 && (
-                        <button type="button" className="text-xs font-bold text-rose-600 hover:text-rose-700 hover:underline flex items-center gap-0.5" onClick={() => setRecipeRows(recipeRows.filter((_, rowIndex) => rowIndex !== index))}>
-                          Xóa
-                        </button>
-                      )}
+                  <div key={index} className={`grid gap-x-2 gap-y-1.5 px-3 py-2 items-center ${recipeWide ? "grid-cols-[1.75rem_minmax(0,1fr)_6rem_7rem_5rem_1.75rem]" : "grid-cols-[1.25rem_minmax(0,1fr)_4.5rem_4.5rem_3.25rem_1.5rem]"}`}>
+                    <span className="text-[11px] font-bold text-slate-400 tabular-nums">{index + 1}</span>
+                    <div className={`min-w-0 ${recipeWide ? "" : "col-span-5"}`}>
+                      <ItemSelect items={data.items} value={row.itemId} nameOnly={!recipeWide} onChange={(itemId) => update({ itemId, unitCode: "", conversionRate: "" })} />
                     </div>
-
-                    <div className="flex flex-col gap-1">
-                      <span className="text-xs font-bold text-slate-600">Chọn nguyên liệu</span>
-                      <ItemSelect items={data.items} value={row.itemId} onChange={(itemId) => setRecipeRows(recipeRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, itemId, unitCode: "", conversionRate: "" } : candidate))} />
-                    </div>
-
-                    <div className="grid grid-cols-3 gap-3">
-                      <div className="flex flex-col gap-1">
-                        <span className="text-xs font-bold text-slate-600">Định lượng</span>
-                        <input type="number" step="0.001" className="control !mt-0" value={row.quantity} onChange={(e) => setRecipeRows(recipeRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, quantity: e.target.value } : candidate))} />
-                      </div>
-
-                      <div className="flex flex-col gap-1">
-                        <span className="text-xs font-bold text-slate-600">ĐVT</span>
-                        <select className="control !mt-0" value={row.unitCode} onChange={(e) => setRecipeRows(recipeRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, unitCode: e.target.value, conversionRate: "" } : candidate))}>
-                          <option value="">{rowItem ? `${rowItem.unit} (ĐVT tồn kho)` : "ĐVT tồn kho"}</option>
-                          {rowUnits.filter((unit) => unit.conversionRate !== 1).map((unit) => (
-                            <option key={unit.unitCode} value={unit.unitCode}>{unit.unitName || unit.unitCode}</option>
-                          ))}
-                          {/* ĐVT khai thẳng lúc import (không có trong danh mục quy đổi) vẫn phải hiện đúng khi Sửa / Sao chép. */}
-                          {row.unitCode && !rowUnits.some((unit) => unit.unitCode.toUpperCase() === row.unitCode.toUpperCase()) && (
-                            <option value={row.unitCode}>{row.unitCode}</option>
-                          )}
-                        </select>
-                        {row.conversionRate && (
-                          <small className="text-[10px] text-slate-500">× {row.conversionRate} {rowItem?.unit || ""}</small>
+                    {!recipeWide && <span />}
+                    <input
+                      data-recipe-qty={index}
+                      type="text"
+                      inputMode="decimal"
+                      aria-label={`Định lượng dòng ${index + 1}`}
+                      title="Định lượng"
+                      className="control !mt-0 !px-2 text-right"
+                      value={row.quantity}
+                      onChange={(e) => update({ quantity: e.target.value.replace(",", ".") })}
+                    />
+                    <div className="min-w-0">
+                      <select className="control !mt-0 !px-1.5 text-xs" title="ĐVT" value={row.unitCode} onChange={(e) => update({ unitCode: e.target.value, conversionRate: "" })}>
+                        <option value="">{rowItem ? rowItem.unit : "ĐVT tồn"}</option>
+                        {rowUnits.filter((unit) => unit.conversionRate !== 1).map((unit) => (
+                          <option key={unit.unitCode} value={unit.unitCode}>{unit.unitName || unit.unitCode}</option>
+                        ))}
+                        {/* ĐVT khai thẳng lúc import (không có trong danh mục quy đổi) vẫn phải hiện đúng khi Sửa / Sao chép. */}
+                        {row.unitCode && !rowUnits.some((unit) => unit.unitCode.toUpperCase() === row.unitCode.toUpperCase()) && (
+                          <option value={row.unitCode}>{row.unitCode}</option>
                         )}
-                      </div>
-
-                      <div className="flex flex-col gap-1">
-                        <span className="text-xs font-bold text-slate-600">Hao hụt (%)</span>
-                        <input type="number" step="0.1" className="control !mt-0" value={row.wasteRate} onChange={(e) => setRecipeRows(recipeRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, wasteRate: e.target.value } : candidate))} />
-                      </div>
+                      </select>
+                      {row.conversionRate && <small className="block text-[10px] text-slate-500">× {row.conversionRate} {rowItem?.unit || ""}</small>}
                     </div>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      aria-label={`Hao hụt dòng ${index + 1}`}
+                      title="Hao hụt (%)"
+                      className="control !mt-0 !px-2 text-right"
+                      value={row.wasteRate}
+                      onChange={(e) => update({ wasteRate: e.target.value.replace(",", ".") })}
+                    />
+                    <button
+                      type="button"
+                      title="Xoá dòng"
+                      disabled={recipeRows.length <= 1}
+                      className="grid place-items-center text-rose-500 hover:text-rose-700 disabled:opacity-30"
+                      onClick={() => setRecipeRows(recipeRows.filter((_, rowIndex) => rowIndex !== index))}
+                    >
+                      <span className="material-symbols-outlined text-base">close</span>
+                    </button>
                   </div>
                   );
                 })}
+                </div>
+                <div className="border-t border-slate-200 bg-slate-50/60 px-3 py-2.5 space-y-1">
+                  <span className="text-[11px] font-bold text-slate-600">Thêm nguyên liệu — gõ mã hoặc tên rồi chọn</span>
+                  <SearchableSelect
+                    value=""
+                    placeholder="+ Thêm nguyên liệu..."
+                    searchPlaceholder="Gõ mã hoặc tên nguyên liệu..."
+                    options={data.items.map((item) => ({ value: item.id, label: `${item.code} - ${item.name}`, subLabel: item.unit }))}
+                    onChange={(itemId) => {
+                      if (!itemId) return;
+                      // Dòng trống cuối bảng thì điền vào đó, không thì thêm dòng mới; rồi nhảy vào ô định lượng.
+                      const blankIndex = recipeRows.findIndex((row) => !row.itemId);
+                      const target = blankIndex >= 0 ? blankIndex : recipeRows.length;
+                      const next = blankIndex >= 0
+                        ? recipeRows.map((row, rowIndex) => rowIndex === blankIndex ? { ...row, itemId, unitCode: "", conversionRate: "", quantity: row.quantity || "1" } : row)
+                        : [...recipeRows, { itemId, quantity: "", unitCode: "", conversionRate: "", wasteRate: "0" }];
+                      setRecipeRows(next);
+                      window.setTimeout(() => {
+                        const input = document.querySelector<HTMLInputElement>(`[data-recipe-qty="${target}"]`);
+                        input?.focus();
+                        input?.select();
+                      }, 50);
+                    }}
+                  />
+                </div>
               </div>
-              
+
               <div className="flex gap-2">
                 <button className="primary-button flex-1">{recipeEditing ? "Lưu thay đổi" : "Lưu phiên bản"}</button>
                 {recipeEditing && (
