@@ -41,6 +41,8 @@ const STATUS_UI: Record<PeriodStatus["status"], { label: string; tone: string }>
 export default function MonthlyCostPanel({ headers, canApply, onApplied }: Props) {
   const [periods, setPeriods] = useState<PeriodStatus[]>([]);
   const [fromPeriod, setFromPeriod] = useState("");
+  /** Tính TỪNG THÁNG (khách 21/10/2026): mặc định Đến tháng = Từ tháng; chọn xa hơn để tính nối nhiều tháng. */
+  const [toPeriod, setToPeriod] = useState("");
   const [report, setReport] = useState<Report | null>(null);
   const [busy, setBusy] = useState<"" | "status" | "preview" | "apply">("status");
   const [error, setError] = useState("");
@@ -77,7 +79,7 @@ export default function MonthlyCostPanel({ headers, canApply, onApplied }: Props
       const response = await fetch("/api/inventory/monthly-cost", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...headers() },
-        body: JSON.stringify({ action, fromPeriod }),
+        body: JSON.stringify({ action, fromPeriod, toPeriod: toPeriod || fromPeriod }),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -105,7 +107,7 @@ export default function MonthlyCostPanel({ headers, canApply, onApplied }: Props
   }, [report]);
   const settled = report?.changedTransfers.filter((row) => row.settledDebt) || [];
   const blocked = Boolean(report?.locked) || settled.length > 0;
-  const previewMatches = report && report.fromPeriod === fromPeriod;
+  const previewMatches = report && report.fromPeriod === fromPeriod && report.toPeriod === (toPeriod || fromPeriod);
 
   return (
     <section className="bg-white border border-emerald-200 rounded-lg p-5 shadow-sm mb-5 space-y-4">
@@ -123,9 +125,15 @@ export default function MonthlyCostPanel({ headers, canApply, onApplied }: Props
         </div>
         <div className="flex flex-wrap items-end gap-2">
           <label className="text-xs font-bold text-slate-600">
-            Tính lại từ tháng
-            <select className="control mt-1 block" value={fromPeriod} onChange={(e) => { setFromPeriod(e.target.value); setReport(null); }} disabled={busy !== ""}>
+            Từ tháng
+            <select className="control mt-1 block" value={fromPeriod} onChange={(e) => { setFromPeriod(e.target.value); setToPeriod(e.target.value); setReport(null); }} disabled={busy !== ""}>
               {periods.map((row) => <option key={row.period} value={row.period}>{monthLabel(row.period)} — {STATUS_UI[row.status].label}</option>)}
+            </select>
+          </label>
+          <label className="text-xs font-bold text-slate-600">
+            Đến tháng
+            <select className="control mt-1 block" value={toPeriod || fromPeriod} onChange={(e) => { setToPeriod(e.target.value); setReport(null); }} disabled={busy !== "" || !fromPeriod}>
+              {periods.filter((row) => row.period >= fromPeriod).map((row) => <option key={row.period} value={row.period}>{monthLabel(row.period)}</option>)}
             </select>
           </label>
           <button type="button" className="secondary-button" disabled={busy !== "" || !fromPeriod} onClick={() => void run("PREVIEW")}>

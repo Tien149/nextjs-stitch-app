@@ -6,7 +6,7 @@ import { resyncOpenStocktakes } from "@/lib/stocktake-resync";
 
 /**
  * Tính giá vốn bình quân cả tháng theo từng kho — xem lib/inventory-monthly-cost-db.ts.
- * GET trạng thái từng tháng · POST { action: "PREVIEW" | "APPLY", fromPeriod }.
+ * GET trạng thái từng tháng · POST { action: "PREVIEW" | "APPLY", fromPeriod, toPeriod? }.
  * Chạy thử ai mở được Kho cũng xem được; ghi thật là việc của kế toán (quyền Duyệt ở Kho).
  */
 const menuHref = "/inventory";
@@ -29,11 +29,12 @@ export async function POST(request: Request) {
   const auth = action === "APPLY" ? requireMenuAction(request, menuHref, "approve") : requireMenuAccess(request, menuHref);
   if (!auth.ok) return auth.response;
   const fromPeriod = typeof body.fromPeriod === "string" && body.fromPeriod ? body.fromPeriod : null;
+  const toPeriod = typeof body.toPeriod === "string" && body.toPeriod ? body.toPeriod : null;
   try {
     if (action === "APPLY") {
       // Chênh lệch kiểm kê chưa chốt đi theo sổ mới nhất trước khi tính giá tháng (khách 21/10/2026).
       await resyncOpenStocktakes({}, auth.session.name).catch((error) => console.error("Đồng bộ chênh lệch kiểm kê lỗi:", error));
-      const outcome = await applyMonthlyCost(fromPeriod, auth.session.name);
+      const outcome = await applyMonthlyCost(fromPeriod, auth.session.name, toPeriod);
       await writeAuditLog({
         session: auth.session, module: menuHref, action: "RUN_MONTHLY_COST", entityType: "InventoryCostingRun", entityId: outcome.runId,
         entityCode: `${outcome.report.fromPeriod}..${outcome.report.toPeriod}`,
@@ -42,7 +43,7 @@ export async function POST(request: Request) {
       const status = await monthlyCostStatus();
       return NextResponse.json({ report: outcome.report, reposted: outcome.reposted, periods: status.periods, earliestPending: status.earliestPending });
     }
-    const preview = await previewMonthlyCost(fromPeriod);
+    const preview = await previewMonthlyCost(fromPeriod, toPeriod);
     return NextResponse.json({ report: preview.report, periods: preview.status });
   } catch (error) {
     if (error instanceof MonthlyCostError) return NextResponse.json({ error: error.message }, { status: 409 });

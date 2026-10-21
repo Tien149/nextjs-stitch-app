@@ -136,14 +136,18 @@ export async function monthlyCostStatus(client: Client = prisma) {
   const last = [currentVnPeriod(), ...fingerprints.keys()].sort().at(-1) || currentVnPeriod();
   const periods: MonthlyCostPeriodStatus[] = [];
   let broken = false;
+  // Tính từng tháng (khách 21/10/2026): tháng trước được tính lại SAU lần tính tháng này thì tồn đầu
+  // tháng này đã đổi — tháng này cũng phải tính lại dù phiếu không đổi.
+  let latestEarlierRun = 0;
   for (const period of periodRange(first, last)) {
     const run = runs.find((row) => row.fromPeriod <= period && row.toPeriod >= period);
     const stored = run ? (JSON.parse(run.fingerprintsJson) as Record<string, string>)[period] || "" : null;
     let status: MonthlyCostPeriodStatus["status"];
     if (!run) status = "NEVER";
     else if (stored !== (fingerprints.get(period) || "")) status = "STALE";
-    else status = broken ? "STALE_EARLIER" : "OK";
+    else status = broken || run.createdAt.getTime() < latestEarlierRun ? "STALE_EARLIER" : "OK";
     if (status !== "OK") broken = true;
+    if (run) latestEarlierRun = Math.max(latestEarlierRun, run.createdAt.getTime());
     periods.push({ period, status, computedAt: run ? run.createdAt.toISOString() : null, computedBy: run?.createdBy || null });
   }
   return { periods, earliestPending: periods.find((row) => row.status !== "OK")?.period || null, fingerprints };
@@ -290,21 +294,30 @@ async function blockers(client: Client, source: MonthlyCostSource, fromPeriod: s
   }
 }
 
-function resolveRange(source: MonthlyCostSource, requested: string | null | undefined, earliestPending: string | null) {
+/**
+ * Khoảng tháng tính giá. `requestedTo` (khách 21/10/2026: "tính từng tháng") giới hạn tới tháng đó —
+ * các tháng sau giữ giá cũ / tạm tính và báo Cần tính lại cho tới khi tính tiếp. Bỏ trống = tới
+ * tháng mới nhất như trước.
+ */
+function resolveRange(source: MonthlyCostSource, requested: string | null | undefined, earliestPending: string | null, requestedTo?: string | null) {
   const lastDoc = source.documents.map((doc) => vnPeriodOf(doc.transactionDate)).sort().at(-1) || source.openingPeriod;
-  const toPeriod = [currentVnPeriod(), lastDoc].sort().at(-1) || currentVnPeriod();
-  const fromPeriod = String(requested || earliestPending || toPeriod).slice(0, 7);
+  const lastPeriod = [currentVnPeriod(), lastDoc].sort().at(-1) || currentVnPeriod();
+  const fromPeriod = String(requested || earliestPending || lastPeriod).slice(0, 7);
   if (!/^\d{4}-\d{2}$/.test(fromPeriod)) throw new MonthlyCostError("Tháng bắt đầu không hợp lệ (YYYY-MM)");
   if (fromPeriod < source.openingPeriod) throw new MonthlyCostError(`Chỉ tính được từ kỳ đầu kỳ tồn kho ${source.openingPeriod}`);
-  if (fromPeriod > toPeriod) throw new MonthlyCostError(`Tháng bắt đầu sau tháng hiện tại ${toPeriod}`);
-  return { fromPeriod, toPeriod };
+  if (fromPeriod > lastPeriod) throw new MonthlyCostError(`Tháng bắt đầu sau tháng hiện tại ${lastPeriod}`);
+  const to = String(requestedTo || "").slice(0, 7);
+  if (to && !/^\d{4}-\d{2}$/.test(to)) throw new MonthlyCostError("Tháng kết thúc không hợp lệ (YYYY-MM)");
+  if (to && to < fromPeriod) throw new MonthlyCostError("Đến tháng phải từ tháng bắt đầu trở đi");
+  const toPeriod = to && to < lastPeriod ? to : lastPeriod;
+  return { fromPeriod, toPeriod, lastPeriod };
 }
 
 /** CHẠY THỬ: tính + so sánh, không ghi gì. */
-export async function previewMonthlyCost(requestedFrom?: string | null) {
+export async function previewMonthlyCost(requestedFrom?: string | null, requestedTo?: string | null) {
   const status = await monthlyCostStatus();
   const source = await loadMonthlyCostSource();
-  const { fromPeriod, toPeriod } = resolveRange(source, requestedFrom, status.earliestPending);
+  const { fromPeriod, toPeriod } = resolveRange(source, requestedFrom, status.earliestPending, requestedTo);
   const result = computeMonthlyCosts({ items: source.items, opening: source.opening, openingPeriod: source.openingPeriod, documents: source.documents, toPeriod });
   const analysis = analyse(source, result, fromPeriod, toPeriod);
   await blockers(prisma, source, fromPeriod, toPeriod, analysis);
@@ -314,13 +327,13 @@ export async function previewMonthlyCost(requestedFrom?: string | null) {
 const chunk = <T,>(rows: T[], size: number) => Array.from({ length: Math.ceil(rows.length / size) }, (_, index) => rows.slice(index * size, (index + 1) * size));
 
 /** GHI THẬT từ `requestedFrom` (mặc định tháng sớm nhất cần tính) tới tháng hiện tại. */
-export async function applyMonthlyCost(requestedFrom: string | null | undefined, actor: string) {
+export async function applyMonthlyCost(requestedFrom: string | null | undefined, actor: string, requestedTo?: string | null) {
   const outcome = await prisma.$transaction(async (tx) => {
     // Hai người bấm cùng lúc thì người sau chờ người trước xong.
     await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtext(${LOCK_KEY}))`);
     const status = await monthlyCostStatus(tx);
     const source = await loadMonthlyCostSource(tx);
-    const { fromPeriod, toPeriod } = resolveRange(source, requestedFrom, status.earliestPending);
+    const { fromPeriod, toPeriod, lastPeriod } = resolveRange(source, requestedFrom, status.earliestPending, requestedTo);
     const result = computeMonthlyCosts({ items: source.items, opening: source.opening, openingPeriod: source.openingPeriod, documents: source.documents, toPeriod });
     const analysis = analyse(source, result, fromPeriod, toPeriod);
     await blockers(tx, source, fromPeriod, toPeriod, analysis);
@@ -355,7 +368,8 @@ export async function applyMonthlyCost(requestedFrom: string | null | undefined,
       await tx.inventoryMonthlyCost.createMany({ data: rows.map((key) => ({ ...key, runId: run.id })) });
     }
     // Giá bình quân tồn hiện tại = giá tháng mới nhất: phiếu lập sau đó (giá tạm tính) bắt đầu từ giá đúng.
-    const latest = result.keys.filter((key) => key.period === toPeriod && key.averageCost > 0);
+    // Tính dừng ở tháng cũ (từng tháng) thì không đụng giá tồn hiện tại.
+    const latest = toPeriod === lastPeriod ? result.keys.filter((key) => key.period === toPeriod && key.averageCost > 0) : [];
     for (const rows of chunk(latest, 500)) {
       await tx.$executeRaw(Prisma.sql`
         UPDATE "InventoryBalance" AS b SET "averageCost" = v.a, "updatedAt" = NOW()
