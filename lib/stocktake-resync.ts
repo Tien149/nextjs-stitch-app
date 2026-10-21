@@ -4,7 +4,7 @@ import { latestKnownUnitCost, postInventoryTransaction, reverseStockEffect } fro
 import { netMovementsAfter } from "@/lib/stocktake-batch";
 import { EXPLOSION_PENDING } from "@/lib/explosion-sources";
 import { STOCKTAKE_APPROVED } from "@/lib/stocktake-status";
-import { EXPLANATION_DRAFT, EXPLANATION_LOCKED, snapshotExplanation, type ExplanationLine } from "@/lib/stocktake-explanation";
+import { EXPLANATION_DRAFT, EXPLANATION_LOCKED, snapshotExplanation, warehouseStockAtCutoff, type ExplanationLine } from "@/lib/stocktake-explanation";
 
 /**
  * Chênh lệch kiểm kê CHỈ GHI NHẬN KHI CHỐT GIẢI TRÌNH (khách chốt 21/10/2026: "Duyệt là duyệt số
@@ -143,6 +143,23 @@ export async function postStocktakeAdjustments(sessionId: string, actor: string)
         inbound.push({ itemId: line.itemId, inputQuantity: adjustment, inputUnitCode: line.item.unit, inputUnitCost: unitCost });
       } else if (adjustment < -EPS) {
         outbound.push({ itemId: line.itemId, inputQuantity: -adjustment, inputUnitCode: line.item.unit, inputUnitCost: 0 });
+      }
+    }
+    // Mã kho có mà phiếu KHÔNG đếm = kiểm 0 (khách 21/10/2026, CLKK tổng thể): đưa tồn tại giờ chốt
+    // về 0 — tồn dương xuất kiểm kê, tồn âm nhập kiểm kê. Số dư đã gỡ phiếu cũ của chính phiếu ở trên.
+    const countedIds = new Set(session!.lines.map((line) => line.itemId));
+    const uncounted = [...(await warehouseStockAtCutoff(db, session!.warehouseCode, session!.stocktakeDate))]
+      .filter(([itemId, row]) => !countedIds.has(itemId) && Math.abs(row.quantity) > EPS);
+    if (uncounted.length > 0) {
+      const units = new Map((await tx.inventoryItem.findMany({ where: { id: { in: uncounted.map(([itemId]) => itemId) } }, select: { id: true, unit: true } })).map((item) => [item.id, item.unit]));
+      for (const [itemId, row] of uncounted) {
+        if (row.quantity > 0) {
+          outbound.push({ itemId, inputQuantity: row.quantity, inputUnitCode: units.get(itemId) || "", inputUnitCost: 0 });
+        } else {
+          let unitCost = row.averageCost;
+          if (!(unitCost > 0)) unitCost = await latestKnownUnitCost(db, itemId, session!.warehouseCode);
+          inbound.push({ itemId, inputQuantity: -row.quantity, inputUnitCode: units.get(itemId) || "", inputUnitCost: unitCost });
+        }
       }
     }
     const freeCode = async (prefix: string) => {

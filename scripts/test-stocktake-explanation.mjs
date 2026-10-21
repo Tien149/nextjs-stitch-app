@@ -60,3 +60,11 @@ test("mã kho có mà phiếu không đếm: vẫn lên giải trình, không ch
   assert.equal(line.variance, 0);
   assert.equal(line.varianceValue, 0);
 });
+
+test("phiếu kiểm cả kho: mã không đếm tính kiểm 0, chênh lệch = −tồn", () => {
+  const [line] = buildExplanationLines([{ ...count("y", 80, 0), notCounted: true, countAsZero: true }], []);
+  assert.equal(line.countAsZero, true);
+  assert.equal(line.counted, 0);
+  assert.equal(line.variance, -80);
+  assert.equal(line.varianceValue, -800);
+});

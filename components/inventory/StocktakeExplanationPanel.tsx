@@ -35,8 +35,10 @@ type Line = {
   opening: number; inPurchase: number; inTransfer: number; inOther: number; inProduction: number; inTotal: number;
   outSale: number; outTransfer: number; outWaste: number; outOther: number; outProduction: number; outTotal: number;
   closing: number; counted: number; variance: number; unitCost: number; varianceValue: number; explanation: string;
-  /** Mã kho có mà phiếu không đếm — lên để tổng khớp tồn cả kho, không chênh lệch. */
+  /** Mã kho có mà phiếu không đếm — lên để tổng khớp tồn cả kho. Phiếu kiểm cả kho: tính kiểm 0
+   * (countAsZero, có chênh lệch, Chốt ghi luôn); đợt theo vị trí: chỉ liệt kê. */
   notCounted?: boolean;
+  countAsZero?: boolean;
 };
 type Explanation = {
   id: string; sourceType: string; sourceId: string; sourceCode: string; branchCode: string; warehouseCode: string;
@@ -244,7 +246,7 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
       second,
       ...visibleLines.map((line, index) => [
         index + 1, explanation.warehouseCode, line.goodsGroup || "", line.itemCode, line.itemName, line.unit,
-        ...NUMBER_COLUMNS.map(([key]) => (line.notCounted && (key === "counted" || key === "variance") ? (key === "counted" ? "Không kiểm" : "") : line[key] as number)),
+        ...NUMBER_COLUMNS.map(([key]) => (line.notCounted && !line.countAsZero && (key === "counted" || key === "variance") ? (key === "counted" ? "Không kiểm" : "") : line[key] as number)),
         Math.abs(line.variance) > 1e-6 ? Math.round(unitCostOf(line)) : "",
         Math.abs(line.variance) > 1e-6 ? varianceValueOf(line) : "",
         notes[line.itemId] ?? line.explanation ?? "",
@@ -462,7 +464,7 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
             <label className="flex items-center gap-2 pb-2 text-xs font-bold text-slate-600">
               <input type="checkbox" checked={lineFilter.onlyVariance} onChange={(e) => setLineFilter({ ...lineFilter, onlyVariance: e.target.checked })} />Chỉ dòng có chênh lệch
             </label>
-            <label className="flex items-center gap-2 pb-2 text-xs font-bold text-slate-600" title="Giải trình gồm mọi mã của kho; mã phiếu không đếm ghi 'Không kiểm', không có chênh lệch">
+            <label className="flex items-center gap-2 pb-2 text-xs font-bold text-slate-600" title="Giải trình gồm mọi mã của kho; mã phiếu không đếm tính số kiểm = 0">
               <input type="checkbox" checked={lineFilter.onlyCounted} onChange={(e) => setLineFilter({ ...lineFilter, onlyCounted: e.target.checked })} />Chỉ mã trong phiếu kiểm
             </label>
             <p className="pb-2 text-xs text-slate-500">Đang hiện <b>{visibleLines.length}</b> / {explanation.lines.length} mã</p>
@@ -505,9 +507,10 @@ export default function StocktakeExplanationPanel({ sessionKey, branchOptions, w
                         const strong = key === "inTotal" || key === "outTotal" || key === "closing" || key === "counted";
                         return (
                           <td key={key} className={`cell text-right tabular-nums whitespace-nowrap ${strong ? "font-bold" : ""} ${key === "variance" ? tone : ""} ${group ? "" : "bg-slate-50/50"}`}>
-                            {line.notCounted && (key === "counted" || key === "variance")
+                            {line.notCounted && !line.countAsZero && (key === "counted" || key === "variance")
                               ? (key === "counted" ? <span className="text-xs font-normal text-slate-400">Không kiểm</span> : <span className="text-slate-300">-</span>)
                               : Math.abs(value) <= 1e-9 && group ? <span className="text-slate-300">-</span> : qty(value)}
+                            {line.countAsZero && key === "counted" && <small className="block text-[10px] font-normal text-slate-400">không đếm = 0</small>}
                           </td>
                         );
                       })}

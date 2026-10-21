@@ -11,12 +11,25 @@ import { postInventoryTransaction } from "../lib/inventory-stock.ts";
 import { postStocktakeAdjustments, resyncStocktake, unpostStocktakeAdjustments } from "../lib/stocktake-resync.ts";
 
 const ITEM = "TEST-RESYNC-NVL";
-const WH = "KHO_HCM";
+// Kho riêng của test: Chốt đưa mọi mã KHÔNG đếm về 0, dùng kho demo là đụng tồn mẫu.
+const WH = "KHO_TEST_RESYNC";
+const ITEM2 = "TEST-RESYNC-KHONG-DEM";
 const BRANCH = "HCM";
 const KK = "KK-TEST-RESYNC";
 const at = (day) => new Date(`2033-01-${day}T10:00:00+07:00`);
 
 async function cleanup() {
+  const other = await prisma.inventoryItem.findFirst({ where: { code: ITEM2, deletedAt: undefined } });
+  if (other) {
+    const lines = await prisma.inventoryTransactionLine.findMany({ where: { itemId: other.id }, select: { transactionId: true } });
+    const ids = [...new Set(lines.map((line) => line.transactionId))];
+    await prisma.$executeRaw`DELETE FROM "JournalLine" WHERE "entryId" IN (SELECT id FROM "JournalEntry" WHERE "sourceId" = ANY(${ids}))`;
+    await prisma.$executeRaw`DELETE FROM "JournalEntry" WHERE "sourceId" = ANY(${ids})`;
+    await prisma.$executeRaw`DELETE FROM "InventoryTransactionLine" WHERE "transactionId" = ANY(${ids})`;
+    await prisma.$executeRaw`DELETE FROM "InventoryTransaction" WHERE id = ANY(${ids})`;
+    await prisma.$executeRaw`DELETE FROM "InventoryBalance" WHERE "itemId" = ${other.id}`;
+    await prisma.$executeRaw`DELETE FROM "InventoryItem" WHERE id = ${other.id}`;
+  }
   const item = await prisma.inventoryItem.findFirst({ where: { code: ITEM, deletedAt: undefined } });
   if (item) {
     const lines = await prisma.inventoryTransactionLine.findMany({ where: { itemId: item.id }, select: { transactionId: true } });
@@ -76,11 +89,19 @@ test("chênh lệch kiểm kê: số sống trước khi chốt, chốt mới gh
   assert.equal(line.systemQuantity, 70);
 
   // Chốt: ghi xuất kiểm kê 10 -> tồn tại giờ chốt = 60, hiện tại = 55.
+  // Mã có tồn trong kho nhưng phiếu không đếm = kiểm 0 → Chốt xuất kiểm kê hết (khách 21/10/2026).
+  const other = await prisma.inventoryItem.create({ data: { code: ITEM2, name: "NVL không đếm", unit: "GR", itemType: "RAW_MATERIAL" } });
+  await post("TEST-RS-M2", "NHAP_MUA", "02", 50, { itemId: other.id, unitCost: 500 });
+
   const posted = await postStocktakeAdjustments(session.id, "test");
   assert.equal(posted.documents.length, 1);
-  const adjustments = await prisma.inventoryTransaction.findMany({ where: { referenceType: "STOCKTAKE", referenceId: session.id }, include: { lines: true } });
-  assert.deepEqual(adjustments.map((doc) => [doc.transactionType, doc.lines[0].quantity]), [["XUAT_KIEM_KE", 10]]);
+  const adjustments = await prisma.inventoryTransaction.findMany({ where: { referenceType: "STOCKTAKE", referenceId: session.id, deletedAt: null }, include: { lines: true } });
+  assert.deepEqual(
+    adjustments.flatMap((doc) => doc.lines.map((line) => [doc.transactionType, line.itemId === item.id ? "counted" : "uncounted", line.quantity])).sort(),
+    [["XUAT_KIEM_KE", "counted", 10], ["XUAT_KIEM_KE", "uncounted", 50]],
+  );
   assert.equal(await balanceQty(item.id), 55);
+  assert.equal(await balanceQty(other.id), 0);
 
   // Giải trình đã chốt: đồng bộ không đụng.
   await prisma.stocktakeExplanation.create({ data: { sourceType: "SESSION", sourceId: session.id, sourceCode: KK, branchCode: BRANCH, warehouseCode: WH, periodTo: at("05"), status: "LOCKED", lines: [] } });
@@ -90,4 +111,5 @@ test("chênh lệch kiểm kê: số sống trước khi chốt, chốt mới gh
   const unposted = await unpostStocktakeAdjustments(session.id, "test");
   assert.equal(unposted.changed, true);
   assert.equal(await balanceQty(item.id), 65);
+  assert.equal(await balanceQty(other.id), 50);
 });

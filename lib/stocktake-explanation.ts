@@ -66,8 +66,11 @@ export type ExplanationLine = {
   varianceValue: number;
   explanation: string;
   /** Mã có tồn / phát sinh trong kho nhưng KHÔNG nằm trong phiếu kiểm (khách 21/10/2026: giải trình
-   * gồm mọi mã của kho để tổng khớp Nhập - Xuất - Tồn). Không kiểm = không chênh lệch, không ghi phiếu. */
+   * gồm mọi mã của kho để tổng khớp Nhập - Xuất - Tồn). Phiếu kiểm cả kho: không đếm = SỐ KIỂM 0, chênh
+   * lệch = −tồn và Chốt ghi luôn (khách chốt "không đếm là bằng 0" để ra CLKK tổng thể). Đợt theo vị
+   * trí: chỉ liệt kê, không chênh lệch. */
   notCounted?: boolean;
+  countAsZero?: boolean;
 };
 
 /** Một dòng phát sinh gom theo mặt hàng × loại phiếu (incoming = điều chuyển VÀO kho này). */
@@ -77,6 +80,8 @@ export type StockCountLine = {
   itemId: string; itemCode: string; itemName: string; goodsGroup: string | null; unit: string;
   closing: number; counted: number; unitCost: number;
   notCounted?: boolean;
+  /** Không đếm tính là kiểm 0 (phiếu kiểm cả kho). */
+  countAsZero?: boolean;
 };
 
 const round = (value: number) => Math.round(value * 1e6) / 1e6;
@@ -108,7 +113,7 @@ export function buildExplanationLines(
     }
     const inTotal = sums.inPurchase + sums.inTransfer + sums.inOther + sums.inProduction;
     const outTotal = sums.outSale + sums.outTransfer + sums.outWaste + sums.outOther + sums.outProduction;
-    const variance = line.notCounted ? 0 : line.counted - line.closing;
+    const variance = line.notCounted && !line.countAsZero ? 0 : line.counted - line.closing;
     return {
       itemId: line.itemId,
       itemCode: line.itemCode,
@@ -134,6 +139,7 @@ export function buildExplanationLines(
       varianceValue: Math.round(variance * line.unitCost),
       explanation: previousNotes.get(line.itemId) || "",
       ...(line.notCounted ? { notCounted: true } : {}),
+      ...(line.countAsZero ? { countAsZero: true } : {}),
     };
   }).sort((a, b) =>
     // Theo nhóm hàng hóa (mã chưa có nhóm xuống cuối) rồi theo mã — giải trình đi theo nhóm.
@@ -336,13 +342,40 @@ export async function loadPeriodMovements(db: TxClient, warehouseCode: string, f
 }
 
 /**
- * Mã của kho KHÔNG có trong phiếu kiểm: còn tồn tại giờ chốt hoặc có phát sinh trong kỳ. Tồn cuối =
- * tồn hiện tại − phát sinh sau giờ chốt (cùng cách Nhập - Xuất - Tồn lùi tồn).
+ * Tồn tại giờ chốt của MỌI mã trong kho (tồn hiện tại − phát sinh sau giờ chốt, cùng cách Nhập -
+ * Xuất - Tồn lùi tồn), bỏ phần điều chỉnh kiểm kê của chính phiếu `ownSourceId` nếu có.
  */
-async function loadUncountedLines(db: TxClient, warehouseCode: string, from: Date | null, to: Date, countedIds: Set<string>): Promise<StockCountLine[]> {
-  const [balances, laterNet, moved] = await Promise.all([
-    db.inventoryBalance.findMany({ where: { warehouseCode }, select: { itemId: true, quantity: true } }),
-    netMovementsAfter(db as unknown as Parameters<typeof netMovementsAfter>[0], warehouseCode, to),
+export async function warehouseStockAtCutoff(db: TxClient, warehouseCode: string, cutoffAt: Date, ownSourceId?: string | null) {
+  const [balances, laterNet, own] = await Promise.all([
+    db.inventoryBalance.findMany({ where: { warehouseCode }, select: { itemId: true, quantity: true, averageCost: true } }),
+    netMovementsAfter(db as unknown as Parameters<typeof netMovementsAfter>[0], warehouseCode, cutoffAt),
+    ownSourceId
+      ? db.$queryRaw<Array<{ itemId: string; net: number }>>(Prisma.sql`
+          SELECT l."itemId", SUM(CASE WHEN t."transactionType" LIKE 'NHAP_%' THEN l."quantity" ELSE -l."quantity" END)::float8 AS net
+          FROM "InventoryTransactionLine" l
+          JOIN "InventoryTransaction" t ON t."id" = l."transactionId"
+          WHERE t."deletedAt" IS NULL AND t."referenceType" = 'STOCKTAKE' AND t."referenceId" = ${ownSourceId}
+          GROUP BY 1
+        `)
+      : Promise.resolve([] as Array<{ itemId: string; net: number }>),
+  ]);
+  const ownNet = new Map(own.map((row) => [row.itemId, row.net]));
+  const stock = new Map<string, { quantity: number; averageCost: number }>();
+  for (const balance of balances) {
+    stock.set(balance.itemId, { quantity: balance.quantity - (laterNet.get(balance.itemId) || 0) - (ownNet.get(balance.itemId) || 0), averageCost: balance.averageCost });
+  }
+  for (const [itemId, net] of laterNet) if (!stock.has(itemId)) stock.set(itemId, { quantity: -net - (ownNet.get(itemId) || 0), averageCost: 0 });
+  return stock;
+}
+
+/** Mã của kho KHÔNG có trong phiếu kiểm: còn tồn tại giờ chốt hoặc có phát sinh trong kỳ. */
+async function loadUncountedLines(
+  db: TxClient,
+  input: { warehouseCode: string; from: Date | null; to: Date; countedIds: Set<string>; ownSourceId: string | null; countAsZero: boolean },
+): Promise<StockCountLine[]> {
+  const { warehouseCode, from, to, countedIds } = input;
+  const [stock, moved] = await Promise.all([
+    warehouseStockAtCutoff(db, warehouseCode, to, input.ownSourceId),
     db.$queryRaw<Array<{ itemId: string }>>(Prisma.sql`
       SELECT DISTINCT l."itemId"
       FROM "InventoryTransactionLine" l
@@ -353,9 +386,7 @@ async function loadUncountedLines(db: TxClient, warehouseCode: string, from: Dat
         ${from ? Prisma.sql`AND t."transactionDate" > ${from}` : Prisma.empty}
     `),
   ]);
-  const closing = new Map<string, number>();
-  for (const balance of balances) closing.set(balance.itemId, balance.quantity - (laterNet.get(balance.itemId) || 0));
-  for (const [itemId, net] of laterNet) if (!closing.has(itemId)) closing.set(itemId, -net);
+  const closing = new Map([...stock].map(([itemId, row]) => [itemId, row.quantity]));
   const movedIds = new Set(moved.map((row) => row.itemId));
   const ids = [...new Set([...closing.keys(), ...movedIds])]
     .filter((itemId) => !countedIds.has(itemId) && (movedIds.has(itemId) || Math.abs(closing.get(itemId) || 0) > 1e-6));
@@ -363,7 +394,7 @@ async function loadUncountedLines(db: TxClient, warehouseCode: string, from: Dat
   const items = await db.inventoryItem.findMany({ where: { id: { in: ids } }, select: { id: true, code: true, name: true, unit: true, goodsGroup: true } });
   return items.map((item) => ({
     itemId: item.id, itemCode: item.code, itemName: item.name, goodsGroup: item.goodsGroup, unit: item.unit,
-    closing: closing.get(item.id) || 0, counted: 0, unitCost: 0, notCounted: true,
+    closing: closing.get(item.id) || 0, counted: 0, unitCost: 0, notCounted: true, countAsZero: input.countAsZero,
   }));
 }
 
@@ -374,7 +405,13 @@ export async function snapshotExplanation(db: TxClient, sourceType: StocktakeSou
   if (source.status !== STOCKTAKE_APPROVED) throw new Error(`BUSINESS:Đợt ${source.code} chưa duyệt (hoặc đã mở lại) — duyệt xong mới lập / cập nhật giải trình được.`);
   const periodFrom = await previousCutoffOf(db, source.warehouseCode, source.cutoffAt);
   // Gồm cả mã kho có mà phiếu không đếm, để tổng giải trình = tồn của cả kho.
-  const uncounted = await loadUncountedLines(db, source.warehouseCode, periodFrom, source.cutoffAt, new Set(source.countLines.map((line) => line.itemId)));
+  const uncounted = await loadUncountedLines(db, {
+    warehouseCode: source.warehouseCode, from: periodFrom, to: source.cutoffAt,
+    countedIds: new Set(source.countLines.map((line) => line.itemId)),
+    // Phiếu kiểm cả kho: không đếm = kiểm 0 (Chốt ghi luôn). Đợt theo vị trí đã ghi lúc duyệt gộp → chỉ liệt kê.
+    ownSourceId: sourceType === "SESSION" ? sourceId : null,
+    countAsZero: sourceType === "SESSION",
+  });
   const allLines = [...source.countLines, ...uncounted];
   const movements = await loadPeriodMovements(db, source.warehouseCode, periodFrom, source.cutoffAt, allLines.map((line) => line.itemId));
   return {
