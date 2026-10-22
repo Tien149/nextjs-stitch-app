@@ -61,6 +61,8 @@ test("số P&L nhập tay trước khi lên phần mềm", async (t) => {
     data: [
       { period: PERIOD, branchCode: BRANCH, metric: "revenue:FOOD", amount: 100_000_000 },
       { period: PERIOD, branchCode: BRANCH, metric: "revenue:DRINK", amount: 40_000_000 },
+      { period: PERIOD, branchCode: BRANCH, metric: "channel:TẠI CHỖ", amount: 120_000_000 },
+      { period: PERIOD, branchCode: BRANCH, metric: "channel:GRAB", amount: 15_000_000 },
       { period: PERIOD, branchCode: BRANCH, metric: `pnlItem:${COGS_ITEM}`, amount: 45_000_000 },
       { period: PERIOD, branchCode: BRANCH, metric: `pnlItem:${OPEX_ITEM}`, amount: 20_000_000 },
     ],
@@ -80,6 +82,10 @@ test("số P&L nhập tay trước khi lên phần mềm", async (t) => {
   assert.equal(revenue.months[2], 140_000_000, "bảng 12 tháng tháng 3");
   const opex = matrix.statement.find((line) => line.key === "otherOpex");
   assert.equal(opex.months[2], 20_000_000);
+  const byChannel = Object.fromEntries(matrix.revenueSplit.byChannel.map((row) => [row.code, row.months[2]]));
+  assert.equal(byChannel["TẠI CHỖ"], 120_000_000, "doanh thu theo nguồn nhập tay");
+  assert.equal(byChannel.GRAB, 15_000_000);
+  assert.equal(byChannel.SO_LIEU_NHAP_TAY, 5_000_000, "phần chưa tách nguồn");
   assert.ok(opex.groups.some((group) => group.items.some((item) => item.code === OPEX_ITEM && item.months[2] === 20_000_000)), "lên đúng hạng mục");
 
   const trend = await getRevenueTrendReport("2026-03", BRANCH, 3);
@@ -89,5 +95,6 @@ test("số P&L nhập tay trước khi lên phần mềm", async (t) => {
   const editor = await getPnlHistoryEditor("2026", BRANCH);
   assert.deepEqual(editor.months, ["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07"]);
   assert.ok(editor.lines.find((line) => line.key === "revenue").groups[0].items.length === 5, "Bếp, Bar, Phụ thu, SVC, Thuế GTGT");
+  assert.ok(editor.lines.find((line) => line.key === "revenueChannel").groups[0].items.some((item) => item.metric === "channel:GRAB"), "có dòng DT Grab");
   assert.ok(editor.lines.find((line) => line.key === "otherOpex").groups.some((group) => group.items.some((item) => item.metric === `pnlItem:${OPEX_ITEM}`)));
 });

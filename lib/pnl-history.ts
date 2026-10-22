@@ -33,6 +33,17 @@ export const PNL_HISTORY_REVENUE_KINDS: ReadonlyArray<{ kind: string; sample: st
   { kind: "VAT", sample: "Dịch vụ", label: "Thuế GTGT", category: REVENUE_VAT_CATEGORY_CODE },
 ];
 
+/**
+ * Doanh thu theo NGUỒN (kênh bán — khách 22/10/2026): `channel:<TÊN KÊNH IN HOA>`, cùng khoá với
+ * cột Kênh bán của file POS (Tại chỗ / Mang về / Grab). Chỉ là cách TÁCH phần doanh thu Bếp + Bar
+ * + Phụ thu ở trên theo kênh, không cộng thêm vào doanh thu; phần chưa tách đứng dòng "chưa tách
+ * nguồn". SVC và thuế GTGT không thuộc kênh nào (giống Dự báo P&L).
+ */
+export const PNL_HISTORY_CHANNEL_PREFIX = "channel:";
+export const PNL_HISTORY_DEFAULT_CHANNELS = ["Tại chỗ", "Mang về", "Grab"];
+export const pnlHistoryChannelMetric = (channel: string) => `${PNL_HISTORY_CHANNEL_PREFIX}${channel.trim().toUpperCase()}`;
+export const isPnlHistoryChannelMetric = (metric: string) => metric.startsWith(PNL_HISTORY_CHANNEL_PREFIX);
+
 /** Bộ phận của doanh thu nhập tay: Bếp → KIT, Bar → BAR (cùng mã với REVENUE_DEPARTMENT_CODES). */
 export function pnlHistoryRevenueDepartment(kind: string | null) {
   return kind === "FOOD" ? "KIT" : kind === "DRINK" ? "BAR" : null;
@@ -83,7 +94,8 @@ export async function loadPnlHistory(firstPeriod: string, lastPeriod: string, br
     console.error("Không đọc được số liệu P&L trước khi lên phần mềm (bỏ qua):", error);
     return [] as HistoryEntry[];
   });
-  const covered = new Set(entries.map((entry) => `${entry.period}|${entry.branchCode.toUpperCase()}`));
+  // Chỉ nhập tách kênh mà chưa nhập doanh thu / chi phí thì chưa tính là tháng đã nhập tay.
+  const covered = new Set(entries.filter((entry) => !isPnlHistoryChannelMetric(entry.metric)).map((entry) => `${entry.period}|${entry.branchCode.toUpperCase()}`));
   return { entries, covers: (period, code) => covered.has(`${period}|${String(code || "").toUpperCase()}`) };
 }
 

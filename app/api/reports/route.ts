@@ -7,7 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { createMoneySourceMatcher, getBalanceSheet, getCashSourceReport, getCashflowForecast, getPnl, getRevenueDayImportRows, getRevenueLedger, getRevenueLedgerDetail, getRevenueSettlementReport, getTrend, PNL_UNGROUPED_CODE } from "@/lib/reports";
 import { deleteRevenueImportRows } from "@/lib/import-commit";
 import { getPayrollBudgetReport, getPnlHistoryEditor, getPnlMatrix, getRevenueTrendReport } from "@/lib/report-budget";
-import { isPnlHistoryPeriod, PNL_HISTORY_CUTOFF, PNL_HISTORY_ITEM_PREFIX, PNL_HISTORY_REVENUE_KINDS, PNL_HISTORY_REVENUE_PREFIX } from "@/lib/pnl-history";
+import { isPnlHistoryChannelMetric, isPnlHistoryPeriod, PNL_HISTORY_CHANNEL_PREFIX, PNL_HISTORY_CUTOFF, PNL_HISTORY_ITEM_PREFIX, PNL_HISTORY_REVENUE_KINDS, PNL_HISTORY_REVENUE_PREFIX } from "@/lib/pnl-history";
 import { getPnlNotes, savePnlNote, toPnlNoteKind } from "@/lib/pnl-note";
 import { apiError, assertPeriodOpen, businessError, cleanText, findClosedPeriod, isPeriodLocked, normalizePeriod, toNumber } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
@@ -1470,6 +1470,7 @@ export async function POST(request: Request) {
         const metric = cleanText(entry.metric);
         if (!period || !isPnlHistoryPeriod(period)) businessError(`Chỉ nhập được tháng trước ${PNL_HISTORY_CUTOFF.slice(5)}/${PNL_HISTORY_CUTOFF.slice(0, 4)} (tháng "${cleanText(entry.period)}").`);
         const validMetric = revenueMetrics.has(metric)
+          || (isPnlHistoryChannelMetric(metric) && metric.length > PNL_HISTORY_CHANNEL_PREFIX.length && metric.length <= 80)
           || (metric.startsWith(PNL_HISTORY_ITEM_PREFIX) && allowedCodes.has(metric.slice(PNL_HISTORY_ITEM_PREFIX.length)));
         if (!validMetric) businessError(`Hạng mục "${metric}" không có trong danh mục P&L.`);
         const amount = entry.amount === "" || entry.amount === null || entry.amount === undefined ? 0 : toNumber(entry.amount);

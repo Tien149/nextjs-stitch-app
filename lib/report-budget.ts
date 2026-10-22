@@ -5,7 +5,7 @@ import { createDepartmentResolver } from "@/lib/department-resolve";
 import { departmentNameMap, shortDepartmentName } from "@/lib/revenue-department";
 import { isRevenueComponentCategory, REVENUE_ADJUST_CATEGORY_CODE, REVENUE_SVC_CATEGORY_CODE, REVENUE_VAT_CATEGORY_CODE, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { loadRevenuePnlGroups, type CategoryLookupClient } from "@/lib/revenue-source";
-import { loadPnlHistory, PNL_HISTORY_CUTOFF, PNL_HISTORY_ITEM_PREFIX, PNL_HISTORY_REVENUE_KINDS, PNL_HISTORY_REVENUE_PREFIX, pnlHistoryLines, pnlHistoryRevenueDepartment } from "@/lib/pnl-history";
+import { isPnlHistoryChannelMetric, loadPnlHistory, PNL_HISTORY_CHANNEL_PREFIX, PNL_HISTORY_CUTOFF, PNL_HISTORY_DEFAULT_CHANNELS, pnlHistoryChannelMetric, PNL_HISTORY_ITEM_PREFIX, PNL_HISTORY_REVENUE_KINDS, PNL_HISTORY_REVENUE_PREFIX, pnlHistoryLines, pnlHistoryRevenueDepartment } from "@/lib/pnl-history";
 
 /* ------------------------------------------------------------------------- *
  * Báo cáo theo feedback chị Bình 26/08/2026 (report_Feedback.pdf):
@@ -391,6 +391,8 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     branchTotals.set(row.branchCode, branchBuckets);
   }
   // Doanh thu nhập tay (Bếp / Bar / Phụ thu, đã gồm SVC) của tháng trước khi lên phần mềm.
+  /** Doanh thu thuần nhập tay (không SVC / thuế) theo "<kỳ>|<nhà hàng>" — để tách theo kênh bán. */
+  const historyNetRevenue = new Map<string, number>();
   for (const line of historyLines) {
     if (!line.revenueSample) continue;
     const monthIndex = months.indexOf(line.period);
@@ -408,8 +410,25 @@ export async function getPnlMatrix(year: string, branchCode: string) {
     else if (line.revenueCategory === REVENUE_VAT_CATEGORY_CODE) vatMonths[monthIndex] += amount;
     else {
       bumpSeries(netRevenueByDepartment, dept, dept === UNASSIGNED_DEPARTMENT ? "DT Phụ Thu" : `DT ${revenueDeptLabel(dept)}`, monthIndex, amount);
-      bumpSeries(netRevenueByChannel, "SO_LIEU_NHAP_TAY", "DT nhập tay (trước khi lên phần mềm)", monthIndex, amount);
+      const key = `${line.period}|${line.branchCode}`;
+      historyNetRevenue.set(key, (historyNetRevenue.get(key) || 0) + amount);
     }
+  }
+  // Doanh thu nhập tay tách theo kênh bán (channel:<KÊNH>); phần chưa tách đứng dòng riêng.
+  const historyChannelSplit = new Map<string, number>();
+  for (const entry of history.entries) {
+    if (!isPnlHistoryChannelMetric(entry.metric)) continue;
+    const monthIndex = months.indexOf(entry.period);
+    if (monthIndex < 0 || Math.abs(entry.amount) < 0.5) continue;
+    const channel = entry.metric.slice(PNL_HISTORY_CHANNEL_PREFIX.length);
+    const label = PNL_HISTORY_DEFAULT_CHANNELS.find((name) => name.toUpperCase() === channel) || channel;
+    bumpSeries(netRevenueByChannel, channel, `DT ${label}`, monthIndex, entry.amount);
+    const key = `${entry.period}|${entry.branchCode}`;
+    historyChannelSplit.set(key, (historyChannelSplit.get(key) || 0) + entry.amount);
+  }
+  for (const [key, amount] of historyNetRevenue) {
+    const rest = amount - (historyChannelSplit.get(key) || 0);
+    if (Math.abs(rest) >= 0.5) bumpSeries(netRevenueByChannel, "SO_LIEU_NHAP_TAY", "DT nhập tay chưa tách nguồn", months.indexOf(key.slice(0, 7)), rest);
   }
   const payrollBonusMonths = Array.from({ length: 12 }, () => 0);
   const payrollInsuranceMonths = Array.from({ length: 12 }, () => 0);
@@ -1060,7 +1079,8 @@ export async function getRevenueTrendReport(period: string, branchCode: string, 
 
 /** Một ô nhập được trên màn "Số liệu trước khi lên phần mềm": metric + tên hiển thị. */
 export type PnlHistoryEditorItem = { metric: string; name: string };
-export type PnlHistoryEditorLine = { key: string; label: string; groups: Array<{ code: string; name: string; items: PnlHistoryEditorItem[] }> };
+/** informational: dòng chỉ tách số của dòng khác (doanh thu theo nguồn) — không cộng vào lợi nhuận. */
+export type PnlHistoryEditorLine = { key: string; label: string; informational?: boolean; groups: Array<{ code: string; name: string; items: PnlHistoryEditorItem[] }> };
 
 /**
  * Khung nhập số P&L thực tế của các tháng trước khi lên phần mềm (khách 19/10/2026) — cùng cây
@@ -1068,7 +1088,7 @@ export type PnlHistoryEditorLine = { key: string; label: string; groups: Array<{
  */
 export async function getPnlHistoryEditor(year: string, branchCode: string) {
   const months = yearMonths(year);
-  const [catalogPnlItems, pnlGroups, categories, departments, revenueGroups, entries] = await Promise.all([
+  const [catalogPnlItems, pnlGroups, categories, departments, revenueGroups, entries, importedChannels] = await Promise.all([
     prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true, group: true, subGroup: true, status: true } }),
     prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true, group: true, status: true } }),
     prisma.masterDataItem.findMany({ where: { type: "REVENUE_EXPENSE_CATEGORY" }, select: { code: true, name: true } }),
@@ -1078,9 +1098,19 @@ export async function getPnlHistoryEditor(year: string, branchCode: string) {
       where: { period: { gte: months[0], lte: months[11] }, ...(branchCode === "ALL" ? {} : { branchCode }) },
       select: { period: true, branchCode: true, metric: true, amount: true, updatedBy: true, updatedAt: true },
     }),
+    // Kênh bán đã có trên file POS — để ô nhập tay cùng tên kênh với số hệ thống.
+    prisma.revenueImportRow.groupBy({ by: ["channel"], where: branchCode === "ALL" ? {} : { branchCode } }),
   ]);
   const pnlItems = withPayrollPnlItem(withDepreciationPnlItem(catalogPnlItems, pnlGroups), pnlGroups);
   const tree = createPnlDetailTree({ pnlItems, pnlGroups, categories, departments }, 1);
+  const channelItems = new Map<string, PnlHistoryEditorItem>();
+  const addChannel = (name: string) => {
+    const metric = pnlHistoryChannelMetric(name);
+    if (name.trim() && !channelItems.has(metric)) channelItems.set(metric, { metric, name: `DT ${name.trim()}` });
+  };
+  PNL_HISTORY_DEFAULT_CHANNELS.forEach(addChannel);
+  importedChannels.forEach((row) => addChannel(row.channel || ""));
+  entries.filter((entry) => isPnlHistoryChannelMetric(entry.metric)).forEach((entry) => addChannel(entry.metric.slice(PNL_HISTORY_CHANNEL_PREFIX.length)));
   const lines: PnlHistoryEditorLine[] = [{
     key: "revenue",
     label: `${PNL_STATEMENT_LINES[0].label} (gồm SVC)`,
@@ -1089,6 +1119,11 @@ export async function getPnlHistoryEditor(year: string, branchCode: string) {
       name: "Doanh thu theo bộ phận",
       items: PNL_HISTORY_REVENUE_KINDS.map((kind) => ({ metric: `${PNL_HISTORY_REVENUE_PREFIX}${kind.kind}`, name: kind.category ? kind.label : revenueGroups.groupOf(kind.sample).name || kind.label })),
     }],
+  }, {
+    key: "revenueChannel",
+    label: "Doanh thu theo nguồn (kênh bán)",
+    informational: true,
+    groups: [{ code: "REVENUE_CHANNEL", name: "Doanh thu theo nguồn", items: [...channelItems.values()] }],
   }];
   for (const statement of PNL_STATEMENT_LINES) {
     if (statement.subtotal || statement.key === "revenue") continue;
