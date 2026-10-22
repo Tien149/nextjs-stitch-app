@@ -708,9 +708,10 @@ export default function PermissionsPage() {
               </button>
             </div>
           </div>
-          <div id="user-list-table" className="overflow-x-auto">
+          {/* Khung cuộn riêng (khách 22/10/2026): bảng dài không đẩy cả trang, tiêu đề cột đứng yên khi cuộn. */}
+          <div id="user-list-table" className="overflow-auto max-h-[60vh] overscroll-contain">
             <table className="w-full text-left text-sm">
-              <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-bold">
+              <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-bold [&_th]:sticky [&_th]:top-0 [&_th]:z-10 [&_th]:bg-slate-50 [&_th]:shadow-[0_1px_0_#e2e8f0]">
                 <tr>
                   <th className="px-4 py-3">Người dùng (Họ & tên)</th>
                   <th className="px-4 py-3">Chức vụ & SĐT</th>
@@ -814,9 +815,10 @@ export default function PermissionsPage() {
             </div>
             <ExportExcelButton fileName="ma_tran_quyen_menu" sheetName="Quyen menu" />
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-bold">
+          <div className="overflow-auto max-h-[60vh] overscroll-contain">
+            {/* Cột tên menu đứng yên khi kéo ngang (khách 22/10/2026); ô góc nằm trên cả tiêu đề lẫn cột. */}
+            <table className="w-full text-left text-sm [&_tr>:first-child]:sticky [&_tr>:first-child]:left-0 [&_tr>:first-child]:min-w-[220px] [&_tbody_tr>:first-child]:z-[5] [&_tbody_tr>:first-child]:bg-white [&_tbody_tr>:first-child]:shadow-[1px_0_0_#e2e8f0] [&_thead_th:first-child]:z-20">
+              <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-bold [&_th]:sticky [&_th]:top-0 [&_th]:z-10 [&_th]:bg-slate-50 [&_th]:shadow-[0_1px_0_#e2e8f0]">
                 <tr>
                   <th className="px-4 py-3">Menu</th>
                   {rolesList.map((r) => (
