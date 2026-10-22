@@ -7,6 +7,7 @@ import { DonutLegendChart, MoneyLineChart, ShareDonutChart } from "@/components/
 import OpexCategoryCard from "@/components/reports/planning/OpexCategoryCard";
 import PayrollBudgetCard from "@/components/reports/planning/PayrollBudgetCard";
 import PnlTrendCard from "@/components/reports/planning/PnlTrendCard";
+import RevenueYoyCard from "@/components/reports/planning/RevenueYoyCard";
 import { Card, MonthChips, NoPlanNotice, PlanActualCell, RateChip, Segmented, StatCard, Tag, fmtMoney, ratioOf, type Tone } from "@/components/reports/planning/planning-ui";
 import { bucketSum, monthPickLabel, monthPickSummary, nodeValue, sumMonths, type MonthPick, type PlanningData, type PnlBucket, type Series, type StatementLine } from "@/components/reports/planning/planning-types";
 
@@ -287,6 +288,9 @@ export default function PnlDashboardTab({ data, picked, onChangePicked }: { data
           <p className="py-6 text-center text-sm text-slate-400">Chưa có doanh thu {mixMode === "plan" ? "kế hoạch" : "thực tế"} trong khoảng lũy kế này.</p>
         )}
       </Card>
+
+      {/* Cùng kỳ qua các năm ngay sau Cơ cấu 1 đồng doanh thu (khách 22/10/2026). */}
+      <RevenueYoyCard year={data.year} branchCode={data.branchCode} />
 
       <div className="grid md:grid-cols-3 gap-4">
         <Card

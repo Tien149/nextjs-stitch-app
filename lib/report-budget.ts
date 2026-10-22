@@ -1082,9 +1082,22 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
 export async function getRevenueTrendReport(period: string, branchCode: string, years = 3) {
   const currentYear = Number(period.slice(0, 4));
   const firstYear = currentYear - Math.max(1, years) + 1;
+  const branchFilter = branchCode === "ALL" ? {} : { branchCode };
+  /**
+   * Doanh thu thực hiện = ĐÚNG dòng Doanh thu của P&L / Dashboard (khách 22/10/2026 đặt báo cáo
+   * cùng kỳ ngay trên Dashboard): vế Có 511 dựng từ file POS (revenuePosJournalLines) + số nhập tay
+   * trước khi lên phần mềm. Từng đọc bút toán 511 đã ghi sổ — lệch P&L khi chưa Đồng bộ ghi sổ
+   * hoặc có phiếu thu ghi doanh thu tay.
+   */
   const [rows, targets, history] = await Promise.all([
-    loadYearJournalLines(`${firstYear}-01`, `${currentYear}-12`, branchCode),
-    prisma.reportTarget.findMany({ where: { metric: "revenue", period: { startsWith: `${currentYear}-` }, ...(branchCode === "ALL" ? {} : { branchCode }) } }),
+    prisma.revenueImportRow.findMany({
+      where: { saleDate: { gte: new Date(`${firstYear}-01-01T00:00:00`), lt: new Date(`${currentYear + 1}-01-01T00:00:00`) }, ...branchFilter },
+      select: {
+        saleDate: true, branchCode: true, departmentCode: true, channel: true, paymentMethod: true, revenueSource: true,
+        grossAmount: true, discountAmount: true, feeAmount: true, vatAmount: true, cardFeeAmount: true, appFeeAmount: true, netAmount: true,
+      },
+    }),
+    prisma.reportTarget.findMany({ where: { metric: "revenue", period: { startsWith: `${currentYear}-` }, ...branchFilter } }),
     loadPnlHistory(`${firstYear}-01`, `${currentYear}-12`, branchCode),
   ]);
   const series = new Map<number, number[]>();
@@ -1097,12 +1110,14 @@ export async function getRevenueTrendReport(period: string, branchCode: string, 
     if (values && monthIndex >= 0) values[monthIndex] += entry.amount;
   }
   for (const row of rows) {
-    if (row.accountType !== "REVENUE") continue;
-    if (history.covers(row.period, row.branchCode)) continue;
-    const yearValue = Number(row.period.slice(0, 4));
-    const monthIndex = Number(row.period.slice(5, 7)) - 1;
-    const values = series.get(yearValue);
-    if (values && monthIndex >= 0) values[monthIndex] += row.credit - row.debit;
+    const date = new Date(row.saleDate);
+    const rowPeriod = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+    if (history.covers(rowPeriod, row.branchCode)) continue;
+    const values = series.get(date.getFullYear());
+    if (!values) continue;
+    for (const line of revenuePosJournalLines(row)) {
+      if (line.accountCode === "511") values[date.getMonth()] += (line.credit || 0) - (line.debit || 0);
+    }
   }
   const plan = Array.from({ length: 12 }, () => 0);
   for (const target of targets) {

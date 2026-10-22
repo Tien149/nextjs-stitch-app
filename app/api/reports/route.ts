@@ -1262,7 +1262,9 @@ export async function GET(request: Request) {
     // "revenue-ledger-detail" là phần xoè chi tiết của chính tab Sổ doanh thu, không phải tab riêng.
     const subViewTab: Record<string, string> = { "pnl-matrix": "pnl", "pnl-note": "pnl", "pnl-history": "pnl", "revenue-trend": "yoy", "daily-cash": "revenue-settlement", "revenue-ledger-detail": "revenue-ledger", "revenue-day-rows": "revenue-ledger" };
     const containerTab = subViewTab[type] || type;
-    if (permittedTabs && !permittedTabs.includes(type) && !permittedTabs.includes(containerTab)) {
+    // Biến động doanh thu cùng kỳ còn nằm trên Dashboard của Hoạch định P&L (khách 22/10/2026).
+    const alsoAllowed = type === "revenue-trend" && permittedTabs?.includes("pnl");
+    if (permittedTabs && !alsoAllowed && !permittedTabs.includes(type) && !permittedTabs.includes(containerTab)) {
       return NextResponse.json({ error: "Bạn không có quyền xem báo cáo này" }, { status: 403 });
     }
     const dayRange = { from: params.get("from"), to: params.get("to") };
