@@ -5,7 +5,7 @@ import { createDepartmentResolver } from "@/lib/department-resolve";
 import { departmentNameMap, shortDepartmentName } from "@/lib/revenue-department";
 import { isRevenueComponentCategory, REVENUE_ADJUST_CATEGORY_CODE, REVENUE_SVC_CATEGORY_CODE, REVENUE_VAT_CATEGORY_CODE, revenuePosJournalLines } from "@/lib/revenue-pos-journal";
 import { loadRevenuePnlGroups, type CategoryLookupClient } from "@/lib/revenue-source";
-import { isPnlHistoryChannelMetric, loadPnlHistory, PNL_HISTORY_CHANNEL_PREFIX, PNL_HISTORY_CUTOFF, PNL_HISTORY_DEFAULT_CHANNELS, pnlHistoryChannelMetric, PNL_HISTORY_ITEM_PREFIX, PNL_HISTORY_REVENUE_KINDS, PNL_HISTORY_REVENUE_PREFIX, pnlHistoryLines, pnlHistoryRevenueDepartment } from "@/lib/pnl-history";
+import { headcountFromStored, isPnlHistoryChannelMetric, isPnlHistoryHeadcountMetric, loadPnlHistory, PNL_HISTORY_HEADCOUNT_PREFIX, PNL_HISTORY_CHANNEL_PREFIX, PNL_HISTORY_CUTOFF, PNL_HISTORY_DEFAULT_CHANNELS, pnlHistoryChannelMetric, PNL_HISTORY_ITEM_PREFIX, PNL_HISTORY_REVENUE_KINDS, PNL_HISTORY_REVENUE_PREFIX, pnlHistoryLines, pnlHistoryRevenueDepartment } from "@/lib/pnl-history";
 
 /* ------------------------------------------------------------------------- *
  * Báo cáo theo feedback chị Bình 26/08/2026 (report_Feedback.pdf):
@@ -824,7 +824,7 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
   const start = new Date(`${year}-01-01T00:00:00`);
   const end = new Date(`${Number(year) + 1}-01-01T00:00:00`);
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
-  const [departments, ratioRows, revenueRows, payrollRows, payrollDeptRows, pnl] = await Promise.all([
+  const [departments, ratioRows, allRevenueRows, allPayrollRows, allPayrollDeptRows, pnl, history] = await Promise.all([
     // `group` là ô Nhóm của danh mục Phòng ban (Vận hành / Văn phòng) — bảng nhân sự theo tháng
     // tách khối theo ô này.
     prisma.masterDataItem.findMany({ where: { type: "DEPARTMENT", status: "ACTIVE" }, select: { code: true, name: true, group: true }, orderBy: { code: "asc" } }),
@@ -851,7 +851,17 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
     // Tổng doanh thu và chi phí nhân sự lấy đúng số của P&L / Dashboard P&L (khách báo 29/09/2026:
     // bảng nhân sự lệch Dashboard — thiếu thuế GTGT ở doanh thu, thiếu khoản lương lẻ ở CP lương).
     getPnlMatrix(year, branchCode),
+    // Số nhập tay của tháng trước khi lên phần mềm: doanh thu + đầu người (lib/pnl-history.ts).
+    loadPnlHistory(months[0], months[11], branchCode),
   ]);
+  // Tháng × nhà hàng đã nhập tay P&L thì bỏ số hệ thống của ô đó, như getPnlMatrix.
+  const systemRow = (row: { period: string; branchCode: string }) => !history.covers(row.period, row.branchCode);
+  const revenueRows = allRevenueRows.filter((row) => {
+    const date = new Date(row.saleDate);
+    return systemRow({ period: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`, branchCode: row.branchCode });
+  });
+  const payrollRows = allPayrollRows.filter(systemRow);
+  const payrollDeptRows = allPayrollDeptRows.filter(systemRow);
   const departmentName = departmentNameMap(departments);
   const deptLabel = (code: string) => (code === UNASSIGNED_DEPARTMENT ? "Chưa gán bộ phận" : departmentName.get(code) || code);
   // Dòng DOANH THU theo bộ phận: tên gọn ("Bếp"), doanh thu không gắn bộ phận là Phụ thu (khách 20/10/2026).
@@ -906,6 +916,29 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
     revenueTotalByBranch.set(row.branchCode, branchTotal);
     svcTotalByBranch.set(row.branchCode, svc);
     pnlRevenueByBranch.set(row.branchCode, pnlBranch);
+  }
+  // Doanh thu nhập tay (Bếp / Bar / Phụ thu, SVC, thuế) — nền lương chuẩn của tháng trước khi lên phần mềm.
+  for (const entry of history.entries) {
+    if (!entry.metric.startsWith(PNL_HISTORY_REVENUE_PREFIX)) continue;
+    const monthIndex = months.indexOf(entry.period);
+    const kind = entry.metric.slice(PNL_HISTORY_REVENUE_PREFIX.length);
+    if (monthIndex < 0 || !PNL_HISTORY_REVENUE_KINDS.some((option) => option.kind === kind)) continue;
+    const pnlBranch = pnlRevenueByBranch.get(entry.branchCode) || monthArray();
+    pnlBranch[monthIndex] += entry.amount;
+    pnlRevenueByBranch.set(entry.branchCode, pnlBranch);
+    if (kind === "VAT") continue;
+    if (kind === "SVC") {
+      const svc = svcTotalByBranch.get(entry.branchCode) || monthArray();
+      svc[monthIndex] += entry.amount;
+      svcTotalByBranch.set(entry.branchCode, svc);
+      bumpSeries(svcByDepartment, UNASSIGNED_DEPARTMENT, revenueDeptLabel(UNASSIGNED_DEPARTMENT), monthIndex, entry.amount);
+      continue;
+    }
+    const dept = pnlHistoryRevenueDepartment(kind) || UNASSIGNED_DEPARTMENT;
+    const branchTotal = revenueTotalByBranch.get(entry.branchCode) || monthArray();
+    branchTotal[monthIndex] += entry.amount;
+    revenueTotalByBranch.set(entry.branchCode, branchTotal);
+    bumpSeries(revenueByDepartment, dept, revenueDeptLabel(dept), monthIndex, entry.amount);
   }
   const revenueTotal = monthArray();
   const svcTotal = monthArray();
@@ -968,6 +1001,16 @@ export async function getPayrollBudgetReport(period: string, branchCode: string)
     const key = `${dept}|${monthIndex}`;
     headcountNumbers.set(key, (headcountNumbers.get(key) || 0) + row.headcount);
     totalHeadcountNumbers[monthIndex] += row.headcount;
+  }
+  // Đầu người nhập tay ở màn "Số liệu trước khi lên phần mềm".
+  for (const entry of history.entries) {
+    if (!isPnlHistoryHeadcountMetric(entry.metric)) continue;
+    const monthIndex = months.indexOf(entry.period);
+    if (monthIndex < 0) continue;
+    const people = headcountFromStored(entry.amount);
+    const key = `${payrollDept(entry.metric.slice(PNL_HISTORY_HEADCOUNT_PREFIX.length))}|${monthIndex}`;
+    headcountNumbers.set(key, (headcountNumbers.get(key) || 0) + people);
+    totalHeadcountNumbers[monthIndex] += people;
   }
 
   const headcountByDepartment: MatrixSeries[] = [];
@@ -1080,7 +1123,7 @@ export async function getRevenueTrendReport(period: string, branchCode: string, 
 /** Một ô nhập được trên màn "Số liệu trước khi lên phần mềm": metric + tên hiển thị. */
 export type PnlHistoryEditorItem = { metric: string; name: string };
 /** informational: dòng chỉ tách số của dòng khác (doanh thu theo nguồn) — không cộng vào lợi nhuận. */
-export type PnlHistoryEditorLine = { key: string; label: string; informational?: boolean; groups: Array<{ code: string; name: string; items: PnlHistoryEditorItem[] }> };
+export type PnlHistoryEditorLine = { key: string; label: string; informational?: boolean; unit?: "people"; groups: Array<{ code: string; name: string; items: PnlHistoryEditorItem[] }> };
 
 /**
  * Khung nhập số P&L thực tế của các tháng trước khi lên phần mềm (khách 19/10/2026) — cùng cây
@@ -1092,7 +1135,7 @@ export async function getPnlHistoryEditor(year: string, branchCode: string) {
     prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM" }, select: { code: true, name: true, group: true, subGroup: true, status: true } }),
     prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP" }, select: { code: true, name: true, group: true, status: true } }),
     prisma.masterDataItem.findMany({ where: { type: "REVENUE_EXPENSE_CATEGORY" }, select: { code: true, name: true } }),
-    prisma.masterDataItem.findMany({ where: { type: "DEPARTMENT" }, select: { code: true, name: true, subGroup: true } }),
+    prisma.masterDataItem.findMany({ where: { type: "DEPARTMENT" }, select: { code: true, name: true, subGroup: true, status: true } }),
     loadRevenuePnlGroups(prisma as unknown as CategoryLookupClient),
     prisma.pnlHistoryEntry.findMany({
       where: { period: { gte: months[0], lte: months[11] }, ...(branchCode === "ALL" ? {} : { branchCode }) },
@@ -1101,6 +1144,7 @@ export async function getPnlHistoryEditor(year: string, branchCode: string) {
     // Kênh bán đã có trên file POS — để ô nhập tay cùng tên kênh với số hệ thống.
     prisma.revenueImportRow.groupBy({ by: ["channel"], where: branchCode === "ALL" ? {} : { branchCode } }),
   ]);
+  const activeDepartments = departments.filter((department) => department.status !== "INACTIVE");
   const pnlItems = withPayrollPnlItem(withDepreciationPnlItem(catalogPnlItems, pnlGroups), pnlGroups);
   const tree = createPnlDetailTree({ pnlItems, pnlGroups, categories, departments }, 1);
   const channelItems = new Map<string, PnlHistoryEditorItem>();
@@ -1138,12 +1182,22 @@ export async function getPnlHistoryEditor(year: string, branchCode: string) {
       })
       .filter((group) => group.items.length > 0);
     lines.push({ key: statement.key, label: statement.label, groups });
+    // Số lượng nhân sự đứng ngay dưới Chi phí nhân sự — số cho tab Ngân sách nhân sự (khách 22/10/2026).
+    if (statement.key === "payroll") {
+      lines.push({
+        key: "headcount",
+        label: "Số lượng nhân sự (người)",
+        informational: true,
+        unit: "people",
+        groups: [{ code: "HEADCOUNT", name: "Số lượng nhân sự", items: activeDepartments.map((department) => ({ metric: `${PNL_HISTORY_HEADCOUNT_PREFIX}${department.code}`, name: department.name })) }],
+      });
+    }
   }
   // Ô ALL là tổng các nhà hàng (chỉ xem), nhập phải chọn từng nhà hàng.
   const values: Record<string, number> = {};
   for (const entry of entries) {
     const key = `${entry.metric}|${entry.period}`;
-    values[key] = (values[key] || 0) + entry.amount;
+    values[key] = (values[key] || 0) + (isPnlHistoryHeadcountMetric(entry.metric) ? headcountFromStored(entry.amount) : entry.amount);
   }
   const lastUpdate = entries.reduce<{ by: string | null; at: Date } | null>((latest, entry) =>
     (!latest || entry.updatedAt > latest.at ? { by: entry.updatedBy, at: entry.updatedAt } : latest), null);

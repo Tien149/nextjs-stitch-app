@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { storeLabel } from "@/lib/branch-labels";
 import { MoneyInput } from "@/components/MoneyInput";
+import { QuantityInput } from "@/components/QuantityInput";
 import { money } from "@/components/reports/report-ui";
 
 /**
@@ -13,7 +14,7 @@ import { money } from "@/components/reports/report-ui";
  */
 
 type EditorItem = { metric: string; name: string };
-type EditorLine = { key: string; label: string; informational?: boolean; groups: Array<{ code: string; name: string; items: EditorItem[] }> };
+type EditorLine = { key: string; label: string; informational?: boolean; unit?: "people"; groups: Array<{ code: string; name: string; items: EditorItem[] }> };
 type Editor = {
   year: string;
   branchCode: string;
@@ -28,7 +29,13 @@ const INCOME_LINES = new Set(["revenue", "otherIncome"]);
 /** SVC và thuế GTGT không thuộc kênh bán nào — phần tách theo nguồn so với doanh thu trừ hai dòng này. */
 const REVENUE_OUTSIDE_CHANNEL = new Set(["revenue:SVC", "revenue:VAT"]);
 const cellKey = (metric: string, period: string) => `${metric}|${period}`;
-const toDraft = (value: number | undefined) => (value && Math.abs(value) >= 0.5 ? String(Math.round(value)) : "");
+/** Số lượng nhân sự (headcount:<bộ phận>) nhập số lẻ 2 chữ số (0,5 người); còn lại là tiền tròn đồng. */
+const isPeopleMetric = (metric: string) => metric.startsWith("headcount:");
+const toDraft = (value: number | undefined, metric = "") => {
+  if (isPeopleMetric(metric)) return value && Math.abs(value) >= 0.005 ? String(Math.round(value * 100) / 100) : "";
+  return value && Math.abs(value) >= 0.5 ? String(Math.round(value)) : "";
+};
+const people = (value: number) => (Math.round(value * 100) / 100).toLocaleString("vi-VN");
 
 export default function PnlHistoryTab({ year: pageYear, branchCode, onSaved }: { year: string; branchCode: string; onSaved?: () => void }) {
   const [editor, setEditor] = useState<Editor | null>(null);
@@ -53,7 +60,7 @@ export default function PnlHistoryTab({ year: pageYear, branchCode, onSaved }: {
       }
       const next = payload as Editor;
       setEditor(next);
-      setDraft(Object.fromEntries(Object.entries(next.values).map(([key, value]) => [key, toDraft(value)])));
+      setDraft(Object.fromEntries(Object.entries(next.values).map(([key, value]) => [key, toDraft(value, key)])));
     } catch {
       setMessage({ tone: "error", text: "Lỗi kết nối máy chủ." });
     } finally {
@@ -74,7 +81,7 @@ export default function PnlHistoryTab({ year: pageYear, branchCode, onSaved }: {
   const changed = useMemo(() => {
     if (!editor) return [];
     const keys = new Set([...Object.keys(draft), ...Object.keys(editor.values)]);
-    return [...keys].filter((key) => (draft[key] || "") !== toDraft(editor.values[key]));
+    return [...keys].filter((key) => (draft[key] || "") !== toDraft(editor.values[key], key));
   }, [draft, editor]);
 
   const amountOf = (metric: string, period: string) => Number(draft[cellKey(metric, period)] || 0);
@@ -106,13 +113,14 @@ export default function PnlHistoryTab({ year: pageYear, branchCode, onSaved }: {
       ["Mã", "Khoản mục", ...months.map((period) => `T${Number(period.slice(5))}/${period.slice(0, 4)}`)],
     ];
     for (const line of editor.lines) {
-      rows.push(["", line.label.toUpperCase(), ...months.map((period) => Math.round(lineMonthTotal(line, period)))]);
+      const round = (value: number) => (line.unit === "people" ? Math.round(value * 100) / 100 : Math.round(value));
+      rows.push(["", line.label.toUpperCase(), ...months.map((period) => round(lineMonthTotal(line, period)))]);
       for (const group of line.groups) {
         if (line.groups.length > 1 || group.items.length > 1) rows.push(["", `  ${group.name}`]);
         for (const item of group.items) {
           rows.push([item.metric, `    ${item.name}`, ...months.map((period) => {
             const value = amountOf(item.metric, period);
-            return value ? Math.round(value) : "";
+            return value ? round(value) : "";
           })]);
         }
       }
@@ -164,9 +172,11 @@ export default function PnlHistoryTab({ year: pageYear, branchCode, onSaved }: {
         columns.forEach((period, index) => {
           if (!period) return;
           const raw = row[index];
-          const value = typeof raw === "number" ? raw : Number(String(raw ?? "").replace(/[.,\s]/g, ""));
+          const text = String(raw ?? "").replace(/\s/g, "");
+          // Số người có số lẻ (1,5): phẩy là dấu thập phân; tiền thì chấm/phẩy là phân cách nghìn.
+          const value = typeof raw === "number" ? raw : Number(isPeopleMetric(metric) ? text.replace(",", ".") : text.replace(/[.,]/g, ""));
           if (String(raw ?? "").trim() !== "" && !Number.isFinite(value)) { unknown.push(`${metric} ${period}`); return; }
-          next[cellKey(metric, period)] = value && Math.abs(value) >= 0.5 ? String(Math.round(value)) : "";
+          next[cellKey(metric, period)] = toDraft(value, metric);
           if (value) filled += 1;
         });
       }
@@ -285,10 +295,10 @@ export default function PnlHistoryTab({ year: pageYear, branchCode, onSaved }: {
                       <td className="sticky left-0 z-10 bg-indigo-50 px-3 py-2 font-bold text-slate-800" title={line.informational ? "Tách doanh thu Bếp + Bar + Phụ thu theo kênh bán, không cộng thêm vào doanh thu" : undefined}>
                         <button type="button" className="mr-1 text-slate-400" onClick={() => setCollapsed({ ...collapsed, [line.key]: !isCollapsed })}>{isCollapsed ? "▸" : "▾"}</button>
                         {line.label}
-                        {line.informational && <span className="ml-1 font-normal text-[11px] text-slate-500">· tách từ doanh thu trên, không gồm SVC, thuế</span>}
+                        {line.informational && <span className="ml-1 font-normal text-[11px] text-slate-500">{line.unit === "people" ? "· cho tab Ngân sách nhân sự, không phải tiền" : "· tách từ doanh thu trên, không gồm SVC, thuế"}</span>}
                       </td>
-                      {lineTotals.map((value, index) => <td key={months[index]} className="px-2 py-2 text-right font-bold text-slate-800">{value ? money(value) : "-"}</td>)}
-                      <td className="px-3 py-2 text-right font-bold text-slate-900">{money(lineTotals.reduce((sum, value) => sum + value, 0))}</td>
+                      {lineTotals.map((value, index) => <td key={months[index]} className="px-2 py-2 text-right font-bold text-slate-800">{value ? (line.unit === "people" ? people(value) : money(value)) : "-"}</td>)}
+                      <td className="px-3 py-2 text-right font-bold text-slate-900">{line.unit === "people" ? "" : money(lineTotals.reduce((sum, value) => sum + value, 0))}</td>
                     </tr>
                     {!isCollapsed && line.groups.map((group) => (
                       <React.Fragment key={`${line.key}-${group.code}`}>
@@ -304,20 +314,32 @@ export default function PnlHistoryTab({ year: pageYear, branchCode, onSaved }: {
                               <td className="sticky left-0 z-10 bg-white px-3 py-1 pl-10 text-slate-700">{item.name}</td>
                               {months.map((period) => {
                                 const key = cellKey(item.metric, period);
-                                const dirty = (draft[key] || "") !== toDraft(editor.values[key]);
+                                const dirty = (draft[key] || "") !== toDraft(editor.values[key], key);
                                 return (
                                   <td key={period} className="px-1 py-0.5">
-                                    <MoneyInput
-                                      value={draft[key] || ""}
-                                      onChange={(value) => setDraft((current) => ({ ...current, [key]: value }))}
-                                      readOnly={readOnly}
-                                      ariaLabel={`${item.name} tháng ${period}`}
-                                      className={`control !mt-0 !h-8 !py-1 text-right !text-xs ${dirty ? "!border-amber-400 !bg-amber-50" : ""}`}
-                                    />
+                                    {line.unit === "people" ? (
+                                      <QuantityInput
+                                        value={draft[key] || ""}
+                                        decimals={2}
+                                        onChange={(value) => setDraft((current) => ({ ...current, [key]: value }))}
+                                        disabled={readOnly}
+                                        ariaLabel={`${item.name} tháng ${period}`}
+                                        placeholder="người"
+                                        className={`control !mt-0 !h-8 !py-1 text-right !text-xs ${dirty ? "!border-amber-400 !bg-amber-50" : ""}`}
+                                      />
+                                    ) : (
+                                      <MoneyInput
+                                        value={draft[key] || ""}
+                                        onChange={(value) => setDraft((current) => ({ ...current, [key]: value }))}
+                                        readOnly={readOnly}
+                                        ariaLabel={`${item.name} tháng ${period}`}
+                                        className={`control !mt-0 !h-8 !py-1 text-right !text-xs ${dirty ? "!border-amber-400 !bg-amber-50" : ""}`}
+                                      />
+                                    )}
                                   </td>
                                 );
                               })}
-                              <td className="px-3 py-1 text-right font-semibold text-slate-700">{rowTotal ? money(rowTotal) : "-"}</td>
+                              <td className="px-3 py-1 text-right font-semibold text-slate-700">{line.unit === "people" ? "" : rowTotal ? money(rowTotal) : "-"}</td>
                             </tr>
                           );
                         })}

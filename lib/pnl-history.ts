@@ -44,6 +44,19 @@ export const PNL_HISTORY_DEFAULT_CHANNELS = ["Tại chỗ", "Mang về", "Grab"]
 export const pnlHistoryChannelMetric = (channel: string) => `${PNL_HISTORY_CHANNEL_PREFIX}${channel.trim().toUpperCase()}`;
 export const isPnlHistoryChannelMetric = (metric: string) => metric.startsWith(PNL_HISTORY_CHANNEL_PREFIX);
 
+/**
+ * Số lượng nhân sự theo bộ phận (khách 22/10/2026) cho tab Ngân sách nhân sự: `headcount:<mã bộ phận>`.
+ * Cột amount bị làm tròn tới đồng ở tầng ghi (lib/money-rounding) nên lưu theo PHẦN TRĂM người
+ * (0,5 người = 50) — đọc / ghi luôn đi qua hai hàm dưới.
+ */
+export const PNL_HISTORY_HEADCOUNT_PREFIX = "headcount:";
+export const isPnlHistoryHeadcountMetric = (metric: string) => metric.startsWith(PNL_HISTORY_HEADCOUNT_PREFIX);
+export const headcountToStored = (people: number) => Math.round(people * 100);
+export const headcountFromStored = (amount: number) => Math.round(amount) / 100;
+
+/** Dòng chỉ để tham chiếu (tách kênh, đầu người) — không làm tháng thành "đã nhập tay P&L". */
+const isReferenceMetric = (metric: string) => isPnlHistoryChannelMetric(metric) || isPnlHistoryHeadcountMetric(metric);
+
 /** Bộ phận của doanh thu nhập tay: Bếp → KIT, Bar → BAR (cùng mã với REVENUE_DEPARTMENT_CODES). */
 export function pnlHistoryRevenueDepartment(kind: string | null) {
   return kind === "FOOD" ? "KIT" : kind === "DRINK" ? "BAR" : null;
@@ -94,8 +107,8 @@ export async function loadPnlHistory(firstPeriod: string, lastPeriod: string, br
     console.error("Không đọc được số liệu P&L trước khi lên phần mềm (bỏ qua):", error);
     return [] as HistoryEntry[];
   });
-  // Chỉ nhập tách kênh mà chưa nhập doanh thu / chi phí thì chưa tính là tháng đã nhập tay.
-  const covered = new Set(entries.filter((entry) => !isPnlHistoryChannelMetric(entry.metric)).map((entry) => `${entry.period}|${entry.branchCode.toUpperCase()}`));
+  // Chỉ nhập tách kênh / đầu người mà chưa nhập doanh thu / chi phí thì chưa tính là tháng đã nhập tay.
+  const covered = new Set(entries.filter((entry) => !isReferenceMetric(entry.metric)).map((entry) => `${entry.period}|${entry.branchCode.toUpperCase()}`));
   return { entries, covers: (period, code) => covered.has(`${period}|${String(code || "").toUpperCase()}`) };
 }
 

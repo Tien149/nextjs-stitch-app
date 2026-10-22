@@ -11,7 +11,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { getPnl } from "../lib/reports.ts";
-import { getPnlMatrix, getRevenueTrendReport, getPnlHistoryEditor } from "../lib/report-budget.ts";
+import { getPayrollBudgetReport, getPnlMatrix, getRevenueTrendReport, getPnlHistoryEditor } from "../lib/report-budget.ts";
 import { isPnlHistoryPeriod } from "../lib/pnl-history.ts";
 
 const require = createRequire(import.meta.url);
@@ -63,6 +63,7 @@ test("số P&L nhập tay trước khi lên phần mềm", async (t) => {
       { period: PERIOD, branchCode: BRANCH, metric: "revenue:DRINK", amount: 40_000_000 },
       { period: PERIOD, branchCode: BRANCH, metric: "channel:TẠI CHỖ", amount: 120_000_000 },
       { period: PERIOD, branchCode: BRANCH, metric: "channel:GRAB", amount: 15_000_000 },
+      { period: PERIOD, branchCode: BRANCH, metric: "headcount:KIT", amount: 250 },
       { period: PERIOD, branchCode: BRANCH, metric: `pnlItem:${COGS_ITEM}`, amount: 45_000_000 },
       { period: PERIOD, branchCode: BRANCH, metric: `pnlItem:${OPEX_ITEM}`, amount: 20_000_000 },
     ],
@@ -86,6 +87,9 @@ test("số P&L nhập tay trước khi lên phần mềm", async (t) => {
   assert.equal(byChannel["TẠI CHỖ"], 120_000_000, "doanh thu theo nguồn nhập tay");
   assert.equal(byChannel.GRAB, 15_000_000);
   assert.equal(byChannel.SO_LIEU_NHAP_TAY, 5_000_000, "phần chưa tách nguồn");
+  const payroll = await getPayrollBudgetReport(PERIOD, BRANCH);
+  assert.equal(payroll.revenue.totalGross[2], 140_000_000, "ngân sách nhân sự lấy doanh thu nhập tay");
+  assert.equal(payroll.headcount.total[2], 2.5, "đầu người nhập tay lưu theo phần trăm người");
   assert.ok(opex.groups.some((group) => group.items.some((item) => item.code === OPEX_ITEM && item.months[2] === 20_000_000)), "lên đúng hạng mục");
 
   const trend = await getRevenueTrendReport("2026-03", BRANCH, 3);

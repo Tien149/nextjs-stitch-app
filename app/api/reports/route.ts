@@ -7,7 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { createMoneySourceMatcher, getBalanceSheet, getCashSourceReport, getCashflowForecast, getPnl, getRevenueDayImportRows, getRevenueLedger, getRevenueLedgerDetail, getRevenueSettlementReport, getTrend, PNL_UNGROUPED_CODE } from "@/lib/reports";
 import { deleteRevenueImportRows } from "@/lib/import-commit";
 import { getPayrollBudgetReport, getPnlHistoryEditor, getPnlMatrix, getRevenueTrendReport } from "@/lib/report-budget";
-import { isPnlHistoryChannelMetric, isPnlHistoryPeriod, PNL_HISTORY_CHANNEL_PREFIX, PNL_HISTORY_CUTOFF, PNL_HISTORY_ITEM_PREFIX, PNL_HISTORY_REVENUE_KINDS, PNL_HISTORY_REVENUE_PREFIX } from "@/lib/pnl-history";
+import { headcountToStored, isPnlHistoryChannelMetric, isPnlHistoryHeadcountMetric, isPnlHistoryPeriod, PNL_HISTORY_HEADCOUNT_PREFIX, PNL_HISTORY_CHANNEL_PREFIX, PNL_HISTORY_CUTOFF, PNL_HISTORY_ITEM_PREFIX, PNL_HISTORY_REVENUE_KINDS, PNL_HISTORY_REVENUE_PREFIX } from "@/lib/pnl-history";
 import { getPnlNotes, savePnlNote, toPnlNoteKind } from "@/lib/pnl-note";
 import { apiError, assertPeriodOpen, businessError, cleanText, findClosedPeriod, isPeriodLocked, normalizePeriod, toNumber } from "@/lib/phase3";
 import { writeAuditLog } from "@/lib/audit-log";
@@ -1459,10 +1459,12 @@ export async function POST(request: Request) {
       const rawEntries = Array.isArray(body.entries) ? body.entries as Array<Record<string, unknown>> : [];
       if (rawEntries.length === 0) businessError("Không có ô nào thay đổi.");
       if (rawEntries.length > 5000) businessError("Lưu tối đa 5.000 ô mỗi lần.");
-      const [pnlItemCodes, pnlGroupCodes] = await Promise.all([
+      const [pnlItemCodes, pnlGroupCodes, departmentCodes] = await Promise.all([
         prisma.masterDataItem.findMany({ where: { type: "PNL_ITEM", deletedAt: null }, select: { code: true } }),
         prisma.masterDataItem.findMany({ where: { type: "PNL_GROUP", group: "OTHER_INCOME", deletedAt: null }, select: { code: true } }),
+        prisma.masterDataItem.findMany({ where: { type: "DEPARTMENT", deletedAt: null }, select: { code: true } }),
       ]);
+      const departmentSet = new Set(departmentCodes.map((row) => row.code));
       const allowedCodes = new Set([...pnlItemCodes, ...pnlGroupCodes].map((row) => row.code));
       const revenueMetrics = new Set(PNL_HISTORY_REVENUE_KINDS.map((kind) => `${PNL_HISTORY_REVENUE_PREFIX}${kind.kind}`));
       const entries = rawEntries.map((entry) => {
@@ -1470,12 +1472,14 @@ export async function POST(request: Request) {
         const metric = cleanText(entry.metric);
         if (!period || !isPnlHistoryPeriod(period)) businessError(`Chỉ nhập được tháng trước ${PNL_HISTORY_CUTOFF.slice(5)}/${PNL_HISTORY_CUTOFF.slice(0, 4)} (tháng "${cleanText(entry.period)}").`);
         const validMetric = revenueMetrics.has(metric)
+          || (isPnlHistoryHeadcountMetric(metric) && departmentSet.has(metric.slice(PNL_HISTORY_HEADCOUNT_PREFIX.length)))
           || (isPnlHistoryChannelMetric(metric) && metric.length > PNL_HISTORY_CHANNEL_PREFIX.length && metric.length <= 80)
           || (metric.startsWith(PNL_HISTORY_ITEM_PREFIX) && allowedCodes.has(metric.slice(PNL_HISTORY_ITEM_PREFIX.length)));
         if (!validMetric) businessError(`Hạng mục "${metric}" không có trong danh mục P&L.`);
         const amount = entry.amount === "" || entry.amount === null || entry.amount === undefined ? 0 : toNumber(entry.amount);
         if (!Number.isFinite(amount)) businessError(`Số tiền không hợp lệ ở ${metric} tháng ${period}.`);
-        return { period: period as string, metric, amount };
+        // Đầu người lưu theo phần trăm người (0,5 người = 50) vì amount bị làm tròn tới đồng.
+        return { period: period as string, metric, amount: isPnlHistoryHeadcountMetric(metric) ? headcountToStored(amount) : amount };
       });
       let saved = 0;
       let removed = 0;
