@@ -194,5 +194,12 @@
   },
   "prisma": {
     "seed": "node prisma/seed.js"
-  }
+  },
+  "browserslist": [
+    "chrome 111",
+    "edge 111",
+    "firefox 111",
+    "safari 15",
+    "ios_saf 15"
+  ]
 }
