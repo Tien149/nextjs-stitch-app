@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import type { Prisma } from "@prisma/custom-client";
 import { randomBytes } from "crypto";
 import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
@@ -16,7 +17,7 @@ import {
 import { scopePayloadByTab } from "@/lib/tab-scope";
 import { nextAssetCode } from "@/lib/asset-code-generator";
 import { postInventoryTransaction, nextStockDocCode } from "@/lib/inventory-stock";
-import { conversionRateForUnit, defaultPurchaseUnit, purchaseLineRate, purchaseLineUnit, toPurchasePrice } from "@/lib/unit-conversion";
+import { conversionRateForUnit, defaultPurchaseUnit, purchaseLineRate, purchaseLineUnit, purchaseUnitOptions, toPurchasePrice } from "@/lib/unit-conversion";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { parseVatRate } from "@/lib/inventory-vat";
 import { buildPriceImport, type PriceImportItem } from "@/lib/supplier-price-list";
@@ -82,11 +83,12 @@ function assertPriceListBranch(session: DemoSession, branchCode: string | null) 
   }
 }
 
-async function generatedCode(prefix: "PR" | "PO", table: "PurchaseRequest" | "PurchaseOrder") {
+/** `db`: truyền transaction khi sinh nhiều mã trong một lần (duyệt PR tách nhiều PO) để thấy mã vừa tạo. */
+async function generatedCode(prefix: "PR" | "PO", table: "PurchaseRequest" | "PurchaseOrder", db: Pick<typeof prisma, "$queryRaw"> = prisma) {
   const head = `${prefix}-${new Date().getFullYear()}-`;
   const rows = table === "PurchaseRequest"
-    ? await prisma.$queryRaw<Array<{ code: string }>>`SELECT "code" FROM "PurchaseRequest" WHERE "code" LIKE ${head + "%"}`
-    : await prisma.$queryRaw<Array<{ code: string }>>`SELECT "code" FROM "PurchaseOrder" WHERE "code" LIKE ${head + "%"}`;
+    ? await db.$queryRaw<Array<{ code: string }>>`SELECT "code" FROM "PurchaseRequest" WHERE "code" LIKE ${head + "%"}`
+    : await db.$queryRaw<Array<{ code: string }>>`SELECT "code" FROM "PurchaseOrder" WHERE "code" LIKE ${head + "%"}`;
   return head + String(nextSeqFromCodes(rows.map((row) => row.code), head)).padStart(4, "0");
 }
 
@@ -927,12 +929,15 @@ export async function POST(request: Request) {
       }
 
       // Người đặt chỉ gửi (dòng mẫu, số lượng); dòng bỏ trống/0 nghĩa là không đặt.
-      const requested = Array.isArray(body.lines) ? (body.lines as Array<{ lineId?: unknown; quantity?: unknown }>) : [];
+      const requested = Array.isArray(body.lines) ? (body.lines as Array<{ lineId?: unknown; quantity?: unknown; unitCode?: unknown }>) : [];
       const quantities = new Map<string, number>();
+      /** ĐVT người đặt đổi trên dòng (khách 22/10/2026) — không gửi thì theo ĐVT của mẫu. */
+      const chosenUnits = new Map<string, string>();
       for (const row of requested) {
         const lineId = cleanText(row.lineId);
         const quantity = toNumber(row.quantity);
         if (lineId && quantity > 0) quantities.set(lineId, quantity);
+        if (lineId && cleanText(row.unitCode)) chosenUnits.set(lineId, cleanText(row.unitCode));
       }
       if (quantities.size === 0) businessError("Chưa điền số lượng cho dòng nào của mẫu");
 
@@ -955,7 +960,9 @@ export async function POST(request: Request) {
         // Tỷ lệ lấy qua defaultPurchaseUnit: danh mục còn nhiều dòng khai sai "1 LIT = 1000 LIT",
         // tin thẳng conversionRate là người đặt gõ 1 lít mà PR ghi 1.000 lít.
         // PR giữ nguyên ĐVT đặt (khách 21/10/2026), DB lưu số theo ĐVT tồn kèm hệ số để hiển thị lại.
-        const { unitCode, conversionRate: rate } = defaultPurchaseUnit(line.item.unit, line.item.unitConversions, line.unitCode);
+        const chosen = chosenUnits.get(line.id);
+        const allowed = chosen && purchaseUnitOptions(line.item.unit, line.item.unitConversions).some((option) => option.unitCode.toUpperCase() === chosen.toUpperCase());
+        const { unitCode, conversionRate: rate } = defaultPurchaseUnit(line.item.unit, line.item.unitConversions, allowed ? chosen : line.unitCode);
         const suggestion = priceSuggestions[line.itemId];
         return {
           itemId: line.itemId,
@@ -1144,9 +1151,9 @@ export async function PATCH(request: Request) {
       if (pr.status === "REJECTED") businessError(`Yêu cầu mua ${pr.code} đã bị từ chối — chờ người đặt sửa và gửi lại.`);
       const liveOrder = await prisma.purchaseOrder.findFirst({ where: { requestId, ...liveOrdersWhere }, select: { code: true } });
       if (liveOrder) businessError(`Yêu cầu mua ${pr.code} đã có đơn mua hàng ${liveOrder.code}.`);
+      // NCC mặc định của phiếu; từng dòng chọn NCC riêng được (khách 22/10/2026) → mỗi NCC một PO.
       const supplierCode = cleanText(body.supplierCode);
       const supplierName = cleanText(body.supplierName);
-      if (!supplierCode || !supplierName) businessError("Chọn nhà cung cấp để lên PO.");
       const warehouseCode = cleanText(body.warehouseCode) || pr.warehouseCode || "";
       if (!warehouseCode) businessError("Chọn kho nhận hàng để lên PO.");
       const warehouse = await prisma.masterDataItem.findFirst({ where: { type: "WAREHOUSE", code: warehouseCode, branch: pr.branchCode } });
@@ -1155,36 +1162,48 @@ export async function PATCH(request: Request) {
       const prLines = await prisma.purchaseRequestLine.findMany({ where: { requestId }, include: { item: true } });
       if (prLines.length === 0) businessError(`Yêu cầu mua ${pr.code} không có dòng hàng.`);
       // Giá gửi lên theo ĐVT đặt của dòng PR (đ/KG...) → quy về ĐVT tồn như mọi chỗ khác.
-      const priceByLine = new Map<string, number>();
-      for (const row of (Array.isArray(body.lines) ? body.lines : []) as Array<{ lineId?: unknown; unitCost?: unknown }>) {
+      const lineInput = new Map<string, { price: number; supplierCode: string; supplierName: string }>();
+      for (const row of (Array.isArray(body.lines) ? body.lines : []) as Array<{ lineId?: unknown; unitCost?: unknown; supplierCode?: unknown; supplierName?: unknown }>) {
         const price = toNumber(row.unitCost);
         if (price < 0) businessError("Đơn giá không được âm");
-        if (cleanText(row.lineId)) priceByLine.set(cleanText(row.lineId), price);
+        if (cleanText(row.lineId)) lineInput.set(cleanText(row.lineId), { price, supplierCode: cleanText(row.supplierCode), supplierName: cleanText(row.supplierName) });
       }
-      const orderLines = prLines.map((line) => {
-        const rate = purchaseLineRate(line);
-        const unitCost = (priceByLine.get(line.id) || 0) / rate;
-        return { itemId: line.itemId, orderedQuantity: line.quantity, unitCost, totalCost: line.quantity * unitCost, unitCode: line.unitCode, conversionRate: line.conversionRate, imageUrl: line.imageUrl || null };
-      });
-      const code = await generatedCode("PO", "PurchaseOrder");
-      if (await findDeletedByUnique("PurchaseOrder", { code })) businessError(duplicatedInTrashMessage(code, "Đơn mua hàng"));
-      const totalAmount = orderLines.reduce((sum, line) => sum + line.totalCost, 0);
+      // Gom dòng theo NCC: dòng không chọn riêng đi theo NCC của phiếu.
+      const groups = new Map<string, { supplierCode: string; supplierName: string; lines: Prisma.PurchaseOrderLineUncheckedCreateWithoutOrderInput[] }>();
+      for (const line of prLines) {
+        const input = lineInput.get(line.id);
+        const lineSupplier = input?.supplierCode || supplierCode;
+        const lineSupplierName = (input?.supplierCode ? input.supplierName : supplierName) || lineSupplier;
+        if (!lineSupplier) businessError(`Chọn nhà cung cấp cho ${line.item.name}.`);
+        const unitCost = (input?.price || 0) / purchaseLineRate(line);
+        const group = groups.get(lineSupplier) || { supplierCode: lineSupplier, supplierName: lineSupplierName, lines: [] };
+        group.lines.push({ itemId: line.itemId, orderedQuantity: line.quantity, unitCost, totalCost: line.quantity * unitCost, unitCode: line.unitCode, conversionRate: line.conversionRate, imageUrl: line.imageUrl || null });
+        groups.set(lineSupplier, group);
+      }
       const now = new Date();
-      const order = await prisma.$transaction(async (tx) => {
-        const created = await tx.purchaseOrder.create({
-          data: {
-            code, requestId, supplierCode, supplierName, branchCode: pr.branchCode, departmentCode: pr.departmentCode, warehouseCode,
-            expectedDate: body.expectedDate ? toDate(body.expectedDate) : pr.neededDate, totalAmount,
-            status: "APPROVED", approvedBy: auth.session.name, approvedAt: now, createdBy: auth.session.name,
-            note: cleanText(body.note) || null,
-            lines: { create: orderLines },
-          },
-        });
+      const orders = await prisma.$transaction(async (tx) => {
+        const created = [];
+        for (const group of groups.values()) {
+          const code = await generatedCode("PO", "PurchaseOrder", tx);
+          if (await findDeletedByUnique("PurchaseOrder", { code })) businessError(duplicatedInTrashMessage(code, "Đơn mua hàng"));
+          created.push(await tx.purchaseOrder.create({
+            data: {
+              code, requestId, supplierCode: group.supplierCode, supplierName: group.supplierName, branchCode: pr.branchCode, departmentCode: pr.departmentCode, warehouseCode,
+              expectedDate: body.expectedDate ? toDate(body.expectedDate) : pr.neededDate, totalAmount: group.lines.reduce((sum, line) => sum + line.totalCost, 0),
+              status: "APPROVED", approvedBy: auth.session.name, approvedAt: now, createdBy: auth.session.name,
+              note: cleanText(body.note) || null,
+              lines: { create: group.lines },
+            },
+          }));
+        }
         await tx.purchaseRequest.update({ where: { id: requestId }, data: { status: "ORDERED", approvedBy: auth.session.name, approvedAt: now, rejectReason: null } });
         return created;
       });
-      await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action, entityType: "PurchaseRequest", entityId: pr.id, entityCode: pr.code, branchCode: pr.branchCode, metadata: { previousStatus: pr.status, orderCode: order.code, supplierCode, warehouseCode, totalAmount, unpricedLines: orderLines.filter((line) => !(line.unitCost > 0)).length } });
-      return NextResponse.json({ ...order, requestCode: pr.code });
+      await writeAuditLog({
+        session: auth.session, module: "PROCUREMENT", action, entityType: "PurchaseRequest", entityId: pr.id, entityCode: pr.code, branchCode: pr.branchCode,
+        metadata: { previousStatus: pr.status, orders: orders.map((order) => ({ code: order.code, supplierCode: order.supplierCode, totalAmount: order.totalAmount })), warehouseCode, unpricedLines: [...groups.values()].flatMap((group) => group.lines).filter((line) => !(line.unitCost > 0)).length },
+      });
+      return NextResponse.json({ ...orders[0], codes: orders.map((order) => order.code), requestCode: pr.code });
     }
 
     if (["CREATE_SHARE_LINK", "REVOKE_SHARE_LINK"].includes(action)) {

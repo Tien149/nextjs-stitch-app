@@ -22,7 +22,7 @@ import { DateRangeFilter } from "@/components/DateRangeFilter";
 import type { DateRange } from "@/lib/date-range";
 import { SendPurchaseOrderDialog } from "./send-po-dialog";
 import { ApproveRequestDialog } from "./approve-request-dialog";
-import { defaultPurchaseUnit, purchaseLineUnit, purchaseUnitOptions, toPurchasePrice, toPurchaseQuantity } from "@/lib/unit-conversion";
+import { conversionRateForUnit, defaultPurchaseUnit, purchaseLineUnit, purchaseUnitOptions, toPurchasePrice, toPurchaseQuantity } from "@/lib/unit-conversion";
 
 import { ActionIcon } from "@/components/ActionIcon";
 type Item = { id: string; code: string; name: string; unit: string; itemType: string; category: string | null; requiresImage: boolean; unitConversions?: TemplateUnitConversion[] };
@@ -1072,7 +1072,8 @@ export default function ProcurementPage() {
                     <span className="material-symbols-outlined text-sm font-bold">add</span>Thêm dòng
                   </button>
                 </div>
-                <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
+                {/* Điện thoại: thẻ từng dòng. Máy tính: dạng bảng (khách 22/10/2026 — thẻ 3 cột khó dò). */}
+                <div className="grid gap-3 md:hidden">
                 {requestRows.map((row, index) => {
                   const rowItem = data.items.find((item) => item.id === row.itemId);
                   const suggestion = row.itemId ? data.priceSuggestions[row.itemId] : undefined;
@@ -1119,6 +1120,70 @@ export default function ProcurementPage() {
                     </div>
                   );
                 })}
+                </div>
+                <div className="hidden md:block overflow-x-auto rounded-lg border border-slate-200 bg-white">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50 text-[11px] uppercase text-slate-500">
+                      <tr>
+                        <th className="px-2 py-2 text-left w-8">#</th>
+                        <th className="px-2 py-2 text-left min-w-[260px]">Mặt hàng</th>
+                        <th className="px-2 py-2 text-left w-44">ĐVT đặt</th>
+                        <th className="px-2 py-2 text-right w-28">Số lượng</th>
+                        <th className="px-2 py-2 text-right w-36">Đơn giá dự kiến</th>
+                        <th className="px-2 py-2 text-right w-32">Thành tiền</th>
+                        <th className="px-2 py-2 w-10" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {requestRows.map((row, index) => {
+                        const rowItem = data.items.find((item) => item.id === row.itemId);
+                        const suggestion = row.itemId ? data.priceSuggestions[row.itemId] : undefined;
+                        const unit = row.unitCode || rowItem?.unit || "";
+                        const rate = rowItem ? conversionRateForUnit(rowItem.unit, rowItem.unitConversions || [], unit) || 1 : 1;
+                        const unitOptions = rowItem ? purchaseUnitOptions(rowItem.unit, rowItem.unitConversions) : [];
+                        const patch = (changes: Partial<RequestRow>) => setRequestRows(requestRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, ...changes } : candidate));
+                        return (
+                          <tr key={index} className="border-t border-slate-100 align-top">
+                            <td className="px-2 py-2 text-xs font-bold text-slate-400">{index + 1}</td>
+                            <td className="px-2 py-1.5">
+                              <SearchableSelect value={row.itemId} onChange={(itemId) => pickRequestRowItem(index, itemId)} options={itemOptions} placeholder="Chọn mặt hàng..." />
+                              {rowItem?.requiresImage && (
+                                <input type="url" className="control !mt-1" placeholder="URL hình ảnh (bắt buộc) https://..." value={row.imageUrl} required onChange={(e) => patch({ imageUrl: e.target.value })} />
+                              )}
+                            </td>
+                            <td className="px-2 py-1.5">
+                              {unitOptions.length > 1 ? (
+                                <select className="control !mt-0" value={unit} onChange={(e) => pickRequestRowUnit(index, e.target.value)} aria-label="ĐVT đặt hàng">
+                                  {unitOptions.map((option) => <option key={option.unitCode} value={option.unitCode}>{option.label}</option>)}
+                                </select>
+                              ) : <span className="block py-2 text-slate-600">{unit || "-"}</span>}
+                            </td>
+                            <td className="px-2 py-1.5">
+                              <QuantityInput className="control !mt-0 text-right" value={row.quantity} required ariaLabel="Số lượng" onChange={(quantity) => patch({ quantity })} />
+                            </td>
+                            <td className="px-2 py-1.5">
+                              <input type="number" min="0" step="any" inputMode="numeric" className="control !mt-0 text-right" value={row.estimatedUnitCost} required aria-label="Đơn giá dự kiến"
+                                onChange={(e) => patch({ estimatedUnitCost: e.target.value })} />
+                              {suggestion && (
+                                <small className="mt-0.5 block text-right text-[11px] text-slate-500" title={`Đề xuất ${unitPrice(suggestion.price)} đ/${rowItem?.unit} ${priceSourceLabel(suggestion)}`}>
+                                  Gợi ý {unitPrice(suggestion.price * rate)} đ/{unit}
+                                </small>
+                              )}
+                            </td>
+                            <td className="px-2 py-2 text-right tabular-nums text-slate-700">{money(Number(row.quantity || 0) * Number(row.estimatedUnitCost || 0))}</td>
+                            <td className="px-1 py-1.5 text-center">
+                              {requestRows.length > 1 && (
+                                <ActionIcon kind="delete" title="Xoá dòng" onClick={() => setRequestRows(requestRows.filter((_, rowIndex) => rowIndex !== index))} />
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  <button type="button" className="w-full border-t border-slate-100 px-3 py-2 text-left text-xs font-bold text-blue-600 hover:bg-blue-50" onClick={() => setRequestRows([...requestRows, emptyRequestRow()])}>
+                    + Thêm dòng
+                  </button>
                 </div>
                 <p className="text-right text-xs font-bold text-slate-700">
                   Tạm tính: {money(requestRows.reduce((sum, row) => sum + Number(row.quantity || 0) * Number(row.estimatedUnitCost || 0), 0))} đ

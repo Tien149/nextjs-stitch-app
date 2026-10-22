@@ -6,7 +6,7 @@ import { QuantityInput } from "@/components/QuantityInput";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
-import { defaultPurchaseUnit } from "@/lib/unit-conversion";
+import { defaultPurchaseUnit, purchaseUnitOptions } from "@/lib/unit-conversion";
 import { quantity as formatQuantity } from "@/lib/format-number";
 import type { DemoSession } from "@/lib/auth-demo";
 import { TEMPLATE_IMPORT_HEADERS, templateWindow, templateWindowStatus, type TemplateWindowStatus } from "@/lib/purchase-template";
@@ -86,6 +86,8 @@ type FillDraft = {
   neededDate: string;
   note: string;
   quantities: Record<string, string>;
+  /** ĐVT người đặt đổi trên từng dòng (khách 22/10/2026); không có = ĐVT của mẫu. */
+  units?: Record<string, string>;
 };
 
 /** ĐVT hiển thị của một dòng mẫu: ĐVT khai trên mẫu -> ĐVT mua mặc định -> ĐVT tồn kho. */
@@ -97,8 +99,8 @@ function lineUnit(line: { unitCode: string | null; item: TemplateItem }) {
  * Số lượng quy về ĐVT tồn kho — hiện ngay dưới ô nhập để người đặt thấy đúng thứ PR sẽ ghi
  * (chỉ hiện khi thực sự có quy đổi, ví dụ 2 thùng = 48 lon).
  */
-function baseQuantityHint(line: { unitCode: string | null; item: TemplateItem }, quantity: string) {
-  const { conversionRate } = defaultPurchaseUnit(line.item.unit, line.item.unitConversions, line.unitCode);
+function baseQuantityHint(line: { unitCode: string | null; item: TemplateItem }, quantity: string, unitCode?: string) {
+  const { conversionRate } = defaultPurchaseUnit(line.item.unit, line.item.unitConversions, unitCode || line.unitCode);
   const value = Number(quantity || 0);
   if (conversionRate === 1 || !(value > 0)) return "";
   return `= ${formatQuantity(value * conversionRate)} ${line.item.unit}`;
@@ -142,6 +144,7 @@ export function TemplatesTab({
   /** NCC của PR: mặc định NCC của mẫu, mẫu chưa có thì người đặt chọn (thu mua vẫn đổi lúc duyệt). */
   const [fillSupplier, setFillSupplier] = useState("");
   const [fillQuantities, setFillQuantities] = useState<Record<string, string>>({});
+  const [fillUnits, setFillUnits] = useState<Record<string, string>>({});
   const [fillSearch, setFillSearch] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -178,6 +181,7 @@ export function TemplatesTab({
         setFillNeededDate(fill.neededDate);
         setFillNote(fill.note);
         setFillQuantities(fill.quantities);
+        setFillUnits(fill.units || {});
       }
       setDraftRestored(true);
     }, 0);
@@ -229,8 +233,9 @@ export function TemplatesTab({
       neededDate: fillNeededDate,
       note: fillNote,
       quantities: fillQuantities,
+      units: fillUnits,
     } satisfies FillDraft);
-  }, [draftRestored, filling, fillBranch, fillDepartment, fillNeededDate, fillNote, fillQuantities]);
+  }, [draftRestored, filling, fillBranch, fillDepartment, fillNeededDate, fillNote, fillQuantities, fillUnits]);
 
   const branchOptions = visibleStoreOptions(user);
   const itemOptions = useMemo(
@@ -250,6 +255,7 @@ export function TemplatesTab({
     setFillNote("");
     setFillSupplier(template.supplierCode || "");
     setFillQuantities({});
+    setFillUnits({});
     setFillSearch("");
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -269,7 +275,7 @@ export function TemplatesTab({
   const submitFill = async () => {
     if (!filling) return;
     const lines = filling.lines
-      .map((line) => ({ lineId: line.id, quantity: Number(fillQuantities[line.id] || 0) }))
+      .map((line) => ({ lineId: line.id, quantity: Number(fillQuantities[line.id] || 0), unitCode: fillUnits[line.id] || undefined }))
       .filter((line) => line.quantity > 0);
     if (lines.length === 0) {
       notify("Chưa điền số lượng cho dòng nào — nhập số lượng vào các mặt hàng cần đặt rồi gửi.");
@@ -596,13 +602,15 @@ export function TemplatesTab({
             {visibleFillLines.map((line) => {
               const quantity = fillQuantities[line.id] || "";
               const active = Number(quantity) > 0;
+              const unitChoices = purchaseUnitOptions(line.item.unit, line.item.unitConversions);
+              const chosenUnit = fillUnits[line.id] || defaultPurchaseUnit(line.item.unit, line.item.unitConversions, line.unitCode).unitCode;
               return (
                 <div key={line.id} className={`flex items-center gap-3 rounded-xl border px-3 py-2.5 ${active ? "border-blue-300 bg-blue-50/60" : "border-slate-200 bg-white"}`}>
                   <div className="flex-1 min-w-0">
                     <p className="font-bold text-sm text-slate-800 leading-snug">{line.item.name}</p>
                     <p className="text-xs text-slate-500">
                       {line.item.code} · ĐVT: <b>{lineUnit(line)}</b>
-                      {baseQuantityHint(line, quantity) ? <span className="text-blue-700 font-semibold"> {baseQuantityHint(line, quantity)}</span> : null}
+                      {baseQuantityHint(line, quantity, fillUnits[line.id]) ? <span className="text-blue-700 font-semibold"> {baseQuantityHint(line, quantity, fillUnits[line.id])}</span> : null}
                       {line.note ? ` · ${line.note}` : ""}
                     </p>
                   </div>
@@ -614,7 +622,19 @@ export function TemplatesTab({
                       onChange={(value) => setFillQuantities((current) => ({ ...current, [line.id]: value }))}
                       ariaLabel={`Số lượng ${line.item.name}`}
                     />
-                    <span className="text-xs font-semibold text-slate-500 w-12 truncate">{lineUnit(line)}</span>
+                    {/* Mặt hàng nhiều ĐVT mua thì chọn ĐVT ngay trên dòng (khách 22/10/2026). */}
+                    {unitChoices.length > 1 ? (
+                      <select
+                        className="control !mt-0 !h-10 w-24 !px-1.5 text-xs font-semibold"
+                        value={chosenUnit}
+                        onChange={(e) => setFillUnits((current) => ({ ...current, [line.id]: e.target.value }))}
+                        aria-label={`ĐVT đặt ${line.item.name}`}
+                      >
+                        {unitChoices.map((option) => <option key={option.unitCode} value={option.unitCode}>{option.unitCode}</option>)}
+                      </select>
+                    ) : (
+                      <span className="text-xs font-semibold text-slate-500 w-12 truncate">{lineUnit(line)}</span>
+                    )}
                   </div>
                 </div>
               );
