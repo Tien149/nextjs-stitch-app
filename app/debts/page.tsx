@@ -261,6 +261,11 @@ export default function DebtsPage() {
     allocationMonths: "",
     allocationStartPeriod: "",
   });
+  // Chuyển công nợ phải trả A → B, không qua thu chi (khách 23/10/2026, lib/debt-transfer.ts).
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [transferSaving, setTransferSaving] = useState(false);
+  const [transferError, setTransferError] = useState("");
+  const [transferForm, setTransferForm] = useState({ branchCode: "", documentDate: new Date().toISOString().slice(0, 10), fromPartnerCode: "", toPartnerCode: "", amount: "", dueDate: "", description: "" });
   // Bảng chi tiết của phiếu: mỗi dòng một hạng mục P&L + số tiền riêng (trích trước cuối tháng
   // cùng NCC nhưng nhiều hạng mục). Một dòng thì tạo khoản đơn như trước.
   const [createLines, setCreateLines] = useState<CreateLine[]>([emptyCreateLine(1)]);
@@ -323,6 +328,54 @@ export default function DebtsPage() {
         .then((data) => setPartners(data));
     }
     loadPnlOptions();
+  };
+
+  const openTransferDialog = () => {
+    setTransferError("");
+    setTransferForm((current) => ({
+      ...current,
+      branchCode: current.branchCode || (branchScope !== "ALL" ? branchScope : visibleStoreOptions(user)[0]?.code || ""),
+    }));
+    setTransferOpen(true);
+    if (partners.length === 0) {
+      void fetch("/api/master-data?type=PARTNER&status=ACTIVE")
+        .then((response) => response.ok ? response.json() : [])
+        .then((data) => setPartners(data));
+    }
+  };
+
+  const submitTransfer = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (transferSaving) return;
+    setTransferError("");
+    if (!transferForm.branchCode || !transferForm.fromPartnerCode || !transferForm.toPartnerCode || !(Number(transferForm.amount) > 0)) {
+      setTransferError("Cần chọn cửa hàng, đối tác chuyển đi, đối tác nhận và số tiền lớn hơn 0.");
+      return;
+    }
+    if (transferForm.fromPartnerCode === transferForm.toPartnerCode) {
+      setTransferError("Đối tác nhận phải khác đối tác chuyển đi.");
+      return;
+    }
+    setTransferSaving(true);
+    try {
+      const response = await fetch("/api/debts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "TRANSFER_PAYABLE", ...transferForm, amount: Number(transferForm.amount) }),
+      });
+      const payload = await response.json().catch(() => ({})) as { code?: string; settled?: string[]; error?: string };
+      if (!response.ok) {
+        setTransferError(payload.error || "Không lập được phiếu chuyển công nợ.");
+        return;
+      }
+      setTransferOpen(false);
+      setTransferForm((current) => ({ ...current, fromPartnerCode: "", toPartnerCode: "", amount: "", dueDate: "", description: "" }));
+      setMessage(`Đã lập phiếu chuyển công nợ ${payload.code}${payload.settled?.length ? ` · gạch ${payload.settled.join(", ")}` : ""}. Bút toán Nợ 331 / Có 331, không qua quỹ, không vào P&L.`);
+      await loadRows();
+      if (ledger) await loadLedger(ledger.partnerCode);
+    } finally {
+      setTransferSaving(false);
+    }
   };
 
   const submitCreateDebt = async (event: React.FormEvent) => {
@@ -686,6 +739,16 @@ export default function DebtsPage() {
               className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700"
             >
               + Thêm công nợ
+            </button>
+          )}
+          {canCreateDebts && (
+            <button
+              type="button"
+              onClick={openTransferDialog}
+              className="rounded-lg border border-blue-300 bg-white px-4 py-2 text-sm font-bold text-blue-700 hover:bg-blue-50"
+              title="Giảm phải trả đối tác A, tăng phải trả đối tác B — không qua thu chi"
+            >
+              Chuyển công nợ
             </button>
           )}
           <BranchScopeSelect session={user} value={branchScope} onChange={setBranchScope} />
@@ -1445,6 +1508,107 @@ export default function DebtsPage() {
               </button>
               <button type="submit" disabled={createSaving} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-60">
                 {createSaving ? "Đang tạo..." : createIsAdvance ? "Lập phiếu hoàn ứng" : "Tạo công nợ"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {transferOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
+          <form onSubmit={submitTransfer} className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-white shadow-xl">
+            <div className="border-b border-slate-200 p-5">
+              <h2 className="font-bold text-slate-900">Chuyển công nợ phải trả</h2>
+              <p className="mt-1 text-xs text-slate-500">
+                Giảm phải trả đối tác A, tăng phải trả đối tác B — không qua quỹ, không vào P&amp;L. Bút toán <b>Nợ 331 (A) / Có 331 (B)</b>.
+                Các khoản đang nợ A được gạch theo thứ tự cũ trước; B có khoản phải trả mới mã CTCN-…, trả tiền thì phiếu chi gạch vào mã đó.
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-3 p-5">
+              <div className="col-span-2 text-xs font-bold text-slate-600">
+                Chuyển từ đối tác (A — giảm phải trả) *
+                <PartnerPicker
+                  className="mt-1"
+                  value={transferForm.fromPartnerCode}
+                  onChange={(fromPartnerCode) => setTransferForm((value) => ({ ...value, fromPartnerCode }))}
+                  options={partners.map((item) => ({ value: item.code, label: `${item.code} - ${item.name}` }))}
+                  required
+                />
+                {transferForm.fromPartnerCode && (() => {
+                  const balance = rows.find((row) => row.partnerCode === transferForm.fromPartnerCode)?.balance;
+                  return balance === undefined ? null : (
+                    <span className={`mt-1 block font-normal ${balance > 0 ? "text-slate-500" : "text-amber-700"}`}>
+                      Số dư công nợ đang xem: {balance > 0 ? `phải trả ${money(balance)} đ` : balance < 0 ? `phải thu ${money(-balance)} đ` : "0 đ"}
+                    </span>
+                  );
+                })()}
+              </div>
+              <div className="col-span-2 text-xs font-bold text-slate-600">
+                Sang đối tác (B — tăng phải trả) *
+                <PartnerPicker
+                  className="mt-1"
+                  value={transferForm.toPartnerCode}
+                  onChange={(toPartnerCode) => setTransferForm((value) => ({ ...value, toPartnerCode }))}
+                  options={partners.filter((item) => item.code !== transferForm.fromPartnerCode).map((item) => ({ value: item.code, label: `${item.code} - ${item.name}` }))}
+                  required
+                  canCreate={canCreatePartner}
+                  defaultPartnerType="SUPPLIER"
+                  onCreated={(partner) => {
+                    setPartners((current) => [...current, partner]);
+                    setTransferForm((value) => ({ ...value, toPartnerCode: partner.code }));
+                  }}
+                />
+              </div>
+              <label className="text-xs font-bold text-slate-600 block">
+                Cửa hàng *
+                <select
+                  value={transferForm.branchCode}
+                  onChange={(event) => setTransferForm((value) => ({ ...value, branchCode: event.target.value }))}
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500"
+                  required
+                >
+                  <option value="">-- Chọn cửa hàng --</option>
+                  {visibleStoreOptions(user).map((option) => (
+                    <option key={option.code} value={option.code}>{option.label}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs font-bold text-slate-600 block">
+                Số tiền chuyển *
+                <MoneyInput
+                  value={transferForm.amount}
+                  onChange={(amount) => setTransferForm((value) => ({ ...value, amount }))}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-right outline-none focus:border-blue-500"
+                  ariaLabel="Số tiền chuyển"
+                />
+              </label>
+              <div className="flex flex-col text-xs font-bold text-slate-600">
+                <span>Ngày chứng từ *</span>
+                <DateInput value={transferForm.documentDate} onChange={(documentDate) => setTransferForm((value) => ({ ...value, documentDate }))} className="mt-1" required ariaLabel="Ngày chuyển công nợ" />
+              </div>
+              <div className="flex flex-col text-xs font-bold text-slate-600">
+                <span>Hạn trả B</span>
+                <DateInput value={transferForm.dueDate} onChange={(dueDate) => setTransferForm((value) => ({ ...value, dueDate }))} className="mt-1" ariaLabel="Hạn trả đối tác nhận" />
+              </div>
+              <label className="col-span-2 text-xs font-bold text-slate-600 block">
+                Diễn giải
+                <input
+                  value={transferForm.description}
+                  onChange={(event) => setTransferForm((value) => ({ ...value, description: event.target.value }))}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
+                  placeholder="VD: NCC A chỉ định thanh toán cho NCC B theo biên bản 3 bên"
+                />
+              </label>
+              {transferError && (
+                <p className="col-span-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">{transferError}</p>
+              )}
+            </div>
+            <div className="flex justify-end gap-2 border-t border-slate-200 p-4">
+              <button type="button" onClick={() => setTransferOpen(false)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50">
+                Đóng
+              </button>
+              <button type="submit" disabled={transferSaving} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-60">
+                {transferSaving ? "Đang lập..." : "Lập phiếu chuyển"}
               </button>
             </div>
           </form>

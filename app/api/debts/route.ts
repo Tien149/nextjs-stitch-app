@@ -10,6 +10,7 @@ import { stripDebtLineSuffix } from "@/lib/debt-group";
 import { ADVANCE_SETTLEMENT_CODE_PREFIX, ADVANCE_SETTLEMENT_DEBT_TYPE, ADVANCE_SETTLEMENT_SOURCE, isAdvanceSettlementDebt } from "@/lib/employee-advance";
 import { normalizeAllocationMonths } from "@/lib/voucher-rules";
 import { loadDebtOverview, parseDateRange } from "@/lib/debt-overview";
+import { createDebtTransfer, deleteDebtTransfer, isDebtTransferDebt } from "@/lib/debt-transfer";
 
 const debtTypes = ["RECEIVABLE", "PAYABLE"];
 const partnerGroups = ["EXTERNAL", "INTERNAL"];
@@ -84,6 +85,37 @@ export async function POST(request: Request) {
     const auth = requireMenuAction(request, "/debts", "create");
     if (!auth.ok) return auth.response;
     const body = await request.json();
+
+    // Chuyển công nợ phải trả A → B, không qua thu chi (khách 23/10/2026, lib/debt-transfer.ts).
+    if (cleanText(body.action) === "TRANSFER_PAYABLE") {
+      const branchCode = cleanText(body.branchCode).toUpperCase();
+      if (!branchCode || branchCode === "ALL") return NextResponse.json({ error: "Chọn cửa hàng của khoản công nợ." }, { status: 400 });
+      try {
+        assertBranchAccess(auth.session, branchCode);
+      } catch (e) {
+        return NextResponse.json({ error: e instanceof Error ? e.message : "Không có quyền chi nhánh" }, { status: 403 });
+      }
+      try {
+        const result = await createDebtTransfer({
+          branchCode,
+          documentDate: toDate(body.documentDate, new Date()),
+          fromPartnerCode: cleanText(body.fromPartnerCode).toUpperCase(),
+          toPartnerCode: cleanText(body.toPartnerCode).toUpperCase(),
+          amount: toNumber(body.amount),
+          description: cleanText(body.description),
+          dueDate: cleanText(body.dueDate) ? toDate(body.dueDate) : null,
+        }, auth.session.name);
+        await writeAuditLog({
+          session: auth.session, module: "DEBTS", action: "TRANSFER_PAYABLE", entityType: "DebtTransfer", entityId: result.transfer.id, entityCode: result.transfer.code, branchCode,
+          metadata: { from: result.transfer.fromPartnerCode, to: result.transfer.toPartnerCode, amount: result.transfer.amount, settled: result.settled, unmatched: result.unmatched },
+        });
+        return NextResponse.json({ code: result.transfer.code, settled: result.settled, unmatched: result.unmatched });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (message.startsWith("BUSINESS:")) return NextResponse.json({ error: message.slice(9) }, { status: 400 });
+        throw error;
+      }
+    }
 
     // Hoàn ứng nhân viên: khoản PHẢI TRẢ đặc biệt — chi phí cấn thẳng vào tạm ứng (Có 141), không
     // hạn trả, không phân bổ, không ai trả tiền cho nó (lib/employee-advance.ts).
@@ -311,6 +343,9 @@ export async function PATCH(request: Request) {
         { error: "Công nợ nội bộ này do phiếu điều tiền liên nhà hàng sinh ra. Hãy xử lý ở màn Vận hành tài chính để bút toán và công nợ đi cùng nhau." },
         { status: 400 },
       );
+    }
+    if (isDebtTransferDebt(current.sourceType)) {
+      return NextResponse.json({ error: `Khoản ${current.code} do phiếu chuyển công nợ sinh ra. Muốn sửa thì xoá phiếu chuyển rồi lập lại.` }, { status: 400 });
     }
 
     // Đã thanh toán một phần hay tất toán thì số liệu do phiếu thu/chi quyết định.
@@ -562,6 +597,19 @@ export async function DELETE(request: Request) {
       ? [await prisma.debtRecord.findUnique({ where: { id } })].filter((row): row is NonNullable<typeof row> => Boolean(row))
       : await prisma.debtRecord.findMany({ where: { code: { startsWith: `${groupCode}/` } }, orderBy: { code: "asc" } });
     if (targets.length === 0) return NextResponse.json({ error: id ? "Không tìm thấy khoản công nợ" : `Không tìm thấy dòng nào của phiếu ${groupCode}` }, { status: 404 });
+
+    // Xoá khoản do phiếu chuyển công nợ sinh ra = xoá cả phiếu chuyển (trả lại nợ đối tác cũ).
+    if (targets.length === 1 && isDebtTransferDebt(targets[0].sourceType) && targets[0].sourceId) {
+      try {
+        assertBranchAccess(auth.session, targets[0].branchCode);
+        const transfer = await deleteDebtTransfer(targets[0].sourceId);
+        await writeAuditLog({ session: auth.session, module: "DEBTS", action: "DELETE_DEBT_TRANSFER", entityType: "DebtTransfer", entityId: transfer.id, entityCode: transfer.code, branchCode: transfer.branchCode, metadata: { from: transfer.fromPartnerCode, to: transfer.toPartnerCode, amount: transfer.amount, reason } });
+        return NextResponse.json({ ok: true, deleted: [transfer.code] });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        return NextResponse.json({ error: message.replace(/^BUSINESS:/, "") || "Không xoá được phiếu chuyển công nợ" }, { status: 400 });
+      }
+    }
 
     for (const current of targets) {
       try {

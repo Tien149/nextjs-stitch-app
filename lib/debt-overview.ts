@@ -130,7 +130,7 @@ function addDebt(rows: Map<string, DebtRow>, code: string, name: string, patch: 
  */
 export async function loadDebtOverview({ branchCode, range, partnerCode }: { branchCode: string; range: DateRange; partnerCode?: string | null }) {
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
-  const [partners, branchItems, openingBalances, deposits, bankRows, ownVouchers, advanceVouchers, purchasePayables, debtRecords, settlementVouchers, allocationVouchers, settlements] = await Promise.all([
+  const [partners, branchItems, openingBalances, deposits, bankRows, ownVouchers, advanceVouchers, purchasePayables, debtRecords, settlementVouchers, allocationVouchers, settlements, transfers] = await Promise.all([
     prisma.masterDataItem.findMany({ where: { type: "PARTNER" } }),
     // Danh mục Cửa hàng: dùng để chắc chắn "đối tác sẽ trả lại tiền" của phiếu chi hộ là
     // một nhà hàng thật, không phải đối tác tự đặt mã bắt đầu bằng NB-.
@@ -169,8 +169,11 @@ export async function loadDebtOverview({ branchCode, range, partnerCode }: { bra
     }),
     prisma.debtSettlement.findMany({
       where: { debt: branchFilter },
-      select: { debtId: true, voucherId: true, amount: true, debt: { select: { code: true, partnerCode: true } } },
+      select: { debtId: true, voucherId: true, transferId: true, amount: true, debt: { select: { code: true, partnerCode: true } } },
     }),
+    // Phiếu chuyển công nợ phải trả A → B (không qua thu chi): vế giảm nợ của A. Vế tăng của B
+    // là khoản phải trả mã = mã phiếu (DebtRecord sourceType DEBT_TRANSFER) đã có trong debtRecords.
+    prisma.debtTransfer.findMany({ where: branchFilter }),
   ]);
 
   // Đã gạch bao nhiêu trên từng khoản nợ (để ghi khoản nợ theo số phát sinh) và từng phiếu
@@ -178,17 +181,23 @@ export async function loadDebtOverview({ branchCode, range, partnerCode }: { bra
   const settledByDebt = new Map<string, { amount: number; voucherIds: string[] }>();
   const settledByVoucher = new Map<string, { amount: number; debtCodes: string[]; partnerCodes: string[] }>();
   for (const row of settlements) {
+    // Gạch bằng phiếu chuyển công nợ thì khoá theo phiếu chuyển (không có phiếu thu/chi).
+    const sourceId = row.voucherId || (row.transferId ? `transfer:${row.transferId}` : "");
+    if (!sourceId) continue;
     const byDebt = settledByDebt.get(row.debtId) || { amount: 0, voucherIds: [] };
     byDebt.amount += row.amount;
-    if (!byDebt.voucherIds.includes(row.voucherId)) byDebt.voucherIds.push(row.voucherId);
+    if (!byDebt.voucherIds.includes(sourceId)) byDebt.voucherIds.push(sourceId);
     settledByDebt.set(row.debtId, byDebt);
-    const byVoucher = settledByVoucher.get(row.voucherId) || { amount: 0, debtCodes: [], partnerCodes: [] };
+    const byVoucher = settledByVoucher.get(sourceId) || { amount: 0, debtCodes: [], partnerCodes: [] };
     byVoucher.amount += row.amount;
     if (!byVoucher.debtCodes.includes(row.debt.code)) byVoucher.debtCodes.push(row.debt.code);
     if (!byVoucher.partnerCodes.includes(row.debt.partnerCode)) byVoucher.partnerCodes.push(row.debt.partnerCode);
-    settledByVoucher.set(row.voucherId, byVoucher);
+    settledByVoucher.set(sourceId, byVoucher);
   }
-  const voucherCodeById = new Map([...settlementVouchers, ...ownVouchers, ...allocationVouchers].map((row) => [row.id, row.code]));
+  const voucherCodeById = new Map([
+    ...[...settlementVouchers, ...ownVouchers, ...allocationVouchers].map((row) => [row.id, row.code] as const),
+    ...transfers.map((row) => [`transfer:${row.id}`, row.code] as const),
+  ]);
   const settledNote = (debtId: string) => {
     const settled = settledByDebt.get(debtId);
     if (!settled || settled.amount <= 0) return "";
@@ -217,6 +226,18 @@ export async function loadDebtOverview({ branchCode, range, partnerCode }: { bra
       amount: voucherSigned(item.voucherType, item.amount),
     };
   }).filter((line): line is typeof line & { partnerCode: string } => Boolean(line.partnerCode));
+  /** Vế GIẢM phải trả của đối tác chuyển đi (A) — cùng dấu với phiếu chi trả nợ. */
+  const transferLines = transfers.map((item) => {
+    const applied = settledByVoucher.get(`transfer:${item.id}`);
+    return {
+      partnerCode: item.fromPartnerCode,
+      partnerName: item.fromPartnerName,
+      date: item.documentDate,
+      code: item.code,
+      description: `Chuyển công nợ phải trả sang ${item.toPartnerName} (${item.toPartnerCode})${item.description ? ` · ${item.description}` : ""}${applied?.debtCodes.length ? ` · gạch ${applied.debtCodes.join(", ")}` : ""}`,
+      amount: -item.amount,
+    };
+  });
   const allocationLines = allocationVouchers.flatMap((item) => item.partnerAllocations.map((line) => ({
     partnerCode: line.partnerCode,
     partnerName: line.partnerName,
@@ -289,7 +310,7 @@ export async function loadDebtOverview({ branchCode, range, partnerCode }: { bra
         amount: voucherSigned(item.voucherType, item.amount),
       });
     }
-    for (const line of [...settlementLines, ...allocationLines].filter((row) => row.partnerCode === partnerCode)) {
+    for (const line of [...settlementLines, ...allocationLines, ...transferLines].filter((row) => row.partnerCode === partnerCode)) {
       ledger.push({ date: line.date, source: "VOUCHER", code: line.code, description: line.description, amount: line.amount });
     }
     for (const item of purchasePayables.filter((row) => row.supplierCode === partnerCode)) {
@@ -420,7 +441,7 @@ export async function loadDebtOverview({ branchCode, range, partnerCode }: { bra
     });
   }
 
-  for (const line of [...settlementLines, ...allocationLines]) {
+  for (const line of [...settlementLines, ...allocationLines, ...transferLines]) {
     const bucket = dateBucket(line.date, range);
     if (bucket === "AFTER") continue;
     if (bucket === "BEFORE") {

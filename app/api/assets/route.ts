@@ -98,10 +98,20 @@ async function assetDeleteSteps(asset: NonNullable<Awaited<ReturnType<typeof pri
   if (payableDebt) {
     const settlements = await prisma.debtSettlement.findMany({
       where: { debtId: payableDebt.id },
-      include: { voucher: { select: { code: true, voucherDate: true, branchCode: true, partnerCode: true, documentChannel: true } } },
+      include: { voucher: { select: { code: true, voucherDate: true, branchCode: true, partnerCode: true, documentChannel: true } }, transfer: { select: { code: true } } },
       orderBy: { settlementDate: "asc" },
     });
-    for (const row of settlements) {
+    for (const settlement of settlements) {
+      // Gạch bằng phiếu chuyển công nợ: không có chứng từ tiền, gỡ ở Công nợ Đối tác.
+      if (!settlement.voucher) {
+        steps.push({
+          text: `Phiếu chuyển công nợ ${settlement.transfer?.code || ""} đã gạch ${Math.round(settlement.amount).toLocaleString("vi-VN")} đ của công nợ ${payableDebt.code}. Xoá phiếu chuyển đó ở màn Công nợ Đối tác để trả lại công nợ.`,
+          href: "/debts",
+          linkLabel: "Mở Công nợ Đối tác",
+        });
+        continue;
+      }
+      const row = { ...settlement, voucher: settlement.voucher };
       const day = row.voucher.voucherDate.toLocaleDateString("en-CA", { timeZone: "Asia/Ho_Chi_Minh" });
       const query = new URLSearchParams({
         voucherType: "PAYMENT",

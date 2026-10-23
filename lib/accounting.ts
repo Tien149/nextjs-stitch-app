@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { debtTransferJournal } from "@/lib/debt-transfer";
 import { addPeriod, businessError, isPeriodLocked, periodFromDate } from "@/lib/phase3";
 import type { DemoSession } from "@/lib/auth-demo";
 import { advanceReceivableCounterpartJournal, cashAccountFor, payableDebtDebitLine, pnlItemGroupLookup, voucherJournalLines } from "@/lib/voucher-accounting";
@@ -770,6 +771,10 @@ export async function syncAccountingPeriod(period: string, branchCode: string, a
       ],
     }));
   }
+
+  // Phiếu chuyển công nợ phải trả A → B (lib/debt-transfer.ts): Nợ 331 (A) / Có 331 (B).
+  const debtTransfers = await prisma.debtTransfer.findMany({ where: { ...branchFilter, documentDate: { gte: start, lt: end } } });
+  for (const row of debtTransfers) results.push(await postJournalEntry(debtTransferJournal(row, actor)));
 
   /**
    * Công nợ PHẢI THU khai tay có nhóm hạng mục P&L thuộc Thu nhập khác (vd. OTHER_IN_VAT "Thu

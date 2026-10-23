@@ -513,18 +513,48 @@ model DebtSettlement {
   id             String   @id @default(uuid())
   debtId         String
   /// Không còn unique: một phiếu chi đại diện có thể gạch nhiều khoản công nợ cùng lúc.
-  voucherId      String
+  /// null = gạch bằng phiếu chuyển công nợ (transferId), không qua thu chi.
+  voucherId      String?
+  transferId     String?
   settlementDate DateTime
   amount         Float
   createdBy      String?
   createdAt      DateTime @default(now())
 
-  debt    DebtRecord       @relation(fields: [debtId], references: [id], onDelete: Cascade)
-  voucher FinancialVoucher @relation(fields: [voucherId], references: [id], onDelete: Restrict)
+  debt     DebtRecord        @relation(fields: [debtId], references: [id], onDelete: Cascade)
+  voucher  FinancialVoucher? @relation(fields: [voucherId], references: [id], onDelete: Restrict)
+  transfer DebtTransfer?     @relation(fields: [transferId], references: [id], onDelete: Cascade)
 
   @@index([voucherId])
+  @@index([transferId])
   @@index([debtId])
   @@index([settlementDate])
+}
+
+/// Chuyển công nợ PHẢI TRẢ giữa hai đối tác, không qua thu chi (khách 23/10/2026): giảm phải trả
+/// đối tác A, tăng phải trả đối tác B. Bút toán Nợ 331 (A) / Có 331 (B), không vào P&L. Khoản
+/// phải trả mới của B là DebtRecord mã = `code` (sourceType DEBT_TRANSFER); khoản của A được gạch
+/// qua DebtSettlement.transferId.
+model DebtTransfer {
+  id              String   @id @default(uuid())
+  code            String   @unique
+  branchCode      String
+  documentDate    DateTime
+  fromPartnerCode String
+  fromPartnerName String
+  toPartnerCode   String
+  toPartnerName   String
+  amount          Float
+  description     String
+  createdBy       String?
+  createdAt       DateTime @default(now())
+
+  settlements DebtSettlement[]
+
+  @@index([branchCode])
+  @@index([fromPartnerCode])
+  @@index([toPartnerCode])
+  @@index([documentDate])
 }
 
 /// Dòng phân bổ của phiếu thu/chi đại diện: một phiếu, một người nhận, nhiều đối tác.
