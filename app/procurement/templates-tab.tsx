@@ -13,7 +13,9 @@ import { TEMPLATE_IMPORT_HEADERS, templateWindow, templateWindowStatus, type Tem
 
 export type TemplateUnitConversion = { id: string; unitCode: string; unitName: string | null; conversionRate: number; isDefaultPurchase: boolean };
 export type TemplateItem = { id: string; code: string; name: string; unit: string; itemType: string; unitConversions?: TemplateUnitConversion[] };
-export type TemplateLine = { id: string; itemId: string; unitCode: string | null; sortOrder: number; note: string | null; item: TemplateItem };
+export type TemplateLine = { id: string; itemId: string; unitCode: string | null; supplierCode?: string | null; supplierName?: string | null; sortOrder: number; note: string | null; item: TemplateItem };
+/** Dòng đang soạn của mẫu: NCC theo từng dòng (khách 23/10/2026). */
+type TemplateRow = { itemId: string; unitCode: string; note?: string; supplierCode?: string };
 export type PurchaseTemplate = { id: string; code: string; name: string; branchCode: string | null; departmentCode: string | null; warehouseCode?: string | null; supplierCode?: string | null; supplierName?: string | null; effectiveFrom?: string | null; effectiveTo?: string | null; status: string; note: string | null; createdBy?: string | null; updatedAt?: string; lines: TemplateLine[] };
 export type DepartmentOption = { id: string; code: string; name: string; branch: string | null };
 export type WarehouseOption = { code: string; name: string; branch: string | null };
@@ -75,7 +77,7 @@ function clearDraft(key: string) {
 
 type ManageDraft = {
   form: { name: string; branchCode: string; departmentCode: string; warehouseCode?: string; supplierCode?: string; note: string; effectiveFrom?: string; effectiveTo?: string };
-  rows: Array<{ itemId: string; unitCode: string; note?: string }>;
+  rows: TemplateRow[];
   editingId: string | null;
 };
 
@@ -104,6 +106,16 @@ function baseQuantityHint(line: { unitCode: string | null; item: TemplateItem },
   const value = Number(quantity || 0);
   if (conversionRate === 1 || !(value > 0)) return "";
   return `= ${formatQuantity(value * conversionRate)} ${line.item.unit}`;
+}
+
+/**
+ * Đổi NCC của một dòng mẫu. Dòng ĐẦU là NCC chung: đổi thì chép xuống các dòng chưa chọn riêng
+ * (trống hoặc đang theo NCC cũ của dòng đầu) — dòng đã chọn NCC khác giữ nguyên (khách 23/10/2026).
+ */
+function changeRowSupplier(rows: TemplateRow[], index: number, supplierCode: string) {
+  if (index !== 0) return rows.map((row, rowIndex) => (rowIndex === index ? { ...row, supplierCode } : row));
+  const previous = rows[0]?.supplierCode || "";
+  return rows.map((row, rowIndex) => (rowIndex === 0 || !row.supplierCode || row.supplierCode === previous ? { ...row, supplierCode } : row));
 }
 
 /**
@@ -152,7 +164,7 @@ export function TemplatesTab({
   const [showManage, setShowManage] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<PurchaseTemplate | null>(null);
   const [templateForm, setTemplateForm] = useState({ name: "", branchCode: "", departmentCode: "", warehouseCode: "", supplierCode: "", note: "", effectiveFrom: "", effectiveTo: "" });
-  const [templateRows, setTemplateRows] = useState<Array<{ itemId: string; unitCode: string; note?: string }>>([{ itemId: "", unitCode: "" }]);
+  const [templateRows, setTemplateRows] = useState<TemplateRow[]>([{ itemId: "", unitCode: "" }]);
   /** Danh sách mẫu: lọc + mẫu đang xem chi tiết (khách yêu cầu 03/10/2026 — rất nhiều mẫu). */
   const [listFilter, setListFilter] = useState({ search: "", branch: "ALL", status: "ACTIVE" });
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -331,13 +343,13 @@ export function TemplatesTab({
       effectiveFrom: templateWindow(template).from || "",
       effectiveTo: templateWindow(template).to || "",
     });
-    setTemplateRows(template.lines.map((line) => ({ itemId: line.itemId, unitCode: line.unitCode || "", note: line.note || "" })));
+    setTemplateRows(template.lines.map((line) => ({ itemId: line.itemId, unitCode: line.unitCode || "", note: line.note || "", supplierCode: line.supplierCode || template.supplierCode || "" })));
     window.setTimeout(() => document.getElementById("template-manage")?.scrollIntoView({ behavior: "smooth" }), 50);
   };
 
   const submitTemplate = async (event: React.FormEvent) => {
     event.preventDefault();
-    const lines = templateRows.filter((row) => row.itemId).map((row) => ({ itemId: row.itemId, unitCode: row.unitCode || undefined, note: row.note || undefined }));
+    const lines = templateRows.filter((row) => row.itemId).map((row) => ({ itemId: row.itemId, unitCode: row.unitCode || undefined, note: row.note || undefined, supplierCode: row.supplierCode || "" }));
     if (templateForm.effectiveFrom && templateForm.effectiveTo && templateForm.effectiveTo < templateForm.effectiveFrom) {
       notify("Ngày kết thúc phải sau Ngày áp dụng.");
       return;
@@ -358,7 +370,8 @@ export function TemplatesTab({
           branchCode: templateForm.branchCode,
           departmentCode: templateForm.departmentCode,
           warehouseCode: templateForm.warehouseCode,
-          supplierCode: templateForm.supplierCode,
+          // NCC giờ khai theo dòng; NCC của mẫu = NCC dòng đầu (mặc định cho người đặt / thu mua).
+          supplierCode: lines[0]?.supplierCode || "",
           effectiveFrom: templateForm.effectiveFrom,
           effectiveTo: templateForm.effectiveTo,
           note: templateForm.note,
@@ -409,7 +422,7 @@ export function TemplatesTab({
     const sample = items.slice(0, 3);
     const rows = [
       [...TEMPLATE_IMPORT_HEADERS],
-      ...sample.map((item, index) => [index === 0 ? "" : "", "Mẫu đặt hàng Bếp", branchOptions[0]?.code || "", departments[0]?.code || "", index === 0 ? "" : "", "", item.code, item.name, item.unitConversions?.find((unit) => unit.isDefaultPurchase)?.unitCode || item.unit, ""]),
+      ...sample.map((item, index) => [index === 0 ? "" : "", "Mẫu đặt hàng Bếp", branchOptions[0]?.code || "", departments[0]?.code || "", index === 0 ? "" : "", "", item.code, item.name, item.unitConversions?.find((unit) => unit.isDefaultPurchase)?.unitCode || item.unit, "", ""]),
     ];
     const guide = [
       ["Cột", "Cách ghi"],
@@ -421,10 +434,11 @@ export function TemplatesTab({
       ["Mã hàng / Tên hàng", "Mã hàng bắt buộc; Tên hàng chỉ để tham khảo."],
       ["ĐVT", "ĐVT đặt hàng (THÙNG, KG...) đã khai quy đổi; để trống = ĐVT mua mặc định."],
       ["Ghi chú", "Ghi chú của dòng (hiện cho người đặt)."],
+      ["Mã NCC", "Mã đối tác NCC của dòng (không bắt buộc) — mỗi dòng một NCC; duyệt PR tự tách PO theo NCC."],
     ];
     const workbook = XLSX.utils.book_new();
     const sheet = XLSX.utils.aoa_to_sheet(rows);
-    sheet["!cols"] = [12, 28, 10, 12, 14, 14, 16, 34, 10, 24].map((wch) => ({ wch }));
+    sheet["!cols"] = [12, 28, 10, 12, 14, 14, 16, 34, 10, 24, 14].map((wch) => ({ wch }));
     XLSX.utils.book_append_sheet(workbook, sheet, "Mau dat hang");
     const guideSheet = XLSX.utils.aoa_to_sheet(guide);
     guideSheet["!cols"] = [{ wch: 28 }, { wch: 120 }];
@@ -565,7 +579,7 @@ export function TemplatesTab({
             <label className="block text-xs font-bold text-slate-600">Ngày cần hàng
               <DateInput value={fillNeededDate} onChange={setFillNeededDate} className="control" ariaLabel="Ngày cần hàng" />
             </label>
-            <label className="block text-xs font-bold text-slate-600">Nhà cung cấp
+            <label className="block text-xs font-bold text-slate-600">NCC cho dòng chưa có NCC
               <div className="mt-1.5">
                 <SearchableSelect
                   value={fillSupplier}
@@ -612,6 +626,7 @@ export function TemplatesTab({
                       {line.item.code} · ĐVT: <b>{lineUnit(line)}</b>
                       {baseQuantityHint(line, quantity, fillUnits[line.id]) ? <span className="text-blue-700 font-semibold"> {baseQuantityHint(line, quantity, fillUnits[line.id])}</span> : null}
                       {line.note ? ` · ${line.note}` : ""}
+                      {line.supplierName ? <span className="block text-slate-400">NCC: {line.supplierName}</span> : null}
                     </p>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
@@ -839,16 +854,6 @@ export function TemplatesTab({
                     .map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name} ({warehouse.code})</option>)}
                 </select>
               </label>
-              <label className="block text-xs font-bold text-slate-600">Nhà cung cấp mặc định
-                <div className="mt-1.5">
-                  <SearchableSelect
-                    value={templateForm.supplierCode}
-                    onChange={(value) => setTemplateForm((current) => ({ ...current, supplierCode: value }))}
-                    options={[{ value: "", label: "Chưa chọn — người đặt / thu mua chọn" }, ...suppliers]}
-                    placeholder="Chưa chọn — người đặt / thu mua chọn"
-                  />
-                </div>
-              </label>
               <label className="block text-xs font-bold text-slate-600">Bộ phận mặc định
                 <select className="control" value={templateForm.departmentCode} onChange={(e) => { const value = e.target.value; setTemplateForm((current) => ({ ...current, departmentCode: value })); }}>
                   <option value="">Người đặt tự chọn</option>
@@ -871,10 +876,11 @@ export function TemplatesTab({
             <div className="space-y-3 border border-slate-100 rounded-lg p-3.5 bg-slate-50/50">
               <div className="flex items-center justify-between border-b border-slate-200/60 pb-2">
                 <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Danh sách mặt hàng của mẫu</h3>
-                <button type="button" className="text-xs font-bold text-blue-600 hover:underline flex items-center gap-0.5" onClick={() => setTemplateRows((rows) => [...rows, { itemId: "", unitCode: "" }])}>
+                <button type="button" className="text-xs font-bold text-blue-600 hover:underline flex items-center gap-0.5" onClick={() => setTemplateRows((rows) => [...rows, { itemId: "", unitCode: "", supplierCode: rows[0]?.supplierCode || "" }])}>
                   <span className="material-symbols-outlined text-sm font-bold">add</span>Thêm dòng
                 </button>
               </div>
+              <p className="text-[11px] text-slate-500">Chọn NCC ở <b>dòng đầu</b> là tự chép xuống các dòng chưa chọn riêng; dòng nào lấy NCC khác thì chọn lại ở dòng đó. Lúc duyệt PR, hệ thống tự tách mỗi NCC một PO.</p>
               {templateRows.map((row, index) => {
                 const { defaultLabel, conversions } = unitOptionsForItem(row.itemId);
                 return (
@@ -885,7 +891,7 @@ export function TemplatesTab({
                         <button type="button" className="text-xs font-bold text-rose-600 hover:underline" onClick={() => setTemplateRows((rows) => rows.filter((_, rowIndex) => rowIndex !== index))}>Xóa</button>
                       )}
                     </div>
-                    <div className="grid sm:grid-cols-[minmax(0,1fr)_180px_minmax(0,240px)] gap-2">
+                    <div className="grid sm:grid-cols-[minmax(0,1fr)_160px] xl:grid-cols-[minmax(0,1fr)_160px_minmax(0,260px)_minmax(0,200px)] gap-2">
                       <SearchableSelect
                         value={row.itemId}
                         onChange={(itemId) => setTemplateRows((rows) => rows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, itemId, unitCode: "" } : candidate))}
@@ -902,6 +908,12 @@ export function TemplatesTab({
                           <option key={unit.unitCode} value={unit.unitCode}>{unit.unitName || unit.unitCode}</option>
                         ))}
                       </select>
+                      <SearchableSelect
+                        value={row.supplierCode || ""}
+                        onChange={(supplierCode) => setTemplateRows((rows) => changeRowSupplier(rows, index, supplierCode))}
+                        options={[{ value: "", label: "Chưa chọn NCC" }, ...suppliers]}
+                        placeholder={index === 0 ? "NCC (chép xuống các dòng)" : "Nhà cung cấp"}
+                      />
                       <input
                         className="control !mt-0"
                         placeholder="Ghi chú dòng (không bắt buộc)"

@@ -31,7 +31,7 @@ type Supplier = { id: string; code: string; name: string; phone?: string | null;
 type PriceSuggestion = { price: number; source: string; supplierName?: string };
 /** unitCode / conversionRate: ĐVT đặt hàng (số lượng, đơn giá trong DB theo ĐVT tồn) — lib/unit-conversion. */
 type UnitFields = { unitCode?: string | null; conversionRate?: number | null };
-type RequestLine = UnitFields & { id: string; itemId: string; quantity: number; estimatedUnitCost: number; imageUrl: string | null; note?: string | null; item: Item };
+type RequestLine = UnitFields & { id: string; itemId: string; quantity: number; estimatedUnitCost: number; imageUrl: string | null; note?: string | null; supplierCode?: string | null; supplierName?: string | null; item: Item };
 type QuoteLine = UnitFields & { itemId: string; quantity: number; unitCost: number; vatRate?: number | null; item?: Item };
 type Quote = { id: string; supplierCode: string; supplierName: string; totalAmount: number; deliveryDays: number | null; paymentTerms: string | null; isSelected: boolean; note: string | null; lines: QuoteLine[] };
 type PurchaseRequest = { id: string; code: string; requestDate: string; branchCode: string; departmentCode: string | null; warehouseCode?: string | null; supplierCode?: string | null; supplierName?: string | null; rejectReason?: string | null; requestedBy: string; neededDate: string | null; reason: string; status: string; approvedAt: string | null; note: string | null; lines: RequestLine[]; quotes: Quote[]; orders?: Array<{ id: string; code: string; status: string }> };
@@ -41,7 +41,8 @@ type Data = { items: Item[]; requests: PurchaseRequest[]; orders: PurchaseOrder[
 /** Chứng từ mua hàng đang chờ xác nhận xoá. */
 type DeleteTarget = { type: "REQUEST" | "ORDER" | "QUOTE"; id: string; title: string; description: string; label: string };
 /** Một dòng hàng trên form PR nhiều dòng. */
-type RequestRow = { itemId: string; unitCode: string; quantity: string; estimatedUnitCost: string; imageUrl: string };
+/** supplierCode: NCC riêng của dòng (từ dòng mẫu, khách 23/10/2026); trống = NCC của phiếu. */
+type RequestRow = { itemId: string; unitCode: string; quantity: string; estimatedUnitCost: string; imageUrl: string; supplierCode?: string };
 
 /** Số lượng + ĐVT đặt hàng của một dòng PR / báo giá / PO để hiển thị ("1 KG", không phải "1.000 GR"). */
 const qtyText = (quantity: number, line: UnitFields & { item?: { unit: string } | null }) => `${qty(toPurchaseQuantity(quantity, line))} ${purchaseLineUnit(line)}`;
@@ -601,6 +602,7 @@ export default function ProcurementPage() {
       quantity: String(toPurchaseQuantity(line.quantity, line)),
       estimatedUnitCost: String(toPurchasePrice(line.estimatedUnitCost, line)),
       imageUrl: line.imageUrl || "",
+      supplierCode: line.supplierCode || "",
     })));
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -609,7 +611,7 @@ export default function ProcurementPage() {
     event.preventDefault();
     const lines = requestRows
       .filter((row) => row.itemId && Number(row.quantity) > 0)
-      .map((row) => ({ itemId: row.itemId, unitCode: row.unitCode || undefined, quantity: row.quantity, estimatedUnitCost: row.estimatedUnitCost, imageUrl: row.imageUrl }));
+      .map((row) => ({ itemId: row.itemId, unitCode: row.unitCode || undefined, quantity: row.quantity, estimatedUnitCost: row.estimatedUnitCost, imageUrl: row.imageUrl, supplierCode: row.supplierCode || "" }));
     if (lines.length === 0) {
       setMessage("Chọn ít nhất một mặt hàng và số lượng lớn hơn 0.");
       return;
@@ -1130,6 +1132,7 @@ export default function ProcurementPage() {
                         <th className="px-2 py-2 text-left w-44">ĐVT đặt</th>
                         <th className="px-2 py-2 text-right w-28">Số lượng</th>
                         <th className="px-2 py-2 text-right w-36">Đơn giá dự kiến</th>
+                        <th className="px-2 py-2 text-left w-48">NCC</th>
                         <th className="px-2 py-2 text-right w-32">Thành tiền</th>
                         <th className="px-2 py-2 w-10" />
                       </tr>
@@ -1169,6 +1172,12 @@ export default function ProcurementPage() {
                                   Gợi ý {unitPrice(suggestion.price * rate)} đ/{unit}
                                 </small>
                               )}
+                            </td>
+                            <td className="px-2 py-1.5">
+                              <select className="control !mt-0" value={row.supplierCode || ""} onChange={(e) => patch({ supplierCode: e.target.value })} aria-label="Nhà cung cấp của dòng">
+                                <option value="">Theo NCC của phiếu</option>
+                                {supplierOptions.filter((option) => option.value).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                              </select>
                             </td>
                             <td className="px-2 py-2 text-right tabular-nums text-slate-700">{money(Number(row.quantity || 0) * Number(row.estimatedUnitCost || 0))}</td>
                             <td className="px-1 py-1.5 text-center">

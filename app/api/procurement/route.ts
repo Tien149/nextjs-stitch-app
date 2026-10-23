@@ -63,6 +63,8 @@ type InputLine = {
   note?: unknown;
   /** ĐVT đặt hàng: có thì quantity / unitCost gửi lên tính THEO ĐVT NÀY (xem withPurchaseUnits). */
   unitCode?: unknown;
+  /** NCC đề xuất của dòng (khách 23/10/2026); trống = theo NCC của phiếu. */
+  supplierCode?: unknown;
 };
 
 /**
@@ -102,6 +104,7 @@ function validLines(value: unknown) {
       imageUrl: cleanText(line.imageUrl),
       note: cleanText(line.note),
       unitCode: cleanText(line.unitCode),
+      supplierCode: cleanText(line.supplierCode),
     }))
     .filter((line) => line.itemId && line.quantity > 0);
 }
@@ -157,6 +160,7 @@ function editableLines(value: unknown) {
     imageUrl: cleanText(line.imageUrl),
     note: cleanText(line.note),
     unitCode: cleanText(line.unitCode),
+    supplierCode: cleanText(line.supplierCode),
   }));
   if (lines.length === 0) businessError("Cần ít nhất một mặt hàng");
   for (const line of lines) {
@@ -217,6 +221,22 @@ async function resolveSupplier(value: unknown) {
   const partner = await prisma.masterDataItem.findFirst({ where: { type: "PARTNER", code: supplierCode }, select: { code: true, name: true } });
   if (!partner) businessError(`Không tìm thấy nhà cung cấp ${supplierCode}.`);
   return { supplierCode: partner.code, supplierName: partner.name };
+}
+
+/**
+ * NCC theo từng dòng mẫu / PR (khách 23/10/2026: một mẫu lấy hàng nhiều NCC). Trả hàm tra
+ * mã → { supplierCode, supplierName } theo danh mục đối tác; mã trống = null (theo NCC của phiếu).
+ */
+async function lineSupplierResolver(codes: Array<string | null | undefined>) {
+  const wanted = [...new Set(codes.map((code) => cleanText(code)).filter(Boolean))];
+  const partners = wanted.length === 0 ? [] : await prisma.masterDataItem.findMany({ where: { type: "PARTNER", code: { in: wanted } }, select: { code: true, name: true } });
+  const byCode = new Map(partners.map((partner) => [partner.code, partner.name]));
+  const missing = wanted.find((code) => !byCode.has(code));
+  if (missing) businessError(`Không tìm thấy nhà cung cấp ${missing}.`);
+  return (code: string | null | undefined) => {
+    const value = cleanText(code);
+    return value ? { supplierCode: value, supplierName: byCode.get(value) || value } : { supplierCode: null, supplierName: null };
+  };
 }
 
 /** Kho của mẫu (trống = mọi kho): thuộc cửa hàng của mẫu và trong phạm vi kho của người lập. */
@@ -548,6 +568,7 @@ export async function POST(request: Request) {
       // gửi kèm status/code tuỳ ý để nhảy cóc trạng thái hoặc phá dãy mã chứng từ.
       const warehouseCode = await resolveRequestWarehouse(auth.session, branchCode, body.warehouseCode);
       const supplier = await resolveSupplier(body.supplierCode);
+      const lineSupplier = await lineSupplierResolver(lines.map((line) => line.supplierCode));
       const code = await generatedCode("PR", "PurchaseRequest");
       if (await findDeletedByUnique("PurchaseRequest", { code })) {
         businessError(duplicatedInTrashMessage(code, "Đề nghị mua hàng"));
@@ -573,6 +594,7 @@ export async function POST(request: Request) {
               estimatedUnitCost: line.unitCost,
               unitCode: line.unitCode,
               conversionRate: line.conversionRate,
+              ...lineSupplier(line.supplierCode),
               imageUrl: line.imageUrl || null,
               note: line.note || null,
             })),
@@ -842,6 +864,14 @@ export async function POST(request: Request) {
           result.errors.push({ row: group.lines[0]?.row || 0, message: error instanceof Error ? error.message.replace(/^BUSINESS:/, "") : String(error) });
         }
       }
+      // Mã NCC từng dòng phải có trong danh mục đối tác.
+      const importSupplierCodes = [...new Set(result.groups.flatMap((group) => group.lines.map((line) => line.supplierCode)).filter((code): code is string => Boolean(code)))];
+      const knownSuppliers = new Map((importSupplierCodes.length === 0 ? [] : await prisma.masterDataItem.findMany({ where: { type: "PARTNER", code: { in: importSupplierCodes } }, select: { code: true, name: true } })).map((row) => [row.code.toUpperCase(), row]));
+      for (const group of result.groups) {
+        for (const line of group.lines) {
+          if (line.supplierCode && !knownSuppliers.has(line.supplierCode)) result.errors.push({ row: line.row, message: `Mã NCC ${line.supplierCode} không có trong danh mục Đối tác` });
+        }
+      }
       const summary = resolved.map(({ group, existing }) => ({ code: existing?.code || null, name: group.name, branchCode: group.branchCode, departmentCode: group.departmentCode, from: group.from, to: group.to, lineCount: group.lines.length }));
       if (!body.commit || result.errors.length > 0) {
         return NextResponse.json({ committed: false, groups: summary, errors: result.errors.sort((a, b) => a.row - b.row).slice(0, 500), errorCount: result.errors.length });
@@ -855,7 +885,10 @@ export async function POST(request: Request) {
           effectiveFrom: templateDayToDate(group.from),
           effectiveTo: templateDayToDate(group.to),
         };
-        const lineData = group.lines.map((line, index) => ({ itemId: line.itemId, unitCode: line.unitCode, sortOrder: index, note: line.note }));
+        const lineData = group.lines.map((line, index) => {
+          const supplier = line.supplierCode ? knownSuppliers.get(line.supplierCode) : null;
+          return { itemId: line.itemId, unitCode: line.unitCode, supplierCode: supplier?.code || null, supplierName: supplier?.name || null, sortOrder: index, note: line.note };
+        });
         if (existing) {
           await prisma.$transaction(async (tx) => {
             await tx.purchaseRequestTemplateLine.deleteMany({ where: { templateId: existing.id } });
@@ -875,9 +908,9 @@ export async function POST(request: Request) {
 
     if (action === "CREATE_TEMPLATE") {
       const name = cleanText(body.name);
-      const rawLines = Array.isArray(body.lines) ? (body.lines as Array<{ itemId?: unknown; unitCode?: unknown; note?: unknown }>) : [];
+      const rawLines = Array.isArray(body.lines) ? (body.lines as Array<{ itemId?: unknown; unitCode?: unknown; note?: unknown; supplierCode?: unknown }>) : [];
       const lines = rawLines
-        .map((line) => ({ itemId: cleanText(line.itemId), unitCode: cleanText(line.unitCode) || null, note: cleanText(line.note) || null }))
+        .map((line) => ({ itemId: cleanText(line.itemId), unitCode: cleanText(line.unitCode) || null, note: cleanText(line.note) || null, supplierCode: cleanText(line.supplierCode) || null }))
         .filter((line) => line.itemId);
       if (!name || lines.length === 0) businessError("Mẫu cần tên và ít nhất một mặt hàng");
       await assertTemplateItems(lines.map((line) => line.itemId));
@@ -885,6 +918,7 @@ export async function POST(request: Request) {
       assertTemplateBranchAccess(auth.session, branchCode);
       const warehouseCode = await resolveTemplateWarehouse(auth.session, branchCode, body.warehouseCode);
       const supplier = await resolveSupplier(body.supplierCode);
+      const lineSupplier = await lineSupplierResolver(lines.map((line) => line.supplierCode));
       const result = await prisma.purchaseRequestTemplate.create({
         data: {
           code: await generatedTemplateCode(),
@@ -896,7 +930,7 @@ export async function POST(request: Request) {
           ...templateEffectiveDates(body),
           note: cleanText(body.note) || null,
           createdBy: auth.session.name,
-          lines: { create: lines.map((line, index) => ({ itemId: line.itemId, unitCode: line.unitCode, sortOrder: index, note: line.note })) },
+          lines: { create: lines.map((line, index) => ({ itemId: line.itemId, unitCode: line.unitCode, ...lineSupplier(line.supplierCode), sortOrder: index, note: line.note })) },
         },
         include: { lines: { include: { item: true } }, },
       });
@@ -970,6 +1004,9 @@ export async function POST(request: Request) {
           estimatedUnitCost: suggestion?.price || 0,
           unitCode,
           conversionRate: rate,
+          // NCC của dòng mẫu (khách 23/10/2026); dòng mẫu chưa có NCC thì theo NCC người đặt chọn / của mẫu.
+          templateSupplierCode: line.supplierCode,
+          templateSupplierName: line.supplierName,
         };
       });
 
@@ -994,7 +1031,13 @@ export async function POST(request: Request) {
           // Thu mua duyệt PR mới lên PO (khách 21/10/2026).
           status: "PENDING_APPROVAL",
           note: cleanText(body.note) || `Theo mẫu ${template.code}`,
-          lines: { create: prLines },
+          lines: {
+            create: prLines.map(({ templateSupplierCode, templateSupplierName, ...line }) => ({
+              ...line,
+              supplierCode: templateSupplierCode || supplier?.supplierCode || null,
+              supplierName: templateSupplierCode ? templateSupplierName : supplier?.supplierName || null,
+            })),
+          },
         },
         include: { lines: { include: { item: true } } },
       });
@@ -1255,13 +1298,14 @@ export async function PATCH(request: Request) {
       const supplier = await resolveSupplier(body.supplierCode);
 
       const rawLines = body.lines !== undefined
-        ? (Array.isArray(body.lines) ? (body.lines as Array<{ itemId?: unknown; unitCode?: unknown; note?: unknown }>) : [])
+        ? (Array.isArray(body.lines) ? (body.lines as Array<{ itemId?: unknown; unitCode?: unknown; note?: unknown; supplierCode?: unknown }>) : [])
         : null;
       const nextLines = rawLines
         ? rawLines
-            .map((line) => ({ itemId: cleanText(line.itemId), unitCode: cleanText(line.unitCode) || null, note: cleanText(line.note) || null }))
+            .map((line) => ({ itemId: cleanText(line.itemId), unitCode: cleanText(line.unitCode) || null, note: cleanText(line.note) || null, supplierCode: cleanText(line.supplierCode) || null }))
             .filter((line) => line.itemId)
         : null;
+      const templateLineSupplier = await lineSupplierResolver((nextLines || []).map((line) => line.supplierCode));
       if (nextLines && nextLines.length === 0) businessError("Mẫu cần ít nhất một mặt hàng");
       if (nextLines) await assertTemplateItems(nextLines.map((line) => line.itemId));
 
@@ -1269,7 +1313,7 @@ export async function PATCH(request: Request) {
         if (nextLines) {
           await tx.purchaseRequestTemplateLine.deleteMany({ where: { templateId } });
           await tx.purchaseRequestTemplateLine.createMany({
-            data: nextLines.map((line, index) => ({ templateId, itemId: line.itemId, unitCode: line.unitCode, sortOrder: index, note: line.note })),
+            data: nextLines.map((line, index) => ({ templateId, itemId: line.itemId, unitCode: line.unitCode, ...templateLineSupplier(line.supplierCode), sortOrder: index, note: line.note })),
           });
         }
         return tx.purchaseRequestTemplate.update({
@@ -1338,6 +1382,7 @@ export async function PATCH(request: Request) {
 
       const nextLines = body.lines !== undefined ? await withPurchaseUnits(editableLines(body.lines)) : null;
       if (nextLines) await assertImageRequirement(nextLines);
+      const lineSupplier = await lineSupplierResolver((nextLines || []).map((line) => line.supplierCode));
 
       const result = await prisma.$transaction(async (tx) => {
         if (nextLines) {
@@ -1350,6 +1395,7 @@ export async function PATCH(request: Request) {
               estimatedUnitCost: line.unitCost,
               unitCode: line.unitCode,
               conversionRate: line.conversionRate,
+              ...lineSupplier(line.supplierCode),
               imageUrl: line.imageUrl || null,
               note: line.note || null,
             })),

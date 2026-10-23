@@ -1163,6 +1163,9 @@ model PurchaseRequestTemplateLine {
   itemId     String
   /// ĐVT đặt hàng trên mẫu (mã trong ItemUnitConversion). Trống = ĐVT mua mặc định của mặt hàng.
   unitCode   String?
+  /// NCC của dòng (khách 23/10/2026: một mẫu lấy hàng nhiều NCC) — đi theo sang dòng PR, duyệt tự tách PO.
+  supplierCode String?
+  supplierName String?
   sortOrder  Int     @default(0)
   note       String?
 
@@ -1219,6 +1222,9 @@ model PurchaseRequestLine {
   /// Số lượng / đơn giá trong DB vẫn theo ĐVT tồn kho; hiển thị = số lượng ÷ hệ số, đơn giá × hệ số.
   unitCode          String?
   conversionRate    Float   @default(1)
+  /// NCC đề xuất của dòng (từ dòng mẫu); trống = theo NCC của phiếu. Thu mua đổi được lúc duyệt.
+  supplierCode      String?
+  supplierName      String?
   imageUrl          String?
   note              String?
 

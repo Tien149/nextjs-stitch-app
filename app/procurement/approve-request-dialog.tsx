@@ -5,7 +5,7 @@ import { PartnerPicker, type CreatedPartner } from "@/components/PartnerPicker";
 import { money, quantity as qty } from "@/lib/format-number";
 import { purchaseLineUnit, toPurchasePrice, toPurchaseQuantity, type PurchaseUnitLine } from "@/lib/unit-conversion";
 
-type ApproveLine = PurchaseUnitLine & { id: string; itemId: string; quantity: number; item: { code: string; name: string; unit: string } };
+type ApproveLine = PurchaseUnitLine & { id: string; itemId: string; quantity: number; supplierCode?: string | null; supplierName?: string | null; item: { code: string; name: string; unit: string } };
 type ApproveQuote = { supplierCode: string; supplierName: string; isSelected: boolean; lines: Array<PurchaseUnitLine & { itemId: string; unitCost: number }> };
 export type ApprovableRequest = { id: string; code: string; branchCode: string; reason: string; warehouseCode?: string | null; supplierCode?: string | null; supplierName?: string | null; lines: ApproveLine[]; quotes: ApproveQuote[] };
 type ActivePriceRow = { itemId: string; supplierCode: string; supplierName: string; stockUnitPrice: number; unitPrice: number; unitCode: string; priceListCode: string };
@@ -96,12 +96,13 @@ export function ApproveRequestDialog({
     setPriceSource((current) => ({ ...current, ...Object.fromEntries(entries.map((entry) => [entry.lineId, offerOf(entry.lineId, entry.supplier.code)?.source || ""])) }));
   };
 
-  // Lần đầu có bảng giá: dòng theo NCC mặc định của phiếu; phiếu chưa có NCC thì dòng lấy NCC rẻ nhất.
+  // Lần đầu có bảng giá: dòng theo NCC của chính dòng (từ mẫu) → NCC mặc định của phiếu → NCC rẻ nhất.
   useEffect(() => {
     if (!activePrices) return;
     const timer = window.setTimeout(() => {
       assign(request.lines.map((line) => {
         const cheapest = offersByLine.get(line.id)?.[0];
+        if (line.supplierCode) return { lineId: line.id, supplier: { code: line.supplierCode, name: line.supplierName || line.supplierCode } };
         return { lineId: line.id, supplier: initialSupplier.code ? initialSupplier : cheapest ? { code: cheapest.supplierCode, name: cheapest.supplierName } : { code: "", name: "" } };
       }));
     }, 0);

@@ -43,6 +43,8 @@ export const TEMPLATE_IMPORT_HEADERS = [
   "Tên hàng",
   "ĐVT",
   "Ghi chú",
+  /** NCC của dòng (khách 23/10/2026) — không bắt buộc. */
+  "Mã NCC",
 ] as const;
 
 const fold = (value: string) => value.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/g, "d").replace(/Đ/g, "D").toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -58,7 +60,7 @@ export type TemplateImportGroup = {
   departmentCode: string | null;
   from: string | null;
   to: string | null;
-  lines: Array<{ itemId: string; itemCode: string; unitCode: string | null; note: string | null; row: number }>;
+  lines: Array<{ itemId: string; itemCode: string; unitCode: string | null; note: string | null; supplierCode: string | null; row: number }>;
 };
 
 export function buildTemplateImport(
@@ -132,10 +134,10 @@ export function buildTemplateImport(
       group.from ||= from;
       group.to ||= to;
       if (group.lines.some((line) => line.itemId === item.id)) return fail(`${itemCode} bị lặp trong mẫu "${name}"`);
-      group.lines.push({ itemId: item.id, itemCode: item.code, unitCode, note: text("Ghi chú") || null, row: rowNumber });
+      group.lines.push({ itemId: item.id, itemCode: item.code, unitCode, note: text("Ghi chú") || null, supplierCode: text("Mã NCC").toUpperCase() || null, row: rowNumber });
       return;
     }
-    groups.set(key, { code, name, branchCode, departmentCode, from, to, lines: [{ itemId: item.id, itemCode: item.code, unitCode, note: text("Ghi chú") || null, row: rowNumber }] });
+    groups.set(key, { code, name, branchCode, departmentCode, from, to, lines: [{ itemId: item.id, itemCode: item.code, unitCode, note: text("Ghi chú") || null, supplierCode: text("Mã NCC").toUpperCase() || null, row: rowNumber }] });
   });
   return { groups: [...groups.values()], errors };
 }
