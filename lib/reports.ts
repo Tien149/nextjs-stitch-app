@@ -2110,6 +2110,25 @@ export async function getCashSourceReport(months: string[], branchCode: string) 
  * Đệ quy chỉ đi đúng một tầng: lời gọi bên trong luôn có kỳ đầu = kỳ gốc nên rẽ vào nhánh
  * khai tay và dừng.
  */
+/**
+ * Kỳ gốc của Báo cáo nguồn tiền: kỳ khai số dư đầu kỳ tiền/ngân hàng/ví sớm nhất (lúc lên hệ
+ * thống). Xem theo NĂM mà năm đó chứa kỳ gốc thì bảng bắt đầu từ kỳ gốc (khách 23/10/2026: trải
+ * từ T1 thì số dư khai ở T8 không được cộng vào, còn tiền cọc nhận trước khi lên hệ thống lại
+ * thành phát sinh T2–T7 — số cuối tháng âm, lạ).
+ */
+export async function cashSourceAnchorPeriod(branchCode: string) {
+  const row = await prisma.openingBalance.findFirst({
+    where: {
+      ...(branchCode === "ALL" ? {} : { branchCode }),
+      status: { in: [...OPENING_BALANCE_EFFECTIVE_STATUSES] },
+      balanceType: { in: [...CASH_SOURCE_OPENING_TYPES] },
+    },
+    orderBy: { period: "asc" },
+    select: { period: true },
+  });
+  return row?.period || null;
+}
+
 async function cashSourceOpeningByCode(period: string, branchCode: string): Promise<Record<string, number>> {
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
   const openingWhere = {

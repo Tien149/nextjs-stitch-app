@@ -948,6 +948,9 @@ export default function ReportsPage() {
             </h2>
             <p className="mt-1 text-xs text-slate-500">
               {cashSource.branchCode === "ALL" ? "Tất cả cửa hàng" : storeLabel(cashSource.branchCode)} · Tiền thực thu/thực chi theo từng khoản mục thu và chi.
+              {cashSource.view === "year" && cashSource.months[0] && cashSource.months[0] > `${cashSource.year}-01` && (
+                <> Bắt đầu từ <b>T{Number(cashSource.months[0].slice(5))}/{cashSource.year}</b> — kỳ khai số dư đầu kỳ lúc lên hệ thống; các tháng trước chưa có số liệu nguồn tiền.</>
+              )}
             </p>
           </div>
 

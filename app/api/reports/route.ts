@@ -4,7 +4,7 @@ import { requireMenuAccess, requireMenuAction } from "@/lib/api-auth";
 import { allowedMenuTabs, canViewFinancialDashboard } from "@/lib/auth-demo";
 import { assertBranchAccess, ensureRevenueComponentCategories, postJournalEntry, requestedBranch } from "@/lib/accounting";
 import { prisma } from "@/lib/prisma";
-import { createMoneySourceMatcher, getBalanceSheet, getCashSourceReport, getCashflowForecast, getPnl, getRevenueDayImportRows, getRevenueLedger, getRevenueLedgerDetail, getRevenueSettlementReport, getTrend, PNL_UNGROUPED_CODE } from "@/lib/reports";
+import { cashSourceAnchorPeriod, createMoneySourceMatcher, getBalanceSheet, getCashSourceReport, getCashflowForecast, getPnl, getRevenueDayImportRows, getRevenueLedger, getRevenueLedgerDetail, getRevenueSettlementReport, getTrend, PNL_UNGROUPED_CODE } from "@/lib/reports";
 import { deleteRevenueImportRows } from "@/lib/import-commit";
 import { getPayrollBudgetReport, getPnlHistoryEditor, getPnlMatrix, getRevenueTrendReport } from "@/lib/report-budget";
 import { headcountToStored, isPnlHistoryChannelMetric, isPnlHistoryHeadcountMetric, isPnlHistoryPeriod, PNL_HISTORY_HEADCOUNT_PREFIX, PNL_HISTORY_CHANNEL_PREFIX, PNL_HISTORY_CUTOFF, PNL_HISTORY_ITEM_PREFIX, PNL_HISTORY_REVENUE_KINDS, PNL_HISTORY_REVENUE_PREFIX } from "@/lib/pnl-history";
@@ -1283,8 +1283,11 @@ export async function GET(request: Request) {
       // Xem theo năm thì trải 12 tháng của năm đang chọn, xem theo tháng thì chỉ một kỳ.
       const view = cleanText(params.get("view")) === "year" ? "year" : "month";
       const year = period.slice(0, 4);
+      const yearMonths = Array.from({ length: 12 }, (_, index) => `${year}-${String(index + 1).padStart(2, "0")}`);
+      // Năm chứa kỳ lên hệ thống: bắt đầu từ kỳ khai số dư đầu kỳ (lib/reports.ts cashSourceAnchorPeriod).
+      const anchor = view === "year" ? await cashSourceAnchorPeriod(branchCode) : null;
       const months = view === "year"
-        ? Array.from({ length: 12 }, (_, index) => `${year}-${String(index + 1).padStart(2, "0")}`)
+        ? (anchor && anchor.startsWith(`${year}-`) ? yearMonths.filter((month) => month >= anchor) : yearMonths)
         : [period];
       return NextResponse.json({ period, view, year, ...(await getCashSourceReport(months, branchCode)) });
     }
