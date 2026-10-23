@@ -1044,7 +1044,7 @@ export default function ReportsPage() {
               <section className="table-panel">
                 <PanelHeader title="Tổng quan nguồn tiền theo tháng" subtitle="Tổng thu, tổng chi và nguồn tiền còn lại từng tháng; kèm mục tiêu Nguồn tiền còn lại khai ở màn Ngân sách." />
                 <div className="overflow-x-auto">
-                  <Table headers={["Chỉ tiêu", ...cashSource.months.map((item) => `T${Number(item.slice(5))}`), "Tổng"]}>
+                  <Table rightFrom={1} headers={["Chỉ tiêu", ...cashSource.months.map((item) => `T${Number(item.slice(5))}`), "Tổng"]}>
                     {([
                       { label: "Tổng thu", pick: (row: { in: number; out: number; net: number }, index: number) => row.in, total: cashSource.totals.in },
                       { label: "Tổng chi", pick: (row: { in: number; out: number; net: number }, index: number) => row.out, total: cashSource.totals.out },
@@ -1088,7 +1088,7 @@ export default function ReportsPage() {
                   subtitle="Số dư từng nguồn tiền mặt/ngân hàng tại thời điểm cuối mỗi tháng: đầu kỳ cộng dồn biến động của các tháng trước đó."
                 />
                 <div className="overflow-x-auto">
-                  <Table headers={["Nguồn tiền", "Đầu kỳ", ...cashSource.months.map((item) => `T${Number(item.slice(5))}`)]}>
+                  <Table rightFrom={1} headers={["Nguồn tiền", "Đầu kỳ", ...cashSource.months.map((item) => `T${Number(item.slice(5))}`)]}>
                     {cashSource.sources.filter((row) => row.group !== DEBT_PROJECTION_GROUP).map((row) => (
                       <tr key={row.code} className="border-t border-slate-100 hover:bg-slate-50">
                         <Cell><b>{cashSourceLabel(row.name)}</b><p className="mt-0.5 text-xs text-slate-500">{row.code}</p></Cell>
@@ -2131,7 +2131,8 @@ function PanelHeader({ title, subtitle, exportFileName, exportable = true }: { t
   );
 }
 
-function Table({ headers, children }: { headers: string[]; children: React.ReactNode }) {
+/** rightFrom: tiêu đề từ cột này trở đi canh phải cho thẳng với cột số (khách 23/10/2026 — bảng tháng lệch cột). */
+function Table({ headers, children, rightFrom }: { headers: string[]; children: React.ReactNode; rightFrom?: number }) {
   // Bọc khung cuộn ngang ngay tại đây: số ghi đủ chữ số nên bảng nhiều cột dễ vượt bề ngang,
   // để bảng tự cuộn còn hơn bóp cột lại rồi cắt số. Nút Xuất Excel tìm <table> theo
   // querySelector nên thêm một lớp div không ảnh hưởng.
@@ -2141,7 +2142,7 @@ function Table({ headers, children }: { headers: string[]; children: React.React
         <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-bold border-b border-slate-200">
           <tr>
             {headers.map((h, i) => (
-              <th key={h} className={`px-4 py-3 whitespace-nowrap ${i === headers.length - 1 ? "text-right" : i === 0 ? "text-left" : "text-left"}`}>{h}</th>
+              <th key={h} className={`px-4 py-3 whitespace-nowrap ${i === headers.length - 1 || (rightFrom !== undefined && i >= rightFrom) ? "text-right" : "text-left"}`}>{h}</th>
             ))}
           </tr>
         </thead>
@@ -3736,7 +3737,7 @@ function CashMonthMatrix({ title, months, rows }: { title: string; months: strin
     <section className="table-panel">
       <PanelHeader title={title} subtitle="Cuộn ngang để xem đủ 12 tháng. Ô trống là tháng không phát sinh." />
       <div className="overflow-x-auto">
-        <Table headers={["Danh mục", ...months.map((item) => `T${Number(item.slice(5))}`), "Tổng"]}>
+        <Table rightFrom={1} headers={["Danh mục", ...months.map((item) => `T${Number(item.slice(5))}`), "Tổng"]}>
           {rows.length === 0 && (
             <tr className="border-t border-slate-100"><Cell>Chưa có phát sinh trong năm.</Cell>{months.map((item) => <Cell key={item}>-</Cell>)}<Cell right>-</Cell></tr>
           )}
