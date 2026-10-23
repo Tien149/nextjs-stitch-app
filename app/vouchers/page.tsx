@@ -8,7 +8,8 @@ import { ModuleFrame } from "@/components/ModuleFrame";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { storeLabel, updateDynamicBranches } from "@/lib/branch-labels";
 import { branchCodeFromInternalPartner } from "@/lib/cost-reallocation";
-import { appMenuItems, canAccessMenu, canEditPastVoucher, canPerformAction, canPerformMenuAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
+import { appMenuItems, canAccessMenu, canEditPastVoucher, canPerformAction, canPerformMenuAction, isCashierSubject, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
+import { vnToday } from "@/lib/date-range";
 import { ADVANCE_RECEIVABLE_ACTION, DEBT_COLLECTION_PURPOSE, PARTNER_COLLECTION_ACTION, PARTNER_COLLECTION_PURPOSE, isPartnerAllowedForVoucher, isSameCalendarDay, isUndeclaredPartnerName, normalizeCashflowCategoryType, PAYMENT_PURPOSES, PREPAID_ALLOCATION_ACTION, RECEIPT_PURPOSES, UNDECLARED_PARTNER_NAME, voucherEditWindowError, voucherPartnerRequirement } from "@/lib/voucher-rules";
 import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySourceDebugLabel, moneySourceDisplayName, moneySourceMatchesBranch, normalizeMoneySourceGroup, summaryMoneySourceGroups } from "@/lib/money-sources";
 import CopyableText from "@/components/CopyableText";
@@ -137,7 +138,8 @@ const NO_PARTNER_OPTION = "__NO_PARTNER__";
 
 const emptyForm = {
   voucherType: "RECEIPT",
-  voucherDate: new Date().toISOString().slice(0, 10),
+  // Ngày theo giờ VN: toISOString() trước 7h sáng ra ngày hôm qua.
+  voucherDate: vnToday(),
   shift: "MORNING",
   depositAction: "",
   depositCode: "",
@@ -580,6 +582,8 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
   const canDelete = user ? canPerformMenuAction(user, moduleHref, "delete") : false;
   /** Quyền sửa/bỏ duyệt chứng từ đã qua ngày (mặc định Admin và Kế toán tổng hợp). */
   const canEditPast = canEditPastVoucher(user);
+  /** Thu ngân lập phiếu mới chỉ theo ngày hôm nay (khách 23/10/2026); sửa phiếu vẫn theo luật cửa sổ sửa. */
+  const cashierTodayOnly = Boolean(user && isCashierSubject(user)) && !editingVoucher;
   const money = (value: number) => formatVndMoney(value);
   const categoryName = (code: string | null) => {
     if (!code) return "Chưa gán khoản mục";
@@ -767,6 +771,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
     setAllocationDraft([{ key: 1, partnerCode: "", amount: "", debtReference: "" }]);
     setForm({
       ...emptyForm,
+      voucherDate: vnToday(),
       branchCode: nextBranch,
       moneySourceCode: firstMoneySourceCode(moneySources, nextBranch, sourceGroups),
       categoryCode: emptyForm.categoryCode,
@@ -908,7 +913,8 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
         : await fetch("/api/vouchers", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ...form, ...multiPartnerPayload, documentChannel }),
+            // Thu ngân chỉ lập phiếu ngày hôm nay — không để trang mở qua đêm gửi ngày hôm qua.
+            body: JSON.stringify({ ...form, ...(cashierTodayOnly ? { voucherDate: vnToday() } : {}), ...multiPartnerPayload, documentChannel }),
           });
 
       const payload = await response.json();
@@ -1226,11 +1232,13 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                 <div className="flex flex-col">
                   <span className="text-xs font-bold text-slate-600 mb-1">Ngày chứng từ *</span>
                   <DateInput
-                    value={form.voucherDate}
+                    value={cashierTodayOnly ? vnToday() : form.voucherDate}
                     onChange={(d) => setForm((value) => ({ ...value, voucherDate: d }))}
                     className="w-full"
+                    disabled={cashierTodayOnly}
                     ariaLabel="Ngày chứng từ"
                   />
+                  {cashierTodayOnly && <span className="mt-1 text-[11px] text-slate-500">Thu ngân chỉ lập phiếu ngày hôm nay.</span>}
                 </div>
               </div>
 

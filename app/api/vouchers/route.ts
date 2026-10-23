@@ -7,7 +7,7 @@ import { revertVoucherSideEffects, VoucherRevertError } from "@/lib/voucher-reve
 import { closedPeriodMessage, findClosedPeriod, isPeriodLocked } from "@/lib/phase3";
 import { buildAuditLogData, writeAuditLog } from "@/lib/audit-log";
 import { softDeleteRecord, SoftDeleteError } from "@/lib/soft-delete";
-import { canEditPastVoucher, canPerformMenuAction, type DemoSession } from "@/lib/auth-demo";
+import { canEditPastVoucher, canPerformMenuAction, isCashierSubject, type DemoSession } from "@/lib/auth-demo";
 import { moneySourceMatchesBranch, parseMoneySourceCodes } from "@/lib/money-sources";
 import { ADVANCE_RECEIVABLE_ACTION, DEBT_COLLECTION_PURPOSE, PARTNER_COLLECTION_ACTION, PARTNER_COLLECTION_PURPOSE, isSameCalendarDay, normalizeAllocationMonths, normalizeCashflowCategoryType, normalizePaymentPurpose, normalizeReceiptPurpose, PREPAID_ALLOCATION_ACTION, isUndeclaredPartnerName, UNDECLARED_PARTNER_NAME, validatePaymentPurpose, validateReceiptPurpose, voucherPartnerRequirement, voucherEditWindowError } from "@/lib/voucher-rules";
 import { completePendingReconciliation, ReconciliationSyncError, releasePendingReconciliation, reopenReconciliationForReview, syncReconciledBankStatement, type BankStatementSyncResult } from "@/lib/reconciliation-links";
@@ -493,6 +493,12 @@ export async function POST(request: Request) {
     }
 
     const voucherDate = body.voucherDate ? new Date(String(body.voucherDate)) : new Date();
+    if (Number.isNaN(voucherDate.getTime())) return NextResponse.json({ error: "Ngày chứng từ không hợp lệ" }, { status: 400 });
+    // Thu ngân chỉ lập phiếu theo thời gian thực — ngày hôm nay (khách 23/10/2026: thu ngân đang
+    // lập được phiếu ngày cũ). Phiếu bổ sung ngày cũ do kế toán lập.
+    if (isCashierSubject(auth.session) && !isSameCalendarDay(voucherDate, new Date())) {
+      return NextResponse.json({ error: "Thu ngân chỉ lập được phiếu ngày hôm nay. Phiếu ngày cũ cần bổ sung thì nhờ kế toán lập." }, { status: 403 });
+    }
     // Phiếu lập ở màn này ra đời với trạng thái APPROVED, tức là đã ghi sổ ngay. Thiếu nhánh
     // chặn này thì lập được phiếu lùi ngày vào tháng đã chốt: phiếu hiện trên sổ quỹ còn bút
     // toán thì `postJournalEntry` bỏ qua vì kỳ khoá, hai bên lệch nhau mà không ai báo.
