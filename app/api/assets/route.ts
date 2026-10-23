@@ -885,7 +885,38 @@ export async function PATCH(request: Request) {
       }
     }
 
+    /**
+     * Sửa nguyên giá / ngày mua của tài sản ghi CÔNG NỢ: khoản phải trả CN-<mã> và bút toán ghi tăng
+     * phải đổi theo (khách 23/10/2026: CCDCKIT0081 sửa 900.000 → 585.000 nhưng công nợ NCC vẫn
+     * 900.000). Đã trả một phần thì chặn — bỏ phiếu chi gạch nợ trước.
+     */
+    const nextCost = body.originalCost !== undefined ? toAmount(body.originalCost) : current.originalCost;
+    const nextPurchaseDate = body.purchaseDate !== undefined ? new Date(String(body.purchaseDate)) : current.purchaseDate;
+    const costChanged = Math.abs(nextCost - current.originalCost) > 0.5;
+    const dateChanged = nextPurchaseDate.getTime() !== current.purchaseDate.getTime();
+    const payableDebt = current.paymentStatus === "PAYABLE" && (costChanged || dateChanged)
+      ? await prisma.debtRecord.findFirst({ where: { sourceType: "ASSET", sourceId: id } })
+      : null;
+    if (payableDebt && costChanged) {
+      if (!(nextCost > 0)) {
+        return NextResponse.json({ error: `Tài sản ${current.code} đang ghi công nợ ${payableDebt.code} nên nguyên giá phải lớn hơn 0. Muốn bỏ công nợ thì đổi sang Đã thanh toán.` }, { status: 400 });
+      }
+      const settled = await prisma.debtSettlement.count({ where: { debtId: payableDebt.id } });
+      if (settled > 0 || payableDebt.status !== "OPEN" || Math.abs(payableDebt.outstandingAmount - payableDebt.originalAmount) > 0.5) {
+        return NextResponse.json({ error: `Công nợ ${payableDebt.code} đã được trả một phần hoặc tất toán nên không sửa được nguyên giá. Bỏ phiếu chi gạch nợ trước rồi sửa lại.` }, { status: 409 });
+      }
+    }
+    if (payableDebt && (await findClosedPeriod({ date: current.purchaseDate, branchCode: current.branchCode }) || await findClosedPeriod({ date: nextPurchaseDate, branchCode: current.branchCode }))) {
+      return NextResponse.json({ error: `Kỳ kế toán của ngày mua đã khoá nên không sửa được nguyên giá / ngày mua của tài sản đang ghi công nợ ${payableDebt.code}.` }, { status: 409 });
+    }
+
     const asset = await prismaRaw.$transaction(async (tx) => {
+      if (payableDebt) {
+        await tx.debtRecord.update({
+          where: { id: payableDebt.id },
+          data: { originalAmount: nextCost, outstandingAmount: nextCost, documentDate: nextPurchaseDate },
+        });
+      }
       const validatedCode = codeChanged ? await assertAssetCodeAvailable(tx, nextCode, id) : current.code;
       // Tên là của MÃ (Danh mục mã): đổi tên ở một hồ sơ thì danh mục và các đợt khác cùng mã đổi theo.
       const renamed = body.name !== undefined ? cleanText(body.name) : "";
@@ -902,7 +933,8 @@ export async function PATCH(request: Request) {
         ...(body.quantity !== undefined ? { quantity: toAmount(body.quantity) || 1 } : {}),
         ...(body.purchaseDate !== undefined ? { purchaseDate: new Date(String(body.purchaseDate)) } : {}),
         ...(body.originalCost !== undefined ? { originalCost: toAmount(body.originalCost) } : {}),
-        ...(body.currentValue !== undefined ? { currentValue: toAmount(body.currentValue) } : {}),
+        ...(body.currentValue !== undefined ? { currentValue: toAmount(body.currentValue) } : costChanged && depreciationCount === 0 ? { currentValue: nextCost } : {}),
+        ...(payableDebt && costChanged ? { payableAmount: nextCost } : {}),
         ...(body.usefulLifeMonths !== undefined ? { usefulLifeMonths: roundPeriodCount(toAmount(body.usefulLifeMonths)) || null } : {}),
         ...(body.depreciationStartDate !== undefined ? { depreciationStartDate: body.depreciationStartDate ? new Date(String(body.depreciationStartDate)) : null } : {}),
         ...(body.residualValue !== undefined ? { residualValue: toAmount(body.residualValue) } : {}),
@@ -912,6 +944,26 @@ export async function PATCH(request: Request) {
         ...(body.note !== undefined ? { note: cleanText(body.note) || null } : {}),
       } });
     });
+
+    // Bút toán ghi tăng theo nguyên giá / ngày mua mới (cùng luật với Đồng bộ ghi sổ).
+    if (payableDebt && asset.originalCost > 0) {
+      const assetGroupItem = await prisma.masterDataItem.findFirst({ where: { type: "ASSET_GROUP", code: asset.assetGroup }, select: { group: true } });
+      const debitAccountCode = ["CCDC", "TOOL"].includes(cleanText(assetGroupItem?.group).toUpperCase()) ? "242" : "211";
+      await prismaRaw.journalEntry.deleteMany({ where: { sourceType: "ASSET_ACQUISITION", sourceId: asset.id, deletedAt: { not: null } } });
+      await postJournalEntry({
+        entryDate: asset.purchaseDate,
+        branchCode: asset.branchCode,
+        sourceType: "ASSET_ACQUISITION",
+        sourceId: asset.id,
+        sourceCode: asset.code,
+        description: `Ghi tăng tài sản ${asset.name}`,
+        createdBy: auth.session.name,
+        lines: [
+          { accountCode: debitAccountCode, debit: asset.originalCost, partnerCode: asset.supplierCode },
+          { accountCode: "331", credit: asset.originalCost, partnerCode: asset.supplierCode },
+        ],
+      });
+    }
 
     await writeAuditLog({
       session: auth.session,
@@ -925,6 +977,7 @@ export async function PATCH(request: Request) {
         changedFields: Object.keys(body).filter((field) => field !== "id" && field !== "action"),
         depreciationCount,
         ...(codeChanged ? { oldCode: current.code, newCode: asset.code } : {}),
+        ...(payableDebt ? { debtCode: payableDebt.code, debtBefore: payableDebt.originalAmount, debtAfter: asset.originalCost } : {}),
       },
     });
 
