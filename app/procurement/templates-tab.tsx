@@ -486,12 +486,12 @@ export function TemplatesTab({
     const aoa: Array<Array<string | number>> = [
       [`${template.code} — ${template.name}`],
       [`${template.branchCode ? storeLabel(template.branchCode) : "Dùng chung mọi cửa hàng"}${template.departmentCode ? ` · ${departmentName(template.departmentCode)}` : ""} · Áp dụng ${window.from ? `từ ${dayText(window.from)}` : "không giới hạn"}${window.to ? ` đến ${dayText(window.to)}` : ""}`],
-      ["STT", "Mã hàng", "Tên hàng", "ĐVT", "Số lượng", "Ghi chú"],
-      ...template.lines.map((line, index) => [index + 1, line.item.code, line.item.name, lineUnit(line), withQuantities ? Number(fillQuantities[line.id] || 0) || "" : "", line.note || ""]),
+      ["STT", "Mã hàng", "Tên hàng", "ĐVT", "Số lượng", "Ghi chú", "NCC"],
+      ...template.lines.map((line, index) => [index + 1, line.item.code, line.item.name, lineUnit(line), withQuantities ? Number(fillQuantities[line.id] || 0) || "" : "", line.note || "", line.supplierName || template.supplierName || ""]),
     ];
     const sheet = XLSX.utils.aoa_to_sheet(aoa);
-    sheet["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 5 } }, { s: { r: 1, c: 0 }, e: { r: 1, c: 5 } }];
-    sheet["!cols"] = [6, 16, 36, 10, 12, 30].map((wch) => ({ wch }));
+    sheet["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 6 } }, { s: { r: 1, c: 0 }, e: { r: 1, c: 6 } }];
+    sheet["!cols"] = [6, 16, 36, 10, 12, 30, 30].map((wch) => ({ wch }));
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, sheet, "Dat hang");
     XLSX.writeFile(workbook, `${template.code}_${withQuantities ? "dat_hang" : "chi_tiet"}.xlsx`);
@@ -791,7 +791,11 @@ export function TemplatesTab({
               <dl className="px-4 sm:px-5 py-3 grid grid-cols-2 lg:grid-cols-4 gap-3 text-sm border-b border-slate-100">
                 <div><dt className="text-xs font-bold text-slate-500">Cửa hàng</dt><dd>{selected.branchCode ? storeLabel(selected.branchCode) : "Dùng chung mọi cửa hàng"}</dd></div>
                 <div><dt className="text-xs font-bold text-slate-500">Bộ phận mặc định</dt><dd>{departmentName(selected.departmentCode) || "Người đặt tự chọn"}</dd></div>
-                <div><dt className="text-xs font-bold text-slate-500">Nhà cung cấp mặc định</dt><dd>{selected.supplierName || <span className="text-slate-400">Chưa chọn</span>}</dd></div>
+                <div><dt className="text-xs font-bold text-slate-500">Nhà cung cấp</dt><dd>{(() => {
+                  // NCC khai theo từng dòng (23/10/2026): nhiều NCC thì báo số NCC, xem cột NCC bên dưới.
+                  const names = [...new Set(selected.lines.map((line) => line.supplierName || selected.supplierName || "").filter(Boolean))];
+                  return names.length > 1 ? `Theo từng dòng (${names.length} NCC)` : names[0] || <span className="text-slate-400">Chưa chọn</span>;
+                })()}</dd></div>
                 <div><dt className="text-xs font-bold text-slate-500">Kho nhận hàng</dt><dd>{selected.warehouseCode || <span className="text-slate-400">Mọi kho</span>}</dd></div>
                 <div><dt className="text-xs font-bold text-slate-500">Ngày áp dụng</dt><dd>{selectedWindow?.from ? dayText(selectedWindow.from) : <span className="text-slate-400">Không giới hạn</span>}</dd></div>
                 <div><dt className="text-xs font-bold text-slate-500">Ngày kết thúc</dt><dd>{selectedWindow?.to ? dayText(selectedWindow.to) : <span className="text-slate-400">Không giới hạn</span>}</dd></div>
@@ -800,7 +804,7 @@ export function TemplatesTab({
               <div className="overflow-x-auto max-h-[420px] overflow-y-auto custom-scrollbar">
                 <table className="w-full text-sm">
                   <thead className="bg-slate-50 text-xs text-slate-500 uppercase border-b border-slate-200 sticky top-0 z-10">
-                    <tr>{["STT", "Mã hàng", "Tên hàng", "ĐVT đặt", "Ghi chú"].map((label) => <th key={label} className="px-3 py-2 text-left font-bold whitespace-nowrap">{label}</th>)}</tr>
+                    <tr>{["STT", "Mã hàng", "Tên hàng", "ĐVT đặt", "NCC", "Ghi chú"].map((label) => <th key={label} className="px-3 py-2 text-left font-bold whitespace-nowrap">{label}</th>)}</tr>
                   </thead>
                   <tbody>
                     {selected.lines.map((line, index) => (
@@ -809,6 +813,7 @@ export function TemplatesTab({
                         <td className="cell whitespace-nowrap font-bold">{line.item.code}</td>
                         <td className="cell">{line.item.name}</td>
                         <td className="cell whitespace-nowrap">{lineUnit(line)}</td>
+                        <td className="cell">{line.supplierName || selected.supplierName || <span className="text-slate-400">Chưa chọn</span>}</td>
                         <td className="cell text-slate-500">{line.note}</td>
                       </tr>
                     ))}
