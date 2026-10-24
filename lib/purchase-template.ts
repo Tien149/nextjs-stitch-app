@@ -45,6 +45,8 @@ export const TEMPLATE_IMPORT_HEADERS = [
   "Ghi chú",
   /** NCC của dòng (khách 23/10/2026) — không bắt buộc. */
   "Mã NCC",
+  /** Mã kho nhận của mẫu (khách 24/10/2026: mẫu bắt buộc có kho) — ghi ở một dòng của mẫu là đủ. */
+  "Kho",
 ] as const;
 
 const fold = (value: string) => value.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/g, "d").replace(/Đ/g, "D").toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -58,6 +60,7 @@ export type TemplateImportGroup = {
   name: string;
   branchCode: string | null;
   departmentCode: string | null;
+  warehouseCode: string | null;
   from: string | null;
   to: string | null;
   lines: Array<{ itemId: string; itemCode: string; unitCode: string | null; note: string | null; supplierCode: string | null; row: number }>;
@@ -100,6 +103,7 @@ export function buildTemplateImport(
     if (text("Ngày kết thúc") && !to) return fail(`Ngày kết thúc "${text("Ngày kết thúc")}" không đọc được (ghi dạng dd/mm/yyyy)`);
     if (from && to && to < from) return fail(`Ngày kết thúc ${to} trước Ngày áp dụng ${from}`);
 
+    const warehouseCode = text("Kho").toUpperCase() || null;
     const itemCode = text("Mã hàng").toUpperCase();
     if (!itemCode) return fail("Thiếu Mã hàng");
     const item = lookup.items.get(itemCode);
@@ -131,13 +135,15 @@ export function buildTemplateImport(
       if (to && group.to && to !== group.to) return fail(`Mẫu "${name}" ghi hai Ngày kết thúc khác nhau`);
       group.branchCode ||= branchCode;
       group.departmentCode ||= departmentCode;
+      if (warehouseCode && group.warehouseCode && warehouseCode !== group.warehouseCode) return fail(`Mẫu "${name}" ghi hai kho khác nhau`);
+      group.warehouseCode ||= warehouseCode;
       group.from ||= from;
       group.to ||= to;
       if (group.lines.some((line) => line.itemId === item.id)) return fail(`${itemCode} bị lặp trong mẫu "${name}"`);
       group.lines.push({ itemId: item.id, itemCode: item.code, unitCode, note: text("Ghi chú") || null, supplierCode: text("Mã NCC").toUpperCase() || null, row: rowNumber });
       return;
     }
-    groups.set(key, { code, name, branchCode, departmentCode, from, to, lines: [{ itemId: item.id, itemCode: item.code, unitCode, note: text("Ghi chú") || null, supplierCode: text("Mã NCC").toUpperCase() || null, row: rowNumber }] });
+    groups.set(key, { code, name, branchCode, departmentCode, warehouseCode, from, to, lines: [{ itemId: item.id, itemCode: item.code, unitCode, note: text("Ghi chú") || null, supplierCode: text("Mã NCC").toUpperCase() || null, row: rowNumber }] });
   });
   return { groups: [...groups.values()], errors };
 }

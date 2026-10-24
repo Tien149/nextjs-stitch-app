@@ -6,6 +6,7 @@ import { inDateRange, type DateRange } from "@/lib/date-range";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { DateInput, MonthInput } from "@/components/DateInput";
+import { storeLabel } from "@/lib/branch-labels";
 import { canOpenPath, canPerformMenuAction, SESSION_KEY, filterModuleTabs } from "@/lib/auth-demo";
 import { allowedDepartmentsOf } from "@/lib/department-scope";
 import { assetLotLabel, distributeStocktakeCount, type StocktakeLotInput } from "@/lib/asset-lot";
@@ -687,7 +688,8 @@ export default function AssetOperationsPage() {
                     }}
                   >
                     <option value="">Chọn cửa hàng</option>
-                    {[...new Set(data.assets.map((asset) => asset.branchCode))].map((branch) => <option key={branch} value={branch}>{branch}</option>)}
+                    {/* Hiện tên cửa hàng, không hiện mã (khách 24/10/2026). */}
+                    {[...new Set(data.assets.map((asset) => asset.branchCode))].map((branch) => <option key={branch} value={branch}>{storeLabel(branch)}</option>)}
                   </select>
                 </Field>
                 <Field label="Ngày kiểm kê">
@@ -706,7 +708,7 @@ export default function AssetOperationsPage() {
                   >
                     {!scopedDepartments && <option value="">Tất cả phòng ban</option>}
                     {stocktakeDepartmentOptions.map((department) => (
-                      <option key={department.code} value={department.code}>{department.name} ({department.code})</option>
+                      <option key={department.code} value={department.code}>{department.name}</option>
                     ))}
                   </select>
                 </Field>
@@ -832,7 +834,7 @@ export default function AssetOperationsPage() {
                         <Field label="Phòng ban *">
                           <select className="control" value={newAsset.departmentCode} onChange={(e) => setNewAsset({ ...newAsset, departmentCode: e.target.value })}>
                             <option value="">Chọn phòng ban</option>
-                            {stocktakeDepartmentOptions.map((department) => <option key={department.code} value={department.code}>{department.name} ({department.code})</option>)}
+                            {stocktakeDepartmentOptions.map((department) => <option key={department.code} value={department.code}>{department.name}</option>)}
                           </select>
                         </Field>
                         <Field label="Vị trí / Kho">

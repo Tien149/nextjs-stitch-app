@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { MonthInput } from "@/components/DateInput";
 import CopyableText from "@/components/CopyableText";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { money, quantity as qty } from "@/lib/format-number";
@@ -78,7 +79,7 @@ export default function MissingRecipesPanel({ sessionKey, branchOptions, default
         <div className="flex flex-wrap items-end gap-2">
           <label className="text-xs font-bold text-slate-500">
             Tháng
-            <input type="month" className="control mt-1" value={month} onChange={(event) => setMonth(event.target.value)} />
+            <MonthInput className="control mt-1" value={month} onChange={setMonth} />
           </label>
           <label className="text-xs font-bold text-slate-500">
             Cửa hàng

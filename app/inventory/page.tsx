@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { priceDeviation } from "@/lib/supplier-price-list";
+import { DateInput, DateTimeInput, MonthInput } from "@/components/DateInput";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { movementTypeLabel } from "@/lib/inventory-movement-labels";
@@ -372,6 +373,8 @@ export default function InventoryPage() {
   const [wasteRows, setWasteRows] = useState([{ itemId: "", quantity: "1", unitCode: "" }]);
   
   const visibleTabs = useMemo(() => filterModuleTabs(user, href), [user]);
+  /** Nhãn rã BOM chỉ cho người có tab Chế biến (kế toán, bếp trưởng…); vận hành không thấy. */
+  const canSeeExplosion = visibleTabs.some((tab) => tab.id === "production");
 
   // Thông báo nằm ở đầu trang nhưng các nút hành động ở tận cuối tab -> cuộn lên cho người dùng thấy kết quả.
   useEffect(() => {
@@ -453,19 +456,6 @@ export default function InventoryPage() {
   ];
   /** Gán loại hủy hàng loạt cần quyền sửa (máy chủ chặn BULK_SET_WASTE_SUBTYPE bằng "edit"). */
   const canEditWaste = canEditItem;
-  const importTarget = active === "stock"
-    ? { tab: "opening-balance", label: "Import tồn kho đầu kỳ" }
-    : active === "items"
-      ? { tab: "inventory-item", label: "Import danh mục mặt hàng" }
-    : active === "recipes"
-      ? { tab: "bom", label: "Import định lượng/BOM" }
-      : active === "stocktake"
-        ? { tab: "stocktake", label: "Import kiểm kê kho" }
-        : active === "production"
-          ? { tab: "production", label: "Import lệnh chế biến" }
-          : active === "waste"
-            ? { tab: "waste", label: "Import hủy hàng theo món" }
-            : { tab: "inventory-transaction", label: "Import nhập/xuất kho" };
   const selectedStockItem = data.items.find((item) => item.id === stockForm.itemId);
   const stockUnits = selectedStockItem?.unitConversions?.length
     ? selectedStockItem.unitConversions
@@ -1902,34 +1892,35 @@ export default function InventoryPage() {
     >
       {/* Operational Summary Cards */}
       <StickyFilterBar>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+      {/* Điện thoại: thẻ gọn (vận hành dùng điện thoại 100% — khách 24/10/2026), máy tính giữ như cũ. */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-4 mb-2 md:mb-4">
+        <div className="bg-white border border-slate-200 rounded-xl px-3 py-2 md:p-4 shadow-sm">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500">Tổng mã hàng (SKUs)</span>
-            <span className="material-symbols-outlined text-blue-500 text-xl">inventory_2</span>
+            <span className="text-[11px] md:text-xs font-semibold text-slate-500 leading-tight">Tổng mã hàng (SKUs)</span>
+            <span className="material-symbols-outlined text-blue-500 text-xl hidden md:inline">inventory_2</span>
           </div>
-          <p className="text-lg font-bold text-slate-800 mt-1">{totalSKUs} mặt hàng</p>
+          <p className="text-sm md:text-lg font-bold text-slate-800 md:mt-1">{totalSKUs} mặt hàng</p>
         </div>
-        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+        <div className="bg-white border border-slate-200 rounded-xl px-3 py-2 md:p-4 shadow-sm">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500">Cảnh báo dưới Min</span>
-            <span className="material-symbols-outlined text-rose-500 text-xl">warning</span>
+            <span className="text-[11px] md:text-xs font-semibold text-slate-500 leading-tight">Cảnh báo dưới Min</span>
+            <span className="material-symbols-outlined text-rose-500 text-xl hidden md:inline">warning</span>
           </div>
-          <p className="text-lg font-bold text-rose-600 mt-1">{lowStockCount} mặt hàng</p>
+          <p className="text-sm md:text-lg font-bold text-rose-600 md:mt-1">{lowStockCount} mặt hàng</p>
         </div>
-        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+        <div className="bg-white border border-slate-200 rounded-xl px-3 py-2 md:p-4 shadow-sm">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500">Tổng giá trị tồn kho</span>
-            <span className="material-symbols-outlined text-emerald-500 text-xl">payments</span>
+            <span className="text-[11px] md:text-xs font-semibold text-slate-500 leading-tight">Tổng giá trị tồn kho</span>
+            <span className="material-symbols-outlined text-emerald-500 text-xl hidden md:inline">payments</span>
           </div>
-          <p className={`font-bold text-emerald-600 mt-1 leading-tight tabular-nums whitespace-nowrap ${statValueTextClass(`${money(totalStockValue)} đ`)}`}>{money(totalStockValue)} đ</p>
+          <p className={`font-bold text-emerald-600 md:mt-1 leading-tight tabular-nums whitespace-nowrap max-md:!text-sm ${statValueTextClass(`${money(totalStockValue)} đ`)}`}>{money(totalStockValue)} đ</p>
         </div>
-        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+        <div className="bg-white border border-slate-200 rounded-xl px-3 py-2 md:p-4 shadow-sm">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500">Tổng giao dịch kho</span>
-            <span className="material-symbols-outlined text-indigo-500 text-xl">swap_horiz</span>
+            <span className="text-[11px] md:text-xs font-semibold text-slate-500 leading-tight">Tổng giao dịch kho</span>
+            <span className="material-symbols-outlined text-indigo-500 text-xl hidden md:inline">swap_horiz</span>
           </div>
-          <p className="text-lg font-bold text-indigo-600 mt-1">{totalTransactions} giao dịch</p>
+          <p className="text-sm md:text-lg font-bold text-indigo-600 md:mt-1">{totalTransactions} giao dịch</p>
         </div>
       </div>
 
@@ -1938,28 +1929,7 @@ export default function InventoryPage() {
       {message && <p ref={messageRef} className="mb-4 px-4 py-3 rounded-lg border border-blue-100 bg-blue-50 text-sm text-blue-700">{message}</p>}
       {sectionLoading && <p className="mb-4 px-4 py-2 rounded-lg border border-slate-200 bg-slate-50 text-xs text-slate-500">Đang tải dữ liệu của tab này...</p>}
 
-      {canCreate && !["stocktake-explanation", "stocktake-result"].includes(active) && (
-        <div className={`mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3 ${canOpenImports ? "border-blue-100 bg-blue-50" : "border-amber-200 bg-amber-50"}`}>
-          <p className={`text-sm ${canOpenImports ? "text-blue-800" : "text-amber-800"}`}>
-            Có thể nhập đầy đủ dữ liệu của màn hình này bằng file Excel theo mẫu chuẩn.
-            {active === "stocktake" && " Kiểm kê Kho không bao gồm CCDC và Tài sản."}
-            {!canOpenImports && " Tài khoản của bạn chưa được cấp menu Import dữ liệu nên chưa mở được màn hình đẩy file — liên hệ Admin để cấp quyền hoặc nhờ import giúp."}
-          </p>
-          {canOpenImports && (
-            <div className="flex flex-wrap gap-2">
-              {/* Danh mục đã có, chỉ thiếu vài cột (Nhóm hàng hóa, Nhóm doanh thu) thì import bổ sung (03/10/2026). */}
-              {active === "items" && (
-                <a className="secondary-button bg-white" href="/imports?tab=inventory-item-update">
-                  <span className="material-symbols-outlined text-lg">edit_note</span>Cập nhật bổ sung mặt hàng
-                </a>
-              )}
-              <a className="secondary-button bg-white" href={`/imports?tab=${importTarget.tab}`}>
-                <span className="material-symbols-outlined text-lg">upload_file</span>{importTarget.label}
-              </a>
-            </div>
-          )}
-        </div>
-      )}
+      {/* Bỏ khung nhắc import file khỏi mọi tab Kho & Định lượng (khách 24/10/2026) — import ở menu Import dữ liệu. */}
 
       {active === "stock" && (
         <StockReportsPanel
@@ -2110,11 +2080,7 @@ export default function InventoryPage() {
                   </a>
                   {" "}— tải file mẫu, điền cột ĐVT mua và Tỷ lệ quy đổi, mã đã có thì cập nhật chứ không tạo trùng.
                 </p>
-              ) : (
-                <p className="text-[11px] leading-5 text-slate-500">
-                  Khung này khai lẻ từng mã. Khai hàng loạt bằng file Excel thì cần menu Import dữ liệu — tài khoản của bạn chưa được cấp, liên hệ Admin.
-                </p>
-              )}
+              ) : null}
               <Input label="Mặt hàng">
                 <ItemSelect items={data.items} value={conversionForm.itemId} onChange={(itemId) => setConversionForm({ ...conversionForm, itemId })} />
               </Input>
@@ -2468,14 +2434,14 @@ export default function InventoryPage() {
               </Input>
 
               {active === "outbound" && stockForm.transactionType === "XUAT_KHAC" && !stockForm.allocationMonths && (
-                <Input label="Hạng mục P&L *">
-                  <select className="control" required value={stockForm.pnlItemCode} onChange={(e) => setStockForm({ ...stockForm, pnlItemCode: e.target.value })}>
-                    <option value="">— Chọn hạng mục —</option>
+                <Input label="Hạng mục P&L">
+                  <select className="control" value={stockForm.pnlItemCode} onChange={(e) => setStockForm({ ...stockForm, pnlItemCode: e.target.value })}>
+                    <option value="">— Để văn phòng chọn sau —</option>
                     {(data.issuePnlItems || []).map((item) => (
                       <option key={item.code} value={item.code}>{item.name}{item.groupName ? ` · ${item.groupName}` : ""}</option>
                     ))}
                   </select>
-                  <small className="block text-[11px] text-slate-500 mt-1">Xuất khác không vào giá vốn: trị giá xuất lên thẳng hạng mục này trên P&L.</small>
+                  <small className="block text-[11px] text-slate-500 mt-1">Xuất khác không vào giá vốn: trị giá xuất lên thẳng hạng mục này trên P&L. Chưa chọn thì nằm ở &quot;Chưa phân loại P&L&quot; tới khi văn phòng sửa phiếu chọn hạng mục.</small>
                 </Input>
               )}
 
@@ -2576,7 +2542,7 @@ export default function InventoryPage() {
 
               <div className="grid grid-cols-[1fr_8rem] gap-3">
                 <Input label="Ngày chứng từ">
-                  <input type="date" className="control" value={stockForm.transactionDate} onChange={(e) => setStockForm({ ...stockForm, transactionDate: e.target.value })} required />
+                  <DateInput className="control" value={stockForm.transactionDate} onChange={(value) => setStockForm({ ...stockForm, transactionDate: value })} required />
                 </Input>
                 <Input label="Giờ">
                   <input type="time" className="control" value={stockForm.transactionTime} onChange={(e) => setStockForm({ ...stockForm, transactionTime: e.target.value })} title="Để trống = tính TRƯỚC giờ chốt kiểm kê trong ngày (07:00)" />
@@ -2719,7 +2685,7 @@ export default function InventoryPage() {
                   Trả tiền rồi thì lập phiếu chi cho chính nhà cung cấp đó để cấn trừ.
                 </div>
                 <Input label="Hạn thanh toán">
-                  <input type="date" className="control" value={stockForm.paymentDueDate} onChange={(e) => setStockForm({ ...stockForm, paymentDueDate: e.target.value })} />
+                  <DateInput className="control" value={stockForm.paymentDueDate} onChange={(value) => setStockForm({ ...stockForm, paymentDueDate: value })} />
                 </Input>
               </>)}
 
@@ -2758,10 +2724,10 @@ export default function InventoryPage() {
                 <input className="control" placeholder="Mã, tên hàng hoặc số phiếu..." value={flowSearch} onChange={(e) => setFlowSearch(e.target.value)} />
               </Input>
               <Input label="Từ ngày chứng từ">
-                <input type="date" className="control" value={flowRange.from} onChange={(e) => setFlowRange({ ...flowRange, from: e.target.value })} />
+                <DateInput className="control" value={flowRange.from} onChange={(value) => setFlowRange({ ...flowRange, from: value })} />
               </Input>
               <Input label="Đến ngày chứng từ">
-                <input type="date" className="control" value={flowRange.to} onChange={(e) => setFlowRange({ ...flowRange, to: e.target.value })} />
+                <DateInput className="control" value={flowRange.to} onChange={(value) => setFlowRange({ ...flowRange, to: value })} />
               </Input>
               <Input label="Nhà hàng">
                 <select className="control" value={flowBranch} onChange={(e) => { setFlowBranch(e.target.value); setFlowWarehouse("ALL"); }}>
@@ -3009,7 +2975,7 @@ export default function InventoryPage() {
                 </Input>
                 <Input label="Ngày điều chuyển">
                   <div className="flex gap-2">
-                    <input type="date" className="control min-w-0" value={transferForm.transactionDate} onChange={(e) => setTransferForm({ ...transferForm, transactionDate: e.target.value })} />
+                    <DateInput className="control min-w-0" value={transferForm.transactionDate} onChange={(value) => setTransferForm({ ...transferForm, transactionDate: value })} />
                     <input type="time" className="control w-28" value={transferForm.transactionTime} aria-label="Giờ điều chuyển" title="Giờ (để trống = 07:00)" onChange={(e) => setTransferForm({ ...transferForm, transactionTime: e.target.value })} />
                   </div>
                 </Input>
@@ -3083,10 +3049,10 @@ export default function InventoryPage() {
                 </select>
               </Input>
               <Input label="Từ ngày chứng từ">
-                <input type="date" className="control" value={flowRange.from} onChange={(e) => setFlowRange({ ...flowRange, from: e.target.value })} />
+                <DateInput className="control" value={flowRange.from} onChange={(value) => setFlowRange({ ...flowRange, from: value })} />
               </Input>
               <Input label="Đến ngày chứng từ">
-                <input type="date" className="control" value={flowRange.to} onChange={(e) => setFlowRange({ ...flowRange, to: e.target.value })} />
+                <DateInput className="control" value={flowRange.to} onChange={(value) => setFlowRange({ ...flowRange, to: value })} />
               </Input>
               <Input label="Kho xuất">
                 <select className="control" value={transferFromWarehouse} onChange={(e) => setTransferFromWarehouse(e.target.value)}>
@@ -3131,7 +3097,7 @@ export default function InventoryPage() {
                 const crossBranch = !!row.toBranchCode && row.toBranchCode !== row.branchCode;
                 return (
                   <tr key={row.id} className="border-t border-slate-100">
-                    <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}</small><ExplosionBadge status={row.explosionStatus} /></Cell>
+                    <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{new Date(row.transactionDate).toLocaleDateString("vi-VN")}</small><ExplosionBadge status={row.explosionStatus} hidden={!canSeeExplosion} /></Cell>
                     <Cell>
                       <b>{row.warehouseCode} → {row.toWarehouseCode}</b>
                       <small>{storeLabel(row.branchCode)} → {storeLabel(row.toBranchCode || row.branchCode)}</small>
@@ -3184,7 +3150,7 @@ export default function InventoryPage() {
             <div className="p-5 space-y-4">
               <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 <Input label="Ngày chứng từ">
-                  <input type="date" className="control" value={transactionEditForm.transactionDate} onChange={(e) => setTransactionEditForm({ ...transactionEditForm, transactionDate: e.target.value })} required />
+                  <DateInput className="control" value={transactionEditForm.transactionDate} onChange={(value) => setTransactionEditForm({ ...transactionEditForm, transactionDate: value })} required />
                 </Input>
                 <Input label={editingTransaction.transactionType === "DIEU_CHUYEN" ? "Kho xuất" : "Kho"}>
                   <select className="control" value={transactionEditForm.warehouseCode} onChange={(e) => setTransactionEditForm({ ...transactionEditForm, warehouseCode: e.target.value })}>
@@ -3448,7 +3414,7 @@ export default function InventoryPage() {
                   <input type="number" min="0" step="0.001" className="control" value={recipeForm.outputConversionRate} onChange={(e) => setRecipeForm({ ...recipeForm, outputConversionRate: e.target.value })} />
                 </Input>
                 <Input label="Ngày áp dụng">
-                  <input type="date" className="control" value={recipeForm.effectiveFrom} onChange={(e) => setRecipeForm({ ...recipeForm, effectiveFrom: e.target.value })} />
+                  <DateInput className="control" value={recipeForm.effectiveFrom} onChange={(value) => setRecipeForm({ ...recipeForm, effectiveFrom: value })} />
                 </Input>
               </div>
               <p className="text-[11px] text-slate-500 leading-relaxed !mt-1">
@@ -3576,7 +3542,7 @@ export default function InventoryPage() {
                 </div>
                 <div className="w-44">
                   <Input label="Áp dụng trong tháng">
-                    <input type="month" className="control" value={recipeMonth} onChange={(e) => setRecipeMonth(e.target.value)} />
+                    <MonthInput className="control" value={recipeMonth} onChange={setRecipeMonth} />
                   </Input>
                 </div>
                 <button type="button" className="secondary-button !min-h-10" onClick={() => void exportRecipeVersionsFlat()} title="Mỗi nguyên liệu một dòng, thông tin món lặp lại ở từng dòng — theo bộ lọc đang xem">
@@ -3704,7 +3670,7 @@ export default function InventoryPage() {
               <div className="px-5 pb-4 flex flex-wrap items-end gap-3">
                 <div className="w-48">
                   <Input label="Tháng">
-                    <input type="month" className="control" value={costMonth} onChange={(e) => setCostMonth(e.target.value)} />
+                    <MonthInput className="control" value={costMonth} onChange={setCostMonth} />
                   </Input>
                 </div>
                 {costMonth && (
@@ -3836,14 +3802,14 @@ export default function InventoryPage() {
               </select>
             </Input>
             <Input label="Từ ngày bán">
-              <input type="date" className="control" value={explodeForm.dateFrom} onChange={(e) => setExplodeForm({ ...explodeForm, dateFrom: e.target.value })} />
+              <DateInput className="control" value={explodeForm.dateFrom} onChange={(value) => setExplodeForm({ ...explodeForm, dateFrom: value })} />
             </Input>
             {/* Kiểm kê chốt giữa ngày (11h 31/8): rã tới đúng giờ chốt, phần bán sau đó rã lần sau.
                 Chỉ chia được khi file POS có giờ bán. Ô giờ nằm ngay trong ô "Đến ngày bán" — đứng riêng
                 ở cột 4 thì màn hình hẹp bị khuất, khách không thấy (20/10/2026). */}
             <Input label="Đến ngày bán · rã tới giờ">
               <div className="flex gap-2">
-                <input type="date" className="control min-w-0" value={explodeForm.dateTo} onChange={(e) => setExplodeForm({ ...explodeForm, dateTo: e.target.value })} />
+                <DateInput className="control min-w-0" value={explodeForm.dateTo} onChange={(value) => setExplodeForm({ ...explodeForm, dateTo: value })} />
                 <select className={`control w-32 shrink-0 ${explodeForm.timeTo ? "!border-indigo-400 !bg-indigo-50 font-bold" : ""}`} value={explodeForm.timeTo}
                   aria-label="Rã tới giờ của ngày cuối" title="Ngày cuối chỉ rã doanh thu bán TRƯỚC giờ này (kiểm kê chốt giữa ngày). Cả ngày = rã hết."
                   onChange={(e) => setExplodeForm({ ...explodeForm, timeTo: e.target.value })}>
@@ -4293,12 +4259,11 @@ export default function InventoryPage() {
             <h3 className="font-bold text-slate-900">Duyệt phiếu kiểm kê {approvingStocktake.stocktake.code}</h3>
             <label className="block text-xs font-bold text-slate-500">
               Giờ chốt kiểm kê
-              <input
-                type="datetime-local"
-                className="control mt-1"
+              <DateTimeInput
+                className="mt-1"
                 value={approvingStocktake.cutoff}
-                max={approvingStocktake.max}
-                onChange={(e) => setApprovingStocktake({ ...approvingStocktake, cutoff: e.target.value })}
+                onChange={(value) => setApprovingStocktake({ ...approvingStocktake, cutoff: value })}
+                ariaLabel="Giờ chốt kiểm kê"
               />
             </label>
             <p className="text-xs text-slate-500 leading-relaxed">
@@ -4441,7 +4406,7 @@ export default function InventoryPage() {
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <Input label="Ngày kiểm kê">
-                  <input type="date" className="control" value={stocktakeForm.stocktakeDate} onChange={(e) => setStocktakeForm({ ...stocktakeForm, stocktakeDate: e.target.value })} />
+                  <DateInput className="control" value={stocktakeForm.stocktakeDate} onChange={(value) => setStocktakeForm({ ...stocktakeForm, stocktakeDate: value })} />
                 </Input>
                 <Input label="Lý do">
                   <input className="control" value={stocktakeForm.reason} onChange={(e) => setStocktakeForm({ ...stocktakeForm, reason: e.target.value })} />
@@ -4617,7 +4582,7 @@ export default function InventoryPage() {
                       {varianceLines.length > 0 && `: ${varianceLines.slice(0, 4).map((line) => `${line.item.name} ${line.varianceQuantity > 0 ? "+" : ""}${qty(line.varianceQuantity)}`).join(", ")}${varianceLines.length > 4 ? "…" : ""}`}
                     </p>
                     {row.status === STOCKTAKE_RETURNED && row.returnedReason && <p className="text-xs text-rose-700">Lý do trả lại: {row.returnedReason}</p>}
-                    <ExplosionBadge status={row.explosionStatus} />
+                    <ExplosionBadge status={row.explosionStatus} hidden={!canSeeExplosion} />
                     <div className="flex flex-wrap gap-1 pt-0.5">{renderStocktakeActions(row)}</div>
                   </div>
                 );
@@ -4663,7 +4628,7 @@ export default function InventoryPage() {
                     <small>{new Date(row.stocktakeDate).toLocaleDateString("vi-VN")}{row.createdBy ? ` · ${row.createdBy}` : ""}</small>
                     <span className={`status mt-1 ${stocktakeStatusTone(row.status)}`}>{stocktakeStatusLabel(row.status)}{row.status === STOCKTAKE_APPROVED && row.approvedBy ? ` · ${row.approvedBy}` : ""}</span>
                     {row.status === STOCKTAKE_RETURNED && row.returnedReason && <small className="text-rose-700">Lý do trả lại: {row.returnedReason}</small>}
-                    <ExplosionBadge status={row.explosionStatus} />
+                    <ExplosionBadge status={row.explosionStatus} hidden={!canSeeExplosion} />
                   </Cell>
                   <Cell>{row.warehouseCode}</Cell>
                   <Cell>
@@ -4718,7 +4683,8 @@ export default function InventoryPage() {
               </Input>
 
               <Input label="Hủy theo">
-                <select className="control" value={wasteForm.mode} onChange={(e) => setWasteForm({ ...wasteForm, mode: e.target.value })}>
+                {/* Hủy theo món (rã định lượng) chỉ cho người có tab Chế biến; vận hành chọn mặt hàng trực tiếp (khách 24/10/2026). */}
+                <select className="control" value={canSeeExplosion ? wasteForm.mode : "ITEMS"} disabled={!canSeeExplosion} onChange={(e) => setWasteForm({ ...wasteForm, mode: e.target.value })}>
                   <option value="ITEMS">Chọn mặt hàng trực tiếp (kể cả thành phẩm)</option>
                   <option value="RECIPE">Theo món — rã định lượng ra nguyên liệu</option>
                 </select>
@@ -4796,7 +4762,7 @@ export default function InventoryPage() {
               </div>
 
               <Input label="Ngày chứng từ">
-                <input type="date" className="control" value={wasteForm.transactionDate} onChange={(e) => setWasteForm({ ...wasteForm, transactionDate: e.target.value })} required />
+                <DateInput className="control" value={wasteForm.transactionDate} onChange={(value) => setWasteForm({ ...wasteForm, transactionDate: value })} required />
               </Input>
 
               <Input label="Mã giao dịch POS / tham chiếu">
@@ -4908,10 +4874,10 @@ export default function InventoryPage() {
               <Panel title="Phiếu hủy" reload={loadData} exportFileName="phieu_huy" />
               <div className="px-5 pb-4 grid grid-cols-2 xl:grid-cols-3 gap-3">
                 <Input label="Từ ngày chứng từ">
-                  <input type="date" className="control" value={flowRange.from} onChange={(e) => setFlowRange({ ...flowRange, from: e.target.value })} />
+                  <DateInput className="control" value={flowRange.from} onChange={(value) => setFlowRange({ ...flowRange, from: value })} />
                 </Input>
                 <Input label="Đến ngày chứng từ">
-                  <input type="date" className="control" value={flowRange.to} onChange={(e) => setFlowRange({ ...flowRange, to: e.target.value })} />
+                  <DateInput className="control" value={flowRange.to} onChange={(value) => setFlowRange({ ...flowRange, to: value })} />
                 </Input>
                 <Input label="Cửa hàng">
                   <select className="control" value={wasteStore} onChange={(e) => setWasteStore(e.target.value)}>
@@ -5021,8 +4987,9 @@ function wasteSubTypeLabel(subType: string | null): string {
  * ~20 ký tự — không cho co lại thì ô tự phình quá cột và cả hàng tràn ra ngoài hộp thoại.
  */
 /** Trạng thái rã BOM của phiếu điều chuyển / kiểm kê có bán thành phẩm (khách chốt 28/09/2026). */
-function ExplosionBadge({ status }: { status?: string | null }) {
-  if (!status) return null;
+/** hidden: vận hành (không có tab Chế biến) không cần thấy chuyện rã BOM (khách 24/10/2026). */
+function ExplosionBadge({ status, hidden }: { status?: string | null; hidden?: boolean }) {
+  if (!status || hidden) return null;
   if (status === "PENDING") {
     return <span className="status mt-1 bg-amber-100 text-amber-800" title="Bán thành phẩm của phiếu này chờ bấm Rã ở tab Chế biến">Chờ rã BTP</span>;
   }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { DateInput } from "@/components/DateInput";
 import CopyableText from "@/components/CopyableText";
 import { storeLabel } from "@/lib/branch-labels";
 import { quantity as qty } from "@/lib/format-number";
@@ -155,20 +156,26 @@ export default function TransferRequestsPanel({ requests, warehouseName, onActio
                       <small className="block text-rose-700 mt-1">{request.returnedReason}{request.returnedBy ? ` — ${request.returnedBy}` : ""}</small>
                     </>
                   ) : (
-                    <span className="status bg-amber-100 text-amber-800">Chờ duyệt nhận</span>
+                    <>
+                      <span className="status bg-amber-100 text-amber-800">Chờ duyệt nhận</span>
+                      {/* Bên chuyển không có nút Duyệt — ghi rõ ai duyệt để khỏi tưởng mất nút (khách 24/10/2026). */}
+                      {!request.canApprove && (
+                        <small className="block text-slate-500 mt-1">Chờ kho <b>{warehouseName(request.toWarehouseCode)}</b> ({storeLabel(request.toBranchCode)}) bấm Duyệt nhận</small>
+                      )}
+                    </>
                   )}
                 </td>
                 <td className="cell">
                   <div className="flex flex-wrap justify-end gap-1.5">
                     {request.canApprove && request.status === "PENDING" && (
                       <>
-                        <ActionIcon kind="approve" title="Duyệt nhận" onClick={() => openDialog({ kind: "approve", request, date: today(), time: "", received: request.lines.map((line) => String(line.inputQuantity)) })} />
-                        <ActionIcon kind="cancel" title="Trả lại" onClick={() => openDialog({ kind: "return", request, reason: "" })} />
+                        <LabeledAction label="Duyệt nhận"><ActionIcon kind="approve" title="Duyệt nhận" onClick={() => openDialog({ kind: "approve", request, date: today(), time: "", received: request.lines.map((line) => String(line.inputQuantity)) })} /></LabeledAction>
+                        <LabeledAction label="Trả lại"><ActionIcon kind="cancel" title="Trả lại" onClick={() => openDialog({ kind: "return", request, reason: "" })} /></LabeledAction>
                       </>
                     )}
                     {request.canEdit && (
                       <>
-                        <ActionIcon kind="edit" title={request.status === "RETURNED" ? "Sửa & gửi lại" : "Sửa"} onClick={() => openDialog({
+                        <LabeledAction label={request.status === "RETURNED" ? "Sửa & gửi lại" : "Sửa"}><ActionIcon kind="edit" title={request.status === "RETURNED" ? "Sửa & gửi lại" : "Sửa"} onClick={() => openDialog({
                             kind: "edit",
                             request,
                             date: vnDateTimeParts(request.requestDate).day,
@@ -176,8 +183,8 @@ export default function TransferRequestsPanel({ requests, warehouseName, onActio
                             note: request.note || "",
                             referenceCode: request.referenceCode || "",
                             quantities: request.lines.map((line) => String(line.inputQuantity)),
-                          })} />
-                        <ActionIcon kind="cancel" title="Huỷ phiếu" onClick={() => { setError(""); setConfirmCancel(request); }} />
+                          })} /></LabeledAction>
+                        <LabeledAction label="Huỷ phiếu"><ActionIcon kind="cancel" title="Huỷ phiếu" onClick={() => { setError(""); setConfirmCancel(request); }} /></LabeledAction>
                       </>
                     )}
                   </div>
@@ -221,7 +228,7 @@ export default function TransferRequestsPanel({ requests, warehouseName, onActio
                     <label className="block text-xs font-bold text-slate-500">
                       {dialog.kind === "approve" ? "Ngày nhận hàng" : "Ngày điều chuyển"}
                       <div className="mt-1 flex gap-2">
-                        <input type="date" className="control min-w-0" value={dialog.date} onChange={(event) => setDialog({ ...dialog, date: event.target.value })} required />
+                        <DateInput className="control min-w-0" value={dialog.date} onChange={(value) => setDialog({ ...dialog, date: value })} required />
                         <input type="time" className="control w-28" value={dialog.time} aria-label="Giờ" title="Giờ (để trống = 07:00)" onChange={(event) => setDialog({ ...dialog, time: event.target.value })} />
                       </div>
                     </label>
@@ -323,5 +330,15 @@ export default function TransferRequestsPanel({ requests, warehouseName, onActio
         </div>
       )}
     </section>
+  );
+}
+
+/** Icon kèm chữ nhỏ bên dưới — điện thoại không có tooltip nên phải ghi rõ nút làm gì. */
+function LabeledAction({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <span className="inline-flex flex-col items-center">
+      {children}
+      <span className="text-[10px] leading-none text-slate-500 whitespace-nowrap">{label}</span>
+    </span>
   );
 }

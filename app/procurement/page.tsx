@@ -11,6 +11,7 @@ import { SearchableSelect } from "@/components/SearchableSelect";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { canPerformMenuAction, filterModuleTabs } from "@/lib/auth-demo";
 import { useModuleAuth } from "@/lib/use-module-auth";
+import { allowedDepartmentsOf } from "@/lib/department-scope";
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { assetGroupCandidates, assetGroupTypeLabel } from "@/lib/asset-group-rules";
@@ -117,6 +118,12 @@ function LinesPreview({ items, className = "text-xs text-slate-500" }: { items: 
 export default function ProcurementPage() {
   const href = "/procurement";
   const { user, loading } = useModuleAuth(href);
+  /**
+   * Lọc PR / PO theo bộ phận được phân công — cùng phạm vi phòng ban với kiểm kê CCDC/tài sản
+   * (khách 24/10/2026). Chỉ một bộ phận thì khoá luôn ô lọc ở bộ phận đó.
+   */
+  const ownDepartments = allowedDepartmentsOf(user);
+  const singleDepartment = ownDepartments?.length === 1 ? ownDepartments[0] : null;
   // "So sánh giá" đứng trước: chốt giá với NCC rồi mới lập yêu cầu mua.
   const [active, setActive] = useState("quotes");
   const [data, setData] = useState<Data>({ items: [], requests: [], orders: [], departments: [], itemGroups: [], warehouses: [], assetGroups: [], templates: [], suppliers: [], priceSuggestions: {} });
@@ -450,7 +457,7 @@ export default function ProcurementPage() {
   useEffect(() => {
     if (active !== "orders") return;
     let cancelled = false;
-    const query = new URLSearchParams({ view: "orders", branchCode: orderFilter.branchCode, departmentCode: orderFilter.departmentCode, status: orderFilter.status, sent: orderFilter.sent });
+    const query = new URLSearchParams({ view: "orders", branchCode: orderFilter.branchCode, departmentCode: singleDepartment || orderFilter.departmentCode, status: orderFilter.status, sent: orderFilter.sent });
     if (orderFilter.from) query.set("from", orderFilter.from);
     if (orderFilter.to) query.set("to", orderFilter.to);
     void fetch(`/api/procurement?${query.toString()}`).then(async (response) => {
@@ -458,7 +465,7 @@ export default function ProcurementPage() {
       if (!cancelled) setOrderList({ rows: payload.orders, truncated: payload.truncated });
     });
     return () => { cancelled = true; };
-  }, [active, orderFilter.branchCode, orderFilter.departmentCode, orderFilter.status, orderFilter.sent, orderFilter.from, orderFilter.to, data.orders]);
+  }, [active, orderFilter.branchCode, orderFilter.departmentCode, orderFilter.status, orderFilter.sent, orderFilter.from, orderFilter.to, data.orders, singleDepartment]);
 
   // So sánh giá có khoảng ngày: hỏi máy chủ để thấy cả PR cũ ngoài 100 phiếu mới nhất.
   useEffect(() => {
@@ -478,7 +485,7 @@ export default function ProcurementPage() {
   useEffect(() => {
     if (active !== "requests") return;
     let cancelled = false;
-    const query = new URLSearchParams({ view: "requests", branchCode: requestFilter.branchCode, departmentCode: requestFilter.departmentCode, status: requestFilter.status });
+    const query = new URLSearchParams({ view: "requests", branchCode: requestFilter.branchCode, departmentCode: singleDepartment || requestFilter.departmentCode, status: requestFilter.status });
     if (requestFilter.from) query.set("from", requestFilter.from);
     if (requestFilter.to) query.set("to", requestFilter.to);
     void fetch(`/api/procurement?${query.toString()}`).then(async (response) => {
@@ -486,7 +493,7 @@ export default function ProcurementPage() {
       if (!cancelled) setRequestList({ rows: payload.requests, truncated: payload.truncated });
     });
     return () => { cancelled = true; };
-  }, [active, requestFilter.branchCode, requestFilter.departmentCode, requestFilter.status, requestFilter.from, requestFilter.to, data.requests]);
+  }, [active, requestFilter.branchCode, requestFilter.departmentCode, requestFilter.status, requestFilter.from, requestFilter.to, data.requests, singleDepartment]);
 
   const send = async (method: "POST" | "PATCH", body: object, success: string) => {
     setMessage("");
@@ -1257,12 +1264,13 @@ export default function ProcurementPage() {
                 </select>
               </Field>
               <Field label="Phòng ban">
-                <select className="control" value={requestFilter.departmentCode} onChange={(e) => setRequestFilter({ ...requestFilter, departmentCode: e.target.value })}>
-                  <option value="ALL">Tất cả phòng ban</option>
+                <select className="control" value={singleDepartment || requestFilter.departmentCode} disabled={Boolean(singleDepartment)} onChange={(e) => setRequestFilter({ ...requestFilter, departmentCode: e.target.value })}>
+                  {!singleDepartment && <option value="ALL">Tất cả phòng ban</option>}
                   {data.departments
+                    .filter((item) => !ownDepartments || ownDepartments.includes(item.code.toUpperCase()))
                     .filter((item) => requestFilter.branchCode === "ALL" || !item.branch || item.branch === "ALL" || item.branch === requestFilter.branchCode)
                     .map((item) => <option key={item.id} value={item.code}>{item.name}{item.branch && item.branch !== "ALL" && requestFilter.branchCode === "ALL" ? ` (${storeLabel(item.branch)})` : ""}</option>)}
-                  <option value="NONE">Chưa gán phòng ban</option>
+                  {!ownDepartments && <option value="NONE">Chưa gán phòng ban</option>}
                 </select>
               </Field>
               <Field label="Trạng thái">
@@ -1737,12 +1745,13 @@ export default function ProcurementPage() {
               </select>
             </Field>
             <Field label="Phòng ban">
-              <select className="control" value={orderFilter.departmentCode} onChange={(e) => setOrderFilter({ ...orderFilter, departmentCode: e.target.value })}>
-                <option value="ALL">Tất cả phòng ban</option>
+              <select className="control" value={singleDepartment || orderFilter.departmentCode} disabled={Boolean(singleDepartment)} onChange={(e) => setOrderFilter({ ...orderFilter, departmentCode: e.target.value })}>
+                {!singleDepartment && <option value="ALL">Tất cả phòng ban</option>}
                 {data.departments
+                  .filter((item) => !ownDepartments || ownDepartments.includes(item.code.toUpperCase()))
                   .filter((item) => orderFilter.branchCode === "ALL" || !item.branch || item.branch === "ALL" || item.branch === orderFilter.branchCode)
                   .map((item) => <option key={item.id} value={item.code}>{item.name}{item.branch && item.branch !== "ALL" && orderFilter.branchCode === "ALL" ? ` (${storeLabel(item.branch)})` : ""}</option>)}
-                <option value="NONE">Chưa gán phòng ban</option>
+                {!ownDepartments && <option value="NONE">Chưa gán phòng ban</option>}
               </select>
             </Field>
             <Field label="Trạng thái">

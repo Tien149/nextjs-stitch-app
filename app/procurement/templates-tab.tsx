@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { DateInput } from "@/components/DateInput";
 import { QuantityInput } from "@/components/QuantityInput";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
@@ -109,6 +109,20 @@ function baseQuantityHint(line: { unitCode: string | null; item: TemplateItem },
 }
 
 /**
+ * Dòng mẫu xếp theo tên NCC rồi tên hàng (khách 24/10/2026 — vận hành đặt hàng 100% trên điện
+ * thoại, gom theo NCC cho dễ dò). Dòng chưa có NCC theo NCC của mẫu; không có NCC nào thì xuống cuối.
+ */
+function sortTemplateLines<T extends { supplierName?: string | null; item: { name: string } }>(lines: T[], fallbackSupplier?: string | null) {
+  const supplierOf = (line: T) => line.supplierName || fallbackSupplier || "";
+  return [...lines].sort((a, b) => {
+    const sa = supplierOf(a);
+    const sb = supplierOf(b);
+    if (!sa !== !sb) return sa ? -1 : 1;
+    return sa.localeCompare(sb, "vi") || a.item.name.localeCompare(b.item.name, "vi");
+  });
+}
+
+/**
  * Đổi NCC của một dòng mẫu. Dòng ĐẦU là NCC chung: đổi thì chép xuống các dòng chưa chọn riêng
  * (trống hoặc đang theo NCC cũ của dòng đầu) — dòng đã chọn NCC khác giữ nguyên (khách 23/10/2026).
  */
@@ -166,7 +180,7 @@ export function TemplatesTab({
   const [templateForm, setTemplateForm] = useState({ name: "", branchCode: "", departmentCode: "", warehouseCode: "", supplierCode: "", note: "", effectiveFrom: "", effectiveTo: "" });
   const [templateRows, setTemplateRows] = useState<TemplateRow[]>([{ itemId: "", unitCode: "" }]);
   /** Danh sách mẫu: lọc + mẫu đang xem chi tiết (khách yêu cầu 03/10/2026 — rất nhiều mẫu). */
-  const [listFilter, setListFilter] = useState({ search: "", branch: "ALL", status: "ACTIVE" });
+  const [listFilter, setListFilter] = useState({ search: "", branch: "ALL", warehouse: "ALL", status: "ACTIVE" });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [importState, setImportState] = useState<{ fileName: string; rows: Array<Record<string, unknown>>; result: TemplateImportResult | null; busy: boolean } | null>(null);
   const [savingTemplate, setSavingTemplate] = useState(false);
@@ -277,7 +291,7 @@ export function TemplatesTab({
     : 0;
 
   const visibleFillLines = filling
-    ? filling.lines.filter((line) => {
+    ? sortTemplateLines(filling.lines, filling.supplierName).filter((line) => {
         const keyword = fillSearch.trim().toLowerCase();
         if (!keyword) return true;
         return line.item.name.toLowerCase().includes(keyword) || line.item.code.toLowerCase().includes(keyword);
@@ -358,6 +372,10 @@ export function TemplatesTab({
       notify("Mẫu cần ít nhất một mặt hàng.");
       return;
     }
+    if (!templateForm.warehouseCode) {
+      notify("Chọn kho nhận hàng cho mẫu.");
+      return;
+    }
     setSavingTemplate(true);
     try {
       const response = await fetch("/api/procurement", {
@@ -422,7 +440,7 @@ export function TemplatesTab({
     const sample = items.slice(0, 3);
     const rows = [
       [...TEMPLATE_IMPORT_HEADERS],
-      ...sample.map((item, index) => [index === 0 ? "" : "", "Mẫu đặt hàng Bếp", branchOptions[0]?.code || "", departments[0]?.code || "", index === 0 ? "" : "", "", item.code, item.name, item.unitConversions?.find((unit) => unit.isDefaultPurchase)?.unitCode || item.unit, "", ""]),
+      ...sample.map((item, index) => [index === 0 ? "" : "", "Mẫu đặt hàng Bếp", branchOptions[0]?.code || "", departments[0]?.code || "", index === 0 ? "" : "", "", item.code, item.name, item.unitConversions?.find((unit) => unit.isDefaultPurchase)?.unitCode || item.unit, "", "", index === 0 ? warehouses[0]?.code || "" : ""]),
     ];
     const guide = [
       ["Cột", "Cách ghi"],
@@ -435,10 +453,11 @@ export function TemplatesTab({
       ["ĐVT", "ĐVT đặt hàng (THÙNG, KG...) đã khai quy đổi; để trống = ĐVT mua mặc định."],
       ["Ghi chú", "Ghi chú của dòng (hiện cho người đặt)."],
       ["Mã NCC", "Mã đối tác NCC của dòng (không bắt buộc) — mỗi dòng một NCC; duyệt PR tự tách PO theo NCC."],
+      ["Kho", `Mã kho nhận hàng của mẫu — BẮT BUỘC với mẫu mới, ghi ở một dòng của mẫu là đủ. Kho thuộc cửa hàng của mẫu: ${warehouses.map((warehouse) => `${warehouse.code} (${warehouse.name})`).join(", ")}.`],
     ];
     const workbook = XLSX.utils.book_new();
     const sheet = XLSX.utils.aoa_to_sheet(rows);
-    sheet["!cols"] = [12, 28, 10, 12, 14, 14, 16, 34, 10, 24, 14].map((wch) => ({ wch }));
+    sheet["!cols"] = [12, 28, 10, 12, 14, 14, 16, 34, 10, 24, 14, 14].map((wch) => ({ wch }));
     XLSX.utils.book_append_sheet(workbook, sheet, "Mau dat hang");
     const guideSheet = XLSX.utils.aoa_to_sheet(guide);
     guideSheet["!cols"] = [{ wch: 28 }, { wch: 120 }];
@@ -487,7 +506,7 @@ export function TemplatesTab({
       [`${template.code} — ${template.name}`],
       [`${template.branchCode ? storeLabel(template.branchCode) : "Dùng chung mọi cửa hàng"}${template.departmentCode ? ` · ${departmentName(template.departmentCode)}` : ""} · Áp dụng ${window.from ? `từ ${dayText(window.from)}` : "không giới hạn"}${window.to ? ` đến ${dayText(window.to)}` : ""}`],
       ["STT", "Mã hàng", "Tên hàng", "ĐVT", "Số lượng", "Ghi chú", "NCC"],
-      ...template.lines.map((line, index) => [index + 1, line.item.code, line.item.name, lineUnit(line), withQuantities ? Number(fillQuantities[line.id] || 0) || "" : "", line.note || "", line.supplierName || template.supplierName || ""]),
+      ...sortTemplateLines(template.lines, template.supplierName).map((line, index) => [index + 1, line.item.code, line.item.name, lineUnit(line), withQuantities ? Number(fillQuantities[line.id] || 0) || "" : "", line.note || "", line.supplierName || template.supplierName || ""]),
     ];
     const sheet = XLSX.utils.aoa_to_sheet(aoa);
     sheet["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 6 } }, { s: { r: 1, c: 0 }, e: { r: 1, c: 6 } }];
@@ -613,20 +632,27 @@ export function TemplatesTab({
           </div>
 
           <div className="px-4 sm:px-5 pb-4 grid lg:grid-cols-2 gap-2">
-            {visibleFillLines.map((line) => {
+            {visibleFillLines.map((line, index) => {
+              // Tiêu đề nhóm mỗi khi đổi NCC — dòng đã xếp theo NCC rồi tên hàng.
+              const supplierName = line.supplierName || filling.supplierName || "";
+              const previous = index > 0 ? visibleFillLines[index - 1].supplierName || filling.supplierName || "" : null;
+              const groupHeader = supplierName !== previous
+                ? <p className="lg:col-span-2 mt-2 first:mt-0 px-1 text-xs font-bold uppercase tracking-wide text-slate-500">{supplierName || "Chưa chọn NCC"}</p>
+                : null;
               const quantity = fillQuantities[line.id] || "";
               const active = Number(quantity) > 0;
               const unitChoices = purchaseUnitOptions(line.item.unit, line.item.unitConversions);
               const chosenUnit = fillUnits[line.id] || defaultPurchaseUnit(line.item.unit, line.item.unitConversions, line.unitCode).unitCode;
               return (
-                <div key={line.id} className={`flex items-center gap-3 rounded-xl border px-3 py-2.5 ${active ? "border-blue-300 bg-blue-50/60" : "border-slate-200 bg-white"}`}>
+                <Fragment key={line.id}>
+                {groupHeader}
+                <div className={`flex items-center gap-3 rounded-xl border px-3 py-2.5 ${active ? "border-blue-300 bg-blue-50/60" : "border-slate-200 bg-white"}`}>
                   <div className="flex-1 min-w-0">
                     <p className="font-bold text-sm text-slate-800 leading-snug">{line.item.name}</p>
                     <p className="text-xs text-slate-500">
                       {line.item.code} · ĐVT: <b>{lineUnit(line)}</b>
                       {baseQuantityHint(line, quantity, fillUnits[line.id]) ? <span className="text-blue-700 font-semibold"> {baseQuantityHint(line, quantity, fillUnits[line.id])}</span> : null}
                       {line.note ? ` · ${line.note}` : ""}
-                      {line.supplierName ? <span className="block text-slate-400">NCC: {line.supplierName}</span> : null}
                     </p>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
@@ -652,6 +678,7 @@ export function TemplatesTab({
                     )}
                   </div>
                 </div>
+                </Fragment>
               );
             })}
             {visibleFillLines.length === 0 && (
@@ -681,6 +708,8 @@ export function TemplatesTab({
   const listedTemplates = templates
     .filter((template) => template.status === "ACTIVE")
     .filter((template) => listFilter.branch === "ALL" || !template.branchCode || template.branchCode === listFilter.branch)
+    // Lọc theo kho (danh sách kho = kho user được phân quyền — khách 24/10/2026); mẫu "mọi kho" luôn hiện.
+    .filter((template) => listFilter.warehouse === "ALL" || !template.warehouseCode || template.warehouseCode === listFilter.warehouse)
     .filter((template) => listFilter.status === "ALL" || templateWindowStatus(template, todayVn) === listFilter.status)
     .filter((template) => !keyword
       || `${template.code} ${template.name}`.toLowerCase().includes(keyword)
@@ -712,11 +741,17 @@ export function TemplatesTab({
             </div>
           )}
         </div>
-        <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
           <input type="search" className="control !mt-0" placeholder="Tìm mã / tên mẫu hoặc mặt hàng trong mẫu..." value={listFilter.search} onChange={(e) => setListFilter({ ...listFilter, search: e.target.value })} />
-          <select className="control !mt-0" value={listFilter.branch} onChange={(e) => setListFilter({ ...listFilter, branch: e.target.value })}>
+          <select className="control !mt-0" value={listFilter.branch} onChange={(e) => setListFilter({ ...listFilter, branch: e.target.value, warehouse: "ALL" })}>
             <option value="ALL">Tất cả cửa hàng</option>
             {branchOptions.map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
+          </select>
+          <select className="control !mt-0" value={listFilter.warehouse} onChange={(e) => setListFilter({ ...listFilter, warehouse: e.target.value })} aria-label="Lọc theo kho">
+            <option value="ALL">Tất cả kho</option>
+            {warehouses
+              .filter((warehouse) => listFilter.branch === "ALL" || !warehouse.branch || warehouse.branch === "ALL" || warehouse.branch === listFilter.branch)
+              .map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name}</option>)}
           </select>
           <select className="control !mt-0" value={listFilter.status} onChange={(e) => setListFilter({ ...listFilter, status: e.target.value })}>
             <option value="ACTIVE">Đang áp dụng</option>
@@ -751,7 +786,7 @@ export function TemplatesTab({
                   return (
                     <tr key={template.id} onClick={() => setSelectedId(template.id)} className={`border-t border-slate-100 cursor-pointer ${isSelected ? "bg-blue-50" : "hover:bg-slate-50"}`}>
                       <td className="cell min-w-[200px]"><b className="text-slate-800">{template.name}</b><small>{template.code}</small></td>
-                      <td className="cell">{template.branchCode ? storeLabel(template.branchCode) : <span className="text-slate-500">Mọi cửa hàng</span>}<small>{departmentName(template.departmentCode)}{template.warehouseCode ? ` · Kho ${template.warehouseCode}` : ""}{template.supplierName ? ` · ${template.supplierName}` : ""}</small></td>
+                      <td className="cell">{template.branchCode ? storeLabel(template.branchCode) : <span className="text-slate-500">Mọi cửa hàng</span>}<small>{departmentName(template.departmentCode)}{template.warehouseCode ? ` · ${warehouses.find((warehouse) => warehouse.code === template.warehouseCode)?.name || `Kho ${template.warehouseCode}`}` : ""}{template.supplierName ? ` · ${template.supplierName}` : ""}</small></td>
                       <td className="cell whitespace-nowrap">
                         <span className={`status ${WINDOW_TONE[status]}`}>{WINDOW_LABEL[status]}</span>
                         <small className="block text-slate-500">{window.from ? dayText(window.from) : "…"} → {window.to ? dayText(window.to) : "…"}</small>
@@ -796,7 +831,7 @@ export function TemplatesTab({
                   const names = [...new Set(selected.lines.map((line) => line.supplierName || selected.supplierName || "").filter(Boolean))];
                   return names.length > 1 ? `Theo từng dòng (${names.length} NCC)` : names[0] || <span className="text-slate-400">Chưa chọn</span>;
                 })()}</dd></div>
-                <div><dt className="text-xs font-bold text-slate-500">Kho nhận hàng</dt><dd>{selected.warehouseCode || <span className="text-slate-400">Mọi kho</span>}</dd></div>
+                <div><dt className="text-xs font-bold text-slate-500">Kho nhận hàng</dt><dd>{selected.warehouseCode ? warehouses.find((warehouse) => warehouse.code === selected.warehouseCode)?.name || selected.warehouseCode : <span className="text-slate-400">Mọi kho</span>}</dd></div>
                 <div><dt className="text-xs font-bold text-slate-500">Ngày áp dụng</dt><dd>{selectedWindow?.from ? dayText(selectedWindow.from) : <span className="text-slate-400">Không giới hạn</span>}</dd></div>
                 <div><dt className="text-xs font-bold text-slate-500">Ngày kết thúc</dt><dd>{selectedWindow?.to ? dayText(selectedWindow.to) : <span className="text-slate-400">Không giới hạn</span>}</dd></div>
                 {selected.note && <div className="col-span-2 lg:col-span-4"><dt className="text-xs font-bold text-slate-500">Ghi chú</dt><dd>{selected.note}</dd></div>}
@@ -807,7 +842,7 @@ export function TemplatesTab({
                     <tr>{["STT", "Mã hàng", "Tên hàng", "ĐVT đặt", "NCC", "Ghi chú"].map((label) => <th key={label} className="px-3 py-2 text-left font-bold whitespace-nowrap">{label}</th>)}</tr>
                   </thead>
                   <tbody>
-                    {selected.lines.map((line, index) => (
+                    {sortTemplateLines(selected.lines, selected.supplierName).map((line, index) => (
                       <tr key={line.id} className="border-t border-slate-100">
                         <td className="cell text-slate-400">{index + 1}</td>
                         <td className="cell whitespace-nowrap font-bold">{line.item.code}</td>
@@ -851,12 +886,13 @@ export function TemplatesTab({
                 </select>
               </label>
               {/* Kho của mẫu (khách 21/10/2026): user được phân kho chỉ thấy mẫu kho mình; PR theo mẫu nhận về kho này. */}
-              <label className="block text-xs font-bold text-slate-600">Kho nhận hàng
-                <select className="control" value={templateForm.warehouseCode} onChange={(e) => { const value = e.target.value; setTemplateForm((current) => ({ ...current, warehouseCode: value })); }}>
-                  <option value="">Mọi kho (ai cũng thấy mẫu)</option>
+              <label className="block text-xs font-bold text-slate-600">Kho nhận hàng *
+                <select className="control" required value={templateForm.warehouseCode} onChange={(e) => { const value = e.target.value; setTemplateForm((current) => ({ ...current, warehouseCode: value })); }}>
+                  {/* Bắt buộc chọn kho (khách 24/10/2026). */}
+                  <option value="">-- Chọn kho --</option>
                   {warehouses
                     .filter((warehouse) => !templateForm.branchCode || !warehouse.branch || warehouse.branch === "ALL" || warehouse.branch === templateForm.branchCode)
-                    .map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name} ({warehouse.code})</option>)}
+                    .map((warehouse) => <option key={warehouse.code} value={warehouse.code}>{warehouse.name}</option>)}
                 </select>
               </label>
               <label className="block text-xs font-bold text-slate-600">Bộ phận mặc định

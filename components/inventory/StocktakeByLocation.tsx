@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { DateInput, DateTimeInput } from "@/components/DateInput";
 import CopyableText from "@/components/CopyableText";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
@@ -361,6 +362,81 @@ export default function StocktakeByLocation(props: {
       .filter((id) => { const item = itemById.get(id); return item && isLocationStocktakeItemType(item.itemType); });
     setLocationForm((form) => ({ ...form, itemIds: [...form.itemIds, ...stocked.filter((id) => !form.itemIds.includes(id))] }));
   };
+  /**
+   * Import vị trí + form mẫu cả kho bằng file (khách 24/10/2026). File mẫu xuất sẵn các vị trí đang
+   * có của kho để sửa rồi nạp lại; mỗi dòng một mặt hàng, thứ tự dòng = thứ tự đếm.
+   */
+  const LOCATION_IMPORT_HEADERS = ["Mã vị trí", "Tên vị trí", "Thứ tự vị trí", "Mã hàng", "Tên hàng"];
+  const downloadLocationTemplate = async () => {
+    const XLSX = await import("xlsx");
+    const current = locationsOf(activeWarehouse);
+    const rows: Array<Array<string | number>> = [LOCATION_IMPORT_HEADERS];
+    for (const location of current) {
+      if (location.items.length === 0) rows.push([location.code, location.name, location.sortOrder, "", ""]);
+      for (const entry of location.items) rows.push([location.code, location.name, location.sortOrder, entry.item.code, entry.item.name]);
+    }
+    if (current.length === 0) {
+      scopedItems.slice(0, 3).forEach((item, index) => rows.push([index < 2 ? "TU_DONG_1" : "KE_KHO_1", index < 2 ? "Tủ đông 1" : "Kệ kho 1", index < 2 ? 1 : 2, item.code, item.name]));
+    }
+    const guide = [
+      ["Cột", "Cách ghi"],
+      ["Mã vị trí", "Bắt buộc. Mỗi vị trí nhiều dòng (một dòng một mặt hàng). Vị trí có trong file thì GHI ĐÈ danh sách mặt hàng; vị trí không có trong file giữ nguyên."],
+      ["Tên vị trí", "Bắt buộc với vị trí mới; vị trí đã có để trống = giữ tên cũ."],
+      ["Thứ tự vị trí", "Không bắt buộc — thứ tự vị trí trong danh sách."],
+      ["Mã hàng", "Mã nguyên liệu / bao bì. Thứ tự dòng = thứ tự đếm trong form."],
+      ["Tên hàng", "Chỉ để tham khảo, hệ thống đọc theo Mã hàng."],
+    ];
+    const book = XLSX.utils.book_new();
+    const sheet = XLSX.utils.aoa_to_sheet(rows);
+    sheet["!cols"] = [16, 24, 12, 18, 40].map((wch) => ({ wch }));
+    XLSX.utils.book_append_sheet(book, sheet, "Vi tri kiem ke");
+    XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(guide), "Huong dan");
+    XLSX.writeFile(book, `vi-tri-kiem-ke-${activeWarehouse}.xlsx`);
+  };
+  const importLocations = async (file: File) => {
+    const XLSX = await import("xlsx");
+    const book = XLSX.read(await file.arrayBuffer());
+    const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(book.Sheets[book.SheetNames[0]], { defval: "" });
+    const fold = (value: string) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d").replace(/Đ/g, "D").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const pick = (row: Record<string, unknown>, header: string) => {
+      const key = Object.keys(row).find((candidate) => fold(candidate) === fold(header));
+      return key ? String(row[key] ?? "").trim() : "";
+    };
+    const rows = raw.map((row, index) => ({
+      row: index + 2,
+      locationCode: pick(row, "Mã vị trí"),
+      locationName: pick(row, "Tên vị trí"),
+      sortOrder: pick(row, "Thứ tự vị trí"),
+      itemCode: pick(row, "Mã hàng"),
+    })).filter((row) => row.locationCode || row.itemCode);
+    if (rows.length === 0) {
+      setMessage("File không có dòng nào — dùng nút Tải file mẫu để lấy đúng cột.");
+      return;
+    }
+    setBusy(true);
+    setMessage("");
+    try {
+      const response = await fetch(api, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...sessionHeaders(sessionKey) },
+        body: JSON.stringify({ action: "IMPORT_LOCATIONS", branchCode, warehouseCode: activeWarehouse, rows }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const lines = (payload.errors || []) as Array<{ row: number; message: string }>;
+        setMessage(`${payload.error || "Không import được"}${lines.length ? `\n${lines.slice(0, 15).map((line) => `${line.row ? `Dòng ${line.row}: ` : ""}${line.message}`).join("\n")}${lines.length > 15 ? `\n… còn ${lines.length - 15} lỗi` : ""}` : ""}`);
+        return;
+      }
+      setMessage(`Đã import ${payload.locations} vị trí (${payload.created} vị trí mới), ${payload.items} dòng mặt hàng vào ${warehouseName(activeWarehouse)}.`);
+      setLocationForm(emptyLocation);
+      await load();
+    } catch {
+      setMessage("Mất kết nối tới máy chủ khi import.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const saveLocation = async () => {
     const payload = await post({ action: "SAVE_LOCATION", ...locationForm, branchCode, warehouseCode: activeWarehouse }, `Đã lưu vị trí ${locationForm.code || locationForm.name}.`);
     if (payload) {
@@ -444,7 +520,7 @@ export default function StocktakeByLocation(props: {
               </select>
             </label>
             <label className="block text-xs font-bold text-slate-600">Ngày đếm
-              <input type="date" className="control" value={countForm.stocktakeDate} onChange={(e) => setCountForm({ ...countForm, stocktakeDate: e.target.value })} />
+              <DateInput className="control" value={countForm.stocktakeDate} onChange={(value) => setCountForm({ ...countForm, stocktakeDate: value })} />
             </label>
           </div>
           {warehouseLocations.length === 0 && (
@@ -532,7 +608,7 @@ export default function StocktakeByLocation(props: {
           )}
           <div className="flex flex-wrap items-end gap-3">
             <label className="block text-xs font-bold text-slate-600">Giờ chốt tồn
-              <input type="datetime-local" className="control" value={cutoffInput} max={nowLocalInput()} onChange={(e) => { setCutoffInput(e.target.value); setPreview(null); }} />
+              <DateTimeInput className="mt-1.5" value={cutoffInput} onChange={(value) => { setCutoffInput(value); setPreview(null); }} ariaLabel="Giờ chốt tồn" />
             </label>
             <button type="button" className="secondary-button" onClick={() => { setCutoffInput(nowLocalInput()); setPreview(null); }}>Bây giờ</button>
             <button type="button" className="primary-button" disabled={busy || selected.length === 0} onClick={() => void runPreview()}>Xem tổng hợp ({selected.length} phiếu)</button>
@@ -632,6 +708,21 @@ export default function StocktakeByLocation(props: {
       )}
 
       {section === "locations" && canEdit && (
+        <div className="space-y-4">
+        <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-slate-600">
+            Khai nhiều vị trí của <b>{warehouseName(activeWarehouse)}</b> bằng file Excel: mỗi dòng một mặt hàng của một vị trí. Vị trí có trong file được ghi đè danh sách mặt hàng, vị trí khác giữ nguyên.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className="secondary-button" disabled={!activeWarehouse} onClick={() => void downloadLocationTemplate()}>
+              <span className="material-symbols-outlined text-lg">download</span>Tải file mẫu
+            </button>
+            <label className={`secondary-button cursor-pointer ${!activeWarehouse || busy ? "pointer-events-none opacity-50" : ""}`}>
+              <span className="material-symbols-outlined text-lg">upload_file</span>Import file
+              <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; if (file) void importLocations(file); }} />
+            </label>
+          </div>
+        </div>
         <div className="grid lg:grid-cols-[420px_1fr] gap-4">
           <form onSubmit={(e) => { e.preventDefault(); void saveLocation(); }} className="bg-white border border-slate-200 rounded-lg p-4 space-y-3 shadow-sm h-fit">
             <h2 className="font-bold text-slate-800">{locationForm.id ? `Sửa vị trí ${locationForm.code}` : "Thêm vị trí"} — {warehouseName(activeWarehouse)}</h2>
@@ -691,6 +782,7 @@ export default function StocktakeByLocation(props: {
               ))}
             </div>
           </section>
+        </div>
         </div>
       )}
 

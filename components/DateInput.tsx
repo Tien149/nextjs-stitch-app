@@ -178,3 +178,18 @@ export function DateInput(props: BaseProps) {
 export function MonthInput(props: BaseProps) {
   return <DatePickerInput {...props} mode="month" />;
 }
+
+/**
+ * Ngày + giờ ("YYYY-MM-DDTHH:mm", cùng giá trị với input datetime-local) nhưng ngày hiện dd/mm/yyyy
+ * — datetime-local trên điện thoại tiếng Anh ra tháng/ngày/năm (khách 24/10/2026).
+ */
+export function DateTimeInput({ value, onChange, className = "", ariaLabel }: { value: string; onChange: (value: string) => void; className?: string; ariaLabel?: string }) {
+  const [day = "", time = ""] = (value || "").split("T");
+  return (
+    <div className={`flex gap-2 ${className}`}>
+      <DateInput className="min-w-0 flex-1" value={day} onChange={(nextDay) => onChange(nextDay ? `${nextDay}T${time || "00:00"}` : "")} ariaLabel={ariaLabel ? `${ariaLabel} — ngày` : undefined} />
+      <input type="time" className="control !mt-0 w-28" value={time.slice(0, 5)} aria-label={ariaLabel ? `${ariaLabel} — giờ` : undefined}
+        onChange={(event) => onChange(`${day || new Date().toISOString().slice(0, 10)}T${event.target.value || "00:00"}`)} />
+    </div>
+  );
+}

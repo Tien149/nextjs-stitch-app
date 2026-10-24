@@ -149,10 +149,14 @@ export function planInventoryCogsJournal(input: {
     const prepaid = !inbound && (input.prepaidItemTypes || []).includes(itemType);
     const expenseItem = EXPENSE_ITEM_TYPES[itemType];
     const chosen = !prepaid && type === "XUAT_KHAC" ? input.issuePnlItem || null : null;
-    const accountCode = prepaid ? "242" : chosen ? chosen.accountCode : expenseItem ? "6428" : "632";
+    // Xuất khác chưa chọn hạng mục (vận hành lập, văn phòng bổ sung sau — khách 24/10/2026): treo
+    // 6428 "chưa phân loại P&L", không vào giá vốn, tới khi sửa phiếu chọn hạng mục. Bao bì / đồng
+    // phục vẫn đi hạng mục riêng của mặt hàng.
+    const unclassifiedIssue = !prepaid && type === "XUAT_KHAC" && !chosen && !expenseItem;
+    const accountCode = prepaid ? "242" : chosen ? chosen.accountCode : unclassifiedIssue || expenseItem ? "6428" : "632";
     // Bao bì / đồng phục: mặt hàng khai hạng mục riêng (Than -> CPBD_THAN) thì đi hạng mục đó.
     const itemExpense = expenseItem ? line.expensePnlItemCode || expenseItem : null;
-    const pnlItemCode = prepaid ? null : chosen ? chosen.pnlItemCode : itemExpense || cogsItem.code;
+    const pnlItemCode = prepaid || unclassifiedIssue ? null : chosen ? chosen.pnlItemCode : itemExpense || cogsItem.code;
     const key = `${accountCode}|${pnlItemCode}`;
     const bucket = buckets.get(key) || { accountCode, pnlItemCode, amount: 0 };
     bucket.amount += amount;

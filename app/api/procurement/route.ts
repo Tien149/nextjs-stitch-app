@@ -840,7 +840,7 @@ export async function POST(request: Request) {
         prisma.inventoryItem.findMany({ select: { id: true, code: true, name: true, unit: true, status: true, itemType: true, unitConversions: { where: { deletedAt: null }, select: { unitCode: true } } } }),
         prisma.masterDataItem.findMany({ where: { type: "BRANCH" }, select: { code: true } }),
         prisma.masterDataItem.findMany({ where: { type: "DEPARTMENT" }, select: { code: true } }),
-        prisma.purchaseRequestTemplate.findMany({ select: { id: true, code: true, name: true, branchCode: true } }),
+        prisma.purchaseRequestTemplate.findMany({ select: { id: true, code: true, name: true, branchCode: true, warehouseCode: true } }),
       ]);
       const result = buildTemplateImport(rows, {
         items: new Map(items.map((item) => [item.code.toUpperCase(), item as TemplateImportItem])),
@@ -864,6 +864,21 @@ export async function POST(request: Request) {
           result.errors.push({ row: group.lines[0]?.row || 0, message: error instanceof Error ? error.message.replace(/^BUSINESS:/, "") : String(error) });
         }
       }
+      // Kho nhận: mẫu mới bắt buộc ghi cột Kho; kho phải thuộc cửa hàng của mẫu và trong phạm vi kho của người import.
+      for (const { group, existing } of resolved) {
+        const row = group.lines[0]?.row || 0;
+        if (!group.warehouseCode && !existing?.warehouseCode) {
+          result.errors.push({ row, message: `Mẫu "${group.name}" chưa ghi cột Kho (mã kho nhận hàng)` });
+          continue;
+        }
+        if (group.warehouseCode) {
+          try {
+            await resolveTemplateWarehouse(auth.session, group.branchCode, group.warehouseCode);
+          } catch (error) {
+            result.errors.push({ row, message: error instanceof Error ? error.message.replace(/^BUSINESS:/, "") : String(error) });
+          }
+        }
+      }
       // Mã NCC từng dòng phải có trong danh mục đối tác.
       const importSupplierCodes = [...new Set(result.groups.flatMap((group) => group.lines.map((line) => line.supplierCode)).filter((code): code is string => Boolean(code)))];
       const knownSuppliers = new Map((importSupplierCodes.length === 0 ? [] : await prisma.masterDataItem.findMany({ where: { type: "PARTNER", code: { in: importSupplierCodes } }, select: { code: true, name: true } })).map((row) => [row.code.toUpperCase(), row]));
@@ -882,6 +897,7 @@ export async function POST(request: Request) {
           name: group.name,
           branchCode: group.branchCode,
           departmentCode: group.departmentCode,
+          ...(group.warehouseCode ? { warehouseCode: group.warehouseCode } : {}),
           effectiveFrom: templateDayToDate(group.from),
           effectiveTo: templateDayToDate(group.to),
         };
@@ -917,6 +933,8 @@ export async function POST(request: Request) {
       const branchCode = cleanText(body.branchCode) || null;
       assertTemplateBranchAccess(auth.session, branchCode);
       const warehouseCode = await resolveTemplateWarehouse(auth.session, branchCode, body.warehouseCode);
+      // Mẫu bắt buộc có kho nhận (khách 24/10/2026).
+      if (!warehouseCode) businessError("Chọn kho nhận hàng cho mẫu.");
       const supplier = await resolveSupplier(body.supplierCode);
       const lineSupplier = await lineSupplierResolver(lines.map((line) => line.supplierCode));
       const result = await prisma.purchaseRequestTemplate.create({
@@ -1295,6 +1313,7 @@ export async function PATCH(request: Request) {
       if (branchCode !== template.branchCode) assertTemplateBranchAccess(auth.session, branchCode);
       assertWarehouseAccess(auth.session, template.warehouseCode);
       const warehouseCode = body.warehouseCode !== undefined ? await resolveTemplateWarehouse(auth.session, branchCode, body.warehouseCode) : template.warehouseCode;
+      if (body.warehouseCode !== undefined && !warehouseCode) businessError("Chọn kho nhận hàng cho mẫu.");
       const supplier = await resolveSupplier(body.supplierCode);
 
       const rawLines = body.lines !== undefined

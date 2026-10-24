@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { DateInput } from "@/components/DateInput";
 import CopyableText from "@/components/CopyableText";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
 import { movementTypeLabel } from "@/lib/inventory-movement-labels";
@@ -426,10 +427,10 @@ export default function StockReportsPanel(props: Props) {
             </select>
           </label>
           <label className="text-xs font-bold text-slate-500">Từ ngày
-            <input type="date" className="control mt-1" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} />
+            <DateInput className="control mt-1" value={range.from} onChange={(value) => setRange({ ...range, from: value })} />
           </label>
           <label className="text-xs font-bold text-slate-500">Đến ngày
-            <input type="date" className="control mt-1" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} />
+            <DateInput className="control mt-1" value={range.to} onChange={(value) => setRange({ ...range, to: value })} />
           </label>
           <label className="text-xs font-bold text-slate-500">Tìm mã / tên hàng
             <input className="control mt-1" placeholder="Gõ mã hoặc tên..." value={search} onChange={(e) => setSearch(e.target.value)} />

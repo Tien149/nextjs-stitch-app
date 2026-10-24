@@ -32,3 +32,16 @@ export function assertWarehouseAccess(session: DemoSession, warehouseCode: strin
   const allowed = allowedWarehousesOf(session) || [];
   throw new Error(`BUSINESS:${label} ${warehouseCode} nằm ngoài các kho được phân công (${allowed.join(", ")}).`);
 }
+
+/**
+ * Kho nhận điều chuyển cho người bị giới hạn kho (khách 24/10/2026: team Bếp điều chuyển thì kho
+ * nhận chỉ hiện kho Bếp): chỉ các kho CÙNG LOẠI (ô Nhóm của danh mục kho: KHO BẾP / KHO BAR /
+ * KHO FOH...) với kho được giao, ở mọi nhà hàng. Người không bị giới hạn kho thấy mọi kho.
+ */
+export function transferDestinationsFor<T extends { code: string; group?: string | null }>(session: DemoSession | null | undefined, warehouses: T[]): T[] {
+  const allowed = allowedWarehousesOf(session);
+  if (!allowed) return warehouses;
+  const groupOf = (warehouse: T) => (warehouse.group || "").trim().toUpperCase();
+  const groups = new Set(warehouses.filter((warehouse) => allowed.includes(warehouse.code.toUpperCase())).map(groupOf).filter(Boolean));
+  return warehouses.filter((warehouse) => allowed.includes(warehouse.code.toUpperCase()) || (groupOf(warehouse) && groups.has(groupOf(warehouse))));
+}

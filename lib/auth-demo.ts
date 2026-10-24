@@ -415,8 +415,8 @@ export const moduleTabs: Record<string, Array<{ id: string; label: string }>> = 
     { id: "production", label: "Chế biến" },
     { id: "waste", label: "Hủy hàng" },
     { id: "stocktake", label: "Kiểm kê" },
-    // Hai màn tách riêng khỏi Kiểm kê (khách yêu cầu 03/10/2026) — quyền đi theo tab Kiểm kê
-    // (MODULE_TAB_FAMILIES), vai trò cũ chỉ tick "Kiểm kê" vẫn thấy đủ.
+    // Hai màn tách riêng khỏi Kiểm kê (khách yêu cầu 03/10/2026) — từ 24/10/2026 phân quyền riêng,
+    // không còn đi theo tab Kiểm kê.
     { id: "stocktake-explanation", label: "Giải trình kiểm kê" },
     { id: "stocktake-result", label: "Kết quả kiểm kê" },
   ],
@@ -533,7 +533,8 @@ export function canOpenPath(session: DemoSession | string | null | undefined, pa
  */
 /** Tab con đi theo quyền của tab gốc: ai được tab gốc thì được luôn các tab này. */
 const MODULE_TAB_FAMILIES: Record<string, Record<string, string[]>> = {
-  "/inventory": { stocktake: ["stocktake-explanation", "stocktake-result"] },
+  // Giải trình / Kết quả kiểm kê KHÔNG còn đi theo tab Kiểm kê (khách 24/10/2026: Trưởng ca Bếp
+  // không được tick mà vẫn thấy) — vai trò nào cần thì tick riêng hai tab này ở Phân quyền.
   // Ai được tick "So sánh giá" thì cũng làm Bảng giá NCC (tab mới 03/10/2026).
   "/procurement": { quotes: ["price-lists"] },
 };

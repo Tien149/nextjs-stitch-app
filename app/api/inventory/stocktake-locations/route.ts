@@ -130,6 +130,71 @@ export async function POST(request: Request) {
     }
 
     /**
+     * Import vị trí + form mẫu của MỘT kho từ file (khách 24/10/2026: mỗi kho nhiều vị trí). Mỗi dòng
+     * file = một mặt hàng của một vị trí, thứ tự dòng = thứ tự đếm. Vị trí có trong file thì GHI ĐÈ
+     * danh sách mặt hàng (chưa có thì tạo mới); vị trí không có trong file giữ nguyên. Sai một dòng
+     * thì không ghi gì, trả danh sách lỗi theo số dòng.
+     */
+    if (action === "IMPORT_LOCATIONS") {
+      const branchCode = cleanText(body.branchCode);
+      const warehouseCode = cleanText(body.warehouseCode);
+      if (!branchCode || !warehouseCode) businessError("Chọn cửa hàng và kho trước khi import");
+      assertBranchAccess(auth.session, branchCode);
+      assertWarehouseAccess(auth.session, warehouseCode);
+      await warehouseOfBranch(warehouseCode, branchCode);
+      const rows = (Array.isArray(body.rows) ? body.rows : []) as Array<{ row?: unknown; locationCode?: unknown; locationName?: unknown; itemCode?: unknown; sortOrder?: unknown }>;
+      if (rows.length === 0) businessError("File không có dòng nào");
+      if (rows.length > 10000) businessError("Tối đa 10.000 dòng mỗi lần import");
+      const codes = [...new Set(rows.map((row) => cleanText(row.itemCode).toUpperCase()).filter(Boolean))];
+      const items = await prisma.inventoryItem.findMany({ where: { code: { in: codes } }, select: { id: true, code: true, itemType: true, status: true } });
+      const itemByCode = new Map(items.map((item) => [item.code.toUpperCase(), item]));
+      const errors: Array<{ row: number; message: string }> = [];
+      const groups = new Map<string, { code: string; name: string; sortOrder: number | null; itemIds: string[] }>();
+      for (const [index, row] of rows.entries()) {
+        const rowNumber = Math.trunc(toNumber(row.row)) || index + 2;
+        const locationCode = cleanText(row.locationCode).toUpperCase().replace(/\s+/g, "_");
+        const itemCode = cleanText(row.itemCode).toUpperCase();
+        if (!locationCode && !itemCode) continue;
+        if (!locationCode) { errors.push({ row: rowNumber, message: "Thiếu Mã vị trí" }); continue; }
+        const group = groups.get(locationCode) || { code: locationCode, name: "", sortOrder: null, itemIds: [] };
+        const name = cleanText(row.locationName);
+        if (name && group.name && name !== group.name) errors.push({ row: rowNumber, message: `Vị trí ${locationCode} ghi hai tên khác nhau` });
+        group.name ||= name;
+        if (group.sortOrder === null && cleanText(row.sortOrder)) group.sortOrder = Math.trunc(toNumber(row.sortOrder));
+        groups.set(locationCode, group);
+        if (!itemCode) continue;
+        const item = itemByCode.get(itemCode);
+        if (!item) { errors.push({ row: rowNumber, message: `Mã hàng ${itemCode} không có trong danh mục` }); continue; }
+        if (!isLocationStocktakeItemType(item.itemType)) { errors.push({ row: rowNumber, message: `${itemCode} không thuộc nhóm nguyên liệu / bao bì nên không đưa vào form kiểm kê` }); continue; }
+        if (group.itemIds.includes(item.id)) { errors.push({ row: rowNumber, message: `${itemCode} lặp trong vị trí ${locationCode}` }); continue; }
+        group.itemIds.push(item.id);
+      }
+      const existing = await prisma.stocktakeLocation.findMany({ where: { warehouseCode, code: { in: [...groups.keys()] } } });
+      const existingByCode = new Map(existing.map((location) => [location.code, location]));
+      for (const group of groups.values()) {
+        if (!group.name && !existingByCode.has(group.code)) errors.push({ row: 0, message: `Vị trí mới ${group.code} cần Tên vị trí` });
+      }
+      if (errors.length > 0) {
+        return NextResponse.json({ error: `File có ${errors.length} lỗi — chưa ghi gì.`, errors: errors.slice(0, 200) }, { status: 400 });
+      }
+      let created = 0;
+      await prisma.$transaction(async (tx) => {
+        for (const group of groups.values()) {
+          const current = existingByCode.get(group.code);
+          const data = { branchCode, warehouseCode, code: group.code, name: group.name || current?.name || group.code, ...(group.sortOrder !== null ? { sortOrder: group.sortOrder } : {}) };
+          const saved = current ? await tx.stocktakeLocation.update({ where: { id: current.id }, data }) : await tx.stocktakeLocation.create({ data });
+          if (!current) created += 1;
+          await tx.stocktakeLocationItem.deleteMany({ where: { locationId: saved.id } });
+          if (group.itemIds.length > 0) {
+            await tx.stocktakeLocationItem.createMany({ data: group.itemIds.map((itemId, index) => ({ locationId: saved.id, itemId, sortOrder: index })) });
+          }
+        }
+      }, { timeout: 60000 });
+      await writeAuditLog({ session: auth.session, module: menuHref, action: "IMPORT_STOCKTAKE_LOCATIONS", entityType: "StocktakeLocation", entityId: warehouseCode, entityCode: warehouseCode, branchCode, metadata: { locations: groups.size, created, rows: rows.length } });
+      return NextResponse.json({ locations: groups.size, created, items: [...groups.values()].reduce((sum, group) => sum + group.itemIds.length, 0) });
+    }
+
+    /**
      * Phiếu đếm một vị trí: chỉ số đếm (nhiều ĐVT cùng lúc), không so sổ sách — việc đó làm lúc
      * kế toán duyệt gộp. Gửi là Chờ duyệt; phiếu Chờ duyệt / Bị trả lại sửa lại được.
      */
