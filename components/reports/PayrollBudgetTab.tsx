@@ -318,7 +318,7 @@ export default function PayrollBudgetTab({
       <section className="table-panel">
         <PanelHeader title={`Bảng lương theo tiêu chuẩn ${data.year}`} subtitle="Doanh thu tham chiếu theo bộ phận, lương chuẩn theo tỷ trọng đã set và lương thực chi trả. Cuộn ngang xem đủ 12 tháng." />
         <div className="overflow-x-auto">
-          <Table headers={["Nội dung", ...monthHeaders, "Cả năm"]}>
+          <Table stickyHeader rightFrom={1} headers={["Nội dung", ...monthHeaders, "Cả năm"]}>
             <SectionRow label="DOANH THU THAM CHIẾU" span={14} />
             {/* Tổng = dòng Doanh thu của P&L; các dòng dưới cộng lại đúng bằng tổng. */}
             <MonthRow label="Tổng doanh thu" values={revenueBase} bold />
@@ -583,7 +583,7 @@ function HeadcountCostTable({ data, monthHeaders }: { data: PayrollBudgetData; m
         title="Số lượng nhân sự theo tháng"
         subtitle="Số người theo khối, CP lương cho NLĐ, doanh thu và các chỉ số trên đầu người. Bếp/Bar tính trên doanh thu bếp/bar tương ứng, bộ phận khác tính trên tổng doanh thu."
       />
-      <Table headers={["Nhóm", "Bộ phận", ...monthHeaders]}>
+      <Table stickyHeader rightFrom={2} headers={["Nhóm", "Bộ phận", ...monthHeaders]}>
         {blocks.map(({ block, rows }) => (
           <React.Fragment key={block}>
             {rows.map((row) => (

@@ -302,17 +302,18 @@ export default function OpexCategoryCard({ data, picked, monthHeaders }: { data:
       </div>
 
       {shown.length > 0 && (
-        <div className="overflow-x-auto px-2">
+        <div className="overflow-auto max-h-[75vh] px-2">
+          {/* Khung cao tối đa 75% màn hình, dòng tiêu đề đứng yên khi kéo xuống (khách 24/10/2026). */}
           <table className="w-full text-[13px]">
-            <thead>
+            <thead className="sticky top-0 z-20">
               <tr className="border-b border-slate-200 bg-amber-50 text-[11px] text-slate-600">
-                <th className={`${sticky} bg-amber-50 px-3 py-2 text-left font-bold`}>Nội dung</th>
-                {shown.map((index) => <th key={index} className={th}>{`${String(index + 1).padStart(2, "0")}.${data.year}`}</th>)}
-                <th className={th}>Cộng {pickLabel}</th>
-                <th className={th}>Ngân sách</th>
-                <th className={th}>% TH</th>
-                <th className={th}>% Tỷ trọng<br />cộng/DT</th>
-                {shown.map((index) => <th key={index} className={th}>% Tỷ trọng<br />{`${String(index + 1).padStart(2, "0")}/DT`}</th>)}
+                <th className={`${sticky} !z-30 bg-amber-50 px-3 py-2 text-left font-bold`}>Nội dung</th>
+                {shown.map((index) => <th key={index} className={`${th} bg-amber-50`}>{`${String(index + 1).padStart(2, "0")}.${data.year}`}</th>)}
+                <th className={`${th} bg-amber-50`}>Cộng {pickLabel}</th>
+                <th className={`${th} bg-amber-50`}>Ngân sách</th>
+                <th className={`${th} bg-amber-50`}>% TH</th>
+                <th className={`${th} bg-amber-50`}>% Tỷ trọng<br />cộng/DT</th>
+                {shown.map((index) => <th key={index} className={`${th} bg-amber-50`}>% Tỷ trọng<br />{`${String(index + 1).padStart(2, "0")}/DT`}</th>)}
               </tr>
             </thead>
             <tbody>

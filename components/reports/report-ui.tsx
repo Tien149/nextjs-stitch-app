@@ -40,16 +40,25 @@ export function PanelHeader({ title, subtitle, exportFileName, exportable = true
   );
 }
 
-export function Table({ headers, children }: { headers: string[]; children: React.ReactNode }) {
+/**
+ * stickyHeader: bảng dài cuộn trong khung cao tối đa 75% màn hình, dòng tiêu đề đứng yên khi kéo
+ * xuống (khách 24/10/2026). rightFrom: tiêu đề từ cột này trở đi canh phải cho thẳng cột số.
+ */
+export function Table({ headers, children, stickyHeader, rightFrom }: { headers: string[]; children: React.ReactNode; stickyHeader?: boolean; rightFrom?: number }) {
   // Bọc khung cuộn ngang ngay tại đây: số ghi đủ chữ số nên bảng nhiều cột dễ vượt bề ngang,
   // để bảng tự cuộn còn hơn bóp cột lại rồi cắt số.
   return (
-    <div className="overflow-x-auto">
+    <div className={stickyHeader ? "overflow-auto max-h-[75vh]" : "overflow-x-auto"}>
       <table className="w-full text-left text-sm">
         <thead>
           <tr className="text-xs uppercase tracking-wide text-slate-500">
-            {headers.map((header) => (
-              <th key={header} className="px-4 py-3 font-semibold whitespace-nowrap">{header}</th>
+            {headers.map((header, index) => (
+              <th
+                key={header}
+                className={`px-4 py-3 font-semibold whitespace-nowrap ${rightFrom !== undefined && index >= rightFrom ? "text-right" : ""} ${stickyHeader ? "sticky top-0 z-10 bg-white shadow-[inset_0_-1px_0_#e2e8f0]" : ""}`}
+              >
+                {header}
+              </th>
             ))}
           </tr>
         </thead>
