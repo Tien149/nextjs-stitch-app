@@ -723,7 +723,7 @@ export default function StocktakeByLocation(props: {
             </label>
           </div>
         </div>
-        <div className="grid lg:grid-cols-[420px_1fr] gap-4">
+        <div className="grid grid-cols-1 *:min-w-0 lg:grid-cols-[420px_minmax(0,1fr)] gap-4">
           <form onSubmit={(e) => { e.preventDefault(); void saveLocation(); }} className="bg-white border border-slate-200 rounded-lg p-4 space-y-3 shadow-sm h-fit">
             <h2 className="font-bold text-slate-800">{locationForm.id ? `Sửa vị trí ${locationForm.code}` : "Thêm vị trí"} — {warehouseName(activeWarehouse)}</h2>
             <div className="grid grid-cols-2 gap-3">

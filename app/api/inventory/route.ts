@@ -139,6 +139,7 @@ function stockPrefix(transactionType: string) {
   if (transactionType === "XUAT_BAN") return "XB";
   if (transactionType === "XUAT_HUY") return "HH";
   if (transactionType === "XUAT_TEST_MON") return "XTM";
+  if (transactionType === "XUAT_TRA_NCC") return "XTN";
   if (transactionType === "XUAT_CHE_BIEN") return "XCB";
   if (transactionType === "XUAT_KIEM_KE") return "XKK";
   if (transactionType === "DIEU_CHUYEN") return "DCK";
@@ -2655,6 +2656,8 @@ export async function POST(request: Request) {
     // Xuất đồng phục có phân bổ đi lịch PB- riêng nên không bắt chọn.
     // Hạng mục P&L không bắt buộc lúc lập (vận hành lập, văn phòng bổ sung khi sửa phiếu — 24/10/2026).
     const issuePnlItemCode = transactionType === "XUAT_KHAC" ? await checkedIssuePnlItem(body.pnlItemCode, true) : null;
+    // Xuất trả hàng NCC phải có NCC — trị giá xuất giảm nợ NCC đó (lib/purchase-payable.ts).
+    if (transactionType === "XUAT_TRA_NCC" && !stockPartnerCode) businessError("Xuất trả hàng NCC phải chọn nhà cung cấp nhận hàng trả.");
 
     const result = await prisma.$transaction(async (tx) => {
       const transactionCode = cleanText(body.code) || await nextStockDocCode(tx, stockPrefix(transactionType), transactionDate);

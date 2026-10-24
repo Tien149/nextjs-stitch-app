@@ -1533,6 +1533,7 @@ export async function commitImport(input: CommitInput) {
           : transactionType === "NHAP_KHAC" ? "NK"
           : transactionType === "XUAT_HUY" ? "HH"
           : transactionType === "XUAT_TEST_MON" ? "XTM"
+          : transactionType === "XUAT_TRA_NCC" ? "XTN"
           : transactionType === "DIEU_CHUYEN" ? "DCK" : "XK";
         /**
          * Mã phiếu LUÔN do hệ thống cấp; số chứng từ của NCC chỉ nằm ở cột `referenceCode`.

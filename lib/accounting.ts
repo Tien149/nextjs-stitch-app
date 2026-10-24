@@ -21,7 +21,7 @@ import { vietnamBusinessDayKey } from "@/lib/revenue-date";
 import { branchGoLiveDay } from "@/lib/wallet-go-live";
 import {
   COGS_PURCHASE_SOURCE_TYPES,
-  COGS_STOCK_TYPES,
+  INVENTORY_JOURNAL_TYPES,
   INVENTORY_COGS_PNL_ITEMS,
   INVENTORY_COGS_START_DATE,
   INVENTORY_COGS_START_PERIOD,
@@ -935,9 +935,9 @@ async function postInventoryCogs(start: Date, end: Date, branchCode: string, act
   const branchFilter = branchCode === "ALL" ? {} : { branchCode };
   const [documents, warehouses] = await Promise.all([
     prisma.inventoryTransaction.findMany({
-      where: { ...branchFilter, transactionDate: { gte: from, lt: end }, transactionType: { in: [...COGS_STOCK_TYPES] } },
+      where: { ...branchFilter, transactionDate: { gte: from, lt: end }, transactionType: { in: [...INVENTORY_JOURNAL_TYPES] } },
       select: {
-        id: true, code: true, transactionType: true, transactionDate: true, branchCode: true, warehouseCode: true, note: true, pnlItemCode: true,
+        id: true, code: true, transactionType: true, transactionDate: true, branchCode: true, warehouseCode: true, note: true, pnlItemCode: true, partnerCode: true,
         lines: { select: { totalCost: true, item: { select: { itemType: true, expensePnlItemCode: true } } } },
       },
     }),
@@ -976,6 +976,7 @@ async function postInventoryCogs(start: Date, end: Date, branchCode: string, act
       lines: doc.lines.map((line) => ({ totalCost: line.totalCost, itemType: line.item.itemType, expensePnlItemCode: line.item.expensePnlItemCode })),
       prepaidItemTypes: allocated ? ALLOCATABLE_ITEM_TYPES : undefined,
       issuePnlItem: doc.pnlItemCode ? { pnlItemCode: doc.pnlItemCode, accountCode: issuePnlItemAccount(issueItemGroupOf.get(doc.pnlItemCode)) } : null,
+      partnerCode: doc.partnerCode,
     });
     if (lines.length === 0) continue;
     posted.push(doc.id);

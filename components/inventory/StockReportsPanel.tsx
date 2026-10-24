@@ -397,7 +397,7 @@ export default function StockReportsPanel(props: Props) {
             </button>
           </div>
         </div>
-        <div className="grid sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-1 *:min-w-0 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           <label className="text-xs font-bold text-slate-500">Cửa hàng
             <select
               className="control mt-1"

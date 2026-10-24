@@ -106,6 +106,10 @@ export function issuePnlItemAccount(group: string | null | undefined) {
 export const COGS_OUTBOUND_TYPES = ["XUAT_BAN", "XUAT_HUY", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_KIEM_KE"] as const;
 export const COGS_INBOUND_TYPES = ["NHAP_KIEM_KE"] as const;
 export const COGS_STOCK_TYPES = [...COGS_OUTBOUND_TYPES, ...COGS_INBOUND_TYPES] as readonly string[];
+/** Xuất trả hàng NCC: không phải giá vốn — Nợ 331 (NCC) / Có 152 theo trị giá xuất (khách 24/10/2026). */
+export const SUPPLIER_RETURN_STOCK_TYPE = "XUAT_TRA_NCC";
+/** Mọi loại phiếu kho có bút toán khi ghi sổ (giá vốn + trả hàng NCC). */
+export const INVENTORY_JOURNAL_TYPES = [...COGS_STOCK_TYPES, SUPPLIER_RETURN_STOCK_TYPE] as readonly string[];
 
 export type CogsJournalLine = {
   accountCode: string;
@@ -113,6 +117,7 @@ export type CogsJournalLine = {
   credit?: number;
   pnlItemCode?: string | null;
   departmentCode?: string | null;
+  partnerCode?: string | null;
 };
 
 /**
@@ -130,8 +135,15 @@ export function planInventoryCogsJournal(input: {
    * còn lại -> 6428). Khách chốt 20/10/2026: xuất khác KHÔNG vào COGS mà lên thẳng hạng mục đã chọn.
    */
   issuePnlItem?: { pnlItemCode: string; accountCode: string } | null;
+  /** NCC của phiếu xuất trả hàng — vế Nợ 331. */
+  partnerCode?: string | null;
 }): CogsJournalLine[] {
   const type = input.transactionType.toUpperCase();
+  if (type === SUPPLIER_RETURN_STOCK_TYPE) {
+    const total = input.lines.reduce((sum, line) => sum + (Number(line.totalCost) || 0), 0);
+    if (!(total > 0) || !input.partnerCode) return [];
+    return [{ accountCode: "331", debit: total, partnerCode: input.partnerCode }, { accountCode: "152", credit: total }];
+  }
   const inbound = (COGS_INBOUND_TYPES as readonly string[]).includes(type);
   if (!inbound && !(COGS_OUTBOUND_TYPES as readonly string[]).includes(type)) return [];
 

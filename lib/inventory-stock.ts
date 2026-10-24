@@ -17,6 +17,8 @@ export const STOCK_TRANSACTION_TYPES = [
   "XUAT_KHAC",
   "XUAT_CHE_BIEN",
   "XUAT_KIEM_KE",
+  /** Xuất trả hàng NCC (khách 24/10/2026): trừ kho theo giá vốn, giảm nợ NCC — Nợ 331 / Có 152. */
+  "XUAT_TRA_NCC",
   "DIEU_CHUYEN",
 ] as const;
 
@@ -114,6 +116,7 @@ export function normalizeStockTransactionType(value: unknown) {
   if (raw === "NHAP_DIEU_CHUYEN" || raw === "XUAT_DIEU_CHUYEN") return "DIEU_CHUYEN";
   if (raw === "TEST_MON" || raw === "XUAT_TEST" || raw === "MON_TEST" || raw === "XUAT_TEST_MON") return "XUAT_TEST_MON";
   if (raw === "POS_SALE" || raw === "BAN_HANG") return "XUAT_BAN";
+  if (raw === "TRA_HANG_NCC" || raw === "XUAT_TRA_HANG" || raw === "TRA_NCC" || raw === "SUPPLIER_RETURN") return "XUAT_TRA_NCC";
   if (raw === "PRODUCTION_IN" || raw === "CHE_BIEN_NHAP") return "NHAP_CHE_BIEN";
   if (raw === "PRODUCTION_OUT" || raw === "CHE_BIEN_XUAT") return "XUAT_CHE_BIEN";
   if (raw === "STOCKTAKE_IN" || raw === "KIEM_KE_NHAP") return "NHAP_KIEM_KE";

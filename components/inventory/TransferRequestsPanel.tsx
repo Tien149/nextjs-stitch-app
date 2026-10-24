@@ -224,7 +224,7 @@ export default function TransferRequestsPanel({ requests, warehouseName, onActio
                 </label>
               ) : (
                 <>
-                  <div className="grid sm:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 *:min-w-0 sm:grid-cols-2 gap-3">
                     <label className="block text-xs font-bold text-slate-500">
                       {dialog.kind === "approve" ? "Ngày nhận hàng" : "Ngày điều chuyển"}
                       <div className="mt-1 flex gap-2">

@@ -47,12 +47,13 @@ export const OUT_CATEGORIES = [
   { key: "production", label: "Xuất chế biến", types: ["XUAT_CHE_BIEN"] },
   { key: "waste", label: "Xuất hủy", types: ["XUAT_HUY"] },
   { key: "stocktake", label: "Xuất kiểm kê", types: ["XUAT_KIEM_KE"] },
+  { key: "supplierReturn", label: "Xuất trả NCC", types: ["XUAT_TRA_NCC"] },
   { key: "other", label: "Xuất khác", types: [] as string[] },
 ] as const;
 
 /** Loại để lọc báo cáo nhập / xuất — điều chuyển đã tách hai vế. */
 export const IN_TYPES = ["NHAP_MUA", "NHAP_DIEU_CHUYEN", "NHAP_CHE_BIEN", "NHAP_KIEM_KE", "NHAP_KHAC"];
-export const OUT_TYPES = ["XUAT_BAN", "XUAT_DIEU_CHUYEN", "XUAT_CHE_BIEN", "XUAT_HUY", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_KIEM_KE"];
+export const OUT_TYPES = ["XUAT_BAN", "XUAT_DIEU_CHUYEN", "XUAT_CHE_BIEN", "XUAT_HUY", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_KIEM_KE", "XUAT_TRA_NCC"];
 
 export function categoryKey(direction: Direction, type: string): string {
   const list = direction === "IN" ? IN_CATEGORIES : OUT_CATEGORIES;

@@ -14,6 +14,15 @@ import { roundVnd } from "@/lib/round-vnd";
  * công nợ sinh từ lương / tài sản / điều chuyển kho.
  */
 export const PURCHASE_PAYABLE_SOURCE = "INVENTORY_PURCHASE";
+/** Phiếu xuất trả hàng NCC — sinh khoản PHẢI THU NCC (cùng mã CN-<phiếu>, cùng sourceType). */
+export const SUPPLIER_RETURN_TYPE = "XUAT_TRA_NCC";
+const debtTypeOf = (transaction: { transactionType: string }) => (transaction.transactionType === SUPPLIER_RETURN_TYPE ? "RECEIVABLE" : "PAYABLE");
+const debtDescriptionOf = (transaction: { transactionType: string; code: string; referenceCode: string | null }) => {
+  const reference = transaction.referenceCode ? ` (chứng từ ${transaction.referenceCode})` : "";
+  return transaction.transactionType === SUPPLIER_RETURN_TYPE
+    ? `Trả hàng NCC theo phiếu xuất ${transaction.code}${reference} — giảm nợ NCC`
+    : `Công nợ mua hàng theo phiếu nhập ${transaction.code}${reference}`;
+};
 
 /** Mã khoản nợ suy ra thẳng từ mã phiếu nhập, nên một phiếu không bao giờ sinh hai khoản nợ. */
 export function purchasePayableCodeOf(transactionCode: string) {
@@ -70,6 +79,12 @@ export function purchaseLineAmount(line: PurchasePayableLine) {
  * = 0 nên số nợ của dữ liệu đã có không đổi. Chi phí mua hàng của phiếu cộng thêm vào nợ.
  */
 function payableAmountOf(transaction: PurchasePayableSource) {
+  // Xuất trả hàng NCC: NCC nợ lại mình đúng trị giá xuất kho (giá vốn) — khoản PHẢI THU cấn vào nợ NCC.
+  if (transaction.transactionType === SUPPLIER_RETURN_TYPE) {
+    if (!(transaction.partnerCode || "").trim()) return 0;
+    const value = roundVnd(transaction.lines.reduce((sum, line) => sum + (line.totalCost || 0), 0));
+    return value > 0 ? value : 0;
+  }
   if (transaction.transactionType !== "NHAP_MUA") return 0;
   // Hàng nhận theo Đơn mua hàng đã có SupplierPayable (cột "Nhập hàng" trên bảng công nợ),
   // ghi thêm một khoản nữa ở đây là nợ NCC gấp đôi.
@@ -98,12 +113,11 @@ export async function createPurchasePayable(
     where: { type: "PARTNER", code: partnerCode },
     select: { name: true, partnerGroup: true },
   });
-  const reference = transaction.referenceCode ? ` (chứng từ ${transaction.referenceCode})` : "";
   return client.debtRecord.create({
     data: {
       importBatchId: options.importBatchId || null,
       code: purchasePayableCodeOf(transaction.code),
-      debtType: "PAYABLE",
+      debtType: debtTypeOf(transaction),
       partnerGroup: partner?.partnerGroup || (isInternalPartnerCode(partnerCode) ? "INTERNAL" : "EXTERNAL"),
       partnerCode,
       partnerName: partner?.name || partnerCode,
@@ -112,7 +126,7 @@ export async function createPurchasePayable(
       dueDate: options.dueDate || null,
       originalAmount: amount,
       outstandingAmount: amount,
-      description: `Công nợ mua hàng theo phiếu nhập ${transaction.code}${reference}`,
+      description: debtDescriptionOf(transaction),
       sourceType: PURCHASE_PAYABLE_SOURCE,
       sourceId: transaction.id,
       recognizeExpense: false,
@@ -149,7 +163,6 @@ export async function syncPurchasePayable(
     where: { type: "PARTNER", code: partnerCode },
     select: { name: true, partnerGroup: true },
   });
-  const reference = transaction.referenceCode ? ` (chứng từ ${transaction.referenceCode})` : "";
   return client.debtRecord.update({
     where: { id: existing.id },
     data: {
@@ -159,9 +172,10 @@ export async function syncPurchasePayable(
       branchCode: transaction.branchCode,
       documentDate: transaction.transactionDate,
       ...(options.dueDate !== undefined ? { dueDate: options.dueDate } : {}),
+      debtType: debtTypeOf(transaction),
       originalAmount: amount,
       outstandingAmount: amount,
-      description: `Công nợ mua hàng theo phiếu nhập ${transaction.code}${reference}`,
+      description: debtDescriptionOf(transaction),
     },
   });
 }

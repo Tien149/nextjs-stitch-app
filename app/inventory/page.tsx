@@ -138,7 +138,11 @@ const RECIPE_VIEWS: Array<{ id: RecipeView; label: string; icon: string }> = [
 type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; flowTruncated?: boolean; transferRequests?: TransferRequest[]; transferDestinations?: Array<{ code: string; name: string; branch: string | null }>; transferTransactions?: Transaction[]; wasteTransactions?: Transaction[]; warehouseBranches?: Array<{ code: string; branch: string | null }>; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; itemRevenueGroups?: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; /** Mã món → FOOD (Bếp) / DRINK (Bar): nhóm doanh thu của mặt hàng, chưa gán thì theo file POS. */ productKitchenKinds?: Record<string, string>; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[]; /** Hạng mục P&L chọn cho phiếu Xuất khác. */ issuePnlItems?: Array<{ code: string; name: string; groupName: string }> };
 /** Loại hiển thị trên hai màn hình Nhập/Xuất. Điều chuyển hiện ở CẢ hai: vế xuất ở kho đi, vế nhập ở kho nhận. */
 const inboundTypes = ["NHAP_MUA", "NHAP_CHE_BIEN", "NHAP_DIEU_CHUYEN", "NHAP_KHAC", "NHAP_KIEM_KE"];
-const outboundTypes = ["XUAT_BAN", "XUAT_CHE_BIEN", "XUAT_HUY", "XUAT_DIEU_CHUYEN", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_KIEM_KE"];
+const outboundTypes = ["XUAT_BAN", "XUAT_CHE_BIEN", "XUAT_HUY", "XUAT_DIEU_CHUYEN", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_TRA_NCC", "XUAT_KIEM_KE"];
+/** Loại xuất lập tay ở tab Xuất kho. */
+const MANUAL_OUTBOUND_TYPES = ["XUAT_KHAC", "XUAT_TEST_MON", "XUAT_TRA_NCC"];
+/** Phiếu chế biến do rã BOM sinh — vận hành (không có tab Chế biến) không cần thấy (khách 24/10/2026). */
+const PRODUCTION_TYPES = ["XUAT_CHE_BIEN", "NHAP_CHE_BIEN"];
 const wasteTypeOptions = [
   { code: "HET_HAN_SU_DUNG", label: "Xuất hủy do hết hạn sử dụng" },
   { code: "KHONG_DAM_BAO_CHAT_LUONG", label: "Xuất hủy do không đảm bảo chất lượng" },
@@ -429,9 +433,18 @@ export default function InventoryPage() {
       setStockForm((form) => form.transactionType.startsWith("NHAP_") ? form : { ...form, transactionType: "NHAP_MUA" });
     }
     if (tab === "outbound") {
-      setStockForm((form) => ["XUAT_KHAC", "XUAT_TEST_MON"].includes(form.transactionType) ? form : { ...form, transactionType: "XUAT_KHAC" });
+      setStockForm((form) => MANUAL_OUTBOUND_TYPES.includes(form.transactionType) ? form : { ...form, transactionType: "XUAT_KHAC" });
     }
   };
+  // Mở thẳng tab bằng đường dẫn (?tab=outbound) không đi qua switchTab: đưa Loại về đúng chiều,
+  // nếu không form Xuất kho vẫn mang "Nhập mua" và hiện ô chọn PO (khách 24/10/2026).
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (active === "inbound") setStockForm((form) => form.transactionType.startsWith("NHAP_") ? form : { ...form, transactionType: "NHAP_MUA" });
+      if (active === "outbound") setStockForm((form) => MANUAL_OUTBOUND_TYPES.includes(form.transactionType) ? form : { ...form, transactionType: "XUAT_KHAC" });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [active]);
 
   const canCreate = user ? canPerformMenuAction(user, href, "create") : false;
   /**
@@ -600,6 +613,7 @@ export default function InventoryPage() {
    */
   const flowRows = (direction: "IN" | "OUT") => data.flowTransactions.flatMap((transaction) => {
     const rows: Array<{ transaction: Transaction; displayType: string; branchCode: string; warehouseCode: string }> = [];
+    if (!canSeeExplosion && PRODUCTION_TYPES.includes(transaction.transactionType)) return rows;
     if (transaction.transactionType === "DIEU_CHUYEN") {
       if (direction === "OUT") rows.push({ transaction, displayType: "XUAT_DIEU_CHUYEN", branchCode: transaction.branchCode, warehouseCode: transaction.warehouseCode });
       if (direction === "IN" && transaction.toWarehouseCode) rows.push({ transaction, displayType: "NHAP_DIEU_CHUYEN", branchCode: transaction.toBranchCode || transaction.branchCode, warehouseCode: transaction.toWarehouseCode });
@@ -622,8 +636,10 @@ export default function InventoryPage() {
   const supplierPriceKey = active === "inbound" && stockForm.transactionType === "NHAP_MUA" && stockForm.partnerCode ? `${stockForm.partnerCode}|${stockForm.branchCode}` : "";
   const listPrice = supplierPrices.key === supplierPriceKey ? supplierPrices.prices.find((price) => price.itemId === stockForm.itemId) : undefined;
   const listPriceDeviation = listPrice && stockBaseUnitCost > 0 ? priceDeviation(stockBaseUnitCost, listPrice.stockUnitPrice) : null;
+  /** Xuất trả hàng NCC: bắt buộc NCC, trị giá xuất (giá vốn) giảm nợ NCC — Nợ 331 / Có 152. */
+  const isSupplierReturn = active === "outbound" && stockForm.transactionType === "XUAT_TRA_NCC";
   const partnerFormGroups = (() => {
-    const order = active === "inbound"
+    const order = active === "inbound" || isSupplierReturn
       ? ["SUPPLIER", "CUSTOMER", "OTHER_PARTNER"]
       : ["CUSTOMER", "SUPPLIER", "OTHER_PARTNER"];
     const labels: Record<string, string> = { SUPPLIER: "Nhà cung cấp", CUSTOMER: "Khách hàng", OTHER_PARTNER: "Đối tác khác" };
@@ -1984,7 +2000,7 @@ export default function InventoryPage() {
       )}
 
       {active === "items" && (
-        <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
+        <div className="grid grid-cols-1 *:min-w-0 gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
           {canCreate && (
             <div className="space-y-4">
             <form onSubmit={(e) => { e.preventDefault(); void send({ action: "CREATE_ITEM", ...itemForm }, "Đã tạo mặt hàng."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
@@ -2416,7 +2432,7 @@ export default function InventoryPage() {
       )}
 
       {(active === "inbound" || active === "outbound") && (
-        <div className="grid lg:grid-cols-[380px_1fr] gap-5">
+        <div className="grid grid-cols-1 *:min-w-0 lg:grid-cols-[380px_minmax(0,1fr)] gap-5">
           {canCreate && (
             <form onSubmit={(e) => { e.preventDefault(); if (grpoOrder) { void receiveFromPO(); return; } void send({ action: "STOCK_TRANSACTION", ...stockForm, transactionDate: vnDateTimeValue(stockForm.transactionDate, stockForm.transactionTime), lines: [{ itemId: stockForm.itemId, inputQuantity: stockForm.quantity, inputUnitCode: stockForm.inputUnitCode || selectedStockUnit?.unitCode, inputUnitCost: active === "inbound" ? stockForm.unitCost : "0", vatRate: active === "inbound" ? stockForm.vatRate : "", vatAmount: active === "inbound" ? stockForm.vatAmount : "" }] }, active === "inbound" ? "Đã ghi nhận phiếu nhập kho." : "Đã ghi nhận phiếu xuất kho."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
               <h2 className="font-bold text-slate-800">{active === "inbound" ? "Ghi nhận nhập kho" : "Ghi nhận xuất kho"}</h2>
@@ -2429,6 +2445,7 @@ export default function InventoryPage() {
                   </>) : (<>
                     <option value="XUAT_KHAC">Xuất khác</option>
                     <option value="XUAT_TEST_MON">Xuất test món</option>
+                    <option value="XUAT_TRA_NCC">Xuất trả hàng NCC</option>
                   </>)}
                 </select>
               </Input>
@@ -2445,13 +2462,19 @@ export default function InventoryPage() {
                 </Input>
               )}
 
+              {isSupplierReturn && (
+                <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                  Trả hàng cho NCC: trừ tồn kho theo <b>giá vốn</b> của kho, đồng thời <b>giảm nợ NCC</b> đúng trị giá đó (bút toán Nợ 331 / Có 152, không vào giá vốn). Bắt buộc chọn NCC.
+                </p>
+              )}
+
               <p className="text-[11px] text-slate-500 leading-relaxed !mt-2">
                 {active === "inbound"
                   ? "Nhập chế biến, nhập điều chuyển và nhập điều chỉnh kiểm kê do hệ thống tự sinh từ tab Chế biến / Điều chuyển / Kiểm kê."
                   : "Xuất bán sinh từ import doanh thu + nút Rã nguyên liệu; xuất hủy ghi ở tab Hủy hàng; xuất điều chuyển ghi ở tab Điều chuyển."}
               </p>
 
-              {stockForm.transactionType === "NHAP_MUA" && (
+              {active === "inbound" && stockForm.transactionType === "NHAP_MUA" && (
                 <Input label="Đơn mua hàng (PO)">
                   <select className="control" value={grpoOrderId} onChange={(e) => selectGrpoOrder(e.target.value)}>
                     <option value="">Nhập thủ công (không theo PO)</option>
@@ -2636,9 +2659,9 @@ export default function InventoryPage() {
                 </div>
               )}
 
-              <Input label={active === "inbound" ? "Nhà cung cấp" : "Đối tác"}>
-                <select className="control" value={stockForm.partnerCode} onChange={(e) => setStockForm({ ...stockForm, partnerCode: e.target.value })}>
-                  <option value="">{active === "inbound" ? "Không khai nhà cung cấp" : "Không khai đối tác"}</option>
+              <Input label={active === "inbound" ? "Nhà cung cấp" : isSupplierReturn ? "Nhà cung cấp nhận trả *" : "Đối tác"}>
+                <select className="control" required={isSupplierReturn} value={stockForm.partnerCode} onChange={(e) => setStockForm({ ...stockForm, partnerCode: e.target.value })}>
+                  <option value="">{active === "inbound" ? "Không khai nhà cung cấp" : isSupplierReturn ? "-- Chọn NCC --" : "Không khai đối tác"}</option>
                   {partnerFormGroups.map((bucket) => (
                     <optgroup key={bucket.group} label={bucket.label}>
                       {bucket.partners.map((partner) => <option key={partner.code} value={partner.code}>{partner.name}</option>)}
@@ -2747,12 +2770,12 @@ export default function InventoryPage() {
                 {active === "inbound" ? (
                   <select className="control" value={inboundType} onChange={(e) => setInboundType(e.target.value)}>
                     <option value="ALL">Tất cả loại nhập</option>
-                    {inboundTypes.map((type) => <option key={type} value={type}>{movementTypeLabel(type)}</option>)}
+                    {inboundTypes.filter((type) => canSeeExplosion || !PRODUCTION_TYPES.includes(type)).map((type) => <option key={type} value={type}>{movementTypeLabel(type)}</option>)}
                   </select>
                 ) : (
                   <select className="control" value={outboundType} onChange={(e) => setOutboundType(e.target.value)}>
                     <option value="ALL">Tất cả loại xuất</option>
-                    {outboundTypes.map((type) => <option key={type} value={type}>{movementTypeLabel(type)}</option>)}
+                    {outboundTypes.filter((type) => canSeeExplosion || !PRODUCTION_TYPES.includes(type)).map((type) => <option key={type} value={type}>{movementTypeLabel(type)}</option>)}
                   </select>
                 )}
               </Input>
@@ -2932,7 +2955,7 @@ export default function InventoryPage() {
           warehouseName={(code) => transferDestinationOptions.find((warehouse) => warehouse.code === code)?.name || code}
           onAction={postTransferRequest}
         />
-        <div className="grid lg:grid-cols-[420px_1fr] gap-5">
+        <div className="grid grid-cols-1 *:min-w-0 lg:grid-cols-[420px_minmax(0,1fr)] gap-5">
           {canCreate && (
             <form onSubmit={(e) => {
               e.preventDefault();
@@ -3148,7 +3171,7 @@ export default function InventoryPage() {
             </div>
 
             <div className="p-5 space-y-4">
-              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 *:min-w-0 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 <Input label="Ngày chứng từ">
                   <DateInput className="control" value={transactionEditForm.transactionDate} onChange={(value) => setTransactionEditForm({ ...transactionEditForm, transactionDate: value })} required />
                 </Input>
@@ -3209,7 +3232,7 @@ export default function InventoryPage() {
                   const units = item ? [{ unitCode: item.unit.toUpperCase(), unitName: item.unit }, ...(item.unitConversions || []).filter((unit) => unit.unitCode.toUpperCase() !== item.unit.toUpperCase())] : [];
                   const patch = (changes: Partial<typeof line>) => setTransactionEditLines(transactionEditLines.map((current, position) => position === index ? { ...current, ...changes } : current));
                   return (
-                    <div key={line.key} className="grid grid-cols-1 sm:grid-cols-[minmax(160px,2.2fr)_minmax(0,0.7fr)_minmax(0,0.8fr)_minmax(0,1fr)_minmax(0,0.8fr)_minmax(0,1fr)_36px] gap-2 items-end border border-slate-100 rounded-lg p-2">
+                    <div key={line.key} className="grid grid-cols-1 *:min-w-0 sm:grid-cols-[minmax(160px,2.2fr)_minmax(0,0.7fr)_minmax(0,0.8fr)_minmax(0,1fr)_minmax(0,0.8fr)_minmax(0,1fr)_36px] gap-2 items-end border border-slate-100 rounded-lg p-2">
                       <Input label={index === 0 ? "Mặt hàng" : ""}>
                         <ItemSelect nameOnly items={data.items} value={line.itemId} onChange={(itemId) => {
                           const picked = data.items.find((candidate) => candidate.id === itemId);
@@ -3339,7 +3362,7 @@ export default function InventoryPage() {
       )}
 
       {active === "recipes" && recipeView === "recipes" && (
-        <div className={`grid gap-5 ${recipeWide ? "" : "lg:grid-cols-[380px_1fr]"}`}>
+        <div className={`grid gap-5 ${recipeWide ? "" : "lg:grid-cols-[380px_minmax(0,1fr)]"}`}>
           {(canCreate || recipeEditing) && (
             <form ref={recipeFormRef} onSubmit={(e) => { e.preventDefault(); void saveRecipe(); }} className={`bg-white border rounded-lg p-5 space-y-4 h-fit shadow-sm scroll-mt-4 ${recipeEditing ? "border-amber-300 ring-2 ring-amber-100" : "border-slate-200"}`}>
               <div className="flex items-start justify-between gap-2">
@@ -3795,7 +3818,7 @@ export default function InventoryPage() {
               )}
             </div>
           </div>
-          <div className="grid md:grid-cols-4 gap-3 mt-4">
+          <div className="grid grid-cols-1 *:min-w-0 md:grid-cols-4 gap-3 mt-4">
             <Input label="Cửa hàng">
               <select className="control" value={explodeBranchCode} onChange={(e) => setExplodeForm({ ...explodeForm, branchCode: e.target.value })}>
                 {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
@@ -4070,7 +4093,7 @@ export default function InventoryPage() {
       )}
 
       {active === "production" && (
-        <div className="grid lg:grid-cols-[380px_1fr] gap-5">
+        <div className="grid grid-cols-1 *:min-w-0 lg:grid-cols-[380px_minmax(0,1fr)] gap-5">
           {canCreate && (
             <form onSubmit={(e) => { e.preventDefault(); void send({ action: "PRODUCE_SEMI_FINISHED", ...productionForm, warehouseCode: productionWarehouseCode, toWarehouseCode: productionToWarehouseCode }, "Đã ghi nhận chế biến bán thành phẩm."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
               <h2 className="font-bold text-slate-800">Chế biến bán thành phẩm (thủ công)</h2>
@@ -4659,7 +4682,7 @@ export default function InventoryPage() {
       )}
 
       {active === "waste" && (
-        <div className="grid lg:grid-cols-[420px_1fr] gap-5">
+        <div className="grid grid-cols-1 *:min-w-0 lg:grid-cols-[420px_minmax(0,1fr)] gap-5">
           {canCreate && (
             <form onSubmit={(e) => {
               e.preventDefault();

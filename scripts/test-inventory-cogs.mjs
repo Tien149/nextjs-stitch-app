@@ -174,3 +174,9 @@ test("bao bì khai hạng mục riêng (Than -> CPBD_THAN) đi hạng mục đó
   assert.deepEqual(byItem.CPBD_VTTH, ["6428", 50_000]);
   assert.equal(lines.find((line) => line.accountCode === "632").debit, 70_000, "nguyên liệu bỏ qua hạng mục riêng, vẫn vào giá vốn");
 });
+
+test("xuất trả hàng NCC: Nợ 331 theo NCC / Có 152 trị giá xuất, không vào giá vốn; chưa khai NCC thì không ghi", () => {
+  const lines = planInventoryCogsJournal({ transactionType: "XUAT_TRA_NCC", warehouseGroup: "BEP", partnerCode: "VE00037", lines: [{ totalCost: 300, itemType: "RAW_MATERIAL" }, { totalCost: 200, itemType: "RAW_MATERIAL" }] });
+  assert.deepEqual(lines, [{ accountCode: "331", debit: 500, partnerCode: "VE00037" }, { accountCode: "152", credit: 500 }]);
+  assert.deepEqual(planInventoryCogsJournal({ transactionType: "XUAT_TRA_NCC", warehouseGroup: "BEP", lines: [{ totalCost: 300, itemType: "RAW_MATERIAL" }] }), []);
+});

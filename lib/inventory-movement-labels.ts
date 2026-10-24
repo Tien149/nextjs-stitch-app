@@ -10,6 +10,7 @@ export function movementTypeLabel(type: string): string {
     XUAT_HUY: "Xuất hủy",
     XUAT_TEST_MON: "Xuất test món",
     XUAT_KHAC: "Xuất khác",
+    XUAT_TRA_NCC: "Xuất trả hàng NCC",
     XUAT_CHE_BIEN: "Xuất chế biến",
     XUAT_KIEM_KE: "Xuất điều chỉnh kiểm kê",
     XUAT_DIEU_CHUYEN: "Xuất điều chuyển",
