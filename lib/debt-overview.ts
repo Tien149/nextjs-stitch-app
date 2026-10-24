@@ -169,7 +169,7 @@ export async function loadDebtOverview({ branchCode, range, partnerCode }: { bra
     }),
     prisma.debtSettlement.findMany({
       where: { debt: branchFilter },
-      select: { debtId: true, voucherId: true, transferId: true, amount: true, debt: { select: { code: true, partnerCode: true } } },
+      select: { debtId: true, voucherId: true, transferId: true, stockTransactionId: true, amount: true, debt: { select: { code: true, partnerCode: true } } },
     }),
     // Phiếu chuyển công nợ phải trả A → B (không qua thu chi): vế giảm nợ của A. Vế tăng của B
     // là khoản phải trả mã = mã phiếu (DebtRecord sourceType DEBT_TRANSFER) đã có trong debtRecords.
@@ -182,7 +182,7 @@ export async function loadDebtOverview({ branchCode, range, partnerCode }: { bra
   const settledByVoucher = new Map<string, { amount: number; debtCodes: string[]; partnerCodes: string[] }>();
   for (const row of settlements) {
     // Gạch bằng phiếu chuyển công nợ thì khoá theo phiếu chuyển (không có phiếu thu/chi).
-    const sourceId = row.voucherId || (row.transferId ? `transfer:${row.transferId}` : "");
+    const sourceId = row.voucherId || (row.transferId ? `transfer:${row.transferId}` : row.stockTransactionId ? `stock:${row.stockTransactionId}` : "");
     if (!sourceId) continue;
     const byDebt = settledByDebt.get(row.debtId) || { amount: 0, voucherIds: [] };
     byDebt.amount += row.amount;
@@ -194,9 +194,13 @@ export async function loadDebtOverview({ branchCode, range, partnerCode }: { bra
     if (!byVoucher.partnerCodes.includes(row.debt.partnerCode)) byVoucher.partnerCodes.push(row.debt.partnerCode);
     settledByVoucher.set(sourceId, byVoucher);
   }
+  // Phiếu xuất trả hàng NCC cấn vào phiếu nhập gốc — lấy mã phiếu để ghi chú "đã gạch bằng XTN-…".
+  const stockIds = [...new Set(settlements.map((row) => row.stockTransactionId).filter((id): id is string => Boolean(id)))];
+  const stockDocs = stockIds.length === 0 ? [] : await prisma.inventoryTransaction.findMany({ where: { id: { in: stockIds } }, select: { id: true, code: true } });
   const voucherCodeById = new Map([
     ...[...settlementVouchers, ...ownVouchers, ...allocationVouchers].map((row) => [row.id, row.code] as const),
     ...transfers.map((row) => [`transfer:${row.id}`, row.code] as const),
+    ...stockDocs.map((row) => [`stock:${row.id}`, row.code] as const),
   ]);
   const settledNote = (debtId: string) => {
     const settled = settledByDebt.get(debtId);

@@ -137,13 +137,11 @@ export function planInventoryCogsJournal(input: {
   issuePnlItem?: { pnlItemCode: string; accountCode: string } | null;
   /** NCC của phiếu xuất trả hàng — vế Nợ 331. */
   partnerCode?: string | null;
+  /** Số giảm nợ NCC của phiếu trả (theo đơn giá + thuế trên phiếu nhập gốc); trống = bằng trị giá xuất. */
+  supplierReturnAmount?: number | null;
 }): CogsJournalLine[] {
   const type = input.transactionType.toUpperCase();
-  if (type === SUPPLIER_RETURN_STOCK_TYPE) {
-    const total = input.lines.reduce((sum, line) => sum + (Number(line.totalCost) || 0), 0);
-    if (!(total > 0) || !input.partnerCode) return [];
-    return [{ accountCode: "331", debit: total, partnerCode: input.partnerCode }, { accountCode: "152", credit: total }];
-  }
+  if (type === SUPPLIER_RETURN_STOCK_TYPE) return planSupplierReturnJournal(input);
   const inbound = (COGS_INBOUND_TYPES as readonly string[]).includes(type);
   if (!inbound && !(COGS_OUTBOUND_TYPES as readonly string[]).includes(type)) return [];
 
@@ -185,6 +183,32 @@ export function planInventoryCogsJournal(input: {
       : { accountCode: bucket.accountCode, [expenseSide]: bucket.amount })),
     { accountCode: "152", [stockSide]: total },
   ];
+}
+
+/**
+ * Xuất trả hàng NCC: Nợ 331 (NCC) theo số giảm nợ / Có 152 theo trị giá xuất kho (giá vốn). Chênh
+ * giữa giá trên phiếu nhập và giá vốn bình quân của kho (giá mua đổi, thuế…) vào giá vốn 632 của
+ * bộ phận kho — hàng trả đi rồi thì chênh đó là lời / lỗ của lô hàng.
+ */
+function planSupplierReturnJournal(input: { warehouseGroup: string | null | undefined; lines: Array<{ totalCost: number }>; partnerCode?: string | null; supplierReturnAmount?: number | null }): CogsJournalLine[] {
+  const stockValue = input.lines.reduce((sum, line) => sum + (Number(line.totalCost) || 0), 0);
+  const refund = input.supplierReturnAmount !== null && input.supplierReturnAmount !== undefined ? Number(input.supplierReturnAmount) || 0 : stockValue;
+  if (!input.partnerCode || (!(refund > 0) && !(stockValue > 0))) return [];
+  const department = departmentFromWarehouseGroup(input.warehouseGroup);
+  const cogsItem = department === REVENUE_DEPARTMENT_CODES.KITCHEN
+    ? INVENTORY_COGS_PNL_ITEMS.KITCHEN
+    : department === REVENUE_DEPARTMENT_CODES.BAR ? INVENTORY_COGS_PNL_ITEMS.BAR : INVENTORY_COGS_PNL_ITEMS.OTHER;
+  const departmentCode = department === REVENUE_DEPARTMENT_CODES.KITCHEN || department === REVENUE_DEPARTMENT_CODES.BAR ? department : null;
+  const lines: CogsJournalLine[] = [];
+  if (refund > 0) lines.push({ accountCode: "331", debit: refund, partnerCode: input.partnerCode });
+  if (stockValue > 0) lines.push({ accountCode: "152", credit: stockValue });
+  const difference = refund - stockValue;
+  if (Math.abs(difference) >= 0.5) {
+    lines.push(difference > 0
+      ? { accountCode: "632", credit: difference, pnlItemCode: cogsItem.code, departmentCode }
+      : { accountCode: "632", debit: -difference, pnlItemCode: cogsItem.code, departmentCode });
+  }
+  return lines;
 }
 
 /**

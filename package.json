@@ -169,7 +169,8 @@
     "test:supplier-price-list": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-supplier-price-list.mjs",
     "test:purchase-template": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-purchase-template.mjs",
     "test:date-range": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-date-range.mjs",
-    "test:debt-transfer": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-debt-transfer.mjs"
+    "test:debt-transfer": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-debt-transfer.mjs",
+    "test:supplier-return": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-supplier-return.mjs"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",

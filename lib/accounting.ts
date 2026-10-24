@@ -958,6 +958,12 @@ async function postInventoryCogs(start: Date, end: Date, branchCode: string, act
     select: { sourceId: true },
   });
   const allocatedDocs = new Set(allocations.map((row) => row.sourceId));
+  // Phiếu trả hàng NCC: số giảm nợ = khoản CN-<mã phiếu> (theo đơn giá + thuế phiếu nhập gốc).
+  const returnDocs = documents.filter((doc) => doc.transactionType === "XUAT_TRA_NCC");
+  const returnAmountByCode = new Map((returnDocs.length === 0 ? [] : await prisma.debtRecord.findMany({
+    where: { code: { in: returnDocs.map((doc) => `CN-${doc.code}`) }, debtType: "RECEIVABLE" },
+    select: { code: true, originalAmount: true },
+  })).map((row) => [row.code.slice(3), row.originalAmount]));
   const posted: string[] = [];
   for (const doc of documents) {
     const allocated = allocatedDocs.has(doc.id);
@@ -977,6 +983,7 @@ async function postInventoryCogs(start: Date, end: Date, branchCode: string, act
       prepaidItemTypes: allocated ? ALLOCATABLE_ITEM_TYPES : undefined,
       issuePnlItem: doc.pnlItemCode ? { pnlItemCode: doc.pnlItemCode, accountCode: issuePnlItemAccount(issueItemGroupOf.get(doc.pnlItemCode)) } : null,
       partnerCode: doc.partnerCode,
+      supplierReturnAmount: returnAmountByCode.get(doc.code) ?? null,
     });
     if (lines.length === 0) continue;
     posted.push(doc.id);

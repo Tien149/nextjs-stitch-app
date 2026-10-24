@@ -46,6 +46,9 @@ export type PurchasePayableSource = {
 };
 
 export type PurchasePayableLine = {
+  itemId?: string;
+  /** Số lượng theo ĐVT tồn — phiếu trả hàng tính số giảm nợ theo đơn giá phiếu nhập gốc. */
+  quantity?: number;
   totalCost: number;
   vatAmount?: number | null;
   inputQuantity?: number | null;
@@ -78,13 +81,51 @@ export function purchaseLineAmount(line: PurchasePayableLine) {
  * đầu vào (`vatAmount`) chỉ cộng vào khoản phải trả. Dòng cũ chưa có cột thuế mang vatAmount
  * = 0 nên số nợ của dữ liệu đã có không đổi. Chi phí mua hàng của phiếu cộng thêm vào nợ.
  */
-function payableAmountOf(transaction: PurchasePayableSource) {
-  // Xuất trả hàng NCC: NCC nợ lại mình đúng trị giá xuất kho (giá vốn) — khoản PHẢI THU cấn vào nợ NCC.
+/**
+ * Phiếu nhập gốc của một phiếu XUẤT TRẢ hàng NCC (referenceCode = mã phiếu nhập NM-…). Khách chốt
+ * 24/10/2026: trả NCC phải đúng phiếu đã nhập — số giảm nợ = số lượng trả × (đơn giá trên phiếu
+ * nhập + thuế GTGT của dòng), gạch thẳng vào công nợ của phiếu nhập đó.
+ */
+export async function supplierReturnSource(tx: PurchasePayableTx, transaction: Pick<PurchasePayableSource, "referenceCode" | "partnerCode">) {
+  const code = (transaction.referenceCode || "").trim();
+  if (!code) return null;
+  const client = tx as RawTxClient;
+  return client.inventoryTransaction.findFirst({
+    where: { code, transactionType: "NHAP_MUA", deletedAt: null },
+    include: { lines: true },
+  });
+}
+
+/** Tiền phải trả trên phiếu nhập cho MỘT đơn vị tồn kho của từng mặt hàng (gồm thuế, không gồm chi phí mua hàng). */
+export function payableUnitByItem(lines: Array<PurchasePayableLine & { itemId: string; quantity: number }>) {
+  const totals = new Map<string, { amount: number; quantity: number }>();
+  for (const line of lines) {
+    const row = totals.get(line.itemId) || { amount: 0, quantity: 0 };
+    row.amount += purchaseLineAmount(line) + (line.vatAmount || 0);
+    row.quantity += line.quantity;
+    totals.set(line.itemId, row);
+  }
+  return new Map([...totals.entries()].map(([itemId, row]) => [itemId, row.quantity > 0 ? row.amount / row.quantity : 0]));
+}
+
+/** Số giảm nợ của phiếu trả: tính theo phiếu nhập gốc; không có phiếu gốc thì theo trị giá xuất. */
+async function supplierReturnAmount(tx: PurchasePayableTx, transaction: PurchasePayableSource) {
+  if (!(transaction.partnerCode || "").trim()) return 0;
+  const source = await supplierReturnSource(tx, transaction);
+  if (!source) return roundVnd(transaction.lines.reduce((sum, line) => sum + (line.totalCost || 0), 0));
+  const unitOf = payableUnitByItem(source.lines);
+  return roundVnd(transaction.lines.reduce((sum, line) => sum + (line.quantity || 0) * (unitOf.get(line.itemId || "") || 0), 0));
+}
+
+async function debtAmountOf(tx: PurchasePayableTx, transaction: PurchasePayableSource) {
   if (transaction.transactionType === SUPPLIER_RETURN_TYPE) {
-    if (!(transaction.partnerCode || "").trim()) return 0;
-    const value = roundVnd(transaction.lines.reduce((sum, line) => sum + (line.totalCost || 0), 0));
+    const value = await supplierReturnAmount(tx, transaction);
     return value > 0 ? value : 0;
   }
+  return payableAmountOf(transaction);
+}
+
+function payableAmountOf(transaction: PurchasePayableSource) {
   if (transaction.transactionType !== "NHAP_MUA") return 0;
   // Hàng nhận theo Đơn mua hàng đã có SupplierPayable (cột "Nhập hàng" trên bảng công nợ),
   // ghi thêm một khoản nữa ở đây là nợ NCC gấp đôi.
@@ -104,7 +145,7 @@ export async function createPurchasePayable(
   transaction: PurchasePayableSource,
   options: { importBatchId?: string | null; dueDate?: Date | null } = {},
 ) {
-  const amount = payableAmountOf(transaction);
+  const amount = await debtAmountOf(tx, transaction);
   if (amount <= 0) return null;
   const partnerCode = (transaction.partnerCode || "").trim();
 
@@ -132,6 +173,9 @@ export async function createPurchasePayable(
       recognizeExpense: false,
       status: "OPEN",
     },
+  }).then(async (debt) => {
+    await linkSupplierReturn(tx, transaction, debt);
+    return debt;
   });
 }
 
@@ -153,7 +197,9 @@ export async function syncPurchasePayable(
   });
   if (!existing) return createPurchasePayable(tx, transaction, options);
 
-  const amount = payableAmountOf(transaction);
+  // Phiếu trả: gỡ phần đã cấn vào phiếu nhập gốc trước, tính lại rồi cấn lại.
+  await unlinkSupplierReturn(tx, transaction.id);
+  const amount = await debtAmountOf(tx, transaction);
   if (amount <= 0) {
     await client.debtRecord.delete({ where: { id: existing.id } });
     return null;
@@ -177,7 +223,48 @@ export async function syncPurchasePayable(
       outstandingAmount: amount,
       description: debtDescriptionOf(transaction),
     },
+  }).then(async (debt) => {
+    await linkSupplierReturn(tx, transaction, debt);
+    return debt;
   });
+}
+
+/** Gỡ các dòng cấn nợ do phiếu trả hàng này tạo, trả lại số còn nợ cho cả hai khoản. */
+export async function unlinkSupplierReturn(tx: PurchasePayableTx, stockTransactionId: string) {
+  const client = tx as RawTxClient;
+  const settlements = await client.debtSettlement.findMany({ where: { stockTransactionId } });
+  for (const settlement of settlements) {
+    const debt = await client.debtRecord.findUnique({ where: { id: settlement.debtId } });
+    if (debt) {
+      const outstandingAmount = Math.min(debt.originalAmount, roundVnd(debt.outstandingAmount + settlement.amount));
+      await client.debtRecord.update({ where: { id: debt.id }, data: { outstandingAmount, status: outstandingAmount >= debt.originalAmount ? "OPEN" : "PARTIAL" } });
+    }
+  }
+  if (settlements.length > 0) await client.debtSettlement.deleteMany({ where: { stockTransactionId } });
+}
+
+/**
+ * Cấn khoản giảm nợ của phiếu trả (CN-XTN… phải thu NCC) vào công nợ của phiếu nhập gốc (CN-NM…):
+ * gạch cả hai một số bằng min(còn nợ phiếu nhập, giá trị trả). Phiếu nhập đã trả hết tiền thì phần
+ * trả hàng đứng thành khoản NCC nợ lại mình.
+ */
+async function linkSupplierReturn(tx: PurchasePayableTx, transaction: PurchasePayableSource, debt: { id: string; outstandingAmount: number; debtType: string }) {
+  if (transaction.transactionType !== SUPPLIER_RETURN_TYPE || debt.debtType !== "RECEIVABLE") return;
+  const sourceCode = (transaction.referenceCode || "").trim();
+  if (!sourceCode) return;
+  const client = tx as RawTxClient;
+  const payable = await client.debtRecord.findFirst({
+    where: { code: purchasePayableCodeOf(sourceCode), sourceType: PURCHASE_PAYABLE_SOURCE, debtType: "PAYABLE", deletedAt: null },
+  });
+  if (!payable) return;
+  const part = roundVnd(Math.min(payable.outstandingAmount, debt.outstandingAmount));
+  if (!(part > 0)) return;
+  const settlementDate = transaction.transactionDate;
+  for (const target of [payable, debt]) {
+    const outstandingAmount = roundVnd(target.outstandingAmount - part);
+    await client.debtSettlement.create({ data: { debtId: target.id, stockTransactionId: transaction.id, settlementDate, amount: part, createdBy: "Hệ thống (trả hàng NCC)" } });
+    await client.debtRecord.update({ where: { id: target.id }, data: { outstandingAmount, status: outstandingAmount <= 0 ? "SETTLED" : "PARTIAL" } });
+  }
 }
 
 /**
@@ -190,10 +277,20 @@ export async function removePurchasePayables(tx: PurchasePayableTx, transactionC
   if (transactionCodes.length === 0) return 0;
   const client = tx as RawTxClient;
   const codes = transactionCodes.map(purchasePayableCodeOf);
+  // Phiếu TRẢ hàng bị xoá: gỡ phần đã cấn vào phiếu nhập gốc trước.
+  const ownReturns = await client.debtRecord.findMany({
+    where: { code: { in: codes }, sourceType: PURCHASE_PAYABLE_SOURCE, debtType: "RECEIVABLE" },
+    select: { sourceId: true },
+  });
+  for (const row of ownReturns) if (row.sourceId) await unlinkSupplierReturn(tx, row.sourceId);
   const debts = await client.debtRecord.findMany({
     where: { code: { in: codes }, sourceType: PURCHASE_PAYABLE_SOURCE },
     include: { settlements: true },
   });
+  const returned = debts.find((debt) => debt.settlements.some((settlement) => settlement.stockTransactionId));
+  if (returned) {
+    throw new Error(`Phiếu nhập của công nợ ${returned.code} đã có phiếu xuất trả hàng NCC — xoá phiếu trả hàng trước rồi mới xoá phiếu nhập.`);
+  }
   const settled = debts.find((debt) => debt.settlements.length > 0);
   if (settled) {
     const message = `Công nợ ${settled.code} (mua hàng theo phiếu nhập) đã được gạch nợ nên không thể xoá phiếu. Hoàn tác phiếu chi gạch nợ trước.`;

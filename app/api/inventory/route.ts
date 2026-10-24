@@ -8,7 +8,7 @@ import { apiError, assertPeriodOpen, businessError, cleanText, isPeriodLocked, t
 import { requestedBranch, assertBranchAccess, repostInventoryCogs } from "@/lib/accounting";
 import { allowedWarehousesOf, assertWarehouseAccess, scopeWarehouses, transferDestinationsFor } from "@/lib/warehouse-scope";
 import { isWasteSubType, normalizeStockTransactionType, normalizeWasteSubType, postInventoryTransaction, repostInventoryTransaction, reverseStockEffect } from "@/lib/inventory-stock";
-import { createPurchasePayable, purchasePayableCodeOf, removePurchasePayables, syncPurchasePayable, PURCHASE_PAYABLE_SOURCE } from "@/lib/purchase-payable";
+import { createPurchasePayable, payableUnitByItem, purchasePayableCodeOf, removePurchasePayables, syncPurchasePayable, PURCHASE_PAYABLE_SOURCE } from "@/lib/purchase-payable";
 import { postStockTransfer, syncTransferInternalDebt } from "@/lib/inventory-transfer";
 import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING, STOCKTAKE_RETURNED, isStocktakeEditable, stocktakeStatusLabel } from "@/lib/stocktake-status";
 import { EXPLOSION_ISSUE_TYPES, EXPLOSION_PENDING, explodedRunOf, isExplosionIssueType, loadPendingExplosionSources, refreshTransferExplosionStatus, releaseExplosionSources, semiFinishedWithRecipeChecker } from "@/lib/explosion-sources";
@@ -731,6 +731,40 @@ export async function GET(request: Request) {
 
     // Giá bảng giá NCC đang hiệu lực — form Nhập mua hiện giá tham chiếu + cảnh báo lệch giá
     // (khách yêu cầu 03/10/2026). Ở API Kho để người chỉ có quyền Kho cũng tra được.
+    /**
+     * Phiếu nhập mua của một NCC để lập phiếu xuất trả hàng (khách 24/10/2026: trả đúng phiếu đã
+     * nhập). Mỗi dòng kèm đơn giá phải trả / ĐVT tồn (gồm thuế) và số lượng đã trả ở các phiếu trả trước.
+     */
+    if (searchParams.get("view") === "return-sources") {
+      const partnerCode = cleanText(searchParams.get("partnerCode"));
+      if (!partnerCode) return NextResponse.json({ receipts: [] });
+      const since = new Date(Date.now() - 365 * 86_400_000);
+      const receipts = await prisma.inventoryTransaction.findMany({
+        where: { transactionType: "NHAP_MUA", partnerCode, transactionDate: { gte: since }, ...branchFilter, ...(inScopedWarehouses ? { warehouseCode: inScopedWarehouses } : {}) },
+        include: { lines: { include: { item: { select: { id: true, code: true, name: true, unit: true } } } } },
+        orderBy: { transactionDate: "desc" },
+        take: 200,
+      });
+      const returns = receipts.length === 0 ? [] : await prisma.inventoryTransaction.findMany({
+        where: { transactionType: "XUAT_TRA_NCC", referenceCode: { in: receipts.map((row) => row.code) } },
+        include: { lines: { select: { itemId: true, quantity: true } } },
+      });
+      const returnedBy = new Map<string, number>();
+      for (const doc of returns) for (const line of doc.lines) returnedBy.set(`${doc.referenceCode}|${line.itemId}`, (returnedBy.get(`${doc.referenceCode}|${line.itemId}`) || 0) + line.quantity);
+      return NextResponse.json({
+        receipts: receipts.map((receipt) => {
+          const unitOf = payableUnitByItem(receipt.lines);
+          return {
+            id: receipt.id, code: receipt.code, transactionDate: receipt.transactionDate, branchCode: receipt.branchCode, warehouseCode: receipt.warehouseCode, referenceCode: receipt.referenceCode,
+            lines: [...new Map(receipt.lines.map((line) => [line.itemId, line])).values()].map((line) => {
+              const quantity = receipt.lines.filter((row) => row.itemId === line.itemId).reduce((sum, row) => sum + row.quantity, 0);
+              return { itemId: line.itemId, itemCode: line.item.code, itemName: line.item.name, unit: line.item.unit, quantity, returned: returnedBy.get(`${receipt.code}|${line.itemId}`) || 0, refundUnit: unitOf.get(line.itemId) || 0 };
+            }),
+          };
+        }),
+      });
+    }
+
     if (searchParams.get("view") === "supplier-prices") {
       const supplierCode = cleanText(searchParams.get("supplierCode"));
       if (!supplierCode) return NextResponse.json({ prices: [] });
@@ -2656,8 +2690,29 @@ export async function POST(request: Request) {
     // Xuất đồng phục có phân bổ đi lịch PB- riêng nên không bắt chọn.
     // Hạng mục P&L không bắt buộc lúc lập (vận hành lập, văn phòng bổ sung khi sửa phiếu — 24/10/2026).
     const issuePnlItemCode = transactionType === "XUAT_KHAC" ? await checkedIssuePnlItem(body.pnlItemCode, true) : null;
-    // Xuất trả hàng NCC phải có NCC — trị giá xuất giảm nợ NCC đó (lib/purchase-payable.ts).
-    if (transactionType === "XUAT_TRA_NCC" && !stockPartnerCode) businessError("Xuất trả hàng NCC phải chọn nhà cung cấp nhận hàng trả.");
+    // Xuất trả hàng NCC: phải chọn NCC + phiếu nhập gốc của NCC đó; mặt hàng phải có trên phiếu nhập
+    // và không trả quá số đã nhập trừ các lần trả trước (lib/purchase-payable.ts).
+    if (transactionType === "XUAT_TRA_NCC") {
+      if (!stockPartnerCode) businessError("Xuất trả hàng NCC phải chọn nhà cung cấp nhận hàng trả.");
+      const sourceCode = cleanText(body.referenceCode);
+      if (!sourceCode) businessError("Chọn phiếu nhập gốc của hàng trả.");
+      const source = await prisma.inventoryTransaction.findFirst({ where: { code: sourceCode, transactionType: "NHAP_MUA" }, include: { lines: true } });
+      if (!source) businessError(`Không tìm thấy phiếu nhập mua ${sourceCode}.`);
+      if ((source!.partnerCode || "") !== stockPartnerCode) businessError(`Phiếu nhập ${sourceCode} không phải của NCC ${stockPartnerCode}.`);
+      const previous = await prisma.inventoryTransaction.findMany({ where: { transactionType: "XUAT_TRA_NCC", referenceCode: sourceCode }, include: { lines: { select: { itemId: true, quantity: true } } } });
+      const requested = Array.isArray(body.lines) ? body.lines as Array<{ itemId?: unknown; inputQuantity?: unknown; inputUnitCode?: unknown }> : [];
+      for (const line of requested) {
+        const itemId = cleanText(line.itemId);
+        const received = source!.lines.filter((row) => row.itemId === itemId).reduce((sum, row) => sum + row.quantity, 0);
+        if (!(received > 0)) businessError(`Mặt hàng không có trên phiếu nhập ${sourceCode}.`);
+        const returned = previous.flatMap((doc) => doc.lines).filter((row) => row.itemId === itemId).reduce((sum, row) => sum + row.quantity, 0);
+        const item = await prisma.inventoryItem.findUnique({ where: { id: itemId }, select: { unit: true, name: true, unitConversions: { where: { deletedAt: null }, select: { unitCode: true, conversionRate: true } } } });
+        const unitCode = cleanText(line.inputUnitCode);
+        const rate = !unitCode || unitCode.toUpperCase() === (item?.unit || "").toUpperCase() ? 1 : Number(item?.unitConversions.find((row) => row.unitCode.toUpperCase() === unitCode.toUpperCase())?.conversionRate) || 1;
+        const quantity = toNumber(line.inputQuantity) * rate;
+        if (quantity > received - returned + 1e-6) businessError(`${item?.name || "Mặt hàng"}: phiếu ${sourceCode} nhập ${received}${returned > 0 ? `, đã trả ${returned}` : ""} ${item?.unit || ""} — chỉ trả tối đa ${Math.max(0, received - returned)} ${item?.unit || ""}.`);
+      }
+    }
 
     const result = await prisma.$transaction(async (tx) => {
       const transactionCode = cleanText(body.code) || await nextStockDocCode(tx, stockPrefix(transactionType), transactionDate);

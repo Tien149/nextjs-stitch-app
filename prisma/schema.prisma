@@ -516,6 +516,9 @@ model DebtSettlement {
   /// null = gạch bằng phiếu chuyển công nợ (transferId), không qua thu chi.
   voucherId      String?
   transferId     String?
+  /// Gạch bằng phiếu xuất trả hàng NCC (XUAT_TRA_NCC): cấn khoản giảm nợ của phiếu trả vào nợ của
+  /// phiếu nhập gốc — không qua thu chi (khách 24/10/2026).
+  stockTransactionId String?
   settlementDate DateTime
   amount         Float
   createdBy      String?
@@ -527,6 +530,7 @@ model DebtSettlement {
 
   @@index([voucherId])
   @@index([transferId])
+  @@index([stockTransactionId])
   @@index([debtId])
   @@index([settlementDate])
 }

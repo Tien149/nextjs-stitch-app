@@ -138,6 +138,7 @@ const RECIPE_VIEWS: Array<{ id: RecipeView; label: string; icon: string }> = [
 type Data = { items: Item[]; balances: Balance[]; transactions: Transaction[]; flowTransactions: Transaction[]; flowTruncated?: boolean; transferRequests?: TransferRequest[]; transferDestinations?: Array<{ code: string; name: string; branch: string | null }>; transferTransactions?: Transaction[]; wasteTransactions?: Transaction[]; warehouseBranches?: Array<{ code: string; branch: string | null }>; recipes: Recipe[]; warehouses: Warehouse[]; stocktakes: Stocktake[]; stockSummary: StockSummary[]; stockMovements: StockMovement[]; itemGroups: ItemGroup[]; revenueGroups: RevenueGroup[]; itemRevenueGroups?: RevenueGroup[]; receiptCategories: RevenueGroup[]; costSummary: CostSummaryRow[]; /** Mã món → FOOD (Bếp) / DRINK (Bar): nhóm doanh thu của mặt hàng, chưa gán thì theo file POS. */ productKitchenKinds?: Record<string, string>; wasteReport: WasteReportRow[]; pendingSales: PendingSales; partners: Partner[]; /** Hạng mục P&L chọn cho phiếu Xuất khác. */ issuePnlItems?: Array<{ code: string; name: string; groupName: string }> };
 /** Loại hiển thị trên hai màn hình Nhập/Xuất. Điều chuyển hiện ở CẢ hai: vế xuất ở kho đi, vế nhập ở kho nhận. */
 const inboundTypes = ["NHAP_MUA", "NHAP_CHE_BIEN", "NHAP_DIEU_CHUYEN", "NHAP_KHAC", "NHAP_KIEM_KE"];
+type ReturnSourceReceipt = { id: string; code: string; transactionDate: string; branchCode: string; warehouseCode: string; referenceCode: string | null; lines: Array<{ itemId: string; itemCode: string; itemName: string; unit: string; quantity: number; returned: number; refundUnit: number }> };
 const outboundTypes = ["XUAT_BAN", "XUAT_CHE_BIEN", "XUAT_HUY", "XUAT_DIEU_CHUYEN", "XUAT_TEST_MON", "XUAT_KHAC", "XUAT_TRA_NCC", "XUAT_KIEM_KE"];
 /** Loại xuất lập tay ở tab Xuất kho. */
 const MANUAL_OUTBOUND_TYPES = ["XUAT_KHAC", "XUAT_TEST_MON", "XUAT_TRA_NCC"];
@@ -1222,6 +1223,21 @@ export default function InventoryPage() {
       .then((payload) => { if (!cancelled) setSupplierPrices({ key: supplierPriceQuery, prices: payload.prices || [] }); });
     return () => { cancelled = true; };
   }, [supplierPriceQuery]);
+  /** Phiếu nhập gốc của NCC cho phiếu xuất trả hàng (khách 24/10/2026: trả đúng phiếu đã nhập). */
+  const returnSourceKey = active === "outbound" && stockForm.transactionType === "XUAT_TRA_NCC" && stockForm.partnerCode ? `${stockForm.partnerCode}|${stockForm.branchCode}` : "";
+  const [returnSources, setReturnSources] = useState<{ key: string; receipts: ReturnSourceReceipt[] }>({ key: "", receipts: [] });
+  useEffect(() => {
+    if (!returnSourceKey) return;
+    const [partnerCode, branchCode] = returnSourceKey.split("|");
+    let cancelled = false;
+    void fetch(`/api/inventory?view=return-sources&partnerCode=${encodeURIComponent(partnerCode)}&branchCode=${encodeURIComponent(branchCode)}`, { headers: getSessionHeaders() })
+      .then(async (response) => (response.ok ? response.json() : { receipts: [] }))
+      .then((payload) => { if (!cancelled) setReturnSources({ key: returnSourceKey, receipts: payload.receipts || [] }); });
+    return () => { cancelled = true; };
+  }, [returnSourceKey]);
+  const returnReceipts = returnSources.key === returnSourceKey ? returnSources.receipts : [];
+  const returnReceipt = isSupplierReturn ? returnReceipts.find((receipt) => receipt.code === stockForm.referenceCode) : undefined;
+  const returnLine = returnReceipt?.lines.find((line) => line.itemId === stockForm.itemId);
   useEffect(() => {
     if (!/^\d{4}-\d{2}$/.test(costMonth)) return;
     let cancelled = false;
@@ -2434,7 +2450,7 @@ export default function InventoryPage() {
       {(active === "inbound" || active === "outbound") && (
         <div className="grid grid-cols-1 *:min-w-0 lg:grid-cols-[380px_minmax(0,1fr)] gap-5">
           {canCreate && (
-            <form onSubmit={(e) => { e.preventDefault(); if (grpoOrder) { void receiveFromPO(); return; } void send({ action: "STOCK_TRANSACTION", ...stockForm, transactionDate: vnDateTimeValue(stockForm.transactionDate, stockForm.transactionTime), lines: [{ itemId: stockForm.itemId, inputQuantity: stockForm.quantity, inputUnitCode: stockForm.inputUnitCode || selectedStockUnit?.unitCode, inputUnitCost: active === "inbound" ? stockForm.unitCost : "0", vatRate: active === "inbound" ? stockForm.vatRate : "", vatAmount: active === "inbound" ? stockForm.vatAmount : "" }] }, active === "inbound" ? "Đã ghi nhận phiếu nhập kho." : "Đã ghi nhận phiếu xuất kho."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
+            <form onSubmit={(e) => { e.preventDefault(); if (grpoOrder) { void receiveFromPO(); return; } void send({ action: "STOCK_TRANSACTION", ...stockForm, ...(active === "outbound" && stockForm.transactionType === "XUAT_TRA_NCC" ? { referenceType: "PURCHASE_RETURN" } : {}), transactionDate: vnDateTimeValue(stockForm.transactionDate, stockForm.transactionTime), lines: [{ itemId: stockForm.itemId, inputQuantity: stockForm.quantity, inputUnitCode: stockForm.inputUnitCode || selectedStockUnit?.unitCode, inputUnitCost: active === "inbound" ? stockForm.unitCost : "0", vatRate: active === "inbound" ? stockForm.vatRate : "", vatAmount: active === "inbound" ? stockForm.vatAmount : "" }] }, active === "inbound" ? "Đã ghi nhận phiếu nhập kho." : "Đã ghi nhận phiếu xuất kho."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
               <h2 className="font-bold text-slate-800">{active === "inbound" ? "Ghi nhận nhập kho" : "Ghi nhận xuất kho"}</h2>
 
               <Input label="Loại">
@@ -2463,9 +2479,54 @@ export default function InventoryPage() {
               )}
 
               {isSupplierReturn && (
-                <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                  Trả hàng cho NCC: trừ tồn kho theo <b>giá vốn</b> của kho, đồng thời <b>giảm nợ NCC</b> đúng trị giá đó (bút toán Nợ 331 / Có 152, không vào giá vốn). Bắt buộc chọn NCC.
-                </p>
+                <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50/60 p-3">
+                  <p className="text-xs text-amber-800">
+                    Trả hàng <b>đúng phiếu nhập</b> của NCC: chọn NCC → phiếu nhập gốc → mặt hàng. Công nợ phiếu nhập đó giảm theo <b>số lượng trả × đơn giá trên phiếu nhập (gồm thuế GTGT)</b>; kho trừ theo giá vốn.
+                  </p>
+                  <Input label="Nhà cung cấp nhận trả *">
+                    <SearchableSelect
+                      value={stockForm.partnerCode}
+                      onChange={(partnerCode) => setStockForm({ ...stockForm, partnerCode, referenceCode: "", itemId: "" })}
+                      options={activePartners.map((partner) => ({ value: partner.code, label: partner.name, subLabel: partner.code }))}
+                      placeholder="-- Chọn NCC --"
+                      searchPlaceholder="Gõ tên hoặc mã NCC..."
+                    />
+                  </Input>
+                  {stockForm.partnerCode && (
+                    <Input label="Phiếu nhập gốc *">
+                      <select className="control" required value={stockForm.referenceCode} onChange={(e) => {
+                        const receipt = returnReceipts.find((row) => row.code === e.target.value);
+                        setStockForm({ ...stockForm, referenceCode: e.target.value, itemId: "", ...(receipt ? { branchCode: receipt.branchCode, warehouseCode: receipt.warehouseCode } : {}) });
+                      }}>
+                        <option value="">{returnSources.key === returnSourceKey ? (returnReceipts.length ? "-- Chọn phiếu nhập --" : "NCC chưa có phiếu nhập mua (12 tháng gần nhất)") : "Đang tải..."}</option>
+                        {returnReceipts.map((receipt) => (
+                          <option key={receipt.id} value={receipt.code}>{receipt.code} · {new Date(receipt.transactionDate).toLocaleDateString("vi-VN")}{receipt.referenceCode ? ` · HĐ ${receipt.referenceCode}` : ""} · {receipt.lines.length} mã</option>
+                        ))}
+                      </select>
+                    </Input>
+                  )}
+                  {returnReceipt && (
+                    <Input label="Mặt hàng trả *">
+                      <select className="control" required value={stockForm.itemId} onChange={(e) => {
+                        const item = data.items.find((candidate) => candidate.id === e.target.value);
+                        setStockForm({ ...stockForm, itemId: e.target.value, inputUnitCode: item?.unit.toUpperCase() || "" });
+                      }}>
+                        <option value="">-- Chọn mặt hàng trên phiếu --</option>
+                        {returnReceipt.lines.map((line) => (
+                          <option key={line.itemId} value={line.itemId} disabled={line.quantity - line.returned <= 1e-6}>
+                            {line.itemName} ({line.itemCode}) · nhập {qty(line.quantity)}{line.returned > 0 ? `, đã trả ${qty(line.returned)}` : ""} {line.unit}
+                          </option>
+                        ))}
+                      </select>
+                    </Input>
+                  )}
+                  {returnLine && (
+                    <p className="text-xs text-slate-700">
+                      Còn trả được <b>{qty(returnLine.quantity - returnLine.returned)} {returnLine.unit}</b> · đơn giá trên phiếu nhập (gồm thuế) <b>{unitPrice(returnLine.refundUnit)} đ/{returnLine.unit}</b>
+                      {stockBaseQuantity > 0 && <> · giảm nợ NCC ≈ <b className="text-emerald-700">{money(Math.round(stockBaseQuantity * returnLine.refundUnit))} đ</b></>}
+                    </p>
+                  )}
+                </div>
               )}
 
               <p className="text-[11px] text-slate-500 leading-relaxed !mt-2">
@@ -2529,12 +2590,12 @@ export default function InventoryPage() {
               )}
 
               {!grpoOrder && (<>
-              <Input label="Mặt hàng">
+              {!isSupplierReturn && <Input label="Mặt hàng">
                 <ItemSelect items={data.items} value={stockForm.itemId} onChange={(itemId) => {
                   const item = data.items.find((candidate) => candidate.id === itemId);
                   setStockForm({ ...stockForm, itemId, inputUnitCode: item?.unitConversions?.[0]?.unitCode || item?.unit.toUpperCase() || "" });
                 }} />
-              </Input>
+              </Input>}
               
               <div className="grid grid-cols-2 gap-3">
                 <Input label="Cửa hàng">
@@ -2659,16 +2720,16 @@ export default function InventoryPage() {
                 </div>
               )}
 
-              <Input label={active === "inbound" ? "Nhà cung cấp" : isSupplierReturn ? "Nhà cung cấp nhận trả *" : "Đối tác"}>
-                <select className="control" required={isSupplierReturn} value={stockForm.partnerCode} onChange={(e) => setStockForm({ ...stockForm, partnerCode: e.target.value })}>
-                  <option value="">{active === "inbound" ? "Không khai nhà cung cấp" : isSupplierReturn ? "-- Chọn NCC --" : "Không khai đối tác"}</option>
+              {!isSupplierReturn && <Input label={active === "inbound" ? "Nhà cung cấp" : "Đối tác"}>
+                <select className="control" value={stockForm.partnerCode} onChange={(e) => setStockForm({ ...stockForm, partnerCode: e.target.value })}>
+                  <option value="">{active === "inbound" ? "Không khai nhà cung cấp" : "Không khai đối tác"}</option>
                   {partnerFormGroups.map((bucket) => (
                     <optgroup key={bucket.group} label={bucket.label}>
                       {bucket.partners.map((partner) => <option key={partner.code} value={partner.code}>{partner.name}</option>)}
                     </optgroup>
                   ))}
                 </select>
-              </Input>
+              </Input>}
 
               {listPrice && (
                 <div className={`rounded-lg border px-3 py-2 text-xs !mt-2 ${listPriceDeviation && !listPriceDeviation.matched ? "border-rose-200 bg-rose-50 text-rose-800" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}>
@@ -2712,9 +2773,9 @@ export default function InventoryPage() {
                 </Input>
               </>)}
 
-              <Input label="Tham chiếu">
+              {!isSupplierReturn && <Input label="Tham chiếu">
                 <input data-input-kind="code" className="control" value={stockForm.referenceCode} onChange={(e) => setStockForm({ ...stockForm, referenceCode: e.target.value })} />
-              </Input>
+              </Input>}
               </>)}
 
               <button className="primary-button w-full">{grpoOrder ? "Nhận hàng từ PO" : "Ghi nhận"}</button>
