@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { PartnerPicker, type CreatedPartner } from "@/components/PartnerPicker";
+import { SearchableSelect } from "@/components/SearchableSelect";
 import { money, quantity as qty } from "@/lib/format-number";
 import { purchaseLineUnit, toPurchasePrice, toPurchaseQuantity, type PurchaseUnitLine } from "@/lib/unit-conversion";
 
@@ -284,18 +285,17 @@ export function ApproveRequestDialog({
                       </td>
                       <td className="px-3 py-2 text-right whitespace-nowrap tabular-nums">{qty(quantity)} {unit}</td>
                       <td className="px-3 py-2">
-                        <select className="control !mt-0 w-full" value={chosen?.code || ""} aria-label={`Nhà cung cấp ${line.item.name}`}
-                          onChange={(e) => assign([{ lineId: line.id, supplier: { code: e.target.value, name: offers.find((offer) => offer.supplierCode === e.target.value)?.supplierName || supplierLabel(e.target.value) } }])}>
-                          <option value="">-- Chọn NCC --</option>
-                          {offers.length > 0 && (
-                            <optgroup label="Có giá (rẻ → đắt)">
-                              {offers.map((offer) => <option key={offer.supplierCode} value={offer.supplierCode}>{offer.supplierName} · {money(offer.price)} đ</option>)}
-                            </optgroup>
-                          )}
-                          <optgroup label="NCC khác (chưa có giá)">
-                            {supplierOptions.filter((option) => option.value && !pricedCodes.has(option.value)).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                          </optgroup>
-                        </select>
+                        {/* Ô chọn NCC có tìm kiếm (khách 24/10/2026); NCC có giá đứng đầu, rẻ → đắt. */}
+                        <SearchableSelect
+                          value={chosen?.code || ""}
+                          onChange={(code) => assign([{ lineId: line.id, supplier: { code, name: offers.find((offer) => offer.supplierCode === code)?.supplierName || supplierLabel(code) } }])}
+                          options={[
+                            ...offers.map((offer) => ({ value: offer.supplierCode, label: `${offer.supplierName} · ${money(offer.price)} đ`, subLabel: `Có giá · ${offer.source}`, selectedLabel: `${offer.supplierName} · ${money(offer.price)} đ` })),
+                            ...supplierOptions.filter((option) => option.value && !pricedCodes.has(option.value)).map((option) => ({ ...option, subLabel: "Chưa có giá" })),
+                          ]}
+                          placeholder="-- Chọn NCC --"
+                          searchPlaceholder="Gõ tên hoặc mã NCC..."
+                        />
                       </td>
                       <td className="px-3 py-2 text-right">
                         <input

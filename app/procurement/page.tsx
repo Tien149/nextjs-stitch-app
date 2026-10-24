@@ -1174,10 +1174,13 @@ export default function ProcurementPage() {
                               )}
                             </td>
                             <td className="px-2 py-1.5">
-                              <select className="control !mt-0" value={row.supplierCode || ""} onChange={(e) => patch({ supplierCode: e.target.value })} aria-label="Nhà cung cấp của dòng">
-                                <option value="">Theo NCC của phiếu</option>
-                                {supplierOptions.filter((option) => option.value).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                              </select>
+                              <SearchableSelect
+                                value={row.supplierCode || ""}
+                                onChange={(supplierCode) => patch({ supplierCode })}
+                                options={[{ value: "", label: "Theo NCC của phiếu" }, ...supplierOptions.filter((option) => option.value)]}
+                                placeholder="Theo NCC của phiếu"
+                                searchPlaceholder="Gõ tên hoặc mã NCC..."
+                              />
                             </td>
                             <td className="px-2 py-2 text-right tabular-nums text-slate-700">{money(Number(row.quantity || 0) * Number(row.estimatedUnitCost || 0))}</td>
                             <td className="px-1 py-1.5 text-center">
