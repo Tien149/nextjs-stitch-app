@@ -45,9 +45,14 @@ export function visibleStoreOptions(access: BranchAccess) {
   return storeOptions.filter((option) => allowed.includes(option.code));
 }
 
-export function updateDynamicBranches(branches: Array<{ code: string; name: string }>) {
-  if (!branches || branches.length === 0) return;
+/**
+ * Danh sách cửa hàng thật nhớ trên máy người dùng (khách 25/10/2026): trước đây trang vẽ lần đầu
+ * bằng HCM/HN mặc định ("Cửa hàng 1/2") rồi mới chờ /api/master-data — người dùng điện thoại chọn
+ * nhầm cửa hàng giả là không thao tác được gì. Nạp lúc đăng nhập + đọc lại ngay khi tải module.
+ */
+const BRANCH_CACHE_KEY = "erp_branch_options";
 
+function applyBranches(branches: Array<{ code: string; name: string }>) {
   const newScope = [{ code: "ALL", label: "Tất cả cửa hàng" }];
   const newStores: Array<{ code: string; label: string }> = [];
 
@@ -62,6 +67,25 @@ export function updateDynamicBranches(branches: Array<{ code: string; name: stri
 
   storeOptions.length = 0;
   storeOptions.push(...newStores);
+}
+
+export function updateDynamicBranches(branches: Array<{ code: string; name: string }>) {
+  if (!branches || branches.length === 0) return;
+  applyBranches(branches);
+  try {
+    localStorage.setItem(BRANCH_CACHE_KEY, JSON.stringify(branches.map(({ code, name }) => ({ code, name }))));
+  } catch {
+    // Trình duyệt chặn bộ nhớ — lần sau vẫn tải lại từ máy chủ như cũ.
+  }
+}
+
+if (typeof window !== "undefined") {
+  try {
+    const cached = JSON.parse(localStorage.getItem(BRANCH_CACHE_KEY) || "null") as Array<{ code: string; name: string }> | null;
+    if (Array.isArray(cached) && cached.length > 0) applyBranches(cached);
+  } catch {
+    // Bộ nhớ hỏng / bị chặn — dùng danh sách mặc định tới khi máy chủ trả về.
+  }
 }
 
 export function branchLabel(code?: string | null) {

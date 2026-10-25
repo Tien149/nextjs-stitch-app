@@ -937,8 +937,8 @@ export default function PermissionsPage() {
 
       {/* Role Permission Matrix Modal */}
       {isRoleModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-xl overflow-hidden animate-in fade-in zoom-in duration-150">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-start justify-center p-4 overflow-y-auto overscroll-contain">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-xl my-auto overflow-hidden animate-in fade-in zoom-in duration-150">
             <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
               <div className="flex items-center gap-2.5">
                 <div className="p-2 rounded-xl bg-blue-50 text-blue-600">
@@ -1078,10 +1078,10 @@ export default function PermissionsPage() {
         </div>
       )}
 
-      {/* Create User Modal */}
+      {/* Create User Modal — form dài hơn màn điện thoại: khung nền tự cuộn, my-auto giữ hộp ở giữa khi đủ chỗ (khách 25/10/2026). */}
       {isUserModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-lg overflow-hidden animate-in fade-in zoom-in duration-150">
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-start justify-center p-4 overflow-y-auto overscroll-contain">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-lg my-auto overflow-hidden animate-in fade-in zoom-in duration-150">
             <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
               <div className="flex items-center gap-2.5">
                 <div className="p-2 rounded-xl bg-blue-50 text-blue-600">

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { AppBrand } from "@/components/AppBrand";
 import { getDefaultRouteForRole, SESSION_KEY } from "@/lib/auth-demo";
+import { updateDynamicBranches } from "@/lib/branch-labels";
 
 const highlights = [
   {
@@ -82,6 +83,15 @@ export default function Login() {
       }
 
       // Cookie phiên do /api/auth/login phát hành (httpOnly), client không tự ghi nữa.
+
+      // Nạp sẵn danh sách cửa hàng thật để trang đầu tiên không hiện "Cửa hàng 1/2" mặc định.
+      try {
+        const branchResponse = await fetch("/api/master-data?type=BRANCH", { headers: { "x-demo-session": encodeURIComponent(sessionValue) } });
+        const branches = branchResponse.ok ? await branchResponse.json() : null;
+        if (Array.isArray(branches)) updateDynamicBranches(branches.filter((branch: { status?: string }) => branch.status === "ACTIVE"));
+      } catch {
+        // Không chặn đăng nhập — ModuleFrame sẽ tải lại danh sách cửa hàng.
+      }
 
       const next = new URLSearchParams(window.location.search).get("next");
       // Truyền cả phiên: vai trò tuỳ chỉnh không được mở Dashboard thì phải vào thẳng màn đầu

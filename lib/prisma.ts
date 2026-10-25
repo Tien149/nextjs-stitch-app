@@ -8,7 +8,8 @@ const globalForPrisma = global as unknown as {
 const basePrisma =
   globalForPrisma.prismaBase ||
   new PrismaClient({
-    log: ['query'],
+    // Production chỉ ghi lỗi: ghi mọi câu truy vấn từng làm log PM2 phình 12 GB và tốn CPU lúc đông người (25/10/2026).
+    log: process.env.NODE_ENV === 'production' ? ['warn', 'error'] : ['query'],
   });
 
 if (process.env.NODE_ENV !== 'production') globalForPrisma.prismaBase = basePrisma;
