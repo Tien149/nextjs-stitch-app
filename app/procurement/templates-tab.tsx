@@ -86,7 +86,8 @@ type FillDraft = {
   branch: string;
   department: string;
   neededDate: string;
-  note: string;
+  /** Ghi chú theo từng dòng (khách 25/10/2026) — thay ô ghi chú chung của phiếu. */
+  notes?: Record<string, string>;
   quantities: Record<string, string>;
   /** ĐVT người đặt đổi trên từng dòng (khách 22/10/2026); không có = ĐVT của mẫu. */
   units?: Record<string, string>;
@@ -166,7 +167,7 @@ export function TemplatesTab({
   const [fillBranch, setFillBranch] = useState("");
   const [fillDepartment, setFillDepartment] = useState("");
   const [fillNeededDate, setFillNeededDate] = useState(today());
-  const [fillNote, setFillNote] = useState("");
+  const [fillNotes, setFillNotes] = useState<Record<string, string>>({});
   /** NCC của PR: mặc định NCC của mẫu, mẫu chưa có thì người đặt chọn (thu mua vẫn đổi lúc duyệt). */
   const [fillSupplier, setFillSupplier] = useState("");
   const [fillQuantities, setFillQuantities] = useState<Record<string, string>>({});
@@ -205,7 +206,7 @@ export function TemplatesTab({
         setFillBranch(fill.branch);
         setFillDepartment(fill.department);
         setFillNeededDate(fill.neededDate);
-        setFillNote(fill.note);
+        setFillNotes(fill.notes || {});
         setFillQuantities(fill.quantities);
         setFillUnits(fill.units || {});
       }
@@ -257,11 +258,11 @@ export function TemplatesTab({
       branch: fillBranch,
       department: fillDepartment,
       neededDate: fillNeededDate,
-      note: fillNote,
+      notes: fillNotes,
       quantities: fillQuantities,
       units: fillUnits,
     } satisfies FillDraft);
-  }, [draftRestored, filling, fillBranch, fillDepartment, fillNeededDate, fillNote, fillQuantities, fillUnits]);
+  }, [draftRestored, filling, fillBranch, fillDepartment, fillNeededDate, fillNotes, fillQuantities, fillUnits]);
 
   const branchOptions = visibleStoreOptions(user);
   const itemOptions = useMemo(
@@ -278,7 +279,7 @@ export function TemplatesTab({
     setFillBranch(branchCode);
     setFillDepartment(template.departmentCode || departmentsForBranch(branchCode)[0]?.code || "");
     setFillNeededDate(today());
-    setFillNote("");
+    setFillNotes({});
     setFillSupplier(template.supplierCode || "");
     setFillQuantities({});
     setFillUnits({});
@@ -301,7 +302,7 @@ export function TemplatesTab({
   const submitFill = async () => {
     if (!filling) return;
     const lines = filling.lines
-      .map((line) => ({ lineId: line.id, quantity: Number(fillQuantities[line.id] || 0), unitCode: fillUnits[line.id] || undefined }))
+      .map((line) => ({ lineId: line.id, quantity: Number(fillQuantities[line.id] || 0), unitCode: fillUnits[line.id] || undefined, note: fillNotes[line.id]?.trim() || undefined }))
       .filter((line) => line.quantity > 0);
     if (lines.length === 0) {
       notify("Chưa điền số lượng cho dòng nào — nhập số lượng vào các mặt hàng cần đặt rồi gửi.");
@@ -318,7 +319,6 @@ export function TemplatesTab({
           branchCode: fillBranch,
           departmentCode: fillDepartment,
           neededDate: fillNeededDate,
-          note: fillNote,
           supplierCode: fillSupplier,
           lines,
         }),
@@ -608,9 +608,6 @@ export function TemplatesTab({
                 />
               </div>
             </label>
-            <label className="block text-xs font-bold text-slate-600">Ghi chú
-              <input className="control" value={fillNote} onChange={(e) => setFillNote(e.target.value)} placeholder="Không bắt buộc" />
-            </label>
           </div>
 
           <div className="p-4 sm:p-5 pb-2 flex flex-wrap items-center gap-2">
@@ -646,7 +643,8 @@ export function TemplatesTab({
               return (
                 <Fragment key={line.id}>
                 {groupHeader}
-                <div className={`flex items-center gap-3 rounded-xl border px-3 py-2.5 ${active ? "border-blue-300 bg-blue-50/60" : "border-slate-200 bg-white"}`}>
+                <div className={`rounded-xl border px-3 py-2.5 ${active ? "border-blue-300 bg-blue-50/60" : "border-slate-200 bg-white"}`}>
+                <div className="flex items-center gap-3">
                   <div className="flex-1 min-w-0">
                     <p className="font-bold text-sm text-slate-800 leading-snug">{line.item.name}</p>
                     <p className="text-xs text-slate-500">
@@ -677,6 +675,17 @@ export function TemplatesTab({
                       <span className="text-xs font-semibold text-slate-500 w-12 truncate">{lineUnit(line)}</span>
                     )}
                   </div>
+                </div>
+                {/* Ghi chú theo từng dòng (khách 25/10/2026): hiện khi đã điền số lượng để danh sách gọn trên điện thoại. */}
+                {(active || fillNotes[line.id]) && (
+                  <input
+                    className="control !mt-2 !h-9 text-sm"
+                    placeholder="Ghi chú dòng này (không bắt buộc)"
+                    value={fillNotes[line.id] || ""}
+                    onChange={(e) => { const value = e.target.value; setFillNotes((current) => ({ ...current, [line.id]: value })); }}
+                    aria-label={`Ghi chú ${line.item.name}`}
+                  />
+                )}
                 </div>
                 </Fragment>
               );
@@ -785,8 +794,8 @@ export function TemplatesTab({
                   const isSelected = selected?.id === template.id;
                   return (
                     <tr key={template.id} onClick={() => setSelectedId(template.id)} className={`border-t border-slate-100 cursor-pointer ${isSelected ? "bg-blue-50" : "hover:bg-slate-50"}`}>
-                      <td className="cell min-w-[200px]"><b className="text-slate-800">{template.name}</b><small>{template.code}</small></td>
-                      <td className="cell">{template.branchCode ? storeLabel(template.branchCode) : <span className="text-slate-500">Mọi cửa hàng</span>}<small>{departmentName(template.departmentCode)}{template.warehouseCode ? ` · ${warehouses.find((warehouse) => warehouse.code === template.warehouseCode)?.name || `Kho ${template.warehouseCode}`}` : ""}{template.supplierName ? ` · ${template.supplierName}` : ""}</small></td>
+                      <td className="cell min-w-[130px] max-w-[180px]"><b className="text-slate-800">{template.name}</b><small className="!text-[11px]">{template.code}</small></td>
+                      <td className="cell min-w-[200px] [&_small]:!text-[11px] [&_small]:leading-snug">{template.branchCode ? storeLabel(template.branchCode) : <span className="text-slate-500">Mọi cửa hàng</span>}<small>{departmentName(template.departmentCode)}{template.warehouseCode ? ` · ${warehouses.find((warehouse) => warehouse.code === template.warehouseCode)?.name || `Kho ${template.warehouseCode}`}` : ""}{template.supplierName ? ` · ${template.supplierName}` : ""}</small></td>
                       <td className="cell whitespace-nowrap">
                         <span className={`status ${WINDOW_TONE[status]}`}>{WINDOW_LABEL[status]}</span>
                         <small className="block text-slate-500">{window.from ? dayText(window.from) : "…"} → {window.to ? dayText(window.to) : "…"}</small>
@@ -839,16 +848,15 @@ export function TemplatesTab({
               <div className="overflow-x-auto max-h-[420px] overflow-y-auto custom-scrollbar">
                 <table className="w-full text-sm">
                   <thead className="bg-slate-50 text-xs text-slate-500 uppercase border-b border-slate-200 sticky top-0 z-10">
-                    <tr>{["STT", "Mã hàng", "Tên hàng", "ĐVT đặt", "NCC", "Ghi chú"].map((label) => <th key={label} className="px-3 py-2 text-left font-bold whitespace-nowrap">{label}</th>)}</tr>
+                    <tr>{["STT", "Tên hàng", "ĐVT đặt", "NCC", "Ghi chú"].map((label) => <th key={label} className="px-3 py-2 text-left font-bold whitespace-nowrap">{label}</th>)}</tr>
                   </thead>
                   <tbody>
                     {sortTemplateLines(selected.lines, selected.supplierName).map((line, index) => (
                       <tr key={line.id} className="border-t border-slate-100">
                         <td className="cell text-slate-400">{index + 1}</td>
-                        <td className="cell whitespace-nowrap font-bold">{line.item.code}</td>
-                        <td className="cell">{line.item.name}</td>
+                        <td className="cell min-w-[140px]" title={line.item.code}>{line.item.name}</td>
                         <td className="cell whitespace-nowrap">{lineUnit(line)}</td>
-                        <td className="cell">{line.supplierName || selected.supplierName || <span className="text-slate-400">Chưa chọn</span>}</td>
+                        <td className="cell min-w-[200px]">{line.supplierName || selected.supplierName || <span className="text-slate-400">Chưa chọn</span>}</td>
                         <td className="cell text-slate-500">{line.note}</td>
                       </tr>
                     ))}

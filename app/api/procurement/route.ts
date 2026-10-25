@@ -981,15 +981,18 @@ export async function POST(request: Request) {
       }
 
       // Người đặt chỉ gửi (dòng mẫu, số lượng); dòng bỏ trống/0 nghĩa là không đặt.
-      const requested = Array.isArray(body.lines) ? (body.lines as Array<{ lineId?: unknown; quantity?: unknown; unitCode?: unknown }>) : [];
+      const requested = Array.isArray(body.lines) ? (body.lines as Array<{ lineId?: unknown; quantity?: unknown; unitCode?: unknown; note?: unknown }>) : [];
       const quantities = new Map<string, number>();
       /** ĐVT người đặt đổi trên dòng (khách 22/10/2026) — không gửi thì theo ĐVT của mẫu. */
       const chosenUnits = new Map<string, string>();
+      /** Ghi chú người đặt gõ trên từng dòng (khách 25/10/2026). */
+      const lineNotes = new Map<string, string>();
       for (const row of requested) {
         const lineId = cleanText(row.lineId);
         const quantity = toNumber(row.quantity);
         if (lineId && quantity > 0) quantities.set(lineId, quantity);
         if (lineId && cleanText(row.unitCode)) chosenUnits.set(lineId, cleanText(row.unitCode));
+        if (lineId && cleanText(row.note)) lineNotes.set(lineId, cleanText(row.note));
       }
       if (quantities.size === 0) businessError("Chưa điền số lượng cho dòng nào của mẫu");
 
@@ -1022,6 +1025,7 @@ export async function POST(request: Request) {
           estimatedUnitCost: suggestion?.price || 0,
           unitCode,
           conversionRate: rate,
+          note: lineNotes.get(line.id) || null,
           // NCC của dòng mẫu (khách 23/10/2026); dòng mẫu chưa có NCC thì theo NCC người đặt chọn / của mẫu.
           templateSupplierCode: line.supplierCode,
           templateSupplierName: line.supplierName,

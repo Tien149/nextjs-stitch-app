@@ -6,7 +6,7 @@ import { SearchableSelect } from "@/components/SearchableSelect";
 import { money, quantity as qty } from "@/lib/format-number";
 import { purchaseLineUnit, toPurchasePrice, toPurchaseQuantity, type PurchaseUnitLine } from "@/lib/unit-conversion";
 
-type ApproveLine = PurchaseUnitLine & { id: string; itemId: string; quantity: number; supplierCode?: string | null; supplierName?: string | null; item: { code: string; name: string; unit: string } };
+type ApproveLine = PurchaseUnitLine & { id: string; itemId: string; quantity: number; supplierCode?: string | null; supplierName?: string | null; note?: string | null; item: { code: string; name: string; unit: string } };
 type ApproveQuote = { supplierCode: string; supplierName: string; isSelected: boolean; lines: Array<PurchaseUnitLine & { itemId: string; unitCost: number }> };
 export type ApprovableRequest = { id: string; code: string; branchCode: string; reason: string; warehouseCode?: string | null; supplierCode?: string | null; supplierName?: string | null; lines: ApproveLine[]; quotes: ApproveQuote[] };
 type ActivePriceRow = { itemId: string; supplierCode: string; supplierName: string; stockUnitPrice: number; unitPrice: number; unitCode: string; priceListCode: string };
@@ -276,6 +276,7 @@ export function ApproveRequestDialog({
                       <td className="px-3 py-2 min-w-[180px]">
                         <b className="text-slate-800">{line.item.name}</b>
                         <small className="block text-slate-500">{line.item.code}{priceSource[line.id] ? ` · ${priceSource[line.id]}` : ""}</small>
+                        {line.note && <small className="block text-amber-700">Ghi chú: {line.note}</small>}
                         {cheaper && (
                           <button type="button" className="mt-1 rounded bg-emerald-50 px-1.5 py-0.5 text-left text-[11px] font-semibold text-emerald-700 hover:bg-emerald-100"
                             onClick={() => assign([{ lineId: line.id, supplier: { code: cheaper.supplierCode, name: cheaper.supplierName } }])}>

@@ -1310,7 +1310,7 @@ export default function ProcurementPage() {
                     <span className={`status ${requestStatusStyle(request.status)} shrink-0`}>{requestStatusLabel(request.status)}</span>
                   </div>
                   <p className="text-sm text-slate-700">{request.reason}{request.warehouseCode ? <span className="text-xs text-slate-500"> · Kho {request.warehouseCode}</span> : null}{request.supplierName ? <span className="text-xs text-slate-500"> · NCC {request.supplierName}</span> : null}</p>
-                  <LinesPreview items={request.lines.map((line) => `${line.item.name}: ${qtyText(line.quantity, line)}`)} />
+                  <LinesPreview items={request.lines.map((line) => `${line.item.name}: ${qtyText(line.quantity, line)}${line.note ? ` · ${line.note}` : ""}`)} />
                   {request.status === "REJECTED" && <p className="text-xs text-rose-700">Thu mua từ chối{request.rejectReason ? `: ${request.rejectReason}` : ""} — bấm Sửa để chỉnh và gửi lại, hoặc Huỷ phiếu.</p>}
                   <div className="flex items-center justify-between pt-1 border-t border-slate-100">
                     <b className="text-sm">{money(requestTotal(request))} đ</b>
@@ -1365,7 +1365,7 @@ export default function ProcurementPage() {
                   </td>
                   <td className="cell">
                     <b>{request.reason}</b>
-                    <LinesPreview items={request.lines.map((line) => `${line.item.name}: ${qtyText(line.quantity, line)}${line.imageUrl ? " · có hình" : ""}`)} />
+                    <LinesPreview items={request.lines.map((line) => `${line.item.name}: ${qtyText(line.quantity, line)}${line.imageUrl ? " · có hình" : ""}${line.note ? ` · ${line.note}` : ""}`)} />
                   </td>
                   <td className="cell text-right font-semibold">
                     {money(requestTotal(request))} đ
@@ -1579,7 +1579,7 @@ export default function ProcurementPage() {
                 <div className="flex items-center justify-between gap-2 pb-3 mb-3 border-b border-slate-100">
                   <div className="min-w-0">
                     <b><CopyableText value={request.code} /> — {request.reason}</b>
-                    <LinesPreview items={request.lines.map((line) => `${line.item.name} (${qtyText(line.quantity, line)})`)} />
+                    <LinesPreview items={request.lines.map((line) => `${line.item.name} (${qtyText(line.quantity, line)})${line.note ? ` · ${line.note}` : ""}`)} />
                   </div>
                   <span className={`status ${requestStatusStyle(request.status)} shrink-0`}>{requestStatusLabel(request.status)}</span>
                 </div>
@@ -1692,7 +1692,7 @@ export default function ProcurementPage() {
                         <tbody>
                           {request.lines.map((line) => (
                             <tr key={line.itemId} className="border-t border-slate-100">
-                              <td className="px-3 py-1.5">{line.item.name} <small className="text-slate-400">× {qtyText(line.quantity, line)}</small></td>
+                              <td className="px-3 py-1.5">{line.item.name} <small className="text-slate-400">× {qtyText(line.quantity, line)}</small>{line.note ? <small className="block text-amber-700">{line.note}</small> : null}</td>
                               {request.quotes.map((quote) => {
                                 const quoteLine = quote.lines.find((candidate) => candidate.itemId === line.itemId);
                                 const cost = quoteLine?.unitCost || 0;
