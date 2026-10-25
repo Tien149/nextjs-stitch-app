@@ -215,6 +215,26 @@ export default function ProcurementPage() {
   const canDelete = user ? canPerformMenuAction(user, href, "delete") : false;
   const canCreatePartner = user ? canPerformMenuAction(user, "/settings", "config") : false;
   const departmentName = (code?: string | null) => data.departments.find((item) => item.code === code)?.name || code || "Chưa gán phòng ban";
+  /**
+   * Form PR khởi tạo cứng "HCM" (cửa hàng demo): ô chọn hiện ASA nhưng state vẫn gửi HCM → API báo
+   * "không có quyền thao tác ngoài cửa hàng được phân công" (khách 25/10/2026). Như màn Kho: biết
+   * cửa hàng thật của người dùng thì đưa form PR mới về cửa hàng đầu tiên trong đó.
+   */
+  useEffect(() => {
+    if (!user || editingRequest) return;
+    const codes = visibleStoreOptions(user).map((option) => option.code);
+    if (codes.length === 0 || codes.includes(requestForm.branchCode)) return;
+    const timer = window.setTimeout(() => {
+      setRequestForm((form) => codes.includes(form.branchCode) ? form : {
+        ...form,
+        branchCode: codes[0],
+        departmentCode: data.departments.find((item) => !item.branch || item.branch === "ALL" || item.branch === codes[0])?.code || "",
+        warehouseCode: "",
+      });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [user, editingRequest, showRequestForm, requestForm.branchCode, data.departments]);
+
   const departmentsForBranch = useMemo(
     () => data.departments.filter((item) => !item.branch || item.branch === "ALL" || item.branch === requestForm.branchCode),
     [data.departments, requestForm.branchCode],
