@@ -43,7 +43,8 @@ type Data = { items: Item[]; requests: PurchaseRequest[]; orders: PurchaseOrder[
 type DeleteTarget = { type: "REQUEST" | "ORDER" | "QUOTE"; id: string; title: string; description: string; label: string };
 /** Một dòng hàng trên form PR nhiều dòng. */
 /** supplierCode: NCC riêng của dòng (từ dòng mẫu, khách 23/10/2026); trống = NCC của phiếu. */
-type RequestRow = { itemId: string; unitCode: string; quantity: string; estimatedUnitCost: string; imageUrl: string; supplierCode?: string };
+/** `uid`: khoá React ổn định — dòng mới chèn lên đầu nên không dùng chỉ số làm key được. */
+type RequestRow = { uid: string; itemId: string; unitCode: string; quantity: string; estimatedUnitCost: string; imageUrl: string; supplierCode?: string };
 
 /** Số lượng + ĐVT đặt hàng của một dòng PR / báo giá / PO để hiển thị ("1 KG", không phải "1.000 GR"). */
 const qtyText = (quantity: number, line: UnitFields & { item?: { unit: string } | null }) => `${qty(toPurchaseQuantity(quantity, line))} ${purchaseLineUnit(line)}`;
@@ -96,7 +97,8 @@ const pendingRequestStatuses = ["PENDING_APPROVAL", "APPROVED"];
 /** PR nhập được báo giá (để so sánh) khi đang chờ duyệt. */
 const quotableStatuses = ["APPROVED", "PENDING_APPROVAL", "ORDERED"];
 
-const emptyRequestRow = (): RequestRow => ({ itemId: "", unitCode: "", quantity: "1", estimatedUnitCost: "0", imageUrl: "" });
+let requestRowSeq = 0;
+const emptyRequestRow = (): RequestRow => ({ uid: `row-${++requestRowSeq}`, itemId: "", unitCode: "", quantity: "1", estimatedUnitCost: "0", imageUrl: "" });
 
 /**
  * Danh sách mặt hàng trên thẻ PR / PO thu gọn thành "N mặt hàng" (khách 21/10/2026: đơn 40+ dòng
@@ -624,6 +626,7 @@ export default function ProcurementPage() {
       reason: request.reason,
     });
     setRequestRows(request.lines.map((line) => ({
+      uid: line.id,
       itemId: line.itemId,
       unitCode: line.unitCode || "",
       quantity: String(toPurchaseQuantity(line.quantity, line)),
@@ -1100,7 +1103,8 @@ export default function ProcurementPage() {
               <div className="space-y-3 border border-slate-100 rounded-lg p-3.5 bg-slate-50/50">
                 <div className="flex items-center justify-between border-b border-slate-200/60 pb-2">
                   <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Mặt hàng cần mua</h3>
-                  <button type="button" className="text-xs font-bold text-blue-600 hover:underline flex items-center gap-0.5" onClick={() => setRequestRows([...requestRows, emptyRequestRow()])}>
+                  {/* PR dài thì dòng mới chèn lên ĐẦU danh sách cho khỏi kéo xuống cuối (khách 25/10/2026). */}
+                  <button type="button" className="text-xs font-bold text-blue-600 hover:underline flex items-center gap-0.5" onClick={() => setRequestRows([emptyRequestRow(), ...requestRows])}>
                     <span className="material-symbols-outlined text-sm font-bold">add</span>Thêm dòng
                   </button>
                 </div>
@@ -1110,7 +1114,7 @@ export default function ProcurementPage() {
                   const rowItem = data.items.find((item) => item.id === row.itemId);
                   const suggestion = row.itemId ? data.priceSuggestions[row.itemId] : undefined;
                   return (
-                    <div key={index} className="bg-white border border-slate-200 rounded-xl p-3 space-y-2 shadow-sm">
+                    <div key={row.uid} className="bg-white border border-slate-200 rounded-xl p-3 space-y-2 shadow-sm">
                       <div className="flex items-center justify-between">
                         <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Hàng #{index + 1}</span>
                         {requestRows.length > 1 && (
@@ -1176,7 +1180,7 @@ export default function ProcurementPage() {
                         const unitOptions = rowItem ? purchaseUnitOptions(rowItem.unit, rowItem.unitConversions) : [];
                         const patch = (changes: Partial<RequestRow>) => setRequestRows(requestRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, ...changes } : candidate));
                         return (
-                          <tr key={index} className="border-t border-slate-100 align-top">
+                          <tr key={row.uid} className="border-t border-slate-100 align-top">
                             <td className="px-2 py-2 text-xs font-bold text-slate-400">{index + 1}</td>
                             <td className="px-2 py-1.5">
                               <SearchableSelect value={row.itemId} onChange={(itemId) => pickRequestRowItem(index, itemId)} options={itemOptions} placeholder="Chọn mặt hàng..." />
