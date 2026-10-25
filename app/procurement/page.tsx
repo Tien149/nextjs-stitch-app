@@ -20,7 +20,7 @@ import { VAT_RATE_OPTIONS, vatAmountOf, vatRateLabel } from "@/lib/inventory-vat
 import { TemplatesTab, type PurchaseTemplate, type TemplateUnitConversion } from "./templates-tab";
 import { PriceListsTab } from "./price-lists-tab";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
-import type { DateRange } from "@/lib/date-range";
+import { vnToday, type DateRange } from "@/lib/date-range";
 import { SendPurchaseOrderDialog } from "./send-po-dialog";
 import { ApproveRequestDialog } from "./approve-request-dialog";
 import { conversionRateForUnit, defaultPurchaseUnit, purchaseLineUnit, purchaseUnitOptions, toPurchasePrice, toPurchaseQuantity } from "@/lib/unit-conversion";
@@ -145,9 +145,9 @@ export default function ProcurementPage() {
     branchCode: "ALL",
     departmentCode: "ALL",
     status: "ALL",
-    // Mặc định không chặn ngày: PR cũ còn chờ mua không được lặn khỏi danh sách.
-    from: "",
-    to: "",
+    // Mặc định hôm nay (khách 25/10/2026), muốn xem ngày khác thì tự điền / xoá ngày.
+    from: vnToday(),
+    to: vnToday(),
     search: "",
   }));
   const [requestList, setRequestList] = useState<{ rows: PurchaseRequest[]; truncated: boolean } | null>(null);
@@ -170,7 +170,7 @@ export default function ProcurementPage() {
   const [quotePriceSource, setQuotePriceSource] = useState<Record<string, string>>({});
 
   /** Tab Đơn mua hàng: lọc cửa hàng / phòng ban / trạng thái / ngày đặt / đã gửi NCC (03/10/2026). */
-  const [orderFilter, setOrderFilter] = useState({ branchCode: "ALL", departmentCode: "ALL", status: "ALL", sent: "ALL", from: "", to: "", search: "" });
+  const [orderFilter, setOrderFilter] = useState({ branchCode: "ALL", departmentCode: "ALL", status: "ALL", sent: "ALL", from: vnToday(), to: vnToday(), search: "" });
   const [orderList, setOrderList] = useState<{ rows: PurchaseOrder[]; truncated: boolean } | null>(null);
 
   /** Đề nghị mua hàng / báo giá / đơn mua hàng đang được sửa. */
@@ -857,6 +857,9 @@ export default function ProcurementPage() {
     const ok = await send("PATCH", { action: "CANCEL_ORDER", orderId: order.id, reason }, `Đã huỷ đơn ${order.code}.${sent ? " Bấm \"Báo huỷ NCC\" để gửi thông báo huỷ cho nhà cung cấp." : ""}`);
     if (ok && sent) setSendingOrder({ ...order, status: "CANCELLED" });
   };
+
+  /** PO chưa gửi NCC lần nào — nút Gửi NCC tô đỏ cho dễ thấy (khách 25/10/2026). */
+  const notSentYet = (order: PurchaseOrder) => order.status !== "CANCELLED" && !order.shareToken;
 
   const sendLabel = (order: PurchaseOrder) => {
     if (order.status === "CANCELLED") return "Báo huỷ NCC";
@@ -1813,7 +1816,7 @@ export default function ProcurementPage() {
                           }} />
                       )}
                       {canCreate && (order.status !== "CANCELLED" || order.shareToken) && (
-                        <button onClick={() => sharePO(order)} className="rounded-lg bg-sky-50 text-sky-700 text-xs font-bold px-3 py-2 inline-flex items-center gap-1">
+                        <button onClick={() => sharePO(order)} className={`rounded-lg text-xs font-bold px-3 py-2 inline-flex items-center gap-1 ${notSentYet(order) ? "bg-red-600 text-white" : "bg-sky-50 text-sky-700"}`}>
                           <span className="material-symbols-outlined text-sm">send</span>
                           {sendLabel(order)}
                         </button>
@@ -1891,7 +1894,7 @@ export default function ProcurementPage() {
                           }} />
                       )}
                       {canCreate && (order.status !== "CANCELLED" || order.shareToken) && (
-                        <button onClick={() => sharePO(order)} className="action-link text-sky-700 hover:underline" title="Gửi phiếu đặt hàng cho NCC qua Zalo / email / SMS / ảnh">
+                        <button onClick={() => sharePO(order)} className={`action-link hover:underline ${notSentYet(order) ? "text-red-600 font-bold" : "text-sky-700"}`} title="Gửi phiếu đặt hàng cho NCC qua Zalo / email / SMS / ảnh">
                           {sendLabel(order)}
                         </button>
                       )}

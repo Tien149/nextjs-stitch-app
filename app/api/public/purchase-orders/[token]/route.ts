@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import QRCode from "qrcode";
 import { prisma } from "@/lib/prisma";
 import { purchaseLineUnit, toPurchasePrice, toPurchaseQuantity } from "@/lib/unit-conversion";
+import { unitDisplayName } from "@/lib/unit-display";
 import { isReachableFromOtherDevices, publicBaseUrl } from "@/lib/public-url";
 
 /**
@@ -19,7 +20,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
     const order = await prisma.purchaseOrder.findUnique({
       where: { shareToken: token },
       include: {
-        lines: { include: { item: { select: { code: true, name: true, unit: true } } } },
+        lines: { include: { item: { select: { code: true, name: true, unit: true, unitConversions: { where: { deletedAt: null }, select: { unitCode: true, unitName: true } } } } } },
         request: { select: { code: true, neededDate: true } },
       },
     });
@@ -67,8 +68,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
       lines: order.lines.map((line) => ({
         itemCode: line.item.code,
         itemName: line.item.name,
-        // Phiếu gửi NCC theo ĐVT đặt hàng (1 KG, không phải 1.000 GR).
-        unit: purchaseLineUnit(line),
+        // Phiếu gửi NCC theo ĐVT đặt hàng (1 KG, không phải 1.000 GR), in TÊN ĐVT thay mã (khách 25/10/2026).
+        unit: unitDisplayName(purchaseLineUnit(line), line.item.unitConversions.find((conversion) => conversion.unitCode.toUpperCase() === purchaseLineUnit(line).toUpperCase())?.unitName),
         quantity: toPurchaseQuantity(line.orderedQuantity, line),
         unitCost: toPurchasePrice(line.unitCost, line),
         totalCost: line.totalCost,

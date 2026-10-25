@@ -88,12 +88,17 @@ type FillDraft = {
   neededDate: string;
   /** Ghi chú theo từng dòng (khách 25/10/2026) — thay ô ghi chú chung của phiếu. */
   notes?: Record<string, string>;
+  /** Mặt hàng thêm ngoài mẫu lúc lên PR (khách 25/10/2026). */
+  extraItemIds?: string[];
   quantities: Record<string, string>;
   /** ĐVT người đặt đổi trên từng dòng (khách 22/10/2026); không có = ĐVT của mẫu. */
   units?: Record<string, string>;
 };
 
 /** ĐVT hiển thị của một dòng mẫu: ĐVT khai trên mẫu -> ĐVT mua mặc định -> ĐVT tồn kho. */
+/** Khoá dòng thêm ngoài mẫu trong các map số lượng / ĐVT / ghi chú của màn điền mẫu. */
+const EXTRA_LINE_PREFIX = "extra:";
+
 function lineUnit(line: { unitCode: string | null; item: TemplateItem }) {
   return defaultPurchaseUnit(line.item.unit, line.item.unitConversions, line.unitCode).unitLabel;
 }
@@ -173,6 +178,8 @@ export function TemplatesTab({
   const [fillQuantities, setFillQuantities] = useState<Record<string, string>>({});
   const [fillUnits, setFillUnits] = useState<Record<string, string>>({});
   const [fillSearch, setFillSearch] = useState("");
+  /** Mặt hàng thêm ngoài mẫu — chỉ vào PR đang lên, mẫu không đổi. Số lượng/ĐVT/ghi chú dùng chung map theo khoá extra:<itemId>. */
+  const [fillExtraItemIds, setFillExtraItemIds] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
 
   /** Khu quản lý mẫu. */
@@ -207,6 +214,7 @@ export function TemplatesTab({
         setFillDepartment(fill.department);
         setFillNeededDate(fill.neededDate);
         setFillNotes(fill.notes || {});
+        setFillExtraItemIds(fill.extraItemIds || []);
         setFillQuantities(fill.quantities);
         setFillUnits(fill.units || {});
       }
@@ -259,10 +267,11 @@ export function TemplatesTab({
       department: fillDepartment,
       neededDate: fillNeededDate,
       notes: fillNotes,
+      extraItemIds: fillExtraItemIds,
       quantities: fillQuantities,
       units: fillUnits,
     } satisfies FillDraft);
-  }, [draftRestored, filling, fillBranch, fillDepartment, fillNeededDate, fillNotes, fillQuantities, fillUnits]);
+  }, [draftRestored, filling, fillBranch, fillDepartment, fillNeededDate, fillNotes, fillExtraItemIds, fillQuantities, fillUnits]);
 
   const branchOptions = visibleStoreOptions(user);
   const itemOptions = useMemo(
@@ -284,12 +293,16 @@ export function TemplatesTab({
     setFillQuantities({});
     setFillUnits({});
     setFillSearch("");
+    setFillExtraItemIds([]);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const filledCount = filling
-    ? filling.lines.filter((line) => Number(fillQuantities[line.id] || 0) > 0).length
-    : 0;
+  const extraFillLines: TemplateLine[] = fillExtraItemIds.flatMap((itemId, index) => {
+    const item = items.find((candidate) => candidate.id === itemId);
+    return item ? [{ id: `${EXTRA_LINE_PREFIX}${itemId}`, itemId, unitCode: null, supplierCode: null, supplierName: null, sortOrder: 10000 + index, note: null, item }] : [];
+  });
+  const allFillLines = filling ? [...filling.lines, ...extraFillLines] : [];
+  const filledCount = allFillLines.filter((line) => Number(fillQuantities[line.id] || 0) > 0).length;
 
   const visibleFillLines = filling
     ? sortTemplateLines(filling.lines, filling.supplierName).filter((line) => {
@@ -304,7 +317,10 @@ export function TemplatesTab({
     const lines = filling.lines
       .map((line) => ({ lineId: line.id, quantity: Number(fillQuantities[line.id] || 0), unitCode: fillUnits[line.id] || undefined, note: fillNotes[line.id]?.trim() || undefined }))
       .filter((line) => line.quantity > 0);
-    if (lines.length === 0) {
+    const extraLines = extraFillLines
+      .map((line) => ({ itemId: line.itemId, quantity: Number(fillQuantities[line.id] || 0), unitCode: fillUnits[line.id] || undefined, note: fillNotes[line.id]?.trim() || undefined }))
+      .filter((line) => line.quantity > 0);
+    if (lines.length + extraLines.length === 0) {
       notify("Chưa điền số lượng cho dòng nào — nhập số lượng vào các mặt hàng cần đặt rồi gửi.");
       return;
     }
@@ -321,6 +337,7 @@ export function TemplatesTab({
           neededDate: fillNeededDate,
           supplierCode: fillSupplier,
           lines,
+          extraLines,
         }),
       });
       const payload = await response.json();
@@ -328,7 +345,7 @@ export function TemplatesTab({
         notify(payload.error || "Không gửi được yêu cầu mua hàng");
         return;
       }
-      notify(`Đã gửi yêu cầu ${payload.code} (${lines.length} mặt hàng) — chờ thu mua duyệt lên PO.`);
+      notify(`Đã gửi yêu cầu ${payload.code} (${lines.length + extraLines.length} mặt hàng) — chờ thu mua duyệt lên PO.`);
       setFilling(null);
       clearDraft(FILL_DRAFT_KEY);
       await reload();
@@ -562,6 +579,74 @@ export function TemplatesTab({
 
   // ───────────────────────── Màn điền mẫu ─────────────────────────
   if (filling) {
+    /** Thẻ một dòng đặt hàng (dòng mẫu hoặc dòng thêm ngoài mẫu — có nút bỏ). */
+    const renderFillCard = (line: TemplateLine, onRemove?: () => void) => {
+      const quantity = fillQuantities[line.id] || "";
+      const active = Number(quantity) > 0;
+      const unitChoices = purchaseUnitOptions(line.item.unit, line.item.unitConversions);
+      const chosenUnit = fillUnits[line.id] || defaultPurchaseUnit(line.item.unit, line.item.unitConversions, line.unitCode).unitCode;
+      return (
+        <div className={`rounded-xl border px-3 py-2.5 ${active ? "border-blue-300 bg-blue-50/60" : "border-slate-200 bg-white"}`}>
+        <div className="flex items-center gap-3">
+          <div className="flex-1 min-w-0">
+            <p className="font-bold text-sm text-slate-800 leading-snug">{line.item.name}</p>
+            <p className="text-xs text-slate-500">
+              {line.item.code} · ĐVT: <b>{lineUnit(line)}</b>
+              {baseQuantityHint(line, quantity, fillUnits[line.id]) ? <span className="text-blue-700 font-semibold"> {baseQuantityHint(line, quantity, fillUnits[line.id])}</span> : null}
+              {line.note ? ` · ${line.note}` : ""}
+            </p>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <QuantityInput
+              className="control !mt-0 w-20 text-right text-base"
+              placeholder="0"
+              value={quantity}
+              onChange={(value) => setFillQuantities((current) => ({ ...current, [line.id]: value }))}
+              ariaLabel={`Số lượng ${line.item.name}`}
+            />
+            {/* Mặt hàng nhiều ĐVT mua thì chọn ĐVT ngay trên dòng (khách 22/10/2026). */}
+            {unitChoices.length > 1 ? (
+              <select
+                className="control !mt-0 !h-10 w-24 !px-1.5 text-xs font-semibold"
+                value={chosenUnit}
+                onChange={(e) => setFillUnits((current) => ({ ...current, [line.id]: e.target.value }))}
+                aria-label={`ĐVT đặt ${line.item.name}`}
+              >
+                {unitChoices.map((option) => <option key={option.unitCode} value={option.unitCode}>{option.unitCode}</option>)}
+              </select>
+            ) : (
+              <span className="text-xs font-semibold text-slate-500 w-12 truncate">{lineUnit(line)}</span>
+            )}
+            {onRemove && (
+              <button type="button" onClick={onRemove} className="icon-button !h-9 !w-9 text-red-600" title="Bỏ mặt hàng thêm ngoài mẫu">
+                <span className="material-symbols-outlined text-lg">close</span>
+              </button>
+            )}
+          </div>
+        </div>
+        {/* Ghi chú theo từng dòng (khách 25/10/2026): hiện khi đã điền số lượng để danh sách gọn trên điện thoại. */}
+        {(active || fillNotes[line.id]) && (
+          <input
+            className="control !mt-2 !h-9 text-sm"
+            placeholder="Ghi chú dòng này (không bắt buộc)"
+            value={fillNotes[line.id] || ""}
+            onChange={(e) => { const value = e.target.value; setFillNotes((current) => ({ ...current, [line.id]: value })); }}
+            aria-label={`Ghi chú ${line.item.name}`}
+          />
+        )}
+        </div>
+      );
+    };
+    const removeExtraItem = (itemId: string) => {
+      const key = `${EXTRA_LINE_PREFIX}${itemId}`;
+      setFillExtraItemIds((current) => current.filter((id) => id !== itemId));
+      for (const setter of [setFillQuantities, setFillUnits, setFillNotes]) {
+        setter((current) => { const next = { ...current }; delete next[key]; return next; });
+      }
+    };
+    const templateItemIds = new Set(filling.lines.map((line) => line.itemId));
+    const extraItemOptions = itemOptions.filter((option) => !templateItemIds.has(option.value) && !fillExtraItemIds.includes(option.value));
+
     return (
       <div className="max-w-6xl mx-auto">
         <div className="bg-white border border-slate-200 rounded-lg shadow-sm">
@@ -626,9 +711,22 @@ export function TemplatesTab({
               <span className="material-symbols-outlined text-lg">upload_file</span>Import số lượng
               <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; if (file) void importQuantities(file); }} />
             </label>
+            {/* Mẫu thiếu mặt hàng thì thêm ngay lúc lên PR (khách 25/10/2026) — chỉ vào PR này, mẫu không đổi. */}
+            <div className="w-full sm:w-80">
+              <SearchableSelect
+                value=""
+                onChange={(itemId) => { if (itemId) setFillExtraItemIds((current) => current.includes(itemId) ? current : [...current, itemId]); }}
+                options={extraItemOptions}
+                placeholder="+ Thêm mặt hàng ngoài mẫu..."
+              />
+            </div>
           </div>
 
           <div className="px-4 sm:px-5 pb-4 grid lg:grid-cols-2 gap-2">
+            {extraFillLines.length > 0 && (
+              <p className="lg:col-span-2 px-1 text-xs font-bold uppercase tracking-wide text-amber-700">Thêm ngoài mẫu</p>
+            )}
+            {extraFillLines.map((line) => <Fragment key={line.id}>{renderFillCard(line, () => removeExtraItem(line.itemId))}</Fragment>)}
             {visibleFillLines.map((line, index) => {
               // Tiêu đề nhóm mỗi khi đổi NCC — dòng đã xếp theo NCC rồi tên hàng.
               const supplierName = line.supplierName || filling.supplierName || "";
@@ -636,57 +734,10 @@ export function TemplatesTab({
               const groupHeader = supplierName !== previous
                 ? <p className="lg:col-span-2 mt-2 first:mt-0 px-1 text-xs font-bold uppercase tracking-wide text-slate-500">{supplierName || "Chưa chọn NCC"}</p>
                 : null;
-              const quantity = fillQuantities[line.id] || "";
-              const active = Number(quantity) > 0;
-              const unitChoices = purchaseUnitOptions(line.item.unit, line.item.unitConversions);
-              const chosenUnit = fillUnits[line.id] || defaultPurchaseUnit(line.item.unit, line.item.unitConversions, line.unitCode).unitCode;
               return (
                 <Fragment key={line.id}>
                 {groupHeader}
-                <div className={`rounded-xl border px-3 py-2.5 ${active ? "border-blue-300 bg-blue-50/60" : "border-slate-200 bg-white"}`}>
-                <div className="flex items-center gap-3">
-                  <div className="flex-1 min-w-0">
-                    <p className="font-bold text-sm text-slate-800 leading-snug">{line.item.name}</p>
-                    <p className="text-xs text-slate-500">
-                      {line.item.code} · ĐVT: <b>{lineUnit(line)}</b>
-                      {baseQuantityHint(line, quantity, fillUnits[line.id]) ? <span className="text-blue-700 font-semibold"> {baseQuantityHint(line, quantity, fillUnits[line.id])}</span> : null}
-                      {line.note ? ` · ${line.note}` : ""}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <QuantityInput
-                      className="control !mt-0 w-20 text-right text-base"
-                      placeholder="0"
-                      value={quantity}
-                      onChange={(value) => setFillQuantities((current) => ({ ...current, [line.id]: value }))}
-                      ariaLabel={`Số lượng ${line.item.name}`}
-                    />
-                    {/* Mặt hàng nhiều ĐVT mua thì chọn ĐVT ngay trên dòng (khách 22/10/2026). */}
-                    {unitChoices.length > 1 ? (
-                      <select
-                        className="control !mt-0 !h-10 w-24 !px-1.5 text-xs font-semibold"
-                        value={chosenUnit}
-                        onChange={(e) => setFillUnits((current) => ({ ...current, [line.id]: e.target.value }))}
-                        aria-label={`ĐVT đặt ${line.item.name}`}
-                      >
-                        {unitChoices.map((option) => <option key={option.unitCode} value={option.unitCode}>{option.unitCode}</option>)}
-                      </select>
-                    ) : (
-                      <span className="text-xs font-semibold text-slate-500 w-12 truncate">{lineUnit(line)}</span>
-                    )}
-                  </div>
-                </div>
-                {/* Ghi chú theo từng dòng (khách 25/10/2026): hiện khi đã điền số lượng để danh sách gọn trên điện thoại. */}
-                {(active || fillNotes[line.id]) && (
-                  <input
-                    className="control !mt-2 !h-9 text-sm"
-                    placeholder="Ghi chú dòng này (không bắt buộc)"
-                    value={fillNotes[line.id] || ""}
-                    onChange={(e) => { const value = e.target.value; setFillNotes((current) => ({ ...current, [line.id]: value })); }}
-                    aria-label={`Ghi chú ${line.item.name}`}
-                  />
-                )}
-                </div>
+                {renderFillCard(line)}
                 </Fragment>
               );
             })}
@@ -698,7 +749,7 @@ export function TemplatesTab({
           {/* Thanh gửi dính đáy màn hình — chừa chỗ nút menu nổi bên trái trên điện thoại */}
           <div className="sticky bottom-0 z-20 border-t border-slate-200 bg-white/95 backdrop-blur px-4 py-3 rounded-b-lg flex items-center gap-3 pl-20 lg:pl-4">
             <p className="text-xs text-slate-600 shrink-0">
-              Đã điền <b className="text-blue-700">{filledCount}</b>/{filling.lines.length} dòng
+              Đã điền <b className="text-blue-700">{filledCount}</b>/{allFillLines.length} dòng
             </p>
             <button type="button" disabled={submitting || filledCount === 0} onClick={() => void submitFill()} className="primary-button flex-1 !min-h-12">
               <span className="material-symbols-outlined text-lg">send</span>

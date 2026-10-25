@@ -994,12 +994,23 @@ export async function POST(request: Request) {
         if (lineId && cleanText(row.unitCode)) chosenUnits.set(lineId, cleanText(row.unitCode));
         if (lineId && cleanText(row.note)) lineNotes.set(lineId, cleanText(row.note));
       }
-      if (quantities.size === 0) businessError("Chưa điền số lượng cho dòng nào của mẫu");
+      // Mặt hàng thêm ngoài mẫu ngay lúc lên PR (khách 25/10/2026) — chỉ vào PR này, mẫu không đổi.
+      const extraRequested = Array.isArray(body.extraLines) ? (body.extraLines as Array<{ itemId?: unknown; quantity?: unknown; unitCode?: unknown; note?: unknown }>) : [];
+      const extraRows = extraRequested
+        .map((row) => ({ itemId: cleanText(row.itemId), quantity: toNumber(row.quantity), unitCode: cleanText(row.unitCode), note: cleanText(row.note) }))
+        .filter((row) => row.itemId && row.quantity > 0);
+      if (quantities.size === 0 && extraRows.length === 0) businessError("Chưa điền số lượng cho dòng nào của mẫu");
+      const extraItems = extraRows.length === 0 ? [] : await prisma.inventoryItem.findMany({
+        where: { id: { in: extraRows.map((row) => row.itemId) }, deletedAt: null },
+        include: { unitConversions: { where: { deletedAt: null } } },
+      });
+      const extraItemById = new Map(extraItems.map((item) => [item.id, item]));
+      if (extraRows.some((row) => !extraItemById.has(row.itemId))) businessError("Có mặt hàng thêm ngoài mẫu không còn trong danh mục — tải lại trang rồi chọn lại.");
 
       const pickedLines = template.lines.filter((line) => quantities.has(line.id));
       // Số lượng gửi lên nhưng không khớp dòng nào của mẫu (mẫu vừa bị sửa/xoá dòng ở tab khác,
       // hoặc dữ liệu gửi sai) — không được tạo yêu cầu mua rỗng dòng hàng.
-      if (pickedLines.length === 0) {
+      if (quantities.size > 0 && pickedLines.length === 0) {
         businessError(`Các dòng gửi lên không còn thuộc mẫu ${template.name}. Hãy mở lại mẫu và điền số lượng.`);
       }
       // Mất một phần dòng = mẫu vừa bị sửa trong lúc người kia đang điền. Báo rõ thay vì lặng lẽ
@@ -1007,7 +1018,7 @@ export async function POST(request: Request) {
       if (pickedLines.length !== quantities.size) {
         businessError(`Mẫu ${template.name} vừa được cập nhật nên ${quantities.size - pickedLines.length} dòng bạn điền không còn tồn tại. Hãy mở lại mẫu và nhập lại để không gửi thiếu hàng.`);
       }
-      const priceSuggestions = await buildPriceSuggestions(pickedLines.map((line) => line.itemId));
+      const priceSuggestions = await buildPriceSuggestions([...pickedLines.map((line) => line.itemId), ...extraRows.map((row) => row.itemId)]);
 
       const prLines = pickedLines.map((line) => {
         const orderedQuantity = quantities.get(line.id) || 0;
@@ -1031,6 +1042,22 @@ export async function POST(request: Request) {
           templateSupplierName: line.supplierName,
         };
       });
+      for (const row of extraRows) {
+        const item = extraItemById.get(row.itemId)!;
+        const allowed = row.unitCode && purchaseUnitOptions(item.unit, item.unitConversions).some((option) => option.unitCode.toUpperCase() === row.unitCode.toUpperCase());
+        const { unitCode, conversionRate: rate } = defaultPurchaseUnit(item.unit, item.unitConversions, allowed ? row.unitCode : null);
+        prLines.push({
+          itemId: item.id,
+          quantity: row.quantity * rate,
+          estimatedUnitCost: priceSuggestions[item.id]?.price || 0,
+          unitCode,
+          conversionRate: rate,
+          note: row.note || null,
+          // Dòng ngoài mẫu theo NCC người đặt chọn / NCC của mẫu (như dòng mẫu chưa có NCC).
+          templateSupplierCode: null,
+          templateSupplierName: null,
+        });
+      }
 
       const departmentCode = cleanText(body.departmentCode) || template.departmentCode || null;
       const warehouseCode = await resolveRequestWarehouse(auth.session, branchCode, template.warehouseCode, body.warehouseCode);
