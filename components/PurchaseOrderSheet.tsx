@@ -45,11 +45,10 @@ export const PurchaseOrderSheet = forwardRef<HTMLDivElement, { order: SharedPurc
         <ol className="space-y-3 text-[15px]">
           {order.lines.map((line, index) => (
             <li key={`${line.itemCode}-${index}`}>
-              <p className="font-bold text-slate-900">
-                {index + 1}. {line.itemName}<span className="font-normal text-slate-400">-{line.itemCode}</span>
-              </p>
-              <p className="text-slate-800 mt-0.5">
-                Số lượng: {orderLineQuantity(line)}
+              {/* Tên hàng và số lượng cùng một dòng như tin nhắn: "1. Rau Tía Tô: 0,3 Kg" (khách 26/10/2026). */}
+              <p className="text-slate-900">
+                <b>{index + 1}. {line.itemName}:</b> {orderLineQuantity(line)}
+                <span className="ml-1.5 text-xs text-slate-400">{line.itemCode}</span>
                 {showPrices && line.unitCost > 0 && (
                   <span className="text-slate-500"> · {money(line.unitCost)} đ/{line.unit} = <b className="text-slate-700">{money(line.totalCost)} đ</b></span>
                 )}

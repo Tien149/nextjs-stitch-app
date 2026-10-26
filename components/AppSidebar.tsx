@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { AppBrand } from "@/components/AppBrand";
+import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 import { appMenuItems, canAccessMenu, type AppMenuItem, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import { logout } from "@/lib/session-client";
 
@@ -54,6 +55,7 @@ export function AppSidebar({ onNavigate, inDrawer = false }: { onNavigate?: () =
   // thì lần nào bấm menu cũng thấy drawer TRỐNG TRƠN một nhịp rồi menu mới hiện ra.
   const [session, setSession] = useState<DemoSession | null>(() => (inDrawer ? readSession() : null));
   const [search, setSearch] = useState(() => (inDrawer && typeof window !== "undefined" ? window.location.search : ""));
+  const [changingPassword, setChangingPassword] = useState(false);
 
   // Doc lai session + query moi khi doi route de sidebar luon dung quyen va menu dang mo.
   useEffect(() => {
@@ -129,6 +131,16 @@ export function AppSidebar({ onNavigate, inDrawer = false }: { onNavigate?: () =
           <span className="material-symbols-outlined mr-3 text-[20px]">help</span>
           <span className="text-sm font-medium">Trợ giúp</span>
         </button>
+        {session && (
+          <button
+            type="button"
+            onClick={() => setChangingPassword(true)}
+            className="w-full flex items-center px-6 py-2 text-white/70 hover:bg-[#1e293b] hover:text-white transition-all text-left"
+          >
+            <span className="material-symbols-outlined mr-3 text-[20px]">key</span>
+            <span className="text-sm font-medium">Đổi mật khẩu</span>
+          </button>
+        )}
         <button
           type="button"
           onClick={handleLogout}
@@ -138,6 +150,7 @@ export function AppSidebar({ onNavigate, inDrawer = false }: { onNavigate?: () =
           <span className="text-sm font-medium">Đăng xuất</span>
         </button>
       </div>
+      {changingPassword && <ChangePasswordDialog onClose={() => setChangingPassword(false)} />}
     </aside>
   );
 }

@@ -5,7 +5,7 @@ import { money, quantity } from "@/lib/format-number";
  * Dùng chung cho trang công khai /po/[token], hộp thoại "Gửi NCC" (xem trước + xuất ảnh) và
  * tin nhắn chữ gửi qua Zalo/SMS/email, để ba nơi luôn ra đúng một bố cục theo phiếu mẫu của
  * khách: Thông tin đặt hàng (Mã đơn, Nơi nhận, Muốn nhận lúc, Người đặt, Lưu ý)
- * rồi Danh sách hàng hóa ("1. Tên hàng-MÃ" / "Số lượng: 4 Kg").
+ * rồi Danh sách hàng hóa, mỗi mặt hàng một dòng "1. Tên hàng: 4 Kg" (khách 26/10/2026).
  */
 export type SharedOrderLine = { itemCode: string; itemName: string; unit: string; quantity: number; unitCost: number; totalCost: number; note?: string | null };
 export type SharedPurchaseOrder = {
@@ -68,11 +68,10 @@ export function purchaseOrderMessage(order: SharedPurchaseOrder, options: { show
   for (const row of orderInfoRows(order)) lines.push(`${row.label}: ${row.upper ? row.value.toUpperCase() : row.value}`);
   lines.push("", "Danh sách hàng hóa");
   order.lines.forEach((line, index) => {
-    // Chỉ tên hàng, bỏ "-<mã hàng>" (khách 26/10/2026) — NCC không dùng mã nội bộ.
-    lines.push(`${index + 1}. ${line.itemName}`);
-    let qtyLine = `Số lượng: ${orderLineQuantity(line)}`;
-    if (options.showPrices && line.unitCost > 0) qtyLine += ` × ${money(line.unitCost)} đ = ${money(line.totalCost)} đ`;
-    lines.push(qtyLine);
+    // "1. Tên hàng: 0,3 Kg" trên một dòng — bỏ mã hàng và chữ "Số lượng" (khách 26/10/2026).
+    let itemLine = `${index + 1}. ${line.itemName}: ${orderLineQuantity(line)}`;
+    if (options.showPrices && line.unitCost > 0) itemLine += ` × ${money(line.unitCost)} đ = ${money(line.totalCost)} đ`;
+    lines.push(itemLine);
     if (line.note) lines.push(`Ghi chú: ${line.note}`);
   });
   if (options.showPrices && order.totalAmount > 0) lines.push("", `Tổng giá trị: ${money(order.totalAmount)} đ`);
