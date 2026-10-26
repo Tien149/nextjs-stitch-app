@@ -82,9 +82,10 @@ test("sổ sách tại giờ chốt = tồn hiện tại − phát sinh ròng sa
   assert.equal(book.find((row) => row.itemId === "BO").quantity, -2);
 });
 
-test("chỉ nguyên liệu và bao bì được đếm theo vị trí", () => {
+test("nguyên liệu, bao bì và bán thành phẩm được đếm theo vị trí; CCDC thì không", () => {
   assert.equal(isLocationStocktakeItemType("RAW_MATERIAL"), true);
   assert.equal(isLocationStocktakeItemType("packaging"), true);
-  assert.equal(isLocationStocktakeItemType("SEMI_FINISHED"), false);
+  // Từ 26/10/2026 BTP vào được form theo vị trí (kiểm dư BTP có định lượng chờ rã BOM).
+  assert.equal(isLocationStocktakeItemType("SEMI_FINISHED"), true);
   assert.equal(isLocationStocktakeItemType("TOOL"), false);
 });

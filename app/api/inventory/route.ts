@@ -58,7 +58,7 @@ const derivedReferenceTypes: Record<string, string> = {
   PRODUCTION: "lệnh chế biến",
 };
 
-type InputLine = { itemId?: unknown; itemCode?: unknown; quantity?: unknown; actualQuantity?: unknown; inputQuantity?: unknown; unitCode?: unknown; inputUnitCode?: unknown; unitCost?: unknown; inputUnitCost?: unknown; vatRate?: unknown; vatAmount?: unknown; wasteRate?: unknown; conversionRate?: unknown; reason?: unknown };
+type InputLine = { itemId?: unknown; itemCode?: unknown; quantity?: unknown; actualQuantity?: unknown; inputQuantity?: unknown; unitCode?: unknown; inputUnitCode?: unknown; unitCost?: unknown; inputUnitCost?: unknown; vatRate?: unknown; vatAmount?: unknown; discountRate?: unknown; discountAmount?: unknown; wasteRate?: unknown; conversionRate?: unknown; reason?: unknown };
 const validItemTypes: readonly string[] = INVENTORY_ITEM_TYPES;
 
 /**
@@ -94,6 +94,9 @@ function linesFrom(value: unknown) {
     // Ô "Tiền thuế" để trống thì KHÔNG gửi số 0 xuống: 0 là một lời khai (thuế đúng bằng 0),
     // còn để trống nghĩa là cứ tính theo thuế suất như cũ.
     vatAmount: cleanText(line.vatAmount) === "" ? undefined : toNumber(line.vatAmount),
+    // Chiết khấu: ô % hoặc ô số tiền (khách 26/10/2026) — chuỗi thô, lib/purchase-discount đọc và kiểm.
+    discountRate: cleanText(line.discountRate),
+    discountAmount: cleanText(line.discountAmount),
     wasteRate: toNumber(line.wasteRate),
     conversionRate: toNumber(line.conversionRate),
   })).filter((line) => (line.itemId || line.itemCode) && line.quantity > 0);
@@ -1280,10 +1283,13 @@ export async function GET(request: Request) {
     }
     // Điều chuyển bán thành phẩm + kiểm dư bán thành phẩm đang chờ rã (khách chốt 28/09/2026):
     // cùng nguồn với nút Rã (loadPendingExplosionSources) nên số hiện ra đúng bằng số sẽ rã.
-    const [pendingTransferDocs, pendingStocktakeDocs] = await Promise.all([
+    const [pendingTransferDocs, pendingSessionDocs, pendingBatchDocs] = await Promise.all([
       prisma.inventoryTransaction.findMany({ where: { ...branchFilter, transactionType: { in: EXPLOSION_ISSUE_TYPES }, explosionStatus: EXPLOSION_PENDING, deletedAt: null }, select: { id: true, branchCode: true } }),
       prisma.stocktakeSession.findMany({ where: { ...branchFilter, status: "APPROVED", explosionStatus: EXPLOSION_PENDING, deletedAt: null }, select: { id: true, branchCode: true } }),
+      // Đợt duyệt gộp theo vị trí có kiểm dư bán thành phẩm (khách 26/10/2026).
+      prisma.stocktakeBatch.findMany({ where: { ...branchFilter, status: "APPROVED", explosionStatus: EXPLOSION_PENDING }, select: { id: true, branchCode: true } }),
     ]);
+    const pendingStocktakeDocs = [...pendingSessionDocs, ...pendingBatchDocs];
     const pendingSourceBranches = [...new Set([...pendingTransferDocs, ...pendingStocktakeDocs].map((doc) => doc.branchCode))];
     const pendingSources = [];
     for (const sourceBranch of pendingSourceBranches) {
@@ -1492,6 +1498,8 @@ export async function POST(request: Request) {
           category: await resolveItemCategory(itemType, body.category),
           revenueGroup: await resolveItemRevenueGroup(body.revenueGroup),
           goodsGroup: normalizeGoodsGroup(body.goodsGroup),
+          // Mã hàng thuế: ghi tự do, cho phép trùng (khách 26/10/2026).
+          taxItemCode: cleanText(body.taxItemCode) || null,
           minStock: toNumber(body.minStock),
           requiresImage: !!body.requiresImage,
           note: cleanText(body.note) || null,
@@ -2296,7 +2304,7 @@ export async function POST(request: Request) {
         skippedRows: outcome.skippedRows,
         transferCount: sources.filter((source) => source.kind === "TRANSFER").length,
         issueCount: sources.filter((source) => source.kind === "ISSUE").length,
-        stocktakeCount: sources.filter((source) => source.kind === "STOCKTAKE").length,
+        stocktakeCount: sources.filter((source) => source.kind === "STOCKTAKE" || source.kind === "STOCKTAKE_BATCH").length,
         keptPriceTransfers,
         // Số món phải dùng kho mặc định vì không suy được bếp/bar — để màn hình nhắc người dùng
         // gán Nhóm doanh thu cho những mã này.
@@ -2664,6 +2672,8 @@ export async function POST(request: Request) {
           inputUnitCost: 0,
           // Huy hang la phieu XUAT: khong co hoa don dau vao nen khong co thue GTGT.
           vatRate: null,
+          discountRate: "",
+          discountAmount: "",
           wasteRate: 0,
           conversionRate: 1,
         };
@@ -2834,6 +2844,7 @@ export async function PATCH(request: Request) {
           ...(body.category !== undefined ? { category: await resolveItemCategory(itemType, body.category) } : {}),
           ...(body.revenueGroup !== undefined ? { revenueGroup: await resolveItemRevenueGroup(body.revenueGroup, item.revenueGroup) } : {}),
           ...(body.goodsGroup !== undefined ? { goodsGroup: normalizeGoodsGroup(body.goodsGroup) } : {}),
+          ...(body.taxItemCode !== undefined ? { taxItemCode: cleanText(body.taxItemCode) || null } : {}),
           // Hạng mục P&L riêng khi bao bì / đồng phục xuất dùng (trống = mặc định của loại).
           ...(body.expensePnlItemCode !== undefined ? { expensePnlItemCode: await checkedIssuePnlItem(body.expensePnlItemCode, true) } : {}),
           ...(body.requiresImage !== undefined ? { requiresImage: !!body.requiresImage } : {}),
@@ -2977,6 +2988,9 @@ export async function PATCH(request: Request) {
               inputUnitCost: line.inputQuantity !== null ? line.inputUnitCost ?? 0 : line.unitCost,
               vatRate: line.vatRate,
               vatAmount: line.vatAmount,
+              // Giữ chiết khấu đã khai: theo % thì tính lại trên tiền hàng, khai số tiền thì giữ số tiền.
+              discountRate: line.discountRate !== null ? String(line.discountRate * 100) : "",
+              discountAmount: line.discountRate === null && line.discountAmount ? String(line.discountAmount) : "",
             })),
           })
           : await tx.inventoryTransaction.update({

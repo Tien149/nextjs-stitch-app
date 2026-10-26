@@ -7,16 +7,25 @@
  * - Kế toán chọn nhiều phiếu của cùng kho rồi duyệt một lần: số đếm của mỗi mã = TỔNG các vị
  *   trí; so với sổ sách TẠI GIỜ CHỐT. Mã có sổ sách mà không nằm trên phiếu nào = đếm 0.
  * - Nguyên liệu, bao bì, hàng hóa, đồng phục (CCDC / tài sản kiểm ở phân hệ Tài sản).
+ * - Bán thành phẩm (từ 26/10/2026): được đưa vào form theo vị trí; chỉ so sổ sách khi có mặt trên
+ *   phiếu đếm (không có thì bỏ qua, không tính đếm 0), kiểm DƯ BTP có định lượng thì rã BOM.
  */
 
 const EPSILON = 0.000001;
 
-/** Nhóm mặt hàng đếm theo vị trí và được duyệt gộp. */
+/**
+ * Nhóm mặt hàng mà SỔ SÁCH cả kho được so khi duyệt gộp: mã có tồn mà không nằm trên phiếu nào = đếm 0.
+ */
 export const LOCATION_STOCKTAKE_ITEM_TYPES = ["RAW_MATERIAL", "PACKAGING", "GOODS", "UNIFORM"] as const;
+/**
+ * Nhóm đưa được vào form / phiếu đếm theo vị trí: thêm bán thành phẩm (khách 26/10/2026) — BTP chỉ
+ * so sổ sách khi có mặt trên phiếu đếm của đợt (không có thì bỏ qua, khách chọn).
+ */
+export const LOCATION_COUNTABLE_ITEM_TYPES = [...LOCATION_STOCKTAKE_ITEM_TYPES, "SEMI_FINISHED"] as const;
 
 export function isLocationStocktakeItemType(itemType: unknown) {
   const normalized = String(itemType || "").trim().toUpperCase();
-  return (LOCATION_STOCKTAKE_ITEM_TYPES as readonly string[]).includes(normalized);
+  return (LOCATION_COUNTABLE_ITEM_TYPES as readonly string[]).includes(normalized);
 }
 
 export type UnitOption = { unitCode: string; conversionRate: number };

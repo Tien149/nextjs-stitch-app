@@ -2,9 +2,11 @@ import { Prisma } from "@prisma/custom-client";
 import type { TxClient } from "@/lib/prisma";
 import { latestKnownUnitCost, postInventoryTransaction, reverseStockEffect } from "@/lib/inventory-stock";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
+import { EXPLOSION_PENDING, explodedRunOf, semiFinishedWithRecipeChecker } from "@/lib/explosion-sources";
 import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING } from "@/lib/stocktake-status";
 import { loadNonInventoryRevenueGroups, tracksInventory, type CategoryLookupClient } from "@/lib/revenue-source";
 import {
+  LOCATION_COUNTABLE_ITEM_TYPES,
   LOCATION_STOCKTAKE_ITEM_TYPES,
   bookAtCutoff,
   consolidateStocktake,
@@ -84,11 +86,15 @@ export async function netMovementsAfter(tx: Tx, warehouseCode: string, cutoffAt:
   return new Map(rows.map((row) => [row.itemId, row.net]));
 }
 
-/** Sổ sách nguyên liệu + bao bì của kho tại giờ chốt. */
-export async function loadBookAtCutoff(tx: Tx, warehouseCode: string, cutoffAt: Date): Promise<BookRow[]> {
+/**
+ * Sổ sách của kho tại giờ chốt: mọi mã nguyên liệu / bao bì / hàng hóa / đồng phục, cộng các mã khác
+ * có mặt trên phiếu đếm (`countedItemIds` — bán thành phẩm: không đếm thì bỏ qua, khách 26/10/2026).
+ */
+export async function loadBookAtCutoff(tx: Tx, warehouseCode: string, cutoffAt: Date, countedItemIds: string[] = []): Promise<BookRow[]> {
+  const typeOrCounted = { OR: [{ itemType: { in: [...LOCATION_STOCKTAKE_ITEM_TYPES] } }, { id: { in: countedItemIds } }] };
   const [balances, laterNet] = await Promise.all([
     tx.inventoryBalance.findMany({
-      where: { warehouseCode, item: { itemType: { in: [...LOCATION_STOCKTAKE_ITEM_TYPES] } } },
+      where: { warehouseCode, item: typeOrCounted },
       select: { itemId: true, quantity: true, averageCost: true },
     }),
     netMovementsAfter(tx, warehouseCode, cutoffAt),
@@ -98,7 +104,7 @@ export async function loadBookAtCutoff(tx: Tx, warehouseCode: string, cutoffAt: 
   const extra = [...laterNet.keys()].filter((itemId) => !scoped.has(itemId));
   if (extra.length > 0) {
     const items = await tx.inventoryItem.findMany({
-      where: { id: { in: extra }, itemType: { in: [...LOCATION_STOCKTAKE_ITEM_TYPES] } },
+      where: { id: { in: extra }, ...typeOrCounted },
       select: { id: true },
     });
     for (const item of items) scoped.add(item.id);
@@ -122,6 +128,8 @@ export type BatchPreviewRow = {
   notCounted: boolean;
   /** Đếm THỪA mà chưa tìm được đơn giá nào — kế toán phải nhập trước khi duyệt. */
   needsUnitCost: boolean;
+  /** Kiểm DƯ bán thành phẩm có định lượng: không nhập kiểm kê, chờ rã BOM ở tab Chế biến (26/10/2026). */
+  deferToExplosion: boolean;
 };
 
 export type BatchPreview = {
@@ -159,11 +167,11 @@ export async function buildBatchPreview(
   for (const session of sessions) {
     if (!session.locationCode) batchError(`Phiếu ${session.code} không phải phiếu đếm theo vị trí — duyệt riêng ở danh sách phiếu kiểm kê cả kho.`);
     if (session.status !== STOCKTAKE_PENDING) batchError(`Phiếu ${session.code} không ở trạng thái Chờ duyệt.`);
-    const outOfScope = session.lines.find((line) => !(LOCATION_STOCKTAKE_ITEM_TYPES as readonly string[]).includes(line.item.itemType));
-    if (outOfScope) batchError(`Phiếu ${session.code} có mặt hàng ngoài nhóm nguyên liệu / bao bì.`);
+    const outOfScope = session.lines.find((line) => !(LOCATION_COUNTABLE_ITEM_TYPES as readonly string[]).includes(line.item.itemType));
+    if (outOfScope) batchError(`Phiếu ${session.code} có mặt hàng ngoài nhóm đếm theo vị trí.`);
   }
 
-  const book = await loadBookAtCutoff(tx, warehouseCode, input.cutoffAt);
+  const book = await loadBookAtCutoff(tx, warehouseCode, input.cutoffAt, [...new Set(sessions.flatMap((session) => session.lines.map((line) => line.itemId)))]);
   const sheets: Sheet[] = sessions.map((session) => ({
     code: session.code,
     locationCode: session.locationCode || "",
@@ -175,6 +183,7 @@ export async function buildBatchPreview(
     select: { id: true, code: true, name: true, unit: true, itemType: true },
   });
   const itemById = new Map(items.map((item) => [item.id, item]));
+  const isExplodable = await semiFinishedWithRecipeChecker(tx, branchCode);
 
   const rows: BatchPreviewRow[] = [];
   for (const row of consolidated) {
@@ -201,7 +210,8 @@ export async function buildBatchPreview(
       unitCost,
       varianceValue: row.varianceQuantity * unitCost,
       notCounted: row.notCounted,
-      needsUnitCost: row.varianceQuantity > 0 && !(unitCost > 0),
+      needsUnitCost: row.varianceQuantity > 0 && !(unitCost > 0) && !(row.varianceQuantity > 0 && isExplodable(item)),
+      deferToExplosion: row.varianceQuantity > 0 && isExplodable(item),
     });
   }
   rows.sort((a, b) => Number(hasVariance(b)) - Number(hasVariance(a)) || Math.abs(b.varianceValue) - Math.abs(a.varianceValue) || a.itemCode.localeCompare(b.itemCode));
@@ -334,12 +344,20 @@ export async function approveStocktakeBatch(
       status: STOCKTAKE_BATCH_APPROVED,
       approvedBy: input.approvedBy,
       approvedAt: new Date(),
+      explosionStatus: null,
       note: [input.note || "", `Phiếu đếm: ${preview.sheets.map((sheet) => `${sheet.code} (${sheet.locationCode})`).join(", ")}`].filter(Boolean).join(" · "),
     },
   });
 
   const variances = preview.rows.filter(hasVariance);
-  const surplus = variances.filter((row) => row.varianceQuantity > 0);
+  /**
+   * Kiểm DƯ bán thành phẩm có định lượng không ghi nhập kiểm kê mà chờ rã BOM (khách 26/10/2026, cùng
+   * luật phiếu kiểm cả kho 28/09): phần dư là hàng đã chế biến mà chưa rã — bấm Rã ở tab Chế biến
+   * mới trừ nguyên liệu và nhập BTP có giá vốn. Kiểm THIẾU BTP vẫn xuất kiểm kê như nguyên liệu.
+   */
+  const deferredSurplus = variances.filter((row) => row.deferToExplosion);
+  const deferredIds = new Set(deferredSurplus.map((row) => row.itemId));
+  const surplus = variances.filter((row) => row.varianceQuantity > 0 && !deferredIds.has(row.itemId));
   const shortage = variances.filter((row) => row.varianceQuantity < 0);
   const base = {
     transactionDate: preview.cutoffAt,
@@ -385,7 +403,7 @@ export async function approveStocktakeBatch(
   if (lineData.length > 0) await tx.stocktakeBatchLine.createMany({ data: lineData });
   const shortageValue = lineData.filter((line) => line.varianceQuantity < 0).reduce((sum, line) => sum + line.varianceValue, 0);
   const surplusValue = lineData.filter((line) => line.varianceQuantity > 0).reduce((sum, line) => sum + line.varianceValue, 0);
-  await tx.stocktakeBatch.update({ where: { id: batch.id }, data: { shortageValue, surplusValue } });
+  await tx.stocktakeBatch.update({ where: { id: batch.id }, data: { shortageValue, surplusValue, ...(deferredSurplus.length > 0 ? { explosionStatus: EXPLOSION_PENDING } : {}) } });
 
   const approvedAt = new Date();
   await tx.stocktakeSession.updateMany({
@@ -408,6 +426,9 @@ export async function reopenStocktakeBatch(tx: Tx, input: { batchId: string; reo
     orderBy: { cutoffAt: "asc" },
   });
   if (later) batchError(`Kho ${batch.warehouseCode} đã có đợt ${later.code} chốt sau (${formatVnDateTime(later.cutoffAt)}). Mở lại đợt đó trước.`);
+  // Phần kiểm dư bán thành phẩm đã rã BOM: phiếu chế biến của lần rã tính trên số đếm này.
+  const explodedRun = explodedRunOf(batch.explosionStatus);
+  if (explodedRun) batchError(`Đợt ${batch.code} có kiểm dư bán thành phẩm đã rã BOM trong lần rã ${explodedRun}. Hoàn tác lần rã đó ở tab Chế biến rồi mới mở lại đợt.`);
 
   const documents = await tx.inventoryTransaction.findMany({
     where: { referenceType: "STOCKTAKE", referenceId: batch.id, deletedAt: null },
@@ -427,7 +448,7 @@ export async function reopenStocktakeBatch(tx: Tx, input: { batchId: string; reo
   });
   const updated = await tx.stocktakeBatch.update({
     where: { id: batch.id },
-    data: { status: STOCKTAKE_BATCH_REOPENED, reopenedBy: input.reopenedBy, reopenedAt: now },
+    data: { status: STOCKTAKE_BATCH_REOPENED, reopenedBy: input.reopenedBy, reopenedAt: now, explosionStatus: null },
   });
   return { batch: updated, documents: documents.map((doc) => doc.code), sessionIds: batch.sessions.map((session) => session.id) };
 }

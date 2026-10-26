@@ -1023,7 +1023,7 @@ async function updateVoucher(session: DemoSession, id: string, body: Record<stri
           branchCode: data.branchCode,
           debtAction: data.debtAction,
           receivablePartnerCode: data.receivablePartnerCode,
-        });
+        }, session.name);
       }
 
       const updated = await tx.financialVoucher.update({
@@ -1160,7 +1160,7 @@ async function changeVoucherStatus(
         if (!latest || latest.deletedAt || latest.status !== "APPROVED") {
           throw new VoucherConflictError("Trạng thái chứng từ vừa thay đổi. Vui lòng tải lại danh sách.");
         }
-        await revertVoucherSideEffects(tx, latest);
+        await revertVoucherSideEffects(tx, latest, null, session.name);
         const reverted = await tx.financialVoucher.update({ where: { id }, data: { status: "DRAFT", approvedBy: null } });
         await reopenReconciliationForReview(tx, "VOUCHER", id);
         return { reverted, previousApprovedBy: latest.approvedBy };
@@ -1336,7 +1336,7 @@ async function deleteVoucherById(session: DemoSession, id: string, reason: strin
         if (!latest || latest.deletedAt || latest.status !== "APPROVED") {
           throw new VoucherConflictError("Trạng thái chứng từ vừa thay đổi. Vui lòng tải lại danh sách.");
         }
-        await revertVoucherSideEffects(tx, latest);
+        await revertVoucherSideEffects(tx, latest, null, session.name);
         await tx.financialVoucher.update({ where: { id }, data: { status: "DRAFT", approvedBy: null } });
       });
     } catch (e) {

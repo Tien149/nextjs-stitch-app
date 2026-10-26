@@ -53,6 +53,8 @@ export type PurchasePayableLine = {
   vatAmount?: number | null;
   inputQuantity?: number | null;
   inputUnitCost?: number | null;
+  /** Chiết khấu của dòng (trừ trước thuế) — NCC thu tiền hàng sau chiết khấu. */
+  discountAmount?: number | null;
 };
 
 /**
@@ -70,7 +72,7 @@ export type PurchasePayableLine = {
  */
 export function purchaseLineAmount(line: PurchasePayableLine) {
   if (line.inputQuantity === null || line.inputQuantity === undefined) return line.totalCost;
-  return roundVnd(line.inputQuantity * (line.inputUnitCost || 0));
+  return roundVnd(line.inputQuantity * (line.inputUnitCost || 0)) - (line.discountAmount || 0);
 }
 
 /**

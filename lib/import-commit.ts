@@ -1370,6 +1370,7 @@ export async function commitImport(input: CommitInput) {
         const data: Prisma.InventoryItemUpdateInput = {
           ...(hasValue(row, "name") ? { name: asText(row.values.name) } : {}),
           ...(hasValue(row, "goods_group") ? { goodsGroup: normalizeGoodsGroup(row.values.goods_group) } : {}),
+          ...(hasValue(row, "tax_item_code") ? { taxItemCode: asText(row.values.tax_item_code) } : {}),
           ...(hasValue(row, "revenue_group") ? { revenueGroup: asText(row.values.revenue_group).toUpperCase() } : {}),
           ...(hasValue(row, "category") ? { category: asText(row.values.category).toUpperCase() } : {}),
           ...(hasValue(row, "min_stock") ? { minStock: asNumber(row.values.min_stock) } : {}),
@@ -1440,6 +1441,7 @@ export async function commitImport(input: CommitInput) {
           create: {
             code, name, itemType, category, revenueGroup, unit,
             goodsGroup: normalizeGoodsGroup(row.values.goods_group),
+            taxItemCode: asText(row.values.tax_item_code) || null,
             minStock: asNumber(row.values.min_stock),
             requiresImage: asFlag(row.values.requires_image),
             note: asText(row.values.note) || null,
@@ -1453,6 +1455,7 @@ export async function commitImport(input: CommitInput) {
             ...(hasColumn("category") ? { category } : {}),
             ...(hasColumn("revenue_group") ? { revenueGroup } : {}),
             ...(hasColumn("goods_group") ? { goodsGroup: normalizeGoodsGroup(row.values.goods_group) } : {}),
+            ...(hasColumn("tax_item_code") ? { taxItemCode: asText(row.values.tax_item_code) || null } : {}),
             ...(hasColumn("min_stock") ? { minStock: asNumber(row.values.min_stock) } : {}),
             ...(hasColumn("requires_image") ? { requiresImage: asFlag(row.values.requires_image) } : {}),
             ...(hasColumn("note") ? { note: asText(row.values.note) || null } : {}),

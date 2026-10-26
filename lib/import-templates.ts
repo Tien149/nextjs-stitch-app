@@ -797,6 +797,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
       // Nhóm hàng hóa đứng TRƯỚC Phân nhóm: tiêu đề "Nhóm hàng hóa" khớp phần đầu với alias của
       // cột khác, ô nào duyệt trước thì giành cột (autoMapHeaders).
       { field: "goods_group", label: "Nhóm hàng hóa", required: false, type: "text", aliases: ["nhom hang hoa", "nhom hh", "nhom hang", "goods group"], note: "Ghi tự do (Thịt, Hải sản, Rau củ, Bia...) — lọc khi giải trình kiểm kê." },
+      { field: "tax_item_code", label: "Mã hàng thuế", required: false, type: "text", aliases: ["ma hang thue", "ma hang hoa thue", "ma thue", "tax item code", "tax code"], note: "Mã dùng khi kê khai / đối chiếu hoá đơn thuế — ghi tự do, nhiều mặt hàng được trùng mã." },
       { field: "category", label: "Phân nhóm (kho)", required: false, type: "text", aliases: ["phan nhom", "nhom mat hang", "category", "item group"], note: "Mã Phân nhóm mặt hàng (đi theo kho / bộ phận) — khác Nhóm hàng hóa." },
       { field: "revenue_group", label: "Nhóm doanh thu", required: false, type: "text", aliases: ["nhom doanh thu", "nhom dt", "loai mon", "revenue group", "revenue source"], note: "Mã nhóm món (REV_FOOD, REV_DRINK, REV_SERVICE) hoặc chữ Đồ ăn / Đồ uống / Phụ thu / Khăn lạnh. Import doanh thu POS lấy cột này khi file POS không khai được Nhóm doanh thu." },
       { field: "unit", label: "Đơn vị tính", required: true, type: "text", aliases: ["dvt", "don vi tinh", "unit"] },
@@ -818,6 +819,7 @@ export const importTemplates: ImportTemplateDefinition[] = [
       { field: "code", label: "Mã mặt hàng", required: true, type: "text", aliases: ["ma hang", "ma mat hang", "code", "item code"] },
       { field: "name", label: "Tên mặt hàng", required: false, type: "text", aliases: ["ten hang", "ten mat hang", "name", "item name"], note: "Bỏ trống = giữ tên cũ" },
       { field: "goods_group", label: "Nhóm hàng hóa", required: false, type: "text", aliases: ["nhom hang hoa", "nhom hh", "nhom hang", "goods group"], note: "Ghi tự do (Thịt, Hải sản, Rau củ, Bia...)" },
+      { field: "tax_item_code", label: "Mã hàng thuế", required: false, type: "text", aliases: ["ma hang thue", "ma hang hoa thue", "ma thue", "tax item code", "tax code"], note: "Mã dùng khi kê khai / đối chiếu hoá đơn thuế — ghi tự do, nhiều mặt hàng được trùng mã." },
       { field: "revenue_group", label: "Nhóm doanh thu", required: false, type: "text", aliases: ["nhom doanh thu", "nhom dt", "loai mon", "revenue group", "revenue source"], note: "Mã nhóm món (REV_FOOD, REV_DRINK, REV_SERVICE) hoặc chữ Đồ ăn / Đồ uống / Phụ thu / Khăn lạnh" },
       { field: "category", label: "Phân nhóm (kho)", required: false, type: "text", aliases: ["phan nhom", "nhom mat hang", "category", "item group"] },
       { field: "min_stock", label: "Tồn tối thiểu", required: false, type: "number", aliases: ["ton toi thieu", "min stock", "min_stock"] },

@@ -347,6 +347,7 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
     //    đang nằm trong kho. Chạy trước xuất bán để BTP dư kiểm kê vào sổ trước khi món bán lấy tồn.
     for (const source of sources) {
       const label = source.kind === "TRANSFER" ? `điều chuyển ${source.code}` : source.kind === "ISSUE" ? `huỷ / xuất ${source.code}` : `kiểm dư ${source.code}`;
+      const isStocktakeSource = source.kind === "STOCKTAKE" || source.kind === "STOCKTAKE_BATCH";
       /**
        * Điều chuyển: lấy tồn trước, chỉ chế biến phần thiếu (khách chốt 29/09/2026) — kho còn 2 kg
        * BTP mà chuyển đi 5 kg thì chỉ chế biến 3 kg; BTP cấp dưới cũng trừ tồn trước. Phiếu điều
@@ -355,7 +356,7 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
        */
       let takeFromStock: ((code: string) => number) | undefined;
       // Huỷ / xuất khác cùng luật với điều chuyển: phiếu đã trừ kho nên cộng trả để ra tồn trước lúc xuất.
-      if (source.kind !== "STOCKTAKE") {
+      if (!isStocktakeSource) {
         const stock = await createStockTaker(tx, recipeItemIdByCode, source.date, [source.warehouseCode]);
         for (const demand of source.demands) stock.add(demand.productCode, source.warehouseCode, demand.quantity);
         takeFromStock = (code) => stock.take(code, source.warehouseCode, Number.POSITIVE_INFINITY);
@@ -369,7 +370,7 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
       });
       for (const used of sourcePlan.stockUsed) stockUsed.push({ ...used, warehouseCode: source.warehouseCode, source: source.code });
       // Phiếu chế biến của kiểm dư mang referenceId = phiếu kiểm kê để Giải trình / Kết quả tính sổ sách sau rã.
-      const sourceReferenceId = source.kind === "STOCKTAKE" ? source.id : null;
+      const sourceReferenceId = isStocktakeSource ? source.id : null;
       for (const step of sourcePlan.productions) {
         sequence += 1;
         const productItem = await tx.inventoryItem.findUnique({ where: { code: step.productCode } });
@@ -424,6 +425,8 @@ export async function executeExplosion(tx: TxClient, input: ExplosionRunInput) {
       } else if (source.kind === "ISSUE") {
         await claimExplosionSource(tx.inventoryTransaction, source.id, runCode);
         if (sourcePlan.productions.length > 0) await repriceIssue(tx, source.id);
+      } else if (source.kind === "STOCKTAKE_BATCH") {
+        await claimExplosionSource(tx.stocktakeBatch, source.id, runCode);
       } else {
         await claimExplosionSource(tx.stocktakeSession, source.id, runCode);
       }

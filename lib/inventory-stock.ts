@@ -5,6 +5,7 @@ import { safeConversionRate } from "@/lib/unit-conversion";
 import { resolveVatAmount } from "@/lib/inventory-vat";
 import { roundVnd } from "@/lib/money-rounding";
 import { allocatePurchaseCost, PURCHASE_COST_TYPES } from "@/lib/purchase-cost";
+import { resolveDiscount } from "@/lib/purchase-discount";
 
 export const STOCK_TRANSACTION_TYPES = [
   "NHAP_MUA",
@@ -68,6 +69,9 @@ export type StockLineInput = {
    * khac may (lech vai dong) — xem resolveVatAmount trong lib/inventory-vat.ts.
    */
   vatAmount?: unknown;
+  /** Chiết khấu của dòng: % (10 = 10%) hoặc số tiền — xem lib/purchase-discount.ts. Chỉ phiếu NHẬP. */
+  discountRate?: unknown;
+  discountAmount?: unknown;
 };
 
 export type PostInventoryTransactionInput = {
@@ -357,7 +361,11 @@ async function resolveStockLine(tx: Tx, line: StockLineInput) {
    * duoc dinh gia lai theo binh quan cua kho de gia von khong tut, nhung NCC khong xuat hoa
    * don cho hang tang nen khong co dong thue nao phai tra.
    */
-  const amountBeforeTax = roundVnd(inputQuantity * inputUnitCost);
+  // Chiết khấu trừ TRƯỚC thuế (khách 26/10/2026): thuế và giá nhập kho tính trên tiền hàng sau chiết khấu.
+  const gross = roundVnd(inputQuantity * inputUnitCost);
+  const discount = resolveDiscount(gross, line.discountRate, line.discountAmount);
+  if (!discount.ok) stockError(`${discount.reason} (${item.code})`);
+  const amountBeforeTax = gross - discount.amount;
   const declaredVat = line.vatAmount === undefined || line.vatAmount === null || text(line.vatAmount) === ""
     ? null
     : numberValue(line.vatAmount);
@@ -378,9 +386,11 @@ async function resolveStockLine(tx: Tx, line: StockLineInput) {
     conversionRate,
     quantity: inputQuantity * conversionRate,
     inputUnitCost: inputUnitCost || null,
-    unitCost: inputUnitCost > 0 ? inputUnitCost / conversionRate : 0,
+    unitCost: inputUnitCost > 0 ? (discount.amount > 0 ? amountBeforeTax / (inputQuantity * conversionRate) : inputUnitCost / conversionRate) : 0,
     vatRate: line.vatRate ?? null,
     vatAmount: vat.vatAmount,
+    discountRate: discount.rate,
+    discountAmount: discount.amount,
   };
 }
 
@@ -533,13 +543,14 @@ export async function reverseStockEffect(
  * Chi phí mua hàng (khách chốt 13/10/2026): phân bổ theo tiền hàng trước thuế từng dòng rồi cộng vào
  * giá nhập kho — `unitCost` = (tiền hàng + phần phân bổ) ÷ SL tồn. `inputUnitCost` giữ đơn giá NCC.
  */
-function withPurchaseCost<T extends { inputQuantity: number; inputUnitCost: number | null; quantity: number; unitCost: number }>(
+function withPurchaseCost<T extends { inputQuantity: number; inputUnitCost: number | null; quantity: number; unitCost: number; discountAmount?: number }>(
   transactionType: string,
   cost: number | null | undefined,
   lines: T[],
 ) {
   const purchaseCost = PURCHASE_COST_TYPES.has(transactionType) ? roundVnd(Math.max(0, Number(cost) || 0)) : 0;
-  const amountOf = (line: T) => roundVnd(line.inputQuantity * (line.inputUnitCost || 0));
+  // Tiền hàng SAU chiết khấu — chi phí mua hàng chia theo số này và cộng vào trên số này.
+  const amountOf = (line: T) => roundVnd(line.inputQuantity * (line.inputUnitCost || 0)) - (line.discountAmount || 0);
   const shares = allocatePurchaseCost(purchaseCost, lines.map((line) => ({ amount: amountOf(line), quantity: line.quantity })));
   return {
     purchaseCost,
@@ -644,6 +655,8 @@ export async function postInventoryTransaction(tx: Tx, input: PostInventoryTrans
           vatRate: line.vatRate,
           vatAmount: line.vatAmount,
           purchaseCostShare: line.purchaseCostShare,
+          discountRate: line.discountRate,
+          discountAmount: line.discountAmount,
         })),
       },
     },
@@ -711,7 +724,7 @@ export async function repostInventoryTransaction(
    */
   const lines = isInboundStockType(transactionType)
     ? input.lines
-    : input.lines.map((line) => ({ ...line, inputUnitCost: null, unitCost: null, vatRate: null, vatAmount: null }));
+    : input.lines.map((line) => ({ ...line, inputUnitCost: null, unitCost: null, vatRate: null, vatAmount: null, discountRate: null, discountAmount: null }));
   const resolvedLines = [];
   for (const line of lines) resolvedLines.push(await resolveStockLine(tx, line));
   const priced = withPurchaseCost(transactionType, input.purchaseCost ?? current.purchaseCost ?? 0, resolvedLines);
@@ -764,6 +777,8 @@ export async function repostInventoryTransaction(
           vatRate: line.vatRate,
           vatAmount: line.vatAmount,
           purchaseCostShare: line.purchaseCostShare,
+          discountRate: line.discountRate,
+          discountAmount: line.discountAmount,
         })),
       },
     },

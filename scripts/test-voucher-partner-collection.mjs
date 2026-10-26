@@ -30,22 +30,29 @@ const phieuThu = {
   allocationStartPeriod: null,
 };
 
-/** tx giả: sổ nợ trong bộ nhớ, đủ cho nhánh gạch nợ theo đối tác. */
-function fakeTx(debts, { alreadySettled = false } = {}) {
-  const calls = { settlements: [], updates: [] };
+/**
+ * tx giả: sổ nợ + các lần gạch trong bộ nhớ, đủ cho nhánh gạch nợ theo đối tác. Từ 26/10/2026
+ * nhánh này gỡ hết lần gạch cũ của phiếu rồi cấn lại (reallocatePartnerCollections), nên tx giả
+ * phải hiểu findMany/deleteMany của DebtSettlement và findUnique của DebtRecord.
+ */
+function fakeTx(debts, { settlements = [] } = {}) {
+  const calls = { settlements: settlements.map((row) => ({ ...row })), updates: [] };
   const store = debts.map((debt) => ({ ...debt }));
+  let seq = 0;
   return {
     calls,
     store,
+    financialVoucher: { findMany: async () => [] },
     debtSettlement: {
-      findFirst: async () => (alreadySettled ? { id: "s0" } : null),
-      create: async ({ data }) => calls.settlements.push(data),
+      findMany: async ({ where }) => calls.settlements.filter((row) => where.voucherId.in.includes(row.voucherId)),
+      deleteMany: async ({ where }) => { calls.settlements = calls.settlements.filter((row) => !where.id.in.includes(row.id)); },
+      create: async ({ data }) => calls.settlements.push({ id: `s${++seq}`, ...data }),
     },
     debtRecord: {
       findMany: async ({ where }) => store
         .filter((item) => item.debtType === where.debtType && item.partnerCode === where.partnerCode
-          && item.branchCode === where.branchCode && item.outstandingAmount > 0)
-        .sort((a, b) => a.documentDate - b.documentDate),
+          && item.branchCode === where.branchCode && item.outstandingAmount > 0),
+      findUnique: async ({ where }) => store.find((item) => item.id === where.id) || null,
       findFirst: async ({ where }) => store.find((item) => item.code === where.code) || null,
       update: async ({ where, data }) => {
         const item = store.find((row) => row.id === where.id);
@@ -81,10 +88,13 @@ test("đối tác chưa có khoản nào đang mở: phiếu vẫn duyệt đư�
   assert.equal(tx.calls.settlements.length, 0);
 });
 
-test("duyệt lại không gạch đôi", async () => {
-  const tx = fakeTx([noCu], { alreadySettled: true });
+test("duyệt lại không gạch đôi: lần gạch cũ được gỡ rồi cấn lại đúng một lần", async () => {
+  const tx = fakeTx([{ ...noCu, outstandingAmount: 0, status: "SETTLED" }], {
+    settlements: [{ id: "s0", debtId: "d1", voucherId: "v1", amount: 40_000_000 }],
+  });
   await applyVoucherSideEffects(tx, phieuThu, "kt");
-  assert.equal(tx.calls.settlements.length, 0);
+  assert.deepEqual(tx.calls.settlements.map((row) => [row.debtId, row.amount]), [["d1", 40_000_000]]);
+  assert.equal(tx.store.find((row) => row.id === "d1").outstandingAmount, 0);
 });
 
 test("không có đối tác thì chặn ngay bằng lỗi nghiệp vụ", async () => {

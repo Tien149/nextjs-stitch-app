@@ -6,6 +6,7 @@ import { storeLabel } from "@/lib/branch-labels";
 import { money, quantity as qty } from "@/lib/format-number";
 import { movementTypeLabel } from "@/lib/inventory-movement-labels";
 import { vatRateLabel } from "@/lib/inventory-vat";
+import { roundVnd } from "@/lib/round-vnd";
 
 /**
  * Bản in PHIẾU NHẬP KHO / PHIẾU XUẤT KHO (khách yêu cầu 03/10/2026) — mở từ nút "In" trên danh
@@ -27,6 +28,9 @@ type Line = {
   vatAmount: number;
   /** Chi phí mua hàng phân bổ vào dòng (đã nằm trong totalCost). */
   purchaseCostShare?: number;
+  /** Chiết khấu của dòng (trừ trước thuế) — % đã khai (null = khai số tiền) và số tiền. */
+  discountRate?: number | null;
+  discountAmount?: number;
   item: { code: string; name: string; unit: string };
 };
 type StockDocument = {
@@ -101,6 +105,21 @@ export default function StockDocumentPrintPage() {
     // Thành tiền in theo hoá đơn NCC (SL × đơn giá); chi phí mua hàng in riêng một dòng ở cuối.
     return { ...line, printQuantity: quantity, printUnit: unit, printUnitPrice: unitPrice, printAmount: line.totalCost - (line.purchaseCostShare || 0) - (doc.transactionType.startsWith("NHAP_") ? line.vatAmount || 0 : 0) };
   });
+  /**
+   * Phiếu NHẬP MUA in đủ cột như màn nhận hàng (khách 26/10/2026): thành tiền trước thuế = SL × đơn
+   * giá NCC, chiết khấu, thuế suất, tiền thuế, sau thuế, chi phí mua hàng phân bổ, trị giá mua hàng.
+   */
+  const isPurchase = doc.transactionType === "NHAP_MUA";
+  const purchaseRows = rows.map((row) => {
+    const discount = row.discountAmount || 0;
+    const gross = row.inputQuantity !== null && row.inputQuantity !== undefined
+      ? roundVnd(Number(row.inputQuantity) * (row.inputUnitCost || 0))
+      : row.printAmount + discount;
+    const afterTax = gross - discount + (row.vatAmount || 0);
+    const share = row.purchaseCostShare || 0;
+    return { ...row, gross, discount, afterTax, share, purchaseValue: afterTax + share };
+  });
+  const purchaseTotal = (key: "gross" | "discount" | "vatAmount" | "afterTax" | "share" | "purchaseValue") => purchaseRows.reduce((sum, row) => sum + (Number(row[key]) || 0), 0);
   const totalBeforeTax = rows.reduce((sum, row) => sum + row.printAmount, 0);
   const totalVat = rows.reduce((sum, row) => sum + (row.vatAmount || 0), 0);
   const purchaseCost = doc.purchaseCost || 0;
@@ -108,7 +127,9 @@ export default function StockDocumentPrintPage() {
 
   return (
     <main className="min-h-screen bg-white text-slate-950 p-8 print:p-0">
-      <div className="max-w-4xl mx-auto border border-slate-200 p-8 print:border-0 print:max-w-none">
+      {/* Phiếu nhập mua nhiều cột: in khổ ngang. */}
+      {isPurchase && <style>{"@media print { @page { size: A4 landscape; margin: 10mm; } }"}</style>}
+      <div className={`${isPurchase ? "max-w-6xl" : "max-w-4xl"} mx-auto border border-slate-200 p-8 print:border-0 print:max-w-none`}>
         <div className="flex justify-between items-start border-b border-slate-200 pb-6">
           <div>
             <h1 className="text-2xl font-bold uppercase">{branchName}</h1>
@@ -145,6 +166,65 @@ export default function StockDocumentPrintPage() {
           {doc.note && <div className="grid grid-cols-[180px_1fr] gap-3"><b>Ghi chú</b><span>{doc.note}</span></div>}
         </div>
 
+        {isPurchase ? (
+          <table className="mt-6 w-full border-collapse text-xs">
+            <thead>
+              <tr className="border-y-2 border-slate-300 text-[10px] uppercase text-slate-500">
+                <th className="py-2 pr-1 text-left">STT</th>
+                <th className="py-2 pr-1 text-left">Mã hàng</th>
+                <th className="py-2 pr-1 text-left">Tên hàng</th>
+                <th className="py-2 pr-1 text-left">ĐVT</th>
+                <th className="py-2 pr-1 text-right">SL</th>
+                <th className="py-2 pr-1 text-right">Đơn giá</th>
+                <th className="py-2 pr-1 text-right">Thành tiền trước thuế</th>
+                <th className="py-2 pr-1 text-right">Chiết khấu</th>
+                <th className="py-2 pr-1 text-right">Thuế suất</th>
+                <th className="py-2 pr-1 text-right">Tiền thuế</th>
+                <th className="py-2 pr-1 text-right">Thành tiền sau thuế</th>
+                <th className="py-2 pr-1 text-right">CP mua phân bổ</th>
+                <th className="py-2 text-right">Trị giá mua hàng</th>
+              </tr>
+            </thead>
+            <tbody>
+              {purchaseRows.map((row, index) => (
+                <tr key={row.id} className="border-b border-slate-100 align-top">
+                  <td className="py-1.5 pr-1">{index + 1}</td>
+                  <td className="py-1.5 pr-1 whitespace-nowrap">{row.item.code}</td>
+                  <td className="py-1.5 pr-1">{row.item.name}</td>
+                  <td className="py-1.5 pr-1">{row.printUnit}</td>
+                  <td className="py-1.5 pr-1 text-right tabular-nums">{qty(row.printQuantity)}</td>
+                  <td className="py-1.5 pr-1 text-right tabular-nums">{money(row.printUnitPrice)}</td>
+                  <td className="py-1.5 pr-1 text-right tabular-nums">{money(row.gross)}</td>
+                  <td className="py-1.5 pr-1 text-right tabular-nums">
+                    {row.discount > 0 ? money(row.discount) : "-"}
+                    {row.discountRate !== null && row.discountRate !== undefined && <small className="block text-slate-500">{Number((row.discountRate * 100).toFixed(2))}%</small>}
+                  </td>
+                  <td className="py-1.5 pr-1 text-right">{vatRateLabel(row.vatRate)}</td>
+                  <td className="py-1.5 pr-1 text-right tabular-nums">{row.vatAmount > 0 ? money(row.vatAmount) : "-"}</td>
+                  <td className="py-1.5 pr-1 text-right tabular-nums">{money(row.afterTax)}</td>
+                  <td className="py-1.5 pr-1 text-right tabular-nums">{row.share > 0 ? money(row.share) : "-"}</td>
+                  <td className="py-1.5 text-right tabular-nums font-bold">{money(row.purchaseValue)}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr className="border-t-2 border-slate-300 font-bold">
+                <td colSpan={6} className="py-2">Cộng</td>
+                <td className="py-2 pr-1 text-right tabular-nums">{money(purchaseTotal("gross"))}</td>
+                <td className="py-2 pr-1 text-right tabular-nums">{money(purchaseTotal("discount"))}</td>
+                <td />
+                <td className="py-2 pr-1 text-right tabular-nums">{money(purchaseTotal("vatAmount"))}</td>
+                <td className="py-2 pr-1 text-right tabular-nums">{money(purchaseTotal("afterTax"))}</td>
+                <td className="py-2 pr-1 text-right tabular-nums">{money(purchaseTotal("share"))}</td>
+                <td className="py-2 text-right tabular-nums">{money(purchaseTotal("purchaseValue"))}</td>
+              </tr>
+              <tr>
+                <td colSpan={10} className="py-2 font-bold">Tổng cộng thanh toán NCC <span className="font-normal text-slate-500">(sau thuế, đã trừ chiết khấu, gồm chi phí mua hàng)</span></td>
+                <td colSpan={3} className="py-2 text-right tabular-nums text-sm font-bold">{money(purchaseTotal("afterTax") + purchaseCost)} đ</td>
+              </tr>
+            </tfoot>
+          </table>
+        ) : (
         <table className="mt-6 w-full border-collapse text-sm">
           <thead>
             <tr className="border-y-2 border-slate-300 text-left text-xs uppercase text-slate-500">
@@ -198,6 +278,7 @@ export default function StockDocumentPrintPage() {
             )}
           </tfoot>
         </table>
+        )}
 
         {/* Ô ký để trống cho ký tay trên bản in. */}
         <div className="grid grid-cols-4 gap-6 text-center mt-16 text-sm">

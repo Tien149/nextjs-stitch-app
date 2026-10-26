@@ -20,6 +20,8 @@ import { postInventoryTransaction, nextStockDocCode } from "@/lib/inventory-stoc
 import { conversionRateForUnit, defaultPurchaseUnit, purchaseLineRate, purchaseLineUnit, purchaseUnitOptions, toPurchasePrice } from "@/lib/unit-conversion";
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { parseVatRate } from "@/lib/inventory-vat";
+import { purchaseLineFigures, resolveDiscount } from "@/lib/purchase-discount";
+import { purchaseLineAmount } from "@/lib/purchase-payable";
 import { buildPriceImport, type PriceImportItem } from "@/lib/supplier-price-list";
 import { findPriceDeviations, loadActivePrices, loadPriceLists, savePriceList } from "@/lib/supplier-price-list-db";
 import { buildTemplateImport, templateDayToDate, templateWindow, templateWindowStatus, type TemplateImportItem } from "@/lib/purchase-template";
@@ -1649,14 +1651,21 @@ export async function PATCH(request: Request) {
     // Nhóm tài sản người nhận hàng chọn cho từng dòng Tài sản/CCDC (chỉ khớp được theo lineId).
     const requestedAssetGroupByLineId = new Map<string, string>();
     const requestedPriceByLineId = new Map<string, number>();
+    /** Thuế suất GTGT + chiết khấu từng dòng khai lúc nhận (khách 26/10/2026) — như phiếu Nhập mua bên Kho. */
+    const requestedTermsByLineId = new Map<string, { vatRate: number | null; discountRate: string; discountAmount: string }>();
     if (hasLinePayload) {
-      for (const row of body.lines as Array<{ lineId?: unknown; id?: unknown; itemId?: unknown; quantity?: unknown; assetGroup?: unknown; unitCost?: unknown }>) {
+      for (const row of body.lines as Array<{ lineId?: unknown; id?: unknown; itemId?: unknown; quantity?: unknown; assetGroup?: unknown; unitCost?: unknown; vatRate?: unknown; discountRate?: unknown; discountAmount?: unknown }>) {
         const quantity = toNumber(row.quantity);
         if (!(quantity >= 0)) continue;
         const lineId = cleanText(row.lineId) || cleanText(row.id);
         // Đơn giá thực lúc nhận (theo ĐVT đặt) — PO duyệt khi chưa có giá thì nhập ở đây.
         if (lineId && toNumber(row.unitCost) > 0) requestedPriceByLineId.set(lineId, toNumber(row.unitCost));
         if (lineId && cleanText(row.assetGroup)) requestedAssetGroupByLineId.set(lineId, cleanText(row.assetGroup).toUpperCase());
+        if (lineId) {
+          const vat = parseVatRate(row.vatRate);
+          if (!vat.ok) businessError(`Thuế suất GTGT [${cleanText(row.vatRate)}] không hợp lệ`);
+          requestedTermsByLineId.set(lineId, { vatRate: vat.ok ? vat.rate : null, discountRate: cleanText(row.discountRate), discountAmount: cleanText(row.discountAmount) });
+        }
         if (lineId) requestedByLineId.set(lineId, quantity);
         else {
           const itemId = cleanText(row.itemId);
@@ -1728,6 +1737,13 @@ export async function PATCH(request: Request) {
       businessError("Chi phí mua hàng chỉ phân bổ được vào hàng nhập kho — lần nhận này chỉ có Tài sản/CCDC.");
     }
 
+    // Dòng kho do engine kho kiểm chiết khấu; dòng Tài sản/CCDC không qua đó nên kiểm ở đây.
+    for (const line of assetLines) {
+      const terms = requestedTermsByLineId.get(line.id);
+      const discount = resolveDiscount(Math.round(line.receiveQuantity * line.unitCost), terms?.discountRate, terms?.discountAmount);
+      if (!discount.ok) businessError(`${line.item.name}: ${discount.reason}`);
+    }
+
     const freeStockLine = stockLines.find((line) => line.unitCost <= 0);
     if (freeStockLine) {
       // Nhập mua giá 0 kéo giá vốn bình quân về sai — hàng tặng kèm thì sửa đơn giá PO
@@ -1758,15 +1774,25 @@ export async function PATCH(request: Request) {
             lines: stockLines.map((line) => {
               const rate = purchaseLineRate(line);
               const stillValid = rate !== 1 && conversionRateForUnit(line.item.unit, line.item.unitConversions, line.unitCode || "") === rate;
+              const terms = requestedTermsByLineId.get(line.id);
+              const extra = { vatRate: terms?.vatRate ?? null, discountRate: terms?.discountRate || "", discountAmount: terms?.discountAmount || "" };
               return stillValid
-                ? { itemId: line.itemId, inputQuantity: line.receiveQuantity / rate, inputUnitCode: line.unitCode, inputUnitCost: line.unitCost * rate }
-                : { itemId: line.itemId, inputQuantity: line.receiveQuantity, inputUnitCost: line.unitCost };
+                ? { itemId: line.itemId, inputQuantity: line.receiveQuantity / rate, inputUnitCode: line.unitCode, inputUnitCost: line.unitCost * rate, ...extra }
+                : { itemId: line.itemId, inputQuantity: line.receiveQuantity, inputUnitCost: line.unitCost, ...extra };
             }),
           })
         : null;
 
-      // Chi phí mua hàng đã làm tròn trên phiếu nhập — cùng số đã cộng vào giá nhập kho.
-      let receivedValue = stockTransaction?.purchaseCost || 0;
+      // Công nợ NCC lần nhận này = tiền hàng sau chiết khấu + thuế GTGT của từng dòng + chi phí mua
+      // hàng (khách 26/10/2026) — dòng kho lấy đúng số phiếu nhập vừa ghi, dòng tài sản tính cùng công thức.
+      let receivedValue = (stockTransaction?.purchaseCost || 0)
+        + (stockTransaction?.lines || []).reduce((sum, line) => sum + purchaseLineAmount(line) + (line.vatAmount || 0), 0);
+      const assetFigures = purchaseLineFigures(assetLines.map((line) => {
+        const terms = requestedTermsByLineId.get(line.id);
+        return { quantity: line.receiveQuantity, unitPrice: line.unitCost, vatRate: terms?.vatRate ?? null, discountRate: terms?.discountRate, discountAmount: terms?.discountAmount };
+      }), 0);
+      const assetValueByLineId = new Map(assetLines.map((line, index) => [line.id, assetFigures[index].afterTax]));
+      receivedValue += assetFigures.reduce((sum, row) => sum + row.afterTax, 0);
       for (const line of receiveLines) {
         await tx.purchaseOrderLine.update({
           where: { id: line.id },
@@ -1776,11 +1802,10 @@ export async function PATCH(request: Request) {
             ...(line.priceChanged ? { unitCost: line.unitCost, totalCost: line.orderedQuantity * line.unitCost } : {}),
           },
         });
-        // Công nợ phải trả tính trên MỌI dòng đã nhận — tài sản vẫn là tiền phải trả NCC.
-        receivedValue += line.receiveQuantity * line.unitCost;
       }
       for (const line of assetLines) {
-        const receivedLineValue = line.receiveQuantity * line.unitCost;
+        // Nguyên giá = tiền hàng sau chiết khấu + thuế (cùng luật giá vốn sau thuế của hàng nhập kho).
+        const receivedLineValue = assetValueByLineId.get(line.id) || 0;
         const assetGroup = assetGroupByLineId.get(line.id) as string;
         await tx.assetRecord.create({
           data: {

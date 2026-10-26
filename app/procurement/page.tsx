@@ -5,6 +5,7 @@ import ExportExcelButton from "@/components/ExportExcelButton";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { DateInput } from "@/components/DateInput";
 import { MoneyInput } from "@/components/MoneyInput";
+import { emptyReceiveTerms, poPriceHint, PurchaseReceiveLines, receiveFigures, receiveLineErrors, type ReceiveLineInfo, type ReceiveLineValue } from "@/components/PurchaseReceiveLines";
 import { QuantityInput } from "@/components/QuantityInput";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { PartnerPicker, type CreatedPartner } from "@/components/PartnerPicker";
@@ -199,6 +200,9 @@ export default function ProcurementPage() {
   /** Ngày nhận hàng + chi phí mua hàng (vận chuyển, bốc xếp...) khai lúc nhận PO (khách 26/10/2026). */
   const [receiveDate, setReceiveDate] = useState(vnToday());
   const [receivePurchaseCost, setReceivePurchaseCost] = useState("");
+  /** Chiết khấu + thuế suất từng dòng lúc nhận (khách 26/10/2026) và lỗi hiện NGAY TRONG hộp thoại. */
+  const [receiveTerms, setReceiveTerms] = useState<Record<string, typeof emptyReceiveTerms>>({});
+  const [receiveError, setReceiveError] = useState("");
   const [receiving, setReceiving] = useState(false);
   /** Đơn đang mở hộp thoại Gửi NCC. */
   const [sendingOrder, setSendingOrder] = useState<PurchaseOrder | null>(null);
@@ -826,7 +830,59 @@ export default function ProcurementPage() {
     setReceiveNote("");
     setReceiveDate(vnToday());
     setReceivePurchaseCost("");
+    setReceiveTerms({});
+    setReceiveError("");
     setReceivingOrder(order);
+  };
+
+  /** Dòng còn phải nhận của PO cho bảng nhận hàng dùng chung (components/PurchaseReceiveLines). */
+  const receiveLineInfos = (order: PurchaseOrder): ReceiveLineInfo[] => order.lines.flatMap((line) => {
+    const remaining = toPurchaseQuantity(line.orderedQuantity - line.receivedQuantity, line);
+    if (remaining <= 0) return [];
+    const unit = purchaseLineUnit(line);
+    const isAsset = ["TOOL", "ASSET"].includes(line.item.itemType);
+    const groupOptions = isAsset ? assetGroupOptionsFor(line.item.itemType) : [];
+    return [{
+      id: line.id,
+      name: line.item.name,
+      unit,
+      remaining,
+      hint: poPriceHint(line.unitCost > 0 ? toPurchasePrice(line.unitCost, line) : 0, unit, receivePriceSource[line.id]),
+      badge: isAsset ? <span className="status bg-indigo-50 text-indigo-700 ml-1">Tài sản/CCDC</span> : undefined,
+      // Nhóm tài sản quyết định tiền tố mã hồ sơ (CCDCBAR0001...) và mã đã cấp là không sửa được,
+      // nên phải chọn ngay tại đây thay vì để hệ thống đoán.
+      extra: isAsset ? (
+        <label className="mt-1 block text-[11px] font-bold text-slate-600">
+          Nhóm tài sản
+          <select
+            className="control !mt-1 !py-1.5 text-xs"
+            value={receiveAssetGroups[line.id] || ""}
+            onChange={(e) => setReceiveAssetGroups({ ...receiveAssetGroups, [line.id]: e.target.value })}
+            aria-label={`Nhóm tài sản của ${line.item.name}`}
+          >
+            <option value="">-- Chọn nhóm tài sản --</option>
+            {groupOptions.map((group) => <option key={group.code} value={group.code}>{group.code} - {group.name}</option>)}
+          </select>
+          {groupOptions.length === 0 && (
+            <span className="mt-1 block font-medium text-amber-700">
+              Chưa khai Nhóm tài sản nào thuộc phân loại {assetGroupTypeLabel(line.item.itemType)}. Thêm ở Cài đặt &gt; Danh mục &gt; Nhóm tài sản rồi nhận lại.
+            </span>
+          )}
+        </label>
+      ) : undefined,
+    }];
+  });
+  const receiveLineValues = (order: PurchaseOrder): Record<string, ReceiveLineValue> => Object.fromEntries(order.lines.map((line) => [line.id, {
+    quantity: receiveQuantities[line.id] ?? "",
+    price: receivePrices[line.id] ?? "",
+    ...(receiveTerms[line.id] || emptyReceiveTerms),
+  }]));
+  const patchReceiveLine = (lineId: string, patch: Partial<ReceiveLineValue>) => {
+    if (patch.quantity !== undefined) setReceiveQuantities((current) => ({ ...current, [lineId]: patch.quantity as string }));
+    if (patch.price !== undefined) setReceivePrices((current) => ({ ...current, [lineId]: patch.price as string }));
+    const { quantity: _quantity, price: _price, ...terms } = patch;
+    void _quantity; void _price;
+    if (Object.keys(terms).length > 0) setReceiveTerms((current) => ({ ...current, [lineId]: { ...(current[lineId] || emptyReceiveTerms), ...terms } }));
   };
 
   const submitReceive = async () => {
@@ -839,9 +895,18 @@ export default function ProcurementPage() {
       quantity: Number(receiveQuantities[line.id] ?? 0) || 0,
       unitCost: Number(receivePrices[line.id] || 0) || undefined,
       assetGroup: receiveAssetGroups[line.id] || "",
+      ...(receiveTerms[line.id] || emptyReceiveTerms),
     }));
+    // Lỗi hiện trong hộp thoại: trước đây setMessage ghi ra trang phía sau, bị hộp thoại che nên
+    // người dùng tưởng nút "Xác nhận nhận hàng" bấm không được (khách 26/10/2026).
+    setReceiveError("");
     if (lines.every((line) => line.quantity <= 0)) {
-      setMessage("Chưa nhập số lượng cần nhận.");
+      setReceiveError("Chưa nhập số lượng cần nhận.");
+      return;
+    }
+    const lineErrors = receiveLineErrors(receiveLineInfos(receivingOrder), receiveLineValues(receivingOrder));
+    if (lineErrors.length > 0) {
+      setReceiveError(lineErrors.join(" · "));
       return;
     }
     setReceiving(true);
@@ -854,7 +919,7 @@ export default function ProcurementPage() {
       });
       const payload = await response.json();
       if (!response.ok) {
-        setMessage(payload.error || "Không nhận được hàng từ PO");
+        setReceiveError(payload.error || "Không nhận được hàng từ PO");
         return;
       }
       const parts: string[] = [];
@@ -2076,7 +2141,7 @@ export default function ProcurementPage() {
 
       {receivingOrder && (
         <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-end sm:items-center justify-center sm:p-4">
-          <div className="bg-white rounded-t-2xl sm:rounded-xl w-full max-w-lg shadow-xl max-h-[92vh] flex flex-col">
+          <div className="bg-white rounded-t-2xl sm:rounded-xl w-full max-w-lg lg:max-w-[1200px] shadow-xl max-h-[92vh] flex flex-col">
             <div className="p-5 border-b border-slate-200 flex items-start justify-between gap-3">
               <div>
                 <h3 className="font-bold text-slate-900">Nhận hàng từ {receivingOrder.code}</h3>
@@ -2099,71 +2164,12 @@ export default function ProcurementPage() {
                 </label>
                 <p className="col-span-2 text-[11px] text-slate-500">Chi phí vận chuyển, bốc xếp... (nếu có) được phân bổ vào giá nhập theo tiền hàng từng dòng và cộng vào công nợ NCC của PO.</p>
               </div>
-              {receivingOrder.lines.map((line) => {
-                const remaining = toPurchaseQuantity(line.orderedQuantity - line.receivedQuantity, line);
-                const lineUnit = purchaseLineUnit(line);
-                if (remaining <= 0) return null;
-                const isAsset = ["TOOL", "ASSET"].includes(line.item.itemType);
-                const groupOptions = isAsset ? assetGroupOptionsFor(line.item.itemType) : [];
-                return (
-                  // Thẻ từng dòng: tên + ghi chú giá cả bề ngang, SL / đơn giá chia đôi bên dưới
-                  // (bản cũ xếp một hàng ngang, trên điện thoại cột tên bị ép còn vài chữ — khách 26/10/2026).
-                  <div key={line.id} className="space-y-2 rounded-xl border border-slate-200 p-3">
-                    <div className="min-w-0">
-                      <p className="font-bold text-sm leading-snug">{line.item.name} {isAsset && <span className="status bg-indigo-50 text-indigo-700 ml-1">Tài sản/CCDC</span>}</p>
-                      <p className="text-xs text-slate-500">Còn phải nhận: <b>{qty(remaining)} {lineUnit}</b> · {line.unitCost > 0 ? `giá PO ${unitPrice(toPurchasePrice(line.unitCost, line))} đ/${lineUnit}` : receivePriceSource[line.id] ? `PO chưa có giá · gợi ý theo ${receivePriceSource[line.id]}` : "PO chưa có giá, chưa có bảng giá — nhập giá thực"}</p>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <label className="block text-[11px] font-bold text-slate-500">SL nhận ({lineUnit})
-                        <QuantityInput
-                          className="control !mt-1 w-full text-right"
-                          value={receiveQuantities[line.id] ?? ""}
-                          onChange={(value) => setReceiveQuantities({ ...receiveQuantities, [line.id]: value })}
-                          ariaLabel={`Số lượng nhận ${line.item.name}`}
-                        />
-                      </label>
-                      {/* Giá thực mua (khách 21/10/2026: PO duyệt khi chưa có giá) — ghi vào phiếu nhập + công nợ. */}
-                      <label className="block text-[11px] font-bold text-slate-500">Đơn giá (đ/{lineUnit})
-                        <input
-                          type="number"
-                          min="0"
-                          step="any"
-                          inputMode="decimal"
-                          className={`control !mt-1 w-full text-right ${!(Number(receivePrices[line.id]) > 0) ? "border-amber-400 bg-amber-50" : ""}`}
-                          placeholder="Giá thực"
-                          value={receivePrices[line.id] ?? ""}
-                          onChange={(e) => setReceivePrices({ ...receivePrices, [line.id]: e.target.value })}
-                          aria-label={`Đơn giá nhận ${line.item.name}`}
-                        />
-                      </label>
-                    </div>
-                    {/* Nhóm tài sản quyết định tiền tố mã hồ sơ (CCDCBAR0001...) và mã đã cấp là
-                        không sửa được, nên phải chọn ngay tại đây thay vì để hệ thống đoán. */}
-                    {isAsset && (
-                      <label className="block pl-1 text-[11px] font-bold text-slate-600">
-                        Nhóm tài sản
-                        <select
-                          className="control !mt-1 !py-1.5 text-xs"
-                          value={receiveAssetGroups[line.id] || ""}
-                          onChange={(e) => setReceiveAssetGroups({ ...receiveAssetGroups, [line.id]: e.target.value })}
-                          aria-label={`Nhóm tài sản của ${line.item.name}`}
-                        >
-                          <option value="">-- Chọn nhóm tài sản --</option>
-                          {groupOptions.map((group) => (
-                            <option key={group.code} value={group.code}>{group.code} - {group.name}</option>
-                          ))}
-                        </select>
-                        {groupOptions.length === 0 && (
-                          <span className="mt-1 block font-medium text-amber-700">
-                            Chưa khai Nhóm tài sản nào thuộc phân loại {assetGroupTypeLabel(line.item.itemType)}.
-                            Thêm ở Cài đặt &gt; Danh mục &gt; Nhóm tài sản rồi nhận lại.
-                          </span>
-                        )}
-                      </label>
-                    )}
-                  </div>
-                );
-              })}
+              <PurchaseReceiveLines
+                lines={receiveLineInfos(receivingOrder)}
+                values={receiveLineValues(receivingOrder)}
+                onChange={patchReceiveLine}
+                purchaseCost={Number(receivePurchaseCost || 0) || 0}
+              />
               {receivingOrder.lines.some((line) => ["TOOL", "ASSET"].includes(line.item.itemType)) && (
                 <p className="text-xs rounded-lg bg-indigo-50 border border-indigo-100 text-indigo-800 px-3 py-2">
                   Dòng Tài sản/CCDC sẽ vào sổ <b>Tài sản &amp; Khấu hao</b> (không cộng tồn kho); các dòng còn lại sinh phiếu Nhập mua ở Kho &amp; Định lượng.
@@ -2175,13 +2181,13 @@ export default function ProcurementPage() {
             </div>
 
             <div className="p-4 sm:p-5 border-t border-slate-200 space-y-2">
+              {receiveError && <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">{receiveError}</p>}
               {(() => {
-                // Tiền hàng lần nhận này (SL × đơn giá theo ĐVT đặt) + chi phí mua hàng = công nợ NCC tăng thêm.
-                const goods = receivingOrder.lines.reduce((sum, line) => sum + (Number(receiveQuantities[line.id] ?? 0) || 0) * (Number(receivePrices[line.id] || 0) || 0), 0);
-                const cost = Number(receivePurchaseCost || 0) || 0;
+                // Công nợ NCC tăng thêm lần nhận này = Σ thành tiền sau thuế (đã trừ chiết khấu) + chi phí mua hàng.
+                const { total } = receiveFigures(receiveLineInfos(receivingOrder), receiveLineValues(receivingOrder), Number(receivePurchaseCost || 0) || 0);
                 return (
                   <p className="text-xs text-slate-600 text-right">
-                    Tiền hàng <b>{money(goods)} đ</b>{cost > 0 ? <> + chi phí <b>{money(cost)} đ</b></> : null} = công nợ NCC <b className="text-slate-900">{money(goods + cost)} đ</b>
+                    Sau thuế <b>{money(total.afterTax)} đ</b>{total.costShare > 0 ? <> + chi phí <b>{money(total.costShare)} đ</b></> : null} = công nợ NCC <b className="text-slate-900">{money(total.purchaseValue)} đ</b>
                   </p>
                 );
               })()}

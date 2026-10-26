@@ -104,12 +104,18 @@ async function syncAdvanceReceivableDebt(
     description: string;
   },
 ) {
+  // Lần cấn theo đối tác sẽ được cấn lại ngay sau (reallocatePartnerCollections) — gỡ ra trước để
+  // số tiền mới chỉ phải đủ cho phần cấn đích danh.
+  const { partner } = await partnerCollectionSettlements(tx, debt.id);
+  if (partner.length > 0) {
+    await tx.debtSettlement.deleteMany({ where: { id: { in: partner.map((row) => row.id) } } });
+  }
   const settled = await tx.debtSettlement.aggregate({ where: { debtId: debt.id }, _sum: { amount: true } });
   const settledAmount = Math.round(settled._sum.amount || 0);
   const amount = Math.round(next.amount);
   if (amount < settledAmount) {
     throw new VoucherSideEffectError(
-      `Khoản ${debt.code} đã được thu lại ${vnd(settledAmount)}, không hạ số tiền phiếu xuống ${vnd(amount)} được — dư nợ sẽ âm. Bỏ duyệt phiếu thu đã gạch khoản này trước, rồi sửa lại.`,
+      `Khoản ${debt.code} đã được gạch đích danh ${vnd(settledAmount)}, không hạ số tiền phiếu xuống ${vnd(amount)} được — dư nợ sẽ âm. Bỏ duyệt phiếu thu đã gạch theo mã khoản này trước, rồi sửa lại.`,
     );
   }
   const outstandingAmount = amount - settledAmount;
@@ -205,6 +211,117 @@ async function settleDebtLine(
     where: { id: debt.id },
     data: { outstandingAmount, status: outstandingAmount === 0 ? "SETTLED" : "PARTIAL" },
   });
+}
+
+/**
+ * Công nợ chi hộ theo SỐ DƯ đối tác (khách chốt 26/10/2026, áp cho mọi phiếu chi hộ): người dùng
+ * không chọn phiếu thu cấn vào khoản nào. Phiếu thu "Thu lại tiền chi hộ theo đối tác" của cùng
+ * cửa hàng + đối tác được cấn lần lượt — phiếu thu cũ nhất vào khoản phải thu cũ nhất — và cấn LẠI
+ * từ đầu mỗi khi một phiếu chi hộ / phiếu thu của đối tác đó được duyệt, sửa, bỏ duyệt hay xoá.
+ * Trước đây khoản đã được cấn một phần thì chặn sửa (UNC-2608-ASA-00133). Bút toán và sổ công nợ
+ * đối tác lấy theo phiếu nên cấn lại không đổi số dư; chỉ đổi "khoản nào còn nợ bao nhiêu".
+ */
+export type PartnerCollectionCredit = { id: string; code: string; voucherDate: Date; amount: number };
+export type PartnerCollectionDebt = { id: string; code: string; documentDate: Date; outstandingAmount: number };
+
+const byDateThenCode = <T extends { code: string }>(date: (row: T) => Date) => (a: T, b: T) =>
+  date(a).getTime() - date(b).getTime() || a.code.localeCompare(b.code);
+
+/** Phiếu thu cũ nhất cấn vào khoản phải thu cũ nhất; phần dư của phiếu thu (thu dư) không cấn gì. */
+export function planPartnerCollection(credits: PartnerCollectionCredit[], debts: PartnerCollectionDebt[]) {
+  const open = [...debts].sort(byDateThenCode((row) => row.documentDate)).map((debt) => ({ ...debt, left: Math.round(debt.outstandingAmount) }));
+  const plan: Array<{ voucherId: string; debtId: string; amount: number }> = [];
+  for (const credit of [...credits].sort(byDateThenCode((row) => row.voucherDate))) {
+    let remaining = Math.round(credit.amount);
+    for (const debt of open) {
+      if (remaining <= 0) break;
+      if (debt.left <= 0) continue;
+      const amount = Math.min(remaining, debt.left);
+      plan.push({ voucherId: credit.id, debtId: debt.id, amount });
+      debt.left -= amount;
+      remaining -= amount;
+    }
+  }
+  return plan;
+}
+
+function debtStatus(outstandingAmount: number, originalAmount: number) {
+  if (outstandingAmount <= 0) return "SETTLED";
+  return outstandingAmount < originalAmount ? "PARTIAL" : "OPEN";
+}
+
+/** Cộng/trừ dư nợ theo từng khoản rồi ghi lại trạng thái — dùng khi gỡ và khi cấn lại. */
+async function shiftOutstanding(tx: RawTxClient, deltas: Map<string, number>) {
+  for (const [debtId, delta] of deltas) {
+    if (!delta) continue;
+    const debt = await tx.debtRecord.findUnique({ where: { id: debtId }, select: { outstandingAmount: true, originalAmount: true } });
+    if (!debt) continue;
+    const outstandingAmount = Math.round(debt.outstandingAmount + delta);
+    await tx.debtRecord.update({ where: { id: debtId }, data: { outstandingAmount, status: debtStatus(outstandingAmount, debt.originalAmount) } });
+  }
+}
+
+/**
+ * Lần cấn của khoản nợ do phiếu thu theo đối tác tạo ra — loại được cấn lại tự do. Lần cấn đích
+ * danh (gạch theo mã, phiếu đại diện, chuyển công nợ, trả hàng NCC) thì giữ nguyên như người dùng chọn.
+ */
+export async function partnerCollectionSettlements(tx: RawTxClient, debtId: string) {
+  const rows = await tx.debtSettlement.findMany({
+    where: { debtId },
+    select: { id: true, amount: true, voucher: { select: { code: true, debtAction: true } }, transferId: true, stockTransactionId: true },
+  });
+  const isPartner = (row: (typeof rows)[number]) => row.voucher?.debtAction === PARTNER_COLLECTION_ACTION;
+  return { partner: rows.filter(isPartner), fixed: rows.filter((row) => !isPartner(row)) };
+}
+
+type PartnerCollectionVoucher = { id: string; code: string; voucherType: string; voucherDate: Date; amount: number; branchCode: string; partnerCode: string | null; debtAction: string | null };
+
+/**
+ * Cấn lại toàn bộ phiếu thu theo đối tác của một (cửa hàng, đối tác). `include`: phiếu đang được
+ * duyệt nhưng chưa lưu trạng thái APPROVED; `excludeVoucherId`: phiếu đang bỏ duyệt / xoá.
+ */
+export async function reallocatePartnerCollections(
+  tx: RawTxClient,
+  scope: { branchCode: string; partnerCode: string | null | undefined },
+  actor: string,
+  options: { include?: PartnerCollectionVoucher | null; excludeVoucherId?: string | null } = {},
+) {
+  const partnerCode = (scope.partnerCode || "").trim();
+  if (!partnerCode || !scope.branchCode) return;
+  const credits: PartnerCollectionCredit[] = (await tx.financialVoucher.findMany({
+    where: { deletedAt: null, status: "APPROVED", voucherType: "RECEIPT", debtAction: PARTNER_COLLECTION_ACTION, branchCode: scope.branchCode, partnerCode },
+    select: { id: true, code: true, voucherDate: true, amount: true },
+  })).filter((row) => row.id !== options.excludeVoucherId);
+  const include = options.include;
+  if (
+    include && include.id !== options.excludeVoucherId && include.voucherType === "RECEIPT" && include.debtAction === PARTNER_COLLECTION_ACTION
+    && include.branchCode === scope.branchCode && include.partnerCode === partnerCode && !credits.some((row) => row.id === include.id)
+  ) {
+    credits.push({ id: include.id, code: include.code, voucherDate: include.voucherDate, amount: include.amount });
+  }
+
+  // Gỡ hết lần cấn cũ của các phiếu này (kể cả phiếu đang loại ra) rồi cấn lại từ đầu.
+  const resetIds = [...credits.map((row) => row.id), ...(options.excludeVoucherId ? [options.excludeVoucherId] : [])];
+  const previous = resetIds.length === 0 ? [] : await tx.debtSettlement.findMany({ where: { voucherId: { in: resetIds } }, select: { id: true, debtId: true, amount: true } });
+  if (previous.length > 0) {
+    await tx.debtSettlement.deleteMany({ where: { id: { in: previous.map((row) => row.id) } } });
+    const restored = new Map<string, number>();
+    for (const row of previous) restored.set(row.debtId, (restored.get(row.debtId) || 0) + row.amount);
+    await shiftOutstanding(tx, restored);
+  }
+
+  const debts = (await tx.debtRecord.findMany({
+    where: { partnerCode, branchCode: scope.branchCode, debtType: "RECEIVABLE", outstandingAmount: { gt: 0 }, deletedAt: null },
+    select: { id: true, code: true, documentDate: true, outstandingAmount: true, sourceType: true },
+  })).filter((debt) => !isAdvanceSettlementDebt(debt.sourceType));
+  const plan = planPartnerCollection(credits, debts);
+  const dateOf = new Map(credits.map((row) => [row.id, row.voucherDate]));
+  const applied = new Map<string, number>();
+  for (const row of plan) {
+    await tx.debtSettlement.create({ data: { debtId: row.debtId, voucherId: row.voucherId, settlementDate: dateOf.get(row.voucherId) as Date, amount: row.amount, createdBy: actor } });
+    applied.set(row.debtId, (applied.get(row.debtId) || 0) - row.amount);
+  }
+  await shiftOutstanding(tx, applied);
 }
 
 type VoucherForSideEffects = {
@@ -327,32 +444,13 @@ export async function applyVoucherSideEffects(
     }
   }
 
-  // Thu lại tiền chi hộ theo đối tác: không cần mã khoản nợ, hệ thống tự gạch các khoản phải
-  // thu đang mở của đối tác tại cửa hàng lập phiếu, cũ trước mới sau, tới khi hết tiền trên
-  // phiếu. Phần dôi ra (không còn khoản nào để gạch) không gạch gì — bút toán vẫn ghi Có 131 của
-  // đối tác nên sổ công nợ tự thấy họ đang trả dư. Idempotent theo voucherId như gạch nợ theo mã.
+  // Thu lại tiền chi hộ theo đối tác: không cần mã khoản nợ, hệ thống cấn các khoản phải thu của
+  // đối tác tại cửa hàng lập phiếu, cũ trước mới sau. Cấn lại cả các phiếu thu khác của đối tác
+  // để thứ tự luôn theo ngày chứng từ (xem reallocatePartnerCollections). Phần dôi ra không gạch
+  // gì — bút toán vẫn ghi Có 131 của đối tác nên sổ công nợ tự thấy họ đang trả dư.
   if (voucher.debtAction === PARTNER_COLLECTION_ACTION) {
     if (!voucher.partnerCode) throw new VoucherSideEffectError("Thu lại tiền chi hộ phải chọn đối tác — hệ thống gạch các khoản phải thu đang mở của đúng người đó.");
-    const previousSettlement = await tx.debtSettlement.findFirst({ where: { voucherId: voucher.id } });
-    if (!previousSettlement) {
-      const openReceivables = await tx.debtRecord.findMany({
-        where: {
-          partnerCode: voucher.partnerCode,
-          branchCode: voucher.branchCode,
-          debtType: "RECEIVABLE",
-          outstandingAmount: { gt: 0 },
-          deletedAt: null,
-        },
-        orderBy: { documentDate: "asc" },
-      });
-      let remaining = Math.round(voucher.amount);
-      for (const debt of openReceivables) {
-        if (remaining <= 0) break;
-        const amount = Math.min(remaining, Math.round(debt.outstandingAmount));
-        await settleDebtLine(tx, voucher, { debtReference: debt.code, partnerCode: voucher.partnerCode, amount }, actor);
-        remaining -= amount;
-      }
-    }
+    await reallocatePartnerCollections(tx, { branchCode: voucher.branchCode, partnerCode: voucher.partnerCode }, actor, { include: voucher });
   }
 
   if (voucher.debtAction === "SETTLE") {
@@ -414,6 +512,9 @@ export async function applyVoucherSideEffects(
         },
       });
     }
+
+    // Phiếu thu theo đối tác đã có (kể cả phần thu dư chưa có khoản nào để cấn) cấn lại vào đây.
+    await reallocatePartnerCollections(tx, { branchCode: voucher.branchCode, partnerCode: voucher.receivablePartnerCode }, actor);
 
     // Vế còn lại nằm ở sổ nhà hàng được chi hộ: nó thôi nợ NCC (tiền đã trả rồi) và quay
     // sang nợ nhà hàng đã ứng tiền. Thiếu khoản này thì công nợ NCC bên đó treo mãi, còn

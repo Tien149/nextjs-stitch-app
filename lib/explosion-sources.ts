@@ -6,7 +6,8 @@
  *     chưa từng được chế biến): kho xuất chế biến phần thiếu, cùng luật với điều chuyển;
  *   - KIỂM KÊ đếm DƯ BTP (thực tế > sổ sách): phần dư là hàng đã chế biến mà chưa rã, nên rã ra
  *     nguyên liệu (trừ NVL, nhập BTP có giá vốn) thay vì phiếu nhập kiểm kê không có nguồn gốc.
- *     Kiểm THIẾU vẫn xuất kiểm kê như cũ.
+ *     Kiểm THIẾU vẫn xuất kiểm kê như cũ. Áp cho cả phiếu kiểm cả kho lẫn ĐỢT DUYỆT GỘP theo vị trí
+ *     (StocktakeBatch, từ 26/10/2026) — mã đợt đi chung danh sách `stocktakeIds` với mã phiếu.
  * Cả hai không sinh phiếu ngay mà vào hàng chờ (`explosionStatus` = PENDING), bấm Rã ở tab Chế
  * biến mới sinh phiếu cùng lần rã doanh thu — hoàn tác / rã lại đi theo cả cụm RA-... như doanh thu.
  */
@@ -80,25 +81,29 @@ export async function refreshTransferExplosionStatus(tx: TxClient, transactionId
  */
 export async function releaseExplosionSources(tx: TxClient, runCode: string) {
   const status = explosionPostedStatus(runCode);
-  const [transfers, stocktakes] = await Promise.all([
+  const [transfers, stocktakes, batches] = await Promise.all([
     tx.inventoryTransaction.findMany({ where: { explosionStatus: status, deletedAt: null }, select: { id: true } }),
     tx.stocktakeSession.findMany({ where: { explosionStatus: status, deletedAt: null }, select: { id: true } }),
+    tx.stocktakeBatch.findMany({ where: { explosionStatus: status }, select: { id: true } }),
   ]);
   const transferIds = transfers.map((row) => row.id);
-  const stocktakeIds = stocktakes.map((row) => row.id);
+  const stocktakeIds = [...stocktakes.map((row) => row.id), ...batches.map((row) => row.id)];
   if (transferIds.length > 0) {
     await tx.inventoryTransaction.updateMany({ where: { id: { in: transferIds } }, data: { explosionStatus: EXPLOSION_PENDING } });
   }
-  if (stocktakeIds.length > 0) {
-    await tx.stocktakeSession.updateMany({ where: { id: { in: stocktakeIds } }, data: { explosionStatus: EXPLOSION_PENDING } });
+  if (stocktakes.length > 0) {
+    await tx.stocktakeSession.updateMany({ where: { id: { in: stocktakes.map((row) => row.id) } }, data: { explosionStatus: EXPLOSION_PENDING } });
+  }
+  if (batches.length > 0) {
+    await tx.stocktakeBatch.updateMany({ where: { id: { in: batches.map((row) => row.id) } }, data: { explosionStatus: EXPLOSION_PENDING } });
   }
   return { transferIds, stocktakeIds };
 }
 
 /** Một phiếu điều chuyển / huỷ / kiểm kê đang chờ rã, quy về nhu cầu chế biến ở một kho. */
 export type ExplosionSource = {
-  /** TRANSFER = điều chuyển; ISSUE = huỷ / xuất test món / xuất khác; STOCKTAKE = kiểm dư. */
-  kind: "TRANSFER" | "ISSUE" | "STOCKTAKE";
+  /** TRANSFER = điều chuyển; ISSUE = huỷ / xuất test món / xuất khác; STOCKTAKE = kiểm dư (phiếu cả kho); STOCKTAKE_BATCH = kiểm dư của đợt duyệt gộp theo vị trí. */
+  kind: "TRANSFER" | "ISSUE" | "STOCKTAKE" | "STOCKTAKE_BATCH";
   id: string;
   code: string;
   date: Date;
@@ -139,6 +144,18 @@ export async function loadPendingExplosionSources(
     orderBy: [{ stocktakeDate: "asc" }, { code: "asc" }],
   });
 
+  // Đợt duyệt gộp theo vị trí có kiểm dư BTP (khách 26/10/2026) — ngày rã = giờ chốt của đợt.
+  const batches = await tx.stocktakeBatch.findMany({
+    where: {
+      branchCode: input.branchCode,
+      status: "APPROVED",
+      explosionStatus: EXPLOSION_PENDING,
+      ...(input.ids ? { id: { in: input.ids.stocktakeIds } } : { cutoffAt: { gte: input.dateFrom, lte: input.rangeEnd } }),
+    },
+    include: { lines: { include: { item: { select: { code: true, itemType: true } } } } },
+    orderBy: [{ cutoffAt: "asc" }, { code: "asc" }],
+  });
+
   const sources: ExplosionSource[] = [];
   for (const transfer of transfers) {
     sources.push({
@@ -168,6 +185,24 @@ export async function loadPendingExplosionSources(
       warehouseCode: stocktake.warehouseCode,
       demands: stocktake.lines
         .filter((line) => line.varianceQuantity > 0 && !booked.has(line.itemId))
+        .map((line) => ({ productCode: line.item.code, quantity: line.varianceQuantity })),
+    });
+  }
+  for (const batch of batches) {
+    // Như phiếu cả kho: phần dư đã hoãn = dòng dư BTP có định lượng KHÔNG có trên phiếu nhập kiểm kê (-N) của đợt.
+    const inbound = await tx.inventoryTransactionLine.findMany({
+      where: { transaction: { referenceType: "STOCKTAKE", referenceId: batch.id, transactionType: "NHAP_KIEM_KE", deletedAt: null } },
+      select: { itemId: true },
+    });
+    const booked = new Set(inbound.map((line) => line.itemId));
+    sources.push({
+      kind: "STOCKTAKE_BATCH",
+      id: batch.id,
+      code: batch.code,
+      date: batch.cutoffAt,
+      warehouseCode: batch.warehouseCode,
+      demands: batch.lines
+        .filter((line) => line.varianceQuantity > 0 && !booked.has(line.itemId) && isExplodable(line.item))
         .map((line) => ({ productCode: line.item.code, quantity: line.varianceQuantity })),
     });
   }

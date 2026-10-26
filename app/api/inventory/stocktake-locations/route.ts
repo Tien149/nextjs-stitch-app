@@ -111,7 +111,7 @@ export async function POST(request: Request) {
       const itemIds = stocktakeIdsFrom(body.itemIds);
       const items = await prisma.inventoryItem.findMany({ where: { id: { in: itemIds } }, select: { id: true, code: true, itemType: true } });
       const wrong = items.find((item) => !isLocationStocktakeItemType(item.itemType));
-      if (wrong) businessError(`${wrong.code} không thuộc nhóm nguyên liệu / bao bì nên không đưa vào form mẫu kiểm kê.`);
+      if (wrong) businessError(`${wrong.code} không thuộc nhóm nguyên liệu / bao bì / hàng hóa / bán thành phẩm nên không đưa vào form mẫu kiểm kê.`);
       const known = new Set(items.map((item) => item.id));
       const duplicate = await prisma.stocktakeLocation.findFirst({ where: { warehouseCode, code, ...(id ? { id: { not: id } } : {}) } });
       if (duplicate) businessError(`Kho ${warehouseCode} đã có vị trí mã ${code}.`);
@@ -165,7 +165,7 @@ export async function POST(request: Request) {
         if (!itemCode) continue;
         const item = itemByCode.get(itemCode);
         if (!item) { errors.push({ row: rowNumber, message: `Mã hàng ${itemCode} không có trong danh mục` }); continue; }
-        if (!isLocationStocktakeItemType(item.itemType)) { errors.push({ row: rowNumber, message: `${itemCode} không thuộc nhóm nguyên liệu / bao bì nên không đưa vào form kiểm kê` }); continue; }
+        if (!isLocationStocktakeItemType(item.itemType)) { errors.push({ row: rowNumber, message: `${itemCode} không thuộc nhóm nguyên liệu / bao bì / hàng hóa / bán thành phẩm nên không đưa vào form kiểm kê` }); continue; }
         if (group.itemIds.includes(item.id)) { errors.push({ row: rowNumber, message: `${itemCode} lặp trong vị trí ${locationCode}` }); continue; }
         group.itemIds.push(item.id);
       }
@@ -228,7 +228,7 @@ export async function POST(request: Request) {
         const itemId = cleanText(line.itemId);
         const item = itemById.get(itemId);
         if (!item) continue;
-        if (!isLocationStocktakeItemType(item.itemType)) businessError(`${item.code} không thuộc nhóm nguyên liệu / bao bì — kiểm ở form kiểm kê cả kho.`);
+        if (!isLocationStocktakeItemType(item.itemType)) businessError(`${item.code} không thuộc nhóm đếm theo vị trí — kiểm ở form kiểm kê cả kho.`);
         const resolved = resolveUnitInputs(item.unit, item.unitConversions, Array.isArray(line.inputs) ? line.inputs : []);
         if (resolved.error) businessError(`${item.code}: ${resolved.error}`);
         if (resolved.inputs.length === 0) continue; // ô để trống = chưa đếm, không ghi dòng

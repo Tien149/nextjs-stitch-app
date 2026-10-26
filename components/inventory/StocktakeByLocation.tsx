@@ -44,6 +44,8 @@ type Batch = {
 type PreviewRow = {
   itemId: string; itemCode: string; itemName: string; unit: string; breakdown: Record<string, number>; countedQuantity: number; bookQuantity: number;
   varianceQuantity: number; unitCost: number; varianceValue: number; notCounted: boolean; needsUnitCost: boolean;
+  /** Kiểm dư bán thành phẩm có định lượng — chờ rã BOM, không nhập kiểm kê (26/10/2026). */
+  deferToExplosion?: boolean;
 };
 type Preview = {
   warehouseCode: string; cutoffAt: string; sheets: Array<{ id: string; code: string; locationCode: string; createdBy: string | null; lineCount: number }>;
@@ -635,7 +637,9 @@ export default function StocktakeByLocation(props: {
                 goodsGroupOf={(itemId) => normalizeGoodsGroup(itemById.get(itemId)?.goodsGroup)}
                 locations={preview.locations}
                 rows={preview.rows.filter((row) => !onlyVariance || Math.abs(row.varianceQuantity) > EPSILON)}
-                unitCostCell={(row) => row.varianceQuantity > 0 ? (
+                unitCostCell={(row) => row.deferToExplosion ? (
+                  <span className="text-amber-700 text-xs font-semibold" title="Bán thành phẩm có định lượng: phần dư không nhập kiểm kê, bấm Rã ở tab Chế biến để trừ nguyên liệu và nhập BTP theo giá vốn">Chờ rã BOM</span>
+                ) : row.varianceQuantity > 0 ? (
                   <input type="number" min="0" className={`control text-right w-24 inline-block ${row.needsUnitCost ? "border-rose-400" : ""}`}
                     placeholder={row.needsUnitCost ? "0 đ" : unitPrice(row.unitCost)}
                     title={row.needsUnitCost ? "Chưa có giá ở kho nào — để trống thì ghi 0 đ, theo giá bình quân khi Tính giá vốn tháng" : undefined}
@@ -889,7 +893,7 @@ function ConsolidatedTable({ locations, rows: allRows, unitCostCell, goodsGroupO
             return (
               <tr key={row.itemId} className={`border-t border-slate-100 ${row.notCounted ? "bg-rose-50/50" : ""}`}>
                 <td className="cell whitespace-nowrap"><b>{row.itemCode}</b></td>
-                <td className="cell">{row.itemName}{row.notCounted && <small className="block text-rose-700">Không vị trí nào đếm — tính 0</small>}</td>
+                <td className="cell">{row.itemName}{row.notCounted && <small className="block text-rose-700">Không vị trí nào đếm — tính 0</small>}{row.deferToExplosion && <small className="block text-amber-700">BTP thừa — chờ rã BOM ở tab Chế biến</small>}</td>
                 <td className="cell">{goodsGroupOf(row.itemId) || ""}</td>
                 <td className="cell">{row.unit}</td>
                 {locations.map((location) => <td key={location.code} className="cell text-right tabular-nums">{row.breakdown[location.code] !== undefined ? qty(row.breakdown[location.code]) : ""}</td>)}

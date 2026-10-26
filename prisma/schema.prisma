@@ -706,6 +706,9 @@ model InventoryItem {
   /// Nhóm hàng hóa (Thịt, Hải sản, Rau củ, Bia...) — ghi tự do, dùng để lọc khi giải trình kiểm
   /// kê (khách yêu cầu 03/10/2026). Khác `category` (Phân nhóm gắn kho / bộ phận).
   goodsGroup    String?
+  /// Mã hàng thuế (khách 26/10/2026) — mã dùng khi kê khai / đối chiếu hoá đơn thuế. Ghi tự do,
+  /// CHO PHÉP TRÙNG giữa các mặt hàng (nhiều mã nội bộ chung một mã hàng thuế), nên không unique.
+  taxItemCode   String?
   /// Hạng mục P&L khi bao bì / đồng phục xuất dùng (khách 20/10/2026: Than xà cừ, Than sạch -> CPBD_THAN).
   /// Trống = hạng mục mặc định của loại (CPBD_VTTH / CPBD_DONGPHUC). Nguyên liệu, BTP... vẫn vào giá vốn.
   expensePnlItemCode String?
@@ -930,6 +933,9 @@ model StocktakeBatch {
   note          String?
   shortageValue Float     @default(0)
   surplusValue  Float     @default(0)
+  /// Kiểm DƯ bán thành phẩm có định lượng chờ rã BOM (khách 26/10/2026, như phiếu kiểm cả kho):
+  /// PENDING = chờ bấm Rã ở tab Chế biến, POSTED:<RA-...> = đã rã. Xem lib/explosion-sources.ts.
+  explosionStatus String?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -1118,6 +1124,10 @@ model InventoryTransactionLine {
   /// Phần chi phí mua hàng của phiếu phân bổ vào dòng này — đã nằm trong `totalCost` / `unitCost`
   /// (giá nhập kho); `inputUnitCost` vẫn là đơn giá NCC trên hoá đơn.
   purchaseCostShare Float @default(0)
+  /// Chiết khấu của dòng (khách 26/10/2026): % người dùng khai (null = khai thẳng số tiền) và số tiền
+  /// chiết khấu đã làm tròn, TRỪ trước khi tính thuế. Tiền hàng sau chiết khấu = SL × đơn giá − discountAmount.
+  discountRate   Float?
+  discountAmount Float   @default(0)
 
   transaction InventoryTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
   item        InventoryItem        @relation(fields: [itemId], references: [id])
