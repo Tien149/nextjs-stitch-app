@@ -54,6 +54,7 @@ export const PurchaseOrderSheet = forwardRef<HTMLDivElement, { order: SharedPurc
                   <span className="text-slate-500"> · {money(line.unitCost)} đ/{line.unit} = <b className="text-slate-700">{money(line.totalCost)} đ</b></span>
                 )}
               </p>
+              {line.note && <p className="text-slate-700 mt-0.5">Ghi chú: <i>{line.note}</i></p>}
             </li>
           ))}
         </ol>

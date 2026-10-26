@@ -21,7 +21,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
       where: { shareToken: token },
       include: {
         lines: { include: { item: { select: { code: true, name: true, unit: true, unitConversions: { where: { deletedAt: null }, select: { unitCode: true, unitName: true } } } } } },
-        request: { select: { code: true, neededDate: true } },
+        request: { select: { code: true, neededDate: true, lines: { select: { itemId: true, note: true } } } },
       },
     });
     if (!order) {
@@ -39,6 +39,16 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
       order.createdBy ? prisma.user.findMany({ where: { name: order.createdBy }, select: { email: true, phone: true }, take: 2 }) : [],
     ]);
     const creator = creators.length === 1 ? creators[0] : null;
+    // Ghi chú người đặt gõ trên từng dòng PR (khách 26/10/2026) — dòng PO chưa có cột ghi chú nên
+    // lấy từ PR gốc theo mặt hàng; một mặt hàng nhiều dòng PR thì gộp các ghi chú khác nhau.
+    const notesByItem = new Map<string, string[]>();
+    for (const requestLine of order.request?.lines || []) {
+      const note = requestLine.note?.trim();
+      if (!note) continue;
+      const notes = notesByItem.get(requestLine.itemId) || [];
+      if (!notes.includes(note)) notes.push(note);
+      notesByItem.set(requestLine.itemId, notes);
+    }
 
     // QR trên phiếu trỏ về chính link công khai này để NCC/nhân viên quét mở lại phiếu.
     // Không lấy origin của request: người đặt mở bằng "localhost" thì QR cũng ra localhost,
@@ -73,6 +83,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
         quantity: toPurchaseQuantity(line.orderedQuantity, line),
         unitCost: toPurchasePrice(line.unitCost, line),
         totalCost: line.totalCost,
+        note: notesByItem.get(line.itemId)?.join("; ") || null,
       })),
       publicUrl,
       qrDataUrl,

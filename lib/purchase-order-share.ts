@@ -7,7 +7,7 @@ import { money, quantity } from "@/lib/format-number";
  * khách: Thông tin đặt hàng (Mã đơn, Nơi nhận, Muốn nhận lúc, Người đặt, Lưu ý)
  * rồi Danh sách hàng hóa ("1. Tên hàng-MÃ" / "Số lượng: 4 Kg").
  */
-export type SharedOrderLine = { itemCode: string; itemName: string; unit: string; quantity: number; unitCost: number; totalCost: number };
+export type SharedOrderLine = { itemCode: string; itemName: string; unit: string; quantity: number; unitCost: number; totalCost: number; note?: string | null };
 export type SharedPurchaseOrder = {
   code: string;
   status: string;
@@ -73,6 +73,7 @@ export function purchaseOrderMessage(order: SharedPurchaseOrder, options: { show
     let qtyLine = `Số lượng: ${orderLineQuantity(line)}`;
     if (options.showPrices && line.unitCost > 0) qtyLine += ` × ${money(line.unitCost)} đ = ${money(line.totalCost)} đ`;
     lines.push(qtyLine);
+    if (line.note) lines.push(`Ghi chú: ${line.note}`);
   });
   if (options.showPrices && order.totalAmount > 0) lines.push("", `Tổng giá trị: ${money(order.totalAmount)} đ`);
   // Không kèm dòng "Xem phiếu: <link>" (khách 21/10/2026) — tin nhắn dừng ở danh sách hàng.
