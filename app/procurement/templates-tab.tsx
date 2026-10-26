@@ -8,6 +8,7 @@ import { SearchableSelect } from "@/components/SearchableSelect";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { defaultPurchaseUnit, purchaseUnitOptions } from "@/lib/unit-conversion";
 import { quantity as formatQuantity } from "@/lib/format-number";
+import { vnTomorrow } from "@/lib/date-range";
 import type { DemoSession } from "@/lib/auth-demo";
 import { TEMPLATE_IMPORT_HEADERS, templateWindow, templateWindowStatus, type TemplateWindowStatus } from "@/lib/purchase-template";
 
@@ -21,7 +22,6 @@ export type DepartmentOption = { id: string; code: string; name: string; branch:
 export type WarehouseOption = { code: string; name: string; branch: string | null };
 export type SupplierOption = { value: string; label: string; subLabel?: string };
 
-const today = () => new Date().toISOString().slice(0, 10);
 /** Đọc file Excel (hoặc CSV UTF-8 — đọc dạng chữ, không thì tiếng Việt vỡ dấu). */
 async function readWorkbook(file: File, cellDates = false) {
   const XLSX = await import("xlsx");
@@ -171,7 +171,7 @@ export function TemplatesTab({
   const [filling, setFilling] = useState<PurchaseTemplate | null>(null);
   const [fillBranch, setFillBranch] = useState("");
   const [fillDepartment, setFillDepartment] = useState("");
-  const [fillNeededDate, setFillNeededDate] = useState(today());
+  const [fillNeededDate, setFillNeededDate] = useState(vnTomorrow());
   const [fillNotes, setFillNotes] = useState<Record<string, string>>({});
   /** NCC của PR: mặc định NCC của mẫu, mẫu chưa có thì người đặt chọn (thu mua vẫn đổi lúc duyệt). */
   const [fillSupplier, setFillSupplier] = useState("");
@@ -287,7 +287,7 @@ export function TemplatesTab({
     setFilling(template);
     setFillBranch(branchCode);
     setFillDepartment(template.departmentCode || departmentsForBranch(branchCode)[0]?.code || "");
-    setFillNeededDate(today());
+    setFillNeededDate(vnTomorrow());
     setFillNotes({});
     setFillSupplier(template.supplierCode || "");
     setFillQuantities({});

@@ -12,6 +12,11 @@ export function vnToday(now: Date = new Date()): string {
   return new Date(now.getTime() + 7 * 3_600_000).toISOString().slice(0, 10);
 }
 
+/** Ngày mai theo giờ Việt Nam — ngày cần hàng mặc định của PR (D+1, khách 26/10/2026). */
+export function vnTomorrow(now: Date = new Date()): string {
+  return new Date(Date.parse(`${vnToday(now)}T00:00:00Z`) + DAY_MS).toISOString().slice(0, 10);
+}
+
 export function dateRangePreset(id: DateRangePresetId, now: Date = new Date()): DateRange {
   const today = vnToday(now);
   const [year, month] = today.split("-").map(Number);

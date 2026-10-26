@@ -94,7 +94,7 @@ type Stocktake = {
 };
 /** unitCode / conversionRate = ĐVT đặt của PO; số nhận gõ theo ĐVT này (máy chủ quy về ĐVT tồn). */
 type ReceivablePOLine = { id: string; itemId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; unitCode?: string | null; conversionRate?: number | null; item: { code: string; name: string; unit: string } };
-type ReceivablePO = { id: string; code: string; supplierName: string; branchCode: string; warehouseCode: string; status: string; lines: ReceivablePOLine[] };
+type ReceivablePO = { id: string; code: string; supplierCode: string; supplierName: string; branchCode: string; warehouseCode: string; status: string; lines: ReceivablePOLine[] };
 type StocktakeDraftRow = { itemId: string; itemCode: string; itemName: string; unit: string; systemQuantity: number; averageCost: number; actualQuantity: string; unitCost: string; reason: string };
 /**
  * Bộ đếm lượt tải (lượt cũ về muộn thì bỏ) và khoảng ngày nhật ký nhập/xuất đang nằm trong
@@ -2535,16 +2535,38 @@ export default function InventoryPage() {
                   : "Xuất bán sinh từ import doanh thu + nút Rã nguyên liệu; xuất hủy ghi ở tab Hủy hàng; xuất điều chuyển ghi ở tab Điều chuyển."}
               </p>
 
-              {active === "inbound" && stockForm.transactionType === "NHAP_MUA" && (
-                <Input label="Đơn mua hàng (PO)">
-                  <select className="control" value={grpoOrderId} onChange={(e) => selectGrpoOrder(e.target.value)}>
-                    <option value="">Nhập thủ công (không theo PO)</option>
-                    {receivablePOs.map((order) => (
-                      <option key={order.id} value={order.id}>{order.code} — {order.supplierName}</option>
+              {/* Chọn NCC trước rồi mới tới PO — danh sách PO chỉ còn đơn của NCC đó (khách 26/10/2026). */}
+              {active === "inbound" && stockForm.transactionType === "NHAP_MUA" && (() => {
+                const supplierPOs = receivablePOs.filter((order) => order.supplierCode === stockForm.partnerCode);
+                return (
+                  <>
+                    <Input label="Nhà cung cấp">
+                      <SearchableSelect
+                        value={stockForm.partnerCode}
+                        onChange={(partnerCode) => {
+                          setStockForm({ ...stockForm, partnerCode });
+                          if (grpoOrder && grpoOrder.supplierCode !== partnerCode) selectGrpoOrder("");
+                        }}
+                        options={[{ value: "", label: "Không khai nhà cung cấp" }, ...activePartners.map((partner) => ({ value: partner.code, label: partner.name, subLabel: partner.code }))]}
+                        placeholder="-- Chọn NCC --"
+                        searchPlaceholder="Gõ tên hoặc mã NCC..."
+                      />
+                    </Input>
+                    {stockForm.partnerCode && (supplierPOs.length > 0 ? (
+                      <Input label="Đơn mua hàng (PO)">
+                        <select className="control" value={grpoOrderId} onChange={(e) => selectGrpoOrder(e.target.value)}>
+                          <option value="">Nhập thủ công (không theo PO)</option>
+                          {supplierPOs.map((order) => (
+                            <option key={order.id} value={order.id}>{order.code} · {storeLabel(order.branchCode)} · {order.warehouseCode}</option>
+                          ))}
+                        </select>
+                      </Input>
+                    ) : (
+                      <p className="text-[11px] text-slate-500">NCC này không có PO đang chờ nhận — nhập thủ công bên dưới.</p>
                     ))}
-                  </select>
-                </Input>
-              )}
+                  </>
+                );
+              })()}
 
               {grpoOrder && (
                 <div className="space-y-3">
@@ -2720,7 +2742,8 @@ export default function InventoryPage() {
                 </div>
               )}
 
-              {!isSupplierReturn && <Input label={active === "inbound" ? "Nhà cung cấp" : "Đối tác"}>
+              {/* Nhập mua đã chọn NCC ở đầu form (cùng ô lọc PO) — không lặp lại ở đây. */}
+              {!isSupplierReturn && !(active === "inbound" && stockForm.transactionType === "NHAP_MUA") && <Input label={active === "inbound" ? "Nhà cung cấp" : "Đối tác"}>
                 <select className="control" value={stockForm.partnerCode} onChange={(e) => setStockForm({ ...stockForm, partnerCode: e.target.value })}>
                   <option value="">{active === "inbound" ? "Không khai nhà cung cấp" : "Không khai đối tác"}</option>
                   {partnerFormGroups.map((bucket) => (

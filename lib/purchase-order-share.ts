@@ -4,7 +4,7 @@ import { money, quantity } from "@/lib/format-number";
  * Phiếu đặt hàng gửi NHÀ CUNG CẤP — dữ liệu do /api/public/purchase-orders/[token] trả về.
  * Dùng chung cho trang công khai /po/[token], hộp thoại "Gửi NCC" (xem trước + xuất ảnh) và
  * tin nhắn chữ gửi qua Zalo/SMS/email, để ba nơi luôn ra đúng một bố cục theo phiếu mẫu của
- * khách: Thông tin đặt hàng (Mã đơn, Nhà cung cấp, Nơi nhận, Muốn nhận lúc, Người đặt, Lưu ý)
+ * khách: Thông tin đặt hàng (Mã đơn, Nơi nhận, Muốn nhận lúc, Người đặt, Lưu ý)
  * rồi Danh sách hàng hóa ("1. Tên hàng-MÃ" / "Số lượng: 4 Kg").
  */
 export type SharedOrderLine = { itemCode: string; itemName: string; unit: string; quantity: number; unitCost: number; totalCost: number };
@@ -43,8 +43,8 @@ export function orderDateLabel(value: string | null) {
 export function orderInfoRows(order: SharedPurchaseOrder) {
   const rows: Array<{ label: string; value: string; upper?: boolean }> = [
     { label: "Mã đơn", value: order.code },
-    { label: "Nhà cung cấp", value: order.supplierName, upper: true },
-    { label: "Nơi nhận", value: [order.branchName, order.branchAddress].filter(Boolean).join(" - ") },
+    // Bỏ dòng Nhà cung cấp (tiêu đề phiếu đã ghi) và địa chỉ ở Nơi nhận, chỉ giữ tên nhà hàng (khách 26/10/2026).
+    { label: "Nơi nhận", value: order.branchName },
     { label: "Muốn nhận lúc", value: orderDateLabel(order.expectedDate) || "Sớm nhất có thể" },
     { label: "Người đặt", value: [order.createdByEmail || order.createdBy, order.createdByPhone].filter(Boolean).join(" - ") || "-" },
   ];
@@ -68,7 +68,8 @@ export function purchaseOrderMessage(order: SharedPurchaseOrder, options: { show
   for (const row of orderInfoRows(order)) lines.push(`${row.label}: ${row.upper ? row.value.toUpperCase() : row.value}`);
   lines.push("", "Danh sách hàng hóa");
   order.lines.forEach((line, index) => {
-    lines.push(`${index + 1}. ${line.itemName}-${line.itemCode}`);
+    // Chỉ tên hàng, bỏ "-<mã hàng>" (khách 26/10/2026) — NCC không dùng mã nội bộ.
+    lines.push(`${index + 1}. ${line.itemName}`);
     let qtyLine = `Số lượng: ${orderLineQuantity(line)}`;
     if (options.showPrices && line.unitCost > 0) qtyLine += ` × ${money(line.unitCost)} đ = ${money(line.totalCost)} đ`;
     lines.push(qtyLine);

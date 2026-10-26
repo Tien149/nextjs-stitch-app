@@ -1721,6 +1721,13 @@ export async function PATCH(request: Request) {
       assetGroupByLineId.set(line.id, resolved.code);
     }
 
+    // Chi phí mua hàng (vận chuyển, bốc xếp...) khai lúc nhận PO (khách 26/10/2026): như phiếu Nhập mua
+    // bên Kho — phân bổ vào giá nhập theo tiền hàng từng dòng và cộng vào công nợ NCC của PO.
+    const purchaseCost = Math.max(0, toNumber(body.purchaseCost) || 0);
+    if (purchaseCost > 0 && stockLines.length === 0) {
+      businessError("Chi phí mua hàng chỉ phân bổ được vào hàng nhập kho — lần nhận này chỉ có Tài sản/CCDC.");
+    }
+
     const freeStockLine = stockLines.find((line) => line.unitCost <= 0);
     if (freeStockLine) {
       // Nhập mua giá 0 kéo giá vốn bình quân về sai — hàng tặng kèm thì sửa đơn giá PO
@@ -1745,6 +1752,7 @@ export async function PATCH(request: Request) {
             partnerCode: order.supplierCode || null,
             note: cleanText(body.note) || `Nhận hàng từ ${order.code}`,
             createdBy: auth.session.name,
+            purchaseCost,
             // Phiếu nhập ghi theo ĐVT đặt của PO, engine kho quy đổi ra ĐVT tồn (cùng luật hệ số an toàn).
             // ĐVT đó đã bị gỡ / đổi hệ số khỏi danh mục sau lúc đặt thì nhập thẳng theo ĐVT tồn.
             lines: stockLines.map((line) => {
@@ -1757,7 +1765,8 @@ export async function PATCH(request: Request) {
           })
         : null;
 
-      let receivedValue = 0;
+      // Chi phí mua hàng đã làm tròn trên phiếu nhập — cùng số đã cộng vào giá nhập kho.
+      let receivedValue = stockTransaction?.purchaseCost || 0;
       for (const line of receiveLines) {
         await tx.purchaseOrderLine.update({
           where: { id: line.id },

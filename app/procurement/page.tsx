@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import ExportExcelButton from "@/components/ExportExcelButton";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { DateInput } from "@/components/DateInput";
+import { MoneyInput } from "@/components/MoneyInput";
 import { QuantityInput } from "@/components/QuantityInput";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { PartnerPicker, type CreatedPartner } from "@/components/PartnerPicker";
@@ -20,7 +21,7 @@ import { VAT_RATE_OPTIONS, vatAmountOf, vatRateLabel } from "@/lib/inventory-vat
 import { TemplatesTab, type PurchaseTemplate, type TemplateUnitConversion } from "./templates-tab";
 import { PriceListsTab } from "./price-lists-tab";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
-import { vnToday, type DateRange } from "@/lib/date-range";
+import { vnToday, vnTomorrow, type DateRange } from "@/lib/date-range";
 import { SendPurchaseOrderDialog } from "./send-po-dialog";
 import { ApproveRequestDialog } from "./approve-request-dialog";
 import { conversionRateForUnit, defaultPurchaseUnit, purchaseLineUnit, purchaseUnitOptions, toPurchasePrice, toPurchaseQuantity } from "@/lib/unit-conversion";
@@ -137,7 +138,7 @@ export default function ProcurementPage() {
     departmentCode: "",
     warehouseCode: "",
     supplierCode: "",
-    neededDate: new Date().toISOString().slice(0, 10),
+    neededDate: vnTomorrow(),
     reason: "Bổ sung nguyên liệu vận hành",
   });
   const [requestRows, setRequestRows] = useState<RequestRow[]>([emptyRequestRow()]);
@@ -195,6 +196,9 @@ export default function ProcurementPage() {
   /** Nhóm tài sản chọn cho từng dòng Tài sản/CCDC khi nhận hàng, khoá theo lineId. */
   const [receiveAssetGroups, setReceiveAssetGroups] = useState<Record<string, string>>({});
   const [receiveNote, setReceiveNote] = useState("");
+  /** Ngày nhận hàng + chi phí mua hàng (vận chuyển, bốc xếp...) khai lúc nhận PO (khách 26/10/2026). */
+  const [receiveDate, setReceiveDate] = useState(vnToday());
+  const [receivePurchaseCost, setReceivePurchaseCost] = useState("");
   const [receiving, setReceiving] = useState(false);
   /** Đơn đang mở hộp thoại Gửi NCC. */
   const [sendingOrder, setSendingOrder] = useState<PurchaseOrder | null>(null);
@@ -607,7 +611,7 @@ export default function ProcurementPage() {
       departmentCode: data.departments.find((item) => !item.branch || item.branch === "ALL" || item.branch === "HCM")?.code || "",
       warehouseCode: "",
       supplierCode: "",
-      neededDate: new Date().toISOString().slice(0, 10),
+      neededDate: vnTomorrow(),
       reason: "Bổ sung nguyên liệu vận hành",
     }));
     setRequestRows([emptyRequestRow()]);
@@ -820,6 +824,8 @@ export default function ProcurementPage() {
       });
     setReceiveAssetGroups(assetGroups);
     setReceiveNote("");
+    setReceiveDate(vnToday());
+    setReceivePurchaseCost("");
     setReceivingOrder(order);
   };
 
@@ -844,7 +850,7 @@ export default function ProcurementPage() {
       const response = await fetch("/api/procurement", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "RECEIVE_ORDER", orderId: receivingOrder.id, lines, note: receiveNote }),
+        body: JSON.stringify({ action: "RECEIVE_ORDER", orderId: receivingOrder.id, lines, note: receiveNote, receivedDate: receiveDate, purchaseCost: Number(receivePurchaseCost || 0) || 0 }),
       });
       const payload = await response.json();
       if (!response.ok) {
@@ -2083,7 +2089,16 @@ export default function ProcurementPage() {
               </button>
             </div>
 
-            <div className="p-5 space-y-3 overflow-y-auto">
+            <div className="p-4 sm:p-5 space-y-3 overflow-y-auto">
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block text-xs font-bold text-slate-600">Ngày nhận
+                  <DateInput value={receiveDate} onChange={setReceiveDate} className="control" ariaLabel="Ngày nhận hàng" />
+                </label>
+                <label className="block text-xs font-bold text-slate-600">Chi phí mua hàng (đ)
+                  <MoneyInput className="control text-right" value={receivePurchaseCost} onChange={setReceivePurchaseCost} placeholder="0 nếu không có" ariaLabel="Chi phí mua hàng" />
+                </label>
+                <p className="col-span-2 text-[11px] text-slate-500">Chi phí vận chuyển, bốc xếp... (nếu có) được phân bổ vào giá nhập theo tiền hàng từng dòng và cộng vào công nợ NCC của PO.</p>
+              </div>
               {receivingOrder.lines.map((line) => {
                 const remaining = toPurchaseQuantity(line.orderedQuantity - line.receivedQuantity, line);
                 const lineUnit = purchaseLineUnit(line);
@@ -2091,28 +2106,30 @@ export default function ProcurementPage() {
                 const isAsset = ["TOOL", "ASSET"].includes(line.item.itemType);
                 const groupOptions = isAsset ? assetGroupOptionsFor(line.item.itemType) : [];
                 return (
-                  <div key={line.id} className="space-y-2">
-                    <div className="flex items-center gap-3">
-                      <div className="flex-1 min-w-0">
-                        <p className="font-bold text-sm truncate">{line.item.name} {isAsset && <span className="status bg-indigo-50 text-indigo-700 ml-1">Tài sản/CCDC</span>}</p>
-                        <p className="text-xs text-slate-500">Còn phải nhận: {qty(remaining)} {lineUnit} · {line.unitCost > 0 ? `giá PO ${unitPrice(toPurchasePrice(line.unitCost, line))} đ/${lineUnit}` : receivePriceSource[line.id] ? `PO chưa có giá · gợi ý theo ${receivePriceSource[line.id]}` : "PO chưa có giá, chưa có bảng giá — nhập giá thực"}</p>
-                      </div>
-                      <label className="text-[10px] font-bold text-slate-500 text-right">SL ({lineUnit})
+                  // Thẻ từng dòng: tên + ghi chú giá cả bề ngang, SL / đơn giá chia đôi bên dưới
+                  // (bản cũ xếp một hàng ngang, trên điện thoại cột tên bị ép còn vài chữ — khách 26/10/2026).
+                  <div key={line.id} className="space-y-2 rounded-xl border border-slate-200 p-3">
+                    <div className="min-w-0">
+                      <p className="font-bold text-sm leading-snug">{line.item.name} {isAsset && <span className="status bg-indigo-50 text-indigo-700 ml-1">Tài sản/CCDC</span>}</p>
+                      <p className="text-xs text-slate-500">Còn phải nhận: <b>{qty(remaining)} {lineUnit}</b> · {line.unitCost > 0 ? `giá PO ${unitPrice(toPurchasePrice(line.unitCost, line))} đ/${lineUnit}` : receivePriceSource[line.id] ? `PO chưa có giá · gợi ý theo ${receivePriceSource[line.id]}` : "PO chưa có giá, chưa có bảng giá — nhập giá thực"}</p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="block text-[11px] font-bold text-slate-500">SL nhận ({lineUnit})
                         <QuantityInput
-                          className="control !mt-0 w-24 text-right"
+                          className="control !mt-1 w-full text-right"
                           value={receiveQuantities[line.id] ?? ""}
                           onChange={(value) => setReceiveQuantities({ ...receiveQuantities, [line.id]: value })}
                           ariaLabel={`Số lượng nhận ${line.item.name}`}
                         />
                       </label>
                       {/* Giá thực mua (khách 21/10/2026: PO duyệt khi chưa có giá) — ghi vào phiếu nhập + công nợ. */}
-                      <label className="text-[10px] font-bold text-slate-500 text-right">Đơn giá (đ/{lineUnit})
+                      <label className="block text-[11px] font-bold text-slate-500">Đơn giá (đ/{lineUnit})
                         <input
                           type="number"
                           min="0"
                           step="any"
                           inputMode="decimal"
-                          className={`control !mt-0 w-28 text-right ${!(Number(receivePrices[line.id]) > 0) ? "border-amber-400 bg-amber-50" : ""}`}
+                          className={`control !mt-1 w-full text-right ${!(Number(receivePrices[line.id]) > 0) ? "border-amber-400 bg-amber-50" : ""}`}
                           placeholder="Giá thực"
                           value={receivePrices[line.id] ?? ""}
                           onChange={(e) => setReceivePrices({ ...receivePrices, [line.id]: e.target.value })}
@@ -2157,12 +2174,24 @@ export default function ProcurementPage() {
               </label>
             </div>
 
-            <div className="p-4 sm:p-5 border-t border-slate-200 flex gap-2">
+            <div className="p-4 sm:p-5 border-t border-slate-200 space-y-2">
+              {(() => {
+                // Tiền hàng lần nhận này (SL × đơn giá theo ĐVT đặt) + chi phí mua hàng = công nợ NCC tăng thêm.
+                const goods = receivingOrder.lines.reduce((sum, line) => sum + (Number(receiveQuantities[line.id] ?? 0) || 0) * (Number(receivePrices[line.id] || 0) || 0), 0);
+                const cost = Number(receivePurchaseCost || 0) || 0;
+                return (
+                  <p className="text-xs text-slate-600 text-right">
+                    Tiền hàng <b>{money(goods)} đ</b>{cost > 0 ? <> + chi phí <b>{money(cost)} đ</b></> : null} = công nợ NCC <b className="text-slate-900">{money(goods + cost)} đ</b>
+                  </p>
+                );
+              })()}
+              <div className="flex gap-2">
               <button type="button" onClick={() => setReceivingOrder(null)} className="secondary-button">Huỷ</button>
               <button type="button" disabled={receiving} onClick={() => void submitReceive()} className="primary-button flex-1 !min-h-12">
                 <span className="material-symbols-outlined text-lg">inventory</span>
                 {receiving ? "Đang nhận hàng..." : "Xác nhận nhận hàng"}
               </button>
+              </div>
             </div>
           </div>
         </div>
