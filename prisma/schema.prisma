@@ -1131,6 +1131,8 @@ model InventoryTransactionLine {
   /// chiết khấu đã làm tròn, TRỪ trước khi tính thuế. Tiền hàng sau chiết khấu = SL × đơn giá − discountAmount.
   discountRate   Float?
   discountAmount Float   @default(0)
+  /// Ghi chú riêng của dòng hàng (khách 27/10/2026: xuất kho & hủy hàng ghi chú từng mặt hàng).
+  note           String?
 
   transaction InventoryTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
   item        InventoryItem        @relation(fields: [itemId], references: [id])
@@ -1401,6 +1403,31 @@ model PurchaseOrderLine {
   item  InventoryItem @relation(fields: [itemId], references: [id])
 
   @@index([orderId])
+}
+
+/// Một LẦN NHẬN HÀNG của PO (khách 26/10/2026 — để "Huỷ lần nhận"): ghi đủ những gì lần nhận đã làm để
+/// đảo đúng phần đó. Huỷ theo thứ tự ngược lại: chỉ lần nhận mới nhất còn hiệu lực của PO mới huỷ được.
+model PurchaseOrderReceipt {
+  id                 String    @id @default(uuid())
+  orderId            String
+  /// Mã phiếu nhập kho (NM-…) nếu lần nhận có hàng vào kho; chỉ Tài sản/CCDC thì null.
+  stockTransactionId String?
+  receivedDate       DateTime
+  /// Số đã cộng vào công nợ NCC (SupplierPayable) ở lần nhận này.
+  payableAmount      Float
+  /// [{ lineId, quantity (ĐVT tồn), createdLine, previousUnitCost, previousTotalCost }]
+  lines              Json
+  /// Hồ sơ Tài sản/CCDC sinh ra ở lần nhận này.
+  assetIds           Json?
+  /// ACTIVE | CANCELLED
+  status             String    @default("ACTIVE")
+  createdBy          String?
+  createdAt          DateTime  @default(now())
+  cancelledBy        String?
+  cancelledAt        DateTime?
+
+  @@index([orderId])
+  @@index([stockTransactionId])
 }
 
 model SupplierPayable {

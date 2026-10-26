@@ -31,6 +31,8 @@ type Line = {
   /** Chiết khấu của dòng (trừ trước thuế) — % đã khai (null = khai số tiền) và số tiền. */
   discountRate?: number | null;
   discountAmount?: number;
+  /** Ghi chú riêng của dòng (27/10/2026). */
+  note?: string | null;
   item: { code: string; name: string; unit: string };
 };
 type StockDocument = {
@@ -190,7 +192,7 @@ export default function StockDocumentPrintPage() {
                 <tr key={row.id} className="border-b border-slate-100 align-top">
                   <td className="py-1.5 pr-1">{index + 1}</td>
                   <td className="py-1.5 pr-1 whitespace-nowrap">{row.item.code}</td>
-                  <td className="py-1.5 pr-1">{row.item.name}</td>
+                  <td className="py-1.5 pr-1">{row.item.name}{row.note && <small className="block text-slate-500 italic">{row.note}</small>}</td>
                   <td className="py-1.5 pr-1">{row.printUnit}</td>
                   <td className="py-1.5 pr-1 text-right tabular-nums">{qty(row.printQuantity)}</td>
                   <td className="py-1.5 pr-1 text-right tabular-nums">{money(row.printUnitPrice)}</td>
@@ -243,7 +245,7 @@ export default function StockDocumentPrintPage() {
               <tr key={row.id} className="border-b border-slate-100 align-top">
                 <td className="py-2 pr-2">{index + 1}</td>
                 <td className="py-2 pr-2 whitespace-nowrap">{row.item.code}</td>
-                <td className="py-2 pr-2">{row.item.name}</td>
+                <td className="py-2 pr-2">{row.item.name}{row.note && <small className="block text-slate-500 italic">{row.note}</small>}</td>
                 <td className="py-2 pr-2">{row.printUnit}</td>
                 <td className="py-2 pr-2 text-right tabular-nums">{qty(row.printQuantity)}</td>
                 <td className="py-2 pr-2 text-right tabular-nums">{money(row.printUnitPrice)}</td>

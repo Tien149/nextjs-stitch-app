@@ -999,6 +999,23 @@ export default function ProcurementPage() {
     setSendingOrder(order);
   };
 
+  /**
+   * Huỷ lần nhận MỚI NHẤT của PO (khách 26/10/2026): hoàn kho, trả số đã nhận, trừ công nợ NCC — rồi nhận
+   * lại với số đúng. Theo thứ tự ngược lại: nhiều lần nhận thì huỷ từ lần gần nhất.
+   */
+  const cancelLastReceipt = async (order: PurchaseOrder) => {
+    if (!window.confirm(`Huỷ lần nhận hàng gần nhất của ${order.code}?\n\nHệ thống hoàn kho theo phiếu nhập của lần đó, trả lại số chưa nhận trên PO và trừ công nợ NCC tương ứng. Sau đó nhận lại với số đúng.`)) return;
+    setMessage("");
+    const response = await fetch("/api/procurement", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "CANCEL_RECEIPT", orderId: order.id }) });
+    const payload = await response.json();
+    if (!response.ok) {
+      setMessage(payload.error || "Không huỷ được lần nhận");
+      return;
+    }
+    setMessage(`Đã huỷ lần nhận ${payload.receiptCode} của ${order.code}${payload.assetsRemoved > 0 ? ` (gỡ ${payload.assetsRemoved} tài sản/CCDC)` : ""} — nhận lại với số đúng ở nút Nhận hàng.`);
+    await loadData();
+  };
+
   const cancelOrder = async (order: PurchaseOrder) => {
     const sent = Boolean(order.shareToken);
     const reason = window.prompt(
@@ -1982,6 +1999,9 @@ export default function ProcurementPage() {
                       {canEdit && ["APPROVED", "PARTIALLY_RECEIVED"].includes(order.status) && (
                         <button onClick={() => startReceiving(order)} className="rounded-lg bg-emerald-600 text-white text-xs font-bold px-3 py-2">Nhận hàng</button>
                       )}
+                      {canEdit && ["PARTIALLY_RECEIVED", "COMPLETED"].includes(order.status) && (
+                        <button onClick={() => void cancelLastReceipt(order)} className="rounded-lg border border-rose-200 bg-white text-rose-600 text-xs font-bold px-3 py-2">Huỷ lần nhận</button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -2064,6 +2084,11 @@ export default function ProcurementPage() {
                       {canEdit && ["APPROVED", "PARTIALLY_RECEIVED"].includes(order.status) && (
                         <button onClick={() => startReceiving(order)} className="action-link text-emerald-700 hover:underline">
                           Nhận hàng
+                        </button>
+                      )}
+                      {canEdit && ["PARTIALLY_RECEIVED", "COMPLETED"].includes(order.status) && (
+                        <button onClick={() => void cancelLastReceipt(order)} className="action-link text-rose-600 hover:underline" title="Huỷ lần nhận gần nhất: hoàn kho, trả số chưa nhận trên PO, trừ công nợ NCC">
+                          Huỷ lần nhận
                         </button>
                       )}
                       <RowActions

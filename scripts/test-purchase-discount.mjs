@@ -63,9 +63,10 @@ test("DB: phiếu nhập mua có chiết khấu + thuế + chi phí — giá nh�
     warehouseCode: "ZDC_KHO",
     partnerCode: NCC,
     purchaseCost: 10_000,
-    lines: [{ itemId: item.id, inputQuantity: 10, inputUnitCost: 100_000, vatRate: 0.1, discountRate: "10" }],
+    lines: [{ itemId: item.id, inputQuantity: 10, inputUnitCost: 100_000, vatRate: 0.1, discountRate: "10", note: "  hàng giao sớm " }],
   }));
   const [line] = receipt.lines;
+  assert.equal(line.note, "hàng giao sớm", "ghi chú dòng lưu xuống phiếu kho (27/10/2026)");
   assert.equal(line.discountAmount, 100_000);
   assert.equal(line.discountRate, 0.1);
   assert.equal(line.vatAmount, 90_000, "thuế tính trên 900.000 sau chiết khấu");

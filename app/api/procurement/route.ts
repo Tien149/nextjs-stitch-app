@@ -22,6 +22,7 @@ import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { parseVatRate } from "@/lib/inventory-vat";
 import { purchaseLineFigures, resolveDiscount } from "@/lib/purchase-discount";
 import { purchaseLineAmount } from "@/lib/purchase-payable";
+import { cancelPurchaseReceipt } from "@/lib/purchase-receipt-cancel";
 import { buildPriceImport, type PriceImportItem } from "@/lib/supplier-price-list";
 import { findPriceDeviations, loadActivePrices, loadPriceLists, savePriceList } from "@/lib/supplier-price-list-db";
 import { buildTemplateImport, templateDayToDate, templateWindow, templateWindowStatus, type TemplateImportItem } from "@/lib/purchase-template";
@@ -1630,6 +1631,26 @@ export async function PATCH(request: Request) {
       return NextResponse.json(result);
     }
 
+    // Huỷ lần nhận hàng mới nhất của PO (khách 26/10/2026) — gọi từ màn Mua hàng (theo PO) hoặc từ phiếu
+    // nhập NM-… ở màn Kho (theo phiếu). Xem lib/purchase-receipt-cancel.ts.
+    if (action === "CANCEL_RECEIPT") {
+      const orderId = cleanText(body.orderId);
+      const stockTransactionId = cleanText(body.stockTransactionId);
+      if (!orderId && !stockTransactionId) businessError("Thiếu PO hoặc phiếu nhập cần huỷ lần nhận");
+      const target = orderId
+        ? await prisma.purchaseOrder.findUnique({ where: { id: orderId }, select: { branchCode: true, warehouseCode: true } })
+        : await prisma.inventoryTransaction.findUnique({ where: { id: stockTransactionId }, select: { branchCode: true, warehouseCode: true } });
+      if (!target) businessError("Không tìm thấy PO / phiếu nhập");
+      assertBranchAccess(auth.session, target.branchCode);
+      assertWarehouseAccess(auth.session, target.warehouseCode);
+      const result = await prisma.$transaction(
+        (tx) => cancelPurchaseReceipt(tx, { orderId: orderId || null, stockTransactionId: stockTransactionId || null, actor: auth.session.name }),
+        { timeout: 60000 },
+      );
+      await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action: "CANCEL_RECEIPT", entityType: "PurchaseOrder", entityCode: result.orderCode, branchCode: result.branchCode, metadata: result });
+      return NextResponse.json(result);
+    }
+
     if (action !== "RECEIVE_ORDER") businessError("Thao tác cập nhật không hợp lệ");
 
     const orderId = cleanText(body.orderId);
@@ -1842,16 +1863,28 @@ export async function PATCH(request: Request) {
       }), 0);
       const assetValueByLineId = new Map(assetLines.map((line, index) => [line.id, assetFigures[index].afterTax]));
       receivedValue += assetFigures.reduce((sum, row) => sum + row.afterTax, 0);
+      // Ghi lại lần nhận này để "Huỷ lần nhận" đảo đúng phần đã làm (khách 26/10/2026).
+      const receiptLines: Array<{ lineId: string; quantity: number; createdLine: boolean; previousUnitCost: number | null; previousTotalCost: number | null }> = [];
+      const assetIds: string[] = [];
       for (const line of receiveLines) {
         if (line.isNew) {
-          await tx.purchaseOrderLine.create({
+          const created = await tx.purchaseOrderLine.create({
             data: {
               orderId: order.id, itemId: line.itemId, orderedQuantity: line.orderedQuantity, receivedQuantity: line.receiveQuantity,
               unitCost: line.unitCost, totalCost: line.totalCost, unitCode: line.unitCode, conversionRate: line.conversionRate,
             },
           });
+          receiptLines.push({ lineId: created.id, quantity: line.receiveQuantity, createdLine: true, previousUnitCost: null, previousTotalCost: null });
           continue;
         }
+        const before = order.lines.find((candidate) => candidate.id === line.id);
+        receiptLines.push({
+          lineId: line.id,
+          quantity: line.receiveQuantity,
+          createdLine: false,
+          previousUnitCost: line.priceChanged && before ? before.unitCost : null,
+          previousTotalCost: line.priceChanged && before ? before.totalCost : null,
+        });
         await tx.purchaseOrderLine.update({
           where: { id: line.id },
           data: {
@@ -1865,7 +1898,7 @@ export async function PATCH(request: Request) {
         // Nguyên giá = tiền hàng sau chiết khấu + thuế (cùng luật giá vốn sau thuế của hàng nhập kho).
         const receivedLineValue = assetValueByLineId.get(line.id) || 0;
         const assetGroup = assetGroupByLineId.get(line.id) as string;
-        await tx.assetRecord.create({
+        const asset = await tx.assetRecord.create({
           data: {
             code: await nextAssetCode(tx, assetGroup, order.departmentCode || ""),
             name: line.item.name,
@@ -1886,6 +1919,7 @@ export async function PATCH(request: Request) {
             note: `Tự tạo từ nhận hàng ${order.code}`,
           },
         });
+        assetIds.push(asset.id);
       }
 
       const remainingLines = await tx.purchaseOrderLine.findMany({ where: { orderId: order.id } });
@@ -1903,6 +1937,17 @@ export async function PATCH(request: Request) {
         where: { purchaseOrderId: order.id },
         create: { purchaseOrderId: order.id, supplierCode: order.supplierCode, supplierName: order.supplierName, recognizedDate: receivedDate, originalAmount: receivedValue, outstandingAmount: receivedValue },
         update: { originalAmount: { increment: receivedValue }, outstandingAmount: { increment: receivedValue } },
+      });
+      await tx.purchaseOrderReceipt.create({
+        data: {
+          orderId: order.id,
+          stockTransactionId: stockTransaction?.id || null,
+          receivedDate,
+          payableAmount: receivedValue,
+          lines: receiptLines,
+          assetIds,
+          createdBy: auth.session.name,
+        },
       });
       return { stockTransaction, assetsCreated: assetLines.length };
     });

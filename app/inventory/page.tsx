@@ -58,7 +58,7 @@ type Transaction = { id: string; code: string; transactionType: string; subType:
   purchaseCost?: number;
   /** Phiếu chế biến của rã BOM trên danh sách Nhập/Xuất kho chỉ mang 3 dòng đầu — số tổng nằm ở đây (xem compactFlowDocument). */
   lineSummary?: { count: number; totalCost: number; vatAmount: number; quantity: number; units: string[]; searchText: string };
-  lines: Array<{ id: string; inputQuantity: number | null; inputUnitCode: string | null; conversionRate: number; quantity: number; unitCost: number; inputUnitCost: number | null; totalCost: number; vatRate: number | null; vatAmount: number; purchaseCostShare?: number; discountRate?: number | null; discountAmount?: number; item: Item }> };
+  lines: Array<{ id: string; inputQuantity: number | null; inputUnitCode: string | null; conversionRate: number; quantity: number; unitCost: number; inputUnitCost: number | null; totalCost: number; vatRate: number | null; vatAmount: number; purchaseCostShare?: number; discountRate?: number | null; discountAmount?: number; note?: string | null; item: Item }> };
 type Recipe = { id: string; code: string; productCode: string; branchCode?: string | null; productName: string; unit: string; outputConversionRate: number; sellingPrice: number; estimatedCost: number; estimatedUnitCost: number; version: number; effectiveFrom: string; status: string; lines: Array<{ quantity: number; unitCode: string | null; conversionRate: number; wasteRate: number; item: Item; quantityBase?: number; componentUnitCost?: number; lineCost?: number }> };
 type CostSummaryRow = { productCode: string; branchCode: string; productName: string; group: string; stockUnit: string; batchUnit: string; outputConversionRate: number; sellingPrice: number; unitCost: number; costRatio: number | null; version: number; appliedFrom?: string; appliedTo?: string };
 type WasteReportRow = { itemCode: string; itemName: string; unit: string; itemType: string; totalQuantity: number; totalValue: number; documentCount: number; bySubType: Record<string, { quantity: number; value: number }> };
@@ -278,7 +278,7 @@ export default function InventoryPage() {
   /** Sửa / xoá phiếu kho ngay trên bảng phiếu của ba tab Nhập / Xuất / Điều chuyển. */
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [transactionEditForm, setTransactionEditForm] = useState({ transactionDate: "", warehouseCode: "", toWarehouseCode: "", partnerCode: "", subType: "", referenceCode: "", note: "", purchaseCost: "" });
-  const [transactionEditLines, setTransactionEditLines] = useState<Array<{ key: string; itemId: string; quantity: string; unitCode: string; unitCost: string; baseUnitCost: number; vatRate: string; vatAmount: string; discountRate: string; discountAmount: string }>>([]);
+  const [transactionEditLines, setTransactionEditLines] = useState<Array<{ key: string; itemId: string; quantity: string; unitCode: string; unitCost: string; baseUnitCost: number; vatRate: string; vatAmount: string; discountRate: string; discountAmount: string; note: string }>>([]);
   const [transactionEditError, setTransactionEditError] = useState<string | null>(null);
   const [transactionEditSaving, setTransactionEditSaving] = useState(false);
   const [deletingTransaction, setDeletingTransaction] = useState<Transaction | null>(null);
@@ -321,7 +321,7 @@ export default function InventoryPage() {
   const [bulkStatusRunning, setBulkStatusRunning] = useState(false);
   const [conversionForm, setConversionForm] = useState({ itemId: "", purchaseUnit: "thung", conversionRate: "24", note: "" });
   const [supplierPrices, setSupplierPrices] = useState<{ key: string; prices: Array<{ itemId: string; unitCode: string; unitPrice: number; vatRate: number | null; stockUnitPrice: number; priceListCode: string; effectiveFrom: string; effectiveTo: string | null }> }>({ key: "", prices: [] });
-  const [stockForm, setStockForm] = useState({ transactionType: "NHAP_MUA", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HN", itemId: "", inputUnitCode: "", quantity: "10", unitCost: "100000", vatRate: "KKKNT", vatAmount: "", discountRate: "", discountAmount: "", purchaseCost: "", partnerCode: "", paymentDueDate: "", referenceCode: "", note: "Nhap kho van hanh", allocationMonths: "", pnlItemCode: "", transactionDate: today(), transactionTime: "" });
+  const [stockForm, setStockForm] = useState({ transactionType: "NHAP_MUA", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HN", itemId: "", inputUnitCode: "", quantity: "10", unitCost: "100000", vatRate: "KKKNT", vatAmount: "", discountRate: "", discountAmount: "", purchaseCost: "", partnerCode: "", paymentDueDate: "", referenceCode: "", note: "", lineNote: "", allocationMonths: "", pnlItemCode: "", transactionDate: today(), transactionTime: "" });
   /** Nhập mua theo PO (GRPO): PO đã duyệt còn hàng chưa nhận + số lượng nhận trên từng dòng. */
   const [receivablePOs, setReceivablePOs] = useState<ReceivablePO[]>([]);
   const [grpoOrderId, setGrpoOrderId] = useState("");
@@ -376,7 +376,7 @@ export default function InventoryPage() {
   /** Lọc nhà hàng / kho / ngày dùng chung cho các tab kiểm kê và các khung bên dưới (khách 16/10/2026). */
   const [stocktakeFilter, setStocktakeFilter] = useState<StocktakeFilter>(EMPTY_STOCKTAKE_FILTER);
   const [wasteForm, setWasteForm] = useState({ wasteType: "HET_HAN_SU_DUNG", mode: "ITEMS", recipeId: "", productQuantity: "1", branchCode: "HCM", warehouseCode: "KHO_HCM", transactionDate: today(), referenceCode: "", note: "" });
-  const [wasteRows, setWasteRows] = useState([{ itemId: "", quantity: "1", unitCode: "" }]);
+  const [wasteRows, setWasteRows] = useState([{ itemId: "", quantity: "1", unitCode: "", note: "" }]);
   
   const visibleTabs = useMemo(() => filterModuleTabs(user, href), [user]);
   /** Nhãn rã BOM chỉ cho người có tab Chế biến (kế toán, bếp trưởng…); vận hành không thấy. */
@@ -1351,6 +1351,25 @@ export default function InventoryPage() {
     if (Object.keys(terms).length > 0) setGrpoTerms((current) => ({ ...current, [lineId]: { ...(current[lineId] || emptyReceiveTerms), ...terms } }));
   };
 
+  /** Huỷ lần nhận hàng PO từ chính phiếu nhập NM-… (chỉ lần nhận mới nhất của PO, thứ tự ngược lại). */
+  const cancelPoReceipt = async (transaction: Transaction) => {
+    if (!window.confirm(`Huỷ lần nhận ${transaction.code} (PO ${transaction.referenceCode || ""})?\n\nHệ thống hoàn kho theo phiếu này, trả lại số chưa nhận trên PO và trừ công nợ NCC tương ứng. Sau đó nhận lại với số đúng.`)) return;
+    setMessage("");
+    const response = await fetch("/api/procurement", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...getSessionHeaders() },
+      body: JSON.stringify({ action: "CANCEL_RECEIPT", stockTransactionId: transaction.id }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      setMessage(payload.error || "Không huỷ được lần nhận");
+      return;
+    }
+    setMessage(`Đã huỷ lần nhận ${payload.receiptCode} của ${payload.orderCode} — nhận lại với số đúng (chọn PO ở ô Đơn mua hàng hoặc màn Mua hàng).`);
+    await loadData();
+    await loadReceivablePOs();
+  };
+
   /** GRPO: nhận hàng từ PO — tồn kho, công nợ NCC và tài sản/CCDC do /api/procurement xử lý. */
   const receiveFromPO = async () => {
     if (!grpoOrder) return;
@@ -1795,7 +1814,9 @@ export default function InventoryPage() {
       PRODUCTION: "lệnh chế biến / lần rã nguyên liệu",
     };
     const source = transaction.referenceType ? derived[transaction.referenceType] : undefined;
-    if (source) return `Phiếu sinh tự động từ ${source} — xử lý ở chứng từ gốc`;
+    if (source) return transaction.referenceType === "PURCHASE_ORDER"
+      ? "Phiếu nhận hàng PO — bấm Huỷ lần nhận rồi nhận lại với số đúng"
+      : `Phiếu sinh tự động từ ${source} — xử lý ở chứng từ gốc`;
     return null;
   };
   /**
@@ -1856,6 +1877,7 @@ export default function InventoryPage() {
       // Chiết khấu đã khai: theo % thì hiện %, khai số tiền thì hiện số tiền (khách 26/10/2026).
       discountRate: line.discountRate !== null && line.discountRate !== undefined ? String(Number((line.discountRate * 100).toFixed(4))) : "",
       discountAmount: (line.discountRate === null || line.discountRate === undefined) && line.discountAmount ? String(Math.round(line.discountAmount)) : "",
+      note: line.note || "",
       };
     }));
   };
@@ -1902,6 +1924,7 @@ export default function InventoryPage() {
             vatAmount: line.vatAmount,
             discountRate: editingTransaction.transactionType === "NHAP_MUA" ? line.discountRate : "",
             discountAmount: editingTransaction.transactionType === "NHAP_MUA" ? line.discountAmount : "",
+            note: line.note,
           })),
         }),
       });
@@ -2557,7 +2580,7 @@ export default function InventoryPage() {
         // Khung ghi nhận rộng hơn (khách 26/10/2026: bỏ cột Mặt hàng / SL ở bảng bên phải để nhường chỗ).
         <div className="grid grid-cols-1 *:min-w-0 lg:grid-cols-[480px_minmax(0,1fr)] gap-5">
           {canCreate && (
-            <form onSubmit={(e) => { e.preventDefault(); if (grpoOrder) { void receiveFromPO(); return; } void send({ action: "STOCK_TRANSACTION", ...stockForm, ...(active === "outbound" && stockForm.transactionType === "XUAT_TRA_NCC" ? { referenceType: "PURCHASE_RETURN" } : {}), transactionDate: vnDateTimeValue(stockForm.transactionDate, stockForm.transactionTime), lines: [{ itemId: stockForm.itemId, inputQuantity: stockForm.quantity, inputUnitCode: stockForm.inputUnitCode || selectedStockUnit?.unitCode, inputUnitCost: active === "inbound" ? stockForm.unitCost : "0", vatRate: active === "inbound" ? stockForm.vatRate : "", vatAmount: active === "inbound" ? stockForm.vatAmount : "", discountRate: active === "inbound" ? stockForm.discountRate : "", discountAmount: active === "inbound" ? stockForm.discountAmount : "" }] }, active === "inbound" ? "Đã ghi nhận phiếu nhập kho." : "Đã ghi nhận phiếu xuất kho."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
+            <form onSubmit={(e) => { e.preventDefault(); if (grpoOrder) { void receiveFromPO(); return; } void send({ action: "STOCK_TRANSACTION", ...stockForm, ...(active === "outbound" && stockForm.transactionType === "XUAT_TRA_NCC" ? { referenceType: "PURCHASE_RETURN" } : {}), transactionDate: vnDateTimeValue(stockForm.transactionDate, stockForm.transactionTime), lines: [{ itemId: stockForm.itemId, inputQuantity: stockForm.quantity, inputUnitCode: stockForm.inputUnitCode || selectedStockUnit?.unitCode, inputUnitCost: active === "inbound" ? stockForm.unitCost : "0", vatRate: active === "inbound" ? stockForm.vatRate : "", vatAmount: active === "inbound" ? stockForm.vatAmount : "", discountRate: active === "inbound" ? stockForm.discountRate : "", discountAmount: active === "inbound" ? stockForm.discountAmount : "", note: stockForm.lineNote }] }, active === "inbound" ? "Đã ghi nhận phiếu nhập kho." : "Đã ghi nhận phiếu xuất kho."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
               <h2 className="font-bold text-slate-800">{active === "inbound" ? "Ghi nhận nhập kho" : "Ghi nhận xuất kho"}</h2>
 
               <Input label="Loại">
@@ -2905,6 +2928,11 @@ export default function InventoryPage() {
                 </Input>
               </>)}
 
+              {/* Ghi chú riêng của mặt hàng trên phiếu (khách 27/10/2026) — hiện trên phiếu in và sổ kho. */}
+              {!grpoOrder && <Input label="Ghi chú mặt hàng">
+                <input className="control" value={stockForm.lineNote} placeholder="Không bắt buộc" onChange={(e) => setStockForm({ ...stockForm, lineNote: e.target.value })} />
+              </Input>}
+
               {!isSupplierReturn && <Input label="Tham chiếu">
                 <input data-input-kind="code" className="control" value={stockForm.referenceCode} onChange={(e) => setStockForm({ ...stockForm, referenceCode: e.target.value })} />
               </Input>}
@@ -3103,6 +3131,12 @@ export default function InventoryPage() {
                     >
                       In
                     </button>
+                    {/* Phiếu nhận hàng PO: sửa = Huỷ lần nhận rồi nhận lại (khách 26/10/2026). */}
+                    {row.transaction.referenceType === "PURCHASE_ORDER" && canCreate && (
+                      <button type="button" onClick={() => void cancelPoReceipt(row.transaction)} className="rounded px-2 py-1 text-[11px] font-bold text-rose-600 border border-rose-200 hover:bg-rose-50" title="Huỷ lần nhận hàng PO này: hoàn kho, trả số chưa nhận trên PO, trừ công nợ NCC — rồi nhận lại với số đúng">
+                        Huỷ lần nhận
+                      </button>
+                    )}
                     {/* Điều chuyển góp một dòng cho mỗi màn hình; sửa/xoá nó ở đúng tab Điều chuyển. */}
                     {row.transaction.transactionType === "DIEU_CHUYEN" ? (
                       <span className="text-xs text-slate-400">Ở tab Điều chuyển</span>
@@ -3403,7 +3437,7 @@ export default function InventoryPage() {
                   <b className="text-sm text-slate-700">Mặt hàng ({transactionEditLines.length} dòng)</b>
                   <button
                     type="button"
-                    onClick={() => setTransactionEditLines([...transactionEditLines, { key: `new-${Date.now()}`, itemId: "", quantity: "1", unitCode: "", unitCost: "0", baseUnitCost: 0, vatRate: "KKKNT", vatAmount: "", discountRate: "", discountAmount: "" }])}
+                    onClick={() => setTransactionEditLines([...transactionEditLines, { key: `new-${Date.now()}`, itemId: "", quantity: "1", unitCode: "", unitCost: "0", baseUnitCost: 0, vatRate: "KKKNT", vatAmount: "", discountRate: "", discountAmount: "", note: "" }])}
                     className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-bold hover:bg-slate-50"
                   >
                     + Thêm dòng
@@ -3471,6 +3505,8 @@ export default function InventoryPage() {
                           onChange={(e) => patch({ vatAmount: e.target.value })}
                         />
                       </Input>
+                      {/* Ghi chú riêng của dòng (khách 27/10/2026) — sửa phiếu không làm mất. */}
+                      <input className="control sm:col-span-full sm:order-last text-sm" value={line.note} placeholder="Ghi chú dòng hàng (không bắt buộc)" aria-label={`Ghi chú dòng ${index + 1}`} onChange={(e) => patch({ note: e.target.value })} />
                       {/* Chiết khấu (khách 26/10/2026): % hoặc số tiền, gõ ô này thì xoá ô kia — trừ trước thuế. */}
                       {editingTransaction.transactionType === "NHAP_MUA" && (
                         <div className="sm:col-span-full sm:order-last grid grid-cols-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,2fr)] gap-2 items-center">
@@ -4890,7 +4926,7 @@ export default function InventoryPage() {
                 action: "RECORD_WASTE",
                 ...wasteForm,
                 recipeId: "",
-                lines: wasteRows.filter((row) => row.itemId).map((row) => ({ itemId: row.itemId, inputQuantity: row.quantity, inputUnitCode: row.unitCode || undefined })),
+                lines: wasteRows.filter((row) => row.itemId).map((row) => ({ itemId: row.itemId, inputQuantity: row.quantity, inputUnitCode: row.unitCode || undefined, note: row.note })),
               }, "Đã ghi nhận phiếu xuất hủy.");
             }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
               <h2 className="font-bold text-slate-800">Ghi nhận hủy hàng</h2>
@@ -4920,7 +4956,7 @@ export default function InventoryPage() {
                 <div className="space-y-3 border border-slate-100 rounded-lg p-3.5 bg-slate-50/50">
                   <div className="flex items-center justify-between border-b border-slate-200/60 pb-2">
                     <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Mặt hàng hủy</h3>
-                    <button type="button" className="text-xs font-bold text-blue-600 hover:underline flex items-center gap-0.5" onClick={() => setWasteRows([...wasteRows, { itemId: "", quantity: "1", unitCode: "" }])}>
+                    <button type="button" className="text-xs font-bold text-blue-600 hover:underline flex items-center gap-0.5" onClick={() => setWasteRows([...wasteRows, { itemId: "", quantity: "1", unitCode: "", note: "" }])}>
                       <span className="material-symbols-outlined text-sm font-bold">add</span>Thêm dòng
                     </button>
                   </div>
@@ -4946,6 +4982,9 @@ export default function InventoryPage() {
                             {rowUnits.map((unit) => <option key={unit.unitCode} value={unit.unitCode}>{unit.unitName || unit.unitCode}</option>)}
                           </select>
                         </div>
+                        {/* Ghi chú từng hàng hủy (khách 27/10/2026). */}
+                        <input className="control !mt-0 text-sm" value={row.note} placeholder="Ghi chú hàng này (không bắt buộc)"
+                          onChange={(e) => setWasteRows(wasteRows.map((candidate, rowIndex) => rowIndex === index ? { ...candidate, note: e.target.value } : candidate))} />
                       </div>
                     );
                   })}

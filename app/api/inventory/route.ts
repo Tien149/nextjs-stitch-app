@@ -60,7 +60,7 @@ const derivedReferenceTypes: Record<string, string> = {
   [TRANSFER_DISPATCH_REFERENCE]: "phiếu điều chuyển chờ duyệt",
 };
 
-type InputLine = { itemId?: unknown; itemCode?: unknown; quantity?: unknown; actualQuantity?: unknown; inputQuantity?: unknown; unitCode?: unknown; inputUnitCode?: unknown; unitCost?: unknown; inputUnitCost?: unknown; vatRate?: unknown; vatAmount?: unknown; discountRate?: unknown; discountAmount?: unknown; wasteRate?: unknown; conversionRate?: unknown; reason?: unknown };
+type InputLine = { itemId?: unknown; itemCode?: unknown; quantity?: unknown; actualQuantity?: unknown; inputQuantity?: unknown; unitCode?: unknown; inputUnitCode?: unknown; unitCost?: unknown; inputUnitCost?: unknown; vatRate?: unknown; vatAmount?: unknown; discountRate?: unknown; discountAmount?: unknown; note?: unknown; wasteRate?: unknown; conversionRate?: unknown; reason?: unknown };
 const validItemTypes: readonly string[] = INVENTORY_ITEM_TYPES;
 
 /**
@@ -99,6 +99,7 @@ function linesFrom(value: unknown) {
     // Chiết khấu: ô % hoặc ô số tiền (khách 26/10/2026) — chuỗi thô, lib/purchase-discount đọc và kiểm.
     discountRate: cleanText(line.discountRate),
     discountAmount: cleanText(line.discountAmount),
+    note: cleanText(line.note),
     wasteRate: toNumber(line.wasteRate),
     conversionRate: toNumber(line.conversionRate),
   })).filter((line) => (line.itemId || line.itemCode) && line.quantity > 0);
@@ -2697,6 +2698,7 @@ export async function POST(request: Request) {
           vatRate: null,
           discountRate: "",
           discountAmount: "",
+          note: "",
           wasteRate: 0,
           conversionRate: 1,
         };
@@ -3020,6 +3022,7 @@ export async function PATCH(request: Request) {
               // Giữ chiết khấu đã khai: theo % thì tính lại trên tiền hàng, khai số tiền thì giữ số tiền.
               discountRate: line.discountRate !== null ? String(line.discountRate * 100) : "",
               discountAmount: line.discountRate === null && line.discountAmount ? String(line.discountAmount) : "",
+              note: line.note || "",
             })),
           })
           : await tx.inventoryTransaction.update({

@@ -72,6 +72,8 @@ export type StockLineInput = {
   /** Chiết khấu của dòng: % (10 = 10%) hoặc số tiền — xem lib/purchase-discount.ts. Chỉ phiếu NHẬP. */
   discountRate?: unknown;
   discountAmount?: unknown;
+  /** Ghi chú riêng của dòng hàng (khách 27/10/2026). */
+  note?: unknown;
 };
 
 export type PostInventoryTransactionInput = {
@@ -391,6 +393,7 @@ async function resolveStockLine(tx: Tx, line: StockLineInput) {
     vatAmount: vat.vatAmount,
     discountRate: discount.rate,
     discountAmount: discount.amount,
+    note: text(line.note) || null,
   };
 }
 
@@ -657,6 +660,7 @@ export async function postInventoryTransaction(tx: Tx, input: PostInventoryTrans
           purchaseCostShare: line.purchaseCostShare,
           discountRate: line.discountRate,
           discountAmount: line.discountAmount,
+          note: line.note,
         })),
       },
     },
@@ -779,6 +783,7 @@ export async function repostInventoryTransaction(
           purchaseCostShare: line.purchaseCostShare,
           discountRate: line.discountRate,
           discountAmount: line.discountAmount,
+          note: line.note,
         })),
       },
     },
