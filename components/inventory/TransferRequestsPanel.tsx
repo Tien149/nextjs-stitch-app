@@ -64,6 +64,9 @@ export default function TransferRequestsPanel({ requests, warehouseName, onActio
   const [busy, setBusy] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState<TransferRequest | null>(null);
   const [error, setError] = useState("");
+  // Bảng ngoài chỉ ghi số mặt hàng (khách 26/10/2026: "tắt nội dung bên ngoài") — nhà hàng nhận bấm Duyệt nhận mở phiếu đủ dòng và duyệt ở đó;
+  // người khác bấm "n mặt hàng" để xổ danh sách.
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   if (requests.length === 0) return null;
   const waitingForMe = requests.filter((request) => request.canApprove && request.status === "PENDING").length;
@@ -145,8 +148,12 @@ export default function TransferRequestsPanel({ requests, warehouseName, onActio
                   <b>{request.warehouseCode} → {request.toWarehouseCode}</b>
                   <small className="block text-slate-500">{storeLabel(request.branchCode)} → {storeLabel(request.toBranchCode)}</small>
                 </td>
-                <td className="cell min-w-[220px]">
-                  {request.lines.map((line) => (
+                <td className="cell min-w-[140px]">
+                  <button type="button" className="font-bold text-blue-700 hover:underline whitespace-nowrap" aria-expanded={expanded === request.id}
+                    onClick={() => setExpanded(expanded === request.id ? null : request.id)}>
+                    {request.lines.length} mặt hàng {expanded === request.id ? "▴" : "▾"}
+                  </button>
+                  {expanded === request.id && request.lines.map((line) => (
                     <span key={line.itemId} className="block">{line.itemName}: <b>{qty(line.inputQuantity)}</b> {lineUnit(line)}</span>
                   ))}
                   {request.note && <small className="block text-slate-500 mt-1">Ghi chú: {request.note}</small>}
