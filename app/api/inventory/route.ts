@@ -24,7 +24,7 @@ import { netMovementsAfter } from "@/lib/stocktake-batch";
 import { EXPLANATION_DRAFT, EXPLANATION_LOCKED, explanationNumbersChanged, listStocktakeSources, loadStocktakeSource, snapshotExplanation, stocktakeUnitCosts, type ExplanationLine, type StocktakeSourceType } from "@/lib/stocktake-explanation";
 import { compactFlowDocument, FLOW_DOCUMENT_LIMIT } from "@/lib/inventory-flow-list";
 import { postStocktakeAdjustments, resyncOpenStocktakes, resyncStocktake, unpostStocktakeAdjustments } from "@/lib/stocktake-resync";
-import { approveTransferRequest, buildTransferRequestLines, canReceiveTransfer, canSendTransfer, TRANSFER_APPROVED, TRANSFER_PENDING, TRANSFER_RETURNED } from "@/lib/inventory-transfer-request";
+import { approveTransferRequest, buildTransferRequestLines, canReceiveTransfer, canSendTransfer, dispatchTransferRequest, TRANSFER_APPROVED, TRANSFER_DISPATCH_REFERENCE, TRANSFER_PENDING, TRANSFER_RETURNED, undoTransferDispatch } from "@/lib/inventory-transfer-request";
 import {
   duplicatedInTrashMessage,
   findDeletedByUnique,
@@ -56,6 +56,8 @@ const derivedReferenceTypes: Record<string, string> = {
   STOCKTAKE: "phiếu kiểm kê",
   PURCHASE_ORDER: "đơn mua hàng",
   PRODUCTION: "lệnh chế biến",
+  // Phiếu chuyển đi của điều chuyển chờ duyệt (hàng đi đường, 26/10/2026): sửa / huỷ ở phiếu chờ duyệt.
+  [TRANSFER_DISPATCH_REFERENCE]: "phiếu điều chuyển chờ duyệt",
 };
 
 type InputLine = { itemId?: unknown; itemCode?: unknown; quantity?: unknown; actualQuantity?: unknown; inputQuantity?: unknown; unitCode?: unknown; inputUnitCode?: unknown; unitCost?: unknown; inputUnitCost?: unknown; vatRate?: unknown; vatAmount?: unknown; discountRate?: unknown; discountAmount?: unknown; wasteRate?: unknown; conversionRate?: unknown; reason?: unknown };
@@ -2438,9 +2440,9 @@ export async function POST(request: Request) {
      * Không cho điều chuyển nhóm FINISHED (postStockTransfer chặn tầng cuối).
      */
     /**
-     * Lập phiếu điều chuyển = GỬI CHỜ DUYỆT (khách chốt 03/10/2026): chưa đụng tồn kho / công nợ;
-     * nhà hàng nhận Duyệt mới ghi phiếu kho (APPROVE_TRANSFER_REQUEST). Bên chuyển chỉ cần quyền
-     * kho xuất — không cần quyền cửa hàng nhận như trước.
+     * Lập phiếu điều chuyển = GỬI CHỜ DUYỆT (khách chốt 03/10/2026). Từ 26/10/2026 trừ kho xuất NGAY
+     * theo ngày giờ lên phiếu (hàng sang kho "Hàng đi đường"); nhà hàng nhận Duyệt mới cộng kho nhận
+     * và sinh công nợ nội bộ (APPROVE_TRANSFER_REQUEST). Bên chuyển chỉ cần quyền kho xuất.
      */
     if (action === "TRANSFER_STOCK") {
       const branchCode = cleanText(body.branchCode);
@@ -2461,6 +2463,7 @@ export async function POST(request: Request) {
       const toBranchCode = (destinationWarehouse?.branch || branchCode).toUpperCase();
       const inputLines = linesFrom(body.lines);
       if (inputLines.length === 0) businessError("Cần ít nhất một dòng hàng điều chuyển");
+      if (await isPeriodLocked(requestDate, branchCode)) businessError("Kỳ kế toán của cửa hàng chuyển đã khóa");
 
       const requestedCode = cleanText(body.code);
       if (requestedCode && await findDeletedByUnique("InventoryTransaction", { code: requestedCode })) {
@@ -2469,7 +2472,7 @@ export async function POST(request: Request) {
       const created = await prisma.$transaction(async (tx) => {
         const lines = await buildTransferRequestLines(tx, inputLines);
         const code = requestedCode || await nextStockDocCode(tx, "DCK", requestDate);
-        return tx.inventoryTransferRequest.create({
+        const request = await tx.inventoryTransferRequest.create({
           data: {
             code,
             status: TRANSFER_PENDING,
@@ -2484,7 +2487,10 @@ export async function POST(request: Request) {
             createdBy: auth.session.name,
           },
         });
-      });
+        // Trừ kho xuất ngay — phiếu chuyển đi sang kho "Hàng đi đường" (khách 26/10/2026).
+        return dispatchTransferRequest(tx, request.id);
+      }, { timeout: 60000 });
+      await resyncStocktakesAfterChange({ branchCode, from: requestDate }, auth.session.name);
       await writeAuditLog({
         session: auth.session, module: menuHref, action: "REQUEST_TRANSFER",
         entityType: "InventoryTransferRequest", entityId: created.id, entityCode: created.code, branchCode,
@@ -2533,19 +2539,27 @@ export async function POST(request: Request) {
       if (current.status === TRANSFER_APPROVED) businessError(`Phiếu ${current.code} đã được duyệt nhận — sửa ở danh sách phiếu điều chuyển`);
       const inputLines = linesFrom(body.lines);
       if (body.lines !== undefined && inputLines.length === 0) businessError("Phiếu phải còn ít nhất một dòng hàng — muốn bỏ hết thì Huỷ phiếu");
-      const updated = await prisma.$transaction(async (tx) => tx.inventoryTransferRequest.update({
-        where: { id: current.id },
-        data: {
-          status: TRANSFER_PENDING,
-          requestDate: body.transactionDate ? toDate(body.transactionDate) : current.requestDate,
-          referenceCode: body.referenceCode !== undefined ? cleanText(body.referenceCode) || null : current.referenceCode,
-          note: body.note !== undefined ? cleanText(body.note) || null : current.note,
-          ...(inputLines.length > 0 ? { lines: await buildTransferRequestLines(tx, inputLines) } : {}),
-          returnedBy: null,
-          returnedAt: null,
-          returnedReason: null,
-        },
-      }));
+      const nextRequestDate = body.transactionDate ? toDate(body.transactionDate) : current.requestDate;
+      if (await isPeriodLocked(nextRequestDate, current.branchCode)) businessError("Kỳ kế toán của cửa hàng chuyển đã khóa");
+      const updated = await prisma.$transaction(async (tx) => {
+        // Gửi lại = đảo phiếu chuyển đi cũ (nếu còn) rồi ghi phiếu chuyển đi mới theo số / ngày giờ mới.
+        await undoTransferDispatch(tx, current, auth.session.name);
+        await tx.inventoryTransferRequest.update({
+          where: { id: current.id },
+          data: {
+            status: TRANSFER_PENDING,
+            requestDate: nextRequestDate,
+            referenceCode: body.referenceCode !== undefined ? cleanText(body.referenceCode) || null : current.referenceCode,
+            note: body.note !== undefined ? cleanText(body.note) || null : current.note,
+            ...(inputLines.length > 0 ? { lines: await buildTransferRequestLines(tx, inputLines) } : {}),
+            returnedBy: null,
+            returnedAt: null,
+            returnedReason: null,
+          },
+        });
+        return dispatchTransferRequest(tx, current.id);
+      }, { timeout: 60000 });
+      await resyncStocktakesAfterChange({ branchCode: current.branchCode, from: current.requestDate < nextRequestDate ? current.requestDate : nextRequestDate }, auth.session.name);
       await writeAuditLog({ session: auth.session, module: menuHref, action: "UPDATE_TRANSFER_REQUEST", entityType: "InventoryTransferRequest", entityId: updated.id, entityCode: updated.code, branchCode: updated.branchCode });
       return NextResponse.json({ request: updated });
     }
@@ -2556,7 +2570,12 @@ export async function POST(request: Request) {
       if (!current) businessError("Không tìm thấy phiếu điều chuyển chờ duyệt");
       if (!canSendTransfer(auth.session, current)) businessError("Chỉ nhà hàng / kho chuyển hàng được huỷ phiếu này");
       if (current.status === TRANSFER_APPROVED) businessError(`Phiếu ${current.code} đã được duyệt nhận — xoá ở danh sách phiếu điều chuyển`);
-      await prisma.inventoryTransferRequest.update({ where: { id: current.id }, data: { deletedAt: new Date(), deletedBy: auth.session.name } });
+      await prisma.$transaction(async (tx) => {
+        // Huỷ: hàng trên phiếu chuyển đi quay về kho xuất.
+        await undoTransferDispatch(tx, current, auth.session.name);
+        await tx.inventoryTransferRequest.update({ where: { id: current.id }, data: { deletedAt: new Date(), deletedBy: auth.session.name } });
+      }, { timeout: 60000 });
+      if (current.dispatchTransactionId) await resyncStocktakesAfterChange({ branchCode: current.branchCode, from: current.requestDate }, auth.session.name);
       await writeAuditLog({ session: auth.session, module: menuHref, action: "CANCEL_TRANSFER_REQUEST", entityType: "InventoryTransferRequest", entityId: current.id, entityCode: current.code, branchCode: current.branchCode });
       return NextResponse.json({ ok: true });
     }
@@ -2569,10 +2588,15 @@ export async function POST(request: Request) {
       if (current.status !== TRANSFER_PENDING) businessError(`Phiếu ${current.code} không ở trạng thái chờ duyệt`);
       const reason = cleanText(body.reason);
       if (!reason) businessError("Nhập lý do trả lại để bên chuyển biết cần sửa gì");
-      const updated = await prisma.inventoryTransferRequest.update({
-        where: { id: current.id },
-        data: { status: TRANSFER_RETURNED, returnedBy: auth.session.name, returnedAt: new Date(), returnedReason: reason },
-      });
+      const updated = await prisma.$transaction(async (tx) => {
+        // Trả lại: hàng về kho xuất (đảo phiếu chuyển đi); bên chuyển sửa & gửi lại thì trừ lại theo số mới.
+        await undoTransferDispatch(tx, current, auth.session.name);
+        return tx.inventoryTransferRequest.update({
+          where: { id: current.id },
+          data: { status: TRANSFER_RETURNED, returnedBy: auth.session.name, returnedAt: new Date(), returnedReason: reason },
+        });
+      }, { timeout: 60000 });
+      if (current.dispatchTransactionId) await resyncStocktakesAfterChange({ branchCode: current.branchCode, from: current.requestDate }, auth.session.name);
       await writeAuditLog({ session: auth.session, module: menuHref, action: "RETURN_TRANSFER_REQUEST", entityType: "InventoryTransferRequest", entityId: updated.id, entityCode: updated.code, branchCode: updated.toBranchCode, metadata: { reason } });
       return NextResponse.json({ request: updated });
     }
@@ -2586,13 +2610,12 @@ export async function POST(request: Request) {
       for (const branch of new Set([current.branchCode, current.toBranchCode])) {
         if (await isPeriodLocked(receivedDate, branch)) businessError(`Kỳ kế toán của cửa hàng ${branch} đã khóa`);
       }
-      const receivedQuantities = Array.isArray(body.receivedQuantities)
-        ? (body.receivedQuantities as unknown[]).map((value) => (value === null || value === undefined || String(value).trim() === "" ? null : toNumber(value)))
-        : [];
+      // Nhận đúng số bên chuyển gửi (khách 26/10/2026): sai số thì Trả lại để bên chuyển sửa.
       const result = await prisma.$transaction(
-        (tx) => approveTransferRequest(tx, { id: current.id, receivedDate, receivedQuantities, approvedBy: auth.session.name }),
+        (tx) => approveTransferRequest(tx, { id: current.id, receivedDate, approvedBy: auth.session.name }),
         { timeout: 60000 },
       );
+      await resyncStocktakesAfterChange({ branchCode: current.toBranchCode, from: receivedDate }, auth.session.name);
       await writeAuditLog({
         session: auth.session, module: menuHref, action: "APPROVE_TRANSFER_REQUEST",
         entityType: "InventoryTransaction", entityId: result.transaction.id, entityCode: result.transaction.code, branchCode: current.toBranchCode,
@@ -2900,6 +2923,12 @@ export async function PATCH(request: Request) {
         || Math.abs(purchaseCost - transaction.purchaseCost) > 0.5;
 
       if (body.lines !== undefined && editedLines.length === 0) businessError("Phiếu phải còn ít nhất một dòng mặt hàng");
+      // Phiếu NHẬN của điều chuyển hàng đi đường: số lượng / kho phải khớp phiếu chuyển đi — sửa ở đây là
+      // lệch kho đi đường. Sai thì xoá phiếu nhận (hàng về kho xuất) rồi lập điều chuyển mới.
+      if (isTransfer && (editedLines.length > 0 || warehouseCode !== transaction.warehouseCode || toWarehouseCode !== transaction.toWarehouseCode)
+        && await prisma.inventoryTransferRequest.findFirst({ where: { transactionId: transaction.id, dispatchTransactionId: { not: null } }, select: { id: true } })) {
+        businessError(`Phiếu ${transaction.code} là phiếu nhận của điều chuyển đã duyệt — không sửa số lượng / kho được. Sai thì xoá phiếu này (hàng về lại kho xuất) rồi lập phiếu điều chuyển mới.`);
+      }
       // Điều chuyển đã rã BOM: phiếu chế biến của lần rã tính theo đúng số / kho / ngày này.
       const transferRun = explodedRunOf(transaction.explosionStatus);
       if (rewritesLines && transferRun) {
@@ -3270,6 +3299,15 @@ export async function DELETE(request: Request) {
       if (transferRun) {
         businessError(`Phiếu ${transaction.code} đã rã BOM trong lần rã ${transferRun}. Hoàn tác lần rã đó ở tab Chế biến trước khi xoá phiếu.`);
       }
+      // Phiếu NHẬN của điều chuyển hàng đi đường: xoá là bỏ cả chuyến — phiếu chuyển đi cũng phải đảo được.
+      const receivedRequest = transaction.transactionType === "DIEU_CHUYEN"
+        ? await prisma.inventoryTransferRequest.findFirst({ where: { transactionId: transaction.id, dispatchTransactionId: { not: null } } })
+        : null;
+      if (receivedRequest?.dispatchTransactionId) {
+        const dispatch = await prisma.inventoryTransaction.findUnique({ where: { id: receivedRequest.dispatchTransactionId }, select: { code: true, explosionStatus: true } });
+        const dispatchRun = explodedRunOf(dispatch?.explosionStatus);
+        if (dispatchRun) businessError(`Phiếu chuyển đi ${dispatch?.code} của ${transaction.code} đã rã BOM trong lần rã ${dispatchRun}. Hoàn tác lần rã đó ở tab Chế biến trước khi xoá phiếu.`);
+      }
 
       // Lịch phân bổ đồng phục đã ghi nhận kỳ nào thì chi phí đã lên sổ — bỏ ghi nhận trước.
       // Chưa ghi nhận thì lịch xoá mềm / khôi phục theo phiếu (cascade ở lib/soft-delete).
@@ -3314,6 +3352,11 @@ export async function DELETE(request: Request) {
       // Phiếu điều chuyển đã duyệt nhận: xoá phiếu kho thì phiếu chờ duyệt gốc cũng đi theo (mã DCK
       // đã dùng, không đưa về chờ duyệt được) — cần chuyển lại thì lập phiếu mới.
       if (transaction.transactionType === "DIEU_CHUYEN") {
+        if (receivedRequest) {
+          // Hàng về lại kho xuất: đảo phiếu chuyển đi (kho xuất → kho đi đường) của chuyến này.
+          await prisma.$transaction((tx) => undoTransferDispatch(tx, receivedRequest, auth.session.name), { timeout: 60000 });
+          await resyncStocktakesAfterChange({ branchCode: receivedRequest.branchCode, from: receivedRequest.requestDate }, auth.session.name);
+        }
         await prisma.inventoryTransferRequest.updateMany({ where: { transactionId: transaction.id }, data: { deletedAt: new Date(), deletedBy: auth.session.name } });
       }
       await writeAuditLog({ session: auth.session, module: menuHref, action: "REVERSE_STOCK", entityType: "InventoryTransaction", entityId: transaction.id, entityCode: transaction.code, branchCode: transaction.branchCode, metadata: { transactionType: transaction.transactionType, reversals, internalDebtCodes } });

@@ -297,6 +297,11 @@ type PriceSuggestion = { price: number; source: string; supplierName?: string };
  * Giá đề xuất theo thứ tự ưu tiên: báo giá đang chọn -> báo giá mới nhất -> PO gần nhất
  * -> giá vốn bình quân. Dùng cho cả màn hình (GET) lẫn tạo PR từ mẫu (giá dự kiến tự điền).
  */
+/** Phần chung của một dòng PO tạo mới lúc nhận hàng (dòng thêm ngay trên phiếu nhận). */
+function receiveLineTemplate(orderId: string) {
+  return { orderId, receivedQuantity: 0, imageUrl: null as string | null };
+}
+
 async function buildPriceSuggestions(itemIds?: string[]) {
   const itemFilter = itemIds && itemIds.length > 0 ? { itemId: { in: itemIds } } : {};
   const [quoteLines, orderLines, balances] = await Promise.all([
@@ -1695,11 +1700,55 @@ export async function PATCH(request: Request) {
       return { ...line, receiveQuantity: 0 };
     })
       .map((line) => (requestedPriceByLineId.has(line.id) ? { ...line, unitCost: (requestedPriceByLineId.get(line.id) as number) / purchaseLineRate(line), priceChanged: true } : { ...line, priceChanged: false }))
-      .filter((line) => line.receiveQuantity > 0);
+      .filter((line) => line.receiveQuantity > 0)
+      .map((line) => ({ ...line, isNew: false }));
+    // Nhận THỪA được (khách 26/10/2026): rau, thịt, cá cân lên hay lệch so với số đặt — không chặn
+    // "vượt số còn lại" nữa; dòng nhận đủ/thừa thì coi như xong.
+
+    /**
+     * Dòng THÊM ngay lúc nhận (khách 26/10/2026): NCC giao thêm hàng gọi bổ sung chung phiếu — thành
+     * dòng mới của chính PO này (số đặt = số nhận) để cuối tháng đối chiếu công nợ NCC theo một PO.
+     */
+    const extraInput = Array.isArray(body.extraLines) ? (body.extraLines as Array<Record<string, unknown>>) : [];
+    const extraItems = extraInput.length === 0 ? [] : await prisma.inventoryItem.findMany({
+      where: { id: { in: extraInput.map((row) => cleanText(row.itemId)).filter(Boolean) } },
+      include: { unitConversions: { where: { deletedAt: null } } },
+    });
+    const extraItemById = new Map(extraItems.map((item) => [item.id, item]));
+    const extraLines = extraInput.flatMap((row, index) => {
+      const item = extraItemById.get(cleanText(row.itemId));
+      if (!cleanText(row.itemId)) return [];
+      if (!item) businessError("Có mặt hàng thêm lúc nhận không còn trong danh mục — tải lại trang rồi chọn lại.");
+      if (item.status !== "ACTIVE") businessError(`Mặt hàng ${item.code} đang ngưng hoạt động`);
+      if (item.itemType === "FINISHED") businessError(`${item.code} là thành phẩm — không mua qua PO.`);
+      const quantity = toNumber(row.quantity);
+      if (!(quantity > 0)) businessError(`Nhập số lượng nhận cho mặt hàng thêm ${item.name}`);
+      const chosen = cleanText(row.unitCode);
+      const allowed = chosen && purchaseUnitOptions(item.unit, item.unitConversions).some((option) => option.unitCode.toUpperCase() === chosen.toUpperCase());
+      const { unitCode, conversionRate } = defaultPurchaseUnit(item.unit, item.unitConversions, allowed ? chosen : item.unit);
+      const id = `extra-${index}`;
+      const vat = parseVatRate(row.vatRate);
+      if (!vat.ok) businessError(`Thuế suất GTGT [${cleanText(row.vatRate)}] không hợp lệ`);
+      requestedTermsByLineId.set(id, { vatRate: vat.ok ? vat.rate : null, discountRate: cleanText(row.discountRate), discountAmount: cleanText(row.discountAmount) });
+      if (cleanText(row.assetGroup)) requestedAssetGroupByLineId.set(id, cleanText(row.assetGroup).toUpperCase());
+      const unitCost = toNumber(row.unitCost) / conversionRate;
+      return [{
+        ...receiveLineTemplate(order.id),
+        id,
+        itemId: item.id,
+        item,
+        unitCode,
+        conversionRate,
+        receiveQuantity: quantity * conversionRate,
+        orderedQuantity: quantity * conversionRate,
+        unitCost,
+        totalCost: quantity * conversionRate * unitCost,
+        priceChanged: false,
+        isNew: true,
+      }];
+    });
+    receiveLines.push(...extraLines);
     if (receiveLines.length === 0) businessError("Không có số lượng cần nhận");
-    for (const line of receiveLines) {
-      if (line.receiveQuantity > line.orderedQuantity - line.receivedQuantity + 1e-6) businessError("Số lượng nhận vượt số lượng còn lại của PO");
-    }
     if (receiveLines.some((line) => ["TOOL", "ASSET"].includes(line.item.itemType)) && !order.departmentCode) {
       businessError("PO có Tài sản/CCDC phải chọn Phòng ban để hệ thống tự sinh mã");
     }
@@ -1794,6 +1843,15 @@ export async function PATCH(request: Request) {
       const assetValueByLineId = new Map(assetLines.map((line, index) => [line.id, assetFigures[index].afterTax]));
       receivedValue += assetFigures.reduce((sum, row) => sum + row.afterTax, 0);
       for (const line of receiveLines) {
+        if (line.isNew) {
+          await tx.purchaseOrderLine.create({
+            data: {
+              orderId: order.id, itemId: line.itemId, orderedQuantity: line.orderedQuantity, receivedQuantity: line.receiveQuantity,
+              unitCost: line.unitCost, totalCost: line.totalCost, unitCode: line.unitCode, conversionRate: line.conversionRate,
+            },
+          });
+          continue;
+        }
         await tx.purchaseOrderLine.update({
           where: { id: line.id },
           data: {
@@ -1836,7 +1894,7 @@ export async function PATCH(request: Request) {
         where: { id: order.id },
         data: {
           status: completed ? "COMPLETED" : "PARTIALLY_RECEIVED",
-          ...(receiveLines.some((line) => line.priceChanged) ? { totalAmount: remainingLines.reduce((sum, line) => sum + line.totalCost, 0) } : {}),
+          ...(receiveLines.some((line) => line.priceChanged || line.isNew) ? { totalAmount: remainingLines.reduce((sum, line) => sum + line.totalCost, 0) } : {}),
         },
       });
       // Cộng dồn bằng `increment` chứ không đọc-rồi-ghi: hai lần nhận hàng chạy song song mà

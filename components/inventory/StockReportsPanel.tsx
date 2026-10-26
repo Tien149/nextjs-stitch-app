@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { DateInput } from "@/components/DateInput";
 import CopyableText from "@/components/CopyableText";
+import { SearchableSelect } from "@/components/SearchableSelect";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
 import { movementTypeLabel } from "@/lib/inventory-movement-labels";
 import {
@@ -18,7 +19,11 @@ import {
  *    xuất theo loại giao dịch.
  * 3. Báo cáo phát sinh: chi tiết phát sinh, tổng hợp / chi tiết nhập, tổng hợp / chi tiết xuất.
  * Bảng chỉ vẽ tối đa RENDER_LIMIT dòng; Xuất Excel lấy đủ mọi dòng.
+ * Từ 26/10/2026 tab Tồn kho chia 3 tab nhỏ như Định lượng (`section`): bộ lọc dùng chung luôn hiện,
+ * mỗi tab nhỏ chỉ vẽ một nhóm báo cáo; bảng tồn real time do trang cha vẽ.
  */
+
+export type StockReportSection = "nxt" | "movements" | "realtime";
 
 type Warehouse = { code: string; name?: string | null; branch?: string | null };
 type Range = { from: string; to: string };
@@ -36,6 +41,8 @@ type Props = {
   search: string; setSearch: (value: string) => void;
   range: Range; setRange: (value: Range) => void;
   reload: () => void | Promise<unknown>;
+  /** Tab nhỏ đang mở — chỉ vẽ nhóm báo cáo đó (bộ lọc chung luôn hiện). */
+  section: StockReportSection;
 };
 
 const RENDER_LIMIT = 1000;
@@ -210,7 +217,9 @@ const REPORTS: Array<{ id: ReportKind; label: string }> = [
 ];
 
 export default function StockReportsPanel(props: Props) {
-  const { summary, movements, warehouses, branchOf, storeOptions, storeLabel, store, setStore, warehouse, setWarehouse, goodsGroup, setGoodsGroup, search, setSearch, range, setRange, reload } = props;
+  const { summary, movements, warehouses, branchOf, storeOptions, storeLabel, store, setStore, warehouse, setWarehouse, goodsGroup, setGoodsGroup, search, setSearch, range, setRange, reload, section } = props;
+  /** Lọc NCC / đối tác của báo cáo nhập / xuất (khách 26/10/2026): ALL, mã đối tác, hoặc NONE = phiếu không khai. */
+  const [partner, setPartner] = useState("ALL");
   const [view, setView] = useState<NxtView>("store");
   const [hideEmpty, setHideEmpty] = useState(true);
   const [report, setReport] = useState<ReportKind>("in-summary");
@@ -297,7 +306,14 @@ export default function StockReportsPanel(props: Props) {
     if (direction && moved.direction !== direction) return false;
     if (effectiveType !== "ALL" && moved.type !== effectiveType) return false;
     return true;
-  }), [movements, range.from, range.to, direction, effectiveType]).filter((row) => passes(row.warehouseCode, row.itemCode, row.itemName, row.goodsGroup));
+  }), [movements, range.from, range.to, direction, effectiveType])
+    .filter((row) => passes(row.warehouseCode, row.itemCode, row.itemName, row.goodsGroup))
+    .filter((row) => partner === "ALL" || (partner === "NONE" ? !row.partnerCode : (row.partnerCode || "").toUpperCase() === partner));
+  const partnerOptions = useMemo(() => {
+    const byCode = new Map<string, string>();
+    for (const row of movements) if (row.partnerCode) byCode.set(row.partnerCode.toUpperCase(), row.partnerName || row.partnerCode);
+    return [...byCode.entries()].sort((a, b) => a[1].localeCompare(b[1], "vi")).map(([code, name]) => ({ value: code, label: name, subLabel: code }));
+  }, [movements]);
 
   const typeText = (row: MovementInput) => {
     const { type } = movementDirection(row);
@@ -386,7 +402,7 @@ export default function StockReportsPanel(props: Props) {
         <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
           <div>
             <h2 className="font-bold text-slate-800">Bộ lọc báo cáo kho</h2>
-            <p className="text-xs text-slate-500 mt-0.5">Áp cho bảng Nhập - Xuất - Tồn, các báo cáo nhập / xuất và bảng tồn hiện tại bên dưới.</p>
+            <p className="text-xs text-slate-500 mt-0.5">Áp chung cho cả 3 tab: Nhập - Xuất - Tồn, Báo cáo nhập / xuất kho và Tồn kho hiện tại.</p>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-[11px] text-slate-500">
@@ -438,6 +454,7 @@ export default function StockReportsPanel(props: Props) {
         </div>
       </section>
 
+      {section === "nxt" && (
       <section className="table-panel shadow-sm mb-5">
         <div className="p-5 pb-3 flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -456,7 +473,9 @@ export default function StockReportsPanel(props: Props) {
         </div>
         <ReportTable columns={nxtColumns} rows={nxtRows} rowKey={(row) => row.key} emptyText="Không có mặt hàng khớp bộ lọc." />
       </section>
+      )}
 
+      {section === "movements" && (
       <section className="table-panel shadow-sm mb-5">
         <div className="p-5 pb-3 flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -474,11 +493,23 @@ export default function StockReportsPanel(props: Props) {
               {typeOptions.map((type) => <option key={type} value={type}>{movementTypeLabel(type)}</option>)}
             </select>
           </label>
+          {/* Tìm theo NCC / đối tác (khách 26/10/2026) — gõ tên hoặc mã. */}
+          <label className="text-xs font-bold text-slate-500 min-w-[240px]">Nhà cung cấp / đối tác
+            <div className="mt-1">
+              <SearchableSelect
+                value={partner}
+                onChange={(value) => setPartner(value || "ALL")}
+                options={[{ value: "ALL", label: "Tất cả NCC / đối tác" }, ...partnerOptions, { value: "NONE", label: "(Phiếu không khai NCC / đối tác)" }]}
+                searchPlaceholder="Gõ tên hoặc mã NCC..."
+              />
+            </div>
+          </label>
         </div>
         {isSummary
           ? <ReportTable columns={summaryColumns} rows={summaryRows} rowKey={(row) => row.key || "_"} emptyText="Không có phát sinh khớp bộ lọc." />
           : <ReportTable columns={detailColumns} rows={reportRows} rowKey={(row, index) => `${row.transactionId}-${row.itemCode}-${row.warehouseCode}-${index}`} emptyText="Không có phát sinh khớp bộ lọc." />}
       </section>
+      )}
     </>
   );
 }

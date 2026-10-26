@@ -790,8 +790,11 @@ model InventoryTransferRequest {
   returnedBy      String?
   returnedAt      DateTime?
   returnedReason  String?
-  /// Phiếu DIEU_CHUYEN đã ghi khi duyệt.
+  /// Phiếu DIEU_CHUYEN đã ghi khi duyệt (kho đi đường → kho nhận, từ 26/10/2026; phiếu cũ: kho xuất → kho nhận).
   transactionId   String?
+  /// Phiếu CHUYỂN ĐI (kho xuất → kho "Hàng đi đường") ghi ngay lúc lập / gửi lại (khách 26/10/2026): trừ kho
+  /// xuất theo ngày giờ lên phiếu. Trả lại / huỷ thì đảo phiếu này. Xem lib/inventory-transfer-request.ts.
+  dispatchTransactionId String?
   deletedAt       DateTime?
   deletedBy       String?
 

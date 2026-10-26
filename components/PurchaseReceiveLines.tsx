@@ -3,13 +3,15 @@
 import type { ReactNode } from "react";
 import { MoneyInput } from "@/components/MoneyInput";
 import { QuantityInput } from "@/components/QuantityInput";
+import { SearchableSelect } from "@/components/SearchableSelect";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
 import { parseVatRate, VAT_RATE_CODES } from "@/lib/inventory-vat";
 import { purchaseLineFigures, resolveDiscount, type PurchaseLineFigures } from "@/lib/purchase-discount";
 
 /** Ô nhập của một dòng nhận hàng — chuỗi thô như người dùng gõ. */
 export type ReceiveLineValue = { quantity: string; price: string; discountRate: string; discountAmount: string; vatRate: string };
-export type ReceiveLineInfo = { id: string; name: string; unit: string; remaining: number; hint: string; badge?: ReactNode; extra?: ReactNode };
+/** `isExtra`: dòng THÊM lúc nhận (NCC giao thêm chung phiếu, khách 26/10/2026) — không có "còn phải nhận". */
+export type ReceiveLineInfo = { id: string; name: string; unit: string; remaining: number; hint: string; badge?: ReactNode; extra?: ReactNode; isExtra?: boolean };
 
 export const emptyReceiveTerms = { discountRate: "", discountAmount: "", vatRate: "KKKNT" };
 
@@ -48,12 +50,15 @@ export function receiveLineErrors(lines: ReceiveLineInfo[], values: Record<strin
  * số tiền, sửa được), thuế suất, tiền thuế, sau thuế, chi phí mua phân bổ, trị giá mua hàng.
  * Dùng chung cho màn Mua hàng (bảng rộng trên máy tính) và form Nhập kho (`cardsOnly`, cột hẹp).
  */
-export function PurchaseReceiveLines({ lines, values, onChange, purchaseCost, cardsOnly = false }: {
+export function PurchaseReceiveLines({ lines, values, onChange, purchaseCost, cardsOnly = false, addOptions, onAdd }: {
   lines: ReceiveLineInfo[];
   values: Record<string, ReceiveLineValue>;
   onChange: (lineId: string, patch: Partial<ReceiveLineValue>) => void;
   purchaseCost: number;
   cardsOnly?: boolean;
+  /** Mặt hàng chọn được để THÊM dòng ngay lúc nhận; không truyền thì không có ô thêm. */
+  addOptions?: Array<{ value: string; label: string; subLabel?: string }>;
+  onAdd?: (itemId: string) => void;
 }) {
   const { rows, total } = receiveFigures(lines, values, purchaseCost);
   const valueOf = (lineId: string) => values[lineId] || { quantity: "", price: "", ...emptyReceiveTerms };
@@ -103,7 +108,7 @@ export function PurchaseReceiveLines({ lines, values, onChange, purchaseCost, ca
           <div key={line.id} className="space-y-2 rounded-xl border border-slate-200 p-3">
             <div className="min-w-0">
               <p className="font-bold text-sm leading-snug">{line.name} {line.badge}</p>
-              <p className="text-xs text-slate-500">Còn phải nhận: <b>{qty(line.remaining)} {line.unit}</b> · {line.hint}</p>
+              <p className="text-xs text-slate-500">{line.isExtra ? line.hint : <>Còn phải nhận: <b>{qty(line.remaining)} {line.unit}</b> · {line.hint}</>}</p>
             </div>
             <div className="grid grid-cols-2 gap-2 text-[11px] font-bold text-slate-500">
               <label className="block">SL nhận ({line.unit}){quantityInput(line)}</label>
@@ -125,7 +130,13 @@ export function PurchaseReceiveLines({ lines, values, onChange, purchaseCost, ca
       })}
     </div>
   );
-  if (cardsOnly) return cards;
+  // Ô thêm dòng: NCC giao thêm hàng gọi bổ sung, nhận chung phiếu PO này (khách 26/10/2026).
+  const addPicker = addOptions && onAdd ? (
+    <div className="mt-2">
+      <SearchableSelect value="" onChange={(itemId) => { if (itemId) onAdd(itemId); }} options={addOptions} placeholder="+ Thêm mặt hàng NCC giao thêm..." />
+    </div>
+  ) : null;
+  if (cardsOnly) return <>{cards}{addPicker}</>;
 
   const head = ["Mặt hàng", "SL nhận", "Đơn giá", "Thành tiền trước thuế", "CK %", "Tiền CK", "Thuế suất", "Tiền thuế", "Thành tiền sau thuế", "CP mua phân bổ", "Trị giá mua hàng"];
   return (
@@ -143,7 +154,7 @@ export function PurchaseReceiveLines({ lines, values, onChange, purchaseCost, ca
                 <tr key={line.id} className="border-t border-slate-100 align-top">
                   <td className="px-2 py-2 min-w-[180px]">
                     <p className="font-bold text-slate-800">{line.name} {line.badge}</p>
-                    <p className="text-[11px] text-slate-500">Còn {qty(line.remaining)} {line.unit} · {line.hint}</p>
+                    <p className="text-[11px] text-slate-500">{line.isExtra ? line.hint : `Còn ${qty(line.remaining)} ${line.unit} · ${line.hint}`}</p>
                     {line.extra}
                   </td>
                   <td className="px-1 py-2 w-24">{quantityInput(line)}</td>
@@ -175,6 +186,7 @@ export function PurchaseReceiveLines({ lines, values, onChange, purchaseCost, ca
           </tfoot>
         </table>
       </div>
+      {addPicker}
     </>
   );
 }

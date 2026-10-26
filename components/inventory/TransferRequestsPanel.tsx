@@ -10,9 +10,9 @@ import { vnDateTimeParts, vnDateTimeValue } from "@/lib/date-range";
 import { ActionIcon } from "@/components/ActionIcon";
 /**
  * Khung "Phiếu điều chuyển chờ duyệt" ở tab Điều chuyển (khách chốt 03/10/2026) — xem
- * lib/inventory-transfer-request.ts. Nhà hàng chuyển lập phiếu; nhà hàng nhận đếm hàng rồi Duyệt
- * nhận (sửa được số thực nhận, chọn ngày nhận) hoặc Trả lại kèm lý do. Bên chuyển sửa / huỷ phiếu
- * chưa duyệt. Máy chủ gửi sẵn cờ canApprove / canEdit theo quyền cửa hàng + kho của người xem.
+ * lib/inventory-transfer-request.ts. Nhà hàng chuyển lập phiếu (trừ kho xuất ngay, hàng đi đường);
+ * nhà hàng nhận Duyệt nhận đúng số gửi theo ngày giờ nhận, sai thì Trả lại kèm lý do (26/10/2026).
+ * Bên chuyển sửa & gửi lại / huỷ phiếu chưa duyệt. Máy chủ gửi sẵn cờ canApprove / canEdit theo quyền cửa hàng + kho của người xem.
  */
 export type TransferRequestLine = {
   itemId: string;
@@ -49,7 +49,9 @@ type Props = {
   onAction: (body: object, success: string) => Promise<{ ok: boolean; error?: string }>;
 };
 
-const today = () => new Date().toISOString().slice(0, 10);
+// Ngày / giờ hiện tại theo giờ Việt Nam — giờ nhận mặc định là lúc bấm (kiểm kê chốt theo giờ, 26/10/2026).
+const today = () => new Date(Date.now() + 7 * 3_600_000).toISOString().slice(0, 10);
+const nowTime = () => new Date(Date.now() + 7 * 3_600_000).toISOString().slice(11, 16);
 const lineUnit = (line: TransferRequestLine) => line.inputUnitCode || line.unit;
 
 type Dialog =
@@ -87,7 +89,7 @@ export default function TransferRequestsPanel({ requests, warehouseName, onActio
   const submitDialog = async () => {
     if (!dialog) return;
     if (dialog.kind === "approve") {
-      await run({ action: "APPROVE_TRANSFER_REQUEST", id: dialog.request.id, receivedDate: vnDateTimeValue(dialog.date, dialog.time), receivedQuantities: dialog.received }, `Đã duyệt nhận phiếu ${dialog.request.code} — tồn kho hai bên đã cập nhật.`);
+      await run({ action: "APPROVE_TRANSFER_REQUEST", id: dialog.request.id, receivedDate: vnDateTimeValue(dialog.date, dialog.time) }, `Đã duyệt nhận phiếu ${dialog.request.code} — tồn kho hai bên đã cập nhật.`);
     } else if (dialog.kind === "return") {
       await run({ action: "RETURN_TRANSFER_REQUEST", id: dialog.request.id, reason: dialog.reason }, `Đã trả lại phiếu ${dialog.request.code} cho bên chuyển.`);
     } else {
@@ -113,8 +115,8 @@ export default function TransferRequestsPanel({ requests, warehouseName, onActio
             Phiếu điều chuyển chờ duyệt <span className="text-amber-700">({requests.length})</span>
           </h2>
           <p className="text-xs text-slate-500 mt-1 max-w-2xl">
-            Hàng đang đi đường: chưa trừ kho chuyển, chưa cộng kho nhận. Nhà hàng nhận đếm hàng rồi <b>Duyệt nhận</b> (sửa được số thực nhận)
-            hoặc <b>Trả lại</b> kèm lý do; bên chuyển sửa rồi gửi lại.
+            Hàng đang đi đường: <b>đã trừ kho chuyển</b> theo ngày giờ lên phiếu, chưa cộng kho nhận. Nhà hàng nhận đếm hàng rồi <b>Duyệt nhận</b> (nhận đúng số gửi)
+            hoặc <b>Trả lại</b> kèm lý do — hàng về lại kho chuyển, bên chuyển sửa rồi gửi lại.
           </p>
         </div>
         {waitingForMe > 0 && (
@@ -169,7 +171,7 @@ export default function TransferRequestsPanel({ requests, warehouseName, onActio
                   <div className="flex flex-wrap justify-end gap-1.5">
                     {request.canApprove && request.status === "PENDING" && (
                       <>
-                        <LabeledAction label="Duyệt nhận"><ActionIcon kind="approve" title="Duyệt nhận" onClick={() => openDialog({ kind: "approve", request, date: today(), time: "", received: request.lines.map((line) => String(line.inputQuantity)) })} /></LabeledAction>
+                        <LabeledAction label="Duyệt nhận"><ActionIcon kind="approve" title="Duyệt nhận" onClick={() => openDialog({ kind: "approve", request, date: today(), time: nowTime(), received: request.lines.map((line) => String(line.inputQuantity)) })} /></LabeledAction>
                         <LabeledAction label="Trả lại"><ActionIcon kind="cancel" title="Trả lại" onClick={() => openDialog({ kind: "return", request, reason: "" })} /></LabeledAction>
                       </>
                     )}
@@ -241,16 +243,19 @@ export default function TransferRequestsPanel({ requests, warehouseName, onActio
                   </div>
                   {dialog.kind === "approve" && (
                     <p className="text-xs text-slate-500">
-                      Phiếu kho ghi theo <b>ngày nhận</b> và <b>số thực nhận</b>: trừ kho chuyển, cộng kho nhận, liên nhà hàng thì sinh công nợ nội bộ.
-                      Dòng thực nhận 0 sẽ bị bỏ.
+                      Cộng vào kho nhận <b>đúng số bên chuyển gửi</b> theo <b>ngày giờ nhận</b>; liên nhà hàng thì sinh công nợ nội bộ.
+                      Số lượng không khớp thì bấm <b>Trả lại</b> để bên chuyển sửa.
                     </p>
                   )}
+                  {/* Phiếu dài (khách 26/10/2026): đánh số dòng + tổng số mặt hàng để nhà hàng nhận dò từng dòng. */}
+                  <p className="text-xs font-bold text-slate-600">{dialog.request.lines.length} mặt hàng</p>
                   <table className="w-full text-sm">
                     <thead className="text-xs text-slate-500 uppercase border-b border-slate-200">
                       <tr>
+                        <th className="py-2 pr-2 text-left w-8">#</th>
                         <th className="py-2 text-left">Mặt hàng</th>
-                        <th className="py-2 text-right">{dialog.kind === "approve" ? "SL chuyển" : "ĐVT"}</th>
-                        <th className="py-2 text-right w-36">{dialog.kind === "approve" ? "SL thực nhận" : "Số lượng"}</th>
+                        <th className="py-2 text-right">ĐVT</th>
+                        <th className="py-2 text-right w-36">Số lượng</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -259,10 +264,11 @@ export default function TransferRequestsPanel({ requests, warehouseName, onActio
                         const differs = dialog.kind === "approve" && Number(values[index]) !== line.inputQuantity;
                         return (
                           <tr key={line.itemId} className="border-b border-slate-100">
+                            <td className="py-2 pr-2 text-slate-400 tabular-nums">{index + 1}</td>
                             <td className="py-2 pr-2">{line.itemName}<small className="block text-slate-400">{line.itemCode}</small></td>
-                            <td className="py-2 pr-2 text-right tabular-nums">{dialog.kind === "approve" ? `${qty(line.inputQuantity)} ${lineUnit(line)}` : lineUnit(line)}</td>
+                            <td className="py-2 pr-2 text-right">{lineUnit(line)}</td>
                             <td className="py-2 text-right">
-                              <input
+                              {dialog.kind === "approve" ? <b className="tabular-nums">{qty(line.inputQuantity)}</b> : <input
                                 type="number"
                                 step="any"
                                 min="0"
@@ -271,10 +277,10 @@ export default function TransferRequestsPanel({ requests, warehouseName, onActio
                                 onChange={(event) => {
                                   const next = [...values];
                                   next[index] = event.target.value;
-                                  setDialog(dialog.kind === "approve" ? { ...dialog, received: next } : { ...dialog, quantities: next });
+                                  setDialog({ ...dialog, quantities: next });
                                 }}
                                 required
-                              />
+                              />}
                             </td>
                           </tr>
                         );
@@ -295,8 +301,12 @@ export default function TransferRequestsPanel({ requests, warehouseName, onActio
             </div>
 
             {error && <p className="mx-5 mb-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>}
-            <div className="p-5 border-t border-slate-200 flex justify-end gap-2">
+            {/* Nút luôn nằm ở đáy khung: phiếu dài kiểm xong là bấm, không phải kéo xuống cuối. */}
+            <div className="sticky bottom-0 p-4 sm:p-5 border-t border-slate-200 bg-white flex justify-end gap-2">
               <button type="button" onClick={() => setDialog(null)} className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50">Đóng</button>
+              {dialog.kind === "approve" && (
+                <button type="button" onClick={() => openDialog({ kind: "return", request: dialog.request, reason: "" })} className="rounded-lg border border-rose-200 bg-white px-4 py-2 text-sm font-bold text-rose-600 hover:bg-rose-50">Trả lại</button>
+              )}
               <button
                 type="submit"
                 disabled={busy}

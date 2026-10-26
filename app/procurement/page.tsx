@@ -203,6 +203,8 @@ export default function ProcurementPage() {
   /** Chiết khấu + thuế suất từng dòng lúc nhận (khách 26/10/2026) và lỗi hiện NGAY TRONG hộp thoại. */
   const [receiveTerms, setReceiveTerms] = useState<Record<string, typeof emptyReceiveTerms>>({});
   const [receiveError, setReceiveError] = useState("");
+  /** Dòng THÊM lúc nhận (NCC giao thêm chung phiếu, khách 26/10/2026): khoá dòng + mặt hàng + ĐVT chọn. */
+  const [receiveExtras, setReceiveExtras] = useState<Array<{ key: string; itemId: string; unitCode: string }>>([]);
   const [receiving, setReceiving] = useState(false);
   /** Đơn đang mở hộp thoại Gửi NCC. */
   const [sendingOrder, setSendingOrder] = useState<PurchaseOrder | null>(null);
@@ -832,6 +834,7 @@ export default function ProcurementPage() {
     setReceivePurchaseCost("");
     setReceiveTerms({});
     setReceiveError("");
+    setReceiveExtras([]);
     setReceivingOrder(order);
   };
 
@@ -872,10 +875,54 @@ export default function ProcurementPage() {
       ) : undefined,
     }];
   });
-  const receiveLineValues = (order: PurchaseOrder): Record<string, ReceiveLineValue> => Object.fromEntries(order.lines.map((line) => [line.id, {
-    quantity: receiveQuantities[line.id] ?? "",
-    price: receivePrices[line.id] ?? "",
-    ...(receiveTerms[line.id] || emptyReceiveTerms),
+  const receiveExtraInfos = (): ReceiveLineInfo[] => receiveExtras.flatMap((extra) => {
+    const item = data.items.find((candidate) => candidate.id === extra.itemId);
+    if (!item) return [];
+    const isAsset = ["TOOL", "ASSET"].includes(item.itemType);
+    const groupOptions = isAsset ? assetGroupOptionsFor(item.itemType) : [];
+    return [{
+      id: extra.key,
+      name: item.name,
+      unit: extra.unitCode,
+      remaining: 0,
+      isExtra: true,
+      hint: "Thêm lúc nhận — vào chung PO này",
+      badge: isAsset ? <span className="status bg-indigo-50 text-indigo-700 ml-1">Tài sản/CCDC</span> : undefined,
+      extra: (
+        <div className="mt-1 flex flex-wrap items-center gap-2">
+          <select
+            className="control !mt-0 !h-8 !py-0 w-auto text-xs"
+            value={extra.unitCode}
+            onChange={(e) => { const unitCode = e.target.value; setReceiveExtras((current) => current.map((row) => row.key === extra.key ? { ...row, unitCode } : row)); }}
+            aria-label={`ĐVT ${item.name}`}
+          >
+            {purchaseUnitOptions(item.unit, item.unitConversions).map((option) => <option key={option.unitCode} value={option.unitCode}>{option.label}</option>)}
+          </select>
+          {isAsset && (
+            <select className="control !mt-0 !h-8 !py-0 w-auto text-xs" value={receiveAssetGroups[extra.key] || ""} onChange={(e) => setReceiveAssetGroups({ ...receiveAssetGroups, [extra.key]: e.target.value })} aria-label={`Nhóm tài sản của ${item.name}`}>
+              <option value="">-- Nhóm tài sản --</option>
+              {groupOptions.map((group) => <option key={group.code} value={group.code}>{group.code} - {group.name}</option>)}
+            </select>
+          )}
+          <button type="button" className="text-xs font-bold text-rose-600 hover:underline" onClick={() => setReceiveExtras((current) => current.filter((row) => row.key !== extra.key))}>Bỏ dòng</button>
+        </div>
+      ),
+    }];
+  });
+  const addReceiveExtra = (itemId: string) => {
+    const item = data.items.find((candidate) => candidate.id === itemId);
+    if (!item) return;
+    const unit = defaultPurchaseUnit(item.unit, item.unitConversions);
+    const key = `extra-${Date.now()}`;
+    const suggested = data.priceSuggestions[itemId]?.price || 0;
+    setReceiveExtras((current) => [...current, { key, itemId, unitCode: unit.unitCode }]);
+    setReceiveQuantities((current) => ({ ...current, [key]: "" }));
+    setReceivePrices((current) => ({ ...current, [key]: suggested > 0 ? String(Math.round(suggested * unit.conversionRate * 100) / 100) : "" }));
+  };
+  const receiveLineValues = (order: PurchaseOrder): Record<string, ReceiveLineValue> => Object.fromEntries([...order.lines.map((line) => line.id), ...receiveExtras.map((extra) => extra.key)].map((id) => [id, {
+    quantity: receiveQuantities[id] ?? "",
+    price: receivePrices[id] ?? "",
+    ...(receiveTerms[id] || emptyReceiveTerms),
   }]));
   const patchReceiveLine = (lineId: string, patch: Partial<ReceiveLineValue>) => {
     if (patch.quantity !== undefined) setReceiveQuantities((current) => ({ ...current, [lineId]: patch.quantity as string }));
@@ -897,14 +944,27 @@ export default function ProcurementPage() {
       assetGroup: receiveAssetGroups[line.id] || "",
       ...(receiveTerms[line.id] || emptyReceiveTerms),
     }));
+    const extraLines = receiveExtras.map((extra) => ({
+      itemId: extra.itemId,
+      unitCode: extra.unitCode,
+      quantity: Number(receiveQuantities[extra.key] ?? 0) || 0,
+      unitCost: Number(receivePrices[extra.key] || 0) || 0,
+      assetGroup: receiveAssetGroups[extra.key] || "",
+      ...(receiveTerms[extra.key] || emptyReceiveTerms),
+    }));
     // Lỗi hiện trong hộp thoại: trước đây setMessage ghi ra trang phía sau, bị hộp thoại che nên
     // người dùng tưởng nút "Xác nhận nhận hàng" bấm không được (khách 26/10/2026).
     setReceiveError("");
-    if (lines.every((line) => line.quantity <= 0)) {
+    if (lines.every((line) => line.quantity <= 0) && extraLines.length === 0) {
       setReceiveError("Chưa nhập số lượng cần nhận.");
       return;
     }
-    const lineErrors = receiveLineErrors(receiveLineInfos(receivingOrder), receiveLineValues(receivingOrder));
+    const missingExtra = extraLines.find((line) => !(line.quantity > 0));
+    if (missingExtra) {
+      setReceiveError(`Nhập số lượng cho mặt hàng thêm ${data.items.find((item) => item.id === missingExtra.itemId)?.name || ""} hoặc bấm Bỏ dòng.`);
+      return;
+    }
+    const lineErrors = receiveLineErrors([...receiveLineInfos(receivingOrder), ...receiveExtraInfos()], receiveLineValues(receivingOrder));
     if (lineErrors.length > 0) {
       setReceiveError(lineErrors.join(" · "));
       return;
@@ -915,7 +975,7 @@ export default function ProcurementPage() {
       const response = await fetch("/api/procurement", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "RECEIVE_ORDER", orderId: receivingOrder.id, lines, note: receiveNote, receivedDate: receiveDate, purchaseCost: Number(receivePurchaseCost || 0) || 0 }),
+        body: JSON.stringify({ action: "RECEIVE_ORDER", orderId: receivingOrder.id, lines, extraLines, note: receiveNote, receivedDate: receiveDate, purchaseCost: Number(receivePurchaseCost || 0) || 0 }),
       });
       const payload = await response.json();
       if (!response.ok) {
@@ -2146,7 +2206,7 @@ export default function ProcurementPage() {
               <div>
                 <h3 className="font-bold text-slate-900">Nhận hàng từ {receivingOrder.code}</h3>
                 <p className="text-sm text-slate-500 mt-1">
-                  {receivingOrder.supplierName} · nhập kho <b>{receivingOrder.warehouseCode}</b>. Sửa số lượng nếu giao thiếu; dòng để 0 sẽ nhận sau.
+                  {receivingOrder.supplierName} · nhập kho <b>{receivingOrder.warehouseCode}</b>. Sửa số lượng theo thực nhận (giao thiếu hoặc thừa đều được); dòng để 0 sẽ nhận sau. NCC giao thêm hàng thì thêm dòng ở cuối bảng.
                 </p>
               </div>
               <button type="button" onClick={() => setReceivingOrder(null)} className="icon-button" title="Đóng">
@@ -2165,10 +2225,12 @@ export default function ProcurementPage() {
                 <p className="col-span-2 text-[11px] text-slate-500">Chi phí vận chuyển, bốc xếp... (nếu có) được phân bổ vào giá nhập theo tiền hàng từng dòng và cộng vào công nợ NCC của PO.</p>
               </div>
               <PurchaseReceiveLines
-                lines={receiveLineInfos(receivingOrder)}
+                lines={[...receiveLineInfos(receivingOrder), ...receiveExtraInfos()]}
                 values={receiveLineValues(receivingOrder)}
                 onChange={patchReceiveLine}
                 purchaseCost={Number(receivePurchaseCost || 0) || 0}
+                addOptions={data.items.map((item) => ({ value: item.id, label: `${item.name} (${item.code})`, subLabel: item.unit }))}
+                onAdd={addReceiveExtra}
               />
               {receivingOrder.lines.some((line) => ["TOOL", "ASSET"].includes(line.item.itemType)) && (
                 <p className="text-xs rounded-lg bg-indigo-50 border border-indigo-100 text-indigo-800 px-3 py-2">
@@ -2184,7 +2246,7 @@ export default function ProcurementPage() {
               {receiveError && <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">{receiveError}</p>}
               {(() => {
                 // Công nợ NCC tăng thêm lần nhận này = Σ thành tiền sau thuế (đã trừ chiết khấu) + chi phí mua hàng.
-                const { total } = receiveFigures(receiveLineInfos(receivingOrder), receiveLineValues(receivingOrder), Number(receivePurchaseCost || 0) || 0);
+                const { total } = receiveFigures([...receiveLineInfos(receivingOrder), ...receiveExtraInfos()], receiveLineValues(receivingOrder), Number(receivePurchaseCost || 0) || 0);
                 return (
                   <p className="text-xs text-slate-600 text-right">
                     Sau thuế <b>{money(total.afterTax)} đ</b>{total.costShare > 0 ? <> + chi phí <b>{money(total.costShare)} đ</b></> : null} = công nợ NCC <b className="text-slate-900">{money(total.purchaseValue)} đ</b>
