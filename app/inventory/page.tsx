@@ -374,6 +374,8 @@ export default function InventoryPage() {
    * 28/09/2026); "Cả kho" là form cũ — so từng phiếu với tồn kho, vẫn dùng cho bán thành phẩm.
    */
   const [stocktakeMode, setStocktakeMode] = useState<"location" | "warehouse">("location");
+  /** Tab Kiểm kê tách hai màn (khách 27/10/2026): Nhập kiểm kê / Duyệt & xử lý. null = theo quyền. */
+  const [stocktakeStep, setStocktakeStep] = useState<"count" | "process" | null>(null);
   /** Lọc nhà hàng / kho / ngày dùng chung cho các tab kiểm kê và các khung bên dưới (khách 16/10/2026). */
   const [stocktakeFilter, setStocktakeFilter] = useState<StocktakeFilter>(EMPTY_STOCKTAKE_FILTER);
   const [wasteForm, setWasteForm] = useState({ wasteType: "HET_HAN_SU_DUNG", mode: "ITEMS", recipeId: "", productQuantity: "1", branchCode: "HCM", warehouseCode: "KHO_HCM", transactionDate: today(), referenceCode: "", note: "" });
@@ -460,6 +462,10 @@ export default function InventoryPage() {
   const canEditItem = user ? canPerformMenuAction(user, href, "edit") : false;
   /** Kế toán: duyệt / trả lại / mở lại phiếu kiểm kê (nhà hàng chỉ Gửi duyệt và sửa). */
   const canApprove = user ? canPerformMenuAction(user, href, "approve") : false;
+  // Vận hành (không có tab Chế biến, không quyền duyệt) chỉ thấy màn Nhập kiểm kê.
+  const canProcessStocktake = canApprove || canSeeExplosion;
+  const stocktakeStepView: "count" | "process" = !canProcessStocktake ? "count" : stocktakeStep ?? (canCreate ? "count" : "process");
+  const stocktakeApproveHere = canApprove && stocktakeStepView === "process";
   /** Ô Nhà hàng của 3 màn kiểm kê: "Tất cả" chỉ khi người xem có hơn một cửa hàng. */
   /** Khung "Phiếu kiểm kê gần nhất" (kiểm cả kho) theo bộ lọc nhà hàng / kho / ngày ở đầu tab. */
   const recentWarehouseStocktakes = data.stocktakes.filter((row) => !row.locationCode
@@ -1528,6 +1534,8 @@ export default function InventoryPage() {
    * đếm giữ số sổ sách chốt lúc đếm; mặt hàng chưa có trên phiếu lấy tồn hiện tại như phiếu mới.
    */
   const loadStocktakeIntoForm = (stocktake: Stocktake) => {
+    // Form sửa nằm ở màn Nhập kiểm kê — bấm Sửa từ màn Duyệt & xử lý thì chuyển sang đó.
+    setStocktakeStep("count");
     const saved = new Map(stocktake.lines.map((line) => [line.item.id, line]));
     const fromLine = (line: Stocktake["lines"][number]) => ({
       systemQuantity: line.systemQuantity,
@@ -1562,13 +1570,13 @@ export default function InventoryPage() {
       {canCreate && isStocktakeEditable(row.status) && (
         <ActionIcon kind="edit" title="Sửa phiếu kiểm kê" onClick={() => loadStocktakeIntoForm(row)} />
       )}
-      {canApprove && row.status === STOCKTAKE_PENDING && (
+      {stocktakeApproveHere && row.status === STOCKTAKE_PENDING && (
         <>
           <ActionIcon kind="approve" title="Duyệt" onClick={() => approveStocktake(row)} />
           <ActionIcon kind="cancel" title="Trả lại cho nhà hàng sửa" onClick={() => returnStocktake(row)} />
         </>
       )}
-      {canApprove && row.status === STOCKTAKE_APPROVED && (
+      {stocktakeApproveHere && row.status === STOCKTAKE_APPROVED && (
         <ActionIcon kind="reopen" title="Mở lại phiếu (hoàn kho, về Chờ duyệt)" onClick={() => {
             if (!window.confirm(`Mở lại phiếu kiểm kê ${row.code}? Phiếu nhập/xuất điều chỉnh của lần duyệt này sẽ được hoàn kho rồi xoá, phiếu quay về Chờ duyệt để nhà hàng sửa và kế toán duyệt lại.`)) return;
             void send({ action: "REOPEN_STOCKTAKE", stocktakeId: row.id }, `Đã mở lại phiếu kiểm kê ${row.code} và hoàn kho — phiếu về Chờ duyệt.`);
@@ -4528,8 +4536,20 @@ export default function InventoryPage() {
         </div>
       )}
 
-      {/* Tab Kiểm kê: danh sách MỌI phiếu (lọc nhà hàng / kho / trạng thái / tháng) đứng đầu. */}
-      {active === "stocktake" && (
+      {/* Tab Kiểm kê hai màn (khách 27/10/2026): nhập số đếm một màn, duyệt / xử lý phiếu một màn. */}
+      {active === "stocktake" && canProcessStocktake && (
+        <div className="flex flex-wrap items-center gap-2 mb-4">
+          {([["count", "Nhập kiểm kê"], ["process", "Duyệt & xử lý phiếu"]] as const).map(([step, label]) => (
+            <button key={step} type="button" onClick={() => setStocktakeStep(step)}
+              className={`px-4 py-2 rounded-full text-sm font-bold border ${stocktakeStepView === step ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-200 hover:border-blue-300"}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Màn Duyệt & xử lý: danh sách MỌI phiếu (lọc nhà hàng / kho / trạng thái / tháng) đứng đầu. */}
+      {active === "stocktake" && stocktakeStepView === "process" && (
         <StocktakeDocumentsPanel
           sessionKey={SESSION_KEY}
           filters={stocktakeFilter}
@@ -4653,6 +4673,8 @@ export default function InventoryPage() {
 
       {active === "stocktake" && stocktakeMode === "location" && (
         <StocktakeByLocation
+          key={stocktakeStepView}
+          step={stocktakeStepView}
           sessionKey={SESSION_KEY}
           items={data.items}
           warehouses={data.warehouses}
@@ -4670,7 +4692,7 @@ export default function InventoryPage() {
 
       {active === "stocktake" && stocktakeMode === "warehouse" && (
         <div className="space-y-5">
-          {canCreate && (
+          {canCreate && stocktakeStepView === "count" && (
             <form onSubmit={async (e) => {
               e.preventDefault();
               const payload = await send({
@@ -4900,7 +4922,7 @@ export default function InventoryPage() {
               })}
             </div>
             <div className="hidden md:block">
-            {canApprove && pickedStocktakeIds.length > 0 && (
+            {stocktakeApproveHere && pickedStocktakeIds.length > 0 && (
               <div className="flex flex-wrap items-center gap-3 border-b border-emerald-100 bg-emerald-50 px-4 py-2 text-sm">
                 <b className="text-emerald-800">Đã chọn {pickedStocktakeIds.length} phiếu chờ duyệt</b>
                 <button type="button" className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-700"
@@ -4915,7 +4937,7 @@ export default function InventoryPage() {
               const allPicked = pendingIds.length > 0 && pendingIds.every((id) => pickedStocktakeIds.includes(id));
               return (
             <Table headers={[
-              ...(canApprove ? [{ label: (
+              ...(stocktakeApproveHere ? [{ label: (
                 <input type="checkbox" aria-label="Chọn tất cả phiếu chờ duyệt" disabled={pendingIds.length === 0} checked={allPicked}
                   onChange={(e) => setPickedStocktakeIds(e.target.checked ? pendingIds : [])} />
               ) }] : []),
@@ -4926,7 +4948,7 @@ export default function InventoryPage() {
                 lines: row.lines.filter((line) => isWarehouseStocktakeItemType(line.item.itemType)),
               })).filter((row) => row.lines.length > 0).map((row) => (
                 <tr key={row.id} className={`border-t border-slate-100 ${pickedStocktakeIds.includes(row.id) ? "bg-emerald-50/60" : ""}`}>
-                  {canApprove && (
+                  {stocktakeApproveHere && (
                     <Cell>
                       {row.status === STOCKTAKE_PENDING ? (
                         <input type="checkbox" aria-label={`Chọn ${row.code}`} checked={pickedStocktakeIds.includes(row.id)}

@@ -93,10 +93,15 @@ export default function StocktakeByLocation(props: {
   canEdit: boolean;
   canApprove: boolean;
   canDelete: boolean;
+  /**
+   * Màn đang mở trong tab Kiểm kê (khách 27/10/2026): "count" = Nhập kiểm kê (chỉ form đếm + phiếu
+   * đếm), "process" = Duyệt & xử lý (duyệt gộp, đợt đã chốt, vị trí & form mẫu).
+   */
+  step: "count" | "process";
   onStockChanged: () => void;
 }) {
-  const { sessionKey, items, warehouses, balances, branchOptions, canCreate, canEdit, canApprove, canDelete, onStockChanged } = props;
-  const [section, setSection] = useState<"count" | "approve" | "batches" | "locations">(canCreate ? "count" : canApprove ? "approve" : "batches");
+  const { sessionKey, items, warehouses, balances, branchOptions, canCreate, canEdit, canApprove, canDelete, step, onStockChanged } = props;
+  const [section, setSection] = useState<"count" | "approve" | "batches" | "locations">(step === "count" ? "count" : canApprove ? "approve" : "batches");
   const [branchCode, setBranchCode] = useState(props.defaultBranch);
   const [data, setData] = useState<{ locations: Location[]; sheets: Sheet[]; batches: Batch[] }>({ locations: [], sheets: [], batches: [] });
   const [message, setMessage] = useState("");
@@ -457,8 +462,8 @@ export default function StocktakeByLocation(props: {
     </datalist>
   );
 
-  const tabs = [
-    canCreate && { key: "count" as const, label: "Đếm theo vị trí" },
+  // Màn Nhập kiểm kê chỉ có form đếm — không hiện nút chuyển mục (vận hành không cần thấy).
+  const tabs = step === "count" ? [] : [
     canApprove && { key: "approve" as const, label: "Duyệt gộp" },
     { key: "batches" as const, label: "Đợt đã chốt" },
     canEdit && { key: "locations" as const, label: "Vị trí & form mẫu" },
@@ -468,14 +473,14 @@ export default function StocktakeByLocation(props: {
     <div className="space-y-4">
       {scopedDatalist}
       <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm space-y-3">
-        <div className="flex flex-wrap items-center gap-2">
+        {tabs.length > 0 && <div className="flex flex-wrap items-center gap-2">
           {tabs.map((tab) => (
             <button key={tab.key} type="button" onClick={() => setSection(tab.key)}
               className={`px-3 py-1.5 rounded-full text-sm font-bold border ${section === tab.key ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-200 hover:border-blue-300"}`}>
               {tab.label}
             </button>
           ))}
-        </div>
+        </div>}
         <div className="grid grid-cols-2 gap-3">
           <label className="block text-xs font-bold text-slate-600">Cửa hàng
             <select className="control" value={branchCode} onChange={(e) => { setBranchCode(e.target.value); setWarehouseCode(""); setPreview(null); setSelectedIds(null); }}>
@@ -491,7 +496,7 @@ export default function StocktakeByLocation(props: {
         </div>
         {message && <p className="rounded-md bg-blue-50 px-3 py-2 text-sm text-blue-800 whitespace-pre-line">{message}</p>}
         {/* Tick menu Kiểm kê chỉ mở màn; lập phiếu đếm cần quyền thao tác "create" của vai trò. */}
-        {!canCreate && (
+        {step === "count" && !canCreate && (
           <p className="rounded-md bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
             Vai trò của bạn chưa có quyền <b>create</b> nên không lập được phiếu đếm. Nhờ Admin tick <b>create</b>{" "}cho vai trò ở Phân quyền &amp; Người dùng.
           </p>
@@ -510,10 +515,6 @@ export default function StocktakeByLocation(props: {
               <button type="button" className="font-bold text-slate-500 hover:underline" onClick={cancelEdit}>Huỷ sửa</button>
             </div>
           )}
-          <p className="rounded-md bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
-            Mỗi phiếu là số đếm của MỘT vị trí, không so tồn hệ thống. Mã nằm ở nhiều vị trí thì đếm ở từng vị trí — kế toán duyệt gộp sẽ cộng tổng
-            và so với tồn tại giờ chốt. Mã có tồn mà không vị trí nào đếm sẽ tính = 0. Nhập được nhiều ĐVT cùng lúc (thùng + chai + lẻ).
-          </p>
           <div className="grid grid-cols-2 gap-3">
             <label className="block text-xs font-bold text-slate-600">Vị trí
               <select className="control" value={countForm.locationCode} disabled={!!editingSheet} onChange={(e) => chooseLocation(e.target.value)}>
@@ -526,7 +527,7 @@ export default function StocktakeByLocation(props: {
             </label>
           </div>
           {warehouseLocations.length === 0 && (
-            <p className="rounded-md bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">Kho này chưa khai vị trí kiểm kê. {canEdit ? "Khai ở mục Vị trí & form mẫu." : "Nhờ quản lý khai vị trí & form mẫu."}</p>
+            <p className="rounded-md bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">Kho này chưa khai vị trí kiểm kê. {canEdit ? "Khai ở màn Duyệt & xử lý > Vị trí & form mẫu." : "Nhờ quản lý khai vị trí & form mẫu."}</p>
           )}
           {countForm.locationCode && (
             <>
@@ -812,8 +813,8 @@ export default function StocktakeByLocation(props: {
                     {sheet.status === STOCKTAKE_RETURNED && sheet.returnedReason && <p className="text-xs text-rose-700">Lý do trả lại: {sheet.returnedReason}</p>}
                   </div>
                   <div className="flex flex-wrap gap-3">
-                    {canCreate && isStocktakeEditable(sheet.status) && <ActionIcon kind="edit" title="Sửa phiếu đếm" onClick={() => editSheet(sheet)} />}
-                    {canApprove && sheet.status === STOCKTAKE_PENDING && (
+                    {step === "count" && canCreate && isStocktakeEditable(sheet.status) && <ActionIcon kind="edit" title="Sửa phiếu đếm" onClick={() => editSheet(sheet)} />}
+                    {step === "process" && canApprove && sheet.status === STOCKTAKE_PENDING && (
                       <ActionIcon kind="cancel" title="Trả lại cho nhà hàng sửa" onClick={() => {
                         const reason = window.prompt(`Lý do trả lại phiếu ${sheet.code}:`, "");
                         if (!reason?.trim()) return;
