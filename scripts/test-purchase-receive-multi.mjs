@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { postOrdersReceive, prepareOrderReceive } from "../lib/purchase-receive.ts";
 import { cancelPurchaseReceipt } from "../lib/purchase-receipt-cancel.ts";
+import { purchaseReceiptPayableLines } from "../lib/purchase-receipt-payables.ts";
 
 const require = createRequire(import.meta.url);
 const { PrismaClient } = require("@prisma/custom-client");
@@ -139,6 +140,25 @@ test("huỷ phiếu gộp khi một PO đã có lần nhận sau → chặn, kh�
   await receiveMany([{ orderId: d.id, lines: [{ lineId: d.lines[0].id, quantity: 1 }] }], { at: "2033-03-04T10:00" });
   await assert.rejects(() => prisma.$transaction((tx) => cancelPurchaseReceipt(tx, { stockTransactionId: first.stockTransaction.id, actor: "test" })), /PO-ZRM-G còn lần nhận/);
   assert.equal(await balanceOf(ids.rau), before + 9);
+});
+
+test("công nợ NCC trình bày theo phiếu NM: phiếu gộp 2 PO một dòng, lần nhận sau một dòng, tổng khớp nợ theo PO", async () => {
+  const h = await newOrder("PO-ZRM-H", ids.rau, 10, 10000);
+  const k = await newOrder("PO-ZRM-K", ids.rau, 10, 10000);
+  const [merged] = await receiveMany([
+    { orderId: h.id, lines: [{ lineId: h.lines[0].id, quantity: 3 }] },
+    { orderId: k.id, lines: [{ lineId: k.lines[0].id, quantity: 2 }] },
+  ], { at: "2033-03-05T09:00", purchaseCost: 5000 });
+  const [later] = await receiveMany([{ orderId: h.id, lines: [{ lineId: h.lines[0].id, quantity: 4 }] }], { at: "2033-04-02T09:00" });
+  const payables = await prisma.supplierPayable.findMany({ where: { purchaseOrderId: { in: [h.id, k.id] } }, include: { purchaseOrder: true } });
+  const lines = await purchaseReceiptPayableLines(prisma, payables);
+  assert.deepEqual(lines.map((line) => line.code).sort(), [merged.stockTransaction.code, later.stockTransaction.code].sort(), "mỗi phiếu NM một dòng, không còn dòng mã PO");
+  const mergedLine = lines.find((line) => line.code === merged.stockTransaction.code);
+  assert.equal(mergedLine.amount, 55000, "30.000 + 20.000 + chi phí mua 5.000");
+  assert.deepEqual(mergedLine.orderCodes.sort(), ["PO-ZRM-H", "PO-ZRM-K"]);
+  assert.equal(lines.find((line) => line.code === later.stockTransaction.code).date.toISOString(), vn("2033-04-02T09:00").toISOString(), "đúng ngày phiếu nhập sau");
+  const total = (rows, pick) => rows.reduce((sum, row) => sum + pick(row), 0);
+  assert.equal(total(lines, (line) => line.amount), total(payables, (row) => row.outstandingAmount));
 });
 
 test("lỗi ở một PO thì không PO nào được nhận", async () => {

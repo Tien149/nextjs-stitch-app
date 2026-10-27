@@ -1056,7 +1056,7 @@ export default function AssetsPage() {
               </label>
                 </section>
 
-                <section className="space-y-3 lg:border-l lg:border-slate-200 lg:pl-6">
+                <section className="space-y-3 lg:border-l lg:border-slate-200 lg:pl-6 lg:pr-2 lg:max-h-[calc(100vh-12rem)] lg:overflow-y-auto">
                   <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">{editingAsset ? "Tài sản / CCDC" : `Dòng ${purchaseLines.length + 1} của phiếu`}</h3>
               {/* Mua tăng cùng loại: dùng lại mã cũ, ghi thành ĐỢT mới (lib/asset-lot.ts). */}
               {!editingAsset && (
@@ -1273,9 +1273,8 @@ export default function AssetsPage() {
                   <span className="material-symbols-outlined text-lg">playlist_add</span>Thêm dòng vào phiếu
                 </button>
               )}
-                </section>
-              </div>
 
+              {/* Bảng dòng của phiếu nằm ngay dưới ô nhập; khung phải tự cuộn khi phiếu dài (khách 27/10/2026). */}
               {!editingAsset && purchaseLines.length > 0 && (
                 <div className="overflow-x-auto rounded-lg border border-slate-200">
                   <table className="w-full text-xs">
@@ -1320,6 +1319,9 @@ export default function AssetsPage() {
                   </table>
                 </div>
               )}
+                </section>
+              </div>
+
 
               {message && (
                 <p className={`text-sm rounded-lg border px-3 py-2 ${messageTone === "error" ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>

@@ -343,6 +343,8 @@ export default function InventoryPage() {
   /** Dòng THÊM lúc nhận PO (NCC giao thêm chung phiếu, khách 26/10/2026). */
   const [grpoExtras, setGrpoExtras] = useState<Array<{ key: string; itemId: string; unitCode: string; orderId: string }>>([]);
   /** Nhập kho thủ công NHIỀU dòng (khách 27/10/2026): tìm ở ô Mặt hàng, chọn là thêm một dòng. */
+  /** Form Ghi nhận nhập / xuất kho mở bằng nút (khách 27/10/2026: khung rộng hai cột như phiếu mua tài sản). */
+  const [stockFormOpen, setStockFormOpen] = useState(false);
   const [manualLines, setManualLines] = useState<Array<{ key: string; itemId: string; unitCode: string; note: string }>>([]);
   const [manualValues, setManualValues] = useState<Record<string, ReceiveLineValue>>({});
   const [recipeForm, setRecipeForm] = useState({ productCode: "SP_COMBO01", productName: "Combo ban POS", sellingPrice: "45000", unit: "", outputConversionRate: "1", effectiveFrom: today(), itemId: "", quantity: "0.02", wasteRate: "3" });
@@ -2788,12 +2790,27 @@ export default function InventoryPage() {
       )}
 
       {(active === "inbound" || active === "outbound") && (
-        // Khung ghi nhận rộng hơn (khách 26/10/2026: bỏ cột Mặt hàng / SL ở bảng bên phải để nhường chỗ).
-        <div className="grid grid-cols-1 *:min-w-0 lg:grid-cols-[480px_minmax(0,1fr)] gap-5">
-          {canCreate && (
-            <form onSubmit={(e) => { e.preventDefault(); if (grpoActive) { void receiveFromPO(); return; } if (active === "inbound") { void submitManualInbound(); return; } void send({ action: "STOCK_TRANSACTION", ...stockForm, ...(active === "outbound" && stockForm.transactionType === "XUAT_TRA_NCC" ? { referenceType: "PURCHASE_RETURN" } : {}), transactionDate: vnDateTimeValue(stockForm.transactionDate, stockForm.transactionTime), lines: [{ itemId: stockForm.itemId, inputQuantity: stockForm.quantity, inputUnitCode: stockForm.inputUnitCode || selectedStockUnit?.unitCode, inputUnitCost: "0", vatRate: "", vatAmount: "", discountRate: "", discountAmount: "", note: stockForm.lineNote }] }, "Đã ghi nhận phiếu xuất kho."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
-              <h2 className="font-bold text-slate-800">{active === "inbound" ? "Ghi nhận nhập kho" : "Ghi nhận xuất kho"}</h2>
-
+        // Khung ghi nhận mở bằng nút, rộng hết khung, hai cột như phiếu mua tài sản (khách 27/10/2026):
+        // trái = thông tin chung của phiếu, phải = các dòng mặt hàng (tự cuộn khi dài). Danh sách phiếu bên dưới.
+        <div className="space-y-5">
+          {canCreate && !stockFormOpen && (
+            <button
+              type="button"
+              onClick={() => setStockFormOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-blue-700"
+            >
+              <span className="material-symbols-outlined text-lg">add</span>{active === "inbound" ? "Ghi nhận nhập kho" : "Ghi nhận xuất kho"}
+            </button>
+          )}
+          {canCreate && stockFormOpen && (
+            <form onSubmit={(e) => { e.preventDefault(); if (grpoActive) { void receiveFromPO(); return; } if (active === "inbound") { void submitManualInbound(); return; } void send({ action: "STOCK_TRANSACTION", ...stockForm, ...(active === "outbound" && stockForm.transactionType === "XUAT_TRA_NCC" ? { referenceType: "PURCHASE_RETURN" } : {}), transactionDate: vnDateTimeValue(stockForm.transactionDate, stockForm.transactionTime), lines: [{ itemId: stockForm.itemId, inputQuantity: stockForm.quantity, inputUnitCode: stockForm.inputUnitCode || selectedStockUnit?.unitCode, inputUnitCost: "0", vatRate: "", vatAmount: "", discountRate: "", discountAmount: "", note: stockForm.lineNote }] }, "Đã ghi nhận phiếu xuất kho."); }} className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-sm">
+              <div className="flex items-start justify-between gap-3">
+                <h2 className="font-bold text-lg text-slate-800">{active === "inbound" ? "Ghi nhận nhập kho" : "Ghi nhận xuất kho"}</h2>
+                <button type="button" onClick={() => setStockFormOpen(false)} className="icon-button" title="Đóng"><span className="material-symbols-outlined">close</span></button>
+              </div>
+              <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)]">
+                <section className="min-w-0 space-y-4">
+                  <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Thông tin chung của phiếu</h3>
               <Input label="Loại">
                 <select className="control" value={stockForm.transactionType} onChange={(e) => setStockForm({ ...stockForm, transactionType: e.target.value })}>
                   {active === "inbound" ? (<>
@@ -2923,7 +2940,7 @@ export default function InventoryPage() {
                     {grpoOrders.map((order) => (
                       <p key={order.id}><b>{order.code}</b> · {order.supplierName} · Kho nhận theo PO: <b>{order.warehouseCode}</b> ({storeLabel(order.branchCode)})</p>
                     ))}
-                    Hệ thống tự tăng tồn kho và ghi công nợ NCC theo số lượng nhận{grpoOrders.length > 1 ? ` — ${grpoOrders.length} PO chung MỘT phiếu nhập NM; công nợ NCC vẫn tách theo từng PO, chi phí mua hàng chia theo tiền hàng từng dòng` : ""}.
+                    Hệ thống tự tăng tồn kho và ghi công nợ NCC theo số lượng nhận{grpoOrders.length > 1 ? ` — ${grpoOrders.length} PO chung MỘT phiếu nhập NM; công nợ NCC ghi theo phiếu NM, chi phí mua hàng chia theo tiền hàng từng dòng` : ""}.
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     <Input label="Ngày nhận">
@@ -2933,41 +2950,10 @@ export default function InventoryPage() {
                       <MoneyInput className="control text-right" value={grpoPurchaseCost} onChange={setGrpoPurchaseCost} placeholder="0 nếu không có" ariaLabel="Chi phí mua hàng" />
                     </Input>
                   </div>
-                  <PurchaseReceiveLines cardsOnly lines={[...grpoLineInfos(), ...grpoExtraInfos()]} values={grpoLineValues()} onChange={patchGrpoLine} purchaseCost={Number(grpoPurchaseCost || 0) || 0}
-                    addOptions={data.items.filter((item) => item.itemType !== "FINISHED" && !["TOOL", "ASSET"].includes(item.itemType) && (item.status || "ACTIVE") === "ACTIVE").map((item) => ({ value: item.id, label: `${item.name} (${item.code})`, subLabel: item.unit }))}
-                    onAdd={addGrpoExtra} />
-                  <p className="text-xs text-slate-600 text-right">
-                    Công nợ NCC lần nhận này: <b className="text-slate-900">{money(receiveFigures([...grpoLineInfos(), ...grpoExtraInfos()], grpoLineValues(), Number(grpoPurchaseCost || 0) || 0).total.purchaseValue)} đ</b>
-                  </p>
                 </div>
               )}
 
               {!grpoActive && (<>
-              {/* Nhập kho nhiều dòng (khách 27/10/2026): ô Mặt hàng là ô tìm — chọn là thêm một dòng
-                  (SL, ĐVT, đơn giá, chiết khấu, thuế như nhận PO); có Bảng giá NCC thì điền sẵn giá. */}
-              {active === "inbound" && (
-                <div className="space-y-3">
-                  <Input label={`Mặt hàng${manualLines.length > 0 ? ` (${manualLines.length} dòng)` : ""}`}>
-                    <SearchableSelect
-                      value=""
-                      onChange={(itemId) => { if (itemId) addManualLine(itemId); }}
-                      options={data.items.filter((item) => !["TOOL", "ASSET"].includes(item.itemType) && (item.status || "ACTIVE") === "ACTIVE").map((item) => ({ value: item.id, label: `${item.code} - ${item.name}`, subLabel: item.unit }))}
-                      placeholder="+ Tìm mặt hàng để thêm dòng..."
-                      searchPlaceholder="Gõ mã hoặc tên mặt hàng..."
-                    />
-                  </Input>
-                  {manualLines.length > 0 && (
-                    <PurchaseReceiveLines cardsOnly lines={manualLineInfos()} values={manualLineValues()} onChange={patchManualLine} purchaseCost={Number(stockForm.purchaseCost || 0) || 0} />
-                  )}
-                </div>
-              )}
-              {!isSupplierReturn && active !== "inbound" && <Input label="Mặt hàng">
-                <ItemSelect items={data.items} value={stockForm.itemId} onChange={(itemId) => {
-                  const item = data.items.find((candidate) => candidate.id === itemId);
-                  setStockForm({ ...stockForm, itemId, inputUnitCode: item?.unitConversions?.[0]?.unitCode || item?.unit.toUpperCase() || "" });
-                }} />
-              </Input>}
-              
               <div className="grid grid-cols-2 gap-3">
                 <Input label="Cửa hàng">
                   <select
@@ -3004,6 +2990,103 @@ export default function InventoryPage() {
                 </Input>
               </div>
 
+              {/* Nhập mua đã chọn NCC ở đầu form (cùng ô lọc PO) — không lặp lại ở đây. */}
+              {!isSupplierReturn && !(active === "inbound" && stockForm.transactionType === "NHAP_MUA") && <Input label={active === "inbound" ? "Nhà cung cấp" : "Đối tác"}>
+                <select className="control" value={stockForm.partnerCode} onChange={(e) => setStockForm({ ...stockForm, partnerCode: e.target.value })}>
+                  <option value="">{active === "inbound" ? "Không khai nhà cung cấp" : "Không khai đối tác"}</option>
+                  {partnerFormGroups.map((bucket) => (
+                    <optgroup key={bucket.group} label={bucket.label}>
+                      {bucket.partners.map((partner) => <option key={partner.code} value={partner.code}>{partner.name}</option>)}
+                    </optgroup>
+                  ))}
+                </select>
+              </Input>}
+
+              {active === "inbound" && stockForm.transactionType === "NHAP_MUA" && (
+                <Input label="Chi phí mua hàng">
+                  <MoneyInput className="control text-right" value={stockForm.purchaseCost} onChange={(value) => setStockForm({ ...stockForm, purchaseCost: value })} placeholder="0" />
+                  <small className="text-[11px] text-slate-500 block mt-1">
+                    Vận chuyển, bốc xếp... của cả phiếu: cộng vào giá nhập kho (nhiều dòng thì chia theo trị giá từng dòng) và cộng vào công nợ NCC.
+                  </small>
+                </Input>
+              )}
+
+              {/* Hoá đơn NCC tính thuế trên tổng hoá đơn nên hay lệch vài đồng so với số tự tính từng
+                  dòng. Công nợ phải trả lấy số sau thuế, nên khai được đúng số trên hoá đơn thì lúc gạch
+                  nợ mới khớp; phần lệch dồn vào dòng có thuế cuối cùng. */}
+              {active === "inbound" && manualLines.length > 0 && (
+                <Input label="Tiền thuế theo hoá đơn (cả phiếu)">
+                  <input
+                    type="number"
+                    className="control text-right"
+                    placeholder={`Tự tính: ${money(receiveFigures(manualLineInfos(), manualLineValues(), 0).total.vatAmount)}`}
+                    value={stockForm.vatAmount}
+                    onChange={(e) => setStockForm({ ...stockForm, vatAmount: e.target.value })}
+                    title="Để trống = lấy số hệ thống tự tính theo thuế suất từng dòng. Chỉ khai khi hoá đơn ghi số khác vài đồng do làm tròn."
+                  />
+                </Input>
+              )}
+
+              {createsPurchasePayable && (<>
+                <div className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-800 !mt-2">
+                  Phiếu này sẽ sinh <b>công nợ phải trả</b> cho nhà cung cấp bằng <b>thành tiền sau thuế</b> của phiếu
+                  {stockPurchaseCost > 0 ? <> cộng <b>chi phí mua hàng {money(stockPurchaseCost)} đ</b></> : null}
+                  {manualLines.length > 0 ? <> (≈ <b>{money(receiveFigures(manualLineInfos(), manualLineValues(), stockPurchaseCost).total.purchaseValue)} đ</b>)</> : null}
+                  {" "}(đã trừ chiết khấu). Dòng <b>đơn giá 0</b> là hàng tặng — vẫn vào kho theo giá
+                  bình quân nhưng không tính một đồng nào vào công nợ.
+                  Trả tiền rồi thì lập phiếu chi cho chính nhà cung cấp đó để cấn trừ.
+                </div>
+                <Input label="Hạn thanh toán">
+                  <DateInput className="control" value={stockForm.paymentDueDate} onChange={(value) => setStockForm({ ...stockForm, paymentDueDate: value })} />
+                </Input>
+              </>)}
+
+              {!isSupplierReturn && <Input label="Tham chiếu">
+                <input data-input-kind="code" className="control" value={stockForm.referenceCode} onChange={(e) => setStockForm({ ...stockForm, referenceCode: e.target.value })} />
+              </Input>}
+              </>)}
+                </section>
+
+                <section className="min-w-0 space-y-4 lg:border-l lg:border-slate-200 lg:pl-6 lg:pr-2 lg:max-h-[calc(100vh-12rem)] lg:overflow-y-auto">
+                  <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">{grpoActive ? "Hàng nhận theo PO" : "Mặt hàng"}</h3>
+              {grpoActive && (
+                <div className="space-y-3">
+                  <PurchaseReceiveLines cardsOnly lines={[...grpoLineInfos(), ...grpoExtraInfos()]} values={grpoLineValues()} onChange={patchGrpoLine} purchaseCost={Number(grpoPurchaseCost || 0) || 0}
+                    addOptions={data.items.filter((item) => item.itemType !== "FINISHED" && !["TOOL", "ASSET"].includes(item.itemType) && (item.status || "ACTIVE") === "ACTIVE").map((item) => ({ value: item.id, label: `${item.name} (${item.code})`, subLabel: item.unit }))}
+                    onAdd={addGrpoExtra} />
+                  <p className="text-xs text-slate-600 text-right">
+                    Công nợ NCC lần nhận này: <b className="text-slate-900">{money(receiveFigures([...grpoLineInfos(), ...grpoExtraInfos()], grpoLineValues(), Number(grpoPurchaseCost || 0) || 0).total.purchaseValue)} đ</b>
+                  </p>
+                </div>
+              )}
+
+              {!grpoActive && (<>
+              {/* Nhập kho nhiều dòng (khách 27/10/2026): ô Mặt hàng là ô tìm — chọn là thêm một dòng
+                  (SL, ĐVT, đơn giá, chiết khấu, thuế như nhận PO); có Bảng giá NCC thì điền sẵn giá. */}
+              {active === "inbound" && (
+                <div className="space-y-3">
+                  <Input label={`Mặt hàng${manualLines.length > 0 ? ` (${manualLines.length} dòng)` : ""}`}>
+                    <SearchableSelect
+                      value=""
+                      onChange={(itemId) => { if (itemId) addManualLine(itemId); }}
+                      options={data.items.filter((item) => !["TOOL", "ASSET"].includes(item.itemType) && (item.status || "ACTIVE") === "ACTIVE").map((item) => ({ value: item.id, label: `${item.code} - ${item.name}`, subLabel: item.unit }))}
+                      placeholder="+ Tìm mặt hàng để thêm dòng..."
+                      searchPlaceholder="Gõ mã hoặc tên mặt hàng..."
+                    />
+                  </Input>
+                  {manualLines.length > 0 && (
+                    <PurchaseReceiveLines cardsOnly lines={manualLineInfos()} values={manualLineValues()} onChange={patchManualLine} purchaseCost={Number(stockForm.purchaseCost || 0) || 0} />
+                  )}
+                </div>
+              )}
+
+              {!isSupplierReturn && active !== "inbound" && <Input label="Mặt hàng">
+                <ItemSelect items={data.items} value={stockForm.itemId} onChange={(itemId) => {
+                  const item = data.items.find((candidate) => candidate.id === itemId);
+                  setStockForm({ ...stockForm, itemId, inputUnitCode: item?.unitConversions?.[0]?.unitCode || item?.unit.toUpperCase() || "" });
+                }} />
+              </Input>}
+
               {active !== "inbound" && <div className="grid grid-cols-2 gap-3">
                 <Input label="Số lượng">
                   <input type="number" step="0.01" className="control" value={stockForm.quantity} onChange={(e) => setStockForm({ ...stockForm, quantity: e.target.value })} />
@@ -3037,31 +3120,6 @@ export default function InventoryPage() {
                 </Input>
               )}
 
-              {/* Hoá đơn NCC tính thuế trên tổng hoá đơn nên hay lệch vài đồng so với số tự tính từng
-                  dòng. Công nợ phải trả lấy số sau thuế, nên khai được đúng số trên hoá đơn thì lúc gạch
-                  nợ mới khớp; phần lệch dồn vào dòng có thuế cuối cùng. */}
-              {active === "inbound" && manualLines.length > 0 && (
-                <Input label="Tiền thuế theo hoá đơn (cả phiếu)">
-                  <input
-                    type="number"
-                    className="control text-right"
-                    placeholder={`Tự tính: ${money(receiveFigures(manualLineInfos(), manualLineValues(), 0).total.vatAmount)}`}
-                    value={stockForm.vatAmount}
-                    onChange={(e) => setStockForm({ ...stockForm, vatAmount: e.target.value })}
-                    title="Để trống = lấy số hệ thống tự tính theo thuế suất từng dòng. Chỉ khai khi hoá đơn ghi số khác vài đồng do làm tròn."
-                  />
-                </Input>
-              )}
-
-              {active === "inbound" && stockForm.transactionType === "NHAP_MUA" && (
-                <Input label="Chi phí mua hàng">
-                  <MoneyInput className="control text-right" value={stockForm.purchaseCost} onChange={(value) => setStockForm({ ...stockForm, purchaseCost: value })} placeholder="0" />
-                  <small className="text-[11px] text-slate-500 block mt-1">
-                    Vận chuyển, bốc xếp... của cả phiếu: cộng vào giá nhập kho (nhiều dòng thì chia theo trị giá từng dòng) và cộng vào công nợ NCC.
-                  </small>
-                </Input>
-              )}
-
               {active !== "inbound" && selectedStockItem && (
                 <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-800">
                   <b>Preview:</b> {qty(stockInputQuantity)} {selectedStockUnit?.unitName || selectedStockUnit?.unitCode || selectedStockItem.unit}
@@ -3070,43 +3128,15 @@ export default function InventoryPage() {
                 </div>
               )}
 
-              {/* Nhập mua đã chọn NCC ở đầu form (cùng ô lọc PO) — không lặp lại ở đây. */}
-              {!isSupplierReturn && !(active === "inbound" && stockForm.transactionType === "NHAP_MUA") && <Input label={active === "inbound" ? "Nhà cung cấp" : "Đối tác"}>
-                <select className="control" value={stockForm.partnerCode} onChange={(e) => setStockForm({ ...stockForm, partnerCode: e.target.value })}>
-                  <option value="">{active === "inbound" ? "Không khai nhà cung cấp" : "Không khai đối tác"}</option>
-                  {partnerFormGroups.map((bucket) => (
-                    <optgroup key={bucket.group} label={bucket.label}>
-                      {bucket.partners.map((partner) => <option key={partner.code} value={partner.code}>{partner.name}</option>)}
-                    </optgroup>
-                  ))}
-                </select>
-              </Input>}
-
-              {createsPurchasePayable && (<>
-                <div className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-800 !mt-2">
-                  Phiếu này sẽ sinh <b>công nợ phải trả</b> cho nhà cung cấp bằng <b>thành tiền sau thuế</b> của phiếu
-                  {stockPurchaseCost > 0 ? <> cộng <b>chi phí mua hàng {money(stockPurchaseCost)} đ</b></> : null}
-                  {manualLines.length > 0 ? <> (≈ <b>{money(receiveFigures(manualLineInfos(), manualLineValues(), stockPurchaseCost).total.purchaseValue)} đ</b>)</> : null}
-                  {" "}(đã trừ chiết khấu). Dòng <b>đơn giá 0</b> là hàng tặng — vẫn vào kho theo giá
-                  bình quân nhưng không tính một đồng nào vào công nợ.
-                  Trả tiền rồi thì lập phiếu chi cho chính nhà cung cấp đó để cấn trừ.
-                </div>
-                <Input label="Hạn thanh toán">
-                  <DateInput className="control" value={stockForm.paymentDueDate} onChange={(value) => setStockForm({ ...stockForm, paymentDueDate: value })} />
-                </Input>
-              </>)}
-
               {/* Ghi chú riêng của mặt hàng trên phiếu (khách 27/10/2026) — hiện trên phiếu in và sổ kho. */}
               {!grpoActive && active !== "inbound" && <Input label="Ghi chú mặt hàng">
                 <input className="control" value={stockForm.lineNote} placeholder="Không bắt buộc" onChange={(e) => setStockForm({ ...stockForm, lineNote: e.target.value })} />
               </Input>}
-
-              {!isSupplierReturn && <Input label="Tham chiếu">
-                <input data-input-kind="code" className="control" value={stockForm.referenceCode} onChange={(e) => setStockForm({ ...stockForm, referenceCode: e.target.value })} />
-              </Input>}
               </>)}
 
               <button className="primary-button w-full">{grpoActive ? (grpoOrders.length > 1 ? `Nhận hàng từ ${grpoOrders.length} PO` : "Nhận hàng từ PO") : active === "inbound" && manualLines.length > 0 ? `Ghi nhận (${manualLines.length} dòng)` : "Ghi nhận"}</button>
+                </section>
+              </div>
             </form>
           )}
 

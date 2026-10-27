@@ -5,6 +5,7 @@
  */
 import { skipsDebtTracking } from "@/lib/retail-customer";
 import { prisma } from "@/lib/prisma";
+import { purchaseReceiptPayableLines } from "@/lib/purchase-receipt-payables";
 import { periodBounds } from "@/lib/accounting";
 import { debtGroupCode } from "@/lib/debt-group";
 import { isAdvanceSettlementDebt } from "@/lib/employee-advance";
@@ -175,6 +176,7 @@ export async function loadDebtOverview({ branchCode, range, partnerCode }: { bra
     // là khoản phải trả mã = mã phiếu (DebtRecord sourceType DEBT_TRANSFER) đã có trong debtRecords.
     prisma.debtTransfer.findMany({ where: branchFilter }),
   ]);
+  const receiptPayables = await purchaseReceiptPayableLines(prisma, purchasePayables);
 
   // Đã gạch bao nhiêu trên từng khoản nợ (để ghi khoản nợ theo số phát sinh) và từng phiếu
   // gạch đã áp vào những khoản nào (để ghi rõ trên dòng phiếu, phần dôi ra gọi tên "trả dư").
@@ -317,13 +319,14 @@ export async function loadDebtOverview({ branchCode, range, partnerCode }: { bra
     for (const line of [...settlementLines, ...allocationLines, ...transferLines].filter((row) => row.partnerCode === partnerCode)) {
       ledger.push({ date: line.date, source: "VOUCHER", code: line.code, description: line.description, amount: line.amount });
     }
-    for (const item of purchasePayables.filter((row) => row.supplierCode === partnerCode)) {
+    // Theo phiếu nhập NM, không theo PO (khách 27/10/2026) — lib/purchase-receipt-payables.ts.
+    for (const item of receiptPayables.filter((row) => row.partnerCode === partnerCode)) {
       ledger.push({
-        date: item.recognizedDate,
+        date: item.date,
         source: "PURCHASE_ORDER",
-        code: item.purchaseOrder.code,
-        description: `Công nợ nhập hàng ${item.purchaseOrder.code}`,
-        amount: item.outstandingAmount,
+        code: item.code,
+        description: item.description,
+        amount: item.amount,
       });
     }
     // Khoản đã gạch hết vẫn đứng trên sổ theo số phát sinh — dòng phiếu gạch bên dưới trừ lại.
@@ -458,16 +461,17 @@ export async function loadDebtOverview({ branchCode, range, partnerCode }: { bra
     });
   }
 
-  for (const item of purchasePayables) {
-    const bucket = dateBucket(item.recognizedDate, range);
+  // Theo ngày từng phiếu nhập NM (không dồn cả PO về ngày nhận đầu tiên).
+  for (const item of receiptPayables) {
+    const bucket = dateBucket(item.date, range);
     if (bucket === "AFTER") continue;
     if (bucket === "BEFORE") {
-      carryForward(item.supplierCode, item.supplierName, item.outstandingAmount);
+      carryForward(item.partnerCode, item.partnerName, item.amount);
       continue;
     }
-    const current = rows.get(item.supplierCode);
-    addDebt(rows, item.supplierCode, item.supplierName, {
-      purchasePayable: (current?.purchasePayable || 0) + item.outstandingAmount,
+    const current = rows.get(item.partnerCode);
+    addDebt(rows, item.partnerCode, item.partnerName, {
+      purchasePayable: (current?.purchasePayable || 0) + item.amount,
     });
   }
 

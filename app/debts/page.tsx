@@ -94,7 +94,7 @@ const externalSourceLabels: Record<string, string> = {
   DEPOSIT: "Phát sinh từ phiếu cọc, hãy chỉnh tại màn hình Tiền cọc",
   BANK_STATEMENT: "Phát sinh từ sao kê ngân hàng, hãy chỉnh tại màn hình Đối chiếu",
   VOUCHER: "Phát sinh từ phiếu thu/chi, hãy chỉnh tại màn hình Chứng từ",
-  PURCHASE_ORDER: "Phát sinh từ đơn mua hàng, hãy chỉnh tại màn hình Mua hàng",
+  PURCHASE_ORDER: "Phát sinh từ phiếu nhập kho nhận theo PO — huỷ lần nhận ở phiếu nhập NM bên Kho",
 };
 
 /** Tên nguồn phát sinh trên sổ chi tiết và file đối chiếu gửi đối tác. */
@@ -103,7 +103,7 @@ const ledgerSourceLabels: Record<string, string> = {
   DEPOSIT: "Tiền cọc",
   BANK_STATEMENT: "Sao kê ngân hàng",
   VOUCHER: "Phiếu thu/chi",
-  PURCHASE_ORDER: "Mua hàng",
+  PURCHASE_ORDER: "Nhập hàng (PO)",
   RECEIVABLE: "Công nợ phải thu",
   PAYABLE: "Công nợ phải trả",
 };
