@@ -300,6 +300,9 @@ export default function InventoryPage() {
   const [recipeIngredientSearch, setRecipeIngredientSearch] = useState("");
   /** Tháng áp dụng ("" = mọi phiên bản): phiên bản có hiệu lực ngày nào trong tháng thì hiện. */
   const [recipeMonth, setRecipeMonth] = useState("");
+  /** Lọc bảng phiên bản định lượng theo cửa hàng và Bếp / Bar (khách 27/10/2026). */
+  const [recipeStoreFilter, setRecipeStoreFilter] = useState("ALL");
+  const [recipeKitchenFilter, setRecipeKitchenFilter] = useState("ALL");
   /** Tab nhỏ của tab Định lượng: Giá thành sản phẩm / Định lượng / Thông tin định lượng trong tháng. */
   const [recipeView, setRecipeView] = useState<RecipeView>("cost");
   const [stockView, setStockView] = useState<StockReportSection>("nxt");
@@ -966,8 +969,53 @@ export default function InventoryPage() {
   };
   const lineMatchesIngredient = (line: Recipe["lines"][number]) =>
     !ingredientKeyword || foldSearchText(line.item.code).includes(ingredientKeyword) || foldSearchText(line.item.name).includes(ingredientKeyword);
-  const filteredRecipeGroups = groupedRecipes.filter(({ recipe, ids }) => {
+  /**
+   * Bếp / Bar của từng món định lượng: thành phẩm theo nhóm doanh thu (như sheet giá thành); BTP
+   * không có nhóm doanh thu nên đi theo món dùng nó — BTP vừa bếp vừa bar dùng thì hiện ở cả hai.
+   */
+  const recipeKitchenKinds = (() => {
+    const usedBy = new Map<string, Set<string>>();
+    for (const recipe of data.recipes) {
+      for (const line of recipe.lines) {
+        const code = line.item.code.toUpperCase();
+        const parents = usedBy.get(code) || new Set<string>();
+        parents.add(recipe.productCode.toUpperCase());
+        usedBy.set(code, parents);
+      }
+    }
+    const memo = new Map<string, Set<string>>();
+    const kindsOf = (code: string, seen: Set<string>): Set<string> => {
+      const cached = memo.get(code);
+      if (cached) return cached;
+      const own = data.productKitchenKinds?.[code];
+      if (own === "FOOD" || own === "DRINK") {
+        const result = new Set([own]);
+        memo.set(code, result);
+        return result;
+      }
+      const result = new Set<string>();
+      if (seen.has(code)) return result;
+      seen.add(code);
+      for (const parent of usedBy.get(code) || []) for (const kind of kindsOf(parent, seen)) result.add(kind);
+      seen.delete(code);
+      memo.set(code, result);
+      return result;
+    };
+    return (code: string) => kindsOf(code.toUpperCase(), new Set());
+  })();
+  const recipeStoreKey = recipeStoreFilter.toUpperCase();
+  const recipeProductsWithStoreVersion = new Set(groupedRecipes
+    .filter((group) => group.branchCodes.includes(recipeStoreKey))
+    .map((group) => group.recipe.productCode.toUpperCase()));
+  const filteredRecipeGroups = groupedRecipes.filter(({ recipe, ids, branchCodes }) => {
     if (recipeMonth && !ids.some((id) => validityInMonth(recipeValidityById.get(id), recipeMonth))) return false;
+    // Cửa hàng: đúng luật chọn định lượng lúc rã — bản riêng của cửa hàng, món chưa có bản riêng thì bản dùng chung.
+    if (recipeStoreFilter !== "ALL" && !branchCodes.includes(recipeStoreKey)
+      && !(branchCodes.length === 0 && !recipeProductsWithStoreVersion.has(recipe.productCode.toUpperCase()))) return false;
+    if (recipeKitchenFilter !== "ALL") {
+      const kinds = recipeKitchenKinds(recipe.productCode);
+      if (recipeKitchenFilter === "MISSING" ? kinds.size > 0 : !kinds.has(recipeKitchenFilter)) return false;
+    }
     if (ingredientKeyword && !recipe.lines.some(lineMatchesIngredient)) return false;
     if (!recipeKeyword) return true;
     return [
@@ -976,7 +1024,7 @@ export default function InventoryPage() {
       ...recipe.lines.flatMap((line) => [line.item.code, line.item.name]),
     ].some((value) => foldSearchText(value || "").includes(recipeKeyword));
   });
-  const recipeFilterActive = Boolean(recipeKeyword || ingredientKeyword || recipeMonth);
+  const recipeFilterActive = Boolean(recipeKeyword || ingredientKeyword || recipeMonth || recipeStoreFilter !== "ALL" || recipeKitchenFilter !== "ALL");
   const dayLabel = (day: string | null | undefined) => (day ? `${day.slice(8, 10)}/${day.slice(5, 7)}/${day.slice(0, 4)}` : "");
   /**
    * Xuất Excel bảng phiên bản định lượng PHẲNG: mỗi nguyên liệu một dòng và thông tin món (mã, tên,
@@ -4001,6 +4049,24 @@ export default function InventoryPage() {
                     <input className="control" placeholder="Mã / tên nguyên liệu, BTP..." value={recipeIngredientSearch} onChange={(e) => setRecipeIngredientSearch(e.target.value)} />
                   </Input>
                 </div>
+                <div className="w-48">
+                  <Input label="Cửa hàng">
+                    <select className="control" value={recipeStoreFilter} onChange={(e) => setRecipeStoreFilter(e.target.value)} title="Bản riêng của cửa hàng; món chưa có bản riêng thì hiện bản dùng chung (cửa hàng đang dùng bản đó)">
+                      <option value="ALL">Tất cả cửa hàng</option>
+                      {visibleStoreOptions(user).map((option) => <option key={option.code} value={option.code}>{storeLabel(option.code)}</option>)}
+                    </select>
+                  </Input>
+                </div>
+                <div className="w-48">
+                  <Input label="Bếp / Bar">
+                    <select className="control" value={recipeKitchenFilter} onChange={(e) => setRecipeKitchenFilter(e.target.value)} title="Món theo nhóm doanh thu gán ở tab Mặt hàng (chưa gán thì theo file doanh thu POS); BTP theo món đang dùng nó">
+                      <option value="ALL">Tất cả bếp / bar</option>
+                      <option value="FOOD">Bếp</option>
+                      <option value="DRINK">Bar</option>
+                      <option value="MISSING">Chưa gán bếp / bar</option>
+                    </select>
+                  </Input>
+                </div>
                 <div className="w-44">
                   <Input label="Áp dụng trong tháng">
                     <MonthInput className="control" value={recipeMonth} onChange={setRecipeMonth} />
@@ -4012,9 +4078,11 @@ export default function InventoryPage() {
                 {recipeFilterActive && (
                   <p className="pb-2 text-xs text-slate-500 w-full">
                     Hiển thị <b>{filteredRecipeGroups.length}</b> / {groupedRecipes.length} định lượng
+                    {recipeStoreFilter !== "ALL" && <> · {storeLabel(recipeStoreFilter)} (gồm bản dùng chung của món chưa có định lượng riêng)</>}
+                    {recipeKitchenFilter !== "ALL" && <> · {recipeKitchenFilter === "FOOD" ? "Bếp" : recipeKitchenFilter === "DRINK" ? "Bar" : "chưa gán bếp / bar"}</>}
                     {recipeMonth && <> · phiên bản có áp dụng trong tháng {recipeMonth.slice(5)}/{recipeMonth.slice(0, 4)}</>}
                     {ingredientKeyword && <> · chỉ hiện dòng nguyên liệu khớp “{recipeIngredientSearch.trim()}”</>}
-                    <button type="button" className="ml-2 font-bold text-blue-600 hover:underline" onClick={() => { setRecipeSearch(""); setRecipeIngredientSearch(""); setRecipeMonth(""); }}>Xoá lọc</button>
+                    <button type="button" className="ml-2 font-bold text-blue-600 hover:underline" onClick={() => { setRecipeSearch(""); setRecipeIngredientSearch(""); setRecipeMonth(""); setRecipeStoreFilter("ALL"); setRecipeKitchenFilter("ALL"); }}>Xoá lọc</button>
                   </p>
                 )}
               </div>
