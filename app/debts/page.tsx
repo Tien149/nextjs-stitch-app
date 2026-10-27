@@ -16,6 +16,11 @@ import { SearchableSelect } from "@/components/SearchableSelect";
 import { MoneyInput } from "@/components/MoneyInput";
 import { visibleStoreOptions } from "@/lib/branch-labels";
 import { money as formatVndMoney } from "@/lib/format-number";
+import { DocLink } from "@/components/DocLink";
+import { focusRowClass, readDocFocus, scrollToDoc } from "@/lib/doc-focus";
+
+/** Nguồn sổ chi tiết mà mã là chứng từ ở màn khác — bấm sang đúng phiếu. */
+const linkedLedgerSources = new Set(["VOUCHER", "DEPOSIT", "BANK_STATEMENT", "PURCHASE_ORDER"]);
 
 type DebtRow = {
   partnerCode: string;
@@ -228,6 +233,9 @@ export default function DebtsPage() {
   const [dateRange, setDateRange] = useState({ fromDate: "", toDate: "" });
   /** Đối tác đang mở ledger, giữ trong ref để đổi khoảng ngày thì tải lại ledger mà không đóng. */
   const openLedgerPartnerRef = useRef("");
+  /** Khoản được trỏ tới từ link chứng từ (?partner=&code=): mở sổ chi tiết đối tác, tô sáng dòng. */
+  const [focusCode, setFocusCode] = useState("");
+  const focusHandledRef = useRef(false);
   const [branchScope, setBranchScope] = useState("ALL");
   const [message, setMessage] = useState("");
   /** Khoản công nợ đang sửa trong hộp thoại; null nghĩa là hộp thoại đang đóng. */
@@ -489,6 +497,20 @@ export default function DebtsPage() {
       }, 0);
     }
   }, [loading, loadRows, loadLedger]);
+
+  useEffect(() => {
+    if (loading || focusHandledRef.current) return;
+    focusHandledRef.current = true;
+    const focus = readDocFocus();
+    const partner = new URLSearchParams(window.location.search).get("partner") || "";
+    if (!focus || !partner) return;
+    window.setTimeout(() => {
+      setFocusCode(focus.code);
+      setView("detail");
+      void loadLedger(partner);
+      scrollToDoc(focus.code);
+    }, 0);
+  }, [loading, loadLedger]);
 
   const money = (value: number) => formatVndMoney(value);
 
@@ -1086,10 +1108,11 @@ export default function DebtsPage() {
                         </td>
                       </tr>
                     )}
-                    <tr className="hover:bg-slate-50">
+                    <tr data-doc-code={item.code} className={item.code === focusCode ? focusRowClass : "hover:bg-slate-50"}>
                       <td className="px-4 py-3">{new Date(item.date).toLocaleDateString("vi-VN")}</td>
                       <td className="px-4 py-3 whitespace-nowrap">{ledgerSourceLabel(item.source, item.sourceType)}</td>
-                      <td className="px-4 py-3 font-bold"><CopyableText value={item.code} /></td>
+                      {/* Chứng từ ở màn khác (phiếu thu/chi, cọc, sao kê, PO) bấm sang đúng phiếu (khách 27/10/2026). */}
+                      <td className="px-4 py-3 font-bold">{linkedLedgerSources.has(item.source) ? <DocLink code={item.code} /> : <CopyableText value={item.code} />}</td>
                       <td className="px-4 py-3">
                         <p className={`text-xs font-bold ${item.agingBucket === "OVERDUE" ? "text-rose-700" : item.agingBucket === "DUE_7" ? "text-amber-700" : "text-slate-500"}`}>
                           {item.dueDate ? new Date(item.dueDate).toLocaleDateString("vi-VN") : "-"}

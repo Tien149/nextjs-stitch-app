@@ -13,6 +13,7 @@ import CopyableText from "@/components/CopyableText";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { money as formatVndMoney } from "@/lib/format-number";
+import { DocLink } from "@/components/DocLink";
 
 type ReallocationLine = {
   id: string;
@@ -268,7 +269,7 @@ export default function CostReallocationsPage() {
                         <b className="text-emerald-700">+ {storeLabel(line.toBranchCode)}</b>
                         <span className="ml-2 font-bold">{money(line.amount)} đ</span>
                         <p className="text-[11px] text-slate-500">
-                          Công nợ: {line.receivableDebtCode || "-"} / {line.payableDebtCode || "-"}
+                          Công nợ: {line.receivableDebtCode ? <DocLink code={line.receivableDebtCode} /> : "-"} / {line.payableDebtCode ? <DocLink code={line.payableDebtCode} /> : "-"}
                         </p>
                       </div>
                     ))}

@@ -12,6 +12,11 @@ import { SearchableSelect } from "@/components/SearchableSelect";
 import { displayRoleName, storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { appMenuItems, canAccessMenu, canPerformAction, type DemoSession, SESSION_KEY } from "@/lib/auth-demo";
 import CopyableText from "@/components/CopyableText";
+import { DocLink } from "@/components/DocLink";
+import { focusRowClass, readDocFocus, scrollToDoc } from "@/lib/doc-focus";
+import { parseVatRate, VAT_RATE_CODES, vatRateLabel } from "@/lib/inventory-vat";
+import { purchaseLineFigures } from "@/lib/purchase-discount";
+import { MoneyInput } from "@/components/MoneyInput";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { resolveInitialBranchScope } from "@/components/BranchScopeSelect";
 import { defaultAssetCodePrefix } from "@/lib/asset-code-generator";
@@ -70,6 +75,14 @@ type Asset = {
   /** Một mã nhiều đợt (lib/asset-lot.ts): đợt thứ mấy / tổng số đợt của mã. */
   lotNo?: number;
   lotCount?: number;
+  /** Phiếu mua nhiều dòng + chi tiết mua (khách 27/10/2026). */
+  purchaseDocCode?: string | null;
+  unitPrice?: number | null;
+  discountRate?: number | null;
+  discountAmount?: number;
+  vatRate?: number | null;
+  vatAmount?: number;
+  purchaseCostShare?: number;
 };
 
 const ASSET_GROUPS: { code: string; label: string; isTool?: boolean }[] = [
@@ -104,7 +117,25 @@ const emptyForm = {
   reuseCode: false,
   /** Hồ sơ tạo từ Danh mục mã: tên + nhóm theo danh mục, không gõ tay. */
   catalogLocked: false,
+  /** Chi tiết mua của dòng (khách 27/10/2026): nguyên giá = SL × đơn giá − chiết khấu + thuế + chi phí mua. */
+  unitPrice: "",
+  discountRate: "",
+  discountAmount: "",
+  vatRate: "KKKNT",
+  /** Tạo mới: chi phí mua hàng của CẢ phiếu (chia theo tiền hàng từng dòng). Sửa: phần đã phân bổ cho hồ sơ này. */
+  purchaseCost: "",
 };
+
+/** Ô của một DÒNG tài sản trên phiếu mua; phần còn lại của form (cửa hàng, kho, ngày, NCC, thanh toán) là chung của phiếu. */
+const LINE_FIELDS = ["reuseCode", "catalogLocked", "code", "name", "departmentCode", "assetGroup", "quantity", "unitPrice", "discountRate", "discountAmount", "vatRate", "usefulLifeMonths", "residualValue", "imageUrl", "note"] as const;
+type AssetForm = typeof emptyForm;
+type PurchaseLineDraft = Pick<AssetForm, (typeof LINE_FIELDS)[number]> & { key: string };
+const pickLine = (form: AssetForm, key: string): PurchaseLineDraft => ({ key, ...Object.fromEntries(LINE_FIELDS.map((field) => [field, form[field]])) } as PurchaseLineDraft);
+/** Các cột tiền của dòng — cùng công thức phiếu nhập mua (lib/purchase-discount). */
+const lineFiguresOf = (lines: Array<Pick<AssetForm, "quantity" | "unitPrice" | "discountRate" | "discountAmount" | "vatRate">>, purchaseCost: number) => purchaseLineFigures(lines.map((line) => {
+  const vat = parseVatRate(line.vatRate);
+  return { quantity: Number(line.quantity) || 1, unitPrice: Number(line.unitPrice) || 0, discountRate: line.discountRate, discountAmount: line.discountAmount, vatRate: vat.ok ? vat.rate : null };
+}), purchaseCost);
 
 type AssetDeleteStep = { text: string; href?: string; linkLabel?: string };
 
@@ -120,6 +151,12 @@ export default function AssetsPage() {
   const [suppliers, setSuppliers] = useState<MasterItem[]>([]);
   const [assetGroups, setAssetGroups] = useState<MasterItem[]>([]);
   const [form, setForm] = useState(emptyForm);
+  /** Form tạo mở bằng nút "+ Thêm tài sản / CCDC" (khách 27/10/2026: form cố định bên trái quá hẹp). */
+  const [formOpen, setFormOpen] = useState(false);
+  /** Các dòng đã "Thêm vào phiếu" của phiếu mua đang lập. */
+  const [purchaseLines, setPurchaseLines] = useState<PurchaseLineDraft[]>([]);
+  /** Tài sản tick chọn để in gộp một phiếu. */
+  const [printIds, setPrintIds] = useState<string[]>([]);
   const [message, setMessage] = useState("");
   const [messageTone, setMessageTone] = useState<"success" | "error">("success");
   const [loading, setLoading] = useState(true);
@@ -169,10 +206,23 @@ export default function AssetsPage() {
   const canDeleteCatalog = user ? canPerformAction(user, "delete") : false;
   /** "records" = hồ sơ từng đợt mua; "catalog" = Danh mục mã (master list, 12/10/2026). */
   const [view, setView] = useState<"records" | "catalog">("records");
+  /** Tài sản được trỏ tới từ link chứng từ (/open/<mã> → ?code=&branch=): lọc mã, tô sáng dòng. */
+  const [focusCode, setFocusCode] = useState("");
+  useEffect(() => {
+    const focus = readDocFocus();
+    if (!focus) return;
+    window.setTimeout(() => {
+      setView("records");
+      setFocusCode(focus.code);
+      setSearchQuery(focus.code);
+      if (focus.branch) setFilterBranch(focus.branch);
+      scrollToDoc(focus.code);
+    }, 0);
+  }, []);
   // Khấu hao/phân bổ chia theo số kỳ nên hay ra số lẻ; bảng tài sản chỉ đọc tới đồng.
   const money = (value: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(value || 0);
   /** Biểu mẫu bên trái hiện ra khi được tạo mới hoặc khi đang sửa một tài sản. */
-  const showAssetForm = canCreate || Boolean(editingAsset);
+  const showAssetForm = (canCreate && formOpen) || Boolean(editingAsset);
   /** Số kỳ đã trích khấu hao của tài sản đang sửa; lớn hơn 0 thì các trường tài chính bị khoá. */
   const editingAllocatedPeriods = editingAsset?.allocatedPeriods || 0;
   /** Lý do không đổi được hình thức thanh toán khi sửa (null = đổi được). Tạo mới luôn chọn được. */
@@ -408,8 +458,45 @@ export default function AssetsPage() {
       note: asset.note || "",
       reuseCode: false,
       catalogLocked: false,
+      // Hồ sơ cũ chưa có chi tiết mua: coi nguyên giá là tiền hàng (đơn giá = nguyên giá / SL).
+      unitPrice: String(asset.unitPrice ?? (asset.quantity ? asset.originalCost / asset.quantity : asset.originalCost)),
+      discountRate: asset.discountRate !== null && asset.discountRate !== undefined ? String(Number((asset.discountRate * 100).toFixed(4))) : "",
+      discountAmount: asset.discountRate === null || asset.discountRate === undefined ? (asset.discountAmount ? String(asset.discountAmount) : "") : "",
+      vatRate: asset.unitPrice === null || asset.unitPrice === undefined ? "KKKNT" : vatRateLabel(asset.vatRate),
+      purchaseCost: asset.purchaseCostShare ? String(asset.purchaseCostShare) : "",
     });
     window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  /** Dòng đang nhập đã có nội dung (tên hoặc mã) — lưu phiếu thì tính cả dòng này. */
+  const currentLineFilled = Boolean(form.name.trim() || form.code.trim());
+  /** Đưa dòng đang nhập vào bảng phiếu; ô dòng trống lại để nhập mã tiếp theo (giữ phòng ban, nhóm, số kỳ). */
+  const addPurchaseLine = () => {
+    if (!currentLineFilled) {
+      setMessageTone("error");
+      setMessage(form.reuseCode ? "Chọn mã tài sản / CCDC đã có." : "Nhập tên tài sản / CCDC trước khi thêm dòng.");
+      return;
+    }
+    setMessage("");
+    const key = `line-${purchaseLines.reduce((max, line) => Math.max(max, Number(line.key.replace("line-", "")) || 0), 0) + 1}`;
+    setPurchaseLines((current) => [...current, pickLine(form, key)]);
+    setForm((current) => ({ ...current, reuseCode: false, catalogLocked: false, code: "", name: "", quantity: "1", unitPrice: "", discountRate: "", discountAmount: "", imageUrl: "", note: "" }));
+  };
+  /** Sửa một dòng đã thêm: đưa ngược lên ô nhập (dòng đang nhập dở thì thêm vào bảng trước). */
+  const editPurchaseLine = (key: string) => {
+    const line = purchaseLines.find((row) => row.key === key);
+    if (!line) return;
+    setPurchaseLines((current) => [
+      ...current.filter((row) => row.key !== key),
+      ...(currentLineFilled ? [pickLine(form, `${key}-x`)] : []),
+    ]);
+    const { key: _key, ...fields } = line;
+    void _key;
+    setForm((current) => ({ ...current, ...fields }));
+  };
+  const closeAssetForm = () => {
+    setFormOpen(false);
+    resetAssetForm();
   };
 
   const submitAsset = async (event: React.FormEvent) => {
@@ -439,10 +526,27 @@ export default function AssetsPage() {
           return;
         }
       }
-      const { paymentStatus: _paymentStatus, payableAmount: _payableAmount, paymentDueDate: _paymentDueDate, ...editableForm } = form;
+      const { paymentStatus: _paymentStatus, payableAmount: _payableAmount, paymentDueDate: _paymentDueDate, purchaseCost: _purchaseCost, unitPrice: _unitPrice, discountRate: _discountRate, discountAmount: _discountAmount, vatRate: _vatRate, ...editableForm } = form;
       void _paymentStatus;
       void _payableAmount;
       void _paymentDueDate;
+      void _purchaseCost;
+      void _unitPrice;
+      void _discountRate;
+      void _discountAmount;
+      void _vatRate;
+      // Nguyên giá = trị giá mua của dòng (khách 27/10/2026), lưu kèm chi tiết để in phiếu.
+      const [editFigures] = lineFiguresOf([form], Number(form.purchaseCost) || 0);
+      const editVat = parseVatRate(form.vatRate);
+      const purchaseTerms = {
+        originalCost: String(editFigures.purchaseValue),
+        unitPrice: form.unitPrice === "" ? null : Number(form.unitPrice) || 0,
+        discountRate: editFigures.discountRate,
+        discountAmount: editFigures.discountAmount,
+        vatRate: editVat.ok ? editVat.rate : null,
+        vatAmount: editFigures.vatAmount,
+        purchaseCostShare: editFigures.costShare,
+      };
       // Tài sản đã trích khấu hao thì API khoá 6 trường tài chính, chỉ gửi thông tin quản lý.
       const payloadBody = editingAllocatedPeriods > 0
         ? {
@@ -458,7 +562,7 @@ export default function AssetsPage() {
             imageUrl: form.imageUrl,
             note: form.note,
           }
-        : { ...editableForm, id: editingAsset.id };
+        : { ...editableForm, ...purchaseTerms, id: editingAsset.id };
 
       const response = await fetch("/api/assets", {
         method: "PATCH",
@@ -481,13 +585,31 @@ export default function AssetsPage() {
       return;
     }
 
+    // Phiếu mua nhiều dòng (khách 27/10/2026): dòng đã thêm + dòng đang nhập (nếu có), chung phần đầu phiếu.
+    const lines = [...purchaseLines, ...(currentLineFilled ? [pickLine(form, "current")] : [])];
+    if (lines.length === 0) {
+      setMessageTone("error");
+      setMessage("Nhập ít nhất một dòng tài sản / CCDC (tên hoặc mã).");
+      return;
+    }
     const response = await fetch("/api/assets", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         ...getSessionHeaders(),
       },
-      body: JSON.stringify(form),
+      body: JSON.stringify({
+        branchCode: form.branchCode,
+        location: form.location,
+        purchaseDate: form.purchaseDate,
+        depreciationStartDate: form.depreciationStartDate,
+        supplierCode: form.supplierCode,
+        supplierName: form.supplierName,
+        paymentStatus: form.paymentStatus,
+        paymentDueDate: form.paymentDueDate,
+        purchaseCost: form.purchaseCost,
+        lines: lines.map(({ key: _key, catalogLocked: _catalogLocked, ...line }) => { void _key; void _catalogLocked; return line; }),
+      }),
     });
     const payload = await response.json();
     if (!response.ok) {
@@ -495,11 +617,12 @@ export default function AssetsPage() {
       setMessage(payload.error || "Không tạo được tài sản");
       return;
     }
+    const created = (payload.assets || []) as Asset[];
     setMessageTone("success");
-    setMessage(form.reuseCode && payload.lotNo > 1
-      ? `Đã ghi đợt ${payload.lotNo} cho mã ${payload.code} (mua tăng). Đợt này phân bổ theo ngày mua và số kỳ riêng.`
-      : "Đã tạo thành công hồ sơ tài sản / CCDC.");
-    setForm({ ...emptyForm, branchCode: form.branchCode });
+    setMessage(`Đã lưu phiếu mua ${payload.purchaseDocCode || ""}: ${created.map((asset) => `${asset.code}${(asset.lotNo || 1) > 1 ? ` (đợt ${asset.lotNo})` : ""}`).join(", ")}. Bấm "In phiếu" trên dòng để in cả phiếu.`);
+    setPurchaseLines([]);
+    setForm({ ...emptyForm, branchCode: form.branchCode, location: form.location, purchaseDate: form.purchaseDate, depreciationStartDate: form.depreciationStartDate, departmentCode: form.departmentCode });
+    setFormOpen(false);
     await loadAssets();
   };
 
@@ -509,6 +632,7 @@ export default function AssetsPage() {
    */
   const startRecordFromCatalog = (item: CatalogItem) => {
     setEditingAsset(null);
+    setFormOpen(true);
     setMessage("");
     setView("records");
     setForm((current) => ({
@@ -680,29 +804,44 @@ export default function AssetsPage() {
               </div>
               <span className="material-symbols-outlined text-slate-400">corporate_fare</span>
             </div>
-            <div className="grid md:grid-cols-3 xl:grid-cols-4 gap-px bg-slate-100">
-              {departmentSummary.slice(0, 8).map((row) => (
-                <button
-                  key={row.code}
-                  type="button"
-                  onClick={() => setFilterDepartment(row.code)}
-                  className="bg-white p-4 text-left hover:bg-blue-50 transition-colors"
-                >
-                  <p className="text-sm font-bold text-slate-900 truncate">{row.name}</p>
-                  <p className="text-xs text-slate-500 mt-1">{row.count} dòng · SL {row.quantity}</p>
-                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                    <div>
-                      <p className="text-slate-400">Nguyên giá</p>
-                      <p className="font-bold text-slate-800">{money(row.originalCost)} đ</p>
-                    </div>
-                    <div>
-                      <p className="text-slate-400">Còn lại</p>
-                      <p className="font-bold text-emerald-700">{money(row.remainingValue)} đ</p>
-                    </div>
-                  </div>
-                </button>
-              ))}
-            </div>
+            {/* Dạng bảng chia đôi hai bên cho gọn (khách 27/10/2026): 6 phòng ban thì mỗi bên 3; bấm dòng để lọc. */}
+            {(() => {
+              const half = Math.ceil(departmentSummary.length / 2);
+              const halves = [departmentSummary.slice(0, half), departmentSummary.slice(half)].filter((rows) => rows.length > 0);
+              return (
+                <div className="grid lg:grid-cols-2 gap-px bg-slate-200">
+                  {halves.map((rows, index) => (
+                    <table key={index} className="w-full bg-white text-xs self-start">
+                      <thead className="bg-slate-50 text-[11px] uppercase text-slate-500">
+                        <tr>
+                          <th className="px-4 py-2 text-left font-bold">Phòng ban</th>
+                          <th className="px-3 py-2 text-right font-bold">Dòng</th>
+                          <th className="px-3 py-2 text-right font-bold">Số lượng</th>
+                          <th className="px-3 py-2 text-right font-bold">Nguyên giá</th>
+                          <th className="px-4 py-2 text-right font-bold">Còn lại</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map((row) => (
+                          <tr
+                            key={row.code}
+                            onClick={() => setFilterDepartment(row.code)}
+                            className={`cursor-pointer border-t border-slate-100 hover:bg-blue-50 ${filterDepartment === row.code ? "bg-blue-50" : ""}`}
+                            title="Bấm để lọc danh sách theo phòng ban này"
+                          >
+                            <td className="px-4 py-2 font-bold text-slate-900">{row.name}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{row.count}</td>
+                            <td className="px-3 py-2 text-right tabular-nums">{row.quantity}</td>
+                            <td className="px-3 py-2 text-right tabular-nums font-bold text-slate-800">{money(row.originalCost)} đ</td>
+                            <td className="px-4 py-2 text-right tabular-nums font-bold text-emerald-700">{money(row.remainingValue)} đ</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ))}
+                </div>
+              );
+            })()}
           </section>
         )}
 
@@ -732,18 +871,41 @@ export default function AssetsPage() {
             onCreateRecord={startRecordFromCatalog}
           />
         ) : (
-        <div className="grid xl:grid-cols-[340px_minmax(0,1fr)] 2xl:grid-cols-[360px_minmax(0,1fr)] gap-5">
-          {/* Form Create Asset */}
-          {showAssetForm && (
+        <div className="space-y-5">
+          {/* Form tạo mở bằng nút (khách 27/10/2026: form cố định bên trái quá hẹp) — mở ra rộng hết khung. */}
+          {canCreate && !showAssetForm && (
+            <button
+              type="button"
+              onClick={() => { setMessage(""); setFormOpen(true); }}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-blue-700"
+            >
+              <span className="material-symbols-outlined text-lg">add</span>Thêm tài sản / CCDC
+            </button>
+          )}
+          {showAssetForm && (() => {
+            // Nguyên giá từng dòng = trị giá mua (sau CK + thuế + chi phí mua phân bổ theo tiền hàng các dòng).
+            const draftLines = editingAsset ? [form] : [...purchaseLines, ...(currentLineFilled || form.unitPrice ? [form] : [])];
+            const figures = lineFiguresOf(draftLines, Number(form.purchaseCost) || 0);
+            const currentFigures = editingAsset || currentLineFilled || form.unitPrice ? figures[figures.length - 1] : null;
+            const savedFigures = editingAsset ? [] : figures.slice(0, purchaseLines.length);
+            const lineCount = purchaseLines.length + (currentLineFilled ? 1 : 0);
+            const priceLocked = editingAllocatedPeriods > 0;
+            return (
             <form
               onSubmit={submitAsset}
-              className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4 h-fit"
+              className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-5"
             >
-              <div>
-                <p className="text-xs font-bold text-blue-600 uppercase">Tài sản & CCDC Master</p>
-                <h2 className="font-bold text-lg text-slate-900 mt-0.5">
-                  {editingAsset ? `Sửa hồ sơ ${editingAsset.code}` : "Tạo hồ sơ tài sản / CCDC"}
-                </h2>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-bold text-blue-600 uppercase">Tài sản & CCDC Master</p>
+                  <h2 className="font-bold text-lg text-slate-900 mt-0.5">
+                    {editingAsset ? `Sửa hồ sơ ${editingAsset.code}` : "Phiếu mua tài sản / CCDC"}
+                  </h2>
+                  {!editingAsset && (
+                    <p className="text-xs text-slate-500 mt-0.5">Mua nhiều mã một lần: nhập từng dòng rồi bấm <b>Thêm dòng vào phiếu</b>; cả phiếu chung một số phiếu để in gộp. Nguyên giá (số dùng khấu hao / phân bổ) = sau chiết khấu + thuế + chi phí mua hàng.</p>
+                  )}
+                </div>
+                <button type="button" onClick={closeAssetForm} className="icon-button" title="Đóng"><span className="material-symbols-outlined">close</span></button>
               </div>
 
               {editingAsset && editingAllocatedPeriods > 0 && (
@@ -753,6 +915,149 @@ export default function AssetsPage() {
                 </p>
               )}
 
+              <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)]">
+                <section className="space-y-3">
+                  <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">{editingAsset ? "Thông tin mua" : "Thông tin chung của phiếu"}</h3>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="text-xs font-bold text-slate-600 block">
+                  Cửa hàng *
+                  <select
+                    value={form.branchCode}
+                    onChange={(e) => {
+                      const branchCode = e.target.value;
+                      // Mua tăng mã của nhà hàng khác: kho/phòng ban lấy từ đợt cũ có thể không thuộc cửa hàng mới.
+                      const inBranch = (item?: MasterItem) => Boolean(item) && (!item?.branch || item.branch === branchCode || item.branch === "ALL");
+                      setForm((v) => ({
+                        ...v,
+                        branchCode,
+                        location: inBranch(warehouses.find((w) => w.code === v.location)) ? v.location : "",
+                        departmentCode: inBranch(departments.find((d) => d.code === v.departmentCode)) ? v.departmentCode : "",
+                      }));
+                    }}
+                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white disabled:bg-slate-100 disabled:text-slate-500"
+                    required
+                  >
+                    {visibleStoreOptions(user).map((opt) => (
+                      <option key={opt.code} value={opt.code}>
+                        {storeLabel(opt.code)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <SearchableSelect
+                  label="Vị trí / Kho"
+                  value={form.location}
+                  onChange={(location) => setForm((v) => ({ ...v, location }))}
+                  options={availableFormWarehouses.map((wh) => ({ value: wh.code, label: wh.name, subLabel: wh.code }))}
+                  placeholder="Chọn vị trí / kho..."
+                  required
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <label className="text-xs font-bold text-slate-600 block">
+                  Ngày mua / nhập *
+                  <DateInput
+                    value={form.purchaseDate}
+                    onChange={(purchaseDate) => setForm((v) => ({ ...v, purchaseDate }))}
+                    className="mt-1"
+                    disabled={editingAllocatedPeriods > 0}
+                    required
+                    ariaLabel="Ngày mua tài sản"
+                  />
+                </label>
+                <label className="text-xs font-bold text-slate-600 block">
+                  Ngày bắt đầu KH
+                  <DateInput
+                    value={form.depreciationStartDate}
+                    onChange={(depreciationStartDate) => setForm((v) => ({ ...v, depreciationStartDate }))}
+                    className="mt-1"
+                    disabled={editingAllocatedPeriods > 0}
+                    ariaLabel="Ngày bắt đầu khấu hao"
+                  />
+                </label>
+              </div>
+
+                              {suppliers.length > 0 ? (
+                  <SearchableSelect
+                    label="Nhà cung cấp"
+                    value={form.supplierCode}
+                    onChange={(supplierCode) => {
+                      const matched = suppliers.find((s) => s.code === supplierCode);
+                      setForm((v) => ({ ...v, supplierCode, supplierName: matched ? matched.name : "" }));
+                    }}
+                    options={suppliers.map((sup) => ({ value: sup.code, label: sup.name, subLabel: sup.code }))}
+                    placeholder="Chọn nhà cung cấp..."
+                    required={form.paymentStatus === "PAYABLE"}
+                    disabled={Boolean(editingAsset && editingAsset.paymentStatus === "PAYABLE")}
+                  />
+                ) : (
+                  <label className="text-xs font-bold text-slate-600 block">
+                    Nhà cung cấp
+                    <input
+                      type="text"
+                      value={form.supplierName}
+                      onChange={(e) => setForm((v) => ({ ...v, supplierName: e.target.value, supplierCode: "" }))}
+                      className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                      placeholder="Tên NCC"
+                      required={form.paymentStatus === "PAYABLE"}
+                      disabled={Boolean(editingAsset && editingAsset.paymentStatus === "PAYABLE")}
+                    />
+                  </label>
+                )}
+
+              <div className="grid grid-cols-2 gap-3">
+                <label className="text-xs font-bold text-slate-600 block">
+                  Thanh toán mua tài sản *
+                  <select
+                    value={form.paymentStatus}
+                    onChange={(e) => setForm((v) => ({ ...v, paymentStatus: e.target.value, payableAmount: e.target.value === "PAYABLE" ? v.originalCost : "", paymentDueDate: e.target.value === "PAYABLE" ? v.paymentDueDate : "" }))}
+                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white disabled:bg-slate-100"
+                    disabled={paymentLockReason !== null}
+                    title={paymentLockReason || undefined}
+                    required
+                  >
+                    <option value="PAYABLE">Công nợ phải trả NCC</option>
+                    <option value="PAID">Đã thanh toán</option>
+                  </select>
+                </label>
+                <label className="text-xs font-bold text-slate-600 block">
+                  Hạn thanh toán
+                  <DateInput
+                    value={form.paymentDueDate}
+                    onChange={(paymentDueDate) => setForm((v) => ({ ...v, paymentDueDate }))}
+                    className="mt-1"
+                    disabled={form.paymentStatus !== "PAYABLE" || Boolean(editingAsset && editingAsset.paymentStatus === "PAYABLE")}
+                    ariaLabel="Hạn thanh toán công nợ tài sản"
+                  />
+                </label>
+              </div>
+              {form.paymentStatus === "PAYABLE" && !editingAsset && (
+                <p className="text-[11px] text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+                  Khi lưu, hệ thống tạo công nợ NCC bằng nguyên giá và bút toán Nợ 211/242 – Có 331 trong cùng giao dịch.
+                </p>
+              )}
+              {editingAsset && form.paymentStatus !== (editingAsset.paymentStatus === "PAYABLE" ? "PAYABLE" : "PAID") && (
+                <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                  {form.paymentStatus === "PAYABLE"
+                    ? "Khi lưu, hệ thống tạo công nợ NCC bằng nguyên giá (mã CN-<mã tài sản>) và đổi bút toán ghi tăng sang Có 331. Cần chọn Nhà cung cấp."
+                    : "Khi lưu, hệ thống gỡ công nợ NCC của tài sản này (chỉ được khi chưa trả đồng nào) và đổi bút toán ghi tăng sang Có 411."}
+                </p>
+              )}
+              {paymentLockReason && editingAsset && (
+                <p className="text-[11px] text-slate-500">{paymentLockReason}</p>
+              )}
+
+              <label className="text-xs font-bold text-slate-600 block">
+                {editingAsset ? "Chi phí mua phân bổ cho tài sản này (đ)" : "Chi phí mua hàng của phiếu (đ)"}
+                <MoneyInput className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500 text-right" value={form.purchaseCost} onChange={(purchaseCost) => setForm((v) => ({ ...v, purchaseCost }))} placeholder="0" ariaLabel="Chi phí mua hàng" disabled={priceLocked} />
+                <span className="mt-1 block text-[11px] font-normal text-slate-500">Vận chuyển, lắp đặt... cộng vào nguyên giá{editingAsset ? "" : ", chia theo tiền hàng (sau chiết khấu) từng dòng"}.</span>
+              </label>
+                </section>
+
+                <section className="space-y-3 lg:border-l lg:border-slate-200 lg:pl-6">
+                  <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">{editingAsset ? "Tài sản / CCDC" : `Dòng ${purchaseLines.length + 1} của phiếu`}</h3>
               {/* Mua tăng cùng loại: dùng lại mã cũ, ghi thành ĐỢT mới (lib/asset-lot.ts). */}
               {!editingAsset && (
                 <label className="flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50/60 px-3 py-2 text-xs text-emerald-900">
@@ -832,43 +1137,6 @@ export default function AssetsPage() {
               </label>
 
               <div className="grid grid-cols-2 gap-3">
-                <label className="text-xs font-bold text-slate-600 block">
-                  Cửa hàng *
-                  <select
-                    value={form.branchCode}
-                    onChange={(e) => {
-                      const branchCode = e.target.value;
-                      // Mua tăng mã của nhà hàng khác: kho/phòng ban lấy từ đợt cũ có thể không thuộc cửa hàng mới.
-                      const inBranch = (item?: MasterItem) => Boolean(item) && (!item?.branch || item.branch === branchCode || item.branch === "ALL");
-                      setForm((v) => ({
-                        ...v,
-                        branchCode,
-                        location: inBranch(warehouses.find((w) => w.code === v.location)) ? v.location : "",
-                        departmentCode: inBranch(departments.find((d) => d.code === v.departmentCode)) ? v.departmentCode : "",
-                      }));
-                    }}
-                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white disabled:bg-slate-100 disabled:text-slate-500"
-                    required
-                  >
-                    {visibleStoreOptions(user).map((opt) => (
-                      <option key={opt.code} value={opt.code}>
-                        {storeLabel(opt.code)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <SearchableSelect
-                  label="Vị trí / Kho"
-                  value={form.location}
-                  onChange={(location) => setForm((v) => ({ ...v, location }))}
-                  options={availableFormWarehouses.map((wh) => ({ value: wh.code, label: wh.name, subLabel: wh.code }))}
-                  placeholder="Chọn vị trí / kho..."
-                  required
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
                 <SearchableSelect
                   label="Phòng ban / Bộ phận"
                   value={form.departmentCode}
@@ -896,95 +1164,33 @@ export default function AssetsPage() {
                 </label>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <label className="text-xs font-bold text-slate-600 block">
                   Số lượng *
-                  <input
-                    type="number"
-                    min="0.01"
-                    step="0.01"
-                    value={form.quantity}
-                    onChange={(e) => setForm((v) => ({ ...v, quantity: e.target.value }))}
-                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
-                    disabled={editingAllocatedPeriods > 0}
-                    required
-                  />
+                  <input type="number" min="0.01" step="0.01" value={form.quantity} onChange={(e) => setForm((v) => ({ ...v, quantity: e.target.value }))} className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500" disabled={priceLocked} required />
+                </label>
+                <label className="text-xs font-bold text-slate-600 block">
+                  Đơn giá (đ)
+                  <MoneyInput className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500 text-right font-bold" value={form.unitPrice} onChange={(unitPrice) => setForm((v) => ({ ...v, unitPrice }))} placeholder="0" ariaLabel="Đơn giá tài sản" disabled={priceLocked} />
+                </label>
+                {/* Gõ % thì xoá số tiền và ngược lại — dòng chỉ theo một cách khai. */}
+                <label className="text-xs font-bold text-slate-600 block">
+                  Chiết khấu %
+                  <input type="number" min="0" max="100" step="any" inputMode="decimal" value={form.discountRate} onChange={(e) => setForm((v) => ({ ...v, discountRate: e.target.value, discountAmount: "" }))} className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500 text-right" placeholder="%" disabled={priceLocked} />
+                </label>
+                <label className="text-xs font-bold text-slate-600 block">
+                  Tiền chiết khấu
+                  <MoneyInput className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500 text-right" value={form.discountRate && currentFigures ? String(currentFigures.discountAmount) : form.discountAmount} onChange={(discountAmount) => setForm((v) => ({ ...v, discountAmount, discountRate: "" }))} placeholder="0" ariaLabel="Tiền chiết khấu" disabled={priceLocked} />
                 </label>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
                 <label className="text-xs font-bold text-slate-600 block">
-                  Ngày mua / nhập *
-                  <DateInput
-                    value={form.purchaseDate}
-                    onChange={(purchaseDate) => setForm((v) => ({ ...v, purchaseDate }))}
-                    className="mt-1"
-                    disabled={editingAllocatedPeriods > 0}
-                    required
-                    ariaLabel="Ngày mua tài sản"
-                  />
-                </label>
-
-                <label className="text-xs font-bold text-slate-600 block">
-                  Nguyên giá (đ)
-                  <input
-                    type="number"
-                    min="0"
-                    value={form.originalCost}
-                    onChange={(e) => setForm((v) => ({ ...v, originalCost: e.target.value, payableAmount: v.paymentStatus === "PAYABLE" ? e.target.value : v.payableAmount }))}
-                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
-                    disabled={editingAllocatedPeriods > 0}
-                    placeholder="0"
-                  />
-                  <span className="mt-1 block text-[11px] font-medium text-slate-500">
-                    Theo dõi quản trị có thể để trống; tài sản ghi công nợ mới bắt buộc nguyên giá.
-                  </span>
-                </label>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <label className="text-xs font-bold text-slate-600 block">
-                  Thanh toán mua tài sản *
-                  <select
-                    value={form.paymentStatus}
-                    onChange={(e) => setForm((v) => ({ ...v, paymentStatus: e.target.value, payableAmount: e.target.value === "PAYABLE" ? v.originalCost : "", paymentDueDate: e.target.value === "PAYABLE" ? v.paymentDueDate : "" }))}
-                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white disabled:bg-slate-100"
-                    disabled={paymentLockReason !== null}
-                    title={paymentLockReason || undefined}
-                    required
-                  >
-                    <option value="PAYABLE">Công nợ phải trả NCC</option>
-                    <option value="PAID">Đã thanh toán</option>
+                  Thuế suất GTGT
+                  <select value={form.vatRate || "KKKNT"} onChange={(e) => setForm((v) => ({ ...v, vatRate: e.target.value }))} className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500 bg-white" disabled={priceLocked}>
+                    {VAT_RATE_CODES.map((code) => <option key={code} value={code}>{code}</option>)}
                   </select>
                 </label>
-                <label className="text-xs font-bold text-slate-600 block">
-                  Hạn thanh toán
-                  <DateInput
-                    value={form.paymentDueDate}
-                    onChange={(paymentDueDate) => setForm((v) => ({ ...v, paymentDueDate }))}
-                    className="mt-1"
-                    disabled={form.paymentStatus !== "PAYABLE" || Boolean(editingAsset && editingAsset.paymentStatus === "PAYABLE")}
-                    ariaLabel="Hạn thanh toán công nợ tài sản"
-                  />
-                </label>
-              </div>
-              {form.paymentStatus === "PAYABLE" && !editingAsset && (
-                <p className="text-[11px] text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
-                  Khi lưu, hệ thống tạo công nợ NCC bằng nguyên giá và bút toán Nợ 211/242 – Có 331 trong cùng giao dịch.
-                </p>
-              )}
-              {editingAsset && form.paymentStatus !== (editingAsset.paymentStatus === "PAYABLE" ? "PAYABLE" : "PAID") && (
-                <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                  {form.paymentStatus === "PAYABLE"
-                    ? "Khi lưu, hệ thống tạo công nợ NCC bằng nguyên giá (mã CN-<mã tài sản>) và đổi bút toán ghi tăng sang Có 331. Cần chọn Nhà cung cấp."
-                    : "Khi lưu, hệ thống gỡ công nợ NCC của tài sản này (chỉ được khi chưa trả đồng nào) và đổi bút toán ghi tăng sang Có 411."}
-                </p>
-              )}
-              {paymentLockReason && editingAsset && (
-                <p className="text-[11px] text-slate-500">{paymentLockReason}</p>
-              )}
-
-              <div className="grid grid-cols-3 gap-2">
                 <label className="text-xs font-bold text-slate-600 block">
                   Số kỳ (tháng)
                   <input
@@ -998,20 +1204,6 @@ export default function AssetsPage() {
                     placeholder="VD: 24"
                   />
                 </label>
-
-                <label className="text-xs font-bold text-slate-600 block col-span-2">
-                  Ngày bắt đầu KH
-                  <DateInput
-                    value={form.depreciationStartDate}
-                    onChange={(depreciationStartDate) => setForm((v) => ({ ...v, depreciationStartDate }))}
-                    className="mt-1"
-                    disabled={editingAllocatedPeriods > 0}
-                    ariaLabel="Ngày bắt đầu khấu hao"
-                  />
-                </label>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
                 <label className="text-xs font-bold text-slate-600 block">
                   Giá trị còn lại tối thiểu
                   <input
@@ -1024,35 +1216,18 @@ export default function AssetsPage() {
                     placeholder="0"
                   />
                 </label>
-
-                {suppliers.length > 0 ? (
-                  <SearchableSelect
-                    label="Nhà cung cấp"
-                    value={form.supplierCode}
-                    onChange={(supplierCode) => {
-                      const matched = suppliers.find((s) => s.code === supplierCode);
-                      setForm((v) => ({ ...v, supplierCode, supplierName: matched ? matched.name : "" }));
-                    }}
-                    options={suppliers.map((sup) => ({ value: sup.code, label: sup.name, subLabel: sup.code }))}
-                    placeholder="Chọn nhà cung cấp..."
-                    required={form.paymentStatus === "PAYABLE"}
-                    disabled={Boolean(editingAsset && editingAsset.paymentStatus === "PAYABLE")}
-                  />
-                ) : (
-                  <label className="text-xs font-bold text-slate-600 block">
-                    Nhà cung cấp
-                    <input
-                      type="text"
-                      value={form.supplierName}
-                      onChange={(e) => setForm((v) => ({ ...v, supplierName: e.target.value, supplierCode: "" }))}
-                      className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                      placeholder="Tên NCC"
-                      required={form.paymentStatus === "PAYABLE"}
-                      disabled={Boolean(editingAsset && editingAsset.paymentStatus === "PAYABLE")}
-                    />
-                  </label>
-                )}
               </div>
+
+              {currentFigures && (
+                <dl className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-900">
+                  <div className="flex justify-between gap-2"><dt>Thành tiền trước thuế</dt><dd className="tabular-nums">{money(currentFigures.gross)}</dd></div>
+                  <div className="flex justify-between gap-2"><dt>Chiết khấu</dt><dd className="tabular-nums">{money(currentFigures.discountAmount)}</dd></div>
+                  <div className="flex justify-between gap-2"><dt>Tiền thuế</dt><dd className="tabular-nums">{money(currentFigures.vatAmount)}</dd></div>
+                  <div className="flex justify-between gap-2"><dt>Thành tiền sau thuế</dt><dd className="tabular-nums">{money(currentFigures.afterTax)}</dd></div>
+                  <div className="flex justify-between gap-2"><dt>CP mua phân bổ</dt><dd className="tabular-nums">{money(currentFigures.costShare)}</dd></div>
+                  <div className="flex justify-between gap-2 font-bold"><dt>Nguyên giá</dt><dd className="tabular-nums">{money(currentFigures.purchaseValue)} đ</dd></div>
+                </dl>
+              )}
 
               <div className="grid grid-cols-[88px_1fr] gap-3 items-end">
                 <div className="h-20 w-20 overflow-hidden rounded-lg border border-slate-200 bg-slate-50 grid place-items-center">
@@ -1093,6 +1268,59 @@ export default function AssetsPage() {
                 />
               </label>
 
+              {!editingAsset && (
+                <button type="button" onClick={addPurchaseLine} className="inline-flex items-center gap-1.5 rounded-lg border border-blue-300 bg-white px-3 py-2 text-sm font-bold text-blue-700 hover:bg-blue-50">
+                  <span className="material-symbols-outlined text-lg">playlist_add</span>Thêm dòng vào phiếu
+                </button>
+              )}
+                </section>
+              </div>
+
+              {!editingAsset && purchaseLines.length > 0 && (
+                <div className="overflow-x-auto rounded-lg border border-slate-200">
+                  <table className="w-full text-xs">
+                    <thead className="bg-slate-50 text-[11px] uppercase text-slate-500">
+                      <tr>
+                        {["#", "Tài sản / CCDC", "Nhóm / Phòng ban", "SL", "Đơn giá", "Chiết khấu", "Thuế", "Sau thuế", "CP mua PB", "Nguyên giá", "Số kỳ", ""].map((label, index) => (
+                          <th key={`${label}-${index}`} className={`px-2 py-2 font-bold ${index >= 3 && index <= 10 ? "text-right" : "text-left"}`}>{label}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {purchaseLines.map((line, index) => {
+                        const lineFigures = savedFigures[index];
+                        return (
+                          <tr key={line.key} className="border-t border-slate-100 align-top">
+                            <td className="px-2 py-2">{index + 1}</td>
+                            <td className="px-2 py-2"><b>{line.name || line.code}</b><small className="block text-slate-500">{line.reuseCode ? `Mua tăng ${line.code}` : line.code || "Mã tự sinh"}</small></td>
+                            <td className="px-2 py-2">{assetGroupOptions.find((group) => group.code === line.assetGroup)?.label || line.assetGroup}<small className="block text-slate-500">{line.departmentCode || "-"}</small></td>
+                            <td className="px-2 py-2 text-right tabular-nums">{line.quantity}</td>
+                            <td className="px-2 py-2 text-right tabular-nums">{money(Number(line.unitPrice) || 0)}</td>
+                            <td className="px-2 py-2 text-right tabular-nums">{lineFigures?.discountAmount ? money(lineFigures.discountAmount) : "-"}</td>
+                            <td className="px-2 py-2 text-right tabular-nums">{lineFigures?.vatAmount ? money(lineFigures.vatAmount) : "-"}<small className="block text-slate-500">{line.vatRate}</small></td>
+                            <td className="px-2 py-2 text-right tabular-nums">{money(lineFigures?.afterTax || 0)}</td>
+                            <td className="px-2 py-2 text-right tabular-nums">{lineFigures?.costShare ? money(lineFigures.costShare) : "-"}</td>
+                            <td className="px-2 py-2 text-right tabular-nums font-bold">{money(lineFigures?.purchaseValue || 0)}</td>
+                            <td className="px-2 py-2 text-right tabular-nums">{line.usefulLifeMonths || "-"}</td>
+                            <td className="px-2 py-2 text-right whitespace-nowrap">
+                              <button type="button" onClick={() => editPurchaseLine(line.key)} className="font-bold text-blue-700 hover:underline">Sửa</button>
+                              <button type="button" onClick={() => setPurchaseLines((current) => current.filter((row) => row.key !== line.key))} className="ml-2 font-bold text-rose-600 hover:underline">Bỏ</button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                    <tfoot className="border-t-2 border-slate-200 bg-slate-50 font-bold">
+                      <tr>
+                        <td className="px-2 py-2" colSpan={9}>Cộng {lineCount} dòng{currentLineFilled ? " (gồm dòng đang nhập)" : ""}</td>
+                        <td className="px-2 py-2 text-right tabular-nums">{money(figures.reduce((sum, row) => sum + row.purchaseValue, 0))} đ</td>
+                        <td colSpan={2} />
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              )}
+
               {message && (
                 <p className={`text-sm rounded-lg border px-3 py-2 ${messageTone === "error" ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
                   {message}
@@ -1100,21 +1328,20 @@ export default function AssetsPage() {
               )}
 
               <div className="flex gap-2">
-                {editingAsset && (
-                  <button
-                    type="button"
-                    onClick={resetAssetForm}
-                    className="px-4 bg-white border border-slate-300 text-slate-600 hover:bg-slate-50 rounded-lg py-2.5 text-sm font-bold transition-colors"
-                  >
-                    Huỷ
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={closeAssetForm}
+                  className="px-4 bg-white border border-slate-300 text-slate-600 hover:bg-slate-50 rounded-lg py-2.5 text-sm font-bold transition-colors"
+                >
+                  {editingAsset ? "Huỷ" : "Đóng"}
+                </button>
                 <button className="flex-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-2.5 text-sm font-bold transition-colors shadow-sm">
-                  {editingAsset ? "Lưu thay đổi" : "Tạo tài sản / CCDC"}
+                  {editingAsset ? "Lưu thay đổi" : `Lưu phiếu mua (${lineCount} dòng)`}
                 </button>
               </div>
             </form>
-          )}
+            );
+          })()}
 
           {/* Asset List & Filter Table */}
           <section className="min-w-0 bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden flex flex-col max-h-[760px]">
@@ -1122,6 +1349,19 @@ export default function AssetsPage() {
             <div className="p-4 border-b border-slate-200 bg-slate-50/70 space-y-3 shrink-0">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h2 className="font-bold text-slate-900 text-base">Danh sách Tài sản &amp; CCDC</h2>
+                {/* Tick nhiều tài sản → in chung một phiếu (khách 27/10/2026). */}
+                {printIds.length > 0 && (
+                  <div className="flex items-center gap-2 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => window.open(`/assets/batch/print?ids=${encodeURIComponent(printIds.join(","))}`, "_blank")}
+                      className="rounded-lg bg-blue-600 px-3 py-1.5 font-bold text-white hover:bg-blue-700"
+                    >
+                      In gộp {printIds.length} tài sản
+                    </button>
+                    <button type="button" onClick={() => setPrintIds([])} className="font-bold text-slate-500 hover:underline">Bỏ chọn</button>
+                  </div>
+                )}
                 {message && !showAssetForm && (
                   <p className={`text-xs rounded-lg border px-3 py-1.5 ${messageTone === "error" ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>{message}</p>
                 )}
@@ -1261,6 +1501,14 @@ export default function AssetsPage() {
               <table className="w-full text-left text-xs min-w-[1040px]">
                 <thead className="bg-slate-100 text-slate-600 uppercase font-bold border-b border-slate-200 sticky top-0 z-10 shadow-sm">
                   <tr>
+                    <th className="pl-4 pr-1 py-3 w-8" data-export-cells="[]">
+                      <input
+                        type="checkbox"
+                        aria-label="Chọn tất cả để in gộp"
+                        checked={assets.length > 0 && assets.every((asset) => printIds.includes(asset.id))}
+                        onChange={(e) => setPrintIds(e.target.checked ? assets.map((asset) => asset.id) : [])}
+                      />
+                    </th>
                     {/* File Excel tách ô gộp ra từng cột (data-export-cells) để khách lọc / pivot được. */}
                     <th className="px-4 py-3" data-export-cells={JSON.stringify(["Mã", "Đợt", "Tên tài sản / CCDC", "Nhà cung cấp", "Ghi chú", "Công nợ"])}>Tài sản / CCDC</th>
                     <th className="px-3 py-3">Cửa hàng / Kho</th>
@@ -1277,7 +1525,7 @@ export default function AssetsPage() {
                 <tbody className="divide-y divide-slate-100">
                   {assets.length === 0 ? (
                     <tr>
-                      <td colSpan={10} className="px-4 py-12 text-center text-slate-400">
+                      <td colSpan={11} className="px-4 py-12 text-center text-slate-400">
                         Chưa có tài sản hoặc CCDC nào phù hợp với bộ lọc.
                       </td>
                     </tr>
@@ -1292,7 +1540,15 @@ export default function AssetsPage() {
                       const departmentName = departmentItem ? departmentItem.name : asset.departmentCode || "Chưa gán phòng ban";
 
                       return (
-                        <tr key={asset.id} className="hover:bg-slate-50/80 transition-colors">
+                        <tr key={asset.id} data-doc-code={asset.code} className={asset.code === focusCode ? focusRowClass : "hover:bg-slate-50/80 transition-colors"}>
+                          <td className="pl-4 pr-1 py-3 align-top" data-export-cells="[]">
+                            <input
+                              type="checkbox"
+                              aria-label={`Chọn ${asset.code} để in gộp`}
+                              checked={printIds.includes(asset.id)}
+                              onChange={(e) => setPrintIds((current) => (e.target.checked ? [...current, asset.id] : current.filter((id) => id !== asset.id)))}
+                            />
+                          </td>
                           <td
                             className="px-4 py-3"
                             data-export-cells={JSON.stringify([
@@ -1329,9 +1585,17 @@ export default function AssetsPage() {
                                   NCC: {asset.supplierName || "-"}
                                   {asset.note && ` · ${asset.note}`}
                                 </p>
+                                {asset.purchaseDocCode && (
+                                  <p className="text-[11px] font-medium text-slate-600">
+                                    Phiếu mua{" "}
+                                    <button type="button" onClick={() => window.open(`/assets/batch/print?doc=${encodeURIComponent(asset.purchaseDocCode || "")}`, "_blank")} className="font-bold text-blue-700 hover:underline" title="In cả phiếu mua">
+                                      {asset.purchaseDocCode}
+                                    </button>
+                                  </p>
+                                )}
                                 {asset.payableDebtCode && (
                                   <p className="text-[11px] font-medium text-amber-700">
-                                    Công nợ: {asset.payableDebtCode} · {asset.payableDebtStatus || "OPEN"}
+                                    Công nợ: <DocLink code={asset.payableDebtCode} /> · {asset.payableDebtStatus || "OPEN"}
                                   </p>
                                 )}
                               </div>
@@ -1396,7 +1660,7 @@ export default function AssetsPage() {
                             {/* In Phiếu nhập tài sản / CCDC (khách yêu cầu 03/10/2026). */}
                             <button
                               type="button"
-                              onClick={() => window.open(`/assets/${asset.id}/print`, "_blank")}
+                              onClick={() => window.open(asset.purchaseDocCode ? `/assets/batch/print?doc=${encodeURIComponent(asset.purchaseDocCode)}` : `/assets/${asset.id}/print`, "_blank")}
                               className="px-2.5 py-1 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 rounded-lg text-xs font-bold transition-colors"
                               title="In phiếu nhập tài sản / CCDC"
                             >

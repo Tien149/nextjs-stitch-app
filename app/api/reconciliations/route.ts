@@ -615,13 +615,14 @@ export async function GET(request: Request) {
           currentMatch: rowMatches[0]
             ? {
                 ...rowMatches[0],
-                targetHref: rowMatches[0].targetType === "VOUCHER" ? "/bank-vouchers" : "/finance-operations",
+                // Mở đúng chứng từ qua /open/<mã> (khách 27/10/2026) thay vì chỉ mở màn chung.
+                targetHref: `/open/${encodeURIComponent(rowMatches[0].targetCode)}`,
               }
             : null,
           otherMatches: rowMatches.slice(1).map((match) => ({
             targetCode: match.targetCode,
             targetType: match.targetType,
-            targetHref: match.targetType === "VOUCHER" ? "/bank-vouchers" : "/finance-operations",
+            targetHref: `/open/${encodeURIComponent(match.targetCode)}`,
           })),
         })),
         matches: [],
@@ -788,9 +789,6 @@ export async function GET(request: Request) {
 
       const { matches: bankMatches, ...bankData } = bank;
       const currentMatch = bankMatches[0] || null;
-      const matchedVoucher = currentMatch?.targetType === "VOUCHER"
-        ? vouchers.find((voucher) => voucher.id === currentMatch.targetId)
-        : null;
       const transferPeriod = bank.transactionDate.toISOString().slice(0, 7);
       const transferHref = `/finance-operations?period=${encodeURIComponent(transferPeriod)}&branchCode=${encodeURIComponent(bank.branchCode || "ALL")}&transfer=${encodeURIComponent(currentMatch?.targetCode || "")}`;
       return {
@@ -805,9 +803,9 @@ export async function GET(request: Request) {
           ? {
               ...currentMatch,
               targetHref: currentMatch.targetType === "VOUCHER"
-                ? (matchedVoucher?.documentChannel === "BANK" ? "/bank-vouchers" : "/vouchers")
+                ? `/open/${encodeURIComponent(currentMatch.targetCode)}`
                 : currentMatch.targetType === "REVENUE_POS"
-                  ? "/imports?tab=revenue-pos"
+                  ? "/imports?tab=revenue"
                   : transferHref,
             }
           : null,

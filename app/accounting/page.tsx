@@ -13,6 +13,10 @@ import { filterMoneySources, firstMoneySourceCode, isMoneySourceAllowed, moneySo
 import CopyableText from "@/components/CopyableText";
 import StickyFilterBar from "@/components/StickyFilterBar";
 import { normalizeCashflowCategoryType } from "@/lib/voucher-rules";
+import { docHref } from "@/components/DocLink";
+
+/** Loại bút toán có sourceCode là mã chứng từ mở được bằng /open/<mã> (xem app/api/doc-link). */
+const DOC_LINK_SOURCE_TYPES = new Set(["VOUCHER", "VOUCHER_COUNTERPART", "MONEY_TRANSFER", "MONEY_TRANSFER_COUNTERPART", "MONEY_TRANSFER_FEE", "ASSET_ACQUISITION", "DEPRECIATION", "SUPPLIER_PAYABLE", "INVENTORY_ISSUE", "ACCRUAL", "DEBT_PAYABLE", "DEBT_RECEIVABLE", "BANK_STATEMENT"]);
 
 type Account = { id: string; code: string; name: string; accountType: string; reportGroup: string };
 type Line = { id: string; debit: number; credit: number; departmentCode: string | null; account: Account; categoryCode: string | null; partnerCode: string | null };
@@ -254,6 +258,12 @@ export default function AccountingPage() {
   };
 
   const handleRedirectToSource = (sourceType: string, sourceCode?: string | null, sourceId?: string | null) => {
+    // Bút toán mang mã chứng từ nguồn → mở đúng phiếu qua /open/<mã> (khách 27/10/2026); loại không có
+    // mã tra được (lương, doanh thu POS, số dư đầu kỳ...) vẫn mở màn gốc như cũ.
+    if (sourceCode?.trim() && DOC_LINK_SOURCE_TYPES.has(sourceType)) {
+      router.push(docHref(sourceCode));
+      return;
+    }
     switch (sourceType) {
       case "OPENING_BALANCE":
         router.push("/opening-balances");
@@ -298,6 +308,12 @@ export default function AccountingPage() {
         break;
       case "PAYROLL":
         router.push("/imports/payroll");
+        break;
+      case "PAYROLL_DEPARTMENT":
+        router.push("/imports?tab=payroll-department");
+        break;
+      case "CASHBOOK_ADJUSTMENT":
+        router.push("/finance-operations?tab=cashbook");
         break;
       default:
         setMessage(`Chưa cấu hình màn hình nguồn cho loại ${sourceType}.`);

@@ -23,6 +23,8 @@ import { MoneyInput } from "@/components/MoneyInput";
 import { exportRowsToExcel } from "@/lib/export-table-excel";
 import { statValueTextClass } from "@/components/reports/report-ui";
 import { money as formatVndMoney } from "@/lib/format-number";
+import { DocLink } from "@/components/DocLink";
+import { focusRowClass, readDocFocus, scrollToDoc } from "@/lib/doc-focus";
 
 const MAX_BULK_SELECTION = 100;
 
@@ -214,6 +216,8 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
   const [pastEditReason, setPastEditReason] = useState("");
   const [pastEditError, setPastEditError] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  /** Phiếu được trỏ tới từ link chứng từ: tô sáng + cuộn tới. */
+  const [focusCode, setFocusCode] = useState("");
   const [bulkRunning, setBulkRunning] = useState(false);
   const [bulkDialog, setBulkDialog] = useState<BulkActionDialogState | null>(null);
   const [bulkReason, setBulkReason] = useState("");
@@ -461,11 +465,18 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
     }
     const urlType = (urlParams.get("voucherType") || "").toUpperCase();
     const urlPartner = (urlParams.get("partnerCode") || "").trim();
-    const hasUrlFilters = urlParams.get("missingCategory") === "1" || Boolean(urlPartner);
+    // Link chứng từ từ màn khác (/open/<mã> → ?code=&date=&branch=): lọc đúng số phiếu, ngày phiếu.
+    const docFocus = readDocFocus();
+    if (docFocus?.branch) {
+      const allowed = session.allowedBranches || [];
+      if (!allowed.length || allowed.includes("ALL") || allowed.includes(docFocus.branch)) initialBranch = docFocus.branch;
+    }
+    const hasUrlFilters = urlParams.get("missingCategory") === "1" || Boolean(urlPartner) || Boolean(docFocus);
     const urlFilters: VoucherFilters = hasUrlFilters
       ? {
-          startDate: urlParams.get("from") || "",
-          endDate: urlParams.get("to") || "",
+          startDate: docFocus?.date || urlParams.get("from") || "",
+          endDate: docFocus?.date || urlParams.get("to") || "",
+          ...(docFocus ? { contentSearch: docFocus.code } : {}),
           voucherType: ["RECEIPT", "PAYMENT"].includes(urlType) ? (urlType as VoucherTypeFilter) : "ALL",
           moneySourceCode: "",
           categoryCode: "",
@@ -481,6 +492,10 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
       if (hasUrlFilters) {
         setFilterDraft(urlFilters);
         setAppliedFilters(urlFilters);
+      }
+      if (docFocus) {
+        setFocusCode(docFocus.code);
+        scrollToDoc(docFocus.code);
       }
       void loadVouchers(initialBranch, urlFilters, 1);
       void loadMasterData(session, initialBranch);
@@ -2057,7 +2072,7 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                     const bulkSelectionDisabledReason = lockReason
                       || (!selectableIds.has(voucher.id) ? "Bạn không có thao tác hàng loạt phù hợp với chứng từ này" : null);
                     return (
-                    <tr key={voucher.id} className={`transition-colors ${selectedIds.includes(voucher.id) ? "bg-blue-50/60" : "hover:bg-slate-50/80"}`}>
+                    <tr key={voucher.id} data-doc-code={voucher.code} className={`transition-colors ${voucher.code === focusCode ? focusRowClass : selectedIds.includes(voucher.id) ? "bg-blue-50/60" : "hover:bg-slate-50/80"}`}>
                       <td className="px-4 py-3.5 align-top">
                         <input
                           type="checkbox"
@@ -2138,13 +2153,16 @@ export function VoucherManagementPage({ documentChannel = "CASH" }: VoucherManag
                         <p className="mt-0.5 text-xs leading-4 text-slate-500 whitespace-normal break-words">{voucher.description}</p>
                         {voucher.debtAction === PREPAID_ALLOCATION_ACTION && voucher.allocationStartPeriod && (
                           <p className="mt-1 text-[11px] font-medium text-indigo-600">
-                            Phân bổ: PB-{voucher.code} · {formatPeriodCount(voucher.allocationMonths)} kỳ từ {voucher.allocationStartPeriod}
+                            Phân bổ: <DocLink code={`PB-${voucher.code}`} /> · {formatPeriodCount(voucher.allocationMonths)} kỳ từ {voucher.allocationStartPeriod}
                           </p>
                         )}
                         {voucher.debtAction === ADVANCE_RECEIVABLE_ACTION && voucher.receivablePartnerCode && (
                           <p className="mt-1 text-[11px] font-medium text-violet-700">
-                            Thu lại của: {voucher.receivablePartnerName || voucher.receivablePartnerCode} · CNTHU-{voucher.code}
+                            Thu lại của: {voucher.receivablePartnerName || voucher.receivablePartnerCode} · <DocLink code={`CNTHU-${voucher.code}`} />
                           </p>
+                        )}
+                        {voucher.debtReference && (
+                          <p className="mt-1 text-[11px] font-medium text-slate-600">Công nợ: <DocLink code={voucher.debtReference} /></p>
                         )}
                         {voucher.debtAction === PARTNER_COLLECTION_ACTION && (
                           <p className="mt-1 text-[11px] font-medium text-violet-700">

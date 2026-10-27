@@ -636,6 +636,15 @@ model AssetRecord {
   paymentStatus             String               @default("UNSPECIFIED")
   payableAmount             Float                @default(0)
   paymentDueDate            DateTime?
+  /// Phiếu mua tài sản nhiều dòng (khách 27/10/2026): MTS-YYYYMM-xxxx, in gộp theo số phiếu.
+  purchaseDocCode           String?
+  /// Chi tiết mua của dòng: nguyên giá = SL × đơn giá − chiết khấu + thuế + chi phí mua phân bổ.
+  unitPrice                 Float?
+  discountRate              Float?
+  discountAmount            Float                @default(0)
+  vatRate                   Float?
+  vatAmount                 Float                @default(0)
+  purchaseCostShare         Float                @default(0)
   sourcePurchaseOrderId     String?
   sourceReceiptId           String?
   disposalDate              DateTime?
@@ -662,6 +671,7 @@ model AssetRecord {
   @@index([assetGroup])
   @@index([status])
   @@index([sourcePurchaseOrderId])
+  @@index([purchaseDocCode])
   @@index([deletedAt])
 }
 

@@ -59,118 +59,149 @@ export async function activeReceipts(tx: TxClient, orderId: string): Promise<Can
   return list.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 }
 
+/**
+ * Huỷ lần nhận. Nhận gộp nhiều PO ra MỘT phiếu NM (khách 27/10/2026) → huỷ là huỷ cả phiếu: mọi PO có
+ * lần nhận trỏ cùng phiếu đều được đảo phần của mình, phiếu NM hoàn kho + xoá một lần. Mỗi PO trên
+ * phiếu đều phải đang có phiếu này là lần nhận mới nhất (thứ tự ngược lại).
+ */
 export async function cancelPurchaseReceipt(
   tx: TxClient,
   input: { orderId?: string | null; stockTransactionId?: string | null; actor: string },
 ) {
-  let orderId = input.orderId || "";
-  if (!orderId && input.stockTransactionId) {
-    const doc = await tx.inventoryTransaction.findUnique({ where: { id: input.stockTransactionId }, select: { referenceType: true, referenceId: true, code: true } });
+  let stockTransactionId = input.stockTransactionId || null;
+  let orderIds: string[];
+  if (stockTransactionId) {
+    const doc = await tx.inventoryTransaction.findUnique({ where: { id: stockTransactionId }, select: { referenceType: true, referenceId: true } });
     if (!doc || doc.referenceType !== "PURCHASE_ORDER" || !doc.referenceId) cancelError("Phiếu này không phải phiếu nhận hàng từ PO");
-    orderId = doc.referenceId;
-  }
-  const order = await tx.purchaseOrder.findUnique({ where: { id: orderId }, include: { lines: true, payable: true } });
-  if (!order) cancelError("Không tìm thấy PO");
-
-  const receipts = await activeReceipts(tx, order.id);
-  if (receipts.length === 0) cancelError(`PO ${order.code} chưa có lần nhận nào còn hiệu lực.`);
-  const target = receipts[0];
-  if (input.stockTransactionId && target.stockTransactionId !== input.stockTransactionId) {
-    cancelError(`PO ${order.code} còn lần nhận ${target.code} sau phiếu này — huỷ theo thứ tự ngược lại: huỷ ${target.code} trước.`);
-  }
-  if (await isPeriodLocked(target.receivedDate, order.branchCode)) cancelError(`Kỳ kế toán của lần nhận ${target.code} đã khóa`);
-
-  const doc = target.stockTransactionId
-    ? await tx.inventoryTransaction.findUnique({ where: { id: target.stockTransactionId }, include: { lines: true } })
-    : null;
-
-  // Lần nhận cần đảo: bản ghi đầy đủ, hoặc dựng lại từ phiếu nhập cũ.
-  let lines: ReceiptLine[];
-  let payableAmount: number;
-  let assetIds: string[];
-  if (target.receiptId) {
-    const receipt = await tx.purchaseOrderReceipt.findUnique({ where: { id: target.receiptId } });
-    lines = (receipt?.lines as ReceiptLine[] | null) || [];
-    payableAmount = receipt?.payableAmount || 0;
-    assetIds = (receipt?.assetIds as string[] | null) || [];
+    orderIds = [doc.referenceId];
   } else {
-    if (!doc) cancelError("Không tìm thấy phiếu nhập của lần nhận");
-    lines = doc.lines.map((line) => {
-      const candidates = order.lines.filter((poLine) => poLine.itemId === line.itemId && poLine.receivedQuantity > 0);
-      if (candidates.length !== 1) cancelError(`Lần nhận ${doc.code} có mặt hàng nằm ở nhiều dòng PO — không tự đảo được, liên hệ kế toán.`);
-      return { lineId: candidates[0].id, quantity: line.quantity, createdLine: false, previousUnitCost: null, previousTotalCost: null };
-    });
-    payableAmount = doc.lines.reduce((sum, line) => sum + purchaseLineAmount(line) + (line.vatAmount || 0), 0) + (doc.purchaseCost || 0);
-    assetIds = (await tx.assetRecord.findMany({ where: { sourceReceiptId: doc.id, deletedAt: null }, select: { id: true } })).map((row) => row.id);
+    if (!input.orderId) cancelError("Thiếu PO cần huỷ lần nhận");
+    const latest = (await activeReceipts(tx, input.orderId))[0];
+    stockTransactionId = latest?.stockTransactionId || null;
+    orderIds = [input.orderId];
+  }
+  if (stockTransactionId) {
+    const linked = await tx.purchaseOrderReceipt.findMany({ where: { stockTransactionId, status: "ACTIVE" }, select: { orderId: true } });
+    orderIds = [...new Set([...orderIds, ...linked.map((row) => row.orderId)])];
   }
 
+  const orders = [];
+  for (const orderId of orderIds) {
+    const order = await tx.purchaseOrder.findUnique({ where: { id: orderId }, include: { lines: true, payable: true } });
+    if (!order) cancelError("Không tìm thấy PO");
+    const receipts = await activeReceipts(tx, order.id);
+    if (receipts.length === 0) cancelError(`PO ${order.code} chưa có lần nhận nào còn hiệu lực.`);
+    const target = receipts[0];
+    if (stockTransactionId && target.stockTransactionId !== stockTransactionId) {
+      cancelError(`PO ${order.code} còn lần nhận ${target.code} sau phiếu này — huỷ theo thứ tự ngược lại: huỷ ${target.code} trước.`);
+    }
+    if (await isPeriodLocked(target.receivedDate, order.branchCode)) cancelError(`Kỳ kế toán của lần nhận ${target.code} đã khóa`);
+    orders.push({ order, target });
+  }
+
+  const doc = stockTransactionId
+    ? await tx.inventoryTransaction.findUnique({ where: { id: stockTransactionId }, include: { lines: true } })
+    : null;
   // Việc phát sinh SAU lần nhận phải gỡ trước (thứ tự ngược lại).
   if (doc) {
     const returned = await tx.inventoryTransaction.findFirst({ where: { transactionType: "XUAT_TRA_NCC", referenceCode: doc.code, deletedAt: null }, select: { code: true } });
     if (returned) cancelError(`Phiếu nhập ${doc.code} đã có phiếu trả hàng NCC ${returned.code} — xoá phiếu trả hàng trước.`);
   }
-  const assets = assetIds.length === 0 ? [] : await tx.assetRecord.findMany({
-    where: { id: { in: assetIds }, deletedAt: null },
-    select: { id: true, code: true, disposalDate: true, _count: { select: { depreciations: true, maintenances: true, damageReports: true } } },
-  });
-  for (const asset of assets) {
-    if (asset._count.depreciations > 0) cancelError(`Tài sản ${asset.code} của lần nhận đã trích khấu hao — bỏ trích khấu hao trước.`);
-    if (asset._count.maintenances > 0 || asset._count.damageReports > 0) cancelError(`Tài sản ${asset.code} của lần nhận đã có bảo trì / báo hỏng — gỡ các phiếu đó trước.`);
-    if (asset.disposalDate) cancelError(`Tài sản ${asset.code} của lần nhận đã thanh lý — huỷ thanh lý trước.`);
+
+  // Phần của từng PO: bản ghi lần nhận đầy đủ, hoặc dựng lại từ phiếu nhập cũ (chỉ một PO).
+  const portions = [];
+  for (const { order, target } of orders) {
+    let lines: ReceiptLine[];
+    let payableAmount: number;
+    let assetIds: string[];
+    if (target.receiptId) {
+      const receipt = await tx.purchaseOrderReceipt.findUnique({ where: { id: target.receiptId } });
+      lines = (receipt?.lines as ReceiptLine[] | null) || [];
+      payableAmount = receipt?.payableAmount || 0;
+      assetIds = (receipt?.assetIds as string[] | null) || [];
+    } else {
+      if (!doc) cancelError("Không tìm thấy phiếu nhập của lần nhận");
+      lines = doc.lines.map((line) => {
+        const candidates = order.lines.filter((poLine) => poLine.itemId === line.itemId && poLine.receivedQuantity > 0);
+        if (candidates.length !== 1) cancelError(`Lần nhận ${doc.code} có mặt hàng nằm ở nhiều dòng PO — không tự đảo được, liên hệ kế toán.`);
+        return { lineId: candidates[0].id, quantity: line.quantity, createdLine: false, previousUnitCost: null, previousTotalCost: null };
+      });
+      payableAmount = doc.lines.reduce((sum, line) => sum + purchaseLineAmount(line) + (line.vatAmount || 0), 0) + (doc.purchaseCost || 0);
+      assetIds = (await tx.assetRecord.findMany({ where: { sourceReceiptId: doc.id, deletedAt: null }, select: { id: true } })).map((row) => row.id);
+    }
+    const assets = assetIds.length === 0 ? [] : await tx.assetRecord.findMany({
+      where: { id: { in: assetIds }, deletedAt: null },
+      select: { id: true, code: true, disposalDate: true, _count: { select: { depreciations: true, maintenances: true, damageReports: true } } },
+    });
+    for (const asset of assets) {
+      if (asset._count.depreciations > 0) cancelError(`Tài sản ${asset.code} của lần nhận đã trích khấu hao — bỏ trích khấu hao trước.`);
+      if (asset._count.maintenances > 0 || asset._count.damageReports > 0) cancelError(`Tài sản ${asset.code} của lần nhận đã có bảo trì / báo hỏng — gỡ các phiếu đó trước.`);
+      if (asset.disposalDate) cancelError(`Tài sản ${asset.code} của lần nhận đã thanh lý — huỷ thanh lý trước.`);
+    }
+    portions.push({ order, target, lines, payableAmount, assets });
   }
 
-  // 1) Kho: hoàn theo phiếu nhập rồi xoá mềm phiếu.
+  // 1) Kho: hoàn theo phiếu nhập rồi xoá mềm phiếu (một lần cho cả phiếu gộp).
   const now = new Date();
   if (doc) {
     await reverseStockEffect(tx, doc);
     await tx.inventoryTransaction.update({ where: { id: doc.id }, data: { deletedAt: now, deletedBy: input.actor } });
   }
-  // 2) Tài sản/CCDC sinh từ lần nhận.
-  if (assets.length > 0) await tx.assetRecord.updateMany({ where: { id: { in: assets.map((asset) => asset.id) } }, data: { deletedAt: now, deletedBy: input.actor } });
-  // 3) Dòng PO: trả lại số đã nhận; dòng thêm lúc nhận thì bỏ; giá đổi lúc nhận thì về giá cũ.
-  for (const line of lines) {
-    const poLine = order.lines.find((candidate) => candidate.id === line.lineId);
-    if (!poLine) continue;
-    if (line.createdLine) {
-      await tx.purchaseOrderLine.delete({ where: { id: poLine.id } });
-      continue;
-    }
-    await tx.purchaseOrderLine.update({
-      where: { id: poLine.id },
-      data: {
-        receivedQuantity: Math.max(0, poLine.receivedQuantity - line.quantity),
-        ...(line.previousUnitCost !== null ? { unitCost: line.previousUnitCost, totalCost: line.previousTotalCost ?? poLine.orderedQuantity * line.previousUnitCost } : {}),
-      },
-    });
-  }
-  const remaining = await tx.purchaseOrderLine.findMany({ where: { orderId: order.id } });
-  const nothingReceived = remaining.every((line) => line.receivedQuantity <= 1e-6);
-  const completed = remaining.length > 0 && remaining.every((line) => line.receivedQuantity >= line.orderedQuantity - 1e-6);
-  await tx.purchaseOrder.update({
-    where: { id: order.id },
-    data: {
-      status: nothingReceived ? "APPROVED" : completed ? "COMPLETED" : "PARTIALLY_RECEIVED",
-      totalAmount: remaining.reduce((sum, line) => sum + line.totalCost, 0),
-      // PO đã Đóng (nhận thiếu) mà huỷ lần nhận thì mở lại — chờ nhận lại.
-      closedAt: null, closedBy: null, closeReason: null,
-    },
-  });
-  await syncRequestCompletion(tx, order.requestId);
-  // 4) Công nợ NCC của PO: trừ đúng phần lần nhận đã cộng; về 0 thì bỏ hẳn khoản (và bút toán của nó).
-  if (order.payable) {
-    const originalAmount = order.payable.originalAmount - payableAmount;
-    if (originalAmount <= 0.5) {
-      await tx.journalEntry.deleteMany({ where: { sourceType: "SUPPLIER_PAYABLE", sourceId: order.payable.id } });
-      await tx.supplierPayable.delete({ where: { id: order.payable.id } });
-    } else {
-      await tx.supplierPayable.update({
-        where: { id: order.payable.id },
-        data: { originalAmount, outstandingAmount: order.payable.outstandingAmount - payableAmount },
+  for (const { order, target, lines, payableAmount, assets } of portions) {
+    // 2) Tài sản/CCDC sinh từ lần nhận.
+    if (assets.length > 0) await tx.assetRecord.updateMany({ where: { id: { in: assets.map((asset) => asset.id) } }, data: { deletedAt: now, deletedBy: input.actor } });
+    // 3) Dòng PO: trả lại số đã nhận; dòng thêm lúc nhận thì bỏ; giá đổi lúc nhận thì về giá cũ.
+    for (const line of lines) {
+      const poLine = order.lines.find((candidate) => candidate.id === line.lineId);
+      if (!poLine) continue;
+      if (line.createdLine) {
+        await tx.purchaseOrderLine.delete({ where: { id: poLine.id } });
+        continue;
+      }
+      await tx.purchaseOrderLine.update({
+        where: { id: poLine.id },
+        data: {
+          receivedQuantity: Math.max(0, poLine.receivedQuantity - line.quantity),
+          ...(line.previousUnitCost !== null ? { unitCost: line.previousUnitCost, totalCost: line.previousTotalCost ?? poLine.orderedQuantity * line.previousUnitCost } : {}),
+        },
       });
     }
+    const remaining = await tx.purchaseOrderLine.findMany({ where: { orderId: order.id } });
+    const nothingReceived = remaining.every((line) => line.receivedQuantity <= 1e-6);
+    const completed = remaining.length > 0 && remaining.every((line) => line.receivedQuantity >= line.orderedQuantity - 1e-6);
+    await tx.purchaseOrder.update({
+      where: { id: order.id },
+      data: {
+        status: nothingReceived ? "APPROVED" : completed ? "COMPLETED" : "PARTIALLY_RECEIVED",
+        totalAmount: remaining.reduce((sum, line) => sum + line.totalCost, 0),
+        // PO đã Đóng (nhận thiếu) mà huỷ lần nhận thì mở lại — chờ nhận lại.
+        closedAt: null, closedBy: null, closeReason: null,
+      },
+    });
+    await syncRequestCompletion(tx, order.requestId);
+    // 4) Công nợ NCC của PO: trừ đúng phần lần nhận đã cộng; về 0 thì bỏ hẳn khoản (và bút toán của nó).
+    if (order.payable) {
+      const originalAmount = order.payable.originalAmount - payableAmount;
+      if (originalAmount <= 0.5) {
+        await tx.journalEntry.deleteMany({ where: { sourceType: "SUPPLIER_PAYABLE", sourceId: order.payable.id } });
+        await tx.supplierPayable.delete({ where: { id: order.payable.id } });
+      } else {
+        await tx.supplierPayable.update({
+          where: { id: order.payable.id },
+          data: { originalAmount, outstandingAmount: order.payable.outstandingAmount - payableAmount },
+        });
+      }
+    }
+    if (target.receiptId) {
+      await tx.purchaseOrderReceipt.update({ where: { id: target.receiptId }, data: { status: "CANCELLED", cancelledBy: input.actor, cancelledAt: now } });
+    }
   }
-  if (target.receiptId) {
-    await tx.purchaseOrderReceipt.update({ where: { id: target.receiptId }, data: { status: "CANCELLED", cancelledBy: input.actor, cancelledAt: now } });
-  }
-  return { orderCode: order.code, receiptCode: target.code, assetsRemoved: assets.length, payableAmount, receivedDate: target.receivedDate, branchCode: order.branchCode };
+  return {
+    orderCode: portions.map((row) => row.order.code).join(", "),
+    receiptCode: doc?.code || portions[0].target.code,
+    assetsRemoved: portions.reduce((sum, row) => sum + row.assets.length, 0),
+    payableAmount: portions.reduce((sum, row) => sum + row.payableAmount, 0),
+    receivedDate: portions[0].target.receivedDate,
+    branchCode: portions[0].order.branchCode,
+  };
 }

@@ -23,6 +23,7 @@ import FinancialPlanningWorkspace from "@/components/reports/planning/FinancialP
 import RevenueTrendTab from "@/components/reports/RevenueTrendTab";
 import { statValueTextClass } from "@/components/reports/report-ui";
 import { isRevenueGroupCategory } from "@/lib/voucher-rules";
+import { DocLink } from "@/components/DocLink";
 
 type Pnl = {
   revenue: number;
@@ -918,7 +919,7 @@ export default function ReportsPage() {
                 {operationRows.map((row) => (
                   <tr key={`${row.module}-${row.id}`} className="border-t border-slate-100">
                     <Cell><b>{row.module}</b></Cell>
-                    <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small className="block text-slate-500">{row.note}</small></Cell>
+                    <Cell><DocLink code={row.code} className="font-bold" /><small className="block text-slate-500">{row.note}</small></Cell>
                     <Cell>{new Date(row.date).toLocaleDateString("vi-VN")}</Cell>
                     <Cell>{storeLabel(row.branchCode)}</Cell>
                     <Cell>{row.departmentName}</Cell>
@@ -1449,7 +1450,7 @@ export default function ReportsPage() {
                 ) : dailyCash.receipts.map((row, index) => (
                   <tr key={row.id} className="border-t border-slate-100">
                     <Cell>{index + 1}</Cell>
-                    <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small className="block text-slate-500">{new Date(row.date).toLocaleDateString("vi-VN")}{row.shift ? ` · ${shiftLabel(row.shift)}` : ""}</small></Cell>
+                    <Cell><DocLink code={row.code} className="font-bold" /><small className="block text-slate-500">{new Date(row.date).toLocaleDateString("vi-VN")}{row.shift ? ` · ${shiftLabel(row.shift)}` : ""}</small></Cell>
                     <Cell>{row.description}</Cell>
                     <Cell>{row.partnerName || "-"}</Cell>
                     <Cell>
@@ -1491,7 +1492,7 @@ export default function ReportsPage() {
                 ) : dailyCash.expenses.map((expense, index) => (
                   <tr key={expense.id} className="border-t border-slate-100">
                     <Cell>{index + 1}</Cell>
-                    <Cell><CopyableText value={expense.code}><b>{expense.code}</b></CopyableText><small className="block text-slate-500">{new Date(expense.date).toLocaleDateString("vi-VN")}{expense.shift ? ` · ${shiftLabel(expense.shift)}` : ""}</small></Cell>
+                    <Cell><DocLink code={expense.code} className="font-bold" /><small className="block text-slate-500">{new Date(expense.date).toLocaleDateString("vi-VN")}{expense.shift ? ` · ${shiftLabel(expense.shift)}` : ""}</small></Cell>
                     <Cell>{expense.description}</Cell>
                     <Cell>{expense.partnerName || "-"}</Cell>
                     <Cell>
@@ -3270,7 +3271,7 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
                           )}
                         </td>
                         <td className="whitespace-nowrap px-3 py-2">{dayLabel(voucher.date)}</td>
-                        <td className="px-3 py-2"><a href="/bank-vouchers" className="font-bold text-blue-700 hover:underline">{voucher.code}</a></td>
+                        <td className="px-3 py-2"><DocLink code={voucher.code} className="font-bold" /></td>
                         <td className="px-3 py-2">{voucher.moneySourceName}<span className="ml-1 text-slate-400">{voucher.moneySourceCode}</span></td>
                         <td className="px-3 py-2">{voucher.partnerName || "—"}</td>
                         <td className="whitespace-nowrap px-3 py-2 text-right font-bold tabular-nums">{money(voucher.amount)} đ</td>
@@ -3278,7 +3279,7 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
                           {voucher.candidates.length > 0
                             ? voucher.candidates.map((candidate) => (
                                 <span key={candidate.id} className="mr-2 inline-flex items-center gap-1.5">
-                                  <span className="font-semibold">{candidate.transactionCode}</span>
+                                  <DocLink code={candidate.transactionCode} className="font-semibold" />
                                   <span className="text-slate-400">{dayLabel(candidate.transactionDate)} · {candidate.bankAccount}</span>
                                   {!candidate.exact && (
                                     <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">
@@ -3303,7 +3304,7 @@ function RevenueSettlementPanel({ data, canLink, onLinked }: { data: RevenueSett
                               ? (
                                 <span className="text-slate-500">
                                   Dòng {(voucher.takenLines || []).map((line) => line.transactionCode).join(", ")} cùng số tiền nhưng <b>đã có chứng từ</b>
-                                  {(voucher.takenLines || [])[0]?.voucherCode ? ` ${(voucher.takenLines || [])[0].voucherCode}` : ""} — phiếu này là bản trùng,{" "}
+                                  {(voucher.takenLines || [])[0]?.voucherCode ? <> <DocLink code={(voucher.takenLines || [])[0].voucherCode} /></> : ""} — phiếu này là bản trùng,{" "}
                                   <a href="/bank-vouchers" className="font-bold text-blue-700 hover:underline">xoá phiếu lập tay</a>.
                                 </span>
                               )

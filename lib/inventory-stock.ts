@@ -672,7 +672,9 @@ export async function postInventoryTransaction(tx: Tx, input: PostInventoryTrans
   if (isExplosionIssueType(transactionType)) {
     created.explosionStatus = await refreshTransferExplosionStatus(tx, created.id);
   }
-  return created;
+  // Dòng đã định giá theo ĐÚNG thứ tự dòng gửi vào (`created.lines` đọc lại từ DB không chắc giữ thứ
+  // tự) — nhận gộp nhiều PO một phiếu cần biết dòng nào của PO nào để tách công nợ.
+  return Object.assign(created, { inputOrderLines: valuedLines });
 }
 
 /**

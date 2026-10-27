@@ -2,9 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DateInput, MonthInput } from "@/components/DateInput";
+import { DocLink } from "@/components/DocLink";
 import { ConfirmDeleteDialog } from "@/components/RowActions";
 import { SearchableSelect } from "@/components/SearchableSelect";
-import CopyableText from "@/components/CopyableText";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { money, quantity as qty, unitPrice as formatUnitPrice } from "@/lib/format-number";
 import { VAT_RATE_OPTIONS, vatAmountOf, vatRateLabel } from "@/lib/inventory-vat";
@@ -489,7 +489,7 @@ export function PriceListsTab({ user, canCreate, canDelete, items, suppliers, no
                 {deviations?.rows.map((row, index) => (
                   <tr key={`${row.transactionId}-${row.itemCode}-${index}`} className="border-t border-slate-100">
                     <td className="cell whitespace-nowrap">{dayText(row.date)}</td>
-                    <td className="cell whitespace-nowrap"><CopyableText value={row.code}><b>{row.code}</b></CopyableText></td>
+                    <td className="cell whitespace-nowrap"><DocLink code={row.code} className="font-bold" /></td>
                     <td className="cell whitespace-nowrap">{storeLabel(row.branchCode)}<small>{row.warehouseCode}</small></td>
                     <td className="cell whitespace-nowrap">{row.supplierCode}</td>
                     <td className="cell"><b>{row.itemName}</b><small>{row.itemCode}</small></td>

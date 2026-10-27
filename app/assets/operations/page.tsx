@@ -12,6 +12,7 @@ import { allowedDepartmentsOf } from "@/lib/department-scope";
 import { assetLotLabel, distributeStocktakeCount, type StocktakeLotInput } from "@/lib/asset-lot";
 import { useModuleAuth } from "@/lib/use-module-auth";
 import CopyableText from "@/components/CopyableText";
+import { DocLink } from "@/components/DocLink";
 import { matchesSearch } from "@/lib/search-text";
 import { STOCKTAKE_APPROVED, STOCKTAKE_PENDING, STOCKTAKE_RETURNED, isStocktakeEditable, stocktakeStatusLabel, stocktakeStatusTone } from "@/lib/stocktake-status";
 
@@ -1080,7 +1081,7 @@ export default function AssetOperationsPage() {
             >
               {depreciationMatrix.map((row) => (
                 <tr key={row.asset.id} className="border-t border-slate-100">
-                  <Cell sticky><b><CopyableText value={row.asset.code}>{assetLotLabel(row.asset)}</CopyableText> - {row.asset.name}</b></Cell>
+                  <Cell sticky><b><DocLink code={row.asset.code}>{assetLotLabel(row.asset)}</DocLink> - {row.asset.name}</b></Cell>
                   {row.months.map((amount, index) => (
                     <Cell key={index} right className={`whitespace-nowrap ${amount ? "" : "text-slate-300"}`}>
                       {amount ? (
@@ -1187,7 +1188,7 @@ export default function AssetOperationsPage() {
             <Table headers={[{ label: "Tài sản" }, { label: "Nội dung" }, { label: "Ngày dự kiến" }, { label: "Lặp" }, { label: "Task" }, { label: "Chi phí", align: "right" }, { label: "Trạng thái" }, { label: "Thao tác", align: "right" }]}>
               {data.maintenances.map((row) => (
                 <tr key={row.id} className="border-t border-slate-100">
-                  <Cell><b>{row.asset.name}</b><small><CopyableText value={row.asset.code}>{row.asset.code}</CopyableText></small></Cell>
+                  <Cell><b>{row.asset.name}</b><small><DocLink code={row.asset.code} /></small></Cell>
                   <Cell>{row.maintenanceType}</Cell>
                   <Cell>{new Date(row.scheduledDate).toLocaleDateString("vi-VN")}</Cell>
                   <Cell>{row.recurrenceRule || "-"}</Cell>
@@ -1316,7 +1317,7 @@ export default function AssetOperationsPage() {
                 {data.damageReports.map((row) => (
                   <tr key={row.id} className="border-t border-slate-100">
                     <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small>{row.status}</small></Cell>
-                    <Cell><CopyableText value={row.asset.code} /> - {row.asset.name}</Cell>
+                    <Cell><DocLink code={row.asset.code} /> - {row.asset.name}</Cell>
                     <Cell><span className="status bg-amber-50 text-amber-700">{row.severity}</span></Cell>
                     <Cell>{row.description}</Cell>
                     <Cell>{row.linkedWorkItemId ? <span className="status bg-blue-50 text-blue-700">Đã tạo</span> : "-"}</Cell>
@@ -1388,7 +1389,7 @@ export default function AssetOperationsPage() {
               ) : (
                 data.assets.filter((a) => a.status === "DISPOSED" && inDateRange(a.disposalDate, opsRange)).map((row) => (
                   <tr key={row.id} className="border-t border-slate-100">
-                    <Cell><CopyableText value={row.code}><b>{row.code}</b></CopyableText><small className="block text-slate-600">{row.name}</small></Cell>
+                    <Cell><DocLink code={row.code} className="font-bold" /><small className="block text-slate-600">{row.name}</small></Cell>
                     <Cell right>{money(row.originalCost)} đ</Cell>
                     <Cell right><b className="text-emerald-700">{money(row.disposalAmount || 0)} đ</b></Cell>
                     <Cell><span className="status bg-rose-100 text-rose-800">Đã thanh lý</span></Cell>

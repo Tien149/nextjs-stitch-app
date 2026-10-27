@@ -11,6 +11,8 @@ import { assetAcquisitionJournalCode, assetPayableCode } from "@/lib/asset-lot";
 import { ensureCatalogItem, renameAssetCode } from "@/lib/asset-catalog";
 import { allowedDepartmentsOf, assertDepartmentAccess } from "@/lib/department-scope";
 import { matchesSearch } from "@/lib/search-text";
+import { parseVatRate } from "@/lib/inventory-vat";
+import { purchaseLineFigures, resolveDiscount } from "@/lib/purchase-discount";
 import {
   softDeleteRecord,
   SoftDeleteError,
@@ -26,6 +28,13 @@ const depreciationLockedFields = [
   "usefulLifeMonths",
   "depreciationStartDate",
   "residualValue",
+  // Chi tiết mua quyết định nguyên giá (khách 27/10/2026).
+  "unitPrice",
+  "discountRate",
+  "discountAmount",
+  "vatRate",
+  "vatAmount",
+  "purchaseCostShare",
 ] as const;
 
 function cleanText(value: unknown) {
@@ -162,39 +171,48 @@ export async function GET(request: Request) {
       return NextResponse.json({ steps: await assetDeleteSteps(asset) });
     }
 
-    // Bản in PHIẾU NHẬP TÀI SẢN / CCDC (khách yêu cầu 03/10/2026): một đợt của mã kèm tên kho,
-    // phòng ban, nhóm, NCC và công nợ để trang in khỏi phải tải cả sổ tài sản.
-    const printId = searchParams.get("view") === "print" ? cleanText(searchParams.get("id")) : "";
-    if (printId) {
-      const asset = await prisma.assetRecord.findUnique({ where: { id: printId } });
-      if (!asset) return NextResponse.json({ error: "Không tìm thấy tài sản" }, { status: 404 });
+    // Bản in PHIẾU NHẬP TÀI SẢN / CCDC (khách yêu cầu 03/10/2026): kèm tên kho, phòng ban, nhóm, NCC
+    // và công nợ để trang in khỏi phải tải cả sổ tài sản. Một phiếu in được NHIỀU tài sản (khách
+    // 27/10/2026): `ids` (tick chọn trên danh sách) hoặc `doc` (cả số phiếu mua MTS-…); `id` = một đợt.
+    if (searchParams.get("view") === "print") {
+      const ids = cleanText(searchParams.get("ids")).split(",").map((value) => value.trim()).filter(Boolean);
+      const singleId = cleanText(searchParams.get("id"));
+      const docCode = cleanText(searchParams.get("doc"));
+      const where = docCode ? { purchaseDocCode: docCode } : { id: { in: ids.length > 0 ? ids : [singleId] } };
+      const assets = await prisma.assetRecord.findMany({ where, orderBy: [{ purchaseDate: "asc" }, { code: "asc" }, { lotNo: "asc" }] });
+      if (assets.length === 0) return NextResponse.json({ error: "Không tìm thấy tài sản" }, { status: 404 });
       try {
-        assertBranchAccess(auth.session, asset.branchCode);
-        assertDepartmentAccess(auth.session, asset.departmentCode, `Tài sản ${asset.code}`);
+        for (const asset of assets) {
+          assertBranchAccess(auth.session, asset.branchCode);
+          assertDepartmentAccess(auth.session, asset.departmentCode, `Tài sản ${asset.code}`);
+        }
       } catch (e) {
         return NextResponse.json({ error: e instanceof Error ? e.message.replace(/^BUSINESS:/, "") : "Lỗi phân quyền" }, { status: 403 });
       }
       const lookup = (type: string, code: string | null) => code
         ? prisma.masterDataItem.findFirst({ where: { type, code: { equals: code, mode: "insensitive" } }, select: { name: true, group: true } })
         : Promise.resolve(null);
-      const [warehouse, department, group, supplier, debt, lotCount] = await Promise.all([
-        lookup("WAREHOUSE", asset.warehouseCode || asset.location),
-        lookup("DEPARTMENT", asset.departmentCode),
-        lookup("ASSET_GROUP", asset.assetGroup),
-        asset.supplierName ? Promise.resolve(null) : lookup("PARTNER", asset.supplierCode),
-        prismaRaw.debtRecord.findFirst({ where: { sourceType: "ASSET", sourceId: asset.id, deletedAt: null }, select: { code: true, status: true, dueDate: true } }),
-        prisma.assetRecord.count({ where: { code: asset.code } }),
-      ]);
-      return NextResponse.json({
-        asset,
-        warehouseName: warehouse?.name || null,
-        departmentName: department?.name || null,
-        groupName: group?.name || null,
-        isTool: ["CCDC", "TOOL"].includes(cleanText(group?.group).toUpperCase()),
-        supplierName: asset.supplierName || supplier?.name || null,
-        debt,
-        lotCount,
-      });
+      const items = await Promise.all(assets.map(async (asset) => {
+        const [warehouse, department, group, supplier, debt, lotCount] = await Promise.all([
+          lookup("WAREHOUSE", asset.warehouseCode || asset.location),
+          lookup("DEPARTMENT", asset.departmentCode),
+          lookup("ASSET_GROUP", asset.assetGroup),
+          asset.supplierName ? Promise.resolve(null) : lookup("PARTNER", asset.supplierCode),
+          prismaRaw.debtRecord.findFirst({ where: { sourceType: "ASSET", sourceId: asset.id, deletedAt: null }, select: { code: true, status: true, dueDate: true } }),
+          prisma.assetRecord.count({ where: { code: asset.code } }),
+        ]);
+        return {
+          asset,
+          warehouseName: warehouse?.name || null,
+          departmentName: department?.name || null,
+          groupName: group?.name || null,
+          isTool: ["CCDC", "TOOL"].includes(cleanText(group?.group).toUpperCase()),
+          supplierName: asset.supplierName || supplier?.name || null,
+          debt,
+          lotCount,
+        };
+      }));
+      return NextResponse.json({ items });
     }
 
     const search = searchParams.get("search")?.trim() || searchParams.get("q")?.trim();
@@ -243,7 +261,7 @@ export async function GET(request: Request) {
     const assets = search
       ? matchedAssets.filter((asset) => matchesSearch(search, [
           asset.code, asset.name, asset.branchCode, asset.departmentCode, asset.assetGroup,
-          asset.supplierName, asset.supplierCode, asset.location, asset.warehouseCode, asset.note,
+          asset.supplierName, asset.supplierCode, asset.location, asset.warehouseCode, asset.note, asset.purchaseDocCode,
         ]))
       : matchedAssets;
     const assetPeriods = Array.from(new Set(assets.map((asset) => periodFromDate(asset.purchaseDate))));
@@ -349,240 +367,339 @@ export async function GET(request: Request) {
   }
 }
 
+/**
+ * Kiểm + chuẩn bị MỘT hồ sơ tài sản sắp tạo (một dòng của phiếu mua). Lỗi trả NextResponse để POST
+ * trả thẳng; tách khỏi POST để một phiếu mua tạo nhiều tài sản trong một transaction (khách 27/10/2026).
+ */
+async function prepareAssetCreate(session: DemoSession, body: Record<string, unknown>) {
+  /**
+   * Mua tăng vào mã đã có (lib/asset-lot.ts): đợt mới dùng lại mã, tên, nhóm của đợt trước; số
+   * lượng, ngày mua, nguyên giá, số kỳ, NCC, thanh toán là của đợt này. Cửa hàng/kho/phòng ban
+   * lấy theo form (trống thì theo đợt trước): cùng mã có thể nằm ở nhiều nhà hàng — ASA mua
+   * cùng model tủ đông TSCDKIT0014 với NME (29/09/2026).
+   */
+  const reuseCode = body.reuseCode === true;
+  const reuseCodeValue = reuseCode ? normalizeAssetCode(body.code) : "";
+  if (reuseCode && !reuseCodeValue) {
+    return NextResponse.json({ error: "Mua tăng vào mã đã có thì phải chọn mã tài sản" }, { status: 400 });
+  }
+  // Mẫu: đợt mới nhất cùng cửa hàng với đợt đang ghi, chưa có thì đợt mới nhất của mã.
+  const reuseBranch = reuseCode ? cleanText(body.branchCode) : "";
+  const reuseTemplate = reuseCode
+    ? (reuseBranch ? await prisma.assetRecord.findFirst({ where: { code: reuseCodeValue, branchCode: reuseBranch }, orderBy: { lotNo: "desc" } }) : null)
+      || await prisma.assetRecord.findFirst({ where: { code: reuseCodeValue }, orderBy: { lotNo: "desc" } })
+    : null;
+  if (reuseCode && !reuseTemplate) {
+    return NextResponse.json({ error: `Mã tài sản ${reuseCodeValue} không tồn tại; tạo hồ sơ mới thay vì mua tăng` }, { status: 400 });
+  }
+  // Mã đã tạo ở Danh mục mã (chưa có hồ sơ): tên + nhóm theo danh mục, không theo ô gõ tay.
+  const catalogCode = !reuseCode ? normalizeAssetCode(body.code) : "";
+  const catalogItem = catalogCode ? await prisma.assetCatalogItem.findUnique({ where: { code: catalogCode } }) : null;
+  if (catalogItem && catalogItem.status !== "ACTIVE") {
+    return NextResponse.json({ error: `Mã ${catalogItem.code} đang Ngưng trong danh mục; bật lại ở Danh mục mã trước khi tạo hồ sơ` }, { status: 400 });
+  }
+  const name = reuseTemplate ? reuseTemplate.name : catalogItem ? catalogItem.name : cleanText(body.name);
+  const branchCode = reuseTemplate ? (cleanText(body.branchCode) || reuseTemplate.branchCode) : cleanText(body.branchCode);
+  const assetGroup = reuseTemplate ? reuseTemplate.assetGroup : catalogItem ? catalogItem.assetGroup : cleanText(body.assetGroup);
+  const originalCost = toAmount(body.originalCost);
+  const formWarehouseCode = cleanText(body.warehouseCode) || cleanText(body.location);
+  const warehouseCode = reuseTemplate
+    ? (formWarehouseCode || (branchCode === reuseTemplate.branchCode ? (reuseTemplate.warehouseCode || reuseTemplate.location || "") : ""))
+    : formWarehouseCode;
+  const departmentCode = reuseTemplate
+    ? (cleanText(body.departmentCode) || (branchCode === reuseTemplate.branchCode ? (reuseTemplate.departmentCode || "") : ""))
+    : cleanText(body.departmentCode);
+  const quantity = toAmount(body.quantity) || 1;
+  const usefulLifeMonths = body.usefulLifeMonths !== undefined && body.usefulLifeMonths !== "" ? roundPeriodCount(toAmount(body.usefulLifeMonths)) : null;
+  const purchaseDate = body.purchaseDate ? new Date(String(body.purchaseDate)) : new Date();
+  const paymentStatus = cleanText(body.paymentStatus).toUpperCase() || "PAID";
+  const payableAmount = paymentStatus === "PAYABLE" ? (toAmount(body.payableAmount) || originalCost) : 0;
+  const paymentDueDate = body.paymentDueDate ? new Date(String(body.paymentDueDate)) : null;
+  const supplierCode = cleanText(body.supplierCode);
+  const supplierName = cleanText(body.supplierName);
+  const manualCode = reuseCode ? "" : normalizeAssetCode(body.code);
+
+  // Theo dõi quản trị không cần nguyên giá — 0 hợp lệ, chỉ cấm số âm; riêng tài sản
+  // ghi công nợ vẫn phải có nguyên giá thật vì nó sinh bút toán và sổ phải trả.
+  if (!name || !branchCode || !assetGroup) {
+    return NextResponse.json({ error: "Tên tài sản, chi nhánh và nhóm tài sản là bắt buộc" }, { status: 400 });
+  }
+  if (originalCost < 0) {
+    return NextResponse.json({ error: "Nguyên giá không được âm" }, { status: 400 });
+  }
+  if (paymentStatus === "PAYABLE" && originalCost <= 0) {
+    return NextResponse.json({ error: "Tài sản ghi công nợ phải có nguyên giá lớn hơn 0" }, { status: 400 });
+  }
+
+  if (quantity <= 0) {
+    return NextResponse.json({ error: "Số lượng phải lớn hơn 0" }, { status: 400 });
+  }
+
+  if (usefulLifeMonths !== null && usefulLifeMonths <= 0) {
+    return NextResponse.json({ error: "Số kỳ khấu hao phải lớn hơn 0" }, { status: 400 });
+  }
+
+  if (Number.isNaN(purchaseDate.getTime()) || (paymentDueDate && Number.isNaN(paymentDueDate.getTime()))) {
+    return NextResponse.json({ error: "Ngày mua hoặc hạn thanh toán không hợp lệ" }, { status: 400 });
+  }
+  if (!manualCode && !reuseCode && !departmentCode) {
+    return NextResponse.json({ error: "Phòng ban là bắt buộc khi hệ thống tự sinh mã tài sản" }, { status: 400 });
+  }
+  if (!["PAID", "PAYABLE"].includes(paymentStatus)) {
+    return NextResponse.json({ error: "Trạng thái thanh toán chỉ nhận Đã thanh toán hoặc Công nợ phải trả" }, { status: 400 });
+  }
+  try {
+    assertDepartmentAccess(session, departmentCode, "Tài sản mới");
+  } catch (e) {
+    return NextResponse.json({ error: (e instanceof Error ? e.message : "Ngoài phạm vi bộ phận").replace(/^BUSINESS:/, "") }, { status: 403 });
+  }
+  if (paymentStatus === "PAYABLE" && !supplierCode) {
+    return NextResponse.json({ error: "Nhà cung cấp là bắt buộc khi ghi nhận công nợ phải trả" }, { status: 400 });
+  }
+  if (paymentStatus === "PAYABLE" && payableAmount !== originalCost) {
+    return NextResponse.json({ error: "Công nợ tài sản phải bằng nguyên giá; khoản đã trả cần được ghi nhận bằng chứng từ thanh toán riêng" }, { status: 400 });
+  }
+  if (paymentDueDate && paymentDueDate < purchaseDate) {
+    return NextResponse.json({ error: "Hạn thanh toán không được trước ngày mua" }, { status: 400 });
+  }
+
+  try {
+    assertBranchAccess(session, branchCode);
+  } catch (e) {
+    return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi phân quyền chi nhánh" }, { status: 403 });
+  }
+
+  const [assetGroupItem, department, supplier] = await Promise.all([
+    prisma.masterDataItem.findFirst({ where: { type: "ASSET_GROUP", status: "ACTIVE", code: assetGroup } }),
+    departmentCode
+      ? prisma.masterDataItem.findFirst({
+          where: {
+            type: "DEPARTMENT", status: "ACTIVE", code: departmentCode,
+            OR: [{ branch: branchCode }, { branch: "ALL" }, { branch: null }],
+          },
+        })
+      : null,
+    supplierCode
+      ? prisma.masterDataItem.findFirst({
+          where: {
+            type: "PARTNER", status: "ACTIVE", code: supplierCode,
+            OR: [
+              { partnerType: { in: ["SUPPLIER", "BOTH"] } },
+              { partnerType: null, group: { in: ["SUPPLIER", "BOTH"] } },
+            ],
+          },
+        })
+      : null,
+  ]);
+  if (!assetGroupItem) {
+    return NextResponse.json({ error: `Nhóm tài sản ${assetGroup} không tồn tại hoặc đã ngưng dùng` }, { status: 400 });
+  }
+  if (departmentCode && !department) {
+    return NextResponse.json({ error: `Phòng ban ${departmentCode} không hợp lệ hoặc không thuộc chi nhánh ${branchCode}` }, { status: 400 });
+  }
+  if (supplierCode && !supplier) {
+    return NextResponse.json({ error: `Đối tác ${supplierCode} không phải Nhà cung cấp/Phải trả đang hoạt động` }, { status: 400 });
+  }
+
+  if (warehouseCode) {
+    const warehouse = await prisma.masterDataItem.findFirst({
+      where: {
+        type: "WAREHOUSE",
+        status: "ACTIVE",
+        code: warehouseCode,
+        OR: [{ branch: branchCode }, { branch: "ALL" }, { branch: null }],
+      },
+    });
+    if (!warehouse) {
+      return NextResponse.json({ error: `Vị trí/Kho ${warehouseCode} không hợp lệ hoặc không thuộc chi nhánh ${branchCode}` }, { status: 400 });
+    }
+  }
+
+  // Ghi tăng tài sản luôn sinh bút toán Nợ 211/242 dù trả tiền ngay hay còn nợ, nên luật
+  // khoá sổ áp cho mọi hình thức thanh toán. Bản cũ chỉ chặn nhánh PAYABLE: mua trả tiền
+  // ngay vẫn ghi tăng được vào tháng đã chốt, tài sản lên danh sách mà sổ cái không có gì.
+  const lockedAsset = await findClosedPeriod({ date: purchaseDate, branchCode });
+  if (lockedAsset) {
+    return NextResponse.json({ error: closedPeriodMessage(lockedAsset, "ghi tăng tài sản") }, { status: 409 });
+  }
+  const accounts = paymentStatus === "PAYABLE" ? await ensureDefaultAccounts() : [];
+  const accountByCode = new Map(accounts.map((account) => [account.code, account.id]));
+  const debitAccountCode = ["CCDC", "TOOL"].includes(cleanText(assetGroupItem.group).toUpperCase()) ? "242" : "211";
+
+  return {
+    body, reuseCode, reuseCodeValue, manualCode, name, branchCode, assetGroup, originalCost, warehouseCode, departmentCode,
+    quantity, usefulLifeMonths, purchaseDate, paymentStatus, payableAmount, paymentDueDate, supplierCode, supplierName, supplier,
+    accountByCode, debitAccountCode,
+  };
+}
+
+type AssetCreatePlan = Exclude<Awaited<ReturnType<typeof prepareAssetCreate>>, NextResponse>;
+type AssetTx = Parameters<Parameters<typeof prismaRaw.$transaction>[0]>[0];
+
+/** Ghi một hồ sơ đã chuẩn bị: mã/đợt, danh mục mã, hồ sơ, công nợ CN-<mã> + bút toán ghi tăng nếu công nợ. */
+async function writeAssetRecord(tx: AssetTx, plan: AssetCreatePlan, session: DemoSession, purchaseDocCode: string | null) {
+  const { body, reuseCode, reuseCodeValue, manualCode, name, branchCode, assetGroup, originalCost, warehouseCode, departmentCode,
+    quantity, usefulLifeMonths, purchaseDate, paymentStatus, payableAmount, paymentDueDate, supplierCode, supplierName, supplier,
+    accountByCode, debitAccountCode } = plan;
+  const lot = reuseCode
+    ? await nextAssetLot(tx, reuseCodeValue)
+    : { code: manualCode ? await assertAssetCodeAvailable(tx, manualCode) : await nextAssetCode(tx, assetGroup, departmentCode), lotNo: 1 };
+  const code = lot.code;
+  // Mã mới (tự sinh / gõ tay) vào luôn danh mục mã; mã đã có trong danh mục thì giữ nguyên.
+  await ensureCatalogItem(tx, { code, name, assetGroup, departmentCode, actor: session.name });
+  const created = await tx.assetRecord.create({ data: {
+    code,
+    lotNo: lot.lotNo,
+    name,
+    branchCode,
+    departmentCode: departmentCode || null,
+    assetGroup,
+    imageUrl: cleanText(body.imageUrl) || null,
+    location: warehouseCode || null,
+    warehouseCode: warehouseCode || null,
+    quantity,
+    purchaseDate,
+    originalCost,
+    currentValue: toAmount(body.currentValue) || originalCost,
+    usefulLifeMonths,
+    depreciationStartDate: body.depreciationStartDate ? new Date(String(body.depreciationStartDate)) : null,
+    residualValue: toAmount(body.residualValue) || 0,
+    supplierCode: supplierCode || null,
+    supplierName: supplierName || supplier?.name || null,
+    paymentStatus,
+    payableAmount,
+    paymentDueDate,
+    status: cleanText(body.status) || "IN_USE",
+    note: cleanText(body.note) || null,
+    // Chi tiết mua (khách 27/10/2026): nguyên giá = sau chiết khấu + thuế + chi phí mua phân bổ.
+    purchaseDocCode,
+    unitPrice: body.unitPrice === undefined || body.unitPrice === null || body.unitPrice === "" ? null : toAmount(body.unitPrice),
+    discountRate: typeof body.discountRate === "number" ? body.discountRate : null,
+    discountAmount: toAmount(body.discountAmount) || 0,
+    vatRate: typeof body.vatRate === "number" ? body.vatRate : null,
+    vatAmount: toAmount(body.vatAmount) || 0,
+    purchaseCostShare: toAmount(body.purchaseCostShare) || 0,
+  } });
+
+  if (paymentStatus === "PAYABLE") {
+    await tx.debtRecord.create({ data: {
+      code: assetPayableCode(created),
+      debtType: "PAYABLE",
+      partnerGroup: "SUPPLIER",
+      partnerCode: supplierCode,
+      partnerName: supplierName || supplier?.name || supplierCode,
+      branchCode,
+      documentDate: purchaseDate,
+      dueDate: paymentDueDate,
+      originalAmount: payableAmount,
+      outstandingAmount: payableAmount,
+      description: `Công nợ mua tài sản/CCDC ${created.code}${created.lotNo > 1 ? ` (đợt ${created.lotNo})` : ""} - ${created.name}`,
+      sourceType: "ASSET",
+      sourceId: created.id,
+      status: "OPEN",
+    } });
+    const debitAccountId = accountByCode.get(debitAccountCode);
+    const payableAccountId = accountByCode.get("331");
+    if (!debitAccountId || !payableAccountId) throw new Error("Thiếu tài khoản kế toán 211/242 hoặc 331");
+    await tx.journalEntry.create({ data: {
+      code: assetAcquisitionJournalCode(created),
+      entryDate: purchaseDate,
+      period: periodFromDate(purchaseDate),
+      branchCode,
+      sourceType: "ASSET_ACQUISITION",
+      sourceId: created.id,
+      sourceCode: created.code,
+      description: `Ghi nhận mua tài sản/CCDC công nợ ${created.code}`,
+      status: "POSTED",
+      createdBy: session.name,
+      lines: { create: [
+        { accountId: debitAccountId, debit: originalCost, credit: 0, departmentCode: departmentCode || null, description: created.name },
+        { accountId: payableAccountId, debit: 0, credit: payableAmount, partnerCode: supplierCode, description: created.name },
+      ] },
+    } });
+  }
+  return created;
+}
+
+/**
+ * Phiếu mua tài sản nhiều dòng → thân từng hồ sơ: phần chung (cửa hàng, kho, phòng ban, ngày mua, NCC,
+ * thanh toán) + dòng; nguyên giá = trị giá mua hàng của dòng (SL × đơn giá − chiết khấu + thuế + chi phí
+ * mua hàng chia theo tiền hàng sau chiết khấu) — cùng công thức phiếu nhập mua (lib/purchase-discount).
+ */
+function buildPurchaseLineBodies(body: Record<string, unknown>): Array<Record<string, unknown>> | NextResponse {
+  const { lines: rawLines, purchaseCost, ...shared } = body;
+  const lines = (rawLines as Array<Record<string, unknown>>).filter((line) => line && typeof line === "object");
+  const vatRates: Array<number | null> = [];
+  for (const [index, line] of lines.entries()) {
+    const vat = parseVatRate(line.vatRate);
+    if (!vat.ok) return NextResponse.json({ error: `Dòng ${index + 1}: thuế suất GTGT [${cleanText(line.vatRate)}] không hợp lệ` }, { status: 400 });
+    vatRates.push(vat.rate);
+    const gross = Math.round((toAmount(line.quantity) || 1) * toAmount(line.unitPrice));
+    const discount = resolveDiscount(gross, line.discountRate, line.discountAmount);
+    if (!discount.ok) return NextResponse.json({ error: `Dòng ${index + 1}: ${discount.reason}` }, { status: 400 });
+  }
+  const figures = purchaseLineFigures(lines.map((line, index) => ({
+    quantity: toAmount(line.quantity) || 1,
+    unitPrice: toAmount(line.unitPrice),
+    discountRate: line.discountRate,
+    discountAmount: line.discountAmount,
+    vatRate: vatRates[index],
+  })), Math.max(0, toAmount(purchaseCost)));
+  return lines.map((line, index) => ({
+    ...shared,
+    ...line,
+    originalCost: figures[index].purchaseValue,
+    payableAmount: undefined,
+    currentValue: undefined,
+    discountRate: figures[index].discountRate,
+    discountAmount: figures[index].discountAmount,
+    vatRate: vatRates[index],
+    vatAmount: figures[index].vatAmount,
+    purchaseCostShare: figures[index].costShare,
+  }));
+}
+
+/** Số phiếu mua tài sản: MTS-YYYYMM-0001, đánh tiếp theo tháng ngày mua. */
+async function nextAssetPurchaseDocCode(tx: AssetTx, purchaseDate: Date) {
+  const vnDate = new Date(purchaseDate.getTime() + 7 * 3600 * 1000).toISOString();
+  const head = `MTS-${vnDate.slice(0, 4)}${vnDate.slice(5, 7)}-`;
+  const rows = await tx.assetRecord.findMany({ where: { purchaseDocCode: { startsWith: head } }, select: { purchaseDocCode: true } });
+  const max = rows.reduce((value, row) => Math.max(value, Number(String(row.purchaseDocCode).slice(head.length)) || 0), 0);
+  return `${head}${String(max + 1).padStart(4, "0")}`;
+}
+
 export async function POST(request: Request) {
   try {
     const auth = requireMenuAction(request, "/assets", "create");
     if (!auth.ok) return auth.response;
 
-    const body = await request.json();
-    /**
-     * Mua tăng vào mã đã có (lib/asset-lot.ts): đợt mới dùng lại mã, tên, nhóm của đợt trước; số
-     * lượng, ngày mua, nguyên giá, số kỳ, NCC, thanh toán là của đợt này. Cửa hàng/kho/phòng ban
-     * lấy theo form (trống thì theo đợt trước): cùng mã có thể nằm ở nhiều nhà hàng — ASA mua
-     * cùng model tủ đông TSCDKIT0014 với NME (29/09/2026).
-     */
-    const reuseCode = body.reuseCode === true;
-    const reuseCodeValue = reuseCode ? normalizeAssetCode(body.code) : "";
-    if (reuseCode && !reuseCodeValue) {
-      return NextResponse.json({ error: "Mua tăng vào mã đã có thì phải chọn mã tài sản" }, { status: 400 });
-    }
-    // Mẫu: đợt mới nhất cùng cửa hàng với đợt đang ghi, chưa có thì đợt mới nhất của mã.
-    const reuseBranch = reuseCode ? cleanText(body.branchCode) : "";
-    const reuseTemplate = reuseCode
-      ? (reuseBranch ? await prisma.assetRecord.findFirst({ where: { code: reuseCodeValue, branchCode: reuseBranch }, orderBy: { lotNo: "desc" } }) : null)
-        || await prisma.assetRecord.findFirst({ where: { code: reuseCodeValue }, orderBy: { lotNo: "desc" } })
-      : null;
-    if (reuseCode && !reuseTemplate) {
-      return NextResponse.json({ error: `Mã tài sản ${reuseCodeValue} không tồn tại; tạo hồ sơ mới thay vì mua tăng` }, { status: 400 });
-    }
-    // Mã đã tạo ở Danh mục mã (chưa có hồ sơ): tên + nhóm theo danh mục, không theo ô gõ tay.
-    const catalogCode = !reuseCode ? normalizeAssetCode(body.code) : "";
-    const catalogItem = catalogCode ? await prisma.assetCatalogItem.findUnique({ where: { code: catalogCode } }) : null;
-    if (catalogItem && catalogItem.status !== "ACTIVE") {
-      return NextResponse.json({ error: `Mã ${catalogItem.code} đang Ngưng trong danh mục; bật lại ở Danh mục mã trước khi tạo hồ sơ` }, { status: 400 });
-    }
-    const name = reuseTemplate ? reuseTemplate.name : catalogItem ? catalogItem.name : cleanText(body.name);
-    const branchCode = reuseTemplate ? (cleanText(body.branchCode) || reuseTemplate.branchCode) : cleanText(body.branchCode);
-    const assetGroup = reuseTemplate ? reuseTemplate.assetGroup : catalogItem ? catalogItem.assetGroup : cleanText(body.assetGroup);
-    const originalCost = toAmount(body.originalCost);
-    const formWarehouseCode = cleanText(body.warehouseCode) || cleanText(body.location);
-    const warehouseCode = reuseTemplate
-      ? (formWarehouseCode || (branchCode === reuseTemplate.branchCode ? (reuseTemplate.warehouseCode || reuseTemplate.location || "") : ""))
-      : formWarehouseCode;
-    const departmentCode = reuseTemplate
-      ? (cleanText(body.departmentCode) || (branchCode === reuseTemplate.branchCode ? (reuseTemplate.departmentCode || "") : ""))
-      : cleanText(body.departmentCode);
-    const quantity = toAmount(body.quantity) || 1;
-    const usefulLifeMonths = body.usefulLifeMonths !== undefined && body.usefulLifeMonths !== "" ? roundPeriodCount(toAmount(body.usefulLifeMonths)) : null;
-    const purchaseDate = body.purchaseDate ? new Date(String(body.purchaseDate)) : new Date();
-    const paymentStatus = cleanText(body.paymentStatus).toUpperCase() || "PAID";
-    const payableAmount = paymentStatus === "PAYABLE" ? (toAmount(body.payableAmount) || originalCost) : 0;
-    const paymentDueDate = body.paymentDueDate ? new Date(String(body.paymentDueDate)) : null;
-    const supplierCode = cleanText(body.supplierCode);
-    const supplierName = cleanText(body.supplierName);
-    const manualCode = reuseCode ? "" : normalizeAssetCode(body.code);
-
-    // Theo dõi quản trị không cần nguyên giá — 0 hợp lệ, chỉ cấm số âm; riêng tài sản
-    // ghi công nợ vẫn phải có nguyên giá thật vì nó sinh bút toán và sổ phải trả.
-    if (!name || !branchCode || !assetGroup) {
-      return NextResponse.json({ error: "Tên tài sản, chi nhánh và nhóm tài sản là bắt buộc" }, { status: 400 });
-    }
-    if (originalCost < 0) {
-      return NextResponse.json({ error: "Nguyên giá không được âm" }, { status: 400 });
-    }
-    if (paymentStatus === "PAYABLE" && originalCost <= 0) {
-      return NextResponse.json({ error: "Tài sản ghi công nợ phải có nguyên giá lớn hơn 0" }, { status: 400 });
-    }
-
-    if (quantity <= 0) {
-      return NextResponse.json({ error: "Số lượng phải lớn hơn 0" }, { status: 400 });
-    }
-
-    if (usefulLifeMonths !== null && usefulLifeMonths <= 0) {
-      return NextResponse.json({ error: "Số kỳ khấu hao phải lớn hơn 0" }, { status: 400 });
-    }
-
-    if (Number.isNaN(purchaseDate.getTime()) || (paymentDueDate && Number.isNaN(paymentDueDate.getTime()))) {
-      return NextResponse.json({ error: "Ngày mua hoặc hạn thanh toán không hợp lệ" }, { status: 400 });
-    }
-    if (!manualCode && !reuseCode && !departmentCode) {
-      return NextResponse.json({ error: "Phòng ban là bắt buộc khi hệ thống tự sinh mã tài sản" }, { status: 400 });
-    }
-    if (!["PAID", "PAYABLE"].includes(paymentStatus)) {
-      return NextResponse.json({ error: "Trạng thái thanh toán chỉ nhận Đã thanh toán hoặc Công nợ phải trả" }, { status: 400 });
-    }
-    try {
-      assertDepartmentAccess(auth.session, departmentCode, "Tài sản mới");
-    } catch (e) {
-      return NextResponse.json({ error: (e instanceof Error ? e.message : "Ngoài phạm vi bộ phận").replace(/^BUSINESS:/, "") }, { status: 403 });
-    }
-    if (paymentStatus === "PAYABLE" && !supplierCode) {
-      return NextResponse.json({ error: "Nhà cung cấp là bắt buộc khi ghi nhận công nợ phải trả" }, { status: 400 });
-    }
-    if (paymentStatus === "PAYABLE" && payableAmount !== originalCost) {
-      return NextResponse.json({ error: "Công nợ tài sản phải bằng nguyên giá; khoản đã trả cần được ghi nhận bằng chứng từ thanh toán riêng" }, { status: 400 });
-    }
-    if (paymentDueDate && paymentDueDate < purchaseDate) {
-      return NextResponse.json({ error: "Hạn thanh toán không được trước ngày mua" }, { status: 400 });
-    }
-
-    try {
-      assertBranchAccess(auth.session, branchCode);
-    } catch (e) {
-      return NextResponse.json({ error: e instanceof Error ? e.message : "Lỗi phân quyền chi nhánh" }, { status: 403 });
-    }
-
-    const [assetGroupItem, department, supplier] = await Promise.all([
-      prisma.masterDataItem.findFirst({ where: { type: "ASSET_GROUP", status: "ACTIVE", code: assetGroup } }),
-      departmentCode
-        ? prisma.masterDataItem.findFirst({
-            where: {
-              type: "DEPARTMENT", status: "ACTIVE", code: departmentCode,
-              OR: [{ branch: branchCode }, { branch: "ALL" }, { branch: null }],
-            },
-          })
-        : null,
-      supplierCode
-        ? prisma.masterDataItem.findFirst({
-            where: {
-              type: "PARTNER", status: "ACTIVE", code: supplierCode,
-              OR: [
-                { partnerType: { in: ["SUPPLIER", "BOTH"] } },
-                { partnerType: null, group: { in: ["SUPPLIER", "BOTH"] } },
-              ],
-            },
-          })
-        : null,
-    ]);
-    if (!assetGroupItem) {
-      return NextResponse.json({ error: `Nhóm tài sản ${assetGroup} không tồn tại hoặc đã ngưng dùng` }, { status: 400 });
-    }
-    if (departmentCode && !department) {
-      return NextResponse.json({ error: `Phòng ban ${departmentCode} không hợp lệ hoặc không thuộc chi nhánh ${branchCode}` }, { status: 400 });
-    }
-    if (supplierCode && !supplier) {
-      return NextResponse.json({ error: `Đối tác ${supplierCode} không phải Nhà cung cấp/Phải trả đang hoạt động` }, { status: 400 });
-    }
-
-    if (warehouseCode) {
-      const warehouse = await prisma.masterDataItem.findFirst({
-        where: {
-          type: "WAREHOUSE",
-          status: "ACTIVE",
-          code: warehouseCode,
-          OR: [{ branch: branchCode }, { branch: "ALL" }, { branch: null }],
-        },
-      });
-      if (!warehouse) {
-        return NextResponse.json({ error: `Vị trí/Kho ${warehouseCode} không hợp lệ hoặc không thuộc chi nhánh ${branchCode}` }, { status: 400 });
+    const body = await request.json() as Record<string, unknown>;
+    // Phiếu mua nhiều dòng (khách 27/10/2026): mỗi dòng một hồ sơ, chung một số phiếu mua để in gộp.
+    const batch = Array.isArray(body.lines);
+    const lineBodies = batch ? buildPurchaseLineBodies(body) : [body];
+    if (lineBodies instanceof NextResponse) return lineBodies;
+    if (lineBodies.length === 0) return NextResponse.json({ error: "Phiếu mua chưa có dòng tài sản nào" }, { status: 400 });
+    const plans: AssetCreatePlan[] = [];
+    for (const [index, lineBody] of lineBodies.entries()) {
+      const prepared = await prepareAssetCreate(auth.session, lineBody);
+      if (prepared instanceof NextResponse) {
+        if (!batch) return prepared;
+        const payload = await prepared.json().catch(() => ({})) as { error?: string };
+        return NextResponse.json({ error: `Dòng ${index + 1}${lineBody.name ? ` (${String(lineBody.name)})` : ""}: ${payload.error || "không hợp lệ"}` }, { status: prepared.status });
       }
+      plans.push(prepared);
     }
 
-    // Ghi tăng tài sản luôn sinh bút toán Nợ 211/242 dù trả tiền ngay hay còn nợ, nên luật
-    // khoá sổ áp cho mọi hình thức thanh toán. Bản cũ chỉ chặn nhánh PAYABLE: mua trả tiền
-    // ngay vẫn ghi tăng được vào tháng đã chốt, tài sản lên danh sách mà sổ cái không có gì.
-    const lockedAsset = await findClosedPeriod({ date: purchaseDate, branchCode });
-    if (lockedAsset) {
-      return NextResponse.json({ error: closedPeriodMessage(lockedAsset, "ghi tăng tài sản") }, { status: 409 });
-    }
-    const accounts = paymentStatus === "PAYABLE" ? await ensureDefaultAccounts() : [];
-    const accountByCode = new Map(accounts.map((account) => [account.code, account.id]));
-    const debitAccountCode = ["CCDC", "TOOL"].includes(cleanText(assetGroupItem.group).toUpperCase()) ? "242" : "211";
-
-    const asset = await prismaRaw.$transaction(async (tx) => {
-      const lot = reuseCode
-        ? await nextAssetLot(tx, reuseCodeValue)
-        : { code: manualCode ? await assertAssetCodeAvailable(tx, manualCode) : await nextAssetCode(tx, assetGroup, departmentCode), lotNo: 1 };
-      const code = lot.code;
-      // Mã mới (tự sinh / gõ tay) vào luôn danh mục mã; mã đã có trong danh mục thì giữ nguyên.
-      await ensureCatalogItem(tx, { code, name, assetGroup, departmentCode, actor: auth.session.name });
-      const created = await tx.assetRecord.create({ data: {
-        code,
-        lotNo: lot.lotNo,
-        name,
-        branchCode,
-        departmentCode: departmentCode || null,
-        assetGroup,
-        imageUrl: cleanText(body.imageUrl) || null,
-        location: warehouseCode || null,
-        warehouseCode: warehouseCode || null,
-        quantity,
-        purchaseDate,
-        originalCost,
-        currentValue: toAmount(body.currentValue) || originalCost,
-        usefulLifeMonths,
-        depreciationStartDate: body.depreciationStartDate ? new Date(String(body.depreciationStartDate)) : null,
-        residualValue: toAmount(body.residualValue) || 0,
-        supplierCode: supplierCode || null,
-        supplierName: supplierName || supplier?.name || null,
-        paymentStatus,
-        payableAmount,
-        paymentDueDate,
-        status: cleanText(body.status) || "IN_USE",
-        note: cleanText(body.note) || null,
-      } });
-
-      if (paymentStatus === "PAYABLE") {
-        await tx.debtRecord.create({ data: {
-          code: assetPayableCode(created),
-          debtType: "PAYABLE",
-          partnerGroup: "SUPPLIER",
-          partnerCode: supplierCode,
-          partnerName: supplierName || supplier?.name || supplierCode,
-          branchCode,
-          documentDate: purchaseDate,
-          dueDate: paymentDueDate,
-          originalAmount: payableAmount,
-          outstandingAmount: payableAmount,
-          description: `Công nợ mua tài sản/CCDC ${created.code}${created.lotNo > 1 ? ` (đợt ${created.lotNo})` : ""} - ${created.name}`,
-          sourceType: "ASSET",
-          sourceId: created.id,
-          status: "OPEN",
-        } });
-        const debitAccountId = accountByCode.get(debitAccountCode);
-        const payableAccountId = accountByCode.get("331");
-        if (!debitAccountId || !payableAccountId) throw new Error("Thiếu tài khoản kế toán 211/242 hoặc 331");
-        await tx.journalEntry.create({ data: {
-          code: assetAcquisitionJournalCode(created),
-          entryDate: purchaseDate,
-          period: periodFromDate(purchaseDate),
-          branchCode,
-          sourceType: "ASSET_ACQUISITION",
-          sourceId: created.id,
-          sourceCode: created.code,
-          description: `Ghi nhận mua tài sản/CCDC công nợ ${created.code}`,
-          status: "POSTED",
-          createdBy: auth.session.name,
-          lines: { create: [
-            { accountId: debitAccountId, debit: originalCost, credit: 0, departmentCode: departmentCode || null, description: created.name },
-            { accountId: payableAccountId, debit: 0, credit: payableAmount, partnerCode: supplierCode, description: created.name },
-          ] },
-        } });
-      }
-      return created;
+    const created = await prismaRaw.$transaction(async (tx) => {
+      const purchaseDocCode = batch ? await nextAssetPurchaseDocCode(tx, plans[0].purchaseDate) : null;
+      const rows = [];
+      for (const plan of plans) rows.push(await writeAssetRecord(tx, plan, auth.session, purchaseDocCode));
+      return rows;
     });
 
-    return NextResponse.json(asset, { status: 201 });
+    return batch
+      ? NextResponse.json({ purchaseDocCode: created[0]?.purchaseDocCode || null, assets: created }, { status: 201 })
+      : NextResponse.json(created[0], { status: 201 });
   } catch (error) {
     if (error instanceof AssetCodeError) {
       return NextResponse.json({ error: error.message }, { status: 409 });
@@ -933,6 +1050,12 @@ export async function PATCH(request: Request) {
         ...(body.quantity !== undefined ? { quantity: toAmount(body.quantity) || 1 } : {}),
         ...(body.purchaseDate !== undefined ? { purchaseDate: new Date(String(body.purchaseDate)) } : {}),
         ...(body.originalCost !== undefined ? { originalCost: toAmount(body.originalCost) } : {}),
+        ...(body.unitPrice !== undefined ? { unitPrice: body.unitPrice === null || body.unitPrice === "" ? null : toAmount(body.unitPrice) } : {}),
+        ...(body.discountRate !== undefined ? { discountRate: typeof body.discountRate === "number" ? body.discountRate : null } : {}),
+        ...(body.discountAmount !== undefined ? { discountAmount: toAmount(body.discountAmount) } : {}),
+        ...(body.vatRate !== undefined ? { vatRate: typeof body.vatRate === "number" ? body.vatRate : null } : {}),
+        ...(body.vatAmount !== undefined ? { vatAmount: toAmount(body.vatAmount) } : {}),
+        ...(body.purchaseCostShare !== undefined ? { purchaseCostShare: toAmount(body.purchaseCostShare) } : {}),
         ...(body.currentValue !== undefined ? { currentValue: toAmount(body.currentValue) } : costChanged && depreciationCount === 0 ? { currentValue: nextCost } : {}),
         ...(payableDebt && costChanged ? { payableAmount: nextCost } : {}),
         ...(body.usefulLifeMonths !== undefined ? { usefulLifeMonths: roundPeriodCount(toAmount(body.usefulLifeMonths)) || null } : {}),

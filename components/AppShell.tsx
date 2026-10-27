@@ -6,7 +6,7 @@ import { AppSidebar } from "@/components/AppSidebar";
 
 /** Cac route khong dung khung sidebar: man dang nhap, cac trang in chung tu va phieu PO cong khai gui NCC. */
 function isBareRoute(pathname: string) {
-  return pathname === "/login" || pathname.endsWith("/print") || pathname.startsWith("/po/");
+  return pathname === "/login" || pathname.endsWith("/print") || pathname.startsWith("/po/") || pathname.startsWith("/open/");
 }
 
 export function AppShell({ children }: { children: ReactNode }) {

@@ -1,8 +1,8 @@
 /**
  * Nhận hàng PO (RECEIVE_ORDER / RECEIVE_ORDERS ở app/api/procurement): kiểm số nhận, đơn giá, thuế,
  * chiết khấu, dòng thêm, nhóm tài sản ở `prepareOrderReceive`; ghi phiếu NM, dòng PO, tài sản/CCDC,
- * công nợ NCC và bản ghi lần nhận ở `postOrderReceive`. Form Nhập kho nhận GỘP nhiều PO của cùng NCC
- * (khách 27/10/2026): mỗi PO vẫn chạy trọn hai bước này, chung một transaction.
+ * công nợ NCC và bản ghi lần nhận ở `postOrdersReceive`. Form Nhập kho nhận GỘP nhiều PO của cùng NCC,
+ * cùng kho (khách 27/10/2026): MỘT phiếu NM cho cả lượt, phần còn lại tách theo từng PO, chung một transaction.
  */
 import type { DemoSession } from "@/lib/auth-demo";
 import { assertBranchAccess } from "@/lib/accounting";
@@ -17,23 +17,6 @@ import { purchaseLineAmount } from "@/lib/purchase-payable";
 import { syncRequestCompletion } from "@/lib/purchase-request-open-lines";
 import { conversionRateForUnit, defaultPurchaseUnit, purchaseUnitOptions, receiveUnitFor } from "@/lib/unit-conversion";
 import { assertWarehouseAccess } from "@/lib/warehouse-scope";
-
-/**
- * Chia chi phí mua hàng của lượt nhận gộp cho từng PO theo tiền hàng nhập kho của PO (`weights`);
- * PO có trọng số cuối cùng nhận phần lẻ để tổng khớp đúng số khai. Tổng trọng số 0 thì trả toàn 0.
- */
-export function allocateReceivePurchaseCost(weights: number[], purchaseCost: number) {
-  const total = weights.reduce((sum, value) => sum + Math.max(0, value), 0);
-  if (!(purchaseCost > 0) || total <= 0) return weights.map(() => 0);
-  const last = weights.reduce((found, value, index) => (value > 0 ? index : found), -1);
-  let allocated = 0;
-  return weights.map((value, index) => {
-    if (value <= 0) return 0;
-    const share = index === last ? purchaseCost - allocated : Math.round((purchaseCost * value) / total);
-    allocated += share;
-    return share;
-  });
-}
 
 /** Phần chung của một dòng PO tạo mới lúc nhận hàng (dòng thêm ngay trên phiếu nhận). */
 function receiveLineTemplate(orderId: string) {
@@ -215,49 +198,78 @@ export async function prepareOrderReceive(session: DemoSession, input: Record<st
     // thành giá trị hợp lý hoặc nhận bằng phiếu "Nhập khác" có ghi chú.
     businessError(`Dòng ${freeStockLine.item.code} chưa có đơn giá — nhập đơn giá thực mua ở ô Đơn giá khi nhận hàng. Hàng tặng kèm hãy nhận bằng phiếu Nhập khác.`);
   }
-  return { order, receiveLines, stockLines, assetLines, requestedTermsByLineId, assetGroupByLineId, purchaseCost: 0 };
+  return { order, receiveLines, stockLines, assetLines, requestedTermsByLineId, assetGroupByLineId };
 }
 
 export type ReceivePlan = Awaited<ReturnType<typeof prepareOrderReceive>>;
 
-/** Ghi một lần nhận PO đã chuẩn bị: phiếu NM, dòng PO, tài sản/CCDC, công nợ NCC, bản ghi lần nhận. */
-export async function postOrderReceive(tx: TxClient, session: DemoSession, plan: ReceivePlan, receivedDate: Date, note: string) {
-  const { order, receiveLines, stockLines, assetLines, requestedTermsByLineId, assetGroupByLineId } = plan;
+/** Dòng phiếu nhập của một dòng PO nhận kho — theo ĐVT nhận (mặc định ĐVT đặt của PO). */
+function stockLineInput(line: ReceivePlan["stockLines"][number], terms: { vatRate: number | null; discountRate: string; discountAmount: string } | undefined) {
+  // Engine kho quy đổi ra ĐVT tồn (cùng luật hệ số an toàn). ĐVT đó đã bị gỡ / đổi hệ số khỏi danh
+  // mục sau lúc đặt thì nhập thẳng theo ĐVT tồn.
+  const rate = line.receiveRate;
+  const stillValid = rate !== 1 && conversionRateForUnit(line.item.unit, line.item.unitConversions, line.receiveUnitCode || "") === rate;
+  const extra = { vatRate: terms?.vatRate ?? null, discountRate: terms?.discountRate || "", discountAmount: terms?.discountAmount || "" };
+  return stillValid
+    ? { itemId: line.itemId, inputQuantity: line.receiveQuantity / rate, inputUnitCode: line.receiveUnitCode, inputUnitCost: line.unitCost * rate, ...extra }
+    : { itemId: line.itemId, inputQuantity: line.receiveQuantity, inputUnitCost: line.unitCost, ...extra };
+}
+
+/**
+ * Ghi một lượt nhận MỘT hoặc NHIỀU PO cùng NCC: MỘT phiếu nhập NM cho cả lượt (khách 27/10/2026 —
+ * đổi luật "mỗi PO một phiếu" cùng ngày: tick bao nhiêu PO cũng chỉ một phiếu nhập). Phiếu mang
+ * referenceId = PO đầu, referenceCode = mọi mã PO; chi phí mua hàng của phiếu chia theo tiền hàng
+ * từng dòng (engine kho). Công nợ NCC, dòng PO, tài sản/CCDC và bản ghi lần nhận vẫn tách THEO
+ * TỪNG PO (mỗi PO một PurchaseOrderReceipt trỏ cùng phiếu NM) — Huỷ lần nhận đảo cả phiếu.
+ */
+export async function postOrdersReceive(tx: TxClient, session: DemoSession, plans: ReceivePlan[], receivedDate: Date, note: string, purchaseCost: number) {
+  const first = plans[0].order;
+  const codes = plans.map((plan) => plan.order.code).join(", ");
+  const stockInputs = plans.flatMap((plan, planIndex) => plan.stockLines.map((line) => ({ planIndex, input: stockLineInput(line, plan.requestedTermsByLineId.get(line.id)) })));
   // Đi qua đúng engine kho (postInventoryTransaction): mã loại chuẩn NHAP_MUA để lên báo cáo
   // thẻ kho (báo cáo lọc NHAP_*/XUAT_* — mã "RECEIPT" cũ làm phiếu nhận PO vô hình và tồn
   // đầu kỳ bị tính ngược sai), kèm khoá dòng tồn và kiểm tra mặt hàng ngưng hoạt động.
-  const stockTransaction = stockLines.length > 0
+  const stockTransaction = stockInputs.length > 0
     ? await postInventoryTransaction(tx, {
         code: await nextStockDocCode(tx, "NM", receivedDate),
         transactionType: "NHAP_MUA",
         transactionDate: receivedDate,
-        branchCode: order.branchCode,
-        warehouseCode: order.warehouseCode,
+        branchCode: first.branchCode,
+        warehouseCode: first.warehouseCode,
         referenceType: "PURCHASE_ORDER",
-        referenceId: order.id,
-        referenceCode: order.code,
-        partnerCode: order.supplierCode || null,
-        note: note || `Nhận hàng từ ${order.code}`,
+        referenceId: first.id,
+        referenceCode: codes,
+        partnerCode: first.supplierCode || null,
+        note: note || `Nhận hàng từ ${codes}`,
         createdBy: session.name,
-        purchaseCost: plan.purchaseCost,
-        // Phiếu nhập ghi theo ĐVT nhận (mặc định ĐVT đặt của PO), engine kho quy đổi ra ĐVT tồn (cùng
-        // luật hệ số an toàn). ĐVT đó đã bị gỡ / đổi hệ số khỏi danh mục sau lúc đặt thì nhập thẳng theo ĐVT tồn.
-        lines: stockLines.map((line) => {
-          const rate = line.receiveRate;
-          const stillValid = rate !== 1 && conversionRateForUnit(line.item.unit, line.item.unitConversions, line.receiveUnitCode || "") === rate;
-          const terms = requestedTermsByLineId.get(line.id);
-          const extra = { vatRate: terms?.vatRate ?? null, discountRate: terms?.discountRate || "", discountAmount: terms?.discountAmount || "" };
-          return stillValid
-            ? { itemId: line.itemId, inputQuantity: line.receiveQuantity / rate, inputUnitCode: line.receiveUnitCode, inputUnitCost: line.unitCost * rate, ...extra }
-            : { itemId: line.itemId, inputQuantity: line.receiveQuantity, inputUnitCost: line.unitCost, ...extra };
-        }),
+        purchaseCost,
+        lines: stockInputs.map((row) => row.input),
       })
     : null;
+  // Công nợ NCC phần hàng kho của từng PO = tiền hàng sau chiết khấu + thuế + chi phí mua phân bổ
+  // của đúng các dòng PO đó trên phiếu (khách 26/10/2026).
+  const stockValueByPlan = plans.map(() => 0);
+  (stockTransaction?.inputOrderLines || []).forEach((line, index) => {
+    stockValueByPlan[stockInputs[index].planIndex] += purchaseLineAmount(line) + (line.vatAmount || 0) + (line.purchaseCostShare || 0);
+  });
+  const results = [];
+  for (const [index, plan] of plans.entries()) {
+    results.push(await settleOrderReceive(tx, session, plan, receivedDate, stockTransaction, stockValueByPlan[index]));
+  }
+  return results;
+}
 
-  // Công nợ NCC lần nhận này = tiền hàng sau chiết khấu + thuế GTGT của từng dòng + chi phí mua
-  // hàng (khách 26/10/2026) — dòng kho lấy đúng số phiếu nhập vừa ghi, dòng tài sản tính cùng công thức.
-  let receivedValue = (stockTransaction?.purchaseCost || 0)
-    + (stockTransaction?.lines || []).reduce((sum, line) => sum + purchaseLineAmount(line) + (line.vatAmount || 0), 0);
+/** Phần riêng từng PO của một lượt nhận: dòng PO, tài sản/CCDC, trạng thái, công nợ NCC, bản ghi lần nhận. */
+async function settleOrderReceive(
+  tx: TxClient,
+  session: DemoSession,
+  plan: ReceivePlan,
+  receivedDate: Date,
+  stockTransaction: Awaited<ReturnType<typeof postInventoryTransaction>> | null,
+  stockValue: number,
+) {
+  const { order, receiveLines, assetLines, requestedTermsByLineId, assetGroupByLineId } = plan;
+  let receivedValue = stockValue;
   const assetFigures = purchaseLineFigures(assetLines.map((line) => {
     const terms = requestedTermsByLineId.get(line.id);
     return { quantity: line.receiveQuantity, unitPrice: line.unitCost, vatRate: terms?.vatRate ?? null, discountRate: terms?.discountRate, discountAmount: terms?.discountAmount };
@@ -343,7 +355,8 @@ export async function postOrderReceive(tx: TxClient, session: DemoSession, plan:
   await tx.purchaseOrderReceipt.create({
     data: {
       orderId: order.id,
-      stockTransactionId: stockTransaction?.id || null,
+      // PO chỉ có Tài sản/CCDC trong lượt gộp thì không gắn phiếu nhập (không có dòng nào trên phiếu).
+      stockTransactionId: plan.stockLines.length > 0 ? stockTransaction?.id || null : null,
       receivedDate,
       payableAmount: receivedValue,
       lines: receiptLines,

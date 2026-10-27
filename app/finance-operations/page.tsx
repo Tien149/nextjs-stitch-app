@@ -18,7 +18,12 @@ import { checkWalletFeeRate } from "@/lib/wallet-settlement-allocation";
 import { walletRevenueBucket } from "@/lib/wallet-revenue-reconciliation";
 import type { ExpenseSummary } from "@/lib/expense-summary";
 
+import Link from "next/link";
 import { ActionIcon } from "@/components/ActionIcon";
+import { DocLink, docHref } from "@/components/DocLink";
+
+/** Nguồn chi phí có mã chứng từ mở được bằng /open/<mã>. */
+const LINKABLE_EXPENSE_SOURCES = new Set(["VOUCHER_CASH", "VOUCHER_BANK", "MONEY_TRANSFER", "ACCRUAL", "DEPRECIATION", "DEBT_PAYABLE", "INVENTORY", "ASSET"]);
 type CashEntry = { id: string; date: string; createdAt: string; code: string; type: string; branchCode: string; moneySourceCode: string; description: string; pnlItemCode?: string | null; receipt: number; payment: number; balance: number };
 type Schedule = { id: string; period: string; amount: number; status: string };
 type Accrual = { id: string; code: string; name: string; branchCode: string; categoryCode: string; pnlItemCode: string | null; totalAmount: number; startPeriod: string; numberOfPeriods: number; status: string; sourceType: string | null; schedules: Schedule[] };
@@ -159,7 +164,12 @@ export default function FinanceOperationsPage() {
   const selectedRange = { from: cashbookRange.startDate, to: cashbookRange.endDate };
   const inSelectedRange = (date: string | null | undefined) => inDateRange(date, selectedRange);
   /** Khoản trích trước có ít nhất một kỳ phân bổ nằm trong khoảng; bảng lịch chỉ hiện các kỳ đó. */
-  const visibleAccruals = data.accruals.filter((row) => row.schedules.some((schedule) => periodInRange(schedule.period, selectedRange)) || (!selectedRange.from && !selectedRange.to));
+  /** Khoản phân bổ được trỏ tới từ link chứng từ (?accrual=PB-…). */
+  const [accrualFocus, setAccrualFocus] = useState("");
+  // Link chứng từ PB-… (/open/<mã>, khách 27/10/2026): chỉ hiện đúng khoản đó, bỏ qua khoảng kỳ.
+  const visibleAccruals = accrualFocus
+    ? data.accruals.filter((row) => row.code === accrualFocus)
+    : data.accruals.filter((row) => row.schedules.some((schedule) => periodInRange(schedule.period, selectedRange)) || (!selectedRange.from && !selectedRange.to));
   const expenseDetailRows = useMemo(() => {
     const query = expenseFilter.query.trim().toLowerCase();
     const range = { from: cashbookRange.startDate, to: cashbookRange.endDate };
@@ -435,7 +445,9 @@ export default function FinanceOperationsPage() {
     const linkedBranch = params.get("branchCode") || "";
     const linkedTransfer = params.get("transfer") || "";
     const linkedTab = params.get("tab") || "";
+    const linkedAccrual = params.get("accrual") || "";
     window.setTimeout(() => {
+      if (linkedAccrual) setAccrualFocus(linkedAccrual);
       if (linkedTab) setActive(linkedTab);
       if (/^\d{4}-\d{2}$/.test(linkedPeriod)) setPeriod(linkedPeriod);
       if (linkedBranch) setBranchCode(linkedBranch);
@@ -2057,6 +2069,12 @@ export default function FinanceOperationsPage() {
                   </p>
                 </div>
               )}
+              {accrualFocus && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800">
+                  <span>Đang xem khoản phân bổ <b>{accrualFocus}</b> (mở từ link chứng từ).</span>
+                  <button type="button" onClick={() => setAccrualFocus("")} className="font-bold underline">Xem tất cả khoản phân bổ</button>
+                </div>
+              )}
               {visibleAccruals.length === 0 ? (
                 <div className="bg-white border border-slate-200 rounded-2xl p-10 text-center text-slate-400 font-medium shadow-sm">
                   {data.accruals.length === 0 ? "Chưa có khoản phân bổ chi phí trích trước nào được tạo." : "Không có khoản phân bổ nào có kỳ trong khoảng thời gian đang lọc."}
@@ -2076,7 +2094,7 @@ export default function FinanceOperationsPage() {
                             className="ml-1.5 text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full"
                             title={`Sinh tự động từ phiếu chi ${row.code.replace(/^PB-/, "")}. Tiền đã chi và đang treo chi phí trả trước (242); mỗi kỳ ghi nhận sẽ rút dần khoản treo đó vào chi phí.`}
                           >
-                            Đã chi tiền · từ phiếu {row.code.replace(/^PB-/, "")}
+                            Đã chi tiền · từ phiếu <DocLink code={row.code.replace(/^PB-/, "")} />
                           </span>
                         )}
                         {/* Khoản sinh từ công nợ phải trả khai tay có phân bổ: nợ NCC đã treo
@@ -2086,7 +2104,7 @@ export default function FinanceOperationsPage() {
                             className="ml-1.5 text-[10px] font-bold text-violet-700 bg-violet-50 border border-violet-200 px-2 py-0.5 rounded-full"
                             title={`Sinh tự động từ công nợ phải trả ${row.code.replace(/^PB-/, "")}. Khoản nợ đang treo chi phí trả trước (242); mỗi kỳ ghi nhận sẽ rút dần vào chi phí. Sửa số tiền/số kỳ ở màn Công nợ Đối tác.`}
                           >
-                            Chưa trả tiền · từ công nợ {row.code.replace(/^PB-/, "")}
+                            Chưa trả tiền · từ công nợ <DocLink code={row.code.replace(/^PB-/, "")} />
                           </span>
                         )}
                         {/* Đồng phục xuất dùng có phân bổ: ghi sổ giá vốn theo kho đã treo Nợ 242 / Có 152. */}
@@ -2095,7 +2113,7 @@ export default function FinanceOperationsPage() {
                             className="ml-1.5 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full"
                             title={`Sinh tự động từ phiếu xuất kho ${row.code.replace(/^PB-/, "")}. Trị giá đồng phục đang treo chi phí trả trước (242); mỗi kỳ ghi nhận sẽ rút dần vào hạng mục đồng phục. Số tiền tự cập nhật theo trị giá phiếu khi Ghi sổ kỳ.`}
                           >
-                            Xuất kho đồng phục · từ phiếu {row.code.replace(/^PB-/, "")}
+                            Xuất kho đồng phục · từ phiếu <DocLink code={row.code.replace(/^PB-/, "")} />
                           </span>
                         )}
                         <h4 className="font-bold text-slate-900 mt-1">{row.name}</h4>
@@ -2490,7 +2508,10 @@ export default function FinanceOperationsPage() {
                         <tr key={row.id} className="hover:bg-slate-50/40 transition-colors align-top">
                           <td className="px-4 py-2 whitespace-nowrap text-slate-700">{new Date(`${row.date}T00:00:00Z`).toLocaleDateString("vi-VN", { timeZone: "UTC" })}</td>
                           <td className="px-4 py-2 whitespace-nowrap">
-                            <a href={row.href} className="font-bold text-indigo-700 hover:underline" title={`Mở ${row.sourceLabel}`}>{row.sourceCode || row.entryCode}</a>
+                            {/* Có mã chứng từ nguồn thì mở đúng phiếu (khách 27/10/2026); bút toán tay / lương vẫn mở màn gốc. */}
+                            {row.sourceCode && LINKABLE_EXPENSE_SOURCES.has(row.sourceKey)
+                              ? <Link href={docHref(row.sourceCode)} className="font-bold text-indigo-700 hover:underline" title={`Mở ${row.sourceLabel} ${row.sourceCode}`}>{row.sourceCode}</Link>
+                              : <a href={row.href} className="font-bold text-indigo-700 hover:underline" title={`Mở ${row.sourceLabel}`}>{row.sourceCode || row.entryCode}</a>}
                             {row.sourceCode && <p className="text-[11px] text-slate-400">{row.entryCode}</p>}
                           </td>
                           <td className="px-4 py-2 whitespace-nowrap text-slate-700">{row.sourceLabel}</td>

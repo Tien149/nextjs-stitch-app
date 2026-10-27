@@ -19,7 +19,7 @@ import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { parseVatRate } from "@/lib/inventory-vat";
 import { cancelPurchaseReceipt } from "@/lib/purchase-receipt-cancel";
 import { liveOrdersWhere, openRequestLines, syncRequestCompletion } from "@/lib/purchase-request-open-lines";
-import { allocateReceivePurchaseCost, postOrderReceive, prepareOrderReceive, type ReceivePlan } from "@/lib/purchase-receive";
+import { postOrdersReceive, prepareOrderReceive, type ReceivePlan } from "@/lib/purchase-receive";
 import { buildPriceImport, type PriceImportItem } from "@/lib/supplier-price-list";
 import { findPriceDeviations, loadActivePrices, loadPriceLists, savePriceList } from "@/lib/supplier-price-list-db";
 import { buildTemplateImport, templateDayToDate, templateWindow, templateWindowStatus, type TemplateImportItem } from "@/lib/purchase-template";
@@ -346,6 +346,25 @@ export async function GET(request: Request) {
     // khoảng ngày yêu cầu. Lọc ở máy chủ vì payload chung chỉ mang 100 PR mới nhất.
     // Danh sách đơn mua hàng có lọc (khách yêu cầu 03/10/2026): cửa hàng, phòng ban, trạng thái,
     // khoảng ngày đặt, đã gửi NCC hay chưa (có link chia sẻ = đã gửi).
+    /**
+     * Ô số liệu đầu màn Mua hàng theo cửa hàng đang lọc (khách 27/10/2026). Đếm ở máy chủ trên toàn bộ
+     * phiếu — trước đây đếm từ payload chung chỉ có 100 PR / 100 PO mới nhất của mọi cửa hàng.
+     */
+    if (view === "stats") {
+      const [requestCount, orderGroups, pending] = await Promise.all([
+        prisma.purchaseRequest.count({ where: { ...branchFilter, AND: warehouseScope(auth.session), deletedAt: null } }),
+        prisma.purchaseOrder.groupBy({ by: ["status"], where: { ...branchFilter, AND: orderWarehouseScope(auth.session), deletedAt: null }, _count: { _all: true } }),
+        prisma.purchaseRequest.findMany({
+          where: { ...branchFilter, AND: warehouseScope(auth.session), status: { in: ["PENDING_APPROVAL", "APPROVED"] } },
+          select: { id: true, lines: { select: { id: true } } },
+        }),
+      ]);
+      // PR chờ mua hàng = còn dòng chưa lên PO (kể cả PR mở lại sau khi huỷ một trong các PO).
+      let waitingRequests = 0;
+      for (const row of pending) if ((await openRequestLines(prisma, row.id, row.lines)).length > 0) waitingRequests += 1;
+      const ordersByStatus = Object.fromEntries(orderGroups.map((group) => [group.status, group._count._all]));
+      return NextResponse.json({ requests: requestCount, waitingRequests, ordersByStatus });
+    }
     if (view === "orders") {
       const dayStart = (value: string | null) => (value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T00:00:00+07:00`) : null);
       const from = dayStart(searchParams.get("from"));
@@ -359,7 +378,8 @@ export async function GET(request: Request) {
           ...branchFilter,
           AND: orderWarehouseScope(auth.session),
           ...(departmentCode && departmentCode !== "ALL" ? (departmentCode === "NONE" ? { departmentCode: null } : { departmentCode }) : {}),
-          ...(status && status !== "ALL" ? { status } : {}),
+          // "Đã nhận hàng" = Hoàn tất (kể cả đóng thiếu) + Nhận một phần (khách 27/10/2026).
+          ...(status === "RECEIVED" ? { status: { in: ["COMPLETED", "PARTIALLY_RECEIVED"] } } : status && status !== "ALL" ? { status } : {}),
           ...(sent === "YES" ? { shareToken: { not: null } } : sent === "NO" ? { shareToken: null } : {}),
           ...(from || toExclusive ? { orderDate: { ...(from ? { gte: from } : {}), ...(toExclusive ? { lt: toExclusive } : {}) } } : {}),
         },
@@ -367,7 +387,27 @@ export async function GET(request: Request) {
         orderBy: { orderDate: "desc" },
         take: 2000,
       });
-      return NextResponse.json({ orders, truncated: orders.length >= 2000 });
+      // Phiếu nhập NM của từng PO (lần nhận còn hiệu lực + phiếu cũ trước bảng lần nhận) — thẻ PO hiện
+      // mã phiếu bấm được (khách 27/10/2026); phiếu gộp nhiều PO hiện ở mọi PO trên phiếu.
+      const orderIds = orders.map((row) => row.id);
+      const receipts = await prisma.purchaseOrderReceipt.findMany({ where: { orderId: { in: orderIds }, status: "ACTIVE", stockTransactionId: { not: null } }, select: { orderId: true, stockTransactionId: true } });
+      const receiptDocs = await prisma.inventoryTransaction.findMany({
+        where: { transactionType: "NHAP_MUA", OR: [{ id: { in: receipts.map((row) => row.stockTransactionId as string) } }, { referenceType: "PURCHASE_ORDER", referenceId: { in: orderIds } }] },
+        select: { id: true, code: true, referenceId: true },
+        orderBy: { transactionDate: "asc" },
+      });
+      const codesByOrder = new Map<string, string[]>();
+      const addCode = (orderId: string | null, docCode: string) => {
+        if (!orderId) return;
+        const list = codesByOrder.get(orderId) || [];
+        if (!list.includes(docCode)) list.push(docCode);
+        codesByOrder.set(orderId, list);
+      };
+      for (const doc of receiptDocs) {
+        addCode(doc.referenceId, doc.code);
+        for (const row of receipts) if (row.stockTransactionId === doc.id) addCode(row.orderId, doc.code);
+      }
+      return NextResponse.json({ orders: orders.map((row) => ({ ...row, receiptCodes: codesByOrder.get(row.id) || [] })), truncated: orders.length >= 2000 });
     }
     if (view === "requests") {
       const parseDay = (value: string | null, endOfDay: boolean) => {
@@ -1102,37 +1142,9 @@ export async function PATCH(request: Request) {
     const body = await request.json();
     const action = cleanText(body.action);
 
-    if (["APPROVE_REQUEST", "REJECT_REQUEST", "SELECT_QUOTE", "UNSELECT_QUOTE", "APPROVE_ORDER", "UNAPPROVE_ORDER", "CANCEL_ORDER", "CLOSE_ORDER", "REOPEN_ORDER"].includes(action)) {
+    if (["APPROVE_REQUEST", "REJECT_REQUEST", "SELECT_QUOTE", "UNSELECT_QUOTE", "APPROVE_ORDER", "UNAPPROVE_ORDER", "CANCEL_ORDER"].includes(action)) {
       const auth = requireMenuAction(request, menuHref, "approve");
       if (!auth.ok) return auth.response;
-      /**
-       * Đóng PO nhận thiếu (khách 27/10/2026): NCC không giao bù phần còn lại → PO Hoàn tất với số đã
-       * nhận, PR nguồn tự Hoàn tất khi mọi PO xong. Công nợ / kho không đổi (đã ghi theo từng lần nhận).
-       * Mở lại PO = bỏ đóng, nhận tiếp được.
-       */
-      if (action === "CLOSE_ORDER" || action === "REOPEN_ORDER") {
-        const orderId = cleanText(body.orderId);
-        const order = await prisma.purchaseOrder.findUnique({ where: { id: orderId }, include: { lines: true } });
-        if (!order) businessError("Không tìm thấy PO");
-        assertBranchAccess(auth.session, order.branchCode);
-        assertWarehouseAccess(auth.session, order.warehouseCode);
-        const closing = action === "CLOSE_ORDER";
-        if (closing && order.status !== "PARTIALLY_RECEIVED") businessError(`Chỉ đóng được PO đang nhận một phần — ${order.code} đang ở trạng thái ${order.status}.`);
-        if (!closing && !order.closedAt) businessError(`${order.code} không phải PO đã đóng.`);
-        const reason = cleanText(body.reason);
-        const result = await prisma.$transaction(async (tx) => {
-          const updated = await tx.purchaseOrder.update({
-            where: { id: orderId },
-            data: closing
-              ? { status: "COMPLETED", closedAt: new Date(), closedBy: auth.session.name, closeReason: reason || null }
-              : { status: "PARTIALLY_RECEIVED", closedAt: null, closedBy: null, closeReason: null },
-          });
-          await syncRequestCompletion(tx, order.requestId);
-          return updated;
-        });
-        await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action, entityType: "PurchaseOrder", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { reason, shortLines: order.lines.filter((line) => line.receivedQuantity < line.orderedQuantity - 1e-6).length } });
-        return NextResponse.json(result);
-      }
       /**
        * Bỏ duyệt đơn mua hàng để sửa lại.
        *
@@ -1356,6 +1368,35 @@ export async function PATCH(request: Request) {
 
     const auth = requireMenuAction(request, menuHref, "edit");
     if (!auth.ok) return auth.response;
+    /**
+     * Đóng PO nhận thiếu (khách 27/10/2026): NCC không giao bù phần còn lại → PO Hoàn tất với số đã
+     * nhận, PR nguồn tự Hoàn tất khi mọi PO xong. Công nợ / kho không đổi (đã ghi theo từng lần nhận).
+     * Mở lại PO = bỏ đóng, nhận tiếp được. Quyền như nhận hàng (edit): người nhận xong bấm Hoàn tất
+     * luôn, PO biến khỏi danh sách chờ nhận ở Nhập kho (khách 27/10/2026).
+     */
+    if (action === "CLOSE_ORDER" || action === "REOPEN_ORDER") {
+      const orderId = cleanText(body.orderId);
+      const order = await prisma.purchaseOrder.findUnique({ where: { id: orderId }, include: { lines: true } });
+      if (!order) businessError("Không tìm thấy PO");
+      assertBranchAccess(auth.session, order.branchCode);
+      assertWarehouseAccess(auth.session, order.warehouseCode);
+      const closing = action === "CLOSE_ORDER";
+      if (closing && order.status !== "PARTIALLY_RECEIVED") businessError(`Chỉ đóng được PO đang nhận một phần — ${order.code} đang ở trạng thái ${order.status}.`);
+      if (!closing && !order.closedAt) businessError(`${order.code} không phải PO đã đóng.`);
+      const reason = cleanText(body.reason);
+      const result = await prisma.$transaction(async (tx) => {
+        const updated = await tx.purchaseOrder.update({
+          where: { id: orderId },
+          data: closing
+            ? { status: "COMPLETED", closedAt: new Date(), closedBy: auth.session.name, closeReason: reason || null }
+            : { status: "PARTIALLY_RECEIVED", closedAt: null, closedBy: null, closeReason: null },
+        });
+        await syncRequestCompletion(tx, order.requestId);
+        return updated;
+      });
+      await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action, entityType: "PurchaseOrder", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { reason, shortLines: order.lines.filter((line) => line.receivedQuantity < line.orderedQuantity - 1e-6).length } });
+      return NextResponse.json(result);
+    }
 
     if (action === "UPDATE_TEMPLATE") {
       const templateId = cleanText(body.templateId) || cleanText(body.id);
@@ -1691,6 +1732,7 @@ export async function PATCH(request: Request) {
 
     // RECEIVE_ORDER: một PO (màn Mua hàng). RECEIVE_ORDERS: nhiều PO cùng NCC từ form Nhập kho (khách
     // 27/10/2026) — kiểm hết trước, ghi chung một transaction: lỗi ở PO nào thì không PO nào được nhận.
+    // Cả lượt ra MỘT phiếu nhập NM (khách chốt lại cùng ngày), nên các PO phải cùng kho nhận.
     const inputs = action === "RECEIVE_ORDERS"
       ? (Array.isArray(body.orders) ? (body.orders as Array<Record<string, unknown>>) : [])
       : [body as Record<string, unknown>];
@@ -1700,23 +1742,23 @@ export async function PATCH(request: Request) {
     for (const input of inputs) plans.push(await prepareOrderReceive(auth.session, input, receivedDate));
     if (new Set(plans.map((plan) => plan.order.id)).size !== plans.length) businessError("Có PO được chọn hai lần");
     if (new Set(plans.map((plan) => plan.order.supplierCode || "")).size > 1) businessError("Nhận gộp chỉ cho các PO cùng một nhà cung cấp");
+    if (new Set(plans.map((plan) => `${plan.order.branchCode}|${plan.order.warehouseCode}`)).size > 1) {
+      businessError(`Nhận gộp một phiếu nhập chỉ cho các PO cùng kho nhận — ${plans.map((plan) => `${plan.order.code}: ${plan.order.warehouseCode}`).join(", ")}. Nhận riêng từng kho.`);
+    }
 
     // Chi phí mua hàng (vận chuyển, bốc xếp...) khai lúc nhận PO (khách 26/10/2026): như phiếu Nhập mua
-    // bên Kho — phân bổ vào giá nhập theo tiền hàng từng dòng và cộng vào công nợ NCC của PO. Nhận gộp
-    // thì chia trước cho từng PO theo tiền hàng nhập kho của PO đó, PO cuối nhận phần lẻ.
+    // bên Kho — ghi trên phiếu NM, phân bổ vào giá nhập theo tiền hàng từng dòng; phần của dòng PO nào
+    // cộng vào công nợ NCC của PO đó.
     const purchaseCost = Math.max(0, toNumber(body.purchaseCost) || 0);
-    const weights = plans.map((plan) => plan.stockLines.reduce((sum, line) => sum + Math.round(line.receiveQuantity * line.unitCost), 0));
-    if (purchaseCost > 0 && weights.every((value) => value <= 0)) {
+    if (purchaseCost > 0 && plans.every((plan) => plan.stockLines.length === 0)) {
       businessError("Chi phí mua hàng chỉ phân bổ được vào hàng nhập kho — lần nhận này chỉ có Tài sản/CCDC.");
     }
-    allocateReceivePurchaseCost(weights, purchaseCost).forEach((share, index) => { plans[index].purchaseCost = share; });
 
     const note = cleanText(body.note);
-    const results = await prisma.$transaction(async (tx) => {
-      const rows: Array<Awaited<ReturnType<typeof postOrderReceive>>> = [];
-      for (const plan of plans) rows.push(await postOrderReceive(tx, auth.session, plan, receivedDate, note));
-      return rows;
-    }, { timeout: 60000 });
+    const results = await prisma.$transaction(
+      (tx) => postOrdersReceive(tx, auth.session, plans, receivedDate, note, purchaseCost),
+      { timeout: 60000 },
+    );
 
     for (const [index, plan] of plans.entries()) {
       const result = results[index];
@@ -1731,7 +1773,7 @@ export async function PATCH(request: Request) {
     }));
     return NextResponse.json({
       stockTransaction: results[0].stockTransaction,
-      receiptCode: receipts.map((row) => row.receiptCode).filter(Boolean).join(", ") || null,
+      receiptCode: [...new Set(receipts.map((row) => row.receiptCode).filter(Boolean))].join(", ") || null,
       assetsCreated: receipts.reduce((sum, row) => sum + row.assetsCreated, 0),
       receipts,
     });

@@ -7,6 +7,7 @@ import { ModuleFrame } from "@/components/ModuleFrame";
 import { canPerformMenuAction } from "@/lib/auth-demo";
 import { storeLabel, visibleStoreOptions } from "@/lib/branch-labels";
 import { useModuleAuth } from "@/lib/use-module-auth";
+import { docHref } from "@/components/DocLink";
 import {
   localDate,
   localDateTime,
@@ -138,7 +139,8 @@ export default function WorkDetailPage() {
   }
 
   const allChecklistDone = item.checklistProgress.total === item.checklistProgress.done;
-  const linkedHref = sourceHref(item.linkedModule, item.linkedId);
+  // Có mã chứng từ nguồn thì mở đúng phiếu (/open/<mã>, khách 27/10/2026), không thì màn gốc.
+  const linkedHref = item.linkedCode ? docHref(item.linkedCode) : sourceHref(item.linkedModule, item.linkedId);
 
   return (
     <ModuleFrame title={item.code} subtitle={item.title} role={user?.role}>

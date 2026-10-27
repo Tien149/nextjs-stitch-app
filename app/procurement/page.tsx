@@ -25,6 +25,8 @@ import { DateRangeFilter } from "@/components/DateRangeFilter";
 import { vnToday, vnTomorrow, type DateRange } from "@/lib/date-range";
 import { SendPurchaseOrderDialog } from "./send-po-dialog";
 import { ApproveRequestDialog } from "./approve-request-dialog";
+import { focusRowClass, readDocFocus, scrollToDoc } from "@/lib/doc-focus";
+import { DocLink } from "@/components/DocLink";
 import { conversionRateForUnit, defaultPurchaseUnit, purchaseLineUnit, purchaseUnitOptions, receiveUnitFor, receiveUnitOptions, toPurchasePrice, toPurchaseQuantity } from "@/lib/unit-conversion";
 
 import { ActionIcon } from "@/components/ActionIcon";
@@ -39,7 +41,7 @@ type QuoteLine = UnitFields & { itemId: string; quantity: number; unitCost: numb
 type Quote = { id: string; supplierCode: string; supplierName: string; totalAmount: number; deliveryDays: number | null; paymentTerms: string | null; isSelected: boolean; note: string | null; lines: QuoteLine[] };
 type PurchaseRequest = { id: string; code: string; requestDate: string; branchCode: string; departmentCode: string | null; warehouseCode?: string | null; supplierCode?: string | null; supplierName?: string | null; rejectReason?: string | null; requestedBy: string; neededDate: string | null; reason: string; status: string; approvedAt: string | null; note: string | null; lines: RequestLine[]; quotes: Quote[]; orders?: Array<{ id: string; code: string; status: string; closedAt?: string | null; lines?: Array<{ requestLineId: string | null }> }> };
 type OrderLine = UnitFields & { id: string; itemId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; imageUrl: string | null; requestLineId?: string | null; item: Item };
-type PurchaseOrder = { id: string; code: string; requestId: string | null; orderDate: string; supplierCode: string; supplierName: string; branchCode: string; departmentCode: string | null; warehouseCode: string; expectedDate: string | null; status: string; approvedAt: string | null; note: string | null; totalAmount: number; shareToken: string | null; lines: OrderLine[]; payable: { outstandingAmount: number } | null; request?: { code: string } | null; closedAt?: string | null; closedBy?: string | null; closeReason?: string | null };
+type PurchaseOrder = { id: string; code: string; requestId: string | null; orderDate: string; supplierCode: string; supplierName: string; branchCode: string; departmentCode: string | null; warehouseCode: string; expectedDate: string | null; status: string; approvedAt: string | null; note: string | null; totalAmount: number; shareToken: string | null; lines: OrderLine[]; payable: { outstandingAmount: number } | null; request?: { code: string } | null; receiptCodes?: string[]; closedAt?: string | null; closedBy?: string | null; closeReason?: string | null };
 type Data = { items: Item[]; requests: PurchaseRequest[]; orders: PurchaseOrder[]; departments: MasterItem[]; itemGroups: MasterItem[]; warehouses: MasterItem[]; assetGroups: MasterItem[]; templates: PurchaseTemplate[]; suppliers: Supplier[]; priceSuggestions: Record<string, PriceSuggestion> };
 /** Chứng từ mua hàng đang chờ xác nhận xoá. */
 type DeleteTarget = { type: "REQUEST" | "ORDER" | "QUOTE"; id: string; title: string; description: string; label: string };
@@ -177,6 +179,22 @@ export default function ProcurementPage() {
 
   /** Tab Đơn mua hàng: lọc cửa hàng / phòng ban / trạng thái / ngày đặt / đã gửi NCC (03/10/2026). */
   const [orderFilter, setOrderFilter] = useState({ branchCode: "ALL", departmentCode: "ALL", status: "ALL", sent: "ALL", from: vnToday(), to: vnToday(), search: "" });
+  /** Phiếu được trỏ tới từ link chứng từ (/open/<mã> → ?tab=&code=&date=): tô sáng + cuộn tới. */
+  const [focusCode, setFocusCode] = useState("");
+  useEffect(() => {
+    const focus = readDocFocus();
+    if (!focus || !["requests", "orders"].includes(focus.tab)) return;
+    window.setTimeout(() => {
+      setActive(focus.tab);
+      setFocusCode(focus.code);
+      const range = { from: focus.date, to: focus.date };
+      if (focus.tab === "orders") setOrderFilter((current) => ({ ...current, branchCode: focus.branch || current.branchCode, departmentCode: "ALL", status: "ALL", sent: "ALL", ...range, search: focus.code }));
+      else setRequestFilter((current) => ({ ...current, branchCode: focus.branch || current.branchCode, departmentCode: "ALL", status: "ALL", ...range, search: focus.code }));
+      scrollToDoc(focus.code);
+    }, 0);
+  }, []);
+  /** Ô số liệu đầu màn (view=stats) theo cửa hàng của bộ lọc tab đang mở. */
+  const [stats, setStats] = useState<{ branchCode: string; requests: number; waitingRequests: number; ordersByStatus: Record<string, number> } | null>(null);
   const [orderList, setOrderList] = useState<{ rows: PurchaseOrder[]; truncated: boolean } | null>(null);
 
   /** Đề nghị mua hàng / báo giá / đơn mua hàng đang được sửa. */
@@ -505,6 +523,19 @@ export default function ProcurementPage() {
     return () => { cancelled = true; };
   }, [active, orderFilter.branchCode, orderFilter.departmentCode, orderFilter.status, orderFilter.sent, orderFilter.from, orderFilter.to, data.orders, singleDepartment]);
 
+  // Ô số liệu đầu màn đi theo cửa hàng đang lọc ở tab Yêu cầu / Đơn mua hàng (khách 27/10/2026);
+  // tab khác = mọi cửa hàng được xem. Tải lại sau mỗi thao tác (loadData đổi data).
+  const statsBranch = active === "orders" ? orderFilter.branchCode : active === "requests" ? requestFilter.branchCode : "ALL";
+  useEffect(() => {
+    let cancelled = false;
+    void fetch(`/api/procurement?view=stats&branchCode=${encodeURIComponent(statsBranch)}`).then(async (response) => {
+      if (!response.ok || cancelled) return;
+      const payload = await response.json() as { requests: number; waitingRequests: number; ordersByStatus: Record<string, number> };
+      if (!cancelled) setStats({ branchCode: statsBranch, ...payload });
+    });
+    return () => { cancelled = true; };
+  }, [statsBranch, data.orders, data.requests]);
+
   // So sánh giá có khoảng ngày: hỏi máy chủ để thấy cả PR cũ ngoài 100 phiếu mới nhất.
   useEffect(() => {
     if (active !== "quotes" || (!quoteRange.from && !quoteRange.to)) return;
@@ -587,10 +618,14 @@ export default function ProcurementPage() {
   };
   /** Bấm mã PO trên PR / mã PR trên PO → mở tab kia, lọc đúng mã, bỏ lọc ngày. */
   const showOrder = (code: string) => {
+    setFocusCode(code);
+    scrollToDoc(code);
     setActive("orders");
     setOrderFilter((current) => ({ ...current, status: "ALL", sent: "ALL", from: "", to: "", search: code }));
   };
   const showRequest = (code: string) => {
+    setFocusCode(code);
+    scrollToDoc(code);
     setActive("requests");
     setRequestFilter((current) => ({ ...current, status: "ALL", from: "", to: "", search: code }));
   };
@@ -608,17 +643,25 @@ export default function ProcurementPage() {
       </p>
     );
   };
+  /** Phiếu nhập NM của PO (view=orders) — bấm sang đúng phiếu bên Kho. */
+  const orderReceiptLinks = (order: PurchaseOrder) => (order.receiptCodes && order.receiptCodes.length > 0 ? (
+    <p className="text-xs text-slate-500">Phiếu nhập: <DocLink code={order.receiptCodes.join(", ")} className="font-bold" /></p>
+  ) : null);
   const orderRequestLink = (order: PurchaseOrder) => (order.request ? (
     <button type="button" onClick={() => showRequest(order.request?.code || "")} className="block text-xs text-sky-700 hover:underline">Từ <b>{order.request.code}</b></button>
   ) : null);
-  /** Đóng PO nhận thiếu: NCC không giao bù → Hoàn tất với số đã nhận, PR tự Hoàn tất khi mọi PO xong. */
+  /**
+   * Hoàn tất PO nhận thiếu (khách 27/10/2026): người nhận hàng không nhận tiếp → PO Hoàn tất với số đã
+   * nhận, không còn hiện ở Nhập kho; PR tự Hoàn tất khi mọi PO xong. Huỷ lần nhận làm ở phiếu nhập NM
+   * bên Kho (nút ở màn này đã bỏ theo khách).
+   */
   const closeOrder = async (order: PurchaseOrder) => {
     const short = order.lines
       .filter((line) => line.receivedQuantity < line.orderedQuantity - 1e-6)
       .map((line) => `- ${line.item.name}: thiếu ${qtyText(line.orderedQuantity - line.receivedQuantity, line)}`);
-    const reason = window.prompt(`Đóng ${order.code} — NCC không giao bù phần còn thiếu?\n${short.join("\n")}\n\nPO thành Hoàn tất với số đã nhận (kho, công nợ giữ nguyên); PR nguồn tự Hoàn tất khi mọi PO xong.\n\nLý do (không bắt buộc):`, "");
+    const reason = window.prompt(`Hoàn tất ${order.code} — không nhận tiếp phần còn thiếu?\n${short.join("\n")}\n\nPO thành Hoàn tất với số đã nhận (kho, công nợ giữ nguyên), không còn hiện ở Nhập kho; PR nguồn tự Hoàn tất khi mọi PO xong.\n\nLý do (không bắt buộc):`, "");
     if (reason === null) return;
-    await send("PATCH", { action: "CLOSE_ORDER", orderId: order.id, reason }, `Đã đóng ${order.code}.`);
+    await send("PATCH", { action: "CLOSE_ORDER", orderId: order.id, reason }, `Đã hoàn tất ${order.code}.`);
   };
   const reopenOrder = async (order: PurchaseOrder) => {
     if (!window.confirm(`Mở lại ${order.code} để nhận tiếp phần còn thiếu?`)) return;
@@ -1098,23 +1141,6 @@ export default function ProcurementPage() {
     setSendingOrder(order);
   };
 
-  /**
-   * Huỷ lần nhận MỚI NHẤT của PO (khách 26/10/2026): hoàn kho, trả số đã nhận, trừ công nợ NCC — rồi nhận
-   * lại với số đúng. Theo thứ tự ngược lại: nhiều lần nhận thì huỷ từ lần gần nhất.
-   */
-  const cancelLastReceipt = async (order: PurchaseOrder) => {
-    if (!window.confirm(`Huỷ lần nhận hàng gần nhất của ${order.code}?\n\nHệ thống hoàn kho theo phiếu nhập của lần đó, trả lại số chưa nhận trên PO và trừ công nợ NCC tương ứng. Sau đó nhận lại với số đúng.`)) return;
-    setMessage("");
-    const response = await fetch("/api/procurement", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "CANCEL_RECEIPT", orderId: order.id }) });
-    const payload = await response.json();
-    if (!response.ok) {
-      setMessage(payload.error || "Không huỷ được lần nhận");
-      return;
-    }
-    setMessage(`Đã huỷ lần nhận ${payload.receiptCode} của ${order.code}${payload.assetsRemoved > 0 ? ` (gỡ ${payload.assetsRemoved} tài sản/CCDC)` : ""} — nhận lại với số đúng ở nút Nhận hàng.`);
-    await loadData();
-  };
-
   const cancelOrder = async (order: PurchaseOrder) => {
     const sent = Boolean(order.shareToken);
     const reason = window.prompt(
@@ -1174,12 +1200,15 @@ export default function ProcurementPage() {
     setActive("orders");
   };
 
-  const totalPRs = data.requests.length;
-  
-  const totalPOs = data.orders.length;
-  // PO đã huỷ không còn "đang thực hiện"; Hoàn tất gồm cả PO đóng thiếu (khách 27/10/2026).
-  const openPOs = data.orders.filter((o) => !["COMPLETED", "RECEIVED", "CANCELLED"].includes(o.status)).length;
-  const completedPOs = data.orders.filter((o) => ["COMPLETED", "RECEIVED"].includes(o.status)).length;
+  // Ô số liệu theo cửa hàng của bộ lọc tab đang mở (view=stats); chưa tải xong thì tạm đếm từ payload chung.
+  const ordersByStatus = stats?.ordersByStatus || data.orders.reduce<Record<string, number>>((counts, order) => ({ ...counts, [order.status]: (counts[order.status] || 0) + 1 }), {});
+  const countOf = (...statuses: string[]) => statuses.reduce((sum, status) => sum + (ordersByStatus[status] || 0), 0);
+  const totalPRs = stats?.requests ?? data.requests.length;
+  const totalPOs = Object.values(ordersByStatus).reduce((sum, count) => sum + count, 0);
+  // PO đã huỷ không còn "đang thực hiện" (khách 27/10/2026).
+  const openPOs = countOf("DRAFT", "APPROVED", "PARTIALLY_RECEIVED");
+  const completedPOs = countOf("COMPLETED", "RECEIVED");
+  const partialPOs = countOf("PARTIALLY_RECEIVED");
 
   if (loading) return <div className="h-screen grid place-items-center bg-slate-100">Đang tải...</div>;
 
@@ -1199,6 +1228,7 @@ export default function ProcurementPage() {
     <ModuleFrame title="Mua hàng & Nhà cung cấp" subtitle="PR theo mẫu, so sánh giá, bảng giá NCC, PO gửi NCC và nhận hàng" role={user?.role} contentClassName="max-w-[1680px]">
       {/* Operational Summary Cards */}
       <StickyFilterBar>
+      {statsBranch !== "ALL" && <p className="hidden sm:block mb-2 text-xs text-slate-500">Số liệu theo cửa hàng <b>{storeLabel(statsBranch)}</b> (bộ lọc của tab đang mở).</p>}
       <div className="hidden sm:grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-4 mb-4">
         <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
           <div className="flex items-center justify-between">
@@ -1212,7 +1242,7 @@ export default function ProcurementPage() {
             <span className="text-xs font-semibold text-slate-500">PR chờ mua hàng</span>
             <span className="material-symbols-outlined text-amber-500 text-xl">pending_actions</span>
           </div>
-          <p className="text-lg font-bold text-amber-600 mt-1">{waitingForPurchase} yêu cầu</p>
+          <p className="text-lg font-bold text-amber-600 mt-1">{stats?.waitingRequests ?? waitingForPurchase} yêu cầu</p>
         </div>
         <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
           <div className="flex items-center justify-between">
@@ -1228,13 +1258,20 @@ export default function ProcurementPage() {
           </div>
           <p className="text-lg font-bold text-emerald-600 mt-1">{openPOs} đơn</p>
         </div>
-        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+        {/* PO đã nhận hàng = Hoàn tất (kể cả đóng thiếu) + Nhận một phần (khách 27/10/2026); bấm để lọc danh sách. */}
+        <button
+          type="button"
+          onClick={() => { setActive("orders"); setOrderFilter((current) => ({ ...current, status: "RECEIVED" })); }}
+          className="text-left bg-white border border-slate-200 rounded-xl p-4 shadow-sm hover:border-teal-300"
+          title="Xem danh sách PO đã nhận hàng"
+        >
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500">PO hoàn tất</span>
+            <span className="text-xs font-semibold text-slate-500">PO đã nhận hàng</span>
             <span className="material-symbols-outlined text-teal-600 text-xl">task_alt</span>
           </div>
-          <p className="text-lg font-bold text-teal-700 mt-1">{completedPOs} đơn</p>
-        </div>
+          <p className="text-lg font-bold text-teal-700 mt-1">{completedPOs + partialPOs} đơn</p>
+          <p className="text-[11px] text-slate-500">Hoàn tất {completedPOs} · Nhận một phần {partialPOs}</p>
+        </button>
       </div>
 
       <ModuleTabs active={active} onChange={setActive} tabs={visibleTabs} />
@@ -1593,7 +1630,7 @@ export default function ProcurementPage() {
             {/* Mobile: thẻ PR — Desktop: bảng */}
             <div className="md:hidden px-3 pb-3 space-y-2.5">
               {filteredRequests.map((request) => (
-                <div key={request.id} className="border border-slate-200 rounded-xl p-3.5 space-y-2">
+                <div key={request.id} data-doc-code={request.code} className={`border border-slate-200 rounded-xl p-3.5 space-y-2 ${request.code === focusCode ? focusRowClass : ""}`}>
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <CopyableText value={request.code}><b>{request.code}</b></CopyableText>
@@ -1647,7 +1684,7 @@ export default function ProcurementPage() {
               ]}
             >
               {filteredRequests.map((request) => (
-                <tr key={request.id} className="border-t border-slate-100">
+                <tr key={request.id} data-doc-code={request.code} className={`border-t border-slate-100 ${request.code === focusCode ? focusRowClass : ""}`}>
                   <td className="cell">
                     <CopyableText value={request.code}><b>{request.code}</b></CopyableText>
                     <small>{new Date(request.requestDate).toLocaleDateString("vi-VN")} · {request.branchCode}</small>
@@ -1883,7 +1920,7 @@ export default function ProcurementPage() {
                   <div key={order.id} className="mb-3 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-sky-900">
                     <span className="material-symbols-outlined text-base">local_shipping</span>
                     <span className="flex-1 min-w-[200px]">
-                      Đã lên đơn <b>{order.code}</b> với <b>{order.supplierName}</b> · <span className={`status ${orderStatusStyle(order.status)}`}>{orderStatusText(order)}</span>
+                      Đã lên đơn <button type="button" onClick={() => showOrder(order.code)} className="font-bold hover:underline">{order.code}</button> với <b>{order.supplierName}</b> · <span className={`status ${orderStatusStyle(order.status)}`}>{orderStatusText(order)}</span>
                       {order.shareToken && <span className="ml-1 text-sky-700">· đã gửi NCC</span>}
                       <span className="block text-sky-700/80">Muốn sửa/xoá báo giá: huỷ đơn trước.</span>
                     </span>
@@ -2052,6 +2089,7 @@ export default function ProcurementPage() {
               <select className="control" value={orderFilter.status} onChange={(e) => setOrderFilter({ ...orderFilter, status: e.target.value })}>
                 <option value="ALL">Tất cả trạng thái</option>
                 {["DRAFT", "APPROVED", "PARTIALLY_RECEIVED", "COMPLETED", "CANCELLED"].map((status) => <option key={status} value={status}>{orderStatusLabel(status)}</option>)}
+                <option value="RECEIVED">Đã nhận hàng (Hoàn tất + Nhận một phần)</option>
               </select>
             </Field>
             <Field label="Gửi NCC">
@@ -2081,7 +2119,7 @@ export default function ProcurementPage() {
               const totalOrdered = order.lines.reduce((sum, line) => sum + line.orderedQuantity, 0);
               const totalReceived = order.lines.reduce((sum, line) => sum + line.receivedQuantity, 0);
               return (
-                <div key={order.id} className="border border-slate-200 rounded-xl p-3.5 space-y-2">
+                <div key={order.id} data-doc-code={order.code} className={`border border-slate-200 rounded-xl p-3.5 space-y-2 ${order.code === focusCode ? focusRowClass : ""}`}>
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <CopyableText value={order.code}><b>{order.code}</b></CopyableText>
@@ -2092,6 +2130,7 @@ export default function ProcurementPage() {
                   </div>
                   <p className="text-sm font-semibold text-slate-800">{order.supplierName}</p>
                   <LinesPreview items={order.lines.map((line) => `${line.item.name} (${qty(toPurchaseQuantity(line.receivedQuantity, line))}/${qtyText(line.orderedQuantity, line)})`)} />
+                  {orderReceiptLinks(order)}
                   <div className="flex items-center justify-between pt-1 border-t border-slate-100">
                     <div>
                       <b className="text-sm">{money(order.totalAmount)} đ</b>
@@ -2119,13 +2158,10 @@ export default function ProcurementPage() {
                       {canEdit && ["APPROVED", "PARTIALLY_RECEIVED"].includes(order.status) && (
                         <button onClick={() => startReceiving(order)} className="rounded-lg bg-emerald-600 text-white text-xs font-bold px-3 py-2">Nhận hàng</button>
                       )}
-                      {canEdit && ["PARTIALLY_RECEIVED", "COMPLETED"].includes(order.status) && (
-                        <button onClick={() => void cancelLastReceipt(order)} className="rounded-lg border border-rose-200 bg-white text-rose-600 text-xs font-bold px-3 py-2">Huỷ lần nhận</button>
+                      {canEdit && order.status === "PARTIALLY_RECEIVED" && (
+                        <button onClick={() => void closeOrder(order)} className="rounded-lg border border-teal-300 bg-white text-teal-700 text-xs font-bold px-3 py-2">Hoàn tất</button>
                       )}
-                      {canApprove && order.status === "PARTIALLY_RECEIVED" && (
-                        <button onClick={() => void closeOrder(order)} className="rounded-lg border border-slate-300 bg-white text-slate-700 text-xs font-bold px-3 py-2">Đóng PO</button>
-                      )}
-                      {canApprove && order.closedAt && (
+                      {canEdit && order.closedAt && (
                         <button onClick={() => void reopenOrder(order)} className="rounded-lg border border-slate-300 bg-white text-slate-700 text-xs font-bold px-3 py-2">Mở lại PO</button>
                       )}
                     </div>
@@ -2153,7 +2189,7 @@ export default function ProcurementPage() {
               const totalOrdered = order.lines.reduce((sum, line) => sum + line.orderedQuantity, 0);
               const totalReceived = order.lines.reduce((sum, line) => sum + line.receivedQuantity, 0);
               return (
-                <tr key={order.id} className="border-t border-slate-100">
+                <tr key={order.id} data-doc-code={order.code} className={`border-t border-slate-100 ${order.code === focusCode ? focusRowClass : ""}`}>
                   <td className="cell">
                     <CopyableText value={order.code}><b>{order.code}</b></CopyableText>
                     <small>{new Date(order.orderDate).toLocaleDateString("vi-VN")}</small>
@@ -2175,8 +2211,9 @@ export default function ProcurementPage() {
                   <td className="cell">
                     <span className={`status ${orderStatusStyle(order.status)}`}>{orderStatusText(order)}</span>
                     <small className="block mt-0.5 text-[10px] text-slate-500">Đã nhận: {totalReceived}/{totalOrdered}</small>
+                    {orderReceiptLinks(order)}
                     <small className={`block text-[10px] font-semibold ${order.shareToken ? "text-sky-700" : "text-slate-400"}`}>{order.shareToken ? "Đã gửi NCC" : "Chưa gửi NCC"}</small>
-                    {order.closedAt && <small className="block text-[10px] text-amber-700">Đóng bởi {order.closedBy}{order.closeReason ? `: ${order.closeReason}` : ""}</small>}
+                    {order.closedAt && <small className="block text-[10px] text-amber-700">Hoàn tất thiếu bởi {order.closedBy}{order.closeReason ? `: ${order.closeReason}` : ""}</small>}
                   </td>
                   <td className="cell">
                     <b>{order.lines.filter((line) => ["TOOL", "ASSET"].includes(line.item.itemType)).length} dòng</b>
@@ -2214,17 +2251,12 @@ export default function ProcurementPage() {
                           Nhận hàng
                         </button>
                       )}
-                      {canEdit && ["PARTIALLY_RECEIVED", "COMPLETED"].includes(order.status) && (
-                        <button onClick={() => void cancelLastReceipt(order)} className="action-link text-rose-600 hover:underline" title="Huỷ lần nhận gần nhất: hoàn kho, trả số chưa nhận trên PO, trừ công nợ NCC">
-                          Huỷ lần nhận
+                      {canEdit && order.status === "PARTIALLY_RECEIVED" && (
+                        <button onClick={() => void closeOrder(order)} className="action-link text-teal-700 hover:underline" title="Không nhận tiếp phần còn thiếu — PO Hoàn tất với số đã nhận, không còn hiện ở Nhập kho">
+                          Hoàn tất
                         </button>
                       )}
-                      {canApprove && order.status === "PARTIALLY_RECEIVED" && (
-                        <button onClick={() => void closeOrder(order)} className="action-link text-slate-700 hover:underline" title="NCC không giao bù phần còn thiếu — PO Hoàn tất với số đã nhận">
-                          Đóng PO
-                        </button>
-                      )}
-                      {canApprove && order.closedAt && (
+                      {canEdit && order.closedAt && (
                         <button onClick={() => void reopenOrder(order)} className="action-link text-slate-700 hover:underline" title="Bỏ đóng để nhận tiếp phần còn thiếu">
                           Mở lại PO
                         </button>

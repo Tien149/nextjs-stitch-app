@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
-import CopyableText from "@/components/CopyableText";
+import { DocLink } from "@/components/DocLink";
 import { Cell, Kpi, PanelHeader, Table, money } from "@/components/reports/report-ui";
 import { MoneyInput } from "@/components/MoneyInput";
 
@@ -446,7 +446,7 @@ export default function BudgetTab({
                                 {drilldownRows.map((item) => (
                                   <tr key={`${item.id}-${item.accountCode}-${item.amount}`} className="border-t border-slate-100 text-xs hover:bg-slate-50">
                                     <Cell>{item.date}</Cell>
-                                    <Cell><CopyableText value={item.code}><b>{item.code}</b></CopyableText></Cell>
+                                    <Cell><DocLink code={item.code} className="font-bold" /></Cell>
                                     <Cell><span className="bg-blue-50 text-blue-700 font-bold px-2 py-0.5 rounded">{item.accountCode}</span></Cell>
                                     <Cell>{item.accountName}</Cell>
                                     <Cell>{item.description}</Cell>
