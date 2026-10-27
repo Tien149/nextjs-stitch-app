@@ -176,6 +176,8 @@
     "test:stocktake-batch-btp": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-stocktake-batch-btp.mjs",
     "test:transfer-transit": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-transfer-transit.mjs",
     "test:purchase-receipt-cancel": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-purchase-receipt-cancel.mjs",
+    "test:stock-summary": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-stock-summary.mjs",
+    "test:purchase-receive-multi": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs --test scripts/test-purchase-receive-multi.mjs",
     "backfill:transfer-dispatch": "node --experimental-strip-types --no-warnings --import ./scripts/register-alias.mjs scripts/backfill-transfer-dispatch.mjs"
   },
   "dependencies": {

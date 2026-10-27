@@ -21,6 +21,7 @@ import { executeExplosion, rerunExplosions, type AffectedExplosionRun } from "@/
 import { loadMissingRecipeReport } from "@/lib/missing-recipes";
 import { buildMonthlyCostSummary } from "@/lib/recipe-cost-summary";
 import { netMovementsAfter } from "@/lib/stocktake-batch";
+import { buildStockSummary, type MovementTotalRow, type OpeningInventoryTotal } from "@/lib/stock-summary";
 import { EXPLANATION_DRAFT, EXPLANATION_LOCKED, explanationNumbersChanged, listStocktakeSources, loadStocktakeSource, snapshotExplanation, stocktakeUnitCosts, type ExplanationLine, type StocktakeSourceType } from "@/lib/stocktake-explanation";
 import { compactFlowDocument, FLOW_DOCUMENT_LIMIT } from "@/lib/inventory-flow-list";
 import { postStocktakeAdjustments, resyncOpenStocktakes, resyncStocktake, unpostStocktakeAdjustments } from "@/lib/stocktake-resync";
@@ -348,16 +349,6 @@ function stockPeriod(searchParams: URLSearchParams) {
   return { from, toEnd: to ? new Date(to.getTime() + 86_400_000) : null };
 }
 
-type MovementTotalRow = {
-  itemId: string; warehouseCode: string; transactionType: string; side: string;
-  /** Phát sinh TRONG kỳ. */
-  quantity: number; value: number;
-  /** Phát sinh từ đầu kỳ trở đi (để lùi tồn hiện tại về tồn đầu kỳ). */
-  afterFromQuantity: number; afterFromValue: number;
-  /** Phát sinh sau cuối kỳ (để lùi tồn hiện tại về tồn cuối kỳ). */
-  afterToQuantity: number; afterToValue: number;
-};
-
 async function loadMovementTotals(branchCode: string, period: { from: Date | null; toEnd: Date | null } = { from: null, toEnd: null }) {
   const branchSql = branchCode === "ALL" ? Prisma.empty : Prisma.sql`AND t."branchCode" = ${branchCode}`;
   // Không chặn đầu nào thì kỳ = toàn bộ lịch sử: tồn đầu kỳ = tồn hiện tại trừ mọi phát sinh,
@@ -370,7 +361,9 @@ async function loadMovementTotals(branchCode: string, period: { from: Date | nul
     COALESCE(SUM(l."quantity") FILTER (WHERE t."transactionDate" >= ${from}), 0)::float8 AS "afterFromQuantity",
     COALESCE(SUM(l."totalCost") FILTER (WHERE t."transactionDate" >= ${from}), 0)::float8 AS "afterFromValue",
     COALESCE(SUM(l."quantity") FILTER (WHERE t."transactionDate" >= ${toEnd}), 0)::float8 AS "afterToQuantity",
-    COALESCE(SUM(l."totalCost") FILTER (WHERE t."transactionDate" >= ${toEnd}), 0)::float8 AS "afterToValue"`;
+    COALESCE(SUM(l."totalCost") FILTER (WHERE t."transactionDate" >= ${toEnd}), 0)::float8 AS "afterToValue",
+    COALESCE(SUM(l."quantity"), 0)::float8 AS "totalQuantity",
+    COALESCE(SUM(l."totalCost"), 0)::float8 AS "totalValue"`;
   // Vế NHẬN (TO) không lọc theo cửa hàng của phiếu: điều chuyển liên nhà hàng (ASA → Nam Mê) mang
   // branchCode bên chuyển, lọc thì kho nhận mất phần nhập và tồn lùi sai (khách 21/10/2026). Kho ngoài
   // phạm vi tự rơi vì bảng chỉ dựng theo số dư của các kho đang xem.
@@ -392,64 +385,19 @@ async function loadMovementTotals(branchCode: string, period: { from: Date | nul
 }
 
 /**
- * Bảng Nhập - Xuất - Tồn theo kỳ: nhập / xuất = phát sinh trong kỳ; tồn đầu kỳ và cuối kỳ lùi
- * từ tồn HIỆN TẠI của kho bằng phát sinh sau mốc tương ứng. Trị giá cũng lùi như vậy (giá trị tồn
- * hiện tại = SL × giá bình quân, trừ trị giá phát sinh sau mốc) nên khớp
- * đầu kỳ + nhập − xuất = cuối kỳ — không lưu lịch sử giá bình quân theo ngày.
- *
- * `movementByType` tách theo loại phiếu; điều chuyển tách hai vế NHAP_DIEU_CHUYEN (kho nhận) /
- * XUAT_DIEU_CHUYEN (kho đi) cho các cột "Nhập/Xuất điều chuyển" của bảng theo từng kho.
+ * Số dư đầu kỳ tồn kho đã xác nhận (CONFIRMED/POSTED — cùng luật scripts/rebuild-inventory-balances)
+ * theo mặt hàng × kho: gốc trị giá đi tới của bảng Nhập - Xuất - Tồn (lib/stock-summary.ts).
  */
-function buildStockSummary<TBalance extends { itemId: string; warehouseCode: string; quantity: number; averageCost: number }>(
-  balances: TBalance[],
-  movementTotals: MovementTotalRow[],
-) {
-  type TypeBucket = { inbound: number; outbound: number; inboundValue: number; outboundValue: number };
-  type Bucket = { inbound: number; outbound: number; inboundValue: number; outboundValue: number; netAfterFrom: number; netAfterTo: number; valueAfterFrom: number; valueAfterTo: number; byType: Record<string, TypeBucket> };
-  const empty = (): Bucket => ({ inbound: 0, outbound: 0, inboundValue: 0, outboundValue: 0, netAfterFrom: 0, netAfterTo: 0, valueAfterFrom: 0, valueAfterTo: 0, byType: {} });
-  const movements = new Map<string, Bucket>();
-  for (const row of movementTotals) {
-    const key = `${row.itemId}|${row.warehouseCode}`;
-    const bucket = movements.get(key) || empty();
-    const sign = row.side === "FROM" && !row.transactionType.startsWith("NHAP_") ? -1 : 1;
-    if (sign > 0) { bucket.inbound += row.quantity; bucket.inboundValue += row.value; }
-    else { bucket.outbound += row.quantity; bucket.outboundValue += row.value; }
-    bucket.netAfterFrom += sign * row.afterFromQuantity;
-    bucket.netAfterTo += sign * row.afterToQuantity;
-    bucket.valueAfterFrom += sign * row.afterFromValue;
-    bucket.valueAfterTo += sign * row.afterToValue;
-    if (row.quantity || row.value) {
-      const type = row.transactionType === "DIEU_CHUYEN" ? (sign > 0 ? "NHAP_DIEU_CHUYEN" : "XUAT_DIEU_CHUYEN") : row.transactionType;
-      const typeBucket = bucket.byType[type] ||= { inbound: 0, outbound: 0, inboundValue: 0, outboundValue: 0 };
-      if (sign > 0) { typeBucket.inbound += row.quantity; typeBucket.inboundValue += row.value; }
-      else { typeBucket.outbound += row.quantity; typeBucket.outboundValue += row.value; }
-    }
-    movements.set(key, bucket);
-  }
-  return balances.map((balance) => {
-    const movement = movements.get(`${balance.itemId}|${balance.warehouseCode}`) || empty();
-    const currentValue = balance.quantity * balance.averageCost;
-    const openingQuantity = balance.quantity - movement.netAfterFrom;
-    const closingQuantity = balance.quantity - movement.netAfterTo;
-    // Hết hàng mà còn lẻ dưới 10 đ (làm tròn trị giá từng phiếu) thì coi là 0. Lệch lớn hơn là phiếu
-    // xuất định giá khác giá bình quân (điều chuyển theo giá mua gần nhất...) — giữ nguyên để hàng
-    // vẫn khớp Đầu kỳ + Nhập − Xuất = Cuối kỳ và cuối kỳ khớp giá trị tồn hiện tại.
-    const valueAt = (quantity: number, value: number) => (Math.abs(quantity) < 0.0005 && Math.abs(value) < 10 ? 0 : value);
-    return {
-      item: (balance as unknown as { item: unknown }).item,
-      warehouseCode: balance.warehouseCode,
-      openingQuantity,
-      openingValue: valueAt(openingQuantity, currentValue - movement.valueAfterFrom),
-      inboundQuantity: movement.inbound,
-      inboundValue: movement.inboundValue,
-      outboundQuantity: movement.outbound,
-      outboundValue: movement.outboundValue,
-      closingQuantity,
-      closingValue: valueAt(closingQuantity, currentValue - movement.valueAfterTo),
-      averageCost: balance.averageCost,
-      movementByType: movement.byType,
-    };
-  });
+async function loadOpeningInventoryTotals() {
+  return prisma.$queryRaw<OpeningInventoryTotal[]>(Prisma.sql`
+    SELECT i."id" AS "itemId", o."warehouseCode",
+           SUM(COALESCE(o."quantity", 0))::float8 AS quantity,
+           SUM(COALESCE(o."quantity", 0) * COALESCE(o."unitCost", 0))::float8 AS value
+    FROM "OpeningBalance" o
+    JOIN "InventoryItem" i ON UPPER(i."code") = UPPER(o."objectCode")
+    WHERE o."balanceType" = 'INVENTORY' AND o."deletedAt" IS NULL AND o."status" IN ('CONFIRMED', 'POSTED') AND o."warehouseCode" IS NOT NULL
+    GROUP BY 1, 2
+  `);
 }
 
 /** Báo cáo hủy hàng cộng trong SQL: mỗi mặt hàng × loại hủy một dòng, đếm số dòng phiếu. */
@@ -722,7 +670,7 @@ export async function GET(request: Request) {
         where: { type: "WAREHOUSE", ...(branchCode === "ALL" ? {} : { branch: branchCode }) },
         select: { code: true },
       });
-      const [stockMovements, periodBalances, periodTotals] = await Promise.all([
+      const [stockMovements, periodBalances, periodTotals, periodOpenings] = await Promise.all([
         loadStockMovements(branchFilter, searchParams).then((rows) => rows.filter((row) => inScope(row.warehouseCode))),
         prisma.inventoryBalance.findMany({
           where: { warehouseCode: { in: scopeWarehouses(auth.session, periodWarehouses).map((row) => row.code) } },
@@ -730,8 +678,9 @@ export async function GET(request: Request) {
           orderBy: [{ warehouseCode: "asc" }, { item: { name: "asc" } }],
         }),
         loadMovementTotals(branchCode, stockPeriod(searchParams)),
+        loadOpeningInventoryTotals(),
       ]);
-      const stockSummary = buildStockSummary(periodBalances, periodTotals);
+      const stockSummary = buildStockSummary(periodBalances, periodTotals, periodOpenings);
       return NextResponse.json(scopePayloadByTab(auth.session, menuHref, { ...movementPayload(stockMovements, searchParams), stockSummary }));
     }
 
@@ -1234,7 +1183,7 @@ export async function GET(request: Request) {
         version: current && "version" in current ? (current as { version?: number }).version || 0 : 0,
       };
     }).sort((a, b) => a.productCode.localeCompare(b.productCode) || a.branchCode.localeCompare(b.branchCode));
-    const stockSummary = want("stock") ? buildStockSummary(balances, movementTotals) : [];
+    const stockSummary = want("stock") ? buildStockSummary(balances, movementTotals, await loadOpeningInventoryTotals()) : [];
     // Báo cáo hủy hàng: mã nào hủy nhiều nhất, tách theo loại hủy (hết hạn / chất lượng).
     const wasteBuckets = new Map<string, {
       itemCode: string; itemName: string; unit: string; itemType: string;

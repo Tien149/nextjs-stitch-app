@@ -324,7 +324,8 @@ export default function InventoryPage() {
   const [stockForm, setStockForm] = useState({ transactionType: "NHAP_MUA", branchCode: "HCM", warehouseCode: "KHO_HCM", toWarehouseCode: "KHO_HN", itemId: "", inputUnitCode: "", quantity: "10", unitCost: "100000", vatRate: "KKKNT", vatAmount: "", discountRate: "", discountAmount: "", purchaseCost: "", partnerCode: "", paymentDueDate: "", referenceCode: "", note: "", lineNote: "", allocationMonths: "", pnlItemCode: "", transactionDate: today(), transactionTime: "" });
   /** Nhập mua theo PO (GRPO): PO đã duyệt còn hàng chưa nhận + số lượng nhận trên từng dòng. */
   const [receivablePOs, setReceivablePOs] = useState<ReceivablePO[]>([]);
-  const [grpoOrderId, setGrpoOrderId] = useState("");
+  /** Chọn được nhiều PO của cùng NCC ở form Nhập kho (khách 27/10/2026); màn Mua hàng vẫn nhận từng PO. */
+  const [grpoOrderIds, setGrpoOrderIds] = useState<string[]>([]);
   const [grpoQuantities, setGrpoQuantities] = useState<Record<string, string>>({});
   /** Đơn giá thực lúc nhận theo ĐVT đặt — PO duyệt khi chưa có giá (khách 21/10/2026). */
   const [grpoPrices, setGrpoPrices] = useState<Record<string, string>>({});
@@ -334,7 +335,7 @@ export default function InventoryPage() {
   const [grpoDate, setGrpoDate] = useState(today());
   const [grpoPurchaseCost, setGrpoPurchaseCost] = useState("");
   /** Dòng THÊM lúc nhận PO (NCC giao thêm chung phiếu, khách 26/10/2026). */
-  const [grpoExtras, setGrpoExtras] = useState<Array<{ key: string; itemId: string; unitCode: string }>>([]);
+  const [grpoExtras, setGrpoExtras] = useState<Array<{ key: string; itemId: string; unitCode: string; orderId: string }>>([]);
   const [recipeForm, setRecipeForm] = useState({ productCode: "SP_COMBO01", productName: "Combo ban POS", sellingPrice: "45000", unit: "", outputConversionRate: "1", effectiveFrom: today(), itemId: "", quantity: "0.02", wasteRate: "3" });
   /** Cửa hàng áp dụng công thức: rỗng = dùng chung, nhiều mã = các nơi pha giống hệt nhau. */
   const [recipeBranchCodes, setRecipeBranchCodes] = useState<string[]>([]);
@@ -1278,55 +1279,85 @@ export default function InventoryPage() {
   }, [active, wasteReportFilter.from, wasteReportFilter.to, data.wasteTransactions]);
 
 
-  const grpoOrder = stockForm.transactionType === "NHAP_MUA"
-    ? receivablePOs.find((order) => order.id === grpoOrderId) || null
-    : null;
-
-  /** Chọn PO -> điền sẵn số lượng còn phải nhận trên từng dòng. */
-  const selectGrpoOrder = (orderId: string) => {
-    setGrpoOrderId(orderId);
-    const order = receivablePOs.find((candidate) => candidate.id === orderId);
-    const quantities: Record<string, string> = {};
-    for (const line of order?.lines || []) {
-      quantities[line.id] = String(toPurchaseQuantity(line.orderedQuantity - line.receivedQuantity, line));
-    }
-    setGrpoQuantities(quantities);
-    setGrpoTerms({});
+  /** PO đang nhận ở form Nhập kho — mỗi PO vẫn ra một phiếu NM, một khoản công nợ, một lần nhận. */
+  const grpoOrders = stockForm.transactionType === "NHAP_MUA"
+    ? grpoOrderIds.flatMap((id) => receivablePOs.filter((order) => order.id === id))
+    : [];
+  const grpoActive = grpoOrders.length > 0;
+  const clearGrpoOrders = () => {
+    setGrpoOrderIds([]);
+    setGrpoQuantities({});
     setGrpoExtras([]);
-    setGrpoDate(today());
-    setGrpoPurchaseCost("");
-    setGrpoPrices(Object.fromEntries((order?.lines || []).map((line) => [line.id, line.unitCost > 0 ? String(toPurchasePrice(line.unitCost, line)) : ""])));
-    setGrpoPriceSource({});
-    // Dòng PO chưa có giá → gợi ý theo Bảng giá của NCC trên PO; người nhập kho vẫn sửa được.
-    if (order) {
-      void fetch(`/api/procurement?view=receive-prices&orderId=${encodeURIComponent(order.id)}`, { headers: getSessionHeaders() })
-        .then(async (response) => (response.ok ? await response.json() as { prices: Record<string, { price: number; source: string }> } : { prices: {} }))
-        .catch(() => ({ prices: {} as Record<string, { price: number; source: string }> }))
-        .then(({ prices }) => {
-          setGrpoPrices((current) => Object.fromEntries(Object.entries(current).map(([lineId, value]) => [lineId, value || (prices[lineId] ? String(prices[lineId].price) : "")])));
-          setGrpoPriceSource(Object.fromEntries(Object.entries(prices).map(([lineId, row]) => [lineId, row.source])));
-        });
-    }
   };
 
-  /** Dòng còn phải nhận của PO cho bảng nhận hàng dùng chung (components/PurchaseReceiveLines). */
-  const grpoLineInfos = (order: ReceivablePO): ReceiveLineInfo[] => order.lines.flatMap((line) => {
+  /** Tick PO -> điền sẵn số còn phải nhận trên từng dòng của PO đó; bỏ tick thì dòng thêm chuyển sang PO còn lại. */
+  const toggleGrpoOrder = (orderId: string, checked: boolean) => {
+    const order = receivablePOs.find((candidate) => candidate.id === orderId);
+    if (!checked || !order) {
+      const remaining = grpoOrderIds.filter((id) => id !== orderId);
+      setGrpoOrderIds(remaining);
+      setGrpoExtras((current) => (remaining.length === 0 ? [] : current.map((extra) => (extra.orderId === orderId ? { ...extra, orderId: remaining[0] } : extra))));
+      return;
+    }
+    if (grpoOrderIds.includes(orderId)) return;
+    if (grpoOrderIds.length === 0) {
+      setGrpoTerms({});
+      setGrpoExtras([]);
+      setGrpoDate(today());
+      setGrpoPurchaseCost("");
+      setGrpoPriceSource({});
+    }
+    setGrpoOrderIds([...grpoOrderIds, orderId]);
+    setGrpoQuantities((current) => ({
+      ...current,
+      ...Object.fromEntries(order.lines.map((line) => [line.id, String(toPurchaseQuantity(line.orderedQuantity - line.receivedQuantity, line))])),
+    }));
+    setGrpoPrices((current) => ({
+      ...current,
+      ...Object.fromEntries(order.lines.map((line) => [line.id, line.unitCost > 0 ? String(toPurchasePrice(line.unitCost, line)) : ""])),
+    }));
+    // Dòng PO chưa có giá → gợi ý theo Bảng giá của NCC trên PO; người nhập kho vẫn sửa được.
+    void fetch(`/api/procurement?view=receive-prices&orderId=${encodeURIComponent(order.id)}`, { headers: getSessionHeaders() })
+      .then(async (response) => (response.ok ? await response.json() as { prices: Record<string, { price: number; source: string }> } : { prices: {} }))
+      .catch(() => ({ prices: {} as Record<string, { price: number; source: string }> }))
+      .then(({ prices }) => {
+        setGrpoPrices((current) => ({
+          ...current,
+          ...Object.fromEntries(order.lines.map((line) => [line.id, current[line.id] || (prices[line.id] ? String(prices[line.id].price) : "")])),
+        }));
+        setGrpoPriceSource((current) => ({ ...current, ...Object.fromEntries(Object.entries(prices).map(([lineId, row]) => [lineId, row.source])) }));
+      });
+  };
+
+  /** Chip mã PO trên từng dòng khi nhận gộp nhiều PO. */
+  const grpoBadge = (code: string) => (grpoOrders.length > 1
+    ? <span className="ml-1 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-bold text-blue-700 whitespace-nowrap">{code}</span>
+    : undefined);
+  /** Dòng còn phải nhận của các PO đang chọn cho bảng nhận hàng dùng chung (components/PurchaseReceiveLines). */
+  const grpoLineInfos = (): ReceiveLineInfo[] => grpoOrders.flatMap((order) => order.lines.flatMap((line) => {
     const remaining = toPurchaseQuantity(line.orderedQuantity - line.receivedQuantity, line);
     if (remaining <= 0) return [];
     const unit = purchaseLineUnit(line);
-    return [{ id: line.id, name: line.item.name, unit, remaining, hint: poPriceHint(line.unitCost > 0 ? toPurchasePrice(line.unitCost, line) : 0, unit, grpoPriceSource[line.id]) }];
-  });
+    return [{ id: line.id, name: line.item.name, unit, remaining, badge: grpoBadge(order.code), hint: poPriceHint(line.unitCost > 0 ? toPurchasePrice(line.unitCost, line) : 0, unit, grpoPriceSource[line.id]) }];
+  }));
   const grpoExtraInfos = (): ReceiveLineInfo[] => grpoExtras.flatMap((extra) => {
     const item = data.items.find((candidate) => candidate.id === extra.itemId);
-    if (!item) return [];
+    const order = grpoOrders.find((candidate) => candidate.id === extra.orderId) || grpoOrders[0];
+    if (!item || !order) return [];
     return [{
-      id: extra.key, name: item.name, unit: extra.unitCode, remaining: 0, isExtra: true, hint: "Thêm lúc nhận — vào chung PO này",
+      id: extra.key, name: item.name, unit: extra.unitCode, remaining: 0, isExtra: true, badge: grpoBadge(order.code), hint: `Thêm lúc nhận — vào chung PO ${order.code}`,
       extra: (
         <div className="mt-1 flex flex-wrap items-center gap-2">
           <select className="control !mt-0 !h-8 !py-0 w-auto text-xs" value={extra.unitCode} aria-label={`ĐVT ${item.name}`}
             onChange={(e) => { const unitCode = e.target.value; setGrpoExtras((current) => current.map((row) => row.key === extra.key ? { ...row, unitCode } : row)); }}>
             {purchaseUnitOptions(item.unit, item.unitConversions).map((option) => <option key={option.unitCode} value={option.unitCode}>{option.label}</option>)}
           </select>
+          {grpoOrders.length > 1 && (
+            <select className="control !mt-0 !h-8 !py-0 w-auto text-xs" value={order.id} aria-label={`PO nhận ${item.name}`}
+              onChange={(e) => { const orderId = e.target.value; setGrpoExtras((current) => current.map((row) => row.key === extra.key ? { ...row, orderId } : row)); }}>
+              {grpoOrders.map((candidate) => <option key={candidate.id} value={candidate.id}>Vào {candidate.code}</option>)}
+            </select>
+          )}
           <button type="button" className="text-xs font-bold text-rose-600 hover:underline" onClick={() => setGrpoExtras((current) => current.filter((row) => row.key !== extra.key))}>Bỏ dòng</button>
         </div>
       ),
@@ -1334,11 +1365,15 @@ export default function InventoryPage() {
   });
   const addGrpoExtra = (itemId: string) => {
     const item = data.items.find((candidate) => candidate.id === itemId);
-    if (!item) return;
-    const key = `extra-${Date.now()}`;
-    setGrpoExtras((current) => [...current, { key, itemId, unitCode: defaultPurchaseUnit(item.unit, item.unitConversions).unitCode }]);
+    if (!item || grpoOrders.length === 0) return;
+    const key = `extra-${grpoExtras.reduce((max, row) => Math.max(max, Number(row.key.replace("extra-", "")) || 0), 0) + 1}`;
+    // Mã dòng thêm đánh lại từ 1 sau mỗi lượt nhận — xoá số cũ còn sót của mã đó.
+    setGrpoQuantities((current) => ({ ...current, [key]: "" }));
+    setGrpoPrices((current) => ({ ...current, [key]: "" }));
+    setGrpoTerms((current) => ({ ...current, [key]: { ...emptyReceiveTerms } }));
+    setGrpoExtras((current) => [...current, { key, itemId, unitCode: defaultPurchaseUnit(item.unit, item.unitConversions).unitCode, orderId: grpoOrders[0].id }]);
   };
-  const grpoLineValues = (order: ReceivablePO): Record<string, ReceiveLineValue> => Object.fromEntries([...order.lines.map((line) => line.id), ...grpoExtras.map((extra) => extra.key)].map((id) => [id, {
+  const grpoLineValues = (): Record<string, ReceiveLineValue> => Object.fromEntries([...grpoOrders.flatMap((order) => order.lines.map((line) => line.id)), ...grpoExtras.map((extra) => extra.key)].map((id) => [id, {
     quantity: grpoQuantities[id] ?? "",
     price: grpoPrices[id] ?? "",
     ...(grpoTerms[id] || emptyReceiveTerms),
@@ -1370,34 +1405,42 @@ export default function InventoryPage() {
     await loadReceivablePOs();
   };
 
-  /** GRPO: nhận hàng từ PO — tồn kho, công nợ NCC và tài sản/CCDC do /api/procurement xử lý. */
+  /**
+   * GRPO: nhận hàng từ một hoặc nhiều PO của cùng NCC — tồn kho, công nợ NCC và tài sản/CCDC do
+   * /api/procurement xử lý (RECEIVE_ORDERS: ghi chung một lượt, lỗi ở PO nào thì không PO nào nhận).
+   */
   const receiveFromPO = async () => {
-    if (!grpoOrder) return;
+    if (!grpoActive) return;
     setMessage("");
     // Gửi đủ mọi dòng kèm lineId, kể cả dòng để 0 (xem chú thích cùng nội dung ở màn Mua hàng).
-    const lines = grpoOrder.lines.map((line) => ({
-      lineId: line.id,
-      itemId: line.itemId,
-      quantity: Number(grpoQuantities[line.id] ?? 0) || 0,
-      unitCost: Number(grpoPrices[line.id] || 0) || undefined,
-      ...(grpoTerms[line.id] || emptyReceiveTerms),
+    const orders = grpoOrders.map((order) => ({
+      orderId: order.id,
+      code: order.code,
+      lines: order.lines.map((line) => ({
+        lineId: line.id,
+        itemId: line.itemId,
+        quantity: Number(grpoQuantities[line.id] ?? 0) || 0,
+        unitCost: Number(grpoPrices[line.id] || 0) || undefined,
+        ...(grpoTerms[line.id] || emptyReceiveTerms),
+      })),
+      extraLines: grpoExtras.filter((extra) => (grpoOrders.some((candidate) => candidate.id === extra.orderId) ? extra.orderId : grpoOrders[0].id) === order.id).map((extra) => ({
+        itemId: extra.itemId,
+        unitCode: extra.unitCode,
+        quantity: Number(grpoQuantities[extra.key] ?? 0) || 0,
+        unitCost: Number(grpoPrices[extra.key] || 0) || 0,
+        ...(grpoTerms[extra.key] || emptyReceiveTerms),
+      })),
     }));
-    const extraLines = grpoExtras.map((extra) => ({
-      itemId: extra.itemId,
-      unitCode: extra.unitCode,
-      quantity: Number(grpoQuantities[extra.key] ?? 0) || 0,
-      unitCost: Number(grpoPrices[extra.key] || 0) || 0,
-      ...(grpoTerms[extra.key] || emptyReceiveTerms),
-    }));
-    if (lines.every((line) => line.quantity <= 0) && extraLines.length === 0) {
-      setMessage("Chưa nhập số lượng cần nhận từ PO.");
+    const empty = orders.find((order) => order.lines.every((line) => line.quantity <= 0) && order.extraLines.length === 0);
+    if (empty) {
+      setMessage(orders.length === 1 ? "Chưa nhập số lượng cần nhận từ PO." : `${empty.code} chưa nhập số lượng nhận — nhập số hoặc bỏ tick PO này.`);
       return;
     }
-    if (extraLines.some((line) => !(line.quantity > 0))) {
+    if (orders.some((order) => order.extraLines.some((line) => !(line.quantity > 0)))) {
       setMessage("Nhập số lượng cho mặt hàng thêm lúc nhận hoặc bấm Bỏ dòng.");
       return;
     }
-    const lineErrors = receiveLineErrors([...grpoLineInfos(grpoOrder), ...grpoExtraInfos()], grpoLineValues(grpoOrder));
+    const lineErrors = receiveLineErrors([...grpoLineInfos(), ...grpoExtraInfos()], grpoLineValues());
     if (lineErrors.length > 0) {
       setMessage(lineErrors.join(" · "));
       return;
@@ -1405,22 +1448,25 @@ export default function InventoryPage() {
     const response = await fetch("/api/procurement", {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...getSessionHeaders() },
-      body: JSON.stringify({ action: "RECEIVE_ORDER", orderId: grpoOrder.id, lines, extraLines, note: stockForm.note, receivedDate: grpoDate, purchaseCost: Number(grpoPurchaseCost || 0) || 0 }),
+      body: JSON.stringify({
+        action: "RECEIVE_ORDERS",
+        orders: orders.map(({ code: _code, ...order }) => { void _code; return order; }),
+        note: stockForm.note,
+        receivedDate: grpoDate,
+        purchaseCost: Number(grpoPurchaseCost || 0) || 0,
+      }),
     });
-    const payload = await response.json();
+    const payload = await response.json() as { error?: string; assetsCreated?: number; receipts?: Array<{ orderCode: string; warehouseCode: string; receiptCode: string | null }> };
     if (response.ok) {
       // Nói rõ hàng đã đi đâu: phiếu nhập kho cho hàng hoá, sổ tài sản cho dòng TOOL/ASSET.
-      const parts: string[] = [];
-      if (payload.receiptCode) parts.push(`phiếu ${payload.receiptCode} vào kho ${grpoOrder.warehouseCode}`);
-      if (payload.assetsCreated > 0) parts.push(`${payload.assetsCreated} tài sản/CCDC đã vào sổ Tài sản & Khấu hao`);
-      setMessage(`Đã nhận hàng từ ${grpoOrder.code}: ${parts.join(" · ") || "cập nhật thành công"}.`);
+      const parts = (payload.receipts || []).filter((row) => row.receiptCode).map((row) => `phiếu ${row.receiptCode} vào kho ${row.warehouseCode}${orders.length > 1 ? ` (${row.orderCode})` : ""}`);
+      if ((payload.assetsCreated || 0) > 0) parts.push(`${payload.assetsCreated} tài sản/CCDC đã vào sổ Tài sản & Khấu hao`);
+      setMessage(`Đã nhận hàng từ ${orders.map((order) => order.code).join(", ")}: ${parts.join(" · ") || "cập nhật thành công"}.`);
+      clearGrpoOrders();
+      await loadData();
+      await loadReceivablePOs();
     } else {
       setMessage(payload.error || "Không nhận được hàng từ PO");
-    }
-    if (response.ok) {
-      setGrpoOrderId("");
-      setGrpoQuantities({});
-      await loadData();
     }
   };
 
@@ -2580,7 +2626,7 @@ export default function InventoryPage() {
         // Khung ghi nhận rộng hơn (khách 26/10/2026: bỏ cột Mặt hàng / SL ở bảng bên phải để nhường chỗ).
         <div className="grid grid-cols-1 *:min-w-0 lg:grid-cols-[480px_minmax(0,1fr)] gap-5">
           {canCreate && (
-            <form onSubmit={(e) => { e.preventDefault(); if (grpoOrder) { void receiveFromPO(); return; } void send({ action: "STOCK_TRANSACTION", ...stockForm, ...(active === "outbound" && stockForm.transactionType === "XUAT_TRA_NCC" ? { referenceType: "PURCHASE_RETURN" } : {}), transactionDate: vnDateTimeValue(stockForm.transactionDate, stockForm.transactionTime), lines: [{ itemId: stockForm.itemId, inputQuantity: stockForm.quantity, inputUnitCode: stockForm.inputUnitCode || selectedStockUnit?.unitCode, inputUnitCost: active === "inbound" ? stockForm.unitCost : "0", vatRate: active === "inbound" ? stockForm.vatRate : "", vatAmount: active === "inbound" ? stockForm.vatAmount : "", discountRate: active === "inbound" ? stockForm.discountRate : "", discountAmount: active === "inbound" ? stockForm.discountAmount : "", note: stockForm.lineNote }] }, active === "inbound" ? "Đã ghi nhận phiếu nhập kho." : "Đã ghi nhận phiếu xuất kho."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
+            <form onSubmit={(e) => { e.preventDefault(); if (grpoActive) { void receiveFromPO(); return; } void send({ action: "STOCK_TRANSACTION", ...stockForm, ...(active === "outbound" && stockForm.transactionType === "XUAT_TRA_NCC" ? { referenceType: "PURCHASE_RETURN" } : {}), transactionDate: vnDateTimeValue(stockForm.transactionDate, stockForm.transactionTime), lines: [{ itemId: stockForm.itemId, inputQuantity: stockForm.quantity, inputUnitCode: stockForm.inputUnitCode || selectedStockUnit?.unitCode, inputUnitCost: active === "inbound" ? stockForm.unitCost : "0", vatRate: active === "inbound" ? stockForm.vatRate : "", vatAmount: active === "inbound" ? stockForm.vatAmount : "", discountRate: active === "inbound" ? stockForm.discountRate : "", discountAmount: active === "inbound" ? stockForm.discountAmount : "", note: stockForm.lineNote }] }, active === "inbound" ? "Đã ghi nhận phiếu nhập kho." : "Đã ghi nhận phiếu xuất kho."); }} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4 h-fit shadow-sm">
               <h2 className="font-bold text-slate-800">{active === "inbound" ? "Ghi nhận nhập kho" : "Ghi nhận xuất kho"}</h2>
 
               <Input label="Loại">
@@ -2675,22 +2721,30 @@ export default function InventoryPage() {
                         value={stockForm.partnerCode}
                         onChange={(partnerCode) => {
                           setStockForm({ ...stockForm, partnerCode });
-                          if (grpoOrder && grpoOrder.supplierCode !== partnerCode) selectGrpoOrder("");
+                          if (grpoOrders.some((order) => order.supplierCode !== partnerCode)) clearGrpoOrders();
                         }}
                         options={[{ value: "", label: "Không khai nhà cung cấp" }, ...activePartners.map((partner) => ({ value: partner.code, label: partner.name, subLabel: partner.code }))]}
                         placeholder="-- Chọn NCC --"
                         searchPlaceholder="Gõ tên hoặc mã NCC..."
                       />
                     </Input>
+                    {/* Tick một hoặc nhiều PO của NCC (NCC giao gộp nhiều đơn một chuyến, khách 27/10/2026). */}
                     {stockForm.partnerCode && (supplierPOs.length > 0 ? (
-                      <Input label="Đơn mua hàng (PO)">
-                        <select className="control" value={grpoOrderId} onChange={(e) => selectGrpoOrder(e.target.value)}>
-                          <option value="">Nhập thủ công (không theo PO)</option>
-                          {supplierPOs.map((order) => (
-                            <option key={order.id} value={order.id}>{order.code} · {storeLabel(order.branchCode)} · {order.warehouseCode}</option>
-                          ))}
-                        </select>
-                      </Input>
+                      <div className="min-w-0 text-xs font-bold text-slate-600">
+                        Đơn mua hàng (PO) — tick một hoặc nhiều PO
+                        <div className="mt-1 max-h-52 overflow-y-auto rounded-lg border border-slate-200 divide-y divide-slate-100 font-normal">
+                          {supplierPOs.map((order) => {
+                            const openLines = order.lines.filter((line) => line.orderedQuantity - line.receivedQuantity > 0).length;
+                            return (
+                              <label key={order.id} className="flex cursor-pointer items-start gap-2 px-3 py-2 hover:bg-slate-50">
+                                <input type="checkbox" className="mt-0.5" checked={grpoOrderIds.includes(order.id)} onChange={(e) => toggleGrpoOrder(order.id, e.target.checked)} />
+                                <span className="min-w-0 text-slate-700"><b>{order.code}</b> · {storeLabel(order.branchCode)} · {order.warehouseCode} · {openLines} dòng còn nhận</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                        <p className="mt-1 text-[11px] font-normal text-slate-500">Không tick PO nào = nhập thủ công (không theo PO). Mỗi PO ra một phiếu nhập NM riêng.</p>
+                      </div>
                     ) : (
                       <p className="text-[11px] text-slate-500">NCC này không có PO đang chờ nhận — nhập thủ công bên dưới.</p>
                     ))}
@@ -2698,11 +2752,13 @@ export default function InventoryPage() {
                 );
               })()}
 
-              {grpoOrder && (
+              {grpoActive && (
                 <div className="space-y-3">
                   <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-800">
-                    <b>{grpoOrder.code}</b> · {grpoOrder.supplierName} · Kho nhận theo PO: <b>{grpoOrder.warehouseCode}</b> ({storeLabel(grpoOrder.branchCode)}).
-                    Hệ thống tự tăng tồn kho và ghi công nợ NCC theo số lượng nhận.
+                    {grpoOrders.map((order) => (
+                      <p key={order.id}><b>{order.code}</b> · {order.supplierName} · Kho nhận theo PO: <b>{order.warehouseCode}</b> ({storeLabel(order.branchCode)})</p>
+                    ))}
+                    Hệ thống tự tăng tồn kho và ghi công nợ NCC theo số lượng nhận{grpoOrders.length > 1 ? " — mỗi PO một phiếu nhập; chi phí mua hàng chia theo tiền hàng từng PO" : ""}.
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     <Input label="Ngày nhận">
@@ -2712,16 +2768,16 @@ export default function InventoryPage() {
                       <MoneyInput className="control text-right" value={grpoPurchaseCost} onChange={setGrpoPurchaseCost} placeholder="0 nếu không có" ariaLabel="Chi phí mua hàng" />
                     </Input>
                   </div>
-                  <PurchaseReceiveLines cardsOnly lines={[...grpoLineInfos(grpoOrder), ...grpoExtraInfos()]} values={grpoLineValues(grpoOrder)} onChange={patchGrpoLine} purchaseCost={Number(grpoPurchaseCost || 0) || 0}
+                  <PurchaseReceiveLines cardsOnly lines={[...grpoLineInfos(), ...grpoExtraInfos()]} values={grpoLineValues()} onChange={patchGrpoLine} purchaseCost={Number(grpoPurchaseCost || 0) || 0}
                     addOptions={data.items.filter((item) => item.itemType !== "FINISHED" && !["TOOL", "ASSET"].includes(item.itemType) && (item.status || "ACTIVE") === "ACTIVE").map((item) => ({ value: item.id, label: `${item.name} (${item.code})`, subLabel: item.unit }))}
                     onAdd={addGrpoExtra} />
                   <p className="text-xs text-slate-600 text-right">
-                    Công nợ NCC lần nhận này: <b className="text-slate-900">{money(receiveFigures([...grpoLineInfos(grpoOrder), ...grpoExtraInfos()], grpoLineValues(grpoOrder), Number(grpoPurchaseCost || 0) || 0).total.purchaseValue)} đ</b>
+                    Công nợ NCC lần nhận này: <b className="text-slate-900">{money(receiveFigures([...grpoLineInfos(), ...grpoExtraInfos()], grpoLineValues(), Number(grpoPurchaseCost || 0) || 0).total.purchaseValue)} đ</b>
                   </p>
                 </div>
               )}
 
-              {!grpoOrder && (<>
+              {!grpoActive && (<>
               {!isSupplierReturn && <Input label="Mặt hàng">
                 <ItemSelect items={data.items} value={stockForm.itemId} onChange={(itemId) => {
                   const item = data.items.find((candidate) => candidate.id === itemId);
@@ -2929,7 +2985,7 @@ export default function InventoryPage() {
               </>)}
 
               {/* Ghi chú riêng của mặt hàng trên phiếu (khách 27/10/2026) — hiện trên phiếu in và sổ kho. */}
-              {!grpoOrder && <Input label="Ghi chú mặt hàng">
+              {!grpoActive && <Input label="Ghi chú mặt hàng">
                 <input className="control" value={stockForm.lineNote} placeholder="Không bắt buộc" onChange={(e) => setStockForm({ ...stockForm, lineNote: e.target.value })} />
               </Input>}
 
@@ -2938,7 +2994,7 @@ export default function InventoryPage() {
               </Input>}
               </>)}
 
-              <button className="primary-button w-full">{grpoOrder ? "Nhận hàng từ PO" : "Ghi nhận"}</button>
+              <button className="primary-button w-full">{grpoActive ? (grpoOrders.length > 1 ? `Nhận hàng từ ${grpoOrders.length} PO` : "Nhận hàng từ PO") : "Ghi nhận"}</button>
             </form>
           )}
 
