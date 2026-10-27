@@ -34,6 +34,7 @@ export function ApproveRequestDialog({
   onSupplierCreated,
   onClose,
   onApproved,
+  existingOrders = [],
 }: {
   request: ApprovableRequest;
   supplierOptions: Option[];
@@ -43,6 +44,8 @@ export function ApproveRequestDialog({
   onSupplierCreated: (partner: CreatedPartner) => void;
   onClose: () => void;
   onApproved: (message: string) => Promise<void> | void;
+  /** PO còn hiệu lực của PR — có nghĩa là đang duyệt lại phần mở lại sau khi huỷ một PO (`request.lines` chỉ còn phần đó). */
+  existingOrders?: string[];
 }) {
   // NCC mặc định: NCC đề xuất trên PR (từ mẫu / người đặt) → báo giá đã chốt; thu mua đổi được.
   const initialQuote = request.quotes.find((quote) => quote.isSelected) || null;
@@ -204,6 +207,9 @@ export function ApproveRequestDialog({
           <div>
             <h3 className="font-bold text-slate-900">Duyệt {request.code} → lên PO</h3>
             <p className="text-sm text-slate-500 mt-1">{request.reason}. Mỗi dòng chọn được NCC riêng — duyệt xong tự tách mỗi NCC một PO. Chưa có giá vẫn duyệt được.</p>
+            {existingOrders.length > 0 && (
+              <p className="text-sm text-amber-700 mt-1">Duyệt lại {request.lines.length} dòng của PO đã huỷ — các dòng đang nằm trên {existingOrders.join(", ")} giữ nguyên.</p>
+            )}
           </div>
           <button type="button" onClick={onClose} className="icon-button" title="Đóng">
             <span className="material-symbols-outlined text-lg">close</span>

@@ -16,6 +16,7 @@
 import type { TxClient } from "@/lib/prisma";
 import { reverseStockEffect } from "@/lib/inventory-stock";
 import { isPeriodLocked } from "@/lib/phase3";
+import { syncRequestCompletion } from "@/lib/purchase-request-open-lines";
 import { purchaseLineAmount } from "@/lib/purchase-payable";
 
 type ReceiptLine = { lineId: string; quantity: number; createdLine: boolean; previousUnitCost: number | null; previousTotalCost: number | null };
@@ -150,8 +151,11 @@ export async function cancelPurchaseReceipt(
     data: {
       status: nothingReceived ? "APPROVED" : completed ? "COMPLETED" : "PARTIALLY_RECEIVED",
       totalAmount: remaining.reduce((sum, line) => sum + line.totalCost, 0),
+      // PO đã Đóng (nhận thiếu) mà huỷ lần nhận thì mở lại — chờ nhận lại.
+      closedAt: null, closedBy: null, closeReason: null,
     },
   });
+  await syncRequestCompletion(tx, order.requestId);
   // 4) Công nợ NCC của PO: trừ đúng phần lần nhận đã cộng; về 0 thì bỏ hẳn khoản (và bút toán của nó).
   if (order.payable) {
     const originalAmount = order.payable.originalAmount - payableAmount;

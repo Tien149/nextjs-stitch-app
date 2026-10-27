@@ -110,3 +110,24 @@ export function purchaseUnitOptions(baseUnit: string, conversions: UnitConversio
   }
   return options;
 }
+
+/**
+ * ĐVT NHẬN được của một dòng PO (khách 27/10/2026): mặc định ĐVT đặt; NCC giao khác ĐVT (đặt THÙNG,
+ * giao lẻ KG) thì nhận theo ĐVT khác đã khai của mặt hàng. ĐVT đặt luôn đứng đầu với hệ số lúc đặt,
+ * kể cả khi đã bị gỡ / đổi hệ số trong danh mục sau đó.
+ */
+export function receiveUnitOptions(line: PurchaseUnitLine, item: { unit: string; unitConversions?: UnitConversionLike[] | null }) {
+  const ordered = purchaseLineUnit(line, item.unit);
+  const rate = purchaseLineRate(line);
+  return [
+    { unitCode: ordered, label: `${ordered}${rate !== 1 ? ` (= ${rate} ${item.unit})` : ""} · ĐVT đặt`, conversionRate: rate },
+    ...purchaseUnitOptions(item.unit, item.unitConversions).filter((option) => !sameUnit(option.unitCode, ordered)),
+  ];
+}
+
+/** ĐVT nhận đã chọn (trống = ĐVT đặt); ĐVT không có trong receiveUnitOptions → null. */
+export function receiveUnitFor(line: PurchaseUnitLine, item: { unit: string; unitConversions?: UnitConversionLike[] | null }, chosen?: string | null) {
+  const options = receiveUnitOptions(line, item);
+  if (!chosen?.trim()) return options[0];
+  return options.find((option) => sameUnit(option.unitCode, chosen)) || null;
+}

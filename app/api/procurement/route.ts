@@ -18,6 +18,7 @@ import { conversionRateForUnit, defaultPurchaseUnit, purchaseLineRate, purchaseL
 import { nextSeqFromCodes } from "@/lib/voucher-code-generator";
 import { parseVatRate } from "@/lib/inventory-vat";
 import { cancelPurchaseReceipt } from "@/lib/purchase-receipt-cancel";
+import { liveOrdersWhere, openRequestLines, syncRequestCompletion } from "@/lib/purchase-request-open-lines";
 import { allocateReceivePurchaseCost, postOrderReceive, prepareOrderReceive, type ReceivePlan } from "@/lib/purchase-receive";
 import { buildPriceImport, type PriceImportItem } from "@/lib/supplier-price-list";
 import { findPriceDeviations, loadActivePrices, loadPriceLists, savePriceList } from "@/lib/supplier-price-list-db";
@@ -46,12 +47,6 @@ const lockedRequestStatuses = ["ORDERED", "COMPLETED", "CANCELLED", "REJECTED"];
 const quotableRequestStatuses = ["APPROVED", "PENDING_APPROVAL", "ORDERED"];
 /** PO chỉ còn sửa/xoá được khi đang ở trạng thái nháp. */
 const lockedOrderStatuses = ["APPROVED", "PARTIALLY_RECEIVED", "COMPLETED", "CANCELLED"];
-/**
- * Đơn mua hàng CÒN HIỆU LỰC của một yêu cầu mua. `include` quan hệ không tự lọc xoá mềm
- * (xem lib/prisma.ts), nên trước đây PO đã xoá vào Thùng rác vẫn bị đếm và khoá cứng báo giá
- * lẫn yêu cầu mua. PO đã huỷ cũng không còn giữ PR.
- */
-const liveOrdersWhere = { deletedAt: null, status: { not: "CANCELLED" } };
 
 type InputLine = {
   itemId?: unknown;
@@ -404,7 +399,8 @@ export async function GET(request: Request) {
         include: {
           lines: { include: { item: true } },
           quotes: { where: { deletedAt: null }, include: { lines: { include: { item: true } } }, orderBy: { totalAmount: "asc" } },
-          orders: { where: liveOrdersWhere, select: { id: true, code: true, status: true } },
+          // Cả PO đã huỷ: thẻ PR liệt kê đủ PO đã lên (khách 27/10/2026); khoá sửa chỉ tính PO còn hiệu lực.
+          orders: { where: { deletedAt: null }, select: { id: true, code: true, status: true, closedAt: true, lines: { select: { requestLineId: true } } }, orderBy: { code: "asc" } },
         },
         orderBy: { requestDate: "desc" },
         take: 2000,
@@ -740,6 +736,7 @@ export async function POST(request: Request) {
                 unitCode: line.unitCode,
                 conversionRate: line.conversionRate,
                 imageUrl: line.imageUrl || null,
+                requestLineId: sourceLines.find((item) => item.itemId === line.itemId)?.id || null,
               })),
             },
           },
@@ -1105,9 +1102,37 @@ export async function PATCH(request: Request) {
     const body = await request.json();
     const action = cleanText(body.action);
 
-    if (["APPROVE_REQUEST", "REJECT_REQUEST", "SELECT_QUOTE", "UNSELECT_QUOTE", "APPROVE_ORDER", "UNAPPROVE_ORDER", "CANCEL_ORDER"].includes(action)) {
+    if (["APPROVE_REQUEST", "REJECT_REQUEST", "SELECT_QUOTE", "UNSELECT_QUOTE", "APPROVE_ORDER", "UNAPPROVE_ORDER", "CANCEL_ORDER", "CLOSE_ORDER", "REOPEN_ORDER"].includes(action)) {
       const auth = requireMenuAction(request, menuHref, "approve");
       if (!auth.ok) return auth.response;
+      /**
+       * Đóng PO nhận thiếu (khách 27/10/2026): NCC không giao bù phần còn lại → PO Hoàn tất với số đã
+       * nhận, PR nguồn tự Hoàn tất khi mọi PO xong. Công nợ / kho không đổi (đã ghi theo từng lần nhận).
+       * Mở lại PO = bỏ đóng, nhận tiếp được.
+       */
+      if (action === "CLOSE_ORDER" || action === "REOPEN_ORDER") {
+        const orderId = cleanText(body.orderId);
+        const order = await prisma.purchaseOrder.findUnique({ where: { id: orderId }, include: { lines: true } });
+        if (!order) businessError("Không tìm thấy PO");
+        assertBranchAccess(auth.session, order.branchCode);
+        assertWarehouseAccess(auth.session, order.warehouseCode);
+        const closing = action === "CLOSE_ORDER";
+        if (closing && order.status !== "PARTIALLY_RECEIVED") businessError(`Chỉ đóng được PO đang nhận một phần — ${order.code} đang ở trạng thái ${order.status}.`);
+        if (!closing && !order.closedAt) businessError(`${order.code} không phải PO đã đóng.`);
+        const reason = cleanText(body.reason);
+        const result = await prisma.$transaction(async (tx) => {
+          const updated = await tx.purchaseOrder.update({
+            where: { id: orderId },
+            data: closing
+              ? { status: "COMPLETED", closedAt: new Date(), closedBy: auth.session.name, closeReason: reason || null }
+              : { status: "PARTIALLY_RECEIVED", closedAt: null, closedBy: null, closeReason: null },
+          });
+          await syncRequestCompletion(tx, order.requestId);
+          return updated;
+        });
+        await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action, entityType: "PurchaseOrder", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { reason, shortLines: order.lines.filter((line) => line.receivedQuantity < line.orderedQuantity - 1e-6).length } });
+        return NextResponse.json(result);
+      }
       /**
        * Bỏ duyệt đơn mua hàng để sửa lại.
        *
@@ -1167,11 +1192,9 @@ export async function PATCH(request: Request) {
         const result = await prisma.$transaction(async (tx) => {
           // Lý do huỷ chỉ vào nhật ký, không ghi vào ghi chú đơn: ghi chú in lên phiếu gửi NCC.
           const cancelled = await tx.purchaseOrder.update({ where: { id: orderId }, data: { status: "CANCELLED" } });
+          // PR mở lại phần của PO này (chờ thu mua duyệt), kể cả khi PR còn PO khác (khách 27/10/2026).
           if (order.requestId) {
-            const siblings = await tx.purchaseOrder.count({ where: { requestId: order.requestId, ...liveOrdersWhere } });
-            if (siblings === 0) {
-              await tx.purchaseRequest.updateMany({ where: { id: order.requestId, status: "ORDERED" }, data: { status: "APPROVED" } });
-            }
+            await tx.purchaseRequest.updateMany({ where: { id: order.requestId, status: "ORDERED" }, data: { status: "APPROVED" } });
           }
           return cancelled;
         });
@@ -1225,7 +1248,12 @@ export async function PATCH(request: Request) {
         businessError(`Yêu cầu mua ${pr.code} đang ở trạng thái ${pr.status} nên không đổi được nữa.`);
       }
       assertWarehouseAccess(auth.session, pr.warehouseCode);
+      const liveOrders = await prisma.purchaseOrder.findMany({ where: { requestId, ...liveOrdersWhere }, select: { code: true } });
       if (action === "REJECT_REQUEST") {
+        // PR đã có PO thì người đặt không sửa lại được nữa — phần còn lại chỉ duyệt tiếp hoặc bỏ.
+        if (liveOrders.length > 0) {
+          businessError(`Yêu cầu mua ${pr.code} đã lên ${liveOrders.map((order) => order.code).join(", ")} nên không trả về người đặt được. Duyệt phần còn lại, hoặc bấm "Bỏ phần còn lại".`);
+        }
         // Từ chối = trả về người đặt sửa lại / huỷ (khách 21/10/2026), kèm lý do để họ biết sửa gì.
         const result = await prisma.purchaseRequest.update({
           where: { id: requestId },
@@ -1240,8 +1268,6 @@ export async function PATCH(request: Request) {
        * lúc nhận hàng. PO ra ở trạng thái Đã duyệt để gửi NCC ngay.
        */
       if (pr.status === "REJECTED") businessError(`Yêu cầu mua ${pr.code} đã bị từ chối — chờ người đặt sửa và gửi lại.`);
-      const liveOrder = await prisma.purchaseOrder.findFirst({ where: { requestId, ...liveOrdersWhere }, select: { code: true } });
-      if (liveOrder) businessError(`Yêu cầu mua ${pr.code} đã có đơn mua hàng ${liveOrder.code}.`);
       // NCC mặc định của phiếu; từng dòng chọn NCC riêng được (khách 22/10/2026) → mỗi NCC một PO.
       const supplierCode = cleanText(body.supplierCode);
       const supplierName = cleanText(body.supplierName);
@@ -1250,8 +1276,11 @@ export async function PATCH(request: Request) {
       const warehouse = await prisma.masterDataItem.findFirst({ where: { type: "WAREHOUSE", code: warehouseCode, branch: pr.branchCode } });
       if (!warehouse) businessError(`Kho ${warehouseCode} không thuộc chi nhánh ${pr.branchCode}.`);
       assertWarehouseAccess(auth.session, warehouseCode);
-      const prLines = await prisma.purchaseRequestLine.findMany({ where: { requestId }, include: { item: true } });
-      if (prLines.length === 0) businessError(`Yêu cầu mua ${pr.code} không có dòng hàng.`);
+      const allLines = await prisma.purchaseRequestLine.findMany({ where: { requestId }, include: { item: true } });
+      if (allLines.length === 0) businessError(`Yêu cầu mua ${pr.code} không có dòng hàng.`);
+      // Chỉ lên PO cho dòng chưa nằm trên PO nào (PR mở lại sau khi huỷ một trong các PO của nó).
+      const prLines = await openRequestLines(prisma, requestId, allLines);
+      if (prLines.length === 0) businessError(`Yêu cầu mua ${pr.code} đã lên PO hết các dòng (${liveOrders.map((order) => order.code).join(", ")}).`);
       // Giá gửi lên theo ĐVT đặt của dòng PR (đ/KG...) → quy về ĐVT tồn như mọi chỗ khác.
       const lineInput = new Map<string, { price: number; supplierCode: string; supplierName: string }>();
       for (const row of (Array.isArray(body.lines) ? body.lines : []) as Array<{ lineId?: unknown; unitCost?: unknown; supplierCode?: unknown; supplierName?: unknown }>) {
@@ -1268,7 +1297,7 @@ export async function PATCH(request: Request) {
         if (!lineSupplier) businessError(`Chọn nhà cung cấp cho ${line.item.name}.`);
         const unitCost = (input?.price || 0) / purchaseLineRate(line);
         const group = groups.get(lineSupplier) || { supplierCode: lineSupplier, supplierName: lineSupplierName, lines: [] };
-        group.lines.push({ itemId: line.itemId, orderedQuantity: line.quantity, unitCost, totalCost: line.quantity * unitCost, unitCode: line.unitCode, conversionRate: line.conversionRate, imageUrl: line.imageUrl || null });
+        group.lines.push({ itemId: line.itemId, orderedQuantity: line.quantity, unitCost, totalCost: line.quantity * unitCost, unitCode: line.unitCode, conversionRate: line.conversionRate, imageUrl: line.imageUrl || null, requestLineId: line.id });
         groups.set(lineSupplier, group);
       }
       const now = new Date();
@@ -1292,7 +1321,7 @@ export async function PATCH(request: Request) {
       });
       await writeAuditLog({
         session: auth.session, module: "PROCUREMENT", action, entityType: "PurchaseRequest", entityId: pr.id, entityCode: pr.code, branchCode: pr.branchCode,
-        metadata: { previousStatus: pr.status, orders: orders.map((order) => ({ code: order.code, supplierCode: order.supplierCode, totalAmount: order.totalAmount })), warehouseCode, unpricedLines: [...groups.values()].flatMap((group) => group.lines).filter((line) => !(line.unitCost > 0)).length },
+        metadata: { previousStatus: pr.status, reopenedLines: liveOrders.length > 0 ? prLines.length : undefined, orders: orders.map((order) => ({ code: order.code, supplierCode: order.supplierCode, totalAmount: order.totalAmount })), warehouseCode, unpricedLines: [...groups.values()].flatMap((group) => group.lines).filter((line) => !(line.unitCost > 0)).length },
       });
       return NextResponse.json({ ...orders[0], codes: orders.map((order) => order.code), requestCode: pr.code });
     }
@@ -1391,11 +1420,18 @@ export async function PATCH(request: Request) {
       if (!pr) businessError("Không tìm thấy yêu cầu mua hàng");
       assertBranchAccess(auth.session, pr.branchCode);
       assertWarehouseAccess(auth.session, pr.warehouseCode);
-      if (!["PENDING_APPROVAL", "APPROVED", "REJECTED"].includes(pr.status) || pr.orders.length > 0) {
+      if (!["PENDING_APPROVAL", "APPROVED", "REJECTED"].includes(pr.status)) {
         businessError(`Yêu cầu mua ${pr.code} đã lên PO hoặc đã đóng nên không huỷ được.`);
       }
-      const result = await prisma.purchaseRequest.update({ where: { id: requestId }, data: { status: "CANCELLED" } });
-      await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action, entityType: "PurchaseRequest", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { previousStatus: pr.status } });
+      // PR còn PO khác (đã huỷ một PO rồi mở lại): huỷ = BỎ phần còn lại, PR về "Đã lên PO" với các PO đang có.
+      const droppedRemainder = pr.orders.length > 0;
+      const result = await prisma.$transaction(async (tx) => {
+        const updated = await tx.purchaseRequest.update({ where: { id: requestId }, data: { status: droppedRemainder ? "ORDERED" : "CANCELLED" } });
+        // Bỏ phần còn lại mà các PO đang có đã nhận đủ thì PR Hoàn tất luôn.
+        if (droppedRemainder) await syncRequestCompletion(tx, requestId);
+        return updated;
+      });
+      await writeAuditLog({ session: auth.session, module: "PROCUREMENT", action, entityType: "PurchaseRequest", entityId: result.id, entityCode: result.code, branchCode: result.branchCode, metadata: { previousStatus: pr.status, droppedRemainder, orders: droppedRemainder ? pr.orders.map((order) => order.code) : undefined } });
       return NextResponse.json(result);
     }
 
@@ -1414,8 +1450,14 @@ export async function PATCH(request: Request) {
       if (lockedRequestStatuses.includes(pr.status) && !resubmit) {
         businessError(`Đề nghị mua hàng ${pr.code} đang ở trạng thái ${pr.status} nên không thể sửa.`);
       }
-      if (pr.orders.length > 0) {
+      // PR mở lại sau khi huỷ một trong các PO (khách 27/10/2026): sửa được các dòng CHƯA lên PO;
+      // dòng đang nằm trên PO còn hiệu lực giữ nguyên (body.lines chỉ là phần mở).
+      const reopened = pr.orders.length > 0 && ["PENDING_APPROVAL", "APPROVED"].includes(pr.status);
+      if (pr.orders.length > 0 && !reopened) {
         businessError(`Đề nghị mua hàng ${pr.code} đã sinh đơn mua hàng nên không thể sửa.`);
+      }
+      if (reopened && body.branchCode !== undefined && cleanText(body.branchCode) !== pr.branchCode) {
+        businessError(`Đề nghị mua hàng ${pr.code} đã có ${pr.orders.map((order) => order.code).join(", ")} nên không đổi cửa hàng được.`);
       }
       // Sửa dòng hàng sau khi đã có báo giá sẽ làm báo giá treo theo mặt hàng không còn được
       // yêu cầu nữa (so sánh giá lệch, tạo PO ra sai). Bỏ báo giá trước rồi hãy sửa.
@@ -1435,7 +1477,10 @@ export async function PATCH(request: Request) {
 
       const result = await prisma.$transaction(async (tx) => {
         if (nextLines) {
-          await tx.purchaseRequestLine.deleteMany({ where: { requestId } });
+          const replaced = reopened
+            ? (await openRequestLines(tx, requestId, await tx.purchaseRequestLine.findMany({ where: { requestId }, select: { id: true } }))).map((line) => line.id)
+            : null;
+          await tx.purchaseRequestLine.deleteMany({ where: replaced ? { id: { in: replaced } } : { requestId } });
           await tx.purchaseRequestLine.createMany({
             data: nextLines.map((line) => ({
               requestId,
@@ -1748,11 +1793,9 @@ export async function DELETE(request: Request) {
       const deleted = await softDeleteRecord({ model: "PurchaseOrder", id, session: auth.session, reason });
       // Trả yêu cầu mua nguồn về trạng thái chờ mua hàng: lập PO đã đẩy nó sang ORDERED (khoá
       // sửa/xoá), xoá PO mà không trả lại thì phiếu kẹt vĩnh viễn dù không còn đơn nào.
+      // PR còn PO khác thì chỉ phần của PO này mở lại (openRequestLines).
       if (order.requestId) {
-        const siblings = await prisma.purchaseOrder.count({ where: { requestId: order.requestId, ...liveOrdersWhere } });
-        if (siblings === 0) {
-          await prisma.purchaseRequest.updateMany({ where: { id: order.requestId, status: "ORDERED" }, data: { status: "APPROVED" } });
-        }
+        await prisma.purchaseRequest.updateMany({ where: { id: order.requestId, status: "ORDERED" }, data: { status: "APPROVED" } });
       }
       return NextResponse.json(deleted);
     }

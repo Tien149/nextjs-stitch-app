@@ -23,14 +23,14 @@ import MonthlyCostPanel from "@/components/inventory/MonthlyCostPanel";
 import RevertExplosionRange from "@/components/inventory/RevertExplosionRange";
 import { DateRangeFilter } from "@/components/DateRangeFilter";
 import { MoneyInput } from "@/components/MoneyInput";
-import { emptyReceiveTerms, poPriceHint, PurchaseReceiveLines, receiveFigures, receiveLineErrors, type ReceiveLineInfo, type ReceiveLineValue } from "@/components/PurchaseReceiveLines";
+import { convertReceiveValue, emptyReceiveTerms, poPriceHint, PurchaseReceiveLines, ReceiveUnitSelect, receiveFigures, receiveLineErrors, type ReceiveLineInfo, type ReceiveLineValue } from "@/components/PurchaseReceiveLines";
 import MissingRecipesPanel from "@/components/inventory/MissingRecipesPanel";
 import TransferRequestsPanel, { type TransferRequest } from "@/components/inventory/TransferRequestsPanel";
 import StocktakeDocumentsPanel from "@/components/inventory/StocktakeDocumentsPanel";
 import StocktakeExplanationPanel from "@/components/inventory/StocktakeExplanationPanel";
 import StocktakeResultsPanel from "@/components/inventory/StocktakeResultsPanel";
 import { EMPTY_STOCKTAKE_FILTER, inStocktakeRange, type StocktakeFilter } from "@/components/inventory/stocktake-filter";
-import { defaultPurchaseUnit, purchaseLineUnit, purchaseUnitOptions, safeConversionRate, toPurchasePrice, toPurchaseQuantity } from "@/lib/unit-conversion";
+import { defaultPurchaseUnit, purchaseLineUnit, purchaseUnitOptions, receiveUnitFor, receiveUnitOptions, safeConversionRate, toPurchasePrice, toPurchaseQuantity } from "@/lib/unit-conversion";
 import { money, quantity as qty, unitPrice } from "@/lib/format-number";
 import { parseVatRate, VAT_RATE_OPTIONS, vatAmountOf, vatRateLabel } from "@/lib/inventory-vat";
 import { resolveDiscount } from "@/lib/purchase-discount";
@@ -327,6 +327,8 @@ export default function InventoryPage() {
   /** Chọn được nhiều PO của cùng NCC ở form Nhập kho (khách 27/10/2026); màn Mua hàng vẫn nhận từng PO. */
   const [grpoOrderIds, setGrpoOrderIds] = useState<string[]>([]);
   const [grpoQuantities, setGrpoQuantities] = useState<Record<string, string>>({});
+  /** ĐVT nhận từng dòng PO khi NCC giao khác ĐVT đặt; trống = ĐVT đặt. */
+  const [grpoUnits, setGrpoUnits] = useState<Record<string, string>>({});
   /** Đơn giá thực lúc nhận theo ĐVT đặt — PO duyệt khi chưa có giá (khách 21/10/2026). */
   const [grpoPrices, setGrpoPrices] = useState<Record<string, string>>({});
   const [grpoPriceSource, setGrpoPriceSource] = useState<Record<string, string>>({});
@@ -1293,6 +1295,7 @@ export default function InventoryPage() {
   const clearGrpoOrders = () => {
     setGrpoOrderIds([]);
     setGrpoQuantities({});
+    setGrpoUnits({});
     setGrpoExtras([]);
   };
 
@@ -1314,6 +1317,8 @@ export default function InventoryPage() {
       setGrpoPriceSource({});
     }
     setGrpoOrderIds([...grpoOrderIds, orderId]);
+    // Số điền sẵn theo ĐVT đặt → bỏ ĐVT nhận còn sót của lần tick trước.
+    setGrpoUnits((current) => Object.fromEntries(Object.entries(current).filter(([lineId]) => !order.lines.some((line) => line.id === lineId))));
     setGrpoQuantities((current) => ({
       ...current,
       ...Object.fromEntries(order.lines.map((line) => [line.id, String(toPurchaseQuantity(line.orderedQuantity - line.receivedQuantity, line))])),
@@ -1340,11 +1345,30 @@ export default function InventoryPage() {
     ? <span className="ml-1 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-bold text-blue-700 whitespace-nowrap">{code}</span>
     : undefined);
   /** Dòng còn phải nhận của các PO đang chọn cho bảng nhận hàng dùng chung (components/PurchaseReceiveLines). */
+  /** ĐVT nhận của dòng PO (mặc định ĐVT đặt) — quy đổi lấy từ danh mục vì dòng PO không kèm. */
+  const grpoUnitOf = (line: ReceivablePOLine) => {
+    const item = data.items.find((candidate) => candidate.id === line.itemId) || line.item;
+    const options = receiveUnitOptions(line, item);
+    return { options, unit: receiveUnitFor(line, item, grpoUnits[line.id]) || options[0] };
+  };
+  const changeGrpoUnit = (line: ReceivablePOLine, unitCode: string) => {
+    const { options, unit } = grpoUnitOf(line);
+    const next = options.find((option) => option.unitCode === unitCode);
+    if (!next) return;
+    const converted = convertReceiveValue({ quantity: grpoQuantities[line.id] ?? "", price: grpoPrices[line.id] ?? "" }, unit.conversionRate, next.conversionRate);
+    setGrpoQuantities((current) => ({ ...current, [line.id]: converted.quantity }));
+    setGrpoPrices((current) => ({ ...current, [line.id]: converted.price }));
+    setGrpoUnits((current) => ({ ...current, [line.id]: next.unitCode }));
+  };
   const grpoLineInfos = (): ReceiveLineInfo[] => grpoOrders.flatMap((order) => order.lines.flatMap((line) => {
-    const remaining = toPurchaseQuantity(line.orderedQuantity - line.receivedQuantity, line);
+    const { options: unitOptions, unit: receiveUnit } = grpoUnitOf(line);
+    const remaining = Math.round(((line.orderedQuantity - line.receivedQuantity) / receiveUnit.conversionRate) * 1e6) / 1e6;
     if (remaining <= 0) return [];
     const unit = purchaseLineUnit(line);
-    return [{ id: line.id, name: line.item.name, unit, remaining, badge: grpoBadge(order.code), hint: poPriceHint(line.unitCost > 0 ? toPurchasePrice(line.unitCost, line) : 0, unit, grpoPriceSource[line.id]) }];
+    return [{
+      id: line.id, name: line.item.name, unit: receiveUnit.unitCode, remaining, badge: grpoBadge(order.code), hint: poPriceHint(line.unitCost > 0 ? toPurchasePrice(line.unitCost, line) : 0, unit, grpoPriceSource[line.id]),
+      extra: unitOptions.length > 1 ? <div className="mt-1"><ReceiveUnitSelect name={line.item.name} value={receiveUnit.unitCode} options={unitOptions} onChange={(unitCode) => changeGrpoUnit(line, unitCode)} /></div> : undefined,
+    }];
   }));
   const grpoExtraInfos = (): ReceiveLineInfo[] => grpoExtras.flatMap((extra) => {
     const item = data.items.find((candidate) => candidate.id === extra.itemId);
@@ -1427,6 +1451,7 @@ export default function InventoryPage() {
         itemId: line.itemId,
         quantity: Number(grpoQuantities[line.id] ?? 0) || 0,
         unitCost: Number(grpoPrices[line.id] || 0) || undefined,
+        unitCode: grpoUnits[line.id] || undefined,
         ...(grpoTerms[line.id] || emptyReceiveTerms),
       })),
       extraLines: grpoExtras.filter((extra) => (grpoOrders.some((candidate) => candidate.id === extra.orderId) ? extra.orderId : grpoOrders[0].id) === order.id).map((extra) => ({

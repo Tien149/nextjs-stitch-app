@@ -129,9 +129,9 @@ export default function StockDocumentPrintPage() {
 
   return (
     <main className="min-h-screen bg-white text-slate-950 p-8 print:p-0">
-      {/* Phiếu nhập mua nhiều cột: in khổ ngang. */}
-      {isPurchase && <style>{"@media print { @page { size: A4 landscape; margin: 10mm; } }"}</style>}
-      <div className={`${isPurchase ? "max-w-6xl" : "max-w-4xl"} mx-auto border border-slate-200 p-8 print:border-0 print:max-w-none`}>
+      {/* Mọi phiếu in A4 dọc (@page ở globals.css). Phiếu nhập mua từng in ngang vì 13 cột; khách
+          27/10/2026 muốn dọc → bảng nhập mua thu chữ nhỏ lại khi in để đủ cột trên khổ dọc. */}
+      <div className={`${isPurchase ? "max-w-6xl print:p-0" : "max-w-4xl"} mx-auto border border-slate-200 p-8 print:border-0 print:max-w-none`}>
         <div className="flex justify-between items-start border-b border-slate-200 pb-6">
           <div>
             <h1 className="text-2xl font-bold uppercase">{branchName}</h1>
@@ -169,9 +169,9 @@ export default function StockDocumentPrintPage() {
         </div>
 
         {isPurchase ? (
-          <table className="mt-6 w-full border-collapse text-xs">
+          <table className="mt-6 w-full border-collapse text-xs print:text-[8.5px] print:leading-tight">
             <thead>
-              <tr className="border-y-2 border-slate-300 text-[10px] uppercase text-slate-500">
+              <tr className="border-y-2 border-slate-300 text-[10px] uppercase text-slate-500 print:text-[7px]">
                 <th className="py-2 pr-1 text-left">STT</th>
                 <th className="py-2 pr-1 text-left">Mã hàng</th>
                 <th className="py-2 pr-1 text-left">Tên hàng</th>

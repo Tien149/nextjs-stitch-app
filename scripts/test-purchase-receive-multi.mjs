@@ -29,6 +29,7 @@ async function cleanup() {
   await prisma.inventoryTransaction.deleteMany({ where: { branchCode: BRANCH } });
   await prisma.purchaseOrder.deleteMany({ where: { branchCode: BRANCH } });
   await prisma.inventoryBalance.deleteMany({ where: { itemId: { in: items.map((row) => row.id) } } });
+  await prisma.itemUnitConversion.deleteMany({ where: { itemId: { in: items.map((row) => row.id) } } });
   await prisma.inventoryItem.deleteMany({ where: { id: { in: items.map((row) => row.id) } } });
 }
 
@@ -105,6 +106,33 @@ test("nhận gộp 2 PO: mỗi PO một phiếu NM + công nợ riêng, dòng th
   assert.equal(await balanceOf(ids.thit), 0);
   const a2 = await prisma.purchaseOrder.findUnique({ where: { id: a.id }, include: { payable: true } });
   assert.equal(a2.payable.originalAmount, 215000);
+});
+
+test("dòng PO đặt THÙNG nhận theo KG: kho cộng đúng số KG, phiếu NM ghi ĐVT KG, giá theo KG", async () => {
+  await prisma.itemUnitConversion.create({ data: { itemId: ids.rau, unitCode: "THUNG", unitName: "Thùng", conversionRate: 10 } });
+  const order = await prisma.purchaseOrder.create({
+    data: {
+      code: "PO-ZRM-E", supplierCode: "ZRM_NCC", supplierName: "NCC test", branchCode: BRANCH, warehouseCode: WH, status: "APPROVED", totalAmount: 400000,
+      lines: { create: [{ itemId: ids.rau, orderedQuantity: 20, unitCost: 20000, totalCost: 400000, unitCode: "THUNG", conversionRate: 10 }] },
+    },
+    include: { lines: true },
+  });
+  const before = await balanceOf(ids.rau);
+  const [row] = await receiveMany([{ orderId: order.id, lines: [{ lineId: order.lines[0].id, quantity: 7, unitCode: "KG", unitCost: 21000 }] }], { at: "2033-03-03T09:00" });
+  assert.equal(await balanceOf(ids.rau), before + 7);
+  const line = row.stockTransaction.lines[0];
+  assert.equal(line.inputUnitCode, "KG");
+  assert.equal(line.quantity, 7);
+  assert.equal(line.inputUnitCost, 21000);
+  const after = await prisma.purchaseOrder.findUnique({ where: { id: order.id }, include: { lines: true } });
+  assert.equal(after.lines[0].receivedQuantity, 7);
+  assert.equal(after.lines[0].unitCost, 21000, "giá dòng PO theo ĐVT tồn");
+  assert.equal(after.status, "PARTIALLY_RECEIVED");
+
+  const [again] = await receiveMany([{ orderId: order.id, lines: [{ lineId: order.lines[0].id, quantity: 1 }] }], { at: "2033-03-03T10:00" });
+  assert.equal(again.stockTransaction.lines[0].inputUnitCode, "Thùng", "không chọn thì vẫn theo ĐVT đặt (engine kho ghi tên ĐVT)");
+  assert.equal(await balanceOf(ids.rau), before + 17);
+  await assert.rejects(() => receiveMany([{ orderId: order.id, lines: [{ lineId: order.lines[0].id, quantity: 1, unitCode: "BAO" }] }], { at: "2033-03-03T11:00" }), /chưa khai/);
 });
 
 test("lỗi ở một PO thì không PO nào được nhận", async () => {

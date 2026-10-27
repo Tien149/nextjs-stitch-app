@@ -14,7 +14,8 @@ import { businessError, cleanText, isPeriodLocked, toNumber } from "@/lib/phase3
 import { prisma, type TxClient } from "@/lib/prisma";
 import { purchaseLineFigures, resolveDiscount } from "@/lib/purchase-discount";
 import { purchaseLineAmount } from "@/lib/purchase-payable";
-import { conversionRateForUnit, defaultPurchaseUnit, purchaseLineRate, purchaseUnitOptions } from "@/lib/unit-conversion";
+import { syncRequestCompletion } from "@/lib/purchase-request-open-lines";
+import { conversionRateForUnit, defaultPurchaseUnit, purchaseUnitOptions, receiveUnitFor } from "@/lib/unit-conversion";
 import { assertWarehouseAccess } from "@/lib/warehouse-scope";
 
 /**
@@ -36,7 +37,7 @@ export function allocateReceivePurchaseCost(weights: number[], purchaseCost: num
 
 /** Phần chung của một dòng PO tạo mới lúc nhận hàng (dòng thêm ngay trên phiếu nhận). */
 function receiveLineTemplate(orderId: string) {
-  return { orderId, receivedQuantity: 0, imageUrl: null as string | null };
+  return { orderId, receivedQuantity: 0, imageUrl: null as string | null, requestLineId: null as string | null };
 }
 
 /**
@@ -69,15 +70,18 @@ export async function prepareOrderReceive(session: DemoSession, input: Record<st
   // Nhóm tài sản người nhận hàng chọn cho từng dòng Tài sản/CCDC (chỉ khớp được theo lineId).
   const requestedAssetGroupByLineId = new Map<string, string>();
   const requestedPriceByLineId = new Map<string, number>();
+  /** ĐVT nhận khác ĐVT đặt (khách 27/10/2026) — số lượng + đơn giá dòng đó theo ĐVT này. */
+  const requestedUnitByLineId = new Map<string, string>();
   /** Thuế suất GTGT + chiết khấu từng dòng khai lúc nhận (khách 26/10/2026) — như phiếu Nhập mua bên Kho. */
   const requestedTermsByLineId = new Map<string, { vatRate: number | null; discountRate: string; discountAmount: string }>();
   if (hasLinePayload) {
-    for (const row of input.lines as Array<{ lineId?: unknown; id?: unknown; itemId?: unknown; quantity?: unknown; assetGroup?: unknown; unitCost?: unknown; vatRate?: unknown; discountRate?: unknown; discountAmount?: unknown }>) {
+    for (const row of input.lines as Array<{ lineId?: unknown; id?: unknown; itemId?: unknown; quantity?: unknown; assetGroup?: unknown; unitCost?: unknown; unitCode?: unknown; vatRate?: unknown; discountRate?: unknown; discountAmount?: unknown }>) {
       const quantity = toNumber(row.quantity);
       if (!(quantity >= 0)) continue;
       const lineId = cleanText(row.lineId) || cleanText(row.id);
       // Đơn giá thực lúc nhận (theo ĐVT đặt) — PO duyệt khi chưa có giá thì nhập ở đây.
       if (lineId && toNumber(row.unitCost) > 0) requestedPriceByLineId.set(lineId, toNumber(row.unitCost));
+      if (lineId && cleanText(row.unitCode)) requestedUnitByLineId.set(lineId, cleanText(row.unitCode));
       if (lineId && cleanText(row.assetGroup)) requestedAssetGroupByLineId.set(lineId, cleanText(row.assetGroup).toUpperCase());
       if (lineId) {
         const vat = parseVatRate(row.vatRate);
@@ -100,19 +104,23 @@ export async function prepareOrderReceive(session: DemoSession, input: Record<st
 
   const receiveLines = order.lines.map((line) => {
     const remaining = line.orderedQuantity - line.receivedQuantity;
-    if (!hasLinePayload) return { ...line, receiveQuantity: remaining };
-    // Số nhận theo dòng gửi lên là theo ĐVT ĐẶT của dòng PO (khách 21/10/2026) → quy về ĐVT tồn.
-    if (requestedByLineId.has(line.id)) return { ...line, receiveQuantity: (requestedByLineId.get(line.id) as number) * purchaseLineRate(line) };
+    // ĐVT nhận: ĐVT đặt của dòng PO, hoặc ĐVT khác đã khai khi NCC giao khác ĐVT (khách 27/10/2026).
+    const unit = receiveUnitFor(line, line.item, requestedUnitByLineId.get(line.id));
+    if (!unit) businessError(`ĐVT ${requestedUnitByLineId.get(line.id)} chưa khai cho ${line.item.name} — thêm ở danh mục mặt hàng hoặc nhận theo ĐVT khác.`);
+    const received = { ...line, receiveUnitCode: unit.unitCode, receiveRate: unit.conversionRate };
+    if (!hasLinePayload) return { ...received, receiveQuantity: remaining };
+    // Số nhận theo dòng gửi lên là theo ĐVT NHẬN của dòng (khách 21/10/2026) → quy về ĐVT tồn.
+    if (requestedByLineId.has(line.id)) return { ...received, receiveQuantity: (requestedByLineId.get(line.id) as number) * unit.conversionRate };
     if (requestedByItemId.has(line.itemId)) {
       const left = requestedByItemId.get(line.itemId) as number;
       const take = lastLineIdOfItem.get(line.itemId) === line.id ? left : Math.min(remaining, left);
       requestedByItemId.set(line.itemId, left - take);
-      return { ...line, receiveQuantity: take };
+      return { ...received, receiveQuantity: take };
     }
     // Có gửi danh sách dòng mà dòng này không nằm trong đó = không nhận dòng này.
-    return { ...line, receiveQuantity: 0 };
+    return { ...received, receiveQuantity: 0 };
   })
-    .map((line) => (requestedPriceByLineId.has(line.id) ? { ...line, unitCost: (requestedPriceByLineId.get(line.id) as number) / purchaseLineRate(line), priceChanged: true } : { ...line, priceChanged: false }))
+    .map((line) => (requestedPriceByLineId.has(line.id) ? { ...line, unitCost: (requestedPriceByLineId.get(line.id) as number) / line.receiveRate, priceChanged: true } : { ...line, priceChanged: false }))
     .filter((line) => line.receiveQuantity > 0)
     .map((line) => ({ ...line, isNew: false }));
   // Nhận THỪA được (khách 26/10/2026): rau, thịt, cá cân lên hay lệch so với số đặt — không chặn
@@ -152,6 +160,8 @@ export async function prepareOrderReceive(session: DemoSession, input: Record<st
       item,
       unitCode,
       conversionRate,
+      receiveUnitCode: unitCode,
+      receiveRate: conversionRate,
       receiveQuantity: quantity * conversionRate,
       orderedQuantity: quantity * conversionRate,
       unitCost,
@@ -230,15 +240,15 @@ export async function postOrderReceive(tx: TxClient, session: DemoSession, plan:
         note: note || `Nhận hàng từ ${order.code}`,
         createdBy: session.name,
         purchaseCost: plan.purchaseCost,
-        // Phiếu nhập ghi theo ĐVT đặt của PO, engine kho quy đổi ra ĐVT tồn (cùng luật hệ số an toàn).
-        // ĐVT đó đã bị gỡ / đổi hệ số khỏi danh mục sau lúc đặt thì nhập thẳng theo ĐVT tồn.
+        // Phiếu nhập ghi theo ĐVT nhận (mặc định ĐVT đặt của PO), engine kho quy đổi ra ĐVT tồn (cùng
+        // luật hệ số an toàn). ĐVT đó đã bị gỡ / đổi hệ số khỏi danh mục sau lúc đặt thì nhập thẳng theo ĐVT tồn.
         lines: stockLines.map((line) => {
-          const rate = purchaseLineRate(line);
-          const stillValid = rate !== 1 && conversionRateForUnit(line.item.unit, line.item.unitConversions, line.unitCode || "") === rate;
+          const rate = line.receiveRate;
+          const stillValid = rate !== 1 && conversionRateForUnit(line.item.unit, line.item.unitConversions, line.receiveUnitCode || "") === rate;
           const terms = requestedTermsByLineId.get(line.id);
           const extra = { vatRate: terms?.vatRate ?? null, discountRate: terms?.discountRate || "", discountAmount: terms?.discountAmount || "" };
           return stillValid
-            ? { itemId: line.itemId, inputQuantity: line.receiveQuantity / rate, inputUnitCode: line.unitCode, inputUnitCost: line.unitCost * rate, ...extra }
+            ? { itemId: line.itemId, inputQuantity: line.receiveQuantity / rate, inputUnitCode: line.receiveUnitCode, inputUnitCost: line.unitCost * rate, ...extra }
             : { itemId: line.itemId, inputQuantity: line.receiveQuantity, inputUnitCost: line.unitCost, ...extra };
         }),
       })
@@ -322,6 +332,7 @@ export async function postOrderReceive(tx: TxClient, session: DemoSession, plan:
       ...(receiveLines.some((line) => line.priceChanged || line.isNew) ? { totalAmount: remainingLines.reduce((sum, line) => sum + line.totalCost, 0) } : {}),
     },
   });
+  await syncRequestCompletion(tx, order.requestId);
   // Cộng dồn bằng `increment` chứ không đọc-rồi-ghi: hai lần nhận hàng chạy song song mà
   // đọc cùng số cũ thì một khoản công nợ bị nuốt mất (lost update).
   await tx.supplierPayable.upsert({

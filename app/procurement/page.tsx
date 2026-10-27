@@ -5,7 +5,7 @@ import ExportExcelButton from "@/components/ExportExcelButton";
 import { ModuleFrame, ModuleTabs } from "@/components/ModuleFrame";
 import { DateInput } from "@/components/DateInput";
 import { MoneyInput } from "@/components/MoneyInput";
-import { emptyReceiveTerms, poPriceHint, PurchaseReceiveLines, receiveFigures, receiveLineErrors, type ReceiveLineInfo, type ReceiveLineValue } from "@/components/PurchaseReceiveLines";
+import { convertReceiveValue, emptyReceiveTerms, poPriceHint, PurchaseReceiveLines, ReceiveUnitSelect, receiveFigures, receiveLineErrors, type ReceiveLineInfo, type ReceiveLineValue } from "@/components/PurchaseReceiveLines";
 import { QuantityInput } from "@/components/QuantityInput";
 import { ConfirmDeleteDialog, RowActions } from "@/components/RowActions";
 import { PartnerPicker, type CreatedPartner } from "@/components/PartnerPicker";
@@ -25,7 +25,7 @@ import { DateRangeFilter } from "@/components/DateRangeFilter";
 import { vnToday, vnTomorrow, type DateRange } from "@/lib/date-range";
 import { SendPurchaseOrderDialog } from "./send-po-dialog";
 import { ApproveRequestDialog } from "./approve-request-dialog";
-import { conversionRateForUnit, defaultPurchaseUnit, purchaseLineUnit, purchaseUnitOptions, toPurchasePrice, toPurchaseQuantity } from "@/lib/unit-conversion";
+import { conversionRateForUnit, defaultPurchaseUnit, purchaseLineUnit, purchaseUnitOptions, receiveUnitFor, receiveUnitOptions, toPurchasePrice, toPurchaseQuantity } from "@/lib/unit-conversion";
 
 import { ActionIcon } from "@/components/ActionIcon";
 type Item = { id: string; code: string; name: string; unit: string; itemType: string; category: string | null; requiresImage: boolean; unitConversions?: TemplateUnitConversion[] };
@@ -37,9 +37,9 @@ type UnitFields = { unitCode?: string | null; conversionRate?: number | null };
 type RequestLine = UnitFields & { id: string; itemId: string; quantity: number; estimatedUnitCost: number; imageUrl: string | null; note?: string | null; supplierCode?: string | null; supplierName?: string | null; item: Item };
 type QuoteLine = UnitFields & { itemId: string; quantity: number; unitCost: number; vatRate?: number | null; item?: Item };
 type Quote = { id: string; supplierCode: string; supplierName: string; totalAmount: number; deliveryDays: number | null; paymentTerms: string | null; isSelected: boolean; note: string | null; lines: QuoteLine[] };
-type PurchaseRequest = { id: string; code: string; requestDate: string; branchCode: string; departmentCode: string | null; warehouseCode?: string | null; supplierCode?: string | null; supplierName?: string | null; rejectReason?: string | null; requestedBy: string; neededDate: string | null; reason: string; status: string; approvedAt: string | null; note: string | null; lines: RequestLine[]; quotes: Quote[]; orders?: Array<{ id: string; code: string; status: string }> };
-type OrderLine = UnitFields & { id: string; itemId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; imageUrl: string | null; item: Item };
-type PurchaseOrder = { id: string; code: string; requestId: string | null; orderDate: string; supplierCode: string; supplierName: string; branchCode: string; departmentCode: string | null; warehouseCode: string; expectedDate: string | null; status: string; approvedAt: string | null; note: string | null; totalAmount: number; shareToken: string | null; lines: OrderLine[]; payable: { outstandingAmount: number } | null };
+type PurchaseRequest = { id: string; code: string; requestDate: string; branchCode: string; departmentCode: string | null; warehouseCode?: string | null; supplierCode?: string | null; supplierName?: string | null; rejectReason?: string | null; requestedBy: string; neededDate: string | null; reason: string; status: string; approvedAt: string | null; note: string | null; lines: RequestLine[]; quotes: Quote[]; orders?: Array<{ id: string; code: string; status: string; closedAt?: string | null; lines?: Array<{ requestLineId: string | null }> }> };
+type OrderLine = UnitFields & { id: string; itemId: string; orderedQuantity: number; receivedQuantity: number; unitCost: number; imageUrl: string | null; requestLineId?: string | null; item: Item };
+type PurchaseOrder = { id: string; code: string; requestId: string | null; orderDate: string; supplierCode: string; supplierName: string; branchCode: string; departmentCode: string | null; warehouseCode: string; expectedDate: string | null; status: string; approvedAt: string | null; note: string | null; totalAmount: number; shareToken: string | null; lines: OrderLine[]; payable: { outstandingAmount: number } | null; request?: { code: string } | null; closedAt?: string | null; closedBy?: string | null; closeReason?: string | null };
 type Data = { items: Item[]; requests: PurchaseRequest[]; orders: PurchaseOrder[]; departments: MasterItem[]; itemGroups: MasterItem[]; warehouses: MasterItem[]; assetGroups: MasterItem[]; templates: PurchaseTemplate[]; suppliers: Supplier[]; priceSuggestions: Record<string, PriceSuggestion> };
 /** Chứng từ mua hàng đang chờ xác nhận xoá. */
 type DeleteTarget = { type: "REQUEST" | "ORDER" | "QUOTE"; id: string; title: string; description: string; label: string };
@@ -84,6 +84,8 @@ const orderStatusLabel = (status: string) => ({
   COMPLETED: "Hoàn tất",
   CANCELLED: "Đã huỷ",
 }[status] || status);
+/** PO Đóng khi NCC không giao bù (khách 27/10/2026) — Hoàn tất nhưng chưa nhận đủ. */
+const orderStatusText = (order: { status: string; closedAt?: string | null }) => (order.status === "COMPLETED" && order.closedAt ? "Hoàn tất (đóng thiếu)" : orderStatusLabel(order.status));
 const orderStatusStyle = (status: string) => {
   if (["APPROVED", "COMPLETED"].includes(status)) return "bg-emerald-50 text-emerald-700";
   if (status === "CANCELLED") return "bg-rose-50 text-rose-700";
@@ -194,6 +196,8 @@ export default function ProcurementPage() {
   /** PR đang mở hộp Duyệt → PO. */
   const [approvingRequest, setApprovingRequest] = useState<PurchaseRequest | null>(null);
   const [receiveQuantities, setReceiveQuantities] = useState<Record<string, string>>({});
+  /** ĐVT nhận từng dòng PO khi NCC giao khác ĐVT đặt; trống = ĐVT đặt. */
+  const [receiveUnits, setReceiveUnits] = useState<Record<string, string>>({});
   /** Nhóm tài sản chọn cho từng dòng Tài sản/CCDC khi nhận hàng, khoá theo lineId. */
   const [receiveAssetGroups, setReceiveAssetGroups] = useState<Record<string, string>>({});
   const [receiveNote, setReceiveNote] = useState("");
@@ -417,10 +421,12 @@ export default function ProcurementPage() {
   );
   /** Yêu cầu đã gửi nhưng mua hàng chưa lập đơn — việc đang chờ xử lý. */
   const waitingForPurchase = useMemo(
-    () => data.requests.filter((item) =>
-      quotableStatuses.includes(item.status) &&
-      item.status !== "ORDERED" &&
-      !data.orders.some((order) => order.requestId === item.id)).length,
+    () => data.requests.filter((item) => {
+      if (!pendingRequestStatuses.includes(item.status)) return false;
+      // PR mở lại sau khi huỷ một trong các PO vẫn tính là việc chờ — còn dòng chưa lên PO.
+      const taken = new Set(data.orders.filter((order) => order.requestId === item.id && order.status !== "CANCELLED").flatMap((order) => order.lines.map((line) => line.requestLineId)));
+      return item.lines.some((line) => !taken.has(line.id));
+    }).length,
     [data.requests, data.orders],
   );
   const selectedRequest = useMemo(() => quotableRequests.find((item) => item.id === quoteForm.requestId), [quotableRequests, quoteForm.requestId]);
@@ -553,8 +559,71 @@ export default function ProcurementPage() {
   const canCancelOrder = (order: PurchaseOrder) =>
     ["DRAFT", "APPROVED"].includes(order.status) && order.lines.every((line) => line.receivedQuantity === 0) && !order.payable;
 
-  const canApproveRequest = (request: PurchaseRequest) => pendingRequestStatuses.includes(request.status) && !requestHasOrder(request);
-  const canCancelRequest = (request: PurchaseRequest) => [...pendingRequestStatuses, "REJECTED"].includes(request.status) && !requestHasOrder(request);
+  /**
+   * Dòng PR chưa nằm trên PO còn hiệu lực (khớp openRequestLines ở /api/procurement): PR tách nhiều
+   * PO, huỷ một PO thì đúng các dòng của PO đó mở lại chờ thu mua duyệt (khách 27/10/2026).
+   */
+  const openLinesOf = (request: PurchaseRequest) => {
+    const taken = new Set(liveOrdersOf(request).flatMap((order) => (order.lines || []).map((line) => line.requestLineId)));
+    return request.lines.filter((line) => !taken.has(line.id));
+  };
+  /** Đang chờ duyệt lại phần mở lại — PR vẫn còn PO khác. */
+  const isReopenedRequest = (request: PurchaseRequest) => pendingRequestStatuses.includes(request.status) && requestHasOrder(request);
+  const requestStatusText = (request: PurchaseRequest) => (isReopenedRequest(request)
+    ? `Chờ duyệt lại ${openLinesOf(request).length}/${request.lines.length} dòng`
+    : requestStatusLabel(request.status));
+  const canApproveRequest = (request: PurchaseRequest) => pendingRequestStatuses.includes(request.status) && openLinesOf(request).length > 0;
+  /** Từ chối trả người đặt sửa — PR đã có PO thì không sửa ngược được nữa. */
+  const canRejectRequest = (request: PurchaseRequest) => canApproveRequest(request) && !requestHasOrder(request);
+  /** Huỷ phiếu; PR mở lại sau khi huỷ một PO thì là bỏ phần còn lại. */
+  const canCancelRequest = (request: PurchaseRequest) => pendingRequestStatuses.includes(request.status) || (request.status === "REJECTED" && !requestHasOrder(request));
+  const startApproveRequest = (request: PurchaseRequest) => setApprovingRequest({ ...request, lines: openLinesOf(request) });
+  /** Mọi PO đã lên từ PR, kể cả đã huỷ — để biết PR đi tới PO nào (khách 27/10/2026). */
+  const ordersOf = (request: PurchaseRequest) => {
+    const byId = new Map<string, { id: string; code: string; status: string; closedAt?: string | null }>();
+    for (const order of request.orders || []) byId.set(order.id, order);
+    for (const order of data.orders) if (order.requestId === request.id) byId.set(order.id, order);
+    return [...byId.values()].sort((left, right) => left.code.localeCompare(right.code));
+  };
+  /** Bấm mã PO trên PR / mã PR trên PO → mở tab kia, lọc đúng mã, bỏ lọc ngày. */
+  const showOrder = (code: string) => {
+    setActive("orders");
+    setOrderFilter((current) => ({ ...current, status: "ALL", sent: "ALL", from: "", to: "", search: code }));
+  };
+  const showRequest = (code: string) => {
+    setActive("requests");
+    setRequestFilter((current) => ({ ...current, status: "ALL", from: "", to: "", search: code }));
+  };
+  const requestOrderLinks = (request: PurchaseRequest) => {
+    const orders = ordersOf(request);
+    if (orders.length === 0) return null;
+    return (
+      <p className="flex flex-wrap gap-x-2 gap-y-0.5 text-xs text-slate-500">
+        <span>PO:</span>
+        {orders.map((order) => (
+          <button key={order.id} type="button" onClick={() => showOrder(order.code)} className={`hover:underline ${order.status === "CANCELLED" ? "text-slate-400" : "text-sky-700"}`}>
+            <b>{order.code}</b> · {orderStatusText(order)}
+          </button>
+        ))}
+      </p>
+    );
+  };
+  const orderRequestLink = (order: PurchaseOrder) => (order.request ? (
+    <button type="button" onClick={() => showRequest(order.request?.code || "")} className="block text-xs text-sky-700 hover:underline">Từ <b>{order.request.code}</b></button>
+  ) : null);
+  /** Đóng PO nhận thiếu: NCC không giao bù → Hoàn tất với số đã nhận, PR tự Hoàn tất khi mọi PO xong. */
+  const closeOrder = async (order: PurchaseOrder) => {
+    const short = order.lines
+      .filter((line) => line.receivedQuantity < line.orderedQuantity - 1e-6)
+      .map((line) => `- ${line.item.name}: thiếu ${qtyText(line.orderedQuantity - line.receivedQuantity, line)}`);
+    const reason = window.prompt(`Đóng ${order.code} — NCC không giao bù phần còn thiếu?\n${short.join("\n")}\n\nPO thành Hoàn tất với số đã nhận (kho, công nợ giữ nguyên); PR nguồn tự Hoàn tất khi mọi PO xong.\n\nLý do (không bắt buộc):`, "");
+    if (reason === null) return;
+    await send("PATCH", { action: "CLOSE_ORDER", orderId: order.id, reason }, `Đã đóng ${order.code}.`);
+  };
+  const reopenOrder = async (order: PurchaseOrder) => {
+    if (!window.confirm(`Mở lại ${order.code} để nhận tiếp phần còn thiếu?`)) return;
+    await send("PATCH", { action: "REOPEN_ORDER", orderId: order.id }, `Đã mở lại ${order.code} — nhận tiếp ở nút Nhận hàng.`);
+  };
   /** Từ chối = trả về người đặt sửa lại / huỷ, kèm lý do. */
   const rejectRequest = async (request: PurchaseRequest) => {
     const reason = window.prompt(`Từ chối ${request.code} — trả về người đặt sửa lại.\n\nLý do (người đặt sẽ thấy):`, "");
@@ -562,10 +631,18 @@ export default function ProcurementPage() {
     await send("PATCH", { action: "REJECT_REQUEST", requestId: request.id, reason }, `Đã từ chối ${request.code} — người đặt sửa lại rồi gửi lại, hoặc huỷ.`);
   };
   const cancelRequest = async (request: PurchaseRequest) => {
+    if (isReopenedRequest(request)) {
+      const orders = liveOrdersOf(request).map((order) => order.code).join(", ");
+      if (!window.confirm(`Bỏ ${openLinesOf(request).length} dòng còn lại của ${request.code}, không mua nữa?\nCác dòng đang nằm trên ${orders} giữ nguyên.`)) return;
+      await send("PATCH", { action: "CANCEL_REQUEST", requestId: request.id }, `Đã bỏ phần còn lại của ${request.code}.`);
+      return;
+    }
     if (!window.confirm(`Huỷ yêu cầu mua ${request.code}? Phiếu huỷ không xử lý tiếp được nữa.`)) return;
     await send("PATCH", { action: "CANCEL_REQUEST", requestId: request.id }, `Đã huỷ ${request.code}.`);
   };
 
+  /** PR mở lại (còn PO khác): sửa được phần chưa lên PO, nhưng không xoá cả phiếu. */
+  const requestEditLockReason = (request: PurchaseRequest) => (isReopenedRequest(request) && request.quotes.length === 0 ? null : requestLockReason(request));
   const requestLockReason = (request: PurchaseRequest) => {
     if (requestHasOrder(request)) {
       return `Yêu cầu mua ${request.code} đã lên đơn ${liveOrdersOf(request).map((order) => order.code).join(", ")} nên không thể sửa hoặc xoá. Hãy huỷ đơn mua hàng trước.`;
@@ -635,7 +712,8 @@ export default function ProcurementPage() {
       neededDate: (request.neededDate || request.requestDate).slice(0, 10),
       reason: request.reason,
     });
-    setRequestRows(request.lines.map((line) => ({
+    // PR mở lại: chỉ nạp các dòng chưa lên PO — dòng trên PO còn hiệu lực giữ nguyên ở máy chủ.
+    setRequestRows((isReopenedRequest(request) ? openLinesOf(request) : request.lines).map((line) => ({
       uid: line.id,
       itemId: line.itemId,
       unitCode: line.unitCode || "",
@@ -835,26 +913,46 @@ export default function ProcurementPage() {
     setReceiveTerms({});
     setReceiveError("");
     setReceiveExtras([]);
+    setReceiveUnits({});
     setReceivingOrder(order);
+  };
+
+  /** ĐVT nhận của dòng PO (mặc định ĐVT đặt) — quy đổi lấy từ danh mục vì dòng PO không kèm. */
+  const receiveUnitOf = (line: OrderLine) => {
+    const item = data.items.find((candidate) => candidate.id === line.itemId) || line.item;
+    const options = receiveUnitOptions(line, item);
+    return { options, unit: receiveUnitFor(line, item, receiveUnits[line.id]) || options[0] };
+  };
+  const changeReceiveUnit = (line: OrderLine, unitCode: string) => {
+    const { options, unit } = receiveUnitOf(line);
+    const next = options.find((option) => option.unitCode === unitCode);
+    if (!next) return;
+    const converted = convertReceiveValue({ quantity: receiveQuantities[line.id] ?? "", price: receivePrices[line.id] ?? "" }, unit.conversionRate, next.conversionRate);
+    setReceiveQuantities((current) => ({ ...current, [line.id]: converted.quantity }));
+    setReceivePrices((current) => ({ ...current, [line.id]: converted.price }));
+    setReceiveUnits((current) => ({ ...current, [line.id]: next.unitCode }));
   };
 
   /** Dòng còn phải nhận của PO cho bảng nhận hàng dùng chung (components/PurchaseReceiveLines). */
   const receiveLineInfos = (order: PurchaseOrder): ReceiveLineInfo[] => order.lines.flatMap((line) => {
-    const remaining = toPurchaseQuantity(line.orderedQuantity - line.receivedQuantity, line);
+    const { options: unitOptions, unit: receiveUnit } = receiveUnitOf(line);
+    const remaining = Math.round(((line.orderedQuantity - line.receivedQuantity) / receiveUnit.conversionRate) * 1e6) / 1e6;
     if (remaining <= 0) return [];
     const unit = purchaseLineUnit(line);
+    const unitSelect = <ReceiveUnitSelect name={line.item.name} value={receiveUnit.unitCode} options={unitOptions} onChange={(unitCode) => changeReceiveUnit(line, unitCode)} />;
     const isAsset = ["TOOL", "ASSET"].includes(line.item.itemType);
     const groupOptions = isAsset ? assetGroupOptionsFor(line.item.itemType) : [];
     return [{
       id: line.id,
       name: line.item.name,
-      unit,
+      unit: receiveUnit.unitCode,
       remaining,
       hint: poPriceHint(line.unitCost > 0 ? toPurchasePrice(line.unitCost, line) : 0, unit, receivePriceSource[line.id]),
       badge: isAsset ? <span className="status bg-indigo-50 text-indigo-700 ml-1">Tài sản/CCDC</span> : undefined,
       // Nhóm tài sản quyết định tiền tố mã hồ sơ (CCDCBAR0001...) và mã đã cấp là không sửa được,
       // nên phải chọn ngay tại đây thay vì để hệ thống đoán.
-      extra: isAsset ? (
+      extra: isAsset ? (<>
+        {unitSelect}
         <label className="mt-1 block text-[11px] font-bold text-slate-600">
           Nhóm tài sản
           <select
@@ -872,7 +970,7 @@ export default function ProcurementPage() {
             </span>
           )}
         </label>
-      ) : undefined,
+      </>) : unitOptions.length > 1 ? <div className="mt-1">{unitSelect}</div> : undefined,
     }];
   });
   const receiveExtraInfos = (): ReceiveLineInfo[] => receiveExtras.flatMap((extra) => {
@@ -941,6 +1039,7 @@ export default function ProcurementPage() {
       itemId: line.itemId,
       quantity: Number(receiveQuantities[line.id] ?? 0) || 0,
       unitCost: Number(receivePrices[line.id] || 0) || undefined,
+      unitCode: receiveUnits[line.id] || undefined,
       assetGroup: receiveAssetGroups[line.id] || "",
       ...(receiveTerms[line.id] || emptyReceiveTerms),
     }));
@@ -1021,7 +1120,7 @@ export default function ProcurementPage() {
     const reason = window.prompt(
       `Huỷ đơn ${order.code} (${order.supplierName})?\n` +
         (sent ? "Link/QR đã gửi NCC vẫn mở được nhưng hiện rõ ĐƠN ĐÃ HUỶ — nên báo NCC ngay sau khi huỷ.\n" : "") +
-        "Yêu cầu mua sẽ trở về Chờ mua hàng để sửa báo giá hoặc lập đơn khác.\n\nLý do huỷ (không bắt buộc, chỉ lưu nội bộ):",
+        "Các dòng của đơn này trên yêu cầu mua sẽ mở lại chờ thu mua duyệt (chọn NCC khác); PO khác của cùng PR giữ nguyên.\n\nLý do huỷ (không bắt buộc, chỉ lưu nội bộ):",
       "",
     );
     if (reason === null) return;
@@ -1086,11 +1185,11 @@ export default function ProcurementPage() {
   const requestTotal = (request: PurchaseRequest) => request.lines.reduce((sum, line) => sum + line.quantity * line.estimatedUnitCost, 0);
   const orderKeyword = orderFilter.search.trim().toLowerCase();
   const filteredOrders = (orderList?.rows || []).filter((order) => !orderKeyword
-    || `${order.code} ${order.supplierName} ${order.supplierCode} ${order.note || ""}`.toLowerCase().includes(orderKeyword)
+    || `${order.code} ${order.supplierName} ${order.supplierCode} ${order.note || ""} ${order.request?.code || ""}`.toLowerCase().includes(orderKeyword)
     || order.lines.some((line) => line.item.code.toLowerCase().includes(orderKeyword) || line.item.name.toLowerCase().includes(orderKeyword)));
   const requestKeyword = requestFilter.search.trim().toLowerCase();
   const filteredRequests = (requestList?.rows || []).filter((request) => !requestKeyword
-    || `${request.code} ${request.reason} ${request.requestedBy}`.toLowerCase().includes(requestKeyword)
+    || `${request.code} ${request.reason} ${request.requestedBy} ${(request.orders || []).map((order) => order.code).join(" ")}`.toLowerCase().includes(requestKeyword)
     || request.lines.some((line) => line.item.code.toLowerCase().includes(requestKeyword) || line.item.name.toLowerCase().includes(requestKeyword)));
 
   return (
@@ -1171,6 +1270,15 @@ export default function ProcurementPage() {
                 </h2>
                 <button type="button" onClick={resetRequestForm} className="icon-button" title="Đóng form"><span className="material-symbols-outlined">close</span></button>
               </div>
+              {editingRequest && isReopenedRequest(editingRequest) && (() => {
+                const open = new Set(openLinesOf(editingRequest).map((line) => line.id));
+                const kept = editingRequest.lines.filter((line) => !open.has(line.id));
+                return (
+                  <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    Chỉ sửa phần chưa lên PO. Giữ nguyên trên {liveOrdersOf(editingRequest).map((order) => order.code).join(", ")}: {kept.map((line) => `${line.item.name} ${qtyText(line.quantity, line)}`).join(", ")}. Không đổi được cửa hàng.
+                  </p>
+                );
+              })()}
 
               <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
                 <Field label="Cửa hàng">
@@ -1482,22 +1590,23 @@ export default function ProcurementPage() {
                       <CopyableText value={request.code}><b>{request.code}</b></CopyableText>
                       <p className="text-xs text-slate-500">{new Date(request.requestDate).toLocaleDateString("vi-VN")} · {storeLabel(request.branchCode)} · {departmentName(request.departmentCode)}</p>
                     </div>
-                    <span className={`status ${requestStatusStyle(request.status)} shrink-0`}>{requestStatusLabel(request.status)}</span>
+                    <span className={`status ${requestStatusStyle(request.status)} shrink-0`}>{requestStatusText(request)}</span>
                   </div>
                   <p className="text-sm text-slate-700">{request.reason}{request.warehouseCode ? <span className="text-xs text-slate-500"> · Kho {request.warehouseCode}</span> : null}{request.supplierName ? <span className="text-xs text-slate-500"> · NCC {request.supplierName}</span> : null}</p>
                   <LinesPreview items={request.lines.map((line) => `${line.item.name}: ${qtyText(line.quantity, line)}${line.note ? ` · ${line.note}` : ""}`)} />
+                  {requestOrderLinks(request)}
                   {request.status === "REJECTED" && <p className="text-xs text-rose-700">Thu mua từ chối{request.rejectReason ? `: ${request.rejectReason}` : ""} — bấm Sửa để chỉnh và gửi lại, hoặc Huỷ phiếu.</p>}
                   <div className="flex items-center justify-between pt-1 border-t border-slate-100">
                     <b className="text-sm">{money(requestTotal(request))} đ</b>
                     <div className="flex items-center gap-1">
                       {canApprove && canApproveRequest(request) && (
                         <>
-                          <ActionIcon kind="approve" title="Duyệt → lên PO" onClick={() => setApprovingRequest(request)} />
-                          <ActionIcon kind="cancel" title="Từ chối (trả người đặt sửa)" onClick={() => void rejectRequest(request)} />
+                          <ActionIcon kind="approve" title={isReopenedRequest(request) ? "Duyệt lại phần còn lại → lên PO" : "Duyệt → lên PO"} onClick={() => startApproveRequest(request)} />
+                          {canRejectRequest(request) && <ActionIcon kind="cancel" title="Từ chối (trả người đặt sửa)" onClick={() => void rejectRequest(request)} />}
                         </>
                       )}
                       {canCreate && canCancelRequest(request) && (
-                        <ActionIcon kind="cancel" title="Huỷ phiếu" onClick={() => void cancelRequest(request)} />
+                        <ActionIcon kind="cancel" title={isReopenedRequest(request) ? "Bỏ phần còn lại (không mua nữa)" : "Huỷ phiếu"} onClick={() => void cancelRequest(request)} />
                       )}
                       <RowActions
                         session={user}
@@ -1508,7 +1617,7 @@ export default function ProcurementPage() {
                           setDeleteError(null);
                           setDeleteTarget({ type: "REQUEST", id: request.id, title: `Xoá đề nghị mua hàng ${request.code}?`, description: `${request.reason} · ${departmentName(request.departmentCode)}`, label: `đề nghị mua hàng ${request.code}` });
                         }}
-                        editDisabledReason={requestLockReason(request)}
+                        editDisabledReason={requestEditLockReason(request)}
                         deleteDisabledReason={requestLockReason(request)}
                       />
                     </div>
@@ -1546,8 +1655,9 @@ export default function ProcurementPage() {
                     {money(requestTotal(request))} đ
                   </td>
                   <td className="cell">
-                    <span className={`status ${requestStatusStyle(request.status)}`}>{requestStatusLabel(request.status)}</span>
+                    <span className={`status ${requestStatusStyle(request.status)}`}>{requestStatusText(request)}</span>
                     {request.status === "REJECTED" && request.rejectReason && <small className="text-rose-700">{request.rejectReason}</small>}
+                    {requestOrderLinks(request)}
                     {request.warehouseCode && <small>Kho {request.warehouseCode}</small>}
                     {request.supplierName && <small>NCC {request.supplierName}</small>}
                   </td>
@@ -1555,12 +1665,12 @@ export default function ProcurementPage() {
                     <div className="flex items-center justify-end gap-2">
                       {canApprove && canApproveRequest(request) && (
                         <>
-                          <ActionIcon kind="approve" title="Duyệt → lên PO" onClick={() => setApprovingRequest(request)} />
-                          <ActionIcon kind="cancel" title="Từ chối (trả người đặt sửa)" onClick={() => void rejectRequest(request)} />
+                          <ActionIcon kind="approve" title={isReopenedRequest(request) ? "Duyệt lại phần còn lại → lên PO" : "Duyệt → lên PO"} onClick={() => startApproveRequest(request)} />
+                          {canRejectRequest(request) && <ActionIcon kind="cancel" title="Từ chối (trả người đặt sửa)" onClick={() => void rejectRequest(request)} />}
                         </>
                       )}
                       {canCreate && canCancelRequest(request) && (
-                        <ActionIcon kind="cancel" title="Huỷ phiếu" onClick={() => void cancelRequest(request)} />
+                        <ActionIcon kind="cancel" title={isReopenedRequest(request) ? "Bỏ phần còn lại (không mua nữa)" : "Huỷ phiếu"} onClick={() => void cancelRequest(request)} />
                       )}
                       <RowActions
                         session={user}
@@ -1577,7 +1687,7 @@ export default function ProcurementPage() {
                             label: `đề nghị mua hàng ${request.code}`,
                           });
                         }}
-                        editDisabledReason={requestLockReason(request)}
+                        editDisabledReason={requestEditLockReason(request)}
                         deleteDisabledReason={requestLockReason(request)}
                       />
                     </div>
@@ -1756,7 +1866,7 @@ export default function ProcurementPage() {
                     <b><CopyableText value={request.code} /> — {request.reason}</b>
                     <LinesPreview items={request.lines.map((line) => `${line.item.name} (${qtyText(line.quantity, line)})${line.note ? ` · ${line.note}` : ""}`)} />
                   </div>
-                  <span className={`status ${requestStatusStyle(request.status)} shrink-0`}>{requestStatusLabel(request.status)}</span>
+                  <span className={`status ${requestStatusStyle(request.status)} shrink-0`}>{requestStatusText(request)}</span>
                 </div>
 
                 {/* PR đã lên đơn: báo giá bị khoá — đưa luôn thao tác gửi NCC / huỷ đơn ra đây để khỏi phải đi tìm. */}
@@ -1764,7 +1874,7 @@ export default function ProcurementPage() {
                   <div key={order.id} className="mb-3 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-sky-900">
                     <span className="material-symbols-outlined text-base">local_shipping</span>
                     <span className="flex-1 min-w-[200px]">
-                      Đã lên đơn <b>{order.code}</b> với <b>{order.supplierName}</b> · <span className={`status ${orderStatusStyle(order.status)}`}>{orderStatusLabel(order.status)}</span>
+                      Đã lên đơn <b>{order.code}</b> với <b>{order.supplierName}</b> · <span className={`status ${orderStatusStyle(order.status)}`}>{orderStatusText(order)}</span>
                       {order.shareToken && <span className="ml-1 text-sky-700">· đã gửi NCC</span>}
                       <span className="block text-sky-700/80">Muốn sửa/xoá báo giá: huỷ đơn trước.</span>
                     </span>
@@ -1967,8 +2077,9 @@ export default function ProcurementPage() {
                     <div className="min-w-0">
                       <CopyableText value={order.code}><b>{order.code}</b></CopyableText>
                       <p className="text-xs text-slate-500">{new Date(order.orderDate).toLocaleDateString("vi-VN")} · {storeLabel(order.branchCode)} · {order.warehouseCode}</p>
+                      {orderRequestLink(order)}
                     </div>
-                    <span className={`status ${orderStatusStyle(order.status)} shrink-0`}>{orderStatusLabel(order.status)}</span>
+                    <span className={`status ${orderStatusStyle(order.status)} shrink-0`}>{orderStatusText(order)}</span>
                   </div>
                   <p className="text-sm font-semibold text-slate-800">{order.supplierName}</p>
                   <LinesPreview items={order.lines.map((line) => `${line.item.name} (${qty(toPurchaseQuantity(line.receivedQuantity, line))}/${qtyText(line.orderedQuantity, line)})`)} />
@@ -2002,6 +2113,12 @@ export default function ProcurementPage() {
                       {canEdit && ["PARTIALLY_RECEIVED", "COMPLETED"].includes(order.status) && (
                         <button onClick={() => void cancelLastReceipt(order)} className="rounded-lg border border-rose-200 bg-white text-rose-600 text-xs font-bold px-3 py-2">Huỷ lần nhận</button>
                       )}
+                      {canApprove && order.status === "PARTIALLY_RECEIVED" && (
+                        <button onClick={() => void closeOrder(order)} className="rounded-lg border border-slate-300 bg-white text-slate-700 text-xs font-bold px-3 py-2">Đóng PO</button>
+                      )}
+                      {canApprove && order.closedAt && (
+                        <button onClick={() => void reopenOrder(order)} className="rounded-lg border border-slate-300 bg-white text-slate-700 text-xs font-bold px-3 py-2">Mở lại PO</button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -2031,6 +2148,7 @@ export default function ProcurementPage() {
                   <td className="cell">
                     <CopyableText value={order.code}><b>{order.code}</b></CopyableText>
                     <small>{new Date(order.orderDate).toLocaleDateString("vi-VN")}</small>
+                    {orderRequestLink(order)}
                   </td>
                   <td className="cell">
                     <b>{order.supplierName}</b>
@@ -2046,9 +2164,10 @@ export default function ProcurementPage() {
                   </td>
                   <td className="cell text-right font-bold">{money(order.totalAmount)} đ</td>
                   <td className="cell">
-                    <span className={`status ${orderStatusStyle(order.status)}`}>{orderStatusLabel(order.status)}</span>
+                    <span className={`status ${orderStatusStyle(order.status)}`}>{orderStatusText(order)}</span>
                     <small className="block mt-0.5 text-[10px] text-slate-500">Đã nhận: {totalReceived}/{totalOrdered}</small>
                     <small className={`block text-[10px] font-semibold ${order.shareToken ? "text-sky-700" : "text-slate-400"}`}>{order.shareToken ? "Đã gửi NCC" : "Chưa gửi NCC"}</small>
+                    {order.closedAt && <small className="block text-[10px] text-amber-700">Đóng bởi {order.closedBy}{order.closeReason ? `: ${order.closeReason}` : ""}</small>}
                   </td>
                   <td className="cell">
                     <b>{order.lines.filter((line) => ["TOOL", "ASSET"].includes(line.item.itemType)).length} dòng</b>
@@ -2089,6 +2208,16 @@ export default function ProcurementPage() {
                       {canEdit && ["PARTIALLY_RECEIVED", "COMPLETED"].includes(order.status) && (
                         <button onClick={() => void cancelLastReceipt(order)} className="action-link text-rose-600 hover:underline" title="Huỷ lần nhận gần nhất: hoàn kho, trả số chưa nhận trên PO, trừ công nợ NCC">
                           Huỷ lần nhận
+                        </button>
+                      )}
+                      {canApprove && order.status === "PARTIALLY_RECEIVED" && (
+                        <button onClick={() => void closeOrder(order)} className="action-link text-slate-700 hover:underline" title="NCC không giao bù phần còn thiếu — PO Hoàn tất với số đã nhận">
+                          Đóng PO
+                        </button>
+                      )}
+                      {canApprove && order.closedAt && (
+                        <button onClick={() => void reopenOrder(order)} className="action-link text-slate-700 hover:underline" title="Bỏ đóng để nhận tiếp phần còn thiếu">
+                          Mở lại PO
                         </button>
                       )}
                       <RowActions
@@ -2210,6 +2339,7 @@ export default function ProcurementPage() {
       {approvingRequest && (
         <ApproveRequestDialog
           request={approvingRequest}
+          existingOrders={liveOrdersOf(approvingRequest).map((order) => order.code)}
           supplierOptions={supplierOptions}
           warehouses={warehousesForBranch(approvingRequest.branchCode)}
           defaultWarehouse={suggestedWarehouseForRequest(approvingRequest)}

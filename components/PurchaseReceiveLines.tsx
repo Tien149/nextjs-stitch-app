@@ -196,3 +196,31 @@ export function poPriceHint(poPrice: number, unit: string, suggestedSource?: str
   if (poPrice > 0) return `giá PO ${unitPrice(poPrice)} đ/${unit}`;
   return suggestedSource ? `PO chưa có giá · gợi ý theo ${suggestedSource}` : "PO chưa có giá — nhập giá thực";
 }
+
+/**
+ * Ô ĐVT nhận của dòng PO (khách 27/10/2026: PO đặt THÙNG, NCC giao lẻ KG thì nhận theo KG) —
+ * `options` từ receiveUnitOptions (lib/unit-conversion), chỉ hiện khi có hơn một ĐVT.
+ */
+export function ReceiveUnitSelect({ name, value, options, onChange }: {
+  name: string;
+  value: string;
+  options: Array<{ unitCode: string; label: string }>;
+  onChange: (unitCode: string) => void;
+}) {
+  if (options.length < 2) return null;
+  return (
+    <select className="control !mt-0 !h-8 !py-0 w-auto text-xs" value={value} onChange={(e) => onChange(e.target.value)} aria-label={`ĐVT nhận ${name}`}>
+      {options.map((option) => <option key={option.unitCode} value={option.unitCode}>{option.label}</option>)}
+    </select>
+  );
+}
+
+/** Đổi ĐVT nhận: quy số lượng + đơn giá đã gõ sang ĐVT mới để thành tiền giữ nguyên. */
+export function convertReceiveValue(value: { quantity: string; price: string }, fromRate: number, toRate: number) {
+  if (!(fromRate > 0) || !(toRate > 0) || fromRate === toRate) return value;
+  const factor = toRate / fromRate;
+  return {
+    quantity: value.quantity === "" ? "" : String(Math.round((Number(value.quantity) / factor) * 1e6) / 1e6),
+    price: value.price === "" ? "" : String(Math.round(Number(value.price) * factor * 100) / 100),
+  };
+}

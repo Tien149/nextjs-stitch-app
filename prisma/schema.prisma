@@ -1364,6 +1364,11 @@ model PurchaseOrder {
   totalAmount    Float     @default(0)
   approvedBy     String?
   approvedAt     DateTime?
+  /// Đóng PO nhận thiếu (NCC không giao bù, khách 27/10/2026): COMPLETED dù chưa nhận đủ.
+  /// Huỷ lần nhận / Mở lại PO thì xoá — trạng thái tính lại theo số đã nhận.
+  closedAt       DateTime?
+  closedBy       String?
+  closeReason    String?
   note           String?
   createdBy      String?
   /// Token link công khai gửi nhà cung cấp xem phiếu không cần đăng nhập. Null = chưa chia sẻ.
@@ -1398,11 +1403,15 @@ model PurchaseOrderLine {
   /// Số lượng / đơn giá trong DB vẫn theo ĐVT tồn kho; hiển thị = số lượng ÷ hệ số, đơn giá × hệ số.
   unitCode         String?
   conversionRate   Float   @default(1)
+  /// Dòng PR sinh ra dòng PO này (khách 27/10/2026: một PR tách nhiều PO, huỷ một PO thì PR mở lại
+  /// đúng các dòng của PO đó để thu mua duyệt lại). Không khoá ngoại: PR sửa lại là xoá/tạo lại dòng.
+  requestLineId    String?
 
   order PurchaseOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
   item  InventoryItem @relation(fields: [itemId], references: [id])
 
   @@index([orderId])
+  @@index([requestLineId])
 }
 
 /// Một LẦN NHẬN HÀNG của PO (khách 26/10/2026 — để "Huỷ lần nhận"): ghi đủ những gì lần nhận đã làm để
