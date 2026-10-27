@@ -1177,7 +1177,9 @@ export default function ProcurementPage() {
   const totalPRs = data.requests.length;
   
   const totalPOs = data.orders.length;
-  const openPOs = data.orders.filter((o) => !["COMPLETED", "RECEIVED"].includes(o.status)).length;
+  // PO đã huỷ không còn "đang thực hiện"; Hoàn tất gồm cả PO đóng thiếu (khách 27/10/2026).
+  const openPOs = data.orders.filter((o) => !["COMPLETED", "RECEIVED", "CANCELLED"].includes(o.status)).length;
+  const completedPOs = data.orders.filter((o) => ["COMPLETED", "RECEIVED"].includes(o.status)).length;
 
   if (loading) return <div className="h-screen grid place-items-center bg-slate-100">Đang tải...</div>;
 
@@ -1197,7 +1199,7 @@ export default function ProcurementPage() {
     <ModuleFrame title="Mua hàng & Nhà cung cấp" subtitle="PR theo mẫu, so sánh giá, bảng giá NCC, PO gửi NCC và nhận hàng" role={user?.role} contentClassName="max-w-[1680px]">
       {/* Operational Summary Cards */}
       <StickyFilterBar>
-      <div className="hidden sm:grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+      <div className="hidden sm:grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-4 mb-4">
         <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-slate-500">Tổng yêu cầu PR</span>
@@ -1225,6 +1227,13 @@ export default function ProcurementPage() {
             <span className="material-symbols-outlined text-emerald-500 text-xl">package_2</span>
           </div>
           <p className="text-lg font-bold text-emerald-600 mt-1">{openPOs} đơn</p>
+        </div>
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-500">PO hoàn tất</span>
+            <span className="material-symbols-outlined text-teal-600 text-xl">task_alt</span>
+          </div>
+          <p className="text-lg font-bold text-teal-700 mt-1">{completedPOs} đơn</p>
         </div>
       </div>
 
